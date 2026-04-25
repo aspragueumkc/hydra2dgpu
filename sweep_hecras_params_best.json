@@ -1,0 +1,12 @@
+{
+  "best": {
+    "mann": 1.5,
+    "expansion_coeff": 0.1,
+    "alpha_method": "area",
+    "sf_method": "combined",
+    "max_abs": 1.3799321149102752,
+    "mean_abs": 0.4348073181099835,
+    "rmse": 0.6610118797047495
+  },
+  "count": 256
+}

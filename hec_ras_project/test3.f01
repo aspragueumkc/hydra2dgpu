@@ -1,0 +1,70 @@
+
+; ============================================================
+; HEC-RAS Steady Flow File (example / template)
+; Save as: Project.f01 (or any .f## paired with your Plan)
+; ============================================================
+
+Flow Title=Example Steady Flow (Baseflow & High Flow)
+Program Version=5.0.7
+
+; ---- Profiles (scenarios) ----
+Number of Profiles=1
+Profile Names= "test3"
+
+; ---- Network Info (must match Geometry) ----
+; For multi-reach systems, list each reach block with the flows at the upstream end.
+Number of Reaches=1
+Reach= "MainReach","MainReach"
+
+; ---- Boundary Conditions for this Reach ----
+; Common downstream BC: Normal depth (Mannings slope) OR Known WS
+; If Normal Depth, specify energy slope (S) as decimal.
+Downstream Boundary Type= Normal Depth
+Downstream Boundary Slope= 0.001
+
+; Upstream BC is normally the FLOW you’ll define below. If you need a specific
+; upstream stage (less common in steady), you can instead use Known WS.
+
+; ---- Flow Definitions ----
+; Provide flows for each profile at the upstream controlling section of the reach.
+; If you supply a single flow per reach/profile, HEC-RAS will distribute at the first XS.
+; If you need detailed flow distribution (Left/Channel/Right), see the next section.
+
+; Format:
+;   Upstream Flow (Reach) for each profile in order of Profile Names.
+Upstream Flow= 800.0
+
+; ---- Optional: Lateral Inflows by River Station ----
+; Use this if you have incremental inflow added along the reach.
+; Format shown per RS, for each profile:
+;   Lateral Inflow Count = N (rows follow)
+;   Lateral Inflow RS= <river station>, <q_profile1>, <q_profile2>, ...
+;Lateral Inflow Count= 2
+;Lateral Inflow RS=  980.00, 50.0,  75.0     ; Adds 50 cfs (PF-Base) / 75 cfs (PF-High) at RS 980.00
+;Lateral Inflow RS=  750.00, 25.0,  50.0     ; Adds 25 / 50 cfs at RS 750.00
+
+; ---- Optional: Flow Distribution at XS (L/C/R) ----
+; If you want to specify Left / Channel / Right flows at a cross section (instead of a single total),
+; give values per profile (triplets per profile). Make sure XS exist in Geometry.
+; Format:
+;   Flow Dist Count = M
+;   Flow Dist= RS, (L,C,R for PF-1), (L,C,R for PF-2), ...
+;Flow Dist Count= 2
+;Flow Dist= 1000.00, 100.0,300.0,100.0,   300.0,900.0,300.0
+;Flow Dist=  900.00, 100.0,300.0,100.0,   300.0,900.0,300.0
+
+; ---- Optional: Known Downstream WS instead of Normal Depth ----
+; If you prefer a known water surface boundary, comment out the Normal Depth lines above
+; and use:
+; Downstream Boundary Type= Known WS
+; Downstream Known WS=  98.50,  101.20    ; PF-Base, PF-High (ft)
+
+; ---- Optional: Coefficients / Settings (defaults are usually fine) ----
+; Energy Coefficients Alpha=1.0,1.0
+; Contraction/Expansion Coefficients=0.1,0.3
+
+; ---- Notes ----
+; 1) River/Reach names and RS must match the Geometry file (.g##).
+; 2) Units are those of the project (commonly ft and cfs).
+; 3) Ensure the number/order of profile values match "Profile Names".
+; 4) If you have multiple reaches, repeat the Reach/BC/Flow blocks per reach.

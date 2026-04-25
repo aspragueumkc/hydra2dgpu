@@ -1,0 +1,5 @@
+Q_target=500.0, M_const=1.49
+Rows=59
+min_abs_err=6.386147, max_abs_err=565.585467, mean_abs_err=275.410714
+best WSE=15.5 depth=15.5 diff=6.386147208101875
+solver_depth=15.335672302246092 analytic_y_norm=15.331812773082326 solver-analytic=0.0038595291637655293

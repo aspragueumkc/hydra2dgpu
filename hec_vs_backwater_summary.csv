@@ -1,0 +1,18 @@
+iteration,iter_name,description,params,max_abs_diff,mean_abs_diff,rmse
+0,baseline,Baseline backwater2 implementation,{},,,
+1,Sf_avg,Use average friction slope between sections (0.5*(Sf1+Sf2)),"{""Sf_method"": ""avg""}",1.0942947121773159,0.5432732041429972,0.687823794955527
+2,alpha1_minorloss,Ignore alpha in minor loss (use alpha=1),"{""minor_alpha"": 1}",,,
+3,no_expansion,Set expansion coeff to 0 for all cross sections,"{""expansion_coeff"": 0.0}",1.157930716545593,0.5560005581883161,0.7083545213465935
+4,channel_Ldw,Use channel length (L_ch) instead of DWRL for friction,"{""use_channel_length"": true}",,,
+5,no_minor,Ignore minor losses (C=0),"{""no_minor_losses"": true}",1.157930716545593,0.5560005581883161,0.7083545213465935
+6,Sf_avg_noexp,Average Sf and set expansion coeff 0,"{""Sf_method"": ""avg"", ""expansion_coeff"": 0.0}",1.0942947121773159,0.5432732041429972,0.687823794955527
+7,exp05,Set expansion coeff to 0.05,"{""expansion_coeff"": 0.05}",,,
+8,alpha_avg,Use average alpha in minor loss term,"{""alpha_avg"": true}",,,
+9,mann_1486,Use Manning constant 1.486,"{""mann_const"": 1.486}",,,
+10,Sf_avg_alpha_avg,Average Sf and average alpha in minor loss,"{""Sf_method"": ""avg"", ""alpha_avg"": true}",1.0942947121773159,0.5417179851255014,0.6877146047858126
+11,Sf_avg_mann1486,Average Sf and Manning 1.486,"{""Sf_method"": ""avg"", ""mann_const"": 1.486}",1.0942947121773159,0.5417179851255014,0.6877146047858126
+12,Sf_alpha_exp005,Sf avg + alpha avg + expansion coeff 0.05,"{""Sf_method"": ""avg"", ""alpha_avg"": true, ""expansion_coeff"": 0.05}",1.0942947121773159,0.5417179851255014,0.6877146047858126
+13,Sf_alpha_exp002,Sf avg + alpha avg + expansion coeff 0.02,"{""Sf_method"": ""avg"", ""alpha_avg"": true, ""expansion_coeff"": 0.02}",1.0942947121773159,0.5417179851255014,0.6877146047858126
+14,Sf_alpha_mann1486_exp005,Sf avg + alpha avg + Manning 1.486 + expansion 0.05,"{""Sf_method"": ""avg"", ""alpha_avg"": true, ""mann_const"": 1.486, ""expansion_coeff"": 0.05}",1.0942947121773159,0.5417179851255014,0.6877146047858126
+15,alpha_mann1486_exp005,alpha avg + Manning 1.486 + expansion 0.05,"{""alpha_avg"": true, ""mann_const"": 1.486, ""expansion_coeff"": 0.05}",,,
+16,Sf_alpha_mann1486_exp002,Sf avg + alpha avg + Manning 1.486 + expansion 0.02,"{""Sf_method"": ""avg"", ""alpha_avg"": true, ""mann_const"": 1.486, ""expansion_coeff"": 0.02}",1.0942947121773159,0.5417179851255014,0.6877146047858126

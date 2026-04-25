@@ -1,0 +1,8 @@
+[general]
+name=Backwater
+description=Backwater and culvert solver GUI plugin
+version=0.1
+qgisMinimumVersion=3.0
+author=Auto-generated
+email=
+homepage=

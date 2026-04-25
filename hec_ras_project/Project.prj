@@ -1,0 +1,10 @@
+<?xml version="1.0"?>
+<Project>
+  <Title>Generated from test3.json</Title>
+  <GeometryFiles>
+    <GeometryFile>geometry.g01</GeometryFile>
+  </GeometryFiles>
+  <PlanFiles>
+    <PlanFile>plan.p01</PlanFile>
+  </PlanFiles>
+</Project>
