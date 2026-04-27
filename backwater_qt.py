@@ -7,42 +7,17 @@ functions in `backwater2.py`.
 This provides a minimal, modern GUI with: file open, New Model, Run, textual
 results, and a matplotlib plot area.
 
-Requires: PyQt5 (or install PySide2 and adapt imports), matplotlib for plotting.
+This module is intended to run only inside QGIS as part of the plugin.
 """
 
 import os
 import sys
 import json
+import math
+import importlib.util
 
-# Try Qt imports
-try:
-    from PyQt5 import QtWidgets, QtCore, QtGui
-    from PyQt5.QtWidgets import QFileDialog, QMessageBox
-    HAVE_QT = True
-except Exception:
-    try:
-        from qgis.PyQt import QtWidgets, QtCore, QtGui
-        from qgis.PyQt.QtWidgets import QFileDialog, QMessageBox
-        HAVE_QT = True
-    except Exception:
-        QtWidgets = None
-        QtCore = None
-        QtGui = None
-        QFileDialog = None
-        QMessageBox = None
-        HAVE_QT = False
-
-if not HAVE_QT:
-    print('PyQt5 not available. Install PyQt5 to use the Qt GUI.')
-    if __name__ == '__main__':
-        sys.exit(0)
-    class _QtDummyNamespace:
-        def __getattr__(self, name):
-            return type(name, (), {})
-
-    QtWidgets = _QtDummyNamespace()
-    QtCore = _QtDummyNamespace()
-    QtGui = _QtDummyNamespace()
+from qgis.PyQt import QtWidgets, QtCore, QtGui
+from qgis.PyQt.QtWidgets import QFileDialog, QMessageBox
 
 # Import solver functions from the plugin-local `backwater2` module.
 try:
@@ -54,13 +29,14 @@ try:
     load_input = _bwmod.load_input
     load_from_geopackage = getattr(_bwmod, 'load_from_geopackage', None)
     save_to_geopackage = getattr(_bwmod, 'save_to_geopackage', None)
+    load_results_from_geopackage = getattr(_bwmod, 'load_results_from_geopackage', None)
+    save_results_to_geopackage = getattr(_bwmod, 'save_results_to_geopackage', None)
     run_backwater = _bwmod.run_backwater
     ModelInput = _bwmod.ModelInput
     CrossSection = _bwmod.CrossSection
-    _plot_results = _bwmod._plot_results
-    HAVE_MPL = _bwmod.HAVE_MPL
+    HAVE_MPL = bool(getattr(_bwmod, 'HAVE_MPL', False))
 except Exception:
-    load_input = load_from_geopackage = save_to_geopackage = run_backwater = ModelInput = CrossSection = _plot_results = None
+    load_input = load_from_geopackage = save_to_geopackage = load_results_from_geopackage = save_results_to_geopackage = run_backwater = ModelInput = CrossSection = None
     HAVE_MPL = False
 
 try:
@@ -71,6 +47,36 @@ try:
     ui_adapter = _ui_adapter
 except Exception:
     ui_adapter = None
+
+
+def _load_set_z_from_raster_expr_func():
+    def _pick_callable(mod):
+        for name in ('set_z_from_raster_expr_py', '_set_z_from_raster_impl', 'set_z_from_raster_expr'):
+            fn = getattr(mod, name, None)
+            if callable(fn):
+                return fn
+        return None
+
+    try:
+        from .expressions import vertices_z_from_raster as _mod  # type: ignore
+        _fn = _pick_callable(_mod)
+        if _fn is not None:
+            return _fn
+    except Exception:
+        pass
+    try:
+        _expr_path = os.path.join(os.path.dirname(__file__), 'expressions', 'vertices_z_from_raster.py')
+        _spec = importlib.util.spec_from_file_location('qgis_backwater_plugin.expressions.vertices_z_from_raster', _expr_path)
+        if _spec is None or _spec.loader is None:
+            return None
+        _mod = importlib.util.module_from_spec(_spec)
+        _spec.loader.exec_module(_mod)
+        return _pick_callable(_mod)
+    except Exception:
+        return None
+
+
+_SET_Z_FROM_RASTER_EXPR = _load_set_z_from_raster_expr_func()
 
 
 # Small UI adapter wrappers: prefer plugin ui_adapter, fallback to Qt dialogs
@@ -132,7 +138,7 @@ class CanvasHolder(QtWidgets.QWidget):
     def wheelEvent(self, event):
         # Ctrl+wheel => zoom canvas; otherwise default behavior (scroll)
         try:
-            if event.modifiers() & QtCore.Qt.ControlModifier and self._canvas is not None:
+            if event.modifiers() & QtCore.Qt.KeyboardModifier.ControlModifier and self._canvas is not None:
                 delta = event.angleDelta().y()
                 factor = 1.1 if delta > 0 else (1.0 / 1.1)
                 self._scale *= factor
@@ -183,7 +189,7 @@ class CrossSectionPreview(QtWidgets.QWidget):
             painter.fillRect(rect, self.palette().window())
             if not self._geom:
                 painter.setPen(QtGui.QColor('gray'))
-                painter.drawText(rect, QtCore.Qt.AlignCenter, 'No geometry')
+                painter.drawText(rect, QtCore.Qt.AlignmentFlag.AlignCenter, 'No geometry')
                 painter.end()
                 return
 
@@ -226,7 +232,7 @@ class CrossSectionPreview(QtWidgets.QWidget):
             fill_poly.append(QtCore.QPointF(tx(self._geom[0][0]), ty(miny)))
 
             painter.setBrush(QtGui.QBrush(QtGui.QColor('#efefef')))
-            painter.setPen(QtCore.Qt.NoPen)
+            painter.setPen(QtCore.Qt.PenStyle.NoPen)
             painter.drawPolygon(fill_poly)
 
             # draw polyline
@@ -237,7 +243,7 @@ class CrossSectionPreview(QtWidgets.QWidget):
                 painter.drawEllipse(pt, 2, 2)
 
             # draw labels
-            painter.setPen(QtGui.QPen(QtCore.Qt.black))
+            painter.setPen(QtGui.QPen(QtCore.Qt.GlobalColor.black))
             painter.drawText(rect.left()+2, rect.top()+12, self._title)
             painter.drawText(left, rect.bottom()-12, f"{minx:.2f}")
             painter.drawText(right-40, rect.bottom()-12, f"{maxx:.2f}")
@@ -250,44 +256,60 @@ class CrossSectionPreview(QtWidgets.QWidget):
             except Exception:
                 pass
 
+
+class _ReattachDockWidget(QtWidgets.QDockWidget):
+    """Dock widget that calls back when user closes it so content can be reattached."""
+
+    def __init__(self, title, on_close, parent=None):
+        super().__init__(title, parent)
+        self._on_close = on_close
+
+    def closeEvent(self, event):
+        try:
+            if callable(self._on_close):
+                self._on_close(self)
+        except Exception:
+            pass
+        event.accept()
+
 class BackwaterWidget(QtWidgets.QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setWindowTitle('Backwater — Qt GUI')
         self.resize(1100, 700)
+        # GeoPackage form-first mode keeps all model edits in native QGIS forms.
+        self.form_only_mode = True
 
         # Use splitters so user can resize sections; left pane = controls, right pane = plots
         main_layout = QtWidgets.QVBoxLayout(self)
 
+        # Dock-level menu bar so the plugin has a native Backwater menu in QGIS dock mode.
+        self.menu_bar = QtWidgets.QMenuBar(self)
+        main_layout.setMenuBar(self.menu_bar)
+        self.backwater_menu = self.menu_bar.addMenu('Backwater')
+
         # Top control row
         controls_row = QtWidgets.QHBoxLayout()
         self.input_path = QtWidgets.QLineEdit()
-        browse_btn = QtWidgets.QPushButton('Browse...')
-        browse_btn.clicked.connect(self.on_browse)
-        new_btn = QtWidgets.QPushButton('New Model')
-        new_btn.clicked.connect(self.on_new_model)
-        load_btn = QtWidgets.QPushButton('Load')
-        load_btn.clicked.connect(self.on_load)
+        self.input_path.setReadOnly(True)
+        self.input_path.setPlaceholderText('No model GeoPackage loaded')
+        browse_btn = QtWidgets.QPushButton('Select Model GeoPackage...')
+        browse_btn.clicked.connect(self.on_menu_open_model)
         run_btn = QtWidgets.QPushButton('Run')
         run_btn.clicked.connect(self.on_run)
-        detach_btn = QtWidgets.QPushButton('Detach Plot')
-        detach_btn.clicked.connect(self.detach_plot)
 
         controls_row.addWidget(QtWidgets.QLabel('Input GeoPackage:'))
         controls_row.addWidget(self.input_path)
         controls_row.addWidget(browse_btn)
-        controls_row.addWidget(new_btn)
-        controls_row.addWidget(load_btn)
         controls_row.addWidget(run_btn)
-        controls_row.addWidget(detach_btn)
         main_layout.addLayout(controls_row)
 
         # Splitter between left (controls) and right (plots)
-        self.horiz_split = QtWidgets.QSplitter(QtCore.Qt.Horizontal)
+        self.horiz_split = QtWidgets.QSplitter(QtCore.Qt.Orientation.Horizontal)
         main_layout.addWidget(self.horiz_split, stretch=1)
 
-        left_widget = QtWidgets.QWidget()
-        left_layout = QtWidgets.QVBoxLayout(left_widget)
+        self.left_widget = QtWidgets.QWidget()
+        left_layout = QtWidgets.QVBoxLayout(self.left_widget)
 
         # Left-side tabs: Geometry | Boundary | Results
         self.left_tabs = QtWidgets.QTabWidget()
@@ -338,10 +360,10 @@ class BackwaterWidget(QtWidgets.QWidget):
         # results widgets (tabular results will be added to the left tabs)
         # results_status_label will be created when the left Results tab is built
 
-        self.horiz_split.addWidget(left_widget)
+        self.horiz_split.addWidget(self.left_widget)
 
         # Right side: vertical split (top = plots, bottom = tabular IO)
-        self.right_split = QtWidgets.QSplitter(QtCore.Qt.Vertical)
+        self.right_split = QtWidgets.QSplitter(QtCore.Qt.Orientation.Vertical)
 
         # Top: plots container
         self.plots_container = QtWidgets.QWidget()
@@ -402,7 +424,7 @@ class BackwaterWidget(QtWidgets.QWidget):
             self.results_status_label = QtWidgets.QLabel('')
             self.results_status_label.setWordWrap(True)
             self.results_status_label.setTextInteractionFlags(
-                QtCore.Qt.TextSelectableByMouse | QtCore.Qt.TextSelectableByKeyboard
+                QtCore.Qt.TextInteractionFlag.TextSelectableByMouse | QtCore.Qt.TextInteractionFlag.TextSelectableByKeyboard
             )
             self.results_page_layout.addWidget(self.results_status_label)
             self.io_tabs.addTab(self.results_page, 'Results')
@@ -502,6 +524,23 @@ class BackwaterWidget(QtWidgets.QWidget):
         self.geom_page_layout.addLayout(geom_btns_layout)
         self.geometry_edit_buttons = [add_btn, rem_btn, up_btn, down_btn, copy_btn, paste_btn, self.apply_geom_btn]
 
+        terrain_layout = QtWidgets.QHBoxLayout()
+        terrain_layout.addWidget(QtWidgets.QLabel('Terrain Raster'))
+        self.terrain_raster_combo = QtWidgets.QComboBox()
+        self.terrain_raster_combo.setToolTip('Select a loaded raster layer used to populate cross-section vertex Z values.')
+        self.terrain_raster_combo.currentIndexChanged.connect(self._on_terrain_raster_combo_changed)
+        terrain_layout.addWidget(self.terrain_raster_combo, 1)
+        self.refresh_terrain_btn = QtWidgets.QPushButton('Refresh')
+        self.refresh_terrain_btn.clicked.connect(self.refresh_terrain_raster_choices)
+        terrain_layout.addWidget(self.refresh_terrain_btn)
+        self.populate_z_btn = QtWidgets.QPushButton('Populate Z From Terrain')
+        self.populate_z_btn.clicked.connect(self.on_populate_section_z_from_terrain)
+        terrain_layout.addWidget(self.populate_z_btn)
+        self.auto_populate_z_cb = QtWidgets.QCheckBox('Auto-populate on Apply Geometry')
+        self.auto_populate_z_cb.setChecked(True)
+        terrain_layout.addWidget(self.auto_populate_z_cb)
+        self.geom_page_layout.addLayout(terrain_layout)
+
         # Detail small plot: will be shown in the Cross-section tab
         # Cross-section preview widget (uses Qt painting, updates live)
         self.detail_plot_widget = CrossSectionPreview()
@@ -517,13 +556,13 @@ class BackwaterWidget(QtWidgets.QWidget):
             self.geom_tab_layout.addWidget(self.detail_plot_widget)
 
         # Save model/plot buttons
-        save_model_btn = QtWidgets.QPushButton('Save Model...')
-        save_model_btn.clicked.connect(self.on_save_model)
+        self.save_model_btn = QtWidgets.QPushButton('Save Model...')
+        self.save_model_btn.clicked.connect(self.on_save_model)
         self.save_plot_btn = QtWidgets.QPushButton('Save Plot...')
         self.save_plot_btn.clicked.connect(self.on_save_plot)
         self.save_plot_btn.setEnabled(False)
         # Save model belongs on Boundary tab; save plot in Results
-        self.boundary_tab_layout.addWidget(save_model_btn)
+        self.boundary_tab_layout.addWidget(self.save_model_btn)
         try:
             # place Save Plot button into bottom-right Results tab when available
             self.results_page_layout.addWidget(self.save_plot_btn)
@@ -533,19 +572,13 @@ class BackwaterWidget(QtWidgets.QWidget):
                 self.boundary_tab_layout.addWidget(self.save_plot_btn)
             except Exception:
                 pass
-        # Detect GeoPackage support at runtime (geopandas/fiona/shapely)
-        try:
-            import geopandas as _gpd  # type: ignore
-            import fiona  # type: ignore
-            from shapely.geometry import LineString  # type: ignore
-            self.can_gpkg = True
-        except Exception:
-            self.can_gpkg = False
-        # Add a Save-to-GeoPackage button (visible when embedded). Enable only if available.
-        save_gpkg_btn = QtWidgets.QPushButton('Save to GeoPackage...')
-        save_gpkg_btn.clicked.connect(self.on_save_geopackage)
-        save_gpkg_btn.setEnabled(self.can_gpkg)
-        self.boundary_tab_layout.addWidget(save_gpkg_btn)
+        # Plugin-only runtime uses native PyQGIS GeoPackage support.
+        self.can_gpkg = True
+        # Save-to-GeoPackage action for plugin workflows.
+        self.save_gpkg_btn = QtWidgets.QPushButton('Save to GeoPackage...')
+        self.save_gpkg_btn.clicked.connect(self.on_save_geopackage)
+        self.save_gpkg_btn.setEnabled(self.can_gpkg)
+        self.boundary_tab_layout.addWidget(self.save_gpkg_btn)
         # Small indicator for GeoPackage capability
         self.gpkg_label = QtWidgets.QLabel('GeoPackage: ' + ('available' if self.can_gpkg else 'missing'))
         self.boundary_tab_layout.addWidget(self.gpkg_label)
@@ -559,10 +592,15 @@ class BackwaterWidget(QtWidgets.QWidget):
         self.boundary_tab_layout.addWidget(self.save_layer_edits_btn)
         self.layer_edit_status_label = QtWidgets.QLabel('Layer editing: unavailable')
         self.boundary_tab_layout.addWidget(self.layer_edit_status_label)
+        self.attribute_form_hint = QtWidgets.QLabel(
+            'Model edits for GeoPackage-backed models are done through native QGIS attribute forms.'
+        )
+        self.attribute_form_hint.setWordWrap(True)
+        self.boundary_tab_layout.addWidget(self.attribute_form_hint)
         # Load example into QGIS (only enabled when running inside QGIS)
-        load_example_btn = QtWidgets.QPushButton('Load example into QGIS')
-        load_example_btn.clicked.connect(self.load_example_into_qgis)
-        # Detect whether we're running inside QGIS: prefer qgis.utils.iface, fallback to ui_adapter.iface
+        self.load_example_btn = QtWidgets.QPushButton('Load example into QGIS')
+        self.load_example_btn.clicked.connect(self.load_example_into_qgis)
+        # Detect whether we're running inside QGIS.
         has_iface = False
         try:
             import qgis.utils as _qutils
@@ -570,10 +608,8 @@ class BackwaterWidget(QtWidgets.QWidget):
                 has_iface = True
         except Exception:
             pass
-        if not has_iface and ui_adapter is not None and getattr(ui_adapter, 'iface', None) is not None:
-            has_iface = True
-        load_example_btn.setEnabled(bool(has_iface))
-        self.boundary_tab_layout.addWidget(load_example_btn)
+        self.load_example_btn.setEnabled(bool(has_iface))
+        self.boundary_tab_layout.addWidget(self.load_example_btn)
 
         # In-memory model
         self.model = None
@@ -583,24 +619,235 @@ class BackwaterWidget(QtWidgets.QWidget):
         self.gpkg_dirty = False
         self._scroller_entries = []
         self._scroller_canvas = None
+        self._dock_host_window = None
+        self._detached_docks = {}
+        self._tab_detach_config = {}
+        self._cross_section_geometry_signal_connected = False
+        self._handling_cross_section_geometry_change = False
         # Undo/redo stacks (store JSON strings)
         self.undo_stack = []
         self.redo_stack = []
         self._set_model_editing_enabled(True)
+        self._create_backwater_menu()
+        self._apply_form_only_ui_mode()
         self._update_geopackage_edit_state()
         self._refresh_scroller_choices()
+        self.refresh_terrain_raster_choices()
+        self._configure_detachable_tabs()
 
-        # Note: menu/toolbar/status bar are created by the QMainWindow wrapper
-        # when this widget is embedded in a MainWindow. This keeps the widget
-        # usable standalone (embedded) without creating application chrome.
+    def set_dock_host_window(self, host_window):
+        """Set host QMainWindow used for detached panel docking/floating."""
+        self._dock_host_window = host_window
 
-    def _create_menus_and_toolbars(self):
-        # menu/tool creation moved to MainWindow wrapper; widget does not create app chrome
-        return
+    def _create_backwater_menu(self):
+        menu = getattr(self, 'backwater_menu', None)
+        if menu is None:
+            return
 
-    def _create_status_bar(self):
-        # status bar is created by the MainWindow wrapper when embedded
-        return
+        self.action_new_model = QtGui.QAction('Create Model GeoPackage...', self)
+        self.action_new_model.triggered.connect(self.on_new_model)
+        menu.addAction(self.action_new_model)
+
+        self.action_open_model = QtGui.QAction('Load Model GeoPackage...', self)
+        self.action_open_model.triggered.connect(self.on_menu_open_model)
+        menu.addAction(self.action_open_model)
+
+        self.action_save_model = QtGui.QAction('Save Model GeoPackage As...', self)
+        self.action_save_model.triggered.connect(self.on_save_geopackage)
+        menu.addAction(self.action_save_model)
+
+        menu.addSeparator()
+
+        self.action_toggle_layer_editing = QtGui.QAction('Enable Layer Editing', self)
+        self.action_toggle_layer_editing.triggered.connect(self.on_toggle_geopackage_editing)
+        menu.addAction(self.action_toggle_layer_editing)
+
+        self.action_save_layer_edits = QtGui.QAction('Save Layer Edits', self)
+        self.action_save_layer_edits.triggered.connect(self.on_save_layer_edits)
+        menu.addAction(self.action_save_layer_edits)
+
+        menu.addSeparator()
+
+        self.action_run_model = QtGui.QAction('Run Model', self)
+        self.action_run_model.setShortcut('F5')
+        self.action_run_model.triggered.connect(self.on_run)
+        menu.addAction(self.action_run_model)
+
+        menu.addSeparator()
+
+        self.action_open_results_plot = QtGui.QAction('Open Results Plot', self)
+        self.action_open_results_plot.triggered.connect(self.open_results_plot)
+        menu.addAction(self.action_open_results_plot)
+
+        self.action_open_results_table = QtGui.QAction('Open Results Table', self)
+        self.action_open_results_table.triggered.connect(self.open_results_table)
+        menu.addAction(self.action_open_results_table)
+
+    def _apply_form_only_ui_mode(self):
+        if not getattr(self, 'form_only_mode', False):
+            return
+
+        # Hide legacy in-widget model editors; editing is done via QGIS attribute forms.
+        try:
+            if self.left_widget is not None:
+                self.left_widget.setVisible(False)
+        except Exception:
+            pass
+        try:
+            self.horiz_split.setSizes([0, 1])
+        except Exception:
+            pass
+
+        try:
+            geom_idx = self.io_tabs.indexOf(self.geom_page)
+            if geom_idx >= 0:
+                self.io_tabs.removeTab(geom_idx)
+        except Exception:
+            pass
+
+        try:
+            cs_idx = self.plots_tabs.indexOf(self.cross_section_page)
+            if cs_idx >= 0:
+                self.plots_tabs.removeTab(cs_idx)
+        except Exception:
+            pass
+
+        for widget in (
+            getattr(self, 'save_model_btn', None),
+            getattr(self, 'save_gpkg_btn', None),
+            getattr(self, 'toggle_gpkg_edit_btn', None),
+            getattr(self, 'save_layer_edits_btn', None),
+            getattr(self, 'load_example_btn', None),
+            getattr(self, 'attribute_form_hint', None),
+            getattr(self, 'layer_edit_status_label', None),
+            getattr(self, 'gpkg_label', None),
+        ):
+            try:
+                if widget is not None:
+                    widget.setVisible(False)
+            except Exception:
+                pass
+
+    def open_results_plot(self):
+        try:
+            if self.plots_tabs is not None and self.plot_page is not None:
+                self.plots_tabs.setCurrentWidget(self.plot_page)
+        except Exception:
+            pass
+
+    def open_results_table(self):
+        try:
+            if self.io_tabs is not None and self.results_page is not None:
+                self.io_tabs.setCurrentWidget(self.results_page)
+        except Exception:
+            pass
+
+    def _configure_detachable_tabs(self):
+        try:
+            self._register_detachable_tab_widget(
+                self.left_tabs,
+                QtCore.Qt.DockWidgetArea.LeftDockWidgetArea,
+                'left_tabs'
+            )
+            self._register_detachable_tab_widget(
+                self.io_tabs,
+                QtCore.Qt.DockWidgetArea.BottomDockWidgetArea,
+                'io_tabs'
+            )
+            self._register_detachable_tab_widget(
+                self.plots_tabs,
+                QtCore.Qt.DockWidgetArea.RightDockWidgetArea,
+                'plots_tabs'
+            )
+        except Exception:
+            pass
+
+    def _register_detachable_tab_widget(self, tab_widget, default_area, widget_key):
+        if tab_widget is None:
+            return
+        self._tab_detach_config[tab_widget] = {
+            'default_area': default_area,
+            'widget_key': widget_key,
+        }
+        bar = tab_widget.tabBar()
+        bar.setContextMenuPolicy(QtCore.Qt.ContextMenuPolicy.CustomContextMenu)
+        bar.customContextMenuRequested.connect(
+            lambda pos, tw=tab_widget: self._show_tab_detach_menu(tw, pos)
+        )
+        bar.setMovable(True)
+
+    def _show_tab_detach_menu(self, tab_widget, pos):
+        bar = tab_widget.tabBar()
+        idx = bar.tabAt(pos)
+        if idx < 0:
+            return
+        menu = QtWidgets.QMenu(self)
+        tab_title = tab_widget.tabText(idx)
+        detach_action = menu.addAction(f'Detach "{tab_title}" panel')
+        action = menu.exec(bar.mapToGlobal(pos))
+        if action == detach_action:
+            self._detach_tab(tab_widget, idx)
+
+    def _detach_tab(self, tab_widget, index):
+        if tab_widget is None or index < 0:
+            return
+        config = self._tab_detach_config.get(tab_widget, {})
+        default_area = config.get('default_area', QtCore.Qt.DockWidgetArea.RightDockWidgetArea)
+        widget_key = config.get('widget_key', 'tabs')
+
+        page = tab_widget.widget(index)
+        if page is None:
+            return
+        title = tab_widget.tabText(index)
+        tab_widget.removeTab(index)
+
+        host = self._dock_host_window
+        if host is None:
+            host = self.window()
+
+        dock = _ReattachDockWidget(title, self._reattach_dock_tab, host)
+        dock.setObjectName(f'backwater_{widget_key}_{title}')
+        dock.setWidget(page)
+        dock.setFeatures(
+            QtWidgets.QDockWidget.DockWidgetFeature.DockWidgetClosable |
+            QtWidgets.QDockWidget.DockWidgetFeature.DockWidgetMovable |
+            QtWidgets.QDockWidget.DockWidgetFeature.DockWidgetFloatable
+        )
+        dock.setAllowedAreas(QtCore.Qt.DockWidgetArea.AllDockWidgetAreas)
+
+        if isinstance(host, QtWidgets.QMainWindow):
+            host.addDockWidget(default_area, dock)
+        dock.setFloating(True)
+        dock.show()
+        dock.raise_()
+
+        self._detached_docks[dock] = {
+            'tab_widget': tab_widget,
+            'title': title,
+            'widget_key': widget_key,
+        }
+
+    def _reattach_dock_tab(self, dock):
+        meta = self._detached_docks.pop(dock, None)
+        if not meta:
+            try:
+                dock.deleteLater()
+            except Exception:
+                pass
+            return
+        tab_widget = meta.get('tab_widget')
+        title = meta.get('title', 'Panel')
+        try:
+            page = dock.widget()
+            if page is not None and tab_widget is not None:
+                dock.setWidget(None)
+                tab_widget.addTab(page, title)
+                tab_widget.setCurrentWidget(page)
+        finally:
+            try:
+                dock.deleteLater()
+            except Exception:
+                pass
 
     def _show_about(self):
         ui_info(self, 'About', 'Backwater Qt GUI\nEnhanced UI with menus, toolbars, docks, and status bar')
@@ -1139,7 +1386,7 @@ class BackwaterWidget(QtWidgets.QWidget):
         except Exception:
             pass
         try:
-            self._write_cross_section_to_layer(idx)
+            self._write_cross_section_to_layer(idx, update_geometry=False)
             self._mark_gpkg_dirty()
         except Exception as exc:
             ui_critical(self, 'GeoPackage update failed', str(exc))
@@ -1173,12 +1420,23 @@ class BackwaterWidget(QtWidgets.QWidget):
         except Exception:
             pass
         try:
-            self._write_cross_section_to_layer(idx)
+            self._write_cross_section_to_layer(idx, update_geometry=True)
             self._mark_gpkg_dirty()
         except Exception as exc:
             ui_critical(self, 'GeoPackage update failed', str(exc))
             return
-        ui_info(self, 'Applied', f'Geometry applied to {self.model.sections[idx].river_station}')
+
+        used_terrain = False
+        try:
+            if self.auto_populate_z_cb.isChecked() and self._selected_terrain_raster_layer() is not None:
+                used_terrain = self._populate_section_z_from_terrain(idx, announce=False)
+        except Exception:
+            used_terrain = False
+
+        if used_terrain:
+            ui_info(self, 'Applied', f'Geometry applied and Z values populated from terrain for {self.model.sections[idx].river_station}')
+        else:
+            ui_info(self, 'Applied', f'Geometry applied to {self.model.sections[idx].river_station}')
         # Refresh the cross-section preview (reads from the geometry table)
         try:
             self.plot_section_detail(idx)
@@ -1269,7 +1527,7 @@ class BackwaterWidget(QtWidgets.QWidget):
                 vals = [str(i), station, f"{wse:.3f}", f"{depth:.3f}", f"{v:.3f}", f"{alpha:.3f}", f"{energy:.3f}", f"{Kt:.3f}", f"{At:.3f}", f"{Sf:.6f}", f"{froude:.3f}"]
                 for c, val in enumerate(vals):
                     item = QtWidgets.QTableWidgetItem(val)
-                    item.setFlags(item.flags() ^ QtCore.Qt.ItemIsEditable)
+                    item.setFlags(item.flags() ^ QtCore.Qt.ItemFlag.ItemIsEditable)
                     self.results_table.setItem(i, c, item)
             except Exception:
                 continue
@@ -1324,6 +1582,302 @@ class BackwaterWidget(QtWidgets.QWidget):
         triggers = QtWidgets.QAbstractItemView.AllEditTriggers if enabled else QtWidgets.QAbstractItemView.NoEditTriggers
         self.geom_table.setEditTriggers(triggers)
 
+    def refresh_terrain_raster_choices(self):
+        combo = getattr(self, 'terrain_raster_combo', None)
+        if combo is None:
+            return
+        selected_layer_id = combo.currentData()
+        if not selected_layer_id:
+            selected_layer_id = self._project_terrain_raster_id()
+        combo.blockSignals(True)
+        combo.clear()
+        combo.addItem('(none)', '')
+        try:
+            from qgis.core import QgsProject, QgsRasterLayer
+            for layer in QgsProject.instance().mapLayers().values():
+                if isinstance(layer, QgsRasterLayer) and layer.isValid():
+                    combo.addItem(layer.name(), layer.id())
+        except Exception:
+            pass
+        if selected_layer_id:
+            idx = combo.findData(selected_layer_id)
+            if idx >= 0:
+                combo.setCurrentIndex(idx)
+        if combo.currentData() != self._project_terrain_raster_id():
+            self._set_project_terrain_raster_id(combo.currentData() or '')
+        combo.blockSignals(False)
+
+    def _project_terrain_raster_id(self) -> str:
+        try:
+            from qgis.core import QgsExpressionContextUtils, QgsProject
+            val = QgsExpressionContextUtils.projectScope(QgsProject.instance()).variable('backwater_terrain_raster_id')
+            return str(val or '').strip()
+        except Exception:
+            return ''
+
+    def _set_project_terrain_raster_id(self, layer_id: str):
+        try:
+            from qgis.core import QgsExpressionContextUtils, QgsProject
+            QgsExpressionContextUtils.setProjectVariable(QgsProject.instance(), 'backwater_terrain_raster_id', str(layer_id or ''))
+        except Exception:
+            pass
+
+    def _on_terrain_raster_combo_changed(self, _index: int):
+        combo = getattr(self, 'terrain_raster_combo', None)
+        if combo is None:
+            return
+        self._set_project_terrain_raster_id(combo.currentData() or '')
+
+    def _selected_terrain_raster_layer(self):
+        layer_id = getattr(self, 'terrain_raster_combo', None)
+        if layer_id is None:
+            return None
+        selected_id = self.terrain_raster_combo.currentData()
+        if not selected_id:
+            return None
+        try:
+            from qgis.core import QgsProject, QgsRasterLayer
+            layer = QgsProject.instance().mapLayer(selected_id)
+            if isinstance(layer, QgsRasterLayer) and layer.isValid():
+                return layer
+        except Exception:
+            pass
+        return None
+
+    @staticmethod
+    def _profile_from_map_geometry(geometry):
+        profile = []
+        if geometry is None or geometry.isEmpty():
+            return profile
+        cumulative = 0.0
+        last_xy = None
+        for vertex in geometry.vertices():
+            x_val = float(vertex.x())
+            y_val = float(vertex.y())
+            z_val = float(vertex.z()) if not math.isnan(float(vertex.z())) else 0.0
+            if last_xy is None:
+                cumulative = 0.0
+            else:
+                cumulative += math.hypot(x_val - last_xy[0], y_val - last_xy[1])
+            profile.append((cumulative, z_val))
+            last_xy = (x_val, y_val)
+        return profile
+
+    def _compute_centerline_chainage_for_geometry(self, geometry):
+        if geometry is None or geometry.isEmpty():
+            return None
+        center_geom = self._get_loaded_centerline_geometry()
+        if center_geom is None:
+            return None
+        try:
+            locate_point = None
+            try:
+                crossing = geometry.intersection(center_geom)
+            except Exception:
+                crossing = None
+
+            if crossing is not None and not crossing.isEmpty():
+                locate_point = crossing.centroid()
+
+            if locate_point is None or locate_point.isEmpty():
+                try:
+                    locate_point = center_geom.nearestPoint(geometry)
+                except Exception:
+                    locate_point = None
+
+            if locate_point is None or locate_point.isEmpty():
+                return None
+
+            chainage = float(center_geom.lineLocatePoint(locate_point))
+            if math.isnan(chainage) or chainage < 0.0:
+                return None
+            return chainage
+        except Exception:
+            return None
+
+    def _compute_river_station_text_for_geometry(self, geometry):
+        chainage = self._compute_centerline_chainage_for_geometry(geometry)
+        if chainage is None:
+            return None
+        return f"{chainage:.3f}"
+
+    def _call_set_z_from_raster_expr(self, source_geom, raster_layer):
+        if _SET_Z_FROM_RASTER_EXPR is None:
+            return None
+        # Use the common positional subset so both expression-decorated and
+        # plain helper call signatures are supported.
+        return _SET_Z_FROM_RASTER_EXPR(source_geom, raster_layer, 1, True)
+
+    def _cross_section_features_sorted_by_chainage(self, layer):
+        feats = []
+        if layer is None:
+            return feats
+        for feat in layer.getFeatures():
+            geom = feat.geometry()
+            chainage = self._compute_centerline_chainage_for_geometry(geom)
+            if chainage is None:
+                chainage = float(len(feats))
+            feats.append((float(chainage), feat))
+        feats.sort(key=lambda t: t[0])
+        return [feat for _, feat in feats]
+
+    def _find_cross_section_feature(self, layer, idx: int, xs):
+        target_rs = str(getattr(xs, 'river_station', ''))
+        for feat in layer.getFeatures():
+            try:
+                if str(feat['river_station']) == target_rs:
+                    return feat
+            except Exception:
+                continue
+        ordered = self._cross_section_features_sorted_by_chainage(layer)
+        if 0 <= idx < len(ordered):
+            return ordered[idx]
+        return None
+
+    def _on_cross_section_geometry_changed(self, fid, geometry):
+        if self._handling_cross_section_geometry_change:
+            return
+        layer = self._get_gpkg_layer('cross_sections')
+        if layer is None or not layer.isEditable():
+            return
+        try:
+            river_idx = layer.fields().indexOf('river_station')
+            self._handling_cross_section_geometry_change = True
+            sampled_geom = geometry
+            raster_layer = self._selected_terrain_raster_layer()
+            if raster_layer is not None:
+                try:
+                    maybe_geom = self._call_set_z_from_raster_expr(geometry, raster_layer)
+                    if maybe_geom is not None and not maybe_geom.isEmpty():
+                        sampled_geom = maybe_geom
+                        layer.changeGeometry(fid, sampled_geom)
+                except Exception:
+                    pass
+
+            river_station_text = self._compute_river_station_text_for_geometry(sampled_geom)
+            if river_idx != -1 and river_station_text is not None:
+                layer.changeAttributeValue(fid, river_idx, river_station_text)
+            self._mark_gpkg_dirty()
+        finally:
+            self._handling_cross_section_geometry_change = False
+
+    def _connect_cross_section_layer_signals(self):
+        if self._cross_section_geometry_signal_connected:
+            return
+        layer = self._get_gpkg_layer('cross_sections')
+        if layer is None:
+            return
+        try:
+            layer.geometryChanged.connect(self._on_cross_section_geometry_changed)
+            self._cross_section_geometry_signal_connected = True
+        except Exception:
+            self._cross_section_geometry_signal_connected = False
+
+    def _disconnect_cross_section_layer_signals(self):
+        if not self._cross_section_geometry_signal_connected:
+            return
+        layer = self._get_gpkg_layer('cross_sections')
+        if layer is None:
+            self._cross_section_geometry_signal_connected = False
+            return
+        try:
+            layer.geometryChanged.disconnect(self._on_cross_section_geometry_changed)
+        except Exception:
+            pass
+        self._cross_section_geometry_signal_connected = False
+
+    def _populate_section_z_from_terrain(self, idx: int, announce: bool = True):
+        if _SET_Z_FROM_RASTER_EXPR is None:
+            if announce:
+                ui_warning(self, 'Terrain Z', 'Could not load expressions/vertices_z_from_raster.py.')
+            return False
+        if self.model is None or idx < 0 or idx >= len(self.model.sections):
+            return False
+        raster_layer = self._selected_terrain_raster_layer()
+        if raster_layer is None:
+            if announce:
+                ui_warning(self, 'Terrain Z', 'Select a terrain raster layer first.')
+            return False
+        if not self.loaded_gpkg_path:
+            if announce:
+                ui_warning(self, 'Terrain Z', 'Terrain sampling requires a GeoPackage-backed model with mapped cross-section geometry.')
+            return False
+
+        layer = self._ensure_gpkg_layer_loaded('cross_sections')
+        if layer is None:
+            if announce:
+                ui_warning(self, 'Terrain Z', 'Could not find the cross_sections layer in the loaded GeoPackage.')
+            return False
+
+        xs = self.model.sections[idx]
+        target_rs = str(xs.river_station)
+        feature = self._find_cross_section_feature(layer, idx, xs)
+
+        if feature is None:
+            if announce:
+                ui_warning(self, 'Terrain Z', f'Could not find cross-section feature {target_rs} in layer.')
+            return False
+
+        source_geom = feature.geometry()
+        if source_geom is None or source_geom.isEmpty():
+            if announce:
+                ui_warning(self, 'Terrain Z', f'Cross-section {target_rs} has no geometry to sample.')
+            return False
+
+        try:
+            sampled_geom = self._call_set_z_from_raster_expr(source_geom, raster_layer)
+        except Exception as exc:
+            if announce:
+                ui_warning(self, 'Terrain Z', f'Failed to sample raster elevations: {exc}')
+            return False
+
+        if sampled_geom is None or sampled_geom.isEmpty():
+            if announce:
+                ui_warning(self, 'Terrain Z', f'No sampled geometry returned for {target_rs}.')
+            return False
+
+        profile = self._profile_from_map_geometry(sampled_geom)
+        if len(profile) < 2:
+            if announce:
+                ui_warning(self, 'Terrain Z', f'Sampled geometry for {target_rs} has too few vertices.')
+            return False
+
+        self.model.sections[idx].geometry = profile
+        river_station_text = self._compute_river_station_text_for_geometry(sampled_geom)
+        if river_station_text is not None:
+            self.model.sections[idx].river_station = river_station_text
+            try:
+                self.section_cb.setItemText(idx, river_station_text)
+            except Exception:
+                pass
+
+        try:
+            if layer.isEditable():
+                river_idx = layer.fields().indexOf('river_station')
+                layer.changeGeometry(feature.id(), sampled_geom)
+                if river_idx != -1 and river_station_text is not None:
+                    layer.changeAttributeValue(feature.id(), river_idx, river_station_text)
+                self._mark_gpkg_dirty()
+        except Exception:
+            pass
+
+        if self.section_cb.currentIndex() == idx:
+            self.on_section_change(idx)
+
+        if announce:
+            ui_info(self, 'Terrain Z', f'Updated Z values for {target_rs} from raster layer "{raster_layer.name()}".')
+        return True
+
+    def on_populate_section_z_from_terrain(self):
+        if self.model is None:
+            ui_warning(self, 'No model', 'Load or create a model first')
+            return
+        idx = self.section_cb.currentIndex()
+        if idx < 0:
+            return
+        self.push_undo()
+        self._populate_section_z_from_terrain(idx, announce=True)
+
     def _get_qgis_iface(self):
         try:
             import qgis.utils as _qutils
@@ -1337,6 +1891,46 @@ class BackwaterWidget(QtWidgets.QWidget):
 
     def _normalize_path(self, path: str) -> str:
         return os.path.normcase(os.path.abspath(path)) if path else ''
+
+    def _is_geopackage_path(self, path: str) -> bool:
+        return bool(path) and str(path).lower().endswith('.gpkg')
+
+    def _load_results_from_loaded_geopackage(self):
+        if not self.loaded_gpkg_path or not callable(load_results_from_geopackage):
+            self.results = None
+            try:
+                self.populate_results_table()
+            except Exception:
+                pass
+            return 0
+
+        try:
+            persisted = load_results_from_geopackage(self.loaded_gpkg_path)
+        except Exception:
+            persisted = []
+
+        if persisted:
+            self.results = persisted
+            try:
+                self.save_plot_btn.setEnabled(bool(HAVE_MPL))
+            except Exception:
+                pass
+        else:
+            self.results = None
+            try:
+                self.save_plot_btn.setEnabled(False)
+            except Exception:
+                pass
+
+        try:
+            self.populate_results_table()
+        except Exception:
+            pass
+        try:
+            self.refresh_plot()
+        except Exception:
+            pass
+        return len(persisted)
 
     def _iter_loaded_gpkg_layers(self):
         iface = self._get_qgis_iface()
@@ -1355,6 +1949,85 @@ class BackwaterWidget(QtWidgets.QWidget):
             if source_path == target:
                 matches.append(layer)
         return matches
+
+    def _layer_has_unsaved_edits(self, layer) -> bool:
+        try:
+            if not layer.isEditable():
+                return False
+        except Exception:
+            return False
+        try:
+            return bool(layer.isModified())
+        except Exception:
+            return False
+
+    def _sync_geopackage_edit_flags_from_layers(self):
+        if not self.loaded_gpkg_path:
+            self.gpkg_editing_enabled = False
+            self.gpkg_dirty = False
+            return
+
+        layers = self._iter_loaded_gpkg_layers()
+        if not layers:
+            return
+
+        any_editable = False
+        any_dirty = False
+        for layer in layers:
+            try:
+                editable = bool(layer.isEditable())
+            except Exception:
+                editable = False
+            if not editable:
+                continue
+            any_editable = True
+            if self._layer_has_unsaved_edits(layer):
+                any_dirty = True
+
+        self.gpkg_editing_enabled = any_editable
+        self.gpkg_dirty = any_dirty
+
+    def _iter_project_vector_layers_for_path(self, gpkg_path: str):
+        if not gpkg_path:
+            return []
+        try:
+            from qgis.core import QgsProject, QgsVectorLayer
+        except Exception:
+            return []
+        target = self._normalize_path(gpkg_path)
+        matches = []
+        for layer in QgsProject.instance().mapLayers().values():
+            if not isinstance(layer, QgsVectorLayer):
+                continue
+            source_path = self._normalize_path(str(layer.source()).split('|', 1)[0])
+            if source_path == target:
+                matches.append(layer)
+        return matches
+
+    def _remove_project_layers_for_path(self, gpkg_path: str):
+        if not gpkg_path:
+            return
+        try:
+            from qgis.core import QgsProject
+        except Exception:
+            return
+        for layer in self._iter_project_vector_layers_for_path(gpkg_path):
+            try:
+                QgsProject.instance().removeMapLayer(layer.id())
+            except Exception:
+                pass
+
+    def _read_gpkg_layer_authid(self, gpkg_path: str, layer_name: str) -> str:
+        if not gpkg_path:
+            return ''
+        try:
+            from qgis.core import QgsVectorLayer
+            lyr = QgsVectorLayer(f"{gpkg_path}|layername={layer_name}", layer_name, 'ogr')
+            if not lyr.isValid() or not lyr.crs().isValid():
+                return ''
+            return str(lyr.crs().authid() or '')
+        except Exception:
+            return ''
 
     def _get_gpkg_layer(self, layer_name: str):
         for layer in self._iter_loaded_gpkg_layers():
@@ -1399,6 +2072,8 @@ class BackwaterWidget(QtWidgets.QWidget):
     def _sync_boundary_from_ui(self):
         if self.model is None:
             return False
+        if getattr(self, 'form_only_mode', False):
+            return True
         self.model.boundary_condition = self.ds_bc.currentText()
         try:
             self.model.boundary_value = float(self.ds_val.text())
@@ -1425,9 +2100,15 @@ class BackwaterWidget(QtWidgets.QWidget):
             pass
 
     def _update_geopackage_edit_state(self):
+        try:
+            self._sync_geopackage_edit_flags_from_layers()
+        except Exception:
+            pass
         gpkg_loaded = bool(self.loaded_gpkg_path)
         qgis_available = self._get_qgis_iface() is not None
-        model_editable = (not gpkg_loaded) or self.gpkg_editing_enabled or (not qgis_available)
+        # GeoPackage-backed models are edited through QGIS layer attribute forms,
+        # not through the plugin's in-widget section editors.
+        model_editable = False
         self._set_model_editing_enabled(model_editable)
         self.toggle_gpkg_edit_btn.setEnabled(gpkg_loaded and qgis_available)
         self.save_layer_edits_btn.setEnabled(gpkg_loaded and qgis_available and self.gpkg_editing_enabled)
@@ -1445,18 +2126,610 @@ class BackwaterWidget(QtWidgets.QWidget):
             self.toggle_gpkg_edit_btn.setText('Enable Layer Editing')
         elif self.gpkg_editing_enabled:
             suffix = ' (unsaved)' if self.gpkg_dirty else ''
-            self.layer_edit_status_label.setText(f'Layer editing: enabled{suffix}')
+            self.layer_edit_status_label.setText(f'Layer editing: enabled in QGIS attribute forms{suffix}')
             self.toggle_gpkg_edit_btn.setText('Disable Layer Editing')
         else:
             self.layer_edit_status_label.setText('Layer editing: read-only')
             self.toggle_gpkg_edit_btn.setText('Enable Layer Editing')
+
+        try:
+            if hasattr(self, 'action_toggle_layer_editing') and self.action_toggle_layer_editing is not None:
+                self.action_toggle_layer_editing.setEnabled(gpkg_loaded and qgis_available)
+                if self.gpkg_editing_enabled:
+                    self.action_toggle_layer_editing.setText('Disable Layer Editing')
+                else:
+                    self.action_toggle_layer_editing.setText('Enable Layer Editing')
+        except Exception:
+            pass
+
+        try:
+            if hasattr(self, 'action_save_layer_edits') and self.action_save_layer_edits is not None:
+                self.action_save_layer_edits.setEnabled(gpkg_loaded and qgis_available and self.gpkg_editing_enabled)
+        except Exception:
+            pass
+
+        try:
+            if hasattr(self, 'action_save_model') and self.action_save_model is not None:
+                self.action_save_model.setEnabled(bool(self.can_gpkg and self.model is not None))
+        except Exception:
+            pass
+
+        try:
+            if hasattr(self, 'action_open_results_plot') and self.action_open_results_plot is not None:
+                self.action_open_results_plot.setEnabled(True)
+        except Exception:
+            pass
+
+        try:
+            if hasattr(self, 'action_open_results_table') and self.action_open_results_table is not None:
+                self.action_open_results_table.setEnabled(True)
+        except Exception:
+            pass
+
+    def _forms_file_path(self, filename: str) -> str:
+        return os.path.join(os.path.dirname(__file__), 'forms', filename)
+
+    def _clear_layer_constraints(self, layer):
+        try:
+            from qgis.core import QgsFieldConstraints
+        except Exception:
+            return
+        for idx in range(layer.fields().count()):
+            try:
+                layer.setConstraintExpression(idx, '')
+            except Exception:
+                pass
+            for constraint in (
+                QgsFieldConstraints.ConstraintNotNull,
+                QgsFieldConstraints.ConstraintExpression,
+                QgsFieldConstraints.ConstraintUnique,
+            ):
+                try:
+                    layer.removeFieldConstraint(idx, constraint)
+                except Exception:
+                    pass
+
+    def _set_value_map_editor(self, layer, field_name: str, mapping: dict):
+        try:
+            from qgis.core import QgsEditorWidgetSetup
+        except Exception:
+            return
+        idx = layer.fields().indexOf(field_name)
+        if idx == -1:
+            return
+        try:
+            layer.setEditorWidgetSetup(idx, QgsEditorWidgetSetup('ValueMap', {'map': mapping}))
+        except Exception:
+            pass
+
+    def _configure_layer_custom_ui(self, layer, cfg, QgsEditFormConfig):
+        layer_name = layer.name()
+        if layer_name not in ('cross_sections', 'boundary_conditions'):
+            return
+
+        ui_name = 'cross_sections_form.ui' if layer_name == 'cross_sections' else 'boundary_conditions_form.ui'
+        init_function = 'backwater_cross_sections_form_open' if layer_name == 'cross_sections' else 'backwater_boundary_form_open'
+        ui_path = self._forms_file_path(ui_name)
+        init_path = self._forms_file_path('backwater_form_init.py')
+
+        if os.path.exists(ui_path):
+            try:
+                cfg.setUiForm(ui_path)
+            except Exception:
+                pass
+
+        if os.path.exists(init_path):
+            try:
+                if hasattr(cfg, 'setInitFilePath'):
+                    cfg.setInitFilePath(init_path)
+                if hasattr(cfg, 'setInitFunction'):
+                    cfg.setInitFunction(init_function)
+                if hasattr(cfg, 'setInitCodeSource') and hasattr(QgsEditFormConfig, 'CodeSourceFile'):
+                    cfg.setInitCodeSource(QgsEditFormConfig.CodeSourceFile)
+            except Exception:
+                pass
+
+    def _configure_layer_field_widgets_and_constraints(self, layer):
+        if layer is None:
+            return
+
+        # Explicitly remove plugin-added hard/soft constraints so form editing
+        # remains unconstrained except for provider-level constraints.
+        self._clear_layer_constraints(layer)
+
+        lname = layer.name()
+        if lname == 'cross_sections':
+            self._set_value_map_editor(layer, 'culvert_shape', {
+                '(none)': '',
+                'circular': 'circular',
+                'rect': 'rect',
+            })
+
+        elif lname == 'boundary_conditions':
+            self._set_value_map_editor(layer, 'boundary_type', {
+                'known_wse': 'known_wse',
+                'normal_depth': 'normal_depth',
+            })
+
+    def _configure_attribute_forms_for_layer(self, layer):
+        if layer is None:
+            return
+        try:
+            from qgis.core import QgsDefaultValue, QgsEditFormConfig
+        except Exception:
+            return
+
+        try:
+            cfg = layer.editFormConfig()
+            # Prefer drag-and-drop style form layout when available.
+            layout_value = None
+            for enum_name in ('DragAndDrop', 'TabLayout', 'GeneratedLayout'):
+                if hasattr(QgsEditFormConfig, enum_name):
+                    layout_value = getattr(QgsEditFormConfig, enum_name)
+                    break
+            if layout_value is not None and hasattr(cfg, 'setLayout'):
+                cfg.setLayout(layout_value)
+
+            self._configure_layer_custom_ui(layer, cfg, QgsEditFormConfig)
+
+            if hasattr(layer, 'setEditFormConfig'):
+                layer.setEditFormConfig(cfg)
+
+            if layer.name() == 'cross_sections':
+                centerline_id_idx = layer.fields().indexOf('centerline_id')
+                if centerline_id_idx != -1 and hasattr(layer, 'setDefaultValueDefinition'):
+                    layer.setDefaultValueDefinition(centerline_id_idx, QgsDefaultValue('1', True))
+
+                contraction_idx = layer.fields().indexOf('contraction_coeff')
+                if contraction_idx != -1 and hasattr(layer, 'setDefaultValueDefinition'):
+                    layer.setDefaultValueDefinition(contraction_idx, QgsDefaultValue('0.1', True))
+
+                expansion_idx = layer.fields().indexOf('expansion_coeff')
+                if expansion_idx != -1 and hasattr(layer, 'setDefaultValueDefinition'):
+                    layer.setDefaultValueDefinition(expansion_idx, QgsDefaultValue('0.3', True))
+
+                river_idx = layer.fields().indexOf('river_station')
+                if river_idx != -1 and hasattr(layer, 'setDefaultValueDefinition'):
+                    expr = (
+                        "with_variable('cl_geom', geometry(get_feature"
+                        "('centerline','centerline_id',coalesce(\"centerline_id\",1))), "
+                        "if (@cl_geom is null, NULL, "
+                        "with_variable('xpt', intersection($geometry, @cl_geom), "
+                        "with_variable('loc_pt', if(@xpt is null OR is_empty(@xpt), "
+                        "closest_point(@cl_geom, $geometry), centroid(@xpt)), "
+                        "with_variable('rs', line_locate_point(@cl_geom, @loc_pt), "
+                        "if(@rs < 0, NULL, to_string(round(@rs, 3))))))))"
+                    )
+                    layer.setDefaultValueDefinition(river_idx, QgsDefaultValue(expr, True))
+
+
+
+            self._configure_layer_field_widgets_and_constraints(layer)
+
+            self._configure_layer_form_actions(layer)
+        except Exception:
+            pass
+
+    def _layer_python_action_type(self):
+        try:
+            from qgis.core import Qgis
+            return Qgis.AttributeActionType.GenericPython
+        except Exception:
+            try:
+                from qgis.core import QgsAction
+                return QgsAction.GenericPython
+            except Exception:
+                return None
+
+    def _upsert_layer_python_action(self, layer, name: str, command: str):
+        if layer is None:
+            return
+        action_type = self._layer_python_action_type()
+        if action_type is None:
+            return
+        try:
+            from qgis.core import QgsAction
+            manager = layer.actions()
+        except Exception:
+            return
+
+        try:
+            for action in list(manager.actions()):
+                try:
+                    if str(action.name()) == str(name):
+                        manager.removeAction(action.id())
+                except Exception:
+                    continue
+        except Exception:
+            pass
+
+        scopes = {'Form', 'Feature', 'Canvas', 'Layer'}
+        try:
+            action_obj = QgsAction(action_type, name, command, False)
+            try:
+                action_obj.setActionScopes(scopes)
+            except Exception:
+                pass
+            manager.addAction(action_obj)
+        except TypeError:
+            try:
+                manager.addAction(action_type, name, command, False)
+                for action in list(manager.actions()):
+                    try:
+                        if str(action.name()) == str(name):
+                            try:
+                                action.setActionScopes(scopes)
+                            except Exception:
+                                pass
+                    except Exception:
+                        continue
+            except TypeError:
+                manager.addAction(action_type, name, command)
+        except Exception:
+            pass
+
+    def _cross_section_select_terrain_action_code(self) -> str:
+        return """from qgis.core import QgsProject, QgsRasterLayer, QgsExpressionContextUtils, Qgis
+from qgis.PyQt.QtWidgets import QInputDialog
+from qgis.utils import iface
+
+project = QgsProject.instance()
+rasters = [lyr for lyr in project.mapLayers().values() if isinstance(lyr, QgsRasterLayer) and lyr.isValid()]
+if not rasters:
+    iface.messageBar().pushMessage('Backwater', 'No valid raster layers are loaded.', level=Qgis.Warning, duration=6)
+else:
+    labels = [f"{lyr.name()} ({lyr.id()[:8]})" for lyr in rasters]
+    current = QgsExpressionContextUtils.projectScope(project).variable('backwater_terrain_raster_id')
+    default_idx = 0
+    for i, lyr in enumerate(rasters):
+        if lyr.id() == str(current):
+            default_idx = i
+            break
+    selected_label, ok = QInputDialog.getItem(None, 'Backwater Terrain Raster', 'Raster layer:', labels, default_idx, False)
+    if ok and selected_label:
+        selected = rasters[labels.index(selected_label)]
+        QgsExpressionContextUtils.setProjectVariable(project, 'backwater_terrain_raster_id', selected.id())
+        iface.messageBar().pushMessage('Backwater', f'Terrain raster set to {selected.name()}.', level=Qgis.Info, duration=5)
+"""
+
+    def _cross_section_update_z_action_code(self) -> str:
+        return """import os
+import importlib.util
+from qgis.core import (
+    Qgis,
+    QgsApplication,
+    QgsExpressionContextUtils,
+    QgsFeatureRequest,
+    QgsProject,
+    QgsRasterLayer,
+)
+from qgis.utils import iface
+
+layer = iface.activeLayer()
+if layer is None:
+    iface.messageBar().pushMessage('Backwater', 'No active layer.', level=Qgis.Warning, duration=6)
+    raise RuntimeError('No active layer')
+
+fid = int([% $id %])
+feat = None
+if fid > -1:
+    feat = next(layer.getFeatures(QgsFeatureRequest(fid)), None)
+
+# Fallback for form/action contexts where $id can be null/temporary.
+if feat is None:
+    selected = layer.selectedFeatures()
+    if selected:
+        feat = selected[0]
+        try:
+            fid = int(feat.id())
+        except Exception:
+            fid = -1
+
+# Final fallback by river_station expression placeholder.
+if feat is None:
+    rs_hint = '[% coalesce("river_station", "") %]'.strip()
+    if rs_hint:
+        for candidate in layer.getFeatures():
+            try:
+                if str(candidate['river_station']) == rs_hint:
+                    feat = candidate
+                    try:
+                        fid = int(candidate.id())
+                    except Exception:
+                        fid = -1
+                    break
+            except Exception:
+                continue
+
+if feat is None:
+    iface.messageBar().pushMessage('Backwater', f'Feature {fid} not found.', level=Qgis.Warning, duration=6)
+    raise RuntimeError('Cross section feature not found')
+
+project = QgsProject.instance()
+raster_id = str(QgsExpressionContextUtils.projectScope(project).variable('backwater_terrain_raster_id') or '').strip()
+raster_layer = project.mapLayer(raster_id) if raster_id else None
+if not isinstance(raster_layer, QgsRasterLayer) or not raster_layer.isValid():
+    rasters = [lyr for lyr in project.mapLayers().values() if isinstance(lyr, QgsRasterLayer) and lyr.isValid()]
+    if not rasters:
+        iface.messageBar().pushMessage('Backwater', 'No valid raster layers are loaded.', level=Qgis.Warning, duration=6)
+        raise RuntimeError('No raster layer available')
+    raster_layer = rasters[0]
+    QgsExpressionContextUtils.setProjectVariable(project, 'backwater_terrain_raster_id', raster_layer.id())
+
+plugin_dir = os.path.join(QgsApplication.qgisSettingsDirPath(), 'python', 'plugins', 'qgis-backwater-plugin')
+expr_path = os.path.join(plugin_dir, 'expressions', 'vertices_z_from_raster.py')
+spec = importlib.util.spec_from_file_location('backwater_vertices_z_from_raster', expr_path)
+if spec is None or spec.loader is None:
+    raise RuntimeError(f'Could not import raster expression module: {expr_path}')
+mod = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(mod)
+func = getattr(mod, 'set_z_from_raster_expr_py', None)
+if not callable(func):
+    func = getattr(mod, '_set_z_from_raster_impl', None)
+if not callable(func):
+    func = getattr(mod, 'set_z_from_raster_expr', None)
+if not callable(func):
+    raise RuntimeError('set_z_from_raster_expr callable not found')
+
+sampled_geom = func(feat.geometry(), raster_layer, 1, True)
+if sampled_geom is None or sampled_geom.isEmpty():
+    raise RuntimeError('Raster sampling returned empty geometry')
+
+if not layer.isEditable():
+    layer.startEditing()
+
+if fid > -1:
+    layer.changeGeometry(fid, sampled_geom)
+else:
+    feat.setGeometry(sampled_geom)
+
+river_idx = layer.fields().indexOf('river_station')
+center_idx = layer.fields().indexOf('centerline_id')
+
+def _set_attr(field_idx, value):
+    if field_idx == -1:
+        return
+    if fid > -1:
+        layer.changeAttributeValue(fid, field_idx, value)
+    else:
+        feat.setAttribute(field_idx, value)
+
+if center_idx != -1:
+    try:
+        cur_center_id = feat[center_idx]
+    except Exception:
+        cur_center_id = None
+    if cur_center_id is None:
+        _set_attr(center_idx, 1)
+
+center_layer = None
+for lyr in project.mapLayers().values():
+    if getattr(lyr, 'name', lambda: '')() == 'centerline':
+        center_layer = lyr
+        break
+if center_layer is not None:
+    center_feat = next(center_layer.getFeatures(), None)
+    if center_feat is not None:
+        center_geom = center_feat.geometry()
+        if center_geom is not None and not center_geom.isEmpty():
+            locate_geom = None
+            try:
+                crossing = sampled_geom.intersection(center_geom)
+            except Exception:
+                crossing = None
+            if crossing is not None and not crossing.isEmpty():
+                locate_geom = crossing.centroid()
+            if locate_geom is None or locate_geom.isEmpty():
+                try:
+                    locate_geom = center_geom.nearestPoint(sampled_geom)
+                except Exception:
+                    locate_geom = None
+            if locate_geom is None or locate_geom.isEmpty():
+                chainage = -1.0
+            else:
+                chainage = float(center_geom.lineLocatePoint(locate_geom))
+            if chainage >= 0 and river_idx != -1:
+                _set_attr(river_idx, f"{chainage:.3f}")
+
+if fid <= -1:
+    if not layer.updateFeature(feat):
+        raise RuntimeError('Could not update geometry for temporary feature')
+
+iface.messageBar().pushMessage('Backwater', f'Updated geometry Z from raster {raster_layer.name()}.', level=Qgis.Success, duration=5)
+"""
+
+    def _boundary_run_model_action_code(self) -> str:
+        return """from qgis.core import Qgis
+from qgis.PyQt.QtWidgets import QDockWidget
+from qgis.utils import iface
+
+dock = iface.mainWindow().findChild(QDockWidget, 'BackwaterMainDock')
+if dock is None or dock.widget() is None or not hasattr(dock.widget(), 'on_run'):
+    iface.messageBar().pushMessage(
+        'Backwater',
+        'Backwater dock is not open. Open the plugin panel, then run this action again.',
+        level=Qgis.Warning,
+        duration=7,
+    )
+else:
+    try:
+        dock.widget().on_run()
+    except Exception as exc:
+        iface.messageBar().pushMessage('Backwater', f'Run Model failed: {exc}', level=Qgis.Critical, duration=8)
+        raise
+"""
+
+    def _configure_layer_form_actions(self, layer):
+        if layer is None:
+            return
+        lname = layer.name()
+        if lname == 'cross_sections':
+            self._upsert_layer_python_action(layer, 'Backwater: Select Terrain Raster', self._cross_section_select_terrain_action_code())
+            self._upsert_layer_python_action(layer, 'Backwater: Update Z From Terrain', self._cross_section_update_z_action_code())
+        elif lname == 'boundary_conditions':
+            self._upsert_layer_python_action(layer, 'Backwater: Run Model', self._boundary_run_model_action_code())
+
+    def _configure_cross_section_centerline_join(self):
+        try:
+            from qgis.core import QgsVectorLayerJoinInfo
+            from qgis.PyQt.QtCore import QVariant
+        except Exception:
+            return
+
+        cross_layer = self._ensure_gpkg_layer_loaded('cross_sections')
+        center_layer = self._ensure_gpkg_layer_loaded('centerline')
+        if cross_layer is None or center_layer is None:
+            return
+
+        try:
+            self._ensure_layer_fields(cross_layer, [('centerline_id', QVariant.Int)])
+            self._ensure_layer_fields(center_layer, [('centerline_id', QVariant.Int)])
+        except Exception:
+            pass
+
+        try:
+            for j in list(cross_layer.vectorJoins()):
+                if getattr(j, 'joinLayerId', lambda: '')() == center_layer.id() or getattr(j, 'joinLayer', lambda: None)() == center_layer:
+                    cross_layer.removeJoin(j.joinLayerId())
+        except Exception:
+            pass
+
+        try:
+            join_info = QgsVectorLayerJoinInfo()
+            join_info.setJoinLayerId(center_layer.id())
+            join_info.setJoinLayer(center_layer)
+            join_info.setJoinFieldName('centerline_id')
+            join_info.setTargetFieldName('centerline_id')
+            join_info.setUsingMemoryCache(True)
+            join_info.setPrefix('cl_')
+            cross_layer.addJoin(join_info)
+        except Exception:
+            pass
+
+    def _persist_layer_form_style(self, layer):
+        if layer is None or not self.loaded_gpkg_path:
+            return
+        try:
+            if hasattr(layer, 'saveStyleToDatabase'):
+                layer.saveStyleToDatabase('backwater_form', 'Backwater form defaults and joins', True, '')
+        except Exception:
+            pass
+
+    def _configure_attribute_forms_for_loaded_layers(self):
+        self._configure_cross_section_centerline_join()
+        for layer_name in ('cross_sections', 'centerline', 'boundary_conditions'):
+            layer = self._ensure_gpkg_layer_loaded(layer_name)
+            self._configure_attribute_forms_for_layer(layer)
+            self._persist_layer_form_style(layer)
+
+    def _select_crs_authid_for_new_model(self):
+        iface = self._get_qgis_iface()
+        if iface is None:
+            return 'EPSG:4326'
+
+        default_authid = 'EPSG:4326'
+        try:
+            default_authid = iface.mapCanvas().mapSettings().destinationCrs().authid() or default_authid
+        except Exception:
+            pass
+
+        try:
+            from qgis.gui import QgsProjectionSelectionDialog
+            dlg = QgsProjectionSelectionDialog(self)
+            try:
+                dlg.setCrs(iface.mapCanvas().mapSettings().destinationCrs())
+            except Exception:
+                pass
+            if dlg.exec():
+                crs = dlg.crs()
+                if crs and crs.isValid():
+                    return crs.authid() or default_authid
+            return None
+        except Exception:
+            pass
+
+        text, ok = QtWidgets.QInputDialog.getText(
+            self,
+            'Model Projection',
+            'Projection (for example EPSG:26912):',
+            QtWidgets.QLineEdit.Normal,
+            default_authid,
+        )
+        if not ok:
+            return None
+        text = str(text).strip()
+        return text or default_authid
+
+    def _get_loaded_centerline_geometry(self):
+        if not self.loaded_gpkg_path:
+            return None
+        layer = self._get_gpkg_layer('centerline')
+        if layer is None:
+            layer = self._ensure_gpkg_layer_loaded('centerline')
+        if layer is not None:
+            feat = next(layer.getFeatures(), None)
+            if feat is not None:
+                try:
+                    return feat.geometry()
+                except Exception:
+                    pass
+        return None
 
     def _mark_gpkg_dirty(self):
         if self.loaded_gpkg_path and self.gpkg_editing_enabled:
             self.gpkg_dirty = True
             self._update_geopackage_edit_state()
 
-    def _write_cross_section_to_layer(self, idx: int):
+    def _interp_profile_elevation(self, profile, station: float) -> float:
+        if not profile:
+            return 0.0
+        pts = sorted([(float(st), float(z)) for st, z in profile], key=lambda p: p[0])
+        if station <= pts[0][0]:
+            return float(pts[0][1])
+        if station >= pts[-1][0]:
+            return float(pts[-1][1])
+        for i in range(1, len(pts)):
+            s0, z0 = pts[i - 1]
+            s1, z1 = pts[i]
+            if s1 <= s0:
+                continue
+            if station <= s1:
+                t = (station - s0) / (s1 - s0)
+                return float(z0 + (z1 - z0) * t)
+        return float(pts[-1][1])
+
+    def _geometry_with_preserved_xy_updated_z(self, source_geometry, profile):
+        try:
+            from qgis.core import QgsGeometry, QgsPoint
+        except Exception:
+            return None
+
+        try:
+            vertices = [v for v in source_geometry.vertices()]
+        except Exception:
+            vertices = []
+
+        if len(vertices) < 2:
+            return None
+
+        # Build chainage along existing XY so map coordinates remain untouched.
+        chainage = [0.0]
+        for i in range(1, len(vertices)):
+            dx = float(vertices[i].x()) - float(vertices[i - 1].x())
+            dy = float(vertices[i].y()) - float(vertices[i - 1].y())
+            chainage.append(chainage[-1] + math.hypot(dx, dy))
+
+        updated_points = []
+        for v, station in zip(vertices, chainage):
+            z = self._interp_profile_elevation(profile, float(station))
+            updated_points.append(QgsPoint(float(v.x()), float(v.y()), float(z)))
+
+        try:
+            return QgsGeometry.fromPolyline(updated_points)
+        except Exception:
+            return None
+
+    def _write_cross_section_to_layer(self, idx: int, update_geometry: bool = True):
         if not (self.loaded_gpkg_path and self.gpkg_editing_enabled):
             return
         layer = self._ensure_gpkg_layer_loaded('cross_sections')
@@ -1469,6 +2742,7 @@ class BackwaterWidget(QtWidgets.QWidget):
             raise RuntimeError(f'QGIS API unavailable: {exc}')
 
         self._ensure_layer_fields(layer, [
+            ('centerline_id', QVariant.Int),
             ('river_station', QVariant.String),
             ('left_bank_station', QVariant.Double),
             ('right_bank_station', QVariant.Double),
@@ -1494,18 +2768,31 @@ class BackwaterWidget(QtWidgets.QWidget):
         ])
 
         xs = self.model.sections[idx]
-        target_feature = None
-        for feature in layer.getFeatures():
-            try:
-                if str(feature['river_station']) == str(xs.river_station):
-                    target_feature = feature
-                    break
-            except Exception:
-                continue
+        target_feature = self._find_cross_section_feature(layer, idx, xs)
 
-        geometry = QgsGeometry.fromPolylineXY([QgsPointXY(float(st), float(z)) for st, z in xs.geometry])
+        source_geom_for_station = None
+        if target_feature is not None:
+            source_geom_for_station = target_feature.geometry()
+        elif update_geometry:
+            try:
+                from qgis.core import QgsGeometry, QgsPointXY
+                source_geom_for_station = QgsGeometry.fromPolylineXY([QgsPointXY(float(st), float(z)) for st, z in xs.geometry])
+            except Exception:
+                source_geom_for_station = None
+
+        river_station_text = self._compute_river_station_text_for_geometry(source_geom_for_station)
+        if river_station_text is None:
+            river_station_text = str(xs.river_station)
+        else:
+            xs.river_station = str(river_station_text)
+            try:
+                self.section_cb.setItemText(idx, str(river_station_text))
+            except Exception:
+                pass
+
         attrs = {
-            'river_station': str(xs.river_station),
+            'centerline_id': 1,
+            'river_station': str(river_station_text),
             'left_bank_station': float(xs.left_bank_station),
             'right_bank_station': float(xs.right_bank_station),
             'n_lob': float(xs.n_lob),
@@ -1529,8 +2816,13 @@ class BackwaterWidget(QtWidgets.QWidget):
             'culvert_weir_sta_right': float(getattr(xs, 'culvert_weir_sta_right', 0.0) or 0.0),
         }
         if target_feature is None:
+            if update_geometry:
+                geometry = QgsGeometry.fromPolylineXY([QgsPointXY(float(st), float(z)) for st, z in xs.geometry])
+            else:
+                geometry = QgsGeometry()
             feature = QgsFeature(layer.fields())
-            feature.setGeometry(geometry)
+            if update_geometry:
+                feature.setGeometry(geometry)
             for name, value in attrs.items():
                 if layer.fields().indexOf(name) != -1:
                     feature[name] = value
@@ -1542,7 +2834,25 @@ class BackwaterWidget(QtWidgets.QWidget):
             field_index = layer.fields().indexOf(name)
             if field_index != -1:
                 layer.changeAttributeValue(fid, field_index, value)
-        layer.changeGeometry(fid, geometry)
+        if update_geometry:
+            source_geom = target_feature.geometry()
+            geometry = self._geometry_with_preserved_xy_updated_z(source_geom, xs.geometry)
+            if geometry is None:
+                raise RuntimeError(
+                    f'Could not safely update geometry for river_station {xs.river_station}; '
+                    'existing geometry is invalid or unsupported.'
+                )
+            layer.changeGeometry(fid, geometry)
+            mapped_station = self._compute_river_station_text_for_geometry(geometry)
+            if mapped_station is not None:
+                river_idx = layer.fields().indexOf('river_station')
+                if river_idx != -1:
+                    layer.changeAttributeValue(fid, river_idx, mapped_station)
+                xs.river_station = mapped_station
+                try:
+                    self.section_cb.setItemText(idx, mapped_station)
+                except Exception:
+                    pass
 
     def _write_boundary_to_layer(self):
         if not (self.loaded_gpkg_path and self.gpkg_editing_enabled):
@@ -1596,11 +2906,7 @@ class BackwaterWidget(QtWidgets.QWidget):
         self.section_cb.addItems([xs.river_station for xs in self.model.sections])
         if self.model.sections:
             self.section_cb.setCurrentIndex(0)
-        self.results = None
-        try:
-            self.save_plot_btn.setEnabled(False)
-        except Exception:
-            pass
+        self._load_results_from_loaded_geopackage()
         self._refresh_scroller_choices()
 
     def on_toggle_geopackage_editing(self):
@@ -1610,25 +2916,29 @@ class BackwaterWidget(QtWidgets.QWidget):
         if self._get_qgis_iface() is None:
             ui_warning(self, 'QGIS required', 'Layer editing is only available when the plugin is running inside QGIS.')
             return
-        layer_names = ('cross_sections', 'boundary_conditions')
+        layer_names = ('cross_sections', 'centerline', 'boundary_conditions')
         if not self.gpkg_editing_enabled:
             try:
+                self._configure_cross_section_centerline_join()
                 layers = []
                 for layer_name in layer_names:
                     layer = self._ensure_gpkg_layer_loaded(layer_name)
                     if layer is None:
                         raise RuntimeError(f'{layer_name} layer could not be loaded from {self.loaded_gpkg_path}')
+                    self._configure_attribute_forms_for_layer(layer)
                     if not layer.isEditable():
                         layer.startEditing()
                     layers.append(layer)
+                self._connect_cross_section_layer_signals()
                 self.gpkg_editing_enabled = True
                 self.gpkg_dirty = False
                 self._update_geopackage_edit_state()
-                ui_info(self, 'Layer editing', 'GeoPackage layers are now editable.')
+                ui_info(self, 'Layer editing', 'GeoPackage layers are now editable. Use QGIS attribute forms to edit model features.')
             except Exception as exc:
                 ui_critical(self, 'Layer editing', str(exc))
             return
 
+        self._disconnect_cross_section_layer_signals()
         for layer_name in layer_names:
             layer = self._get_gpkg_layer(layer_name)
             if layer is not None and layer.isEditable():
@@ -1647,8 +2957,10 @@ class BackwaterWidget(QtWidgets.QWidget):
             ui_warning(self, 'Layer editing', 'Enable GeoPackage layer editing first.')
             return
         try:
-            self._write_boundary_to_layer()
-            for layer_name in ('cross_sections', 'boundary_conditions'):
+            if not getattr(self, 'form_only_mode', False):
+                self._write_boundary_to_layer()
+            self._disconnect_cross_section_layer_signals()
+            for layer_name in ('cross_sections', 'centerline', 'boundary_conditions'):
                 layer = self._get_gpkg_layer(layer_name)
                 if layer is not None and layer.isEditable() and not layer.commitChanges():
                     errors = '; '.join(layer.commitErrors()) if hasattr(layer, 'commitErrors') else 'commit failed'
@@ -1659,20 +2971,60 @@ class BackwaterWidget(QtWidgets.QWidget):
             self._update_geopackage_edit_state()
             ui_info(self, 'Saved', f'Layer edits saved to {self.loaded_gpkg_path}')
         except Exception as exc:
+            try:
+                if self.gpkg_editing_enabled:
+                    self._connect_cross_section_layer_signals()
+            except Exception:
+                pass
             ui_critical(self, 'Save layer edits', str(exc))
 
     # --- model actions
+    def on_menu_open_model(self):
+        filters = 'GeoPackage Files (*.gpkg)'
+        p, _ = ui_get_open_filename(self, 'Open Model GeoPackage', filters)
+        if not p:
+            return
+        self.input_path.setText(p)
+        self.on_load()
+
     def on_browse(self):
-        filters = 'GeoPackage Files (*.gpkg);;All Files (*)'
+        filters = 'GeoPackage Files (*.gpkg)'
         p, _ = ui_get_open_filename(self, 'Open Model', filters)
         if p:
             self.input_path.setText(p)
 
     def on_new_model(self):
+        if not getattr(self, 'can_gpkg', False) or save_to_geopackage is None:
+            ui_warning(self, 'Not available', 'Creating a model GeoPackage requires PyQGIS support.')
+            return
+
+        gpkg_path, _ = ui_get_save_filename(self, 'Create New Model GeoPackage', 'GeoPackage Files (*.gpkg)')
+        if not gpkg_path:
+            return
+        if not gpkg_path.lower().endswith('.gpkg'):
+            gpkg_path += '.gpkg'
+
+        crs_authid = self._select_crs_authid_for_new_model()
+        if not crs_authid:
+            return
+
+        base_flow = 500.0
+        if not getattr(self, 'form_only_mode', False):
+            try:
+                base_flow = float(self.flow_edit.text())
+            except Exception:
+                base_flow = 500.0
+
+        centerline_geom = None
         try:
-            base_flow = float(self.flow_edit.text())
+            from qgis.core import QgsGeometry
+            centerline_geom = QgsGeometry.fromWkt('LINESTRING (0 0, 20 0)')
         except Exception:
-            base_flow = 500.0
+            centerline_geom = None
+        if centerline_geom is None:
+            ui_critical(self, 'Create model', 'Could not create centerline geometry via PyQGIS.')
+            return
+
         xs0 = CrossSection(
             river_station='S_down',
             geometry=[(0.0, 100.0), (10.0, 99.5)],
@@ -1680,7 +3032,7 @@ class BackwaterWidget(QtWidgets.QWidget):
             right_bank_station=8.0,
             n_lob=0.035, n_ch=0.035, n_rob=0.035,
             contraction_coeff=0.1, expansion_coeff=0.3,
-            L_lob_to_next=10.0, L_ch_to_next=10.0, L_rob_to_next=10.0
+            L_lob_to_next=0.0, L_ch_to_next=0.0, L_rob_to_next=0.0
         )
         xs1 = CrossSection(
             river_station='S_up',
@@ -1689,41 +3041,59 @@ class BackwaterWidget(QtWidgets.QWidget):
             right_bank_station=18.0,
             n_lob=0.035, n_ch=0.035, n_rob=0.035,
             contraction_coeff=0.1, expansion_coeff=0.3,
-            L_lob_to_next=10.0, L_ch_to_next=10.0, L_rob_to_next=10.0
+            L_lob_to_next=0.0, L_ch_to_next=0.0, L_rob_to_next=0.0
         )
-        self.model = ModelInput(
+        model = ModelInput(
             flow_cfs=base_flow,
             flow_change=None,
             boundary_condition='known_wse',
             boundary_value=100.0,
             sections=[xs0, xs1]
         )
-        self.loaded_gpkg_path = ''
-        self.gpkg_editing_enabled = False
-        self.gpkg_dirty = False
-        self.input_path.setText('')
-        self._sync_ui_from_model()
-        self.section_cb.clear()
-        self.section_cb.addItems([xs.river_station for xs in self.model.sections])
-        self.section_cb.setCurrentIndex(0)
-        self.results = None
-        ui_info(self, 'Created', 'Created new minimal two-section model')
-        # push initial state to undo stack
-        self.push_undo()
+
+        # If this path is already loaded in the project, drop stale layers so
+        # the newly written file CRS and schema are re-read from disk.
+        self._remove_project_layers_for_path(gpkg_path)
+
         try:
-            self.update_cross_section_tab_state()
-        except Exception:
-            pass
-        self._update_geopackage_edit_state()
-        self._refresh_scroller_choices()
+            save_to_geopackage(
+                gpkg_path,
+                model,
+                centerline_geom=centerline_geom,
+                overwrite=True,
+                crs_authid=crs_authid,
+            )
+        except Exception as exc:
+            ui_critical(self, 'Create model', str(exc))
+            return
+
+        actual_authid = self._read_gpkg_layer_authid(gpkg_path, 'cross_sections')
+        if actual_authid and str(actual_authid).upper() != str(crs_authid).upper():
+            ui_warning(
+                self,
+                'CRS mismatch',
+                f'Created GeoPackage layer CRS is {actual_authid}, but selected CRS was {crs_authid}. '
+                'The file was written, but projection may differ from selection.'
+            )
+
+        self.input_path.setText(gpkg_path)
+        self.on_load()
+        self._configure_attribute_forms_for_loaded_layers()
+        if self._get_qgis_iface() is not None and not self.gpkg_editing_enabled:
+            self.on_toggle_geopackage_editing()
+        ui_info(self, 'Created', f'Created new model GeoPackage at {gpkg_path} ({crs_authid}).')
 
     def on_load(self):
         # Ensure we can rebind module-level loader symbols if needed
-        global load_from_geopackage, save_to_geopackage, load_input
+        global load_from_geopackage, save_to_geopackage, load_results_from_geopackage, save_results_to_geopackage, load_input
         p = self.input_path.text().strip()
         if not p:
             ui_warning(self, 'Input required', 'Please choose an input GeoPackage file or create a new model')
             return
+        if not self._is_geopackage_path(p):
+            ui_warning(self, 'GeoPackage required', 'Only GeoPackage (*.gpkg) models are supported.')
+            return
+        self._remove_project_layers_for_path(p)
         try:
             self.model = load_input(p)
             self.loaded_gpkg_path = self._normalize_path(p)
@@ -1735,7 +3105,10 @@ class BackwaterWidget(QtWidgets.QWidget):
             self.section_cb.addItems([xs.river_station for xs in self.model.sections])
             if self.model.sections:
                 self.section_cb.setCurrentIndex(0)
+            result_count = self._load_results_from_loaded_geopackage()
             ui_info(self, 'Loaded', f'Loaded model: {p}')
+            if result_count > 0:
+                ui_info(self, 'Results', f'Loaded {result_count} persisted result row(s) from model_results.')
             try:
                 self.refresh_plot()
             except Exception:
@@ -1747,7 +3120,9 @@ class BackwaterWidget(QtWidgets.QWidget):
             # push initial loaded state
             self.push_undo()
             self._update_geopackage_edit_state()
+            self._configure_attribute_forms_for_loaded_layers()
             self._refresh_scroller_choices()
+            self.refresh_terrain_raster_choices()
         except Exception as e:
             ui_critical(self, 'Error', str(e))
 
@@ -1757,13 +3132,26 @@ class BackwaterWidget(QtWidgets.QWidget):
         except Exception:
             pass
 
+        try:
+            self._sync_geopackage_edit_flags_from_layers()
+            self._update_geopackage_edit_state()
+        except Exception:
+            pass
+
+        if self.gpkg_editing_enabled and self.gpkg_dirty:
+            ui_warning(self, 'Unsaved edits', 'Save GeoPackage layer edits before running the model.')
+            return
+
         # ensure these names refer to the plugin-local solver module symbols
-        global run_backwater, load_input, load_from_geopackage, save_to_geopackage, ModelInput, CrossSection, _plot_results, HAVE_MPL
+        global run_backwater, load_input, load_from_geopackage, save_to_geopackage, load_results_from_geopackage, save_results_to_geopackage, ModelInput, CrossSection, HAVE_MPL
 
         if self.model is None:
             p = self.input_path.text().strip()
             if not p:
                 ui_warning(self, 'Input required', 'Please load a model or create a new one')
+                return
+            if not self._is_geopackage_path(p):
+                ui_warning(self, 'GeoPackage required', 'Only GeoPackage (*.gpkg) models are supported.')
                 return
             try:
                 self.model = load_input(p)
@@ -1773,18 +3161,30 @@ class BackwaterWidget(QtWidgets.QWidget):
                 ui_critical(self, 'Error', str(e))
                 return
 
-        # override bc and flow
-        self.model.boundary_condition = self.ds_bc.currentText()
+        # GeoPackage-only mode: always reload model from disk before run so
+        # the solver uses the latest committed layer edits.
         try:
-            self.model.boundary_value = float(self.ds_val.text())
-        except Exception:
-            ui_warning(self, 'Invalid', 'DS value must be numeric')
+            if self.loaded_gpkg_path:
+                self.model = load_input(self.loaded_gpkg_path)
+                self.section_cb.clear()
+                self.section_cb.addItems([xs.river_station for xs in self.model.sections])
+        except Exception as e:
+            ui_critical(self, 'Error', f'Failed to reload GeoPackage before run: {e}')
             return
-        try:
-            self.model.flow_cfs = float(self.flow_edit.text())
-        except Exception:
-            ui_warning(self, 'Invalid', 'Flow must be numeric')
-            return
+
+        # Optional in-widget BC/flow override is disabled in form-only mode.
+        if not getattr(self, 'form_only_mode', False):
+            self.model.boundary_condition = self.ds_bc.currentText()
+            try:
+                self.model.boundary_value = float(self.ds_val.text())
+            except Exception:
+                ui_warning(self, 'Invalid', 'DS value must be numeric')
+                return
+            try:
+                self.model.flow_cfs = float(self.flow_edit.text())
+            except Exception:
+                ui_warning(self, 'Invalid', 'Flow must be numeric')
+                return
 
         # GUI validation: ensure known_wse downstream value is not below the downstream
         # section minimum bed elevation (non-physical). Provide a clear warning.
@@ -1819,9 +3219,10 @@ class BackwaterWidget(QtWidgets.QWidget):
             load_input = getattr(_mod, 'load_input', load_input)
             load_from_geopackage = getattr(_mod, 'load_from_geopackage', load_from_geopackage)
             save_to_geopackage = getattr(_mod, 'save_to_geopackage', save_to_geopackage)
+            load_results_from_geopackage = getattr(_mod, 'load_results_from_geopackage', load_results_from_geopackage)
+            save_results_to_geopackage = getattr(_mod, 'save_results_to_geopackage', save_results_to_geopackage)
             ModelInput = getattr(_mod, 'ModelInput', ModelInput)
             CrossSection = getattr(_mod, 'CrossSection', CrossSection)
-            _plot_results = getattr(_mod, '_plot_results', _plot_results)
             HAVE_MPL = getattr(_mod, 'HAVE_MPL', HAVE_MPL)
         except Exception:
             pass
@@ -1836,9 +3237,10 @@ class BackwaterWidget(QtWidgets.QWidget):
                 load_input = getattr(_mod, 'load_input', load_input)
                 load_from_geopackage = getattr(_mod, 'load_from_geopackage', load_from_geopackage)
                 save_to_geopackage = getattr(_mod, 'save_to_geopackage', save_to_geopackage)
+                load_results_from_geopackage = getattr(_mod, 'load_results_from_geopackage', load_results_from_geopackage)
+                save_results_to_geopackage = getattr(_mod, 'save_results_to_geopackage', save_results_to_geopackage)
                 ModelInput = getattr(_mod, 'ModelInput', ModelInput)
                 CrossSection = getattr(_mod, 'CrossSection', CrossSection)
-                _plot_results = getattr(_mod, '_plot_results', _plot_results)
                 HAVE_MPL = getattr(_mod, 'HAVE_MPL', HAVE_MPL)
                 # Propagate GUI method selections into the solver module
                 try:
@@ -1915,6 +3317,18 @@ class BackwaterWidget(QtWidgets.QWidget):
 
             solver_choice = str(self.solver_combo.currentText()) if hasattr(self, 'solver_combo') else 'py'
             self.results = run_backwater(self.model, solver=solver_choice)
+
+            if self.loaded_gpkg_path and callable(save_results_to_geopackage):
+                try:
+                    save_results_to_geopackage(
+                        self.loaded_gpkg_path,
+                        self.model,
+                        self.results,
+                        layer_name='model_results',
+                        solver=solver_choice,
+                    )
+                except Exception as save_exc:
+                    ui_warning(self, 'Results persistence', f'Run completed, but could not save model_results layer: {save_exc}')
         except Exception as e:
             import traceback
             tb = traceback.format_exc()
@@ -1934,6 +3348,10 @@ class BackwaterWidget(QtWidgets.QWidget):
         try:
             # show results tab in bottom-right IO tabs
             self.io_tabs.setCurrentWidget(self.results_page)
+        except Exception:
+            pass
+        try:
+            self._update_geopackage_edit_state()
         except Exception:
             pass
         # update small run summary in Results tab
@@ -2296,14 +3714,16 @@ class BackwaterWidget(QtWidgets.QWidget):
             ui_warning(self, 'No model', 'Load and edit a model before saving.')
             return
         if not getattr(self, 'can_gpkg', False):
-            ui_warning(self, 'Not available', 'GeoPackage save requires geopandas/fiona/shapely.')
+            ui_warning(self, 'Not available', 'GeoPackage save requires PyQGIS support.')
             return
         p, _ = ui_get_save_filename(self, 'Save Model', 'GeoPackage Files (*.gpkg)')
         if not p:
             return
-        if not self._sync_boundary_from_ui():
-            return
-        save_to_geopackage(p, self.model)
+        if not getattr(self, 'form_only_mode', False):
+            if not self._sync_boundary_from_ui():
+                return
+        centerline_geom = self._get_loaded_centerline_geometry()
+        save_to_geopackage(p, self.model, centerline_geom=centerline_geom)
         self.loaded_gpkg_path = self._normalize_path(p)
         self.gpkg_editing_enabled = False
         self.gpkg_dirty = False
@@ -2364,16 +3784,18 @@ class BackwaterWidget(QtWidgets.QWidget):
             ui_warning(self, 'No model', 'Load and edit a model before saving.')
             return
         if not getattr(self, 'can_gpkg', False) or 'save_to_geopackage' not in globals() or save_to_geopackage is None:
-            ui_warning(self, 'Not available', 'GeoPackage save routine not available (requires geopandas/fiona/shapely).')
+            ui_warning(self, 'Not available', 'GeoPackage save routine not available (PyQGIS required).')
             return
         default_path = self.loaded_gpkg_path or ''
         p, _ = ui_get_save_filename(self, 'Save GeoPackage', 'GeoPackage Files (*.gpkg)')
         if not p:
             return
         try:
-            if not self._sync_boundary_from_ui():
-                return
-            save_to_geopackage(p, self.model)
+            if not getattr(self, 'form_only_mode', False):
+                if not self._sync_boundary_from_ui():
+                    return
+            centerline_geom = self._get_loaded_centerline_geometry()
+            save_to_geopackage(p, self.model, centerline_geom=centerline_geom)
             self.loaded_gpkg_path = self._normalize_path(p)
             self.gpkg_editing_enabled = False
             self.gpkg_dirty = False
@@ -2386,7 +3808,7 @@ class BackwaterWidget(QtWidgets.QWidget):
         """Create simple example layers (cross_sections, centerline, boundary_conditions)
         and add them to the current QGIS project. Only works when running inside QGIS.
         """
-        # Ensure running inside QGIS (check qgis.utils.iface or ui_adapter.iface)
+        # Ensure running inside QGIS.
         has_iface = False
         try:
             import qgis.utils as _qutils
@@ -2395,9 +3817,8 @@ class BackwaterWidget(QtWidgets.QWidget):
         except Exception:
             pass
         if not has_iface:
-            if ui_adapter is None or getattr(ui_adapter, 'iface', None) is None:
-                ui_warning(self, 'QGIS required', 'This action must be run from within QGIS.')
-                return
+            ui_warning(self, 'QGIS required', 'This action must be run from within QGIS.')
+            return
         try:
             from qgis.core import QgsVectorLayer, QgsProject, QgsFeature, QgsGeometry
             from qgis.PyQt.QtCore import QVariant
@@ -2462,173 +3883,116 @@ class BackwaterWidget(QtWidgets.QWidget):
             ui_info(self, 'Cancelled', 'Save cancelled')
             return
 
-        # Try to use geopandas (if available) to write layers to the GeoPackage
         wrote_ok = False
-        if self.can_gpkg:
-            try:
-                import geopandas as gpd
-                from shapely import wkt
-                # cross_sections
-                rows = []
-                for r in examples['cross_sections']:
-                    geom = wkt.loads(r['geometry_wkt'])
-                    rows.append({
-                        'geometry': geom,
-                        'river_station': r['river_station'],
-                        'left_bank_station': float(r['left_bank_station']),
-                        'right_bank_station': float(r['right_bank_station']),
-                        'n_lob': float(r['n_lob']), 'n_ch': float(r['n_ch']), 'n_rob': float(r['n_rob']),
-                        'contraction_coeff': float(r['contraction_coeff']),
-                        'expansion_coeff': float(r['expansion_coeff']),
-                        'L_lob_to_next': float(r['L_lob_to_next']),
-                        'L_ch_to_next': float(r['L_ch_to_next']),
-                        'L_rob_to_next': float(r['L_rob_to_next']),
-                        'culvert_code': int(r.get('culvert_code', 0)),
-                        'culvert_shape': r.get('culvert_shape', ''),
-                        'culvert_diameter': float(r.get('culvert_diameter', 0.0)),
-                        'culvert_width': float(r.get('culvert_width', 0.0)),
-                        'culvert_height': float(r.get('culvert_height', 0.0)),
-                        'culvert_upstream_invert': float(r.get('culvert_upstream_invert', 0.0)),
-                        'culvert_downstream_invert': float(r.get('culvert_downstream_invert', 0.0)),
-                        'culvert_length': float(r.get('culvert_length', 0.0)),
-                        'culvert_weir_coeff': float(r.get('culvert_weir_coeff', 3.0)),
-                        'culvert_weir_sta_left': float(r.get('culvert_weir_sta_left', 0.0)),
-                        'culvert_weir_sta_right': float(r.get('culvert_weir_sta_right', 0.0)),
-                    })
-                gdf_cs = gpd.GeoDataFrame(rows, geometry='geometry', crs='EPSG:4326')
-                gdf_cs.to_file(gpkg_path, layer='cross_sections', driver='GPKG')
+        try:
+            from qgis.core import QgsFields, QgsField, QgsWkbTypes, QgsVectorFileWriter
+            from qgis.PyQt.QtCore import QVariant
+            transform_ctx = QgsProject.instance().transformContext()
 
-                # centerline
-                rows = []
-                for r in examples['centerline']:
-                    geom = wkt.loads(r['geometry_wkt'])
-                    rows.append({'geometry': geom})
-                gdf_cl = gpd.GeoDataFrame(rows, geometry='geometry', crs='EPSG:4326')
-                gdf_cl.to_file(gpkg_path, layer='centerline', driver='GPKG', mode='a')
-
-                # boundary conditions
-                rows = []
-                for r in examples['boundary_conditions']:
-                    geom = wkt.loads(r['geometry_wkt'])
-                    rows.append({'geometry': geom, 'flow_cfs': float(r['flow_cfs']), 'boundary_type': r['boundary_type'], 'boundary_value': float(r['boundary_value'])})
-                gdf_bd = gpd.GeoDataFrame(rows, geometry='geometry', crs='EPSG:4326')
-                gdf_bd.to_file(gpkg_path, layer='boundary_conditions', driver='GPKG', mode='a')
-
-                wrote_ok = True
-            except Exception as e:
-                ui_warning(self, 'geopandas write failed', f'geopandas write failed: {e}')
-
-        # If geopandas unavailable or failed, try QGIS writer API
-        if not wrote_ok:
-            try:
-                from qgis.core import QgsFields, QgsField, QgsWkbTypes, QgsVectorFileWriter
-                from qgis.PyQt.QtCore import QVariant
-                transform_ctx = QgsProject.instance().transformContext()
-
-                # cross_sections layer
-                cs_fields = QgsFields()
-                cs_fields.append(QgsField('river_station', QVariant.String))
-                cs_fields.append(QgsField('left_bank_station', QVariant.Double))
-                cs_fields.append(QgsField('right_bank_station', QVariant.Double))
-                cs_fields.append(QgsField('n_lob', QVariant.Double))
-                cs_fields.append(QgsField('n_ch', QVariant.Double))
-                cs_fields.append(QgsField('n_rob', QVariant.Double))
-                cs_fields.append(QgsField('contraction_coeff', QVariant.Double))
-                cs_fields.append(QgsField('expansion_coeff', QVariant.Double))
-                cs_fields.append(QgsField('L_lob_to_next', QVariant.Double))
-                cs_fields.append(QgsField('L_ch_to_next', QVariant.Double))
-                cs_fields.append(QgsField('L_rob_to_next', QVariant.Double))
-                cs_fields.append(QgsField('culvert_code', QVariant.Int))
-                cs_fields.append(QgsField('culvert_shape', QVariant.String))
-                cs_fields.append(QgsField('culvert_diameter', QVariant.Double))
-                cs_fields.append(QgsField('culvert_width', QVariant.Double))
-                cs_fields.append(QgsField('culvert_height', QVariant.Double))
-                cs_fields.append(QgsField('culvert_upstream_invert', QVariant.Double))
-                cs_fields.append(QgsField('culvert_downstream_invert', QVariant.Double))
-                cs_fields.append(QgsField('culvert_length', QVariant.Double))
-                cs_fields.append(QgsField('culvert_weir_coeff', QVariant.Double))
-                cs_fields.append(QgsField('culvert_weir_sta_left', QVariant.Double))
-                cs_fields.append(QgsField('culvert_weir_sta_right', QVariant.Double))
-                cs_layer = QgsVectorLayer('LineStringZ?crs=EPSG:4326', 'cross_sections', 'memory')
-                cs_dp = cs_layer.dataProvider()
-                cs_dp.addAttributes(cs_fields)
-                cs_layer.updateFields()
-                feats = []
-                for r in examples['cross_sections']:
-                    f = QgsFeature()
-                    f.setFields(cs_layer.fields())
-                    try:
-                        f.setGeometry(QgsGeometry.fromWkt(r['geometry_wkt']))
-                    except Exception:
-                        pass
-                    f['river_station'] = r['river_station']
-                    f['left_bank_station'] = float(r['left_bank_station'])
-                    f['right_bank_station'] = float(r['right_bank_station'])
-                    f['n_lob'] = float(r['n_lob'])
-                    f['n_ch'] = float(r['n_ch'])
-                    f['n_rob'] = float(r['n_rob'])
-                    f['contraction_coeff'] = float(r['contraction_coeff'])
-                    f['expansion_coeff'] = float(r['expansion_coeff'])
-                    f['L_lob_to_next'] = float(r['L_lob_to_next'])
-                    f['L_ch_to_next'] = float(r['L_ch_to_next'])
-                    f['L_rob_to_next'] = float(r['L_rob_to_next'])
-                    f['culvert_code'] = int(r.get('culvert_code', 0))
-                    f['culvert_shape'] = str(r.get('culvert_shape', ''))
-                    f['culvert_diameter'] = float(r.get('culvert_diameter', 0.0))
-                    f['culvert_width'] = float(r.get('culvert_width', 0.0))
-                    f['culvert_height'] = float(r.get('culvert_height', 0.0))
-                    f['culvert_upstream_invert'] = float(r.get('culvert_upstream_invert', 0.0))
-                    f['culvert_downstream_invert'] = float(r.get('culvert_downstream_invert', 0.0))
-                    f['culvert_length'] = float(r.get('culvert_length', 0.0))
-                    f['culvert_weir_coeff'] = float(r.get('culvert_weir_coeff', 3.0))
-                    f['culvert_weir_sta_left'] = float(r.get('culvert_weir_sta_left', 0.0))
-                    f['culvert_weir_sta_right'] = float(r.get('culvert_weir_sta_right', 0.0))
-                    feats.append(f)
-                cs_dp.addFeatures(feats)
-
-                opts = QgsVectorFileWriter.SaveVectorOptions()
-                opts.driverName = 'GPKG'
-                opts.fileEncoding = 'UTF-8'
-                opts.layerName = 'cross_sections'
-                QgsVectorFileWriter.writeAsVectorFormatV2(cs_layer, gpkg_path, transform_ctx, opts)
-
-                # centerline
-                cl_layer = QgsVectorLayer('LineString?crs=EPSG:4326', 'centerline', 'memory')
-                cl_dp = cl_layer.dataProvider()
+            # cross_sections layer
+            cs_fields = QgsFields()
+            cs_fields.append(QgsField('river_station', QVariant.String))
+            cs_fields.append(QgsField('left_bank_station', QVariant.Double))
+            cs_fields.append(QgsField('right_bank_station', QVariant.Double))
+            cs_fields.append(QgsField('n_lob', QVariant.Double))
+            cs_fields.append(QgsField('n_ch', QVariant.Double))
+            cs_fields.append(QgsField('n_rob', QVariant.Double))
+            cs_fields.append(QgsField('contraction_coeff', QVariant.Double))
+            cs_fields.append(QgsField('expansion_coeff', QVariant.Double))
+            cs_fields.append(QgsField('L_lob_to_next', QVariant.Double))
+            cs_fields.append(QgsField('L_ch_to_next', QVariant.Double))
+            cs_fields.append(QgsField('L_rob_to_next', QVariant.Double))
+            cs_fields.append(QgsField('culvert_code', QVariant.Int))
+            cs_fields.append(QgsField('culvert_shape', QVariant.String))
+            cs_fields.append(QgsField('culvert_diameter', QVariant.Double))
+            cs_fields.append(QgsField('culvert_width', QVariant.Double))
+            cs_fields.append(QgsField('culvert_height', QVariant.Double))
+            cs_fields.append(QgsField('culvert_upstream_invert', QVariant.Double))
+            cs_fields.append(QgsField('culvert_downstream_invert', QVariant.Double))
+            cs_fields.append(QgsField('culvert_length', QVariant.Double))
+            cs_fields.append(QgsField('culvert_weir_coeff', QVariant.Double))
+            cs_fields.append(QgsField('culvert_weir_sta_left', QVariant.Double))
+            cs_fields.append(QgsField('culvert_weir_sta_right', QVariant.Double))
+            cs_layer = QgsVectorLayer('LineStringZ?crs=EPSG:4326', 'cross_sections', 'memory')
+            cs_dp = cs_layer.dataProvider()
+            cs_dp.addAttributes(cs_fields)
+            cs_layer.updateFields()
+            feats = []
+            for r in examples['cross_sections']:
                 f = QgsFeature()
+                f.setFields(cs_layer.fields())
                 try:
-                    f.setGeometry(QgsGeometry.fromWkt(examples['centerline'][0]['geometry_wkt']))
+                    f.setGeometry(QgsGeometry.fromWkt(r['geometry_wkt']))
                 except Exception:
                     pass
-                cl_dp.addFeatures([f])
-                opts.layerName = 'centerline'
-                QgsVectorFileWriter.writeAsVectorFormatV2(cl_layer, gpkg_path, transform_ctx, opts)
+                f['river_station'] = r['river_station']
+                f['left_bank_station'] = float(r['left_bank_station'])
+                f['right_bank_station'] = float(r['right_bank_station'])
+                f['n_lob'] = float(r['n_lob'])
+                f['n_ch'] = float(r['n_ch'])
+                f['n_rob'] = float(r['n_rob'])
+                f['contraction_coeff'] = float(r['contraction_coeff'])
+                f['expansion_coeff'] = float(r['expansion_coeff'])
+                f['L_lob_to_next'] = float(r['L_lob_to_next'])
+                f['L_ch_to_next'] = float(r['L_ch_to_next'])
+                f['L_rob_to_next'] = float(r['L_rob_to_next'])
+                f['culvert_code'] = int(r.get('culvert_code', 0))
+                f['culvert_shape'] = str(r.get('culvert_shape', ''))
+                f['culvert_diameter'] = float(r.get('culvert_diameter', 0.0))
+                f['culvert_width'] = float(r.get('culvert_width', 0.0))
+                f['culvert_height'] = float(r.get('culvert_height', 0.0))
+                f['culvert_upstream_invert'] = float(r.get('culvert_upstream_invert', 0.0))
+                f['culvert_downstream_invert'] = float(r.get('culvert_downstream_invert', 0.0))
+                f['culvert_length'] = float(r.get('culvert_length', 0.0))
+                f['culvert_weir_coeff'] = float(r.get('culvert_weir_coeff', 3.0))
+                f['culvert_weir_sta_left'] = float(r.get('culvert_weir_sta_left', 0.0))
+                f['culvert_weir_sta_right'] = float(r.get('culvert_weir_sta_right', 0.0))
+                feats.append(f)
+            cs_dp.addFeatures(feats)
 
-                # boundary conditions
-                bd_layer = QgsVectorLayer('Point?crs=EPSG:4326', 'boundary_conditions', 'memory')
-                bd_dp = bd_layer.dataProvider()
-                bd_fields = QgsFields()
-                bd_fields.append(QgsField('flow_cfs', QVariant.Double))
-                bd_fields.append(QgsField('boundary_type', QVariant.String))
-                bd_fields.append(QgsField('boundary_value', QVariant.Double))
-                bd_dp.addAttributes(bd_fields)
-                bd_layer.updateFields()
-                bf = QgsFeature()
-                bf.setFields(bd_layer.fields())
-                try:
-                    bf.setGeometry(QgsGeometry.fromWkt(examples['boundary_conditions'][0]['geometry_wkt']))
-                except Exception:
-                    pass
-                bf['flow_cfs'] = float(examples['boundary_conditions'][0]['flow_cfs'])
-                bf['boundary_type'] = examples['boundary_conditions'][0]['boundary_type']
-                bf['boundary_value'] = float(examples['boundary_conditions'][0]['boundary_value'])
-                bd_dp.addFeatures([bf])
-                opts.layerName = 'boundary_conditions'
-                QgsVectorFileWriter.writeAsVectorFormatV2(bd_layer, gpkg_path, transform_ctx, opts)
+            opts = QgsVectorFileWriter.SaveVectorOptions()
+            opts.driverName = 'GPKG'
+            opts.fileEncoding = 'UTF-8'
+            opts.layerName = 'cross_sections'
+            QgsVectorFileWriter.writeAsVectorFormatV2(cs_layer, gpkg_path, transform_ctx, opts)
 
-                wrote_ok = True
-            except Exception as e:
-                ui_warning(self, 'QGIS write failed', f'Could not write GeoPackage via QGIS API: {e}')
+            # centerline
+            cl_layer = QgsVectorLayer('LineString?crs=EPSG:4326', 'centerline', 'memory')
+            cl_dp = cl_layer.dataProvider()
+            f = QgsFeature()
+            try:
+                f.setGeometry(QgsGeometry.fromWkt(examples['centerline'][0]['geometry_wkt']))
+            except Exception:
+                pass
+            cl_dp.addFeatures([f])
+            opts.layerName = 'centerline'
+            QgsVectorFileWriter.writeAsVectorFormatV2(cl_layer, gpkg_path, transform_ctx, opts)
+
+            # boundary conditions
+            bd_layer = QgsVectorLayer('Point?crs=EPSG:4326', 'boundary_conditions', 'memory')
+            bd_dp = bd_layer.dataProvider()
+            bd_fields = QgsFields()
+            bd_fields.append(QgsField('flow_cfs', QVariant.Double))
+            bd_fields.append(QgsField('boundary_type', QVariant.String))
+            bd_fields.append(QgsField('boundary_value', QVariant.Double))
+            bd_dp.addAttributes(bd_fields)
+            bd_layer.updateFields()
+            bf = QgsFeature()
+            bf.setFields(bd_layer.fields())
+            try:
+                bf.setGeometry(QgsGeometry.fromWkt(examples['boundary_conditions'][0]['geometry_wkt']))
+            except Exception:
+                pass
+            bf['flow_cfs'] = float(examples['boundary_conditions'][0]['flow_cfs'])
+            bf['boundary_type'] = examples['boundary_conditions'][0]['boundary_type']
+            bf['boundary_value'] = float(examples['boundary_conditions'][0]['boundary_value'])
+            bd_dp.addFeatures([bf])
+            opts.layerName = 'boundary_conditions'
+            QgsVectorFileWriter.writeAsVectorFormatV2(bd_layer, gpkg_path, transform_ctx, opts)
+
+            wrote_ok = True
+        except Exception as e:
+            ui_warning(self, 'QGIS write failed', f'Could not write GeoPackage via QGIS API: {e}')
 
         # Add saved layers to project
         if wrote_ok:
@@ -2644,191 +4008,12 @@ class BackwaterWidget(QtWidgets.QWidget):
         else:
             ui_warning(self, 'Failed', 'Could not write example GeoPackage')
 
-
-def main():
-    if not HAVE_QT:
-        print('PyQt5 not available. Install PyQt5 to use the Qt GUI.')
-        return
-    # When run standalone, create a QApplication and show the main window.
-    app = QtWidgets.QApplication.instance()
-    created_app = False
-    if app is None:
-        app = QtWidgets.QApplication(sys.argv)
-        created_app = True
-    # Prefer the full MainWindow if present (menus/toolbars); otherwise use the
-    # lightweight BackwaterWidget so the module can run even if class order
-    # differs due to editing.
-    if 'MainWindow' in globals():
-        w = MainWindow()
-    else:
-        w = BackwaterWidget()
-    w.show()
-    if created_app:
-        sys.exit(app.exec_())
-
-
-if __name__ == '__main__':
-    main()
-
-
-def create_backwater_widget(parent=None):
-    """Create and return the BackwaterWidget instance for embedding in host apps.
-
-    In QGIS plugin code you can call `create_backwater_widget()` and add the
-    returned widget to a dock or layout. Do NOT call this from code that
-    already creates a QApplication unless you intend to show the window.
-    """
-    if not HAVE_QT:
-        raise RuntimeError('PyQt5 not available')
-    w = BackwaterWidget(parent)
-    if parent is not None:
-        try:
-            w.setParent(parent)
-        except Exception:
-            pass
-    return w
-
-
 def create_backwater_dockwidget(parent=None, title='Backwater'):
     """Create a QDockWidget containing the backwater UI suitable for adding
     to a QGIS main window via `addDockWidget()`.
     """
-    if not HAVE_QT:
-        raise RuntimeError('PyQt5 not available')
     dock = QtWidgets.QDockWidget(title, parent)
-    # Use a MainWindow as the dock's widget to preserve menus/toolbars if desired.
+    dock.setObjectName('BackwaterMainDock')
     widget = BackwaterWidget(parent)
     dock.setWidget(widget)
     return dock
-
-
-class MainWindow(QtWidgets.QMainWindow):
-    """Thin QMainWindow wrapper that builds menus/toolbars/status bar and
-    embeds the `BackwaterWidget` so the core UI can also be used as a plain
-    widget (for QGIS plugin embedding).
-    """
-    def __init__(self, parent=None):
-        super().__init__(parent)
-        self.setWindowTitle('Backwater — Qt GUI')
-        self.resize(1100, 700)
-        # central widget
-        self.central = BackwaterWidget(self)
-        self.setCentralWidget(self.central)
-        # create status bar first so central widget can reference it
-        self._create_status_bar()
-        # let central widget update status_label attribute
-        try:
-            self.central.status_label = self.status_label
-        except Exception:
-            pass
-        # create menus/toolbars and wire to central widget methods
-        self._create_menus_and_toolbars()
-
-    def _create_status_bar(self):
-        sb = QtWidgets.QStatusBar()
-        self.setStatusBar(sb)
-        self.status_label = QtWidgets.QLabel('Ready')
-        sb.addPermanentWidget(self.status_label)
-
-    def _create_menus_and_toolbars(self):
-        menubar = self.menuBar()
-
-        # File menu
-        file_menu = menubar.addMenu('File')
-        new_act = QtWidgets.QAction('New', self)
-        new_act.setShortcut('Ctrl+N')
-        new_act.triggered.connect(self.central.on_new_model)
-        file_menu.addAction(new_act)
-
-        open_act = QtWidgets.QAction('Open...', self)
-        open_act.setShortcut('Ctrl+O')
-        open_act.triggered.connect(self.central.on_load)
-        file_menu.addAction(open_act)
-
-        save_act = QtWidgets.QAction('Save...', self)
-        save_act.setShortcut('Ctrl+S')
-        save_act.triggered.connect(self.central.on_save_model)
-        file_menu.addAction(save_act)
-
-        save_gpkg_act = QtWidgets.QAction('Save to GeoPackage...', self)
-        save_gpkg_act.triggered.connect(self.central.on_save_geopackage)
-        # Enable/disable based on runtime detection in the central widget
-        try:
-            enabled = bool(getattr(self.central, 'can_gpkg', False))
-            save_gpkg_act.setEnabled(enabled)
-            if not enabled:
-                save_gpkg_act.setToolTip('Disabled: geopandas/fiona/shapely not installed')
-        except Exception:
-            pass
-        file_menu.addAction(save_gpkg_act)
-
-        file_menu.addSeparator()
-        exit_act = QtWidgets.QAction('Exit', self)
-        exit_act.setShortcut('Ctrl+Q')
-        exit_act.triggered.connect(self.close)
-        file_menu.addAction(exit_act)
-
-        # Edit menu
-        edit_menu = menubar.addMenu('Edit')
-        undo_act = QtWidgets.QAction('Undo', self)
-        undo_act.setShortcut('Ctrl+Z')
-        undo_act.triggered.connect(self.central.undo)
-        edit_menu.addAction(undo_act)
-
-        redo_act = QtWidgets.QAction('Redo', self)
-        redo_act.setShortcut('Ctrl+Y')
-        redo_act.triggered.connect(self.central.redo)
-        edit_menu.addAction(redo_act)
-
-        # View menu
-        view_menu = menubar.addMenu('View')
-        detach_act = QtWidgets.QAction('Detach Plot', self)
-        detach_act.triggered.connect(self.central.detach_plot)
-        view_menu.addAction(detach_act)
-
-        # Help menu
-        help_menu = menubar.addMenu('Help')
-        about_act = QtWidgets.QAction('About', self)
-        about_act.triggered.connect(self.central._show_about)
-        help_menu.addAction(about_act)
-
-        # Main toolbar
-        toolbar = self.addToolBar('Main')
-        toolbar.setMovable(True)
-        toolbar.addAction(new_act)
-        toolbar.addAction(open_act)
-        toolbar.addAction(save_act)
-        toolbar.addSeparator()
-        run_act = QtWidgets.QAction('Run', self)
-        run_act.setShortcut('F5')
-        run_act.triggered.connect(self.central.on_run)
-        toolbar.addAction(run_act)
-        toolbar.addSeparator()
-        toolbar.addAction(undo_act)
-        toolbar.addAction(redo_act)
-        toolbar.addSeparator()
-        toolbar.addAction(detach_act)
-        toolbar.addSeparator()
-        # View mode actions
-        geom_view_act = QtWidgets.QAction('Geometry Editor', self)
-        geom_view_act.setCheckable(True)
-        geom_view_act.triggered.connect(lambda: self.central.set_view_mode('geometry'))
-        profile_view_act = QtWidgets.QAction('Profile Plot', self)
-        profile_view_act.setCheckable(True)
-        profile_view_act.triggered.connect(lambda: self.central.set_view_mode('profile'))
-        section_view_act = QtWidgets.QAction('Cross-section Plot', self)
-        section_view_act.setCheckable(True)
-        section_view_act.triggered.connect(lambda: self.central.set_view_mode('section'))
-        toolbar.addAction(geom_view_act)
-        toolbar.addAction(profile_view_act)
-        toolbar.addAction(section_view_act)
-        # action group so only one is checked
-        ag = QtWidgets.QActionGroup(self)
-        ag.addAction(geom_view_act); ag.addAction(profile_view_act); ag.addAction(section_view_act)
-        geom_view_act.setChecked(True)
-
-        # small toolbar for quick-save plot
-        plot_tb = self.addToolBar('Plot')
-        saveplot_act = QtWidgets.QAction('Save Plot', self)
-        saveplot_act.triggered.connect(self.central.on_save_plot)
-        plot_tb.addAction(saveplot_act)

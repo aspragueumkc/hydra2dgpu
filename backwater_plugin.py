@@ -1,15 +1,13 @@
 """QGIS plugin glue for Backwater solver UI.
 
 This plugin creates a dockable UI by embedding the existing Backwater
-widget. It also exposes a simple action to extract cross-section geometry
-from a selected 3D polyline feature and populate the geometry editor.
-
+widget.
 Note: This code is intended to be loaded inside QGIS where `iface` is
 available. When running outside QGIS it will not function.
 """
 import os
 import sys
-from qgis.PyQt.QtWidgets import QAction, QDockWidget
+from qgis.PyQt.QtWidgets import QAction, QMenu
 from qgis.PyQt.QtCore import Qt
 from qgis.core import Qgis
 
@@ -37,11 +35,6 @@ class BackwaterQgisPlugin:
                 except Exception:
                     create_backwater_dockwidget = None
 
-            try:
-                from .qgis_utils import extract_xs_from_line
-            except Exception:
-                extract_xs_from_line = None
-
             # ensure the plugin ui_adapter uses the QGIS iface
             try:
                 from . import ui_adapter
@@ -56,35 +49,30 @@ class BackwaterQgisPlugin:
                     pass
 
             self._create_dock = create_backwater_dockwidget
-            self._extract_fn = extract_xs_from_line
         except Exception:
             # If imports fail in unexpected ways, allow plugin to load but
             # actions will report errors at runtime.
             self._create_dock = None
-            self._extract_fn = None
 
         self.dock = None
         self.action = None
-        self.extract_action = None
+        self.main_menu = None
+        self.main_menu_actions = []
+        self._owns_main_menu = False
+        self._plugin_menu_path = '&Backwater'
 
     def initGui(self):
-        self.action = QAction('Backwater', self.iface.mainWindow())
+        self.action = QAction('Open Backwater Panel', self.iface.mainWindow())
         self.action.triggered.connect(self.run)
         self.iface.addToolBarIcon(self.action)
-        self.iface.addPluginToMenu('&Backwater', self.action)
-
-        self.extract_action = QAction('Extract cross-section from selected line', self.iface.mainWindow())
-        self.extract_action.triggered.connect(self.extract_from_selected)
-        self.iface.addToolBarIcon(self.extract_action)
-        self.iface.addPluginToMenu('&Backwater', self.extract_action)
+        self.iface.addPluginToMenu(self._plugin_menu_path, self.action)
+        self._install_main_menu_bar_menu()
 
     def unload(self):
         if self.action:
-            self.iface.removePluginMenu('&Backwater', self.action)
+            self.iface.removePluginMenu(self._plugin_menu_path, self.action)
             self.iface.removeToolBarIcon(self.action)
-        if self.extract_action:
-            self.iface.removePluginMenu('&Backwater', self.extract_action)
-            self.iface.removeToolBarIcon(self.extract_action)
+        self._remove_main_menu_bar_menu()
         if self.dock:
             try:
                 self.iface.removeDockWidget(self.dock)
@@ -97,47 +85,155 @@ class BackwaterQgisPlugin:
             return
         if not self.dock:
             self.dock = self._create_dock(parent=self.iface.mainWindow(), title='Backwater')
-            self.iface.addDockWidget(Qt.RightDockWidgetArea, self.dock)
+            try:
+                self.dock.setObjectName('BackwaterMainDock')
+            except Exception:
+                pass
+            self.iface.addDockWidget(Qt.DockWidgetArea.RightDockWidgetArea, self.dock)
+            try:
+                widget = self.dock.widget()
+                if widget is not None and hasattr(widget, 'set_dock_host_window'):
+                    widget.set_dock_host_window(self.iface.mainWindow())
+            except Exception:
+                pass
         self.dock.show()
         self.dock.raise_()
+        self._sync_main_menu_state()
 
-    def extract_from_selected(self):
-        layer = self.iface.activeLayer()
-        if layer is None:
-            self.iface.messageBar().pushMessage('Backwater', 'No active layer', level=Qgis.Warning)
-            return
-        # get first selected feature
-        sel = layer.selectedFeatureIds() if hasattr(layer, 'selectedFeatureIds') else [f.id() for f in layer.selectedFeatures()]
-        if not sel:
-            self.iface.messageBar().pushMessage('Backwater', 'No feature selected', level=Qgis.Warning)
-            return
-        fid = sel[0]
-        feat = layer.getFeature(fid)
-        if self._extract_fn is None:
-            self.iface.messageBar().pushMessage('Backwater', 'Extraction function not available', level=Qgis.Critical)
-            return
-        geom = feat.geometry()
-        pts = self._extract_fn(geom, samples=64)
-        if not pts:
-            self.iface.messageBar().pushMessage('Backwater', 'No geometry extracted', level=Qgis.Warning)
-            return
-        # ensure UI is shown
-        if not self.dock:
-            self.run()
-        widget = self.dock.widget()
-        if widget is None:
-            self.iface.messageBar().pushMessage('Backwater', 'No widget available', level=Qgis.Critical)
-            return
-        # populate geometry table (geometry editor page)
+    def _menu_bar(self):
         try:
-            widget.geom_table.setRowCount(0)
-            for st, z in pts:
-                r = widget.geom_table.rowCount()
-                widget.geom_table.insertRow(r)
-                from qgis.PyQt.QtWidgets import QTableWidgetItem
-                widget.geom_table.setItem(r, 0, QTableWidgetItem(f"{st:.3f}"))
-                widget.geom_table.setItem(r, 1, QTableWidgetItem(f"{z:.3f}"))
-            widget.set_view_mode('geometry')
-            self.iface.messageBar().pushMessage('Backwater', f'Extracted {len(pts)} points', level=Qgis.Info)
-        except Exception as e:
-            self.iface.messageBar().pushMessage('Backwater', f'Populate failed: {e}', level=Qgis.Critical)
+            mw = self.iface.mainWindow()
+            return mw.menuBar() if mw is not None else None
+        except Exception:
+            return None
+
+    def _find_backwater_main_menu(self):
+        menu_bar = self._menu_bar()
+        if menu_bar is None:
+            return None
+        for action in menu_bar.actions():
+            try:
+                menu = action.menu()
+            except Exception:
+                menu = None
+            if menu is None:
+                continue
+            try:
+                if menu.objectName() == 'BackwaterMainMenu':
+                    return menu
+            except Exception:
+                pass
+            try:
+                if str(menu.title()).replace('&', '').strip().lower() == 'backwater':
+                    return menu
+            except Exception:
+                pass
+        return None
+
+    def _invoke_widget_method(self, method_name: str, ensure_dock: bool = True):
+        if ensure_dock and self.dock is None:
+            self.run()
+        widget = self.dock.widget() if self.dock is not None else None
+        if widget is None:
+            self.iface.messageBar().pushMessage(
+                'Backwater',
+                'Backwater panel is not available.',
+                level=Qgis.Warning,
+                duration=6,
+            )
+            return
+        fn = getattr(widget, method_name, None)
+        if not callable(fn):
+            self.iface.messageBar().pushMessage(
+                'Backwater',
+                f'Action not available: {method_name}',
+                level=Qgis.Warning,
+                duration=6,
+            )
+            return
+        try:
+            fn()
+        except Exception as exc:
+            self.iface.messageBar().pushMessage(
+                'Backwater',
+                f'{method_name} failed: {exc}',
+                level=Qgis.Critical,
+                duration=8,
+            )
+
+    def _sync_main_menu_state(self):
+        can_open = bool(self._create_dock)
+        for action in self.main_menu_actions:
+            try:
+                action.setEnabled(can_open)
+            except Exception:
+                pass
+
+    def _install_main_menu_bar_menu(self):
+        menu_bar = self._menu_bar()
+        if menu_bar is None:
+            return
+
+        menu = self._find_backwater_main_menu()
+        if menu is None:
+            menu = QMenu('Backwater', menu_bar)
+            menu.setObjectName('BackwaterMainMenu')
+            menu_bar.addMenu(menu)
+            self._owns_main_menu = True
+        else:
+            self._owns_main_menu = False
+
+        self.main_menu = menu
+
+        action_specs = [
+            ('BackwaterMenuOpenPanelAction', 'Open Backwater Panel', lambda: self.run()),
+            ('BackwaterMenuCreateModelAction', 'Create New Model GeoPackage...', lambda: self._invoke_widget_method('on_new_model')),
+            ('BackwaterMenuLoadModelAction', 'Load Model GeoPackage...', lambda: self._invoke_widget_method('on_menu_open_model')),
+            ('BackwaterMenuSaveModelAction', 'Save Model GeoPackage As...', lambda: self._invoke_widget_method('on_save_geopackage')),
+            ('BackwaterMenuRunAction', 'Run Model', lambda: self._invoke_widget_method('on_run')),
+            ('BackwaterMenuResultsPlotAction', 'Open Results Plot', lambda: self._invoke_widget_method('open_results_plot')),
+            ('BackwaterMenuResultsTableAction', 'Open Results Table', lambda: self._invoke_widget_method('open_results_table')),
+            ('BackwaterMenuToggleEditingAction', 'Enable/Disable Layer Editing', lambda: self._invoke_widget_method('on_toggle_geopackage_editing')),
+            ('BackwaterMenuSaveEditsAction', 'Save Layer Edits', lambda: self._invoke_widget_method('on_save_layer_edits')),
+        ]
+
+        existing = {a.objectName(): a for a in menu.actions() if a is not None}
+        for object_name, _text, _cb in action_specs:
+            stale = existing.get(object_name)
+            if stale is not None:
+                menu.removeAction(stale)
+
+        self.main_menu_actions = []
+        for idx, (object_name, text, callback) in enumerate(action_specs):
+            if idx in (1, 4, 7):
+                menu.addSeparator()
+            action = QAction(text, self.iface.mainWindow())
+            action.setObjectName(object_name)
+            action.triggered.connect(callback)
+            menu.addAction(action)
+            self.main_menu_actions.append(action)
+
+        self._sync_main_menu_state()
+
+    def _remove_main_menu_bar_menu(self):
+        menu = self.main_menu
+        if menu is None:
+            return
+
+        for action in list(self.main_menu_actions):
+            try:
+                menu.removeAction(action)
+            except Exception:
+                pass
+        self.main_menu_actions = []
+
+        if self._owns_main_menu:
+            try:
+                menu_bar = self._menu_bar()
+                if menu_bar is not None:
+                    menu_bar.removeAction(menu.menuAction())
+            except Exception:
+                pass
+
+        self.main_menu = None
+        self._owns_main_menu = False

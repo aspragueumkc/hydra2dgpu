@@ -27,6 +27,19 @@ def _resolve_raster_name(raster_ref):
 
 @qgsfunction(args="auto", group="Custom")
 def set_z_from_raster_expr(geom, raster_ref, band=1, keep_existing_if_nodata=True, feature=None, parent=None):
+    return _set_z_from_raster_impl(geom, raster_ref, band, keep_existing_if_nodata)
+
+
+def set_z_from_raster_expr_py(geom, raster_ref, band=1, keep_existing_if_nodata=True):
+    """Plain Python callable for plugin code paths.
+
+    QGIS wraps functions decorated with @qgsfunction in a QgsPyExpressionFunction,
+    which is not directly callable from plugin Python code in some contexts.
+    """
+    return _set_z_from_raster_impl(geom, raster_ref, band, keep_existing_if_nodata)
+
+
+def _set_z_from_raster_impl(geom, raster_ref, band=1, keep_existing_if_nodata=True):
     """
     set_z_from_raster_expr($geometry, 'USGS_1m_DEM_ft_callaway', 1, true)
 

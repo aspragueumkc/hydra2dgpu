@@ -1,0 +1,130 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<ui version="4.0">
+ <class>BackwaterCrossSectionsForm</class>
+ <widget class="QDialog" name="BackwaterCrossSectionsForm">
+  <property name="geometry">
+   <rect>
+    <x>0</x>
+    <y>0</y>
+    <width>640</width>
+    <height>820</height>
+   </rect>
+  </property>
+  <property name="windowTitle">
+   <string>Backwater Cross Section</string>
+  </property>
+  <layout class="QVBoxLayout" name="verticalLayout">
+   <item>
+    <widget class="QLabel" name="label_header">
+     <property name="text">
+      <string>Cross Section Form</string>
+     </property>
+     <property name="styleSheet">
+      <string notr="true">font-size: 14pt; font-weight: 700; color: #1f3d5a;</string>
+     </property>
+    </widget>
+   </item>
+   <item>
+    <layout class="QHBoxLayout" name="actionButtonsLayout">
+     <item>
+      <widget class="QPushButton" name="btn_select_terrain">
+       <property name="text">
+        <string>Select Terrain Raster</string>
+       </property>
+      </widget>
+     </item>
+     <item>
+      <widget class="QPushButton" name="btn_update_z">
+       <property name="text">
+        <string>Update Z From Terrain</string>
+       </property>
+      </widget>
+     </item>
+    </layout>
+   </item>
+   <item>
+    <widget class="Line" name="line">
+     <property name="orientation">
+      <enum>Qt::Horizontal</enum>
+     </property>
+    </widget>
+   </item>
+   <item>
+    <widget class="QScrollArea" name="scrollArea">
+     <property name="widgetResizable">
+      <bool>true</bool>
+     </property>
+     <widget class="QWidget" name="scrollAreaWidgetContents">
+      <property name="geometry">
+       <rect>
+        <x>0</x>
+        <y>0</y>
+        <width>612</width>
+        <height>1200</height>
+       </rect>
+      </property>
+      <layout class="QFormLayout" name="formLayout">
+       <property name="labelAlignment">
+        <set>Qt::AlignRight|Qt::AlignTrailing|Qt::AlignVCenter</set>
+       </property>
+       <item row="0" column="0"><widget class="QLabel" name="lbl_centerline_id"><property name="text"><string>centerline_id</string></property></widget></item>
+       <item row="0" column="1"><widget class="QLineEdit" name="centerline_id"/></item>
+       <item row="1" column="0"><widget class="QLabel" name="lbl_river_station"><property name="text"><string>river_station</string></property></widget></item>
+       <item row="1" column="1"><widget class="QLineEdit" name="river_station"/></item>
+       <item row="2" column="0"><widget class="QLabel" name="lbl_left_bank_station"><property name="text"><string>left_bank_station</string></property></widget></item>
+       <item row="2" column="1"><widget class="QLineEdit" name="left_bank_station"/></item>
+       <item row="3" column="0"><widget class="QLabel" name="lbl_right_bank_station"><property name="text"><string>right_bank_station</string></property></widget></item>
+       <item row="3" column="1"><widget class="QLineEdit" name="right_bank_station"/></item>
+       <item row="4" column="0"><widget class="QLabel" name="lbl_n_lob"><property name="text"><string>n_lob</string></property></widget></item>
+       <item row="4" column="1"><widget class="QLineEdit" name="n_lob"/></item>
+       <item row="5" column="0"><widget class="QLabel" name="lbl_n_ch"><property name="text"><string>n_ch</string></property></widget></item>
+       <item row="5" column="1"><widget class="QLineEdit" name="n_ch"/></item>
+       <item row="6" column="0"><widget class="QLabel" name="lbl_n_rob"><property name="text"><string>n_rob</string></property></widget></item>
+       <item row="6" column="1"><widget class="QLineEdit" name="n_rob"/></item>
+       <item row="7" column="0"><widget class="QLabel" name="lbl_contraction_coeff"><property name="text"><string>contraction_coeff</string></property></widget></item>
+       <item row="7" column="1"><widget class="QLineEdit" name="contraction_coeff"/></item>
+       <item row="8" column="0"><widget class="QLabel" name="lbl_expansion_coeff"><property name="text"><string>expansion_coeff</string></property></widget></item>
+       <item row="8" column="1"><widget class="QLineEdit" name="expansion_coeff"/></item>
+       <item row="9" column="0"><widget class="QLabel" name="lbl_L_lob_to_next"><property name="text"><string>L_lob_to_next</string></property></widget></item>
+       <item row="9" column="1"><widget class="QLineEdit" name="L_lob_to_next"/></item>
+       <item row="10" column="0"><widget class="QLabel" name="lbl_L_ch_to_next"><property name="text"><string>L_ch_to_next</string></property></widget></item>
+       <item row="10" column="1"><widget class="QLineEdit" name="L_ch_to_next"/></item>
+       <item row="11" column="0"><widget class="QLabel" name="lbl_L_rob_to_next"><property name="text"><string>L_rob_to_next</string></property></widget></item>
+       <item row="11" column="1"><widget class="QLineEdit" name="L_rob_to_next"/></item>
+       <item row="12" column="0"><widget class="QLabel" name="lbl_culvert_code"><property name="text"><string>culvert_code</string></property></widget></item>
+       <item row="12" column="1"><widget class="QLineEdit" name="culvert_code"/></item>
+       <item row="13" column="0"><widget class="QLabel" name="lbl_culvert_shape"><property name="text"><string>culvert_shape</string></property></widget></item>
+       <item row="13" column="1">
+        <widget class="QComboBox" name="culvert_shape">
+         <item><property name="text"><string></string></property></item>
+         <item><property name="text"><string>circular</string></property></item>
+         <item><property name="text"><string>rect</string></property></item>
+        </widget>
+       </item>
+       <item row="14" column="0"><widget class="QLabel" name="lbl_culvert_diameter"><property name="text"><string>culvert_diameter</string></property></widget></item>
+       <item row="14" column="1"><widget class="QLineEdit" name="culvert_diameter"/></item>
+       <item row="15" column="0"><widget class="QLabel" name="lbl_culvert_width"><property name="text"><string>culvert_width</string></property></widget></item>
+       <item row="15" column="1"><widget class="QLineEdit" name="culvert_width"/></item>
+       <item row="16" column="0"><widget class="QLabel" name="lbl_culvert_height"><property name="text"><string>culvert_height</string></property></widget></item>
+       <item row="16" column="1"><widget class="QLineEdit" name="culvert_height"/></item>
+       <item row="17" column="0"><widget class="QLabel" name="lbl_culvert_upstream_invert"><property name="text"><string>culvert_upstream_invert</string></property></widget></item>
+       <item row="17" column="1"><widget class="QLineEdit" name="culvert_upstream_invert"/></item>
+       <item row="18" column="0"><widget class="QLabel" name="lbl_culvert_downstream_invert"><property name="text"><string>culvert_downstream_invert</string></property></widget></item>
+       <item row="18" column="1"><widget class="QLineEdit" name="culvert_downstream_invert"/></item>
+       <item row="19" column="0"><widget class="QLabel" name="lbl_culvert_length"><property name="text"><string>culvert_length</string></property></widget></item>
+       <item row="19" column="1"><widget class="QLineEdit" name="culvert_length"/></item>
+       <item row="20" column="0"><widget class="QLabel" name="lbl_culvert_weir_coeff"><property name="text"><string>culvert_weir_coeff</string></property></widget></item>
+       <item row="20" column="1"><widget class="QLineEdit" name="culvert_weir_coeff"/></item>
+       <item row="21" column="0"><widget class="QLabel" name="lbl_culvert_weir_sta_left"><property name="text"><string>culvert_weir_sta_left</string></property></widget></item>
+       <item row="21" column="1"><widget class="QLineEdit" name="culvert_weir_sta_left"/></item>
+       <item row="22" column="0"><widget class="QLabel" name="lbl_culvert_weir_sta_right"><property name="text"><string>culvert_weir_sta_right</string></property></widget></item>
+       <item row="22" column="1"><widget class="QLineEdit" name="culvert_weir_sta_right"/></item>
+      </layout>
+     </widget>
+    </widget>
+   </item>
+  </layout>
+ </widget>
+ <resources/>
+ <connections/>
+</ui>

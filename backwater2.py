@@ -28,11 +28,12 @@
         or normal depth:
         python backwater.py --input model.gpkg --ds-bc normal_depth --ds-value 0.0005
 
-    GeoPackage format with layers: cross_sections, centerline (optional), boundary_conditions.
+    GeoPackage format with layers: cross_sections, centerline, boundary_conditions.
 -----------------------------------------------------------------------------
 """
 
 import argparse
+from datetime import datetime, timezone
 import importlib
 import math
 import os
@@ -41,20 +42,6 @@ import sys
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import List, Tuple, Optional, Dict
-
-# Optional GUI / plotting
-try:
-    import tkinter as tk
-    from tkinter import ttk, filedialog, messagebox
-    HAVE_TK = True
-except Exception:
-    HAVE_TK = False
-
-try:
-    import matplotlib.pyplot as plt
-    HAVE_MPL = True
-except Exception:
-    HAVE_MPL = False
 
 # Optional numeric accelerators
 try:
@@ -807,24 +794,24 @@ def irregular_weir_flow_from_geometry(
 # Culvert inlet control (FHWA HEC-5 equations)
 # ---------------------------------------------------------------------------
 
-def apply_culvert_control(xs_culvert: CrossSection, z_invert: float, 
-                          wse_headwater: float, wse_tailwater: float, 
+def apply_culvert_control(xs_culvert: CrossSection, z_invert: float,
+                          wse_headwater: float, wse_tailwater: float,
                           Q_target: float) -> Tuple[float, bool, str]:
     """
     Apply both inlet and outlet control to limit flow (FHWA HEC-5 equations).
-    
+
     Computes:
     - Inlet control: max flow based on headwater depth
     - Outlet control: max flow based on tailwater submergence and friction losses
     - Returns the minimum (most restrictive) control as the culvert-limited flow
-    
+
     Args:
         xs_culvert: CrossSection with culvert properties
         z_invert: Invert elevation at culvert (ft)
         wse_headwater: Water surface elevation at culvert inlet (ft)
         wse_tailwater: Water surface elevation at culvert outlet (ft)
         Q_target: Target flow rate (cfs)
-    
+
     Returns:
         (Q_controlled, culvert_is_restricting, control_type)
         Q_controlled: Culvert-limited flow (cfs)
@@ -833,15 +820,15 @@ def apply_culvert_control(xs_culvert: CrossSection, z_invert: float,
     """
     if not HAVE_CULVERT or not xs_culvert.has_culvert():
         return Q_target, False, 'none'
-    
+
     try:
         # Culvert geometry
         culvert_slope = xs_culvert.culvert_slope()
         z_inlet = xs_culvert.culvert_upstream_invert if xs_culvert.culvert_upstream_invert != 0.0 else z_invert
         z_outlet = xs_culvert.culvert_downstream_invert if xs_culvert.culvert_downstream_invert != 0.0 else z_inlet
-        
+
         if xs_culvert.culvert_shape == 'circular':
-            xsect = CircularXsect(diameter_ft=xs_culvert.culvert_diameter, 
+            xsect = CircularXsect(diameter_ft=xs_culvert.culvert_diameter,
                                   culvert_code=xs_culvert.culvert_code)
         elif xs_culvert.culvert_shape == 'rect':
             xsect = RectangularXsect(width_ft=xs_culvert.culvert_width,
@@ -849,20 +836,20 @@ def apply_culvert_control(xs_culvert: CrossSection, z_invert: float,
                                      culvert_code=xs_culvert.culvert_code)
         else:
             return Q_target, False, 'none'
-        
+
         # INLET CONTROL calculation
         h_headwater = max(0.0, wse_headwater - z_inlet)
         q_inlet, _, _, _ = inlet_controlled_flow(xsect, culvert_slope, h_headwater)
-        
+
         # OUTLET CONTROL calculation (simplified version)
         # Outlet control is dominant when tailwater is high (submerged outlet)
         # In this case, flow is limited by normal/critical depth at outlet and friction losses
         h_tailwater = max(0.0, wse_tailwater - z_outlet)
-        
+
         # Simple outlet control: if tailwater is above outlet invert, check submergence
         q_outlet = Q_target  # Default: no outlet control
         is_submerged = h_tailwater > 0.0
-        
+
         if is_submerged:
             # Outlet is submerged; use tailwater as constraint
             # For a submerged outlet, apply a simple friction-based limit
@@ -875,7 +862,7 @@ def apply_culvert_control(xs_culvert: CrossSection, z_invert: float,
                 # Partially submerged; flow reduced proportionally
                 submergence_ratio = h_tailwater / xsect.yFull
                 q_outlet = Q_target * (1.0 - 0.3 * submergence_ratio)
-        
+
         # Select the more restrictive control
         if q_inlet < q_outlet:
             q_controlled = q_inlet
@@ -905,10 +892,10 @@ def apply_culvert_control(xs_culvert: CrossSection, z_invert: float,
             if q_weir > 0.0:
                 q_controlled += q_weir
                 control_type = f'{control_type}+weir'
-        
+
         culvert_is_restricting = q_controlled < Q_target
         return q_controlled, culvert_is_restricting, control_type
-        
+
     except Exception as e:
         # If culvert computation fails, proceed without culvert control
         print(f"WARNING: Culvert control calculation failed: {e}")
@@ -2155,13 +2142,378 @@ def load_input(path: str) -> ModelInput:
     return load_from_geopackage(path)
 
 
+def _qgis_profile_from_geometry(geom):
+    """Return station/elevation profile from QgsGeometry line feature."""
+    try:
+        from qgis.core import QgsWkbTypes
+    except Exception as exc:
+        raise ImportError('PyQGIS not available') from exc
+
+    if geom is None or geom.isEmpty():
+        return [], None
+
+    try:
+        verts = [v for v in geom.vertices()]
+    except Exception:
+        verts = []
+    if not verts:
+        return [], None
+
+    has_z = False
+    try:
+        has_z = QgsWkbTypes.hasZ(geom.wkbType())
+    except Exception:
+        has_z = False
+
+    profile = []
+    s = 0.0
+    prev = verts[0]
+    if has_z:
+        profile.append((0.0, float(prev.z())))
+    else:
+        profile.append((0.0, float(prev.y())))
+
+    for v in verts[1:]:
+        if has_z:
+            s += math.hypot(float(v.x()) - float(prev.x()), float(v.y()) - float(prev.y()))
+            z = float(v.z())
+        else:
+            s += abs(float(v.x()) - float(prev.x()))
+            z = float(v.y())
+        profile.append((float(s), float(z)))
+        prev = v
+
+    try:
+        centroid = geom.centroid()
+        if centroid is None or centroid.isEmpty():
+            centroid = None
+    except Exception:
+        centroid = None
+
+    return profile, centroid
+
+
+def _qgis_geometry_from_profile(profile):
+    try:
+        from qgis.core import QgsGeometry, QgsPoint
+    except Exception as exc:
+        raise ImportError('PyQGIS not available') from exc
+    return QgsGeometry.fromPolyline([QgsPoint(float(st), 0.0, float(z)) for st, z in profile])
+
+
+def _load_from_geopackage_qgis(path: str, cross_layer: str, centerline_layer: str, boundary_layer: str) -> ModelInput:
+    try:
+        from qgis.core import QgsVectorLayer
+    except Exception as exc:
+        raise ImportError('PyQGIS not available') from exc
+
+    def _layer(layer_name: str):
+        lyr = QgsVectorLayer(f"{path}|layername={layer_name}", layer_name, 'ogr')
+        if not lyr.isValid():
+            raise ValueError(f"GeoPackage layer '{layer_name}' could not be loaded from {path}")
+        return lyr
+
+    def _value(feat, name: str, default=None):
+        try:
+            idx = feat.fields().indexOf(name)
+            if idx == -1:
+                return default
+            v = feat[idx]
+            return default if v is None else v
+        except Exception:
+            return default
+
+    def _safe_float(value, default=0.0):
+        try:
+            v = float(value)
+            if math.isnan(v):
+                return float(default)
+            return v
+        except Exception:
+            return float(default)
+
+    def _safe_int(value, default=0):
+        try:
+            v = float(value)
+            if math.isnan(v):
+                return int(default)
+            return int(v)
+        except Exception:
+            return int(default)
+
+    def _safe_shape(value):
+        if value is None:
+            return None
+        text = str(value).strip()
+        if not text or text.lower() in ('nan', 'none', 'null'):
+            return None
+        return text
+
+    cross_lyr = _layer(cross_layer)
+    center_lyr = _layer(centerline_layer)
+    center_feat = next(center_lyr.getFeatures(), None)
+    if center_feat is None or center_feat.geometry() is None or center_feat.geometry().isEmpty():
+        raise ValueError(
+            f"GeoPackage layer '{centerline_layer}' is empty. "
+            "At least one centerline feature is required."
+        )
+    center_geom = center_feat.geometry()
+
+    rows = []
+    for feat in cross_lyr.getFeatures():
+        profile, centroid = _qgis_profile_from_geometry(feat.geometry())
+        chainage = 0.0
+        try:
+            if centroid is not None:
+                chainage = float(center_geom.lineLocatePoint(centroid))
+        except Exception:
+            chainage = 0.0
+        rows.append({
+            'river_station': _value(feat, 'river_station', ''),
+            'geometry': profile,
+            'chainage': chainage,
+            'left_bank_station': _safe_float(_value(feat, 'left_bank_station', 0.0), 0.0),
+            'right_bank_station': _safe_float(_value(feat, 'right_bank_station', 0.0), 0.0),
+            'n_lob': _safe_float(_value(feat, 'n_lob', 0.035), 0.035),
+            'n_ch': _safe_float(_value(feat, 'n_ch', 0.035), 0.035),
+            'n_rob': _safe_float(_value(feat, 'n_rob', 0.035), 0.035),
+            'contraction_coeff': _safe_float(_value(feat, 'contraction_coeff', 0.1), 0.1),
+            'expansion_coeff': _safe_float(_value(feat, 'expansion_coeff', 0.3), 0.3),
+            'L_lob_to_next': _safe_float(_value(feat, 'L_lob_to_next', 0.0), 0.0),
+            'L_ch_to_next': _safe_float(_value(feat, 'L_ch_to_next', 0.0), 0.0),
+            'L_rob_to_next': _safe_float(_value(feat, 'L_rob_to_next', 0.0), 0.0),
+            'culvert_code': _safe_int(_value(feat, 'culvert_code', 0), 0),
+            'culvert_shape': _safe_shape(_value(feat, 'culvert_shape', None)),
+            'culvert_diameter': _safe_float(_value(feat, 'culvert_diameter', 0.0), 0.0),
+            'culvert_width': _safe_float(_value(feat, 'culvert_width', 0.0), 0.0),
+            'culvert_height': _safe_float(_value(feat, 'culvert_height', 0.0), 0.0),
+            'culvert_upstream_invert': _safe_float(_value(feat, 'culvert_upstream_invert', 0.0), 0.0),
+            'culvert_downstream_invert': _safe_float(_value(feat, 'culvert_downstream_invert', 0.0), 0.0),
+            'culvert_length': _safe_float(_value(feat, 'culvert_length', 0.0), 0.0),
+            'culvert_weir_coeff': _safe_float(_value(feat, 'culvert_weir_coeff', 3.0), 3.0),
+            'culvert_weir_sta_left': _safe_float(_value(feat, 'culvert_weir_sta_left', 0.0), 0.0),
+            'culvert_weir_sta_right': _safe_float(_value(feat, 'culvert_weir_sta_right', 0.0), 0.0),
+            'culvert_slope_legacy': _safe_float(_value(feat, 'culvert_slope', 0.0), 0.0),
+        })
+
+    rows = sorted(rows, key=lambda x: x.get('chainage', 0.0))
+
+    sections = []
+    for r in rows:
+        xs = CrossSection(
+            river_station=str(r.get('river_station', '')),
+            geometry=[(float(x), float(z)) for x, z in r['geometry']],
+            left_bank_station=float(r.get('left_bank_station', 0.0)),
+            right_bank_station=float(r.get('right_bank_station', 0.0)),
+            n_lob=float(r.get('n_lob', 0.035)), n_ch=float(r.get('n_ch', 0.035)), n_rob=float(r.get('n_rob', 0.035)),
+            contraction_coeff=float(r.get('contraction_coeff', 0.1)), expansion_coeff=float(r.get('expansion_coeff', 0.3)),
+            L_lob_to_next=float(r.get('L_lob_to_next', 0.0)),
+            L_ch_to_next=float(r.get('L_ch_to_next', 0.0)),
+            L_rob_to_next=float(r.get('L_rob_to_next', 0.0)),
+            culvert_code=int(r.get('culvert_code', 0)),
+            culvert_shape=r.get('culvert_shape', None),
+            culvert_diameter=float(r.get('culvert_diameter', 0.0)),
+            culvert_width=float(r.get('culvert_width', 0.0)),
+            culvert_height=float(r.get('culvert_height', 0.0)),
+            culvert_upstream_invert=float(r.get('culvert_upstream_invert', 0.0)),
+            culvert_downstream_invert=float(r.get('culvert_downstream_invert', 0.0)),
+            culvert_length=float(r.get('culvert_length', 0.0)),
+            culvert_weir_coeff=float(r.get('culvert_weir_coeff', 3.0)),
+            culvert_weir_sta_left=float(r.get('culvert_weir_sta_left', 0.0)),
+            culvert_weir_sta_right=float(r.get('culvert_weir_sta_right', 0.0)),
+        )
+        if xs.culvert_length <= 0.0:
+            legacy_slope = float(r.get('culvert_slope_legacy', 0.0) or 0.0)
+            if legacy_slope > 0.0:
+                xs.culvert_length = max(1.0, xs.L_ch_to_next if xs.L_ch_to_next > 0.0 else 1.0)
+                xs.culvert_upstream_invert = min((z for _, z in xs.geometry), default=0.0)
+                xs.culvert_downstream_invert = xs.culvert_upstream_invert - legacy_slope * xs.culvert_length
+        sections.append(xs)
+
+    if len(sections) > 1:
+        for i in range(len(sections) - 1):
+            spacing = max(0.0, float(rows[i + 1]['chainage'] - rows[i]['chainage']))
+            if sections[i].L_ch_to_next <= 0.0:
+                sections[i].L_ch_to_next = spacing
+            if sections[i].L_lob_to_next <= 0.0:
+                sections[i].L_lob_to_next = spacing
+            if sections[i].L_rob_to_next <= 0.0:
+                sections[i].L_rob_to_next = spacing
+
+    flow_cfs = 0.0
+    boundary_condition = 'known_wse'
+    boundary_value = 0.0
+    try:
+        b_lyr = _layer(boundary_layer)
+        b_feat = next(b_lyr.getFeatures(), None)
+        if b_feat is not None:
+            flow_cfs = _safe_float(_value(b_feat, 'flow_cfs', 0.0), 0.0)
+            boundary_condition = str(_value(b_feat, 'boundary_type', 'known_wse') or 'known_wse')
+            boundary_value = _safe_float(_value(b_feat, 'boundary_value', 0.0), 0.0)
+    except Exception:
+        pass
+
+    return ModelInput(flow_cfs=flow_cfs, flow_change=None, boundary_condition=boundary_condition, boundary_value=boundary_value, sections=sections)
+
+
+def _save_to_geopackage_qgis(path: str, model: ModelInput, centerline_geom=None, overwrite: bool = True, crs_authid: Optional[str] = None):
+    try:
+        from qgis.core import QgsFeature, QgsField, QgsGeometry, QgsPointXY, QgsProject, QgsVectorFileWriter, QgsVectorLayer
+        from qgis.PyQt.QtCore import QVariant
+    except Exception as exc:
+        raise ImportError('PyQGIS not available') from exc
+
+    def _to_qgs_geom(geom_like):
+        if geom_like is None:
+            return None
+        if hasattr(geom_like, 'asWkt') and hasattr(geom_like, 'isEmpty'):
+            return geom_like
+        if hasattr(geom_like, 'wkt'):
+            try:
+                return QgsGeometry.fromWkt(str(geom_like.wkt))
+            except Exception:
+                return None
+        return None
+
+    def _layer(layer_name: str):
+        lyr = QgsVectorLayer(f"{path}|layername={layer_name}", layer_name, 'ogr')
+        return lyr if lyr.isValid() else None
+
+    authid = str(crs_authid) if crs_authid else 'EPSG:4326'
+    cross_existing = _layer('cross_sections')
+    if cross_existing is not None and cross_existing.crs().isValid() and not crs_authid:
+        authid = cross_existing.crs().authid()
+
+    center_existing = _layer('centerline')
+    centerline_to_write = _to_qgs_geom(centerline_geom)
+    if centerline_to_write is None and center_existing is not None:
+        ef = next(center_existing.getFeatures(), None)
+        if ef is not None:
+            centerline_to_write = ef.geometry()
+    if centerline_to_write is None or centerline_to_write.isEmpty():
+        raise ValueError(
+            "A centerline geometry is required when saving a model GeoPackage. "
+            "Create/load a centerline layer first."
+        )
+
+    transform_ctx = QgsProject.instance().transformContext()
+    opts = QgsVectorFileWriter.SaveVectorOptions()
+    opts.driverName = 'GPKG'
+    opts.fileEncoding = 'UTF-8'
+
+    cross_layer = QgsVectorLayer(f"LineStringZ?crs={authid}", 'cross_sections', 'memory')
+    cdp = cross_layer.dataProvider()
+    cdp.addAttributes([
+        QgsField('centerline_id', QVariant.Int),
+        QgsField('river_station', QVariant.String),
+        QgsField('left_bank_station', QVariant.Double),
+        QgsField('right_bank_station', QVariant.Double),
+        QgsField('n_lob', QVariant.Double),
+        QgsField('n_ch', QVariant.Double),
+        QgsField('n_rob', QVariant.Double),
+        QgsField('contraction_coeff', QVariant.Double),
+        QgsField('expansion_coeff', QVariant.Double),
+        QgsField('L_lob_to_next', QVariant.Double),
+        QgsField('L_ch_to_next', QVariant.Double),
+        QgsField('L_rob_to_next', QVariant.Double),
+        QgsField('culvert_code', QVariant.Int),
+        QgsField('culvert_shape', QVariant.String),
+        QgsField('culvert_diameter', QVariant.Double),
+        QgsField('culvert_width', QVariant.Double),
+        QgsField('culvert_height', QVariant.Double),
+        QgsField('culvert_upstream_invert', QVariant.Double),
+        QgsField('culvert_downstream_invert', QVariant.Double),
+        QgsField('culvert_length', QVariant.Double),
+        QgsField('culvert_weir_coeff', QVariant.Double),
+        QgsField('culvert_weir_sta_left', QVariant.Double),
+        QgsField('culvert_weir_sta_right', QVariant.Double),
+        QgsField('culvert_slope', QVariant.Double),
+    ])
+    cross_layer.updateFields()
+    feats = []
+    for xs in model.sections:
+        feat = QgsFeature(cross_layer.fields())
+        feat.setGeometry(_qgis_geometry_from_profile([(float(x), float(z)) for x, z in xs.geometry]))
+        feat['centerline_id'] = 1
+        feat['river_station'] = str(xs.river_station)
+        feat['left_bank_station'] = float(xs.left_bank_station)
+        feat['right_bank_station'] = float(xs.right_bank_station)
+        feat['n_lob'] = float(xs.n_lob)
+        feat['n_ch'] = float(xs.n_ch)
+        feat['n_rob'] = float(xs.n_rob)
+        feat['contraction_coeff'] = float(xs.contraction_coeff)
+        feat['expansion_coeff'] = float(xs.expansion_coeff)
+        feat['L_lob_to_next'] = float(xs.L_lob_to_next)
+        feat['L_ch_to_next'] = float(xs.L_ch_to_next)
+        feat['L_rob_to_next'] = float(xs.L_rob_to_next)
+        feat['culvert_code'] = int(xs.culvert_code)
+        feat['culvert_shape'] = str(xs.culvert_shape or '')
+        feat['culvert_diameter'] = float(xs.culvert_diameter)
+        feat['culvert_width'] = float(xs.culvert_width)
+        feat['culvert_height'] = float(xs.culvert_height)
+        feat['culvert_upstream_invert'] = float(xs.culvert_upstream_invert)
+        feat['culvert_downstream_invert'] = float(xs.culvert_downstream_invert)
+        feat['culvert_length'] = float(xs.culvert_length)
+        feat['culvert_weir_coeff'] = float(xs.culvert_weir_coeff)
+        feat['culvert_weir_sta_left'] = float(xs.culvert_weir_sta_left)
+        feat['culvert_weir_sta_right'] = float(xs.culvert_weir_sta_right)
+        feat['culvert_slope'] = float(xs.culvert_slope())
+        feats.append(feat)
+    cdp.addFeatures(feats)
+    opts.layerName = 'cross_sections'
+    if hasattr(QgsVectorFileWriter, 'CreateOrOverwriteFile'):
+        opts.actionOnExistingFile = (
+            QgsVectorFileWriter.CreateOrOverwriteFile
+            if overwrite
+            else QgsVectorFileWriter.CreateOrOverwriteLayer
+        )
+    QgsVectorFileWriter.writeAsVectorFormatV2(cross_layer, path, transform_ctx, opts)
+
+    center_layer = QgsVectorLayer(f"LineString?crs={authid}", 'centerline', 'memory')
+    center_dp = center_layer.dataProvider()
+    center_dp.addAttributes([QgsField('centerline_id', QVariant.Int)])
+    center_layer.updateFields()
+    cf = QgsFeature(center_layer.fields())
+    cf.setGeometry(centerline_to_write)
+    cf['centerline_id'] = 1
+    center_dp.addFeature(cf)
+    opts.layerName = 'centerline'
+    if hasattr(QgsVectorFileWriter, 'CreateOrOverwriteLayer'):
+        opts.actionOnExistingFile = QgsVectorFileWriter.CreateOrOverwriteLayer
+    QgsVectorFileWriter.writeAsVectorFormatV2(center_layer, path, transform_ctx, opts)
+
+    b_layer = QgsVectorLayer(f"Point?crs={authid}", 'boundary_conditions', 'memory')
+    bdp = b_layer.dataProvider()
+    bdp.addAttributes([
+        QgsField('boundary_type', QVariant.String),
+        QgsField('boundary_value', QVariant.Double),
+        QgsField('flow_cfs', QVariant.Double),
+    ])
+    b_layer.updateFields()
+    bf = QgsFeature(b_layer.fields())
+    bf.setGeometry(QgsGeometry.fromPointXY(QgsPointXY(0.0, 0.0)))
+    bf['boundary_type'] = str(model.boundary_condition)
+    bf['boundary_value'] = float(model.boundary_value)
+    bf['flow_cfs'] = float(model.flow_cfs)
+    bdp.addFeature(bf)
+    opts.layerName = 'boundary_conditions'
+    if hasattr(QgsVectorFileWriter, 'CreateOrOverwriteLayer'):
+        opts.actionOnExistingFile = QgsVectorFileWriter.CreateOrOverwriteLayer
+    QgsVectorFileWriter.writeAsVectorFormatV2(b_layer, path, transform_ctx, opts)
+
+
 def load_from_geopackage(path: str, cross_layer: str = 'cross_sections', centerline_layer: str = 'centerline', boundary_layer: str = 'boundary_conditions') -> ModelInput:
-    """Load model from a GeoPackage (geopandas/shapely required)."""
+    """Load model from a GeoPackage (PyQGIS first, geopandas/shapely fallback)."""
+    try:
+        return _load_from_geopackage_qgis(path, cross_layer, centerline_layer, boundary_layer)
+    except ImportError:
+        pass
+
     try:
         import geopandas as gpd
         from shapely.geometry import LineString
     except Exception as e:
-        raise RuntimeError('geopandas/shapely required to load GeoPackage') from e
+        raise RuntimeError('PyQGIS or geopandas/shapely is required to load GeoPackage') from e
 
     cross_gdf = gpd.read_file(path, layer=cross_layer)
     centerline = None
@@ -2169,8 +2521,16 @@ def load_from_geopackage(path: str, cross_layer: str = 'cross_sections', centerl
         centerline_gdf = gpd.read_file(path, layer=centerline_layer)
         if len(centerline_gdf) > 0:
             centerline = centerline_gdf.geometry.iloc[0]
-    except Exception:
-        centerline = None
+    except Exception as exc:
+        raise ValueError(
+            f"GeoPackage is missing required '{centerline_layer}' layer. "
+            "Create a model GeoPackage with centerline and try again."
+        ) from exc
+    if centerline is None:
+        raise ValueError(
+            f"GeoPackage layer '{centerline_layer}' is empty. "
+            "At least one centerline feature is required."
+        )
 
     rows = []
 
@@ -2327,16 +2687,16 @@ def load_from_geopackage(path: str, cross_layer: str = 'cross_sections', centerl
                 xs.culvert_downstream_invert = xs.culvert_upstream_invert - legacy_slope * xs.culvert_length
         sections.append(xs)
 
-    if len(sections) > 1:
-        if all('chainage' in r for r in rows):
-            for i in range(len(sections)-1):
-                # only overwrite L_ch_to_next if it wasn't provided in attributes
-                if not sections[i].L_ch_to_next:
-                    sections[i].L_ch_to_next = float(rows[i+1]['chainage'] - rows[i]['chainage'])
-        else:
-            for i in range(len(sections)-1):
-                if not sections[i].L_ch_to_next:
-                    sections[i].L_ch_to_next = 1.0
+    if len(sections) > 1 and all('chainage' in r for r in rows):
+        for i in range(len(sections) - 1):
+            spacing = max(0.0, float(rows[i + 1]['chainage'] - rows[i]['chainage']))
+            # Default reach lengths from centerline spacing when not provided.
+            if sections[i].L_ch_to_next <= 0.0:
+                sections[i].L_ch_to_next = spacing
+            if sections[i].L_lob_to_next <= 0.0:
+                sections[i].L_lob_to_next = spacing
+            if sections[i].L_rob_to_next <= 0.0:
+                sections[i].L_rob_to_next = spacing
 
     flow_cfs = 0.0
     boundary_condition = 'known_wse'
@@ -2354,20 +2714,106 @@ def load_from_geopackage(path: str, cross_layer: str = 'cross_sections', centerl
     return ModelInput(flow_cfs=flow_cfs, flow_change=None, boundary_condition=boundary_condition, boundary_value=boundary_value, sections=sections)
 
 
-def save_to_geopackage(path: str, model: ModelInput, centerline_geom=None, overwrite: bool = True):
+def save_to_geopackage(path: str, model: ModelInput, centerline_geom=None, overwrite: bool = True, crs_authid: Optional[str] = None):
+    try:
+        _save_to_geopackage_qgis(path, model, centerline_geom=centerline_geom, overwrite=overwrite, crs_authid=crs_authid)
+        return
+    except ImportError:
+        pass
+
     try:
         import geopandas as gpd
-        from shapely.geometry import LineString
+        from shapely.geometry import LineString, MultiLineString
         import fiona
     except Exception as e:
-            raise RuntimeError('geopandas/fiona/shapely required to save GeoPackage') from e
+            raise RuntimeError('PyQGIS or geopandas/fiona/shapely is required to save GeoPackage') from e
+
+    def _interp_profile_elevation(profile: List[Tuple[float, float]], station: float) -> float:
+        if not profile:
+            return 0.0
+        pts = sorted([(float(st), float(z)) for st, z in profile], key=lambda p: p[0])
+        if station <= pts[0][0]:
+            return float(pts[0][1])
+        if station >= pts[-1][0]:
+            return float(pts[-1][1])
+        for i in range(1, len(pts)):
+            s0, z0 = pts[i - 1]
+            s1, z1 = pts[i]
+            if s1 <= s0:
+                continue
+            if station <= s1:
+                t = (station - s0) / (s1 - s0)
+                return float(z0 + (z1 - z0) * t)
+        return float(pts[-1][1])
+
+    def _linestring_with_preserved_xy_updated_z(line, profile: List[Tuple[float, float]]):
+        coords = list(line.coords)
+        if len(coords) < 2:
+            return line
+        chainage = [0.0]
+        for i in range(1, len(coords)):
+            x0, y0 = float(coords[i - 1][0]), float(coords[i - 1][1])
+            x1, y1 = float(coords[i][0]), float(coords[i][1])
+            chainage.append(chainage[-1] + math.hypot(x1 - x0, y1 - y0))
+        new_coords = []
+        for c, s in zip(coords, chainage):
+            x = float(c[0])
+            y = float(c[1])
+            z = _interp_profile_elevation(profile, float(s))
+            new_coords.append((x, y, z))
+        return LineString(new_coords)
+
+    def _geometry_with_preserved_xy_updated_z(geom, profile: List[Tuple[float, float]]):
+        if geom is None:
+            return None
+        try:
+            if isinstance(geom, LineString):
+                return _linestring_with_preserved_xy_updated_z(geom, profile)
+            if isinstance(geom, MultiLineString):
+                return MultiLineString([
+                    _linestring_with_preserved_xy_updated_z(line, profile)
+                    for line in geom.geoms
+                ])
+        except Exception:
+            return None
+        return None
+
+    existing_by_station = {}
+    existing_centerline_geom = None
+    existing_crs = None
+    try:
+        if os.path.exists(path):
+            existing_gdf = gpd.read_file(path, layer='cross_sections')
+            existing_crs = getattr(existing_gdf, 'crs', None)
+            for _, feat in existing_gdf.iterrows():
+                rs = feat.get('river_station')
+                if rs is None:
+                    continue
+                existing_by_station[str(rs)] = feat.geometry
+            try:
+                centerline_gdf = gpd.read_file(path, layer='centerline')
+                if len(centerline_gdf) > 0:
+                    existing_centerline_geom = centerline_gdf.geometry.iloc[0]
+                    if existing_crs is None:
+                        existing_crs = getattr(centerline_gdf, 'crs', None)
+            except Exception:
+                pass
+    except Exception:
+        existing_by_station = {}
 
     rows = []
     for xs in model.sections:
         coords = [(float(x), float(z)) for x,z in xs.geometry]
-        geom = LineString([(x, z) for x,z in coords])
+        geom = None
+        existing_geom = existing_by_station.get(str(xs.river_station))
+        if existing_geom is not None:
+            geom = _geometry_with_preserved_xy_updated_z(existing_geom, coords)
+        if geom is None:
+            # Fallback for new sections with no existing planform geometry.
+            geom = LineString([(st, 0.0, z) for st, z in coords])
         rows.append({
             'geometry': geom,
+            'centerline_id': 1,
             'river_station': xs.river_station,
             'left_bank_station': xs.left_bank_station,
             'right_bank_station': xs.right_bank_station,
@@ -2392,13 +2838,20 @@ def save_to_geopackage(path: str, model: ModelInput, centerline_geom=None, overw
             'culvert_slope': xs.culvert_slope(),
         })
 
-    gdf = gpd.GeoDataFrame(rows, geometry='geometry', crs=None)
+    gdf_crs = crs_authid if crs_authid else existing_crs
+    gdf = gpd.GeoDataFrame(rows, geometry='geometry', crs=gdf_crs)
     mode = 'w' if overwrite else 'a'
     gdf.to_file(path, layer='cross_sections', driver='GPKG', index=False, mode=mode)
 
-    if centerline_geom is not None:
-        cgdf = gpd.GeoDataFrame([{'geometry': centerline_geom}], geometry='geometry')
-        cgdf.to_file(path, layer='centerline', driver='GPKG', index=False, mode='a')
+    centerline_to_write = centerline_geom if centerline_geom is not None else existing_centerline_geom
+    if centerline_to_write is None:
+        raise ValueError(
+            "A centerline geometry is required when saving a model GeoPackage. "
+            "Create/load a centerline layer first."
+        )
+
+    cgdf = gpd.GeoDataFrame([{'geometry': centerline_to_write, 'centerline_id': 1}], geometry='geometry', crs=gdf_crs)
+    cgdf.to_file(path, layer='centerline', driver='GPKG', index=False, mode='a')
 
     try:
         import fiona
@@ -2408,6 +2861,218 @@ def save_to_geopackage(path: str, model: ModelInput, centerline_geom=None, overw
             dst.write({'properties': props})
     except Exception:
         pass
+
+
+def _save_results_to_geopackage_qgis(
+    path: str,
+    model: Optional[ModelInput],
+    results: List[SectionState],
+    layer_name: str = 'model_results',
+    solver: str = 'py',
+):
+    try:
+        from qgis.core import QgsFeature, QgsField, QgsProject, QgsVectorFileWriter, QgsVectorLayer
+        from qgis.PyQt.QtCore import QVariant
+    except Exception as exc:
+        raise ImportError('PyQGIS not available') from exc
+
+    layer = QgsVectorLayer('None', layer_name, 'memory')
+    if not layer.isValid():
+        raise RuntimeError(f'Could not create in-memory layer for {layer_name}')
+
+    dp = layer.dataProvider()
+    dp.addAttributes([
+        QgsField('result_index', QVariant.Int),
+        QgsField('river_station', QVariant.String),
+        QgsField('solver', QVariant.String),
+        QgsField('run_time_utc', QVariant.String),
+        QgsField('wse', QVariant.Double),
+        QgsField('depth_at_min', QVariant.Double),
+        QgsField('alpha', QVariant.Double),
+        QgsField('A_lob', QVariant.Double),
+        QgsField('A_ch', QVariant.Double),
+        QgsField('A_rob', QVariant.Double),
+        QgsField('K_lob', QVariant.Double),
+        QgsField('K_ch', QVariant.Double),
+        QgsField('K_rob', QVariant.Double),
+        QgsField('Q_lob', QVariant.Double),
+        QgsField('Q_ch', QVariant.Double),
+        QgsField('Q_rob', QVariant.Double),
+        QgsField('V_t', QVariant.Double),
+        QgsField('K_t', QVariant.Double),
+        QgsField('A_t', QVariant.Double),
+        QgsField('Sf_total', QVariant.Double),
+        QgsField('Froude', QVariant.Double),
+    ])
+    layer.updateFields()
+
+    run_time_utc = datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace('+00:00', 'Z')
+    features = []
+    for idx, state in enumerate(results or []):
+        feat = QgsFeature(layer.fields())
+        river_station = str(idx)
+        if model is not None and idx < len(getattr(model, 'sections', [])):
+            river_station = str(model.sections[idx].river_station)
+        feat['result_index'] = int(idx)
+        feat['river_station'] = river_station
+        feat['solver'] = str(solver)
+        feat['run_time_utc'] = run_time_utc
+        feat['wse'] = float(getattr(state, 'wse', 0.0))
+        feat['depth_at_min'] = float(getattr(state, 'depth_at_min', 0.0))
+        feat['alpha'] = float(getattr(state, 'alpha', 0.0))
+        feat['A_lob'] = float(getattr(state, 'A_lob', 0.0))
+        feat['A_ch'] = float(getattr(state, 'A_ch', 0.0))
+        feat['A_rob'] = float(getattr(state, 'A_rob', 0.0))
+        feat['K_lob'] = float(getattr(state, 'K_lob', 0.0))
+        feat['K_ch'] = float(getattr(state, 'K_ch', 0.0))
+        feat['K_rob'] = float(getattr(state, 'K_rob', 0.0))
+        feat['Q_lob'] = float(getattr(state, 'Q_lob', 0.0))
+        feat['Q_ch'] = float(getattr(state, 'Q_ch', 0.0))
+        feat['Q_rob'] = float(getattr(state, 'Q_rob', 0.0))
+        feat['V_t'] = float(getattr(state, 'V_t', 0.0))
+        feat['K_t'] = float(getattr(state, 'K_t', 0.0))
+        feat['A_t'] = float(getattr(state, 'A_t', 0.0))
+        feat['Sf_total'] = float(getattr(state, 'Sf_total', 0.0))
+        feat['Froude'] = float(getattr(state, 'Froude', 0.0))
+        features.append(feat)
+
+    if features:
+        dp.addFeatures(features)
+
+    transform_ctx = QgsProject.instance().transformContext()
+    opts = QgsVectorFileWriter.SaveVectorOptions()
+    opts.driverName = 'GPKG'
+    opts.fileEncoding = 'UTF-8'
+    opts.layerName = layer_name
+    if hasattr(QgsVectorFileWriter, 'CreateOrOverwriteLayer'):
+        opts.actionOnExistingFile = QgsVectorFileWriter.CreateOrOverwriteLayer
+    QgsVectorFileWriter.writeAsVectorFormatV2(layer, path, transform_ctx, opts)
+
+
+def _load_results_from_geopackage_qgis(path: str, layer_name: str = 'model_results') -> List[SectionState]:
+    try:
+        from qgis.core import QgsVectorLayer
+    except Exception as exc:
+        raise ImportError('PyQGIS not available') from exc
+
+    lyr = QgsVectorLayer(f"{path}|layername={layer_name}", layer_name, 'ogr')
+    if not lyr.isValid():
+        return []
+
+    def _value(feat, name: str, default=None):
+        try:
+            idx = feat.fields().indexOf(name)
+            if idx == -1:
+                return default
+            v = feat[idx]
+            return default if v is None else v
+        except Exception:
+            return default
+
+    def _safe_float(value, default=0.0):
+        try:
+            v = float(value)
+            return default if math.isnan(v) else v
+        except Exception:
+            return float(default)
+
+    def _safe_int(value, default=0):
+        try:
+            v = float(value)
+            if math.isnan(v):
+                return int(default)
+            return int(v)
+        except Exception:
+            return int(default)
+
+    rows = []
+    for feat in lyr.getFeatures():
+        idx = _safe_int(_value(feat, 'result_index', len(rows)), len(rows))
+        state = SectionState(
+            wse=_safe_float(_value(feat, 'wse', 0.0), 0.0),
+            depth_at_min=_safe_float(_value(feat, 'depth_at_min', 0.0), 0.0),
+            alpha=_safe_float(_value(feat, 'alpha', 0.0), 0.0),
+            A_lob=_safe_float(_value(feat, 'A_lob', 0.0), 0.0),
+            A_ch=_safe_float(_value(feat, 'A_ch', 0.0), 0.0),
+            A_rob=_safe_float(_value(feat, 'A_rob', 0.0), 0.0),
+            K_lob=_safe_float(_value(feat, 'K_lob', 0.0), 0.0),
+            K_ch=_safe_float(_value(feat, 'K_ch', 0.0), 0.0),
+            K_rob=_safe_float(_value(feat, 'K_rob', 0.0), 0.0),
+            Q_lob=_safe_float(_value(feat, 'Q_lob', 0.0), 0.0),
+            Q_ch=_safe_float(_value(feat, 'Q_ch', 0.0), 0.0),
+            Q_rob=_safe_float(_value(feat, 'Q_rob', 0.0), 0.0),
+            V_t=_safe_float(_value(feat, 'V_t', 0.0), 0.0),
+            K_t=_safe_float(_value(feat, 'K_t', 0.0), 0.0),
+            A_t=_safe_float(_value(feat, 'A_t', 0.0), 0.0),
+            Sf_total=_safe_float(_value(feat, 'Sf_total', 0.0), 0.0),
+            Froude=_safe_float(_value(feat, 'Froude', 0.0), 0.0),
+        )
+        rows.append((idx, state))
+
+    rows.sort(key=lambda t: t[0])
+    return [state for _, state in rows]
+
+
+def save_results_to_geopackage(
+    path: str,
+    model: Optional[ModelInput],
+    results: List[SectionState],
+    layer_name: str = 'model_results',
+    solver: str = 'py',
+):
+    """Persist model run results to a GeoPackage table layer."""
+    try:
+        _save_results_to_geopackage_qgis(path, model, results, layer_name=layer_name, solver=solver)
+        return
+    except ImportError:
+        raise RuntimeError('PyQGIS is required to save model results to GeoPackage safely.')
+
+
+def load_results_from_geopackage(path: str, layer_name: str = 'model_results') -> List[SectionState]:
+    """Load persisted model run results from a GeoPackage table layer."""
+    try:
+        return _load_results_from_geopackage_qgis(path, layer_name=layer_name)
+    except ImportError:
+        pass
+
+    try:
+        import fiona
+    except Exception:
+        return []
+
+    rows = []
+    try:
+        with fiona.open(path, mode='r', driver='GPKG', layer=layer_name) as src:
+            for rec in src:
+                props = rec.get('properties') or {}
+                idx = int(props.get('result_index', len(rows)))
+                rows.append((
+                    idx,
+                    SectionState(
+                        wse=float(props.get('wse', 0.0) or 0.0),
+                        depth_at_min=float(props.get('depth_at_min', 0.0) or 0.0),
+                        alpha=float(props.get('alpha', 0.0) or 0.0),
+                        A_lob=float(props.get('A_lob', 0.0) or 0.0),
+                        A_ch=float(props.get('A_ch', 0.0) or 0.0),
+                        A_rob=float(props.get('A_rob', 0.0) or 0.0),
+                        K_lob=float(props.get('K_lob', 0.0) or 0.0),
+                        K_ch=float(props.get('K_ch', 0.0) or 0.0),
+                        K_rob=float(props.get('K_rob', 0.0) or 0.0),
+                        Q_lob=float(props.get('Q_lob', 0.0) or 0.0),
+                        Q_ch=float(props.get('Q_ch', 0.0) or 0.0),
+                        Q_rob=float(props.get('Q_rob', 0.0) or 0.0),
+                        V_t=float(props.get('V_t', 0.0) or 0.0),
+                        K_t=float(props.get('K_t', 0.0) or 0.0),
+                        A_t=float(props.get('A_t', 0.0) or 0.0),
+                        Sf_total=float(props.get('Sf_total', 0.0) or 0.0),
+                        Froude=float(props.get('Froude', 0.0) or 0.0),
+                    ),
+                ))
+    except Exception:
+        return []
+
+    rows.sort(key=lambda t: t[0])
+    return [state for _, state in rows]
 
 
 def run_backwater(model: ModelInput, solver: str = 'py'):
@@ -2684,597 +3349,8 @@ def run_backwater(model: ModelInput, solver: str = 'py'):
 
 
 # ---------------------------------------------------------------------------
-# GUI + plotting helpers
+# CLI entrypoint
 # ---------------------------------------------------------------------------
-def _plot_results(model: ModelInput, results: List[SectionState]):
-    if not HAVE_MPL:
-        raise RuntimeError("Matplotlib required for plotting")
-
-    # Plot each cross-section geometry with waterline
-    n = len(model.sections)
-    fig, axes = plt.subplots(nrows=n, ncols=1, figsize=(6, 2.5 * n), sharex=False)
-    if n == 1:
-        axes = [axes]
-
-    for ax, xs, st in zip(axes, model.sections, results):
-        geom = sorted(xs.geometry, key=lambda p: p[0])
-        xs_x = [p[0] for p in geom]
-        xs_z = [p[1] for p in geom]
-        ax.plot(xs_x, xs_z, '-k', linewidth=2)
-        ax.fill_between(xs_x, xs_z, min(xs_z) - 1.0, color="#f0f0f0")
-        ax.axhline(st.wse, color='blue', linestyle='--', linewidth=2, label=f'WSE {st.wse:.3f} ft')
-        
-        # Add culvert visualization if present
-        if xs.has_culvert():
-            z_min = min(xs_z)
-            # Draw culvert zone in the cross-section
-            culvert_label = f"Culvert: {xs.culvert_shape} (code {xs.culvert_code})"
-            if xs.culvert_shape == 'circular':
-                culvert_label += f" D={xs.culvert_diameter} ft"
-            else:
-                culvert_label += f" {xs.culvert_width}x{xs.culvert_height} ft"
-            
-            # Highlight culvert zone with a red rectangle
-            ax.axhspan(z_min, z_min + 1.0, alpha=0.2, color='red', label=culvert_label)
-            ax.text(xs_x[len(xs_x)//2], z_min + 0.5, "CULVERT", 
-                   ha='center', va='center', fontsize=8, fontweight='bold', color='red')
-        
-        ax.set_ylabel(f"RS {xs.river_station}\n(elev ft)")
-        ax.legend(loc='upper right', fontsize=8)
-        ax.grid(True, alpha=0.3)
-
-    fig.tight_layout()
-    return fig
-
-
-def launch_gui():
-    if not HAVE_TK:
-        raise RuntimeError("Tkinter not available on this system")
-
-    root = tk.Tk()
-    root.title("Backwater — Standard Step GUI")
-
-    frm = ttk.Frame(root, padding=8)
-    frm.grid(row=0, column=0, sticky=(tk.W, tk.E, tk.N, tk.S))
-
-    input_path = tk.StringVar()
-    flow_var = tk.DoubleVar(value=500.0)
-
-    def choose_file():
-        p = filedialog.askopenfilename(filetypes=[("GeoPackage files", "*.gpkg"), ("All files", "*")])
-        if p:
-            input_path.set(p)
-
-    ttk.Label(frm, text="Input GeoPackage:").grid(column=0, row=0, sticky=tk.W)
-    ttk.Entry(frm, textvariable=input_path, width=60).grid(column=1, row=0, sticky=(tk.W, tk.E))
-    ttk.Button(frm, text="Browse...", command=choose_file).grid(column=2, row=0, sticky=tk.W)
-
-    ds_bc_var = tk.StringVar(value="known_wse")
-    ds_val_var = tk.DoubleVar(value=0.0)
-
-    ttk.Label(frm, text="DS BC:").grid(column=0, row=1, sticky=tk.W)
-    ttk.Combobox(frm, textvariable=ds_bc_var, values=("known_wse", "normal_depth"), width=20).grid(column=1, row=1, sticky=tk.W)
-    ds_val_label = ttk.Label(frm, text="DS value (WSE ft):")
-    ds_val_label.grid(column=0, row=2, sticky=tk.W)
-    ttk.Entry(frm, textvariable=ds_val_var, width=20).grid(column=1, row=2, sticky=tk.W)
-
-    def _on_ds_bc_change(*args):
-        v = ds_bc_var.get()
-        if v == 'normal_depth':
-            ds_val_label.config(text='DS value (channel slope S0):')
-        else:
-            ds_val_label.config(text='DS value (WSE ft):')
-
-    ds_bc_var.trace_add('write', _on_ds_bc_change)
-    ttk.Label(frm, text="Flow (cfs):").grid(column=0, row=3, sticky=tk.W)
-    ttk.Entry(frm, textvariable=flow_var, width=20).grid(column=1, row=3, sticky=tk.W)
-
-    # Alpha and Sf method selectors (GUI)
-    alpha_var = tk.StringVar(value=ALPHA_METHOD)
-    sf_var = tk.StringVar(value=SF_METHOD)
-    ttk.Label(frm, text="Alpha method:").grid(column=0, row=4, sticky=tk.W)
-    ttk.Combobox(frm, textvariable=alpha_var, values=("conveyance","area"), width=20).grid(column=1, row=4, sticky=tk.W)
-    ttk.Label(frm, text="Sf method:").grid(column=0, row=5, sticky=tk.W)
-    ttk.Combobox(frm, textvariable=sf_var, values=("combined","avg"), width=20).grid(column=1, row=5, sticky=tk.W)
-
-    # Output text area
-    text_out = tk.Text(root, height=10)
-    text_out.grid(row=2, column=0, columnspan=3, sticky=(tk.W, tk.E))
-
-    # Plot canvas holder (scrollable)
-    def make_scrollable_frame(parent, width=600, height=200):
-        outer = ttk.Frame(parent)
-        canvas = tk.Canvas(outer, width=width, height=height)
-        vscroll = ttk.Scrollbar(outer, orient=tk.VERTICAL, command=canvas.yview)
-        hscroll = ttk.Scrollbar(outer, orient=tk.HORIZONTAL, command=canvas.xview)
-        canvas.configure(yscrollcommand=vscroll.set, xscrollcommand=hscroll.set)
-        inner = ttk.Frame(canvas)
-        canvas.create_window((0,0), window=inner, anchor='nw')
-
-        def _on_config(event=None):
-            canvas.configure(scrollregion=canvas.bbox('all'))
-
-        inner.bind('<Configure>', _on_config)
-        canvas.grid(row=0, column=0, sticky=(tk.N, tk.S, tk.E, tk.W))
-        vscroll.grid(row=0, column=1, sticky=(tk.N, tk.S))
-        hscroll.grid(row=1, column=0, sticky=(tk.W, tk.E))
-        return outer, inner
-
-    canvas_holder_outer, canvas_holder_inner = make_scrollable_frame(root, width=700, height=300)
-    canvas_holder_outer.grid(row=3, column=0, columnspan=3, sticky=(tk.W, tk.E, tk.N, tk.S))
-
-    fig_canvas = None
-
-    # In-memory model state for editing
-    current_model: Optional[ModelInput] = None
-    current_file: Optional[str] = None
-    current_results: Optional[List[SectionState]] = None
-
-    # Section selector & editable properties
-    section_var = tk.StringVar()
-    section_idxs: List[int] = []
-
-    prop_frame = ttk.Frame(frm, padding=(0, 8, 0, 8))
-    prop_frame.grid(column=0, row=6, columnspan=3, sticky=(tk.W, tk.E))
-
-    ttk.Label(prop_frame, text="Section:").grid(column=0, row=0, sticky=tk.W)
-    section_cb = ttk.Combobox(prop_frame, textvariable=section_var, values=[], state='readonly', width=30)
-    section_cb.grid(column=1, row=0, sticky=tk.W)
-
-    # Property fields
-    props = {}
-    prop_names = [
-        ("left_bank_station", "Left bank"), ("right_bank_station", "Right bank"),
-        ("n_lob", "n_lob"), ("n_ch", "n_ch"), ("n_rob", "n_rob"),
-        ("contraction_coeff", "Cc"), ("expansion_coeff", "Ce"),
-        ("L_lob_to_next", "L_lob"), ("L_ch_to_next", "L_ch"), ("L_rob_to_next", "L_rob")
-    ]
-
-    for i, (key, label) in enumerate(prop_names, start=1):
-        ttk.Label(prop_frame, text=f"{label}:").grid(column=0, row=i, sticky=tk.W)
-        v = tk.DoubleVar(value=0.0)
-        e = ttk.Entry(prop_frame, textvariable=v, width=12)
-        e.grid(column=1, row=i, sticky=tk.W)
-        props[key] = v
-
-    # Geometry editor: treeview + controls
-    geom_frame = ttk.Labelframe(frm, text="Cross-section Geometry (station, elevation)", padding=(6,6))
-    geom_frame.grid(column=3, row=0, rowspan=7, sticky=(tk.N, tk.S, tk.E, tk.W), padx=(8,0))
-
-    geom_tv = ttk.Treeview(geom_frame, columns=("station","elevation"), show='headings', height=12)
-    geom_tv.heading('station', text='Station')
-    geom_tv.heading('elevation', text='Elevation')
-    geom_tv.column('station', width=100, anchor='center')
-    geom_tv.column('elevation', width=100, anchor='center')
-    geom_tv.grid(column=0, row=0, columnspan=4, sticky=(tk.N, tk.S, tk.E, tk.W))
-
-    geom_scroll = ttk.Scrollbar(geom_frame, orient=tk.VERTICAL, command=geom_tv.yview)
-    geom_tv.configure(yscroll=geom_scroll.set)
-    geom_scroll.grid(column=4, row=0, sticky=(tk.N, tk.S))
-    geom_hscroll = ttk.Scrollbar(geom_frame, orient=tk.HORIZONTAL, command=geom_tv.xview)
-    geom_tv.configure(xscroll=geom_hscroll.set)
-    geom_hscroll.grid(column=0, row=3, columnspan=4, sticky=(tk.W, tk.E))
-
-    def populate_geom_table(idx: int):
-        geom_tv.delete(*geom_tv.get_children())
-        xs = current_model.sections[idx]
-        for i, (st, z) in enumerate(sorted(xs.geometry, key=lambda p: p[0])):
-            geom_tv.insert('', 'end', iid=str(i), values=(f"{st:.3f}", f"{z:.3f}"))
-
-    def geom_add_row():
-        # add row after selection or at end
-        sel = geom_tv.selection()
-        if sel:
-            idx = int(sel[0]) + 1
-        else:
-            idx = len(geom_tv.get_children())
-        geom_tv.insert('', idx, iid=str(idx), values=("0.0","0.0"))
-        # reindex iids
-        for i, iid in enumerate(geom_tv.get_children()):
-            geom_tv.item(iid, iid=str(i))
-
-    def geom_remove_row():
-        sel = geom_tv.selection()
-        if not sel:
-            return
-        geom_tv.delete(sel[0])
-        # reindex
-        for i, iid in enumerate(geom_tv.get_children()):
-            geom_tv.item(iid, iid=str(i))
-
-    def geom_move(up: bool):
-        sel = geom_tv.selection()
-        if not sel:
-            return
-        iid = sel[0]
-        kids = list(geom_tv.get_children())
-        idx = kids.index(iid)
-        new_idx = max(0, idx-1) if up else min(len(kids)-1, idx+1)
-        if new_idx == idx:
-            return
-        vals = geom_tv.item(iid)['values']
-        geom_tv.delete(iid)
-        geom_tv.insert('', new_idx, iid=str(new_idx), values=vals)
-        # rebuild all iids in order
-        for i, iid2 in enumerate(geom_tv.get_children()):
-            geom_tv.item(iid2, iid=str(i))
-
-    # In-place editing for treeview cells (double-click)
-    edit_entry = None
-
-    def finish_edit(event=None):
-        nonlocal edit_entry
-        if edit_entry is None:
-            return
-        iid = edit_entry._iid
-        col = edit_entry._col
-        val = edit_entry.get()
-        edit_entry.destroy()
-        edit_entry = None
-        # update treeview
-        try:
-            # Keep formatting similar
-            if col == '#1':
-                v = f"{float(val):.6f}"
-            else:
-                v = f"{float(val):.6f}"
-        except Exception:
-            messagebox.showerror('Invalid', 'Value must be numeric')
-            return
-        vals = list(geom_tv.item(iid, 'values'))
-        col_index = 0 if col == '#1' else 1
-        vals[col_index] = v
-        geom_tv.item(iid, values=vals)
-
-    def on_geom_double_click(event):
-        nonlocal edit_entry
-        # identify row/col
-        region = geom_tv.identify_region(event.x, event.y)
-        if region != 'cell':
-            return
-        row = geom_tv.identify_row(event.y)
-        col = geom_tv.identify_column(event.x)
-        if not row or not col:
-            return
-        bbox = geom_tv.bbox(row, col)
-        if not bbox:
-            return
-        x, y, w, h = bbox
-        val = geom_tv.set(row, column=col)
-        # place Entry over cell
-        edit_entry = ttk.Entry(geom_tv)
-        edit_entry.place(x=x, y=y, width=w, height=h)
-        edit_entry.insert(0, val)
-        edit_entry._iid = row
-        edit_entry._col = col
-        edit_entry.focus_set()
-        edit_entry.bind('<Return>', finish_edit)
-        edit_entry.bind('<FocusOut>', finish_edit)
-
-    geom_tv.bind('<Double-1>', on_geom_double_click)
-
-    def apply_geom_changes(idx: int):
-        # read rows and update current_model.sections[idx].geometry
-        rows = []
-        for iid in geom_tv.get_children():
-            st_s, z_s = geom_tv.item(iid)['values']
-            try:
-                st = float(str(st_s))
-                z = float(str(z_s))
-            except Exception:
-                messagebox.showerror('Invalid', 'Station/elevation must be numeric')
-                return
-            rows.append((st, z))
-        # sort by station
-        rows = sorted(rows, key=lambda p: p[0])
-        current_model.sections[idx].geometry = [(float(x), float(z)) for x, z in rows]
-        messagebox.showinfo('Applied', f'Geometry applied to {current_model.sections[idx].river_station}')
-        # update plot
-        plot_selected_section(idx)
-
-    def geom_copy_selected():
-        sel = geom_tv.selection()
-        if not sel:
-            messagebox.showinfo('Copy', 'No rows selected')
-            return
-        lines = []
-        for iid in sel:
-            st, z = geom_tv.item(iid, 'values')
-            lines.append(f"{st}\t{z}")
-        txt = '\n'.join(lines)
-        try:
-            root.clipboard_clear()
-            root.clipboard_append(txt)
-            messagebox.showinfo('Copied', f'Copied {len(lines)} row(s) to clipboard')
-        except Exception as e:
-            messagebox.showerror('Copy error', str(e))
-
-    def geom_paste_clipboard(idx: int):
-        try:
-            txt = root.clipboard_get()
-        except Exception:
-            messagebox.showerror('Paste', 'Clipboard does not contain text')
-            return
-        lines = [ln.strip() for ln in txt.splitlines() if ln.strip()]
-        if not lines:
-            messagebox.showinfo('Paste', 'No data to paste')
-            return
-        added = 0
-        for ln in lines:
-            if '\t' in ln:
-                parts = ln.split('\t')
-            elif ',' in ln:
-                parts = ln.split(',')
-            else:
-                parts = ln.split()
-            try:
-                st = float(parts[0])
-                z = float(parts[1])
-            except Exception:
-                continue
-            geom_tv.insert('', 'end', values=(f"{st:.6f}", f"{z:.6f}"))
-            added += 1
-        for i, iid in enumerate(geom_tv.get_children()):
-            geom_tv.item(iid, iid=str(i))
-        messagebox.showinfo('Pasted', f'Pasted {added} row(s)')
-
-    ttk.Button(geom_frame, text='Add', command=geom_add_row).grid(column=0, row=1, sticky=tk.W, pady=(6,0))
-    ttk.Button(geom_frame, text='Remove', command=geom_remove_row).grid(column=1, row=1, sticky=tk.W, pady=(6,0))
-    ttk.Button(geom_frame, text='Up', command=lambda: geom_move(True)).grid(column=2, row=1, sticky=tk.W, pady=(6,0))
-    ttk.Button(geom_frame, text='Down', command=lambda: geom_move(False)).grid(column=3, row=1, sticky=tk.W, pady=(6,0))
-    ttk.Button(geom_frame, text='Copy', command=geom_copy_selected).grid(column=0, row=2, sticky=tk.W, pady=(6,0))
-    ttk.Button(geom_frame, text='Paste', command=lambda: geom_paste_clipboard(section_cb.current())).grid(column=1, row=2, sticky=tk.W, pady=(6,0))
-    ttk.Button(geom_frame, text='Apply Geometry', command=lambda: apply_geom_changes(section_cb.current())).grid(column=0, row=3, columnspan=4, sticky=(tk.W, tk.E), pady=(6,0))
-
-    # Detail plot for selected section
-    detail_frame = ttk.Labelframe(root, text='Section Detail Plot', padding=(6,6))
-    detail_frame.grid(column=0, row=4, columnspan=3, sticky=(tk.W, tk.E))
-    # scrollable detail plot
-    detail_outer, detail_canvas_holder = make_scrollable_frame(detail_frame, width=600, height=220)
-    detail_outer.grid(column=0, row=0, sticky=(tk.W, tk.E))
-
-    def plot_selected_section(idx: int):
-        if not HAVE_MPL or current_model is None:
-            return
-        xs = current_model.sections[idx]
-        geom = sorted(xs.geometry, key=lambda p: p[0])
-        sx = [p[0] for p in geom]
-        sz = [p[1] for p in geom]
-        fig, ax = plt.subplots(figsize=(6,2.5))
-        ax.plot(sx, sz, '-k', marker='o')
-        ax.fill_between(sx, sz, min(sz)-1.0, color="#f0f0f0")
-        ax.set_xlabel('Station')
-        ax.set_ylabel('Elevation (ft)')
-        ax.set_title(xs.river_station)
-        fig.tight_layout()
-        for child in detail_canvas_holder.winfo_children():
-            child.destroy()
-        try:
-            from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
-        except Exception:
-            return
-        canvas = FigureCanvasTkAgg(fig, master=detail_canvas_holder)
-        canvas.draw()
-        canvas.get_tk_widget().pack(fill=tk.BOTH, expand=1)
-
-
-    def load_model_into_gui(path: str):
-        nonlocal current_model, current_file, current_results
-        current_model = load_input(path)
-        current_file = path
-        # populate section combobox
-        names = [xs.river_station for xs in current_model.sections]
-        section_cb['values'] = names
-        if names:
-            section_cb.current(0)
-            section_var.set(names[0])
-            show_section_properties(0)
-            populate_geom_table(0)
-            plot_selected_section(0)
-
-    def show_section_properties(idx: int):
-        xs = current_model.sections[idx]
-        props['left_bank_station'].set(xs.left_bank_station)
-        props['right_bank_station'].set(xs.right_bank_station)
-        props['n_lob'].set(xs.n_lob)
-        props['n_ch'].set(xs.n_ch)
-        props['n_rob'].set(xs.n_rob)
-        props['contraction_coeff'].set(xs.contraction_coeff)
-        props['expansion_coeff'].set(xs.expansion_coeff)
-        props['L_lob_to_next'].set(xs.L_lob_to_next)
-        props['L_ch_to_next'].set(xs.L_ch_to_next)
-        props['L_rob_to_next'].set(xs.L_rob_to_next)
-        # populate geometry table for this section
-        populate_geom_table(idx)
-        plot_selected_section(idx)
-
-    def on_section_change(event=None):
-        if current_model is None:
-            return
-        idx = section_cb.current()
-        if idx >= 0:
-            show_section_properties(idx)
-
-    section_cb.bind('<<ComboboxSelected>>', on_section_change)
-
-    def apply_section_changes():
-        if current_model is None:
-            messagebox.showerror("No model", "Load a model first")
-            return
-        idx = section_cb.current()
-        if idx < 0:
-            return
-        xs = current_model.sections[idx]
-        xs.left_bank_station = float(props['left_bank_station'].get())
-        xs.right_bank_station = float(props['right_bank_station'].get())
-        xs.n_lob = float(props['n_lob'].get())
-        xs.n_ch = float(props['n_ch'].get())
-        xs.n_rob = float(props['n_rob'].get())
-        xs.contraction_coeff = float(props['contraction_coeff'].get())
-        xs.expansion_coeff = float(props['expansion_coeff'].get())
-        xs.L_lob_to_next = float(props['L_lob_to_next'].get())
-        xs.L_ch_to_next = float(props['L_ch_to_next'].get())
-        xs.L_rob_to_next = float(props['L_rob_to_next'].get())
-        messagebox.showinfo("Applied", f"Changes applied to section {xs.river_station}")
-
-    # Controls: Load, Run, Apply, Save
-    def on_browse():
-        p = filedialog.askopenfilename(filetypes=[("GeoPackage files", "*.gpkg"), ("All files", "*")])
-        if p:
-            input_path.set(p)
-
-    def on_load():
-        p = input_path.get()
-        if not p:
-            messagebox.showerror("Input required", "Please select an input GeoPackage file.")
-            return
-        try:
-            load_model_into_gui(p)
-            text_out.delete(1.0, tk.END)
-            text_out.insert(tk.END, f"Loaded model: {p}\n")
-        except Exception as e:
-            messagebox.showerror("Error", str(e))
-
-    def on_run():
-        nonlocal fig_canvas, current_results
-        if current_model is None:
-            # try loading from path
-            p = input_path.get()
-            if not p:
-                messagebox.showerror("Input required", "Please select an input GeoPackage file.")
-                return
-            try:
-                load_model_into_gui(p)
-            except Exception as e:
-                messagebox.showerror("Error", str(e))
-                return
-
-        # override bc and flow
-        current_model.boundary_condition = ds_bc_var.get()
-        current_model.boundary_value = float(ds_val_var.get())
-        try:
-            current_model.flow_cfs = float(flow_var.get())
-        except Exception:
-            messagebox.showerror("Invalid flow", "Flow must be numeric")
-            return
-
-        try:
-            # apply GUI-selected methods
-            global ALPHA_METHOD, SF_METHOD
-            ALPHA_METHOD = alpha_var.get()
-            SF_METHOD = sf_var.get()
-            current_results = run_backwater(current_model)
-        except Exception as e:
-            messagebox.showerror("Run error", str(e))
-            return
-
-        # display textual results
-        text_out.delete(1.0, tk.END)
-        text_out.insert(tk.END, "Idx  RS            WSE(ft)    Depth(ft)  V(ft/s)  Alpha   K_total     A_total     Sf_total   Froude\n")
-        for i, (xs, s) in enumerate(zip(current_model.sections, current_results)):
-            text_out.insert(tk.END, f"{i:<4} {xs.river_station:<12} {s.wse:>9.3f} {s.depth_at_min:>11.3f} "
-                                f"{s.V_t:>9.3f} {s.alpha:>7.3f} {s.K_t:>10.1f} {s.A_t:>10.2f} {s.Sf_total:>10.6f} {getattr(s, 'Froude', 0.0):>9.3f}\n")
-
-        # plotting
-        if HAVE_MPL:
-            fig = _plot_results(current_model, current_results)
-            for child in canvas_holder_inner.winfo_children():
-                child.destroy()
-            try:
-                from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
-            except Exception:
-                messagebox.showerror('Plot not available', 'matplotlib backend for Tk not available')
-                return
-            fig_canvas = FigureCanvasTkAgg(fig, master=canvas_holder_inner)
-            fig_canvas.draw()
-            fig_canvas.get_tk_widget().pack(fill=tk.BOTH, expand=1)
-
-    def on_save_model():
-        if current_model is None:
-            messagebox.showerror("No model", "Load and edit a model before saving.")
-            return
-        p = filedialog.asksaveasfilename(defaultextension='.gpkg', filetypes=[('GeoPackage', '*.gpkg')])
-        if not p:
-            return
-        save_to_geopackage(p, current_model)
-        messagebox.showinfo('Saved', f'Model saved to {p}')
-
-    def on_save_plot():
-        if not HAVE_MPL:
-            messagebox.showerror('Plot not available', 'matplotlib is not installed')
-            return
-        p = filedialog.asksaveasfilename(defaultextension='.png', filetypes=[('PNG', '*.png')])
-        if not p:
-            return
-        # Last figure is the one in the canvas
-        try:
-            import matplotlib.pyplot as _plt
-            _plt.savefig(p)
-            messagebox.showinfo('Saved', f'Plot saved to {p}')
-        except Exception as e:
-            messagebox.showerror('Save error', str(e))
-
-    def create_new_model():
-        nonlocal current_model, current_file, current_results
-        # Minimal two-section default model
-        try:
-            base_flow = float(flow_var.get())
-        except Exception:
-            base_flow = 500.0
-
-        xs0 = CrossSection(
-            river_station='S_down',
-            geometry=[(0.0, 100.0), (10.0, 99.5)],
-            left_bank_station=2.0,
-            right_bank_station=8.0,
-            n_lob=0.035, n_ch=0.035, n_rob=0.035,
-            contraction_coeff=0.1, expansion_coeff=0.3,
-            L_lob_to_next=10.0, L_ch_to_next=10.0, L_rob_to_next=10.0
-        )
-
-        xs1 = CrossSection(
-            river_station='S_up',
-            geometry=[(10.0, 99.5), (20.0, 99.0)],
-            left_bank_station=12.0,
-            right_bank_station=18.0,
-            n_lob=0.035, n_ch=0.035, n_rob=0.035,
-            contraction_coeff=0.1, expansion_coeff=0.3,
-            L_lob_to_next=10.0, L_ch_to_next=10.0, L_rob_to_next=10.0
-        )
-
-        current_model = ModelInput(
-            flow_cfs=base_flow,
-            flow_change=None,
-            boundary_condition='known_wse',
-            boundary_value=100.0,
-            sections=[xs0, xs1]
-        )
-        current_file = None
-        current_results = None
-        # populate GUI
-        names = [xs.river_station for xs in current_model.sections]
-        section_cb['values'] = names
-        if names:
-            section_cb.current(0)
-            section_var.set(names[0])
-            show_section_properties(0)
-            populate_geom_table(0)
-            plot_selected_section(0)
-        input_path.set('')
-        messagebox.showinfo('New Model', 'Created new minimal two-section model')
-
-    # Buttons setup
-    btn_row = 0
-    ttk.Button(frm, text='Browse...', command=on_browse).grid(column=2, row=0, sticky=tk.W)
-    ttk.Button(frm, text='Load', command=on_load).grid(column=0, row=1, sticky=tk.W)
-    ttk.Button(frm, text='Run', command=on_run).grid(column=1, row=1, sticky=tk.W)
-    ttk.Button(frm, text='Apply Section Changes', command=apply_section_changes).grid(column=0, row=6, sticky=tk.W)
-    ttk.Button(frm, text='Save Model...', command=on_save_model).grid(column=1, row=6, sticky=tk.W)
-    ttk.Button(frm, text='Save Plot...', command=on_save_plot).grid(column=2, row=6, sticky=tk.W)
-
-    root.mainloop()
-
-
 def main():
     parser = argparse.ArgumentParser(
         description="Backwater (1D steady) standard-step solver for a single river reach / single flow.",
@@ -3312,12 +3388,4 @@ def main():
 
 
 if __name__ == "__main__":
-    # If no CLI args supplied and Tkinter available, launch GUI
-    if len(sys.argv) == 1 and HAVE_TK:
-        try:
-            launch_gui()
-        except Exception:
-            # fallback to CLI
-            main()
-    else:
-        main()
+    main()
