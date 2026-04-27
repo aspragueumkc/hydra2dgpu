@@ -1,7 +1,7 @@
 import math
 import unittest
 
-from backwater2 import CrossSection, solve_culvert_headwater, G
+from backwater_model import CrossSection, solve_culvert_headwater, G
 from culvert_routine import CircularXsect, solve_normal_depth_in_culvert
 
 

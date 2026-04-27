@@ -2,7 +2,7 @@
 """backwater_qt.py
 
 A Qt-based GUI wrapper for the backwater solver that reuses the computation
-functions in `backwater2.py`.
+functions in `backwater_model.py`.
 
 This provides a minimal, modern GUI with: file open, New Model, Run, textual
 results, and a matplotlib plot area.
@@ -19,12 +19,45 @@ import importlib.util
 from qgis.PyQt import QtWidgets, QtCore, QtGui
 from qgis.PyQt.QtWidgets import QFileDialog, QMessageBox
 
+
+def _detect_matplotlib_qt_available() -> bool:
+    try:
+        import matplotlib  # noqa: F401
+    except Exception:
+        return False
+
+    try:
+        from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as _fc  # noqa: F401
+        from matplotlib.backends.backend_qt5agg import NavigationToolbar2QT as _tb  # noqa: F401
+        return True
+    except Exception:
+        try:
+            from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg as _fc  # noqa: F401
+            from matplotlib.backends.backend_qtagg import NavigationToolbar2QT as _tb  # noqa: F401
+            return True
+        except Exception:
+            return False
+
+
+def _import_matplotlib_qt():
+    import matplotlib.pyplot as plt
+    import numpy as _np
+
+    try:
+        from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
+        from matplotlib.backends.backend_qt5agg import NavigationToolbar2QT as NavigationToolbar
+    except Exception:
+        from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg as FigureCanvas
+        from matplotlib.backends.backend_qtagg import NavigationToolbar2QT as NavigationToolbar
+
+    return FigureCanvas, NavigationToolbar, plt, _np
+
 # Import solver functions from the plugin-local `backwater2` module.
 try:
     try:
-        from . import backwater2 as _bwmod  # type: ignore
+        from . import backwater_model as _bwmod  # type: ignore
     except Exception:
-        import backwater2 as _bwmod  # type: ignore
+        import backwater_model as _bwmod  # type: ignore
 
     load_input = _bwmod.load_input
     load_from_geopackage = getattr(_bwmod, 'load_from_geopackage', None)
@@ -34,10 +67,10 @@ try:
     run_backwater = _bwmod.run_backwater
     ModelInput = _bwmod.ModelInput
     CrossSection = _bwmod.CrossSection
-    HAVE_MPL = bool(getattr(_bwmod, 'HAVE_MPL', False))
+    HAVE_MPL = _detect_matplotlib_qt_available()
 except Exception:
     load_input = load_from_geopackage = save_to_geopackage = load_results_from_geopackage = save_results_to_geopackage = run_backwater = ModelInput = CrossSection = None
-    HAVE_MPL = False
+    HAVE_MPL = _detect_matplotlib_qt_available()
 
 try:
     try:
@@ -1169,10 +1202,7 @@ class BackwaterWidget(QtWidgets.QWidget):
             index = 0
 
         try:
-            from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
-            from matplotlib.backends.backend_qt5agg import NavigationToolbar2QT as NavigationToolbar
-            import matplotlib.pyplot as plt
-            import numpy as _np
+            FigureCanvas, NavigationToolbar, plt, _np = _import_matplotlib_qt()
         except Exception:
             self._clear_layout_widgets(self.scroller_plot_host_layout)
             self.scroller_plot_host_layout.addWidget(QtWidgets.QLabel('matplotlib backend unavailable'))
@@ -3207,7 +3237,7 @@ else:
         # picked up without restarting QGIS.
         try:
             import importlib.util
-            _mod_path = os.path.join(os.path.dirname(__file__), 'backwater2.py')
+            _mod_path = os.path.join(os.path.dirname(__file__), 'backwater_model.py')
             _spec = importlib.util.spec_from_file_location('qgis_backwater_plugin.backwater2', _mod_path)
             if _spec is None or _spec.loader is None:
                 raise ImportError(f'Could not create import spec for {_mod_path}')
@@ -3437,9 +3467,7 @@ else:
         # plotting
         if HAVE_MPL:
             try:
-                from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
-                import matplotlib.pyplot as plt
-                import numpy as _np
+                FigureCanvas, NavigationToolbar, plt, _np = _import_matplotlib_qt()
 
                 n = len(self.model.sections)
                 # compute chainage using channel reach lengths; fallback to cumulative section index
@@ -3566,7 +3594,6 @@ else:
                 # Add matplotlib navigation toolbar for pan/zoom inside results page
                 canvas = FigureCanvas(fig)
                 try:
-                    from matplotlib.backends.backend_qt5agg import NavigationToolbar2QT as NavigationToolbar
                     toolbar = NavigationToolbar(canvas, self.plot_page)
                     self.plot_page_layout.addWidget(toolbar)
                 except Exception:

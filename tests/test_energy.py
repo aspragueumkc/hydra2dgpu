@@ -7,7 +7,7 @@ here = os.path.dirname(os.path.dirname(__file__))
 if here not in sys.path:
     sys.path.insert(0, here)
 
-import backwater2 as bw
+import backwater_model as bw
 
 G = bw.G
 

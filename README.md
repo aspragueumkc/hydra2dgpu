@@ -1,44 +1,81 @@
 # QGIS Backwater Plugin
 
-QGIS plugin workspace for steady-flow backwater profile modeling, culvert/weir handling, and comparison tooling.
+Steady-flow 1D backwater modeling plugin for QGIS with GeoPackage-native model storage, culvert support, and integrated run/result tools.
 
-## Contents
+## Current State
 
-- Core solver: `backwater2.py`
-- Qt UI: `backwater_qt.py`
-- Plugin entry: `backwater_plugin.py`
-- Test scripts and diagnostics in project root and `tests/`
-- Example HEC-RAS files in `hec_ras_project/`
+- Plugin-first architecture.
+- Core solver is in `backwater_model.py` (GUI-free, CLI-capable).
+- QGIS dock widget and UI workflows are in `backwater_qt.py`.
+- QGIS menu integration is in `backwater_plugin.py`.
+- Model I/O is GeoPackage-only in the plugin workflow.
 
-## Model Editing Workflow
+## Key Features
 
-- Use `Create Model GeoPackage...` in the plugin UI to create a new model file.
-- The plugin now runs in GeoPackage-only mode: model load/run inputs must be `*.gpkg`.
-- The create workflow prompts for:
-	- save location/name
-	- model projection (CRS)
-- New model GeoPackages always include the required layers:
-	- `cross_sections`
-	- `centerline`
-	- `boundary_conditions`
-	- `model_results` (written after each successful run)
-- For GeoPackage-backed models, edits are made through native QGIS layer attribute forms.
-- In-widget section/property edit controls are read-only in this mode; use layer forms/actions for model edits.
-- `cross_sections` forms now include layer actions:
-	- `Backwater: Select Terrain Raster` stores the selected raster in a project variable (`backwater_terrain_raster_id`).
-	- `Backwater: Update Z From Terrain` updates feature vertex Z values using `expressions/vertices_z_from_raster.py` and refreshes `river_station` from centerline chainage.
-- `boundary_conditions` forms include `Backwater: Run Model`, which triggers the plugin's run command from the form context.
-- Custom Qt Designer form files are applied for:
-	- `cross_sections` -> `forms/cross_sections_form.ui`
-	- `boundary_conditions` -> `forms/boundary_conditions_form.ui`
-	- form init/button styling and action handlers -> `forms/backwater_form_init.py`
-- Drop-down editors are enforced for:
-	- `cross_sections.culvert_shape` (`'', circular, rect`)
-	- `boundary_conditions.boundary_type` (`known_wse, normal_depth`)
-- No plugin-added field constraints are enforced; form validation is left to user workflow and provider-level constraints.
-- In `cross_sections` forms, culvert detail fields are shown only when `culvert_code > 0`.
-- Default values are set for `contraction_coeff` (`0.1`) and `expansion_coeff` (`0.3`).
-- Successful model runs are persisted to the `model_results` GeoPackage layer, and reloaded into the UI results table/plots when the model is opened.
-- GeoPackage geospatial I/O now prefers native PyQGIS APIs, with geopandas/shapely used only as a fallback when PyQGIS is unavailable.
-- `centerline` is required when loading/saving a model. The plugin no longer treats centerline as optional.
-- Default reach lengths (`L_ch_to_next`, and when unset also `L_lob_to_next`/`L_rob_to_next`) are derived from centerline spacing between neighboring cross sections.
+- Create, load, save, and run backwater models directly from QGIS.
+- Built-in main menu entries under **Backwater** for common actions:
+  - Open Backwater Panel
+  - Create New Model GeoPackage...
+  - Load Model GeoPackage...
+  - Save Model GeoPackage As...
+  - Run Model
+  - Open Results Plot
+  - Open Results Table
+  - Enable/Disable Layer Editing
+  - Save Layer Edits
+- New **Options** submenu in the Backwater menu:
+  - Solver: `py` or `scipy`
+  - Alpha Method: `conveyance` or `area`
+- Downstream boundary controls in UI (`known_wse`, `normal_depth`) plus DS value and flow inputs.
+- Result persistence to `model_results` and reload on model open.
+- Culvert fields integrated into cross-section schema and forms.
+- Matplotlib plotting support in plugin context with local runtime detection.
+
+## GeoPackage Model Layers
+
+The plugin expects these core layers:
+
+- `cross_sections`
+- `centerline` (required)
+- `boundary_conditions`
+
+The plugin also writes/reads:
+
+- `model_results`
+
+## Editing Workflow
+
+- Enable editing with **Backwater > Enable/Disable Layer Editing**.
+- Edit model data through QGIS attribute forms for loaded layers.
+- Save edits with **Backwater > Save Layer Edits** before running.
+- If unsaved layer edits exist, model run is blocked until edits are saved.
+
+Form behavior includes:
+
+- Cross-section and boundary-condition custom forms from `forms/`.
+- Cross-section actions for terrain selection and Z updates.
+- Conditional culvert field visibility based on `culvert_code`.
+
+## Repository Layout
+
+- `backwater_model.py`: hydraulic solver, GeoPackage I/O, CLI entry logic.
+- `backwater_qt.py`: dock widget, run workflow, plotting/table UI.
+- `backwater_plugin.py`: QGIS main menu and action wiring.
+- `culvert_routine.py`: culvert hydraulics helpers.
+- `forms/`: Qt Designer forms and form-init hooks.
+- `expressions/`: QGIS expression helpers.
+- `tests/`: solver and integration-oriented tests.
+- `docs/`: design notes and hydraulic reference material.
+
+## Development Notes
+
+- In this environment, use `python3` for checks.
+- Example syntax check:
+
+```bash
+python3 -m py_compile backwater_model.py backwater_qt.py backwater_plugin.py
+```
+
+## User Documentation
+
+See `USER_GUIDE.md` for step-by-step usage in QGIS.

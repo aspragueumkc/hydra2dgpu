@@ -57,21 +57,26 @@ class BackwaterQgisPlugin:
         self.dock = None
         self.action = None
         self.main_menu = None
+        self.options_menu = None
         self.main_menu_actions = []
+        self.action_solver_py = None
+        self.action_solver_scipy = None
+        self.action_alpha_conveyance = None
+        self.action_alpha_area = None
         self._owns_main_menu = False
         self._plugin_menu_path = '&Backwater'
 
     def initGui(self):
-        self.action = QAction('Open Backwater Panel', self.iface.mainWindow())
-        self.action.triggered.connect(self.run)
-        self.iface.addToolBarIcon(self.action)
-        self.iface.addPluginToMenu(self._plugin_menu_path, self.action)
+        #self.action = QAction('Open Backwater Panel', self.iface.mainWindow())
+        #self.action.triggered.connect(self.run)
+        #self.iface.addToolBarIcon(self.action)
+        #self.iface.addPluginToMenu(self._plugin_menu_path, self.action)
         self._install_main_menu_bar_menu()
 
     def unload(self):
-        if self.action:
-            self.iface.removePluginMenu(self._plugin_menu_path, self.action)
-            self.iface.removeToolBarIcon(self.action)
+        #if self.action:
+            #self.iface.removePluginMenu(self._plugin_menu_path, self.action)
+            #self.iface.removeToolBarIcon(self.action)
         self._remove_main_menu_bar_menu()
         if self.dock:
             try:
@@ -161,6 +166,87 @@ class BackwaterQgisPlugin:
                 duration=8,
             )
 
+    def _with_widget(self, callback, ensure_dock: bool = True):
+        if ensure_dock and self.dock is None:
+            self.run()
+        widget = self.dock.widget() if self.dock is not None else None
+        if widget is None:
+            self.iface.messageBar().pushMessage(
+                'Backwater',
+                'Backwater panel is not available.',
+                level=Qgis.Warning,
+                duration=6,
+            )
+            return False
+        try:
+            callback(widget)
+            return True
+        except Exception as exc:
+            self.iface.messageBar().pushMessage(
+                'Backwater',
+                f'Options update failed: {exc}',
+                level=Qgis.Warning,
+                duration=6,
+            )
+            return False
+
+    def _set_solver_option(self, solver_name: str):
+        normalized = str(solver_name).strip().lower()
+
+        def _set(widget):
+            combo = getattr(widget, 'solver_combo', None)
+            if combo is None:
+                raise RuntimeError('Solver selector not available')
+            idx = combo.findText(normalized)
+            if idx < 0:
+                raise RuntimeError(f'Solver option not found: {normalized}')
+            combo.setCurrentIndex(idx)
+
+        if self._with_widget(_set, ensure_dock=True):
+            self._set_option_checks(solver_name=normalized)
+
+    def _set_alpha_option(self, alpha_name: str):
+        normalized = str(alpha_name).strip().lower()
+
+        def _set(widget):
+            combo = getattr(widget, 'alpha_combo', None)
+            if combo is None:
+                raise RuntimeError('Alpha selector not available')
+            idx = combo.findText(normalized)
+            if idx < 0:
+                raise RuntimeError(f'Alpha method not found: {normalized}')
+            combo.setCurrentIndex(idx)
+
+        if self._with_widget(_set, ensure_dock=True):
+            self._set_option_checks(alpha_name=normalized)
+
+    def _set_option_checks(self, solver_name: str = None, alpha_name: str = None):
+        if self.action_solver_py is not None and solver_name is not None:
+            self.action_solver_py.setChecked(str(solver_name).lower() == 'py')
+        if self.action_solver_scipy is not None and solver_name is not None:
+            self.action_solver_scipy.setChecked(str(solver_name).lower() == 'scipy')
+        if self.action_alpha_conveyance is not None and alpha_name is not None:
+            self.action_alpha_conveyance.setChecked(str(alpha_name).lower() == 'conveyance')
+        if self.action_alpha_area is not None and alpha_name is not None:
+            self.action_alpha_area.setChecked(str(alpha_name).lower() == 'area')
+
+    def _refresh_option_checks_from_widget(self):
+        def _refresh(widget):
+            solver_name = 'py'
+            alpha_name = 'conveyance'
+            solver_combo = getattr(widget, 'solver_combo', None)
+            if solver_combo is not None:
+                solver_name = str(solver_combo.currentText()).strip().lower() or solver_name
+            alpha_combo = getattr(widget, 'alpha_combo', None)
+            if alpha_combo is not None:
+                alpha_name = str(alpha_combo.currentText()).strip().lower() or alpha_name
+            self._set_option_checks(solver_name=solver_name, alpha_name=alpha_name)
+
+        if self.dock is None:
+            self._set_option_checks(solver_name='py', alpha_name='conveyance')
+            return
+        self._with_widget(_refresh, ensure_dock=False)
+
     def _sync_main_menu_state(self):
         can_open = bool(self._create_dock)
         for action in self.main_menu_actions:
@@ -168,6 +254,10 @@ class BackwaterQgisPlugin:
                 action.setEnabled(can_open)
             except Exception:
                 pass
+        try:
+            self._refresh_option_checks_from_widget()
+        except Exception:
+            pass
 
     def _install_main_menu_bar_menu(self):
         menu_bar = self._menu_bar()
@@ -213,6 +303,55 @@ class BackwaterQgisPlugin:
             menu.addAction(action)
             self.main_menu_actions.append(action)
 
+        menu.addSeparator()
+        stale_options = menu.findChild(QMenu, 'BackwaterMenuOptionsSubmenu')
+        if stale_options is not None:
+            try:
+                menu.removeAction(stale_options.menuAction())
+            except Exception:
+                pass
+
+        options_menu = menu.addMenu('Options')
+        options_menu.setObjectName('BackwaterMenuOptionsSubmenu')
+
+        solver_menu = options_menu.addMenu('Solver')
+        solver_menu.setObjectName('BackwaterMenuSolverSubmenu')
+
+        self.action_solver_py = QAction('Python (py)', self.iface.mainWindow())
+        self.action_solver_py.setObjectName('BackwaterMenuSolverPyAction')
+        self.action_solver_py.setCheckable(True)
+        self.action_solver_py.triggered.connect(lambda checked: self._set_solver_option('py') if checked else None)
+        solver_menu.addAction(self.action_solver_py)
+        self.main_menu_actions.append(self.action_solver_py)
+
+        self.action_solver_scipy = QAction('SciPy (scipy)', self.iface.mainWindow())
+        self.action_solver_scipy.setObjectName('BackwaterMenuSolverScipyAction')
+        self.action_solver_scipy.setCheckable(True)
+        self.action_solver_scipy.triggered.connect(lambda checked: self._set_solver_option('scipy') if checked else None)
+        solver_menu.addAction(self.action_solver_scipy)
+        self.main_menu_actions.append(self.action_solver_scipy)
+
+        alpha_menu = options_menu.addMenu('Alpha Method')
+        alpha_menu.setObjectName('BackwaterMenuAlphaSubmenu')
+
+        self.action_alpha_conveyance = QAction('Conveyance', self.iface.mainWindow())
+        self.action_alpha_conveyance.setObjectName('BackwaterMenuAlphaConveyanceAction')
+        self.action_alpha_conveyance.setCheckable(True)
+        self.action_alpha_conveyance.triggered.connect(lambda checked: self._set_alpha_option('conveyance') if checked else None)
+        alpha_menu.addAction(self.action_alpha_conveyance)
+        self.main_menu_actions.append(self.action_alpha_conveyance)
+
+        self.action_alpha_area = QAction('Area', self.iface.mainWindow())
+        self.action_alpha_area.setObjectName('BackwaterMenuAlphaAreaAction')
+        self.action_alpha_area.setCheckable(True)
+        self.action_alpha_area.triggered.connect(lambda checked: self._set_alpha_option('area') if checked else None)
+        alpha_menu.addAction(self.action_alpha_area)
+        self.main_menu_actions.append(self.action_alpha_area)
+
+        options_menu.aboutToShow.connect(self._refresh_option_checks_from_widget)
+        self.options_menu = options_menu
+        self._refresh_option_checks_from_widget()
+
         self._sync_main_menu_state()
 
     def _remove_main_menu_bar_menu(self):
@@ -236,4 +375,9 @@ class BackwaterQgisPlugin:
                 pass
 
         self.main_menu = None
+        self.options_menu = None
+        self.action_solver_py = None
+        self.action_solver_scipy = None
+        self.action_alpha_conveyance = None
+        self.action_alpha_area = None
         self._owns_main_menu = False
