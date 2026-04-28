@@ -285,6 +285,15 @@ class BackwaterQgisPlugin:
             ('BackwaterMenuResultsTableAction', 'Open Results Table', lambda: self._invoke_widget_method('open_results_table')),
             ('BackwaterMenuToggleEditingAction', 'Enable/Disable Layer Editing', lambda: self._invoke_widget_method('on_toggle_geopackage_editing')),
             ('BackwaterMenuSaveEditsAction', 'Save Layer Edits', lambda: self._invoke_widget_method('on_save_layer_edits')),
+            ('BackwaterMenuUnsteadyInputDialogAction', 'Unsteady Input...', lambda: self._invoke_widget_method('open_unsteady_input_dialog')),
+            ('BackwaterMenuRunUnsteadyAction', 'Run Unsteady Model', lambda: self._invoke_widget_method('on_run_unsteady')),
+            ('BackwaterMenuLoadUnsteadyRunAction', 'Load Saved Unsteady Run...', lambda: self._invoke_widget_method('on_load_unsteady_results')),
+            ('BackwaterMenuUnsteadyDebugOptionsAction', 'Unsteady Debug Options...', lambda: self._invoke_widget_method('open_unsteady_debug_dialog')),
+            ('BackwaterMenuUnsteadyDebugLogViewerAction', 'View Unsteady Debug Log...', lambda: self._invoke_widget_method('open_unsteady_debug_log_viewer')),
+            ('BackwaterMenuUnsteadyProfileAction', 'Open Unsteady Profile Plot', lambda: self._invoke_widget_method('open_unsteady_results_plot')),
+            ('BackwaterMenuUnsteadyHydroAction', 'Open Stage Hydrograph Plot', lambda: self._invoke_widget_method('open_unsteady_hydro_plot')),
+            ('BackwaterMenuUnsteadySectionAction', 'Open Unsteady Section Results', lambda: self._invoke_widget_method('open_unsteady_section_results_plot')),
+            ('BackwaterMenuMaxWSETableAction', 'Open Max WSE Table', lambda: self._invoke_widget_method('open_max_wse_table')),
         ]
 
         existing = {a.objectName(): a for a in menu.actions() if a is not None}
@@ -295,7 +304,7 @@ class BackwaterQgisPlugin:
 
         self.main_menu_actions = []
         for idx, (object_name, text, callback) in enumerate(action_specs):
-            if idx in (1, 4, 7):
+            if idx in (1, 4, 7, 10):
                 menu.addSeparator()
             action = QAction(text, self.iface.mainWindow())
             action.setObjectName(object_name)

@@ -434,6 +434,60 @@ class BackwaterWidget(QtWidgets.QWidget):
         self.plots_tabs.addTab(self.plot_page, 'Results Plot')
         self.plots_tabs.addTab(self.cross_section_page, 'cross-section plot')
         self.plots_tabs.addTab(self.plot_scroller_page, 'Plot Scroller')
+        # Unsteady profile plot page (WSE profile at selected time step)
+        self.unsteady_plot_page = QtWidgets.QWidget()
+        self.unsteady_plot_page_layout = QtWidgets.QVBoxLayout(self.unsteady_plot_page)
+        unsteady_time_row = QtWidgets.QHBoxLayout()
+        self.unsteady_time_slider = QtWidgets.QSlider(QtCore.Qt.Orientation.Horizontal)
+        self.unsteady_time_slider.setMinimum(0)
+        self.unsteady_time_slider.setMaximum(0)
+        self.unsteady_time_label = QtWidgets.QLabel('t = —')
+        self.unsteady_time_slider.valueChanged.connect(self._on_unsteady_slider_changed)
+        unsteady_time_row.addWidget(QtWidgets.QLabel('Time step:'))
+        unsteady_time_row.addWidget(self.unsteady_time_slider, stretch=1)
+        unsteady_time_row.addWidget(self.unsteady_time_label)
+        self.unsteady_plot_page_layout.addLayout(unsteady_time_row)
+        self.unsteady_canvas_host = QtWidgets.QWidget()
+        self.unsteady_canvas_host_layout = QtWidgets.QVBoxLayout(self.unsteady_canvas_host)
+        self.unsteady_canvas_host_layout.setContentsMargins(0, 0, 0, 0)
+        self.unsteady_plot_page_layout.addWidget(self.unsteady_canvas_host, stretch=1)
+        self.plots_tabs.addTab(self.unsteady_plot_page, 'Unsteady Profile')
+        # WSE hydrograph plot page (WSE vs time at each section)
+        self.unsteady_hydro_page = QtWidgets.QWidget()
+        self.unsteady_hydro_page_layout = QtWidgets.QVBoxLayout(self.unsteady_hydro_page)
+        self.unsteady_hydro_canvas_host = QtWidgets.QWidget()
+        self.unsteady_hydro_canvas_host_layout = QtWidgets.QVBoxLayout(self.unsteady_hydro_canvas_host)
+        self.unsteady_hydro_canvas_host_layout.setContentsMargins(0, 0, 0, 0)
+        self.unsteady_hydro_page_layout.addWidget(self.unsteady_hydro_canvas_host, stretch=1)
+        self.plots_tabs.addTab(self.unsteady_hydro_page, 'WSE Hydrograph')
+        # Unsteady section results page (time and station scrollers)
+        self.unsteady_section_page = QtWidgets.QWidget()
+        self.unsteady_section_page_layout = QtWidgets.QVBoxLayout(self.unsteady_section_page)
+        section_control_row_1 = QtWidgets.QHBoxLayout()
+        self.unsteady_section_time_slider = QtWidgets.QSlider(QtCore.Qt.Orientation.Horizontal)
+        self.unsteady_section_time_slider.setMinimum(0)
+        self.unsteady_section_time_slider.setMaximum(0)
+        self.unsteady_section_time_label = QtWidgets.QLabel('t = —')
+        self.unsteady_section_time_slider.valueChanged.connect(self._on_unsteady_section_slider_changed)
+        section_control_row_1.addWidget(QtWidgets.QLabel('Time:'))
+        section_control_row_1.addWidget(self.unsteady_section_time_slider, stretch=1)
+        section_control_row_1.addWidget(self.unsteady_section_time_label)
+        self.unsteady_section_page_layout.addLayout(section_control_row_1)
+        section_control_row_2 = QtWidgets.QHBoxLayout()
+        self.unsteady_section_station_slider = QtWidgets.QSlider(QtCore.Qt.Orientation.Horizontal)
+        self.unsteady_section_station_slider.setMinimum(0)
+        self.unsteady_section_station_slider.setMaximum(0)
+        self.unsteady_section_station_label = QtWidgets.QLabel('RS = —')
+        self.unsteady_section_station_slider.valueChanged.connect(self._on_unsteady_section_slider_changed)
+        section_control_row_2.addWidget(QtWidgets.QLabel('River Station:'))
+        section_control_row_2.addWidget(self.unsteady_section_station_slider, stretch=1)
+        section_control_row_2.addWidget(self.unsteady_section_station_label)
+        self.unsteady_section_page_layout.addLayout(section_control_row_2)
+        self.unsteady_section_canvas_host = QtWidgets.QWidget()
+        self.unsteady_section_canvas_host_layout = QtWidgets.QVBoxLayout(self.unsteady_section_canvas_host)
+        self.unsteady_section_canvas_host_layout.setContentsMargins(0, 0, 0, 0)
+        self.unsteady_section_page_layout.addWidget(self.unsteady_section_canvas_host, stretch=1)
+        self.plots_tabs.addTab(self.unsteady_section_page, 'Unsteady Section Results')
         self.plots_container_layout.addWidget(self.plots_tabs)
 
         # Bottom: IO tabs (geometry table). Results table will be shown on the left Results tab.
@@ -463,6 +517,23 @@ class BackwaterWidget(QtWidgets.QWidget):
             self.io_tabs.addTab(self.results_page, 'Results')
         except Exception:
             pass
+
+        # Max WSE table page (populated after unsteady runs)
+        try:
+            self.max_wse_page = QtWidgets.QWidget()
+            self.max_wse_page_layout = QtWidgets.QVBoxLayout(self.max_wse_page)
+            self.max_wse_table = QtWidgets.QTableWidget()
+            self.max_wse_table.setColumnCount(3)
+            self.max_wse_table.setHorizontalHeaderLabels(
+                ['River Station', 'Max WSE (ft)', 'Max Depth (ft)'])
+            self.max_wse_table.horizontalHeader().setStretchLastSection(True)
+            self.max_wse_table.setEditTriggers(
+                QtWidgets.QAbstractItemView.EditTrigger.NoEditTriggers)
+            self.max_wse_page_layout.addWidget(self.max_wse_table)
+            self.io_tabs.addTab(self.max_wse_page, 'Max WSE')
+        except Exception:
+            self.max_wse_page = None
+            self.max_wse_table = None
 
         # Section selector and property editor (no 'Sections:' label)
         self.section_cb = QtWidgets.QComboBox()
@@ -647,6 +718,7 @@ class BackwaterWidget(QtWidgets.QWidget):
         # In-memory model
         self.model = None
         self.results = None
+        self.unsteady_results = None   # UnsteadyResults from last unsteady run
         self.loaded_gpkg_path = ''
         self.gpkg_editing_enabled = False
         self.gpkg_dirty = False
@@ -667,6 +739,7 @@ class BackwaterWidget(QtWidgets.QWidget):
         self._refresh_scroller_choices()
         self.refresh_terrain_raster_choices()
         self._configure_detachable_tabs()
+        self._build_unsteady_tab()
 
     def set_dock_host_window(self, host_window):
         """Set host QMainWindow used for detached panel docking/floating."""
@@ -706,6 +779,26 @@ class BackwaterWidget(QtWidgets.QWidget):
         self.action_run_model.triggered.connect(self.on_run)
         menu.addAction(self.action_run_model)
 
+        self.action_unsteady_input_dialog = QtGui.QAction('Unsteady Input...', self)
+        self.action_unsteady_input_dialog.triggered.connect(self.open_unsteady_input_dialog)
+        menu.addAction(self.action_unsteady_input_dialog)
+
+        self.action_run_unsteady_model = QtGui.QAction('Run Unsteady Model', self)
+        self.action_run_unsteady_model.triggered.connect(self.on_run_unsteady)
+        menu.addAction(self.action_run_unsteady_model)
+
+        self.action_load_unsteady_run = QtGui.QAction('Load Saved Unsteady Run...', self)
+        self.action_load_unsteady_run.triggered.connect(self.on_load_unsteady_results)
+        menu.addAction(self.action_load_unsteady_run)
+
+        self.action_unsteady_debug_options = QtGui.QAction('Unsteady Debug Options...', self)
+        self.action_unsteady_debug_options.triggered.connect(self.open_unsteady_debug_dialog)
+        menu.addAction(self.action_unsteady_debug_options)
+
+        self.action_unsteady_debug_log_viewer = QtGui.QAction('View Unsteady Debug Log...', self)
+        self.action_unsteady_debug_log_viewer.triggered.connect(self.open_unsteady_debug_log_viewer)
+        menu.addAction(self.action_unsteady_debug_log_viewer)
+
         menu.addSeparator()
 
         self.action_open_results_plot = QtGui.QAction('Open Results Plot', self)
@@ -715,6 +808,22 @@ class BackwaterWidget(QtWidgets.QWidget):
         self.action_open_results_table = QtGui.QAction('Open Results Table', self)
         self.action_open_results_table.triggered.connect(self.open_results_table)
         menu.addAction(self.action_open_results_table)
+
+        self.action_open_unsteady_profile_plot = QtGui.QAction('Open Unsteady Profile Plot', self)
+        self.action_open_unsteady_profile_plot.triggered.connect(self.open_unsteady_results_plot)
+        menu.addAction(self.action_open_unsteady_profile_plot)
+
+        self.action_open_unsteady_hydro_plot = QtGui.QAction('Open Stage Hydrograph Plot', self)
+        self.action_open_unsteady_hydro_plot.triggered.connect(self.open_unsteady_hydro_plot)
+        menu.addAction(self.action_open_unsteady_hydro_plot)
+
+        self.action_open_unsteady_section_plot = QtGui.QAction('Open Unsteady Section Results', self)
+        self.action_open_unsteady_section_plot.triggered.connect(self.open_unsteady_section_results_plot)
+        menu.addAction(self.action_open_unsteady_section_plot)
+
+        self.action_open_max_wse_table = QtGui.QAction('Open Max WSE Table', self)
+        self.action_open_max_wse_table.triggered.connect(self.open_max_wse_table)
+        menu.addAction(self.action_open_max_wse_table)
 
     def _apply_form_only_ui_mode(self):
         if not getattr(self, 'form_only_mode', False):
@@ -4034,6 +4143,1040 @@ else:
                 ui_info(self, 'Saved', f'Example GeoPackage saved to {gpkg_path} (could not add to project)')
         else:
             ui_warning(self, 'Failed', 'Could not write example GeoPackage')
+
+    # ------------------------------------------------------------------
+    # Unsteady solver UI
+    # ------------------------------------------------------------------
+
+    def open_unsteady_input_dialog(self):
+        """Open a standalone unsteady-input dialog for form-only workflows."""
+        dlg = QtWidgets.QDialog(self)
+        dlg.setWindowTitle('Unsteady Model Input')
+        dlg.resize(760, 620)
+        layout = QtWidgets.QVBoxLayout(dlg)
+
+        # Simulation parameters
+        params_group = QtWidgets.QGroupBox('Simulation Parameters', dlg)
+        params_form = QtWidgets.QFormLayout(params_group)
+        dt_edit = QtWidgets.QLineEdit(
+            self.us_dt_edit.text() if hasattr(self, 'us_dt_edit') else '60')
+        dur_edit = QtWidgets.QLineEdit(
+            self.us_tend_edit.text() if hasattr(self, 'us_tend_edit') else '3600')
+        theta_edit = QtWidgets.QLineEdit(
+            self.us_theta_edit.text() if hasattr(self, 'us_theta_edit') else '0.6')
+        out_spin = QtWidgets.QSpinBox()
+        out_spin.setMinimum(1)
+        out_spin.setMaximum(10000)
+        if hasattr(self, 'us_outint_spin'):
+            out_spin.setValue(int(self.us_outint_spin.value()))
+        else:
+            out_spin.setValue(1)
+        params_form.addRow('dt (s):', dt_edit)
+        params_form.addRow('Duration (s):', dur_edit)
+        params_form.addRow('Theta:', theta_edit)
+        params_form.addRow('Output interval:', out_spin)
+        layout.addWidget(params_group)
+
+        # Upstream hydrograph table
+        hydro_group = QtWidgets.QGroupBox('Upstream Flow Hydrograph', dlg)
+        hydro_layout = QtWidgets.QVBoxLayout(hydro_group)
+        hydro_btn_row = QtWidgets.QHBoxLayout()
+        add_btn = QtWidgets.QPushButton('+')
+        rem_btn = QtWidgets.QPushButton('−')
+        load_btn = QtWidgets.QPushButton('Load CSV…')
+        for b in (add_btn, rem_btn):
+            b.setFixedWidth(32)
+        hydro_btn_row.addWidget(add_btn)
+        hydro_btn_row.addWidget(rem_btn)
+        hydro_btn_row.addWidget(load_btn)
+        hydro_btn_row.addStretch()
+        hydro_layout.addLayout(hydro_btn_row)
+        hydro_table = QtWidgets.QTableWidget(0, 2)
+        hydro_table.setHorizontalHeaderLabels(['Time (s)', 'Q (cfs)'])
+        hydro_table.horizontalHeader().setStretchLastSection(True)
+        hydro_table.setMinimumHeight(220)
+        hydro_layout.addWidget(hydro_table)
+        layout.addWidget(hydro_group)
+
+        # Seed from existing unsteady table when available.
+        if hasattr(self, 'us_hydro_table') and self.us_hydro_table is not None and self.us_hydro_table.rowCount() > 0:
+            for r in range(self.us_hydro_table.rowCount()):
+                hydro_table.insertRow(r)
+                t_item = self.us_hydro_table.item(r, 0)
+                q_item = self.us_hydro_table.item(r, 1)
+                hydro_table.setItem(r, 0, QtWidgets.QTableWidgetItem(t_item.text() if t_item else '0'))
+                hydro_table.setItem(r, 1, QtWidgets.QTableWidgetItem(q_item.text() if q_item else '0'))
+        else:
+            hydro_table.insertRow(0)
+            hydro_table.setItem(0, 0, QtWidgets.QTableWidgetItem('0'))
+            hydro_table.setItem(0, 1, QtWidgets.QTableWidgetItem('100'))
+            hydro_table.insertRow(1)
+            hydro_table.setItem(1, 0, QtWidgets.QTableWidgetItem('3600'))
+            hydro_table.setItem(1, 1, QtWidgets.QTableWidgetItem('100'))
+
+        def _add_row():
+            row = hydro_table.rowCount()
+            hydro_table.insertRow(row)
+            hydro_table.setItem(row, 0, QtWidgets.QTableWidgetItem('0'))
+            hydro_table.setItem(row, 1, QtWidgets.QTableWidgetItem('0'))
+
+        def _remove_selected_rows():
+            rows = sorted({idx.row() for idx in hydro_table.selectedIndexes()}, reverse=True)
+            for r in rows:
+                hydro_table.removeRow(r)
+
+        def _load_csv():
+            path, _ = QFileDialog.getOpenFileName(
+                dlg, 'Load Hydrograph CSV', '', 'CSV files (*.csv);;All files (*)')
+            if not path:
+                return
+            try:
+                import csv
+                rows = []
+                with open(path, newline='') as f:
+                    reader = csv.reader(f)
+                    for line in reader:
+                        if len(line) < 2:
+                            continue
+                        try:
+                            rows.append((float(line[0]), float(line[1])))
+                        except ValueError:
+                            continue
+                if not rows:
+                    QMessageBox.warning(dlg, 'Load CSV', 'No valid data rows found in CSV.')
+                    return
+                hydro_table.setRowCount(0)
+                for t_val, q_val in rows:
+                    r = hydro_table.rowCount()
+                    hydro_table.insertRow(r)
+                    hydro_table.setItem(r, 0, QtWidgets.QTableWidgetItem(str(t_val)))
+                    hydro_table.setItem(r, 1, QtWidgets.QTableWidgetItem(str(q_val)))
+            except Exception as exc:
+                QMessageBox.critical(dlg, 'Load CSV Error', str(exc))
+
+        add_btn.clicked.connect(_add_row)
+        rem_btn.clicked.connect(_remove_selected_rows)
+        load_btn.clicked.connect(_load_csv)
+
+        # Downstream boundary condition controls
+        ds_group = QtWidgets.QGroupBox('Downstream Boundary', dlg)
+        ds_form = QtWidgets.QFormLayout(ds_group)
+        ds_combo = QtWidgets.QComboBox()
+        ds_combo.addItems(['normal_depth', 'stage'])
+        if hasattr(self, 'us_ds_bc_combo'):
+            idx = ds_combo.findText(str(self.us_ds_bc_combo.currentText()))
+            if idx >= 0:
+                ds_combo.setCurrentIndex(idx)
+        ds_edit = QtWidgets.QLineEdit(
+            self.us_ds_bc_edit.text() if hasattr(self, 'us_ds_bc_edit') else '0.001')
+        ds_form.addRow('DS BC type:', ds_combo)
+        ds_form.addRow('DS BC value:', ds_edit)
+        layout.addWidget(ds_group)
+
+        debug_group = QtWidgets.QGroupBox('Debug Logging', dlg)
+        debug_form = QtWidgets.QFormLayout(debug_group)
+        debug_enable = QtWidgets.QCheckBox('Enable detailed unsteady debug logging')
+        if hasattr(self, 'us_debug_enable_chk'):
+            debug_enable.setChecked(bool(self.us_debug_enable_chk.isChecked()))
+        debug_freq_combo = QtWidgets.QComboBox()
+        debug_freq_combo.addItem('Output timestep', 'output')
+        debug_freq_combo.addItem('Computation timestep', 'computation')
+        if hasattr(self, 'us_debug_frequency_combo'):
+            val = self.us_debug_frequency_combo.currentData()
+            idx = max(0, debug_freq_combo.findData(val))
+            debug_freq_combo.setCurrentIndex(idx)
+        debug_form.addRow(debug_enable)
+        debug_form.addRow('Capture frequency:', debug_freq_combo)
+        layout.addWidget(debug_group)
+
+        btns = QtWidgets.QDialogButtonBox(dlg)
+        run_btn = btns.addButton('Run Unsteady', QtWidgets.QDialogButtonBox.ButtonRole.AcceptRole)
+        btns.addButton(QtWidgets.QDialogButtonBox.StandardButton.Close)
+        layout.addWidget(btns)
+
+        def _run_from_dialog():
+            if hydro_table.rowCount() < 2:
+                QMessageBox.warning(dlg, 'Hydrograph Error', 'At least two hydrograph rows are required.')
+                return
+            try:
+                float(dt_edit.text())
+                float(dur_edit.text())
+                float(theta_edit.text())
+                float(ds_edit.text())
+            except ValueError:
+                QMessageBox.warning(dlg, 'Parameter Error', 'Please enter valid numeric values.')
+                return
+
+            # Ensure the backing unsteady widgets exist so we can reuse on_run_unsteady.
+            if not hasattr(self, 'us_hydro_table') or self.us_hydro_table is None:
+                self._build_unsteady_tab()
+
+            self.us_dt_edit.setText(dt_edit.text())
+            self.us_tend_edit.setText(dur_edit.text())
+            self.us_theta_edit.setText(theta_edit.text())
+            self.us_outint_spin.setValue(int(out_spin.value()))
+            self.us_ds_bc_combo.setCurrentText(str(ds_combo.currentText()))
+            self.us_ds_bc_edit.setText(ds_edit.text())
+            self.us_debug_enable_chk.setChecked(bool(debug_enable.isChecked()))
+            self.us_debug_frequency_combo.setCurrentIndex(debug_freq_combo.currentIndex())
+
+            self.us_hydro_table.setRowCount(0)
+            for r in range(hydro_table.rowCount()):
+                t_item = hydro_table.item(r, 0)
+                q_item = hydro_table.item(r, 1)
+                if t_item is None or q_item is None:
+                    continue
+                rr = self.us_hydro_table.rowCount()
+                self.us_hydro_table.insertRow(rr)
+                self.us_hydro_table.setItem(rr, 0, QtWidgets.QTableWidgetItem(t_item.text()))
+                self.us_hydro_table.setItem(rr, 1, QtWidgets.QTableWidgetItem(q_item.text()))
+
+            self.on_run_unsteady()
+            dlg.accept()
+
+        run_btn.clicked.connect(_run_from_dialog)
+        btns.rejected.connect(dlg.reject)
+        dlg.exec()
+
+    def _build_unsteady_tab(self):
+        """Add 'Unsteady' tab to left_tabs with hydrograph input and controls."""
+        try:
+            self.unsteady_tab = QtWidgets.QWidget()
+            layout = QtWidgets.QVBoxLayout(self.unsteady_tab)
+
+            # -- Simulation parameters --
+            params_group = QtWidgets.QGroupBox('Simulation Parameters')
+            params_layout = QtWidgets.QFormLayout(params_group)
+            self.us_dt_edit = QtWidgets.QLineEdit('60')
+            self.us_dt_edit.setToolTip('Computational time step in seconds')
+            self.us_tend_edit = QtWidgets.QLineEdit('3600')
+            self.us_tend_edit.setToolTip('Total simulation duration in seconds')
+            self.us_theta_edit = QtWidgets.QLineEdit('0.6')
+            self.us_theta_edit.setToolTip('Preissmann weighting factor (0.5–1.0)')
+            self.us_outint_spin = QtWidgets.QSpinBox()
+            self.us_outint_spin.setMinimum(1)
+            self.us_outint_spin.setMaximum(10000)
+            self.us_outint_spin.setValue(1)
+            self.us_outint_spin.setToolTip('Store results every N computational steps')
+            params_layout.addRow('dt (s):', self.us_dt_edit)
+            params_layout.addRow('Duration (s):', self.us_tend_edit)
+            params_layout.addRow('Theta:', self.us_theta_edit)
+            params_layout.addRow('Output interval:', self.us_outint_spin)
+            layout.addWidget(params_group)
+
+            # -- Upstream hydrograph --
+            hydro_group = QtWidgets.QGroupBox('Upstream Flow Hydrograph')
+            hydro_layout = QtWidgets.QVBoxLayout(hydro_group)
+            hydro_btn_row = QtWidgets.QHBoxLayout()
+            us_add_btn = QtWidgets.QPushButton('+')
+            us_add_btn.setFixedWidth(32)
+            us_add_btn.setToolTip('Add row')
+            us_rem_btn = QtWidgets.QPushButton('−')
+            us_rem_btn.setFixedWidth(32)
+            us_rem_btn.setToolTip('Remove selected row')
+            us_load_btn = QtWidgets.QPushButton('Load CSV…')
+            us_load_btn.setToolTip('Load hydrograph from two-column CSV (time_s, Q_cfs)')
+            us_save_btn = QtWidgets.QPushButton('Save to GPKG')
+            us_save_btn.setToolTip('Save current hydrograph to the loaded GeoPackage')
+            hydro_btn_row.addWidget(us_add_btn)
+            hydro_btn_row.addWidget(us_rem_btn)
+            hydro_btn_row.addWidget(us_load_btn)
+            hydro_btn_row.addWidget(us_save_btn)
+            hydro_btn_row.addStretch()
+            hydro_layout.addLayout(hydro_btn_row)
+            self.us_hydro_table = QtWidgets.QTableWidget(0, 2)
+            self.us_hydro_table.setHorizontalHeaderLabels(['Time (s)', 'Q (cfs)'])
+            self.us_hydro_table.horizontalHeader().setStretchLastSection(True)
+            self.us_hydro_table.setMaximumHeight(200)
+            hydro_layout.addWidget(self.us_hydro_table)
+            layout.addWidget(hydro_group)
+            us_add_btn.clicked.connect(self._us_hydro_add_row)
+            us_rem_btn.clicked.connect(self._us_hydro_remove_row)
+            us_load_btn.clicked.connect(self._us_hydro_load_csv)
+            us_save_btn.clicked.connect(self._us_hydro_save_gpkg)
+            # Seed with a simple default (constant base flow)
+            self._us_hydro_add_row(t=0.0, q=100.0)
+            self._us_hydro_add_row(t=3600.0, q=100.0)
+
+            # -- Downstream BC --
+            ds_group = QtWidgets.QGroupBox('Downstream Boundary')
+            ds_layout = QtWidgets.QFormLayout(ds_group)
+            self.us_ds_bc_combo = QtWidgets.QComboBox()
+            self.us_ds_bc_combo.addItems(['normal_depth', 'stage'])
+            self.us_ds_bc_edit = QtWidgets.QLineEdit('0.001')
+            self.us_ds_bc_edit.setToolTip('S0 (normal depth) or WSE (stage) at DS end')
+            ds_layout.addRow('DS BC type:', self.us_ds_bc_combo)
+            ds_layout.addRow('DS BC value:', self.us_ds_bc_edit)
+            layout.addWidget(ds_group)
+
+            debug_group = QtWidgets.QGroupBox('Debug Logging')
+            debug_layout = QtWidgets.QFormLayout(debug_group)
+            self.us_debug_enable_chk = QtWidgets.QCheckBox('Enable detailed unsteady debug logging')
+            self.us_debug_frequency_combo = QtWidgets.QComboBox()
+            self.us_debug_frequency_combo.addItem('Output timestep', 'output')
+            self.us_debug_frequency_combo.addItem('Computation timestep', 'computation')
+            self.us_debug_frequency_combo.setCurrentIndex(0)
+            debug_layout.addRow(self.us_debug_enable_chk)
+            debug_layout.addRow('Capture frequency:', self.us_debug_frequency_combo)
+            layout.addWidget(debug_group)
+
+            # -- Run button and progress --
+            run_row = QtWidgets.QHBoxLayout()
+            self.run_unsteady_btn = QtWidgets.QPushButton('Run Unsteady')
+            self.run_unsteady_btn.setStyleSheet(
+                'QPushButton { background: #1565c0; color: white; font-weight: bold; }')
+            self.run_unsteady_btn.clicked.connect(self.on_run_unsteady)
+            run_row.addWidget(self.run_unsteady_btn)
+            self.load_unsteady_run_btn = QtWidgets.QPushButton('Load Saved Run…')
+            self.load_unsteady_run_btn.setToolTip('Read a persisted unsteady run from GeoPackage')
+            self.load_unsteady_run_btn.clicked.connect(self.on_load_unsteady_results)
+            run_row.addWidget(self.load_unsteady_run_btn)
+            layout.addLayout(run_row)
+            self.us_progress_bar = QtWidgets.QProgressBar()
+            self.us_progress_bar.setRange(0, 100)
+            self.us_progress_bar.setValue(0)
+            self.us_progress_bar.setVisible(False)
+            layout.addWidget(self.us_progress_bar)
+            self.us_status_label = QtWidgets.QLabel('')
+            self.us_status_label.setWordWrap(True)
+            layout.addWidget(self.us_status_label)
+
+            layout.addStretch()
+            self.left_tabs.addTab(self.unsteady_tab, 'Unsteady')
+        except Exception as exc:
+            import traceback
+            print(f"WARNING: Could not build unsteady tab: {exc}\n{traceback.format_exc()}")
+
+    def _us_hydro_add_row(self, t: float = 0.0, q: float = 0.0):
+        tbl = self.us_hydro_table
+        row = tbl.rowCount()
+        tbl.insertRow(row)
+        tbl.setItem(row, 0, QtWidgets.QTableWidgetItem(str(t)))
+        tbl.setItem(row, 1, QtWidgets.QTableWidgetItem(str(q)))
+
+    def _us_hydro_remove_row(self):
+        tbl = self.us_hydro_table
+        rows = sorted({idx.row() for idx in tbl.selectedIndexes()}, reverse=True)
+        for r in rows:
+            tbl.removeRow(r)
+
+    def _us_hydro_load_csv(self):
+        """Load a two-column CSV (time_s, Q_cfs) into the upstream hydrograph table."""
+        path, _ = QFileDialog.getOpenFileName(
+            self, 'Load Hydrograph CSV', '', 'CSV files (*.csv);;All files (*)')
+        if not path:
+            return
+        try:
+            import csv
+            rows = []
+            with open(path, newline='') as f:
+                reader = csv.reader(f)
+                for line in reader:
+                    if len(line) < 2:
+                        continue
+                    try:
+                        t_val = float(line[0])
+                        q_val = float(line[1])
+                        rows.append((t_val, q_val))
+                    except ValueError:
+                        continue  # skip header / bad lines
+            if not rows:
+                QMessageBox.warning(self, 'Load CSV', 'No valid data rows found in CSV.')
+                return
+            tbl = self.us_hydro_table
+            tbl.setRowCount(0)
+            for t_val, q_val in rows:
+                self._us_hydro_add_row(t=t_val, q=q_val)
+        except Exception as exc:
+            QMessageBox.critical(self, 'Load CSV Error', str(exc))
+
+    def _us_hydro_save_gpkg(self):
+        """Save the upstream hydrograph to the loaded GeoPackage."""
+        path = getattr(self, 'loaded_gpkg_path', '')
+        if not path:
+            QMessageBox.warning(self, 'Save Hydrograph', 'No GeoPackage loaded.')
+            return
+        try:
+            from unsteady_model import HydrographBC, save_hydrograph_to_geopackage
+        except ImportError:
+            try:
+                from .unsteady_model import HydrographBC, save_hydrograph_to_geopackage
+            except ImportError as exc:
+                QMessageBox.critical(self, 'Import Error', str(exc))
+                return
+        hydro = self._read_us_hydrograph()
+        if hydro is None:
+            return
+        try:
+            hid = save_hydrograph_to_geopackage(path, hydro, hydrograph_id='upstream')
+            QMessageBox.information(self, 'Saved', f'Hydrograph saved to GeoPackage (id={hid}).')
+        except Exception as exc:
+            QMessageBox.critical(self, 'Save Error', str(exc))
+
+    def _read_us_hydrograph(self):
+        """Read hydrograph data from the upstream hydrograph table widget.
+        Returns a HydrographBC or None on error."""
+        try:
+            from unsteady_model import HydrographBC
+        except ImportError:
+            try:
+                from .unsteady_model import HydrographBC
+            except ImportError:
+                return None
+        tbl = self.us_hydro_table
+        times, values = [], []
+        for r in range(tbl.rowCount()):
+            t_item = tbl.item(r, 0)
+            q_item = tbl.item(r, 1)
+            if t_item is None or q_item is None:
+                continue
+            try:
+                times.append(float(t_item.text()))
+                values.append(float(q_item.text()))
+            except ValueError:
+                QMessageBox.warning(self, 'Hydrograph Error',
+                    f'Row {r+1}: non-numeric value — please check the hydrograph table.')
+                return None
+        if len(times) < 2:
+            QMessageBox.warning(self, 'Hydrograph Error',
+                'At least two hydrograph points (rows) are required.')
+            return None
+        return HydrographBC(times=times, values=values, bc_type='flow',
+                            label='Upstream flow hydrograph')
+
+    # ------------------------------------------------------------------
+    # Unsteady run
+    # ------------------------------------------------------------------
+
+    def on_run_unsteady(self):
+        """Execute the 1D unsteady solver and display results."""
+        try:
+            from unsteady_model import (
+                HydrographBC, UnsteadyParams, run_unsteady,
+                save_unsteady_results_to_geopackage,
+                save_unsteady_debug_to_geopackage,
+            )
+        except ImportError:
+            try:
+                from .unsteady_model import (
+                    HydrographBC, UnsteadyParams, run_unsteady,
+                    save_unsteady_results_to_geopackage,
+                    save_unsteady_debug_to_geopackage,
+                )
+            except ImportError as exc:
+                QMessageBox.critical(self, 'Import Error',
+                    f'Could not import unsteady_model: {exc}')
+                return
+
+        # Load model if not already loaded
+        path = getattr(self, 'loaded_gpkg_path', '')
+        if self.model is None:
+            if not path:
+                QMessageBox.warning(self, 'No Model',
+                    'Load a model GeoPackage before running.')
+                return
+            try:
+                import backwater_model as _bwmod
+                self.model = _bwmod.load_from_geopackage(path)
+            except Exception as exc:
+                QMessageBox.critical(self, 'Load Error', str(exc))
+                return
+
+        # Read hydrograph
+        hydro = self._read_us_hydrograph()
+        if hydro is None:
+            return
+
+        # Read solver parameters
+        try:
+            dt    = float(self.us_dt_edit.text())
+            t_end = float(self.us_tend_edit.text())
+            theta = float(self.us_theta_edit.text())
+            outint = int(self.us_outint_spin.value())
+        except ValueError as exc:
+            QMessageBox.warning(self, 'Parameter Error', str(exc))
+            return
+        if dt <= 0 or t_end <= 0:
+            QMessageBox.warning(self, 'Parameter Error',
+                'dt and Duration must be positive.')
+            return
+
+        ds_bc    = str(self.us_ds_bc_combo.currentText())
+        try:
+            ds_val = float(self.us_ds_bc_edit.text())
+        except ValueError:
+            QMessageBox.warning(self, 'Parameter Error',
+                'DS BC value must be numeric.')
+            return
+
+        params = UnsteadyParams(
+            dt=dt, t_end=t_end, theta=theta,
+            output_interval=outint,
+            downstream_bc=ds_bc, downstream_value=ds_val,
+            debug_capture=bool(self.us_debug_enable_chk.isChecked()),
+            debug_frequency=str(self.us_debug_frequency_combo.currentData() or 'output'),
+        )
+
+        # Progress feedback
+        self.us_progress_bar.setVisible(True)
+        self.us_progress_bar.setValue(0)
+        self.us_status_label.setText('Running unsteady solver…')
+        QtWidgets.QApplication.processEvents()
+
+        def _progress(step, total, msg):
+            pct = int(100 * step / total) if total > 0 else 0
+            self.us_progress_bar.setValue(pct)
+            self.us_status_label.setText(msg)
+            QtWidgets.QApplication.processEvents()
+
+        try:
+            results = run_unsteady(self.model, hydro, params,
+                                   progress_callback=_progress)
+            self.unsteady_results = results
+
+            # Save to GeoPackage
+            if path:
+                try:
+                    run_id = save_unsteady_results_to_geopackage(path, results)
+                    msg = (
+                        f'Done.  {results.n_output_times} output steps, '
+                        f'run_id={run_id}'
+                    )
+                    if params.debug_capture and results.debug_records:
+                        rec_kind = str(params.debug_frequency or 'output')
+                        n_debug = save_unsteady_debug_to_geopackage(
+                            path, run_id, results.debug_records, record_kind=rec_kind
+                        )
+                        msg += f', debug={n_debug} ({rec_kind})'
+                    self.us_status_label.setText(msg)
+                except Exception as save_exc:
+                    self.us_status_label.setText(
+                        f'Done (save failed: {save_exc})')
+            else:
+                self.us_status_label.setText(
+                    f'Done.  {results.n_output_times} output steps.')
+
+            self.us_progress_bar.setValue(100)
+            self._populate_unsteady_plots(results)
+            self._populate_max_wse_table(results)
+
+        except Exception as exc:
+            import traceback
+            self.us_progress_bar.setVisible(False)
+            self.us_status_label.setText(f'Error: {exc}')
+            QMessageBox.critical(self, 'Unsteady Solver Error',
+                f'{exc}\n\n{traceback.format_exc()}')
+            return
+
+        self.us_progress_bar.setVisible(False)
+
+    # ------------------------------------------------------------------
+    # Unsteady results display
+    # ------------------------------------------------------------------
+
+    def _populate_unsteady_plots(self, results):
+        """Build matplotlib plots for the unsteady results."""
+        if not HAVE_MPL:
+            self.us_status_label.setText(
+                'Matplotlib not available — cannot display plots.')
+            return
+
+        # Update time slider
+        n = results.n_output_times
+        self.unsteady_time_slider.setMaximum(max(0, n - 1))
+        self.unsteady_time_slider.setValue(0)
+        self.unsteady_section_time_slider.setMaximum(max(0, n - 1))
+        self.unsteady_section_time_slider.setValue(0)
+        self.unsteady_section_station_slider.setMaximum(max(0, results.n_sections - 1))
+        self.unsteady_section_station_slider.setValue(0)
+        # Draw initial profile plot
+        self._draw_unsteady_profile_plot(0)
+        # Draw WSE hydrograph plot
+        self._draw_unsteady_hydro_plot(results)
+        self._draw_unsteady_section_results_plot(0, 0)
+        # Switch to unsteady profile tab
+        try:
+            self.plots_tabs.setCurrentWidget(self.unsteady_plot_page)
+        except Exception:
+            pass
+
+    def _on_unsteady_slider_changed(self, value: int):
+        """Slider moved — redraw the WSE profile at the new time step."""
+        self._draw_unsteady_profile_plot(value)
+
+    def _on_unsteady_section_slider_changed(self, _value: int):
+        """Section-results sliders moved — redraw combined section diagnostics."""
+        t_idx = int(self.unsteady_section_time_slider.value())
+        s_idx = int(self.unsteady_section_station_slider.value())
+        self._draw_unsteady_section_results_plot(t_idx, s_idx)
+
+    def _unsteady_distance_from_ds(self, n_sections: int):
+        """Distance from downstream in solver order (US→DS values descending)."""
+        import numpy as _np
+        if n_sections <= 0:
+            return _np.array([], dtype=float)
+        x = _np.arange(n_sections, dtype=float)
+        if self.model is None:
+            return x
+        try:
+            from backwater_model import _sorted_sections_by_river_station
+            sections_ds_to_us = _sorted_sections_by_river_station(self.model.sections)
+            ds_dist = [0.0]
+            for i in range(1, min(n_sections, len(sections_ds_to_us))):
+                ds_dist.append(ds_dist[-1] + max(float(sections_ds_to_us[i - 1].L_ch_to_next), 0.0))
+            ds_dist_us_to_ds = list(reversed(ds_dist))
+            if len(ds_dist_us_to_ds) < n_sections:
+                ds_dist_us_to_ds.extend([ds_dist_us_to_ds[-1]] * (n_sections - len(ds_dist_us_to_ds)))
+            return _np.array(ds_dist_us_to_ds[:n_sections], dtype=float)
+        except Exception:
+            return x
+
+    def _draw_unsteady_profile_plot(self, time_idx: int):
+        """Draw WSE profile + max WSE envelope at output step *time_idx*."""
+        if not HAVE_MPL:
+            return
+        results = getattr(self, 'unsteady_results', None)
+        if results is None:
+            return
+        if time_idx < 0 or time_idx >= results.n_output_times:
+            return
+
+        try:
+            FigureCanvas, NavigationToolbar, plt, _np = _import_matplotlib_qt()
+        except Exception:
+            return
+
+        t_sec = float(results.times[time_idx])
+        t_label = (f'{t_sec/3600:.2f} h' if t_sec >= 3600
+                   else f'{t_sec:.0f} s')
+        self.unsteady_time_label.setText(f't = {t_label}')
+
+        N = results.n_sections
+        x = self._unsteady_distance_from_ds(N)
+
+        wse_t   = results.wse[time_idx]
+        max_wse = results.max_wse
+
+        # Compute min bed elevation per section (for thalweg)
+        bed = _np.zeros(N)
+        if self.model is not None:
+            try:
+                from backwater_model import _sorted_sections_by_river_station
+                ordered_ds_to_us = list(reversed(
+                    _sorted_sections_by_river_station(self.model.sections)))
+                for i, xs in enumerate(ordered_ds_to_us[:N]):
+                    bed[i] = min(p[1] for p in xs.geometry)
+            except Exception:
+                pass
+
+        # Clear previous canvas
+        for child in self.unsteady_canvas_host.findChildren(QtWidgets.QWidget):
+            child.setParent(None)
+
+        fig, ax = plt.subplots(figsize=(8, 4))
+        fig.subplots_adjust(left=0.1, right=0.97, top=0.88, bottom=0.12)
+        ax.fill_between(x, bed, _np.minimum(wse_t, wse_t),
+                        color='#90caf9', alpha=0.4, label='_nolegend_')
+        ax.plot(x, bed,       '-',  color='saddlebrown', lw=1.5, label='Thalweg')
+        ax.plot(x, max_wse,   '--', color='#ef5350',     lw=1.5, label='Max WSE')
+        ax.plot(x, wse_t,     '-o', color='#1565c0',     lw=2,   markersize=5,
+                label=f'WSE at {t_label}')
+        ax.set_xlabel('Distance from downstream (ft)')
+        ax.set_ylabel('Elevation (ft)')
+        ax.set_title('Unsteady WSE Profile (DS shown at right)')
+        ax.legend(fontsize=8)
+        ax.grid(True, linestyle='--', alpha=0.4)
+
+        canvas = FigureCanvas(fig)
+        toolbar = NavigationToolbar(canvas, self)
+        self.unsteady_canvas_host_layout.addWidget(toolbar)
+        self.unsteady_canvas_host_layout.addWidget(canvas)
+        plt.close(fig)
+
+    def _draw_unsteady_hydro_plot(self, results):
+        """Draw WSE vs time for each cross section (hydrograph plot)."""
+        if not HAVE_MPL:
+            return
+
+        try:
+            FigureCanvas, NavigationToolbar, plt, _np = _import_matplotlib_qt()
+        except Exception:
+            return
+
+        # Clear previous canvas
+        for child in self.unsteady_hydro_canvas_host.findChildren(QtWidgets.QWidget):
+            child.setParent(None)
+
+        times_h = results.times / 3600.0   # convert to hours
+        N = results.n_sections
+        fig, ax = plt.subplots(figsize=(9, 5))
+        fig.subplots_adjust(left=0.09, right=0.78, top=0.90, bottom=0.12)
+        cmap = plt.get_cmap('viridis', N)
+        for i in range(N):
+            sid = results.section_ids[i] if i < len(results.section_ids) else str(i)
+            ax.plot(times_h, results.wse[:, i],
+                    color=cmap(i), lw=1.5, label=f'RS {sid}')
+        ax.set_xlabel('Time (hours)')
+        ax.set_ylabel('Water Surface Elevation (ft)')
+        ax.set_title('Stage Hydrographs — All Sections')
+        ax.grid(True, linestyle='--', alpha=0.4)
+        ax.legend(fontsize=7, loc='upper left',
+                  bbox_to_anchor=(1.01, 1.0), borderaxespad=0)
+        canvas = FigureCanvas(fig)
+        toolbar = NavigationToolbar(canvas, self)
+        self.unsteady_hydro_canvas_host_layout.addWidget(toolbar)
+        self.unsteady_hydro_canvas_host_layout.addWidget(canvas)
+        plt.close(fig)
+
+    def _draw_unsteady_section_results_plot(self, time_idx: int, section_idx: int):
+        """Draw profile-at-time and section-timeseries with dual scrollers."""
+        if not HAVE_MPL:
+            return
+        results = getattr(self, 'unsteady_results', None)
+        if results is None or results.n_output_times <= 0 or results.n_sections <= 0:
+            return
+        time_idx = max(0, min(int(time_idx), results.n_output_times - 1))
+        section_idx = max(0, min(int(section_idx), results.n_sections - 1))
+
+        try:
+            FigureCanvas, NavigationToolbar, plt, _np = _import_matplotlib_qt()
+        except Exception:
+            return
+
+        t_sec = float(results.times[time_idx])
+        t_label = (f'{t_sec/3600:.2f} h' if t_sec >= 3600 else f'{t_sec:.0f} s')
+        sec_label = str(results.section_ids[section_idx]) if section_idx < len(results.section_ids) else str(section_idx)
+        self.unsteady_section_time_label.setText(f't = {t_label}')
+        self.unsteady_section_station_label.setText(f'RS = {sec_label}')
+
+        for child in self.unsteady_section_canvas_host.findChildren(QtWidgets.QWidget):
+            child.setParent(None)
+
+        x = self._unsteady_distance_from_ds(results.n_sections)
+        profile_t = results.wse[time_idx]
+        max_wse = results.max_wse
+        times_h = results.times / 3600.0
+
+        fig, (ax_top, ax_bottom) = plt.subplots(2, 1, figsize=(9, 7), sharex=False)
+        fig.subplots_adjust(left=0.1, right=0.92, top=0.92, bottom=0.09, hspace=0.32)
+        ax_top.plot(x, max_wse, '--', color='#ef5350', lw=1.5, label='Max WSE')
+        ax_top.plot(x, profile_t, '-o', color='#1565c0', lw=2.0, markersize=4, label=f'WSE at {t_label}')
+        ax_top.axvline(float(x[section_idx]), color='#6d4c41', linestyle=':', lw=1.2, label=f'Selected RS {sec_label}')
+        ax_top.set_xlabel('Distance from downstream (ft)')
+        ax_top.set_ylabel('Elevation (ft)')
+        ax_top.set_title('Section Results: Profile Snapshot')
+        ax_top.grid(True, linestyle='--', alpha=0.4)
+        ax_top.legend(fontsize=8)
+
+        ax_bottom.plot(times_h, results.wse[:, section_idx], color='#2e7d32', lw=2, label='WSE')
+        ax_bottom.axvline(t_sec / 3600.0, color='#2e7d32', linestyle=':', lw=1.2)
+        ax_bottom.set_xlabel('Time (hours)')
+        ax_bottom.set_ylabel('WSE (ft)', color='#2e7d32')
+        ax_bottom.tick_params(axis='y', labelcolor='#2e7d32')
+        ax_bottom.grid(True, linestyle='--', alpha=0.4)
+        ax_q = ax_bottom.twinx()
+        ax_q.plot(times_h, results.q[:, section_idx], color='#8e24aa', lw=1.6, label='Q')
+        ax_q.set_ylabel('Q (cfs)', color='#8e24aa')
+        ax_q.tick_params(axis='y', labelcolor='#8e24aa')
+        ax_bottom.set_title(f'Section Timeseries at RS {sec_label}')
+
+        canvas = FigureCanvas(fig)
+        toolbar = NavigationToolbar(canvas, self)
+        self.unsteady_section_canvas_host_layout.addWidget(toolbar)
+        self.unsteady_section_canvas_host_layout.addWidget(canvas)
+        plt.close(fig)
+
+    def _populate_max_wse_table(self, results):
+        """Fill the Max WSE table with max water surface per section."""
+        tbl = getattr(self, 'max_wse_table', None)
+        if tbl is None:
+            return
+        tbl.setRowCount(0)
+        # Compute min bed for depth calculation
+        bed = {}
+        if self.model is not None:
+            try:
+                from backwater_model import _sorted_sections_by_river_station
+                ordered_ds_to_us = list(reversed(
+                    _sorted_sections_by_river_station(self.model.sections)))
+                for i, xs in enumerate(ordered_ds_to_us[:results.n_sections]):
+                    bed[i] = min(p[1] for p in xs.geometry)
+            except Exception:
+                pass
+        for i, sid in enumerate(results.section_ids):
+            tbl.insertRow(i)
+            max_z = float(results.max_wse[i])
+            z_bed = bed.get(i, max_z)
+            max_depth = max(0.0, max_z - z_bed)
+            tbl.setItem(i, 0, QtWidgets.QTableWidgetItem(str(sid)))
+            tbl.setItem(i, 1, QtWidgets.QTableWidgetItem(f'{max_z:.3f}'))
+            tbl.setItem(i, 2, QtWidgets.QTableWidgetItem(f'{max_depth:.3f}'))
+        try:
+            if hasattr(self, 'io_tabs') and hasattr(self, 'max_wse_page'):
+                self.io_tabs.setCurrentWidget(self.max_wse_page)
+        except Exception:
+            pass
+
+    def open_unsteady_debug_dialog(self):
+        """Open a small dialog to configure unsteady debug capture settings."""
+        dlg = QtWidgets.QDialog(self)
+        dlg.setWindowTitle('Unsteady Debug Options')
+        dlg.resize(420, 180)
+        layout = QtWidgets.QVBoxLayout(dlg)
+        form = QtWidgets.QFormLayout()
+        enable_chk = QtWidgets.QCheckBox('Enable detailed unsteady debug logging')
+        enable_chk.setChecked(bool(self.us_debug_enable_chk.isChecked()))
+        freq_combo = QtWidgets.QComboBox()
+        freq_combo.addItem('Output timestep', 'output')
+        freq_combo.addItem('Computation timestep', 'computation')
+        idx = max(0, freq_combo.findData(self.us_debug_frequency_combo.currentData()))
+        freq_combo.setCurrentIndex(idx)
+        form.addRow(enable_chk)
+        form.addRow('Capture frequency:', freq_combo)
+        layout.addLayout(form)
+        buttons = QtWidgets.QDialogButtonBox(
+            QtWidgets.QDialogButtonBox.StandardButton.Ok |
+            QtWidgets.QDialogButtonBox.StandardButton.Cancel
+        )
+        layout.addWidget(buttons)
+
+        def _accept():
+            self.us_debug_enable_chk.setChecked(bool(enable_chk.isChecked()))
+            self.us_debug_frequency_combo.setCurrentIndex(freq_combo.currentIndex())
+            dlg.accept()
+
+        buttons.accepted.connect(_accept)
+        buttons.rejected.connect(dlg.reject)
+        dlg.exec()
+
+    def open_unsteady_debug_log_viewer(self):
+        """Open a dialog for browsing saved unsteady debug records."""
+        path = getattr(self, 'loaded_gpkg_path', '')
+        if not path:
+            QMessageBox.warning(self, 'Unsteady Debug Log', 'No GeoPackage loaded.')
+            return
+
+        try:
+            from unsteady_model import (
+                list_unsteady_runs_in_geopackage,
+                load_unsteady_debug_from_geopackage,
+            )
+        except ImportError:
+            try:
+                from .unsteady_model import (
+                    list_unsteady_runs_in_geopackage,
+                    load_unsteady_debug_from_geopackage,
+                )
+            except ImportError as exc:
+                QMessageBox.critical(self, 'Import Error', str(exc))
+                return
+
+        runs = list_unsteady_runs_in_geopackage(path)
+        if not runs:
+            QMessageBox.information(self, 'Unsteady Debug Log', 'No saved unsteady runs found in this GeoPackage.')
+            return
+
+        dlg = QtWidgets.QDialog(self)
+        dlg.setWindowTitle('Unsteady Debug Log Viewer')
+        dlg.resize(980, 680)
+
+        layout = QtWidgets.QVBoxLayout(dlg)
+        controls = QtWidgets.QGridLayout()
+
+        run_combo = QtWidgets.QComboBox()
+        for row in runs:
+            run_id = str(row.get('run_id', ''))
+            run_time = str(row.get('run_time', ''))
+            n_out = row.get('n_output_times', '?')
+            dt_s = row.get('dt_s', '?')
+            run_combo.addItem(
+                f"{run_id} | outputs={n_out} | dt={dt_s} s | {run_time}",
+                run_id,
+            )
+
+        kind_combo = QtWidgets.QComboBox()
+        kind_combo.addItem('All record kinds', 'all')
+        kind_combo.addItem('Output timesteps', 'output')
+        kind_combo.addItem('Computation timesteps', 'computation')
+
+        step_slider = QtWidgets.QSlider(QtCore.Qt.Orientation.Horizontal)
+        step_slider.setMinimum(0)
+        step_slider.setMaximum(0)
+        step_slider.setValue(0)
+
+        step_label = QtWidgets.QLabel('Record 1 of 1')
+        summary_label = QtWidgets.QLabel('')
+        summary_label.setWordWrap(True)
+
+        controls.addWidget(QtWidgets.QLabel('Run:'), 0, 0)
+        controls.addWidget(run_combo, 0, 1)
+        controls.addWidget(QtWidgets.QLabel('Filter:'), 0, 2)
+        controls.addWidget(kind_combo, 0, 3)
+        controls.addWidget(step_label, 1, 0)
+        controls.addWidget(step_slider, 1, 1, 1, 3)
+        controls.addWidget(summary_label, 2, 0, 1, 4)
+        layout.addLayout(controls)
+
+        record_view = QtWidgets.QPlainTextEdit()
+        record_view.setReadOnly(True)
+        layout.addWidget(record_view, stretch=1)
+
+        buttons = QtWidgets.QDialogButtonBox(QtWidgets.QDialogButtonBox.StandardButton.Close)
+        buttons.rejected.connect(dlg.reject)
+        buttons.accepted.connect(dlg.accept)
+        buttons.button(QtWidgets.QDialogButtonBox.StandardButton.Close).clicked.connect(dlg.accept)
+        layout.addWidget(buttons)
+
+        state = {'records': []}
+
+        def _show_record(idx):
+            records = state['records']
+            if not records:
+                step_label.setText('Record 0 of 0')
+                summary_label.setText('No debug records found for the selected run/filter.')
+                record_view.setPlainText('')
+                return
+            i = max(0, min(int(idx), len(records) - 1))
+            rec = records[i]
+            step_idx = rec.get('step_idx', '?') if isinstance(rec, dict) else '?'
+            time_s = rec.get('time_s', '?') if isinstance(rec, dict) else '?'
+            output_step = rec.get('output_step', '?') if isinstance(rec, dict) else '?'
+            step_label.setText(f'Record {i + 1} of {len(records)}')
+            summary_label.setText(
+                f'step_idx={step_idx}, time_s={time_s}, output_step={output_step}'
+            )
+            try:
+                record_view.setPlainText(json.dumps(rec, indent=2, sort_keys=True, default=str))
+            except Exception:
+                record_view.setPlainText(str(rec))
+
+        def _reload_records():
+            run_id = run_combo.currentData()
+            kind = str(kind_combo.currentData() or 'all')
+            if not run_id:
+                state['records'] = []
+                _show_record(0)
+                return
+            try:
+                if kind == 'all':
+                    records = load_unsteady_debug_from_geopackage(path, run_id)
+                else:
+                    records = load_unsteady_debug_from_geopackage(path, run_id, record_kind=kind)
+            except Exception as exc:
+                state['records'] = []
+                record_view.setPlainText(f'Failed to load debug records: {exc}')
+                step_label.setText('Record 0 of 0')
+                summary_label.setText('')
+                return
+
+            state['records'] = records
+            step_slider.blockSignals(True)
+            step_slider.setMinimum(0)
+            step_slider.setMaximum(max(0, len(records) - 1))
+            step_slider.setValue(0)
+            step_slider.blockSignals(False)
+            _show_record(0)
+
+        run_combo.currentIndexChanged.connect(_reload_records)
+        kind_combo.currentIndexChanged.connect(_reload_records)
+        step_slider.valueChanged.connect(_show_record)
+
+        _reload_records()
+        dlg.exec()
+
+    def on_load_unsteady_results(self):
+        """Load a persisted unsteady run from GeoPackage and refresh plots."""
+        path = getattr(self, 'loaded_gpkg_path', '')
+        if not path:
+            QMessageBox.warning(self, 'Load Unsteady Run', 'No GeoPackage loaded.')
+            return
+        try:
+            from unsteady_model import (
+                list_unsteady_runs_in_geopackage,
+                load_unsteady_results_from_geopackage,
+                load_unsteady_debug_from_geopackage,
+            )
+        except ImportError:
+            try:
+                from .unsteady_model import (
+                    list_unsteady_runs_in_geopackage,
+                    load_unsteady_results_from_geopackage,
+                    load_unsteady_debug_from_geopackage,
+                )
+            except ImportError as exc:
+                QMessageBox.critical(self, 'Import Error', str(exc))
+                return
+
+        runs = list_unsteady_runs_in_geopackage(path)
+        if not runs:
+            QMessageBox.information(self, 'Load Unsteady Run', 'No saved unsteady runs found in this GeoPackage.')
+            return
+        labels = []
+        run_ids = []
+        for row in runs:
+            rid = str(row.get('run_id', ''))
+            run_ids.append(rid)
+            labels.append(
+                f"{rid} | dt={row.get('dt', '?')} s | outputs={row.get('n_output_times', '?')} | "
+                f"{row.get('created_utc', '')}"
+            )
+        selected, ok = QtWidgets.QInputDialog.getItem(
+            self,
+            'Load Unsteady Run',
+            'Select run:',
+            labels,
+            0,
+            False,
+        )
+        if not ok or not selected:
+            return
+        idx = labels.index(selected)
+        run_id = run_ids[idx]
+        try:
+            results = load_unsteady_results_from_geopackage(path, run_id)
+            if results is None:
+                QMessageBox.warning(self, 'Load Unsteady Run', f'Run id not found: {run_id}')
+                return
+            debug_records = load_unsteady_debug_from_geopackage(path, run_id)
+            if debug_records:
+                results.debug_records = debug_records
+            self.unsteady_results = results
+            self._populate_unsteady_plots(results)
+            self._populate_max_wse_table(results)
+            self.us_status_label.setText(
+                f'Loaded run {run_id}: {results.n_output_times} outputs, '
+                f'{results.n_sections} sections.'
+            )
+        except Exception as exc:
+            QMessageBox.critical(self, 'Load Unsteady Run Error', str(exc))
+
+    def open_unsteady_results_plot(self):
+        """Switch to the Unsteady Profile tab in plots_tabs."""
+        try:
+            self.plots_tabs.setCurrentWidget(self.unsteady_plot_page)
+        except Exception:
+            pass
+
+    def open_unsteady_hydro_plot(self):
+        """Switch to the WSE Hydrograph tab in plots_tabs."""
+        try:
+            self.plots_tabs.setCurrentWidget(self.unsteady_hydro_page)
+        except Exception:
+            pass
+
+    def open_unsteady_section_results_plot(self):
+        """Switch to the Unsteady Section Results tab in plots_tabs."""
+        try:
+            self.plots_tabs.setCurrentWidget(self.unsteady_section_page)
+        except Exception:
+            pass
+
+    def open_max_wse_table(self):
+        """Switch to the Max WSE tab in io_tabs."""
+        try:
+            self.io_tabs.setCurrentWidget(self.max_wse_page)
+        except Exception:
+            pass
 
 def create_backwater_dockwidget(parent=None, title='Backwater'):
     """Create a QDockWidget containing the backwater UI suitable for adding
