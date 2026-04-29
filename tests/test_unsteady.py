@@ -28,7 +28,9 @@ from unsteady_model import (
     HydrographBC,
     UnsteadyParams,
     UnsteadyResults,
+    _build_section_hydraulic_table,
     _compute_total_K,
+    _dK_dz,
     _effective_reach_length,
     _hydraulic_bed_elevation,
     _regularized_wse,
@@ -304,6 +306,24 @@ class TestHydraulicHelpers(unittest.TestCase):
         self.assertGreater(wetter.left_activation_factor, 0.0)
         self.assertGreater(wetter.right_activation_factor, 0.0)
 
+    def test_lookup_table_matches_direct_section_state(self):
+        table = _build_section_hydraulic_table(self.xs, dz=0.05, padding=2.0)
+
+        for stage in (500.5, 501.25, 503.0):
+            direct = _unsteady_section_state(self.xs, stage, 250.0)
+            tabled = _unsteady_section_state(self.xs, stage, 250.0, hydraulic_table=table)
+
+            self.assertAlmostEqual(tabled.A_t, direct.A_t, delta=0.05)
+            self.assertAlmostEqual(tabled.K_t, direct.K_t, delta=max(0.1, 0.01 * direct.K_t))
+            self.assertAlmostEqual(tabled.T_t, direct.T_t, delta=0.1)
+            self.assertAlmostEqual(tabled.alpha, direct.alpha, delta=0.02)
+
+    def test_lookup_table_matches_direct_dkdz(self):
+        table = _build_section_hydraulic_table(self.xs, dz=0.05, padding=2.0)
+        direct = _dK_dz(self.xs, 502.0)
+        tabled = _dK_dz(self.xs, 502.0, hydraulic_table=table)
+        self.assertAlmostEqual(tabled, direct, delta=max(0.25, 0.05 * abs(direct)))
+
 
 # ---------------------------------------------------------------------------
 # Unsteady solver integration test
@@ -357,6 +377,30 @@ class TestUnsteadySolverBasic(unittest.TestCase):
         # max_wse should exceed initial WSE at upstream section
         init_wse_us = results.wse[0, 0]
         self.assertGreater(results.max_wse[0], init_wse_us)
+
+    def test_precomputed_tables_match_direct_solver(self):
+        from unsteady_model import run_unsteady
+
+        model = _make_simple_model(n_sections=4, Q_base=150.0, bed_slope=0.0015)
+        hydro = HydrographBC(
+            times=[0.0, 180.0, 360.0],
+            values=[150.0, 240.0, 150.0],
+            bc_type='flow',
+        )
+
+        params_direct = self._make_run_params(dt=30.0, t_end=360.0)
+        params_direct.precompute_hydraulic_tables = False
+
+        params_table = self._make_run_params(dt=30.0, t_end=360.0)
+        params_table.precompute_hydraulic_tables = True
+        params_table.hydraulic_table_dz = 0.01
+        params_table.hydraulic_table_padding = 3.0
+
+        direct = run_unsteady(model, hydro, params_direct)
+        tabled = run_unsteady(model, hydro, params_table)
+
+        self.assertTrue(np.allclose(tabled.wse, direct.wse, atol=0.06, rtol=0.0))
+        self.assertTrue(np.allclose(tabled.q, direct.q, atol=5.0, rtol=0.01))
 
     def test_max_wse_is_envelope(self):
         """max_wse must be >= all time-step WSE values at every section."""

@@ -38,7 +38,7 @@ import pickle
 import sqlite3
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from typing import Any, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 import sys, os
 sys.path.insert(0, os.path.dirname(__file__))
@@ -166,6 +166,15 @@ class UnsteadyParams:
     debug_frequency : str
         ``'output'`` to capture only output timesteps, or ``'computation'``
         to capture every computational timestep.
+    precompute_hydraulic_tables : bool
+        Precompute section hydraulic properties on a stage grid at the start
+        of the run and use interpolation during the solve.
+    hydraulic_table_dz : float
+        Stage increment (ft) used for the precomputed hydraulic lookup table.
+        Smaller values improve fidelity and increase startup preprocessing time.
+    hydraulic_table_padding : float
+        Extra elevation range (ft) above the highest surveyed point to include
+        in the lookup table before falling back to direct geometry evaluation.
     """
     dt: float = 60.0
     t_end: float = 3600.0
@@ -179,6 +188,9 @@ class UnsteadyParams:
     debug_output_path: str = ''
     debug_capture: bool = False
     debug_frequency: str = 'output'
+    precompute_hydraulic_tables: bool = True
+    hydraulic_table_dz: float = 0.01
+    hydraulic_table_padding: float = 5.0
 
 
 @dataclass
@@ -247,6 +259,28 @@ class UnsteadySectionState:
     right_activation_elev: float
     left_activation_factor: float
     right_activation_factor: float
+
+
+@dataclass
+class SectionHydraulicTable:
+    """Precomputed stage-property lookup table for one cross section."""
+    z_values: Any
+    A_lob_raw: Any
+    T_lob_raw: Any
+    K_lob_raw: Any
+    A_ch: Any
+    T_ch: Any
+    K_ch: Any
+    A_rob_raw: Any
+    T_rob_raw: Any
+    K_rob_raw: Any
+    K_total_raw: Any
+    dK_dz_raw: Any
+    left_activation_elev: float
+    right_activation_elev: float
+
+    def covers(self, z: float) -> bool:
+        return bool(self.z_values[0] <= z <= self.z_values[-1])
 
 
 # ---------------------------------------------------------------------------
@@ -331,8 +365,87 @@ def _subsection_hydraulics(geom: List[Tuple[float, float]], z: float, n_val: flo
     return A, P, max(0.0, T), K
 
 
-def _unsteady_section_state(xs: CrossSection, z: float, Q_total: float) -> UnsteadySectionState:
-    """Compute subsection-aware hydraulics for the unsteady solver."""
+def _interp_table_value(z_values: Any, values: Any, z: float) -> float:
+    """Linearly interpolate a tabled hydraulic property at stage *z*."""
+    return float(np.interp(float(z), z_values, values))
+
+
+def _interp_table_slope(z_values: Any, values: Any, z: float) -> Optional[float]:
+    """Piecewise-linear slope of a tabled property with respect to stage."""
+    if z <= float(z_values[0]) or z >= float(z_values[-1]):
+        return None
+    idx = int(np.searchsorted(z_values, float(z), side='right'))
+    idx = max(1, min(idx, len(z_values) - 1))
+    z0 = float(z_values[idx - 1])
+    z1 = float(z_values[idx])
+    if z1 <= z0:
+        return 0.0
+    return float((values[idx] - values[idx - 1]) / (z1 - z0))
+
+
+def _build_section_hydraulic_table(
+    xs: CrossSection,
+    dz: float,
+    padding: float,
+) -> SectionHydraulicTable:
+    """Precompute subsection hydraulic properties on a regular stage grid."""
+    if dz <= 0.0:
+        raise ValueError("hydraulic_table_dz must be positive.")
+
+    z_min = _hydraulic_bed_elevation(xs) + WETTING_DEPTH_FT
+    z_top = max(p[1] for p in xs.geometry)
+    z_max = max(z_min + dz, z_top + max(float(padding), dz))
+    n_points = max(32, int(math.ceil((z_max - z_min) / dz)) + 1)
+    z_values = np.linspace(z_min, z_max, n_points, dtype=np.float64)
+
+    lob_g, ch_g, rob_g = xs._subgeometry()
+    A_lob_raw = np.empty(n_points, dtype=np.float64)
+    T_lob_raw = np.empty(n_points, dtype=np.float64)
+    K_lob_raw = np.empty(n_points, dtype=np.float64)
+    A_ch = np.empty(n_points, dtype=np.float64)
+    T_ch = np.empty(n_points, dtype=np.float64)
+    K_ch = np.empty(n_points, dtype=np.float64)
+    A_rob_raw = np.empty(n_points, dtype=np.float64)
+    T_rob_raw = np.empty(n_points, dtype=np.float64)
+    K_rob_raw = np.empty(n_points, dtype=np.float64)
+
+    for idx, z_val in enumerate(z_values):
+        A_lob_raw[idx], _P_lob, T_lob_raw[idx], K_lob_raw[idx] = _subsection_hydraulics(lob_g, float(z_val), xs.n_lob)
+        A_ch[idx], _P_ch, T_ch[idx], K_ch[idx] = _subsection_hydraulics(ch_g, float(z_val), xs.n_ch)
+        A_rob_raw[idx], _P_rob, T_rob_raw[idx], K_rob_raw[idx] = _subsection_hydraulics(rob_g, float(z_val), xs.n_rob)
+
+    return SectionHydraulicTable(
+        z_values=z_values,
+        A_lob_raw=A_lob_raw,
+        T_lob_raw=T_lob_raw,
+        K_lob_raw=K_lob_raw,
+        A_ch=A_ch,
+        T_ch=T_ch,
+        K_ch=K_ch,
+        A_rob_raw=A_rob_raw,
+        T_rob_raw=T_rob_raw,
+        K_rob_raw=K_rob_raw,
+        K_total_raw=K_lob_raw + K_ch + K_rob_raw,
+        dK_dz_raw=np.gradient(K_lob_raw + K_ch + K_rob_raw, z_values, edge_order=2),
+        left_activation_elev=_overbank_activation_elevation(xs, 'left'),
+        right_activation_elev=_overbank_activation_elevation(xs, 'right'),
+    )
+
+
+def _build_hydraulic_tables(
+    sections_us_to_ds: List[CrossSection],
+    dz: float,
+    padding: float,
+) -> Dict[int, SectionHydraulicTable]:
+    """Build lookup tables for all cross sections in the model."""
+    return {
+        id(xs): _build_section_hydraulic_table(xs, dz=dz, padding=padding)
+        for xs in sections_us_to_ds
+    }
+
+
+def _unsteady_section_state_direct(xs: CrossSection, z: float, Q_total: float) -> UnsteadySectionState:
+    """Compute subsection-aware hydraulics directly from section geometry."""
     z = _regularized_wse(xs, z)
     lob_g, ch_g, rob_g = xs._subgeometry()
 
@@ -402,6 +515,99 @@ def _unsteady_section_state(xs: CrossSection, z: float, Q_total: float) -> Unste
         left_activation_factor=left_factor,
         right_activation_factor=right_factor,
     )
+
+
+def _unsteady_section_state_from_table(
+    xs: CrossSection,
+    hydraulic_table: SectionHydraulicTable,
+    z: float,
+    Q_total: float,
+) -> UnsteadySectionState:
+    """Compute section hydraulics by interpolating a precomputed stage table."""
+    z = _regularized_wse(xs, z)
+    if not hydraulic_table.covers(z):
+        return _unsteady_section_state_direct(xs, z, Q_total)
+
+    A_lob_raw = _interp_table_value(hydraulic_table.z_values, hydraulic_table.A_lob_raw, z)
+    T_lob_raw = _interp_table_value(hydraulic_table.z_values, hydraulic_table.T_lob_raw, z)
+    K_lob_raw = _interp_table_value(hydraulic_table.z_values, hydraulic_table.K_lob_raw, z)
+    A_ch = _interp_table_value(hydraulic_table.z_values, hydraulic_table.A_ch, z)
+    T_ch = _interp_table_value(hydraulic_table.z_values, hydraulic_table.T_ch, z)
+    K_ch = _interp_table_value(hydraulic_table.z_values, hydraulic_table.K_ch, z)
+    A_rob_raw = _interp_table_value(hydraulic_table.z_values, hydraulic_table.A_rob_raw, z)
+    T_rob_raw = _interp_table_value(hydraulic_table.z_values, hydraulic_table.T_rob_raw, z)
+    K_rob_raw = _interp_table_value(hydraulic_table.z_values, hydraulic_table.K_rob_raw, z)
+
+    left_factor = _activation_factor(z, hydraulic_table.left_activation_elev)
+    right_factor = _activation_factor(z, hydraulic_table.right_activation_elev)
+
+    A_lob = left_factor * A_lob_raw
+    T_lob = left_factor * T_lob_raw
+    K_lob = left_factor * K_lob_raw
+    A_rob = right_factor * A_rob_raw
+    T_rob = right_factor * T_rob_raw
+    K_rob = right_factor * K_rob_raw
+
+    A_t = A_lob + A_ch + A_rob
+    T_t = T_lob + T_ch + T_rob
+    K_t = K_lob + K_ch + K_rob
+
+    if K_t > 0.0:
+        Q_lob = Q_total * (K_lob / K_t)
+        Q_ch = Q_total * (K_ch / K_t)
+        Q_rob = Q_total * (K_rob / K_t)
+    else:
+        Q_lob = 0.0
+        Q_ch = 0.0
+        Q_rob = 0.0
+
+    V_t = Q_total / A_t if A_t > 0.0 else 0.0
+    alpha_num = 0.0
+    for K_i, A_i in ((K_lob, A_lob), (K_ch, A_ch), (K_rob, A_rob)):
+        if K_i > 0.0 and A_i > 0.0:
+            alpha_num += (K_i ** 3) / (A_i ** 2)
+    alpha = ((A_t ** 2) * alpha_num / (K_t ** 3)) if K_t > 0.0 and A_t > 0.0 else 1.0
+
+    if T_t <= 0.0:
+        slope = _interp_table_slope(hydraulic_table.z_values, hydraulic_table.A_ch + hydraulic_table.A_lob_raw + hydraulic_table.A_rob_raw, z)
+        T_t = max(0.01, slope if slope is not None else 0.01)
+
+    return UnsteadySectionState(
+        z=z,
+        alpha=alpha,
+        A_lob=A_lob,
+        A_ch=A_ch,
+        A_rob=A_rob,
+        T_lob=T_lob,
+        T_ch=T_ch,
+        T_rob=T_rob,
+        K_lob=K_lob,
+        K_ch=K_ch,
+        K_rob=K_rob,
+        Q_lob=Q_lob,
+        Q_ch=Q_ch,
+        Q_rob=Q_rob,
+        A_t=A_t,
+        T_t=T_t,
+        K_t=K_t,
+        V_t=V_t,
+        left_activation_elev=hydraulic_table.left_activation_elev,
+        right_activation_elev=hydraulic_table.right_activation_elev,
+        left_activation_factor=left_factor,
+        right_activation_factor=right_factor,
+    )
+
+
+def _unsteady_section_state(
+    xs: CrossSection,
+    z: float,
+    Q_total: float,
+    hydraulic_table: Optional[SectionHydraulicTable] = None,
+) -> UnsteadySectionState:
+    """Compute subsection-aware hydraulics for the unsteady solver."""
+    if hydraulic_table is not None:
+        return _unsteady_section_state_from_table(xs, hydraulic_table, z, Q_total)
+    return _unsteady_section_state_direct(xs, z, Q_total)
 
 
 def _effective_reach_length(xs_downstream: CrossSection, state_up: UnsteadySectionState, state_down: UnsteadySectionState, fallback_length: float) -> float:
@@ -482,11 +688,17 @@ def _capture_step_debug(
     t_new: float,
     output_step: bool,
     inner_stats: List[dict],
+    hydraulic_tables: Optional[Dict[int, SectionHydraulicTable]] = None,
 ) -> dict:
     """Capture a detailed solver snapshot for one timestep."""
     states = []
     for xs, z_val, q_val in zip(sections_us_to_ds, z_state, q_state):
-        s = _unsteady_section_state(xs, float(z_val), float(q_val))
+        s = _unsteady_section_state(
+            xs,
+            float(z_val),
+            float(q_val),
+            hydraulic_table=hydraulic_tables.get(id(xs)) if hydraulic_tables else None,
+        )
         states.append(s)
 
     reach_lengths = []
@@ -495,7 +707,13 @@ def _capture_step_debug(
     ds_to_us = list(reversed(sections_us_to_ds))
     for i, (xs, s, q_val) in enumerate(zip(sections_us_to_ds, states, q_state)):
         sf_by_node.append(_Sf(float(q_val), s.K_t))
-        dkdz_by_node.append(_dK_dz(xs, float(z_state[i])))
+        dkdz_by_node.append(
+            _dK_dz(
+                xs,
+                float(z_state[i]),
+                hydraulic_table=hydraulic_tables.get(id(xs)) if hydraulic_tables else None,
+            )
+        )
     for r in range(len(states) - 1):
         xs_down = ds_to_us[len(states) - 2 - r]
         reach_lengths.append(
@@ -554,8 +772,21 @@ def _regularized_wse(xs: CrossSection, z: float, min_depth: float = WETTING_DEPT
     """Clamp stage to a minimum wetting depth above the hydraulic bed."""
     return max(float(z), _hydraulic_bed_elevation(xs) + max(1e-6, float(min_depth)))
 
-def _compute_total_K(xs: CrossSection, z: float) -> float:
+def _compute_total_K(
+    xs: CrossSection,
+    z: float,
+    hydraulic_table: Optional[SectionHydraulicTable] = None,
+) -> float:
     """Total Manning conveyance at WSE *z* using subsection roughness."""
+    if hydraulic_table is not None and hydraulic_table.covers(z):
+        left_factor = _activation_factor(z, hydraulic_table.left_activation_elev)
+        right_factor = _activation_factor(z, hydraulic_table.right_activation_elev)
+        return (
+            left_factor * _interp_table_value(hydraulic_table.z_values, hydraulic_table.K_lob_raw, z)
+            + _interp_table_value(hydraulic_table.z_values, hydraulic_table.K_ch, z)
+            + right_factor * _interp_table_value(hydraulic_table.z_values, hydraulic_table.K_rob_raw, z)
+        )
+
     lob_g, ch_g, rob_g = xs._subgeometry()
 
     def _K_sub(geom, n_val):
@@ -570,21 +801,33 @@ def _compute_total_K(xs: CrossSection, z: float) -> float:
     return _K_sub(lob_g, xs.n_lob) + _K_sub(ch_g, xs.n_ch) + _K_sub(rob_g, xs.n_rob)
 
 
-def _section_vars(xs: CrossSection, z: float) -> Tuple[float, float, float]:
+def _section_vars(
+    xs: CrossSection,
+    z: float,
+    hydraulic_table: Optional[SectionHydraulicTable] = None,
+) -> Tuple[float, float, float]:
     """Return (A_total, K_total, T_top_width) at WSE *z*.
 
     *T* is the free-surface top width (≈ dA/dz), computed numerically.
     """
-    state = _unsteady_section_state(xs, z, 0.0)
+    state = _unsteady_section_state(xs, z, 0.0, hydraulic_table=hydraulic_table)
     return state.A_t, state.K_t, state.T_t
 
 
-def _dK_dz(xs: CrossSection, z: float, dz: float = 1e-3) -> float:
+def _dK_dz(
+    xs: CrossSection,
+    z: float,
+    dz: float = 1e-3,
+    hydraulic_table: Optional[SectionHydraulicTable] = None,
+) -> float:
     """Numerical dK/dz at WSE *z*."""
     z = _regularized_wse(xs, z)
     z_min = _hydraulic_bed_elevation(xs) + 1e-6
-    K_hi = _compute_total_K(xs, z + dz)
-    K_lo = _compute_total_K(xs, max(z - dz, z_min))
+    if hydraulic_table is not None:
+        if hydraulic_table.covers(z):
+            return _interp_table_value(hydraulic_table.z_values, hydraulic_table.dK_dz_raw, z)
+    K_hi = _compute_total_K(xs, z + dz, hydraulic_table=hydraulic_table)
+    K_lo = _compute_total_K(xs, max(z - dz, z_min), hydraulic_table=hydraulic_table)
     return (K_hi - K_lo) / (2.0 * dz)
 
 
@@ -609,18 +852,32 @@ def _dSf_dz(Q: float, K: float, dKdz: float) -> float:
     return -2.0 * Q * abs(Q) / (K ** 3) * dKdz
 
 
-def _normal_depth_Q(xs: CrossSection, S0: float, z: float) -> float:
+def _normal_depth_Q(
+    xs: CrossSection,
+    S0: float,
+    z: float,
+    hydraulic_table: Optional[SectionHydraulicTable] = None,
+) -> float:
     """Q from Manning normal-depth rating at elevation *z*."""
     z = _regularized_wse(xs, z)
-    K = _compute_total_K(xs, z)
+    K = _compute_total_K(xs, z, hydraulic_table=hydraulic_table)
     if S0 <= 0.0 or K <= 0.0:
         return 0.0
     return K * math.sqrt(S0)
 
 
-def _dQ_dz_normal(xs: CrossSection, S0: float, z: float, dz: float = 1e-3) -> float:
+def _dQ_dz_normal(
+    xs: CrossSection,
+    S0: float,
+    z: float,
+    dz: float = 1e-3,
+    hydraulic_table: Optional[SectionHydraulicTable] = None,
+) -> float:
     """Numerical dQ/dz for normal-depth BC linearization."""
-    return (_normal_depth_Q(xs, S0, z + dz) - _normal_depth_Q(xs, S0, z - dz)) / (2.0 * dz)
+    return (
+        _normal_depth_Q(xs, S0, z + dz, hydraulic_table=hydraulic_table)
+        - _normal_depth_Q(xs, S0, z - dz, hydraulic_table=hydraulic_table)
+    ) / (2.0 * dz)
 
 
 # ---------------------------------------------------------------------------
@@ -637,6 +894,7 @@ def _assemble_system(
     Q_upstream_next: float,
     ds_bc: str,
     ds_bc_value: float,          # S0 for normal depth, or z_ds^{n+1} for stage
+    hydraulic_tables: Optional[Dict[int, SectionHydraulicTable]] = None,
 ) -> Tuple[Any, Any]:
     """Build the pentadiagonal (bandwidth-5) matrix and RHS vector.
 
@@ -674,9 +932,11 @@ def _assemble_system(
 
         z_r   = z_n[r];   Q_r   = Q_n[r]
         z_rp1 = z_n[r+1]; Q_rp1 = Q_n[r+1]
+        table_r = hydraulic_tables.get(id(xs_r)) if hydraulic_tables else None
+        table_rp1 = hydraulic_tables.get(id(xs_rp1)) if hydraulic_tables else None
 
-        state_r = _unsteady_section_state(xs_r, z_r, Q_r)
-        state_rp1 = _unsteady_section_state(xs_rp1, z_rp1, Q_rp1)
+        state_r = _unsteady_section_state(xs_r, z_r, Q_r, hydraulic_table=table_r)
+        state_rp1 = _unsteady_section_state(xs_rp1, z_rp1, Q_rp1, hydraulic_table=table_rp1)
         L = _effective_reach_length(xs_rp1, state_r, state_rp1, dx[r])
 
         A_r, K_r, T_r = state_r.A_t, state_r.K_t, state_r.T_t
@@ -694,8 +954,8 @@ def _assemble_system(
 
         dSf_dQ_r   = _dSf_dQ(Q_r,   K_r)
         dSf_dQ_rp1 = _dSf_dQ(Q_rp1, K_rp1)
-        dKdz_r     = _dK_dz(xs_r,   z_r)
-        dKdz_rp1   = _dK_dz(xs_rp1, z_rp1)
+        dKdz_r     = _dK_dz(xs_r,   z_r, hydraulic_table=table_r)
+        dKdz_rp1   = _dK_dz(xs_rp1, z_rp1, hydraulic_table=table_rp1)
         dSf_dz_r   = _dSf_dz(Q_r,   K_r,   dKdz_r)
         dSf_dz_rp1 = _dSf_dz(Q_rp1, K_rp1, dKdz_rp1)
 
@@ -757,8 +1017,9 @@ def _assemble_system(
         # x[2N-1] = ΔQ_{N-1} (diagonal); x[2N-2] = Δz_{N-1}
         S0 = max(ds_bc_value, 1e-8)
         xs_ds = sections_us_to_ds[N - 1]
-        Q_nd  = _normal_depth_Q(xs_ds, S0, z_n[N - 1])
-        dQdz  = _dQ_dz_normal(xs_ds, S0, z_n[N - 1])
+        table_ds = hydraulic_tables.get(id(xs_ds)) if hydraulic_tables else None
+        Q_nd  = _normal_depth_Q(xs_ds, S0, z_n[N - 1], hydraulic_table=table_ds)
+        dQdz  = _dQ_dz_normal(xs_ds, S0, z_n[N - 1], hydraulic_table=table_ds)
         ab[2, size - 1]  =  1.0          # diagonal (ΔQ_{N-1})
         ab[3, size - 2] -= dQdz          # below diagonal (Δz_{N-1})
         rhs[row_ds] = Q_nd - Q_n[N - 1]
@@ -800,6 +1061,7 @@ def _capture_first_step_debug(
     step: int,
     inner_iter: int,
     t_new: float,
+    hydraulic_tables: Optional[Dict[int, SectionHydraulicTable]] = None,
 ) -> dict:
     """Return a JSON-serializable snapshot for the first-step upstream rows."""
     snapshot = {
@@ -847,8 +1109,10 @@ def _capture_first_step_debug(
     Q_0 = float(Q_state[0])
     Q_1 = float(Q_state[1])
 
-    state_0 = _unsteady_section_state(xs_0, z_0, Q_0)
-    state_1 = _unsteady_section_state(xs_1, z_1, Q_1)
+    table_0 = hydraulic_tables.get(id(xs_0)) if hydraulic_tables else None
+    table_1 = hydraulic_tables.get(id(xs_1)) if hydraulic_tables else None
+    state_0 = _unsteady_section_state(xs_0, z_0, Q_0, hydraulic_table=table_0)
+    state_1 = _unsteady_section_state(xs_1, z_1, Q_1, hydraulic_table=table_1)
     L = _effective_reach_length(xs_1, state_0, state_1, float(dx[0]) if dx else 1.0)
 
     A_0, K_0, T_0 = state_0.A_t, state_0.K_t, state_0.T_t
@@ -863,8 +1127,8 @@ def _capture_first_step_debug(
     alpha_1 = state_1.alpha
     dSf_dQ_0 = _dSf_dQ(Q_0, K_0)
     dSf_dQ_1 = _dSf_dQ(Q_1, K_1)
-    dKdz_0 = _dK_dz(xs_0, z_0)
-    dKdz_1 = _dK_dz(xs_1, z_1)
+    dKdz_0 = _dK_dz(xs_0, z_0, hydraulic_table=table_0)
+    dKdz_1 = _dK_dz(xs_1, z_1, hydraulic_table=table_1)
     dSf_dz_0 = _dSf_dz(Q_0, K_0, dKdz_0)
     dSf_dz_1 = _dSf_dz(Q_1, K_1, dKdz_1)
 
@@ -1122,6 +1386,14 @@ def run_unsteady(
     for i, xs in enumerate(sections_us_to_ds):
         z_n[i] = _regularized_wse(xs, z_n[i], MIN_DEPTH)
 
+    hydraulic_tables = None
+    if params.precompute_hydraulic_tables:
+        hydraulic_tables = _build_hydraulic_tables(
+            sections_us_to_ds,
+            dz=float(params.hydraulic_table_dz),
+            padding=float(params.hydraulic_table_padding),
+        )
+
     # Storage for output
     n_output = (n_total_steps // output_interval) + 1
     wse_out  = np.empty((n_output, N), dtype=np.float64)
@@ -1171,6 +1443,7 @@ def run_unsteady(
                 ab, rhs_vec = _assemble_system(
                     sections_us_to_ds, dx, z_iter, Q_iter, dt, theta,
                     Q_us_next, ds_bc, ds_value_next,
+                    hydraulic_tables=hydraulic_tables,
                 )
                 try:
                     delta = _solve_banded(ab, rhs_vec)
@@ -1196,6 +1469,7 @@ def run_unsteady(
                         step=step,
                         inner_iter=_inner + 1,
                         t_new=t_new,
+                        hydraulic_tables=hydraulic_tables,
                     ))
 
                 dz_raw = delta[0::2]   # Δz at each node
@@ -1264,6 +1538,7 @@ def run_unsteady(
                     step=step,
                     t_new=t_new,
                     output_step=(step % output_interval == 0),
+                        hydraulic_tables=hydraulic_tables,
                     inner_stats=inner_debug_stats,
                 ))
 
