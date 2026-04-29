@@ -79,3 +79,10 @@ python3 -m py_compile backwater_model.py backwater_qt.py backwater_plugin.py
 ## User Documentation
 
 See `USER_GUIDE.md` for step-by-step usage in QGIS.
+
+## Implementation Roadmap
+
+For the current native-backend roadmap (1D C++ port + 2D SWE solver), see:
+
+- `docs/IMPLEMENTATION_PLAN_6W_1D_CPP_AND_2D_SWE.md`
+- `docs/TASK_BOARD_6W_SOLO_AND_AGENT.md`
