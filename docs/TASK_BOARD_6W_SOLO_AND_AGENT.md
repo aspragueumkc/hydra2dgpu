@@ -334,3 +334,33 @@ Note: OpenMP `#pragma omp parallel for` is a no-op if OpenMP not found at build 
 Verification:
 1. `python3 -m unittest tests.test_native_table_build tests.test_native_table_state tests.test_native_assembly_core tests.test_native_damping_core tests.test_native_timestep -v` -> **ALL PASS**.
 
+### 2026-04-30 (HP2 complete: batch node-property evaluation with 2D SoA table layout)
+Tasks touched:
+1. Added `compute_node_properties_cpp` C++ kernel: batch evaluation of area, conveyance, top-width, velocity, alpha, dK/dz and discharge-weighted reach lengths from 2D SoA-packed (N × max_len) table arrays.
+2. Added `native_backend.py` wrappers: `compute_node_properties` (bridge) and `pack_node_property_bundle` (one-shot table packer).
+3. Wired native fast path into `_compute_node_properties` in `unsteady_model.py` with `bed_elevations` and pre-packed `node_property_bundle` (built once before time loop, reused each timestep).
+4. Added `pack_node_property_bundle` import to both try blocks and `None` fallback in `unsteady_model.py`.
+5. Added parity test `tests/test_native_node_properties.py` (3 tests: parity, shapes, physical constraints).
+
+Files changed:
+1. `cpp/src/backwater_native.cpp`
+2. `native_backend.py`
+3. `unsteady_model.py`
+4. `tests/test_native_node_properties.py`
+
+Benchmark results (5 sections, 2000 reps, per-call micro-benchmark):
+| Backend | Per-call time |
+|---------|--------------|
+| Python  | ~207 µs      |
+| Native  | ~77 µs       |
+| Speedup | **~2.7×**    |
+
+Verification:
+1. `python3 -m unittest tests.test_native_node_properties tests.test_native_table_build tests.test_native_table_state tests.test_native_assembly_core tests.test_native_damping_core tests.test_native_timestep -v` -> **ALL PASS (8 tests)**.
+
+Status:
+- [x] HP1 slice 1 (native table construction)
+- [x] HP1 slice 2 (native subsection clipping/preprocessing)
+- [x] HP1 slice 3 (OpenMP parallelization + startup benchmark deltas)
+- [x] HP2 (batch node-property evaluation, 2D SoA layout, 2.7× speedup)
+

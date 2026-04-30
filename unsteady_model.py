@@ -75,6 +75,7 @@ try:
         build_section_hydraulic_table_cpp as _native_build_section_hydraulic_table,
         configure_table_threads_cpp as _native_configure_table_threads,
         compute_node_properties as _native_compute_node_properties,
+        pack_node_property_bundle as _native_pack_node_property_bundle,
         get_table_threads_cpp as _native_get_table_threads,
         is_native_enabled as _is_native_enabled,
         run_one_timestep_unsteady_1d_cpp as _native_run_one_timestep,
@@ -90,6 +91,7 @@ except ImportError:
             build_section_hydraulic_table_cpp as _native_build_section_hydraulic_table,
             configure_table_threads_cpp as _native_configure_table_threads,
             compute_node_properties as _native_compute_node_properties,
+            pack_node_property_bundle as _native_pack_node_property_bundle,
             get_table_threads_cpp as _native_get_table_threads,
             is_native_enabled as _is_native_enabled,
             run_one_timestep_unsteady_1d_cpp as _native_run_one_timestep,
@@ -103,6 +105,7 @@ except ImportError:
         _native_build_section_hydraulic_table = None  # type: ignore
         _native_configure_table_threads = None  # type: ignore
         _native_compute_node_properties = None  # type: ignore
+        _native_pack_node_property_bundle = None  # type: ignore
         _native_get_table_threads = None  # type: ignore
         _is_native_enabled = None  # type: ignore
         _native_run_one_timestep = None  # type: ignore
@@ -1475,6 +1478,8 @@ def _compute_node_properties(
     Q_n: Any,
     hydraulic_tables: Optional[Dict[int, SectionHydraulicTable]] = None,
     overbank_ramp_depth: float = WETTING_DEPTH_FT,
+    bed_elevations: Optional[Any] = None,
+    node_property_bundle: Optional[Dict] = None,
 ) -> Tuple[Any, Any, Any, Any, Any, Any, Any]:
     """Compute hydraulic properties and derivatives for all nodes.
 
@@ -1488,6 +1493,59 @@ def _compute_node_properties(
     alpha_values : ndarray, shape (N,)
     dkdz_values : ndarray, shape (N,)
     """
+    # --- HP2 native batch path ---
+    # Requires: native enabled, pre-built bundle, and bed_elevations array.
+    if (
+        _native_compute_node_properties is not None
+        and _is_native_enabled is not None
+        and _is_native_enabled()
+        and hydraulic_tables is not None
+        and bed_elevations is not None
+    ):
+        try:
+            bundle = node_property_bundle
+            if bundle is None:
+                # Build on first call (one-shot packing; caller may cache via node_property_bundle).
+                assert _native_pack_node_property_bundle is not None
+                bundle = _native_pack_node_property_bundle(
+                    sections_us_to_ds, hydraulic_tables, list(dx)
+                )
+            reach_lengths, area_values, conveyance_values, top_width_values, \
+                velocity_values, alpha_values, dkdz_values = _native_compute_node_properties(
+                    np.asarray(z_n, dtype=np.float64),
+                    np.asarray(Q_n, dtype=np.float64),
+                    np.asarray(bed_elevations, dtype=np.float64),
+                    float(WETTING_DEPTH_FT),
+                    bundle["table_z_2d"],
+                    bundle["a_lob_2d"],
+                    bundle["t_lob_2d"],
+                    bundle["k_lob_2d"],
+                    bundle["a_ch_2d"],
+                    bundle["t_ch_2d"],
+                    bundle["k_ch_2d"],
+                    bundle["a_rob_2d"],
+                    bundle["t_rob_2d"],
+                    bundle["k_rob_2d"],
+                    bundle["dk_dz_2d"],
+                    bundle["table_lengths"],
+                    bundle["left_act_elev"],
+                    bundle["right_act_elev"],
+                    float(overbank_ramp_depth),
+                    bundle["L_ch"],
+                    bundle["L_lob"],
+                    bundle["L_rob"],
+                    bundle["dx_fallback"],
+                )
+            _NATIVE_SOLVER_RUNTIME['native_node_props_success_count'] = int(
+                _NATIVE_SOLVER_RUNTIME.get('native_node_props_success_count', 0)) + 1
+            return reach_lengths, area_values, conveyance_values, top_width_values, velocity_values, alpha_values, dkdz_values
+        except Exception as exc:
+            _NATIVE_SOLVER_RUNTIME['native_node_props_fallback_count'] = int(
+                _NATIVE_SOLVER_RUNTIME.get('native_node_props_fallback_count', 0)) + 1
+            _NATIVE_SOLVER_RUNTIME['last_node_props_fallback_error'] = str(exc)
+            # Fall through to Python path.
+
+    # --- Python path ---
     N = len(sections_us_to_ds)
     states = []
     dKdz_nodes = []
@@ -1534,6 +1592,7 @@ def _compute_node_properties(
         )
 
     return reach_lengths, area_values, conveyance_values, top_width_values, velocity_values, alpha_values, dkdz_values
+
 
 
 def _assemble_system(
@@ -2123,6 +2182,22 @@ def run_unsteady(
             padding=float(params.hydraulic_table_padding),
         )
 
+    # HP2: pre-pack table data for batch node-property evaluation.
+    # Built once here; passed into each _compute_node_properties call.
+    node_property_bundle = None
+    if (
+        hydraulic_tables is not None
+        and _native_pack_node_property_bundle is not None
+        and _is_native_enabled is not None
+        and _is_native_enabled()
+    ):
+        try:
+            node_property_bundle = _native_pack_node_property_bundle(
+                sections_us_to_ds, hydraulic_tables, list(dx)
+            )
+        except Exception:
+            node_property_bundle = None
+
     # Storage for output
     n_output = (n_total_steps // output_interval) + 1
     wse_out  = np.empty((n_output, N), dtype=np.float64)
@@ -2191,6 +2266,8 @@ def run_unsteady(
                         sections_us_to_ds, dx, z_iter, Q_iter,
                         hydraulic_tables=hydraulic_tables,
                         overbank_ramp_depth=overbank_ramp_depth,
+                        bed_elevations=bed_elevations,
+                        node_property_bundle=node_property_bundle,
                     )
                     z_iter, Q_iter, executed_iters, step_max_update_error, _converged = _native_run_one_timestep(
                         np.asarray(z_iter, dtype=np.float64),

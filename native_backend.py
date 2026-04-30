@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import importlib
 import os
-from typing import Any, Optional
+from typing import Any, Dict, List, Optional
+
+import numpy as np
 
 _NATIVE = None
 _NATIVE_IMPORT_ERROR: Optional[Exception] = None
@@ -138,21 +140,141 @@ def adaptive_damping_scale(
 
 
 def compute_node_properties(
-    reach_lengths_input,
-    z_values,
-    q_values,
-    hydraulic_tables_data,
-    overbank_ramp_depth,
+    z_n,
+    Q_n,
+    bed_elevations,
+    min_depth: float,
+    table_z_2d,
+    a_lob_2d,
+    t_lob_2d,
+    k_lob_2d,
+    a_ch_2d,
+    t_ch_2d,
+    k_ch_2d,
+    a_rob_2d,
+    t_rob_2d,
+    k_rob_2d,
+    dk_dz_2d,
+    table_lengths,
+    left_act_elev,
+    right_act_elev,
+    ramp_depth: float,
+    L_ch,
+    L_lob,
+    L_rob,
+    dx_fallback,
 ):
-    """Compute node properties (area, conveyance, width, velocity, alpha, dK/dz) through the native module."""
+    """Batch node property evaluation from pre-packed 2D SoA table layout (HP2).
+
+    Returns (reach_lengths, area, conveyance, top_width, velocity, alpha, dkdz)
+    where reach_lengths has shape (N-1,) and the rest have shape (N,).
+    """
     mod = load_native_module()
-    return mod.compute_node_properties(
-        reach_lengths_input,
-        z_values,
-        q_values,
-        hydraulic_tables_data,
-        overbank_ramp_depth,
+    return mod.compute_node_properties_cpp(
+        z_n, Q_n, bed_elevations, float(min_depth),
+        table_z_2d, a_lob_2d, t_lob_2d, k_lob_2d,
+        a_ch_2d, t_ch_2d, k_ch_2d,
+        a_rob_2d, t_rob_2d, k_rob_2d,
+        dk_dz_2d, table_lengths,
+        left_act_elev, right_act_elev, float(ramp_depth),
+        L_ch, L_lob, L_rob, dx_fallback,
     )
+
+
+def pack_node_property_bundle(
+    sections_ordered,
+    hydraulic_tables: Dict,
+    dx_list: List[float],
+) -> Dict[str, Any]:
+    """Pre-pack per-section hydraulic table data into 2D SoA numpy arrays.
+
+    All per-section table arrays are stacked row-major into (N x max_len)
+    matrices, padded with the last valid value (safe for interp_linear
+    out-of-bounds clamping).  Returns a dict that can be passed directly
+    to compute_node_properties().
+
+    Parameters
+    ----------
+    sections_ordered : list of CrossSection, upstream-to-downstream.
+    hydraulic_tables : dict mapping id(xs) -> SectionHydraulicTable.
+    dx_list : list of float, reach spacings (length N-1), used as fallback
+              when L_ch_to_next is missing/zero on a section.
+
+    Returns
+    -------
+    dict with keys: table_z_2d, a_lob_2d, t_lob_2d, k_lob_2d,
+                    a_ch_2d, t_ch_2d, k_ch_2d, a_rob_2d, t_rob_2d, k_rob_2d,
+                    dk_dz_2d, table_lengths (int32),
+                    left_act_elev, right_act_elev,
+                    L_ch, L_lob, L_rob, dx_fallback.
+    """
+    N = len(sections_ordered)
+    tables = [hydraulic_tables[id(xs)] for xs in sections_ordered]
+    lengths = np.array([len(t.z_values) for t in tables], dtype=np.int32)
+    max_len = int(lengths.max())
+
+    def _pack(attr: str) -> np.ndarray:
+        mat = np.empty((N, max_len), dtype=np.float64)
+        for i, t in enumerate(tables):
+            arr = getattr(t, attr)
+            n = len(arr)
+            mat[i, :n] = arr
+            if n < max_len:
+                # Pad with last valid value so interp_linear clamps correctly.
+                mat[i, n:] = arr[-1]
+        return mat
+
+    table_z_2d = _pack("z_values")
+    a_lob_2d   = _pack("A_lob_raw")
+    t_lob_2d   = _pack("T_lob_raw")
+    k_lob_2d   = _pack("K_lob_raw")
+    a_ch_2d    = _pack("A_ch")
+    t_ch_2d    = _pack("T_ch")
+    k_ch_2d    = _pack("K_ch")
+    a_rob_2d   = _pack("A_rob_raw")
+    t_rob_2d   = _pack("T_rob_raw")
+    k_rob_2d   = _pack("K_rob_raw")
+    dk_dz_2d   = _pack("dK_dz_raw")
+
+    left_act_elev  = np.array([t.left_activation_elev  for t in tables], dtype=np.float64)
+    right_act_elev = np.array([t.right_activation_elev for t in tables], dtype=np.float64)
+
+    # Reach geometry: for reach r, the downstream section is sections_ordered[r+1],
+    # but L_*_to_next on a section points toward the next upstream section in the
+    # DS-to-US ordering.  The solver builds dx via the reversed-order traversal:
+    # ordered_ds_to_us[N-2-r].L_ch_to_next is the length for reach r.
+    ordered_ds_to_us = list(reversed(sections_ordered))
+    L_ch_arr  = np.empty(N - 1, dtype=np.float64)
+    L_lob_arr = np.empty(N - 1, dtype=np.float64)
+    L_rob_arr = np.empty(N - 1, dtype=np.float64)
+    for r in range(N - 1):
+        ds_sec = ordered_ds_to_us[N - 2 - r]
+        L_ch_arr[r]  = float(getattr(ds_sec, "L_ch_to_next",  0.0) or 0.0)
+        L_lob_arr[r] = float(getattr(ds_sec, "L_lob_to_next", 0.0) or 0.0)
+        L_rob_arr[r] = float(getattr(ds_sec, "L_rob_to_next", 0.0) or 0.0)
+
+    dx_fb = np.array(dx_list, dtype=np.float64)
+
+    return {
+        "table_z_2d":    table_z_2d,
+        "a_lob_2d":      a_lob_2d,
+        "t_lob_2d":      t_lob_2d,
+        "k_lob_2d":      k_lob_2d,
+        "a_ch_2d":       a_ch_2d,
+        "t_ch_2d":       t_ch_2d,
+        "k_ch_2d":       k_ch_2d,
+        "a_rob_2d":      a_rob_2d,
+        "t_rob_2d":      t_rob_2d,
+        "k_rob_2d":      k_rob_2d,
+        "dk_dz_2d":      dk_dz_2d,
+        "table_lengths": lengths,
+        "left_act_elev": left_act_elev,
+        "right_act_elev": right_act_elev,
+        "L_ch":          L_ch_arr,
+        "L_lob":         L_lob_arr,
+        "L_rob":         L_rob_arr,
+        "dx_fallback":   dx_fb,
+    }
 
 
 def run_one_timestep_unsteady_1d_cpp(

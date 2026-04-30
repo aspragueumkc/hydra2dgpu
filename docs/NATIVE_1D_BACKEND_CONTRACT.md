@@ -99,6 +99,40 @@ Outputs:
 - Enforces minimum wetting depth on all nodes after state updates.
 - Returns both the updated state and diagnostic information for logging/debugging.
 
+### `compute_node_properties_cpp(...)`
+
+**HP2 entrypoint — batch node-property evaluation from 2D SoA table layout.**
+
+Inputs:
+1. `z_n`: current water-surface elevations, shape `(N,)`.
+2. `Q_n`: current discharges, shape `(N,)`.
+3. `bed_elevations`: hydraulic bed elevation per node, shape `(N,)`.
+4. `min_depth` (double): minimum wetting depth (ft) for regularization.
+5. 2D table arrays — row `i` holds the table for section `i` (C-order, shape `(N, max_len)`):
+   `table_z_2d`, `a_lob_2d`, `t_lob_2d`, `k_lob_2d`, `a_ch_2d`, `t_ch_2d`, `k_ch_2d`,
+   `a_rob_2d`, `t_rob_2d`, `k_rob_2d`, `dk_dz_2d`.
+6. `table_lengths`: valid row lengths per section, shape `(N,)` (int).
+7. `left_act_elev`, `right_act_elev`: overbank activation elevations, shape `(N,)`.
+8. `ramp_depth` (double): overbank activation ramp depth (ft).
+9. Reach geometry arrays, shape `(N-1,)`: `L_ch`, `L_lob`, `L_rob`.
+10. `dx_fallback`: fallback reach lengths if all L values are zero, shape `(N-1,)`.
+
+Outputs (Python tuple of 7 arrays):
+1. `reach_lengths`: discharge-weighted HEC-RAS reach lengths, shape `(N-1,)`.
+2. `area`: total wetted area per node, shape `(N,)`.
+3. `conveyance`: total conveyance per node, shape `(N,)`.
+4. `top_width`: total top width per node, shape `(N,)`.
+5. `velocity`: average velocity per node, shape `(N,)`.
+6. `alpha`: energy correction coefficient per node, shape `(N,)`.
+7. `dkdz`: dK/dz derivative per node (interpolated from `dk_dz_2d`), shape `(N,)`.
+
+Contract notes:
+- Each row of 2D arrays is padded to `max_len` with the last valid value for safe clamped interpolation.
+- Reach lengths use discharge-weighted mean: `(Q_lob*L_lob + Q_ch*L_ch + Q_rob*L_rob) / Q_total` (HEC-RAS convention); falls back to `L_ch` if total flow is zero, minimum 1.0 ft.
+- T_t=0 fallback: finite-difference of area at z±1e-6 for nodes with zero top-width interpolation.
+- Python bridge: `native_backend.compute_node_properties(...)` and `native_backend.pack_node_property_bundle(sections, hydraulic_tables, dx)`.
+- Bundle is built once before the time loop via `pack_node_property_bundle` and passed as `node_property_bundle` kwarg to `_compute_node_properties` each timestep.
+
 ### `build_section_hydraulic_table_cpp(...)`
 
 Inputs:

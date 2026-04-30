@@ -1153,6 +1153,226 @@ py::tuple build_section_hydraulic_table_from_geometry_cpp(
     );
 }
 
+// HP2: batch node-property evaluation from 2D SoA table layout.
+// Each section's table data is packed as one row of a (N x max_len) 2D array.
+// This eliminates N Python->C++ roundtrips per timestep and enables cache-local
+// access across properties within one section's row.
+//
+// Returns (reach_lengths, area, conveyance, top_width, velocity, alpha, dkdz)
+// where reach_lengths has shape (N-1,) and the rest have shape (N,).
+py::tuple compute_node_properties_cpp(
+    py::array_t<double, py::array::c_style | py::array::forcecast> z_n,
+    py::array_t<double, py::array::c_style | py::array::forcecast> Q_n,
+    py::array_t<double, py::array::c_style | py::array::forcecast> bed_elevations,
+    double min_depth,
+    // 2D table arrays, shape (N, max_len), C-order (row = one section):
+    py::array_t<double, py::array::c_style | py::array::forcecast> table_z_2d,
+    py::array_t<double, py::array::c_style | py::array::forcecast> a_lob_2d,
+    py::array_t<double, py::array::c_style | py::array::forcecast> t_lob_2d,
+    py::array_t<double, py::array::c_style | py::array::forcecast> k_lob_2d,
+    py::array_t<double, py::array::c_style | py::array::forcecast> a_ch_2d,
+    py::array_t<double, py::array::c_style | py::array::forcecast> t_ch_2d,
+    py::array_t<double, py::array::c_style | py::array::forcecast> k_ch_2d,
+    py::array_t<double, py::array::c_style | py::array::forcecast> a_rob_2d,
+    py::array_t<double, py::array::c_style | py::array::forcecast> t_rob_2d,
+    py::array_t<double, py::array::c_style | py::array::forcecast> k_rob_2d,
+    py::array_t<double, py::array::c_style | py::array::forcecast> dk_dz_2d,
+    py::array_t<int,    py::array::c_style | py::array::forcecast> table_lengths,
+    py::array_t<double, py::array::c_style | py::array::forcecast> left_act_elev,
+    py::array_t<double, py::array::c_style | py::array::forcecast> right_act_elev,
+    double ramp_depth,
+    // Reach geometry arrays, shape (N-1,):
+    py::array_t<double, py::array::c_style | py::array::forcecast> L_ch,
+    py::array_t<double, py::array::c_style | py::array::forcecast> L_lob,
+    py::array_t<double, py::array::c_style | py::array::forcecast> L_rob,
+    py::array_t<double, py::array::c_style | py::array::forcecast> dx_fallback) {
+
+    auto z_buf = z_n.request();
+    auto Q_buf = Q_n.request();
+    auto bed_buf = bed_elevations.request();
+    auto tz_buf  = table_z_2d.request();
+    auto al_buf  = a_lob_2d.request();
+    auto tl_buf  = t_lob_2d.request();
+    auto kl_buf  = k_lob_2d.request();
+    auto ac_buf  = a_ch_2d.request();
+    auto tc_buf  = t_ch_2d.request();
+    auto kc_buf  = k_ch_2d.request();
+    auto ar_buf  = a_rob_2d.request();
+    auto tr_buf  = t_rob_2d.request();
+    auto kr_buf  = k_rob_2d.request();
+    auto dkdz_buf = dk_dz_2d.request();
+    auto len_buf  = table_lengths.request();
+    auto lact_buf = left_act_elev.request();
+    auto ract_buf = right_act_elev.request();
+    auto Lch_buf  = L_ch.request();
+    auto Llob_buf = L_lob.request();
+    auto Lrob_buf = L_rob.request();
+    auto dx_buf   = dx_fallback.request();
+
+    if (z_buf.ndim != 1 || Q_buf.ndim != 1 || bed_buf.ndim != 1) {
+        throw std::runtime_error("compute_node_properties_cpp: z_n, Q_n, bed_elevations must be 1D.");
+    }
+    if (tz_buf.ndim != 2) {
+        throw std::runtime_error("compute_node_properties_cpp: table arrays must be 2D (N x max_len).");
+    }
+
+    const int N = static_cast<int>(z_buf.shape[0]);
+    if (N < 2) {
+        throw std::runtime_error("compute_node_properties_cpp: requires at least 2 nodes.");
+    }
+    const int max_len = static_cast<int>(tz_buf.shape[1]);
+    if (static_cast<int>(tz_buf.shape[0]) != N) {
+        throw std::runtime_error("compute_node_properties_cpp: table arrays row count must match N.");
+    }
+
+    const auto* z_ptr   = static_cast<const double*>(z_buf.ptr);
+    const auto* Q_ptr   = static_cast<const double*>(Q_buf.ptr);
+    const auto* bed_ptr = static_cast<const double*>(bed_buf.ptr);
+    const auto* tz_ptr  = static_cast<const double*>(tz_buf.ptr);
+    const auto* al_ptr  = static_cast<const double*>(al_buf.ptr);
+    const auto* tl_ptr  = static_cast<const double*>(tl_buf.ptr);
+    const auto* kl_ptr  = static_cast<const double*>(kl_buf.ptr);
+    const auto* ac_ptr  = static_cast<const double*>(ac_buf.ptr);
+    const auto* tc_ptr  = static_cast<const double*>(tc_buf.ptr);
+    const auto* kc_ptr  = static_cast<const double*>(kc_buf.ptr);
+    const auto* ar_ptr  = static_cast<const double*>(ar_buf.ptr);
+    const auto* tr_ptr  = static_cast<const double*>(tr_buf.ptr);
+    const auto* kr_ptr  = static_cast<const double*>(kr_buf.ptr);
+    const auto* dkdz_ptr = static_cast<const double*>(dkdz_buf.ptr);
+    const auto* len_ptr  = static_cast<const int*>(len_buf.ptr);
+    const auto* lact_ptr = static_cast<const double*>(lact_buf.ptr);
+    const auto* ract_ptr = static_cast<const double*>(ract_buf.ptr);
+    const auto* Lch_ptr  = static_cast<const double*>(Lch_buf.ptr);
+    const auto* Llob_ptr = static_cast<const double*>(Llob_buf.ptr);
+    const auto* Lrob_ptr = static_cast<const double*>(Lrob_buf.ptr);
+    const auto* dx_ptr   = static_cast<const double*>(dx_buf.ptr);
+
+    // Allocate output arrays.
+    py::array_t<double> out_reach(N - 1);
+    py::array_t<double> out_area(N);
+    py::array_t<double> out_conv(N);
+    py::array_t<double> out_tw(N);
+    py::array_t<double> out_vel(N);
+    py::array_t<double> out_alpha(N);
+    py::array_t<double> out_dkdz(N);
+
+    auto* reach_ptr = static_cast<double*>(out_reach.request().ptr);
+    auto* area_ptr  = static_cast<double*>(out_area.request().ptr);
+    auto* conv_ptr  = static_cast<double*>(out_conv.request().ptr);
+    auto* tw_ptr    = static_cast<double*>(out_tw.request().ptr);
+    auto* vel_ptr   = static_cast<double*>(out_vel.request().ptr);
+    auto* alpha_ptr = static_cast<double*>(out_alpha.request().ptr);
+    auto* dkdz_o_ptr = static_cast<double*>(out_dkdz.request().ptr);
+
+    // Per-section flow partition (needed for reach-length weighting).
+    std::vector<double> q_lob_arr(static_cast<size_t>(N), 0.0);
+    std::vector<double> q_ch_arr(static_cast<size_t>(N), 0.0);
+    std::vector<double> q_rob_arr(static_cast<size_t>(N), 0.0);
+
+    // Evaluate hydraulic state for each node using its table row.
+    for (int i = 0; i < N; ++i) {
+        const double z_raw = z_ptr[i];
+        const double z_reg = std::max(z_raw, bed_ptr[i] + std::max(1.0e-6, min_depth));
+        const double Q_i   = Q_ptr[i];
+        const int    n_tab = len_ptr[i];
+        const int    row   = i * max_len;  // row offset in 2D array
+
+        const double a_lob_raw = interp_linear(tz_ptr + row, al_ptr + row, n_tab, z_reg);
+        const double t_lob_raw = interp_linear(tz_ptr + row, tl_ptr + row, n_tab, z_reg);
+        const double k_lob_raw = interp_linear(tz_ptr + row, kl_ptr + row, n_tab, z_reg);
+        const double a_ch      = interp_linear(tz_ptr + row, ac_ptr + row, n_tab, z_reg);
+        const double t_ch      = interp_linear(tz_ptr + row, tc_ptr + row, n_tab, z_reg);
+        const double k_ch      = interp_linear(tz_ptr + row, kc_ptr + row, n_tab, z_reg);
+        const double a_rob_raw = interp_linear(tz_ptr + row, ar_ptr + row, n_tab, z_reg);
+        const double t_rob_raw = interp_linear(tz_ptr + row, tr_ptr + row, n_tab, z_reg);
+        const double k_rob_raw = interp_linear(tz_ptr + row, kr_ptr + row, n_tab, z_reg);
+        const double dk_dz_i   = interp_linear(tz_ptr + row, dkdz_ptr + row, n_tab, z_reg);
+
+        const double lf = activation_factor(z_reg, lact_ptr[i], ramp_depth);
+        const double rf = activation_factor(z_reg, ract_ptr[i], ramp_depth);
+
+        const double a_lob = lf * a_lob_raw;
+        const double t_lob = lf * t_lob_raw;
+        const double k_lob = lf * k_lob_raw;
+        const double a_rob = rf * a_rob_raw;
+        const double t_rob = rf * t_rob_raw;
+        const double k_rob = rf * k_rob_raw;
+
+        const double a_t = a_lob + a_ch + a_rob;
+        const double k_t = k_lob + k_ch + k_rob;
+        double t_t       = t_lob + t_ch + t_rob;
+
+        if (t_t <= 0.0) {
+            // Fallback: finite-difference approximation of dA/dz.
+            const double dz_eps = 1.0e-6;
+            const double z_hi = z_reg + dz_eps;
+            const double z_lo = z_reg - dz_eps;
+            const double a_hi = interp_linear(tz_ptr + row, al_ptr + row, n_tab, z_hi)
+                              + interp_linear(tz_ptr + row, ac_ptr + row, n_tab, z_hi)
+                              + interp_linear(tz_ptr + row, ar_ptr + row, n_tab, z_hi);
+            const double a_lo = interp_linear(tz_ptr + row, al_ptr + row, n_tab, z_lo)
+                              + interp_linear(tz_ptr + row, ac_ptr + row, n_tab, z_lo)
+                              + interp_linear(tz_ptr + row, ar_ptr + row, n_tab, z_lo);
+            t_t = (a_hi - a_lo) / (2.0 * dz_eps);
+            if (t_t < 0.01) { t_t = 0.01; }
+        }
+
+        double q_lob_i = 0.0, q_ch_i = 0.0, q_rob_i = 0.0;
+        if (k_t > 0.0) {
+            q_lob_i = Q_i * (k_lob / k_t);
+            q_ch_i  = Q_i * (k_ch  / k_t);
+            q_rob_i = Q_i * (k_rob / k_t);
+        }
+
+        const double v_t = (a_t > 0.0) ? Q_i / a_t : 0.0;
+
+        double alpha_num = 0.0;
+        if (k_lob > 0.0 && a_lob > 0.0) { alpha_num += (k_lob * k_lob * k_lob) / (a_lob * a_lob); }
+        if (k_ch  > 0.0 && a_ch  > 0.0) { alpha_num += (k_ch  * k_ch  * k_ch)  / (a_ch  * a_ch);  }
+        if (k_rob > 0.0 && a_rob > 0.0) { alpha_num += (k_rob * k_rob * k_rob) / (a_rob * a_rob); }
+        double alpha = 1.0;
+        if (k_t > 0.0 && a_t > 0.0) {
+            alpha = (a_t * a_t * alpha_num) / (k_t * k_t * k_t);
+        }
+
+        area_ptr[i]    = a_t;
+        conv_ptr[i]    = k_t;
+        tw_ptr[i]      = t_t;
+        vel_ptr[i]     = v_t;
+        alpha_ptr[i]   = alpha;
+        dkdz_o_ptr[i]  = dk_dz_i;
+        q_lob_arr[i]   = q_lob_i;
+        q_ch_arr[i]    = q_ch_i;
+        q_rob_arr[i]   = q_rob_i;
+    }
+
+    // Compute discharge-weighted reach lengths (HEC-RAS convention).
+    for (int r = 0; r < N - 1; ++r) {
+        double l_ch  = Lch_ptr[r];
+        double l_lob = Llob_ptr[r];
+        double l_rob = Lrob_ptr[r];
+        const double fb = dx_ptr[r];
+
+        if (l_ch  <= 0.0) { l_ch  = fb; }
+        if (l_lob <= 0.0) { l_lob = l_ch; }
+        if (l_rob <= 0.0) { l_rob = l_ch; }
+
+        const double q_lob_av = 0.5 * (std::abs(q_lob_arr[r]) + std::abs(q_lob_arr[r + 1]));
+        const double q_ch_av  = 0.5 * (std::abs(q_ch_arr[r])  + std::abs(q_ch_arr[r + 1]));
+        const double q_rob_av = 0.5 * (std::abs(q_rob_arr[r]) + std::abs(q_rob_arr[r + 1]));
+        const double q_total  = q_lob_av + q_ch_av + q_rob_av;
+
+        if (q_total <= 0.0) {
+            reach_ptr[r] = std::max(1.0, l_ch);
+        } else {
+            reach_ptr[r] = std::max(1.0,
+                (l_lob * q_lob_av + l_ch * q_ch_av + l_rob * q_rob_av) / q_total);
+        }
+    }
+
+    return py::make_tuple(out_reach, out_area, out_conv, out_tw, out_vel, out_alpha, out_dkdz);
+}
+
 void configure_table_threads_cpp(int thread_count) {
     g_table_threads = std::max(0, thread_count);
 #if defined(BACKWATER_HAS_OPENMP)
@@ -1212,4 +1432,13 @@ PYBIND11_MODULE(backwater_native, m) {
                     "Configure OpenMP thread count for native hydraulic-table kernels (0 uses runtime default).");
                 m.def("get_table_threads_cpp", &get_table_threads_cpp,
                     "Get configured native hydraulic-table OpenMP thread count (0 means runtime default).");
+    m.def("compute_node_properties_cpp", &compute_node_properties_cpp,
+          py::arg("z_n"), py::arg("Q_n"), py::arg("bed_elevations"), py::arg("min_depth"),
+          py::arg("table_z_2d"), py::arg("a_lob_2d"), py::arg("t_lob_2d"), py::arg("k_lob_2d"),
+          py::arg("a_ch_2d"), py::arg("t_ch_2d"), py::arg("k_ch_2d"),
+          py::arg("a_rob_2d"), py::arg("t_rob_2d"), py::arg("k_rob_2d"),
+          py::arg("dk_dz_2d"), py::arg("table_lengths"),
+          py::arg("left_act_elev"), py::arg("right_act_elev"), py::arg("ramp_depth"),
+          py::arg("L_ch"), py::arg("L_lob"), py::arg("L_rob"), py::arg("dx_fallback"),
+          "Batch node property evaluation from 2D SoA table layout (HP2).");
 }

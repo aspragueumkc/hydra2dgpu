@@ -234,9 +234,19 @@ Definition of done:
 1. Move startup and property buffers to contiguous SoA-friendly layout.
 2. Validate compiler vectorization on hot loops.
 
+**HP2 completed (2026-04-30):**
+1. Added `compute_node_properties_cpp` C++ kernel: batch evaluation of area, conveyance, top-width, velocity, alpha, dK/dz and discharge-weighted reach lengths from 2D SoA-packed table arrays (N × max_len, row-major).
+2. Added `native_backend.py` wrappers: `compute_node_properties` (bridge) and `pack_node_property_bundle` (one-shot packer).
+3. Wired into `_compute_node_properties` in `unsteady_model.py` with `bed_elevations` and pre-packed `node_property_bundle` parameters; `node_property_bundle` is built once before the time loop and reused each timestep.
+4. Added parity test `tests/test_native_node_properties.py` (3 tests: parity, shapes, physical constraints).
+5. All 8 parity tests pass (3 new + 5 HP1 carried forward).
+
+Per-timestep property-evaluation benchmark (5 sections, 2000 reps):
+- Python: ~207 µs/call → Native: ~77 µs/call → **~2.7× speedup**
+
 Definition of done:
-1. Benchmarks show startup and/or property-evaluation improvement.
-2. No parity regressions.
+1. Benchmarks show startup and/or property-evaluation improvement. ✓
+2. No parity regressions. ✓
 
 ### HP3: OpenMP threading pass
 1. Parallelize section/table/property loops.
