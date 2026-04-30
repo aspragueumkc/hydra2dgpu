@@ -36,6 +36,8 @@ import json
 import math
 import pickle
 import sqlite3
+import concurrent.futures as _cf
+import multiprocessing as _mp
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Tuple
@@ -57,6 +59,113 @@ try:
 except ImportError:
     _HAVE_SCIPY = False
     _scipy_solve_banded = None  # type: ignore
+
+try:
+    from numba import njit as _numba_njit
+    _HAVE_NUMBA = True
+except ImportError:
+    _numba_njit = None  # type: ignore
+    _HAVE_NUMBA = False
+
+try:
+    from native_backend import (
+        adaptive_damping_scale as _native_adaptive_damping_scale,
+        assemble_system_core as _native_assemble_system_core,
+        build_section_hydraulic_table_cpp as _native_build_section_hydraulic_table,
+        compute_node_properties as _native_compute_node_properties,
+        is_native_enabled as _is_native_enabled,
+        run_one_timestep_unsteady_1d_cpp as _native_run_one_timestep,
+        solve_banded_full as _native_solve_banded_full,
+        solve_table_state as _native_solve_table_state,
+    )
+except ImportError:
+    try:
+        from .native_backend import (  # type: ignore
+            adaptive_damping_scale as _native_adaptive_damping_scale,
+            assemble_system_core as _native_assemble_system_core,
+            build_section_hydraulic_table_cpp as _native_build_section_hydraulic_table,
+            compute_node_properties as _native_compute_node_properties,
+            is_native_enabled as _is_native_enabled,
+            run_one_timestep_unsteady_1d_cpp as _native_run_one_timestep,
+            solve_banded_full as _native_solve_banded_full,
+            solve_table_state as _native_solve_table_state,
+        )
+    except ImportError:
+        _native_adaptive_damping_scale = None  # type: ignore
+        _native_assemble_system_core = None  # type: ignore
+        _native_build_section_hydraulic_table = None  # type: ignore
+        _native_compute_node_properties = None  # type: ignore
+        _is_native_enabled = None  # type: ignore
+        _native_run_one_timestep = None  # type: ignore
+        _native_solve_banded_full = None  # type: ignore
+        _native_solve_table_state = None  # type: ignore
+
+
+_NATIVE_SOLVER_RUNTIME: Dict[str, Any] = {
+    'enabled': False,
+    'module_available': False,
+    'native_assembly_success_count': 0,
+    'native_assembly_fallback_count': 0,
+    'last_assembly_fallback_error': '',
+    'native_damping_success_count': 0,
+    'native_damping_fallback_count': 0,
+    'last_damping_fallback_error': '',
+    'native_success_count': 0,
+    'native_fallback_count': 0,
+    'last_fallback_error': '',
+    'native_timestep_success_count': 0,
+    'native_timestep_fallback_count': 0,
+    'last_timestep_fallback_error': '',
+}
+
+
+def _reset_native_solver_runtime() -> None:
+    enabled = False
+    if _is_native_enabled is not None:
+        try:
+            enabled = bool(_is_native_enabled())
+        except Exception:
+            enabled = False
+    _NATIVE_SOLVER_RUNTIME.update({
+        'enabled': enabled,
+        'module_available': bool(_native_solve_banded_full is not None),
+        'native_assembly_success_count': 0,
+        'native_assembly_fallback_count': 0,
+        'last_assembly_fallback_error': '',
+        'native_damping_success_count': 0,
+        'native_damping_fallback_count': 0,
+        'last_damping_fallback_error': '',
+        'native_success_count': 0,
+        'native_fallback_count': 0,
+        'last_fallback_error': '',
+        'native_timestep_success_count': 0,
+        'native_timestep_fallback_count': 0,
+        'last_timestep_fallback_error': '',
+    })
+
+
+def get_native_solver_runtime() -> Dict[str, Any]:
+    return dict(_NATIVE_SOLVER_RUNTIME)
+
+
+def _native_solver_backend_label() -> str:
+    if not bool(_NATIVE_SOLVER_RUNTIME.get('enabled', False)):
+        return 'python-scipy'
+    ts_ok = int(_NATIVE_SOLVER_RUNTIME.get('native_timestep_success_count', 0))
+    ts_fb = int(_NATIVE_SOLVER_RUNTIME.get('native_timestep_fallback_count', 0))
+    if ts_ok > 0:
+        if ts_fb > 0:
+            return 'native-cpp-timestep-with-fallback'
+        return 'native-cpp-timestep-active'
+    if int(_NATIVE_SOLVER_RUNTIME.get('native_success_count', 0)) > 0:
+        if int(_NATIVE_SOLVER_RUNTIME.get('native_fallback_count', 0)) > 0:
+            return 'native-cpp-with-fallback'
+        return 'native-cpp-active'
+    if not bool(_NATIVE_SOLVER_RUNTIME.get('module_available', False)):
+        return 'python-fallback-native-unavailable'
+    if int(_NATIVE_SOLVER_RUNTIME.get('native_fallback_count', 0)) > 0:
+        return 'python-fallback-native-error'
+    return 'python-scipy'
 
 # Shared hydraulic helpers from the steady model
 try:
@@ -175,6 +284,12 @@ class UnsteadyParams:
     hydraulic_table_padding : float
         Extra elevation range (ft) above the highest surveyed point to include
         in the lookup table before falling back to direct geometry evaluation.
+    ds_bc_ramp_steps : int
+        Number of startup timesteps over which downstream boundary-condition
+        corrections are ramped from 0 to 100%. Set 0 for no ramp.
+    overbank_activation_ramp_depth_ft : float
+        Depth (ft) used to smoothly activate overbank conveyance once stage
+        exceeds the overbank activation elevation.
     """
     dt: float = 60.0
     t_end: float = 3600.0
@@ -191,6 +306,8 @@ class UnsteadyParams:
     precompute_hydraulic_tables: bool = True
     hydraulic_table_dz: float = 0.01
     hydraulic_table_padding: float = 5.0
+    ds_bc_ramp_steps: int = 5
+    overbank_activation_ramp_depth_ft: float = 0.25
 
 
 @dataclass
@@ -288,6 +405,130 @@ class SectionHydraulicTable:
 # ---------------------------------------------------------------------------
 
 WETTING_DEPTH_FT = 0.001
+
+
+if _HAVE_NUMBA:
+    @_numba_njit(cache=True, fastmath=True)
+    def _interp_linear_jit(x_values, y_values, x):
+        n = len(x_values)
+        if n == 0:
+            return 0.0
+        if x <= x_values[0]:
+            return y_values[0]
+        if x >= x_values[n - 1]:
+            return y_values[n - 1]
+
+        lo = 0
+        hi = n - 1
+        while lo < hi - 1:
+            mid = (lo + hi) // 2
+            if x_values[mid] <= x:
+                lo = mid
+            else:
+                hi = mid
+
+        x0 = x_values[lo]
+        x1 = x_values[hi]
+        if x1 <= x0:
+            return y_values[lo]
+        frac = (x - x0) / (x1 - x0)
+        return y_values[lo] + frac * (y_values[hi] - y_values[lo])
+
+    @_numba_njit(cache=True, fastmath=True)
+    def _activation_factor_jit(stage, activation_elev, ramp_depth):
+        depth = stage - activation_elev
+        if depth <= 0.0:
+            return 0.0
+        if ramp_depth <= 0.0:
+            return 1.0
+        frac = depth / ramp_depth
+        if frac < 0.0:
+            return 0.0
+        if frac > 1.0:
+            return 1.0
+        return frac
+
+    @_numba_njit(cache=True, fastmath=True)
+    def _table_state_jit(
+        z,
+        q_total,
+        z_values,
+        A_lob_raw_series,
+        T_lob_raw_series,
+        K_lob_raw_series,
+        A_ch_series,
+        T_ch_series,
+        K_ch_series,
+        A_rob_raw_series,
+        T_rob_raw_series,
+        K_rob_raw_series,
+        left_activation_elev,
+        right_activation_elev,
+        ramp_depth,
+    ):
+        A_lob_raw = _interp_linear_jit(z_values, A_lob_raw_series, z)
+        T_lob_raw = _interp_linear_jit(z_values, T_lob_raw_series, z)
+        K_lob_raw = _interp_linear_jit(z_values, K_lob_raw_series, z)
+        A_ch = _interp_linear_jit(z_values, A_ch_series, z)
+        T_ch = _interp_linear_jit(z_values, T_ch_series, z)
+        K_ch = _interp_linear_jit(z_values, K_ch_series, z)
+        A_rob_raw = _interp_linear_jit(z_values, A_rob_raw_series, z)
+        T_rob_raw = _interp_linear_jit(z_values, T_rob_raw_series, z)
+        K_rob_raw = _interp_linear_jit(z_values, K_rob_raw_series, z)
+
+        left_factor = _activation_factor_jit(z, left_activation_elev, ramp_depth)
+        right_factor = _activation_factor_jit(z, right_activation_elev, ramp_depth)
+
+        A_lob = left_factor * A_lob_raw
+        T_lob = left_factor * T_lob_raw
+        K_lob = left_factor * K_lob_raw
+        A_rob = right_factor * A_rob_raw
+        T_rob = right_factor * T_rob_raw
+        K_rob = right_factor * K_rob_raw
+
+        A_t = A_lob + A_ch + A_rob
+        T_t = T_lob + T_ch + T_rob
+        K_t = K_lob + K_ch + K_rob
+
+        if K_t > 0.0:
+            Q_lob = q_total * (K_lob / K_t)
+            Q_ch = q_total * (K_ch / K_t)
+            Q_rob = q_total * (K_rob / K_t)
+        else:
+            Q_lob = 0.0
+            Q_ch = 0.0
+            Q_rob = 0.0
+
+        V_t = q_total / A_t if A_t > 0.0 else 0.0
+
+        alpha_num = 0.0
+        if K_lob > 0.0 and A_lob > 0.0:
+            alpha_num += (K_lob ** 3) / (A_lob ** 2)
+        if K_ch > 0.0 and A_ch > 0.0:
+            alpha_num += (K_ch ** 3) / (A_ch ** 2)
+        if K_rob > 0.0 and A_rob > 0.0:
+            alpha_num += (K_rob ** 3) / (A_rob ** 2)
+
+        if K_t > 0.0 and A_t > 0.0:
+            alpha = ((A_t ** 2) * alpha_num / (K_t ** 3))
+        else:
+            alpha = 1.0
+
+        if T_t <= 0.0:
+            A_total_raw = A_lob_raw_series + A_ch_series + A_rob_raw_series
+            slope = _interp_linear_jit(z_values, A_total_raw, z + 1e-6) - _interp_linear_jit(z_values, A_total_raw, z - 1e-6)
+            T_t = slope / (2.0e-6)
+            if T_t < 0.01:
+                T_t = 0.01
+
+        return (
+            A_lob, A_ch, A_rob,
+            T_lob, T_ch, T_rob,
+            K_lob, K_ch, K_rob,
+            Q_lob, Q_ch, Q_rob,
+            A_t, T_t, K_t, V_t, alpha,
+            left_factor, right_factor,
+        )
 
 
 def _station_elevation(xs: CrossSection, station: float) -> float:
@@ -399,6 +640,62 @@ def _build_section_hydraulic_table(
     z_values = np.linspace(z_min, z_max, n_points, dtype=np.float64)
 
     lob_g, ch_g, rob_g = xs._subgeometry()
+
+    if _native_build_section_hydraulic_table is not None and _is_native_enabled is not None:
+        if _is_native_enabled():
+            try:
+                lob_x = np.asarray([p[0] for p in lob_g], dtype=np.float64)
+                lob_z = np.asarray([p[1] for p in lob_g], dtype=np.float64)
+                ch_x = np.asarray([p[0] for p in ch_g], dtype=np.float64)
+                ch_z = np.asarray([p[1] for p in ch_g], dtype=np.float64)
+                rob_x = np.asarray([p[0] for p in rob_g], dtype=np.float64)
+                rob_z = np.asarray([p[1] for p in rob_g], dtype=np.float64)
+
+                (
+                    A_lob_raw,
+                    T_lob_raw,
+                    K_lob_raw,
+                    A_ch,
+                    T_ch,
+                    K_ch,
+                    A_rob_raw,
+                    T_rob_raw,
+                    K_rob_raw,
+                    K_total_raw,
+                    dK_dz_raw,
+                ) = _native_build_section_hydraulic_table(
+                    lob_x,
+                    lob_z,
+                    ch_x,
+                    ch_z,
+                    rob_x,
+                    rob_z,
+                    z_values,
+                    xs.n_lob,
+                    xs.n_ch,
+                    xs.n_rob,
+                )
+
+                return SectionHydraulicTable(
+                    z_values=z_values,
+                    A_lob_raw=np.asarray(A_lob_raw, dtype=np.float64),
+                    T_lob_raw=np.asarray(T_lob_raw, dtype=np.float64),
+                    K_lob_raw=np.asarray(K_lob_raw, dtype=np.float64),
+                    A_ch=np.asarray(A_ch, dtype=np.float64),
+                    T_ch=np.asarray(T_ch, dtype=np.float64),
+                    K_ch=np.asarray(K_ch, dtype=np.float64),
+                    A_rob_raw=np.asarray(A_rob_raw, dtype=np.float64),
+                    T_rob_raw=np.asarray(T_rob_raw, dtype=np.float64),
+                    K_rob_raw=np.asarray(K_rob_raw, dtype=np.float64),
+                    K_total_raw=np.asarray(K_total_raw, dtype=np.float64),
+                    dK_dz_raw=np.asarray(dK_dz_raw, dtype=np.float64),
+                    left_activation_elev=_overbank_activation_elevation(xs, 'left'),
+                    right_activation_elev=_overbank_activation_elevation(xs, 'right'),
+                )
+            except Exception:
+                # Keep production behavior: silently fall back to Python table build.
+                pass
+
     A_lob_raw = np.empty(n_points, dtype=np.float64)
     T_lob_raw = np.empty(n_points, dtype=np.float64)
     K_lob_raw = np.empty(n_points, dtype=np.float64)
@@ -432,19 +729,66 @@ def _build_section_hydraulic_table(
     )
 
 
+def _build_section_hydraulic_table_worker(
+    xs: CrossSection,
+    dz: float,
+    padding: float,
+) -> SectionHydraulicTable:
+    """Process-pool worker wrapper for one section table build."""
+    return _build_section_hydraulic_table(xs, dz=dz, padding=padding)
+
+
 def _build_hydraulic_tables(
     sections_us_to_ds: List[CrossSection],
     dz: float,
     padding: float,
 ) -> Dict[int, SectionHydraulicTable]:
     """Build lookup tables for all cross sections in the model."""
+    n_sections = len(sections_us_to_ds)
+    if n_sections == 0:
+        return {}
+
+    cpu_count = max(1, int(os.cpu_count() or 1))
+    disable_parallel = str(os.environ.get('BACKWATER_DISABLE_TABLE_PARALLEL', '')).strip().lower() in ('1', 'true', 'yes')
+    use_parallel = (
+        not disable_parallel
+        and n_sections >= 6
+        and cpu_count > 1
+    )
+
+    if use_parallel:
+        workers = min(cpu_count, n_sections)
+        try:
+            ctx = _mp.get_context('spawn')
+            with _cf.ProcessPoolExecutor(max_workers=workers, mp_context=ctx) as exe:
+                table_list = list(
+                    exe.map(
+                        _build_section_hydraulic_table_worker,
+                        sections_us_to_ds,
+                        [dz] * n_sections,
+                        [padding] * n_sections,
+                    )
+                )
+            return {
+                id(xs): table
+                for xs, table in zip(sections_us_to_ds, table_list)
+            }
+        except Exception:
+            # Fall back to serial mode if process pools are unavailable.
+            pass
+
     return {
         id(xs): _build_section_hydraulic_table(xs, dz=dz, padding=padding)
         for xs in sections_us_to_ds
     }
 
 
-def _unsteady_section_state_direct(xs: CrossSection, z: float, Q_total: float) -> UnsteadySectionState:
+def _unsteady_section_state_direct(
+    xs: CrossSection,
+    z: float,
+    Q_total: float,
+    overbank_ramp_depth: float = WETTING_DEPTH_FT,
+) -> UnsteadySectionState:
     """Compute subsection-aware hydraulics directly from section geometry."""
     z = _regularized_wse(xs, z)
     lob_g, ch_g, rob_g = xs._subgeometry()
@@ -455,8 +799,8 @@ def _unsteady_section_state_direct(xs: CrossSection, z: float, Q_total: float) -
 
     left_activation_elev = _overbank_activation_elevation(xs, 'left')
     right_activation_elev = _overbank_activation_elevation(xs, 'right')
-    left_factor = _activation_factor(z, left_activation_elev)
-    right_factor = _activation_factor(z, right_activation_elev)
+    left_factor = _activation_factor(z, left_activation_elev, ramp_depth=overbank_ramp_depth)
+    right_factor = _activation_factor(z, right_activation_elev, ramp_depth=overbank_ramp_depth)
 
     A_lob = left_factor * A_lob_raw
     T_lob = left_factor * T_lob_raw
@@ -522,11 +866,118 @@ def _unsteady_section_state_from_table(
     hydraulic_table: SectionHydraulicTable,
     z: float,
     Q_total: float,
+    overbank_ramp_depth: float = WETTING_DEPTH_FT,
 ) -> UnsteadySectionState:
     """Compute section hydraulics by interpolating a precomputed stage table."""
     z = _regularized_wse(xs, z)
     if not hydraulic_table.covers(z):
-        return _unsteady_section_state_direct(xs, z, Q_total)
+        return _unsteady_section_state_direct(xs, z, Q_total, overbank_ramp_depth=overbank_ramp_depth)
+
+    if _native_solve_table_state is not None and _is_native_enabled is not None:
+        if _is_native_enabled():
+            try:
+                (
+                    A_lob, A_ch, A_rob,
+                    T_lob, T_ch, T_rob,
+                    K_lob, K_ch, K_rob,
+                    Q_lob, Q_ch, Q_rob,
+                    A_t, T_t, K_t, V_t, alpha,
+                    left_factor, right_factor,
+                ) = _native_solve_table_state(
+                    z,
+                    Q_total,
+                    hydraulic_table.z_values,
+                    hydraulic_table.A_lob_raw,
+                    hydraulic_table.T_lob_raw,
+                    hydraulic_table.K_lob_raw,
+                    hydraulic_table.A_ch,
+                    hydraulic_table.T_ch,
+                    hydraulic_table.K_ch,
+                    hydraulic_table.A_rob_raw,
+                    hydraulic_table.T_rob_raw,
+                    hydraulic_table.K_rob_raw,
+                    hydraulic_table.left_activation_elev,
+                    hydraulic_table.right_activation_elev,
+                    overbank_ramp_depth,
+                )
+
+                return UnsteadySectionState(
+                    z=z,
+                    alpha=float(alpha),
+                    A_lob=float(A_lob),
+                    A_ch=float(A_ch),
+                    A_rob=float(A_rob),
+                    T_lob=float(T_lob),
+                    T_ch=float(T_ch),
+                    T_rob=float(T_rob),
+                    K_lob=float(K_lob),
+                    K_ch=float(K_ch),
+                    K_rob=float(K_rob),
+                    Q_lob=float(Q_lob),
+                    Q_ch=float(Q_ch),
+                    Q_rob=float(Q_rob),
+                    A_t=float(A_t),
+                    T_t=float(T_t),
+                    K_t=float(K_t),
+                    V_t=float(V_t),
+                    left_activation_elev=hydraulic_table.left_activation_elev,
+                    right_activation_elev=hydraulic_table.right_activation_elev,
+                    left_activation_factor=float(left_factor),
+                    right_activation_factor=float(right_factor),
+                )
+            except Exception:
+                pass
+
+    if _HAVE_NUMBA:
+        (
+            A_lob, A_ch, A_rob,
+            T_lob, T_ch, T_rob,
+            K_lob, K_ch, K_rob,
+            Q_lob, Q_ch, Q_rob,
+            A_t, T_t, K_t, V_t, alpha,
+            left_factor, right_factor,
+        ) = _table_state_jit(
+            z,
+            Q_total,
+            hydraulic_table.z_values,
+            hydraulic_table.A_lob_raw,
+            hydraulic_table.T_lob_raw,
+            hydraulic_table.K_lob_raw,
+            hydraulic_table.A_ch,
+            hydraulic_table.T_ch,
+            hydraulic_table.K_ch,
+            hydraulic_table.A_rob_raw,
+            hydraulic_table.T_rob_raw,
+            hydraulic_table.K_rob_raw,
+            hydraulic_table.left_activation_elev,
+            hydraulic_table.right_activation_elev,
+            overbank_ramp_depth,
+        )
+
+        return UnsteadySectionState(
+            z=z,
+            alpha=float(alpha),
+            A_lob=float(A_lob),
+            A_ch=float(A_ch),
+            A_rob=float(A_rob),
+            T_lob=float(T_lob),
+            T_ch=float(T_ch),
+            T_rob=float(T_rob),
+            K_lob=float(K_lob),
+            K_ch=float(K_ch),
+            K_rob=float(K_rob),
+            Q_lob=float(Q_lob),
+            Q_ch=float(Q_ch),
+            Q_rob=float(Q_rob),
+            A_t=float(A_t),
+            T_t=float(T_t),
+            K_t=float(K_t),
+            V_t=float(V_t),
+            left_activation_elev=hydraulic_table.left_activation_elev,
+            right_activation_elev=hydraulic_table.right_activation_elev,
+            left_activation_factor=float(left_factor),
+            right_activation_factor=float(right_factor),
+        )
 
     A_lob_raw = _interp_table_value(hydraulic_table.z_values, hydraulic_table.A_lob_raw, z)
     T_lob_raw = _interp_table_value(hydraulic_table.z_values, hydraulic_table.T_lob_raw, z)
@@ -538,8 +989,8 @@ def _unsteady_section_state_from_table(
     T_rob_raw = _interp_table_value(hydraulic_table.z_values, hydraulic_table.T_rob_raw, z)
     K_rob_raw = _interp_table_value(hydraulic_table.z_values, hydraulic_table.K_rob_raw, z)
 
-    left_factor = _activation_factor(z, hydraulic_table.left_activation_elev)
-    right_factor = _activation_factor(z, hydraulic_table.right_activation_elev)
+    left_factor = _activation_factor(z, hydraulic_table.left_activation_elev, ramp_depth=overbank_ramp_depth)
+    right_factor = _activation_factor(z, hydraulic_table.right_activation_elev, ramp_depth=overbank_ramp_depth)
 
     A_lob = left_factor * A_lob_raw
     T_lob = left_factor * T_lob_raw
@@ -603,11 +1054,18 @@ def _unsteady_section_state(
     z: float,
     Q_total: float,
     hydraulic_table: Optional[SectionHydraulicTable] = None,
+    overbank_ramp_depth: float = WETTING_DEPTH_FT,
 ) -> UnsteadySectionState:
     """Compute subsection-aware hydraulics for the unsteady solver."""
     if hydraulic_table is not None:
-        return _unsteady_section_state_from_table(xs, hydraulic_table, z, Q_total)
-    return _unsteady_section_state_direct(xs, z, Q_total)
+        return _unsteady_section_state_from_table(
+            xs,
+            hydraulic_table,
+            z,
+            Q_total,
+            overbank_ramp_depth=overbank_ramp_depth,
+        )
+    return _unsteady_section_state_direct(xs, z, Q_total, overbank_ramp_depth=overbank_ramp_depth)
 
 
 def _effective_reach_length(xs_downstream: CrossSection, state_up: UnsteadySectionState, state_down: UnsteadySectionState, fallback_length: float) -> float:
@@ -633,17 +1091,55 @@ def _effective_reach_length(xs_downstream: CrossSection, state_up: UnsteadySecti
 
 
 def _apply_adaptive_damping(
-    sections_us_to_ds: List[CrossSection],
+    bed_elevations: Any,
     z_iter: Any,
     Q_iter: Any,
     dz_raw: Any,
     dQ_raw: Any,
 ) -> Tuple[Any, Any, float]:
     """Scale Newton updates to reduce overshoot near wet/dry transitions."""
+    scale = _adaptive_damping_scale_core(
+        bed_elevations=np.asarray(bed_elevations, dtype=np.float64),
+        z_iter=np.asarray(z_iter, dtype=np.float64),
+        q_iter=np.asarray(Q_iter, dtype=np.float64),
+        dz_raw=np.asarray(dz_raw, dtype=np.float64),
+        dq_raw=np.asarray(dQ_raw, dtype=np.float64),
+    )
+    return dz_raw * scale, dQ_raw * scale, float(scale)
+
+
+def _adaptive_damping_scale_core(
+    bed_elevations: Any,
+    z_iter: Any,
+    q_iter: Any,
+    dz_raw: Any,
+    dq_raw: Any,
+) -> float:
+    """Compute the scalar adaptive damping factor for one Newton update."""
+    if _native_adaptive_damping_scale is not None and _is_native_enabled is not None:
+        if _is_native_enabled():
+            try:
+                scale = float(_native_adaptive_damping_scale(
+                    bed_elevations,
+                    z_iter,
+                    q_iter,
+                    dz_raw,
+                    dq_raw,
+                    float(WETTING_DEPTH_FT),
+                ))
+                _NATIVE_SOLVER_RUNTIME['native_damping_success_count'] = int(_NATIVE_SOLVER_RUNTIME.get('native_damping_success_count', 0)) + 1
+                return max(0.05, min(1.0, scale))
+            except Exception as exc:
+                _NATIVE_SOLVER_RUNTIME['native_damping_fallback_count'] = int(_NATIVE_SOLVER_RUNTIME.get('native_damping_fallback_count', 0)) + 1
+                _NATIVE_SOLVER_RUNTIME['last_damping_fallback_error'] = str(exc)
+    elif bool(_NATIVE_SOLVER_RUNTIME.get('enabled', False)):
+        _NATIVE_SOLVER_RUNTIME['native_damping_fallback_count'] = int(_NATIVE_SOLVER_RUNTIME.get('native_damping_fallback_count', 0)) + 1
+        if not _NATIVE_SOLVER_RUNTIME.get('last_damping_fallback_error'):
+            _NATIVE_SOLVER_RUNTIME['last_damping_fallback_error'] = 'native module unavailable'
+
     scale = 1.0
-    for i, xs in enumerate(sections_us_to_ds):
-        hbed = _hydraulic_bed_elevation(xs)
-        depth = max(0.0, float(z_iter[i]) - hbed)
+    for i in range(len(z_iter)):
+        depth = max(0.0, float(z_iter[i]) - float(bed_elevations[i]))
 
         # Limit stage updates to a fraction of local depth with sensible floors/caps.
         max_dz = max(0.05, min(0.5, 0.5 * max(depth, WETTING_DEPTH_FT)))
@@ -652,15 +1148,14 @@ def _apply_adaptive_damping(
             scale = min(scale, max_dz / dz_abs)
 
         # Limit discharge updates relative to local flow magnitude.
-        q_ref = max(20.0, abs(float(Q_iter[i])))
+        q_ref = max(20.0, abs(float(q_iter[i])))
         max_dQ = 0.35 * q_ref + 10.0
-        dQ_abs = abs(float(dQ_raw[i]))
+        dQ_abs = abs(float(dq_raw[i]))
         if dQ_abs > max_dQ and dQ_abs > 0.0:
             scale = min(scale, max_dQ / dQ_abs)
 
     # Keep a minimum step so iterations can still converge in reasonable time.
-    scale = max(0.05, min(1.0, scale))
-    return dz_raw * scale, dQ_raw * scale, float(scale)
+    return max(0.05, min(1.0, scale))
 
 
 def _linear_system_residual_inf(ab: Any, delta: Any, rhs_vec: Any) -> float:
@@ -689,6 +1184,7 @@ def _capture_step_debug(
     output_step: bool,
     inner_stats: List[dict],
     hydraulic_tables: Optional[Dict[int, SectionHydraulicTable]] = None,
+    overbank_ramp_depth: float = WETTING_DEPTH_FT,
 ) -> dict:
     """Capture a detailed solver snapshot for one timestep."""
     states = []
@@ -698,6 +1194,7 @@ def _capture_step_debug(
             float(z_val),
             float(q_val),
             hydraulic_table=hydraulic_tables.get(id(xs)) if hydraulic_tables else None,
+            overbank_ramp_depth=overbank_ramp_depth,
         )
         states.append(s)
 
@@ -712,6 +1209,7 @@ def _capture_step_debug(
                 xs,
                 float(z_state[i]),
                 hydraulic_table=hydraulic_tables.get(id(xs)) if hydraulic_tables else None,
+                overbank_ramp_depth=overbank_ramp_depth,
             )
         )
     for r in range(len(states) - 1):
@@ -776,11 +1274,12 @@ def _compute_total_K(
     xs: CrossSection,
     z: float,
     hydraulic_table: Optional[SectionHydraulicTable] = None,
+    overbank_ramp_depth: float = WETTING_DEPTH_FT,
 ) -> float:
     """Total Manning conveyance at WSE *z* using subsection roughness."""
     if hydraulic_table is not None and hydraulic_table.covers(z):
-        left_factor = _activation_factor(z, hydraulic_table.left_activation_elev)
-        right_factor = _activation_factor(z, hydraulic_table.right_activation_elev)
+        left_factor = _activation_factor(z, hydraulic_table.left_activation_elev, ramp_depth=overbank_ramp_depth)
+        right_factor = _activation_factor(z, hydraulic_table.right_activation_elev, ramp_depth=overbank_ramp_depth)
         return (
             left_factor * _interp_table_value(hydraulic_table.z_values, hydraulic_table.K_lob_raw, z)
             + _interp_table_value(hydraulic_table.z_values, hydraulic_table.K_ch, z)
@@ -805,12 +1304,19 @@ def _section_vars(
     xs: CrossSection,
     z: float,
     hydraulic_table: Optional[SectionHydraulicTable] = None,
+    overbank_ramp_depth: float = WETTING_DEPTH_FT,
 ) -> Tuple[float, float, float]:
     """Return (A_total, K_total, T_top_width) at WSE *z*.
 
     *T* is the free-surface top width (≈ dA/dz), computed numerically.
     """
-    state = _unsteady_section_state(xs, z, 0.0, hydraulic_table=hydraulic_table)
+    state = _unsteady_section_state(
+        xs,
+        z,
+        0.0,
+        hydraulic_table=hydraulic_table,
+        overbank_ramp_depth=overbank_ramp_depth,
+    )
     return state.A_t, state.K_t, state.T_t
 
 
@@ -819,6 +1325,7 @@ def _dK_dz(
     z: float,
     dz: float = 1e-3,
     hydraulic_table: Optional[SectionHydraulicTable] = None,
+    overbank_ramp_depth: float = WETTING_DEPTH_FT,
 ) -> float:
     """Numerical dK/dz at WSE *z*."""
     z = _regularized_wse(xs, z)
@@ -826,8 +1333,8 @@ def _dK_dz(
     if hydraulic_table is not None:
         if hydraulic_table.covers(z):
             return _interp_table_value(hydraulic_table.z_values, hydraulic_table.dK_dz_raw, z)
-    K_hi = _compute_total_K(xs, z + dz, hydraulic_table=hydraulic_table)
-    K_lo = _compute_total_K(xs, max(z - dz, z_min), hydraulic_table=hydraulic_table)
+    K_hi = _compute_total_K(xs, z + dz, hydraulic_table=hydraulic_table, overbank_ramp_depth=overbank_ramp_depth)
+    K_lo = _compute_total_K(xs, max(z - dz, z_min), hydraulic_table=hydraulic_table, overbank_ramp_depth=overbank_ramp_depth)
     return (K_hi - K_lo) / (2.0 * dz)
 
 
@@ -857,10 +1364,11 @@ def _normal_depth_Q(
     S0: float,
     z: float,
     hydraulic_table: Optional[SectionHydraulicTable] = None,
+    overbank_ramp_depth: float = WETTING_DEPTH_FT,
 ) -> float:
     """Q from Manning normal-depth rating at elevation *z*."""
     z = _regularized_wse(xs, z)
-    K = _compute_total_K(xs, z, hydraulic_table=hydraulic_table)
+    K = _compute_total_K(xs, z, hydraulic_table=hydraulic_table, overbank_ramp_depth=overbank_ramp_depth)
     if S0 <= 0.0 or K <= 0.0:
         return 0.0
     return K * math.sqrt(S0)
@@ -872,17 +1380,86 @@ def _dQ_dz_normal(
     z: float,
     dz: float = 1e-3,
     hydraulic_table: Optional[SectionHydraulicTable] = None,
+    overbank_ramp_depth: float = WETTING_DEPTH_FT,
 ) -> float:
     """Numerical dQ/dz for normal-depth BC linearization."""
     return (
-        _normal_depth_Q(xs, S0, z + dz, hydraulic_table=hydraulic_table)
-        - _normal_depth_Q(xs, S0, z - dz, hydraulic_table=hydraulic_table)
+        _normal_depth_Q(xs, S0, z + dz, hydraulic_table=hydraulic_table, overbank_ramp_depth=overbank_ramp_depth)
+        - _normal_depth_Q(xs, S0, z - dz, hydraulic_table=hydraulic_table, overbank_ramp_depth=overbank_ramp_depth)
     ) / (2.0 * dz)
 
 
 # ---------------------------------------------------------------------------
 # Preissmann implicit scheme — matrix assembly
 # ---------------------------------------------------------------------------
+
+def _compute_node_properties(
+    sections_us_to_ds: List[CrossSection],
+    dx: List[float],
+    z_n: Any,
+    Q_n: Any,
+    hydraulic_tables: Optional[Dict[int, SectionHydraulicTable]] = None,
+    overbank_ramp_depth: float = WETTING_DEPTH_FT,
+) -> Tuple[Any, Any, Any, Any, Any, Any, Any]:
+    """Compute hydraulic properties and derivatives for all nodes.
+
+    Returns
+    -------
+    reach_lengths : ndarray, shape (N - 1,)
+    area_values : ndarray, shape (N,)
+    conveyance_values : ndarray, shape (N,)
+    top_width_values : ndarray, shape (N,)
+    velocity_values : ndarray, shape (N,)
+    alpha_values : ndarray, shape (N,)
+    dkdz_values : ndarray, shape (N,)
+    """
+    N = len(sections_us_to_ds)
+    states = []
+    dKdz_nodes = []
+    for i, xs in enumerate(sections_us_to_ds):
+        table_i = hydraulic_tables.get(id(xs)) if hydraulic_tables else None
+        state_i = _unsteady_section_state(
+            xs,
+            z_n[i],
+            Q_n[i],
+            hydraulic_table=table_i,
+            overbank_ramp_depth=overbank_ramp_depth,
+        )
+        states.append(state_i)
+        dKdz_nodes.append(
+            _dK_dz(
+                xs,
+                z_n[i],
+                hydraulic_table=table_i,
+                overbank_ramp_depth=overbank_ramp_depth,
+            )
+        )
+
+    reach_lengths = np.empty(N - 1, dtype=np.float64)
+    area_values = np.empty(N, dtype=np.float64)
+    conveyance_values = np.empty(N, dtype=np.float64)
+    top_width_values = np.empty(N, dtype=np.float64)
+    velocity_values = np.empty(N, dtype=np.float64)
+    alpha_values = np.empty(N, dtype=np.float64)
+    dkdz_values = np.asarray(dKdz_nodes, dtype=np.float64)
+
+    for i, state_i in enumerate(states):
+        area_values[i] = state_i.A_t
+        conveyance_values[i] = state_i.K_t
+        top_width_values[i] = state_i.T_t
+        velocity_values[i] = state_i.V_t
+        alpha_values[i] = state_i.alpha
+
+    for r in range(N - 1):
+        reach_lengths[r] = _effective_reach_length(
+            sections_us_to_ds[r + 1],
+            states[r],
+            states[r + 1],
+            dx[r],
+        )
+
+    return reach_lengths, area_values, conveyance_values, top_width_values, velocity_values, alpha_values, dkdz_values
+
 
 def _assemble_system(
     sections_us_to_ds: List[CrossSection],
@@ -895,6 +1472,8 @@ def _assemble_system(
     ds_bc: str,
     ds_bc_value: float,          # S0 for normal depth, or z_ds^{n+1} for stage
     hydraulic_tables: Optional[Dict[int, SectionHydraulicTable]] = None,
+    overbank_ramp_depth: float = WETTING_DEPTH_FT,
+    ds_bc_ramp_factor: float = 1.0,
 ) -> Tuple[Any, Any]:
     """Build the pentadiagonal (bandwidth-5) matrix and RHS vector.
 
@@ -911,124 +1490,187 @@ def _assemble_system(
     rhs : ndarray, shape (2N,)
     """
     N = len(sections_us_to_ds)
+    reach_lengths, area_values, conveyance_values, top_width_values, velocity_values, alpha_values, dkdz_values = _compute_node_properties(
+        sections_us_to_ds,
+        dx,
+        z_n,
+        Q_n,
+        hydraulic_tables=hydraulic_tables,
+        overbank_ramp_depth=overbank_ramp_depth,
+    )
+
+    if _native_assemble_system_core is not None and _is_native_enabled is not None:
+        if _is_native_enabled():
+            try:
+                ab, rhs = _native_assemble_system_core(
+                    reach_lengths,
+                    np.asarray(z_n, dtype=np.float64),
+                    np.asarray(Q_n, dtype=np.float64),
+                    area_values,
+                    conveyance_values,
+                    top_width_values,
+                    velocity_values,
+                    alpha_values,
+                    dkdz_values,
+                    float(dt),
+                    float(theta),
+                    float(Q_upstream_next),
+                    bool(ds_bc == 'stage'),
+                    float(ds_bc_value),
+                    float(ds_bc_ramp_factor),
+                )
+                _NATIVE_SOLVER_RUNTIME['native_assembly_success_count'] = int(_NATIVE_SOLVER_RUNTIME.get('native_assembly_success_count', 0)) + 1
+                return ab, rhs
+            except Exception as exc:
+                _NATIVE_SOLVER_RUNTIME['native_assembly_fallback_count'] = int(_NATIVE_SOLVER_RUNTIME.get('native_assembly_fallback_count', 0)) + 1
+                _NATIVE_SOLVER_RUNTIME['last_assembly_fallback_error'] = str(exc)
+    elif bool(_NATIVE_SOLVER_RUNTIME.get('enabled', False)):
+        _NATIVE_SOLVER_RUNTIME['native_assembly_fallback_count'] = int(_NATIVE_SOLVER_RUNTIME.get('native_assembly_fallback_count', 0)) + 1
+        if not _NATIVE_SOLVER_RUNTIME.get('last_assembly_fallback_error'):
+            _NATIVE_SOLVER_RUNTIME['last_assembly_fallback_error'] = 'native module unavailable'
+
+    return _assemble_system_core(
+        reach_lengths=reach_lengths,
+        z_values=np.asarray(z_n, dtype=np.float64),
+        q_values=np.asarray(Q_n, dtype=np.float64),
+        area_values=area_values,
+        conveyance_values=conveyance_values,
+        top_width_values=top_width_values,
+        velocity_values=velocity_values,
+        alpha_values=alpha_values,
+        dkdz_values=dkdz_values,
+        dt=float(dt),
+        theta=float(theta),
+        q_upstream_next=float(Q_upstream_next),
+        ds_is_stage=bool(ds_bc == 'stage'),
+        ds_bc_value=float(ds_bc_value),
+        ds_bc_ramp_factor=float(ds_bc_ramp_factor),
+    )
+
+
+def _assemble_system_core(
+    reach_lengths: Any,
+    z_values: Any,
+    q_values: Any,
+    area_values: Any,
+    conveyance_values: Any,
+    top_width_values: Any,
+    velocity_values: Any,
+    alpha_values: Any,
+    dkdz_values: Any,
+    dt: float,
+    theta: float,
+    q_upstream_next: float,
+    ds_is_stage: bool,
+    ds_bc_value: float,
+    ds_bc_ramp_factor: float,
+) -> Tuple[Any, Any]:
+    N = len(z_values)
     size = 2 * N
     ab = np.zeros((5, size), dtype=np.float64)
     rhs = np.zeros(size, dtype=np.float64)
 
-    # ------------------------------------------------------------------
-    # Row 0: Upstream BC — prescribe ΔQ_0 = Q_upstream^{n+1} - Q_0^n
-    #   → 1*ΔQ_0 = Q_bc_next - Q_n[0]
-    #   Unknown x[1] = ΔQ_0; Row=0, Col=1, i-j=-1 → ab[2+(-1), 1] = ab[1, 1]
-    # ------------------------------------------------------------------
     ab[1, 1] = 1.0
-    rhs[0] = Q_upstream_next - Q_n[0]
+    rhs[0] = q_upstream_next - q_values[0]
 
-    # ------------------------------------------------------------------
-    # Rows 2r+1, 2r+2 for each reach r = 0 … N-2
-    # ------------------------------------------------------------------
     for r in range(N - 1):
-        xs_r   = sections_us_to_ds[r]
-        xs_rp1 = sections_us_to_ds[r + 1]
+        z_r = z_values[r]
+        q_r = q_values[r]
+        z_rp1 = z_values[r + 1]
+        q_rp1 = q_values[r + 1]
+        L = reach_lengths[r]
 
-        z_r   = z_n[r];   Q_r   = Q_n[r]
-        z_rp1 = z_n[r+1]; Q_rp1 = Q_n[r+1]
-        table_r = hydraulic_tables.get(id(xs_r)) if hydraulic_tables else None
-        table_rp1 = hydraulic_tables.get(id(xs_rp1)) if hydraulic_tables else None
+        A_r = area_values[r]
+        K_r = conveyance_values[r]
+        T_r = top_width_values[r]
+        A_rp1 = area_values[r + 1]
+        K_rp1 = conveyance_values[r + 1]
+        T_rp1 = top_width_values[r + 1]
 
-        state_r = _unsteady_section_state(xs_r, z_r, Q_r, hydraulic_table=table_r)
-        state_rp1 = _unsteady_section_state(xs_rp1, z_rp1, Q_rp1, hydraulic_table=table_rp1)
-        L = _effective_reach_length(xs_rp1, state_r, state_rp1, dx[r])
-
-        A_r, K_r, T_r = state_r.A_t, state_r.K_t, state_r.T_t
-        A_rp1, K_rp1, T_rp1 = state_rp1.A_t, state_rp1.K_t, state_rp1.T_t
-
-        Sf_r   = _Sf(Q_r,   K_r)
-        Sf_rp1 = _Sf(Q_rp1, K_rp1)
+        Sf_r = _Sf(q_r, K_r)
+        Sf_rp1 = _Sf(q_rp1, K_rp1)
         Sf_avg = 0.5 * (Sf_r + Sf_rp1)
-        Abar   = 0.5 * (A_r + A_rp1)
+        Abar = 0.5 * (A_r + A_rp1)
 
-        V_r = state_r.V_t
-        V_rp1 = state_rp1.V_t
-        alpha_r = state_r.alpha
-        alpha_rp1 = state_rp1.alpha
+        V_r = velocity_values[r]
+        V_rp1 = velocity_values[r + 1]
+        alpha_r = alpha_values[r]
+        alpha_rp1 = alpha_values[r + 1]
 
-        dSf_dQ_r   = _dSf_dQ(Q_r,   K_r)
-        dSf_dQ_rp1 = _dSf_dQ(Q_rp1, K_rp1)
-        dKdz_r     = _dK_dz(xs_r,   z_r, hydraulic_table=table_r)
-        dKdz_rp1   = _dK_dz(xs_rp1, z_rp1, hydraulic_table=table_rp1)
-        dSf_dz_r   = _dSf_dz(Q_r,   K_r,   dKdz_r)
-        dSf_dz_rp1 = _dSf_dz(Q_rp1, K_rp1, dKdz_rp1)
+        dSf_dQ_r = _dSf_dQ(q_r, K_r)
+        dSf_dQ_rp1 = _dSf_dQ(q_rp1, K_rp1)
+        dKdz_r = dkdz_values[r]
+        dKdz_rp1 = dkdz_values[r + 1]
+        dSf_dz_r = _dSf_dz(q_r, K_r, dKdz_r)
+        dSf_dz_rp1 = _dSf_dz(q_rp1, K_rp1, dKdz_rp1)
 
-        # ==============================================================
-        # Continuity row (row_c = 2r+1):
-        #   CZ_r*Δz_r + CQ_r*ΔQ_r + CZ_{r+1}*Δz_{r+1} + CQ_{r+1}*ΔQ_{r+1} = CB
-        # ==============================================================
         row_c = 2 * r + 1
-        CZ_r   =  T_r   / (2.0 * dt)
-        CQ_r   = -theta  / L
-        CZ_rp1 =  T_rp1 / (2.0 * dt)
-        CQ_rp1 =  theta  / L
-        CB     = -(Q_rp1 - Q_r) / L
+        CZ_r = T_r / (2.0 * dt)
+        CQ_r = -theta / L
+        CZ_rp1 = T_rp1 / (2.0 * dt)
+        CQ_rp1 = theta / L
+        CB = -(q_rp1 - q_r) / L
 
-        # Columns for row_c: 2r(Δz_r), 2r+1(ΔQ_r), 2r+2(Δz_{r+1}), 2r+3(ΔQ_{r+1})
-        # ab[2 + row_c - col, col]
-        ab[3, 2*r    ] += CZ_r    # i-j = 1  → ab[3, 2r]
-        ab[2, 2*r+1  ] += CQ_r    # i-j = 0  → ab[2, 2r+1]  (diagonal)
-        ab[1, 2*r+2  ] += CZ_rp1  # i-j = -1 → ab[1, 2r+2]
-        ab[0, 2*r+3  ] += CQ_rp1  # i-j = -2 → ab[0, 2r+3]
-        rhs[row_c]     += CB
+        ab[3, 2 * r] += CZ_r
+        ab[2, 2 * r + 1] += CQ_r
+        ab[1, 2 * r + 2] += CZ_rp1
+        ab[0, 2 * r + 3] += CQ_rp1
+        rhs[row_c] += CB
 
-        # ==============================================================
-        # Momentum row (row_m = 2r+2):
-        #   MZ_r*Δz_r + MQ_r*ΔQ_r + MZ_{r+1}*Δz_{r+1} + MQ_{r+1}*ΔQ_{r+1} = MB
-        # ==============================================================
         row_m = 2 * r + 2
-        MQ_r   = (1.0 / (2.0*dt)) - theta*alpha_r*V_r/L   + theta*G*Abar * 0.5*dSf_dQ_r
-        MZ_r   = theta*G*Abar * 0.5*dSf_dz_r       - G*Abar*theta/L
-        MQ_rp1 = (1.0 / (2.0*dt)) + theta*alpha_rp1*V_rp1/L + theta*G*Abar * 0.5*dSf_dQ_rp1
-        MZ_rp1 = theta*G*Abar * 0.5*dSf_dz_rp1    + G*Abar*theta/L
+        MQ_r = (1.0 / (2.0 * dt)) - theta * alpha_r * V_r / L + theta * G * Abar * 0.5 * dSf_dQ_r
+        MZ_r = theta * G * Abar * 0.5 * dSf_dz_r - G * Abar * theta / L
+        MQ_rp1 = (1.0 / (2.0 * dt)) + theta * alpha_rp1 * V_rp1 / L + theta * G * Abar * 0.5 * dSf_dQ_rp1
+        MZ_rp1 = theta * G * Abar * 0.5 * dSf_dz_rp1 + G * Abar * theta / L
 
         MB = -(
-            (alpha_rp1 * Q_rp1 * V_rp1 - alpha_r * Q_r * V_r) / L
+            (alpha_rp1 * q_rp1 * V_rp1 - alpha_r * q_r * V_r) / L
             + G * Abar * (z_rp1 - z_r) / L
             + G * Abar * Sf_avg
         )
 
-        # Columns for row_m: 2r(Δz_r), 2r+1(ΔQ_r), 2r+2(Δz_{r+1}), 2r+3(ΔQ_{r+1})
-        ab[4, 2*r    ] += MZ_r    # i-j = 2  → ab[4, 2r]
-        ab[3, 2*r+1  ] += MQ_r    # i-j = 1  → ab[3, 2r+1]
-        ab[2, 2*r+2  ] += MZ_rp1  # i-j = 0  → ab[2, 2r+2]  (diagonal)
-        ab[1, 2*r+3  ] += MQ_rp1  # i-j = -1 → ab[1, 2r+3]
-        rhs[row_m]     += MB
+        ab[4, 2 * r] += MZ_r
+        ab[3, 2 * r + 1] += MQ_r
+        ab[2, 2 * r + 2] += MZ_rp1
+        ab[1, 2 * r + 3] += MQ_rp1
+        rhs[row_m] += MB
 
-    # ------------------------------------------------------------------
-    # Row 2N-1: Downstream BC
-    # ------------------------------------------------------------------
     row_ds = size - 1
-    if ds_bc == 'stage':
-        # Prescribe Δz_{N-1} = z_ds^{n+1} - z_n[N-1]
-        # x[2(N-1)] = Δz_{N-1}; col = 2N-2; row-col = 1 → ab[3, 2N-2]
+    if ds_is_stage:
         ab[3, size - 2] = 1.0
-        rhs[row_ds] = ds_bc_value - z_n[N - 1]
+        rhs[row_ds] = ds_bc_ramp_factor * (ds_bc_value - z_values[N - 1])
     else:
-        # Normal depth: Q^{n+1} = K * sqrt(S0)
-        # Linearised: ΔQ = (dQ/dz)*Δz + [Q_nd(z^n) - Q^n]
-        # → 1*ΔQ_{N-1} - (dQ/dz)*Δz_{N-1} = Q_nd - Q^n
-        # x[2N-1] = ΔQ_{N-1} (diagonal); x[2N-2] = Δz_{N-1}
         S0 = max(ds_bc_value, 1e-8)
-        xs_ds = sections_us_to_ds[N - 1]
-        table_ds = hydraulic_tables.get(id(xs_ds)) if hydraulic_tables else None
-        Q_nd  = _normal_depth_Q(xs_ds, S0, z_n[N - 1], hydraulic_table=table_ds)
-        dQdz  = _dQ_dz_normal(xs_ds, S0, z_n[N - 1], hydraulic_table=table_ds)
-        ab[2, size - 1]  =  1.0          # diagonal (ΔQ_{N-1})
-        ab[3, size - 2] -= dQdz          # below diagonal (Δz_{N-1})
-        rhs[row_ds] = Q_nd - Q_n[N - 1]
+        K_ds = max(0.0, float(conveyance_values[N - 1]))
+        dKdz_ds = float(dkdz_values[N - 1])
+        sqrt_S0 = math.sqrt(S0)
+        Q_nd = K_ds * sqrt_S0
+        dQdz = dKdz_ds * sqrt_S0
+        ab[2, size - 1] = 1.0
+        ab[3, size - 2] -= dQdz
+        rhs[row_ds] = ds_bc_ramp_factor * (Q_nd - q_values[N - 1])
 
     return ab, rhs
 
 
 def _solve_banded(ab: Any, rhs: Any) -> Any:
     """Solve the pentadiagonal system.  Falls back to numpy if scipy absent."""
+    if _native_solve_banded_full is not None and _is_native_enabled is not None:
+        if _is_native_enabled():
+            try:
+                out = _native_solve_banded_full(ab, rhs)
+                _NATIVE_SOLVER_RUNTIME['native_success_count'] = int(_NATIVE_SOLVER_RUNTIME.get('native_success_count', 0)) + 1
+                return out
+            except Exception as exc:
+                # Native path is optional. Fall back to python/scipy path.
+                _NATIVE_SOLVER_RUNTIME['native_fallback_count'] = int(_NATIVE_SOLVER_RUNTIME.get('native_fallback_count', 0)) + 1
+                _NATIVE_SOLVER_RUNTIME['last_fallback_error'] = str(exc)
+                pass
+    elif bool(_NATIVE_SOLVER_RUNTIME.get('enabled', False)):
+        _NATIVE_SOLVER_RUNTIME['native_fallback_count'] = int(_NATIVE_SOLVER_RUNTIME.get('native_fallback_count', 0)) + 1
+        if not _NATIVE_SOLVER_RUNTIME.get('last_fallback_error'):
+            _NATIVE_SOLVER_RUNTIME['last_fallback_error'] = 'native module unavailable'
+
     if _HAVE_SCIPY:
         return _scipy_solve_banded((2, 2), ab, rhs)
     # Fallback: reconstruct full matrix from banded storage and use numpy
@@ -1305,8 +1947,10 @@ def run_unsteady(
     params : UnsteadyParams
         Solver control parameters (dt, t_end, theta, etc.).
     progress_callback : callable, optional
-        Called with ``(current_step, total_steps, message)`` for progress
-        reporting from the GUI.  May be ``None``.
+        Called with ``(current_step, total_steps, message[, diagnostics])`` for
+        progress reporting from the GUI.  The optional *diagnostics* dict
+        includes inner-iteration counts, max update error, tolerance checks,
+        and any stability overrides applied during that step.
 
     Returns
     -------
@@ -1325,6 +1969,8 @@ def run_unsteady(
             "Install it in the QGIS Python environment."
         )
 
+    _reset_native_solver_runtime()
+
     dt     = float(params.dt)
     t_end  = float(params.t_end)
     theta  = float(max(0.5, min(1.0, params.theta)))
@@ -1332,6 +1978,8 @@ def run_unsteady(
     output_interval = max(1, int(params.output_interval))
     max_iter = max(1, int(params.max_iter))
     tol = float(params.tol)
+    ds_bc_ramp_steps = max(0, int(getattr(params, 'ds_bc_ramp_steps', 0) or 0))
+    overbank_ramp_depth = max(0.0, float(getattr(params, 'overbank_activation_ramp_depth_ft', WETTING_DEPTH_FT)))
     debug_capture = bool(params.debug_capture)
     debug_frequency = str(params.debug_frequency or 'output').strip().lower()
     if debug_frequency not in ('output', 'computation'):
@@ -1361,6 +2009,7 @@ def run_unsteady(
     # and its L_ch_to_next is the distance from sections_ds_to_us[N-2-r]
     # to sections_ds_to_us[N-1-r] = sections_us_to_ds[r].
     dx = []
+    init_stability_events = []
     ordered_ds_to_us = list(reversed(sections_us_to_ds))  # DS=0
     for r in range(N - 1):
         # node r = ordered_ds_to_us[N-1-r], node r+1 = ordered_ds_to_us[N-2-r]
@@ -1376,6 +2025,9 @@ def run_unsteady(
                 UserWarning,
                 stacklevel=3,
             )
+            init_stability_events.append(
+                f"Reach length fallback: section {ds_section_of_reach.river_station} used 100.0 ft"
+            )
         dx.append(L)
 
     # Pre-compute section IDs (US→DS)
@@ -1383,7 +2035,9 @@ def run_unsteady(
 
     # Enforce a minimum water depth at each node to avoid dry-bed singularities
     MIN_DEPTH = WETTING_DEPTH_FT
+    bed_elevations = np.empty(N, dtype=np.float64)
     for i, xs in enumerate(sections_us_to_ds):
+        bed_elevations[i] = _hydraulic_bed_elevation(xs)
         z_n[i] = _regularized_wse(xs, z_n[i], MIN_DEPTH)
 
     hydraulic_tables = None
@@ -1433,78 +2087,165 @@ def run_unsteady(
             else:
                 ds_value_next = ds_bc_value   # S0 (unchanged for normal depth)
 
+            if ds_bc_ramp_steps > 0:
+                ds_bc_ramp_factor = min(1.0, float(step) / float(ds_bc_ramp_steps))
+            else:
+                ds_bc_ramp_factor = 1.0
+
             # Working copies (updated in inner iterations)
             z_iter = np.array(z_n)
             Q_iter = np.array(Q_n)
             inner_debug_stats = []
+            step_stability_events = []
+            step_max_update_error = 0.0
+            executed_iters = 0
 
-            # Inner Newton-like iterations to handle nonlinear Sf
-            for _inner in range(max_iter):
-                ab, rhs_vec = _assemble_system(
-                    sections_us_to_ds, dx, z_iter, Q_iter, dt, theta,
-                    Q_us_next, ds_bc, ds_value_next,
-                    hydraulic_tables=hydraulic_tables,
-                )
+            # Inner Newton-like iterations to handle nonlinear Sf.
+            # When native acceleration is active and debug capture is off, delegate the
+            # entire inner loop to the C++ single-timestep kernel (single linearization).
+            _use_native_timestep = (
+                _native_run_one_timestep is not None
+                and _is_native_enabled is not None
+                and _is_native_enabled()
+                and not debug_capture
+                and debug_payload is None
+            )
+            if _use_native_timestep:
                 try:
-                    delta = _solve_banded(ab, rhs_vec)
-                except Exception as exc:
-                    raise RuntimeError(
-                        f"Linear system solve failed at t={t_new:.1f} s (step {step}): {exc}"
-                    ) from exc
-
-                if debug_payload is not None and step == 1:
-                    debug_payload['records'].append(_capture_first_step_debug(
-                        sections_us_to_ds=sections_us_to_ds,
-                        dx=dx,
-                        z_state=z_iter,
-                        Q_state=Q_iter,
-                        dt=dt,
-                        theta=theta,
-                        Q_upstream_next=Q_us_next,
-                        ds_bc=ds_bc,
-                        ds_bc_value=ds_value_next,
-                        ab=ab,
-                        rhs_vec=rhs_vec,
-                        delta=delta,
-                        step=step,
-                        inner_iter=_inner + 1,
-                        t_new=t_new,
+                    reach_lengths_ts, area_ts, conv_ts, tw_ts, vel_ts, alpha_ts, dkdz_ts = _compute_node_properties(
+                        sections_us_to_ds, dx, z_iter, Q_iter,
                         hydraulic_tables=hydraulic_tables,
-                    ))
+                        overbank_ramp_depth=overbank_ramp_depth,
+                    )
+                    z_iter, Q_iter, executed_iters, step_max_update_error, _converged = _native_run_one_timestep(
+                        np.asarray(z_iter, dtype=np.float64),
+                        np.asarray(Q_iter, dtype=np.float64),
+                        reach_lengths_ts,
+                        bed_elevations,
+                        area_ts,
+                        conv_ts,
+                        tw_ts,
+                        vel_ts,
+                        alpha_ts,
+                        dkdz_ts,
+                        float(dt),
+                        float(theta),
+                        float(Q_us_next),
+                        bool(ds_bc == 'stage'),
+                        float(ds_value_next),
+                        float(ds_bc_ramp_factor),
+                        int(max_iter),
+                        float(tol),
+                        float(MIN_DEPTH),
+                    )
+                    _NATIVE_SOLVER_RUNTIME['native_timestep_success_count'] = int(_NATIVE_SOLVER_RUNTIME.get('native_timestep_success_count', 0)) + 1
+                    z_iter = np.asarray(z_iter, dtype=np.float64)
+                    Q_iter = np.asarray(Q_iter, dtype=np.float64)
+                except Exception as exc:
+                    _NATIVE_SOLVER_RUNTIME['native_timestep_fallback_count'] = int(_NATIVE_SOLVER_RUNTIME.get('native_timestep_fallback_count', 0)) + 1
+                    _NATIVE_SOLVER_RUNTIME['last_timestep_fallback_error'] = str(exc)
+                    _use_native_timestep = False  # fall through to Python loop
 
-                dz_raw = delta[0::2]   # Δz at each node
-                dQ_raw = delta[1::2]   # ΔQ at each node
-                dz, dQ, damping = _apply_adaptive_damping(
-                    sections_us_to_ds, z_iter, Q_iter, dz_raw, dQ_raw
+            if not _use_native_timestep:
+                # Python inner Newton loop (also used for debug capture).
+                for _inner in range(max_iter):
+                    executed_iters = _inner + 1
+                    ab, rhs_vec = _assemble_system(
+                        sections_us_to_ds, dx, z_iter, Q_iter, dt, theta,
+                        Q_us_next, ds_bc, ds_value_next,
+                        hydraulic_tables=hydraulic_tables,
+                        overbank_ramp_depth=overbank_ramp_depth,
+                        ds_bc_ramp_factor=ds_bc_ramp_factor,
+                    )
+                    try:
+                        delta = _solve_banded(ab, rhs_vec)
+                    except Exception as exc:
+                        raise RuntimeError(
+                            f"Linear system solve failed at t={t_new:.1f} s (step {step}): {exc}"
+                        ) from exc
+
+                    if debug_payload is not None and step == 1:
+                        debug_payload['records'].append(_capture_first_step_debug(
+                            sections_us_to_ds=sections_us_to_ds,
+                            dx=dx,
+                            z_state=z_iter,
+                            Q_state=Q_iter,
+                            dt=dt,
+                            theta=theta,
+                            Q_upstream_next=Q_us_next,
+                            ds_bc=ds_bc,
+                            ds_bc_value=ds_value_next,
+                            ab=ab,
+                            rhs_vec=rhs_vec,
+                            delta=delta,
+                            step=step,
+                            inner_iter=_inner + 1,
+                            t_new=t_new,
+                            hydraulic_tables=hydraulic_tables,
+                        ))
+
+                    dz_raw = delta[0::2]   # Δz at each node
+                    dQ_raw = delta[1::2]   # ΔQ at each node
+                    dz, dQ, damping = _apply_adaptive_damping(
+                        bed_elevations, z_iter, Q_iter, dz_raw, dQ_raw
+                    )
+                    if damping < 0.999:
+                        step_stability_events.append(
+                            f"Adaptive damping applied (factor={damping:.3f})"
+                        )
+                    if debug_capture:
+                        inner_debug_stats.append({
+                            'inner_iter': int(_inner + 1),
+                            'max_abs_dz_raw': float(np.max(np.abs(dz_raw))),
+                            'max_abs_dQ_raw': float(np.max(np.abs(dQ_raw))),
+                            'max_abs_dz_applied': float(np.max(np.abs(dz))),
+                            'max_abs_dQ_applied': float(np.max(np.abs(dQ))),
+                            'linear_rhs_inf': float(np.max(np.abs(rhs_vec))),
+                            'linear_residual_inf': _linear_system_residual_inf(ab, delta, rhs_vec),
+                            'damping_factor': float(damping),
+                        })
+
+                    if debug_payload is not None and step == 1 and debug_payload['records']:
+                        debug_payload['records'][-1]['damping_factor'] = damping
+                        debug_payload['records'][-1]['delta_raw'] = {
+                            'dz': [float(val) for val in dz_raw],
+                            'dQ': [float(val) for val in dQ_raw],
+                        }
+
+                    z_iter = z_iter + dz
+                    Q_iter = Q_iter + dQ
+                    step_max_update_error = max(
+                        step_max_update_error,
+                        float(np.max(np.abs(dz))),
+                        float(np.max(np.abs(dQ))),
+                    )
+
+                    # Enforce minimum depth
+                    regularized_nodes = 0
+                    for i, xs in enumerate(sections_us_to_ds):
+                        z_new = _regularized_wse(xs, z_iter[i], MIN_DEPTH)
+                        if z_new > z_iter[i] + 1e-12:
+                            regularized_nodes += 1
+                        z_iter[i] = z_new
+                    if regularized_nodes:
+                        step_stability_events.append(
+                            f"Wetting-depth clamp applied at {regularized_nodes} section(s)"
+                        )
+
+                    max_dz = float(np.max(np.abs(dz)))
+                    max_dQ = float(np.max(np.abs(dQ)))
+                    if max_dz < tol and max_dQ < tol:
+                        break
+
+            tol_exceeded = bool(step_max_update_error >= tol)
+            if tol_exceeded:
+                step_stability_events.append(
+                    f"Solver update error {step_max_update_error:.3e} exceeded tolerance {tol:.3e}"
                 )
-                if debug_capture:
-                    inner_debug_stats.append({
-                        'inner_iter': int(_inner + 1),
-                        'max_abs_dz_raw': float(np.max(np.abs(dz_raw))),
-                        'max_abs_dQ_raw': float(np.max(np.abs(dQ_raw))),
-                        'max_abs_dz_applied': float(np.max(np.abs(dz))),
-                        'max_abs_dQ_applied': float(np.max(np.abs(dQ))),
-                        'linear_rhs_inf': float(np.max(np.abs(rhs_vec))),
-                        'linear_residual_inf': _linear_system_residual_inf(ab, delta, rhs_vec),
-                        'damping_factor': float(damping),
-                    })
-
-                if debug_payload is not None and step == 1 and debug_payload['records']:
-                    debug_payload['records'][-1]['damping_factor'] = damping
-                    debug_payload['records'][-1]['delta_raw'] = {
-                        'dz': [float(val) for val in dz_raw],
-                        'dQ': [float(val) for val in dQ_raw],
-                    }
-
-                z_iter = z_iter + dz
-                Q_iter = Q_iter + dQ
-
-                # Enforce minimum depth
-                for i, xs in enumerate(sections_us_to_ds):
-                    z_iter[i] = _regularized_wse(xs, z_iter[i], MIN_DEPTH)
-
-                if np.max(np.abs(dz)) < tol and np.max(np.abs(dQ)) < tol:
-                    break
+            if executed_iters >= max_iter and tol_exceeded:
+                step_stability_events.append(
+                    f"Maximum inner iterations reached ({max_iter}) before tolerance convergence"
+                )
 
             z_n = z_iter
             Q_n = Q_iter
@@ -1538,12 +2279,41 @@ def run_unsteady(
                     step=step,
                     t_new=t_new,
                     output_step=(step % output_interval == 0),
-                        hydraulic_tables=hydraulic_tables,
+                    hydraulic_tables=hydraulic_tables,
+                    overbank_ramp_depth=overbank_ramp_depth,
                     inner_stats=inner_debug_stats,
                 ))
 
             if progress_callback is not None:
-                progress_callback(step, n_total_steps, f"t = {t_new:.0f} s")
+                diagnostics = {
+                    'time_s': float(t_new),
+                    'inner_iterations': int(executed_iters),
+                    'max_update_error': float(step_max_update_error),
+                    'tolerance': float(tol),
+                    'tolerance_exceeded': bool(tol_exceeded),
+                    'ds_bc_ramp_factor': float(ds_bc_ramp_factor),
+                    'stability_events': list(step_stability_events),
+                    'initial_stability_events': list(init_stability_events),
+                    'solver_backend': _native_solver_backend_label(),
+                    'native_enabled': bool(_NATIVE_SOLVER_RUNTIME.get('enabled', False)),
+                    'native_assembly_success_count': int(_NATIVE_SOLVER_RUNTIME.get('native_assembly_success_count', 0)),
+                    'native_assembly_fallback_count': int(_NATIVE_SOLVER_RUNTIME.get('native_assembly_fallback_count', 0)),
+                    'native_last_assembly_fallback_error': str(_NATIVE_SOLVER_RUNTIME.get('last_assembly_fallback_error', '') or ''),
+                    'native_damping_success_count': int(_NATIVE_SOLVER_RUNTIME.get('native_damping_success_count', 0)),
+                    'native_damping_fallback_count': int(_NATIVE_SOLVER_RUNTIME.get('native_damping_fallback_count', 0)),
+                    'native_last_damping_fallback_error': str(_NATIVE_SOLVER_RUNTIME.get('last_damping_fallback_error', '') or ''),
+                    'native_success_count': int(_NATIVE_SOLVER_RUNTIME.get('native_success_count', 0)),
+                    'native_fallback_count': int(_NATIVE_SOLVER_RUNTIME.get('native_fallback_count', 0)),
+                    'native_last_fallback_error': str(_NATIVE_SOLVER_RUNTIME.get('last_fallback_error', '') or ''),
+                    'native_timestep_success_count': int(_NATIVE_SOLVER_RUNTIME.get('native_timestep_success_count', 0)),
+                    'native_timestep_fallback_count': int(_NATIVE_SOLVER_RUNTIME.get('native_timestep_fallback_count', 0)),
+                    'native_last_timestep_fallback_error': str(_NATIVE_SOLVER_RUNTIME.get('last_timestep_fallback_error', '') or ''),
+                }
+                try:
+                    progress_callback(step, n_total_steps, f"t = {t_new:.0f} s", diagnostics)
+                except TypeError:
+                    progress_callback(step, n_total_steps, f"t = {t_new:.0f} s")
+                init_stability_events = []
     finally:
         if debug_payload is not None and params.debug_output_path:
             with open(params.debug_output_path, 'w', encoding='utf-8') as fh:
@@ -1596,6 +2366,16 @@ CREATE TABLE IF NOT EXISTS unsteady_hydrographs (
     bc_type       TEXT NOT NULL,
     label         TEXT,
     data_json     TEXT NOT NULL
+)
+"""
+
+_TABLE_PLANS_DDL = """
+CREATE TABLE IF NOT EXISTS unsteady_plans (
+    plan_id      TEXT PRIMARY KEY,
+    plan_name    TEXT NOT NULL,
+    created_utc  TEXT NOT NULL,
+    updated_utc  TEXT NOT NULL,
+    data_json    TEXT NOT NULL
 )
 """
 
@@ -1854,6 +2634,137 @@ list_unsteady_runs_in_geopackage = list_unsteady_runs
 # ---------------------------------------------------------------------------
 # Hydrograph boundary condition GeoPackage I/O
 # ---------------------------------------------------------------------------
+
+def save_unsteady_plan_to_geopackage(
+    path: str,
+    plan_data: dict,
+    plan_name: str,
+    plan_id: Optional[str] = None,
+) -> str:
+    """Save unsteady input configuration to GeoPackage.
+
+    Parameters
+    ----------
+    path : str
+        Path to GeoPackage file.
+    plan_data : dict
+        JSON-serializable plan payload.
+    plan_name : str
+        User-facing name for the plan.
+    plan_id : str, optional
+        Existing plan id to update; if omitted a new plan id is created.
+
+    Returns
+    -------
+    str
+        Plan id used for storage.
+    """
+    if not isinstance(plan_data, dict):
+        raise ValueError("plan_data must be a dictionary.")
+
+    plan_name = str(plan_name or '').strip()
+    if not plan_name:
+        raise ValueError("plan_name cannot be empty.")
+
+    now_utc = datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S UTC')
+    plan_id_use = str(plan_id or f"plan_{datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ')}")
+
+    conn = sqlite3.connect(path)
+    try:
+        conn.execute(_TABLE_PLANS_DDL)
+        row = conn.execute(
+            "SELECT created_utc FROM unsteady_plans WHERE plan_id=?",
+            (plan_id_use,),
+        ).fetchone()
+        created_utc = str(row[0]) if row else now_utc
+        payload = json.dumps(plan_data)
+        conn.execute(
+            "INSERT OR REPLACE INTO unsteady_plans "
+            "(plan_id, plan_name, created_utc, updated_utc, data_json) "
+            "VALUES (?,?,?,?,?)",
+            (plan_id_use, plan_name, created_utc, now_utc, payload),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    return plan_id_use
+
+
+def load_unsteady_plan_from_geopackage(path: str, plan_id: str) -> Optional[dict]:
+    """Load a saved unsteady input configuration by plan id."""
+    if not os.path.isfile(path):
+        return None
+
+    conn = sqlite3.connect(path)
+    try:
+        cur = conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' "
+            "AND name='unsteady_plans'"
+        )
+        if cur.fetchone() is None:
+            return None
+        row = conn.execute(
+            "SELECT plan_id, plan_name, created_utc, updated_utc, data_json "
+            "FROM unsteady_plans WHERE plan_id=?",
+            (str(plan_id),),
+        ).fetchone()
+    finally:
+        conn.close()
+
+    if row is None:
+        return None
+
+    pid, pname, created_utc, updated_utc, data_json = row
+    try:
+        payload = json.loads(data_json)
+    except Exception:
+        payload = {}
+    if not isinstance(payload, dict):
+        payload = {}
+
+    return {
+        'plan_id': str(pid),
+        'plan_name': str(pname),
+        'created_utc': str(created_utc),
+        'updated_utc': str(updated_utc),
+        'plan_data': payload,
+    }
+
+
+def list_unsteady_plans_in_geopackage(path: str) -> List[dict]:
+    """List saved unsteady plans stored in the GeoPackage."""
+    if not os.path.isfile(path):
+        return []
+
+    conn = sqlite3.connect(path)
+    try:
+        cur = conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' "
+            "AND name='unsteady_plans'"
+        )
+        if cur.fetchone() is None:
+            return []
+        rows = conn.execute(
+            "SELECT plan_id, plan_name, created_utc, updated_utc "
+            "FROM unsteady_plans ORDER BY updated_utc DESC, plan_name COLLATE NOCASE"
+        ).fetchall()
+    finally:
+        conn.close()
+
+    return [
+        {
+            'plan_id': str(pid),
+            'plan_name': str(pname),
+            'created_utc': str(created),
+            'updated_utc': str(updated),
+        }
+        for pid, pname, created, updated in rows
+    ]
+
+
+# Alias naming consistency with other helpers
+list_unsteady_plans = list_unsteady_plans_in_geopackage
 
 def save_hydrograph_to_geopackage(
     path: str,

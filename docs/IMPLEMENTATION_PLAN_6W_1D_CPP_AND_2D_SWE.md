@@ -23,6 +23,38 @@ Out of scope for this 6-week window:
 2. Python remains system-of-record for plugin workflows.
 3. One native backend layout reused by both solvers.
 
+## Hybrid Design: Single-Run + Multi-Run Parallelism
+
+This plan adopts a hybrid model:
+1. Single simulation acceleration is in-process C++ (pybind11) with OpenMP.
+2. Multi-run acceleration (ensembles/calibration/sweeps) may use MPI outside the plugin process.
+
+### Single Simulation Acceleration Blueprint (Required)
+
+The single-run path explicitly includes four acceleration items:
+
+1. Keep hot loops in C++
+	- Port cross-section geometry preprocessing and hydraulic table construction into native kernels.
+	- Keep Python in orchestration mode only (I/O, UI, callbacks, persistence).
+
+2. Vectorization/SIMD + cache-friendly layouts
+	- Convert startup and table/property arrays to SoA-friendly contiguous buffers.
+	- Preserve stride-1 loops for stage-major operations and compiler autovectorization.
+
+3. OpenMP threads for table/property kernels
+	- Parallelize by section and stage rows for preprocessing/table build.
+	- Add thread cap control for plugin safety (`OMP_NUM_THREADS` or explicit setter).
+
+4. Batched linear algebra where possible
+	- Replace repeated scalar coefficient operations with batched kernels in startup/property phases.
+	- Maintain current banded timestep solve contract; only internal batching strategy changes.
+
+### MPI Position
+
+1. Do not use MPI domain decomposition for one implicit 1D run in plugin context (communication-heavy global coupling).
+2. Use MPI only for outer-level independent-run parallelism (scenario sets, parameter sweeps, Monte Carlo).
+3. MPI workers should each run the same validated single-simulation C++ path for deterministic comparability.
+
 ## Weekly Plan
 
 ### Week 1: Foundations and Contracts
@@ -63,16 +95,19 @@ Goals:
 1. Optimize C++ 1D hotspots after parity lock.
 2. Add deterministic diagnostics mode and robust error guards.
 3. Run decomposition benchmarks for startup vs per-step cost.
+4. Implement native geometry preprocessing and hydraulic table build kernels with OpenMP.
 
 Deliverables:
 1. Optimized C++ 1D backend.
 2. Benchmark report with direct comparison to Python+Numba path.
 3. C++ backend default enabled for supported configurations.
+4. Hybrid startup acceleration path (`build_section_geometry_cpp`, `build_hydraulic_tables_cpp`) behind a runtime flag.
 
 Acceptance criteria:
 1. Measured speedup target achieved on representative scenarios.
 2. Stability diagnostics show no regression in solver robustness.
 3. Fallback path to Python remains available.
+4. Startup benchmark shows measurable reduction and no parity drift in table-derived properties.
 
 ### Week 4: 2D SWE MVP Compute Core
 Goals:
@@ -127,6 +162,8 @@ Acceptance criteria:
 2. Runtime diagnostics available in both success and failure scenarios.
 3. Numerical acceptance thresholds defined before optimization changes.
 4. Every performance claim backed by benchmark command and output.
+5. Single-run acceleration changes must include separate startup and per-step decomposition metrics.
+6. Parallel paths (OpenMP or MPI orchestration) must preserve deterministic tolerances and fallback behavior.
 
 ## Suggested Milestone Tags
 1. `M1-foundation` (Week 1)
@@ -140,3 +177,77 @@ Acceptance criteria:
 1. Keep daily checkpoint notes in commit messages and PR descriptions.
 2. Prefer small vertical slices: contract -> implementation -> test -> benchmark.
 3. Defer optional features if they threaten parity or stability gates.
+
+## Progress Snapshot (2026-04-29)
+
+Completed or materially advanced:
+1. Native module scaffold, CMake build path, and local Linux build doc are in place.
+2. Runtime backend flag is implemented with Python fallback semantics.
+3. Native 1D arithmetic slices now cover table-state interpolation, banded matrix assembly, adaptive damping scale, and banded solve.
+4. Focused parity tests exist for `solve_table_state`, `assemble_system_core`, and `adaptive_damping_scale`.
+5. Benchmark tooling now supports backend-specific timing with `--backend python|native|compare` and decomposition mode.
+6. A current 1D native contract doc has been added in `docs/NATIVE_1D_BACKEND_CONTRACT.md`.
+
+Still pending against the original weekly plan:
+1. A single `run_unsteady_1d_cpp(...)` binding for the full 1D timestep loop is not implemented yet.
+2. Golden 1D reference fixtures are not frozen yet.
+3. 2D input/output contract and 2D solver work have not started.
+4. Native backend is not ready to be the default path yet.
+
+Immediate next steps being followed from the plan:
+1. Continue Week 2 parity work by moving remaining per-step scalar preparation out of Python.
+2. Keep the vertical-slice workflow: contract update, implementation, parity test, benchmark evidence.
+3. Update the task board after each native milestone with concrete test and benchmark commands.
+
+### HP1 Progress Update (2026-04-30)
+Completed slice:
+1. Added native entrypoint `build_section_hydraulic_table_cpp(...)` to construct subsection hydraulic tables from subsection geometry arrays.
+2. Wired Python bridge fallback path so `_build_section_hydraulic_table(...)` uses native when enabled and falls back safely on errors.
+3. Added parity test `tests/test_native_table_build.py` and validated against existing Python implementation.
+
+Still pending within HP1:
+1. Port subsection clipping/geometry preprocessing from raw cross-section polyline to C++.
+2. Add OpenMP threading and startup benchmark deltas for the HP1 path.
+
+## Added Execution Track: Hybrid Acceleration Work Packages
+
+### HP1: Native startup path (geometry + tables)
+1. Add `build_section_geometry_cpp(...)` and `build_hydraulic_tables_cpp(...)` bindings.
+2. Wire optional Python bridge path with transparent fallback.
+3. Add parity tests versus current Python-generated tables.
+
+Definition of done:
+1. Section/table arrays match within tolerance across representative cross-sections.
+2. Startup benchmark improvement is documented.
+
+### HP2: Memory layout and SIMD pass
+1. Move startup and property buffers to contiguous SoA-friendly layout.
+2. Validate compiler vectorization on hot loops.
+
+Definition of done:
+1. Benchmarks show startup and/or property-evaluation improvement.
+2. No parity regressions.
+
+### HP3: OpenMP threading pass
+1. Parallelize section/table/property loops.
+2. Add thread-count controls and safe defaults for desktop/plugin use.
+
+Definition of done:
+1. Multi-core speedup measured at fixed tolerances.
+2. No nondeterministic instability beyond accepted tolerance envelope.
+
+### HP4: Batched algebra pass
+1. Batch repeated coefficient operations where possible in startup/property phases.
+2. Keep current solver API unchanged to minimize integration risk.
+
+Definition of done:
+1. Reduced CPU time in targeted kernels.
+2. Existing timestep solver parity tests stay green.
+
+### HP5: MPI outer-run orchestrator (optional)
+1. Provide a separate CLI/tooling path for independent-run distribution.
+2. Keep MPI outside in-process QGIS plugin execution model.
+
+Definition of done:
+1. Throughput scaling shown on independent scenario batches.
+2. Single-run plugin behavior remains unchanged.
