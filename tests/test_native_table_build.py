@@ -17,7 +17,8 @@ class TestNativeTableBuild(unittest.TestCase):
     def setUp(self):
         self.xs = CrossSection(
             river_station='150',
-            geometry=[(-30.0, 101.0), (-10.0, 99.0), (0.0, 98.4), (10.0, 98.5), (30.0, 101.2)],
+            # Intentionally unsorted to verify native preprocessing sorts/clips geometry correctly.
+            geometry=[(10.0, 98.5), (-30.0, 101.0), (30.0, 101.2), (0.0, 98.4), (-10.0, 99.0)],
             left_bank_station=-10.0,
             right_bank_station=10.0,
             n_lob=0.055,
@@ -33,6 +34,8 @@ class TestNativeTableBuild(unittest.TestCase):
             import backwater_native
         except Exception:
             self.skipTest('native module not built/importable in test environment')
+
+        self.assertTrue(hasattr(backwater_native, 'build_section_hydraulic_table_from_geometry_cpp'))
 
         if not hasattr(backwater_native, 'build_section_hydraulic_table_cpp'):
             self.skipTest('native module missing build_section_hydraulic_table_cpp entrypoint')

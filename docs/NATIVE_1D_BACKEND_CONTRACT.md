@@ -12,12 +12,13 @@ Current native entrypoints cover bounded arithmetic slices and a full single-tim
 4. `solve_banded_full(...)`
 5. `run_one_timestep_unsteady_1d_cpp(...)`
 6. `build_section_hydraulic_table_cpp(...)` (HP1 slice-1)
+7. `build_section_hydraulic_table_from_geometry_cpp(...)` (HP1 slice-2)
 
 The Python layer remains responsible for:
 
 1. GeoPackage loading and persistence.
 2. QGIS/UI orchestration and time-series handling.
-3. Cross-section geometry preprocessing and subsection clipping.
+3. GeoPackage and model object decoding to section polyline arrays.
 4. Hydraulic-table orchestration (native call + fallback) and activation-elevation metadata.
 5. Output formatting, progress callbacks, and debug diagnostics.
 
@@ -113,6 +114,25 @@ Contract notes:
 - Native kernel computes subsection area/perimeter/top-width using trapezoidal submerged geometry integration.
 - `dK_dz_raw` is computed with a second-order edge stencil compatible with Python `np.gradient(..., edge_order=2)` behavior.
 - Activation elevations are still computed in Python and attached to `SectionHydraulicTable`.
+
+### `build_section_hydraulic_table_from_geometry_cpp(...)`
+
+Inputs:
+1. Full section polyline arrays: `geom_x`, `geom_z` (1D).
+2. Bank stations: `left_bank_station`, `right_bank_station`.
+3. Stage grid `z_values` (1D, monotonic increasing expected).
+4. Manning roughness values `n_lob`, `n_ch`, `n_rob`.
+
+Outputs:
+1. Same table arrays as `build_section_hydraulic_table_cpp(...)`:
+	`A_lob_raw`, `T_lob_raw`, `K_lob_raw`, `A_ch`, `T_ch`, `K_ch`,
+	`A_rob_raw`, `T_rob_raw`, `K_rob_raw`, `K_total_raw`, `dK_dz_raw`.
+
+Contract notes:
+- Native kernel sorts raw section polyline points by station.
+- Native kernel clips LOB/CH/ROB subsection geometry internally from bank stations.
+- Intended as the primary HP1 path to remove Python subsection clipping from startup hot path.
+- Python keeps a compatibility fallback to subsection-array entrypoint and pure Python builder.
 
 ## Error Semantics
 

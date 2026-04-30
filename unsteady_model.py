@@ -71,6 +71,7 @@ try:
     from native_backend import (
         adaptive_damping_scale as _native_adaptive_damping_scale,
         assemble_system_core as _native_assemble_system_core,
+        build_section_hydraulic_table_from_geometry_cpp as _native_build_table_from_geometry,
         build_section_hydraulic_table_cpp as _native_build_section_hydraulic_table,
         compute_node_properties as _native_compute_node_properties,
         is_native_enabled as _is_native_enabled,
@@ -83,6 +84,7 @@ except ImportError:
         from .native_backend import (  # type: ignore
             adaptive_damping_scale as _native_adaptive_damping_scale,
             assemble_system_core as _native_assemble_system_core,
+            build_section_hydraulic_table_from_geometry_cpp as _native_build_table_from_geometry,
             build_section_hydraulic_table_cpp as _native_build_section_hydraulic_table,
             compute_node_properties as _native_compute_node_properties,
             is_native_enabled as _is_native_enabled,
@@ -93,6 +95,7 @@ except ImportError:
     except ImportError:
         _native_adaptive_damping_scale = None  # type: ignore
         _native_assemble_system_core = None  # type: ignore
+        _native_build_table_from_geometry = None  # type: ignore
         _native_build_section_hydraulic_table = None  # type: ignore
         _native_compute_node_properties = None  # type: ignore
         _is_native_enabled = None  # type: ignore
@@ -639,6 +642,56 @@ def _build_section_hydraulic_table(
     n_points = max(32, int(math.ceil((z_max - z_min) / dz)) + 1)
     z_values = np.linspace(z_min, z_max, n_points, dtype=np.float64)
 
+    if _native_build_table_from_geometry is not None and _is_native_enabled is not None:
+        if _is_native_enabled():
+            try:
+                geom_sorted = sorted(xs.geometry, key=lambda p: p[0])
+                geom_x = np.asarray([p[0] for p in geom_sorted], dtype=np.float64)
+                geom_z = np.asarray([p[1] for p in geom_sorted], dtype=np.float64)
+
+                (
+                    A_lob_raw,
+                    T_lob_raw,
+                    K_lob_raw,
+                    A_ch,
+                    T_ch,
+                    K_ch,
+                    A_rob_raw,
+                    T_rob_raw,
+                    K_rob_raw,
+                    K_total_raw,
+                    dK_dz_raw,
+                ) = _native_build_table_from_geometry(
+                    geom_x,
+                    geom_z,
+                    xs.left_bank_station,
+                    xs.right_bank_station,
+                    z_values,
+                    xs.n_lob,
+                    xs.n_ch,
+                    xs.n_rob,
+                )
+
+                return SectionHydraulicTable(
+                    z_values=z_values,
+                    A_lob_raw=np.asarray(A_lob_raw, dtype=np.float64),
+                    T_lob_raw=np.asarray(T_lob_raw, dtype=np.float64),
+                    K_lob_raw=np.asarray(K_lob_raw, dtype=np.float64),
+                    A_ch=np.asarray(A_ch, dtype=np.float64),
+                    T_ch=np.asarray(T_ch, dtype=np.float64),
+                    K_ch=np.asarray(K_ch, dtype=np.float64),
+                    A_rob_raw=np.asarray(A_rob_raw, dtype=np.float64),
+                    T_rob_raw=np.asarray(T_rob_raw, dtype=np.float64),
+                    K_rob_raw=np.asarray(K_rob_raw, dtype=np.float64),
+                    K_total_raw=np.asarray(K_total_raw, dtype=np.float64),
+                    dK_dz_raw=np.asarray(dK_dz_raw, dtype=np.float64),
+                    left_activation_elev=_overbank_activation_elevation(xs, 'left'),
+                    right_activation_elev=_overbank_activation_elevation(xs, 'right'),
+                )
+            except Exception:
+                # Keep production behavior: silently fall back to Python table build.
+                pass
+
     lob_g, ch_g, rob_g = xs._subgeometry()
 
     if _native_build_section_hydraulic_table is not None and _is_native_enabled is not None:
@@ -693,7 +746,6 @@ def _build_section_hydraulic_table(
                     right_activation_elev=_overbank_activation_elevation(xs, 'right'),
                 )
             except Exception:
-                # Keep production behavior: silently fall back to Python table build.
                 pass
 
     A_lob_raw = np.empty(n_points, dtype=np.float64)

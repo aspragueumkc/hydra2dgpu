@@ -10,6 +10,8 @@ namespace py = pybind11;
 
 namespace {
 
+using Point = std::pair<double, double>;
+
 double interp_linear(const double* x_values, const double* y_values, int n, double x) {
     if (n <= 0) {
         return 0.0;
@@ -128,6 +130,116 @@ void submerged_trapezoids_area_perimeter_xy(
     }
 
     out_t = std::max(0.0, top_width);
+}
+
+std::vector<Point> clip_polyline_by_x_points(const std::vector<Point>& poly, double x_min, double x_max) {
+    if (poly.empty()) {
+        return {};
+    }
+
+    std::vector<Point> clipped;
+    for (size_t i = 0; i + 1 < poly.size(); ++i) {
+        const double x0 = poly[i].first;
+        const double z0 = poly[i].second;
+        const double x1 = poly[i + 1].first;
+        const double z1 = poly[i + 1].second;
+
+        std::vector<Point> seg;
+        seg.emplace_back(x0, z0);
+
+        if ((x0 < x_min && x_min < x1) || (x1 < x_min && x_min < x0)) {
+            const double zi = (x1 != x0) ? (z0 + (z1 - z0) * ((x_min - x0) / (x1 - x0))) : z0;
+            seg.emplace_back(x_min, zi);
+        }
+        if ((x0 < x_max && x_max < x1) || (x1 < x_max && x_max < x0)) {
+            const double zi = (x1 != x0) ? (z0 + (z1 - z0) * ((x_max - x0) / (x1 - x0))) : z0;
+            seg.emplace_back(x_max, zi);
+        }
+
+        seg.emplace_back(x1, z1);
+
+        std::sort(seg.begin(), seg.end(), [](const Point& a, const Point& b) {
+            return a.first < b.first;
+        });
+
+        std::vector<Point> seg_filtered;
+        for (const auto& p : seg) {
+            if ((x_min - 1.0e-9) <= p.first && p.first <= (x_max + 1.0e-9)) {
+                seg_filtered.push_back(p);
+            }
+        }
+        if (seg_filtered.empty()) {
+            continue;
+        }
+
+        if (clipped.empty()) {
+            clipped.insert(clipped.end(), seg_filtered.begin(), seg_filtered.end());
+        } else {
+            const Point& tail = clipped.back();
+            const Point& head = seg_filtered.front();
+            if (std::abs(tail.first - head.first) <= 1.0e-9 && std::abs(tail.second - head.second) <= 1.0e-9) {
+                clipped.insert(clipped.end(), seg_filtered.begin() + 1, seg_filtered.end());
+            } else {
+                clipped.insert(clipped.end(), seg_filtered.begin(), seg_filtered.end());
+            }
+        }
+    }
+
+    std::vector<Point> out;
+    for (const auto& p : clipped) {
+        if (out.empty()) {
+            out.push_back(p);
+            continue;
+        }
+        const Point& last = out.back();
+        if (std::abs(last.first - p.first) > 1.0e-9 || std::abs(last.second - p.second) > 1.0e-9) {
+            out.push_back(p);
+        }
+    }
+    return out;
+}
+
+void subsection_hydraulics_points(
+    const std::vector<Point>& geom,
+    double wse,
+    double n_val,
+    double& out_a,
+    double& out_t,
+    double& out_k) {
+    out_a = 0.0;
+    out_t = 0.0;
+    out_k = 0.0;
+    if (geom.size() < 2) {
+        return;
+    }
+
+    std::vector<double> x_values;
+    std::vector<double> z_values;
+    x_values.reserve(geom.size());
+    z_values.reserve(geom.size());
+    for (const auto& p : geom) {
+        x_values.push_back(p.first);
+        z_values.push_back(p.second);
+    }
+
+    double area = 0.0;
+    double perim = 0.0;
+    double top_width = 0.0;
+    submerged_trapezoids_area_perimeter_xy(
+        x_values.data(),
+        z_values.data(),
+        static_cast<int>(x_values.size()),
+        wse,
+        area,
+        perim,
+        top_width);
+
+    out_a = std::max(0.0, area);
+    out_t = std::max(0.0, top_width);
+    if (area > 0.0 && perim > 0.0 && n_val > 0.0) {
+        const double radius = area / perim;
+        out_k = (1.49 / n_val) * area * std::pow(radius, 2.0 / 3.0);
+    }
 }
 
 void subsection_hydraulics_xy(
@@ -877,6 +989,153 @@ py::tuple build_section_hydraulic_table_cpp(
     );
 }
 
+py::tuple build_section_hydraulic_table_from_geometry_cpp(
+    py::array_t<double, py::array::c_style | py::array::forcecast> geom_x,
+    py::array_t<double, py::array::c_style | py::array::forcecast> geom_z,
+    double left_bank_station,
+    double right_bank_station,
+    py::array_t<double, py::array::c_style | py::array::forcecast> z_values,
+    double n_lob,
+    double n_ch,
+    double n_rob) {
+    auto geom_x_buf = geom_x.request();
+    auto geom_z_buf = geom_z.request();
+    auto z_values_buf = z_values.request();
+
+    if (geom_x_buf.ndim != 1 || geom_z_buf.ndim != 1 || z_values_buf.ndim != 1) {
+        throw std::runtime_error("build_section_hydraulic_table_from_geometry_cpp expects 1D arrays.");
+    }
+
+    const int n_geom = static_cast<int>(geom_x_buf.shape[0]);
+    const int n_points = static_cast<int>(z_values_buf.shape[0]);
+    if (n_geom < 2 || static_cast<int>(geom_z_buf.shape[0]) != n_geom) {
+        throw std::runtime_error("geometry arrays must have matching length >= 2.");
+    }
+    if (n_points <= 0) {
+        throw std::runtime_error("z_values must be non-empty.");
+    }
+
+    const auto* gx_ptr = static_cast<const double*>(geom_x_buf.ptr);
+    const auto* gz_ptr = static_cast<const double*>(geom_z_buf.ptr);
+    const auto* z_ptr = static_cast<const double*>(z_values_buf.ptr);
+
+    std::vector<Point> geom;
+    geom.reserve(static_cast<size_t>(n_geom));
+    for (int i = 0; i < n_geom; ++i) {
+        geom.emplace_back(gx_ptr[i], gz_ptr[i]);
+    }
+    std::sort(geom.begin(), geom.end(), [](const Point& a, const Point& b) {
+        return a.first < b.first;
+    });
+
+    const double min_x = geom.front().first;
+    const double max_x = geom.back().first;
+
+    const std::vector<Point> lob_geom = clip_polyline_by_x_points(geom, min_x, left_bank_station);
+    const std::vector<Point> ch_geom = clip_polyline_by_x_points(geom, left_bank_station, right_bank_station);
+    const std::vector<Point> rob_geom = clip_polyline_by_x_points(geom, right_bank_station, max_x);
+
+    py::array_t<double> a_lob_raw(n_points);
+    py::array_t<double> t_lob_raw(n_points);
+    py::array_t<double> k_lob_raw(n_points);
+    py::array_t<double> a_ch(n_points);
+    py::array_t<double> t_ch(n_points);
+    py::array_t<double> k_ch(n_points);
+    py::array_t<double> a_rob_raw(n_points);
+    py::array_t<double> t_rob_raw(n_points);
+    py::array_t<double> k_rob_raw(n_points);
+    py::array_t<double> k_total_raw(n_points);
+    py::array_t<double> dk_dz_raw(n_points);
+
+    auto a_lob_buf = a_lob_raw.request();
+    auto t_lob_buf = t_lob_raw.request();
+    auto k_lob_buf = k_lob_raw.request();
+    auto a_ch_buf = a_ch.request();
+    auto t_ch_buf = t_ch.request();
+    auto k_ch_buf = k_ch.request();
+    auto a_rob_buf = a_rob_raw.request();
+    auto t_rob_buf = t_rob_raw.request();
+    auto k_rob_buf = k_rob_raw.request();
+    auto k_total_buf = k_total_raw.request();
+    auto dk_dz_buf = dk_dz_raw.request();
+
+    auto* a_lob_ptr = static_cast<double*>(a_lob_buf.ptr);
+    auto* t_lob_ptr = static_cast<double*>(t_lob_buf.ptr);
+    auto* k_lob_ptr = static_cast<double*>(k_lob_buf.ptr);
+    auto* a_ch_ptr = static_cast<double*>(a_ch_buf.ptr);
+    auto* t_ch_ptr = static_cast<double*>(t_ch_buf.ptr);
+    auto* k_ch_ptr = static_cast<double*>(k_ch_buf.ptr);
+    auto* a_rob_ptr = static_cast<double*>(a_rob_buf.ptr);
+    auto* t_rob_ptr = static_cast<double*>(t_rob_buf.ptr);
+    auto* k_rob_ptr = static_cast<double*>(k_rob_buf.ptr);
+    auto* k_total_ptr = static_cast<double*>(k_total_buf.ptr);
+    auto* dk_dz_ptr = static_cast<double*>(dk_dz_buf.ptr);
+
+    for (int i = 0; i < n_points; ++i) {
+        const double z_eval = z_ptr[i];
+
+        subsection_hydraulics_points(lob_geom, z_eval, n_lob, a_lob_ptr[i], t_lob_ptr[i], k_lob_ptr[i]);
+        subsection_hydraulics_points(ch_geom, z_eval, n_ch, a_ch_ptr[i], t_ch_ptr[i], k_ch_ptr[i]);
+        subsection_hydraulics_points(rob_geom, z_eval, n_rob, a_rob_ptr[i], t_rob_ptr[i], k_rob_ptr[i]);
+
+        k_total_ptr[i] = k_lob_ptr[i] + k_ch_ptr[i] + k_rob_ptr[i];
+    }
+
+    if (n_points == 1) {
+        dk_dz_ptr[0] = 0.0;
+    } else if (n_points == 2) {
+        const double dz = z_ptr[1] - z_ptr[0];
+        const double g = (dz != 0.0) ? (k_total_ptr[1] - k_total_ptr[0]) / dz : 0.0;
+        dk_dz_ptr[0] = g;
+        dk_dz_ptr[1] = g;
+    } else {
+        for (int i = 1; i < n_points - 1; ++i) {
+            const double dz = z_ptr[i + 1] - z_ptr[i - 1];
+            dk_dz_ptr[i] = (dz != 0.0) ? (k_total_ptr[i + 1] - k_total_ptr[i - 1]) / dz : 0.0;
+        }
+
+        {
+            const double h0 = z_ptr[1] - z_ptr[0];
+            const double h1 = z_ptr[2] - z_ptr[1];
+            if (h0 != 0.0 && h1 != 0.0 && (h0 + h1) != 0.0) {
+                const double a = -(2.0 * h0 + h1) / (h0 * (h0 + h1));
+                const double b = (h0 + h1) / (h0 * h1);
+                const double c = -h0 / (h1 * (h0 + h1));
+                dk_dz_ptr[0] = a * k_total_ptr[0] + b * k_total_ptr[1] + c * k_total_ptr[2];
+            } else {
+                dk_dz_ptr[0] = 0.0;
+            }
+        }
+        {
+            const int n = n_points;
+            const double hm1 = z_ptr[n - 1] - z_ptr[n - 2];
+            const double hm2 = z_ptr[n - 2] - z_ptr[n - 3];
+            if (hm1 != 0.0 && hm2 != 0.0 && (hm1 + hm2) != 0.0) {
+                const double a = hm1 / (hm2 * (hm1 + hm2));
+                const double b = -(hm1 + hm2) / (hm1 * hm2);
+                const double c = (2.0 * hm1 + hm2) / (hm1 * (hm1 + hm2));
+                dk_dz_ptr[n - 1] = a * k_total_ptr[n - 3] + b * k_total_ptr[n - 2] + c * k_total_ptr[n - 1];
+            } else {
+                dk_dz_ptr[n - 1] = 0.0;
+            }
+        }
+    }
+
+    return py::make_tuple(
+        a_lob_raw,
+        t_lob_raw,
+        k_lob_raw,
+        a_ch,
+        t_ch,
+        k_ch,
+        a_rob_raw,
+        t_rob_raw,
+        k_rob_raw,
+        k_total_raw,
+        dk_dz_raw
+    );
+}
+
 }  // namespace
 
 PYBIND11_MODULE(backwater_native, m) {
@@ -914,4 +1173,8 @@ PYBIND11_MODULE(backwater_native, m) {
             py::arg("rob_x"), py::arg("rob_z"), py::arg("z_values"),
             py::arg("n_lob"), py::arg("n_ch"), py::arg("n_rob"),
             "Build subsection hydraulic table arrays for one cross section from subsection geometry.");
+            m.def("build_section_hydraulic_table_from_geometry_cpp", &build_section_hydraulic_table_from_geometry_cpp,
+                py::arg("geom_x"), py::arg("geom_z"), py::arg("left_bank_station"), py::arg("right_bank_station"),
+                py::arg("z_values"), py::arg("n_lob"), py::arg("n_ch"), py::arg("n_rob"),
+                "Clip subsection geometry and build hydraulic table arrays for one cross section.");
 }

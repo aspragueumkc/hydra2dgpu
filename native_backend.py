@@ -227,3 +227,27 @@ def build_section_hydraulic_table_cpp(
         n_ch,
         n_rob,
     )
+
+
+def build_section_hydraulic_table_from_geometry_cpp(
+    geom_x,
+    geom_z,
+    left_bank_station,
+    right_bank_station,
+    z_values,
+    n_lob,
+    n_ch,
+    n_rob,
+):
+    """Build one section hydraulic lookup table from full section geometry."""
+    mod = load_native_module()
+    return mod.build_section_hydraulic_table_from_geometry_cpp(
+        geom_x,
+        geom_z,
+        left_bank_station,
+        right_bank_station,
+        z_values,
+        n_lob,
+        n_ch,
+        n_rob,
+    )

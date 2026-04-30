@@ -204,10 +204,11 @@ Completed slice:
 1. Added native entrypoint `build_section_hydraulic_table_cpp(...)` to construct subsection hydraulic tables from subsection geometry arrays.
 2. Wired Python bridge fallback path so `_build_section_hydraulic_table(...)` uses native when enabled and falls back safely on errors.
 3. Added parity test `tests/test_native_table_build.py` and validated against existing Python implementation.
+4. Added native entrypoint `build_section_hydraulic_table_from_geometry_cpp(...)` to perform subsection clipping/preprocessing and table construction from raw section geometry arrays.
+5. Switched runtime preference to geometry-preprocessing native path (with fallback chain preserved).
 
 Still pending within HP1:
-1. Port subsection clipping/geometry preprocessing from raw cross-section polyline to C++.
-2. Add OpenMP threading and startup benchmark deltas for the HP1 path.
+1. Add OpenMP threading and startup benchmark deltas for the HP1 path.
 
 ## Added Execution Track: Hybrid Acceleration Work Packages
 

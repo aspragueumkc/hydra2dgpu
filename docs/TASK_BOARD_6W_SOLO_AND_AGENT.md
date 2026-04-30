@@ -285,3 +285,23 @@ Open notes:
 Slice-1 verification:
 1. `python3 -m unittest tests.test_native_table_build tests.test_native_table_state tests.test_native_assembly_core tests.test_native_damping_core tests.test_native_timestep -v` -> **ALL PASS**.
 
+### 2026-04-30 (HP1 slice 2 complete: native subsection clipping/preprocessing)
+Tasks touched:
+1. Added native entrypoint `build_section_hydraulic_table_from_geometry_cpp(...)` to clip LOB/CH/ROB subsections from raw section polyline and build table arrays.
+2. Updated `_build_section_hydraulic_table(...)` to prefer the geometry-preprocessing native path when enabled.
+3. Preserved fallback chain: native-from-geometry -> native-from-subsections -> Python.
+
+Files changed:
+1. `cpp/src/backwater_native.cpp`
+2. `native_backend.py`
+3. `unsteady_model.py`
+4. `tests/test_native_table_build.py`
+
+Verification:
+1. `python3 -m unittest tests.test_native_table_build tests.test_native_table_state tests.test_native_assembly_core tests.test_native_damping_core tests.test_native_timestep -v` -> **ALL PASS**.
+
+Status:
+- [x] HP1 slice 1 (native table construction)
+- [x] HP1 slice 2 (native subsection clipping/preprocessing)
+- [ ] HP1 slice 3 (OpenMP parallelization + startup benchmark deltas)
+
