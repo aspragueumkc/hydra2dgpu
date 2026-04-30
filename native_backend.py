@@ -251,3 +251,15 @@ def build_section_hydraulic_table_from_geometry_cpp(
         n_ch,
         n_rob,
     )
+
+
+def configure_table_threads_cpp(thread_count):
+    """Configure native hydraulic-table thread count (0 means runtime default)."""
+    mod = load_native_module()
+    return mod.configure_table_threads_cpp(int(thread_count))
+
+
+def get_table_threads_cpp():
+    """Read configured native hydraulic-table thread count."""
+    mod = load_native_module()
+    return int(mod.get_table_threads_cpp())

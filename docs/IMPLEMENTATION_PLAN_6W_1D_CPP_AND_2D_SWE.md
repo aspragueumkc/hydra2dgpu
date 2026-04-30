@@ -207,8 +207,17 @@ Completed slice:
 4. Added native entrypoint `build_section_hydraulic_table_from_geometry_cpp(...)` to perform subsection clipping/preprocessing and table construction from raw section geometry arrays.
 5. Switched runtime preference to geometry-preprocessing native path (with fallback chain preserved).
 
-Still pending within HP1:
-1. Add OpenMP threading and startup benchmark deltas for the HP1 path.
+HP1 slice 3 completed (2026-04-30):
+1. Added OpenMP `#pragma omp parallel for if(n_points >= 64)` in both table-build kernels.
+2. Added `configure_table_threads_cpp` / `get_table_threads_cpp` entrypoints.
+3. Conditionally enabled via `find_package(OpenMP QUIET)` — degrades gracefully if not present.
+4. Auto thread config in `_build_hydraulic_tables`: `min(cpu_count, n_sections)` or `BACKWATER_NATIVE_TABLE_THREADS` env override.
+5. Process-pool oversubscription guard: Python pool disabled when native is active.
+
+Startup benchmark deltas (5 sections, dz=0.01, pad=5.0):
+- Python: 0.366 s → Native (4 threads): 0.017 s → **~21.5× speedup**
+
+HP1 is fully complete. All planned entrypoints implemented and parity-tested.
 
 ## Added Execution Track: Hybrid Acceleration Work Packages
 

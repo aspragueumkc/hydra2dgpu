@@ -13,6 +13,8 @@ Current native entrypoints cover bounded arithmetic slices and a full single-tim
 5. `run_one_timestep_unsteady_1d_cpp(...)`
 6. `build_section_hydraulic_table_cpp(...)` (HP1 slice-1)
 7. `build_section_hydraulic_table_from_geometry_cpp(...)` (HP1 slice-2)
+8. `configure_table_threads_cpp(int)` (HP1 slice-3)
+9. `get_table_threads_cpp()` (HP1 slice-3)
 
 The Python layer remains responsible for:
 
@@ -133,6 +135,27 @@ Contract notes:
 - Native kernel clips LOB/CH/ROB subsection geometry internally from bank stations.
 - Intended as the primary HP1 path to remove Python subsection clipping from startup hot path.
 - Python keeps a compatibility fallback to subsection-array entrypoint and pure Python builder.
+
+### `configure_table_threads_cpp(int)`
+
+Inputs:
+1. `thread_count` (int): Number of OpenMP threads to use for table-build kernels. Clamped to `[1, hardware_concurrency]` internally.
+
+Outputs:
+1. None.
+
+Contract notes:
+- Sets process-global `g_table_threads` used by `omp_set_num_threads(...)` before parallel table-build regions.
+- Has no effect if the extension was compiled without OpenMP (`BACKWATER_HAS_OPENMP` not defined).
+- Python bridge reads `BACKWATER_NATIVE_TABLE_THREADS` env var at `_build_hydraulic_tables` entry; if unset, auto-computes `min(cpu_count, n_sections)` and calls this function.
+
+### `get_table_threads_cpp()`
+
+Inputs:
+1. None.
+
+Outputs:
+1. Current `g_table_threads` value (int). Returns 1 if OpenMP is not compiled in.
 
 ## Error Semantics
 

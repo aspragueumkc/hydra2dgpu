@@ -6,11 +6,16 @@
 #include <pybind11/numpy.h>
 #include <pybind11/pybind11.h>
 
+#if defined(BACKWATER_HAS_OPENMP)
+#include <omp.h>
+#endif
+
 namespace py = pybind11;
 
 namespace {
 
 using Point = std::pair<double, double>;
+int g_table_threads = 0;
 
 double interp_linear(const double* x_values, const double* y_values, int n, double x) {
     if (n <= 0) {
@@ -923,6 +928,12 @@ py::tuple build_section_hydraulic_table_cpp(
     auto* k_total_ptr = static_cast<double*>(k_total_buf.ptr);
     auto* dk_dz_ptr = static_cast<double*>(dk_dz_buf.ptr);
 
+    #if defined(BACKWATER_HAS_OPENMP)
+    if (g_table_threads > 0) {
+        omp_set_num_threads(g_table_threads);
+    }
+    #pragma omp parallel for if(n_points >= 64)
+    #endif
     for (int i = 0; i < n_points; ++i) {
         const double z_eval = z_ptr[i];
 
@@ -1071,6 +1082,12 @@ py::tuple build_section_hydraulic_table_from_geometry_cpp(
     auto* k_total_ptr = static_cast<double*>(k_total_buf.ptr);
     auto* dk_dz_ptr = static_cast<double*>(dk_dz_buf.ptr);
 
+    #if defined(BACKWATER_HAS_OPENMP)
+    if (g_table_threads > 0) {
+        omp_set_num_threads(g_table_threads);
+    }
+    #pragma omp parallel for if(n_points >= 64)
+    #endif
     for (int i = 0; i < n_points; ++i) {
         const double z_eval = z_ptr[i];
 
@@ -1136,6 +1153,19 @@ py::tuple build_section_hydraulic_table_from_geometry_cpp(
     );
 }
 
+void configure_table_threads_cpp(int thread_count) {
+    g_table_threads = std::max(0, thread_count);
+#if defined(BACKWATER_HAS_OPENMP)
+    if (g_table_threads > 0) {
+        omp_set_num_threads(g_table_threads);
+    }
+#endif
+}
+
+int get_table_threads_cpp() {
+    return g_table_threads;
+}
+
 }  // namespace
 
 PYBIND11_MODULE(backwater_native, m) {
@@ -1177,4 +1207,9 @@ PYBIND11_MODULE(backwater_native, m) {
                 py::arg("geom_x"), py::arg("geom_z"), py::arg("left_bank_station"), py::arg("right_bank_station"),
                 py::arg("z_values"), py::arg("n_lob"), py::arg("n_ch"), py::arg("n_rob"),
                 "Clip subsection geometry and build hydraulic table arrays for one cross section.");
+                m.def("configure_table_threads_cpp", &configure_table_threads_cpp,
+                    py::arg("thread_count"),
+                    "Configure OpenMP thread count for native hydraulic-table kernels (0 uses runtime default).");
+                m.def("get_table_threads_cpp", &get_table_threads_cpp,
+                    "Get configured native hydraulic-table OpenMP thread count (0 means runtime default).");
 }

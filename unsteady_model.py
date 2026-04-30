@@ -73,7 +73,9 @@ try:
         assemble_system_core as _native_assemble_system_core,
         build_section_hydraulic_table_from_geometry_cpp as _native_build_table_from_geometry,
         build_section_hydraulic_table_cpp as _native_build_section_hydraulic_table,
+        configure_table_threads_cpp as _native_configure_table_threads,
         compute_node_properties as _native_compute_node_properties,
+        get_table_threads_cpp as _native_get_table_threads,
         is_native_enabled as _is_native_enabled,
         run_one_timestep_unsteady_1d_cpp as _native_run_one_timestep,
         solve_banded_full as _native_solve_banded_full,
@@ -86,7 +88,9 @@ except ImportError:
             assemble_system_core as _native_assemble_system_core,
             build_section_hydraulic_table_from_geometry_cpp as _native_build_table_from_geometry,
             build_section_hydraulic_table_cpp as _native_build_section_hydraulic_table,
+            configure_table_threads_cpp as _native_configure_table_threads,
             compute_node_properties as _native_compute_node_properties,
+            get_table_threads_cpp as _native_get_table_threads,
             is_native_enabled as _is_native_enabled,
             run_one_timestep_unsteady_1d_cpp as _native_run_one_timestep,
             solve_banded_full as _native_solve_banded_full,
@@ -97,7 +101,9 @@ except ImportError:
         _native_assemble_system_core = None  # type: ignore
         _native_build_table_from_geometry = None  # type: ignore
         _native_build_section_hydraulic_table = None  # type: ignore
+        _native_configure_table_threads = None  # type: ignore
         _native_compute_node_properties = None  # type: ignore
+        _native_get_table_threads = None  # type: ignore
         _is_native_enabled = None  # type: ignore
         _native_run_one_timestep = None  # type: ignore
         _native_solve_banded_full = None  # type: ignore
@@ -802,8 +808,25 @@ def _build_hydraulic_tables(
 
     cpu_count = max(1, int(os.cpu_count() or 1))
     disable_parallel = str(os.environ.get('BACKWATER_DISABLE_TABLE_PARALLEL', '')).strip().lower() in ('1', 'true', 'yes')
+    native_table_active = (
+        _native_build_table_from_geometry is not None
+        and _is_native_enabled is not None
+        and _is_native_enabled()
+    )
+
+    if native_table_active and _native_configure_table_threads is not None:
+        try:
+            env_threads = os.environ.get('BACKWATER_NATIVE_TABLE_THREADS', '').strip()
+            if env_threads:
+                _native_configure_table_threads(max(0, int(env_threads)))
+            elif _native_get_table_threads is not None and int(_native_get_table_threads()) <= 0:
+                _native_configure_table_threads(max(1, min(cpu_count, n_sections if n_sections > 0 else 1)))
+        except Exception:
+            pass
+
     use_parallel = (
         not disable_parallel
+        and not native_table_active
         and n_sections >= 6
         and cpu_count > 1
     )

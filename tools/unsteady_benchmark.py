@@ -318,6 +318,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--decompose-short-steps", type=int, default=10, help="Short run length in steps for decomposition mode")
     parser.add_argument("--no-precompute", action="store_true", help="Disable hydraulic table precompute during solve")
     parser.add_argument("--backend", choices=("python", "native", "compare"), default="python", help="Solver backend mode for benchmark runs")
+    parser.add_argument(
+        "--preprocess-backend",
+        choices=("auto", "python", "native"),
+        default="auto",
+        help="Backend mode to use for preprocess-only timing (auto keeps current environment)",
+    )
     return parser.parse_args()
 
 
@@ -337,7 +343,11 @@ def main() -> int:
     sections_us_to_ds = sorted(model.sections, key=_station_sort_key, reverse=True)
 
     t1 = time.perf_counter()
-    _ = _build_hydraulic_tables(sections_us_to_ds, dz=float(args.table_dz), padding=float(args.table_pad))
+    if args.preprocess_backend == "auto":
+        _ = _build_hydraulic_tables(sections_us_to_ds, dz=float(args.table_dz), padding=float(args.table_pad))
+    else:
+        with _backend_mode(args.preprocess_backend):
+            _ = _build_hydraulic_tables(sections_us_to_ds, dz=float(args.table_dz), padding=float(args.table_pad))
     t_pre = time.perf_counter() - t1
 
     backend_summaries: List[BackendRunSummary] = []
@@ -363,6 +373,7 @@ def main() -> int:
     print(f"  Nonlinear config: max_iter={args.max_iter}, tol={args.tol}")
     print(f"  Table config: precompute={not args.no_precompute}, dz={args.table_dz}, pad={args.table_pad}")
     print(f"  Backend mode: {args.backend}")
+    print(f"  Preprocess backend: {args.preprocess_backend}")
     print(f"  Load time: {t_load:.3f} s")
     print(f"  Preprocess-only time: {t_pre:.3f} s")
     if backend_summaries:

@@ -303,5 +303,34 @@ Verification:
 Status:
 - [x] HP1 slice 1 (native table construction)
 - [x] HP1 slice 2 (native subsection clipping/preprocessing)
-- [ ] HP1 slice 3 (OpenMP parallelization + startup benchmark deltas)
+- [x] HP1 slice 3 (OpenMP parallelization + startup benchmark deltas)
+
+### 2026-04-30 (HP1 slice 3 complete: OpenMP threading + startup benchmark)
+Tasks touched:
+1. Added `#pragma omp parallel for if(n_points >= 64)` guards in both `build_section_hydraulic_table_cpp` and `build_section_hydraulic_table_from_geometry_cpp` kernels.
+2. Added `configure_table_threads_cpp(int)` / `get_table_threads_cpp()` entrypoints and `g_table_threads` global for thread-count control.
+3. Added `CMakeLists.txt` `find_package(OpenMP QUIET)` — gracefully degrades to single-threaded if OpenMP not found at build time.
+4. Added auto thread-count logic in `_build_hydraulic_tables(...)`: reads `BACKWATER_NATIVE_TABLE_THREADS` env var, falls back to `min(cpu_count, n_sections)`.
+5. Added process-pool oversubscription guard: Python process pool disabled when native table build is active.
+6. Added `--preprocess-backend (auto|python|native)` flag to `tools/unsteady_benchmark.py`.
+
+Files changed:
+1. `CMakeLists.txt`
+2. `cpp/src/backwater_native.cpp`
+3. `native_backend.py`
+4. `unsteady_model.py`
+5. `tools/unsteady_benchmark.py`
+
+Benchmark results (5 cross sections, dz=0.01, pad=5.0, BACKWATER_NATIVE_TABLE_THREADS=4):
+| Backend | Preprocess time (median, 5 runs) |
+|---------|-----------------------------------|
+| Python  | 0.366 s                           |
+| Native  | 0.017 s                           |
+| Speedup | ~21.5×                            |
+
+Note: Solve time unchanged between backends (~0.80 s) — only preprocess changes with HP1.
+Note: OpenMP `#pragma omp parallel for` is a no-op if OpenMP not found at build time; correctness is unaffected.
+
+Verification:
+1. `python3 -m unittest tests.test_native_table_build tests.test_native_table_state tests.test_native_assembly_core tests.test_native_damping_core tests.test_native_timestep -v` -> **ALL PASS**.
 

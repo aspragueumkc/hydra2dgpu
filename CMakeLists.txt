@@ -22,6 +22,12 @@ endif()
 
 pybind11_add_module(backwater_native cpp/src/backwater_native.cpp)
 
+find_package(OpenMP QUIET)
+if(OpenMP_CXX_FOUND)
+  target_link_libraries(backwater_native PRIVATE OpenMP::OpenMP_CXX)
+  target_compile_definitions(backwater_native PRIVATE BACKWATER_HAS_OPENMP=1)
+endif()
+
 if(MSVC)
   target_compile_options(backwater_native PRIVATE /W4)
 else()
