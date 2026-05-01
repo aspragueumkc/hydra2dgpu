@@ -1,0 +1,660 @@
+// swe2d_gpu.cu
+// CUDA kernel implementations for the 2D SWE hybrid solver.
+//
+// Three kernel launches per timestep:
+//   1. swe2d_flux_kernel   — parallel over edges, writes flux accumulators
+//   2. swe2d_update_kernel — parallel over cells, applies fluxes + friction
+//   3. swe2d_cfl_kernel    — parallel over cells, block-reduce to find max lambda
+//
+// All numerical logic is shared with the CPU path via swe2d_numerics.hpp
+// (the SWE2D_HOSTDEV macro marks kernels callable from both host and device).
+
+#include "swe2d_gpu.cuh"
+#include "swe2d_numerics.hpp"
+
+#include <cuda_runtime.h>
+#include <device_launch_parameters.h>
+#include <cooperative_groups.h>
+
+#include <cmath>
+#include <cstring>
+#include <stdexcept>
+#include <limits>
+#include <cstdio>
+#include <cstdlib>
+#include <vector>
+
+namespace cg = cooperative_groups;
+
+namespace {
+
+bool swe2d_debug_enabled(const char* name) {
+    const char* v = std::getenv(name);
+    return (v && v[0] && v[0] != '0');
+}
+
+void dump_flux_summary(const char* tag,
+                       const std::vector<double>& dh,
+                       const std::vector<double>& dhu,
+                       const std::vector<double>& dhv)
+{
+    if (dh.empty()) return;
+    double s_h = 0.0, s_hu = 0.0, s_hv = 0.0;
+    double m_h = 0.0, m_hu = 0.0, m_hv = 0.0;
+    for (size_t i = 0; i < dh.size(); ++i) {
+        const double ah = std::abs(dh[i]);
+        const double au = std::abs(dhu[i]);
+        const double av = std::abs(dhv[i]);
+        s_h += dh[i];
+        s_hu += dhu[i];
+        s_hv += dhv[i];
+        if (ah > m_h) m_h = ah;
+        if (au > m_hu) m_hu = au;
+        if (av > m_hv) m_hv = av;
+    }
+    std::fprintf(stderr,
+                 "[SWE2D_DEBUG] %s flux summary: sum(dh)=%.9e sum(dhu)=%.9e sum(dhv)=%.9e max|dh|=%.9e max|dhu|=%.9e max|dhv|=%.9e\n",
+                 tag, s_h, s_hu, s_hv, m_h, m_hu, m_hv);
+    const size_t n_show = std::min<size_t>(dh.size(), 8);
+    for (size_t i = 0; i < n_show; ++i) {
+        std::fprintf(stderr,
+                     "[SWE2D_DEBUG] %s flux cell[%zu]: dh=%.9e dhu=%.9e dhv=%.9e\n",
+                     tag, i, dh[i], dhu[i], dhv[i]);
+    }
+}
+
+__device__ inline void hllc_flux_cuda_local(
+    double hL, double uL, double vL,
+    double hR, double uR, double vR,
+    double nx, double ny,
+    double g, double h_min,
+    double& fh, double& fhu, double& fhv)
+{
+    fh = 0.0;
+    fhu = 0.0;
+    fhv = 0.0;
+
+    if (hL <= h_min && hR <= h_min) {
+        return;
+    }
+
+    const double unL = uL * nx + vL * ny;
+    const double unR = uR * nx + vR * ny;
+
+    const double cL = (hL > 0.0) ? ::sqrt(g * hL) : 0.0;
+    const double cR = (hR > 0.0) ? ::sqrt(g * hR) : 0.0;
+
+    const double sqrt_hL = (hL > 0.0) ? ::sqrt(hL) : 0.0;
+    const double sqrt_hR = (hR > 0.0) ? ::sqrt(hR) : 0.0;
+    const double denom = sqrt_hL + sqrt_hR;
+
+    const double u_roe = (denom > 0.0)
+                       ? (sqrt_hL * unL + sqrt_hR * unR) / denom
+                       : 0.0;
+    const double c_roe = (denom > 0.0)
+                       ? ::sqrt(0.5 * g * (hL + hR))
+                       : 0.0;
+
+    const double SL = ::fmin(unL - cL, u_roe - c_roe);
+    const double SR = ::fmax(unR + cR, u_roe + c_roe);
+
+    const double fhL  = hL * unL;
+    const double fhuL = hL * uL * unL + 0.5 * g * hL * hL * nx;
+    const double fhvL = hL * vL * unL + 0.5 * g * hL * hL * ny;
+
+    const double fhR  = hR * unR;
+    const double fhuR = hR * uR * unR + 0.5 * g * hR * hR * nx;
+    const double fhvR = hR * vR * unR + 0.5 * g * hR * hR * ny;
+
+    if (SL >= 0.0) {
+        fh = fhL;
+        fhu = fhuL;
+        fhv = fhvL;
+        return;
+    }
+    if (SR <= 0.0) {
+        fh = fhR;
+        fhu = fhuR;
+        fhv = fhvR;
+        return;
+    }
+
+    const double numS = hR * unR * (SR - unR) - hL * unL * (SL - unL)
+                      + 0.5 * g * (hL * hL - hR * hR);
+    const double denS = hR * (SR - unR) - hL * (SL - unL);
+    const double S_star = (::fabs(denS) > 1.0e-15) ? (numS / denS) : 0.0;
+
+    if (S_star >= 0.0) {
+        const double coeff = hL * (SL - unL) / (SL - S_star);
+        const double h_star_L  = coeff;
+        const double hu_star_L = coeff * (uL + (S_star - unL) * nx);
+        const double hv_star_L = coeff * (vL + (S_star - unL) * ny);
+
+        const double dh  = h_star_L  - hL;
+        const double dhu = hu_star_L - hL * uL;
+        const double dhv = hv_star_L - hL * vL;
+
+        fh  = fhL  + SL * dh;
+        fhu = fhuL + SL * dhu;
+        fhv = fhvL + SL * dhv;
+    } else {
+        const double coeff = hR * (SR - unR) / (SR - S_star);
+        const double h_star_R  = coeff;
+        const double hu_star_R = coeff * (uR + (S_star - unR) * nx);
+        const double hv_star_R = coeff * (vR + (S_star - unR) * ny);
+
+        const double dh  = h_star_R  - hR;
+        const double dhu = hu_star_R - hR * uR;
+        const double dhv = hv_star_R - hR * vR;
+
+        fh  = fhR  + SR * dh;
+        fhu = fhuR + SR * dhu;
+        fhv = fhvR + SR * dhv;
+    }
+}
+
+} // namespace
+
+// ─────────────────────────────────────────────────────────────────────────────
+// CUDA error checking
+// ─────────────────────────────────────────────────────────────────────────────
+#define CUDA_CHECK(call)                                                        \
+    do {                                                                        \
+        cudaError_t _e = (call);                                                \
+        if (_e != cudaSuccess) {                                                \
+            throw std::runtime_error(std::string("CUDA error: ")               \
+                + cudaGetErrorString(_e) + " at " __FILE__ ":"                 \
+                + std::to_string(__LINE__));                                    \
+        }                                                                       \
+    } while (0)
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Kernel 1: Flux computation — one thread per edge
+// Writes atomic increments into flux accumulators.
+// ─────────────────────────────────────────────────────────────────────────────
+__global__ void swe2d_flux_kernel(
+    int32_t        n_edges,
+    const int32_t* edge_c0,
+    const int32_t* edge_c1,
+    const double*  edge_nx,
+    const double*  edge_ny,
+    const double*  edge_len,
+    const int32_t* edge_bc,
+    const double*  edge_bc_val,
+    const double*  cell_h,
+    const double*  cell_hu,
+    const double*  cell_hv,
+    const double*  cell_zb,
+    const double*  cell_inv_area,
+    double*        flux_h,    // [n_cells] accumulator
+    double*        flux_hu,
+    double*        flux_hv,
+    double*        dbg_fh,
+    double*        dbg_fhu,
+    double*        dbg_fhv,
+    double g, double h_min)
+{
+    int32_t e = blockIdx.x * blockDim.x + threadIdx.x;
+    if (e >= n_edges) return;
+
+    int32_t c0 = edge_c0[e];
+    int32_t c1 = edge_c1[e];
+    
+    // Skip flux TO degenerate cells (inv_area > 1e6)
+    if (cell_inv_area[c0] > 1.0e6 || (c1 >= 0 && cell_inv_area[c1] > 1.0e6)) {
+        return;
+    }
+    
+    double  nx  = edge_nx[e];
+    double  ny  = edge_ny[e];
+    double  len = edge_len[e];
+
+    double hL  = cell_h[c0],  huL = cell_hu[c0], hvL = cell_hv[c0];
+    double zbL = cell_zb[c0];
+
+    double hR, huR, hvR, zbR;
+    if (c1 >= 0) {
+        hR  = cell_h[c1]; huR = cell_hu[c1]; hvR = cell_hv[c1];
+        zbR = cell_zb[c1];
+    } else {
+        swe2d::GhostState gs = swe2d::make_ghost(
+            hL, huL, hvL, zbL, nx, ny,
+            edge_bc[e], edge_bc_val[e], h_min);
+        hR  = gs.h; huR = gs.hu; hvR = gs.hv;
+        zbR = gs.zb;
+    }
+
+// Reconstruct hydrostatic states then apply a CUDA-local HLLC flux.
+    // This avoids relying on host/device overload resolution from the shared
+    // header in this kernel hot-path.
+    swe2d::ReconstructedStates rs = swe2d::hydrostatic_reconstruct(
+        hL, huL, hvL, zbL, hR, huR, hvR, zbR, h_min);
+
+    double flux_fh = 0.0, flux_fhu = 0.0, flux_fhv = 0.0;
+    hllc_flux_cuda_local(
+        rs.hL_star, rs.uL, rs.vL,
+        rs.hR_star, rs.uR, rs.vR,
+        nx, ny, g, h_min,
+        flux_fh, flux_fhu, flux_fhv);
+
+    double corr_hu = 0.0, corr_hv = 0.0;
+    swe2d::bed_slope_correction(hL, rs.hL_star, nx, ny, g, corr_hu, corr_hv);
+
+    double fh  = flux_fh  * len;
+    double fhu = (flux_fhu + corr_hu) * len;
+    double fhv = (flux_fhv + corr_hv) * len;
+
+    if (dbg_fh) {
+        dbg_fh[e] = fh;
+        dbg_fhu[e] = fhu;
+        dbg_fhv[e] = fhv;
+    }
+
+    // c0: flux leaves
+    atomicAdd(&flux_h[c0],  -fh);
+    atomicAdd(&flux_hu[c0], -fhu);
+    atomicAdd(&flux_hv[c0], -fhv);
+
+    if (c1 >= 0) {
+        // c1: flux enters, with right-side bed-slope correction
+        double corr_hu_r = 0.0, corr_hv_r = 0.0;
+        // Same normal direction as c0 — see swe2d_solver.cpp for derivation.
+        swe2d::bed_slope_correction(hR, rs.hR_star, nx, ny, g, corr_hu_r, corr_hv_r);
+        double fhu_r = (flux_fhu + corr_hu_r) * len;
+        double fhv_r = (flux_fhv + corr_hv_r) * len;
+        atomicAdd(&flux_h[c1],  fh);
+        atomicAdd(&flux_hu[c1], fhu_r);
+        atomicAdd(&flux_hv[c1], fhv_r);
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Kernel 2: State update — one thread per cell
+// ─────────────────────────────────────────────────────────────────────────────
+__global__ void swe2d_update_kernel(
+    int32_t       n_cells,
+    double*       cell_h,
+    double*       cell_hu,
+    double*       cell_hv,
+    const double* flux_h,
+    const double* flux_hu,
+    const double* flux_hv,
+    const double* cell_inv_area,
+    const double* cell_n_mann,
+    double dt, double g, double h_min)
+{
+    int32_t c = blockIdx.x * blockDim.x + threadIdx.x;
+    if (c >= n_cells) return;
+
+    double inv_a = cell_inv_area[c];
+
+    // Clamp inv_area to prevent overflow: bound state update by max_inv_a * |flux|
+    const double max_inv_a = 1.0e6;
+    if (inv_a > max_inv_a) inv_a = max_inv_a;
+
+    cell_h[c]  += dt * flux_h[c]  * inv_a;
+    cell_hu[c] += dt * flux_hu[c] * inv_a;
+    cell_hv[c] += dt * flux_hv[c] * inv_a;
+
+    // Positivity enforcement
+    if (cell_h[c] < 0.0) cell_h[c] = 0.0;
+    if (cell_h[c] < h_min) {
+        cell_hu[c] = 0.0;
+        cell_hv[c] = 0.0;
+    }
+
+    // Manning friction (semi-implicit)
+    double n_mann = cell_n_mann[c];
+    swe2d::apply_friction(cell_h[c], cell_hu[c], cell_hv[c],
+                          dt, n_mann, g, h_min);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Kernel 3: CFL reduction — one thread per cell, block-level max, then global
+// ─────────────────────────────────────────────────────────────────────────────
+__global__ void swe2d_cfl_kernel(
+    int32_t       n_cells,
+    const double* cell_h,
+    const double* cell_hu,
+    const double* cell_hv,
+    const double* cell_area,
+    double g, double h_min,
+    double* d_lambda_max)
+{
+    extern __shared__ double sdata[];
+    int32_t tid = threadIdx.x;
+    int32_t c   = blockIdx.x * blockDim.x + tid;
+
+    double lambda = 0.0;
+    if (c < n_cells) {
+        double h  = cell_h[c];
+        double hu = cell_hu[c];
+        double hv = cell_hv[c];
+        double a  = cell_area[c];
+        // Approximate cell size as sqrt(area)
+        double dx = (a > 0.0) ? sqrt(a) : 1.0;
+        double u  = swe2d::vel_u(hu, h, h_min);
+        double v  = swe2d::vel_v(hv, h, h_min);
+        double spd = sqrt(u * u + v * v) + swe2d::celerity(h, g);
+        lambda = (dx > 0.0) ? (spd / dx) : 0.0;
+    }
+
+    sdata[tid] = lambda;
+    __syncthreads();
+
+    // Block-level reduction (power-of-2 stride)
+    for (unsigned int stride = blockDim.x / 2; stride > 0; stride >>= 1) {
+        if (tid < stride) {
+            if (sdata[tid + stride] > sdata[tid])
+                sdata[tid] = sdata[tid + stride];
+        }
+        __syncthreads();
+    }
+
+    if (tid == 0) {
+        // Atomic max via double (CUDA does not have native atomicMax for double;
+        // use CAS loop)
+        unsigned long long int* addr =
+            reinterpret_cast<unsigned long long int*>(d_lambda_max);
+        unsigned long long int old_bits = *addr;
+        while (true) {
+            double old_val = __longlong_as_double(static_cast<long long int>(old_bits));
+            if (sdata[0] <= old_val) break;
+            unsigned long long int new_bits = static_cast<unsigned long long int>(
+                __double_as_longlong(sdata[0]));
+            unsigned long long int assumed = old_bits;
+            old_bits = atomicCAS(addr, assumed, new_bits);
+            if (old_bits == assumed) break;
+        }
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// swe2d_gpu_available
+// ─────────────────────────────────────────────────────────────────────────────
+bool swe2d_gpu_available() {
+    int count = 0;
+    cudaError_t err = cudaGetDeviceCount(&count);
+    return (err == cudaSuccess && count > 0);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// swe2d_gpu_init
+// ─────────────────────────────────────────────────────────────────────────────
+SWE2DDeviceState* swe2d_gpu_init(
+    const SWE2DMesh& mesh,
+    const double*    h0,
+    const double*    hu0,
+    const double*    hv0,
+    const double*    n_mann_cell)
+{
+    auto* dev = new SWE2DDeviceState();
+    dev->n_cells = mesh.n_cells;
+    dev->n_edges = mesh.n_edges;
+
+    size_t sz_cells = static_cast<size_t>(mesh.n_cells);
+    size_t sz_edges = static_cast<size_t>(mesh.n_edges);
+
+    // Helper lambdas for allocation + copy
+    auto alloc_d = [](void** ptr, size_t bytes) {
+        CUDA_CHECK(cudaMalloc(ptr, bytes));
+    };
+    auto copy_h2d_i = [](int32_t* dst, const int32_t* src, size_t n) {
+        CUDA_CHECK(cudaMemcpy(dst, src, n * sizeof(int32_t), cudaMemcpyHostToDevice));
+    };
+    auto copy_h2d_d = [](double* dst, const double* src, size_t n) {
+        CUDA_CHECK(cudaMemcpy(dst, src, n * sizeof(double), cudaMemcpyHostToDevice));
+    };
+
+    // Edge topology
+    alloc_d(reinterpret_cast<void**>(&dev->d_edge_c0),     sz_edges * sizeof(int32_t));
+    alloc_d(reinterpret_cast<void**>(&dev->d_edge_c1),     sz_edges * sizeof(int32_t));
+    alloc_d(reinterpret_cast<void**>(&dev->d_edge_n0),     sz_edges * sizeof(int32_t));
+    alloc_d(reinterpret_cast<void**>(&dev->d_edge_n1),     sz_edges * sizeof(int32_t));
+    alloc_d(reinterpret_cast<void**>(&dev->d_edge_nx),     sz_edges * sizeof(double));
+    alloc_d(reinterpret_cast<void**>(&dev->d_edge_ny),     sz_edges * sizeof(double));
+    alloc_d(reinterpret_cast<void**>(&dev->d_edge_len),    sz_edges * sizeof(double));
+    alloc_d(reinterpret_cast<void**>(&dev->d_edge_bc),     sz_edges * sizeof(int32_t));
+    alloc_d(reinterpret_cast<void**>(&dev->d_edge_bc_val), sz_edges * sizeof(double));
+
+    copy_h2d_i(dev->d_edge_c0, mesh.edge_c0.data(), sz_edges);
+    copy_h2d_i(dev->d_edge_c1, mesh.edge_c1.data(), sz_edges);
+    copy_h2d_i(dev->d_edge_n0, mesh.edge_n0.data(), sz_edges);
+    copy_h2d_i(dev->d_edge_n1, mesh.edge_n1.data(), sz_edges);
+    copy_h2d_d(dev->d_edge_nx,  mesh.edge_nx.data(),  sz_edges);
+    copy_h2d_d(dev->d_edge_ny,  mesh.edge_ny.data(),  sz_edges);
+    copy_h2d_d(dev->d_edge_len, mesh.edge_len.data(), sz_edges);
+    // BCType → int32_t
+    {
+        std::vector<int32_t> bc_int(sz_edges);
+        for (size_t i = 0; i < sz_edges; ++i)
+            bc_int[i] = static_cast<int32_t>(mesh.edge_bc[i]);
+        copy_h2d_i(dev->d_edge_bc, bc_int.data(), sz_edges);
+    }
+    copy_h2d_d(dev->d_edge_bc_val, mesh.edge_bc_val.data(), sz_edges);
+
+    // Cell geometry
+    alloc_d(reinterpret_cast<void**>(&dev->d_cell_zb),      sz_cells * sizeof(double));
+    alloc_d(reinterpret_cast<void**>(&dev->d_cell_area),    sz_cells * sizeof(double));
+    alloc_d(reinterpret_cast<void**>(&dev->d_cell_inv_area),sz_cells * sizeof(double));
+    alloc_d(reinterpret_cast<void**>(&dev->d_n_mann_cell),  sz_cells * sizeof(double));
+    copy_h2d_d(dev->d_cell_zb,       mesh.cell_zb.data(),       sz_cells);
+    copy_h2d_d(dev->d_cell_area,     mesh.cell_area.data(),     sz_cells);
+    copy_h2d_d(dev->d_cell_inv_area, mesh.cell_inv_area.data(), sz_cells);
+    copy_h2d_d(dev->d_n_mann_cell,   n_mann_cell,               sz_cells);
+
+    // State
+    alloc_d(reinterpret_cast<void**>(&dev->d_h),  sz_cells * sizeof(double));
+    alloc_d(reinterpret_cast<void**>(&dev->d_hu), sz_cells * sizeof(double));
+    alloc_d(reinterpret_cast<void**>(&dev->d_hv), sz_cells * sizeof(double));
+    copy_h2d_d(dev->d_h,  h0,                 sz_cells);
+    copy_h2d_d(dev->d_hu, hu0 ? hu0 : h0,     sz_cells);  // reuse pointer; zeroed if same
+    if (!hu0) CUDA_CHECK(cudaMemset(dev->d_hu, 0, sz_cells * sizeof(double)));
+    copy_h2d_d(dev->d_hv, hv0 ? hv0 : h0,     sz_cells);
+    if (!hv0) CUDA_CHECK(cudaMemset(dev->d_hv, 0, sz_cells * sizeof(double)));
+
+    // Flux accumulators
+    alloc_d(reinterpret_cast<void**>(&dev->d_flux_h),  sz_cells * sizeof(double));
+    alloc_d(reinterpret_cast<void**>(&dev->d_flux_hu), sz_cells * sizeof(double));
+    alloc_d(reinterpret_cast<void**>(&dev->d_flux_hv), sz_cells * sizeof(double));
+
+    // CFL workspace
+    alloc_d(reinterpret_cast<void**>(&dev->d_lambda_max), sizeof(double));
+
+    return dev;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// swe2d_gpu_step
+// ─────────────────────────────────────────────────────────────────────────────
+void swe2d_gpu_step(
+    SWE2DDeviceState* dev,
+    double dt,
+    double g,
+    double h_min,
+    double /*cfl_factor*/,
+    SWE2DStepDiag* diag)
+{
+    constexpr int BLOCK = 256;
+    int32_t n_edges = dev->n_edges;
+    int32_t n_cells = dev->n_cells;
+
+    if (swe2d_debug_enabled("BACKWATER_SWE2D_DEBUG_GPU_INPUT")) {
+        std::fprintf(stderr, "[SWE2D_DEBUG] GPU input: n_cells=%d n_edges=%d dt=%.9e g=%.9e h_min=%.9e\n",
+                     static_cast<int>(n_cells), static_cast<int>(n_edges), dt, g, h_min);
+        const size_t e_show = std::min<size_t>(static_cast<size_t>(n_edges), 8);
+        std::vector<int32_t> e_c0(e_show), e_c1(e_show);
+        std::vector<double> e_nx(e_show), e_ny(e_show), e_len(e_show);
+        if (e_show > 0) {
+            CUDA_CHECK(cudaMemcpy(e_c0.data(), dev->d_edge_c0, e_show * sizeof(int32_t), cudaMemcpyDeviceToHost));
+            CUDA_CHECK(cudaMemcpy(e_c1.data(), dev->d_edge_c1, e_show * sizeof(int32_t), cudaMemcpyDeviceToHost));
+            CUDA_CHECK(cudaMemcpy(e_nx.data(), dev->d_edge_nx, e_show * sizeof(double), cudaMemcpyDeviceToHost));
+            CUDA_CHECK(cudaMemcpy(e_ny.data(), dev->d_edge_ny, e_show * sizeof(double), cudaMemcpyDeviceToHost));
+            CUDA_CHECK(cudaMemcpy(e_len.data(), dev->d_edge_len, e_show * sizeof(double), cudaMemcpyDeviceToHost));
+        }
+        for (size_t i = 0; i < e_show; ++i) {
+            std::fprintf(stderr,
+                         "[SWE2D_DEBUG] GPU edge[%zu]: c0=%d c1=%d nx=%.9e ny=%.9e len=%.9e\n",
+                         i,
+                         static_cast<int>(e_c0[i]),
+                         static_cast<int>(e_c1[i]),
+                         e_nx[i], e_ny[i], e_len[i]);
+        }
+
+        const size_t c_show = std::min<size_t>(static_cast<size_t>(n_cells), 8);
+        std::vector<double> h_in(c_show), hu_in(c_show), hv_in(c_show), zb_in(c_show);
+        if (c_show > 0) {
+            CUDA_CHECK(cudaMemcpy(h_in.data(), dev->d_h, c_show * sizeof(double), cudaMemcpyDeviceToHost));
+            CUDA_CHECK(cudaMemcpy(hu_in.data(), dev->d_hu, c_show * sizeof(double), cudaMemcpyDeviceToHost));
+            CUDA_CHECK(cudaMemcpy(hv_in.data(), dev->d_hv, c_show * sizeof(double), cudaMemcpyDeviceToHost));
+            CUDA_CHECK(cudaMemcpy(zb_in.data(), dev->d_cell_zb, c_show * sizeof(double), cudaMemcpyDeviceToHost));
+        }
+        for (size_t i = 0; i < c_show; ++i) {
+            std::fprintf(stderr,
+                         "[SWE2D_DEBUG] GPU state[%zu]: h=%.9e hu=%.9e hv=%.9e zb=%.9e\n",
+                         i, h_in[i], hu_in[i], hv_in[i], zb_in[i]);
+        }
+    }
+
+    // Zero flux accumulators
+    CUDA_CHECK(cudaMemset(dev->d_flux_h,  0, static_cast<size_t>(n_cells) * sizeof(double)));
+    CUDA_CHECK(cudaMemset(dev->d_flux_hu, 0, static_cast<size_t>(n_cells) * sizeof(double)));
+    CUDA_CHECK(cudaMemset(dev->d_flux_hv, 0, static_cast<size_t>(n_cells) * sizeof(double)));
+
+    // Kernel 1: Flux
+    {
+        const bool dbg_edge_flux = swe2d_debug_enabled("BACKWATER_SWE2D_DEBUG_GPU_EDGE_FLUX");
+        double* d_dbg_fh = nullptr;
+        double* d_dbg_fhu = nullptr;
+        double* d_dbg_fhv = nullptr;
+        if (dbg_edge_flux) {
+            CUDA_CHECK(cudaMalloc(reinterpret_cast<void**>(&d_dbg_fh),
+                                  static_cast<size_t>(n_edges) * sizeof(double)));
+            CUDA_CHECK(cudaMalloc(reinterpret_cast<void**>(&d_dbg_fhu),
+                                  static_cast<size_t>(n_edges) * sizeof(double)));
+            CUDA_CHECK(cudaMalloc(reinterpret_cast<void**>(&d_dbg_fhv),
+                                  static_cast<size_t>(n_edges) * sizeof(double)));
+            CUDA_CHECK(cudaMemset(d_dbg_fh, 0xA5, static_cast<size_t>(n_edges) * sizeof(double)));
+            CUDA_CHECK(cudaMemset(d_dbg_fhu, 0xA5, static_cast<size_t>(n_edges) * sizeof(double)));
+            CUDA_CHECK(cudaMemset(d_dbg_fhv, 0xA5, static_cast<size_t>(n_edges) * sizeof(double)));
+        }
+        int grid = (n_edges + BLOCK - 1) / BLOCK;
+        swe2d_flux_kernel<<<grid, BLOCK>>>(
+            n_edges,
+            dev->d_edge_c0, dev->d_edge_c1,
+            dev->d_edge_nx, dev->d_edge_ny, dev->d_edge_len,
+            dev->d_edge_bc, dev->d_edge_bc_val,
+            dev->d_h, dev->d_hu, dev->d_hv,
+            dev->d_cell_zb,
+            dev->d_cell_inv_area,
+            dev->d_flux_h, dev->d_flux_hu, dev->d_flux_hv,
+            d_dbg_fh, d_dbg_fhu, d_dbg_fhv,
+            g, h_min);
+        CUDA_CHECK(cudaGetLastError());
+
+        if (dbg_edge_flux) {
+            std::vector<double> fh(static_cast<size_t>(n_edges));
+            std::vector<double> fhu(static_cast<size_t>(n_edges));
+            std::vector<double> fhv(static_cast<size_t>(n_edges));
+            CUDA_CHECK(cudaMemcpy(fh.data(), d_dbg_fh,
+                                  static_cast<size_t>(n_edges) * sizeof(double),
+                                  cudaMemcpyDeviceToHost));
+            CUDA_CHECK(cudaMemcpy(fhu.data(), d_dbg_fhu,
+                                  static_cast<size_t>(n_edges) * sizeof(double),
+                                  cudaMemcpyDeviceToHost));
+            CUDA_CHECK(cudaMemcpy(fhv.data(), d_dbg_fhv,
+                                  static_cast<size_t>(n_edges) * sizeof(double),
+                                  cudaMemcpyDeviceToHost));
+            const size_t n_show = std::min<size_t>(static_cast<size_t>(n_edges), 12);
+            for (size_t i = 0; i < n_show; ++i) {
+                std::fprintf(stderr,
+                             "[SWE2D_DEBUG] GPU edge_flux[%zu]: fh=%.9e fhu=%.9e fhv=%.9e\n",
+                             i, fh[i], fhu[i], fhv[i]);
+            }
+            CUDA_CHECK(cudaFree(d_dbg_fh));
+            CUDA_CHECK(cudaFree(d_dbg_fhu));
+            CUDA_CHECK(cudaFree(d_dbg_fhv));
+        }
+    }
+
+    if (swe2d_debug_enabled("BACKWATER_SWE2D_DEBUG_GPU_FLUX")) {
+        std::vector<double> h_flux(static_cast<size_t>(n_cells));
+        std::vector<double> hu_flux(static_cast<size_t>(n_cells));
+        std::vector<double> hv_flux(static_cast<size_t>(n_cells));
+        CUDA_CHECK(cudaMemcpy(h_flux.data(), dev->d_flux_h,
+                              static_cast<size_t>(n_cells) * sizeof(double),
+                              cudaMemcpyDeviceToHost));
+        CUDA_CHECK(cudaMemcpy(hu_flux.data(), dev->d_flux_hu,
+                              static_cast<size_t>(n_cells) * sizeof(double),
+                              cudaMemcpyDeviceToHost));
+        CUDA_CHECK(cudaMemcpy(hv_flux.data(), dev->d_flux_hv,
+                              static_cast<size_t>(n_cells) * sizeof(double),
+                              cudaMemcpyDeviceToHost));
+        dump_flux_summary("GPU", h_flux, hu_flux, hv_flux);
+    }
+
+    // Kernel 2: Update
+    {
+        int grid = (n_cells + BLOCK - 1) / BLOCK;
+        swe2d_update_kernel<<<grid, BLOCK>>>(
+            n_cells,
+            dev->d_h, dev->d_hu, dev->d_hv,
+            dev->d_flux_h, dev->d_flux_hu, dev->d_flux_hv,
+            dev->d_cell_inv_area, dev->d_n_mann_cell,
+            dt, g, h_min);
+        CUDA_CHECK(cudaGetLastError());
+    }
+
+    CUDA_CHECK(cudaDeviceSynchronize());
+
+    // Fill diagnostics (lightweight host-side pass; can be replaced by
+    // a dedicated reduce kernel for large domains)
+    if (diag) {
+        diag->dt         = dt;
+        diag->gpu_active = true;
+        // Wet cell count and mass require device-to-host or a reduce kernel.
+        // For MVP, set to sentinel values indicating GPU path ran.
+        diag->wet_cells  = -1;  // -1 = not computed on this path
+        diag->max_depth  = -1.0;
+        diag->min_depth  = -1.0;
+        diag->mass_total = -1.0;
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// swe2d_gpu_get_state
+// ─────────────────────────────────────────────────────────────────────────────
+void swe2d_gpu_get_state(
+    SWE2DDeviceState* dev,
+    double* h_out,
+    double* hu_out,
+    double* hv_out)
+{
+    size_t sz = static_cast<size_t>(dev->n_cells) * sizeof(double);
+    if (h_out)  CUDA_CHECK(cudaMemcpy(h_out,  dev->d_h,  sz, cudaMemcpyDeviceToHost));
+    if (hu_out) CUDA_CHECK(cudaMemcpy(hu_out, dev->d_hu, sz, cudaMemcpyDeviceToHost));
+    if (hv_out) CUDA_CHECK(cudaMemcpy(hv_out, dev->d_hv, sz, cudaMemcpyDeviceToHost));
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// swe2d_gpu_destroy
+// ─────────────────────────────────────────────────────────────────────────────
+void swe2d_gpu_destroy(SWE2DDeviceState* dev) {
+    if (!dev) return;
+    auto safe_free = [](void* ptr) { if (ptr) cudaFree(ptr); };
+
+    safe_free(dev->d_edge_c0);    safe_free(dev->d_edge_c1);
+    safe_free(dev->d_edge_n0);    safe_free(dev->d_edge_n1);
+    safe_free(dev->d_edge_nx);    safe_free(dev->d_edge_ny);
+    safe_free(dev->d_edge_len);   safe_free(dev->d_edge_bc);
+    safe_free(dev->d_edge_bc_val);
+    safe_free(dev->d_cell_zb);    safe_free(dev->d_cell_area);
+    safe_free(dev->d_cell_inv_area);
+    safe_free(dev->d_n_mann_cell);
+    safe_free(dev->d_h);          safe_free(dev->d_hu);
+    safe_free(dev->d_hv);
+    safe_free(dev->d_flux_h);     safe_free(dev->d_flux_hu);
+    safe_free(dev->d_flux_hv);
+    safe_free(dev->d_lambda_max);
+    delete dev;
+}

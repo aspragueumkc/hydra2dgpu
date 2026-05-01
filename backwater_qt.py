@@ -488,6 +488,31 @@ class BackwaterWidget(QtWidgets.QWidget):
         self.unsteady_section_canvas_host_layout.setContentsMargins(0, 0, 0, 0)
         self.unsteady_section_page_layout.addWidget(self.unsteady_section_canvas_host, stretch=1)
         self.plots_tabs.addTab(self.unsteady_section_page, 'Unsteady Section Results')
+
+        # Unsteady runtime monitor page (always visible in main right-side tabs,
+        # including form-only mode where the left panel is hidden).
+        self.unsteady_runtime_page = QtWidgets.QWidget()
+        self.unsteady_runtime_page_layout = QtWidgets.QVBoxLayout(self.unsteady_runtime_page)
+        self.us_runtime_summary_label_main = QtWidgets.QLabel('Waiting to start run...')
+        self.us_runtime_summary_label_main.setWordWrap(True)
+        self.unsteady_runtime_page_layout.addWidget(self.us_runtime_summary_label_main)
+        self.us_runtime_metrics_label_main = QtWidgets.QLabel('')
+        self.us_runtime_metrics_label_main.setWordWrap(True)
+        self.unsteady_runtime_page_layout.addWidget(self.us_runtime_metrics_label_main)
+        self.us_runtime_warning_log_main = QtWidgets.QPlainTextEdit()
+        self.us_runtime_warning_log_main.setReadOnly(True)
+        self.us_runtime_warning_log_main.document().setMaximumBlockCount(300)
+        self.us_runtime_warning_log_main.setPlaceholderText(
+            'Runtime monitor stream: backend confirmation, convergence status, and stability warnings.'
+        )
+        self.unsteady_runtime_page_layout.addWidget(self.us_runtime_warning_log_main, stretch=1)
+        runtime_main_btn_row = QtWidgets.QHBoxLayout()
+        self.us_runtime_export_btn_main = QtWidgets.QPushButton('Export Runtime Log…')
+        self.us_runtime_export_btn_main.clicked.connect(self._export_unsteady_runtime_log)
+        runtime_main_btn_row.addWidget(self.us_runtime_export_btn_main)
+        runtime_main_btn_row.addStretch()
+        self.unsteady_runtime_page_layout.addLayout(runtime_main_btn_row)
+        self.plots_tabs.addTab(self.unsteady_runtime_page, 'Runtime Monitor')
         self.plots_container_layout.addWidget(self.plots_tabs)
 
         # Bottom: IO tabs (geometry table). Results table will be shown on the left Results tab.
@@ -794,6 +819,10 @@ class BackwaterWidget(QtWidgets.QWidget):
         self.action_unsteady_debug_options = QtGui.QAction('Unsteady Debug Options...', self)
         self.action_unsteady_debug_options.triggered.connect(self.open_unsteady_debug_dialog)
         menu.addAction(self.action_unsteady_debug_options)
+
+        self.action_open_swe2d_demo = QtGui.QAction('2D SWE Workbench...', self)
+        self.action_open_swe2d_demo.triggered.connect(self.open_swe2d_demo_dialog)
+        menu.addAction(self.action_open_swe2d_demo)
 
         self.action_unsteady_debug_log_viewer = QtGui.QAction('View Unsteady Debug Log...', self)
         self.action_unsteady_debug_log_viewer.triggered.connect(self.open_unsteady_debug_log_viewer)
@@ -4164,6 +4193,12 @@ else:
             self.us_tend_edit.text() if hasattr(self, 'us_tend_edit') else '3600')
         theta_edit = QtWidgets.QLineEdit(
             self.us_theta_edit.text() if hasattr(self, 'us_theta_edit') else '0.6')
+        max_iter_spin = QtWidgets.QSpinBox()
+        max_iter_spin.setMinimum(1)
+        max_iter_spin.setMaximum(100)
+        max_iter_spin.setValue(int(self.us_max_iter_spin.value()) if hasattr(self, 'us_max_iter_spin') else 4)
+        tol_edit = QtWidgets.QLineEdit(
+            self.us_tol_edit.text() if hasattr(self, 'us_tol_edit') else '1e-4')
         out_spin = QtWidgets.QSpinBox()
         out_spin.setMinimum(1)
         out_spin.setMaximum(10000)
@@ -4174,7 +4209,34 @@ else:
         params_form.addRow('dt (s):', dt_edit)
         params_form.addRow('Duration (s):', dur_edit)
         params_form.addRow('Theta:', theta_edit)
+        params_form.addRow('Max inner iterations:', max_iter_spin)
+        params_form.addRow('Tolerance:', tol_edit)
         params_form.addRow('Output interval:', out_spin)
+
+        precompute_chk = QtWidgets.QCheckBox('Precompute hydraulic tables')
+        if hasattr(self, 'us_precompute_tables_chk'):
+            precompute_chk.setChecked(bool(self.us_precompute_tables_chk.isChecked()))
+        else:
+            precompute_chk.setChecked(True)
+
+        table_dz_edit = QtWidgets.QLineEdit(
+            self.us_table_dz_edit.text() if hasattr(self, 'us_table_dz_edit') else '0.01')
+        table_dz_edit.setToolTip('Stage increment (ft) for precomputed hydraulic table')
+        table_pad_edit = QtWidgets.QLineEdit(
+            self.us_table_pad_edit.text() if hasattr(self, 'us_table_pad_edit') else '5.0')
+        table_pad_edit.setToolTip('Stage padding (ft) above section top for table range')
+        ds_ramp_steps_edit = QtWidgets.QLineEdit(
+            self.us_ds_ramp_steps_edit.text() if hasattr(self, 'us_ds_ramp_steps_edit') else '5')
+        ds_ramp_steps_edit.setToolTip('Startup timesteps over which downstream BC corrections ramp from 0 to full')
+        overbank_ramp_edit = QtWidgets.QLineEdit(
+            self.us_overbank_ramp_edit.text() if hasattr(self, 'us_overbank_ramp_edit') else '0.25')
+        overbank_ramp_edit.setToolTip('Depth (ft) used to smoothly activate overbank conveyance above bank controls')
+
+        params_form.addRow(precompute_chk)
+        params_form.addRow('Table dz (ft):', table_dz_edit)
+        params_form.addRow('Table padding (ft):', table_pad_edit)
+        params_form.addRow('DS BC ramp steps:', ds_ramp_steps_edit)
+        params_form.addRow('Overbank ramp depth (ft):', overbank_ramp_edit)
         layout.addWidget(params_group)
 
         # Upstream hydrograph table
@@ -4289,10 +4351,174 @@ else:
         debug_form.addRow('Capture frequency:', debug_freq_combo)
         layout.addWidget(debug_group)
 
+        jit_enabled_dialog = False
+        try:
+            from unsteady_model import _HAVE_NUMBA as _DIALOG_HAVE_NUMBA
+            jit_enabled_dialog = bool(_DIALOG_HAVE_NUMBA)
+        except Exception:
+            try:
+                from .unsteady_model import _HAVE_NUMBA as _DIALOG_HAVE_NUMBA
+                jit_enabled_dialog = bool(_DIALOG_HAVE_NUMBA)
+            except Exception:
+                jit_enabled_dialog = False
+        jit_status_lbl = QtWidgets.QLabel(
+            f"JIT acceleration status: {'enabled' if jit_enabled_dialog else 'disabled'}"
+        )
+        jit_status_lbl.setWordWrap(True)
+        layout.addWidget(jit_status_lbl)
+
+        plan_btn_row = QtWidgets.QHBoxLayout()
+        save_plan_btn = QtWidgets.QPushButton('Save Plan to GPKG…')
+        load_plan_btn = QtWidgets.QPushButton('Load Plan from GPKG…')
+        plan_btn_row.addWidget(save_plan_btn)
+        plan_btn_row.addWidget(load_plan_btn)
+        plan_btn_row.addStretch()
+        layout.addLayout(plan_btn_row)
+
         btns = QtWidgets.QDialogButtonBox(dlg)
         run_btn = btns.addButton('Run Unsteady', QtWidgets.QDialogButtonBox.ButtonRole.AcceptRole)
         btns.addButton(QtWidgets.QDialogButtonBox.StandardButton.Close)
         layout.addWidget(btns)
+
+        def _collect_dialog_plan_payload():
+            hydro = []
+            for r in range(hydro_table.rowCount()):
+                t_item = hydro_table.item(r, 0)
+                q_item = hydro_table.item(r, 1)
+                if t_item is None or q_item is None:
+                    continue
+                try:
+                    hydro.append([float(t_item.text()), float(q_item.text())])
+                except Exception:
+                    continue
+            return {
+                'dt_s': float(dt_edit.text()),
+                'duration_s': float(dur_edit.text()),
+                'theta': float(theta_edit.text()),
+                'max_iter': int(max_iter_spin.value()),
+                'tol': float(tol_edit.text()),
+                'output_interval': int(out_spin.value()),
+                'downstream_bc': str(ds_combo.currentText()),
+                'downstream_value': float(ds_edit.text()),
+                'debug_capture': bool(debug_enable.isChecked()),
+                'debug_frequency': str(debug_freq_combo.currentData() or 'output'),
+                'precompute_hydraulic_tables': bool(precompute_chk.isChecked()),
+                'hydraulic_table_dz': float(table_dz_edit.text()),
+                'hydraulic_table_padding': float(table_pad_edit.text()),
+                'ds_bc_ramp_steps': int(float(ds_ramp_steps_edit.text())),
+                'overbank_activation_ramp_depth_ft': float(overbank_ramp_edit.text()),
+                'upstream_hydrograph': hydro,
+            }
+
+        def _apply_dialog_plan_payload(plan_data):
+            if not isinstance(plan_data, dict):
+                return
+            if 'dt_s' in plan_data:
+                dt_edit.setText(str(plan_data.get('dt_s', dt_edit.text())))
+            if 'duration_s' in plan_data:
+                dur_edit.setText(str(plan_data.get('duration_s', dur_edit.text())))
+            if 'theta' in plan_data:
+                theta_edit.setText(str(plan_data.get('theta', theta_edit.text())))
+            if 'max_iter' in plan_data:
+                try:
+                    max_iter_spin.setValue(max(1, int(plan_data.get('max_iter', max_iter_spin.value()))))
+                except Exception:
+                    pass
+            if 'tol' in plan_data:
+                tol_edit.setText(str(plan_data.get('tol', tol_edit.text())))
+            if 'output_interval' in plan_data:
+                try:
+                    out_spin.setValue(max(1, int(plan_data.get('output_interval', out_spin.value()))))
+                except Exception:
+                    pass
+            if 'downstream_bc' in plan_data:
+                ds_combo.setCurrentText(str(plan_data.get('downstream_bc', ds_combo.currentText())))
+            if 'downstream_value' in plan_data:
+                ds_edit.setText(str(plan_data.get('downstream_value', ds_edit.text())))
+            if 'debug_capture' in plan_data:
+                debug_enable.setChecked(bool(plan_data.get('debug_capture', False)))
+            if 'debug_frequency' in plan_data:
+                idx = max(0, debug_freq_combo.findData(str(plan_data.get('debug_frequency', 'output'))))
+                debug_freq_combo.setCurrentIndex(idx)
+            if 'precompute_hydraulic_tables' in plan_data:
+                precompute_chk.setChecked(bool(plan_data.get('precompute_hydraulic_tables', True)))
+            if 'hydraulic_table_dz' in plan_data:
+                table_dz_edit.setText(str(plan_data.get('hydraulic_table_dz', table_dz_edit.text())))
+            if 'hydraulic_table_padding' in plan_data:
+                table_pad_edit.setText(str(plan_data.get('hydraulic_table_padding', table_pad_edit.text())))
+            if 'ds_bc_ramp_steps' in plan_data:
+                ds_ramp_steps_edit.setText(str(plan_data.get('ds_bc_ramp_steps', ds_ramp_steps_edit.text())))
+            if 'overbank_activation_ramp_depth_ft' in plan_data:
+                overbank_ramp_edit.setText(str(plan_data.get('overbank_activation_ramp_depth_ft', overbank_ramp_edit.text())))
+            hydro = plan_data.get('upstream_hydrograph', [])
+            if isinstance(hydro, list):
+                hydro_table.setRowCount(0)
+                for pair in hydro:
+                    if not isinstance(pair, (list, tuple)) or len(pair) < 2:
+                        continue
+                    rr = hydro_table.rowCount()
+                    hydro_table.insertRow(rr)
+                    hydro_table.setItem(rr, 0, QtWidgets.QTableWidgetItem(str(pair[0])))
+                    hydro_table.setItem(rr, 1, QtWidgets.QTableWidgetItem(str(pair[1])))
+
+        def _save_dialog_plan_to_gpkg():
+            path = getattr(self, 'loaded_gpkg_path', '')
+            if not path:
+                QMessageBox.warning(dlg, 'Save Plan', 'No GeoPackage loaded.')
+                return
+            try:
+                payload = _collect_dialog_plan_payload()
+            except Exception as exc:
+                QMessageBox.warning(dlg, 'Save Plan', f'Invalid inputs: {exc}')
+                return
+            default_name = f"Unsteady Plan {QtCore.QDateTime.currentDateTime().toString('yyyy-MM-dd HH:mm:ss')}"
+            name, ok = QtWidgets.QInputDialog.getText(dlg, 'Save Unsteady Plan', 'Plan name:', text=default_name)
+            if not ok:
+                return
+            name = str(name).strip()
+            if not name:
+                QMessageBox.warning(dlg, 'Save Plan', 'Plan name cannot be empty.')
+                return
+            try:
+                try:
+                    from unsteady_model import save_unsteady_plan_to_geopackage
+                except ImportError:
+                    from .unsteady_model import save_unsteady_plan_to_geopackage
+                pid = save_unsteady_plan_to_geopackage(path, payload, name)
+                QMessageBox.information(dlg, 'Saved', f'Plan saved (id={pid}).')
+            except Exception as exc:
+                QMessageBox.critical(dlg, 'Save Plan Error', str(exc))
+
+        def _load_dialog_plan_from_gpkg():
+            path = getattr(self, 'loaded_gpkg_path', '')
+            if not path:
+                QMessageBox.warning(dlg, 'Load Plan', 'No GeoPackage loaded.')
+                return
+            try:
+                try:
+                    from unsteady_model import list_unsteady_plans_in_geopackage, load_unsteady_plan_from_geopackage
+                except ImportError:
+                    from .unsteady_model import list_unsteady_plans_in_geopackage, load_unsteady_plan_from_geopackage
+                plans = list_unsteady_plans_in_geopackage(path)
+            except Exception as exc:
+                QMessageBox.critical(dlg, 'Load Plan Error', str(exc))
+                return
+            if not plans:
+                QMessageBox.information(dlg, 'Load Plan', 'No saved unsteady plans found in this GeoPackage.')
+                return
+            labels = [f"{p['plan_name']} ({p['plan_id']})" for p in plans]
+            selected, ok = QtWidgets.QInputDialog.getItem(dlg, 'Load Unsteady Plan', 'Choose plan:', labels, 0, False)
+            if not ok:
+                return
+            idx = labels.index(selected)
+            rec = load_unsteady_plan_from_geopackage(path, plans[idx]['plan_id'])
+            if not rec:
+                QMessageBox.warning(dlg, 'Load Plan', 'Selected plan could not be loaded.')
+                return
+            _apply_dialog_plan_payload(rec.get('plan_data', {}))
+
+        save_plan_btn.clicked.connect(_save_dialog_plan_to_gpkg)
+        load_plan_btn.clicked.connect(_load_dialog_plan_from_gpkg)
 
         def _run_from_dialog():
             if hydro_table.rowCount() < 2:
@@ -4302,6 +4528,7 @@ else:
                 float(dt_edit.text())
                 float(dur_edit.text())
                 float(theta_edit.text())
+                float(tol_edit.text())
                 float(ds_edit.text())
             except ValueError:
                 QMessageBox.warning(dlg, 'Parameter Error', 'Please enter valid numeric values.')
@@ -4314,11 +4541,22 @@ else:
             self.us_dt_edit.setText(dt_edit.text())
             self.us_tend_edit.setText(dur_edit.text())
             self.us_theta_edit.setText(theta_edit.text())
+            if hasattr(self, 'us_max_iter_spin'):
+                self.us_max_iter_spin.setValue(int(max_iter_spin.value()))
+            if hasattr(self, 'us_tol_edit'):
+                self.us_tol_edit.setText(tol_edit.text())
             self.us_outint_spin.setValue(int(out_spin.value()))
             self.us_ds_bc_combo.setCurrentText(str(ds_combo.currentText()))
             self.us_ds_bc_edit.setText(ds_edit.text())
             self.us_debug_enable_chk.setChecked(bool(debug_enable.isChecked()))
             self.us_debug_frequency_combo.setCurrentIndex(debug_freq_combo.currentIndex())
+            self.us_precompute_tables_chk.setChecked(bool(precompute_chk.isChecked()))
+            self.us_table_dz_edit.setText(table_dz_edit.text())
+            self.us_table_pad_edit.setText(table_pad_edit.text())
+            if hasattr(self, 'us_ds_ramp_steps_edit'):
+                self.us_ds_ramp_steps_edit.setText(ds_ramp_steps_edit.text())
+            if hasattr(self, 'us_overbank_ramp_edit'):
+                self.us_overbank_ramp_edit.setText(overbank_ramp_edit.text())
 
             self.us_hydro_table.setRowCount(0)
             for r in range(hydro_table.rowCount()):
@@ -4331,8 +4569,10 @@ else:
                 self.us_hydro_table.setItem(rr, 0, QtWidgets.QTableWidgetItem(t_item.text()))
                 self.us_hydro_table.setItem(rr, 1, QtWidgets.QTableWidgetItem(q_item.text()))
 
-            self.on_run_unsteady()
+            # Close modal dialog first so live runtime monitor in the main UI is visible during execution.
             dlg.accept()
+            QtWidgets.QApplication.processEvents()
+            self.on_run_unsteady()
 
         run_btn.clicked.connect(_run_from_dialog)
         btns.rejected.connect(dlg.reject)
@@ -4342,7 +4582,15 @@ else:
         """Add 'Unsteady' tab to left_tabs with hydrograph input and controls."""
         try:
             self.unsteady_tab = QtWidgets.QWidget()
-            layout = QtWidgets.QVBoxLayout(self.unsteady_tab)
+            outer_layout = QtWidgets.QVBoxLayout(self.unsteady_tab)
+            outer_layout.setContentsMargins(0, 0, 0, 0)
+            scroll_area = QtWidgets.QScrollArea()
+            scroll_area.setWidgetResizable(True)
+            scroll_area.setFrameShape(QtWidgets.QFrame.Shape.NoFrame)
+            inner_widget = QtWidgets.QWidget()
+            scroll_area.setWidget(inner_widget)
+            outer_layout.addWidget(scroll_area)
+            layout = QtWidgets.QVBoxLayout(inner_widget)
 
             # -- Simulation parameters --
             params_group = QtWidgets.QGroupBox('Simulation Parameters')
@@ -4353,15 +4601,39 @@ else:
             self.us_tend_edit.setToolTip('Total simulation duration in seconds')
             self.us_theta_edit = QtWidgets.QLineEdit('0.6')
             self.us_theta_edit.setToolTip('Preissmann weighting factor (0.5–1.0)')
+            self.us_max_iter_spin = QtWidgets.QSpinBox()
+            self.us_max_iter_spin.setMinimum(1)
+            self.us_max_iter_spin.setMaximum(100)
+            self.us_max_iter_spin.setValue(4)
+            self.us_max_iter_spin.setToolTip('Maximum inner nonlinear iterations per computational step')
+            self.us_tol_edit = QtWidgets.QLineEdit('1e-4')
+            self.us_tol_edit.setToolTip('Convergence tolerance on max(|dz|, |dQ|) during inner iterations')
             self.us_outint_spin = QtWidgets.QSpinBox()
             self.us_outint_spin.setMinimum(1)
             self.us_outint_spin.setMaximum(10000)
             self.us_outint_spin.setValue(1)
             self.us_outint_spin.setToolTip('Store results every N computational steps')
+            self.us_precompute_tables_chk = QtWidgets.QCheckBox('Precompute hydraulic tables')
+            self.us_precompute_tables_chk.setChecked(True)
+            self.us_table_dz_edit = QtWidgets.QLineEdit('0.01')
+            self.us_table_dz_edit.setToolTip('Stage increment (ft) for precomputed hydraulic table')
+            self.us_table_pad_edit = QtWidgets.QLineEdit('5.0')
+            self.us_table_pad_edit.setToolTip('Stage padding (ft) above section top for table range')
+            self.us_ds_ramp_steps_edit = QtWidgets.QLineEdit('5')
+            self.us_ds_ramp_steps_edit.setToolTip('Startup timesteps over which downstream BC corrections ramp from 0 to full')
+            self.us_overbank_ramp_edit = QtWidgets.QLineEdit('0.25')
+            self.us_overbank_ramp_edit.setToolTip('Depth (ft) used to smoothly activate overbank conveyance above bank controls')
             params_layout.addRow('dt (s):', self.us_dt_edit)
             params_layout.addRow('Duration (s):', self.us_tend_edit)
             params_layout.addRow('Theta:', self.us_theta_edit)
+            params_layout.addRow('Max inner iterations:', self.us_max_iter_spin)
+            params_layout.addRow('Tolerance:', self.us_tol_edit)
             params_layout.addRow('Output interval:', self.us_outint_spin)
+            params_layout.addRow(self.us_precompute_tables_chk)
+            params_layout.addRow('Table dz (ft):', self.us_table_dz_edit)
+            params_layout.addRow('Table padding (ft):', self.us_table_pad_edit)
+            params_layout.addRow('DS BC ramp steps:', self.us_ds_ramp_steps_edit)
+            params_layout.addRow('Overbank ramp depth (ft):', self.us_overbank_ramp_edit)
             layout.addWidget(params_group)
 
             # -- Upstream hydrograph --
@@ -4420,6 +4692,10 @@ else:
             debug_layout.addRow('Capture frequency:', self.us_debug_frequency_combo)
             layout.addWidget(debug_group)
 
+            self.us_jit_status_label = QtWidgets.QLabel('JIT acceleration status: unknown')
+            self.us_jit_status_label.setWordWrap(True)
+            layout.addWidget(self.us_jit_status_label)
+
             # -- Run button and progress --
             run_row = QtWidgets.QHBoxLayout()
             self.run_unsteady_btn = QtWidgets.QPushButton('Run Unsteady')
@@ -4427,6 +4703,18 @@ else:
                 'QPushButton { background: #1565c0; color: white; font-weight: bold; }')
             self.run_unsteady_btn.clicked.connect(self.on_run_unsteady)
             run_row.addWidget(self.run_unsteady_btn)
+            self.save_unsteady_plan_btn = QtWidgets.QPushButton('Save Plan…')
+            self.save_unsteady_plan_btn.setToolTip('Save current unsteady inputs as a reusable plan in the GeoPackage')
+            self.save_unsteady_plan_btn.clicked.connect(self._save_unsteady_plan_to_gpkg)
+            run_row.addWidget(self.save_unsteady_plan_btn)
+            self.load_unsteady_plan_btn = QtWidgets.QPushButton('Load Plan…')
+            self.load_unsteady_plan_btn.setToolTip('Load saved unsteady input plan from the GeoPackage')
+            self.load_unsteady_plan_btn.clicked.connect(self._load_unsteady_plan_from_gpkg)
+            run_row.addWidget(self.load_unsteady_plan_btn)
+            self.run_unsteady_plan_btn = QtWidgets.QPushButton('Run Plan…')
+            self.run_unsteady_plan_btn.setToolTip('Choose a saved plan, apply it, and run unsteady in one click')
+            self.run_unsteady_plan_btn.clicked.connect(self._run_unsteady_plan_from_gpkg)
+            run_row.addWidget(self.run_unsteady_plan_btn)
             self.load_unsteady_run_btn = QtWidgets.QPushButton('Load Saved Run…')
             self.load_unsteady_run_btn.setToolTip('Read a persisted unsteady run from GeoPackage')
             self.load_unsteady_run_btn.clicked.connect(self.on_load_unsteady_results)
@@ -4440,6 +4728,34 @@ else:
             self.us_status_label = QtWidgets.QLabel('')
             self.us_status_label.setWordWrap(True)
             layout.addWidget(self.us_status_label)
+
+            # -- Runtime Monitor (shown below progress when a run starts) --
+            self.us_runtime_group = QtWidgets.QGroupBox('Runtime Monitor')
+            self.us_runtime_group.setVisible(False)
+            runtime_layout = QtWidgets.QVBoxLayout(self.us_runtime_group)
+            self.us_runtime_summary_label = QtWidgets.QLabel('Waiting to start run...')
+            self.us_runtime_summary_label.setWordWrap(True)
+            runtime_layout.addWidget(self.us_runtime_summary_label)
+            self.us_runtime_metrics_label = QtWidgets.QLabel('')
+            self.us_runtime_metrics_label.setWordWrap(True)
+            runtime_layout.addWidget(self.us_runtime_metrics_label)
+            self.us_runtime_warning_log = QtWidgets.QPlainTextEdit()
+            self.us_runtime_warning_log.setReadOnly(True)
+            self.us_runtime_warning_log.document().setMaximumBlockCount(300)
+            self.us_runtime_warning_log.setMinimumHeight(80)
+            self.us_runtime_warning_log.setMaximumHeight(220)
+            self.us_runtime_warning_log.setPlaceholderText(
+                'Stability warnings and numerical overrides will appear here during runtime.'
+            )
+            runtime_layout.addWidget(self.us_runtime_warning_log)
+            runtime_btn_row = QtWidgets.QHBoxLayout()
+            self.us_runtime_export_btn = QtWidgets.QPushButton('Export Runtime Log…')
+            self.us_runtime_export_btn.setToolTip('Save runtime monitor summary, metrics, and warnings to a text file')
+            self.us_runtime_export_btn.clicked.connect(self._export_unsteady_runtime_log)
+            runtime_btn_row.addWidget(self.us_runtime_export_btn)
+            runtime_btn_row.addStretch()
+            runtime_layout.addLayout(runtime_btn_row)
+            layout.addWidget(self.us_runtime_group)
 
             layout.addStretch()
             self.left_tabs.addTab(self.unsteady_tab, 'Unsteady')
@@ -4544,6 +4860,388 @@ else:
         return HydrographBC(times=times, values=values, bc_type='flow',
                             label='Upstream flow hydrograph')
 
+    def _collect_unsteady_plan_payload(self) -> dict:
+        """Collect all current unsteady input controls into one plan payload."""
+        hydro = []
+        if hasattr(self, 'us_hydro_table') and self.us_hydro_table is not None:
+            for r in range(self.us_hydro_table.rowCount()):
+                t_item = self.us_hydro_table.item(r, 0)
+                q_item = self.us_hydro_table.item(r, 1)
+                if t_item is None or q_item is None:
+                    continue
+                try:
+                    hydro.append([float(t_item.text()), float(q_item.text())])
+                except Exception:
+                    continue
+
+        return {
+            'dt_s': float(self.us_dt_edit.text()),
+            'duration_s': float(self.us_tend_edit.text()),
+            'theta': float(self.us_theta_edit.text()),
+            'max_iter': int(self.us_max_iter_spin.value()),
+            'tol': float(self.us_tol_edit.text()),
+            'output_interval': int(self.us_outint_spin.value()),
+            'downstream_bc': str(self.us_ds_bc_combo.currentText()),
+            'downstream_value': float(self.us_ds_bc_edit.text()),
+            'debug_capture': bool(self.us_debug_enable_chk.isChecked()),
+            'debug_frequency': str(self.us_debug_frequency_combo.currentData() or 'output'),
+            'precompute_hydraulic_tables': bool(self.us_precompute_tables_chk.isChecked()),
+            'hydraulic_table_dz': float(self.us_table_dz_edit.text()),
+            'hydraulic_table_padding': float(self.us_table_pad_edit.text()),
+            'ds_bc_ramp_steps': int(float(self.us_ds_ramp_steps_edit.text())),
+            'overbank_activation_ramp_depth_ft': float(self.us_overbank_ramp_edit.text()),
+            'upstream_hydrograph': hydro,
+        }
+
+    def _apply_unsteady_plan_payload(self, plan_data: dict):
+        """Apply a saved unsteady plan payload onto UI controls."""
+        if not isinstance(plan_data, dict):
+            return
+
+        if 'dt_s' in plan_data:
+            self.us_dt_edit.setText(str(plan_data.get('dt_s', self.us_dt_edit.text())))
+        if 'duration_s' in plan_data:
+            self.us_tend_edit.setText(str(plan_data.get('duration_s', self.us_tend_edit.text())))
+        if 'theta' in plan_data:
+            self.us_theta_edit.setText(str(plan_data.get('theta', self.us_theta_edit.text())))
+        if 'max_iter' in plan_data:
+            try:
+                self.us_max_iter_spin.setValue(max(1, int(plan_data.get('max_iter', self.us_max_iter_spin.value()))))
+            except Exception:
+                pass
+        if 'tol' in plan_data:
+            self.us_tol_edit.setText(str(plan_data.get('tol', self.us_tol_edit.text())))
+        if 'output_interval' in plan_data:
+            try:
+                self.us_outint_spin.setValue(max(1, int(plan_data.get('output_interval', self.us_outint_spin.value()))))
+            except Exception:
+                pass
+        if 'downstream_bc' in plan_data:
+            self.us_ds_bc_combo.setCurrentText(str(plan_data.get('downstream_bc', self.us_ds_bc_combo.currentText())))
+        if 'downstream_value' in plan_data:
+            self.us_ds_bc_edit.setText(str(plan_data.get('downstream_value', self.us_ds_bc_edit.text())))
+        if 'debug_capture' in plan_data:
+            self.us_debug_enable_chk.setChecked(bool(plan_data.get('debug_capture', False)))
+        if 'debug_frequency' in plan_data:
+            idx = max(0, self.us_debug_frequency_combo.findData(str(plan_data.get('debug_frequency', 'output'))))
+            self.us_debug_frequency_combo.setCurrentIndex(idx)
+        if 'precompute_hydraulic_tables' in plan_data:
+            self.us_precompute_tables_chk.setChecked(bool(plan_data.get('precompute_hydraulic_tables', True)))
+        if 'hydraulic_table_dz' in plan_data:
+            self.us_table_dz_edit.setText(str(plan_data.get('hydraulic_table_dz', self.us_table_dz_edit.text())))
+        if 'hydraulic_table_padding' in plan_data:
+            self.us_table_pad_edit.setText(str(plan_data.get('hydraulic_table_padding', self.us_table_pad_edit.text())))
+        if 'ds_bc_ramp_steps' in plan_data:
+            self.us_ds_ramp_steps_edit.setText(str(plan_data.get('ds_bc_ramp_steps', self.us_ds_ramp_steps_edit.text())))
+        if 'overbank_activation_ramp_depth_ft' in plan_data:
+            self.us_overbank_ramp_edit.setText(str(plan_data.get('overbank_activation_ramp_depth_ft', self.us_overbank_ramp_edit.text())))
+
+        hydro = plan_data.get('upstream_hydrograph', [])
+        if isinstance(hydro, list) and self.us_hydro_table is not None:
+            self.us_hydro_table.setRowCount(0)
+            for pair in hydro:
+                if not isinstance(pair, (list, tuple)) or len(pair) < 2:
+                    continue
+                rr = self.us_hydro_table.rowCount()
+                self.us_hydro_table.insertRow(rr)
+                self.us_hydro_table.setItem(rr, 0, QtWidgets.QTableWidgetItem(str(pair[0])))
+                self.us_hydro_table.setItem(rr, 1, QtWidgets.QTableWidgetItem(str(pair[1])))
+
+    def _save_unsteady_plan_to_gpkg(self):
+        """Save the current unsteady model input set as a reusable plan."""
+        path = getattr(self, 'loaded_gpkg_path', '')
+        if not path:
+            QMessageBox.warning(self, 'Save Plan', 'No GeoPackage loaded.')
+            return
+
+        try:
+            payload = self._collect_unsteady_plan_payload()
+        except Exception as exc:
+            QMessageBox.warning(self, 'Save Plan', f'Invalid unsteady inputs: {exc}')
+            return
+
+        default_name = f"Unsteady Plan {QtCore.QDateTime.currentDateTime().toString('yyyy-MM-dd HH:mm:ss')}"
+        plan_name, ok = QtWidgets.QInputDialog.getText(self, 'Save Unsteady Plan', 'Plan name:', text=default_name)
+        if not ok:
+            return
+        plan_name = str(plan_name).strip()
+        if not plan_name:
+            QMessageBox.warning(self, 'Save Plan', 'Plan name cannot be empty.')
+            return
+
+        try:
+            try:
+                from unsteady_model import save_unsteady_plan_to_geopackage
+            except ImportError:
+                from .unsteady_model import save_unsteady_plan_to_geopackage
+            plan_id = save_unsteady_plan_to_geopackage(path, payload, plan_name)
+            QMessageBox.information(self, 'Saved', f'Unsteady plan saved (id={plan_id}).')
+        except Exception as exc:
+            QMessageBox.critical(self, 'Save Plan Error', str(exc))
+
+    def _load_unsteady_plan_from_gpkg(self):
+        """Load and apply a saved unsteady plan from GeoPackage."""
+        rec = self._choose_unsteady_plan_from_gpkg(dialog_title='Load Unsteady Plan')
+        if not rec:
+            return
+        self._apply_unsteady_plan_payload(rec.get('plan_data', {}))
+
+    def _run_unsteady_plan_from_gpkg(self):
+        """Choose a saved unsteady plan, apply it, and execute immediately."""
+        rec = self._choose_unsteady_plan_from_gpkg(dialog_title='Run Unsteady Plan')
+        if not rec:
+            return
+        self._apply_unsteady_plan_payload(rec.get('plan_data', {}))
+        self.on_run_unsteady()
+
+    def _choose_unsteady_plan_from_gpkg(self, dialog_title='Select Unsteady Plan'):
+        """Open plan picker and return the selected plan record dict, or None."""
+        path = getattr(self, 'loaded_gpkg_path', '')
+        if not path:
+            QMessageBox.warning(self, 'Load Plan', 'No GeoPackage loaded.')
+            return None
+
+        try:
+            try:
+                from unsteady_model import list_unsteady_plans_in_geopackage, load_unsteady_plan_from_geopackage
+            except ImportError:
+                from .unsteady_model import list_unsteady_plans_in_geopackage, load_unsteady_plan_from_geopackage
+            plans = list_unsteady_plans_in_geopackage(path)
+        except Exception as exc:
+            QMessageBox.critical(self, 'Load Plan Error', str(exc))
+            return None
+
+        if not plans:
+            QMessageBox.information(self, 'Load Plan', 'No saved unsteady plans found in this GeoPackage.')
+            return None
+
+        labels = [f"{p['plan_name']} ({p['plan_id']})" for p in plans]
+        selected, ok = QtWidgets.QInputDialog.getItem(self, dialog_title, 'Choose plan:', labels, 0, False)
+        if not ok:
+            return None
+        idx = labels.index(selected)
+        rec = load_unsteady_plan_from_geopackage(path, plans[idx]['plan_id'])
+        if not rec:
+            QMessageBox.warning(self, 'Load Plan', 'Selected plan could not be loaded.')
+            return None
+        return rec
+
+    def _reset_unsteady_runtime_monitor(self):
+        """Reset live runtime monitor before a new solver execution."""
+        self._ensure_unsteady_runtime_monitor()
+        self._us_runtime_warning_seen = set()
+        if hasattr(self, 'us_runtime_group'):
+            self.us_runtime_group.setVisible(True)
+            # Ensure the scroll area scrolls down to reveal the newly shown group
+            self.us_runtime_group.updateGeometry()
+            QtWidgets.QApplication.processEvents()
+            self.us_runtime_group.ensurePolished()
+            # Walk up to find the QScrollArea parent and scroll to the widget
+            parent = self.us_runtime_group.parentWidget()
+            while parent is not None:
+                if isinstance(parent, QtWidgets.QScrollArea):
+                    parent.ensureWidgetVisible(self.us_runtime_group)
+                    break
+                parent = parent.parentWidget()
+        if hasattr(self, 'us_runtime_summary_label'):
+            self.us_runtime_summary_label.setText('Initializing unsteady solver...')
+        if hasattr(self, 'us_runtime_metrics_label'):
+            self.us_runtime_metrics_label.setText('')
+        if hasattr(self, 'us_runtime_warning_log'):
+            self.us_runtime_warning_log.clear()
+        if hasattr(self, 'us_runtime_summary_label_main'):
+            self.us_runtime_summary_label_main.setText('Initializing unsteady solver...')
+        if hasattr(self, 'us_runtime_metrics_label_main'):
+            self.us_runtime_metrics_label_main.setText('')
+        if hasattr(self, 'us_runtime_warning_log_main'):
+            self.us_runtime_warning_log_main.clear()
+        try:
+            if hasattr(self, 'plots_tabs') and hasattr(self, 'unsteady_runtime_page'):
+                self.plots_tabs.setCurrentWidget(self.unsteady_runtime_page)
+        except Exception:
+            pass
+
+    def _ensure_unsteady_runtime_monitor(self):
+        """Create runtime monitor widgets if they were not built in the unsteady tab."""
+        if hasattr(self, 'us_runtime_group') and self.us_runtime_group is not None:
+            return
+
+        host_layout = None
+        try:
+            if hasattr(self, 'us_status_label') and self.us_status_label is not None:
+                host = self.us_status_label.parentWidget()
+                if host is not None:
+                    host_layout = host.layout()
+        except Exception:
+            host_layout = None
+        if host_layout is None:
+            return
+
+        self.us_runtime_group = QtWidgets.QGroupBox('Runtime Monitor')
+        self.us_runtime_group.setVisible(False)
+        runtime_layout = QtWidgets.QVBoxLayout(self.us_runtime_group)
+
+        self.us_runtime_summary_label = QtWidgets.QLabel('Waiting to start run...')
+        self.us_runtime_summary_label.setWordWrap(True)
+        runtime_layout.addWidget(self.us_runtime_summary_label)
+
+        self.us_runtime_metrics_label = QtWidgets.QLabel('')
+        self.us_runtime_metrics_label.setWordWrap(True)
+        runtime_layout.addWidget(self.us_runtime_metrics_label)
+
+        self.us_runtime_warning_log = QtWidgets.QPlainTextEdit()
+        self.us_runtime_warning_log.setReadOnly(True)
+        self.us_runtime_warning_log.document().setMaximumBlockCount(300)
+        self.us_runtime_warning_log.setMinimumHeight(80)
+        self.us_runtime_warning_log.setMaximumHeight(220)
+        self.us_runtime_warning_log.setPlaceholderText(
+            'Stability warnings and numerical overrides will appear here during runtime.'
+        )
+        runtime_layout.addWidget(self.us_runtime_warning_log)
+
+        runtime_btn_row = QtWidgets.QHBoxLayout()
+        self.us_runtime_export_btn = QtWidgets.QPushButton('Export Runtime Log…')
+        self.us_runtime_export_btn.setToolTip('Save runtime monitor summary, metrics, and warnings to a text file')
+        self.us_runtime_export_btn.clicked.connect(self._export_unsteady_runtime_log)
+        runtime_btn_row.addWidget(self.us_runtime_export_btn)
+        runtime_btn_row.addStretch()
+        runtime_layout.addLayout(runtime_btn_row)
+
+        insert_at = host_layout.indexOf(self.us_status_label)
+        if insert_at >= 0:
+            host_layout.insertWidget(insert_at + 1, self.us_runtime_group)
+        else:
+            host_layout.addWidget(self.us_runtime_group)
+
+    def _append_unsteady_runtime_warning(self, text: str):
+        """Append warning once to runtime monitor and keep UI responsive."""
+        if not text:
+            return
+        if not hasattr(self, '_us_runtime_warning_seen'):
+            self._us_runtime_warning_seen = set()
+        if text in self._us_runtime_warning_seen:
+            return
+        self._us_runtime_warning_seen.add(text)
+        if hasattr(self, 'us_runtime_warning_log'):
+            self.us_runtime_warning_log.appendPlainText(text)
+        if hasattr(self, 'us_runtime_warning_log_main'):
+            self.us_runtime_warning_log_main.appendPlainText(text)
+
+    def _update_unsteady_runtime_monitor(self, step: int, total: int, msg: str, diagnostics: dict):
+        """Update live runtime monitor labels/logs from solver callback diagnostics."""
+        self._ensure_unsteady_runtime_monitor()
+        if hasattr(self, 'us_runtime_group'):
+            self.us_runtime_group.setVisible(True)
+        if hasattr(self, 'us_runtime_summary_label'):
+            self.us_runtime_summary_label.setText(f'Step {step}/{total}: {msg}')
+        if hasattr(self, 'us_runtime_summary_label_main'):
+            self.us_runtime_summary_label_main.setText(f'Step {step}/{total}: {msg}')
+
+        diagnostics = diagnostics or {}
+        inner_iters = int(diagnostics.get('inner_iterations', 0))
+        max_err = float(diagnostics.get('max_update_error', 0.0))
+        tol = float(diagnostics.get('tolerance', 0.0))
+        tol_exceeded = bool(diagnostics.get('tolerance_exceeded', False))
+        solver_backend = str(diagnostics.get('solver_backend', '') or '').strip()
+        native_enabled = bool(diagnostics.get('native_enabled', False))
+        native_success_count = int(diagnostics.get('native_success_count', 0))
+        native_fallback_count = int(diagnostics.get('native_fallback_count', 0))
+        native_last_fallback_error = str(diagnostics.get('native_last_fallback_error', '') or '').strip()
+        metrics = (
+            f'Inner iterations: {inner_iters}    '
+            f'Max solver update error: {max_err:.3e}    '
+            f'Tolerance: {tol:.3e}'
+        )
+        if tol_exceeded:
+            metrics += '    STATUS: tolerance exceeded'
+        else:
+            metrics += '    STATUS: within tolerance'
+        if solver_backend:
+            metrics += f'    Backend: {solver_backend}'
+        if hasattr(self, 'us_runtime_metrics_label'):
+            self.us_runtime_metrics_label.setText(metrics)
+        if hasattr(self, 'us_runtime_metrics_label_main'):
+            self.us_runtime_metrics_label_main.setText(metrics)
+
+        if solver_backend:
+            self._append_unsteady_runtime_warning(
+                f'solver backend confirmation | enabled={native_enabled} backend={solver_backend} '
+                f'native_solves={native_success_count} native_fallbacks={native_fallback_count}'
+            )
+        if native_fallback_count > 0 and native_last_fallback_error:
+            self._append_unsteady_runtime_warning(
+                f'native fallback detail | {native_last_fallback_error}'
+            )
+
+        events = list(diagnostics.get('initial_stability_events', [])) + list(diagnostics.get('stability_events', []))
+        for event in events:
+            self._append_unsteady_runtime_warning(f't={diagnostics.get("time_s", 0.0):.1f}s | {event}')
+
+        if tol_exceeded:
+            self._append_unsteady_runtime_warning(
+                f't={diagnostics.get("time_s", 0.0):.1f}s | solver update error {max_err:.3e} > tolerance {tol:.3e}'
+            )
+
+    def _export_unsteady_runtime_log(self):
+        """Export current runtime monitor state to a plain-text file."""
+        summary = ''
+        metrics = ''
+        warnings_text = ''
+        if hasattr(self, 'us_runtime_summary_label'):
+            summary = str(self.us_runtime_summary_label.text() or '').strip()
+        if hasattr(self, 'us_runtime_metrics_label'):
+            metrics = str(self.us_runtime_metrics_label.text() or '').strip()
+        if hasattr(self, 'us_runtime_warning_log'):
+            warnings_text = str(self.us_runtime_warning_log.toPlainText() or '').strip()
+
+        if not summary and hasattr(self, 'us_runtime_summary_label_main'):
+            summary = str(self.us_runtime_summary_label_main.text() or '').strip()
+        if not metrics and hasattr(self, 'us_runtime_metrics_label_main'):
+            metrics = str(self.us_runtime_metrics_label_main.text() or '').strip()
+        if not warnings_text and hasattr(self, 'us_runtime_warning_log_main'):
+            warnings_text = str(self.us_runtime_warning_log_main.toPlainText() or '').strip()
+
+        if not summary and not metrics and not warnings_text:
+            QMessageBox.information(self, 'Export Runtime Log', 'No runtime monitor content available to export yet.')
+            return
+
+        stamp = QtCore.QDateTime.currentDateTime().toString('yyyyMMdd_HHmmss')
+        default_name = f'unsteady_runtime_log_{stamp}.txt'
+        default_dir = os.path.dirname(getattr(self, 'loaded_gpkg_path', '') or '')
+        default_path = os.path.join(default_dir, default_name) if default_dir else default_name
+        out_path, _ = QFileDialog.getSaveFileName(
+            self,
+            'Export Runtime Log',
+            default_path,
+            'Text files (*.txt);;All files (*)',
+        )
+        if not out_path:
+            return
+
+        lines = []
+        lines.append('QGIS Backwater Plugin - Unsteady Runtime Log')
+        lines.append(f'Exported: {QtCore.QDateTime.currentDateTime().toString("yyyy-MM-dd HH:mm:ss")}')
+        gpkg_path = str(getattr(self, 'loaded_gpkg_path', '') or '')
+        if gpkg_path:
+            lines.append(f'GeoPackage: {gpkg_path}')
+        lines.append('')
+        lines.append('Summary')
+        lines.append(summary or '(none)')
+        lines.append('')
+        lines.append('Metrics')
+        lines.append(metrics or '(none)')
+        lines.append('')
+        lines.append('Warnings')
+        lines.append(warnings_text or '(none)')
+        lines.append('')
+
+        try:
+            with open(out_path, 'w', encoding='utf-8') as fh:
+                fh.write('\n'.join(lines))
+            QMessageBox.information(self, 'Export Runtime Log', f'Runtime log exported to:\n{out_path}')
+        except Exception as exc:
+            QMessageBox.critical(self, 'Export Runtime Log Error', str(exc))
+
     # ------------------------------------------------------------------
     # Unsteady run
     # ------------------------------------------------------------------
@@ -4551,18 +5249,29 @@ else:
     def on_run_unsteady(self):
         """Execute the 1D unsteady solver and display results."""
         try:
+            if hasattr(self, 'left_tabs') and hasattr(self, 'unsteady_tab'):
+                self.left_tabs.setCurrentWidget(self.unsteady_tab)
+        except Exception:
+            pass
+
+        jit_enabled = False
+        try:
             from unsteady_model import (
                 HydrographBC, UnsteadyParams, run_unsteady,
                 save_unsteady_results_to_geopackage,
                 save_unsteady_debug_to_geopackage,
+                _HAVE_NUMBA,
             )
+            jit_enabled = bool(_HAVE_NUMBA)
         except ImportError:
             try:
                 from .unsteady_model import (
                     HydrographBC, UnsteadyParams, run_unsteady,
                     save_unsteady_results_to_geopackage,
                     save_unsteady_debug_to_geopackage,
+                    _HAVE_NUMBA,
                 )
+                jit_enabled = bool(_HAVE_NUMBA)
             except ImportError as exc:
                 QMessageBox.critical(self, 'Import Error',
                     f'Could not import unsteady_model: {exc}')
@@ -4592,13 +5301,31 @@ else:
             dt    = float(self.us_dt_edit.text())
             t_end = float(self.us_tend_edit.text())
             theta = float(self.us_theta_edit.text())
+            max_iter = int(self.us_max_iter_spin.value()) if hasattr(self, 'us_max_iter_spin') else 4
+            tol = float(self.us_tol_edit.text()) if hasattr(self, 'us_tol_edit') else 1e-4
             outint = int(self.us_outint_spin.value())
+            table_dz = float(self.us_table_dz_edit.text()) if hasattr(self, 'us_table_dz_edit') else 0.01
+            table_pad = float(self.us_table_pad_edit.text()) if hasattr(self, 'us_table_pad_edit') else 5.0
+            ds_bc_ramp_steps = int(float(self.us_ds_ramp_steps_edit.text())) if hasattr(self, 'us_ds_ramp_steps_edit') else 5
+            overbank_ramp_depth = float(self.us_overbank_ramp_edit.text()) if hasattr(self, 'us_overbank_ramp_edit') else 0.25
         except ValueError as exc:
             QMessageBox.warning(self, 'Parameter Error', str(exc))
             return
         if dt <= 0 or t_end <= 0:
             QMessageBox.warning(self, 'Parameter Error',
                 'dt and Duration must be positive.')
+            return
+        if table_dz <= 0 or table_pad < 0:
+            QMessageBox.warning(self, 'Parameter Error',
+                'Table dz must be positive and table padding must be non-negative.')
+            return
+        if max_iter < 1 or tol <= 0:
+            QMessageBox.warning(self, 'Parameter Error',
+                'Max inner iterations must be at least 1 and tolerance must be positive.')
+            return
+        if ds_bc_ramp_steps < 0 or overbank_ramp_depth < 0:
+            QMessageBox.warning(self, 'Parameter Error',
+                'DS BC ramp steps and overbank ramp depth must be non-negative.')
             return
 
         ds_bc    = str(self.us_ds_bc_combo.currentText())
@@ -4611,22 +5338,46 @@ else:
 
         params = UnsteadyParams(
             dt=dt, t_end=t_end, theta=theta,
+            max_iter=max_iter,
+            tol=tol,
             output_interval=outint,
             downstream_bc=ds_bc, downstream_value=ds_val,
             debug_capture=bool(self.us_debug_enable_chk.isChecked()),
             debug_frequency=str(self.us_debug_frequency_combo.currentData() or 'output'),
+            precompute_hydraulic_tables=bool(self.us_precompute_tables_chk.isChecked()) if hasattr(self, 'us_precompute_tables_chk') else True,
+            hydraulic_table_dz=table_dz,
+            hydraulic_table_padding=table_pad,
+            ds_bc_ramp_steps=ds_bc_ramp_steps,
+            overbank_activation_ramp_depth_ft=overbank_ramp_depth,
         )
 
         # Progress feedback
         self.us_progress_bar.setVisible(True)
         self.us_progress_bar.setValue(0)
-        self.us_status_label.setText('Running unsteady solver…')
+        self._reset_unsteady_runtime_monitor()
+        jit_text = ('enabled' if jit_enabled else 'disabled')
+        if hasattr(self, 'us_jit_status_label'):
+            self.us_jit_status_label.setText(f'JIT acceleration status: {jit_text}')
+        self.us_status_label.setText(f'Running unsteady solver… (JIT {jit_text})')
         QtWidgets.QApplication.processEvents()
 
-        def _progress(step, total, msg):
+        ui_progress_state = {
+            'last_step': 0,
+            'stride': 1,
+        }
+
+        def _progress(step, total, msg, diagnostics=None):
+            if total > 0:
+                ui_progress_state['stride'] = max(1, int(total // 200) or 1)
+            force_update = (step >= total)
+            if not force_update and step > 0:
+                if (step - ui_progress_state['last_step']) < ui_progress_state['stride']:
+                    return
+            ui_progress_state['last_step'] = step
             pct = int(100 * step / total) if total > 0 else 0
             self.us_progress_bar.setValue(pct)
             self.us_status_label.setText(msg)
+            self._update_unsteady_runtime_monitor(step, total, msg, diagnostics or {})
             QtWidgets.QApplication.processEvents()
 
         try:
@@ -4655,6 +5406,11 @@ else:
             else:
                 self.us_status_label.setText(
                     f'Done.  {results.n_output_times} output steps.')
+
+            if hasattr(self, 'us_runtime_summary_label'):
+                self.us_runtime_summary_label.setText(
+                    f'Completed run with {results.n_output_times} output step(s).'
+                )
 
             self.us_progress_bar.setValue(100)
             self._populate_unsteady_plots(results)
@@ -4948,6 +5704,19 @@ else:
         buttons.accepted.connect(_accept)
         buttons.rejected.connect(dlg.reject)
         dlg.exec()
+
+    def open_swe2d_demo_dialog(self):
+        """Open the full 2D SWE workbench dialog from the plugin UI."""
+        try:
+            from swe2d_workbench_qt import launch_swe2d_workbench
+        except Exception:
+            try:
+                from .swe2d_workbench_qt import launch_swe2d_workbench
+            except Exception as exc:
+                QMessageBox.critical(self, '2D SWE Workbench', f'Unable to open 2D workbench: {exc}')
+                return
+
+        launch_swe2d_workbench(self)
 
     def open_unsteady_debug_log_viewer(self):
         """Open a dialog for browsing saved unsteady debug records."""

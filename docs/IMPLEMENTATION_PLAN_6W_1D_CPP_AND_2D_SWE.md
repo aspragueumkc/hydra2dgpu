@@ -14,9 +14,15 @@ In scope:
 4. Benchmarking, diagnostics, and GeoPackage persistence updates.
 
 Out of scope for this 6-week window:
-1. High-order 2D reconstruction and AMR.
-2. Full GPU path.
-3. Multi-domain 1D/2D coupling beyond simple coexistence in the UI.
+1. High-order 2D reconstruction and adaptive mesh refinement (AMR).
+2. Full multi-domain 1D/2D dynamic coupling beyond simple coexistence in the UI.
+3. Multi-GPU distribution and MPI domain decomposition for the 2D solver.
+
+Revised in scope (supersedes prior exclusion):
+1. Hybrid GPU/CPU 2D SWE solver on an unstructured triangular mesh.
+   - GPU path via CUDA (NVIDIA); graceful runtime fallback to OpenMP CPU path.
+   - Unstructured mesh required for realistic riverine geometry (meanders, confluences, floodplains).
+   - CUDA detection at CMake configure time; CPU-only builds remain valid.
 
 ## Architecture Decision
 1. C++ first for both 1D and 2D compute kernels.
@@ -56,6 +62,76 @@ The single-run path explicitly includes four acceleration items:
 3. MPI workers should each run the same validated single-simulation C++ path for deterministic comparability.
 
 ## Weekly Plan
+
+## Hybrid GPU/CPU 2D SWE Solver Architecture
+
+### Rationale for Unstructured Grid
+Realistic riverine domains — meandering channels, braided reaches, confluences, irregular floodplains — cannot be accurately represented on structured Cartesian grids without extreme over-refinement or staircase boundary artifacts. An unstructured triangular mesh:
+1. Conforms to arbitrary bank geometry and islands.
+2. Supports local refinement in narrow channels without penalizing the full domain.
+3. Maps directly to GIS input layers (polygon boundaries → mesh generation) that QGIS already holds.
+
+### Rationale for Hybrid GPU/CPU
+1. The per-timestep work in an explicit FV scheme is embarrassingly parallel over cells and edges — the ideal GPU workload.
+2. Mesh topology (connectivity, BC classification) is static after setup and lives on CPU; no branchy logic goes to GPU.
+3. CUDA is the most mature path for NVIDIA workstations where this plugin is likely deployed.
+4. A clean CPU fallback (OpenMP, same kernels) keeps the solver portable and testable on any machine.
+
+### Grid Representation: Structure of Arrays (SoA)
+All mesh arrays use contiguous SoA layout for both SIMD auto-vectorization on CPU and coalesced memory access on GPU.
+
+Node arrays (N nodes):
+- `node_x[N]`, `node_y[N]`, `node_z[N]`  — coordinates and bed elevation
+
+Cell arrays (M triangular cells):
+- `cell_n0[M]`, `cell_n1[M]`, `cell_n2[M]`  — node indices
+- `cell_cx[M]`, `cell_cy[M]`               — centroid coordinates
+- `cell_area[M]`                           — cell area
+- `cell_zb[M]`                             — bed elevation at centroid
+- `cell_h[M]`, `cell_hu[M]`, `cell_hv[M]`  — conserved state
+
+Edge arrays (E interior + boundary edges):
+- `edge_c0[E]`, `edge_c1[E]`               — left/right cell indices (-1 = boundary)
+- `edge_n0[E]`, `edge_n1[E]`               — endpoint node indices
+- `edge_nx[E]`, `edge_ny[E]`               — outward unit normal (from c0 to c1)
+- `edge_len[E]`                            — edge length
+- `edge_bc_type[E]`                        — boundary type enum
+
+### Numerical Scheme
+1. **Riemann solver**: HLLC (positivity-preserving wave-speed estimates from Einfeldt).
+2. **Reconstruction**: Piecewise-constant (1st order) MVP; MUSCL with MinMod limiter for 2nd order (deferred).
+3. **Wet/dry**: Thin-film regularization (`h_min = 1e-6 m`); deactivate cells below threshold; enforce h ≥ 0 after update.
+4. **Bed slope source**: Well-balanced hydrostatic reconstruction on each edge (maintains lake-at-rest exactly).
+5. **Friction source**: Manning, explicit Euler (semi-implicit limiter to prevent velocity blowup in shallow cells).
+6. **Timestep**: Global CFL reduction over all edges; `dt = CFL_factor × min(dx/|u+c|)`.
+
+### GPU Kernel Layout (CUDA)
+Each timestep executes three kernel launches:
+1. `swe2d_flux_kernel<<<E/256, 256>>>` — parallel over edges; writes per-edge flux contributions.
+2. `swe2d_update_kernel<<<M/256, 256>>>` — parallel over cells; accumulates fluxes, applies sources, enforces positivity.
+3. `swe2d_cfl_kernel<<<M/256, 256>>>` + device reduction — computes minimum dt for next step.
+
+### CPU Path (OpenMP)
+Identical numerical operations, vectorized with `#pragma omp parallel for simd` over edge and cell loops. Thread count controlled by `BACKWATER_SWE2D_THREADS` env var or `configure_swe2d_threads_cpp()`.
+
+### Path Selection
+At runtime, `swe2d_backend.py` queries `swe2d_gpu_available()` and selects the CUDA path if available and not explicitly disabled via `BACKWATER_SWE2D_GPU=0`. Either path is invoked through the same pybind11 API surface — Python orchestration is path-agnostic.
+
+### File Layout
+```
+cpp/src/
+  swe2d_mesh.hpp         # Mesh SoA structs and edge connectivity builder
+  swe2d_mesh.cpp         # Mesh construction and validation
+  swe2d_numerics.hpp     # HLLC solver, reconstruction, well-balanced bed slope
+  swe2d_numerics.cpp     # CPU implementations of numerical kernels
+  swe2d_solver.hpp       # Solver API (init, step, query, destroy)
+  swe2d_solver.cpp       # CPU solver: OpenMP flux + update + CFL loops
+  swe2d_gpu.cuh          # CUDA declarations (included only when CUDA found)
+  swe2d_gpu.cu           # CUDA kernels and device memory management
+  swe2d_bindings.cpp     # pybind11 module backwater_swe2d
+```
+
+### Weekly Plan
 
 ### Week 1: Foundations and Contracts
 Goals:
@@ -109,15 +185,20 @@ Acceptance criteria:
 3. Fallback path to Python remains available.
 4. Startup benchmark shows measurable reduction and no parity drift in table-derived properties.
 
-### Week 4: 2D SWE MVP Compute Core
+### Week 4: 2D SWE MVP Compute Core — Hybrid GPU/CPU Unstructured Mesh
 Goals:
-1. Implement 2D explicit finite-volume SWE on structured grid.
-2. Add robust wet/dry handling and positivity controls.
-3. Support core boundaries: inflow, stage/open, wall.
+1. Implement unstructured triangular mesh infrastructure (SoA layout for GPU-readiness).
+2. Implement explicit finite-volume SWE on unstructured mesh with HLLC Riemann solver.
+3. Add wet/dry positivity preservation and CFL timestep control.
+4. Add CUDA GPU acceleration path with OpenMP CPU fallback.
+5. Support core boundaries: inflow, stage/open, wall, reflecting.
 
 Deliverables:
-1. C++ 2D solver core with pybind entrypoint.
-2. Canonical tests (dam-break, still-water balance, uniform flow sanity).
+1. C++ 2D solver core (`swe2d_mesh`, `swe2d_solver`) with pybind11 entrypoint.
+2. CUDA kernel path (`swe2d_gpu.cu`) wired behind CMake `BACKWATER_USE_CUDA` flag.
+3. CPU OpenMP path that runs identically when CUDA is absent or disabled at runtime.
+4. Python bridge `swe2d_backend.py` with GPU-availability query and path selector.
+5. Canonical validation tests (dam-break, still-water balance, uniform flow).
 3. Basic output arrays and timestep diagnostics.
 
 Acceptance criteria:

@@ -286,6 +286,7 @@ class BackwaterQgisPlugin:
             ('BackwaterMenuToggleEditingAction', 'Enable/Disable Layer Editing', lambda: self._invoke_widget_method('on_toggle_geopackage_editing')),
             ('BackwaterMenuSaveEditsAction', 'Save Layer Edits', lambda: self._invoke_widget_method('on_save_layer_edits')),
             ('BackwaterMenuUnsteadyInputDialogAction', 'Unsteady Input...', lambda: self._invoke_widget_method('open_unsteady_input_dialog')),
+            ('BackwaterMenuSWE2DDemoAction', '2D SWE Workbench...', lambda: self._invoke_widget_method('open_swe2d_demo_dialog')),
             ('BackwaterMenuRunUnsteadyAction', 'Run Unsteady Model', lambda: self._invoke_widget_method('on_run_unsteady')),
             ('BackwaterMenuLoadUnsteadyRunAction', 'Load Saved Unsteady Run...', lambda: self._invoke_widget_method('on_load_unsteady_results')),
             ('BackwaterMenuUnsteadyDebugOptionsAction', 'Unsteady Debug Options...', lambda: self._invoke_widget_method('open_unsteady_debug_dialog')),

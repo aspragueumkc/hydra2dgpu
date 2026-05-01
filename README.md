@@ -10,6 +10,15 @@ Steady-flow 1D backwater modeling plugin for QGIS with GeoPackage-native model s
 - QGIS menu integration is in `backwater_plugin.py`.
 - Model I/O is GeoPackage-only in the plugin workflow.
 
+## Project Status
+
+- Native backend work is active: the 1D unsteady path has C++ build scaffolding, backend selection, and partial parity/benchmark coverage, but it is not yet the fully validated default runtime.
+- SWE2D now has a dedicated QGIS workbench with native CPU/GPU solver hooks, interactive run/cancel controls, and topology-driven meshing from map layers.
+- The topology meshing workflow now supports TQMesh as a backend in the workbench, including an optional quad-edge layer for four-sided regions defined by explicit side polylines.
+- TQMesh stability work is in place: the Python binding crash caused by incorrect quadtree scaling was fixed, triangular meshing is stable, and quadrilateral output is available through the sampled-side plus `tri2quad` path.
+- The current TQMesh quadrilateral workflow is intentionally conservative: for full four-edge regions, explicit side polylines are sampled into the exterior boundary and then converted from triangles to quads, because applying quad-layer generation on all four sides at once was not robust.
+- Known active issue: the 2D GPU solver still has a degenerate-cell instability in the `2d_example` case, so SWE2D remains a development feature rather than a release-ready default.
+
 ## Key Features
 
 - Create, load, save, and run backwater models directly from QGIS.
@@ -86,3 +95,5 @@ For the current native-backend roadmap (1D C++ port + 2D SWE solver), see:
 
 - `docs/IMPLEMENTATION_PLAN_6W_1D_CPP_AND_2D_SWE.md`
 - `docs/TASK_BOARD_6W_SOLO_AND_AGENT.md`
+- `docs/WEEK1_CPP_STARTER_PACK.md`
+- `docs/NATIVE_CPP_BACKEND_BUILD.md`
