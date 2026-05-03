@@ -425,6 +425,17 @@ class SWE2DBackend:
             raise RuntimeError("initialize() must be called before get_state().")
         return self._mod.swe2d_get_state(self._solver_h)
 
+    def set_state(self, h: np.ndarray, hu: np.ndarray, hv: np.ndarray) -> None:
+        """Overwrite current (h, hu, hv) state arrays."""
+        if self._solver_h is None:
+            raise RuntimeError("initialize() must be called before set_state().")
+        h_arr = np.ascontiguousarray(h, dtype=np.float64)
+        hu_arr = np.ascontiguousarray(hu, dtype=np.float64)
+        hv_arr = np.ascontiguousarray(hv, dtype=np.float64)
+        if h_arr.size != self._n_cells or hu_arr.size != self._n_cells or hv_arr.size != self._n_cells:
+            raise ValueError("h/hu/hv lengths must all equal n_cells")
+        self._mod.swe2d_set_state(self._solver_h, h_arr, hu_arr, hv_arr)
+
     # ── Diagnostics ───────────────────────────────────────────────────────────
 
     def gpu_active(self) -> bool:

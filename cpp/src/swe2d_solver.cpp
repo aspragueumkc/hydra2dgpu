@@ -292,6 +292,26 @@ void swe2d_get_state(const SWE2DSolver* s, double* h_out, double* hu_out, double
     if (hv_out) std::copy(s->hv.begin(), s->hv.end(), hv_out);
 }
 
+void swe2d_set_state(SWE2DSolver* s, const double* h_in, const double* hu_in, const double* hv_in) {
+    if (!s) return;
+    const int32_t n = s->mesh->n_cells;
+    if (h_in) {
+        std::copy(h_in, h_in + n, s->h.begin());
+    }
+    if (hu_in) {
+        std::copy(hu_in, hu_in + n, s->hu.begin());
+    }
+    if (hv_in) {
+        std::copy(hv_in, hv_in + n, s->hv.begin());
+    }
+
+#ifdef BACKWATER_HAS_CUDA
+    if (s->dev) {
+        swe2d_gpu_set_state(s->dev, s->h.data(), s->hu.data(), s->hv.data());
+    }
+#endif
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // CFL timestep calculation — CPU pass over all edges
 // ─────────────────────────────────────────────────────────────────────────────

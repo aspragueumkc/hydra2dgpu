@@ -388,6 +388,14 @@ class SWE2DWorkbenchDialog(QtWidgets.QDialog):
         self.bed_amp_spin.setRange(0.0, 1.0e6)
         self.bed_amp_spin.setDecimals(3)
         self.bed_amp_spin.setValue(0.0)
+        self.mesh_layout_combo = QtWidgets.QComboBox()
+        self.mesh_layout_combo.addItem("Split triangles (2 cells / block)", "tri")
+        self.mesh_layout_combo.addItem("Structured block quads (1 cell / block, faster)", "quad")
+        self.mesh_layout_combo.setCurrentIndex(1)
+        self.mesh_layout_combo.setToolTip(
+            "Select generated cell layout.\n"
+            "Structured block quads usually run faster for rectilinear domains."
+        )
         self.generate_mesh_btn = QtWidgets.QPushButton("Generate Mesh")
         self.generate_mesh_btn.clicked.connect(self._on_generate_mesh)
         self.mesh_info_lbl = QtWidgets.QLabel("Mesh not generated")
@@ -397,6 +405,7 @@ class SWE2DWorkbenchDialog(QtWidgets.QDialog):
         mesh_form.addRow("Length X:", self.lx_spin)
         mesh_form.addRow("Length Y:", self.ly_spin)
         mesh_form.addRow("Bed perturbation amplitude:", self.bed_amp_spin)
+        mesh_form.addRow("Structured layout:", self.mesh_layout_combo)
         mesh_form.addRow(self.generate_mesh_btn)
         mesh_form.addRow(self.mesh_info_lbl)
         left_layout.addWidget(mesh_group)
@@ -595,7 +604,12 @@ class SWE2DWorkbenchDialog(QtWidgets.QDialog):
         self.reconstruction_combo.setCurrentIndex(1)
         self.reconstruction_combo.setToolTip(
             "Select spatial reconstruction for the native solver.\n"
-            "MUSCL Fast prioritizes throughput; MUSCL MinMod is more robust near steep gradients."
+            "All 2nd-order schemes use Green-Gauss gradient-based TVD reconstruction:\n"
+            "  Superbee (MUSCL Fast)  — most aggressive TVD, sharpest fronts\n"
+            "  MinMod                 — most conservative, most stable near dry fronts\n"
+            "  MC                     — balanced monotonized-central (good default)\n"
+            "  Van Leer               — smooth limiter, good for continuous waves\n"
+            "Recommend: start with MUSCL MinMod; switch to MC or Van Leer once stable."
         )
         self.gpu_default_lbl = QtWidgets.QLabel("GPU is attempted by default when supported by the native backend.")
         self.gpu_default_lbl.setWordWrap(True)
@@ -2660,7 +2674,7 @@ class SWE2DWorkbenchDialog(QtWidgets.QDialog):
         except Exception as exc:
             QtWidgets.QMessageBox.critical(self, "Snapshot", f"Snapshot failed:\n{exc}")
 
-    def _structured_mesh(self, nx: int, ny: int, lx: float, ly: float, bed_amp: float):
+    def _structured_mesh(self, nx: int, ny: int, lx: float, ly: float, bed_amp: float, cell_layout: str = "quad"):
         xs = np.linspace(0.0, lx, nx + 1)
         ys = np.linspace(0.0, ly, ny + 1)
         Xg, Yg = np.meshgrid(xs, ys)
@@ -2673,16 +2687,36 @@ class SWE2DWorkbenchDialog(QtWidgets.QDialog):
 
         stride = nx + 1
         cells: List[int] = []
+        face_nodes: List[int] = []
+        face_offsets: List[int] = [0]
+        make_quads = str(cell_layout).strip().lower().startswith("quad")
+
         for j in range(ny):
             for i in range(nx):
                 n00 = j * stride + i
                 n10 = j * stride + i + 1
                 n01 = (j + 1) * stride + i
                 n11 = (j + 1) * stride + i + 1
+
+                if make_quads:
+                    # Polygon face ring (counter-clockwise) for solver path.
+                    face_nodes.extend([n00, n10, n11, n01])
+                    face_offsets.append(len(face_nodes))
+                # Triangles are always kept for plotting and export compatibility.
                 cells.extend([n00, n10, n11])
                 cells.extend([n00, n11, n01])
+
         cell_nodes = np.array(cells, dtype=np.int32)
-        return node_x, node_y, node_z, cell_nodes
+        if make_quads:
+            return (
+                node_x,
+                node_y,
+                node_z,
+                cell_nodes,
+                np.asarray(face_offsets, dtype=np.int32),
+                np.asarray(face_nodes, dtype=np.int32),
+            )
+        return node_x, node_y, node_z, cell_nodes, None, None
 
     def _structured_side_edges(self, nx: int, ny: int):
         stride = nx + 1
@@ -3343,23 +3377,43 @@ class SWE2DWorkbenchDialog(QtWidgets.QDialog):
         lx = float(self.lx_spin.value())
         ly = float(self.ly_spin.value())
         bed_amp = float(self.bed_amp_spin.value())
+        layout_mode = str(self.mesh_layout_combo.currentData() or "quad")
 
-        node_x, node_y, node_z, cell_nodes = self._structured_mesh(nx, ny, lx, ly, bed_amp)
+        node_x, node_y, node_z, cell_nodes, face_offsets, face_nodes = self._structured_mesh(
+            nx,
+            ny,
+            lx,
+            ly,
+            bed_amp,
+            layout_mode,
+        )
         self._mesh_data = {
             "nx": np.array(nx),
             "ny": np.array(ny),
             "lx": np.array(lx),
             "ly": np.array(ly),
+            "cell_layout": np.array(layout_mode),
             "node_x": node_x,
             "node_y": node_y,
             "node_z": node_z,
             "cell_nodes": cell_nodes,
         }
-        n_cells = cell_nodes.shape[0] // 3
-        self.mesh_info_lbl.setText(
-            f"Generated mesh: nodes={node_x.shape[0]}, cells={n_cells}, triangles={n_cells}"
+        if face_offsets is not None and face_nodes is not None:
+            self._mesh_data["cell_face_offsets"] = face_offsets
+            self._mesh_data["cell_face_nodes"] = face_nodes
+            n_cells = int(face_offsets.size - 1)
+            n_tri = int(cell_nodes.shape[0] // 3)
+            self.mesh_info_lbl.setText(
+                f"Generated mesh: nodes={node_x.shape[0]}, cells={n_cells} (quads), plot-triangles={n_tri}"
+            )
+        else:
+            n_cells = int(cell_nodes.shape[0] // 3)
+            self.mesh_info_lbl.setText(
+                f"Generated mesh: nodes={node_x.shape[0]}, cells={n_cells}, triangles={n_cells}"
+            )
+        self._log(
+            f"Mesh generated: nx={nx}, ny={ny}, lx={lx:.2f}, ly={ly:.2f}, bed_amp={bed_amp:.4f}, layout={layout_mode}"
         )
-        self._log(f"Mesh generated: nx={nx}, ny={ny}, lx={lx:.2f}, ly={ly:.2f}, bed_amp={bed_amp:.4f}")
         self._result_data = None
         self.view_mode_combo.setCurrentText("Mesh")
         self._refresh_plot()

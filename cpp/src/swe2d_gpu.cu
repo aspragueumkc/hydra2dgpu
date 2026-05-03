@@ -311,65 +311,35 @@ __global__ void swe2d_flux_kernel(
         zbR = cell_zb[c1];
 
         // GPU-only selectable higher-order reconstruction modes.
+        // All schemes 1–4 use Green-Gauss gradient-based TVD reconstruction.
+        // The pair-only midpoint approach (coefficient 0.5) was removed because it
+        // produces identical face states on both sides of every edge, which cancels
+        // the HLLC solver's upwind dissipation and causes neutral-to-unstable
+        // behaviour on non-trivial meshes regardless of unit system.
+        //
+        // Limiter table:
+        //   FV_MUSCL_FAST     (1) — Superbee:  most aggressive TVD, sharpest fronts
+        //   FV_MUSCL_MINMOD   (2) — MinMod:    most conservative TVD, most stable
+        //   FV_MUSCL_MC       (3) — MC:        balanced monotonized-central
+        //   FV_MUSCL_VAN_LEER (4) — Van Leer:  smooth limiter, phi→2 as r→∞
         const int scheme_fast   = static_cast<int>(SWE2DSpatialScheme::FV_MUSCL_FAST);
         const int scheme_robust = static_cast<int>(SWE2DSpatialScheme::FV_MUSCL_MINMOD);
         const int scheme_mc     = static_cast<int>(SWE2DSpatialScheme::FV_MUSCL_MC);
         const int scheme_vl     = static_cast<int>(SWE2DSpatialScheme::FV_MUSCL_VAN_LEER);
-        if (spatial_scheme == scheme_fast || spatial_scheme == scheme_robust) {
-            const double dh_pair  = hR  - hL;
-            const double dhu_pair = huR - huL;
-            const double dhv_pair = hvR - hvL;
-
-            // Fast mode: symmetric unlimited linear extrapolation.
-            double hL_rec  = hL  + 0.5 * dh_pair;
-            double huL_rec = huL + 0.5 * dhu_pair;
-            double hvL_rec = hvL + 0.5 * dhv_pair;
-            double hR_rec  = hR  - 0.5 * dh_pair;
-            double huR_rec = huR - 0.5 * dhu_pair;
-            double hvR_rec = hvR - 0.5 * dhv_pair;
-
-            if (spatial_scheme == scheme_robust) {
-                // Robust mode: pair-bounded limiter to suppress overshoot.
-                const double h_lo = fmin(hL, hR);
-                const double h_hi = fmax(hL, hR);
-                const double hu_lo = fmin(huL, huR);
-                const double hu_hi = fmax(huL, huR);
-                const double hv_lo = fmin(hvL, hvR);
-                const double hv_hi = fmax(hvL, hvR);
-
-                hL_rec = fmin(h_hi, fmax(h_lo, hL_rec));
-                hR_rec = fmin(h_hi, fmax(h_lo, hR_rec));
-                huL_rec = fmin(hu_hi, fmax(hu_lo, huL_rec));
-                huR_rec = fmin(hu_hi, fmax(hu_lo, huR_rec));
-                hvL_rec = fmin(hv_hi, fmax(hv_lo, hvL_rec));
-                hvR_rec = fmin(hv_hi, fmax(hv_lo, hvR_rec));
-            }
-
-            hL = (hL_rec > 0.0) ? hL_rec : 0.0;
-            hR = (hR_rec > 0.0) ? hR_rec : 0.0;
-            huL = huL_rec;
-            huR = huR_rec;
-            hvL = hvL_rec;
-            hvR = hvR_rec;
-        } else if ((spatial_scheme == scheme_mc || spatial_scheme == scheme_vl)
-                   && cell_cx != nullptr && grad_hx != nullptr) {
-            // Gradient-based TVD reconstruction (MC or Van Leer limiter).
-            // r = (Green-Gauss gradient projected onto c0→c1) / (pair difference)
-            // phi_MC(r)     = max(0, min(2r, (1+r)/2, 2))
-            // phi_VanLeer(r)= (r + |r|) / (1 + |r|)
+        if (spatial_scheme >= scheme_fast && cell_cx != nullptr && grad_hx != nullptr) {
             const double dcx = cell_cx[c1] - cell_cx[c0];
             const double dcy = cell_cy[c1] - cell_cy[c0];
             constexpr double EPS = 1.0e-30;
 
-            // Helper lambda to compute limiter phi(r) and reconstruct one variable.
+            // Helper lambda: compute TVD limiter phi(r) and reconstruct one variable.
             // q0, q1 — cell-centre values; gx0/gy0, gx1/gy1 — GG gradient at c0, c1.
             auto tvd_reconstruct = [&](double q0, double q1,
                                        double gx0, double gy0,
                                        double gx1, double gy1,
                                        double& qL_out, double& qR_out) {
-                const double dq = q1 - q0;   // "downwind" difference from c0
+                const double dq = q1 - q0;   // downwind difference (c0→c1)
 
-                // Slope ratio at c0: gradient projection / pair step
+                // Slope ratio at c0: GG gradient projected onto c0→c1 / pair jump
                 const double s0 = gx0 * dcx + gy0 * dcy;
                 const double sign_dq = (dq >= 0.0) ? 1.0 : -1.0;
                 const double r0 = s0 / (dq + sign_dq * EPS);
@@ -379,7 +349,16 @@ __global__ void swe2d_flux_kernel(
                 const double r1 = s1 / (-dq + (-sign_dq) * EPS);
 
                 double phi0, phi1;
-                if (spatial_scheme == scheme_mc) {
+                if (spatial_scheme == scheme_fast) {
+                    // Superbee: most liberal TVD limiter (sharpest)
+                    phi0 = fmax(0.0, fmax(fmin(2.0 * r0, 1.0), fmin(r0, 2.0)));
+                    phi1 = fmax(0.0, fmax(fmin(2.0 * r1, 1.0), fmin(r1, 2.0)));
+                } else if (spatial_scheme == scheme_robust) {
+                    // MinMod: most conservative TVD limiter (most stable)
+                    phi0 = fmax(0.0, fmin(r0, 1.0));
+                    phi1 = fmax(0.0, fmin(r1, 1.0));
+                } else if (spatial_scheme == scheme_mc) {
+                    // MC (monotonized central): balanced
                     phi0 = fmax(0.0, fmin(fmin(2.0 * r0, 0.5 * (1.0 + r0)), 2.0));
                     phi1 = fmax(0.0, fmin(fmin(2.0 * r1, 0.5 * (1.0 + r1)), 2.0));
                 } else {
@@ -820,8 +799,12 @@ void swe2d_gpu_step(
     CUDA_CHECK(cudaMemset(dev->d_flux_hu, 0, static_cast<size_t>(n_cells) * sizeof(double)));
     CUDA_CHECK(cudaMemset(dev->d_flux_hv, 0, static_cast<size_t>(n_cells) * sizeof(double)));
 
-    // Kernel 0 (gradient pre-pass): required for MC and Van Leer limiters.
-    const bool need_gradients = (spatial_scheme >= 3);
+    // Kernel 0 (gradient pre-pass): required for all 2nd-order schemes (1–4).
+    // Schemes 1 & 2 also need per-cell gradients so that each side of a face
+    // gets an independently-estimated slope → face states differ → the HLLC
+    // retains its upwind dissipation (pair-only midpoint reconstruction gave
+    // equal face states and a neutrally-stable central flux).
+    const bool need_gradients = (spatial_scheme >= 1);
     if (need_gradients) {
         const size_t sz_c = static_cast<size_t>(n_cells) * sizeof(double);
         CUDA_CHECK(cudaMemset(dev->d_grad_hx,  0, sz_c));

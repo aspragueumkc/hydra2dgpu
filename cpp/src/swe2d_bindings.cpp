@@ -444,6 +444,23 @@ PYBIND11_MODULE(backwater_swe2d, m) {
         py::arg("solver"),
         "Return current (h, hu, hv) state arrays.");
 
+    // ── Set state ─────────────────────────────────────────────────────────────
+    m.def("swe2d_set_state",
+        [](std::shared_ptr<PySolver>& ps,
+           py::array_t<double, py::array::c_style | py::array::forcecast> h_in,
+           py::array_t<double, py::array::c_style | py::array::forcecast> hu_in,
+           py::array_t<double, py::array::c_style | py::array::forcecast> hv_in)
+        {
+            if (!ps || !ps->solver) throw std::invalid_argument("null solver handle");
+            const int32_t nc = ps->solver->mesh->n_cells;
+            require_array(h_in, nc, "h_in");
+            require_array(hu_in, nc, "hu_in");
+            require_array(hv_in, nc, "hv_in");
+            swe2d_set_state(ps->solver, h_in.data(), hu_in.data(), hv_in.data());
+        },
+        py::arg("solver"), py::arg("h_in"), py::arg("hu_in"), py::arg("hv_in"),
+        "Overwrite current (h, hu, hv) solver state arrays.");
+
     // ── Destroy ───────────────────────────────────────────────────────────────
     m.def("swe2d_destroy",
         [](std::shared_ptr<PySolver>& ps) {
