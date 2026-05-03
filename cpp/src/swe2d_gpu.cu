@@ -187,6 +187,74 @@ __device__ inline void hllc_flux_cuda_local(
     } while (0)
 
 // ─────────────────────────────────────────────────────────────────────────────
+// Kernel 0 (optional): Green-Gauss gradient estimation — one thread per edge.
+// Accumulates face-average * outward-normal * len / area into per-cell gradient
+// arrays. Must be run with zeroed gradient arrays before the flux kernel when
+// the scheme is FV_MUSCL_MC (3) or FV_MUSCL_VAN_LEER (4).
+// ─────────────────────────────────────────────────────────────────────────────
+__global__ void swe2d_gradient_kernel(
+    int32_t        n_edges,
+    const int32_t* edge_c0,
+    const int32_t* edge_c1,
+    const double*  edge_nx,
+    const double*  edge_ny,
+    const double*  edge_len,
+    const double*  cell_h,
+    const double*  cell_hu,
+    const double*  cell_hv,
+    const double*  cell_inv_area,
+    double*        grad_hx,  double* grad_hy,
+    double*        grad_hux, double* grad_huy,
+    double*        grad_hvx, double* grad_hvy)
+{
+    int32_t e = blockIdx.x * blockDim.x + threadIdx.x;
+    if (e >= n_edges) return;
+
+    int32_t c0 = edge_c0[e];
+    int32_t c1 = edge_c1[e];
+
+    // Skip degenerate cells
+    if (cell_inv_area[c0] > 1.0e6) return;
+
+    double nx  = edge_nx[e];
+    double ny  = edge_ny[e];
+    double len = edge_len[e];
+
+    double h0  = cell_h[c0],  hu0 = cell_hu[c0], hv0 = cell_hv[c0];
+    double h1, hu1, hv1;
+    if (c1 >= 0 && cell_inv_area[c1] <= 1.0e6) {
+        h1 = cell_h[c1]; hu1 = cell_hu[c1]; hv1 = cell_hv[c1];
+    } else {
+        // Boundary: use cell value (zero-gradient extrapolation for gradient)
+        h1 = h0; hu1 = hu0; hv1 = hv0;
+    }
+
+    // Green-Gauss: contribution = q_face * n * len * inv_area
+    double ia0 = cell_inv_area[c0];
+    double qh  = 0.5 * (h0  + h1);
+    double qhu = 0.5 * (hu0 + hu1);
+    double qhv = 0.5 * (hv0 + hv1);
+
+    atomicAdd(&grad_hx[c0],   qh  * nx * len * ia0);
+    atomicAdd(&grad_hy[c0],   qh  * ny * len * ia0);
+    atomicAdd(&grad_hux[c0],  qhu * nx * len * ia0);
+    atomicAdd(&grad_huy[c0],  qhu * ny * len * ia0);
+    atomicAdd(&grad_hvx[c0],  qhv * nx * len * ia0);
+    atomicAdd(&grad_hvy[c0],  qhv * ny * len * ia0);
+
+    // Contribution to c1: outward normal for c1 is the reverse of c0's normal
+    if (c1 >= 0 && cell_inv_area[c1] <= 1.0e6) {
+        double ia1 = cell_inv_area[c1];
+        atomicAdd(&grad_hx[c1],  -qh  * nx * len * ia1);
+        atomicAdd(&grad_hy[c1],  -qh  * ny * len * ia1);
+        atomicAdd(&grad_hux[c1], -qhu * nx * len * ia1);
+        atomicAdd(&grad_huy[c1], -qhu * ny * len * ia1);
+        atomicAdd(&grad_hvx[c1], -qhv * nx * len * ia1);
+        atomicAdd(&grad_hvy[c1], -qhv * ny * len * ia1);
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // Kernel 1: Flux computation — one thread per edge
 // Writes atomic increments into flux accumulators.
 // ─────────────────────────────────────────────────────────────────────────────
@@ -204,6 +272,12 @@ __global__ void swe2d_flux_kernel(
     const double*  cell_hv,
     const double*  cell_zb,
     const double*  cell_inv_area,
+    // Cell centroids and gradients (used for MC and Van Leer limiters)
+    const double*  cell_cx,
+    const double*  cell_cy,
+    const double*  grad_hx,  const double* grad_hy,
+    const double*  grad_hux, const double* grad_huy,
+    const double*  grad_hvx, const double* grad_hvy,
     double*        flux_h,    // [n_cells] accumulator
     double*        flux_hu,
     double*        flux_hv,
@@ -237,8 +311,10 @@ __global__ void swe2d_flux_kernel(
         zbR = cell_zb[c1];
 
         // GPU-only selectable higher-order reconstruction modes.
-        const int scheme_fast = static_cast<int>(SWE2DSpatialScheme::FV_MUSCL_FAST);
+        const int scheme_fast   = static_cast<int>(SWE2DSpatialScheme::FV_MUSCL_FAST);
         const int scheme_robust = static_cast<int>(SWE2DSpatialScheme::FV_MUSCL_MINMOD);
+        const int scheme_mc     = static_cast<int>(SWE2DSpatialScheme::FV_MUSCL_MC);
+        const int scheme_vl     = static_cast<int>(SWE2DSpatialScheme::FV_MUSCL_VAN_LEER);
         if (spatial_scheme == scheme_fast || spatial_scheme == scheme_robust) {
             const double dh_pair  = hR  - hL;
             const double dhu_pair = huR - huL;
@@ -275,7 +351,71 @@ __global__ void swe2d_flux_kernel(
             huR = huR_rec;
             hvL = hvL_rec;
             hvR = hvR_rec;
+        } else if ((spatial_scheme == scheme_mc || spatial_scheme == scheme_vl)
+                   && cell_cx != nullptr && grad_hx != nullptr) {
+            // Gradient-based TVD reconstruction (MC or Van Leer limiter).
+            // r = (Green-Gauss gradient projected onto c0→c1) / (pair difference)
+            // phi_MC(r)     = max(0, min(2r, (1+r)/2, 2))
+            // phi_VanLeer(r)= (r + |r|) / (1 + |r|)
+            const double dcx = cell_cx[c1] - cell_cx[c0];
+            const double dcy = cell_cy[c1] - cell_cy[c0];
+            constexpr double EPS = 1.0e-30;
+
+            // Helper lambda to compute limiter phi(r) and reconstruct one variable.
+            // q0, q1 — cell-centre values; gx0/gy0, gx1/gy1 — GG gradient at c0, c1.
+            auto tvd_reconstruct = [&](double q0, double q1,
+                                       double gx0, double gy0,
+                                       double gx1, double gy1,
+                                       double& qL_out, double& qR_out) {
+                const double dq = q1 - q0;   // "downwind" difference from c0
+
+                // Slope ratio at c0: gradient projection / pair step
+                const double s0 = gx0 * dcx + gy0 * dcy;
+                const double sign_dq = (dq >= 0.0) ? 1.0 : -1.0;
+                const double r0 = s0 / (dq + sign_dq * EPS);
+
+                // Slope ratio at c1 (looking back toward c0)
+                const double s1 = -(gx1 * dcx + gy1 * dcy);
+                const double r1 = s1 / (-dq + (-sign_dq) * EPS);
+
+                double phi0, phi1;
+                if (spatial_scheme == scheme_mc) {
+                    phi0 = fmax(0.0, fmin(fmin(2.0 * r0, 0.5 * (1.0 + r0)), 2.0));
+                    phi1 = fmax(0.0, fmin(fmin(2.0 * r1, 0.5 * (1.0 + r1)), 2.0));
+                } else {
+                    // Van Leer: smooth, phi → 2 as r → ∞
+                    phi0 = (r0 + fabs(r0)) / (1.0 + fabs(r0));
+                    phi1 = (r1 + fabs(r1)) / (1.0 + fabs(r1));
+                }
+
+                qL_out = q0 + phi0 * 0.5 * dq;
+                qR_out = q1 - phi1 * 0.5 * dq;
+            };
+
+            double hL_rec, hR_rec, huL_rec, huR_rec, hvL_rec, hvR_rec;
+            tvd_reconstruct(hL,  hR,  grad_hx[c0],  grad_hy[c0],  grad_hx[c1],  grad_hy[c1],  hL_rec,  hR_rec);
+            tvd_reconstruct(huL, huR, grad_hux[c0], grad_huy[c0], grad_hux[c1], grad_huy[c1], huL_rec, huR_rec);
+            tvd_reconstruct(hvL, hvR, grad_hvx[c0], grad_hvy[c0], grad_hvx[c1], grad_hvy[c1], hvL_rec, hvR_rec);
+
+            hL  = (hL_rec  > 0.0) ? hL_rec  : 0.0;
+            hR  = (hR_rec  > 0.0) ? hR_rec  : 0.0;
+            huL = huL_rec; huR = huR_rec;
+            hvL = hvL_rec; hvR = hvR_rec;
         }
+
+        // Keep reconstructed momentum physically bounded for shallow cells.
+        const double hL_eff = (hL > h_min) ? hL : h_min;
+        const double hR_eff = (hR > h_min) ? hR : h_min;
+        const double u_cap_L = fmax(50.0, 20.0 * sqrt(g * hL_eff));
+        const double u_cap_R = fmax(50.0, 20.0 * sqrt(g * hR_eff));
+        const double hu_cap_L = hL_eff * u_cap_L;
+        const double hv_cap_L = hL_eff * u_cap_L;
+        const double hu_cap_R = hR_eff * u_cap_R;
+        const double hv_cap_R = hR_eff * u_cap_R;
+        huL = fmin(hu_cap_L, fmax(-hu_cap_L, huL));
+        hvL = fmin(hv_cap_L, fmax(-hv_cap_L, hvL));
+        huR = fmin(hu_cap_R, fmax(-hu_cap_R, huR));
+        hvR = fmin(hv_cap_R, fmax(-hv_cap_R, hvR));
     } else {
         swe2d::GhostState gs = swe2d::make_ghost(
             hL, huL, hvL, zbL, nx, ny,
@@ -355,9 +495,16 @@ __global__ void swe2d_update_kernel(
     const double max_inv_a = 1.0e6;
     if (inv_a > max_inv_a) inv_a = max_inv_a;
 
-    cell_h[c]  += dt * flux_h[c]  * inv_a;
-    cell_hu[c] += dt * flux_hu[c] * inv_a;
-    cell_hv[c] += dt * flux_hv[c] * inv_a;
+    double fh = flux_h[c];
+    double fhu = flux_hu[c];
+    double fhv = flux_hv[c];
+    if (!isfinite(fh)) fh = 0.0;
+    if (!isfinite(fhu)) fhu = 0.0;
+    if (!isfinite(fhv)) fhv = 0.0;
+
+    cell_h[c]  += dt * fh  * inv_a;
+    cell_hu[c] += dt * fhu * inv_a;
+    cell_hv[c] += dt * fhv * inv_a;
 
     // Positivity enforcement
     if (cell_h[c] < 0.0) cell_h[c] = 0.0;
@@ -370,6 +517,24 @@ __global__ void swe2d_update_kernel(
     double n_mann = cell_n_mann[c];
     swe2d::apply_friction(cell_h[c], cell_hu[c], cell_hv[c],
                           dt, n_mann, g, h_min);
+
+    // Robustness guard: remove non-finite states and cap extreme momentum.
+    if (!isfinite(cell_h[c]) || !isfinite(cell_hu[c]) || !isfinite(cell_hv[c])) {
+        cell_h[c] = 0.0;
+        cell_hu[c] = 0.0;
+        cell_hv[c] = 0.0;
+    } else if (cell_h[c] > h_min) {
+        const double inv_h = 1.0 / cell_h[c];
+        const double u = cell_hu[c] * inv_h;
+        const double v = cell_hv[c] * inv_h;
+        const double spd = sqrt(u * u + v * v);
+        const double spd_cap = fmax(50.0, 20.0 * sqrt(g * cell_h[c]));
+        if (isfinite(spd) && spd > spd_cap && spd > 0.0) {
+            const double scale = spd_cap / spd;
+            cell_hu[c] *= scale;
+            cell_hv[c] *= scale;
+        }
+    }
 
     if (d_max_wse_elev_error) {
         const double wse_err = fabs(cell_h[c] - h_old);
@@ -439,7 +604,13 @@ __global__ void swe2d_cfl_kernel(
         double u  = swe2d::vel_u(hu, h, h_min);
         double v  = swe2d::vel_v(hv, h, h_min);
         double spd = sqrt(u * u + v * v) + swe2d::celerity(h, g);
-        lambda = (dx > 0.0) ? (spd / dx) : 0.0;
+        if (!isfinite(spd) || !isfinite(dx) || dx <= 0.0) {
+            lambda = 0.0;
+        } else {
+            lambda = spd / dx;
+            if (!isfinite(lambda)) lambda = 0.0;
+            if (lambda > 1.0e6) lambda = 1.0e6;
+        }
     }
 
     sdata[tid] = lambda;
@@ -546,6 +717,26 @@ SWE2DDeviceState* swe2d_gpu_init(
     copy_h2d_d(dev->d_cell_inv_area, mesh.cell_inv_area.data(), sz_cells);
     copy_h2d_d(dev->d_n_mann_cell,   n_mann_cell,               sz_cells);
 
+    // Cell centroids (for gradient-based higher-order reconstruction)
+    alloc_d(reinterpret_cast<void**>(&dev->d_cell_cx), sz_cells * sizeof(double));
+    alloc_d(reinterpret_cast<void**>(&dev->d_cell_cy), sz_cells * sizeof(double));
+    copy_h2d_d(dev->d_cell_cx, mesh.cell_cx.data(), sz_cells);
+    copy_h2d_d(dev->d_cell_cy, mesh.cell_cy.data(), sz_cells);
+
+    // Gradient arrays (zeroed; filled by swe2d_gradient_kernel each step for MC/VL)
+    alloc_d(reinterpret_cast<void**>(&dev->d_grad_hx),  sz_cells * sizeof(double));
+    alloc_d(reinterpret_cast<void**>(&dev->d_grad_hy),  sz_cells * sizeof(double));
+    alloc_d(reinterpret_cast<void**>(&dev->d_grad_hux), sz_cells * sizeof(double));
+    alloc_d(reinterpret_cast<void**>(&dev->d_grad_huy), sz_cells * sizeof(double));
+    alloc_d(reinterpret_cast<void**>(&dev->d_grad_hvx), sz_cells * sizeof(double));
+    alloc_d(reinterpret_cast<void**>(&dev->d_grad_hvy), sz_cells * sizeof(double));
+    CUDA_CHECK(cudaMemset(dev->d_grad_hx,  0, sz_cells * sizeof(double)));
+    CUDA_CHECK(cudaMemset(dev->d_grad_hy,  0, sz_cells * sizeof(double)));
+    CUDA_CHECK(cudaMemset(dev->d_grad_hux, 0, sz_cells * sizeof(double)));
+    CUDA_CHECK(cudaMemset(dev->d_grad_huy, 0, sz_cells * sizeof(double)));
+    CUDA_CHECK(cudaMemset(dev->d_grad_hvx, 0, sz_cells * sizeof(double)));
+    CUDA_CHECK(cudaMemset(dev->d_grad_hvy, 0, sz_cells * sizeof(double)));
+
     // State
     alloc_d(reinterpret_cast<void**>(&dev->d_h),  sz_cells * sizeof(double));
     alloc_d(reinterpret_cast<void**>(&dev->d_hu), sz_cells * sizeof(double));
@@ -629,6 +820,29 @@ void swe2d_gpu_step(
     CUDA_CHECK(cudaMemset(dev->d_flux_hu, 0, static_cast<size_t>(n_cells) * sizeof(double)));
     CUDA_CHECK(cudaMemset(dev->d_flux_hv, 0, static_cast<size_t>(n_cells) * sizeof(double)));
 
+    // Kernel 0 (gradient pre-pass): required for MC and Van Leer limiters.
+    const bool need_gradients = (spatial_scheme >= 3);
+    if (need_gradients) {
+        const size_t sz_c = static_cast<size_t>(n_cells) * sizeof(double);
+        CUDA_CHECK(cudaMemset(dev->d_grad_hx,  0, sz_c));
+        CUDA_CHECK(cudaMemset(dev->d_grad_hy,  0, sz_c));
+        CUDA_CHECK(cudaMemset(dev->d_grad_hux, 0, sz_c));
+        CUDA_CHECK(cudaMemset(dev->d_grad_huy, 0, sz_c));
+        CUDA_CHECK(cudaMemset(dev->d_grad_hvx, 0, sz_c));
+        CUDA_CHECK(cudaMemset(dev->d_grad_hvy, 0, sz_c));
+        int g_grid = (n_edges + BLOCK - 1) / BLOCK;
+        swe2d_gradient_kernel<<<g_grid, BLOCK>>>(
+            n_edges,
+            dev->d_edge_c0, dev->d_edge_c1,
+            dev->d_edge_nx, dev->d_edge_ny, dev->d_edge_len,
+            dev->d_h, dev->d_hu, dev->d_hv,
+            dev->d_cell_inv_area,
+            dev->d_grad_hx,  dev->d_grad_hy,
+            dev->d_grad_hux, dev->d_grad_huy,
+            dev->d_grad_hvx, dev->d_grad_hvy);
+        CUDA_CHECK(cudaGetLastError());
+    }
+
     // Kernel 1: Flux
     {
         const bool dbg_edge_flux = swe2d_debug_enabled("BACKWATER_SWE2D_DEBUG_GPU_EDGE_FLUX");
@@ -655,6 +869,10 @@ void swe2d_gpu_step(
             dev->d_h, dev->d_hu, dev->d_hv,
             dev->d_cell_zb,
             dev->d_cell_inv_area,
+            dev->d_cell_cx, dev->d_cell_cy,
+            dev->d_grad_hx,  dev->d_grad_hy,
+            dev->d_grad_hux, dev->d_grad_huy,
+            dev->d_grad_hvx, dev->d_grad_hvy,
             dev->d_flux_h, dev->d_flux_hu, dev->d_flux_hv,
             d_dbg_fh, d_dbg_fhu, d_dbg_fhv,
             spatial_scheme,
@@ -886,6 +1104,10 @@ void swe2d_gpu_destroy(SWE2DDeviceState* dev) {
     safe_free(dev->d_cell_zb);    safe_free(dev->d_cell_area);
     safe_free(dev->d_cell_inv_area);
     safe_free(dev->d_n_mann_cell);
+    safe_free(dev->d_cell_cx);    safe_free(dev->d_cell_cy);
+    safe_free(dev->d_grad_hx);    safe_free(dev->d_grad_hy);
+    safe_free(dev->d_grad_hux);   safe_free(dev->d_grad_huy);
+    safe_free(dev->d_grad_hvx);   safe_free(dev->d_grad_hvy);
     safe_free(dev->d_h);          safe_free(dev->d_hu);
     safe_free(dev->d_hv);
     safe_free(dev->d_h0);         safe_free(dev->d_hu0);

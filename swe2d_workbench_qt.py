@@ -126,6 +126,14 @@ _CELL_TYPE_OPTIONS = [
     "empty",
 ]
 
+_RECONSTRUCTION_OPTIONS = [
+    ("First-order (baseline)",          0),
+    ("MUSCL Fast (high-throughput)",     1),
+    ("MUSCL MinMod (robust)",            2),
+    ("MUSCL MC (less-diffusive TVD)",    3),
+    ("MUSCL Van Leer (smooth TVD)",      4),
+]
+
 _BC_VALUE_MAP = {
     "Wall (zero normal flux)": 1,
     "Inflow Q (total discharge)": 2,
@@ -569,11 +577,28 @@ class SWE2DWorkbenchDialog(QtWidgets.QDialog):
         self.dt_spin.setRange(1.0e-4, 1.0e6)
         self.dt_spin.setDecimals(5)
         self.dt_spin.setValue(0.05)
+        self.rain_rate_spin = QtWidgets.QDoubleSpinBox()
+        self.rain_rate_spin.setRange(0.0, 2000.0)
+        self.rain_rate_spin.setDecimals(3)
+        self.rain_rate_spin.setValue(0.0)
+        self.rain_rate_spin.setSuffix(" mm/hr")
         self.run_time_edit = QtWidgets.QLineEdit()
         self.run_time_edit.setPlaceholderText("decimal hours (e.g. 1.5) or HH:MM (e.g. 01:30)")
         self.run_time_edit.setText("1:00")
-        self.use_gpu_chk = QtWidgets.QCheckBox("Use GPU when available")
-        self.use_gpu_chk.setChecked(bool(swe2d_gpu_available()))
+        self.internal_flow_layer_combo = QtWidgets.QComboBox()
+        self.internal_flow_layer_combo.addItem("(none)", None)
+        self.internal_flow_field_edit = QtWidgets.QLineEdit("q_cms")
+        self.internal_flow_field_edit.setPlaceholderText("field name, e.g. q_cms")
+        self.reconstruction_combo = QtWidgets.QComboBox()
+        for label, value in _RECONSTRUCTION_OPTIONS:
+            self.reconstruction_combo.addItem(label, int(value))
+        self.reconstruction_combo.setCurrentIndex(1)
+        self.reconstruction_combo.setToolTip(
+            "Select spatial reconstruction for the native solver.\n"
+            "MUSCL Fast prioritizes throughput; MUSCL MinMod is more robust near steep gradients."
+        )
+        self.gpu_default_lbl = QtWidgets.QLabel("GPU is attempted by default when supported by the native backend.")
+        self.gpu_default_lbl.setWordWrap(True)
         self.unit_system_lbl = QtWidgets.QLabel("Unit system: auto")
         self.unit_system_lbl.setWordWrap(True)
         param_form.addRow("Base depth:", self.base_depth_spin)
@@ -582,9 +607,13 @@ class SWE2DWorkbenchDialog(QtWidgets.QDialog):
         param_form.addRow("CFL:", self.cfl_spin)
         param_form.addRow("h_min:", self.h_min_spin)
         param_form.addRow("Fixed dt:", self.dt_spin)
+        param_form.addRow("Rain rate:", self.rain_rate_spin)
+        param_form.addRow("Internal flow layer:", self.internal_flow_layer_combo)
+        param_form.addRow("Internal flow field:", self.internal_flow_field_edit)
         param_form.addRow("Run duration (hr or HH:MM):", self.run_time_edit)
+        param_form.addRow("Reconstruction:", self.reconstruction_combo)
         param_form.addRow(self.unit_system_lbl)
-        param_form.addRow(self.use_gpu_chk)
+        param_form.addRow(self.gpu_default_lbl)
         left_layout.addWidget(param_group)
 
         run_row = QtWidgets.QHBoxLayout()
@@ -1099,6 +1128,7 @@ class SWE2DWorkbenchDialog(QtWidgets.QDialog):
         keep_topo_constraints = self.topo_constraints_combo.currentData() if hasattr(self, "topo_constraints_combo") else None
         keep_topo_quad_edges = self.topo_quad_edges_combo.currentData() if hasattr(self, "topo_quad_edges_combo") else None
         keep_bc_lines = self.bc_lines_layer_combo.currentData() if hasattr(self, "bc_lines_layer_combo") else None
+        keep_internal_flow = self.internal_flow_layer_combo.currentData() if hasattr(self, "internal_flow_layer_combo") else None
 
         self.nodes_layer_combo.clear()
         self.cells_layer_combo.clear()
@@ -1121,11 +1151,16 @@ class SWE2DWorkbenchDialog(QtWidgets.QDialog):
         if hasattr(self, "bc_lines_layer_combo"):
             self.bc_lines_layer_combo.clear()
             self.bc_lines_layer_combo.addItem("(none)", None)
+        if hasattr(self, "internal_flow_layer_combo"):
+            self.internal_flow_layer_combo.clear()
+            self.internal_flow_layer_combo.addItem("(none)", None)
 
         for lyr in self._iter_project_layers():
             try:
                 if isinstance(lyr, QgsVectorLayer):
                     self._configure_swe2d_layer_editors(lyr)
+                    if hasattr(self, "internal_flow_layer_combo"):
+                        self.internal_flow_layer_combo.addItem(lyr.name(), lyr.id())
                     geom_type = lyr.geometryType()
                     if geom_type == QgsWkbTypes.GeometryType.PointGeometry:
                         self.nodes_layer_combo.addItem(lyr.name(), lyr.id())
@@ -1184,6 +1219,8 @@ class SWE2DWorkbenchDialog(QtWidgets.QDialog):
             _restore(self.topo_quad_edges_combo, keep_topo_quad_edges)
         if hasattr(self, "bc_lines_layer_combo") and keep_bc_lines is not None:
             _restore(self.bc_lines_layer_combo, keep_bc_lines)
+        if hasattr(self, "internal_flow_layer_combo") and keep_internal_flow is not None:
+            _restore(self.internal_flow_layer_combo, keep_internal_flow)
 
         self._update_unit_system_from_crs()
 
@@ -1731,6 +1768,132 @@ class SWE2DWorkbenchDialog(QtWidgets.QDialog):
 
         tris = self._mesh_data["cell_nodes"].reshape((-1, 3))
         return node_x[tris].mean(axis=1), node_y[tris].mean(axis=1)
+
+    def _mesh_cell_areas(self) -> np.ndarray:
+        assert self._mesh_data is not None
+        node_x = self._mesh_data["node_x"]
+        node_y = self._mesh_data["node_y"]
+
+        if "cell_face_offsets" in self._mesh_data and "cell_face_nodes" in self._mesh_data:
+            offs = self._mesh_data["cell_face_offsets"].astype(np.int32)
+            faces = self._mesh_data["cell_face_nodes"].astype(np.int32)
+            area = np.zeros(offs.size - 1, dtype=np.float64)
+            for i in range(offs.size - 1):
+                s = int(offs[i])
+                e = int(offs[i + 1])
+                ids = faces[s:e]
+                if ids.size < 3:
+                    continue
+                x = node_x[ids]
+                y = node_y[ids]
+                area[i] = 0.5 * abs(float(np.dot(x, np.roll(y, -1)) - np.dot(y, np.roll(x, -1))))
+            return area
+
+        tris = self._mesh_data["cell_nodes"].reshape((-1, 3)).astype(np.int32)
+        x0 = node_x[tris[:, 0]]
+        y0 = node_y[tris[:, 0]]
+        x1 = node_x[tris[:, 1]]
+        y1 = node_y[tris[:, 1]]
+        x2 = node_x[tris[:, 2]]
+        y2 = node_y[tris[:, 2]]
+        return 0.5 * np.abs((x1 - x0) * (y2 - y0) - (x2 - x0) * (y1 - y0))
+
+    def _build_internal_flow_source_cms(self) -> Optional[np.ndarray]:
+        if self._mesh_data is None or not _HAVE_QGIS_CORE:
+            return None
+        if not hasattr(self, "internal_flow_layer_combo"):
+            return None
+
+        lyr = self._combo_layer(self.internal_flow_layer_combo, "vector")
+        if lyr is None:
+            return None
+
+        field_name = str(self.internal_flow_field_edit.text() or "q_cms").strip()
+        if not field_name:
+            field_name = "q_cms"
+        fields = set(lyr.fields().names())
+        if field_name not in fields:
+            for cand in ("q_cms", "flow_cms", "q", "flow"):
+                if cand in fields:
+                    field_name = cand
+                    break
+        if field_name not in fields:
+            self._log(f"Internal flow layer '{lyr.name()}' missing flow field '{field_name}'; skipping internal sources.")
+            return None
+
+        cx, cy = self._mesh_cell_centroids()
+        cell_q = np.zeros(cx.shape[0], dtype=np.float64)
+        assigned = 0
+
+        for ft in lyr.getFeatures():
+            geom = ft.geometry()
+            if geom is None or geom.isEmpty():
+                continue
+            try:
+                q_cms = float(ft[field_name])
+            except Exception:
+                continue
+            if not np.isfinite(q_cms) or abs(q_cms) <= 0.0:
+                continue
+
+            try:
+                wkb_type = int(geom.wkbType())
+            except Exception:
+                wkb_type = -1
+
+            if QgsWkbTypes.geometryType(wkb_type) == QgsWkbTypes.GeometryType.PolygonGeometry:
+                hit_ids = []
+                for i in range(cx.shape[0]):
+                    p = QgsGeometry.fromPointXY(QgsPointXY(float(cx[i]), float(cy[i])))
+                    if geom.contains(p) or geom.intersects(p):
+                        hit_ids.append(i)
+                if not hit_ids:
+                    continue
+                share = q_cms / float(len(hit_ids))
+                for idx in hit_ids:
+                    cell_q[idx] += share
+                assigned += 1
+            else:
+                rp = geom.centroid().asPoint() if not geom.centroid().isEmpty() else None
+                if rp is None:
+                    continue
+                dx = cx - float(rp.x())
+                dy = cy - float(rp.y())
+                idx = int(np.argmin(dx * dx + dy * dy))
+                cell_q[idx] += q_cms
+                assigned += 1
+
+        self._log(
+            f"Internal flow sources mapped from layer '{lyr.name()}': features={assigned}, total_Q={float(np.sum(cell_q)):.6f} cms"
+        )
+        return cell_q
+
+    def _apply_external_sources(
+        self,
+        backend: SWE2DBackend,
+        dt_step: float,
+        rain_rate_mps: float,
+        cell_source_cms: Optional[np.ndarray],
+    ) -> None:
+        if dt_step <= 0.0:
+            return
+        if rain_rate_mps <= 0.0 and cell_source_cms is None:
+            return
+
+        h, hu, hv = backend.get_state()
+        src = np.full(h.shape, float(rain_rate_mps), dtype=np.float64)
+        if cell_source_cms is not None:
+            area = self._mesh_cell_areas()
+            safe_area = np.maximum(area, 1.0e-8)
+            src += (cell_source_cms / safe_area)
+
+        h = h + dt_step * src
+        h = np.where(np.isfinite(h), h, 0.0)
+        h = np.maximum(h, 0.0)
+        dry = h < float(self.h_min_spin.value())
+        hu = np.where(dry, 0.0, hu)
+        hv = np.where(dry, 0.0, hv)
+        backend.set_state(h, hu, hv)
 
     def _build_spatial_manning_array(self) -> Optional[np.ndarray]:
         if self._mesh_data is None or not _HAVE_QGIS_CORE:
@@ -3254,6 +3417,10 @@ class SWE2DWorkbenchDialog(QtWidgets.QDialog):
 
             run_duration_s = self._parse_run_duration_seconds()
             dt = float(self.dt_spin.value())
+            reconstruction_mode = int(self.reconstruction_combo.currentData())
+            reconstruction_name = self.reconstruction_combo.currentText().strip()
+            rain_rate_mps = float(self.rain_rate_spin.value()) / 1000.0 / 3600.0
+            cell_source_cms = self._build_internal_flow_source_cms()
 
             # Snapshot output interval — clamp to at least 1 s to avoid div-by-zero
             _oi_hr = self._parse_time_hours(self.output_interval_edit.text())
@@ -3266,8 +3433,12 @@ class SWE2DWorkbenchDialog(QtWidgets.QDialog):
                 self._log("Timeseries BC mode active (flow/stage hydrographs).")
 
             self._log("Starting 2D run...")
-            want_gpu = bool(self.use_gpu_chk.isChecked())
-            backend = SWE2DBackend(use_gpu=want_gpu)
+            self._log(f"Reconstruction mode: {reconstruction_name}")
+            if rain_rate_mps > 0.0:
+                self._log(f"Rain-on-grid active: {float(self.rain_rate_spin.value()):.3f} mm/hr")
+            if cell_source_cms is not None:
+                self._log(f"Internal source/sink forcing active: total_Q={float(np.sum(cell_source_cms)):.6f} cms")
+            backend = SWE2DBackend()
 
             bc_tp_init = bc_tp.copy()
             bc_vl_init = bc_vl.copy()
@@ -3307,6 +3478,7 @@ class SWE2DWorkbenchDialog(QtWidgets.QDialog):
                 h_min=float(self.h_min_spin.value()),
                 dt_fixed=dt,
                 dt_max=dt,
+                spatial_discretization=reconstruction_mode,
             )
 
             last_diag = None
@@ -3335,6 +3507,12 @@ class SWE2DWorkbenchDialog(QtWidgets.QDialog):
                     backend.set_boundary_conditions(bc_n0, bc_n1, bc_tp_step, bc_vl_step)
 
                 last_diag = backend.step(dt)
+                self._apply_external_sources(
+                    backend,
+                    float(last_diag.get("dt", dt)),
+                    rain_rate_mps,
+                    cell_source_cms,
+                )
                 t_accum += float(last_diag.get("dt", dt))
 
                 # Capture snapshot at each output interval boundary

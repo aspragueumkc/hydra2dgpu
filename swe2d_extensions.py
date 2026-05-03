@@ -14,14 +14,14 @@ from typing import Dict, List, Optional, Sequence, Tuple
 
 
 class SpatialDiscretization(IntEnum):
-    FV_FIRST_ORDER = 0
-    FV_MUSCL_FAST = 1
-    FV_MUSCL_MINMOD = 2
-    DG_P0 = 3
-    DG_P1 = 4
-    # Backward-compatibility aliases while WENO is not yet implemented.
+    FV_FIRST_ORDER    = 0
+    FV_MUSCL_FAST     = 1
+    FV_MUSCL_MINMOD   = 2
+    FV_MUSCL_MC       = 3   # Monotonized-Central limiter (gradient-based TVD)
+    FV_MUSCL_VAN_LEER = 4   # Van Leer smooth limiter (gradient-based TVD)
+    # Backward-compatibility aliases
     FV_MUSCL = FV_MUSCL_FAST
-    FV_WENO = FV_MUSCL_MINMOD
+    FV_WENO  = FV_MUSCL_MINMOD
 
 
 class TemporalScheme(IntEnum):

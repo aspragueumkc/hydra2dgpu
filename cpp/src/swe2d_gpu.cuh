@@ -29,6 +29,15 @@ struct SWE2DDeviceState {
     double*  d_cell_inv_area = nullptr;
     double*  d_n_mann_cell = nullptr;
 
+    // Cell centroids (needed for gradient-based higher-order reconstruction)
+    double*  d_cell_cx = nullptr;
+    double*  d_cell_cy = nullptr;
+
+    // Per-cell gradient arrays (Green-Gauss, for MC and Van Leer limiters)
+    double*  d_grad_hx  = nullptr;   double*  d_grad_hy  = nullptr;
+    double*  d_grad_hux = nullptr;   double*  d_grad_huy = nullptr;
+    double*  d_grad_hvx = nullptr;   double*  d_grad_hvy = nullptr;
+
     // Conserved state (updated each step)
     double*  d_h  = nullptr;
     double*  d_hu = nullptr;

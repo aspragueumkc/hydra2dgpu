@@ -11,11 +11,11 @@
 #include <vector>
 
 enum class SWE2DSpatialScheme : int {
-    FV_FIRST_ORDER = 0,
-    FV_MUSCL_FAST = 1,
-    FV_MUSCL_MINMOD = 2,
-    DG_P0 = 3,
-    DG_P1 = 4,
+    FV_FIRST_ORDER    = 0,
+    FV_MUSCL_FAST     = 1,
+    FV_MUSCL_MINMOD   = 2,
+    FV_MUSCL_MC       = 3,   // Monotonized-Central limiter (gradient-based TVD)
+    FV_MUSCL_VAN_LEER = 4,   // Van Leer smooth limiter (gradient-based TVD)
 };
 
 enum class SWE2DTurbulenceModel : int {
@@ -129,6 +129,9 @@ SWE2DStepDiag swe2d_step(SWE2DSolver* s, double dt_request);
 
 // Copy current state out to caller-supplied arrays (length mesh.n_cells each).
 void swe2d_get_state(const SWE2DSolver* s, double* h_out, double* hu_out, double* hv_out);
+
+// Overwrite current state from caller-supplied arrays (length mesh.n_cells each).
+void swe2d_set_state(SWE2DSolver* s, const double* h_in, const double* hu_in, const double* hv_in);
 
 // Free all resources (including GPU device memory if allocated).
 void swe2d_destroy(SWE2DSolver* s);
