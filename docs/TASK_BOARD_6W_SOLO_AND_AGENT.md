@@ -474,3 +474,52 @@ Status:
 - [x] C1 CPU Numerics Core (CPU path validated)
 - [~] C2 GPU Acceleration Path (GPU kernels complete; numerical parity issue noted; MVP-ready with caveats)
 
+---
+
+### GPU-First Architecture Refactor (Phases 1–5 complete)
+
+Summary of changes across two sessions targeting `swe2d_gpu.cu`, `swe2d_gpu.cuh`, `swe2d_solver.cpp`, `swe2d_solver.hpp`, `swe2d_bindings.cpp`, `swe2d_backend.py`.
+
+**Phase 1 — CUDA-local numerics in hot path** (prior session)
+- Extracted `celerity_cuda_local`, `hydrostatic_reconstruct_cuda_local`, `make_ghost_cuda_local`, `apply_friction_cuda_local`, `vel_u_cuda_local`, `vel_v_cuda_local`, `bed_slope_correction_cuda_local` into anonymous namespace in `swe2d_gpu.cu`.
+- Hot-path kernels no longer depend on `swe2d_numerics.hpp` (host-compiled shared header).
+- Removed `#include "swe2d_numerics.hpp"` from `swe2d_gpu.cu`.
+
+**Phase 2 — Optional/interval diagnostics sync** (prior session)
+- Added `sync_diagnostics: bool` parameter to `swe2d_gpu_step` and `swe2d_gpu_step_rk2`.
+- Added `gpu_diag_sync_interval_steps: int = 1` to `SWE2DSolverConfig` (default: sync every step).
+- Added `gpu_steps` counter to `SWE2DSolver`; dispatch logic in `swe2d_solver.cpp` computes `sync_diag_this_step` and passes it to GPU step functions.
+- Python: `gpu_diag_sync_interval_steps` exposed through `swe2d_backend.py` `initialize()`.
+
+**Stage 3 — State stays device-resident between snapshots** (this session)
+- `swe2d_get_state()` in `swe2d_solver.cpp` no longer routes through host mirror vectors (`s->h/hu/hv`) on the GPU path; instead calls `swe2d_gpu_get_state(dev, h_out, hu_out, hv_out)` directly (device→caller single transfer).
+- Binding in `swe2d_bindings.cpp` simplified: removed redundant `std::copy` to `ps->solver->h/hu/hv` that was duplicating the transfer.
+
+**Stage 4 — On-device packed diagnostic reduction** (this session)
+- Added `double* d_diag_packed = nullptr;` to `SWE2DDeviceState` (`swe2d_gpu.cuh`).
+- Added `pack_diag_kernel<<<1,1>>>` (1-thread kernel) that packs `d_lambda_max[0]` and `d_max_wse_elev_error[0]` into `d_diag_packed[0..1]` immediately after the CFL kernel.
+- `swe2d_gpu_step` and `swe2d_gpu_step_rk2` now issue a single `cudaMemcpy` of 16 bytes when `sync_diagnostics` is true, replacing two separate device-to-host copies.
+
+**Stage 5 — CPU path as compatibility fallback** (this session)
+- Added `#include <mutex>` to `swe2d_solver.cpp`.
+- Added `static std::once_flag s_cpu_warn;` + `std::call_once` at the top of `swe2d_step_cpu` that emits a one-time `[SWE2D] WARNING: CPU fallback solver path is active...` stderr message.
+- Updated block comment on `swe2d_step_cpu` to explicitly label it "COMPATIBILITY FALLBACK ONLY".
+
+Files changed across all 5 phases:
+- `cpp/src/swe2d_gpu.cu`
+- `cpp/src/swe2d_gpu.cuh`
+- `cpp/src/swe2d_solver.cpp`
+- `cpp/src/swe2d_solver.hpp`
+- `cpp/src/swe2d_bindings.cpp`
+- `swe2d_backend.py`
+
+Build status: ✅ `cmake --build build -j4` succeeds (warnings: expected NVCC GCC-extension line-directive style, nvlink incompatible static lib skips — both non-fatal).
+Smoke test: ✅ `gpu_diag_sync_interval_steps`, `max_inv_area`, `cfl_lambda_cap` all present in binding signatures; `swe2d_get_state` binding intact.
+
+Status:
+- [x] Phase 1: CUDA-local numerics
+- [x] Phase 2: Optional/interval diagnostics sync
+- [x] Stage 3: Device-resident state by default
+- [x] Stage 4: On-device packed diagnostic reduction
+- [x] Stage 5: CPU path as compatibility fallback (one-shot stderr warning)
+

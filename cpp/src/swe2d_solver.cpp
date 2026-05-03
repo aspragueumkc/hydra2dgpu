@@ -1,6 +1,14 @@
 // swe2d_solver.cpp
 // CPU solver implementation for the 2D SWE on an unstructured triangular mesh.
 // OpenMP parallelism is used for the flux and update loops when available.
+//
+// SWE2D project direction note:
+// - Active numerics, validation, and performance work are GPU-first.
+// - The CPU path is kept only as a maintenance/debug fallback so the plugin can
+//   still run without CUDA and so algorithm experiments can be inspected more
+//   easily in host code.
+// - CPU/GPU parity is no longer a primary engineering objective here; do not
+//   block GPU optimization work on keeping these paths numerically matched.
 
 #include "swe2d_solver.hpp"
 #include "swe2d_numerics.hpp"
@@ -21,6 +29,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <utility>
+#include <mutex>
 
 namespace {
 
@@ -30,102 +39,69 @@ inline double clamp_double(double v, double lo, double hi) {
     return std::max(lo, std::min(v, hi));
 }
 
-void build_cell_neighbors(SWE2DSolver* s) {
-    const SWE2DMesh& mesh = *s->mesh;
-    std::vector<std::vector<int32_t>> nbrs(static_cast<size_t>(mesh.n_cells));
-    for (int32_t e = 0; e < mesh.n_edges; ++e) {
-        const int32_t c0 = mesh.edge_c0[e];
-        const int32_t c1 = mesh.edge_c1[e];
-        if (c1 < 0) continue;
-        nbrs[static_cast<size_t>(c0)].push_back(c1);
-        nbrs[static_cast<size_t>(c1)].push_back(c0);
-    }
-
-    s->cell_nbr_offsets.assign(static_cast<size_t>(mesh.n_cells) + 1, 0);
-    size_t total = 0;
-    for (int32_t c = 0; c < mesh.n_cells; ++c) {
-        auto& v = nbrs[static_cast<size_t>(c)];
-        std::sort(v.begin(), v.end());
-        v.erase(std::unique(v.begin(), v.end()), v.end());
-        total += v.size();
-        s->cell_nbr_offsets[static_cast<size_t>(c) + 1] = static_cast<int32_t>(total);
-    }
-
-    s->cell_nbr_ids.assign(total, -1);
-    size_t p = 0;
-    for (int32_t c = 0; c < mesh.n_cells; ++c) {
-        const auto& v = nbrs[static_cast<size_t>(c)];
-        for (int32_t nb : v) {
-            s->cell_nbr_ids[p++] = nb;
-        }
-    }
-}
-
-void compute_cell_gradient_and_bounds(
-    const SWE2DSolver* s,
+// ─────────────────────────────────────────────────────────────────────────────
+// Green-Gauss gradient — identical algorithm to swe2d_gradient_kernel (GPU).
+// Must be called with pre-zeroed gx/gy vectors.
+// Boundary edges (c1 < 0) contribute a face value equal to c0 (zero-gradient).
+// ─────────────────────────────────────────────────────────────────────────────
+void compute_gg_gradient_cpu(
+    const SWE2DMesh& mesh,
     const std::vector<double>& q,
     std::vector<double>& gx,
-    std::vector<double>& gy,
-    std::vector<double>& qmin,
-    std::vector<double>& qmax)
+    std::vector<double>& gy)
 {
-    const SWE2DMesh& mesh = *s->mesh;
     const int32_t n_cells = mesh.n_cells;
+    const int32_t n_edges = mesh.n_edges;
     gx.assign(static_cast<size_t>(n_cells), 0.0);
     gy.assign(static_cast<size_t>(n_cells), 0.0);
-    qmin.assign(static_cast<size_t>(n_cells), 0.0);
-    qmax.assign(static_cast<size_t>(n_cells), 0.0);
 
-    #ifdef BACKWATER_HAS_OPENMP
-    #pragma omp parallel for schedule(static)
-    #endif
-    for (int32_t c = 0; c < n_cells; ++c) {
-        const double qc = q[c];
-        double gxc = 0.0;
-        double gyc = 0.0;
-        double wsum = 0.0;
-        double qlo = qc;
-        double qhi = qc;
+    for (int32_t e = 0; e < n_edges; ++e) {
+        const int32_t c0 = mesh.edge_c0[e];
+        const int32_t c1 = mesh.edge_c1[e];
+        const double  nx  = mesh.edge_nx[e];
+        const double  ny  = mesh.edge_ny[e];
+        const double  len = mesh.edge_len[e];
 
-        const int32_t k0 = s->cell_nbr_offsets[static_cast<size_t>(c)];
-        const int32_t k1 = s->cell_nbr_offsets[static_cast<size_t>(c) + 1];
-        for (int32_t k = k0; k < k1; ++k) {
-            const int32_t nb = s->cell_nbr_ids[static_cast<size_t>(k)];
-            const double qn = q[nb];
-            if (qn < qlo) qlo = qn;
-            if (qn > qhi) qhi = qn;
+        // Skip degenerate cells
+        if (mesh.cell_inv_area[c0] > 1.0e6) continue;
 
-            const double dx = mesh.cell_cx[nb] - mesh.cell_cx[c];
-            const double dy = mesh.cell_cy[nb] - mesh.cell_cy[c];
-            const double d2 = dx * dx + dy * dy;
-            if (d2 <= 1.0e-14) continue;
-            const double w = 1.0 / d2;
-            const double dq = qn - qc;
-            gxc += w * dq * dx;
-            gyc += w * dq * dy;
-            wsum += w;
+        const double q0 = q[static_cast<size_t>(c0)];
+        const double q1 = (c1 >= 0 && mesh.cell_inv_area[c1] <= 1.0e6)
+                          ? q[static_cast<size_t>(c1)] : q0;
+        const double qf = 0.5 * (q0 + q1);
+
+        const double ia0 = mesh.cell_inv_area[c0];
+        gx[static_cast<size_t>(c0)] += qf * nx * len * ia0;
+        gy[static_cast<size_t>(c0)] += qf * ny * len * ia0;
+
+        if (c1 >= 0 && mesh.cell_inv_area[c1] <= 1.0e6) {
+            const double ia1 = mesh.cell_inv_area[c1];
+            gx[static_cast<size_t>(c1)] -= qf * nx * len * ia1;
+            gy[static_cast<size_t>(c1)] -= qf * ny * len * ia1;
         }
-
-        if (wsum > 0.0) {
-            gxc /= wsum;
-            gyc /= wsum;
-        }
-
-        gx[static_cast<size_t>(c)] = gxc;
-        gy[static_cast<size_t>(c)] = gyc;
-        qmin[static_cast<size_t>(c)] = qlo;
-        qmax[static_cast<size_t>(c)] = qhi;
     }
 }
 
-inline double reconstruct_to_edge(
-    double qc,
-    double gx,
-    double gy,
-    double dx,
-    double dy)
+// ─────────────────────────────────────────────────────────────────────────────
+// TVD phi limiter — identical formulas to swe2d_flux_kernel (GPU).
+// scheme: 1=Superbee, 2=MinMod, 3=MC, 4=VanLeer
+// ─────────────────────────────────────────────────────────────────────────────
+inline double phi_tvd_cpu(double r, int scheme)
 {
-    return qc + gx * dx + gy * dy;
+    switch (scheme) {
+        case 1:  // Superbee (most aggressive)
+            return std::fmax(0.0, std::fmax(std::fmin(2.0 * r, 1.0),
+                                            std::fmin(r, 2.0)));
+        case 2:  // MinMod (most conservative)
+            return std::fmax(0.0, std::fmin(r, 1.0));
+        case 3:  // MC (monotonized central)
+            return std::fmax(0.0, std::fmin(std::fmin(2.0 * r, 0.5 * (1.0 + r)),
+                                            2.0));
+        case 4:  // Van Leer (smooth)
+            return (r + std::fabs(r)) / (1.0 + std::fabs(r));
+        default:
+            return 0.0;
+    }
 }
 
 #ifdef BACKWATER_HAS_CUDA
@@ -244,9 +220,7 @@ SWE2DSolver* swe2d_create(
     s->dhu.assign(n, 0.0);
     s->dhv.assign(n, 0.0);
 
-    build_cell_neighbors(s);
-
-#ifdef BACKWATER_HAS_OPENMP
+    #ifdef BACKWATER_HAS_OPENMP
     if (cfg.n_threads > 0) {
         omp_set_num_threads(cfg.n_threads);
     }
@@ -285,7 +259,12 @@ void swe2d_destroy(SWE2DSolver* s) {
 void swe2d_get_state(const SWE2DSolver* s, double* h_out, double* hu_out, double* hv_out) {
     if (!s) return;
 #ifdef BACKWATER_HAS_CUDA
-    sync_gpu_state_to_host(const_cast<SWE2DSolver*>(s));
+    if (s->dev) {
+        // GPU path: transfer directly device → caller; host mirror is not updated.
+        // State remains device-resident between explicit snapshots.
+        swe2d_gpu_get_state(s->dev, h_out, hu_out, hv_out);
+        return;
+    }
 #endif
     if (h_out)  std::copy(s->h.begin(),  s->h.end(),  h_out);
     if (hu_out) std::copy(s->hu.begin(), s->hu.end(), hu_out);
@@ -366,28 +345,52 @@ static double compute_cfl_dt(const SWE2DSolver* s) {
 
 // ─────────────────────────────────────────────────────────────────────────────
 // swe2d_step_cpu — one explicit Euler timestep on CPU
+// COMPATIBILITY FALLBACK ONLY.  This path is used when no CUDA device is
+// present.  All active SWE2D numerical work (new schemes, optimisations,
+// robustness fixes) targets the CUDA path in swe2d_gpu.cu.  Do not backport
+// GPU-only improvements here unless explicitly required for the CPU fallback
+// to remain runnable.
 // ─────────────────────────────────────────────────────────────────────────────
 SWE2DStepDiag swe2d_step_cpu(SWE2DSolver* s, double dt) {
+    static std::once_flag s_cpu_warn;
+    std::call_once(s_cpu_warn, []() {
+        std::fprintf(stderr,
+            "[SWE2D] WARNING: CPU fallback solver path is active. "
+            "GPU path is strongly preferred for all production runs.\n");
+    });
     const SWE2DMesh& mesh = *s->mesh;
     const double g        = s->cfg.g;
     const double h_min    = s->cfg.h_min;
     int32_t n_cells       = mesh.n_cells;
     int32_t n_edges       = mesh.n_edges;
     const int spatial_scheme = s->cfg.spatial_scheme;
-    const bool use_fast_recon =
-        (spatial_scheme == static_cast<int>(SWE2DSpatialScheme::FV_MUSCL_FAST));
-    const bool use_robust_recon =
-        (spatial_scheme == static_cast<int>(SWE2DSpatialScheme::FV_MUSCL_MINMOD));
-    const bool use_higher_order = use_fast_recon || use_robust_recon;
+    // All schemes >= 1 use Green-Gauss gradient + phi-TVD reconstruction,
+    // consistent with the GPU kernel (swe2d_gpu.cu).  The old IDW gradient +
+    // Barth-Jespersen path only covered schemes 1 and 2 and produced different
+    // numerical results from the GPU, leading to instability on unstructured
+    // meshes for scheme 1 (no limiter) and incorrect well-balancing for all.
+    // Keep this CPU logic functionally sane, but performance tuning effort
+    // belongs in the GPU path rather than here.
+    const bool use_higher_order = (spatial_scheme >= 1);
 
-    std::vector<double> ghx, ghy, hmin_nbr, hmax_nbr;
-    std::vector<double> guhx, guhy, humin_nbr, humax_nbr;
-    std::vector<double> gvhx, gvhy, hvmin_nbr, hvmax_nbr;
+    std::vector<double> ghx, ghy;
+    std::vector<double> guhx, guhy;
+    std::vector<double> gvhx, gvhy;
 
     if (use_higher_order) {
-        compute_cell_gradient_and_bounds(s, s->h, ghx, ghy, hmin_nbr, hmax_nbr);
-        compute_cell_gradient_and_bounds(s, s->hu, guhx, guhy, humin_nbr, humax_nbr);
-        compute_cell_gradient_and_bounds(s, s->hv, gvhx, gvhy, hvmin_nbr, hvmax_nbr);
+        compute_gg_gradient_cpu(mesh, s->h,  ghx,  ghy);
+        compute_gg_gradient_cpu(mesh, s->hu, guhx, guhy);
+        compute_gg_gradient_cpu(mesh, s->hv, gvhx, gvhy);
+    }
+
+    // For the surface-gradient method we need ∇η where η = h + zb.
+    // Build per-cell η view and compute its GG gradient.
+    std::vector<double> getax, getay;
+    if (use_higher_order) {
+        std::vector<double> eta(static_cast<size_t>(n_cells));
+        for (int32_t c = 0; c < n_cells; ++c)
+            eta[static_cast<size_t>(c)] = s->h[c] + mesh.cell_zb[c];
+        compute_gg_gradient_cpu(mesh, eta, getax, getay);
     }
 
     // Zero flux accumulators
@@ -425,35 +428,63 @@ SWE2DStepDiag swe2d_step_cpu(SWE2DSolver* s, double dt) {
             zbR = mesh.cell_zb[c1];
 
             if (use_higher_order) {
-                const int32_t n0 = mesh.edge_n0[e];
-                const int32_t n1 = mesh.edge_n1[e];
-                const double xe = 0.5 * (mesh.node_x[n0] + mesh.node_x[n1]);
-                const double ye = 0.5 * (mesh.node_y[n0] + mesh.node_y[n1]);
+                    // Green-Gauss + phi-TVD reconstruction — mirrors GPU kernel.
+                    // Cell-to-cell vector (not face midpoint) is used for the
+                    // slope ratio, exactly as in swe2d_flux_kernel.
+                    constexpr double EPS = 1.0e-30;
+                    const double dcx = mesh.cell_cx[c1] - mesh.cell_cx[c0];
+                    const double dcy = mesh.cell_cy[c1] - mesh.cell_cy[c0];
 
-                const double dxL = xe - mesh.cell_cx[c0];
-                const double dyL = ye - mesh.cell_cy[c0];
-                const double dxR = xe - mesh.cell_cx[c1];
-                const double dyR = ye - mesh.cell_cy[c1];
+                    auto tvd_rec = [&](double q0, double q1,
+                                       double gx0, double gy0,
+                                       double gx1, double gy1,
+                                       double& qL_out, double& qR_out)
+                    {
+                        const double dq = q1 - q0;
+                        const double s0 =  (gx0 * dcx + gy0 * dcy);
+                        const double s1 = -(gx1 * dcx + gy1 * dcy);
+                        const double sign_dq = (dq >= 0.0) ? 1.0 : -1.0;
+                        const double r0 =  s0 / (dq + sign_dq * EPS);
+                        const double r1 =  s1 / (-dq + (-sign_dq) * EPS);
+                        const double phi0 = phi_tvd_cpu(r0, spatial_scheme);
+                        const double phi1 = phi_tvd_cpu(r1, spatial_scheme);
+                        qL_out = q0 + phi0 * 0.5 * dq;
+                        qR_out = q1 - phi1 * 0.5 * dq;
+                    };
 
-                hL  = reconstruct_to_edge(s->h[c0],  ghx[c0],  ghy[c0],  dxL, dyL);
-                huL = reconstruct_to_edge(s->hu[c0], guhx[c0], guhy[c0], dxL, dyL);
-                hvL = reconstruct_to_edge(s->hv[c0], gvhx[c0], gvhy[c0], dxL, dyL);
+                        // Surface-gradient method (Zhou et al. 2001):
+                        // Reconstruct η = h + zb via ∇η, then convert back to h.
+                        // For lake-at-rest: dη = 0 → phi = 0 → hL = h_c0, hR = h_c1
+                        // → exact well-balancing independent of mesh irregularity.
+                        {
+                            const double etaL_c = hL + zbL;
+                            const double etaR_c = hR + zbR;
+                            double etaL_r, etaR_r;
+                            tvd_rec(etaL_c, etaR_c,
+                                    getax[c0], getay[c0], getax[c1], getay[c1],
+                                    etaL_r, etaR_r);
+                            hL = std::fmax(0.0, etaL_r - zbL);
+                            hR = std::fmax(0.0, etaR_r - zbR);
+                        }
 
-                hR  = reconstruct_to_edge(s->h[c1],  ghx[c1],  ghy[c1],  dxR, dyR);
-                huR = reconstruct_to_edge(s->hu[c1], guhx[c1], guhy[c1], dxR, dyR);
-                hvR = reconstruct_to_edge(s->hv[c1], gvhx[c1], gvhy[c1], dxR, dyR);
+                        // Momentum: reconstruct using ∇h (not ∇η — velocity/momentum
+                        // is not directly affected by the bed elevation bias).
+                        double huL_r, huR_r, hvL_r, hvR_r;
+                        tvd_rec(huL, huR, guhx[c0], guhy[c0], guhx[c1], guhy[c1], huL_r, huR_r);
+                        tvd_rec(hvL, hvR, gvhx[c0], gvhy[c0], gvhx[c1], gvhy[c1], hvL_r, hvR_r);
+                        huL = huL_r; huR = huR_r;
+                        hvL = hvL_r; hvR = hvR_r;
 
-                if (use_robust_recon) {
-                    hL  = clamp_double(hL,  hmin_nbr[c0],  hmax_nbr[c0]);
-                    huL = clamp_double(huL, humin_nbr[c0], humax_nbr[c0]);
-                    hvL = clamp_double(hvL, hvmin_nbr[c0], hvmax_nbr[c0]);
-                    hR  = clamp_double(hR,  hmin_nbr[c1],  hmax_nbr[c1]);
-                    huR = clamp_double(huR, humin_nbr[c1], humax_nbr[c1]);
-                    hvR = clamp_double(hvR, hvmin_nbr[c1], hvmax_nbr[c1]);
-                }
+                        // Momentum cap (matches GPU update_kernel logic)
+                        const double hL_eff = (hL > h_min) ? hL : h_min;
+                        const double hR_eff = (hR > h_min) ? hR : h_min;
+                        const double u_cap_L = std::fmax(50.0, 20.0 * std::sqrt(g * hL_eff));
+                        const double u_cap_R = std::fmax(50.0, 20.0 * std::sqrt(g * hR_eff));
+                        huL = clamp_double(huL, -hL_eff * u_cap_L, hL_eff * u_cap_L);
+                        hvL = clamp_double(hvL, -hL_eff * u_cap_L, hL_eff * u_cap_L);
+                        huR = clamp_double(huR, -hR_eff * u_cap_R, hR_eff * u_cap_R);
+                        hvR = clamp_double(hvR, -hR_eff * u_cap_R, hR_eff * u_cap_R);
 
-                if (hL < 0.0) hL = 0.0;
-                if (hR < 0.0) hR = 0.0;
             }
         } else {
             // Boundary edge: construct ghost cell
@@ -576,6 +607,9 @@ SWE2DStepDiag swe2d_step(SWE2DSolver* s, double dt_request) {
     if (!s) throw std::invalid_argument("swe2d_step: null solver");
 
     const bool use_rk2 = (s->cfg.temporal_order >= 2);
+    const int diag_interval = s->cfg.gpu_diag_sync_interval_steps;
+    const bool sync_diag_this_step =
+        (diag_interval > 0) ? ((s->gpu_steps % static_cast<uint64_t>(diag_interval)) == 0u) : false;
 
 #ifdef BACKWATER_HAS_CUDA
     if (s->dev) {
@@ -588,7 +622,8 @@ SWE2DStepDiag swe2d_step(SWE2DSolver* s, double dt_request) {
                 s->cfg.g,
                 s->cfg.h_min,
                 s->cfg.cfl,
-                s->cfg.dt_max);
+                s->cfg.dt_max,
+                s->cfg.cfl_lambda_cap);
             dt = (dt_request > 0.0) ? std::min(dt_request, dt_cfl) : dt_cfl;
         }
 
@@ -597,9 +632,19 @@ SWE2DStepDiag swe2d_step(SWE2DSolver* s, double dt_request) {
             swe2d_gpu_step(s->dev, dt,
                            s->cfg.g, s->cfg.h_min,
                            s->cfg.spatial_scheme,
-                           s->cfg.cfl, &diag);
+                           s->cfg.cfl,
+                           s->cfg.max_inv_area,
+                           s->cfg.cfl_lambda_cap,
+                           s->cfg.momentum_cap_min_speed,
+                           s->cfg.momentum_cap_celerity_mult,
+                           s->cfg.depth_cap,
+                           s->cfg.max_rel_depth_increase,
+                           s->cfg.shallow_damping_depth,
+                           sync_diag_this_step,
+                           &diag);
             diag.gpu_active = true;
             s->t += dt;
+            s->gpu_steps += 1;
             return diag;
         }
 
@@ -607,8 +652,18 @@ SWE2DStepDiag swe2d_step(SWE2DSolver* s, double dt_request) {
         swe2d_gpu_step_rk2(s->dev, dt,
                            s->cfg.g, s->cfg.h_min,
                            s->cfg.spatial_scheme,
-                           s->cfg.cfl, &diag);
+                           s->cfg.cfl,
+                           s->cfg.max_inv_area,
+                           s->cfg.cfl_lambda_cap,
+                           s->cfg.momentum_cap_min_speed,
+                           s->cfg.momentum_cap_celerity_mult,
+                           s->cfg.depth_cap,
+                           s->cfg.max_rel_depth_increase,
+                           s->cfg.shallow_damping_depth,
+                           sync_diag_this_step,
+                           &diag);
         s->t += dt;
+        s->gpu_steps += 1;
         return diag;
     }
 #endif

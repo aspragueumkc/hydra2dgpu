@@ -56,6 +56,10 @@ struct SWE2DDeviceState {
     // CFL workspace (device scalar)
     double*  d_lambda_max = nullptr;
     double*  d_max_wse_elev_error = nullptr;
+    // Packed diagnostic buffer: [0]=lambda_max, [1]=max_wse_elev_error.
+    // Filled on-device by pack_diag_kernel after each step; a single cudaMemcpy
+    // of 16 bytes transfers both values when sync_diagnostics is true.
+    double*  d_diag_packed = nullptr;
 
     // Dimensions
     int32_t  n_cells = 0;
@@ -82,6 +86,14 @@ void swe2d_gpu_step(
     double h_min,
     int spatial_scheme,
     double cfl_factor,
+    double max_inv_area,
+    double cfl_lambda_cap,
+    double momentum_cap_min_speed,
+    double momentum_cap_celerity_mult,
+    double depth_cap,
+    double max_rel_depth_increase,
+    double shallow_damping_depth,
+    bool sync_diagnostics,
     SWE2DStepDiag* diag);
 
 // Advance one SSPRK2 (Heun) timestep fully on GPU.
@@ -92,6 +104,14 @@ void swe2d_gpu_step_rk2(
     double h_min,
     int spatial_scheme,
     double cfl_factor,
+    double max_inv_area,
+    double cfl_lambda_cap,
+    double momentum_cap_min_speed,
+    double momentum_cap_celerity_mult,
+    double depth_cap,
+    double max_rel_depth_increase,
+    double shallow_damping_depth,
+    bool sync_diagnostics,
     SWE2DStepDiag* diag);
 
 // Compute a CFL-limited dt from current device state without host-state sync.
@@ -100,7 +120,8 @@ double swe2d_gpu_compute_dt(
     double g,
     double h_min,
     double cfl_factor,
-    double dt_max);
+    double dt_max,
+    double cfl_lambda_cap);
 
 // Copy current state from device to caller-supplied host arrays.
 void swe2d_gpu_get_state(

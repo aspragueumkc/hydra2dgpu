@@ -300,6 +300,14 @@ PYBIND11_MODULE(backwater_swe2d, m) {
            py::object n_mann_cell_obj,
            double g, double n_mann, double h_min,
            double cfl, double dt_max, double dt_fixed,
+                  double max_inv_area,
+                  double cfl_lambda_cap,
+                  double momentum_cap_min_speed,
+                  double momentum_cap_celerity_mult,
+                  double depth_cap,
+                  double max_rel_depth_increase,
+                  double shallow_damping_depth,
+                  int gpu_diag_sync_interval_steps,
               bool use_gpu, int n_threads,
               int temporal_order,
               int spatial_scheme,
@@ -349,6 +357,14 @@ PYBIND11_MODULE(backwater_swe2d, m) {
             cfg.cfl       = cfl;
             cfg.dt_max    = dt_max;
             cfg.dt_fixed  = dt_fixed;
+            cfg.max_inv_area = max_inv_area;
+            cfg.cfl_lambda_cap = cfl_lambda_cap;
+            cfg.momentum_cap_min_speed = momentum_cap_min_speed;
+            cfg.momentum_cap_celerity_mult = momentum_cap_celerity_mult;
+            cfg.depth_cap = depth_cap;
+            cfg.max_rel_depth_increase = max_rel_depth_increase;
+            cfg.shallow_damping_depth = shallow_damping_depth;
+            cfg.gpu_diag_sync_interval_steps = gpu_diag_sync_interval_steps;
             cfg.temporal_order = temporal_order;
             cfg.spatial_scheme = spatial_scheme;
             cfg.turbulence_model = turbulence_model;
@@ -375,6 +391,14 @@ PYBIND11_MODULE(backwater_swe2d, m) {
         py::arg("cfl")      = 0.45,
         py::arg("dt_max")   = 10.0,
         py::arg("dt_fixed") = -1.0,
+        py::arg("max_inv_area") = 1.0e6,
+        py::arg("cfl_lambda_cap") = 1.0e6,
+        py::arg("momentum_cap_min_speed") = 50.0,
+        py::arg("momentum_cap_celerity_mult") = 20.0,
+        py::arg("depth_cap") = 1.0e6,
+        py::arg("max_rel_depth_increase") = 2.0,
+        py::arg("shallow_damping_depth") = 1.0e-4,
+        py::arg("gpu_diag_sync_interval_steps") = 1,
         py::arg("use_gpu")  = true,
         py::arg("n_threads") = 0,
         py::arg("temporal_order") = 2,
@@ -425,18 +449,8 @@ PYBIND11_MODULE(backwater_swe2d, m) {
             auto hu_out = py::array_t<double>(nc);
             auto hv_out = py::array_t<double>(nc);
 
-#ifdef BACKWATER_HAS_CUDA
-            // If GPU active, sync from device first
-            if (ps->solver->dev) {
-                swe2d_gpu_get_state(ps->solver->dev,
-                    h_out.mutable_data(), hu_out.mutable_data(), hv_out.mutable_data());
-                // Also update host state for consistency
-                std::copy(h_out.data(),  h_out.data()  + nc, ps->solver->h.begin());
-                std::copy(hu_out.data(), hu_out.data() + nc, ps->solver->hu.begin());
-                std::copy(hv_out.data(), hv_out.data() + nc, ps->solver->hv.begin());
-                return {h_out, hu_out, hv_out};
-            }
-#endif
+            // swe2d_get_state routes directly device→caller when GPU is active;
+            // no host mirror update — state stays device-resident.
             swe2d_get_state(ps->solver,
                 h_out.mutable_data(), hu_out.mutable_data(), hv_out.mutable_data());
             return {h_out, hu_out, hv_out};

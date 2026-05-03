@@ -56,6 +56,18 @@ struct SWE2DSolverConfig {
     bool    enable_hydraulic_structures = false;
     bool    use_gpu  = true;    // attempt CUDA path; falls back to CPU
     int     n_threads = 0;      // 0 = auto (OMP_NUM_THREADS or hardware)
+
+    // Stability hardening controls (GPU-first tuning knobs).
+    // These defaults preserve the current behaviour envelope while allowing
+    // real-world wet/dry runs to be hardened from the GUI without recompiling.
+    double  max_inv_area = 1.0e6;              // cap on 1/area used in updates
+    double  cfl_lambda_cap = 1.0e6;            // cap on local CFL wave speed ratio
+    double  momentum_cap_min_speed = 50.0;     // absolute min speed cap for momentum limiting
+    double  momentum_cap_celerity_mult = 20.0; // speed cap = max(min_speed, mult*sqrt(g*h))
+    double  depth_cap = 1.0e6;                 // hard upper bound on depth
+    double  max_rel_depth_increase = 2.0;      // per-step limit: h <= h_old + rel*max(h_old,h_min)
+    double  shallow_damping_depth = 1.0e-4;    // blend momentum to zero as h approaches h_min
+    int     gpu_diag_sync_interval_steps = 1;  // 1=sync diagnostics every step, N=every N steps, <=0 disables
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -100,6 +112,7 @@ struct SWE2DSolver {
 
     // ── Simulation time ──────────────────────────────────────────────────────
     double t = 0.0;
+    uint64_t gpu_steps = 0;
 
     // ── GPU state (null when CUDA unavailable or use_gpu=false) ─────────────
 #ifdef BACKWATER_HAS_CUDA

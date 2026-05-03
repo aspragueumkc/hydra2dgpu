@@ -6,11 +6,10 @@
 //   2. swe2d_update_kernel — parallel over cells, applies fluxes + friction
 //   3. swe2d_cfl_kernel    — parallel over cells, block-reduce to find max lambda
 //
-// All numerical logic is shared with the CPU path via swe2d_numerics.hpp
-// (the SWE2D_HOSTDEV macro marks kernels callable from both host and device).
+// CUDA hot-path numerics are implemented locally in this translation unit to
+// keep GPU optimization decoupled from the CPU fallback implementation.
 
 #include "swe2d_gpu.cuh"
-#include "swe2d_numerics.hpp"
 
 #include <cuda_runtime.h>
 #include <device_launch_parameters.h>
@@ -27,6 +26,132 @@
 namespace cg = cooperative_groups;
 
 namespace {
+
+struct GhostStateLocal {
+    double h;
+    double hu;
+    double hv;
+    double zb;
+};
+
+struct ReconstructedStatesLocal {
+    double hL_star;
+    double uL;
+    double vL;
+    double hR_star;
+    double uR;
+    double vR;
+    double zb_face;
+};
+
+__device__ __forceinline__ double vel_u_cuda_local(double hu, double h, double h_min) {
+    return (h > h_min) ? (hu / h) : 0.0;
+}
+
+__device__ __forceinline__ double vel_v_cuda_local(double hv, double h, double h_min) {
+    return (h > h_min) ? (hv / h) : 0.0;
+}
+
+__device__ __forceinline__ double celerity_cuda_local(double h, double g) {
+    return (h > 0.0) ? ::sqrt(g * h) : 0.0;
+}
+
+__device__ __forceinline__ ReconstructedStatesLocal hydrostatic_reconstruct_cuda_local(
+    double hL,  double huL, double hvL, double zbL,
+    double hR,  double huR, double hvR, double zbR,
+    double h_min)
+{
+    ReconstructedStatesLocal rs;
+    const double etaL = hL + zbL;
+    const double etaR = hR + zbR;
+    rs.zb_face = (zbL > zbR) ? zbL : zbR;
+    rs.hL_star = (etaL > rs.zb_face) ? (etaL - rs.zb_face) : 0.0;
+    rs.hR_star = (etaR > rs.zb_face) ? (etaR - rs.zb_face) : 0.0;
+    rs.uL = vel_u_cuda_local(huL, hL, h_min);
+    rs.vL = vel_v_cuda_local(hvL, hL, h_min);
+    rs.uR = vel_u_cuda_local(huR, hR, h_min);
+    rs.vR = vel_v_cuda_local(hvR, hR, h_min);
+    return rs;
+}
+
+__device__ __forceinline__ void bed_slope_correction_cuda_local(
+    double hL, double hL_star,
+    double nx, double ny, double g,
+    double& corr_hu, double& corr_hv)
+{
+    const double dp = 0.5 * g * (hL_star * hL_star - hL * hL);
+    corr_hu -= dp * nx;
+    corr_hv -= dp * ny;
+}
+
+__device__ __forceinline__ GhostStateLocal make_ghost_cuda_local(
+    double hI,  double huI, double hvI, double zbI,
+    double nx,  double ny,
+    int bc_type,
+    double bc_val,
+    double h_min)
+{
+    GhostStateLocal g{};
+    g.zb = zbI;
+
+    switch (bc_type) {
+        case 1:
+        case 5: {
+            g.h = hI;
+            const double un = huI * nx + hvI * ny;
+            g.hu = huI - 2.0 * un * nx;
+            g.hv = hvI - 2.0 * un * ny;
+            break;
+        }
+        case 2:
+            g.h = hI;
+            g.hu = -bc_val * nx;
+            g.hv = -bc_val * ny;
+            break;
+        case 3: {
+            const double h_ghost = bc_val - zbI;
+            g.h = (h_ghost > h_min) ? h_ghost : h_min;
+            g.hu = huI;
+            g.hv = hvI;
+            break;
+        }
+        case 4:
+            g.h = hI;
+            g.hu = huI;
+            g.hv = hvI;
+            break;
+        case 6:
+            g.h = (bc_val > h_min) ? bc_val : h_min;
+            g.hu = huI;
+            g.hv = hvI;
+            break;
+        default:
+            g.h = hI;
+            g.hu = huI;
+            g.hv = hvI;
+            break;
+    }
+    return g;
+}
+
+__device__ __forceinline__ void apply_friction_cuda_local(
+    double& h, double& hu, double& hv,
+    double dt, double n_mann, double g, double h_min)
+{
+    if (h <= h_min) {
+        hu = 0.0;
+        hv = 0.0;
+        return;
+    }
+    const double u = hu / h;
+    const double v = hv / h;
+    const double spd = ::sqrt(u * u + v * v);
+    const double h43 = ::pow(h, 4.0 / 3.0);
+    const double cf = (h43 > 0.0) ? (g * n_mann * n_mann / h43) : 0.0;
+    const double denom = 1.0 + dt * cf * spd;
+    hu /= denom;
+    hv /= denom;
+}
 
 bool swe2d_debug_enabled(const char* name) {
     const char* v = std::getenv(name);
@@ -200,9 +325,11 @@ __global__ void swe2d_gradient_kernel(
     const double*  edge_ny,
     const double*  edge_len,
     const double*  cell_h,
+    const double*  cell_zb,
     const double*  cell_hu,
     const double*  cell_hv,
     const double*  cell_inv_area,
+    double         max_inv_area,
     double*        grad_hx,  double* grad_hy,
     double*        grad_hux, double* grad_huy,
     double*        grad_hvx, double* grad_hvy)
@@ -214,24 +341,31 @@ __global__ void swe2d_gradient_kernel(
     int32_t c1 = edge_c1[e];
 
     // Skip degenerate cells
-    if (cell_inv_area[c0] > 1.0e6) return;
+    if (cell_inv_area[c0] > max_inv_area) return;
 
     double nx  = edge_nx[e];
     double ny  = edge_ny[e];
     double len = edge_len[e];
 
     double h0  = cell_h[c0],  hu0 = cell_hu[c0], hv0 = cell_hv[c0];
-    double h1, hu1, hv1;
-    if (c1 >= 0 && cell_inv_area[c1] <= 1.0e6) {
+    double zb0 = cell_zb[c0];
+    double h1, hu1, hv1, zb1;
+    if (c1 >= 0 && cell_inv_area[c1] <= max_inv_area) {
         h1 = cell_h[c1]; hu1 = cell_hu[c1]; hv1 = cell_hv[c1];
+        zb1 = cell_zb[c1];
     } else {
         // Boundary: use cell value (zero-gradient extrapolation for gradient)
         h1 = h0; hu1 = hu0; hv1 = hv0;
+        zb1 = zb0;
     }
 
     // Green-Gauss: contribution = q_face * n * len * inv_area
+    // For depth we reconstruct free-surface eta = h + zb to preserve
+    // higher-order lake-at-rest well-balancing on non-flat beds.
     double ia0 = cell_inv_area[c0];
-    double qh  = 0.5 * (h0  + h1);
+    double eta0 = h0 + zb0;
+    double eta1 = h1 + zb1;
+    double qh  = 0.5 * (eta0 + eta1);
     double qhu = 0.5 * (hu0 + hu1);
     double qhv = 0.5 * (hv0 + hv1);
 
@@ -243,7 +377,7 @@ __global__ void swe2d_gradient_kernel(
     atomicAdd(&grad_hvy[c0],  qhv * ny * len * ia0);
 
     // Contribution to c1: outward normal for c1 is the reverse of c0's normal
-    if (c1 >= 0 && cell_inv_area[c1] <= 1.0e6) {
+    if (c1 >= 0 && cell_inv_area[c1] <= max_inv_area) {
         double ia1 = cell_inv_area[c1];
         atomicAdd(&grad_hx[c1],  -qh  * nx * len * ia1);
         atomicAdd(&grad_hy[c1],  -qh  * ny * len * ia1);
@@ -285,7 +419,10 @@ __global__ void swe2d_flux_kernel(
     double*        dbg_fhu,
     double*        dbg_fhv,
     int            spatial_scheme,
-    double g, double h_min)
+    double g, double h_min,
+    double max_inv_area,
+    double momentum_cap_min_speed,
+    double momentum_cap_celerity_mult)
 {
     int32_t e = blockIdx.x * blockDim.x + threadIdx.x;
     if (e >= n_edges) return;
@@ -294,7 +431,7 @@ __global__ void swe2d_flux_kernel(
     int32_t c1 = edge_c1[e];
     
     // Skip flux TO degenerate cells (inv_area > 1e6)
-    if (cell_inv_area[c0] > 1.0e6 || (c1 >= 0 && cell_inv_area[c1] > 1.0e6)) {
+    if (cell_inv_area[c0] > max_inv_area || (c1 >= 0 && cell_inv_area[c1] > max_inv_area)) {
         return;
     }
     
@@ -371,13 +508,18 @@ __global__ void swe2d_flux_kernel(
                 qR_out = q1 - phi1 * 0.5 * dq;
             };
 
-            double hL_rec, hR_rec, huL_rec, huR_rec, hvL_rec, hvR_rec;
-            tvd_reconstruct(hL,  hR,  grad_hx[c0],  grad_hy[c0],  grad_hx[c1],  grad_hy[c1],  hL_rec,  hR_rec);
+            // Reconstruct free surface eta=h+zb using grad_h* (which stores
+            // Green-Gauss gradients of eta from swe2d_gradient_kernel), then
+            // convert back to depth for hydrostatic reconstruction.
+            double etaL_rec, etaR_rec, huL_rec, huR_rec, hvL_rec, hvR_rec;
+            const double etaL = hL + zbL;
+            const double etaR = hR + zbR;
+            tvd_reconstruct(etaL, etaR, grad_hx[c0], grad_hy[c0], grad_hx[c1], grad_hy[c1], etaL_rec, etaR_rec);
             tvd_reconstruct(huL, huR, grad_hux[c0], grad_huy[c0], grad_hux[c1], grad_huy[c1], huL_rec, huR_rec);
             tvd_reconstruct(hvL, hvR, grad_hvx[c0], grad_hvy[c0], grad_hvx[c1], grad_hvy[c1], hvL_rec, hvR_rec);
 
-            hL  = (hL_rec  > 0.0) ? hL_rec  : 0.0;
-            hR  = (hR_rec  > 0.0) ? hR_rec  : 0.0;
+            hL  = fmax(0.0, etaL_rec - zbL);
+            hR  = fmax(0.0, etaR_rec - zbR);
             huL = huL_rec; huR = huR_rec;
             hvL = hvL_rec; hvR = hvR_rec;
         }
@@ -385,8 +527,10 @@ __global__ void swe2d_flux_kernel(
         // Keep reconstructed momentum physically bounded for shallow cells.
         const double hL_eff = (hL > h_min) ? hL : h_min;
         const double hR_eff = (hR > h_min) ? hR : h_min;
-        const double u_cap_L = fmax(50.0, 20.0 * sqrt(g * hL_eff));
-        const double u_cap_R = fmax(50.0, 20.0 * sqrt(g * hR_eff));
+        const double u_cap_L = fmax(momentum_cap_min_speed,
+                        momentum_cap_celerity_mult * sqrt(g * hL_eff));
+        const double u_cap_R = fmax(momentum_cap_min_speed,
+                        momentum_cap_celerity_mult * sqrt(g * hR_eff));
         const double hu_cap_L = hL_eff * u_cap_L;
         const double hv_cap_L = hL_eff * u_cap_L;
         const double hu_cap_R = hR_eff * u_cap_R;
@@ -396,7 +540,7 @@ __global__ void swe2d_flux_kernel(
         huR = fmin(hu_cap_R, fmax(-hu_cap_R, huR));
         hvR = fmin(hv_cap_R, fmax(-hv_cap_R, hvR));
     } else {
-        swe2d::GhostState gs = swe2d::make_ghost(
+        GhostStateLocal gs = make_ghost_cuda_local(
             hL, huL, hvL, zbL, nx, ny,
             edge_bc[e], edge_bc_val[e], h_min);
         hR  = gs.h; huR = gs.hu; hvR = gs.hv;
@@ -406,7 +550,7 @@ __global__ void swe2d_flux_kernel(
 // Reconstruct hydrostatic states then apply a CUDA-local HLLC flux.
     // This avoids relying on host/device overload resolution from the shared
     // header in this kernel hot-path.
-    swe2d::ReconstructedStates rs = swe2d::hydrostatic_reconstruct(
+    ReconstructedStatesLocal rs = hydrostatic_reconstruct_cuda_local(
         hL, huL, hvL, zbL, hR, huR, hvR, zbR, h_min);
 
     double flux_fh = 0.0, flux_fhu = 0.0, flux_fhv = 0.0;
@@ -417,7 +561,7 @@ __global__ void swe2d_flux_kernel(
         flux_fh, flux_fhu, flux_fhv);
 
     double corr_hu = 0.0, corr_hv = 0.0;
-    swe2d::bed_slope_correction(hL, rs.hL_star, nx, ny, g, corr_hu, corr_hv);
+    bed_slope_correction_cuda_local(hL, rs.hL_star, nx, ny, g, corr_hu, corr_hv);
 
     double fh  = flux_fh  * len;
     double fhu = (flux_fhu + corr_hu) * len;
@@ -437,8 +581,8 @@ __global__ void swe2d_flux_kernel(
     if (c1 >= 0) {
         // c1: flux enters, with right-side bed-slope correction
         double corr_hu_r = 0.0, corr_hv_r = 0.0;
-        // Same normal direction as c0 — see swe2d_solver.cpp for derivation.
-        swe2d::bed_slope_correction(hR, rs.hR_star, nx, ny, g, corr_hu_r, corr_hv_r);
+        // Same normal direction as c0 to preserve lake-at-rest balance.
+        bed_slope_correction_cuda_local(hR, rs.hR_star, nx, ny, g, corr_hu_r, corr_hv_r);
         double fhu_r = (flux_fhu + corr_hu_r) * len;
         double fhv_r = (flux_fhv + corr_hv_r) * len;
         atomicAdd(&flux_h[c1],  fh);
@@ -461,7 +605,13 @@ __global__ void swe2d_update_kernel(
     const double* cell_inv_area,
     const double* cell_n_mann,
     double*       d_max_wse_elev_error,
-    double dt, double g, double h_min)
+    double dt, double g, double h_min,
+    double max_inv_area,
+    double momentum_cap_min_speed,
+    double momentum_cap_celerity_mult,
+    double depth_cap,
+    double max_rel_depth_increase,
+    double shallow_damping_depth)
 {
     int32_t c = blockIdx.x * blockDim.x + threadIdx.x;
     if (c >= n_cells) return;
@@ -471,7 +621,7 @@ __global__ void swe2d_update_kernel(
     double inv_a = cell_inv_area[c];
 
     // Clamp inv_area to prevent overflow: bound state update by max_inv_a * |flux|
-    const double max_inv_a = 1.0e6;
+    const double max_inv_a = fmax(max_inv_area, 1.0);
     if (inv_a > max_inv_a) inv_a = max_inv_a;
 
     double fh = flux_h[c];
@@ -481,7 +631,18 @@ __global__ void swe2d_update_kernel(
     if (!isfinite(fhu)) fhu = 0.0;
     if (!isfinite(fhv)) fhv = 0.0;
 
-    cell_h[c]  += dt * fh  * inv_a;
+    double h_trial = cell_h[c] + dt * fh * inv_a;
+    if (!isfinite(h_trial)) h_trial = 0.0;
+
+    // Per-step depth growth limiter for wetting-front robustness.
+    if (max_rel_depth_increase > 0.0) {
+        const double h_ref = fmax(h_old, h_min);
+        const double h_step_cap = h_old + max_rel_depth_increase * h_ref;
+        if (h_trial > h_step_cap) h_trial = h_step_cap;
+    }
+    if (depth_cap > 0.0 && h_trial > depth_cap) h_trial = depth_cap;
+
+    cell_h[c]  = h_trial;
     cell_hu[c] += dt * fhu * inv_a;
     cell_hv[c] += dt * fhv * inv_a;
 
@@ -490,12 +651,18 @@ __global__ void swe2d_update_kernel(
     if (cell_h[c] < h_min) {
         cell_hu[c] = 0.0;
         cell_hv[c] = 0.0;
+    } else if (shallow_damping_depth > h_min && cell_h[c] < shallow_damping_depth) {
+        // Smoothly damp momentum in shallow cells to stabilize moving wet/dry fronts.
+        const double t = (cell_h[c] - h_min) / (shallow_damping_depth - h_min);
+        const double scale = fmin(1.0, fmax(0.0, t));
+        cell_hu[c] *= scale;
+        cell_hv[c] *= scale;
     }
 
     // Manning friction (semi-implicit)
     double n_mann = cell_n_mann[c];
-    swe2d::apply_friction(cell_h[c], cell_hu[c], cell_hv[c],
-                          dt, n_mann, g, h_min);
+    apply_friction_cuda_local(cell_h[c], cell_hu[c], cell_hv[c],
+                              dt, n_mann, g, h_min);
 
     // Robustness guard: remove non-finite states and cap extreme momentum.
     if (!isfinite(cell_h[c]) || !isfinite(cell_hu[c]) || !isfinite(cell_hv[c])) {
@@ -507,7 +674,8 @@ __global__ void swe2d_update_kernel(
         const double u = cell_hu[c] * inv_h;
         const double v = cell_hv[c] * inv_h;
         const double spd = sqrt(u * u + v * v);
-        const double spd_cap = fmax(50.0, 20.0 * sqrt(g * cell_h[c]));
+        const double spd_cap = fmax(momentum_cap_min_speed,
+                                    momentum_cap_celerity_mult * sqrt(g * cell_h[c]));
         if (isfinite(spd) && spd > spd_cap && spd > 0.0) {
             const double scale = spd_cap / spd;
             cell_hu[c] *= scale;
@@ -566,6 +734,7 @@ __global__ void swe2d_cfl_kernel(
     const double* cell_hv,
     const double* cell_area,
     double g, double h_min,
+    double lambda_cap,
     double* d_lambda_max)
 {
     extern __shared__ double sdata[];
@@ -580,15 +749,16 @@ __global__ void swe2d_cfl_kernel(
         double a  = cell_area[c];
         // Approximate cell size as sqrt(area)
         double dx = (a > 0.0) ? sqrt(a) : 1.0;
-        double u  = swe2d::vel_u(hu, h, h_min);
-        double v  = swe2d::vel_v(hv, h, h_min);
-        double spd = sqrt(u * u + v * v) + swe2d::celerity(h, g);
+        double u  = vel_u_cuda_local(hu, h, h_min);
+        double v  = vel_v_cuda_local(hv, h, h_min);
+        double spd = sqrt(u * u + v * v) + celerity_cuda_local(h, g);
         if (!isfinite(spd) || !isfinite(dx) || dx <= 0.0) {
             lambda = 0.0;
         } else {
             lambda = spd / dx;
             if (!isfinite(lambda)) lambda = 0.0;
-            if (lambda > 1.0e6) lambda = 1.0e6;
+            const double lam_cap = fmax(lambda_cap, 1.0);
+            if (lambda > lam_cap) lambda = lam_cap;
         }
     }
 
@@ -620,6 +790,19 @@ __global__ void swe2d_cfl_kernel(
             if (old_bits == assumed) break;
         }
     }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// pack_diag_kernel — pack two device scalars into a contiguous 2-double buffer
+// so a single cudaMemcpy of 16 bytes transfers all diagnostic values.
+// ─────────────────────────────────────────────────────────────────────────────
+__global__ void pack_diag_kernel(
+    const double* __restrict__ d_lambda_max,
+    const double* __restrict__ d_max_wse_elev_error,
+    double* __restrict__ d_out)
+{
+    d_out[0] = d_lambda_max[0];
+    d_out[1] = d_max_wse_elev_error[0];
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -737,6 +920,8 @@ SWE2DDeviceState* swe2d_gpu_init(
     // CFL workspace
     alloc_d(reinterpret_cast<void**>(&dev->d_lambda_max), sizeof(double));
     alloc_d(reinterpret_cast<void**>(&dev->d_max_wse_elev_error), sizeof(double));
+    alloc_d(reinterpret_cast<void**>(&dev->d_diag_packed), 2 * sizeof(double));
+    CUDA_CHECK(cudaMemset(dev->d_diag_packed, 0, 2 * sizeof(double)));
 
     return dev;
 }
@@ -751,6 +936,14 @@ void swe2d_gpu_step(
     double h_min,
     int spatial_scheme,
     double /*cfl_factor*/,
+    double max_inv_area,
+    double cfl_lambda_cap,
+    double momentum_cap_min_speed,
+    double momentum_cap_celerity_mult,
+    double depth_cap,
+    double max_rel_depth_increase,
+    double shallow_damping_depth,
+    bool sync_diagnostics,
     SWE2DStepDiag* diag)
 {
     constexpr int BLOCK = 256;
@@ -818,8 +1011,9 @@ void swe2d_gpu_step(
             n_edges,
             dev->d_edge_c0, dev->d_edge_c1,
             dev->d_edge_nx, dev->d_edge_ny, dev->d_edge_len,
-            dev->d_h, dev->d_hu, dev->d_hv,
+            dev->d_h, dev->d_cell_zb, dev->d_hu, dev->d_hv,
             dev->d_cell_inv_area,
+            max_inv_area,
             dev->d_grad_hx,  dev->d_grad_hy,
             dev->d_grad_hux, dev->d_grad_huy,
             dev->d_grad_hvx, dev->d_grad_hvy);
@@ -859,7 +1053,10 @@ void swe2d_gpu_step(
             dev->d_flux_h, dev->d_flux_hu, dev->d_flux_hv,
             d_dbg_fh, d_dbg_fhu, d_dbg_fhv,
             spatial_scheme,
-            g, h_min);
+            g, h_min,
+            max_inv_area,
+            momentum_cap_min_speed,
+            momentum_cap_celerity_mult);
         CUDA_CHECK(cudaGetLastError());
 
         if (dbg_edge_flux) {
@@ -913,7 +1110,13 @@ void swe2d_gpu_step(
             dev->d_flux_h, dev->d_flux_hu, dev->d_flux_hv,
             dev->d_cell_inv_area, dev->d_n_mann_cell,
             dev->d_max_wse_elev_error,
-            dt, g, h_min);
+            dt, g, h_min,
+            max_inv_area,
+            momentum_cap_min_speed,
+            momentum_cap_celerity_mult,
+            depth_cap,
+            max_rel_depth_increase,
+            shallow_damping_depth);
         CUDA_CHECK(cudaGetLastError());
     }
 
@@ -926,31 +1129,35 @@ void swe2d_gpu_step(
             dev->d_h, dev->d_hu, dev->d_hv,
             dev->d_cell_area,
             g, h_min,
+            cfl_lambda_cap,
             dev->d_lambda_max);
         CUDA_CHECK(cudaGetLastError());
     }
+    // Pack both diagnostic scalars into contiguous buffer for single-transfer readback.
+    pack_diag_kernel<<<1, 1>>>(dev->d_lambda_max, dev->d_max_wse_elev_error, dev->d_diag_packed);
+    CUDA_CHECK(cudaGetLastError());
 
-    CUDA_CHECK(cudaDeviceSynchronize());
-
-    // Fill diagnostics (lightweight host-side pass; can be replaced by
-    // a dedicated reduce kernel for large domains)
+    // Fill diagnostics. For high-throughput loops this can skip host sync and
+    // report sentinel values until a synchronized diagnostic sample is requested.
     if (diag) {
-        double lambda_max = 0.0;
-        double max_wse_elev_error = 0.0;
-        CUDA_CHECK(cudaMemcpy(&lambda_max, dev->d_lambda_max, sizeof(double), cudaMemcpyDeviceToHost));
-        CUDA_CHECK(cudaMemcpy(&max_wse_elev_error, dev->d_max_wse_elev_error, sizeof(double), cudaMemcpyDeviceToHost));
-
         diag->dt         = dt;
         diag->gpu_active = true;
-        // Wet cell count and mass require device-to-host or a reduce kernel.
-        // For MVP, set to sentinel values indicating GPU path ran.
-        diag->wet_cells  = -1;  // -1 = not computed on this path
+        diag->wet_cells  = -1;
         diag->max_depth  = -1.0;
         diag->min_depth  = -1.0;
         diag->mass_total = -1.0;
-        diag->max_courant = dt * lambda_max;
-        diag->max_depth_residual = max_wse_elev_error;
-        diag->max_wse_elev_error = max_wse_elev_error;
+        diag->max_courant = -1.0;
+        diag->max_depth_residual = -1.0;
+        diag->max_wse_elev_error = -1.0;
+
+        if (sync_diagnostics) {
+            CUDA_CHECK(cudaDeviceSynchronize());
+            double packed[2] = {0.0, 0.0};
+            CUDA_CHECK(cudaMemcpy(packed, dev->d_diag_packed, 2 * sizeof(double), cudaMemcpyDeviceToHost));
+            diag->max_courant = dt * packed[0];
+            diag->max_depth_residual = packed[1];
+            diag->max_wse_elev_error = packed[1];
+        }
     }
 }
 
@@ -959,7 +1166,8 @@ double swe2d_gpu_compute_dt(
     double g,
     double h_min,
     double cfl_factor,
-    double dt_max)
+    double dt_max,
+    double cfl_lambda_cap)
 {
     constexpr int BLOCK = 256;
     const int32_t n_cells = dev->n_cells;
@@ -971,6 +1179,7 @@ double swe2d_gpu_compute_dt(
         dev->d_h, dev->d_hu, dev->d_hv,
         dev->d_cell_area,
         g, h_min,
+        cfl_lambda_cap,
         dev->d_lambda_max);
     CUDA_CHECK(cudaGetLastError());
     CUDA_CHECK(cudaDeviceSynchronize());
@@ -992,6 +1201,14 @@ void swe2d_gpu_step_rk2(
     double h_min,
     int spatial_scheme,
     double cfl_factor,
+    double max_inv_area,
+    double cfl_lambda_cap,
+    double momentum_cap_min_speed,
+    double momentum_cap_celerity_mult,
+    double depth_cap,
+    double max_rel_depth_increase,
+    double shallow_damping_depth,
+    bool sync_diagnostics,
     SWE2DStepDiag* diag)
 {
     constexpr int BLOCK = 256;
@@ -1003,8 +1220,18 @@ void swe2d_gpu_step_rk2(
     CUDA_CHECK(cudaMemcpy(dev->d_hv0, dev->d_hv, sz, cudaMemcpyDeviceToDevice));
 
     SWE2DStepDiag tmp_diag;
-    swe2d_gpu_step(dev, dt, g, h_min, spatial_scheme, cfl_factor, &tmp_diag);
-    swe2d_gpu_step(dev, dt, g, h_min, spatial_scheme, cfl_factor, &tmp_diag);
+    swe2d_gpu_step(dev, dt, g, h_min, spatial_scheme, cfl_factor,
+                   max_inv_area, cfl_lambda_cap,
+                   momentum_cap_min_speed, momentum_cap_celerity_mult,
+                   depth_cap, max_rel_depth_increase, shallow_damping_depth,
+                   false,
+                   &tmp_diag);
+    swe2d_gpu_step(dev, dt, g, h_min, spatial_scheme, cfl_factor,
+                   max_inv_area, cfl_lambda_cap,
+                   momentum_cap_min_speed, momentum_cap_celerity_mult,
+                   depth_cap, max_rel_depth_increase, shallow_damping_depth,
+                   false,
+                   &tmp_diag);
 
     CUDA_CHECK(cudaMemset(dev->d_max_wse_elev_error, 0, sizeof(double)));
     int grid = (n_cells + BLOCK - 1) / BLOCK;
@@ -1015,33 +1242,38 @@ void swe2d_gpu_step_rk2(
         dev->d_max_wse_elev_error,
         h_min);
     CUDA_CHECK(cudaGetLastError());
-    CUDA_CHECK(cudaDeviceSynchronize());
-
     CUDA_CHECK(cudaMemset(dev->d_lambda_max, 0, sizeof(double)));
     swe2d_cfl_kernel<<<grid, BLOCK, BLOCK * static_cast<int>(sizeof(double))>>>(
         n_cells,
         dev->d_h, dev->d_hu, dev->d_hv,
         dev->d_cell_area,
         g, h_min,
+        cfl_lambda_cap,
         dev->d_lambda_max);
     CUDA_CHECK(cudaGetLastError());
-    CUDA_CHECK(cudaDeviceSynchronize());
+    // Pack diagnostic scalars for single-transfer readback.
+    pack_diag_kernel<<<1, 1>>>(dev->d_lambda_max, dev->d_max_wse_elev_error, dev->d_diag_packed);
+    CUDA_CHECK(cudaGetLastError());
 
     if (diag) {
-        double lambda_max = 0.0;
-        double max_depth_residual = 0.0;
-        CUDA_CHECK(cudaMemcpy(&lambda_max, dev->d_lambda_max, sizeof(double), cudaMemcpyDeviceToHost));
-        CUDA_CHECK(cudaMemcpy(&max_depth_residual, dev->d_max_wse_elev_error, sizeof(double), cudaMemcpyDeviceToHost));
-
         diag->dt = dt;
         diag->gpu_active = true;
         diag->wet_cells = -1;
         diag->max_depth = -1.0;
         diag->min_depth = -1.0;
         diag->mass_total = -1.0;
-        diag->max_courant = dt * lambda_max;
-        diag->max_depth_residual = max_depth_residual;
-        diag->max_wse_elev_error = max_depth_residual;
+        diag->max_courant = -1.0;
+        diag->max_depth_residual = -1.0;
+        diag->max_wse_elev_error = -1.0;
+
+        if (sync_diagnostics) {
+            CUDA_CHECK(cudaDeviceSynchronize());
+            double packed[2] = {0.0, 0.0};
+            CUDA_CHECK(cudaMemcpy(packed, dev->d_diag_packed, 2 * sizeof(double), cudaMemcpyDeviceToHost));
+            diag->max_courant = dt * packed[0];
+            diag->max_depth_residual = packed[1];
+            diag->max_wse_elev_error = packed[1];
+        }
     }
 }
 
@@ -1099,5 +1331,6 @@ void swe2d_gpu_destroy(SWE2DDeviceState* dev) {
     safe_free(dev->d_flux_hv);
     safe_free(dev->d_lambda_max);
     safe_free(dev->d_max_wse_elev_error);
+    safe_free(dev->d_diag_packed);
     delete dev;
 }

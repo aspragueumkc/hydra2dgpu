@@ -270,6 +270,14 @@ class SWE2DBackend:
         cfl:      float = 0.45,
         dt_max:   float = 10.0,
         dt_fixed: float = -1.0,
+        max_inv_area: float = 1.0e6,
+        cfl_lambda_cap: float = 1.0e6,
+        momentum_cap_min_speed: float = 50.0,
+        momentum_cap_celerity_mult: float = 20.0,
+        depth_cap: float = 1.0e6,
+        max_rel_depth_increase: float = 2.0,
+        shallow_damping_depth: float = 1.0e-4,
+        gpu_diag_sync_interval_steps: int = 1,
         n_threads: int  = 0,
         temporal_scheme: TemporalScheme = TemporalScheme.SSP_RK2,
         spatial_discretization: SpatialDiscretization = SpatialDiscretization.FV_FIRST_ORDER,
@@ -301,6 +309,23 @@ class SWE2DBackend:
             Maximum timestep (s).
         dt_fixed : float
             If > 0, override CFL with this fixed dt.
+        max_inv_area : float
+            Cap on 1/area used by GPU flux/update kernels for tiny cells.
+        cfl_lambda_cap : float
+            Cap on local CFL lambda used for diagnostic and dt reduction.
+        momentum_cap_min_speed : float
+            Minimum speed bound used for momentum clipping.
+        momentum_cap_celerity_mult : float
+            Multiplier for sqrt(g*h) in momentum clipping speed bound.
+        depth_cap : float
+            Absolute depth ceiling for robustness.
+        max_rel_depth_increase : float
+            Per-step limiter on depth increase: h <= h_old + rel*max(h_old,h_min).
+        shallow_damping_depth : float
+            Depth below which momentum is smoothly damped toward zero.
+        gpu_diag_sync_interval_steps : int
+            GPU host-sync diagnostics cadence. 1=every step, N=every N steps,
+            <=0 disables per-step host diagnostic sync.
         n_threads : int
             CPU thread count (0 = auto).
         temporal_scheme : TemporalScheme
@@ -342,6 +367,14 @@ class SWE2DBackend:
             h0_arr, hu0_arr, hv0_arr, n_mann_cell_arr,
             g=g, n_mann=n_mann, h_min=h_min,
             cfl=cfl, dt_max=dt_max, dt_fixed=dt_fixed,
+            max_inv_area=max_inv_area,
+            cfl_lambda_cap=cfl_lambda_cap,
+            momentum_cap_min_speed=momentum_cap_min_speed,
+            momentum_cap_celerity_mult=momentum_cap_celerity_mult,
+            depth_cap=depth_cap,
+            max_rel_depth_increase=max_rel_depth_increase,
+            shallow_damping_depth=shallow_damping_depth,
+            gpu_diag_sync_interval_steps=int(gpu_diag_sync_interval_steps),
             use_gpu=self._use_gpu, n_threads=n_threads,
             temporal_order=int(native_opts["temporal_order"]),
             spatial_scheme=int(native_opts["spatial_scheme"]),
