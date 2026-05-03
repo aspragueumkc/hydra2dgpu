@@ -181,21 +181,27 @@ py::dict generate_triangular_mesh(
         }
     }
 
-    generator.triangulation(mesh).generate_elements();
+    // ---- Release the Python GIL during all heavy C++ computation -----------
+    // This allows other Python threads (e.g. the QGIS bridge QTimer) to run
+    // while TQMesh is generating elements and smoothing.
+    {
+        py::gil_scoped_release release_gil;
 
-    if (tri_to_quad) {
-        generator.tri2quad_modification(mesh).modify();
-    }
+        generator.triangulation(mesh).generate_elements();
 
-    if (n_smooth > 0) {
-        generator.mixed_smoothing(mesh).smooth(n_smooth);
-    }
+        if (tri_to_quad) {
+            generator.tri2quad_modification(mesh).modify();
+        }
 
-    // ---- Check completeness ------------------------------------------------
-    MeshChecker checker { mesh, domain };
-    if (!checker.check_completeness()) {
-        throw std::runtime_error("TQMesh: mesh generation failed completeness check");
-    }
+        if (n_smooth > 0) {
+            generator.mixed_smoothing(mesh).smooth(n_smooth);
+        }
+
+        MeshChecker checker { mesh, domain };
+        if (!checker.check_completeness()) {
+            throw std::runtime_error("TQMesh: mesh generation failed completeness check");
+        }
+    }  // GIL re-acquired here
 
     // ---- Prepare output indices --------------------------------------------
     // TQMesh assigns indices via MeshCleanup (triggered by write_mesh or manually)

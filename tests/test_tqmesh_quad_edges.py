@@ -1,6 +1,7 @@
 import os
 import sys
 import unittest
+import numpy as np
 
 here = os.path.dirname(os.path.dirname(__file__))
 if here not in sys.path:
@@ -43,6 +44,46 @@ class TestTQMeshQuadEdges(unittest.TestCase):
         self.assertGreater(quads, 0)
         self.assertGreater(len(mesh.node_x), 0)
         self.assertGreater(quads, tris)
+
+    def test_adjacent_regions_share_interface_edges(self):
+        try:
+            import backwater_tqmesh  # noqa: F401
+        except ImportError:
+            self.skipTest("backwater_tqmesh module is not built")
+
+        regions = [
+            ConceptualRegion(
+                region_id=1,
+                ring_xy=[(0.0, 0.0), (50.0, 0.0), (50.0, 50.0), (0.0, 50.0)],
+                default_size=10.0,
+                default_cell_type="triangular",
+            ),
+            ConceptualRegion(
+                region_id=2,
+                ring_xy=[(50.0, 0.0), (100.0, 0.0), (100.0, 50.0), (50.0, 50.0)],
+                default_size=10.0,
+                default_cell_type="triangular",
+            ),
+        ]
+        model = ConceptualModel(nodes=[], arcs=[], regions=regions, constraints=[], quad_edges=[])
+
+        mesh = TQMeshBackend().generate(model)
+
+        edge_regions = {}
+        offs = mesh.cell_face_offsets.astype(np.int32)
+        nodes = mesh.cell_face_nodes.astype(np.int32)
+        region_ids = mesh.region_id.astype(np.int32)
+        for face_idx in range(offs.size - 1):
+            poly = nodes[int(offs[face_idx]):int(offs[face_idx + 1])]
+            rid = int(region_ids[face_idx])
+            for i in range(poly.size):
+                a = int(poly[i])
+                b = int(poly[(i + 1) % poly.size])
+                edge = (a, b) if a < b else (b, a)
+                edge_regions.setdefault(edge, set()).add(rid)
+
+        shared_edges = [edge for edge, rids in edge_regions.items() if rids == {1, 2}]
+        self.assertGreater(len(shared_edges), 0)
 
 
 if __name__ == "__main__":

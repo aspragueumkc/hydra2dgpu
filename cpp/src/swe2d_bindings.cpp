@@ -300,7 +300,14 @@ PYBIND11_MODULE(backwater_swe2d, m) {
            py::object n_mann_cell_obj,
            double g, double n_mann, double h_min,
            double cfl, double dt_max, double dt_fixed,
-           bool use_gpu, int n_threads)
+              bool use_gpu, int n_threads,
+              int temporal_order,
+              int spatial_scheme,
+              int turbulence_model,
+              int bed_friction_model,
+              bool enable_rain_module,
+              bool enable_pipe_network_module,
+              bool enable_hydraulic_structures)
            -> std::shared_ptr<PySolver>
         {
             if (!pm) throw std::invalid_argument("null mesh handle");
@@ -342,6 +349,13 @@ PYBIND11_MODULE(backwater_swe2d, m) {
             cfg.cfl       = cfl;
             cfg.dt_max    = dt_max;
             cfg.dt_fixed  = dt_fixed;
+            cfg.temporal_order = temporal_order;
+            cfg.spatial_scheme = spatial_scheme;
+            cfg.turbulence_model = turbulence_model;
+            cfg.bed_friction_model = bed_friction_model;
+            cfg.enable_rain_module = enable_rain_module;
+            cfg.enable_pipe_network_module = enable_pipe_network_module;
+            cfg.enable_hydraulic_structures = enable_hydraulic_structures;
             cfg.use_gpu   = use_gpu;
             cfg.n_threads = n_threads;
 
@@ -363,6 +377,13 @@ PYBIND11_MODULE(backwater_swe2d, m) {
         py::arg("dt_fixed") = -1.0,
         py::arg("use_gpu")  = true,
         py::arg("n_threads") = 0,
+        py::arg("temporal_order") = 2,
+        py::arg("spatial_scheme") = 0,
+        py::arg("turbulence_model") = 0,
+        py::arg("bed_friction_model") = 0,
+        py::arg("enable_rain_module") = false,
+        py::arg("enable_pipe_network_module") = false,
+        py::arg("enable_hydraulic_structures") = false,
         "Create a 2D SWE solver.\n\n"
         "Parameters\n----------\n"
         "mesh : PyMesh handle from swe2d_build_mesh\n"
@@ -383,6 +404,9 @@ PYBIND11_MODULE(backwater_swe2d, m) {
             d["max_depth"]  = diag.max_depth;
             d["min_depth"]  = diag.min_depth;
             d["mass_total"] = diag.mass_total;
+            d["max_courant"] = diag.max_courant;
+            d["max_depth_residual"] = diag.max_depth_residual;
+            d["max_wse_elev_error"] = diag.max_wse_elev_error;
             d["gpu_active"] = diag.gpu_active;
             return d;
         },

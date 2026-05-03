@@ -34,6 +34,11 @@ struct SWE2DDeviceState {
     double*  d_hu = nullptr;
     double*  d_hv = nullptr;
 
+    // RK2 backup state (U^n)
+    double*  d_h0  = nullptr;
+    double*  d_hu0 = nullptr;
+    double*  d_hv0 = nullptr;
+
     // Flux accumulators (zeroed each step)
     double*  d_flux_h  = nullptr;
     double*  d_flux_hu = nullptr;
@@ -41,6 +46,7 @@ struct SWE2DDeviceState {
 
     // CFL workspace (device scalar)
     double*  d_lambda_max = nullptr;
+    double*  d_max_wse_elev_error = nullptr;
 
     // Dimensions
     int32_t  n_cells = 0;
@@ -65,8 +71,27 @@ void swe2d_gpu_step(
     double dt,
     double g,
     double h_min,
+    int spatial_scheme,
     double cfl_factor,
     SWE2DStepDiag* diag);
+
+// Advance one SSPRK2 (Heun) timestep fully on GPU.
+void swe2d_gpu_step_rk2(
+    SWE2DDeviceState* dev,
+    double dt,
+    double g,
+    double h_min,
+    int spatial_scheme,
+    double cfl_factor,
+    SWE2DStepDiag* diag);
+
+// Compute a CFL-limited dt from current device state without host-state sync.
+double swe2d_gpu_compute_dt(
+    SWE2DDeviceState* dev,
+    double g,
+    double h_min,
+    double cfl_factor,
+    double dt_max);
 
 // Copy current state from device to caller-supplied host arrays.
 void swe2d_gpu_get_state(
@@ -74,6 +99,13 @@ void swe2d_gpu_get_state(
     double* h_out,
     double* hu_out,
     double* hv_out);
+
+// Upload host state arrays into the current device solver state.
+void swe2d_gpu_set_state(
+    SWE2DDeviceState* dev,
+    const double* h_in,
+    const double* hu_in,
+    const double* hv_in);
 
 // Free all device memory.
 void swe2d_gpu_destroy(SWE2DDeviceState* dev);

@@ -1,5 +1,11 @@
 # 2D SWE Hybrid GPU/CPU Solver — Detailed Plan and Skeleton
 
+## Status Update (Current Direction)
+
+The active implementation strategy has moved to a GPU-primary SWE2D roadmap.
+CUDA kernels are now the main target for higher-order numerics and validation
+work, while the CPU path is retained as a compatibility and debugging fallback.
+
 ## 1. Overview
 
 This document details the design, data contracts, and implementation skeleton for the

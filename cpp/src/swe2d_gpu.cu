@@ -63,6 +63,24 @@ void dump_flux_summary(const char* tag,
     }
 }
 
+__device__ inline double atomicMaxDouble(double* address, double val) {
+    unsigned long long int* address_as_ull = reinterpret_cast<unsigned long long int*>(address);
+    unsigned long long int old = *address_as_ull;
+
+    while (true) {
+        double old_val = __longlong_as_double(static_cast<long long int>(old));
+        if (old_val >= val) {
+            return old_val;
+        }
+        unsigned long long int assumed = old;
+        old = atomicCAS(address_as_ull, assumed,
+                        static_cast<unsigned long long int>(__double_as_longlong(val)));
+        if (old == assumed) {
+            return val;
+        }
+    }
+}
+
 __device__ inline void hllc_flux_cuda_local(
     double hL, double uL, double vL,
     double hR, double uR, double vR,
@@ -192,6 +210,7 @@ __global__ void swe2d_flux_kernel(
     double*        dbg_fh,
     double*        dbg_fhu,
     double*        dbg_fhv,
+    int            spatial_scheme,
     double g, double h_min)
 {
     int32_t e = blockIdx.x * blockDim.x + threadIdx.x;
@@ -216,6 +235,47 @@ __global__ void swe2d_flux_kernel(
     if (c1 >= 0) {
         hR  = cell_h[c1]; huR = cell_hu[c1]; hvR = cell_hv[c1];
         zbR = cell_zb[c1];
+
+        // GPU-only selectable higher-order reconstruction modes.
+        const int scheme_fast = static_cast<int>(SWE2DSpatialScheme::FV_MUSCL_FAST);
+        const int scheme_robust = static_cast<int>(SWE2DSpatialScheme::FV_MUSCL_MINMOD);
+        if (spatial_scheme == scheme_fast || spatial_scheme == scheme_robust) {
+            const double dh_pair  = hR  - hL;
+            const double dhu_pair = huR - huL;
+            const double dhv_pair = hvR - hvL;
+
+            // Fast mode: symmetric unlimited linear extrapolation.
+            double hL_rec  = hL  + 0.5 * dh_pair;
+            double huL_rec = huL + 0.5 * dhu_pair;
+            double hvL_rec = hvL + 0.5 * dhv_pair;
+            double hR_rec  = hR  - 0.5 * dh_pair;
+            double huR_rec = huR - 0.5 * dhu_pair;
+            double hvR_rec = hvR - 0.5 * dhv_pair;
+
+            if (spatial_scheme == scheme_robust) {
+                // Robust mode: pair-bounded limiter to suppress overshoot.
+                const double h_lo = fmin(hL, hR);
+                const double h_hi = fmax(hL, hR);
+                const double hu_lo = fmin(huL, huR);
+                const double hu_hi = fmax(huL, huR);
+                const double hv_lo = fmin(hvL, hvR);
+                const double hv_hi = fmax(hvL, hvR);
+
+                hL_rec = fmin(h_hi, fmax(h_lo, hL_rec));
+                hR_rec = fmin(h_hi, fmax(h_lo, hR_rec));
+                huL_rec = fmin(hu_hi, fmax(hu_lo, huL_rec));
+                huR_rec = fmin(hu_hi, fmax(hu_lo, huR_rec));
+                hvL_rec = fmin(hv_hi, fmax(hv_lo, hvL_rec));
+                hvR_rec = fmin(hv_hi, fmax(hv_lo, hvR_rec));
+            }
+
+            hL = (hL_rec > 0.0) ? hL_rec : 0.0;
+            hR = (hR_rec > 0.0) ? hR_rec : 0.0;
+            huL = huL_rec;
+            huR = huR_rec;
+            hvL = hvL_rec;
+            hvR = hvR_rec;
+        }
     } else {
         swe2d::GhostState gs = swe2d::make_ghost(
             hL, huL, hvL, zbL, nx, ny,
@@ -281,10 +341,13 @@ __global__ void swe2d_update_kernel(
     const double* flux_hv,
     const double* cell_inv_area,
     const double* cell_n_mann,
+    double*       d_max_wse_elev_error,
     double dt, double g, double h_min)
 {
     int32_t c = blockIdx.x * blockDim.x + threadIdx.x;
     if (c >= n_cells) return;
+
+    const double h_old = cell_h[c];
 
     double inv_a = cell_inv_area[c];
 
@@ -307,6 +370,46 @@ __global__ void swe2d_update_kernel(
     double n_mann = cell_n_mann[c];
     swe2d::apply_friction(cell_h[c], cell_hu[c], cell_hv[c],
                           dt, n_mann, g, h_min);
+
+    if (d_max_wse_elev_error) {
+        const double wse_err = fabs(cell_h[c] - h_old);
+        atomicMaxDouble(d_max_wse_elev_error, wse_err);
+    }
+}
+
+__global__ void swe2d_rk2_combine_kernel(
+    int32_t n_cells,
+    double* cell_h,
+    double* cell_hu,
+    double* cell_hv,
+    const double* h0,
+    const double* hu0,
+    const double* hv0,
+    double* d_max_wse_elev_error,
+    double h_min)
+{
+    int32_t c = blockIdx.x * blockDim.x + threadIdx.x;
+    if (c >= n_cells) return;
+
+    const double h_new = 0.5 * (h0[c] + cell_h[c]);
+    const double hu_new = 0.5 * (hu0[c] + cell_hu[c]);
+    const double hv_new = 0.5 * (hv0[c] + cell_hv[c]);
+
+    const double h_final = (h_new < 0.0) ? 0.0 : h_new;
+    cell_h[c] = h_final;
+
+    if (h_final < h_min) {
+        cell_hu[c] = 0.0;
+        cell_hv[c] = 0.0;
+    } else {
+        cell_hu[c] = hu_new;
+        cell_hv[c] = hv_new;
+    }
+
+    if (d_max_wse_elev_error) {
+        const double depth_res = fabs(h_final - h0[c]);
+        atomicMaxDouble(d_max_wse_elev_error, depth_res);
+    }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -447,6 +550,9 @@ SWE2DDeviceState* swe2d_gpu_init(
     alloc_d(reinterpret_cast<void**>(&dev->d_h),  sz_cells * sizeof(double));
     alloc_d(reinterpret_cast<void**>(&dev->d_hu), sz_cells * sizeof(double));
     alloc_d(reinterpret_cast<void**>(&dev->d_hv), sz_cells * sizeof(double));
+    alloc_d(reinterpret_cast<void**>(&dev->d_h0),  sz_cells * sizeof(double));
+    alloc_d(reinterpret_cast<void**>(&dev->d_hu0), sz_cells * sizeof(double));
+    alloc_d(reinterpret_cast<void**>(&dev->d_hv0), sz_cells * sizeof(double));
     copy_h2d_d(dev->d_h,  h0,                 sz_cells);
     copy_h2d_d(dev->d_hu, hu0 ? hu0 : h0,     sz_cells);  // reuse pointer; zeroed if same
     if (!hu0) CUDA_CHECK(cudaMemset(dev->d_hu, 0, sz_cells * sizeof(double)));
@@ -460,6 +566,7 @@ SWE2DDeviceState* swe2d_gpu_init(
 
     // CFL workspace
     alloc_d(reinterpret_cast<void**>(&dev->d_lambda_max), sizeof(double));
+    alloc_d(reinterpret_cast<void**>(&dev->d_max_wse_elev_error), sizeof(double));
 
     return dev;
 }
@@ -472,6 +579,7 @@ void swe2d_gpu_step(
     double dt,
     double g,
     double h_min,
+    int spatial_scheme,
     double /*cfl_factor*/,
     SWE2DStepDiag* diag)
 {
@@ -549,6 +657,7 @@ void swe2d_gpu_step(
             dev->d_cell_inv_area,
             dev->d_flux_h, dev->d_flux_hu, dev->d_flux_hv,
             d_dbg_fh, d_dbg_fhu, d_dbg_fhv,
+            spatial_scheme,
             g, h_min);
         CUDA_CHECK(cudaGetLastError());
 
@@ -595,13 +704,28 @@ void swe2d_gpu_step(
 
     // Kernel 2: Update
     {
+        CUDA_CHECK(cudaMemset(dev->d_max_wse_elev_error, 0, sizeof(double)));
         int grid = (n_cells + BLOCK - 1) / BLOCK;
         swe2d_update_kernel<<<grid, BLOCK>>>(
             n_cells,
             dev->d_h, dev->d_hu, dev->d_hv,
             dev->d_flux_h, dev->d_flux_hu, dev->d_flux_hv,
             dev->d_cell_inv_area, dev->d_n_mann_cell,
+            dev->d_max_wse_elev_error,
             dt, g, h_min);
+        CUDA_CHECK(cudaGetLastError());
+    }
+
+    // Kernel 3: CFL reduction for max Courant diagnostic
+    CUDA_CHECK(cudaMemset(dev->d_lambda_max, 0, sizeof(double)));
+    {
+        int grid = (n_cells + BLOCK - 1) / BLOCK;
+        swe2d_cfl_kernel<<<grid, BLOCK, BLOCK * static_cast<int>(sizeof(double))>>>(
+            n_cells,
+            dev->d_h, dev->d_hu, dev->d_hv,
+            dev->d_cell_area,
+            g, h_min,
+            dev->d_lambda_max);
         CUDA_CHECK(cudaGetLastError());
     }
 
@@ -610,6 +734,11 @@ void swe2d_gpu_step(
     // Fill diagnostics (lightweight host-side pass; can be replaced by
     // a dedicated reduce kernel for large domains)
     if (diag) {
+        double lambda_max = 0.0;
+        double max_wse_elev_error = 0.0;
+        CUDA_CHECK(cudaMemcpy(&lambda_max, dev->d_lambda_max, sizeof(double), cudaMemcpyDeviceToHost));
+        CUDA_CHECK(cudaMemcpy(&max_wse_elev_error, dev->d_max_wse_elev_error, sizeof(double), cudaMemcpyDeviceToHost));
+
         diag->dt         = dt;
         diag->gpu_active = true;
         // Wet cell count and mass require device-to-host or a reduce kernel.
@@ -618,6 +747,100 @@ void swe2d_gpu_step(
         diag->max_depth  = -1.0;
         diag->min_depth  = -1.0;
         diag->mass_total = -1.0;
+        diag->max_courant = dt * lambda_max;
+        diag->max_depth_residual = max_wse_elev_error;
+        diag->max_wse_elev_error = max_wse_elev_error;
+    }
+}
+
+double swe2d_gpu_compute_dt(
+    SWE2DDeviceState* dev,
+    double g,
+    double h_min,
+    double cfl_factor,
+    double dt_max)
+{
+    constexpr int BLOCK = 256;
+    const int32_t n_cells = dev->n_cells;
+
+    CUDA_CHECK(cudaMemset(dev->d_lambda_max, 0, sizeof(double)));
+    int grid = (n_cells + BLOCK - 1) / BLOCK;
+    swe2d_cfl_kernel<<<grid, BLOCK, BLOCK * static_cast<int>(sizeof(double))>>>(
+        n_cells,
+        dev->d_h, dev->d_hu, dev->d_hv,
+        dev->d_cell_area,
+        g, h_min,
+        dev->d_lambda_max);
+    CUDA_CHECK(cudaGetLastError());
+    CUDA_CHECK(cudaDeviceSynchronize());
+
+    double lambda_max = 0.0;
+    CUDA_CHECK(cudaMemcpy(&lambda_max, dev->d_lambda_max, sizeof(double), cudaMemcpyDeviceToHost));
+
+    if (lambda_max <= 0.0) {
+        return dt_max;
+    }
+    const double dt = cfl_factor / lambda_max;
+    return (dt < dt_max) ? dt : dt_max;
+}
+
+void swe2d_gpu_step_rk2(
+    SWE2DDeviceState* dev,
+    double dt,
+    double g,
+    double h_min,
+    int spatial_scheme,
+    double cfl_factor,
+    SWE2DStepDiag* diag)
+{
+    constexpr int BLOCK = 256;
+    const int32_t n_cells = dev->n_cells;
+    const size_t sz = static_cast<size_t>(n_cells) * sizeof(double);
+
+    CUDA_CHECK(cudaMemcpy(dev->d_h0, dev->d_h, sz, cudaMemcpyDeviceToDevice));
+    CUDA_CHECK(cudaMemcpy(dev->d_hu0, dev->d_hu, sz, cudaMemcpyDeviceToDevice));
+    CUDA_CHECK(cudaMemcpy(dev->d_hv0, dev->d_hv, sz, cudaMemcpyDeviceToDevice));
+
+    SWE2DStepDiag tmp_diag;
+    swe2d_gpu_step(dev, dt, g, h_min, spatial_scheme, cfl_factor, &tmp_diag);
+    swe2d_gpu_step(dev, dt, g, h_min, spatial_scheme, cfl_factor, &tmp_diag);
+
+    CUDA_CHECK(cudaMemset(dev->d_max_wse_elev_error, 0, sizeof(double)));
+    int grid = (n_cells + BLOCK - 1) / BLOCK;
+    swe2d_rk2_combine_kernel<<<grid, BLOCK>>>(
+        n_cells,
+        dev->d_h, dev->d_hu, dev->d_hv,
+        dev->d_h0, dev->d_hu0, dev->d_hv0,
+        dev->d_max_wse_elev_error,
+        h_min);
+    CUDA_CHECK(cudaGetLastError());
+    CUDA_CHECK(cudaDeviceSynchronize());
+
+    CUDA_CHECK(cudaMemset(dev->d_lambda_max, 0, sizeof(double)));
+    swe2d_cfl_kernel<<<grid, BLOCK, BLOCK * static_cast<int>(sizeof(double))>>>(
+        n_cells,
+        dev->d_h, dev->d_hu, dev->d_hv,
+        dev->d_cell_area,
+        g, h_min,
+        dev->d_lambda_max);
+    CUDA_CHECK(cudaGetLastError());
+    CUDA_CHECK(cudaDeviceSynchronize());
+
+    if (diag) {
+        double lambda_max = 0.0;
+        double max_depth_residual = 0.0;
+        CUDA_CHECK(cudaMemcpy(&lambda_max, dev->d_lambda_max, sizeof(double), cudaMemcpyDeviceToHost));
+        CUDA_CHECK(cudaMemcpy(&max_depth_residual, dev->d_max_wse_elev_error, sizeof(double), cudaMemcpyDeviceToHost));
+
+        diag->dt = dt;
+        diag->gpu_active = true;
+        diag->wet_cells = -1;
+        diag->max_depth = -1.0;
+        diag->min_depth = -1.0;
+        diag->mass_total = -1.0;
+        diag->max_courant = dt * lambda_max;
+        diag->max_depth_residual = max_depth_residual;
+        diag->max_wse_elev_error = max_depth_residual;
     }
 }
 
@@ -634,6 +857,18 @@ void swe2d_gpu_get_state(
     if (h_out)  CUDA_CHECK(cudaMemcpy(h_out,  dev->d_h,  sz, cudaMemcpyDeviceToHost));
     if (hu_out) CUDA_CHECK(cudaMemcpy(hu_out, dev->d_hu, sz, cudaMemcpyDeviceToHost));
     if (hv_out) CUDA_CHECK(cudaMemcpy(hv_out, dev->d_hv, sz, cudaMemcpyDeviceToHost));
+}
+
+void swe2d_gpu_set_state(
+    SWE2DDeviceState* dev,
+    const double* h_in,
+    const double* hu_in,
+    const double* hv_in)
+{
+    size_t sz = static_cast<size_t>(dev->n_cells) * sizeof(double);
+    if (h_in)  CUDA_CHECK(cudaMemcpy(dev->d_h,  h_in,  sz, cudaMemcpyHostToDevice));
+    if (hu_in) CUDA_CHECK(cudaMemcpy(dev->d_hu, hu_in, sz, cudaMemcpyHostToDevice));
+    if (hv_in) CUDA_CHECK(cudaMemcpy(dev->d_hv, hv_in, sz, cudaMemcpyHostToDevice));
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -653,8 +888,11 @@ void swe2d_gpu_destroy(SWE2DDeviceState* dev) {
     safe_free(dev->d_n_mann_cell);
     safe_free(dev->d_h);          safe_free(dev->d_hu);
     safe_free(dev->d_hv);
+    safe_free(dev->d_h0);         safe_free(dev->d_hu0);
+    safe_free(dev->d_hv0);
     safe_free(dev->d_flux_h);     safe_free(dev->d_flux_hu);
     safe_free(dev->d_flux_hv);
     safe_free(dev->d_lambda_max);
+    safe_free(dev->d_max_wse_elev_error);
     delete dev;
 }

@@ -10,6 +10,28 @@
 #include <cstdint>
 #include <vector>
 
+enum class SWE2DSpatialScheme : int {
+    FV_FIRST_ORDER = 0,
+    FV_MUSCL_FAST = 1,
+    FV_MUSCL_MINMOD = 2,
+    DG_P0 = 3,
+    DG_P1 = 4,
+};
+
+enum class SWE2DTurbulenceModel : int {
+    NONE = 0,
+    SMAGORINSKY = 1,
+    K_EPSILON = 2,
+    K_OMEGA_SST = 3,
+};
+
+enum class SWE2DBedFrictionModel : int {
+    MANNING = 0,
+    CHEZY = 1,
+    DARCY_WEISBACH = 2,
+    NIKURADSE = 3,
+};
+
 // Forward declaration of GPU state (defined in swe2d_gpu.cuh when CUDA present)
 #ifdef BACKWATER_HAS_CUDA
 struct SWE2DDeviceState;
@@ -25,6 +47,13 @@ struct SWE2DSolverConfig {
     double  cfl      = 0.45;    // CFL safety factor
     double  dt_max   = 10.0;    // maximum allowable timestep (s)
     double  dt_fixed = -1.0;    // if > 0, use this fixed dt (overrides CFL)
+    int     temporal_order = 2; // 1 = Euler, 2 = SSPRK2 (Heun)
+    int     spatial_scheme = static_cast<int>(SWE2DSpatialScheme::FV_FIRST_ORDER);
+    int     turbulence_model = static_cast<int>(SWE2DTurbulenceModel::NONE);
+    int     bed_friction_model = static_cast<int>(SWE2DBedFrictionModel::MANNING);
+    bool    enable_rain_module = false;
+    bool    enable_pipe_network_module = false;
+    bool    enable_hydraulic_structures = false;
     bool    use_gpu  = true;    // attempt CUDA path; falls back to CPU
     int     n_threads = 0;      // 0 = auto (OMP_NUM_THREADS or hardware)
 };
@@ -38,6 +67,9 @@ struct SWE2DStepDiag {
     double   max_depth  = 0.0;
     double   min_depth  = 0.0;
     double   mass_total = 0.0;
+    double   max_courant = 0.0;
+    double   max_depth_residual = 0.0;
+    double   max_wse_elev_error = 0.0;
     bool     gpu_active = false;
 };
 
@@ -58,6 +90,10 @@ struct SWE2DSolver {
     std::vector<double> dh;   // [n_cells] accumulated depth flux / area
     std::vector<double> dhu;  // [n_cells]
     std::vector<double> dhv;  // [n_cells]
+
+    // ── Cell-neighbor connectivity (CSR) for higher-order reconstruction ────
+    std::vector<int32_t> cell_nbr_offsets; // [n_cells + 1]
+    std::vector<int32_t> cell_nbr_ids;     // [sum(n_nbr_cell)]
 
     // ── Config ───────────────────────────────────────────────────────────────
     SWE2DSolverConfig cfg;

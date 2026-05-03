@@ -18,7 +18,15 @@ from __future__ import annotations
 import os
 import sys
 import numpy as np
-from typing import Callable, List, Optional, Tuple
+from typing import Callable, Dict, List, Optional, Tuple
+
+from swe2d_extensions import (
+    BedFrictionModel,
+    SolverModelOptions,
+    SpatialDiscretization,
+    TemporalScheme,
+    TurbulenceModel,
+)
 
 # Ensure the native extension (.so) built under ./build/ is findable regardless
 # of how Python was launched (QGIS, standalone terminal, pytest, etc.).
@@ -263,6 +271,11 @@ class SWE2DBackend:
         dt_max:   float = 10.0,
         dt_fixed: float = -1.0,
         n_threads: int  = 0,
+        temporal_scheme: TemporalScheme = TemporalScheme.SSP_RK2,
+        spatial_discretization: SpatialDiscretization = SpatialDiscretization.FV_FIRST_ORDER,
+        turbulence_model: TurbulenceModel = TurbulenceModel.NONE,
+        bed_friction_model: BedFrictionModel = BedFrictionModel.MANNING,
+        model_options: Optional[SolverModelOptions] = None,
     ) -> None:
         """
         Create the solver with initial conditions.
@@ -290,6 +303,16 @@ class SWE2DBackend:
             If > 0, override CFL with this fixed dt.
         n_threads : int
             CPU thread count (0 = auto).
+        temporal_scheme : TemporalScheme
+            Temporal integrator selection (default SSP_RK2).
+        spatial_discretization : SpatialDiscretization
+            Spatial scheme selector (currently scaffolded).
+        turbulence_model : TurbulenceModel
+            Turbulence closure selector (currently scaffolded).
+        bed_friction_model : BedFrictionModel
+            Bed friction law selector (currently scaffolded).
+        model_options : SolverModelOptions, optional
+            Composite extension config (rain, drainage, hydraulic structures).
         """
         if self._mesh_h is None:
             raise RuntimeError("build_mesh() must be called before initialize().")
@@ -302,12 +325,31 @@ class SWE2DBackend:
         if self._solver_h is not None:
             self._mod.swe2d_destroy(self._solver_h)
 
+        native_opts: Dict[str, object] = {
+            "temporal_order": int(temporal_scheme),
+            "spatial_scheme": int(spatial_discretization),
+            "turbulence_model": int(turbulence_model),
+            "bed_friction_model": int(bed_friction_model),
+            "enable_rain_module": False,
+            "enable_pipe_network_module": False,
+            "enable_hydraulic_structures": False,
+        }
+        if model_options is not None:
+            native_opts.update(model_options.to_native_dict())
+
         self._solver_h = self._mod.swe2d_create_solver(
             self._mesh_h,
             h0_arr, hu0_arr, hv0_arr, n_mann_cell_arr,
             g=g, n_mann=n_mann, h_min=h_min,
             cfl=cfl, dt_max=dt_max, dt_fixed=dt_fixed,
             use_gpu=self._use_gpu, n_threads=n_threads,
+            temporal_order=int(native_opts["temporal_order"]),
+            spatial_scheme=int(native_opts["spatial_scheme"]),
+            turbulence_model=int(native_opts["turbulence_model"]),
+            bed_friction_model=int(native_opts["bed_friction_model"]),
+            enable_rain_module=bool(native_opts["enable_rain_module"]),
+            enable_pipe_network_module=bool(native_opts["enable_pipe_network_module"]),
+            enable_hydraulic_structures=bool(native_opts["enable_hydraulic_structures"]),
         )
 
     # ── Stepping ─────────────────────────────────────────────────────────────
@@ -323,7 +365,8 @@ class SWE2DBackend:
 
         Returns
         -------
-        dict with keys: dt, wet_cells, max_depth, min_depth, mass_total, gpu_active
+        dict with keys: dt, wet_cells, max_depth, min_depth, mass_total,
+        max_courant, max_depth_residual, max_wse_elev_error, gpu_active
         """
         if self._solver_h is None:
             raise RuntimeError("initialize() must be called before step().")

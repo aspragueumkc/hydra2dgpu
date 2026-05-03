@@ -24,6 +24,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from typing import Dict, List, Optional, Sequence, Tuple
+import os
+import warnings
 
 import numpy as np
 
@@ -93,6 +95,16 @@ class MeshResult:
 
 
 _CELL_TYPES = {"triangular", "quadrilateral", "cartesian", "empty"}
+
+
+@dataclass
+class _TQMeshQualityConfig:
+    min_angle_deg: float
+    max_aspect_ratio: float
+    min_area_rel_bbox: float
+    strict: bool
+    size_scales: Tuple[float, ...]
+    smooth_increments: Tuple[int, ...]
 
 
 def _polygon_area_xy(xs: np.ndarray, ys: np.ndarray) -> float:
@@ -175,6 +187,68 @@ def _repair_mesh_result(mesh: MeshResult, area_tol: float = 1.0e-10) -> MeshResu
     )
 
 
+def _weld_mesh_nodes(
+    node_x: np.ndarray,
+    node_y: np.ndarray,
+    *connectivity_arrays: np.ndarray,
+    tol: Optional[float] = None,
+) -> Tuple[np.ndarray, np.ndarray, Tuple[np.ndarray, ...]]:
+    """Merge coincident vertices and remap connectivity.
+
+    TQMesh multi-region support currently meshes regions independently.  For
+    adjacent, non-overlapping regions with shared boundaries, the merged solver
+    mesh must collapse identical interface coordinates back onto the same global
+    node ids so shared edges can be reconstructed from polygon connectivity.
+    """
+    if node_x.size != node_y.size:
+        raise ValueError("node_x and node_y must have the same length")
+    if node_x.size == 0:
+        return node_x, node_y, tuple(arr.copy() for arr in connectivity_arrays)
+
+    if tol is None:
+        scale = max(
+            1.0,
+            float(np.max(np.abs(node_x))),
+            float(np.max(np.abs(node_y))),
+            float(np.ptp(node_x)),
+            float(np.ptp(node_y)),
+        )
+        tol = max(1.0e-9, scale * 1.0e-9)
+
+    buckets: Dict[Tuple[int, int], List[int]] = {}
+    unique_x: List[float] = []
+    unique_y: List[float] = []
+    remap = np.empty(node_x.size, dtype=np.int32)
+
+    for old_idx, (x, y) in enumerate(zip(node_x.tolist(), node_y.tolist())):
+        key = (int(np.rint(x / tol)), int(np.rint(y / tol)))
+        new_idx = None
+        for cand in buckets.get(key, []):
+            if abs(unique_x[cand] - x) <= tol and abs(unique_y[cand] - y) <= tol:
+                new_idx = cand
+                break
+        if new_idx is None:
+            new_idx = len(unique_x)
+            unique_x.append(float(x))
+            unique_y.append(float(y))
+            buckets.setdefault(key, []).append(new_idx)
+        remap[old_idx] = int(new_idx)
+
+    remapped_arrays: List[np.ndarray] = []
+    for arr in connectivity_arrays:
+        arr32 = np.asarray(arr, dtype=np.int32)
+        if arr32.size == 0:
+            remapped_arrays.append(arr32.copy())
+        else:
+            remapped_arrays.append(remap[arr32])
+
+    return (
+        np.asarray(unique_x, dtype=np.float64),
+        np.asarray(unique_y, dtype=np.float64),
+        tuple(remapped_arrays),
+    )
+
+
 def _as_float(v, default: float) -> float:
     try:
         return float(v)
@@ -194,6 +268,134 @@ def _normalize_cell_type(v: str, default: str = "triangular") -> str:
     if s not in _CELL_TYPES:
         return default
     return s
+
+
+def _env_float(name: str, default: float) -> float:
+    try:
+        return float(os.environ.get(name, default))
+    except Exception:
+        return float(default)
+
+
+def _env_bool(name: str, default: bool) -> bool:
+    raw = str(os.environ.get(name, "1" if default else "0")).strip().lower()
+    return raw in {"1", "true", "yes", "on"}
+
+
+def _env_csv_floats(name: str, default: Sequence[float]) -> Tuple[float, ...]:
+    raw = str(os.environ.get(name, "")).strip()
+    if not raw:
+        return tuple(float(v) for v in default)
+    vals: List[float] = []
+    for tok in raw.split(","):
+        tok = tok.strip()
+        if not tok:
+            continue
+        try:
+            vals.append(float(tok))
+        except Exception:
+            continue
+    if not vals:
+        return tuple(float(v) for v in default)
+    return tuple(vals)
+
+
+def _mesh_quality_stats(
+    vx: np.ndarray,
+    vy: np.ndarray,
+    tris: np.ndarray,
+    quads: np.ndarray,
+) -> Dict[str, float]:
+    """Compute compact quality metrics used by adaptive retries."""
+    n_tri = int(tris.shape[0]) if tris.ndim == 2 else 0
+    n_quad = int(quads.shape[0]) if quads.ndim == 2 else 0
+    n_cells = n_tri + n_quad
+    if n_cells <= 0:
+        return {
+            "n_cells": 0.0,
+            "min_angle_deg": 0.0,
+            "max_aspect_ratio": float("inf"),
+            "min_area": 0.0,
+            "bbox_area": 0.0,
+        }
+
+    min_angle = float("inf")
+    max_aspect = 0.0
+    min_area = float("inf")
+
+    def _cell_metrics(conn: np.ndarray) -> Tuple[float, float, float]:
+        pts_x = vx[conn]
+        pts_y = vy[conn]
+        px2 = np.roll(pts_x, -1)
+        py2 = np.roll(pts_y, -1)
+        area = abs(_polygon_area_xy(pts_x, pts_y))
+
+        ex = px2 - pts_x
+        ey = py2 - pts_y
+        el = np.hypot(ex, ey)
+        min_len = float(np.min(el)) if el.size else 0.0
+        max_len = float(np.max(el)) if el.size else float("inf")
+        aspect = (max_len / max(min_len, 1e-14)) if np.isfinite(max_len) else float("inf")
+
+        best_min_angle = float("inf")
+        n = conn.size
+        for i in range(n):
+            ip = (i - 1) % n
+            inx = (i + 1) % n
+            v1x = pts_x[ip] - pts_x[i]
+            v1y = pts_y[ip] - pts_y[i]
+            v2x = pts_x[inx] - pts_x[i]
+            v2y = pts_y[inx] - pts_y[i]
+            n1 = max(float(np.hypot(v1x, v1y)), 1e-14)
+            n2 = max(float(np.hypot(v2x, v2y)), 1e-14)
+            cosang = (v1x * v2x + v1y * v2y) / (n1 * n2)
+            cosang = max(-1.0, min(1.0, float(cosang)))
+            ang = float(np.degrees(np.arccos(cosang)))
+            best_min_angle = min(best_min_angle, ang)
+        return best_min_angle, aspect, area
+
+    if n_tri:
+        for tri in tris:
+            a, ar, area = _cell_metrics(np.asarray(tri, dtype=np.int32))
+            min_angle = min(min_angle, a)
+            max_aspect = max(max_aspect, ar)
+            min_area = min(min_area, area)
+
+    if n_quad:
+        for quad in quads:
+            a, ar, area = _cell_metrics(np.asarray(quad, dtype=np.int32))
+            min_angle = min(min_angle, a)
+            max_aspect = max(max_aspect, ar)
+            min_area = min(min_area, area)
+
+    bbox_area = max(float(np.ptp(vx)) * float(np.ptp(vy)), 0.0)
+    return {
+        "n_cells": float(n_cells),
+        "min_angle_deg": float(min_angle if np.isfinite(min_angle) else 0.0),
+        "max_aspect_ratio": float(max_aspect if np.isfinite(max_aspect) else float("inf")),
+        "min_area": float(min_area if np.isfinite(min_area) else 0.0),
+        "bbox_area": float(bbox_area),
+    }
+
+
+def _quality_passes(stats: Dict[str, float], cfg: _TQMeshQualityConfig) -> bool:
+    if stats.get("n_cells", 0.0) <= 0.0:
+        return False
+    area_floor = max(cfg.min_area_rel_bbox * max(stats.get("bbox_area", 0.0), 1.0), 1e-18)
+    return (
+        stats.get("min_angle_deg", 0.0) >= cfg.min_angle_deg
+        and stats.get("max_aspect_ratio", float("inf")) <= cfg.max_aspect_ratio
+        and stats.get("min_area", 0.0) >= area_floor
+    )
+
+
+def _quality_score(stats: Dict[str, float], cfg: _TQMeshQualityConfig) -> float:
+    """Higher score is better; used to pick best non-passing candidate in non-strict mode."""
+    area_floor = max(cfg.min_area_rel_bbox * max(stats.get("bbox_area", 0.0), 1.0), 1e-18)
+    angle_term = stats.get("min_angle_deg", 0.0) / max(cfg.min_angle_deg, 1e-6)
+    aspect_term = max(cfg.max_aspect_ratio, 1e-6) / max(stats.get("max_aspect_ratio", float("inf")), 1e-6)
+    area_term = stats.get("min_area", 0.0) / max(area_floor, 1e-18)
+    return float(min(angle_term, 2.0) + min(aspect_term, 2.0) + min(area_term, 2.0))
 
 
 def _point_in_polygon(x: float, y: float, ring: Sequence[Tuple[float, float]]) -> bool:
@@ -250,6 +452,76 @@ def _sample_polyline(points: Sequence[Tuple[float, float]], target_size: float) 
     return sampled
 
 
+def _rdp_open_polyline(points: Sequence[Tuple[float, float]], tol: float) -> List[Tuple[float, float]]:
+    """Ramer-Douglas-Peucker simplification for an open polyline."""
+    if len(points) <= 2:
+        return list(points)
+
+    p0 = np.asarray(points[0], dtype=np.float64)
+    p1 = np.asarray(points[-1], dtype=np.float64)
+    seg = p1 - p0
+    seg_norm = float(np.hypot(seg[0], seg[1]))
+
+    max_dist = -1.0
+    max_idx = -1
+    for i in range(1, len(points) - 1):
+        p = np.asarray(points[i], dtype=np.float64)
+        if seg_norm <= 1.0e-14:
+            d = float(np.hypot(*(p - p0)))
+        else:
+            d = float(abs(seg[0] * (p0[1] - p[1]) - (p0[0] - p[0]) * seg[1]) / seg_norm)
+        if d > max_dist:
+            max_dist = d
+            max_idx = i
+
+    if max_dist <= tol or max_idx < 0:
+        return [tuple(points[0]), tuple(points[-1])]
+
+    left = _rdp_open_polyline(points[: max_idx + 1], tol)
+    right = _rdp_open_polyline(points[max_idx:], tol)
+    return left[:-1] + right
+
+
+def _simplify_closed_ring(
+    ring: Sequence[Tuple[float, float]],
+    tol: float,
+    max_vertices: Optional[int] = None,
+) -> List[Tuple[float, float]]:
+    """Simplify a closed polygon ring while preserving closure topology."""
+    pts = list(ring)
+    if len(pts) < 4:
+        return pts
+    if pts[0] == pts[-1]:
+        pts = pts[:-1]
+    if len(pts) < 4:
+        return pts
+
+    tol = max(float(tol), 0.0)
+    if tol <= 0.0 and (max_vertices is None or len(pts) <= int(max_vertices)):
+        return pts
+
+    arr = np.asarray(pts, dtype=np.float64)
+    ctr = np.mean(arr, axis=0)
+    d2 = np.sum((arr - ctr) ** 2, axis=1)
+    i0 = int(np.argmax(d2))
+
+    rotated = pts[i0:] + pts[:i0]
+    open_poly = rotated + [rotated[0]]
+    simplified = _rdp_open_polyline(open_poly, tol)
+    if len(simplified) >= 2 and simplified[0] == simplified[-1]:
+        simplified = simplified[:-1]
+
+    if len(simplified) < 3:
+        simplified = rotated
+
+    if max_vertices is not None and len(simplified) > int(max_vertices):
+        n_keep = max(3, int(max_vertices))
+        idx = np.linspace(0, len(simplified) - 1, n_keep, dtype=int)
+        simplified = [simplified[int(i)] for i in idx]
+
+    return simplified
+
+
 def _orient_quad_edge_chains(edges: Sequence[QuadEdgeControl]) -> List[QuadEdgeControl]:
     if len(edges) != 4:
         return list(edges)
@@ -299,6 +571,81 @@ def _orient_quad_edge_chains(edges: Sequence[QuadEdgeControl]) -> List[QuadEdgeC
         candidates.append(current)
     candidates.sort(key=_score)
     return candidates[0]
+
+
+def _quad_controls_for_region(
+    model: ConceptualModel,
+    region: ConceptualRegion,
+) -> Optional[Tuple[List[Tuple[float, float]], List[QuadEdgeControl]]]:
+    """Build ordered/sampled quad-edge controls for a single region.
+
+    Returns
+    -------
+    (ring, edges) if the region has a complete 4-edge quad definition.
+    None otherwise.
+    """
+    quad_edges = [edge for edge in model.quad_edges if int(edge.region_id) == int(region.region_id)]
+    if len(quad_edges) != 4:
+        return None
+    if {int(edge.edge_id) for edge in quad_edges} != {1, 2, 3, 4}:
+        return None
+
+    oriented = _orient_quad_edge_chains(quad_edges)
+    ring: List[Tuple[float, float]] = []
+    normalized_edges: List[QuadEdgeControl] = []
+    default_edge_sizes = list(region.edge_lengths) if region.edge_lengths and len(region.edge_lengths) == 4 else [region.default_size] * 4
+    for edge in oriented:
+        edge_size = edge.target_size
+        if edge_size is None and 1 <= int(edge.edge_id) <= 4:
+            edge_size = float(default_edge_sizes[int(edge.edge_id) - 1])
+        if edge_size is None or edge_size <= 0.0:
+            edge_size = float(region.default_size)
+        sampled = _sample_polyline(edge.points_xy, edge_size)
+        if len(sampled) < 2:
+            return None
+        if ring:
+            join = sampled[0]
+            prev = ring[-1]
+            if np.hypot(join[0] - prev[0], join[1] - prev[1]) <= 1.0e-6:
+                sampled = [prev] + sampled[1:]
+            ring.extend(sampled[1:])
+        else:
+            ring.extend(sampled)
+        normalized_edges.append(
+            QuadEdgeControl(
+                region_id=edge.region_id,
+                edge_id=edge.edge_id,
+                points_xy=sampled,
+                target_size=edge_size,
+                n_layers=edge.n_layers,
+                first_height=edge.first_height,
+                growth_rate=edge.growth_rate,
+            )
+        )
+
+    if len(ring) >= 2 and np.hypot(ring[0][0] - ring[-1][0], ring[0][1] - ring[-1][1]) <= 1.0e-6:
+        ring = ring[:-1]
+    if len(ring) < 4:
+        return None
+    area = _polygon_area_xy(
+        np.asarray([p[0] for p in ring], dtype=np.float64),
+        np.asarray([p[1] for p in ring], dtype=np.float64),
+    )
+    if area < 0.0:
+        ring = list(reversed(ring))
+        normalized_edges = [
+            QuadEdgeControl(
+                region_id=edge.region_id,
+                edge_id=edge.edge_id,
+                points_xy=list(reversed(edge.points_xy)),
+                target_size=edge.target_size,
+                n_layers=edge.n_layers,
+                first_height=edge.first_height,
+                growth_rate=edge.growth_rate,
+            )
+            for edge in reversed(normalized_edges)
+        ]
+    return ring, normalized_edges
 
 
 class MeshingBackend:
@@ -471,7 +818,9 @@ class GmshBackend(MeshingBackend):
         if not model.regions:
             raise ValueError("No conceptual regions provided.")
 
-        gmsh.initialize()
+        # `interruptible=False` avoids installing a SIGINT handler, which lets
+        # the Python API run from the QGIS bridge worker thread.
+        gmsh.initialize(interruptible=False)
         gmsh.option.setNumber("General.Verbosity", 1)
         gmsh.model.add("swe2d")
 
@@ -490,6 +839,7 @@ class GmshBackend(MeshingBackend):
         surface_tags: List[int] = []
         surface_meta: List[Tuple[int, str, float]] = []  # (region_id, cell_type, target_size)
         surface_curve_tags: Dict[int, List[int]] = {}
+        surface_quad_controls: Dict[int, Optional[List[QuadEdgeControl]]] = {}
 
         # ---- 1. Build one Gmsh surface per region ----------------------
         for region in model.regions:
@@ -503,15 +853,61 @@ class GmshBackend(MeshingBackend):
             if ctype == "empty":
                 continue
 
-            pts = [gmsh.model.geo.addPoint(x, y, 0.0, region.default_size) for x, y in ring]
-            lines = []
-            for i in range(len(pts)):
-                lines.append(gmsh.model.geo.addLine(pts[i], pts[(i + 1) % len(pts)]))
+            quad_controls = None
+            if ctype in ("quadrilateral", "cartesian"):
+                quad_setup = _quad_controls_for_region(model, region)
+                if quad_setup is not None:
+                    ring, quad_controls = quad_setup
+
+            lines: List[int] = []
+            if quad_controls is not None:
+                first_pt_tag: Optional[int] = None
+                first_xy: Optional[Tuple[float, float]] = None
+                prev_end_tag: Optional[int] = None
+                for ei, edge in enumerate(quad_controls):
+                    edge_pts = list(edge.points_xy)
+                    if len(edge_pts) < 2:
+                        continue
+                    edge_lc = float(edge.target_size) if (edge.target_size is not None and edge.target_size > 0.0) else float(region.default_size)
+                    edge_tags: List[int] = []
+                    for pj, (x, y) in enumerate(edge_pts):
+                        if ei > 0 and pj == 0 and prev_end_tag is not None:
+                            edge_tags.append(prev_end_tag)
+                            continue
+                        if ei == len(quad_controls) - 1 and pj == len(edge_pts) - 1 and first_pt_tag is not None and first_xy is not None:
+                            if np.hypot(x - first_xy[0], y - first_xy[1]) <= tol:
+                                edge_tags.append(first_pt_tag)
+                                continue
+                        ptag = gmsh.model.geo.addPoint(x, y, 0.0, edge_lc)
+                        edge_tags.append(ptag)
+                        if first_pt_tag is None:
+                            first_pt_tag = ptag
+                            first_xy = (float(x), float(y))
+                    if len(edge_tags) < 2:
+                        continue
+                    try:
+                        curve = gmsh.model.geo.addSpline(edge_tags) if len(edge_tags) > 2 else gmsh.model.geo.addLine(edge_tags[0], edge_tags[1])
+                        lines.append(curve)
+                    except Exception:
+                        for k in range(len(edge_tags) - 1):
+                            lines.append(gmsh.model.geo.addLine(edge_tags[k], edge_tags[k + 1]))
+                    prev_end_tag = edge_tags[-1]
+                if first_pt_tag is not None and prev_end_tag is not None and prev_end_tag != first_pt_tag:
+                    lines.append(gmsh.model.geo.addLine(prev_end_tag, first_pt_tag))
+            else:
+                pts = [gmsh.model.geo.addPoint(x, y, 0.0, region.default_size) for x, y in ring]
+                for i in range(len(pts)):
+                    lines.append(gmsh.model.geo.addLine(pts[i], pts[(i + 1) % len(pts)]))
+
+            if len(lines) < 3:
+                continue
+
             loop = gmsh.model.geo.addCurveLoop(lines)
             surf = gmsh.model.geo.addPlaneSurface([loop])
             surface_tags.append(surf)
             surface_meta.append((region.region_id, ctype, region.default_size))
             surface_curve_tags[surf] = lines
+            surface_quad_controls[surf] = quad_controls
 
         if not surface_tags:
             raise ValueError("GmshBackend: no non-empty regions to mesh.")
@@ -597,18 +993,22 @@ class GmshBackend(MeshingBackend):
         for surf, (rid, ctype, sz) in zip(surface_tags, surface_meta):
             region = next((r for r in model.regions if int(r.region_id) == int(rid)), None)
             lines = surface_curve_tags.get(surf, [])
+            quad_controls = surface_quad_controls.get(surf)
             if ctype == "cartesian":
                 # Transfinite + Recombine: structured, fast, pure quads.
                 if region is not None and region.edge_lengths and len(lines) == 4 and len(region.edge_lengths) == 4:
                     try:
-                        p_ring = list(region.ring_xy)
-                        if p_ring and p_ring[0] == p_ring[-1]:
-                            p_ring = p_ring[:-1]
                         edge_geom_len = []
-                        for i in range(4):
-                            x0, y0 = p_ring[i]
-                            x1, y1 = p_ring[(i + 1) % 4]
-                            edge_geom_len.append(float(np.hypot(x1 - x0, y1 - y0)))
+                        if quad_controls is not None and len(quad_controls) == 4:
+                            edge_geom_len = [_polyline_length(edge.points_xy) for edge in quad_controls]
+                        else:
+                            p_ring = list(region.ring_xy)
+                            if p_ring and p_ring[0] == p_ring[-1]:
+                                p_ring = p_ring[:-1]
+                            for i in range(4):
+                                x0, y0 = p_ring[i]
+                                x1, y1 = p_ring[(i + 1) % 4]
+                                edge_geom_len.append(float(np.hypot(x1 - x0, y1 - y0)))
                         counts = []
                         for i in range(4):
                             tlen = max(float(region.edge_lengths[i]), tol)
@@ -636,22 +1036,30 @@ class GmshBackend(MeshingBackend):
                         pass  # Works best for 4-sided surfaces.
                 gmsh.model.mesh.setRecombine(2, surf)
                 want_recombine = True
+                # Packing of Parallelograms requires a scaled cross field and
+                # is brittle on real project geometries.  For structured quad
+                # surfaces, transfinite constraints plus recombination are the
+                # controlling inputs; keep the base 2D algorithm on the safer
+                # frontal path.
                 try:
-                    gmsh.model.mesh.setAlgorithm(2, surf, self._ALGO_PACKING_OF_PARALLELOGRAMS)
+                    gmsh.model.mesh.setAlgorithm(2, surf, self._ALGO_FRONTAL)
                 except Exception:
-                    gmsh.option.setNumber("Mesh.Algorithm", self._ALGO_PACKING_OF_PARALLELOGRAMS)
+                    gmsh.option.setNumber("Mesh.Algorithm", self._ALGO_FRONTAL)
             elif ctype == "quadrilateral":
                 # Unstructured quads via Blossom recombination.
                 if region is not None and region.edge_lengths and len(lines) == 4 and len(region.edge_lengths) == 4:
                     try:
-                        p_ring = list(region.ring_xy)
-                        if p_ring and p_ring[0] == p_ring[-1]:
-                            p_ring = p_ring[:-1]
                         edge_geom_len = []
-                        for i in range(4):
-                            x0, y0 = p_ring[i]
-                            x1, y1 = p_ring[(i + 1) % 4]
-                            edge_geom_len.append(float(np.hypot(x1 - x0, y1 - y0)))
+                        if quad_controls is not None and len(quad_controls) == 4:
+                            edge_geom_len = [_polyline_length(edge.points_xy) for edge in quad_controls]
+                        else:
+                            p_ring = list(region.ring_xy)
+                            if p_ring and p_ring[0] == p_ring[-1]:
+                                p_ring = p_ring[:-1]
+                            for i in range(4):
+                                x0, y0 = p_ring[i]
+                                x1, y1 = p_ring[(i + 1) % 4]
+                                edge_geom_len.append(float(np.hypot(x1 - x0, y1 - y0)))
                         counts = []
                         for i in range(4):
                             tlen = max(float(region.edge_lengths[i]), tol)
@@ -668,10 +1076,15 @@ class GmshBackend(MeshingBackend):
                         pass
                 gmsh.model.mesh.setRecombine(2, surf)
                 want_recombine = True
+                # For general quad regions, generate triangles with the frontal
+                # algorithm and let Blossom handle recombination.  This avoids
+                # the scaled-cross-field requirement that triggers terminal
+                # errors like: "Packing of Parallelograms require a scaled
+                # cross field".
                 try:
-                    gmsh.model.mesh.setAlgorithm(2, surf, self._ALGO_PACKING_OF_PARALLELOGRAMS)
+                    gmsh.model.mesh.setAlgorithm(2, surf, self._ALGO_FRONTAL)
                 except Exception:
-                    gmsh.option.setNumber("Mesh.Algorithm", self._ALGO_PACKING_OF_PARALLELOGRAMS)
+                    gmsh.option.setNumber("Mesh.Algorithm", self._ALGO_FRONTAL)
             else:
                 # triangular: frontal Delaunay for quality.
                 try:
@@ -941,69 +1354,31 @@ class TQMeshBackend(MeshingBackend):
     name = "tqmesh"
 
     @staticmethod
-    def _quad_controls_for_region(model: ConceptualModel, region: ConceptualRegion) -> Optional[Tuple[List[Tuple[float, float]], List[QuadEdgeControl]]]:
-        quad_edges = [edge for edge in model.quad_edges if int(edge.region_id) == int(region.region_id)]
-        if len(quad_edges) != 4:
-            return None
-        if {int(edge.edge_id) for edge in quad_edges} != {1, 2, 3, 4}:
-            return None
-
-        oriented = _orient_quad_edge_chains(quad_edges)
-        ring: List[Tuple[float, float]] = []
-        normalized_edges: List[QuadEdgeControl] = []
-        default_edge_sizes = list(region.edge_lengths) if region.edge_lengths and len(region.edge_lengths) == 4 else [region.default_size] * 4
-        for edge in oriented:
-            edge_size = edge.target_size
-            if edge_size is None and 1 <= int(edge.edge_id) <= 4:
-                edge_size = float(default_edge_sizes[int(edge.edge_id) - 1])
-            if edge_size is None or edge_size <= 0.0:
-                edge_size = float(region.default_size)
-            sampled = _sample_polyline(edge.points_xy, edge_size)
-            if len(sampled) < 2:
-                return None
-            if ring:
-                join = sampled[0]
-                prev = ring[-1]
-                if np.hypot(join[0] - prev[0], join[1] - prev[1]) <= 1.0e-6:
-                    sampled = [prev] + sampled[1:]
-                ring.extend(sampled[1:])
-            else:
-                ring.extend(sampled)
-            normalized_edges.append(
-                QuadEdgeControl(
-                    region_id=edge.region_id,
-                    edge_id=edge.edge_id,
-                    points_xy=sampled,
-                    target_size=edge_size,
-                    n_layers=edge.n_layers,
-                    first_height=edge.first_height,
-                    growth_rate=edge.growth_rate,
-                )
-            )
-
-        if len(ring) >= 2 and np.hypot(ring[0][0] - ring[-1][0], ring[0][1] - ring[-1][1]) <= 1.0e-6:
-            ring = ring[:-1]
-        if len(ring) < 4:
-            return None
-        area = _polygon_area_xy(
-            np.asarray([p[0] for p in ring], dtype=np.float64),
-            np.asarray([p[1] for p in ring], dtype=np.float64),
+    def _quality_config() -> _TQMeshQualityConfig:
+        return _TQMeshQualityConfig(
+            # Quality targets are INFORMATIONAL in non-strict mode — they drive
+            # warnings and best-candidate selection but will not exhaust the
+            # retry ladder.  The real retry trigger is TQMesh completeness
+            # failure (RuntimeError from the C++ binding).
+            #
+            # Defaults are intentionally relaxed so that most real-world
+            # watershed polygons pass on the first attempt.  Tighten via env
+            # vars only if you need a high-quality mesh and are willing to wait.
+            min_angle_deg=max(_env_float("BACKWATER_TQMESH_MIN_ANGLE_DEG", 5.0), 0.0),
+            max_aspect_ratio=max(_env_float("BACKWATER_TQMESH_MAX_ASPECT", 20.0), 1.0),
+            min_area_rel_bbox=max(_env_float("BACKWATER_TQMESH_MIN_AREA_REL_BBOX", 1.0e-14), 0.0),
+            strict=_env_bool("BACKWATER_TQMESH_QUALITY_STRICT", False),
+            # Fast default: single attempt at requested size.
+            size_scales=_env_csv_floats("BACKWATER_TQMESH_SIZE_SCALES", (1.0,)),
+            # Fast default: no smoothing.
+            smooth_increments=tuple(
+                int(round(v)) for v in _env_csv_floats("BACKWATER_TQMESH_SMOOTH_INCREMENTS", (0.0,))
+            ),
         )
-        if area < 0.0:
-            ring = list(reversed(ring))
-            normalized_edges = [
-                QuadEdgeControl(
-                    region_id=edge.region_id,
-                    edge_id=edge.edge_id,
-                    points_xy=list(reversed(edge.points_xy)),
-                    target_size=edge.target_size,
-                    n_layers=edge.n_layers,
-                    first_height=edge.first_height,
-                    growth_rate=edge.growth_rate,
-                )
-                for edge in reversed(normalized_edges)
-            ]
-        return ring, normalized_edges
+
+    @staticmethod
+    def _quad_controls_for_region(model: ConceptualModel, region: ConceptualRegion) -> Optional[Tuple[List[Tuple[float, float]], List[QuadEdgeControl]]]:
+        return _quad_controls_for_region(model, region)
 
     def generate(self, model: ConceptualModel) -> MeshResult:
         try:
@@ -1016,6 +1391,8 @@ class TQMeshBackend(MeshingBackend):
 
         if not model.regions:
             raise ValueError("TQMeshBackend: no conceptual regions provided.")
+
+        quality_cfg = self._quality_config()
 
         # ---- Process each region independently then merge results ----------
         # For the common single-region case this is straightforward.
@@ -1058,6 +1435,11 @@ class TQMeshBackend(MeshingBackend):
 
             # Exterior boundary — TQMesh expects CCW; ensure correct winding
             ext_verts = list(quad_boundary) if quad_boundary is not None else ring
+            if quad_controls is None:
+                simp_factor = max(_env_float("BACKWATER_TQMESH_BOUNDARY_SIMPLIFY_FACTOR", 0.35), 0.0)
+                simp_tol = float(target_size) * simp_factor
+                simp_max = max(8, int(round(_env_float("BACKWATER_TQMESH_BOUNDARY_MAX_VERTS", 64.0))))
+                ext_verts = _simplify_closed_ring(ext_verts, tol=simp_tol, max_vertices=simp_max)
             if quad_controls is None and not self._is_ccw(ext_verts):
                 ext_verts = list(reversed(ext_verts))
 
@@ -1101,7 +1483,9 @@ class TQMeshBackend(MeshingBackend):
                 if len(active_quad_layers) >= 4:
                     active_quad_layers = []
 
-            result = _tq.generate_triangular_mesh(
+            # TQMesh can be sensitive to some combinations (quad-layers + tri2quad +
+            # smoothing) for specific regions.  Try a stable cascade before failing.
+            base_args = dict(
                 ext_verts=[[v[0], v[1]] for v in ext_verts],
                 ext_colors=ext_colors,
                 int_boundaries=[],
@@ -1109,10 +1493,126 @@ class TQMeshBackend(MeshingBackend):
                 constraint_verts=[[list(v) for v in cverts] for cverts in constraint_verts_list],
                 constraint_sizes=constraint_sizes_list,
                 target_size=target_size,
-                quad_layers=active_quad_layers,
-                tri_to_quad=(ctype in ("quadrilateral", "cartesian")),
-                n_smooth=3,
             )
+            want_quads = ctype in ("quadrilateral", "cartesian")
+
+            attempts = [
+                ("requested", active_quad_layers, want_quads, 3),
+            ]
+            if active_quad_layers:
+                attempts.append(("no-quad-layers", [], want_quads, 3))
+            if want_quads:
+                attempts.append(("triangles-only", [], False, 1))
+            attempts.append(("minimal", [], False, 0))
+
+            result = None
+            errors: List[str] = []
+            seen_cfg = set()
+            used_label = "requested"
+            used_quality: Optional[Dict[str, float]] = None
+            best_nonpassing = None
+            best_nonpassing_score = -float("inf")
+            for label, quad_layers_try, tri_to_quad_try, n_smooth_try in attempts:
+                for size_scale in quality_cfg.size_scales:
+                    target_try = max(target_size * max(float(size_scale), 1e-6), 1e-10)
+                    csz_try = [max(float(cs) * max(float(size_scale), 1e-6), 1e-10) for cs in constraint_sizes_list]
+                    for ds in quality_cfg.smooth_increments:
+                        smooth_try = max(0, int(n_smooth_try) + int(ds))
+                        cfg_key = (
+                            label,
+                            tuple(tuple(q) for q in quad_layers_try),
+                            bool(tri_to_quad_try),
+                            int(smooth_try),
+                            float(round(target_try, 12)),
+                        )
+                        if cfg_key in seen_cfg:
+                            continue
+                        seen_cfg.add(cfg_key)
+
+                        try:
+                            candidate = _tq.generate_triangular_mesh(
+                                ext_verts=base_args["ext_verts"],
+                                ext_colors=base_args["ext_colors"],
+                                int_boundaries=base_args["int_boundaries"],
+                                int_colors=base_args["int_colors"],
+                                constraint_verts=base_args["constraint_verts"],
+                                constraint_sizes=csz_try,
+                                target_size=target_try,
+                                quad_layers=quad_layers_try,
+                                tri_to_quad=tri_to_quad_try,
+                                n_smooth=smooth_try,
+                            )
+                        except Exception as exc:
+                            errors.append(
+                                f"{label} (size={target_try:.4g}, smooth={smooth_try}): {exc}"
+                            )
+                            continue
+
+                        cand_vx = np.asarray(candidate["verts_x"], dtype=np.float64)
+                        cand_vy = np.asarray(candidate["verts_y"], dtype=np.float64)
+                        cand_tris = np.asarray(candidate["triangles"], dtype=np.int32)
+                        cand_quads = np.asarray(candidate["quads"], dtype=np.int32)
+                        stats = _mesh_quality_stats(cand_vx, cand_vy, cand_tris, cand_quads)
+
+                        if _quality_passes(stats, quality_cfg):
+                            result = candidate
+                            used_label = f"{label} (size={target_try:.4g}, smooth={smooth_try})"
+                            used_quality = stats
+                            break
+
+                        score = _quality_score(stats, quality_cfg)
+                        if score > best_nonpassing_score:
+                            best_nonpassing_score = score
+                            best_nonpassing = (candidate, label, target_try, smooth_try, stats)
+                        errors.append(
+                            "quality-fail "
+                            f"{label} (size={target_try:.4g}, smooth={smooth_try}): "
+                            f"min_angle={stats['min_angle_deg']:.2f}, "
+                            f"max_aspect={stats['max_aspect_ratio']:.2f}, "
+                            f"min_area={stats['min_area']:.3e}"
+                        )
+                    if result is not None:
+                        break
+                if result is not None:
+                    break
+
+            if result is None and (not quality_cfg.strict) and best_nonpassing is not None:
+                result, base_label, used_target_size, used_smooth, used_quality = best_nonpassing
+                used_label = (
+                    f"{base_label} (best-nonpassing; size={used_target_size:.4g}, "
+                    f"smooth={used_smooth})"
+                )
+                warnings.warn(
+                    "TQMesh quality thresholds not fully met for region "
+                    f"{region.region_id}; using best available candidate in non-strict mode. "
+                    f"Metrics: min_angle={used_quality['min_angle_deg']:.2f}, "
+                    f"max_aspect={used_quality['max_aspect_ratio']:.2f}, "
+                    f"min_area={used_quality['min_area']:.3e}",
+                    RuntimeWarning,
+                )
+
+            if result is None:
+                raise RuntimeError(
+                    "TQMesh failed for region "
+                    f"{region.region_id} after fallback attempts. "
+                    + " | ".join(errors)
+                )
+
+            if errors:
+                qmsg = ""
+                if used_quality is not None:
+                    qmsg = (
+                        f" quality(min_angle={used_quality['min_angle_deg']:.2f},"
+                        f" max_aspect={used_quality['max_aspect_ratio']:.2f},"
+                        f" min_area={used_quality['min_area']:.3e})"
+                    )
+                warnings.warn(
+                    "TQMesh fallback used for region "
+                    f"{region.region_id} ({used_label}) due to prior failure(s): "
+                    + " | ".join(errors)
+                    + qmsg,
+                    RuntimeWarning,
+                )
 
             vx: np.ndarray = np.asarray(result["verts_x"], dtype=np.float64)
             vy: np.ndarray = np.asarray(result["verts_y"], dtype=np.float64)
@@ -1147,17 +1647,23 @@ class TQMeshBackend(MeshingBackend):
         if not all_tris and not all_quads:
             raise ValueError("TQMesh generated no cells.")
 
-        node_x = np.asarray(all_vx, dtype=np.float64)
-        node_y = np.asarray(all_vy, dtype=np.float64)
-        node_z = np.zeros(len(all_vx), dtype=np.float64)
+        tri_conn = np.asarray(all_tris, dtype=np.int32)
+        quad_conn = np.asarray(all_quads, dtype=np.int32)
+        node_x, node_y, (tri_conn, quad_conn) = _weld_mesh_nodes(
+            np.asarray(all_vx, dtype=np.float64),
+            np.asarray(all_vy, dtype=np.float64),
+            tri_conn,
+            quad_conn,
+        )
+        node_z = np.zeros(node_x.size, dtype=np.float64)
 
         # Build CSR face topology from triangles + quads
         face_nodes_list: List[int] = []
         face_offsets: List[int] = [0]
         plot_tris: List[int] = []
 
-        tris_arr = np.asarray(all_tris, dtype=np.int32).reshape(-1, 3) if all_tris else np.empty((0,3), np.int32)
-        quads_arr = np.asarray(all_quads, dtype=np.int32).reshape(-1, 4) if all_quads else np.empty((0,4), np.int32)
+        tris_arr = tri_conn.reshape(-1, 3) if tri_conn.size else np.empty((0,3), np.int32)
+        quads_arr = quad_conn.reshape(-1, 4) if quad_conn.size else np.empty((0,4), np.int32)
 
         for tri in tris_arr:
             face_nodes_list.extend(tri.tolist())

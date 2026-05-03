@@ -11,9 +11,12 @@ This module provides a focused GUI for:
 
 from __future__ import annotations
 
+import concurrent.futures
+import copy
 import csv
 import math
 import os
+import time
 from typing import Dict, List, Optional, Tuple
 
 import numpy as np
@@ -135,6 +138,25 @@ _BC_VALUE_MAP = {
 }
 
 _SWE2D_WORKBENCH_WINDOWS = []
+
+
+def _run_topology_mesh_job(conceptual, backend_name: str):
+    """Run heavy topology meshing work off the GUI thread/process."""
+    # Use the already-imported function when available; fall back to local import
+    # in subprocess contexts.
+    gen = generate_face_centric_mesh
+    if gen is None:
+        try:
+            from swe2d_meshing import generate_face_centric_mesh as gen  # type: ignore
+        except Exception:
+            from .swe2d_meshing import generate_face_centric_mesh as gen  # type: ignore
+    return gen(conceptual, backend=backend_name)
+
+
+def _clone_conceptual_without_constraints(conceptual):
+    clone = copy.deepcopy(conceptual)
+    clone.constraints = []
+    return clone
 
 
 class HydrographEditorDialog(QtWidgets.QDialog):
@@ -286,6 +308,24 @@ class SWE2DWorkbenchDialog(QtWidgets.QDialog):
         self._unit_system = "SI"
         self._length_unit_name = "m"
         self._gravity = 9.81
+        self._topology_mesh_future: Optional[concurrent.futures.Future] = None
+        self._topology_mesh_backend: Optional[str] = None
+        self._topology_mesh_default_cell_type: Optional[str] = None
+        self._topology_mesh_run_mode = "full"
+        self._topology_mesh_auto_fallback_used = False
+        self._topology_mesh_conceptual = None
+        self._topology_mesh_thread_pool = concurrent.futures.ThreadPoolExecutor(max_workers=1)
+        self._topology_mesh_process_pool: Optional[concurrent.futures.ProcessPoolExecutor] = None
+        self._topology_mesh_timer = QtCore.QTimer(self)
+        self._topology_mesh_timer.setInterval(120)
+        self._topology_mesh_timer.timeout.connect(self._poll_topology_mesh_future)
+        self._topology_mesh_started_at: Optional[float] = None
+        self._topology_mesh_poll_count = 0
+        try:
+            timeout_sec = float(os.environ.get("BACKWATER_TOPOLOGY_MESH_TIMEOUT_SEC", "300"))
+        except Exception:
+            timeout_sec = 300.0
+        self._topology_mesh_timeout_sec = max(30.0, timeout_sec)
 
         FigureCanvas, Figure, mtri = _try_import_matplotlib_qt()
         self._FigureCanvas = FigureCanvas
@@ -657,6 +697,230 @@ class SWE2DWorkbenchDialog(QtWidgets.QDialog):
     def _log(self, msg: str):
         self.log_view.appendPlainText(str(msg))
         QtWidgets.QApplication.processEvents()
+
+    def closeEvent(self, event):
+        self._topology_mesh_timer.stop()
+        try:
+            self._topology_mesh_thread_pool.shutdown(wait=False, cancel_futures=True)
+        except Exception:
+            pass
+        try:
+            if self._topology_mesh_process_pool is not None:
+                self._topology_mesh_process_pool.shutdown(wait=False, cancel_futures=True)
+        except Exception:
+            pass
+        super().closeEvent(event)
+
+    def _set_topology_mesh_busy(self, busy: bool, status_msg: Optional[str] = None):
+        try:
+            self.topo_generate_btn.setEnabled(not busy)
+        except Exception:
+            pass
+        if status_msg is not None:
+            self.topo_status_lbl.setText(status_msg)
+        if busy:
+            self.progress_bar.setRange(0, 0)
+            QtWidgets.QApplication.setOverrideCursor(QtCore.Qt.CursorShape.WaitCursor)
+        else:
+            self.progress_bar.setRange(0, 100)
+            self.progress_bar.setValue(0)
+            try:
+                QtWidgets.QApplication.restoreOverrideCursor()
+            except Exception:
+                pass
+
+    def _format_elapsed(self, started_at: Optional[float]) -> str:
+        if started_at is None:
+            return "0.00s"
+        return f"{max(0.0, time.perf_counter() - started_at):.2f}s"
+
+    def _start_topology_mesh_async(
+        self,
+        conceptual,
+        backend_name: str,
+        default_cell_type: str,
+        run_mode: str = "full",
+    ):
+        if self._topology_mesh_future is not None and not self._topology_mesh_future.done():
+            self._log("Topology mesh is already running. Please wait for completion.")
+            return
+
+        self._topology_mesh_backend = backend_name
+        self._topology_mesh_default_cell_type = default_cell_type
+        self._topology_mesh_run_mode = run_mode
+        self._topology_mesh_conceptual = conceptual
+        if run_mode == "full":
+            self._topology_mesh_auto_fallback_used = False
+        self._topology_mesh_started_at = time.perf_counter()
+        self._topology_mesh_poll_count = 0
+
+        if backend_name == "gmsh":
+            # Keep Gmsh in a separate process to avoid UI freezes from C++
+            # meshing work and signal-handler constraints.
+            if self._topology_mesh_process_pool is None:
+                self._topology_mesh_process_pool = concurrent.futures.ProcessPoolExecutor(max_workers=1)
+            executor = self._topology_mesh_process_pool
+        else:
+            executor = self._topology_mesh_thread_pool
+
+        self._topology_mesh_future = executor.submit(_run_topology_mesh_job, conceptual, backend_name)
+        status_msg = f"Meshing in progress with backend '{backend_name}'..."
+        if run_mode == "fallback-no-constraints":
+            status_msg = (
+                f"Meshing fallback in progress with backend '{backend_name}' "
+                "(constraints disabled)..."
+            )
+        self._set_topology_mesh_busy(True, status_msg)
+        self._log(
+            "mesh> start "
+            f"backend={backend_name} default_cell_type={default_cell_type} "
+            f"mode={run_mode} "
+            f"timeout={self._topology_mesh_timeout_sec:.0f}s "
+            f"elapsed={self._format_elapsed(self._topology_mesh_started_at)}"
+        )
+        self._topology_mesh_timer.start()
+
+    def _poll_topology_mesh_future(self):
+        fut = self._topology_mesh_future
+        if fut is None:
+            self._topology_mesh_timer.stop()
+            self._set_topology_mesh_busy(False)
+            return
+
+        elapsed = 0.0
+        if self._topology_mesh_started_at is not None:
+            elapsed = max(0.0, time.perf_counter() - self._topology_mesh_started_at)
+
+        if elapsed > self._topology_mesh_timeout_sec and not fut.done():
+            backend_name = self._topology_mesh_backend or "unknown"
+            default_cell_type = self._topology_mesh_default_cell_type or "triangular"
+            run_mode = self._topology_mesh_run_mode
+            conceptual = self._topology_mesh_conceptual
+            can_retry_without_constraints = (
+                backend_name == "gmsh"
+                and run_mode == "full"
+                and not self._topology_mesh_auto_fallback_used
+                and conceptual is not None
+                and bool(getattr(conceptual, "constraints", []))
+            )
+            self._topology_mesh_timer.stop()
+            self._topology_mesh_future = None
+            self._topology_mesh_started_at = None
+            self._topology_mesh_poll_count = 0
+
+            # For gmsh (process executor), terminate and recreate the pool to
+            # ensure stuck native meshing work is not left running.
+            if backend_name == "gmsh" and self._topology_mesh_process_pool is not None:
+                try:
+                    self._topology_mesh_process_pool.shutdown(wait=False, cancel_futures=True)
+                except Exception:
+                    pass
+                self._topology_mesh_process_pool = None
+
+            self.topo_status_lbl.setText(
+                f"Topology meshing timed out after {self._topology_mesh_timeout_sec:.0f}s "
+                f"(backend '{backend_name}')."
+            )
+            self._log(
+                "mesh> timeout "
+                f"backend={backend_name} mode={run_mode} elapsed={elapsed:.2f}s "
+                f"limit={self._topology_mesh_timeout_sec:.0f}s"
+            )
+
+            if can_retry_without_constraints:
+                try:
+                    fallback_conceptual = _clone_conceptual_without_constraints(conceptual)
+                    self._topology_mesh_auto_fallback_used = True
+                    self._log(
+                        "mesh> fallback "
+                        f"backend={backend_name} action=retry_without_constraints "
+                        f"reason=timeout elapsed={elapsed:.2f}s"
+                    )
+                    self._start_topology_mesh_async(
+                        fallback_conceptual,
+                        backend_name,
+                        default_cell_type,
+                        run_mode="fallback-no-constraints",
+                    )
+                    return
+                except Exception as exc:
+                    self._log(f"mesh> fallback-fail backend={backend_name} error={exc}")
+
+            self._set_topology_mesh_busy(False)
+            return
+
+        if not fut.done():
+            self._topology_mesh_poll_count += 1
+            # Emit lightweight runtime heartbeat at ~1 second cadence.
+            if self._topology_mesh_poll_count % 8 == 0:
+                spinner = "|/-\\"[(self._topology_mesh_poll_count // 8) % 4]
+                self._log(
+                    "mesh> run "
+                    f"status={spinner} backend={self._topology_mesh_backend or 'unknown'} "
+                    f"elapsed={self._format_elapsed(self._topology_mesh_started_at)}"
+                )
+            return
+
+        self._topology_mesh_timer.stop()
+        backend_name = self._topology_mesh_backend or "unknown"
+        default_cell_type = self._topology_mesh_default_cell_type or "triangular"
+        run_mode = self._topology_mesh_run_mode
+        elapsed_str = self._format_elapsed(self._topology_mesh_started_at)
+        self._topology_mesh_future = None
+        self._topology_mesh_started_at = None
+        self._topology_mesh_poll_count = 0
+
+        try:
+            mesh = fut.result()
+            self._mesh_data = {
+                "nx": np.array(max(2, int(round(np.sqrt(mesh.node_x.size))))),
+                "ny": np.array(max(2, int(round(np.sqrt(mesh.node_x.size))))),
+                "lx": np.array(max(float(np.max(mesh.node_x) - np.min(mesh.node_x)), 1.0)),
+                "ly": np.array(max(float(np.max(mesh.node_y) - np.min(mesh.node_y)), 1.0)),
+                "node_x": mesh.node_x,
+                "node_y": mesh.node_y,
+                "node_z": mesh.node_z,
+                "cell_nodes": mesh.cell_nodes,
+                "cell_face_offsets": mesh.cell_face_offsets,
+                "cell_face_nodes": mesh.cell_face_nodes,
+                "cell_type": mesh.cell_type,
+                "region_id": mesh.region_id,
+                "target_size": mesh.target_size,
+            }
+            n_faces = int(mesh.cell_face_offsets.size - 1)
+            n_tris = int(mesh.cell_nodes.size // 3)
+            self.mesh_info_lbl.setText(f"Topology mesh: nodes={mesh.node_x.size}, faces={n_faces}, plot_triangles={n_tris}")
+            if run_mode == "fallback-no-constraints":
+                self.topo_status_lbl.setText(
+                    f"Generated {n_faces} computational faces using backend '{backend_name}' "
+                    "after timeout fallback with constraints disabled. "
+                    "Review/repair constraint polygons and regenerate when ready."
+                )
+            else:
+                self.topo_status_lbl.setText(
+                    f"Generated {n_faces} computational faces using backend '{backend_name}'. "
+                    "Cell metadata (type/size/region) stored in mesh state."
+                )
+            self._log(
+                "mesh> done "
+                f"backend={backend_name} default_cell_type={default_cell_type} "
+                f"mode={run_mode} "
+                f"nodes={mesh.node_x.size} faces={n_faces} elapsed={elapsed_str}"
+            )
+            self._result_data = None
+            self.view_mode_combo.setCurrentText("Mesh")
+            self._refresh_plot()
+        except NotImplementedError as exc:
+            self.topo_status_lbl.setText(str(exc))
+            self._log(f"mesh> fail backend={backend_name} mode={run_mode} elapsed={elapsed_str} error={exc}")
+        except RuntimeError as exc:
+            self.topo_status_lbl.setText(str(exc))
+            self._log(f"mesh> fail backend={backend_name} mode={run_mode} elapsed={elapsed_str} error={exc}")
+        except Exception as exc:
+            self.topo_status_lbl.setText(f"Topology meshing failed: {exc}")
+            self._log(f"mesh> fail backend={backend_name} mode={run_mode} elapsed={elapsed_str} error={exc}")
+        finally:
+            self._set_topology_mesh_busy(False)
 
     def _set_value_map_editor(self, layer, field_name: str, mapping: dict):
         if QgsEditorWidgetSetup is None:
@@ -1157,36 +1421,7 @@ class SWE2DWorkbenchDialog(QtWidgets.QDialog):
                 default_size=default_size,
                 default_cell_type=default_cell_type,
             )
-            mesh = generate_face_centric_mesh(conceptual, backend=backend_name)
-            self._mesh_data = {
-                "nx": np.array(max(2, int(round(np.sqrt(mesh.node_x.size))))),
-                "ny": np.array(max(2, int(round(np.sqrt(mesh.node_x.size))))),
-                "lx": np.array(max(float(np.max(mesh.node_x) - np.min(mesh.node_x)), 1.0)),
-                "ly": np.array(max(float(np.max(mesh.node_y) - np.min(mesh.node_y)), 1.0)),
-                "node_x": mesh.node_x,
-                "node_y": mesh.node_y,
-                "node_z": mesh.node_z,
-                "cell_nodes": mesh.cell_nodes,
-                "cell_face_offsets": mesh.cell_face_offsets,
-                "cell_face_nodes": mesh.cell_face_nodes,
-                "cell_type": mesh.cell_type,
-                "region_id": mesh.region_id,
-                "target_size": mesh.target_size,
-            }
-            n_faces = int(mesh.cell_face_offsets.size - 1)
-            n_tris = int(mesh.cell_nodes.size // 3)
-            self.mesh_info_lbl.setText(f"Topology mesh: nodes={mesh.node_x.size}, faces={n_faces}, plot_triangles={n_tris}")
-            self.topo_status_lbl.setText(
-                f"Generated {n_faces} computational faces using backend '{backend_name}'. "
-                "Cell metadata (type/size/region) stored in mesh state."
-            )
-            self._log(
-                f"Topology meshing complete: nodes={mesh.node_x.size}, faces={n_faces}, "
-                f"backend={backend_name}, default_cell_type={default_cell_type}"
-            )
-            self._result_data = None
-            self.view_mode_combo.setCurrentText("Mesh")
-            self._refresh_plot()
+            self._start_topology_mesh_async(conceptual, backend_name, default_cell_type)
         except NotImplementedError as exc:
             self.topo_status_lbl.setText(str(exc))
             self._log(f"Topology meshing backend not implemented: {exc}")
@@ -2023,6 +2258,7 @@ class SWE2DWorkbenchDialog(QtWidgets.QDialog):
             nx_var.units = "m"
             nx_var.mesh = "mesh2d"
             nx_var.location = "node"
+            nx_var.grid_mapping = "crs"
             nx_var[:] = node_x.astype(np.float64)
 
             ny_var = ds.createVariable("node_y", "f8", ("node",))
@@ -2030,6 +2266,7 @@ class SWE2DWorkbenchDialog(QtWidgets.QDialog):
             ny_var.units = "m"
             ny_var.mesh = "mesh2d"
             ny_var.location = "node"
+            ny_var.grid_mapping = "crs"
             ny_var[:] = node_y.astype(np.float64)
 
             nz_var = ds.createVariable("node_z", "f8", ("node",))
@@ -2038,6 +2275,7 @@ class SWE2DWorkbenchDialog(QtWidgets.QDialog):
             nz_var.units = "m"
             nz_var.mesh = "mesh2d"
             nz_var.location = "node"
+            nz_var.grid_mapping = "crs"
             nz_var[:] = node_z.astype(np.float64)
 
             # Face centroid coordinates
@@ -2046,6 +2284,7 @@ class SWE2DWorkbenchDialog(QtWidgets.QDialog):
             fx_var.units = "m"
             fx_var.mesh = "mesh2d"
             fx_var.location = "face"
+            fx_var.grid_mapping = "crs"
             fx_var[:] = cell_cx.astype(np.float64)
 
             fy_var = ds.createVariable("face_y", "f8", ("face",))
@@ -2053,6 +2292,7 @@ class SWE2DWorkbenchDialog(QtWidgets.QDialog):
             fy_var.units = "m"
             fy_var.mesh = "mesh2d"
             fy_var.location = "face"
+            fy_var.grid_mapping = "crs"
             fy_var[:] = cell_cy.astype(np.float64)
 
             # Face minimum bed elevation
@@ -2061,6 +2301,7 @@ class SWE2DWorkbenchDialog(QtWidgets.QDialog):
             fz_var.units = "m"
             fz_var.mesh = "mesh2d"
             fz_var.location = "face"
+            fz_var.grid_mapping = "crs"
             fz_var[:] = cell_min_z.astype(np.float64)
 
             # Face→node connectivity (1-indexed as UGRID standard; -1 = fill)
@@ -2119,6 +2360,7 @@ class SWE2DWorkbenchDialog(QtWidgets.QDialog):
                 d_var.mesh = "mesh2d"
                 d_var.location = "face"
                 d_var.coordinates = "face_x face_y"
+                d_var.grid_mapping = "crs"
                 d_var[:] = depth_arr
 
                 w_var = ds.createVariable(
@@ -2130,30 +2372,33 @@ class SWE2DWorkbenchDialog(QtWidgets.QDialog):
                 w_var.mesh = "mesh2d"
                 w_var.location = "face"
                 w_var.coordinates = "face_x face_y"
+                w_var.grid_mapping = "crs"
                 w_var[:] = wse_arr
 
-                # UGRID vector: u and v as separate variables sharing the same
-                # long_name prefix.  MDAL groups them into a vector dataset.
+                # MDAL's UGRID driver infers vectors from component wording in
+                # long_name, not just standard_name, on many QGIS builds.
                 u_var = ds.createVariable(
                     "velocity_u", "f4", ("time", "face"), fill_value=np.float32(-9999.0)
                 )
                 u_var.standard_name = "eastward_water_velocity"
-                u_var.long_name = "velocity"
+                u_var.long_name = "eastward component of velocity"
                 u_var.units = "m s-1"
                 u_var.mesh = "mesh2d"
                 u_var.location = "face"
                 u_var.coordinates = "face_x face_y"
+                u_var.grid_mapping = "crs"
                 u_var[:] = vel_u_arr
 
                 v_var = ds.createVariable(
                     "velocity_v", "f4", ("time", "face"), fill_value=np.float32(-9999.0)
                 )
                 v_var.standard_name = "northward_water_velocity"
-                v_var.long_name = "velocity"
+                v_var.long_name = "northward component of velocity"
                 v_var.units = "m s-1"
                 v_var.mesh = "mesh2d"
                 v_var.location = "face"
                 v_var.coordinates = "face_x face_y"
+                v_var.grid_mapping = "crs"
                 v_var[:] = vel_v_arr
 
                 vm_var = ds.createVariable(
@@ -2164,6 +2409,7 @@ class SWE2DWorkbenchDialog(QtWidgets.QDialog):
                 vm_var.mesh = "mesh2d"
                 vm_var.location = "face"
                 vm_var.coordinates = "face_x face_y"
+                vm_var.grid_mapping = "crs"
                 vm_var[:] = vel_mag_arr
 
     def _export_mesh_to_hdf5(self):
@@ -3103,10 +3349,20 @@ class SWE2DWorkbenchDialog(QtWidgets.QDialog):
                 self.progress_bar.setValue(pct)
                 i += 1
                 if i == 1 or i % 10 == 0 or pct >= 100:
+                    max_courant = float(last_diag.get("max_courant", float("nan")))
+                    max_wse_res = float(
+                        last_diag.get(
+                            "max_depth_residual",
+                            last_diag.get("max_wse_elev_error", float("nan")),
+                        )
+                    )
+                    cmax_txt = f"{max_courant:.5f}" if np.isfinite(max_courant) and max_courant >= 0.0 else "n/a"
+                    wse_res_txt = f"{max_wse_res:.6e}" if np.isfinite(max_wse_res) and max_wse_res >= 0.0 else "n/a"
                     self._log(
                         f"step={i} t={t_accum / 3600.0:.3f} hr / {run_duration_s / 3600.0:.3f} hr "
                         f"dt={float(last_diag.get('dt', 0.0)):.5f} "
-                        f"gpu={bool(last_diag.get('gpu_active', False))} wet={last_diag.get('wet_cells', '?')}"
+                        f"gpu={bool(last_diag.get('gpu_active', False))} wet={last_diag.get('wet_cells', '?')} "
+                        f"Cmax={cmax_txt} WSEres={wse_res_txt}"
                     )
                 QtWidgets.QApplication.processEvents()
 

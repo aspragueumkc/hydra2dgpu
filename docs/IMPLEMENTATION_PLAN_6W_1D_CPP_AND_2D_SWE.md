@@ -1,5 +1,11 @@
 # 6-Week Implementation Plan: 1D C++ Port + 2D SWE Solver
 
+## Status Update (Current Direction)
+
+For ongoing SWE2D work, this repository now follows a GPU-primary strategy:
+new numerical accuracy and performance features are implemented first in CUDA,
+with CPU SWE2D treated as a fallback/debug path rather than a parity target.
+
 ## Objective
 Deliver a production-capable native backend strategy for this plugin by:
 1. Porting the existing 1D unsteady solver compute core to C++.

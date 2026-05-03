@@ -20,8 +20,113 @@
 #include <cstring>
 #include <cstdio>
 #include <cstdlib>
+#include <utility>
 
 namespace {
+
+static double compute_lambda_max(const SWE2DSolver* s);
+
+inline double clamp_double(double v, double lo, double hi) {
+    return std::max(lo, std::min(v, hi));
+}
+
+void build_cell_neighbors(SWE2DSolver* s) {
+    const SWE2DMesh& mesh = *s->mesh;
+    std::vector<std::vector<int32_t>> nbrs(static_cast<size_t>(mesh.n_cells));
+    for (int32_t e = 0; e < mesh.n_edges; ++e) {
+        const int32_t c0 = mesh.edge_c0[e];
+        const int32_t c1 = mesh.edge_c1[e];
+        if (c1 < 0) continue;
+        nbrs[static_cast<size_t>(c0)].push_back(c1);
+        nbrs[static_cast<size_t>(c1)].push_back(c0);
+    }
+
+    s->cell_nbr_offsets.assign(static_cast<size_t>(mesh.n_cells) + 1, 0);
+    size_t total = 0;
+    for (int32_t c = 0; c < mesh.n_cells; ++c) {
+        auto& v = nbrs[static_cast<size_t>(c)];
+        std::sort(v.begin(), v.end());
+        v.erase(std::unique(v.begin(), v.end()), v.end());
+        total += v.size();
+        s->cell_nbr_offsets[static_cast<size_t>(c) + 1] = static_cast<int32_t>(total);
+    }
+
+    s->cell_nbr_ids.assign(total, -1);
+    size_t p = 0;
+    for (int32_t c = 0; c < mesh.n_cells; ++c) {
+        const auto& v = nbrs[static_cast<size_t>(c)];
+        for (int32_t nb : v) {
+            s->cell_nbr_ids[p++] = nb;
+        }
+    }
+}
+
+void compute_cell_gradient_and_bounds(
+    const SWE2DSolver* s,
+    const std::vector<double>& q,
+    std::vector<double>& gx,
+    std::vector<double>& gy,
+    std::vector<double>& qmin,
+    std::vector<double>& qmax)
+{
+    const SWE2DMesh& mesh = *s->mesh;
+    const int32_t n_cells = mesh.n_cells;
+    gx.assign(static_cast<size_t>(n_cells), 0.0);
+    gy.assign(static_cast<size_t>(n_cells), 0.0);
+    qmin.assign(static_cast<size_t>(n_cells), 0.0);
+    qmax.assign(static_cast<size_t>(n_cells), 0.0);
+
+    #ifdef BACKWATER_HAS_OPENMP
+    #pragma omp parallel for schedule(static)
+    #endif
+    for (int32_t c = 0; c < n_cells; ++c) {
+        const double qc = q[c];
+        double gxc = 0.0;
+        double gyc = 0.0;
+        double wsum = 0.0;
+        double qlo = qc;
+        double qhi = qc;
+
+        const int32_t k0 = s->cell_nbr_offsets[static_cast<size_t>(c)];
+        const int32_t k1 = s->cell_nbr_offsets[static_cast<size_t>(c) + 1];
+        for (int32_t k = k0; k < k1; ++k) {
+            const int32_t nb = s->cell_nbr_ids[static_cast<size_t>(k)];
+            const double qn = q[nb];
+            if (qn < qlo) qlo = qn;
+            if (qn > qhi) qhi = qn;
+
+            const double dx = mesh.cell_cx[nb] - mesh.cell_cx[c];
+            const double dy = mesh.cell_cy[nb] - mesh.cell_cy[c];
+            const double d2 = dx * dx + dy * dy;
+            if (d2 <= 1.0e-14) continue;
+            const double w = 1.0 / d2;
+            const double dq = qn - qc;
+            gxc += w * dq * dx;
+            gyc += w * dq * dy;
+            wsum += w;
+        }
+
+        if (wsum > 0.0) {
+            gxc /= wsum;
+            gyc /= wsum;
+        }
+
+        gx[static_cast<size_t>(c)] = gxc;
+        gy[static_cast<size_t>(c)] = gyc;
+        qmin[static_cast<size_t>(c)] = qlo;
+        qmax[static_cast<size_t>(c)] = qhi;
+    }
+}
+
+inline double reconstruct_to_edge(
+    double qc,
+    double gx,
+    double gy,
+    double dx,
+    double dy)
+{
+    return qc + gx * dx + gy * dy;
+}
 
 #ifdef BACKWATER_HAS_CUDA
 void sync_gpu_state_to_host(SWE2DSolver* s) {
@@ -33,6 +138,38 @@ void sync_gpu_state_to_host(SWE2DSolver* s) {
 bool swe2d_debug_enabled(const char* name) {
     const char* v = std::getenv(name);
     return (v && v[0] && v[0] != '0');
+}
+
+SWE2DStepDiag summarize_state(const SWE2DSolver* s, double dt, bool gpu_active, double max_depth_residual) {
+    const SWE2DMesh& mesh = *s->mesh;
+    const double h_min = s->cfg.h_min;
+
+    SWE2DStepDiag diag;
+    diag.dt = dt;
+    diag.gpu_active = gpu_active;
+    diag.max_depth = 0.0;
+    diag.min_depth = std::numeric_limits<double>::max();
+    diag.wet_cells = 0;
+    diag.mass_total = 0.0;
+    diag.max_depth_residual = max_depth_residual;
+    diag.max_wse_elev_error = max_depth_residual;
+
+    for (int32_t c = 0; c < mesh.n_cells; ++c) {
+        const double h = s->h[c];
+        if (h > h_min) {
+            diag.wet_cells += 1;
+            if (h > diag.max_depth) diag.max_depth = h;
+            if (h < diag.min_depth) diag.min_depth = h;
+        }
+        diag.mass_total += h * mesh.cell_area[c];
+    }
+
+    if (diag.min_depth == std::numeric_limits<double>::max()) {
+        diag.min_depth = 0.0;
+    }
+
+    diag.max_courant = dt * compute_lambda_max(s);
+    return diag;
 }
 
 void dump_flux_summary(const char* tag,
@@ -107,6 +244,8 @@ SWE2DSolver* swe2d_create(
     s->dhu.assign(n, 0.0);
     s->dhv.assign(n, 0.0);
 
+    build_cell_neighbors(s);
+
 #ifdef BACKWATER_HAS_OPENMP
     if (cfg.n_threads > 0) {
         omp_set_num_threads(cfg.n_threads);
@@ -156,11 +295,11 @@ void swe2d_get_state(const SWE2DSolver* s, double* h_out, double* hu_out, double
 // ─────────────────────────────────────────────────────────────────────────────
 // CFL timestep calculation — CPU pass over all edges
 // ─────────────────────────────────────────────────────────────────────────────
-static double compute_cfl_dt(const SWE2DSolver* s) {
+namespace {
+static double compute_lambda_max(const SWE2DSolver* s) {
     const SWE2DMesh& mesh = *s->mesh;
     const double g        = s->cfg.g;
     const double h_min    = s->cfg.h_min;
-    const double cfl      = s->cfg.cfl;
 
     double lambda_max = 0.0;
 
@@ -192,6 +331,14 @@ static double compute_cfl_dt(const SWE2DSolver* s) {
         if (lam > lambda_max) lambda_max = lam;
     }
 
+    return lambda_max;
+}
+} // namespace
+
+static double compute_cfl_dt(const SWE2DSolver* s) {
+    const double cfl = s->cfg.cfl;
+    double lambda_max = compute_lambda_max(s);
+
     if (lambda_max <= 0.0) return s->cfg.dt_max;
     double dt = cfl / lambda_max;
     return std::min(dt, s->cfg.dt_max);
@@ -206,6 +353,22 @@ SWE2DStepDiag swe2d_step_cpu(SWE2DSolver* s, double dt) {
     const double h_min    = s->cfg.h_min;
     int32_t n_cells       = mesh.n_cells;
     int32_t n_edges       = mesh.n_edges;
+    const int spatial_scheme = s->cfg.spatial_scheme;
+    const bool use_fast_recon =
+        (spatial_scheme == static_cast<int>(SWE2DSpatialScheme::FV_MUSCL_FAST));
+    const bool use_robust_recon =
+        (spatial_scheme == static_cast<int>(SWE2DSpatialScheme::FV_MUSCL_MINMOD));
+    const bool use_higher_order = use_fast_recon || use_robust_recon;
+
+    std::vector<double> ghx, ghy, hmin_nbr, hmax_nbr;
+    std::vector<double> guhx, guhy, humin_nbr, humax_nbr;
+    std::vector<double> gvhx, gvhy, hvmin_nbr, hvmax_nbr;
+
+    if (use_higher_order) {
+        compute_cell_gradient_and_bounds(s, s->h, ghx, ghy, hmin_nbr, hmax_nbr);
+        compute_cell_gradient_and_bounds(s, s->hu, guhx, guhy, humin_nbr, humax_nbr);
+        compute_cell_gradient_and_bounds(s, s->hv, gvhx, gvhy, hvmin_nbr, hvmax_nbr);
+    }
 
     // Zero flux accumulators
     #ifdef BACKWATER_HAS_OPENMP
@@ -240,6 +403,38 @@ SWE2DStepDiag swe2d_step_cpu(SWE2DSolver* s, double dt) {
         if (c1 >= 0) {
             hR  = s->h[c1]; huR = s->hu[c1]; hvR = s->hv[c1];
             zbR = mesh.cell_zb[c1];
+
+            if (use_higher_order) {
+                const int32_t n0 = mesh.edge_n0[e];
+                const int32_t n1 = mesh.edge_n1[e];
+                const double xe = 0.5 * (mesh.node_x[n0] + mesh.node_x[n1]);
+                const double ye = 0.5 * (mesh.node_y[n0] + mesh.node_y[n1]);
+
+                const double dxL = xe - mesh.cell_cx[c0];
+                const double dyL = ye - mesh.cell_cy[c0];
+                const double dxR = xe - mesh.cell_cx[c1];
+                const double dyR = ye - mesh.cell_cy[c1];
+
+                hL  = reconstruct_to_edge(s->h[c0],  ghx[c0],  ghy[c0],  dxL, dyL);
+                huL = reconstruct_to_edge(s->hu[c0], guhx[c0], guhy[c0], dxL, dyL);
+                hvL = reconstruct_to_edge(s->hv[c0], gvhx[c0], gvhy[c0], dxL, dyL);
+
+                hR  = reconstruct_to_edge(s->h[c1],  ghx[c1],  ghy[c1],  dxR, dyR);
+                huR = reconstruct_to_edge(s->hu[c1], guhx[c1], guhy[c1], dxR, dyR);
+                hvR = reconstruct_to_edge(s->hv[c1], gvhx[c1], gvhy[c1], dxR, dyR);
+
+                if (use_robust_recon) {
+                    hL  = clamp_double(hL,  hmin_nbr[c0],  hmax_nbr[c0]);
+                    huL = clamp_double(huL, humin_nbr[c0], humax_nbr[c0]);
+                    hvL = clamp_double(hvL, hvmin_nbr[c0], hvmax_nbr[c0]);
+                    hR  = clamp_double(hR,  hmin_nbr[c1],  hmax_nbr[c1]);
+                    huR = clamp_double(huR, humin_nbr[c1], humax_nbr[c1]);
+                    hvR = clamp_double(hvR, hvmin_nbr[c1], hvmax_nbr[c1]);
+                }
+
+                if (hL < 0.0) hL = 0.0;
+                if (hR < 0.0) hR = 0.0;
+            }
         } else {
             // Boundary edge: construct ghost cell
             swe2d::GhostState gs = swe2d::make_ghost(
@@ -291,14 +486,17 @@ SWE2DStepDiag swe2d_step_cpu(SWE2DSolver* s, double dt) {
     double  r_max_depth  = 0.0;
     double  r_min_depth  = std::numeric_limits<double>::max();
     double  r_mass_total = 0.0;
+    double  r_max_wse_elev_error = 0.0;
 
     #ifdef BACKWATER_HAS_OPENMP
     #pragma omp parallel for schedule(static) \
         reduction(+:r_wet_cells, r_mass_total) \
         reduction(max:r_max_depth) \
-        reduction(min:r_min_depth)
+        reduction(min:r_min_depth) \
+        reduction(max:r_max_wse_elev_error)
     #endif
     for (int32_t c = 0; c < n_cells; ++c) {
+        const double h_old = s->h[c];
         double inv_a = mesh.cell_inv_area[c];
         double area  = mesh.cell_area[c];
 
@@ -317,6 +515,11 @@ SWE2DStepDiag swe2d_step_cpu(SWE2DSolver* s, double dt) {
         double n_mann = s->n_mann_cell[c];
         swe2d::apply_friction(s->h[c], s->hu[c], s->hv[c],
                               dt, n_mann, g, h_min);
+
+        const double wse_err = std::abs(s->h[c] - h_old);
+        if (wse_err > r_max_wse_elev_error) {
+            r_max_wse_elev_error = wse_err;
+        }
 
         // Diagnostics
         double h_c = s->h[c];
@@ -339,6 +542,9 @@ SWE2DStepDiag swe2d_step_cpu(SWE2DSolver* s, double dt) {
     diag.max_depth   = r_max_depth;
     diag.min_depth   = (r_min_depth == std::numeric_limits<double>::max()) ? 0.0 : r_min_depth;
     diag.mass_total  = r_mass_total;
+    diag.max_courant = dt * compute_lambda_max(s);
+    diag.max_depth_residual = r_max_wse_elev_error;
+    diag.max_wse_elev_error = r_max_wse_elev_error;
 
     return diag;
 }
@@ -349,33 +555,85 @@ SWE2DStepDiag swe2d_step_cpu(SWE2DSolver* s, double dt) {
 SWE2DStepDiag swe2d_step(SWE2DSolver* s, double dt_request) {
     if (!s) throw std::invalid_argument("swe2d_step: null solver");
 
-    // Determine timestep
-    double dt;
-    if (s->cfg.dt_fixed > 0.0) {
-        dt = s->cfg.dt_fixed;
-    } else {
-#ifdef BACKWATER_HAS_CUDA
-        sync_gpu_state_to_host(s);
-#endif
-        double dt_cfl = compute_cfl_dt(s);
-        dt = (dt_request > 0.0) ? std::min(dt_request, dt_cfl) : dt_cfl;
-    }
+    const bool use_rk2 = (s->cfg.temporal_order >= 2);
 
 #ifdef BACKWATER_HAS_CUDA
     if (s->dev) {
+        double dt;
+        if (s->cfg.dt_fixed > 0.0) {
+            dt = s->cfg.dt_fixed;
+        } else {
+            const double dt_cfl = swe2d_gpu_compute_dt(
+                s->dev,
+                s->cfg.g,
+                s->cfg.h_min,
+                s->cfg.cfl,
+                s->cfg.dt_max);
+            dt = (dt_request > 0.0) ? std::min(dt_request, dt_cfl) : dt_cfl;
+        }
+
+        if (!use_rk2) {
+            SWE2DStepDiag diag;
+            swe2d_gpu_step(s->dev, dt,
+                           s->cfg.g, s->cfg.h_min,
+                           s->cfg.spatial_scheme,
+                           s->cfg.cfl, &diag);
+            diag.gpu_active = true;
+            s->t += dt;
+            return diag;
+        }
+
         SWE2DStepDiag diag;
-        swe2d_gpu_step(s->dev, dt,
-                       s->cfg.g, s->cfg.h_min,
-                       s->cfg.cfl, &diag);
-        // Sync host state from device (lazy: only when get_state is called)
-        // For diagnostics, GPU kernel returns them directly.
-        diag.gpu_active = true;
+        swe2d_gpu_step_rk2(s->dev, dt,
+                           s->cfg.g, s->cfg.h_min,
+                           s->cfg.spatial_scheme,
+                           s->cfg.cfl, &diag);
         s->t += dt;
         return diag;
     }
 #endif
 
-    SWE2DStepDiag diag = swe2d_step_cpu(s, dt);
+    // Determine timestep (CPU path)
+    double dt;
+    if (s->cfg.dt_fixed > 0.0) {
+        dt = s->cfg.dt_fixed;
+    } else {
+        double dt_cfl = compute_cfl_dt(s);
+        dt = (dt_request > 0.0) ? std::min(dt_request, dt_cfl) : dt_cfl;
+    }
+
+    if (!use_rk2) {
+        SWE2DStepDiag diag = swe2d_step_cpu(s, dt);
+        s->t += dt;
+        return diag;
+    }
+
+    std::vector<double> h0 = s->h;
+    std::vector<double> hu0 = s->hu;
+    std::vector<double> hv0 = s->hv;
+
+    swe2d_step_cpu(s, dt);
+    swe2d_step_cpu(s, dt);
+
+    double max_depth_residual = 0.0;
+    for (int32_t c = 0; c < s->mesh->n_cells; ++c) {
+        s->h[c] = 0.5 * (h0[c] + s->h[c]);
+        s->hu[c] = 0.5 * (hu0[c] + s->hu[c]);
+        s->hv[c] = 0.5 * (hv0[c] + s->hv[c]);
+
+        if (s->h[c] < 0.0) s->h[c] = 0.0;
+        if (s->h[c] < s->cfg.h_min) {
+            s->hu[c] = 0.0;
+            s->hv[c] = 0.0;
+        }
+
+        const double depth_res = std::abs(s->h[c] - h0[c]);
+        if (depth_res > max_depth_residual) {
+            max_depth_residual = depth_res;
+        }
+    }
+
+    SWE2DStepDiag diag = summarize_state(s, dt, false, max_depth_residual);
     s->t += dt;
     return diag;
 }
