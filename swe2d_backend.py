@@ -284,6 +284,7 @@ class SWE2DBackend:
         turbulence_model: TurbulenceModel = TurbulenceModel.NONE,
         bed_friction_model: BedFrictionModel = BedFrictionModel.MANNING,
         model_options: Optional[SolverModelOptions] = None,
+        degen_mode: int = 0,
     ) -> None:
         """
         Create the solver with initial conditions.
@@ -383,6 +384,7 @@ class SWE2DBackend:
             enable_rain_module=bool(native_opts["enable_rain_module"]),
             enable_pipe_network_module=bool(native_opts["enable_pipe_network_module"]),
             enable_hydraulic_structures=bool(native_opts["enable_hydraulic_structures"]),
+            degen_mode=int(degen_mode),
         )
 
     # ── Stepping ─────────────────────────────────────────────────────────────

@@ -232,7 +232,9 @@ SWE2DSolver* swe2d_create(
     if (cfg.use_gpu && swe2d_gpu_available()) {
         s->dev = swe2d_gpu_init(mesh,
                                 s->h.data(), s->hu.data(), s->hv.data(),
-                                s->n_mann_cell.data());
+                                s->n_mann_cell.data(),
+                                cfg.degen_mode,
+                                cfg.max_inv_area);
     }
 #endif
 

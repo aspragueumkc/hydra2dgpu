@@ -56,10 +56,25 @@ struct SWE2DDeviceState {
     // CFL workspace (device scalar)
     double*  d_lambda_max = nullptr;
     double*  d_max_wse_elev_error = nullptr;
-    // Packed diagnostic buffer: [0]=lambda_max, [1]=max_wse_elev_error.
+    // Packed diagnostic buffer: [0]=lambda_max, [1]=max_wse_elev_error, [2]=(double)n_wet.
     // Filled on-device by pack_diag_kernel after each step; a single cudaMemcpy
-    // of 16 bytes transfers both values when sync_diagnostics is true.
+    // of 24 bytes transfers all three values when sync_diagnostics is true.
     double*  d_diag_packed = nullptr;
+
+    // Wet/dry active-set mask (updated at the start of every step).
+    // d_active[c] = 1 if cell c is wet (h>h_min), adjacent to a wet cell,
+    // or at a forced-inflow BC edge.  Used to skip gradient and update work
+    // for fully-isolated dry cells.
+    int32_t* d_active    = nullptr;   // n_cells
+    int32_t* d_n_wet     = nullptr;   // device scalar: count of h>h_min cells
+    int32_t* d_bc_forced = nullptr;   // n_cells: 1 if cell has forced-inflow BC
+
+    // Degenerate-cell handling (computed once at init; all null when degen_mode == 0).
+    // degen_mode mirrors SWE2DSolverConfig::degen_mode.
+    int32_t  degen_mode          = 0;
+    int32_t* d_degen_mask        = nullptr;  // [n_cells]: 1 if cell_inv_area > max_inv_area
+    double*  d_inv_area_repaired = nullptr;  // [n_cells]: neighbor-averaged inv_area (mode 2)
+    int32_t* d_merge_owner       = nullptr;  // [n_cells]: merge-to cell index (mode 3), -1 if none
 
     // Dimensions
     int32_t  n_cells = 0;
@@ -76,7 +91,9 @@ SWE2DDeviceState* swe2d_gpu_init(
     const double*    h0,
     const double*    hu0,
     const double*    hv0,
-    const double*    n_mann_cell);
+    const double*    n_mann_cell,
+    int              degen_mode   = 0,
+    double           max_inv_area = 1.0e6);
 
 // Advance one timestep on GPU.  Writes diagnostics to *diag.
 void swe2d_gpu_step(

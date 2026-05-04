@@ -148,7 +148,7 @@ _BC_VALUE_MAP = {
 _SWE2D_WORKBENCH_WINDOWS = []
 
 
-def _run_topology_mesh_job(conceptual, backend_name: str):
+def _run_topology_mesh_job(conceptual, backend_name: str, options: Optional[Dict[str, object]] = None):
     """Run heavy topology meshing work off the GUI thread/process."""
     # Use the already-imported function when available; fall back to local import
     # in subprocess contexts.
@@ -158,7 +158,7 @@ def _run_topology_mesh_job(conceptual, backend_name: str):
             from swe2d_meshing import generate_face_centric_mesh as gen  # type: ignore
         except Exception:
             from .swe2d_meshing import generate_face_centric_mesh as gen  # type: ignore
-    return gen(conceptual, backend=backend_name)
+    return gen(conceptual, backend=backend_name, options=options)
 
 
 def _clone_conceptual_without_constraints(conceptual):
@@ -298,6 +298,171 @@ class HydrographEditorDialog(QtWidgets.QDialog):
         return "; ".join(parts)
 
 
+class TopologyAttributeTableDialog(QtWidgets.QDialog):
+    def __init__(self, layer, title: str, field_specs, sort_fields=None, note: str = "", parent=None):
+        super().__init__(parent)
+        self.layer = layer
+        self.field_specs = list(field_specs)
+        self.sort_fields = list(sort_fields or [])
+        self._row_feature_ids: List[int] = []
+
+        self.setWindowTitle(title)
+        self.resize(920, 440)
+
+        root = QtWidgets.QVBoxLayout(self)
+        hint = QtWidgets.QLabel(
+            note
+            or "Edit topology attributes here. Geometry remains edited in the map canvas or native QGIS layer tools."
+        )
+        hint.setWordWrap(True)
+        root.addWidget(hint)
+
+        self.table = QtWidgets.QTableWidget(0, len(self.field_specs))
+        self.table.setHorizontalHeaderLabels([spec[1] for spec in self.field_specs])
+        self.table.horizontalHeader().setStretchLastSection(True)
+        root.addWidget(self.table, stretch=1)
+
+        row_btns = QtWidgets.QHBoxLayout()
+        self.refresh_btn = QtWidgets.QPushButton("Reload From Layer")
+        self.add_row_btn = QtWidgets.QPushButton("Add Row")
+        self.remove_row_btn = QtWidgets.QPushButton("Remove Selected")
+        self.refresh_btn.clicked.connect(self._load_rows)
+        self.add_row_btn.clicked.connect(self._add_blank_row)
+        self.remove_row_btn.clicked.connect(self._remove_selected_rows)
+        row_btns.addWidget(self.refresh_btn)
+        row_btns.addWidget(self.add_row_btn)
+        row_btns.addWidget(self.remove_row_btn)
+        row_btns.addStretch(1)
+        root.addLayout(row_btns)
+
+        buttons = QtWidgets.QDialogButtonBox(
+            QtWidgets.QDialogButtonBox.StandardButton.Ok
+            | QtWidgets.QDialogButtonBox.StandardButton.Cancel
+        )
+        buttons.accepted.connect(self._save_and_accept)
+        buttons.rejected.connect(self.reject)
+        root.addWidget(buttons)
+
+        self._load_rows()
+
+    def _sorted_features(self):
+        feats = list(self.layer.getFeatures()) if self.layer is not None else []
+        if not self.sort_fields:
+            return feats
+
+        def _key(ft):
+            vals = []
+            for name in self.sort_fields:
+                try:
+                    value = ft[name]
+                except Exception:
+                    value = None
+                vals.append((value is None, value))
+            return vals
+
+        feats.sort(key=_key)
+        return feats
+
+    def _set_editor(self, row: int, col: int, value, spec):
+        kind = spec[2]
+        if kind == "enum":
+            combo = QtWidgets.QComboBox()
+            for option in spec[3]:
+                combo.addItem(str(option), str(option))
+            text = str(value or "").strip().lower()
+            idx = combo.findData(text)
+            combo.setCurrentIndex(max(0, idx))
+            self.table.setCellWidget(row, col, combo)
+            return
+        item = QtWidgets.QTableWidgetItem("" if value in (None, "") else str(value))
+        self.table.setItem(row, col, item)
+
+    def _editor_value(self, row: int, col: int, spec):
+        kind = spec[2]
+        if kind == "enum":
+            combo = self.table.cellWidget(row, col)
+            return None if combo is None else combo.currentData()
+        item = self.table.item(row, col)
+        text = "" if item is None else str(item.text()).strip()
+        if text == "":
+            return None
+        if kind == "int":
+            return int(round(float(text)))
+        if kind == "float":
+            return float(text)
+        return text
+
+    def _load_rows(self):
+        self.table.setRowCount(0)
+        self._row_feature_ids = []
+        for ft in self._sorted_features():
+            row = self.table.rowCount()
+            self.table.insertRow(row)
+            self._row_feature_ids.append(int(ft.id()))
+            for col, spec in enumerate(self.field_specs):
+                field_name = spec[0]
+                try:
+                    value = ft[field_name]
+                except Exception:
+                    value = None
+                self._set_editor(row, col, value, spec)
+
+    def _add_blank_row(self):
+        row = self.table.rowCount()
+        self.table.insertRow(row)
+        self._row_feature_ids.append(-1)
+        for col, spec in enumerate(self.field_specs):
+            self._set_editor(row, col, "", spec)
+
+    def _remove_selected_rows(self):
+        rows = sorted({idx.row() for idx in self.table.selectedIndexes()}, reverse=True)
+        for row in rows:
+            self.table.removeRow(row)
+            if 0 <= row < len(self._row_feature_ids):
+                self._row_feature_ids.pop(row)
+
+    def _save_and_accept(self):
+        if self.layer is None:
+            self.accept()
+            return
+        started_here = False
+        try:
+            if not self.layer.isEditable():
+                if not self.layer.startEditing():
+                    raise RuntimeError("Could not start layer editing session.")
+                started_here = True
+
+            field_idx = {spec[0]: self.layer.fields().indexOf(spec[0]) for spec in self.field_specs}
+            provider = self.layer.dataProvider()
+
+            for row, fid in enumerate(self._row_feature_ids):
+                if fid < 0:
+                    feat = QgsFeature(self.layer.fields())
+                    if not provider.addFeatures([feat]):
+                        raise RuntimeError("Failed to add new feature row to layer.")
+                    fids = [f.id() for f in self.layer.getFeatures()]
+                    fid = int(fids[-1]) if fids else -1
+                    self._row_feature_ids[row] = fid
+                for col, spec in enumerate(self.field_specs):
+                    idx = field_idx.get(spec[0], -1)
+                    if idx < 0:
+                        continue
+                    value = self._editor_value(row, col, spec)
+                    self.layer.changeAttributeValue(fid, idx, value)
+
+            if started_here and not self.layer.commitChanges():
+                raise RuntimeError("Layer changes could not be committed.")
+            self.layer.triggerRepaint()
+            self.accept()
+        except Exception as exc:
+            if started_here:
+                try:
+                    self.layer.rollBack()
+                except Exception:
+                    pass
+            QtWidgets.QMessageBox.warning(self, "Topology Editor", f"Failed to save layer edits: {exc}")
+
+
 class SWE2DWorkbenchDialog(QtWidgets.QDialog):
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -322,6 +487,7 @@ class SWE2DWorkbenchDialog(QtWidgets.QDialog):
         self._topology_mesh_run_mode = "full"
         self._topology_mesh_auto_fallback_used = False
         self._topology_mesh_conceptual = None
+        self._topology_mesh_options: Dict[str, object] = {}
         self._topology_mesh_thread_pool = concurrent.futures.ThreadPoolExecutor(max_workers=1)
         self._topology_mesh_process_pool: Optional[concurrent.futures.ProcessPoolExecutor] = None
         self._topology_mesh_timer = QtCore.QTimer(self)
@@ -481,6 +647,39 @@ class SWE2DWorkbenchDialog(QtWidgets.QDialog):
         self.topo_default_size_spin.setValue(20.0)
         self.topo_default_cell_type_combo = QtWidgets.QComboBox()
         self.topo_default_cell_type_combo.addItems(["triangular", "quadrilateral", "cartesian", "empty"])
+        self.topo_quality_min_angle_spin = QtWidgets.QDoubleSpinBox()
+        self.topo_quality_min_angle_spin.setRange(0.0, 89.0)
+        self.topo_quality_min_angle_spin.setDecimals(1)
+        self.topo_quality_min_angle_spin.setValue(5.0)
+        self.topo_quality_max_aspect_spin = QtWidgets.QDoubleSpinBox()
+        self.topo_quality_max_aspect_spin.setRange(1.0, 1.0e4)
+        self.topo_quality_max_aspect_spin.setDecimals(2)
+        self.topo_quality_max_aspect_spin.setValue(20.0)
+        self.topo_quality_min_area_edit = QtWidgets.QLineEdit("1e-14")
+        self.topo_quality_strict_chk = QtWidgets.QCheckBox("Strict quality acceptance")
+        self.topo_quality_size_scales_edit = QtWidgets.QLineEdit("1.0")
+        self.topo_quality_smooth_increments_edit = QtWidgets.QLineEdit("0")
+        quality_form_widget = QtWidgets.QWidget()
+        quality_form = QtWidgets.QFormLayout(quality_form_widget)
+        quality_form.setContentsMargins(0, 0, 0, 0)
+        quality_form.addRow("Min angle (deg):", self.topo_quality_min_angle_spin)
+        quality_form.addRow("Max aspect ratio:", self.topo_quality_max_aspect_spin)
+        quality_form.addRow("Min area / bbox area:", self.topo_quality_min_area_edit)
+        quality_form.addRow("Retry size scales:", self.topo_quality_size_scales_edit)
+        quality_form.addRow("Retry smooth increments:", self.topo_quality_smooth_increments_edit)
+        quality_form.addRow(self.topo_quality_strict_chk)
+        self.topo_validate_btn = QtWidgets.QPushButton("Summarize Layer Controls")
+        self.topo_validate_btn.clicked.connect(self._update_topology_control_summary)
+        self.topo_edit_regions_btn = QtWidgets.QPushButton("Edit Region Controls")
+        self.topo_edit_regions_btn.clicked.connect(self._open_topology_region_table)
+        self.topo_edit_quad_edges_btn = QtWidgets.QPushButton("Edit Transition Layers")
+        self.topo_edit_quad_edges_btn.clicked.connect(self._open_topology_quad_edge_table)
+        self.topo_controls_summary_lbl = QtWidgets.QLabel(
+            "Topology-layer controls: use multiple region polygons for multiple blocks. "
+            "Use region target_size + cell_type, edge_len_1..4 for cartesian/quadrilateral block spacing, "
+            "and quad-edge n_layers / first_height / growth_rate for TQMesh transition layers."
+        )
+        self.topo_controls_summary_lbl.setWordWrap(True)
         self.topo_export_template_btn = QtWidgets.QPushButton("Create Topology Template Layers")
         self.topo_export_template_btn.clicked.connect(self._create_topology_template_layers)
         self.topo_generate_btn = QtWidgets.QPushButton("Generate Mesh From Topology Layers")
@@ -496,7 +695,7 @@ class SWE2DWorkbenchDialog(QtWidgets.QDialog):
         topo_layout.addWidget(self.topo_regions_combo, 2, 1)
         topo_layout.addWidget(QtWidgets.QLabel("Constraints layer:"), 3, 0)
         topo_layout.addWidget(self.topo_constraints_combo, 3, 1)
-        topo_layout.addWidget(QtWidgets.QLabel("Quad edges layer (TQMesh):"), 4, 0)
+        topo_layout.addWidget(QtWidgets.QLabel("Quad edges / transition layers:"), 4, 0)
         topo_layout.addWidget(self.topo_quad_edges_combo, 4, 1)
         topo_layout.addWidget(QtWidgets.QLabel("Meshing backend:"), 5, 0)
         topo_layout.addWidget(self.topo_backend_combo, 5, 1)
@@ -504,10 +703,21 @@ class SWE2DWorkbenchDialog(QtWidgets.QDialog):
         topo_layout.addWidget(self.topo_default_size_spin, 6, 1)
         topo_layout.addWidget(QtWidgets.QLabel("Default cell type:"), 7, 0)
         topo_layout.addWidget(self.topo_default_cell_type_combo, 7, 1)
-        topo_layout.addWidget(self.topo_export_template_btn, 8, 0, 1, 2)
-        topo_layout.addWidget(self.topo_generate_btn, 9, 0, 1, 2)
-        topo_layout.addWidget(self.topo_status_lbl, 10, 0, 1, 2)
+        topo_layout.addWidget(QtWidgets.QLabel("TQMesh quality controls:"), 8, 0)
+        topo_layout.addWidget(quality_form_widget, 8, 1)
+        topo_layout.addWidget(self.topo_validate_btn, 9, 0, 1, 2)
+        topo_layout.addWidget(self.topo_edit_regions_btn, 10, 0)
+        topo_layout.addWidget(self.topo_edit_quad_edges_btn, 10, 1)
+        topo_layout.addWidget(self.topo_controls_summary_lbl, 11, 0, 1, 2)
+        topo_layout.addWidget(self.topo_export_template_btn, 12, 0, 1, 2)
+        topo_layout.addWidget(self.topo_generate_btn, 13, 0, 1, 2)
+        topo_layout.addWidget(self.topo_status_lbl, 14, 0, 1, 2)
         left_layout.addWidget(topo_group)
+
+        self.topo_backend_combo.currentIndexChanged.connect(self._update_topology_control_summary)
+        self.topo_regions_combo.currentIndexChanged.connect(self._update_topology_control_summary)
+        self.topo_constraints_combo.currentIndexChanged.connect(self._update_topology_control_summary)
+        self.topo_quad_edges_combo.currentIndexChanged.connect(self._update_topology_control_summary)
 
         bc_group = QtWidgets.QGroupBox("Boundary Conditions (side defaults + optional BC polyline overrides)")
         bc_grid = QtWidgets.QGridLayout(bc_group)
@@ -586,6 +796,55 @@ class SWE2DWorkbenchDialog(QtWidgets.QDialog):
         self.dt_spin.setRange(1.0e-4, 1.0e6)
         self.dt_spin.setDecimals(5)
         self.dt_spin.setValue(0.05)
+        self.max_rel_depth_increase_spin = QtWidgets.QDoubleSpinBox()
+        self.max_rel_depth_increase_spin.setRange(0.0, 1000.0)
+        self.max_rel_depth_increase_spin.setDecimals(3)
+        self.max_rel_depth_increase_spin.setValue(2.0)
+        self.max_rel_depth_increase_spin.setToolTip(
+            "Per-step depth growth limiter on GPU update:\n"
+            "h_new <= h_old + factor * max(h_old, h_min).\n"
+            "Lower values are more robust near advancing wet/dry fronts."
+        )
+        self.shallow_damping_depth_spin = QtWidgets.QDoubleSpinBox()
+        self.shallow_damping_depth_spin.setRange(1.0e-8, 10.0)
+        self.shallow_damping_depth_spin.setDecimals(6)
+        self.shallow_damping_depth_spin.setValue(1.0e-4)
+        self.shallow_damping_depth_spin.setToolTip(
+            "Depth threshold for smooth momentum damping in shallow cells."
+        )
+        self.depth_cap_spin = QtWidgets.QDoubleSpinBox()
+        self.depth_cap_spin.setRange(0.001, 1.0e7)
+        self.depth_cap_spin.setDecimals(3)
+        self.depth_cap_spin.setValue(1.0e6)
+        self.depth_cap_spin.setToolTip("Absolute depth cap for robustness.")
+        self.momentum_cap_min_speed_spin = QtWidgets.QDoubleSpinBox()
+        self.momentum_cap_min_speed_spin.setRange(0.1, 1.0e4)
+        self.momentum_cap_min_speed_spin.setDecimals(3)
+        self.momentum_cap_min_speed_spin.setValue(50.0)
+        self.momentum_cap_min_speed_spin.setToolTip(
+            "Minimum speed floor used by momentum clipping."
+        )
+        self.momentum_cap_celerity_mult_spin = QtWidgets.QDoubleSpinBox()
+        self.momentum_cap_celerity_mult_spin.setRange(0.1, 1000.0)
+        self.momentum_cap_celerity_mult_spin.setDecimals(3)
+        self.momentum_cap_celerity_mult_spin.setValue(20.0)
+        self.momentum_cap_celerity_mult_spin.setToolTip(
+            "Momentum clipping speed cap multiplier on sqrt(g*h)."
+        )
+        self.max_inv_area_spin = QtWidgets.QDoubleSpinBox()
+        self.max_inv_area_spin.setRange(1.0, 1.0e12)
+        self.max_inv_area_spin.setDecimals(1)
+        self.max_inv_area_spin.setValue(1.0e6)
+        self.max_inv_area_spin.setToolTip(
+            "Cap on inverse cell area used in flux and update kernels."
+        )
+        self.cfl_lambda_cap_spin = QtWidgets.QDoubleSpinBox()
+        self.cfl_lambda_cap_spin.setRange(1.0, 1.0e12)
+        self.cfl_lambda_cap_spin.setDecimals(1)
+        self.cfl_lambda_cap_spin.setValue(1.0e6)
+        self.cfl_lambda_cap_spin.setToolTip(
+            "Cap on local CFL lambda used in dt reduction and diagnostics."
+        )
         self.rain_rate_spin = QtWidgets.QDoubleSpinBox()
         self.rain_rate_spin.setRange(0.0, 2000.0)
         self.rain_rate_spin.setDecimals(3)
@@ -611,6 +870,23 @@ class SWE2DWorkbenchDialog(QtWidgets.QDialog):
             "  Van Leer               — smooth limiter, good for continuous waves\n"
             "Recommend: start with MUSCL MinMod; switch to MC or Van Leer once stable."
         )
+        self.degen_mode_combo = QtWidgets.QComboBox()
+        for _label, _val in [
+            ("None (max_inv_area cap)", 0),
+            ("Skip (permanently inactive)", 1),
+            ("Repair (neighbor-avg inv_area)", 2),
+            ("Merge (redirect flux to owner)", 3),
+        ]:
+            self.degen_mode_combo.addItem(_label, int(_val))
+        self.degen_mode_combo.setCurrentIndex(0)
+        self.degen_mode_combo.setToolTip(
+            "Degenerate cell handling mode (cells with area below 1/max_inv_area).\n"
+            "None: existing max_inv_area cap in update kernel (default).\n"
+            "Skip: permanently exclude degenerate cells from all flux/update.\n"
+            "Repair: replace degenerate cell inv_area with neighbor average;\n"
+            "  keeps them in physics with sane CFL contribution.\n"
+            "Merge: redirect flux accumulation to largest non-degenerate neighbor."
+        )
         self.gpu_default_lbl = QtWidgets.QLabel("GPU is attempted by default when supported by the native backend.")
         self.gpu_default_lbl.setWordWrap(True)
         self.unit_system_lbl = QtWidgets.QLabel("Unit system: auto")
@@ -621,11 +897,19 @@ class SWE2DWorkbenchDialog(QtWidgets.QDialog):
         param_form.addRow("CFL:", self.cfl_spin)
         param_form.addRow("h_min:", self.h_min_spin)
         param_form.addRow("Fixed dt:", self.dt_spin)
+        param_form.addRow("Max rel depth increase:", self.max_rel_depth_increase_spin)
+        param_form.addRow("Shallow damping depth:", self.shallow_damping_depth_spin)
+        param_form.addRow("Depth cap:", self.depth_cap_spin)
+        param_form.addRow("Momentum cap min speed:", self.momentum_cap_min_speed_spin)
+        param_form.addRow("Momentum cap celerity mult:", self.momentum_cap_celerity_mult_spin)
+        param_form.addRow("Max inv area:", self.max_inv_area_spin)
+        param_form.addRow("CFL lambda cap:", self.cfl_lambda_cap_spin)
         param_form.addRow("Rain rate:", self.rain_rate_spin)
         param_form.addRow("Internal flow layer:", self.internal_flow_layer_combo)
         param_form.addRow("Internal flow field:", self.internal_flow_field_edit)
         param_form.addRow("Run duration (hr or HH:MM):", self.run_time_edit)
         param_form.addRow("Reconstruction:", self.reconstruction_combo)
+        param_form.addRow("Degenerate cell mode:", self.degen_mode_combo)
         param_form.addRow(self.unit_system_lbl)
         param_form.addRow(self.gpu_default_lbl)
         left_layout.addWidget(param_group)
@@ -782,6 +1066,7 @@ class SWE2DWorkbenchDialog(QtWidgets.QDialog):
         conceptual,
         backend_name: str,
         default_cell_type: str,
+        mesh_options: Optional[Dict[str, object]] = None,
         run_mode: str = "full",
     ):
         if self._topology_mesh_future is not None and not self._topology_mesh_future.done():
@@ -792,6 +1077,7 @@ class SWE2DWorkbenchDialog(QtWidgets.QDialog):
         self._topology_mesh_default_cell_type = default_cell_type
         self._topology_mesh_run_mode = run_mode
         self._topology_mesh_conceptual = conceptual
+        self._topology_mesh_options = dict(mesh_options or {})
         if run_mode == "full":
             self._topology_mesh_auto_fallback_used = False
         self._topology_mesh_started_at = time.perf_counter()
@@ -806,7 +1092,12 @@ class SWE2DWorkbenchDialog(QtWidgets.QDialog):
         else:
             executor = self._topology_mesh_thread_pool
 
-        self._topology_mesh_future = executor.submit(_run_topology_mesh_job, conceptual, backend_name)
+        self._topology_mesh_future = executor.submit(
+            _run_topology_mesh_job,
+            conceptual,
+            backend_name,
+            self._topology_mesh_options,
+        )
         status_msg = f"Meshing in progress with backend '{backend_name}'..."
         if run_mode == "fallback-no-constraints":
             status_msg = (
@@ -883,6 +1174,7 @@ class SWE2DWorkbenchDialog(QtWidgets.QDialog):
                         fallback_conceptual,
                         backend_name,
                         default_cell_type,
+                        self._topology_mesh_options,
                         run_mode="fallback-no-constraints",
                     )
                     return
@@ -1237,6 +1529,174 @@ class SWE2DWorkbenchDialog(QtWidgets.QDialog):
             _restore(self.internal_flow_layer_combo, keep_internal_flow)
 
         self._update_unit_system_from_crs()
+        self._update_topology_control_summary()
+
+    def _parse_csv_number_list(self, text: str, cast=float):
+        values = []
+        for part in str(text or "").split(","):
+            item = part.strip()
+            if not item:
+                continue
+            number = float(item)
+            values.append(cast(number) if cast is int else cast(number))
+        return values
+
+    def _build_topology_meshing_options(self) -> Dict[str, object]:
+        return {
+            "tqmesh_min_angle_deg": float(self.topo_quality_min_angle_spin.value()),
+            "tqmesh_max_aspect_ratio": float(self.topo_quality_max_aspect_spin.value()),
+            "tqmesh_min_area_rel_bbox": float(self.topo_quality_min_area_edit.text().strip() or "0"),
+            "tqmesh_quality_strict": bool(self.topo_quality_strict_chk.isChecked()),
+            "tqmesh_size_scales": tuple(self._parse_csv_number_list(self.topo_quality_size_scales_edit.text(), float) or [1.0]),
+            "tqmesh_smooth_increments": tuple(self._parse_csv_number_list(self.topo_quality_smooth_increments_edit.text(), int) or [0]),
+        }
+
+    def _open_topology_region_table(self):
+        layer = self._combo_layer(self.topo_regions_combo, "vector")
+        if layer is None:
+            QtWidgets.QMessageBox.information(self, "Topology Editor", "Select a topology regions layer first.")
+            return
+        dlg = TopologyAttributeTableDialog(
+            layer,
+            "Topology Region Controls",
+            [
+                ("region_id", "Region ID", "int"),
+                ("target_size", "Target Size", "float"),
+                ("cell_type", "Cell Type", "enum", _CELL_TYPE_OPTIONS),
+                ("edge_len_1", "Edge Len 1", "float"),
+                ("edge_len_2", "Edge Len 2", "float"),
+                ("edge_len_3", "Edge Len 3", "float"),
+                ("edge_len_4", "Edge Len 4", "float"),
+            ],
+            sort_fields=["region_id"],
+            note=(
+                "Use one polygon per block. For structured/cartesian blocks, edge_len_1..4 define per-edge target spacing "
+                "used by Gmsh and the structured fallback when the region has a complete four-edge topology definition."
+            ),
+            parent=self,
+        )
+        if dlg.exec() == QtWidgets.QDialog.DialogCode.Accepted:
+            self._update_topology_control_summary()
+
+    def _open_topology_quad_edge_table(self):
+        layer = self._combo_layer(self.topo_quad_edges_combo, "vector")
+        if layer is None:
+            QtWidgets.QMessageBox.information(self, "Topology Editor", "Select a quad-edge / transition-layer layer first.")
+            return
+        dlg = TopologyAttributeTableDialog(
+            layer,
+            "Topology Transition Layers",
+            [
+                ("region_id", "Region ID", "int"),
+                ("edge_id", "Edge ID", "int"),
+                ("target_size", "Target Size", "float"),
+                ("n_layers", "N Layers", "int"),
+                ("first_height", "First Height", "float"),
+                ("growth_rate", "Growth Rate", "float"),
+            ],
+            sort_fields=["region_id", "edge_id"],
+            note=(
+                "Define one line per region edge for a complete four-edge structured block. n_layers / first_height / growth_rate "
+                "control transition-layer packing inward from that edge."
+            ),
+            parent=self,
+        )
+        if dlg.exec() == QtWidgets.QDialog.DialogCode.Accepted:
+            self._update_topology_control_summary()
+
+    def _update_topology_control_summary(self):
+        if not hasattr(self, "topo_controls_summary_lbl"):
+            return
+
+        backend_name = str(self.topo_backend_combo.currentData() or "structured") if hasattr(self, "topo_backend_combo") else "structured"
+        regions_layer = self._combo_layer(self.topo_regions_combo, "vector") if hasattr(self, "topo_regions_combo") else None
+        quad_edges_layer = self._combo_layer(self.topo_quad_edges_combo, "vector") if hasattr(self, "topo_quad_edges_combo") else None
+
+        if backend_name == "gmsh":
+            backend_hint = (
+                "Gmsh: use multiple region polygons for multiblock meshes. "
+                "Set region cell_type to 'cartesian' or 'quadrilateral' and populate edge_len_1..4 "
+                "for per-edge structured spacing. Opposite edges are matched automatically."
+            )
+        elif backend_name == "tqmesh":
+            backend_hint = (
+                "TQMesh: use multiple region polygons for blockwise target_size and cell_type. "
+                "Use quad-edge lines with n_layers, first_height, and growth_rate for transition layers."
+            )
+        else:
+            backend_hint = (
+                "Structured fallback: honors per-region target_size and cell_type, "
+                "but does not apply quad-edge transition layers or exact transfinite edge counts."
+            )
+
+        details: List[str] = []
+        if regions_layer is not None:
+            try:
+                region_fields = set(regions_layer.fields().names())
+                region_count = 0
+                cartesian_count = 0
+                size_values = set()
+                missing_edge_lengths = 0
+                for ft in regions_layer.getFeatures():
+                    region_count += 1
+                    ctype = str(ft["cell_type"]).strip().lower() if "cell_type" in region_fields and ft["cell_type"] not in (None, "") else ""
+                    if ctype in {"cartesian", "quadrilateral"}:
+                        cartesian_count += 1
+                        edge_fields = [f"edge_len_{i}" for i in range(1, 5)]
+                        edge_ok = True
+                        for name in edge_fields:
+                            if name not in region_fields or ft[name] in (None, ""):
+                                edge_ok = False
+                                break
+                            try:
+                                if float(ft[name]) <= 0.0:
+                                    edge_ok = False
+                                    break
+                            except Exception:
+                                edge_ok = False
+                                break
+                        if not edge_ok:
+                            missing_edge_lengths += 1
+                    if "target_size" in region_fields and ft["target_size"] not in (None, ""):
+                        try:
+                            size_values.add(round(float(ft["target_size"]), 6))
+                        except Exception:
+                            pass
+                details.append(f"regions={region_count}")
+                if cartesian_count > 0:
+                    details.append(f"structured-block-regions={cartesian_count}")
+                if len(size_values) > 1:
+                    details.append(f"multi-block sizes={len(size_values)}")
+                if missing_edge_lengths > 0:
+                    details.append(f"structured regions missing edge_len_1..4={missing_edge_lengths}")
+            except Exception:
+                pass
+
+        if quad_edges_layer is not None and getattr(self, "topo_quad_edges_combo", None) is not None and self.topo_quad_edges_combo.currentData() is not None:
+            try:
+                q_fields = set(quad_edges_layer.fields().names())
+                edge_count = 0
+                layered_edges = 0
+                total_layers = 0
+                for ft in quad_edges_layer.getFeatures():
+                    edge_count += 1
+                    if "n_layers" in q_fields and ft["n_layers"] not in (None, ""):
+                        nl = max(0, int(ft["n_layers"]))
+                        total_layers += nl
+                        if nl > 0:
+                            layered_edges += 1
+                details.append(f"quad-edges={edge_count}")
+                if layered_edges > 0:
+                    details.append(f"transition-layer-edges={layered_edges}")
+                    details.append(f"total-n_layers={total_layers}")
+            except Exception:
+                pass
+
+        suffix = " | ".join(details)
+        if suffix:
+            self.topo_controls_summary_lbl.setText(f"{backend_hint} Current layers: {suffix}.")
+        else:
+            self.topo_controls_summary_lbl.setText(backend_hint)
 
     def _create_topology_template_layers(self):
         if not _HAVE_QGIS_CORE:
@@ -1463,6 +1923,7 @@ class SWE2DWorkbenchDialog(QtWidgets.QDialog):
         backend_name = str(self.topo_backend_combo.currentData() or "structured")
 
         try:
+            mesh_options = self._build_topology_meshing_options()
             conceptual = conceptual_from_qgis_layers(
                 nodes_layer=nodes_layer,
                 arcs_layer=arcs_layer,
@@ -1472,7 +1933,10 @@ class SWE2DWorkbenchDialog(QtWidgets.QDialog):
                 default_size=default_size,
                 default_cell_type=default_cell_type,
             )
-            self._start_topology_mesh_async(conceptual, backend_name, default_cell_type)
+            self._start_topology_mesh_async(conceptual, backend_name, default_cell_type, mesh_options)
+        except ValueError as exc:
+            self.topo_status_lbl.setText(f"Invalid topology mesh options: {exc}")
+            self._log(f"Topology mesh option error: {exc}")
         except NotImplementedError as exc:
             self.topo_status_lbl.setText(str(exc))
             self._log(f"Topology meshing backend not implemented: {exc}")
@@ -3488,6 +3952,16 @@ class SWE2DWorkbenchDialog(QtWidgets.QDialog):
 
             self._log("Starting 2D run...")
             self._log(f"Reconstruction mode: {reconstruction_name}")
+            self._log(
+                "Stability controls: "
+                f"max_rel_dh={float(self.max_rel_depth_increase_spin.value()):.3f}, "
+                f"shallow_damp_h={float(self.shallow_damping_depth_spin.value()):.6e}, "
+                f"depth_cap={float(self.depth_cap_spin.value()):.3f}, "
+                f"mom_cap_min={float(self.momentum_cap_min_speed_spin.value()):.3f}, "
+                f"mom_cap_mult={float(self.momentum_cap_celerity_mult_spin.value()):.3f}, "
+                f"invA_cap={float(self.max_inv_area_spin.value()):.3e}, "
+                f"lambda_cap={float(self.cfl_lambda_cap_spin.value()):.3e}"
+            )
             if rain_rate_mps > 0.0:
                 self._log(f"Rain-on-grid active: {float(self.rain_rate_spin.value()):.3f} mm/hr")
             if cell_source_cms is not None:
@@ -3532,7 +4006,15 @@ class SWE2DWorkbenchDialog(QtWidgets.QDialog):
                 h_min=float(self.h_min_spin.value()),
                 dt_fixed=dt,
                 dt_max=dt,
+                max_inv_area=float(self.max_inv_area_spin.value()),
+                cfl_lambda_cap=float(self.cfl_lambda_cap_spin.value()),
+                momentum_cap_min_speed=float(self.momentum_cap_min_speed_spin.value()),
+                momentum_cap_celerity_mult=float(self.momentum_cap_celerity_mult_spin.value()),
+                depth_cap=float(self.depth_cap_spin.value()),
+                max_rel_depth_increase=float(self.max_rel_depth_increase_spin.value()),
+                shallow_damping_depth=float(self.shallow_damping_depth_spin.value()),
                 spatial_discretization=reconstruction_mode,
+                degen_mode=int(self.degen_mode_combo.currentData()),
             )
 
             last_diag = None

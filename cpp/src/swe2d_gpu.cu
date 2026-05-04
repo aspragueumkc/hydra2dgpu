@@ -296,6 +296,96 @@ __device__ inline void hllc_flux_cuda_local(
     }
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// Wet/dry classification and active-set marking
+// ─────────────────────────────────────────────────────────────────────────────
+
+// swe2d_classify_kernel: one thread per cell.
+// Sets d_active[c]=1 if h>h_min or cell has a forced-inflow BC edge.
+// Block-reduces the wet count (h>h_min only) into d_n_wet via atomicAdd.
+__global__ void swe2d_classify_kernel(
+    int32_t        n_cells,
+    const double*  d_h,
+    const int32_t* d_bc_forced,
+    int32_t*       d_active,
+    int32_t*       d_n_wet,
+    double         h_min)
+{
+    extern __shared__ int32_t scount[];
+    int32_t tid = threadIdx.x;
+    int32_t c   = blockIdx.x * blockDim.x + tid;
+
+    int32_t wet = 0;
+    if (c < n_cells) {
+        const int32_t forced = d_bc_forced ? d_bc_forced[c] : 0;
+        const int32_t w      = (d_h[c] > h_min) ? 1 : 0;
+        d_active[c] = w | forced;
+        wet         = w;   // count only hydrodynamically wet cells
+    }
+
+    scount[tid] = wet;
+    __syncthreads();
+    for (unsigned int s = blockDim.x / 2; s > 0; s >>= 1) {
+        if (tid < s) scount[tid] += scount[tid + s];
+        __syncthreads();
+    }
+    if (tid == 0) atomicAdd(d_n_wet, scount[0]);
+}
+
+// swe2d_mark_neighbor_kernel: one thread per interior edge.
+// If one endpoint is active, marks the other endpoint active too,
+// so wetting-front dry cells receive their flux during the update step.
+__global__ void swe2d_mark_neighbor_kernel(
+    int32_t        n_edges,
+    const int32_t* edge_c0,
+    const int32_t* edge_c1,
+    int32_t*       d_active)
+{
+    int32_t e = blockIdx.x * blockDim.x + threadIdx.x;
+    if (e >= n_edges) return;
+    int32_t c0 = edge_c0[e];
+    int32_t c1 = edge_c1[e];
+    if (c1 < 0) return;   // boundary edge — no second interior cell
+    if (d_active[c0] && !d_active[c1]) atomicOr(&d_active[c1], 1);
+    if (d_active[c1] && !d_active[c0]) atomicOr(&d_active[c0], 1);
+}
+
+// swe2d_degen_deactivate_kernel: one thread per cell.
+// Modes 1 (skip) and 3 (merge): force degenerate cells permanently inactive
+// after each classify pass so they never receive flux or get updated.
+__global__ void swe2d_degen_deactivate_kernel(
+    int32_t        n_cells,
+    const int32_t* d_degen_mask,
+    int32_t*       d_active)
+{
+    int32_t c = blockIdx.x * blockDim.x + threadIdx.x;
+    if (c >= n_cells || !d_degen_mask[c]) return;
+    d_active[c] = 0;
+}
+
+// swe2d_degen_sync_kernel: one thread per degenerate cell.
+// Mode 3 (merge): copy owner state into each degenerate cell so that
+// flux computation and higher-order reconstruction sees physically sane values.
+__global__ void swe2d_degen_sync_kernel(
+    int32_t        n_cells,
+    const int32_t* d_degen_mask,
+    const int32_t* d_merge_owner,
+    double*        d_h,
+    double*        d_hu,
+    double*        d_hv)
+{
+    int32_t c = blockIdx.x * blockDim.x + threadIdx.x;
+    if (c >= n_cells || !d_degen_mask[c]) return;
+    const int32_t owner = d_merge_owner[c];
+    if (owner < 0 || owner >= n_cells) {
+        d_h[c] = 0.0; d_hu[c] = 0.0; d_hv[c] = 0.0;
+    } else {
+        d_h[c]  = d_h[owner];
+        d_hu[c] = d_hu[owner];
+        d_hv[c] = d_hv[owner];
+    }
+}
+
 } // namespace
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -332,7 +422,9 @@ __global__ void swe2d_gradient_kernel(
     double         max_inv_area,
     double*        grad_hx,  double* grad_hy,
     double*        grad_hux, double* grad_huy,
-    double*        grad_hvx, double* grad_hvy)
+    double*        grad_hvx, double* grad_hvy,
+    const int32_t* d_active,
+    const int32_t* d_degen_mask)
 {
     int32_t e = blockIdx.x * blockDim.x + threadIdx.x;
     if (e >= n_edges) return;
@@ -340,8 +432,15 @@ __global__ void swe2d_gradient_kernel(
     int32_t c0 = edge_c0[e];
     int32_t c1 = edge_c1[e];
 
-    // Skip degenerate cells
-    if (cell_inv_area[c0] > max_inv_area) return;
+    // Skip edges originating from degenerate cells.
+    // Use d_degen_mask when available; otherwise fall back to raw inv_area cap.
+    const int32_t c0_degen = d_degen_mask ? d_degen_mask[c0]
+                                          : (cell_inv_area[c0] > max_inv_area ? 1 : 0);
+    if (c0_degen) return;
+
+    // Skip edges where both cells are fully inactive (dry, no wet neighbors).
+    // Gradients for such cells remain zero, which is correct for dry state.
+    if (d_active && !d_active[c0] && (c1 < 0 || !d_active[c1])) return;
 
     double nx  = edge_nx[e];
     double ny  = edge_ny[e];
@@ -350,7 +449,9 @@ __global__ void swe2d_gradient_kernel(
     double h0  = cell_h[c0],  hu0 = cell_hu[c0], hv0 = cell_hv[c0];
     double zb0 = cell_zb[c0];
     double h1, hu1, hv1, zb1;
-    if (c1 >= 0 && cell_inv_area[c1] <= max_inv_area) {
+    const int32_t c1_degen = (c1 >= 0 && d_degen_mask) ? d_degen_mask[c1]
+                             : (c1 < 0 || cell_inv_area[c1] > max_inv_area ? 1 : 0);
+    if (c1 >= 0 && !c1_degen) {
         h1 = cell_h[c1]; hu1 = cell_hu[c1]; hv1 = cell_hv[c1];
         zb1 = cell_zb[c1];
     } else {
@@ -377,7 +478,7 @@ __global__ void swe2d_gradient_kernel(
     atomicAdd(&grad_hvy[c0],  qhv * ny * len * ia0);
 
     // Contribution to c1: outward normal for c1 is the reverse of c0's normal
-    if (c1 >= 0 && cell_inv_area[c1] <= max_inv_area) {
+    if (c1 >= 0 && !c1_degen) {
         double ia1 = cell_inv_area[c1];
         atomicAdd(&grad_hx[c1],  -qh  * nx * len * ia1);
         atomicAdd(&grad_hy[c1],  -qh  * ny * len * ia1);
@@ -422,19 +523,41 @@ __global__ void swe2d_flux_kernel(
     double g, double h_min,
     double max_inv_area,
     double momentum_cap_min_speed,
-    double momentum_cap_celerity_mult)
+    double momentum_cap_celerity_mult,
+    const int32_t* d_degen_mask,
+    const int32_t* d_merge_owner,
+    int            degen_mode)
 {
     int32_t e = blockIdx.x * blockDim.x + threadIdx.x;
     if (e >= n_edges) return;
 
     int32_t c0 = edge_c0[e];
     int32_t c1 = edge_c1[e];
-    
-    // Skip flux TO degenerate cells (inv_area > 1e6)
-    if (cell_inv_area[c0] > max_inv_area || (c1 >= 0 && cell_inv_area[c1] > max_inv_area)) {
-        return;
+
+    // Degenerate-cell handling at edge level.
+    // Build per-endpoint degenerate flags using mask when available.
+    const int32_t dm0 = d_degen_mask ? d_degen_mask[c0]
+                                     : (cell_inv_area[c0] > max_inv_area ? 1 : 0);
+    const int32_t dm1 = (c1 >= 0) ? (d_degen_mask ? d_degen_mask[c1]
+                                                   : (cell_inv_area[c1] > max_inv_area ? 1 : 0))
+                                   : 0;
+
+    // Modes 0 and 1: skip edges involving degenerate cells entirely.
+    if (degen_mode <= 1 && (dm0 || dm1)) return;
+
+    // Mode 3: skip edge if a degenerate endpoint has no valid merge owner.
+    if (degen_mode == 3) {
+        if (dm0 && (d_merge_owner == nullptr || d_merge_owner[c0] < 0)) return;
+        if (dm1 && (d_merge_owner == nullptr || d_merge_owner[c1] < 0)) return;
     }
-    
+
+    // Resolve flux accumulation targets (mode 3: redirect to merge owner).
+    int32_t acc0 = c0, acc1 = c1;
+    if (degen_mode == 3 && d_merge_owner) {
+        if (dm0 && d_merge_owner[c0] >= 0) acc0 = d_merge_owner[c0];
+        if (c1 >= 0 && dm1 && d_merge_owner[c1] >= 0) acc1 = d_merge_owner[c1];
+    }
+
     double  nx  = edge_nx[e];
     double  ny  = edge_ny[e];
     double  len = edge_len[e];
@@ -573,21 +696,21 @@ __global__ void swe2d_flux_kernel(
         dbg_fhv[e] = fhv;
     }
 
-    // c0: flux leaves
-    atomicAdd(&flux_h[c0],  -fh);
-    atomicAdd(&flux_hu[c0], -fhu);
-    atomicAdd(&flux_hv[c0], -fhv);
+    // c0 (or its merge owner in mode 3): flux leaves
+    atomicAdd(&flux_h[acc0],  -fh);
+    atomicAdd(&flux_hu[acc0], -fhu);
+    atomicAdd(&flux_hv[acc0], -fhv);
 
     if (c1 >= 0) {
-        // c1: flux enters, with right-side bed-slope correction
+        // c1 (or its merge owner in mode 3): flux enters, with right-side bed-slope correction
         double corr_hu_r = 0.0, corr_hv_r = 0.0;
         // Same normal direction as c0 to preserve lake-at-rest balance.
         bed_slope_correction_cuda_local(hR, rs.hR_star, nx, ny, g, corr_hu_r, corr_hv_r);
         double fhu_r = (flux_fhu + corr_hu_r) * len;
         double fhv_r = (flux_fhv + corr_hv_r) * len;
-        atomicAdd(&flux_h[c1],  fh);
-        atomicAdd(&flux_hu[c1], fhu_r);
-        atomicAdd(&flux_hv[c1], fhv_r);
+        atomicAdd(&flux_h[acc1],  fh);
+        atomicAdd(&flux_hu[acc1], fhu_r);
+        atomicAdd(&flux_hv[acc1], fhv_r);
     }
 }
 
@@ -611,18 +734,33 @@ __global__ void swe2d_update_kernel(
     double momentum_cap_celerity_mult,
     double depth_cap,
     double max_rel_depth_increase,
-    double shallow_damping_depth)
+    double shallow_damping_depth,
+    const int32_t* d_active,
+    const int32_t* d_degen_mask,
+    const double*  d_inv_area_repaired,
+    int            degen_mode)
 {
     int32_t c = blockIdx.x * blockDim.x + threadIdx.x;
     if (c >= n_cells) return;
 
+    // Skip fully isolated dry cells: no wet neighbors means no flux will arrive.
+    if (d_active && !d_active[c]) return;
+
+    // Modes 1 and 3: skip degenerate cells entirely (flux was dropped or redirected).
+    if (d_degen_mask && d_degen_mask[c] && degen_mode != 2) return;
+
     const double h_old = cell_h[c];
 
-    double inv_a = cell_inv_area[c];
-
-    // Clamp inv_area to prevent overflow: bound state update by max_inv_a * |flux|
-    const double max_inv_a = fmax(max_inv_area, 1.0);
-    if (inv_a > max_inv_a) inv_a = max_inv_a;
+    double inv_a;
+    if (degen_mode == 2 && d_inv_area_repaired != nullptr && d_degen_mask && d_degen_mask[c]) {
+        // Mode 2: use neighbor-averaged repaired inv_area to prevent CFL collapse.
+        inv_a = d_inv_area_repaired[c];
+    } else {
+        inv_a = cell_inv_area[c];
+        // Modes 0/1: clamp inv_area to prevent overflow in update.
+        const double max_inv_a = fmax(max_inv_area, 1.0);
+        if (inv_a > max_inv_a) inv_a = max_inv_a;
+    }
 
     double fh = flux_h[c];
     double fhu = flux_hu[c];
@@ -735,14 +873,17 @@ __global__ void swe2d_cfl_kernel(
     const double* cell_area,
     double g, double h_min,
     double lambda_cap,
-    double* d_lambda_max)
+    double* d_lambda_max,
+    const int32_t* d_degen_mask,
+    int            degen_mode)
 {
     extern __shared__ double sdata[];
     int32_t tid = threadIdx.x;
     int32_t c   = blockIdx.x * blockDim.x + tid;
 
     double lambda = 0.0;
-    if (c < n_cells) {
+    // Skip degenerate cells in active modes to prevent collapsed CFL timestep.
+    if (c < n_cells && !(d_degen_mask && d_degen_mask[c] && degen_mode > 0)) {
         double h  = cell_h[c];
         double hu = cell_hu[c];
         double hv = cell_hv[c];
@@ -797,12 +938,14 @@ __global__ void swe2d_cfl_kernel(
 // so a single cudaMemcpy of 16 bytes transfers all diagnostic values.
 // ─────────────────────────────────────────────────────────────────────────────
 __global__ void pack_diag_kernel(
-    const double* __restrict__ d_lambda_max,
-    const double* __restrict__ d_max_wse_elev_error,
-    double* __restrict__ d_out)
+    const double*  __restrict__ d_lambda_max,
+    const double*  __restrict__ d_max_wse_elev_error,
+    const int32_t* __restrict__ d_n_wet,
+    double*        __restrict__ d_out)
 {
     d_out[0] = d_lambda_max[0];
     d_out[1] = d_max_wse_elev_error[0];
+    d_out[2] = d_n_wet ? static_cast<double>(d_n_wet[0]) : -1.0;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -822,7 +965,9 @@ SWE2DDeviceState* swe2d_gpu_init(
     const double*    h0,
     const double*    hu0,
     const double*    hv0,
-    const double*    n_mann_cell)
+    const double*    n_mann_cell,
+    int              degen_mode,
+    double           max_inv_area)
 {
     auto* dev = new SWE2DDeviceState();
     dev->n_cells = mesh.n_cells;
@@ -920,8 +1065,112 @@ SWE2DDeviceState* swe2d_gpu_init(
     // CFL workspace
     alloc_d(reinterpret_cast<void**>(&dev->d_lambda_max), sizeof(double));
     alloc_d(reinterpret_cast<void**>(&dev->d_max_wse_elev_error), sizeof(double));
-    alloc_d(reinterpret_cast<void**>(&dev->d_diag_packed), 2 * sizeof(double));
-    CUDA_CHECK(cudaMemset(dev->d_diag_packed, 0, 2 * sizeof(double)));
+    alloc_d(reinterpret_cast<void**>(&dev->d_diag_packed), 3 * sizeof(double));
+    CUDA_CHECK(cudaMemset(dev->d_diag_packed, 0, 3 * sizeof(double)));
+
+    // Wet/dry active-set arrays
+    alloc_d(reinterpret_cast<void**>(&dev->d_active),    sz_cells * sizeof(int32_t));
+    alloc_d(reinterpret_cast<void**>(&dev->d_n_wet),     sizeof(int32_t));
+    alloc_d(reinterpret_cast<void**>(&dev->d_bc_forced), sz_cells * sizeof(int32_t));
+    CUDA_CHECK(cudaMemset(dev->d_active,    0, sz_cells * sizeof(int32_t)));
+    CUDA_CHECK(cudaMemset(dev->d_n_wet,     0, sizeof(int32_t)));
+    // Build bc_forced host-side: mark cells at forced-inflow BC edges (types 2, 3, 6)
+    // so that even initially-dry inflow cells are included in the active set.
+    {
+        std::vector<int32_t> h_bcf(sz_cells, 0);
+        for (size_t ei = 0; ei < sz_edges; ++ei) {
+            if (mesh.edge_c1[ei] >= 0) continue;   // interior edge
+            const int32_t bc = static_cast<int32_t>(mesh.edge_bc[ei]);
+            if (bc == 2 || bc == 3 || bc == 6) {
+                const int32_t c0 = mesh.edge_c0[ei];
+                if (c0 >= 0 && c0 < static_cast<int32_t>(sz_cells))
+                    h_bcf[static_cast<size_t>(c0)] = 1;
+            }
+        }
+        copy_h2d_i(dev->d_bc_forced, h_bcf.data(), sz_cells);
+    }
+
+    // ── Degenerate-cell precompute (host-side, uploaded once) ────────────────
+    dev->degen_mode = degen_mode;
+    if (degen_mode > 0) {
+        // Build degenerate mask: cell is degenerate if cell_inv_area > max_inv_area.
+        std::vector<int32_t> h_degen(sz_cells, 0);
+        for (size_t ci = 0; ci < sz_cells; ++ci) {
+            if (mesh.cell_inv_area[ci] > max_inv_area)
+                h_degen[ci] = 1;
+        }
+        alloc_d(reinterpret_cast<void**>(&dev->d_degen_mask), sz_cells * sizeof(int32_t));
+        copy_h2d_i(dev->d_degen_mask, h_degen.data(), sz_cells);
+
+        if (degen_mode == 1) {
+            // Mode 1 (skip): zero initial state of degenerate cells so they start dry.
+            std::vector<double> h_mod(h0, h0 + sz_cells);
+            for (size_t ci = 0; ci < sz_cells; ++ci) {
+                if (h_degen[ci]) h_mod[ci] = 0.0;
+            }
+            copy_h2d_d(dev->d_h, h_mod.data(), sz_cells);
+        }
+
+        if (degen_mode == 2) {
+            // Mode 2 (repair): replace degenerate cell inv_area with neighbor-averaged value.
+            std::vector<double> h_repair(sz_cells);
+            for (size_t ci = 0; ci < sz_cells; ++ci)
+                h_repair[ci] = mesh.cell_inv_area[ci];
+
+            // Accumulate non-degenerate neighbor inv_area for each degenerate cell.
+            std::vector<double> sum_ia(sz_cells, 0.0);
+            std::vector<int32_t> cnt_ia(sz_cells, 0);
+            for (size_t ei = 0; ei < sz_edges; ++ei) {
+                int32_t c0e = mesh.edge_c0[ei];
+                int32_t c1e = mesh.edge_c1[ei];
+                if (c1e < 0) continue;
+                if (h_degen[static_cast<size_t>(c0e)] && !h_degen[static_cast<size_t>(c1e)]) {
+                    sum_ia[static_cast<size_t>(c0e)] += mesh.cell_inv_area[static_cast<size_t>(c1e)];
+                    cnt_ia[static_cast<size_t>(c0e)]++;
+                }
+                if (h_degen[static_cast<size_t>(c1e)] && !h_degen[static_cast<size_t>(c0e)]) {
+                    sum_ia[static_cast<size_t>(c1e)] += mesh.cell_inv_area[static_cast<size_t>(c0e)];
+                    cnt_ia[static_cast<size_t>(c1e)]++;
+                }
+            }
+            for (size_t ci = 0; ci < sz_cells; ++ci) {
+                if (h_degen[ci] && cnt_ia[ci] > 0)
+                    h_repair[ci] = sum_ia[ci] / static_cast<double>(cnt_ia[ci]);
+                else if (h_degen[ci])
+                    h_repair[ci] = max_inv_area;  // fallback: use cap
+            }
+            alloc_d(reinterpret_cast<void**>(&dev->d_inv_area_repaired), sz_cells * sizeof(double));
+            copy_h2d_d(dev->d_inv_area_repaired, h_repair.data(), sz_cells);
+        }
+
+        if (degen_mode == 3) {
+            // Mode 3 (merge): for each degenerate cell, find the non-degenerate neighbor
+            // with the largest area as the merge owner.
+            std::vector<int32_t> h_owner(sz_cells, -1);
+            std::vector<double> best_area(sz_cells, -1.0);
+            for (size_t ei = 0; ei < sz_edges; ++ei) {
+                int32_t c0e = mesh.edge_c0[ei];
+                int32_t c1e = mesh.edge_c1[ei];
+                if (c1e < 0) continue;
+                if (h_degen[static_cast<size_t>(c0e)] && !h_degen[static_cast<size_t>(c1e)]) {
+                    double a = mesh.cell_area[static_cast<size_t>(c1e)];
+                    if (a > best_area[static_cast<size_t>(c0e)]) {
+                        best_area[static_cast<size_t>(c0e)] = a;
+                        h_owner[static_cast<size_t>(c0e)] = c1e;
+                    }
+                }
+                if (h_degen[static_cast<size_t>(c1e)] && !h_degen[static_cast<size_t>(c0e)]) {
+                    double a = mesh.cell_area[static_cast<size_t>(c0e)];
+                    if (a > best_area[static_cast<size_t>(c1e)]) {
+                        best_area[static_cast<size_t>(c1e)] = a;
+                        h_owner[static_cast<size_t>(c1e)] = c0e;
+                    }
+                }
+            }
+            alloc_d(reinterpret_cast<void**>(&dev->d_merge_owner), sz_cells * sizeof(int32_t));
+            copy_h2d_i(dev->d_merge_owner, h_owner.data(), sz_cells);
+        }
+    }
 
     return dev;
 }
@@ -992,6 +1241,40 @@ void swe2d_gpu_step(
     CUDA_CHECK(cudaMemset(dev->d_flux_hu, 0, static_cast<size_t>(n_cells) * sizeof(double)));
     CUDA_CHECK(cudaMemset(dev->d_flux_hv, 0, static_cast<size_t>(n_cells) * sizeof(double)));
 
+    // Kernel -1: wet/dry classification — build d_active and count wet cells.
+    // Must run before gradient and flux kernels so the active set is current.
+    if (dev->d_active && dev->d_n_wet) {
+        CUDA_CHECK(cudaMemset(dev->d_n_wet, 0, sizeof(int32_t)));
+        const int c_grid = (n_cells + BLOCK - 1) / BLOCK;
+        swe2d_classify_kernel<<<c_grid, BLOCK, BLOCK * sizeof(int32_t)>>>(
+            n_cells, dev->d_h, dev->d_bc_forced,
+            dev->d_active, dev->d_n_wet, h_min);
+        CUDA_CHECK(cudaGetLastError());
+        // Extend active set one ring outward so wetting-front dry cells
+        // can receive flux from their wet neighbors.
+        const int e_grid = (n_edges + BLOCK - 1) / BLOCK;
+        swe2d_mark_neighbor_kernel<<<e_grid, BLOCK>>>(
+            n_edges, dev->d_edge_c0, dev->d_edge_c1, dev->d_active);
+        CUDA_CHECK(cudaGetLastError());
+        // Modes 1 and 3: force degenerate cells inactive so they never
+        // receive flux or get updated (overrides classify's wetting check).
+        if ((dev->degen_mode == 1 || dev->degen_mode == 3) && dev->d_degen_mask) {
+            const int c_grid2 = (n_cells + BLOCK - 1) / BLOCK;
+            swe2d_degen_deactivate_kernel<<<c_grid2, BLOCK>>>(
+                n_cells, dev->d_degen_mask, dev->d_active);
+            CUDA_CHECK(cudaGetLastError());
+        }
+        // Mode 3: copy owner state into degenerate cells before flux so that
+        // reconstruction sees physically sane values at degenerate-cell faces.
+        if (dev->degen_mode == 3 && dev->d_degen_mask && dev->d_merge_owner) {
+            const int c_grid2 = (n_cells + BLOCK - 1) / BLOCK;
+            swe2d_degen_sync_kernel<<<c_grid2, BLOCK>>>(
+                n_cells, dev->d_degen_mask, dev->d_merge_owner,
+                dev->d_h, dev->d_hu, dev->d_hv);
+            CUDA_CHECK(cudaGetLastError());
+        }
+    }
+
     // Kernel 0 (gradient pre-pass): required for all 2nd-order schemes (1–4).
     // Schemes 1 & 2 also need per-cell gradients so that each side of a face
     // gets an independently-estimated slope → face states differ → the HLLC
@@ -1016,7 +1299,9 @@ void swe2d_gpu_step(
             max_inv_area,
             dev->d_grad_hx,  dev->d_grad_hy,
             dev->d_grad_hux, dev->d_grad_huy,
-            dev->d_grad_hvx, dev->d_grad_hvy);
+            dev->d_grad_hvx, dev->d_grad_hvy,
+            dev->d_active,
+            dev->d_degen_mask);
         CUDA_CHECK(cudaGetLastError());
     }
 
@@ -1056,7 +1341,8 @@ void swe2d_gpu_step(
             g, h_min,
             max_inv_area,
             momentum_cap_min_speed,
-            momentum_cap_celerity_mult);
+            momentum_cap_celerity_mult,
+            dev->d_degen_mask, dev->d_merge_owner, dev->degen_mode);
         CUDA_CHECK(cudaGetLastError());
 
         if (dbg_edge_flux) {
@@ -1116,7 +1402,9 @@ void swe2d_gpu_step(
             momentum_cap_celerity_mult,
             depth_cap,
             max_rel_depth_increase,
-            shallow_damping_depth);
+            shallow_damping_depth,
+            dev->d_active,
+            dev->d_degen_mask, dev->d_inv_area_repaired, dev->degen_mode);
         CUDA_CHECK(cudaGetLastError());
     }
 
@@ -1130,11 +1418,12 @@ void swe2d_gpu_step(
             dev->d_cell_area,
             g, h_min,
             cfl_lambda_cap,
-            dev->d_lambda_max);
+            dev->d_lambda_max,
+            dev->d_degen_mask, dev->degen_mode);
         CUDA_CHECK(cudaGetLastError());
     }
-    // Pack both diagnostic scalars into contiguous buffer for single-transfer readback.
-    pack_diag_kernel<<<1, 1>>>(dev->d_lambda_max, dev->d_max_wse_elev_error, dev->d_diag_packed);
+    // Pack all three diagnostic scalars into contiguous buffer for single-transfer readback.
+    pack_diag_kernel<<<1, 1>>>(dev->d_lambda_max, dev->d_max_wse_elev_error, dev->d_n_wet, dev->d_diag_packed);
     CUDA_CHECK(cudaGetLastError());
 
     // Fill diagnostics. For high-throughput loops this can skip host sync and
@@ -1152,11 +1441,12 @@ void swe2d_gpu_step(
 
         if (sync_diagnostics) {
             CUDA_CHECK(cudaDeviceSynchronize());
-            double packed[2] = {0.0, 0.0};
-            CUDA_CHECK(cudaMemcpy(packed, dev->d_diag_packed, 2 * sizeof(double), cudaMemcpyDeviceToHost));
-            diag->max_courant = dt * packed[0];
+            double packed[3] = {0.0, 0.0, -1.0};
+            CUDA_CHECK(cudaMemcpy(packed, dev->d_diag_packed, 3 * sizeof(double), cudaMemcpyDeviceToHost));
+            diag->max_courant        = dt * packed[0];
             diag->max_depth_residual = packed[1];
             diag->max_wse_elev_error = packed[1];
+            diag->wet_cells          = static_cast<int32_t>(packed[2]);
         }
     }
 }
@@ -1180,7 +1470,8 @@ double swe2d_gpu_compute_dt(
         dev->d_cell_area,
         g, h_min,
         cfl_lambda_cap,
-        dev->d_lambda_max);
+        dev->d_lambda_max,
+        dev->d_degen_mask, dev->degen_mode);
     CUDA_CHECK(cudaGetLastError());
     CUDA_CHECK(cudaDeviceSynchronize());
 
@@ -1249,10 +1540,11 @@ void swe2d_gpu_step_rk2(
         dev->d_cell_area,
         g, h_min,
         cfl_lambda_cap,
-        dev->d_lambda_max);
+        dev->d_lambda_max,
+        dev->d_degen_mask, dev->degen_mode);
     CUDA_CHECK(cudaGetLastError());
     // Pack diagnostic scalars for single-transfer readback.
-    pack_diag_kernel<<<1, 1>>>(dev->d_lambda_max, dev->d_max_wse_elev_error, dev->d_diag_packed);
+    pack_diag_kernel<<<1, 1>>>(dev->d_lambda_max, dev->d_max_wse_elev_error, dev->d_n_wet, dev->d_diag_packed);
     CUDA_CHECK(cudaGetLastError());
 
     if (diag) {
@@ -1268,11 +1560,12 @@ void swe2d_gpu_step_rk2(
 
         if (sync_diagnostics) {
             CUDA_CHECK(cudaDeviceSynchronize());
-            double packed[2] = {0.0, 0.0};
-            CUDA_CHECK(cudaMemcpy(packed, dev->d_diag_packed, 2 * sizeof(double), cudaMemcpyDeviceToHost));
-            diag->max_courant = dt * packed[0];
+            double packed[3] = {0.0, 0.0, -1.0};
+            CUDA_CHECK(cudaMemcpy(packed, dev->d_diag_packed, 3 * sizeof(double), cudaMemcpyDeviceToHost));
+            diag->max_courant        = dt * packed[0];
             diag->max_depth_residual = packed[1];
             diag->max_wse_elev_error = packed[1];
+            diag->wet_cells          = static_cast<int32_t>(packed[2]);
         }
     }
 }
@@ -1332,5 +1625,11 @@ void swe2d_gpu_destroy(SWE2DDeviceState* dev) {
     safe_free(dev->d_lambda_max);
     safe_free(dev->d_max_wse_elev_error);
     safe_free(dev->d_diag_packed);
+    safe_free(dev->d_active);
+    safe_free(dev->d_n_wet);
+    safe_free(dev->d_bc_forced);
+    safe_free(dev->d_degen_mask);
+    safe_free(dev->d_inv_area_repaired);
+    safe_free(dev->d_merge_owner);
     delete dev;
 }
