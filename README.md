@@ -14,22 +14,26 @@ Steady-flow 1D backwater modeling plugin for QGIS with GeoPackage-native model s
 
 - Native backend work is active: the 1D unsteady path has C++ build scaffolding, backend selection, and partial parity/benchmark coverage, but it is not yet the fully validated default runtime.
 - SWE2D now has a dedicated QGIS workbench with native solver hooks, interactive run/cancel controls, and topology-driven meshing from map layers.
-- SWE2D development is now GPU-primary: CUDA is the main implementation path for numerics, validation, and performance tuning.
-- CPU SWE2D remains available as a compatibility/debug path, but CPU/GPU numerical parity is no longer treated as the primary development objective.
-- The topology meshing workflow now supports TQMesh as a backend in the workbench, including an optional quad-edge layer for four-sided regions defined by explicit side polylines.
+- SWE2D development is now GPU-only in practice: CUDA is the main implementation path for numerics, validation, and performance tuning.
+- CPU SWE2D remains only as a compatibility/debug fallback. It is not the target for new optimization work, and CPU/GPU numerical parity is no longer treated as a development goal.
+- The topology meshing workflow now treats constraint layers as real local sizing inputs in the Gmsh backend, so refinement polygons can drive smaller cells inside a larger region instead of only acting as metadata.
+- Topology imports now handle MultiPolygon regions and constraints, which matters when QGIS layers contain multipart features.
+- The structured backend remains a coarse-grid path and does not provide true local h-refinement; use Gmsh when local refinement matters.
+- The topology meshing workflow also supports TQMesh as a backend in the workbench, including an optional quad-edge layer for four-sided regions defined by explicit side polylines.
 - TQMesh stability work is in place: the Python binding crash caused by incorrect quadtree scaling was fixed, triangular meshing is stable, and quadrilateral output is available through the sampled-side plus `tri2quad` path.
 - The current TQMesh quadrilateral workflow is intentionally conservative: for full four-edge regions, explicit side polylines are sampled into the exterior boundary and then converted from triangles to quads, because applying quad-layer generation on all four sides at once was not robust.
-- Known active issue: the 2D GPU solver still has a degenerate-cell instability in the `2d_example` case, so SWE2D remains a development feature rather than a release-ready default.
+- Latest GPU validation status: gmsh-based unstructured dam-break and lake-at-rest checks pass on CUDA for spatial schemes 0..4.
 
 ## SWE2D GPU Validation and Performance Testing
 
-- Legacy coarse GPU/CPU regression envelope: `tests/test_swe2d_gpu.py`
+- Legacy coarse GPU/CPU regression envelope: `tests/test_swe2d_gpu.py` (maintenance-only; not the main acceptance gate)
 - Dedicated GPU-only validation + throughput suite: `tests/test_swe2d_gpu_validation_perf.py`
+- Dedicated GPU unstructured gmsh-based validation: `tests/test_swe2d_gpu_unstructured.py`
 
 Run:
 
 ```bash
-PYTHONPATH="$PWD:$PWD/build" python3 -m unittest -v tests.test_swe2d_gpu tests.test_swe2d_gpu_validation_perf
+PYTHONPATH="$PWD:$PWD/build" python3 -m unittest -v tests.test_swe2d_gpu_validation_perf tests.test_swe2d_gpu_unstructured
 ```
 
 Optional benchmark mode:
@@ -37,6 +41,23 @@ Optional benchmark mode:
 ```bash
 BACKWATER_RUN_GPU_PERF=1 PYTHONPATH="$PWD:$PWD/build" python3 -m unittest -v tests.test_swe2d_gpu_validation_perf
 ```
+
+Latest unstructured GPU status:
+
+- Dam-break on gmsh-generated unstructured triangles passes on CUDA for schemes 0..4.
+- Lake-at-rest on gmsh-generated unstructured triangles now passes on CUDA for schemes 0..4.
+
+Topological meshing status:
+
+- Constraint polygons now act as local size fields in the Gmsh backend, so they can refine a subregion inside a larger mesh.
+- Multipart QGIS regions and constraints are accepted.
+- Structured meshing is still useful for simple coarse tiling, but it is not a substitute for local refinement.
+
+Implication for contributors and agents:
+
+- Prioritize fixing and optimizing the CUDA solver.
+- Do not spend SWE2D development effort chasing CPU/GPU parity unless a specific compatibility bug requires it.
+- When working on meshing, prefer the Gmsh topology path for refinement-sensitive domains and treat TQMesh as an alternative backend for quad-oriented layouts.
 
 ## SWE2D Extension Skeletons
 

@@ -140,7 +140,7 @@ Status note: the standalone 2D Python bridge is implemented and exercised by the
 Definition of done:
 1. 2D run starts and completes from GUI.
 
-Status note: the QGIS menu now exposes a full 2D SWE workbench with interactive mesh generation, side-based BC assignment, model parameter controls, run/cancel execution, and result visualization (mesh/depth/velocity). The workbench now also supports face-centric topology meshing from map layers (`SWE2D_Topo_Nodes/Arcs/Regions/Constraints`) with per-region/per-constraint `cell_type` (`triangular`, `quadrilateral`, `cartesian`, `empty`) and target size controls, plus terrain-raster node bed-Z assignment.
+Status note: the QGIS menu now exposes a full 2D SWE workbench with interactive mesh generation, side-based BC assignment, model parameter controls, run/cancel execution, and result visualization (mesh/depth/velocity). The workbench now also supports face-centric topology meshing from map layers (`SWE2D_Topo_Nodes/Arcs/Regions/Constraints`) with Gmsh-backed local refinement via constraint size fields, MultiPolygon region import, per-region/per-constraint `cell_type` (`triangular`, `quadrilateral`, `cartesian`, `empty`) and target size controls, plus terrain-raster node bed-Z assignment. The structured backend remains a coarse tiling path and does not replace true local refinement.
 
 ### D2 Persistence and Monitoring
 - [ ] Add GeoPackage tables for 2D outputs.

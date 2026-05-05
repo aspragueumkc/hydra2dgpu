@@ -106,7 +106,26 @@ Use menu actions:
 
 Results can also reload automatically when opening a model with existing `model_results` rows.
 
-## 10. Save a Copy of the Model
+## 10. SWE2D Workbench
+
+The plugin also includes a 2D SWE workbench for topology-driven meshing and native solver runs.
+
+Typical workflow:
+
+1. Open the 2D/SWE2D workbench in the plugin UI.
+2. Load or select the topology layers for nodes, arcs, regions, and constraints.
+3. Choose a meshing backend.
+4. Use Gmsh when you need constraint-driven local refinement inside a larger region.
+5. Use TQMesh when you want a quad-oriented layout for explicit side-based regions.
+6. Use the structured backend only for simple coarse tiling; it does not perform true local refinement.
+
+Notes:
+
+- Constraint polygons are now interpreted as real local sizing controls in the Gmsh path.
+- Multipart QGIS topology layers are supported.
+- The CUDA solver path is the primary runtime target for SWE2D.
+
+## 11. Save a Copy of the Model
 
 Use:
 
@@ -114,7 +133,7 @@ Use:
 
 This writes the current model to a selected GeoPackage path.
 
-## 11. Troubleshooting
+## 12. Troubleshooting
 
 ### Run blocked by unsaved edits
 
@@ -140,7 +159,7 @@ This writes the current model to a selected GeoPackage path.
 
 - Confirm `centerline` exists and has at least one valid feature
 
-## 12. Recommended Workflow
+## 13. Recommended Workflow
 
 1. Create or load a GeoPackage model
 2. Enable layer editing
@@ -150,3 +169,5 @@ This writes the current model to a selected GeoPackage path.
 6. Run model
 7. Review plot and table
 8. Save model copy if needed
+
+For 2D runs, add the topology layers first, then choose Gmsh when local refinement matters.
