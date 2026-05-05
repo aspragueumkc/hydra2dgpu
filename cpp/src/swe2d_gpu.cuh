@@ -68,6 +68,11 @@ struct SWE2DDeviceState {
     int32_t* d_active    = nullptr;   // n_cells
     int32_t* d_n_wet     = nullptr;   // device scalar: count of h>h_min cells
     int32_t* d_bc_forced = nullptr;   // n_cells: 1 if cell has forced-inflow BC
+    // Hysteretic active set: stores d_active from the PREVIOUS step.
+    // Passed to swe2d_classify_kernel so cells that were active last step and
+    // still have h > 0 are kept active for one extra step, suppressing
+    // rapid oscillatory activation/deactivation at wet/dry fronts.
+    int32_t* d_was_active = nullptr;  // n_cells
 
     // Degenerate-cell handling (computed once at init; all null when degen_mode == 0).
     // degen_mode mirrors SWE2DSolverConfig::degen_mode.
@@ -75,6 +80,11 @@ struct SWE2DDeviceState {
     int32_t* d_degen_mask        = nullptr;  // [n_cells]: 1 if cell_inv_area > max_inv_area
     double*  d_inv_area_repaired = nullptr;  // [n_cells]: neighbor-averaged inv_area (mode 2)
     int32_t* d_merge_owner       = nullptr;  // [n_cells]: merge-to cell index (mode 3), -1 if none
+
+    // Persistent CUDA stream — all per-step kernel launches and async memsets
+    // go on this stream.  Allows CPU-side work (BC updates, Python callbacks)
+    // to overlap with GPU execution between steps.
+    cudaStream_t d_stream = nullptr;
 
     // Dimensions
     int32_t  n_cells = 0;
@@ -111,7 +121,9 @@ void swe2d_gpu_step(
     double max_rel_depth_increase,
     double shallow_damping_depth,
     bool sync_diagnostics,
-    SWE2DStepDiag* diag);
+    SWE2DStepDiag* diag,
+    double front_flux_damping    = 0.5,
+    bool   active_set_hysteresis = true);
 
 // Advance one SSPRK2 (Heun) timestep fully on GPU.
 void swe2d_gpu_step_rk2(
@@ -129,7 +141,9 @@ void swe2d_gpu_step_rk2(
     double max_rel_depth_increase,
     double shallow_damping_depth,
     bool sync_diagnostics,
-    SWE2DStepDiag* diag);
+    SWE2DStepDiag* diag,
+    double front_flux_damping    = 0.5,
+    bool   active_set_hysteresis = true);
 
 // Compute a CFL-limited dt from current device state without host-state sync.
 double swe2d_gpu_compute_dt(

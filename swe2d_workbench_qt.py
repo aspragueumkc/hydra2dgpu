@@ -14,8 +14,10 @@ from __future__ import annotations
 import concurrent.futures
 import copy
 import csv
+import datetime
 import math
 import os
+import sqlite3
 import time
 from typing import Dict, List, Optional, Tuple
 
@@ -463,6 +465,209 @@ class TopologyAttributeTableDialog(QtWidgets.QDialog):
             QtWidgets.QMessageBox.warning(self, "Topology Editor", f"Failed to save layer edits: {exc}")
 
 
+class SWE2DLineResultsViewerDialog(QtWidgets.QDialog):
+    """Viewer for sampled SWE2D line results stored in GeoPackage/SQLite."""
+
+    _COLUMNS = [
+        ("t_s", "Time (s)"),
+        ("line_id", "Line ID"),
+        ("line_name", "Line Name"),
+        ("depth_m", "Depth (m)"),
+        ("velocity_ms", "Velocity (m/s)"),
+        ("wse_m", "Water Surface (m)"),
+        ("bed_m", "Bed (m)"),
+        ("flow_cms", "Flow (m3/s)"),
+    ]
+
+    _PLOT_OPTIONS = [
+        ("Depth", "depth_m"),
+        ("Velocity", "velocity_ms"),
+        ("Water Surface", "wse_m"),
+        ("Bed", "bed_m"),
+        ("Flow", "flow_cms"),
+    ]
+
+    def __init__(self, records: List[Dict[str, object]], run_id: str, db_path: str, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("2D Sample Line Results Viewer")
+        self.resize(980, 620)
+
+        self._records = list(records)
+        self._run_id = str(run_id)
+        self._db_path = str(db_path)
+        self._plot_canvas = None
+        self._plot_fig = None
+
+        root = QtWidgets.QVBoxLayout(self)
+
+        header = QtWidgets.QLabel(
+            f"Run ID: {self._run_id}\nSource: {self._db_path}"
+        )
+        header.setWordWrap(True)
+        root.addWidget(header)
+
+        controls = QtWidgets.QHBoxLayout()
+        controls.addWidget(QtWidgets.QLabel("Line:"))
+        self.line_combo = QtWidgets.QComboBox()
+        controls.addWidget(self.line_combo)
+        controls.addWidget(QtWidgets.QLabel("Variable:"))
+        self.metric_combo = QtWidgets.QComboBox()
+        for label, key in self._PLOT_OPTIONS:
+            self.metric_combo.addItem(label, key)
+        controls.addWidget(self.metric_combo)
+        controls.addStretch(1)
+        root.addLayout(controls)
+
+        self.table = QtWidgets.QTableWidget()
+        self.table.setEditTriggers(QtWidgets.QAbstractItemView.EditTrigger.NoEditTriggers)
+        self.table.setSelectionBehavior(QtWidgets.QAbstractItemView.SelectionBehavior.SelectRows)
+        self.table.setAlternatingRowColors(True)
+        self.table.setColumnCount(len(self._COLUMNS))
+        self.table.setHorizontalHeaderLabels([lbl for _, lbl in self._COLUMNS])
+        self.table.horizontalHeader().setStretchLastSection(True)
+
+        self._have_mpl = False
+        FigureCanvas, Figure, _ = _try_import_matplotlib_qt()
+        if FigureCanvas is not None and Figure is not None:
+            self._have_mpl = True
+            self._plot_fig = Figure(figsize=(6.8, 3.0), tight_layout=True)
+            self._plot_canvas = FigureCanvas(self._plot_fig)
+
+        split = QtWidgets.QSplitter(QtCore.Qt.Orientation.Vertical)
+        table_host = QtWidgets.QWidget()
+        table_layout = QtWidgets.QVBoxLayout(table_host)
+        table_layout.setContentsMargins(0, 0, 0, 0)
+        table_layout.addWidget(self.table)
+        split.addWidget(table_host)
+
+        plot_host = QtWidgets.QWidget()
+        plot_layout = QtWidgets.QVBoxLayout(plot_host)
+        plot_layout.setContentsMargins(0, 0, 0, 0)
+        if self._have_mpl:
+            plot_layout.addWidget(self._plot_canvas)
+        else:
+            note = QtWidgets.QLabel("Matplotlib backend unavailable; table view only.")
+            note.setWordWrap(True)
+            plot_layout.addWidget(note)
+        split.addWidget(plot_host)
+        split.setSizes([380, 220])
+        root.addWidget(split, stretch=1)
+
+        buttons = QtWidgets.QDialogButtonBox(QtWidgets.QDialogButtonBox.StandardButton.Close)
+        buttons.rejected.connect(self.reject)
+        buttons.accepted.connect(self.accept)
+        root.addWidget(buttons)
+
+        self._populate_line_combo()
+        self._refresh_table()
+        self._refresh_plot()
+
+        self.line_combo.currentIndexChanged.connect(self._refresh_table)
+        self.line_combo.currentIndexChanged.connect(self._refresh_plot)
+        self.metric_combo.currentIndexChanged.connect(self._refresh_plot)
+
+    def _line_filter(self):
+        value = self.line_combo.currentData()
+        if value is None:
+            return None
+        try:
+            return int(value)
+        except Exception:
+            return None
+
+    def _populate_line_combo(self):
+        self.line_combo.clear()
+        self.line_combo.addItem("All lines", None)
+        by_line: Dict[int, str] = {}
+        for rec in self._records:
+            try:
+                lid = int(rec.get("line_id", -1))
+            except Exception:
+                continue
+            lname = str(rec.get("line_name", "") or "")
+            if lid not in by_line:
+                by_line[lid] = lname
+        for lid in sorted(by_line.keys()):
+            label = f"{lid}"
+            if by_line[lid]:
+                label += f" - {by_line[lid]}"
+            self.line_combo.addItem(label, lid)
+
+    def _filtered_records(self) -> List[Dict[str, object]]:
+        lid = self._line_filter()
+        if lid is None:
+            return list(self._records)
+        out = []
+        for rec in self._records:
+            try:
+                if int(rec.get("line_id", -1)) == lid:
+                    out.append(rec)
+            except Exception:
+                continue
+        return out
+
+    def _refresh_table(self):
+        rows = self._filtered_records()
+        rows.sort(key=lambda r: (float(r.get("t_s", 0.0)), int(r.get("line_id", -1))))
+        self.table.setRowCount(len(rows))
+        for r, rec in enumerate(rows):
+            for c, (key, _) in enumerate(self._COLUMNS):
+                val = rec.get(key)
+                if isinstance(val, float):
+                    txt = f"{val:.6f}"
+                else:
+                    txt = str(val)
+                self.table.setItem(r, c, QtWidgets.QTableWidgetItem(txt))
+
+    def _refresh_plot(self):
+        if not self._have_mpl or self._plot_fig is None or self._plot_canvas is None:
+            return
+        rows = self._filtered_records()
+        metric = str(self.metric_combo.currentData())
+        self._plot_fig.clear()
+        ax = self._plot_fig.add_subplot(111)
+        if not rows:
+            ax.text(0.5, 0.5, "No sampled line results", ha="center", va="center", transform=ax.transAxes)
+            self._plot_canvas.draw_idle()
+            return
+
+        by_line: Dict[int, List[Tuple[float, float]]] = {}
+        name_by_line: Dict[int, str] = {}
+        for rec in rows:
+            try:
+                lid = int(rec.get("line_id", -1))
+                ts = float(rec.get("t_s", 0.0))
+                vv = float(rec.get(metric, float("nan")))
+            except Exception:
+                continue
+            if not np.isfinite(vv):
+                continue
+            by_line.setdefault(lid, []).append((ts, vv))
+            name_by_line[lid] = str(rec.get("line_name", "") or "")
+
+        if not by_line:
+            ax.text(0.5, 0.5, "No numeric values to plot", ha="center", va="center", transform=ax.transAxes)
+            self._plot_canvas.draw_idle()
+            return
+
+        for lid in sorted(by_line.keys()):
+            pairs = sorted(by_line[lid], key=lambda x: x[0])
+            t_hr = np.asarray([p[0] / 3600.0 for p in pairs], dtype=np.float64)
+            vals = np.asarray([p[1] for p in pairs], dtype=np.float64)
+            label = f"Line {lid}"
+            if name_by_line.get(lid):
+                label += f" ({name_by_line[lid]})"
+            ax.plot(t_hr, vals, "-", linewidth=1.8, label=label)
+
+        ax.set_xlabel("Time (hr)")
+        ax.set_ylabel(self.metric_combo.currentText())
+        ax.set_title("Sample line time series")
+        if len(by_line) > 1:
+            ax.legend(loc="best")
+        ax.grid(True, alpha=0.3)
+        self._plot_canvas.draw_idle()
+
+
 class SWE2DWorkbenchDialog(QtWidgets.QDialog):
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -476,6 +681,10 @@ class SWE2DWorkbenchDialog(QtWidgets.QDialog):
         self._mesh_data: Optional[Dict[str, np.ndarray]] = None
         self._result_data: Optional[Dict[str, np.ndarray]] = None
         self._snapshot_timesteps: List[Tuple] = []  # list of (time_s, h, hu, hv)
+        self._line_snapshot_rows: List[Dict[str, object]] = []
+        self._line_results_latest_run_id: str = ""
+        self._line_results_latest_db_path: str = ""
+        self._model_gpkg_path: str = ""
         self._mesh_nodes_layer_id: Optional[str] = None
         self._mesh_cells_layer_id: Optional[str] = None
         self._unit_system = "SI"
@@ -582,6 +791,7 @@ class SWE2DWorkbenchDialog(QtWidgets.QDialog):
         self.cells_layer_combo = QtWidgets.QComboBox()
         self.terrain_layer_combo = QtWidgets.QComboBox()
         self.manning_layer_combo = QtWidgets.QComboBox()
+        self.sample_lines_layer_combo = QtWidgets.QComboBox()
         self.refresh_layers_btn = QtWidgets.QPushButton("Refresh Layers")
         self.refresh_layers_btn.clicked.connect(self._refresh_layer_combos)
         self.create_model_gpkg_btn = QtWidgets.QPushButton("Create 2D Model GeoPackage")
@@ -596,6 +806,10 @@ class SWE2DWorkbenchDialog(QtWidgets.QDialog):
         self.save_results_hdf5_btn.clicked.connect(self._export_results_to_hdf5)
         self.save_results_ugrid_btn = QtWidgets.QPushButton("Save Results To UGRID NetCDF")
         self.save_results_ugrid_btn.clicked.connect(self._export_results_to_ugrid)
+        self.extended_outputs_chk = QtWidgets.QCheckBox("Include extended outputs (momentum, qmag, wet mask, Fr, Manning)")
+        self.extended_outputs_chk.setChecked(True)
+        self.open_results_viewer_btn = QtWidgets.QPushButton("Open 2D Results Viewer")
+        self.open_results_viewer_btn.clicked.connect(self._open_line_results_viewer)
         self.import_mesh_layers_btn = QtWidgets.QPushButton("Load Mesh From Selected Layers")
         self.import_mesh_layers_btn.clicked.connect(self._import_mesh_from_layers)
         self.terrain_to_nodes_btn = QtWidgets.QPushButton("Assign Node Z From Terrain")
@@ -613,17 +827,21 @@ class SWE2DWorkbenchDialog(QtWidgets.QDialog):
         map_layout.addWidget(self.terrain_layer_combo, 2, 1)
         map_layout.addWidget(QtWidgets.QLabel("Manning polygons:"), 3, 0)
         map_layout.addWidget(self.manning_layer_combo, 3, 1)
-        map_layout.addWidget(self.refresh_layers_btn, 4, 0)
-        map_layout.addWidget(self.create_model_gpkg_btn, 4, 1)
-        map_layout.addWidget(self.load_model_gpkg_btn, 5, 0, 1, 2)
-        map_layout.addWidget(self.export_mesh_layers_btn, 6, 0)
-        map_layout.addWidget(self.save_hdf5_btn, 6, 1)
-        map_layout.addWidget(self.save_results_hdf5_btn, 7, 0, 1, 2)
-        map_layout.addWidget(self.save_results_ugrid_btn, 8, 0, 1, 2)
-        map_layout.addWidget(self.import_mesh_layers_btn, 9, 0, 1, 2)
-        map_layout.addWidget(self.terrain_to_nodes_btn, 10, 0, 1, 2)
-        map_layout.addWidget(self.pull_node_z_btn, 11, 0, 1, 2)
-        map_layout.addWidget(self.layer_status_lbl, 12, 0, 1, 2)
+        map_layout.addWidget(QtWidgets.QLabel("Sample lines layer:"), 4, 0)
+        map_layout.addWidget(self.sample_lines_layer_combo, 4, 1)
+        map_layout.addWidget(self.refresh_layers_btn, 5, 0)
+        map_layout.addWidget(self.create_model_gpkg_btn, 5, 1)
+        map_layout.addWidget(self.load_model_gpkg_btn, 6, 0, 1, 2)
+        map_layout.addWidget(self.export_mesh_layers_btn, 7, 0)
+        map_layout.addWidget(self.save_hdf5_btn, 7, 1)
+        map_layout.addWidget(self.save_results_hdf5_btn, 8, 0, 1, 2)
+        map_layout.addWidget(self.save_results_ugrid_btn, 9, 0, 1, 2)
+        map_layout.addWidget(self.extended_outputs_chk, 10, 0, 1, 2)
+        map_layout.addWidget(self.open_results_viewer_btn, 11, 0, 1, 2)
+        map_layout.addWidget(self.import_mesh_layers_btn, 12, 0, 1, 2)
+        map_layout.addWidget(self.terrain_to_nodes_btn, 13, 0, 1, 2)
+        map_layout.addWidget(self.pull_node_z_btn, 14, 0, 1, 2)
+        map_layout.addWidget(self.layer_status_lbl, 15, 0, 1, 2)
         left_layout.addWidget(map_group)
 
         topo_group = QtWidgets.QGroupBox("Topology Meshing (Face-centric)")
@@ -659,6 +877,37 @@ class SWE2DWorkbenchDialog(QtWidgets.QDialog):
         self.topo_quality_strict_chk = QtWidgets.QCheckBox("Strict quality acceptance")
         self.topo_quality_size_scales_edit = QtWidgets.QLineEdit("1.0")
         self.topo_quality_smooth_increments_edit = QtWidgets.QLineEdit("0")
+        self.topo_gmsh_tri_algo_combo = QtWidgets.QComboBox()
+        self.topo_gmsh_tri_algo_combo.addItem("Frontal-Delaunay (quality)", 6)
+        self.topo_gmsh_tri_algo_combo.addItem("Delaunay (faster)", 5)
+        self.topo_gmsh_quad_algo_combo = QtWidgets.QComboBox()
+        self.topo_gmsh_quad_algo_combo.addItem("Frontal + Blossom recombine", 6)
+        self.topo_gmsh_quad_algo_combo.addItem("Delaunay + Blossom recombine", 5)
+        self.topo_gmsh_quad_algo_combo.addItem("Packing of Parallelograms", 9)
+        self.topo_gmsh_smoothing_spin = QtWidgets.QSpinBox()
+        self.topo_gmsh_smoothing_spin.setRange(0, 100)
+        self.topo_gmsh_smoothing_spin.setValue(5)
+        self.topo_gmsh_optimize_iters_spin = QtWidgets.QSpinBox()
+        self.topo_gmsh_optimize_iters_spin.setRange(0, 100)
+        self.topo_gmsh_optimize_iters_spin.setValue(3)
+        self.topo_gmsh_recombine_algo_combo = QtWidgets.QComboBox()
+        self.topo_gmsh_recombine_algo_combo.addItem("Simple", 0)
+        self.topo_gmsh_recombine_algo_combo.addItem("Blossom", 1)
+        self.topo_gmsh_recombine_algo_combo.addItem("Simple full-quad", 2)
+        self.topo_gmsh_optimize_netgen_chk = QtWidgets.QCheckBox("Enable Netgen optimize")
+        self.topo_gmsh_verbosity_spin = QtWidgets.QSpinBox()
+        self.topo_gmsh_verbosity_spin.setRange(0, 10)
+        self.topo_gmsh_verbosity_spin.setValue(1)
+        gmsh_form_widget = QtWidgets.QWidget()
+        gmsh_form = QtWidgets.QFormLayout(gmsh_form_widget)
+        gmsh_form.setContentsMargins(0, 0, 0, 0)
+        gmsh_form.addRow("Triangle algorithm:", self.topo_gmsh_tri_algo_combo)
+        gmsh_form.addRow("Quadrilateral algorithm:", self.topo_gmsh_quad_algo_combo)
+        gmsh_form.addRow("Recombine algorithm:", self.topo_gmsh_recombine_algo_combo)
+        gmsh_form.addRow("Smoothing passes:", self.topo_gmsh_smoothing_spin)
+        gmsh_form.addRow("Optimize iterations:", self.topo_gmsh_optimize_iters_spin)
+        gmsh_form.addRow("Verbosity:", self.topo_gmsh_verbosity_spin)
+        gmsh_form.addRow(self.topo_gmsh_optimize_netgen_chk)
         quality_form_widget = QtWidgets.QWidget()
         quality_form = QtWidgets.QFormLayout(quality_form_widget)
         quality_form.setContentsMargins(0, 0, 0, 0)
@@ -703,15 +952,17 @@ class SWE2DWorkbenchDialog(QtWidgets.QDialog):
         topo_layout.addWidget(self.topo_default_size_spin, 6, 1)
         topo_layout.addWidget(QtWidgets.QLabel("Default cell type:"), 7, 0)
         topo_layout.addWidget(self.topo_default_cell_type_combo, 7, 1)
-        topo_layout.addWidget(QtWidgets.QLabel("TQMesh quality controls:"), 8, 0)
-        topo_layout.addWidget(quality_form_widget, 8, 1)
-        topo_layout.addWidget(self.topo_validate_btn, 9, 0, 1, 2)
-        topo_layout.addWidget(self.topo_edit_regions_btn, 10, 0)
-        topo_layout.addWidget(self.topo_edit_quad_edges_btn, 10, 1)
-        topo_layout.addWidget(self.topo_controls_summary_lbl, 11, 0, 1, 2)
-        topo_layout.addWidget(self.topo_export_template_btn, 12, 0, 1, 2)
-        topo_layout.addWidget(self.topo_generate_btn, 13, 0, 1, 2)
-        topo_layout.addWidget(self.topo_status_lbl, 14, 0, 1, 2)
+        topo_layout.addWidget(QtWidgets.QLabel("Gmsh advanced controls:"), 8, 0)
+        topo_layout.addWidget(gmsh_form_widget, 8, 1)
+        topo_layout.addWidget(QtWidgets.QLabel("TQMesh quality controls:"), 9, 0)
+        topo_layout.addWidget(quality_form_widget, 9, 1)
+        topo_layout.addWidget(self.topo_validate_btn, 10, 0, 1, 2)
+        topo_layout.addWidget(self.topo_edit_regions_btn, 11, 0)
+        topo_layout.addWidget(self.topo_edit_quad_edges_btn, 11, 1)
+        topo_layout.addWidget(self.topo_controls_summary_lbl, 12, 0, 1, 2)
+        topo_layout.addWidget(self.topo_export_template_btn, 13, 0, 1, 2)
+        topo_layout.addWidget(self.topo_generate_btn, 14, 0, 1, 2)
+        topo_layout.addWidget(self.topo_status_lbl, 15, 0, 1, 2)
         left_layout.addWidget(topo_group)
 
         self.topo_backend_combo.currentIndexChanged.connect(self._update_topology_control_summary)
@@ -812,6 +1063,24 @@ class SWE2DWorkbenchDialog(QtWidgets.QDialog):
         self.shallow_damping_depth_spin.setToolTip(
             "Depth threshold for smooth momentum damping in shallow cells."
         )
+        self.front_flux_damping_spin = QtWidgets.QDoubleSpinBox()
+        self.front_flux_damping_spin.setRange(0.0, 1.0)
+        self.front_flux_damping_spin.setDecimals(2)
+        self.front_flux_damping_spin.setSingleStep(0.05)
+        self.front_flux_damping_spin.setValue(0.5)
+        self.front_flux_damping_spin.setToolTip(
+            "Momentum-flux scale factor applied to edges on the wet/dry front.\n"
+            "0.0 = fully damp momentum at the front (most stable, some diffusion).\n"
+            "1.0 = no damping (default HLLC).\n"
+            "0.5 is a good starting value for oscillating fronts."
+        )
+        self.active_set_hysteresis_chk = QtWidgets.QCheckBox("Enable")
+        self.active_set_hysteresis_chk.setChecked(True)
+        self.active_set_hysteresis_chk.setToolTip(
+            "Keep cells active for one extra step after they dry below h_min.\n"
+            "Prevents rapid oscillatory wet/dry switching at the advancing front.\n"
+            "Has negligible performance overhead."
+        )
         self.depth_cap_spin = QtWidgets.QDoubleSpinBox()
         self.depth_cap_spin.setRange(0.001, 1.0e7)
         self.depth_cap_spin.setDecimals(3)
@@ -899,6 +1168,8 @@ class SWE2DWorkbenchDialog(QtWidgets.QDialog):
         param_form.addRow("Fixed dt:", self.dt_spin)
         param_form.addRow("Max rel depth increase:", self.max_rel_depth_increase_spin)
         param_form.addRow("Shallow damping depth:", self.shallow_damping_depth_spin)
+        param_form.addRow("Front flux damping:", self.front_flux_damping_spin)
+        param_form.addRow("Active-set hysteresis:", self.active_set_hysteresis_chk)
         param_form.addRow("Depth cap:", self.depth_cap_spin)
         param_form.addRow("Momentum cap min speed:", self.momentum_cap_min_speed_spin)
         param_form.addRow("Momentum cap celerity mult:", self.momentum_cap_celerity_mult_spin)
@@ -941,6 +1212,14 @@ class SWE2DWorkbenchDialog(QtWidgets.QDialog):
             "E.g. 00:30 captures every 30 minutes of simulation time."
         )
         snap_row.addWidget(self.output_interval_edit)
+        snap_row.addWidget(QtWidgets.QLabel("Line output interval:"))
+        self.line_output_interval_edit = QtWidgets.QLineEdit("00:05")
+        self.line_output_interval_edit.setMaximumWidth(90)
+        self.line_output_interval_edit.setToolTip(
+            "Interval for sampled line time-series output capture.\n"
+            "Independent from mesh snapshot interval."
+        )
+        snap_row.addWidget(self.line_output_interval_edit)
         self.snapshot_btn = QtWidgets.QPushButton("Take Snapshot")
         self.snapshot_btn.setToolTip(
             "Write all captured timesteps up to now to a temporary HEC-RAS HDF5 file.\n"
@@ -1305,6 +1584,7 @@ class SWE2DWorkbenchDialog(QtWidgets.QDialog):
         is_constraint = "topo_constraints" in lname or lname.endswith("swe2d_topo_constraints")
         is_quad_edges = "topo_quad_edges" in lname or lname.endswith("swe2d_topo_quad_edges")
         is_bc_lines = "bc_lines" in lname
+        is_sample_lines = "sample_lines" in lname
         is_manning = "manning" in lname
 
         if is_region or is_constraint:
@@ -1335,6 +1615,11 @@ class SWE2DWorkbenchDialog(QtWidgets.QDialog):
         if is_manning:
             self._set_expression_constraint(layer, "n_mann", '"n_mann" >= 0')
             self._set_expression_constraint(layer, "priority", '"priority" >= 0')
+
+        if is_sample_lines:
+            self._set_expression_constraint(layer, "line_id", '"line_id" IS NULL OR "line_id" >= 0')
+            self._set_expression_constraint(layer, "enabled", '"enabled" IS NULL OR "enabled" IN (0,1)')
+            self._set_expression_constraint(layer, "priority", '"priority" IS NULL OR "priority" >= 0')
 
     def _detect_map_unit(self):
         if not _HAVE_QGIS_CORE or QgsProject is None:
@@ -1435,6 +1720,7 @@ class SWE2DWorkbenchDialog(QtWidgets.QDialog):
         keep_topo_quad_edges = self.topo_quad_edges_combo.currentData() if hasattr(self, "topo_quad_edges_combo") else None
         keep_bc_lines = self.bc_lines_layer_combo.currentData() if hasattr(self, "bc_lines_layer_combo") else None
         keep_internal_flow = self.internal_flow_layer_combo.currentData() if hasattr(self, "internal_flow_layer_combo") else None
+        keep_sample_lines = self.sample_lines_layer_combo.currentData() if hasattr(self, "sample_lines_layer_combo") else None
 
         self.nodes_layer_combo.clear()
         self.cells_layer_combo.clear()
@@ -1442,6 +1728,9 @@ class SWE2DWorkbenchDialog(QtWidgets.QDialog):
         if hasattr(self, "manning_layer_combo"):
             self.manning_layer_combo.clear()
             self.manning_layer_combo.addItem("(none)", None)
+        if hasattr(self, "sample_lines_layer_combo"):
+            self.sample_lines_layer_combo.clear()
+            self.sample_lines_layer_combo.addItem("(none)", None)
         if hasattr(self, "topo_nodes_combo"):
             self.topo_nodes_combo.clear()
         if hasattr(self, "topo_arcs_combo"):
@@ -1481,6 +1770,8 @@ class SWE2DWorkbenchDialog(QtWidgets.QDialog):
                         if hasattr(self, "topo_constraints_combo"):
                             self.topo_constraints_combo.addItem(lyr.name(), lyr.id())
                     elif geom_type == QgsWkbTypes.GeometryType.LineGeometry:
+                        if hasattr(self, "sample_lines_layer_combo"):
+                            self.sample_lines_layer_combo.addItem(lyr.name(), lyr.id())
                         if hasattr(self, "topo_arcs_combo"):
                             self.topo_arcs_combo.addItem(lyr.name(), lyr.id())
                         if hasattr(self, "topo_quad_edges_combo"):
@@ -1527,6 +1818,8 @@ class SWE2DWorkbenchDialog(QtWidgets.QDialog):
             _restore(self.bc_lines_layer_combo, keep_bc_lines)
         if hasattr(self, "internal_flow_layer_combo") and keep_internal_flow is not None:
             _restore(self.internal_flow_layer_combo, keep_internal_flow)
+        if hasattr(self, "sample_lines_layer_combo") and keep_sample_lines is not None:
+            _restore(self.sample_lines_layer_combo, keep_sample_lines)
 
         self._update_unit_system_from_crs()
         self._update_topology_control_summary()
@@ -1543,6 +1836,13 @@ class SWE2DWorkbenchDialog(QtWidgets.QDialog):
 
     def _build_topology_meshing_options(self) -> Dict[str, object]:
         return {
+            "gmsh_tri_algorithm": int(self.topo_gmsh_tri_algo_combo.currentData() or 6),
+            "gmsh_quad_algorithm": int(self.topo_gmsh_quad_algo_combo.currentData() or 6),
+            "gmsh_recombination_algorithm": int(self.topo_gmsh_recombine_algo_combo.currentData() or 1),
+            "gmsh_smoothing": int(self.topo_gmsh_smoothing_spin.value()),
+            "gmsh_optimize_iters": int(self.topo_gmsh_optimize_iters_spin.value()),
+            "gmsh_optimize_netgen": bool(self.topo_gmsh_optimize_netgen_chk.isChecked()),
+            "gmsh_verbosity": int(self.topo_gmsh_verbosity_spin.value()),
             "tqmesh_min_angle_deg": float(self.topo_quality_min_angle_spin.value()),
             "tqmesh_max_aspect_ratio": float(self.topo_quality_max_aspect_spin.value()),
             "tqmesh_min_area_rel_bbox": float(self.topo_quality_min_area_edit.text().strip() or "0"),
@@ -1746,13 +2046,18 @@ class SWE2DWorkbenchDialog(QtWidgets.QDialog):
             "SWE2D_BC_Lines",
             "memory",
         )
+        sample_lines = QgsVectorLayer(
+            f"LineString?crs={crs_auth}&field=line_id:integer&field=name:string(128)&field=enabled:integer&field=priority:integer",
+            "SWE2D_Sample_Lines",
+            "memory",
+        )
         hydro_tbl = QgsVectorLayer(
             "None?field=hydrograph_id:string(64)&field=bc_type:integer&field=Time:string(32)&field=Value:double&field=description:string(256)",
             "SWE2D_Hydrographs",
             "memory",
         )
 
-        for lyr in (nodes, arcs, regions, constraints, quad_edges, manning, bc_lines, hydro_tbl):
+        for lyr in (nodes, arcs, regions, constraints, quad_edges, manning, bc_lines, sample_lines, hydro_tbl):
             if lyr is not None and lyr.isValid():
                 QgsProject.instance().addMapLayer(lyr)
                 if isinstance(lyr, QgsVectorLayer):
@@ -1762,7 +2067,7 @@ class SWE2DWorkbenchDialog(QtWidgets.QDialog):
         self.topo_status_lbl.setText(
             "Topology template layers created. Define regions (required), optional arcs/constraints, and optional TQMesh quad-edge lines, then generate mesh."
         )
-        self._log("Created topology template layers: SWE2D_Topo_Nodes/Arcs/Regions/Constraints/Quad_Edges + SWE2D_Manning_Zones + SWE2D_BC_Lines + SWE2D_Hydrographs")
+        self._log("Created topology template layers: SWE2D_Topo_Nodes/Arcs/Regions/Constraints/Quad_Edges + SWE2D_Manning_Zones + SWE2D_BC_Lines + SWE2D_Sample_Lines + SWE2D_Hydrographs")
 
     def _write_memory_layer_to_gpkg(self, layer, path: str, layer_name: str, create_file: bool):
         if QgsVectorFileWriter is None:
@@ -1841,13 +2146,18 @@ class SWE2DWorkbenchDialog(QtWidgets.QDialog):
             "swe2d_bc_lines",
             "memory",
         )
+        sample_lines = QgsVectorLayer(
+            f"LineString?crs={crs_auth}&field=line_id:integer&field=name:string(128)&field=enabled:integer&field=priority:integer",
+            "swe2d_sample_lines",
+            "memory",
+        )
         hydro = QgsVectorLayer(
             "None?field=hydrograph_id:string(64)&field=bc_type:integer&field=Time:string(32)&field=Value:double&field=description:string(256)",
             "swe2d_hydrographs",
             "memory",
         )
 
-        model_layers = [nodes, arcs, regions, constraints, quad_edges, manning, bc_lines, hydro]
+        model_layers = [nodes, arcs, regions, constraints, quad_edges, manning, bc_lines, sample_lines, hydro]
         for lyr in model_layers:
             self._configure_swe2d_layer_editors(lyr)
 
@@ -1881,6 +2191,7 @@ class SWE2DWorkbenchDialog(QtWidgets.QDialog):
             "swe2d_topo_quad_edges",
             "swe2d_manning_zones",
             "swe2d_bc_lines",
+            "swe2d_sample_lines",
             "swe2d_hydrographs",
         ]
         loaded = 0
@@ -1892,6 +2203,7 @@ class SWE2DWorkbenchDialog(QtWidgets.QDialog):
                 loaded += 1
 
         self._refresh_layer_combos()
+        self._model_gpkg_path = str(gpkg_path)
         self._log(f"Loaded 2D model GeoPackage: {gpkg_path} (layers loaded={loaded})")
         self.layer_status_lbl.setText(f"Loaded 2D model GeoPackage ({loaded} layers).")
 
@@ -2276,6 +2588,382 @@ class SWE2DWorkbenchDialog(QtWidgets.QDialog):
         y2 = node_y[tris[:, 2]]
         return 0.5 * np.abs((x1 - x0) * (y2 - y0) - (x2 - x0) * (y1 - y0))
 
+    def _mesh_cell_min_bed(self) -> np.ndarray:
+        assert self._mesh_data is not None
+        node_z = self._mesh_data["node_z"]
+        if "cell_face_offsets" in self._mesh_data and "cell_face_nodes" in self._mesh_data:
+            offs = self._mesh_data["cell_face_offsets"].astype(np.int32)
+            faces = self._mesh_data["cell_face_nodes"].astype(np.int32)
+            out = np.zeros(offs.size - 1, dtype=np.float64)
+            for i in range(offs.size - 1):
+                s = int(offs[i])
+                e = int(offs[i + 1])
+                ids = faces[s:e]
+                if ids.size:
+                    out[i] = float(np.min(node_z[ids]))
+            return out
+        tri = self._mesh_data["cell_nodes"].reshape(-1, 3).astype(np.int32)
+        return np.min(node_z[tri], axis=1).astype(np.float64)
+
+    def _mesh_cell_polygons(self) -> List[QgsGeometry]:
+        assert self._mesh_data is not None
+        node_x = self._mesh_data["node_x"]
+        node_y = self._mesh_data["node_y"]
+        out: List[QgsGeometry] = []
+
+        if "cell_face_offsets" in self._mesh_data and "cell_face_nodes" in self._mesh_data:
+            offs = self._mesh_data["cell_face_offsets"].astype(np.int32)
+            faces = self._mesh_data["cell_face_nodes"].astype(np.int32)
+            for i in range(offs.size - 1):
+                s = int(offs[i])
+                e = int(offs[i + 1])
+                ids = faces[s:e]
+                if ids.size < 3:
+                    out.append(QgsGeometry())
+                    continue
+                ring = [QgsPointXY(float(node_x[n]), float(node_y[n])) for n in ids]
+                ring.append(ring[0])
+                out.append(QgsGeometry.fromPolygonXY([ring]))
+            return out
+
+        tris = self._mesh_data["cell_nodes"].reshape((-1, 3)).astype(np.int32)
+        for tri in tris:
+            ring = [
+                QgsPointXY(float(node_x[int(tri[0])]), float(node_y[int(tri[0])])),
+                QgsPointXY(float(node_x[int(tri[1])]), float(node_y[int(tri[1])])),
+                QgsPointXY(float(node_x[int(tri[2])]), float(node_y[int(tri[2])])),
+            ]
+            ring.append(ring[0])
+            out.append(QgsGeometry.fromPolygonXY([ring]))
+        return out
+
+    def _build_line_sampling_map(self) -> List[Dict[str, object]]:
+        if self._mesh_data is None or not _HAVE_QGIS_CORE:
+            return []
+        if not hasattr(self, "sample_lines_layer_combo"):
+            return []
+        line_layer = self._combo_layer(self.sample_lines_layer_combo, "vector")
+        if line_layer is None:
+            return []
+
+        fields = set(line_layer.fields().names())
+        id_field = "line_id" if "line_id" in fields else None
+        name_field = "name" if "name" in fields else None
+        enabled_field = "enabled" if "enabled" in fields else None
+
+        cell_polys = self._mesh_cell_polygons()
+        if not cell_polys:
+            return []
+        cell_bboxes = [g.boundingBox() if g is not None and not g.isEmpty() else None for g in cell_polys]
+
+        sample_map: List[Dict[str, object]] = []
+        for ft in line_layer.getFeatures():
+            geom = ft.geometry()
+            if geom is None or geom.isEmpty():
+                continue
+            try:
+                if enabled_field is not None and int(ft[enabled_field]) <= 0:
+                    continue
+            except Exception:
+                pass
+
+            line_len = float(geom.length())
+            if line_len <= 0.0:
+                continue
+            try:
+                p0 = geom.interpolate(0.0).asPoint()
+                p1 = geom.interpolate(max(0.0, line_len - 1.0e-9)).asPoint()
+                dx = float(p1.x()) - float(p0.x())
+                dy = float(p1.y()) - float(p0.y())
+                mag = math.hypot(dx, dy)
+                if mag <= 0.0:
+                    continue
+                tx = dx / mag
+                ty = dy / mag
+                nx = ty
+                ny = -tx
+            except Exception:
+                continue
+
+            try:
+                line_id = int(ft[id_field]) if id_field is not None else int(ft.id())
+            except Exception:
+                line_id = int(ft.id())
+            line_name = str(ft[name_field]) if name_field is not None and ft[name_field] not in (None, "") else ""
+
+            line_bbox = geom.boundingBox()
+            idx: List[int] = []
+            lens: List[float] = []
+            for ci, cell_geom in enumerate(cell_polys):
+                bb = cell_bboxes[ci]
+                if bb is None or not bb.intersects(line_bbox):
+                    continue
+                try:
+                    inter = cell_geom.intersection(geom)
+                except Exception:
+                    continue
+                if inter is None or inter.isEmpty():
+                    continue
+                seg_len = float(inter.length())
+                if seg_len <= 0.0:
+                    continue
+                idx.append(ci)
+                lens.append(seg_len)
+
+            if idx:
+                sample_map.append(
+                    {
+                        "line_id": int(line_id),
+                        "line_name": line_name,
+                        "normal_x": float(nx),
+                        "normal_y": float(ny),
+                        "cell_idx": np.asarray(idx, dtype=np.int32),
+                        "weights": np.asarray(lens, dtype=np.float64),
+                    }
+                )
+
+        if sample_map:
+            self._log(f"Sample line mapping ready: {len(sample_map)} line(s).")
+        return sample_map
+
+    def _sample_line_metrics(
+        self,
+        sample_map: List[Dict[str, object]],
+        t_s: float,
+        h: np.ndarray,
+        hu: np.ndarray,
+        hv: np.ndarray,
+        cell_bed: np.ndarray,
+    ) -> List[Dict[str, object]]:
+        if not sample_map:
+            return []
+        out: List[Dict[str, object]] = []
+        g = float(self._gravity)
+        h_min = float(self.h_min_spin.value()) if hasattr(self, "h_min_spin") else 1.0e-6
+        for sm in sample_map:
+            idx = sm["cell_idx"]
+            w = sm["weights"]
+            if idx.size == 0 or w.size == 0:
+                continue
+            hh = h[idx]
+            huu = hu[idx]
+            hvv = hv[idx]
+            zb = cell_bed[idx]
+            safe_h = np.maximum(hh, 1.0e-12)
+            vel = np.sqrt((huu / safe_h) ** 2 + (hvv / safe_h) ** 2)
+            wsum = float(np.sum(w))
+            if wsum <= 0.0:
+                continue
+            depth_m = float(np.sum(hh * w) / wsum)
+            velocity_ms = float(np.sum(vel * w) / wsum)
+            wse_m = float(np.sum((hh + zb) * w) / wsum)
+            bed_m = float(np.sum(zb * w) / wsum)
+            qn = huu * float(sm["normal_x"]) + hvv * float(sm["normal_y"])
+            flow_cms = float(np.sum(qn * w))
+
+            out.append(
+                {
+                    "t_s": float(t_s),
+                    "line_id": int(sm["line_id"]),
+                    "line_name": str(sm.get("line_name", "") or ""),
+                    "depth_m": depth_m,
+                    "velocity_ms": velocity_ms,
+                    "wse_m": wse_m,
+                    "bed_m": bed_m,
+                    "flow_cms": flow_cms,
+                    "wet_frac": float(np.mean((hh > h_min).astype(np.float64))),
+                    "fr": float(np.mean(np.where(hh > h_min, vel / np.sqrt(np.maximum(g * hh, 1.0e-12)), 0.0))),
+                }
+            )
+        return out
+
+    def _current_line_results_storage_path(self) -> str:
+        if self._model_gpkg_path and os.path.exists(self._model_gpkg_path):
+            return self._model_gpkg_path
+        if hasattr(self, "sample_lines_layer_combo"):
+            lyr = self._combo_layer(self.sample_lines_layer_combo, "vector")
+            if lyr is not None:
+                try:
+                    src = str(lyr.dataProvider().dataSourceUri())
+                    gpkg = src.split("|", 1)[0]
+                    if gpkg.lower().endswith(".gpkg") and os.path.exists(gpkg):
+                        return gpkg
+                except Exception:
+                    pass
+        import tempfile
+        return os.path.join(tempfile.gettempdir(), "swe2d_line_results.gpkg")
+
+    def _persist_line_results_to_geopackage(
+        self,
+        gpkg_path: str,
+        run_id: str,
+        rows: List[Dict[str, object]],
+        mesh_interval_s: float,
+        line_interval_s: float,
+    ) -> None:
+        if not gpkg_path or not rows:
+            return
+        conn = sqlite3.connect(gpkg_path)
+        try:
+            cur = conn.cursor()
+            cur.execute(
+                """
+                CREATE TABLE IF NOT EXISTS swe2d_line_results_runs (
+                    run_id TEXT PRIMARY KEY,
+                    created_utc TEXT,
+                    mesh_interval_s REAL,
+                    line_interval_s REAL,
+                    row_count INTEGER
+                )
+                """
+            )
+            cur.execute(
+                """
+                CREATE TABLE IF NOT EXISTS swe2d_line_results_ts (
+                    run_id TEXT,
+                    t_s REAL,
+                    line_id INTEGER,
+                    line_name TEXT,
+                    depth_m REAL,
+                    velocity_ms REAL,
+                    wse_m REAL,
+                    bed_m REAL,
+                    flow_cms REAL,
+                    wet_frac REAL,
+                    fr REAL,
+                    PRIMARY KEY (run_id, t_s, line_id)
+                )
+                """
+            )
+            cur.execute(
+                "CREATE INDEX IF NOT EXISTS idx_swe2d_line_ts_run_line_t ON swe2d_line_results_ts(run_id, line_id, t_s)"
+            )
+            cur.execute("DELETE FROM swe2d_line_results_ts WHERE run_id = ?", (run_id,))
+            cur.execute(
+                """
+                INSERT OR REPLACE INTO swe2d_line_results_runs
+                (run_id, created_utc, mesh_interval_s, line_interval_s, row_count)
+                VALUES (?, ?, ?, ?, ?)
+                """,
+                (
+                    str(run_id),
+                    datetime.datetime.utcnow().replace(microsecond=0).isoformat() + "Z",
+                    float(mesh_interval_s),
+                    float(line_interval_s),
+                    int(len(rows)),
+                ),
+            )
+            batch = [
+                (
+                    str(run_id),
+                    float(r.get("t_s", 0.0)),
+                    int(r.get("line_id", -1)),
+                    str(r.get("line_name", "") or ""),
+                    float(r.get("depth_m", float("nan"))),
+                    float(r.get("velocity_ms", float("nan"))),
+                    float(r.get("wse_m", float("nan"))),
+                    float(r.get("bed_m", float("nan"))),
+                    float(r.get("flow_cms", float("nan"))),
+                    float(r.get("wet_frac", float("nan"))),
+                    float(r.get("fr", float("nan"))),
+                )
+                for r in rows
+            ]
+            cur.executemany(
+                """
+                INSERT OR REPLACE INTO swe2d_line_results_ts
+                (run_id, t_s, line_id, line_name, depth_m, velocity_ms, wse_m, bed_m, flow_cms, wet_frac, fr)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                batch,
+            )
+            conn.commit()
+            self._line_results_latest_run_id = str(run_id)
+            self._line_results_latest_db_path = str(gpkg_path)
+            self._log(
+                f"Stored sample line results in GeoPackage: {gpkg_path} "
+                f"(run_id={run_id}, rows={len(rows)})"
+            )
+        finally:
+            conn.close()
+
+    def _load_line_results_from_geopackage(
+        self,
+        gpkg_path: str,
+        run_id: Optional[str] = None,
+    ) -> Tuple[str, List[Dict[str, object]]]:
+        if not gpkg_path or not os.path.exists(gpkg_path):
+            return "", []
+        conn = sqlite3.connect(gpkg_path)
+        try:
+            cur = conn.cursor()
+            cur.execute(
+                "SELECT name FROM sqlite_master WHERE type='table' AND name='swe2d_line_results_ts'"
+            )
+            if cur.fetchone() is None:
+                return "", []
+
+            chosen = str(run_id or "").strip()
+            if not chosen:
+                cur.execute(
+                    """
+                    SELECT run_id FROM swe2d_line_results_runs
+                    ORDER BY datetime(created_utc) DESC, rowid DESC
+                    LIMIT 1
+                    """
+                )
+                row = cur.fetchone()
+                if row is None:
+                    return "", []
+                chosen = str(row[0])
+
+            cur.execute(
+                """
+                SELECT t_s, line_id, line_name, depth_m, velocity_ms, wse_m, bed_m, flow_cms, wet_frac, fr
+                FROM swe2d_line_results_ts
+                WHERE run_id = ?
+                ORDER BY t_s ASC, line_id ASC
+                """,
+                (chosen,),
+            )
+            rows = []
+            for t_s, line_id, line_name, depth_m, velocity_ms, wse_m, bed_m, flow_cms, wet_frac, fr in cur.fetchall():
+                rows.append(
+                    {
+                        "t_s": float(t_s),
+                        "line_id": int(line_id),
+                        "line_name": str(line_name or ""),
+                        "depth_m": float(depth_m),
+                        "velocity_ms": float(velocity_ms),
+                        "wse_m": float(wse_m),
+                        "bed_m": float(bed_m),
+                        "flow_cms": float(flow_cms),
+                        "wet_frac": float(wet_frac),
+                        "fr": float(fr),
+                    }
+                )
+            return chosen, rows
+        finally:
+            conn.close()
+
+    def _open_line_results_viewer(self):
+        db_path = ""
+        if self._line_results_latest_db_path and os.path.exists(self._line_results_latest_db_path):
+            db_path = self._line_results_latest_db_path
+        if not db_path:
+            db_path = self._current_line_results_storage_path()
+        if not db_path:
+            self._log("No GeoPackage available for line results viewer.")
+            return
+
+        run_id = self._line_results_latest_run_id or None
+        chosen, rows = self._load_line_results_from_geopackage(db_path, run_id=run_id)
+        if not chosen or not rows:
+            self._log("No sampled line results found in GeoPackage yet.")
+            return
+        dlg = SWE2DLineResultsViewerDialog(records=rows, run_id=chosen, db_path=db_path, parent=self)
+        dlg.exec()
+
     def _build_internal_flow_source_cms(self) -> Optional[np.ndarray]:
         if self._mesh_data is None or not _HAVE_QGIS_CORE:
             return None
@@ -2634,6 +3322,8 @@ class SWE2DWorkbenchDialog(QtWidgets.QDialog):
 
         area_name = "Perimeter 1"
 
+        include_extra = bool(getattr(self, "extended_outputs_chk", None) is None or self.extended_outputs_chk.isChecked())
+
         with _h5py.File(path, "w") as f:
             f.attrs["File Type"] = np.bytes_(b"HEC-RAS Results")
             f.attrs["File Version"] = np.bytes_(b"HEC-RAS 7.0 April 2026")
@@ -2727,6 +3417,12 @@ class SWE2DWorkbenchDialog(QtWidgets.QDialog):
                 "Cells Minimum Elevation",
                 data=cell_min_z.astype(np.float32),
             )
+            if include_extra:
+                if self._result_data is not None and "n_mann_cell" in self._result_data:
+                    n_face = np.asarray(self._result_data["n_mann_cell"], dtype=np.float64)[:n_cells]
+                else:
+                    n_face = np.full(n_cells, float(self.n_mann_spin.value()), dtype=np.float64)
+                area_grp.create_dataset("Cells Manning n", data=n_face.astype(np.float32))
             # Connectivity: nCells × maxVerts, -1 padded
             area_grp.create_dataset("Cells FacePoint Indexes", data=fp_idx)
 
@@ -2759,6 +3455,14 @@ class SWE2DWorkbenchDialog(QtWidgets.QDialog):
                 vel_arr = np.zeros((n_t, n_cells), dtype=np.float32)
                 vel_u_arr = np.zeros((n_t, n_cells), dtype=np.float32)
                 vel_v_arr = np.zeros((n_t, n_cells), dtype=np.float32)
+                if include_extra:
+                    mom_u_arr = np.zeros((n_t, n_cells), dtype=np.float32)
+                    mom_v_arr = np.zeros((n_t, n_cells), dtype=np.float32)
+                    qmag_arr = np.zeros((n_t, n_cells), dtype=np.float32)
+                    wet_arr = np.zeros((n_t, n_cells), dtype=np.float32)
+                    froude_arr = np.zeros((n_t, n_cells), dtype=np.float32)
+                    h_min = float(self.h_min_spin.value())
+                    g = float(self._gravity)
 
                 for ti, (_, h, hu, hv) in enumerate(timesteps):
                     h_f = np.asarray(h, dtype=np.float64)[:n_cells]
@@ -2772,6 +3476,12 @@ class SWE2DWorkbenchDialog(QtWidgets.QDialog):
                     vel_arr[ti] = np.sqrt(u ** 2 + v ** 2).astype(np.float32)
                     vel_u_arr[ti] = u.astype(np.float32)
                     vel_v_arr[ti] = v.astype(np.float32)
+                    if include_extra:
+                        mom_u_arr[ti] = hu_f.astype(np.float32)
+                        mom_v_arr[ti] = hv_f.astype(np.float32)
+                        qmag_arr[ti] = np.sqrt(hu_f ** 2 + hv_f ** 2).astype(np.float32)
+                        wet_arr[ti] = (h_f > h_min).astype(np.float32)
+                        froude_arr[ti] = np.where(h_f > h_min, np.sqrt(u ** 2 + v ** 2) / np.sqrt(np.maximum(g * h_f, 1.0e-12)), 0.0).astype(np.float32)
 
                 ar = f.require_group(f"{ts_base}/2D Flow Areas/{area_name}")
                 ar.create_dataset("Depth", data=depth_arr)
@@ -2784,6 +3494,12 @@ class SWE2DWorkbenchDialog(QtWidgets.QDialog):
                 ar.create_dataset("Cell Velocity Y", data=vel_v_arr)
                 ar.create_dataset("Velocity X", data=vel_u_arr)
                 ar.create_dataset("Velocity Y", data=vel_v_arr)
+                if include_extra:
+                    ar.create_dataset("Cell Momentum - X", data=mom_u_arr)
+                    ar.create_dataset("Cell Momentum - Y", data=mom_v_arr)
+                    ar.create_dataset("Unit Discharge - Magnitude", data=qmag_arr)
+                    ar.create_dataset("Wet Mask", data=wet_arr)
+                    ar.create_dataset("Cell Froude Number", data=froude_arr)
 
                 # MDAL's HEC-RAS reader expects Summary Output to exist when a
                 # Results tree is present, even if most summary datasets are not.
@@ -2869,6 +3585,8 @@ class SWE2DWorkbenchDialog(QtWidgets.QDialog):
                     epsg_code = project_crs.postgisSrid() or None
             except Exception:
                 pass
+
+        include_extra = bool(getattr(self, "extended_outputs_chk", None) is None or self.extended_outputs_chk.isChecked())
 
         with _netCDF4.Dataset(path, "w", format="NETCDF4") as ds:
             # Global attributes (CF + UGRID)
@@ -2978,6 +3696,14 @@ class SWE2DWorkbenchDialog(QtWidgets.QDialog):
                 vel_u_arr = np.zeros((len(timesteps), n_cells), dtype=np.float32)
                 vel_v_arr = np.zeros((len(timesteps), n_cells), dtype=np.float32)
                 vel_mag_arr = np.zeros((len(timesteps), n_cells), dtype=np.float32)
+                if include_extra:
+                    mom_u_arr = np.zeros((len(timesteps), n_cells), dtype=np.float32)
+                    mom_v_arr = np.zeros((len(timesteps), n_cells), dtype=np.float32)
+                    qmag_arr = np.zeros((len(timesteps), n_cells), dtype=np.float32)
+                    wet_arr = np.zeros((len(timesteps), n_cells), dtype=np.float32)
+                    froude_arr = np.zeros((len(timesteps), n_cells), dtype=np.float32)
+                    h_min = float(self.h_min_spin.value())
+                    g = float(self._gravity)
 
                 for ti, (_, h, hu, hv) in enumerate(timesteps):
                     h_f = np.asarray(h, dtype=np.float64)[:n_cells]
@@ -2991,6 +3717,12 @@ class SWE2DWorkbenchDialog(QtWidgets.QDialog):
                     vel_u_arr[ti] = u.astype(np.float32)
                     vel_v_arr[ti] = v.astype(np.float32)
                     vel_mag_arr[ti] = np.sqrt(u ** 2 + v ** 2).astype(np.float32)
+                    if include_extra:
+                        mom_u_arr[ti] = hu_f.astype(np.float32)
+                        mom_v_arr[ti] = hv_f.astype(np.float32)
+                        qmag_arr[ti] = np.sqrt(hu_f ** 2 + hv_f ** 2).astype(np.float32)
+                        wet_arr[ti] = (h_f > h_min).astype(np.float32)
+                        froude_arr[ti] = np.where(h_f > h_min, np.sqrt(u ** 2 + v ** 2) / np.sqrt(np.maximum(g * h_f, 1.0e-12)), 0.0).astype(np.float32)
 
                 d_var = ds.createVariable(
                     "water_depth", "f4", ("time", "face"), fill_value=np.float32(-9999.0)
@@ -3052,6 +3784,76 @@ class SWE2DWorkbenchDialog(QtWidgets.QDialog):
                 vm_var.coordinates = "face_x face_y"
                 vm_var.grid_mapping = "crs"
                 vm_var[:] = vel_mag_arr
+
+                if include_extra:
+                    mu_var = ds.createVariable(
+                        "momentum_x", "f4", ("time", "face"), fill_value=np.float32(-9999.0)
+                    )
+                    mu_var.long_name = "x momentum per unit width"
+                    mu_var.units = "m2 s-1"
+                    mu_var.mesh = "mesh2d"
+                    mu_var.location = "face"
+                    mu_var.coordinates = "face_x face_y"
+                    mu_var.grid_mapping = "crs"
+                    mu_var[:] = mom_u_arr
+
+                    mv_var = ds.createVariable(
+                        "momentum_y", "f4", ("time", "face"), fill_value=np.float32(-9999.0)
+                    )
+                    mv_var.long_name = "y momentum per unit width"
+                    mv_var.units = "m2 s-1"
+                    mv_var.mesh = "mesh2d"
+                    mv_var.location = "face"
+                    mv_var.coordinates = "face_x face_y"
+                    mv_var.grid_mapping = "crs"
+                    mv_var[:] = mom_v_arr
+
+                    qmag_var = ds.createVariable(
+                        "unit_discharge_magnitude", "f4", ("time", "face"), fill_value=np.float32(-9999.0)
+                    )
+                    qmag_var.long_name = "unit discharge magnitude"
+                    qmag_var.units = "m2 s-1"
+                    qmag_var.mesh = "mesh2d"
+                    qmag_var.location = "face"
+                    qmag_var.coordinates = "face_x face_y"
+                    qmag_var.grid_mapping = "crs"
+                    qmag_var[:] = qmag_arr
+
+                    wet_var = ds.createVariable(
+                        "wet_mask", "f4", ("time", "face"), fill_value=np.float32(-9999.0)
+                    )
+                    wet_var.long_name = "wet mask"
+                    wet_var.units = "1"
+                    wet_var.mesh = "mesh2d"
+                    wet_var.location = "face"
+                    wet_var.coordinates = "face_x face_y"
+                    wet_var.grid_mapping = "crs"
+                    wet_var[:] = wet_arr
+
+                    fr_var = ds.createVariable(
+                        "froude_number", "f4", ("time", "face"), fill_value=np.float32(-9999.0)
+                    )
+                    fr_var.long_name = "Froude number"
+                    fr_var.units = "1"
+                    fr_var.mesh = "mesh2d"
+                    fr_var.location = "face"
+                    fr_var.coordinates = "face_x face_y"
+                    fr_var.grid_mapping = "crs"
+                    fr_var[:] = froude_arr
+
+            if include_extra:
+                if self._result_data is not None and "n_mann_cell" in self._result_data:
+                    n_face = np.asarray(self._result_data["n_mann_cell"], dtype=np.float64)[:n_cells]
+                else:
+                    n_face = np.full(n_cells, float(self.n_mann_spin.value()), dtype=np.float64)
+                n_var = ds.createVariable("manning_n_face", "f4", ("face",), fill_value=np.float32(-9999.0))
+                n_var.long_name = "Manning roughness at face"
+                n_var.units = "s m-1/3"
+                n_var.mesh = "mesh2d"
+                n_var.location = "face"
+                n_var.coordinates = "face_x face_y"
+                n_var.grid_mapping = "crs"
+                n_var[:] = n_face.astype(np.float32)
 
     def _export_mesh_to_hdf5(self):
         if self._mesh_data is None:
@@ -3135,6 +3937,24 @@ class SWE2DWorkbenchDialog(QtWidgets.QDialog):
                 f"({n_ts} timestep(s), last t={last_t_hr:.3f} hr, "
                 f"interval={self.output_interval_edit.text()})"
             )
+
+            if self._line_snapshot_rows:
+                gpkg_results_path = self._current_line_results_storage_path()
+                if gpkg_results_path:
+                    snap_run_id = datetime.datetime.utcnow().strftime("swe2d_snapshot_%Y%m%dT%H%M%SZ")
+                    mesh_interval_s = max(1.0, self._parse_time_hours(self.output_interval_edit.text()) * 3600.0)
+                    line_interval_s = max(1.0, self._parse_time_hours(self.line_output_interval_edit.text()) * 3600.0)
+                    self._persist_line_results_to_geopackage(
+                        gpkg_results_path,
+                        snap_run_id,
+                        self._line_snapshot_rows,
+                        mesh_interval_s=mesh_interval_s,
+                        line_interval_s=line_interval_s,
+                    )
+                    self._log(
+                        f"Sample line snapshot stored → {gpkg_results_path} "
+                        f"(rows={len(self._line_snapshot_rows)}, run_id={snap_run_id})"
+                    )
         except Exception as exc:
             QtWidgets.QMessageBox.critical(self, "Snapshot", f"Snapshot failed:\n{exc}")
 
@@ -3943,8 +4763,15 @@ class SWE2DWorkbenchDialog(QtWidgets.QDialog):
             # Snapshot output interval — clamp to at least 1 s to avoid div-by-zero
             _oi_hr = self._parse_time_hours(self.output_interval_edit.text())
             output_interval_s = max(1.0, _oi_hr * 3600.0)
+            _line_oi_hr = self._parse_time_hours(self.line_output_interval_edit.text())
+            line_output_interval_s = max(1.0, _line_oi_hr * 3600.0)
             self._snapshot_timesteps = []
+            self._line_snapshot_rows = []
             _next_snap_t = output_interval_s
+            _next_line_snap_t = line_output_interval_s
+            sample_map = self._build_line_sampling_map()
+            cell_min_z = self._mesh_cell_min_bed() if sample_map else None
+            run_id = datetime.datetime.utcnow().strftime("swe2d_%Y%m%dT%H%M%SZ")
 
             dynamic_bc = bool(np.any((bc_tp == _BC_TS_FLOW) | (bc_tp == _BC_TS_STAGE)) or edge_hydrographs)
             if dynamic_bc:
@@ -3952,6 +4779,9 @@ class SWE2DWorkbenchDialog(QtWidgets.QDialog):
 
             self._log("Starting 2D run...")
             self._log(f"Reconstruction mode: {reconstruction_name}")
+            self._log(
+                f"Output intervals: mesh={output_interval_s:.1f}s, sample-lines={line_output_interval_s:.1f}s"
+            )
             self._log(
                 "Stability controls: "
                 f"max_rel_dh={float(self.max_rel_depth_increase_spin.value()):.3f}, "
@@ -4015,6 +4845,8 @@ class SWE2DWorkbenchDialog(QtWidgets.QDialog):
                 shallow_damping_depth=float(self.shallow_damping_depth_spin.value()),
                 spatial_discretization=reconstruction_mode,
                 degen_mode=int(self.degen_mode_combo.currentData()),
+                front_flux_damping=float(self.front_flux_damping_spin.value()),
+                active_set_hysteresis=bool(self.active_set_hysteresis_chk.isChecked()),
             )
 
             last_diag = None
@@ -4052,12 +4884,29 @@ class SWE2DWorkbenchDialog(QtWidgets.QDialog):
                 t_accum += float(last_diag.get("dt", dt))
 
                 # Capture snapshot at each output interval boundary
-                if t_accum >= _next_snap_t:
+                need_mesh_snap = t_accum >= _next_snap_t
+                need_line_snap = bool(sample_map) and t_accum >= _next_line_snap_t
+                if need_mesh_snap or need_line_snap:
                     h_s, hu_s, hv_s = backend.get_state()
+
+                if need_mesh_snap:
                     self._snapshot_timesteps.append(
                         (t_accum, h_s.copy(), hu_s.copy(), hv_s.copy())
                     )
                     _next_snap_t += output_interval_s
+
+                if need_line_snap and cell_min_z is not None:
+                    rows = self._sample_line_metrics(
+                        sample_map,
+                        t_accum,
+                        h_s,
+                        hu_s,
+                        hv_s,
+                        cell_min_z,
+                    )
+                    if rows:
+                        self._line_snapshot_rows.extend(rows)
+                    _next_line_snap_t += line_output_interval_s
 
                 pct = int(min(100.0, (t_accum / max(run_duration_s, 1.0e-9)) * 100.0))
                 self.progress_bar.setValue(pct)
@@ -4085,14 +4934,27 @@ class SWE2DWorkbenchDialog(QtWidgets.QDialog):
                 "h": h,
                 "hu": hu,
                 "hv": hv,
+                "n_mann_cell": n_mann_cell.copy() if n_mann_cell is not None else np.full(h.shape, float(self.n_mann_spin.value()), dtype=np.float64),
                 "gpu_active": np.array(bool(backend.gpu_active())),
                 "last_mass_total": np.array(float(last_diag.get("mass_total", -1.0) if last_diag else -1.0)),
             }
+
+            gpkg_results_path = self._current_line_results_storage_path()
+            if gpkg_results_path and self._line_snapshot_rows:
+                self._persist_line_results_to_geopackage(
+                    gpkg_results_path,
+                    run_id,
+                    self._line_snapshot_rows,
+                    mesh_interval_s=output_interval_s,
+                    line_interval_s=line_output_interval_s,
+                )
             self._log("Run complete." if not self._cancel_requested else "Run canceled by user.")
             self._log(
                 f"Depth range: {float(np.min(h)):.6f} .. {float(np.max(h)):.6f} | "
                 f"Velocity mag max: {float(np.max(np.sqrt((hu / np.maximum(h, 1e-12)) ** 2 + (hv / np.maximum(h, 1e-12)) ** 2))):.6f}"
             )
+            if self._line_snapshot_rows:
+                self._log(f"Sample line rows captured: {len(self._line_snapshot_rows)}")
             self._refresh_plot()
         except Exception as exc:
             QtWidgets.QMessageBox.critical(self, "2D SWE", f"Run failed: {exc}")

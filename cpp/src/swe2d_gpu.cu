@@ -304,12 +304,13 @@ __device__ inline void hllc_flux_cuda_local(
 // Sets d_active[c]=1 if h>h_min or cell has a forced-inflow BC edge.
 // Block-reduces the wet count (h>h_min only) into d_n_wet via atomicAdd.
 __global__ void swe2d_classify_kernel(
-    int32_t        n_cells,
-    const double*  d_h,
-    const int32_t* d_bc_forced,
-    int32_t*       d_active,
-    int32_t*       d_n_wet,
-    double         h_min)
+    int32_t                     n_cells,
+    const double*  __restrict__ d_h,
+    const int32_t* __restrict__ d_bc_forced,
+    int32_t*                    d_active,
+    int32_t*                    d_n_wet,
+    double                      h_min,
+    const int32_t* __restrict__ d_was_active)  // nullable: previous-step active set for 1-step hysteresis
 {
     extern __shared__ int32_t scount[];
     int32_t tid = threadIdx.x;
@@ -317,9 +318,14 @@ __global__ void swe2d_classify_kernel(
 
     int32_t wet = 0;
     if (c < n_cells) {
-        const int32_t forced = d_bc_forced ? d_bc_forced[c] : 0;
+        const int32_t forced = d_bc_forced  ? d_bc_forced[c]  : 0;
         const int32_t w      = (d_h[c] > h_min) ? 1 : 0;
-        d_active[c] = w | forced;
+        // Hysteretic wetting: cells that were active last step and still carry
+        // non-zero depth stay active for one additional step.  This prevents
+        // rapid oscillatory wet/dry switching at the advancing front without
+        // modifying mass balance (the update kernel still enforces h >= 0).
+        const int32_t grace  = (d_was_active && d_was_active[c] && d_h[c] > 0.0) ? 1 : 0;
+        d_active[c] = w | forced | grace;
         wet         = w;   // count only hydrodynamically wet cells
     }
 
@@ -336,10 +342,10 @@ __global__ void swe2d_classify_kernel(
 // If one endpoint is active, marks the other endpoint active too,
 // so wetting-front dry cells receive their flux during the update step.
 __global__ void swe2d_mark_neighbor_kernel(
-    int32_t        n_edges,
-    const int32_t* edge_c0,
-    const int32_t* edge_c1,
-    int32_t*       d_active)
+    int32_t                     n_edges,
+    const int32_t* __restrict__ edge_c0,
+    const int32_t* __restrict__ edge_c1,
+    int32_t*                    d_active)
 {
     int32_t e = blockIdx.x * blockDim.x + threadIdx.x;
     if (e >= n_edges) return;
@@ -354,9 +360,9 @@ __global__ void swe2d_mark_neighbor_kernel(
 // Modes 1 (skip) and 3 (merge): force degenerate cells permanently inactive
 // after each classify pass so they never receive flux or get updated.
 __global__ void swe2d_degen_deactivate_kernel(
-    int32_t        n_cells,
-    const int32_t* d_degen_mask,
-    int32_t*       d_active)
+    int32_t                     n_cells,
+    const int32_t* __restrict__ d_degen_mask,
+    int32_t*                    d_active)
 {
     int32_t c = blockIdx.x * blockDim.x + threadIdx.x;
     if (c >= n_cells || !d_degen_mask[c]) return;
@@ -367,12 +373,12 @@ __global__ void swe2d_degen_deactivate_kernel(
 // Mode 3 (merge): copy owner state into each degenerate cell so that
 // flux computation and higher-order reconstruction sees physically sane values.
 __global__ void swe2d_degen_sync_kernel(
-    int32_t        n_cells,
-    const int32_t* d_degen_mask,
-    const int32_t* d_merge_owner,
-    double*        d_h,
-    double*        d_hu,
-    double*        d_hv)
+    int32_t                     n_cells,
+    const int32_t* __restrict__ d_degen_mask,
+    const int32_t* __restrict__ d_merge_owner,
+    double*                     d_h,
+    double*                     d_hu,
+    double*                     d_hv)
 {
     int32_t c = blockIdx.x * blockDim.x + threadIdx.x;
     if (c >= n_cells || !d_degen_mask[c]) return;
@@ -408,23 +414,23 @@ __global__ void swe2d_degen_sync_kernel(
 // the scheme is FV_MUSCL_MC (3) or FV_MUSCL_VAN_LEER (4).
 // ─────────────────────────────────────────────────────────────────────────────
 __global__ void swe2d_gradient_kernel(
-    int32_t        n_edges,
-    const int32_t* edge_c0,
-    const int32_t* edge_c1,
-    const double*  edge_nx,
-    const double*  edge_ny,
-    const double*  edge_len,
-    const double*  cell_h,
-    const double*  cell_zb,
-    const double*  cell_hu,
-    const double*  cell_hv,
-    const double*  cell_inv_area,
-    double         max_inv_area,
-    double*        grad_hx,  double* grad_hy,
-    double*        grad_hux, double* grad_huy,
-    double*        grad_hvx, double* grad_hvy,
-    const int32_t* d_active,
-    const int32_t* d_degen_mask)
+    int32_t                     n_edges,
+    const int32_t* __restrict__ edge_c0,
+    const int32_t* __restrict__ edge_c1,
+    const double*  __restrict__ edge_nx,
+    const double*  __restrict__ edge_ny,
+    const double*  __restrict__ edge_len,
+    const double*  __restrict__ cell_h,
+    const double*  __restrict__ cell_zb,
+    const double*  __restrict__ cell_hu,
+    const double*  __restrict__ cell_hv,
+    const double*  __restrict__ cell_inv_area,
+    double                      max_inv_area,
+    double*                     grad_hx,  double* grad_hy,
+    double*                     grad_hux, double* grad_huy,
+    double*                     grad_hvx, double* grad_hvy,
+    const int32_t* __restrict__ d_active,
+    const int32_t* __restrict__ d_degen_mask)
 {
     int32_t e = blockIdx.x * blockDim.x + threadIdx.x;
     if (e >= n_edges) return;
@@ -446,14 +452,17 @@ __global__ void swe2d_gradient_kernel(
     double ny  = edge_ny[e];
     double len = edge_len[e];
 
-    double h0  = cell_h[c0],  hu0 = cell_hu[c0], hv0 = cell_hv[c0];
-    double zb0 = cell_zb[c0];
+    // __ldg: forces LDG (read-only texture cache) path for the irregular
+    // scatter-reads indexed by c0/c1.  Irregular addresses thrash L2 without
+    // the 32-way L1 texture cache.
+    double h0  = __ldg(&cell_h[c0]),  hu0 = __ldg(&cell_hu[c0]), hv0 = __ldg(&cell_hv[c0]);
+    double zb0 = __ldg(&cell_zb[c0]);
     double h1, hu1, hv1, zb1;
     const int32_t c1_degen = (c1 >= 0 && d_degen_mask) ? d_degen_mask[c1]
                              : (c1 < 0 || cell_inv_area[c1] > max_inv_area ? 1 : 0);
     if (c1 >= 0 && !c1_degen) {
-        h1 = cell_h[c1]; hu1 = cell_hu[c1]; hv1 = cell_hv[c1];
-        zb1 = cell_zb[c1];
+        h1 = __ldg(&cell_h[c1]); hu1 = __ldg(&cell_hu[c1]); hv1 = __ldg(&cell_hv[c1]);
+        zb1 = __ldg(&cell_zb[c1]);
     } else {
         // Boundary: use cell value (zero-gradient extrapolation for gradient)
         h1 = h0; hu1 = hu0; hv1 = hv0;
@@ -494,39 +503,41 @@ __global__ void swe2d_gradient_kernel(
 // Writes atomic increments into flux accumulators.
 // ─────────────────────────────────────────────────────────────────────────────
 __global__ void swe2d_flux_kernel(
-    int32_t        n_edges,
-    const int32_t* edge_c0,
-    const int32_t* edge_c1,
-    const double*  edge_nx,
-    const double*  edge_ny,
-    const double*  edge_len,
-    const int32_t* edge_bc,
-    const double*  edge_bc_val,
-    const double*  cell_h,
-    const double*  cell_hu,
-    const double*  cell_hv,
-    const double*  cell_zb,
-    const double*  cell_inv_area,
+    int32_t                     n_edges,
+    const int32_t* __restrict__ edge_c0,
+    const int32_t* __restrict__ edge_c1,
+    const double*  __restrict__ edge_nx,
+    const double*  __restrict__ edge_ny,
+    const double*  __restrict__ edge_len,
+    const int32_t* __restrict__ edge_bc,
+    const double*  __restrict__ edge_bc_val,
+    const double*  __restrict__ cell_h,
+    const double*  __restrict__ cell_hu,
+    const double*  __restrict__ cell_hv,
+    const double*  __restrict__ cell_zb,
+    const double*  __restrict__ cell_inv_area,
     // Cell centroids and gradients (used for MC and Van Leer limiters)
-    const double*  cell_cx,
-    const double*  cell_cy,
-    const double*  grad_hx,  const double* grad_hy,
-    const double*  grad_hux, const double* grad_huy,
-    const double*  grad_hvx, const double* grad_hvy,
-    double*        flux_h,    // [n_cells] accumulator
-    double*        flux_hu,
-    double*        flux_hv,
-    double*        dbg_fh,
-    double*        dbg_fhu,
-    double*        dbg_fhv,
-    int            spatial_scheme,
+    const double*  __restrict__ cell_cx,
+    const double*  __restrict__ cell_cy,
+    const double*  __restrict__ grad_hx,  const double* __restrict__ grad_hy,
+    const double*  __restrict__ grad_hux, const double* __restrict__ grad_huy,
+    const double*  __restrict__ grad_hvx, const double* __restrict__ grad_hvy,
+    double*                     flux_h,    // [n_cells] accumulator
+    double*                     flux_hu,
+    double*                     flux_hv,
+    double*                     dbg_fh,
+    double*                     dbg_fhu,
+    double*                     dbg_fhv,
+    int                         spatial_scheme,
     double g, double h_min,
-    double max_inv_area,
-    double momentum_cap_min_speed,
-    double momentum_cap_celerity_mult,
-    const int32_t* d_degen_mask,
-    const int32_t* d_merge_owner,
-    int            degen_mode)
+    double                      max_inv_area,
+    double                      momentum_cap_min_speed,
+    double                      momentum_cap_celerity_mult,
+    const int32_t* __restrict__ d_degen_mask,
+    const int32_t* __restrict__ d_merge_owner,
+    int                         degen_mode,
+    const int32_t* __restrict__ d_active,            // nullable: wet/dry active-set mask
+    double                      front_flux_damping)  // momentum-flux scale for wet/dry front edges
 {
     int32_t e = blockIdx.x * blockDim.x + threadIdx.x;
     if (e >= n_edges) return;
@@ -551,6 +562,11 @@ __global__ void swe2d_flux_kernel(
         if (dm1 && (d_merge_owner == nullptr || d_merge_owner[c1] < 0)) return;
     }
 
+    // Dry-edge early exit: skip interior edges where both endpoint cells are
+    // fully inactive.  Avoids all reconstruction and HLLC work for fully-dry
+    // interior edges — the dominant kernel-time saving on partially-wet domains.
+    if (d_active && c1 >= 0 && !d_active[c0] && !d_active[c1]) return;
+
     // Resolve flux accumulation targets (mode 3: redirect to merge owner).
     int32_t acc0 = c0, acc1 = c1;
     if (degen_mode == 3 && d_merge_owner) {
@@ -562,13 +578,14 @@ __global__ void swe2d_flux_kernel(
     double  ny  = edge_ny[e];
     double  len = edge_len[e];
 
-    double hL  = cell_h[c0],  huL = cell_hu[c0], hvL = cell_hv[c0];
-    double zbL = cell_zb[c0];
+    // __ldg: forces L1 read-only (texture) cache path for irregular scatter-reads.
+    double hL  = __ldg(&cell_h[c0]),  huL = __ldg(&cell_hu[c0]), hvL = __ldg(&cell_hv[c0]);
+    double zbL = __ldg(&cell_zb[c0]);
 
     double hR, huR, hvR, zbR;
     if (c1 >= 0) {
-        hR  = cell_h[c1]; huR = cell_hu[c1]; hvR = cell_hv[c1];
-        zbR = cell_zb[c1];
+        hR  = __ldg(&cell_h[c1]); huR = __ldg(&cell_hu[c1]); hvR = __ldg(&cell_hv[c1]);
+        zbR = __ldg(&cell_zb[c1]);
 
         // GPU-only selectable higher-order reconstruction modes.
         // All schemes 1–4 use Green-Gauss gradient-based TVD reconstruction.
@@ -690,6 +707,17 @@ __global__ void swe2d_flux_kernel(
     double fhu = (flux_fhu + corr_hu) * len;
     double fhv = (flux_fhv + corr_hv) * len;
 
+    // Front-aware flux damping: at wet/dry front edges (exactly one side active),
+    // scale the momentum component of the flux to suppress oscillations that grow
+    // at the advancing front.  Mass flux (fh) is NOT scaled to preserve
+    // mass conservation; only the momentum signal is attenuated.
+    const bool is_wet_dry_front = d_active && (c1 >= 0) &&
+                                  ((d_active[c0] != 0) != (d_active[c1] != 0));
+    if (is_wet_dry_front && front_flux_damping < 1.0) {
+        fhu *= front_flux_damping;
+        fhv *= front_flux_damping;
+    }
+
     if (dbg_fh) {
         dbg_fh[e] = fh;
         dbg_fhu[e] = fhu;
@@ -708,6 +736,10 @@ __global__ void swe2d_flux_kernel(
         bed_slope_correction_cuda_local(hR, rs.hR_star, nx, ny, g, corr_hu_r, corr_hv_r);
         double fhu_r = (flux_fhu + corr_hu_r) * len;
         double fhv_r = (flux_fhv + corr_hv_r) * len;
+        if (is_wet_dry_front && front_flux_damping < 1.0) {
+            fhu_r *= front_flux_damping;
+            fhv_r *= front_flux_damping;
+        }
         atomicAdd(&flux_h[acc1],  fh);
         atomicAdd(&flux_hu[acc1], fhu_r);
         atomicAdd(&flux_hv[acc1], fhv_r);
@@ -718,27 +750,27 @@ __global__ void swe2d_flux_kernel(
 // Kernel 2: State update — one thread per cell
 // ─────────────────────────────────────────────────────────────────────────────
 __global__ void swe2d_update_kernel(
-    int32_t       n_cells,
-    double*       cell_h,
-    double*       cell_hu,
-    double*       cell_hv,
-    const double* flux_h,
-    const double* flux_hu,
-    const double* flux_hv,
-    const double* cell_inv_area,
-    const double* cell_n_mann,
-    double*       d_max_wse_elev_error,
+    int32_t                     n_cells,
+    double*                     cell_h,
+    double*                     cell_hu,
+    double*                     cell_hv,
+    const double*  __restrict__ flux_h,
+    const double*  __restrict__ flux_hu,
+    const double*  __restrict__ flux_hv,
+    const double*  __restrict__ cell_inv_area,
+    const double*  __restrict__ cell_n_mann,
+    double*                     d_max_wse_elev_error,
     double dt, double g, double h_min,
-    double max_inv_area,
-    double momentum_cap_min_speed,
-    double momentum_cap_celerity_mult,
-    double depth_cap,
-    double max_rel_depth_increase,
-    double shallow_damping_depth,
-    const int32_t* d_active,
-    const int32_t* d_degen_mask,
-    const double*  d_inv_area_repaired,
-    int            degen_mode)
+    double                      max_inv_area,
+    double                      momentum_cap_min_speed,
+    double                      momentum_cap_celerity_mult,
+    double                      depth_cap,
+    double                      max_rel_depth_increase,
+    double                      shallow_damping_depth,
+    const int32_t* __restrict__ d_active,
+    const int32_t* __restrict__ d_degen_mask,
+    const double*  __restrict__ d_inv_area_repaired,
+    int                         degen_mode)
 {
     int32_t c = blockIdx.x * blockDim.x + threadIdx.x;
     if (c >= n_cells) return;
@@ -791,8 +823,12 @@ __global__ void swe2d_update_kernel(
         cell_hv[c] = 0.0;
     } else if (shallow_damping_depth > h_min && cell_h[c] < shallow_damping_depth) {
         // Smoothly damp momentum in shallow cells to stabilize moving wet/dry fronts.
-        const double t = (cell_h[c] - h_min) / (shallow_damping_depth - h_min);
-        const double scale = fmin(1.0, fmax(0.0, t));
+        // Uses Hermite smoothstep (3t²−2t³) which is C¹ at both endpoints:
+        //   scale=0 at h=h_min  (no abrupt momentum discontinuity)
+        //   scale=1 at h=shallow_damping_depth (full momentum beyond threshold)
+        const double t   = (cell_h[c] - h_min) / (shallow_damping_depth - h_min);
+        const double t_s = fmin(1.0, fmax(0.0, t));
+        const double scale = t_s * t_s * (3.0 - 2.0 * t_s);
         cell_hu[c] *= scale;
         cell_hv[c] *= scale;
     }
@@ -866,16 +902,16 @@ __global__ void swe2d_rk2_combine_kernel(
 // Kernel 3: CFL reduction — one thread per cell, block-level max, then global
 // ─────────────────────────────────────────────────────────────────────────────
 __global__ void swe2d_cfl_kernel(
-    int32_t       n_cells,
-    const double* cell_h,
-    const double* cell_hu,
-    const double* cell_hv,
-    const double* cell_area,
+    int32_t                     n_cells,
+    const double*  __restrict__ cell_h,
+    const double*  __restrict__ cell_hu,
+    const double*  __restrict__ cell_hv,
+    const double*  __restrict__ cell_area,
     double g, double h_min,
-    double lambda_cap,
-    double* d_lambda_max,
-    const int32_t* d_degen_mask,
-    int            degen_mode)
+    double                      lambda_cap,
+    double*                     d_lambda_max,
+    const int32_t* __restrict__ d_degen_mask,
+    int                         degen_mode)
 {
     extern __shared__ double sdata[];
     int32_t tid = threadIdx.x;
@@ -1072,8 +1108,10 @@ SWE2DDeviceState* swe2d_gpu_init(
     alloc_d(reinterpret_cast<void**>(&dev->d_active),    sz_cells * sizeof(int32_t));
     alloc_d(reinterpret_cast<void**>(&dev->d_n_wet),     sizeof(int32_t));
     alloc_d(reinterpret_cast<void**>(&dev->d_bc_forced), sz_cells * sizeof(int32_t));
+    alloc_d(reinterpret_cast<void**>(&dev->d_was_active), sz_cells * sizeof(int32_t));
     CUDA_CHECK(cudaMemset(dev->d_active,    0, sz_cells * sizeof(int32_t)));
     CUDA_CHECK(cudaMemset(dev->d_n_wet,     0, sizeof(int32_t)));
+    CUDA_CHECK(cudaMemset(dev->d_was_active, 0, sz_cells * sizeof(int32_t)));
     // Build bc_forced host-side: mark cells at forced-inflow BC edges (types 2, 3, 6)
     // so that even initially-dry inflow cells are included in the active set.
     {
@@ -1172,6 +1210,11 @@ SWE2DDeviceState* swe2d_gpu_init(
         }
     }
 
+    // Create a persistent non-default stream.  All per-step kernel launches and
+    // async memsets go on this stream so that host-side work (BC updates, Python
+    // callbacks) can proceed while the GPU finishes the previous step.
+    CUDA_CHECK(cudaStreamCreate(&dev->d_stream));
+
     return dev;
 }
 
@@ -1193,7 +1236,9 @@ void swe2d_gpu_step(
     double max_rel_depth_increase,
     double shallow_damping_depth,
     bool sync_diagnostics,
-    SWE2DStepDiag* diag)
+    SWE2DStepDiag* diag,
+    double front_flux_damping,
+    bool   active_set_hysteresis)
 {
     constexpr int BLOCK = 256;
     int32_t n_edges = dev->n_edges;
@@ -1236,31 +1281,41 @@ void swe2d_gpu_step(
         }
     }
 
-    // Zero flux accumulators
-    CUDA_CHECK(cudaMemset(dev->d_flux_h,  0, static_cast<size_t>(n_cells) * sizeof(double)));
-    CUDA_CHECK(cudaMemset(dev->d_flux_hu, 0, static_cast<size_t>(n_cells) * sizeof(double)));
-    CUDA_CHECK(cudaMemset(dev->d_flux_hv, 0, static_cast<size_t>(n_cells) * sizeof(double)));
+    // Zero flux accumulators (async: pipelined with preceding GPU work on stream)
+    const size_t sz_cells_d = static_cast<size_t>(n_cells) * sizeof(double);
+    CUDA_CHECK(cudaMemsetAsync(dev->d_flux_h,  0, sz_cells_d, dev->d_stream));
+    CUDA_CHECK(cudaMemsetAsync(dev->d_flux_hu, 0, sz_cells_d, dev->d_stream));
+    CUDA_CHECK(cudaMemsetAsync(dev->d_flux_hv, 0, sz_cells_d, dev->d_stream));
 
     // Kernel -1: wet/dry classification — build d_active and count wet cells.
     // Must run before gradient and flux kernels so the active set is current.
     if (dev->d_active && dev->d_n_wet) {
-        CUDA_CHECK(cudaMemset(dev->d_n_wet, 0, sizeof(int32_t)));
+        // Hysteretic active set: save d_active BEFORE overwriting it so the
+        // classify kernel can extend activity for 1 step to cells that just dried.
+        if (active_set_hysteresis && dev->d_was_active) {
+            CUDA_CHECK(cudaMemcpyAsync(dev->d_was_active, dev->d_active,
+                                       static_cast<size_t>(n_cells) * sizeof(int32_t),
+                                       cudaMemcpyDeviceToDevice,
+                                       dev->d_stream));
+        }
+        CUDA_CHECK(cudaMemsetAsync(dev->d_n_wet, 0, sizeof(int32_t), dev->d_stream));
         const int c_grid = (n_cells + BLOCK - 1) / BLOCK;
-        swe2d_classify_kernel<<<c_grid, BLOCK, BLOCK * sizeof(int32_t)>>>(
+        swe2d_classify_kernel<<<c_grid, BLOCK, BLOCK * sizeof(int32_t), dev->d_stream>>>(
             n_cells, dev->d_h, dev->d_bc_forced,
-            dev->d_active, dev->d_n_wet, h_min);
+            dev->d_active, dev->d_n_wet, h_min,
+            active_set_hysteresis ? dev->d_was_active : nullptr);
         CUDA_CHECK(cudaGetLastError());
         // Extend active set one ring outward so wetting-front dry cells
         // can receive flux from their wet neighbors.
         const int e_grid = (n_edges + BLOCK - 1) / BLOCK;
-        swe2d_mark_neighbor_kernel<<<e_grid, BLOCK>>>(
+        swe2d_mark_neighbor_kernel<<<e_grid, BLOCK, 0, dev->d_stream>>>(
             n_edges, dev->d_edge_c0, dev->d_edge_c1, dev->d_active);
         CUDA_CHECK(cudaGetLastError());
         // Modes 1 and 3: force degenerate cells inactive so they never
         // receive flux or get updated (overrides classify's wetting check).
         if ((dev->degen_mode == 1 || dev->degen_mode == 3) && dev->d_degen_mask) {
             const int c_grid2 = (n_cells + BLOCK - 1) / BLOCK;
-            swe2d_degen_deactivate_kernel<<<c_grid2, BLOCK>>>(
+            swe2d_degen_deactivate_kernel<<<c_grid2, BLOCK, 0, dev->d_stream>>>(
                 n_cells, dev->d_degen_mask, dev->d_active);
             CUDA_CHECK(cudaGetLastError());
         }
@@ -1268,7 +1323,7 @@ void swe2d_gpu_step(
         // reconstruction sees physically sane values at degenerate-cell faces.
         if (dev->degen_mode == 3 && dev->d_degen_mask && dev->d_merge_owner) {
             const int c_grid2 = (n_cells + BLOCK - 1) / BLOCK;
-            swe2d_degen_sync_kernel<<<c_grid2, BLOCK>>>(
+            swe2d_degen_sync_kernel<<<c_grid2, BLOCK, 0, dev->d_stream>>>(
                 n_cells, dev->d_degen_mask, dev->d_merge_owner,
                 dev->d_h, dev->d_hu, dev->d_hv);
             CUDA_CHECK(cudaGetLastError());
@@ -1283,14 +1338,14 @@ void swe2d_gpu_step(
     const bool need_gradients = (spatial_scheme >= 1);
     if (need_gradients) {
         const size_t sz_c = static_cast<size_t>(n_cells) * sizeof(double);
-        CUDA_CHECK(cudaMemset(dev->d_grad_hx,  0, sz_c));
-        CUDA_CHECK(cudaMemset(dev->d_grad_hy,  0, sz_c));
-        CUDA_CHECK(cudaMemset(dev->d_grad_hux, 0, sz_c));
-        CUDA_CHECK(cudaMemset(dev->d_grad_huy, 0, sz_c));
-        CUDA_CHECK(cudaMemset(dev->d_grad_hvx, 0, sz_c));
-        CUDA_CHECK(cudaMemset(dev->d_grad_hvy, 0, sz_c));
+        CUDA_CHECK(cudaMemsetAsync(dev->d_grad_hx,  0, sz_c, dev->d_stream));
+        CUDA_CHECK(cudaMemsetAsync(dev->d_grad_hy,  0, sz_c, dev->d_stream));
+        CUDA_CHECK(cudaMemsetAsync(dev->d_grad_hux, 0, sz_c, dev->d_stream));
+        CUDA_CHECK(cudaMemsetAsync(dev->d_grad_huy, 0, sz_c, dev->d_stream));
+        CUDA_CHECK(cudaMemsetAsync(dev->d_grad_hvx, 0, sz_c, dev->d_stream));
+        CUDA_CHECK(cudaMemsetAsync(dev->d_grad_hvy, 0, sz_c, dev->d_stream));
         int g_grid = (n_edges + BLOCK - 1) / BLOCK;
-        swe2d_gradient_kernel<<<g_grid, BLOCK>>>(
+        swe2d_gradient_kernel<<<g_grid, BLOCK, 0, dev->d_stream>>>(
             n_edges,
             dev->d_edge_c0, dev->d_edge_c1,
             dev->d_edge_nx, dev->d_edge_ny, dev->d_edge_len,
@@ -1318,12 +1373,12 @@ void swe2d_gpu_step(
                                   static_cast<size_t>(n_edges) * sizeof(double)));
             CUDA_CHECK(cudaMalloc(reinterpret_cast<void**>(&d_dbg_fhv),
                                   static_cast<size_t>(n_edges) * sizeof(double)));
-            CUDA_CHECK(cudaMemset(d_dbg_fh, 0xA5, static_cast<size_t>(n_edges) * sizeof(double)));
-            CUDA_CHECK(cudaMemset(d_dbg_fhu, 0xA5, static_cast<size_t>(n_edges) * sizeof(double)));
-            CUDA_CHECK(cudaMemset(d_dbg_fhv, 0xA5, static_cast<size_t>(n_edges) * sizeof(double)));
+            CUDA_CHECK(cudaMemsetAsync(d_dbg_fh, 0xA5, static_cast<size_t>(n_edges) * sizeof(double), dev->d_stream));
+            CUDA_CHECK(cudaMemsetAsync(d_dbg_fhu, 0xA5, static_cast<size_t>(n_edges) * sizeof(double), dev->d_stream));
+            CUDA_CHECK(cudaMemsetAsync(d_dbg_fhv, 0xA5, static_cast<size_t>(n_edges) * sizeof(double), dev->d_stream));
         }
         int grid = (n_edges + BLOCK - 1) / BLOCK;
-        swe2d_flux_kernel<<<grid, BLOCK>>>(
+        swe2d_flux_kernel<<<grid, BLOCK, 0, dev->d_stream>>>(
             n_edges,
             dev->d_edge_c0, dev->d_edge_c1,
             dev->d_edge_nx, dev->d_edge_ny, dev->d_edge_len,
@@ -1342,10 +1397,12 @@ void swe2d_gpu_step(
             max_inv_area,
             momentum_cap_min_speed,
             momentum_cap_celerity_mult,
-            dev->d_degen_mask, dev->d_merge_owner, dev->degen_mode);
+            dev->d_degen_mask, dev->d_merge_owner, dev->degen_mode,
+            dev->d_active, front_flux_damping);
         CUDA_CHECK(cudaGetLastError());
 
         if (dbg_edge_flux) {
+            CUDA_CHECK(cudaStreamSynchronize(dev->d_stream));
             std::vector<double> fh(static_cast<size_t>(n_edges));
             std::vector<double> fhu(static_cast<size_t>(n_edges));
             std::vector<double> fhv(static_cast<size_t>(n_edges));
@@ -1371,6 +1428,7 @@ void swe2d_gpu_step(
     }
 
     if (swe2d_debug_enabled("BACKWATER_SWE2D_DEBUG_GPU_FLUX")) {
+        CUDA_CHECK(cudaStreamSynchronize(dev->d_stream));
         std::vector<double> h_flux(static_cast<size_t>(n_cells));
         std::vector<double> hu_flux(static_cast<size_t>(n_cells));
         std::vector<double> hv_flux(static_cast<size_t>(n_cells));
@@ -1388,9 +1446,9 @@ void swe2d_gpu_step(
 
     // Kernel 2: Update
     {
-        CUDA_CHECK(cudaMemset(dev->d_max_wse_elev_error, 0, sizeof(double)));
+        CUDA_CHECK(cudaMemsetAsync(dev->d_max_wse_elev_error, 0, sizeof(double), dev->d_stream));
         int grid = (n_cells + BLOCK - 1) / BLOCK;
-        swe2d_update_kernel<<<grid, BLOCK>>>(
+        swe2d_update_kernel<<<grid, BLOCK, 0, dev->d_stream>>>(
             n_cells,
             dev->d_h, dev->d_hu, dev->d_hv,
             dev->d_flux_h, dev->d_flux_hu, dev->d_flux_hv,
@@ -1409,10 +1467,10 @@ void swe2d_gpu_step(
     }
 
     // Kernel 3: CFL reduction for max Courant diagnostic
-    CUDA_CHECK(cudaMemset(dev->d_lambda_max, 0, sizeof(double)));
+    CUDA_CHECK(cudaMemsetAsync(dev->d_lambda_max, 0, sizeof(double), dev->d_stream));
     {
         int grid = (n_cells + BLOCK - 1) / BLOCK;
-        swe2d_cfl_kernel<<<grid, BLOCK, BLOCK * static_cast<int>(sizeof(double))>>>(
+        swe2d_cfl_kernel<<<grid, BLOCK, BLOCK * static_cast<int>(sizeof(double)), dev->d_stream>>>(
             n_cells,
             dev->d_h, dev->d_hu, dev->d_hv,
             dev->d_cell_area,
@@ -1423,7 +1481,7 @@ void swe2d_gpu_step(
         CUDA_CHECK(cudaGetLastError());
     }
     // Pack all three diagnostic scalars into contiguous buffer for single-transfer readback.
-    pack_diag_kernel<<<1, 1>>>(dev->d_lambda_max, dev->d_max_wse_elev_error, dev->d_n_wet, dev->d_diag_packed);
+    pack_diag_kernel<<<1, 1, 0, dev->d_stream>>>(dev->d_lambda_max, dev->d_max_wse_elev_error, dev->d_n_wet, dev->d_diag_packed);
     CUDA_CHECK(cudaGetLastError());
 
     // Fill diagnostics. For high-throughput loops this can skip host sync and
@@ -1440,7 +1498,7 @@ void swe2d_gpu_step(
         diag->max_wse_elev_error = -1.0;
 
         if (sync_diagnostics) {
-            CUDA_CHECK(cudaDeviceSynchronize());
+            CUDA_CHECK(cudaStreamSynchronize(dev->d_stream));
             double packed[3] = {0.0, 0.0, -1.0};
             CUDA_CHECK(cudaMemcpy(packed, dev->d_diag_packed, 3 * sizeof(double), cudaMemcpyDeviceToHost));
             diag->max_courant        = dt * packed[0];
@@ -1462,9 +1520,9 @@ double swe2d_gpu_compute_dt(
     constexpr int BLOCK = 256;
     const int32_t n_cells = dev->n_cells;
 
-    CUDA_CHECK(cudaMemset(dev->d_lambda_max, 0, sizeof(double)));
+    CUDA_CHECK(cudaMemsetAsync(dev->d_lambda_max, 0, sizeof(double), dev->d_stream));
     int grid = (n_cells + BLOCK - 1) / BLOCK;
-    swe2d_cfl_kernel<<<grid, BLOCK, BLOCK * static_cast<int>(sizeof(double))>>>(
+    swe2d_cfl_kernel<<<grid, BLOCK, BLOCK * static_cast<int>(sizeof(double)), dev->d_stream>>>(
         n_cells,
         dev->d_h, dev->d_hu, dev->d_hv,
         dev->d_cell_area,
@@ -1473,7 +1531,7 @@ double swe2d_gpu_compute_dt(
         dev->d_lambda_max,
         dev->d_degen_mask, dev->degen_mode);
     CUDA_CHECK(cudaGetLastError());
-    CUDA_CHECK(cudaDeviceSynchronize());
+    CUDA_CHECK(cudaStreamSynchronize(dev->d_stream));
 
     double lambda_max = 0.0;
     CUDA_CHECK(cudaMemcpy(&lambda_max, dev->d_lambda_max, sizeof(double), cudaMemcpyDeviceToHost));
@@ -1500,15 +1558,17 @@ void swe2d_gpu_step_rk2(
     double max_rel_depth_increase,
     double shallow_damping_depth,
     bool sync_diagnostics,
-    SWE2DStepDiag* diag)
+    SWE2DStepDiag* diag,
+    double front_flux_damping,
+    bool   active_set_hysteresis)
 {
     constexpr int BLOCK = 256;
     const int32_t n_cells = dev->n_cells;
     const size_t sz = static_cast<size_t>(n_cells) * sizeof(double);
 
-    CUDA_CHECK(cudaMemcpy(dev->d_h0, dev->d_h, sz, cudaMemcpyDeviceToDevice));
-    CUDA_CHECK(cudaMemcpy(dev->d_hu0, dev->d_hu, sz, cudaMemcpyDeviceToDevice));
-    CUDA_CHECK(cudaMemcpy(dev->d_hv0, dev->d_hv, sz, cudaMemcpyDeviceToDevice));
+    CUDA_CHECK(cudaMemcpyAsync(dev->d_h0, dev->d_h, sz, cudaMemcpyDeviceToDevice, dev->d_stream));
+    CUDA_CHECK(cudaMemcpyAsync(dev->d_hu0, dev->d_hu, sz, cudaMemcpyDeviceToDevice, dev->d_stream));
+    CUDA_CHECK(cudaMemcpyAsync(dev->d_hv0, dev->d_hv, sz, cudaMemcpyDeviceToDevice, dev->d_stream));
 
     SWE2DStepDiag tmp_diag;
     swe2d_gpu_step(dev, dt, g, h_min, spatial_scheme, cfl_factor,
@@ -1516,25 +1576,27 @@ void swe2d_gpu_step_rk2(
                    momentum_cap_min_speed, momentum_cap_celerity_mult,
                    depth_cap, max_rel_depth_increase, shallow_damping_depth,
                    false,
-                   &tmp_diag);
+                   &tmp_diag,
+                   front_flux_damping, active_set_hysteresis);
     swe2d_gpu_step(dev, dt, g, h_min, spatial_scheme, cfl_factor,
                    max_inv_area, cfl_lambda_cap,
                    momentum_cap_min_speed, momentum_cap_celerity_mult,
                    depth_cap, max_rel_depth_increase, shallow_damping_depth,
                    false,
-                   &tmp_diag);
+                   &tmp_diag,
+                   front_flux_damping, active_set_hysteresis);
 
-    CUDA_CHECK(cudaMemset(dev->d_max_wse_elev_error, 0, sizeof(double)));
+    CUDA_CHECK(cudaMemsetAsync(dev->d_max_wse_elev_error, 0, sizeof(double), dev->d_stream));
     int grid = (n_cells + BLOCK - 1) / BLOCK;
-    swe2d_rk2_combine_kernel<<<grid, BLOCK>>>(
+    swe2d_rk2_combine_kernel<<<grid, BLOCK, 0, dev->d_stream>>>(
         n_cells,
         dev->d_h, dev->d_hu, dev->d_hv,
         dev->d_h0, dev->d_hu0, dev->d_hv0,
         dev->d_max_wse_elev_error,
         h_min);
     CUDA_CHECK(cudaGetLastError());
-    CUDA_CHECK(cudaMemset(dev->d_lambda_max, 0, sizeof(double)));
-    swe2d_cfl_kernel<<<grid, BLOCK, BLOCK * static_cast<int>(sizeof(double))>>>(
+    CUDA_CHECK(cudaMemsetAsync(dev->d_lambda_max, 0, sizeof(double), dev->d_stream));
+    swe2d_cfl_kernel<<<grid, BLOCK, BLOCK * static_cast<int>(sizeof(double)), dev->d_stream>>>(
         n_cells,
         dev->d_h, dev->d_hu, dev->d_hv,
         dev->d_cell_area,
@@ -1544,7 +1606,7 @@ void swe2d_gpu_step_rk2(
         dev->d_degen_mask, dev->degen_mode);
     CUDA_CHECK(cudaGetLastError());
     // Pack diagnostic scalars for single-transfer readback.
-    pack_diag_kernel<<<1, 1>>>(dev->d_lambda_max, dev->d_max_wse_elev_error, dev->d_n_wet, dev->d_diag_packed);
+    pack_diag_kernel<<<1, 1, 0, dev->d_stream>>>(dev->d_lambda_max, dev->d_max_wse_elev_error, dev->d_n_wet, dev->d_diag_packed);
     CUDA_CHECK(cudaGetLastError());
 
     if (diag) {
@@ -1559,7 +1621,7 @@ void swe2d_gpu_step_rk2(
         diag->max_wse_elev_error = -1.0;
 
         if (sync_diagnostics) {
-            CUDA_CHECK(cudaDeviceSynchronize());
+            CUDA_CHECK(cudaStreamSynchronize(dev->d_stream));
             double packed[3] = {0.0, 0.0, -1.0};
             CUDA_CHECK(cudaMemcpy(packed, dev->d_diag_packed, 3 * sizeof(double), cudaMemcpyDeviceToHost));
             diag->max_courant        = dt * packed[0];
@@ -1628,8 +1690,14 @@ void swe2d_gpu_destroy(SWE2DDeviceState* dev) {
     safe_free(dev->d_active);
     safe_free(dev->d_n_wet);
     safe_free(dev->d_bc_forced);
+    safe_free(dev->d_was_active);
     safe_free(dev->d_degen_mask);
     safe_free(dev->d_inv_area_repaired);
     safe_free(dev->d_merge_owner);
+    if (dev->d_stream) {
+        cudaStreamSynchronize(dev->d_stream);
+        cudaStreamDestroy(dev->d_stream);
+        dev->d_stream = nullptr;
+    }
     delete dev;
 }

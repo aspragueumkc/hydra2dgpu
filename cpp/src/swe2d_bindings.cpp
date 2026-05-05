@@ -316,7 +316,9 @@ PYBIND11_MODULE(backwater_swe2d, m) {
               bool enable_rain_module,
               bool enable_pipe_network_module,
               bool enable_hydraulic_structures,
-              int degen_mode)
+              int degen_mode,
+              double front_flux_damping,
+              bool   active_set_hysteresis)
            -> std::shared_ptr<PySolver>
         {
             if (!pm) throw std::invalid_argument("null mesh handle");
@@ -376,6 +378,8 @@ PYBIND11_MODULE(backwater_swe2d, m) {
             cfg.use_gpu   = use_gpu;
             cfg.n_threads = n_threads;
             cfg.degen_mode = degen_mode;
+            cfg.front_flux_damping = front_flux_damping;
+            cfg.active_set_hysteresis = active_set_hysteresis;
 
             auto ps = std::make_shared<PySolver>();
             ps->mesh_owner = pm;
@@ -411,6 +415,8 @@ PYBIND11_MODULE(backwater_swe2d, m) {
         py::arg("enable_pipe_network_module") = false,
         py::arg("enable_hydraulic_structures") = false,
         py::arg("degen_mode") = 0,
+        py::arg("front_flux_damping") = 0.5,
+        py::arg("active_set_hysteresis") = true,
         "Create a 2D SWE solver.\n\n"
         "Parameters\n----------\n"
         "mesh : PyMesh handle from swe2d_build_mesh\n"

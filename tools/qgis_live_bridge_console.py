@@ -708,6 +708,99 @@ class QgisLiveBridge:
                              "area": area, "bbox_w": bbox_w, "bbox_h": bbox_h})
             return {"layer": name, "features": rows}
 
+        if action == "run_swe2d_workbench":
+            import sys
+
+            mod = sys.modules.get("swe2d_workbench_qt")
+            if mod is None:
+                raise RuntimeError("swe2d_workbench_qt module is not loaded in this QGIS session")
+
+            wins = getattr(mod, "_SWE2D_WORKBENCH_WINDOWS", None)
+            if not isinstance(wins, list) or not wins:
+                raise RuntimeError("No open SWE2D Workbench window found")
+
+            dlg = wins[-1]
+            if dlg is None:
+                raise RuntimeError("Invalid SWE2D Workbench window handle")
+
+            scheme = params.get("reconstruction_mode", None)
+            if scheme is not None:
+                try:
+                    scheme = int(scheme)
+                except Exception as exc:
+                    raise ValueError(f"Invalid reconstruction_mode: {exc}")
+
+                combo = getattr(dlg, "reconstruction_combo", None)
+                if combo is None:
+                    raise RuntimeError("SWE2D Workbench has no reconstruction_combo")
+
+                idx = -1
+                for i in range(combo.count()):
+                    try:
+                        v = int(combo.itemData(i))
+                    except Exception:
+                        continue
+                    if v == scheme:
+                        idx = i
+                        break
+                if idx < 0:
+                    raise ValueError(f"reconstruction_mode={scheme} not found in combo")
+                combo.setCurrentIndex(idx)
+
+            log_view = getattr(dlg, "log_view", None)
+            pre_log = ""
+            if log_view is not None and hasattr(log_view, "toPlainText"):
+                pre_log = str(log_view.toPlainText() or "")
+
+            dlg._on_run()
+
+            result_data = getattr(dlg, "_result_data", None)
+            if not isinstance(result_data, dict) or "h" not in result_data:
+                return {
+                    "ok": False,
+                    "error": "Run completed but no result data returned",
+                }
+
+            h = np.asarray(result_data.get("h"), dtype=np.float64)
+            hu = np.asarray(result_data.get("hu"), dtype=np.float64)
+            hv = np.asarray(result_data.get("hv"), dtype=np.float64)
+            h_safe = np.maximum(h, 1.0e-12)
+            vel = np.sqrt((hu / h_safe) ** 2 + (hv / h_safe) ** 2)
+
+            rec_name = None
+            rec_mode = None
+            combo = getattr(dlg, "reconstruction_combo", None)
+            if combo is not None:
+                try:
+                    rec_name = str(combo.currentText())
+                except Exception:
+                    rec_name = None
+                try:
+                    rec_mode = int(combo.currentData())
+                except Exception:
+                    rec_mode = None
+
+            post_log = ""
+            if log_view is not None and hasattr(log_view, "toPlainText"):
+                post_log = str(log_view.toPlainText() or "")
+
+            new_log = post_log[len(pre_log):].strip() if post_log.startswith(pre_log) else post_log[-4000:]
+            log_tail = [ln for ln in new_log.splitlines() if ln.strip()][-12:]
+
+            return {
+                "ok": True,
+                "reconstruction_mode": rec_mode,
+                "reconstruction_name": rec_name,
+                "n_cells": int(h.size),
+                "depth_min": float(np.min(h)),
+                "depth_max": float(np.max(h)),
+                "velocity_max": float(np.max(vel)),
+                "velocity_mean": float(np.mean(vel)),
+                "gpu_active": bool(np.asarray(result_data.get("gpu_active", False)).item()),
+                "last_mass_total": float(np.asarray(result_data.get("last_mass_total", -1.0)).item()),
+                "log_tail": log_tail,
+            }
+
         raise ValueError(f"Unsupported action: {action}")
 
 

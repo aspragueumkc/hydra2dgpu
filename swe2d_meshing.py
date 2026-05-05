@@ -421,6 +421,38 @@ def _bbox_from_ring(ring: Sequence[Tuple[float, float]]) -> Tuple[float, float, 
     return min(xs), min(ys), max(xs), max(ys)
 
 
+def _iter_qgis_polygon_outer_rings(geom) -> List[List[Tuple[float, float]]]:
+    """Extract outer rings from QGIS Polygon or MultiPolygon geometries."""
+    rings: List[List[Tuple[float, float]]] = []
+    if geom is None or geom.isEmpty():
+        return rings
+
+    try:
+        multi = geom.asMultiPolygon()
+        if multi:
+            for poly in multi:
+                if not poly or not poly[0]:
+                    continue
+                ring = [(float(p.x()), float(p.y())) for p in poly[0][:-1]]
+                if len(ring) >= 3:
+                    rings.append(ring)
+            if rings:
+                return rings
+    except Exception:
+        pass
+
+    try:
+        poly = geom.asPolygon()
+        if poly and poly[0]:
+            ring = [(float(p.x()), float(p.y())) for p in poly[0][:-1]]
+            if len(ring) >= 3:
+                rings.append(ring)
+    except Exception:
+        pass
+
+    return rings
+
+
 def _polyline_length(points: Sequence[Tuple[float, float]]) -> float:
     if len(points) < 2:
         return 0.0
@@ -661,6 +693,178 @@ class MeshingBackend:
         raise NotImplementedError()
 
 
+def _interp_polyline_fraction(points: Sequence[Tuple[float, float]], frac: float) -> Tuple[float, float]:
+    if not points:
+        return (0.0, 0.0)
+    if len(points) == 1:
+        return (float(points[0][0]), float(points[0][1]))
+    target = max(0.0, min(1.0, float(frac))) * _polyline_length(points)
+    if target <= 0.0:
+        return (float(points[0][0]), float(points[0][1]))
+    total = 0.0
+    for i in range(1, len(points)):
+        x0, y0 = points[i - 1]
+        x1, y1 = points[i]
+        seg = float(np.hypot(x1 - x0, y1 - y0))
+        if total + seg >= target and seg > 1.0e-15:
+            local = (target - total) / seg
+            return (x0 + local * (x1 - x0), y0 + local * (y1 - y0))
+        total += seg
+    return (float(points[-1][0]), float(points[-1][1]))
+
+
+def _transition_widths(edge: QuadEdgeControl) -> List[float]:
+    if edge.n_layers <= 0 or edge.first_height is None or edge.first_height <= 0.0:
+        return []
+    growth = max(float(edge.growth_rate), 1.0e-6)
+    first = max(float(edge.first_height), 1.0e-10)
+    return [first * (growth ** i) for i in range(max(0, int(edge.n_layers)))]
+
+
+def _build_axis_params(
+    total_len: float,
+    base_target: float,
+    start_edge: Optional[QuadEdgeControl],
+    end_edge: Optional[QuadEdgeControl],
+) -> np.ndarray:
+    total_len = max(float(total_len), 1.0e-9)
+    base_target = max(float(base_target), 1.0e-9)
+
+    start_widths = _transition_widths(start_edge) if start_edge is not None else []
+    end_widths = _transition_widths(end_edge) if end_edge is not None else []
+    reserved = float(sum(start_widths) + sum(end_widths))
+    if reserved >= total_len * 0.98 and reserved > 0.0:
+        scale = (total_len * 0.98) / reserved
+        start_widths = [w * scale for w in start_widths]
+        end_widths = [w * scale for w in end_widths]
+        reserved = float(sum(start_widths) + sum(end_widths))
+
+    middle_len = max(total_len - reserved, 0.0)
+    middle_target_candidates = [base_target]
+    if start_edge is not None and start_edge.target_size is not None and start_edge.target_size > 0.0:
+        middle_target_candidates.append(float(start_edge.target_size))
+    if end_edge is not None and end_edge.target_size is not None and end_edge.target_size > 0.0:
+        middle_target_candidates.append(float(end_edge.target_size))
+    middle_target = max(float(sum(middle_target_candidates) / len(middle_target_candidates)), 1.0e-9)
+    middle_count = int(max(0, round(middle_len / middle_target))) if middle_len > 1.0e-12 else 0
+    middle_widths = [middle_len / middle_count] * middle_count if middle_count > 0 else []
+
+    widths = list(start_widths) + list(middle_widths) + list(reversed(end_widths))
+    if not widths:
+        widths = [total_len]
+    width_sum = float(sum(widths))
+    if width_sum <= 0.0:
+        widths = [total_len]
+        width_sum = total_len
+    scale = total_len / width_sum
+    widths = [w * scale for w in widths]
+
+    coords = [0.0]
+    acc = 0.0
+    for width in widths:
+        acc += width
+        coords.append(min(acc / total_len, 1.0))
+    coords[-1] = 1.0
+    return np.asarray(coords, dtype=np.float64)
+
+
+def _transfinite_quad_point(
+    bottom: Sequence[Tuple[float, float]],
+    right: Sequence[Tuple[float, float]],
+    top: Sequence[Tuple[float, float]],
+    left: Sequence[Tuple[float, float]],
+    xi: float,
+    eta: float,
+) -> Tuple[float, float]:
+    bx, by = _interp_polyline_fraction(bottom, xi)
+    tx, ty = _interp_polyline_fraction(top, xi)
+    lx, ly = _interp_polyline_fraction(left, eta)
+    rx, ry = _interp_polyline_fraction(right, eta)
+
+    x00, y00 = bottom[0]
+    x10, y10 = bottom[-1]
+    x01, y01 = top[0]
+    x11, y11 = top[-1]
+
+    px = ((1.0 - eta) * bx + eta * tx + (1.0 - xi) * lx + xi * rx)
+    py = ((1.0 - eta) * by + eta * ty + (1.0 - xi) * ly + xi * ry)
+    px -= (
+        (1.0 - xi) * (1.0 - eta) * x00
+        + xi * (1.0 - eta) * x10
+        + (1.0 - xi) * eta * x01
+        + xi * eta * x11
+    )
+    py -= (
+        (1.0 - xi) * (1.0 - eta) * y00
+        + xi * (1.0 - eta) * y10
+        + (1.0 - xi) * eta * y01
+        + xi * eta * y11
+    )
+    return (float(px), float(py))
+
+
+def _structured_quad_region_mesh(
+    region: ConceptualRegion,
+    quad_controls: List[QuadEdgeControl],
+) -> Optional[Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]]:
+    if len(quad_controls) != 4:
+        return None
+
+    bottom = list(quad_controls[0].points_xy)
+    right = list(quad_controls[1].points_xy)
+    top = list(reversed(quad_controls[2].points_xy))
+    left = list(reversed(quad_controls[3].points_xy))
+    if len(bottom) < 2 or len(right) < 2 or len(top) < 2 or len(left) < 2:
+        return None
+
+    default_edge_sizes = list(region.edge_lengths) if region.edge_lengths and len(region.edge_lengths) == 4 else [region.default_size] * 4
+    x_target = max(float(0.5 * (default_edge_sizes[0] + default_edge_sizes[2])), 1.0e-9)
+    y_target = max(float(0.5 * (default_edge_sizes[1] + default_edge_sizes[3])), 1.0e-9)
+    x_len = 0.5 * (_polyline_length(bottom) + _polyline_length(top))
+    y_len = 0.5 * (_polyline_length(left) + _polyline_length(right))
+
+    xi_vals = _build_axis_params(x_len, x_target, quad_controls[3], quad_controls[1])
+    eta_vals = _build_axis_params(y_len, y_target, quad_controls[0], quad_controls[2])
+    nx = max(1, int(xi_vals.size - 1))
+    ny = max(1, int(eta_vals.size - 1))
+
+    node_x: List[float] = []
+    node_y: List[float] = []
+    face_nodes: List[int] = []
+    face_offsets: List[int] = [0]
+    tri_nodes: List[int] = []
+
+    def idx(i: int, j: int) -> int:
+        return j * (nx + 1) + i
+
+    for j, eta in enumerate(eta_vals):
+        for i, xi in enumerate(xi_vals):
+            px, py = _transfinite_quad_point(bottom, right, top, left, float(xi), float(eta))
+            node_x.append(px)
+            node_y.append(py)
+
+    for j in range(ny):
+        for i in range(nx):
+            n00 = idx(i, j)
+            n10 = idx(i + 1, j)
+            n01 = idx(i, j + 1)
+            n11 = idx(i + 1, j + 1)
+            face_nodes.extend([n00, n10, n11, n01])
+            face_offsets.append(len(face_nodes))
+            tri_nodes.extend([n00, n10, n11, n00, n11, n01])
+
+    cell_count = nx * ny
+    target_sizes = np.full(cell_count, float(region.default_size), dtype=np.float64)
+    return (
+        np.asarray(node_x, dtype=np.float64),
+        np.asarray(node_y, dtype=np.float64),
+        np.asarray(tri_nodes, dtype=np.int32),
+        np.asarray(face_offsets, dtype=np.int32),
+        np.asarray(face_nodes, dtype=np.int32),
+        target_sizes,
+    )
+
+
 class StructuredFaceCentricBackend(MeshingBackend):
     """Face-centric generator using a structured seed with topology constraints.
 
@@ -688,6 +892,41 @@ class StructuredFaceCentricBackend(MeshingBackend):
             ring = region.ring_xy
             if len(ring) < 3:
                 continue
+
+            region_constraints = []
+            for cst in model.constraints:
+                if len(cst.ring_xy) < 3:
+                    continue
+                cx = sum(p[0] for p in cst.ring_xy) / len(cst.ring_xy)
+                cy = sum(p[1] for p in cst.ring_xy) / len(cst.ring_xy)
+                if _point_in_polygon(cx, cy, ring):
+                    region_constraints.append(cst)
+
+            if region.default_cell_type in ("cartesian", "quadrilateral") and not region_constraints:
+                quad_setup = _quad_controls_for_region(model, region)
+                if quad_setup is not None:
+                    _, quad_controls = quad_setup
+                    block = _structured_quad_region_mesh(region, quad_controls)
+                    if block is not None:
+                        block_x, block_y, block_tris, block_face_offsets, block_face_nodes, block_sizes = block
+                        node_offset = len(all_nodes_x)
+                        all_nodes_x.extend(block_x.tolist())
+                        all_nodes_y.extend(block_y.tolist())
+                        all_nodes_z.extend([0.0] * int(block_x.size))
+                        all_tris.extend((block_tris + node_offset).tolist())
+
+                        shifted_faces = block_face_nodes + node_offset
+                        for cell_idx in range(int(block_face_offsets.size - 1)):
+                            s = int(block_face_offsets[cell_idx])
+                            e = int(block_face_offsets[cell_idx + 1])
+                            all_face_nodes.extend(shifted_faces[s:e].tolist())
+                            all_face_offsets.append(len(all_face_nodes))
+
+                        n_cells = int(block_face_offsets.size - 1)
+                        all_cell_type.extend([region.default_cell_type] * n_cells)
+                        all_region_id.extend([region.region_id] * n_cells)
+                        all_size.extend(block_sizes.tolist())
+                        continue
 
             xmin, ymin, xmax, ymax = _bbox_from_ring(ring)
             base_size = max(region.default_size, 1e-6)
@@ -763,13 +1002,20 @@ class StructuredFaceCentricBackend(MeshingBackend):
         if not all_tris:
             raise ValueError("Topology meshing produced no computational cells.")
 
+        node_x = np.asarray(all_nodes_x, dtype=np.float64)
+        node_y = np.asarray(all_nodes_y, dtype=np.float64)
+        cell_nodes = np.asarray(all_tris, dtype=np.int32)
+        face_nodes = np.asarray(all_face_nodes, dtype=np.int32)
+        if node_x.size:
+            node_x, node_y, (cell_nodes, face_nodes) = _weld_mesh_nodes(node_x, node_y, cell_nodes, face_nodes)
+
         out = MeshResult(
-            node_x=np.asarray(all_nodes_x, dtype=np.float64),
-            node_y=np.asarray(all_nodes_y, dtype=np.float64),
-            node_z=np.asarray(all_nodes_z, dtype=np.float64),
-            cell_nodes=np.asarray(all_tris, dtype=np.int32),
+            node_x=node_x,
+            node_y=node_y,
+            node_z=np.zeros_like(node_x),
+            cell_nodes=cell_nodes,
             cell_face_offsets=np.asarray(all_face_offsets, dtype=np.int32),
-            cell_face_nodes=np.asarray(all_face_nodes, dtype=np.int32),
+            cell_face_nodes=face_nodes,
             cell_type=np.asarray(all_cell_type, dtype=object),
             region_id=np.asarray(all_region_id, dtype=np.int32),
             target_size=np.asarray(all_size, dtype=np.float64),
@@ -812,20 +1058,62 @@ class GmshBackend(MeshingBackend):
     _ALGO_DELAUNAY = 5          # Delaunay (fast fallback)
     _ALGO_PACKING_OF_PARALLELOGRAMS = 9  # good for recombination
 
+    def __init__(self, options: Optional[Dict[str, object]] = None):
+        self._options = dict(options or {})
+
+    def _opt_int(self, name: str, default: int) -> int:
+        value = self._options.get(name)
+        if value is None:
+            return int(default)
+        try:
+            return int(round(float(value)))
+        except Exception:
+            return int(default)
+
+    def _opt_bool(self, name: str, default: bool) -> bool:
+        value = self._options.get(name)
+        if value is None:
+            return bool(default)
+        if isinstance(value, bool):
+            return value
+        text = str(value).strip().lower()
+        if text in {"1", "true", "yes", "on"}:
+            return True
+        if text in {"0", "false", "no", "off"}:
+            return False
+        return bool(default)
+
     def generate(self, model: ConceptualModel) -> MeshResult:
         import gmsh
 
         if not model.regions:
             raise ValueError("No conceptual regions provided.")
 
+        tri_algo = self._opt_int("gmsh_tri_algorithm", self._ALGO_FRONTAL)
+        quad_algo = self._opt_int("gmsh_quad_algorithm", self._ALGO_FRONTAL)
+        smoothing_passes = max(0, self._opt_int("gmsh_smoothing", 5))
+        optimize_iters = max(0, self._opt_int("gmsh_optimize_iters", 3))
+        recomb_algo = self._opt_int("gmsh_recombination_algorithm", 1)
+        optimize_netgen = self._opt_bool("gmsh_optimize_netgen", False)
+        verbosity = max(0, self._opt_int("gmsh_verbosity", 1))
+
         # `interruptible=False` avoids installing a SIGINT handler, which lets
         # the Python API run from the QGIS bridge worker thread.
         gmsh.initialize(interruptible=False)
-        gmsh.option.setNumber("General.Verbosity", 1)
+        gmsh.option.setNumber("General.Verbosity", float(verbosity))
         gmsh.model.add("swe2d")
 
         try:
-            return self._build(gmsh, model)
+            return self._build(
+                gmsh,
+                model,
+                tri_algo=tri_algo,
+                quad_algo=quad_algo,
+                smoothing_passes=smoothing_passes,
+                optimize_iters=optimize_iters,
+                recomb_algo=recomb_algo,
+                optimize_netgen=optimize_netgen,
+            )
         finally:
             gmsh.finalize()
 
@@ -833,7 +1121,17 @@ class GmshBackend(MeshingBackend):
     # Internal construction helpers
     # ------------------------------------------------------------------
 
-    def _build(self, gmsh, model: ConceptualModel) -> MeshResult:
+    def _build(
+        self,
+        gmsh,
+        model: ConceptualModel,
+        tri_algo: int,
+        quad_algo: int,
+        smoothing_passes: int,
+        optimize_iters: int,
+        recomb_algo: int,
+        optimize_netgen: bool,
+    ) -> MeshResult:
         # Tolerance for point deduplication (scaled to typical hydraulic coords).
         tol = 1e-6
         surface_tags: List[int] = []
@@ -936,10 +1234,21 @@ class GmshBackend(MeshingBackend):
 
         gmsh.model.geo.synchronize()
 
-        # ---- 3. Constraint refinement zones (polygon-conforming) -------
-        # Avoid bbox-based refinement (which over-refines for irregular polygons)
-        # by seeding target-size points only on/inside each constraint polygon.
-        constraint_seed_points: List[int] = []
+        # ---- 3. Constraint refinement zones (background field) ----------
+        # Build a region baseline size field and overlay per-constraint
+        # threshold fields derived from polygon-clipped point sampling.
+        # This is stronger than pure point embedding and enforces local sizing.
+        base_surface_fields: List[int] = []
+        for surf, (_, _, sz) in zip(surface_tags, surface_meta):
+            f_const = gmsh.model.mesh.field.add("MathEval")
+            gmsh.model.mesh.field.setString(f_const, "F", f"{max(float(sz), 1.0e-9):.16g}")
+            f_restrict = gmsh.model.mesh.field.add("Restrict")
+            gmsh.model.mesh.field.setNumber(f_restrict, "InField", float(f_const))
+            gmsh.model.mesh.field.setNumbers(f_restrict, "SurfacesList", [int(surf)])
+            base_surface_fields.append(f_restrict)
+
+        constraint_point_lists: List[List[int]] = []
+        constraint_target_sizes: List[float] = []
         for cst in model.constraints:
             if len(cst.ring_xy) < 3 or cst.cell_type == "empty":
                 continue
@@ -949,20 +1258,22 @@ class GmshBackend(MeshingBackend):
             if len(ring) < 3:
                 continue
 
-            # Boundary seed points at target size.
+            pt_tags: List[int] = []
+            cst_size = max(float(cst.target_size), 1.0e-9)
+
+            # Boundary samples.
             for x, y in ring:
                 try:
-                    constraint_seed_points.append(gmsh.model.geo.addPoint(x, y, 0.0, cst.target_size))
+                    pt_tags.append(gmsh.model.geo.addPoint(float(x), float(y), 0.0, cst_size))
                 except Exception:
                     pass
 
-            # Interior seed points on a clipped grid so refinement follows
-            # polygon footprint instead of axis-aligned bbox.
+            # Interior samples clipped to the polygon footprint.
             xs = [p[0] for p in ring]
             ys = [p[1] for p in ring]
             xmin, xmax = min(xs), max(xs)
             ymin, ymax = min(ys), max(ys)
-            step = max(float(cst.target_size), tol * 10.0)
+            step = max(cst_size, tol * 10.0)
             max_pts = 6000
             n_added = 0
             y = ymin + 0.5 * step
@@ -971,22 +1282,50 @@ class GmshBackend(MeshingBackend):
                 while x < xmax - 0.5 * step and n_added < max_pts:
                     if _point_in_polygon(x, y, ring):
                         try:
-                            constraint_seed_points.append(gmsh.model.geo.addPoint(x, y, 0.0, cst.target_size))
+                            pt_tags.append(gmsh.model.geo.addPoint(float(x), float(y), 0.0, cst_size))
                             n_added += 1
                         except Exception:
                             pass
                     x += step
                 y += step
 
+            dedup_tags = list(dict.fromkeys(pt_tags))
+            if dedup_tags:
+                constraint_point_lists.append(dedup_tags)
+                constraint_target_sizes.append(cst_size)
+
         gmsh.model.geo.synchronize()
-        if constraint_seed_points:
-            # Deduplicate while preserving order.
-            dedup_pts = list(dict.fromkeys(constraint_seed_points))
-            for surf in surface_tags:
-                try:
-                    gmsh.model.mesh.embed(0, dedup_pts, 2, surf)
-                except Exception:
-                    pass
+
+        if constraint_point_lists:
+            all_fields: List[int] = list(base_surface_fields)
+            max_region_size = max(max(float(sz), 1.0e-9) for (_, _, sz) in surface_meta)
+            for pt_list, cst_size in zip(constraint_point_lists, constraint_target_sizes):
+                f_dist = gmsh.model.mesh.field.add("Distance")
+                gmsh.model.mesh.field.setNumbers(f_dist, "PointsList", [int(t) for t in pt_list])
+
+                f_thresh = gmsh.model.mesh.field.add("Threshold")
+                gmsh.model.mesh.field.setNumber(f_thresh, "InField", float(f_dist))
+                gmsh.model.mesh.field.setNumber(f_thresh, "SizeMin", float(cst_size))
+                gmsh.model.mesh.field.setNumber(f_thresh, "SizeMax", float(max_region_size))
+                gmsh.model.mesh.field.setNumber(f_thresh, "DistMin", 0.0)
+                gmsh.model.mesh.field.setNumber(f_thresh, "DistMax", float(1.5 * cst_size))
+                gmsh.model.mesh.field.setNumber(f_thresh, "StopAtDistMax", 1.0)
+
+                f_restrict = gmsh.model.mesh.field.add("Restrict")
+                gmsh.model.mesh.field.setNumber(f_restrict, "InField", float(f_thresh))
+                gmsh.model.mesh.field.setNumbers(f_restrict, "SurfacesList", [int(s) for s in surface_tags])
+                all_fields.append(f_restrict)
+
+            if len(all_fields) == 1:
+                bg_field = all_fields[0]
+            else:
+                bg_field = gmsh.model.mesh.field.add("Min")
+                gmsh.model.mesh.field.setNumbers(bg_field, "FieldsList", [int(fid) for fid in all_fields])
+
+            gmsh.model.mesh.field.setAsBackgroundMesh(int(bg_field))
+            gmsh.option.setNumber("Mesh.MeshSizeFromPoints", 1.0)
+            gmsh.option.setNumber("Mesh.MeshSizeFromCurvature", 0.0)
+            gmsh.option.setNumber("Mesh.MeshSizeExtendFromBoundary", 0.0)
 
         # ---- 4. Per-surface algorithm and recombination flags ----------
         want_recombine = False
@@ -1042,9 +1381,9 @@ class GmshBackend(MeshingBackend):
                 # controlling inputs; keep the base 2D algorithm on the safer
                 # frontal path.
                 try:
-                    gmsh.model.mesh.setAlgorithm(2, surf, self._ALGO_FRONTAL)
+                    gmsh.model.mesh.setAlgorithm(2, surf, quad_algo)
                 except Exception:
-                    gmsh.option.setNumber("Mesh.Algorithm", self._ALGO_FRONTAL)
+                    gmsh.option.setNumber("Mesh.Algorithm", float(quad_algo))
             elif ctype == "quadrilateral":
                 # Unstructured quads via Blossom recombination.
                 if region is not None and region.edge_lengths and len(lines) == 4 and len(region.edge_lengths) == 4:
@@ -1082,21 +1421,21 @@ class GmshBackend(MeshingBackend):
                 # errors like: "Packing of Parallelograms require a scaled
                 # cross field".
                 try:
-                    gmsh.model.mesh.setAlgorithm(2, surf, self._ALGO_FRONTAL)
+                    gmsh.model.mesh.setAlgorithm(2, surf, quad_algo)
                 except Exception:
-                    gmsh.option.setNumber("Mesh.Algorithm", self._ALGO_FRONTAL)
+                    gmsh.option.setNumber("Mesh.Algorithm", float(quad_algo))
             else:
                 # triangular: frontal Delaunay for quality.
                 try:
-                    gmsh.model.mesh.setAlgorithm(2, surf, self._ALGO_FRONTAL)
+                    gmsh.model.mesh.setAlgorithm(2, surf, tri_algo)
                 except Exception:
-                    gmsh.option.setNumber("Mesh.Algorithm", self._ALGO_FRONTAL)
+                    gmsh.option.setNumber("Mesh.Algorithm", float(tri_algo))
 
         # ---- 5. Global mesh options ------------------------------------
         gmsh.option.setNumber("Mesh.RecombineAll", 0)          # per-surface only
-        gmsh.option.setNumber("Mesh.RecombinationAlgorithm", 1)  # Blossom
-        gmsh.option.setNumber("Mesh.Smoothing", 5)              # Laplacian passes
-        gmsh.option.setNumber("Mesh.OptimizeNetgen", 0)
+        gmsh.option.setNumber("Mesh.RecombinationAlgorithm", float(recomb_algo))
+        gmsh.option.setNumber("Mesh.Smoothing", float(smoothing_passes))
+        gmsh.option.setNumber("Mesh.OptimizeNetgen", 1.0 if optimize_netgen else 0.0)
 
         # ---- 6. Generate -----------------------------------------------
         gmsh.model.mesh.generate(2)
@@ -1105,7 +1444,8 @@ class GmshBackend(MeshingBackend):
                 gmsh.model.mesh.recombine()
             except Exception:
                 pass
-        gmsh.model.mesh.optimize("Laplace2D", niter=3)
+        if optimize_iters > 0:
+            gmsh.model.mesh.optimize("Laplace2D", niter=optimize_iters)
 
         # ---- 7. Extract nodes ------------------------------------------
         node_tags, node_coords, _ = gmsh.model.mesh.getNodes()
@@ -1225,10 +1565,9 @@ def conceptual_from_qgis_layers(
         geom = ft.geometry()
         if geom is None or geom.isEmpty():
             continue
-        poly = geom.asPolygon()
-        if not poly or not poly[0]:
+        rings = _iter_qgis_polygon_outer_rings(geom)
+        if not rings:
             continue
-        ring = [(float(p.x()), float(p.y())) for p in poly[0][:-1]]
         rid = _as_int(ft["region_id"], auto_rid) if "region_id" in region_fields else auto_rid
         size = _as_float(ft["target_size"], default_size) if "target_size" in region_fields else default_size
         ctype = _normalize_cell_type(ft["cell_type"], default_cell_type) if "cell_type" in region_fields else default_cell_type
@@ -1243,15 +1582,17 @@ def conceptual_from_qgis_layers(
             vals = [_as_float(ft[nm], size) for nm in edge_fields]
             if all(v > 0 for v in vals):
                 edge_lengths = vals
-        regions.append(
-            ConceptualRegion(
-                region_id=rid,
-                ring_xy=ring,
-                default_size=size,
-                default_cell_type=ctype,
-                edge_lengths=edge_lengths,
+        for part_idx, ring in enumerate(rings):
+            part_rid = rid if part_idx == 0 else int(f"{rid}{part_idx}")
+            regions.append(
+                ConceptualRegion(
+                    region_id=part_rid,
+                    ring_xy=ring,
+                    default_size=size,
+                    default_cell_type=ctype,
+                    edge_lengths=edge_lengths,
+                )
             )
-        )
         auto_rid += 1
 
     if constraints_layer is not None:
@@ -1261,14 +1602,15 @@ def conceptual_from_qgis_layers(
             geom = ft.geometry()
             if geom is None or geom.isEmpty():
                 continue
-            poly = geom.asPolygon()
-            if not poly or not poly[0]:
+            rings = _iter_qgis_polygon_outer_rings(geom)
+            if not rings:
                 continue
-            ring = [(float(p.x()), float(p.y())) for p in poly[0][:-1]]
             cid = _as_int(ft["constraint_id"], auto_cid) if "constraint_id" in c_fields else auto_cid
             size = _as_float(ft["target_size"], default_size) if "target_size" in c_fields else default_size
             ctype = _normalize_cell_type(ft["cell_type"], default_cell_type) if "cell_type" in c_fields else default_cell_type
-            constraints.append(CellConstraint(constraint_id=cid, ring_xy=ring, target_size=size, cell_type=ctype))
+            for part_idx, ring in enumerate(rings):
+                part_cid = cid if part_idx == 0 else int(f"{cid}{part_idx}")
+                constraints.append(CellConstraint(constraint_id=part_cid, ring_xy=ring, target_size=size, cell_type=ctype))
             auto_cid += 1
 
     if quad_edges_layer is not None:
@@ -1353,8 +1695,72 @@ class TQMeshBackend(MeshingBackend):
 
     name = "tqmesh"
 
-    @staticmethod
-    def _quality_config() -> _TQMeshQualityConfig:
+    def __init__(self, options: Optional[Dict[str, object]] = None):
+        self._options = dict(options or {})
+
+    def _quality_config(self) -> _TQMeshQualityConfig:
+        options = self._options
+
+        def _opt_float(name: str, default: float, min_value: float) -> float:
+            value = options.get(name)
+            if value is None:
+                return max(default, min_value)
+            try:
+                return max(float(value), min_value)
+            except Exception:
+                return max(default, min_value)
+
+        def _opt_bool(name: str, default: bool) -> bool:
+            value = options.get(name)
+            if value is None:
+                return bool(default)
+            if isinstance(value, bool):
+                return value
+            text = str(value).strip().lower()
+            if text in {"1", "true", "yes", "on"}:
+                return True
+            if text in {"0", "false", "no", "off"}:
+                return False
+            return bool(default)
+
+        def _opt_float_tuple(name: str, default: Tuple[float, ...]) -> Tuple[float, ...]:
+            value = options.get(name)
+            if value is None:
+                return tuple(float(v) for v in default)
+            if isinstance(value, str):
+                parts = [p.strip() for p in value.split(",") if p.strip()]
+                vals = []
+                for part in parts:
+                    try:
+                        vals.append(float(part))
+                    except Exception:
+                        continue
+                return tuple(vals) or tuple(float(v) for v in default)
+            try:
+                vals = [float(v) for v in value]  # type: ignore[arg-type]
+            except Exception:
+                return tuple(float(v) for v in default)
+            return tuple(vals) or tuple(float(v) for v in default)
+
+        def _opt_int_tuple(name: str, default: Tuple[int, ...]) -> Tuple[int, ...]:
+            value = options.get(name)
+            if value is None:
+                return tuple(int(v) for v in default)
+            if isinstance(value, str):
+                parts = [p.strip() for p in value.split(",") if p.strip()]
+                vals = []
+                for part in parts:
+                    try:
+                        vals.append(int(round(float(part))))
+                    except Exception:
+                        continue
+                return tuple(vals) or tuple(int(v) for v in default)
+            try:
+                vals = [int(round(float(v))) for v in value]  # type: ignore[arg-type]
+            except Exception:
+                return tuple(int(v) for v in default)
+            return tuple(vals) or tuple(int(v) for v in default)
+
         return _TQMeshQualityConfig(
             # Quality targets are INFORMATIONAL in non-strict mode — they drive
             # warnings and best-candidate selection but will not exhaust the
@@ -1364,15 +1770,33 @@ class TQMeshBackend(MeshingBackend):
             # Defaults are intentionally relaxed so that most real-world
             # watershed polygons pass on the first attempt.  Tighten via env
             # vars only if you need a high-quality mesh and are willing to wait.
-            min_angle_deg=max(_env_float("BACKWATER_TQMESH_MIN_ANGLE_DEG", 5.0), 0.0),
-            max_aspect_ratio=max(_env_float("BACKWATER_TQMESH_MAX_ASPECT", 20.0), 1.0),
-            min_area_rel_bbox=max(_env_float("BACKWATER_TQMESH_MIN_AREA_REL_BBOX", 1.0e-14), 0.0),
-            strict=_env_bool("BACKWATER_TQMESH_QUALITY_STRICT", False),
+            min_angle_deg=_opt_float(
+                "tqmesh_min_angle_deg",
+                _env_float("BACKWATER_TQMESH_MIN_ANGLE_DEG", 5.0),
+                0.0,
+            ),
+            max_aspect_ratio=_opt_float(
+                "tqmesh_max_aspect_ratio",
+                _env_float("BACKWATER_TQMESH_MAX_ASPECT", 20.0),
+                1.0,
+            ),
+            min_area_rel_bbox=_opt_float(
+                "tqmesh_min_area_rel_bbox",
+                _env_float("BACKWATER_TQMESH_MIN_AREA_REL_BBOX", 1.0e-14),
+                0.0,
+            ),
+            strict=_opt_bool("tqmesh_quality_strict", _env_bool("BACKWATER_TQMESH_QUALITY_STRICT", False)),
             # Fast default: single attempt at requested size.
-            size_scales=_env_csv_floats("BACKWATER_TQMESH_SIZE_SCALES", (1.0,)),
+            size_scales=_opt_float_tuple(
+                "tqmesh_size_scales",
+                _env_csv_floats("BACKWATER_TQMESH_SIZE_SCALES", (1.0,)),
+            ),
             # Fast default: no smoothing.
-            smooth_increments=tuple(
-                int(round(v)) for v in _env_csv_floats("BACKWATER_TQMESH_SMOOTH_INCREMENTS", (0.0,))
+            smooth_increments=_opt_int_tuple(
+                "tqmesh_smooth_increments",
+                tuple(
+                    int(round(v)) for v in _env_csv_floats("BACKWATER_TQMESH_SMOOTH_INCREMENTS", (0.0,))
+                ),
             ),
         )
 
@@ -1703,6 +2127,7 @@ class TQMeshBackend(MeshingBackend):
 def generate_face_centric_mesh(
         model: ConceptualModel,
         backend: str = "gmsh",
+    options: Optional[Dict[str, object]] = None,
 ) -> MeshResult:
     """Generate a computational mesh from a ConceptualModel.
 
@@ -1712,6 +2137,8 @@ def generate_face_centric_mesh(
     backend : ``"gmsh"`` (default), ``"structured"``, ``"tqmesh"``.
               ``"gmsh"`` requires the ``gmsh`` Python package (pip install gmsh).
               ``"tqmesh"`` uses the built-in TQMesh advancing-front generator.
+    options : Optional backend-specific options dictionary used for TQMesh and
+              Gmsh advanced controls from the GUI.
     """
     if backend == "gmsh":
         if not _gmsh_available():
@@ -1719,9 +2146,9 @@ def generate_face_centric_mesh(
                 "gmsh Python package is not installed.  "
                 "Run: pip install gmsh   (or select the 'Structured' backend)."
             )
-        return GmshBackend().generate(model)
+        return GmshBackend(options=options).generate(model)
     if backend == "structured":
         return StructuredFaceCentricBackend().generate(model)
     if backend == "tqmesh":
-        return TQMeshBackend().generate(model)
+        return TQMeshBackend(options=options).generate(model)
     raise ValueError(f"Unknown meshing backend: {backend!r}. Choose 'gmsh', 'structured', or 'tqmesh'.")

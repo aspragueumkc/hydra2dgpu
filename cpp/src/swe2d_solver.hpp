@@ -69,6 +69,10 @@ struct SWE2DSolverConfig {
     double  shallow_damping_depth = 1.0e-4;    // blend momentum to zero as h approaches h_min
     int     gpu_diag_sync_interval_steps = 1;  // 1=sync diagnostics every step, N=every N steps, <=0 disables
     int     degen_mode = 0; // 0=none, 1=skip (permanently inactive), 2=repair (neighbor-avg inv_area), 3=merge (redirect flux to neighbor)
+
+    // Wet/dry front stability controls
+    double  front_flux_damping = 0.5;     // momentum-flux scale factor on wet/dry front edges (0=full damp, 1=none)
+    bool    active_set_hysteresis = true; // keep cells active 1 extra step after drying to suppress oscillatory front switching
 };
 
 // ─────────────────────────────────────────────────────────────────────────────

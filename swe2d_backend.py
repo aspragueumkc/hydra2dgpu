@@ -285,6 +285,8 @@ class SWE2DBackend:
         bed_friction_model: BedFrictionModel = BedFrictionModel.MANNING,
         model_options: Optional[SolverModelOptions] = None,
         degen_mode: int = 0,
+        front_flux_damping: float = 0.5,
+        active_set_hysteresis: bool = True,
     ) -> None:
         """
         Create the solver with initial conditions.
@@ -385,6 +387,8 @@ class SWE2DBackend:
             enable_pipe_network_module=bool(native_opts["enable_pipe_network_module"]),
             enable_hydraulic_structures=bool(native_opts["enable_hydraulic_structures"]),
             degen_mode=int(degen_mode),
+            front_flux_damping=float(front_flux_damping),
+            active_set_hysteresis=bool(active_set_hysteresis),
         )
 
     # ── Stepping ─────────────────────────────────────────────────────────────

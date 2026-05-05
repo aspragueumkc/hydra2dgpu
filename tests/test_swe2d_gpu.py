@@ -1,10 +1,14 @@
 """
 test_swe2d_gpu.py
-CPU vs GPU coarse parity smoke test.
+Legacy CPU vs GPU coarse parity smoke test.
 
-The GPU path is now intentionally optimized independently from CPU operation
-ordering, so strict bitwise/near-bitwise parity is no longer expected.
-These tests keep a broad regression envelope to detect catastrophic drifts.
+SWE2D development is GPU-first.  This file is retained only as a broad
+compatibility envelope so catastrophic drifts are still visible when someone
+touches the fallback CPU path.
+
+Strict bitwise or near-bitwise CPU/GPU parity is not a project objective.
+Do not treat failures here as a reason to avoid GPU-focused numerical or
+performance improvements unless the task explicitly requires CPU fallback work.
 
 Skipped automatically when:
     - backwater_swe2d is not built, OR

@@ -643,7 +643,9 @@ SWE2DStepDiag swe2d_step(SWE2DSolver* s, double dt_request) {
                            s->cfg.max_rel_depth_increase,
                            s->cfg.shallow_damping_depth,
                            sync_diag_this_step,
-                           &diag);
+                           &diag,
+                           s->cfg.front_flux_damping,
+                           s->cfg.active_set_hysteresis);
             diag.gpu_active = true;
             s->t += dt;
             s->gpu_steps += 1;
@@ -663,7 +665,9 @@ SWE2DStepDiag swe2d_step(SWE2DSolver* s, double dt_request) {
                            s->cfg.max_rel_depth_increase,
                            s->cfg.shallow_damping_depth,
                            sync_diag_this_step,
-                           &diag);
+                           &diag,
+                           s->cfg.front_flux_damping,
+                           s->cfg.active_set_hysteresis);
         s->t += dt;
         s->gpu_steps += 1;
         return diag;

@@ -106,6 +106,14 @@ def parser() -> argparse.ArgumentParser:
     p_raw.add_argument("--action", required=True)
     p_raw.add_argument("--params-json", default="{}")
 
+    p_run2d = sub.add_parser("run-swe2d")
+    p_run2d.add_argument(
+        "--reconstruction-mode",
+        type=int,
+        default=None,
+        help="Optional reconstruction mode override (0..4) before run",
+    )
+
     return p
 
 
@@ -130,6 +138,11 @@ def main() -> int:
     elif args.cmd == "trigger-action":
         action = "trigger_action"
         params = {"object_name": args.object_name}
+    elif args.cmd == "run-swe2d":
+        action = "run_swe2d_workbench"
+        params = {}
+        if args.reconstruction_mode is not None:
+            params["reconstruction_mode"] = int(args.reconstruction_mode)
     elif args.cmd == "raw":
         action = args.action
         try:
