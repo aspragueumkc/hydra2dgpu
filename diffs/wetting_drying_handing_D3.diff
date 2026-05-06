@@ -1,0 +1,56 @@
+diff --git a/swe2d_gpu.cu b/swe2d_gpu.cu
+index 1111111..7777777 100644
+--- a/swe2d_gpu.cu
++++ b/swe2d_gpu.cu
+@@ -214,11 +214,15 @@ __global__ void swe2d_classify_kernel(
+     int32_t        n_cells,
+     const double*  d_h,
+     const int32_t* d_bc_forced,
+     int32_t*       d_active,
++    const int32_t* d_active_prev,
+     int32_t*       d_n_wet,
+-    double         h_min)
++    double         h_min,
++    double         h_on_factor,
++    double         h_off_factor)
+ {
+@@ -231,11 +235,30 @@ __global__ void swe2d_classify_kernel(
+ 
+     int32_t wet = 0;
+     if (c < n_cells) {
+         const int32_t forced = d_bc_forced ? d_bc_forced[c] : 0;
+-        const int32_t w      = (d_h[c] > h_min) ? 1 : 0;
+-        d_active[c] = w | forced;
+-        wet         = w;   // count only hydrodynamically wet cells
++        const double h = d_h[c];
++
++        // Hysteresis thresholds: h_on > h_off to avoid chattering at the front.
++        const double h_on  = h_on_factor  * h_min;
++        const double h_off = h_off_factor * h_min;
++
++        int32_t prev = d_active_prev ? d_active_prev[c] : 0;
++        int32_t w;
++        if (prev) {
++            // Once active, stay active until depth drops below h_off.
++            w = (h > h_off) ? 1 : 0;
++        } else {
++            // Once inactive, only turn on when depth exceeds h_on.
++            w = (h > h_on) ? 1 : 0;
++        }
++
++        d_active[c] = w | forced;
++        // Count only hydrodynamically wet cells (no forced-only).
++        wet = w;
+     }
+@@ -262,6 +285,7 @@ __global__ void swe2d_mark_neighbor_kernel(
+     int32_t        n_edges,
+     const int32_t* edge_c0,
+     const int32_t* edge_c1,
+-    int32_t*       d_active)
++    int32_t*       d_active)
+ {
+@@ -276,6 +300,7 @@ __global__ void swe2d_mark_neighbor_kernel(
+     if (c1 < 0) return;   // boundary edge — no second interior cell
+     if (d_active[c0] && !d_active[c1]) atomicOr(&d_active[c1], 1);
+     if (d_active[c1] && !d_active[c0]) atomicOr(&d_active[c0], 1);
+ }

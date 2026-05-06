@@ -24,6 +24,15 @@ struct SWE2DDeviceState {
     int32_t* d_edge_bc     = nullptr;   // BCType stored as int32_t for CUDA compatibility
     double*  d_edge_bc_val = nullptr;
 
+    // Per-edge hydrograph forcing (optional, evaluated on GPU each step).
+    int32_t* d_hg_edge_index = nullptr;   // [n_hg_edges]
+    int32_t* d_hg_bc_type = nullptr;      // [n_hg_edges]
+    int32_t* d_hg_offsets = nullptr;      // [n_hg_edges+1]
+    double*  d_hg_time_s = nullptr;       // [n_hg_samples]
+    double*  d_hg_value = nullptr;        // [n_hg_samples]
+    int32_t  n_hg_edges = 0;
+    int32_t  n_hg_samples = 0;
+
     double*  d_cell_zb     = nullptr;
     double*  d_cell_area   = nullptr;
     double*  d_cell_inv_area = nullptr;
@@ -81,6 +90,20 @@ struct SWE2DDeviceState {
     double*  d_inv_area_repaired = nullptr;  // [n_cells]: neighbor-averaged inv_area (mode 2)
     int32_t* d_merge_owner       = nullptr;  // [n_cells]: merge-to cell index (mode 3), -1 if none
 
+    // Rainfall + CN forcing (optional, evaluated on GPU each step).
+    int32_t* d_cell_gage_idx      = nullptr; // [n_cells]
+    int32_t* d_rain_hg_offsets    = nullptr; // [n_rain_gages+1]
+    double*  d_rain_hg_time_s     = nullptr; // [n_rain_samples]
+    double*  d_rain_hg_cum_mm     = nullptr; // [n_rain_samples]
+    double*  d_rain_cn            = nullptr; // [n_cells]
+    double*  d_rain_cum_mm        = nullptr; // [n_cells]
+    double*  d_rain_excess_cum_mm = nullptr; // [n_cells]
+    double*  d_cell_source_mps    = nullptr; // [n_cells]
+    int32_t  n_rain_gages = 0;
+    int32_t  n_rain_samples = 0;
+    double   rain_ia_ratio = 0.2;
+    double   rain_mm_to_model_depth = 1.0e-3;
+
     // Persistent CUDA stream — all per-step kernel launches and async memsets
     // go on this stream.  Allows CPU-side work (BC updates, Python callbacks)
     // to overlap with GPU execution between steps.
@@ -108,6 +131,7 @@ SWE2DDeviceState* swe2d_gpu_init(
 // Advance one timestep on GPU.  Writes diagnostics to *diag.
 void swe2d_gpu_step(
     SWE2DDeviceState* dev,
+    double t_now,
     double dt,
     double g,
     double h_min,
@@ -128,6 +152,7 @@ void swe2d_gpu_step(
 // Advance one SSPRK2 (Heun) timestep fully on GPU.
 void swe2d_gpu_step_rk2(
     SWE2DDeviceState* dev,
+    double t_now,
     double dt,
     double g,
     double h_min,
@@ -167,6 +192,53 @@ void swe2d_gpu_set_state(
     const double* h_in,
     const double* hu_in,
     const double* hv_in);
+
+// Push updated boundary type/value arrays to device for selected edges.
+void swe2d_gpu_update_boundary_values(
+    SWE2DDeviceState* dev,
+    const int32_t* edge_index,
+    const int32_t* bc_type,
+    const double* bc_val,
+    int32_t n_updates);
+
+// Upload per-edge hydrograph forcing arrays.
+void swe2d_gpu_set_boundary_hydrographs(
+    SWE2DDeviceState* dev,
+    const int32_t* edge_index,
+    const int32_t* bc_type,
+    const int32_t* offsets,
+    const double* time_s,
+    const double* value,
+    int32_t n_edges,
+    int32_t n_samples);
+
+// Upload per-cell rain+CN forcing arrays.
+void swe2d_gpu_set_rain_cn_forcing(
+    SWE2DDeviceState* dev,
+    const int32_t* cell_gage_idx,
+    const int32_t* gage_offsets,
+    const double* hg_time_s,
+    const double* hg_cum_mm,
+    const double* cn,
+    int32_t n_cells,
+    int32_t n_gages,
+    int32_t n_samples,
+    double ia_ratio,
+    double mm_to_model_depth);
+
+// Headless coupling helper: compute per-cell depth-rate sources [m/s] from
+// packed drainage/structure transfer arrays using CUDA kernels.
+void swe2d_gpu_compute_coupling_sources(
+    int32_t n_cells,
+    const double* cell_area_m2,
+    int32_t n_inlets,
+    const int32_t* inlet_cell,
+    const double* inlet_flow_cms,
+    int32_t n_structures,
+    const int32_t* structure_up_cell,
+    const int32_t* structure_down_cell,
+    const double* structure_flow_cms,
+    double* source_rate_mps_out);
 
 // Free all device memory.
 void swe2d_gpu_destroy(SWE2DDeviceState* dev);

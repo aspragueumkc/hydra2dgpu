@@ -1,0 +1,78 @@
+diff --git a/swe2d_gpu.cu b/swe2d_gpu.cu
+index 1111111..4444444 100644
+--- a/swe2d_gpu.cu
++++ b/swe2d_gpu.cu
+@@ -57,6 +57,13 @@ __device__ __forceinline__ double celerity_cuda_local(double h, double g) {
+     return (h > 0.0) ? ::sqrt(g * h) : 0.0;
+ }
+ 
++// For each cell c, cell_merge_owner[c] is either c itself (normal cell)
++// or the index of a neighbor cell that "owns" its mass and momentum.
++// Degenerate cells are merged into their owner; all kernels must use
++// the owner index before reading/writing state.
++__device__ __constant__ int32_t* d_cell_merge_owner = nullptr;
++
++
+ __device__ __forceinline__ ReconstructedStatesLocal hydrostatic_reconstruct_cuda_local(
+@@ -309,6 +316,7 @@ __global__ void swe2d_gradient_kernel(
+     double*        grad_hx,  double* grad_hy,
+     double*        grad_hux, double* grad_huy,
+     double*        grad_hvx, double* grad_hvy,
++    const int32_t* cell_merge_owner,
+     const int32_t* d_active)
+ {
+@@ -318,8 +326,12 @@ __global__ void swe2d_gradient_kernel(
+     int32_t c0 = edge_c0[e];
+     int32_t c1 = edge_c1[e];
+ 
++    // Redirect to owner cells if merged.
++    if (cell_merge_owner) {
++        c0 = cell_merge_owner[c0];
++        if (c1 >= 0) c1 = cell_merge_owner[c1];
++    }
++
+-    // Skip degenerate cells
+-    if (cell_inv_area[c0] > max_inv_area) return;
++    if (cell_inv_area[c0] > max_inv_area) return;
+@@ -401,6 +413,7 @@ __global__ void swe2d_flux_kernel(
+     const double*  grad_hvx, const double* grad_hvy,
+     double*        flux_h,    // [n_cells] accumulator
+     double*        flux_hu,
+@@ -410,6 +423,7 @@ __global__ void swe2d_flux_kernel(
+     int            spatial_scheme,
+     double g, double h_min,
+     double max_inv_area,
++    const int32_t* cell_merge_owner,
+     double momentum_cap_min_speed,
+     double momentum_cap_celerity_mult)
+ {
+@@ -418,6 +432,12 @@ __global__ void swe2d_flux_kernel(
+ 
+     int32_t c0 = edge_c0[e];
+     int32_t c1 = edge_c1[e];
++
++    // Redirect to owner cells if merged.
++    if (cell_merge_owner) {
++        c0 = cell_merge_owner[c0];
++        if (c1 >= 0) c1 = cell_merge_owner[c1];
++    }
+@@ -566,6 +586,7 @@ __global__ void swe2d_update_kernel(
+     const double* flux_hv,
+     const double* cell_inv_area,
+     const double* cell_n_mann,
++    const int32_t* cell_merge_owner,
+     double*       d_max_wse_elev_error,
+@@ -575,7 +596,15 @@ __global__ void swe2d_update_kernel(
+     const int32_t* d_active)
+ {
+     int32_t c = blockIdx.x * blockDim.x + threadIdx.x;
+-    if (c >= n_cells) return;
++    if (c >= n_cells) return;
++
++    // Redirect updates to owner cell if this cell was merged.
++    if (cell_merge_owner) {
++        int32_t owner = cell_merge_owner[c];
++        if (owner != c) {
++            return; // owner thread will handle the update
++        }
++    }

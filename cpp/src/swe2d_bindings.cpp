@@ -70,6 +70,66 @@ PYBIND11_MODULE(backwater_swe2d, m) {
     m.def("swe2d_gpu_available", &swe2d_gpu_available,
           "Return True if a CUDA-capable GPU is present and the GPU path was compiled.");
 
+#ifdef BACKWATER_HAS_CUDA
+    m.def("swe2d_gpu_compute_coupling_sources",
+        [](py::array_t<double, py::array::c_style | py::array::forcecast> cell_area_m2,
+           py::array_t<int32_t, py::array::c_style | py::array::forcecast> inlet_cell,
+           py::array_t<double, py::array::c_style | py::array::forcecast> inlet_flow_cms,
+           py::array_t<int32_t, py::array::c_style | py::array::forcecast> structure_up_cell,
+           py::array_t<int32_t, py::array::c_style | py::array::forcecast> structure_down_cell,
+           py::array_t<double, py::array::c_style | py::array::forcecast> structure_flow_cms)
+           -> py::array_t<double>
+        {
+            const int32_t n_cells = static_cast<int32_t>(cell_area_m2.size());
+            if (inlet_cell.size() != inlet_flow_cms.size()) {
+                throw std::invalid_argument("inlet_cell and inlet_flow_cms must have the same length");
+            }
+            if (structure_up_cell.size() != structure_down_cell.size() ||
+                structure_up_cell.size() != structure_flow_cms.size()) {
+                throw std::invalid_argument(
+                    "structure_up_cell, structure_down_cell, and structure_flow_cms must have the same length");
+            }
+
+            auto out = py::array_t<double>(n_cells);
+            swe2d_gpu_compute_coupling_sources(
+                n_cells,
+                (n_cells > 0) ? cell_area_m2.data() : nullptr,
+                static_cast<int32_t>(inlet_cell.size()),
+                inlet_cell.size() ? inlet_cell.data() : nullptr,
+                inlet_flow_cms.size() ? inlet_flow_cms.data() : nullptr,
+                static_cast<int32_t>(structure_up_cell.size()),
+                structure_up_cell.size() ? structure_up_cell.data() : nullptr,
+                structure_down_cell.size() ? structure_down_cell.data() : nullptr,
+                structure_flow_cms.size() ? structure_flow_cms.data() : nullptr,
+                out.mutable_data());
+            return out;
+        },
+        py::arg("cell_area_m2"),
+        py::arg("inlet_cell"),
+        py::arg("inlet_flow_cms"),
+        py::arg("structure_up_cell"),
+        py::arg("structure_down_cell"),
+        py::arg("structure_flow_cms"),
+        "Headless CUDA helper: convert inlet/structure transfer flows to per-cell depth-rate sources [m/s].");
+#else
+    m.def("swe2d_gpu_compute_coupling_sources",
+        [](py::array_t<double, py::array::c_style | py::array::forcecast>,
+           py::array_t<int32_t, py::array::c_style | py::array::forcecast>,
+           py::array_t<double, py::array::c_style | py::array::forcecast>,
+           py::array_t<int32_t, py::array::c_style | py::array::forcecast>,
+           py::array_t<int32_t, py::array::c_style | py::array::forcecast>,
+           py::array_t<double, py::array::c_style | py::array::forcecast>) -> py::array_t<double>
+        {
+            throw std::runtime_error("CUDA path not compiled; swe2d_gpu_compute_coupling_sources is unavailable.");
+        },
+        py::arg("cell_area_m2"),
+        py::arg("inlet_cell"),
+        py::arg("inlet_flow_cms"),
+        py::arg("structure_up_cell"),
+        py::arg("structure_down_cell"),
+        py::arg("structure_flow_cms"));
+#endif
+
     // ── Mesh builder (legacy triangular triplets) ───────────────────────────
     // swe2d_build_mesh(node_x, node_y, node_z, cell_nodes,
     //                  bc_edge_node0, bc_edge_node1, bc_edge_type, bc_edge_val)
@@ -290,6 +350,84 @@ PYBIND11_MODULE(backwater_swe2d, m) {
         },
         py::arg("mesh"), py::arg("edge_index"), py::arg("bc_type"), py::arg("bc_val"),
         "Update boundary condition type/value for boundary edges by edge index.");
+
+    m.def("swe2d_solver_set_boundary_values",
+        [](const std::shared_ptr<PySolver>& ps,
+           py::array_t<int32_t, py::array::c_style | py::array::forcecast> edge_index,
+           py::array_t<int32_t, py::array::c_style | py::array::forcecast> bc_type,
+           py::array_t<double, py::array::c_style | py::array::forcecast> bc_val) {
+            if (!ps || !ps->solver) throw std::invalid_argument("null solver handle");
+            if (edge_index.size() != bc_type.size() || edge_index.size() != bc_val.size()) {
+                throw std::invalid_argument("edge_index, bc_type, bc_val must have same length");
+            }
+            swe2d_solver_set_boundary_values(ps->solver,
+                                             edge_index.data(),
+                                             bc_type.data(),
+                                             bc_val.data(),
+                                             static_cast<int32_t>(edge_index.size()));
+        },
+        py::arg("solver"), py::arg("edge_index"), py::arg("bc_type"), py::arg("bc_val"),
+        "Update boundary condition values on an active solver and sync GPU arrays.");
+
+    m.def("swe2d_solver_set_boundary_hydrographs",
+        [](const std::shared_ptr<PySolver>& ps,
+           py::array_t<int32_t, py::array::c_style | py::array::forcecast> edge_index,
+           py::array_t<int32_t, py::array::c_style | py::array::forcecast> bc_type,
+           py::array_t<int32_t, py::array::c_style | py::array::forcecast> offsets,
+           py::array_t<double, py::array::c_style | py::array::forcecast> time_s,
+           py::array_t<double, py::array::c_style | py::array::forcecast> value) {
+            if (!ps || !ps->solver) throw std::invalid_argument("null solver handle");
+            if (edge_index.size() != bc_type.size()) {
+                throw std::invalid_argument("edge_index and bc_type must have same length");
+            }
+            if (offsets.size() != edge_index.size() + 1) {
+                throw std::invalid_argument("offsets length must be n_edges + 1");
+            }
+            swe2d_solver_set_boundary_hydrographs(ps->solver,
+                                                  edge_index.data(),
+                                                  bc_type.data(),
+                                                  offsets.data(),
+                                                  time_s.data(),
+                                                  value.data(),
+                                                  static_cast<int32_t>(edge_index.size()),
+                                                  static_cast<int32_t>(time_s.size()));
+        },
+        py::arg("solver"), py::arg("edge_index"), py::arg("bc_type"), py::arg("offsets"), py::arg("time_s"), py::arg("value"),
+        "Register per-boundary-edge hydrograph timeseries on the solver.");
+
+    m.def("swe2d_solver_set_rain_cn_forcing",
+        [](const std::shared_ptr<PySolver>& ps,
+           py::array_t<int32_t, py::array::c_style | py::array::forcecast> cell_gage_idx,
+           py::array_t<int32_t, py::array::c_style | py::array::forcecast> gage_offsets,
+           py::array_t<double, py::array::c_style | py::array::forcecast> hg_time_s,
+           py::array_t<double, py::array::c_style | py::array::forcecast> hg_cum_mm,
+           py::array_t<double, py::array::c_style | py::array::forcecast> cn,
+           double ia_ratio,
+           double mm_to_model_depth) {
+            if (!ps || !ps->solver) throw std::invalid_argument("null solver handle");
+            if (cell_gage_idx.size() != cn.size()) {
+                throw std::invalid_argument("cell_gage_idx and cn must have same length");
+            }
+            if (gage_offsets.size() < 2) {
+                throw std::invalid_argument("gage_offsets must contain at least 2 entries");
+            }
+            if (hg_time_s.size() != hg_cum_mm.size()) {
+                throw std::invalid_argument("hg_time_s and hg_cum_mm must have same length");
+            }
+            swe2d_solver_set_rain_cn_forcing(ps->solver,
+                                             cell_gage_idx.data(),
+                                             gage_offsets.data(),
+                                             hg_time_s.data(),
+                                             hg_cum_mm.data(),
+                                             cn.data(),
+                                             static_cast<int32_t>(cell_gage_idx.size()),
+                                             static_cast<int32_t>(gage_offsets.size() - 1),
+                                             static_cast<int32_t>(hg_time_s.size()),
+                                             ia_ratio,
+                                             mm_to_model_depth);
+        },
+        py::arg("solver"), py::arg("cell_gage_idx"), py::arg("gage_offsets"), py::arg("hg_time_s"), py::arg("hg_cum_mm"), py::arg("cn"), py::arg("ia_ratio") = 0.2, py::arg("mm_to_model_depth") = 1.0e-3,
+        "Register per-cell rain/CN forcing data on the solver.");
 
     // ── Solver creation ───────────────────────────────────────────────────────
     m.def("swe2d_create_solver",

@@ -1,0 +1,104 @@
+diff --git a/swe2d_gpu.cu b/swe2d_gpu.cu
+index 1111111..2222222 100644
+--- a/swe2d_gpu.cu
++++ b/swe2d_gpu.cu
+@@ -40,6 +40,9 @@ namespace {
+ struct ReconstructedStatesLocal {
+     double hL_star;
+     double uL;
+@@ -57,6 +60,11 @@ __device__ __forceinline__ double celerity_cuda_local(double h, double g) {
+     return (h > 0.0) ? ::sqrt(g * h) : 0.0;
+ }
+ 
++// Device-side mask: 1 if cell is geometrically degenerate (inv_area > max_inv_area),
++// 0 otherwise. This is filled on the host once per mesh and reused every step.
++__device__ __constant__ int32_t* d_is_degenerate = nullptr;
++
++
+ __device__ __forceinline__ ReconstructedStatesLocal hydrostatic_reconstruct_cuda_local(
+     double hL,  double huL, double hvL, double zbL,
+     double hR,  double huR, double hvR, double zbR,
+@@ -230,6 +238,12 @@ __global__ void swe2d_classify_kernel(
+     int32_t*       d_active,
+     int32_t*       d_n_wet,
+     double         h_min)
+ {
+@@ -239,6 +253,11 @@ __global__ void swe2d_classify_kernel(
+     int32_t c   = blockIdx.x * blockDim.x + tid;
+ 
+     int32_t wet = 0;
++
++    // Degenerate cells are treated as permanently dry/inactive.
++    if (c < n_cells && d_is_degenerate && d_is_degenerate[c]) {
++        d_active[c] = 0;
++    } else
+     if (c < n_cells) {
+         const int32_t forced = d_bc_forced ? d_bc_forced[c] : 0;
+         const int32_t w      = (d_h[c] > h_min) ? 1 : 0;
+@@ -309,6 +328,7 @@ __global__ void swe2d_gradient_kernel(
+     double*        grad_hx,  double* grad_hy,
+     double*        grad_hux, double* grad_huy,
+     double*        grad_hvx, double* grad_hvy,
++    const int32_t* d_is_degenerate,
+     const int32_t* d_active)
+ {
+     int32_t e = blockIdx.x * blockDim.x + threadIdx.x;
+@@ -318,8 +338,10 @@ __global__ void swe2d_gradient_kernel(
+     int32_t c0 = edge_c0[e];
+     int32_t c1 = edge_c1[e];
+ 
+-    // Skip degenerate cells
+-    if (cell_inv_area[c0] > max_inv_area) return;
++    // Skip degenerate cells entirely.
++    if (d_is_degenerate && d_is_degenerate[c0]) return;
++    if (c1 >= 0 && d_is_degenerate && d_is_degenerate[c1]) return;
++
+@@ -401,6 +423,7 @@ __global__ void swe2d_flux_kernel(
+     const double*  grad_hvx, const double* grad_hvy,
+     double*        flux_h,    // [n_cells] accumulator
+     double*        flux_hu,
+@@ -410,6 +433,7 @@ __global__ void swe2d_flux_kernel(
+     int            spatial_scheme,
+     double g, double h_min,
+     double max_inv_area,
++    const int32_t* d_is_degenerate,
+     double momentum_cap_min_speed,
+     double momentum_cap_celerity_mult)
+ {
+@@ -418,9 +442,11 @@ __global__ void swe2d_flux_kernel(
+ 
+     int32_t c0 = edge_c0[e];
+     int32_t c1 = edge_c1[e];
+-    
+-    // Skip flux TO degenerate cells (inv_area > 1e6)
+-    if (cell_inv_area[c0] > max_inv_area || (c1 >= 0 && cell_inv_area[c1] > max_inv_area)) {
++
++    // Skip edges touching degenerate cells: they do not participate in fluxes.
++    if (d_is_degenerate &&
++        (d_is_degenerate[c0] || (c1 >= 0 && d_is_degenerate[c1]))) {
+         return;
+     }
+@@ -566,6 +592,7 @@ __global__ void swe2d_update_kernel(
+     double max_inv_area,
+     double momentum_cap_min_speed,
+     double momentum_cap_celerity_mult,
++    const int32_t* d_is_degenerate,
+     double depth_cap,
+     double max_rel_depth_increase,
+     double shallow_damping_depth,
+@@ -575,6 +602,16 @@ __global__ void swe2d_update_kernel(
+     int32_t c = blockIdx.x * blockDim.x + threadIdx.x;
+     if (c >= n_cells) return;
+ 
++    // Degenerate cells are forced to a dry, quiescent state and never updated.
++    if (d_is_degenerate && d_is_degenerate[c]) {
++        cell_h[c]  = 0.0;
++        cell_hu[c] = 0.0;
++        cell_hv[c] = 0.0;
++        if (d_max_wse_elev_error) {
++            atomicMaxDouble(d_max_wse_elev_error, 0.0);
++        }
++        return;
++    }
+     // Skip fully isolated dry cells: no wet neighbors means no flux will arrive.
+     if (d_active && !d_active[c]) return;

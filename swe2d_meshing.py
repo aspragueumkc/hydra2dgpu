@@ -174,13 +174,32 @@ def _repair_mesh_result(mesh: MeshResult, area_tol: float = 1.0e-10) -> MeshResu
             for k in range(1, poly.size - 1):
                 tri_plot.extend([int(poly[0]), int(poly[k]), int(poly[k + 1])])
 
+    # Drop unreferenced/orphan nodes so exported node layers align exactly with
+    # computational faces (important for Gmsh workflows with embedded geometry points).
+    used_nodes = np.unique(kn)
+    if used_nodes.size <= 0:
+        raise ValueError("Mesh repair produced faces but no referenced nodes.")
+
+    remap = np.full(mesh.node_x.shape[0], -1, dtype=np.int32)
+    remap[used_nodes] = np.arange(used_nodes.size, dtype=np.int32)
+
+    kn = remap[kn]
+    tri_arr = np.asarray(tri_plot, dtype=np.int32)
+    if tri_arr.size > 0:
+        tri_arr = remap[tri_arr]
+
+    if mesh.node_z.shape[0] == mesh.node_x.shape[0]:
+        compact_z = mesh.node_z[used_nodes]
+    else:
+        compact_z = np.zeros(used_nodes.size, dtype=np.float64)
+
     return MeshResult(
-        node_x=mesh.node_x,
-        node_y=mesh.node_y,
-        node_z=mesh.node_z,
-        cell_nodes=np.asarray(tri_plot, dtype=np.int32),
+        node_x=mesh.node_x[used_nodes],
+        node_y=mesh.node_y[used_nodes],
+        node_z=compact_z,
+        cell_nodes=tri_arr,
         cell_face_offsets=np.asarray(keep_offsets, dtype=np.int32),
-        cell_face_nodes=np.asarray(keep_face_nodes, dtype=np.int32),
+        cell_face_nodes=kn,
         cell_type=mesh.cell_type[keep_idx_arr],
         region_id=mesh.region_id[keep_idx_arr],
         target_size=mesh.target_size[keep_idx_arr],
@@ -1269,21 +1288,35 @@ class GmshBackend(MeshingBackend):
                     pass
 
             # Interior samples clipped to the polygon footprint.
+            #
+            # Important: avoid one-sided sampling truncation. The previous
+            # implementation stopped after a fixed point cap while scanning
+            # ymin->ymax, which could leave only part of a large constraint
+            # polygon refined. Here we choose an area-adaptive step so sampling
+            # remains approximately bounded while covering the full polygon.
             xs = [p[0] for p in ring]
             ys = [p[1] for p in ring]
             xmin, xmax = min(xs), max(xs)
             ymin, ymax = min(ys), max(ys)
-            step = max(cst_size, tol * 10.0)
-            max_pts = 6000
-            n_added = 0
+
+            base_step = max(cst_size, tol * 10.0)
+            target_pts = 6000.0
+            poly_area = abs(_polygon_area_xy(
+                np.asarray(xs, dtype=np.float64),
+                np.asarray(ys, dtype=np.float64),
+            ))
+            if poly_area > 0.0:
+                step = max(base_step, float(np.sqrt(poly_area / target_pts)))
+            else:
+                step = base_step
+
             y = ymin + 0.5 * step
-            while y < ymax - 0.5 * step and n_added < max_pts:
+            while y < ymax - 0.5 * step:
                 x = xmin + 0.5 * step
-                while x < xmax - 0.5 * step and n_added < max_pts:
+                while x < xmax - 0.5 * step:
                     if _point_in_polygon(x, y, ring):
                         try:
                             pt_tags.append(gmsh.model.geo.addPoint(float(x), float(y), 0.0, cst_size))
-                            n_added += 1
                         except Exception:
                             pass
                     x += step

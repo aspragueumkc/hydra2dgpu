@@ -1,0 +1,200 @@
+{
+	"artifacts" : 
+	[
+		{
+			"path" : "backwater_native.cpython-313-x86_64-linux-gnu.so"
+		}
+	],
+	"backtrace" : 2,
+	"backtraceGraph" : 
+	{
+		"commands" : 
+		[
+			"add_library",
+			"pybind11_add_module",
+			"set_property",
+			"find_package",
+			"target_compile_options",
+			"target_link_libraries",
+			"target_compile_definitions"
+		],
+		"files" : 
+		[
+			"build/_deps/pybind11-src/tools/pybind11Tools.cmake",
+			"CMakeLists.txt",
+			"/usr/share/cmake-3.31/Modules/FindOpenMP.cmake"
+		],
+		"nodes" : 
+		[
+			{
+				"file" : 1
+			},
+			{
+				"command" : 1,
+				"file" : 1,
+				"line" : 29,
+				"parent" : 0
+			},
+			{
+				"command" : 0,
+				"file" : 0,
+				"line" : 181,
+				"parent" : 1
+			},
+			{
+				"command" : 3,
+				"file" : 1,
+				"line" : 31,
+				"parent" : 0
+			},
+			{
+				"file" : 2,
+				"parent" : 3
+			},
+			{
+				"command" : 2,
+				"file" : 2,
+				"line" : 655,
+				"parent" : 4
+			},
+			{
+				"command" : 4,
+				"file" : 1,
+				"line" : 40,
+				"parent" : 0
+			},
+			{
+				"command" : 5,
+				"file" : 1,
+				"line" : 33,
+				"parent" : 0
+			},
+			{
+				"command" : 6,
+				"file" : 1,
+				"line" : 34,
+				"parent" : 0
+			},
+			{
+				"command" : 5,
+				"file" : 0,
+				"line" : 183,
+				"parent" : 1
+			}
+		]
+	},
+	"compileGroups" : 
+	[
+		{
+			"compileCommandFragments" : 
+			[
+				{
+					"fragment" : "-g -std=c++17 -fPIC -fvisibility=hidden"
+				},
+				{
+					"backtrace" : 6,
+					"fragment" : "-Wall"
+				},
+				{
+					"backtrace" : 6,
+					"fragment" : "-Wextra"
+				},
+				{
+					"backtrace" : 6,
+					"fragment" : "-Wpedantic"
+				},
+				{
+					"backtrace" : 7,
+					"fragment" : "-fopenmp"
+				}
+			],
+			"defines" : 
+			[
+				{
+					"backtrace" : 8,
+					"define" : "BACKWATER_HAS_OPENMP=1"
+				},
+				{
+					"define" : "backwater_native_EXPORTS"
+				}
+			],
+			"includes" : 
+			[
+				{
+					"backtrace" : 9,
+					"isSystem" : true,
+					"path" : "/home/aaron/.local/share/QGIS/QGIS3/profiles/default/python/plugins/qgis-backwater-plugin/build/_deps/pybind11-src/include"
+				},
+				{
+					"backtrace" : 9,
+					"isSystem" : true,
+					"path" : "/usr/include/python3.13"
+				}
+			],
+			"language" : "CXX",
+			"languageStandard" : 
+			{
+				"backtraces" : 
+				[
+					9,
+					9,
+					9
+				],
+				"standard" : "17"
+			},
+			"sourceIndexes" : 
+			[
+				0
+			]
+		}
+	],
+	"id" : "backwater_native::@6890427a1f51a3e7e1df",
+	"link" : 
+	{
+		"commandFragments" : 
+		[
+			{
+				"fragment" : "",
+				"role" : "flags"
+			},
+			{
+				"backtrace" : 5,
+				"fragment" : "/usr/lib/gcc/x86_64-linux-gnu/15/libgomp.so",
+				"role" : "libraries"
+			},
+			{
+				"backtrace" : 5,
+				"fragment" : "/usr/lib/x86_64-linux-gnu/libpthread.a",
+				"role" : "libraries"
+			}
+		],
+		"language" : "CXX"
+	},
+	"name" : "backwater_native",
+	"nameOnDisk" : "backwater_native.cpython-313-x86_64-linux-gnu.so",
+	"paths" : 
+	{
+		"build" : ".",
+		"source" : "."
+	},
+	"sourceGroups" : 
+	[
+		{
+			"name" : "Source Files",
+			"sourceIndexes" : 
+			[
+				0
+			]
+		}
+	],
+	"sources" : 
+	[
+		{
+			"backtrace" : 2,
+			"compileGroupIndex" : 0,
+			"path" : "cpp/src/backwater_native.cpp",
+			"sourceGroupIndex" : 0
+		}
+	],
+	"type" : "MODULE_LIBRARY"
+}

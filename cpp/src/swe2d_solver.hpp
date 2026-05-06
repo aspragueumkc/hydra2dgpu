@@ -107,6 +107,7 @@ struct SWE2DSolver {
     std::vector<double> dh;   // [n_cells] accumulated depth flux / area
     std::vector<double> dhu;  // [n_cells]
     std::vector<double> dhv;  // [n_cells]
+    std::vector<double> source_terms; // [n_cells] additive depth source [m/s]
 
     // ── Cell-neighbor connectivity (CSR) for higher-order reconstruction ────
     std::vector<int32_t> cell_nbr_offsets; // [n_cells + 1]
@@ -114,6 +115,26 @@ struct SWE2DSolver {
 
     // ── Config ───────────────────────────────────────────────────────────────
     SWE2DSolverConfig cfg;
+
+    // Optional per-boundary-edge hydrograph forcing (timeseries evaluated per step).
+    bool hydrographs_enabled = false;
+    std::vector<int32_t> hg_edge_index;   // [n_hg_edges] boundary edge indices
+    std::vector<int32_t> hg_bc_type;      // [n_hg_edges] target BC type (2/3)
+    std::vector<int32_t> hg_offsets;      // [n_hg_edges + 1]
+    std::vector<double>  hg_time_s;       // [n_hg_samples] sample times (s)
+    std::vector<double>  hg_value;        // [n_hg_samples] sample values
+
+    // Optional rainfall + CN infiltration forcing (per-cell, event mode).
+    bool rain_cn_enabled = false;
+    std::vector<int32_t> rain_cell_gage;      // [n_cells] gage index per cell
+    std::vector<int32_t> rain_gage_offsets;   // [n_gages + 1]
+    std::vector<double>  rain_hg_time_s;      // [n_rain_samples]
+    std::vector<double>  rain_hg_cum_mm;      // [n_rain_samples] cumulative rainfall depth [mm]
+    std::vector<double>  rain_cn;             // [n_cells] curve number
+    std::vector<double>  rain_cum_mm;         // [n_cells] cumulative rain [mm]
+    std::vector<double>  rain_excess_cum_mm;  // [n_cells] cumulative excess [mm]
+    double rain_ia_ratio = 0.2;
+    double rain_mm_to_model_depth = 1.0e-3;   // convert mm excess depth -> solver depth units (m or ft)
 
     // ── Simulation time ──────────────────────────────────────────────────────
     double t = 0.0;
@@ -144,6 +165,39 @@ SWE2DSolver* swe2d_create(
 // dt_request: desired timestep (s).  Actual dt may be smaller due to CFL constraint.
 //   Pass dt_request <= 0 to use CFL-controlled timestep.
 SWE2DStepDiag swe2d_step(SWE2DSolver* s, double dt_request);
+
+// Update BC type/value by boundary edge index on an existing solver and sync GPU state.
+void swe2d_solver_set_boundary_values(
+    SWE2DSolver* s,
+    const int32_t* edge_index,
+    const int32_t* bc_type,
+    const double* bc_val,
+    int32_t n_updates);
+
+// Configure per-edge hydrograph forcing (evaluated each step).
+void swe2d_solver_set_boundary_hydrographs(
+    SWE2DSolver* s,
+    const int32_t* edge_index,
+    const int32_t* bc_type,
+    const int32_t* offsets,
+    const double* time_s,
+    const double* value,
+    int32_t n_edges,
+    int32_t n_samples);
+
+// Configure per-cell rain+CN forcing (evaluated each step).
+void swe2d_solver_set_rain_cn_forcing(
+    SWE2DSolver* s,
+    const int32_t* cell_gage_idx,
+    const int32_t* gage_offsets,
+    const double* hg_time_s,
+    const double* hg_cum_mm,
+    const double* cn,
+    int32_t n_cells,
+    int32_t n_gages,
+    int32_t n_samples,
+    double ia_ratio,
+    double mm_to_model_depth = 1.0e-3);
 
 // Copy current state out to caller-supplied arrays (length mesh.n_cells each).
 void swe2d_get_state(const SWE2DSolver* s, double* h_out, double* hu_out, double* hv_out);

@@ -1,0 +1,28 @@
+diff --git a/swe2d_gpu.cu b/swe2d_gpu.cu
+index 1111111..6666666 100644
+--- a/swe2d_gpu.cu
++++ b/swe2d_gpu.cu
+@@ -627,13 +627,23 @@ __global__ void swe2d_update_kernel(
+     // Positivity enforcement
+     if (cell_h[c] < 0.0) cell_h[c] = 0.0;
+     if (cell_h[c] < h_min) {
+         cell_hu[c] = 0.0;
+         cell_hv[c] = 0.0;
+-    } else if (shallow_damping_depth > h_min && cell_h[c] < shallow_damping_depth) {
+-        // Smoothly damp momentum in shallow cells to stabilize moving wet/dry fronts.
+-        const double t = (cell_h[c] - h_min) / (shallow_damping_depth - h_min);
+-        const double scale = fmin(1.0, fmax(0.0, t));
+-        cell_hu[c] *= scale;
+-        cell_hv[c] *= scale;
++    } else if (shallow_damping_depth > h_min && cell_h[c] < shallow_damping_depth) {
++        // Front-optimized damping: use a C^1 cubic taper instead of linear,
++        // which reduces artificial diffusion while still killing spurious
++        // velocities in very shallow cells.
++        double t = (cell_h[c] - h_min) /
++                   (shallow_damping_depth - h_min);
++        t = fmin(1.0, fmax(0.0, t));
++        // Cubic Hermite: 3 t^2 - 2 t^3, monotone from 0 to 1 with zero slope at ends.
++        double scale = t * t * (3.0 - 2.0 * t);
++        cell_hu[c] *= scale;
++        cell_hv[c] *= scale;
+     }

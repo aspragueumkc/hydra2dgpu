@@ -10,6 +10,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from enum import IntEnum
+import math
 from typing import Dict, List, Optional, Sequence, Tuple
 
 
@@ -108,6 +109,26 @@ class PipeNetworkConfig:
     swmm_input_path: Optional[str] = None
 
 
+@dataclass
+class PipeNetworkState:
+    """Transient state for the 1D drainage network reference implementation."""
+
+    node_depth_m: Dict[str, float] = field(default_factory=dict)
+    link_flow_cms: Dict[str, float] = field(default_factory=dict)
+
+
+@dataclass
+class CouplingDiagnostics:
+    """Lightweight diagnostics for one network/exchange step."""
+
+    dt_s: float
+    net_node_inflow_cms: float = 0.0
+    total_capture_cms: float = 0.0
+    total_surcharge_cms: float = 0.0
+    max_node_depth_m: float = 0.0
+    max_link_flow_cms: float = 0.0
+
+
 class StructureType(IntEnum):
     WEIR = 1
     CULVERT = 2
@@ -133,6 +154,99 @@ class HydraulicStructureConfig:
     structures: List[HydraulicStructure] = field(default_factory=list)
     control_interval_s: float = 1.0
     controller_name: str = "none"
+
+
+def circular_area_from_diameter(diameter_m: float) -> float:
+    d = max(0.0, float(diameter_m))
+    return 0.25 * math.pi * d * d
+
+
+def circular_wet_perimeter_full(diameter_m: float) -> float:
+    d = max(0.0, float(diameter_m))
+    return math.pi * d
+
+
+def compute_orifice_flow(
+    head_up_m: float,
+    head_down_m: float,
+    area_m2: float,
+    discharge_coeff: float = 0.62,
+    g: float = 9.81,
+    max_flow_cms: Optional[float] = None,
+) -> float:
+    """Return signed orifice flow from up to down based on head difference."""
+    a = max(0.0, float(area_m2))
+    if a <= 0.0:
+        return 0.0
+    dh = float(head_up_m) - float(head_down_m)
+    if abs(dh) <= 1.0e-12:
+        return 0.0
+    q = float(discharge_coeff) * a * math.sqrt(max(0.0, 2.0 * float(g) * abs(dh)))
+    if max_flow_cms is not None:
+        q = min(q, max(0.0, float(max_flow_cms)))
+    return q if dh >= 0.0 else -q
+
+
+def compute_weir_flow(
+    upstream_wse_m: float,
+    downstream_wse_m: float,
+    crest_elev_m: float,
+    width_m: float,
+    coeff: float = 1.7,
+    max_flow_cms: Optional[float] = None,
+) -> float:
+    """Broad-crested style weir discharge using upstream head over crest."""
+    b = max(0.0, float(width_m))
+    if b <= 0.0:
+        return 0.0
+    hup = max(0.0, float(upstream_wse_m) - float(crest_elev_m))
+    hdn = max(0.0, float(downstream_wse_m) - float(crest_elev_m))
+    if hup <= 0.0 and hdn <= 0.0:
+        return 0.0
+    if float(upstream_wse_m) >= float(downstream_wse_m):
+        h = hup
+        sign = 1.0
+    else:
+        h = hdn
+        sign = -1.0
+    q = float(coeff) * b * (h ** 1.5)
+    if max_flow_cms is not None:
+        q = min(q, max(0.0, float(max_flow_cms)))
+    return sign * q
+
+
+def compute_pipe_manning_capacity_full(
+    diameter_m: float,
+    slope_m_per_m: float,
+    roughness_n: float,
+) -> float:
+    """Full-flow Manning capacity for a circular conduit."""
+    d = max(0.0, float(diameter_m))
+    if d <= 0.0:
+        return 0.0
+    n = max(1.0e-6, float(roughness_n))
+    s = max(0.0, float(slope_m_per_m))
+    if s <= 0.0:
+        return 0.0
+    area = circular_area_from_diameter(d)
+    wetted_perimeter = circular_wet_perimeter_full(d)
+    if wetted_perimeter <= 0.0:
+        return 0.0
+    r_h = area / wetted_perimeter
+    return (1.0 / n) * area * (r_h ** (2.0 / 3.0)) * math.sqrt(s)
+
+
+def convert_cell_flows_to_depth_rates(
+    cell_flow_cms: Sequence[float],
+    cell_area_m2: Sequence[float],
+) -> List[float]:
+    """Convert per-cell volumetric source terms [m^3/s] to depth rates [m/s]."""
+    n = min(len(cell_flow_cms), len(cell_area_m2))
+    out = [0.0] * n
+    for i in range(n):
+        area = max(1.0e-12, float(cell_area_m2[i]))
+        out[i] = float(cell_flow_cms[i]) / area
+    return out
 
 
 @dataclass
@@ -163,9 +277,28 @@ class DrainageCouplingEngine:
 
     def __init__(self, cfg: PipeNetworkConfig):
         self.cfg = cfg
+        self.state = PipeNetworkState()
+        self._node_index: Dict[str, int] = {}
+        self._node_area_m2: Dict[str, float] = {}
+        self._links_from: Dict[str, List[DrainageLink]] = {}
+        self._links_to: Dict[str, List[DrainageLink]] = {}
 
     def initialize(self) -> None:
-        # TODO: parse SWMM input and build CPU/GPU sparse graph representation.
+        self._node_index = {n.node_id: i for i, n in enumerate(self.cfg.nodes)}
+        self._node_area_m2 = {
+            n.node_id: max(1.0, float(n.metadata.get("surface_area_m2", 50.0)))
+            for n in self.cfg.nodes
+        }
+        self._links_from = {n.node_id: [] for n in self.cfg.nodes}
+        self._links_to = {n.node_id: [] for n in self.cfg.nodes}
+        for lnk in self.cfg.links:
+            if lnk.from_node_id in self._links_from:
+                self._links_from[lnk.from_node_id].append(lnk)
+            if lnk.to_node_id in self._links_to:
+                self._links_to[lnk.to_node_id].append(lnk)
+            self.state.link_flow_cms.setdefault(lnk.link_id, 0.0)
+        for n in self.cfg.nodes:
+            self.state.node_depth_m.setdefault(n.node_id, 0.0)
         return None
 
     def exchange_step(self, dt: float, cell_wse: Sequence[float]) -> Tuple[List[float], List[float]]:

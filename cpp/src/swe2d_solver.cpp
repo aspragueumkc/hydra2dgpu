@@ -39,6 +39,87 @@ inline double clamp_double(double v, double lo, double hi) {
     return std::max(lo, std::min(v, hi));
 }
 
+inline double interp_series_clamped_host(
+    const std::vector<double>& t,
+    const std::vector<double>& v,
+    int32_t start,
+    int32_t end,
+    double x)
+{
+    const int32_t n = end - start;
+    if (n <= 0) return 0.0;
+    if (n == 1) return v[static_cast<size_t>(start)];
+    if (x <= t[static_cast<size_t>(start)]) return v[static_cast<size_t>(start)];
+    if (x >= t[static_cast<size_t>(end - 1)]) return v[static_cast<size_t>(end - 1)];
+
+    auto t0 = t.begin() + start;
+    auto t1 = t.begin() + end;
+    auto it = std::upper_bound(t0, t1, x);
+    int32_t i1 = static_cast<int32_t>(it - t.begin());
+    int32_t i0 = i1 - 1;
+    const double tx0 = t[static_cast<size_t>(i0)];
+    const double tx1 = t[static_cast<size_t>(i1)];
+    const double y0 = v[static_cast<size_t>(i0)];
+    const double y1 = v[static_cast<size_t>(i1)];
+    const double a = (x - tx0) / std::max(tx1 - tx0, 1.0e-12);
+    return y0 + a * (y1 - y0);
+}
+
+void apply_solver_boundary_hydrographs(SWE2DSolver* s, double t_now)
+{
+    if (!s || !s->hydrographs_enabled) return;
+    SWE2DMesh& mesh = const_cast<SWE2DMesh&>(*s->mesh);
+    const int32_t n = static_cast<int32_t>(s->hg_edge_index.size());
+    for (int32_t i = 0; i < n; ++i) {
+        const int32_t e = s->hg_edge_index[static_cast<size_t>(i)];
+        if (e < 0 || e >= mesh.n_edges) continue;
+        const int32_t off0 = s->hg_offsets[static_cast<size_t>(i)];
+        const int32_t off1 = s->hg_offsets[static_cast<size_t>(i + 1)];
+        const double val = interp_series_clamped_host(s->hg_time_s, s->hg_value, off0, off1, t_now);
+        mesh.edge_bc[e] = static_cast<BCType>(s->hg_bc_type[static_cast<size_t>(i)]);
+        mesh.edge_bc_val[e] = val;
+    }
+}
+
+void build_solver_rain_cn_source(SWE2DSolver* s, double t0, double t1)
+{
+    if (!s) return;
+    const int32_t n_cells = s->mesh->n_cells;
+    if (static_cast<int32_t>(s->source_terms.size()) != n_cells)
+        s->source_terms.assign(static_cast<size_t>(n_cells), 0.0);
+    else
+        std::fill(s->source_terms.begin(), s->source_terms.end(), 0.0);
+
+    if (!s->rain_cn_enabled || t1 <= t0) return;
+
+    for (int32_t c = 0; c < n_cells; ++c) {
+        const int32_t gidx = s->rain_cell_gage[static_cast<size_t>(c)];
+        if (gidx < 0) continue;
+        const int32_t off0 = s->rain_gage_offsets[static_cast<size_t>(gidx)];
+        const int32_t off1 = s->rain_gage_offsets[static_cast<size_t>(gidx + 1)];
+        if (off1 <= off0) continue;
+
+        const double r0 = interp_series_clamped_host(s->rain_hg_time_s, s->rain_hg_cum_mm, off0, off1, t0);
+        const double r1 = interp_series_clamped_host(s->rain_hg_time_s, s->rain_hg_cum_mm, off0, off1, t1);
+        const double dr = std::max(0.0, r1 - r0);
+        const double p = s->rain_cum_mm[static_cast<size_t>(c)] + dr;
+
+        const double cn = std::min(100.0, std::max(1.0, s->rain_cn[static_cast<size_t>(c)]));
+        const double s_mm = std::max((25400.0 / cn) - 254.0, 0.0);
+        const double ia = s->rain_ia_ratio * s_mm;
+        double pe = 0.0;
+        if (p > ia) {
+            const double num = (p - ia) * (p - ia);
+            const double den = std::max(p + (1.0 - s->rain_ia_ratio) * s_mm, 1.0e-12);
+            pe = num / den;
+        }
+        const double de = std::max(0.0, pe - s->rain_excess_cum_mm[static_cast<size_t>(c)]);
+        s->rain_cum_mm[static_cast<size_t>(c)] = p;
+        s->rain_excess_cum_mm[static_cast<size_t>(c)] = pe;
+        s->source_terms[static_cast<size_t>(c)] = (de * s->rain_mm_to_model_depth) / (t1 - t0);
+    }
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Green-Gauss gradient — identical algorithm to swe2d_gradient_kernel (GPU).
 // Must be called with pre-zeroed gx/gy vectors.
@@ -556,6 +637,9 @@ SWE2DStepDiag swe2d_step_cpu(SWE2DSolver* s, double dt) {
         s->h[c]  += dt * s->dh[c]  * inv_a;
         s->hu[c] += dt * s->dhu[c] * inv_a;
         s->hv[c] += dt * s->dhv[c] * inv_a;
+        if (c < static_cast<int32_t>(s->source_terms.size())) {
+            s->h[c] += dt * s->source_terms[static_cast<size_t>(c)];
+        }
 
         // Positivity enforcement
         if (s->h[c] < 0.0) s->h[c] = 0.0;
@@ -607,6 +691,7 @@ SWE2DStepDiag swe2d_step_cpu(SWE2DSolver* s, double dt) {
 // ─────────────────────────────────────────────────────────────────────────────
 SWE2DStepDiag swe2d_step(SWE2DSolver* s, double dt_request) {
     if (!s) throw std::invalid_argument("swe2d_step: null solver");
+    const double t_now = s->t;
 
     const bool use_rk2 = (s->cfg.temporal_order >= 2);
     const int diag_interval = s->cfg.gpu_diag_sync_interval_steps;
@@ -631,7 +716,7 @@ SWE2DStepDiag swe2d_step(SWE2DSolver* s, double dt_request) {
 
         if (!use_rk2) {
             SWE2DStepDiag diag;
-            swe2d_gpu_step(s->dev, dt,
+            swe2d_gpu_step(s->dev, t_now, dt,
                            s->cfg.g, s->cfg.h_min,
                            s->cfg.spatial_scheme,
                            s->cfg.cfl,
@@ -653,7 +738,7 @@ SWE2DStepDiag swe2d_step(SWE2DSolver* s, double dt_request) {
         }
 
         SWE2DStepDiag diag;
-        swe2d_gpu_step_rk2(s->dev, dt,
+        swe2d_gpu_step_rk2(s->dev, t_now, dt,
                            s->cfg.g, s->cfg.h_min,
                            s->cfg.spatial_scheme,
                            s->cfg.cfl,
@@ -684,6 +769,8 @@ SWE2DStepDiag swe2d_step(SWE2DSolver* s, double dt_request) {
     }
 
     if (!use_rk2) {
+        apply_solver_boundary_hydrographs(s, t_now);
+        build_solver_rain_cn_source(s, t_now, t_now + dt);
         SWE2DStepDiag diag = swe2d_step_cpu(s, dt);
         s->t += dt;
         return diag;
@@ -693,7 +780,11 @@ SWE2DStepDiag swe2d_step(SWE2DSolver* s, double dt_request) {
     std::vector<double> hu0 = s->hu;
     std::vector<double> hv0 = s->hv;
 
+    apply_solver_boundary_hydrographs(s, t_now);
+    build_solver_rain_cn_source(s, t_now, t_now + dt);
     swe2d_step_cpu(s, dt);
+    apply_solver_boundary_hydrographs(s, t_now + dt);
+    build_solver_rain_cn_source(s, t_now + dt, t_now + 2.0 * dt);
     swe2d_step_cpu(s, dt);
 
     double max_depth_residual = 0.0;
@@ -717,4 +808,137 @@ SWE2DStepDiag swe2d_step(SWE2DSolver* s, double dt_request) {
     SWE2DStepDiag diag = summarize_state(s, dt, false, max_depth_residual);
     s->t += dt;
     return diag;
+}
+
+void swe2d_solver_set_boundary_values(
+    SWE2DSolver* s,
+    const int32_t* edge_index,
+    const int32_t* bc_type,
+    const double* bc_val,
+    int32_t n_updates)
+{
+    if (!s || !edge_index || !bc_type || !bc_val || n_updates <= 0) return;
+    SWE2DMesh& mesh = const_cast<SWE2DMesh&>(*s->mesh);
+    for (int32_t i = 0; i < n_updates; ++i) {
+        const int32_t e = edge_index[static_cast<size_t>(i)];
+        if (e < 0 || e >= mesh.n_edges) continue;
+        mesh.edge_bc[static_cast<size_t>(e)] = static_cast<BCType>(bc_type[static_cast<size_t>(i)]);
+        mesh.edge_bc_val[static_cast<size_t>(e)] = bc_val[static_cast<size_t>(i)];
+    }
+#ifdef BACKWATER_HAS_CUDA
+    if (s->dev) {
+        swe2d_gpu_update_boundary_values(s->dev, edge_index, bc_type, bc_val, n_updates);
+    }
+#endif
+}
+
+void swe2d_solver_set_boundary_hydrographs(
+    SWE2DSolver* s,
+    const int32_t* edge_index,
+    const int32_t* bc_type,
+    const int32_t* offsets,
+    const double* time_s,
+    const double* value,
+    int32_t n_edges,
+    int32_t n_samples)
+{
+    if (!s) return;
+    s->hg_edge_index.clear();
+    s->hg_bc_type.clear();
+    s->hg_offsets.clear();
+    s->hg_time_s.clear();
+    s->hg_value.clear();
+    s->hydrographs_enabled = false;
+
+    if (n_edges <= 0 || n_samples <= 0 || !edge_index || !bc_type || !offsets || !time_s || !value) {
+#ifdef BACKWATER_HAS_CUDA
+        if (s->dev) {
+            swe2d_gpu_set_boundary_hydrographs(s->dev, nullptr, nullptr, nullptr, nullptr, nullptr, 0, 0);
+        }
+#endif
+        return;
+    }
+
+    s->hg_edge_index.assign(edge_index, edge_index + n_edges);
+    s->hg_bc_type.assign(bc_type, bc_type + n_edges);
+    s->hg_offsets.assign(offsets, offsets + n_edges + 1);
+    s->hg_time_s.assign(time_s, time_s + n_samples);
+    s->hg_value.assign(value, value + n_samples);
+    s->hydrographs_enabled = true;
+#ifdef BACKWATER_HAS_CUDA
+    if (s->dev) {
+        swe2d_gpu_set_boundary_hydrographs(s->dev, edge_index, bc_type, offsets, time_s, value, n_edges, n_samples);
+    }
+#endif
+}
+
+void swe2d_solver_set_rain_cn_forcing(
+    SWE2DSolver* s,
+    const int32_t* cell_gage_idx,
+    const int32_t* gage_offsets,
+    const double* hg_time_s,
+    const double* hg_cum_mm,
+    const double* cn,
+    int32_t n_cells,
+    int32_t n_gages,
+    int32_t n_samples,
+    double ia_ratio,
+    double mm_to_model_depth)
+{
+    if (!s) return;
+    s->rain_cell_gage.clear();
+    s->rain_gage_offsets.clear();
+    s->rain_hg_time_s.clear();
+    s->rain_hg_cum_mm.clear();
+    s->rain_cn.clear();
+    s->rain_cum_mm.clear();
+    s->rain_excess_cum_mm.clear();
+    s->rain_cn_enabled = false;
+    s->rain_ia_ratio = ia_ratio;
+    s->rain_mm_to_model_depth = (mm_to_model_depth > 0.0) ? mm_to_model_depth : 1.0e-3;
+
+    if (n_cells <= 0 || n_gages <= 0 || n_samples <= 0 || !cell_gage_idx || !gage_offsets || !hg_time_s || !hg_cum_mm || !cn) {
+#ifdef BACKWATER_HAS_CUDA
+        if (s->dev) {
+            swe2d_gpu_set_rain_cn_forcing(
+                s->dev,
+                nullptr,
+                nullptr,
+                nullptr,
+                nullptr,
+                nullptr,
+                0,
+                0,
+                0,
+                   s->rain_ia_ratio,
+                s->rain_mm_to_model_depth);
+        }
+#endif
+        return;
+    }
+
+    s->rain_cell_gage.assign(cell_gage_idx, cell_gage_idx + n_cells);
+    s->rain_gage_offsets.assign(gage_offsets, gage_offsets + n_gages + 1);
+    s->rain_hg_time_s.assign(hg_time_s, hg_time_s + n_samples);
+    s->rain_hg_cum_mm.assign(hg_cum_mm, hg_cum_mm + n_samples);
+    s->rain_cn.assign(cn, cn + n_cells);
+    s->rain_cum_mm.assign(static_cast<size_t>(n_cells), 0.0);
+    s->rain_excess_cum_mm.assign(static_cast<size_t>(n_cells), 0.0);
+    s->source_terms.assign(static_cast<size_t>(n_cells), 0.0);
+    s->rain_cn_enabled = true;
+#ifdef BACKWATER_HAS_CUDA
+    if (s->dev) {
+        swe2d_gpu_set_rain_cn_forcing(s->dev,
+                                      cell_gage_idx,
+                                      gage_offsets,
+                                      hg_time_s,
+                                      hg_cum_mm,
+                                      cn,
+                                      n_cells,
+                                      n_gages,
+                                      n_samples,
+                                      ia_ratio,
+                                      s->rain_mm_to_model_depth);
+    }
+#endif
 }

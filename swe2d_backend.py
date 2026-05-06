@@ -128,6 +128,11 @@ class SWE2DBackend:
         self._solver_h = None   # PySolver handle
         self._n_cells  = 0
         self._boundary_edge_index_by_nodes = {}
+        self._supports_solver_bc_update = hasattr(self._mod, "swe2d_solver_set_boundary_values")
+        self._supports_solver_hydrographs = hasattr(self._mod, "swe2d_solver_set_boundary_hydrographs")
+        self._supports_solver_rain_cn = hasattr(self._mod, "swe2d_solver_set_rain_cn_forcing")
+        self._h_min = 1.0e-6
+        self._cell_area = np.empty(0, dtype=np.float64)
 
         # Last step diagnostics
         self._last_diag: Optional[dict] = None
@@ -172,6 +177,7 @@ class SWE2DBackend:
         node_z = np.ascontiguousarray(node_z, dtype=np.float64)
 
         cell_nodes_flat = np.ascontiguousarray(cell_nodes, dtype=np.int32).ravel()
+        self._cell_area = np.empty(0, dtype=np.float64)
 
         # Empty BC arrays if not provided
         bc_n0  = np.empty(0, dtype=np.int32)
@@ -191,6 +197,16 @@ class SWE2DBackend:
                 raise ValueError("cell_face_offsets must contain at least 2 entries")
             if int(face_offsets[-1]) != int(cell_nodes_flat.size):
                 raise ValueError("cell_face_offsets[-1] must equal len(cell_nodes)")
+            self._cell_area = np.zeros(face_offsets.size - 1, dtype=np.float64)
+            for i in range(face_offsets.size - 1):
+                s = int(face_offsets[i])
+                e = int(face_offsets[i + 1])
+                ids = cell_nodes_flat[s:e]
+                if ids.size < 3:
+                    continue
+                xx = node_x[ids]
+                yy = node_y[ids]
+                self._cell_area[i] = 0.5 * abs(float(np.dot(xx, np.roll(yy, -1)) - np.dot(yy, np.roll(xx, -1))))
             self._mesh_h = self._mod.swe2d_build_mesh_poly(
                 node_x,
                 node_y,
@@ -203,6 +219,14 @@ class SWE2DBackend:
                 bc_vl,
             )
         else:
+            tris = cell_nodes_flat.reshape((-1, 3))
+            x0 = node_x[tris[:, 0]]
+            y0 = node_y[tris[:, 0]]
+            x1 = node_x[tris[:, 1]]
+            y1 = node_y[tris[:, 1]]
+            x2 = node_x[tris[:, 2]]
+            y2 = node_y[tris[:, 2]]
+            self._cell_area = 0.5 * np.abs((x1 - x0) * (y2 - y0) - (x2 - x0) * (y1 - y0))
             self._mesh_h = self._mod.swe2d_build_mesh(
                 node_x, node_y, node_z, cell_nodes_flat,
                 bc_n0, bc_n1, bc_tp, bc_vl)
@@ -254,7 +278,71 @@ class SWE2DBackend:
                 raise ValueError(f"Boundary edge ({a}, {b}) not found in mesh")
             edge_index[i] = self._boundary_edge_index_by_nodes[key]
 
-        self._mod.swe2d_set_boundary_values(self._mesh_h, edge_index, tp, vl)
+        if self._solver_h is not None and self._supports_solver_bc_update:
+            self._mod.swe2d_solver_set_boundary_values(self._solver_h, edge_index, tp, vl)
+        else:
+            self._mod.swe2d_set_boundary_values(self._mesh_h, edge_index, tp, vl)
+
+    def set_boundary_hydrographs_native(
+        self,
+        edge_index: np.ndarray,
+        bc_type: np.ndarray,
+        offsets: np.ndarray,
+        time_s: np.ndarray,
+        value: np.ndarray,
+    ) -> None:
+        if self._solver_h is None:
+            raise RuntimeError("initialize() must be called before set_boundary_hydrographs_native().")
+        if not self._supports_solver_hydrographs:
+            raise RuntimeError("Native boundary hydrograph API not supported by current module.")
+        e = np.ascontiguousarray(edge_index, dtype=np.int32).ravel()
+        t = np.ascontiguousarray(bc_type, dtype=np.int32).ravel()
+        o = np.ascontiguousarray(offsets, dtype=np.int32).ravel()
+        ts = np.ascontiguousarray(time_s, dtype=np.float64).ravel()
+        v = np.ascontiguousarray(value, dtype=np.float64).ravel()
+        if e.size != t.size:
+            raise ValueError("edge_index and bc_type must have same length")
+        if o.size != e.size + 1:
+            raise ValueError("offsets length must be n_edges + 1")
+        if ts.size != v.size:
+            raise ValueError("time_s and value must have same length")
+        self._mod.swe2d_solver_set_boundary_hydrographs(self._solver_h, e, t, o, ts, v)
+
+    def set_rain_cn_forcing_native(
+        self,
+        cell_gage_idx: np.ndarray,
+        gage_offsets: np.ndarray,
+        hg_time_s: np.ndarray,
+        hg_cum_mm: np.ndarray,
+        cn: np.ndarray,
+        ia_ratio: float = 0.2,
+        mm_to_model_depth: float = 1.0e-3,
+    ) -> None:
+        if self._solver_h is None:
+            raise RuntimeError("initialize() must be called before set_rain_cn_forcing_native().")
+        if not self._supports_solver_rain_cn:
+            raise RuntimeError("Native rain+CN forcing API not supported by current module.")
+        cg = np.ascontiguousarray(cell_gage_idx, dtype=np.int32).ravel()
+        go = np.ascontiguousarray(gage_offsets, dtype=np.int32).ravel()
+        ts = np.ascontiguousarray(hg_time_s, dtype=np.float64).ravel()
+        cr = np.ascontiguousarray(hg_cum_mm, dtype=np.float64).ravel()
+        cna = np.ascontiguousarray(cn, dtype=np.float64).ravel()
+        if cg.size != cna.size:
+            raise ValueError("cell_gage_idx and cn must have same length")
+        if go.size < 2:
+            raise ValueError("gage_offsets must have at least two entries")
+        if ts.size != cr.size:
+            raise ValueError("hg_time_s and hg_cum_mm must have same length")
+        self._mod.swe2d_solver_set_rain_cn_forcing(
+            self._solver_h,
+            cg,
+            go,
+            ts,
+            cr,
+            cna,
+            float(ia_ratio),
+            float(mm_to_model_depth),
+        )
 
     # ── Solver init ──────────────────────────────────────────────────────────
 
@@ -390,6 +478,7 @@ class SWE2DBackend:
             front_flux_damping=float(front_flux_damping),
             active_set_hysteresis=bool(active_set_hysteresis),
         )
+        self._h_min = float(h_min)
 
     # ── Stepping ─────────────────────────────────────────────────────────────
 
@@ -419,6 +508,7 @@ class SWE2DBackend:
         dt_request: float = -1.0,
         progress_callback: Optional[Callable[[float, dict], None]] = None,
         cancel_check:      Optional[Callable[[], bool]] = None,
+        source_rate_callback: Optional[Callable[[float, float, np.ndarray, np.ndarray, np.ndarray], Optional[np.ndarray]]] = None,
     ) -> List[dict]:
         """
         Run the solver to t_end.
@@ -433,6 +523,11 @@ class SWE2DBackend:
             Called after each step with current time and diagnostics.
         cancel_check : callable() -> bool, optional
             If provided, called each step; run stops early if True returned.
+        source_rate_callback : callable(t, dt, h, hu, hv) -> ndarray, optional
+            Optional coupled-source hook called after each native step.
+            Return per-cell depth source rates [L/T]. Returned array must have
+            length n_cells. Positive values add depth, negative values remove
+            depth. Depth is clipped to >=0 and momentum is zeroed in dry cells.
 
         Returns
         -------
@@ -447,7 +542,20 @@ class SWE2DBackend:
             if cancel_check and cancel_check():
                 break
             diag = self.step(dt_request)
-            t += diag["dt"]
+            dt = float(diag["dt"])
+            if source_rate_callback is not None and dt > 0.0:
+                h, hu, hv = self.get_state()
+                src = source_rate_callback(t, dt, h, hu, hv)
+                if src is not None:
+                    src_arr = np.ascontiguousarray(src, dtype=np.float64).ravel()
+                    if src_arr.size != self._n_cells:
+                        raise ValueError("source_rate_callback must return an array with length n_cells")
+                    h = np.maximum(0.0, h + dt * src_arr)
+                    dry = h < self._h_min
+                    hu = np.where(dry, 0.0, hu)
+                    hv = np.where(dry, 0.0, hv)
+                    self.set_state(h, hu, hv)
+            t += dt
             diags.append(diag)
             if progress_callback:
                 progress_callback(t, diag)
@@ -487,6 +595,10 @@ class SWE2DBackend:
     def n_cells(self) -> int:
         """Number of cells in the mesh."""
         return self._n_cells
+
+    def cell_areas(self) -> np.ndarray:
+        """Return cached per-cell planform areas [L^2] from the input mesh."""
+        return self._cell_area.copy()
 
     # ── Cleanup ───────────────────────────────────────────────────────────────
 
