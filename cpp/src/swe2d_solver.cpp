@@ -85,10 +85,21 @@ void build_solver_rain_cn_source(SWE2DSolver* s, double t0, double t1)
 {
     if (!s) return;
     const int32_t n_cells = s->mesh->n_cells;
-    if (static_cast<int32_t>(s->source_terms.size()) != n_cells)
+    if (static_cast<int32_t>(s->source_terms.size()) != n_cells) {
         s->source_terms.assign(static_cast<size_t>(n_cells), 0.0);
-    else
+    }
+
+    // Seed with externally-coupled source terms (if configured), then add
+    // native rain/CN forcing on top.
+    if (s->external_sources_enabled &&
+        static_cast<int32_t>(s->external_source_terms.size()) == n_cells) {
+        std::copy(
+            s->external_source_terms.begin(),
+            s->external_source_terms.end(),
+            s->source_terms.begin());
+    } else {
         std::fill(s->source_terms.begin(), s->source_terms.end(), 0.0);
+    }
 
     if (!s->rain_cn_enabled || t1 <= t0) return;
 
@@ -116,7 +127,7 @@ void build_solver_rain_cn_source(SWE2DSolver* s, double t0, double t1)
         const double de = std::max(0.0, pe - s->rain_excess_cum_mm[static_cast<size_t>(c)]);
         s->rain_cum_mm[static_cast<size_t>(c)] = p;
         s->rain_excess_cum_mm[static_cast<size_t>(c)] = pe;
-        s->source_terms[static_cast<size_t>(c)] = (de * s->rain_mm_to_model_depth) / (t1 - t0);
+        s->source_terms[static_cast<size_t>(c)] += (de * s->rain_mm_to_model_depth) / (t1 - t0);
     }
 }
 
@@ -300,6 +311,8 @@ SWE2DSolver* swe2d_create(
     s->dh.assign(n, 0.0);
     s->dhu.assign(n, 0.0);
     s->dhv.assign(n, 0.0);
+    s->source_terms.assign(n, 0.0);
+    s->external_source_terms.assign(n, 0.0);
 
     #ifdef BACKWATER_HAS_OPENMP
     if (cfg.n_threads > 0) {
@@ -939,6 +952,31 @@ void swe2d_solver_set_rain_cn_forcing(
                                       n_samples,
                                       ia_ratio,
                                       s->rain_mm_to_model_depth);
+    }
+#endif
+}
+
+void swe2d_solver_set_external_sources(
+    SWE2DSolver* s,
+    const double* source_mps,
+    int32_t n_cells)
+{
+    if (!s) return;
+    const int32_t nc = s->mesh->n_cells;
+    s->external_sources_enabled = false;
+    s->external_source_terms.assign(static_cast<size_t>(nc), 0.0);
+
+    if (source_mps && n_cells == nc && n_cells > 0) {
+        s->external_source_terms.assign(source_mps, source_mps + static_cast<size_t>(n_cells));
+        s->external_sources_enabled = true;
+    }
+
+#ifdef BACKWATER_HAS_CUDA
+    if (s->dev) {
+        swe2d_gpu_set_external_sources(
+            s->dev,
+            s->external_sources_enabled ? s->external_source_terms.data() : nullptr,
+            s->external_sources_enabled ? nc : 0);
     }
 #endif
 }

@@ -108,6 +108,7 @@ struct SWE2DSolver {
     std::vector<double> dhu;  // [n_cells]
     std::vector<double> dhv;  // [n_cells]
     std::vector<double> source_terms; // [n_cells] additive depth source [m/s]
+    std::vector<double> external_source_terms; // [n_cells] externally-coupled depth source [m/s]
 
     // ── Cell-neighbor connectivity (CSR) for higher-order reconstruction ────
     std::vector<int32_t> cell_nbr_offsets; // [n_cells + 1]
@@ -135,6 +136,11 @@ struct SWE2DSolver {
     std::vector<double>  rain_excess_cum_mm;  // [n_cells] cumulative excess [mm]
     double rain_ia_ratio = 0.2;
     double rain_mm_to_model_depth = 1.0e-3;   // convert mm excess depth -> solver depth units (m or ft)
+
+    // Optional external coupling source terms (e.g., drainage/structure coupling
+    // from Python). When enabled, these are added every step on top of native
+    // rain+CN source terms.
+    bool external_sources_enabled = false;
 
     // ── Simulation time ──────────────────────────────────────────────────────
     double t = 0.0;
@@ -198,6 +204,13 @@ void swe2d_solver_set_rain_cn_forcing(
     int32_t n_samples,
     double ia_ratio,
     double mm_to_model_depth = 1.0e-3);
+
+// Configure per-cell externally-coupled depth source terms [m/s].
+// Passing nullptr or n_cells <= 0 clears external sources.
+void swe2d_solver_set_external_sources(
+    SWE2DSolver* s,
+    const double* source_mps,
+    int32_t n_cells);
 
 // Copy current state out to caller-supplied arrays (length mesh.n_cells each).
 void swe2d_get_state(const SWE2DSolver* s, double* h_out, double* hu_out, double* hv_out);

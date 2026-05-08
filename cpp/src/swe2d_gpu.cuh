@@ -21,6 +21,8 @@ struct SWE2DDeviceState {
     double*  d_edge_nx     = nullptr;
     double*  d_edge_ny     = nullptr;
     double*  d_edge_len    = nullptr;
+    double*  d_edge_mx     = nullptr;
+    double*  d_edge_my     = nullptr;
     int32_t* d_edge_bc     = nullptr;   // BCType stored as int32_t for CUDA compatibility
     double*  d_edge_bc_val = nullptr;
 
@@ -99,6 +101,7 @@ struct SWE2DDeviceState {
     double*  d_rain_cum_mm        = nullptr; // [n_cells]
     double*  d_rain_excess_cum_mm = nullptr; // [n_cells]
     double*  d_cell_source_mps    = nullptr; // [n_cells]
+    double*  d_external_source_mps = nullptr; // [n_cells]
     int32_t  n_rain_gages = 0;
     int32_t  n_rain_samples = 0;
     double   rain_ia_ratio = 0.2;
@@ -226,6 +229,13 @@ void swe2d_gpu_set_rain_cn_forcing(
     double ia_ratio,
     double mm_to_model_depth);
 
+// Upload per-cell external source terms [m/s] used by the GPU step update.
+// Passing nullptr clears external sources on the device.
+void swe2d_gpu_set_external_sources(
+    SWE2DDeviceState* dev,
+    const double* source_mps,
+    int32_t n_cells);
+
 // Headless coupling helper: compute per-cell depth-rate sources [m/s] from
 // packed drainage/structure transfer arrays using CUDA kernels.
 void swe2d_gpu_compute_coupling_sources(
@@ -239,6 +249,47 @@ void swe2d_gpu_compute_coupling_sources(
     const int32_t* structure_down_cell,
     const double* structure_flow_cms,
     double* source_rate_mps_out);
+
+// Headless coupling helper: advance 1D drainage state by one step on GPU and
+// return per-cell surface source flows [m3/s] (positive to 2D, negative from 2D).
+// solver_mode: 0=EGL, 1=DIFFUSION, 2=DYNAMIC.
+void swe2d_gpu_drainage_step(
+    int32_t n_cells,
+    int32_t n_nodes,
+    int32_t n_links,
+    int32_t n_inlets,
+    const double* cell_wse,
+    const double* cell_area,
+    const double* node_invert_elev,
+    const double* node_max_depth,
+    const double* node_surface_area,
+    const int32_t* link_from,
+    const int32_t* link_to,
+    const double* link_length,
+    const double* link_roughness_n,
+    const double* link_diameter,
+    const double* link_max_flow,
+    const int32_t* inlet_cell,
+    const int32_t* inlet_node,
+    const double* inlet_crest_elev,
+    const double* inlet_width,
+    const double* inlet_coefficient,
+    const double* inlet_max_capture,
+    const double* cell_depth,
+    const double* node_depth_in,
+    const double* link_flow_in,
+    double dt_s,
+    double gravity,
+    int32_t solver_mode,
+    double head_deadband_m,
+    double dynamic_flow_relaxation,
+    double* node_depth_out,
+    double* link_flow_out,
+    double* q_cell_out,
+    double* max_node_depth_out,
+    double* max_link_flow_out,
+    double* limiter_event_count_out,
+    double* limiter_volume_m3_out);
 
 // Free all device memory.
 void swe2d_gpu_destroy(SWE2DDeviceState* dev);

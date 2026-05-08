@@ -40,8 +40,9 @@ class ConceptualNode:
 @dataclass
 class ConceptualArc:
     arc_id: int
-    node0: int
-    node1: int
+    node0: int = -1
+    node1: int = -1
+    points_xy: Optional[List[Tuple[float, float]]] = None
 
 
 @dataclass
@@ -1158,6 +1159,37 @@ class GmshBackend(MeshingBackend):
         surface_curve_tags: Dict[int, List[int]] = {}
         surface_quad_controls: Dict[int, Optional[List[QuadEdgeControl]]] = {}
 
+        # Shared geometry registries for conforming inter-region interfaces.
+        # Points and single-segment lines on shared boundaries are reused so
+        # Gmsh meshes that interface curve exactly once.  Without this, each
+        # region independently creates duplicate points/curves at the same
+        # physical location; Gmsh then discretises the shared edge twice with
+        # potentially different node counts, producing hanging nodes that
+        # immediately destabilise the FVM solver.
+        _pt_prec = 6  # rounding digits ≈ 1 µm — sufficient for hydraulic coords
+        pt_reg: Dict[Tuple[float, float], int] = {}   # (rx,ry) -> gmsh point tag
+        seg_reg: Dict[Tuple[int, int], int] = {}       # (p0,p1) -> signed curve tag
+
+        def _geo_pt(x: float, y: float, lc: float) -> int:
+            """Return existing gmsh point tag at (x,y) or create a new one."""
+            key = (round(float(x), _pt_prec), round(float(y), _pt_prec))
+            if key in pt_reg:
+                return pt_reg[key]
+            tag = gmsh.model.geo.addPoint(float(x), float(y), 0.0, lc)
+            pt_reg[key] = tag
+            return tag
+
+        def _geo_seg(p0: int, p1: int) -> int:
+            """Return signed line tag for directed segment p0->p1, sharing if it
+            already exists in either direction."""
+            if (p0, p1) in seg_reg:
+                return seg_reg[(p0, p1)]
+            if (p1, p0) in seg_reg:
+                return -seg_reg[(p1, p0)]
+            tag = gmsh.model.geo.addLine(p0, p1)
+            seg_reg[(p0, p1)] = tag
+            return tag
+
         # ---- 1. Build one Gmsh surface per region ----------------------
         for region in model.regions:
             ring = list(region.ring_xy)
@@ -1195,7 +1227,7 @@ class GmshBackend(MeshingBackend):
                             if np.hypot(x - first_xy[0], y - first_xy[1]) <= tol:
                                 edge_tags.append(first_pt_tag)
                                 continue
-                        ptag = gmsh.model.geo.addPoint(x, y, 0.0, edge_lc)
+                        ptag = _geo_pt(x, y, edge_lc)
                         edge_tags.append(ptag)
                         if first_pt_tag is None:
                             first_pt_tag = ptag
@@ -1203,18 +1235,21 @@ class GmshBackend(MeshingBackend):
                     if len(edge_tags) < 2:
                         continue
                     try:
-                        curve = gmsh.model.geo.addSpline(edge_tags) if len(edge_tags) > 2 else gmsh.model.geo.addLine(edge_tags[0], edge_tags[1])
+                        # Share single-segment edges via _geo_seg so adjacent
+                        # regions referencing the same boundary line reuse the
+                        # same Gmsh curve tag (possibly negated for direction).
+                        curve = gmsh.model.geo.addSpline(edge_tags) if len(edge_tags) > 2 else _geo_seg(edge_tags[0], edge_tags[1])
                         lines.append(curve)
                     except Exception:
                         for k in range(len(edge_tags) - 1):
-                            lines.append(gmsh.model.geo.addLine(edge_tags[k], edge_tags[k + 1]))
+                            lines.append(_geo_seg(edge_tags[k], edge_tags[k + 1]))
                     prev_end_tag = edge_tags[-1]
                 if first_pt_tag is not None and prev_end_tag is not None and prev_end_tag != first_pt_tag:
-                    lines.append(gmsh.model.geo.addLine(prev_end_tag, first_pt_tag))
+                    lines.append(_geo_seg(prev_end_tag, first_pt_tag))
             else:
-                pts = [gmsh.model.geo.addPoint(x, y, 0.0, region.default_size) for x, y in ring]
+                pts = [_geo_pt(x, y, region.default_size) for x, y in ring]
                 for i in range(len(pts)):
-                    lines.append(gmsh.model.geo.addLine(pts[i], pts[(i + 1) % len(pts)]))
+                    lines.append(_geo_seg(pts[i], pts[(i + 1) % len(pts)]))
 
             if len(lines) < 3:
                 continue
@@ -1234,20 +1269,35 @@ class GmshBackend(MeshingBackend):
             arc_curve_tags: List[int] = []
             # Build a quick node-id -> (x,y) lookup
             node_xy = {n.node_id: (n.x, n.y) for n in model.nodes}
+            arc_lc = min((float(r.default_size) for r in model.regions), default=1.0)
             for arc in model.arcs:
+                pts_xy = list(arc.points_xy or [])
+                if len(pts_xy) >= 2:
+                    gp_tags: List[int] = []
+                    for x, y in pts_xy:
+                        ptag = _geo_pt(float(x), float(y), arc_lc)
+                        if not gp_tags or gp_tags[-1] != ptag:
+                            gp_tags.append(ptag)
+                    for i in range(len(gp_tags) - 1):
+                        seg = _geo_seg(gp_tags[i], gp_tags[i + 1])
+                        arc_curve_tags.append(abs(int(seg)))
+                    continue
+
+                # Backward-compatible fallback: endpoint IDs in topo_nodes.
                 p0_xy = node_xy.get(arc.node0)
                 p1_xy = node_xy.get(arc.node1)
                 if p0_xy is None or p1_xy is None:
                     continue
-                gp0 = gmsh.model.geo.addPoint(p0_xy[0], p0_xy[1], 0.0)
-                gp1 = gmsh.model.geo.addPoint(p1_xy[0], p1_xy[1], 0.0)
-                arc_curve_tags.append(gmsh.model.geo.addLine(gp0, gp1))
+                gp0 = _geo_pt(p0_xy[0], p0_xy[1], arc_lc)
+                gp1 = _geo_pt(p1_xy[0], p1_xy[1], arc_lc)
+                arc_curve_tags.append(abs(int(_geo_seg(gp0, gp1))))
 
             if arc_curve_tags:
+                arc_curve_tags = sorted({int(tag) for tag in arc_curve_tags if int(tag) > 0})
+                gmsh.model.geo.synchronize()
                 for surf in surface_tags:
-                    gmsh.model.geo.synchronize()
                     try:
-                        gmsh.model.geo.embed(1, arc_curve_tags, 2, surf)
+                        gmsh.model.mesh.embed(1, arc_curve_tags, 2, surf)
                     except Exception:
                         pass  # arc may not intersect this surface; skip
 
@@ -1394,7 +1444,8 @@ class GmshBackend(MeshingBackend):
                         counts[1] = counts[3] = n1
 
                         for ltag, npt in zip(lines, counts):
-                            gmsh.model.mesh.setTransfiniteCurve(ltag, int(npt))
+                            # abs(): shared reversed curves carry negative tags
+                            gmsh.model.mesh.setTransfiniteCurve(abs(ltag), int(npt))
                         gmsh.model.mesh.setTransfiniteSurface(surf)
                     except Exception:
                         try:
@@ -1442,7 +1493,7 @@ class GmshBackend(MeshingBackend):
                         counts[0] = counts[2] = n0
                         counts[1] = counts[3] = n1
                         for ltag, npt in zip(lines, counts):
-                            gmsh.model.mesh.setTransfiniteCurve(ltag, int(npt))
+                            gmsh.model.mesh.setTransfiniteCurve(abs(ltag), int(npt))
                         gmsh.model.mesh.setTransfiniteSurface(surf)
                     except Exception:
                         pass
@@ -1554,9 +1605,11 @@ def conceptual_from_qgis_layers(
 ) -> ConceptualModel:
     """Build conceptual topology model from QGIS layers.
 
-    Expected fields (optional unless noted):
-    - nodes: node_id
-    - arcs: arc_id, node0, node1
+        Expected fields (optional unless noted):
+        - nodes: node_id
+        - arcs: arc_id
+            - breakline is read from arc geometry vertices (preferred)
+            - node0/node1 are optional fallback endpoints
     - regions (required geometry): region_id, target_size, cell_type
     - constraints: constraint_id, target_size, cell_type
     - quad_edges: region_id, edge_id, target_size, n_layers, first_height, growth_rate
@@ -1586,10 +1639,33 @@ def conceptual_from_qgis_layers(
         arc_fields = set(arcs_layer.fields().names())
         auto_id = 0
         for ft in arcs_layer.getFeatures():
+            geom = ft.geometry()
+            pts: List[Tuple[float, float]] = []
+            if geom is not None and not geom.isEmpty():
+                try:
+                    line = geom.asPolyline()
+                    if line:
+                        pts = [(float(p.x()), float(p.y())) for p in line]
+                except Exception:
+                    pts = []
+                if not pts:
+                    try:
+                        multi = geom.asMultiPolyline()
+                        if multi and multi[0]:
+                            pts = [(float(p.x()), float(p.y())) for p in multi[0]]
+                    except Exception:
+                        pts = []
             a_id = _as_int(ft["arc_id"], auto_id) if "arc_id" in arc_fields else auto_id
             n0 = _as_int(ft["node0"], -1) if "node0" in arc_fields else -1
             n1 = _as_int(ft["node1"], -1) if "node1" in arc_fields else -1
-            arcs.append(ConceptualArc(arc_id=a_id, node0=n0, node1=n1))
+            arcs.append(
+                ConceptualArc(
+                    arc_id=a_id,
+                    node0=n0,
+                    node1=n1,
+                    points_xy=pts if len(pts) >= 2 else None,
+                )
+            )
             auto_id += 1
 
     region_fields = set(regions_layer.fields().names())

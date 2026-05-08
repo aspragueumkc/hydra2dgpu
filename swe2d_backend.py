@@ -131,6 +131,7 @@ class SWE2DBackend:
         self._supports_solver_bc_update = hasattr(self._mod, "swe2d_solver_set_boundary_values")
         self._supports_solver_hydrographs = hasattr(self._mod, "swe2d_solver_set_boundary_hydrographs")
         self._supports_solver_rain_cn = hasattr(self._mod, "swe2d_solver_set_rain_cn_forcing")
+        self._supports_solver_external_sources = hasattr(self._mod, "swe2d_solver_set_external_sources")
         self._h_min = 1.0e-6
         self._cell_area = np.empty(0, dtype=np.float64)
 
@@ -344,6 +345,26 @@ class SWE2DBackend:
             float(mm_to_model_depth),
         )
 
+    def set_external_sources_native(self, source_rate_mps: Optional[np.ndarray]) -> None:
+        """Set external per-cell depth source rates [m/s] directly on native solver.
+
+        This API is designed for device-resident coupling workflows: source
+        terms are uploaded once per step and consumed inside the native update
+        kernel, avoiding full h/hu/hv host->device state round-trips.
+        Passing None clears the external source field.
+        """
+        if self._solver_h is None:
+            raise RuntimeError("initialize() must be called before set_external_sources_native().")
+        if not self._supports_solver_external_sources:
+            raise RuntimeError("Native external source API not supported by current module.")
+        if source_rate_mps is None:
+            self._mod.swe2d_solver_set_external_sources(self._solver_h, None)
+            return
+        src = np.ascontiguousarray(source_rate_mps, dtype=np.float64).ravel()
+        if src.size != self._n_cells:
+            raise ValueError("source_rate_mps length must equal n_cells")
+        self._mod.swe2d_solver_set_external_sources(self._solver_h, src)
+
     # ── Solver init ──────────────────────────────────────────────────────────
 
     def initialize(
@@ -509,6 +530,7 @@ class SWE2DBackend:
         progress_callback: Optional[Callable[[float, dict], None]] = None,
         cancel_check:      Optional[Callable[[], bool]] = None,
         source_rate_callback: Optional[Callable[[float, float, np.ndarray, np.ndarray, np.ndarray], Optional[np.ndarray]]] = None,
+        use_native_source_injection: bool = False,
     ) -> List[dict]:
         """
         Run the solver to t_end.
@@ -528,6 +550,12 @@ class SWE2DBackend:
             Return per-cell depth source rates [L/T]. Returned array must have
             length n_cells. Positive values add depth, negative values remove
             depth. Depth is clipped to >=0 and momentum is zeroed in dry cells.
+        use_native_source_injection : bool, default False
+            If True, source_rate_callback output is uploaded via
+            set_external_sources_native() and consumed directly by native step
+            updates. This keeps state device-resident (no per-step set_state
+            round-trip). In adaptive-CFL mode this applies with one-step lag
+            because dt is only known after each native step.
 
         Returns
         -------
@@ -535,6 +563,13 @@ class SWE2DBackend:
         """
         if self._solver_h is None:
             raise RuntimeError("initialize() must be called before run().")
+
+        if use_native_source_injection and source_rate_callback is not None:
+            if not self._supports_solver_external_sources:
+                raise RuntimeError(
+                    "use_native_source_injection=True requires native external source API support")
+            # Start from zero external source on solver.
+            self.set_external_sources_native(None)
 
         diags: List[dict] = []
         t = 0.0
@@ -546,7 +581,9 @@ class SWE2DBackend:
             if source_rate_callback is not None and dt > 0.0:
                 h, hu, hv = self.get_state()
                 src = source_rate_callback(t, dt, h, hu, hv)
-                if src is not None:
+                if use_native_source_injection:
+                    self.set_external_sources_native(src)
+                elif src is not None:
                     src_arr = np.ascontiguousarray(src, dtype=np.float64).ravel()
                     if src_arr.size != self._n_cells:
                         raise ValueError("source_rate_callback must return an array with length n_cells")
@@ -559,6 +596,10 @@ class SWE2DBackend:
             diags.append(diag)
             if progress_callback:
                 progress_callback(t, diag)
+
+        if use_native_source_injection and source_rate_callback is not None:
+            # Prevent stale external sources from affecting future runs.
+            self.set_external_sources_native(None)
 
         return diags
 

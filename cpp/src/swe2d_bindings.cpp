@@ -111,6 +111,142 @@ PYBIND11_MODULE(backwater_swe2d, m) {
         py::arg("structure_down_cell"),
         py::arg("structure_flow_cms"),
         "Headless CUDA helper: convert inlet/structure transfer flows to per-cell depth-rate sources [m/s].");
+
+    m.def("swe2d_gpu_drainage_step",
+        [](py::array_t<double, py::array::c_style | py::array::forcecast> cell_wse,
+           py::array_t<double, py::array::c_style | py::array::forcecast> cell_area,
+           py::array_t<double, py::array::c_style | py::array::forcecast> node_invert_elev,
+           py::array_t<double, py::array::c_style | py::array::forcecast> node_max_depth,
+           py::array_t<double, py::array::c_style | py::array::forcecast> node_surface_area,
+           py::array_t<int32_t, py::array::c_style | py::array::forcecast> link_from,
+           py::array_t<int32_t, py::array::c_style | py::array::forcecast> link_to,
+           py::array_t<double, py::array::c_style | py::array::forcecast> link_length,
+           py::array_t<double, py::array::c_style | py::array::forcecast> link_roughness_n,
+           py::array_t<double, py::array::c_style | py::array::forcecast> link_diameter,
+           py::array_t<double, py::array::c_style | py::array::forcecast> link_max_flow,
+           py::array_t<int32_t, py::array::c_style | py::array::forcecast> inlet_cell,
+           py::array_t<int32_t, py::array::c_style | py::array::forcecast> inlet_node,
+           py::array_t<double, py::array::c_style | py::array::forcecast> inlet_crest_elev,
+           py::array_t<double, py::array::c_style | py::array::forcecast> inlet_width,
+           py::array_t<double, py::array::c_style | py::array::forcecast> inlet_coefficient,
+           py::array_t<double, py::array::c_style | py::array::forcecast> inlet_max_capture,
+              py::array_t<double, py::array::c_style | py::array::forcecast> cell_depth,
+           py::array_t<double, py::array::c_style | py::array::forcecast> node_depth,
+           py::array_t<double, py::array::c_style | py::array::forcecast> link_flow,
+           double dt_s,
+           double gravity,
+              int32_t solver_mode,
+              double head_deadband_m,
+              double dynamic_flow_relaxation)
+           -> py::tuple
+        {
+            const int32_t n_cells = static_cast<int32_t>(cell_wse.size());
+            if (cell_area.size() != static_cast<size_t>(n_cells)) {
+                throw std::invalid_argument("cell_wse and cell_area must have same length");
+            }
+            const int32_t n_nodes = static_cast<int32_t>(node_invert_elev.size());
+            if (node_max_depth.size() != static_cast<size_t>(n_nodes) ||
+                node_surface_area.size() != static_cast<size_t>(n_nodes) ||
+                node_depth.size() != static_cast<size_t>(n_nodes)) {
+                throw std::invalid_argument("node arrays must have consistent length");
+            }
+            const int32_t n_links = static_cast<int32_t>(link_from.size());
+            if (link_to.size() != static_cast<size_t>(n_links) ||
+                link_length.size() != static_cast<size_t>(n_links) ||
+                link_roughness_n.size() != static_cast<size_t>(n_links) ||
+                link_diameter.size() != static_cast<size_t>(n_links) ||
+                link_max_flow.size() != static_cast<size_t>(n_links) ||
+                link_flow.size() != static_cast<size_t>(n_links)) {
+                throw std::invalid_argument("link arrays must have consistent length");
+            }
+            const int32_t n_inlets = static_cast<int32_t>(inlet_cell.size());
+            if (inlet_node.size() != static_cast<size_t>(n_inlets) ||
+                inlet_crest_elev.size() != static_cast<size_t>(n_inlets) ||
+                inlet_width.size() != static_cast<size_t>(n_inlets) ||
+                inlet_coefficient.size() != static_cast<size_t>(n_inlets) ||
+                inlet_max_capture.size() != static_cast<size_t>(n_inlets)) {
+                throw std::invalid_argument("inlet arrays must have consistent length");
+            }
+
+            auto node_depth_out = py::array_t<double>(n_nodes);
+            auto link_flow_out = py::array_t<double>(n_links);
+            auto q_cell_out = py::array_t<double>(n_cells);
+            double max_node_depth = 0.0;
+            double max_link_flow = 0.0;
+            double limiter_events = 0.0;
+            double limiter_volume_m3 = 0.0;
+
+            swe2d_gpu_drainage_step(
+                n_cells,
+                n_nodes,
+                n_links,
+                n_inlets,
+                cell_wse.data(),
+                cell_area.data(),
+                node_invert_elev.data(),
+                node_max_depth.data(),
+                node_surface_area.data(),
+                link_from.data(),
+                link_to.data(),
+                link_length.data(),
+                link_roughness_n.data(),
+                link_diameter.data(),
+                link_max_flow.data(),
+                inlet_cell.data(),
+                inlet_node.data(),
+                inlet_crest_elev.data(),
+                inlet_width.data(),
+                inlet_coefficient.data(),
+                inlet_max_capture.data(),
+                (cell_depth.size() == static_cast<size_t>(n_cells)) ? cell_depth.data() : nullptr,
+                node_depth.data(),
+                link_flow.data(),
+                dt_s,
+                gravity,
+                solver_mode,
+                head_deadband_m,
+                dynamic_flow_relaxation,
+                node_depth_out.mutable_data(),
+                link_flow_out.mutable_data(),
+                q_cell_out.mutable_data(),
+                &max_node_depth,
+                &max_link_flow,
+                &limiter_events,
+                &limiter_volume_m3);
+
+            py::dict diag;
+            diag["max_node_depth"] = max_node_depth;
+            diag["max_link_flow"] = max_link_flow;
+            diag["limiter_events"] = limiter_events;
+            diag["limiter_volume_m3"] = limiter_volume_m3;
+            return py::make_tuple(node_depth_out, link_flow_out, q_cell_out, diag);
+        },
+        py::arg("cell_wse"),
+        py::arg("cell_area"),
+        py::arg("node_invert_elev"),
+        py::arg("node_max_depth"),
+        py::arg("node_surface_area"),
+        py::arg("link_from"),
+        py::arg("link_to"),
+        py::arg("link_length"),
+        py::arg("link_roughness_n"),
+        py::arg("link_diameter"),
+        py::arg("link_max_flow"),
+        py::arg("inlet_cell"),
+        py::arg("inlet_node"),
+        py::arg("inlet_crest_elev"),
+        py::arg("inlet_width"),
+        py::arg("inlet_coefficient"),
+        py::arg("inlet_max_capture"),
+        py::arg("cell_depth"),
+        py::arg("node_depth"),
+        py::arg("link_flow"),
+        py::arg("dt_s"),
+        py::arg("gravity"),
+        py::arg("solver_mode"),
+        py::arg("head_deadband_m") = 1.0e-3,
+        py::arg("dynamic_flow_relaxation") = 1.0,
+        "Headless CUDA helper: advance 1D drainage network one step (EGL/diffusion/dynamic).");
 #else
     m.def("swe2d_gpu_compute_coupling_sources",
         [](py::array_t<double, py::array::c_style | py::array::forcecast>,
@@ -128,6 +264,36 @@ PYBIND11_MODULE(backwater_swe2d, m) {
         py::arg("structure_up_cell"),
         py::arg("structure_down_cell"),
         py::arg("structure_flow_cms"));
+
+    m.def("swe2d_gpu_drainage_step",
+        [](py::array_t<double, py::array::c_style | py::array::forcecast>,
+           py::array_t<double, py::array::c_style | py::array::forcecast>,
+           py::array_t<double, py::array::c_style | py::array::forcecast>,
+           py::array_t<double, py::array::c_style | py::array::forcecast>,
+           py::array_t<double, py::array::c_style | py::array::forcecast>,
+           py::array_t<int32_t, py::array::c_style | py::array::forcecast>,
+           py::array_t<int32_t, py::array::c_style | py::array::forcecast>,
+           py::array_t<double, py::array::c_style | py::array::forcecast>,
+           py::array_t<double, py::array::c_style | py::array::forcecast>,
+           py::array_t<double, py::array::c_style | py::array::forcecast>,
+           py::array_t<double, py::array::c_style | py::array::forcecast>,
+           py::array_t<int32_t, py::array::c_style | py::array::forcecast>,
+           py::array_t<int32_t, py::array::c_style | py::array::forcecast>,
+           py::array_t<double, py::array::c_style | py::array::forcecast>,
+           py::array_t<double, py::array::c_style | py::array::forcecast>,
+           py::array_t<double, py::array::c_style | py::array::forcecast>,
+           py::array_t<double, py::array::c_style | py::array::forcecast>,
+           py::array_t<double, py::array::c_style | py::array::forcecast>,
+           py::array_t<double, py::array::c_style | py::array::forcecast>,
+           py::array_t<double, py::array::c_style | py::array::forcecast>,
+           double,
+           double,
+           int32_t,
+           double,
+           double) -> py::tuple
+        {
+            throw std::runtime_error("CUDA path not compiled; swe2d_gpu_drainage_step is unavailable.");
+        });
 #endif
 
     // ── Mesh builder (legacy triangular triplets) ───────────────────────────
@@ -428,6 +594,24 @@ PYBIND11_MODULE(backwater_swe2d, m) {
         },
         py::arg("solver"), py::arg("cell_gage_idx"), py::arg("gage_offsets"), py::arg("hg_time_s"), py::arg("hg_cum_mm"), py::arg("cn"), py::arg("ia_ratio") = 0.2, py::arg("mm_to_model_depth") = 1.0e-3,
         "Register per-cell rain/CN forcing data on the solver.");
+
+    m.def("swe2d_solver_set_external_sources",
+        [](const std::shared_ptr<PySolver>& ps,
+           py::object source_mps_obj) {
+            if (!ps || !ps->solver) throw std::invalid_argument("null solver handle");
+            if (source_mps_obj.is_none()) {
+                swe2d_solver_set_external_sources(ps->solver, nullptr, 0);
+                return;
+            }
+            auto src = source_mps_obj.cast<py::array_t<double, py::array::c_style | py::array::forcecast>>();
+            const int32_t nc = ps->solver->mesh->n_cells;
+            if (src.size() != static_cast<size_t>(nc)) {
+                throw std::invalid_argument("source_mps length must equal n_cells");
+            }
+            swe2d_solver_set_external_sources(ps->solver, src.data(), nc);
+        },
+        py::arg("solver"), py::arg("source_mps") = py::none(),
+        "Set per-cell external depth source rates [m/s] on solver (None clears).");
 
     // ── Solver creation ───────────────────────────────────────────────────────
     m.def("swe2d_create_solver",
