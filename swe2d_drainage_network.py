@@ -607,8 +607,10 @@ class SWE2DUrbanDrainageModule(DrainageCouplingEngine):
             except KeyError:
                 continue
 
-            d_pipe = max(0.0, float(outfall.diameter))
-            area_pipe = circular_area_from_diameter(d_pipe) if d_pipe > 0.0 else 0.0
+            area_pipe = max(0.0, float(getattr(outfall, "area_m2", 0.0) or 0.0))
+            if area_pipe <= 0.0:
+                d_pipe = max(0.0, float(outfall.diameter))
+                area_pipe = circular_area_from_diameter(d_pipe) if d_pipe > 0.0 else 0.0
             if area_pipe <= 0.0:
                 continue
 

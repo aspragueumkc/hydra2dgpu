@@ -1,0 +1,1696 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE article PUBLIC "-//NLM//DTD JATS (Z39.96) Journal Publishing DTD v1.3 20210610//EN" "JATS-journalpublishing1-3.dtd">
+<article xmlns:mml="http://www.w3.org/1998/Math/MathML" xmlns:xlink="http://www.w3.org/1999/xlink" article-type="research-article" dtd-version="1.3" xml:lang="en">
+  <front>
+    <journal-meta>
+      <journal-id journal-id-type="publisher-id">water</journal-id>
+      <journal-title-group>
+        <journal-title>Water</journal-title>
+        <abbrev-journal-title abbrev-type="publisher">Water</abbrev-journal-title>
+        <abbrev-journal-title abbrev-type="pubmed">Water</abbrev-journal-title>
+      </journal-title-group>
+      <issn pub-type="epub">2073-4441</issn>
+      <publisher>
+        <publisher-name>MDPI</publisher-name>
+      </publisher>
+    </journal-meta>
+    <article-meta>
+      <article-id pub-id-type="doi">10.3390/w15071300</article-id>
+      <article-id pub-id-type="publisher-id">water-15-01300</article-id>
+      <article-categories>
+        <subj-group>
+          <subject>Article</subject>
+        </subj-group>
+      </article-categories>
+      <title-group>
+        <article-title>A GPU-Accelerated Two-Dimensional Hydrodynamic Model for Unstructured Grids</article-title>
+      </title-group>
+      <contrib-group>
+        <contrib contrib-type="author">
+          <contrib-id contrib-id-type="orcid" authenticated="true">https://orcid.org/0000-0002-3238-8818</contrib-id>
+          <name>
+            <surname>Peng</surname>
+            <given-names>Feng</given-names>
+          </name>
+          <role vocab="credit" vocab-identifier="https://credit.niso.org/" vocab-term="Methodology" vocab-term-identifier="https://credit.niso.org/contributor-roles/methodology/">Methodology</role>
+          <role vocab="credit" vocab-identifier="https://credit.niso.org/" vocab-term="Software" vocab-term-identifier="https://credit.niso.org/contributor-roles/software/">Software</role>
+          <role vocab="credit" vocab-identifier="https://credit.niso.org/" vocab-term="Validation" vocab-term-identifier="https://credit.niso.org/contributor-roles/validation/">Validation</role>
+          <role vocab="credit" vocab-identifier="https://credit.niso.org/" vocab-term="Writing &#x2013; original draft" vocab-term-identifier="https://credit.niso.org/contributor-roles/writing-original-draft/">Writing &#x2013; original draft</role>
+          <xref rid="af1-water-15-01300" ref-type="aff">1</xref>
+          <xref rid="af2-water-15-01300" ref-type="aff">2</xref>
+        </contrib>
+        <contrib contrib-type="author">
+          <name>
+            <surname>Hao</surname>
+            <given-names>Xiaoli</given-names>
+          </name>
+          <role vocab="credit" vocab-identifier="https://credit.niso.org/" vocab-term="Methodology" vocab-term-identifier="https://credit.niso.org/contributor-roles/methodology/">Methodology</role>
+          <role vocab="credit" vocab-identifier="https://credit.niso.org/" vocab-term="Writing &#x2013; review &amp; editing" vocab-term-identifier="https://credit.niso.org/contributor-roles/writing-review-editing/">Writing &#x2013; review &amp; editing</role>
+          <xref rid="af2-water-15-01300" ref-type="aff">2</xref>
+        </contrib>
+        <contrib contrib-type="author">
+          <name>
+            <surname>Chai</surname>
+            <given-names>Fuxin</given-names>
+          </name>
+          <role vocab="credit" vocab-identifier="https://credit.niso.org/" vocab-term="Conceptualization" vocab-term-identifier="https://credit.niso.org/contributor-roles/conceptualization/">Conceptualization</role>
+          <role vocab="credit" vocab-identifier="https://credit.niso.org/" vocab-term="Validation" vocab-term-identifier="https://credit.niso.org/contributor-roles/validation/">Validation</role>
+          <role vocab="credit" vocab-identifier="https://credit.niso.org/" vocab-term="Data curation" vocab-term-identifier="https://credit.niso.org/contributor-roles/data-curation/">Data curation</role>
+          <role vocab="credit" vocab-identifier="https://credit.niso.org/" vocab-term="Writing &#x2013; review &amp; editing" vocab-term-identifier="https://credit.niso.org/contributor-roles/writing-review-editing/">Writing &#x2013; review &amp; editing</role>
+          <xref rid="af1-water-15-01300" ref-type="aff">1</xref>
+          <xref rid="af2-water-15-01300" ref-type="aff">2</xref>
+          <xref rid="c1-water-15-01300" ref-type="corresp">*</xref>
+        </contrib>
+      </contrib-group>
+      <contrib-group>
+        <contrib contrib-type="editor">
+          <name>
+            <surname>Wu</surname>
+            <given-names>Chin H</given-names>
+          </name>
+          <role>Academic Editor</role>
+        </contrib>
+      </contrib-group>
+      <aff id="af1-water-15-01300"><label>1</label>State Key Laboratory of Simulation and Regulation of Water Cycle in River Basin, China Institute of Water Resource and Hydropower Research, Beijing 100038, China; <email>pengfeng@iwhr.com</email></aff>
+      <aff id="af2-water-15-01300"><label>2</label>Research Center on Flood and Drought Disaster Reduction, China Institute of Water Resources and Hydropower Research, Beijing 100038, China</aff>
+      <author-notes>
+        <corresp id="c1-water-15-01300"><label>*</label>Correspondence: <email>chaifx@iwhr.com</email></corresp>
+      </author-notes>
+      <pub-date pub-type="epub">
+        <day>25</day>
+        <month>03</month>
+        <year>2023</year>
+      </pub-date>
+      <pub-date pub-type="collection">
+        <month>04</month>
+        <year>2023</year>
+      </pub-date>
+      <volume>15</volume>
+      <issue>7</issue>
+      <elocation-id>1300</elocation-id>
+      <history>
+        <date date-type="received">
+          <day>20</day>
+          <month>02</month>
+          <year>2023</year>
+        </date>
+        <date date-type="rev-recd">
+          <day>17</day>
+          <month>03</month>
+          <year>2023</year>
+        </date>
+        <date date-type="accepted">
+          <day>23</day>
+          <month>03</month>
+          <year>2023</year>
+        </date>
+      </history>
+      <permissions>
+        <copyright-statement>&#xA9; 2023 by the authors.</copyright-statement>
+        <copyright-year>2023</copyright-year>
+        <license license-type="open-access">
+          <license-p>Licensee MDPI, Basel, Switzerland. This article is an open access article distributed under the terms and conditions of the Creative Commons Attribution (CC BY) license (<ext-link ext-link-type="uri" xlink:href="https://creativecommons.org/licenses/by/4.0/">https://creativecommons.org/licenses/by/4.0/</ext-link>).</license-p>
+        </license>
+      </permissions>
+      <abstract>
+        <p>The precision of numerical overland flow models is limited by their computational cost. A GPU-accelerated 2D shallow flow model is developed to overcome this challenge in this study. The model employs a Godunov-type finite volume method (FVM) to solve shallow water equations (SWEs) with unstructured grids, while also considering rainfall, infiltration, bottom slope, and friction source terms. The numerical simulation demonstrates that this model has well-balanced and robust properties. In an experiment of urban rain-runoff and flood, the accuracy and stability of the model are further demonstrated. The model is programmed with CUDA, and each numerical computation term is processed in parallel to adopt multi-thread GPU acceleration technology. With the GPU computation framework, this model can achieve a speeding up ration around 75 to single-thread CPU in the dam-break flow for a large-scale application.</p>
+      </abstract>
+      <kwd-group>
+        <kwd>Godunov scheme</kwd>
+        <kwd>unstructured grids</kwd>
+        <kwd>GPU acceleration</kwd>
+        <kwd>shallow water equations</kwd>
+      </kwd-group>
+      <funding-group>
+        <award-group>
+          <funding-source>National Key Research and Development Program of China</funding-source>
+          <award-id>2016YFC0803107</award-id>
+        </award-group>
+        <award-group>
+          <funding-source>Beijing Science and Technology Project</funding-source>
+          <award-id>Z201100008220005</award-id>
+        </award-group>
+        <funding-statement>This research was funded by the National Key Research and Development Program of China (2016YFC0803107), Beijing Science and Technology Project (No. Z201100008220005).</funding-statement>
+      </funding-group>
+    </article-meta>
+  </front>
+  <body>
+    <sec id="sec1-water-15-01300" sec-type="intro">
+      <title>1. Introduction</title>
+      <p>With global warming and urbanization, floods have become one of the most serious natural disasters [<xref ref-type="bibr" rid="B1-water-15-01300">1</xref>]. Faster and more accurate numerical flood simulation is gaining importance as an essential technical tool for flood prediction and early warning [<xref ref-type="bibr" rid="B2-water-15-01300">2</xref>,<xref ref-type="bibr" rid="B3-water-15-01300">3</xref>,<xref ref-type="bibr" rid="B4-water-15-01300">4</xref>]. </p>
+      <p>In the past several decades, considerable progress has been made in numerical simulation [<xref ref-type="bibr" rid="B5-water-15-01300">5</xref>]. In addition, numerous numerical schemes have been developed to solve different real-word issues, which include dam breaks, urban rainfall-runoff, and flash floods in catchment areas [<xref ref-type="bibr" rid="B6-water-15-01300">6</xref>,<xref ref-type="bibr" rid="B7-water-15-01300">7</xref>,<xref ref-type="bibr" rid="B8-water-15-01300">8</xref>,<xref ref-type="bibr" rid="B9-water-15-01300">9</xref>]. Among this method, the Godunov-type finite volume method has good shock-capturing ability and a good conservation property and has been extensively used for the numerical simulation of water flow. Therefore, the Godunov-type finite volume method is employed in the present study. On the one hand, many numerical flux solver methods for Godunov-type finite volume schemes have been put forward in past studies [<xref ref-type="bibr" rid="B10-water-15-01300">10</xref>,<xref ref-type="bibr" rid="B11-water-15-01300">11</xref>,<xref ref-type="bibr" rid="B12-water-15-01300">12</xref>,<xref ref-type="bibr" rid="B13-water-15-01300">13</xref>], such as Roe&#x2019;s approximate Riemann solver proposed by Brufau and Garcia-Navarro [<xref ref-type="bibr" rid="B14-water-15-01300">14</xref>], the Augmented Roe&#x2019;s Riemann solver [<xref ref-type="bibr" rid="B15-water-15-01300">15</xref>], the HLLC Riemann solver [<xref ref-type="bibr" rid="B16-water-15-01300">16</xref>,<xref ref-type="bibr" rid="B17-water-15-01300">17</xref>], and the HLLCS Riemann solver [<xref ref-type="bibr" rid="B18-water-15-01300">18</xref>,<xref ref-type="bibr" rid="B19-water-15-01300">19</xref>]. In past studies, the Riemann solver has been developing constantly, presenting more accurate and efficient methods for solving the Riemann problem. On the other hand, well-balanced numerical schemes that can treat wet&#x2013;dry front and static water stability property have also advanced in past studies [<xref ref-type="bibr" rid="B20-water-15-01300">20</xref>,<xref ref-type="bibr" rid="B21-water-15-01300">21</xref>,<xref ref-type="bibr" rid="B22-water-15-01300">22</xref>]. A hydrostatic reconstruction method was introduced by Audusse et al. [<xref ref-type="bibr" rid="B23-water-15-01300">23</xref>], and this method reconstructs Riemann states on both sides of the interface to maintain the stability of the numerical model. Liang and Marche [<xref ref-type="bibr" rid="B24-water-15-01300">24</xref>] used water surface elevation as the flow variable to deduce a well-balanced SWE. Xia et al. [<xref ref-type="bibr" rid="B25-water-15-01300">25</xref>] improved the non-negative water depth reconstruction method using second-order reconstructed topography.</p>
+      <p>With the increasing availability of high-resolution terrain data from satellite imagery [<xref ref-type="bibr" rid="B26-water-15-01300">26</xref>,<xref ref-type="bibr" rid="B27-water-15-01300">27</xref>], it is necessary to provide a detailed description of complex topographic features for the accurate reproduction of key hydrodynamic processes. Therefore, there is a common problem in both large-scale watershed flood simulation and accurate urban storm flood simulation. Huxley et al. [<xref ref-type="bibr" rid="B28-water-15-01300">28</xref>] adopted five different sizes (0.5 m, 1 m, 2 m, 5 m, 10 m and 20 m) of grids to carry out numerical simulation in an urban area, and this study indicated that accurate results depend on the number of grids, which must be made smaller to achieve precision. In urban areas, a 2~5 m grid size has been recommended by several previous studies [<xref ref-type="bibr" rid="B29-water-15-01300">29</xref>]. Numerical simulation models are still rarely used, mainly because of their large computational cost in large-scale districts. Therefore, the development of an efficient and accurate hydrodynamic model poses a significant challenge for overland flow simulation.</p>
+      <p>Simulation models must be particularly fast (in the order of minutes) to meet real-time simulation requirements. Many high-performance computational methods have been developed to accelerate hydrodynamic numerical simulation. Leandro et al. [<xref ref-type="bibr" rid="B30-water-15-01300">30</xref>] parallelized multiple CPUs to build a two-dimensional diffusive wave model called P-DWave. Wu et al. [<xref ref-type="bibr" rid="B31-water-15-01300">31</xref>] developed the CPU-OpenMP framework for solving SWEs using the Smoothed Particle Hydrodynamics method. In addition, due to the low efficiency of traditional CPU-based series or parallel computing methods, these methods cannot be used for rapid and efficient hydrodynamic model solutions with a large number of grids. In contrast, GPU acceleration is much more promising and has a higher speed-up. Xia et al. [<xref ref-type="bibr" rid="B32-water-15-01300">32</xref>] applied multi-threaded GPU acceleration on a structured grid model.</p>
+      <p>Hydrodynamic modeling methods and techniques have undergone great developments, but there are still significant challenges to the accuracy and efficiency of water flow simulation. For large-scale river basins and complex urban areas under the surface, traditional computing methods have high computing time costs when working with high-resolution unstructured grids. With regard to this problem, a new unstructured, two-dimensional hydrodynamic numerical model using GPU acceleration is proposed in this work. </p>
+    </sec>
+    <sec id="sec2-water-15-01300">
+      <title>2. Governing Equations</title>
+      <p>The conservative two-dimensional shallow water equations with source terms are denoted below:<disp-formula id="FD1-water-15-01300"><label>(1)</label><mml:math display="block" id="mm1"><mml:semantics><mml:mrow><mml:mfrac><mml:mrow><mml:mo>&#x2202;</mml:mo><mml:mstyle mathvariant="bold" mathsize="normal"><mml:mi>U</mml:mi></mml:mstyle></mml:mrow><mml:mrow><mml:mo>&#x2202;</mml:mo><mml:mi>t</mml:mi></mml:mrow></mml:mfrac><mml:mo>+</mml:mo><mml:mfrac><mml:mrow><mml:mo>&#x2202;</mml:mo><mml:mstyle mathvariant="bold" mathsize="normal"><mml:mi>F</mml:mi></mml:mstyle></mml:mrow><mml:mrow><mml:mo>&#x2202;</mml:mo><mml:mi>x</mml:mi></mml:mrow></mml:mfrac><mml:mo>+</mml:mo><mml:mfrac><mml:mrow><mml:mo>&#x2202;</mml:mo><mml:mstyle mathvariant="bold" mathsize="normal"><mml:mi>G</mml:mi></mml:mstyle></mml:mrow><mml:mrow><mml:mo>&#x2202;</mml:mo><mml:mi>y</mml:mi></mml:mrow></mml:mfrac><mml:mo>=</mml:mo><mml:mstyle mathvariant="bold" mathsize="normal"><mml:mi>S</mml:mi></mml:mstyle></mml:mrow></mml:semantics></mml:math></disp-formula>
+      where <italic>t</italic> represents the time; <bold>U</bold> contains the variables of the flow state; <bold>F</bold> and <bold>G</bold> are the vectors of the numerical flux terms in <italic>x</italic> and <italic>y</italic> of Cartesian coordinates; and <bold>S</bold> is the vector of source terms that include rainfall, infiltration, bed slope, and friction. In addition, the vector terms are written as:<disp-formula id="FD2-water-15-01300"><label>(2)</label><mml:math display="block" id="mm2"><mml:semantics><mml:mtable columnalign="left"><mml:mtr><mml:mtd><mml:mstyle mathvariant="bold" mathsize="normal"><mml:mi>U</mml:mi></mml:mstyle><mml:mo>=</mml:mo><mml:mrow><mml:mo>[</mml:mo><mml:mrow><mml:mtable><mml:mtr><mml:mtd><mml:mi>h</mml:mi></mml:mtd></mml:mtr><mml:mtr><mml:mtd><mml:mrow><mml:mi>h</mml:mi><mml:mi>u</mml:mi></mml:mrow></mml:mtd></mml:mtr><mml:mtr><mml:mtd><mml:mrow><mml:mi>h</mml:mi><mml:mi>v</mml:mi></mml:mrow></mml:mtd></mml:mtr></mml:mtable></mml:mrow><mml:mo>]</mml:mo></mml:mrow><mml:mo>,</mml:mo><mml:mo>&#x2009;</mml:mo><mml:mo>&#x2009;</mml:mo><mml:mstyle mathvariant="bold" mathsize="normal"><mml:mi>F</mml:mi></mml:mstyle><mml:mo>=</mml:mo><mml:mrow><mml:mo>[</mml:mo><mml:mrow><mml:mtable><mml:mtr><mml:mtd><mml:mrow><mml:mi>h</mml:mi><mml:mi>u</mml:mi></mml:mrow></mml:mtd></mml:mtr><mml:mtr><mml:mtd><mml:mrow><mml:mi>h</mml:mi><mml:msup><mml:mi>u</mml:mi><mml:mn>2</mml:mn></mml:msup><mml:mo>+</mml:mo><mml:mfrac><mml:mn>1</mml:mn><mml:mn>2</mml:mn></mml:mfrac><mml:mi>g</mml:mi><mml:msup><mml:mi>h</mml:mi><mml:mn>2</mml:mn></mml:msup></mml:mrow></mml:mtd></mml:mtr><mml:mtr><mml:mtd><mml:mrow><mml:mi>h</mml:mi><mml:mi>u</mml:mi><mml:mi>v</mml:mi></mml:mrow></mml:mtd></mml:mtr></mml:mtable></mml:mrow><mml:mo>]</mml:mo></mml:mrow><mml:mo>,</mml:mo><mml:mo>&#x2009;</mml:mo><mml:mo>&#x2009;</mml:mo><mml:mstyle mathvariant="bold" mathsize="normal"><mml:mi>G</mml:mi></mml:mstyle><mml:mo>=</mml:mo><mml:mrow><mml:mo>[</mml:mo><mml:mrow><mml:mtable><mml:mtr><mml:mtd><mml:mrow><mml:mi>h</mml:mi><mml:mi>v</mml:mi></mml:mrow></mml:mtd></mml:mtr><mml:mtr><mml:mtd><mml:mrow><mml:mi>h</mml:mi><mml:mi>u</mml:mi><mml:mi>v</mml:mi></mml:mrow></mml:mtd></mml:mtr><mml:mtr><mml:mtd><mml:mrow><mml:mi>h</mml:mi><mml:msup><mml:mi>v</mml:mi><mml:mn>2</mml:mn></mml:msup><mml:mo>+</mml:mo><mml:mfrac><mml:mn>1</mml:mn><mml:mn>2</mml:mn></mml:mfrac><mml:mi>g</mml:mi><mml:msup><mml:mi>h</mml:mi><mml:mn>2</mml:mn></mml:msup></mml:mrow></mml:mtd></mml:mtr></mml:mtable></mml:mrow><mml:mo>]</mml:mo></mml:mrow></mml:mtd></mml:mtr><mml:mtr><mml:mtd><mml:mstyle mathvariant="bold" mathsize="normal"><mml:mi>S</mml:mi></mml:mstyle><mml:mo>=</mml:mo><mml:mstyle mathvariant="bold" mathsize="normal"><mml:mi>R</mml:mi><mml:mi>I</mml:mi></mml:mstyle><mml:mo>+</mml:mo><mml:msub><mml:mstyle mathvariant="bold" mathsize="normal"><mml:mi>S</mml:mi></mml:mstyle><mml:mi>b</mml:mi></mml:msub><mml:mo>+</mml:mo><mml:msub><mml:mstyle mathvariant="bold" mathsize="normal"><mml:mi>S</mml:mi></mml:mstyle><mml:mi>f</mml:mi></mml:msub><mml:mo>=</mml:mo><mml:mrow><mml:mo>[</mml:mo><mml:mrow><mml:mtable><mml:mtr><mml:mtd><mml:mrow><mml:mi>R</mml:mi><mml:mo>+</mml:mo><mml:mi>I</mml:mi></mml:mrow></mml:mtd></mml:mtr><mml:mtr><mml:mtd><mml:mn>0</mml:mn></mml:mtd></mml:mtr><mml:mtr><mml:mtd><mml:mn>0</mml:mn></mml:mtd></mml:mtr></mml:mtable></mml:mrow><mml:mo>]</mml:mo></mml:mrow><mml:mo>+</mml:mo><mml:mrow><mml:mo>[</mml:mo><mml:mrow><mml:mtable><mml:mtr><mml:mtd><mml:mn>0</mml:mn></mml:mtd></mml:mtr><mml:mtr><mml:mtd><mml:mrow><mml:mtable><mml:mtr><mml:mtd><mml:mrow><mml:mo>&#x2212;</mml:mo><mml:mi>g</mml:mi><mml:mi>h</mml:mi><mml:mfrac><mml:mrow><mml:mo>&#x2202;</mml:mo><mml:mi>z</mml:mi></mml:mrow><mml:mrow><mml:mo>&#x2202;</mml:mo><mml:mi>x</mml:mi></mml:mrow></mml:mfrac></mml:mrow></mml:mtd></mml:mtr><mml:mtr><mml:mtd><mml:mrow><mml:mo>&#x2212;</mml:mo><mml:mi>g</mml:mi><mml:mi>h</mml:mi><mml:mfrac><mml:mrow><mml:mo>&#x2202;</mml:mo><mml:mi>z</mml:mi></mml:mrow><mml:mrow><mml:mo>&#x2202;</mml:mo><mml:mi>y</mml:mi></mml:mrow></mml:mfrac></mml:mrow></mml:mtd></mml:mtr></mml:mtable></mml:mrow></mml:mtd></mml:mtr></mml:mtable></mml:mrow><mml:mo>]</mml:mo></mml:mrow><mml:mo>+</mml:mo><mml:mrow><mml:mo>[</mml:mo><mml:mrow><mml:mtable><mml:mtr><mml:mtd><mml:mn>0</mml:mn></mml:mtd></mml:mtr><mml:mtr><mml:mtd><mml:mrow><mml:mo>&#x2212;</mml:mo><mml:msub><mml:mi>C</mml:mi><mml:mi>f</mml:mi></mml:msub><mml:mi>u</mml:mi><mml:msqrt><mml:mrow><mml:msup><mml:mi>u</mml:mi><mml:mn>2</mml:mn></mml:msup><mml:mo>+</mml:mo><mml:msup><mml:mi>v</mml:mi><mml:mn>2</mml:mn></mml:msup></mml:mrow></mml:msqrt></mml:mrow></mml:mtd></mml:mtr><mml:mtr><mml:mtd><mml:mrow><mml:mo>&#x2212;</mml:mo><mml:msub><mml:mi>C</mml:mi><mml:mi>f</mml:mi></mml:msub><mml:mi>v</mml:mi><mml:msqrt><mml:mrow><mml:msup><mml:mi>u</mml:mi><mml:mn>2</mml:mn></mml:msup><mml:mo>+</mml:mo><mml:msup><mml:mi>v</mml:mi><mml:mn>2</mml:mn></mml:msup></mml:mrow></mml:msqrt></mml:mrow></mml:mtd></mml:mtr></mml:mtable></mml:mrow><mml:mo>]</mml:mo></mml:mrow></mml:mtd></mml:mtr></mml:mtable></mml:semantics></mml:math></disp-formula>
+      in which <italic>g</italic> indicates the gravity acceleration with a value of 9.81 m<sup>2</sup>/s; <italic>h</italic> refers to the water depth; <italic>u</italic> and <italic>v</italic> represent depth-averaged velocity in <italic>x</italic> and <italic>y</italic> directions; <italic>R</italic> and <italic>I</italic> indicate rainfall rate and infiltration rate, respectively; <italic>z</italic> refers to the bottom elevation; and <italic>C<sub>f</sub></italic> represents the roughness coefficient evaluated based on
+      <disp-formula id="FD3-water-15-01300"><label>(3)</label><mml:math display="block" id="mm3"><mml:semantics><mml:mrow><mml:msub><mml:mi>C</mml:mi><mml:mi>f</mml:mi></mml:msub><mml:mo>=</mml:mo><mml:mi>g</mml:mi><mml:msup><mml:mi>n</mml:mi><mml:mn>2</mml:mn></mml:msup><mml:mo>/</mml:mo><mml:msup><mml:mi>h</mml:mi><mml:mrow><mml:mn>1</mml:mn><mml:mo>/</mml:mo><mml:mn>3</mml:mn></mml:mrow></mml:msup></mml:mrow></mml:semantics></mml:math></disp-formula>
+      where <italic>n</italic> represents the Manning coefficient.</p>
+    </sec>
+    <sec id="sec3-water-15-01300">
+      <title>3. Numerical Schemes</title>
+      <sec id="sec3dot1-water-15-01300">
+        <title>3.1. Finite Volume Method and Unstructured Grid Discretization</title>
+        <p>The integral form of Equation (2) is
+        <disp-formula id="FD4-water-15-01300"><label>(4)</label><mml:math display="block" id="mm4"><mml:semantics><mml:mrow><mml:mstyle displaystyle="true"><mml:mrow><mml:msub><mml:mo>&#x222B;</mml:mo><mml:mo>&#x3A9;</mml:mo></mml:msub><mml:mrow><mml:mfrac><mml:mrow><mml:mo>&#x2202;</mml:mo><mml:mstyle mathvariant="bold" mathsize="normal"><mml:mi>U</mml:mi></mml:mstyle></mml:mrow><mml:mrow><mml:mo>&#x2202;</mml:mo><mml:mi>t</mml:mi></mml:mrow></mml:mfrac><mml:mi>d</mml:mi><mml:mo>&#x3A9;</mml:mo></mml:mrow></mml:mrow></mml:mstyle><mml:mo>+</mml:mo><mml:mstyle displaystyle="true"><mml:mrow><mml:msub><mml:mo>&#x222B;</mml:mo><mml:mo>&#x3A9;</mml:mo></mml:msub><mml:mrow><mml:mrow><mml:mo>(</mml:mo><mml:mrow><mml:mfrac><mml:mrow><mml:mo>&#x2202;</mml:mo><mml:mstyle mathvariant="bold" mathsize="normal"><mml:mi>F</mml:mi></mml:mstyle></mml:mrow><mml:mrow><mml:mo>&#x2202;</mml:mo><mml:mi>x</mml:mi></mml:mrow></mml:mfrac><mml:mo>+</mml:mo><mml:mfrac><mml:mrow><mml:mo>&#x2202;</mml:mo><mml:mstyle mathvariant="bold" mathsize="normal"><mml:mi>G</mml:mi></mml:mstyle></mml:mrow><mml:mrow><mml:mo>&#x2202;</mml:mo><mml:mi>y</mml:mi></mml:mrow></mml:mfrac></mml:mrow><mml:mo>)</mml:mo></mml:mrow><mml:mi>d</mml:mi><mml:mo>&#x3A9;</mml:mo></mml:mrow></mml:mrow></mml:mstyle><mml:mo>=</mml:mo><mml:mstyle displaystyle="true"><mml:mrow><mml:msub><mml:mo>&#x222B;</mml:mo><mml:mo>&#x3A9;</mml:mo></mml:msub><mml:mrow><mml:mstyle mathvariant="bold" mathsize="normal"><mml:mi>S</mml:mi></mml:mstyle><mml:mi>d</mml:mi><mml:mo>&#x3A9;</mml:mo></mml:mrow></mml:mrow></mml:mstyle><mml:mo>.</mml:mo></mml:mrow></mml:semantics></mml:math></disp-formula>
+        using the Gauss theorem, Equation (4) can be expressed as (5):<disp-formula id="FD5-water-15-01300"><label>(5)</label><mml:math display="block" id="mm5"><mml:semantics><mml:mrow><mml:mfrac><mml:mo>&#x2202;</mml:mo><mml:mrow><mml:mo>&#x2202;</mml:mo><mml:mi>t</mml:mi></mml:mrow></mml:mfrac><mml:mstyle displaystyle="true"><mml:mrow><mml:msub><mml:mo>&#x222B;</mml:mo><mml:mo>&#x3A9;</mml:mo></mml:msub><mml:mrow><mml:mstyle mathvariant="bold" mathsize="normal"><mml:mi>U</mml:mi></mml:mstyle><mml:mi>d</mml:mi><mml:mo>&#x3A9;</mml:mo></mml:mrow></mml:mrow></mml:mstyle><mml:mo>+</mml:mo><mml:mstyle displaystyle="true"><mml:mrow><mml:msub><mml:mo>&#x222B;</mml:mo><mml:mo>&#x393;</mml:mo></mml:msub><mml:mrow><mml:mrow><mml:mo>(</mml:mo><mml:mrow><mml:mstyle mathvariant="bold" mathsize="normal"><mml:mi>F</mml:mi></mml:mstyle><mml:msub><mml:mi>n</mml:mi><mml:mi>x</mml:mi></mml:msub><mml:mo>+</mml:mo><mml:mstyle mathvariant="bold" mathsize="normal"><mml:mi>G</mml:mi></mml:mstyle><mml:msub><mml:mi>n</mml:mi><mml:mi>y</mml:mi></mml:msub></mml:mrow><mml:mo>)</mml:mo></mml:mrow><mml:mi>d</mml:mi></mml:mrow></mml:mrow></mml:mstyle><mml:mo>&#x393;</mml:mo><mml:mo>=</mml:mo><mml:mstyle displaystyle="true"><mml:mrow><mml:msub><mml:mo>&#x222B;</mml:mo><mml:mo>&#x3A9;</mml:mo></mml:msub><mml:mrow><mml:mrow><mml:mo>(</mml:mo><mml:mrow><mml:mstyle mathvariant="bold" mathsize="normal"><mml:mi>R</mml:mi><mml:mi>I</mml:mi></mml:mstyle><mml:mo>+</mml:mo><mml:msub><mml:mstyle mathvariant="bold" mathsize="normal"><mml:mi>S</mml:mi></mml:mstyle><mml:mi>b</mml:mi></mml:msub><mml:mo>+</mml:mo><mml:msub><mml:mstyle mathvariant="bold" mathsize="normal"><mml:mi>S</mml:mi></mml:mstyle><mml:mi>f</mml:mi></mml:msub></mml:mrow><mml:mo>)</mml:mo></mml:mrow><mml:mi>d</mml:mi><mml:mo>&#x3A9;</mml:mo></mml:mrow></mml:mrow></mml:mstyle></mml:mrow></mml:semantics></mml:math></disp-formula>
+        where &#x3A9; and &#x393; are the control area and boundary of the cell in an unstructured mesh, representing the control area and sides of cell <italic>i</italic>, respectively; <italic>n<sub>x</sub></italic> and <italic>n<sub>y</sub></italic> indicate the outward unit normal vector to the cell <italic>i</italic> at the edges in the <italic>x</italic> and <italic>y</italic> directions.</p>
+        <p>A general unstructured grid is shown in <xref ref-type="fig" rid="water-15-01300-f001">Figure 1</xref>. &#x394;<italic>t</italic> is defined as the time step. The explicit time-marching scheme of Equation (5) in cell <italic>i</italic> is
+        <disp-formula id="FD6-water-15-01300"><label>(6)</label><mml:math display="block" id="mm6"><mml:semantics><mml:mrow><mml:msubsup><mml:mstyle mathvariant="bold" mathsize="normal"><mml:mi>U</mml:mi></mml:mstyle><mml:mi>i</mml:mi><mml:mrow><mml:mi>n</mml:mi><mml:mo>+</mml:mo><mml:mn>1</mml:mn></mml:mrow></mml:msubsup><mml:mo>=</mml:mo><mml:msubsup><mml:mstyle mathvariant="bold" mathsize="normal"><mml:mi>U</mml:mi></mml:mstyle><mml:mi>i</mml:mi><mml:mi>n</mml:mi></mml:msubsup><mml:mo>&#x2212;</mml:mo><mml:mfrac><mml:mrow><mml:mo>&#x394;</mml:mo><mml:mi>t</mml:mi></mml:mrow><mml:mrow><mml:msub><mml:mo>&#x3A9;</mml:mo><mml:mi>i</mml:mi></mml:msub></mml:mrow></mml:mfrac><mml:mstyle displaystyle="true"><mml:munderover><mml:mo>&#x2211;</mml:mo><mml:mrow><mml:mi>k</mml:mi><mml:mo>=</mml:mo><mml:mn>1</mml:mn></mml:mrow><mml:mrow><mml:mi>N</mml:mi><mml:mi>E</mml:mi></mml:mrow></mml:munderover><mml:mrow><mml:msub><mml:mrow><mml:mrow><mml:mo>(</mml:mo><mml:mrow><mml:msup><mml:mstyle mathvariant="bold" mathsize="normal"><mml:mi>T</mml:mi></mml:mstyle><mml:mrow><mml:mstyle mathvariant="bold" mathsize="normal"><mml:mo>&#x2212;</mml:mo><mml:mn>1</mml:mn></mml:mstyle></mml:mrow></mml:msup><mml:mstyle mathvariant="bold" mathsize="normal"><mml:mover accent="true"><mml:mi>F</mml:mi><mml:mo stretchy="false">^</mml:mo></mml:mover></mml:mstyle></mml:mrow><mml:mo>)</mml:mo></mml:mrow></mml:mrow><mml:mrow><mml:mi>i</mml:mi><mml:mo>,</mml:mo><mml:mi>k</mml:mi></mml:mrow></mml:msub><mml:msub><mml:mi>l</mml:mi><mml:mrow><mml:mi>i</mml:mi><mml:mo>,</mml:mo><mml:mi>k</mml:mi></mml:mrow></mml:msub></mml:mrow></mml:mstyle><mml:mo>+</mml:mo><mml:mo>&#x394;</mml:mo><mml:mi>t</mml:mi><mml:mrow><mml:mo>(</mml:mo><mml:mrow><mml:mstyle mathvariant="bold" mathsize="normal"><mml:mi>R</mml:mi></mml:mstyle><mml:msubsup><mml:mstyle mathvariant="bold" mathsize="normal"><mml:mi>I</mml:mi></mml:mstyle><mml:mi>i</mml:mi><mml:mi>n</mml:mi></mml:msubsup><mml:mo>+</mml:mo><mml:msubsup><mml:mstyle mathvariant="bold" mathsize="normal"><mml:mi>S</mml:mi></mml:mstyle><mml:mrow><mml:mi>b</mml:mi><mml:mi>i</mml:mi></mml:mrow><mml:mi>n</mml:mi></mml:msubsup><mml:mo>+</mml:mo><mml:msubsup><mml:mstyle mathvariant="bold" mathsize="normal"><mml:mi>S</mml:mi></mml:mstyle><mml:mrow><mml:mi>f</mml:mi><mml:mi>i</mml:mi></mml:mrow><mml:mrow><mml:mi>n</mml:mi><mml:mo>+</mml:mo><mml:mn>1</mml:mn></mml:mrow></mml:msubsup></mml:mrow><mml:mo>)</mml:mo></mml:mrow></mml:mrow></mml:semantics></mml:math></disp-formula>
+        where <italic>k</italic> denotes the index of the edge and <italic>NE</italic> is the total edge; <italic>l</italic> indicates the length of the edge; and <inline-formula><mml:math id="mm7"><mml:semantics><mml:mrow><mml:msup><mml:mstyle mathvariant="bold" mathsize="normal"><mml:mi>T</mml:mi></mml:mstyle><mml:mrow><mml:mstyle mathvariant="bold" mathsize="normal"><mml:mo>&#x2212;</mml:mo><mml:mn>1</mml:mn></mml:mstyle></mml:mrow></mml:msup><mml:mstyle mathvariant="bold" mathsize="normal"><mml:mover accent="true"><mml:mi>F</mml:mi><mml:mo stretchy="false">^</mml:mo></mml:mover></mml:mstyle></mml:mrow></mml:semantics></mml:math></inline-formula> represents the numerical flux at the edge.</p>
+        <p>Solving the flux of SWEs satisfies the rotational invariance property in every edge, and
+        <disp-formula id="FD7-water-15-01300"><label>(7)</label><mml:math display="block" id="mm8"><mml:semantics><mml:mrow><mml:mstyle mathvariant="bold" mathsize="normal"><mml:mi>F</mml:mi></mml:mstyle><mml:msub><mml:mi>n</mml:mi><mml:mi>x</mml:mi></mml:msub><mml:mo>+</mml:mo><mml:mstyle mathvariant="bold" mathsize="normal"><mml:mi>G</mml:mi></mml:mstyle><mml:msub><mml:mi>n</mml:mi><mml:mi>y</mml:mi></mml:msub><mml:mo>=</mml:mo><mml:msup><mml:mstyle mathvariant="bold" mathsize="normal"><mml:mi>T</mml:mi></mml:mstyle><mml:mrow><mml:mstyle mathvariant="bold" mathsize="normal"><mml:mo>&#x2212;</mml:mo><mml:mn>1</mml:mn></mml:mstyle></mml:mrow></mml:msup><mml:mstyle mathvariant="bold" mathsize="normal"><mml:mi>F</mml:mi></mml:mstyle><mml:mrow><mml:mo>(</mml:mo><mml:mrow><mml:mstyle mathvariant="bold" mathsize="normal"><mml:mi>T</mml:mi><mml:mi>U</mml:mi></mml:mstyle></mml:mrow><mml:mo>)</mml:mo></mml:mrow></mml:mrow></mml:semantics></mml:math></disp-formula>
+        where <bold>T</bold> indicates the rotation matrix and <bold>T<sup>&#x2212;1</sup></bold> refers to the inverse matrix:<disp-formula id="FD8-water-15-01300"><label>(8)</label><mml:math display="block" id="mm9"><mml:semantics><mml:mrow><mml:mstyle mathvariant="bold" mathsize="normal"><mml:mi>T</mml:mi></mml:mstyle><mml:mo>=</mml:mo><mml:mrow><mml:mo>[</mml:mo><mml:mrow><mml:mtable><mml:mtr><mml:mtd><mml:mn>1</mml:mn></mml:mtd><mml:mtd><mml:mn>0</mml:mn></mml:mtd><mml:mtd><mml:mn>0</mml:mn></mml:mtd></mml:mtr><mml:mtr><mml:mtd><mml:mn>0</mml:mn></mml:mtd><mml:mtd><mml:mrow><mml:msub><mml:mi>n</mml:mi><mml:mi>x</mml:mi></mml:msub></mml:mrow></mml:mtd><mml:mtd><mml:mrow><mml:msub><mml:mi>n</mml:mi><mml:mi>y</mml:mi></mml:msub></mml:mrow></mml:mtd></mml:mtr><mml:mtr><mml:mtd><mml:mn>0</mml:mn></mml:mtd><mml:mtd><mml:mrow><mml:mo>&#x2212;</mml:mo><mml:msub><mml:mi>n</mml:mi><mml:mi>y</mml:mi></mml:msub></mml:mrow></mml:mtd><mml:mtd><mml:mrow><mml:msub><mml:mi>n</mml:mi><mml:mi>x</mml:mi></mml:msub></mml:mrow></mml:mtd></mml:mtr></mml:mtable></mml:mrow><mml:mo>]</mml:mo></mml:mrow><mml:mo>&#x2009;</mml:mo><mml:mo>&#x2009;</mml:mo><mml:mo>&#x2009;</mml:mo><mml:mo>&#x2009;</mml:mo><mml:msup><mml:mstyle mathvariant="bold" mathsize="normal"><mml:mi>T</mml:mi></mml:mstyle><mml:mrow><mml:mstyle mathvariant="bold" mathsize="normal"><mml:mo>&#x2212;</mml:mo><mml:mn>1</mml:mn></mml:mstyle></mml:mrow></mml:msup><mml:mo>=</mml:mo><mml:mrow><mml:mo>[</mml:mo><mml:mrow><mml:mtable><mml:mtr><mml:mtd><mml:mn>1</mml:mn></mml:mtd><mml:mtd><mml:mn>0</mml:mn></mml:mtd><mml:mtd><mml:mn>0</mml:mn></mml:mtd></mml:mtr><mml:mtr><mml:mtd><mml:mn>0</mml:mn></mml:mtd><mml:mtd><mml:mrow><mml:msub><mml:mi>n</mml:mi><mml:mi>x</mml:mi></mml:msub></mml:mrow></mml:mtd><mml:mtd><mml:mrow><mml:mo>&#x2212;</mml:mo><mml:msub><mml:mi>n</mml:mi><mml:mi>y</mml:mi></mml:msub></mml:mrow></mml:mtd></mml:mtr><mml:mtr><mml:mtd><mml:mn>0</mml:mn></mml:mtd><mml:mtd><mml:mrow><mml:msub><mml:mi>n</mml:mi><mml:mi>y</mml:mi></mml:msub></mml:mrow></mml:mtd><mml:mtd><mml:mrow><mml:msub><mml:mi>n</mml:mi><mml:mi>x</mml:mi></mml:msub></mml:mrow></mml:mtd></mml:mtr></mml:mtable></mml:mrow><mml:mo>]</mml:mo></mml:mrow><mml:mo>&#x2009;</mml:mo></mml:mrow></mml:semantics></mml:math></disp-formula></p>
+        <p>The conserved variable <inline-formula><mml:math id="mm10"><mml:semantics><mml:mrow><mml:mover accent="true"><mml:mstyle mathvariant="bold" mathsize="normal"><mml:mi>U</mml:mi></mml:mstyle><mml:mo stretchy="false">^</mml:mo></mml:mover></mml:mrow></mml:semantics></mml:math></inline-formula> after rotation transformation in the edges of the cell is presented as
+        <disp-formula id="FD9-water-15-01300"><label>(9)</label><mml:math id="mm11" display="block"><mml:semantics><mml:mrow><mml:mover accent="true"><mml:mstyle mathvariant="bold" mathsize="normal"><mml:mi>U</mml:mi></mml:mstyle><mml:mo stretchy="false">^</mml:mo></mml:mover><mml:mo>=</mml:mo><mml:mstyle mathvariant="bold" mathsize="normal"><mml:mi>T</mml:mi><mml:mi>U</mml:mi></mml:mstyle></mml:mrow></mml:semantics></mml:math></disp-formula>
+        and flux <inline-formula><mml:math id="mm12"><mml:semantics><mml:mrow><mml:mstyle mathvariant="bold" mathsize="normal"><mml:mover accent="true"><mml:mi>F</mml:mi><mml:mo stretchy="false">^</mml:mo></mml:mover></mml:mstyle><mml:mo>=</mml:mo><mml:mstyle mathvariant="bold" mathsize="normal"><mml:mi>F</mml:mi></mml:mstyle><mml:mrow><mml:mo>(</mml:mo><mml:mstyle mathvariant="bold" mathsize="normal"><mml:mover accent="true"><mml:mi>U</mml:mi><mml:mo stretchy="false">^</mml:mo></mml:mover></mml:mstyle><mml:mo>)</mml:mo></mml:mrow></mml:mrow></mml:semantics></mml:math></inline-formula>.</p>
+        <p>Thus, the 2D SWEs can not only solve the 1D Riemann problem but can also avoid solving <bold>F</bold> and <bold>G</bold> twice at all edges. The numerical fluxes of cell <italic>i</italic> and cell <italic>j</italic> adjacent to both sides of the edge <italic>k</italic> are satisfied:<disp-formula id="FD10-water-15-01300"><label>(10)</label><mml:math display="block" id="mm13"><mml:semantics><mml:mrow><mml:msubsup><mml:mstyle mathvariant="bold" mathsize="normal"><mml:mover accent="true"><mml:mi>F</mml:mi><mml:mo stretchy="false">^</mml:mo></mml:mover></mml:mstyle><mml:mrow><mml:mi>j</mml:mi><mml:mo>,</mml:mo><mml:mi>k</mml:mi></mml:mrow><mml:mo>&#x2212;</mml:mo></mml:msubsup><mml:mo>=</mml:mo><mml:mo>&#x2212;</mml:mo><mml:msubsup><mml:mstyle mathvariant="bold" mathsize="normal"><mml:mover accent="true"><mml:mi>F</mml:mi><mml:mo stretchy="false">^</mml:mo></mml:mover></mml:mstyle><mml:mrow><mml:mi>i</mml:mi><mml:mo>,</mml:mo><mml:mi>k</mml:mi></mml:mrow><mml:mo>&#x2212;</mml:mo></mml:msubsup></mml:mrow></mml:semantics></mml:math></disp-formula></p>
+      </sec>
+      <sec id="sec3dot2-water-15-01300">
+        <title>3.2. Water Depth Reconstruction</title>
+        <p>The numerical stability of the hydrodynamic model depends on the correct evaluation of the numerical flux and the bottom slope source term. It is important to the wet&#x2013;dry front that one side of the interface has water and the others do not. Especially in the case water flows from a wet grid to a dry grid over complex terrain, reasonable evaluation of numerical flux is essential for numerical stability. The hydrostatic reconstruction (HR) method presented by Audusse et al. [<xref ref-type="bibr" rid="B23-water-15-01300">23</xref>] is an efficient and robust method. The flow variables are reconstructed using the assessed water depth and bottom elevation at both sides. The HR method reconstructs the flow variables in the following steps.</p>
+        <p>At first, the maximum bottom elevation at both sides of the interface is defined as that in Audusse et al. [<xref ref-type="bibr" rid="B23-water-15-01300">23</xref>]:<disp-formula id="FD11-water-15-01300"><label>(11)</label><mml:math display="block" id="mm14"><mml:semantics><mml:mrow><mml:msub><mml:mi>z</mml:mi><mml:mi>M</mml:mi></mml:msub><mml:mo>=</mml:mo><mml:mi>max</mml:mi><mml:mrow><mml:mo>(</mml:mo><mml:mrow><mml:msub><mml:mi>z</mml:mi><mml:mi>L</mml:mi></mml:msub><mml:mo>,</mml:mo><mml:msub><mml:mi>z</mml:mi><mml:mi>R</mml:mi></mml:msub></mml:mrow><mml:mo>)</mml:mo></mml:mrow><mml:mo>.</mml:mo></mml:mrow></mml:semantics></mml:math></disp-formula></p>
+        <p>Secondly, the reconstructed water depths at both sides are presented as:<disp-formula id="FD12-water-15-01300"><label>(12)</label><mml:math display="block" id="mm15"><mml:semantics><mml:mrow><mml:mtable columnalign="left"><mml:mtr><mml:mtd><mml:msubsup><mml:mi>h</mml:mi><mml:mi>L</mml:mi><mml:mi>c</mml:mi></mml:msubsup><mml:mo>=</mml:mo><mml:mi>max</mml:mi><mml:mrow><mml:mo>(</mml:mo><mml:mrow><mml:mn>0</mml:mn><mml:mo>,</mml:mo><mml:msub><mml:mi>h</mml:mi><mml:mi>L</mml:mi></mml:msub><mml:mo>+</mml:mo><mml:msub><mml:mi>z</mml:mi><mml:mi>L</mml:mi></mml:msub><mml:mo>&#x2212;</mml:mo><mml:msub><mml:mi>z</mml:mi><mml:mi>M</mml:mi></mml:msub></mml:mrow><mml:mo>)</mml:mo></mml:mrow></mml:mtd></mml:mtr><mml:mtr><mml:mtd><mml:msubsup><mml:mi>h</mml:mi><mml:mi>R</mml:mi><mml:mi>c</mml:mi></mml:msubsup><mml:mo>=</mml:mo><mml:mi>max</mml:mi><mml:mrow><mml:mo>(</mml:mo><mml:mrow><mml:mn>0</mml:mn><mml:mo>,</mml:mo><mml:msub><mml:mi>h</mml:mi><mml:mi mathvariant="normal">R</mml:mi></mml:msub><mml:mo>+</mml:mo><mml:msub><mml:mi>z</mml:mi><mml:mi>R</mml:mi></mml:msub><mml:mo>&#x2212;</mml:mo><mml:msub><mml:mi>z</mml:mi><mml:mi>M</mml:mi></mml:msub></mml:mrow><mml:mo>)</mml:mo></mml:mrow></mml:mtd></mml:mtr></mml:mtable><mml:mo>.</mml:mo></mml:mrow></mml:semantics></mml:math></disp-formula></p>
+        <p>Then, the velocities at both sides are in turn reconstructed as: <disp-formula id="FD13-water-15-01300"><label>(13)</label><mml:math display="block" id="mm16"><mml:semantics><mml:mrow><mml:msubsup><mml:mi>u</mml:mi><mml:mi>d</mml:mi><mml:mi>c</mml:mi></mml:msubsup><mml:mo>=</mml:mo><mml:mrow><mml:mo>{</mml:mo><mml:mtable columnalign="left"><mml:mtr><mml:mtd><mml:msub><mml:mi>u</mml:mi><mml:mi>d</mml:mi></mml:msub><mml:mo>,</mml:mo></mml:mtd><mml:mtd><mml:mrow><mml:mi>if</mml:mi><mml:mo>&#xA0;</mml:mo></mml:mrow><mml:msub><mml:mi>h</mml:mi><mml:mi>d</mml:mi></mml:msub><mml:mo>&gt;</mml:mo><mml:msub><mml:mi>h</mml:mi><mml:mi>&#x3B5;</mml:mi></mml:msub></mml:mtd></mml:mtr><mml:mtr><mml:mtd><mml:mn>0</mml:mn><mml:mo>,</mml:mo></mml:mtd><mml:mtd><mml:mrow><mml:mi>if</mml:mi><mml:mo>&#xA0;</mml:mo></mml:mrow><mml:msub><mml:mi>h</mml:mi><mml:mi>d</mml:mi></mml:msub><mml:mo>&#x2264;</mml:mo><mml:msub><mml:mi>h</mml:mi><mml:mi>&#x3B5;</mml:mi></mml:msub></mml:mtd></mml:mtr></mml:mtable></mml:mrow><mml:mo>&#x2009;</mml:mo><mml:mo>&#x2009;</mml:mo><mml:mo>&#x2009;</mml:mo><mml:mo>&#x2009;</mml:mo><mml:mo>&#x2009;</mml:mo><mml:mo>&#x2009;</mml:mo><mml:mo>&#x2009;</mml:mo><mml:mo>&#x2009;</mml:mo><mml:mo>&#x2009;</mml:mo><mml:msubsup><mml:mi>v</mml:mi><mml:mi>d</mml:mi><mml:mi>c</mml:mi></mml:msubsup><mml:mo>=</mml:mo><mml:mrow><mml:mo>{</mml:mo><mml:mtable columnalign="left"><mml:mtr><mml:mtd><mml:msub><mml:mi>v</mml:mi><mml:mi>d</mml:mi></mml:msub><mml:mo>,</mml:mo></mml:mtd><mml:mtd><mml:mrow><mml:mi>if</mml:mi><mml:mo>&#xA0;</mml:mo></mml:mrow><mml:msub><mml:mi>h</mml:mi><mml:mi>d</mml:mi></mml:msub><mml:mo>&gt;</mml:mo><mml:msub><mml:mi>h</mml:mi><mml:mi>&#x3B5;</mml:mi></mml:msub></mml:mtd></mml:mtr><mml:mtr><mml:mtd><mml:mn>0</mml:mn><mml:mo>,</mml:mo></mml:mtd><mml:mtd><mml:mrow><mml:mi>if</mml:mi><mml:mo>&#xA0;</mml:mo></mml:mrow><mml:msub><mml:mi>h</mml:mi><mml:mi>d</mml:mi></mml:msub><mml:mo>&#x2264;</mml:mo><mml:msub><mml:mi>h</mml:mi><mml:mi>&#x3B5;</mml:mi></mml:msub></mml:mtd></mml:mtr></mml:mtable></mml:mrow><mml:mo>.</mml:mo></mml:mrow></mml:semantics></mml:math></disp-formula></p>
+        <p>Without losing generality, <xref ref-type="fig" rid="water-15-01300-f002">Figure 2</xref> indicates three cases where two cells share a common edge at the discrete level. The water depths of the two cells are reconstructed above the maximum bottom elevation. Peculiarly, if the water level of a cell is less than the bottom elevation of another cell, then its water depth is reconstructed as zero, as illustrated in <xref ref-type="fig" rid="water-15-01300-f002">Figure 2</xref>c. </p>
+      </sec>
+      <sec id="sec3dot3-water-15-01300">
+        <title>3.3. Interface Numerical Flux and Slope Source Term Discretization</title>
+        <p>The SWEs are solved using a Godunov-type finite volume scheme in this model. The interfaces flux is calculated by solve Riemann problem. However, it is difficult to calculate the analytical solution to the Riemann problem quickly due to the large amount of computation cost. In the current work, the HLLC approximate Riemann solver [<xref ref-type="bibr" rid="B17-water-15-01300">17</xref>] is used to calculate the numerical flux at the interface. The Riemann problem only requires solving once at each edge to detect the numerical flux at the cell interface using Equation (7)&#x2212;(10). The interface flux is calculated using the reconstructed variables in <xref ref-type="sec" rid="sec3dot2-water-15-01300">Section 3.2</xref>, and the flux is given by the HLLC approximate Riemann solver as:<disp-formula id="FD14-water-15-01300"><label>(14)</label><mml:math display="block" id="mm17"><mml:semantics><mml:mrow><mml:mstyle mathvariant="bold" mathsize="normal"><mml:mi>F</mml:mi></mml:mstyle><mml:mo>=</mml:mo><mml:mrow><mml:mo>{</mml:mo><mml:mtable columnalign="left"><mml:mtr><mml:mtd><mml:msub><mml:mstyle mathvariant="bold" mathsize="normal"><mml:mi>F</mml:mi></mml:mstyle><mml:mi>L</mml:mi></mml:msub></mml:mtd><mml:mtd><mml:mo>&#x2009;</mml:mo><mml:mo>&#x2009;</mml:mo><mml:mo>&#x2009;</mml:mo><mml:mo>&#x2009;</mml:mo><mml:mo>&#x2009;</mml:mo><mml:mo>&#x2009;</mml:mo><mml:mo>&#x2009;</mml:mo><mml:mo>&#x2009;</mml:mo><mml:mi>if</mml:mi><mml:mo>&#x2009;</mml:mo><mml:msub><mml:mi>S</mml:mi><mml:mi>L</mml:mi></mml:msub><mml:mo>&gt;</mml:mo><mml:mn>0</mml:mn></mml:mtd></mml:mtr><mml:mtr><mml:mtd><mml:msubsup><mml:mstyle mathvariant="bold" mathsize="normal"><mml:mi>F</mml:mi></mml:mstyle><mml:mi>L</mml:mi><mml:mo>*</mml:mo></mml:msubsup></mml:mtd><mml:mtd><mml:mo>&#x2009;</mml:mo><mml:mo>&#x2009;</mml:mo><mml:mo>&#x2009;</mml:mo><mml:mo>&#x2009;</mml:mo><mml:mo>&#x2009;</mml:mo><mml:mo>&#x2009;</mml:mo><mml:mo>&#x2009;</mml:mo><mml:mo>&#x2009;</mml:mo><mml:mi>if</mml:mi><mml:mo>&#x2009;</mml:mo><mml:msub><mml:mi>S</mml:mi><mml:mi>L</mml:mi></mml:msub><mml:mo>&#x2264;</mml:mo><mml:mn>0</mml:mn><mml:mo>&#x2264;</mml:mo><mml:msub><mml:mi>S</mml:mi><mml:mi>M</mml:mi></mml:msub></mml:mtd></mml:mtr><mml:mtr><mml:mtd><mml:msubsup><mml:mstyle mathvariant="bold" mathsize="normal"><mml:mi>F</mml:mi></mml:mstyle><mml:mi>R</mml:mi><mml:mo>*</mml:mo></mml:msubsup></mml:mtd><mml:mtd><mml:mo>&#x2009;</mml:mo><mml:mo>&#x2009;</mml:mo><mml:mo>&#x2009;</mml:mo><mml:mo>&#x2009;</mml:mo><mml:mo>&#x2009;</mml:mo><mml:mo>&#x2009;</mml:mo><mml:mo>&#x2009;</mml:mo><mml:mo>&#x2009;</mml:mo><mml:mi>if</mml:mi><mml:mo>&#x2009;</mml:mo><mml:msub><mml:mi>S</mml:mi><mml:mi>M</mml:mi></mml:msub><mml:mo>&#x2264;</mml:mo><mml:mn>0</mml:mn><mml:mo>&#x2264;</mml:mo><mml:msub><mml:mi>S</mml:mi><mml:mi>R</mml:mi></mml:msub></mml:mtd></mml:mtr><mml:mtr><mml:mtd><mml:msub><mml:mstyle mathvariant="bold" mathsize="normal"><mml:mi>F</mml:mi></mml:mstyle><mml:mi>R</mml:mi></mml:msub></mml:mtd><mml:mtd><mml:mo>&#x2009;</mml:mo><mml:mo>&#x2009;</mml:mo><mml:mo>&#x2009;</mml:mo><mml:mo>&#x2009;</mml:mo><mml:mo>&#x2009;</mml:mo><mml:mo>&#x2009;</mml:mo><mml:mo>&#x2009;</mml:mo><mml:mo>&#x2009;</mml:mo><mml:mi>if</mml:mi><mml:mo>&#x2009;</mml:mo><mml:msub><mml:mi>S</mml:mi><mml:mi>R</mml:mi></mml:msub><mml:mo>&#x2264;</mml:mo><mml:mn>0</mml:mn></mml:mtd></mml:mtr></mml:mtable></mml:mrow></mml:mrow></mml:semantics></mml:math></disp-formula>
+        where <inline-formula><mml:math id="mm18"><mml:semantics><mml:mrow><mml:msub><mml:mstyle mathvariant="bold" mathsize="normal"><mml:mi>F</mml:mi></mml:mstyle><mml:mi>L</mml:mi></mml:msub><mml:mo>=</mml:mo><mml:mstyle mathvariant="bold" mathsize="normal"><mml:mi>F</mml:mi></mml:mstyle><mml:mrow><mml:mo>(</mml:mo><mml:mrow><mml:msub><mml:mstyle mathvariant="bold" mathsize="normal"><mml:mi>U</mml:mi></mml:mstyle><mml:mi>L</mml:mi></mml:msub></mml:mrow><mml:mo>)</mml:mo></mml:mrow></mml:mrow></mml:semantics></mml:math></inline-formula> and <inline-formula><mml:math id="mm19"><mml:semantics><mml:mrow><mml:msub><mml:mstyle mathvariant="bold" mathsize="normal"><mml:mi>F</mml:mi></mml:mstyle><mml:mi>R</mml:mi></mml:msub><mml:mo>=</mml:mo><mml:mstyle mathvariant="bold" mathsize="normal"><mml:mi>F</mml:mi></mml:mstyle><mml:mrow><mml:mo>(</mml:mo><mml:mrow><mml:msub><mml:mstyle mathvariant="bold" mathsize="normal"><mml:mi>U</mml:mi></mml:mstyle><mml:mi>R</mml:mi></mml:msub></mml:mrow><mml:mo>)</mml:mo></mml:mrow></mml:mrow></mml:semantics></mml:math></inline-formula> represent the calculated Riemann states from the left and right; <italic>S<sub>L</sub></italic>, <italic>S<sub>R</sub></italic>, and <italic>S<sub>M</sub></italic> refer to characteristic wave speeds; and <inline-formula><mml:math id="mm20"><mml:semantics><mml:mrow><mml:msubsup><mml:mstyle mathvariant="bold" mathsize="normal"><mml:mi>F</mml:mi></mml:mstyle><mml:mi>L</mml:mi><mml:mo>*</mml:mo></mml:msubsup></mml:mrow></mml:semantics></mml:math></inline-formula> and <inline-formula><mml:math id="mm21"><mml:semantics><mml:mrow><mml:msubsup><mml:mstyle mathvariant="bold" mathsize="normal"><mml:mi>F</mml:mi></mml:mstyle><mml:mi>R</mml:mi><mml:mo>*</mml:mo></mml:msubsup></mml:mrow></mml:semantics></mml:math></inline-formula> indicate the numerical fluxes in the left and right middle regions of the HLLC approximate Riemannian solver in the solution structure, given by
+        <disp-formula id="FD15-water-15-01300"><label>(15)</label><mml:math display="block" id="mm22"><mml:semantics><mml:mrow><mml:msubsup><mml:mstyle mathvariant="bold" mathsize="normal"><mml:mi>F</mml:mi></mml:mstyle><mml:mi>L</mml:mi><mml:mo>*</mml:mo></mml:msubsup><mml:mo>=</mml:mo><mml:mrow><mml:mo>[</mml:mo><mml:mrow><mml:mtable><mml:mtr><mml:mtd><mml:mrow><mml:msubsup><mml:mi>F</mml:mi><mml:mn>1</mml:mn><mml:mo>*</mml:mo></mml:msubsup></mml:mrow></mml:mtd></mml:mtr><mml:mtr><mml:mtd><mml:mrow><mml:msubsup><mml:mi>F</mml:mi><mml:mn>2</mml:mn><mml:mo>*</mml:mo></mml:msubsup></mml:mrow></mml:mtd></mml:mtr><mml:mtr><mml:mtd><mml:mrow><mml:msub><mml:mi>v</mml:mi><mml:mi>L</mml:mi></mml:msub><mml:msubsup><mml:mi>F</mml:mi><mml:mn>1</mml:mn><mml:mo>*</mml:mo></mml:msubsup></mml:mrow></mml:mtd></mml:mtr></mml:mtable></mml:mrow><mml:mo>]</mml:mo></mml:mrow><mml:mo>,</mml:mo><mml:mo>&#x2009;</mml:mo><mml:mo>&#x2009;</mml:mo><mml:msubsup><mml:mstyle mathvariant="bold" mathsize="normal"><mml:mi>F</mml:mi></mml:mstyle><mml:mi>R</mml:mi><mml:mo>*</mml:mo></mml:msubsup><mml:mo>=</mml:mo><mml:mrow><mml:mo>[</mml:mo><mml:mrow><mml:mtable><mml:mtr><mml:mtd><mml:mrow><mml:msubsup><mml:mi>F</mml:mi><mml:mn>1</mml:mn><mml:mo>*</mml:mo></mml:msubsup></mml:mrow></mml:mtd></mml:mtr><mml:mtr><mml:mtd><mml:mrow><mml:msubsup><mml:mi>F</mml:mi><mml:mn>2</mml:mn><mml:mo>*</mml:mo></mml:msubsup></mml:mrow></mml:mtd></mml:mtr><mml:mtr><mml:mtd><mml:mrow><mml:msub><mml:mi>v</mml:mi><mml:mi>R</mml:mi></mml:msub><mml:msubsup><mml:mi>F</mml:mi><mml:mn>1</mml:mn><mml:mo>*</mml:mo></mml:msubsup></mml:mrow></mml:mtd></mml:mtr></mml:mtable></mml:mrow><mml:mo>]</mml:mo></mml:mrow></mml:mrow></mml:semantics></mml:math></disp-formula>
+        with the HLL fluxes calculated by
+        <disp-formula id="FD16-water-15-01300"><label>(16)</label><mml:math display="block" id="mm23"><mml:semantics><mml:mrow><mml:msup><mml:mstyle mathvariant="bold" mathsize="normal"><mml:mi>F</mml:mi></mml:mstyle><mml:mo>*</mml:mo></mml:msup><mml:mo>=</mml:mo><mml:mfrac><mml:mrow><mml:msub><mml:mi>S</mml:mi><mml:mi>R</mml:mi></mml:msub><mml:msub><mml:mstyle mathvariant="bold" mathsize="normal"><mml:mi>F</mml:mi></mml:mstyle><mml:mi>L</mml:mi></mml:msub><mml:mo>&#x2212;</mml:mo><mml:msub><mml:mi>S</mml:mi><mml:mi>L</mml:mi></mml:msub><mml:msub><mml:mstyle mathvariant="bold" mathsize="normal"><mml:mi>F</mml:mi></mml:mstyle><mml:mi>R</mml:mi></mml:msub><mml:mo>+</mml:mo><mml:msub><mml:mi>S</mml:mi><mml:mi>L</mml:mi></mml:msub><mml:msub><mml:mi>S</mml:mi><mml:mi>R</mml:mi></mml:msub><mml:mrow><mml:mo>(</mml:mo><mml:mrow><mml:msub><mml:mstyle mathvariant="bold" mathsize="normal"><mml:mi>U</mml:mi></mml:mstyle><mml:mi>R</mml:mi></mml:msub><mml:mo>&#x2212;</mml:mo><mml:msub><mml:mstyle mathvariant="bold" mathsize="normal"><mml:mi>U</mml:mi></mml:mstyle><mml:mi>L</mml:mi></mml:msub></mml:mrow><mml:mo>)</mml:mo></mml:mrow></mml:mrow><mml:mrow><mml:msub><mml:mi>S</mml:mi><mml:mi>R</mml:mi></mml:msub><mml:mo>&#x2212;</mml:mo><mml:msub><mml:mi>S</mml:mi><mml:mi>L</mml:mi></mml:msub></mml:mrow></mml:mfrac><mml:mo>.</mml:mo></mml:mrow></mml:semantics></mml:math></disp-formula></p>
+        <p>The left and right characteristic waves are defined as:<disp-formula id="FD17-water-15-01300"><label>(17)</label><mml:math display="block" id="mm24"><mml:semantics><mml:mtable columnalign="left"><mml:mtr><mml:mtd><mml:msub><mml:mi>S</mml:mi><mml:mi>L</mml:mi></mml:msub><mml:mo>=</mml:mo><mml:mrow><mml:mo>{</mml:mo><mml:mtable columnalign="left"><mml:mtr><mml:mtd><mml:msub><mml:mi>u</mml:mi><mml:mi>R</mml:mi></mml:msub><mml:mo>&#x2212;</mml:mo><mml:mn>2</mml:mn><mml:msqrt><mml:mrow><mml:mi>g</mml:mi><mml:msub><mml:mi>h</mml:mi><mml:mi>R</mml:mi></mml:msub></mml:mrow></mml:msqrt><mml:mo>,</mml:mo></mml:mtd><mml:mtd><mml:mi>if</mml:mi><mml:mo>&#x2009;</mml:mo><mml:msub><mml:mi>h</mml:mi><mml:mi>L</mml:mi></mml:msub><mml:mo>=</mml:mo><mml:mn>0</mml:mn></mml:mtd></mml:mtr><mml:mtr><mml:mtd><mml:mi>min</mml:mi><mml:mrow><mml:mo>(</mml:mo><mml:mrow><mml:msub><mml:mi>u</mml:mi><mml:mi>L</mml:mi></mml:msub><mml:mo>&#x2212;</mml:mo><mml:msqrt><mml:mrow><mml:mi>g</mml:mi><mml:msub><mml:mi>h</mml:mi><mml:mi>L</mml:mi></mml:msub></mml:mrow></mml:msqrt><mml:mo>,</mml:mo><mml:msup><mml:mi>u</mml:mi><mml:mo>*</mml:mo></mml:msup><mml:mo>&#x2212;</mml:mo><mml:msqrt><mml:mrow><mml:mi>g</mml:mi><mml:msup><mml:mi>h</mml:mi><mml:mo>*</mml:mo></mml:msup></mml:mrow></mml:msqrt></mml:mrow><mml:mo>)</mml:mo></mml:mrow><mml:mo>,</mml:mo></mml:mtd><mml:mtd><mml:mi>if</mml:mi><mml:mo>&#x2009;</mml:mo><mml:msub><mml:mi>h</mml:mi><mml:mi>L</mml:mi></mml:msub><mml:mo>&gt;</mml:mo><mml:mn>0</mml:mn></mml:mtd></mml:mtr></mml:mtable></mml:mrow></mml:mtd></mml:mtr><mml:mtr><mml:mtd><mml:msub><mml:mi>S</mml:mi><mml:mi>R</mml:mi></mml:msub><mml:mo>=</mml:mo><mml:mrow><mml:mo>{</mml:mo><mml:mtable columnalign="left"><mml:mtr><mml:mtd><mml:msub><mml:mi>u</mml:mi><mml:mi>L</mml:mi></mml:msub><mml:mo>+</mml:mo><mml:mn>2</mml:mn><mml:msqrt><mml:mrow><mml:mi>g</mml:mi><mml:msub><mml:mi>h</mml:mi><mml:mi>L</mml:mi></mml:msub></mml:mrow></mml:msqrt><mml:mo>,</mml:mo></mml:mtd><mml:mtd><mml:mi>if</mml:mi><mml:mo>&#x2009;</mml:mo><mml:msub><mml:mi>h</mml:mi><mml:mi>R</mml:mi></mml:msub><mml:mo>=</mml:mo><mml:mn>0</mml:mn></mml:mtd></mml:mtr><mml:mtr><mml:mtd><mml:mi>max</mml:mi><mml:mrow><mml:mo>(</mml:mo><mml:mrow><mml:msub><mml:mi>u</mml:mi><mml:mi>R</mml:mi></mml:msub><mml:mo>+</mml:mo><mml:msqrt><mml:mrow><mml:mi>g</mml:mi><mml:msub><mml:mi>h</mml:mi><mml:mi>R</mml:mi></mml:msub></mml:mrow></mml:msqrt><mml:mo>,</mml:mo><mml:msup><mml:mi>u</mml:mi><mml:mo>*</mml:mo></mml:msup><mml:mo>+</mml:mo><mml:msqrt><mml:mrow><mml:mi>g</mml:mi><mml:msup><mml:mi>h</mml:mi><mml:mo>*</mml:mo></mml:msup></mml:mrow></mml:msqrt></mml:mrow><mml:mo>)</mml:mo></mml:mrow><mml:mo>,</mml:mo></mml:mtd><mml:mtd><mml:mi>if</mml:mi><mml:mo>&#x2009;</mml:mo><mml:msub><mml:mi>h</mml:mi><mml:mi>R</mml:mi></mml:msub><mml:mo>&gt;</mml:mo><mml:mn>0</mml:mn><mml:mo>&#x2009;</mml:mo></mml:mtd></mml:mtr></mml:mtable></mml:mrow></mml:mtd></mml:mtr></mml:mtable></mml:semantics></mml:math></disp-formula>
+        with 
+        <disp-formula id="FD18-water-15-01300"><label>(18)</label><mml:math display="block" id="mm25"><mml:semantics><mml:mtable columnalign="left"><mml:mtr><mml:mtd><mml:msup><mml:mi>u</mml:mi><mml:mo>*</mml:mo></mml:msup><mml:mo>=</mml:mo><mml:mfrac><mml:mn>1</mml:mn><mml:mn>2</mml:mn></mml:mfrac><mml:mrow><mml:mo>(</mml:mo><mml:mrow><mml:msub><mml:mi>u</mml:mi><mml:mi>L</mml:mi></mml:msub><mml:mo>+</mml:mo><mml:msub><mml:mi>u</mml:mi><mml:mi>R</mml:mi></mml:msub></mml:mrow><mml:mo>)</mml:mo></mml:mrow><mml:mo>+</mml:mo><mml:msqrt><mml:mrow><mml:mi>g</mml:mi><mml:msub><mml:mi>h</mml:mi><mml:mi>L</mml:mi></mml:msub></mml:mrow></mml:msqrt><mml:mo>&#x2212;</mml:mo><mml:msqrt><mml:mrow><mml:mi>g</mml:mi><mml:msub><mml:mi>h</mml:mi><mml:mi>R</mml:mi></mml:msub></mml:mrow></mml:msqrt></mml:mtd></mml:mtr><mml:mtr><mml:mtd><mml:msup><mml:mi>h</mml:mi><mml:mo>*</mml:mo></mml:msup><mml:mo>=</mml:mo><mml:mfrac><mml:mn>1</mml:mn><mml:mi>g</mml:mi></mml:mfrac><mml:msup><mml:mrow><mml:mo>[</mml:mo><mml:mrow><mml:mfrac><mml:mn>1</mml:mn><mml:mn>2</mml:mn></mml:mfrac><mml:mrow><mml:mo>(</mml:mo><mml:mrow><mml:msqrt><mml:mrow><mml:mi>g</mml:mi><mml:msub><mml:mi>h</mml:mi><mml:mi>L</mml:mi></mml:msub></mml:mrow></mml:msqrt><mml:mo>+</mml:mo><mml:msqrt><mml:mrow><mml:mi>g</mml:mi><mml:msub><mml:mi>h</mml:mi><mml:mi>R</mml:mi></mml:msub></mml:mrow></mml:msqrt></mml:mrow><mml:mo>)</mml:mo></mml:mrow><mml:mo>+</mml:mo><mml:mfrac><mml:mn>1</mml:mn><mml:mn>4</mml:mn></mml:mfrac><mml:mrow><mml:mo>(</mml:mo><mml:mrow><mml:msub><mml:mi>u</mml:mi><mml:mi>L</mml:mi></mml:msub><mml:mo>&#x2212;</mml:mo><mml:msub><mml:mi>u</mml:mi><mml:mi>R</mml:mi></mml:msub></mml:mrow><mml:mo>)</mml:mo></mml:mrow></mml:mrow><mml:mo>]</mml:mo></mml:mrow><mml:mn>2</mml:mn></mml:msup></mml:mtd></mml:mtr></mml:mtable></mml:semantics></mml:math></disp-formula></p>
+        <p>Then, the middle characteristic wave speed is calculated:<disp-formula id="FD19-water-15-01300"><label>(19)</label><mml:math display="block" id="mm26"><mml:semantics><mml:mrow><mml:msub><mml:mi>S</mml:mi><mml:mi>M</mml:mi></mml:msub><mml:mo>=</mml:mo><mml:mfrac><mml:mrow><mml:msub><mml:mi>S</mml:mi><mml:mi>L</mml:mi></mml:msub><mml:msub><mml:mi>h</mml:mi><mml:mi>R</mml:mi></mml:msub><mml:mrow><mml:mo>(</mml:mo><mml:mrow><mml:msub><mml:mi>u</mml:mi><mml:mi>R</mml:mi></mml:msub><mml:mo>&#x2212;</mml:mo><mml:msub><mml:mi>S</mml:mi><mml:mi>R</mml:mi></mml:msub></mml:mrow><mml:mo>)</mml:mo></mml:mrow><mml:mo>&#x2212;</mml:mo><mml:msub><mml:mi>S</mml:mi><mml:mi>R</mml:mi></mml:msub><mml:msub><mml:mi>h</mml:mi><mml:mi>L</mml:mi></mml:msub><mml:mrow><mml:mo>(</mml:mo><mml:mrow><mml:msub><mml:mi>u</mml:mi><mml:mi>L</mml:mi></mml:msub><mml:mo>&#x2212;</mml:mo><mml:msub><mml:mi>S</mml:mi><mml:mi>L</mml:mi></mml:msub></mml:mrow><mml:mo>)</mml:mo></mml:mrow></mml:mrow><mml:mrow><mml:msub><mml:mi>h</mml:mi><mml:mi>R</mml:mi></mml:msub><mml:mrow><mml:mo>(</mml:mo><mml:mrow><mml:msub><mml:mi>u</mml:mi><mml:mi>R</mml:mi></mml:msub><mml:mo>&#x2212;</mml:mo><mml:msub><mml:mi>S</mml:mi><mml:mi>R</mml:mi></mml:msub></mml:mrow><mml:mo>)</mml:mo></mml:mrow><mml:mo>&#x2212;</mml:mo><mml:msub><mml:mi>h</mml:mi><mml:mi>L</mml:mi></mml:msub><mml:mrow><mml:mo>(</mml:mo><mml:mrow><mml:msub><mml:mi>u</mml:mi><mml:mi>L</mml:mi></mml:msub><mml:mo>&#x2212;</mml:mo><mml:msub><mml:mi>S</mml:mi><mml:mi>L</mml:mi></mml:msub></mml:mrow><mml:mo>)</mml:mo></mml:mrow></mml:mrow></mml:mfrac></mml:mrow></mml:semantics></mml:math></disp-formula></p>
+        <p>Following the recommendation by Audusse et al. [<xref ref-type="bibr" rid="B23-water-15-01300">23</xref>], the bottom slope source term at the cell interface can be solved as:<disp-formula id="FD20-water-15-01300"><label>(20)</label><mml:math display="block" id="mm27"><mml:semantics><mml:mrow><mml:msub><mml:mi>S</mml:mi><mml:mrow><mml:mi>b</mml:mi><mml:mi>L</mml:mi></mml:mrow></mml:msub><mml:mo>=</mml:mo><mml:mfrac><mml:mn>1</mml:mn><mml:mn>2</mml:mn></mml:mfrac><mml:mi>g</mml:mi><mml:mrow><mml:mo>(</mml:mo><mml:mrow><mml:msubsup><mml:mi>h</mml:mi><mml:mi>L</mml:mi><mml:mrow><mml:mi>c</mml:mi><mml:mn>2</mml:mn></mml:mrow></mml:msubsup><mml:mo>&#x2212;</mml:mo><mml:msubsup><mml:mi>h</mml:mi><mml:mi>L</mml:mi><mml:mn>2</mml:mn></mml:msubsup></mml:mrow><mml:mo>)</mml:mo></mml:mrow></mml:mrow></mml:semantics></mml:math></disp-formula>
+        and the bottom slope source term of the cell is given by
+        <disp-formula id="FD21-water-15-01300"><label>(21)</label><mml:math display="block" id="mm28"><mml:semantics><mml:mrow><mml:msub><mml:mstyle mathvariant="bold" mathsize="normal"><mml:mi>S</mml:mi></mml:mstyle><mml:mrow><mml:mi>b</mml:mi><mml:mi>i</mml:mi></mml:mrow></mml:msub><mml:mo>=</mml:mo><mml:mfrac><mml:mn>1</mml:mn><mml:mrow><mml:msub><mml:mo>&#x3A9;</mml:mo><mml:mi>i</mml:mi></mml:msub></mml:mrow></mml:mfrac><mml:mstyle displaystyle="true"><mml:munderover><mml:mo>&#x2211;</mml:mo><mml:mrow><mml:mi>k</mml:mi><mml:mo>=</mml:mo><mml:mn>1</mml:mn></mml:mrow><mml:mrow><mml:mi>N</mml:mi><mml:mi>E</mml:mi></mml:mrow></mml:munderover><mml:mrow><mml:msub><mml:mi>S</mml:mi><mml:mrow><mml:mi>b</mml:mi><mml:mi>k</mml:mi><mml:mo>,</mml:mo><mml:mi>i</mml:mi></mml:mrow></mml:msub><mml:msub><mml:mi>l</mml:mi><mml:mrow><mml:mi>k</mml:mi><mml:mo>,</mml:mo><mml:mi>i</mml:mi></mml:mrow></mml:msub></mml:mrow></mml:mstyle><mml:msub><mml:mrow><mml:mrow><mml:mo>[</mml:mo><mml:mrow><mml:mtable><mml:mtr><mml:mtd><mml:mn>0</mml:mn></mml:mtd></mml:mtr><mml:mtr><mml:mtd><mml:mrow><mml:msub><mml:mi>n</mml:mi><mml:mrow><mml:mi>x</mml:mi><mml:mi>k</mml:mi></mml:mrow></mml:msub></mml:mrow></mml:mtd></mml:mtr><mml:mtr><mml:mtd><mml:mrow><mml:msub><mml:mi>n</mml:mi><mml:mrow><mml:mi>y</mml:mi><mml:mi>k</mml:mi></mml:mrow></mml:msub></mml:mrow></mml:mtd></mml:mtr></mml:mtable></mml:mrow><mml:mo>]</mml:mo></mml:mrow></mml:mrow><mml:mi>i</mml:mi></mml:msub></mml:mrow></mml:semantics></mml:math></disp-formula></p>
+      </sec>
+      <sec id="sec3dot4-water-15-01300">
+        <title>3.4. Friction Source Term</title>
+        <p>A splitting point-implicit method [<xref ref-type="bibr" rid="B9-water-15-01300">9</xref>,<xref ref-type="bibr" rid="B24-water-15-01300">24</xref>,<xref ref-type="bibr" rid="B33-water-15-01300">33</xref>] is adopted to evaluate the friction source term in the present study. This method is equivalent to addressing the following ordinary differential equations
+        <disp-formula id="FD22-water-15-01300"><label>(22)</label><mml:math display="block" id="mm29"><mml:semantics><mml:mrow><mml:mfrac><mml:mrow><mml:mi>d</mml:mi><mml:mstyle mathvariant="bold" mathsize="normal"><mml:mi>U</mml:mi></mml:mstyle></mml:mrow><mml:mrow><mml:mi>d</mml:mi><mml:mi>t</mml:mi></mml:mrow></mml:mfrac><mml:mo>=</mml:mo><mml:msub><mml:mstyle mathvariant="bold" mathsize="normal"><mml:mi>S</mml:mi></mml:mstyle><mml:mi>f</mml:mi></mml:msub><mml:mo>,</mml:mo></mml:mrow></mml:semantics></mml:math></disp-formula>
+        where <inline-formula><mml:math id="mm30"><mml:semantics><mml:mrow><mml:msub><mml:mstyle mathvariant="bold" mathsize="normal"><mml:mi>S</mml:mi></mml:mstyle><mml:mi>f</mml:mi></mml:msub><mml:mo>=</mml:mo><mml:msup><mml:mrow><mml:mrow><mml:mo>[</mml:mo><mml:mrow><mml:mtable><mml:mtr><mml:mtd><mml:mn>0</mml:mn></mml:mtd><mml:mtd><mml:mrow><mml:msub><mml:mi>S</mml:mi><mml:mrow><mml:mi>f</mml:mi><mml:mi>x</mml:mi></mml:mrow></mml:msub></mml:mrow></mml:mtd><mml:mtd><mml:mrow><mml:msub><mml:mi>S</mml:mi><mml:mrow><mml:mi>f</mml:mi><mml:mi>y</mml:mi></mml:mrow></mml:msub></mml:mrow></mml:mtd></mml:mtr></mml:mtable></mml:mrow><mml:mo>]</mml:mo></mml:mrow></mml:mrow><mml:mi>T</mml:mi></mml:msup></mml:mrow></mml:semantics></mml:math></inline-formula>, and
+        <disp-formula id="FD23-water-15-01300"><label>(23)</label><mml:math display="block" id="mm31"><mml:semantics><mml:mrow><mml:mtable columnalign="left"><mml:mtr><mml:mtd><mml:msub><mml:mi>S</mml:mi><mml:mrow><mml:mi>f</mml:mi><mml:mi>x</mml:mi></mml:mrow></mml:msub><mml:mo>=</mml:mo><mml:mo>&#x2212;</mml:mo><mml:msub><mml:mi>C</mml:mi><mml:mi>f</mml:mi></mml:msub><mml:mi>u</mml:mi><mml:msqrt><mml:mrow><mml:msup><mml:mi>u</mml:mi><mml:mn>2</mml:mn></mml:msup><mml:mo>+</mml:mo><mml:msup><mml:mi>v</mml:mi><mml:mn>2</mml:mn></mml:msup></mml:mrow></mml:msqrt></mml:mtd></mml:mtr><mml:mtr><mml:mtd><mml:msub><mml:mi>S</mml:mi><mml:mrow><mml:mi>f</mml:mi><mml:mi>y</mml:mi></mml:mrow></mml:msub><mml:mo>=</mml:mo><mml:mo>&#x2212;</mml:mo><mml:msub><mml:mi>C</mml:mi><mml:mi>f</mml:mi></mml:msub><mml:mi>v</mml:mi><mml:msqrt><mml:mrow><mml:msup><mml:mi>u</mml:mi><mml:mn>2</mml:mn></mml:msup><mml:mo>+</mml:mo><mml:msup><mml:mi>v</mml:mi><mml:mn>2</mml:mn></mml:msup></mml:mrow></mml:msqrt></mml:mtd></mml:mtr></mml:mtable><mml:mo>.</mml:mo></mml:mrow></mml:semantics></mml:math></disp-formula></p>
+        <p>Taking the x-direction as an instance in Equation (22), <inline-formula><mml:math id="mm32"><mml:semantics><mml:mrow><mml:msub><mml:mi>S</mml:mi><mml:mrow><mml:mi>f</mml:mi><mml:mi>x</mml:mi></mml:mrow></mml:msub></mml:mrow></mml:semantics></mml:math></inline-formula> can be expanded using a Taylor series as:<disp-formula id="FD24-water-15-01300"><label>(24)</label><mml:math display="block" id="mm33"><mml:semantics><mml:mrow><mml:msubsup><mml:mi>S</mml:mi><mml:mrow><mml:mi>f</mml:mi><mml:mi>x</mml:mi></mml:mrow><mml:mrow><mml:mi>n</mml:mi><mml:mo>+</mml:mo><mml:mn>1</mml:mn></mml:mrow></mml:msubsup><mml:mo>=</mml:mo><mml:msubsup><mml:mi>S</mml:mi><mml:mrow><mml:mi>f</mml:mi><mml:mi>x</mml:mi></mml:mrow><mml:mi>n</mml:mi></mml:msubsup><mml:mo>+</mml:mo><mml:mrow><mml:mo>(</mml:mo><mml:mrow><mml:mfrac><mml:mrow><mml:mo>&#x2202;</mml:mo><mml:msub><mml:mi>S</mml:mi><mml:mrow><mml:mi>f</mml:mi><mml:mi>x</mml:mi></mml:mrow></mml:msub></mml:mrow><mml:mrow><mml:mo>&#x2202;</mml:mo><mml:msub><mml:mi>U</mml:mi><mml:mi>x</mml:mi></mml:msub></mml:mrow></mml:mfrac></mml:mrow><mml:mo>)</mml:mo></mml:mrow><mml:mo>&#x394;</mml:mo><mml:msub><mml:mi>U</mml:mi><mml:mi>x</mml:mi></mml:msub><mml:mo>+</mml:mo><mml:mi>o</mml:mi><mml:mrow><mml:mo>(</mml:mo><mml:mrow><mml:mo>&#x394;</mml:mo><mml:msubsup><mml:mi>U</mml:mi><mml:mi>x</mml:mi><mml:mn>2</mml:mn></mml:msubsup></mml:mrow><mml:mo>)</mml:mo></mml:mrow><mml:mo>,</mml:mo></mml:mrow></mml:semantics></mml:math></disp-formula>
+        in which <inline-formula><mml:math id="mm34"><mml:semantics><mml:mrow><mml:mo>&#x394;</mml:mo><mml:msub><mml:mi>U</mml:mi><mml:mi>x</mml:mi></mml:msub><mml:mo>=</mml:mo><mml:msubsup><mml:mi>U</mml:mi><mml:mi>x</mml:mi><mml:mrow><mml:mi>n</mml:mi><mml:mo>+</mml:mo><mml:mn>1</mml:mn></mml:mrow></mml:msubsup><mml:mo>&#x2212;</mml:mo><mml:msubsup><mml:mi>U</mml:mi><mml:mi>x</mml:mi><mml:mi>n</mml:mi></mml:msubsup></mml:mrow></mml:semantics></mml:math></inline-formula>. Ignoring the higher-order terms, together with Equation (24), Equation (22) is rewritten as:<disp-formula id="FD25-water-15-01300"><label>(25)</label><mml:math display="block" id="mm35"><mml:semantics><mml:mrow><mml:msubsup><mml:mi>U</mml:mi><mml:mi>x</mml:mi><mml:mrow><mml:mi>n</mml:mi><mml:mo>+</mml:mo><mml:mn>1</mml:mn></mml:mrow></mml:msubsup><mml:mo>=</mml:mo><mml:msubsup><mml:mi>U</mml:mi><mml:mi>x</mml:mi><mml:mi>n</mml:mi></mml:msubsup><mml:mo>+</mml:mo><mml:mo>&#x394;</mml:mo><mml:mi>t</mml:mi><mml:msup><mml:mrow><mml:mrow><mml:mo>(</mml:mo><mml:mrow><mml:mfrac><mml:mrow><mml:msub><mml:mi>S</mml:mi><mml:mrow><mml:mi>f</mml:mi><mml:mi>x</mml:mi></mml:mrow></mml:msub></mml:mrow><mml:mrow><mml:msub><mml:mi>D</mml:mi><mml:mi>x</mml:mi></mml:msub></mml:mrow></mml:mfrac></mml:mrow><mml:mo>)</mml:mo></mml:mrow></mml:mrow><mml:mi>n</mml:mi></mml:msup><mml:mo>=</mml:mo><mml:msubsup><mml:mi>U</mml:mi><mml:mi>x</mml:mi><mml:mi>n</mml:mi></mml:msubsup><mml:mo>+</mml:mo><mml:mo>&#x394;</mml:mo><mml:mi>t</mml:mi><mml:msub><mml:mover accent="true"><mml:mi>S</mml:mi><mml:mo>&#xAF;</mml:mo></mml:mover><mml:mrow><mml:mi>f</mml:mi><mml:mi>x</mml:mi></mml:mrow></mml:msub></mml:mrow></mml:semantics></mml:math></disp-formula>
+        where <italic>D<sub>x</sub></italic> is implicit coefficient defined as:<disp-formula id="FD26-water-15-01300"><label>(26)</label><mml:math id="mm36" display="block"><mml:semantics><mml:mrow><mml:msub><mml:mi>D</mml:mi><mml:mi>x</mml:mi></mml:msub><mml:mo>=</mml:mo><mml:mn>1</mml:mn><mml:mo>+</mml:mo><mml:mo>&#x394;</mml:mo><mml:mi>t</mml:mi><mml:msup><mml:mrow><mml:mrow><mml:mo>(</mml:mo><mml:mrow><mml:mfrac><mml:mrow><mml:mo>&#x2202;</mml:mo><mml:msub><mml:mi>S</mml:mi><mml:mrow><mml:mi>f</mml:mi><mml:mi>x</mml:mi></mml:mrow></mml:msub></mml:mrow><mml:mrow><mml:mo>&#x2202;</mml:mo><mml:msub><mml:mi>U</mml:mi><mml:mi>x</mml:mi></mml:msub></mml:mrow></mml:mfrac></mml:mrow><mml:mo>)</mml:mo></mml:mrow></mml:mrow><mml:mi>n</mml:mi></mml:msup></mml:mrow></mml:semantics></mml:math></disp-formula>
+        and <inline-formula><mml:math id="mm37"><mml:semantics><mml:mrow><mml:msub><mml:mover accent="true"><mml:mi>S</mml:mi><mml:mo>&#xAF;</mml:mo></mml:mover><mml:mrow><mml:mi>f</mml:mi><mml:mi>x</mml:mi></mml:mrow></mml:msub></mml:mrow></mml:semantics></mml:math></inline-formula> refers to the implicit friction source term. The greatest effect of friction on the flow is to reduce the flow velocity to 0. To avoid an unphysical velocity, <inline-formula><mml:math id="mm38"><mml:semantics><mml:mrow><mml:msub><mml:mover accent="true"><mml:mi>S</mml:mi><mml:mo>&#xAF;</mml:mo></mml:mover><mml:mrow><mml:mi>f</mml:mi><mml:mi>x</mml:mi></mml:mrow></mml:msub></mml:mrow></mml:semantics></mml:math></inline-formula> is limited as follows:<disp-formula id="FD27-water-15-01300"><label>(27)</label><mml:math id="mm39" display="block"><mml:semantics><mml:mrow><mml:msub><mml:mover accent="true"><mml:mi>S</mml:mi><mml:mo>&#xAF;</mml:mo></mml:mover><mml:mrow><mml:mi>f</mml:mi><mml:mi>x</mml:mi></mml:mrow></mml:msub><mml:mrow><mml:mo>{</mml:mo><mml:mtable columnalign="left"><mml:mtr><mml:mtd><mml:mo>&#x2265;</mml:mo><mml:mo>&#x2009;</mml:mo><mml:mo>&#x2009;</mml:mo><mml:mo>&#x2009;</mml:mo><mml:msubsup><mml:mi>q</mml:mi><mml:mi>x</mml:mi><mml:mi>n</mml:mi></mml:msubsup><mml:mo>/</mml:mo><mml:mo>&#x394;</mml:mo><mml:mi>t</mml:mi></mml:mtd><mml:mtd><mml:mi>if</mml:mi><mml:mo>&#x2009;</mml:mo><mml:msubsup><mml:mi>q</mml:mi><mml:mi>x</mml:mi><mml:mi>n</mml:mi></mml:msubsup><mml:mo>&#x2265;</mml:mo><mml:mn>0</mml:mn></mml:mtd></mml:mtr><mml:mtr><mml:mtd><mml:mo>&#x2264;</mml:mo><mml:mo>&#x2212;</mml:mo><mml:msubsup><mml:mi>q</mml:mi><mml:mi>x</mml:mi><mml:mi>n</mml:mi></mml:msubsup><mml:mo>/</mml:mo><mml:mo>&#x394;</mml:mo><mml:mi>t</mml:mi></mml:mtd><mml:mtd><mml:mi>if</mml:mi><mml:mo>&#x2009;</mml:mo><mml:msubsup><mml:mi>q</mml:mi><mml:mi>x</mml:mi><mml:mi>n</mml:mi></mml:msubsup><mml:mo>&#x2264;</mml:mo><mml:mn>0</mml:mn></mml:mtd></mml:mtr></mml:mtable></mml:mrow></mml:mrow></mml:semantics></mml:math></disp-formula></p>
+        <p>Due to this limitation, friction can no longer change flow direction.</p>
+      </sec>
+      <sec id="sec3dot5-water-15-01300">
+        <title>3.5. Rainfall and Infiltration Source Term</title>
+        <p>The rain and infiltration source terms are simply calculated by
+        <disp-formula id="FD28-water-15-01300"><label>(28)</label><mml:math display="block" id="mm40"><mml:semantics><mml:mrow><mml:msubsup><mml:mi>h</mml:mi><mml:mi>i</mml:mi><mml:mrow><mml:mi>n</mml:mi><mml:mo>+</mml:mo><mml:mn>1</mml:mn></mml:mrow></mml:msubsup><mml:mo>=</mml:mo><mml:msubsup><mml:mi>h</mml:mi><mml:mi>i</mml:mi><mml:mi>n</mml:mi></mml:msubsup><mml:mo>+</mml:mo><mml:msub><mml:mi>R</mml:mi><mml:mi>i</mml:mi></mml:msub><mml:mo>+</mml:mo><mml:msub><mml:mi>I</mml:mi><mml:mi>i</mml:mi></mml:msub></mml:mrow></mml:semantics></mml:math></disp-formula>
+        where <italic>R<sub>i</sub></italic> is the rainfall rate in cell <italic>i</italic> and <italic>I<sub>i</sub></italic> is the infiltration rate calculated by the Horton method as:<disp-formula id="FD29-water-15-01300"><label>(29)</label><mml:math display="block" id="mm41"><mml:semantics><mml:mrow><mml:mi>f</mml:mi><mml:mo>=</mml:mo><mml:msub><mml:mi>f</mml:mi><mml:mi>c</mml:mi></mml:msub><mml:mo>+</mml:mo><mml:mrow><mml:mo>(</mml:mo><mml:mrow><mml:msub><mml:mi>f</mml:mi><mml:mn>0</mml:mn></mml:msub><mml:mo>&#x2212;</mml:mo><mml:msub><mml:mi>f</mml:mi><mml:mi>c</mml:mi></mml:msub></mml:mrow><mml:mo>)</mml:mo></mml:mrow><mml:msup><mml:mi>e</mml:mi><mml:mrow><mml:mo>&#x2212;</mml:mo><mml:mi>&#x3B2;</mml:mi><mml:mi>t</mml:mi></mml:mrow></mml:msup></mml:mrow></mml:semantics></mml:math></disp-formula>
+        in which <italic>f<sub>0</sub></italic> and <italic>f<sub>c</sub></italic> are the maximum and stable infiltration rates, respectively; <italic>&#x3B2;</italic> is the recession coefficient; and <italic>t</italic> represents the infiltration duration.</p>
+      </sec>
+      <sec id="sec3dot6-water-15-01300">
+        <title>3.6. Stability Criteria</title>
+        <p>The stability of explicit numerical scheme can be governed by the Courant&#x2013;Friedrichs&#x2013;Lewy (CFL) criterion. In terms of all edges, the time step may be presented as:<disp-formula id="FD30-water-15-01300"><label>(30)</label><mml:math display="block" id="mm42"><mml:semantics><mml:mrow><mml:mo>&#x394;</mml:mo><mml:mi>t</mml:mi><mml:mo>=</mml:mo><mml:mi>CFL</mml:mi><mml:mo>&#x22C5;</mml:mo><mml:munder><mml:mrow><mml:mi>min</mml:mi></mml:mrow><mml:mi>k</mml:mi></mml:munder><mml:msub><mml:mrow><mml:mrow><mml:mo>[</mml:mo><mml:mrow><mml:mfrac><mml:mrow><mml:mi>min</mml:mi><mml:mrow><mml:mo>(</mml:mo><mml:mrow><mml:msub><mml:mi>d</mml:mi><mml:mi>L</mml:mi></mml:msub><mml:mo>,</mml:mo><mml:msub><mml:mi>d</mml:mi><mml:mi>R</mml:mi></mml:msub></mml:mrow><mml:mo>)</mml:mo></mml:mrow></mml:mrow><mml:mrow><mml:mi>max</mml:mi><mml:mrow><mml:mo>(</mml:mo><mml:mrow><mml:msub><mml:mi>u</mml:mi><mml:mi>L</mml:mi></mml:msub><mml:mo>+</mml:mo><mml:msqrt><mml:mrow><mml:mi>g</mml:mi><mml:msub><mml:mi>h</mml:mi><mml:mi>L</mml:mi></mml:msub></mml:mrow></mml:msqrt><mml:mo>,</mml:mo><mml:msub><mml:mi>u</mml:mi><mml:mi>R</mml:mi></mml:msub><mml:mo>+</mml:mo><mml:msqrt><mml:mrow><mml:mi>g</mml:mi><mml:msub><mml:mi>h</mml:mi><mml:mi>R</mml:mi></mml:msub></mml:mrow></mml:msqrt></mml:mrow><mml:mo>)</mml:mo></mml:mrow></mml:mrow></mml:mfrac></mml:mrow><mml:mo>]</mml:mo></mml:mrow></mml:mrow><mml:mi>k</mml:mi></mml:msub></mml:mrow></mml:semantics></mml:math></disp-formula>
+        where CFL is a value between 0 and 1 and <italic>d</italic> suggests the distance from a cell&#x2019;s center to its edge.</p>
+      </sec>
+      <sec id="sec3dot7-water-15-01300">
+        <title>3.7. GPU-Accelerated Procedure </title>
+        <p>Graphics processing units (GPUs) have become a popular choice for scientific computations, artificial intelligence, and other high-performance computing applications due to their remarkable parallel processing capabilities. Furthermore, the use of GPUs has also led to notable advancements in the field of hydrodynamic numerical simulations, which are computationally expensive. Among the prominent GPU programming languages, including CUDA, OpenCL, and OpenAcc, CUDA is adopted in this work due to its high computational efficiency. We have employed a C-style CUDA programming language, utilizing standard I/O and mathematical libraries for the I/O file and numerical calculations, respectively. The model&#x2019;s workflow involves the CPU controlling the I/O and computation process while the GPU performs the numerical simulation calculations.</p>
+        <p>Upon reading the grid topology information and parameters, the CPU transfers all the relevant data from the CPU memory to the GPU memory. All topology information and parameters are stored in the GPU&#x2019;s global memory, which can be accessed by all threads. During the numerical computation in the GPU, appropriate threads are allocated to meet the model&#x2019;s calculation requirements. The thread allocation parameters in CUDA are composed of two components, a grid and block. Variables of all threads in a block can access each other, and they are computed in a group of at least 32 threads. In this study, we have used the thread parameters of grid 128 and block 256. In each computed term, variables are copied from global memory to the thread&#x2019;s local memory. These variables are utilized to evaluate the current item. As an illustration, for the calculation of water depth reconstruction, we compute the water depth and velocity of reconstruction on both sides of the edge. To achieve this, the grid parameters of the current edge of the modification thread are first copied to the local memory. These parameters include the index of the units on both sides of the edge, the water flow parameters of the units, and the bottom slope elevation. Then, the reconstructed flow variables are calculated by Equations (11)&#x2013;(13). Finally, the results are copied to the global memory used for storing the reconstructed flow variables, which will be used for the subsequent interface flux calculation.</p>
+        <p><xref ref-type="fig" rid="water-15-01300-f003">Figure 3</xref> presents the procedure of implementing the proposed multi-threading approach for GPU parallel computing. At each time step, the model first evaluates the wet and dry states to determine the wet grid and the dry&#x2013;wet fronts for subsequent calculations. Next, the water depth variables on both sides of the edges are updated to calculate the local time step. The current updated time step is determined by taking the minimum value of the local time steps calculated by Equation (30). The flux of the edge is then calculated and updated into the cells. Finally, the rainfall, infiltration, and friction source terms are updated. The aforementioned procedures are repeated in each time step until the set maximum simulation time is reached. In addition, at the end of the simulation, the data will be copied from the GPU memory to the CPU memory for writing and post-processing, if necessary, at any moment during the simulation.</p>
+      </sec>
+    </sec>
+    <sec id="sec4-water-15-01300">
+      <title>4. Model Validation and Results</title>
+      <sec id="sec4dot1-water-15-01300">
+        <title>4.1. Still Water Test in an Uneven Bed </title>
+        <p>Well-balanced and conservative properties are essential for hydrodynamic models for it to be able to maintain the static state of the water level in the study area and not generate spurious flow velocities in still water conditions. With the purpose of validating the present 2D overland flow model, a still, steady flow over uneven terrain with a wet&#x2013;dry interface is considered [<xref ref-type="bibr" rid="B33-water-15-01300">33</xref>]. There are two overlapping bumps in the terrain, which are as set by <inline-formula><mml:math id="mm43"><mml:semantics><mml:mrow><mml:mi>d</mml:mi><mml:mo stretchy="false">(</mml:mo><mml:mi>x</mml:mi><mml:mo>,</mml:mo><mml:mi>y</mml:mi><mml:mo stretchy="false">)</mml:mo><mml:mo>=</mml:mo><mml:mi>max</mml:mi><mml:mo stretchy="false">(</mml:mo><mml:mn>0</mml:mn><mml:mo>,</mml:mo><mml:msub><mml:mi>D</mml:mi><mml:mn>1</mml:mn></mml:msub><mml:mo>,</mml:mo><mml:msub><mml:mi>D</mml:mi><mml:mn>2</mml:mn></mml:msub><mml:mo stretchy="false">)</mml:mo></mml:mrow></mml:semantics></mml:math></inline-formula>, where <inline-formula><mml:math id="mm44"><mml:semantics><mml:mrow><mml:msub><mml:mi>D</mml:mi><mml:mn>1</mml:mn></mml:msub><mml:mo>=</mml:mo><mml:mn>2000</mml:mn><mml:mo>&#x2212;</mml:mo><mml:mn>0.0032</mml:mn><mml:mo stretchy="false">[</mml:mo><mml:msup><mml:mrow><mml:mo stretchy="false">(</mml:mo><mml:mi>X</mml:mi><mml:mo>&#x2212;</mml:mo><mml:mn>3000</mml:mn><mml:mo stretchy="false">)</mml:mo></mml:mrow><mml:mn>2</mml:mn></mml:msup><mml:mo>+</mml:mo><mml:msup><mml:mrow><mml:mo stretchy="false">(</mml:mo><mml:mi>Y</mml:mi><mml:mo>&#x2212;</mml:mo><mml:mn>5000</mml:mn><mml:mo stretchy="false">)</mml:mo></mml:mrow><mml:mn>2</mml:mn></mml:msup><mml:mo stretchy="false">]</mml:mo></mml:mrow></mml:semantics></mml:math></inline-formula> and <inline-formula><mml:math id="mm45"><mml:semantics><mml:mrow><mml:msub><mml:mi>D</mml:mi><mml:mn>2</mml:mn></mml:msub><mml:mo>=</mml:mo><mml:mn>900</mml:mn><mml:mo>&#x2212;</mml:mo><mml:mn>0.000144</mml:mn><mml:mo stretchy="false">[</mml:mo><mml:msup><mml:mrow><mml:mo stretchy="false">(</mml:mo><mml:mi>X</mml:mi><mml:mo>&#x2212;</mml:mo><mml:mn>5000</mml:mn><mml:mo stretchy="false">)</mml:mo></mml:mrow><mml:mn>2</mml:mn></mml:msup><mml:mo>+</mml:mo><mml:msup><mml:mrow><mml:mo stretchy="false">(</mml:mo><mml:mi>Y</mml:mi><mml:mo>&#x2212;</mml:mo><mml:mn>3000</mml:mn><mml:mo stretchy="false">)</mml:mo></mml:mrow><mml:mn>2</mml:mn></mml:msup><mml:mo stretchy="false">]</mml:mo></mml:mrow></mml:semantics></mml:math></inline-formula>. The domain of 8000 m &#xD7; 8000 m is divided into 58,672 cells. In addition, this domain is set as the initial water level of 1000 m. The simulation result at T = 5000 s is shown in <xref ref-type="fig" rid="water-15-01300-f004">Figure 4</xref>, the water level remains the same as the initial water level with no velocity, clearly revealing that the lake at rest can be recreated in an exact way. The results show that the model strictly maintains the C-property for the still water case with the presence of wet&#x2013;dry fronts. </p>
+      </sec>
+      <sec id="sec4dot2-water-15-01300">
+        <title>4.2. Dam-Break Flow in a 90&#xB0; Curved Channel</title>
+        <p>A good shock-capturing capability is important to numerical simulation. A dam-break flow in a 90&#xB0; curved channel is considered to validate the present model&#x2019;s shock-capturing capability [<xref ref-type="bibr" rid="B34-water-15-01300">34</xref>]. Concerning this test case, the domain is displayed as in <xref ref-type="fig" rid="water-15-01300-f005">Figure 5</xref> [<xref ref-type="bibr" rid="B35-water-15-01300">35</xref>], and it forms a square reservoir feeding an L-shaped channel. The domain is composed of a 2.4 &#xD7; 2.4 m square water reservoir and an L-shaped, 90&#xB0; curved river channel, which is divided into 113,796 cells. The numbering names of the six measured points and their location divisions are at points as shown in <xref ref-type="fig" rid="water-15-01300-f005">Figure 5</xref> and <xref ref-type="table" rid="water-15-01300-t001">Table 1</xref>, respectively. A uniform Manning coefficient is used for this domain, which is set as 0.0095 s&#xB7;m<sup>&#x2212;1/3</sup>. In addition, the zero bottom elevation was applied in this domain. The initial conditions include zero flow and 0.2 m depth in the reservoir and 0.0 m in the channel. Meanwhile, the whole domain is closed, except the outlet, which is regarded to be open. </p>
+        <p>The contour plot of the depth at t = 1 s, 3 s, 5 s, and 10 s is displayed in <xref ref-type="fig" rid="water-15-01300-f006">Figure 6</xref>a&#x2013;d, respectively. The contour plot results can directly reflect the water resistance at the straight corner of the river channel. In this case, the dam breaks at the beginning of the simulation, and an overland flow model simulates the water flow processes within 40s. Meanwhile, the calculated water depth with six measured points is compared with the experimental data, as shown in <xref ref-type="fig" rid="water-15-01300-f007">Figure 7</xref>. The simulated water depths have good consistency with the measured water depth at the six measured points. In particular, the model accurately predicts the flood water arrival time of each measured point downstream. In addition, the simulation results of this model were compared with the results by Gottardi et al. [<xref ref-type="bibr" rid="B34-water-15-01300">34</xref>], and our results have better agreement with the measured results than Gottardi&#x2019;s results.</p>
+        <p>At the same time, as shown in <xref ref-type="fig" rid="water-15-01300-f007">Figure 7</xref>, the water level rose rapidly twice at three measured points, which are P2, P3, and P4. These measured points are all located in the river between the dam and the 90&#xB0; bend of the channel. For these points, the direct cause of the first rapid rise in water level was due to the sudden downward discharge of the water body after the dam breaks. Meanwhile, the second rapid rise in the water level was due to water being blocked at the turn of the straight angle of the river channel. On the other side, the water level just rose rapidly once for two points, which are P5 and P6. This is caused by these two points not being directly affected by the water blocking occurring at the straight corner bend of the channel. Thus, these two points rose rapidly once, and the water depth became low as the water flowed out of the calculation domain. The simulation results show that the model can capture shocks in flows following dam breaks well.</p>
+      </sec>
+      <sec id="sec4dot3-water-15-01300">
+        <title>4.3. Urban Rainfall Runoff Experiment</title>
+        <p>Urban rainfall-runoff-induced overland flows are difficult to simulate two-dimensionally in urban areas, for example, due to their unsteady wet&#x2013;dry interface and low water depth. To validate the current 2D overland model of rainfall-runoff-induced flow in an urban area, experiments on the rainfall runoff in an experimental urban area performed by Cea et al. [<xref ref-type="bibr" rid="B36-water-15-01300">36</xref>,<xref ref-type="bibr" rid="B37-water-15-01300">37</xref>] can be adopted. The catchment topography in shown in <xref ref-type="fig" rid="water-15-01300-f008">Figure 8</xref>, which gradually decreases from the outside region into inside region. Meanwhile, the domain mesh has a random placement, as shown in <xref ref-type="fig" rid="water-15-01300-f009">Figure 9</xref>. In addition, buildings are shown by wood blocks of 20 cm &#xD7; 30 cm and 20 cm in height. Moreover, three rainfall events, set as R1, R2, and R3, applied a uniform rainfall supply rate of 25 L/min over 20, 40, and 60 s, respectively, to yield a rainfall intensity of 300 mm/h (<xref ref-type="table" rid="water-15-01300-t002">Table 2</xref>). The whole area was discretized with unstructured grids and divided into 113,796 cells. A uniform Manning coefficient is used for this domain, which is set as 0.013 s&#xB7;m<sup>&#x2212;1/3</sup>. The calculated outlet discharges in three rainfall events are compared based on the experimental data [<xref ref-type="bibr" rid="B5-water-15-01300">5</xref>], as shown in <xref ref-type="fig" rid="water-15-01300-f010">Figure 10</xref>. The simulated and measured outlet discharges exhibit good consistency. In addition, the present results are compared with the simulation results by Cea et al. [<xref ref-type="bibr" rid="B36-water-15-01300">36</xref>], and the present model has almost the same results as their study. This case study shows that the present model has a good accuracy in the simulation of the rainfall-runoff process in urban areas.</p>
+        <p>Clearly, the simulated water depth and flow patterns at 20, 40, and 60 s in three rainfall events are displayed in <xref ref-type="fig" rid="water-15-01300-f011">Figure 11</xref>. It is clear that domain terrain plays a key role in the rainfall-runoff process and the consequent flow patterns. Rainwater flows from the buildings&#x2019; sloping roofs to the ground, where it is directed to the valley in the basin&#x2019;s center and travels to the bottom outlet. In addition, this case study reveals that the present overland flow can simulate the rainfall-induced overland flow in the urban area well, taking into account the blocking effect of urban buildings. All in all, the present model can deal well with unsteady wet&#x2013;dry interfaces and low water depths in the numerical simulation of urban areas. </p>
+      </sec>
+      <sec id="sec4dot4-water-15-01300">
+        <title>4.4. Experiment of a Flash Flood over Urban Topography </title>
+        <p>In urban areas, there are a large number of buildings, which affects surface flow. A lot of physical experiments have been conducted to investigate the propagation characteristics of flood waves flowing into the urban area in Toce Valley. To validate the performance of current the 2D model in an urban area, a flash flood in Toce river can be adopted [<xref ref-type="bibr" rid="B38-water-15-01300">38</xref>]. Numerous physical experiments are conducted with two topography configurations, two types of block arrangements (aligned and random), and three different inflow hydrographs. In this study, we select buildings in the aligned layout, as shown in <xref ref-type="fig" rid="water-15-01300-f012">Figure 12</xref>a. The buildings are shown by 15 cm concrete cubes. Ten gauges (P1&#x2013;P10) have been placed at crucial locations to measure the water depth. The whole area was discretized with unstructured grids and divided into 30,319 cells. A uniform Manning coefficient is used for this domain, which is set as 0.0162 s&#xB7;m<sup>&#x2212;1/3</sup>. In addition, the low inflow hydrograph has been applied to this configuration, which was controlled by a pump located at the upstream of the valley, as shown in <xref ref-type="fig" rid="water-15-01300-f012">Figure 12</xref>b. The initial conditions include zero water depth in the whole domain and the downstream of the valley set as an open boundary. </p>
+        <p>The water depths and water velocities predicted by the model at different times are shown in <xref ref-type="fig" rid="water-15-01300-f013">Figure 13</xref>. The results shown in this figure clearly demonstrate the model&#x2019;s ability to capture the instantaneous flow of the flash flood and reflect the water blocking effect of buildings. Before the flow arrives at the buildings, the flood front is moving at a fast speed. However, the water flow was delayed by buildings, which causes water deflection and flow alteration. In the meantime, a large part of the flood flows down the two edges of the valley and avoids the building area. The water depths decrease after the flood peak reduces.</p>
+        <p>The calculated water depths at nine gauges are shown in <xref ref-type="fig" rid="water-15-01300-f014">Figure 14</xref>. The simulated results have good consistency with the measured results. Meanwhile, the simulation results can almost accurately predict the arrival time of the peak and maximum water depths. Comparison of the calculated and measured water depths at P5 showed a slight difference. This result might due to the SWEs being unable to account for the three-dimensional transient and turbulent water flow. All in all, this case study reveals that the present overland model can simulate the inflow-induced overland flow of water in an urban area well, accounting for the blocking effect of urban buildings. </p>
+      </sec>
+      <sec id="sec4dot5-water-15-01300">
+        <title>4.5. Malpasset Dam Break</title>
+        <p>The Malpasset dam, which was built in the southern French river valley of the Reyran, gave way in 1959 as a result of heavy rain. Due to its more detailed measured, experimental, and topographic data, this study area is widely used to test the accuracy and stability of two-dimensional mathematical models and their ability to deal with real terrain [<xref ref-type="bibr" rid="B39-water-15-01300">39</xref>,<xref ref-type="bibr" rid="B40-water-15-01300">40</xref>,<xref ref-type="bibr" rid="B41-water-15-01300">41</xref>]. Here, a dam-break flow in Malpasset is considered to validate the present model&#x2019;s performance in a large-scale and real case. The terrain data and the measured data were provided as shown in <xref ref-type="fig" rid="water-15-01300-f015">Figure 15</xref>. There are 17 measurement points of actual investigation (P1~P17), 9 measured points (G6~G14) in the physical experiment, and 3 transformers (A, B, and C) located downstream of the dam. The whole area was discretized with unstructured grids and divided into 275,476 cells. A uniform Manning coefficient is used for this domain, which is set as 0. 033 s&#xB7;m<sup>&#x2212;1/3</sup>. In addition, the initial conditions include a 100 m water level upstream of the dam and zero water level in the studied area. </p>
+        <p>The contour plot of water depth at t = 2000 s is displayed in <xref ref-type="fig" rid="water-15-01300-f016">Figure 16</xref> when the wave front had already reached the downstream floodplain. In other words, the contour plot results can directly reflect the water from the dam break reaching the downstream area of the floodplain. A comparison of the calculated and measured results is shown in <xref ref-type="fig" rid="water-15-01300-f017">Figure 17</xref>a&#x2013;c, which includes the survey and the experimental observations in terms of maximum water levels and wave arrival times. Meanwhile, the estimated model results and the measured and experimental values exhibit good consistency. The uncertainty of the survey and experimental data may lead to some differences in some measurement points. These discrepancies may be attributed to the 2D model&#x2019;s limitations in the simulation of a 3D flow, some measurement uncertainties in the survey and experiment, changes in the topography after the initial event, as well as scale effects in the experiment, particularly for the roughness. However, the present results are compared with the simulation results by Hou et al. [<xref ref-type="bibr" rid="B33-water-15-01300">33</xref>] and Nikolos et al. [<xref ref-type="bibr" rid="B42-water-15-01300">42</xref>], and the present model has almost the same results as their simulation results. This case study shows that the present model has a good accuracy in the simulation of the dam break. All in all, the present overland model can deal with unsteady wet&#x2013;dry interfaces and uneven bed numerical simulation problems well in a real dam-break case and can thus accurately predict the dam-break flow for large-scale applications.</p>
+        <p>This case aims to evaluate the efficiency of the present model using different hardware configurations. The statistics of computational cost with different hardware configurations are shown in <xref ref-type="table" rid="water-15-01300-t003">Table 3</xref>. These statistics show that a multi-core GPU is more efficient than other hardware configurations. Specially, the efficiencies of the GPU and CPU devices are compared in this table. This model can achieve a speeding up ratio of around 4 using 10-core CPUs compared to a single-thread CPU. With the GPU computation framework, this model can achieve around a 75 speeding up ratio compared to a single thread CPU in the dam-break flow for a large-scale application. Here, the computational efficiency of a GPU with multiple CUDA cores is appreciably higher than that of a multi-core CPU. </p>
+      </sec>
+    </sec>
+    <sec id="sec5-water-15-01300" sec-type="conclusions">
+      <title>5. Conclusions</title>
+      <p>A new 2D, unstructured, grid-based hydrodynamic model with conservation and balance properties is presented in this paper. This model is constructed using a Godunov-type finite volume scheme, which is able to deal with complex flows such as unsteady wet&#x2013;dry interfaces, low water depths and uneven beds. More importantly, this new model is able to adopt GPUs to achieve numerical simulation of large-scale applications.</p>
+      <p>Five test cases have been adopted to validate the present model&#x2019;s performance. The well-balanced and conservative properties have been proven by means of the still water test in an uneven bed. The model&#x2019;s good shock-capturing capability has been validated by simulating a dam break in a 90&#xB0; curved channel, which showed better agreement with the measured results than Gottardi&#x2019;s results. This urban rainfall runoff experiment case shows that the present model has a good accuracy in the simulation of rainfall-runoff processes in urban area, which has almost the same results as Cea&#x2019;s study and measured values. A case study of a flash flood over an urban topography revealed that the present overland model can simulate the inflow-induced overland flow in an urban area well, in which the blocking effect of urban buildings is taken into account. Finally, the Malpasset dam break case showed that the present model can deal with the numerical simulation of an unsteady wet&#x2013;dry interface and an uneven bed in a real dam break case. The simulation results show that the numerical methods used are reliable and effective. The model has considerable predictive potential for complex flows in rainfall runoff, river hydraulics and inundation, dam breaks, and other flood processes.</p>
+      <p>The numerical simulation of the Malpasset dam break further demonstrated the efficiency of the present model using different hardware configurations. The use of a GPU is much more efficient than a multi-core CPU. Particularly, the ratio of a 10-core CPU is 3.76, while the ratio of a CPU with multiple CUDA cores can be as high as 74.47. The hydrodynamic model on the basis of the GPU framework shows a powerful computing advantage in processing a large number of grids with high resolution. The model adopts a method which is easier to implement and more robust in the calculation of some terms and that can be flexibly implemented to improve each term under the current GPU framework.</p>
+    </sec>
+  </body>
+  <back>
+    <notes>
+      <title>Author Contributions</title>
+      <p>Conceptualization, F.C.; methodology, F.P. and X.H.; validation, F.P. and F.C.; data curation, F.C.; writing&#x2014;original draft preparation, F.P.; writing&#x2014;review and editing, X.H. and F.C. All authors have read and agreed to the published version of the manuscript.</p>
+    </notes>
+    <notes>
+      <title>Data Availability Statement</title>
+      <p>No new data were created or analyzed in this study. Data sharing is not applicable to this article.</p>
+    </notes>
+    <ack>
+      <title>Acknowledgments</title>
+      <p>The authors would like to extend our deepest gratitude to Hongping Zhang and Guangyuan Kan for their invaluable help and support in this work.</p>
+    </ack>
+    <notes notes-type="COI-statement">
+      <title>Conflicts of Interest</title>
+      <p>The authors declare no conflict of interest.</p>
+    </notes>
+    <ref-list>
+      <title>References</title>
+      <ref id="B1-water-15-01300">
+        <label>1.</label>
+        <element-citation publication-type="journal">
+          <person-group person-group-type="author">
+            <name>
+              <surname>Li</surname>
+              <given-names>S.</given-names>
+            </name>
+            <name>
+              <surname>Duffy</surname>
+              <given-names>C.J.</given-names>
+            </name>
+          </person-group>
+          <article-title>Fully coupled approach to modeling shallow water flow, sediment transport, and bed evolution in rivers</article-title>
+          <source>Water Resour. Res.</source>
+          <year>2011</year>
+          <volume>47</volume>
+          <fpage>W03508</fpage>
+          <pub-id pub-id-type="doi">10.1029/2010WR009751</pub-id>
+        </element-citation>
+      </ref>
+      <ref id="B2-water-15-01300">
+        <label>2.</label>
+        <element-citation publication-type="journal">
+          <person-group person-group-type="author">
+            <name>
+              <surname>Aric&#xF2;</surname>
+              <given-names>C.</given-names>
+            </name>
+            <name>
+              <surname>Sinagra</surname>
+              <given-names>S.</given-names>
+            </name>
+            <name>
+              <surname>Begnudelli</surname>
+              <given-names>L.</given-names>
+            </name>
+            <name>
+              <surname>Tucciarelli</surname>
+              <given-names>T.</given-names>
+            </name>
+          </person-group>
+          <article-title>MAST-2D diffusive model for flood prediction on domains with triangular Delaunay unstructured meshes</article-title>
+          <source>Adv. Water Resour.</source>
+          <year>2011</year>
+          <volume>34</volume>
+          <fpage>1427</fpage>
+          <lpage>1449</lpage>
+          <pub-id pub-id-type="doi">10.1016/j.advwatres.2011.08.002</pub-id>
+        </element-citation>
+      </ref>
+      <ref id="B3-water-15-01300">
+        <label>3.</label>
+        <element-citation publication-type="journal">
+          <person-group person-group-type="author">
+            <name>
+              <surname>Benkhaldoun</surname>
+              <given-names>F.</given-names>
+            </name>
+            <name>
+              <surname>Sahmim</surname>
+              <given-names>S.</given-names>
+            </name>
+            <name>
+              <surname>Sea</surname>
+              <given-names>D.M.</given-names>
+            </name>
+          </person-group>
+          <article-title>A two-dimensional finite volume morphodynamic model on unstructured triangular grids</article-title>
+          <source>Int. J. Numer. Methods Fluids</source>
+          <year>2010</year>
+          <volume>63</volume>
+          <fpage>1296</fpage>
+          <lpage>1327</lpage>
+          <pub-id pub-id-type="doi">10.1002/fld.2129</pub-id>
+        </element-citation>
+      </ref>
+      <ref id="B4-water-15-01300">
+        <label>4.</label>
+        <element-citation publication-type="journal">
+          <person-group person-group-type="author">
+            <name>
+              <surname>Canestrelli</surname>
+              <given-names>A.</given-names>
+            </name>
+            <name>
+              <surname>Fagherazzi</surname>
+              <given-names>S.</given-names>
+            </name>
+            <name>
+              <surname>Lanzoni</surname>
+              <given-names>S.</given-names>
+            </name>
+          </person-group>
+          <article-title>A mass-conservative centered finite volume model for solving two-dimensional two-layer shallow water equations for fluid mud propagation over varying topography and dry areas</article-title>
+          <source>Adv. Water Resour.</source>
+          <year>2012</year>
+          <volume>40</volume>
+          <fpage>54</fpage>
+          <lpage>70</lpage>
+          <pub-id pub-id-type="doi">10.1016/j.advwatres.2012.01.009</pub-id>
+        </element-citation>
+      </ref>
+      <ref id="B5-water-15-01300">
+        <label>5.</label>
+        <element-citation publication-type="journal">
+          <person-group person-group-type="author">
+            <name>
+              <surname>Fiedler</surname>
+              <given-names>F.R.</given-names>
+            </name>
+            <name>
+              <surname>Ramirez</surname>
+              <given-names>J.A.</given-names>
+            </name>
+          </person-group>
+          <article-title>A numerical method for simulating discontinuous shallow flow over an infiltrating surface</article-title>
+          <source>Int. J. Numer. Methods Fluids</source>
+          <year>2000</year>
+          <volume>32</volume>
+          <fpage>219</fpage>
+          <lpage>239</lpage>
+          <pub-id pub-id-type="doi">10.1002/(SICI)1097-0363(20000130)32:2&lt;219::AID-FLD936&gt;3.0.CO;2-J</pub-id>
+        </element-citation>
+      </ref>
+      <ref id="B6-water-15-01300">
+        <label>6.</label>
+        <element-citation publication-type="journal">
+          <person-group person-group-type="author">
+            <name>
+              <surname>Song</surname>
+              <given-names>L.</given-names>
+            </name>
+            <name>
+              <surname>Zhou</surname>
+              <given-names>J.</given-names>
+            </name>
+            <name>
+              <surname>Guo</surname>
+              <given-names>J.</given-names>
+            </name>
+            <name>
+              <surname>Zou</surname>
+              <given-names>Q.</given-names>
+            </name>
+            <name>
+              <surname>Liu</surname>
+              <given-names>Y.</given-names>
+            </name>
+          </person-group>
+          <article-title>A robust well-balanced finite volume model for shallow water flows with wetting and drying over irregular terrain</article-title>
+          <source>Adv. Water Resour.</source>
+          <year>2011</year>
+          <volume>34</volume>
+          <fpage>915</fpage>
+          <lpage>932</lpage>
+          <pub-id pub-id-type="doi">10.1016/j.advwatres.2011.04.017</pub-id>
+        </element-citation>
+      </ref>
+      <ref id="B7-water-15-01300">
+        <label>7.</label>
+        <element-citation publication-type="journal">
+          <person-group person-group-type="author">
+            <name>
+              <surname>Simons</surname>
+              <given-names>F.</given-names>
+            </name>
+            <name>
+              <surname>Busse</surname>
+              <given-names>T.</given-names>
+            </name>
+            <name>
+              <surname>Hou</surname>
+              <given-names>J.</given-names>
+            </name>
+            <name>
+              <surname>&#xD6;zgen</surname>
+              <given-names>I.</given-names>
+            </name>
+            <name>
+              <surname>Hinkelmann</surname>
+              <given-names>R.</given-names>
+            </name>
+          </person-group>
+          <article-title>A model for overland flow and associated processes within the Hydroinformatics Modelling System</article-title>
+          <source>J. Hydroinformatics</source>
+          <year>2014</year>
+          <volume>16</volume>
+          <fpage>375</fpage>
+          <lpage>391</lpage>
+          <pub-id pub-id-type="doi">10.2166/hydro.2013.173</pub-id>
+        </element-citation>
+      </ref>
+      <ref id="B8-water-15-01300">
+        <label>8.</label>
+        <element-citation publication-type="journal">
+          <person-group person-group-type="author">
+            <name>
+              <surname>Yu</surname>
+              <given-names>C.</given-names>
+            </name>
+            <name>
+              <surname>Duan</surname>
+              <given-names>J.</given-names>
+            </name>
+          </person-group>
+          <article-title>Two-dimensional hydrodynamic model for surface-flow routing</article-title>
+          <source>J. Hydraul. Eng.</source>
+          <year>2014</year>
+          <volume>140</volume>
+          <fpage>04014045</fpage>
+          <pub-id pub-id-type="doi">10.1061/(ASCE)HY.1943-7900.0000913</pub-id>
+        </element-citation>
+      </ref>
+      <ref id="B9-water-15-01300">
+        <label>9.</label>
+        <element-citation publication-type="journal">
+          <person-group person-group-type="author">
+            <name>
+              <surname>Zhang</surname>
+              <given-names>H.</given-names>
+            </name>
+            <name>
+              <surname>Wu</surname>
+              <given-names>W.</given-names>
+            </name>
+            <name>
+              <surname>Hu</surname>
+              <given-names>C.</given-names>
+            </name>
+            <name>
+              <surname>Hu</surname>
+              <given-names>C.</given-names>
+            </name>
+            <name>
+              <surname>Li</surname>
+              <given-names>M.</given-names>
+            </name>
+            <name>
+              <surname>Hao</surname>
+              <given-names>X.</given-names>
+            </name>
+            <name>
+              <surname>Liu</surname>
+              <given-names>S.</given-names>
+            </name>
+          </person-group>
+          <article-title>A distributed hydrodynamic model for urban storm flood risk assessment</article-title>
+          <source>J. Hydrol.</source>
+          <year>2021</year>
+          <volume>600</volume>
+          <fpage>126513</fpage>
+          <pub-id pub-id-type="doi">10.1016/j.jhydrol.2021.126513</pub-id>
+        </element-citation>
+      </ref>
+      <ref id="B10-water-15-01300">
+        <label>10.</label>
+        <element-citation publication-type="journal">
+          <person-group person-group-type="author">
+            <name>
+              <surname>Toro</surname>
+              <given-names>E.F.</given-names>
+            </name>
+            <name>
+              <surname>Garcia-Navarro</surname>
+              <given-names>P.</given-names>
+            </name>
+          </person-group>
+          <article-title>Godunov-type methods for free-surface shallow flows: A review</article-title>
+          <source>J. Hydraul. Res.</source>
+          <year>2007</year>
+          <volume>45</volume>
+          <fpage>736</fpage>
+          <lpage>751</lpage>
+          <pub-id pub-id-type="doi">10.1080/00221686.2007.9521812</pub-id>
+        </element-citation>
+      </ref>
+      <ref id="B11-water-15-01300">
+        <label>11.</label>
+        <element-citation publication-type="journal">
+          <person-group person-group-type="author">
+            <name>
+              <surname>LeVeque</surname>
+              <given-names>R.J.</given-names>
+            </name>
+          </person-group>
+          <article-title>Balancing source terms and flux gradients in high-resolution Godunov methods: The quasi-steady wave-propagation algorithm</article-title>
+          <source>J. Comput. Phys.</source>
+          <year>1998</year>
+          <volume>146</volume>
+          <fpage>346</fpage>
+          <lpage>365</lpage>
+          <pub-id pub-id-type="doi">10.1006/jcph.1998.6058</pub-id>
+        </element-citation>
+      </ref>
+      <ref id="B12-water-15-01300">
+        <label>12.</label>
+        <element-citation publication-type="journal">
+          <person-group person-group-type="author">
+            <name>
+              <surname>Zhang</surname>
+              <given-names>D.</given-names>
+            </name>
+            <name>
+              <surname>Quan</surname>
+              <given-names>J.</given-names>
+            </name>
+            <name>
+              <surname>Wang</surname>
+              <given-names>Z.</given-names>
+            </name>
+            <name>
+              <surname>Zhang</surname>
+              <given-names>H.</given-names>
+            </name>
+            <name>
+              <surname>Ma</surname>
+              <given-names>J.</given-names>
+            </name>
+          </person-group>
+          <article-title>Numerical Simulation of Overland Flows Using Godunov Scheme Based on Finite Volume Method</article-title>
+          <source>EPiC Ser. Eng.</source>
+          <year>2018</year>
+          <volume>3</volume>
+          <fpage>2425</fpage>
+          <lpage>2432</lpage>
+        </element-citation>
+      </ref>
+      <ref id="B13-water-15-01300">
+        <label>13.</label>
+        <element-citation publication-type="journal">
+          <person-group person-group-type="author">
+            <name>
+              <surname>LeFloch</surname>
+              <given-names>P.G.</given-names>
+            </name>
+            <name>
+              <surname>Thanh</surname>
+              <given-names>M.D.</given-names>
+            </name>
+          </person-group>
+          <article-title>A Godunov-type method for the shallow water equations with discontinuous topography in the resonant regime</article-title>
+          <source>J. Comput. Phys.</source>
+          <year>2011</year>
+          <volume>230</volume>
+          <fpage>7631</fpage>
+          <lpage>7660</lpage>
+          <pub-id pub-id-type="doi">10.1016/j.jcp.2011.06.017</pub-id>
+        </element-citation>
+      </ref>
+      <ref id="B14-water-15-01300">
+        <label>14.</label>
+        <element-citation publication-type="journal">
+          <person-group person-group-type="author">
+            <name>
+              <surname>Brufau</surname>
+              <given-names>P.</given-names>
+            </name>
+            <name>
+              <surname>Garcia-Navarro</surname>
+              <given-names>P.</given-names>
+            </name>
+          </person-group>
+          <article-title>Two-dimensional dam break flow simulation</article-title>
+          <source>Int. J. Numer. Methods Fluids</source>
+          <year>2000</year>
+          <volume>33</volume>
+          <fpage>35</fpage>
+          <lpage>57</lpage>
+          <pub-id pub-id-type="doi">10.1002/(SICI)1097-0363(20000515)33:1&lt;35::AID-FLD999&gt;3.0.CO;2-D</pub-id>
+        </element-citation>
+      </ref>
+      <ref id="B15-water-15-01300">
+        <label>15.</label>
+        <element-citation publication-type="journal">
+          <person-group person-group-type="author">
+            <name>
+              <surname>George</surname>
+              <given-names>D.L.</given-names>
+            </name>
+          </person-group>
+          <article-title>Augmented Riemann solvers for the shallow water equations over variable topography with steady states and inundation</article-title>
+          <source>J. Comput. Phys.</source>
+          <year>2008</year>
+          <volume>227</volume>
+          <fpage>3089</fpage>
+          <lpage>3113</lpage>
+          <pub-id pub-id-type="doi">10.1016/j.jcp.2007.10.027</pub-id>
+        </element-citation>
+      </ref>
+      <ref id="B16-water-15-01300">
+        <label>16.</label>
+        <element-citation publication-type="journal">
+          <person-group person-group-type="author">
+            <name>
+              <surname>Harten</surname>
+              <given-names>A.</given-names>
+            </name>
+            <name>
+              <surname>Lax</surname>
+              <given-names>P.D.</given-names>
+            </name>
+            <name>
+              <surname>Leer</surname>
+              <given-names>B.V.</given-names>
+            </name>
+          </person-group>
+          <article-title>On Upstream Differencing and Godunov-Type Schemes for Hyperbolic Conservation Laws</article-title>
+          <source>SIAM Rev.</source>
+          <year>1983</year>
+          <volume>25</volume>
+          <fpage>35</fpage>
+          <lpage>61</lpage>
+          <pub-id pub-id-type="doi">10.1137/1025002</pub-id>
+        </element-citation>
+      </ref>
+      <ref id="B17-water-15-01300">
+        <label>17.</label>
+        <element-citation publication-type="journal">
+          <person-group person-group-type="author">
+            <name>
+              <surname>Toro</surname>
+              <given-names>E.F.</given-names>
+            </name>
+            <name>
+              <surname>Spruce</surname>
+              <given-names>M.</given-names>
+            </name>
+            <name>
+              <surname>Speares</surname>
+              <given-names>W.</given-names>
+            </name>
+          </person-group>
+          <article-title>Restoration of the contact surface in the HLL-Riemann solver</article-title>
+          <source>Shock Waves</source>
+          <year>1994</year>
+          <volume>4</volume>
+          <fpage>25</fpage>
+          <lpage>34</lpage>
+          <pub-id pub-id-type="doi">10.1007/BF01414629</pub-id>
+        </element-citation>
+      </ref>
+      <ref id="B18-water-15-01300">
+        <label>18.</label>
+        <element-citation publication-type="journal">
+          <person-group person-group-type="author">
+            <name>
+              <surname>Murillo</surname>
+              <given-names>J.</given-names>
+            </name>
+            <name>
+              <surname>Garc&#xED;a-Navarro</surname>
+              <given-names>P.</given-names>
+            </name>
+          </person-group>
+          <article-title>Weak solutions for partial differential equations with source terms: Application to the shallow water equations</article-title>
+          <source>J. Comput. Phys.</source>
+          <year>2010</year>
+          <volume>229</volume>
+          <fpage>4327</fpage>
+          <lpage>4368</lpage>
+          <pub-id pub-id-type="doi">10.1016/j.jcp.2010.02.016</pub-id>
+        </element-citation>
+      </ref>
+      <ref id="B19-water-15-01300">
+        <label>19.</label>
+        <element-citation publication-type="journal">
+          <person-group person-group-type="author">
+            <name>
+              <surname>Murillo</surname>
+              <given-names>J.</given-names>
+            </name>
+            <name>
+              <surname>Garc&#xED;a-Navarro</surname>
+              <given-names>P.</given-names>
+            </name>
+          </person-group>
+          <article-title>Augmented versions of the HLL and HLLC Riemann solvers including source terms in one and two dimensions for shallow flow applications</article-title>
+          <source>J. Comput. Phys.</source>
+          <year>2012</year>
+          <volume>231</volume>
+          <fpage>6861</fpage>
+          <lpage>6906</lpage>
+          <pub-id pub-id-type="doi">10.1016/j.jcp.2012.06.031</pub-id>
+        </element-citation>
+      </ref>
+      <ref id="B20-water-15-01300">
+        <label>20.</label>
+        <element-citation publication-type="journal">
+          <person-group person-group-type="author">
+            <name>
+              <surname>Hou</surname>
+              <given-names>J.</given-names>
+            </name>
+            <name>
+              <surname>Liang</surname>
+              <given-names>Q.</given-names>
+            </name>
+            <name>
+              <surname>Simons</surname>
+              <given-names>F.</given-names>
+            </name>
+            <name>
+              <surname>Hinkelmann</surname>
+              <given-names>R.</given-names>
+            </name>
+          </person-group>
+          <article-title>A stable 2D unstructured shallow flow model for simulations of wetting and drying over rough terrains</article-title>
+          <source>Comput. Fluids</source>
+          <year>2013</year>
+          <volume>82</volume>
+          <fpage>132</fpage>
+          <lpage>147</lpage>
+          <pub-id pub-id-type="doi">10.1016/j.compfluid.2013.04.015</pub-id>
+        </element-citation>
+      </ref>
+      <ref id="B21-water-15-01300">
+        <label>21.</label>
+        <element-citation publication-type="journal">
+          <person-group person-group-type="author">
+            <name>
+              <surname>Marche</surname>
+              <given-names>F.</given-names>
+            </name>
+            <name>
+              <surname>Bonneton</surname>
+              <given-names>P.</given-names>
+            </name>
+            <name>
+              <surname>Fabrie</surname>
+              <given-names>P.</given-names>
+            </name>
+            <name>
+              <surname>Seguin</surname>
+              <given-names>N.</given-names>
+            </name>
+          </person-group>
+          <article-title>Evaluation of well-balanced bore-capturing schemes for 2D wetting and drying processes</article-title>
+          <source>Int. J. Numer. Methods Fluids</source>
+          <year>2007</year>
+          <volume>53</volume>
+          <fpage>867</fpage>
+          <lpage>894</lpage>
+          <pub-id pub-id-type="doi">10.1002/fld.1311</pub-id>
+        </element-citation>
+      </ref>
+      <ref id="B22-water-15-01300">
+        <label>22.</label>
+        <element-citation publication-type="journal">
+          <person-group person-group-type="author">
+            <name>
+              <surname>Song</surname>
+              <given-names>L.</given-names>
+            </name>
+            <name>
+              <surname>Zhou</surname>
+              <given-names>J.</given-names>
+            </name>
+            <name>
+              <surname>Li</surname>
+              <given-names>Q.</given-names>
+            </name>
+            <name>
+              <surname>Yang</surname>
+              <given-names>X.</given-names>
+            </name>
+            <name>
+              <surname>Zhang</surname>
+              <given-names>Y.</given-names>
+            </name>
+          </person-group>
+          <article-title>An unstructured finite volume model for dam-break floods with wet/dry fronts over complex topography</article-title>
+          <source>Int. J. Numer. Methods Fluids</source>
+          <year>2011</year>
+          <volume>67</volume>
+          <fpage>960</fpage>
+          <lpage>980</lpage>
+          <pub-id pub-id-type="doi">10.1002/fld.2397</pub-id>
+        </element-citation>
+      </ref>
+      <ref id="B23-water-15-01300">
+        <label>23.</label>
+        <element-citation publication-type="journal">
+          <person-group person-group-type="author">
+            <name>
+              <surname>Audusse</surname>
+              <given-names>E.</given-names>
+            </name>
+            <name>
+              <surname>Bouchut</surname>
+              <given-names>F.</given-names>
+            </name>
+            <name>
+              <surname>Bristeau</surname>
+              <given-names>M.-O.</given-names>
+            </name>
+            <name>
+              <surname>Klein</surname>
+              <given-names>R.</given-names>
+            </name>
+            <name>
+              <surname>Perthame</surname>
+              <given-names>B.T.</given-names>
+            </name>
+          </person-group>
+          <article-title>A Fast and Stable Well-Balanced Scheme with Hydrostatic Reconstruction for Shallow Water Flows</article-title>
+          <source>SIAM J. Sci. Comput.</source>
+          <year>2004</year>
+          <volume>25</volume>
+          <fpage>2050</fpage>
+          <lpage>2065</lpage>
+          <pub-id pub-id-type="doi">10.1137/S1064827503431090</pub-id>
+        </element-citation>
+      </ref>
+      <ref id="B24-water-15-01300">
+        <label>24.</label>
+        <element-citation publication-type="journal">
+          <person-group person-group-type="author">
+            <name>
+              <surname>Liang</surname>
+              <given-names>Q.</given-names>
+            </name>
+            <name>
+              <surname>Marche</surname>
+              <given-names>F.</given-names>
+            </name>
+          </person-group>
+          <article-title>Numerical resolution of well-balanced shallow water equations with complex source terms</article-title>
+          <source>Adv. Water Resour.</source>
+          <year>2009</year>
+          <volume>32</volume>
+          <fpage>873</fpage>
+          <lpage>884</lpage>
+          <pub-id pub-id-type="doi">10.1016/j.advwatres.2009.02.010</pub-id>
+        </element-citation>
+      </ref>
+      <ref id="B25-water-15-01300">
+        <label>25.</label>
+        <element-citation publication-type="journal">
+          <person-group person-group-type="author">
+            <name>
+              <surname>Xia</surname>
+              <given-names>X.</given-names>
+            </name>
+            <name>
+              <surname>Liang</surname>
+              <given-names>Q.</given-names>
+            </name>
+            <name>
+              <surname>Ming</surname>
+              <given-names>X.</given-names>
+            </name>
+            <name>
+              <surname>Hou</surname>
+              <given-names>J.</given-names>
+            </name>
+          </person-group>
+          <article-title>An efficient and stable hydrodynamic model with novel source term discretization schemes for overland flow and flood simulations</article-title>
+          <source>Water Resour. Res.</source>
+          <year>2017</year>
+          <volume>53</volume>
+          <fpage>3730</fpage>
+          <lpage>3759</lpage>
+          <pub-id pub-id-type="doi">10.1002/2016WR020055</pub-id>
+        </element-citation>
+      </ref>
+      <ref id="B26-water-15-01300">
+        <label>26.</label>
+        <element-citation publication-type="journal">
+          <person-group person-group-type="author">
+            <name>
+              <surname>Horritt</surname>
+              <given-names>M.S.</given-names>
+            </name>
+            <name>
+              <surname>Bates</surname>
+              <given-names>P.D.</given-names>
+            </name>
+          </person-group>
+          <article-title>Effects of spatial resolution on a raster based model of flood flow</article-title>
+          <source>J. Hydrol.</source>
+          <year>2001</year>
+          <volume>253</volume>
+          <fpage>239</fpage>
+          <lpage>249</lpage>
+          <pub-id pub-id-type="doi">10.1016/S0022-1694(01)00490-5</pub-id>
+        </element-citation>
+      </ref>
+      <ref id="B27-water-15-01300">
+        <label>27.</label>
+        <element-citation publication-type="journal">
+          <person-group person-group-type="author">
+            <name>
+              <surname>Brown</surname>
+              <given-names>J.D.</given-names>
+            </name>
+            <name>
+              <surname>Spencer</surname>
+              <given-names>T.</given-names>
+            </name>
+            <name>
+              <surname>Moeller</surname>
+              <given-names>I.</given-names>
+            </name>
+          </person-group>
+          <article-title>Modeling storm surge flooding of an urban area with particular reference to modeling uncertainties: A case study of Canvey Island, United Kingdom</article-title>
+          <source>Water Resour. Res.</source>
+          <year>2007</year>
+          <volume>43</volume>
+          <fpage>W06402</fpage>
+          <pub-id pub-id-type="doi">10.1029/2005WR004597</pub-id>
+        </element-citation>
+      </ref>
+      <ref id="B28-water-15-01300">
+        <label>28.</label>
+        <element-citation publication-type="book">
+          <person-group person-group-type="author">
+            <name>
+              <surname>Huxley</surname>
+              <given-names>C.</given-names>
+            </name>
+          </person-group>
+          <source>Rapid and Accurate Storm Water Drainage System Assessments Using GPU Technology</source>
+          <publisher-name>BMT</publisher-name>
+          <publisher-loc>Brisbane, Australia</publisher-loc>
+          <year>2017</year>
+        </element-citation>
+      </ref>
+      <ref id="B29-water-15-01300">
+        <label>29.</label>
+        <element-citation publication-type="journal">
+          <person-group person-group-type="author">
+            <name>
+              <surname>Fewtrell</surname>
+              <given-names>T.</given-names>
+            </name>
+            <name>
+              <surname>Bates</surname>
+              <given-names>P.D.</given-names>
+            </name>
+            <name>
+              <surname>Horritt</surname>
+              <given-names>M.</given-names>
+            </name>
+            <name>
+              <surname>Hunter</surname>
+              <given-names>N.</given-names>
+            </name>
+          </person-group>
+          <article-title>Evaluating the effect of scale in flood inundation modelling in urban environments</article-title>
+          <source>Hydrol. Process. Int. J.</source>
+          <year>2008</year>
+          <volume>22</volume>
+          <fpage>5107</fpage>
+          <lpage>5118</lpage>
+          <pub-id pub-id-type="doi">10.1002/hyp.7148</pub-id>
+        </element-citation>
+      </ref>
+      <ref id="B30-water-15-01300">
+        <label>30.</label>
+        <element-citation publication-type="journal">
+          <person-group person-group-type="author">
+            <name>
+              <surname>Leandro</surname>
+              <given-names>J.</given-names>
+            </name>
+            <name>
+              <surname>Chen</surname>
+              <given-names>A.S.</given-names>
+            </name>
+            <name>
+              <surname>Schumann</surname>
+              <given-names>A.</given-names>
+            </name>
+          </person-group>
+          <article-title>A 2D parallel diffusive wave model for floodplain inundation with variable time step (P-DWave)</article-title>
+          <source>J. Hydrol.</source>
+          <year>2014</year>
+          <volume>517</volume>
+          <fpage>250</fpage>
+          <lpage>259</lpage>
+          <pub-id pub-id-type="doi">10.1016/j.jhydrol.2014.05.020</pub-id>
+        </element-citation>
+      </ref>
+      <ref id="B31-water-15-01300">
+        <label>31.</label>
+        <element-citation publication-type="journal">
+          <person-group person-group-type="author">
+            <name>
+              <surname>Wu</surname>
+              <given-names>Y.</given-names>
+            </name>
+            <name>
+              <surname>Tian</surname>
+              <given-names>L.</given-names>
+            </name>
+            <name>
+              <surname>Rubinato</surname>
+              <given-names>M.</given-names>
+            </name>
+            <name>
+              <surname>Gu</surname>
+              <given-names>S.</given-names>
+            </name>
+            <name>
+              <surname>Yu</surname>
+              <given-names>T.</given-names>
+            </name>
+            <name>
+              <surname>Xu</surname>
+              <given-names>Z.</given-names>
+            </name>
+            <name>
+              <surname>Cao</surname>
+              <given-names>P.</given-names>
+            </name>
+            <name>
+              <surname>Wang</surname>
+              <given-names>X.</given-names>
+            </name>
+            <name>
+              <surname>Zhao</surname>
+              <given-names>Q.</given-names>
+            </name>
+          </person-group>
+          <article-title>A New Parallel Framework of SPH-SWE for Dam Break Simulation Based on OpenMP</article-title>
+          <source>Water</source>
+          <year>2020</year>
+          <volume>12</volume>
+          <elocation-id>1395</elocation-id>
+          <pub-id pub-id-type="doi">10.3390/w12051395</pub-id>
+        </element-citation>
+      </ref>
+      <ref id="B32-water-15-01300">
+        <label>32.</label>
+        <element-citation publication-type="journal">
+          <person-group person-group-type="author">
+            <name>
+              <surname>Xia</surname>
+              <given-names>X.</given-names>
+            </name>
+            <name>
+              <surname>Liang</surname>
+              <given-names>Q.</given-names>
+            </name>
+            <name>
+              <surname>Ming</surname>
+              <given-names>X.</given-names>
+            </name>
+          </person-group>
+          <article-title>A full-scale fluvial flood modelling framework based on a high-performance integrated hydrodynamic modelling system (HiPIMS)</article-title>
+          <source>Adv. Water Resour.</source>
+          <year>2019</year>
+          <volume>132</volume>
+          <fpage>103392</fpage>
+          <pub-id pub-id-type="doi">10.1016/j.advwatres.2019.103392</pub-id>
+        </element-citation>
+      </ref>
+      <ref id="B33-water-15-01300">
+        <label>33.</label>
+        <element-citation publication-type="journal">
+          <person-group person-group-type="author">
+            <name>
+              <surname>Hou</surname>
+              <given-names>J.</given-names>
+            </name>
+            <name>
+              <surname>Liang</surname>
+              <given-names>Q.</given-names>
+            </name>
+            <name>
+              <surname>Simons</surname>
+              <given-names>F.</given-names>
+            </name>
+            <name>
+              <surname>Hinkelmann</surname>
+              <given-names>R.</given-names>
+            </name>
+          </person-group>
+          <article-title>A 2D well-balanced shallow flow model for unstructured grids with novel slope source term treatment</article-title>
+          <source>Adv. Water Resour.</source>
+          <year>2013</year>
+          <volume>52</volume>
+          <fpage>107</fpage>
+          <lpage>131</lpage>
+          <pub-id pub-id-type="doi">10.1016/j.advwatres.2012.08.003</pub-id>
+        </element-citation>
+      </ref>
+      <ref id="B34-water-15-01300">
+        <label>34.</label>
+        <element-citation publication-type="journal">
+          <person-group person-group-type="author">
+            <name>
+              <surname>Gottardi</surname>
+              <given-names>G.</given-names>
+            </name>
+            <name>
+              <surname>Venutelli</surname>
+              <given-names>M.</given-names>
+            </name>
+          </person-group>
+          <article-title>Central scheme for two-dimensional dam-break flow simulation</article-title>
+          <source>Adv. Water Resour.</source>
+          <year>2004</year>
+          <volume>27</volume>
+          <fpage>259</fpage>
+          <lpage>268</lpage>
+          <pub-id pub-id-type="doi">10.1016/j.advwatres.2003.12.006</pub-id>
+        </element-citation>
+      </ref>
+      <ref id="B35-water-15-01300">
+        <label>35.</label>
+        <element-citation publication-type="journal">
+          <person-group person-group-type="author">
+            <name>
+              <surname>Fraz&#xE3;o</surname>
+              <given-names>S.S.</given-names>
+            </name>
+            <name>
+              <surname>Zech</surname>
+              <given-names>Y.</given-names>
+            </name>
+          </person-group>
+          <article-title>Dam Break in Channels with 90&#xB0; Bend</article-title>
+          <source>J. Hydraul. Eng.</source>
+          <year>2002</year>
+          <volume>128</volume>
+          <fpage>956</fpage>
+          <lpage>968</lpage>
+          <pub-id pub-id-type="doi">10.1061/(ASCE)0733-9429(2002)128:11(956)</pub-id>
+        </element-citation>
+      </ref>
+      <ref id="B36-water-15-01300">
+        <label>36.</label>
+        <element-citation publication-type="journal">
+          <person-group person-group-type="author">
+            <name>
+              <surname>Cea</surname>
+              <given-names>L.</given-names>
+            </name>
+            <name>
+              <surname>Garrido</surname>
+              <given-names>M.</given-names>
+            </name>
+            <name>
+              <surname>Puertas</surname>
+              <given-names>J.</given-names>
+            </name>
+          </person-group>
+          <article-title>Experimental validation of two-dimensional depth-averaged models for forecasting rainfall&#x2013;runoff from precipitation data in urban areas</article-title>
+          <source>J. Hydrol.</source>
+          <year>2010</year>
+          <volume>382</volume>
+          <fpage>88</fpage>
+          <lpage>102</lpage>
+          <pub-id pub-id-type="doi">10.1016/j.jhydrol.2009.12.020</pub-id>
+        </element-citation>
+      </ref>
+      <ref id="B37-water-15-01300">
+        <label>37.</label>
+        <element-citation publication-type="journal">
+          <person-group person-group-type="author">
+            <name>
+              <surname>Cea</surname>
+              <given-names>L.</given-names>
+            </name>
+            <name>
+              <surname>Garrido</surname>
+              <given-names>M.</given-names>
+            </name>
+            <name>
+              <surname>Puertas</surname>
+              <given-names>J.</given-names>
+            </name>
+            <name>
+              <surname>J&#xE1;come</surname>
+              <given-names>A.</given-names>
+            </name>
+            <name>
+              <surname>Del R&#xED;o</surname>
+              <given-names>H.</given-names>
+            </name>
+            <name>
+              <surname>Su&#xE1;rez</surname>
+              <given-names>J.</given-names>
+            </name>
+          </person-group>
+          <article-title>Overland flow computations in urban and industrial catchments from direct precipitation data using a two-dimensional shallow water model</article-title>
+          <source>Water Sci. Technol. J. Int. Assoc. Water Pollut. Res.</source>
+          <year>2010</year>
+          <volume>62</volume>
+          <fpage>1998</fpage>
+          <lpage>2008</lpage>
+          <pub-id pub-id-type="doi">10.2166/wst.2010.746</pub-id>
+        </element-citation>
+      </ref>
+      <ref id="B38-water-15-01300">
+        <label>38.</label>
+        <element-citation publication-type="journal">
+          <person-group person-group-type="author">
+            <name>
+              <surname>Testa</surname>
+              <given-names>G.</given-names>
+            </name>
+            <name>
+              <surname>Zuccala</surname>
+              <given-names>D.</given-names>
+            </name>
+            <name>
+              <surname>Alcrudo</surname>
+              <given-names>F.</given-names>
+            </name>
+            <name>
+              <surname>Mulet</surname>
+              <given-names>J.</given-names>
+            </name>
+            <name>
+              <surname>Soares-Fraz&#xE3;o</surname>
+              <given-names>S.</given-names>
+            </name>
+          </person-group>
+          <article-title>Flash flood flow experiment in a simplified urban district</article-title>
+          <source>J. Hydraul. Res.</source>
+          <year>2007</year>
+          <volume>45</volume>
+          <fpage>37</fpage>
+          <lpage>44</lpage>
+          <pub-id pub-id-type="doi">10.1080/00221686.2007.9521831</pub-id>
+        </element-citation>
+      </ref>
+      <ref id="B39-water-15-01300">
+        <label>39.</label>
+        <element-citation publication-type="confproc">
+          <person-group person-group-type="author">
+            <name>
+              <surname>Goutal</surname>
+              <given-names>N.</given-names>
+            </name>
+          </person-group>
+          <article-title>The Malpasset dam failure. An overview and test case definition</article-title>
+          <source>Proceedings of the 4th CADAM Meeting</source>
+          <conf-loc>Zaragoza, Spain</conf-loc>
+          <conf-date>18&#x2013;19 November 1999</conf-date>
+          <fpage>18</fpage>
+          <lpage>19</lpage>
+        </element-citation>
+      </ref>
+      <ref id="B40-water-15-01300">
+        <label>40.</label>
+        <element-citation publication-type="journal">
+          <person-group person-group-type="author">
+            <name>
+              <surname>Yoon</surname>
+              <given-names>T.H.</given-names>
+            </name>
+            <name>
+              <surname>Kang</surname>
+              <given-names>S.-K.</given-names>
+            </name>
+          </person-group>
+          <article-title>Finite volume model for two-dimensional shallow water flows on unstructured grids</article-title>
+          <source>J. Hydraul. Eng.</source>
+          <year>2004</year>
+          <volume>130</volume>
+          <fpage>678</fpage>
+          <lpage>688</lpage>
+          <pub-id pub-id-type="doi">10.1061/(ASCE)0733-9429(2004)130:7(678)</pub-id>
+        </element-citation>
+      </ref>
+      <ref id="B41-water-15-01300">
+        <label>41.</label>
+        <element-citation publication-type="journal">
+          <person-group person-group-type="author">
+            <name>
+              <surname>George</surname>
+              <given-names>D.</given-names>
+            </name>
+          </person-group>
+          <article-title>Adaptive finite volume methods with well-balanced Riemann solvers for modeling floods in rugged terrain: Application to the Malpasset dam-break flood (France, 1959)</article-title>
+          <source>Int. J. Numer. Methods Fluids</source>
+          <year>2011</year>
+          <volume>66</volume>
+          <fpage>1000</fpage>
+          <lpage>1018</lpage>
+          <pub-id pub-id-type="doi">10.1002/fld.2298</pub-id>
+        </element-citation>
+      </ref>
+      <ref id="B42-water-15-01300">
+        <label>42.</label>
+        <element-citation publication-type="journal">
+          <person-group person-group-type="author">
+            <name>
+              <surname>Nikolos</surname>
+              <given-names>I.</given-names>
+            </name>
+            <name>
+              <surname>Delis</surname>
+              <given-names>A.</given-names>
+            </name>
+          </person-group>
+          <article-title>An unstructured node-centered finite volume scheme for shallow water flows with wet&#x2013;dry fronts over complex topography</article-title>
+          <source>Comput. Methods Appl. Mech. Eng.</source>
+          <year>2009</year>
+          <volume>198</volume>
+          <fpage>3723</fpage>
+          <lpage>3750</lpage>
+          <pub-id pub-id-type="doi">10.1016/j.cma.2009.08.006</pub-id>
+        </element-citation>
+      </ref>
+    </ref-list>
+    <sec sec-type="display-objects">
+      <title>Figures and Tables</title>
+      <fig id="water-15-01300-f001" position="float">
+        <label>Figure 1</label>
+        <caption>
+          <p>The cell topology of unstructured grids.</p>
+        </caption>
+        <graphic xmlns:xlink="http://www.w3.org/1999/xlink" xlink:href="water-15-01300-g001.tif"/>
+      </fig>
+      <fig id="water-15-01300-f002" position="float">
+        <label>Figure 2</label>
+        <caption>
+          <p>Illustration of hydrostatic reconstruction at: (<bold>a</bold>) <italic>h</italic><sub>L</sub> + <italic>z</italic><sub>L</sub> &gt; <italic>h</italic><sub>R</sub> + <italic>z</italic><sub>R</sub>; (<bold>b</bold>) <italic>h</italic><sub>L</sub> + <italic>z</italic><sub>L</sub> &lt; <italic>h</italic><sub>R</sub> + <italic>z</italic><sub>R</sub>; and (<bold>c</bold>) <italic>h</italic><sub>L</sub> + <italic>z</italic><sub>L</sub> &lt; <italic>z</italic><sub>R</sub>.</p>
+        </caption>
+        <graphic xmlns:xlink="http://www.w3.org/1999/xlink" xlink:href="water-15-01300-g002.tif"/>
+      </fig>
+      <fig id="water-15-01300-f003" position="float">
+        <label>Figure 3</label>
+        <caption>
+          <p>Multi-thread hydrodynamic numerical simulation process in GPU.</p>
+        </caption>
+        <graphic xmlns:xlink="http://www.w3.org/1999/xlink" xlink:href="water-15-01300-g003.tif"/>
+      </fig>
+      <fig id="water-15-01300-f004" position="float">
+        <label>Figure 4</label>
+        <caption>
+          <p>Still water test in an uneven bed: results of the still water test at T = 5000 s. The blue color represents water level, and the other colors represent the elevation of the bottom slope.</p>
+        </caption>
+        <graphic xmlns:xlink="http://www.w3.org/1999/xlink" xlink:href="water-15-01300-g004.tif"/>
+      </fig>
+      <fig id="water-15-01300-f005" position="float">
+        <label>Figure 5</label>
+        <caption>
+          <p>Dam-break flow in a 90&#xB0; curved channel: schematic diagram in the 90&#xB0; curved channel.</p>
+        </caption>
+        <graphic xmlns:xlink="http://www.w3.org/1999/xlink" xlink:href="water-15-01300-g005.tif"/>
+      </fig>
+      <fig id="water-15-01300-f006" position="float">
+        <label>Figure 6</label>
+        <caption>
+          <p>Dam-break flow in a 90&#xB0; curved channel: simulated water depth at t = 1, 3, 5, 10 s, as shown in (<bold>a</bold>&#x2013;<bold>d</bold>).</p>
+        </caption>
+        <graphic xmlns:xlink="http://www.w3.org/1999/xlink" xlink:href="water-15-01300-g006.tif"/>
+      </fig>
+      <fig id="water-15-01300-f007" position="float">
+        <label>Figure 7</label>
+        <caption>
+          <p>Dam-break flow in a 90&#xB0; curved channel: simulated and measured water depth [<xref ref-type="bibr" rid="B34-water-15-01300">34</xref>].</p>
+        </caption>
+        <graphic xmlns:xlink="http://www.w3.org/1999/xlink" xlink:href="water-15-01300-g007.tif"/>
+      </fig>
+      <fig id="water-15-01300-f008" position="float">
+        <label>Figure 8</label>
+        <caption>
+          <p>Urban rainfall-runoff experiment: topography of the experimental area.</p>
+        </caption>
+        <graphic xmlns:xlink="http://www.w3.org/1999/xlink" xlink:href="water-15-01300-g008.tif"/>
+      </fig>
+      <fig id="water-15-01300-f009" position="float">
+        <label>Figure 9</label>
+        <caption>
+          <p>Urban rainfall-runoff experiment: mesh and representation of buildings (partial area). The blue color represents the normal sides, and the red color represent the building sides.</p>
+        </caption>
+        <graphic xmlns:xlink="http://www.w3.org/1999/xlink" xlink:href="water-15-01300-g009.tif"/>
+      </fig>
+      <fig id="water-15-01300-f010" position="float">
+        <label>Figure 10</label>
+        <caption>
+          <p>Urban rainfall-runoff experiment: simulated and measured outlet discharges [<xref ref-type="bibr" rid="B36-water-15-01300">36</xref>].</p>
+        </caption>
+        <graphic xmlns:xlink="http://www.w3.org/1999/xlink" xlink:href="water-15-01300-g010.tif"/>
+      </fig>
+      <fig id="water-15-01300-f011" position="float">
+        <label>Figure 11</label>
+        <caption>
+          <p>Urban rainfall-runoff experiment: simulated water depths and flow patterns at the last moment of three rainfall events.</p>
+        </caption>
+        <graphic xmlns:xlink="http://www.w3.org/1999/xlink" xlink:href="water-15-01300-g011.tif"/>
+      </fig>
+      <fig id="water-15-01300-f012" position="float">
+        <label>Figure 12</label>
+        <caption>
+          <p>Flash flood in an urban area: (<bold>a</bold>) layout of the physical model; (<bold>b</bold>) inflow hydrograph.</p>
+        </caption>
+        <graphic xmlns:xlink="http://www.w3.org/1999/xlink" xlink:href="water-15-01300-g012.tif"/>
+      </fig>
+      <fig id="water-15-01300-f013" position="float">
+        <label>Figure 13</label>
+        <caption>
+          <p>Flash flood in an urban area: simulated water depths and velocities.</p>
+        </caption>
+        <graphic xmlns:xlink="http://www.w3.org/1999/xlink" xlink:href="water-15-01300-g013.tif"/>
+      </fig>
+      <fig id="water-15-01300-f014" position="float">
+        <label>Figure 14</label>
+        <caption>
+          <p>Simulated and measured water depths at nine sample gauges.</p>
+        </caption>
+        <graphic xmlns:xlink="http://www.w3.org/1999/xlink" xlink:href="water-15-01300-g014.tif"/>
+      </fig>
+      <fig id="water-15-01300-f015" position="float">
+        <label>Figure 15</label>
+        <caption>
+          <p>Malpasset dam break: topography and location of experimental points.</p>
+        </caption>
+        <graphic xmlns:xlink="http://www.w3.org/1999/xlink" xlink:href="water-15-01300-g015.tif"/>
+      </fig>
+      <fig id="water-15-01300-f016" position="float">
+        <label>Figure 16</label>
+        <caption>
+          <p>Malpasset dam break: numerical flood routing at t = 2000 s.</p>
+        </caption>
+        <graphic xmlns:xlink="http://www.w3.org/1999/xlink" xlink:href="water-15-01300-g016.tif"/>
+      </fig>
+      <fig id="water-15-01300-f017" position="float">
+        <label>Figure 17</label>
+        <caption>
+          <p>Malpasset dam break: comparison of numerical simulation results with observed and experimental results: (<bold>a</bold>) Maximum water level (survey points); (<bold>b</bold>) Maximum water level (scale model measurements); and (<bold>c</bold>) Wave arrival time (scale model measurements) [<xref ref-type="bibr" rid="B33-water-15-01300">33</xref>,<xref ref-type="bibr" rid="B42-water-15-01300">42</xref>].</p>
+        </caption>
+        <graphic xmlns:xlink="http://www.w3.org/1999/xlink" xlink:href="water-15-01300-g017.tif"/>
+      </fig>
+      <table-wrap id="water-15-01300-t001" position="float">
+        <object-id pub-id-type="pii">water-15-01300-t001_Table 1</object-id>
+        <label>Table 1</label>
+        <caption>
+          <p>Dam-break flow in a 90&#xB0; curved channel: location of six measured points.</p>
+        </caption>
+        <table>
+          <thead>
+            <tr>
+              <th align="center" valign="middle" style="border-top:solid thin;border-bottom:solid thin">Point</th>
+              <th align="center" valign="middle" style="border-top:solid thin;border-bottom:solid thin">X (m)</th>
+              <th align="center" valign="middle" style="border-top:solid thin;border-bottom:solid thin">Y (m)</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td align="center" valign="middle">P1</td>
+              <td align="center" valign="middle">1.20</td>
+              <td align="center" valign="middle">1.20</td>
+            </tr>
+            <tr>
+              <td align="center" valign="middle">P2</td>
+              <td align="center" valign="middle">2.75</td>
+              <td align="center" valign="middle">0.70</td>
+            </tr>
+            <tr>
+              <td align="center" valign="middle">P3</td>
+              <td align="center" valign="middle">4.25</td>
+              <td align="center" valign="middle">0.70</td>
+            </tr>
+            <tr>
+              <td align="center" valign="middle">P4</td>
+              <td align="center" valign="middle">5.75</td>
+              <td align="center" valign="middle">0.70</td>
+            </tr>
+            <tr>
+              <td align="center" valign="middle">P5</td>
+              <td align="center" valign="middle">6.55</td>
+              <td align="center" valign="middle">1.50</td>
+            </tr>
+            <tr>
+              <td align="center" valign="middle" style="border-bottom:solid thin">P6</td>
+              <td align="center" valign="middle" style="border-bottom:solid thin">6.55</td>
+              <td align="center" valign="middle" style="border-bottom:solid thin">3.00</td>
+            </tr>
+          </tbody>
+        </table>
+      </table-wrap>
+      <table-wrap id="water-15-01300-t002" position="float">
+        <object-id pub-id-type="pii">water-15-01300-t002_Table 2</object-id>
+        <label>Table 2</label>
+        <caption>
+          <p>Urban rainfall-runoff experiment: rainfall schemes.</p>
+        </caption>
+        <table>
+          <thead>
+            <tr>
+              <th align="center" valign="middle" style="border-top:solid thin;border-bottom:solid thin">Rainfall Events</th>
+              <th align="center" valign="middle" style="border-top:solid thin;border-bottom:solid thin">Rainfall Intensity<break/>(mm/h)</th>
+              <th align="center" valign="middle" style="border-top:solid thin;border-bottom:solid thin">Rainfall Duration<break/>(s)</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td align="center" valign="middle">R1</td>
+              <td align="center" valign="middle">300</td>
+              <td align="center" valign="middle">20</td>
+            </tr>
+            <tr>
+              <td align="center" valign="middle">R2</td>
+              <td align="center" valign="middle">300</td>
+              <td align="center" valign="middle">40</td>
+            </tr>
+            <tr>
+              <td align="center" valign="middle" style="border-bottom:solid thin">R3</td>
+              <td align="center" valign="middle" style="border-bottom:solid thin">300</td>
+              <td align="center" valign="middle" style="border-bottom:solid thin">60</td>
+            </tr>
+          </tbody>
+        </table>
+      </table-wrap>
+      <table-wrap id="water-15-01300-t003" position="float">
+        <object-id pub-id-type="pii">water-15-01300-t003_Table 3</object-id>
+        <label>Table 3</label>
+        <caption>
+          <p>Hardware configurations and computational cost for the Malpasset dam break.</p>
+        </caption>
+        <table>
+          <thead>
+            <tr>
+              <th align="center" valign="middle" style="border-top:solid thin;border-bottom:solid thin">Hardware</th>
+              <th align="center" valign="middle" style="border-top:solid thin;border-bottom:solid thin">Hardware Setup</th>
+              <th align="center" valign="middle" style="border-top:solid thin;border-bottom:solid thin">Hardware<break/>Cores</th>
+              <th align="center" valign="middle" style="border-top:solid thin;border-bottom:solid thin">Computational Cost (s)</th>
+              <th align="center" valign="middle" style="border-top:solid thin;border-bottom:solid thin">Speeding Up Ratio</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td rowspan="6" align="center" valign="middle" style="border-bottom:solid thin">CPU</td>
+              <td rowspan="6" align="center" valign="middle" style="border-bottom:solid thin">INTER i9-10900 <sup>1</sup></td>
+              <td align="center" valign="middle">1</td>
+              <td align="center" valign="middle">1034.235</td>
+              <td align="center" valign="middle">1.00</td>
+            </tr>
+            <tr>
+              <td align="center" valign="middle">2</td>
+              <td align="center" valign="middle">699.198</td>
+              <td align="center" valign="middle">1.48</td>
+            </tr>
+            <tr>
+              <td align="center" valign="middle">4</td>
+              <td align="center" valign="middle">448.042</td>
+              <td align="center" valign="middle">2.31</td>
+            </tr>
+            <tr>
+              <td align="center" valign="middle">6</td>
+              <td align="center" valign="middle">315.580</td>
+              <td align="center" valign="middle">3.28</td>
+            </tr>
+            <tr>
+              <td align="center" valign="middle">8</td>
+              <td align="center" valign="middle">297.681</td>
+              <td align="center" valign="middle">3.47</td>
+            </tr>
+            <tr>
+              <td align="center" valign="middle" style="border-bottom:solid thin">10</td>
+              <td align="center" valign="middle" style="border-bottom:solid thin">275.372</td>
+              <td align="center" valign="middle" style="border-bottom:solid thin">3.76</td>
+            </tr>
+            <tr>
+              <td rowspan="6" align="center" valign="middle" style="border-bottom:solid thin">GPU</td>
+              <td align="center" valign="middle">NVIDIA Geforce GTX 1660Ti <sup>2</sup> </td>
+              <td align="center" valign="middle">1536</td>
+              <td align="center" valign="middle">77.210</td>
+              <td align="center" valign="middle">13.40</td>
+            </tr>
+            <tr>
+              <td align="center" valign="middle">NVIDIA Geforce RTX 3070 Laptop <sup>2</sup></td>
+              <td align="center" valign="middle">5120</td>
+              <td align="center" valign="middle">50.283</td>
+              <td align="center" valign="middle">20.57</td>
+            </tr>
+            <tr>
+              <td align="center" valign="middle">NVIDIA RTX A4000 <sup>2</sup></td>
+              <td align="center" valign="middle">6144</td>
+              <td align="center" valign="middle">47.012</td>
+              <td align="center" valign="middle">22.00</td>
+            </tr>
+            <tr>
+              <td align="center" valign="middle">NVIDIA Geforce RTX 3080Ti <sup>2</sup></td>
+              <td align="center" valign="middle">10,240</td>
+              <td align="center" valign="middle">39.612</td>
+              <td align="center" valign="middle">26.11</td>
+            </tr>
+            <tr>
+              <td align="center" valign="middle">NVIDIA Geforce RTX 3090 <sup>2</sup></td>
+              <td align="center" valign="middle">10,496</td>
+              <td align="center" valign="middle">35.718</td>
+              <td align="center" valign="middle">28.96</td>
+            </tr>
+            <tr>
+              <td align="center" valign="middle" style="border-bottom:solid thin">NVIDIA Geforce RTX 4090 <sup>2</sup></td>
+              <td align="center" valign="middle" style="border-bottom:solid thin">16,384</td>
+              <td align="center" valign="middle" style="border-bottom:solid thin">13.888</td>
+              <td align="center" valign="middle" style="border-bottom:solid thin">74.47</td>
+            </tr>
+          </tbody>
+        </table>
+        <table-wrap-foot>
+          <fn>
+            <p><sup>1</sup> Intel Corporation, Santa Clara, USA; <sup>2</sup> NVIDIA Corporation, Santa Clara, USA. </p>
+          </fn>
+        </table-wrap-foot>
+      </table-wrap>
+    </sec>
+    <fn-group>
+      <fn>
+        <p><bold>Disclaimer/Publisher&#x2019;s Note:</bold> The statements, opinions and data contained in all publications are solely those of the individual author(s) and contributor(s) and not of MDPI and/or the editor(s). MDPI and/or the editor(s) disclaim responsibility for any injury to people or property resulting from any ideas, methods, instructions or products referred to in the content.</p>
+      </fn>
+    </fn-group>
+  </back>
+</article>

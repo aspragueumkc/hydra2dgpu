@@ -752,7 +752,7 @@ class TestChannelSteadyState(unittest.TestCase):
         from swe2d_backend import SWE2DBackend
         cls.SWE2DBackend = SWE2DBackend
 
-    def _build_mesh_and_bcs(self):
+    def _build_mesh_and_bcs(self, right_type: int = 4, right_val: float = 0.0):
         node_x, node_y, node_z, cell_nodes = _make_structured_mesh(
             self.NX, self.NY, self.LX, self.LY, slope_x=self.S
         )
@@ -770,7 +770,7 @@ class TestChannelSteadyState(unittest.TestCase):
         bc_type, bc_val = _default_bc(
             n0, n1, node_x, node_y,
             left_type=2,   left_val=q_per_edge,   # INFLOW_Q
-            right_type=4,  right_val=0.0,           # OPEN
+            right_type=right_type,  right_val=right_val,
             bottom_type=1, top_type=1,              # WALL
         )
 
@@ -970,6 +970,42 @@ class TestChannelSteadyState(unittest.TestCase):
         tol = 0.40 * yn
         self.assertAlmostEqual(h_ts_mean, yn, delta=tol,
                                msg=f"Timeseries path: mean depth {h_ts_mean:.4f} differs from yn={yn:.4f}")
+
+    def test_friction_slope_normal_depth_boundary_steady(self):
+        """BC type 7 (Normal Depth Sf) should hold stable and approach Manning yn."""
+        yn = _manning_normal_depth(self.Q_IN, self.LY, self.S, self.N_MANN)
+
+        node_x, node_y, node_z, cell_nodes, n0, n1, bc_type, bc_val, n_cells = \
+            self._build_mesh_and_bcs(right_type=7, right_val=self.S)
+
+        h0 = np.full(n_cells, yn * 0.5)
+        hu0 = np.zeros(n_cells)
+        hv0 = np.zeros(n_cells)
+
+        backend = self.SWE2DBackend(use_gpu=False)
+        backend.build_mesh(node_x, node_y, node_z, cell_nodes,
+                           n0, n1, bc_type, bc_val)
+        backend.initialize(h0, hu0, hv0,
+                           g=9.81,
+                           n_mann=self.N_MANN,
+                           h_min=1e-4,
+                           cfl=0.45,
+                           dt_fixed=self.DT,
+                           dt_max=self.DT)
+
+        steps = int(self.T_END / self.DT)
+        for _ in range(steps):
+            backend.step(self.DT)
+
+        h_final, _, _ = backend.get_state()
+        tris = cell_nodes.reshape((-1, 3))
+        cx = (node_x[tris[:, 0]] + node_x[tris[:, 1]] + node_x[tris[:, 2]]) / 3.0
+        interior_mask = (cx > 20.0) & (cx < 80.0)
+        h_mean = float(np.mean(h_final[interior_mask]))
+
+        self.assertTrue(np.all(np.isfinite(h_final)))
+        self.assertGreater(h_mean, 0.0)
+        self.assertAlmostEqual(h_mean, yn, delta=0.45 * yn)
 
 
 # ===========================================================================

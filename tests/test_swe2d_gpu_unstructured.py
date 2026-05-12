@@ -55,6 +55,40 @@ class TestGPUUnstructuredDamBreak(unittest.TestCase):
     H_L, H_R = 2.0, 0.5
     T_END = 10.0
 
+    def test_godunov_rollout_mode_smoke(self):
+        mod = _load_module()
+        node_x, node_y, node_z, cell_nodes, cell_cx, _ = _make_gmsh_triangle_mesh(
+            self.LX, self.LY, self.SIZE_STABILITY
+        )
+        mesh = _build_mesh(mod, node_x, node_y, node_z, cell_nodes)
+        h0 = np.where(cell_cx <= self.LX / 2.0, self.H_L, self.H_R)
+
+        solver = mod.swe2d_create_solver(
+            mesh,
+            h0.copy(),
+            n_mann=0.0,
+            cfl=0.45,
+            dt_max=0.5,
+            temporal_order=2,
+            spatial_scheme=0,
+            godunov_mode=1,
+            use_gpu=True,
+        )
+
+        t = 0.0
+        last_diag = None
+        while t < self.T_END:
+            last_diag = mod.swe2d_step(solver, -1.0)
+            t += last_diag["dt"]
+
+        h, hu, hv = mod.swe2d_get_state(solver)
+        mod.swe2d_destroy(solver)
+
+        self.assertTrue(last_diag["gpu_active"], "GPU inactive in Godunov rollout mode")
+        self.assertTrue(np.isfinite(h).all() and np.isfinite(hu).all() and np.isfinite(hv).all())
+        self.assertGreaterEqual(float(np.min(h)), 0.0)
+        self.assertLess(float(np.max(h)), 1.0e6)
+
     def test_stability_all_schemes(self):
         mod = _load_module()
         node_x, node_y, node_z, cell_nodes, cell_cx, _ = _make_gmsh_triangle_mesh(

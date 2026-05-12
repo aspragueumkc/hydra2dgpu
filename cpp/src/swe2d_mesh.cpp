@@ -107,6 +107,7 @@ SWE2DMesh swe2d_build_mesh_poly(
     mesh.cell_area.resize(n_cells);
     mesh.cell_zb.resize(n_cells);
     mesh.cell_inv_area.resize(n_cells);
+    mesh.cell_edge_offsets.resize(static_cast<size_t>(n_cells) + 1, 0);
 
     for (int32_t c = 0; c < n_cells; ++c) {
         int32_t s = mesh.cell_face_offsets[c];
@@ -190,12 +191,14 @@ SWE2DMesh swe2d_build_mesh_poly(
     mesh.edge_len.reserve(mesh.cell_face_nodes.size());
     mesh.edge_bc.reserve(mesh.cell_face_nodes.size());
     mesh.edge_bc_val.reserve(mesh.cell_face_nodes.size());
+    mesh.cell_edge_ids.reserve(mesh.cell_face_nodes.size());
 
     int32_t n_edges = 0;
     for (int32_t c = 0; c < n_cells; ++c) {
         int32_t s = mesh.cell_face_offsets[c];
         int32_t e = mesh.cell_face_offsets[c + 1];
         int32_t nv = e - s;
+        mesh.cell_edge_offsets[static_cast<size_t>(c)] = static_cast<int32_t>(mesh.cell_edge_ids.size());
         for (int32_t i = 0; i < nv; ++i) {
             int32_t na = mesh.cell_face_nodes[s + i];
             int32_t nb = mesh.cell_face_nodes[s + ((i + 1) % nv)];
@@ -227,6 +230,7 @@ SWE2DMesh swe2d_build_mesh_poly(
                 mesh.edge_bc_val.push_back(0.0);
 
                 edge_map[key] = EdgeEntry{n_edges};
+                mesh.cell_edge_ids.push_back(n_edges);
                 ++n_edges;
             } else {
                 int32_t eidx = it->second.edge_idx;
@@ -237,11 +241,13 @@ SWE2DMesh swe2d_build_mesh_poly(
                 }
                 mesh.edge_c1[eidx] = c;
                 mesh.edge_bc[eidx] = BCType::INTERIOR;
+                mesh.cell_edge_ids.push_back(eidx);
             }
         }
     }
 
     mesh.n_edges = n_edges;
+    mesh.cell_edge_offsets[static_cast<size_t>(n_cells)] = static_cast<int32_t>(mesh.cell_edge_ids.size());
 
     // Classify boundary edges.
     for (int32_t e = 0; e < mesh.n_edges; ++e) {
@@ -317,7 +323,9 @@ std::string swe2d_validate_mesh(const SWE2DMesh& mesh) {
     check_sz("node_y", mesh.node_y.size(), static_cast<size_t>(mesh.n_nodes));
     check_sz("node_z", mesh.node_z.size(), static_cast<size_t>(mesh.n_nodes));
     check_sz("cell_face_offsets", mesh.cell_face_offsets.size(), static_cast<size_t>(mesh.n_cells + 1));
+    check_sz("cell_edge_offsets", mesh.cell_edge_offsets.size(), static_cast<size_t>(mesh.n_cells + 1));
     check_sz("cell_area", mesh.cell_area.size(), static_cast<size_t>(mesh.n_cells));
+    check_sz("cell_edge_ids", mesh.cell_edge_ids.size(), mesh.cell_face_nodes.size());
     check_sz("edge_c0", mesh.edge_c0.size(), static_cast<size_t>(mesh.n_edges));
     check_sz("edge_bc", mesh.edge_bc.size(), static_cast<size_t>(mesh.n_edges));
 
@@ -340,6 +348,16 @@ std::string swe2d_validate_mesh(const SWE2DMesh& mesh) {
                 err << "cell " << c << " has fewer than 3 vertices; ";
                 break;
             }
+        }
+    }
+
+    if (!mesh.cell_edge_offsets.empty()) {
+        if (mesh.cell_edge_offsets.front() != 0) {
+            err << "cell_edge_offsets[0] must be 0; ";
+        }
+        int32_t edge_ids_n = static_cast<int32_t>(mesh.cell_edge_ids.size());
+        if (mesh.cell_edge_offsets.back() != edge_ids_n) {
+            err << "cell_edge_offsets tail must match cell_edge_ids size; ";
         }
     }
 

@@ -72,6 +72,7 @@ try:
         DrainageSolverMode,
         DrainageLink,
         DrainageNode,
+        GodunovSolverMode,
         HydraulicStructure,
         HydraulicStructureConfig,
         InletExchange,
@@ -80,6 +81,8 @@ try:
         OutfallExchange,
         PipeNetworkConfig,
         StructureType,
+        SpatialDiscretization,
+        TemporalScheme,
     )
     from swe2d_structures import SWE2DStructureModule
 except Exception:
@@ -90,6 +93,7 @@ except Exception:
             DrainageSolverMode,
             DrainageLink,
             DrainageNode,
+            GodunovSolverMode,
             HydraulicStructure,
             HydraulicStructureConfig,
             InletExchange,
@@ -98,6 +102,8 @@ except Exception:
             OutfallExchange,
             PipeNetworkConfig,
             StructureType,
+            SpatialDiscretization,
+            TemporalScheme,
         )
         from .swe2d_structures import SWE2DStructureModule
     except Exception:
@@ -109,6 +115,8 @@ except Exception:
         InletType = NodeInletAssignment = None
         PipeNetworkConfig = HydraulicStructureConfig = None
         DrainageSolverMode = None
+        GodunovSolverMode = None
+        SpatialDiscretization = None
         StructureType = None
 
 try:
@@ -143,6 +151,7 @@ try:
         Gauge,
         ThiessenRainCNForcing,
         build_hyetograph,
+        inspect_hyetograph_rows,
         assign_cells_to_nearest_gauge,
         runoff_depth_mm_from_event_rain_mm,
         time_of_concentration_hours_velocity_method,
@@ -153,6 +162,7 @@ except Exception:
             Gauge,
             ThiessenRainCNForcing,
             build_hyetograph,
+            inspect_hyetograph_rows,
             assign_cells_to_nearest_gauge,
             runoff_depth_mm_from_event_rain_mm,
             time_of_concentration_hours_velocity_method,
@@ -160,6 +170,7 @@ except Exception:
     except Exception:
         Gauge = ThiessenRainCNForcing = None
         build_hyetograph = assign_cells_to_nearest_gauge = None
+        inspect_hyetograph_rows = None
         runoff_depth_mm_from_event_rain_mm = time_of_concentration_hours_velocity_method = None
 
 
@@ -184,6 +195,7 @@ _BC_OPTIONS = [
     ("Inflow Q (total discharge)", 2),
     ("Stage (prescribed WSE)", 3),
     ("Normal Depth (prescribed depth)", 6),
+    ("Normal Depth (friction slope Sf)", 7),
     ("Timeseries Flow Q", 102),
     ("Timeseries Stage", 103),
     ("Open (zero-gradient)", 4),
@@ -216,11 +228,18 @@ _RECONSTRUCTION_OPTIONS = [
     ("MUSCL Van Leer (smooth TVD)",      4),
 ]
 
+_TEMPORAL_ORDER_OPTIONS = [
+    ("Euler (RK1, 1st-order)",           1),
+    ("RK2 (Heun, 2nd-order, default)",   2),
+    ("RK4 (classic, 4th-order)",         4),
+]
+
 _BC_VALUE_MAP = {
     "Wall (zero normal flux)": 1,
     "Inflow Q (total discharge)": 2,
     "Stage (prescribed WSE)": 3,
     "Normal Depth (prescribed depth)": 6,
+    "Normal Depth (friction slope Sf)": 7,
     "Timeseries Flow Q": 102,
     "Timeseries Stage": 103,
     "Open (zero-gradient)": 4,
@@ -240,6 +259,13 @@ _DRAIN_LINK_TYPE_VALUE_MAP = {
     "Pump": "pump",
     "Weir": "weir",
     "Orifice": "orifice",
+}
+
+_DRAIN_LINK_SHAPE_VALUE_MAP = {
+    "Circular": "circular",
+    "Box": "box",
+    "Pipe arch": "pipe_arch",
+    "Custom area": "custom",
 }
 
 _RAIN_GAGE_UNITS_VALUE_MAP = {
@@ -276,6 +302,12 @@ _MODEL_LAYER_BINDINGS = {
         "combo_attr": "hyetograph_layer_combo",
         "geometry": "table",
         "required_fields": ("hyetograph_id", "Time", "Value"),
+    },
+    "storm_areas": {
+        "layer_name": "swe2d_storm_areas",
+        "combo_attr": "storm_area_layer_combo",
+        "geometry": "polygon",
+        "required_fields": ("storm_id",),
     },
     "drainage_nodes": {
         "layer_name": "swe2d_drainage_nodes",
@@ -724,6 +756,12 @@ class SWE2DLineResultsViewerDialog(QtWidgets.QDialog):
         for label, key in self._PROFILE_FILL_OPTIONS:
             self.fill_metric_combo.addItem(label, key)
         controls.addWidget(self.fill_metric_combo)
+        self.wse_render_lbl = QtWidgets.QLabel("WSE render:")
+        controls.addWidget(self.wse_render_lbl)
+        self.wse_render_combo = QtWidgets.QComboBox()
+        self.wse_render_combo.addItem("Clipped to bed (wet only)", "clipped")
+        self.wse_render_combo.addItem("Raw sampled", "raw")
+        controls.addWidget(self.wse_render_combo)
         controls.addStretch(1)
         root.addLayout(controls)
 
@@ -780,6 +818,7 @@ class SWE2DLineResultsViewerDialog(QtWidgets.QDialog):
         self.time_combo.currentIndexChanged.connect(self._refresh_table)
         self.time_combo.currentIndexChanged.connect(self._refresh_plot)
         self.fill_metric_combo.currentIndexChanged.connect(self._refresh_plot)
+        self.wse_render_combo.currentIndexChanged.connect(self._refresh_plot)
         self.view_mode_combo.currentIndexChanged.connect(self._sync_control_visibility)
         self.view_mode_combo.currentIndexChanged.connect(self._refresh_table)
         self.view_mode_combo.currentIndexChanged.connect(self._refresh_plot)
@@ -837,6 +876,8 @@ class SWE2DLineResultsViewerDialog(QtWidgets.QDialog):
         self.profile_metric_combo.setVisible(is_profile)
         self.time_combo.setVisible(is_profile or is_wse)
         self.fill_metric_combo.setVisible(is_wse)
+        self.wse_render_lbl.setVisible(is_wse)
+        self.wse_render_combo.setVisible(is_wse)
 
     def _filtered_records(self) -> List[Dict[str, object]]:
         lid = self._line_filter()
@@ -975,9 +1016,12 @@ class SWE2DLineResultsViewerDialog(QtWidgets.QDialog):
             self._plot_canvas.draw_idle()
             return
 
-        # WSE + bed profile, with optional color-ramped fill between bed and WSE.
+        # WSE + bed profile. Rendering is wet-aware and clips WSE to bed for
+        # display so dry/near-dry samples do not produce misleading below-bed dips.
         wse = np.asarray([float(r.get("wse_m", float("nan"))) for r in rows], dtype=np.float64)
         bed = np.asarray([float(r.get("bed_m", float("nan"))) for r in rows], dtype=np.float64)
+        depth = np.asarray([float(r.get("depth_m", float("nan"))) for r in rows], dtype=np.float64)
+        wet = np.asarray([float(r.get("wet", float("nan"))) for r in rows], dtype=np.float64)
         ok = np.isfinite(wse) & np.isfinite(bed)
         if not np.any(ok):
             ax.text(0.5, 0.5, "No WSE/bed values for selected line/timestep", ha="center", va="center", transform=ax.transAxes)
@@ -987,6 +1031,23 @@ class SWE2DLineResultsViewerDialog(QtWidgets.QDialog):
         x_ok = x[ok]
         wse_ok = wse[ok]
         bed_ok = bed[ok]
+        depth_ok = depth[ok]
+        wet_ok_raw = wet[ok]
+        wet_mask = np.where(np.isfinite(wet_ok_raw), wet_ok_raw > 0.5, depth_ok > 1.0e-9)
+
+        render_mode = str(self.wse_render_combo.currentData()) if hasattr(self, "wse_render_combo") else "clipped"
+        wse_phys = np.maximum(wse_ok, bed_ok)
+        below_bed_count = int(np.sum(wse_ok < bed_ok))
+        if render_mode == "raw":
+            fill_mask = np.isfinite(wse_ok) & np.isfinite(bed_ok)
+            wse_fill = wse_ok
+            wse_plot = wse_ok
+            render_note = f"Raw mode: {below_bed_count} sample(s) with WSE < bed"
+        else:
+            fill_mask = wet_mask
+            wse_fill = wse_phys
+            wse_plot = np.where(wet_mask, wse_phys, np.nan)
+            render_note = f"Display note: clipped {below_bed_count} sample(s) where WSE < bed"
         fill_key = str(self.fill_metric_combo.currentData())
 
         if fill_key != "none":
@@ -1004,11 +1065,13 @@ class SWE2DLineResultsViewerDialog(QtWidgets.QDialog):
                     for i in range(len(x_ok) - 1):
                         if not (np.isfinite(fill_vals[i]) and np.isfinite(fill_vals[i + 1])):
                             continue
+                        if not (fill_mask[i] and fill_mask[i + 1]):
+                            continue
                         c_mid = cmap(norm(0.5 * (fill_vals[i] + fill_vals[i + 1])))
                         ax.fill_between(
                             x_ok[i : i + 2],
                             bed_ok[i : i + 2],
-                            wse_ok[i : i + 2],
+                            wse_fill[i : i + 2],
                             color=c_mid,
                             alpha=0.85,
                             linewidth=0.0,
@@ -1017,12 +1080,23 @@ class SWE2DLineResultsViewerDialog(QtWidgets.QDialog):
                     sm.set_array([])
                     self._plot_fig.colorbar(sm, ax=ax, label=self.fill_metric_combo.currentText())
             except Exception:
-                ax.fill_between(x_ok, bed_ok, wse_ok, color="tab:blue", alpha=0.18)
+                ax.fill_between(x_ok, bed_ok, wse_fill, where=fill_mask, interpolate=True, color="tab:blue", alpha=0.18)
         else:
-            ax.fill_between(x_ok, bed_ok, wse_ok, color="tab:blue", alpha=0.18)
+            ax.fill_between(x_ok, bed_ok, wse_fill, where=fill_mask, interpolate=True, color="tab:blue", alpha=0.18)
 
         ax.plot(x_ok, bed_ok, "-", color="saddlebrown", linewidth=1.6, label="Bed")
-        ax.plot(x_ok, wse_ok, "-", color="royalblue", linewidth=1.8, label="Water Surface")
+        ax.plot(x_ok, wse_plot, "-", color="royalblue", linewidth=1.8, label="Water Surface")
+        if below_bed_count > 0:
+            ax.text(
+                0.01,
+                0.99,
+            render_note,
+                transform=ax.transAxes,
+                ha="left",
+                va="top",
+                fontsize=8,
+                color="0.35",
+            )
         ax.set_xlabel("Station")
         ax.set_ylabel("Elevation")
         ax.set_title(f"Line {line_id} WSE + bed at t={t_s/3600.0:.4f} hr" + (f" ({line_name})" if line_name else ""))
@@ -1420,11 +1494,15 @@ class SWE2DWorkbenchDialog(QtWidgets.QDialog):
         self._topology_mesh_timer.timeout.connect(self._poll_topology_mesh_future)
         self._topology_mesh_started_at: Optional[float] = None
         self._topology_mesh_poll_count = 0
+        self._topology_mesh_active_timeout_sec = 0.0
+        self._project_layer_state_blocked = False
+        self._initial_layer_restore_pending = True
         try:
             timeout_sec = float(os.environ.get("BACKWATER_TOPOLOGY_MESH_TIMEOUT_SEC", "300"))
         except Exception:
             timeout_sec = 300.0
         self._topology_mesh_timeout_sec = max(30.0, timeout_sec)
+        self._topology_mesh_active_timeout_sec = self._topology_mesh_timeout_sec
 
         FigureCanvas, Figure, mtri = _try_import_matplotlib_qt()
         self._FigureCanvas = FigureCanvas
@@ -1433,6 +1511,13 @@ class SWE2DWorkbenchDialog(QtWidgets.QDialog):
         self._have_mpl = FigureCanvas is not None and Figure is not None and mtri is not None
 
         self._build_ui()
+        self._connect_project_layer_state_signals()
+        self._connect_project_workbench_state_signals()
+        self._connect_project_save_state_signals()
+        self._restore_project_layer_bindings()
+        self._initial_layer_restore_pending = False
+        self._persist_project_layer_bindings()
+        # Note: workbench state restoration moved to showEvent() for more reliable timing
         self._update_unit_system_from_crs()
         self._log(
             f"2D bridge: {'available' if swe2d_available() else 'missing'} | "
@@ -1649,10 +1734,23 @@ class SWE2DWorkbenchDialog(QtWidgets.QDialog):
         self.topo_quality_max_aspect_spin.setRange(1.0, 1.0e4)
         self.topo_quality_max_aspect_spin.setDecimals(2)
         self.topo_quality_max_aspect_spin.setValue(20.0)
+        self.topo_quality_max_non_orth_spin = QtWidgets.QDoubleSpinBox()
+        self.topo_quality_max_non_orth_spin.setRange(1.0, 89.9)
+        self.topo_quality_max_non_orth_spin.setDecimals(1)
+        self.topo_quality_max_non_orth_spin.setValue(82.0)
         self.topo_quality_min_area_edit = QtWidgets.QLineEdit("1e-14")
         self.topo_quality_strict_chk = QtWidgets.QCheckBox("Strict quality acceptance")
-        self.topo_quality_size_scales_edit = QtWidgets.QLineEdit("1.0")
-        self.topo_quality_smooth_increments_edit = QtWidgets.QLineEdit("0")
+        self.topo_quality_size_scales_edit = QtWidgets.QLineEdit("1.0,0.9,0.8,0.7")
+        self.topo_quality_smooth_increments_edit = QtWidgets.QLineEdit("0,2,4,6")
+        self.topo_gmsh_quality_enable_chk = QtWidgets.QCheckBox("Enable Gmsh iterative quality loop")
+        self.topo_gmsh_quality_enable_chk.setChecked(False)
+        self.topo_gmsh_quality_max_iters_spin = QtWidgets.QSpinBox()
+        self.topo_gmsh_quality_max_iters_spin.setRange(1, 50)
+        self.topo_gmsh_quality_max_iters_spin.setValue(6)
+        self.topo_gmsh_quality_time_limit_spin = QtWidgets.QDoubleSpinBox()
+        self.topo_gmsh_quality_time_limit_spin.setRange(1.0, 3600.0)
+        self.topo_gmsh_quality_time_limit_spin.setDecimals(1)
+        self.topo_gmsh_quality_time_limit_spin.setValue(60.0)
         self.topo_gmsh_tri_algo_combo = QtWidgets.QComboBox()
         self.topo_gmsh_tri_algo_combo.addItem("Frontal-Delaunay (quality)", 6)
         self.topo_gmsh_tri_algo_combo.addItem("Delaunay (faster)", 5)
@@ -1687,8 +1785,12 @@ class SWE2DWorkbenchDialog(QtWidgets.QDialog):
         quality_form_widget = QtWidgets.QWidget()
         quality_form = QtWidgets.QFormLayout(quality_form_widget)
         quality_form.setContentsMargins(0, 0, 0, 0)
+        quality_form.addRow(self.topo_gmsh_quality_enable_chk)
+        quality_form.addRow("Gmsh max attempts:", self.topo_gmsh_quality_max_iters_spin)
+        quality_form.addRow("Gmsh time budget (s):", self.topo_gmsh_quality_time_limit_spin)
         quality_form.addRow("Min angle (deg):", self.topo_quality_min_angle_spin)
         quality_form.addRow("Max aspect ratio:", self.topo_quality_max_aspect_spin)
+        quality_form.addRow("Max non-orthogonality (deg):", self.topo_quality_max_non_orth_spin)
         quality_form.addRow("Min area / bbox area:", self.topo_quality_min_area_edit)
         quality_form.addRow("Retry size scales:", self.topo_quality_size_scales_edit)
         quality_form.addRow("Retry smooth increments:", self.topo_quality_smooth_increments_edit)
@@ -1709,6 +1811,9 @@ class SWE2DWorkbenchDialog(QtWidgets.QDialog):
         self.topo_export_template_btn.clicked.connect(self._create_topology_template_layers)
         self.topo_generate_btn = QtWidgets.QPushButton("Generate Mesh From Topology Layers")
         self.topo_generate_btn.clicked.connect(self._generate_mesh_from_topology_layers)
+        self.topo_terminate_btn = QtWidgets.QPushButton("Terminate Mesh Run")
+        self.topo_terminate_btn.setEnabled(False)
+        self.topo_terminate_btn.clicked.connect(self._on_terminate_topology_mesh)
         self.topo_status_lbl = QtWidgets.QLabel("Select regions layer and generate face-centric mesh")
         self.topo_status_lbl.setWordWrap(True)
 
@@ -1730,14 +1835,19 @@ class SWE2DWorkbenchDialog(QtWidgets.QDialog):
         topo_layout.addWidget(self.topo_default_cell_type_combo, 7, 1)
         topo_layout.addWidget(QtWidgets.QLabel("Gmsh advanced controls:"), 8, 0)
         topo_layout.addWidget(gmsh_form_widget, 8, 1)
-        topo_layout.addWidget(QtWidgets.QLabel("TQMesh quality controls:"), 9, 0)
+        topo_layout.addWidget(QtWidgets.QLabel("Quality controls (Gmsh + TQMesh):"), 9, 0)
         topo_layout.addWidget(quality_form_widget, 9, 1)
         topo_layout.addWidget(self.topo_validate_btn, 10, 0, 1, 2)
         topo_layout.addWidget(self.topo_edit_regions_btn, 11, 0)
         topo_layout.addWidget(self.topo_edit_quad_edges_btn, 11, 1)
         topo_layout.addWidget(self.topo_controls_summary_lbl, 12, 0, 1, 2)
         topo_layout.addWidget(self.topo_export_template_btn, 13, 0, 1, 2)
-        topo_layout.addWidget(self.topo_generate_btn, 14, 0, 1, 2)
+        topo_actions_row = QtWidgets.QWidget()
+        topo_actions_layout = QtWidgets.QHBoxLayout(topo_actions_row)
+        topo_actions_layout.setContentsMargins(0, 0, 0, 0)
+        topo_actions_layout.addWidget(self.topo_generate_btn)
+        topo_actions_layout.addWidget(self.topo_terminate_btn)
+        topo_layout.addWidget(topo_actions_row, 14, 0, 1, 2)
         topo_layout.addWidget(self.topo_status_lbl, 15, 0, 1, 2)
         left_layout.addWidget(topo_group)
 
@@ -1745,6 +1855,16 @@ class SWE2DWorkbenchDialog(QtWidgets.QDialog):
         self.topo_regions_combo.currentIndexChanged.connect(self._update_topology_control_summary)
         self.topo_constraints_combo.currentIndexChanged.connect(self._update_topology_control_summary)
         self.topo_quad_edges_combo.currentIndexChanged.connect(self._update_topology_control_summary)
+        self.topo_quality_min_angle_spin.valueChanged.connect(self._update_topology_control_summary)
+        self.topo_quality_max_aspect_spin.valueChanged.connect(self._update_topology_control_summary)
+        self.topo_quality_max_non_orth_spin.valueChanged.connect(self._update_topology_control_summary)
+        self.topo_quality_min_area_edit.textChanged.connect(self._update_topology_control_summary)
+        self.topo_quality_strict_chk.toggled.connect(self._update_topology_control_summary)
+        self.topo_quality_size_scales_edit.textChanged.connect(self._update_topology_control_summary)
+        self.topo_quality_smooth_increments_edit.textChanged.connect(self._update_topology_control_summary)
+        self.topo_gmsh_quality_enable_chk.toggled.connect(self._update_topology_control_summary)
+        self.topo_gmsh_quality_max_iters_spin.valueChanged.connect(self._update_topology_control_summary)
+        self.topo_gmsh_quality_time_limit_spin.valueChanged.connect(self._update_topology_control_summary)
 
         bc_group = QtWidgets.QGroupBox("Boundary Conditions (side defaults + optional BC polyline overrides)")
         bc_grid = QtWidgets.QGridLayout(bc_group)
@@ -1850,12 +1970,75 @@ class SWE2DWorkbenchDialog(QtWidgets.QDialog):
             "h_new <= h_old + factor * max(h_old, h_min).\n"
             "Lower values are more robust near advancing wet/dry fronts."
         )
+        self.max_source_depth_step_spin = QtWidgets.QDoubleSpinBox()
+        self.max_source_depth_step_spin.setRange(0.0, 10.0)
+        self.max_source_depth_step_spin.setDecimals(6)
+        self.max_source_depth_step_spin.setValue(0.0)
+        self.max_source_depth_step_spin.setToolTip(
+            "Absolute cap on positive source-driven depth increase per step (model units).\n"
+            "0 disables the cap. Useful for suppressing rain/CN impulse spikes."
+        )
+        self.max_source_rate_spin = QtWidgets.QDoubleSpinBox()
+        self.max_source_rate_spin.setRange(0.0, 100.0)
+        self.max_source_rate_spin.setDecimals(6)
+        self.max_source_rate_spin.setValue(0.0)
+        self.max_source_rate_spin.setToolTip(
+            "Cap on positive net source rate (model units per second).\n"
+            "0 disables the cap. Applies before per-step depth update."
+        )
+        self.extreme_rain_mode_chk = QtWidgets.QCheckBox("Enable")
+        self.extreme_rain_mode_chk.setChecked(False)
+        self.extreme_rain_mode_chk.setToolTip(
+            "Adaptive source-CFL limiter for extreme rainfall/source events.\n"
+            "When enabled, positive source terms are reduced using an equivalent\n"
+            "substepping factor so dt*source remains bounded by beta*h_ref."
+        )
+        self.source_cfl_beta_spin = QtWidgets.QDoubleSpinBox()
+        self.source_cfl_beta_spin.setRange(0.01, 2.0)
+        self.source_cfl_beta_spin.setDecimals(3)
+        self.source_cfl_beta_spin.setSingleStep(0.05)
+        self.source_cfl_beta_spin.setValue(0.25)
+        self.source_cfl_beta_spin.setToolTip(
+            "Target source-CFL beta in dt*source <= beta*h_ref.\n"
+            "Lower beta is more conservative."
+        )
+        self.source_max_substeps_spin = QtWidgets.QSpinBox()
+        self.source_max_substeps_spin.setRange(1, 512)
+        self.source_max_substeps_spin.setValue(16)
+        self.source_max_substeps_spin.setToolTip(
+            "Maximum equivalent source substeps used by adaptive source limiter."
+        )
+        self.source_true_subcycling_chk = QtWidgets.QCheckBox("Enable")
+        self.source_true_subcycling_chk.setChecked(False)
+        self.source_true_subcycling_chk.setToolTip(
+            "Apply true source subcycling (real sub-iterations over dt) instead of\n"
+            "equivalent one-shot source scaling."
+        )
+        self.source_imex_split_chk = QtWidgets.QCheckBox("Enable")
+        self.source_imex_split_chk.setChecked(False)
+        self.source_imex_split_chk.setToolTip(
+            "IMEX-style split: apply flux update first, then source/friction subcycling.\n"
+            "Most useful when true source subcycling is enabled."
+        )
+        self.source_stage_coupled_imex_rk2_chk = QtWidgets.QCheckBox("Enable")
+        self.source_stage_coupled_imex_rk2_chk.setChecked(False)
+        self.source_stage_coupled_imex_rk2_chk.setToolTip(
+            "Stage-coupled IMEX-RK2 for external coupling sources (drainage/structures).\n"
+            "Runs a predictor/corrector source update each step (GPU native injection path).\n"
+            "Best for stiff coupling; costs extra compute per step."
+        )
         self.shallow_damping_depth_spin = QtWidgets.QDoubleSpinBox()
         self.shallow_damping_depth_spin.setRange(1.0e-8, 10.0)
         self.shallow_damping_depth_spin.setDecimals(6)
         self.shallow_damping_depth_spin.setValue(1.0e-4)
         self.shallow_damping_depth_spin.setToolTip(
             "Depth threshold for smooth momentum damping in shallow cells."
+        )
+        self.shallow_front_recon_fallback_chk = QtWidgets.QCheckBox("Enable")
+        self.shallow_front_recon_fallback_chk.setChecked(True)
+        self.shallow_front_recon_fallback_chk.setToolTip(
+            "If enabled, force first-order reconstruction on shallow wet/dry-front\n"
+            "edge pairs to improve stability for higher-order schemes."
         )
         self.front_flux_damping_spin = QtWidgets.QDoubleSpinBox()
         self.front_flux_damping_spin.setRange(0.0, 1.0)
@@ -1919,6 +2102,16 @@ class SWE2DWorkbenchDialog(QtWidgets.QDialog):
         self.cn_default_spin.setValue(75.0)
         self.use_spatial_rain_cn_chk = QtWidgets.QCheckBox("Use Thiessen gage rainfall + CN infiltration when layers are available")
         self.use_spatial_rain_cn_chk.setChecked(True)
+        self.storm_area_layer_combo = QtWidgets.QComboBox()
+        self.storm_area_layer_combo.addItem("(none)", None)
+        self.rain_boundary_buffer_rings_spin = QtWidgets.QSpinBox()
+        self.rain_boundary_buffer_rings_spin.setRange(0, 10)
+        self.rain_boundary_buffer_rings_spin.setValue(1)
+        self.rain_boundary_buffer_rings_spin.setToolTip(
+            "Boundary rain buffer rings (Thiessen + CN forcing).\n"
+            "0: no exclusion. 1: exclude boundary cells.\n"
+            "N>1: also exclude N-1 inward neighbor rings."
+        )
         self.run_time_edit = QtWidgets.QLineEdit()
         self.run_time_edit.setPlaceholderText("decimal hours (e.g. 1.5) or HH:MM (e.g. 01:30)")
         self.run_time_edit.setText("1:00")
@@ -1938,6 +2131,27 @@ class SWE2DWorkbenchDialog(QtWidgets.QDialog):
             "  MC                     — balanced monotonized-central (good default)\n"
             "  Van Leer               — smooth limiter, good for continuous waves\n"
             "Recommend: start with MUSCL MinMod; switch to MC or Van Leer once stable."
+        )
+        self.temporal_order_combo = QtWidgets.QComboBox()
+        for label, value in _TEMPORAL_ORDER_OPTIONS:
+            self.temporal_order_combo.addItem(label, int(value))
+        self.temporal_order_combo.setCurrentIndex(1)  # Default RK2
+        self.temporal_order_combo.setToolTip(
+            "Select temporal integration scheme:\n"
+            "  Euler (RK1)  — 1st-order, fastest, use for dry-bed or debugging\n"
+            "  RK2 (Heun)   — 2nd-order (default), balanced stability & speed\n"
+            "  RK4 (classic) — 4th-order, best for rain-on-grid scenarios, ~2x cost\n"
+            "RK4 only available on GPU."
+        )
+        self.godunov_mode_combo = QtWidgets.QComboBox()
+        self.godunov_mode_combo.addItem("Current GPU solver", int(GodunovSolverMode.CURRENT_GPU_STEP))
+        self.godunov_mode_combo.addItem("Godunov rollout (2nd-order)", int(GodunovSolverMode.GODUNOV_ROLLOUT))
+        self.godunov_mode_combo.setCurrentIndex(0)
+        self.godunov_mode_combo.setToolTip(
+            "Select the solver implementation used by the GPU path.\n"
+            "Current GPU solver: existing production path.\n"
+            "Godunov rollout: enables the second-order rollout configuration and\n"
+            "keeps the native solver on the migration path for the new FVM mode."
         )
         self.degen_mode_combo = QtWidgets.QComboBox()
         for _label, _val in [
@@ -1987,6 +2201,72 @@ class SWE2DWorkbenchDialog(QtWidgets.QDialog):
             "GPU: native CUDA drainage solver for EGL/Diffusion/Dynamic modes;\n"
             "falls back to CPU path when CUDA drainage bindings are unavailable."
         )
+        self.drainage_coupling_substeps_spin = QtWidgets.QSpinBox()
+        self.drainage_coupling_substeps_spin.setRange(1, 256)
+        self.drainage_coupling_substeps_spin.setValue(1)
+        self.drainage_coupling_substeps_spin.setToolTip(
+            "Fixed number of 1D drainage substeps taken per 2D coupling step.\n"
+            "Increase this for stiff drainage networks or dynamic-wave runs."
+        )
+        self.drainage_max_coupling_substeps_spin = QtWidgets.QSpinBox()
+        self.drainage_max_coupling_substeps_spin.setRange(1, 1024)
+        self.drainage_max_coupling_substeps_spin.setValue(64)
+        self.drainage_max_coupling_substeps_spin.setToolTip(
+            "Maximum adaptive drainage substeps allowed when the 1D stability\n"
+            "controller tightens the drainage timestep automatically."
+        )
+        self.drainage_head_deadband_spin = QtWidgets.QDoubleSpinBox()
+        self.drainage_head_deadband_spin.setRange(0.0, 10.0)
+        self.drainage_head_deadband_spin.setDecimals(6)
+        self.drainage_head_deadband_spin.setValue(1.0e-3)
+        self.drainage_head_deadband_spin.setToolTip(
+            "Head deadband used before drainage link and inlet exchange updates.\n"
+            "Larger values reduce chatter near balanced states."
+        )
+        self.drainage_dynamic_relaxation_spin = QtWidgets.QDoubleSpinBox()
+        self.drainage_dynamic_relaxation_spin.setRange(0.0, 1.0)
+        self.drainage_dynamic_relaxation_spin.setDecimals(3)
+        self.drainage_dynamic_relaxation_spin.setSingleStep(0.05)
+        self.drainage_dynamic_relaxation_spin.setValue(1.0)
+        self.drainage_dynamic_relaxation_spin.setToolTip(
+            "Dynamic-wave flow relaxation factor.\n"
+            "1.0 keeps the full update; lower values damp oscillatory link-flow response."
+        )
+        self.drainage_adaptive_depth_fraction_spin = QtWidgets.QDoubleSpinBox()
+        self.drainage_adaptive_depth_fraction_spin.setRange(0.001, 1.0)
+        self.drainage_adaptive_depth_fraction_spin.setDecimals(3)
+        self.drainage_adaptive_depth_fraction_spin.setSingleStep(0.01)
+        self.drainage_adaptive_depth_fraction_spin.setValue(0.2)
+        self.drainage_adaptive_depth_fraction_spin.setToolTip(
+            "Adaptive drainage substepping threshold based on fractional node-depth\n"
+            "change per substep. Lower values are more conservative."
+        )
+        self.drainage_adaptive_wave_courant_spin = QtWidgets.QDoubleSpinBox()
+        self.drainage_adaptive_wave_courant_spin.setRange(0.001, 10.0)
+        self.drainage_adaptive_wave_courant_spin.setDecimals(3)
+        self.drainage_adaptive_wave_courant_spin.setSingleStep(0.05)
+        self.drainage_adaptive_wave_courant_spin.setValue(0.5)
+        self.drainage_adaptive_wave_courant_spin.setToolTip(
+            "Adaptive drainage substepping target for dynamic-wave links based on\n"
+            "wave Courant number. Lower values are more conservative."
+        )
+        self.drainage_implicit_iters_spin = QtWidgets.QSpinBox()
+        self.drainage_implicit_iters_spin.setRange(1, 8)
+        self.drainage_implicit_iters_spin.setValue(2)
+        self.drainage_implicit_iters_spin.setToolTip(
+            "Number of implicit predictor/corrector inner iterations per drainage substep\n"
+            "(GPU path only). 1 = explicit single-pass; 2-4 gives better mass conservation\n"
+            "at ~linear cost per extra iteration."
+        )
+        self.drainage_implicit_relax_spin = QtWidgets.QDoubleSpinBox()
+        self.drainage_implicit_relax_spin.setRange(0.1, 1.0)
+        self.drainage_implicit_relax_spin.setDecimals(2)
+        self.drainage_implicit_relax_spin.setSingleStep(0.05)
+        self.drainage_implicit_relax_spin.setValue(0.5)
+        self.drainage_implicit_relax_spin.setToolTip(
+            "Relaxation factor for implicit coupling iterates (GPU path only).\n"
+            "1.0 = no relaxation (full update); 0.5 damps oscillations between iterates."
+        )
         self.gpu_default_lbl = QtWidgets.QLabel("GPU is attempted by default when supported by the native backend.")
         self.gpu_default_lbl.setWordWrap(True)
         self.unit_system_lbl = QtWidgets.QLabel("Unit system: auto")
@@ -2000,7 +2280,16 @@ class SWE2DWorkbenchDialog(QtWidgets.QDialog):
         param_form.addRow("Variable timestep:", self.adaptive_cfl_dt_chk)
         param_form.addRow("dt (fixed or dt_max):", self.dt_spin)
         param_form.addRow("Max rel depth increase:", self.max_rel_depth_increase_spin)
+        param_form.addRow("Max source dh/step:", self.max_source_depth_step_spin)
+        param_form.addRow("Max source rate:", self.max_source_rate_spin)
+        param_form.addRow("Extreme rain mode:", self.extreme_rain_mode_chk)
+        param_form.addRow("Source CFL beta:", self.source_cfl_beta_spin)
+        param_form.addRow("Source max substeps:", self.source_max_substeps_spin)
+        param_form.addRow("True source subcycling:", self.source_true_subcycling_chk)
+        param_form.addRow("IMEX source split:", self.source_imex_split_chk)
+        param_form.addRow("Stage-coupled IMEX-RK2 sources:", self.source_stage_coupled_imex_rk2_chk)
         param_form.addRow("Shallow damping depth:", self.shallow_damping_depth_spin)
+        param_form.addRow("Shallow-front recon fallback:", self.shallow_front_recon_fallback_chk)
         param_form.addRow("Front flux damping:", self.front_flux_damping_spin)
         param_form.addRow("Active-set hysteresis:", self.active_set_hysteresis_chk)
         param_form.addRow("Depth cap:", self.depth_cap_spin)
@@ -2011,14 +2300,26 @@ class SWE2DWorkbenchDialog(QtWidgets.QDialog):
         param_form.addRow("Rain rate:", self.rain_rate_spin)
         param_form.addRow("Default CN:", self.cn_default_spin)
         param_form.addRow("Rain/CN forcing:", self.use_spatial_rain_cn_chk)
+        param_form.addRow("Storm area layer (optional):", self.storm_area_layer_combo)
+        param_form.addRow("Rain boundary buffer rings:", self.rain_boundary_buffer_rings_spin)
         param_form.addRow("Internal flow layer:", self.internal_flow_layer_combo)
         param_form.addRow("Internal flow field:", self.internal_flow_field_edit)
         param_form.addRow("Run duration (hr or HH:MM):", self.run_time_edit)
         param_form.addRow("Reconstruction:", self.reconstruction_combo)
+        param_form.addRow("Temporal order:", self.temporal_order_combo)
+        param_form.addRow("GPU solver mode:", self.godunov_mode_combo)
         param_form.addRow("Degenerate cell mode:", self.degen_mode_combo)
         param_form.addRow("Coupling loop:", self.coupling_loop_combo)
         param_form.addRow("Drainage equation set:", self.drainage_solver_mode_combo)
         param_form.addRow("Drainage solver backend:", self.drainage_backend_combo)
+        param_form.addRow("Drainage substeps:", self.drainage_coupling_substeps_spin)
+        param_form.addRow("Drainage max adaptive substeps:", self.drainage_max_coupling_substeps_spin)
+        param_form.addRow("Drainage head deadband:", self.drainage_head_deadband_spin)
+        param_form.addRow("Drainage dynamic relaxation:", self.drainage_dynamic_relaxation_spin)
+        param_form.addRow("Drainage adaptive depth fraction:", self.drainage_adaptive_depth_fraction_spin)
+        param_form.addRow("Drainage adaptive wave Courant:", self.drainage_adaptive_wave_courant_spin)
+        param_form.addRow("Drainage implicit iterations (GPU):", self.drainage_implicit_iters_spin)
+        param_form.addRow("Drainage implicit relaxation (GPU):", self.drainage_implicit_relax_spin)
         param_form.addRow(self.unit_system_lbl)
         param_form.addRow(self.gpu_default_lbl)
         left_layout.addWidget(param_group)
@@ -2297,6 +2598,9 @@ class SWE2DWorkbenchDialog(QtWidgets.QDialog):
         self._log(f"Autopopulate from group '{gp}': assigned {assigned} layer selectors.")
 
     def closeEvent(self, event):
+        self._persist_project_layer_bindings()
+        self._persist_project_workbench_state()
+        self._terminate_topology_mesh_run(reason="dialog-close", update_status=False, emit_log=False)
         self._topology_mesh_timer.stop()
         try:
             self._topology_mesh_thread_pool.shutdown(wait=False, cancel_futures=True)
@@ -2309,9 +2613,23 @@ class SWE2DWorkbenchDialog(QtWidgets.QDialog):
             pass
         super().closeEvent(event)
 
+    def showEvent(self, event):
+        """Restore workbench state when dialog is shown; timing is more reliable than __init__."""
+        super().showEvent(event)
+        if not hasattr(self, "_workbench_state_restored_on_show"):
+            self._workbench_state_restored_on_show = False
+        if not self._workbench_state_restored_on_show:
+            self._log("[DEBUG] showEvent: attempting to restore workbench state")
+            self._restore_project_workbench_state()
+            self._workbench_state_restored_on_show = True
+
     def _set_topology_mesh_busy(self, busy: bool, status_msg: Optional[str] = None):
         try:
             self.topo_generate_btn.setEnabled(not busy)
+        except Exception:
+            pass
+        try:
+            self.topo_terminate_btn.setEnabled(bool(busy))
         except Exception:
             pass
         if status_msg is not None:
@@ -2331,6 +2649,81 @@ class SWE2DWorkbenchDialog(QtWidgets.QDialog):
         if started_at is None:
             return "0.00s"
         return f"{max(0.0, time.perf_counter() - started_at):.2f}s"
+
+    def _opt_bool(self, value: object, default: bool = False) -> bool:
+        if value is None:
+            return bool(default)
+        if isinstance(value, bool):
+            return value
+        text = str(value).strip().lower()
+        if text in {"1", "true", "yes", "on"}:
+            return True
+        if text in {"0", "false", "no", "off"}:
+            return False
+        return bool(default)
+
+    def _opt_float(self, value: object, default: float) -> float:
+        try:
+            return float(value)
+        except Exception:
+            return float(default)
+
+    def _effective_topology_timeout_sec(self, backend_name: str, mesh_options: Optional[Dict[str, object]]) -> float:
+        base = float(self._topology_mesh_timeout_sec)
+        if backend_name != "gmsh":
+            return base
+        opts = dict(mesh_options or {})
+        gmsh_loop_enabled = self._opt_bool(opts.get("gmsh_quality_enable"), False)
+        if not gmsh_loop_enabled:
+            return base
+        budget_s = max(1.0, self._opt_float(opts.get("gmsh_quality_time_limit_s"), 60.0))
+        # Add small scheduling/teardown slack so cancellation still aligns with user budget.
+        return max(5.0, min(base, budget_s + 5.0))
+
+    def _terminate_topology_mesh_run(
+        self,
+        reason: str,
+        update_status: bool = True,
+        emit_log: bool = True,
+    ) -> bool:
+        fut = self._topology_mesh_future
+        if fut is None:
+            return False
+
+        backend_name = self._topology_mesh_backend or "unknown"
+        run_mode = self._topology_mesh_run_mode
+        elapsed_str = self._format_elapsed(self._topology_mesh_started_at)
+
+        self._topology_mesh_timer.stop()
+        self._topology_mesh_future = None
+        self._topology_mesh_started_at = None
+        self._topology_mesh_poll_count = 0
+
+        try:
+            fut.cancel()
+        except Exception:
+            pass
+
+        if backend_name == "gmsh" and self._topology_mesh_process_pool is not None:
+            try:
+                self._topology_mesh_process_pool.shutdown(wait=False, cancel_futures=True)
+            except Exception:
+                pass
+            self._topology_mesh_process_pool = None
+
+        if update_status:
+            self.topo_status_lbl.setText(f"Topology meshing terminated by user (backend '{backend_name}').")
+        if emit_log:
+            self._log(
+                "mesh> terminate "
+                f"backend={backend_name} mode={run_mode} reason={reason} elapsed={elapsed_str}"
+            )
+        self._set_topology_mesh_busy(False)
+        return True
+
+    def _on_terminate_topology_mesh(self):
+        if not self._terminate_topology_mesh_run(reason="user"):
+            self._log("No topology mesh run is currently active.")
 
     def _start_topology_mesh_async(
         self,
@@ -2353,6 +2746,10 @@ class SWE2DWorkbenchDialog(QtWidgets.QDialog):
             self._topology_mesh_auto_fallback_used = False
         self._topology_mesh_started_at = time.perf_counter()
         self._topology_mesh_poll_count = 0
+        self._topology_mesh_active_timeout_sec = self._effective_topology_timeout_sec(
+            backend_name,
+            self._topology_mesh_options,
+        )
 
         if backend_name == "gmsh":
             # Keep Gmsh in a separate process to avoid UI freezes from C++
@@ -2380,9 +2777,21 @@ class SWE2DWorkbenchDialog(QtWidgets.QDialog):
             "mesh> start "
             f"backend={backend_name} default_cell_type={default_cell_type} "
             f"mode={run_mode} "
-            f"timeout={self._topology_mesh_timeout_sec:.0f}s "
+            f"timeout={self._topology_mesh_active_timeout_sec:.0f}s "
             f"elapsed={self._format_elapsed(self._topology_mesh_started_at)}"
         )
+        if backend_name == "gmsh":
+            gmsh_loop_enabled = self._opt_bool(self._topology_mesh_options.get("gmsh_quality_enable"), False)
+            gmsh_budget = max(1.0, self._opt_float(self._topology_mesh_options.get("gmsh_quality_time_limit_s"), 60.0))
+            self._log(
+                "mesh> gmsh-quality "
+                f"enabled={gmsh_loop_enabled} budget={gmsh_budget:.1f}s "
+                f"effective-timeout={self._topology_mesh_active_timeout_sec:.1f}s"
+            )
+            if not gmsh_loop_enabled:
+                self._log(
+                    "mesh> note gmsh time budget is only enforced when 'Enable Gmsh iterative quality loop' is ON"
+                )
         self._topology_mesh_timer.start()
 
     def _poll_topology_mesh_future(self):
@@ -2396,7 +2805,7 @@ class SWE2DWorkbenchDialog(QtWidgets.QDialog):
         if self._topology_mesh_started_at is not None:
             elapsed = max(0.0, time.perf_counter() - self._topology_mesh_started_at)
 
-        if elapsed > self._topology_mesh_timeout_sec and not fut.done():
+        if elapsed > self._topology_mesh_active_timeout_sec and not fut.done():
             backend_name = self._topology_mesh_backend or "unknown"
             default_cell_type = self._topology_mesh_default_cell_type or "triangular"
             run_mode = self._topology_mesh_run_mode
@@ -2423,13 +2832,13 @@ class SWE2DWorkbenchDialog(QtWidgets.QDialog):
                 self._topology_mesh_process_pool = None
 
             self.topo_status_lbl.setText(
-                f"Topology meshing timed out after {self._topology_mesh_timeout_sec:.0f}s "
+                f"Topology meshing timed out after {self._topology_mesh_active_timeout_sec:.0f}s "
                 f"(backend '{backend_name}')."
             )
             self._log(
                 "mesh> timeout "
                 f"backend={backend_name} mode={run_mode} elapsed={elapsed:.2f}s "
-                f"limit={self._topology_mesh_timeout_sec:.0f}s"
+                f"limit={self._topology_mesh_active_timeout_sec:.0f}s"
             )
 
             if can_retry_without_constraints:
@@ -2478,6 +2887,13 @@ class SWE2DWorkbenchDialog(QtWidgets.QDialog):
 
         try:
             mesh = fut.result()
+            n_nodes = int(np.asarray(mesh.node_x).size)
+            n_faces = max(0, int(np.asarray(mesh.cell_face_offsets).size) - 1)
+            if n_nodes <= 0 or n_faces <= 0:
+                raise RuntimeError(
+                    f"Topology backend '{backend_name}' produced an empty mesh "
+                    f"(nodes={n_nodes}, faces={n_faces})."
+                )
             self._mesh_data = {
                 "nx": np.array(max(2, int(round(np.sqrt(mesh.node_x.size))))),
                 "ny": np.array(max(2, int(round(np.sqrt(mesh.node_x.size))))),
@@ -2601,7 +3017,7 @@ class SWE2DWorkbenchDialog(QtWidgets.QDialog):
 
         if is_bc_lines:
             self._set_value_map_editor(layer, "bc_type", _BC_VALUE_MAP)
-            self._set_expression_constraint(layer, "bc_type", '"bc_type" IN (1,2,3,4,5,6,102,103)')
+            self._set_expression_constraint(layer, "bc_type", '"bc_type" IN (1,2,3,4,5,6,7,102,103)')
             self._set_expression_constraint(layer, "priority", '"priority" >= 0')
 
         if is_quad_edges:
@@ -2649,18 +3065,25 @@ class SWE2DWorkbenchDialog(QtWidgets.QDialog):
             self._set_expression_constraint(layer, "rim_elev", '"rim_elev" IS NULL OR "rim_elev" >= "invert_elev"')
             self._set_expression_constraint(layer, "crest_elev", '"crest_elev" IS NULL OR "crest_elev" >= "invert_elev"')
             self._set_expression_constraint(layer, "surface_area", '"surface_area" IS NULL OR "surface_area" > 0')
+            if "outfall_area" in node_field_names:
+                self._set_expression_constraint(layer, "outfall_area", '"outfall_area" IS NULL OR "outfall_area" > 0')
             if "zero_storage" in node_field_names:
                 self._set_expression_constraint(layer, "zero_storage", '"zero_storage" IS NULL OR "zero_storage" IN (0,1)')
 
         if is_drain_links:
             self._set_value_map_editor(layer, "link_type", _DRAIN_LINK_TYPE_VALUE_MAP)
+            self._set_value_map_editor(layer, "link_shape", _DRAIN_LINK_SHAPE_VALUE_MAP)
             self._set_expression_constraint(layer, "link_id", 'length(trim("link_id")) > 0')
             self._set_expression_constraint(layer, "from_node", 'length(trim("from_node")) > 0')
             self._set_expression_constraint(layer, "to_node", 'length(trim("to_node")) > 0')
             self._set_expression_constraint(layer, "link_type", '"link_type" IN (\'conduit\',\'lateral_simple\',\'pump\',\'weir\',\'orifice\')')
+            self._set_expression_constraint(layer, "link_shape", '"link_shape" IS NULL OR "link_shape" IN (\'circular\',\'box\',\'pipe_arch\',\'custom\')')
             self._set_expression_constraint(layer, "length", '"length" IS NULL OR "length" > 0')
             self._set_expression_constraint(layer, "roughness_n", '"roughness_n" IS NULL OR "roughness_n" > 0')
             self._set_expression_constraint(layer, "diameter", '"diameter" IS NULL OR "diameter" > 0')
+            self._set_expression_constraint(layer, "span", '"span" IS NULL OR "span" > 0')
+            self._set_expression_constraint(layer, "rise", '"rise" IS NULL OR "rise" > 0')
+            self._set_expression_constraint(layer, "area_m2", '"area_m2" IS NULL OR "area_m2" > 0')
 
         if is_drain_inlets:
             self._set_expression_constraint(layer, "inlet_type_id", 'length(trim("inlet_type_id")) > 0')
@@ -2791,193 +3214,204 @@ class SWE2DWorkbenchDialog(QtWidgets.QDialog):
             self.layer_status_lbl.setText("QGIS layer API unavailable in this runtime")
             return
 
-        keep_nodes = self.nodes_layer_combo.currentData()
-        keep_cells = self.cells_layer_combo.currentData()
-        keep_terrain = self.terrain_layer_combo.currentData()
-        keep_manning = self.manning_layer_combo.currentData() if hasattr(self, "manning_layer_combo") else None
-        keep_cn = self.cn_layer_combo.currentData() if hasattr(self, "cn_layer_combo") else None
-        keep_rain_gages = self.rain_gage_layer_combo.currentData() if hasattr(self, "rain_gage_layer_combo") else None
-        keep_hyetograph = self.hyetograph_layer_combo.currentData() if hasattr(self, "hyetograph_layer_combo") else None
-        keep_topo_nodes = self.topo_nodes_combo.currentData() if hasattr(self, "topo_nodes_combo") else None
-        keep_topo_arcs = self.topo_arcs_combo.currentData() if hasattr(self, "topo_arcs_combo") else None
-        keep_topo_regions = self.topo_regions_combo.currentData() if hasattr(self, "topo_regions_combo") else None
-        keep_topo_constraints = self.topo_constraints_combo.currentData() if hasattr(self, "topo_constraints_combo") else None
-        keep_topo_quad_edges = self.topo_quad_edges_combo.currentData() if hasattr(self, "topo_quad_edges_combo") else None
-        keep_bc_lines = self.bc_lines_layer_combo.currentData() if hasattr(self, "bc_lines_layer_combo") else None
-        keep_internal_flow = self.internal_flow_layer_combo.currentData() if hasattr(self, "internal_flow_layer_combo") else None
-        keep_sample_lines = self.sample_lines_layer_combo.currentData() if hasattr(self, "sample_lines_layer_combo") else None
-        keep_drain_nodes = self.drain_nodes_layer_combo.currentData() if hasattr(self, "drain_nodes_layer_combo") else None
-        keep_drain_links = self.drain_links_layer_combo.currentData() if hasattr(self, "drain_links_layer_combo") else None
-        keep_drain_inlets = self.drain_inlets_layer_combo.currentData() if hasattr(self, "drain_inlets_layer_combo") else None
-        keep_drain_node_inlets = self.drain_node_inlets_layer_combo.currentData() if hasattr(self, "drain_node_inlets_layer_combo") else None
-        keep_structures = self.structures_layer_combo.currentData() if hasattr(self, "structures_layer_combo") else None
+        self._project_layer_state_blocked = True
+        try:
+            keep_nodes = self.nodes_layer_combo.currentData()
+            keep_cells = self.cells_layer_combo.currentData()
+            keep_terrain = self.terrain_layer_combo.currentData()
+            keep_manning = self.manning_layer_combo.currentData() if hasattr(self, "manning_layer_combo") else None
+            keep_cn = self.cn_layer_combo.currentData() if hasattr(self, "cn_layer_combo") else None
+            keep_rain_gages = self.rain_gage_layer_combo.currentData() if hasattr(self, "rain_gage_layer_combo") else None
+            keep_hyetograph = self.hyetograph_layer_combo.currentData() if hasattr(self, "hyetograph_layer_combo") else None
+            keep_storm_area = self.storm_area_layer_combo.currentData() if hasattr(self, "storm_area_layer_combo") else None
+            keep_topo_nodes = self.topo_nodes_combo.currentData() if hasattr(self, "topo_nodes_combo") else None
+            keep_topo_arcs = self.topo_arcs_combo.currentData() if hasattr(self, "topo_arcs_combo") else None
+            keep_topo_regions = self.topo_regions_combo.currentData() if hasattr(self, "topo_regions_combo") else None
+            keep_topo_constraints = self.topo_constraints_combo.currentData() if hasattr(self, "topo_constraints_combo") else None
+            keep_topo_quad_edges = self.topo_quad_edges_combo.currentData() if hasattr(self, "topo_quad_edges_combo") else None
+            keep_bc_lines = self.bc_lines_layer_combo.currentData() if hasattr(self, "bc_lines_layer_combo") else None
+            keep_internal_flow = self.internal_flow_layer_combo.currentData() if hasattr(self, "internal_flow_layer_combo") else None
+            keep_sample_lines = self.sample_lines_layer_combo.currentData() if hasattr(self, "sample_lines_layer_combo") else None
+            keep_drain_nodes = self.drain_nodes_layer_combo.currentData() if hasattr(self, "drain_nodes_layer_combo") else None
+            keep_drain_links = self.drain_links_layer_combo.currentData() if hasattr(self, "drain_links_layer_combo") else None
+            keep_drain_inlets = self.drain_inlets_layer_combo.currentData() if hasattr(self, "drain_inlets_layer_combo") else None
+            keep_drain_node_inlets = self.drain_node_inlets_layer_combo.currentData() if hasattr(self, "drain_node_inlets_layer_combo") else None
+            keep_structures = self.structures_layer_combo.currentData() if hasattr(self, "structures_layer_combo") else None
 
-        self.nodes_layer_combo.clear()
-        self.cells_layer_combo.clear()
-        self.terrain_layer_combo.clear()
-        if hasattr(self, "manning_layer_combo"):
-            self.manning_layer_combo.clear()
-            self.manning_layer_combo.addItem("(none)", None)
-        if hasattr(self, "cn_layer_combo"):
-            self.cn_layer_combo.clear()
-            self.cn_layer_combo.addItem("(none)", None)
-        if hasattr(self, "rain_gage_layer_combo"):
-            self.rain_gage_layer_combo.clear()
-            self.rain_gage_layer_combo.addItem("(none)", None)
-        if hasattr(self, "hyetograph_layer_combo"):
-            self.hyetograph_layer_combo.clear()
-            self.hyetograph_layer_combo.addItem("(none)", None)
-        if hasattr(self, "sample_lines_layer_combo"):
-            self.sample_lines_layer_combo.clear()
-            self.sample_lines_layer_combo.addItem("(none)", None)
-        if hasattr(self, "drain_nodes_layer_combo"):
-            self.drain_nodes_layer_combo.clear()
-            self.drain_nodes_layer_combo.addItem("(none)", None)
-        if hasattr(self, "drain_links_layer_combo"):
-            self.drain_links_layer_combo.clear()
-            self.drain_links_layer_combo.addItem("(none)", None)
-        if hasattr(self, "drain_inlets_layer_combo"):
-            self.drain_inlets_layer_combo.clear()
-            self.drain_inlets_layer_combo.addItem("(none)", None)
-        if hasattr(self, "drain_node_inlets_layer_combo"):
-            self.drain_node_inlets_layer_combo.clear()
-            self.drain_node_inlets_layer_combo.addItem("(none)", None)
-        if hasattr(self, "structures_layer_combo"):
-            self.structures_layer_combo.clear()
-            self.structures_layer_combo.addItem("(none)", None)
-        if hasattr(self, "topo_nodes_combo"):
-            self.topo_nodes_combo.clear()
-        if hasattr(self, "topo_arcs_combo"):
-            self.topo_arcs_combo.clear()
-        if hasattr(self, "topo_regions_combo"):
-            self.topo_regions_combo.clear()
-        if hasattr(self, "topo_constraints_combo"):
-            self.topo_constraints_combo.clear()
-            self.topo_constraints_combo.addItem("(none)", None)
-        if hasattr(self, "topo_quad_edges_combo"):
-            self.topo_quad_edges_combo.clear()
-            self.topo_quad_edges_combo.addItem("(none)", None)
-        if hasattr(self, "bc_lines_layer_combo"):
-            self.bc_lines_layer_combo.clear()
-            self.bc_lines_layer_combo.addItem("(none)", None)
-        if hasattr(self, "internal_flow_layer_combo"):
-            self.internal_flow_layer_combo.clear()
-            self.internal_flow_layer_combo.addItem("(none)", None)
+            self.nodes_layer_combo.clear()
+            self.cells_layer_combo.clear()
+            self.terrain_layer_combo.clear()
+            if hasattr(self, "manning_layer_combo"):
+                self.manning_layer_combo.clear()
+                self.manning_layer_combo.addItem("(none)", None)
+            if hasattr(self, "cn_layer_combo"):
+                self.cn_layer_combo.clear()
+                self.cn_layer_combo.addItem("(none)", None)
+            if hasattr(self, "rain_gage_layer_combo"):
+                self.rain_gage_layer_combo.clear()
+                self.rain_gage_layer_combo.addItem("(none)", None)
+            if hasattr(self, "hyetograph_layer_combo"):
+                self.hyetograph_layer_combo.clear()
+                self.hyetograph_layer_combo.addItem("(none)", None)
+            if hasattr(self, "storm_area_layer_combo"):
+                self.storm_area_layer_combo.clear()
+                self.storm_area_layer_combo.addItem("(none)", None)
+            if hasattr(self, "sample_lines_layer_combo"):
+                self.sample_lines_layer_combo.clear()
+                self.sample_lines_layer_combo.addItem("(none)", None)
+            if hasattr(self, "drain_nodes_layer_combo"):
+                self.drain_nodes_layer_combo.clear()
+                self.drain_nodes_layer_combo.addItem("(none)", None)
+            if hasattr(self, "drain_links_layer_combo"):
+                self.drain_links_layer_combo.clear()
+                self.drain_links_layer_combo.addItem("(none)", None)
+            if hasattr(self, "drain_inlets_layer_combo"):
+                self.drain_inlets_layer_combo.clear()
+                self.drain_inlets_layer_combo.addItem("(none)", None)
+            if hasattr(self, "drain_node_inlets_layer_combo"):
+                self.drain_node_inlets_layer_combo.clear()
+                self.drain_node_inlets_layer_combo.addItem("(none)", None)
+            if hasattr(self, "structures_layer_combo"):
+                self.structures_layer_combo.clear()
+                self.structures_layer_combo.addItem("(none)", None)
+            if hasattr(self, "topo_nodes_combo"):
+                self.topo_nodes_combo.clear()
+            if hasattr(self, "topo_arcs_combo"):
+                self.topo_arcs_combo.clear()
+            if hasattr(self, "topo_regions_combo"):
+                self.topo_regions_combo.clear()
+            if hasattr(self, "topo_constraints_combo"):
+                self.topo_constraints_combo.clear()
+                self.topo_constraints_combo.addItem("(none)", None)
+            if hasattr(self, "topo_quad_edges_combo"):
+                self.topo_quad_edges_combo.clear()
+                self.topo_quad_edges_combo.addItem("(none)", None)
+            if hasattr(self, "bc_lines_layer_combo"):
+                self.bc_lines_layer_combo.clear()
+                self.bc_lines_layer_combo.addItem("(none)", None)
+            if hasattr(self, "internal_flow_layer_combo"):
+                self.internal_flow_layer_combo.clear()
+                self.internal_flow_layer_combo.addItem("(none)", None)
 
-        for lyr in self._iter_project_layers():
-            try:
-                if isinstance(lyr, QgsVectorLayer):
-                    self._configure_swe2d_layer_editors(lyr)
-                    if hasattr(self, "internal_flow_layer_combo"):
-                        self.internal_flow_layer_combo.addItem(lyr.name(), lyr.id())
-                    geom_type = lyr.geometryType()
-                    if geom_type == QgsWkbTypes.GeometryType.PointGeometry:
-                        self.nodes_layer_combo.addItem(lyr.name(), lyr.id())
-                        if hasattr(self, "rain_gage_layer_combo"):
-                            self.rain_gage_layer_combo.addItem(lyr.name(), lyr.id())
-                        if hasattr(self, "topo_nodes_combo"):
-                            self.topo_nodes_combo.addItem(lyr.name(), lyr.id())
-                        if hasattr(self, "drain_nodes_layer_combo"):
-                            self.drain_nodes_layer_combo.addItem(lyr.name(), lyr.id())
-                    elif geom_type == QgsWkbTypes.GeometryType.PolygonGeometry:
-                        self.cells_layer_combo.addItem(lyr.name(), lyr.id())
-                        if hasattr(self, "manning_layer_combo"):
-                            self.manning_layer_combo.addItem(lyr.name(), lyr.id())
-                        if hasattr(self, "cn_layer_combo"):
-                            self.cn_layer_combo.addItem(lyr.name(), lyr.id())
-                        if hasattr(self, "topo_regions_combo"):
-                            self.topo_regions_combo.addItem(lyr.name(), lyr.id())
-                        if hasattr(self, "topo_constraints_combo"):
-                            self.topo_constraints_combo.addItem(lyr.name(), lyr.id())
-                    elif geom_type in (
-                        QgsWkbTypes.GeometryType.UnknownGeometry,
-                        getattr(QgsWkbTypes.GeometryType, "NullGeometry", QgsWkbTypes.GeometryType.UnknownGeometry),
-                    ):
-                        lname = str(lyr.name() or "").lower()
-                        if hasattr(self, "hyetograph_layer_combo"):
-                            if "hyetograph" in lname:
+            for lyr in self._iter_project_layers():
+                try:
+                    if isinstance(lyr, QgsVectorLayer):
+                        self._configure_swe2d_layer_editors(lyr)
+                        if hasattr(self, "internal_flow_layer_combo"):
+                            self.internal_flow_layer_combo.addItem(lyr.name(), lyr.id())
+                        geom_type = lyr.geometryType()
+                        if geom_type == QgsWkbTypes.GeometryType.PointGeometry:
+                            self.nodes_layer_combo.addItem(lyr.name(), lyr.id())
+                            if hasattr(self, "rain_gage_layer_combo"):
+                                self.rain_gage_layer_combo.addItem(lyr.name(), lyr.id())
+                            if hasattr(self, "topo_nodes_combo"):
+                                self.topo_nodes_combo.addItem(lyr.name(), lyr.id())
+                            if hasattr(self, "drain_nodes_layer_combo"):
+                                self.drain_nodes_layer_combo.addItem(lyr.name(), lyr.id())
+                        elif geom_type == QgsWkbTypes.GeometryType.PolygonGeometry:
+                            self.cells_layer_combo.addItem(lyr.name(), lyr.id())
+                            if hasattr(self, "manning_layer_combo"):
+                                self.manning_layer_combo.addItem(lyr.name(), lyr.id())
+                            if hasattr(self, "cn_layer_combo"):
+                                self.cn_layer_combo.addItem(lyr.name(), lyr.id())
+                            if hasattr(self, "storm_area_layer_combo"):
+                                self.storm_area_layer_combo.addItem(lyr.name(), lyr.id())
+                            if hasattr(self, "topo_regions_combo"):
+                                self.topo_regions_combo.addItem(lyr.name(), lyr.id())
+                            if hasattr(self, "topo_constraints_combo"):
+                                self.topo_constraints_combo.addItem(lyr.name(), lyr.id())
+                        elif geom_type in (
+                            QgsWkbTypes.GeometryType.UnknownGeometry,
+                            getattr(QgsWkbTypes.GeometryType, "NullGeometry", QgsWkbTypes.GeometryType.UnknownGeometry),
+                        ):
+                            lname = str(lyr.name() or "").lower()
+                            if hasattr(self, "hyetograph_layer_combo") and "hyetograph" in lname:
                                 self.hyetograph_layer_combo.addItem(lyr.name(), lyr.id())
-                        if hasattr(self, "drain_inlets_layer_combo"):
-                            if "drainage_inlets" in lname:
+                            if hasattr(self, "drain_inlets_layer_combo") and "drainage_inlets" in lname:
                                 self.drain_inlets_layer_combo.addItem(lyr.name(), lyr.id())
-                        if hasattr(self, "drain_node_inlets_layer_combo"):
-                            if "drainage_node_inlets" in lname:
+                            if hasattr(self, "drain_node_inlets_layer_combo") and "drainage_node_inlets" in lname:
                                 self.drain_node_inlets_layer_combo.addItem(lyr.name(), lyr.id())
-                    elif geom_type == QgsWkbTypes.GeometryType.LineGeometry:
-                        if hasattr(self, "sample_lines_layer_combo"):
-                            self.sample_lines_layer_combo.addItem(lyr.name(), lyr.id())
-                        if hasattr(self, "topo_arcs_combo"):
-                            self.topo_arcs_combo.addItem(lyr.name(), lyr.id())
-                        if hasattr(self, "topo_quad_edges_combo"):
-                            self.topo_quad_edges_combo.addItem(lyr.name(), lyr.id())
-                        if hasattr(self, "bc_lines_layer_combo"):
-                            self.bc_lines_layer_combo.addItem(lyr.name(), lyr.id())
-                        if hasattr(self, "drain_links_layer_combo"):
-                            self.drain_links_layer_combo.addItem(lyr.name(), lyr.id())
-                        if hasattr(self, "structures_layer_combo"):
-                            self.structures_layer_combo.addItem(lyr.name(), lyr.id())
-                elif isinstance(lyr, QgsRasterLayer):
-                    self.terrain_layer_combo.addItem(lyr.name(), lyr.id())
-            except Exception:
-                continue
+                        elif geom_type == QgsWkbTypes.GeometryType.LineGeometry:
+                            if hasattr(self, "sample_lines_layer_combo"):
+                                self.sample_lines_layer_combo.addItem(lyr.name(), lyr.id())
+                            if hasattr(self, "topo_arcs_combo"):
+                                self.topo_arcs_combo.addItem(lyr.name(), lyr.id())
+                            if hasattr(self, "topo_quad_edges_combo"):
+                                self.topo_quad_edges_combo.addItem(lyr.name(), lyr.id())
+                            if hasattr(self, "bc_lines_layer_combo"):
+                                self.bc_lines_layer_combo.addItem(lyr.name(), lyr.id())
+                            if hasattr(self, "drain_links_layer_combo"):
+                                self.drain_links_layer_combo.addItem(lyr.name(), lyr.id())
+                            if hasattr(self, "structures_layer_combo"):
+                                self.structures_layer_combo.addItem(lyr.name(), lyr.id())
+                    elif isinstance(lyr, QgsRasterLayer):
+                        self.terrain_layer_combo.addItem(lyr.name(), lyr.id())
+                except Exception:
+                    continue
 
-        # Keep hydrograph_layer dropdown current for BC line layers.
-        hydro_layer_map = {}
-        for lyr in self._iter_project_layers():
-            if isinstance(lyr, QgsVectorLayer):
-                hydro_layer_map[str(lyr.name())] = str(lyr.name())
-        for lyr in self._iter_project_layers():
-            if isinstance(lyr, QgsVectorLayer) and "bc_lines" in str(lyr.name()).lower():
-                self._set_value_map_editor(lyr, "hydrograph_layer", hydro_layer_map)
+            hydro_layer_map = {}
+            for lyr in self._iter_project_layers():
+                if isinstance(lyr, QgsVectorLayer):
+                    hydro_layer_map[str(lyr.name())] = str(lyr.name())
+            for lyr in self._iter_project_layers():
+                if isinstance(lyr, QgsVectorLayer) and "bc_lines" in str(lyr.name()).lower():
+                    self._set_value_map_editor(lyr, "hydrograph_layer", hydro_layer_map)
 
-        def _restore(combo, keep_id):
-            if not keep_id:
-                return
-            idx = combo.findData(keep_id)
-            if idx >= 0:
-                combo.setCurrentIndex(idx)
+            def _restore(combo, keep_id):
+                if not keep_id:
+                    return
+                idx = combo.findData(keep_id)
+                if idx >= 0:
+                    combo.setCurrentIndex(idx)
 
-        _restore(self.nodes_layer_combo, keep_nodes)
-        _restore(self.cells_layer_combo, keep_cells)
-        _restore(self.terrain_layer_combo, keep_terrain)
-        if hasattr(self, "manning_layer_combo"):
-            _restore(self.manning_layer_combo, keep_manning)
-        if hasattr(self, "cn_layer_combo"):
-            _restore(self.cn_layer_combo, keep_cn)
-        if hasattr(self, "rain_gage_layer_combo"):
-            _restore(self.rain_gage_layer_combo, keep_rain_gages)
-        if hasattr(self, "hyetograph_layer_combo"):
-            _restore(self.hyetograph_layer_combo, keep_hyetograph)
-        if hasattr(self, "topo_nodes_combo"):
-            _restore(self.topo_nodes_combo, keep_topo_nodes)
-        if hasattr(self, "topo_arcs_combo"):
-            _restore(self.topo_arcs_combo, keep_topo_arcs)
-        if hasattr(self, "topo_regions_combo"):
-            _restore(self.topo_regions_combo, keep_topo_regions)
-        if hasattr(self, "topo_constraints_combo") and keep_topo_constraints is not None:
-            _restore(self.topo_constraints_combo, keep_topo_constraints)
-        if hasattr(self, "topo_quad_edges_combo") and keep_topo_quad_edges is not None:
-            _restore(self.topo_quad_edges_combo, keep_topo_quad_edges)
-        if hasattr(self, "bc_lines_layer_combo") and keep_bc_lines is not None:
-            _restore(self.bc_lines_layer_combo, keep_bc_lines)
-        if hasattr(self, "internal_flow_layer_combo") and keep_internal_flow is not None:
-            _restore(self.internal_flow_layer_combo, keep_internal_flow)
-        if hasattr(self, "sample_lines_layer_combo") and keep_sample_lines is not None:
-            _restore(self.sample_lines_layer_combo, keep_sample_lines)
-        if hasattr(self, "drain_nodes_layer_combo") and keep_drain_nodes is not None:
-            _restore(self.drain_nodes_layer_combo, keep_drain_nodes)
-        if hasattr(self, "drain_links_layer_combo") and keep_drain_links is not None:
-            _restore(self.drain_links_layer_combo, keep_drain_links)
-        if hasattr(self, "drain_inlets_layer_combo") and keep_drain_inlets is not None:
-            _restore(self.drain_inlets_layer_combo, keep_drain_inlets)
-        if hasattr(self, "drain_node_inlets_layer_combo") and keep_drain_node_inlets is not None:
-            _restore(self.drain_node_inlets_layer_combo, keep_drain_node_inlets)
-        if hasattr(self, "structures_layer_combo") and keep_structures is not None:
-            _restore(self.structures_layer_combo, keep_structures)
+            _restore(self.nodes_layer_combo, keep_nodes)
+            _restore(self.cells_layer_combo, keep_cells)
+            _restore(self.terrain_layer_combo, keep_terrain)
+            if hasattr(self, "manning_layer_combo"):
+                _restore(self.manning_layer_combo, keep_manning)
+            if hasattr(self, "cn_layer_combo"):
+                _restore(self.cn_layer_combo, keep_cn)
+            if hasattr(self, "rain_gage_layer_combo"):
+                _restore(self.rain_gage_layer_combo, keep_rain_gages)
+            if hasattr(self, "hyetograph_layer_combo"):
+                _restore(self.hyetograph_layer_combo, keep_hyetograph)
+            if hasattr(self, "storm_area_layer_combo"):
+                _restore(self.storm_area_layer_combo, keep_storm_area)
+            if hasattr(self, "topo_nodes_combo"):
+                _restore(self.topo_nodes_combo, keep_topo_nodes)
+            if hasattr(self, "topo_arcs_combo"):
+                _restore(self.topo_arcs_combo, keep_topo_arcs)
+            if hasattr(self, "topo_regions_combo"):
+                _restore(self.topo_regions_combo, keep_topo_regions)
+            if hasattr(self, "topo_constraints_combo") and keep_topo_constraints is not None:
+                _restore(self.topo_constraints_combo, keep_topo_constraints)
+            if hasattr(self, "topo_quad_edges_combo") and keep_topo_quad_edges is not None:
+                _restore(self.topo_quad_edges_combo, keep_topo_quad_edges)
+            if hasattr(self, "bc_lines_layer_combo") and keep_bc_lines is not None:
+                _restore(self.bc_lines_layer_combo, keep_bc_lines)
+            if hasattr(self, "internal_flow_layer_combo") and keep_internal_flow is not None:
+                _restore(self.internal_flow_layer_combo, keep_internal_flow)
+            if hasattr(self, "sample_lines_layer_combo") and keep_sample_lines is not None:
+                _restore(self.sample_lines_layer_combo, keep_sample_lines)
+            if hasattr(self, "drain_nodes_layer_combo") and keep_drain_nodes is not None:
+                _restore(self.drain_nodes_layer_combo, keep_drain_nodes)
+            if hasattr(self, "drain_links_layer_combo") and keep_drain_links is not None:
+                _restore(self.drain_links_layer_combo, keep_drain_links)
+            if hasattr(self, "drain_inlets_layer_combo") and keep_drain_inlets is not None:
+                _restore(self.drain_inlets_layer_combo, keep_drain_inlets)
+            if hasattr(self, "drain_node_inlets_layer_combo") and keep_drain_node_inlets is not None:
+                _restore(self.drain_node_inlets_layer_combo, keep_drain_node_inlets)
+            if hasattr(self, "structures_layer_combo") and keep_structures is not None:
+                _restore(self.structures_layer_combo, keep_structures)
 
-        self._update_unit_system_from_crs()
-        self._refresh_layer_group_combo()
-        self._update_topology_control_summary()
+            self._update_unit_system_from_crs()
+            self._refresh_layer_group_combo()
+            self._update_topology_control_summary()
+        finally:
+            self._project_layer_state_blocked = False
+
+        self._restore_project_layer_bindings()
+        self._persist_project_layer_bindings()
 
     def _parse_csv_number_list(self, text: str, cast=float):
         values = []
@@ -2990,6 +3424,8 @@ class SWE2DWorkbenchDialog(QtWidgets.QDialog):
         return values
 
     def _build_topology_meshing_options(self) -> Dict[str, object]:
+        size_scales = tuple(self._parse_csv_number_list(self.topo_quality_size_scales_edit.text(), float) or [1.0])
+        smooth_increments = tuple(self._parse_csv_number_list(self.topo_quality_smooth_increments_edit.text(), int) or [0])
         return {
             "gmsh_tri_algorithm": int(self.topo_gmsh_tri_algo_combo.currentData() or 6),
             "gmsh_quad_algorithm": int(self.topo_gmsh_quad_algo_combo.currentData() or 6),
@@ -2998,12 +3434,22 @@ class SWE2DWorkbenchDialog(QtWidgets.QDialog):
             "gmsh_optimize_iters": int(self.topo_gmsh_optimize_iters_spin.value()),
             "gmsh_optimize_netgen": bool(self.topo_gmsh_optimize_netgen_chk.isChecked()),
             "gmsh_verbosity": int(self.topo_gmsh_verbosity_spin.value()),
+            "gmsh_quality_enable": bool(self.topo_gmsh_quality_enable_chk.isChecked()),
+            "gmsh_quality_max_iterations": int(self.topo_gmsh_quality_max_iters_spin.value()),
+            "gmsh_quality_time_limit_s": float(self.topo_gmsh_quality_time_limit_spin.value()),
+            "gmsh_min_angle_deg": float(self.topo_quality_min_angle_spin.value()),
+            "gmsh_max_aspect_ratio": float(self.topo_quality_max_aspect_spin.value()),
+            "gmsh_max_non_orth_deg": float(self.topo_quality_max_non_orth_spin.value()),
+            "gmsh_min_area_rel_bbox": float(self.topo_quality_min_area_edit.text().strip() or "0"),
+            "gmsh_quality_strict": bool(self.topo_quality_strict_chk.isChecked()),
+            "gmsh_quality_size_scales": size_scales,
+            "gmsh_quality_smooth_increments": smooth_increments,
             "tqmesh_min_angle_deg": float(self.topo_quality_min_angle_spin.value()),
             "tqmesh_max_aspect_ratio": float(self.topo_quality_max_aspect_spin.value()),
             "tqmesh_min_area_rel_bbox": float(self.topo_quality_min_area_edit.text().strip() or "0"),
             "tqmesh_quality_strict": bool(self.topo_quality_strict_chk.isChecked()),
-            "tqmesh_size_scales": tuple(self._parse_csv_number_list(self.topo_quality_size_scales_edit.text(), float) or [1.0]),
-            "tqmesh_smooth_increments": tuple(self._parse_csv_number_list(self.topo_quality_smooth_increments_edit.text(), int) or [0]),
+            "tqmesh_size_scales": size_scales,
+            "tqmesh_smooth_increments": smooth_increments,
         }
 
     def _open_topology_region_table(self):
@@ -3084,6 +3530,24 @@ class SWE2DWorkbenchDialog(QtWidgets.QDialog):
                 "but does not apply quad-edge transition layers or exact transfinite edge counts."
             )
 
+        quality_hint = (
+            " Quality UI: min angle >= {min_angle:.1f} deg, max aspect <= {max_aspect:.2f}, "
+            "max non-orth <= {max_non_orth:.1f} deg, min area/bbox >= {min_area}, strict={strict}; "
+            "retry scales={size_scales}, smooth increments={smooth_increments}; "
+            "Gmsh loop={gmsh_loop}, attempts={attempts}, budget={budget:.1f}s."
+        ).format(
+            min_angle=float(self.topo_quality_min_angle_spin.value()) if hasattr(self, "topo_quality_min_angle_spin") else 0.0,
+            max_aspect=float(self.topo_quality_max_aspect_spin.value()) if hasattr(self, "topo_quality_max_aspect_spin") else 0.0,
+            max_non_orth=float(self.topo_quality_max_non_orth_spin.value()) if hasattr(self, "topo_quality_max_non_orth_spin") else 0.0,
+            min_area=str(self.topo_quality_min_area_edit.text()).strip() if hasattr(self, "topo_quality_min_area_edit") else "0",
+            strict="on" if getattr(self, "topo_quality_strict_chk", None) is not None and self.topo_quality_strict_chk.isChecked() else "off",
+            size_scales=str(self.topo_quality_size_scales_edit.text()).strip() if hasattr(self, "topo_quality_size_scales_edit") else "1.0",
+            smooth_increments=str(self.topo_quality_smooth_increments_edit.text()).strip() if hasattr(self, "topo_quality_smooth_increments_edit") else "0",
+            gmsh_loop="on" if getattr(self, "topo_gmsh_quality_enable_chk", None) is not None and self.topo_gmsh_quality_enable_chk.isChecked() else "off",
+            attempts=int(self.topo_gmsh_quality_max_iters_spin.value()) if hasattr(self, "topo_gmsh_quality_max_iters_spin") else 0,
+            budget=float(self.topo_gmsh_quality_time_limit_spin.value()) if hasattr(self, "topo_gmsh_quality_time_limit_spin") else 0.0,
+        )
+
         details: List[str] = []
         if regions_layer is not None:
             try:
@@ -3149,9 +3613,9 @@ class SWE2DWorkbenchDialog(QtWidgets.QDialog):
 
         suffix = " | ".join(details)
         if suffix:
-            self.topo_controls_summary_lbl.setText(f"{backend_hint} Current layers: {suffix}.")
+            self.topo_controls_summary_lbl.setText(f"{backend_hint}{quality_hint} Current layers: {suffix}.")
         else:
-            self.topo_controls_summary_lbl.setText(backend_hint)
+            self.topo_controls_summary_lbl.setText(f"{backend_hint}{quality_hint}")
 
     def _create_topology_template_layers(self):
         if not _HAVE_QGIS_CORE:
@@ -3207,12 +3671,12 @@ class SWE2DWorkbenchDialog(QtWidgets.QDialog):
             "memory",
         )
         drainage_nodes = QgsVectorLayer(
-            f"Point?crs={crs_auth}&field=node_id:string(64)&field=invert_elev:double&field=max_depth:double&field=rim_elev:double&field=crest_elev:double&field=node_type:string(32)&field=surface_area:double&field=zero_storage:integer",
+            f"Point?crs={crs_auth}&field=node_id:string(64)&field=invert_elev:double&field=max_depth:double&field=rim_elev:double&field=crest_elev:double&field=node_type:string(32)&field=surface_area:double&field=outfall_area:double&field=zero_storage:integer",
             "SWE2D_Drainage_Nodes",
             "memory",
         )
         drainage_links = QgsVectorLayer(
-            f"LineString?crs={crs_auth}&field=link_id:string(64)&field=from_node:string(64)&field=to_node:string(64)&field=link_type:string(32)&field=length:double&field=roughness_n:double&field=diameter:double&field=max_flow:double&field=cd:double",
+            f"LineString?crs={crs_auth}&field=link_id:string(64)&field=from_node:string(64)&field=to_node:string(64)&field=link_type:string(32)&field=link_shape:string(32)&field=length:double&field=roughness_n:double&field=diameter:double&field=span:double&field=rise:double&field=area_m2:double&field=equiv_diameter_m:double&field=max_flow:double&field=cd:double",
             "SWE2D_Drainage_Links",
             "memory",
         )
@@ -3336,6 +3800,11 @@ class SWE2DWorkbenchDialog(QtWidgets.QDialog):
             "swe2d_rain_gages",
             "memory",
         )
+        storm_areas = QgsVectorLayer(
+            f"Polygon?crs={crs_auth}&field=storm_id:integer&field=name:string(128)&field=priority:integer",
+            "swe2d_storm_areas",
+            "memory",
+        )
         cn_zones = QgsVectorLayer(
             f"Polygon?crs={crs_auth}&field=zone_id:integer&field=cn:double&field=priority:integer",
             "swe2d_cn_zones",
@@ -3352,12 +3821,12 @@ class SWE2DWorkbenchDialog(QtWidgets.QDialog):
             "memory",
         )
         drainage_nodes = QgsVectorLayer(
-            f"Point?crs={crs_auth}&field=node_id:string(64)&field=invert_elev:double&field=max_depth:double&field=rim_elev:double&field=crest_elev:double&field=node_type:string(32)&field=surface_area:double&field=zero_storage:integer",
+            f"Point?crs={crs_auth}&field=node_id:string(64)&field=invert_elev:double&field=max_depth:double&field=rim_elev:double&field=crest_elev:double&field=node_type:string(32)&field=surface_area:double&field=outfall_area:double&field=zero_storage:integer",
             "swe2d_drainage_nodes",
             "memory",
         )
         drainage_links = QgsVectorLayer(
-            f"LineString?crs={crs_auth}&field=link_id:string(64)&field=from_node:string(64)&field=to_node:string(64)&field=link_type:string(32)&field=length:double&field=roughness_n:double&field=diameter:double&field=max_flow:double&field=cd:double",
+            f"LineString?crs={crs_auth}&field=link_id:string(64)&field=from_node:string(64)&field=to_node:string(64)&field=link_type:string(32)&field=link_shape:string(32)&field=length:double&field=roughness_n:double&field=diameter:double&field=span:double&field=rise:double&field=area_m2:double&field=equiv_diameter_m:double&field=max_flow:double&field=cd:double",
             "swe2d_drainage_links",
             "memory",
         )
@@ -3387,6 +3856,7 @@ class SWE2DWorkbenchDialog(QtWidgets.QDialog):
             bc_lines,
             sample_lines,
             rain_gages,
+            storm_areas,
             cn_zones,
             hyetographs,
             hydro,
@@ -3490,6 +3960,7 @@ class SWE2DWorkbenchDialog(QtWidgets.QDialog):
             "swe2d_bc_lines",
             "swe2d_sample_lines",
             "swe2d_rain_gages",
+            "swe2d_storm_areas",
             "swe2d_cn_zones",
             "swe2d_hyetographs",
             "swe2d_hydrographs",
@@ -4838,6 +5309,12 @@ class SWE2DWorkbenchDialog(QtWidgets.QDialog):
         dlg.exec()
 
     def _build_internal_flow_source_cms(self) -> Optional[np.ndarray]:
+        forcing = self._build_internal_flow_forcing()
+        if forcing is None:
+            return None
+        return self._internal_flow_source_cms_at_time(forcing, 0.0)
+
+    def _build_internal_flow_forcing(self) -> Optional[Dict[str, object]]:
         if self._mesh_data is None or not _HAVE_QGIS_CORE:
             return None
         if not hasattr(self, "internal_flow_layer_combo"):
@@ -4860,19 +5337,76 @@ class SWE2DWorkbenchDialog(QtWidgets.QDialog):
             self._log(f"Internal flow layer '{lyr.name()}' missing flow field '{field_name}'; skipping internal sources.")
             return None
 
+        hydro_field = None
+        for cand in ("hydrograph", "hydrograph_text", "hydro", "hg"):
+            if cand in fields:
+                hydro_field = cand
+                break
+
+        hgid_field = "hydrograph_id" if "hydrograph_id" in fields else None
+        hlyr_field = "hydrograph_layer" if "hydrograph_layer" in fields else None
+        hydro_lookup: Dict[str, str] = {}
+        if hgid_field is not None:
+            hydro_layers = [
+                hlyr
+                for hlyr in self._iter_project_layers()
+                if isinstance(hlyr, QgsVectorLayer) and str(hlyr.name()).lower() in ("swe2d_hydrographs",)
+            ]
+            if hydro_layers:
+                hlyr = hydro_layers[0]
+                hfields = set(hlyr.fields().names())
+                if "hydrograph_id" in hfields and "hydrograph" in hfields:
+                    for hft in hlyr.getFeatures():
+                        hid = str(hft["hydrograph_id"] or "").strip()
+                        htxt = str(hft["hydrograph"] or "").strip()
+                        if hid and htxt:
+                            hydro_lookup[hid] = htxt
+
         cx, cy = self._mesh_cell_centroids()
-        cell_q = np.zeros(cx.shape[0], dtype=np.float64)
+        base_q = np.zeros(cx.shape[0], dtype=np.float64)
+        dynamic_terms: List[Tuple[np.ndarray, np.ndarray, Tuple[np.ndarray, np.ndarray]]] = []
         assigned = 0
+        dynamic_assigned = 0
 
         for ft in lyr.getFeatures():
             geom = ft.geometry()
             if geom is None or geom.isEmpty():
                 continue
+
+            q_cms = 0.0
             try:
                 q_cms = float(ft[field_name])
             except Exception:
-                continue
-            if not np.isfinite(q_cms) or abs(q_cms) <= 0.0:
+                q_cms = 0.0
+            if not np.isfinite(q_cms):
+                q_cms = 0.0
+
+            hg = None
+            raw_h = str(ft[hydro_field] or "").strip() if hydro_field is not None else ""
+            ref_layer = str(ft[hlyr_field] or "").strip() if hlyr_field is not None else ""
+            hid = str(ft[hgid_field] or "").strip() if hgid_field is not None else ""
+            if not raw_h and hid and hid in hydro_lookup:
+                raw_h = hydro_lookup[hid]
+
+            if raw_h:
+                try:
+                    hg = self._parse_hydrograph_text(raw_h)
+                except Exception:
+                    hg = None
+
+            if hg is None and (ref_layer or (hgid_field is not None and hid)):
+                layer_ref = ref_layer or (str(ft[hydro_field] or "").strip() if hydro_field is not None else "")
+                target_layer = None
+                for hlyr in self._iter_project_layers():
+                    if not isinstance(hlyr, QgsVectorLayer):
+                        continue
+                    if str(hlyr.name()) == layer_ref or str(hlyr.id()) == layer_ref:
+                        target_layer = hlyr
+                        break
+                if target_layer is not None:
+                    hg = self._hydrograph_from_layer(target_layer, hydrograph_id=hid, bc_type=None)
+
+            if abs(q_cms) <= 0.0 and hg is None:
                 continue
 
             try:
@@ -4888,10 +5422,8 @@ class SWE2DWorkbenchDialog(QtWidgets.QDialog):
                         hit_ids.append(i)
                 if not hit_ids:
                     continue
-                share = q_cms / float(len(hit_ids))
-                for idx in hit_ids:
-                    cell_q[idx] += share
-                assigned += 1
+                idx_arr = np.asarray(hit_ids, dtype=np.int32)
+                wt_arr = np.full(idx_arr.shape[0], 1.0 / float(idx_arr.shape[0]), dtype=np.float64)
             else:
                 rp = geom.centroid().asPoint() if not geom.centroid().isEmpty() else None
                 if rp is None:
@@ -4899,12 +5431,41 @@ class SWE2DWorkbenchDialog(QtWidgets.QDialog):
                 dx = cx - float(rp.x())
                 dy = cy - float(rp.y())
                 idx = int(np.argmin(dx * dx + dy * dy))
-                cell_q[idx] += q_cms
-                assigned += 1
+                idx_arr = np.asarray([idx], dtype=np.int32)
+                wt_arr = np.asarray([1.0], dtype=np.float64)
+
+            if abs(q_cms) > 0.0:
+                base_q[idx_arr] += q_cms * wt_arr
+            if hg is not None:
+                dynamic_terms.append((idx_arr, wt_arr, hg))
+                dynamic_assigned += 1
+            assigned += 1
+
+        if assigned <= 0:
+            return None
 
         self._log(
-            f"Internal flow sources mapped from layer '{lyr.name()}': features={assigned}, total_Q={float(np.sum(cell_q)):.6f} cms"
+            f"Internal flow sources mapped from layer '{lyr.name()}': features={assigned}, "
+            f"timeseries_features={dynamic_assigned}, static_total_Q={float(np.sum(base_q)):.6f} cms"
         )
+        return {
+            "base_q_cms": base_q,
+            "dynamic_terms": dynamic_terms,
+            "layer_name": str(lyr.name()),
+        }
+
+    def _internal_flow_source_cms_at_time(self, forcing: Optional[Dict[str, object]], t_sec: float) -> Optional[np.ndarray]:
+        if forcing is None:
+            return None
+        base_q = forcing.get("base_q_cms")
+        if base_q is None:
+            return None
+
+        cell_q = np.asarray(base_q, dtype=np.float64).copy()
+        dynamic_terms = forcing.get("dynamic_terms", [])
+        for idx_arr, wt_arr, hg in dynamic_terms:
+            q_total = self._interp_hydrograph(hg, t_sec)
+            cell_q[np.asarray(idx_arr, dtype=np.int32)] += q_total * np.asarray(wt_arr, dtype=np.float64)
         return cell_q
 
     def _apply_external_sources(
@@ -4953,6 +5514,40 @@ class SWE2DWorkbenchDialog(QtWidgets.QDialog):
             csr = np.asarray(coupled_source_rate, dtype=np.float64)
             src[: min(src.shape[0], csr.shape[0])] += csr[: min(src.shape[0], csr.shape[0])]
 
+        h, hu, hv = backend.get_state()
+        h_prev = np.asarray(h, dtype=np.float64)
+
+        src = np.where(np.isfinite(src), src, 0.0)
+
+        # Optional positive source-rate cap for rain/CN/internal forcing spikes.
+        src_cap_widget = getattr(self, "max_source_rate_spin", None)
+        src_cap = float(src_cap_widget.value()) if src_cap_widget is not None else 0.0
+        if src_cap > 0.0:
+            src = np.where(src > src_cap, src_cap, src)
+
+        dh = dt_step * src
+
+        # Host-side source update limiter for robust dry-to-wet transitions.
+        # Native solver applies stability controls internally; this protects the
+        # Python fallback path used when native source injection is unavailable.
+        max_rel_widget = getattr(self, "max_rel_depth_increase_spin", None)
+        hmin_widget = getattr(self, "h_min_spin", None)
+        h_min = float(hmin_widget.value()) if hmin_widget is not None else 1.0e-4
+        max_rel = float(max_rel_widget.value()) if max_rel_widget is not None else 0.0
+        if max_rel > 0.0:
+            dh_pos_cap = np.maximum(h_prev, h_min) * max_rel
+            dh = np.where(dh > dh_pos_cap, dh_pos_cap, dh)
+
+        # Optional absolute cap on positive source-driven depth change per step.
+        dh_cap_widget = getattr(self, "max_source_depth_step_spin", None)
+        dh_cap = float(dh_cap_widget.value()) if dh_cap_widget is not None else 0.0
+        if dh_cap > 0.0:
+            dh = np.where(dh > dh_cap, dh_cap, dh)
+
+        # Ensure native source injection receives the same capped source rates as
+        # the host fallback path. Without this, rain/CN sources can bypass the
+        # per-step depth-growth guard when native injection is enabled.
+        src = dh / dt_step
         if prefer_native_injection and hasattr(backend, "set_external_sources_native"):
             try:
                 backend.set_external_sources_native(src)
@@ -4961,14 +5556,48 @@ class SWE2DWorkbenchDialog(QtWidgets.QDialog):
                 # Fallback to host-side source application if native injection fails.
                 pass
 
-        h, hu, hv = backend.get_state()
-
-        h = h + dt_step * src
+        h = h_prev + dh
         h = np.where(np.isfinite(h), h, 0.0)
         h = np.maximum(h, 0.0)
-        dry = h < float(self.h_min_spin.value())
+
+        dry = h < h_min
         hu = np.where(dry, 0.0, hu)
         hv = np.where(dry, 0.0, hv)
+
+        # Cells that just transitioned from dry to wet due to source terms should
+        # not inherit stale momentum from prior dry-state numerical noise.
+        newly_wet = (h_prev < h_min) & (~dry)
+        hu = np.where(newly_wet, 0.0, hu)
+        hv = np.where(newly_wet, 0.0, hv)
+
+        # Apply shallow-water momentum damping on the fallback source path.
+        shallow_widget = getattr(self, "shallow_damping_depth_spin", None)
+        shallow_damp_h = float(shallow_widget.value()) if shallow_widget is not None else 0.0
+        if shallow_damp_h > h_min:
+            damp = np.clip(h / shallow_damp_h, 0.0, 1.0)
+            hu = hu * damp
+            hv = hv * damp
+        
+        # Momentum cap after rain/source application to prevent velocity blow-up.
+        # When rain adds depth to cells with existing momentum, the effective velocity
+        # can spike. Apply a cap based on depth-scaled wave celerity to prevent CFL explosion.
+        gravity = 9.81
+        min_speed_cap_widget = getattr(self, "momentum_cap_min_speed_spin", None)
+        celerity_mult_widget = getattr(self, "momentum_cap_celerity_mult_spin", None)
+        min_speed_cap = float(min_speed_cap_widget.value()) if min_speed_cap_widget is not None else 50.0
+        celerity_mult = float(celerity_mult_widget.value()) if celerity_mult_widget is not None else 20.0
+        
+        abs_u = np.abs(hu) / np.maximum(h, 1.0e-12)
+        abs_v = np.abs(hv) / np.maximum(h, 1.0e-12)
+        abs_speed = np.sqrt(abs_u**2 + abs_v**2)
+        wave_speed = np.sqrt(gravity * np.maximum(h, 1.0e-12))
+        speed_cap = np.maximum(min_speed_cap, celerity_mult * wave_speed)
+        clipped = abs_speed > speed_cap
+        if np.any(clipped):
+            scale = np.where(clipped, speed_cap / np.maximum(abs_speed, 1.0e-12), 1.0)
+            hu = hu * scale
+            hv = hv * scale
+        
         backend.set_state(h, hu, hv)
 
     def _build_spatial_manning_array(self) -> Optional[np.ndarray]:
@@ -5113,15 +5742,63 @@ class SWE2DWorkbenchDialog(QtWidgets.QDialog):
             self._log("Rain gage layer missing gage_id/hyetograph_id fields; skipping Thiessen rain forcing.")
             return None
 
-        hy_fields = set(hyetograph_layer.fields().names())
+        hy_field_names = list(hyetograph_layer.fields().names())
+        hy_fields = set(hy_field_names)
         hy_id_field = "hyetograph_id" if "hyetograph_id" in hy_fields else None
-        time_field = "Time" if "Time" in hy_fields else None
-        value_field = "Value" if "Value" in hy_fields else None
+
+        time_field = None
+        for cand in ("Time", "time", "Time_hr", "time_hr", "Time_min", "time_min", "minutes", "Minutes", "t_min"):
+            if cand in hy_fields:
+                time_field = cand
+                break
+
+        value_field = None
+        for cand in (
+            "Value",
+            "value",
+            "Rain",
+            "rain",
+            "rainfall",
+            "Rainfall",
+            "Incremental_Rainfall_in",
+            "incremental_rainfall_in",
+            "rain_in",
+            "rain_mm",
+        ):
+            if cand in hy_fields:
+                value_field = cand
+                break
+
+        if value_field is None:
+            for name in hy_field_names:
+                ln = str(name).lower()
+                if "value" in ln or "rain" in ln or "hyeto" in ln:
+                    value_field = name
+                    break
         if hy_id_field is None or time_field is None or value_field is None:
             self._log("Hyetograph table missing hyetograph_id/Time/Value fields; skipping Thiessen rain forcing.")
             return None
 
         hy_rows_by_id: Dict[str, List[Dict[str, object]]] = {}
+        time_field_l = str(time_field or "").lower()
+        value_field_l = str(value_field or "").lower()
+
+        inferred_value_type = "intensity"
+        if "increment" in value_field_l or "depth" in value_field_l:
+            inferred_value_type = "incremental_depth"
+        elif "cum" in value_field_l:
+            inferred_value_type = "cumulative_depth"
+
+        inferred_units = "mm/hr"
+        if "in/hr" in value_field_l:
+            inferred_units = "in/hr"
+        elif "mm/hr" in value_field_l:
+            inferred_units = "mm/hr"
+        elif "_in" in value_field_l or "inch" in value_field_l:
+            inferred_units = "in"
+        elif "_mm" in value_field_l:
+            inferred_units = "mm"
+
         for ft in hyetograph_layer.getFeatures():
             try:
                 hy_id = str(ft[hy_id_field] or "").strip()
@@ -5129,13 +5806,35 @@ class SWE2DWorkbenchDialog(QtWidgets.QDialog):
                 hy_id = ""
             if not hy_id:
                 continue
+
+            time_value = ft[time_field]
+            if "min" in time_field_l and isinstance(time_value, (int, float)):
+                time_value = f"{float(time_value)} min"
+            elif "hr" in time_field_l and isinstance(time_value, (int, float)):
+                time_value = f"{float(time_value)} hr"
+
             row = {
-                "Time": ft[time_field],
+                "Time": time_value,
                 "Value": ft[value_field],
-                "value_type": ft["value_type"] if "value_type" in hy_fields else "intensity",
-                "units": ft["units"] if "units" in hy_fields else "mm/hr",
+                "value_type": ft["value_type"] if "value_type" in hy_fields else inferred_value_type,
+                "units": ft["units"] if "units" in hy_fields else inferred_units,
             }
             hy_rows_by_id.setdefault(hy_id, []).append(row)
+
+        if inspect_hyetograph_rows is not None:
+            for hy_id in sorted(hy_rows_by_id.keys()):
+                rows = hy_rows_by_id.get(hy_id, [])
+                diag = inspect_hyetograph_rows(rows)
+                self._log(
+                    "Hyetograph parse: "
+                    f"id='{hy_id}', rows={int(diag.get('n_rows', 0))}, valid={int(diag.get('n_valid', 0))}, "
+                    f"mode={diag.get('mode', 'unknown')}, units={diag.get('units', 'unknown')}, "
+                    f"t=[{float(diag.get('t_start_s', 0.0)):.1f},{float(diag.get('t_end_s', 0.0)):.1f}] s, "
+                    f"dt_med={float(diag.get('dt_median_s', 0.0)):.1f} s, "
+                    f"total_depth={float(diag.get('total_depth_mm', 0.0)):.3f} mm"
+                )
+                for w in list(diag.get("warnings", [])):
+                    self._log(f"Hyetograph parse warning (id='{hy_id}'): {w}")
 
         gauges: List[Gauge] = []
         hy_by_gauge_index: Dict[int, object] = {}
@@ -5164,6 +5863,58 @@ class SWE2DWorkbenchDialog(QtWidgets.QDialog):
         cell_to_gauge = assign_cells_to_nearest_gauge(cell_x, cell_y, gauges)
         if cell_to_gauge is None:
             return None
+        cell_to_gauge = np.asarray(cell_to_gauge, dtype=np.int32).copy()
+
+        storm_area_layer = self._combo_layer(self.storm_area_layer_combo, "vector") if hasattr(self, "storm_area_layer_combo") else None
+        if storm_area_layer is not None:
+            in_storm = np.zeros(cell_to_gauge.shape[0], dtype=bool)
+            for ft in storm_area_layer.getFeatures():
+                geom = ft.geometry()
+                if geom is None or geom.isEmpty():
+                    continue
+                try:
+                    wkb_type = int(geom.wkbType())
+                except Exception:
+                    wkb_type = -1
+                if QgsWkbTypes.geometryType(wkb_type) == QgsWkbTypes.GeometryType.PolygonGeometry:
+                    for i in range(cell_x.shape[0]):
+                        if in_storm[i]:
+                            continue
+                        p = QgsGeometry.fromPointXY(QgsPointXY(float(cell_x[i]), float(cell_y[i])))
+                        if geom.contains(p) or geom.intersects(p):
+                            in_storm[i] = True
+                else:
+                    rp = geom.centroid().asPoint() if not geom.centroid().isEmpty() else None
+                    if rp is None:
+                        continue
+                    dx = cell_x - float(rp.x())
+                    dy = cell_y - float(rp.y())
+                    in_storm[int(np.argmin(dx * dx + dy * dy))] = True
+
+            if np.any(in_storm):
+                excluded_count = int(np.count_nonzero(~in_storm))
+                cell_to_gauge[~in_storm] = -1
+                self._log(
+                    f"Thiessen storm-area mask active: included {int(np.count_nonzero(in_storm))} cell(s), "
+                    f"excluded {excluded_count} outside '{storm_area_layer.name()}'."
+                )
+            else:
+                cell_to_gauge[:] = -1
+                self._log(
+                    f"Thiessen storm-area mask active: no cell centroids intersected '{storm_area_layer.name()}'; "
+                    "rainfall forcing disabled by mask."
+                )
+
+        # Exclude boundary-adjacent rings from rainfall source to reduce
+        # compounding source/BC forcing at open or prescribed boundaries.
+        boundary_exclusion_rings = int(self.rain_boundary_buffer_rings_spin.value()) if hasattr(self, "rain_boundary_buffer_rings_spin") else 1
+        excluded = self._boundary_buffer_cells(boundary_exclusion_rings)
+        if excluded.size > 0:
+            cell_to_gauge[excluded] = -1
+            self._log(
+                f"Thiessen rain boundary buffer active: excluded {excluded.size} cell(s) "
+                f"across {boundary_exclusion_rings} boundary ring(s)."
+            )
 
         cnvals = self._build_spatial_cn_array()
         forcing = ThiessenRainCNForcing(
@@ -5245,6 +5996,7 @@ class SWE2DWorkbenchDialog(QtWidgets.QDialog):
             x = float(pt.x())
             y = float(pt.y())
             invert = _opt_float(ft["invert_elev"] if "invert_elev" in node_fields else None, 0.0)
+            node_type = str(ft["node_type"] if "node_type" in node_fields else "junction").strip().lower() or "junction"
             ci = self._nearest_cell_index_for_xy(x, y)
             bed_here = float(cell_min_bed[ci]) if ci >= 0 and ci < int(cell_min_bed.size) else invert
             rim = _opt_float(ft["rim_elev"] if "rim_elev" in node_fields else None, None)
@@ -5252,10 +6004,13 @@ class SWE2DWorkbenchDialog(QtWidgets.QDialog):
                 rim = max(invert, bed_here)
             max_depth = _opt_float(ft["max_depth"] if "max_depth" in node_fields else None, None)
             if max_depth is None:
-                max_depth = max(0.1, float(rim) - float(invert))
+                if node_type == "outfall":
+                    max_depth = 10.0
+                else:
+                    max_depth = max(0.1, float(rim) - float(invert))
             crest = _opt_float(ft["crest_elev"] if "crest_elev" in node_fields else None, None)
             if crest is None:
-                crest = float(rim)
+                crest = float(invert if node_type == "outfall" else rim)
 
             node = DrainageNode(
                 node_id=node_id,
@@ -5265,9 +6020,10 @@ class SWE2DWorkbenchDialog(QtWidgets.QDialog):
                 max_depth=float(max_depth),
                 crest_elev=float(crest),
                 rim_elev=float(rim),
-                node_type=str(ft["node_type"] if "node_type" in node_fields else "junction").strip() or "junction",
+                node_type=node_type,
                 metadata={
-                    "surface_area": float(ft["surface_area"] if "surface_area" in node_fields and ft["surface_area"] not in (None, "") else 50.0)
+                    "surface_area": float(ft["surface_area"] if "surface_area" in node_fields and ft["surface_area"] not in (None, "") else 50.0),
+                    "outfall_area_m2": float(ft["outfall_area"] if "outfall_area" in node_fields and ft["outfall_area"] not in (None, "") else 0.0),
                 },
             )
             nodes.append(node)
@@ -5280,6 +6036,13 @@ class SWE2DWorkbenchDialog(QtWidgets.QDialog):
         link_fields = set(link_layer.fields().names())
         links: List[DrainageLink] = []
         links_missing_capacity: List[str] = []
+
+        def _ellipse_perimeter(a: float, b: float) -> float:
+            # Ramanujan approximation; stable and cheap for geometry-derived hydraulics.
+            if a <= 0.0 or b <= 0.0:
+                return 0.0
+            return math.pi * (3.0 * (a + b) - math.sqrt(max(0.0, (3.0 * a + b) * (a + 3.0 * b))))
+
         for ft in link_layer.getFeatures():
             geom = ft.geometry()
             if geom is None or geom.isEmpty():
@@ -5289,6 +6052,10 @@ class SWE2DWorkbenchDialog(QtWidgets.QDialog):
             to_node = str(ft["to_node"] if "to_node" in link_fields else "").strip()
             if not link_id or not from_node or not to_node:
                 continue
+
+            link_shape = str(ft["link_shape"] if "link_shape" in link_fields else "").strip().lower()
+            if link_shape in ("", "none", "null"):
+                link_shape = "circular"
 
             diameter_val = None
             for nm in ("diameter", "diameter_m", "equiv_diameter", "equiv_diameter_m"):
@@ -5312,6 +6079,28 @@ class SWE2DWorkbenchDialog(QtWidgets.QDialog):
                     except Exception:
                         pass
 
+            span_val = None
+            for nm in ("span", "span_m", "width", "width_m"):
+                if nm in link_fields and ft[nm] not in (None, ""):
+                    try:
+                        s_try = float(ft[nm])
+                        if s_try > 0.0:
+                            span_val = s_try
+                            break
+                    except Exception:
+                        pass
+
+            rise_val = None
+            for nm in ("rise", "rise_m", "height", "height_m"):
+                if nm in link_fields and ft[nm] not in (None, ""):
+                    try:
+                        r_try = float(ft[nm])
+                        if r_try > 0.0:
+                            rise_val = r_try
+                            break
+                    except Exception:
+                        pass
+
             equiv_d_val = None
             for nm in ("equiv_diameter_m", "equiv_diameter"):
                 if nm in link_fields and ft[nm] not in (None, ""):
@@ -5322,6 +6111,32 @@ class SWE2DWorkbenchDialog(QtWidgets.QDialog):
                             break
                     except Exception:
                         pass
+
+            if (area_val is None or area_val <= 0.0):
+                if link_shape == "circular" and diameter_val is not None and diameter_val > 0.0:
+                    area_val = 0.25 * math.pi * float(diameter_val) * float(diameter_val)
+                elif link_shape in ("box", "rectangular", "rect") and span_val is not None and rise_val is not None:
+                    area_val = float(span_val) * float(rise_val)
+                elif link_shape == "pipe_arch" and span_val is not None and rise_val is not None:
+                    area_val = 0.25 * math.pi * float(span_val) * float(rise_val)
+
+            if (equiv_d_val is None or equiv_d_val <= 0.0):
+                if diameter_val is not None and diameter_val > 0.0:
+                    equiv_d_val = float(diameter_val)
+                elif area_val is not None and area_val > 0.0:
+                    if link_shape in ("box", "rectangular", "rect") and span_val is not None and rise_val is not None:
+                        perim = 2.0 * (float(span_val) + float(rise_val))
+                        if perim > 0.0:
+                            equiv_d_val = 4.0 * float(area_val) / perim
+                    elif link_shape == "pipe_arch" and span_val is not None and rise_val is not None:
+                        perim = _ellipse_perimeter(0.5 * float(span_val), 0.5 * float(rise_val))
+                        if perim > 0.0:
+                            equiv_d_val = 4.0 * float(area_val) / perim
+                    if equiv_d_val is None or equiv_d_val <= 0.0:
+                        equiv_d_val = math.sqrt(4.0 * float(area_val) / math.pi)
+
+            if (diameter_val is None or diameter_val <= 0.0) and equiv_d_val is not None and equiv_d_val > 0.0:
+                diameter_val = float(equiv_d_val)
 
             if (diameter_val is None or diameter_val <= 0.0) and (area_val is None or area_val <= 0.0) and (equiv_d_val is None or equiv_d_val <= 0.0):
                 links_missing_capacity.append(link_id)
@@ -5339,7 +6154,10 @@ class SWE2DWorkbenchDialog(QtWidgets.QDialog):
                     metadata={
                         "area_m2": float(area_val) if area_val is not None else 0.0,
                         "equiv_diameter_m": float(equiv_d_val) if equiv_d_val is not None else 0.0,
-                        "cd": float(ft["cd"] if "cd" in link_fields and ft["cd"] not in (None, "") else 0.75)
+                        "cd": float(ft["cd"] if "cd" in link_fields and ft["cd"] not in (None, "") else 0.75),
+                        "link_shape": link_shape,
+                        "span_m": float(span_val) if span_val is not None else 0.0,
+                        "rise_m": float(rise_val) if rise_val is not None else 0.0,
                     },
                 )
             )
@@ -5350,7 +6168,8 @@ class SWE2DWorkbenchDialog(QtWidgets.QDialog):
             preview = ", ".join(links_missing_capacity[:8])
             suffix = "" if len(links_missing_capacity) <= 8 else f", ... (+{len(links_missing_capacity) - 8} more)"
             self._log(
-                "Drainage warning: link(s) missing diameter/area/equiv_diameter; link flow will stay zero for these IDs: "
+                "Drainage warning: link(s) missing hydraulic geometry (diameter/area/equiv_diameter/shape dimensions); "
+                "link flow will stay zero for these IDs: "
                 f"{preview}{suffix}"
             )
 
@@ -5451,51 +6270,61 @@ class SWE2DWorkbenchDialog(QtWidgets.QDialog):
                     )
 
         # Build outfall exchange objects for outfall-type nodes located within the mesh.
-        # Diameter is resolved from the largest connected link hydraulic capacity
-        # (diameter/equiv_diameter/area-derived equivalent diameter) for that outfall node.
+        # Prefer explicit outfall area on node features; fall back to connected-link
+        # hydraulic capacity when area is not explicitly provided.
         outfalls: List[OutfallExchange] = []
         if OutfallExchange is not None:
+            _node_connected_area: dict = {}
             _node_connected_diameter: dict = {}
             for lnk in links:
+                area_lnk = float(lnk.metadata.get("area_m2", 0.0) or 0.0)
                 d_lnk = float(lnk.diameter or 0.0)
                 if d_lnk <= 0.0:
                     d_lnk = float(lnk.metadata.get("equiv_diameter_m", 0.0) or 0.0)
                 if d_lnk <= 0.0:
-                    a_lnk = float(lnk.metadata.get("area_m2", 0.0) or 0.0)
-                    if a_lnk > 0.0:
-                        d_lnk = math.sqrt(4.0 * a_lnk / math.pi)
-                if d_lnk <= 0.0:
-                    continue
+                    if area_lnk > 0.0:
+                        d_lnk = math.sqrt(4.0 * area_lnk / math.pi)
+                if area_lnk <= 0.0 and d_lnk > 0.0:
+                    area_lnk = 0.25 * math.pi * d_lnk * d_lnk
                 for nid in (lnk.from_node_id, lnk.to_node_id):
+                    cur_a = float(_node_connected_area.get(nid, 0.0))
+                    if area_lnk > cur_a:
+                        _node_connected_area[nid] = area_lnk
                     cur = float(_node_connected_diameter.get(nid, 0.0))
                     if d_lnk > cur:
                         _node_connected_diameter[nid] = d_lnk
 
-            outfalls_missing_diameter: List[str] = []
+            outfalls_missing_capacity: List[str] = []
             for node in nodes:
                 if str(node.node_type).strip().lower() != "outfall":
                     continue
                 cell_id = self._nearest_cell_index_for_xy(float(node.x), float(node.y))
+                area_outfall = max(0.0, float(node.metadata.get("outfall_area_m2", 0.0) or 0.0))
+                if area_outfall <= 0.0:
+                    area_outfall = max(0.0, float(_node_connected_area.get(node.node_id, 0.0) or 0.0))
                 diameter = float(_node_connected_diameter.get(node.node_id, 0.0) or 0.0)
-                if diameter <= 0.0:
-                    outfalls_missing_diameter.append(str(node.node_id))
+                if diameter <= 0.0 and area_outfall > 0.0:
+                    diameter = math.sqrt(4.0 * area_outfall / math.pi)
+                if area_outfall <= 0.0 and diameter <= 0.0:
+                    outfalls_missing_capacity.append(str(node.node_id))
                 outfalls.append(
                     OutfallExchange(
                         outfall_id=node.node_id,
                         cell_id=cell_id,
                         node_id=node.node_id,
                         invert_elev=float(node.invert_elev),
+                        area_m2=area_outfall,
                         diameter=diameter,
                         coefficient=0.82,
                         max_flow=None,
                         zero_storage=bool(node_zero_storage_by_id.get(node.node_id, False)),
                     )
                 )
-            if outfalls_missing_diameter:
-                preview = ", ".join(outfalls_missing_diameter[:8])
-                suffix = "" if len(outfalls_missing_diameter) <= 8 else f", ... (+{len(outfalls_missing_diameter) - 8} more)"
+            if outfalls_missing_capacity:
+                preview = ", ".join(outfalls_missing_capacity[:8])
+                suffix = "" if len(outfalls_missing_capacity) <= 8 else f", ... (+{len(outfalls_missing_capacity) - 8} more)"
                 self._log(
-                    "Drainage warning: outfall node(s) missing connected diameter/area capacity; "
+                    "Drainage warning: outfall node(s) missing outfall_area and connected link capacity; "
                     f"outfall exchange will stay zero for IDs: {preview}{suffix}"
                 )
 
@@ -5505,7 +6334,11 @@ class SWE2DWorkbenchDialog(QtWidgets.QDialog):
         self._log(
             f"Drainage coupling configured: nodes={len(nodes)}, links={len(links)}, "
             f"inlets={len(inlets)}, inlet_types={len(inlet_types)}, node_inlets={len(node_inlets)}, "
-            f"outfalls={len(outfalls)}, gravity={gravity:.3f}, mode={solver_mode_name}"
+            f"outfalls={len(outfalls)}, gravity={gravity:.3f}, mode={solver_mode_name}, "
+            f"substeps={int(self.drainage_coupling_substeps_spin.value()) if hasattr(self, 'drainage_coupling_substeps_spin') else 1}, "
+            f"max_substeps={int(self.drainage_max_coupling_substeps_spin.value()) if hasattr(self, 'drainage_max_coupling_substeps_spin') else 64}, "
+            f"deadband={float(self.drainage_head_deadband_spin.value()) if hasattr(self, 'drainage_head_deadband_spin') else 1.0e-3:.4g}, "
+            f"relax={float(self.drainage_dynamic_relaxation_spin.value()) if hasattr(self, 'drainage_dynamic_relaxation_spin') else 1.0:.3f}"
         )
         return PipeNetworkConfig(
             enabled=True,
@@ -5517,6 +6350,14 @@ class SWE2DWorkbenchDialog(QtWidgets.QDialog):
             outfalls=outfalls,
             gravity=gravity,
             solver_mode=solver_mode,
+            coupling_substeps=int(self.drainage_coupling_substeps_spin.value()) if hasattr(self, "drainage_coupling_substeps_spin") else 1,
+            max_coupling_substeps=int(self.drainage_max_coupling_substeps_spin.value()) if hasattr(self, "drainage_max_coupling_substeps_spin") else 64,
+            head_deadband_m=float(self.drainage_head_deadband_spin.value()) if hasattr(self, "drainage_head_deadband_spin") else 1.0e-3,
+            dynamic_flow_relaxation=float(self.drainage_dynamic_relaxation_spin.value()) if hasattr(self, "drainage_dynamic_relaxation_spin") else 1.0,
+            adaptive_depth_fraction=float(self.drainage_adaptive_depth_fraction_spin.value()) if hasattr(self, "drainage_adaptive_depth_fraction_spin") else 0.2,
+            adaptive_wave_courant=float(self.drainage_adaptive_wave_courant_spin.value()) if hasattr(self, "drainage_adaptive_wave_courant_spin") else 0.5,
+            implicit_coupling_iterations=int(self.drainage_implicit_iters_spin.value()) if hasattr(self, "drainage_implicit_iters_spin") else 2,
+            implicit_coupling_relaxation=float(self.drainage_implicit_relax_spin.value()) if hasattr(self, "drainage_implicit_relax_spin") else 0.5,
         )
 
     def _build_hydraulic_structure_config(self):
@@ -5606,6 +6447,419 @@ class SWE2DWorkbenchDialog(QtWidgets.QDialog):
                 return True
         return False
 
+    def _set_combo_by_layer_id_or_name(self, combo: object, layer_id: object, layer_name: str) -> bool:
+        """Set a combo box selection by layer id with name fallback.
+
+        Args:
+            combo: Target combo-like widget.
+            layer_id: Saved layer id value.
+            layer_name: Saved layer display name.
+
+        Returns:
+            True when selection was restored, otherwise False.
+        """
+        if combo is None:
+            return False
+        if layer_id not in (None, ""):
+            idx = combo.findData(str(layer_id))
+            if idx >= 0:
+                combo.setCurrentIndex(idx)
+                return True
+        return self._set_combo_by_layer_name(combo, layer_name)
+
+    def _project_layer_binding_specs(self) -> List[Tuple[str, object]]:
+        """Return combo attributes that store project-layer bindings.
+
+        Returns:
+            List of `(attribute_name, combo_widget)` pairs.
+        """
+        specs: List[Tuple[str, object]] = []
+        for attr_name in [
+            "nodes_layer_combo",
+            "cells_layer_combo",
+            "terrain_layer_combo",
+            "manning_layer_combo",
+            "cn_layer_combo",
+            "rain_gage_layer_combo",
+            "hyetograph_layer_combo",
+            "storm_area_layer_combo",
+            "sample_lines_layer_combo",
+            "drain_nodes_layer_combo",
+            "drain_links_layer_combo",
+            "drain_inlets_layer_combo",
+            "drain_node_inlets_layer_combo",
+            "structures_layer_combo",
+            "bc_lines_layer_combo",
+            "topo_nodes_combo",
+            "topo_arcs_combo",
+            "topo_regions_combo",
+            "topo_constraints_combo",
+            "topo_quad_edges_combo",
+            "layer_group_combo",
+        ]:
+            combo = getattr(self, attr_name, None)
+            if combo is not None:
+                specs.append((attr_name, combo))
+        return specs
+
+    def _project_entry_read_text(self, key: str, default: str = "") -> str:
+        """Read a text value from QGIS project settings.
+
+        Args:
+            key: Project entry key name.
+            default: Fallback value when key is missing.
+
+        Returns:
+            Stored text value, or `default` if unavailable.
+        """
+        if not _HAVE_QGIS_CORE or QgsProject is None:
+            return str(default)
+        try:
+            result = QgsProject.instance().readEntry("Backwater2DWorkbench", key, str(default))
+        except Exception:
+            return str(default)
+        if isinstance(result, tuple):
+            return str(result[0] if result and result[0] not in (None, "") else default)
+        return str(result if result not in (None, "") else default)
+
+    def _persist_project_layer_bindings(self, *_args: object) -> None:
+        """Persist current layer-combo selections into the QGIS project."""
+        if self._project_layer_state_blocked or not _HAVE_QGIS_CORE or QgsProject is None:
+            return
+        if bool(getattr(self, "_initial_layer_restore_pending", False)):
+            return
+        payload = {"version": 1, "selectors": {}}
+        for attr_name, combo in self._project_layer_binding_specs():
+            idx = combo.currentIndex()
+            label = str(combo.currentText() or "").strip() if idx >= 0 else ""
+            layer_id = combo.currentData()
+            layer_id = "" if layer_id in (None, "") else str(layer_id)
+            payload["selectors"][attr_name] = {
+                "layer_id": layer_id,
+                "layer_name": label,
+            }
+        try:
+            QgsProject.instance().writeEntry(
+                "Backwater2DWorkbench",
+                "layer_selector_state_json",
+                json.dumps(payload, separators=(",", ":")),
+            )
+        except Exception:
+            pass
+
+    def _restore_project_layer_bindings(self) -> None:
+        """Restore saved layer-combo selections from the QGIS project."""
+        if self._project_layer_state_blocked or not _HAVE_QGIS_CORE or QgsProject is None:
+            return
+        raw = self._project_entry_read_text("layer_selector_state_json", "")
+        if not raw:
+            return
+        try:
+            payload = json.loads(raw)
+        except Exception:
+            return
+        selectors = payload.get("selectors", {}) if isinstance(payload, dict) else {}
+        if not isinstance(selectors, dict):
+            return
+
+        self._project_layer_state_blocked = True
+        try:
+            for attr_name, combo in self._project_layer_binding_specs():
+                saved = selectors.get(attr_name)
+                if not isinstance(saved, dict):
+                    continue
+                self._set_combo_by_layer_id_or_name(
+                    combo,
+                    saved.get("layer_id"),
+                    str(saved.get("layer_name") or ""),
+                )
+        finally:
+            self._project_layer_state_blocked = False
+
+    def _connect_project_layer_state_signals(self) -> None:
+        """Connect layer combo change signals to persistence callback."""
+        for _attr_name, combo in self._project_layer_binding_specs():
+            try:
+                combo.currentIndexChanged.connect(self._persist_project_layer_bindings)
+            except Exception:
+                pass
+
+    def _connect_project_workbench_state_signals(self) -> None:
+        """Connect workbench widget signals to state persistence callback."""
+        widget_specs = [
+            ("nx_spin", "valueChanged"),
+            ("ny_spin", "valueChanged"),
+            ("lx_spin", "valueChanged"),
+            ("ly_spin", "valueChanged"),
+            ("bed_amp_spin", "valueChanged"),
+            ("mesh_layout_combo", "currentIndexChanged"),
+            ("h_min_spin", "valueChanged"),
+            ("initial_condition_combo", "currentIndexChanged"),
+            ("initial_depth_spin", "valueChanged"),
+            ("initial_wse_spin", "valueChanged"),
+            ("adaptive_cfl_dt_chk", "toggled"),
+            ("dt_spin", "valueChanged"),
+            ("max_rel_depth_increase_spin", "valueChanged"),
+            ("max_source_depth_step_spin", "valueChanged"),
+            ("max_source_rate_spin", "valueChanged"),
+            ("extreme_rain_mode_chk", "toggled"),
+            ("source_cfl_beta_spin", "valueChanged"),
+            ("source_max_substeps_spin", "valueChanged"),
+            ("source_true_subcycling_chk", "toggled"),
+            ("source_imex_split_chk", "toggled"),
+            ("source_stage_coupled_imex_rk2_chk", "toggled"),
+            ("shallow_damping_depth_spin", "valueChanged"),
+            ("shallow_front_recon_fallback_chk", "toggled"),
+            ("front_flux_damping_spin", "valueChanged"),
+            ("active_set_hysteresis_chk", "toggled"),
+            ("depth_cap_spin", "valueChanged"),
+            ("momentum_cap_min_speed_spin", "valueChanged"),
+            ("momentum_cap_celerity_mult_spin", "valueChanged"),
+            ("max_inv_area_spin", "valueChanged"),
+            ("cfl_lambda_cap_spin", "valueChanged"),
+            ("rain_rate_spin", "valueChanged"),
+            ("cn_default_spin", "valueChanged"),
+            ("use_spatial_rain_cn_chk", "toggled"),
+            ("rain_boundary_buffer_rings_spin", "valueChanged"),
+            ("internal_flow_field_edit", "editingFinished"),
+            ("run_time_edit", "editingFinished"),
+            ("output_interval_edit", "editingFinished"),
+            ("line_output_interval_edit", "editingFinished"),
+            ("reconstruction_combo", "currentIndexChanged"),
+            ("temporal_order_combo", "currentIndexChanged"),
+            ("degen_mode_combo", "currentIndexChanged"),
+            ("coupling_loop_combo", "currentIndexChanged"),
+            ("drainage_solver_mode_combo", "currentIndexChanged"),
+            ("drainage_backend_combo", "currentIndexChanged"),
+            ("drainage_coupling_substeps_spin", "valueChanged"),
+            ("drainage_max_coupling_substeps_spin", "valueChanged"),
+            ("drainage_head_deadband_spin", "valueChanged"),
+            ("drainage_dynamic_relaxation_spin", "valueChanged"),
+            ("drainage_adaptive_depth_fraction_spin", "valueChanged"),
+            ("drainage_adaptive_wave_courant_spin", "valueChanged"),
+            ("extended_outputs_chk", "toggled"),
+            ("save_mesh_results_to_gpkg_chk", "toggled"),
+            ("save_line_results_to_gpkg_chk", "toggled"),
+            ("save_coupling_results_to_gpkg_chk", "toggled"),
+            ("save_run_log_to_gpkg_chk", "toggled"),
+            ("topo_backend_combo", "currentIndexChanged"),
+            ("topo_default_size_spin", "valueChanged"),
+            ("topo_default_cell_type_combo", "currentIndexChanged"),
+            ("topo_quality_min_angle_spin", "valueChanged"),
+            ("topo_quality_max_aspect_spin", "valueChanged"),
+            ("topo_quality_max_non_orth_spin", "valueChanged"),
+            ("topo_quality_min_area_edit", "editingFinished"),
+            ("topo_quality_size_scales_edit", "editingFinished"),
+            ("topo_quality_smooth_increments_edit", "editingFinished"),
+            ("topo_quality_strict_chk", "toggled"),
+            ("topo_gmsh_quality_enable_chk", "toggled"),
+            ("topo_gmsh_quality_max_iters_spin", "valueChanged"),
+            ("topo_gmsh_quality_time_limit_spin", "valueChanged"),
+            ("topo_gmsh_tri_algo_combo", "currentIndexChanged"),
+            ("topo_gmsh_quad_algo_combo", "currentIndexChanged"),
+            ("topo_gmsh_recombine_algo_combo", "currentIndexChanged"),
+            ("topo_gmsh_smoothing_spin", "valueChanged"),
+            ("topo_gmsh_optimize_iters_spin", "valueChanged"),
+            ("topo_gmsh_optimize_netgen_chk", "toggled"),
+            ("topo_gmsh_verbosity_spin", "valueChanged"),
+        ]
+
+        for attr_name, signal_name in widget_specs:
+            widget = getattr(self, attr_name, None)
+            if widget is None:
+                continue
+            try:
+                signal = getattr(widget, signal_name, None)
+                if signal is not None:
+                    signal.connect(self._persist_project_workbench_state)
+            except Exception:
+                pass
+
+    def _connect_project_save_state_signals(self) -> None:
+        """Connect QGIS project read/save signals to workbench state sync."""
+        if not _HAVE_QGIS_CORE or QgsProject is None:
+            return
+        proj = QgsProject.instance()
+        
+        # Try multiple signal names for QGIS project save/load events
+        signal_names = ["aboutToBeSaved", "writeProject", "projectSaved"]
+        connected_count = 0
+        
+        for signal_name in signal_names:
+            try:
+                signal = getattr(proj, signal_name, None)
+                if signal is not None:
+                    signal.connect(self._persist_project_workbench_state)
+                    connected_count += 1
+            except Exception as e:
+                self._log(f"[DEBUG] failed to connect signal {signal_name}: {e}")
+        
+        self._log(f"[DEBUG] connected {connected_count} project signals for workbench state persistence")
+        for signal_name in ("readProject", "projectRead"):
+            try:
+                signal = getattr(proj, signal_name, None)
+                if signal is not None:
+                    signal.connect(self._restore_project_layer_bindings)
+                    signal.connect(self._restore_project_workbench_state)
+            except Exception:
+                pass
+
+    def _persist_project_workbench_state(self, *_args: object) -> None:
+        """Persist workbench widget values to the active QGIS project.
+
+        The method captures supported widget types (spin boxes, combo boxes,
+        checkboxes, and line edits) and stores a compact JSON payload in the
+        project under `Backwater2DWorkbench/workbench_state_json`.
+        """
+        if not _HAVE_QGIS_CORE or QgsProject is None:
+            return
+        payload = {
+            "version": 1,
+            "widgets": {}
+        }
+        
+        # Collect all widgets that should be persisted
+        widget_attrs = [
+            # Mesh generation
+            "nx_spin", "ny_spin", "lx_spin", "ly_spin", "bed_amp_spin", "mesh_layout_combo",
+            # Parameters
+            "h_min_spin", "initial_condition_combo", "initial_depth_spin", "initial_wse_spin",
+            "adaptive_cfl_dt_chk", "dt_spin", "max_rel_depth_increase_spin",
+            "shallow_damping_depth_spin", "shallow_front_recon_fallback_chk",
+            "front_flux_damping_spin", "active_set_hysteresis_chk",
+            "depth_cap_spin", "momentum_cap_min_speed_spin", "momentum_cap_celerity_mult_spin",
+            "max_inv_area_spin", "cfl_lambda_cap_spin", "rain_rate_spin", "cn_default_spin",
+            "max_source_depth_step_spin", "max_source_rate_spin", "extreme_rain_mode_chk",
+            "source_cfl_beta_spin", "source_max_substeps_spin", "source_true_subcycling_chk",
+            "source_imex_split_chk", "source_stage_coupled_imex_rk2_chk",
+            "use_spatial_rain_cn_chk", "rain_boundary_buffer_rings_spin", "internal_flow_field_edit",
+            "run_time_edit", "output_interval_edit", "line_output_interval_edit",
+            "reconstruction_combo", "temporal_order_combo", "degen_mode_combo", "coupling_loop_combo",
+            "drainage_solver_mode_combo", "drainage_backend_combo", "drainage_coupling_substeps_spin",
+            "drainage_max_coupling_substeps_spin", "drainage_head_deadband_spin",
+            "drainage_dynamic_relaxation_spin", "drainage_adaptive_depth_fraction_spin",
+            "drainage_adaptive_wave_courant_spin", "drainage_implicit_iters_spin",
+            "drainage_implicit_relax_spin", "extended_outputs_chk",
+            "save_mesh_results_to_gpkg_chk", "save_line_results_to_gpkg_chk",
+            "save_coupling_results_to_gpkg_chk", "save_run_log_to_gpkg_chk",
+            # Topology mesh
+            "topo_backend_combo", "topo_default_size_spin", "topo_default_cell_type_combo",
+            "topo_quality_min_angle_spin", "topo_quality_max_aspect_spin",
+            "topo_quality_max_non_orth_spin", "topo_quality_min_area_edit",
+            "topo_quality_size_scales_edit", "topo_quality_smooth_increments_edit",
+            "topo_quality_strict_chk", "topo_gmsh_quality_enable_chk",
+            "topo_gmsh_quality_max_iters_spin", "topo_gmsh_quality_time_limit_spin",
+            "topo_gmsh_tri_algo_combo", "topo_gmsh_quad_algo_combo",
+            "topo_gmsh_recombine_algo_combo", "topo_gmsh_smoothing_spin",
+            "topo_gmsh_optimize_iters_spin", "topo_gmsh_optimize_netgen_chk",
+            "topo_gmsh_verbosity_spin",
+        ]
+        
+        for attr_name in widget_attrs:
+            widget = getattr(self, attr_name, None)
+            if widget is None:
+                continue
+            
+            value = None
+            if isinstance(widget, QtWidgets.QSpinBox):
+                value = widget.value()
+            elif isinstance(widget, QtWidgets.QDoubleSpinBox):
+                value = widget.value()
+            elif isinstance(widget, QtWidgets.QComboBox):
+                value = widget.currentData()
+                if value is None:
+                    value = widget.currentIndex()
+            elif isinstance(widget, QtWidgets.QCheckBox):
+                value = widget.isChecked()
+            elif isinstance(widget, QtWidgets.QLineEdit):
+                value = widget.text()
+            else:
+                continue
+            
+            payload["widgets"][attr_name] = {
+                "type": type(widget).__name__,
+                "value": value
+            }
+        
+        try:
+            json_str = json.dumps(payload, separators=(",", ":"), default=str)
+            QgsProject.instance().writeEntry(
+                "Backwater2DWorkbench",
+                "workbench_state_json",
+                json_str,
+            )
+            self._log(f"[DEBUG] persist: saved {len(payload['widgets'])} widgets to project")
+        except Exception as e:
+            self._log(f"[DEBUG] persist: writeEntry failed: {e}")
+
+    def _restore_project_workbench_state(self, *_args: object) -> None:
+        """Restore persisted workbench widget values from QGIS project state."""
+        if not _HAVE_QGIS_CORE or QgsProject is None:
+            self._log("[DEBUG] restore: QGIS core not available")
+            return
+        
+        raw = self._project_entry_read_text("workbench_state_json", "")
+        if not raw:
+            self._log("[DEBUG] restore: no saved workbench state found")
+            return
+        
+        self._log(f"[DEBUG] restore: found {len(raw)} chars of state data")
+        try:
+            payload = json.loads(raw)
+        except Exception as e:
+            self._log(f"[DEBUG] restore: json parse failed: {e}")
+            return
+        
+        widgets_data = payload.get("widgets", {}) if isinstance(payload, dict) else {}
+        if not isinstance(widgets_data, dict):
+            self._log("[DEBUG] restore: widgets not a dict")
+            return
+        
+        self._log(f"[DEBUG] restore: restoring {len(widgets_data)} widget values")
+        restored_count = 0
+        for attr_name, widget_info in widgets_data.items():
+            widget = getattr(self, attr_name, None)
+            if widget is None or not isinstance(widget_info, dict):
+                continue
+            
+            value = widget_info.get("value")
+            if value is None:
+                continue
+            
+            try:
+                if isinstance(widget, QtWidgets.QSpinBox):
+                    widget.setValue(int(value))
+                    restored_count += 1
+                elif isinstance(widget, QtWidgets.QDoubleSpinBox):
+                    widget.setValue(float(value))
+                    restored_count += 1
+                elif isinstance(widget, QtWidgets.QComboBox):
+                    # Try to find item by data first, then by index
+                    found = False
+                    for i in range(widget.count()):
+                        if widget.itemData(i) == value:
+                            widget.setCurrentIndex(i)
+                            found = True
+                            break
+                    if not found:
+                        # Fallback to index
+                        try:
+                            widget.setCurrentIndex(int(value))
+                        except Exception:
+                            pass
+                    restored_count += 1
+                elif isinstance(widget, QtWidgets.QCheckBox):
+                    widget.setChecked(bool(value))
+                    restored_count += 1
+                elif isinstance(widget, QtWidgets.QLineEdit):
+                    widget.setText(str(value))
+                    restored_count += 1
+            except Exception as e:
+                self._log(f"[DEBUG] restore: failed to restore {attr_name}: {e}")
+                continue
+        
+        self._log(f"[DEBUG] restore: successfully restored {restored_count} of {len(widgets_data)} widgets")
+
     def _missing_required_fields(self, layer, required_fields: Sequence[str]) -> List[str]:
         if layer is None:
             return list(required_fields)
@@ -5642,7 +6896,7 @@ class SWE2DWorkbenchDialog(QtWidgets.QDialog):
             now = datetime.datetime.utcnow().replace(microsecond=0).isoformat() + "Z"
             cur.execute(
                 "INSERT OR REPLACE INTO swe2d_model_metadata(key, value, updated_utc) VALUES (?, ?, ?)",
-                ("swe2d_coupling_schema_version", "3", now),
+                ("swe2d_coupling_schema_version", "4", now),
             )
             cur.execute(
                 "INSERT OR REPLACE INTO swe2d_model_metadata(key, value, updated_utc) VALUES (?, ?, ?)",
@@ -7453,6 +8707,66 @@ class SWE2DWorkbenchDialog(QtWidgets.QDialog):
                         break
         return np.asarray(hit, dtype=np.int32)
 
+    def _boundary_buffer_cells(self, n_rings: int) -> np.ndarray:
+        """Return cell indices within n_rings of the mesh boundary.
+
+        Ring 1 includes boundary cells. Ring 2 adds cells adjacent to ring 1, etc.
+        """
+        if self._mesh_data is None or int(n_rings) <= 0:
+            return np.empty(0, dtype=np.int32)
+
+        edge_cells: Dict[Tuple[int, int], List[int]] = {}
+        if "cell_face_offsets" in self._mesh_data and "cell_face_nodes" in self._mesh_data:
+            offs = self._mesh_data["cell_face_offsets"].astype(np.int32)
+            faces = self._mesh_data["cell_face_nodes"].astype(np.int32)
+            n_cells = int(offs.size - 1)
+            for ci in range(n_cells):
+                s = int(offs[ci])
+                e = int(offs[ci + 1])
+                poly = faces[s:e]
+                for k in range(poly.size):
+                    a = int(poly[k])
+                    b = int(poly[(k + 1) % poly.size])
+                    key = (min(a, b), max(a, b))
+                    edge_cells.setdefault(key, []).append(ci)
+        else:
+            tris = self._mesh_data["cell_nodes"].reshape((-1, 3)).astype(np.int32)
+            n_cells = int(tris.shape[0])
+            for ci, tri in enumerate(tris):
+                for k in range(3):
+                    a = int(tri[k])
+                    b = int(tri[(k + 1) % 3])
+                    key = (min(a, b), max(a, b))
+                    edge_cells.setdefault(key, []).append(ci)
+
+        # Build adjacency and boundary seed set from edge ownership.
+        neighbors: List[set] = [set() for _ in range(n_cells)]
+        ring = set()
+        for owners in edge_cells.values():
+            if len(owners) == 1:
+                ring.add(int(owners[0]))
+            elif len(owners) == 2:
+                c0 = int(owners[0])
+                c1 = int(owners[1])
+                neighbors[c0].add(c1)
+                neighbors[c1].add(c0)
+
+        if not ring:
+            return np.empty(0, dtype=np.int32)
+
+        selected = set(ring)
+        for _ in range(1, int(n_rings)):
+            nxt = set()
+            for c in ring:
+                nxt.update(neighbors[c])
+            nxt.difference_update(selected)
+            if not nxt:
+                break
+            selected.update(nxt)
+            ring = nxt
+
+        return np.asarray(sorted(selected), dtype=np.int32)
+
     def _initial_state(self, bc_n0: Optional[np.ndarray] = None, bc_n1: Optional[np.ndarray] = None, bc_tp: Optional[np.ndarray] = None):
         assert self._mesh_data is not None
         cell_x, _ = self._mesh_cell_centroids()
@@ -7526,10 +8840,28 @@ class SWE2DWorkbenchDialog(QtWidgets.QDialog):
             dt_request = -1.0 if adaptive_cfl_dt else dt_cfg
             reconstruction_mode = int(self.reconstruction_combo.currentData())
             reconstruction_name = self.reconstruction_combo.currentText().strip()
+            temporal_order_value = int(self.temporal_order_combo.currentData())
+            temporal_scheme = TemporalScheme(temporal_order_value)
+            temporal_scheme_name = self.temporal_order_combo.currentText().strip()
+            godunov_mode_value = int(self.godunov_mode_combo.currentData()) if hasattr(self, "godunov_mode_combo") else int(GodunovSolverMode.CURRENT_GPU_STEP)
+            godunov_mode = GodunovSolverMode(godunov_mode_value)
+            if godunov_mode == GodunovSolverMode.GODUNOV_ROLLOUT:
+                promoted_temporal = max(temporal_order_value, int(TemporalScheme.SSP_RK2))
+                promoted_reconstruction = max(reconstruction_mode, int(SpatialDiscretization.FV_MUSCL_MINMOD))
+                if promoted_temporal != temporal_order_value:
+                    self._log("Godunov rollout selected: promoting temporal integration to RK2.")
+                    temporal_order_value = promoted_temporal
+                    temporal_scheme = TemporalScheme(temporal_order_value)
+                    temporal_scheme_name = self.temporal_order_combo.itemText(self.temporal_order_combo.findData(temporal_order_value)).strip() if self.temporal_order_combo.findData(temporal_order_value) >= 0 else temporal_scheme_name
+                if promoted_reconstruction != reconstruction_mode:
+                    self._log("Godunov rollout selected: promoting reconstruction to MUSCL MinMod.")
+                    reconstruction_mode = promoted_reconstruction
+                    reconstruction_name = self.reconstruction_combo.itemText(self.reconstruction_combo.findData(reconstruction_mode)).strip() if self.reconstruction_combo.findData(reconstruction_mode) >= 0 else reconstruction_name
             coupling_loop_mode = str(self.coupling_loop_combo.currentData() if hasattr(self, "coupling_loop_combo") else "cpu")
             drainage_solver_backend_mode = str(self.drainage_backend_combo.currentData() if hasattr(self, "drainage_backend_combo") else "cpu")
             rain_rate_model = self._rain_rate_si_to_model(float(self.rain_rate_spin.value()) / 1000.0 / 3600.0)
-            cell_source_si = self._build_internal_flow_source_cms()
+            internal_flow_forcing = self._build_internal_flow_forcing()
+            cell_source_si = self._internal_flow_source_cms_at_time(internal_flow_forcing, 0.0)
             cell_source_model = self._flow_si_to_model(cell_source_si) if cell_source_si is not None else None
             thiessen_forcing = self._build_thiessen_rain_cn_forcing()
             pipe_network_cfg = self._build_pipe_network_config()
@@ -7588,12 +8920,21 @@ class SWE2DWorkbenchDialog(QtWidgets.QDialog):
             self._log("Starting 2D run...")
             self._log(f"Run wallclock start: {run_wallclock_start}")
             self._log(f"Reconstruction mode: {reconstruction_name}")
+            self._log(f"Temporal scheme: {temporal_scheme_name}")
             self._log(
                 f"Output intervals: mesh={output_interval_s:.1f}s, sample-lines={line_output_interval_s:.1f}s"
             )
             self._log(
                 "Stability controls: "
                 f"max_rel_dh={float(self.max_rel_depth_increase_spin.value()):.3f}, "
+                f"src_dh_step_cap={float(self.max_source_depth_step_spin.value()):.6e}, "
+                f"src_rate_cap={float(self.max_source_rate_spin.value()):.6e}, "
+                f"extreme_rain_mode={bool(self.extreme_rain_mode_chk.isChecked())}, "
+                f"src_beta={float(self.source_cfl_beta_spin.value()):.3f}, "
+                f"src_max_substeps={int(self.source_max_substeps_spin.value())}, "
+                f"true_subcycling={bool(self.source_true_subcycling_chk.isChecked())}, "
+                f"imex_split={bool(self.source_imex_split_chk.isChecked())}, "
+                f"stage_coupled_imex_rk2={bool(getattr(self, 'source_stage_coupled_imex_rk2_chk', None) and self.source_stage_coupled_imex_rk2_chk.isChecked())}, "
                 f"shallow_damp_h={float(self.shallow_damping_depth_spin.value()):.6e}, "
                 f"depth_cap={float(self.depth_cap_spin.value()):.3f}, "
                 f"mom_cap_min={float(self.momentum_cap_min_speed_spin.value()):.3f}, "
@@ -7616,6 +8957,10 @@ class SWE2DWorkbenchDialog(QtWidgets.QDialog):
                 self._log(
                     f"Internal source/sink forcing active: total_Q={float(np.sum(cell_source_model)):.6f} {self._flow_unit_label()}"
                 )
+            if internal_flow_forcing is not None:
+                ts_count = int(len(internal_flow_forcing.get("dynamic_terms", [])))
+                if ts_count > 0:
+                    self._log(f"Internal flow time-series forcing active: features={ts_count}")
             if coupling_controller is not None:
                 self._log(
                     "Coupled drainage/structure forcing active: "
@@ -7697,7 +9042,17 @@ class SWE2DWorkbenchDialog(QtWidgets.QDialog):
                 depth_cap=float(self.depth_cap_spin.value()),
                 max_rel_depth_increase=float(self.max_rel_depth_increase_spin.value()),
                 shallow_damping_depth=float(self.shallow_damping_depth_spin.value()),
+                extreme_rain_mode=bool(self.extreme_rain_mode_chk.isChecked()),
+                source_cfl_beta=float(self.source_cfl_beta_spin.value()),
+                source_max_substeps=int(self.source_max_substeps_spin.value()),
+                source_rate_cap=float(self.max_source_rate_spin.value()),
+                source_depth_step_cap=float(self.max_source_depth_step_spin.value()),
+                source_true_subcycling=bool(self.source_true_subcycling_chk.isChecked()),
+                source_imex_split=bool(self.source_imex_split_chk.isChecked()),
+                enable_shallow_front_recon_fallback=bool(self.shallow_front_recon_fallback_chk.isChecked()),
                 spatial_discretization=reconstruction_mode,
+                temporal_scheme=temporal_scheme,
+                godunov_mode=godunov_mode,
                 degen_mode=int(self.degen_mode_combo.currentData()),
                 front_flux_damping=float(self.front_flux_damping_spin.value()),
                 active_set_hysteresis=bool(self.active_set_hysteresis_chk.isChecked()),
@@ -7863,6 +9218,47 @@ class SWE2DWorkbenchDialog(QtWidgets.QDialog):
                     native_source_injection_mode = False
                     self._log(f"Native external source injection unavailable: {exc}")
 
+            stage_coupled_imex_requested = bool(
+                hasattr(self, "source_stage_coupled_imex_rk2_chk")
+                and self.source_stage_coupled_imex_rk2_chk.isChecked()
+            )
+            stage_coupled_imex_enabled = False
+            if stage_coupled_imex_requested:
+                stage_reasons: List[str] = []
+                if coupling_controller is None:
+                    stage_reasons.append("no coupling sources configured")
+                if temporal_scheme != TemporalScheme.SSP_RK2:
+                    stage_reasons.append("temporal scheme is not RK2")
+                if not native_source_injection_mode:
+                    stage_reasons.append("native source injection unavailable")
+                if stage_reasons:
+                    self._log(
+                        "Stage-coupled IMEX-RK2 requested but disabled: "
+                        + "; ".join(stage_reasons)
+                    )
+                else:
+                    stage_coupled_imex_enabled = True
+                    self._log("Stage-coupled IMEX-RK2 enabled for external coupling sources.")
+
+            def _rain_source_for_window(t0_s: float, t1_s: float, accumulate: bool) -> object:
+                rain_src_local = rain_rate_model
+                if thiessen_forcing is not None and not native_rain_cn_forcing:
+                    rain_src_si_local, rain_diag_local = thiessen_forcing.step_net_rainfall_mps(t0_s, t1_s)
+                    rain_src_local = self._rain_rate_si_to_model(rain_src_si_local)
+                    if accumulate:
+                        rain_stats_acc["rain_mm"] += float(rain_diag_local.get("rain_mm_mean", 0.0))
+                        rain_stats_acc["excess_mm"] += float(rain_diag_local.get("excess_mm_mean", 0.0))
+                        rain_stats_acc["samples"] += 1
+                elif native_rain_cn_forcing:
+                    rain_src_local = 0.0
+                return rain_src_local
+
+            def _cell_source_model_at_time(t_s: float) -> Optional[np.ndarray]:
+                src_si = self._internal_flow_source_cms_at_time(internal_flow_forcing, t_s)
+                if src_si is None:
+                    return None
+                return self._flow_si_to_model(src_si)
+
             while t_accum < run_duration_s:
                 if self._cancel_requested:
                     break
@@ -7882,29 +9278,101 @@ class SWE2DWorkbenchDialog(QtWidgets.QDialog):
                     )
                     backend.set_boundary_conditions(bc_n0, bc_n1, bc_tp_step, bc_vl_step)
 
-                last_diag = backend.step(dt_request)
-                dt_used = float(last_diag.get("dt", dt_cfg))
-                coupled_source_rate = None
-                if coupling_controller is not None:
-                    h_c, hu_c, hv_c = backend.get_state()
-                    coupled_source_rate = coupling_controller.compute_source_rates(t_accum, dt_used, h_c, hu_c, hv_c)
                 rain_src = rain_rate_model
-                if thiessen_forcing is not None and not native_rain_cn_forcing:
-                    rain_src_si, rain_diag = thiessen_forcing.step_net_rainfall_mps(t_accum, t_accum + dt_used)
-                    rain_src = self._rain_rate_si_to_model(rain_src_si)
-                    rain_stats_acc["rain_mm"] += float(rain_diag.get("rain_mm_mean", 0.0))
-                    rain_stats_acc["excess_mm"] += float(rain_diag.get("excess_mm_mean", 0.0))
-                    rain_stats_acc["samples"] += 1
-                elif native_rain_cn_forcing:
-                    rain_src = 0.0
-                self._apply_external_sources(
-                    backend,
-                    dt_used,
-                    rain_src,
-                    cell_source_model,
-                    coupled_source_rate,
-                    prefer_native_injection=native_source_injection_mode,
-                )
+                if stage_coupled_imex_enabled:
+                    h0_c, hu0_c, hv0_c = backend.get_state()
+                    dt_stage_guess = dt_cfg if dt_request <= 0.0 else float(dt_request)
+                    cell_source_model_0 = _cell_source_model_at_time(t_accum)
+                    coupled_source_rate_0 = coupling_controller.compute_source_rates(
+                        t_accum,
+                        dt_stage_guess,
+                        h0_c,
+                        hu0_c,
+                        hv0_c,
+                    )
+                    rain_src_pred = _rain_source_for_window(t_accum, t_accum + dt_stage_guess, accumulate=False)
+                    self._apply_external_sources(
+                        backend,
+                        dt_stage_guess,
+                        rain_src_pred,
+                        cell_source_model_0,
+                        coupled_source_rate_0,
+                        prefer_native_injection=native_source_injection_mode,
+                    )
+                    _diag_predict = backend.step(dt_request)
+                    dt_used = float(_diag_predict.get("dt", dt_cfg))
+                    h1_c, hu1_c, hv1_c = backend.get_state()
+                    coupled_source_rate_1 = coupling_controller.compute_source_rates(
+                        t_accum + dt_used,
+                        dt_used,
+                        h1_c,
+                        hu1_c,
+                        hv1_c,
+                    )
+                    coupled_source_rate = 0.5 * (
+                        np.asarray(coupled_source_rate_0, dtype=np.float64)
+                        + np.asarray(coupled_source_rate_1, dtype=np.float64)
+                    )
+                    backend.set_state(h0_c, hu0_c, hv0_c)
+                    if dynamic_bc and not native_bc_forcing:
+                        bc_tp_step, bc_vl_step = self._apply_timeseries_bc_values(
+                            bc_n0, bc_n1, bc_tp, bc_vl, side_hydrographs, t_accum, edge_hydrographs
+                        )
+                        bc_vl_step = self._distribute_total_flow_to_unit_q(
+                            bc_n0,
+                            bc_n1,
+                            bc_tp_step,
+                            bc_vl_step,
+                            bc_tp,
+                            side_hydrographs,
+                            edge_hydrographs,
+                        )
+                        backend.set_boundary_conditions(bc_n0, bc_n1, bc_tp_step, bc_vl_step)
+                    rain_src = _rain_source_for_window(t_accum, t_accum + dt_used, accumulate=True)
+                    cell_source_model_1 = _cell_source_model_at_time(t_accum + dt_used)
+                    if cell_source_model_0 is None:
+                        cell_source_model_stage = cell_source_model_1
+                    elif cell_source_model_1 is None:
+                        cell_source_model_stage = cell_source_model_0
+                    else:
+                        cell_source_model_stage = 0.5 * (
+                            np.asarray(cell_source_model_0, dtype=np.float64)
+                            + np.asarray(cell_source_model_1, dtype=np.float64)
+                        )
+                    self._apply_external_sources(
+                        backend,
+                        dt_used,
+                        rain_src,
+                        cell_source_model_stage,
+                        coupled_source_rate,
+                        prefer_native_injection=native_source_injection_mode,
+                    )
+                    last_diag = backend.step(dt_used)
+                else:
+                    dt_source_guess = dt_cfg if dt_request <= 0.0 else float(dt_request)
+                    cell_source_model_step = _cell_source_model_at_time(t_accum)
+                    coupled_source_rate = None
+                    if coupling_controller is not None:
+                        h_c, hu_c, hv_c = backend.get_state()
+                        coupled_source_rate = coupling_controller.compute_source_rates(
+                            t_accum,
+                            dt_source_guess,
+                            h_c,
+                            hu_c,
+                            hv_c,
+                        )
+                    rain_src = _rain_source_for_window(t_accum, t_accum + dt_source_guess, accumulate=False)
+                    self._apply_external_sources(
+                        backend,
+                        dt_source_guess,
+                        rain_src,
+                        cell_source_model_step,
+                        coupled_source_rate,
+                        prefer_native_injection=native_source_injection_mode,
+                    )
+                    last_diag = backend.step(dt_request)
+                    dt_used = float(last_diag.get("dt", dt_cfg))
+                    rain_src = _rain_source_for_window(t_accum, t_accum + dt_used, accumulate=True)
                 t_accum += dt_used
 
                 # Capture snapshot at each output interval boundary
@@ -7954,11 +9422,32 @@ class SWE2DWorkbenchDialog(QtWidgets.QDialog):
                     )
                     cmax_txt = f"{max_courant:.5f}" if np.isfinite(max_courant) and max_courant >= 0.0 else "n/a"
                     wse_res_txt = f"{max_wse_res:.6e}" if np.isfinite(max_wse_res) and max_wse_res >= 0.0 else "n/a"
+                    rain_diag_txt = ""
+                    rain_arr_diag = np.asarray(rain_src, dtype=np.float64)
+                    if np.any(rain_arr_diag > 0.0):
+                        h_d, hu_d, hv_d = backend.get_state()
+                        h_d = np.asarray(h_d, dtype=np.float64)
+                        hu_d = np.asarray(hu_d, dtype=np.float64)
+                        hv_d = np.asarray(hv_d, dtype=np.float64)
+                        wet_mask = h_d > float(self.h_min_spin.value())
+                        if np.any(wet_mask):
+                            inv_h = 1.0 / np.maximum(h_d[wet_mask], 1.0e-12)
+                            speed = np.sqrt((hu_d[wet_mask] * inv_h) ** 2 + (hv_d[wet_mask] * inv_h) ** 2)
+                            umax = float(np.max(speed)) if speed.size else 0.0
+                            hmin_wet = float(np.min(h_d[wet_mask]))
+                            hmax = float(np.max(h_d)) if h_d.size else 0.0
+                            rain_diag_txt = (
+                                f" rain:umax={umax:.3e} {self._length_unit_name}/s"
+                                f" hminWet={hmin_wet:.3e} {self._length_unit_name}"
+                                f" hmax={hmax:.3e} {self._length_unit_name}"
+                            )
+                        else:
+                            rain_diag_txt = " rain:all-dry"
                     self._log(
                         f"step={i} t={t_accum / 3600.0:.3f} hr / {run_duration_s / 3600.0:.3f} hr "
                         f"dt={float(last_diag.get('dt', 0.0)):.5f} "
                         f"gpu={bool(last_diag.get('gpu_active', False))} wet={last_diag.get('wet_cells', '?')} "
-                        f"Cmax={cmax_txt} WSEres={wse_res_txt}"
+                        f"Cmax={cmax_txt} WSEres={wse_res_txt}{rain_diag_txt}"
                     )
                     if coupling_controller is not None:
                         cdiag = coupling_controller.last_diag

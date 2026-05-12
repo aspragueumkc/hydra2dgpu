@@ -25,6 +25,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Dict, List, Optional, Sequence, Tuple
 import os
+import time
 import warnings
 
 import numpy as np
@@ -104,6 +105,20 @@ class _TQMeshQualityConfig:
     max_aspect_ratio: float
     min_area_rel_bbox: float
     strict: bool
+    size_scales: Tuple[float, ...]
+    smooth_increments: Tuple[int, ...]
+
+
+@dataclass
+class _GmshQualityConfig:
+    enabled: bool
+    strict: bool
+    min_angle_deg: float
+    max_aspect_ratio: float
+    min_area_rel_bbox: float
+    max_non_orth_deg: float
+    max_iterations: int
+    time_limit_s: float
     size_scales: Tuple[float, ...]
     smooth_increments: Tuple[int, ...]
 
@@ -205,6 +220,17 @@ def _repair_mesh_result(mesh: MeshResult, area_tol: float = 1.0e-10) -> MeshResu
         region_id=mesh.region_id[keep_idx_arr],
         target_size=mesh.target_size[keep_idx_arr],
     )
+
+
+def _require_nonempty_mesh(mesh: MeshResult, backend_name: str) -> MeshResult:
+    n_nodes = int(np.asarray(mesh.node_x).size)
+    n_faces = max(0, int(np.asarray(mesh.cell_face_offsets).size) - 1)
+    if n_nodes <= 0 or n_faces <= 0:
+        raise RuntimeError(
+            f"{backend_name} produced an empty mesh (nodes={n_nodes}, faces={n_faces}). "
+            "Check conceptual polygons/constraints and retry."
+        )
+    return mesh
 
 
 def _weld_mesh_nodes(
@@ -416,6 +442,147 @@ def _quality_score(stats: Dict[str, float], cfg: _TQMeshQualityConfig) -> float:
     aspect_term = max(cfg.max_aspect_ratio, 1e-6) / max(stats.get("max_aspect_ratio", float("inf")), 1e-6)
     area_term = stats.get("min_area", 0.0) / max(area_floor, 1e-18)
     return float(min(angle_term, 2.0) + min(aspect_term, 2.0) + min(area_term, 2.0))
+
+
+def _face_mesh_quality_stats(mesh: MeshResult) -> Dict[str, float]:
+    """Compute quality metrics on polygon face topology.
+
+    Metrics are used by the iterative Gmsh quality loop and include an
+    approximate non-orthogonality estimate on interior edges.
+    """
+    vx = np.asarray(mesh.node_x, dtype=np.float64)
+    vy = np.asarray(mesh.node_y, dtype=np.float64)
+    offs = np.asarray(mesh.cell_face_offsets, dtype=np.int32)
+    nodes = np.asarray(mesh.cell_face_nodes, dtype=np.int32)
+
+    n_cells = max(0, int(offs.size) - 1)
+    if n_cells <= 0:
+        return {
+            "n_cells": 0.0,
+            "min_angle_deg": 0.0,
+            "max_aspect_ratio": float("inf"),
+            "min_area": 0.0,
+            "bbox_area": 0.0,
+            "max_non_orth_deg": 90.0,
+        }
+
+    min_angle = float("inf")
+    max_aspect = 0.0
+    min_area = float("inf")
+    centroids = np.zeros((n_cells, 2), dtype=np.float64)
+    edge_map: Dict[Tuple[int, int], List[Tuple[int, float, float, float, float, float, float]]] = {}
+
+    for c in range(n_cells):
+        s = int(offs[c])
+        e = int(offs[c + 1])
+        conn = np.asarray(nodes[s:e], dtype=np.int32)
+        if conn.size >= 2 and conn[0] == conn[-1]:
+            conn = conn[:-1]
+        if conn.size < 3:
+            continue
+
+        px = vx[conn]
+        py = vy[conn]
+        centroids[c, 0] = float(np.mean(px))
+        centroids[c, 1] = float(np.mean(py))
+
+        area = abs(_polygon_area_xy(px, py))
+        min_area = min(min_area, area)
+
+        px2 = np.roll(px, -1)
+        py2 = np.roll(py, -1)
+        ex = px2 - px
+        ey = py2 - py
+        el = np.hypot(ex, ey)
+        min_len = float(np.min(el)) if el.size else 0.0
+        max_len = float(np.max(el)) if el.size else float("inf")
+        aspect = (max_len / max(min_len, 1.0e-14)) if np.isfinite(max_len) else float("inf")
+        max_aspect = max(max_aspect, aspect)
+
+        best_min_angle = float("inf")
+        n = conn.size
+        for i in range(n):
+            ip = (i - 1) % n
+            inx = (i + 1) % n
+            v1x = px[ip] - px[i]
+            v1y = py[ip] - py[i]
+            v2x = px[inx] - px[i]
+            v2y = py[inx] - py[i]
+            n1 = max(float(np.hypot(v1x, v1y)), 1.0e-14)
+            n2 = max(float(np.hypot(v2x, v2y)), 1.0e-14)
+            cosang = (v1x * v2x + v1y * v2y) / (n1 * n2)
+            cosang = max(-1.0, min(1.0, float(cosang)))
+            ang = float(np.degrees(np.arccos(cosang)))
+            best_min_angle = min(best_min_angle, ang)
+        min_angle = min(min_angle, best_min_angle)
+
+        for i in range(n):
+            a = int(conn[i])
+            b = int(conn[(i + 1) % n])
+            x0 = float(vx[a])
+            y0 = float(vy[a])
+            x1 = float(vx[b])
+            y1 = float(vy[b])
+            midx = 0.5 * (x0 + x1)
+            midy = 0.5 * (y0 + y1)
+            key = (a, b) if a < b else (b, a)
+            edge_map.setdefault(key, []).append((c, midx, midy, x0, y0, x1, y1))
+
+    max_non_orth = 0.0
+    for vals in edge_map.values():
+        if len(vals) != 2:
+            continue
+        c0, _, _, x0, y0, x1, y1 = vals[0]
+        c1, _, _, _, _, _, _ = vals[1]
+        dcx = centroids[c1, 0] - centroids[c0, 0]
+        dcy = centroids[c1, 1] - centroids[c0, 1]
+        dn = float(np.hypot(dcx, dcy))
+        if dn <= 1.0e-14:
+            continue
+        ex = x1 - x0
+        ey = y1 - y0
+        # Face-normal direction from edge tangent; sign is irrelevant due to abs().
+        nx = ey
+        ny = -ex
+        nn = float(np.hypot(nx, ny))
+        if nn <= 1.0e-14:
+            continue
+        cosang = abs((nx * dcx + ny * dcy) / (nn * dn))
+        cosang = max(-1.0, min(1.0, cosang))
+        non_orth = float(np.degrees(np.arccos(cosang)))
+        max_non_orth = max(max_non_orth, non_orth)
+
+    bbox_area = max(float(np.ptp(vx)) * float(np.ptp(vy)), 0.0)
+    return {
+        "n_cells": float(n_cells),
+        "min_angle_deg": float(min_angle if np.isfinite(min_angle) else 0.0),
+        "max_aspect_ratio": float(max_aspect if np.isfinite(max_aspect) else float("inf")),
+        "min_area": float(min_area if np.isfinite(min_area) else 0.0),
+        "bbox_area": float(bbox_area),
+        "max_non_orth_deg": float(max_non_orth),
+    }
+
+
+def _gmsh_quality_passes(stats: Dict[str, float], cfg: _GmshQualityConfig) -> bool:
+    if stats.get("n_cells", 0.0) <= 0.0:
+        return False
+    area_floor = max(cfg.min_area_rel_bbox * max(stats.get("bbox_area", 0.0), 1.0), 1.0e-18)
+    return (
+        stats.get("min_angle_deg", 0.0) >= cfg.min_angle_deg
+        and stats.get("max_aspect_ratio", float("inf")) <= cfg.max_aspect_ratio
+        and stats.get("min_area", 0.0) >= area_floor
+        and stats.get("max_non_orth_deg", 90.0) <= cfg.max_non_orth_deg
+    )
+
+
+def _gmsh_quality_score(stats: Dict[str, float], cfg: _GmshQualityConfig) -> float:
+    area_floor = max(cfg.min_area_rel_bbox * max(stats.get("bbox_area", 0.0), 1.0), 1.0e-18)
+    angle_term = stats.get("min_angle_deg", 0.0) / max(cfg.min_angle_deg, 1.0e-6)
+    aspect_term = max(cfg.max_aspect_ratio, 1.0e-6) / max(stats.get("max_aspect_ratio", float("inf")), 1.0e-6)
+    area_term = stats.get("min_area", 0.0) / max(area_floor, 1.0e-18)
+    non_orth = max(stats.get("max_non_orth_deg", 90.0), 1.0e-6)
+    non_orth_term = max(cfg.max_non_orth_deg, 1.0e-6) / non_orth
+    return float(min(angle_term, 2.0) + min(aspect_term, 2.0) + min(area_term, 2.0) + min(non_orth_term, 2.0))
 
 
 def _point_in_polygon(x: float, y: float, ring: Sequence[Tuple[float, float]]) -> bool:
@@ -1103,6 +1270,128 @@ class GmshBackend(MeshingBackend):
             return False
         return bool(default)
 
+    def _opt_float(self, name: str, default: float) -> float:
+        value = self._options.get(name)
+        if value is None:
+            return float(default)
+        try:
+            return float(value)
+        except Exception:
+            return float(default)
+
+    def _opt_float_tuple(self, name: str, default: Tuple[float, ...]) -> Tuple[float, ...]:
+        value = self._options.get(name)
+        if value is None:
+            return tuple(float(v) for v in default)
+        if isinstance(value, str):
+            raw_items = value.replace(";", ",").split(",")
+        elif isinstance(value, (list, tuple)):
+            raw_items = list(value)
+        else:
+            return tuple(float(v) for v in default)
+        parsed: List[float] = []
+        for item in raw_items:
+            text = str(item).strip()
+            if not text:
+                continue
+            try:
+                parsed.append(float(text))
+            except Exception:
+                continue
+        if not parsed:
+            return tuple(float(v) for v in default)
+        return tuple(parsed)
+
+    def _gmsh_quality_config(self) -> _GmshQualityConfig:
+        enabled = self._opt_bool(
+            "gmsh_quality_enable",
+            _env_bool("BACKWATER_GMSH_QUALITY_ENABLE", False),
+        )
+        strict = self._opt_bool(
+            "gmsh_quality_strict",
+            self._opt_bool(
+                "tqmesh_quality_strict",
+                _env_bool("BACKWATER_GMSH_QUALITY_STRICT", False),
+            ),
+        )
+        min_angle_deg = self._opt_float(
+            "gmsh_min_angle_deg",
+            self._opt_float(
+                "tqmesh_min_angle_deg",
+                _env_float("BACKWATER_GMSH_MIN_ANGLE_DEG", 18.0),
+            ),
+        )
+        max_aspect_ratio = self._opt_float(
+            "gmsh_max_aspect_ratio",
+            self._opt_float(
+                "tqmesh_max_aspect_ratio",
+                _env_float("BACKWATER_GMSH_MAX_ASPECT_RATIO", 12.0),
+            ),
+        )
+        min_area_rel_bbox = self._opt_float(
+            "gmsh_min_area_rel_bbox",
+            self._opt_float(
+                "tqmesh_min_area_rel_bbox",
+                _env_float("BACKWATER_GMSH_MIN_AREA_REL_BBOX", 1.0e-11),
+            ),
+        )
+        max_non_orth_deg = self._opt_float(
+            "gmsh_max_non_orth_deg",
+            _env_float("BACKWATER_GMSH_MAX_NON_ORTH_DEG", 82.0),
+        )
+        max_iterations = max(
+            1,
+            self._opt_int(
+                "gmsh_quality_max_iterations",
+                int(round(_env_float("BACKWATER_GMSH_QUALITY_MAX_ITERATIONS", 6.0))),
+            ),
+        )
+        time_limit_s = max(
+            1.0,
+            self._opt_float(
+                "gmsh_quality_time_limit_s",
+                _env_float("BACKWATER_GMSH_QUALITY_TIME_LIMIT_S", 60.0),
+            ),
+        )
+        size_scales = tuple(
+            max(1.0e-3, float(v))
+            for v in self._opt_float_tuple(
+                "gmsh_quality_size_scales",
+                self._opt_float_tuple("tqmesh_size_scales", (1.0, 0.9, 0.8, 0.7)),
+            )
+        )
+        smooth_increments = tuple(
+            max(0, int(round(v)))
+            for v in self._opt_float_tuple(
+                "gmsh_quality_smooth_increments",
+                self._opt_float_tuple("tqmesh_smooth_increments", (0.0, 3.0, 6.0)),
+            )
+        )
+        if not size_scales:
+            size_scales = (1.0,)
+        if not smooth_increments:
+            smooth_increments = (0,)
+        # Guard against no-op retry ladders (e.g. "1.0" and "0").
+        # When iterative quality is enabled, ensure attempts explore distinct
+        # candidates even if the UI left legacy single-value defaults.
+        if enabled and max_iterations > 1:
+            if all(abs(float(v) - 1.0) <= 1.0e-12 for v in size_scales):
+                size_scales = (1.0, 0.9, 0.8, 0.7)
+            if all(int(v) == 0 for v in smooth_increments):
+                smooth_increments = (0, 2, 4, 6)
+        return _GmshQualityConfig(
+            enabled=enabled,
+            strict=strict,
+            min_angle_deg=max(1.0, float(min_angle_deg)),
+            max_aspect_ratio=max(1.1, float(max_aspect_ratio)),
+            min_area_rel_bbox=max(0.0, float(min_area_rel_bbox)),
+            max_non_orth_deg=min(89.9, max(1.0, float(max_non_orth_deg))),
+            max_iterations=int(max_iterations),
+            time_limit_s=float(time_limit_s),
+            size_scales=size_scales,
+            smooth_increments=smooth_increments,
+        )
+
     def generate(self, model: ConceptualModel) -> MeshResult:
         import gmsh
 
@@ -1116,24 +1405,138 @@ class GmshBackend(MeshingBackend):
         recomb_algo = self._opt_int("gmsh_recombination_algorithm", 1)
         optimize_netgen = self._opt_bool("gmsh_optimize_netgen", False)
         verbosity = max(0, self._opt_int("gmsh_verbosity", 1))
+        quality_cfg = self._gmsh_quality_config()
 
         # `interruptible=False` avoids installing a SIGINT handler, which lets
         # the Python API run from the QGIS bridge worker thread.
         gmsh.initialize(interruptible=False)
         gmsh.option.setNumber("General.Verbosity", float(verbosity))
-        gmsh.model.add("swe2d")
 
         try:
-            return self._build(
-                gmsh,
-                model,
-                tri_algo=tri_algo,
-                quad_algo=quad_algo,
-                smoothing_passes=smoothing_passes,
-                optimize_iters=optimize_iters,
-                recomb_algo=recomb_algo,
-                optimize_netgen=optimize_netgen,
+            if not quality_cfg.enabled:
+                gmsh.model.add("swe2d")
+                return _require_nonempty_mesh(
+                    self._build(
+                        gmsh,
+                        model,
+                        tri_algo=tri_algo,
+                        quad_algo=quad_algo,
+                        smoothing_passes=smoothing_passes,
+                        optimize_iters=optimize_iters,
+                        recomb_algo=recomb_algo,
+                        optimize_netgen=optimize_netgen,
+                        size_scale=1.0,
+                    ),
+                    "Gmsh",
+                )
+
+            start_t = time.perf_counter()
+            best_mesh: Optional[MeshResult] = None
+            best_stats: Optional[Dict[str, float]] = None
+            best_score = -1.0e30
+            attempts = 0
+            scale_i = 0
+            smooth_i = 0
+            had_passing_candidate = False
+
+            # Alternate between configured and fallback algorithms so retries
+            # can escape deterministic local minima with identical topology.
+            tri_algo_ladder = [int(tri_algo)]
+            tri_alt = self._ALGO_DELAUNAY if int(tri_algo) != self._ALGO_DELAUNAY else self._ALGO_FRONTAL
+            if tri_alt not in tri_algo_ladder:
+                tri_algo_ladder.append(int(tri_alt))
+
+            quad_algo_ladder = [int(quad_algo)]
+            quad_alt = self._ALGO_DELAUNAY if int(quad_algo) != self._ALGO_DELAUNAY else self._ALGO_FRONTAL
+            if quad_alt not in quad_algo_ladder:
+                quad_algo_ladder.append(int(quad_alt))
+
+            recomb_ladder = [int(recomb_algo)]
+            recomb_alt = 0 if int(recomb_algo) != 0 else 1
+            if recomb_alt not in recomb_ladder:
+                recomb_ladder.append(int(recomb_alt))
+
+            while attempts < quality_cfg.max_iterations:
+                elapsed = time.perf_counter() - start_t
+                if elapsed >= quality_cfg.time_limit_s:
+                    break
+
+                gmsh.clear()
+                gmsh.model.add(f"swe2d_try_{attempts + 1}")
+
+                size_scale = quality_cfg.size_scales[scale_i % len(quality_cfg.size_scales)]
+                smooth_inc = quality_cfg.smooth_increments[smooth_i % len(quality_cfg.smooth_increments)]
+                scale_i += 1
+                if scale_i % len(quality_cfg.size_scales) == 0:
+                    smooth_i += 1
+                tri_try = tri_algo_ladder[attempts % len(tri_algo_ladder)]
+                quad_try = quad_algo_ladder[(attempts // len(tri_algo_ladder)) % len(quad_algo_ladder)]
+                recomb_try = recomb_ladder[(attempts // max(1, len(tri_algo_ladder) * len(quad_algo_ladder))) % len(recomb_ladder)]
+
+                try:
+                    mesh = _require_nonempty_mesh(
+                        self._build(
+                            gmsh,
+                            model,
+                            tri_algo=tri_try,
+                            quad_algo=quad_try,
+                            smoothing_passes=max(0, smoothing_passes + int(smooth_inc)),
+                            optimize_iters=optimize_iters,
+                            recomb_algo=recomb_try,
+                            optimize_netgen=optimize_netgen,
+                            size_scale=float(size_scale),
+                        ),
+                        "Gmsh",
+                    )
+                    stats = _face_mesh_quality_stats(mesh)
+                    score = _gmsh_quality_score(stats, quality_cfg)
+
+                    if score > best_score:
+                        best_score = score
+                        best_mesh = mesh
+                        best_stats = stats
+
+                    if _gmsh_quality_passes(stats, quality_cfg):
+                        had_passing_candidate = True
+                        if quality_cfg.strict:
+                            # Strict mode only needs the first passing candidate.
+                            return mesh
+                except Exception as exc:
+                    warnings.warn(
+                        f"Gmsh quality attempt {attempts + 1} failed for tri={tri_try}, quad={quad_try}, "
+                        f"recomb={recomb_try}, size_scale={size_scale:.3f}, smooth={smoothing_passes + int(smooth_inc)}: {exc}",
+                        RuntimeWarning,
+                    )
+
+                attempts += 1
+
+            if best_mesh is None or best_stats is None:
+                raise RuntimeError("Gmsh quality loop produced no valid non-empty mesh candidate.")
+
+            if had_passing_candidate:
+                return best_mesh
+
+            diag = (
+                "min_angle={:.2f} deg, max_aspect={:.2f}, min_area={:.3e}, max_non_orth={:.2f} deg"
+                .format(
+                    float(best_stats.get("min_angle_deg", 0.0)),
+                    float(best_stats.get("max_aspect_ratio", float("inf"))),
+                    float(best_stats.get("min_area", 0.0)),
+                    float(best_stats.get("max_non_orth_deg", 90.0)),
+                )
             )
+            if quality_cfg.strict:
+                raise RuntimeError(
+                    "Gmsh quality constraints were not met within retry limits "
+                    f"(attempts={attempts}, time_limit_s={quality_cfg.time_limit_s:.1f}). "
+                    f"Best candidate: {diag}."
+                )
+            warnings.warn(
+                "Gmsh quality constraints were not met; using best available candidate "
+                f"(attempts={attempts}, time_limit_s={quality_cfg.time_limit_s:.1f}). {diag}",
+                RuntimeWarning,
+            )
+            return best_mesh
         finally:
             gmsh.finalize()
 
@@ -1151,6 +1554,7 @@ class GmshBackend(MeshingBackend):
         optimize_iters: int,
         recomb_algo: int,
         optimize_netgen: bool,
+        size_scale: float,
     ) -> MeshResult:
         # Tolerance for point deduplication (scaled to typical hydraulic coords).
         tol = 1e-6
@@ -1201,6 +1605,7 @@ class GmshBackend(MeshingBackend):
             ctype = region.default_cell_type
             if ctype == "empty":
                 continue
+            region_size = max(float(region.default_size) * float(size_scale), 1.0e-9)
 
             quad_controls = None
             if ctype in ("quadrilateral", "cartesian"):
@@ -1217,7 +1622,7 @@ class GmshBackend(MeshingBackend):
                     edge_pts = list(edge.points_xy)
                     if len(edge_pts) < 2:
                         continue
-                    edge_lc = float(edge.target_size) if (edge.target_size is not None and edge.target_size > 0.0) else float(region.default_size)
+                    edge_lc = float(edge.target_size) * float(size_scale) if (edge.target_size is not None and edge.target_size > 0.0) else float(region_size)
                     edge_tags: List[int] = []
                     for pj, (x, y) in enumerate(edge_pts):
                         if ei > 0 and pj == 0 and prev_end_tag is not None:
@@ -1247,7 +1652,7 @@ class GmshBackend(MeshingBackend):
                 if first_pt_tag is not None and prev_end_tag is not None and prev_end_tag != first_pt_tag:
                     lines.append(_geo_seg(prev_end_tag, first_pt_tag))
             else:
-                pts = [_geo_pt(x, y, region.default_size) for x, y in ring]
+                pts = [_geo_pt(x, y, region_size) for x, y in ring]
                 for i in range(len(pts)):
                     lines.append(_geo_seg(pts[i], pts[(i + 1) % len(pts)]))
 
@@ -1257,7 +1662,7 @@ class GmshBackend(MeshingBackend):
             loop = gmsh.model.geo.addCurveLoop(lines)
             surf = gmsh.model.geo.addPlaneSurface([loop])
             surface_tags.append(surf)
-            surface_meta.append((region.region_id, ctype, region.default_size))
+            surface_meta.append((region.region_id, ctype, region_size))
             surface_curve_tags[surf] = lines
             surface_quad_controls[surf] = quad_controls
 
@@ -1269,7 +1674,7 @@ class GmshBackend(MeshingBackend):
             arc_curve_tags: List[int] = []
             # Build a quick node-id -> (x,y) lookup
             node_xy = {n.node_id: (n.x, n.y) for n in model.nodes}
-            arc_lc = min((float(r.default_size) for r in model.regions), default=1.0)
+            arc_lc = min((max(float(r.default_size) * float(size_scale), 1.0e-9) for r in model.regions), default=1.0)
             for arc in model.arcs:
                 pts_xy = list(arc.points_xy or [])
                 if len(pts_xy) >= 2:
@@ -1328,7 +1733,7 @@ class GmshBackend(MeshingBackend):
                 continue
 
             pt_tags: List[int] = []
-            cst_size = max(float(cst.target_size), 1.0e-9)
+            cst_size = max(float(cst.target_size) * float(size_scale), 1.0e-9)
 
             # Boundary samples.
             for x, y in ring:

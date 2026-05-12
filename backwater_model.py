@@ -40,7 +40,7 @@ import re
 import sys
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import List, Tuple, Optional, Dict
+from typing import Any, List, Tuple, Optional, Dict
 
 # Optional numeric accelerators
 try:
@@ -98,7 +98,8 @@ def _ensure_culvert_runtime() -> bool:
     if HAVE_CULVERT:
         return True
 
-    def _bind_from_module(_mod):
+    def _bind_from_module(_mod: object) -> bool:
+        """Bind culvert symbols from a dynamically imported module."""
         CircularXsect_local = getattr(_mod, 'CircularXsect', None)
         RectangularXsect_local = getattr(_mod, 'RectangularXsect', None)
         solve_headwater_depth_for_Q_local = getattr(_mod, 'solve_headwater_depth_for_Q', None)
@@ -444,6 +445,7 @@ class CrossSection:
     culvert_weir_sta_right: float = 0.0  # right station limit for weir integration (ft); 0 = use full geometry
 
     def _subgeometry(self) -> Tuple[List[Tuple[float, float]], List[Tuple[float, float]], List[Tuple[float, float]]]:
+        """Split full cross section into LOB/CH/ROB polylines."""
         xs_sorted = sorted(self.geometry, key=lambda p: p[0])
         lob = clip_polyline_by_x(xs_sorted, xs_sorted[0][0], self.left_bank_station)
         ch = clip_polyline_by_x(xs_sorted, self.left_bank_station, self.right_bank_station)
@@ -492,6 +494,7 @@ class CrossSection:
         A_rob, P_rob, _ = submerged_trapezoids_area_perimeter(rob_geom, wse)
 
         def K_from_AP(A: float, P: float, n: float) -> float:
+            """Compute subsection conveyance from area and wetted perimeter."""
             if A <= 0.0 or P <= 0.0:
                 return 0.0
             R = A / P
@@ -587,6 +590,16 @@ class ReachLink:
     L_rob: float
 
     def discharge_weighted_length(self, Qlob_av: float, Qch_av: float, Qrob_av: float) -> float:
+        """Compute discharge-weighted reach length.
+
+        Args:
+            Qlob_av: Average left overbank flow.
+            Qch_av: Average channel flow.
+            Qrob_av: Average right overbank flow.
+
+        Returns:
+            Discharge-weighted reach length.
+        """
         Qt_av = Qlob_av + Qch_av + Qrob_av
         if Qt_av <= 0.0:
             return 0.0
@@ -610,6 +623,16 @@ class SectionState:
 
 
 def compute_state(xs: CrossSection, wse: float, Q_total: float) -> SectionState:
+    """Compute hydraulic state for one section at a target water surface.
+
+    Args:
+        xs: Cross section definition.
+        wse: Water surface elevation.
+        Q_total: Total discharge through the section.
+
+    Returns:
+        Computed section hydraulic state.
+    """
     h = xs.hydraulics_at_wse(wse, Q_total)
     res = h
     A_lob = res["lob"].A; A_ch = res["ch"].A; A_rob = res["rob"].A
@@ -1028,6 +1051,7 @@ def solve_culvert_headwater(
     weir_sta_right = float(getattr(xs_culvert, 'culvert_weir_sta_right', 0.0) or 0.0)
 
     def inlet_control_hw(Q_trial: float) -> Tuple[float, str]:
+        """Compute inlet-control headwater for a trial culvert flow."""
         if Q_trial <= 0.0:
             return z_inlet, 'inlet'
         if _xsect is None:
@@ -1128,6 +1152,7 @@ def solve_culvert_headwater(
         # Implicit solve: f(y) = y + (1-Ce)*Q²/(2g*A²) - rhs = 0
         # Only valid on subcritical branch: y in [dc_local, y_full]
         def f_outlet(y: float) -> float:
+            """Outlet-depth residual for the downstream barrel energy equation."""
             if y <= 0.0:
                 return -rhs
             area = _xsect.area(y)
@@ -1162,6 +1187,7 @@ def solve_culvert_headwater(
         return max(dc_local, min(0.5 * (y_lo + y_hi), y_full))
 
     def outlet_control_hw(Q_trial: float) -> Tuple[float, str]:
+        """Compute outlet-control headwater for a trial culvert flow."""
         if Q_trial <= 0.0:
             return z_inlet, 'outlet-partial'
 
@@ -1300,6 +1326,7 @@ def solve_culvert_headwater(
         )
 
     def governing_culvert_headwater(Q_cul: float) -> Tuple[float, str]:
+        """Select governing culvert control mode for the trial culvert flow."""
         hw_ic, _ = inlet_control_hw(Q_cul)
         hw_oc, oc_mode = outlet_control_hw(Q_cul)
         if oc_mode.startswith('inlet-'):
@@ -1339,6 +1366,7 @@ def solve_culvert_headwater(
         Q_w = 0.0
 
         def _f_hw(hw_trial: float) -> float:
+            """Residual for coupled culvert-plus-weir headwater solve."""
             q_w_trial = Q_weir_at(hw_trial)
             q_cul_trial = max(0.0, Q_total - q_w_trial)
             hw_cul, _ = governing_culvert_headwater(q_cul_trial)
@@ -1483,7 +1511,12 @@ def solve_energy_upstream(
     s1 = compute_state(xs_up, w1, Q_total_up)
 
     # Helper: attempt to find a sign-changing bracket by sampling a widened range
-    def _find_bracket_by_sampling(w_lo_candidate: float, w_hi_candidate: float, samples: int = 41):
+    def _find_bracket_by_sampling(
+        w_lo_candidate: float,
+        w_hi_candidate: float,
+        samples: int = 41,
+    ) -> Optional[Tuple[float, float]]:
+        """Sample residuals to find a sign-changing bracket for root solve."""
         ws = []
         lo = w_lo_candidate
         hi = w_hi_candidate
@@ -1508,7 +1541,8 @@ def solve_energy_upstream(
             prev_s = s_try
             prev_w = w
         return None
-    def energy_balance_state(w_try: float):
+    def energy_balance_state(w_try: float) -> Tuple[SectionState, float, float]:
+        """Evaluate upstream trial state and energy-equation residual."""
         s_try = compute_state(xs_up, w_try, Q_total_up)
         y_dn = s_dn.wse - z_dn
         y_up = s_try.wse - z_up
@@ -1527,6 +1561,7 @@ def solve_energy_upstream(
     # Choose a second trial per HEC-RAS: compute a one-step "computed" WS
     # via a small finite-difference derivative and move 70% toward it.
     def one_step_computed_ws(w_base: float, f_base: float, eps: float = 0.01) -> Optional[float]:
+        """Estimate one Newton-like water-surface update from local slope."""
         try:
             f_plus = energy_balance_state(w_base + eps)[1]
             df = (f_plus - f_base) / eps
@@ -1673,6 +1708,7 @@ def solve_energy_upstream_scipy(
 
     # Residual function for brentq: returns lhs - rhs as in energy_balance_state
     def residual(w_try: float) -> float:
+        """Evaluate upstream-energy residual at trial water surface elevation."""
         s_try = compute_state(xs_up, w_try, Q_total_up)
         y_dn = s_dn.wse - z_dn
         y_up = s_try.wse - z_up
@@ -1729,7 +1765,8 @@ def solve_energy_upstream_scipy(
                     break
         if not found:
             # Aggressive sampling across an expanded window to find any sign change
-            def _sample_find_bracket(lo: float, hi: float, samples: int = 81):
+            def _sample_find_bracket(lo: float, hi: float, samples: int = 81) -> Optional[Tuple[float, float]]:
+                """Find a sign-changing residual bracket by dense sampling."""
                 if hi <= lo:
                     return None
                 step = (hi - lo) / float(samples - 1)
@@ -1881,7 +1918,8 @@ def solve_energy_upstream_scipy(
         # before abandoning SciPy path. This tries linear and denser
         # clustered samplings around sensible anchors and accepts a root
         # only if hydraulics look valid.
-        def _try_clustered_samples(anchors):
+        def _try_clustered_samples(anchors: List[float]) -> Optional[SectionState]:
+            """Try clustered sampling around anchor WSE values to find a valid root."""
             scales = [(-200.0, 200.0, 121), (-50.0, 50.0, 121), (-10.0, 10.0, 81), (-1.0, 1.0, 41)]
             for a in anchors:
                 for lo_off, hi_off, samples in scales:
@@ -1953,7 +1991,8 @@ def solve_energy_upstream_scipy(
         try:
             w_lo2 = max(zmin_up + 1e-3, w_lo - 50.0)
             w_hi2 = max(w_hi + 200.0, s_dn.wse + 200.0)
-            def _sample_and_try(lo, hi, samples=201):
+            def _sample_and_try(lo: float, hi: float, samples: int = 201) -> Optional[Tuple[float, float]]:
+                """Sample a range and return first valid subcritical bracket."""
                 if hi <= lo:
                     return None
                 step = (hi - lo) / float(samples - 1)
@@ -2045,6 +2084,7 @@ def solve_critical_depth(xs: CrossSection, Q_total: float, z_guess: Optional[flo
     hi = zmax + 50.0 if z_guess is None else max(z_guess + 1.0, zmax + 1.0)
 
     def froude_minus_one(w: float) -> float:
+        """Return Froude residual relative to critical condition."""
         return getattr(compute_state(xs, w, Q_total), 'Froude', 0.0) - 1.0
 
     f_lo = froude_minus_one(lo)
@@ -2096,7 +2136,7 @@ class ModelInput:
     sections: List[CrossSection] = field(default_factory=list)
 
 
-def _parse_river_station_value(river_station) -> Optional[float]:
+def _parse_river_station_value(river_station: object) -> Optional[float]:
     """Parse numeric river station value from common string formats."""
     if river_station is None:
         return None
@@ -2141,8 +2181,16 @@ def load_input(path: str) -> ModelInput:
     return load_from_geopackage(path)
 
 
-def _qgis_profile_from_geometry(geom):
-    """Return station/elevation profile from QgsGeometry line feature."""
+def _qgis_profile_from_geometry(geom: object) -> Tuple[List[Tuple[float, float]], Optional[object]]:
+    """Build station/elevation profile from a QGIS line geometry.
+
+    Args:
+        geom: QGIS geometry object.
+
+    Returns:
+        Tuple of `(profile, centroid)` where profile is `(station, elevation)`
+        pairs and centroid is a geometry centroid when available.
+    """
     try:
         from qgis.core import QgsWkbTypes
     except Exception as exc:
@@ -2192,7 +2240,15 @@ def _qgis_profile_from_geometry(geom):
     return profile, centroid
 
 
-def _qgis_geometry_from_profile(profile):
+def _qgis_geometry_from_profile(profile: List[Tuple[float, float]]) -> object:
+    """Create a QGIS polyline geometry from a station/elevation profile.
+
+    Args:
+        profile: Station/elevation profile.
+
+    Returns:
+        QGIS polyline geometry.
+    """
     try:
         from qgis.core import QgsGeometry, QgsPoint
     except Exception as exc:
@@ -2201,18 +2257,31 @@ def _qgis_geometry_from_profile(profile):
 
 
 def _load_from_geopackage_qgis(path: str, cross_layer: str, centerline_layer: str, boundary_layer: str) -> ModelInput:
+    """Load a model from GeoPackage layers using PyQGIS APIs.
+
+    Args:
+        path: GeoPackage path.
+        cross_layer: Cross-section layer name.
+        centerline_layer: Centerline layer name.
+        boundary_layer: Boundary condition layer name.
+
+    Returns:
+        Parsed model input payload.
+    """
     try:
         from qgis.core import QgsVectorLayer
     except Exception as exc:
         raise ImportError('PyQGIS not available') from exc
 
-    def _layer(layer_name: str):
+    def _layer(layer_name: str) -> object:
+        """Open and validate a GeoPackage vector layer by name."""
         lyr = QgsVectorLayer(f"{path}|layername={layer_name}", layer_name, 'ogr')
         if not lyr.isValid():
             raise ValueError(f"GeoPackage layer '{layer_name}' could not be loaded from {path}")
         return lyr
 
-    def _value(feat, name: str, default=None):
+    def _value(feat: object, name: str, default: Any = None) -> Any:
+        """Read a feature field safely with fallback."""
         try:
             idx = feat.fields().indexOf(name)
             if idx == -1:
@@ -2222,7 +2291,8 @@ def _load_from_geopackage_qgis(path: str, cross_layer: str, centerline_layer: st
         except Exception:
             return default
 
-    def _safe_float(value, default=0.0):
+    def _safe_float(value: Any, default: float = 0.0) -> float:
+        """Convert scalar-like value to finite float with default fallback."""
         try:
             v = float(value)
             if math.isnan(v):
@@ -2231,7 +2301,8 @@ def _load_from_geopackage_qgis(path: str, cross_layer: str, centerline_layer: st
         except Exception:
             return float(default)
 
-    def _safe_int(value, default=0):
+    def _safe_int(value: Any, default: int = 0) -> int:
+        """Convert scalar-like value to int with default fallback."""
         try:
             v = float(value)
             if math.isnan(v):
@@ -2240,7 +2311,8 @@ def _load_from_geopackage_qgis(path: str, cross_layer: str, centerline_layer: st
         except Exception:
             return int(default)
 
-    def _safe_shape(value):
+    def _safe_shape(value: Any) -> Optional[str]:
+        """Normalize optional shape text field."""
         if value is None:
             return None
         text = str(value).strip()
@@ -2355,14 +2427,30 @@ def _load_from_geopackage_qgis(path: str, cross_layer: str, centerline_layer: st
     return ModelInput(flow_cfs=flow_cfs, flow_change=None, boundary_condition=boundary_condition, boundary_value=boundary_value, sections=sections)
 
 
-def _save_to_geopackage_qgis(path: str, model: ModelInput, centerline_geom=None, overwrite: bool = True, crs_authid: Optional[str] = None):
+def _save_to_geopackage_qgis(
+    path: str,
+    model: ModelInput,
+    centerline_geom: Optional[object] = None,
+    overwrite: bool = True,
+    crs_authid: Optional[str] = None,
+) -> None:
+    """Save model input layers to GeoPackage using PyQGIS APIs.
+
+    Args:
+        path: GeoPackage path.
+        model: Model input payload.
+        centerline_geom: Optional centerline geometry override.
+        overwrite: Whether to overwrite existing layers.
+        crs_authid: Optional CRS auth id for new layers.
+    """
     try:
         from qgis.core import QgsFeature, QgsField, QgsGeometry, QgsPointXY, QgsProject, QgsVectorFileWriter, QgsVectorLayer
         from qgis.PyQt.QtCore import QVariant
     except Exception as exc:
         raise ImportError('PyQGIS not available') from exc
 
-    def _to_qgs_geom(geom_like):
+    def _to_qgs_geom(geom_like: Optional[object]) -> Optional[object]:
+        """Convert supported geometry-like object to QgsGeometry."""
         if geom_like is None:
             return None
         if hasattr(geom_like, 'asWkt') and hasattr(geom_like, 'isEmpty'):
@@ -2374,7 +2462,8 @@ def _save_to_geopackage_qgis(path: str, model: ModelInput, centerline_geom=None,
                 return None
         return None
 
-    def _layer(layer_name: str):
+    def _layer(layer_name: str) -> Optional[object]:
+        """Open a GeoPackage layer if present."""
         lyr = QgsVectorLayer(f"{path}|layername={layer_name}", layer_name, 'ogr')
         return lyr if lyr.isValid() else None
 
@@ -2533,7 +2622,8 @@ def load_from_geopackage(path: str, cross_layer: str = 'cross_sections', centerl
 
     rows = []
 
-    def _safe_float(value, default=0.0):
+    def _safe_float(value: Any, default: float = 0.0) -> float:
+        """Convert scalar-like value to finite float with fallback."""
         try:
             v = float(value)
             if math.isnan(v):
@@ -2542,7 +2632,8 @@ def load_from_geopackage(path: str, cross_layer: str = 'cross_sections', centerl
         except Exception:
             return float(default)
 
-    def _safe_int(value, default=0):
+    def _safe_int(value: Any, default: int = 0) -> int:
+        """Convert scalar-like value to int with fallback."""
         try:
             v = float(value)
             if math.isnan(v):
@@ -2551,7 +2642,8 @@ def load_from_geopackage(path: str, cross_layer: str = 'cross_sections', centerl
         except Exception:
             return int(default)
 
-    def _safe_shape(value):
+    def _safe_shape(value: Any) -> Optional[str]:
+        """Normalize optional culvert shape text field."""
         if value is None:
             return None
         try:
@@ -2713,7 +2805,22 @@ def load_from_geopackage(path: str, cross_layer: str = 'cross_sections', centerl
     return ModelInput(flow_cfs=flow_cfs, flow_change=None, boundary_condition=boundary_condition, boundary_value=boundary_value, sections=sections)
 
 
-def save_to_geopackage(path: str, model: ModelInput, centerline_geom=None, overwrite: bool = True, crs_authid: Optional[str] = None):
+def save_to_geopackage(
+    path: str,
+    model: ModelInput,
+    centerline_geom: Optional[object] = None,
+    overwrite: bool = True,
+    crs_authid: Optional[str] = None,
+) -> None:
+    """Save model input to GeoPackage using QGIS-first fallback strategy.
+
+    Args:
+        path: GeoPackage output path.
+        model: Model input payload.
+        centerline_geom: Optional centerline geometry override.
+        overwrite: Whether to overwrite existing layers.
+        crs_authid: Optional target CRS auth id.
+    """
     try:
         _save_to_geopackage_qgis(path, model, centerline_geom=centerline_geom, overwrite=overwrite, crs_authid=crs_authid)
         return
@@ -2728,6 +2835,7 @@ def save_to_geopackage(path: str, model: ModelInput, centerline_geom=None, overw
             raise RuntimeError('PyQGIS or geopandas/fiona/shapely is required to save GeoPackage') from e
 
     def _interp_profile_elevation(profile: List[Tuple[float, float]], station: float) -> float:
+        """Interpolate profile elevation at station."""
         if not profile:
             return 0.0
         pts = sorted([(float(st), float(z)) for st, z in profile], key=lambda p: p[0])
@@ -2745,7 +2853,8 @@ def save_to_geopackage(path: str, model: ModelInput, centerline_geom=None, overw
                 return float(z0 + (z1 - z0) * t)
         return float(pts[-1][1])
 
-    def _linestring_with_preserved_xy_updated_z(line, profile: List[Tuple[float, float]]):
+    def _linestring_with_preserved_xy_updated_z(line: object, profile: List[Tuple[float, float]]) -> object:
+        """Preserve XY coordinates and recompute Z from profile chainage."""
         coords = list(line.coords)
         if len(coords) < 2:
             return line
@@ -2762,7 +2871,8 @@ def save_to_geopackage(path: str, model: ModelInput, centerline_geom=None, overw
             new_coords.append((x, y, z))
         return LineString(new_coords)
 
-    def _geometry_with_preserved_xy_updated_z(geom, profile: List[Tuple[float, float]]):
+    def _geometry_with_preserved_xy_updated_z(geom: object, profile: List[Tuple[float, float]]) -> Optional[object]:
+        """Apply profile-based Z updates to LineString or MultiLineString geometry."""
         if geom is None:
             return None
         try:
@@ -2868,7 +2978,8 @@ def _save_results_to_geopackage_qgis(
     results: List[SectionState],
     layer_name: str = 'model_results',
     solver: str = 'py',
-):
+) -> None:
+    """Save computed results to a GeoPackage attribute layer via PyQGIS."""
     try:
         from qgis.core import QgsFeature, QgsField, QgsProject, QgsVectorFileWriter, QgsVectorLayer
         from qgis.PyQt.QtCore import QVariant
@@ -2949,6 +3060,7 @@ def _save_results_to_geopackage_qgis(
 
 
 def _load_results_from_geopackage_qgis(path: str, layer_name: str = 'model_results') -> List[SectionState]:
+    """Load computed result states from a GeoPackage attribute layer via PyQGIS."""
     try:
         from qgis.core import QgsVectorLayer
     except Exception as exc:
@@ -2958,7 +3070,8 @@ def _load_results_from_geopackage_qgis(path: str, layer_name: str = 'model_resul
     if not lyr.isValid():
         return []
 
-    def _value(feat, name: str, default=None):
+    def _value(feat: object, name: str, default: Any = None) -> Any:
+        """Read a field value safely from a feature."""
         try:
             idx = feat.fields().indexOf(name)
             if idx == -1:
@@ -2968,14 +3081,16 @@ def _load_results_from_geopackage_qgis(path: str, layer_name: str = 'model_resul
         except Exception:
             return default
 
-    def _safe_float(value, default=0.0):
+    def _safe_float(value: Any, default: float = 0.0) -> float:
+        """Convert value to finite float with fallback."""
         try:
             v = float(value)
             return default if math.isnan(v) else v
         except Exception:
             return float(default)
 
-    def _safe_int(value, default=0):
+    def _safe_int(value: Any, default: int = 0) -> int:
+        """Convert value to int with fallback."""
         try:
             v = float(value)
             if math.isnan(v):
@@ -3018,7 +3133,7 @@ def save_results_to_geopackage(
     results: List[SectionState],
     layer_name: str = 'model_results',
     solver: str = 'py',
-):
+) -> None:
     """Persist model run results to a GeoPackage table layer."""
     try:
         _save_results_to_geopackage_qgis(path, model, results, layer_name=layer_name, solver=solver)
@@ -3074,7 +3189,7 @@ def load_results_from_geopackage(path: str, layer_name: str = 'model_results') -
     return [state for _, state in rows]
 
 
-def run_backwater(model: ModelInput, solver: str = 'py'):
+def run_backwater(model: ModelInput, solver: str = 'py') -> List[SectionState]:
     """
     Execute standard-step solution from downstream to upstream.
     Sections must be ordered from downstream (index 0) to upstream (index N-1).
@@ -3089,6 +3204,7 @@ def run_backwater(model: ModelInput, solver: str = 'py'):
     ordered_sections = _sorted_sections_by_river_station(model.sections)
 
     def _min_bed(xs: CrossSection) -> float:
+        """Return minimum bed elevation for a cross section geometry."""
         return min(z for _, z in xs.geometry)
 
     if ordered_sections != original_sections:
@@ -3350,7 +3466,8 @@ def run_backwater(model: ModelInput, solver: str = 'py'):
 # ---------------------------------------------------------------------------
 # CLI entrypoint
 # ---------------------------------------------------------------------------
-def main():
+def main() -> None:
+    """Run command-line entrypoint for the steady backwater solver."""
     parser = argparse.ArgumentParser(
         description="Backwater (1D steady) standard-step solver for a single river reach / single flow.",
         formatter_class=argparse.RawTextHelpFormatter

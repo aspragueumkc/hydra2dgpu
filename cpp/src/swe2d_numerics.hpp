@@ -268,8 +268,11 @@ SWE2D_HOSTDEV inline void apply_friction(
     double u    = hu / h;
     double v    = hv / h;
     double spd  = std::sqrt(u * u + v * v);
+    // Regularize shallow-cell friction stiffness to avoid large Cf spikes
+    // right above h_min at advancing wet/dry fronts.
+    const double h_fric = std::max(h, 4.0 * h_min);
     // Cf = g * n^2 / h^(4/3)
-    double h43  = std::pow(h, 4.0 / 3.0);
+    double h43  = std::pow(h_fric, 4.0 / 3.0);
     double Cf   = (h43 > 0.0) ? (g * n_mann * n_mann / h43) : 0.0;
     double denom = 1.0 + dt * Cf * spd;
     hu /= denom;
@@ -325,7 +328,8 @@ SWE2D_HOSTDEV inline GhostState make_ghost(
     double nx,  double ny,                            // outward normal
     int    bc_type,
     double bc_val,
-    double h_min)
+    double h_min,
+    double n_mann)
 {
     GhostState g{};
     g.zb = zbI;  // ghost bed elevation = interior bed elevation
@@ -373,6 +377,21 @@ SWE2D_HOSTDEV inline GhostState make_ghost(
             g.hu = huI;
             g.hv = hvI;
             break;
+        case 7: { // NORMAL_DEPTH_SLOPE: friction-slope normal depth (bc_val = Sf)
+            const double sf = fmax(fabs(bc_val), 1.0e-8);
+            const double qn = huI * nx + hvI * ny;
+            const double qmag = fabs(qn);
+            if (qmag <= 1.0e-12) {
+                g.h = (hI > h_min) ? hI : h_min;
+            } else {
+                const double n_eff = fmax(fabs(n_mann), 1.0e-6);
+                const double h_nd = pow((qmag * n_eff) / sqrt(sf), 3.0 / 5.0);
+                g.h = (h_nd > h_min) ? h_nd : h_min;
+            }
+            g.hu = huI;
+            g.hv = hvI;
+            break;
+        }
         default: // INTERIOR or unknown — should not appear in boundary loop
             g.h  = hI;
             g.hu = huI;

@@ -26,6 +26,10 @@ struct SWE2DDeviceState {
     int32_t* d_edge_bc     = nullptr;   // BCType stored as int32_t for CUDA compatibility
     double*  d_edge_bc_val = nullptr;
 
+    // Cell-to-edge CSR, used by the atomics-free unstructured kernels.
+    int32_t* d_cell_edge_offsets = nullptr;  // [n_cells + 1]
+    int32_t* d_cell_edge_ids     = nullptr;   // [sum(n_verts_cell)]
+
     // Per-edge hydrograph forcing (optional, evaluated on GPU each step).
     int32_t* d_hg_edge_index = nullptr;   // [n_hg_edges]
     int32_t* d_hg_bc_type = nullptr;      // [n_hg_edges]
@@ -59,10 +63,24 @@ struct SWE2DDeviceState {
     double*  d_hu0 = nullptr;
     double*  d_hv0 = nullptr;
 
+    // RK4 intermediate stages (allocated on demand when temporal_order >= 4)
+    // Used to store results from stages k1, k2, k3 during 4-stage integration.
+    double*  d_h1  = nullptr;
+    double*  d_hu1 = nullptr;
+    double*  d_hv1 = nullptr;
+    double*  d_h2  = nullptr;
+    double*  d_hu2 = nullptr;
+    double*  d_hv2 = nullptr;
+    double*  d_h3  = nullptr;
+    double*  d_hu3 = nullptr;
+    double*  d_hv3 = nullptr;
+
     // Flux accumulators (zeroed each step)
     double*  d_flux_h  = nullptr;
     double*  d_flux_hu = nullptr;
     double*  d_flux_hv = nullptr;
+    double*  d_flux_hu_r = nullptr;
+    double*  d_flux_hv_r = nullptr;
 
     // CFL workspace (device scalar)
     double*  d_lambda_max = nullptr;
@@ -147,6 +165,14 @@ void swe2d_gpu_step(
     double depth_cap,
     double max_rel_depth_increase,
     double shallow_damping_depth,
+    bool extreme_rain_mode,
+    double source_cfl_beta,
+    int source_max_substeps,
+    double source_rate_cap,
+    double source_depth_step_cap,
+    bool source_true_subcycling,
+    bool source_imex_split,
+    bool enable_shallow_front_recon_fallback,
     bool sync_diagnostics,
     SWE2DStepDiag* diag,
     double front_flux_damping    = 0.5,
@@ -168,6 +194,105 @@ void swe2d_gpu_step_rk2(
     double depth_cap,
     double max_rel_depth_increase,
     double shallow_damping_depth,
+    bool extreme_rain_mode,
+    double source_cfl_beta,
+    int source_max_substeps,
+    double source_rate_cap,
+    double source_depth_step_cap,
+    bool source_true_subcycling,
+    bool source_imex_split,
+    bool enable_shallow_front_recon_fallback,
+    bool sync_diagnostics,
+    SWE2DStepDiag* diag,
+    double front_flux_damping    = 0.5,
+    bool   active_set_hysteresis = true);
+
+// Advance one Godunov rollout timestep on GPU.
+// This path enforces the rollout numerics contract (minimum 2nd-order spatial
+// reconstruction and shallow-front fallback hardening) while keeping the core
+// CUDA kernels shared with the production path.
+void swe2d_gpu_step_godunov_rollout(
+    SWE2DDeviceState* dev,
+    double t_now,
+    double dt,
+    double g,
+    double h_min,
+    int spatial_scheme,
+    double cfl_factor,
+    double max_inv_area,
+    double cfl_lambda_cap,
+    double momentum_cap_min_speed,
+    double momentum_cap_celerity_mult,
+    double depth_cap,
+    double max_rel_depth_increase,
+    double shallow_damping_depth,
+    bool extreme_rain_mode,
+    double source_cfl_beta,
+    int source_max_substeps,
+    double source_rate_cap,
+    double source_depth_step_cap,
+    bool source_true_subcycling,
+    bool source_imex_split,
+    bool enable_shallow_front_recon_fallback,
+    bool sync_diagnostics,
+    SWE2DStepDiag* diag,
+    double front_flux_damping    = 0.5,
+    bool   active_set_hysteresis = true);
+
+// Advance one SSPRK2 Godunov rollout timestep fully on GPU.
+void swe2d_gpu_step_rk2_godunov_rollout(
+    SWE2DDeviceState* dev,
+    double t_now,
+    double dt,
+    double g,
+    double h_min,
+    int spatial_scheme,
+    double cfl_factor,
+    double max_inv_area,
+    double cfl_lambda_cap,
+    double momentum_cap_min_speed,
+    double momentum_cap_celerity_mult,
+    double depth_cap,
+    double max_rel_depth_increase,
+    double shallow_damping_depth,
+    bool extreme_rain_mode,
+    double source_cfl_beta,
+    int source_max_substeps,
+    double source_rate_cap,
+    double source_depth_step_cap,
+    bool source_true_subcycling,
+    bool source_imex_split,
+    bool enable_shallow_front_recon_fallback,
+    bool sync_diagnostics,
+    SWE2DStepDiag* diag,
+    double front_flux_damping    = 0.5,
+    bool   active_set_hysteresis = true);
+
+// Advance one classic RK4 (4th-order Runge-Kutta) timestep fully on GPU.
+// Uses four function evaluations per step with weights (1 + 2 + 2 + 1)/6.
+void swe2d_gpu_step_rk4(
+    SWE2DDeviceState* dev,
+    double t_now,
+    double dt,
+    double g,
+    double h_min,
+    int spatial_scheme,
+    double cfl_factor,
+    double max_inv_area,
+    double cfl_lambda_cap,
+    double momentum_cap_min_speed,
+    double momentum_cap_celerity_mult,
+    double depth_cap,
+    double max_rel_depth_increase,
+    double shallow_damping_depth,
+    bool extreme_rain_mode,
+    double source_cfl_beta,
+    int source_max_substeps,
+    double source_rate_cap,
+    double source_depth_step_cap,
+    bool source_true_subcycling,
+    bool source_imex_split,
+    bool enable_shallow_front_recon_fallback,
     bool sync_diagnostics,
     SWE2DStepDiag* diag,
     double front_flux_damping    = 0.5,
@@ -258,6 +383,7 @@ void swe2d_gpu_drainage_step(
     int32_t n_nodes,
     int32_t n_links,
     int32_t n_inlets,
+    int32_t n_outfalls,
     const double* cell_wse,
     const double* cell_area,
     const double* node_invert_elev,
@@ -275,6 +401,13 @@ void swe2d_gpu_drainage_step(
     const double* inlet_width,
     const double* inlet_coefficient,
     const double* inlet_max_capture,
+    const int32_t* outfall_cell,
+    const int32_t* outfall_node,
+    const double* outfall_invert_elev,
+    const double* outfall_diameter,
+    const double* outfall_coefficient,
+    const double* outfall_max_flow,
+    const int32_t* outfall_zero_storage,
     const double* cell_depth,
     const double* node_depth_in,
     const double* link_flow_in,

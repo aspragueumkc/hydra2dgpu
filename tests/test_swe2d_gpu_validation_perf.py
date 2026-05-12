@@ -122,6 +122,31 @@ class TestSWE2DGPUValidationPerf(unittest.TestCase):
         self.assertTrue(np.all(np.isfinite(hv)))
         self.assertGreaterEqual(float(np.min(h)), -1.0e-10)
 
+    def test_gpu_godunov_rollout_runtime_sane(self):
+        solver = self.mod.swe2d_create_solver(
+            self.mesh,
+            self.h0.copy(),
+            n_mann=0.030,
+            cfl=0.45,
+            dt_max=1.0,
+            temporal_order=2,
+            spatial_scheme=0,
+            godunov_mode=1,
+            use_gpu=True,
+        )
+        diag = None
+        for _ in range(80):
+            diag = self.mod.swe2d_step(solver, -1.0)
+        h, hu, hv = self.mod.swe2d_get_state(solver)
+        self.mod.swe2d_destroy(solver)
+
+        self.assertTrue(diag["gpu_active"], "Godunov rollout run did not stay on GPU")
+        self.assertTrue(np.all(np.isfinite(h)))
+        self.assertTrue(np.all(np.isfinite(hu)))
+        self.assertTrue(np.all(np.isfinite(hv)))
+        self.assertGreaterEqual(float(np.min(h)), -1.0e-10)
+        self.assertLess(float(np.max(h)), 1.0e6)
+
     @unittest.skipUnless(
         os.environ.get("BACKWATER_RUN_GPU_PERF", "0") == "1",
         "Set BACKWATER_RUN_GPU_PERF=1 to enable throughput benchmark",

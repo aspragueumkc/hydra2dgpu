@@ -22,6 +22,7 @@ from typing import Callable, Dict, List, Optional, Tuple
 
 from swe2d_extensions import (
     BedFrictionModel,
+    GodunovSolverMode,
     SolverModelOptions,
     SpatialDiscretization,
     TemporalScheme,
@@ -386,10 +387,19 @@ class SWE2DBackend:
         depth_cap: float = 1.0e6,
         max_rel_depth_increase: float = 2.0,
         shallow_damping_depth: float = 1.0e-4,
-        gpu_diag_sync_interval_steps: int = 1,
+        extreme_rain_mode: bool = False,
+        source_cfl_beta: float = 0.25,
+        source_max_substeps: int = 16,
+        source_rate_cap: float = 0.0,
+        source_depth_step_cap: float = 0.0,
+        source_true_subcycling: bool = False,
+        source_imex_split: bool = False,
+        enable_shallow_front_recon_fallback: bool = True,
+        gpu_diag_sync_interval_steps: int = 10,
         n_threads: int  = 0,
         temporal_scheme: TemporalScheme = TemporalScheme.SSP_RK2,
         spatial_discretization: SpatialDiscretization = SpatialDiscretization.FV_FIRST_ORDER,
+        godunov_mode: GodunovSolverMode = GodunovSolverMode.CURRENT_GPU_STEP,
         turbulence_model: TurbulenceModel = TurbulenceModel.NONE,
         bed_friction_model: BedFrictionModel = BedFrictionModel.MANNING,
         model_options: Optional[SolverModelOptions] = None,
@@ -435,6 +445,9 @@ class SWE2DBackend:
             Per-step limiter on depth increase: h <= h_old + rel*max(h_old,h_min).
         shallow_damping_depth : float
             Depth below which momentum is smoothly damped toward zero.
+        enable_shallow_front_recon_fallback : bool
+            If True, force first-order reconstruction on shallow edge pairs near
+            advancing wet/dry fronts as a stability control.
         gpu_diag_sync_interval_steps : int
             GPU host-sync diagnostics cadence. 1=every step, N=every N steps,
             <=0 disables per-step host diagnostic sync.
@@ -444,6 +457,8 @@ class SWE2DBackend:
             Temporal integrator selection (default SSP_RK2).
         spatial_discretization : SpatialDiscretization
             Spatial scheme selector (currently scaffolded).
+        godunov_mode : GodunovSolverMode
+            Selects the current GPU path or the Godunov rollout mode.
         turbulence_model : TurbulenceModel
             Turbulence closure selector (currently scaffolded).
         bed_friction_model : BedFrictionModel
@@ -465,6 +480,7 @@ class SWE2DBackend:
         native_opts: Dict[str, object] = {
             "temporal_order": int(temporal_scheme),
             "spatial_scheme": int(spatial_discretization),
+            "godunov_mode": int(godunov_mode),
             "turbulence_model": int(turbulence_model),
             "bed_friction_model": int(bed_friction_model),
             "enable_rain_module": False,
@@ -486,10 +502,19 @@ class SWE2DBackend:
             depth_cap=depth_cap,
             max_rel_depth_increase=max_rel_depth_increase,
             shallow_damping_depth=shallow_damping_depth,
+            extreme_rain_mode=bool(extreme_rain_mode),
+            source_cfl_beta=float(source_cfl_beta),
+            source_max_substeps=int(source_max_substeps),
+            source_rate_cap=float(source_rate_cap),
+            source_depth_step_cap=float(source_depth_step_cap),
+            source_true_subcycling=bool(source_true_subcycling),
+            source_imex_split=bool(source_imex_split),
+            enable_shallow_front_recon_fallback=bool(enable_shallow_front_recon_fallback),
             gpu_diag_sync_interval_steps=int(gpu_diag_sync_interval_steps),
             use_gpu=self._use_gpu, n_threads=n_threads,
             temporal_order=int(native_opts["temporal_order"]),
             spatial_scheme=int(native_opts["spatial_scheme"]),
+            godunov_mode=int(native_opts["godunov_mode"]),
             turbulence_model=int(native_opts["turbulence_model"]),
             bed_friction_model=int(native_opts["bed_friction_model"]),
             enable_rain_module=bool(native_opts["enable_rain_module"]),

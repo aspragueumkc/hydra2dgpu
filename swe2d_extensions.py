@@ -29,6 +29,7 @@ class TemporalScheme(IntEnum):
     EULER_1ST = 1
     SSP_RK2 = 2
     SSP_RK3 = 3
+    CLASSIC_RK4 = 4
 
 
 class TurbulenceModel(IntEnum):
@@ -43,6 +44,11 @@ class BedFrictionModel(IntEnum):
     CHEZY = 1
     DARCY_WEISBACH = 2
     NIKURADSE = 3
+
+
+class GodunovSolverMode(IntEnum):
+    CURRENT_GPU_STEP = 0
+    GODUNOV_ROLLOUT = 1
 
 
 class DrainageSolverMode(IntEnum):
@@ -171,6 +177,7 @@ class OutfallExchange:
     cell_id: int
     node_id: str
     invert_elev: float
+    area_m2: float = 0.0
     diameter: float = 0.0
     coefficient: float = 0.82  # pipe outlet loss coefficient
     max_flow: Optional[float] = None
@@ -198,6 +205,26 @@ class PipeNetworkConfig:
     # allow the 1D solver to run at a finer dt than the 2D timestep, improving
     # stability for stiff networks without requiring GPU sub-stepping.
     coupling_substeps: int = 1
+    # Maximum substeps allowed when the adaptive drainage timestep controller
+    # tightens the 1D solve for stiff dynamic states.
+    max_coupling_substeps: int = 64
+    # Small head-difference deadband applied before link/inlet exchange updates
+    # to suppress chatter around near-balanced states.
+    head_deadband_m: float = 1.0e-3
+    # Relaxation factor applied to dynamic-wave link flow updates.
+    # 1.0 keeps the full update, lower values damp oscillatory responses.
+    dynamic_flow_relaxation: float = 1.0
+    # Adaptive substepping limit: allowable fractional node-depth change per
+    # drainage substep for the 1D network solve.
+    adaptive_depth_fraction: float = 0.2
+    # Adaptive substepping limit: wave Courant target used for dynamic links.
+    adaptive_wave_courant: float = 0.5
+    # Optional extra inner iterations for a predictor/corrector style coupling
+    # solve between 2D surface exchange and the 1D drainage network.
+    implicit_coupling_iterations: int = 2
+    # Relaxation factor used when blending coupling iterates. 0.5 is a safe
+    # default for stiff rain/drainage coupling; 1.0 disables relaxation.
+    implicit_coupling_relaxation: float = 0.5
 
 
 @dataclass
@@ -309,6 +336,13 @@ class HydraulicStructureConfig:
 def circular_area_from_diameter(diameter_m: float) -> float:
     d = max(0.0, float(diameter_m))
     return 0.25 * math.pi * d * d
+
+
+def equivalent_circular_diameter_from_area(area_m2: float) -> float:
+    a = max(0.0, float(area_m2))
+    if a <= 0.0:
+        return 0.0
+    return math.sqrt(4.0 * a / math.pi)
 
 
 def circular_wet_perimeter_full(diameter_m: float) -> float:
@@ -431,6 +465,7 @@ def convert_cell_flows_to_depth_rates(
 class SolverModelOptions:
     temporal_scheme: TemporalScheme = TemporalScheme.SSP_RK2
     spatial_discretization: SpatialDiscretization = SpatialDiscretization.FV_FIRST_ORDER
+    godunov_mode: GodunovSolverMode = GodunovSolverMode.CURRENT_GPU_STEP
     turbulence_model: TurbulenceModel = TurbulenceModel.NONE
     bed_friction_model: BedFrictionModel = BedFrictionModel.MANNING
     rain: RainFieldConfig = field(default_factory=RainFieldConfig)
@@ -442,6 +477,7 @@ class SolverModelOptions:
         return {
             "temporal_order": int(self.temporal_scheme),
             "spatial_scheme": int(self.spatial_discretization),
+            "godunov_mode": int(self.godunov_mode),
             "turbulence_model": int(self.turbulence_model),
             "bed_friction_model": int(self.bed_friction_model),
             "enable_rain_module": bool(self.rain.enabled),

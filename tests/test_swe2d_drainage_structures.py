@@ -569,6 +569,13 @@ class TestSWE2DDrainageStructures(unittest.TestCase):
                 inlet_width,
                 inlet_coefficient,
                 inlet_max_capture,
+                outfall_cell,
+                outfall_node,
+                outfall_invert_elev,
+                outfall_diameter,
+                outfall_coefficient,
+                outfall_max_flow,
+                outfall_zero_storage,
                 cell_depth,
                 gpu_node_depth,
                 gpu_link_flow,
@@ -594,6 +601,13 @@ class TestSWE2DDrainageStructures(unittest.TestCase):
                     inlet_width,
                     inlet_coefficient,
                     inlet_max_capture,
+                    outfall_cell,
+                    outfall_node,
+                    outfall_invert_elev,
+                    outfall_diameter,
+                    outfall_coefficient,
+                    outfall_max_flow,
+                    outfall_zero_storage,
                     cell_depth,
                     dt_s,
                     gravity,
@@ -676,6 +690,53 @@ class TestSWE2DDrainageStructures(unittest.TestCase):
             hv0=np.zeros(2, dtype=np.float64),
             dt_fixed=0.05,
             dt_max=0.05,
+        )
+
+        rain_rate = 0.01
+
+        def combined_source_callback(t_s, dt_s, h, hu, hv):
+            drainage_src = controller.compute_source_rates(t_s, dt_s, h, hu, hv)
+            return drainage_src + rain_rate
+
+        backend.run(
+            t_end=0.1,
+            dt_request=0.05,
+            source_rate_callback=combined_source_callback,
+        )
+        h, _, _ = backend.get_state()
+        self.assertTrue(np.all(np.isfinite(h)))
+        self.assertTrue(backend.gpu_active())
+        self.assertGreater(controller.last_diag.drainage_max_link_flow, 0.0)
+        self.assertGreater(float(np.max(h)), 0.1)
+        backend.destroy()
+
+    @unittest.skipUnless(swe2d_available() and swe2d_gpu_available(), "native SWE2D CUDA backend not available")
+    def test_backend_gpu_run_combines_rain_and_drainage_sources_rollout_mode(self):
+        backend = SWE2DBackend(use_gpu=True)
+        node_x = np.asarray([0.0, 1.0, 1.0, 0.0], dtype=np.float64)
+        node_y = np.asarray([0.0, 0.0, 1.0, 1.0], dtype=np.float64)
+        node_z = np.asarray([0.0, 0.0, 0.0, 0.0], dtype=np.float64)
+        cell_nodes = np.asarray([0, 1, 2, 0, 2, 3], dtype=np.int32)
+        backend.build_mesh(node_x, node_y, node_z, cell_nodes)
+
+        drainage = self._build_simple_network()
+        drainage.state.node_depth["N0"] = 0.1
+        controller = SWE2DCouplingController(
+            cell_area=backend.cell_areas(),
+            cell_bed=np.zeros(backend.n_cells, dtype=np.float64),
+            drainage=drainage,
+            structures=None,
+            coupling_loop="cuda",
+            drainage_solver_backend="gpu",
+        )
+
+        backend.initialize(
+            h0=np.asarray([0.2, 0.1], dtype=np.float64),
+            hu0=np.zeros(2, dtype=np.float64),
+            hv0=np.zeros(2, dtype=np.float64),
+            dt_fixed=0.05,
+            dt_max=0.05,
+            godunov_mode=1,
         )
 
         rain_rate = 0.01

@@ -130,6 +130,13 @@ PYBIND11_MODULE(backwater_swe2d, m) {
            py::array_t<double, py::array::c_style | py::array::forcecast> inlet_width,
            py::array_t<double, py::array::c_style | py::array::forcecast> inlet_coefficient,
            py::array_t<double, py::array::c_style | py::array::forcecast> inlet_max_capture,
+              py::array_t<int32_t, py::array::c_style | py::array::forcecast> outfall_cell,
+              py::array_t<int32_t, py::array::c_style | py::array::forcecast> outfall_node,
+              py::array_t<double, py::array::c_style | py::array::forcecast> outfall_invert_elev,
+              py::array_t<double, py::array::c_style | py::array::forcecast> outfall_diameter,
+              py::array_t<double, py::array::c_style | py::array::forcecast> outfall_coefficient,
+              py::array_t<double, py::array::c_style | py::array::forcecast> outfall_max_flow,
+              py::array_t<int32_t, py::array::c_style | py::array::forcecast> outfall_zero_storage,
               py::array_t<double, py::array::c_style | py::array::forcecast> cell_depth,
            py::array_t<double, py::array::c_style | py::array::forcecast> node_depth,
            py::array_t<double, py::array::c_style | py::array::forcecast> link_flow,
@@ -167,6 +174,15 @@ PYBIND11_MODULE(backwater_swe2d, m) {
                 inlet_max_capture.size() != static_cast<size_t>(n_inlets)) {
                 throw std::invalid_argument("inlet arrays must have consistent length");
             }
+            const int32_t n_outfalls = static_cast<int32_t>(outfall_cell.size());
+            if (outfall_node.size() != static_cast<size_t>(n_outfalls) ||
+                outfall_invert_elev.size() != static_cast<size_t>(n_outfalls) ||
+                outfall_diameter.size() != static_cast<size_t>(n_outfalls) ||
+                outfall_coefficient.size() != static_cast<size_t>(n_outfalls) ||
+                outfall_max_flow.size() != static_cast<size_t>(n_outfalls) ||
+                outfall_zero_storage.size() != static_cast<size_t>(n_outfalls)) {
+                throw std::invalid_argument("outfall arrays must have consistent length");
+            }
 
             auto node_depth_out = py::array_t<double>(n_nodes);
             auto link_flow_out = py::array_t<double>(n_links);
@@ -181,6 +197,7 @@ PYBIND11_MODULE(backwater_swe2d, m) {
                 n_nodes,
                 n_links,
                 n_inlets,
+                n_outfalls,
                 cell_wse.data(),
                 cell_area.data(),
                 node_invert_elev.data(),
@@ -198,6 +215,13 @@ PYBIND11_MODULE(backwater_swe2d, m) {
                 inlet_width.data(),
                 inlet_coefficient.data(),
                 inlet_max_capture.data(),
+                outfall_cell.data(),
+                outfall_node.data(),
+                outfall_invert_elev.data(),
+                outfall_diameter.data(),
+                outfall_coefficient.data(),
+                outfall_max_flow.data(),
+                outfall_zero_storage.data(),
                 (cell_depth.size() == static_cast<size_t>(n_cells)) ? cell_depth.data() : nullptr,
                 node_depth.data(),
                 link_flow.data(),
@@ -238,6 +262,13 @@ PYBIND11_MODULE(backwater_swe2d, m) {
         py::arg("inlet_width"),
         py::arg("inlet_coefficient"),
         py::arg("inlet_max_capture"),
+        py::arg("outfall_cell"),
+        py::arg("outfall_node"),
+        py::arg("outfall_invert_elev"),
+        py::arg("outfall_diameter"),
+        py::arg("outfall_coefficient"),
+        py::arg("outfall_max_flow"),
+        py::arg("outfall_zero_storage"),
         py::arg("cell_depth"),
         py::arg("node_depth"),
         py::arg("link_flow"),
@@ -282,6 +313,13 @@ PYBIND11_MODULE(backwater_swe2d, m) {
            py::array_t<double, py::array::c_style | py::array::forcecast>,
            py::array_t<double, py::array::c_style | py::array::forcecast>,
            py::array_t<double, py::array::c_style | py::array::forcecast>,
+           py::array_t<int32_t, py::array::c_style | py::array::forcecast>,
+           py::array_t<int32_t, py::array::c_style | py::array::forcecast>,
+           py::array_t<double, py::array::c_style | py::array::forcecast>,
+           py::array_t<double, py::array::c_style | py::array::forcecast>,
+           py::array_t<double, py::array::c_style | py::array::forcecast>,
+           py::array_t<double, py::array::c_style | py::array::forcecast>,
+           py::array_t<int32_t, py::array::c_style | py::array::forcecast>,
            py::array_t<double, py::array::c_style | py::array::forcecast>,
            py::array_t<double, py::array::c_style | py::array::forcecast>,
            py::array_t<double, py::array::c_style | py::array::forcecast>,
@@ -629,10 +667,19 @@ PYBIND11_MODULE(backwater_swe2d, m) {
                   double depth_cap,
                   double max_rel_depth_increase,
                   double shallow_damping_depth,
+                  bool extreme_rain_mode,
+                  double source_cfl_beta,
+                  int source_max_substeps,
+                  double source_rate_cap,
+                  double source_depth_step_cap,
+                  bool source_true_subcycling,
+                  bool source_imex_split,
+                  bool enable_shallow_front_recon_fallback,
                   int gpu_diag_sync_interval_steps,
               bool use_gpu, int n_threads,
               int temporal_order,
               int spatial_scheme,
+              int godunov_mode,
               int turbulence_model,
               int bed_friction_model,
               bool enable_rain_module,
@@ -689,9 +736,18 @@ PYBIND11_MODULE(backwater_swe2d, m) {
             cfg.depth_cap = depth_cap;
             cfg.max_rel_depth_increase = max_rel_depth_increase;
             cfg.shallow_damping_depth = shallow_damping_depth;
+            cfg.extreme_rain_mode = extreme_rain_mode;
+            cfg.source_cfl_beta = source_cfl_beta;
+            cfg.source_max_substeps = source_max_substeps;
+            cfg.source_rate_cap = source_rate_cap;
+            cfg.source_depth_step_cap = source_depth_step_cap;
+            cfg.source_true_subcycling = source_true_subcycling;
+            cfg.source_imex_split = source_imex_split;
+            cfg.enable_shallow_front_recon_fallback = enable_shallow_front_recon_fallback;
             cfg.gpu_diag_sync_interval_steps = gpu_diag_sync_interval_steps;
             cfg.temporal_order = temporal_order;
             cfg.spatial_scheme = spatial_scheme;
+            cfg.godunov_mode = godunov_mode;
             cfg.turbulence_model = turbulence_model;
             cfg.bed_friction_model = bed_friction_model;
             cfg.enable_rain_module = enable_rain_module;
@@ -726,11 +782,20 @@ PYBIND11_MODULE(backwater_swe2d, m) {
         py::arg("depth_cap") = 1.0e6,
         py::arg("max_rel_depth_increase") = 2.0,
         py::arg("shallow_damping_depth") = 1.0e-4,
+        py::arg("extreme_rain_mode") = false,
+        py::arg("source_cfl_beta") = 0.25,
+        py::arg("source_max_substeps") = 16,
+        py::arg("source_rate_cap") = 0.0,
+        py::arg("source_depth_step_cap") = 0.0,
+        py::arg("source_true_subcycling") = false,
+        py::arg("source_imex_split") = false,
+        py::arg("enable_shallow_front_recon_fallback") = true,
         py::arg("gpu_diag_sync_interval_steps") = 1,
         py::arg("use_gpu")  = true,
         py::arg("n_threads") = 0,
         py::arg("temporal_order") = 2,
         py::arg("spatial_scheme") = 0,
+        py::arg("godunov_mode") = 0,
         py::arg("turbulence_model") = 0,
         py::arg("bed_friction_model") = 0,
         py::arg("enable_rain_module") = false,
@@ -840,4 +905,5 @@ PYBIND11_MODULE(backwater_swe2d, m) {
     m.attr("BC_OPEN")     = py::int_(static_cast<int>(BCType::OPEN));
     m.attr("BC_REFLECT")  = py::int_(static_cast<int>(BCType::REFLECT));
     m.attr("BC_NORMAL_DEPTH") = py::int_(static_cast<int>(BCType::NORMAL_DEPTH));
+    m.attr("BC_NORMAL_DEPTH_SLOPE") = py::int_(static_cast<int>(BCType::NORMAL_DEPTH_SLOPE));
 }

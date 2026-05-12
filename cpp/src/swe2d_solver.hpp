@@ -49,6 +49,7 @@ struct SWE2DSolverConfig {
     double  dt_fixed = -1.0;    // if > 0, use this fixed dt (overrides CFL)
     int     temporal_order = 2; // 1 = Euler, 2 = SSPRK2 (Heun)
     int     spatial_scheme = static_cast<int>(SWE2DSpatialScheme::FV_FIRST_ORDER);
+    int     godunov_mode = 0;   // 0 = current GPU step, 1 = Godunov rollout mode
     int     turbulence_model = static_cast<int>(SWE2DTurbulenceModel::NONE);
     int     bed_friction_model = static_cast<int>(SWE2DBedFrictionModel::MANNING);
     bool    enable_rain_module = false;
@@ -73,6 +74,16 @@ struct SWE2DSolverConfig {
     // Wet/dry front stability controls
     double  front_flux_damping = 0.5;     // momentum-flux scale factor on wet/dry front edges (0=full damp, 1=none)
     bool    active_set_hysteresis = true; // keep cells active 1 extra step after drying to suppress oscillatory front switching
+    bool    enable_shallow_front_recon_fallback = true; // if true, force 1st-order reconstruction on shallow edge pairs
+
+    // Extreme-rain robustness controls (GPU-first path, mirrored in CPU fallback).
+    bool    extreme_rain_mode = false;      // enable adaptive source-CFL limiting
+    double  source_cfl_beta = 0.25;         // target source CFL: dt*src <= beta*h_ref
+    int     source_max_substeps = 16;       // cap on equivalent source substep count
+    double  source_rate_cap = 0.0;          // hard cap on positive source rate [depth/s], 0=off
+    double  source_depth_step_cap = 0.0;    // hard cap on positive source depth increment per step [depth], 0=off
+    bool    source_true_subcycling = false; // true: apply real source sub-iterations per hydro step
+    bool    source_imex_split = false;      // true: flux step first, then source+friction split substeps
 };
 
 // ─────────────────────────────────────────────────────────────────────────────

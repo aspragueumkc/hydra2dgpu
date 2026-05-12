@@ -86,6 +86,15 @@ Current higher-order reconstruction implementation status:
 Both schemes are now selectable in the GPU flux path through native solver
 configuration (`spatial_scheme`) and are compatible with RK2 stepping.
 
+Additional wet/dry-front stability controls are now available from the 2D
+workbench and native API:
+
+- Localized shallow-front reconstruction fallback (optional):
+  `enable_shallow_front_recon_fallback` forces first-order reconstruction only
+  on shallow edge pairs near advancing wet/dry fronts.
+- `front_flux_damping` momentum-flux damping at wet/dry fronts.
+- `active_set_hysteresis` to reduce oscillatory active-set switching.
+
 ## Key Features
 
 - Create, load, save, and run backwater models directly from QGIS.
@@ -151,6 +160,16 @@ Form behavior includes:
 ```bash
 python3 -m py_compile backwater_model.py backwater_qt.py backwater_plugin.py
 ```
+
+- Python docstring/type-hint coverage audit (project-owned files):
+
+```bash
+python3 tools/python_style_audit.py
+```
+
+- Audit continuation and staged wave handoff guide:
+
+  - `docs/PYTHON_STYLE_AUDIT_WAVES.md`
 
 ## User Documentation
 

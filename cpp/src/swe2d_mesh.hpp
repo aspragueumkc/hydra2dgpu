@@ -20,7 +20,8 @@ enum class BCType : int32_t {
     STAGE    = 3,   // Prescribed water-surface elevation (m)
     OPEN     = 4,   // Riemann outflow / zero-gradient
     REFLECT  = 5,   // Reflecting: reverse normal velocity component
-    NORMAL_DEPTH = 6 // Prescribed boundary depth h (m)
+    NORMAL_DEPTH = 6, // Prescribed boundary depth h (m)
+    NORMAL_DEPTH_SLOPE = 7 // Friction-slope normal depth (bc_val = Sf)
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -40,6 +41,8 @@ struct SWE2DMesh {
     int32_t              n_cells = 0;
     std::vector<int32_t> cell_face_offsets; // [n_cells + 1], CSR offsets into cell_face_nodes
     std::vector<int32_t> cell_face_nodes;   // [sum(n_verts_cell)] node indices for each cell ring
+    std::vector<int32_t> cell_edge_offsets;  // [n_cells + 1], CSR offsets into cell_edge_ids
+    std::vector<int32_t> cell_edge_ids;      // [sum(n_verts_cell)] edge indices for each cell ring
     std::vector<double>  cell_cx;     // [n_cells] centroid x (m)
     std::vector<double>  cell_cy;     // [n_cells] centroid y (m)
     std::vector<double>  cell_area;   // [n_cells] area (m²)

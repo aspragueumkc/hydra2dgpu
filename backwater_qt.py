@@ -15,12 +15,18 @@ import sys
 import json
 import math
 import importlib.util
+from typing import Any, Callable, Dict, Optional, Sequence, Tuple
 
 from qgis.PyQt import QtWidgets, QtCore, QtGui
 from qgis.PyQt.QtWidgets import QFileDialog, QMessageBox
 
 
 def _detect_matplotlib_qt_available() -> bool:
+    """Check whether matplotlib and a Qt backend are importable.
+
+    Returns:
+        True when a compatible matplotlib Qt backend can be imported.
+    """
     try:
         import matplotlib  # noqa: F401
     except Exception:
@@ -39,7 +45,12 @@ def _detect_matplotlib_qt_available() -> bool:
             return False
 
 
-def _import_matplotlib_qt():
+def _import_matplotlib_qt() -> Tuple[object, object, object, object]:
+    """Import matplotlib Qt classes and plotting helpers.
+
+    Returns:
+        Tuple containing `(FigureCanvas, NavigationToolbar, plt, np)`.
+    """
     import matplotlib.pyplot as plt
     import numpy as _np
 
@@ -82,8 +93,15 @@ except Exception:
     ui_adapter = None
 
 
-def _load_set_z_from_raster_expr_func():
-    def _pick_callable(mod):
+def _load_set_z_from_raster_expr_func() -> Optional[Callable[..., Any]]:
+    """Load a callable for updating geometry Z from raster sampling.
+
+    Returns:
+        Callable expression helper or None when unavailable.
+    """
+
+    def _pick_callable(mod: object) -> Optional[Callable[..., Any]]:
+        """Select first matching callable from an expression module."""
         for name in ('set_z_from_raster_expr_py', '_set_z_from_raster_impl', 'set_z_from_raster_expr'):
             fn = getattr(mod, name, None)
             if callable(fn):
@@ -113,34 +131,47 @@ _SET_Z_FROM_RASTER_EXPR = _load_set_z_from_raster_expr_func()
 
 
 # Small UI adapter wrappers: prefer plugin ui_adapter, fallback to Qt dialogs
-def ui_info(parent, title, msg):
+def ui_info(parent: object, title: str, msg: str) -> None:
+    """Show informational message using UI adapter when available."""
     if ui_adapter is not None:
         ui_adapter.info(msg, title, parent)
     else:
         QMessageBox.information(parent, title or 'Info', msg)
 
 
-def ui_warning(parent, title, msg):
+def ui_warning(parent: object, title: str, msg: str) -> None:
+    """Show warning message using UI adapter when available."""
     if ui_adapter is not None:
         ui_adapter.warning(msg, title, parent)
     else:
         QMessageBox.warning(parent, title or 'Warning', msg)
 
 
-def ui_critical(parent, title, msg):
+def ui_critical(parent: object, title: str, msg: str) -> None:
+    """Show critical error message using UI adapter when available."""
     if ui_adapter is not None:
         ui_adapter.critical(msg, title, parent)
     else:
         QMessageBox.critical(parent, title or 'Error', msg)
 
 
-def ui_get_open_filename(parent, caption, filter):
+def ui_get_open_filename(parent: object, caption: str, filter: str) -> Tuple[str, str]:
+    """Open a file selection dialog.
+
+    Returns:
+        `(filename, selected_filter)` tuple.
+    """
     if ui_adapter is not None:
         return ui_adapter.get_open_filename(parent, caption, filter)
     return QFileDialog.getOpenFileName(parent, caption, '', filter)
 
 
-def ui_get_save_filename(parent, caption, filter):
+def ui_get_save_filename(parent: object, caption: str, filter: str) -> Tuple[str, str]:
+    """Open a save-file dialog.
+
+    Returns:
+        `(filename, selected_filter)` tuple.
+    """
     if ui_adapter is not None:
         return ui_adapter.get_save_filename(parent, caption, filter)
     return QFileDialog.getSaveFileName(parent, caption, '', filter)
@@ -151,7 +182,12 @@ class CanvasHolder(QtWidgets.QWidget):
     scaling the canvas widget size. Without Ctrl the wheel scrolls the
     containing QScrollArea normally.
     """
-    def __init__(self, parent=None):
+    def __init__(self, parent: Optional[QtWidgets.QWidget] = None):
+        """Initialize canvas holder widget.
+
+        Args:
+            parent: Optional parent widget.
+        """
         super().__init__(parent)
         self._canvas = None
         self._base_size = None
@@ -159,8 +195,12 @@ class CanvasHolder(QtWidgets.QWidget):
         self.setLayout(QtWidgets.QVBoxLayout())
         self.layout().setContentsMargins(0,0,0,0)
 
-    def set_canvas(self, canvas):
-        # attach canvas and remember its base size for scaling
+    def set_canvas(self, canvas: QtWidgets.QWidget) -> None:
+        """Attach a matplotlib canvas and cache initial size for zooming.
+
+        Args:
+            canvas: Canvas widget to host.
+        """
         self._canvas = canvas
         self.layout().addWidget(canvas)
         try:
@@ -168,8 +208,12 @@ class CanvasHolder(QtWidgets.QWidget):
         except Exception:
             self._base_size = canvas.size()
 
-    def wheelEvent(self, event):
-        # Ctrl+wheel => zoom canvas; otherwise default behavior (scroll)
+    def wheelEvent(self, event: QtGui.QWheelEvent) -> None:
+        """Handle wheel zoom with Ctrl modifier; otherwise delegate scroll.
+
+        Args:
+            event: Wheel input event.
+        """
         try:
             if event.modifiers() & QtCore.Qt.KeyboardModifier.ControlModifier and self._canvas is not None:
                 delta = event.angleDelta().y()
@@ -190,32 +234,53 @@ class CrossSectionPreview(QtWidgets.QWidget):
     """Lightweight cross-section preview that draws stations/elevations
     directly using QPainter so it doesn't depend on matplotlib.
     """
-    def __init__(self, parent=None):
+    def __init__(self, parent: Optional[QtWidgets.QWidget] = None):
+        """Initialize lightweight cross-section preview widget.
+
+        Args:
+            parent: Optional parent widget.
+        """
         super().__init__(parent)
         self._geom = []
         self._title = ''
 
-    def set_geometry(self, geom):
-        # geom: list of (station, elevation)
+    def set_geometry(self, geom: Sequence[Tuple[float, float]]) -> None:
+        """Update preview geometry.
+
+        Args:
+            geom: Sequence of `(station, elevation)` pairs.
+        """
         try:
             self._geom = sorted([(float(s), float(z)) for s, z in geom], key=lambda p: p[0])
         except Exception:
             self._geom = []
         self.update()
 
-    def set_title(self, t: str):
+    def set_title(self, t: str) -> None:
+        """Set preview title text.
+
+        Args:
+            t: Title string.
+        """
         self._title = str(t)
         self.update()
 
-    def clear(self):
+    def clear(self) -> None:
+        """Clear displayed geometry and title."""
         self._geom = []
         self._title = ''
         self.update()
 
-    def sizeHint(self):
+    def sizeHint(self) -> QtCore.QSize:
+        """Return preferred preview size."""
         return QtCore.QSize(600, 200)
 
-    def paintEvent(self, event):
+    def paintEvent(self, event: QtGui.QPaintEvent) -> None:
+        """Paint current cross-section geometry.
+
+        Args:
+            event: Paint event.
+        """
         try:
             painter = QtGui.QPainter(self)
             rect = self.contentsRect()
@@ -293,11 +358,13 @@ class CrossSectionPreview(QtWidgets.QWidget):
 class _ReattachDockWidget(QtWidgets.QDockWidget):
     """Dock widget that calls back when user closes it so content can be reattached."""
 
-    def __init__(self, title, on_close, parent=None):
+    def __init__(self, title: str, on_close: Optional[Callable[[QtWidgets.QDockWidget], None]], parent: Optional[QtWidgets.QWidget] = None):
+        """Initialize detachable dock wrapper."""
         super().__init__(title, parent)
         self._on_close = on_close
 
-    def closeEvent(self, event):
+    def closeEvent(self, event: QtGui.QCloseEvent) -> None:
+        """Notify close callback, then accept dock close."""
         try:
             if callable(self._on_close):
                 self._on_close(self)
@@ -306,7 +373,12 @@ class _ReattachDockWidget(QtWidgets.QDockWidget):
         event.accept()
 
 class BackwaterWidget(QtWidgets.QWidget):
-    def __init__(self, parent=None):
+    def __init__(self, parent: Optional[QtWidgets.QWidget] = None):
+        """Initialize Backwater plugin main widget.
+
+        Args:
+            parent: Optional parent widget.
+        """
         super().__init__(parent)
         self.setWindowTitle('Backwater — Qt GUI')
         self.resize(1100, 700)
@@ -766,11 +838,12 @@ class BackwaterWidget(QtWidgets.QWidget):
         self._configure_detachable_tabs()
         self._build_unsteady_tab()
 
-    def set_dock_host_window(self, host_window):
+    def set_dock_host_window(self, host_window: Optional[QtWidgets.QMainWindow]) -> None:
         """Set host QMainWindow used for detached panel docking/floating."""
         self._dock_host_window = host_window
 
-    def _create_backwater_menu(self):
+    def _create_backwater_menu(self) -> None:
+        """Create the dock-level Backwater menu actions."""
         menu = getattr(self, 'backwater_menu', None)
         if menu is None:
             return
@@ -854,7 +927,8 @@ class BackwaterWidget(QtWidgets.QWidget):
         self.action_open_max_wse_table.triggered.connect(self.open_max_wse_table)
         menu.addAction(self.action_open_max_wse_table)
 
-    def _apply_form_only_ui_mode(self):
+    def _apply_form_only_ui_mode(self) -> None:
+        """Apply compact form-only mode used for GeoPackage-first workflows."""
         if not getattr(self, 'form_only_mode', False):
             return
 
@@ -899,21 +973,24 @@ class BackwaterWidget(QtWidgets.QWidget):
             except Exception:
                 pass
 
-    def open_results_plot(self):
+    def open_results_plot(self) -> None:
+        """Switch to the results plot tab when available."""
         try:
             if self.plots_tabs is not None and self.plot_page is not None:
                 self.plots_tabs.setCurrentWidget(self.plot_page)
         except Exception:
             pass
 
-    def open_results_table(self):
+    def open_results_table(self) -> None:
+        """Switch to the tabular results page when available."""
         try:
             if self.io_tabs is not None and self.results_page is not None:
                 self.io_tabs.setCurrentWidget(self.results_page)
         except Exception:
             pass
 
-    def _configure_detachable_tabs(self):
+    def _configure_detachable_tabs(self) -> None:
+        """Register main tab widgets with detach/reattach behavior."""
         try:
             self._register_detachable_tab_widget(
                 self.left_tabs,
@@ -933,7 +1010,13 @@ class BackwaterWidget(QtWidgets.QWidget):
         except Exception:
             pass
 
-    def _register_detachable_tab_widget(self, tab_widget, default_area, widget_key):
+    def _register_detachable_tab_widget(
+        self,
+        tab_widget: Optional[QtWidgets.QTabWidget],
+        default_area: QtCore.Qt.DockWidgetArea,
+        widget_key: str,
+    ) -> None:
+        """Register a tab widget for context-menu detach actions."""
         if tab_widget is None:
             return
         self._tab_detach_config[tab_widget] = {
@@ -947,7 +1030,8 @@ class BackwaterWidget(QtWidgets.QWidget):
         )
         bar.setMovable(True)
 
-    def _show_tab_detach_menu(self, tab_widget, pos):
+    def _show_tab_detach_menu(self, tab_widget: QtWidgets.QTabWidget, pos: QtCore.QPoint) -> None:
+        """Show context menu with detach action for clicked tab."""
         bar = tab_widget.tabBar()
         idx = bar.tabAt(pos)
         if idx < 0:
@@ -959,7 +1043,8 @@ class BackwaterWidget(QtWidgets.QWidget):
         if action == detach_action:
             self._detach_tab(tab_widget, idx)
 
-    def _detach_tab(self, tab_widget, index):
+    def _detach_tab(self, tab_widget: Optional[QtWidgets.QTabWidget], index: int) -> None:
+        """Detach one tab page into a floating dock widget."""
         if tab_widget is None or index < 0:
             return
         config = self._tab_detach_config.get(tab_widget, {})
@@ -998,7 +1083,8 @@ class BackwaterWidget(QtWidgets.QWidget):
             'widget_key': widget_key,
         }
 
-    def _reattach_dock_tab(self, dock):
+    def _reattach_dock_tab(self, dock: QtWidgets.QDockWidget) -> None:
+        """Reattach content from detached dock back into original tab widget."""
         meta = self._detached_docks.pop(dock, None)
         if not meta:
             try:
@@ -1020,10 +1106,11 @@ class BackwaterWidget(QtWidgets.QWidget):
             except Exception:
                 pass
 
-    def _show_about(self):
+    def _show_about(self) -> None:
+        """Show plugin about dialog."""
         ui_info(self, 'About', 'Backwater Qt GUI\nEnhanced UI with menus, toolbars, docks, and status bar')
 
-    def set_view_mode(self, mode: str):
+    def set_view_mode(self, mode: str) -> None:
         """mode: 'geometry' | 'profile' | 'section'"""
         try:
             if mode == 'geometry':
@@ -1081,18 +1168,20 @@ class BackwaterWidget(QtWidgets.QWidget):
             pass
 
     # --- geometry table helpers
-    def geom_add_row(self):
+    def geom_add_row(self) -> None:
+        """Append a blank station/elevation row in geometry table."""
         r = self.geom_table.rowCount()
         self.geom_table.insertRow(r)
         self.geom_table.setItem(r,0, QtWidgets.QTableWidgetItem('0.0'))
         self.geom_table.setItem(r,1, QtWidgets.QTableWidgetItem('0.0'))
 
-    def geom_remove_row(self):
+    def geom_remove_row(self) -> None:
+        """Remove currently selected geometry row."""
         sel = self.geom_table.currentRow()
         if sel >= 0:
             self.geom_table.removeRow(sel)
 
-    def geom_copy_selected(self):
+    def geom_copy_selected(self) -> None:
         """Copy selected geometry rows to the clipboard (tab-separated)."""
         rows = sorted(set(i.row() for i in self.geom_table.selectedItems()))
         if not rows:
@@ -1109,7 +1198,7 @@ class BackwaterWidget(QtWidgets.QWidget):
         except Exception:
             ui_warning(self, 'Copy failed', 'Could not copy to clipboard')
 
-    def geom_paste_clipboard(self):
+    def geom_paste_clipboard(self) -> None:
         """Paste tab-separated station,elevation rows from the clipboard into the geometry table.
 
         Existing selection's first row is used as the insert position; if nothing
@@ -1165,7 +1254,8 @@ class BackwaterWidget(QtWidgets.QWidget):
             ui_warning(self, 'Paste', 'No valid rows found in clipboard')
 
     # --- undo / redo support (serialize model dict)
-    def _model_to_dict(self):
+    def _model_to_dict(self) -> Optional[Dict[str, Any]]:
+        """Serialize in-memory model into JSON-compatible dictionary."""
         if self.model is None:
             return None
         out = {
@@ -1198,7 +1288,8 @@ class BackwaterWidget(QtWidgets.QWidget):
             })
         return out
 
-    def _load_model_from_dict(self, d):
+    def _load_model_from_dict(self, d: Optional[Dict[str, Any]]) -> None:
+        """Load in-memory model from serialized dictionary payload."""
         if d is None:
             self.model = None
             return
@@ -1240,8 +1331,8 @@ class BackwaterWidget(QtWidgets.QWidget):
             self.section_cb.setCurrentIndex(0)
         self._refresh_scroller_choices()
 
-    def push_undo(self):
-        # push current model state onto undo stack
+    def push_undo(self) -> None:
+        """Push current model snapshot onto undo stack and clear redo stack."""
         d = self._model_to_dict()
         if d is None:
             return
@@ -1250,14 +1341,15 @@ class BackwaterWidget(QtWidgets.QWidget):
         # clear redo on new action
         self.redo_stack.clear()
 
-    def _clear_layout_widgets(self, layout):
+    def _clear_layout_widgets(self, layout: QtWidgets.QLayout) -> None:
+        """Remove and orphan all child widgets from a layout."""
         for i in reversed(range(layout.count())):
             item = layout.itemAt(i)
             widget = item.widget() if item is not None else None
             if widget is not None:
                 widget.setParent(None)
 
-    def _computed_culvert_slope(self, xs) -> float:
+    def _computed_culvert_slope(self, xs: Any) -> float:
         """Compute slope from invert elevations and culvert length."""
         try:
             # Prefer model method when available.
@@ -1276,7 +1368,8 @@ class BackwaterWidget(QtWidgets.QWidget):
         except Exception:
             return 0.0
 
-    def _update_computed_culvert_slope_display(self, xs=None):
+    def _update_computed_culvert_slope_display(self, xs: Optional[Any] = None) -> None:
+        """Refresh read-only culvert slope field for selected section."""
         try:
             if xs is None:
                 idx = self.section_cb.currentIndex()
@@ -1292,7 +1385,8 @@ class BackwaterWidget(QtWidgets.QWidget):
             except Exception:
                 pass
 
-    def _refresh_scroller_choices(self):
+    def _refresh_scroller_choices(self) -> None:
+        """Rebuild one-plot-at-a-time scroller choices from model sections."""
         self._scroller_entries = []
         self.scroller_combo.blockSignals(True)
         self.scroller_combo.clear()
@@ -1318,7 +1412,8 @@ class BackwaterWidget(QtWidgets.QWidget):
         self.scroller_next_btn.setEnabled(has_entries)
         self._refresh_scroller_plot(0)
 
-    def _scroll_plot_step(self, step):
+    def _scroll_plot_step(self, step: int) -> None:
+        """Move scroller selection by `step` with wraparound."""
         count = self.scroller_combo.count()
         if count <= 0:
             return
@@ -1327,7 +1422,8 @@ class BackwaterWidget(QtWidgets.QWidget):
             current = 0
         self.scroller_combo.setCurrentIndex((current + step) % count)
 
-    def _refresh_scroller_plot(self, index):
+    def _refresh_scroller_plot(self, index: int) -> None:
+        """Render currently selected scroller plot entry."""
         if not HAVE_MPL:
             self._clear_layout_widgets(self.scroller_plot_host_layout)
             self.scroller_plot_host_layout.addWidget(QtWidgets.QLabel('matplotlib not available'))
@@ -5947,9 +6043,19 @@ else:
         except Exception:
             pass
 
-def create_backwater_dockwidget(parent=None, title='Backwater'):
+def create_backwater_dockwidget(
+    parent: Optional[QtWidgets.QWidget] = None,
+    title: str = 'Backwater',
+) -> QtWidgets.QDockWidget:
     """Create a QDockWidget containing the backwater UI suitable for adding
     to a QGIS main window via `addDockWidget()`.
+
+    Args:
+        parent: Optional parent widget.
+        title: Dock title text.
+
+    Returns:
+        Configured dock widget containing `BackwaterWidget`.
     """
     dock = QtWidgets.QDockWidget(title, parent)
     dock.setObjectName('BackwaterMainDock')

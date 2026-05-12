@@ -125,6 +125,15 @@ Notes:
 - Multipart QGIS topology layers are supported.
 - The CUDA solver path is the primary runtime target for SWE2D.
 
+Recommended SWE2D wet/dry stability controls in the workbench:
+
+- `Shallow-front recon fallback`: optional localized first-order fallback for
+	shallow edge pairs near wetting fronts.
+- `Front flux damping`: momentum-flux damping at wet/dry interfaces.
+- `Active-set hysteresis`: reduces rapid wet/dry activation toggling.
+- `Shallow damping depth` and `Max rel depth increase`: additional robustness
+	controls for thin advancing fronts.
+
 ## 11. Save a Copy of the Model
 
 Use:

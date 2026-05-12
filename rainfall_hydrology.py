@@ -28,6 +28,18 @@ def _parse_time_to_seconds(value) -> Optional[float]:
     text = str(value or "").strip()
     if not text:
         return None
+
+    lower = text.lower()
+    for suffix, mult in (("minutes", 60.0), ("minute", 60.0), ("mins", 60.0), ("min", 60.0), ("m", 60.0),
+                         ("hours", 3600.0), ("hour", 3600.0), ("hrs", 3600.0), ("hr", 3600.0), ("h", 3600.0),
+                         ("seconds", 1.0), ("second", 1.0), ("secs", 1.0), ("sec", 1.0), ("s", 1.0)):
+        if lower.endswith(suffix):
+            raw = lower[: -len(suffix)].strip()
+            try:
+                return float(raw) * mult
+            except Exception:
+                return None
+
     try:
         return float(text) * 3600.0
     except Exception:
@@ -131,6 +143,93 @@ def build_hyetograph(rows: Iterable[Dict[str, object]]) -> Optional[Hyetograph]:
             cumulative[i] = cumulative[i - 1] + max(0.0, mmph * dt_h)
 
     return Hyetograph(times_s=times, cumulative_mm=cumulative)
+
+
+def inspect_hyetograph_rows(rows: Iterable[Dict[str, object]]) -> Dict[str, object]:
+    """Return diagnostics describing how hyetograph rows will be interpreted."""
+    parsed: List[Tuple[float, float, str, str]] = []
+    total_rows = 0
+    numeric_time_tokens = 0
+    clock_time_tokens = 0
+    suffixed_time_tokens = 0
+    invalid_time_tokens = 0
+
+    for row in rows:
+        total_rows += 1
+        t_raw = row.get("Time")
+        t_s = _parse_time_to_seconds(t_raw)
+        txt = str(t_raw or "").strip().lower()
+        if isinstance(t_raw, (int, float)):
+            numeric_time_tokens += 1
+        elif ":" in txt:
+            clock_time_tokens += 1
+        elif any(txt.endswith(s) for s in ("minutes", "minute", "mins", "min", "m", "hours", "hour", "hrs", "hr", "h", "seconds", "second", "secs", "sec", "s")):
+            suffixed_time_tokens += 1
+        if t_s is None:
+            invalid_time_tokens += 1
+            continue
+
+        value = _to_float(row.get("Value"), default=0.0)
+        units = str(row.get("units") or row.get("Units") or "mm/hr")
+        value_type = _normalize_text(row.get("value_type") or row.get("ValueType") or "intensity")
+        parsed.append((t_s, value, value_type, units))
+
+    out: Dict[str, object] = {
+        "n_rows": int(total_rows),
+        "n_valid": int(len(parsed)),
+        "n_invalid_time": int(invalid_time_tokens),
+        "numeric_time_tokens": int(numeric_time_tokens),
+        "clock_time_tokens": int(clock_time_tokens),
+        "suffixed_time_tokens": int(suffixed_time_tokens),
+        "mode": "unknown",
+        "units": "unknown",
+        "t_start_s": 0.0,
+        "t_end_s": 0.0,
+        "dt_median_s": 0.0,
+        "total_depth_mm": 0.0,
+        "warnings": [],
+    }
+
+    if not parsed:
+        out["warnings"] = ["no valid Time/Value rows"]
+        return out
+
+    parsed.sort(key=lambda x: x[0])
+    times = np.array([p[0] for p in parsed], dtype=np.float64)
+    values = np.array([p[1] for p in parsed], dtype=np.float64)
+    mode = str(parsed[0][2])
+    units = str(parsed[0][3])
+
+    out["mode"] = mode
+    out["units"] = units
+    out["t_start_s"] = float(times[0])
+    out["t_end_s"] = float(times[-1])
+    if times.size > 1:
+        out["dt_median_s"] = float(np.median(np.diff(times)))
+
+    warnings: List[str] = []
+    if mode in ("depth", "depth_inc", "increment", "incremental", "incremental_depth"):
+        inc = np.array([_convert_depth_to_mm(p[1], p[3]) for p in parsed], dtype=np.float64)
+        out["total_depth_mm"] = float(np.sum(np.maximum(inc, 0.0)))
+    elif mode in ("depth_cum", "cumulative", "cumulative_depth"):
+        cum = np.array([_convert_depth_to_mm(p[1], p[3]) for p in parsed], dtype=np.float64)
+        out["total_depth_mm"] = float(np.max(np.maximum(cum, 0.0)))
+    else:
+        total = 0.0
+        for i in range(1, times.size):
+            dt_h = max(0.0, (times[i] - times[i - 1]) / 3600.0)
+            mmph = _convert_intensity_to_mmph(values[i - 1], units)
+            total += max(0.0, mmph * dt_h)
+        out["total_depth_mm"] = float(total)
+
+    if numeric_time_tokens > 0 and clock_time_tokens == 0 and suffixed_time_tokens == 0:
+        warnings.append("numeric Time interpreted as hours; use HH:MM or explicit min/hr suffix to avoid ambiguity")
+
+    if out["dt_median_s"] > 0.0 and out["dt_median_s"] < 10.0:
+        warnings.append("very small time interval detected; verify Time units")
+
+    out["warnings"] = warnings
+    return out
 
 
 def assign_cells_to_nearest_gauge(
