@@ -95,7 +95,7 @@ class DrainageNode:
     max_depth: float
     crest_elev: Optional[float] = None
     rim_elev: Optional[float] = None
-    node_type: str = "junction"  # junction, outfall, storage, inlet
+    node_type: str = "junction"  # junction, outfall, storage, inlet, pipe_end
     # --- Outfall boundary-condition fields (only used when node_type == "outfall") ---
     # outfall_mode choices: "free" | "fixed_wse" | "stage_discharge"
     #   free             – node drains freely; depth reset to 0 each step unless
@@ -187,6 +187,36 @@ class OutfallExchange:
 
 
 @dataclass
+class PipeEndExchange:
+    """Coupling object for a daylighted pipe end located within the 2D mesh.
+
+    A pipe end represents an open pipe terminus that exchanges flow directly
+    with the co-located 2D surface cell — no inlet grate, no invert
+    depression.  Exchange is two-way:
+
+      - Outflow: pipe head > surface WSE  -> flow discharges into 2D cell.
+      - Inflow:  surface WSE > pipe invert -> flow enters pipe from surface.
+
+    Unlike OutfallExchange there is no local manhole storage bucket; the pipe
+    cross-section IS the exchange area (``zero_storage`` is always True).
+    Typical uses: culvert face, daylighted underdrain, storm-sewer stub-out.
+    """
+    pipe_end_id: str
+    cell_id: int
+    node_id: str
+    invert_elev: float
+    diameter: float = 0.0
+    area_m2: float = 0.0
+    coefficient: float = 0.82  # pipe outlet loss coefficient (FHWA Ke)
+    max_flow: Optional[float] = None
+    # Optional empirical minor-loss coefficients applied at daylighted ends
+    # when converting surface head to effective boundary head for routed-link
+    # coupling. Defaults follow common design heuristics.
+    inlet_loss_k: Optional[float] = 0.5
+    outlet_loss_k: Optional[float] = 1.0
+
+
+@dataclass
 class PipeNetworkConfig:
     enabled: bool = False
     nodes: List[DrainageNode] = field(default_factory=list)
@@ -195,6 +225,7 @@ class PipeNetworkConfig:
     node_inlets: List[NodeInletAssignment] = field(default_factory=list)
     inlets: List[InletExchange] = field(default_factory=list)
     outfalls: List[OutfallExchange] = field(default_factory=list)
+    pipe_ends: List[PipeEndExchange] = field(default_factory=list)
     use_swmm_reference_mode: bool = False
     target_cuda_port: bool = False
     gravity: float = 9.81
@@ -519,7 +550,10 @@ class DrainageCouplingEngine:
             self.state.link_flow.setdefault(lnk.link_id, 0.0)
         for n in self.cfg.nodes:
             self.state.node_depth.setdefault(n.node_id, 0.0)
-        self._outfall_exchange_nodes = {o.node_id for o in self.cfg.outfalls}
+        self._outfall_exchange_nodes = (
+            {o.node_id for o in self.cfg.outfalls}
+            | {p.node_id for p in getattr(self.cfg, "pipe_ends", [])}
+        )
         return None
 
     def exchange_step(self, dt: float, cell_wse: Sequence[float]) -> Tuple[List[float], List[float]]:

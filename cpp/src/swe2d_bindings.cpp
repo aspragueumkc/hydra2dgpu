@@ -137,6 +137,13 @@ PYBIND11_MODULE(backwater_swe2d, m) {
               py::array_t<double, py::array::c_style | py::array::forcecast> outfall_coefficient,
               py::array_t<double, py::array::c_style | py::array::forcecast> outfall_max_flow,
               py::array_t<int32_t, py::array::c_style | py::array::forcecast> outfall_zero_storage,
+                  py::array_t<int32_t, py::array::c_style | py::array::forcecast> pipe_end_cell,
+                  py::array_t<int32_t, py::array::c_style | py::array::forcecast> pipe_end_node,
+                  py::array_t<double, py::array::c_style | py::array::forcecast> pipe_end_invert_elev,
+                  py::array_t<double, py::array::c_style | py::array::forcecast> pipe_end_diameter,
+                  py::array_t<double, py::array::c_style | py::array::forcecast> pipe_end_area,
+                  py::array_t<double, py::array::c_style | py::array::forcecast> pipe_end_inlet_loss_k,
+                  py::array_t<double, py::array::c_style | py::array::forcecast> pipe_end_outlet_loss_k,
               py::array_t<double, py::array::c_style | py::array::forcecast> cell_depth,
            py::array_t<double, py::array::c_style | py::array::forcecast> node_depth,
            py::array_t<double, py::array::c_style | py::array::forcecast> link_flow,
@@ -183,6 +190,15 @@ PYBIND11_MODULE(backwater_swe2d, m) {
                 outfall_zero_storage.size() != static_cast<size_t>(n_outfalls)) {
                 throw std::invalid_argument("outfall arrays must have consistent length");
             }
+            const int32_t n_pipe_ends = static_cast<int32_t>(pipe_end_cell.size());
+            if (pipe_end_node.size() != static_cast<size_t>(n_pipe_ends) ||
+                pipe_end_invert_elev.size() != static_cast<size_t>(n_pipe_ends) ||
+                pipe_end_diameter.size() != static_cast<size_t>(n_pipe_ends) ||
+                pipe_end_area.size() != static_cast<size_t>(n_pipe_ends) ||
+                pipe_end_inlet_loss_k.size() != static_cast<size_t>(n_pipe_ends) ||
+                pipe_end_outlet_loss_k.size() != static_cast<size_t>(n_pipe_ends)) {
+                throw std::invalid_argument("pipe_end arrays must have consistent length");
+            }
 
             auto node_depth_out = py::array_t<double>(n_nodes);
             auto link_flow_out = py::array_t<double>(n_links);
@@ -198,6 +214,7 @@ PYBIND11_MODULE(backwater_swe2d, m) {
                 n_links,
                 n_inlets,
                 n_outfalls,
+                n_pipe_ends,
                 cell_wse.data(),
                 cell_area.data(),
                 node_invert_elev.data(),
@@ -222,6 +239,13 @@ PYBIND11_MODULE(backwater_swe2d, m) {
                 outfall_coefficient.data(),
                 outfall_max_flow.data(),
                 outfall_zero_storage.data(),
+                pipe_end_cell.data(),
+                pipe_end_node.data(),
+                pipe_end_invert_elev.data(),
+                pipe_end_diameter.data(),
+                pipe_end_area.data(),
+                pipe_end_inlet_loss_k.data(),
+                pipe_end_outlet_loss_k.data(),
                 (cell_depth.size() == static_cast<size_t>(n_cells)) ? cell_depth.data() : nullptr,
                 node_depth.data(),
                 link_flow.data(),
@@ -269,6 +293,13 @@ PYBIND11_MODULE(backwater_swe2d, m) {
         py::arg("outfall_coefficient"),
         py::arg("outfall_max_flow"),
         py::arg("outfall_zero_storage"),
+        py::arg("pipe_end_cell"),
+        py::arg("pipe_end_node"),
+        py::arg("pipe_end_invert_elev"),
+        py::arg("pipe_end_diameter"),
+        py::arg("pipe_end_area"),
+        py::arg("pipe_end_inlet_loss_k"),
+        py::arg("pipe_end_outlet_loss_k"),
         py::arg("cell_depth"),
         py::arg("node_depth"),
         py::arg("link_flow"),
@@ -320,6 +351,13 @@ PYBIND11_MODULE(backwater_swe2d, m) {
            py::array_t<double, py::array::c_style | py::array::forcecast>,
            py::array_t<double, py::array::c_style | py::array::forcecast>,
            py::array_t<int32_t, py::array::c_style | py::array::forcecast>,
+           py::array_t<int32_t, py::array::c_style | py::array::forcecast>,
+           py::array_t<int32_t, py::array::c_style | py::array::forcecast>,
+           py::array_t<double, py::array::c_style | py::array::forcecast>,
+           py::array_t<double, py::array::c_style | py::array::forcecast>,
+           py::array_t<double, py::array::c_style | py::array::forcecast>,
+           py::array_t<double, py::array::c_style | py::array::forcecast>,
+           py::array_t<double, py::array::c_style | py::array::forcecast>,
            py::array_t<double, py::array::c_style | py::array::forcecast>,
            py::array_t<double, py::array::c_style | py::array::forcecast>,
            py::array_t<double, py::array::c_style | py::array::forcecast>,

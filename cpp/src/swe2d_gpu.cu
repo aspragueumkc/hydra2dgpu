@@ -1519,6 +1519,141 @@ __global__ void swe2d_drainage_node_update_kernel(
     node_depth_out[i] = d1;
 }
 
+__global__ void swe2d_drainage_pipe_end_qleave_kernel(
+    int32_t n_links,
+    const int32_t* __restrict__ link_from,
+    const int32_t* __restrict__ link_to,
+    const double* __restrict__ link_flow_prev,
+    double* __restrict__ node_qleave)
+{
+    const int32_t i = blockIdx.x * blockDim.x + threadIdx.x;
+    if (i >= n_links) return;
+    const int32_t n0 = link_from[i];
+    const int32_t n1 = link_to[i];
+    if (n0 < 0 || n1 < 0) return;
+    const double q = link_flow_prev ? link_flow_prev[i] : 0.0;
+    if (!isfinite(q) || q == 0.0) return;
+    // Positive q is defined from link_from -> link_to.
+    atomicAdd(&node_qleave[n0], q);
+    atomicAdd(&node_qleave[n1], -q);
+}
+
+__global__ void swe2d_drainage_pipe_end_bc_kernel(
+    int32_t n_pipe_ends,
+    int32_t n_cells,
+    const int32_t* __restrict__ pipe_end_cell,
+    const int32_t* __restrict__ pipe_end_node,
+    const double* __restrict__ pipe_end_invert_elev,
+    const double* __restrict__ pipe_end_diameter,
+    const double* __restrict__ pipe_end_area,
+    const double* __restrict__ pipe_end_inlet_loss_k,
+    const double* __restrict__ pipe_end_outlet_loss_k,
+    const double* __restrict__ cell_wse,
+    const double* __restrict__ node_invert_elev,
+    const double* __restrict__ node_surface_area,
+    const double* __restrict__ node_qleave,
+    double gravity,
+    double* __restrict__ node_depth,
+    double* __restrict__ pipe_end_depth_bc,
+    double* __restrict__ pipe_end_node_area)
+{
+    const int32_t i = blockIdx.x * blockDim.x + threadIdx.x;
+    if (i >= n_pipe_ends) return;
+    const int32_t c = pipe_end_cell[i];
+    const int32_t n = pipe_end_node[i];
+    if (c < 0 || c >= n_cells || n < 0) {
+        pipe_end_depth_bc[i] = 0.0;
+        pipe_end_node_area[i] = 1.0;
+        return;
+    }
+
+    const double invert = pipe_end_invert_elev[i];
+    const double area_node = fmax(1.0, node_surface_area[n]);
+    const double wse_surface = cell_wse[c];
+    const double node_head = node_invert_elev[n] + fmax(0.0, node_depth[n]);
+
+    double area_pipe = fmax(0.0, pipe_end_area[i]);
+    if (area_pipe <= 0.0) {
+        const double d_pipe = fmax(0.0, pipe_end_diameter[i]);
+        area_pipe = (d_pipe > 0.0) ? (0.25 * M_PI * d_pipe * d_pipe) : 0.0;
+    }
+
+    const double q_leave = node_qleave ? node_qleave[n] : 0.0;
+    bool flow_surface_to_network = false;
+    if (fabs(q_leave) <= 1.0e-12) {
+        flow_surface_to_network = (wse_surface >= node_head);
+    } else {
+        flow_surface_to_network = (q_leave >= 0.0);
+    }
+
+    const double k_in = fmax(0.0, pipe_end_inlet_loss_k[i]);
+    const double k_out = fmax(0.0, pipe_end_outlet_loss_k[i]);
+    const double k_use = flow_surface_to_network ? k_in : k_out;
+
+    double h_loss = 0.0;
+    if (area_pipe > 0.0) {
+        const double vel = fabs(q_leave) / fmax(area_pipe, 1.0e-12);
+        h_loss = k_use * vel * vel / (2.0 * fmax(gravity, 1.0e-9));
+    }
+    const double wse_eff = fmax(invert, wse_surface - h_loss);
+    const double d_bc = fmax(0.0, wse_eff - invert);
+    node_depth[n] = d_bc;
+    pipe_end_depth_bc[i] = d_bc;
+    pipe_end_node_area[i] = area_node;
+}
+
+__global__ void swe2d_drainage_pipe_end_exchange_kernel(
+    int32_t n_pipe_ends,
+    int32_t n_cells,
+    const int32_t* __restrict__ pipe_end_cell,
+    const int32_t* __restrict__ pipe_end_node,
+    const double* __restrict__ pipe_end_depth_bc,
+    const double* __restrict__ pipe_end_node_area,
+    const double* __restrict__ cell_area,
+    const double* __restrict__ cell_depth,
+    const double* __restrict__ node_max_depth,
+    double dt_s,
+    const double* __restrict__ node_depth,
+    double* __restrict__ q_cell,
+    double* __restrict__ node_depth_write,
+    double* __restrict__ limiter_event_count,
+    double* __restrict__ limiter_volume_m3)
+{
+    const int32_t i = blockIdx.x * blockDim.x + threadIdx.x;
+    if (i >= n_pipe_ends) return;
+    const int32_t c = pipe_end_cell[i];
+    const int32_t n = pipe_end_node[i];
+    if (c < 0 || c >= n_cells || n < 0) return;
+
+    const double d_bc = fmax(0.0, pipe_end_depth_bc[i]);
+    const double area_node = fmax(1.0, pipe_end_node_area[i]);
+    const double d_after = fmax(0.0, node_depth[n]);
+    const double delta_vol = (d_after - d_bc) * area_node;
+    double q_net = (dt_s > 0.0) ? (delta_vol / dt_s) : 0.0;
+
+    if (q_net > 0.0) {
+        atomicAdd(&q_cell[c], q_net);
+        return;
+    }
+    if (q_net >= 0.0) return;
+
+    // Surface -> network sink, apply availability limiter.
+    double q_in = -q_net;
+    if (cell_depth && cell_area) {
+        const double avail_surface_vol = fmax(0.0, cell_depth[c]) * fmax(0.0, cell_area[c]);
+        const double q_cap_surface = (dt_s > 0.0) ? (avail_surface_vol / dt_s) : 0.0;
+        if (q_in > q_cap_surface) {
+            if (limiter_event_count) atomicAdd(limiter_event_count, 1.0);
+            if (limiter_volume_m3) atomicAdd(limiter_volume_m3, fmax(0.0, q_in - q_cap_surface) * dt_s);
+            q_in = q_cap_surface;
+        }
+    }
+    atomicAdd(&q_cell[c], -q_in);
+
+    const double d_reconciled = d_bc + q_in * dt_s / area_node;
+    node_depth_write[n] = fmax(0.0, fmin(node_max_depth[n], d_reconciled));
+}
+
 __global__ void swe2d_drainage_inlet_exchange_kernel(
     int32_t n_inlets,
     int32_t n_cells,
@@ -2431,6 +2566,20 @@ void swe2d_gpu_step_rk2(
                    false,
                    &tmp_diag,
                    front_flux_damping, active_set_hysteresis);
+
+    // Save CN cumulative state at t+dt so RK2 source prediction in the second
+    // stage does not commit cumulative rainfall/excess through t+2dt.
+    const bool has_rain_cn_state = (
+        dev->d_rain_cum_mm &&
+        dev->d_rain_excess_cum_mm &&
+        dev->d_h1 &&
+        dev->d_h2
+    );
+    if (has_rain_cn_state) {
+        CUDA_CHECK(cudaMemcpyAsync(dev->d_h1, dev->d_rain_cum_mm, sz, cudaMemcpyDeviceToDevice, dev->d_stream));
+        CUDA_CHECK(cudaMemcpyAsync(dev->d_h2, dev->d_rain_excess_cum_mm, sz, cudaMemcpyDeviceToDevice, dev->d_stream));
+    }
+
     swe2d_gpu_step(dev, t_now + dt, dt, g, h_min, spatial_scheme, cfl_factor,
                    max_inv_area, cfl_lambda_cap,
                    momentum_cap_min_speed, momentum_cap_celerity_mult,
@@ -2451,6 +2600,12 @@ void swe2d_gpu_step_rk2(
         dev->d_max_wse_elev_error,
         h_min);
     CUDA_CHECK(cudaGetLastError());
+
+    if (has_rain_cn_state) {
+        CUDA_CHECK(cudaMemcpyAsync(dev->d_rain_cum_mm, dev->d_h1, sz, cudaMemcpyDeviceToDevice, dev->d_stream));
+        CUDA_CHECK(cudaMemcpyAsync(dev->d_rain_excess_cum_mm, dev->d_h2, sz, cudaMemcpyDeviceToDevice, dev->d_stream));
+    }
+
     CUDA_CHECK(cudaMemsetAsync(dev->d_lambda_max, 0, sizeof(double), dev->d_stream));
     const int edge_grid = (dev->n_edges + BLOCK - 1) / BLOCK;
     swe2d_cfl_kernel<<<edge_grid, BLOCK, BLOCK * static_cast<int>(sizeof(double)), dev->d_stream>>>(
@@ -3055,6 +3210,7 @@ void swe2d_gpu_drainage_step(
     int32_t n_links,
     int32_t n_inlets,
     int32_t n_outfalls,
+    int32_t n_pipe_ends,
     const double* cell_wse,
     const double* cell_area,
     const double* node_invert_elev,
@@ -3079,6 +3235,13 @@ void swe2d_gpu_drainage_step(
     const double* outfall_coefficient,
     const double* outfall_max_flow,
     const int32_t* outfall_zero_storage,
+    const int32_t* pipe_end_cell,
+    const int32_t* pipe_end_node,
+    const double* pipe_end_invert_elev,
+    const double* pipe_end_diameter,
+    const double* pipe_end_area,
+    const double* pipe_end_inlet_loss_k,
+    const double* pipe_end_outlet_loss_k,
     const double* cell_depth,
     const double* node_depth_in,
     const double* link_flow_in,
@@ -3099,8 +3262,10 @@ void swe2d_gpu_drainage_step(
         !link_from || !link_to || !link_length || !link_roughness_n || !link_diameter || !link_max_flow ||
         !inlet_cell || !inlet_node || !inlet_crest_elev || !inlet_width || !inlet_coefficient || !inlet_max_capture ||
         !outfall_cell || !outfall_node || !outfall_invert_elev || !outfall_diameter || !outfall_coefficient || !outfall_max_flow || !outfall_zero_storage ||
+        !pipe_end_cell || !pipe_end_node || !pipe_end_invert_elev || !pipe_end_diameter || !pipe_end_area ||
+        !pipe_end_inlet_loss_k || !pipe_end_outlet_loss_k ||
         !node_depth_in || !link_flow_in || !node_depth_out || !link_flow_out || !q_cell_out ||
-        n_cells < 0 || n_nodes < 0 || n_links < 0 || n_inlets < 0 || n_outfalls < 0) {
+        n_cells < 0 || n_nodes < 0 || n_links < 0 || n_inlets < 0 || n_outfalls < 0 || n_pipe_ends < 0) {
         throw std::invalid_argument("swe2d_gpu_drainage_step: invalid arguments");
     }
 
@@ -3123,6 +3288,10 @@ void swe2d_gpu_drainage_step(
     double *d_i_crest = nullptr, *d_i_width = nullptr, *d_i_cd = nullptr, *d_i_qmax = nullptr;
     int32_t *d_o_cell = nullptr, *d_o_node = nullptr, *d_o_zero_storage = nullptr;
     double *d_o_invert = nullptr, *d_o_diameter = nullptr, *d_o_cd = nullptr, *d_o_qmax = nullptr;
+    int32_t *d_p_cell = nullptr, *d_p_node = nullptr;
+    double *d_p_invert = nullptr, *d_p_diameter = nullptr, *d_p_area = nullptr;
+    double *d_p_kin = nullptr, *d_p_kout = nullptr;
+    double *d_p_depth_bc = nullptr, *d_p_node_area = nullptr, *d_node_qleave = nullptr;
     double *d_q_cell = nullptr;
     double *d_limiter_events = nullptr, *d_limiter_volume = nullptr;
 
@@ -3193,12 +3362,61 @@ void swe2d_gpu_drainage_step(
         CUDA_CHECK(cudaMemcpy(d_o_qmax, outfall_max_flow, static_cast<size_t>(n_outfalls) * sizeof(double), cudaMemcpyHostToDevice));
         CUDA_CHECK(cudaMemcpy(d_o_zero_storage, outfall_zero_storage, static_cast<size_t>(n_outfalls) * sizeof(int32_t), cudaMemcpyHostToDevice));
 
+        CUDA_CHECK(cudaMalloc(reinterpret_cast<void**>(&d_p_cell), static_cast<size_t>(n_pipe_ends) * sizeof(int32_t)));
+        CUDA_CHECK(cudaMalloc(reinterpret_cast<void**>(&d_p_node), static_cast<size_t>(n_pipe_ends) * sizeof(int32_t)));
+        CUDA_CHECK(cudaMalloc(reinterpret_cast<void**>(&d_p_invert), static_cast<size_t>(n_pipe_ends) * sizeof(double)));
+        CUDA_CHECK(cudaMalloc(reinterpret_cast<void**>(&d_p_diameter), static_cast<size_t>(n_pipe_ends) * sizeof(double)));
+        CUDA_CHECK(cudaMalloc(reinterpret_cast<void**>(&d_p_area), static_cast<size_t>(n_pipe_ends) * sizeof(double)));
+        CUDA_CHECK(cudaMalloc(reinterpret_cast<void**>(&d_p_kin), static_cast<size_t>(n_pipe_ends) * sizeof(double)));
+        CUDA_CHECK(cudaMalloc(reinterpret_cast<void**>(&d_p_kout), static_cast<size_t>(n_pipe_ends) * sizeof(double)));
+        CUDA_CHECK(cudaMalloc(reinterpret_cast<void**>(&d_p_depth_bc), static_cast<size_t>(n_pipe_ends) * sizeof(double)));
+        CUDA_CHECK(cudaMalloc(reinterpret_cast<void**>(&d_p_node_area), static_cast<size_t>(n_pipe_ends) * sizeof(double)));
+        CUDA_CHECK(cudaMemcpy(d_p_cell, pipe_end_cell, static_cast<size_t>(n_pipe_ends) * sizeof(int32_t), cudaMemcpyHostToDevice));
+        CUDA_CHECK(cudaMemcpy(d_p_node, pipe_end_node, static_cast<size_t>(n_pipe_ends) * sizeof(int32_t), cudaMemcpyHostToDevice));
+        CUDA_CHECK(cudaMemcpy(d_p_invert, pipe_end_invert_elev, static_cast<size_t>(n_pipe_ends) * sizeof(double), cudaMemcpyHostToDevice));
+        CUDA_CHECK(cudaMemcpy(d_p_diameter, pipe_end_diameter, static_cast<size_t>(n_pipe_ends) * sizeof(double), cudaMemcpyHostToDevice));
+        CUDA_CHECK(cudaMemcpy(d_p_area, pipe_end_area, static_cast<size_t>(n_pipe_ends) * sizeof(double), cudaMemcpyHostToDevice));
+        CUDA_CHECK(cudaMemcpy(d_p_kin, pipe_end_inlet_loss_k, static_cast<size_t>(n_pipe_ends) * sizeof(double), cudaMemcpyHostToDevice));
+        CUDA_CHECK(cudaMemcpy(d_p_kout, pipe_end_outlet_loss_k, static_cast<size_t>(n_pipe_ends) * sizeof(double), cudaMemcpyHostToDevice));
+        CUDA_CHECK(cudaMalloc(reinterpret_cast<void**>(&d_node_qleave), static_cast<size_t>(n_nodes) * sizeof(double)));
+        CUDA_CHECK(cudaMemset(d_node_qleave, 0, static_cast<size_t>(n_nodes) * sizeof(double)));
+
         CUDA_CHECK(cudaMalloc(reinterpret_cast<void**>(&d_q_cell), static_cast<size_t>(n_cells) * sizeof(double)));
         CUDA_CHECK(cudaMemset(d_q_cell, 0, static_cast<size_t>(n_cells) * sizeof(double)));
         CUDA_CHECK(cudaMalloc(reinterpret_cast<void**>(&d_limiter_events), sizeof(double)));
         CUDA_CHECK(cudaMalloc(reinterpret_cast<void**>(&d_limiter_volume), sizeof(double)));
         CUDA_CHECK(cudaMemset(d_limiter_events, 0, sizeof(double)));
         CUDA_CHECK(cudaMemset(d_limiter_volume, 0, sizeof(double)));
+
+        if (n_links > 0) {
+            const int grid_links = (n_links + BLOCK - 1) / BLOCK;
+            swe2d_drainage_pipe_end_qleave_kernel<<<grid_links, BLOCK>>>(
+                n_links, d_l_from, d_l_to, d_l_q_prev, d_node_qleave);
+            CUDA_CHECK(cudaGetLastError());
+        }
+
+        if (n_pipe_ends > 0) {
+            const int grid_pipe_ends = (n_pipe_ends + BLOCK - 1) / BLOCK;
+            swe2d_drainage_pipe_end_bc_kernel<<<grid_pipe_ends, BLOCK>>>(
+                n_pipe_ends,
+                n_cells,
+                d_p_cell,
+                d_p_node,
+                d_p_invert,
+                d_p_diameter,
+                d_p_area,
+                d_p_kin,
+                d_p_kout,
+                d_cell_wse,
+                d_node_inv,
+                d_node_area,
+                d_node_qleave,
+                gravity,
+                d_node_depth,
+                d_p_depth_bc,
+                d_p_node_area);
+            CUDA_CHECK(cudaGetLastError());
+        }
 
         if (n_links > 0) {
             const int grid_links = (n_links + BLOCK - 1) / BLOCK;
@@ -3214,6 +3432,27 @@ void swe2d_gpu_drainage_step(
         swe2d_drainage_node_update_kernel<<<grid_nodes, BLOCK>>>(
             n_nodes, d_node_maxd, d_node_area, d_node_net_q, d_node_depth, dt_s, d_node_depth);
         CUDA_CHECK(cudaGetLastError());
+
+        if (n_pipe_ends > 0) {
+            const int grid_pipe_ends = (n_pipe_ends + BLOCK - 1) / BLOCK;
+            swe2d_drainage_pipe_end_exchange_kernel<<<grid_pipe_ends, BLOCK>>>(
+                n_pipe_ends,
+                n_cells,
+                d_p_cell,
+                d_p_node,
+                d_p_depth_bc,
+                d_p_node_area,
+                d_cell_area,
+                d_cell_depth,
+                d_node_maxd,
+                dt_s,
+                d_node_depth,
+                d_q_cell,
+                d_node_depth,
+                d_limiter_events,
+                d_limiter_volume);
+            CUDA_CHECK(cudaGetLastError());
+        }
 
         if (n_inlets > 0) {
             const int grid_inlets = (n_inlets + BLOCK - 1) / BLOCK;
@@ -3333,6 +3572,16 @@ void swe2d_gpu_drainage_step(
     if (d_o_cd) cudaFree(d_o_cd);
     if (d_o_qmax) cudaFree(d_o_qmax);
     if (d_o_zero_storage) cudaFree(d_o_zero_storage);
+    if (d_p_cell) cudaFree(d_p_cell);
+    if (d_p_node) cudaFree(d_p_node);
+    if (d_p_invert) cudaFree(d_p_invert);
+    if (d_p_diameter) cudaFree(d_p_diameter);
+    if (d_p_area) cudaFree(d_p_area);
+    if (d_p_kin) cudaFree(d_p_kin);
+    if (d_p_kout) cudaFree(d_p_kout);
+    if (d_p_depth_bc) cudaFree(d_p_depth_bc);
+    if (d_p_node_area) cudaFree(d_p_node_area);
+    if (d_node_qleave) cudaFree(d_node_qleave);
     if (d_q_cell) cudaFree(d_q_cell);
     if (d_limiter_events) cudaFree(d_limiter_events);
     if (d_limiter_volume) cudaFree(d_limiter_volume);

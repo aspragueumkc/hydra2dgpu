@@ -85,6 +85,13 @@ class SWE2DDrainageSoA:
     outfall_coefficient: np.ndarray
     outfall_max_flow: np.ndarray
     outfall_zero_storage: np.ndarray
+    pipe_end_cell: np.ndarray
+    pipe_end_node: np.ndarray
+    pipe_end_invert_elev: np.ndarray
+    pipe_end_diameter: np.ndarray
+    pipe_end_area: np.ndarray
+    pipe_end_inlet_loss_k: np.ndarray
+    pipe_end_outlet_loss_k: np.ndarray
     solver_mode: int = int(DrainageSolverMode.EGL)
 
 
@@ -124,6 +131,7 @@ def pack_pipe_network_soa(cfg: Optional[PipeNetworkConfig], n_cells: int) -> Opt
     nl = len(cfg.links)
     ni = len(cfg.inlets)
     no = len(cfg.outfalls)
+    np_end = len(getattr(cfg, "pipe_ends", []))
 
     node_x = np.zeros(nn, dtype=np.float64)
     node_y = np.zeros(nn, dtype=np.float64)
@@ -200,6 +208,25 @@ def pack_pipe_network_soa(cfg: Optional[PipeNetworkConfig], n_cells: int) -> Opt
         outfall_max_flow[i] = np.nan if ot.max_flow is None else float(ot.max_flow)
         outfall_zero_storage[i] = 1 if bool(getattr(ot, "zero_storage", False)) else 0
 
+    pipe_end_cell = np.full(np_end, -1, dtype=np.int32)
+    pipe_end_node = np.full(np_end, -1, dtype=np.int32)
+    pipe_end_invert_elev = np.zeros(np_end, dtype=np.float64)
+    pipe_end_diameter = np.zeros(np_end, dtype=np.float64)
+    pipe_end_area = np.zeros(np_end, dtype=np.float64)
+    pipe_end_inlet_loss_k = np.full(np_end, 0.5, dtype=np.float64)
+    pipe_end_outlet_loss_k = np.full(np_end, 1.0, dtype=np.float64)
+    for i, pe in enumerate(getattr(cfg, "pipe_ends", [])):
+        ci = int(pe.cell_id)
+        pipe_end_cell[i] = ci if 0 <= ci < int(n_cells) else -1
+        pipe_end_node[i] = int(node_idx.get(pe.node_id, -1))
+        pipe_end_invert_elev[i] = float(pe.invert_elev)
+        pipe_end_diameter[i] = float(getattr(pe, "diameter", 0.0) or 0.0)
+        pipe_end_area[i] = float(getattr(pe, "area_m2", 0.0) or 0.0)
+        kin = getattr(pe, "inlet_loss_k", 0.5)
+        kout = getattr(pe, "outlet_loss_k", 1.0)
+        pipe_end_inlet_loss_k[i] = 0.5 if kin is None else float(kin)
+        pipe_end_outlet_loss_k[i] = 1.0 if kout is None else float(kout)
+
     return SWE2DDrainageSoA(
         node_x=node_x,
         node_y=node_y,
@@ -226,6 +253,13 @@ def pack_pipe_network_soa(cfg: Optional[PipeNetworkConfig], n_cells: int) -> Opt
         outfall_coefficient=outfall_coefficient,
         outfall_max_flow=outfall_max_flow,
         outfall_zero_storage=outfall_zero_storage,
+        pipe_end_cell=pipe_end_cell,
+        pipe_end_node=pipe_end_node,
+        pipe_end_invert_elev=pipe_end_invert_elev,
+        pipe_end_diameter=pipe_end_diameter,
+        pipe_end_area=pipe_end_area,
+        pipe_end_inlet_loss_k=pipe_end_inlet_loss_k,
+        pipe_end_outlet_loss_k=pipe_end_outlet_loss_k,
         solver_mode=int(getattr(cfg, "solver_mode", DrainageSolverMode.EGL)),
     )
 
@@ -415,7 +449,9 @@ class SWE2DCouplingController:
         structure_diag: Dict[str, float] = {}
 
         if self.drainage is not None:
-            drainage_diag = self.drainage.solve_network_step(float(dt_s))
+            has_pipe_end_routing = bool(getattr(self.drainage.cfg, "pipe_ends", []))
+            if not has_pipe_end_routing:
+                drainage_diag = self.drainage.solve_network_step(float(dt_s))
             src = np.asarray(
                 self.drainage.surface_exchange_source_rate(
                     float(dt_s),
@@ -425,6 +461,8 @@ class SWE2DCouplingController:
                 ),
                 dtype=np.float64,
             )
+            if has_pipe_end_routing:
+                drainage_diag = dict(getattr(self.drainage, "_last_network_diag", {}))
             if src.size != self.n_cells:
                 raise ValueError("drainage source-rate array size mismatch")
             total += src
@@ -524,6 +562,13 @@ class SWE2DCouplingController:
                             np.asarray(dsoa.outfall_coefficient, dtype=np.float64),
                             np.asarray(dsoa.outfall_max_flow, dtype=np.float64),
                             np.asarray(dsoa.outfall_zero_storage, dtype=np.int32),
+                            np.asarray(dsoa.pipe_end_cell, dtype=np.int32),
+                            np.asarray(dsoa.pipe_end_node, dtype=np.int32),
+                            np.asarray(dsoa.pipe_end_invert_elev, dtype=np.float64),
+                            np.asarray(dsoa.pipe_end_diameter, dtype=np.float64),
+                            np.asarray(dsoa.pipe_end_area, dtype=np.float64),
+                            np.asarray(dsoa.pipe_end_inlet_loss_k, dtype=np.float64),
+                            np.asarray(dsoa.pipe_end_outlet_loss_k, dtype=np.float64),
                             np.asarray(hh_iter, dtype=np.float64),
                             nd_state,
                             lf_state,
@@ -560,7 +605,11 @@ class SWE2DCouplingController:
                     "substeps_used": float(n_substeps),
                 }
             else:
-                drainage_step_diag = self.drainage.solve_network_step(float(dt_s))
+                has_pipe_end_routing = bool(getattr(self.drainage.cfg, "pipe_ends", []))
+                if not has_pipe_end_routing:
+                    drainage_step_diag = self.drainage.solve_network_step(float(dt_s))
+                else:
+                    drainage_step_diag = {}
                 q_cell = np.asarray(
                     self.drainage.apply_surface_exchange(
                         float(dt_s),
@@ -570,6 +619,8 @@ class SWE2DCouplingController:
                     ),
                     dtype=np.float64,
                 )
+                if has_pipe_end_routing:
+                    drainage_step_diag = dict(getattr(self.drainage, "_last_network_diag", {}))
                 drainage_diag = {
                     "max_node_depth": float(drainage_step_diag.get("max_node_depth", 0.0)),
                     "max_link_flow": float(drainage_step_diag.get("max_link_flow", 0.0)),

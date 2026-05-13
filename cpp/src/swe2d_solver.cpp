@@ -941,9 +941,15 @@ SWE2DStepDiag swe2d_step(SWE2DSolver* s, double dt_request) {
     std::vector<double> h0 = s->h;
     std::vector<double> hu0 = s->hu;
     std::vector<double> hv0 = s->hv;
+    std::vector<double> rain_cum_stage1;
+    std::vector<double> rain_excess_stage1;
 
     apply_solver_boundary_hydrographs(s, t_now);
     build_solver_rain_cn_source(s, t_now, t_now + dt);
+    if (s->rain_cn_enabled) {
+        rain_cum_stage1 = s->rain_cum_mm;
+        rain_excess_stage1 = s->rain_excess_cum_mm;
+    }
     swe2d_step_cpu(s, dt);
     apply_solver_boundary_hydrographs(s, t_now + dt);
     build_solver_rain_cn_source(s, t_now + dt, t_now + 2.0 * dt);
@@ -965,6 +971,15 @@ SWE2DStepDiag swe2d_step(SWE2DSolver* s, double dt_request) {
         if (depth_res > max_depth_residual) {
             max_depth_residual = depth_res;
         }
+    }
+
+    // RK2 advances physical time by dt, so keep cumulative CN state at t+dt
+    // (the second stage source evaluation should not commit cumulative totals).
+    if (s->rain_cn_enabled &&
+        rain_cum_stage1.size() == s->rain_cum_mm.size() &&
+        rain_excess_stage1.size() == s->rain_excess_cum_mm.size()) {
+        s->rain_cum_mm.swap(rain_cum_stage1);
+        s->rain_excess_cum_mm.swap(rain_excess_stage1);
     }
 
     SWE2DStepDiag diag = summarize_state(s, dt, false, max_depth_residual);

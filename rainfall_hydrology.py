@@ -283,6 +283,13 @@ class SCSCurveNumberLoss:
         self.cumulative_excess_mm = new_excess
         return inc_excess
 
+    def preview_step(self, rain_mm: np.ndarray) -> np.ndarray:
+        """Compute incremental excess without mutating cumulative CN state."""
+        r = np.maximum(np.asarray(rain_mm, dtype=np.float64), 0.0)
+        preview_cum_rain = self.cumulative_rain_mm + r
+        new_excess = scs_cumulative_excess_mm(preview_cum_rain, self.curve_number, ia_ratio=self.ia_ratio)
+        return np.maximum(new_excess - self.cumulative_excess_mm, 0.0)
+
 
 class ThiessenRainCNForcing:
     """Maps rain gages to cells (Thiessen nearest gage) and applies CN losses."""
@@ -298,7 +305,7 @@ class ThiessenRainCNForcing:
         self.gauge_hyetographs = dict(gauge_hyetographs)
         self.cn_model = SCSCurveNumberLoss(curve_number=np.asarray(curve_number, dtype=np.float64), ia_ratio=ia_ratio)
 
-    def step_net_rainfall_mps(self, t0_s: float, t1_s: float) -> Tuple[np.ndarray, Dict[str, float]]:
+    def _window_rain_mm(self, t0_s: float, t1_s: float) -> Tuple[np.ndarray, float]:
         dt_s = max(1.0e-9, float(t1_s) - float(t0_s))
         rain_mm = np.zeros(self.cell_to_gauge.shape[0], dtype=np.float64)
 
@@ -310,7 +317,11 @@ class ThiessenRainCNForcing:
             depth_mm = hy.depth_between_mm(t0_s, t1_s)
             rain_mm[self.cell_to_gauge == int(gi)] = max(0.0, depth_mm)
 
-        excess_mm = self.cn_model.step(rain_mm)
+        return rain_mm, dt_s
+
+    def step_net_rainfall_mps(self, t0_s: float, t1_s: float, mutate_state: bool = True) -> Tuple[np.ndarray, Dict[str, float]]:
+        rain_mm, dt_s = self._window_rain_mm(t0_s, t1_s)
+        excess_mm = self.cn_model.step(rain_mm) if mutate_state else self.cn_model.preview_step(rain_mm)
         rate_mps = (excess_mm / 1000.0) / dt_s
 
         stats = {

@@ -13,6 +13,7 @@ from swe2d_extensions import (
     DrainageSolverMode,
     InletExchange,
     OutfallExchange,
+    PipeEndExchange,
     PipeNetworkConfig,
     circular_area_from_diameter,
     circular_section_from_depth,
@@ -128,6 +129,44 @@ class SWE2DUrbanDrainageModule(DrainageCouplingEngine):
         if dt_s <= 0.0:
             return 0.0
         return min(float(q_cms), max(0.0, float(available_volume_m3)) / float(dt_s))
+
+    def _pipe_end_area_m2(self, pe: PipeEndExchange) -> float:
+        area_pipe = max(0.0, float(getattr(pe, "area_m2", 0.0) or 0.0))
+        if area_pipe <= 0.0:
+            d_pipe = max(0.0, float(pe.diameter))
+            area_pipe = circular_area_from_diameter(d_pipe) if d_pipe > 0.0 else 0.0
+        return area_pipe
+
+    def _pipe_end_flow_leaving_node(self, node_id: str) -> float:
+        """Return positive flow when the node discharges into its connected link(s)."""
+        q_leave = 0.0
+        for link in self._links_from.get(node_id, []):
+            q_leave += float(self.state.link_flow.get(link.link_id, 0.0))
+        for link in self._links_to.get(node_id, []):
+            q_leave -= float(self.state.link_flow.get(link.link_id, 0.0))
+        return q_leave
+
+    def _pipe_end_effective_surface_head(self, pe: PipeEndExchange, node: DrainageNode, wse_surface: float, g: float) -> float:
+        """Apply optional empirical inlet/outlet end-losses to the imposed boundary head."""
+        area_pipe = self._pipe_end_area_m2(pe)
+        if area_pipe <= 0.0:
+            return float(wse_surface)
+
+        q_leave = self._pipe_end_flow_leaving_node(node.node_id)
+        node_head = self._node_head(node)
+        if abs(q_leave) <= 1.0e-12:
+            # No strong directional signal yet; infer direction from current head.
+            flow_surface_to_network = float(wse_surface) >= float(node_head)
+        else:
+            flow_surface_to_network = q_leave >= 0.0
+
+        k_in = float(getattr(pe, "inlet_loss_k", 0.5) if getattr(pe, "inlet_loss_k", None) is not None else 0.5)
+        k_out = float(getattr(pe, "outlet_loss_k", 1.0) if getattr(pe, "outlet_loss_k", None) is not None else 1.0)
+        k_use = k_in if flow_surface_to_network else k_out
+
+        velocity = abs(q_leave) / max(area_pipe, 1.0e-12)
+        h_loss = max(0.0, k_use) * velocity * velocity / (2.0 * max(g, 1.0e-9))
+        return max(float(node.invert_elev), float(wse_surface) - h_loss)
 
     def _adaptive_substep_count(self, dt_s: float, solver_mode: DrainageSolverMode) -> int:
         if dt_s <= 0.0 or not self.cfg.nodes:
@@ -481,7 +520,7 @@ class SWE2DUrbanDrainageModule(DrainageCouplingEngine):
             max_node_depth=max_depth,
             max_link_flow=max_q,
         )
-        return {
+        diag_dict = {
             "dt":                  diag.dt_s,
             "substeps_used":       substeps,
             "net_node_inflow":     diag.net_node_inflow,
@@ -492,6 +531,8 @@ class SWE2DUrbanDrainageModule(DrainageCouplingEngine):
             "max_node_depth_m":    diag.max_node_depth,
             "max_link_flow_cms":   diag.max_link_flow,
         }
+        self._last_network_diag = diag_dict
+        return diag_dict
 
     def exchange_step(
         self,
@@ -510,6 +551,49 @@ class SWE2DUrbanDrainageModule(DrainageCouplingEngine):
         deadband = self._head_deadband()
         area_arr = None if cell_area_m2 is None else list(cell_area_m2)
         depth_arr = None if cell_depth_m is None else list(cell_depth_m)
+
+        # Route daylighted pipe-end links with surface-head boundary conditions.
+        # This path performs BC injection -> 1D solve -> mapped 2D source/sink.
+        # It replaces the old independent per-end orifice behavior.
+        pipe_end_snapshots: List[Tuple[PipeEndExchange, DrainageNode, int, float, float]] = []
+        pipe_ends = list(getattr(self.cfg, "pipe_ends", []))
+        if pipe_ends:
+            for pe in pipe_ends:
+                ci = int(pe.cell_id)
+                if ci < 0 or ci >= n_cells:
+                    continue
+                try:
+                    node = self._node_by_id(pe.node_id)
+                except KeyError:
+                    continue
+
+                node_area = self._node_area_m2(node.node_id)
+                wse_surface = float(cell_wse[ci])
+                wse_eff = self._pipe_end_effective_surface_head(pe, node, wse_surface, g)
+                d_bc = max(0.0, min(float(node.max_depth), wse_eff - float(node.invert_elev)))
+                self.state.node_depth[node.node_id] = d_bc
+                pipe_end_snapshots.append((pe, node, ci, d_bc, node_area))
+
+            if pipe_end_snapshots:
+                self.solve_network_step(dt_s)
+
+                for _pe, node, ci, d_bc, node_area in pipe_end_snapshots:
+                    d_after = max(0.0, float(self.state.node_depth.get(node.node_id, 0.0)))
+                    delta_vol = (d_after - d_bc) * node_area
+                    q_net = delta_vol / dt_s  # >0 source to 2D, <0 sink from 2D
+                    if q_net > 0.0:
+                        sources[ci] += q_net
+                    elif q_net < 0.0:
+                        q_in = -q_net
+                        if area_arr is not None and depth_arr is not None and ci < len(area_arr) and ci < len(depth_arr):
+                            available_surface_volume = max(0.0, float(area_arr[ci])) * max(0.0, float(depth_arr[ci]))
+                            q_in = self._limit_flow_by_volume(q_in, available_surface_volume, dt_s)
+                            # Keep node state consistent with the limited exchange volume.
+                            self.state.node_depth[node.node_id] = min(
+                                float(node.max_depth),
+                                max(0.0, d_bc + q_in * dt_s / max(node_area, 1.0e-12)),
+                            )
+                        sinks[ci] += q_in
 
         for inlet in self.cfg.inlets:
             ci = int(inlet.cell_id)
@@ -722,6 +806,7 @@ __all__ = [
     "DrainageSolverMode",
     "InletExchange",
     "OutfallExchange",
+    "PipeEndExchange",
     "PipeNetworkConfig",
     "SWE2DUrbanDrainageModule",
 ]

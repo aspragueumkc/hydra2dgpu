@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import os
 import sys
+import inspect
 import numpy as np
 from typing import Callable, Dict, List, Optional, Tuple
 
@@ -138,6 +139,48 @@ class SWE2DBackend:
 
         # Last step diagnostics
         self._last_diag: Optional[dict] = None
+
+    def _create_solver_compat(self, *args, **kwargs):
+        """Call swe2d_create_solver with kwargs compatible with loaded extension."""
+        try:
+            return self._mod.swe2d_create_solver(*args, **kwargs)
+        except TypeError as exc:
+            # pybind11 emits this for signature mismatches (often when Python
+            # passes newer kwargs to an older compiled extension).
+            if "incompatible function arguments" not in str(exc):
+                raise
+
+        sig = None
+        try:
+            sig = inspect.signature(self._mod.swe2d_create_solver)
+        except (TypeError, ValueError):
+            sig = None
+
+        if sig is not None:
+            allowed = {
+                name
+                for name, param in sig.parameters.items()
+                if param.kind in (param.POSITIONAL_OR_KEYWORD, param.KEYWORD_ONLY)
+            }
+            filtered = {k: v for k, v in kwargs.items() if k in allowed}
+            return self._mod.swe2d_create_solver(*args, **filtered)
+
+        # Conservative fallback for environments where signature introspection
+        # on the pybind function is unavailable.
+        filtered = dict(kwargs)
+        for key in (
+            "extreme_rain_mode",
+            "source_cfl_beta",
+            "source_max_substeps",
+            "source_rate_cap",
+            "source_depth_step_cap",
+            "source_true_subcycling",
+            "source_imex_split",
+            "enable_shallow_front_recon_fallback",
+            "godunov_mode",
+        ):
+            filtered.pop(key, None)
+        return self._mod.swe2d_create_solver(*args, **filtered)
 
     # ── Mesh ─────────────────────────────────────────────────────────────────
 
@@ -490,7 +533,7 @@ class SWE2DBackend:
         if model_options is not None:
             native_opts.update(model_options.to_native_dict())
 
-        self._solver_h = self._mod.swe2d_create_solver(
+        self._solver_h = self._create_solver_compat(
             self._mesh_h,
             h0_arr, hu0_arr, hv0_arr, n_mann_cell_arr,
             g=g, n_mann=n_mann, h_min=h_min,
@@ -589,12 +632,18 @@ class SWE2DBackend:
         if self._solver_h is None:
             raise RuntimeError("initialize() must be called before run().")
 
+        emulate_native_lag = False
+        pending_source_arr: Optional[np.ndarray] = None
+
         if use_native_source_injection and source_rate_callback is not None:
             if not self._supports_solver_external_sources:
-                raise RuntimeError(
-                    "use_native_source_injection=True requires native external source API support")
+                # Compatibility fallback for extensions built without native
+                # external-source API support.
+                use_native_source_injection = False
+                emulate_native_lag = True
             # Start from zero external source on solver.
-            self.set_external_sources_native(None)
+            if use_native_source_injection:
+                self.set_external_sources_native(None)
 
         diags: List[dict] = []
         t = 0.0
@@ -608,6 +657,21 @@ class SWE2DBackend:
                 src = source_rate_callback(t, dt, h, hu, hv)
                 if use_native_source_injection:
                     self.set_external_sources_native(src)
+                elif emulate_native_lag:
+                    if src is not None:
+                        src_arr = np.ascontiguousarray(src, dtype=np.float64).ravel()
+                        if src_arr.size != self._n_cells:
+                            raise ValueError("source_rate_callback must return an array with length n_cells")
+                    else:
+                        src_arr = None
+
+                    if pending_source_arr is not None:
+                        h = np.maximum(0.0, h + dt * pending_source_arr)
+                        dry = h < self._h_min
+                        hu = np.where(dry, 0.0, hu)
+                        hv = np.where(dry, 0.0, hv)
+                        self.set_state(h, hu, hv)
+                    pending_source_arr = src_arr
                 elif src is not None:
                     src_arr = np.ascontiguousarray(src, dtype=np.float64).ravel()
                     if src_arr.size != self._n_cells:
