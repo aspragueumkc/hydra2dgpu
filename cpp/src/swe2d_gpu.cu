@@ -35,6 +35,61 @@ struct GhostStateLocal {
     double zb;
 };
 
+inline uint64_t swe2d_mix_u64(uint64_t h, uint64_t v) {
+    h ^= v + 0x9e3779b97f4a7c15ULL + (h << 6) + (h >> 2);
+    return h;
+}
+
+inline uint64_t swe2d_u64_from_double(double v) {
+    uint64_t bits = 0;
+    std::memcpy(&bits, &v, sizeof(double));
+    return bits;
+}
+
+inline uint64_t swe2d_kernel_graph_signature(
+    double dt,
+    double g,
+    double h_min,
+    double cfl_lambda_cap,
+    double max_inv_area,
+    double momentum_cap_min_speed,
+    double momentum_cap_celerity_mult,
+    double depth_cap,
+    double max_rel_depth_increase,
+    double shallow_damping_depth,
+    bool extreme_rain_mode,
+    double source_cfl_beta,
+    int source_max_substeps,
+    double source_rate_cap,
+    double source_depth_step_cap,
+    bool source_true_subcycling,
+    bool source_imex_split,
+    bool enable_shallow_front_recon_fallback,
+    double front_flux_damping)
+{
+    uint64_t h = 1469598103934665603ULL;
+    h = swe2d_mix_u64(h, swe2d_u64_from_double(dt));
+    h = swe2d_mix_u64(h, swe2d_u64_from_double(g));
+    h = swe2d_mix_u64(h, swe2d_u64_from_double(h_min));
+    h = swe2d_mix_u64(h, swe2d_u64_from_double(cfl_lambda_cap));
+    h = swe2d_mix_u64(h, swe2d_u64_from_double(max_inv_area));
+    h = swe2d_mix_u64(h, swe2d_u64_from_double(momentum_cap_min_speed));
+    h = swe2d_mix_u64(h, swe2d_u64_from_double(momentum_cap_celerity_mult));
+    h = swe2d_mix_u64(h, swe2d_u64_from_double(depth_cap));
+    h = swe2d_mix_u64(h, swe2d_u64_from_double(max_rel_depth_increase));
+    h = swe2d_mix_u64(h, swe2d_u64_from_double(shallow_damping_depth));
+    h = swe2d_mix_u64(h, static_cast<uint64_t>(extreme_rain_mode ? 1 : 0));
+    h = swe2d_mix_u64(h, swe2d_u64_from_double(source_cfl_beta));
+    h = swe2d_mix_u64(h, static_cast<uint64_t>(source_max_substeps));
+    h = swe2d_mix_u64(h, swe2d_u64_from_double(source_rate_cap));
+    h = swe2d_mix_u64(h, swe2d_u64_from_double(source_depth_step_cap));
+    h = swe2d_mix_u64(h, static_cast<uint64_t>(source_true_subcycling ? 1 : 0));
+    h = swe2d_mix_u64(h, static_cast<uint64_t>(source_imex_split ? 1 : 0));
+    h = swe2d_mix_u64(h, static_cast<uint64_t>(enable_shallow_front_recon_fallback ? 1 : 0));
+    h = swe2d_mix_u64(h, swe2d_u64_from_double(front_flux_damping));
+    return h;
+}
+
 struct ReconstructedStatesLocal {
     double hL_star;
     double uL;
@@ -2120,6 +2175,10 @@ SWE2DDeviceState* swe2d_gpu_init(
     // callbacks) can proceed while the GPU finishes the previous step.
     CUDA_CHECK(cudaStreamCreate(&dev->d_stream));
 
+    // Phase 5: Optionally allocate pressure workspace now if nonhydro mode detected
+    // (Allocation can also happen lazily on first nonhydro step; done here for early validation)
+    // Note: deferred for now to avoid allocation overhead for hydrostatic-only runs.
+
     return dev;
 }
 
@@ -2157,6 +2216,10 @@ void swe2d_gpu_step(
     constexpr int BLOCK = 256;
     int32_t n_edges = dev->n_edges;
     int32_t n_cells = dev->n_cells;
+    const int32_t graph_integrator =
+        (dev->kernel_graph_cache.time_integrator == 2 || dev->kernel_graph_cache.time_integrator == 4)
+            ? dev->kernel_graph_cache.time_integrator
+            : 1;
 
     if (swe2d_debug_enabled("BACKWATER_SWE2D_DEBUG_GPU_INPUT")) {
         std::fprintf(stderr, "[SWE2D_DEBUG] GPU input: n_cells=%d n_edges=%d dt=%.9e g=%.9e h_min=%.9e\n",
@@ -2316,7 +2379,152 @@ void swe2d_gpu_step(
         CUDA_CHECK(cudaGetLastError());
     }
 
+    const bool dbg_edge_flux = swe2d_debug_enabled("BACKWATER_SWE2D_DEBUG_GPU_EDGE_FLUX");
+    const bool dbg_flux_summary = swe2d_debug_enabled("BACKWATER_SWE2D_DEBUG_GPU_FLUX");
+    const bool try_kernel_graph = dev->enable_kernel_graphs && !dbg_edge_flux && !dbg_flux_summary;
+    const uint64_t graph_signature = swe2d_kernel_graph_signature(
+        dt,
+        g,
+        h_min,
+        cfl_lambda_cap,
+        max_inv_area,
+        momentum_cap_min_speed,
+        momentum_cap_celerity_mult,
+        depth_cap,
+        max_rel_depth_increase,
+        shallow_damping_depth,
+        extreme_rain_mode,
+        source_cfl_beta,
+        source_max_substeps,
+        source_rate_cap,
+        source_depth_step_cap,
+        source_true_subcycling,
+        source_imex_split,
+        enable_shallow_front_recon_fallback,
+        front_flux_damping);
+
+    bool used_graph_replay = false;
+    if (try_kernel_graph) {
+        auto& cache = dev->kernel_graph_cache;
+        const bool cache_match =
+            cache.is_valid &&
+            cache.exec != nullptr &&
+            cache.n_cells == n_cells &&
+            cache.n_edges == n_edges &&
+            cache.spatial_scheme == spatial_scheme &&
+            cache.time_integrator == graph_integrator &&
+            cache.config_signature == graph_signature;
+
+        if (cache_match) {
+            CUDA_CHECK(cudaGraphLaunch(cache.exec, dev->d_stream));
+            dev->graph_replay_count += 1;
+            used_graph_replay = true;
+        } else {
+            cache.destroy();
+            CUDA_CHECK(cudaStreamSynchronize(dev->d_stream));
+            cudaError_t cap_begin = cudaStreamBeginCapture(dev->d_stream, cudaStreamCaptureModeThreadLocal);
+            if (cap_begin == cudaSuccess) {
+                int grid_flux = (n_edges + BLOCK - 1) / BLOCK;
+                swe2d_flux_kernel<<<grid_flux, BLOCK, 0, dev->d_stream>>>(
+                    n_edges,
+                    dev->d_edge_c0, dev->d_edge_c1,
+                    dev->d_edge_nx, dev->d_edge_ny, dev->d_edge_len,
+                    dev->d_edge_mx, dev->d_edge_my,
+                    dev->d_edge_bc, dev->d_edge_bc_val,
+                    dev->d_h, dev->d_hu, dev->d_hv,
+                    dev->d_n_mann_cell,
+                    dev->d_cell_zb,
+                    dev->d_cell_inv_area,
+                    dev->d_cell_cx, dev->d_cell_cy,
+                    dev->d_grad_hx,  dev->d_grad_hy,
+                    dev->d_grad_hux, dev->d_grad_huy,
+                    dev->d_grad_hvx, dev->d_grad_hvy,
+                    dev->d_flux_h, dev->d_flux_hu, dev->d_flux_hv,
+                    dev->d_flux_hu_r, dev->d_flux_hv_r,
+                    nullptr, nullptr, nullptr,
+                    spatial_scheme,
+                    g, h_min,
+                    max_inv_area,
+                    momentum_cap_min_speed,
+                    momentum_cap_celerity_mult,
+                    dev->d_degen_mask, dev->d_merge_owner, dev->degen_mode,
+                    dev->d_active, front_flux_damping, shallow_damping_depth,
+                    enable_shallow_front_recon_fallback);
+
+                CUDA_CHECK(cudaMemsetAsync(dev->d_max_wse_elev_error, 0, sizeof(double), dev->d_stream));
+                int grid_update = (n_cells + BLOCK - 1) / BLOCK;
+                swe2d_update_kernel<<<grid_update, BLOCK, 0, dev->d_stream>>>(
+                    n_cells,
+                    dev->d_cell_edge_offsets, dev->d_cell_edge_ids,
+                    dev->d_edge_c0, dev->d_edge_c1,
+                    dev->d_h, dev->d_hu, dev->d_hv,
+                    dev->d_flux_h, dev->d_flux_hu, dev->d_flux_hv,
+                    dev->d_flux_hu_r, dev->d_flux_hv_r,
+                    dev->d_cell_inv_area, dev->d_n_mann_cell,
+                    dev->d_max_wse_elev_error,
+                    dt, g, h_min,
+                    max_inv_area,
+                    momentum_cap_min_speed,
+                    momentum_cap_celerity_mult,
+                    depth_cap,
+                    max_rel_depth_increase,
+                    shallow_damping_depth,
+                    extreme_rain_mode,
+                    source_cfl_beta,
+                    source_max_substeps,
+                    source_rate_cap,
+                    source_depth_step_cap,
+                    source_true_subcycling,
+                    source_imex_split,
+                    dev->d_active,
+                    dev->d_degen_mask, dev->d_inv_area_repaired, dev->degen_mode,
+                    (dev->n_rain_samples > 0) ? dev->d_cell_source_mps : nullptr,
+                    dev->d_external_source_mps);
+
+                CUDA_CHECK(cudaMemsetAsync(dev->d_lambda_max, 0, sizeof(double), dev->d_stream));
+                int grid_cfl = (n_edges + BLOCK - 1) / BLOCK;
+                swe2d_cfl_kernel<<<grid_cfl, BLOCK, BLOCK * static_cast<int>(sizeof(double)), dev->d_stream>>>(
+                    n_edges,
+                    dev->d_edge_c0, dev->d_edge_c1,
+                    dev->d_edge_nx, dev->d_edge_ny, dev->d_edge_len,
+                    dev->d_h, dev->d_hu, dev->d_hv,
+                    dev->d_cell_area,
+                    g, h_min,
+                    cfl_lambda_cap,
+                    dev->d_lambda_max,
+                    dev->d_degen_mask, dev->degen_mode);
+                pack_diag_kernel<<<1, 1, 0, dev->d_stream>>>(
+                    dev->d_lambda_max, dev->d_max_wse_elev_error, dev->d_n_wet, dev->d_diag_packed);
+
+                cudaGraph_t captured_graph = nullptr;
+                cudaError_t cap_end = cudaStreamEndCapture(dev->d_stream, &captured_graph);
+                if (cap_end == cudaSuccess && captured_graph != nullptr) {
+                    cudaGraphExec_t graph_exec = nullptr;
+                    if (cudaGraphInstantiate(&graph_exec, captured_graph, nullptr, nullptr, 0) == cudaSuccess) {
+                        cache.graph = captured_graph;
+                        cache.exec = graph_exec;
+                        cache.n_cells = n_cells;
+                        cache.n_edges = n_edges;
+                        cache.spatial_scheme = spatial_scheme;
+                        cache.time_integrator = graph_integrator;
+                        cache.config_signature = graph_signature;
+                        cache.is_valid = true;
+                        CUDA_CHECK(cudaGraphLaunch(cache.exec, dev->d_stream));
+                        dev->graph_replay_count += 1;
+                        used_graph_replay = true;
+                    } else {
+                        if (graph_exec != nullptr) cudaGraphExecDestroy(graph_exec);
+                        cudaGraphDestroy(captured_graph);
+                    }
+                } else if (captured_graph != nullptr) {
+                    cudaGraphDestroy(captured_graph);
+                }
+            }
+        }
+    }
+
     // Kernel 1: Flux
+    if (!used_graph_replay) {
     {
         const bool dbg_edge_flux = swe2d_debug_enabled("BACKWATER_SWE2D_DEBUG_GPU_EDGE_FLUX");
         double* d_dbg_fh = nullptr;
@@ -2457,6 +2665,7 @@ void swe2d_gpu_step(
     // Pack all three diagnostic scalars into contiguous buffer for single-transfer readback.
     pack_diag_kernel<<<1, 1, 0, dev->d_stream>>>(dev->d_lambda_max, dev->d_max_wse_elev_error, dev->d_n_wet, dev->d_diag_packed);
     CUDA_CHECK(cudaGetLastError());
+    }
 
     // Fill diagnostics. For high-throughput loops this can skip host sync and
     // report sentinel values until a synchronized diagnostic sample is requested.
@@ -2470,6 +2679,8 @@ void swe2d_gpu_step(
         diag->max_courant = -1.0;
         diag->max_depth_residual = -1.0;
         diag->max_wse_elev_error = -1.0;
+        diag->gpu_graph_launches_step = used_graph_replay ? 1 : 0;
+        diag->gpu_graph_launches_total = static_cast<int64_t>(dev->graph_replay_count);
 
         if (sync_diagnostics) {
             CUDA_CHECK(cudaStreamSynchronize(dev->d_stream));
@@ -2550,6 +2761,9 @@ void swe2d_gpu_step_rk2(
     constexpr int BLOCK = 256;
     const int32_t n_cells = dev->n_cells;
     const size_t sz = static_cast<size_t>(n_cells) * sizeof(double);
+    const uint64_t graph_launches_before = dev->graph_replay_count;
+    const int32_t prev_graph_integrator = dev->kernel_graph_cache.time_integrator;
+    dev->kernel_graph_cache.time_integrator = 2;
 
     CUDA_CHECK(cudaMemcpyAsync(dev->d_h0, dev->d_h, sz, cudaMemcpyDeviceToDevice, dev->d_stream));
     CUDA_CHECK(cudaMemcpyAsync(dev->d_hu0, dev->d_hu, sz, cudaMemcpyDeviceToDevice, dev->d_stream));
@@ -2633,6 +2847,9 @@ void swe2d_gpu_step_rk2(
         diag->max_courant = -1.0;
         diag->max_depth_residual = -1.0;
         diag->max_wse_elev_error = -1.0;
+        const uint64_t graph_launches_after = dev->graph_replay_count;
+        diag->gpu_graph_launches_step = static_cast<int32_t>(graph_launches_after - graph_launches_before);
+        diag->gpu_graph_launches_total = static_cast<int64_t>(graph_launches_after);
 
         if (sync_diagnostics) {
             CUDA_CHECK(cudaStreamSynchronize(dev->d_stream));
@@ -2644,6 +2861,8 @@ void swe2d_gpu_step_rk2(
             diag->wet_cells          = static_cast<int32_t>(packed[2]);
         }
     }
+
+    dev->kernel_graph_cache.time_integrator = prev_graph_integrator;
 }
 
 void swe2d_gpu_step_godunov_rollout(
@@ -2802,6 +3021,9 @@ void swe2d_gpu_step_rk4(
     constexpr int BLOCK = 256;
     const int32_t n_cells = dev->n_cells;
     const size_t sz = static_cast<size_t>(n_cells) * sizeof(double);
+    const uint64_t graph_launches_before = dev->graph_replay_count;
+    const int32_t prev_graph_integrator = dev->kernel_graph_cache.time_integrator;
+    dev->kernel_graph_cache.time_integrator = 4;
 
     // ──────────────────────────────────────────────────────────────────────────
     // Stage 1: k1 = dt * f(t_n, y_n)
@@ -2939,6 +3161,9 @@ void swe2d_gpu_step_rk4(
         diag->max_courant = -1.0;
         diag->max_depth_residual = -1.0;
         diag->max_wse_elev_error = -1.0;
+        const uint64_t graph_launches_after = dev->graph_replay_count;
+        diag->gpu_graph_launches_step = static_cast<int32_t>(graph_launches_after - graph_launches_before);
+        diag->gpu_graph_launches_total = static_cast<int64_t>(graph_launches_after);
 
         if (sync_diagnostics) {
             CUDA_CHECK(cudaStreamSynchronize(dev->d_stream));
@@ -2950,6 +3175,8 @@ void swe2d_gpu_step_rk4(
             diag->wet_cells          = static_cast<int32_t>(packed[2]);
         }
     }
+
+    dev->kernel_graph_cache.time_integrator = prev_graph_integrator;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -3126,6 +3353,130 @@ void swe2d_gpu_set_external_sources(
         cudaMemcpyHostToDevice));
 }
 
+SWE3DCartesianPatchDeviceState* swe3d_cartesian_patch_alloc(
+    const SWE3DCartesianPatchDesc& desc)
+{
+    if (desc.nx <= 0 || desc.ny <= 0 || desc.nz <= 0) {
+        throw std::invalid_argument("swe3d_cartesian_patch_alloc: invalid patch dimensions");
+    }
+    if (desc.dx <= 0.0 || desc.dy <= 0.0 || desc.dz <= 0.0) {
+        throw std::invalid_argument("swe3d_cartesian_patch_alloc: invalid patch spacing");
+    }
+
+    auto* patch = new SWE3DCartesianPatchDeviceState();
+    patch->desc = desc;
+    patch->n_cells = static_cast<int64_t>(desc.nx) * static_cast<int64_t>(desc.ny) * static_cast<int64_t>(desc.nz);
+    if (patch->n_cells <= 0) {
+        delete patch;
+        throw std::invalid_argument("swe3d_cartesian_patch_alloc: invalid cell count");
+    }
+
+    const size_t bytes = static_cast<size_t>(patch->n_cells) * sizeof(double);
+    CUDA_CHECK(cudaMalloc(reinterpret_cast<void**>(&patch->d_u), bytes));
+    CUDA_CHECK(cudaMalloc(reinterpret_cast<void**>(&patch->d_v), bytes));
+    CUDA_CHECK(cudaMalloc(reinterpret_cast<void**>(&patch->d_w), bytes));
+    CUDA_CHECK(cudaMalloc(reinterpret_cast<void**>(&patch->d_p), bytes));
+    CUDA_CHECK(cudaMalloc(reinterpret_cast<void**>(&patch->d_vof), bytes));
+    CUDA_CHECK(cudaMemset(patch->d_u, 0, bytes));
+    CUDA_CHECK(cudaMemset(patch->d_v, 0, bytes));
+    CUDA_CHECK(cudaMemset(patch->d_w, 0, bytes));
+    CUDA_CHECK(cudaMemset(patch->d_p, 0, bytes));
+    CUDA_CHECK(cudaMemset(patch->d_vof, 0, bytes));
+    return patch;
+}
+
+void swe3d_cartesian_patch_zero_state(
+    SWE3DCartesianPatchDeviceState* patch,
+    cudaStream_t stream)
+{
+    if (!patch || patch->n_cells <= 0) return;
+    const size_t bytes = static_cast<size_t>(patch->n_cells) * sizeof(double);
+    if (stream != nullptr) {
+        CUDA_CHECK(cudaMemsetAsync(patch->d_u, 0, bytes, stream));
+        CUDA_CHECK(cudaMemsetAsync(patch->d_v, 0, bytes, stream));
+        CUDA_CHECK(cudaMemsetAsync(patch->d_w, 0, bytes, stream));
+        CUDA_CHECK(cudaMemsetAsync(patch->d_p, 0, bytes, stream));
+        CUDA_CHECK(cudaMemsetAsync(patch->d_vof, 0, bytes, stream));
+    } else {
+        CUDA_CHECK(cudaMemset(patch->d_u, 0, bytes));
+        CUDA_CHECK(cudaMemset(patch->d_v, 0, bytes));
+        CUDA_CHECK(cudaMemset(patch->d_w, 0, bytes));
+        CUDA_CHECK(cudaMemset(patch->d_p, 0, bytes));
+        CUDA_CHECK(cudaMemset(patch->d_vof, 0, bytes));
+    }
+}
+
+void swe3d_cartesian_patch_release(
+    SWE3DCartesianPatchDeviceState* patch)
+{
+    if (!patch) return;
+    if (patch->d_u) cudaFree(patch->d_u);
+    if (patch->d_v) cudaFree(patch->d_v);
+    if (patch->d_w) cudaFree(patch->d_w);
+    if (patch->d_p) cudaFree(patch->d_p);
+    if (patch->d_vof) cudaFree(patch->d_vof);
+    delete patch;
+}
+
+void swe2d_gpu_set_2d3d_interface_contract(
+    SWE2DDeviceState* dev,
+    const int32_t* cell2d,
+    const double* face_area,
+    const double* face_nx,
+    const double* face_ny,
+    const double* face_nz,
+    int32_t n_faces)
+{
+    if (!dev) return;
+    swe2d_gpu_clear_2d3d_interface_contract(dev);
+    if (n_faces <= 0) return;
+    if (!cell2d || !face_area || !face_nx || !face_ny || !face_nz) {
+        throw std::invalid_argument("swe2d_gpu_set_2d3d_interface_contract: null input arrays");
+    }
+
+    auto* iface = new SWE2D3DInterfaceContractDevice();
+    iface->n_faces = n_faces;
+    const size_t n_faces_sz = static_cast<size_t>(n_faces);
+    CUDA_CHECK(cudaMalloc(reinterpret_cast<void**>(&iface->d_cell2d), n_faces_sz * sizeof(int32_t)));
+    CUDA_CHECK(cudaMalloc(reinterpret_cast<void**>(&iface->d_face_area), n_faces_sz * sizeof(double)));
+    CUDA_CHECK(cudaMalloc(reinterpret_cast<void**>(&iface->d_face_nx), n_faces_sz * sizeof(double)));
+    CUDA_CHECK(cudaMalloc(reinterpret_cast<void**>(&iface->d_face_ny), n_faces_sz * sizeof(double)));
+    CUDA_CHECK(cudaMalloc(reinterpret_cast<void**>(&iface->d_face_nz), n_faces_sz * sizeof(double)));
+    CUDA_CHECK(cudaMalloc(reinterpret_cast<void**>(&iface->d_flux_mass_2d_to_3d), n_faces_sz * sizeof(double)));
+    CUDA_CHECK(cudaMalloc(reinterpret_cast<void**>(&iface->d_flux_momx_2d_to_3d), n_faces_sz * sizeof(double)));
+    CUDA_CHECK(cudaMalloc(reinterpret_cast<void**>(&iface->d_flux_momy_2d_to_3d), n_faces_sz * sizeof(double)));
+    CUDA_CHECK(cudaMalloc(reinterpret_cast<void**>(&iface->d_head_loss_3d_to2d), n_faces_sz * sizeof(double)));
+
+    CUDA_CHECK(cudaMemcpy(iface->d_cell2d, cell2d, n_faces_sz * sizeof(int32_t), cudaMemcpyHostToDevice));
+    CUDA_CHECK(cudaMemcpy(iface->d_face_area, face_area, n_faces_sz * sizeof(double), cudaMemcpyHostToDevice));
+    CUDA_CHECK(cudaMemcpy(iface->d_face_nx, face_nx, n_faces_sz * sizeof(double), cudaMemcpyHostToDevice));
+    CUDA_CHECK(cudaMemcpy(iface->d_face_ny, face_ny, n_faces_sz * sizeof(double), cudaMemcpyHostToDevice));
+    CUDA_CHECK(cudaMemcpy(iface->d_face_nz, face_nz, n_faces_sz * sizeof(double), cudaMemcpyHostToDevice));
+    CUDA_CHECK(cudaMemset(iface->d_flux_mass_2d_to_3d, 0, n_faces_sz * sizeof(double)));
+    CUDA_CHECK(cudaMemset(iface->d_flux_momx_2d_to_3d, 0, n_faces_sz * sizeof(double)));
+    CUDA_CHECK(cudaMemset(iface->d_flux_momy_2d_to_3d, 0, n_faces_sz * sizeof(double)));
+    CUDA_CHECK(cudaMemset(iface->d_head_loss_3d_to2d, 0, n_faces_sz * sizeof(double)));
+    dev->coupling_iface = iface;
+}
+
+void swe2d_gpu_clear_2d3d_interface_contract(
+    SWE2DDeviceState* dev)
+{
+    if (!dev || !dev->coupling_iface) return;
+    auto* iface = dev->coupling_iface;
+    if (iface->d_cell2d) cudaFree(iface->d_cell2d);
+    if (iface->d_face_area) cudaFree(iface->d_face_area);
+    if (iface->d_face_nx) cudaFree(iface->d_face_nx);
+    if (iface->d_face_ny) cudaFree(iface->d_face_ny);
+    if (iface->d_face_nz) cudaFree(iface->d_face_nz);
+    if (iface->d_flux_mass_2d_to_3d) cudaFree(iface->d_flux_mass_2d_to_3d);
+    if (iface->d_flux_momx_2d_to_3d) cudaFree(iface->d_flux_momx_2d_to_3d);
+    if (iface->d_flux_momy_2d_to_3d) cudaFree(iface->d_flux_momy_2d_to_3d);
+    if (iface->d_head_loss_3d_to2d) cudaFree(iface->d_head_loss_3d_to2d);
+    delete iface;
+    dev->coupling_iface = nullptr;
+}
+
 void swe2d_gpu_compute_coupling_sources(
     int32_t n_cells,
     const double* cell_area_m2,
@@ -3202,6 +3553,170 @@ void swe2d_gpu_compute_coupling_sources(
     if (d_struct_up) cudaFree(d_struct_up);
     if (d_struct_dn) cudaFree(d_struct_dn);
     if (d_struct_q) cudaFree(d_struct_q);
+}
+
+void swe2d_gpu_apply_2d3d_coupling_exchange_scaffold(
+    SWE2DDeviceState* dev,
+    double /*dt*/,
+    bool /*one_way_2d_to_3d*/,
+    SWE2DStepDiag* /*diag*/)
+{
+    if (!dev || !dev->coupling_iface) return;
+    // Scaffold placeholder: contract buffers are allocated and can be populated
+    // by future coupling kernels. No state update is applied yet.
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Phase 5: Pressure Workspace Allocation/Deallocation
+// ─────────────────────────────────────────────────────────────────────────────
+
+bool swe2d_gpu_allocate_pressure_workspace(
+    SWE2DDeviceState* dev,
+    int32_t n_cells)
+{
+    if (!dev || n_cells <= 0) return false;
+    if (dev->nh_workspace.is_configured) return true;
+
+    auto& ws = dev->nh_workspace;
+    const size_t sz_cells = static_cast<size_t>(n_cells) * sizeof(double);
+
+    try {
+        CUDA_CHECK(cudaMalloc(reinterpret_cast<void**>(&ws.d_p), sz_cells));
+        CUDA_CHECK(cudaMalloc(reinterpret_cast<void**>(&ws.d_p_rhs), sz_cells));
+        CUDA_CHECK(cudaMalloc(reinterpret_cast<void**>(&ws.d_stencil_diag), sz_cells));
+        CUDA_CHECK(cudaMalloc(reinterpret_cast<void**>(&ws.d_pcg_r), sz_cells));
+        CUDA_CHECK(cudaMalloc(reinterpret_cast<void**>(&ws.d_pcg_p), sz_cells));
+        CUDA_CHECK(cudaMalloc(reinterpret_cast<void**>(&ws.d_pcg_Ap), sz_cells));
+        CUDA_CHECK(cudaMalloc(reinterpret_cast<void**>(&ws.d_pcg_z), sz_cells));
+        CUDA_CHECK(cudaMalloc(reinterpret_cast<void**>(&ws.d_precond), sz_cells));
+        CUDA_CHECK(cudaMalloc(reinterpret_cast<void**>(&ws.d_pcg_rr), sizeof(double)));
+        CUDA_CHECK(cudaMalloc(reinterpret_cast<void**>(&ws.d_pcg_rrold), sizeof(double)));
+        CUDA_CHECK(cudaMalloc(reinterpret_cast<void**>(&ws.d_pcg_pAp), sizeof(double)));
+        CUDA_CHECK(cudaMalloc(reinterpret_cast<void**>(&ws.d_u_corr), sz_cells));
+        CUDA_CHECK(cudaMalloc(reinterpret_cast<void**>(&ws.d_v_corr), sz_cells));
+
+        CUDA_CHECK(cudaMemset(ws.d_p, 0, sz_cells));
+        CUDA_CHECK(cudaMemset(ws.d_p_rhs, 0, sz_cells));
+        CUDA_CHECK(cudaMemset(ws.d_stencil_diag, 0, sz_cells));
+        CUDA_CHECK(cudaMemset(ws.d_pcg_r, 0, sz_cells));
+        CUDA_CHECK(cudaMemset(ws.d_pcg_p, 0, sz_cells));
+        CUDA_CHECK(cudaMemset(ws.d_pcg_Ap, 0, sz_cells));
+        CUDA_CHECK(cudaMemset(ws.d_pcg_z, 0, sz_cells));
+        CUDA_CHECK(cudaMemset(ws.d_precond, 0, sz_cells));
+        CUDA_CHECK(cudaMemset(ws.d_pcg_rr, 0, sizeof(double)));
+        CUDA_CHECK(cudaMemset(ws.d_pcg_rrold, 0, sizeof(double)));
+        CUDA_CHECK(cudaMemset(ws.d_pcg_pAp, 0, sizeof(double)));
+        CUDA_CHECK(cudaMemset(ws.d_u_corr, 0, sz_cells));
+        CUDA_CHECK(cudaMemset(ws.d_v_corr, 0, sz_cells));
+
+        ws.is_configured = true;
+        return true;
+    } catch (...) {
+        swe2d_gpu_deallocate_pressure_workspace(dev);
+        return false;
+    }
+}
+
+void swe2d_gpu_deallocate_pressure_workspace(
+    SWE2DDeviceState* dev)
+{
+    if (!dev) return;
+    auto& ws = dev->nh_workspace;
+    if (ws.d_p) { cudaFree(ws.d_p); ws.d_p = nullptr; }
+    if (ws.d_p_rhs) { cudaFree(ws.d_p_rhs); ws.d_p_rhs = nullptr; }
+    if (ws.d_stencil_diag) { cudaFree(ws.d_stencil_diag); ws.d_stencil_diag = nullptr; }
+    if (ws.d_pcg_r) { cudaFree(ws.d_pcg_r); ws.d_pcg_r = nullptr; }
+    if (ws.d_pcg_p) { cudaFree(ws.d_pcg_p); ws.d_pcg_p = nullptr; }
+    if (ws.d_pcg_Ap) { cudaFree(ws.d_pcg_Ap); ws.d_pcg_Ap = nullptr; }
+    if (ws.d_pcg_z) { cudaFree(ws.d_pcg_z); ws.d_pcg_z = nullptr; }
+    if (ws.d_precond) { cudaFree(ws.d_precond); ws.d_precond = nullptr; }
+    if (ws.d_pcg_rr) { cudaFree(ws.d_pcg_rr); ws.d_pcg_rr = nullptr; }
+    if (ws.d_pcg_rrold) { cudaFree(ws.d_pcg_rrold); ws.d_pcg_rrold = nullptr; }
+    if (ws.d_pcg_pAp) { cudaFree(ws.d_pcg_pAp); ws.d_pcg_pAp = nullptr; }
+    if (ws.d_u_corr) { cudaFree(ws.d_u_corr); ws.d_u_corr = nullptr; }
+    if (ws.d_v_corr) { cudaFree(ws.d_v_corr); ws.d_v_corr = nullptr; }
+    ws.is_configured = false;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Phase 6: 2D-3D Exchange Kernel Skeleton
+// ─────────────────────────────────────────────────────────────────────────────
+
+__global__ void swe3d_exchange_kernel_skeleton(
+    int32_t n_faces,
+    const int32_t* d_cell2d,
+    const double* d_h_2d,
+    const double* d_hu_2d,
+    const double* d_hv_2d,
+    const double* d_cell_area_2d,
+    const double* d_face_area,
+    const double* d_face_nx,
+    const double* d_face_ny,
+    const double* d_face_nz,
+    const double* d_u_3d,
+    const double* d_p_3d,
+    double* d_flux_mass_2d_to_3d,
+    double* d_flux_momx_2d_to_3d,
+    double* d_flux_momy_2d_to_3d,
+    double* d_head_loss_3d_to2d,
+    double g,
+    double dt)
+{
+    (void)d_cell2d; (void)d_h_2d; (void)d_hu_2d; (void)d_hv_2d; (void)d_cell_area_2d;
+    (void)d_face_area; (void)d_face_nx; (void)d_face_ny; (void)d_face_nz;
+    (void)d_u_3d; (void)d_p_3d; (void)g; (void)dt;
+
+    const int32_t i = blockIdx.x * blockDim.x + threadIdx.x;
+    if (i >= n_faces) return;
+
+    // Scaffold: zero all exchange buffers (no actual coupling yet)
+    d_flux_mass_2d_to_3d[i] = 0.0;
+    d_flux_momx_2d_to_3d[i] = 0.0;
+    d_flux_momy_2d_to_3d[i] = 0.0;
+    d_head_loss_3d_to2d[i] = 0.0;
+}
+
+void swe2d_gpu_apply_2d3d_exchange_skeleton(
+    SWE2DDeviceState* dev,
+    double dt,
+    double g,
+    bool apply_head_loss_to_2d_rhs,
+    SWE2DStepDiag* diag)
+{
+    (void)apply_head_loss_to_2d_rhs;
+    (void)diag;
+
+    if (!dev || !dev->coupling_iface || !dev->patch3d) {
+        return;
+    }
+
+    auto* iface = dev->coupling_iface;
+    int n_faces = iface->n_faces;
+    if (n_faces <= 0) return;
+
+    constexpr int BLOCK = 256;
+    const int grid = (n_faces + BLOCK - 1) / BLOCK;
+
+    swe3d_exchange_kernel_skeleton<<<grid, BLOCK, 0, dev->d_stream>>>(
+        n_faces,
+        iface->d_cell2d,
+        dev->d_h,
+        dev->d_hu,
+        dev->d_hv,
+        dev->d_cell_area,
+        iface->d_face_area,
+        iface->d_face_nx,
+        iface->d_face_ny,
+        iface->d_face_nz,
+        dev->patch3d->d_u,
+        dev->patch3d->d_p,
+        iface->d_flux_mass_2d_to_3d,
+        iface->d_flux_momx_2d_to_3d,
+        iface->d_flux_momy_2d_to_3d,
+        iface->d_head_loss_3d_to2d,
+        g,
+        dt);
+    CUDA_CHECK(cudaGetLastError());
 }
 
 void swe2d_gpu_drainage_step(
@@ -3587,12 +4102,111 @@ void swe2d_gpu_drainage_step(
     if (d_limiter_volume) cudaFree(d_limiter_volume);
 }
 
+void swe2d_gpu_step_nonhydro_predictor_corrector(
+    SWE2DDeviceState* dev,
+    double t_now,
+    double dt,
+    double g,
+    double h_min,
+    int spatial_scheme,
+    const SWE2DNonhydroPcConfig& nh_cfg,
+    bool sync_diagnostics,
+    SWE2DStepDiag* diag,
+    SWE2DNonhydroPcDiag* nh_diag,
+    double front_flux_damping,
+    bool active_set_hysteresis)
+{
+    if (!dev) throw std::invalid_argument("swe2d_gpu_step_nonhydro_predictor_corrector: null device state");
+
+    // Allocate pressure workspace on first use
+    if (!dev->nh_workspace.is_configured) {
+        if (!swe2d_gpu_allocate_pressure_workspace(dev, dev->n_cells)) {
+            throw std::runtime_error("swe2d_gpu_step_nonhydro_predictor_corrector: failed to allocate pressure workspace");
+        }
+    }
+
+    // Phase 5 Skeleton: Predictor step (reuse hydrostatic flux+update for now)
+    SWE2DStepDiag pred_diag;
+    swe2d_gpu_step(
+        dev,
+        t_now,
+        dt,
+        g,
+        h_min,
+        spatial_scheme,
+        0.0,
+        1.0e6,
+        1.0e6,
+        50.0,
+        20.0,
+        1.0e6,
+        2.0,
+        1.0e-4,
+        false,
+        0.25,
+        16,
+        0.0,
+        0.0,
+        false,
+        false,
+        true,
+        false,  // no diagnostics sync during predictor
+        &pred_diag,
+        front_flux_damping,
+        active_set_hysteresis);
+
+    // Phase 6 Skeleton: Exchange with 3D (no-op for now)
+    if (dev->coupling_iface && dev->patch3d) {
+        swe2d_gpu_apply_2d3d_exchange_skeleton(dev, dt, g, true, diag);
+    }
+
+    // Phase 5 Skeleton: Corrector step (stub: no momentum correction yet)
+    // Would compute: u_corr = -grad(p) → update (h, hu, hv) with corrector
+    // For now, just zero the correction and report diagnostic
+
+    if (diag) {
+        *diag = pred_diag;  // Copy predictor diagnostics
+        diag->gpu_active = true;
+    }
+
+    if (nh_diag) {
+        nh_diag->pressure_iters = 0;
+        nh_diag->pressure_residual = 0.0;
+        nh_diag->corrector_applied = false;  // Scaffold: corrector not applied yet
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Graph management (Suggestion 9)
+// ─────────────────────────────────────────────────────────────────────────────
+void swe2d_gpu_enable_kernel_graphs(SWE2DDeviceState* dev, bool enable) {
+    if (!dev) return;
+    // Destroy any existing graph if disabling or if we're re-enabling with different config
+    if (!enable || (enable && dev->kernel_graph_cache.is_valid)) {
+        dev->kernel_graph_cache.destroy();
+    }
+    dev->enable_kernel_graphs = enable;
+}
+
+void swe2d_gpu_destroy_kernel_graphs(SWE2DDeviceState* dev) {
+    if (!dev) return;
+    dev->kernel_graph_cache.destroy();
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // swe2d_gpu_destroy
 // ─────────────────────────────────────────────────────────────────────────────
 void swe2d_gpu_destroy(SWE2DDeviceState* dev) {
     if (!dev) return;
     auto safe_free = [](void* ptr) { if (ptr) cudaFree(ptr); };
+
+    // Clean up advanced-mode scaffolding
+    swe2d_gpu_clear_2d3d_interface_contract(dev);
+    if (dev->patch3d) {
+        swe3d_cartesian_patch_release(dev->patch3d);
+        dev->patch3d = nullptr;
+    }
+    swe2d_gpu_deallocate_pressure_workspace(dev);
 
     safe_free(dev->d_edge_c0);    safe_free(dev->d_edge_c1);
     safe_free(dev->d_edge_n0);    safe_free(dev->d_edge_n1);
@@ -3644,6 +4258,8 @@ void swe2d_gpu_destroy(SWE2DDeviceState* dev) {
         cudaStreamSynchronize(dev->d_stream);
         cudaStreamDestroy(dev->d_stream);
         dev->d_stream = nullptr;
+        // Clean up CUDA graph cache
+        dev->kernel_graph_cache.destroy();
     }
     delete dev;
 }

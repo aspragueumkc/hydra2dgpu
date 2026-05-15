@@ -10,6 +10,102 @@
 #include <cstdint>
 
 // ─────────────────────────────────────────────────────────────────────────────
+// CUDA Graph cache for optimized kernel sequence replay
+// ─────────────────────────────────────────────────────────────────────────────
+struct KernelGraphCache {
+    cudaGraph_t       graph = nullptr;       // Captured graph template
+    cudaGraphExec_t   exec = nullptr;        // Executable instance for replay
+    int32_t           n_cells = 0;           // Mesh size at capture time
+    int32_t           n_edges = 0;           // Edge count at capture time
+    int32_t           spatial_scheme = 0;    // Spatial scheme at capture
+    int32_t           time_integrator = 0;   // RK order (2 or 4) at capture
+    uint64_t          config_signature = 0;  // Scalar/runtime config signature
+    bool              is_valid = false;      // True if graph can be replayed
+    
+    void destroy() {
+        if (exec != nullptr) {
+            cudaGraphExecDestroy(exec);
+            exec = nullptr;
+        }
+        if (graph != nullptr) {
+            cudaGraphDestroy(graph);
+            graph = nullptr;
+        }
+        is_valid = false;
+    }
+};
+
+enum class SWE2DPressureMatrixType : int {
+    COLOCATED_COMPACT_STENCIL = 0,
+    STAGGERED_VELOCITY = 1,
+};
+
+enum class SWE2DPreconditionerType : int {
+    JACOBI = 0,
+    BLOCK_JACOBI = 1,
+    ILU0 = 2,
+};
+
+enum class SWE2DVelocityCorrectionMethod : int {
+    DIVERGENCE_FREE = 0,
+    ENERGY_STABLE = 1,
+};
+
+struct SWE2DNonhydroPcConfig {
+    int pressure_max_iters = 100;
+    double pressure_tol = 1.0e-5;
+    double relax = 1.0;
+    int matrix_type = static_cast<int>(SWE2DPressureMatrixType::COLOCATED_COMPACT_STENCIL);
+    int preconditioner = static_cast<int>(SWE2DPreconditionerType::JACOBI);
+    int velocity_correction = static_cast<int>(SWE2DVelocityCorrectionMethod::DIVERGENCE_FREE);
+    bool use_adaptive_nh = false;
+    double froude_activation_threshold = 0.5;
+    double aspect_ratio_activation_threshold = 5.0;
+};
+
+struct SWE2DNonhydroPcDiag {
+    int pressure_iters = 0;
+    double pressure_residual = 0.0;
+    bool corrector_applied = false;
+};
+
+struct SWE3DCartesianPatchDesc {
+    int32_t nx = 0;
+    int32_t ny = 0;
+    int32_t nz = 0;
+    double dx = 0.0;
+    double dy = 0.0;
+    double dz = 0.0;
+    double origin_x = 0.0;
+    double origin_y = 0.0;
+    double origin_z = 0.0;
+    bool single_phase_free_surface = true;
+};
+
+struct SWE3DCartesianPatchDeviceState {
+    SWE3DCartesianPatchDesc desc;
+    int64_t n_cells = 0;
+    double* d_u = nullptr;
+    double* d_v = nullptr;
+    double* d_w = nullptr;
+    double* d_p = nullptr;
+    double* d_vof = nullptr;
+};
+
+struct SWE2D3DInterfaceContractDevice {
+    int32_t n_faces = 0;
+    int32_t* d_cell2d = nullptr;
+    double* d_face_area = nullptr;
+    double* d_face_nx = nullptr;
+    double* d_face_ny = nullptr;
+    double* d_face_nz = nullptr;
+    double* d_flux_mass_2d_to_3d = nullptr;
+    double* d_flux_momx_2d_to_3d = nullptr;
+    double* d_flux_momy_2d_to_3d = nullptr;
+    double* d_head_loss_3d_to2d = nullptr;
+};
+
+// ─────────────────────────────────────────────────────────────────────────────
 // Device memory pool for one solver instance
 // ─────────────────────────────────────────────────────────────────────────────
 struct SWE2DDeviceState {
@@ -133,6 +229,36 @@ struct SWE2DDeviceState {
     // Dimensions
     int32_t  n_cells = 0;
     int32_t  n_edges = 0;
+
+    // CUDA Graph optimization for kernel sequence replay
+    // Captures Flux → Update → CFL sequence to reduce launch overhead.
+    KernelGraphCache kernel_graph_cache;
+    bool             enable_kernel_graphs = false;
+    uint64_t         graph_replay_count = 0;   // Diagnostics counter
+
+    // Advanced-mode scaffolding handles.
+    SWE3DCartesianPatchDeviceState* patch3d = nullptr;
+    SWE2D3DInterfaceContractDevice* coupling_iface = nullptr;
+
+    // Phase 5: Non-hydrostatic pressure workspace (GPU-only; initialized on demand)
+    struct NonhydroPressureWorkspace {
+        double* d_p = nullptr;
+        double* d_p_rhs = nullptr;
+        double* d_stencil_diag = nullptr;
+        double* d_pcg_r = nullptr;
+        double* d_pcg_p = nullptr;
+        double* d_pcg_Ap = nullptr;
+        double* d_pcg_z = nullptr;
+        double* d_precond = nullptr;
+        double* d_pcg_rr = nullptr;
+        double* d_pcg_rrold = nullptr;
+        double* d_pcg_pAp = nullptr;
+        double* d_u_corr = nullptr;
+        double* d_v_corr = nullptr;
+        int matrix_type_last = -1;
+        int preconditioner_last = -1;
+        bool is_configured = false;
+    } nh_workspace{};
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -298,6 +424,20 @@ void swe2d_gpu_step_rk4(
     double front_flux_damping    = 0.5,
     bool   active_set_hysteresis = true);
 
+void swe2d_gpu_step_nonhydro_predictor_corrector(
+    SWE2DDeviceState* dev,
+    double t_now,
+    double dt,
+    double g,
+    double h_min,
+    int spatial_scheme,
+    const SWE2DNonhydroPcConfig& nh_cfg,
+    bool sync_diagnostics,
+    SWE2DStepDiag* diag,
+    SWE2DNonhydroPcDiag* nh_diag,
+    double front_flux_damping    = 0.5,
+    bool   active_set_hysteresis = true);
+
 // Compute a CFL-limited dt from current device state without host-state sync.
 double swe2d_gpu_compute_dt(
     SWE2DDeviceState* dev,
@@ -375,6 +515,70 @@ void swe2d_gpu_compute_coupling_sources(
     const double* structure_flow_cms,
     double* source_rate_mps_out);
 
+SWE3DCartesianPatchDeviceState* swe3d_cartesian_patch_alloc(
+    const SWE3DCartesianPatchDesc& desc);
+
+void swe3d_cartesian_patch_zero_state(
+    SWE3DCartesianPatchDeviceState* patch,
+    cudaStream_t stream);
+
+void swe3d_cartesian_patch_release(
+    SWE3DCartesianPatchDeviceState* patch);
+
+void swe2d_gpu_set_2d3d_interface_contract(
+    SWE2DDeviceState* dev,
+    const int32_t* cell2d,
+    const double* face_area,
+    const double* face_nx,
+    const double* face_ny,
+    const double* face_nz,
+    int32_t n_faces);
+
+void swe2d_gpu_clear_2d3d_interface_contract(
+    SWE2DDeviceState* dev);
+
+void swe2d_gpu_apply_2d3d_coupling_exchange_scaffold(
+    SWE2DDeviceState* dev,
+    double dt,
+    bool one_way_2d_to_3d,
+    SWE2DStepDiag* diag);
+
+// Phase 5: Pressure workspace lifecycle
+bool swe2d_gpu_allocate_pressure_workspace(
+    SWE2DDeviceState* dev,
+    int32_t n_cells);
+
+void swe2d_gpu_deallocate_pressure_workspace(
+    SWE2DDeviceState* dev);
+
+// Phase 6: 2D-3D exchange kernel scaffold
+__global__ void swe3d_exchange_kernel_skeleton(
+    int32_t n_faces,
+    const int32_t* d_cell2d,
+    const double* d_h_2d,
+    const double* d_hu_2d,
+    const double* d_hv_2d,
+    const double* d_cell_area_2d,
+    const double* d_face_area,
+    const double* d_face_nx,
+    const double* d_face_ny,
+    const double* d_face_nz,
+    const double* d_u_3d,
+    const double* d_p_3d,
+    double* d_flux_mass_2d_to_3d,
+    double* d_flux_momx_2d_to_3d,
+    double* d_flux_momy_2d_to_3d,
+    double* d_head_loss_3d_to2d,
+    double g,
+    double dt);
+
+void swe2d_gpu_apply_2d3d_exchange_skeleton(
+    SWE2DDeviceState* dev,
+    double dt,
+    double g,
+    bool apply_head_loss_to_2d_rhs,
+    SWE2DStepDiag* diag);
+
 // Headless coupling helper: advance 1D drainage state by one step on GPU and
 // return per-cell surface source flows [m3/s] (positive to 2D, negative from 2D).
 // solver_mode: 0=EGL, 1=DIFFUSION, 2=DYNAMIC.
@@ -431,6 +635,13 @@ void swe2d_gpu_drainage_step(
     double* max_link_flow_out,
     double* limiter_event_count_out,
     double* limiter_volume_m3_out);
+
+// CUDA Graph optimization API (Suggestion 9)
+// Enable graph capture on next step, and use replayed graphs on subsequent steps.
+void swe2d_gpu_enable_kernel_graphs(SWE2DDeviceState* dev, bool enable);
+
+// Manually destroy cached graph (called at cleanup or on config change).
+void swe2d_gpu_destroy_kernel_graphs(SWE2DDeviceState* dev);
 
 // Free all device memory.
 void swe2d_gpu_destroy(SWE2DDeviceState* dev);

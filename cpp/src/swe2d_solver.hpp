@@ -125,6 +125,20 @@ struct SWE2DStepDiag {
     int64_t  gpu_graph_launches_total = 0;
 };
 
+struct SWE2DNonhydroDiag {
+    int32_t pressure_iters = 0;
+    double pressure_residual = 0.0;
+    bool corrector_applied = false;
+};
+
+struct SWE2D3DInterfaceContractHost {
+    std::vector<int32_t> cell2d;
+    std::vector<double> face_area;
+    std::vector<double> face_nx;
+    std::vector<double> face_ny;
+    std::vector<double> face_nz;
+};
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Solver handle
 // ─────────────────────────────────────────────────────────────────────────────

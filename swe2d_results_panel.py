@@ -20,7 +20,7 @@ from __future__ import annotations
 import dataclasses
 import json
 import os as _os
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional, Set, Tuple
 
 import numpy as np
 try:
@@ -97,20 +97,37 @@ _PANEL_COLORS: List[Tuple[int, int, int]] = [
 ]
 
 _TS_VARIABLES = [
-    ("Flow (m\u00b3/s)", "flow_cms"),
-    ("Depth (m)",        "depth_m"),
-    ("Velocity (m/s)",   "velocity_ms"),
+    ("Flow",             "flow_cms"),
+    ("Depth",            "depth_m"),
+    ("Velocity",         "velocity_ms"),
     ("Water Surface",    "wse_m"),
     ("Bed Elevation",    "bed_m"),
 ]
 
 _PROF_VARIABLES = [
     ("WSE + Bed",        "wse_bed"),
-    ("EGL (m)",          "egl_m"),
-    ("Depth (m)",        "depth_m"),
-    ("Velocity (m/s)",   "velocity_ms"),
+    ("EGL",              "egl_m"),
+    ("Depth",            "depth_m"),
+    ("Velocity",         "velocity_ms"),
     ("Froude",           "fr"),
     ("Normal Flow",      "flow_qn"),
+]
+
+_PROFILE_FILL_OPTIONS = [
+    ("None", "none"),
+    ("Depth", "depth_m"),
+    ("Velocity", "velocity_ms"),
+    ("Froude", "fr"),
+    ("Normal Flow", "flow_qn"),
+]
+
+_PROFILE_CMAP_OPTIONS = [
+    ("Viridis", "viridis"),
+    ("Plasma", "plasma"),
+    ("Turbo", "turbo"),
+    ("Inferno", "inferno"),
+    ("Magma", "magma"),
+    ("Cividis", "cividis"),
 ]
 
 _PERSISTENCE_KEY = "swe2d_results_panel_state"
@@ -141,6 +158,10 @@ class RunRecord:
 
     def display_label(self) -> str:
         return self.label or self.run_id
+
+    @property
+    def key(self) -> str:
+        return f"{self.gpkg_path}::{self.run_id}"
 
 
 # ---------------------------------------------------------------------------
@@ -195,6 +216,9 @@ class SWE2DResultsPanel(_BASE_DOCK):  # type: ignore[valid-type,misc]
         self._iface = iface
 
         self._run_records: List[RunRecord] = []
+        self._manual_gpkg_paths: List[str] = []
+        self._base_selected_run_keys: Set[str] = set()
+        self._manual_selected_run_keys: Set[str] = set()
         self._line_id: int = -1
         self._current_t_sec: float = 0.0
         self._all_timesteps: np.ndarray = np.empty(0, dtype=np.float64)
@@ -215,6 +239,7 @@ class SWE2DResultsPanel(_BASE_DOCK):  # type: ignore[valid-type,misc]
         self._ax_prof = None
         self._canvas_prof = None
         self._ts_vline = None
+        self._prof_fill_cbar = None
 
         self._setup_ui()
         self._setup_matplotlib()
@@ -242,7 +267,12 @@ class SWE2DResultsPanel(_BASE_DOCK):  # type: ignore[valid-type,misc]
         refresh_btn.setFixedSize(22, 22)
         refresh_btn.setToolTip("Re-scan GPKG for new runs")
         refresh_btn.clicked.connect(self._discover_runs)
+        add_btn = QtWidgets.QPushButton("+")
+        add_btn.setFixedSize(22, 22)
+        add_btn.setToolTip("Add results from one or more GeoPackages")
+        add_btn.clicked.connect(self._add_results_files)
         top.addWidget(self._gpkg_lbl, 1)
+        top.addWidget(add_btn)
         top.addWidget(refresh_btn)
         root.addLayout(top)
 
@@ -256,9 +286,36 @@ class SWE2DResultsPanel(_BASE_DOCK):  # type: ignore[valid-type,misc]
         self._run_list = QtWidgets.QListWidget()
         self._run_list.setFixedWidth(200)
         self._run_list.setAlternatingRowColors(True)
+        self._run_list.setSelectionMode(QtWidgets.QAbstractItemView.ExtendedSelection)
         self._run_list.setItemDelegate(_SwatchDelegate(self._run_list))
         self._run_list.itemChanged.connect(self._on_run_toggle)
+        self._run_list.setContextMenuPolicy(Qt.CustomContextMenu)
+        self._run_list.customContextMenuRequested.connect(self._show_run_list_context_menu)
+        self._run_list.setToolTip(
+            "Check/uncheck to toggle run visibility.\n"
+            "Select row(s) then use Remove button or right-click to remove."
+        )
         sidebar.addWidget(self._run_list)
+
+        # Run list action buttons
+        run_btn_row = QtWidgets.QHBoxLayout()
+        run_btn_row.setSpacing(2)
+        self._remove_runs_btn = QtWidgets.QPushButton("\u2212 Remove")
+        self._remove_runs_btn.setFixedHeight(20)
+        self._remove_runs_btn.setToolTip("Remove selected run(s) from the viewer")
+        self._remove_runs_btn.clicked.connect(self._remove_selected_runs)
+        _show_all_btn = QtWidgets.QPushButton("\u2713 All")
+        _show_all_btn.setFixedHeight(20)
+        _show_all_btn.setToolTip("Show all runs")
+        _show_all_btn.clicked.connect(self._set_all_runs_visible)
+        _hide_all_btn = QtWidgets.QPushButton("\u25a1 None")
+        _hide_all_btn.setFixedHeight(20)
+        _hide_all_btn.setToolTip("Hide all runs")
+        _hide_all_btn.clicked.connect(self._set_all_runs_hidden)
+        run_btn_row.addWidget(self._remove_runs_btn, 2)
+        run_btn_row.addWidget(_show_all_btn, 1)
+        run_btn_row.addWidget(_hide_all_btn, 1)
+        sidebar.addLayout(run_btn_row)
 
         line_row = QtWidgets.QHBoxLayout()
         line_row.addWidget(QtWidgets.QLabel("Line:"))
@@ -285,6 +342,42 @@ class SWE2DResultsPanel(_BASE_DOCK):  # type: ignore[valid-type,misc]
         self._prof_var_combo.currentIndexChanged.connect(self._on_prof_var_changed)
         pvar_row.addWidget(self._prof_var_combo, 1)
         sidebar.addLayout(pvar_row)
+
+        self._prof_fill_widget = QtWidgets.QWidget()
+        prof_fill_row = QtWidgets.QHBoxLayout(self._prof_fill_widget)
+        prof_fill_row.setContentsMargins(0, 0, 0, 0)
+        self._prof_fill_lbl = QtWidgets.QLabel("Fill by:")
+        self._prof_fill_combo = QtWidgets.QComboBox()
+        for label, key in _PROFILE_FILL_OPTIONS:
+            self._prof_fill_combo.addItem(label, key)
+        self._prof_fill_combo.currentIndexChanged.connect(self._on_prof_fill_changed)
+        prof_fill_row.addWidget(self._prof_fill_lbl)
+        prof_fill_row.addWidget(self._prof_fill_combo, 1)
+        sidebar.addWidget(self._prof_fill_widget)
+
+        self._prof_wse_render_widget = QtWidgets.QWidget()
+        prof_wse_row = QtWidgets.QHBoxLayout(self._prof_wse_render_widget)
+        prof_wse_row.setContentsMargins(0, 0, 0, 0)
+        self._prof_wse_render_lbl = QtWidgets.QLabel("WSE render:")
+        self._prof_wse_render_combo = QtWidgets.QComboBox()
+        self._prof_wse_render_combo.addItem("Clipped to bed (wet only)", "clipped")
+        self._prof_wse_render_combo.addItem("Raw sampled", "raw")
+        self._prof_wse_render_combo.currentIndexChanged.connect(self._on_prof_fill_changed)
+        prof_wse_row.addWidget(self._prof_wse_render_lbl)
+        prof_wse_row.addWidget(self._prof_wse_render_combo, 1)
+        sidebar.addWidget(self._prof_wse_render_widget)
+
+        self._prof_cmap_widget = QtWidgets.QWidget()
+        prof_cmap_row = QtWidgets.QHBoxLayout(self._prof_cmap_widget)
+        prof_cmap_row.setContentsMargins(0, 0, 0, 0)
+        self._prof_cmap_lbl = QtWidgets.QLabel("Colormap:")
+        self._prof_cmap_combo = QtWidgets.QComboBox()
+        for label, key in _PROFILE_CMAP_OPTIONS:
+            self._prof_cmap_combo.addItem(label, key)
+        self._prof_cmap_combo.currentIndexChanged.connect(self._on_prof_fill_changed)
+        prof_cmap_row.addWidget(self._prof_cmap_lbl)
+        prof_cmap_row.addWidget(self._prof_cmap_combo, 1)
+        sidebar.addWidget(self._prof_cmap_widget)
 
         self._show_structures_chk = QtWidgets.QCheckBox("Overlay structures")
         self._show_structures_chk.setChecked(True)
@@ -323,6 +416,7 @@ class SWE2DResultsPanel(_BASE_DOCK):  # type: ignore[valid-type,misc]
         self._run_count_lbl = QtWidgets.QLabel("")
         self._run_count_lbl.setStyleSheet("color: gray; font-size: 9px;")
         sidebar.addWidget(self._run_count_lbl)
+        self._sync_profile_render_controls()
         sidebar.addStretch(1)
         body.addLayout(sidebar)
 
@@ -431,41 +525,224 @@ class SWE2DResultsPanel(_BASE_DOCK):  # type: ignore[valid-type,misc]
     # Run discovery
     # ------------------------------------------------------------------
 
-    def _discover_runs(self):
+    def _next_color(self, index: int) -> Tuple[int, int, int]:
+        return _PANEL_COLORS[index % len(_PANEL_COLORS)]
+
+    def _collect_runs_from_gpkg(self, gpkg_path: str) -> List[RunRecord]:
         from swe2d_results_queries import discover_line_result_runs
 
+        if not gpkg_path:
+            return []
+        runs = discover_line_result_runs(gpkg_path)
+        out: List[RunRecord] = []
+        gpkg_short = _os.path.basename(gpkg_path)
+        for meta in runs:
+            rid = str(meta.get("run_id", ""))
+            if not rid:
+                continue
+            is_snapshot = rid.startswith("swe2d_snapshot_") or ("snapshot" in rid.lower())
+            suffix = " [snapshot]" if is_snapshot else ""
+            out.append(
+                RunRecord(
+                    run_id=rid,
+                    gpkg_path=gpkg_path,
+                    color=(0, 0, 0),
+                    enabled=True,
+                    has_profile=bool(meta.get("has_profile", False)),
+                    label=f"{gpkg_short}:{rid}{suffix}",
+                )
+            )
+        return out
+
+    def _prompt_select_runs(self, gpkg_path: str, candidates: List[RunRecord]) -> List[RunRecord]:
+        if not candidates:
+            return []
+
+        dlg = QtWidgets.QDialog(self)
+        dlg.setWindowTitle(f"Select Results From { _os.path.basename(gpkg_path) }")
+        dlg.resize(520, 420)
+        lay = QtWidgets.QVBoxLayout(dlg)
+
+        msg = QtWidgets.QLabel(
+            "Choose individual result files/runs to add. Snapshot runs are listed too."
+        )
+        msg.setWordWrap(True)
+        lay.addWidget(msg)
+
+        run_list = QtWidgets.QListWidget()
+        run_list.setSelectionMode(QtWidgets.QAbstractItemView.NoSelection)
+        for rec in candidates:
+            item = QtWidgets.QListWidgetItem(rec.display_label())
+            item.setFlags(item.flags() | Qt.ItemIsUserCheckable)
+            item.setCheckState(Qt.Checked)
+            item.setData(Qt.UserRole, rec.key)
+            item.setToolTip(f"Run: {rec.run_id}\nGPKG: {rec.gpkg_path}")
+            run_list.addItem(item)
+        lay.addWidget(run_list, 1)
+
+        controls = QtWidgets.QHBoxLayout()
+        sel_all_btn = QtWidgets.QPushButton("Select All")
+        clear_all_btn = QtWidgets.QPushButton("Clear All")
+        controls.addWidget(sel_all_btn)
+        controls.addWidget(clear_all_btn)
+        controls.addStretch(1)
+        lay.addLayout(controls)
+
+        btn_box = QtWidgets.QDialogButtonBox(
+            QtWidgets.QDialogButtonBox.Ok | QtWidgets.QDialogButtonBox.Cancel
+        )
+        lay.addWidget(btn_box)
+
+        def _set_all(state: int) -> None:
+            for i in range(run_list.count()):
+                run_list.item(i).setCheckState(state)
+
+        sel_all_btn.clicked.connect(lambda: _set_all(Qt.Checked))
+        clear_all_btn.clicked.connect(lambda: _set_all(Qt.Unchecked))
+        btn_box.accepted.connect(dlg.accept)
+        btn_box.rejected.connect(dlg.reject)
+
+        if dlg.exec_() != QtWidgets.QDialog.Accepted:
+            return []
+
+        selected: List[RunRecord] = []
+        selected_keys: Set[str] = set()
+        for i in range(run_list.count()):
+            item = run_list.item(i)
+            if item.checkState() != Qt.Checked:
+                continue
+            selected_keys.add(str(item.data(Qt.UserRole) or ""))
+
+        if not selected_keys:
+            return []
+        for rec in candidates:
+            if rec.key in selected_keys:
+                selected.append(rec)
+        return selected
+
+    def _rebuild_run_list_widget(self) -> None:
         self._run_list.blockSignals(True)
         self._run_list.clear()
-        self._run_records.clear()
+        for rec in self._run_records:
+            item = QtWidgets.QListWidgetItem(rec.display_label())
+            item.setCheckState(Qt.Checked if rec.enabled else Qt.Unchecked)
+            item.setData(Qt.UserRole, rec.key)
+            item.setData(Qt.UserRole + 1, rec.color)
+            item.setToolTip(f"Run: {rec.run_id}\nGPKG: {rec.gpkg_path}")
+            self._run_list.addItem(item)
+        self._run_list.blockSignals(False)
+
+    def _discover_runs(self):
+        old_enabled = {rec.key for rec in self._run_records if rec.enabled}
+        old_manual_paths = list(self._manual_gpkg_paths)
 
         self._gpkg_lbl.setText(
             _os.path.basename(self._gpkg_path) if self._gpkg_path else "(no GPKG)"
         )
-        runs = discover_line_result_runs(self._gpkg_path) if self._gpkg_path else []
+        combined: List[RunRecord] = []
+        seen: set = set()
 
-        for i, meta in enumerate(runs):
-            rid = str(meta["run_id"])
-            color = _PANEL_COLORS[i % len(_PANEL_COLORS)]
-            rec = RunRecord(
-                run_id=rid,
-                gpkg_path=self._gpkg_path,
-                color=color,
-                enabled=True,
-                has_profile=bool(meta.get("has_profile", False)),
-            )
-            self._run_records.append(rec)
+        base_candidates = self._collect_runs_from_gpkg(self._gpkg_path)
+        base_filter_keys = {
+            k for k in self._base_selected_run_keys if k.startswith(f"{self._gpkg_path}::")
+        }
+        if base_filter_keys:
+            filtered_base = [rec for rec in base_candidates if rec.key in base_filter_keys]
+            if filtered_base:
+                base_candidates = filtered_base
+            else:
+                # Stale base selection keys: clear and fall back to all discovered runs.
+                self._base_selected_run_keys = {
+                    k for k in self._base_selected_run_keys if not k.startswith(f"{self._gpkg_path}::")
+                }
 
-            item = QtWidgets.QListWidgetItem(rid)
-            item.setCheckState(Qt.Checked)
-            item.setData(Qt.UserRole, rid)
-            item.setData(Qt.UserRole + 1, color)
-            item.setToolTip(f"Run: {rid}")
-            self._run_list.addItem(item)
+        for rec in base_candidates:
+            if rec.key in seen:
+                continue
+            seen.add(rec.key)
+            combined.append(rec)
 
-        self._run_list.blockSignals(False)
-        self._run_count_lbl.setText(f"{len(runs)} run(s)")
+        manual_paths: List[str] = []
+        for gpkg in old_manual_paths:
+            if not gpkg or gpkg == self._gpkg_path:
+                continue
+            if not _os.path.exists(gpkg):
+                continue
+            manual_paths.append(gpkg)
+            candidates = self._collect_runs_from_gpkg(gpkg)
+            gpkg_filter_keys = {
+                k for k in self._manual_selected_run_keys if k.startswith(f"{gpkg}::")
+            }
+            if gpkg_filter_keys:
+                filtered_candidates = [rec for rec in candidates if rec.key in gpkg_filter_keys]
+                if filtered_candidates:
+                    candidates = filtered_candidates
+                else:
+                    # Stale manual selection keys for this gpkg: clear and show all runs.
+                    self._manual_selected_run_keys = {
+                        k for k in self._manual_selected_run_keys if not k.startswith(f"{gpkg}::")
+                    }
+
+            for rec in candidates:
+                if rec.key in seen:
+                    continue
+                seen.add(rec.key)
+                combined.append(rec)
+
+        for i, rec in enumerate(combined):
+            rec.color = self._next_color(i)
+            rec.enabled = rec.key in old_enabled if old_enabled else True
+
+        self._manual_gpkg_paths = manual_paths
+        self._run_records = combined
+        self._rebuild_run_list_widget()
+        self._run_count_lbl.setText(f"{len(self._run_records)} run(s)")
         self._refresh_line_combo()
         self._refresh_meta_table()
+
+    def _add_results_files(self):
+        file_paths, _ = QtWidgets.QFileDialog.getOpenFileNames(
+            self,
+            "Add SWE2D Results GeoPackage(s)",
+            self._gpkg_path or "",
+            "GeoPackage (*.gpkg)",
+        )
+        if not file_paths:
+            return
+
+        added_paths = 0
+        added_runs = 0
+        for fp in file_paths:
+            gpkg = str(fp or "").strip()
+            if not gpkg or not _os.path.exists(gpkg):
+                continue
+            candidates = self._collect_runs_from_gpkg(gpkg)
+            if not candidates:
+                continue
+            selected = self._prompt_select_runs(gpkg, candidates)
+            if not selected:
+                continue
+            if gpkg == self._gpkg_path:
+                selected_keys = {rec.key for rec in selected}
+                self._base_selected_run_keys = (
+                    set() if len(selected_keys) >= len(candidates) else selected_keys
+                )
+                added_runs += len(selected)
+                continue
+            if gpkg not in self._manual_gpkg_paths:
+                self._manual_gpkg_paths.append(gpkg)
+                added_paths += 1
+            for rec in selected:
+                self._manual_selected_run_keys.add(rec.key)
+            added_runs += len(selected)
+
+        if added_paths <= 0 and added_runs <= 0:
+            self._status_lbl.setText("No new results were added.")
+            return
+        self._discover_runs()
+        self._status_lbl.setText(
+            f"Added {added_runs} result run(s) from {added_paths} GeoPackage(s)."
+        )
 
     # ------------------------------------------------------------------
     # Line combo
@@ -560,14 +837,73 @@ class SWE2DResultsPanel(_BASE_DOCK):  # type: ignore[valid-type,misc]
     # ------------------------------------------------------------------
 
     def _on_run_toggle(self, item: QtWidgets.QListWidgetItem):
-        rid = item.data(Qt.UserRole)
+        run_key = item.data(Qt.UserRole)
         enabled = item.checkState() == Qt.Checked
         for rec in self._run_records:
-            if rec.run_id == rid:
+            if rec.key == run_key:
                 rec.enabled = enabled
                 break
         self._refresh_line_combo()
         self.velocity_overlay_changed.emit()
+
+    def _remove_selected_runs(self):
+        """Permanently remove selected run(s) from the viewer."""
+        selected_keys = {
+            item.data(Qt.UserRole)
+            for item in self._run_list.selectedItems()
+            if item.data(Qt.UserRole)
+        }
+        if not selected_keys:
+            return
+        self._run_records = [r for r in self._run_records if r.key not in selected_keys]
+        self._base_selected_run_keys -= selected_keys
+        self._manual_selected_run_keys -= selected_keys
+        # Drop manual GPKG paths that no longer have any runs.
+        remaining_manual = {r.gpkg_path for r in self._run_records if r.gpkg_path != self._gpkg_path}
+        self._manual_gpkg_paths = [p for p in self._manual_gpkg_paths if p in remaining_manual]
+        # Re-assign colors so the palette stays compact.
+        for i, rec in enumerate(self._run_records):
+            rec.color = self._next_color(i)
+        self._rebuild_run_list_widget()
+        self._run_count_lbl.setText(f"{len(self._run_records)} run(s)")
+        self._refresh_line_combo()
+        self._refresh_meta_table()
+        self.velocity_overlay_changed.emit()
+
+    def _set_all_runs_visible(self):
+        """Check all runs (show in plots/tables)."""
+        self._run_list.blockSignals(True)
+        for i in range(self._run_list.count()):
+            self._run_list.item(i).setCheckState(Qt.Checked)
+        self._run_list.blockSignals(False)
+        for rec in self._run_records:
+            rec.enabled = True
+        self._refresh_line_combo()
+        self.velocity_overlay_changed.emit()
+
+    def _set_all_runs_hidden(self):
+        """Uncheck all runs (hide from plots/tables)."""
+        self._run_list.blockSignals(True)
+        for i in range(self._run_list.count()):
+            self._run_list.item(i).setCheckState(Qt.Unchecked)
+        self._run_list.blockSignals(False)
+        for rec in self._run_records:
+            rec.enabled = False
+        self._refresh_line_combo()
+        self.velocity_overlay_changed.emit()
+
+    def _show_run_list_context_menu(self, pos: QtCore.QPoint):
+        """Right-click context menu for the run list."""
+        menu = QtWidgets.QMenu(self)
+        if self._run_list.selectedItems():
+            remove_act = menu.addAction("Remove selected run(s)")
+            remove_act.triggered.connect(self._remove_selected_runs)
+            menu.addSeparator()
+        show_act = menu.addAction("\u2713 Show all")
+        show_act.triggered.connect(self._set_all_runs_visible)
+        hide_act = menu.addAction("\u25a1 Hide all")
+        hide_act.triggered.connect(self._set_all_runs_hidden)
+        menu.exec_(self._run_list.viewport().mapToGlobal(pos))
 
     def _on_line_changed(self, _index: int):
         lid = self._line_combo.currentData()
@@ -581,8 +917,23 @@ class SWE2DResultsPanel(_BASE_DOCK):  # type: ignore[valid-type,misc]
             self._refresh_timeseries()
 
     def _on_prof_var_changed(self, _):
+        self._sync_profile_render_controls()
         if self._tabs.currentIndex() == 1:
             self._refresh_profile()
+
+    def _on_prof_fill_changed(self, _):
+        if self._tabs.currentIndex() == 1:
+            self._refresh_profile()
+
+    def _sync_profile_render_controls(self):
+        is_wse_bed = str(self._prof_var_combo.currentData() or "wse_bed") == "wse_bed"
+        fill_enabled = is_wse_bed and str(self._prof_fill_combo.currentData() or "none") != "none"
+        if hasattr(self, "_prof_fill_widget"):
+            self._prof_fill_widget.setVisible(is_wse_bed)
+        if hasattr(self, "_prof_wse_render_widget"):
+            self._prof_wse_render_widget.setVisible(is_wse_bed)
+        if hasattr(self, "_prof_cmap_widget"):
+            self._prof_cmap_widget.setVisible(fill_enabled)
 
     def _on_tab_changed(self, index: int):
         if index == 0:
@@ -724,11 +1075,25 @@ class SWE2DResultsPanel(_BASE_DOCK):  # type: ignore[valid-type,misc]
         )
 
         mode = str(self._prof_var_combo.currentData() or "wse_bed")
+        fill_key = str(self._prof_fill_combo.currentData() or "none") if hasattr(self, "_prof_fill_combo") else "none"
+        render_mode = str(self._prof_wse_render_combo.currentData() or "clipped") if hasattr(self, "_prof_wse_render_combo") else "clipped"
+        cmap_name = str(self._prof_cmap_combo.currentData() or "viridis") if hasattr(self, "_prof_cmap_combo") else "viridis"
+        use_fill_cmap = mode == "wse_bed" and fill_key != "none"
+
+        if self._prof_fill_cbar is not None:
+            try:
+                self._prof_fill_cbar.remove()
+            except Exception:
+                pass
+            self._prof_fill_cbar = None
+
         self._ax_prof.cla()
         plotted = 0
         bed_drawn = False
         structure_rows: List[Dict[str, object]] = []
         line_name = str(self._line_combo.currentText() or "")
+        fill_segments: List[Tuple[np.ndarray, np.ndarray, np.ndarray, float]] = []
+        fill_values: List[float] = []
 
         for rec in self._run_records:
             if not rec.enabled or self._line_id < 0:
@@ -762,7 +1127,15 @@ class SWE2DResultsPanel(_BASE_DOCK):  # type: ignore[valid-type,misc]
                     np.isfinite(wet_ok), wet_ok > 0.5, depth_ok > 1e-9
                 )
                 wse_phys = np.maximum(wse_ok, bed_ok)
-                wse_plot = np.where(wet_mask, wse_phys, np.nan)
+
+                if render_mode == "raw":
+                    fill_mask = np.isfinite(wse_ok) & np.isfinite(bed_ok)
+                    wse_fill = wse_ok
+                    wse_plot = wse_ok
+                else:
+                    fill_mask = wet_mask
+                    wse_fill = wse_phys
+                    wse_plot = np.where(wet_mask, wse_phys, np.nan)
 
                 if not bed_drawn and x_ok.size:
                     bed_min = float(np.min(bed_ok)) - 0.05 * max(float(np.ptp(bed_ok)), 0.1)
@@ -776,11 +1149,33 @@ class SWE2DResultsPanel(_BASE_DOCK):  # type: ignore[valid-type,misc]
                     )
                     bed_drawn = True
 
-                self._ax_prof.fill_between(
-                    x_ok, bed_ok, wse_plot,
-                    where=wet_mask, interpolate=True,
-                    color=color, alpha=0.18, zorder=3,
-                )
+                if use_fill_cmap:
+                    fill_metric = np.asarray(
+                        data.get(fill_key, np.full_like(station, np.nan)),
+                        dtype=np.float64,
+                    )
+                    fill_ok = fill_metric[ok]
+                    for i in range(len(x_ok) - 1):
+                        if not (fill_mask[i] and fill_mask[i + 1]):
+                            continue
+                        if not (np.isfinite(fill_ok[i]) and np.isfinite(fill_ok[i + 1])):
+                            continue
+                        vmid = 0.5 * (float(fill_ok[i]) + float(fill_ok[i + 1]))
+                        fill_values.append(vmid)
+                        fill_segments.append(
+                            (
+                                x_ok[i : i + 2],
+                                bed_ok[i : i + 2],
+                                wse_fill[i : i + 2],
+                                vmid,
+                            )
+                        )
+                else:
+                    self._ax_prof.fill_between(
+                        x_ok, bed_ok, wse_fill,
+                        where=fill_mask, interpolate=True,
+                        color=color, alpha=0.18, zorder=3,
+                    )
                 self._ax_prof.plot(
                     x_ok, wse_plot,
                     color=color, linewidth=1.5, zorder=4,
@@ -849,6 +1244,39 @@ class SWE2DResultsPanel(_BASE_DOCK):  # type: ignore[valid-type,misc]
                 except Exception:
                     pass
 
+        if use_fill_cmap and fill_segments and fill_values:
+            try:
+                from matplotlib import cm as mpl_cm, colors as mpl_colors
+
+                vals = np.asarray(fill_values, dtype=np.float64)
+                finite = np.isfinite(vals)
+                if np.any(finite):
+                    vmin = float(np.nanmin(vals[finite]))
+                    vmax = float(np.nanmax(vals[finite]))
+                    if vmax <= vmin:
+                        vmax = vmin + 1.0
+                    norm = mpl_colors.Normalize(vmin=vmin, vmax=vmax)
+                    cmap = mpl_cm.get_cmap(cmap_name)
+                    for x_seg, bed_seg, wse_seg, vmid in fill_segments:
+                        self._ax_prof.fill_between(
+                            x_seg,
+                            bed_seg,
+                            wse_seg,
+                            color=cmap(norm(vmid)),
+                            alpha=0.85,
+                            linewidth=0.0,
+                            zorder=3,
+                        )
+                    sm = mpl_cm.ScalarMappable(norm=norm, cmap=cmap)
+                    sm.set_array([])
+                    self._prof_fill_cbar = self._fig_prof.colorbar(
+                        sm,
+                        ax=self._ax_prof,
+                        label=self._prof_fill_combo.currentText(),
+                    )
+            except Exception:
+                pass
+
         if plotted and self._show_structures_chk.isChecked() and structure_rows:
             x0, x1 = self._ax_prof.get_xlim()
             y0, y1 = self._ax_prof.get_ylim()
@@ -898,10 +1326,10 @@ class SWE2DResultsPanel(_BASE_DOCK):  # type: ignore[valid-type,misc]
                     f"Profile: {plotted} run(s) at t={self._current_t_sec / 3600.0:.3f} hr; structures={len(placed)} placed."
                 )
 
-        self._ax_prof.set_xlabel("Station (m)")
+        self._ax_prof.set_xlabel("Station")
         var_label = self._prof_var_combo.currentText()
         self._ax_prof.set_ylabel(
-            "Elevation (m)" if mode == "wse_bed" else var_label
+            "Elevation" if mode == "wse_bed" else var_label
         )
         t_hr = self._current_t_sec / 3600.0
         self._ax_prof.set_title(f"t = {t_hr:.3f} hr", fontsize=9)
@@ -1080,13 +1508,20 @@ class SWE2DResultsPanel(_BASE_DOCK):  # type: ignore[valid-type,misc]
         if not _HAVE_QGSPROJECT or _QgsProject is None:
             return
         state = {
+            "run_keys_enabled": [r.key for r in self._run_records if r.enabled],
             "run_ids_enabled": [r.run_id for r in self._run_records if r.enabled],
+            "manual_gpkg_paths": list(self._manual_gpkg_paths),
+            "base_selected_run_keys": sorted(self._base_selected_run_keys),
+            "manual_selected_run_keys": sorted(self._manual_selected_run_keys),
             "line_id": self._line_id,
             "t_sec": self._current_t_sec,
             "frame_idx": int(self._anim_frame_idx),
             "tab_index": self._tabs.currentIndex(),
             "ts_var": self._ts_var_combo.currentData(),
             "prof_var": self._prof_var_combo.currentData(),
+            "prof_fill_var": self._prof_fill_combo.currentData(),
+            "prof_wse_render_mode": self._prof_wse_render_combo.currentData(),
+            "prof_fill_cmap": self._prof_cmap_combo.currentData(),
             "show_structures": bool(self._show_structures_chk.isChecked()),
             "show_velocity": bool(self._show_velocity_chk.isChecked()),
             "velocity_density": int(self.velocity_density_stride()),
@@ -1114,12 +1549,29 @@ class SWE2DResultsPanel(_BASE_DOCK):  # type: ignore[valid-type,misc]
         except Exception:
             return
 
+        self._manual_gpkg_paths = [
+            str(p) for p in state.get("manual_gpkg_paths", [])
+            if isinstance(p, str) and p and _os.path.exists(p) and p != self._gpkg_path
+        ]
+        self._base_selected_run_keys = {
+            str(k) for k in state.get("base_selected_run_keys", [])
+            if isinstance(k, str) and k
+        }
+        self._manual_selected_run_keys = {
+            str(k) for k in state.get("manual_selected_run_keys", [])
+            if isinstance(k, str) and k
+        }
+        self._discover_runs()
+
+        enabled_keys = set(state.get("run_keys_enabled", []))
         enabled_ids = set(state.get("run_ids_enabled", []))
         for i in range(self._run_list.count()):
             item = self._run_list.item(i)
-            rid = item.data(Qt.UserRole)
+            run_key = str(item.data(Qt.UserRole) or "")
+            rid = run_key.split("::", 1)[1] if "::" in run_key else run_key
+            should_enable = (run_key in enabled_keys) if enabled_keys else (rid in enabled_ids)
             item.setCheckState(
-                Qt.Checked if rid in enabled_ids else Qt.Unchecked
+                Qt.Checked if should_enable else Qt.Unchecked
             )
 
         lid = state.get("line_id", -1)
@@ -1142,6 +1594,23 @@ class SWE2DResultsPanel(_BASE_DOCK):  # type: ignore[valid-type,misc]
         idx_pv = self._prof_var_combo.findData(pv)
         if idx_pv >= 0:
             self._prof_var_combo.setCurrentIndex(idx_pv)
+
+        pfv = state.get("prof_fill_var", "none")
+        idx_pfv = self._prof_fill_combo.findData(pfv)
+        if idx_pfv >= 0:
+            self._prof_fill_combo.setCurrentIndex(idx_pfv)
+
+        prm = state.get("prof_wse_render_mode", "clipped")
+        idx_prm = self._prof_wse_render_combo.findData(prm)
+        if idx_prm >= 0:
+            self._prof_wse_render_combo.setCurrentIndex(idx_prm)
+
+        pcm = state.get("prof_fill_cmap", "viridis")
+        idx_pcm = self._prof_cmap_combo.findData(pcm)
+        if idx_pcm >= 0:
+            self._prof_cmap_combo.setCurrentIndex(idx_pcm)
+
+        self._sync_profile_render_controls()
 
         show_structures = bool(state.get("show_structures", True))
         self._show_structures_chk.setChecked(show_structures)
@@ -1176,8 +1645,6 @@ class SWE2DResultsPanel(_BASE_DOCK):  # type: ignore[valid-type,misc]
         if new == self._gpkg_path:
             return
         self._gpkg_path = new
-        for rec in self._run_records:
-            rec.gpkg_path = new
         self._discover_runs()
 
     def set_current_time(self, t_sec: float):
@@ -1188,6 +1655,19 @@ class SWE2DResultsPanel(_BASE_DOCK):  # type: ignore[valid-type,misc]
             if rec.enabled:
                 return str(rec.run_id)
         return ""
+
+    def enabled_overlay_targets(self) -> List[Tuple[str, str]]:
+        """Return enabled overlay targets as (gpkg_path, run_id) pairs."""
+        out: List[Tuple[str, str]] = []
+        for rec in self._run_records:
+            if not rec.enabled:
+                continue
+            gpkg = str(rec.gpkg_path or "").strip()
+            run_id = str(rec.run_id or "").strip()
+            if not gpkg or not run_id:
+                continue
+            out.append((gpkg, run_id))
+        return out
 
     def current_time_sec(self) -> float:
         return float(self._current_t_sec)

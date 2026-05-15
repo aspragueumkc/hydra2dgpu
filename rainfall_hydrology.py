@@ -292,7 +292,16 @@ class SCSCurveNumberLoss:
 
 
 class ThiessenRainCNForcing:
-    """Maps rain gages to cells (Thiessen nearest gage) and applies CN losses."""
+    """Maps rain gages to cells (Thiessen nearest gage) and applies infiltration losses.
+
+    ``infiltration_method`` controls which loss model is applied:
+
+    * ``"scs_cn"``  – NRCS SCS Curve Number (default, original behaviour)
+    * ``"none"``    – no infiltration; raw rainfall depth becomes runoff directly
+    """
+
+    #: Recognised infiltration method identifiers.
+    INFILTRATION_METHODS = ("none", "scs_cn")
 
     def __init__(
         self,
@@ -300,10 +309,151 @@ class ThiessenRainCNForcing:
         gauge_hyetographs: Dict[int, Hyetograph],
         curve_number: np.ndarray,
         ia_ratio: float = 0.2,
+        infiltration_method: str = "scs_cn",
     ):
         self.cell_to_gauge = np.asarray(cell_to_gauge, dtype=np.int32)
         self.gauge_hyetographs = dict(gauge_hyetographs)
-        self.cn_model = SCSCurveNumberLoss(curve_number=np.asarray(curve_number, dtype=np.float64), ia_ratio=ia_ratio)
+        self.infiltration_method = str(infiltration_method).lower().strip()
+        self.curve_number = np.clip(np.asarray(curve_number, dtype=np.float64).ravel(), 1.0, 100.0)
+        self.ia_ratio = float(ia_ratio)
+        self.cn_model = SCSCurveNumberLoss(curve_number=self.curve_number, ia_ratio=self.ia_ratio)
+        self._preprocessed_cache: Optional[Dict[str, np.ndarray]] = None
+
+    def _build_preprocessed_cache(self) -> Dict[str, np.ndarray]:
+        cache = self._preprocessed_cache
+        if cache is not None:
+            return cache
+
+        times_all: List[np.ndarray] = []
+        for hy in self.gauge_hyetographs.values():
+            t = np.asarray(getattr(hy, "times_s", []), dtype=np.float64).ravel()
+            if t.size:
+                times_all.append(t)
+        if not times_all:
+            times = np.asarray([0.0], dtype=np.float64)
+        else:
+            times = np.unique(np.concatenate(times_all))
+            if times.size == 0 or float(times[0]) > 0.0:
+                times = np.insert(times, 0, 0.0)
+        times = np.asarray(times, dtype=np.float64)
+
+        gauge_ids = sorted({int(g) for g in np.unique(self.cell_to_gauge).tolist() if int(g) >= 0})
+        gauge_cum: Dict[int, np.ndarray] = {}
+        for gi in gauge_ids:
+            hy = self.gauge_hyetographs.get(int(gi))
+            if hy is None:
+                gauge_cum[int(gi)] = np.zeros(times.shape[0], dtype=np.float64)
+                continue
+            th = np.asarray(hy.times_s, dtype=np.float64).ravel()
+            ch = np.asarray(hy.cumulative_mm, dtype=np.float64).ravel()
+            if th.size == 0 or ch.size == 0:
+                gauge_cum[int(gi)] = np.zeros(times.shape[0], dtype=np.float64)
+                continue
+            gauge_cum[int(gi)] = np.interp(times, th, ch, left=0.0, right=float(ch[-1]))
+
+        key_to_group: Dict[Tuple[object, ...], int] = {}
+        group_cum: List[np.ndarray] = []
+        cell_group_idx = np.full(self.cell_to_gauge.shape[0], -1, dtype=np.int32)
+
+        zeros_curve = np.zeros(times.shape[0], dtype=np.float64)
+        for i in range(self.cell_to_gauge.shape[0]):
+            gi = int(self.cell_to_gauge[i])
+            if gi < 0:
+                key: Tuple[object, ...] = ("off",)
+            elif self.infiltration_method == "none":
+                key = ("none", gi)
+            else:
+                key = ("scs_cn", gi, float(self.curve_number[i]))
+
+            gid = key_to_group.get(key)
+            if gid is None:
+                if gi < 0:
+                    curve = zeros_curve.copy()
+                else:
+                    rain_curve = np.asarray(gauge_cum.get(gi, zeros_curve), dtype=np.float64)
+                    if self.infiltration_method == "none":
+                        curve = rain_curve.copy()
+                    else:
+                        cn_curve = np.full(rain_curve.shape, float(self.curve_number[i]), dtype=np.float64)
+                        curve = scs_cumulative_excess_mm(
+                            rain_curve,
+                            cn_curve,
+                            ia_ratio=self.ia_ratio,
+                        )
+                gid = len(group_cum)
+                key_to_group[key] = gid
+                group_cum.append(np.asarray(curve, dtype=np.float64))
+            cell_group_idx[i] = int(gid)
+
+        if not group_cum:
+            group_cum_arr = np.zeros((1, times.shape[0]), dtype=np.float64)
+            cell_group_idx = np.zeros(self.cell_to_gauge.shape[0], dtype=np.int32)
+        else:
+            group_cum_arr = np.vstack(group_cum).astype(np.float64, copy=False)
+
+        cache = {
+            "times_s": times,
+            "group_cumulative_excess_mm": group_cum_arr,
+            "cell_group_idx": cell_group_idx,
+        }
+        self._preprocessed_cache = cache
+        return cache
+
+    @staticmethod
+    def _interp_group_cumulative_mm(times_s: np.ndarray, group_cum_mm: np.ndarray, t_s: float) -> np.ndarray:
+        t = float(t_s)
+        if times_s.size <= 1:
+            return np.asarray(group_cum_mm[:, 0], dtype=np.float64)
+        if t <= float(times_s[0]):
+            return np.asarray(group_cum_mm[:, 0], dtype=np.float64)
+        if t >= float(times_s[-1]):
+            return np.asarray(group_cum_mm[:, -1], dtype=np.float64)
+        j = int(np.searchsorted(times_s, t, side="right") - 1)
+        j = max(0, min(j, int(times_s.size) - 2))
+        t0 = float(times_s[j])
+        t1 = float(times_s[j + 1])
+        if t1 <= t0:
+            return np.asarray(group_cum_mm[:, j], dtype=np.float64)
+        w = (t - t0) / (t1 - t0)
+        return (1.0 - w) * group_cum_mm[:, j] + w * group_cum_mm[:, j + 1]
+
+    def build_native_preprocessed_payload(self) -> Dict[str, np.ndarray]:
+        """Return preprocessed excess-hyetograph payload compatible with native API.
+
+        The native backend currently accepts rainfall+CN inputs. We provide
+        precomputed cumulative excess as pseudo-rainfall and force identity loss
+        (CN=100, Ia=0) so runtime infiltration is not re-applied.
+        """
+        cache = self._build_preprocessed_cache()
+        times = np.asarray(cache["times_s"], dtype=np.float64).ravel()
+        group_cum = np.asarray(cache["group_cumulative_excess_mm"], dtype=np.float64)
+        cell_group_idx = np.asarray(cache["cell_group_idx"], dtype=np.int32).ravel()
+
+        n_groups = int(group_cum.shape[0])
+        nt = int(times.size)
+        if n_groups <= 0 or nt <= 0:
+            return {
+                "cell_gage_idx": np.full(cell_group_idx.shape[0], -1, dtype=np.int32),
+                "gage_offsets": np.asarray([0], dtype=np.int32),
+                "hg_time_s": np.asarray([0.0], dtype=np.float64),
+                "hg_cum_mm": np.asarray([0.0], dtype=np.float64),
+                "cn": np.full(cell_group_idx.shape[0], 100.0, dtype=np.float64),
+                "ia_ratio": np.asarray([0.0], dtype=np.float64),
+            }
+
+        gage_offsets = np.arange(0, (n_groups + 1) * nt, nt, dtype=np.int32)
+        hg_time_s = np.tile(times, n_groups).astype(np.float64, copy=False)
+        hg_cum_mm = group_cum.reshape(-1).astype(np.float64, copy=False)
+        cn = np.full(cell_group_idx.shape[0], 100.0, dtype=np.float64)
+        ia_ratio = np.asarray([0.0], dtype=np.float64)
+        return {
+            "cell_gage_idx": cell_group_idx.astype(np.int32, copy=False),
+            "gage_offsets": gage_offsets,
+            "hg_time_s": hg_time_s,
+            "hg_cum_mm": hg_cum_mm,
+            "cn": cn,
+            "ia_ratio": ia_ratio,
+        }
 
     def _window_rain_mm(self, t0_s: float, t1_s: float) -> Tuple[np.ndarray, float]:
         dt_s = max(1.0e-9, float(t1_s) - float(t0_s))
@@ -321,7 +471,16 @@ class ThiessenRainCNForcing:
 
     def step_net_rainfall_mps(self, t0_s: float, t1_s: float, mutate_state: bool = True) -> Tuple[np.ndarray, Dict[str, float]]:
         rain_mm, dt_s = self._window_rain_mm(t0_s, t1_s)
-        excess_mm = self.cn_model.step(rain_mm) if mutate_state else self.cn_model.preview_step(rain_mm)
+        cache = self._build_preprocessed_cache()
+        times = np.asarray(cache["times_s"], dtype=np.float64)
+        group_cum = np.asarray(cache["group_cumulative_excess_mm"], dtype=np.float64)
+        cell_group = np.asarray(cache["cell_group_idx"], dtype=np.int32)
+
+        g0 = self._interp_group_cumulative_mm(times, group_cum, float(t0_s))
+        g1 = self._interp_group_cumulative_mm(times, group_cum, float(t1_s))
+        group_inc = np.maximum(g1 - g0, 0.0)
+        excess_mm = np.maximum(group_inc[cell_group], 0.0)
+
         rate_mps = (excess_mm / 1000.0) / dt_s
 
         stats = {

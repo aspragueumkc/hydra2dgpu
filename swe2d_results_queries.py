@@ -69,6 +69,26 @@ def _table_exists(conn: sqlite3.Connection, table_name: str) -> bool:
         return False
 
 
+def _resolve_ts_table(conn: sqlite3.Connection, run_id: str) -> Tuple[str, bool]:
+    """Return (table_name, uses_run_id_column) for timeseries storage."""
+    if _table_exists(conn, "swe2d_line_results_ts"):
+        return "swe2d_line_results_ts", True
+    legacy = f"swe2d_line_results_ts_{run_id}"
+    if _table_exists(conn, legacy):
+        return legacy, False
+    return "", False
+
+
+def _resolve_profile_table(conn: sqlite3.Connection, run_id: str) -> Tuple[str, bool]:
+    """Return (table_name, uses_run_id_column) for profile storage."""
+    if _table_exists(conn, "swe2d_line_results_profile"):
+        return "swe2d_line_results_profile", True
+    legacy = f"swe2d_line_results_profile_{run_id}"
+    if _table_exists(conn, legacy):
+        return legacy, False
+    return "", False
+
+
 # ---------------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------------
@@ -91,19 +111,57 @@ def discover_line_result_runs(gpkg_path: str) -> List[Dict]:
     if conn is None:
         return []
     try:
+        results: List[Dict] = []
+
+        # New shared-schema support: swe2d_line_results_ts/profile with run_id columns.
+        if _table_exists(conn, "swe2d_line_results_ts"):
+            run_ids: List[str] = []
+            if _table_exists(conn, "swe2d_line_results_runs"):
+                cur = conn.execute(
+                    "SELECT run_id FROM swe2d_line_results_runs "
+                    "ORDER BY datetime(created_utc) DESC, rowid DESC"
+                )
+                run_ids = [str(r[0]) for r in cur.fetchall() if str(r[0] or "").strip()]
+            if not run_ids:
+                cur = conn.execute(
+                    "SELECT DISTINCT run_id FROM swe2d_line_results_ts ORDER BY run_id"
+                )
+                run_ids = [str(r[0]) for r in cur.fetchall() if str(r[0] or "").strip()]
+
+            has_profile_table = _table_exists(conn, "swe2d_line_results_profile")
+            for run_id in run_ids:
+                has_profile = False
+                if has_profile_table:
+                    cur = conn.execute(
+                        "SELECT 1 FROM swe2d_line_results_profile WHERE run_id=? LIMIT 1",
+                        (run_id,),
+                    )
+                    has_profile = cur.fetchone() is not None
+                results.append(
+                    {
+                        "run_id": run_id,
+                        "table_ts": "swe2d_line_results_ts",
+                        "table_profile": "swe2d_line_results_profile",
+                        "has_profile": has_profile,
+                    }
+                )
+
+        # Legacy per-run table support: swe2d_line_results_ts_<run_id>.
         cur = conn.execute(
             "SELECT name FROM sqlite_master "
             "WHERE type='table' AND name LIKE 'swe2d_line_results_ts_%' "
             "ORDER BY name"
         )
         rows = cur.fetchall()
-        results = []
+        existing = {str(r.get("run_id", "")) for r in results}
         for row in rows:
             table_ts = str(row[0])
             prefix = "swe2d_line_results_ts_"
             if not table_ts.startswith(prefix):
                 continue
             run_id = table_ts[len(prefix):]
+            if run_id in existing:
+                continue
             table_profile = f"swe2d_line_results_profile_{run_id}"
             has_profile = _table_exists(conn, table_profile)
             results.append(
@@ -126,16 +184,22 @@ def load_line_ids(gpkg_path: str, run_id: str) -> List[Tuple[int, str]]:
 
     Returns an empty list on any error.
     """
-    table = f"swe2d_line_results_ts_{run_id}"
     conn = _open_ro(gpkg_path)
     if conn is None:
         return []
     try:
-        if not _table_exists(conn, table):
+        table, shared = _resolve_ts_table(conn, str(run_id))
+        if not table:
             return []
-        cur = conn.execute(
-            f"SELECT DISTINCT line_id, line_name FROM \"{table}\" ORDER BY line_id"
-        )
+        if shared:
+            cur = conn.execute(
+                f"SELECT DISTINCT line_id, line_name FROM \"{table}\" WHERE run_id=? ORDER BY line_id",
+                (str(run_id),),
+            )
+        else:
+            cur = conn.execute(
+                f"SELECT DISTINCT line_id, line_name FROM \"{table}\" ORDER BY line_id"
+            )
         return [(int(r[0]), str(r[1] or "")) for r in cur.fetchall()]
     except Exception:
         return []
@@ -148,17 +212,23 @@ def load_timesteps(gpkg_path: str, run_id: str, line_id: int) -> np.ndarray:
 
     Returns an empty float64 array on any error.
     """
-    table = f"swe2d_line_results_ts_{run_id}"
     conn = _open_ro(gpkg_path)
     if conn is None:
         return np.empty(0, dtype=np.float64)
     try:
-        if not _table_exists(conn, table):
+        table, shared = _resolve_ts_table(conn, str(run_id))
+        if not table:
             return np.empty(0, dtype=np.float64)
-        cur = conn.execute(
-            f"SELECT DISTINCT t_s FROM \"{table}\" WHERE line_id=? ORDER BY t_s",
-            (int(line_id),),
-        )
+        if shared:
+            cur = conn.execute(
+                f"SELECT DISTINCT t_s FROM \"{table}\" WHERE run_id=? AND line_id=? ORDER BY t_s",
+                (str(run_id), int(line_id)),
+            )
+        else:
+            cur = conn.execute(
+                f"SELECT DISTINCT t_s FROM \"{table}\" WHERE line_id=? ORDER BY t_s",
+                (int(line_id),),
+            )
         vals = [float(r[0]) for r in cur.fetchall()]
         return np.asarray(vals, dtype=np.float64)
     except Exception:
@@ -176,18 +246,25 @@ def load_timeseries(gpkg_path: str, run_id: str, line_id: int) -> Dict[str, np.n
 
     Returns an empty dict on any error or if no rows match.
     """
-    table = f"swe2d_line_results_ts_{run_id}"
     conn = _open_ro(gpkg_path)
     if conn is None:
         return {}
     try:
-        if not _table_exists(conn, table):
+        table, shared = _resolve_ts_table(conn, str(run_id))
+        if not table:
             return {}
-        cur = conn.execute(
-            f"SELECT t_s, depth_m, velocity_ms, wse_m, bed_m, flow_cms "
-            f"FROM \"{table}\" WHERE line_id=? ORDER BY t_s",
-            (int(line_id),),
-        )
+        if shared:
+            cur = conn.execute(
+                f"SELECT t_s, depth_m, velocity_ms, wse_m, bed_m, flow_cms "
+                f"FROM \"{table}\" WHERE run_id=? AND line_id=? ORDER BY t_s",
+                (str(run_id), int(line_id)),
+            )
+        else:
+            cur = conn.execute(
+                f"SELECT t_s, depth_m, velocity_ms, wse_m, bed_m, flow_cms "
+                f"FROM \"{table}\" WHERE line_id=? ORDER BY t_s",
+                (int(line_id),),
+            )
         rows = cur.fetchall()
         if not rows:
             return {}
@@ -225,20 +302,29 @@ def load_profile(
         ``flow_qn``, ``fr``, ``wet``
     Returns an empty dict on any error or if the profile table does not exist.
     """
-    table = f"swe2d_line_results_profile_{run_id}"
     conn = _open_ro(gpkg_path)
     if conn is None:
         return {}
     try:
-        if not _table_exists(conn, table):
+        table, shared = _resolve_profile_table(conn, str(run_id))
+        if not table:
             return {}
-        cur = conn.execute(
-            f"SELECT station_m, depth_m, velocity_ms, wse_m, bed_m, flow_qn, fr, wet "
-            f"FROM \"{table}\" "
-            f"WHERE line_id=? AND ABS(t_s - ?) < ? "
-            f"ORDER BY station_m",
-            (int(line_id), float(t_sec), float(t_tol)),
-        )
+        if shared:
+            cur = conn.execute(
+                f"SELECT station_m, depth_m, velocity_ms, wse_m, bed_m, flow_qn, fr, wet "
+                f"FROM \"{table}\" "
+                f"WHERE run_id=? AND line_id=? AND ABS(t_s - ?) < ? "
+                f"ORDER BY station_m",
+                (str(run_id), int(line_id), float(t_sec), float(t_tol)),
+            )
+        else:
+            cur = conn.execute(
+                f"SELECT station_m, depth_m, velocity_ms, wse_m, bed_m, flow_qn, fr, wet "
+                f"FROM \"{table}\" "
+                f"WHERE line_id=? AND ABS(t_s - ?) < ? "
+                f"ORDER BY station_m",
+                (int(line_id), float(t_sec), float(t_tol)),
+            )
         rows = cur.fetchall()
         if not rows:
             return {}

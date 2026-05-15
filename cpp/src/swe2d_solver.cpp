@@ -790,10 +790,6 @@ SWE2DStepDiag swe2d_step(SWE2DSolver* s, double dt_request) {
         (s->cfg.equation_set == static_cast<int>(SWE2DEquationSet::NONHYDROSTATIC_2D));
     const bool use_2d3d_coupling =
         (s->cfg.coupling_mode != static_cast<int>(SWE2DThreeDCouplingMode::OFF));
-    if (use_nonhydrostatic_mode || use_2d3d_coupling) {
-        throw std::runtime_error(
-            "swe2d_step: nonhydrostatic/coupled GPU solver path is scaffolded but not implemented yet");
-    }
 
     const bool use_godunov_rollout = (s->cfg.godunov_mode != 0);
     const bool use_rk4 = (s->cfg.temporal_order >= 4) && !use_godunov_rollout;
@@ -804,6 +800,11 @@ SWE2DStepDiag swe2d_step(SWE2DSolver* s, double dt_request) {
 
 #ifdef BACKWATER_HAS_CUDA
     if (s->dev) {
+        if (use_2d3d_coupling) {
+            throw std::runtime_error(
+                "swe2d_step: 2D-3D coupled solver path is scaffolded but not implemented yet");
+        }
+
         double dt;
         if (s->cfg.dt_fixed > 0.0) {
             dt = s->cfg.dt_fixed;
@@ -816,6 +817,26 @@ SWE2DStepDiag swe2d_step(SWE2DSolver* s, double dt_request) {
                 s->cfg.dt_max,
                 s->cfg.cfl_lambda_cap);
             dt = (dt_request > 0.0) ? std::min(dt_request, dt_cfl) : dt_cfl;
+        }
+
+        if (use_nonhydrostatic_mode) {
+            SWE2DStepDiag diag;
+            SWE2DNonhydroPcConfig nh_cfg;
+            SWE2DNonhydroPcDiag nh_diag;
+            swe2d_gpu_step_nonhydro_predictor_corrector(
+                s->dev,
+                t_now,
+                dt,
+                s->cfg.g,
+                s->cfg.h_min,
+                s->cfg.spatial_scheme,
+                nh_cfg,
+                sync_diag_this_step,
+                &diag,
+                &nh_diag,
+                s->cfg.front_flux_damping,
+                s->cfg.active_set_hysteresis);
+            return diag;
         }
 
         if (use_rk4) {

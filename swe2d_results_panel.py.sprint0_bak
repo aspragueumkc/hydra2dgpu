@@ -1,0 +1,510 @@
+"""swe2d_results_panel.py
+
+Dockable multi-run results panel for the SWE2D workbench.
+
+Displays time-series and cross-section profiles for one or more result runs
+stored in a GeoPackage.  Designed to live alongside the existing modal
+``SWE2DLineResultsViewerDialog``; it does NOT replace it.
+
+Usage (from within SWE2DWorkbenchDialog)
+-----------------------------------------
+    from swe2d_results_panel import SWE2DResultsPanel
+    panel = SWE2DResultsPanel(gpkg_path="path/to/model.gpkg", iface=iface)
+    iface.addDockWidget(Qt.RightDockWidgetArea, panel)
+    panel.show()
+"""
+
+from __future__ import annotations
+
+import dataclasses
+from typing import Dict, List, Optional, Tuple
+
+import numpy as np
+from PyQt5 import QtCore, QtWidgets
+from PyQt5.QtCore import Qt
+
+# ---------------------------------------------------------------------------
+# Optional QGIS import — fall back to plain QDockWidget outside QGIS
+# ---------------------------------------------------------------------------
+try:
+    from qgis.gui import QgsDockWidget as _QgsDockWidget
+    _BASE_DOCK = _QgsDockWidget
+except ImportError:
+    _BASE_DOCK = QtWidgets.QDockWidget  # type: ignore[assignment,misc]
+
+# ---------------------------------------------------------------------------
+# Optional matplotlib import
+# ---------------------------------------------------------------------------
+_FigureCanvas = None
+_Figure = None
+
+
+def _try_import_matplotlib():
+    global _FigureCanvas, _Figure
+    if _FigureCanvas is not None:
+        return True
+    try:
+        from matplotlib.backends.backend_qt5agg import (
+            FigureCanvasQTAgg as FigureCanvas,
+        )
+        from matplotlib.figure import Figure
+        _FigureCanvas = FigureCanvas
+        _Figure = Figure
+        return True
+    except Exception:
+        pass
+    try:
+        from matplotlib.backends.backend_qtagg import (
+            FigureCanvasQTAgg as FigureCanvas,
+        )
+        from matplotlib.figure import Figure
+        _FigureCanvas = FigureCanvas
+        _Figure = Figure
+        return True
+    except Exception:
+        pass
+    return False
+
+
+# ---------------------------------------------------------------------------
+# Color palette (matplotlib tab10 first 8 as (R, G, B) 0-255)
+# ---------------------------------------------------------------------------
+_PANEL_COLORS: List[Tuple[int, int, int]] = [
+    (31,  119, 180),
+    (255, 127,  14),
+    (44,  160,  44),
+    (214,  39,  40),
+    (148, 103, 189),
+    (140,  86,  75),
+    (227, 119, 194),
+    (127, 127, 127),
+]
+
+
+def _color_to_float(rgb: Tuple[int, int, int]) -> Tuple[float, float, float]:
+    return (rgb[0] / 255.0, rgb[1] / 255.0, rgb[2] / 255.0)
+
+
+def _color_to_qcolor(rgb: Tuple[int, int, int]):
+    from PyQt5.QtGui import QColor
+    return QColor(rgb[0], rgb[1], rgb[2])
+
+
+# ---------------------------------------------------------------------------
+# Internal data model
+# ---------------------------------------------------------------------------
+
+@dataclasses.dataclass
+class RunRecord:
+    run_id: str
+    gpkg_path: str
+    color: Tuple[int, int, int]
+    enabled: bool = True
+    label: str = ""        # display label; falls back to run_id
+
+    def display_label(self) -> str:
+        return self.label or self.run_id
+
+
+# ---------------------------------------------------------------------------
+# Color-swatch delegate for QListWidget items
+# ---------------------------------------------------------------------------
+
+class _ColorSwatchDelegate(QtWidgets.QStyledItemDelegate):
+    """Draws a small color rectangle before each list item's text."""
+
+    _SWATCH = 14  # swatch square size in pixels
+    _GAP = 4
+
+    def paint(self, painter, option, index):
+        super().paint(painter, option, index)
+        color_data = index.data(Qt.UserRole + 1)
+        if color_data is None:
+            return
+        from PyQt5.QtGui import QColor
+        r, g, b = color_data
+        rect = option.rect
+        sw = self._SWATCH
+        gap = self._GAP
+        swatch_rect = QtCore.QRect(
+            rect.left() + gap,
+            rect.top() + (rect.height() - sw) // 2,
+            sw,
+            sw,
+        )
+        painter.save()
+        painter.setBrush(QColor(r, g, b))
+        painter.setPen(QtCore.Qt.NoPen)
+        painter.drawRect(swatch_rect)
+        painter.restore()
+
+
+# ---------------------------------------------------------------------------
+# Main panel class
+# ---------------------------------------------------------------------------
+
+class SWE2DResultsPanel(_BASE_DOCK):  # type: ignore[valid-type,misc]
+    """Dockable panel showing multi-run time-series and profile plots."""
+
+    def __init__(
+        self,
+        gpkg_path: str = "",
+        iface=None,
+        parent=None,
+    ):
+        super().__init__(parent)
+        self.setWindowTitle("SWE2D Results")
+        self.setObjectName("SWE2DResultsPanel")
+        self.setFeatures(
+            QtWidgets.QDockWidget.DockWidgetMovable
+            | QtWidgets.QDockWidget.DockWidgetFloatable
+            | QtWidgets.QDockWidget.DockWidgetClosable
+        )
+
+        self._gpkg_path: str = str(gpkg_path or "")
+        self._iface = iface
+        self._run_records: List[RunRecord] = []
+        self._line_id: int = -1
+        self._current_t_sec: float = 0.0
+        self._have_matplotlib: bool = False
+
+        # matplotlib figure/canvas handles (set in _setup_matplotlib)
+        self._fig_ts = None
+        self._ax_ts = None
+        self._canvas_ts = None
+        self._fig_prof = None
+        self._ax_prof = None
+        self._canvas_prof = None
+
+        self._setup_ui()
+        self._setup_matplotlib()
+
+        if self._gpkg_path:
+            self._discover_runs()
+
+    # ------------------------------------------------------------------
+    # UI construction
+    # ------------------------------------------------------------------
+
+    def _setup_ui(self):
+        container = QtWidgets.QWidget()
+        self.setWidget(container)
+
+        root = QtWidgets.QVBoxLayout(container)
+        root.setContentsMargins(4, 4, 4, 4)
+        root.setSpacing(4)
+
+        # ---- Top bar: title + refresh ----------------------------------
+        top_bar = QtWidgets.QHBoxLayout()
+        top_lbl = QtWidgets.QLabel("<b>SWE2D Results</b>")
+        self._refresh_btn = QtWidgets.QPushButton("Refresh")
+        self._refresh_btn.setFixedWidth(72)
+        self._refresh_btn.clicked.connect(self._discover_runs)
+        self._gpkg_lbl = QtWidgets.QLabel()
+        self._gpkg_lbl.setWordWrap(False)
+        self._gpkg_lbl.setStyleSheet("color: gray; font-size: 9px;")
+        top_bar.addWidget(top_lbl)
+        top_bar.addStretch(1)
+        top_bar.addWidget(self._refresh_btn)
+        root.addLayout(top_bar)
+        root.addWidget(self._gpkg_lbl)
+
+        # ---- Body: left sidebar + tabs ---------------------------------
+        body = QtWidgets.QHBoxLayout()
+
+        # Left sidebar
+        sidebar = QtWidgets.QVBoxLayout()
+        sidebar.addWidget(QtWidgets.QLabel("Runs (check to overlay):"))
+        self._run_list = QtWidgets.QListWidget()
+        self._run_list.setFixedWidth(210)
+        self._run_list.setAlternatingRowColors(True)
+        self._run_list.setItemDelegate(_ColorSwatchDelegate(self._run_list))
+        self._run_list.itemChanged.connect(self._on_run_toggle)
+        sidebar.addWidget(self._run_list)
+
+        # Line selector below run list
+        line_row = QtWidgets.QHBoxLayout()
+        line_row.addWidget(QtWidgets.QLabel("Line:"))
+        self._line_combo = QtWidgets.QComboBox()
+        self._line_combo.setMinimumWidth(110)
+        self._line_combo.currentIndexChanged.connect(self._on_line_changed)
+        line_row.addWidget(self._line_combo, 1)
+        sidebar.addLayout(line_row)
+
+        self._run_count_lbl = QtWidgets.QLabel("")
+        self._run_count_lbl.setStyleSheet("color: gray; font-size: 9px;")
+        sidebar.addWidget(self._run_count_lbl)
+        sidebar.addStretch(1)
+
+        body.addLayout(sidebar)
+
+        # Tabs (plot area)
+        self._tabs = QtWidgets.QTabWidget()
+        self._ts_tab = QtWidgets.QWidget()
+        self._prof_tab = QtWidgets.QWidget()
+        self._tabs.addTab(self._ts_tab, "Time-Series")
+        self._tabs.addTab(self._prof_tab, "Profile")
+        self._tabs.currentChanged.connect(self._on_tab_changed)
+
+        body.addWidget(self._tabs, 1)
+        root.addLayout(body, 1)
+
+        # ---- Bottom status bar -----------------------------------------
+        self._status_lbl = QtWidgets.QLabel("No results loaded.")
+        self._status_lbl.setStyleSheet("color: gray; font-size: 9px;")
+        root.addWidget(self._status_lbl)
+
+    def _setup_matplotlib(self):
+        """Embed matplotlib figures into the two tab widgets."""
+        self._have_matplotlib = _try_import_matplotlib()
+
+        def _make_canvas_tab(tab_widget) -> Tuple:
+            layout = QtWidgets.QVBoxLayout(tab_widget)
+            layout.setContentsMargins(0, 0, 0, 0)
+            if not self._have_matplotlib:
+                layout.addWidget(QtWidgets.QLabel("matplotlib not available"))
+                return None, None, None
+            fig = _Figure(figsize=(6, 4), tight_layout=True)
+            ax = fig.add_subplot(111)
+            canvas = _FigureCanvas(fig)
+            layout.addWidget(canvas)
+            return fig, ax, canvas
+
+        self._fig_ts, self._ax_ts, self._canvas_ts = _make_canvas_tab(self._ts_tab)
+        self._fig_prof, self._ax_prof, self._canvas_prof = _make_canvas_tab(self._prof_tab)
+
+    # ------------------------------------------------------------------
+    # Run discovery and list population
+    # ------------------------------------------------------------------
+
+    def _discover_runs(self):
+        """Query the GPKG for runs and repopulate the sidebar list."""
+        from swe2d_results_queries import discover_line_result_runs
+
+        self._run_list.blockSignals(True)
+        self._run_list.clear()
+        self._run_records.clear()
+
+        if self._gpkg_path:
+            self._gpkg_lbl.setText(self._gpkg_path)
+            runs = discover_line_result_runs(self._gpkg_path)
+        else:
+            self._gpkg_lbl.setText("(no GPKG loaded)")
+            runs = []
+
+        for i, run_meta in enumerate(runs):
+            run_id = str(run_meta["run_id"])
+            color = _PANEL_COLORS[i % len(_PANEL_COLORS)]
+            record = RunRecord(
+                run_id=run_id,
+                gpkg_path=self._gpkg_path,
+                color=color,
+                enabled=True,
+            )
+            self._run_records.append(record)
+
+            item = QtWidgets.QListWidgetItem(run_id)
+            item.setCheckState(Qt.Checked)
+            item.setData(Qt.UserRole, run_id)
+            item.setData(Qt.UserRole + 1, color)
+            item.setToolTip(f"Run: {run_id}\nGPKG: {self._gpkg_path}")
+            self._run_list.addItem(item)
+
+        self._run_list.blockSignals(False)
+        self._run_count_lbl.setText(f"{len(runs)} run(s) found")
+        self._refresh_line_combo()
+
+    def _refresh_line_combo(self):
+        """Rebuild the line selector from all enabled runs (union)."""
+        from swe2d_results_queries import load_line_ids
+
+        self._line_combo.blockSignals(True)
+        self._line_combo.clear()
+
+        seen: Dict[int, str] = {}
+        for record in self._run_records:
+            if not record.enabled:
+                continue
+            pairs = load_line_ids(record.gpkg_path, record.run_id)
+            for lid, lname in pairs:
+                if lid not in seen:
+                    seen[lid] = lname
+
+        if not seen:
+            self._line_combo.addItem("(no results)", -1)
+            self._line_id = -1
+        else:
+            for lid in sorted(seen.keys()):
+                lname = seen[lid]
+                display = lname if lname else f"Line {lid}"
+                self._line_combo.addItem(display, lid)
+            # Restore previously selected line_id if possible
+            idx = self._line_combo.findData(self._line_id)
+            if idx >= 0:
+                self._line_combo.setCurrentIndex(idx)
+            else:
+                self._line_id = self._line_combo.currentData() or -1
+
+        self._line_combo.blockSignals(False)
+        self._refresh_plots()
+
+    # ------------------------------------------------------------------
+    # Signal handlers
+    # ------------------------------------------------------------------
+
+    def _on_run_toggle(self, item: QtWidgets.QListWidgetItem):
+        run_id = item.data(Qt.UserRole)
+        enabled = item.checkState() == Qt.Checked
+        for record in self._run_records:
+            if record.run_id == run_id:
+                record.enabled = enabled
+                break
+        self._refresh_line_combo()
+
+    def _on_line_changed(self, index: int):
+        line_id = self._line_combo.currentData()
+        if line_id is not None and int(line_id) != self._line_id:
+            self._line_id = int(line_id)
+            self._refresh_plots()
+
+    def _on_tab_changed(self, index: int):
+        # Lazy-render the newly visible tab
+        if index == 0:
+            self._refresh_timeseries()
+        elif index == 1:
+            self._refresh_profile()
+
+    # ------------------------------------------------------------------
+    # Plot rendering
+    # ------------------------------------------------------------------
+
+    def _refresh_plots(self):
+        if not self._have_matplotlib:
+            return
+        tab_idx = self._tabs.currentIndex()
+        if tab_idx == 0:
+            self._refresh_timeseries()
+        else:
+            self._refresh_profile()
+
+    def _refresh_timeseries(self):
+        if not self._have_matplotlib or self._ax_ts is None:
+            return
+        from swe2d_results_queries import load_timeseries
+
+        self._ax_ts.cla()
+        plotted = 0
+        for record in self._run_records:
+            if not record.enabled:
+                continue
+            if self._line_id < 0:
+                continue
+            data = load_timeseries(record.gpkg_path, record.run_id, self._line_id)
+            if not data:
+                continue
+            color = _color_to_float(record.color)
+            t_hr = data["t_s"] / 3600.0
+            self._ax_ts.plot(
+                t_hr,
+                data["flow_cms"],
+                color=color,
+                linewidth=1.5,
+                label=record.display_label(),
+            )
+            plotted += 1
+
+        self._ax_ts.set_xlabel("Time (hr)")
+        self._ax_ts.set_ylabel("Flow (m\u00b3/s)")
+        self._ax_ts.grid(True, alpha=0.3)
+        if plotted > 0:
+            self._ax_ts.legend(fontsize=8, loc="best")
+            self._status_lbl.setText(f"Time-series: {plotted} run(s) plotted.")
+        else:
+            self._ax_ts.text(
+                0.5, 0.5, "No data",
+                ha="center", va="center", transform=self._ax_ts.transAxes,
+                color="gray",
+            )
+            self._status_lbl.setText("No time-series data for selected line/runs.")
+        self._canvas_ts.draw_idle()
+
+    def _refresh_profile(self):
+        if not self._have_matplotlib or self._ax_prof is None:
+            return
+        from swe2d_results_queries import find_nearest_timestep, load_profile
+
+        self._ax_prof.cla()
+        plotted = 0
+        bed_drawn = False
+
+        for record in self._run_records:
+            if not record.enabled:
+                continue
+            if self._line_id < 0:
+                continue
+            t = find_nearest_timestep(
+                record.gpkg_path, record.run_id, self._line_id, self._current_t_sec
+            )
+            data = load_profile(record.gpkg_path, record.run_id, self._line_id, t)
+            if not data:
+                continue
+            color = _color_to_float(record.color)
+            station = data["station_m"]
+            wse = data["wse_m"]
+            bed = data["bed_m"]
+
+            # Draw bed fill once (use first available run)
+            if not bed_drawn and station.size > 0:
+                bed_min = float(np.min(bed)) - 0.1 * max(float(np.ptp(bed)), 0.1)
+                self._ax_prof.fill_between(
+                    station, bed_min, bed,
+                    color="#8B7355", alpha=0.55, zorder=1, label="_nolegend_"
+                )
+                self._ax_prof.plot(station, bed, color="#5C4033", linewidth=0.8, zorder=2)
+                bed_drawn = True
+
+            # WSE line
+            self._ax_prof.plot(
+                station, wse,
+                color=color, linewidth=1.5, zorder=3,
+                label=f"{record.display_label()} WSE",
+            )
+            plotted += 1
+
+        self._ax_prof.set_xlabel("Station (m)")
+        self._ax_prof.set_ylabel("Elevation (m)")
+        self._ax_prof.grid(True, alpha=0.3)
+        t_hr = self._current_t_sec / 3600.0
+        self._ax_prof.set_title(f"Profile at t = {t_hr:.3f} hr", fontsize=9)
+        if plotted > 0:
+            self._ax_prof.legend(fontsize=8, loc="best")
+            self._status_lbl.setText(f"Profile: {plotted} run(s) plotted at t={t_hr:.3f} hr.")
+        else:
+            self._ax_prof.text(
+                0.5, 0.5, "No data",
+                ha="center", va="center", transform=self._ax_prof.transAxes,
+                color="gray",
+            )
+            self._status_lbl.setText("No profile data for selected line/runs.")
+        self._canvas_prof.draw_idle()
+
+    # ------------------------------------------------------------------
+    # Public API for workbench to call
+    # ------------------------------------------------------------------
+
+    def set_gpkg_path(self, gpkg_path: str):
+        """Update the GPKG source and re-discover runs."""
+        new_path = str(gpkg_path or "")
+        if new_path == self._gpkg_path:
+            return
+        self._gpkg_path = new_path
+        # Update existing records that came from the old path
+        for record in self._run_records:
+            record.gpkg_path = new_path
+        self._discover_runs()
+
+    def set_current_time(self, t_sec: float):
+        """Sync the current animation time; refreshes profile tab if visible."""
+        self._current_t_sec = float(t_sec)
+        if self._tabs.currentIndex() == 1:
+            self._refresh_profile()

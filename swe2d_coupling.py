@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+import os
 from typing import Callable, Dict, Optional, Sequence
 
 import numpy as np
@@ -345,6 +346,7 @@ class SWE2DCouplingController:
         structures: Optional[SWE2DStructureModule] = None,
         coupling_loop: str = "cpu",
         drainage_solver_backend: str = "cpu",
+        drainage_gpu_method: str = "step",
         **legacy_kwargs,
     ):
         if cell_area is None:
@@ -369,9 +371,13 @@ class SWE2DCouplingController:
         self.drainage_solver_backend = str(drainage_solver_backend or "cpu").strip().lower()
         if self.drainage_solver_backend not in {"cpu", "gpu"}:
             raise ValueError("drainage_solver_backend must be 'cpu' or 'gpu'")
+        self.drainage_gpu_method = str(drainage_gpu_method or "step").strip().lower()
+        if self.drainage_gpu_method not in {"step", "iterative"}:
+            raise ValueError("drainage_gpu_method must be 'step' or 'iterative'")
         self._drainage_soa = pack_pipe_network_soa(self.drainage.cfg, self.n_cells) if self.drainage is not None else None
         self._gpu_node_depth: Optional[np.ndarray] = None
         self._gpu_link_flow: Optional[np.ndarray] = None
+        self._gpu_drainage_static_args: Optional[Dict[str, np.ndarray]] = None
         self.last_diag = SWE2DCouplingDiagnostics()
 
     @property
@@ -418,6 +424,47 @@ class SWE2DCouplingController:
             self.drainage.state.node_depth[node.node_id] = float(self._gpu_node_depth[i])
         for i, link in enumerate(self.drainage.cfg.links):
             self.drainage.state.link_flow[link.link_id] = float(self._gpu_link_flow[i])
+
+    def _ensure_gpu_drainage_static_args(self) -> Optional[Dict[str, np.ndarray]]:
+        if self._drainage_soa is None:
+            return None
+        if self._gpu_drainage_static_args is not None:
+            return self._gpu_drainage_static_args
+        dsoa = self._drainage_soa
+        self._gpu_drainage_static_args = {
+            "cell_bed": np.ascontiguousarray(self.cell_bed, dtype=np.float64),
+            "cell_area": np.ascontiguousarray(self.cell_area, dtype=np.float64),
+            "node_invert_elev": np.ascontiguousarray(dsoa.node_invert_elev, dtype=np.float64),
+            "node_max_depth": np.ascontiguousarray(dsoa.node_max_depth, dtype=np.float64),
+            "node_surface_area": np.ascontiguousarray(dsoa.node_surface_area, dtype=np.float64),
+            "link_from": np.ascontiguousarray(dsoa.link_from, dtype=np.int32),
+            "link_to": np.ascontiguousarray(dsoa.link_to, dtype=np.int32),
+            "link_length": np.ascontiguousarray(dsoa.link_length, dtype=np.float64),
+            "link_roughness_n": np.ascontiguousarray(dsoa.link_roughness_n, dtype=np.float64),
+            "link_diameter": np.ascontiguousarray(dsoa.link_diameter, dtype=np.float64),
+            "link_max_flow": np.ascontiguousarray(dsoa.link_max_flow, dtype=np.float64),
+            "inlet_cell": np.ascontiguousarray(dsoa.inlet_cell, dtype=np.int32),
+            "inlet_node": np.ascontiguousarray(dsoa.inlet_node, dtype=np.int32),
+            "inlet_crest_elev": np.ascontiguousarray(dsoa.inlet_crest_elev, dtype=np.float64),
+            "inlet_width": np.ascontiguousarray(dsoa.inlet_width, dtype=np.float64),
+            "inlet_coefficient": np.ascontiguousarray(dsoa.inlet_coefficient, dtype=np.float64),
+            "inlet_max_capture": np.ascontiguousarray(dsoa.inlet_max_capture, dtype=np.float64),
+            "outfall_cell": np.ascontiguousarray(dsoa.outfall_cell, dtype=np.int32),
+            "outfall_node": np.ascontiguousarray(dsoa.outfall_node, dtype=np.int32),
+            "outfall_invert_elev": np.ascontiguousarray(dsoa.outfall_invert_elev, dtype=np.float64),
+            "outfall_diameter": np.ascontiguousarray(dsoa.outfall_diameter, dtype=np.float64),
+            "outfall_coefficient": np.ascontiguousarray(dsoa.outfall_coefficient, dtype=np.float64),
+            "outfall_max_flow": np.ascontiguousarray(dsoa.outfall_max_flow, dtype=np.float64),
+            "outfall_zero_storage": np.ascontiguousarray(dsoa.outfall_zero_storage, dtype=np.int32),
+            "pipe_end_cell": np.ascontiguousarray(dsoa.pipe_end_cell, dtype=np.int32),
+            "pipe_end_node": np.ascontiguousarray(dsoa.pipe_end_node, dtype=np.int32),
+            "pipe_end_invert_elev": np.ascontiguousarray(dsoa.pipe_end_invert_elev, dtype=np.float64),
+            "pipe_end_diameter": np.ascontiguousarray(dsoa.pipe_end_diameter, dtype=np.float64),
+            "pipe_end_area": np.ascontiguousarray(dsoa.pipe_end_area, dtype=np.float64),
+            "pipe_end_inlet_loss_k": np.ascontiguousarray(dsoa.pipe_end_inlet_loss_k, dtype=np.float64),
+            "pipe_end_outlet_loss_k": np.ascontiguousarray(dsoa.pipe_end_outlet_loss_k, dtype=np.float64),
+        }
+        return self._gpu_drainage_static_args
 
     @property
     def n_cells(self) -> int:
@@ -525,85 +572,172 @@ class SWE2DCouplingController:
                 coupling_relax = float(getattr(self.drainage.cfg, "implicit_coupling_relaxation", 0.5))
                 coupling_relax = min(1.0, max(0.0, coupling_relax))
                 area_safe = np.maximum(self.cell_area, 1.0e-12)
+                static_args = self._ensure_gpu_drainage_static_args()
+                if static_args is None:
+                    raise RuntimeError("GPU drainage static args are unavailable")
+                hh64 = np.asarray(hh, dtype=np.float64)
+                node_depth_state = np.asarray(self._gpu_node_depth, dtype=np.float64)
+                link_flow_state = np.asarray(self._gpu_link_flow, dtype=np.float64)
+                head_deadband = float(getattr(self.drainage.cfg, "head_deadband_m", 1.0e-3))
 
-                q_cell_acc = np.zeros(self.n_cells, dtype=np.float64)
-                diag = {"max_node_depth": 0.0, "max_link_flow": 0.0, "limiter_events": 0.0, "limiter_volume_m3": 0.0}
-                nd_state = np.asarray(self._gpu_node_depth, dtype=np.float64)
-                lf_state = np.asarray(self._gpu_link_flow, dtype=np.float64)
-                hh_sub = np.asarray(hh, dtype=np.float64).copy()
-                for _ in range(n_substeps):
-                    hh_iter = np.asarray(hh_sub, dtype=np.float64)
-                    q_cell_step_last = np.zeros(self.n_cells, dtype=np.float64)
-                    diag_step_last = {"max_node_depth": 0.0, "max_link_flow": 0.0, "limiter_events": 0.0, "limiter_volume_m3": 0.0}
-                    for _ in range(implicit_iters):
-                        wse_iter = hh_iter + self.cell_bed
-                        nd_out, lf_out, q_cell_step, diag_step = native_mod.swe2d_gpu_drainage_step(
-                            np.asarray(wse_iter, dtype=np.float64),
-                            np.asarray(self.cell_area, dtype=np.float64),
-                            np.asarray(dsoa.node_invert_elev, dtype=np.float64),
-                            np.asarray(dsoa.node_max_depth, dtype=np.float64),
-                            np.asarray(dsoa.node_surface_area, dtype=np.float64),
-                            np.asarray(dsoa.link_from, dtype=np.int32),
-                            np.asarray(dsoa.link_to, dtype=np.int32),
-                            np.asarray(dsoa.link_length, dtype=np.float64),
-                            np.asarray(dsoa.link_roughness_n, dtype=np.float64),
-                            np.asarray(dsoa.link_diameter, dtype=np.float64),
-                            np.asarray(dsoa.link_max_flow, dtype=np.float64),
-                            np.asarray(dsoa.inlet_cell, dtype=np.int32),
-                            np.asarray(dsoa.inlet_node, dtype=np.int32),
-                            np.asarray(dsoa.inlet_crest_elev, dtype=np.float64),
-                            np.asarray(dsoa.inlet_width, dtype=np.float64),
-                            np.asarray(dsoa.inlet_coefficient, dtype=np.float64),
-                            np.asarray(dsoa.inlet_max_capture, dtype=np.float64),
-                            np.asarray(dsoa.outfall_cell, dtype=np.int32),
-                            np.asarray(dsoa.outfall_node, dtype=np.int32),
-                            np.asarray(dsoa.outfall_invert_elev, dtype=np.float64),
-                            np.asarray(dsoa.outfall_diameter, dtype=np.float64),
-                            np.asarray(dsoa.outfall_coefficient, dtype=np.float64),
-                            np.asarray(dsoa.outfall_max_flow, dtype=np.float64),
-                            np.asarray(dsoa.outfall_zero_storage, dtype=np.int32),
-                            np.asarray(dsoa.pipe_end_cell, dtype=np.int32),
-                            np.asarray(dsoa.pipe_end_node, dtype=np.int32),
-                            np.asarray(dsoa.pipe_end_invert_elev, dtype=np.float64),
-                            np.asarray(dsoa.pipe_end_diameter, dtype=np.float64),
-                            np.asarray(dsoa.pipe_end_area, dtype=np.float64),
-                            np.asarray(dsoa.pipe_end_inlet_loss_k, dtype=np.float64),
-                            np.asarray(dsoa.pipe_end_outlet_loss_k, dtype=np.float64),
-                            np.asarray(hh_iter, dtype=np.float64),
-                            nd_state,
-                            lf_state,
-                            dt_sub,
+                # Fast-path for inactive exchange conditions.
+                if static_args is not None:
+                    inlet_idx = static_args["inlet_cell"]
+                    inlet_crest = static_args["inlet_crest_elev"]
+                    has_inlet_head = False
+                    if inlet_idx.size > 0:
+                        inlet_wse = np.asarray(cell_wse[inlet_idx], dtype=np.float64)
+                        has_inlet_head = bool(np.any(inlet_wse > inlet_crest + head_deadband))
+                    node_active = bool(np.any(node_depth_state > head_deadband))
+                    link_active = bool(np.any(np.abs(link_flow_state) > 1.0e-10))
+                    if (not has_inlet_head) and (not node_active) and (not link_active):
+                        q_cell = np.zeros(self.n_cells, dtype=np.float64)
+                        drainage_diag = {
+                            "max_node_depth": 0.0,
+                            "max_link_flow": 0.0,
+                            "limiter_events": 0.0,
+                            "limiter_volume_m3": 0.0,
+                            "substeps_used": 0.0,
+                            "implicit_iters_used": 0.0,
+                            "inactive_fastpath": 1.0,
+                        }
+                        component_sums["drainage_native_iterative"] = 0.0
+                        component_sums["drainage_inactive_fastpath"] = 1.0
+                    else:
+                        component_sums["drainage_inactive_fastpath"] = 0.0
+                else:
+                    component_sums["drainage_inactive_fastpath"] = 0.0
+
+                if q_cell is None:
+                    prefer_native_iterative = self.drainage_gpu_method == "iterative"
+                    use_native_iterative = (
+                        prefer_native_iterative
+                        and hasattr(native_mod, "swe2d_gpu_drainage_step_iterative")
+                        and os.environ.get("BACKWATER_SWE2D_DISABLE_NATIVE_ITERATIVE", "").strip() != "1"
+                    )
+                    # Enforce native iterative when requested (no fallback to Python loop).
+                    if prefer_native_iterative and not use_native_iterative:
+                        raise RuntimeError(
+                            "GPU drainage method 'iterative' requested but native implementation unavailable. "
+                            "Either switch to 'step' method or ensure CUDA bindings are available."
+                        )
+                    if use_native_iterative:
+                        nd_out, lf_out, q_cell_step, diag = native_mod.swe2d_gpu_drainage_step_iterative(
+                            static_args["cell_bed"],
+                            static_args["cell_area"],
+                            static_args["node_invert_elev"],
+                            static_args["node_max_depth"],
+                            static_args["node_surface_area"],
+                            static_args["link_from"],
+                            static_args["link_to"],
+                            static_args["link_length"],
+                            static_args["link_roughness_n"],
+                            static_args["link_diameter"],
+                            static_args["link_max_flow"],
+                            static_args["inlet_cell"],
+                            static_args["inlet_node"],
+                            static_args["inlet_crest_elev"],
+                            static_args["inlet_width"],
+                            static_args["inlet_coefficient"],
+                            static_args["inlet_max_capture"],
+                            static_args["outfall_cell"],
+                            static_args["outfall_node"],
+                            static_args["outfall_invert_elev"],
+                            static_args["outfall_diameter"],
+                            static_args["outfall_coefficient"],
+                            static_args["outfall_max_flow"],
+                            static_args["outfall_zero_storage"],
+                            static_args["pipe_end_cell"],
+                            static_args["pipe_end_node"],
+                            static_args["pipe_end_invert_elev"],
+                            static_args["pipe_end_diameter"],
+                            static_args["pipe_end_area"],
+                            static_args["pipe_end_inlet_loss_k"],
+                            static_args["pipe_end_outlet_loss_k"],
+                            hh64,
+                            node_depth_state,
+                            link_flow_state,
+                            float(dt_s),
                             float(getattr(self.drainage.cfg, "gravity", 9.81)),
                             int(dsoa.solver_mode),
                             float(getattr(self.drainage.cfg, "head_deadband_m", 1.0e-3)),
                             float(getattr(self.drainage.cfg, "dynamic_flow_relaxation", 1.0)),
+                            int(n_substeps),
+                            int(implicit_iters),
+                            float(coupling_relax),
                         )
-                        nd_state = np.asarray(nd_out, dtype=np.float64)
-                        lf_state = np.asarray(lf_out, dtype=np.float64)
-                        q_cell_step_last = np.asarray(q_cell_step, dtype=np.float64)
-                        diag_step_last = diag_step
-                        # q_cell_step > 0 removes surface water; blend depth update for implicit coupling.
-                        hh_target = np.maximum(hh_sub - q_cell_step_last * dt_sub / area_safe, 0.0)
-                        hh_iter = (1.0 - coupling_relax) * hh_iter + coupling_relax * hh_target
-
-                    q_cell_acc += q_cell_step_last
-                    hh_sub = np.maximum(hh_sub - q_cell_step_last * dt_sub / area_safe, 0.0)
-                    diag["max_node_depth"] = max(float(diag.get("max_node_depth", 0.0)), float(diag_step_last.get("max_node_depth", 0.0)))
-                    diag["max_link_flow"] = max(float(diag.get("max_link_flow", 0.0)), float(diag_step_last.get("max_link_flow", 0.0)))
-                    diag["limiter_events"] = float(diag.get("limiter_events", 0.0)) + float(diag_step_last.get("limiter_events", 0.0))
-                    diag["limiter_volume_m3"] = float(diag.get("limiter_volume_m3", 0.0)) + float(diag_step_last.get("limiter_volume_m3", 0.0))
-
-                self._gpu_node_depth = nd_state
-                self._gpu_link_flow = lf_state
-                self._sync_gpu_state_back_to_drainage()
-                q_cell = np.asarray(q_cell_acc / float(n_substeps), dtype=np.float64)
-                drainage_diag = {
-                    "max_node_depth": float(diag.get("max_node_depth", 0.0)),
-                    "max_link_flow": float(diag.get("max_link_flow", 0.0)),
-                    "limiter_events": float(diag.get("limiter_events", 0.0)),
-                    "limiter_volume_m3": float(diag.get("limiter_volume_m3", 0.0)),
-                    "substeps_used": float(n_substeps),
-                }
+                        self._gpu_node_depth = np.asarray(nd_out, dtype=np.float64)
+                        self._gpu_link_flow = np.asarray(lf_out, dtype=np.float64)
+                        self._sync_gpu_state_back_to_drainage()
+                        q_cell = np.asarray(q_cell_step, dtype=np.float64)
+                        drainage_diag = {
+                            "max_node_depth": float(diag.get("max_node_depth", 0.0)),
+                            "max_link_flow": float(diag.get("max_link_flow", 0.0)),
+                            "limiter_events": float(diag.get("limiter_events", 0.0)),
+                            "limiter_volume_m3": float(diag.get("limiter_volume_m3", 0.0)),
+                            "substeps_used": float(diag.get("substeps_used", n_substeps)),
+                            "implicit_iters_used": float(diag.get("implicit_iters_used", max(1, n_substeps * implicit_iters))),
+                            "inactive_fastpath": float(diag.get("inactive_fastpath", 0.0)),
+                        }
+                        component_sums["drainage_native_iterative"] = 1.0
+                    else:
+                        nd_out, lf_out, q_cell_step, diag = (
+                            native_mod.swe2d_gpu_drainage_step(
+                                cell_wse,
+                                static_args["cell_area"],
+                                static_args["node_invert_elev"],
+                                static_args["node_max_depth"],
+                                static_args["node_surface_area"],
+                                static_args["link_from"],
+                                static_args["link_to"],
+                                static_args["link_length"],
+                                static_args["link_roughness_n"],
+                                static_args["link_diameter"],
+                                static_args["link_max_flow"],
+                                static_args["inlet_cell"],
+                                static_args["inlet_node"],
+                                static_args["inlet_crest_elev"],
+                                static_args["inlet_width"],
+                                static_args["inlet_coefficient"],
+                                static_args["inlet_max_capture"],
+                                static_args["outfall_cell"],
+                                static_args["outfall_node"],
+                                static_args["outfall_invert_elev"],
+                                static_args["outfall_diameter"],
+                                static_args["outfall_coefficient"],
+                                static_args["outfall_max_flow"],
+                                static_args["outfall_zero_storage"],
+                                static_args["pipe_end_cell"],
+                                static_args["pipe_end_node"],
+                                static_args["pipe_end_invert_elev"],
+                                static_args["pipe_end_diameter"],
+                                static_args["pipe_end_area"],
+                                static_args["pipe_end_inlet_loss_k"],
+                                static_args["pipe_end_outlet_loss_k"],
+                                hh64,
+                                node_depth_state,
+                                link_flow_state,
+                                float(dt_s),
+                                float(getattr(self.drainage.cfg, "gravity", 9.81)),
+                                int(dsoa.solver_mode),
+                                float(getattr(self.drainage.cfg, "head_deadband_m", 1.0e-3)),
+                                float(getattr(self.drainage.cfg, "dynamic_flow_relaxation", 1.0)),
+                            )
+                        )
+                        self._gpu_node_depth = np.asarray(nd_out, dtype=np.float64)
+                        self._gpu_link_flow = np.asarray(lf_out, dtype=np.float64)
+                        self._sync_gpu_state_back_to_drainage()
+                        q_cell = np.asarray(q_cell_step, dtype=np.float64)
+                        drainage_diag = {
+                            "max_node_depth": float(diag.get("max_node_depth", 0.0)),
+                            "max_link_flow": float(diag.get("max_link_flow", 0.0)),
+                            "limiter_events": float(diag.get("limiter_events", 0.0)),
+                            "limiter_volume_m3": float(diag.get("limiter_volume_m3", 0.0)),
+                            "substeps_used": 1.0,
+                            "implicit_iters_used": 0.0,
+                            "inactive_fastpath": 0.0,
+                        }
+                        component_sums["drainage_native_iterative"] = 0.0
             else:
                 has_pipe_end_routing = bool(getattr(self.drainage.cfg, "pipe_ends", []))
                 if not has_pipe_end_routing:
@@ -628,7 +762,13 @@ class SWE2DCouplingController:
                     "limiter_volume_m3": float(drainage_step_diag.get("limiter_volume_m3", 0.0)),
                     "substeps_used": 1.0,
                 }
+                component_sums["drainage_native_iterative"] = 0.0
 
+            if q_cell is None:
+                raise RuntimeError(
+                    "GPU drainage did not produce q_cell (None). "
+                    "Check drainage_gpu_method and native CUDA drainage bindings."
+                )
             nz = np.nonzero(np.abs(q_cell) > 0.0)[0]
             if nz.size > 0:
                 inlet_cell = nz.astype(np.int32, copy=False)
@@ -638,6 +778,8 @@ class SWE2DCouplingController:
             component_sums["drainage_limiter_events"] = float(drainage_diag.get("limiter_events", 0.0))
             component_sums["drainage_limiter_volume_m3"] = float(drainage_diag.get("limiter_volume_m3", 0.0))
             component_sums["drainage_substeps_used"] = float(drainage_diag.get("substeps_used", 1.0))
+            component_sums["drainage_implicit_iters_used"] = float(drainage_diag.get("implicit_iters_used", 0.0))
+            component_sums["drainage_inactive_fastpath"] = float(drainage_diag.get("inactive_fastpath", 0.0))
 
         if self.structures is not None:
             flows = np.asarray(self.structures.structure_flows(cell_wse), dtype=np.float64)

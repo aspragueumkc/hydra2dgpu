@@ -535,9 +535,11 @@ CMakeFiles/backwater_swe2d.dir/cpp/src/swe2d_gpu.cu.o: /home/aaron/.local/share/
   /usr/include/asm-generic/types.h \
   /usr/include/assert.h \
   /usr/include/builtin_types.h \
+  /usr/include/c++/13/algorithm \
   /usr/include/c++/13/atomic \
   /usr/include/c++/13/backward/binders.h \
   /usr/include/c++/13/bit \
+  /usr/include/c++/13/bits/algorithmfwd.h \
   /usr/include/c++/13/bits/alloc_traits.h \
   /usr/include/c++/13/bits/allocator.h \
   /usr/include/c++/13/bits/atomic_base.h \
@@ -575,20 +577,24 @@ CMakeFiles/backwater_swe2d.dir/cpp/src/swe2d_gpu.cu.o: /home/aaron/.local/share/
   /usr/include/c++/13/bits/specfun.h \
   /usr/include/c++/13/bits/std_abs.h \
   /usr/include/c++/13/bits/std_thread.h \
+  /usr/include/c++/13/bits/stl_algo.h \
   /usr/include/c++/13/bits/stl_algobase.h \
   /usr/include/c++/13/bits/stl_bvector.h \
   /usr/include/c++/13/bits/stl_construct.h \
   /usr/include/c++/13/bits/stl_function.h \
+  /usr/include/c++/13/bits/stl_heap.h \
   /usr/include/c++/13/bits/stl_iterator.h \
   /usr/include/c++/13/bits/stl_iterator_base_funcs.h \
   /usr/include/c++/13/bits/stl_iterator_base_types.h \
   /usr/include/c++/13/bits/stl_pair.h \
   /usr/include/c++/13/bits/stl_relops.h \
+  /usr/include/c++/13/bits/stl_tempbuf.h \
   /usr/include/c++/13/bits/stl_uninitialized.h \
   /usr/include/c++/13/bits/stl_vector.h \
   /usr/include/c++/13/bits/string_view.tcc \
   /usr/include/c++/13/bits/stringfwd.h \
   /usr/include/c++/13/bits/this_thread_sleep.h \
+  /usr/include/c++/13/bits/uniform_int_dist.h \
   /usr/include/c++/13/bits/unique_ptr.h \
   /usr/include/c++/13/bits/uses_allocator.h \
   /usr/include/c++/13/bits/uses_allocator_args.h \
@@ -620,6 +626,8 @@ CMakeFiles/backwater_swe2d.dir/cpp/src/swe2d_gpu.cu.o: /home/aaron/.local/share/
   /usr/include/c++/13/limits \
   /usr/include/c++/13/math.h \
   /usr/include/c++/13/new \
+  /usr/include/c++/13/pstl/execution_defs.h \
+  /usr/include/c++/13/pstl/glue_algorithm_defs.h \
   /usr/include/c++/13/pstl/pstl_config.h \
   /usr/include/c++/13/ratio \
   /usr/include/c++/13/stdexcept \
@@ -2073,6 +2081,10 @@ CMakeFiles/backwater_swe2d.dir/cmake_device_link.o:
 
 /usr/include/c++/13/pstl/pstl_config.h:
 
+/usr/include/c++/13/pstl/glue_algorithm_defs.h:
+
+/usr/include/c++/13/pstl/execution_defs.h:
+
 /usr/include/c++/13/new:
 
 /usr/include/c++/13/limits:
@@ -2117,17 +2129,23 @@ CMakeFiles/backwater_swe2d.dir/cmake_device_link.o:
 
 /usr/include/c++/13/bits/unique_ptr.h:
 
+/usr/include/c++/13/bits/uniform_int_dist.h:
+
 /usr/include/c++/13/cerrno:
 
 /usr/include/c++/13/bits/stringfwd.h:
 
 /usr/include/c++/13/bits/stl_uninitialized.h:
 
+/usr/include/c++/13/bits/stl_tempbuf.h:
+
 /usr/include/c++/13/bits/stl_iterator_base_types.h:
 
 /usr/include/c++/13/bits/stl_function.h:
 
 /usr/include/c++/13/bits/stl_bvector.h:
+
+/usr/include/c++/13/bits/stl_algo.h:
 
 /usr/include/c++/13/bits/std_thread.h:
 
@@ -2202,6 +2220,8 @@ CMakeFiles/backwater_swe2d.dir/cmake_device_link.o:
 /usr/lib/gcc/x86_64-linux-gnu/13/libgcc_s.so:
 
 /usr/include/x86_64-linux-gnu/bits/long-double.h:
+
+/usr/include/c++/13/bits/algorithmfwd.h:
 
 /usr/include/c++/15/string:
 
@@ -3225,6 +3245,12 @@ _deps/pybind11-src/include/pybind11/numpy.h:
 
 /usr/include/python3.13/iterobject.h:
 
+/usr/include/cuda/std/detail/libcxx/include/__type_traits/is_aggregate.h:
+
+/usr/include/c++/13/bits/functexcept.h:
+
+/usr/include/python3.13/longobject.h:
+
 /usr/include/python3.13/memoryobject.h:
 
 /usr/include/python3.13/rangeobject.h:
@@ -3475,6 +3501,16 @@ _deps/pybind11-src/include/pybind11/pytypes.h:
 
 /usr/include/x86_64-linux-gnu/bits/waitflags.h:
 
+/usr/include/cuda/std/detail/libcxx/include/__fwd/memory_resource.h:
+
+/usr/include/c++/13/bits/this_thread_sleep.h:
+
+/usr/include/c++/13/bits/exception_ptr.h:
+
+/usr/include/x86_64-linux-gnu/bits/stat.h:
+
+/usr/include/x86_64-linux-gnu/bits/waitstatus.h:
+
 /usr/include/c++/13/bits/exception_defines.h:
 
 /usr/include/x86_64-linux-gnu/bits/wctype-wchar.h:
@@ -3535,6 +3571,8 @@ _deps/pybind11-src/include/pybind11/complex.h:
 
 /home/aaron/.local/share/QGIS/QGIS3/profiles/default/python/plugins/qgis-backwater-plugin/cpp/src/swe2d_gpu.cu:
 
+/usr/include/c++/13/algorithm:
+
 /usr/include/c++/15/ratio:
 
 /usr/include/c++/15/bits/stl_map.h:
@@ -3546,6 +3584,8 @@ _deps/pybind11-src/include/pybind11/complex.h:
 /usr/include/c++/13/bits/alloc_traits.h:
 
 /usr/include/c++/13/bits/atomic_base.h:
+
+/usr/include/c++/13/bits/stl_heap.h:
 
 /usr/include/c++/13/bits/atomic_lockfree_defines.h:
 
@@ -3560,19 +3600,3 @@ _deps/pybind11-src/include/pybind11/complex.h:
 /usr/include/c++/15/bits/basic_ios.h:
 
 /usr/include/c++/13/bits/cpp_type_traits.h:
-
-/usr/include/cuda/std/detail/libcxx/include/__fwd/memory_resource.h:
-
-/usr/include/c++/13/bits/this_thread_sleep.h:
-
-/usr/include/x86_64-linux-gnu/bits/stat.h:
-
-/usr/include/x86_64-linux-gnu/bits/waitstatus.h:
-
-/usr/include/c++/13/bits/exception_ptr.h:
-
-/usr/include/cuda/std/detail/libcxx/include/__type_traits/is_aggregate.h:
-
-/usr/include/python3.13/longobject.h:
-
-/usr/include/c++/13/bits/functexcept.h:

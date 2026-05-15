@@ -94,6 +94,7 @@ class MeshResult:
     cell_type: np.ndarray
     region_id: np.ndarray
     target_size: np.ndarray
+    quality_summary: Optional[Dict[str, object]] = None
 
 
 _CELL_TYPES = {"triangular", "quadrilateral", "cartesian", "empty"}
@@ -444,7 +445,7 @@ def _quality_score(stats: Dict[str, float], cfg: _TQMeshQualityConfig) -> float:
     return float(min(angle_term, 2.0) + min(aspect_term, 2.0) + min(area_term, 2.0))
 
 
-def _face_mesh_quality_stats(mesh: MeshResult) -> Dict[str, float]:
+def _face_mesh_quality_stats(mesh: MeshResult, cfg: Optional[_GmshQualityConfig] = None) -> Dict[str, float]:
     """Compute quality metrics on polygon face topology.
 
     Metrics are used by the iterative Gmsh quality loop and include an
@@ -470,6 +471,10 @@ def _face_mesh_quality_stats(mesh: MeshResult) -> Dict[str, float]:
     max_aspect = 0.0
     min_area = float("inf")
     centroids = np.zeros((n_cells, 2), dtype=np.float64)
+    cell_min_angle = np.full(n_cells, np.nan, dtype=np.float64)
+    cell_aspect = np.full(n_cells, np.nan, dtype=np.float64)
+    cell_area = np.full(n_cells, np.nan, dtype=np.float64)
+    cell_max_non_orth = np.zeros(n_cells, dtype=np.float64)
     edge_map: Dict[Tuple[int, int], List[Tuple[int, float, float, float, float, float, float]]] = {}
 
     for c in range(n_cells):
@@ -488,6 +493,7 @@ def _face_mesh_quality_stats(mesh: MeshResult) -> Dict[str, float]:
 
         area = abs(_polygon_area_xy(px, py))
         min_area = min(min_area, area)
+        cell_area[c] = float(area)
 
         px2 = np.roll(px, -1)
         py2 = np.roll(py, -1)
@@ -498,6 +504,7 @@ def _face_mesh_quality_stats(mesh: MeshResult) -> Dict[str, float]:
         max_len = float(np.max(el)) if el.size else float("inf")
         aspect = (max_len / max(min_len, 1.0e-14)) if np.isfinite(max_len) else float("inf")
         max_aspect = max(max_aspect, aspect)
+        cell_aspect[c] = float(aspect)
 
         best_min_angle = float("inf")
         n = conn.size
@@ -515,6 +522,7 @@ def _face_mesh_quality_stats(mesh: MeshResult) -> Dict[str, float]:
             ang = float(np.degrees(np.arccos(cosang)))
             best_min_angle = min(best_min_angle, ang)
         min_angle = min(min_angle, best_min_angle)
+        cell_min_angle[c] = float(best_min_angle)
 
         for i in range(n):
             a = int(conn[i])
@@ -551,9 +559,11 @@ def _face_mesh_quality_stats(mesh: MeshResult) -> Dict[str, float]:
         cosang = max(-1.0, min(1.0, cosang))
         non_orth = float(np.degrees(np.arccos(cosang)))
         max_non_orth = max(max_non_orth, non_orth)
+        cell_max_non_orth[c0] = max(float(cell_max_non_orth[c0]), non_orth)
+        cell_max_non_orth[c1] = max(float(cell_max_non_orth[c1]), non_orth)
 
     bbox_area = max(float(np.ptp(vx)) * float(np.ptp(vy)), 0.0)
-    return {
+    out = {
         "n_cells": float(n_cells),
         "min_angle_deg": float(min_angle if np.isfinite(min_angle) else 0.0),
         "max_aspect_ratio": float(max_aspect if np.isfinite(max_aspect) else float("inf")),
@@ -561,6 +571,46 @@ def _face_mesh_quality_stats(mesh: MeshResult) -> Dict[str, float]:
         "bbox_area": float(bbox_area),
         "max_non_orth_deg": float(max_non_orth),
     }
+
+    if cfg is not None:
+        area_floor = max(float(cfg.min_area_rel_bbox) * max(float(bbox_area), 1.0), 1.0e-18)
+        valid = np.isfinite(cell_min_angle) & np.isfinite(cell_aspect) & np.isfinite(cell_area)
+        if np.any(valid):
+            fail_angle = int(np.count_nonzero(cell_min_angle[valid] < float(cfg.min_angle_deg)))
+            fail_aspect = int(np.count_nonzero(cell_aspect[valid] > float(cfg.max_aspect_ratio)))
+            fail_area = int(np.count_nonzero(cell_area[valid] < area_floor))
+            fail_non_orth = int(np.count_nonzero(cell_max_non_orth[valid] > float(cfg.max_non_orth_deg)))
+            fail_any = int(
+                np.count_nonzero(
+                    (cell_min_angle[valid] < float(cfg.min_angle_deg))
+                    | (cell_aspect[valid] > float(cfg.max_aspect_ratio))
+                    | (cell_area[valid] < area_floor)
+                    | (cell_max_non_orth[valid] > float(cfg.max_non_orth_deg))
+                )
+            )
+            out.update(
+                {
+                    "area_floor": float(area_floor),
+                    "failed_min_angle_cells": float(fail_angle),
+                    "failed_max_aspect_cells": float(fail_aspect),
+                    "failed_min_area_cells": float(fail_area),
+                    "failed_max_non_orth_cells": float(fail_non_orth),
+                    "failed_any_cells": float(fail_any),
+                }
+            )
+        else:
+            out.update(
+                {
+                    "area_floor": float(area_floor),
+                    "failed_min_angle_cells": 0.0,
+                    "failed_max_aspect_cells": 0.0,
+                    "failed_min_area_cells": 0.0,
+                    "failed_max_non_orth_cells": 0.0,
+                    "failed_any_cells": 0.0,
+                }
+            )
+
+    return out
 
 
 def _gmsh_quality_passes(stats: Dict[str, float], cfg: _GmshQualityConfig) -> bool:
@@ -1488,7 +1538,7 @@ class GmshBackend(MeshingBackend):
                         ),
                         "Gmsh",
                     )
-                    stats = _face_mesh_quality_stats(mesh)
+                    stats = _face_mesh_quality_stats(mesh, quality_cfg)
                     score = _gmsh_quality_score(stats, quality_cfg)
 
                     if score > best_score:
@@ -1500,11 +1550,29 @@ class GmshBackend(MeshingBackend):
                         had_passing_candidate = True
                         if quality_cfg.strict:
                             # Strict mode only needs the first passing candidate.
+                            mesh.quality_summary = {
+                                "attempts": int(attempts + 1),
+                                "strict_requested": bool(quality_cfg.strict),
+                                "had_passing_candidate": True,
+                                "best_stats": dict(stats),
+                            }
                             return mesh
                 except Exception as exc:
                     warnings.warn(
                         f"Gmsh quality attempt {attempts + 1} failed for tri={tri_try}, quad={quad_try}, "
                         f"recomb={recomb_try}, size_scale={size_scale:.3f}, smooth={smoothing_passes + int(smooth_inc)}: {exc}",
+                        RuntimeWarning,
+                    )
+                else:
+                    warnings.warn(
+                        "Gmsh quality attempt "
+                        f"{attempts + 1}: "
+                        f"fail_cells(any/angle/aspect/area/non_orth)="
+                        f"{int(stats.get('failed_any_cells', 0.0))}/"
+                        f"{int(stats.get('failed_min_angle_cells', 0.0))}/"
+                        f"{int(stats.get('failed_max_aspect_cells', 0.0))}/"
+                        f"{int(stats.get('failed_min_area_cells', 0.0))}/"
+                        f"{int(stats.get('failed_max_non_orth_cells', 0.0))}",
                         RuntimeWarning,
                     )
 
@@ -1514,6 +1582,12 @@ class GmshBackend(MeshingBackend):
                 raise RuntimeError("Gmsh quality loop produced no valid non-empty mesh candidate.")
 
             if had_passing_candidate:
+                best_mesh.quality_summary = {
+                    "attempts": int(attempts),
+                    "strict_requested": bool(quality_cfg.strict),
+                    "had_passing_candidate": True,
+                    "best_stats": dict(best_stats),
+                }
                 return best_mesh
 
             diag = (
@@ -1525,12 +1599,13 @@ class GmshBackend(MeshingBackend):
                     float(best_stats.get("max_non_orth_deg", 90.0)),
                 )
             )
-            if quality_cfg.strict:
-                raise RuntimeError(
-                    "Gmsh quality constraints were not met within retry limits "
-                    f"(attempts={attempts}, time_limit_s={quality_cfg.time_limit_s:.1f}). "
-                    f"Best candidate: {diag}."
-                )
+            summary = {
+                "attempts": int(attempts),
+                "strict_requested": bool(quality_cfg.strict),
+                "had_passing_candidate": False,
+                "best_stats": dict(best_stats),
+            }
+            best_mesh.quality_summary = summary
             warnings.warn(
                 "Gmsh quality constraints were not met; using best available candidate "
                 f"(attempts={attempts}, time_limit_s={quality_cfg.time_limit_s:.1f}). {diag}",
