@@ -4145,6 +4145,166 @@ static bool swe2d_gpu_solve_pressure_pcg(
     return true;
 }
 
+// Phase 8C: Apply momentum correction from solved pressure field.
+// Computes cell-centered pressure gradient and applies velocity correction:
+//   du = -dt * grad(p)_x
+//   dv = -dt * grad(p)_y
+//   hu += h * du, hv += h * dv
+__global__ void swe2d_gpu_momentum_corrector_kernel(
+    int32_t n_cells,
+    double dt,
+    double g,
+    double h_min,
+    double relax,
+    int velocity_correction_mode,
+    const double* d_h,
+    const double* d_p,
+    const int32_t* d_cell_edge_offsets,
+    const int32_t* d_cell_edge_ids,
+    const int32_t* d_edge_c0,
+    const int32_t* d_edge_c1,
+    const double* d_edge_nx,
+    const double* d_edge_ny,
+    const double* d_edge_len,
+    const double* d_cell_inv_area,
+    double* d_u_corr,
+    double* d_v_corr,
+    double* d_hu,
+    double* d_hv)
+{
+    const int32_t c = blockIdx.x * blockDim.x + threadIdx.x;
+    if (c >= n_cells) return;
+
+    const double h = d_h[c];
+    if (!(h > h_min) || !std::isfinite(h)) {
+        d_u_corr[c] = 0.0;
+        d_v_corr[c] = 0.0;
+        return;
+    }
+
+    const double p_c = d_p[c];
+    if (!std::isfinite(p_c)) {
+        d_u_corr[c] = 0.0;
+        d_v_corr[c] = 0.0;
+        return;
+    }
+
+    double grad_px = 0.0;
+    double grad_py = 0.0;
+    const int32_t offset_start = d_cell_edge_offsets[c];
+    const int32_t offset_end = d_cell_edge_offsets[c + 1];
+    for (int32_t j = offset_start; j < offset_end; ++j) {
+        const int32_t edge_id = d_cell_edge_ids[j];
+        if (edge_id < 0) continue;
+
+        const int32_t c0 = d_edge_c0[edge_id];
+        const int32_t c1 = d_edge_c1[edge_id];
+        int32_t c_nb = -1;
+        double sign = 0.0;
+        if (c0 == c) {
+            c_nb = c1;
+            sign = 1.0;
+        } else if (c1 == c) {
+            c_nb = c0;
+            sign = -1.0;
+        } else {
+            continue;
+        }
+        if (c_nb < 0 || c_nb >= n_cells) {
+            // Homogeneous Neumann pressure BC on boundary edges.
+            continue;
+        }
+
+        const double p_nb = d_p[c_nb];
+        if (!std::isfinite(p_nb)) continue;
+
+        const double dp = p_nb - p_c;
+        const double nx_out = sign * d_edge_nx[edge_id];
+        const double ny_out = sign * d_edge_ny[edge_id];
+        const double len = d_edge_len[edge_id];
+        grad_px += dp * nx_out * len;
+        grad_py += dp * ny_out * len;
+    }
+
+    const double inv_area = d_cell_inv_area[c];
+    grad_px *= inv_area;
+    grad_py *= inv_area;
+
+    double du = -dt * grad_px;
+    double dv = -dt * grad_py;
+
+    // Optional extra damping for the energy-stable mode scaffold.
+    if (velocity_correction_mode == static_cast<int>(SWE2DVelocityCorrectionMethod::ENERGY_STABLE)) {
+        du *= 0.9;
+        dv *= 0.9;
+    }
+
+    // CFL-style safety cap for correction velocity magnitude.
+    const double celerity = sqrt(max(g * h, 0.0));
+    const double cap = max(1.0e-6, 3.0 * celerity);
+    const double mag = sqrt(du * du + dv * dv);
+    if (mag > cap) {
+        const double s = cap / mag;
+        du *= s;
+        dv *= s;
+    }
+
+    du *= relax;
+    dv *= relax;
+
+    if (!std::isfinite(du) || !std::isfinite(dv)) {
+        du = 0.0;
+        dv = 0.0;
+    }
+
+    d_u_corr[c] = du;
+    d_v_corr[c] = dv;
+    d_hu[c] += h * du;
+    d_hv[c] += h * dv;
+}
+
+static bool swe2d_gpu_apply_momentum_correction(
+    SWE2DDeviceState* dev,
+    double dt,
+    double g,
+    double h_min,
+    const SWE2DNonhydroPcConfig& nh_cfg)
+{
+    if (!dev || dev->n_cells <= 0) return false;
+    auto& ws = dev->nh_workspace;
+    if (!ws.is_configured || !ws.d_p || !ws.d_u_corr || !ws.d_v_corr) return false;
+    if (!dev->d_h || !dev->d_hu || !dev->d_hv || !dev->d_cell_inv_area) return false;
+    if (!dev->d_cell_edge_offsets || !dev->d_cell_edge_ids) return false;
+
+    constexpr int BLOCK = 256;
+    const int grid = (dev->n_cells + BLOCK - 1) / BLOCK;
+    const double relax = std::max(0.0, std::min(1.0, nh_cfg.relax));
+
+    swe2d_gpu_momentum_corrector_kernel<<<grid, BLOCK, 0, dev->d_stream>>>(
+        dev->n_cells,
+        dt,
+        g,
+        h_min,
+        relax,
+        nh_cfg.velocity_correction,
+        dev->d_h,
+        ws.d_p,
+        dev->d_cell_edge_offsets,
+        dev->d_cell_edge_ids,
+        dev->d_edge_c0,
+        dev->d_edge_c1,
+        dev->d_edge_nx,
+        dev->d_edge_ny,
+        dev->d_edge_len,
+        dev->d_cell_inv_area,
+        ws.d_u_corr,
+        ws.d_v_corr,
+        dev->d_hu,
+        dev->d_hv);
+    CUDA_CHECK(cudaGetLastError());
+    return true;
+}
+
 void swe2d_gpu_drainage_step(
     int32_t n_cells,
     int32_t n_nodes,
@@ -4600,14 +4760,16 @@ void swe2d_gpu_step_nonhydro_predictor_corrector(
         throw std::runtime_error("swe2d_gpu_step_nonhydro_predictor_corrector: PCG pressure solve failed");
     }
 
+    // Phase 8C: Apply pressure-gradient momentum correction.
+    bool corr_ok = swe2d_gpu_apply_momentum_correction(dev, dt, g, h_min, nh_cfg);
+    if (!corr_ok) {
+        throw std::runtime_error("swe2d_gpu_step_nonhydro_predictor_corrector: momentum correction failed");
+    }
+
     // Phase 6 Skeleton: Exchange with 3D (no-op for now)
     if (dev->coupling_iface && dev->patch3d) {
         swe2d_gpu_apply_2d3d_exchange_skeleton(dev, dt, g, true, diag);
     }
-
-    // Phase 5 Skeleton: Corrector step (stub: no momentum correction yet)
-    // Would compute: u_corr = -grad(p) → update (h, hu, hv) with corrector
-    // For now, just zero the correction and report diagnostic
 
     if (diag) {
         *diag = pred_diag;  // Copy predictor diagnostics
@@ -4617,7 +4779,7 @@ void swe2d_gpu_step_nonhydro_predictor_corrector(
     if (nh_diag) {
         nh_diag->pressure_iters = pcg_diag.pressure_iters;
         nh_diag->pressure_residual = pcg_diag.pressure_residual;
-        nh_diag->corrector_applied = false;  // Scaffold: corrector not applied yet
+        nh_diag->corrector_applied = true;
     }
 }
 
