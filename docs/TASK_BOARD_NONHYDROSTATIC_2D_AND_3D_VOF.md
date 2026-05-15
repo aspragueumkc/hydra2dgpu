@@ -18,7 +18,9 @@ Status legend:
 
 ## Epic B: Non-Hydrostatic 2D Solver Option
 
-- TODO: B1. Add solver mode enum and UI selector (`Hydrostatic`, `Non-hydrostatic`).
+- IN_PROGRESS: B1. Add solver mode enum and UI selector (`Hydrostatic`, `Non-hydrostatic`).
+- DONE: B1a. Native/Python solver-mode enums and config plumbing scaffolded (hydrostatic vs nonhydrostatic).
+- DONE: B1b. GPU-only guardrails added for advanced nonhydrostatic/coupled modes.
 - TODO: B2. Implement predictor step reuse from existing hydrostatic solver path.
 - TODO: B3. Implement non-hydrostatic pressure correction equation (CPU).
 - TODO: B4. Implement velocity/momentum correction and dry-cell safeguards.
@@ -38,7 +40,9 @@ Status legend:
 
 ## Epic D: 3D VoF Solver (Hydraulic Structures Focus)
 
-- TODO: D1. Finalize 3D discretization and data layout design note.
+- IN_PROGRESS: D1. Finalize 3D discretization and data layout design note.
+- DONE: D1a. Added 3D solver-model/coupling config scaffold in native and Python interfaces.
+- DONE: D1b. Added explicit single-phase free-surface model flag in solver config.
 - TODO: D2. Implement Cartesian grid generation + geometry mask ingestion.
 - TODO: D3. Implement VoF advection core.
 - TODO: D4. Implement momentum predictor + pressure projection.

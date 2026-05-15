@@ -24,6 +24,9 @@ from typing import Callable, Dict, List, Optional, Tuple
 from swe2d_extensions import (
     BedFrictionModel,
     GodunovSolverMode,
+    SWE2DEquationSet,
+    SWE2DThreeDCouplingMode,
+    SWE2DThreeDSolverModel,
     SolverModelOptions,
     SpatialDiscretization,
     TemporalScheme,
@@ -178,6 +181,11 @@ class SWE2DBackend:
             "source_imex_split",
             "enable_shallow_front_recon_fallback",
             "godunov_mode",
+            "equation_set",
+            "coupling_mode",
+            "three_d_solver_model",
+            "enforce_gpu_only_advanced_modes",
+            "three_d_single_phase_free_surface",
         ):
             filtered.pop(key, None)
         return self._mod.swe2d_create_solver(*args, **filtered)
@@ -438,7 +446,7 @@ class SWE2DBackend:
         source_true_subcycling: bool = False,
         source_imex_split: bool = False,
         enable_shallow_front_recon_fallback: bool = True,
-        gpu_diag_sync_interval_steps: int = 10,
+        gpu_diag_sync_interval_steps: int = 50,  # Production-friendly: reduce host sync overhead. Set 1 for high-frequency monitoring.
         n_threads: int  = 0,
         temporal_scheme: TemporalScheme = TemporalScheme.SSP_RK2,
         spatial_discretization: SpatialDiscretization = SpatialDiscretization.FV_FIRST_ORDER,
@@ -526,12 +534,42 @@ class SWE2DBackend:
             "godunov_mode": int(godunov_mode),
             "turbulence_model": int(turbulence_model),
             "bed_friction_model": int(bed_friction_model),
+            "equation_set": int(SWE2DEquationSet.HYDROSTATIC_2D),
+            "coupling_mode": int(SWE2DThreeDCouplingMode.OFF),
+            "three_d_solver_model": int(SWE2DThreeDSolverModel.DISABLED),
+            "enforce_gpu_only_advanced_modes": True,
+            "three_d_single_phase_free_surface": True,
             "enable_rain_module": False,
             "enable_pipe_network_module": False,
             "enable_hydraulic_structures": False,
         }
         if model_options is not None:
             native_opts.update(model_options.to_native_dict())
+
+        equation_set = int(native_opts.get("equation_set", int(SWE2DEquationSet.HYDROSTATIC_2D)))
+        coupling_mode = int(native_opts.get("coupling_mode", int(SWE2DThreeDCouplingMode.OFF)))
+        advanced_mode_requested = (
+            equation_set != int(SWE2DEquationSet.HYDROSTATIC_2D)
+            or coupling_mode != int(SWE2DThreeDCouplingMode.OFF)
+        )
+        enforce_gpu_only = bool(native_opts.get("enforce_gpu_only_advanced_modes", True))
+        if advanced_mode_requested and enforce_gpu_only:
+            if not self._use_gpu:
+                raise ValueError(
+                    "Nonhydrostatic/coupled solver modes are GPU-only. "
+                    "Initialize backend with use_gpu=True."
+                )
+            try:
+                if not bool(self._mod.swe2d_gpu_available()):
+                    raise RuntimeError(
+                        "Nonhydrostatic/coupled solver modes require an active CUDA device "
+                        "and GPU-enabled native build."
+                    )
+            except AttributeError:
+                raise RuntimeError(
+                    "Loaded native solver does not expose GPU capability checks; "
+                    "rebuild backwater_swe2d with CUDA support."
+                )
 
         self._solver_h = self._create_solver_compat(
             self._mesh_h,
@@ -560,6 +598,11 @@ class SWE2DBackend:
             godunov_mode=int(native_opts["godunov_mode"]),
             turbulence_model=int(native_opts["turbulence_model"]),
             bed_friction_model=int(native_opts["bed_friction_model"]),
+            equation_set=int(native_opts["equation_set"]),
+            coupling_mode=int(native_opts["coupling_mode"]),
+            three_d_solver_model=int(native_opts["three_d_solver_model"]),
+            enforce_gpu_only_advanced_modes=bool(native_opts["enforce_gpu_only_advanced_modes"]),
+            three_d_single_phase_free_surface=bool(native_opts["three_d_single_phase_free_surface"]),
             enable_rain_module=bool(native_opts["enable_rain_module"]),
             enable_pipe_network_module=bool(native_opts["enable_pipe_network_module"]),
             enable_hydraulic_structures=bool(native_opts["enable_hydraulic_structures"]),
@@ -598,7 +641,7 @@ class SWE2DBackend:
         progress_callback: Optional[Callable[[float, dict], None]] = None,
         cancel_check:      Optional[Callable[[], bool]] = None,
         source_rate_callback: Optional[Callable[[float, float, np.ndarray, np.ndarray, np.ndarray], Optional[np.ndarray]]] = None,
-        use_native_source_injection: bool = False,
+        use_native_source_injection: bool = True,  # Production default: keep state device-resident.
     ) -> List[dict]:
         """
         Run the solver to t_end.
@@ -632,6 +675,38 @@ class SWE2DBackend:
         if self._solver_h is None:
             raise RuntimeError("initialize() must be called before run().")
 
+        # Determine if we can use the native run-to-time API.
+        # Native run is available when: no source_rate_callback (uncoupled case).
+        has_native_run = hasattr(self._mod, "swe2d_run_to_time") and source_rate_callback is None
+
+        diags: List[dict] = []
+
+        if has_native_run:
+            # Use native run-to-time API: eliminates per-step Python orchestration.
+            # Returns dict with keys: 'diags', 'steps_completed', 'cancelled', 'final_time'
+            result = self._mod.swe2d_run_to_time(
+                self._solver_h,
+                t_end,
+                dt_request,
+                0  # diag_batch_size=0: minimal diagnostic batching (no per-step overhead)
+            )
+            
+            # Result is a dict with 'diags' (list of batched diagnostics), 'steps_completed',
+            # 'cancelled', and 'final_time'. For the zero batch case, diags will be empty
+            # but we get significant speedup from eliminating Python loop overhead.
+            diags = result.get("diags", [])
+            self._last_diag = None
+            
+            # Call progress_callback once at the end if provided.
+            if progress_callback and result.get("steps_completed", 0) > 0:
+                # Construct a final diagnostic dict with cumulative information.
+                final_time = result.get("final_time", t_end)
+                final_diag = {"dt": dt_request, "time": final_time}
+                progress_callback(final_time, final_diag)
+            
+            return diags
+
+        # Fallback: Python loop (when source_rate_callback is used or native API unavailable)
         emulate_native_lag = False
         pending_source_arr: Optional[np.ndarray] = None
 
@@ -645,7 +720,6 @@ class SWE2DBackend:
             if use_native_source_injection:
                 self.set_external_sources_native(None)
 
-        diags: List[dict] = []
         t = 0.0
         while t < t_end:
             if cancel_check and cancel_check():

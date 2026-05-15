@@ -51,6 +51,22 @@ class GodunovSolverMode(IntEnum):
     GODUNOV_ROLLOUT = 1
 
 
+class SWE2DEquationSet(IntEnum):
+    HYDROSTATIC_2D = 0
+    NONHYDROSTATIC_2D = 1
+
+
+class SWE2DThreeDCouplingMode(IntEnum):
+    OFF = 0
+    ONE_WAY_2D_TO_3D = 1
+    TWO_WAY_2D_3D = 2
+
+
+class SWE2DThreeDSolverModel(IntEnum):
+    DISABLED = 0
+    SINGLE_PHASE_FREE_SURFACE_VOF = 1
+
+
 class DrainageSolverMode(IntEnum):
     """Equation set for the 1D drainage-network solver.
 
@@ -499,6 +515,11 @@ class SolverModelOptions:
     godunov_mode: GodunovSolverMode = GodunovSolverMode.CURRENT_GPU_STEP
     turbulence_model: TurbulenceModel = TurbulenceModel.NONE
     bed_friction_model: BedFrictionModel = BedFrictionModel.MANNING
+    equation_set: SWE2DEquationSet = SWE2DEquationSet.HYDROSTATIC_2D
+    coupling_mode: SWE2DThreeDCouplingMode = SWE2DThreeDCouplingMode.OFF
+    three_d_solver_model: SWE2DThreeDSolverModel = SWE2DThreeDSolverModel.DISABLED
+    enforce_gpu_only_advanced_modes: bool = True
+    three_d_single_phase_free_surface: bool = True
     rain: RainFieldConfig = field(default_factory=RainFieldConfig)
     pipe_network: PipeNetworkConfig = field(default_factory=PipeNetworkConfig)
     hydraulic_structures: HydraulicStructureConfig = field(default_factory=HydraulicStructureConfig)
@@ -511,6 +532,11 @@ class SolverModelOptions:
             "godunov_mode": int(self.godunov_mode),
             "turbulence_model": int(self.turbulence_model),
             "bed_friction_model": int(self.bed_friction_model),
+            "equation_set": int(self.equation_set),
+            "coupling_mode": int(self.coupling_mode),
+            "three_d_solver_model": int(self.three_d_solver_model),
+            "enforce_gpu_only_advanced_modes": bool(self.enforce_gpu_only_advanced_modes),
+            "three_d_single_phase_free_surface": bool(self.three_d_single_phase_free_surface),
             "enable_rain_module": bool(self.rain.enabled),
             "enable_pipe_network_module": bool(self.pipe_network.enabled),
             "enable_hydraulic_structures": bool(self.hydraulic_structures.enabled),

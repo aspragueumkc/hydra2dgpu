@@ -32,6 +32,22 @@ enum class SWE2DBedFrictionModel : int {
     NIKURADSE = 3,
 };
 
+enum class SWE2DEquationSet : int {
+    HYDROSTATIC_2D = 0,
+    NONHYDROSTATIC_2D = 1,
+};
+
+enum class SWE2DThreeDCouplingMode : int {
+    OFF = 0,
+    ONE_WAY_2D_TO_3D = 1,
+    TWO_WAY_2D_3D = 2,
+};
+
+enum class SWE2DThreeDSolverModel : int {
+    DISABLED = 0,
+    SINGLE_PHASE_FREE_SURFACE_VOF = 1,
+};
+
 // Forward declaration of GPU state (defined in swe2d_gpu.cuh when CUDA present)
 #ifdef BACKWATER_HAS_CUDA
 struct SWE2DDeviceState;
@@ -52,6 +68,12 @@ struct SWE2DSolverConfig {
     int     godunov_mode = 0;   // 0 = current GPU step, 1 = Godunov rollout mode
     int     turbulence_model = static_cast<int>(SWE2DTurbulenceModel::NONE);
     int     bed_friction_model = static_cast<int>(SWE2DBedFrictionModel::MANNING);
+    int     equation_set = static_cast<int>(SWE2DEquationSet::HYDROSTATIC_2D);
+    int     coupling_mode = static_cast<int>(SWE2DThreeDCouplingMode::OFF);
+    int     three_d_solver_model = static_cast<int>(SWE2DThreeDSolverModel::DISABLED);
+    bool    enforce_gpu_only_advanced_modes = true;
+    // 3D roadmap constraint: single-phase free-surface only for near-term VoF work.
+    bool    three_d_single_phase_free_surface = true;
     bool    enable_rain_module = false;
     bool    enable_pipe_network_module = false;
     bool    enable_hydraulic_structures = false;
@@ -99,6 +121,8 @@ struct SWE2DStepDiag {
     double   max_depth_residual = 0.0;
     double   max_wse_elev_error = 0.0;
     bool     gpu_active = false;
+    int32_t  gpu_graph_launches_step = 0;
+    int64_t  gpu_graph_launches_total = 0;
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -231,6 +255,30 @@ void swe2d_set_state(SWE2DSolver* s, const double* h_in, const double* hu_in, co
 
 // Free all resources (including GPU device memory if allocated).
 void swe2d_destroy(SWE2DSolver* s);
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Native run-to-time loop (removes per-step Python orchestration)
+// ─────────────────────────────────────────────────────────────────────────────
+// Callback signature: called on progress at user-specified interval.
+// Returns true to continue, false to cancel.
+typedef bool (*SWE2DProgressCallback)(double current_time, uint64_t step_count, const SWE2DStepDiag* diag);
+
+struct SWE2DRunConfig {
+    double t_end;                           // End simulation time (s)
+    double dt_request;                      // Requested per-step dt; -1 for CFL-controlled
+    int progress_callback_interval_steps;   // Call progress_cb every N steps; <=0 disables
+    SWE2DProgressCallback progress_cb;      // Callback (may be nullptr if interval <= 0)
+    int diag_batch_size;                    // Diagnostics array capacity; 0 = no batching (only final)
+};
+
+// Run simulation from current t to t_end. Batches diagnostics every N steps into diag_out.
+// Returns number of diagnostics written to diag_out.
+// On cancellation (progress_cb returns false), returns negative count of steps completed.
+int32_t swe2d_run_to_time(
+    SWE2DSolver* s,
+    const SWE2DRunConfig* cfg,
+    SWE2DStepDiag* diag_out,  // Output array, optional
+    int32_t max_diags);        // Capacity of diag_out array
 
 // ─────────────────────────────────────────────────────────────────────────────
 // GPU availability query

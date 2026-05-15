@@ -15,8 +15,12 @@
 #include "swe2d_gpu.cuh"
 #endif
 
+#include <algorithm>
+#include <cmath>
+#include <cstring>
 #include <memory>
 #include <stdexcept>
+#include <vector>
 
 namespace py = pybind11;
 
@@ -309,6 +313,353 @@ PYBIND11_MODULE(backwater_swe2d, m) {
         py::arg("head_deadband_m") = 1.0e-3,
         py::arg("dynamic_flow_relaxation") = 1.0,
         "Headless CUDA helper: advance 1D drainage network one step (EGL/diffusion/dynamic).");
+
+    m.def("swe2d_gpu_drainage_step_iterative",
+        [](py::array_t<double, py::array::c_style | py::array::forcecast> cell_bed,
+           py::array_t<double, py::array::c_style | py::array::forcecast> cell_area,
+           py::array_t<double, py::array::c_style | py::array::forcecast> node_invert_elev,
+           py::array_t<double, py::array::c_style | py::array::forcecast> node_max_depth,
+           py::array_t<double, py::array::c_style | py::array::forcecast> node_surface_area,
+           py::array_t<int32_t, py::array::c_style | py::array::forcecast> link_from,
+           py::array_t<int32_t, py::array::c_style | py::array::forcecast> link_to,
+           py::array_t<double, py::array::c_style | py::array::forcecast> link_length,
+           py::array_t<double, py::array::c_style | py::array::forcecast> link_roughness_n,
+           py::array_t<double, py::array::c_style | py::array::forcecast> link_diameter,
+           py::array_t<double, py::array::c_style | py::array::forcecast> link_max_flow,
+           py::array_t<int32_t, py::array::c_style | py::array::forcecast> inlet_cell,
+           py::array_t<int32_t, py::array::c_style | py::array::forcecast> inlet_node,
+           py::array_t<double, py::array::c_style | py::array::forcecast> inlet_crest_elev,
+           py::array_t<double, py::array::c_style | py::array::forcecast> inlet_width,
+           py::array_t<double, py::array::c_style | py::array::forcecast> inlet_coefficient,
+           py::array_t<double, py::array::c_style | py::array::forcecast> inlet_max_capture,
+           py::array_t<int32_t, py::array::c_style | py::array::forcecast> outfall_cell,
+           py::array_t<int32_t, py::array::c_style | py::array::forcecast> outfall_node,
+           py::array_t<double, py::array::c_style | py::array::forcecast> outfall_invert_elev,
+           py::array_t<double, py::array::c_style | py::array::forcecast> outfall_diameter,
+           py::array_t<double, py::array::c_style | py::array::forcecast> outfall_coefficient,
+           py::array_t<double, py::array::c_style | py::array::forcecast> outfall_max_flow,
+           py::array_t<int32_t, py::array::c_style | py::array::forcecast> outfall_zero_storage,
+           py::array_t<int32_t, py::array::c_style | py::array::forcecast> pipe_end_cell,
+           py::array_t<int32_t, py::array::c_style | py::array::forcecast> pipe_end_node,
+           py::array_t<double, py::array::c_style | py::array::forcecast> pipe_end_invert_elev,
+           py::array_t<double, py::array::c_style | py::array::forcecast> pipe_end_diameter,
+           py::array_t<double, py::array::c_style | py::array::forcecast> pipe_end_area,
+           py::array_t<double, py::array::c_style | py::array::forcecast> pipe_end_inlet_loss_k,
+           py::array_t<double, py::array::c_style | py::array::forcecast> pipe_end_outlet_loss_k,
+           py::array_t<double, py::array::c_style | py::array::forcecast> cell_depth,
+           py::array_t<double, py::array::c_style | py::array::forcecast> node_depth,
+           py::array_t<double, py::array::c_style | py::array::forcecast> link_flow,
+           double dt_s,
+           double gravity,
+           int32_t solver_mode,
+           double head_deadband_m,
+           double dynamic_flow_relaxation,
+           int32_t n_substeps,
+           int32_t implicit_iters,
+           double coupling_relaxation)
+           -> py::tuple
+        {
+            const int32_t n_cells = static_cast<int32_t>(cell_bed.size());
+            if (cell_area.size() != static_cast<size_t>(n_cells) ||
+                cell_depth.size() != static_cast<size_t>(n_cells)) {
+                throw std::invalid_argument("cell_bed, cell_area, and cell_depth must have same length");
+            }
+            const int32_t n_nodes = static_cast<int32_t>(node_invert_elev.size());
+            if (node_max_depth.size() != static_cast<size_t>(n_nodes) ||
+                node_surface_area.size() != static_cast<size_t>(n_nodes) ||
+                node_depth.size() != static_cast<size_t>(n_nodes)) {
+                throw std::invalid_argument("node arrays must have consistent length");
+            }
+            const int32_t n_links = static_cast<int32_t>(link_from.size());
+            if (link_to.size() != static_cast<size_t>(n_links) ||
+                link_length.size() != static_cast<size_t>(n_links) ||
+                link_roughness_n.size() != static_cast<size_t>(n_links) ||
+                link_diameter.size() != static_cast<size_t>(n_links) ||
+                link_max_flow.size() != static_cast<size_t>(n_links) ||
+                link_flow.size() != static_cast<size_t>(n_links)) {
+                throw std::invalid_argument("link arrays must have consistent length");
+            }
+            const int32_t n_inlets = static_cast<int32_t>(inlet_cell.size());
+            if (inlet_node.size() != static_cast<size_t>(n_inlets) ||
+                inlet_crest_elev.size() != static_cast<size_t>(n_inlets) ||
+                inlet_width.size() != static_cast<size_t>(n_inlets) ||
+                inlet_coefficient.size() != static_cast<size_t>(n_inlets) ||
+                inlet_max_capture.size() != static_cast<size_t>(n_inlets)) {
+                throw std::invalid_argument("inlet arrays must have consistent length");
+            }
+            const int32_t n_outfalls = static_cast<int32_t>(outfall_cell.size());
+            if (outfall_node.size() != static_cast<size_t>(n_outfalls) ||
+                outfall_invert_elev.size() != static_cast<size_t>(n_outfalls) ||
+                outfall_diameter.size() != static_cast<size_t>(n_outfalls) ||
+                outfall_coefficient.size() != static_cast<size_t>(n_outfalls) ||
+                outfall_max_flow.size() != static_cast<size_t>(n_outfalls) ||
+                outfall_zero_storage.size() != static_cast<size_t>(n_outfalls)) {
+                throw std::invalid_argument("outfall arrays must have consistent length");
+            }
+            const int32_t n_pipe_ends = static_cast<int32_t>(pipe_end_cell.size());
+            if (pipe_end_node.size() != static_cast<size_t>(n_pipe_ends) ||
+                pipe_end_invert_elev.size() != static_cast<size_t>(n_pipe_ends) ||
+                pipe_end_diameter.size() != static_cast<size_t>(n_pipe_ends) ||
+                pipe_end_area.size() != static_cast<size_t>(n_pipe_ends) ||
+                pipe_end_inlet_loss_k.size() != static_cast<size_t>(n_pipe_ends) ||
+                pipe_end_outlet_loss_k.size() != static_cast<size_t>(n_pipe_ends)) {
+                throw std::invalid_argument("pipe_end arrays must have consistent length");
+            }
+
+            const int32_t substeps = std::max<int32_t>(1, n_substeps);
+            const int32_t iters = std::max<int32_t>(1, implicit_iters);
+            const double relax = std::max(0.0, std::min(1.0, coupling_relaxation));
+            const double dt_sub = dt_s / static_cast<double>(substeps);
+
+            auto node_state_out = py::array_t<double>(n_nodes);
+            auto link_state_out = py::array_t<double>(n_links);
+            auto q_cell_out = py::array_t<double>(n_cells);
+
+            std::vector<double> node_state(static_cast<size_t>(n_nodes));
+            std::vector<double> link_state(static_cast<size_t>(n_links));
+            std::vector<double> q_cell_acc(static_cast<size_t>(n_cells), 0.0);
+            std::vector<double> q_cell_last(static_cast<size_t>(n_cells), 0.0);
+            std::vector<double> hh_sub(static_cast<size_t>(n_cells));
+            std::vector<double> hh_iter(static_cast<size_t>(n_cells));
+            std::vector<double> hh_target(static_cast<size_t>(n_cells));
+            std::vector<double> cell_wse(static_cast<size_t>(n_cells));
+            std::vector<double> node_out(static_cast<size_t>(n_nodes));
+            std::vector<double> link_out(static_cast<size_t>(n_links));
+            std::vector<double> q_out(static_cast<size_t>(n_cells));
+
+            std::memcpy(node_state.data(), node_depth.data(), sizeof(double) * static_cast<size_t>(n_nodes));
+            std::memcpy(link_state.data(), link_flow.data(), sizeof(double) * static_cast<size_t>(n_links));
+            std::memcpy(hh_sub.data(), cell_depth.data(), sizeof(double) * static_cast<size_t>(n_cells));
+
+            // Fast path for fully inactive exchange states.
+            const double tiny_h = std::max(1.0e-12, 0.1 * head_deadband_m);
+            bool any_wet_surface = false;
+            for (int32_t i = 0; i < n_cells; ++i) {
+                if (hh_sub[static_cast<size_t>(i)] > tiny_h) {
+                    any_wet_surface = true;
+                    break;
+                }
+            }
+            bool any_wet_nodes = false;
+            for (int32_t i = 0; i < n_nodes; ++i) {
+                if (node_state[static_cast<size_t>(i)] > tiny_h) {
+                    any_wet_nodes = true;
+                    break;
+                }
+            }
+            bool any_link_flow = false;
+            for (int32_t i = 0; i < n_links; ++i) {
+                if (std::abs(link_state[static_cast<size_t>(i)]) > 1.0e-10) {
+                    any_link_flow = true;
+                    break;
+                }
+            }
+            if (!any_wet_surface && !any_wet_nodes && !any_link_flow) {
+                std::memcpy(node_state_out.mutable_data(), node_state.data(), sizeof(double) * static_cast<size_t>(n_nodes));
+                std::memcpy(link_state_out.mutable_data(), link_state.data(), sizeof(double) * static_cast<size_t>(n_links));
+                std::fill(q_cell_out.mutable_data(), q_cell_out.mutable_data() + n_cells, 0.0);
+                py::dict diag;
+                diag["max_node_depth"] = 0.0;
+                diag["max_link_flow"] = 0.0;
+                diag["limiter_events"] = 0.0;
+                diag["limiter_volume_m3"] = 0.0;
+                diag["substeps_used"] = 0.0;
+                diag["implicit_iters_used"] = 0.0;
+                diag["inactive_fastpath"] = 1.0;
+                return py::make_tuple(node_state_out, link_state_out, q_cell_out, diag);
+            }
+
+            double max_node_depth = 0.0;
+            double max_link_flow = 0.0;
+            double limiter_events = 0.0;
+            double limiter_volume_m3 = 0.0;
+
+            int32_t substeps_used = 0;
+            int32_t implicit_iters_used = 0;
+            for (int32_t s = 0; s < substeps; ++s) {
+                ++substeps_used;
+                std::memcpy(hh_iter.data(), hh_sub.data(), sizeof(double) * static_cast<size_t>(n_cells));
+                std::fill(q_cell_last.begin(), q_cell_last.end(), 0.0);
+                double step_max_node_depth = 0.0;
+                double step_max_link_flow = 0.0;
+                double step_limiter_events = 0.0;
+                double step_limiter_volume_m3 = 0.0;
+                bool converged = false;
+
+                for (int32_t it = 0; it < iters; ++it) {
+                    ++implicit_iters_used;
+                    for (int32_t i = 0; i < n_cells; ++i) {
+                        cell_wse[static_cast<size_t>(i)] = cell_bed.data()[i] + hh_iter[static_cast<size_t>(i)];
+                    }
+                    swe2d_gpu_drainage_step(
+                        n_cells,
+                        n_nodes,
+                        n_links,
+                        n_inlets,
+                        n_outfalls,
+                        n_pipe_ends,
+                        cell_wse.data(),
+                        cell_area.data(),
+                        node_invert_elev.data(),
+                        node_max_depth.data(),
+                        node_surface_area.data(),
+                        link_from.data(),
+                        link_to.data(),
+                        link_length.data(),
+                        link_roughness_n.data(),
+                        link_diameter.data(),
+                        link_max_flow.data(),
+                        inlet_cell.data(),
+                        inlet_node.data(),
+                        inlet_crest_elev.data(),
+                        inlet_width.data(),
+                        inlet_coefficient.data(),
+                        inlet_max_capture.data(),
+                        outfall_cell.data(),
+                        outfall_node.data(),
+                        outfall_invert_elev.data(),
+                        outfall_diameter.data(),
+                        outfall_coefficient.data(),
+                        outfall_max_flow.data(),
+                        outfall_zero_storage.data(),
+                        pipe_end_cell.data(),
+                        pipe_end_node.data(),
+                        pipe_end_invert_elev.data(),
+                        pipe_end_diameter.data(),
+                        pipe_end_area.data(),
+                        pipe_end_inlet_loss_k.data(),
+                        pipe_end_outlet_loss_k.data(),
+                        hh_iter.data(),
+                        node_state.data(),
+                        link_state.data(),
+                        dt_sub,
+                        gravity,
+                        solver_mode,
+                        head_deadband_m,
+                        dynamic_flow_relaxation,
+                        node_out.data(),
+                        link_out.data(),
+                        q_out.data(),
+                        &step_max_node_depth,
+                        &step_max_link_flow,
+                        &step_limiter_events,
+                        &step_limiter_volume_m3);
+
+                    std::memcpy(node_state.data(), node_out.data(), sizeof(double) * static_cast<size_t>(n_nodes));
+                    std::memcpy(link_state.data(), link_out.data(), sizeof(double) * static_cast<size_t>(n_links));
+                    std::memcpy(q_cell_last.data(), q_out.data(), sizeof(double) * static_cast<size_t>(n_cells));
+
+                    double max_h_update = 0.0;
+                    for (int32_t i = 0; i < n_cells; ++i) {
+                        const double h_prev = hh_iter[static_cast<size_t>(i)];
+                        const double h_old = hh_sub[static_cast<size_t>(i)];
+                        const double dh = q_cell_last[static_cast<size_t>(i)] * dt_sub / std::max(cell_area.data()[i], 1.0e-12);
+                        const double h_tgt = std::max(h_old - dh, 0.0);
+                        hh_target[static_cast<size_t>(i)] = h_tgt;
+                        hh_iter[static_cast<size_t>(i)] = (1.0 - relax) * h_prev + relax * h_tgt;
+                        max_h_update = std::max(max_h_update, std::abs(hh_iter[static_cast<size_t>(i)] - h_prev));
+                    }
+
+                    if (max_h_update <= tiny_h) {
+                        converged = true;
+                        break;
+                    }
+                }
+
+                for (int32_t i = 0; i < n_cells; ++i) {
+                    q_cell_acc[static_cast<size_t>(i)] += q_cell_last[static_cast<size_t>(i)];
+                    const double dh = q_cell_last[static_cast<size_t>(i)] * dt_sub / std::max(cell_area.data()[i], 1.0e-12);
+                    hh_sub[static_cast<size_t>(i)] = std::max(hh_sub[static_cast<size_t>(i)] - dh, 0.0);
+                }
+                max_node_depth = std::max(max_node_depth, step_max_node_depth);
+                max_link_flow = std::max(max_link_flow, step_max_link_flow);
+                limiter_events += step_limiter_events;
+                limiter_volume_m3 += step_limiter_volume_m3;
+
+                if (converged) {
+                    break;
+                }
+            }
+
+            for (int32_t i = 0; i < n_cells; ++i) {
+                q_cell_out.mutable_data()[i] = q_cell_acc[static_cast<size_t>(i)] / static_cast<double>(std::max(1, substeps_used));
+            }
+
+            std::memcpy(node_state_out.mutable_data(), node_state.data(), sizeof(double) * static_cast<size_t>(n_nodes));
+            std::memcpy(link_state_out.mutable_data(), link_state.data(), sizeof(double) * static_cast<size_t>(n_links));
+
+            py::dict diag;
+            diag["max_node_depth"] = max_node_depth;
+            diag["max_link_flow"] = max_link_flow;
+            diag["limiter_events"] = limiter_events;
+            diag["limiter_volume_m3"] = limiter_volume_m3;
+            diag["substeps_used"] = static_cast<double>(substeps_used);
+            diag["implicit_iters_used"] = static_cast<double>(implicit_iters_used);
+            diag["inactive_fastpath"] = 0.0;
+            return py::make_tuple(node_state_out, link_state_out, q_cell_out, diag);
+        },
+        py::arg("cell_bed"),
+        py::arg("cell_area"),
+        py::arg("node_invert_elev"),
+        py::arg("node_max_depth"),
+        py::arg("node_surface_area"),
+        py::arg("link_from"),
+        py::arg("link_to"),
+        py::arg("link_length"),
+        py::arg("link_roughness_n"),
+        py::arg("link_diameter"),
+        py::arg("link_max_flow"),
+        py::arg("inlet_cell"),
+        py::arg("inlet_node"),
+        py::arg("inlet_crest_elev"),
+        py::arg("inlet_width"),
+        py::arg("inlet_coefficient"),
+        py::arg("inlet_max_capture"),
+        py::arg("outfall_cell"),
+        py::arg("outfall_node"),
+        py::arg("outfall_invert_elev"),
+        py::arg("outfall_diameter"),
+        py::arg("outfall_coefficient"),
+        py::arg("outfall_max_flow"),
+        py::arg("outfall_zero_storage"),
+        py::arg("pipe_end_cell"),
+        py::arg("pipe_end_node"),
+        py::arg("pipe_end_invert_elev"),
+        py::arg("pipe_end_diameter"),
+        py::arg("pipe_end_area"),
+        py::arg("pipe_end_inlet_loss_k"),
+        py::arg("pipe_end_outlet_loss_k"),
+        py::arg("cell_depth"),
+        py::arg("node_depth"),
+        py::arg("link_flow"),
+        py::arg("dt_s"),
+        py::arg("gravity"),
+        py::arg("solver_mode"),
+        py::arg("head_deadband_m") = 1.0e-3,
+        py::arg("dynamic_flow_relaxation") = 1.0,
+        py::arg("n_substeps") = 1,
+        py::arg("implicit_iters") = 1,
+        py::arg("coupling_relaxation") = 0.5,
+        "Headless CUDA helper: advance drainage network with native substep/implicit loops in one call.");
+
+    m.def("swe2d_gpu_enable_kernel_graphs",
+        [](py::object dev_capsule, bool enable) {
+            auto dev = static_cast<SWE2DDeviceState*>(PyCapsule_GetPointer(dev_capsule.ptr(), "SWE2DDeviceState*"));
+            if (!dev) throw std::runtime_error("Invalid device pointer");
+            swe2d_gpu_enable_kernel_graphs(dev, enable);
+        },
+        py::arg("dev"),
+        py::arg("enable"),
+        "Enable or disable CUDA graph optimization for kernel sequence replay.");
+
+    m.def("swe2d_gpu_destroy_kernel_graphs",
+        [](py::object dev_capsule) {
+            auto dev = static_cast<SWE2DDeviceState*>(PyCapsule_GetPointer(dev_capsule.ptr(), "SWE2DDeviceState*"));
+            if (!dev) throw std::runtime_error("Invalid device pointer");
+            swe2d_gpu_destroy_kernel_graphs(dev);
+        },
+        py::arg("dev"),
+        "Destroy cached CUDA graph resources for this solver instance.");
 #else
     m.def("swe2d_gpu_compute_coupling_sources",
         [](py::array_t<double, py::array::c_style | py::array::forcecast>,
@@ -369,6 +720,63 @@ PYBIND11_MODULE(backwater_swe2d, m) {
            double) -> py::tuple
         {
             throw std::runtime_error("CUDA path not compiled; swe2d_gpu_drainage_step is unavailable.");
+        });
+
+    m.def("swe2d_gpu_drainage_step_iterative",
+        [](py::array_t<double, py::array::c_style | py::array::forcecast>,
+           py::array_t<double, py::array::c_style | py::array::forcecast>,
+           py::array_t<double, py::array::c_style | py::array::forcecast>,
+           py::array_t<double, py::array::c_style | py::array::forcecast>,
+           py::array_t<double, py::array::c_style | py::array::forcecast>,
+           py::array_t<int32_t, py::array::c_style | py::array::forcecast>,
+           py::array_t<int32_t, py::array::c_style | py::array::forcecast>,
+           py::array_t<double, py::array::c_style | py::array::forcecast>,
+           py::array_t<double, py::array::c_style | py::array::forcecast>,
+           py::array_t<double, py::array::c_style | py::array::forcecast>,
+           py::array_t<double, py::array::c_style | py::array::forcecast>,
+           py::array_t<int32_t, py::array::c_style | py::array::forcecast>,
+           py::array_t<int32_t, py::array::c_style | py::array::forcecast>,
+           py::array_t<double, py::array::c_style | py::array::forcecast>,
+           py::array_t<double, py::array::c_style | py::array::forcecast>,
+           py::array_t<double, py::array::c_style | py::array::forcecast>,
+           py::array_t<double, py::array::c_style | py::array::forcecast>,
+           py::array_t<int32_t, py::array::c_style | py::array::forcecast>,
+           py::array_t<int32_t, py::array::c_style | py::array::forcecast>,
+           py::array_t<double, py::array::c_style | py::array::forcecast>,
+           py::array_t<double, py::array::c_style | py::array::forcecast>,
+           py::array_t<double, py::array::c_style | py::array::forcecast>,
+           py::array_t<double, py::array::c_style | py::array::forcecast>,
+           py::array_t<int32_t, py::array::c_style | py::array::forcecast>,
+           py::array_t<int32_t, py::array::c_style | py::array::forcecast>,
+           py::array_t<double, py::array::c_style | py::array::forcecast>,
+           py::array_t<double, py::array::c_style | py::array::forcecast>,
+           py::array_t<double, py::array::c_style | py::array::forcecast>,
+           py::array_t<double, py::array::c_style | py::array::forcecast>,
+           py::array_t<double, py::array::c_style | py::array::forcecast>,
+           py::array_t<double, py::array::c_style | py::array::forcecast>,
+           py::array_t<double, py::array::c_style | py::array::forcecast>,
+           py::array_t<double, py::array::c_style | py::array::forcecast>,
+           py::array_t<double, py::array::c_style | py::array::forcecast>,
+           double,
+           double,
+           int32_t,
+           double,
+           double,
+           int32_t,
+           int32_t,
+           double) -> py::tuple
+        {
+            throw std::runtime_error("CUDA path not compiled; swe2d_gpu_drainage_step_iterative is unavailable.");
+        });
+
+    m.def("swe2d_gpu_enable_kernel_graphs",
+        [](py::object, bool) {
+            throw std::runtime_error("CUDA path not compiled; swe2d_gpu_enable_kernel_graphs is unavailable.");
+        });
+
+    m.def("swe2d_gpu_destroy_kernel_graphs",
+        [](py::object) {
+            throw std::runtime_error("CUDA path not compiled; swe2d_gpu_destroy_kernel_graphs is unavailable.");
         });
 #endif
 
@@ -720,6 +1128,11 @@ PYBIND11_MODULE(backwater_swe2d, m) {
               int godunov_mode,
               int turbulence_model,
               int bed_friction_model,
+              int equation_set,
+              int coupling_mode,
+              int three_d_solver_model,
+              bool enforce_gpu_only_advanced_modes,
+              bool three_d_single_phase_free_surface,
               bool enable_rain_module,
               bool enable_pipe_network_module,
               bool enable_hydraulic_structures,
@@ -788,6 +1201,11 @@ PYBIND11_MODULE(backwater_swe2d, m) {
             cfg.godunov_mode = godunov_mode;
             cfg.turbulence_model = turbulence_model;
             cfg.bed_friction_model = bed_friction_model;
+            cfg.equation_set = equation_set;
+            cfg.coupling_mode = coupling_mode;
+            cfg.three_d_solver_model = three_d_solver_model;
+            cfg.enforce_gpu_only_advanced_modes = enforce_gpu_only_advanced_modes;
+            cfg.three_d_single_phase_free_surface = three_d_single_phase_free_surface;
             cfg.enable_rain_module = enable_rain_module;
             cfg.enable_pipe_network_module = enable_pipe_network_module;
             cfg.enable_hydraulic_structures = enable_hydraulic_structures;
@@ -836,6 +1254,11 @@ PYBIND11_MODULE(backwater_swe2d, m) {
         py::arg("godunov_mode") = 0,
         py::arg("turbulence_model") = 0,
         py::arg("bed_friction_model") = 0,
+        py::arg("equation_set") = 0,
+        py::arg("coupling_mode") = 0,
+        py::arg("three_d_solver_model") = 0,
+        py::arg("enforce_gpu_only_advanced_modes") = true,
+        py::arg("three_d_single_phase_free_surface") = true,
         py::arg("enable_rain_module") = false,
         py::arg("enable_pipe_network_module") = false,
         py::arg("enable_hydraulic_structures") = false,
@@ -866,6 +1289,8 @@ PYBIND11_MODULE(backwater_swe2d, m) {
             d["max_depth_residual"] = diag.max_depth_residual;
             d["max_wse_elev_error"] = diag.max_wse_elev_error;
             d["gpu_active"] = diag.gpu_active;
+            d["gpu_graph_launches_step"] = diag.gpu_graph_launches_step;
+            d["gpu_graph_launches_total"] = diag.gpu_graph_launches_total;
             return d;
         },
         py::arg("solver"), py::arg("dt_request") = -1.0,
@@ -919,6 +1344,78 @@ PYBIND11_MODULE(backwater_swe2d, m) {
         },
         py::arg("solver"),
         "Explicitly free native solver resources (also called on GC).");
+
+    // ── Native run-to-time loop ───────────────────────────────────────────────
+    m.def("swe2d_run_to_time",
+        [](std::shared_ptr<PySolver> ps,
+           double t_end,
+           double dt_request,
+           int diag_batch_size) -> py::dict
+        {
+            if (!ps || !ps->solver) throw std::invalid_argument("null solver handle");
+
+            // Run the native loop without Python callbacks (callbacks would require
+            // a context pointer in the C interface, which we don't have).
+            // For now, we batch diagnostics and return them after completion.
+            std::vector<SWE2DStepDiag> diag_batch;
+            if (diag_batch_size > 0) {
+                diag_batch.reserve(diag_batch_size);
+            }
+
+            SWE2DRunConfig cfg;
+            cfg.t_end = t_end;
+            cfg.dt_request = dt_request;
+            cfg.progress_callback_interval_steps = 0;  // No Python callbacks
+            cfg.progress_cb = nullptr;
+            cfg.diag_batch_size = diag_batch_size;
+            cfg.progress_callback_interval_steps = 0;
+            cfg.progress_cb = nullptr;
+
+            // Allocate temp array for diagnostics if batching enabled.
+            std::vector<SWE2DStepDiag> temp_diag_array;
+            if (diag_batch_size > 0) {
+                temp_diag_array.resize(diag_batch_size);
+            }
+
+            int32_t result = swe2d_run_to_time(
+                ps->solver,
+                &cfg,
+                temp_diag_array.size() > 0 ? temp_diag_array.data() : nullptr,
+                static_cast<int32_t>(temp_diag_array.size()));
+
+            // Convert diagnostics to Python list.
+            py::list diag_list;
+            if (result > 0) {
+                for (int32_t i = 0; i < result; ++i) {
+                    const SWE2DStepDiag& d = temp_diag_array[i];
+                    py::dict d_dict;
+                    d_dict["dt"] = d.dt;
+                    d_dict["wet_cells"] = static_cast<int32_t>(d.wet_cells);
+                    d_dict["max_depth"] = d.max_depth;
+                    d_dict["min_depth"] = d.min_depth;
+                    d_dict["mass_total"] = d.mass_total;
+                    d_dict["max_courant"] = d.max_courant;
+                    d_dict["max_depth_residual"] = d.max_depth_residual;
+                    d_dict["max_wse_elev_error"] = d.max_wse_elev_error;
+                    d_dict["gpu_active"] = d.gpu_active;
+                    d_dict["gpu_graph_launches_step"] = static_cast<int32_t>(d.gpu_graph_launches_step);
+                    diag_list.append(d_dict);
+                }
+            }
+
+            py::dict ret;
+            ret["diags"] = diag_list;
+            ret["steps_completed"] = static_cast<int32_t>(std::abs(result));
+            ret["cancelled"] = (result < 0);
+            ret["final_time"] = ps->solver->t;
+            return ret;
+        },
+        py::arg("solver"),
+        py::arg("t_end"),
+        py::arg("dt_request") = -1.0,
+        py::arg("diag_batch_size") = 0,
+        "Run simulation natively from current time to t_end. Returns dict with 'diags', "
+        "'steps_completed', 'cancelled', 'final_time'.");
 
     // ── PyMesh / PySolver as opaque Python types ──────────────────────────────
     py::class_<PyMesh, std::shared_ptr<PyMesh>>(m, "SWE2DMeshHandle")

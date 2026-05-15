@@ -26,6 +26,7 @@
 #include <stdexcept>
 #include <limits>
 #include <cstring>
+#include <cctype>
 #include <cstdio>
 #include <cstdlib>
 #include <utility>
@@ -208,6 +209,13 @@ bool swe2d_debug_enabled(const char* name) {
     return (v && v[0] && v[0] != '0');
 }
 
+bool swe2d_env_enabled(const char* name) {
+    const char* v = std::getenv(name);
+    if (!v || !v[0]) return false;
+    const char c0 = static_cast<char>(std::tolower(static_cast<unsigned char>(v[0])));
+    return !(c0 == '0' || c0 == 'f' || c0 == 'n');
+}
+
 SWE2DStepDiag summarize_state(const SWE2DSolver* s, double dt, bool gpu_active, double max_depth_residual) {
     const SWE2DMesh& mesh = *s->mesh;
     const double h_min = s->cfg.h_min;
@@ -294,6 +302,26 @@ SWE2DSolver* swe2d_create(
         throw std::invalid_argument("swe2d_create: h0 must not be null");
     }
 
+    const bool advanced_mode_requested =
+        (cfg.equation_set != static_cast<int>(SWE2DEquationSet::HYDROSTATIC_2D)) ||
+        (cfg.coupling_mode != static_cast<int>(SWE2DThreeDCouplingMode::OFF));
+    if (advanced_mode_requested && cfg.enforce_gpu_only_advanced_modes && !cfg.use_gpu) {
+        throw std::invalid_argument(
+            "swe2d_create: nonhydrostatic/coupled modes are GPU-only; set use_gpu=true");
+    }
+
+#ifdef BACKWATER_HAS_CUDA
+    if (advanced_mode_requested && cfg.enforce_gpu_only_advanced_modes && !swe2d_gpu_available()) {
+        throw std::runtime_error(
+            "swe2d_create: advanced nonhydrostatic/coupled modes require CUDA-enabled runtime");
+    }
+#else
+    if (advanced_mode_requested && cfg.enforce_gpu_only_advanced_modes) {
+        throw std::runtime_error(
+            "swe2d_create: advanced nonhydrostatic/coupled modes require CUDA build");
+    }
+#endif
+
     auto* s = new SWE2DSolver();
     s->mesh = &mesh;
     s->cfg  = cfg;
@@ -334,6 +362,10 @@ SWE2DSolver* swe2d_create(
                                 s->n_mann_cell.data(),
                                 cfg.degen_mode,
                                 cfg.max_inv_area);
+        if (s->dev) {
+            const bool enable_cuda_graphs = swe2d_env_enabled("BACKWATER_ENABLE_CUDA_GRAPHS");
+            swe2d_gpu_enable_kernel_graphs(s->dev, enable_cuda_graphs);
+        }
     }
 #endif
 
@@ -754,6 +786,15 @@ SWE2DStepDiag swe2d_step(SWE2DSolver* s, double dt_request) {
     if (!s) throw std::invalid_argument("swe2d_step: null solver");
     const double t_now = s->t;
 
+    const bool use_nonhydrostatic_mode =
+        (s->cfg.equation_set == static_cast<int>(SWE2DEquationSet::NONHYDROSTATIC_2D));
+    const bool use_2d3d_coupling =
+        (s->cfg.coupling_mode != static_cast<int>(SWE2DThreeDCouplingMode::OFF));
+    if (use_nonhydrostatic_mode || use_2d3d_coupling) {
+        throw std::runtime_error(
+            "swe2d_step: nonhydrostatic/coupled GPU solver path is scaffolded but not implemented yet");
+    }
+
     const bool use_godunov_rollout = (s->cfg.godunov_mode != 0);
     const bool use_rk4 = (s->cfg.temporal_order >= 4) && !use_godunov_rollout;
     const bool use_rk2 = ((s->cfg.temporal_order >= 2) || use_godunov_rollout) && !use_rk4;
@@ -1144,3 +1185,49 @@ void swe2d_solver_set_external_sources(
     }
 #endif
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Native run-to-time loop
+// ─────────────────────────────────────────────────────────────────────────────
+int32_t swe2d_run_to_time(
+    SWE2DSolver* s,
+    const SWE2DRunConfig* cfg,
+    SWE2DStepDiag* diag_out,
+    int32_t max_diags)
+{
+    if (!s || !cfg) throw std::invalid_argument("swe2d_run_to_time: null solver or config");
+
+    int32_t diag_count = 0;
+    uint64_t step_count = 0;
+    double t = s->t;
+    const double t_end = cfg->t_end;
+    const double dt_request = cfg->dt_request;
+    const int progress_interval = cfg->progress_callback_interval_steps;
+    SWE2DProgressCallback progress_cb = cfg->progress_cb;
+    const int batch_size = cfg->diag_batch_size;
+
+    while (t < t_end) {
+        SWE2DStepDiag diag = swe2d_step(s, dt_request);
+        t += diag.dt;
+        ++step_count;
+
+        // Store diagnostics if batching is enabled and we have space.
+        if (batch_size > 0 && diag_count < max_diags) {
+            diag_out[diag_count++] = diag;
+        }
+
+        // Call progress callback at specified interval.
+        if (progress_interval > 0 && (step_count % static_cast<uint64_t>(progress_interval)) == 0u) {
+            if (progress_cb != nullptr) {
+                bool should_continue = progress_cb(t, step_count, &diag);
+                if (!should_continue) {
+                    // Cancellation requested; return negative count to signal partial run.
+                    return -static_cast<int32_t>(step_count);
+                }
+            }
+        }
+    }
+
+    return diag_count;
+}
+
