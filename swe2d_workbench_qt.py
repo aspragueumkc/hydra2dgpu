@@ -1539,6 +1539,10 @@ class SWE2DWorkbenchDialog(QtWidgets.QDialog):
         self._sample_line_prev_map_tool = None
         self._velocity_vector_builder = None
         self._velocity_vectors_layer_id: Optional[str] = None
+        self._velocity_overlay_sources: List[Dict[str, str]] = []
+        self._velocity_overlay_layer_ids: Dict[str, str] = {}
+        self._velocity_cell_xy_cache: Dict[str, Dict[int, Tuple[float, float]]] = {}
+        self._velocity_base_len_cache: Dict[str, float] = {}
         self._velocity_overlay_manual_gpkg_path: str = ""
         self._velocity_overlay_manual_run_id: str = ""
         self._velocity_overlay_manual_layer_name: str = ""
@@ -5588,6 +5592,25 @@ class SWE2DWorkbenchDialog(QtWidgets.QDialog):
             if not gpkg_path or not run_id:
                 return
 
+            source_key = f"{gpkg_path}::{table_name}::{run_id}"
+            source = {
+                "key": source_key,
+                "gpkg_path": gpkg_path,
+                "table_name": table_name,
+                "run_id": run_id,
+                "label": f"{os.path.basename(gpkg_path)}:{table_name}:{run_id}",
+            }
+
+            existing_idx = -1
+            for i, rec in enumerate(self._velocity_overlay_sources):
+                if str(rec.get("key", "")) == source_key:
+                    existing_idx = i
+                    break
+            if existing_idx >= 0:
+                self._velocity_overlay_sources[existing_idx] = source
+            else:
+                self._velocity_overlay_sources.append(source)
+
             self._velocity_overlay_manual_gpkg_path = gpkg_path
             self._velocity_overlay_manual_run_id = run_id
             self._velocity_overlay_manual_layer_name = table_name
@@ -5603,7 +5626,7 @@ class SWE2DWorkbenchDialog(QtWidgets.QDialog):
             t_s = panel.current_time_sec() if panel is not None else 0.0
             self._refresh_velocity_vectors_overlay(float(t_s))
             self._log(
-                f"Velocity arrows source set: table='{table_name}', gpkg='{gpkg_path}', run_id='{run_id}'"
+                f"Velocity arrows source added: table='{table_name}', gpkg='{gpkg_path}', run_id='{run_id}', total_sources={len(self._velocity_overlay_sources)}"
             )
         except Exception as exc:
             self._log(f"Velocity arrows source selection failed: {exc}")
@@ -5612,6 +5635,24 @@ class SWE2DWorkbenchDialog(QtWidgets.QDialog):
                 "Velocity Arrows",
                 f"Could not add velocity arrows source.\n\n{exc}",
             )
+
+    def _velocity_source_color(self, source_key: str) -> str:
+        palette = [
+            "#1f77b4",
+            "#ff7f0e",
+            "#2ca02c",
+            "#d62728",
+            "#17becf",
+            "#bcbd22",
+            "#8c564b",
+            "#e377c2",
+        ]
+        idx = 0
+        for i, rec in enumerate(self._velocity_overlay_sources):
+            if str(rec.get("key", "")) == str(source_key):
+                idx = i
+                break
+        return palette[idx % len(palette)]
 
     def _get_velocity_vector_builder(self):
         if self._velocity_vector_builder is not None:
@@ -5627,11 +5668,14 @@ class SWE2DWorkbenchDialog(QtWidgets.QDialog):
             self._velocity_vector_builder = None
         return self._velocity_vector_builder
 
-    def _velocity_vectors_layer(self):
+    def _velocity_vectors_layer_for_source(self, source: Dict[str, str]):
         if not _HAVE_QGIS_CORE or QgsProject is None or QgsVectorLayer is None:
             return None
-        if self._velocity_vectors_layer_id:
-            lyr = QgsProject.instance().mapLayer(self._velocity_vectors_layer_id)
+
+        source_key = str(source.get("key", ""))
+        layer_id = self._velocity_overlay_layer_ids.get(source_key, "")
+        if layer_id:
+            lyr = QgsProject.instance().mapLayer(layer_id)
             if lyr is not None and lyr.isValid():
                 return lyr
 
@@ -5643,6 +5687,9 @@ class SWE2DWorkbenchDialog(QtWidgets.QDialog):
         except Exception:
             pass
 
+        run_id = str(source.get("run_id", "run"))
+        table_name = str(source.get("table_name", "table"))
+        layer_name = f"SWE2D_Velocity_{run_id}_{table_name}"
         uri = (
             f"LineString?crs={crs_auth}"
             "&field=cell_id:integer"
@@ -5650,73 +5697,143 @@ class SWE2DWorkbenchDialog(QtWidgets.QDialog):
             "&field=u:double"
             "&field=v:double"
             "&field=angle_deg:double"
+            "&field=source:string(160)"
             "&field=color:string(16)"
             "&field=width:double"
         )
-        lyr = QgsVectorLayer(uri, "SWE2D_Velocity_Vectors", "memory")
+        lyr = QgsVectorLayer(uri, layer_name, "memory")
         if lyr is None or not lyr.isValid():
             return None
         QgsProject.instance().addMapLayer(lyr)
-        self._velocity_vectors_layer_id = str(lyr.id())
+        self._velocity_overlay_layer_ids[source_key] = str(lyr.id())
         return lyr
 
-    def _clear_velocity_vectors_layer(self):
-        lyr = self._velocity_vectors_layer()
-        if lyr is None:
+    def _clear_velocity_vectors_layers(self):
+        if not _HAVE_QGIS_CORE or QgsProject is None:
             return
-        try:
-            dp = lyr.dataProvider()
-            ids = [f.id() for f in lyr.getFeatures()]
-            if ids:
-                dp.deleteFeatures(ids)
-            lyr.triggerRepaint()
-        except Exception:
-            pass
+        for source_key, layer_id in list(self._velocity_overlay_layer_ids.items()):
+            try:
+                lyr = QgsProject.instance().mapLayer(layer_id)
+                if lyr is None or not lyr.isValid():
+                    continue
+                dp = lyr.dataProvider()
+                ids = [f.id() for f in lyr.getFeatures()]
+                if ids:
+                    dp.deleteFeatures(ids)
+                lyr.triggerRepaint()
+            except Exception:
+                continue
+
+    def _mesh_cell_centers_for_gpkg(self, gpkg_path: str) -> Tuple[Dict[int, Tuple[float, float]], float]:
+        gpkg_path = str(gpkg_path or "").strip()
+        if gpkg_path in self._velocity_cell_xy_cache:
+            return (
+                self._velocity_cell_xy_cache.get(gpkg_path, {}),
+                float(self._velocity_base_len_cache.get(gpkg_path, 1.0)),
+            )
+
+        cell_xy: Dict[int, Tuple[float, float]] = {}
+        base_len = 1.0
+
+        if _HAVE_QGIS_CORE and QgsVectorLayer is not None and gpkg_path and os.path.exists(gpkg_path):
+            for lname in ("swe2d_mesh_cells", "SWE2D_Mesh_Cells"):
+                try:
+                    lyr = QgsVectorLayer(f"{gpkg_path}|layername={lname}", lname, "ogr")
+                    if lyr is None or not lyr.isValid():
+                        continue
+                    if lyr.fields().indexFromName("cell_id") < 0:
+                        continue
+
+                    areas = []
+                    for ft in lyr.getFeatures():
+                        try:
+                            cid = int(ft["cell_id"])
+                            geom = ft.geometry()
+                            if geom is None or geom.isEmpty():
+                                continue
+                            cgeom = geom.centroid()
+                            if cgeom is None or cgeom.isEmpty():
+                                continue
+                            pt = cgeom.asPoint()
+                            cell_xy[cid] = (float(pt.x()), float(pt.y()))
+                            try:
+                                a = float(geom.area())
+                                if a > 0.0:
+                                    areas.append(a)
+                            except Exception:
+                                pass
+                        except Exception:
+                            continue
+
+                    if cell_xy:
+                        if areas:
+                            base_len = max(0.05, float(np.sqrt(max(float(np.nanmean(np.asarray(areas))), 1.0e-9))))
+                        break
+                except Exception:
+                    continue
+
+        # Fallback for current active in-memory mesh if mesh layer was unavailable.
+        if not cell_xy and self._mesh_data is not None:
+            try:
+                cx, cy = self._mesh_cell_centroids()
+                n_cells = min(int(cx.size), int(cy.size))
+                cell_xy = {i: (float(cx[i]), float(cy[i])) for i in range(n_cells)}
+                area = np.asarray(self._mesh_cell_areas(), dtype=np.float64)
+                base_len = max(0.05, float(np.sqrt(max(float(np.nanmean(area)), 1.0e-9))))
+            except Exception:
+                cell_xy = {}
+                base_len = 1.0
+
+        # Handle common 1-based cell_id schemas by also exposing shifted keys.
+        if cell_xy and 0 not in cell_xy and 1 in cell_xy:
+            shifted = {}
+            for cid, xy in cell_xy.items():
+                if cid > 0:
+                    shifted[cid - 1] = xy
+            cell_xy.update(shifted)
+
+        self._velocity_cell_xy_cache[gpkg_path] = cell_xy
+        self._velocity_base_len_cache[gpkg_path] = float(base_len)
+        return cell_xy, float(base_len)
 
     def _refresh_velocity_vectors_overlay(self, t_s: float):
         panel = getattr(self, "_results_panel", None)
         if panel is None or not panel.velocity_overlay_enabled():
-            self._clear_velocity_vectors_layer()
+            self._clear_velocity_vectors_layers()
             return
-        if self._mesh_data is None or not _HAVE_QGIS_CORE:
-            self._clear_velocity_vectors_layer()
+        if not _HAVE_QGIS_CORE:
+            self._clear_velocity_vectors_layers()
             return
 
-        targets = []
-        if self._velocity_overlay_manual_gpkg_path and self._velocity_overlay_manual_run_id:
-            targets = [
-                (
-                    str(self._velocity_overlay_manual_gpkg_path),
-                    str(self._velocity_overlay_manual_run_id),
-                )
-            ]
-        else:
-            if hasattr(panel, "enabled_overlay_targets"):
-                try:
-                    targets = list(panel.enabled_overlay_targets())
-                except Exception:
-                    targets = []
-            if not targets:
-                gpkg_path_fallback = str(self._model_gpkg_path or "")
-                run_id_fallback = str(panel.active_overlay_run_id() or "")
-                if gpkg_path_fallback and run_id_fallback:
-                    targets = [(gpkg_path_fallback, run_id_fallback)]
-        if not targets:
-            self._clear_velocity_vectors_layer()
+        if not self._velocity_overlay_sources:
+            self._clear_velocity_vectors_layers()
             return
 
         builder = self._get_velocity_vector_builder()
         if builder is None:
-            self._clear_velocity_vectors_layer()
+            self._clear_velocity_vectors_layers()
             return
 
-        snap = None
-        table_name = str(self._velocity_overlay_manual_table_name or "swe2d_mesh_results")
-        for gpkg_path, run_id in targets:
-            gpkg_path = str(gpkg_path or "")
-            run_id = str(run_id or "")
-            if not gpkg_path or not run_id or not os.path.exists(gpkg_path):
+        stride = max(1, int(panel.velocity_density_stride()))
+        min_speed = max(0.0, float(panel.velocity_min_speed()))
+
+        for source in list(self._velocity_overlay_sources):
+            gpkg_path = str(source.get("gpkg_path", "")).strip()
+            run_id = str(source.get("run_id", "")).strip()
+            table_name = str(source.get("table_name", "swe2d_mesh_results")).strip() or "swe2d_mesh_results"
+            source_key = str(source.get("key", "")).strip()
+            if not gpkg_path or not run_id or not source_key or not os.path.exists(gpkg_path):
                 continue
+
+            lyr = self._velocity_vectors_layer_for_source(source)
+            if lyr is None:
+                continue
+
+            dp = lyr.dataProvider()
+            old_ids = [f.id() for f in lyr.getFeatures()]
+            if old_ids:
+                dp.deleteFeatures(old_ids)
+
             snap = builder.load_snapshot(
                 gpkg_path,
                 run_id,
@@ -5724,80 +5841,63 @@ class SWE2DWorkbenchDialog(QtWidgets.QDialog):
                 t_tol=1.0,
                 table_name=table_name,
             )
-            if snap is not None:
-                break
-        if snap is None:
-            self._clear_velocity_vectors_layer()
-            return
-
-        cx, cy = self._mesh_cell_centroids()
-        n_cells = min(int(cx.size), int(cy.size))
-        cell_xy = {i: (float(cx[i]), float(cy[i])) for i in range(n_cells)}
-        stride = max(1, int(panel.velocity_density_stride()))
-        min_speed = max(0.0, float(panel.velocity_min_speed()))
-        vecs = builder.build_vectors(
-            snapshot=snap,
-            cell_xy=cell_xy,
-            stride=stride,
-            min_depth=1.0e-6,
-            min_speed=min_speed,
-        )
-
-        lyr = self._velocity_vectors_layer()
-        if lyr is None:
-            return
-
-        dp = lyr.dataProvider()
-        old_ids = [f.id() for f in lyr.getFeatures()]
-        if old_ids:
-            dp.deleteFeatures(old_ids)
-
-        if not vecs:
-            lyr.triggerRepaint()
-            return
-
-        try:
-            area = np.asarray(self._mesh_cell_areas(), dtype=np.float64)
-            base_len = float(np.sqrt(max(float(np.nanmean(area)), 1.0e-9)))
-        except Exception:
-            base_len = 1.0
-        base_len = max(base_len, 0.05)
-
-        feats = []
-        for v in vecs:
-            speed = float(v.get("speed", 0.0))
-            if speed <= 1.0e-12:
+            if snap is None:
+                lyr.triggerRepaint()
                 continue
-            style = builder.style_from_speed(speed)
-            dir_u = float(v.get("u", 0.0)) / speed
-            dir_v = float(v.get("v", 0.0)) / speed
-            line_len = base_len * min(3.0, max(0.4, 0.7 + 0.8 * speed))
 
-            x0 = float(v.get("x", 0.0))
-            y0 = float(v.get("y", 0.0))
-            x1 = x0 + dir_u * line_len
-            y1 = y0 + dir_v * line_len
+            cell_xy, base_len = self._mesh_cell_centers_for_gpkg(gpkg_path)
+            if not cell_xy:
+                lyr.triggerRepaint()
+                continue
 
-            feat = QgsFeature(lyr.fields())
-            feat.setAttribute("cell_id", int(v.get("cell_id", -1)))
-            feat.setAttribute("speed", speed)
-            feat.setAttribute("u", float(v.get("u", 0.0)))
-            feat.setAttribute("v", float(v.get("v", 0.0)))
-            feat.setAttribute("angle_deg", float(v.get("angle_deg", 0.0)))
-            feat.setAttribute("color", str(style.get("color", "#2c7bb6")))
-            feat.setAttribute("width", float(style.get("width", 0.6)))
-            feat.setGeometry(
-                QgsGeometry.fromPolylineXY([
-                    QgsPointXY(x0, y0),
-                    QgsPointXY(x1, y1),
-                ])
+            vecs = builder.build_vectors(
+                snapshot=snap,
+                cell_xy=cell_xy,
+                stride=stride,
+                min_depth=1.0e-6,
+                min_speed=min_speed,
             )
-            feats.append(feat)
+            if not vecs:
+                lyr.triggerRepaint()
+                continue
 
-        if feats:
-            dp.addFeatures(feats)
-            lyr.updateExtents()
-        lyr.triggerRepaint()
+            source_color = self._velocity_source_color(source_key)
+            feats = []
+            for v in vecs:
+                speed = float(v.get("speed", 0.0))
+                if speed <= 1.0e-12:
+                    continue
+                dir_u = float(v.get("u", 0.0)) / speed
+                dir_v = float(v.get("v", 0.0)) / speed
+                line_len = float(base_len) * min(6.0, max(1.0, 1.25 + 1.15 * speed))
+
+                x0 = float(v.get("x", 0.0))
+                y0 = float(v.get("y", 0.0))
+                x1 = x0 + dir_u * line_len
+                y1 = y0 + dir_v * line_len
+
+                feat = QgsFeature(lyr.fields())
+                feat.setAttribute("cell_id", int(v.get("cell_id", -1)))
+                feat.setAttribute("speed", speed)
+                feat.setAttribute("u", float(v.get("u", 0.0)))
+                feat.setAttribute("v", float(v.get("v", 0.0)))
+                feat.setAttribute("angle_deg", float(v.get("angle_deg", 0.0)))
+                feat.setAttribute("source", str(source.get("label", "")))
+                feat.setAttribute("color", source_color)
+                feat.setAttribute("width", 0.8)
+                feat.setGeometry(
+                    QgsGeometry.fromPolylineXY([
+                        QgsPointXY(x0, y0),
+                        QgsPointXY(x1, y1),
+                    ])
+                )
+                feats.append(feat)
+
+            if feats:
+                dp.addFeatures(feats)
+                lyr.updateExtents()
+            lyr.triggerRepaint()
+
         iface = getattr(self, "_iface", None)
         if iface is not None and hasattr(iface, "mapCanvas"):
             try:
