@@ -30,20 +30,22 @@ class VelocityVectorBuilder:
     """Load cached mesh snapshots and derive vector/glyph styling fields."""
 
     def __init__(self, max_cache_entries: int = 16):
-        self._cache: "OrderedDict[Tuple[str, str, float], VelocitySnapshot]" = OrderedDict()
+        self._cache: "OrderedDict[Tuple[str, str, str, float], VelocitySnapshot]" = OrderedDict()
         self._max_cache_entries = max(1, int(max_cache_entries))
 
-    def load_available_timesteps(self, gpkg_path: str, run_id: str) -> np.ndarray:
+    def load_available_timesteps(self, gpkg_path: str, run_id: str, table_name: str = "swe2d_mesh_results") -> np.ndarray:
         conn = _open_ro(gpkg_path)
         if conn is None:
             return np.empty(0, dtype=np.float64)
         try:
-            if not _table_exists(conn, "swe2d_mesh_results"):
+            table_name = str(table_name or "swe2d_mesh_results")
+            if not _table_exists(conn, table_name):
                 return np.empty(0, dtype=np.float64)
+            q_table = _quote_ident(table_name)
             cur = conn.execute(
-                """
+                f"""
                 SELECT DISTINCT t_s
-                FROM swe2d_mesh_results
+                FROM {q_table}
                 WHERE run_id = ?
                 ORDER BY t_s
                 """,
@@ -56,8 +58,16 @@ class VelocityVectorBuilder:
         finally:
             conn.close()
 
-    def load_snapshot(self, gpkg_path: str, run_id: str, t_s: float, t_tol: float = 0.5) -> VelocitySnapshot | None:
-        key = (str(gpkg_path), str(run_id), float(t_s))
+    def load_snapshot(
+        self,
+        gpkg_path: str,
+        run_id: str,
+        t_s: float,
+        t_tol: float = 0.5,
+        table_name: str = "swe2d_mesh_results",
+    ) -> VelocitySnapshot | None:
+        table_name = str(table_name or "swe2d_mesh_results")
+        key = (str(gpkg_path), table_name, str(run_id), float(t_s))
         snap = self._cache.get(key)
         if snap is not None:
             self._cache.move_to_end(key)
@@ -67,12 +77,13 @@ class VelocityVectorBuilder:
         if conn is None:
             return None
         try:
-            if not _table_exists(conn, "swe2d_mesh_results"):
+            if not _table_exists(conn, table_name):
                 return None
+            q_table = _quote_ident(table_name)
             cur = conn.execute(
-                """
+                f"""
                 SELECT cell_id, h, hu, hv, t_s
-                FROM swe2d_mesh_results
+                FROM {q_table}
                 WHERE run_id = ? AND ABS(t_s - ?) < ?
                 ORDER BY cell_id
                 """,
@@ -206,6 +217,12 @@ def _table_columns(conn: sqlite3.Connection, table_name: str) -> List[str]:
         return [str(r[1]) for r in cur.fetchall()]
     except Exception:
         return []
+
+
+def _quote_ident(name: str) -> str:
+    # SQLite identifier quoting for dynamic table names.
+    safe = str(name or "").replace('"', '""')
+    return f'"{safe}"'
 
 
 def _pick_column(available: Sequence[str], aliases: Sequence[str]) -> str:

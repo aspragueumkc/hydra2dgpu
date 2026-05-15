@@ -1542,6 +1542,7 @@ class SWE2DWorkbenchDialog(QtWidgets.QDialog):
         self._velocity_overlay_manual_gpkg_path: str = ""
         self._velocity_overlay_manual_run_id: str = ""
         self._velocity_overlay_manual_layer_name: str = ""
+        self._velocity_overlay_manual_table_name: str = ""
 
     def _resolve_qgis_iface(self):
         """Resolve a usable QGIS iface object from dialog context/runtime."""
@@ -5434,29 +5435,72 @@ class SWE2DWorkbenchDialog(QtWidgets.QDialog):
         t_s = panel.current_time_sec() if panel is not None else 0.0
         self._refresh_velocity_vectors_overlay(float(t_s))
 
-    def _project_gpkg_layers(self) -> List[Tuple[str, str]]:
-        if not _HAVE_QGIS_CORE or QgsProject is None:
+    def _list_velocity_candidate_tables(self, gpkg_path: str) -> List[str]:
+        gpkg_path = str(gpkg_path or "").strip()
+        if not gpkg_path or not os.path.exists(gpkg_path):
             return []
-        out: List[Tuple[str, str]] = []
+
+        required_cols = {"run_id", "t_s", "cell_id", "h", "hu", "hv"}
+        internal_prefixes = (
+            "gpkg_",
+            "rtree_",
+            "sqlite_",
+        )
+        out: List[str] = []
         try:
-            layers = QgsProject.instance().mapLayers().values()
+            conn = sqlite3.connect(gpkg_path)
         except Exception:
             return out
-        for lyr in layers:
+        try:
+            cur = conn.cursor()
+            cur.execute("SELECT name FROM sqlite_master WHERE type='table' ORDER BY name")
+            table_rows = cur.fetchall()
+            for row in table_rows:
+                table_name = str(row[0] or "").strip()
+                if not table_name:
+                    continue
+                lname = table_name.lower()
+                if lname.startswith(internal_prefixes):
+                    continue
+                try:
+                    cur.execute(f'PRAGMA table_info("{table_name}")')
+                    cols = {str(r[1]).lower() for r in cur.fetchall()}
+                except Exception:
+                    continue
+                if required_cols.issubset(cols):
+                    out.append(table_name)
+        finally:
             try:
-                if lyr is None or not lyr.isValid() or not hasattr(lyr, "source"):
-                    continue
-                src = str(lyr.source() or "")
-                if not src:
-                    continue
-                gpkg = src.split("|", 1)[0].strip()
-                if not gpkg.lower().endswith(".gpkg") or not os.path.exists(gpkg):
-                    continue
-                out.append((str(lyr.name() or os.path.basename(gpkg)), gpkg))
+                conn.close()
             except Exception:
-                continue
-        # Keep deterministic order in picker
-        out.sort(key=lambda item: item[0].lower())
+                pass
+        return out
+
+    def _run_ids_for_velocity_table(self, gpkg_path: str, table_name: str) -> List[str]:
+        gpkg_path = str(gpkg_path or "").strip()
+        table_name = str(table_name or "").strip()
+        if not gpkg_path or not table_name or not os.path.exists(gpkg_path):
+            return []
+
+        out: List[str] = []
+        try:
+            conn = sqlite3.connect(gpkg_path)
+        except Exception:
+            return out
+        try:
+            cur = conn.cursor()
+            q_table = table_name.replace('"', '""')
+            cur.execute(
+                f'SELECT DISTINCT run_id FROM "{q_table}" WHERE run_id IS NOT NULL ORDER BY run_id'
+            )
+            out = [str(r[0]).strip() for r in cur.fetchall() if str(r[0]).strip()]
+        except Exception:
+            out = []
+        finally:
+            try:
+                conn.close()
+            except Exception:
+                pass
         return out
 
     def _pick_velocity_overlay_source(self) -> Tuple[str, str, str]:
@@ -5464,43 +5508,47 @@ class SWE2DWorkbenchDialog(QtWidgets.QDialog):
         if panel is None:
             return "", "", ""
 
-        layer_choices = self._project_gpkg_layers()
-        if not layer_choices:
-            QtWidgets.QMessageBox.information(
+        start_path = self._velocity_overlay_manual_gpkg_path or self._gpkg_path or ""
+        gpkg_path, _ = QtWidgets.QFileDialog.getOpenFileName(
+            self,
+            "Select SWE2D Velocity GeoPackage",
+            start_path,
+            "GeoPackage (*.gpkg)",
+        )
+        gpkg_path = str(gpkg_path or "").strip()
+        if not gpkg_path:
+            return "", "", ""
+
+        table_choices = self._list_velocity_candidate_tables(gpkg_path)
+        if not table_choices:
+            QtWidgets.QMessageBox.warning(
                 self,
                 "Velocity Arrows",
-                "No loaded GeoPackage layers were found in the project.",
+                "No velocity-compatible tables were found in the selected GeoPackage.",
             )
             return "", "", ""
 
-        layer_labels = [f"{name} ({os.path.basename(gpkg)})" for name, gpkg in layer_choices]
-        default_label = layer_labels[0]
-        if self._velocity_overlay_manual_gpkg_path:
-            for i, (_, gpkg) in enumerate(layer_choices):
-                if gpkg == self._velocity_overlay_manual_gpkg_path:
-                    default_label = layer_labels[i]
-                    break
+        default_table = table_choices[0]
+        if self._velocity_overlay_manual_table_name in table_choices:
+            default_table = self._velocity_overlay_manual_table_name
 
-        chosen_label, ok = QtWidgets.QInputDialog.getItem(
+        table_name, ok = QtWidgets.QInputDialog.getItem(
             self,
             "Velocity Arrows",
-            "Select GeoPackage layer source:",
-            layer_labels,
-            max(0, layer_labels.index(default_label)),
+            "Select table source:",
+            table_choices,
+            max(0, table_choices.index(default_table)),
             False,
         )
         if not ok:
             return "", "", ""
-
-        idx = layer_labels.index(chosen_label)
-        layer_name, gpkg_path = layer_choices[idx]
+        table_name = str(table_name)
 
         run_ids: List[str] = []
-        if hasattr(panel, "run_ids_for_gpkg"):
-            try:
-                run_ids = list(panel.run_ids_for_gpkg(gpkg_path, enabled_only=False))
-            except Exception:
-                run_ids = []
+        try:
+            run_ids = self._run_ids_for_velocity_table(gpkg_path, table_name)
+        except Exception:
+            run_ids = []
 
         if not run_ids:
             active_run_id = str(panel.active_overlay_run_id() or "").strip()
@@ -5511,7 +5559,7 @@ class SWE2DWorkbenchDialog(QtWidgets.QDialog):
             QtWidgets.QMessageBox.warning(
                 self,
                 "Velocity Arrows",
-                "No run ids were found in the selected GeoPackage for velocity rendering.",
+                "No run ids were found in the selected table for velocity rendering.",
             )
             return "", "", ""
 
@@ -5532,16 +5580,17 @@ class SWE2DWorkbenchDialog(QtWidgets.QDialog):
                 return "", "", ""
             run_id = str(chosen_run)
 
-        return gpkg_path, run_id, layer_name
+        return gpkg_path, run_id, table_name
 
     def _on_results_panel_velocity_overlay_add_requested(self):
-        gpkg_path, run_id, layer_name = self._pick_velocity_overlay_source()
+        gpkg_path, run_id, table_name = self._pick_velocity_overlay_source()
         if not gpkg_path or not run_id:
             return
 
         self._velocity_overlay_manual_gpkg_path = gpkg_path
         self._velocity_overlay_manual_run_id = run_id
-        self._velocity_overlay_manual_layer_name = layer_name
+        self._velocity_overlay_manual_layer_name = table_name
+        self._velocity_overlay_manual_table_name = table_name
 
         panel = getattr(self, "_results_panel", None)
         if panel is not None and hasattr(panel, "set_velocity_overlay_enabled"):
@@ -5553,7 +5602,7 @@ class SWE2DWorkbenchDialog(QtWidgets.QDialog):
         t_s = panel.current_time_sec() if panel is not None else 0.0
         self._refresh_velocity_vectors_overlay(float(t_s))
         self._log(
-            f"Velocity arrows source set: layer='{layer_name}', gpkg='{gpkg_path}', run_id='{run_id}'"
+            f"Velocity arrows source set: table='{table_name}', gpkg='{gpkg_path}', run_id='{run_id}'"
         )
 
     def _get_velocity_vector_builder(self):
@@ -5654,12 +5703,19 @@ class SWE2DWorkbenchDialog(QtWidgets.QDialog):
             return
 
         snap = None
+        table_name = str(self._velocity_overlay_manual_table_name or "swe2d_mesh_results")
         for gpkg_path, run_id in targets:
             gpkg_path = str(gpkg_path or "")
             run_id = str(run_id or "")
             if not gpkg_path or not run_id or not os.path.exists(gpkg_path):
                 continue
-            snap = builder.load_snapshot(gpkg_path, run_id, float(t_s), t_tol=1.0)
+            snap = builder.load_snapshot(
+                gpkg_path,
+                run_id,
+                float(t_s),
+                t_tol=1.0,
+                table_name=table_name,
+            )
             if snap is not None:
                 break
         if snap is None:
