@@ -3766,6 +3766,175 @@ void swe2d_gpu_apply_2d3d_exchange_skeleton(
     CUDA_CHECK(cudaGetLastError());
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// Phase 8A: Pressure RHS & Laplacian Stencil Implementation
+// ─────────────────────────────────────────────────────────────────────────────
+
+// Kernel: Compute pressure RHS from velocity divergence.
+// RHS_i = -(1/dt) * Σ_edges [ (hu*nx + hv*ny) * face_area ]
+// Each thread handles one cell; loads all incident edges and computes divergence.
+__global__ void swe2d_gpu_compute_pressure_rhs_kernel(
+    int32_t n_cells,
+    const double* d_hu,
+    const double* d_hv,
+    const int32_t* d_cell_edge_offsets,
+    const int32_t* d_cell_edge_ids,
+    const double* d_edge_nx,
+    const double* d_edge_ny,
+    const double* d_edge_len,
+    const double* d_cell_area,
+    double dt,
+    double* d_p_rhs)
+{
+    const int32_t c = blockIdx.x * blockDim.x + threadIdx.x;
+    if (c >= n_cells) return;
+
+    // Sum outward flux over all incident edges
+    double div = 0.0;
+    int32_t offset_start = d_cell_edge_offsets[c];
+    int32_t offset_end = d_cell_edge_offsets[c + 1];
+    for (int32_t j = offset_start; j < offset_end; ++j) {
+        int32_t edge_id = d_cell_edge_ids[j];
+        if (edge_id < 0) continue;  // Sentinel, skip
+        
+        // Flux: (hu*nx + hv*ny) * edge_length
+        double flux = (d_hu[c] * d_edge_nx[edge_id] + 
+                       d_hv[c] * d_edge_ny[edge_id]) * d_edge_len[edge_id];
+        div += flux;
+    }
+
+    // RHS = -(div / dt) for pressure Poisson equation
+    d_p_rhs[c] = -div / dt;
+}
+
+bool swe2d_gpu_compute_pressure_rhs(
+    SWE2DDeviceState* dev,
+    double dt,
+    double g)
+{
+    (void)g;  // Not needed for RHS computation (pressure is kinematic)
+    
+    if (!dev || !dev->nh_workspace.d_p_rhs || dev->n_cells <= 0) {
+        return false;
+    }
+    if (!dev->d_cell_edge_offsets || !dev->d_cell_edge_ids) {
+        return false;  // Edge connectivity not allocated
+    }
+
+    constexpr int BLOCK = 256;
+    const int grid = (dev->n_cells + BLOCK - 1) / BLOCK;
+
+    try {
+        swe2d_gpu_compute_pressure_rhs_kernel<<<grid, BLOCK, 0, dev->d_stream>>>(
+            dev->n_cells,
+            dev->d_hu,
+            dev->d_hv,
+            dev->d_cell_edge_offsets,
+            dev->d_cell_edge_ids,
+            dev->d_edge_nx,
+            dev->d_edge_ny,
+            dev->d_edge_len,
+            dev->d_cell_area,
+            dt,
+            dev->nh_workspace.d_p_rhs);
+        CUDA_CHECK(cudaGetLastError());
+        return true;
+    } catch (...) {
+        return false;
+    }
+}
+
+// Kernel: Matrix-free Laplacian evaluation and diagonal extraction.
+// Colocated compact stencil: (A*p)_c = Σ_neighbors [ coeff * (p_nb - p_c) ]
+// where coeff ≈ (edge_length / distance) / cell_area
+// Diagonal: D_cc = Σ_neighbors |coeff|
+__global__ void swe2d_gpu_laplacian_stencil_kernel(
+    int32_t n_cells,
+    const double* d_p,
+    const double* d_cell_area,
+    const double* d_cell_inv_area,
+    const int32_t* d_cell_edge_offsets,
+    const int32_t* d_cell_edge_ids,
+    const int32_t* d_edge_c0,
+    const int32_t* d_edge_c1,
+    const double* d_edge_len,
+    double* d_pcg_Ap,
+    double* d_stencil_diag)
+{
+    const int32_t c = blockIdx.x * blockDim.x + threadIdx.x;
+    if (c >= n_cells) return;
+
+    double matvec = 0.0;
+    double diag = 0.0;
+    double inv_area = d_cell_inv_area[c];
+
+    // Iterate over incident edges
+    int32_t offset_start = d_cell_edge_offsets[c];
+    int32_t offset_end = d_cell_edge_offsets[c + 1];
+    for (int32_t j = offset_start; j < offset_end; ++j) {
+        int32_t edge_id = d_cell_edge_ids[j];
+        if (edge_id < 0) continue;
+
+        // Determine neighbor cell
+        int32_t c0 = d_edge_c0[edge_id];
+        int32_t c1 = d_edge_c1[edge_id];
+        int32_t c_nb = (c0 == c) ? c1 : c0;
+
+        if (c_nb < 0 || c_nb >= n_cells) continue;  // Boundary edge (Neumann BC: no contribution)
+
+        // Stencil coefficient: edge_length / (distance * cell_area)
+        // Simplified: use edge_length * inv_area as approximation
+        double coeff = d_edge_len[edge_id] * inv_area;
+        
+        // (A*p)_c += coeff * (p_nb - p_c)
+        double dp = d_p[c_nb] - d_p[c];
+        matvec += coeff * dp;
+        
+        // Accumulate diagonal
+        diag += coeff;
+    }
+
+    d_pcg_Ap[c] = matvec;
+    d_stencil_diag[c] = diag > 1.0e-14 ? diag : 1.0e-14;  // Avoid division by zero
+}
+
+bool swe2d_gpu_laplacian_matrix_free(
+    SWE2DDeviceState* dev)
+{
+    if (!dev || dev->n_cells <= 0) {
+        return false;
+    }
+    auto& ws = dev->nh_workspace;
+    if (!ws.d_p || !ws.d_pcg_Ap || !ws.d_stencil_diag) {
+        return false;  // Workspace not allocated
+    }
+    if (!dev->d_cell_edge_offsets || !dev->d_cell_edge_ids) {
+        return false;  // Edge connectivity not allocated
+    }
+
+    constexpr int BLOCK = 256;
+    const int grid = (dev->n_cells + BLOCK - 1) / BLOCK;
+
+    try {
+        swe2d_gpu_laplacian_stencil_kernel<<<grid, BLOCK, 0, dev->d_stream>>>(
+            dev->n_cells,
+            ws.d_p,
+            dev->d_cell_area,
+            dev->d_cell_inv_area,
+            dev->d_cell_edge_offsets,
+            dev->d_cell_edge_ids,
+            dev->d_edge_c0,
+            dev->d_edge_c1,
+            dev->d_edge_len,
+            ws.d_pcg_Ap,
+            ws.d_stencil_diag);
+        CUDA_CHECK(cudaGetLastError());
+        return true;
+    } catch (...) {
+        return false;
+    }
+}
+
 void swe2d_gpu_drainage_step(
     int32_t n_cells,
     int32_t n_nodes,
@@ -4201,6 +4370,18 @@ void swe2d_gpu_step_nonhydro_predictor_corrector(
         &pred_diag,
         front_flux_damping,
         active_set_hysteresis);
+
+    // Phase 8A: Compute pressure RHS from velocity divergence
+    bool rhs_ok = swe2d_gpu_compute_pressure_rhs(dev, dt, g);
+    if (!rhs_ok) {
+        throw std::runtime_error("swe2d_gpu_step_nonhydro_predictor_corrector: pressure RHS computation failed");
+    }
+
+    // Phase 8A: Evaluate matrix-free Laplacian stencil + diagonal
+    bool lapl_ok = swe2d_gpu_laplacian_matrix_free(dev);
+    if (!lapl_ok) {
+        throw std::runtime_error("swe2d_gpu_step_nonhydro_predictor_corrector: Laplacian stencil evaluation failed");
+    }
 
     // Phase 6 Skeleton: Exchange with 3D (no-op for now)
     if (dev->coupling_iface && dev->patch3d) {

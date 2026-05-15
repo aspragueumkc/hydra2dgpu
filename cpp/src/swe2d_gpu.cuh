@@ -595,6 +595,27 @@ void swe2d_gpu_apply_2d3d_exchange_skeleton(
     bool apply_head_loss_to_2d_rhs,
     SWE2DStepDiag* diag);
 
+// ─────────────────────────────────────────────────────────────────────────────
+// Phase 8A: Pressure RHS & Laplacian Stencil Kernels
+// ─────────────────────────────────────────────────────────────────────────────
+
+// Compute pressure right-hand side from velocity divergence.
+// RHS_i = -(1/dt) * Σ_edges [ flux_out_normal_k ]
+// Stores result in d_p_rhs (device workspace buffer).
+bool swe2d_gpu_compute_pressure_rhs(
+    SWE2DDeviceState* dev,
+    double dt,
+    double g);
+
+// Matrix-free Laplacian evaluation and diagonal extraction.
+// Computes (A*p) using 5-point stencil on triangular mesh.
+// Also pre-computes Laplacian diagonal for Jacobi preconditioner.
+// Returns true on success.
+bool swe2d_gpu_laplacian_matrix_free(
+    SWE2DDeviceState* dev);
+
+// ─────────────────────────────────────────────────────────────────────────────
+
 // Headless coupling helper: advance 1D drainage state by one step on GPU and
 // return per-cell surface source flows [m3/s] (positive to 2D, negative from 2D).
 // solver_mode: 0=EGL, 1=DIFFUSION, 2=DYNAMIC.
