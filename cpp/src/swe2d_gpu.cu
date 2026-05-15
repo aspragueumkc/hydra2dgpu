@@ -3935,6 +3935,216 @@ bool swe2d_gpu_laplacian_matrix_free(
     }
 }
 
+// Phase 8B: PCG kernels and host loop.
+
+__global__ void swe2d_gpu_pcg_init_kernel(
+    int32_t n_cells,
+    const double* d_rhs,
+    const double* d_diag,
+    double* d_pressure,
+    double* d_r,
+    double* d_z,
+    double* d_dir)
+{
+    const int32_t c = blockIdx.x * blockDim.x + threadIdx.x;
+    if (c >= n_cells) return;
+
+    const double rhs = d_rhs[c];
+    const double diag = d_diag[c] > 1.0e-14 ? d_diag[c] : 1.0e-14;
+    d_pressure[c] = 0.0;
+    d_r[c] = rhs;
+    d_z[c] = rhs / diag;
+    d_dir[c] = d_z[c];
+}
+
+__global__ void swe2d_gpu_dot_product_kernel(
+    int32_t n_cells,
+    const double* d_a,
+    const double* d_b,
+    double* d_out)
+{
+    const int32_t c = blockIdx.x * blockDim.x + threadIdx.x;
+    if (c >= n_cells) return;
+    atomicAdd(d_out, d_a[c] * d_b[c]);
+}
+
+__global__ void swe2d_gpu_pcg_update_pr_kernel(
+    int32_t n_cells,
+    double alpha,
+    const double* d_dir,
+    const double* d_Ap,
+    double* d_pressure,
+    double* d_r,
+    const double* d_diag,
+    double* d_z)
+{
+    const int32_t c = blockIdx.x * blockDim.x + threadIdx.x;
+    if (c >= n_cells) return;
+
+    d_pressure[c] += alpha * d_dir[c];
+    d_r[c] -= alpha * d_Ap[c];
+    const double diag = d_diag[c] > 1.0e-14 ? d_diag[c] : 1.0e-14;
+    d_z[c] = d_r[c] / diag;
+}
+
+__global__ void swe2d_gpu_pcg_update_dir_kernel(
+    int32_t n_cells,
+    double beta,
+    const double* d_z,
+    double* d_dir)
+{
+    const int32_t c = blockIdx.x * blockDim.x + threadIdx.x;
+    if (c >= n_cells) return;
+    d_dir[c] = d_z[c] + beta * d_dir[c];
+}
+
+static bool swe2d_gpu_dot_product(
+    SWE2DDeviceState* dev,
+    const double* d_a,
+    const double* d_b,
+    double* d_tmp_scalar,
+    double* out)
+{
+    if (!dev || !d_a || !d_b || !d_tmp_scalar || !out) return false;
+    const int32_t n_cells = dev->n_cells;
+    if (n_cells <= 0) return false;
+
+    constexpr int BLOCK = 256;
+    const int grid = (n_cells + BLOCK - 1) / BLOCK;
+    CUDA_CHECK(cudaMemsetAsync(d_tmp_scalar, 0, sizeof(double), dev->d_stream));
+    swe2d_gpu_dot_product_kernel<<<grid, BLOCK, 0, dev->d_stream>>>(
+        n_cells,
+        d_a,
+        d_b,
+        d_tmp_scalar);
+    CUDA_CHECK(cudaGetLastError());
+    CUDA_CHECK(cudaMemcpyAsync(out, d_tmp_scalar, sizeof(double), cudaMemcpyDeviceToHost, dev->d_stream));
+    CUDA_CHECK(cudaStreamSynchronize(dev->d_stream));
+    return true;
+}
+
+static bool swe2d_gpu_apply_laplacian_vec(
+    SWE2DDeviceState* dev,
+    const double* d_vec,
+    double* d_out)
+{
+    if (!dev || !d_vec || !d_out || dev->n_cells <= 0) return false;
+    if (!dev->d_cell_edge_offsets || !dev->d_cell_edge_ids) return false;
+
+    constexpr int BLOCK = 256;
+    const int grid = (dev->n_cells + BLOCK - 1) / BLOCK;
+    swe2d_gpu_laplacian_stencil_kernel<<<grid, BLOCK, 0, dev->d_stream>>>(
+        dev->n_cells,
+        d_vec,
+        dev->d_cell_area,
+        dev->d_cell_inv_area,
+        dev->d_cell_edge_offsets,
+        dev->d_cell_edge_ids,
+        dev->d_edge_c0,
+        dev->d_edge_c1,
+        dev->d_edge_len,
+        d_out,
+        dev->nh_workspace.d_stencil_diag);
+    CUDA_CHECK(cudaGetLastError());
+    return true;
+}
+
+static bool swe2d_gpu_solve_pressure_pcg(
+    SWE2DDeviceState* dev,
+    const SWE2DNonhydroPcConfig& nh_cfg,
+    SWE2DNonhydroPcDiag* nh_diag)
+{
+    if (!dev || dev->n_cells <= 0) return false;
+    auto& ws = dev->nh_workspace;
+    if (!ws.is_configured || !ws.d_p || !ws.d_p_rhs || !ws.d_stencil_diag) return false;
+    if (!ws.d_pcg_r || !ws.d_pcg_p || !ws.d_pcg_Ap || !ws.d_pcg_z) return false;
+    if (!ws.d_pcg_rr || !ws.d_pcg_rrold || !ws.d_pcg_pAp) return false;
+
+    constexpr int BLOCK = 256;
+    const int grid = (dev->n_cells + BLOCK - 1) / BLOCK;
+
+    swe2d_gpu_pcg_init_kernel<<<grid, BLOCK, 0, dev->d_stream>>>(
+        dev->n_cells,
+        ws.d_p_rhs,
+        ws.d_stencil_diag,
+        ws.d_p,
+        ws.d_pcg_r,
+        ws.d_pcg_z,
+        ws.d_pcg_p);
+    CUDA_CHECK(cudaGetLastError());
+
+    double rhs_rr = 0.0;
+    if (!swe2d_gpu_dot_product(dev, ws.d_p_rhs, ws.d_p_rhs, ws.d_pcg_rr, &rhs_rr)) return false;
+    const double rhs_norm = std::sqrt(std::max(rhs_rr, 0.0));
+
+    double rr_old = 0.0;
+    if (!swe2d_gpu_dot_product(dev, ws.d_pcg_r, ws.d_pcg_z, ws.d_pcg_rrold, &rr_old)) return false;
+    rr_old = std::max(rr_old, 0.0);
+
+    const int max_iter = std::max(1, nh_cfg.pressure_max_iters);
+    const double tol_rel = nh_cfg.pressure_tol > 0.0 ? nh_cfg.pressure_tol : 1.0e-3;
+    const double tol_abs = 1.0e-6;
+
+    int iter_count = 0;
+    double residual_norm = std::sqrt(rr_old);
+    bool converged = (residual_norm <= tol_abs) || (rhs_norm > 0.0 && (residual_norm / rhs_norm) <= tol_rel);
+
+    for (int iter = 0; iter < max_iter && !converged; ++iter) {
+        if (!swe2d_gpu_apply_laplacian_vec(dev, ws.d_pcg_p, ws.d_pcg_Ap)) return false;
+
+        double pAp = 0.0;
+        if (!swe2d_gpu_dot_product(dev, ws.d_pcg_p, ws.d_pcg_Ap, ws.d_pcg_pAp, &pAp)) return false;
+        if (std::abs(pAp) < 1.0e-20) {
+            break;
+        }
+
+        const double alpha = rr_old / pAp;
+        swe2d_gpu_pcg_update_pr_kernel<<<grid, BLOCK, 0, dev->d_stream>>>(
+            dev->n_cells,
+            alpha,
+            ws.d_pcg_p,
+            ws.d_pcg_Ap,
+            ws.d_p,
+            ws.d_pcg_r,
+            ws.d_stencil_diag,
+            ws.d_pcg_z);
+        CUDA_CHECK(cudaGetLastError());
+
+        double rr_new = 0.0;
+        if (!swe2d_gpu_dot_product(dev, ws.d_pcg_r, ws.d_pcg_z, ws.d_pcg_rr, &rr_new)) return false;
+        rr_new = std::max(rr_new, 0.0);
+        residual_norm = std::sqrt(rr_new);
+        iter_count = iter + 1;
+
+        converged = (residual_norm <= tol_abs) || (rhs_norm > 0.0 && (residual_norm / rhs_norm) <= tol_rel);
+        if (converged) {
+            rr_old = rr_new;
+            break;
+        }
+
+        if (rr_old <= 1.0e-30) {
+            rr_old = rr_new;
+            break;
+        }
+        const double beta = rr_new / rr_old;
+        swe2d_gpu_pcg_update_dir_kernel<<<grid, BLOCK, 0, dev->d_stream>>>(
+            dev->n_cells,
+            beta,
+            ws.d_pcg_z,
+            ws.d_pcg_p);
+        CUDA_CHECK(cudaGetLastError());
+        rr_old = rr_new;
+    }
+
+    CUDA_CHECK(cudaStreamSynchronize(dev->d_stream));
+
+    if (nh_diag) {
+        nh_diag->pressure_iters = iter_count;
+        nh_diag->pressure_residual = residual_norm;
+    }
+    return true;
+}
+
 void swe2d_gpu_drainage_step(
     int32_t n_cells,
     int32_t n_nodes,
@@ -4383,6 +4593,13 @@ void swe2d_gpu_step_nonhydro_predictor_corrector(
         throw std::runtime_error("swe2d_gpu_step_nonhydro_predictor_corrector: Laplacian stencil evaluation failed");
     }
 
+    // Phase 8B: Solve pressure correction with PCG.
+    SWE2DNonhydroPcDiag pcg_diag{};
+    bool pcg_ok = swe2d_gpu_solve_pressure_pcg(dev, nh_cfg, &pcg_diag);
+    if (!pcg_ok) {
+        throw std::runtime_error("swe2d_gpu_step_nonhydro_predictor_corrector: PCG pressure solve failed");
+    }
+
     // Phase 6 Skeleton: Exchange with 3D (no-op for now)
     if (dev->coupling_iface && dev->patch3d) {
         swe2d_gpu_apply_2d3d_exchange_skeleton(dev, dt, g, true, diag);
@@ -4398,8 +4615,8 @@ void swe2d_gpu_step_nonhydro_predictor_corrector(
     }
 
     if (nh_diag) {
-        nh_diag->pressure_iters = 0;
-        nh_diag->pressure_residual = 0.0;
+        nh_diag->pressure_iters = pcg_diag.pressure_iters;
+        nh_diag->pressure_residual = pcg_diag.pressure_residual;
         nh_diag->corrector_applied = false;  // Scaffold: corrector not applied yet
     }
 }
