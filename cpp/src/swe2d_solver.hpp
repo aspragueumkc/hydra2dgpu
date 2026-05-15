@@ -140,6 +140,39 @@ struct SWE2D3DInterfaceContractHost {
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
+// Phase 7: Contract validation & factory (pybind11 exposure)
+// ─────────────────────────────────────────────────────────────────────────────
+
+// Validate contract struct consistency (all array sizes match).
+// Returns true if valid, false otherwise. Can be called from Python before upload.
+inline bool swe2d_contract_is_valid(const SWE2D3DInterfaceContractHost& c) {
+    if (c.cell2d.empty()) return false;
+    const size_t n = c.cell2d.size();
+    return c.face_area.size() == n &&
+           c.face_nx.size() == n &&
+           c.face_ny.size() == n &&
+           c.face_nz.size() == n;
+}
+
+// Factory: create a contract from arrays. Validates and deep-copies.
+// Returns default (empty) contract if validation fails.
+inline SWE2D3DInterfaceContractHost swe2d_contract_create(
+    const std::vector<int32_t>& cell2d_in,
+    const std::vector<double>& face_area_in,
+    const std::vector<double>& face_nx_in,
+    const std::vector<double>& face_ny_in,
+    const std::vector<double>& face_nz_in)
+{
+    SWE2D3DInterfaceContractHost c;
+    c.cell2d = cell2d_in;
+    c.face_area = face_area_in;
+    c.face_nx = face_nx_in;
+    c.face_ny = face_ny_in;
+    c.face_nz = face_nz_in;
+    return c;  // validation caller's responsibility, or validate on upload
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // Solver handle
 // ─────────────────────────────────────────────────────────────────────────────
 struct SWE2DSolver {

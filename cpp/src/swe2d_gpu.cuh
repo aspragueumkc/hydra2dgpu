@@ -537,6 +537,22 @@ void swe2d_gpu_set_2d3d_interface_contract(
 void swe2d_gpu_clear_2d3d_interface_contract(
     SWE2DDeviceState* dev);
 
+// Phase 7: Contract API for pybind11 exposure
+// Allocate and upload contract geometry + flux/head-loss buffers to GPU.
+// Returns true on success; false on allocation failure.
+// Pre-zeros flux and head-loss output buffers to avoid garbage values.
+bool swe2d_gpu_contract_upload(
+    SWE2DDeviceState* dev,
+    const SWE2D3DInterfaceContractHost& contract);
+
+// Free device-side contract buffers (flux, head-loss, etc).
+// Safe to call even if contract was never uploaded (null check internally).
+void swe2d_gpu_contract_free(
+    SWE2DDeviceState* dev);
+
+// Query: is a device contract currently uploaded?
+bool swe2d_gpu_is_contract_uploaded(const SWE2DDeviceState* dev);
+
 void swe2d_gpu_apply_2d3d_coupling_exchange_scaffold(
     SWE2DDeviceState* dev,
     double dt,

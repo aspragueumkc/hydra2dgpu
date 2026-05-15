@@ -812,6 +812,127 @@ class SWE2DBackend:
             self._mod.swe2d_destroy(self._solver_h)
             self._solver_h = None
 
+    # ─────────────────────────────────────────────────────────────────────────────
+    # Phase 7: 2D-3D interface contract API
+    # ─────────────────────────────────────────────────────────────────────────────
+
+    def create_interface_contract(
+        self,
+        cell2d: np.ndarray,
+        face_area: np.ndarray,
+        face_nx: np.ndarray,
+        face_ny: np.ndarray,
+        face_nz: np.ndarray,
+    ):
+        """
+        Create a 2D-3D interface contract from geometry arrays.
+        
+        Args:
+            cell2d: int32 array of 2D cell indices (length N_FACES)
+            face_area: float64 array of interface face areas (length N_FACES)
+            face_nx, face_ny, face_nz: float64 arrays of outward face normals (length N_FACES)
+        
+        Returns:
+            Contract handle (opaque object); pass to upload_interface_contract().
+            Returns None on validation failure.
+        """
+        try:
+            cell2d_arr = np.asarray(cell2d, dtype=np.int32, order='C')
+            face_area_arr = np.asarray(face_area, dtype=np.float64, order='C')
+            face_nx_arr = np.asarray(face_nx, dtype=np.float64, order='C')
+            face_ny_arr = np.asarray(face_ny, dtype=np.float64, order='C')
+            face_nz_arr = np.asarray(face_nz, dtype=np.float64, order='C')
+            
+            if not hasattr(self._mod, 'swe2d_contract_create'):
+                raise RuntimeError(
+                    "Native module does not expose swe2d_contract_create. "
+                    "Rebuild with Phase 7 support (cmake --build build)."
+                )
+            
+            return self._mod.swe2d_contract_create(
+                cell2d_arr, face_area_arr, face_nx_arr, face_ny_arr, face_nz_arr
+            )
+        except Exception as e:
+            print(f"Failed to create interface contract: {e}")
+            return None
+
+    def is_interface_contract_valid(self, contract) -> bool:
+        """
+        Validate contract consistency before upload.
+        
+        Args:
+            contract: Handle returned by create_interface_contract()
+        
+        Returns:
+            True if contract is valid (all arrays same length > 0).
+        """
+        if contract is None:
+            return False
+        try:
+            if not hasattr(self._mod, 'swe2d_contract_is_valid'):
+                return False
+            return self._mod.swe2d_contract_is_valid(contract)
+        except Exception:
+            return False
+
+    def upload_interface_contract(self, contract) -> bool:
+        """
+        Upload contract geometry and allocate device buffers for 2D-3D exchange.
+        
+        Args:
+            contract: Handle returned by create_interface_contract()
+        
+        Returns:
+            True on success; False if allocation failed.
+        """
+        if self._solver_h is None:
+            raise RuntimeError("Solver not initialized; call initialize() first.")
+        if contract is None:
+            raise ValueError("null contract handle")
+        
+        try:
+            if not hasattr(self._mod, 'swe2d_gpu_contract_upload'):
+                raise RuntimeError(
+                    "Native module does not expose swe2d_gpu_contract_upload. "
+                    "Rebuild with Phase 7 support (cmake --build build)."
+                )
+            return self._mod.swe2d_gpu_contract_upload(self._solver_h, contract)
+        except Exception as e:
+            print(f"Failed to upload interface contract: {e}")
+            return False
+
+    def clear_interface_contract(self) -> None:
+        """
+        Free device-side contract buffers (flux, head-loss, etc).
+        
+        Safe to call even if no contract is currently uploaded.
+        """
+        if self._solver_h is None:
+            return
+        
+        try:
+            if hasattr(self._mod, 'swe2d_gpu_contract_clear'):
+                self._mod.swe2d_gpu_contract_clear(self._solver_h)
+        except Exception as e:
+            print(f"Warning: failed to clear interface contract: {e}")
+
+    def is_interface_contract_uploaded(self) -> bool:
+        """
+        Query: is a 2D-3D interface contract currently uploaded?
+        
+        Returns:
+            True if contract is uploaded to GPU; False otherwise.
+        """
+        if self._solver_h is None:
+            return False
+        
+        try:
+            if not hasattr(self._mod, 'swe2d_gpu_is_contract_uploaded'):
+                return False
+            return self._mod.swe2d_gpu_is_contract_uploaded(self._solver_h)
+        except Exception:
+            return False
+
     def __del__(self):
         try:
             self.destroy()

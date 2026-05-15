@@ -1417,6 +1417,114 @@ PYBIND11_MODULE(backwater_swe2d, m) {
         "Run simulation natively from current time to t_end. Returns dict with 'diags', "
         "'steps_completed', 'cancelled', 'final_time'.");
 
+    // ─────────────────────────────────────────────────────────────────────────────
+    // Phase 7: 2D-3D interface contract API
+    // ─────────────────────────────────────────────────────────────────────────────
+
+    // Wrapper class for contract handle (Python GC owns lifetime)
+    struct PyContractHandle {
+        SWE2D3DInterfaceContractHost host_contract;
+        // Device contract (if uploaded) is managed by solver, not this handle.
+    };
+
+    // Create contract from arrays (validates and deep-copies).
+    m.def("swe2d_contract_create",
+        [](py::array_t<int32_t, py::array::c_style | py::array::forcecast> cell2d,
+           py::array_t<double, py::array::c_style | py::array::forcecast> face_area,
+           py::array_t<double, py::array::c_style | py::array::forcecast> face_nx,
+           py::array_t<double, py::array::c_style | py::array::forcecast> face_ny,
+           py::array_t<double, py::array::c_style | py::array::forcecast> face_nz) 
+            -> std::shared_ptr<PyContractHandle>
+        {
+            auto handle = std::make_shared<PyContractHandle>();
+            
+            // Copy arrays into host contract
+            const int32_t* c2d_ptr = cell2d.data();
+            const double* fa_ptr = face_area.data();
+            const double* fnx_ptr = face_nx.data();
+            const double* fny_ptr = face_ny.data();
+            const double* fnz_ptr = face_nz.data();
+            
+            int32_t n = static_cast<int32_t>(cell2d.size());
+            if (n <= 0 ||
+                face_area.size() != n ||
+                face_nx.size() != n ||
+                face_ny.size() != n ||
+                face_nz.size() != n) {
+                throw std::invalid_argument(
+                    "swe2d_contract_create: all arrays must have same length > 0");
+            }
+            
+            handle->host_contract.cell2d.assign(c2d_ptr, c2d_ptr + n);
+            handle->host_contract.face_area.assign(fa_ptr, fa_ptr + n);
+            handle->host_contract.face_nx.assign(fnx_ptr, fnx_ptr + n);
+            handle->host_contract.face_ny.assign(fny_ptr, fny_ptr + n);
+            handle->host_contract.face_nz.assign(fnz_ptr, fnz_ptr + n);
+            
+            return handle;
+        },
+        py::arg("cell2d"), py::arg("face_area"), py::arg("face_nx"),
+        py::arg("face_ny"), py::arg("face_nz"),
+        "Create a 2D-3D interface contract from numpy arrays. Arrays must all have same length.");
+
+    // Validate contract before upload.
+    m.def("swe2d_contract_is_valid",
+        [](const std::shared_ptr<PyContractHandle>& contract) -> bool
+        {
+            if (!contract) return false;
+            return swe2d_contract_is_valid(contract->host_contract);
+        },
+        py::arg("contract"),
+        "Validate contract consistency (all arrays same length, non-empty).");
+
+    // Upload contract to GPU solver.
+    m.def("swe2d_gpu_contract_upload",
+        [](const std::shared_ptr<PySolver>& solver,
+           const std::shared_ptr<PyContractHandle>& contract) -> bool
+        {
+            if (!solver || !solver->solver) 
+                throw std::invalid_argument("null solver handle");
+            if (!contract) 
+                throw std::invalid_argument("null contract handle");
+            
+            #ifdef BACKWATER_HAS_CUDA
+            return swe2d_gpu_contract_upload(solver->solver->dev, contract->host_contract);
+            #else
+            throw std::runtime_error("GPU support not compiled; cannot upload contract");
+            #endif
+        },
+        py::arg("solver"), py::arg("contract"),
+        "Upload contract geometry and allocate device buffers for exchange. Returns True on success.");
+
+    // Clear contract (free device buffers).
+    m.def("swe2d_gpu_contract_clear",
+        [](const std::shared_ptr<PySolver>& solver) -> void
+        {
+            if (!solver || !solver->solver) 
+                throw std::invalid_argument("null solver handle");
+            
+            #ifdef BACKWATER_HAS_CUDA
+            swe2d_gpu_contract_free(solver->solver->dev);
+            #endif
+        },
+        py::arg("solver"),
+        "Clear device-side contract buffers (flux, head-loss, etc).");
+
+    // Query: is contract uploaded?
+    m.def("swe2d_gpu_is_contract_uploaded",
+        [](const std::shared_ptr<PySolver>& solver) -> bool
+        {
+            if (!solver || !solver->solver) return false;
+            
+            #ifdef BACKWATER_HAS_CUDA
+            return swe2d_gpu_is_contract_uploaded(solver->solver->dev);
+            #else
+            return false;
+            #endif
+        },
+        py::arg("solver"),
+        "Return True if a device contract is currently uploaded.");
+
     // ── PyMesh / PySolver as opaque Python types ──────────────────────────────
     py::class_<PyMesh, std::shared_ptr<PyMesh>>(m, "SWE2DMeshHandle")
         .def("__repr__", [](const PyMesh& pm) {
@@ -1429,6 +1537,11 @@ PYBIND11_MODULE(backwater_swe2d, m) {
         .def("__repr__", [](const PySolver& ps) {
             return std::string("<SWE2DSolverHandle ") +
                    (ps.solver ? ("t=" + std::to_string(ps.solver->t)) : "destroyed") + ">";
+        });
+
+    py::class_<PyContractHandle, std::shared_ptr<PyContractHandle>>(m, "SWE2DContractHandle")
+        .def("__repr__", [](const PyContractHandle& pc) {
+            return "<SWE2DContractHandle n_faces=" + std::to_string(pc.host_contract.cell2d.size()) + ">";
         });
 
     // ── BCType constants ──────────────────────────────────────────────────────

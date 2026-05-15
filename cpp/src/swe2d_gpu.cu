@@ -3477,6 +3477,53 @@ void swe2d_gpu_clear_2d3d_interface_contract(
     dev->coupling_iface = nullptr;
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// Phase 7: Contract upload/free APIs for pybind11 exposure
+// ─────────────────────────────────────────────────────────────────────────────
+
+bool swe2d_gpu_contract_upload(
+    SWE2DDeviceState* dev,
+    const SWE2D3DInterfaceContractHost& contract)
+{
+    if (!dev) return false;
+    
+    // Validate host contract
+    if (!swe2d_contract_is_valid(contract)) {
+        return false;
+    }
+    
+    int32_t n_faces = static_cast<int32_t>(contract.cell2d.size());
+    if (n_faces <= 0) return false;
+    
+    // Use existing set function which handles allocation and copy
+    try {
+        swe2d_gpu_set_2d3d_interface_contract(
+            dev,
+            contract.cell2d.data(),
+            contract.face_area.data(),
+            contract.face_nx.data(),
+            contract.face_ny.data(),
+            contract.face_nz.data(),
+            n_faces);
+        return true;
+    } catch (const std::exception&) {
+        // Allocation or copy failed; cleanup happens in set function via clear
+        return false;
+    }
+}
+
+void swe2d_gpu_contract_free(SWE2DDeviceState* dev)
+{
+    if (!dev) return;
+    swe2d_gpu_clear_2d3d_interface_contract(dev);
+}
+
+bool swe2d_gpu_is_contract_uploaded(const SWE2DDeviceState* dev)
+{
+    if (!dev) return false;
+    return dev->coupling_iface != nullptr;
+}
+
 void swe2d_gpu_compute_coupling_sources(
     int32_t n_cells,
     const double* cell_area_m2,
