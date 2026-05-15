@@ -1539,6 +1539,9 @@ class SWE2DWorkbenchDialog(QtWidgets.QDialog):
         self._sample_line_prev_map_tool = None
         self._velocity_vector_builder = None
         self._velocity_vectors_layer_id: Optional[str] = None
+        self._velocity_overlay_manual_gpkg_path: str = ""
+        self._velocity_overlay_manual_run_id: str = ""
+        self._velocity_overlay_manual_layer_name: str = ""
 
     def _resolve_qgis_iface(self):
         """Resolve a usable QGIS iface object from dialog context/runtime."""
@@ -5185,6 +5188,11 @@ class SWE2DWorkbenchDialog(QtWidgets.QDialog):
                 pass
             self._results_panel.velocity_overlay_changed.connect(self._on_results_panel_velocity_overlay_changed)
             try:
+                self._results_panel.velocity_overlay_add_requested.disconnect(self._on_results_panel_velocity_overlay_add_requested)
+            except Exception:
+                pass
+            self._results_panel.velocity_overlay_add_requested.connect(self._on_results_panel_velocity_overlay_add_requested)
+            try:
                 self._results_panel.restore_state()
             except Exception:
                 pass
@@ -5426,6 +5434,128 @@ class SWE2DWorkbenchDialog(QtWidgets.QDialog):
         t_s = panel.current_time_sec() if panel is not None else 0.0
         self._refresh_velocity_vectors_overlay(float(t_s))
 
+    def _project_gpkg_layers(self) -> List[Tuple[str, str]]:
+        if not _HAVE_QGIS_CORE or QgsProject is None:
+            return []
+        out: List[Tuple[str, str]] = []
+        try:
+            layers = QgsProject.instance().mapLayers().values()
+        except Exception:
+            return out
+        for lyr in layers:
+            try:
+                if lyr is None or not lyr.isValid() or not hasattr(lyr, "source"):
+                    continue
+                src = str(lyr.source() or "")
+                if not src:
+                    continue
+                gpkg = src.split("|", 1)[0].strip()
+                if not gpkg.lower().endswith(".gpkg") or not os.path.exists(gpkg):
+                    continue
+                out.append((str(lyr.name() or os.path.basename(gpkg)), gpkg))
+            except Exception:
+                continue
+        # Keep deterministic order in picker
+        out.sort(key=lambda item: item[0].lower())
+        return out
+
+    def _pick_velocity_overlay_source(self) -> Tuple[str, str, str]:
+        panel = getattr(self, "_results_panel", None)
+        if panel is None:
+            return "", "", ""
+
+        layer_choices = self._project_gpkg_layers()
+        if not layer_choices:
+            QtWidgets.QMessageBox.information(
+                self,
+                "Velocity Arrows",
+                "No loaded GeoPackage layers were found in the project.",
+            )
+            return "", "", ""
+
+        layer_labels = [f"{name} ({os.path.basename(gpkg)})" for name, gpkg in layer_choices]
+        default_label = layer_labels[0]
+        if self._velocity_overlay_manual_gpkg_path:
+            for i, (_, gpkg) in enumerate(layer_choices):
+                if gpkg == self._velocity_overlay_manual_gpkg_path:
+                    default_label = layer_labels[i]
+                    break
+
+        chosen_label, ok = QtWidgets.QInputDialog.getItem(
+            self,
+            "Velocity Arrows",
+            "Select GeoPackage layer source:",
+            layer_labels,
+            max(0, layer_labels.index(default_label)),
+            False,
+        )
+        if not ok:
+            return "", "", ""
+
+        idx = layer_labels.index(chosen_label)
+        layer_name, gpkg_path = layer_choices[idx]
+
+        run_ids: List[str] = []
+        if hasattr(panel, "run_ids_for_gpkg"):
+            try:
+                run_ids = list(panel.run_ids_for_gpkg(gpkg_path, enabled_only=False))
+            except Exception:
+                run_ids = []
+
+        if not run_ids:
+            active_run_id = str(panel.active_overlay_run_id() or "").strip()
+            if active_run_id:
+                run_ids = [active_run_id]
+
+        if not run_ids:
+            QtWidgets.QMessageBox.warning(
+                self,
+                "Velocity Arrows",
+                "No run ids were found in the selected GeoPackage for velocity rendering.",
+            )
+            return "", "", ""
+
+        run_id = run_ids[0]
+        if len(run_ids) > 1:
+            default_run = run_id
+            if self._velocity_overlay_manual_run_id in run_ids:
+                default_run = self._velocity_overlay_manual_run_id
+            chosen_run, run_ok = QtWidgets.QInputDialog.getItem(
+                self,
+                "Velocity Arrows",
+                "Select run id:",
+                run_ids,
+                max(0, run_ids.index(default_run)),
+                False,
+            )
+            if not run_ok:
+                return "", "", ""
+            run_id = str(chosen_run)
+
+        return gpkg_path, run_id, layer_name
+
+    def _on_results_panel_velocity_overlay_add_requested(self):
+        gpkg_path, run_id, layer_name = self._pick_velocity_overlay_source()
+        if not gpkg_path or not run_id:
+            return
+
+        self._velocity_overlay_manual_gpkg_path = gpkg_path
+        self._velocity_overlay_manual_run_id = run_id
+        self._velocity_overlay_manual_layer_name = layer_name
+
+        panel = getattr(self, "_results_panel", None)
+        if panel is not None and hasattr(panel, "set_velocity_overlay_enabled"):
+            try:
+                panel.set_velocity_overlay_enabled(True)
+            except Exception:
+                pass
+
+        t_s = panel.current_time_sec() if panel is not None else 0.0
+        self._refresh_velocity_vectors_overlay(float(t_s))
+        self._log(
+            f"Velocity arrows source set: layer='{layer_name}', gpkg='{gpkg_path}', run_id='{run_id}'"
+        )
+
     def _get_velocity_vector_builder(self):
         if self._velocity_vector_builder is not None:
             return self._velocity_vector_builder
@@ -5496,16 +5626,24 @@ class SWE2DWorkbenchDialog(QtWidgets.QDialog):
             return
 
         targets = []
-        if hasattr(panel, "enabled_overlay_targets"):
-            try:
-                targets = list(panel.enabled_overlay_targets())
-            except Exception:
-                targets = []
-        if not targets:
-            gpkg_path_fallback = str(self._model_gpkg_path or "")
-            run_id_fallback = str(panel.active_overlay_run_id() or "")
-            if gpkg_path_fallback and run_id_fallback:
-                targets = [(gpkg_path_fallback, run_id_fallback)]
+        if self._velocity_overlay_manual_gpkg_path and self._velocity_overlay_manual_run_id:
+            targets = [
+                (
+                    str(self._velocity_overlay_manual_gpkg_path),
+                    str(self._velocity_overlay_manual_run_id),
+                )
+            ]
+        else:
+            if hasattr(panel, "enabled_overlay_targets"):
+                try:
+                    targets = list(panel.enabled_overlay_targets())
+                except Exception:
+                    targets = []
+            if not targets:
+                gpkg_path_fallback = str(self._model_gpkg_path or "")
+                run_id_fallback = str(panel.active_overlay_run_id() or "")
+                if gpkg_path_fallback and run_id_fallback:
+                    targets = [(gpkg_path_fallback, run_id_fallback)]
         if not targets:
             self._clear_velocity_vectors_layer()
             return

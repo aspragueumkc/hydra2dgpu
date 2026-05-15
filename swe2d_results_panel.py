@@ -204,6 +204,7 @@ class SWE2DResultsPanel(_BASE_DOCK):  # type: ignore[valid-type,misc]
 
     timestep_changed = pyqtSignal(float)
     velocity_overlay_changed = pyqtSignal()
+    velocity_overlay_add_requested = pyqtSignal()
 
     def __init__(self, gpkg_path: str = "", iface=None, parent=None):
         super().__init__(parent)
@@ -393,6 +394,11 @@ class SWE2DResultsPanel(_BASE_DOCK):  # type: ignore[valid-type,misc]
         self._show_velocity_chk.setChecked(False)
         self._show_velocity_chk.toggled.connect(self._on_velocity_overlay_control_changed)
         sidebar.addWidget(self._show_velocity_chk)
+
+        self._velocity_add_btn = QtWidgets.QPushButton("Add To Map Canvas...")
+        self._velocity_add_btn.setToolTip("Manually select a GeoPackage layer to source velocity arrows from")
+        self._velocity_add_btn.clicked.connect(self._on_velocity_overlay_add_requested)
+        sidebar.addWidget(self._velocity_add_btn)
 
         vel_density_row = QtWidgets.QHBoxLayout()
         vel_density_row.addWidget(QtWidgets.QLabel("Density:"))
@@ -996,6 +1002,9 @@ class SWE2DResultsPanel(_BASE_DOCK):  # type: ignore[valid-type,misc]
 
     def _on_velocity_overlay_control_changed(self, *_):
         self.velocity_overlay_changed.emit()
+
+    def _on_velocity_overlay_add_requested(self):
+        self.velocity_overlay_add_requested.emit()
 
     def _on_controller_play_state_changed(self, playing: bool):
         self._play_btn.blockSignals(True)
@@ -1690,11 +1699,30 @@ class SWE2DResultsPanel(_BASE_DOCK):  # type: ignore[valid-type,misc]
     def velocity_overlay_enabled(self) -> bool:
         return bool(self._show_velocity_chk.isChecked())
 
+    def set_velocity_overlay_enabled(self, enabled: bool):
+        self._show_velocity_chk.setChecked(bool(enabled))
+
     def velocity_density_stride(self) -> int:
         return int(self._vel_density_combo.currentData() or 1)
 
     def velocity_min_speed(self) -> float:
         return float(self._vel_min_speed_spin.value())
+
+    def run_ids_for_gpkg(self, gpkg_path: str, enabled_only: bool = False) -> List[str]:
+        gpkg_norm = str(gpkg_path or "").strip()
+        out: List[str] = []
+        seen: Set[str] = set()
+        for rec in self._run_records:
+            if str(rec.gpkg_path or "").strip() != gpkg_norm:
+                continue
+            if enabled_only and not rec.enabled:
+                continue
+            rid = str(rec.run_id or "").strip()
+            if not rid or rid in seen:
+                continue
+            seen.add(rid)
+            out.append(rid)
+        return out
 
     def closeEvent(self, event):
         self._anim.pause()
