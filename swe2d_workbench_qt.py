@@ -5508,7 +5508,7 @@ class SWE2DWorkbenchDialog(QtWidgets.QDialog):
         if panel is None:
             return "", "", ""
 
-        start_path = self._velocity_overlay_manual_gpkg_path or self._gpkg_path or ""
+        start_path = self._velocity_overlay_manual_gpkg_path or self._model_gpkg_path or ""
         gpkg_path, _ = QtWidgets.QFileDialog.getOpenFileName(
             self,
             "Select SWE2D Velocity GeoPackage",
@@ -5583,27 +5583,35 @@ class SWE2DWorkbenchDialog(QtWidgets.QDialog):
         return gpkg_path, run_id, table_name
 
     def _on_results_panel_velocity_overlay_add_requested(self):
-        gpkg_path, run_id, table_name = self._pick_velocity_overlay_source()
-        if not gpkg_path or not run_id:
-            return
+        try:
+            gpkg_path, run_id, table_name = self._pick_velocity_overlay_source()
+            if not gpkg_path or not run_id:
+                return
 
-        self._velocity_overlay_manual_gpkg_path = gpkg_path
-        self._velocity_overlay_manual_run_id = run_id
-        self._velocity_overlay_manual_layer_name = table_name
-        self._velocity_overlay_manual_table_name = table_name
+            self._velocity_overlay_manual_gpkg_path = gpkg_path
+            self._velocity_overlay_manual_run_id = run_id
+            self._velocity_overlay_manual_layer_name = table_name
+            self._velocity_overlay_manual_table_name = table_name
 
-        panel = getattr(self, "_results_panel", None)
-        if panel is not None and hasattr(panel, "set_velocity_overlay_enabled"):
-            try:
-                panel.set_velocity_overlay_enabled(True)
-            except Exception:
-                pass
+            panel = getattr(self, "_results_panel", None)
+            if panel is not None and hasattr(panel, "set_velocity_overlay_enabled"):
+                try:
+                    panel.set_velocity_overlay_enabled(True)
+                except Exception:
+                    pass
 
-        t_s = panel.current_time_sec() if panel is not None else 0.0
-        self._refresh_velocity_vectors_overlay(float(t_s))
-        self._log(
-            f"Velocity arrows source set: table='{table_name}', gpkg='{gpkg_path}', run_id='{run_id}'"
-        )
+            t_s = panel.current_time_sec() if panel is not None else 0.0
+            self._refresh_velocity_vectors_overlay(float(t_s))
+            self._log(
+                f"Velocity arrows source set: table='{table_name}', gpkg='{gpkg_path}', run_id='{run_id}'"
+            )
+        except Exception as exc:
+            self._log(f"Velocity arrows source selection failed: {exc}")
+            QtWidgets.QMessageBox.warning(
+                self,
+                "Velocity Arrows",
+                f"Could not add velocity arrows source.\n\n{exc}",
+            )
 
     def _get_velocity_vector_builder(self):
         if self._velocity_vector_builder is not None:
