@@ -58,10 +58,11 @@ except ImportError:
 # ---------------------------------------------------------------------------
 _FigureCanvas = None
 _Figure = None
+_NavigationToolbar = None
 
 
 def _try_import_matplotlib() -> bool:
-    global _FigureCanvas, _Figure
+    global _FigureCanvas, _Figure, _NavigationToolbar
     if _FigureCanvas is not None:
         return True
     for _backend in (
@@ -72,8 +73,10 @@ def _try_import_matplotlib() -> bool:
             import importlib as _importlib
             _mod = _importlib.import_module(_backend)
             from matplotlib.figure import Figure as _Figure_cls
+            from matplotlib.backends.backend_qt5agg import NavigationToolbar2QT
             _FigureCanvas = _mod.FigureCanvasQTAgg
             _Figure = _Figure_cls
+            _NavigationToolbar = NavigationToolbar2QT
             return True
         except Exception:
             continue
@@ -235,9 +238,11 @@ class SWE2DResultsPanel(_BASE_DOCK):  # type: ignore[valid-type,misc]
         self._fig_ts = None
         self._ax_ts = None
         self._canvas_ts = None
+        self._toolbar_ts = None
         self._fig_prof = None
         self._ax_prof = None
         self._canvas_prof = None
+        self._toolbar_prof = None
         self._ts_vline = None
         self._prof_fill_cbar = None
 
@@ -508,18 +513,28 @@ class SWE2DResultsPanel(_BASE_DOCK):  # type: ignore[valid-type,misc]
         def _embed(tab_widget):
             layout = QtWidgets.QVBoxLayout(tab_widget)
             layout.setContentsMargins(0, 0, 0, 0)
+            layout.setSpacing(0)
             if not self._have_mpl:
                 layout.addWidget(QtWidgets.QLabel("matplotlib not available"))
-                return None, None, None
-            fig = _Figure(figsize=(6, 3.8), tight_layout=True)
+                return None, None, None, None
+            # Use constrained_layout instead of tight_layout for stability
+            fig = _Figure(figsize=(6, 3.8), constrained_layout=True)
             ax = fig.add_subplot(111)
             canvas = _FigureCanvas(fig)
             canvas.setMinimumHeight(200)
-            layout.addWidget(canvas)
-            return fig, ax, canvas
+            
+            # Add navigation toolbar for zoom/pan controls
+            toolbar = None
+            if _NavigationToolbar:
+                toolbar = _NavigationToolbar(canvas, tab_widget)
+                toolbar.setIconSize(QtCore.QSize(16, 16))
+                layout.addWidget(toolbar)
+            
+            layout.addWidget(canvas, 1)
+            return fig, ax, canvas, toolbar
 
-        self._fig_ts, self._ax_ts, self._canvas_ts = _embed(self._ts_tab)
-        self._fig_prof, self._ax_prof, self._canvas_prof = _embed(self._prof_tab)
+        self._fig_ts, self._ax_ts, self._canvas_ts, self._toolbar_ts = _embed(self._ts_tab)
+        self._fig_prof, self._ax_prof, self._canvas_prof, self._toolbar_prof = _embed(self._prof_tab)
 
     # ------------------------------------------------------------------
     # Run discovery
