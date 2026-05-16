@@ -43,12 +43,24 @@ Status legend:
 - IN_PROGRESS: D1. Finalize 3D discretization and data layout design note.
 - DONE: D1a. Added 3D solver-model/coupling config scaffold in native and Python interfaces.
 - DONE: D1b. Added explicit single-phase free-surface model flag in solver config.
-- TODO: D2. Implement Cartesian grid generation + geometry mask ingestion.
-- TODO: D3. Implement VoF advection core.
-- TODO: D4. Implement momentum predictor + pressure projection.
+- IN_PROGRESS: D2. Implement Cartesian grid generation + geometry mask ingestion.
+- TODO: D2a. Add STL import validation (topology/units/extent) and fail-fast diagnostics.
+- TODO: D2b. Build ROI-based structured patch generator with `(nx, ny, nz)` controls.
+- TODO: D2c. Generate porosity/open-area tensors (`phi`, `ax`, `ay`, `az`) from geometry voxelization.
+- TODO: D3. Implement bounded VoF advection core.
+- IN_PROGRESS: D4. Implement momentum predictor + pressure projection (replace scaffold damping-only 3D step).
 - TODO: D5. Add boundary condition suite for inflow/outflow/walls/free-surface handling.
 - TODO: D6. Add GPU acceleration path for advection/projection kernels.
 - TODO: D7. Validate against spillway and culvert canonical cases.
+- TODO: D8. Add STL-derived geometry regression cases (culvert barrel, bridge deck/piers, multi-solid scene).
+
+## Epic H: 3D Geometry + QGIS Viewer Integration
+
+- TODO: H1. Add experimental workbench controls for STL geometry inputs and patch ROI.
+- TODO: H2. Add preprocessing pipeline for geometry-to-structured patch metadata export.
+- TODO: H3. Export 3D patch QA products (slice/surface snapshots) for QGIS 3D viewer.
+- TODO: H4. Add visualization presets for `vof`, pressure, and velocity magnitude.
+- TODO: H5. Add acceptance checks for geometry/viewer workflow (import -> preprocess -> run -> render).
 
 ## Epic E: 2D-3D Coupling
 
@@ -76,10 +88,10 @@ Status legend:
 
 ## Suggested Execution Order (Next 4 Weeks)
 
-1. Week 1: A5, A6, G1, G2
-2. Week 2: B1, B2, B3 (CPU NH prototype)
-3. Week 3: C1, C2, C3 (2D structure operator framework)
-4. Week 4: D1, D2, E1 (3D/coupling foundation)
+1. Week 1: D4, D3, D5 (uncoupled 3D numerics core)
+2. Week 2: D2a, D2b, D2c, D8 (STL/structured geometry gates)
+3. Week 3: H1, H2, H3 (QGIS 3D workflow MVP)
+4. Week 4: E1, E2 and stabilization of uncoupled-to-coupled interface contracts
 
 ## Open Decisions Needing Discussion
 

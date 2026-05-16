@@ -71,6 +71,30 @@ Return:
 
 **Files to touch:** `swe2d_bindings.cpp`
 
+#### Phase 8: STL Geometry Ingestion + Structured Patch Build (NEW)
+- Import STL solids and validate manifold/units assumptions
+- Define patch ROI + `(nx, ny, nz)` controls from workbench
+- Build Cartesian patch occupancy/porosity/open-area tensors (`phi`, `ax`, `ay`, `az`)
+
+**Files to touch:** `swe2d_workbench_qt.py`, `swe2d_backend.py`, `cpp/src/swe2d_solver.cpp`, `cpp/src/swe2d_gpu.cuh/.cu`
+
+#### Phase 9: QGIS 3D Viewer Outputs (NEW)
+- Snapshot export of 3D patch slices/surfaces for QGIS 3D viewer
+- Minimal velocity/scalar review products (`vof`, `p`, `|u|`)
+- Keep full-volume rendering out of MVP scope
+
+**Files to touch:** `swe2d_workbench_qt.py`, export/query helpers, native snapshot hooks as needed
+
+#### Phase 10: 3D Numerics Core Replacement (IMMEDIATE PRIORITY)
+- Replace scaffold damping kernel with real 3D operator split:
+   - advection/diffusion predictor
+   - pressure Poisson/projection
+   - velocity correction
+   - bounded VoF transport
+- Preserve uncoupled-mode validation gates as blocking acceptance criteria
+
+**Files to touch:** `cpp/src/swe2d_gpu.cuh/.cu`, related 3D test harnesses
+
 ## Safe Editing Strategy
 
 1. **Always call subagent first** with the specific task name (B2, D2, E1, etc.)
@@ -97,6 +121,7 @@ After each slice:
 2. No new link errors
 3. Hydrostatic mode runs unchanged
 4. Advanced modes fail fast with clear errors (not silent success)
+5. For 3D slices, uncoupled validation tests remain green before moving to coupling work
 
 ## Commit Hygiene
 
@@ -112,3 +137,4 @@ Group slices by phase before committing:
 - **Pressure matrix format**: scaffold only stores pointers; actual sparse format TBD per preconditioner choice
 - **Graph cache interaction**: ensure nonhydro/coupled paths do not replay hydrostatic CUDA graphs
 - **Device memory hygiene**: every new pointer in device state must be null-initialized, allocated on demand, and freed in destroy()
+- **STL preprocessing discipline**: perform topology/unit checks before voxelization; never silently auto-fix invalid geometry without logging what changed

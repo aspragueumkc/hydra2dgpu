@@ -1525,6 +1525,117 @@ PYBIND11_MODULE(backwater_swe2d, m) {
         py::arg("solver"),
         "Return True if a device contract is currently uploaded.");
 
+    // ── 3D patch state observation/initialisation (validation API) ────────────
+
+    m.def("swe2d_get_3d_patch_stats",
+        [](const std::shared_ptr<PySolver>& solver) -> py::dict
+        {
+            if (!solver || !solver->solver)
+                throw std::invalid_argument("null or destroyed solver");
+            #ifdef BACKWATER_HAS_CUDA
+            SWE3DPatchStats s = swe2d_gpu_get_3d_patch_stats(solver->solver->dev);
+            py::dict d;
+            d["n_cells"]   = s.n_cells;
+            d["nx"]        = s.nx;
+            d["ny"]        = s.ny;
+            d["nz"]        = s.nz;
+            d["dx"]        = s.dx;
+            d["dy"]        = s.dy;
+            d["dz"]        = s.dz;
+            d["vof_min"]   = s.vof_min;
+            d["vof_max"]   = s.vof_max;
+            d["vof_sum"]   = s.vof_sum;
+            d["u_rms"]     = s.u_rms;
+            d["v_rms"]     = s.v_rms;
+            d["w_rms"]     = s.w_rms;
+            d["p_max_abs"] = s.p_max_abs;
+            d["divergence_rms"] = s.divergence_rms;
+            d["projection_iters"] = s.projection_iters;
+            d["projection_residual"] = s.projection_residual;
+            d["projection_converged"] = s.projection_converged;
+            return d;
+            #else
+            throw std::runtime_error("CUDA not compiled; swe2d_get_3d_patch_stats unavailable");
+            #endif
+        },
+        py::arg("solver"),
+        "Return aggregate statistics for the 3D Cartesian patch attached to solver.\n"
+        "Performs a device→host transfer; intended for testing, not production inner loops.\n"
+        "Keys: n_cells, nx, ny, nz, dx, dy, dz, vof_min, vof_max, vof_sum,\n"
+        "      u_rms, v_rms, w_rms, p_max_abs, divergence_rms,\n"
+        "      projection_iters, projection_residual, projection_converged");
+
+    m.def("swe2d_set_3d_patch_vof",
+        [](const std::shared_ptr<PySolver>& solver, py::array_t<double, py::array::c_style> vof) -> void
+        {
+            if (!solver || !solver->solver)
+                throw std::invalid_argument("null or destroyed solver");
+            #ifdef BACKWATER_HAS_CUDA
+            py::buffer_info buf = vof.request();
+            swe2d_gpu_set_3d_patch_vof(
+                solver->solver->dev,
+                static_cast<const double*>(buf.ptr),
+                static_cast<int64_t>(buf.size));
+            #else
+            throw std::runtime_error("CUDA not compiled; swe2d_set_3d_patch_vof unavailable");
+            #endif
+        },
+        py::arg("solver"),
+        py::arg("vof"),
+        "Upload a VoF initial-condition array (float64, length == n_cells) to the 3D patch.");
+
+    m.def("swe2d_set_3d_patch_state",
+        [](const std::shared_ptr<PySolver>& solver,
+           py::object u_obj,
+           py::object v_obj,
+           py::object w_obj,
+           py::object p_obj,
+           py::object vof_obj) -> void
+        {
+            if (!solver || !solver->solver)
+                throw std::invalid_argument("null or destroyed solver");
+            #ifdef BACKWATER_HAS_CUDA
+            auto to_ptr = [](py::object& o, std::vector<double>& tmp) -> const double*
+            {
+                if (o.is_none()) return nullptr;
+                auto arr = o.cast<py::array_t<double, py::array::c_style>>();
+                py::buffer_info buf = arr.request();
+                tmp.assign(static_cast<const double*>(buf.ptr),
+                            static_cast<const double*>(buf.ptr) + buf.size);
+                return tmp.data();
+            };
+            // infer n from first non-None arg
+            int64_t n = -1;
+            auto check_n = [&](py::object& o) {
+                if (!o.is_none() && n < 0) {
+                    auto arr = o.cast<py::array_t<double>>();
+                    n = static_cast<int64_t>(arr.size());
+                }
+            };
+            check_n(u_obj); check_n(v_obj); check_n(w_obj);
+            check_n(p_obj); check_n(vof_obj);
+            if (n < 0) return; // all None — no-op
+
+            std::vector<double> tu, tv, tw, tp, tvof;
+            const double* pu   = to_ptr(u_obj,   tu);
+            const double* pv   = to_ptr(v_obj,   tv);
+            const double* pw   = to_ptr(w_obj,   tw);
+            const double* pp   = to_ptr(p_obj,   tp);
+            const double* pvof = to_ptr(vof_obj, tvof);
+            swe2d_gpu_set_3d_patch_state(solver->solver->dev, pu, pv, pw, pp, pvof, n);
+            #else
+            throw std::runtime_error("CUDA not compiled; swe2d_set_3d_patch_state unavailable");
+            #endif
+        },
+        py::arg("solver"),
+        py::arg("u")   = py::none(),
+        py::arg("v")   = py::none(),
+        py::arg("w")   = py::none(),
+        py::arg("p")   = py::none(),
+        py::arg("vof") = py::none(),
+        "Upload per-cell initial conditions for any combination of u, v, w, p, vof.\n"
+        "Pass None to skip a field.  Arrays must be float64, length == n_cells.");
+
     // ── PyMesh / PySolver as opaque Python types ──────────────────────────────
     py::class_<PyMesh, std::shared_ptr<PyMesh>>(m, "SWE2DMeshHandle")
         .def("__repr__", [](const PyMesh& pm) {

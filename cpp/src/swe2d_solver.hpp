@@ -16,6 +16,7 @@ enum class SWE2DSpatialScheme : int {
     FV_MUSCL_MINMOD   = 2,
     FV_MUSCL_MC       = 3,   // Monotonized-Central limiter (gradient-based TVD)
     FV_MUSCL_VAN_LEER = 4,   // Van Leer smooth limiter (gradient-based TVD)
+    FV_WENO3_LIKE     = 5,   // WENO3-like nonlinear blend (GPU-first experimental)
 };
 
 enum class SWE2DTurbulenceModel : int {
@@ -63,7 +64,7 @@ struct SWE2DSolverConfig {
     double  cfl      = 0.45;    // CFL safety factor
     double  dt_max   = 10.0;    // maximum allowable timestep (s)
     double  dt_fixed = -1.0;    // if > 0, use this fixed dt (overrides CFL)
-    int     temporal_order = 2; // 1 = Euler, 2 = SSPRK2 (Heun)
+    int     temporal_order = 2; // 1 = Euler, 2 = SSPRK2 (Heun), 4 = classic RK4 (composed), 5 = true RK4 (graph-safe), 6 = true RK5 (graph-safe)
     int     spatial_scheme = static_cast<int>(SWE2DSpatialScheme::FV_FIRST_ORDER);
     int     godunov_mode = 0;   // 0 = current GPU step, 1 = Godunov rollout mode
     int     turbulence_model = static_cast<int>(SWE2DTurbulenceModel::NONE);

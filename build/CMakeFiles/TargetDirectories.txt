@@ -1,7 +1,0 @@
-/home/aaron/.local/share/QGIS/QGIS3/profiles/default/python/plugins/qgis-backwater-plugin/build/CMakeFiles/backwater_native.dir
-/home/aaron/.local/share/QGIS/QGIS3/profiles/default/python/plugins/qgis-backwater-plugin/build/CMakeFiles/backwater_swe2d.dir
-/home/aaron/.local/share/QGIS/QGIS3/profiles/default/python/plugins/qgis-backwater-plugin/build/CMakeFiles/backwater_tqmesh.dir
-/home/aaron/.local/share/QGIS/QGIS3/profiles/default/python/plugins/qgis-backwater-plugin/build/CMakeFiles/edit_cache.dir
-/home/aaron/.local/share/QGIS/QGIS3/profiles/default/python/plugins/qgis-backwater-plugin/build/CMakeFiles/rebuild_cache.dir
-/home/aaron/.local/share/QGIS/QGIS3/profiles/default/python/plugins/qgis-backwater-plugin/build/_deps/pybind11-build/CMakeFiles/edit_cache.dir
-/home/aaron/.local/share/QGIS/QGIS3/profiles/default/python/plugins/qgis-backwater-plugin/build/_deps/pybind11-build/CMakeFiles/rebuild_cache.dir

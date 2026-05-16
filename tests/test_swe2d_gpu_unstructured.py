@@ -97,7 +97,7 @@ class TestGPUUnstructuredDamBreak(unittest.TestCase):
         mesh = _build_mesh(mod, node_x, node_y, node_z, cell_nodes)
         h0 = np.where(cell_cx <= self.LX / 2.0, self.H_L, self.H_R)
 
-        for scheme_id in range(5):
+        for scheme_id in range(6):
             solver = mod.swe2d_create_solver(
                 mesh,
                 h0.copy(),
@@ -197,7 +197,7 @@ class TestGPUUnstructuredLakeAtRest(unittest.TestCase):
         zb_cell = (node_z[cn[:, 0]] + node_z[cn[:, 1]] + node_z[cn[:, 2]]) / 3.0
         h0 = np.maximum(0.0, self.ETA0 - zb_cell)
 
-        for scheme_id in range(5):
+        for scheme_id in range(6):
             solver = mod.swe2d_create_solver(
                 mesh,
                 h0.copy(),

@@ -33,6 +33,7 @@ try:
         QgsFeature,
         QgsField,
         QgsGeometry,
+        QgsMeshLayer,
         QgsProject,
         QgsPointXY,
         QgsRasterLayer,
@@ -46,6 +47,7 @@ try:
 except Exception:
     QgsEditorWidgetSetup = QgsFieldConstraints = None
     QgsFeature = QgsField = QgsGeometry = QgsPointXY = QgsProject = None
+    QgsMeshLayer = None
     QgsRasterLayer = QgsVectorLayer = QgsWkbTypes = None
     QgsUnitTypes = QgsVectorFileWriter = None
     QVariant = None
@@ -81,8 +83,12 @@ try:
         OutfallExchange,
         PipeEndExchange,
         PipeNetworkConfig,
+        SWE2DEquationSet,
+        SWE2DThreeDCouplingMode,
+        SWE2DThreeDSolverModel,
         StructureType,
         SpatialDiscretization,
+        SolverModelOptions,
         TemporalScheme,
     )
     from swe2d_structures import SWE2DStructureModule
@@ -103,8 +109,12 @@ except Exception:
             OutfallExchange,
             PipeEndExchange,
             PipeNetworkConfig,
+            SWE2DEquationSet,
+            SWE2DThreeDCouplingMode,
+            SWE2DThreeDSolverModel,
             StructureType,
             SpatialDiscretization,
+            SolverModelOptions,
             TemporalScheme,
         )
         from .swe2d_structures import SWE2DStructureModule
@@ -118,6 +128,10 @@ except Exception:
         InletType = NodeInletAssignment = None
         PipeNetworkConfig = HydraulicStructureConfig = None
         DrainageSolverMode = None
+        SWE2DEquationSet = None
+        SWE2DThreeDCouplingMode = None
+        SWE2DThreeDSolverModel = None
+        SolverModelOptions = None
         GodunovSolverMode = None
         SpatialDiscretization = None
         StructureType = None
@@ -230,12 +244,15 @@ _RECONSTRUCTION_OPTIONS = [
     ("MUSCL MinMod (robust)",            2),
     ("MUSCL MC (less-diffusive TVD)",    3),
     ("MUSCL Van Leer (smooth TVD)",      4),
+    ("WENO3-like (GPU experimental)",    5),
 ]
 
 _TEMPORAL_ORDER_OPTIONS = [
     ("Euler (RK1, 1st-order)",           1),
     ("RK2 (Heun, 2nd-order, default)",   2),
     ("RK4 (classic, 4th-order)",         4),
+    ("Graph-safe RK4 (true staged)",     5),
+    ("Graph-safe RK5 (Cash-Karp)",       6),
 ]
 
 _BC_VALUE_MAP = {
@@ -293,6 +310,7 @@ _HYETOGRAPH_UNITS_VALUE_MAP = {
 }
 
 _SWE2D_WORKBENCH_WINDOWS = []
+_SWE2D_WORKBENCH_DOCK = None
 
 _MODEL_LAYER_BINDINGS = {
     "rain_gages": {
@@ -1480,6 +1498,10 @@ class SWE2DWorkbenchDialog(QtWidgets.QDialog):
         self._coupling_results_latest_db_path: str = ""
         self._run_log_latest_run_id: str = ""
         self._run_log_latest_db_path: str = ""
+        self._results_mesh_layer_id: str = ""
+        self._results_mesh_source_path: str = ""
+        self._results_mesh_snapshot_count: int = -1
+        self._results_mesh_mode_enabled: bool = True
         self._runtime_log_lines: List[str] = []
         self._model_gpkg_path: str = ""
         self._mesh_nodes_layer_id: Optional[str] = None
@@ -1541,12 +1563,17 @@ class SWE2DWorkbenchDialog(QtWidgets.QDialog):
         self._velocity_vectors_layer_id: Optional[str] = None
         self._velocity_overlay_sources: List[Dict[str, str]] = []
         self._velocity_overlay_layer_ids: Dict[str, str] = {}
+        self._velocity_overlay_feature_ids: Dict[str, Dict[int, int]] = {}
+        self._velocity_overlay_source_mode_logged: Dict[str, bool] = {}
         self._velocity_cell_xy_cache: Dict[str, Dict[int, Tuple[float, float]]] = {}
         self._velocity_base_len_cache: Dict[str, float] = {}
         self._velocity_overlay_manual_gpkg_path: str = ""
         self._velocity_overlay_manual_run_id: str = ""
         self._velocity_overlay_manual_layer_name: str = ""
         self._velocity_overlay_manual_table_name: str = ""
+        self._velocity_overlay_refresh_token: int = 0
+        self._velocity_overlay_frame_counter: int = 0
+        self._velocity_overlay_perf_log_every: int = 30
 
     def _resolve_qgis_iface(self):
         """Resolve a usable QGIS iface object from dialog context/runtime."""
@@ -2243,6 +2270,26 @@ class SWE2DWorkbenchDialog(QtWidgets.QDialog):
             "  Van Leer               — smooth limiter, good for continuous waves\n"
             "Recommend: start with MUSCL MinMod; switch to MC or Van Leer once stable."
         )
+        self.equation_set_combo = QtWidgets.QComboBox()
+        if SWE2DEquationSet is not None:
+            self.equation_set_combo.addItem("Hydrostatic 2D (default)", int(SWE2DEquationSet.HYDROSTATIC_2D))
+            self.equation_set_combo.addItem("Nonhydrostatic 2D", int(SWE2DEquationSet.NONHYDROSTATIC_2D))
+        else:
+            self.equation_set_combo.addItem("Hydrostatic 2D (default)", 0)
+            self.equation_set_combo.addItem("Nonhydrostatic 2D", 1)
+        self.equation_set_combo.setCurrentIndex(0)
+        self.equation_set_combo.setToolTip(
+            "Choose the governing equation set for the 2D solver.\n"
+            "Hydrostatic 2D keeps the existing shallow-water path.\n"
+            "Nonhydrostatic 2D enables the pressure-correction solver and requires GPU."
+        )
+        self.experimental_3d_mode_chk = QtWidgets.QCheckBox("Enable")
+        self.experimental_3d_mode_chk.setChecked(False)
+        self.experimental_3d_mode_chk.setToolTip(
+            "Experimental 3D patch solver mode for validation/smoke testing only.\n"
+            "Enables SINGLE_PHASE_FREE_SURFACE_VOF in uncoupled mode.\n"
+            "2D-3D coupling exchange is forced OFF in this GUI path."
+        )
         self.temporal_order_combo = QtWidgets.QComboBox()
         for label, value in _TEMPORAL_ORDER_OPTIONS:
             self.temporal_order_combo.addItem(label, int(value))
@@ -2251,8 +2298,10 @@ class SWE2DWorkbenchDialog(QtWidgets.QDialog):
             "Select temporal integration scheme:\n"
             "  Euler (RK1)  — 1st-order, fastest, use for dry-bed or debugging\n"
             "  RK2 (Heun)   — 2nd-order (default), balanced stability & speed\n"
-            "  RK4 (classic) — 4th-order, best for rain-on-grid scenarios, ~2x cost\n"
-            "RK4 only available on GPU."
+            "  RK4 (classic) — 4th-order composed path\n"
+            "  Graph-safe RK4 — true staged RK4 with CUDA-graph-safe forcing\n"
+            "  Graph-safe RK5 — Cash-Karp staged RK5 with CUDA-graph-safe forcing\n"
+            "Higher-order schemes are GPU-oriented and may be auto-adjusted by runtime guards."
         )
         self.godunov_mode_combo = QtWidgets.QComboBox()
         self.godunov_mode_combo.addItem("Current GPU solver", int(GodunovSolverMode.CURRENT_GPU_STEP))
@@ -2393,7 +2442,7 @@ class SWE2DWorkbenchDialog(QtWidgets.QDialog):
         self.gpu_default_lbl.setWordWrap(True)
         self.unit_system_lbl = QtWidgets.QLabel("Unit system: auto")
         self.unit_system_lbl.setWordWrap(True)
-        param_form.addRow("Manning n:", self.n_mann_spin)
+        param_form.addRow("Manning n:", self.n_mann_spin) 
         param_form.addRow("CFL:", self.cfl_spin)
         param_form.addRow("h_min:", self.h_min_spin)
         param_form.addRow("Initial condition:", self.initial_condition_combo)
@@ -2432,7 +2481,9 @@ class SWE2DWorkbenchDialog(QtWidgets.QDialog):
         param_form.addRow("Internal flow field:", self.internal_flow_field_edit)
         param_form.addRow("Run duration (hr or HH:MM):", self.run_time_edit)
         param_form.addRow("Reconstruction:", self.reconstruction_combo)
-        param_form.addRow("Temporal order:", self.temporal_order_combo)
+        param_form.addRow("Temporal discretization:", self.temporal_order_combo)
+        param_form.addRow("Equation set:", self.equation_set_combo)
+        param_form.addRow("Experimental 3D patch mode:", self.experimental_3d_mode_chk)
         param_form.addRow("GPU solver mode:", self.godunov_mode_combo)
         param_form.addRow("Degenerate cell mode:", self.degen_mode_combo)
         param_form.addRow("Coupling loop:", self.coupling_loop_combo)
@@ -5427,9 +5478,102 @@ class SWE2DWorkbenchDialog(QtWidgets.QDialog):
         gpkg = self._model_gpkg_path or ""
         if gpkg and gpkg != self._results_panel._gpkg_path:
             self._results_panel.set_gpkg_path(gpkg)
+
+        if self._results_mesh_mode_enabled:
+            self._ensure_results_mesh_layer_mode()
+
         self._results_panel.show()
         self._results_panel.raise_()
         self._refresh_velocity_vectors_overlay(self._results_panel.current_time_sec())
+
+    def _results_mesh_layer(self):
+        if not _HAVE_QGIS_CORE or QgsProject is None:
+            return None
+        lid = str(getattr(self, "_results_mesh_layer_id", "") or "").strip()
+        if not lid:
+            return None
+        try:
+            lyr = QgsProject.instance().mapLayer(lid)
+            if lyr is not None and lyr.isValid():
+                return lyr
+        except Exception:
+            pass
+        return None
+
+    def _results_mesh_temp_nc_path(self) -> str:
+        import tempfile
+
+        stem = "swe2d_results"
+        try:
+            if self._model_gpkg_path:
+                stem = os.path.splitext(os.path.basename(self._model_gpkg_path))[0] or stem
+        except Exception:
+            pass
+        return os.path.join(tempfile.gettempdir(), f"{stem}_results_panel.nc")
+
+    def _ensure_results_mesh_layer_mode(self) -> bool:
+        """Ensure a QGIS mesh layer is available for snapshot-driven results viewing."""
+        if not self._results_mesh_mode_enabled:
+            return False
+        if not _HAVE_QGIS_CORE or QgsProject is None or QgsMeshLayer is None:
+            return False
+        if self._mesh_data is None or not self._snapshot_timesteps:
+            return False
+
+        out_path = self._results_mesh_temp_nc_path()
+        need_rewrite = (
+            (not os.path.exists(out_path))
+            or (int(self._results_mesh_snapshot_count) != int(len(self._snapshot_timesteps)))
+        )
+        if need_rewrite:
+            try:
+                self._write_ugrid_nc(out_path, timesteps=self._snapshot_timesteps)
+                self._results_mesh_snapshot_count = int(len(self._snapshot_timesteps))
+                self._results_mesh_source_path = str(out_path)
+                self._log(
+                    "Results mesh source updated for map mode: "
+                    f"{out_path} (timesteps={self._results_mesh_snapshot_count})"
+                )
+            except Exception as exc:
+                self._log(f"Results mesh-layer mode unavailable (UGRID export failed): {exc}")
+                return False
+
+        existing = self._results_mesh_layer()
+        if existing is not None:
+            try:
+                src = str(existing.source() or "")
+                if str(out_path) in src or src == str(out_path):
+                    return True
+            except Exception:
+                pass
+            try:
+                QgsProject.instance().removeMapLayer(existing.id())
+            except Exception:
+                pass
+
+        try:
+            mesh_layer = QgsMeshLayer(str(out_path), "SWE2D_Results_Mesh", "mdal")
+        except Exception as exc:
+            self._log(f"Results mesh-layer mode unavailable (mesh layer create failed): {exc}")
+            return False
+
+        if mesh_layer is None or not mesh_layer.isValid():
+            self._log(
+                "Results mesh-layer mode unavailable: QGIS/MDAL failed to open generated UGRID file."
+            )
+            return False
+
+        try:
+            QgsProject.instance().addMapLayer(mesh_layer)
+            self._results_mesh_layer_id = str(mesh_layer.id())
+            self._log(
+                "Results map mode active: mesh-layer-first (QGIS Mesh/MDAL). "
+                f"Layer='{mesh_layer.name()}'"
+            )
+            return True
+        except Exception as exc:
+            self._log(f"Results mesh-layer mode unavailable (add layer failed): {exc}")
+            return False
 
     def _on_results_panel_timestep_changed(self, t_s: float):
         self._refresh_velocity_vectors_overlay(float(t_s))
@@ -5500,6 +5644,70 @@ class SWE2DWorkbenchDialog(QtWidgets.QDialog):
             out = [str(r[0]).strip() for r in cur.fetchall() if str(r[0]).strip()]
         except Exception:
             out = []
+        finally:
+            try:
+                conn.close()
+            except Exception:
+                pass
+        return out
+
+    def _velocity_data_support_for_run(self, gpkg_path: str, run_id: str, table_name: str) -> Dict[str, object]:
+        """Inspect stored velocity data availability for a run.
+
+        Returns availability flags so UI/runtime logs can explain which velocity
+        source will be used: face-centered reconstruction (preferred) or
+        cell-centered hu/hv fallback.
+        """
+        gpkg_path = str(gpkg_path or "").strip()
+        run_id = str(run_id or "").strip()
+        table_name = str(table_name or "swe2d_mesh_results").strip() or "swe2d_mesh_results"
+        out = {
+            "cell_rows": 0,
+            "face_table": "",
+            "face_rows": 0,
+        }
+        if not gpkg_path or not run_id or not os.path.exists(gpkg_path):
+            return out
+
+        def _quote_ident(name: str) -> str:
+            return '"' + str(name or "").replace('"', '""') + '"'
+
+        try:
+            conn = sqlite3.connect(gpkg_path)
+        except Exception:
+            return out
+        try:
+            cur = conn.cursor()
+            try:
+                cur.execute(
+                    f"SELECT COUNT(*) FROM {_quote_ident(table_name)} WHERE run_id = ?",
+                    (run_id,),
+                )
+                row = cur.fetchone()
+                out["cell_rows"] = int(row[0]) if row and row[0] is not None else 0
+            except Exception:
+                out["cell_rows"] = 0
+
+            for face_table in ("swe2d_face_flux_results", "swe2d_face_results", "swe2d_flux_faces"):
+                try:
+                    cur.execute(
+                        "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?",
+                        (face_table,),
+                    )
+                    if cur.fetchone() is None:
+                        continue
+                    cur.execute(
+                        f"SELECT COUNT(*) FROM {_quote_ident(face_table)} WHERE run_id = ?",
+                        (run_id,),
+                    )
+                    row = cur.fetchone()
+                    n_face = int(row[0]) if row and row[0] is not None else 0
+                    if n_face > 0:
+                        out["face_table"] = face_table
+                        out["face_rows"] = n_face
+                        break
+                except Exception:
+                    continue
         finally:
             try:
                 conn.close()
@@ -5625,6 +5833,19 @@ class SWE2DWorkbenchDialog(QtWidgets.QDialog):
 
             t_s = panel.current_time_sec() if panel is not None else 0.0
             self._refresh_velocity_vectors_overlay(float(t_s))
+
+            support = self._velocity_data_support_for_run(gpkg_path, run_id, table_name)
+            if int(support.get("face_rows", 0)) > 0:
+                self._log(
+                    "Velocity arrows source mode: face-centered reconstruction preferred "
+                    f"(face_table={support.get('face_table')}, face_rows={int(support.get('face_rows', 0))}, "
+                    f"cell_rows={int(support.get('cell_rows', 0))})."
+                )
+            else:
+                self._log(
+                    "Velocity arrows source mode: cell-centered hu/hv fallback only "
+                    f"(no face flux rows for run_id={run_id}, cell_rows={int(support.get('cell_rows', 0))})."
+                )
             self._log(
                 f"Velocity arrows source added: table='{table_name}', gpkg='{gpkg_path}', run_id='{run_id}', total_sources={len(self._velocity_overlay_sources)}"
             )
@@ -5720,23 +5941,95 @@ class SWE2DWorkbenchDialog(QtWidgets.QDialog):
                 ids = [f.id() for f in lyr.getFeatures()]
                 if ids:
                     dp.deleteFeatures(ids)
+                self._velocity_overlay_feature_ids[source_key] = {}
                 lyr.triggerRepaint()
             except Exception:
                 continue
 
-    def _mesh_cell_centers_for_gpkg(self, gpkg_path: str) -> Tuple[Dict[int, Tuple[float, float]], float]:
+    def _mesh_cell_centers_for_gpkg(
+        self,
+        gpkg_path: str,
+        run_id: str = "",
+        table_name: str = "swe2d_mesh_results",
+    ) -> Tuple[Dict[int, Tuple[float, float]], float]:
         gpkg_path = str(gpkg_path or "").strip()
-        if gpkg_path in self._velocity_cell_xy_cache:
+        run_id = str(run_id or "").strip()
+        table_name = str(table_name or "swe2d_mesh_results").strip() or "swe2d_mesh_results"
+        cache_key = f"{gpkg_path}|{table_name}|{run_id}"
+        if cache_key in self._velocity_cell_xy_cache:
             return (
-                self._velocity_cell_xy_cache.get(gpkg_path, {}),
-                float(self._velocity_base_len_cache.get(gpkg_path, 1.0)),
+                self._velocity_cell_xy_cache.get(cache_key, {}),
+                float(self._velocity_base_len_cache.get(cache_key, 1.0)),
             )
 
         cell_xy: Dict[int, Tuple[float, float]] = {}
         base_len = 1.0
+        mesh_layer_name = ""
+
+        def _quote_ident(name: str) -> str:
+            return '"' + str(name or "").replace('"', '""') + '"'
+
+        expected_n_cells = 0
+        candidate_layers: List[str] = [
+            "swe2d_mesh_cells",
+            "SWE2D_Mesh_Cells",
+            "SWE2D_Mesh_Cells refined 2",
+            "struct_SWE2D_Mesh_Cells",
+            "smol_SWE2D_Mesh_Cells",
+            "GMSH_SWE2D_Mesh_Cells",
+        ]
+
+        if gpkg_path and os.path.exists(gpkg_path):
+            try:
+                conn = sqlite3.connect(gpkg_path)
+                cur = conn.cursor()
+                cur.execute(
+                    "SELECT name FROM sqlite_master WHERE type='table' AND lower(name) LIKE '%mesh_cells%'"
+                )
+                for (nm,) in cur.fetchall():
+                    nm = str(nm or "").strip()
+                    if nm and nm not in candidate_layers:
+                        candidate_layers.append(nm)
+
+                if run_id:
+                    cur.execute(
+                        f"SELECT COUNT(DISTINCT cell_id) FROM {_quote_ident(table_name)} WHERE run_id = ?",
+                        (run_id,),
+                    )
+                    row = cur.fetchone()
+                    expected_n_cells = int(row[0]) if row and row[0] is not None else 0
+
+                best_layer = ""
+                best_score = None
+                for lname in candidate_layers:
+                    try:
+                        cur.execute(f"SELECT COUNT(*) FROM {_quote_ident(lname)}")
+                        row = cur.fetchone()
+                        n_cells = int(row[0]) if row and row[0] is not None else 0
+                    except Exception:
+                        continue
+                    if n_cells <= 0:
+                        continue
+                    if expected_n_cells > 0:
+                        score = abs(n_cells - expected_n_cells)
+                        if best_score is None or score < best_score:
+                            best_score = score
+                            best_layer = lname
+                            if score == 0:
+                                break
+                    elif not best_layer:
+                        best_layer = lname
+                mesh_layer_name = best_layer
+            except Exception:
+                mesh_layer_name = ""
+            finally:
+                try:
+                    conn.close()
+                except Exception:
+                    pass
 
         if _HAVE_QGIS_CORE and QgsVectorLayer is not None and gpkg_path and os.path.exists(gpkg_path):
-            for lname in ("swe2d_mesh_cells", "SWE2D_Mesh_Cells"):
+            for lname in ([mesh_layer_name] if mesh_layer_name else []) + ["swe2d_mesh_cells", "SWE2D_Mesh_Cells"]:
                 try:
                     lyr = QgsVectorLayer(f"{gpkg_path}|layername={lname}", lname, "ogr")
                     if lyr is None or not lyr.isValid():
@@ -5768,6 +6061,11 @@ class SWE2DWorkbenchDialog(QtWidgets.QDialog):
                     if cell_xy:
                         if areas:
                             base_len = max(0.05, float(np.sqrt(max(float(np.nanmean(np.asarray(areas))), 1.0e-9))))
+                        if expected_n_cells > 0 and abs(int(len(cell_xy)) - int(expected_n_cells)) > 0:
+                            self._log(
+                                "Velocity overlay warning: selected mesh layer does not exactly match run cell count "
+                                f"(run_id={run_id}, table={table_name}, expected={expected_n_cells}, got={len(cell_xy)}, layer={lname})."
+                            )
                         break
                 except Exception:
                     continue
@@ -5792,11 +6090,19 @@ class SWE2DWorkbenchDialog(QtWidgets.QDialog):
                     shifted[cid - 1] = xy
             cell_xy.update(shifted)
 
-        self._velocity_cell_xy_cache[gpkg_path] = cell_xy
-        self._velocity_base_len_cache[gpkg_path] = float(base_len)
+        self._velocity_cell_xy_cache[cache_key] = cell_xy
+        self._velocity_base_len_cache[cache_key] = float(base_len)
         return cell_xy, float(base_len)
 
     def _refresh_velocity_vectors_overlay(self, t_s: float):
+        self._velocity_overlay_refresh_token += 1
+        refresh_token = int(self._velocity_overlay_refresh_token)
+        frame_t0 = time.perf_counter()
+        fetch_ms = 0.0
+        build_ms = 0.0
+        draw_ms = 0.0
+        total_vectors = 0
+        total_sources = 0
         panel = getattr(self, "_results_panel", None)
         if panel is None or not panel.velocity_overlay_enabled():
             self._clear_velocity_vectors_layers()
@@ -5818,6 +6124,9 @@ class SWE2DWorkbenchDialog(QtWidgets.QDialog):
         min_speed = max(0.0, float(panel.velocity_min_speed()))
 
         for source in list(self._velocity_overlay_sources):
+            if refresh_token != self._velocity_overlay_refresh_token:
+                return
+            total_sources += 1
             gpkg_path = str(source.get("gpkg_path", "")).strip()
             run_id = str(source.get("run_id", "")).strip()
             table_name = str(source.get("table_name", "swe2d_mesh_results")).strip() or "swe2d_mesh_results"
@@ -5829,11 +6138,26 @@ class SWE2DWorkbenchDialog(QtWidgets.QDialog):
             if lyr is None:
                 continue
 
-            dp = lyr.dataProvider()
-            old_ids = [f.id() for f in lyr.getFeatures()]
-            if old_ids:
-                dp.deleteFeatures(old_ids)
+            cell_to_fid = self._velocity_overlay_feature_ids.get(source_key)
+            if cell_to_fid is None:
+                cell_to_fid = {}
+                self._velocity_overlay_feature_ids[source_key] = cell_to_fid
 
+            dp = lyr.dataProvider()
+            if not cell_to_fid:
+                try:
+                    idx_cell = lyr.fields().indexFromName("cell_id")
+                    if idx_cell >= 0:
+                        for f in lyr.getFeatures():
+                            try:
+                                cid = int(f["cell_id"])
+                                cell_to_fid[cid] = int(f.id())
+                            except Exception:
+                                continue
+                except Exception:
+                    pass
+
+            _tf0 = time.perf_counter()
             snap = builder.load_snapshot(
                 gpkg_path,
                 run_id,
@@ -5841,15 +6165,40 @@ class SWE2DWorkbenchDialog(QtWidgets.QDialog):
                 t_tol=1.0,
                 table_name=table_name,
             )
+            fetch_ms += (time.perf_counter() - _tf0) * 1000.0
             if snap is None:
                 lyr.triggerRepaint()
                 continue
 
-            cell_xy, base_len = self._mesh_cell_centers_for_gpkg(gpkg_path)
+            if not self._velocity_overlay_source_mode_logged.get(source_key, False):
+                try:
+                    support = self._velocity_data_support_for_run(gpkg_path, run_id, table_name)
+                    if str(getattr(snap, "source", "")) == "face_flux_reconstruction":
+                        self._log(
+                            "Velocity rendering mode: using face-centered reconstruction "
+                            f"(run_id={run_id}, table={table_name}, face_table={support.get('face_table')}, "
+                            f"face_rows={int(support.get('face_rows', 0))}, cell_rows={int(support.get('cell_rows', 0))})."
+                        )
+                    else:
+                        self._log(
+                            "Velocity rendering mode: using cell-centered hu/hv "
+                            f"(run_id={run_id}, table={table_name}, no usable face rows detected; "
+                            f"cell_rows={int(support.get('cell_rows', 0))})."
+                        )
+                except Exception:
+                    pass
+                self._velocity_overlay_source_mode_logged[source_key] = True
+
+            cell_xy, base_len = self._mesh_cell_centers_for_gpkg(
+                gpkg_path,
+                run_id=run_id,
+                table_name=table_name,
+            )
             if not cell_xy:
                 lyr.triggerRepaint()
                 continue
 
+            _tb0 = time.perf_counter()
             vecs = builder.build_vectors(
                 snapshot=snap,
                 cell_xy=cell_xy,
@@ -5857,16 +6206,37 @@ class SWE2DWorkbenchDialog(QtWidgets.QDialog):
                 min_depth=1.0e-6,
                 min_speed=min_speed,
             )
+            build_ms += (time.perf_counter() - _tb0) * 1000.0
             if not vecs:
+                existing = list(cell_to_fid.values())
+                if existing:
+                    dp.deleteFeatures(existing)
+                    self._velocity_overlay_feature_ids[source_key] = {}
                 lyr.triggerRepaint()
                 continue
+            total_vectors += int(len(vecs))
 
             source_color = self._velocity_source_color(source_key)
-            feats = []
+            idx_speed = lyr.fields().indexFromName("speed")
+            idx_u = lyr.fields().indexFromName("u")
+            idx_v = lyr.fields().indexFromName("v")
+            idx_ang = lyr.fields().indexFromName("angle_deg")
+            idx_src = lyr.fields().indexFromName("source")
+            idx_color = lyr.fields().indexFromName("color")
+            idx_width = lyr.fields().indexFromName("width")
+
+            new_feats = []
+            geom_updates = {}
+            attr_updates = {}
+            seen_cells = set()
             for v in vecs:
                 speed = float(v.get("speed", 0.0))
                 if speed <= 1.0e-12:
                     continue
+                cid = int(v.get("cell_id", -1))
+                if cid < 0:
+                    continue
+                seen_cells.add(cid)
                 dir_u = float(v.get("u", 0.0)) / speed
                 dir_v = float(v.get("v", 0.0)) / speed
                 line_len = float(base_len) * min(6.0, max(1.0, 1.25 + 1.15 * speed))
@@ -5875,9 +6245,35 @@ class SWE2DWorkbenchDialog(QtWidgets.QDialog):
                 y0 = float(v.get("y", 0.0))
                 x1 = x0 + dir_u * line_len
                 y1 = y0 + dir_v * line_len
+                geom = QgsGeometry.fromPolylineXY([
+                    QgsPointXY(x0, y0),
+                    QgsPointXY(x1, y1),
+                ])
+
+                fid = cell_to_fid.get(cid)
+                if fid is not None:
+                    geom_updates[fid] = geom
+                    updates = {}
+                    if idx_speed >= 0:
+                        updates[idx_speed] = speed
+                    if idx_u >= 0:
+                        updates[idx_u] = float(v.get("u", 0.0))
+                    if idx_v >= 0:
+                        updates[idx_v] = float(v.get("v", 0.0))
+                    if idx_ang >= 0:
+                        updates[idx_ang] = float(v.get("angle_deg", 0.0))
+                    if idx_src >= 0:
+                        updates[idx_src] = str(source.get("label", ""))
+                    if idx_color >= 0:
+                        updates[idx_color] = source_color
+                    if idx_width >= 0:
+                        updates[idx_width] = 0.8
+                    if updates:
+                        attr_updates[fid] = updates
+                    continue
 
                 feat = QgsFeature(lyr.fields())
-                feat.setAttribute("cell_id", int(v.get("cell_id", -1)))
+                feat.setAttribute("cell_id", cid)
                 feat.setAttribute("speed", speed)
                 feat.setAttribute("u", float(v.get("u", 0.0)))
                 feat.setAttribute("v", float(v.get("v", 0.0)))
@@ -5885,18 +6281,36 @@ class SWE2DWorkbenchDialog(QtWidgets.QDialog):
                 feat.setAttribute("source", str(source.get("label", "")))
                 feat.setAttribute("color", source_color)
                 feat.setAttribute("width", 0.8)
-                feat.setGeometry(
-                    QgsGeometry.fromPolylineXY([
-                        QgsPointXY(x0, y0),
-                        QgsPointXY(x1, y1),
-                    ])
-                )
-                feats.append(feat)
+                feat.setGeometry(geom)
+                new_feats.append(feat)
 
-            if feats:
-                dp.addFeatures(feats)
+            _td0 = time.perf_counter()
+            if geom_updates:
+                dp.changeGeometryValues(geom_updates)
+            if attr_updates:
+                dp.changeAttributeValues(attr_updates)
+            if new_feats:
+                ok, added = dp.addFeatures(new_feats)
+                if ok:
+                    for f in added:
+                        try:
+                            cid = int(f["cell_id"])
+                            cell_to_fid[cid] = int(f.id())
+                        except Exception:
+                            continue
+
+            stale_cells = [cid for cid in list(cell_to_fid.keys()) if cid not in seen_cells]
+            if stale_cells:
+                stale_fids = [cell_to_fid[cid] for cid in stale_cells if cid in cell_to_fid]
+                if stale_fids:
+                    dp.deleteFeatures(stale_fids)
+                for cid in stale_cells:
+                    cell_to_fid.pop(cid, None)
+
+            if new_feats or stale_cells:
                 lyr.updateExtents()
             lyr.triggerRepaint()
+            draw_ms += (time.perf_counter() - _td0) * 1000.0
 
         iface = getattr(self, "_iface", None)
         if iface is not None and hasattr(iface, "mapCanvas"):
@@ -5904,6 +6318,18 @@ class SWE2DWorkbenchDialog(QtWidgets.QDialog):
                 iface.mapCanvas().refresh()
             except Exception:
                 pass
+
+        self._velocity_overlay_frame_counter += 1
+        frame_ms = (time.perf_counter() - frame_t0) * 1000.0
+        if (
+            self._velocity_overlay_frame_counter % max(1, int(self._velocity_overlay_perf_log_every)) == 0
+            or frame_ms > 80.0
+        ):
+            self._log(
+                "Velocity overlay perf: "
+                f"frame_ms={frame_ms:.1f}, fetch_ms={fetch_ms:.1f}, build_ms={build_ms:.1f}, draw_ms={draw_ms:.1f}, "
+                f"sources={total_sources}, vectors={total_vectors}, stride={stride}"
+            )
 
     # ------------------------------------------------------------------
 
@@ -6236,6 +6662,19 @@ class SWE2DWorkbenchDialog(QtWidgets.QDialog):
                 ],
             )
             conn.commit()
+            support = self._velocity_data_support_for_run(gpkg_path, run_id, "swe2d_mesh_results")
+            if int(support.get("face_rows", 0)) > 0:
+                self._log(
+                    "Velocity persistence check: both cell-centered and face-centered data are present "
+                    f"(run_id={run_id}, cell_rows={int(support.get('cell_rows', 0))}, "
+                    f"face_table={support.get('face_table')}, face_rows={int(support.get('face_rows', 0))})."
+                )
+            else:
+                self._log(
+                    "Velocity persistence check: only cell-centered h/hu/hv rows were stored for this run; "
+                    "no face-centered flux rows were found in GeoPackage tables "
+                    "(swe2d_face_flux_results / swe2d_face_results / swe2d_flux_faces)."
+                )
             self._log(
                 f"Stored mesh snapshot results in GeoPackage: {gpkg_path} "
                 f"(run_id={run_id}, rows={len(mesh_rows)})"
@@ -7769,6 +8208,8 @@ class SWE2DWorkbenchDialog(QtWidgets.QDialog):
             ("line_output_interval_edit", "editingFinished"),
             ("reconstruction_combo", "currentIndexChanged"),
             ("temporal_order_combo", "currentIndexChanged"),
+            ("equation_set_combo", "currentIndexChanged"),
+            ("experimental_3d_mode_chk", "toggled"),
             ("degen_mode_combo", "currentIndexChanged"),
             ("coupling_loop_combo", "currentIndexChanged"),
             ("drainage_solver_mode_combo", "currentIndexChanged"),
@@ -7865,7 +8306,8 @@ class SWE2DWorkbenchDialog(QtWidgets.QDialog):
         widget_attrs = [
             # Mesh generation
             "nx_spin", "ny_spin", "lx_spin", "ly_spin", "bed_amp_spin", "mesh_layout_combo",
-            # Parameters
+            # Parameters"
+            "n_mann_spin","cfl_spin",
             "h_min_spin", "initial_condition_combo", "initial_depth_spin", "initial_wse_spin",
             "adaptive_cfl_dt_chk", "dt_spin", "gpu_diag_sync_interval_spin", "max_rel_depth_increase_spin",
             "enable_cuda_graphs_chk",
@@ -7879,7 +8321,7 @@ class SWE2DWorkbenchDialog(QtWidgets.QDialog):
             "source_imex_split_chk", "source_stage_coupled_imex_rk2_chk",
             "use_spatial_rain_cn_chk", "infiltration_method_combo", "rain_boundary_buffer_rings_spin", "internal_flow_field_edit",
             "run_time_edit", "output_interval_edit", "line_output_interval_edit",
-            "reconstruction_combo", "temporal_order_combo", "degen_mode_combo", "coupling_loop_combo",
+            "reconstruction_combo", "temporal_order_combo", "equation_set_combo", "experimental_3d_mode_chk", "degen_mode_combo", "coupling_loop_combo",
             "drainage_solver_mode_combo", "drainage_backend_combo", "drainage_gpu_method_combo", "drainage_coupling_substeps_spin",
             "drainage_max_coupling_substeps_spin", "drainage_head_deadband_spin",
             "drainage_dynamic_relaxation_spin", "drainage_adaptive_depth_fraction_spin",
@@ -10124,14 +10566,44 @@ class SWE2DWorkbenchDialog(QtWidgets.QDialog):
                 and str(coupling_loop_mode).strip().lower() == "cuda"
                 and str(drainage_solver_backend_mode).strip().lower() == "gpu"
             ):
-                # Safety guard: avoid CUDA graph replay for RK4 with CUDA drainage/coupling.
+                # Safety guard: avoid CUDA graph replay for higher-order RK with CUDA drainage/coupling.
                 # This combination can trigger illegal memory access on some runs/devices.
-                cuda_graphs_enabled = False
+                cuda_graphs_enabled = True
                 self._log(
-                    "CUDA graph replay auto-disabled for RK4 + CUDA drainage/coupling runtime "
+                    "CUDA graph replay auto-disabled for higher-order RK + CUDA drainage/coupling runtime "
                     "to avoid illegal memory access."
                 )
             os.environ["BACKWATER_ENABLE_CUDA_GRAPHS"] = "1" if cuda_graphs_enabled else "0"
+            equation_set_value = int(self.equation_set_combo.currentData()) if hasattr(self, "equation_set_combo") else 0
+            equation_set = SWE2DEquationSet(equation_set_value) if SWE2DEquationSet is not None else equation_set_value
+            experimental_3d_enabled = bool(
+                hasattr(self, "experimental_3d_mode_chk")
+                and self.experimental_3d_mode_chk is not None
+                and self.experimental_3d_mode_chk.isChecked()
+            )
+            model_options = None
+            if SolverModelOptions is not None:
+                model_options = SolverModelOptions(
+                    temporal_scheme=temporal_scheme,
+                    spatial_discretization=SpatialDiscretization(reconstruction_mode),
+                    godunov_mode=godunov_mode,
+                    equation_set=equation_set,
+                )
+                if experimental_3d_enabled:
+                    if SWE2DThreeDSolverModel is None or SWE2DThreeDCouplingMode is None:
+                        raise RuntimeError("Experimental 3D mode requested but 3D enum support is unavailable in this build.")
+                    if not bool(swe2d_gpu_available()):
+                        raise RuntimeError("Experimental 3D mode requires CUDA GPU availability.")
+                    if SWE2DEquationSet is not None and equation_set != SWE2DEquationSet.HYDROSTATIC_2D:
+                        self._log(
+                            "Experimental 3D mode overrides equation set to Hydrostatic 2D for scaffold validation."
+                        )
+                        equation_set = SWE2DEquationSet.HYDROSTATIC_2D
+                        model_options.equation_set = equation_set
+                    model_options.three_d_solver_model = SWE2DThreeDSolverModel.SINGLE_PHASE_FREE_SURFACE_VOF
+                    model_options.coupling_mode = SWE2DThreeDCouplingMode.OFF
+                    model_options.enforce_gpu_only_advanced_modes = True
+                    model_options.three_d_single_phase_free_surface = True
             rain_rate_model = self._rain_rate_si_to_model(float(self.rain_rate_spin.value()) / 1000.0 / 3600.0)
             internal_flow_forcing = self._build_internal_flow_forcing()
             cell_source_si = self._internal_flow_source_cms_at_time(internal_flow_forcing, 0.0)
@@ -10139,6 +10611,14 @@ class SWE2DWorkbenchDialog(QtWidgets.QDialog):
             thiessen_forcing = self._build_thiessen_rain_cn_forcing()
             pipe_network_cfg = self._build_pipe_network_config()
             hydraulic_structures_cfg = self._build_hydraulic_structure_config()
+
+            # Propagate locally-built drainage/structure configs into model_options
+            # so that enable_pipe_network_module and enable_hydraulic_structures flags are set correctly.
+            if model_options is not None:
+                if pipe_network_cfg is not None:
+                    model_options.pipe_network = pipe_network_cfg
+                if hydraulic_structures_cfg is not None:
+                    model_options.hydraulic_structures = hydraulic_structures_cfg
 
             if self._model_gpkg_path and os.path.exists(self._model_gpkg_path):
                 try:
@@ -10213,7 +10693,14 @@ class SWE2DWorkbenchDialog(QtWidgets.QDialog):
             if dynamic_bc:
                 self._log("Timeseries BC mode active (flow/stage hydrographs).")
 
+            run_mode_name = "2D"
+            if model_options is not None and SWE2DThreeDSolverModel is not None:
+                if int(model_options.three_d_solver_model) == int(SWE2DThreeDSolverModel.SINGLE_PHASE_FREE_SURFACE_VOF):
+                    run_mode_name = "2D + Experimental 3D patch"
+
             self._log("Starting 2D run...")
+            if run_mode_name != "2D":
+                self._log(f"Run mode: {run_mode_name} (uncoupled, validation-only scaffold).")
             self._log(f"Run wallclock start: {run_wallclock_start}")
             self._log(f"Reconstruction mode: {reconstruction_name}")
             self._log(f"Temporal scheme: {temporal_scheme_name}")
@@ -10359,6 +10846,7 @@ class SWE2DWorkbenchDialog(QtWidgets.QDialog):
                     source_imex_split=bool(self.source_imex_split_chk.isChecked()),
                     enable_shallow_front_recon_fallback=bool(self.shallow_front_recon_fallback_chk.isChecked()),
                     gpu_diag_sync_interval_steps=int(self.gpu_diag_sync_interval_spin.value()),
+                    model_options=model_options,
                     spatial_discretization=reconstruction_mode,
                     temporal_scheme=temporal_scheme,
                     godunov_mode=godunov_mode,
@@ -10384,6 +10872,38 @@ class SWE2DWorkbenchDialog(QtWidgets.QDialog):
                     self._log("CUDA graph replay fallback at solver init succeeded.")
                 else:
                     raise
+
+            experimental_3d_runtime = bool(
+                model_options is not None
+                and SWE2DThreeDSolverModel is not None
+                and int(model_options.three_d_solver_model) == int(SWE2DThreeDSolverModel.SINGLE_PHASE_FREE_SURFACE_VOF)
+            )
+
+            def _get_3d_patch_stats() -> Optional[Dict[str, object]]:
+                if not experimental_3d_runtime:
+                    return None
+                if backend is None or not hasattr(backend, "_solver_h"):
+                    return None
+                try:
+                    mod = getattr(backend, "_mod", None)
+                    solver_h = getattr(backend, "_solver_h", None)
+                    if mod is None or solver_h is None or not hasattr(mod, "swe2d_get_3d_patch_stats"):
+                        return None
+                    return dict(mod.swe2d_get_3d_patch_stats(solver_h))
+                except Exception:
+                    return None
+
+            if experimental_3d_runtime:
+                stats0 = _get_3d_patch_stats()
+                if stats0 is not None:
+                    self._log(
+                        "3D patch initialized: "
+                        f"nx={int(stats0.get('nx', 0))} ny={int(stats0.get('ny', 0))} nz={int(stats0.get('nz', 0))} "
+                        f"dx={float(stats0.get('dx', 0.0)):.3f} dy={float(stats0.get('dy', 0.0)):.3f} dz={float(stats0.get('dz', 0.0)):.3f} "
+                        f"cells={int(stats0.get('n_cells', 0))}"
+                    )
+                else:
+                    self._log("3D patch stats unavailable from native module (run continues).")
 
             last_diag = None
             t_accum = 0.0
@@ -11013,6 +11533,19 @@ class SWE2DWorkbenchDialog(QtWidgets.QDialog):
                         f"{rain_diag_txt}"
                         )
                     )
+                    if experimental_3d_runtime:
+                        stats = _get_3d_patch_stats()
+                        if stats is not None:
+                            self._log(
+                                "  3d_patch: "
+                                f"vof=[{float(stats.get('vof_min', float('nan'))):.3e}, "
+                                f"{float(stats.get('vof_max', float('nan'))):.3e}] "
+                                f"vof_sum={float(stats.get('vof_sum', float('nan'))):.6e} "
+                                f"u_rms={float(stats.get('u_rms', float('nan'))):.3e} "
+                                f"v_rms={float(stats.get('v_rms', float('nan'))):.3e} "
+                                f"w_rms={float(stats.get('w_rms', float('nan'))):.3e} "
+                                f"p_abs_max={float(stats.get('p_max_abs', float('nan'))):.3e}"
+                            )
                     if timing_samples > 0:
                         avg_wall = timing_totals_ms["wall"] / timing_samples
                         avg_step = timing_totals_ms["step"] / timing_samples
@@ -11133,6 +11666,11 @@ class SWE2DWorkbenchDialog(QtWidgets.QDialog):
                         mesh_rows,
                         interval_s=output_interval_s,
                     )
+            if self._results_mesh_mode_enabled and self._snapshot_timesteps:
+                try:
+                    self._ensure_results_mesh_layer_mode()
+                except Exception:
+                    pass
             run_wallclock_end = datetime.datetime.now().replace(microsecond=0).isoformat(sep=" ")
             run_duration_wallclock_s = max(0.0, time.perf_counter() - run_perf_start)
             self._log(f"Run wallclock end: {run_wallclock_end}")
@@ -11227,7 +11765,49 @@ class SWE2DWorkbenchDialog(QtWidgets.QDialog):
         self._canvas.draw_idle()
 
 
-def launch_swe2d_workbench(parent=None, iface=None):
+def _normalize_workbench_host_mode(host_mode: object) -> str:
+    mode_txt = str(host_mode or "window").strip().lower()
+    return "dock" if mode_txt in {"dock", "docked", "panel"} else "window"
+
+
+def _close_workbench_windows() -> None:
+    # Close detached dialog windows when switching host mode.
+    while _SWE2D_WORKBENCH_WINDOWS:
+        dlg = _SWE2D_WORKBENCH_WINDOWS.pop()
+        try:
+            dlg.close()
+        except Exception:
+            pass
+
+
+def _remove_workbench_dock(iface_obj) -> None:
+    global _SWE2D_WORKBENCH_DOCK
+    dock = _SWE2D_WORKBENCH_DOCK
+    if dock is None:
+        return
+    try:
+        widget = dock.widget()
+        if widget is not None:
+            try:
+                widget.close()
+            except Exception:
+                pass
+    except Exception:
+        pass
+    try:
+        if iface_obj is not None and hasattr(iface_obj, "removeDockWidget"):
+            iface_obj.removeDockWidget(dock)
+    except Exception:
+        pass
+    try:
+        dock.deleteLater()
+    except Exception:
+        pass
+    _SWE2D_WORKBENCH_DOCK = None
+
+
+def launch_swe2d_workbench(parent=None, iface=None, host_mode: str = "window"):
+    global _SWE2D_WORKBENCH_DOCK
     if iface is None and parent is not None:
         if hasattr(parent, "_get_qgis_iface") and callable(getattr(parent, "_get_qgis_iface")):
             try:
@@ -11246,6 +11826,68 @@ def launch_swe2d_workbench(parent=None, iface=None):
             iface = getattr(_qutils, "iface", None)
         except Exception:
             iface = None
+
+    mode = _normalize_workbench_host_mode(host_mode)
+
+    if mode == "dock":
+        _close_workbench_windows()
+        if _SWE2D_WORKBENCH_DOCK is not None:
+            try:
+                _SWE2D_WORKBENCH_DOCK.show()
+                _SWE2D_WORKBENCH_DOCK.raise_()
+            except Exception:
+                pass
+            return _SWE2D_WORKBENCH_DOCK
+
+        host_window = None
+        if iface is not None and hasattr(iface, "mainWindow"):
+            try:
+                host_window = iface.mainWindow()
+            except Exception:
+                host_window = None
+        if host_window is None:
+            host_window = parent
+
+        dock = QtWidgets.QDockWidget("2D SWE Workbench", host_window)
+        dock.setObjectName("SWE2DWorkbenchDock")
+        dock.setFeatures(
+            QtWidgets.QDockWidget.DockWidgetMovable
+            | QtWidgets.QDockWidget.DockWidgetFloatable
+            | QtWidgets.QDockWidget.DockWidgetClosable,
+        )
+        dlg = SWE2DWorkbenchDialog(host_window, iface=iface)
+        # QDialog carries Qt::Dialog window flags that force an independent OS
+        # window, preventing embedding in a QDockWidget.  Resetting to
+        # Qt::Widget removes those flags so the dialog content sits inline in
+        # the dock panel exactly like any other embedded QWidget.
+        dlg.setWindowFlags(QtCore.Qt.Widget)
+        dock.setWidget(dlg)
+        _SWE2D_WORKBENCH_DOCK = dock
+
+        try:
+            if iface is not None and hasattr(iface, "addDockWidget"):
+                iface.addDockWidget(QtCore.Qt.RightDockWidgetArea, dock)
+            else:
+                dock.show()
+        except Exception:
+            dock.show()
+        try:
+            dock.raise_()
+        except Exception:
+            pass
+        return dock
+
+    _remove_workbench_dock(iface)
+
+    for existing in list(_SWE2D_WORKBENCH_WINDOWS):
+        try:
+            if existing.isVisible():
+                existing.show()
+                existing.raise_()
+                existing.activateWindow()
+                return existing
+        except Exception:
+            pass
 
     dlg = SWE2DWorkbenchDialog(parent, iface=iface)
 

@@ -382,6 +382,7 @@ class BackwaterWidget(QtWidgets.QWidget):
         super().__init__(parent)
         self.setWindowTitle('Backwater — Qt GUI')
         self.resize(1100, 700)
+        self._swe2d_workbench_host_mode = self._load_swe2d_workbench_host_mode()
         # GeoPackage form-first mode keeps all model edits in native QGIS forms.
         self.form_only_mode = True
 
@@ -896,6 +897,12 @@ class BackwaterWidget(QtWidgets.QWidget):
         self.action_open_swe2d_demo = QtGui.QAction('2D SWE Workbench...', self)
         self.action_open_swe2d_demo.triggered.connect(self.open_swe2d_demo_dialog)
         menu.addAction(self.action_open_swe2d_demo)
+
+        self.action_swe2d_workbench_docked = QtGui.QAction('Dock 2D SWE Workbench Panel', self)
+        self.action_swe2d_workbench_docked.setCheckable(True)
+        self.action_swe2d_workbench_docked.setChecked(self._swe2d_workbench_host_mode == 'dock')
+        self.action_swe2d_workbench_docked.toggled.connect(self._on_toggle_swe2d_workbench_host_mode)
+        menu.addAction(self.action_swe2d_workbench_docked)
 
         self.action_unsteady_debug_log_viewer = QtGui.QAction('View Unsteady Debug Log...', self)
         self.action_unsteady_debug_log_viewer.triggered.connect(self.open_unsteady_debug_log_viewer)
@@ -5812,7 +5819,47 @@ else:
                 QMessageBox.critical(self, '2D SWE Workbench', f'Unable to open 2D workbench: {exc}')
                 return
 
-        launch_swe2d_workbench(self)
+        launch_swe2d_workbench(self, host_mode=self._swe2d_workbench_host_mode)
+
+    def _load_swe2d_workbench_host_mode(self) -> str:
+        try:
+            from qgis.core import QgsProject
+
+            raw = QgsProject.instance().readEntry(
+                'Backwater2DWorkbench',
+                'swe2d_workbench_host_mode',
+                'window',
+            )
+            if isinstance(raw, tuple):
+                raw = raw[0] if raw else 'window'
+            mode = str(raw or 'window').strip().lower()
+            return 'dock' if mode in {'dock', 'docked', 'panel'} else 'window'
+        except Exception:
+            return 'window'
+
+    def _save_swe2d_workbench_host_mode(self, mode: str) -> None:
+        try:
+            from qgis.core import QgsProject
+
+            QgsProject.instance().writeEntry(
+                'Backwater2DWorkbench',
+                'swe2d_workbench_host_mode',
+                'dock' if str(mode).strip().lower() == 'dock' else 'window',
+            )
+        except Exception:
+            pass
+
+    def _on_toggle_swe2d_workbench_host_mode(self, checked: bool) -> None:
+        self._swe2d_workbench_host_mode = 'dock' if checked else 'window'
+        self._save_swe2d_workbench_host_mode(self._swe2d_workbench_host_mode)
+        try:
+            from swe2d_workbench_qt import launch_swe2d_workbench
+        except Exception:
+            try:
+                from .swe2d_workbench_qt import launch_swe2d_workbench
+            except Exception:
+                return
+        launch_swe2d_workbench(self, host_mode=self._swe2d_workbench_host_mode)
 
     def open_unsteady_debug_log_viewer(self):
         """Open a dialog for browsing saved unsteady debug records."""

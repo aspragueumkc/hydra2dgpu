@@ -1,1 +1,0 @@
-/usr/bin/c++ -fPIC -g -Wl,--dependency-file=CMakeFiles/backwater_tqmesh.dir/link.d -shared  -o backwater_tqmesh.cpython-313-x86_64-linux-gnu.so CMakeFiles/backwater_tqmesh.dir/cpp/src/tqmesh_bindings.cpp.o

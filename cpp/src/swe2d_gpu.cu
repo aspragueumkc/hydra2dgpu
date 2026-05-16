@@ -28,6 +28,20 @@ namespace cg = cooperative_groups;
 
 namespace {
 
+constexpr int SWE2D_GRAPH_STAGE_SLOTS = 6;
+
+inline int32_t* swe2d_stage_edge_bc_slot(SWE2DDeviceState* dev, int slot) {
+    return dev->d_stage_edge_bc + static_cast<size_t>(slot) * static_cast<size_t>(dev->n_edges);
+}
+
+inline double* swe2d_stage_edge_bc_val_slot(SWE2DDeviceState* dev, int slot) {
+    return dev->d_stage_edge_bc_val + static_cast<size_t>(slot) * static_cast<size_t>(dev->n_edges);
+}
+
+inline double* swe2d_stage_source_slot(SWE2DDeviceState* dev, int slot) {
+    return dev->d_stage_cell_source_mps + static_cast<size_t>(slot) * static_cast<size_t>(dev->n_cells);
+}
+
 struct GhostStateLocal {
     double h;
     double hu;
@@ -613,6 +627,34 @@ __device__ __forceinline__ double interp_series_clamped_cuda(
     return y0 + a * (y1 - y0);
 }
 
+__device__ __forceinline__ double interp_series_slope_clamped_cuda(
+    const double* __restrict__ t,
+    const double* __restrict__ v,
+    int32_t start,
+    int32_t end,
+    double x)
+{
+    if (end - start <= 1) return 0.0;
+    if (x <= t[start]) {
+        const double dt = fmax(t[start + 1] - t[start], 1.0e-12);
+        return (v[start + 1] - v[start]) / dt;
+    }
+    if (x >= t[end - 1]) {
+        const double dt = fmax(t[end - 1] - t[end - 2], 1.0e-12);
+        return (v[end - 1] - v[end - 2]) / dt;
+    }
+
+    int32_t lo = start;
+    int32_t hi = end - 1;
+    while (hi - lo > 1) {
+        const int32_t mid = (lo + hi) >> 1;
+        if (x < t[mid]) hi = mid;
+        else lo = mid;
+    }
+    const double dt = fmax(t[hi] - t[lo], 1.0e-12);
+    return (v[hi] - v[lo]) / dt;
+}
+
 __global__ void swe2d_apply_hydrograph_bc_kernel(
     int32_t n_hg_edges,
     const int32_t* __restrict__ hg_edge_index,
@@ -699,6 +741,124 @@ __global__ void swe2d_build_rain_cn_source_kernel(
 
     const double dt = fmax(t1 - t0, 1.0e-9);
     cell_source_mps[c] = (de * mm_to_model_depth) / dt;
+}
+
+__global__ void swe2d_eval_rain_cn_stage_rate_kernel(
+    int32_t n_cells,
+    const int32_t* __restrict__ cell_gage_idx,
+    const int32_t* __restrict__ hg_offsets,
+    const double*  __restrict__ hg_time_s,
+    const double*  __restrict__ hg_cum_mm,
+    const double*  __restrict__ cn,
+    const double*  __restrict__ cum_rain_mm,
+    double* __restrict__ cell_source_mps,
+    double t_base,
+    double t_stage,
+    double ia_ratio,
+    double mm_to_model_depth)
+{
+    int32_t c = blockIdx.x * blockDim.x + threadIdx.x;
+    if (c >= n_cells) return;
+
+    const int32_t gidx = cell_gage_idx[c];
+    if (gidx < 0) {
+        cell_source_mps[c] = 0.0;
+        return;
+    }
+
+    const int32_t s = hg_offsets[gidx];
+    const int32_t e = hg_offsets[gidx + 1];
+    if (e <= s) {
+        cell_source_mps[c] = 0.0;
+        return;
+    }
+
+    const double r_base = interp_series_clamped_cuda(hg_time_s, hg_cum_mm, s, e, t_base);
+    const double r_stage = interp_series_clamped_cuda(hg_time_s, hg_cum_mm, s, e, t_stage);
+    const double dr = fmax(0.0, r_stage - r_base);
+    const double p = cum_rain_mm[c] + dr;
+
+    const double cn_c = fmin(100.0, fmax(1.0, cn[c]));
+    const double s_mm = fmax((25400.0 / cn_c) - 254.0, 0.0);
+    const double ia = ia_ratio * s_mm;
+    if (p <= ia) {
+        cell_source_mps[c] = 0.0;
+        return;
+    }
+
+    const double a = p - ia;
+    const double b = fmax(p + (1.0 - ia_ratio) * s_mm, 1.0e-12);
+    const double dpe_dp = a * (2.0 * b - a) / (b * b);
+    const double rain_rate_mmps = fmax(0.0, interp_series_slope_clamped_cuda(hg_time_s, hg_cum_mm, s, e, t_stage));
+    cell_source_mps[c] = fmax(0.0, dpe_dp * rain_rate_mmps * mm_to_model_depth);
+}
+
+__global__ void swe2d_stage_source_max_kernel(
+    int32_t n_cells,
+    int32_t n_slots,
+    const double* __restrict__ stage_source,
+    double* __restrict__ cell_source_mps)
+{
+    int32_t c = blockIdx.x * blockDim.x + threadIdx.x;
+    if (c >= n_cells) return;
+
+    double src_max = 0.0;
+    for (int32_t slot = 0; slot < n_slots; ++slot) {
+        const double v = stage_source[static_cast<size_t>(slot) * static_cast<size_t>(n_cells) + static_cast<size_t>(c)];
+        if (isfinite(v) && v > src_max) src_max = v;
+    }
+    cell_source_mps[c] = src_max;
+}
+
+__global__ void swe2d_rk_multi_stage_build_kernel(
+    int32_t n_cells,
+    double* dst_h,
+    double* dst_hu,
+    double* dst_hv,
+    const double* base_h,
+    const double* base_hu,
+    const double* base_hv,
+    const double* k1_h,
+    const double* k1_hu,
+    const double* k1_hv,
+    double a1,
+    const double* k2_h,
+    const double* k2_hu,
+    const double* k2_hv,
+    double a2,
+    const double* k3_h,
+    const double* k3_hu,
+    const double* k3_hv,
+    double a3,
+    const double* k4_h,
+    const double* k4_hu,
+    const double* k4_hv,
+    double a4,
+    const double* k5_h,
+    const double* k5_hu,
+    const double* k5_hv,
+    double a5,
+    const double* k6_h,
+    const double* k6_hu,
+    const double* k6_hv,
+    double a6)
+{
+    int32_t c = blockIdx.x * blockDim.x + threadIdx.x;
+    if (c >= n_cells) return;
+
+    double h = base_h[c];
+    double hu = base_hu[c];
+    double hv = base_hv[c];
+    if (k1_h) { h += a1 * k1_h[c]; hu += a1 * k1_hu[c]; hv += a1 * k1_hv[c]; }
+    if (k2_h) { h += a2 * k2_h[c]; hu += a2 * k2_hu[c]; hv += a2 * k2_hv[c]; }
+    if (k3_h) { h += a3 * k3_h[c]; hu += a3 * k3_hu[c]; hv += a3 * k3_hv[c]; }
+    if (k4_h) { h += a4 * k4_h[c]; hu += a4 * k4_hu[c]; hv += a4 * k4_hv[c]; }
+    if (k5_h) { h += a5 * k5_h[c]; hu += a5 * k5_hu[c]; hv += a5 * k5_hv[c]; }
+    if (k6_h) { h += a6 * k6_h[c]; hu += a6 * k6_hu[c]; hv += a6 * k6_hv[c]; }
+
+    dst_h[c] = h;
+    dst_hu[c] = hu;
+    dst_hv[c] = hv;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -807,6 +967,7 @@ __global__ void swe2d_flux_kernel(
         const int scheme_robust = static_cast<int>(SWE2DSpatialScheme::FV_MUSCL_MINMOD);
         const int scheme_mc     = static_cast<int>(SWE2DSpatialScheme::FV_MUSCL_MC);
         const int scheme_vl     = static_cast<int>(SWE2DSpatialScheme::FV_MUSCL_VAN_LEER);
+        const int scheme_weno3  = static_cast<int>(SWE2DSpatialScheme::FV_WENO3_LIKE);
         const double recon_fallback_depth = fmax(h_min, 0.5 * shallow_damping_depth);
         const bool shallow_pair = (hL < recon_fallback_depth) || (hR < recon_fallback_depth);
         const bool disable_higher_order = enable_shallow_front_recon_fallback && shallow_pair;
@@ -865,15 +1026,73 @@ __global__ void swe2d_flux_kernel(
                 qR_out = fmin(qmax, fmax(qmin, rawR));
             };
 
+            // WENO3-like helper on unstructured cell pairs:
+            // blend GG-extrapolated state with pair-midpoint state using
+            // nonlinear smoothness weights, then enforce pair-bounds clamp.
+            auto weno3_like_reconstruct = [&](double q0, double q1,
+                                              double gx0, double gy0,
+                                              double gx1, double gy1,
+                                              double& qL_out, double& qR_out) {
+                const double dq = q1 - q0;
+                const double dxL = fx - cell_cx[c0];
+                const double dyL = fy - cell_cy[c0];
+                const double dxR = fx - cell_cx[c1];
+                const double dyR = fy - cell_cy[c1];
+
+                const double pL_grad = q0 + (gx0 * dxL + gy0 * dyL);
+                const double pR_grad = q1 + (gx1 * dxR + gy1 * dyR);
+                const double pL_mid  = q0 + 0.5 * dq;
+                const double pR_mid  = q1 - 0.5 * dq;
+
+                const double scale = q0 * q0 + q1 * q1 + dq * dq;
+                const double eps_weno = 1.0e-20 + 1.0e-12 * fmax(1.0, scale);
+                const double betaL0 = (pL_grad - q0) * (pL_grad - q0);
+                const double betaL1 = dq * dq;
+                const double betaR0 = (pR_grad - q1) * (pR_grad - q1);
+                const double betaR1 = dq * dq;
+
+                // Jump-aware linear weights:
+                // favor GG reconstruction in smooth regions; reduce its weight
+                // near strong local jumps for additional robustness.
+                const double jump_ratio = fabs(dq) / (fabs(q0) + fabs(q1) + 1.0e-12);
+                const double d0 = (jump_ratio < 0.25) ? (2.0 / 3.0) : 0.52;
+                const double d1 = 1.0 - d0;
+
+                const double aL0 = d0 / ((eps_weno + betaL0) * (eps_weno + betaL0));
+                const double aL1 = d1 / ((eps_weno + betaL1) * (eps_weno + betaL1));
+                const double sumL = aL0 + aL1;
+                const double wL0 = (sumL > 0.0) ? (aL0 / sumL) : d0;
+                const double wL1 = (sumL > 0.0) ? (aL1 / sumL) : d1;
+
+                const double aR0 = d0 / ((eps_weno + betaR0) * (eps_weno + betaR0));
+                const double aR1 = d1 / ((eps_weno + betaR1) * (eps_weno + betaR1));
+                const double sumR = aR0 + aR1;
+                const double wR0 = (sumR > 0.0) ? (aR0 / sumR) : d0;
+                const double wR1 = (sumR > 0.0) ? (aR1 / sumR) : d1;
+
+                const double rawL = wL0 * pL_grad + wL1 * pL_mid;
+                const double rawR = wR0 * pR_grad + wR1 * pR_mid;
+                const double qmin = fmin(q0, q1);
+                const double qmax = fmax(q0, q1);
+                qL_out = fmin(qmax, fmax(qmin, rawL));
+                qR_out = fmin(qmax, fmax(qmin, rawR));
+            };
+
             // Reconstruct free surface eta=h+zb using grad_h* (which stores
             // Green-Gauss gradients of eta from swe2d_gradient_kernel), then
             // convert back to depth for hydrostatic reconstruction.
             double etaL_rec, etaR_rec, huL_rec, huR_rec, hvL_rec, hvR_rec;
             const double etaL = hL + zbL;
             const double etaR = hR + zbR;
-            tvd_reconstruct(etaL, etaR, grad_hx[c0], grad_hy[c0], grad_hx[c1], grad_hy[c1], etaL_rec, etaR_rec);
-            tvd_reconstruct(huL, huR, grad_hux[c0], grad_huy[c0], grad_hux[c1], grad_huy[c1], huL_rec, huR_rec);
-            tvd_reconstruct(hvL, hvR, grad_hvx[c0], grad_hvy[c0], grad_hvx[c1], grad_hvy[c1], hvL_rec, hvR_rec);
+            if (spatial_scheme == scheme_weno3) {
+                weno3_like_reconstruct(etaL, etaR, grad_hx[c0], grad_hy[c0], grad_hx[c1], grad_hy[c1], etaL_rec, etaR_rec);
+                weno3_like_reconstruct(huL, huR, grad_hux[c0], grad_huy[c0], grad_hux[c1], grad_huy[c1], huL_rec, huR_rec);
+                weno3_like_reconstruct(hvL, hvR, grad_hvx[c0], grad_hvy[c0], grad_hvx[c1], grad_hvy[c1], hvL_rec, hvR_rec);
+            } else {
+                tvd_reconstruct(etaL, etaR, grad_hx[c0], grad_hy[c0], grad_hx[c1], grad_hy[c1], etaL_rec, etaR_rec);
+                tvd_reconstruct(huL, huR, grad_hux[c0], grad_huy[c0], grad_hux[c1], grad_huy[c1], huL_rec, huR_rec);
+                tvd_reconstruct(hvL, hvR, grad_hvx[c0], grad_hvy[c0], grad_hvx[c1], grad_hvy[c1], hvL_rec, hvR_rec);
+            }
 
             hL  = fmax(0.0, etaL_rec - zbL);
             hR  = fmax(0.0, etaR_rec - zbR);
@@ -1198,11 +1417,77 @@ __global__ void swe2d_rk2_combine_kernel(
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Classic RK4 combine kernel: y_new = y0 + (dt/6)*(k1 + 2*k2 + 2*k3 + k4)
-// Inputs: h0, hu0, hv0 (initial state at t_n), and h1-h3, hu1-hu3, hv1-hv3 (stages)
-// The current d_h, d_hu, d_hv contain stage k4 (full step result from t_n+3dt/4)
-// Output: y_new stored in cell_h, cell_hu, cell_hv
+// RK4 helper kernels.
+// We keep the intermediate stages device-resident and only combine on the GPU:
+//   1. capture half-step increments k_i = 2 * (y_half - y_stage)
+//   2. build the next stage state from y0 and the captured increment
+//   3. final combine y_{n+1} = y0 + (1/6) * (k1 + 2k2 + 2k3 + k4)
 // ─────────────────────────────────────────────────────────────────────────────
+__global__ void swe2d_rk4_capture_increment_kernel(
+    int32_t n_cells,
+    double* dst_h,
+    double* dst_hu,
+    double* dst_hv,
+    const double* stage_h,
+    const double* stage_hu,
+    const double* stage_hv,
+    const double* base_h,
+    const double* base_hu,
+    const double* base_hv)
+{
+    int32_t c = blockIdx.x * blockDim.x + threadIdx.x;
+    if (c >= n_cells) return;
+
+    dst_h[c]  = 2.0 * (stage_h[c]  - base_h[c]);
+    dst_hu[c] = 2.0 * (stage_hu[c] - base_hu[c]);
+    dst_hv[c] = 2.0 * (stage_hv[c] - base_hv[c]);
+}
+
+__global__ void swe2d_rk4_build_stage_kernel(
+    int32_t n_cells,
+    double* dst_h,
+    double* dst_hu,
+    double* dst_hv,
+    const double* base_h,
+    const double* base_hu,
+    const double* base_hv,
+    const double* inc_h,
+    const double* inc_hu,
+    const double* inc_hv,
+    double inc_scale)
+{
+    int32_t c = blockIdx.x * blockDim.x + threadIdx.x;
+    if (c >= n_cells) return;
+
+    dst_h[c]  = base_h[c]  + inc_scale * inc_h[c];
+    dst_hu[c] = base_hu[c] + inc_scale * inc_hu[c];
+    dst_hv[c] = base_hv[c] + inc_scale * inc_hv[c];
+}
+
+__global__ void swe2d_rk4_shift_from_reference_kernel(
+    int32_t n_cells,
+    double* dst_h,
+    double* dst_hu,
+    double* dst_hv,
+    const double* base_h,
+    const double* base_hu,
+    const double* base_hv,
+    const double* current_h,
+    const double* current_hu,
+    const double* current_hv,
+    const double* ref_h,
+    const double* ref_hu,
+    const double* ref_hv,
+    double scale)
+{
+    int32_t c = blockIdx.x * blockDim.x + threadIdx.x;
+    if (c >= n_cells) return;
+
+    dst_h[c]  = base_h[c]  + scale * (current_h[c]  - ref_h[c]);
+    dst_hu[c] = base_hu[c] + scale * (current_hu[c] - ref_hu[c]);
+    dst_hv[c] = base_hv[c] + scale * (current_hv[c] - ref_hv[c]);
+}
+
 __global__ void swe2d_rk4_combine_kernel(
     int32_t n_cells,
     double* cell_h,           // Output: y_new (currently holds k4 result)
@@ -1211,39 +1496,33 @@ __global__ void swe2d_rk4_combine_kernel(
     const double* h0,         // Stage 0: initial condition y0
     const double* hu0,
     const double* hv0,
-    const double* h1,         // Stage 1: k1 = f(t, y0) evaluated over dt
+    const double* k1,         // Stage 1 increment over dt/2, scaled to full dt
     const double* hu1,
     const double* hv1,
-    const double* h2,         // Stage 2: k2 = f(t + dt/2, y0 + k1/2) evaluated over dt
+    const double* k2,         // Stage 2 increment over dt/2, scaled to full dt
     const double* hu2,
     const double* hv2,
-    const double* h3,         // Stage 3: k3 = f(t + dt/2, y0 + k2/2) evaluated over dt
+    const double* stage4_h,   // Stage 4 state: y0 + k3
     const double* hu3,
     const double* hv3,
-    // cell_h/hu/hv at entry contain k4 = f(t + dt, y0 + k3) evaluated over dt
+    // cell_h/hu/hv at entry contain y4_half = stage4_h + 0.5 * k4
     double* d_max_wse_elev_error,
     double h_min)
 {
     int32_t c = blockIdx.x * blockDim.x + threadIdx.x;
     if (c >= n_cells) return;
 
-    // RK4 formula: y_new = y0 + (dt/6)*(k1 + 2*k2 + 2*k3 + k4)
-    // But since each stage is already integrated over dt, we need to scale:
-    // k_i is the increment from one full step, so final is:
-    // y_new = y0 + (1/6)*(k1 + 2*k2 + 2*k3 + k4)
+    const double k3_h  = stage4_h[c]  - h0[c];
+    const double k3_hu = hu3[c]       - hu0[c];
+    const double k3_hv = hv3[c]       - hv0[c];
+    const double k4_h  = 2.0 * (cell_h[c]  - stage4_h[c]);
+    const double k4_hu = 2.0 * (cell_hu[c] - hu3[c]);
+    const double k4_hv = 2.0 * (cell_hv[c] - hv3[c]);
+
     const double one_sixth = 1.0 / 6.0;
-    const double h_new = h0[c] + one_sixth * (h1[c] - h0[c] + 
-                                              2.0 * (h2[c] - h0[c]) + 
-                                              2.0 * (h3[c] - h0[c]) + 
-                                              (cell_h[c] - h0[c]));
-    const double hu_new = hu0[c] + one_sixth * (hu1[c] - hu0[c] + 
-                                                2.0 * (hu2[c] - hu0[c]) + 
-                                                2.0 * (hu3[c] - hu0[c]) + 
-                                                (cell_hu[c] - hu0[c]));
-    const double hv_new = hv0[c] + one_sixth * (hv1[c] - hv0[c] + 
-                                                2.0 * (hv2[c] - hv0[c]) + 
-                                                2.0 * (hv3[c] - hv0[c]) + 
-                                                (cell_hv[c] - hv0[c]));
+    const double h_new = h0[c] + one_sixth * (k1[c] + 2.0 * k2[c] + 2.0 * k3_h + k4_h);
+    const double hu_new = hu0[c] + one_sixth * (hu1[c] + 2.0 * hu2[c] + 2.0 * k3_hu + k4_hu);
+    const double hv_new = hv0[c] + one_sixth * (hv1[c] + 2.0 * hv2[c] + 2.0 * k3_hv + k4_hv);
 
     const double h_final = (h_new < 0.0) ? 0.0 : h_new;
     cell_h[c] = h_final;
@@ -1259,6 +1538,276 @@ __global__ void swe2d_rk4_combine_kernel(
     if (d_max_wse_elev_error) {
         const double depth_res = fabs(h_final - h0[c]);
         atomicMaxDouble(d_max_wse_elev_error, depth_res);
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// RK4 graph-safe helpers: pure L(U) collector and 4-stage Butcher-tableau combine.
+// These support temporal_order=5 (swe2d_gpu_step_rk4_graph).
+// ─────────────────────────────────────────────────────────────────────────────
+
+// Accumulates the flux divergence + source into a k-vector (slope × dt).
+// Does NOT update cell state, does NOT apply friction or positivity.
+// Safe to capture in a CUDA graph: pointer addresses are fixed across steps.
+__global__ void swe2d_rk4_rhs_collect_kernel(
+    int32_t                     n_cells,
+    const int32_t* __restrict__ cell_edge_offsets,
+    const int32_t* __restrict__ cell_edge_ids,
+    const int32_t* __restrict__ edge_c0,
+    const int32_t* __restrict__ edge_c1,
+    double*                     k_h,
+    double*                     k_hu,
+    double*                     k_hv,
+    const double*  __restrict__ flux_h,
+    const double*  __restrict__ flux_hu,
+    const double*  __restrict__ flux_hv,
+    const double*  __restrict__ flux_hu_r,
+    const double*  __restrict__ flux_hv_r,
+    const double*  __restrict__ cell_inv_area,
+    const double*  __restrict__ cell_source_mps,
+    const double*  __restrict__ external_source_mps,
+    const int32_t* __restrict__ d_active,
+    const int32_t* __restrict__ d_degen_mask,
+    const double*  __restrict__ d_inv_area_repaired,
+    int                         degen_mode,
+    double                      max_inv_area,
+    double                      dt)
+{
+    int32_t c = blockIdx.x * blockDim.x + threadIdx.x;
+    if (c >= n_cells) return;
+
+    // Inactive cells contribute zero slope.
+    if (d_active && !d_active[c]) {
+        k_h[c] = 0.0; k_hu[c] = 0.0; k_hv[c] = 0.0;
+        return;
+    }
+    // Degen modes 1 and 3: skip entirely (flux was dropped/redirected).
+    if (d_degen_mask && d_degen_mask[c] && degen_mode != 2) {
+        k_h[c] = 0.0; k_hu[c] = 0.0; k_hv[c] = 0.0;
+        return;
+    }
+
+    double inv_a;
+    if (degen_mode == 2 && d_inv_area_repaired && d_degen_mask && d_degen_mask[c]) {
+        inv_a = d_inv_area_repaired[c];
+    } else {
+        inv_a = cell_inv_area[c];
+        const double max_inv_a = fmax(max_inv_area, 1.0);
+        if (inv_a > max_inv_a) inv_a = max_inv_a;
+    }
+
+    double fh = 0.0, fhu = 0.0, fhv = 0.0;
+    const int32_t s = cell_edge_offsets[c];
+    const int32_t e = cell_edge_offsets[c + 1];
+    for (int32_t ki = s; ki < e; ++ki) {
+        const int32_t edge = cell_edge_ids[ki];
+        if (edge_c0[edge] == c) {
+            fh  += flux_h[edge];
+            fhu += flux_hu[edge];
+            fhv += flux_hv[edge];
+        } else {
+            fh  -= flux_h[edge];
+            fhu += flux_hu_r ? flux_hu_r[edge] : -flux_hu[edge];
+            fhv += flux_hv_r ? flux_hv_r[edge] : -flux_hv[edge];
+        }
+    }
+
+    if (!isfinite(fh))  fh  = 0.0;
+    if (!isfinite(fhu)) fhu = 0.0;
+    if (!isfinite(fhv)) fhv = 0.0;
+
+    const double src = ((cell_source_mps    ? cell_source_mps[c]    : 0.0) +
+                        (external_source_mps ? external_source_mps[c] : 0.0));
+    const double src_safe = isfinite(src) ? src : 0.0;
+
+    k_h[c]  = dt * (fh  * inv_a + src_safe);
+    k_hu[c] = dt *  fhu * inv_a;
+    k_hv[c] = dt *  fhv * inv_a;
+}
+
+// Combines the four RK4 slopes with Butcher-tableau weights (1,2,2,1)/6,
+// then applies positivity, shallow damping, Manning friction, momentum cap,
+// and NaN guard on the final combined state.  Writes into cell_h/hu/hv.
+__global__ void swe2d_rk4_graph_combine_kernel(
+    int32_t                     n_cells,
+    double*                     cell_h,
+    double*                     cell_hu,
+    double*                     cell_hv,
+    const double*  __restrict__ h0,
+    const double*  __restrict__ hu0,
+    const double*  __restrict__ hv0,
+    const double*  __restrict__ k1_h,
+    const double*  __restrict__ k1_hu,
+    const double*  __restrict__ k1_hv,
+    const double*  __restrict__ k2_h,
+    const double*  __restrict__ k2_hu,
+    const double*  __restrict__ k2_hv,
+    const double*  __restrict__ k3_h,
+    const double*  __restrict__ k3_hu,
+    const double*  __restrict__ k3_hv,
+    const double*  __restrict__ k4_h,
+    const double*  __restrict__ k4_hu,
+    const double*  __restrict__ k4_hv,
+    double*                     d_max_wse_elev_error,
+    const double*  __restrict__ cell_n_mann,
+    double                      g,
+    double                      h_min,
+    double                      shallow_damping_depth,
+    double                      dt,
+    double                      momentum_cap_min_speed,
+    double                      momentum_cap_celerity_mult)
+{
+    int32_t c = blockIdx.x * blockDim.x + threadIdx.x;
+    if (c >= n_cells) return;
+
+    // Classic RK4 combination: y_new = y0 + (1/6)(k1 + 2k2 + 2k3 + k4)
+    const double one_sixth = 1.0 / 6.0;
+    double h_new  = h0[c]  + one_sixth * (k1_h[c]  + 2.0*k2_h[c]  + 2.0*k3_h[c]  + k4_h[c]);
+    double hu_new = hu0[c] + one_sixth * (k1_hu[c] + 2.0*k2_hu[c] + 2.0*k3_hu[c] + k4_hu[c]);
+    double hv_new = hv0[c] + one_sixth * (k1_hv[c] + 2.0*k2_hv[c] + 2.0*k3_hv[c] + k4_hv[c]);
+
+    // NaN guard (before positivity so NaN doesn't propagate)
+    if (!isfinite(h_new))  h_new  = 0.0;
+    if (!isfinite(hu_new)) hu_new = 0.0;
+    if (!isfinite(hv_new)) hv_new = 0.0;
+
+    // Positivity
+    if (h_new < 0.0) h_new = 0.0;
+    double h_final = h_new;
+
+    if (h_final < h_min) {
+        hu_new = 0.0;
+        hv_new = 0.0;
+    } else if (shallow_damping_depth > h_min && h_final < shallow_damping_depth) {
+        // Hermite smoothstep: damps momentum smoothly near the wet/dry front
+        const double t   = (h_final - h_min) / (shallow_damping_depth - h_min);
+        const double t_s = fmin(1.0, fmax(0.0, t));
+        const double scale = t_s * t_s * (3.0 - 2.0 * t_s);
+        hu_new *= scale;
+        hv_new *= scale;
+    }
+
+    // Manning friction (semi-implicit) on the combined final state
+    if (h_final >= h_min) {
+        double n_mann = cell_n_mann[c];
+        apply_friction_cuda_local(h_final, hu_new, hv_new, dt, n_mann, g, h_min);
+    }
+
+    // Momentum cap
+    if (h_final > h_min) {
+        const double inv_h = 1.0 / h_final;
+        const double u = hu_new * inv_h;
+        const double v = hv_new * inv_h;
+        const double spd = sqrt(u*u + v*v);
+        const double spd_cap = fmax(momentum_cap_min_speed,
+                                    momentum_cap_celerity_mult * sqrt(g * h_final));
+        if (isfinite(spd) && spd > spd_cap && spd > 0.0) {
+            const double scale = spd_cap / spd;
+            hu_new *= scale;
+            hv_new *= scale;
+        }
+    }
+
+    cell_h[c]  = h_final;
+    cell_hu[c] = hu_new;
+    cell_hv[c] = hv_new;
+
+    if (d_max_wse_elev_error) {
+        atomicMaxDouble(d_max_wse_elev_error, fabs(h_final - h0[c]));
+    }
+}
+
+__global__ void swe2d_rk5_graph_combine_kernel(
+    int32_t                     n_cells,
+    double*                     cell_h,
+    double*                     cell_hu,
+    double*                     cell_hv,
+    const double*  __restrict__ h0,
+    const double*  __restrict__ hu0,
+    const double*  __restrict__ hv0,
+    const double*  __restrict__ k1_h,
+    const double*  __restrict__ k1_hu,
+    const double*  __restrict__ k1_hv,
+    const double*  __restrict__ k3_h,
+    const double*  __restrict__ k3_hu,
+    const double*  __restrict__ k3_hv,
+    const double*  __restrict__ k4_h,
+    const double*  __restrict__ k4_hu,
+    const double*  __restrict__ k4_hv,
+    const double*  __restrict__ k6_h,
+    const double*  __restrict__ k6_hu,
+    const double*  __restrict__ k6_hv,
+    double*                     d_max_wse_elev_error,
+    const double*  __restrict__ cell_n_mann,
+    double                      g,
+    double                      h_min,
+    double                      shallow_damping_depth,
+    double                      dt,
+    double                      momentum_cap_min_speed,
+    double                      momentum_cap_celerity_mult)
+{
+    int32_t c = blockIdx.x * blockDim.x + threadIdx.x;
+    if (c >= n_cells) return;
+
+    double h_new = h0[c]
+        + (37.0 / 378.0) * k1_h[c]
+        + (250.0 / 621.0) * k3_h[c]
+        + (125.0 / 594.0) * k4_h[c]
+        + (512.0 / 1771.0) * k6_h[c];
+    double hu_new = hu0[c]
+        + (37.0 / 378.0) * k1_hu[c]
+        + (250.0 / 621.0) * k3_hu[c]
+        + (125.0 / 594.0) * k4_hu[c]
+        + (512.0 / 1771.0) * k6_hu[c];
+    double hv_new = hv0[c]
+        + (37.0 / 378.0) * k1_hv[c]
+        + (250.0 / 621.0) * k3_hv[c]
+        + (125.0 / 594.0) * k4_hv[c]
+        + (512.0 / 1771.0) * k6_hv[c];
+
+    if (!isfinite(h_new))  h_new = 0.0;
+    if (!isfinite(hu_new)) hu_new = 0.0;
+    if (!isfinite(hv_new)) hv_new = 0.0;
+
+    if (h_new < 0.0) h_new = 0.0;
+    double h_final = h_new;
+
+    if (h_final < h_min) {
+        hu_new = 0.0;
+        hv_new = 0.0;
+    } else if (shallow_damping_depth > h_min && h_final < shallow_damping_depth) {
+        const double t = (h_final - h_min) / (shallow_damping_depth - h_min);
+        const double t_s = fmin(1.0, fmax(0.0, t));
+        const double scale = t_s * t_s * (3.0 - 2.0 * t_s);
+        hu_new *= scale;
+        hv_new *= scale;
+    }
+
+    if (h_final >= h_min) {
+        double n_mann = cell_n_mann[c];
+        apply_friction_cuda_local(h_final, hu_new, hv_new, dt, n_mann, g, h_min);
+    }
+
+    if (h_final > h_min) {
+        const double inv_h = 1.0 / h_final;
+        const double u = hu_new * inv_h;
+        const double v = hv_new * inv_h;
+        const double spd = sqrt(u * u + v * v);
+        const double spd_cap = fmax(momentum_cap_min_speed,
+                                    momentum_cap_celerity_mult * sqrt(g * h_final));
+        if (isfinite(spd) && spd > spd_cap && spd > 0.0) {
+            const double scale = spd_cap / spd;
+            hu_new *= scale;
+            hv_new *= scale;
+        }
+    }
+
+    cell_h[c] = h_final;
+    cell_hu[c] = hu_new;
+    cell_hv[c] = hv_new;
+
+    if (d_max_wse_elev_error) {
+        atomicMaxDouble(d_max_wse_elev_error, fabs(h_final - h0[c]));
     }
 }
 
@@ -2050,6 +2599,22 @@ SWE2DDeviceState* swe2d_gpu_init(
     alloc_d(reinterpret_cast<void**>(&dev->d_h3),  sz_cells * sizeof(double));
     alloc_d(reinterpret_cast<void**>(&dev->d_hu3), sz_cells * sizeof(double));
     alloc_d(reinterpret_cast<void**>(&dev->d_hv3), sz_cells * sizeof(double));
+    // k4 slope buffer for true RK4 (temporal_order=5, graph-safe)
+    alloc_d(reinterpret_cast<void**>(&dev->d_k4_h),  sz_cells * sizeof(double));
+    alloc_d(reinterpret_cast<void**>(&dev->d_k4_hu), sz_cells * sizeof(double));
+    alloc_d(reinterpret_cast<void**>(&dev->d_k4_hv), sz_cells * sizeof(double));
+    alloc_d(reinterpret_cast<void**>(&dev->d_k5_h),  sz_cells * sizeof(double));
+    alloc_d(reinterpret_cast<void**>(&dev->d_k5_hu), sz_cells * sizeof(double));
+    alloc_d(reinterpret_cast<void**>(&dev->d_k5_hv), sz_cells * sizeof(double));
+    alloc_d(reinterpret_cast<void**>(&dev->d_k6_h),  sz_cells * sizeof(double));
+    alloc_d(reinterpret_cast<void**>(&dev->d_k6_hu), sz_cells * sizeof(double));
+    alloc_d(reinterpret_cast<void**>(&dev->d_k6_hv), sz_cells * sizeof(double));
+    alloc_d(reinterpret_cast<void**>(&dev->d_cell_source_mps), sz_cells * sizeof(double));
+    alloc_d(reinterpret_cast<void**>(&dev->d_stage_cell_source_mps), static_cast<size_t>(SWE2D_GRAPH_STAGE_SLOTS) * sz_cells * sizeof(double));
+    alloc_d(reinterpret_cast<void**>(&dev->d_stage_edge_bc), static_cast<size_t>(SWE2D_GRAPH_STAGE_SLOTS) * sz_edges * sizeof(int32_t));
+    alloc_d(reinterpret_cast<void**>(&dev->d_stage_edge_bc_val), static_cast<size_t>(SWE2D_GRAPH_STAGE_SLOTS) * sz_edges * sizeof(double));
+    CUDA_CHECK(cudaMemset(dev->d_cell_source_mps, 0, sz_cells * sizeof(double)));
+    CUDA_CHECK(cudaMemset(dev->d_stage_cell_source_mps, 0, static_cast<size_t>(SWE2D_GRAPH_STAGE_SLOTS) * sz_cells * sizeof(double)));
 
     // Edge flux buffers (consumed by the cell-centric update kernel).
     alloc_d(reinterpret_cast<void**>(&dev->d_flux_h),    sz_edges * sizeof(double));
@@ -3024,18 +3589,18 @@ void swe2d_gpu_step_rk4(
     const uint64_t graph_launches_before = dev->graph_replay_count;
     const int32_t prev_graph_integrator = dev->kernel_graph_cache.time_integrator;
     dev->kernel_graph_cache.time_integrator = 4;
+    const double dt_half = 0.5 * dt;
 
-    // ──────────────────────────────────────────────────────────────────────────
-    // Stage 1: k1 = dt * f(t_n, y_n)
-    // ──────────────────────────────────────────────────────────────────────────
-    // Save initial state in d_h0, d_hu0, d_hv0
+    // Save initial state in d_h0, d_hu0, d_hv0.
     CUDA_CHECK(cudaMemcpyAsync(dev->d_h0,  dev->d_h,  sz, cudaMemcpyDeviceToDevice, dev->d_stream));
     CUDA_CHECK(cudaMemcpyAsync(dev->d_hu0, dev->d_hu, sz, cudaMemcpyDeviceToDevice, dev->d_stream));
     CUDA_CHECK(cudaMemcpyAsync(dev->d_hv0, dev->d_hv, sz, cudaMemcpyDeviceToDevice, dev->d_stream));
-    
-    // Execute one full step: d_h, d_hu, d_hv will contain y_n + k1 after this
+
     SWE2DStepDiag tmp_diag;
-    swe2d_gpu_step(dev, t_now, dt, g, h_min, spatial_scheme, cfl_factor,
+    int grid = (n_cells + BLOCK - 1) / BLOCK;
+
+    // Stage 1: evaluate at t_n and capture k1.
+    swe2d_gpu_step(dev, t_now, dt_half, g, h_min, spatial_scheme, cfl_factor,
                    max_inv_area, cfl_lambda_cap,
                    momentum_cap_min_speed, momentum_cap_celerity_mult,
                    depth_cap, max_rel_depth_increase, shallow_damping_depth,
@@ -3044,71 +3609,23 @@ void swe2d_gpu_step_rk4(
                    enable_shallow_front_recon_fallback,
                    false, &tmp_diag,
                    front_flux_damping, active_set_hysteresis);
-    
-    // Save k1 result in d_h1, d_hu1, d_hv1
     CUDA_CHECK(cudaMemcpyAsync(dev->d_h1,  dev->d_h,  sz, cudaMemcpyDeviceToDevice, dev->d_stream));
     CUDA_CHECK(cudaMemcpyAsync(dev->d_hu1, dev->d_hu, sz, cudaMemcpyDeviceToDevice, dev->d_stream));
     CUDA_CHECK(cudaMemcpyAsync(dev->d_hv1, dev->d_hv, sz, cudaMemcpyDeviceToDevice, dev->d_stream));
-    
-    // ──────────────────────────────────────────────────────────────────────────
-    // Stage 2: k2 = dt * f(t_n + dt/2, y_n + k1/2)
-    // ──────────────────────────────────────────────────────────────────────────
-    // Restore y_n and compute y_n + k1/2
-    int grid = (n_cells + BLOCK - 1) / BLOCK;
-    // Use a simpler approach: directly modify the state by computing average in-place
-    swe2d_gpu_step(dev, t_now + 0.5*dt, dt, g, h_min, spatial_scheme, cfl_factor,
-                   max_inv_area, cfl_lambda_cap,
-                   momentum_cap_min_speed, momentum_cap_celerity_mult,
-                   depth_cap, max_rel_depth_increase, shallow_damping_depth,
-                   extreme_rain_mode, source_cfl_beta, source_max_substeps,
-                   source_rate_cap, source_depth_step_cap, source_true_subcycling, source_imex_split,
-                   enable_shallow_front_recon_fallback,
-                   false, &tmp_diag,
-                   front_flux_damping, active_set_hysteresis);
-    
-    // Save k2 result in d_h2, d_hu2, d_hv2
-    CUDA_CHECK(cudaMemcpyAsync(dev->d_h2,  dev->d_h,  sz, cudaMemcpyDeviceToDevice, dev->d_stream));
-    CUDA_CHECK(cudaMemcpyAsync(dev->d_hu2, dev->d_hu, sz, cudaMemcpyDeviceToDevice, dev->d_stream));
-    CUDA_CHECK(cudaMemcpyAsync(dev->d_hv2, dev->d_hv, sz, cudaMemcpyDeviceToDevice, dev->d_stream));
-    
-    // ──────────────────────────────────────────────────────────────────────────
-    // Stage 3: k3 = dt * f(t_n + dt/2, y_n + k2/2)
-    // Similar to stage 2, step from y_n with half-step at midpoint time
-    // ──────────────────────────────────────────────────────────────────────────
-    // For RK4, we need to restore y_n and compute y_n + k2/2, but this gets complex
-    // with the current single-step interface. Instead, use the simpler 
-    // low-storage RK4 variant or implement as:
-    // Restore y_n and step with the midpoint formulation again
-    
-    // Restore y_n (from d_h0)
-    CUDA_CHECK(cudaMemcpyAsync(dev->d_h,  dev->d_h0,  sz, cudaMemcpyDeviceToDevice, dev->d_stream));
-    CUDA_CHECK(cudaMemcpyAsync(dev->d_hu, dev->d_hu0, sz, cudaMemcpyDeviceToDevice, dev->d_stream));
-    CUDA_CHECK(cudaMemcpyAsync(dev->d_hv, dev->d_hv0, sz, cudaMemcpyDeviceToDevice, dev->d_stream));
-    
-    // Average with k2 to get y_n + k2/2
-    // (This is an approximation; proper RK4 would require evaluating at the exact midpoint)
-    swe2d_gpu_step(dev, t_now + 0.5*dt, dt, g, h_min, spatial_scheme, cfl_factor,
-                   max_inv_area, cfl_lambda_cap,
-                   momentum_cap_min_speed, momentum_cap_celerity_mult,
-                   depth_cap, max_rel_depth_increase, shallow_damping_depth,
-                   extreme_rain_mode, source_cfl_beta, source_max_substeps,
-                   source_rate_cap, source_depth_step_cap, source_true_subcycling, source_imex_split,
-                   enable_shallow_front_recon_fallback,
-                   false, &tmp_diag,
-                   front_flux_damping, active_set_hysteresis);
-    
-    // Save k3 result in d_h3, d_hu3, d_hv3
+    swe2d_rk4_capture_increment_kernel<<<grid, BLOCK, 0, dev->d_stream>>>(
+        n_cells,
+        dev->d_h1, dev->d_hu1, dev->d_hv1,
+        dev->d_h, dev->d_hu, dev->d_hv,
+        dev->d_h0, dev->d_hu0, dev->d_hv0);
+    CUDA_CHECK(cudaGetLastError());
+
+    // Preserve the stage-1 midpoint state for the next increment capture.
     CUDA_CHECK(cudaMemcpyAsync(dev->d_h3,  dev->d_h,  sz, cudaMemcpyDeviceToDevice, dev->d_stream));
     CUDA_CHECK(cudaMemcpyAsync(dev->d_hu3, dev->d_hu, sz, cudaMemcpyDeviceToDevice, dev->d_stream));
     CUDA_CHECK(cudaMemcpyAsync(dev->d_hv3, dev->d_hv, sz, cudaMemcpyDeviceToDevice, dev->d_stream));
-    
-    // ──────────────────────────────────────────────────────────────────────────
-    // Stage 4: k4 = dt * f(t_n + dt, y_n + k3)
-    // Restore y_n and step from y_n + k3 to t_n + dt
-    // ──────────────────────────────────────────────────────────────────────────
-    // Start from y_n + k3
-    // d_h, d_hu, d_hv already contain the k3 result, so just do one more step
-    swe2d_gpu_step(dev, t_now + dt, dt, g, h_min, spatial_scheme, cfl_factor,
+
+    // Stage 2: evaluate at t_n + dt/2 and capture k2.
+    swe2d_gpu_step(dev, t_now + dt_half, dt_half, g, h_min, spatial_scheme, cfl_factor,
                    max_inv_area, cfl_lambda_cap,
                    momentum_cap_min_speed, momentum_cap_celerity_mult,
                    depth_cap, max_rel_depth_increase, shallow_damping_depth,
@@ -3117,9 +3634,58 @@ void swe2d_gpu_step_rk4(
                    enable_shallow_front_recon_fallback,
                    false, &tmp_diag,
                    front_flux_damping, active_set_hysteresis);
-    
-    // Now d_h, d_hu, d_hv contain k4, and we have k1, k2, k3 saved
-    // Apply the RK4 combine formula: y_new = y_0 + (1/6)*(k1 + 2*k2 + 2*k3 + k4)
+    swe2d_rk4_capture_increment_kernel<<<grid, BLOCK, 0, dev->d_stream>>>(
+        n_cells,
+        dev->d_h2, dev->d_hu2, dev->d_hv2,
+        dev->d_h, dev->d_hu, dev->d_hv,
+        dev->d_h3, dev->d_hu3, dev->d_hv3);
+    CUDA_CHECK(cudaGetLastError());
+
+    swe2d_rk4_build_stage_kernel<<<grid, BLOCK, 0, dev->d_stream>>>(
+        n_cells,
+        dev->d_h3, dev->d_hu3, dev->d_hv3,
+        dev->d_h0, dev->d_hu0, dev->d_hv0,
+        dev->d_h2, dev->d_hu2, dev->d_hv2,
+        0.5);
+    CUDA_CHECK(cudaGetLastError());
+    CUDA_CHECK(cudaMemcpyAsync(dev->d_h,  dev->d_h3,  sz, cudaMemcpyDeviceToDevice, dev->d_stream));
+    CUDA_CHECK(cudaMemcpyAsync(dev->d_hu, dev->d_hu3, sz, cudaMemcpyDeviceToDevice, dev->d_stream));
+    CUDA_CHECK(cudaMemcpyAsync(dev->d_hv, dev->d_hv3, sz, cudaMemcpyDeviceToDevice, dev->d_stream));
+
+    // Stage 3: evaluate at t_n + dt/2 and capture k3.
+    swe2d_gpu_step(dev, t_now + dt_half, dt_half, g, h_min, spatial_scheme, cfl_factor,
+                   max_inv_area, cfl_lambda_cap,
+                   momentum_cap_min_speed, momentum_cap_celerity_mult,
+                   depth_cap, max_rel_depth_increase, shallow_damping_depth,
+                   extreme_rain_mode, source_cfl_beta, source_max_substeps,
+                   source_rate_cap, source_depth_step_cap, source_true_subcycling, source_imex_split,
+                   enable_shallow_front_recon_fallback,
+                   false, &tmp_diag,
+                   front_flux_damping, active_set_hysteresis);
+    swe2d_rk4_shift_from_reference_kernel<<<grid, BLOCK, 0, dev->d_stream>>>(
+        n_cells,
+        dev->d_h3, dev->d_hu3, dev->d_hv3,
+        dev->d_h0, dev->d_hu0, dev->d_hv0,
+        dev->d_h, dev->d_hu, dev->d_hv,
+        dev->d_h3, dev->d_hu3, dev->d_hv3,
+        0.5);
+    CUDA_CHECK(cudaGetLastError());
+    CUDA_CHECK(cudaMemcpyAsync(dev->d_h,  dev->d_h3,  sz, cudaMemcpyDeviceToDevice, dev->d_stream));
+    CUDA_CHECK(cudaMemcpyAsync(dev->d_hu, dev->d_hu3, sz, cudaMemcpyDeviceToDevice, dev->d_stream));
+    CUDA_CHECK(cudaMemcpyAsync(dev->d_hv, dev->d_hv3, sz, cudaMemcpyDeviceToDevice, dev->d_stream));
+
+    // Stage 4: evaluate at t_n + dt and capture k4.
+    swe2d_gpu_step(dev, t_now + dt, dt_half, g, h_min, spatial_scheme, cfl_factor,
+                   max_inv_area, cfl_lambda_cap,
+                   momentum_cap_min_speed, momentum_cap_celerity_mult,
+                   depth_cap, max_rel_depth_increase, shallow_damping_depth,
+                   extreme_rain_mode, source_cfl_beta, source_max_substeps,
+                   source_rate_cap, source_depth_step_cap, source_true_subcycling, source_imex_split,
+                   enable_shallow_front_recon_fallback,
+                   false, &tmp_diag,
+                   front_flux_damping, active_set_hysteresis);
+
+    // Final combine: y_new = y0 + (1/6) * (k1 + 2*k2 + 2*k3 + k4).
     CUDA_CHECK(cudaMemsetAsync(dev->d_max_wse_elev_error, 0, sizeof(double), dev->d_stream));
     swe2d_rk4_combine_kernel<<<grid, BLOCK, 0, dev->d_stream>>>(
         n_cells,
@@ -3165,6 +3731,905 @@ void swe2d_gpu_step_rk4(
         diag->gpu_graph_launches_step = static_cast<int32_t>(graph_launches_after - graph_launches_before);
         diag->gpu_graph_launches_total = static_cast<int64_t>(graph_launches_after);
 
+        if (sync_diagnostics) {
+            CUDA_CHECK(cudaStreamSynchronize(dev->d_stream));
+            double packed[3] = {0.0, 0.0, -1.0};
+            CUDA_CHECK(cudaMemcpy(packed, dev->d_diag_packed, 3 * sizeof(double), cudaMemcpyDeviceToHost));
+            diag->max_courant        = dt * packed[0];
+            diag->max_depth_residual = packed[1];
+            diag->max_wse_elev_error = packed[1];
+            diag->wet_cells          = static_cast<int32_t>(packed[2]);
+        }
+    }
+
+    dev->kernel_graph_cache.time_integrator = prev_graph_integrator;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// swe2d_gpu_step_rk4_graph: Graph-safe true Butcher-tableau RK4
+// ─────────────────────────────────────────────────────────────────────────────
+// Temporal order = 5. Uses pure L(U) evaluations per stage, with full 4-stage
+// sequence capturable as a single CUDA graph (time_integrator=5).
+// Classify runs once per step outside the graph.
+void swe2d_gpu_step_rk4_graph(
+    SWE2DDeviceState* dev,
+    double t_now,
+    double dt,
+    double g,
+    double h_min,
+    int spatial_scheme,
+    double cfl_factor,
+    double max_inv_area,
+    double cfl_lambda_cap,
+    double momentum_cap_min_speed,
+    double momentum_cap_celerity_mult,
+    double depth_cap,
+    double max_rel_depth_increase,
+    double shallow_damping_depth,
+    bool extreme_rain_mode,
+    double source_cfl_beta,
+    int source_max_substeps,
+    double source_rate_cap,
+    double source_depth_step_cap,
+    bool source_true_subcycling,
+    bool source_imex_split,
+    bool enable_shallow_front_recon_fallback,
+    bool sync_diagnostics,
+    SWE2DStepDiag* diag,
+    double front_flux_damping,
+    bool   active_set_hysteresis)
+{
+    if (!dev) throw std::invalid_argument("swe2d_gpu_step_rk4_graph: null device");
+
+    constexpr int BLOCK = 256;
+    const int32_t n_cells = dev->n_cells;
+    const int32_t n_edges = dev->n_edges;
+    const size_t sz = static_cast<size_t>(n_cells) * sizeof(double);
+    const size_t sz_edges = static_cast<size_t>(n_edges) * sizeof(double);
+    const uint64_t graph_launches_before = dev->graph_replay_count;
+    const int32_t prev_graph_integrator = dev->kernel_graph_cache.time_integrator;
+    dev->kernel_graph_cache.time_integrator = 5;
+    const double stage_c[4] = {0.0, 0.5, 0.5, 1.0};
+
+    // Save initial state as U^0
+    CUDA_CHECK(cudaMemcpyAsync(dev->d_h0,  dev->d_h,  sz, cudaMemcpyDeviceToDevice, dev->d_stream));
+    CUDA_CHECK(cudaMemcpyAsync(dev->d_hu0, dev->d_hu, sz, cudaMemcpyDeviceToDevice, dev->d_stream));
+    CUDA_CHECK(cudaMemcpyAsync(dev->d_hv0, dev->d_hv, sz, cudaMemcpyDeviceToDevice, dev->d_stream));
+
+    auto precompute_stage_forcing = [&]() {
+        for (int slot = 0; slot < 4; ++slot) {
+            CUDA_CHECK(cudaMemcpyAsync(swe2d_stage_edge_bc_slot(dev, slot), dev->d_edge_bc,
+                                       static_cast<size_t>(n_edges) * sizeof(int32_t),
+                                       cudaMemcpyDeviceToDevice, dev->d_stream));
+            CUDA_CHECK(cudaMemcpyAsync(swe2d_stage_edge_bc_val_slot(dev, slot), dev->d_edge_bc_val,
+                                       sz_edges, cudaMemcpyDeviceToDevice, dev->d_stream));
+        }
+
+        if (dev->n_hg_edges > 0 && dev->d_hg_edge_index && dev->d_hg_offsets &&
+            dev->d_hg_time_s && dev->d_hg_value) {
+            const int hg_grid = (dev->n_hg_edges + BLOCK - 1) / BLOCK;
+            for (int slot = 0; slot < 4; ++slot) {
+                swe2d_apply_hydrograph_bc_kernel<<<hg_grid, BLOCK, 0, dev->d_stream>>>(
+                    dev->n_hg_edges,
+                    dev->d_hg_edge_index,
+                    dev->d_hg_bc_type,
+                    dev->d_hg_offsets,
+                    dev->d_hg_time_s,
+                    dev->d_hg_value,
+                    swe2d_stage_edge_bc_slot(dev, slot),
+                    swe2d_stage_edge_bc_val_slot(dev, slot),
+                    t_now + stage_c[slot] * dt);
+                CUDA_CHECK(cudaGetLastError());
+            }
+        }
+
+        if (dev->n_rain_samples > 0 && dev->d_cell_gage_idx && dev->d_rain_hg_offsets &&
+            dev->d_rain_hg_time_s && dev->d_rain_hg_cum_mm && dev->d_rain_cn) {
+            const int r_grid = (n_cells + BLOCK - 1) / BLOCK;
+            for (int slot = 0; slot < 4; ++slot) {
+                swe2d_eval_rain_cn_stage_rate_kernel<<<r_grid, BLOCK, 0, dev->d_stream>>>(
+                    n_cells,
+                    dev->d_cell_gage_idx,
+                    dev->d_rain_hg_offsets,
+                    dev->d_rain_hg_time_s,
+                    dev->d_rain_hg_cum_mm,
+                    dev->d_rain_cn,
+                    dev->d_rain_cum_mm,
+                    swe2d_stage_source_slot(dev, slot),
+                    t_now,
+                    t_now + stage_c[slot] * dt,
+                    dev->rain_ia_ratio,
+                    dev->rain_mm_to_model_depth);
+                CUDA_CHECK(cudaGetLastError());
+            }
+            swe2d_stage_source_max_kernel<<<r_grid, BLOCK, 0, dev->d_stream>>>(
+                n_cells, 4, dev->d_stage_cell_source_mps, dev->d_cell_source_mps);
+            CUDA_CHECK(cudaGetLastError());
+        } else {
+            CUDA_CHECK(cudaMemsetAsync(dev->d_stage_cell_source_mps, 0,
+                                       static_cast<size_t>(4) * sz, dev->d_stream));
+            CUDA_CHECK(cudaMemsetAsync(dev->d_cell_source_mps, 0, sz, dev->d_stream));
+        }
+    };
+
+    precompute_stage_forcing();
+
+    // Wet/dry classification based on U^0
+    if (dev->d_active && dev->d_n_wet) {
+        if (active_set_hysteresis && dev->d_was_active) {
+            CUDA_CHECK(cudaMemcpyAsync(dev->d_was_active, dev->d_active,
+                                       static_cast<size_t>(n_cells) * sizeof(int32_t),
+                                       cudaMemcpyDeviceToDevice,
+                                       dev->d_stream));
+        }
+        CUDA_CHECK(cudaMemsetAsync(dev->d_n_wet, 0, sizeof(int32_t), dev->d_stream));
+        const int c_grid = (n_cells + BLOCK - 1) / BLOCK;
+        swe2d_classify_kernel<<<c_grid, BLOCK, BLOCK * sizeof(int32_t), dev->d_stream>>>(
+            n_cells, dev->d_h, dev->d_cell_source_mps, dev->d_external_source_mps, dev->d_bc_forced,
+            dev->d_active, dev->d_n_wet, h_min,
+            active_set_hysteresis ? dev->d_was_active : nullptr);
+        CUDA_CHECK(cudaGetLastError());
+        
+        const int e_grid = (n_edges + BLOCK - 1) / BLOCK;
+        swe2d_mark_neighbor_kernel<<<e_grid, BLOCK, 0, dev->d_stream>>>(
+            n_edges, dev->d_edge_c0, dev->d_edge_c1, dev->d_active);
+        CUDA_CHECK(cudaGetLastError());
+
+        if ((dev->degen_mode == 1 || dev->degen_mode == 3) && dev->d_degen_mask) {
+            const int c_grid2 = (n_cells + BLOCK - 1) / BLOCK;
+            swe2d_degen_deactivate_kernel<<<c_grid2, BLOCK, 0, dev->d_stream>>>(
+                n_cells, dev->d_degen_mask, dev->d_active);
+            CUDA_CHECK(cudaGetLastError());
+        }
+
+        if (dev->degen_mode == 3 && dev->d_degen_mask && dev->d_merge_owner) {
+            const int c_grid2 = (n_cells + BLOCK - 1) / BLOCK;
+            swe2d_degen_sync_kernel<<<c_grid2, BLOCK, 0, dev->d_stream>>>(
+                n_cells, dev->d_degen_mask, dev->d_merge_owner,
+                dev->d_h, dev->d_hu, dev->d_hv);
+            CUDA_CHECK(cudaGetLastError());
+        }
+    }
+
+    const bool need_gradients = (spatial_scheme >= 1);
+    const int grid_c = (n_cells + BLOCK - 1) / BLOCK;
+    const int grid_e = (n_edges + BLOCK - 1) / BLOCK;
+
+    auto evaluate_rhs = [&](const int32_t* edge_bc,
+                            const double* edge_bc_val,
+                            const double* stage_source,
+                            double* k_h,
+                            double* k_hu,
+                            double* k_hv) {
+        if (need_gradients) {
+            CUDA_CHECK(cudaMemsetAsync(dev->d_grad_hx,  0, static_cast<size_t>(n_cells) * sizeof(double), dev->d_stream));
+            CUDA_CHECK(cudaMemsetAsync(dev->d_grad_hy,  0, static_cast<size_t>(n_cells) * sizeof(double), dev->d_stream));
+            CUDA_CHECK(cudaMemsetAsync(dev->d_grad_hux, 0, static_cast<size_t>(n_cells) * sizeof(double), dev->d_stream));
+            CUDA_CHECK(cudaMemsetAsync(dev->d_grad_huy, 0, static_cast<size_t>(n_cells) * sizeof(double), dev->d_stream));
+            CUDA_CHECK(cudaMemsetAsync(dev->d_grad_hvx, 0, static_cast<size_t>(n_cells) * sizeof(double), dev->d_stream));
+            CUDA_CHECK(cudaMemsetAsync(dev->d_grad_hvy, 0, static_cast<size_t>(n_cells) * sizeof(double), dev->d_stream));
+            swe2d_gradient_kernel<<<grid_c, BLOCK, 0, dev->d_stream>>>(
+                n_cells,
+                dev->d_cell_edge_offsets, dev->d_cell_edge_ids,
+                dev->d_edge_c0, dev->d_edge_c1,
+                dev->d_edge_nx, dev->d_edge_ny, dev->d_edge_len,
+                dev->d_h, dev->d_cell_zb, dev->d_hu, dev->d_hv,
+                dev->d_cell_inv_area,
+                max_inv_area,
+                dev->d_grad_hx,  dev->d_grad_hy,
+                dev->d_grad_hux, dev->d_grad_huy,
+                dev->d_grad_hvx, dev->d_grad_hvy,
+                dev->d_active,
+                dev->d_degen_mask,
+                dev->degen_mode);
+            CUDA_CHECK(cudaGetLastError());
+        }
+
+        CUDA_CHECK(cudaMemsetAsync(dev->d_flux_h, 0, sz_edges, dev->d_stream));
+        CUDA_CHECK(cudaMemsetAsync(dev->d_flux_hu, 0, sz_edges, dev->d_stream));
+        CUDA_CHECK(cudaMemsetAsync(dev->d_flux_hv, 0, sz_edges, dev->d_stream));
+        CUDA_CHECK(cudaMemsetAsync(dev->d_flux_hu_r, 0, sz_edges, dev->d_stream));
+        CUDA_CHECK(cudaMemsetAsync(dev->d_flux_hv_r, 0, sz_edges, dev->d_stream));
+
+        swe2d_flux_kernel<<<grid_e, BLOCK, 0, dev->d_stream>>>(
+            n_edges,
+            dev->d_edge_c0, dev->d_edge_c1,
+            dev->d_edge_nx, dev->d_edge_ny, dev->d_edge_len,
+            dev->d_edge_mx, dev->d_edge_my,
+            edge_bc, edge_bc_val,
+            dev->d_h, dev->d_hu, dev->d_hv,
+            dev->d_n_mann_cell, dev->d_cell_zb,
+            dev->d_cell_inv_area,
+            dev->d_cell_cx, dev->d_cell_cy,
+            dev->d_grad_hx, dev->d_grad_hy,
+            dev->d_grad_hux, dev->d_grad_huy,
+            dev->d_grad_hvx, dev->d_grad_hvy,
+            dev->d_flux_h, dev->d_flux_hu, dev->d_flux_hv,
+            dev->d_flux_hu_r, dev->d_flux_hv_r,
+            nullptr, nullptr, nullptr,
+            spatial_scheme,
+            g,
+            h_min,
+            max_inv_area,
+            momentum_cap_min_speed,
+            momentum_cap_celerity_mult,
+            dev->d_degen_mask,
+            dev->d_merge_owner,
+            dev->degen_mode,
+            dev->d_active,
+            front_flux_damping,
+            shallow_damping_depth,
+            enable_shallow_front_recon_fallback);
+        CUDA_CHECK(cudaGetLastError());
+
+        swe2d_rk4_rhs_collect_kernel<<<grid_c, BLOCK, 0, dev->d_stream>>>(
+            n_cells,
+            dev->d_cell_edge_offsets,
+            dev->d_cell_edge_ids,
+            dev->d_edge_c0,
+            dev->d_edge_c1,
+            k_h,
+            k_hu,
+            k_hv,
+            dev->d_flux_h,
+            dev->d_flux_hu,
+            dev->d_flux_hv,
+            dev->d_flux_hu_r,
+            dev->d_flux_hv_r,
+            dev->d_cell_inv_area,
+            stage_source,
+            dev->d_external_source_mps,
+            dev->d_active,
+            dev->d_degen_mask,
+            dev->d_inv_area_repaired,
+            dev->degen_mode,
+            max_inv_area,
+            dt);
+        CUDA_CHECK(cudaGetLastError());
+    };
+
+    auto run_rk4_stages_and_combine = [&]() {
+        evaluate_rhs(swe2d_stage_edge_bc_slot(dev, 0), swe2d_stage_edge_bc_val_slot(dev, 0), swe2d_stage_source_slot(dev, 0),
+                     dev->d_h1, dev->d_hu1, dev->d_hv1);
+
+        swe2d_rk4_build_stage_kernel<<<grid_c, BLOCK, 0, dev->d_stream>>>(
+            n_cells,
+            dev->d_h, dev->d_hu, dev->d_hv,
+            dev->d_h0, dev->d_hu0, dev->d_hv0,
+            dev->d_h1, dev->d_hu1, dev->d_hv1,
+            0.5);
+        CUDA_CHECK(cudaGetLastError());
+        evaluate_rhs(swe2d_stage_edge_bc_slot(dev, 1), swe2d_stage_edge_bc_val_slot(dev, 1), swe2d_stage_source_slot(dev, 1),
+                     dev->d_h2, dev->d_hu2, dev->d_hv2);
+
+        swe2d_rk4_build_stage_kernel<<<grid_c, BLOCK, 0, dev->d_stream>>>(
+            n_cells,
+            dev->d_h, dev->d_hu, dev->d_hv,
+            dev->d_h0, dev->d_hu0, dev->d_hv0,
+            dev->d_h2, dev->d_hu2, dev->d_hv2,
+            0.5);
+        CUDA_CHECK(cudaGetLastError());
+        evaluate_rhs(swe2d_stage_edge_bc_slot(dev, 2), swe2d_stage_edge_bc_val_slot(dev, 2), swe2d_stage_source_slot(dev, 2),
+                     dev->d_h3, dev->d_hu3, dev->d_hv3);
+
+        swe2d_rk4_build_stage_kernel<<<grid_c, BLOCK, 0, dev->d_stream>>>(
+            n_cells,
+            dev->d_h, dev->d_hu, dev->d_hv,
+            dev->d_h0, dev->d_hu0, dev->d_hv0,
+            dev->d_h3, dev->d_hu3, dev->d_hv3,
+            1.0);
+        CUDA_CHECK(cudaGetLastError());
+        evaluate_rhs(swe2d_stage_edge_bc_slot(dev, 3), swe2d_stage_edge_bc_val_slot(dev, 3), swe2d_stage_source_slot(dev, 3),
+                     dev->d_k4_h, dev->d_k4_hu, dev->d_k4_hv);
+
+        CUDA_CHECK(cudaMemsetAsync(dev->d_max_wse_elev_error, 0, sizeof(double), dev->d_stream));
+        swe2d_rk4_graph_combine_kernel<<<grid_c, BLOCK, 0, dev->d_stream>>>(
+            n_cells,
+            dev->d_h, dev->d_hu, dev->d_hv,
+            dev->d_h0, dev->d_hu0, dev->d_hv0,
+            dev->d_h1, dev->d_hu1, dev->d_hv1,
+            dev->d_h2, dev->d_hu2, dev->d_hv2,
+            dev->d_h3, dev->d_hu3, dev->d_hv3,
+            dev->d_k4_h, dev->d_k4_hu, dev->d_k4_hv,
+            dev->d_max_wse_elev_error,
+            dev->d_n_mann_cell,
+            g, h_min, shallow_damping_depth, dt,
+            momentum_cap_min_speed,
+            momentum_cap_celerity_mult);
+        CUDA_CHECK(cudaGetLastError());
+    };
+
+    const bool dbg_edge_flux = swe2d_debug_enabled("BACKWATER_SWE2D_DEBUG_GPU_EDGE_FLUX");
+    const bool dbg_flux_summary = swe2d_debug_enabled("BACKWATER_SWE2D_DEBUG_GPU_FLUX");
+    const bool try_kernel_graph = dev->enable_kernel_graphs && !dbg_edge_flux && !dbg_flux_summary;
+    if (swe2d_debug_enabled("BACKWATER_SWE2D_DEBUG_GPU_GRAPH")) {
+        std::fprintf(stderr,
+                     "[SWE2D_DEBUG] RK4_GRAPH integrator=5 eligible=%d (graphs=%d edge_dbg=%d flux_dbg=%d)\n",
+                     static_cast<int>(try_kernel_graph),
+                     static_cast<int>(dev->enable_kernel_graphs),
+                     static_cast<int>(dbg_edge_flux),
+                     static_cast<int>(dbg_flux_summary));
+    }
+
+    const uint64_t graph_signature = swe2d_kernel_graph_signature(
+        dt,
+        g,
+        h_min,
+        cfl_lambda_cap,
+        max_inv_area,
+        momentum_cap_min_speed,
+        momentum_cap_celerity_mult,
+        depth_cap,
+        max_rel_depth_increase,
+        shallow_damping_depth,
+        extreme_rain_mode,
+        source_cfl_beta,
+        source_max_substeps,
+        source_rate_cap,
+        source_depth_step_cap,
+        source_true_subcycling,
+        source_imex_split,
+        enable_shallow_front_recon_fallback,
+        front_flux_damping);
+
+    bool used_graph_replay = false;
+    if (try_kernel_graph) {
+        auto& cache = dev->kernel_graph_cache;
+        const bool cache_match =
+            cache.is_valid &&
+            cache.exec != nullptr &&
+            cache.n_cells == n_cells &&
+            cache.n_edges == n_edges &&
+            cache.spatial_scheme == spatial_scheme &&
+            cache.time_integrator == 5 &&
+            cache.config_signature == graph_signature;
+
+        if (cache_match) {
+            CUDA_CHECK(cudaGraphLaunch(cache.exec, dev->d_stream));
+            dev->graph_replay_count += 1;
+            used_graph_replay = true;
+        } else {
+            cache.destroy();
+            CUDA_CHECK(cudaStreamSynchronize(dev->d_stream));
+            cudaError_t cap_begin = cudaStreamBeginCapture(dev->d_stream, cudaStreamCaptureModeThreadLocal);
+            if (cap_begin == cudaSuccess) {
+                run_rk4_stages_and_combine();
+
+                cudaGraph_t graph = nullptr;
+                cudaError_t cap_end = cudaStreamEndCapture(dev->d_stream, &graph);
+                if (cap_end == cudaSuccess && graph != nullptr) {
+                    cudaGraphExec_t exec = nullptr;
+                    if (cudaGraphInstantiate(&exec, graph, nullptr, nullptr, 0) == cudaSuccess) {
+                        cache.graph = graph;
+                        cache.exec = exec;
+                        cache.n_cells = n_cells;
+                        cache.n_edges = n_edges;
+                        cache.spatial_scheme = spatial_scheme;
+                        cache.time_integrator = 5;
+                        cache.config_signature = graph_signature;
+                        cache.is_valid = true;
+                        CUDA_CHECK(cudaGraphLaunch(cache.exec, dev->d_stream));
+                        dev->graph_replay_count += 1;
+                        used_graph_replay = true;
+                    } else {
+                        if (exec) cudaGraphExecDestroy(exec);
+                        cudaGraphDestroy(graph);
+                    }
+                } else if (graph != nullptr) {
+                    cudaGraphDestroy(graph);
+                }
+            }
+        }
+    }
+
+    if (!used_graph_replay) {
+        if (swe2d_debug_enabled("BACKWATER_SWE2D_DEBUG_GPU_GRAPH")) {
+            std::fprintf(stderr,
+                         "[SWE2D_DEBUG] RK4_GRAPH integrator=5 executing non-graph path\\n");
+        }
+        run_rk4_stages_and_combine();
+    }
+
+    if (dev->n_rain_samples > 0 && dev->d_cell_gage_idx && dev->d_rain_hg_offsets &&
+        dev->d_rain_hg_time_s && dev->d_rain_hg_cum_mm && dev->d_rain_cn) {
+        const int r_grid = (n_cells + BLOCK - 1) / BLOCK;
+        swe2d_build_rain_cn_source_kernel<<<r_grid, BLOCK, 0, dev->d_stream>>>(
+            n_cells,
+            dev->d_cell_gage_idx,
+            dev->d_rain_hg_offsets,
+            dev->d_rain_hg_time_s,
+            dev->d_rain_hg_cum_mm,
+            dev->d_rain_cn,
+            dev->d_rain_cum_mm,
+            dev->d_rain_excess_cum_mm,
+            dev->d_cell_source_mps,
+            t_now,
+            t_now + dt,
+            dev->rain_ia_ratio,
+            dev->rain_mm_to_model_depth);
+        CUDA_CHECK(cudaGetLastError());
+    }
+
+    // Compute final CFL for diagnostics
+    CUDA_CHECK(cudaMemsetAsync(dev->d_lambda_max, 0, sizeof(double), dev->d_stream));
+    const int edge_grid = (n_edges + BLOCK - 1) / BLOCK;
+    swe2d_cfl_kernel<<<edge_grid, BLOCK, BLOCK * static_cast<int>(sizeof(double)), dev->d_stream>>>(
+        n_edges,
+        dev->d_edge_c0, dev->d_edge_c1,
+        dev->d_edge_nx, dev->d_edge_ny, dev->d_edge_len,
+        dev->d_h, dev->d_hu, dev->d_hv,
+        dev->d_cell_area,
+        g, h_min,
+        cfl_lambda_cap,
+        dev->d_lambda_max,
+        dev->d_degen_mask, dev->degen_mode);
+    CUDA_CHECK(cudaGetLastError());
+
+    pack_diag_kernel<<<1, 1, 0, dev->d_stream>>>(dev->d_lambda_max, dev->d_max_wse_elev_error, dev->d_n_wet, dev->d_diag_packed);
+    CUDA_CHECK(cudaGetLastError());
+
+    if (diag) {
+        diag->dt = dt;
+        diag->gpu_active = true;
+        diag->wet_cells = -1;
+        diag->max_depth = -1.0;
+        diag->min_depth = -1.0;
+        diag->mass_total = -1.0;
+        diag->max_courant = -1.0;
+        diag->max_depth_residual = -1.0;
+        diag->max_wse_elev_error = -1.0;
+        const uint64_t graph_launches_after = dev->graph_replay_count;
+        diag->gpu_graph_launches_step = static_cast<int32_t>(graph_launches_after - graph_launches_before);
+        diag->gpu_graph_launches_total = static_cast<int64_t>(graph_launches_after);
+
+        if (sync_diagnostics) {
+            CUDA_CHECK(cudaStreamSynchronize(dev->d_stream));
+            double packed[3] = {0.0, 0.0, -1.0};
+            CUDA_CHECK(cudaMemcpy(packed, dev->d_diag_packed, 3 * sizeof(double), cudaMemcpyDeviceToHost));
+            diag->max_courant        = dt * packed[0];
+            diag->max_depth_residual = packed[1];
+            diag->max_wse_elev_error = packed[1];
+            diag->wet_cells          = static_cast<int32_t>(packed[2]);
+        }
+    }
+
+    dev->kernel_graph_cache.time_integrator = prev_graph_integrator;
+}
+
+void swe2d_gpu_step_rk5_graph(
+    SWE2DDeviceState* dev,
+    double t_now,
+    double dt,
+    double g,
+    double h_min,
+    int spatial_scheme,
+    double cfl_factor,
+    double max_inv_area,
+    double cfl_lambda_cap,
+    double momentum_cap_min_speed,
+    double momentum_cap_celerity_mult,
+    double depth_cap,
+    double max_rel_depth_increase,
+    double shallow_damping_depth,
+    bool extreme_rain_mode,
+    double source_cfl_beta,
+    int source_max_substeps,
+    double source_rate_cap,
+    double source_depth_step_cap,
+    bool source_true_subcycling,
+    bool source_imex_split,
+    bool enable_shallow_front_recon_fallback,
+    bool sync_diagnostics,
+    SWE2DStepDiag* diag,
+    double front_flux_damping,
+    bool   active_set_hysteresis)
+{
+    if (!dev) throw std::invalid_argument("swe2d_gpu_step_rk5_graph: null device");
+
+    constexpr int BLOCK = 256;
+    const int32_t n_cells = dev->n_cells;
+    const int32_t n_edges = dev->n_edges;
+    const size_t sz = static_cast<size_t>(n_cells) * sizeof(double);
+    const size_t sz_edges = static_cast<size_t>(n_edges) * sizeof(double);
+    const uint64_t graph_launches_before = dev->graph_replay_count;
+    const int32_t prev_graph_integrator = dev->kernel_graph_cache.time_integrator;
+    dev->kernel_graph_cache.time_integrator = 6;
+    const double stage_c[6] = {0.0, 1.0 / 5.0, 3.0 / 10.0, 3.0 / 5.0, 1.0, 7.0 / 8.0};
+
+    CUDA_CHECK(cudaMemcpyAsync(dev->d_h0,  dev->d_h,  sz, cudaMemcpyDeviceToDevice, dev->d_stream));
+    CUDA_CHECK(cudaMemcpyAsync(dev->d_hu0, dev->d_hu, sz, cudaMemcpyDeviceToDevice, dev->d_stream));
+    CUDA_CHECK(cudaMemcpyAsync(dev->d_hv0, dev->d_hv, sz, cudaMemcpyDeviceToDevice, dev->d_stream));
+
+    auto precompute_stage_forcing = [&]() {
+        for (int slot = 0; slot < 6; ++slot) {
+            CUDA_CHECK(cudaMemcpyAsync(swe2d_stage_edge_bc_slot(dev, slot), dev->d_edge_bc,
+                                       static_cast<size_t>(n_edges) * sizeof(int32_t),
+                                       cudaMemcpyDeviceToDevice, dev->d_stream));
+            CUDA_CHECK(cudaMemcpyAsync(swe2d_stage_edge_bc_val_slot(dev, slot), dev->d_edge_bc_val,
+                                       sz_edges, cudaMemcpyDeviceToDevice, dev->d_stream));
+        }
+
+        if (dev->n_hg_edges > 0 && dev->d_hg_edge_index && dev->d_hg_offsets &&
+            dev->d_hg_time_s && dev->d_hg_value) {
+            const int hg_grid = (dev->n_hg_edges + BLOCK - 1) / BLOCK;
+            for (int slot = 0; slot < 6; ++slot) {
+                swe2d_apply_hydrograph_bc_kernel<<<hg_grid, BLOCK, 0, dev->d_stream>>>(
+                    dev->n_hg_edges,
+                    dev->d_hg_edge_index,
+                    dev->d_hg_bc_type,
+                    dev->d_hg_offsets,
+                    dev->d_hg_time_s,
+                    dev->d_hg_value,
+                    swe2d_stage_edge_bc_slot(dev, slot),
+                    swe2d_stage_edge_bc_val_slot(dev, slot),
+                    t_now + stage_c[slot] * dt);
+                CUDA_CHECK(cudaGetLastError());
+            }
+        }
+
+        if (dev->n_rain_samples > 0 && dev->d_cell_gage_idx && dev->d_rain_hg_offsets &&
+            dev->d_rain_hg_time_s && dev->d_rain_hg_cum_mm && dev->d_rain_cn) {
+            const int r_grid = (n_cells + BLOCK - 1) / BLOCK;
+            for (int slot = 0; slot < 6; ++slot) {
+                swe2d_eval_rain_cn_stage_rate_kernel<<<r_grid, BLOCK, 0, dev->d_stream>>>(
+                    n_cells,
+                    dev->d_cell_gage_idx,
+                    dev->d_rain_hg_offsets,
+                    dev->d_rain_hg_time_s,
+                    dev->d_rain_hg_cum_mm,
+                    dev->d_rain_cn,
+                    dev->d_rain_cum_mm,
+                    swe2d_stage_source_slot(dev, slot),
+                    t_now,
+                    t_now + stage_c[slot] * dt,
+                    dev->rain_ia_ratio,
+                    dev->rain_mm_to_model_depth);
+                CUDA_CHECK(cudaGetLastError());
+            }
+            swe2d_stage_source_max_kernel<<<r_grid, BLOCK, 0, dev->d_stream>>>(
+                n_cells, 6, dev->d_stage_cell_source_mps, dev->d_cell_source_mps);
+            CUDA_CHECK(cudaGetLastError());
+        } else {
+            CUDA_CHECK(cudaMemsetAsync(dev->d_stage_cell_source_mps, 0,
+                                       static_cast<size_t>(6) * sz, dev->d_stream));
+            CUDA_CHECK(cudaMemsetAsync(dev->d_cell_source_mps, 0, sz, dev->d_stream));
+        }
+    };
+
+    precompute_stage_forcing();
+
+    if (dev->d_active && dev->d_n_wet) {
+        if (active_set_hysteresis && dev->d_was_active) {
+            CUDA_CHECK(cudaMemcpyAsync(dev->d_was_active, dev->d_active,
+                                       static_cast<size_t>(n_cells) * sizeof(int32_t),
+                                       cudaMemcpyDeviceToDevice,
+                                       dev->d_stream));
+        }
+        CUDA_CHECK(cudaMemsetAsync(dev->d_n_wet, 0, sizeof(int32_t), dev->d_stream));
+        const int c_grid = (n_cells + BLOCK - 1) / BLOCK;
+        swe2d_classify_kernel<<<c_grid, BLOCK, BLOCK * sizeof(int32_t), dev->d_stream>>>(
+            n_cells, dev->d_h, dev->d_cell_source_mps, dev->d_external_source_mps, dev->d_bc_forced,
+            dev->d_active, dev->d_n_wet, h_min,
+            active_set_hysteresis ? dev->d_was_active : nullptr);
+        CUDA_CHECK(cudaGetLastError());
+
+        const int e_grid = (n_edges + BLOCK - 1) / BLOCK;
+        swe2d_mark_neighbor_kernel<<<e_grid, BLOCK, 0, dev->d_stream>>>(
+            n_edges, dev->d_edge_c0, dev->d_edge_c1, dev->d_active);
+        CUDA_CHECK(cudaGetLastError());
+
+        if ((dev->degen_mode == 1 || dev->degen_mode == 3) && dev->d_degen_mask) {
+            const int c_grid2 = (n_cells + BLOCK - 1) / BLOCK;
+            swe2d_degen_deactivate_kernel<<<c_grid2, BLOCK, 0, dev->d_stream>>>(
+                n_cells, dev->d_degen_mask, dev->d_active);
+            CUDA_CHECK(cudaGetLastError());
+        }
+
+        if (dev->degen_mode == 3 && dev->d_degen_mask && dev->d_merge_owner) {
+            const int c_grid2 = (n_cells + BLOCK - 1) / BLOCK;
+            swe2d_degen_sync_kernel<<<c_grid2, BLOCK, 0, dev->d_stream>>>(
+                n_cells, dev->d_degen_mask, dev->d_merge_owner,
+                dev->d_h, dev->d_hu, dev->d_hv);
+            CUDA_CHECK(cudaGetLastError());
+        }
+    }
+
+    const bool need_gradients = (spatial_scheme >= 1);
+    const int grid_c = (n_cells + BLOCK - 1) / BLOCK;
+    const int grid_e = (n_edges + BLOCK - 1) / BLOCK;
+
+    auto evaluate_rhs = [&](const int32_t* edge_bc,
+                            const double* edge_bc_val,
+                            const double* stage_source,
+                            double* k_h,
+                            double* k_hu,
+                            double* k_hv) {
+        if (need_gradients) {
+            CUDA_CHECK(cudaMemsetAsync(dev->d_grad_hx,  0, static_cast<size_t>(n_cells) * sizeof(double), dev->d_stream));
+            CUDA_CHECK(cudaMemsetAsync(dev->d_grad_hy,  0, static_cast<size_t>(n_cells) * sizeof(double), dev->d_stream));
+            CUDA_CHECK(cudaMemsetAsync(dev->d_grad_hux, 0, static_cast<size_t>(n_cells) * sizeof(double), dev->d_stream));
+            CUDA_CHECK(cudaMemsetAsync(dev->d_grad_huy, 0, static_cast<size_t>(n_cells) * sizeof(double), dev->d_stream));
+            CUDA_CHECK(cudaMemsetAsync(dev->d_grad_hvx, 0, static_cast<size_t>(n_cells) * sizeof(double), dev->d_stream));
+            CUDA_CHECK(cudaMemsetAsync(dev->d_grad_hvy, 0, static_cast<size_t>(n_cells) * sizeof(double), dev->d_stream));
+            swe2d_gradient_kernel<<<grid_c, BLOCK, 0, dev->d_stream>>>(
+                n_cells,
+                dev->d_cell_edge_offsets, dev->d_cell_edge_ids,
+                dev->d_edge_c0, dev->d_edge_c1,
+                dev->d_edge_nx, dev->d_edge_ny, dev->d_edge_len,
+                dev->d_h, dev->d_cell_zb, dev->d_hu, dev->d_hv,
+                dev->d_cell_inv_area,
+                max_inv_area,
+                dev->d_grad_hx,  dev->d_grad_hy,
+                dev->d_grad_hux, dev->d_grad_huy,
+                dev->d_grad_hvx, dev->d_grad_hvy,
+                dev->d_active,
+                dev->d_degen_mask,
+                dev->degen_mode);
+            CUDA_CHECK(cudaGetLastError());
+        }
+
+        CUDA_CHECK(cudaMemsetAsync(dev->d_flux_h, 0, sz_edges, dev->d_stream));
+        CUDA_CHECK(cudaMemsetAsync(dev->d_flux_hu, 0, sz_edges, dev->d_stream));
+        CUDA_CHECK(cudaMemsetAsync(dev->d_flux_hv, 0, sz_edges, dev->d_stream));
+        CUDA_CHECK(cudaMemsetAsync(dev->d_flux_hu_r, 0, sz_edges, dev->d_stream));
+        CUDA_CHECK(cudaMemsetAsync(dev->d_flux_hv_r, 0, sz_edges, dev->d_stream));
+
+        swe2d_flux_kernel<<<grid_e, BLOCK, 0, dev->d_stream>>>(
+            n_edges,
+            dev->d_edge_c0, dev->d_edge_c1,
+            dev->d_edge_nx, dev->d_edge_ny, dev->d_edge_len,
+            dev->d_edge_mx, dev->d_edge_my,
+            edge_bc, edge_bc_val,
+            dev->d_h, dev->d_hu, dev->d_hv,
+            dev->d_n_mann_cell, dev->d_cell_zb,
+            dev->d_cell_inv_area,
+            dev->d_cell_cx, dev->d_cell_cy,
+            dev->d_grad_hx, dev->d_grad_hy,
+            dev->d_grad_hux, dev->d_grad_huy,
+            dev->d_grad_hvx, dev->d_grad_hvy,
+            dev->d_flux_h, dev->d_flux_hu, dev->d_flux_hv,
+            dev->d_flux_hu_r, dev->d_flux_hv_r,
+            nullptr, nullptr, nullptr,
+            spatial_scheme,
+            g,
+            h_min,
+            max_inv_area,
+            momentum_cap_min_speed,
+            momentum_cap_celerity_mult,
+            dev->d_degen_mask,
+            dev->d_merge_owner,
+            dev->degen_mode,
+            dev->d_active,
+            front_flux_damping,
+            shallow_damping_depth,
+            enable_shallow_front_recon_fallback);
+        CUDA_CHECK(cudaGetLastError());
+
+        swe2d_rk4_rhs_collect_kernel<<<grid_c, BLOCK, 0, dev->d_stream>>>(
+            n_cells,
+            dev->d_cell_edge_offsets,
+            dev->d_cell_edge_ids,
+            dev->d_edge_c0,
+            dev->d_edge_c1,
+            k_h,
+            k_hu,
+            k_hv,
+            dev->d_flux_h,
+            dev->d_flux_hu,
+            dev->d_flux_hv,
+            dev->d_flux_hu_r,
+            dev->d_flux_hv_r,
+            dev->d_cell_inv_area,
+            stage_source,
+            dev->d_external_source_mps,
+            dev->d_active,
+            dev->d_degen_mask,
+            dev->d_inv_area_repaired,
+            dev->degen_mode,
+            max_inv_area,
+            dt);
+        CUDA_CHECK(cudaGetLastError());
+    };
+
+    auto run_rk5_stages_and_combine = [&]() {
+        evaluate_rhs(swe2d_stage_edge_bc_slot(dev, 0), swe2d_stage_edge_bc_val_slot(dev, 0), swe2d_stage_source_slot(dev, 0),
+                     dev->d_h1, dev->d_hu1, dev->d_hv1);
+
+        swe2d_rk_multi_stage_build_kernel<<<grid_c, BLOCK, 0, dev->d_stream>>>(
+            n_cells, dev->d_h, dev->d_hu, dev->d_hv,
+            dev->d_h0, dev->d_hu0, dev->d_hv0,
+            dev->d_h1, dev->d_hu1, dev->d_hv1, 1.0 / 5.0,
+            nullptr, nullptr, nullptr, 0.0,
+            nullptr, nullptr, nullptr, 0.0,
+            nullptr, nullptr, nullptr, 0.0,
+            nullptr, nullptr, nullptr, 0.0,
+            nullptr, nullptr, nullptr, 0.0);
+        CUDA_CHECK(cudaGetLastError());
+        evaluate_rhs(swe2d_stage_edge_bc_slot(dev, 1), swe2d_stage_edge_bc_val_slot(dev, 1), swe2d_stage_source_slot(dev, 1),
+                     dev->d_h2, dev->d_hu2, dev->d_hv2);
+
+        swe2d_rk_multi_stage_build_kernel<<<grid_c, BLOCK, 0, dev->d_stream>>>(
+            n_cells, dev->d_h, dev->d_hu, dev->d_hv,
+            dev->d_h0, dev->d_hu0, dev->d_hv0,
+            dev->d_h1, dev->d_hu1, dev->d_hv1, 3.0 / 40.0,
+            dev->d_h2, dev->d_hu2, dev->d_hv2, 9.0 / 40.0,
+            nullptr, nullptr, nullptr, 0.0,
+            nullptr, nullptr, nullptr, 0.0,
+            nullptr, nullptr, nullptr, 0.0,
+            nullptr, nullptr, nullptr, 0.0);
+        CUDA_CHECK(cudaGetLastError());
+        evaluate_rhs(swe2d_stage_edge_bc_slot(dev, 2), swe2d_stage_edge_bc_val_slot(dev, 2), swe2d_stage_source_slot(dev, 2),
+                     dev->d_h3, dev->d_hu3, dev->d_hv3);
+
+        swe2d_rk_multi_stage_build_kernel<<<grid_c, BLOCK, 0, dev->d_stream>>>(
+            n_cells, dev->d_h, dev->d_hu, dev->d_hv,
+            dev->d_h0, dev->d_hu0, dev->d_hv0,
+            dev->d_h1, dev->d_hu1, dev->d_hv1, 3.0 / 10.0,
+            dev->d_h2, dev->d_hu2, dev->d_hv2, -9.0 / 10.0,
+            dev->d_h3, dev->d_hu3, dev->d_hv3, 6.0 / 5.0,
+            nullptr, nullptr, nullptr, 0.0,
+            nullptr, nullptr, nullptr, 0.0,
+            nullptr, nullptr, nullptr, 0.0);
+        CUDA_CHECK(cudaGetLastError());
+        evaluate_rhs(swe2d_stage_edge_bc_slot(dev, 3), swe2d_stage_edge_bc_val_slot(dev, 3), swe2d_stage_source_slot(dev, 3),
+                     dev->d_k4_h, dev->d_k4_hu, dev->d_k4_hv);
+
+        swe2d_rk_multi_stage_build_kernel<<<grid_c, BLOCK, 0, dev->d_stream>>>(
+            n_cells, dev->d_h, dev->d_hu, dev->d_hv,
+            dev->d_h0, dev->d_hu0, dev->d_hv0,
+            dev->d_h1, dev->d_hu1, dev->d_hv1, -11.0 / 54.0,
+            dev->d_h2, dev->d_hu2, dev->d_hv2, 5.0 / 2.0,
+            dev->d_h3, dev->d_hu3, dev->d_hv3, -70.0 / 27.0,
+            dev->d_k4_h, dev->d_k4_hu, dev->d_k4_hv, 35.0 / 27.0,
+            nullptr, nullptr, nullptr, 0.0,
+            nullptr, nullptr, nullptr, 0.0);
+        CUDA_CHECK(cudaGetLastError());
+        evaluate_rhs(swe2d_stage_edge_bc_slot(dev, 4), swe2d_stage_edge_bc_val_slot(dev, 4), swe2d_stage_source_slot(dev, 4),
+                     dev->d_k5_h, dev->d_k5_hu, dev->d_k5_hv);
+
+        swe2d_rk_multi_stage_build_kernel<<<grid_c, BLOCK, 0, dev->d_stream>>>(
+            n_cells, dev->d_h, dev->d_hu, dev->d_hv,
+            dev->d_h0, dev->d_hu0, dev->d_hv0,
+            dev->d_h1, dev->d_hu1, dev->d_hv1, 1631.0 / 55296.0,
+            dev->d_h2, dev->d_hu2, dev->d_hv2, 175.0 / 512.0,
+            dev->d_h3, dev->d_hu3, dev->d_hv3, 575.0 / 13824.0,
+            dev->d_k4_h, dev->d_k4_hu, dev->d_k4_hv, 44275.0 / 110592.0,
+            dev->d_k5_h, dev->d_k5_hu, dev->d_k5_hv, 253.0 / 4096.0,
+            nullptr, nullptr, nullptr, 0.0);
+        CUDA_CHECK(cudaGetLastError());
+        evaluate_rhs(swe2d_stage_edge_bc_slot(dev, 5), swe2d_stage_edge_bc_val_slot(dev, 5), swe2d_stage_source_slot(dev, 5),
+                     dev->d_k6_h, dev->d_k6_hu, dev->d_k6_hv);
+
+        CUDA_CHECK(cudaMemsetAsync(dev->d_max_wse_elev_error, 0, sizeof(double), dev->d_stream));
+        swe2d_rk5_graph_combine_kernel<<<grid_c, BLOCK, 0, dev->d_stream>>>(
+            n_cells,
+            dev->d_h, dev->d_hu, dev->d_hv,
+            dev->d_h0, dev->d_hu0, dev->d_hv0,
+            dev->d_h1, dev->d_hu1, dev->d_hv1,
+            dev->d_h3, dev->d_hu3, dev->d_hv3,
+            dev->d_k4_h, dev->d_k4_hu, dev->d_k4_hv,
+            dev->d_k6_h, dev->d_k6_hu, dev->d_k6_hv,
+            dev->d_max_wse_elev_error,
+            dev->d_n_mann_cell,
+            g, h_min, shallow_damping_depth, dt,
+            momentum_cap_min_speed,
+            momentum_cap_celerity_mult);
+        CUDA_CHECK(cudaGetLastError());
+    };
+
+    const bool dbg_edge_flux = swe2d_debug_enabled("BACKWATER_SWE2D_DEBUG_GPU_EDGE_FLUX");
+    const bool dbg_flux_summary = swe2d_debug_enabled("BACKWATER_SWE2D_DEBUG_GPU_FLUX");
+    const bool try_kernel_graph = dev->enable_kernel_graphs && !dbg_edge_flux && !dbg_flux_summary;
+    const uint64_t graph_signature = swe2d_kernel_graph_signature(
+        dt, g, h_min, cfl_lambda_cap, max_inv_area,
+        momentum_cap_min_speed, momentum_cap_celerity_mult,
+        depth_cap, max_rel_depth_increase, shallow_damping_depth,
+        extreme_rain_mode, source_cfl_beta, source_max_substeps,
+        source_rate_cap, source_depth_step_cap,
+        source_true_subcycling, source_imex_split,
+        enable_shallow_front_recon_fallback,
+        front_flux_damping);
+
+    bool used_graph_replay = false;
+    if (try_kernel_graph) {
+        auto& cache = dev->kernel_graph_cache;
+        const bool cache_match =
+            cache.is_valid && cache.exec != nullptr &&
+            cache.n_cells == n_cells && cache.n_edges == n_edges &&
+            cache.spatial_scheme == spatial_scheme &&
+            cache.time_integrator == 6 &&
+            cache.config_signature == graph_signature;
+        if (cache_match) {
+            CUDA_CHECK(cudaGraphLaunch(cache.exec, dev->d_stream));
+            dev->graph_replay_count += 1;
+            used_graph_replay = true;
+        } else {
+            cache.destroy();
+            CUDA_CHECK(cudaStreamSynchronize(dev->d_stream));
+            cudaGraph_t graph = nullptr;
+            cudaError_t cap_begin = cudaStreamBeginCapture(dev->d_stream, cudaStreamCaptureModeThreadLocal);
+            if (cap_begin == cudaSuccess) {
+                run_rk5_stages_and_combine();
+                const cudaError_t cap_end = cudaStreamEndCapture(dev->d_stream, &graph);
+                if (cap_end == cudaSuccess && graph != nullptr) {
+                    cudaGraphExec_t exec = nullptr;
+                    if (cudaGraphInstantiate(&exec, graph, nullptr, nullptr, 0) == cudaSuccess) {
+                        cache.graph = graph;
+                        cache.exec = exec;
+                        cache.n_cells = n_cells;
+                        cache.n_edges = n_edges;
+                        cache.spatial_scheme = spatial_scheme;
+                        cache.time_integrator = 6;
+                        cache.config_signature = graph_signature;
+                        cache.is_valid = true;
+                        CUDA_CHECK(cudaGraphLaunch(cache.exec, dev->d_stream));
+                        dev->graph_replay_count += 1;
+                        used_graph_replay = true;
+                    } else {
+                        if (exec) cudaGraphExecDestroy(exec);
+                        cudaGraphDestroy(graph);
+                    }
+                } else if (graph != nullptr) {
+                    cudaGraphDestroy(graph);
+                }
+            }
+        }
+    }
+
+    if (!used_graph_replay) {
+        run_rk5_stages_and_combine();
+    }
+
+    if (dev->n_rain_samples > 0 && dev->d_cell_gage_idx && dev->d_rain_hg_offsets &&
+        dev->d_rain_hg_time_s && dev->d_rain_hg_cum_mm && dev->d_rain_cn) {
+        const int r_grid = (n_cells + BLOCK - 1) / BLOCK;
+        swe2d_build_rain_cn_source_kernel<<<r_grid, BLOCK, 0, dev->d_stream>>>(
+            n_cells,
+            dev->d_cell_gage_idx,
+            dev->d_rain_hg_offsets,
+            dev->d_rain_hg_time_s,
+            dev->d_rain_hg_cum_mm,
+            dev->d_rain_cn,
+            dev->d_rain_cum_mm,
+            dev->d_rain_excess_cum_mm,
+            dev->d_cell_source_mps,
+            t_now,
+            t_now + dt,
+            dev->rain_ia_ratio,
+            dev->rain_mm_to_model_depth);
+        CUDA_CHECK(cudaGetLastError());
+    }
+
+    CUDA_CHECK(cudaMemsetAsync(dev->d_lambda_max, 0, sizeof(double), dev->d_stream));
+    const int edge_grid = (n_edges + BLOCK - 1) / BLOCK;
+    swe2d_cfl_kernel<<<edge_grid, BLOCK, BLOCK * static_cast<int>(sizeof(double)), dev->d_stream>>>(
+        n_edges,
+        dev->d_edge_c0, dev->d_edge_c1,
+        dev->d_edge_nx, dev->d_edge_ny, dev->d_edge_len,
+        dev->d_h, dev->d_hu, dev->d_hv,
+        dev->d_cell_area,
+        g, h_min,
+        cfl_lambda_cap,
+        dev->d_lambda_max,
+        dev->d_degen_mask, dev->degen_mode);
+    CUDA_CHECK(cudaGetLastError());
+
+    pack_diag_kernel<<<1, 1, 0, dev->d_stream>>>(dev->d_lambda_max, dev->d_max_wse_elev_error, dev->d_n_wet, dev->d_diag_packed);
+    CUDA_CHECK(cudaGetLastError());
+
+    if (diag) {
+        diag->dt = dt;
+        diag->gpu_active = true;
+        diag->wet_cells = -1;
+        diag->max_depth = -1.0;
+        diag->min_depth = -1.0;
+        diag->mass_total = -1.0;
+        diag->max_courant = -1.0;
+        diag->max_depth_residual = -1.0;
+        diag->max_wse_elev_error = -1.0;
+        const uint64_t graph_launches_after = dev->graph_replay_count;
+        diag->gpu_graph_launches_step = static_cast<int32_t>(graph_launches_after - graph_launches_before);
+        diag->gpu_graph_launches_total = static_cast<int64_t>(graph_launches_after);
         if (sync_diagnostics) {
             CUDA_CHECK(cudaStreamSynchronize(dev->d_stream));
             double packed[3] = {0.0, 0.0, -1.0};
@@ -3293,7 +4758,6 @@ void swe2d_gpu_set_rain_cn_forcing(
     if (dev->d_rain_cn) CUDA_CHECK(cudaFree(dev->d_rain_cn));
     if (dev->d_rain_cum_mm) CUDA_CHECK(cudaFree(dev->d_rain_cum_mm));
     if (dev->d_rain_excess_cum_mm) CUDA_CHECK(cudaFree(dev->d_rain_excess_cum_mm));
-    if (dev->d_cell_source_mps) CUDA_CHECK(cudaFree(dev->d_cell_source_mps));
     dev->d_cell_gage_idx = nullptr;
     dev->d_rain_hg_offsets = nullptr;
     dev->d_rain_hg_time_s = nullptr;
@@ -3301,11 +4765,17 @@ void swe2d_gpu_set_rain_cn_forcing(
     dev->d_rain_cn = nullptr;
     dev->d_rain_cum_mm = nullptr;
     dev->d_rain_excess_cum_mm = nullptr;
-    dev->d_cell_source_mps = nullptr;
     dev->n_rain_gages = 0;
     dev->n_rain_samples = 0;
     dev->rain_ia_ratio = ia_ratio;
     dev->rain_mm_to_model_depth = (mm_to_model_depth > 0.0) ? mm_to_model_depth : 1.0e-3;
+
+    if (!dev->d_cell_source_mps && dev->n_cells > 0) {
+        CUDA_CHECK(cudaMalloc(reinterpret_cast<void**>(&dev->d_cell_source_mps), static_cast<size_t>(dev->n_cells) * sizeof(double)));
+    }
+    if (dev->d_cell_source_mps && dev->n_cells > 0) {
+        CUDA_CHECK(cudaMemset(dev->d_cell_source_mps, 0, static_cast<size_t>(dev->n_cells) * sizeof(double)));
+    }
 
     if (n_cells <= 0 || n_gages <= 0 || n_samples <= 0 || !cell_gage_idx || !gage_offsets || !hg_time_s || !hg_cum_mm || !cn) return;
     CUDA_CHECK(cudaMalloc(reinterpret_cast<void**>(&dev->d_cell_gage_idx), static_cast<size_t>(n_cells) * sizeof(int32_t)));
@@ -3315,7 +4785,6 @@ void swe2d_gpu_set_rain_cn_forcing(
     CUDA_CHECK(cudaMalloc(reinterpret_cast<void**>(&dev->d_rain_cn), static_cast<size_t>(n_cells) * sizeof(double)));
     CUDA_CHECK(cudaMalloc(reinterpret_cast<void**>(&dev->d_rain_cum_mm), static_cast<size_t>(n_cells) * sizeof(double)));
     CUDA_CHECK(cudaMalloc(reinterpret_cast<void**>(&dev->d_rain_excess_cum_mm), static_cast<size_t>(n_cells) * sizeof(double)));
-    CUDA_CHECK(cudaMalloc(reinterpret_cast<void**>(&dev->d_cell_source_mps), static_cast<size_t>(n_cells) * sizeof(double)));
     CUDA_CHECK(cudaMemcpy(dev->d_cell_gage_idx, cell_gage_idx, static_cast<size_t>(n_cells) * sizeof(int32_t), cudaMemcpyHostToDevice));
     CUDA_CHECK(cudaMemcpy(dev->d_rain_hg_offsets, gage_offsets, static_cast<size_t>(n_gages + 1) * sizeof(int32_t), cudaMemcpyHostToDevice));
     CUDA_CHECK(cudaMemcpy(dev->d_rain_hg_time_s, hg_time_s, static_cast<size_t>(n_samples) * sizeof(double), cudaMemcpyHostToDevice));
@@ -3377,11 +4846,20 @@ SWE3DCartesianPatchDeviceState* swe3d_cartesian_patch_alloc(
     CUDA_CHECK(cudaMalloc(reinterpret_cast<void**>(&patch->d_w), bytes));
     CUDA_CHECK(cudaMalloc(reinterpret_cast<void**>(&patch->d_p), bytes));
     CUDA_CHECK(cudaMalloc(reinterpret_cast<void**>(&patch->d_vof), bytes));
+    CUDA_CHECK(cudaMalloc(reinterpret_cast<void**>(&patch->d_p_rhs), bytes));
+    CUDA_CHECK(cudaMalloc(reinterpret_cast<void**>(&patch->d_p_tmp), bytes));
+    CUDA_CHECK(cudaMalloc(reinterpret_cast<void**>(&patch->d_proj_residual_bits), sizeof(unsigned long long)));
     CUDA_CHECK(cudaMemset(patch->d_u, 0, bytes));
     CUDA_CHECK(cudaMemset(patch->d_v, 0, bytes));
     CUDA_CHECK(cudaMemset(patch->d_w, 0, bytes));
     CUDA_CHECK(cudaMemset(patch->d_p, 0, bytes));
     CUDA_CHECK(cudaMemset(patch->d_vof, 0, bytes));
+    CUDA_CHECK(cudaMemset(patch->d_p_rhs, 0, bytes));
+    CUDA_CHECK(cudaMemset(patch->d_p_tmp, 0, bytes));
+    CUDA_CHECK(cudaMemset(patch->d_proj_residual_bits, 0, sizeof(unsigned long long)));
+    patch->last_projection_iters = 0;
+    patch->last_projection_residual = -1.0;
+    patch->last_projection_converged = false;
     return patch;
 }
 
@@ -3397,13 +4875,22 @@ void swe3d_cartesian_patch_zero_state(
         CUDA_CHECK(cudaMemsetAsync(patch->d_w, 0, bytes, stream));
         CUDA_CHECK(cudaMemsetAsync(patch->d_p, 0, bytes, stream));
         CUDA_CHECK(cudaMemsetAsync(patch->d_vof, 0, bytes, stream));
+        CUDA_CHECK(cudaMemsetAsync(patch->d_p_rhs, 0, bytes, stream));
+        CUDA_CHECK(cudaMemsetAsync(patch->d_p_tmp, 0, bytes, stream));
+        CUDA_CHECK(cudaMemsetAsync(patch->d_proj_residual_bits, 0, sizeof(unsigned long long), stream));
     } else {
         CUDA_CHECK(cudaMemset(patch->d_u, 0, bytes));
         CUDA_CHECK(cudaMemset(patch->d_v, 0, bytes));
         CUDA_CHECK(cudaMemset(patch->d_w, 0, bytes));
         CUDA_CHECK(cudaMemset(patch->d_p, 0, bytes));
         CUDA_CHECK(cudaMemset(patch->d_vof, 0, bytes));
+        CUDA_CHECK(cudaMemset(patch->d_p_rhs, 0, bytes));
+        CUDA_CHECK(cudaMemset(patch->d_p_tmp, 0, bytes));
+        CUDA_CHECK(cudaMemset(patch->d_proj_residual_bits, 0, sizeof(unsigned long long)));
     }
+    patch->last_projection_iters = 0;
+    patch->last_projection_residual = -1.0;
+    patch->last_projection_converged = false;
 }
 
 void swe3d_cartesian_patch_release(
@@ -3415,6 +4902,9 @@ void swe3d_cartesian_patch_release(
     if (patch->d_w) cudaFree(patch->d_w);
     if (patch->d_p) cudaFree(patch->d_p);
     if (patch->d_vof) cudaFree(patch->d_vof);
+    if (patch->d_p_rhs) cudaFree(patch->d_p_rhs);
+    if (patch->d_p_tmp) cudaFree(patch->d_p_tmp);
+    if (patch->d_proj_residual_bits) cudaFree(patch->d_proj_residual_bits);
     delete patch;
 }
 
@@ -3764,6 +5254,338 @@ void swe2d_gpu_apply_2d3d_exchange_skeleton(
         g,
         dt);
     CUDA_CHECK(cudaGetLastError());
+}
+
+__device__ __forceinline__ int64_t swe3d_flat_idx(
+    int32_t ix,
+    int32_t iy,
+    int32_t iz,
+    int32_t nx,
+    int32_t ny)
+{
+    return static_cast<int64_t>(iz) * static_cast<int64_t>(nx) * static_cast<int64_t>(ny) +
+           static_cast<int64_t>(iy) * static_cast<int64_t>(nx) +
+           static_cast<int64_t>(ix);
+}
+
+__global__ void swe3d_single_phase_predictor_kernel(
+    int64_t n_cells,
+    double* d_u,
+    double* d_v,
+    double* d_w,
+    double* d_vof,
+    double dt)
+{
+    const int64_t i = static_cast<int64_t>(blockIdx.x) * static_cast<int64_t>(blockDim.x) +
+                      static_cast<int64_t>(threadIdx.x);
+    if (i >= n_cells) return;
+
+    // Keep VoF bounded in this first operator-split implementation.
+    const double vof = d_vof[i];
+    d_vof[i] = vof < 0.0 ? 0.0 : (vof > 1.0 ? 1.0 : vof);
+
+    // Minimal diffusion-like predictor damping for robustness while projection matures.
+    const double damp = 1.0 / (1.0 + 0.05 * dt);
+    d_u[i] *= damp;
+    d_v[i] *= damp;
+    d_w[i] *= damp;
+}
+
+__global__ void swe3d_compute_pressure_rhs_kernel(
+    int32_t nx,
+    int32_t ny,
+    int32_t nz,
+    double dx,
+    double dy,
+    double dz,
+    const double* d_u,
+    const double* d_v,
+    const double* d_w,
+    double dt,
+    double* d_rhs)
+{
+    const int64_t n_cells = static_cast<int64_t>(nx) * static_cast<int64_t>(ny) * static_cast<int64_t>(nz);
+    const int64_t i = static_cast<int64_t>(blockIdx.x) * static_cast<int64_t>(blockDim.x) +
+                      static_cast<int64_t>(threadIdx.x);
+    if (i >= n_cells) return;
+
+    const int32_t plane = nx * ny;
+    const int32_t iz = static_cast<int32_t>(i / plane);
+    const int32_t rem = static_cast<int32_t>(i - static_cast<int64_t>(iz) * plane);
+    const int32_t iy = rem / nx;
+    const int32_t ix = rem - iy * nx;
+
+    const int32_t ixm = (ix > 0) ? (ix - 1) : ix;
+    const int32_t ixp = (ix + 1 < nx) ? (ix + 1) : ix;
+    const int32_t iym = (iy > 0) ? (iy - 1) : iy;
+    const int32_t iyp = (iy + 1 < ny) ? (iy + 1) : iy;
+    const int32_t izm = (iz > 0) ? (iz - 1) : iz;
+    const int32_t izp = (iz + 1 < nz) ? (iz + 1) : iz;
+
+    const int64_t id_xm = swe3d_flat_idx(ixm, iy, iz, nx, ny);
+    const int64_t id_xp = swe3d_flat_idx(ixp, iy, iz, nx, ny);
+    const int64_t id_ym = swe3d_flat_idx(ix, iym, iz, nx, ny);
+    const int64_t id_yp = swe3d_flat_idx(ix, iyp, iz, nx, ny);
+    const int64_t id_zm = swe3d_flat_idx(ix, iy, izm, nx, ny);
+    const int64_t id_zp = swe3d_flat_idx(ix, iy, izp, nx, ny);
+
+    const double du_dx = (d_u[id_xp] - d_u[id_xm]) / (2.0 * dx);
+    const double dv_dy = (d_v[id_yp] - d_v[id_ym]) / (2.0 * dy);
+    const double dw_dz = (d_w[id_zp] - d_w[id_zm]) / (2.0 * dz);
+    const double div_u = du_dx + dv_dy + dw_dz;
+    d_rhs[i] = div_u / dt;
+}
+
+__global__ void swe3d_pressure_jacobi_kernel(
+    int32_t nx,
+    int32_t ny,
+    int32_t nz,
+    double dx,
+    double dy,
+    double dz,
+    const double* d_p,
+    const double* d_rhs,
+    double* d_p_out)
+{
+    const int64_t n_cells = static_cast<int64_t>(nx) * static_cast<int64_t>(ny) * static_cast<int64_t>(nz);
+    const int64_t i = static_cast<int64_t>(blockIdx.x) * static_cast<int64_t>(blockDim.x) +
+                      static_cast<int64_t>(threadIdx.x);
+    if (i >= n_cells) return;
+
+    const int32_t plane = nx * ny;
+    const int32_t iz = static_cast<int32_t>(i / plane);
+    const int32_t rem = static_cast<int32_t>(i - static_cast<int64_t>(iz) * plane);
+    const int32_t iy = rem / nx;
+    const int32_t ix = rem - iy * nx;
+
+    const int32_t ixm = (ix > 0) ? (ix - 1) : ix;
+    const int32_t ixp = (ix + 1 < nx) ? (ix + 1) : ix;
+    const int32_t iym = (iy > 0) ? (iy - 1) : iy;
+    const int32_t iyp = (iy + 1 < ny) ? (iy + 1) : iy;
+    const int32_t izm = (iz > 0) ? (iz - 1) : iz;
+    const int32_t izp = (iz + 1 < nz) ? (iz + 1) : iz;
+
+    const int64_t id_xm = swe3d_flat_idx(ixm, iy, iz, nx, ny);
+    const int64_t id_xp = swe3d_flat_idx(ixp, iy, iz, nx, ny);
+    const int64_t id_ym = swe3d_flat_idx(ix, iym, iz, nx, ny);
+    const int64_t id_yp = swe3d_flat_idx(ix, iyp, iz, nx, ny);
+    const int64_t id_zm = swe3d_flat_idx(ix, iy, izm, nx, ny);
+    const int64_t id_zp = swe3d_flat_idx(ix, iy, izp, nx, ny);
+
+    const double inv_dx2 = 1.0 / (dx * dx);
+    const double inv_dy2 = 1.0 / (dy * dy);
+    const double inv_dz2 = 1.0 / (dz * dz);
+    const double denom = 2.0 * (inv_dx2 + inv_dy2 + inv_dz2);
+
+    const double nbr_sum =
+        (d_p[id_xm] + d_p[id_xp]) * inv_dx2 +
+        (d_p[id_ym] + d_p[id_yp]) * inv_dy2 +
+        (d_p[id_zm] + d_p[id_zp]) * inv_dz2;
+
+    d_p_out[i] = (nbr_sum - d_rhs[i]) / denom;
+}
+
+__global__ void swe3d_projection_residual_max_kernel(
+    int64_t n_cells,
+    const double* d_p_old,
+    const double* d_p_new,
+    unsigned long long* d_residual_bits)
+{
+    const int64_t i = static_cast<int64_t>(blockIdx.x) * static_cast<int64_t>(blockDim.x) +
+                      static_cast<int64_t>(threadIdx.x);
+    if (i >= n_cells) return;
+    const double diff = fabs(d_p_new[i] - d_p_old[i]);
+    const unsigned long long bits = __double_as_longlong(diff);
+    atomicMax(d_residual_bits, bits);
+}
+
+__global__ void swe3d_velocity_correction_kernel(
+    int32_t nx,
+    int32_t ny,
+    int32_t nz,
+    double dx,
+    double dy,
+    double dz,
+    const double* d_p,
+    double dt,
+    double* d_u,
+    double* d_v,
+    double* d_w)
+{
+    const int64_t n_cells = static_cast<int64_t>(nx) * static_cast<int64_t>(ny) * static_cast<int64_t>(nz);
+    const int64_t i = static_cast<int64_t>(blockIdx.x) * static_cast<int64_t>(blockDim.x) +
+                      static_cast<int64_t>(threadIdx.x);
+    if (i >= n_cells) return;
+
+    const int32_t plane = nx * ny;
+    const int32_t iz = static_cast<int32_t>(i / plane);
+    const int32_t rem = static_cast<int32_t>(i - static_cast<int64_t>(iz) * plane);
+    const int32_t iy = rem / nx;
+    const int32_t ix = rem - iy * nx;
+
+    const int32_t ixm = (ix > 0) ? (ix - 1) : ix;
+    const int32_t ixp = (ix + 1 < nx) ? (ix + 1) : ix;
+    const int32_t iym = (iy > 0) ? (iy - 1) : iy;
+    const int32_t iyp = (iy + 1 < ny) ? (iy + 1) : iy;
+    const int32_t izm = (iz > 0) ? (iz - 1) : iz;
+    const int32_t izp = (iz + 1 < nz) ? (iz + 1) : iz;
+
+    const int64_t id_xm = swe3d_flat_idx(ixm, iy, iz, nx, ny);
+    const int64_t id_xp = swe3d_flat_idx(ixp, iy, iz, nx, ny);
+    const int64_t id_ym = swe3d_flat_idx(ix, iym, iz, nx, ny);
+    const int64_t id_yp = swe3d_flat_idx(ix, iyp, iz, nx, ny);
+    const int64_t id_zm = swe3d_flat_idx(ix, iy, izm, nx, ny);
+    const int64_t id_zp = swe3d_flat_idx(ix, iy, izp, nx, ny);
+
+    const double dp_dx = (d_p[id_xp] - d_p[id_xm]) / (2.0 * dx);
+    const double dp_dy = (d_p[id_yp] - d_p[id_ym]) / (2.0 * dy);
+    const double dp_dz = (d_p[id_zp] - d_p[id_zm]) / (2.0 * dz);
+
+    d_u[i] -= dt * dp_dx;
+    d_v[i] -= dt * dp_dy;
+    d_w[i] -= dt * dp_dz;
+}
+
+void swe2d_gpu_step_3d_single_phase_free_surface(
+    SWE2DDeviceState* dev,
+    double /*t_now*/,
+    double dt,
+    double g,
+    bool enable_coupling_exchange,
+    bool sync_diagnostics,
+    SWE2DStepDiag* diag)
+{
+    if (!dev) throw std::invalid_argument("swe2d_gpu_step_3d_single_phase_free_surface: null device state");
+    if (!dev->patch3d) {
+        throw std::runtime_error(
+            "swe2d_gpu_step_3d_single_phase_free_surface: 3D patch is not allocated");
+    }
+
+    auto* patch = dev->patch3d;
+    if (patch->n_cells <= 0) {
+        throw std::runtime_error(
+            "swe2d_gpu_step_3d_single_phase_free_surface: invalid 3D patch size");
+    }
+
+    constexpr int BLOCK = 256;
+    const int64_t n_cells = patch->n_cells;
+    const int grid = static_cast<int>((n_cells + static_cast<int64_t>(BLOCK) - 1) / static_cast<int64_t>(BLOCK));
+
+    swe3d_single_phase_predictor_kernel<<<grid, BLOCK, 0, dev->d_stream>>>(
+        n_cells,
+        patch->d_u,
+        patch->d_v,
+        patch->d_w,
+        patch->d_vof,
+        dt);
+    CUDA_CHECK(cudaGetLastError());
+
+    const auto& desc = patch->desc;
+    swe3d_compute_pressure_rhs_kernel<<<grid, BLOCK, 0, dev->d_stream>>>(
+        desc.nx,
+        desc.ny,
+        desc.nz,
+        desc.dx,
+        desc.dy,
+        desc.dz,
+        patch->d_u,
+        patch->d_v,
+        patch->d_w,
+        dt,
+        patch->d_p_rhs);
+    CUDA_CHECK(cudaGetLastError());
+
+    constexpr int JACOBI_MAX_ITERS = 40;
+    constexpr double JACOBI_TOL = 1.0e-6;
+    double last_residual = std::numeric_limits<double>::infinity();
+    int iter_count = 0;
+    bool converged = false;
+    for (int iter = 0; iter < JACOBI_MAX_ITERS; ++iter) {
+        swe3d_pressure_jacobi_kernel<<<grid, BLOCK, 0, dev->d_stream>>>(
+            desc.nx,
+            desc.ny,
+            desc.nz,
+            desc.dx,
+            desc.dy,
+            desc.dz,
+            patch->d_p,
+            patch->d_p_rhs,
+            patch->d_p_tmp);
+        CUDA_CHECK(cudaGetLastError());
+
+        CUDA_CHECK(cudaMemsetAsync(
+            patch->d_proj_residual_bits,
+            0,
+            sizeof(unsigned long long),
+            dev->d_stream));
+        swe3d_projection_residual_max_kernel<<<grid, BLOCK, 0, dev->d_stream>>>(
+            n_cells,
+            patch->d_p,
+            patch->d_p_tmp,
+            patch->d_proj_residual_bits);
+        CUDA_CHECK(cudaGetLastError());
+
+        unsigned long long residual_bits = 0ULL;
+        CUDA_CHECK(cudaMemcpyAsync(
+            &residual_bits,
+            patch->d_proj_residual_bits,
+            sizeof(unsigned long long),
+            cudaMemcpyDeviceToHost,
+            dev->d_stream));
+        CUDA_CHECK(cudaStreamSynchronize(dev->d_stream));
+        std::memcpy(&last_residual, &residual_bits, sizeof(double));
+
+        std::swap(patch->d_p, patch->d_p_tmp);
+        iter_count = iter + 1;
+        if (last_residual <= JACOBI_TOL) {
+            converged = true;
+            break;
+        }
+    }
+
+    patch->last_projection_iters = iter_count;
+    patch->last_projection_residual = last_residual;
+    patch->last_projection_converged = converged;
+
+    swe3d_velocity_correction_kernel<<<grid, BLOCK, 0, dev->d_stream>>>(
+        desc.nx,
+        desc.ny,
+        desc.nz,
+        desc.dx,
+        desc.dy,
+        desc.dz,
+        patch->d_p,
+        dt,
+        patch->d_u,
+        patch->d_v,
+        patch->d_w);
+    CUDA_CHECK(cudaGetLastError());
+
+    if (enable_coupling_exchange) {
+        if (!dev->coupling_iface) {
+            throw std::runtime_error(
+                "swe2d_gpu_step_3d_single_phase_free_surface: 2D-3D coupling requested but no interface contract is uploaded");
+        }
+        swe2d_gpu_apply_2d3d_exchange_skeleton(dev, dt, g, true, diag);
+    }
+
+    if (diag) {
+        diag->dt = dt;
+        diag->gpu_active = true;
+        diag->wet_cells = -1;
+        diag->max_depth = -1.0;
+        diag->min_depth = -1.0;
+        diag->mass_total = -1.0;
+        diag->max_courant = -1.0;
+        diag->max_depth_residual = -1.0;
+        diag->max_wse_elev_error = -1.0;
+        diag->gpu_graph_launches_step = 0;
+        diag->gpu_graph_launches_total = static_cast<int64_t>(dev->graph_replay_count);
+    }
+
+    if (sync_diagnostics) {
+        CUDA_CHECK(cudaStreamSynchronize(dev->d_stream));
+    }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -4784,6 +6606,153 @@ void swe2d_gpu_step_nonhydro_predictor_corrector(
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// 3D patch state observation and initialisation
+// ─────────────────────────────────────────────────────────────────────────────
+
+SWE3DPatchStats swe2d_gpu_get_3d_patch_stats(SWE2DDeviceState* dev)
+{
+    if (!dev || !dev->patch3d)
+        throw std::runtime_error("swe2d_gpu_get_3d_patch_stats: no 3D patch allocated");
+
+    const auto* patch = dev->patch3d;
+    const int64_t n = patch->n_cells;
+    if (n <= 0)
+        throw std::runtime_error("swe2d_gpu_get_3d_patch_stats: empty patch");
+
+    const size_t sz = static_cast<size_t>(n) * sizeof(double);
+
+    // Synchronise so the patch step kernel has finished before we read.
+    if (dev->d_stream)
+        CUDA_CHECK(cudaStreamSynchronize(dev->d_stream));
+
+    std::vector<double> h_u(n), h_v(n), h_w(n), h_p(n), h_vof(n);
+    CUDA_CHECK(cudaMemcpy(h_u.data(),   patch->d_u,   sz, cudaMemcpyDeviceToHost));
+    CUDA_CHECK(cudaMemcpy(h_v.data(),   patch->d_v,   sz, cudaMemcpyDeviceToHost));
+    CUDA_CHECK(cudaMemcpy(h_w.data(),   patch->d_w,   sz, cudaMemcpyDeviceToHost));
+    CUDA_CHECK(cudaMemcpy(h_p.data(),   patch->d_p,   sz, cudaMemcpyDeviceToHost));
+    CUDA_CHECK(cudaMemcpy(h_vof.data(), patch->d_vof, sz, cudaMemcpyDeviceToHost));
+
+    SWE3DPatchStats s;
+    s.n_cells = n;
+    s.nx = patch->desc.nx;
+    s.ny = patch->desc.ny;
+    s.nz = patch->desc.nz;
+    s.dx = patch->desc.dx;
+    s.dy = patch->desc.dy;
+    s.dz = patch->desc.dz;
+
+    s.vof_min = h_vof[0];
+    s.vof_max = h_vof[0];
+    s.vof_sum = 0.0;
+    double su2 = 0.0, sv2 = 0.0, sw2 = 0.0;
+    double sdiv2 = 0.0;
+    s.p_max_abs = 0.0;
+
+    for (int64_t i = 0; i < n; ++i) {
+        const double vf = h_vof[i];
+        if (vf < s.vof_min) s.vof_min = vf;
+        if (vf > s.vof_max) s.vof_max = vf;
+        s.vof_sum += vf;
+        su2 += h_u[i] * h_u[i];
+        sv2 += h_v[i] * h_v[i];
+        sw2 += h_w[i] * h_w[i];
+        const double pabs = std::abs(h_p[i]);
+        if (pabs > s.p_max_abs) s.p_max_abs = pabs;
+
+        const int32_t nx = s.nx;
+        const int32_t ny = s.ny;
+        const int32_t nz = s.nz;
+        const int32_t plane = nx * ny;
+        const int32_t iz = static_cast<int32_t>(i / plane);
+        const int32_t rem = static_cast<int32_t>(i - static_cast<int64_t>(iz) * plane);
+        const int32_t iy = rem / nx;
+        const int32_t ix = rem - iy * nx;
+
+        const int32_t ixm = (ix > 0) ? (ix - 1) : ix;
+        const int32_t ixp = (ix + 1 < nx) ? (ix + 1) : ix;
+        const int32_t iym = (iy > 0) ? (iy - 1) : iy;
+        const int32_t iyp = (iy + 1 < ny) ? (iy + 1) : iy;
+        const int32_t izm = (iz > 0) ? (iz - 1) : iz;
+        const int32_t izp = (iz + 1 < nz) ? (iz + 1) : iz;
+
+        const auto hidx = [nx, ny](int32_t x, int32_t y, int32_t z) -> int64_t {
+            return static_cast<int64_t>(z) * static_cast<int64_t>(nx) * static_cast<int64_t>(ny) +
+                   static_cast<int64_t>(y) * static_cast<int64_t>(nx) +
+                   static_cast<int64_t>(x);
+        };
+        const int64_t id_xm = hidx(ixm, iy, iz);
+        const int64_t id_xp = hidx(ixp, iy, iz);
+        const int64_t id_ym = hidx(ix, iym, iz);
+        const int64_t id_yp = hidx(ix, iyp, iz);
+        const int64_t id_zm = hidx(ix, iy, izm);
+        const int64_t id_zp = hidx(ix, iy, izp);
+
+        const double du_dx = (h_u[id_xp] - h_u[id_xm]) / (2.0 * s.dx);
+        const double dv_dy = (h_v[id_yp] - h_v[id_ym]) / (2.0 * s.dy);
+        const double dw_dz = (h_w[id_zp] - h_w[id_zm]) / (2.0 * s.dz);
+        const double div_u = du_dx + dv_dy + dw_dz;
+        sdiv2 += div_u * div_u;
+    }
+
+    const double inv_n = 1.0 / static_cast<double>(n);
+    s.u_rms = std::sqrt(su2 * inv_n);
+    s.v_rms = std::sqrt(sv2 * inv_n);
+    s.w_rms = std::sqrt(sw2 * inv_n);
+    s.divergence_rms = std::sqrt(sdiv2 * inv_n);
+    s.projection_iters = patch->last_projection_iters;
+    s.projection_residual = patch->last_projection_residual;
+    s.projection_converged = patch->last_projection_converged;
+    return s;
+}
+
+void swe2d_gpu_set_3d_patch_vof(
+    SWE2DDeviceState* dev,
+    const double*     vof_host,
+    int64_t           n)
+{
+    if (!dev || !dev->patch3d)
+        throw std::runtime_error("swe2d_gpu_set_3d_patch_vof: no 3D patch allocated");
+    if (!vof_host)
+        throw std::invalid_argument("swe2d_gpu_set_3d_patch_vof: null input");
+    if (n != dev->patch3d->n_cells)
+        throw std::invalid_argument("swe2d_gpu_set_3d_patch_vof: length mismatch");
+
+    CUDA_CHECK(cudaMemcpyAsync(
+        dev->patch3d->d_vof,
+        vof_host,
+        static_cast<size_t>(n) * sizeof(double),
+        cudaMemcpyHostToDevice,
+        dev->d_stream));
+}
+
+void swe2d_gpu_set_3d_patch_state(
+    SWE2DDeviceState* dev,
+    const double* u_host,
+    const double* v_host,
+    const double* w_host,
+    const double* p_host,
+    const double* vof_host,
+    int64_t n)
+{
+    if (!dev || !dev->patch3d)
+        throw std::runtime_error("swe2d_gpu_set_3d_patch_state: no 3D patch allocated");
+    if (n != dev->patch3d->n_cells)
+        throw std::invalid_argument("swe2d_gpu_set_3d_patch_state: length mismatch");
+
+    const size_t sz = static_cast<size_t>(n) * sizeof(double);
+    cudaStream_t s = dev->d_stream;
+
+    auto upload = [&](double* dst, const double* src) {
+        if (src) CUDA_CHECK(cudaMemcpyAsync(dst, src, sz, cudaMemcpyHostToDevice, s));
+    };
+    upload(dev->patch3d->d_u,   u_host);
+    upload(dev->patch3d->d_v,   v_host);
+    upload(dev->patch3d->d_w,   w_host);
+    upload(dev->patch3d->d_p,   p_host);
+    upload(dev->patch3d->d_vof, vof_host);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // Graph management (Suggestion 9)
 // ─────────────────────────────────────────────────────────────────────────────
 void swe2d_gpu_enable_kernel_graphs(SWE2DDeviceState* dev, bool enable) {
@@ -4839,6 +6808,18 @@ void swe2d_gpu_destroy(SWE2DDeviceState* dev) {
     safe_free(dev->d_hv);
     safe_free(dev->d_h0);         safe_free(dev->d_hu0);
     safe_free(dev->d_hv0);
+    safe_free(dev->d_h1);         safe_free(dev->d_hu1);
+    safe_free(dev->d_hv1);
+    safe_free(dev->d_h2);         safe_free(dev->d_hu2);
+    safe_free(dev->d_hv2);
+    safe_free(dev->d_h3);         safe_free(dev->d_hu3);
+    safe_free(dev->d_hv3);
+    safe_free(dev->d_k4_h);       safe_free(dev->d_k4_hu);
+    safe_free(dev->d_k4_hv);
+    safe_free(dev->d_k5_h);       safe_free(dev->d_k5_hu);
+    safe_free(dev->d_k5_hv);
+    safe_free(dev->d_k6_h);       safe_free(dev->d_k6_hu);
+    safe_free(dev->d_k6_hv);
     safe_free(dev->d_flux_h);     safe_free(dev->d_flux_hu);
     safe_free(dev->d_flux_hv);    safe_free(dev->d_flux_hu_r);
     safe_free(dev->d_flux_hv_r);
@@ -4860,6 +6841,9 @@ void swe2d_gpu_destroy(SWE2DDeviceState* dev) {
     safe_free(dev->d_rain_cum_mm);
     safe_free(dev->d_rain_excess_cum_mm);
     safe_free(dev->d_cell_source_mps);
+    safe_free(dev->d_stage_cell_source_mps);
+    safe_free(dev->d_stage_edge_bc);
+    safe_free(dev->d_stage_edge_bc_val);
     safe_free(dev->d_external_source_mps);
     if (dev->d_stream) {
         cudaStreamSynchronize(dev->d_stream);

@@ -7,6 +7,24 @@
 3. Couple 2D and 3D so river-scale routing remains cheap (2D) while local structure physics are resolved (3D).
 4. Preserve GPU scalability and practical runtime for engineering workflows.
 
+## 1.1 Current 3D CUDA Progress (2026-05-15)
+
+Implemented in this iteration:
+- Added a dedicated CUDA dispatch path for `SINGLE_PHASE_FREE_SURFACE_VOF` in native solver stepping.
+- Added automatic 3D Cartesian patch allocation during solver creation when 3D mode is selected.
+- Replaced single-kernel damping scaffold with staged uncoupled 3D operator path:
+  - predictor stabilization,
+  - divergence-based pressure RHS,
+  - Jacobi pressure projection iterations,
+  - pressure-gradient velocity correction,
+  - bounded VoF clamping.
+- Wired optional 2D-3D exchange scaffold invocation from the 3D step when coupling mode is enabled and contract is uploaded.
+
+Current limitations:
+- 3D projection is now first-pass Jacobi scaffold and requires physics calibration/validation.
+- True conservative VoF advection transport is still pending (current step keeps boundedness, not full interface transport).
+- Coupling still requires a valid uploaded 2D-3D interface contract; otherwise coupling-on runs fail fast with explicit errors.
+
 ## 2. What We Started Now (Boundary Condition Foundation)
 
 Completed in this iteration:
@@ -125,6 +143,68 @@ Stage B:
 - 1D/2D structure operators coupled to 3D near-field patches
 - tabulated local loss relations where full 3D is not needed
 
+## 6.4 Geometry Ingestion and 3D Patch Meshing (STL-first)
+
+Objective:
+- Allow users to import true 3D structure geometry (starting with STL) in QGIS,
+  then build a structured Cartesian 3D patch suitable for GPU-first solver kernels.
+
+Workflow (MVP):
+- Import one or more STL solids as structure inputs (culvert barrel, bridge deck,
+  piers, walls, gates).
+- Define a 3D patch ROI in map coordinates (x/y bounds + z extents) and target
+  patch resolution `(nx, ny, nz)`.
+- Generate a Cartesian patch from ROI and voxelize/classify cells against STL solids.
+- Emit per-cell geometry coefficients for solver kernels:
+  - fluid fraction `phi` (0..1)
+  - face open-area fractions `(ax, ay, az)`
+  - optional wall-normal / signed-distance metadata for immersed forcing
+
+Implementation note:
+- Keep structured patch generation in plugin/native preprocessing and do not add
+  unstructured 3D meshing in MVP.
+- Structured-grid consistency with CUDA kernels is the primary requirement.
+
+## 6.5 Wall Geometry Handling Strategy (Immersed Boundary + Porosity)
+
+Primary path (recommended):
+- Fractional-cell porosity/open-area method on Cartesian grid.
+- Momentum/pressure operators are scaled by `phi` and face fractions `(ax, ay, az)`.
+- Advantages:
+  - GPU-friendly memory access
+  - no cut-cell topology rebuild each step
+  - robust for complex imported STL geometry
+
+Secondary path (optional later):
+- Direct-forcing immersed boundary correction near solid boundaries using signed-distance
+  normals (for sharper no-slip/no-penetration behavior).
+
+MVP acceptance behavior:
+- Solid cells: `phi=0`, velocities forced to zero.
+- Partial cells: conservative flux scaling through open-area faces.
+- Geometry is static during run (no moving solids in MVP).
+
+## 6.6 QGIS 3D Viewer Integration Plan
+
+Objective:
+- Provide practical visualization of 3D patch results inside QGIS without requiring
+  an external postprocessor.
+
+MVP visualization products:
+- 3D patch boundary surfaces (isosurfaces or extracted slice surfaces) as mesh layers.
+- Time-varying scalar fields on slices (`vof`, `p`, velocity magnitude).
+- Optional vector glyph layers for velocity on selected slices.
+
+Data export strategy (MVP):
+- Keep native solver state in GPU memory during stepping.
+- On snapshot cadence, export selected diagnostics/slices to disk-backed mesh products
+  consumable by QGIS 3D view.
+- Prefer low-volume slice/surface exports first; defer full-volume streaming.
+
+Operational constraints:
+- QGIS 3D viewer is used for QA/engineering review; not as a high-frequency full-volume
+  renderer for every timestep.
+
 ## 7. Bridges/Culverts/Weirs Implementation Roadmap
 
 Near-term (within current 2D framework):
@@ -141,6 +221,13 @@ Mid-term:
 
 ## 8. Milestones
 
+Execution order lock (agreed):
+1. Physics correctness (uncoupled 3D validation suite).
+2. Computational efficiency and robustness hardening.
+3. 2D-3D coupling rollout.
+
+No coupling optimization work should gate physics validation. No coupling acceptance claims before uncoupled 3D validation gates are passing.
+
 M0 (done):
 - Total-Q boundary input + progressive low-edge activation.
 
@@ -150,16 +237,32 @@ M1:
 M2:
 - Non-hydrostatic 2D GPU path + performance parity tests vs hydrostatic mode.
 
-M3:
-- 3D VoF prototype on Cartesian mesh with static spillway benchmark.
+M3 (Physics-first 3D):
+- Uncoupled 3D VoF validation suite passes baseline cases (no 2D coupling):
+  - static/free-surface preservation,
+  - hydrostatic pressure sanity,
+  - broad-crested weir profile case,
+  - culvert pressurization transition case.
 
-M4:
-- One-way 2D->3D coupling (boundary forcing only).
+M3.5 (Geometry + Viewer enablement):
+- STL ingestion workflow available in workbench (experimental flag).
+- Structured patch generation from ROI + resolution controls.
+- Porosity/open-area coefficient generation and validation checks.
+- QGIS 3D viewer snapshots (slice/surface products) wired for review.
 
-M5:
-- Two-way conservative 2D<->3D coupling with relaxation controls.
+M4 (Optimization/robustness):
+- 3D kernels profiled and hardened after M3 is green:
+  - projection/pressure solve cost reduction,
+  - memory-layout and launch optimization,
+  - robustness under high Courant/steep gradients.
+
+M5 (Coupling enablement):
+- One-way 2D->3D coupling (boundary forcing only) after uncoupled 3D validation and optimization.
 
 M6:
+- Two-way conservative 2D<->3D coupling with relaxation controls.
+
+M7:
 - Structure library v1 (culvert/bridge/weir templates + calibration workflows).
 
 ## 9. Validation and Benchmark Plan
@@ -173,6 +276,10 @@ M6:
 - broad-crested weir nappe profile
 - culvert barrel pressurization transitions
 - bridge deck overtopping case
+- STL-derived geometry regression set:
+  - watertight culvert barrel,
+  - bridge deck + piers,
+  - complex multi-solid case with overlapping extents.
 
 Coupled 2D/3D:
 - floodplain + bridge opening test with mass closure and stage continuity checks
@@ -193,23 +300,22 @@ Acceptance metrics:
 3. Geometry complexity in 3D:
 - Mitigation: start with Cartesian + immersed/cut-cell only.
 
+5. STL quality variability (non-manifold/holes/units mismatch):
+- Mitigation: import-time validation and repair checks; explicit unit/CRS transform step;
+  fail-fast with actionable diagnostics.
+
 4. User workflow complexity:
 - Mitigation: staged UI exposure (basic/advanced), defaults tuned for stability.
 
 ## 11. Immediate Next Development Steps
 
-1. Add BC diagnostics panel output:
-- total Q in,
-- active boundary length,
-- computed unit q,
-- number of active edges.
-
-2. Add BC-layer grouping identifier support (e.g., `flow_group`) so multiple inflow lines on same side can remain independent total-Q sources.
-
-3. Start non-hydrostatic branch skeleton in native backend:
-- new mode enum,
-- pressure workspace buffers,
-- predictor/corrector function hooks,
-- baseline CPU test case.
-
-4. Start 3D solver design doc v0 with data layout options (AoS vs SoA, tile/block sizing, pressure solver choice).
+1. Physics/numerics priority restart (immediate):
+- replace scaffold damping step with real operator split:
+  - advection/diffusion predictor,
+  - pressure projection (Poisson solve),
+  - velocity correction,
+  - bounded VoF transport.
+2. Keep uncoupled 3D validation suite as hard gate and extend with STL-derived geometry fixtures.
+3. Implement STL-to-structured preprocessing (ROI, voxel classification, porosity/open-area tensors).
+4. Add experimental QGIS 3D viewer products (slice/surface snapshots) for patch QA.
+5. Defer one-way/two-way coupling milestones until uncoupled physics + geometry gates are green.

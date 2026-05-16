@@ -1,1 +1,0 @@
-  -L"/usr/lib/x86_64-linux-gnu/stubs"  -L"/usr/lib/gcc/x86_64-linux-gnu/13"   -ldl "/usr/lib/x86_64-linux-gnu/librt.a" "/usr/lib/x86_64-linux-gnu/libpthread.a" -lcudadevrt -lcudart_static -lrt -lpthread 

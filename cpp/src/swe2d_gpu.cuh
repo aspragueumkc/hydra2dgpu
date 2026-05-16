@@ -90,6 +90,14 @@ struct SWE3DCartesianPatchDeviceState {
     double* d_w = nullptr;
     double* d_p = nullptr;
     double* d_vof = nullptr;
+    // 3D projection workspace (uncoupled path): pressure RHS + Jacobi scratch.
+    double* d_p_rhs = nullptr;
+    double* d_p_tmp = nullptr;
+    unsigned long long* d_proj_residual_bits = nullptr;
+    // Last projection diagnostics from swe2d_gpu_step_3d_single_phase_free_surface.
+    int32_t last_projection_iters = 0;
+    double last_projection_residual = -1.0;
+    bool last_projection_converged = false;
 };
 
 struct SWE2D3DInterfaceContractDevice {
@@ -121,6 +129,10 @@ struct SWE2DDeviceState {
     double*  d_edge_my     = nullptr;
     int32_t* d_edge_bc     = nullptr;   // BCType stored as int32_t for CUDA compatibility
     double*  d_edge_bc_val = nullptr;
+    // Per-stage boundary forcing snapshots used by graph-safe higher-order schemes.
+    // Layout is contiguous by stage: slot*swe_n_edges + edge.
+    int32_t* d_stage_edge_bc = nullptr;
+    double*  d_stage_edge_bc_val = nullptr;
 
     // Cell-to-edge CSR, used by the atomics-free unstructured kernels.
     int32_t* d_cell_edge_offsets = nullptr;  // [n_cells + 1]
@@ -170,6 +182,17 @@ struct SWE2DDeviceState {
     double*  d_h3  = nullptr;
     double*  d_hu3 = nullptr;
     double*  d_hv3 = nullptr;
+    // k4 slope buffer for graph-safe true RK4 (temporal_order=5)
+    double*  d_k4_h  = nullptr;
+    double*  d_k4_hu = nullptr;
+    double*  d_k4_hv = nullptr;
+    // Extra slope buffers for graph-safe RK5 (temporal_order=6)
+    double*  d_k5_h  = nullptr;
+    double*  d_k5_hu = nullptr;
+    double*  d_k5_hv = nullptr;
+    double*  d_k6_h  = nullptr;
+    double*  d_k6_hu = nullptr;
+    double*  d_k6_hv = nullptr;
 
     // Flux accumulators (zeroed each step)
     double*  d_flux_h  = nullptr;
@@ -216,6 +239,9 @@ struct SWE2DDeviceState {
     double*  d_rain_excess_cum_mm = nullptr; // [n_cells]
     double*  d_cell_source_mps    = nullptr; // [n_cells]
     double*  d_external_source_mps = nullptr; // [n_cells]
+    // Per-stage rain/source snapshots used by graph-safe higher-order schemes.
+    // Layout is contiguous by stage: slot*n_cells + cell.
+    double*  d_stage_cell_source_mps = nullptr;
     int32_t  n_rain_gages = 0;
     int32_t  n_rain_samples = 0;
     double   rain_ia_ratio = 0.2;
@@ -394,8 +420,8 @@ void swe2d_gpu_step_rk2_godunov_rollout(
     double front_flux_damping    = 0.5,
     bool   active_set_hysteresis = true);
 
-// Advance one classic RK4 (4th-order Runge-Kutta) timestep fully on GPU.
-// Uses four function evaluations per step with weights (1 + 2 + 2 + 1)/6.
+// Advance one classic RK4 (4th-order Runge-Kutta, composed) timestep fully on GPU.
+// temporal_order=4. Composed method using 4×swe2d_gpu_step calls.
 void swe2d_gpu_step_rk4(
     SWE2DDeviceState* dev,
     double t_now,
@@ -423,6 +449,81 @@ void swe2d_gpu_step_rk4(
     SWE2DStepDiag* diag,
     double front_flux_damping    = 0.5,
     bool   active_set_hysteresis = true);
+
+// Advance one graph-safe true RK4 timestep fully on GPU.
+// temporal_order=5. Pure Butcher-tableau RK4 with separate L(U) evaluations per stage.
+// Classify runs once per step (outside graph); gradient+flux+rhs_collect+stage_build
+// across all 4 stages is captured as a single CUDA graph (time_integrator=5).
+void swe2d_gpu_step_rk4_graph(
+    SWE2DDeviceState* dev,
+    double t_now,
+    double dt,
+    double g,
+    double h_min,
+    int spatial_scheme,
+    double cfl_factor,
+    double max_inv_area,
+    double cfl_lambda_cap,
+    double momentum_cap_min_speed,
+    double momentum_cap_celerity_mult,
+    double depth_cap,
+    double max_rel_depth_increase,
+    double shallow_damping_depth,
+    bool extreme_rain_mode,
+    double source_cfl_beta,
+    int source_max_substeps,
+    double source_rate_cap,
+    double source_depth_step_cap,
+    bool source_true_subcycling,
+    bool source_imex_split,
+    bool enable_shallow_front_recon_fallback,
+    bool sync_diagnostics,
+    SWE2DStepDiag* diag,
+    double front_flux_damping    = 0.5,
+    bool   active_set_hysteresis = true);
+
+// Advance one graph-safe RK5 timestep fully on GPU.
+// temporal_order=6. Cash-Karp 5th-order explicit RK with stage forcing snapshots
+// prepared outside the graph and consumed inside the captured stage sequence.
+void swe2d_gpu_step_rk5_graph(
+    SWE2DDeviceState* dev,
+    double t_now,
+    double dt,
+    double g,
+    double h_min,
+    int spatial_scheme,
+    double cfl_factor,
+    double max_inv_area,
+    double cfl_lambda_cap,
+    double momentum_cap_min_speed,
+    double momentum_cap_celerity_mult,
+    double depth_cap,
+    double max_rel_depth_increase,
+    double shallow_damping_depth,
+    bool extreme_rain_mode,
+    double source_cfl_beta,
+    int source_max_substeps,
+    double source_rate_cap,
+    double source_depth_step_cap,
+    bool source_true_subcycling,
+    bool source_imex_split,
+    bool enable_shallow_front_recon_fallback,
+    bool sync_diagnostics,
+    SWE2DStepDiag* diag,
+    double front_flux_damping    = 0.5,
+    bool   active_set_hysteresis = true);
+
+// Advance one 3D single-phase free-surface scaffold timestep on GPU.
+// This advances the 3D patch state and optionally applies 2D-3D exchange
+// scaffolding when an interface contract is uploaded.
+void swe2d_gpu_step_3d_single_phase_free_surface(
+    SWE2DDeviceState* dev,
+    double t_now,
+    double dt,
+    double g,
+    bool enable_coupling_exchange,
+    bool sync_diagnostics,
+    SWE2DStepDiag* diag);
 
 void swe2d_gpu_step_nonhydro_predictor_corrector(
     SWE2DDeviceState* dev,
@@ -672,6 +773,62 @@ void swe2d_gpu_drainage_step(
     double* max_link_flow_out,
     double* limiter_event_count_out,
     double* limiter_volume_m3_out);
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 3D patch state observation and initialisation (validation / testing API)
+// ─────────────────────────────────────────────────────────────────────────────
+
+// Aggregate statistics over all cells in the 3D Cartesian patch.
+// Fields are copied from device to host and reduced on the CPU — suitable
+// for validation tests, not for inner-loop production use.
+struct SWE3DPatchStats {
+    int64_t n_cells = 0;
+    // VoF
+    double vof_min = 0.0;
+    double vof_max = 0.0;
+    double vof_sum = 0.0;       // total VoF (conserved if no source/sink)
+    // Velocity RMS (sqrt(mean(u^2)))
+    double u_rms = 0.0;
+    double v_rms = 0.0;
+    double w_rms = 0.0;
+    // Pressure extrema
+    double p_max_abs = 0.0;
+    // Velocity divergence RMS over patch (from cell-centered finite differences)
+    double divergence_rms = 0.0;
+    // Last projection diagnostics
+    int32_t projection_iters = 0;
+    double projection_residual = -1.0;
+    bool projection_converged = false;
+    // Patch descriptor (for assertions)
+    int32_t nx = 0;
+    int32_t ny = 0;
+    int32_t nz = 0;
+    double dx = 0.0;
+    double dy = 0.0;
+    double dz = 0.0;
+};
+
+// Synchronise and collect stats from the 3D patch attached to dev.
+// Throws if dev or dev->patch3d is null.
+SWE3DPatchStats swe2d_gpu_get_3d_patch_stats(SWE2DDeviceState* dev);
+
+// Upload a full per-cell VoF field (host → device, length must equal n_cells).
+// Validates length against patch.  Throws on mismatch.
+void swe2d_gpu_set_3d_patch_vof(
+    SWE2DDeviceState* dev,
+    const double*     vof_host,
+    int64_t           n);
+
+// Upload full per-cell velocity+pressure initial condition (all optional).
+// Pass nullptr for any field to skip that field.  Length must equal n_cells.
+void swe2d_gpu_set_3d_patch_state(
+    SWE2DDeviceState* dev,
+    const double* u_host,    // nullable
+    const double* v_host,    // nullable
+    const double* w_host,    // nullable
+    const double* p_host,    // nullable
+    const double* vof_host,  // nullable
+    int64_t n);
 
 // CUDA Graph optimization API (Suggestion 9)
 // Enable graph capture on next step, and use replayed graphs on subsequent steps.

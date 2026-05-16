@@ -20,6 +20,7 @@ class SpatialDiscretization(IntEnum):
     FV_MUSCL_MINMOD   = 2
     FV_MUSCL_MC       = 3   # Monotonized-Central limiter (gradient-based TVD)
     FV_MUSCL_VAN_LEER = 4   # Van Leer smooth limiter (gradient-based TVD)
+    FV_WENO3_LIKE     = 5   # WENO3-like nonlinear blend (GPU-first experimental)
     # Backward-compatibility aliases
     FV_MUSCL = FV_MUSCL_FAST
     FV_WENO  = FV_MUSCL_MINMOD
@@ -30,6 +31,8 @@ class TemporalScheme(IntEnum):
     SSP_RK2 = 2
     SSP_RK3 = 3
     CLASSIC_RK4 = 4
+    GRAPH_SAFE_RK4 = 5      # True RK4 stage path with graph-safe staged forcing
+    GRAPH_SAFE_RK5 = 6      # Cash-Karp RK5 stage path with graph-safe staged forcing
 
 
 class TurbulenceModel(IntEnum):

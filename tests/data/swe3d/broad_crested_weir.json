@@ -1,0 +1,68 @@
+{
+  "_comment": [
+    "Broad-crested weir reference case for Stage-1 3D validation gate.",
+    "Analytical reference follows the standard weir nappe formula:",
+    "  Q = Cd * b * (2/3) * sqrt(2g/3) * H^(3/2)",
+    "  Cd = 0.848 (broad-crested), b = 1.0 m (unit width), H = 0.30 m",
+    "  => Q_ref ≈ 0.218 m³/s  (±5 % tolerance)",
+    "",
+    "Domain: 3 m long × 1 m wide × 0.6 m tall",
+    "Weir:   centred at x=1.5 m, height 0.20 m, crest length 0.30 m",
+    "ICs:    upstream depth 0.50 m (h = 0.50 m above channel floor),",
+    "        downstream depth 0.10 m (free overfall)",
+    "BCs:    inlet: constant head (WSE = 0.50 m), outlet: free overfall",
+    "",
+    "Metrics checked:",
+    "  free_surface_upstream_m  : WSE at x=0.5 m in range [0.45, 0.55]",
+    "  free_surface_downstream_m: WSE at x=2.5 m in range [0.05, 0.25]",
+    "  discharge_m3_per_s       : mean column discharge at weir crest in range [0.165, 0.270]",
+    "",
+    "NOTE: This case is a specification stub.  The run_and_compare harness will",
+    "      instantiate a 3D patch matching this geometry when triggered by",
+    "      BACKWATER_RUN_SWE3D_PHYSICS_CASES=1.  The case will fail gracefully",
+    "      until VoF advection + pressure projection are implemented."
+  ],
+  "name": "broad_crested_weir",
+  "description": "Broad-crested weir — free-surface nappe reference",
+  "domain": {
+    "lx_m":  3.0,
+    "ly_m":  1.0,
+    "lz_m":  0.6,
+    "patch_nx": 60,
+    "patch_ny":  8,
+    "patch_nz": 12
+  },
+  "weir": {
+    "x_centre_m":   1.5,
+    "height_m":     0.20,
+    "crest_width_m": 0.30
+  },
+  "initial_conditions": {
+    "upstream_depth_m":   0.50,
+    "downstream_depth_m": 0.10
+  },
+  "simulation": {
+    "n_steps":  200,
+    "dt_s":    0.005
+  },
+  "metrics": {
+    "free_surface_upstream_m": {
+      "probe_x_m": 0.5,
+      "ref_value":  0.50,
+      "tolerance_abs": 0.05,
+      "description": "Water-surface elevation at x=0.5 m (upstream of weir)"
+    },
+    "free_surface_downstream_m": {
+      "probe_x_m": 2.5,
+      "ref_value":  0.15,
+      "tolerance_abs": 0.10,
+      "description": "Water-surface elevation at x=2.5 m (downstream of weir)"
+    },
+    "discharge_m3_per_s": {
+      "probe_x_m": 1.5,
+      "ref_value":  0.218,
+      "tolerance_rel": 0.20,
+      "description": "Volumetric discharge past weir crest (Q = Cd b H^1.5 sqrt(2g/3))"
+    }
+  }
+}
