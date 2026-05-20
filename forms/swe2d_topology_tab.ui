@@ -1,0 +1,384 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<ui version="4.0">
+ <class>SWE2DTopologyTabPage</class>
+ <widget class="QWidget" name="SWE2DTopologyTabPage">
+  <layout class="QVBoxLayout" name="verticalLayout">
+   <property name="leftMargin">
+    <number>0</number>
+   </property>
+   <property name="topMargin">
+    <number>0</number>
+   </property>
+   <property name="rightMargin">
+    <number>0</number>
+   </property>
+   <property name="bottomMargin">
+    <number>0</number>
+   </property>
+   <item>
+    <widget class="QGroupBox" name="topo_group">
+     <property name="title">
+      <string>Topology Meshing (Face-centric)</string>
+     </property>
+        <layout class="QGridLayout" name="topo_layout">
+         <item row="0" column="0">
+          <widget class="QLabel" name="topo_nodes_lbl">
+           <property name="text">
+            <string>Topology nodes layer:</string>
+           </property>
+          </widget>
+         </item>
+         <item row="0" column="1">
+          <widget class="QComboBox" name="topo_nodes_combo"/>
+         </item>
+         <item row="1" column="0">
+          <widget class="QLabel" name="topo_arcs_lbl">
+           <property name="text">
+            <string>Topology arcs layer:</string>
+           </property>
+          </widget>
+         </item>
+         <item row="1" column="1">
+          <widget class="QComboBox" name="topo_arcs_combo"/>
+         </item>
+         <item row="2" column="0">
+          <widget class="QLabel" name="topo_regions_lbl">
+           <property name="text">
+            <string>Topology regions layer:</string>
+           </property>
+          </widget>
+         </item>
+         <item row="2" column="1">
+          <widget class="QComboBox" name="topo_regions_combo"/>
+         </item>
+         <item row="3" column="0">
+          <widget class="QLabel" name="topo_constraints_lbl">
+           <property name="text">
+            <string>Constraints layer:</string>
+           </property>
+          </widget>
+         </item>
+         <item row="3" column="1">
+          <widget class="QComboBox" name="topo_constraints_combo"/>
+         </item>
+         <item row="4" column="0">
+          <widget class="QLabel" name="topo_quad_edges_lbl">
+           <property name="text">
+            <string>Quad edges / transition layers:</string>
+           </property>
+          </widget>
+         </item>
+         <item row="4" column="1">
+          <widget class="QComboBox" name="topo_quad_edges_combo"/>
+         </item>
+         <item row="5" column="0">
+          <widget class="QLabel" name="topo_backend_lbl">
+           <property name="text">
+            <string>Meshing backend:</string>
+           </property>
+          </widget>
+         </item>
+         <item row="5" column="1">
+          <widget class="QComboBox" name="topo_backend_combo"/>
+         </item>
+         <item row="6" column="0">
+          <widget class="QLabel" name="topo_default_size_lbl">
+           <property name="text">
+            <string>Default target size:</string>
+           </property>
+          </widget>
+         </item>
+         <item row="6" column="1">
+          <widget class="QDoubleSpinBox" name="topo_default_size_spin"/>
+         </item>
+         <item row="7" column="0">
+          <widget class="QLabel" name="topo_default_cell_type_lbl">
+           <property name="text">
+            <string>Default cell type:</string>
+           </property>
+          </widget>
+         </item>
+         <item row="7" column="1">
+          <widget class="QComboBox" name="topo_default_cell_type_combo"/>
+         </item>
+         <item row="8" column="0">
+          <widget class="QLabel" name="topo_gmsh_controls_lbl">
+           <property name="text">
+            <string>Gmsh advanced controls:</string>
+           </property>
+          </widget>
+         </item>
+         <item row="8" column="1">
+          <widget class="QWidget" name="topo_gmsh_controls_widget" native="true">
+           <layout class="QFormLayout" name="topo_gmsh_controls_form">
+            <property name="leftMargin">
+             <number>0</number>
+            </property>
+            <property name="topMargin">
+             <number>0</number>
+            </property>
+            <property name="rightMargin">
+             <number>0</number>
+            </property>
+            <property name="bottomMargin">
+             <number>0</number>
+            </property>
+            <item row="0" column="0">
+             <widget class="QLabel" name="topo_gmsh_tri_algo_lbl">
+              <property name="text">
+               <string>Triangle algorithm:</string>
+              </property>
+             </widget>
+            </item>
+            <item row="0" column="1">
+             <widget class="QComboBox" name="topo_gmsh_tri_algo_combo"/>
+            </item>
+            <item row="1" column="0">
+             <widget class="QLabel" name="topo_gmsh_quad_algo_lbl">
+              <property name="text">
+               <string>Quadrilateral algorithm:</string>
+              </property>
+             </widget>
+            </item>
+            <item row="1" column="1">
+             <widget class="QComboBox" name="topo_gmsh_quad_algo_combo"/>
+            </item>
+            <item row="2" column="0">
+             <widget class="QLabel" name="topo_gmsh_recombine_algo_lbl">
+              <property name="text">
+               <string>Recombine algorithm:</string>
+              </property>
+             </widget>
+            </item>
+            <item row="2" column="1">
+             <widget class="QComboBox" name="topo_gmsh_recombine_algo_combo"/>
+            </item>
+            <item row="3" column="0">
+             <widget class="QLabel" name="topo_gmsh_smoothing_lbl">
+              <property name="text">
+               <string>Smoothing passes:</string>
+              </property>
+             </widget>
+            </item>
+            <item row="3" column="1">
+             <widget class="QSpinBox" name="topo_gmsh_smoothing_spin"/>
+            </item>
+            <item row="4" column="0">
+             <widget class="QLabel" name="topo_gmsh_optimize_iters_lbl">
+              <property name="text">
+               <string>Optimize iterations:</string>
+              </property>
+             </widget>
+            </item>
+            <item row="4" column="1">
+             <widget class="QSpinBox" name="topo_gmsh_optimize_iters_spin"/>
+            </item>
+            <item row="5" column="0">
+             <widget class="QLabel" name="topo_gmsh_verbosity_lbl">
+              <property name="text">
+               <string>Verbosity:</string>
+              </property>
+             </widget>
+            </item>
+            <item row="5" column="1">
+             <widget class="QSpinBox" name="topo_gmsh_verbosity_spin"/>
+            </item>
+            <item row="6" column="0" colspan="2">
+             <widget class="QCheckBox" name="topo_gmsh_optimize_netgen_chk">
+              <property name="text">
+               <string>Enable Netgen optimize</string>
+              </property>
+             </widget>
+            </item>
+           </layout>
+          </widget>
+         </item>
+         <item row="9" column="0">
+          <widget class="QLabel" name="topo_quality_controls_lbl">
+           <property name="text">
+            <string>Quality controls (Gmsh + TQMesh):</string>
+           </property>
+          </widget>
+         </item>
+         <item row="9" column="1">
+          <widget class="QWidget" name="topo_quality_controls_widget" native="true">
+           <layout class="QFormLayout" name="topo_quality_controls_form">
+            <property name="leftMargin">
+             <number>0</number>
+            </property>
+            <property name="topMargin">
+             <number>0</number>
+            </property>
+            <property name="rightMargin">
+             <number>0</number>
+            </property>
+            <property name="bottomMargin">
+             <number>0</number>
+            </property>
+            <item row="0" column="0" colspan="2">
+             <widget class="QCheckBox" name="topo_gmsh_quality_enable_chk">
+              <property name="text">
+               <string>Enable Gmsh iterative quality loop</string>
+              </property>
+             </widget>
+            </item>
+            <item row="1" column="0">
+             <widget class="QLabel" name="topo_gmsh_quality_max_iters_lbl">
+              <property name="text">
+               <string>Gmsh max attempts:</string>
+              </property>
+             </widget>
+            </item>
+            <item row="1" column="1">
+             <widget class="QSpinBox" name="topo_gmsh_quality_max_iters_spin"/>
+            </item>
+            <item row="2" column="0">
+             <widget class="QLabel" name="topo_gmsh_quality_time_limit_lbl">
+              <property name="text">
+               <string>Gmsh time budget (s):</string>
+              </property>
+             </widget>
+            </item>
+            <item row="2" column="1">
+             <widget class="QDoubleSpinBox" name="topo_gmsh_quality_time_limit_spin"/>
+            </item>
+            <item row="3" column="0">
+             <widget class="QLabel" name="topo_quality_min_angle_lbl">
+              <property name="text">
+               <string>Min angle (deg):</string>
+              </property>
+             </widget>
+            </item>
+            <item row="3" column="1">
+             <widget class="QDoubleSpinBox" name="topo_quality_min_angle_spin"/>
+            </item>
+            <item row="4" column="0">
+             <widget class="QLabel" name="topo_quality_max_aspect_lbl">
+              <property name="text">
+               <string>Max aspect ratio:</string>
+              </property>
+             </widget>
+            </item>
+            <item row="4" column="1">
+             <widget class="QDoubleSpinBox" name="topo_quality_max_aspect_spin"/>
+            </item>
+            <item row="5" column="0">
+             <widget class="QLabel" name="topo_quality_max_non_orth_lbl">
+              <property name="text">
+               <string>Max non-orthogonality (deg):</string>
+              </property>
+             </widget>
+            </item>
+            <item row="5" column="1">
+             <widget class="QDoubleSpinBox" name="topo_quality_max_non_orth_spin"/>
+            </item>
+            <item row="6" column="0">
+             <widget class="QLabel" name="topo_quality_min_area_lbl">
+              <property name="text">
+               <string>Min area / bbox area:</string>
+              </property>
+             </widget>
+            </item>
+            <item row="6" column="1">
+             <widget class="QLineEdit" name="topo_quality_min_area_edit"/>
+            </item>
+            <item row="7" column="0">
+             <widget class="QLabel" name="topo_quality_size_scales_lbl">
+              <property name="text">
+               <string>Retry size scales:</string>
+              </property>
+             </widget>
+            </item>
+            <item row="7" column="1">
+             <widget class="QLineEdit" name="topo_quality_size_scales_edit"/>
+            </item>
+            <item row="8" column="0">
+             <widget class="QLabel" name="topo_quality_smooth_increments_lbl">
+              <property name="text">
+               <string>Retry smooth increments:</string>
+              </property>
+             </widget>
+            </item>
+            <item row="8" column="1">
+             <widget class="QLineEdit" name="topo_quality_smooth_increments_edit"/>
+            </item>
+            <item row="9" column="0" colspan="2">
+             <widget class="QCheckBox" name="topo_quality_strict_chk">
+              <property name="text">
+               <string>Strict quality acceptance</string>
+              </property>
+             </widget>
+            </item>
+           </layout>
+          </widget>
+         </item>
+         <item row="10" column="0" colspan="2">
+          <widget class="QPushButton" name="topo_validate_btn">
+           <property name="text">
+            <string>Summarize Layer Controls</string>
+           </property>
+          </widget>
+         </item>
+         <item row="11" column="0">
+          <widget class="QPushButton" name="topo_edit_regions_btn">
+           <property name="text">
+            <string>Edit Region Controls</string>
+           </property>
+          </widget>
+         </item>
+         <item row="11" column="1">
+          <widget class="QPushButton" name="topo_edit_quad_edges_btn">
+           <property name="text">
+            <string>Edit Transition Layers</string>
+           </property>
+          </widget>
+         </item>
+         <item row="12" column="0" colspan="2">
+          <widget class="QLabel" name="topo_controls_summary_lbl">
+           <property name="text">
+            <string>Topology-layer controls: use multiple region polygons for multiple blocks. Use region target_size + cell_type, edge_len_1..4 for cartesian/quadrilateral block spacing, use region interior rings or empty regions/constraints for holes, and quad-edge n_layers / first_height / growth_rate for TQMesh transition layers.</string>
+           </property>
+           <property name="wordWrap">
+            <bool>true</bool>
+           </property>
+          </widget>
+         </item>
+         <item row="13" column="0" colspan="2">
+          <widget class="QPushButton" name="topo_export_template_btn">
+           <property name="text">
+            <string>Create Topology Template Layers</string>
+           </property>
+          </widget>
+         </item>
+         <item row="14" column="0">
+          <widget class="QPushButton" name="topo_generate_btn">
+           <property name="text">
+            <string>Generate Mesh From Topology Layers</string>
+           </property>
+          </widget>
+         </item>
+         <item row="14" column="1">
+          <widget class="QPushButton" name="topo_terminate_btn">
+           <property name="text">
+            <string>Terminate Mesh Run</string>
+           </property>
+          </widget>
+         </item>
+         <item row="15" column="0" colspan="2">
+          <widget class="QLabel" name="topo_status_lbl">
+           <property name="text">
+            <string>Select regions layer and generate face-centric mesh</string>
+           </property>
+           <property name="wordWrap">
+            <bool>true</bool>
+           </property>
+          </widget>
+         </item>
+        </layout>
+    </widget>
+   </item>
+  </layout>
+ </widget>
+ <resources/>
+ <connections/>
+</ui>

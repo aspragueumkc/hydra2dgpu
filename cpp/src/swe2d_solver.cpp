@@ -224,6 +224,16 @@ int swe2d_env_int(const char* name, int default_value, int min_value) {
     return static_cast<int>(parsed);
 }
 
+int swe2d_env_int_bounded(const char* name, int default_value, int min_value, int max_value) {
+    const char* v = std::getenv(name);
+    if (!v || !v[0]) return default_value;
+    const long parsed = std::strtol(v, nullptr, 10);
+    if (parsed < static_cast<long>(min_value) || parsed > static_cast<long>(max_value)) {
+        return default_value;
+    }
+    return static_cast<int>(parsed);
+}
+
 double swe2d_env_double(const char* name, double default_value, double min_value) {
     const char* v = std::getenv(name);
     if (!v || !v[0]) return default_value;
@@ -232,10 +242,42 @@ double swe2d_env_double(const char* name, double default_value, double min_value
     return parsed;
 }
 
+void swe3d_load_face_bc_from_env(
+    SWE3DCartesianPatchDesc& desc,
+    int32_t face,
+    const char* face_name)
+{
+    if (!face_name) return;
+    if (face < 0 || face >= SWE3D_PATCH_FACE_COUNT) return;
+
+    char key[128];
+    auto build_key = [&](const char* suffix) -> const char* {
+        std::snprintf(key, sizeof(key), "BACKWATER_SWE3D_BC_%s_%s", face_name, suffix);
+        return key;
+    };
+
+    desc.bc_mode[face] = swe2d_env_int_bounded(
+        build_key("MODE"),
+        desc.bc_mode[face],
+        static_cast<int>(SWE3DBoundaryMode::WALL),
+        static_cast<int>(SWE3DBoundaryMode::INFLOW_FLOW_RATE));
+
+    desc.bc_u[face] = swe2d_env_double(build_key("U"), desc.bc_u[face], -1.0e300);
+    desc.bc_v[face] = swe2d_env_double(build_key("V"), desc.bc_v[face], -1.0e300);
+    desc.bc_w[face] = swe2d_env_double(build_key("W"), desc.bc_w[face], -1.0e300);
+    desc.bc_q[face] = swe2d_env_double(build_key("Q"), desc.bc_q[face], -1.0e300);
+    desc.bc_vof[face] = clamp_double(
+        swe2d_env_double(build_key("VOF"), desc.bc_vof[face], -1.0e300),
+        0.0,
+        1.0);
+    desc.bc_p[face] = swe2d_env_double(build_key("P"), desc.bc_p[face], -1.0e300);
+}
+
 #ifdef BACKWATER_HAS_CUDA
 SWE3DCartesianPatchDesc swe3d_default_patch_desc_from_env(
     const SWE2DMesh& mesh,
-    bool single_phase_free_surface)
+    bool single_phase_free_surface,
+    double default_manning_n)
 {
     double min_x = std::numeric_limits<double>::infinity();
     double min_y = std::numeric_limits<double>::infinity();
@@ -256,13 +298,30 @@ SWE3DCartesianPatchDesc swe3d_default_patch_desc_from_env(
         max_z = std::max(max_z, z);
     }
 
-    const int nx = swe2d_env_int("BACKWATER_SWE3D_PATCH_NX", 32, 2);
-    const int ny = swe2d_env_int("BACKWATER_SWE3D_PATCH_NY", 32, 2);
-    const int nz = swe2d_env_int("BACKWATER_SWE3D_PATCH_NZ", 16, 2);
-
     const double span_x = std::max(max_x - min_x, 1.0);
     const double span_y = std::max(max_y - min_y, 1.0);
     const double span_z = std::max(max_z - min_z, 1.0);
+
+    const int nx_env = swe2d_env_int("BACKWATER_SWE3D_PATCH_NX", 32, 2);
+    const int ny_env = swe2d_env_int("BACKWATER_SWE3D_PATCH_NY", 32, 2);
+    const int nz_env = swe2d_env_int("BACKWATER_SWE3D_PATCH_NZ", 16, 2);
+
+    const double face_len_iso = swe2d_env_double("BACKWATER_SWE3D_PATCH_FACE_LEN", -1.0, -1.0e300);
+    const double face_len_x = swe2d_env_double("BACKWATER_SWE3D_PATCH_FACE_LEN_X", face_len_iso, -1.0e300);
+    const double face_len_y = swe2d_env_double("BACKWATER_SWE3D_PATCH_FACE_LEN_Y", face_len_iso, -1.0e300);
+    const double face_len_z = swe2d_env_double("BACKWATER_SWE3D_PATCH_FACE_LEN_Z", face_len_iso, -1.0e300);
+
+    auto derive_count_from_face_len = [](double span, double face_len, int fallback) -> int {
+        if (std::isfinite(face_len) && face_len > 0.0) {
+            const double ratio = span / std::max(face_len, 1.0e-9);
+            return std::max(2, static_cast<int>(std::ceil(ratio)));
+        }
+        return fallback;
+    };
+
+    const int nx = derive_count_from_face_len(span_x, face_len_x, nx_env);
+    const int ny = derive_count_from_face_len(span_y, face_len_y, ny_env);
+    const int nz = derive_count_from_face_len(span_z, face_len_z, nz_env);
 
     SWE3DCartesianPatchDesc desc;
     desc.nx = nx;
@@ -275,6 +334,43 @@ SWE3DCartesianPatchDesc swe3d_default_patch_desc_from_env(
     desc.origin_y = swe2d_env_double("BACKWATER_SWE3D_PATCH_ORIGIN_Y", min_y, -1.0e300);
     desc.origin_z = swe2d_env_double("BACKWATER_SWE3D_PATCH_ORIGIN_Z", min_z, -1.0e300);
     desc.single_phase_free_surface = single_phase_free_surface;
+    desc.gravity_z_sign = swe2d_env_double("BACKWATER_SWE3D_GRAVITY_Z_SIGN", -1.0, -1.0e300);
+    desc.enable_bed_drag = swe2d_env_int_bounded("BACKWATER_SWE3D_ENABLE_BED_DRAG", 1, 0, 1) != 0;
+    desc.bed_manning_n = swe2d_env_double(
+        "BACKWATER_SWE3D_BED_MANNING_N",
+        std::max(default_manning_n, 0.0),
+        0.0);
+    desc.bed_drag_h_ref = swe2d_env_double(
+        "BACKWATER_SWE3D_BED_DRAG_HREF",
+        std::max(desc.dz, 1.0e-3),
+        1.0e-9);
+    desc.bed_drag_layers = swe2d_env_int("BACKWATER_SWE3D_BED_DRAG_LAYERS", 1, 0);
+
+    swe3d_load_face_bc_from_env(
+        desc,
+        static_cast<int32_t>(SWE3DPatchBoundaryFace::XMIN),
+        "XMIN");
+    swe3d_load_face_bc_from_env(
+        desc,
+        static_cast<int32_t>(SWE3DPatchBoundaryFace::XMAX),
+        "XMAX");
+    swe3d_load_face_bc_from_env(
+        desc,
+        static_cast<int32_t>(SWE3DPatchBoundaryFace::YMIN),
+        "YMIN");
+    swe3d_load_face_bc_from_env(
+        desc,
+        static_cast<int32_t>(SWE3DPatchBoundaryFace::YMAX),
+        "YMAX");
+    swe3d_load_face_bc_from_env(
+        desc,
+        static_cast<int32_t>(SWE3DPatchBoundaryFace::ZMIN),
+        "ZMIN");
+    swe3d_load_face_bc_from_env(
+        desc,
+        static_cast<int32_t>(SWE3DPatchBoundaryFace::ZMAX),
+        "ZMAX");
+
     return desc;
 }
 #endif
@@ -433,7 +529,17 @@ SWE2DSolver* swe2d_create(
             if (cfg.three_d_solver_model == static_cast<int>(SWE2DThreeDSolverModel::SINGLE_PHASE_FREE_SURFACE_VOF)) {
                 const SWE3DCartesianPatchDesc patch_desc = swe3d_default_patch_desc_from_env(
                     mesh,
-                    cfg.three_d_single_phase_free_surface);
+                    cfg.three_d_single_phase_free_surface,
+                    cfg.n_mann);
+                std::fprintf(stderr,
+                             "[SWE3D] patch init: gravity_z_sign=%.6f enable_bed_drag=%d bed_manning_n=%.6f bed_drag_h_ref=%.6f bed_drag_layers=%d single_phase=%d dz=%.6f\n",
+                             patch_desc.gravity_z_sign,
+                             patch_desc.enable_bed_drag ? 1 : 0,
+                             patch_desc.bed_manning_n,
+                             patch_desc.bed_drag_h_ref,
+                             patch_desc.bed_drag_layers,
+                             patch_desc.single_phase_free_surface ? 1 : 0,
+                             patch_desc.dz);
                 s->dev->patch3d = swe3d_cartesian_patch_alloc(patch_desc);
                 swe3d_cartesian_patch_zero_state(s->dev->patch3d, s->dev->d_stream);
             }
@@ -885,13 +991,19 @@ SWE2DStepDiag swe2d_step(SWE2DSolver* s, double dt_request) {
         if (s->cfg.dt_fixed > 0.0) {
             dt = s->cfg.dt_fixed;
         } else {
-            const double dt_cfl = swe2d_gpu_compute_dt(
-                s->dev,
-                s->cfg.g,
-                s->cfg.h_min,
-                s->cfg.cfl,
-                s->cfg.dt_max,
-                s->cfg.cfl_lambda_cap);
+            const double dt_cfl = use_3d_solver_model
+                ? swe2d_gpu_compute_dt_3d_patch(
+                    s->dev,
+                    s->cfg.g,
+                    s->cfg.cfl,
+                    s->cfg.dt_max)
+                : swe2d_gpu_compute_dt(
+                    s->dev,
+                    s->cfg.g,
+                    s->cfg.h_min,
+                    s->cfg.cfl,
+                    s->cfg.dt_max,
+                    s->cfg.cfl_lambda_cap);
             dt = (dt_request > 0.0) ? std::min(dt_request, dt_cfl) : dt_cfl;
         }
 
@@ -905,10 +1017,11 @@ SWE2DStepDiag swe2d_step(SWE2DSolver* s, double dt_request) {
                 t_now,
                 dt,
                 s->cfg.g,
-                use_2d3d_coupling,
+                s->cfg.coupling_mode,
                 sync_diag_this_step,
                 &diag);
-            s->t += dt;
+            const double dt_used = (diag.dt > 0.0) ? diag.dt : dt;
+            s->t += dt_used;
             s->gpu_steps += 1;
             return diag;
         }

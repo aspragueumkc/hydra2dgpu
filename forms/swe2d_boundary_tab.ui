@@ -1,0 +1,175 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<ui version="4.0">
+ <class>SWE2DBoundaryTabPage</class>
+ <widget class="QWidget" name="SWE2DBoundaryTabPage">
+  <layout class="QVBoxLayout" name="verticalLayout">
+   <property name="leftMargin">
+    <number>0</number>
+   </property>
+   <property name="topMargin">
+    <number>0</number>
+   </property>
+   <property name="rightMargin">
+    <number>0</number>
+   </property>
+   <property name="bottomMargin">
+    <number>0</number>
+   </property>
+   <item>
+    <widget class="QGroupBox" name="bc_group">
+     <property name="title">
+      <string>Boundary Conditions (side defaults + optional BC polyline overrides)</string>
+     </property>
+     <layout class="QGridLayout" name="bc_grid">
+      <item row="0" column="0">
+       <widget class="QLabel" name="label_side">
+        <property name="text">
+         <string>Side</string>
+        </property>
+       </widget>
+      </item>
+      <item row="0" column="1">
+       <widget class="QLabel" name="label_type">
+        <property name="text">
+         <string>Type</string>
+        </property>
+       </widget>
+      </item>
+      <item row="0" column="2">
+       <widget class="QLabel" name="label_value">
+        <property name="text">
+         <string>Value (Q_total for flow)</string>
+        </property>
+       </widget>
+      </item>
+      <item row="0" column="3">
+       <widget class="QLabel" name="label_hydrograph">
+        <property name="text">
+         <string>Hydrograph (hr,Q_total; hr,Q_total)</string>
+        </property>
+       </widget>
+      </item>
+      <item row="0" column="4">
+       <widget class="QLabel" name="label_editor">
+        <property name="text">
+         <string>Editor</string>
+        </property>
+       </widget>
+      </item>
+        <item row="1" column="0">
+         <widget class="QLabel" name="label_left_side">
+          <property name="text">
+           <string>Left</string>
+          </property>
+         </widget>
+        </item>
+        <item row="1" column="1">
+         <widget class="QComboBox" name="left_bc_type_combo"/>
+        </item>
+        <item row="1" column="2">
+         <widget class="QDoubleSpinBox" name="left_bc_value_spin"/>
+        </item>
+        <item row="1" column="3">
+         <widget class="QLineEdit" name="left_bc_hydrograph_edit"/>
+        </item>
+        <item row="1" column="4">
+         <widget class="QPushButton" name="left_bc_editor_btn">
+          <property name="text">
+           <string>Edit...</string>
+          </property>
+         </widget>
+        </item>
+        <item row="2" column="0">
+         <widget class="QLabel" name="label_right_side">
+          <property name="text">
+           <string>Right</string>
+          </property>
+         </widget>
+        </item>
+        <item row="2" column="1">
+         <widget class="QComboBox" name="right_bc_type_combo"/>
+        </item>
+        <item row="2" column="2">
+         <widget class="QDoubleSpinBox" name="right_bc_value_spin"/>
+        </item>
+        <item row="2" column="3">
+         <widget class="QLineEdit" name="right_bc_hydrograph_edit"/>
+        </item>
+        <item row="2" column="4">
+         <widget class="QPushButton" name="right_bc_editor_btn">
+          <property name="text">
+           <string>Edit...</string>
+          </property>
+         </widget>
+        </item>
+        <item row="3" column="0">
+         <widget class="QLabel" name="label_bottom_side">
+          <property name="text">
+           <string>Bottom</string>
+          </property>
+         </widget>
+        </item>
+        <item row="3" column="1">
+         <widget class="QComboBox" name="bottom_bc_type_combo"/>
+        </item>
+        <item row="3" column="2">
+         <widget class="QDoubleSpinBox" name="bottom_bc_value_spin"/>
+        </item>
+        <item row="3" column="3">
+         <widget class="QLineEdit" name="bottom_bc_hydrograph_edit"/>
+        </item>
+        <item row="3" column="4">
+         <widget class="QPushButton" name="bottom_bc_editor_btn">
+          <property name="text">
+           <string>Edit...</string>
+          </property>
+         </widget>
+        </item>
+        <item row="4" column="0">
+         <widget class="QLabel" name="label_top_side">
+          <property name="text">
+           <string>Top</string>
+          </property>
+         </widget>
+        </item>
+        <item row="4" column="1">
+         <widget class="QComboBox" name="top_bc_type_combo"/>
+        </item>
+        <item row="4" column="2">
+         <widget class="QDoubleSpinBox" name="top_bc_value_spin"/>
+        </item>
+        <item row="4" column="3">
+         <widget class="QLineEdit" name="top_bc_hydrograph_edit"/>
+        </item>
+        <item row="4" column="4">
+         <widget class="QPushButton" name="top_bc_editor_btn">
+          <property name="text">
+           <string>Edit...</string>
+          </property>
+         </widget>
+        </item>
+      <item row="5" column="0">
+       <widget class="QLabel" name="label_bc_override">
+        <property name="text">
+         <string>BC polyline layer override:</string>
+        </property>
+       </widget>
+      </item>
+        <item row="5" column="1" colspan="4">
+         <widget class="QComboBox" name="bc_lines_layer_combo"/>
+        </item>
+        <item row="6" column="0" colspan="5">
+         <widget class="QCheckBox" name="inflow_progressive_chk">
+          <property name="text">
+           <string>Flow BC: activate lowest-elevation boundary edges first as Q increases</string>
+          </property>
+         </widget>
+        </item>
+     </layout>
+    </widget>
+   </item>
+  </layout>
+ </widget>
+ <resources/>
+ <connections/>
+</ui>

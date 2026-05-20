@@ -53,6 +53,7 @@ class ConceptualRegion:
     default_size: float
     default_cell_type: str
     edge_lengths: Optional[List[float]] = None
+    hole_rings: Optional[List[List[Tuple[float, float]]]] = None
 
 
 @dataclass
@@ -658,11 +659,54 @@ def _bbox_from_ring(ring: Sequence[Tuple[float, float]]) -> Tuple[float, float, 
     return min(xs), min(ys), max(xs), max(ys)
 
 
-def _iter_qgis_polygon_outer_rings(geom) -> List[List[Tuple[float, float]]]:
-    """Extract outer rings from QGIS Polygon or MultiPolygon geometries."""
-    rings: List[List[Tuple[float, float]]] = []
+def _ring_centroid_xy(ring: Sequence[Tuple[float, float]]) -> Tuple[float, float]:
+    n = len(ring)
+    if n <= 0:
+        return 0.0, 0.0
+    return (
+        float(sum(p[0] for p in ring) / float(n)),
+        float(sum(p[1] for p in ring) / float(n)),
+    )
+
+
+def _cell_overlaps_ring(
+    x0: float,
+    y0: float,
+    x1: float,
+    y1: float,
+    ring: Sequence[Tuple[float, float]],
+) -> bool:
+    """Conservative overlap probe between an axis-aligned cell and a polygon ring."""
+    probes = (
+        (x0, y0),
+        (x1, y0),
+        (x1, y1),
+        (x0, y1),
+        (0.5 * (x0 + x1), 0.5 * (y0 + y1)),
+    )
+    for px, py in probes:
+        if _point_in_polygon(float(px), float(py), ring):
+            return True
+
+    cx, cy = _ring_centroid_xy(ring)
+    if x0 < cx < x1 and y0 < cy < y1:
+        return True
+    return False
+
+
+def _iter_qgis_polygon_parts(
+    geom,
+) -> List[Tuple[List[Tuple[float, float]], List[List[Tuple[float, float]]]]]:
+    """Extract polygon parts as (outer_ring, [hole_rings]) from QGIS geometry."""
+    parts: List[Tuple[List[Tuple[float, float]], List[List[Tuple[float, float]]]]] = []
     if geom is None or geom.isEmpty():
-        return rings
+        return parts
+
+    def _ring_xy(points) -> List[Tuple[float, float]]:
+        ring = [(float(p.x()), float(p.y())) for p in points[:-1]]
+        if len(ring) >= 3 and ring[0] == ring[-1]:
+            ring = ring[:-1]
+        return ring
 
     try:
         multi = geom.asMultiPolygon()
@@ -670,24 +714,108 @@ def _iter_qgis_polygon_outer_rings(geom) -> List[List[Tuple[float, float]]]:
             for poly in multi:
                 if not poly or not poly[0]:
                     continue
-                ring = [(float(p.x()), float(p.y())) for p in poly[0][:-1]]
-                if len(ring) >= 3:
-                    rings.append(ring)
-            if rings:
-                return rings
+                outer = _ring_xy(poly[0])
+                if len(outer) < 3:
+                    continue
+                holes: List[List[Tuple[float, float]]] = []
+                for inner in poly[1:]:
+                    hring = _ring_xy(inner)
+                    if len(hring) >= 3:
+                        holes.append(hring)
+                parts.append((outer, holes))
+            if parts:
+                return parts
     except Exception:
         pass
 
     try:
         poly = geom.asPolygon()
         if poly and poly[0]:
-            ring = [(float(p.x()), float(p.y())) for p in poly[0][:-1]]
-            if len(ring) >= 3:
-                rings.append(ring)
+            outer = _ring_xy(poly[0])
+            if len(outer) >= 3:
+                holes: List[List[Tuple[float, float]]] = []
+                for inner in poly[1:]:
+                    hring = _ring_xy(inner)
+                    if len(hring) >= 3:
+                        holes.append(hring)
+                parts.append((outer, holes))
     except Exception:
         pass
 
-    return rings
+    return parts
+
+
+def _iter_qgis_polygon_outer_rings(geom) -> List[List[Tuple[float, float]]]:
+    """Extract outer rings from QGIS Polygon or MultiPolygon geometries."""
+    return [outer for outer, _holes in _iter_qgis_polygon_parts(geom)]
+
+
+def _constraints_for_region(
+    model: ConceptualModel,
+    region_outer_ring: Sequence[Tuple[float, float]],
+) -> List[CellConstraint]:
+    out: List[CellConstraint] = []
+    for cst in model.constraints:
+        if len(cst.ring_xy) < 3:
+            continue
+        cx, cy = _ring_centroid_xy(cst.ring_xy)
+        if _point_in_polygon(cx, cy, region_outer_ring):
+            out.append(cst)
+    return out
+
+
+def _region_exclusion_zones(
+    model: ConceptualModel,
+    region: ConceptualRegion,
+    region_outer_ring: Optional[Sequence[Tuple[float, float]]] = None,
+) -> List[Tuple[List[Tuple[float, float]], float]]:
+    """Return exclusion polygons inside a region as ``(ring, target_size)``.
+
+    Exclusions come from:
+    - interior rings of the region polygon,
+    - other regions marked ``cell_type=empty``,
+    - constraints marked ``cell_type=empty``.
+    """
+    outer = list(region_outer_ring) if region_outer_ring is not None else list(region.ring_xy)
+    if outer and outer[0] == outer[-1]:
+        outer = outer[:-1]
+    if len(outer) < 3:
+        return []
+
+    zones: List[Tuple[List[Tuple[float, float]], float]] = []
+    seen = set()
+
+    def _add_zone(ring: Sequence[Tuple[float, float]], size: float) -> None:
+        rr = list(ring)
+        if rr and rr[0] == rr[-1]:
+            rr = rr[:-1]
+        if len(rr) < 3:
+            return
+        cx, cy = _ring_centroid_xy(rr)
+        if not _point_in_polygon(cx, cy, outer):
+            return
+        key = tuple((round(float(x), 7), round(float(y), 7)) for x, y in rr)
+        if key in seen:
+            return
+        seen.add(key)
+        zones.append((rr, max(float(size), 1.0e-9)))
+
+    for hring in (region.hole_rings or []):
+        _add_zone(hring, region.default_size)
+
+    for candidate in model.regions:
+        if candidate is region:
+            continue
+        if str(candidate.default_cell_type).strip().lower() != "empty":
+            continue
+        _add_zone(candidate.ring_xy, candidate.default_size)
+
+    for cst in model.constraints:
+        if str(cst.cell_type).strip().lower() != "empty":
+            continue
+        _add_zone(cst.ring_xy, cst.target_size)
+
+    return zones
 
 
 def _polyline_length(points: Sequence[Tuple[float, float]]) -> float:
@@ -1130,16 +1258,13 @@ class StructuredFaceCentricBackend(MeshingBackend):
             if len(ring) < 3:
                 continue
 
-            region_constraints = []
-            for cst in model.constraints:
-                if len(cst.ring_xy) < 3:
-                    continue
-                cx = sum(p[0] for p in cst.ring_xy) / len(cst.ring_xy)
-                cy = sum(p[1] for p in cst.ring_xy) / len(cst.ring_xy)
-                if _point_in_polygon(cx, cy, ring):
-                    region_constraints.append(cst)
+            if str(region.default_cell_type).strip().lower() == "empty":
+                continue
 
-            if region.default_cell_type in ("cartesian", "quadrilateral") and not region_constraints:
+            region_constraints = _constraints_for_region(model, ring)
+            region_exclusions = _region_exclusion_zones(model, region, ring)
+
+            if region.default_cell_type in ("cartesian", "quadrilateral") and not region_constraints and not region_exclusions:
                 quad_setup = _quad_controls_for_region(model, region)
                 if quad_setup is not None:
                     _, quad_controls = quad_setup
@@ -1189,14 +1314,22 @@ class StructuredFaceCentricBackend(MeshingBackend):
 
             for j in range(ny):
                 for i in range(nx):
+                    x0 = xmin + i * dx
+                    y0 = ymin + j * dy
+                    x1 = x0 + dx
+                    y1 = y0 + dy
                     cx = xmin + (i + 0.5) * dx
                     cy = ymin + (j + 0.5) * dy
                     if not _point_in_polygon(cx, cy, ring):
                         continue
+                    if any(_cell_overlaps_ring(x0, y0, x1, y1, ering) for ering, _esize in region_exclusions):
+                        continue
 
                     local_size = base_size
                     local_type = region.default_cell_type
-                    for cst in model.constraints:
+                    for cst in region_constraints:
+                        if str(cst.cell_type).strip().lower() == "empty":
+                            continue
                         if _point_in_polygon(cx, cy, cst.ring_xy):
                             local_size = max(cst.target_size, 1e-6)
                             local_type = cst.cell_type
@@ -1677,7 +1810,7 @@ class GmshBackend(MeshingBackend):
             if len(ring) < 3:
                 continue
 
-            ctype = region.default_cell_type
+            ctype = str(region.default_cell_type).strip().lower()
             if ctype == "empty":
                 continue
             region_size = max(float(region.default_size) * float(size_scale), 1.0e-9)
@@ -1735,7 +1868,43 @@ class GmshBackend(MeshingBackend):
                 continue
 
             loop = gmsh.model.geo.addCurveLoop(lines)
-            surf = gmsh.model.geo.addPlaneSurface([loop])
+            hole_loops: List[int] = []
+            exclusion_zones = _region_exclusion_zones(model, region, ring)
+            if exclusion_zones:
+                outer_area = _polygon_area_xy(
+                    np.asarray([p[0] for p in ring], dtype=np.float64),
+                    np.asarray([p[1] for p in ring], dtype=np.float64),
+                )
+                outer_ccw = bool(outer_area > 0.0)
+                for ering, esize in exclusion_zones:
+                    hring = list(ering)
+                    if hring and hring[0] == hring[-1]:
+                        hring = hring[:-1]
+                    if len(hring) < 3:
+                        continue
+
+                    h_area = _polygon_area_xy(
+                        np.asarray([p[0] for p in hring], dtype=np.float64),
+                        np.asarray([p[1] for p in hring], dtype=np.float64),
+                    )
+                    if bool(h_area > 0.0) == outer_ccw:
+                        hring = list(reversed(hring))
+
+                    hole_size = max(float(esize) * float(size_scale), 1.0e-9)
+                    hole_pts = [_geo_pt(x, y, hole_size) for x, y in hring]
+                    if len(hole_pts) < 3:
+                        continue
+                    hlines: List[int] = []
+                    for i in range(len(hole_pts)):
+                        hlines.append(_geo_seg(hole_pts[i], hole_pts[(i + 1) % len(hole_pts)]))
+                    if len(hlines) < 3:
+                        continue
+                    try:
+                        hole_loops.append(gmsh.model.geo.addCurveLoop(hlines))
+                    except Exception:
+                        pass
+
+            surf = gmsh.model.geo.addPlaneSurface([loop] + hole_loops)
             surface_tags.append(surf)
             surface_meta.append((region.region_id, ctype, region_size))
             surface_curve_tags[surf] = lines
@@ -1749,7 +1918,14 @@ class GmshBackend(MeshingBackend):
             arc_curve_tags: List[int] = []
             # Build a quick node-id -> (x,y) lookup
             node_xy = {n.node_id: (n.x, n.y) for n in model.nodes}
-            arc_lc = min((max(float(r.default_size) * float(size_scale), 1.0e-9) for r in model.regions), default=1.0)
+            arc_lc = min(
+                (
+                    max(float(r.default_size) * float(size_scale), 1.0e-9)
+                    for r in model.regions
+                    if str(r.default_cell_type).strip().lower() != "empty"
+                ),
+                default=1.0,
+            )
             for arc in model.arcs:
                 pts_xy = list(arc.points_xy or [])
                 if len(pts_xy) >= 2:
@@ -1799,7 +1975,7 @@ class GmshBackend(MeshingBackend):
         constraint_point_lists: List[List[int]] = []
         constraint_target_sizes: List[float] = []
         for cst in model.constraints:
-            if len(cst.ring_xy) < 3 or cst.cell_type == "empty":
+            if len(cst.ring_xy) < 3 or str(cst.cell_type).strip().lower() == "empty":
                 continue
             ring = list(cst.ring_xy)
             if ring[0] == ring[-1]:
@@ -2154,8 +2330,8 @@ def conceptual_from_qgis_layers(
         geom = ft.geometry()
         if geom is None or geom.isEmpty():
             continue
-        rings = _iter_qgis_polygon_outer_rings(geom)
-        if not rings:
+        parts = _iter_qgis_polygon_parts(geom)
+        if not parts:
             continue
         rid = _as_int(ft["region_id"], auto_rid) if "region_id" in region_fields else auto_rid
         size = _as_float(ft["target_size"], default_size) if "target_size" in region_fields else default_size
@@ -2171,7 +2347,7 @@ def conceptual_from_qgis_layers(
             vals = [_as_float(ft[nm], size) for nm in edge_fields]
             if all(v > 0 for v in vals):
                 edge_lengths = vals
-        for part_idx, ring in enumerate(rings):
+        for part_idx, (ring, holes) in enumerate(parts):
             part_rid = rid if part_idx == 0 else int(f"{rid}{part_idx}")
             regions.append(
                 ConceptualRegion(
@@ -2180,6 +2356,7 @@ def conceptual_from_qgis_layers(
                     default_size=size,
                     default_cell_type=ctype,
                     edge_lengths=edge_lengths,
+                    hole_rings=holes,
                 )
             )
         auto_rid += 1
@@ -2191,13 +2368,13 @@ def conceptual_from_qgis_layers(
             geom = ft.geometry()
             if geom is None or geom.isEmpty():
                 continue
-            rings = _iter_qgis_polygon_outer_rings(geom)
-            if not rings:
+            parts = _iter_qgis_polygon_parts(geom)
+            if not parts:
                 continue
             cid = _as_int(ft["constraint_id"], auto_cid) if "constraint_id" in c_fields else auto_cid
             size = _as_float(ft["target_size"], default_size) if "target_size" in c_fields else default_size
             ctype = _normalize_cell_type(ft["cell_type"], default_cell_type) if "cell_type" in c_fields else default_cell_type
-            for part_idx, ring in enumerate(rings):
+            for part_idx, (ring, _holes) in enumerate(parts):
                 part_cid = cid if part_idx == 0 else int(f"{cid}{part_idx}")
                 constraints.append(CellConstraint(constraint_id=part_cid, ring_xy=ring, target_size=size, cell_type=ctype))
             auto_cid += 1
@@ -2433,11 +2610,13 @@ class TQMeshBackend(MeshingBackend):
             if len(ring) < 3:
                 continue
 
-            ctype = region.default_cell_type
+            ctype = str(region.default_cell_type).strip().lower()
             if ctype == "empty":
                 continue
 
             target_size = max(float(region.default_size), 1e-10)
+            region_constraints = _constraints_for_region(model, ring)
+            region_exclusions = _region_exclusion_zones(model, region, ring)
 
             quad_controls = None
             quad_boundary = None
@@ -2455,24 +2634,34 @@ class TQMeshBackend(MeshingBackend):
                 ext_verts = _simplify_closed_ring(ext_verts, tol=simp_tol, max_vertices=simp_max)
             if quad_controls is None and not self._is_ccw(ext_verts):
                 ext_verts = list(reversed(ext_verts))
+            ext_is_ccw = self._is_ccw(ext_verts)
 
             # All exterior edges get color 1 by default; real BC colors are
             # applied post-mesh in the workbench from swe2d_bc_lines (same
             # as the gmsh backend does).
             ext_colors = [1] * len(ext_verts)
 
+            int_boundaries: List[List[List[float]]] = []
+            int_colors: List[List[int]] = []
+            for ering, _esize in region_exclusions:
+                hring = list(ering)
+                if hring and hring[0] == hring[-1]:
+                    hring = hring[:-1]
+                if len(hring) < 3:
+                    continue
+                if self._is_ccw(hring) == ext_is_ccw:
+                    hring = list(reversed(hring))
+                int_boundaries.append([[float(v[0]), float(v[1])] for v in hring])
+                int_colors.append([1] * len(hring))
+
             # Constraint zones that overlap this region
             constraint_verts_list: List[List[tuple]] = []
             constraint_sizes_list: List[float] = []
-            for cst in model.constraints:
-                if len(cst.ring_xy) < 3 or cst.cell_type == "empty":
+            for cst in region_constraints:
+                if len(cst.ring_xy) < 3 or str(cst.cell_type).strip().lower() == "empty":
                     continue
-                # Only include constraints whose centroid is inside this region
-                cx = sum(p[0] for p in cst.ring_xy) / len(cst.ring_xy)
-                cy = sum(p[1] for p in cst.ring_xy) / len(cst.ring_xy)
-                if _point_in_polygon(cx, cy, ring):
-                    constraint_verts_list.append(list(cst.ring_xy))
-                    constraint_sizes_list.append(float(cst.target_size))
+                constraint_verts_list.append(list(cst.ring_xy))
+                constraint_sizes_list.append(float(cst.target_size))
 
             # Call the C++ binding
             active_quad_layers = []
@@ -2501,8 +2690,8 @@ class TQMeshBackend(MeshingBackend):
             base_args = dict(
                 ext_verts=[[v[0], v[1]] for v in ext_verts],
                 ext_colors=ext_colors,
-                int_boundaries=[],
-                int_colors=[],
+                int_boundaries=int_boundaries,
+                int_colors=int_colors,
                 constraint_verts=[[list(v) for v in cverts] for cverts in constraint_verts_list],
                 constraint_sizes=constraint_sizes_list,
                 target_size=target_size,

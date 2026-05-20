@@ -1,0 +1,110 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<ui version="4.0">
+ <class>SWE2DRunTabPage</class>
+ <widget class="QWidget" name="SWE2DRunTabPage">
+  <property name="geometry">
+   <rect>
+    <x>0</x>
+    <y>0</y>
+    <width>310</width>
+    <height>180</height>
+   </rect>
+  </property>
+  <layout class="QVBoxLayout" name="verticalLayout">
+   <property name="leftMargin">
+    <number>0</number>
+   </property>
+   <property name="topMargin">
+    <number>0</number>
+   </property>
+   <property name="rightMargin">
+    <number>0</number>
+   </property>
+   <property name="bottomMargin">
+    <number>0</number>
+   </property>
+   <item>
+    <widget class="QGroupBox" name="run_group">
+     <property name="title">
+      <string>Run / Output</string>
+     </property>
+     <layout class="QVBoxLayout" name="run_layout">
+      <item>
+       <layout class="QHBoxLayout" name="run_row_layout">
+        <item>
+         <widget class="QPushButton" name="preview_overrides_btn">
+          <property name="text">
+           <string>Preview Overrides</string>
+          </property>
+         </widget>
+        </item>
+        <item>
+         <widget class="QPushButton" name="run_btn">
+          <property name="text">
+           <string>Run 2D Model</string>
+          </property>
+         </widget>
+        </item>
+        <item>
+         <widget class="QPushButton" name="cancel_btn">
+          <property name="text">
+           <string>Cancel</string>
+          </property>
+         </widget>
+        </item>
+       </layout>
+      </item>
+      <item>
+       <widget class="QProgressBar" name="progress_bar">
+        <property name="value">
+         <number>0</number>
+        </property>
+       </widget>
+      </item>
+      <item>
+       <layout class="QHBoxLayout" name="run_snapshot_row_layout">
+        <item>
+         <widget class="QLabel" name="output_interval_lbl">
+          <property name="text">
+           <string>Output interval (hr or HH:MM):</string>
+          </property>
+         </widget>
+        </item>
+        <item>
+         <widget class="QLineEdit" name="output_interval_edit">
+          <property name="text">
+           <string>00:30</string>
+          </property>
+         </widget>
+        </item>
+        <item>
+         <widget class="QLabel" name="line_output_interval_lbl">
+          <property name="text">
+           <string>Line output interval:</string>
+          </property>
+         </widget>
+        </item>
+        <item>
+         <widget class="QLineEdit" name="line_output_interval_edit">
+          <property name="text">
+           <string>00:05</string>
+          </property>
+         </widget>
+        </item>
+        <item>
+         <widget class="QPushButton" name="snapshot_btn">
+          <property name="text">
+           <string>Take Snapshot</string>
+          </property>
+         </widget>
+        </item>
+       </layout>
+      </item>
+     </layout>
+    </widget>
+   </item>
+  </layout>
+ </widget>
+ <resources/>
+ <connections/>
+</ui>

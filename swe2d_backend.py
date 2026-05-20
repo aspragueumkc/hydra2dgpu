@@ -19,7 +19,7 @@ import os
 import sys
 import inspect
 import numpy as np
-from typing import Callable, Dict, List, Optional, Tuple
+from typing import Callable, Dict, List, Optional, Tuple, Union
 
 from swe2d_extensions import (
     BedFrictionModel,
@@ -93,6 +93,144 @@ def swe2d_gpu_available() -> bool:
         return mod.swe2d_gpu_available()
     except Exception:
         return False
+
+
+_SWE3D_ADAPTIVE_DT_METHOD_MAP = {
+    "advective": 0,
+    "advective_only": 0,
+    "gravity": 1,
+    "advective_gravity": 1,
+    "advective_plus_gravity_wave": 1,
+    "projection": 2,
+    "advective_gravity_projection": 2,
+    "advective_gravity_plus_projection": 2,
+}
+
+
+def set_swe3d_adaptive_dt_method(method: Union[int, str]) -> int:
+    """
+    Configure SWE3D adaptive dt mode via environment variable.
+
+    Modes:
+      0 / "advective"                    : advective CFL only
+      1 / "advective_gravity"            : advective + gravity-wave CFL
+      2 / "advective_gravity_projection" : advective + gravity-wave + projection-aware dt
+    """
+    mode_val: int
+    if isinstance(method, str):
+        key = method.strip().lower()
+        if key.isdigit() or (key.startswith("-") and key[1:].isdigit()):
+            mode_val = int(key)
+        else:
+            if key not in _SWE3D_ADAPTIVE_DT_METHOD_MAP:
+                raise ValueError(
+                    "Unknown SWE3D adaptive dt method. "
+                    "Use 0/1/2 or one of: "
+                    f"{sorted(_SWE3D_ADAPTIVE_DT_METHOD_MAP.keys())}"
+                )
+            mode_val = int(_SWE3D_ADAPTIVE_DT_METHOD_MAP[key])
+    else:
+        mode_val = int(method)
+
+    if mode_val < 0 or mode_val > 2:
+        raise ValueError("SWE3D adaptive dt mode must be 0, 1, or 2")
+
+    os.environ["BACKWATER_SWE3D_ADAPTIVE_DT_MODE"] = str(mode_val)
+    return mode_val
+
+
+def set_swe3d_vof_max_substeps(max_substeps: int) -> int:
+    """Set SWE3D VOF transport max substeps cap (>= 1)."""
+    cap = int(max_substeps)
+    if cap < 1:
+        raise ValueError("SWE3D VOF max substeps must be >= 1")
+    os.environ["BACKWATER_SWE3D_VOF_MAX_SUBSTEPS"] = str(cap)
+    return cap
+
+
+def configure_swe3d_runtime(
+    adaptive_dt_method: Optional[Union[int, str]] = None,
+    vof_max_substeps: Optional[int] = None,
+    gravity_wave_cfl: Optional[float] = None,
+    projection_residual_target: Optional[float] = None,
+    projection_reject_enable: Optional[bool] = None,
+    projection_fail_fast: Optional[bool] = None,
+    projection_dt_reduction: Optional[float] = None,
+    projection_max_retries: Optional[int] = None,
+    projection_min_dt_factor: Optional[float] = None,
+    geometry_gate_strict: Optional[bool] = None,
+    geometry_gate_max_solid_fraction: Optional[float] = None,
+    geometry_gate_max_seed_leak_fallbacks: Optional[int] = None,
+) -> Dict[str, object]:
+    """
+    Convenience helper for configuring SWE3D runtime controls from Python/QGIS console.
+
+    All values are applied as process environment variables and are consumed
+    by the CUDA path each step.
+    """
+    applied: Dict[str, object] = {}
+
+    if adaptive_dt_method is not None:
+        applied["adaptive_dt_mode"] = set_swe3d_adaptive_dt_method(adaptive_dt_method)
+    if vof_max_substeps is not None:
+        applied["vof_max_substeps"] = set_swe3d_vof_max_substeps(vof_max_substeps)
+    if gravity_wave_cfl is not None:
+        gw_cfl = float(gravity_wave_cfl)
+        if not np.isfinite(gw_cfl) or gw_cfl <= 0.0:
+            raise ValueError("gravity_wave_cfl must be a positive finite number")
+        os.environ["BACKWATER_SWE3D_GRAVITY_WAVE_CFL"] = f"{gw_cfl:.17g}"
+        applied["gravity_wave_cfl"] = gw_cfl
+    if projection_residual_target is not None:
+        target = float(projection_residual_target)
+        if not np.isfinite(target) or target <= 0.0:
+            raise ValueError("projection_residual_target must be a positive finite number")
+        os.environ["BACKWATER_SWE3D_PROJECTION_RESIDUAL_TARGET"] = f"{target:.17g}"
+        applied["projection_residual_target"] = target
+    if projection_reject_enable is not None:
+        enabled = bool(projection_reject_enable)
+        os.environ["BACKWATER_SWE3D_PROJECTION_REJECT_ENABLE"] = "1" if enabled else "0"
+        applied["projection_reject_enable"] = enabled
+    if projection_fail_fast is not None:
+        fail_fast = bool(projection_fail_fast)
+        os.environ["BACKWATER_SWE3D_PROJECTION_FAIL_FAST"] = "1" if fail_fast else "0"
+        applied["projection_fail_fast"] = fail_fast
+    if projection_dt_reduction is not None:
+        reduction = float(projection_dt_reduction)
+        if not np.isfinite(reduction) or reduction <= 0.0 or reduction >= 1.0:
+            raise ValueError("projection_dt_reduction must be in (0, 1)")
+        os.environ["BACKWATER_SWE3D_PROJECTION_DT_REDUCTION"] = f"{reduction:.17g}"
+        applied["projection_dt_reduction"] = reduction
+    if projection_max_retries is not None:
+        retries = int(projection_max_retries)
+        if retries < 0:
+            raise ValueError("projection_max_retries must be >= 0")
+        os.environ["BACKWATER_SWE3D_PROJECTION_MAX_RETRIES"] = str(retries)
+        applied["projection_max_retries"] = retries
+    if projection_min_dt_factor is not None:
+        min_fac = float(projection_min_dt_factor)
+        if not np.isfinite(min_fac) or min_fac <= 0.0:
+            raise ValueError("projection_min_dt_factor must be > 0")
+        os.environ["BACKWATER_SWE3D_PROJECTION_MIN_DT_FACTOR"] = f"{min_fac:.17g}"
+        applied["projection_min_dt_factor"] = min_fac
+
+    if geometry_gate_strict is not None:
+        strict = bool(geometry_gate_strict)
+        os.environ["BACKWATER_SWE3D_GEOM_STRICT"] = "1" if strict else "0"
+        applied["geometry_gate_strict"] = strict
+    if geometry_gate_max_solid_fraction is not None:
+        frac = float(geometry_gate_max_solid_fraction)
+        if not np.isfinite(frac) or frac < 0.0 or frac > 1.0:
+            raise ValueError("geometry_gate_max_solid_fraction must be in [0, 1]")
+        os.environ["BACKWATER_SWE3D_GEOM_MAX_SOLID_FRACTION"] = f"{frac:.17g}"
+        applied["geometry_gate_max_solid_fraction"] = frac
+    if geometry_gate_max_seed_leak_fallbacks is not None:
+        leaks = int(geometry_gate_max_seed_leak_fallbacks)
+        if leaks < 0:
+            raise ValueError("geometry_gate_max_seed_leak_fallbacks must be >= 0")
+        os.environ["BACKWATER_SWE3D_GEOM_MAX_SEED_LEAK_FALLBACKS"] = str(leaks)
+        applied["geometry_gate_max_seed_leak_fallbacks"] = leaks
+
+    return applied
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -775,6 +913,206 @@ class SWE2DBackend:
         if self._solver_h is None:
             raise RuntimeError("initialize() must be called before get_state().")
         return self._mod.swe2d_get_state(self._solver_h)
+
+    def supports_3d_patch_observation(self) -> bool:
+        """Return True when native 3D patch observation APIs are available."""
+        if self._solver_h is None:
+            return False
+        return bool(
+            hasattr(self._mod, "swe2d_get_3d_patch_stats")
+            and hasattr(self._mod, "swe2d_get_3d_patch_vof")
+        )
+
+    def get_3d_patch_stats(self) -> Dict[str, object]:
+        """Return aggregate diagnostics for the active 3D Cartesian patch."""
+        if self._solver_h is None:
+            raise RuntimeError("initialize() must be called before get_3d_patch_stats().")
+        if not hasattr(self._mod, "swe2d_get_3d_patch_stats"):
+            raise RuntimeError("Native module does not expose swe2d_get_3d_patch_stats().")
+        return dict(self._mod.swe2d_get_3d_patch_stats(self._solver_h))
+
+    def get_3d_patch_vof(self) -> np.ndarray:
+        """Download full 3D patch VoF field as a flat float64 array."""
+        if self._solver_h is None:
+            raise RuntimeError("initialize() must be called before get_3d_patch_vof().")
+        if not hasattr(self._mod, "swe2d_get_3d_patch_vof"):
+            raise RuntimeError("Native module does not expose swe2d_get_3d_patch_vof().")
+        return np.asarray(self._mod.swe2d_get_3d_patch_vof(self._solver_h), dtype=np.float64)
+
+    def supports_3d_patch_geometry_upload(self) -> bool:
+        """Return True when native 3D geometry tensor upload API is available."""
+        if self._solver_h is None:
+            return False
+        return bool(hasattr(self._mod, "swe2d_set_3d_patch_geometry"))
+
+    def supports_3d_patch_state_upload(self) -> bool:
+        """Return True when native 3D patch state upload APIs are available."""
+        if self._solver_h is None:
+            return False
+        return bool(
+            hasattr(self._mod, "swe2d_set_3d_patch_state")
+            or hasattr(self._mod, "swe2d_set_3d_patch_vof")
+        )
+
+    def set_3d_patch_vof(self, vof: np.ndarray) -> None:
+        """Upload a full VoF array to the active 3D patch."""
+        if self._solver_h is None:
+            raise RuntimeError("initialize() must be called before set_3d_patch_vof().")
+        if not hasattr(self._mod, "swe2d_set_3d_patch_vof"):
+            raise RuntimeError("Native module does not expose swe2d_set_3d_patch_vof().")
+        vof_arr = np.ascontiguousarray(vof, dtype=np.float64).ravel()
+        self._mod.swe2d_set_3d_patch_vof(self._solver_h, vof_arr)
+
+    def set_3d_patch_state(
+        self,
+        u: Optional[np.ndarray] = None,
+        v: Optional[np.ndarray] = None,
+        w: Optional[np.ndarray] = None,
+        p: Optional[np.ndarray] = None,
+        vof: Optional[np.ndarray] = None,
+    ) -> None:
+        """Upload any subset of per-cell 3D patch state arrays."""
+        if self._solver_h is None:
+            raise RuntimeError("initialize() must be called before set_3d_patch_state().")
+        if hasattr(self._mod, "swe2d_set_3d_patch_state"):
+            u_arr = None if u is None else np.ascontiguousarray(u, dtype=np.float64).ravel()
+            v_arr = None if v is None else np.ascontiguousarray(v, dtype=np.float64).ravel()
+            w_arr = None if w is None else np.ascontiguousarray(w, dtype=np.float64).ravel()
+            p_arr = None if p is None else np.ascontiguousarray(p, dtype=np.float64).ravel()
+            vof_arr = None if vof is None else np.ascontiguousarray(vof, dtype=np.float64).ravel()
+            self._mod.swe2d_set_3d_patch_state(
+                self._solver_h,
+                u=u_arr,
+                v=v_arr,
+                w=w_arr,
+                p=p_arr,
+                vof=vof_arr,
+            )
+            return
+
+        if vof is not None and hasattr(self._mod, "swe2d_set_3d_patch_vof"):
+            self.set_3d_patch_vof(vof)
+            return
+
+        raise RuntimeError(
+            "Native module does not expose swe2d_set_3d_patch_state() or compatible vof upload fallback."
+        )
+
+    def set_3d_patch_geometry(
+        self,
+        phi: Optional[np.ndarray] = None,
+        ax: Optional[np.ndarray] = None,
+        ay: Optional[np.ndarray] = None,
+        az: Optional[np.ndarray] = None,
+        sanitize: bool = False,
+        phi_snap_min: float = 0.005,
+        area_snap_min: float = 0.01,
+    ) -> None:
+        """
+        Upload static 3D geometry tensors (phi/ax/ay/az) for sub-grid solids.
+
+        Parameters
+        ----------
+        sanitize : bool, optional
+            If True, clamp arrays to [0, 1] and snap very small values to zero.
+            This is intended as a numerical-stability guard for sliver cut-cells.
+        phi_snap_min : float, optional
+            Cells with phi < phi_snap_min are snapped to fully solid (phi=0), and
+            corresponding face-open fractions are also zeroed.
+        area_snap_min : float, optional
+            Face-open fractions ax/ay/az below this threshold are snapped to 0.
+        """
+        if self._solver_h is None:
+            raise RuntimeError("initialize() must be called before set_3d_patch_geometry().")
+        if not hasattr(self._mod, "swe2d_set_3d_patch_geometry"):
+            raise RuntimeError("Native module does not expose swe2d_set_3d_patch_geometry().")
+
+        phi_arr = None if phi is None else np.ascontiguousarray(phi, dtype=np.float64).ravel()
+        ax_arr = None if ax is None else np.ascontiguousarray(ax, dtype=np.float64).ravel()
+        ay_arr = None if ay is None else np.ascontiguousarray(ay, dtype=np.float64).ravel()
+        az_arr = None if az is None else np.ascontiguousarray(az, dtype=np.float64).ravel()
+
+        if phi_arr is None and ax_arr is None and ay_arr is None and az_arr is None:
+            return
+
+        if sanitize:
+            try:
+                phi_thr = float(phi_snap_min)
+            except Exception:
+                phi_thr = 0.0
+            try:
+                area_thr = float(area_snap_min)
+            except Exception:
+                area_thr = 0.0
+
+            if not np.isfinite(phi_thr):
+                phi_thr = 0.0
+            if not np.isfinite(area_thr):
+                area_thr = 0.0
+            phi_thr = max(0.0, min(1.0, phi_thr))
+            area_thr = max(0.0, min(1.0, area_thr))
+
+            # Work on private copies so caller-owned arrays are never mutated.
+            if phi_arr is not None:
+                phi_arr = phi_arr.copy()
+            if ax_arr is not None:
+                ax_arr = ax_arr.copy()
+            if ay_arr is not None:
+                ay_arr = ay_arr.copy()
+            if az_arr is not None:
+                az_arr = az_arr.copy()
+
+            def _sanitize_tensor(arr: Optional[np.ndarray]) -> Optional[np.ndarray]:
+                if arr is None:
+                    return None
+                np.nan_to_num(arr, copy=False, nan=0.0, posinf=1.0, neginf=0.0)
+                np.clip(arr, 0.0, 1.0, out=arr)
+                return arr
+
+            phi_arr = _sanitize_tensor(phi_arr)
+            ax_arr = _sanitize_tensor(ax_arr)
+            ay_arr = _sanitize_tensor(ay_arr)
+            az_arr = _sanitize_tensor(az_arr)
+
+            if phi_arr is not None and phi_thr > 0.0:
+                tiny_phi = phi_arr < phi_thr
+                if np.any(tiny_phi):
+                    phi_arr[tiny_phi] = 0.0
+                    if ax_arr is not None:
+                        ax_arr[tiny_phi] = 0.0
+                    if ay_arr is not None:
+                        ay_arr[tiny_phi] = 0.0
+                    if az_arr is not None:
+                        az_arr[tiny_phi] = 0.0
+
+            if area_thr > 0.0:
+                if ax_arr is not None:
+                    ax_arr[ax_arr < area_thr] = 0.0
+                if ay_arr is not None:
+                    ay_arr[ay_arr < area_thr] = 0.0
+                if az_arr is not None:
+                    az_arr[az_arr < area_thr] = 0.0
+
+            # If a cell has no open faces after snapping, treat it as solid.
+            if phi_arr is not None and (ax_arr is not None or ay_arr is not None or az_arr is not None):
+                area_sum = np.zeros_like(phi_arr)
+                if ax_arr is not None:
+                    area_sum += ax_arr
+                if ay_arr is not None:
+                    area_sum += ay_arr
+                if az_arr is not None:
+                    area_sum += az_arr
+                isolated = (phi_arr > 0.0) & (area_sum <= 0.0)
+                if np.any(isolated):
+                    phi_arr[isolated] = 0.0
+
+        self._mod.swe2d_set_3d_patch_geometry(
+            self._solver_h,
+            phi=phi_arr,
+            ax=ax_arr,
+            ay=ay_arr,
+            az=az_arr,
+        )
 
     def set_state(self, h: np.ndarray, hu: np.ndarray, hv: np.ndarray) -> None:
         """Overwrite current (h, hu, hv) state arrays."""

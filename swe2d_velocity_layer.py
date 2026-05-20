@@ -179,6 +179,217 @@ class VelocityVectorBuilder:
             )
         return out
 
+    def build_streamline_traces(
+        self,
+        snapshot: VelocitySnapshot,
+        cell_xy: Dict[int, Tuple[float, float]],
+        seed_count: int = 48,
+        max_steps: int = 28,
+        step_len_factor: float = 0.85,
+        min_depth: float = 1.0e-6,
+        min_speed: float = 0.05,
+        seed_stride: int = 1,
+    ) -> List[Dict[str, object]]:
+        """Build streamline-like traces from a single velocity snapshot.
+
+        Traces are seeded from distributed active cells and integrated forward
+        using nearest-neighbor (or KD-tree weighted) velocity samples.
+        """
+        seed_count = max(1, int(seed_count))
+        max_steps = max(2, int(max_steps))
+        step_len_factor = max(0.05, float(step_len_factor))
+        seed_stride = max(1, int(seed_stride))
+
+        h = np.maximum(snapshot.h, float(min_depth))
+        u = snapshot.hu / h
+        v = snapshot.hv / h
+        speed = np.sqrt(u * u + v * v)
+
+        pts_x: List[float] = []
+        pts_y: List[float] = []
+        vel_u: List[float] = []
+        vel_v: List[float] = []
+        vel_s: List[float] = []
+
+        for i in range(snapshot.cell_id.size):
+            cid = int(snapshot.cell_id[i])
+            xy = cell_xy.get(cid)
+            if xy is None:
+                continue
+            si = float(speed[i])
+            if not np.isfinite(si):
+                continue
+            ui = float(u[i])
+            vi = float(v[i])
+            if not (np.isfinite(ui) and np.isfinite(vi)):
+                continue
+            pts_x.append(float(xy[0]))
+            pts_y.append(float(xy[1]))
+            vel_u.append(ui)
+            vel_v.append(vi)
+            vel_s.append(si)
+
+        if len(pts_x) < 4:
+            return []
+
+        x_arr = np.asarray(pts_x, dtype=np.float64)
+        y_arr = np.asarray(pts_y, dtype=np.float64)
+        u_arr = np.asarray(vel_u, dtype=np.float64)
+        v_arr = np.asarray(vel_v, dtype=np.float64)
+        s_arr = np.asarray(vel_s, dtype=np.float64)
+
+        finite = (
+            np.isfinite(x_arr)
+            & np.isfinite(y_arr)
+            & np.isfinite(u_arr)
+            & np.isfinite(v_arr)
+            & np.isfinite(s_arr)
+        )
+        if not np.any(finite):
+            return []
+
+        x_arr = x_arr[finite]
+        y_arr = y_arr[finite]
+        u_arr = u_arr[finite]
+        v_arr = v_arr[finite]
+        s_arr = s_arr[finite]
+
+        if x_arr.size < 4:
+            return []
+
+        x_min = float(np.min(x_arr))
+        x_max = float(np.max(x_arr))
+        y_min = float(np.min(y_arr))
+        y_max = float(np.max(y_arr))
+        span_x = max(1.0e-9, x_max - x_min)
+        span_y = max(1.0e-9, y_max - y_min)
+        base_len = max(1.0e-9, np.sqrt(span_x * span_y / float(max(1, x_arr.size))))
+        step_len = step_len_factor * base_len
+
+        tree = None
+        try:
+            from scipy.spatial import cKDTree  # type: ignore
+
+            tree = cKDTree(np.column_stack((x_arr, y_arr)))
+        except Exception:
+            tree = None
+
+        def _sample_velocity(px: float, py: float) -> Tuple[float, float, float]:
+            if tree is not None:
+                k = 4 if x_arr.size >= 4 else 1
+                dist, idx = tree.query((px, py), k=k)
+                idx_arr = np.atleast_1d(idx).astype(np.int64)
+                dist_arr = np.atleast_1d(dist).astype(np.float64)
+                if idx_arr.size <= 0:
+                    return 0.0, 0.0, 0.0
+                w = 1.0 / np.maximum(dist_arr, 1.0e-6)
+                sw = float(np.sum(w))
+                if sw <= 1.0e-12:
+                    return 0.0, 0.0, 0.0
+                us = float(np.sum(u_arr[idx_arr] * w) / sw)
+                vs = float(np.sum(v_arr[idx_arr] * w) / sw)
+                ss = float(np.hypot(us, vs))
+                return us, vs, ss
+
+            d2 = (x_arr - px) * (x_arr - px) + (y_arr - py) * (y_arr - py)
+            if d2.size <= 0:
+                return 0.0, 0.0, 0.0
+            idx0 = int(np.argmin(d2))
+            us = float(u_arr[idx0])
+            vs = float(v_arr[idx0])
+            ss = float(np.hypot(us, vs))
+            return us, vs, ss
+
+        order = np.lexsort((y_arr, x_arr))
+        if seed_stride > 1 and order.size > 1:
+            order = order[::seed_stride]
+        if order.size <= 0:
+            return []
+
+        if order.size > seed_count:
+            pick = np.linspace(0, order.size - 1, num=seed_count, dtype=np.int64)
+            seed_idx = order[pick]
+        else:
+            seed_idx = order
+
+        # Skip near-duplicate seeds by coarse bins to improve spatial coverage.
+        bin_x = max(1.0e-9, span_x / max(4.0, np.sqrt(float(seed_count))))
+        bin_y = max(1.0e-9, span_y / max(4.0, np.sqrt(float(seed_count))))
+        seen_bins = set()
+        seed_points: List[Tuple[float, float, float]] = []
+        for idx in seed_idx:
+            sx = float(x_arr[int(idx)])
+            sy = float(y_arr[int(idx)])
+            ss = float(s_arr[int(idx)])
+            if ss < float(min_speed):
+                continue
+            bx = int((sx - x_min) / bin_x)
+            by = int((sy - y_min) / bin_y)
+            key = (bx, by)
+            if key in seen_bins:
+                continue
+            seen_bins.add(key)
+            seed_points.append((sx, sy, ss))
+            if len(seed_points) >= seed_count:
+                break
+
+        if not seed_points:
+            # Fallback: use top-speed cells as seeds.
+            top = np.argsort(-s_arr)
+            for idx in top[:seed_count]:
+                ss = float(s_arr[int(idx)])
+                if ss < float(min_speed):
+                    break
+                seed_points.append((float(x_arr[int(idx)]), float(y_arr[int(idx)]), ss))
+            if not seed_points:
+                return []
+
+        traces: List[Dict[str, object]] = []
+        margin = 2.0 * step_len
+        for trace_id, (sx, sy, _) in enumerate(seed_points):
+            px = float(sx)
+            py = float(sy)
+            pts: List[Tuple[float, float]] = [(px, py)]
+            sampled_speeds: List[float] = []
+
+            for _ in range(max_steps):
+                us, vs, ss = _sample_velocity(px, py)
+                if ss < float(min_speed) or not np.isfinite(ss):
+                    break
+                dx = us / ss
+                dy = vs / ss
+                local_step = step_len * min(2.5, max(0.75, 1.0 + 0.25 * ss))
+                nx = px + dx * local_step
+                ny = py + dy * local_step
+                if (
+                    nx < (x_min - margin)
+                    or nx > (x_max + margin)
+                    or ny < (y_min - margin)
+                    or ny > (y_max + margin)
+                ):
+                    break
+                pts.append((float(nx), float(ny)))
+                sampled_speeds.append(float(ss))
+                px, py = nx, ny
+
+            if len(pts) < 3:
+                continue
+
+            seg_len = 0.0
+            for i in range(1, len(pts)):
+                seg_len += float(np.hypot(pts[i][0] - pts[i - 1][0], pts[i][1] - pts[i - 1][1]))
+            mean_speed = float(np.mean(np.asarray(sampled_speeds, dtype=np.float64))) if sampled_speeds else 0.0
+            traces.append(
+                {
+                    "trace_id": int(trace_id),
+                    "points": pts,
+                    "mean_speed": mean_speed,
+                    "length": float(seg_len),
+                }
+            )
+
+        return traces
+
     @staticmethod
     def style_from_speed(speed: float) -> Dict[str, object]:
         """Map speed to color/width style fields for symbolization."""

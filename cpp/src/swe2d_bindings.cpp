@@ -1291,6 +1291,17 @@ PYBIND11_MODULE(backwater_swe2d, m) {
             d["gpu_active"] = diag.gpu_active;
             d["gpu_graph_launches_step"] = diag.gpu_graph_launches_step;
             d["gpu_graph_launches_total"] = diag.gpu_graph_launches_total;
+            d["projection_retry_count"] = diag.projection_retry_count;
+            d["projection_attempt_count"] = diag.projection_attempt_count;
+            d["projection_retry_exhausted"] = diag.projection_retry_exhausted;
+            d["projection_retry_enabled"] = diag.projection_retry_enabled;
+            d["projection_retry_fail_fast"] = diag.projection_retry_fail_fast;
+            d["projection_retry_dt_initial"] = diag.projection_retry_dt_initial;
+            d["projection_retry_dt_floor"] = diag.projection_retry_dt_floor;
+            d["projection_retry_dt_reduction"] = diag.projection_retry_dt_reduction;
+            d["projection_retry_residual_target"] = diag.projection_retry_residual_target;
+            d["projection_retry_residual_ratio"] = diag.projection_retry_residual_ratio;
+            d["projection_retry_residual_ratio_max"] = diag.projection_retry_residual_ratio_max;
             return d;
         },
         py::arg("solver"), py::arg("dt_request") = -1.0,
@@ -1399,6 +1410,17 @@ PYBIND11_MODULE(backwater_swe2d, m) {
                     d_dict["max_wse_elev_error"] = d.max_wse_elev_error;
                     d_dict["gpu_active"] = d.gpu_active;
                     d_dict["gpu_graph_launches_step"] = static_cast<int32_t>(d.gpu_graph_launches_step);
+                    d_dict["projection_retry_count"] = d.projection_retry_count;
+                    d_dict["projection_attempt_count"] = d.projection_attempt_count;
+                    d_dict["projection_retry_exhausted"] = d.projection_retry_exhausted;
+                    d_dict["projection_retry_enabled"] = d.projection_retry_enabled;
+                    d_dict["projection_retry_fail_fast"] = d.projection_retry_fail_fast;
+                    d_dict["projection_retry_dt_initial"] = d.projection_retry_dt_initial;
+                    d_dict["projection_retry_dt_floor"] = d.projection_retry_dt_floor;
+                    d_dict["projection_retry_dt_reduction"] = d.projection_retry_dt_reduction;
+                    d_dict["projection_retry_residual_target"] = d.projection_retry_residual_target;
+                    d_dict["projection_retry_residual_ratio"] = d.projection_retry_residual_ratio;
+                    d_dict["projection_retry_residual_ratio_max"] = d.projection_retry_residual_ratio_max;
                     diag_list.append(d_dict);
                 }
             }
@@ -1553,6 +1575,7 @@ PYBIND11_MODULE(backwater_swe2d, m) {
             d["projection_iters"] = s.projection_iters;
             d["projection_residual"] = s.projection_residual;
             d["projection_converged"] = s.projection_converged;
+            d["vof_transport_substeps"] = s.vof_transport_substeps;
             return d;
             #else
             throw std::runtime_error("CUDA not compiled; swe2d_get_3d_patch_stats unavailable");
@@ -1563,7 +1586,8 @@ PYBIND11_MODULE(backwater_swe2d, m) {
         "Performs a device→host transfer; intended for testing, not production inner loops.\n"
         "Keys: n_cells, nx, ny, nz, dx, dy, dz, vof_min, vof_max, vof_sum,\n"
         "      u_rms, v_rms, w_rms, p_max_abs, divergence_rms,\n"
-        "      projection_iters, projection_residual, projection_converged");
+        "      projection_iters, projection_residual, projection_converged,\n"
+        "      vof_transport_substeps");
 
     m.def("swe2d_set_3d_patch_vof",
         [](const std::shared_ptr<PySolver>& solver, py::array_t<double, py::array::c_style> vof) -> void
@@ -1583,6 +1607,27 @@ PYBIND11_MODULE(backwater_swe2d, m) {
         py::arg("solver"),
         py::arg("vof"),
         "Upload a VoF initial-condition array (float64, length == n_cells) to the 3D patch.");
+
+    m.def("swe2d_get_3d_patch_vof",
+        [](const std::shared_ptr<PySolver>& solver) -> py::array_t<double>
+        {
+            if (!solver || !solver->solver)
+                throw std::invalid_argument("null or destroyed solver");
+            #ifdef BACKWATER_HAS_CUDA
+            SWE3DPatchStats s = swe2d_gpu_get_3d_patch_stats(solver->solver->dev);
+            py::array_t<double> out(s.n_cells);
+            py::buffer_info buf = out.request();
+            swe2d_gpu_get_3d_patch_vof(
+                solver->solver->dev,
+                static_cast<double*>(buf.ptr),
+                s.n_cells);
+            return out;
+            #else
+            throw std::runtime_error("CUDA not compiled; swe2d_get_3d_patch_vof unavailable");
+            #endif
+        },
+        py::arg("solver"),
+        "Download full VoF field from 3D patch as a float64 array of length n_cells.");
 
     m.def("swe2d_set_3d_patch_state",
         [](const std::shared_ptr<PySolver>& solver,
@@ -1635,6 +1680,66 @@ PYBIND11_MODULE(backwater_swe2d, m) {
         py::arg("vof") = py::none(),
         "Upload per-cell initial conditions for any combination of u, v, w, p, vof.\n"
         "Pass None to skip a field.  Arrays must be float64, length == n_cells.");
+
+    m.def("swe2d_set_3d_patch_geometry",
+        [](const std::shared_ptr<PySolver>& solver,
+           py::object phi_obj,
+           py::object ax_obj,
+           py::object ay_obj,
+           py::object az_obj) -> void
+        {
+            if (!solver || !solver->solver)
+                throw std::invalid_argument("null or destroyed solver");
+            #ifdef BACKWATER_HAS_CUDA
+            auto infer_n = [](py::object& o) -> int64_t {
+                if (o.is_none()) return -1;
+                auto arr = o.cast<py::array_t<double, py::array::c_style>>();
+                return static_cast<int64_t>(arr.size());
+            };
+
+            int64_t n = -1;
+            for (py::object* obj : {&phi_obj, &ax_obj, &ay_obj, &az_obj}) {
+                const int64_t m = infer_n(*obj);
+                if (m < 0) continue;
+                if (n < 0) {
+                    n = m;
+                } else if (m != n) {
+                    throw std::invalid_argument("swe2d_set_3d_patch_geometry: all provided arrays must have equal length");
+                }
+            }
+            if (n < 0) return; // all None — no-op
+
+            auto to_ptr = [n](py::object& o, std::vector<double>& tmp) -> const double*
+            {
+                if (o.is_none()) return nullptr;
+                auto arr = o.cast<py::array_t<double, py::array::c_style>>();
+                py::buffer_info buf = arr.request();
+                if (static_cast<int64_t>(buf.size) != n) {
+                    throw std::invalid_argument("swe2d_set_3d_patch_geometry: length mismatch among provided arrays");
+                }
+                tmp.assign(static_cast<const double*>(buf.ptr),
+                           static_cast<const double*>(buf.ptr) + buf.size);
+                return tmp.data();
+            };
+
+            std::vector<double> tphi, tax, tay, taz;
+            const double* pphi = to_ptr(phi_obj, tphi);
+            const double* pax = to_ptr(ax_obj, tax);
+            const double* pay = to_ptr(ay_obj, tay);
+            const double* paz = to_ptr(az_obj, taz);
+            swe2d_gpu_set_3d_patch_geometry(solver->solver->dev, pphi, pax, pay, paz, n);
+            #else
+            throw std::runtime_error("CUDA not compiled; swe2d_set_3d_patch_geometry unavailable");
+            #endif
+        },
+        py::arg("solver"),
+        py::arg("phi") = py::none(),
+        py::arg("ax") = py::none(),
+        py::arg("ay") = py::none(),
+        py::arg("az") = py::none(),
+        "Upload static 3D geometry tensors for sub-grid solids.\n"
+        "Pass any combination of phi/ax/ay/az arrays (float64, equal length == n_cells).\n"
+        "Pass None for fields that should remain unchanged.");
 
     // ── PyMesh / PySolver as opaque Python types ──────────────────────────────
     py::class_<PyMesh, std::shared_ptr<PyMesh>>(m, "SWE2DMeshHandle")

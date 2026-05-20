@@ -1,0 +1,184 @@
+from __future__ import annotations
+
+from typing import Dict, Optional, Tuple
+
+import numpy as np
+
+Hydrograph = Tuple[np.ndarray, np.ndarray]
+EdgeHydrographMap = Optional[Dict[int, Tuple[int, Hydrograph]]]
+
+
+def interp_hydrograph(hg: Hydrograph, t_sec: float) -> float:
+    t, v = hg
+    if t.size == 1:
+        return float(v[0])
+    if t_sec <= float(t[0]):
+        return float(v[0])
+    if t_sec >= float(t[-1]):
+        return float(v[-1])
+    return float(np.interp(t_sec, t, v))
+
+
+def distribute_total_flow_to_unit_q(
+    edge_n0: np.ndarray,
+    edge_n1: np.ndarray,
+    bc_type_step: np.ndarray,
+    bc_val_step: np.ndarray,
+    bc_type_template: np.ndarray,
+    side_hydrographs: Dict[str, Hydrograph],
+    node_x: np.ndarray,
+    node_y: np.ndarray,
+    node_z: np.ndarray,
+    progressive: bool,
+    ts_flow_code: int,
+    edge_hydrographs: EdgeHydrographMap = None,
+) -> np.ndarray:
+    """Convert total discharge Q inputs into unit discharge q [L^2/T]."""
+    if edge_n0.size == 0:
+        return bc_val_step
+
+    out_val = bc_val_step.astype(np.float64, copy=True)
+    flow_idx = np.where(bc_type_step.astype(np.int32) == 2)[0]
+    if flow_idx.size == 0:
+        return out_val
+
+    xmin = float(np.min(node_x))
+    xmax = float(np.max(node_x))
+    ymin = float(np.min(node_y))
+    ymax = float(np.max(node_y))
+
+    mx = 0.5 * (node_x[edge_n0] + node_x[edge_n1])
+    my = 0.5 * (node_y[edge_n0] + node_y[edge_n1])
+    d = np.vstack([np.abs(mx - xmin), np.abs(mx - xmax), np.abs(my - ymin), np.abs(my - ymax)])
+    side_idx = np.argmin(d, axis=0)
+    side_names = ["left", "right", "bottom", "top"]
+
+    edge_len = np.hypot(node_x[edge_n1] - node_x[edge_n0], node_y[edge_n1] - node_y[edge_n0])
+    edge_z = 0.5 * (node_z[edge_n0] + node_z[edge_n1])
+
+    groups: Dict[Tuple, Dict[str, object]] = {}
+    for i in flow_idx.tolist():
+        side = side_names[int(side_idx[i])]
+
+        peak_q = abs(float(out_val[i]))
+        key: Tuple
+
+        if edge_hydrographs is not None and i in edge_hydrographs and int(edge_hydrographs[i][0]) == ts_flow_code:
+            hg = edge_hydrographs[i][1]
+            try:
+                peak_q = float(np.max(np.abs(hg[1]))) if hg[1].size else abs(float(out_val[i]))
+            except Exception:
+                peak_q = abs(float(out_val[i]))
+            key = ("edge_hg", id(hg))
+        elif int(bc_type_template[i]) == ts_flow_code:
+            hg = side_hydrographs.get(side)
+            if hg is not None:
+                try:
+                    peak_q = float(np.max(np.abs(hg[1]))) if hg[1].size else abs(float(out_val[i]))
+                except Exception:
+                    peak_q = abs(float(out_val[i]))
+            key = ("side_hg", side)
+        else:
+            key = ("static", side, round(float(out_val[i]), 12))
+
+        if key not in groups:
+            groups[key] = {
+                "idx": [],
+                "peak_q": max(peak_q, 0.0),
+            }
+        groups[key]["idx"].append(i)
+        groups[key]["peak_q"] = max(float(groups[key]["peak_q"]), max(peak_q, 0.0))
+
+    eps = 1.0e-12
+    for grp in groups.values():
+        idx = np.asarray(grp["idx"], dtype=np.int32)
+        if idx.size == 0:
+            continue
+
+        q_total = float(out_val[idx[0]])
+        if abs(q_total) <= eps:
+            out_val[idx] = 0.0
+            continue
+
+        g_len = edge_len[idx]
+        g_z = edge_z[idx]
+        total_len = float(np.sum(g_len))
+        if total_len <= eps:
+            out_val[idx] = 0.0
+            continue
+
+        if progressive:
+            peak_q = max(float(grp["peak_q"]), abs(q_total))
+            frac = min(1.0, abs(q_total) / max(peak_q, eps))
+            target_len = frac * total_len
+        else:
+            target_len = total_len
+
+        if target_len <= eps:
+            out_val[idx] = 0.0
+            continue
+
+        order = np.argsort(g_z, kind="stable")
+        idx_sorted = idx[order]
+        len_sorted = g_len[order]
+        csum = np.cumsum(len_sorted)
+        n_active = int(np.searchsorted(csum, target_len, side="left") + 1)
+        n_active = max(1, min(n_active, idx_sorted.size))
+        active_idx = idx_sorted[:n_active]
+        active_len = float(np.sum(edge_len[active_idx]))
+        if active_len <= eps:
+            out_val[idx] = 0.0
+            continue
+
+        q_unit = q_total / active_len
+        out_val[idx] = 0.0
+        out_val[active_idx] = q_unit
+
+    return out_val
+
+
+def apply_timeseries_bc_values(
+    edge_n0: np.ndarray,
+    edge_n1: np.ndarray,
+    bc_type: np.ndarray,
+    bc_val: np.ndarray,
+    side_hydrographs: Dict[str, Hydrograph],
+    node_x: np.ndarray,
+    node_y: np.ndarray,
+    t_sec: float,
+    ts_flow_code: int,
+    ts_stage_code: int,
+    edge_hydrographs: EdgeHydrographMap = None,
+) -> Tuple[np.ndarray, np.ndarray]:
+    if edge_n0.size == 0:
+        return bc_type, bc_val
+
+    xmin = float(np.min(node_x))
+    xmax = float(np.max(node_x))
+    ymin = float(np.min(node_y))
+    ymax = float(np.max(node_y))
+
+    mx = 0.5 * (node_x[edge_n0] + node_x[edge_n1])
+    my = 0.5 * (node_y[edge_n0] + node_y[edge_n1])
+    d = np.vstack([np.abs(mx - xmin), np.abs(mx - xmax), np.abs(my - ymin), np.abs(my - ymax)])
+    side_idx = np.argmin(d, axis=0)
+    side_names = ["left", "right", "bottom", "top"]
+
+    out_type = bc_type.astype(np.int32, copy=True)
+    out_val = bc_val.astype(np.float64, copy=True)
+    for i in range(edge_n0.size):
+        if edge_hydrographs is not None and i in edge_hydrographs:
+            tcode, hg = edge_hydrographs[i]
+            out_val[i] = interp_hydrograph(hg, t_sec)
+            out_type[i] = 2 if int(tcode) == ts_flow_code else 3
+            continue
+
+        tcode = int(out_type[i])
+        if tcode not in (ts_flow_code, ts_stage_code):
+            continue
+        side = side_names[int(side_idx[i])]
+        if side not in side_hydrographs:
+            continue
+        out_val[i] = interp_hydrograph(side_hydrographs[side], t_sec)
+        out_type[i] = 2 if tcode == ts_flow_code else 3
+    return out_type, out_val

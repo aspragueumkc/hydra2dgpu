@@ -1,0 +1,115 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<ui version="4.0">
+ <class>SWE2DRightPane</class>
+ <widget class="QWidget" name="SWE2DRightPane">
+  <property name="geometry">
+   <rect>
+    <x>0</x>
+    <y>0</y>
+    <width>460</width>
+    <height>420</height>
+   </rect>
+  </property>
+  <layout class="QVBoxLayout" name="right_layout">
+   <property name="leftMargin">
+    <number>0</number>
+   </property>
+   <property name="topMargin">
+    <number>0</number>
+   </property>
+   <property name="rightMargin">
+    <number>0</number>
+   </property>
+   <property name="bottomMargin">
+    <number>0</number>
+   </property>
+   <property name="spacing">
+    <number>4</number>
+   </property>
+   <item>
+    <layout class="QHBoxLayout" name="view_row_layout">
+     <item>
+      <widget class="QLabel" name="view_mode_lbl">
+       <property name="text">
+        <string>View:</string>
+       </property>
+      </widget>
+     </item>
+     <item>
+      <widget class="QComboBox" name="view_mode_combo"/>
+     </item>
+     <item>
+      <spacer name="view_row_spacer">
+       <property name="orientation">
+        <enum>Qt::Horizontal</enum>
+       </property>
+       <property name="sizeHint" stdset="0">
+        <size>
+         <width>40</width>
+         <height>20</height>
+        </size>
+       </property>
+      </spacer>
+     </item>
+    </layout>
+   </item>
+   <item>
+    <layout class="QHBoxLayout" name="popout_row_layout">
+     <item>
+      <widget class="QPushButton" name="detach_mesh_view_btn">
+       <property name="text">
+        <string>Detach Mesh View</string>
+       </property>
+      </widget>
+     </item>
+     <item>
+      <widget class="QPushButton" name="detach_runtime_log_btn">
+       <property name="text">
+        <string>Detach Runtime Log</string>
+       </property>
+      </widget>
+     </item>
+     <item>
+      <spacer name="popout_row_spacer">
+       <property name="orientation">
+        <enum>Qt::Horizontal</enum>
+       </property>
+       <property name="sizeHint" stdset="0">
+        <size>
+         <width>40</width>
+         <height>20</height>
+        </size>
+       </property>
+      </spacer>
+     </item>
+    </layout>
+   </item>
+   <item>
+    <widget class="QSplitter" name="right_vertical_split">
+     <property name="orientation">
+      <enum>Qt::Vertical</enum>
+     </property>
+     <widget class="QWidget" name="right_plot_host">
+      <layout class="QVBoxLayout" name="right_plot_host_layout">
+       <property name="leftMargin">
+        <number>0</number>
+       </property>
+       <property name="topMargin">
+        <number>0</number>
+       </property>
+       <property name="rightMargin">
+        <number>0</number>
+       </property>
+       <property name="bottomMargin">
+        <number>0</number>
+       </property>
+      </layout>
+     </widget>
+     <widget class="QPlainTextEdit" name="log_view"/>
+    </widget>
+   </item>
+  </layout>
+ </widget>
+ <resources/>
+ <connections/>
+</ui>

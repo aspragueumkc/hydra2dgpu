@@ -424,6 +424,45 @@ class SWE2DResultsPanel(_BASE_DOCK):  # type: ignore[valid-type,misc]
         vel_min_row.addWidget(self._vel_min_speed_spin, 1)
         sidebar.addLayout(vel_min_row)
 
+        self._show_streamlines_chk = QtWidgets.QCheckBox("Streamline traces")
+        self._show_streamlines_chk.setChecked(False)
+        self._show_streamlines_chk.setToolTip("Render map-canvas streamline traces from the active velocity field")
+        self._show_streamlines_chk.toggled.connect(self._on_velocity_overlay_control_changed)
+        sidebar.addWidget(self._show_streamlines_chk)
+
+        sl_seed_row = QtWidgets.QHBoxLayout()
+        sl_seed_row.addWidget(QtWidgets.QLabel("Traces:"))
+        self._streamline_seed_combo = QtWidgets.QComboBox()
+        self._streamline_seed_combo.addItem("24", 24)
+        self._streamline_seed_combo.addItem("48", 48)
+        self._streamline_seed_combo.addItem("96", 96)
+        self._streamline_seed_combo.addItem("160", 160)
+        self._streamline_seed_combo.setCurrentIndex(1)
+        self._streamline_seed_combo.currentIndexChanged.connect(self._on_velocity_overlay_control_changed)
+        sl_seed_row.addWidget(self._streamline_seed_combo, 1)
+        sidebar.addLayout(sl_seed_row)
+
+        sl_steps_row = QtWidgets.QHBoxLayout()
+        sl_steps_row.addWidget(QtWidgets.QLabel("Trace steps:"))
+        self._streamline_steps_spin = QtWidgets.QSpinBox()
+        self._streamline_steps_spin.setRange(4, 256)
+        self._streamline_steps_spin.setValue(30)
+        self._streamline_steps_spin.setSingleStep(2)
+        self._streamline_steps_spin.valueChanged.connect(self._on_velocity_overlay_control_changed)
+        sl_steps_row.addWidget(self._streamline_steps_spin, 1)
+        sidebar.addLayout(sl_steps_row)
+
+        sl_step_len_row = QtWidgets.QHBoxLayout()
+        sl_step_len_row.addWidget(QtWidgets.QLabel("Step factor:"))
+        self._streamline_step_scale_spin = QtWidgets.QDoubleSpinBox()
+        self._streamline_step_scale_spin.setDecimals(2)
+        self._streamline_step_scale_spin.setRange(0.1, 3.0)
+        self._streamline_step_scale_spin.setValue(0.85)
+        self._streamline_step_scale_spin.setSingleStep(0.05)
+        self._streamline_step_scale_spin.valueChanged.connect(self._on_velocity_overlay_control_changed)
+        sl_step_len_row.addWidget(self._streamline_step_scale_spin, 1)
+        sidebar.addLayout(sl_step_len_row)
+
         self._run_count_lbl = QtWidgets.QLabel("")
         self._run_count_lbl.setStyleSheet("color: gray; font-size: 9px;")
         sidebar.addWidget(self._run_count_lbl)
@@ -1548,8 +1587,12 @@ class SWE2DResultsPanel(_BASE_DOCK):  # type: ignore[valid-type,misc]
             "prof_fill_cmap": self._prof_cmap_combo.currentData(),
             "show_structures": bool(self._show_structures_chk.isChecked()),
             "show_velocity": bool(self._show_velocity_chk.isChecked()),
+            "show_streamlines": bool(self._show_streamlines_chk.isChecked()),
             "velocity_density": int(self.velocity_density_stride()),
             "velocity_min_speed": float(self.velocity_min_speed()),
+            "streamline_seed_count": int(self.streamline_seed_count()),
+            "streamline_max_steps": int(self.streamline_max_steps()),
+            "streamline_step_scale": float(self.streamline_step_scale()),
             "speed_index": int(self._speed_combo.currentIndex()),
             "is_playing": bool(self._anim.is_playing),
         }
@@ -1642,12 +1685,23 @@ class SWE2DResultsPanel(_BASE_DOCK):  # type: ignore[valid-type,misc]
         show_velocity = bool(state.get("show_velocity", False))
         self._show_velocity_chk.setChecked(show_velocity)
 
+        show_streamlines = bool(state.get("show_streamlines", False))
+        self._show_streamlines_chk.setChecked(show_streamlines)
+
         density = int(state.get("velocity_density", 4))
         idx_den = self._vel_density_combo.findData(density)
         if idx_den >= 0:
             self._vel_density_combo.setCurrentIndex(idx_den)
 
         self._vel_min_speed_spin.setValue(float(state.get("velocity_min_speed", 0.05)))
+
+        sl_count = int(state.get("streamline_seed_count", 48))
+        idx_sl_count = self._streamline_seed_combo.findData(sl_count)
+        if idx_sl_count >= 0:
+            self._streamline_seed_combo.setCurrentIndex(idx_sl_count)
+
+        self._streamline_steps_spin.setValue(int(state.get("streamline_max_steps", 30)))
+        self._streamline_step_scale_spin.setValue(float(state.get("streamline_step_scale", 0.85)))
 
         speed_index = int(state.get("speed_index", 2))
         if 0 <= speed_index < self._speed_combo.count():
@@ -1707,6 +1761,21 @@ class SWE2DResultsPanel(_BASE_DOCK):  # type: ignore[valid-type,misc]
 
     def velocity_min_speed(self) -> float:
         return float(self._vel_min_speed_spin.value())
+
+    def streamline_overlay_enabled(self) -> bool:
+        return bool(self._show_streamlines_chk.isChecked())
+
+    def set_streamline_overlay_enabled(self, enabled: bool):
+        self._show_streamlines_chk.setChecked(bool(enabled))
+
+    def streamline_seed_count(self) -> int:
+        return int(self._streamline_seed_combo.currentData() or 48)
+
+    def streamline_max_steps(self) -> int:
+        return int(self._streamline_steps_spin.value())
+
+    def streamline_step_scale(self) -> float:
+        return float(self._streamline_step_scale_spin.value())
 
     def run_ids_for_gpkg(self, gpkg_path: str, enabled_only: bool = False) -> List[str]:
         gpkg_norm = str(gpkg_path or "").strip()

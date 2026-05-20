@@ -1,0 +1,484 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<ui version="4.0">
+ <class>SWE2DMapTabPage</class>
+ <widget class="QWidget" name="SWE2DMapTabPage">
+  <property name="geometry">
+   <rect>
+    <x>0</x>
+    <y>0</y>
+    <width>532</width>
+    <height>1862</height>
+   </rect>
+  </property>
+  <layout class="QVBoxLayout" name="verticalLayout">
+   <property name="leftMargin">
+    <number>0</number>
+   </property>
+   <property name="topMargin">
+    <number>0</number>
+   </property>
+   <property name="rightMargin">
+    <number>0</number>
+   </property>
+   <property name="bottomMargin">
+    <number>0</number>
+   </property>
+   <item>
+    <widget class="QGroupBox" name="map_group">
+     <property name="title">
+      <string>Map Layer Mesh + Terrain</string>
+     </property>
+     <layout class="QVBoxLayout" name="map_layout">
+      <property name="spacing">
+       <number>6</number>
+      </property>
+      <item>
+       <widget class="QGroupBox" name="map_data_group">
+        <property name="title">
+         <string>Data layers</string>
+        </property>
+        <layout class="QGridLayout" name="map_data_layout">
+         <item row="0" column="0">
+          <widget class="QLabel" name="label_nodes_layer">
+           <property name="text">
+            <string>Nodes layer:</string>
+           </property>
+          </widget>
+         </item>
+         <item row="0" column="1">
+          <widget class="QComboBox" name="nodes_layer_combo"/>
+         </item>
+         <item row="1" column="0">
+          <widget class="QLabel" name="label_cells_layer">
+           <property name="text">
+            <string>Cells layer:</string>
+           </property>
+          </widget>
+         </item>
+         <item row="1" column="1">
+          <widget class="QComboBox" name="cells_layer_combo"/>
+         </item>
+         <item row="2" column="0">
+          <widget class="QLabel" name="label_terrain_layer">
+           <property name="text">
+            <string>Terrain raster:</string>
+           </property>
+          </widget>
+         </item>
+         <item row="2" column="1">
+          <widget class="QComboBox" name="terrain_layer_combo"/>
+         </item>
+         <item row="3" column="0">
+          <widget class="QLabel" name="label_manning_layer">
+           <property name="text">
+            <string>Manning polygons:</string>
+           </property>
+          </widget>
+         </item>
+         <item row="3" column="1">
+          <widget class="QComboBox" name="manning_layer_combo"/>
+         </item>
+         <item row="4" column="0">
+          <widget class="QLabel" name="label_cn_layer">
+           <property name="text">
+            <string>CN polygons:</string>
+           </property>
+          </widget>
+         </item>
+         <item row="4" column="1">
+          <widget class="QComboBox" name="cn_layer_combo"/>
+         </item>
+         <item row="5" column="0">
+          <widget class="QLabel" name="label_rain_gage_layer">
+           <property name="text">
+            <string>Rain gages (points):</string>
+           </property>
+          </widget>
+         </item>
+         <item row="5" column="1">
+          <widget class="QComboBox" name="rain_gage_layer_combo"/>
+         </item>
+         <item row="6" column="0">
+          <widget class="QLabel" name="label_hyetograph_layer">
+           <property name="text">
+            <string>Rain hyetographs (table):</string>
+           </property>
+          </widget>
+         </item>
+         <item row="6" column="1">
+          <widget class="QComboBox" name="hyetograph_layer_combo"/>
+         </item>
+         <item row="7" column="0">
+          <widget class="QLabel" name="label_sample_lines_layer">
+           <property name="text">
+            <string>Sample lines layer:</string>
+           </property>
+          </widget>
+         </item>
+         <item row="7" column="1">
+          <widget class="QComboBox" name="sample_lines_layer_combo"/>
+         </item>
+         <item row="8" column="0">
+          <widget class="QLabel" name="label_drain_nodes_layer">
+           <property name="text">
+            <string>Drainage nodes layer:</string>
+           </property>
+          </widget>
+         </item>
+         <item row="8" column="1">
+          <widget class="QComboBox" name="drain_nodes_layer_combo"/>
+         </item>
+         <item row="9" column="0">
+          <widget class="QLabel" name="label_drain_links_layer">
+           <property name="text">
+            <string>Drainage links layer:</string>
+           </property>
+          </widget>
+         </item>
+         <item row="9" column="1">
+          <widget class="QComboBox" name="drain_links_layer_combo"/>
+         </item>
+         <item row="10" column="0">
+          <widget class="QLabel" name="label_drain_inlets_layer">
+           <property name="text">
+            <string>Drainage inlet types (table):</string>
+           </property>
+          </widget>
+         </item>
+         <item row="10" column="1">
+          <widget class="QComboBox" name="drain_inlets_layer_combo"/>
+         </item>
+         <item row="11" column="0">
+          <widget class="QLabel" name="label_drain_node_inlets_layer">
+           <property name="text">
+            <string>Drainage node-inlets (table):</string>
+           </property>
+          </widget>
+         </item>
+         <item row="11" column="1">
+          <widget class="QComboBox" name="drain_node_inlets_layer_combo"/>
+         </item>
+         <item row="12" column="0">
+          <widget class="QLabel" name="label_structures_layer">
+           <property name="text">
+            <string>Hydraulic structures layer:</string>
+           </property>
+          </widget>
+         </item>
+         <item row="12" column="1">
+          <widget class="QComboBox" name="structures_layer_combo"/>
+         </item>
+         <item row="13" column="0">
+          <widget class="QLabel" name="label_layer_group">
+           <property name="text">
+            <string>Layer group:</string>
+           </property>
+          </widget>
+         </item>
+         <item row="13" column="1">
+          <widget class="QComboBox" name="layer_group_combo"/>
+         </item>
+         <item row="14" column="0" colspan="2">
+          <widget class="QPushButton" name="autopop_group_btn">
+           <property name="text">
+            <string>Autopopulate From Group</string>
+           </property>
+          </widget>
+         </item>
+         <item row="15" column="0">
+          <widget class="QPushButton" name="refresh_layers_btn">
+           <property name="text">
+            <string>Refresh Layers</string>
+           </property>
+          </widget>
+         </item>
+         <item row="15" column="1">
+          <widget class="QPushButton" name="create_model_gpkg_btn">
+           <property name="text">
+            <string>Create 2D Model GeoPackage</string>
+           </property>
+          </widget>
+         </item>
+        </layout>
+       </widget>
+      </item>
+      <item>
+       <widget class="QGroupBox" name="map_actions_group">
+        <property name="title">
+         <string>Model files and mesh actions</string>
+        </property>
+        <layout class="QGridLayout" name="map_actions_layout">
+         <item row="0" column="0" colspan="2">
+          <widget class="QPushButton" name="create_lumped_gpkg_btn">
+           <property name="text">
+            <string>Create Lumped Hydro GeoPackage</string>
+           </property>
+          </widget>
+         </item>
+         <item row="1" column="0">
+          <widget class="QPushButton" name="load_model_gpkg_btn">
+           <property name="text">
+            <string>Load 2D Model GeoPackage</string>
+           </property>
+          </widget>
+         </item>
+         <item row="1" column="1">
+          <widget class="QPushButton" name="migrate_model_gpkg_btn">
+           <property name="text">
+            <string>Update GeoPackage Schema</string>
+           </property>
+          </widget>
+         </item>
+         <item row="2" column="0" colspan="2">
+          <widget class="QPushButton" name="preview_coupling_btn">
+           <property name="text">
+            <string>Preview Drainage/Structure Coupling</string>
+           </property>
+          </widget>
+         </item>
+         <item row="3" column="0">
+          <widget class="QPushButton" name="export_mesh_layers_btn">
+           <property name="text">
+            <string>Export Mesh To Map Layers</string>
+           </property>
+          </widget>
+         </item>
+         <item row="3" column="1">
+          <widget class="QPushButton" name="save_hdf5_btn">
+           <property name="text">
+            <string>Save Mesh To HEC-RAS HDF5</string>
+           </property>
+          </widget>
+         </item>
+         <item row="4" column="0" colspan="2">
+          <widget class="QPushButton" name="save_results_hdf5_btn">
+           <property name="text">
+            <string>Save Results To HEC-RAS HDF5</string>
+           </property>
+          </widget>
+         </item>
+         <item row="5" column="0" colspan="2">
+          <widget class="QPushButton" name="save_results_ugrid_btn">
+           <property name="text">
+            <string>Save Results To UGRID NetCDF</string>
+           </property>
+          </widget>
+         </item>
+         <item row="6" column="0" colspan="2">
+          <widget class="QPushButton" name="import_mesh_layers_btn">
+           <property name="text">
+            <string>Load Mesh From Selected Layers</string>
+           </property>
+          </widget>
+         </item>
+         <item row="7" column="0" colspan="2">
+          <widget class="QPushButton" name="terrain_to_nodes_btn">
+           <property name="text">
+            <string>Assign Node Z From Terrain</string>
+           </property>
+          </widget>
+         </item>
+         <item row="8" column="0" colspan="2">
+          <widget class="QPushButton" name="pull_node_z_btn">
+           <property name="text">
+            <string>Pull Node Z From Nodes Layer</string>
+           </property>
+          </widget>
+         </item>
+        </layout>
+       </widget>
+      </item>
+      <item>
+       <widget class="QGroupBox" name="map_results_group">
+        <property name="title">
+         <string>Results and overlays</string>
+        </property>
+        <layout class="QGridLayout" name="map_results_layout">
+         <item row="0" column="0" colspan="2">
+          <widget class="QCheckBox" name="extended_outputs_chk">
+           <property name="text">
+            <string>Include extended outputs (momentum, qmag, wet mask, Fr, Manning)</string>
+           </property>
+          </widget>
+         </item>
+         <item row="1" column="0" colspan="2">
+          <widget class="QCheckBox" name="save_mesh_results_to_gpkg_chk">
+           <property name="text">
+            <string>Save mesh snapshot results to GeoPackage</string>
+           </property>
+          </widget>
+         </item>
+         <item row="2" column="0" colspan="2">
+          <widget class="QCheckBox" name="save_line_results_to_gpkg_chk">
+           <property name="text">
+            <string>Save sampled line results to GeoPackage</string>
+           </property>
+          </widget>
+         </item>
+         <item row="3" column="0" colspan="2">
+          <widget class="QCheckBox" name="save_coupling_results_to_gpkg_chk">
+           <property name="text">
+            <string>Save drainage/structure results to GeoPackage</string>
+           </property>
+          </widget>
+         </item>
+         <item row="4" column="0" colspan="2">
+          <widget class="QCheckBox" name="save_run_log_to_gpkg_chk">
+           <property name="text">
+            <string>Save run log to GeoPackage</string>
+           </property>
+          </widget>
+         </item>
+         <item row="5" column="0" colspan="2">
+          <widget class="QPushButton" name="open_results_viewer_btn">
+           <property name="text">
+            <string>Open 2D Results Viewer</string>
+           </property>
+          </widget>
+         </item>
+         <item row="6" column="0" colspan="2">
+          <widget class="QPushButton" name="open_results_panel_btn">
+           <property name="text">
+            <string>Results Panel (multi-run)</string>
+           </property>
+          </widget>
+         </item>
+         <item row="7" column="0" colspan="2">
+          <widget class="QCheckBox" name="high_perf_canvas_overlay_chk">
+           <property name="text">
+            <string>Show High-Perf Overlay On Map Canvas</string>
+           </property>
+          </widget>
+         </item>
+         <item row="8" column="0">
+          <widget class="QLabel" name="label_high_perf_overlay_field">
+           <property name="text">
+            <string>High-perf overlay field:</string>
+           </property>
+          </widget>
+         </item>
+         <item row="8" column="1">
+          <widget class="QComboBox" name="high_perf_canvas_overlay_field_combo"/>
+         </item>
+         <item row="9" column="0">
+          <widget class="QLabel" name="label_high_perf_overlay_cmap">
+           <property name="text">
+            <string>High-perf overlay colormap:</string>
+           </property>
+          </widget>
+         </item>
+         <item row="9" column="1">
+          <widget class="QComboBox" name="high_perf_canvas_overlay_cmap_combo"/>
+         </item>
+         <item row="10" column="0" colspan="2">
+          <widget class="QCheckBox" name="high_perf_canvas_overlay_lock_canvas_chk">
+           <property name="text">
+            <string>Lock overlay resolution to current canvas size</string>
+           </property>
+          </widget>
+         </item>
+         <item row="11" column="0">
+          <widget class="QLabel" name="label_high_perf_overlay_res">
+           <property name="text">
+            <string>High-perf overlay resolution:</string>
+           </property>
+          </widget>
+         </item>
+         <item row="11" column="1">
+          <widget class="QComboBox" name="high_perf_canvas_overlay_res_combo"/>
+         </item>
+         <item row="12" column="0" colspan="2">
+          <widget class="QCheckBox" name="high_perf_canvas_overlay_auto_contrast_chk">
+           <property name="text">
+            <string>Auto contrast</string>
+           </property>
+          </widget>
+         </item>
+         <item row="13" column="0">
+          <widget class="QLabel" name="label_high_perf_overlay_opacity">
+           <property name="text">
+            <string>High-perf overlay opacity:</string>
+           </property>
+          </widget>
+         </item>
+         <item row="13" column="1">
+          <widget class="QDoubleSpinBox" name="high_perf_canvas_overlay_opacity_spin"/>
+         </item>
+        </layout>
+       </widget>
+      </item>
+      <item>
+       <widget class="QGroupBox" name="map_tools_group">
+        <property name="title">
+         <string>Utilities and 3D tools</string>
+        </property>
+        <layout class="QGridLayout" name="map_tools_layout">
+         <item row="0" column="0" colspan="2">
+          <widget class="QPushButton" name="draw_sample_line_btn">
+           <property name="text">
+            <string>Draw Sample Line On Map</string>
+           </property>
+          </widget>
+         </item>
+         <item row="1" column="0" colspan="2">
+          <widget class="QPushButton" name="open_coupling_results_viewer_btn">
+           <property name="text">
+            <string>Open Drainage/Structure Results Viewer</string>
+           </property>
+          </widget>
+         </item>
+         <item row="2" column="0" colspan="2">
+          <widget class="QPushButton" name="open_run_log_viewer_btn">
+           <property name="text">
+            <string>Open Run Log Viewer</string>
+           </property>
+          </widget>
+         </item>
+         <item row="3" column="0" colspan="2">
+          <widget class="QLabel" name="layer_status_lbl">
+           <property name="text">
+            <string>No layer-linked mesh yet</string>
+           </property>
+           <property name="wordWrap">
+            <bool>true</bool>
+           </property>
+          </widget>
+         </item>
+         <item row="4" column="0" colspan="2">
+          <widget class="QPushButton" name="open_3d_patch_viewer_btn">
+           <property name="text">
+            <string>Open 3D Patch Viewer</string>
+           </property>
+          </widget>
+         </item>
+         <item row="5" column="0" colspan="2">
+          <widget class="QPushButton" name="publish_3d_patch_surface_btn">
+           <property name="text">
+            <string>Publish Current 3D Surface To QGIS 3D</string>
+           </property>
+          </widget>
+         </item>
+        </layout>
+       </widget>
+      </item>
+      <item>
+       <spacer name="verticalSpacer">
+        <property name="orientation">
+         <enum>Qt::Vertical</enum>
+        </property>
+        <property name="sizeHint" stdset="0">
+         <size>
+          <width>20</width>
+          <height>40</height>
+         </size>
+        </property>
+       </spacer>
+      </item>
+     </layout>
+    </widget>
+   </item>
+  </layout>
+ </widget>
+ <resources/>
+ <connections/>
+</ui>

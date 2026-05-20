@@ -1,0 +1,47 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<ui version="4.0">
+ <class>SWE2DWorkbenchShell</class>
+ <widget class="QWidget" name="SWE2DWorkbenchShell">
+  <property name="geometry">
+   <rect>
+    <x>0</x>
+    <y>0</y>
+    <width>1200</width>
+    <height>760</height>
+   </rect>
+  </property>
+  <layout class="QVBoxLayout" name="root_layout">
+   <item>
+    <widget class="QLabel" name="header_lbl">
+     <property name="text">
+      <string>Interactive 2D SWE workflow</string>
+     </property>
+     <property name="wordWrap">
+      <bool>true</bool>
+     </property>
+    </widget>
+   </item>
+   <item>
+    <widget class="QSplitter" name="main_splitter">
+     <property name="orientation">
+      <enum>Qt::Horizontal</enum>
+     </property>
+     <widget class="QWidget" name="left_host"/>
+     <widget class="QWidget" name="right_host"/>
+    </widget>
+   </item>
+   <item>
+    <widget class="QDialogButtonBox" name="bottom_buttons">
+     <property name="orientation">
+      <enum>Qt::Horizontal</enum>
+     </property>
+     <property name="standardButtons">
+      <set>QDialogButtonBox::Close</set>
+     </property>
+    </widget>
+   </item>
+  </layout>
+ </widget>
+ <resources/>
+ <connections/>
+</ui>

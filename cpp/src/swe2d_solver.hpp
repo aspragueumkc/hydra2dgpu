@@ -124,6 +124,18 @@ struct SWE2DStepDiag {
     bool     gpu_active = false;
     int32_t  gpu_graph_launches_step = 0;
     int64_t  gpu_graph_launches_total = 0;
+    // Sprint 3 telemetry: projection retry/adaptive dt health metrics (3D path).
+    int32_t  projection_retry_count = 0;      // number of dt reductions applied
+    int32_t  projection_attempt_count = 1;    // total projection attempts executed
+    bool     projection_retry_exhausted = false; // true if retries hit max while projection still unhealthy
+    bool     projection_retry_enabled = false;
+    bool     projection_retry_fail_fast = false;
+    double   projection_retry_dt_initial = 0.0;
+    double   projection_retry_dt_floor = 0.0;
+    double   projection_retry_dt_reduction = 1.0;
+    double   projection_retry_residual_target = 0.0;
+    double   projection_retry_residual_ratio = 0.0;     // last attempt residual / target
+    double   projection_retry_residual_ratio_max = 0.0; // worst residual / target across attempts
 };
 
 struct SWE2DNonhydroDiag {

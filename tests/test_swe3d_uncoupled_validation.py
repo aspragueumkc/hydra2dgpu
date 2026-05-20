@@ -15,16 +15,39 @@ Stage-1 physics gates (always run, no env var required):
 Reference-case gates (gated behind BACKWATER_RUN_SWE3D_PHYSICS_CASES=1 for now):
   * Broad-crested weir free-surface profile
   * Culvert pressurisation sequence
+
+Optional external cross-code gate (disabled by default):
+    * OpenFOAM damBreak alpha-profile comparison
 """
 
 import os
 import sys
 import unittest
+from contextlib import contextmanager
+from pathlib import Path
 import numpy as np
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 _PHYSICS_CASES = os.environ.get("BACKWATER_RUN_SWE3D_PHYSICS_CASES", "0") == "1"
+_OPENFOAM_DAMBREAK = os.environ.get("BACKWATER_RUN_OPENFOAM_DAMBREAK", "0") == "1"
+_SUBGRID_DAMBREAK = os.environ.get("BACKWATER_RUN_SWE3D_SUBGRID_DAMBREAK", "0") == "1"
+
+
+@contextmanager
+def _temporary_env(overrides):
+    old = {}
+    try:
+        for key, value in (overrides or {}).items():
+            old[key] = os.environ.get(key)
+            os.environ[key] = str(value)
+        yield
+    finally:
+        for key, prev in old.items():
+            if prev is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = prev
 
 
 def _load_module():
@@ -32,6 +55,17 @@ def _load_module():
         import backwater_swe2d
         return backwater_swe2d
     except ImportError:
+        repo_root = Path(__file__).resolve().parent.parent
+        build_dir = repo_root / "build"
+        if build_dir.is_dir():
+            build_path = str(build_dir)
+            if build_path not in sys.path:
+                sys.path.insert(0, build_path)
+            try:
+                import backwater_swe2d
+                return backwater_swe2d
+            except ImportError:
+                return None
         return None
 
 
@@ -75,15 +109,46 @@ def _make_rect_mesh(mod, nx, ny, lx, ly):
     return mesh
 
 
-def _make_3d_solver(mod, mesh, h0):
-    """Create an uncoupled single-phase 3D solver (no coupling contract needed)."""
-    return mod.swe2d_create_solver(
-        mesh,
-        h0,
+def _make_3d_solver(mod, mesh, h0, env_overrides=None, coupling_mode=0):
+    """Create a single-phase 3D solver with selectable coupling mode."""
+    kwargs = dict(
         use_gpu=True,
         temporal_order=2,
-        coupling_mode=0,
+        coupling_mode=int(coupling_mode),
         three_d_solver_model=1,
+    )
+    if env_overrides:
+        with _temporary_env(env_overrides):
+            return mod.swe2d_create_solver(mesh, h0, **kwargs)
+    return mod.swe2d_create_solver(mesh, h0, **kwargs)
+
+
+def _upload_interface_contract(mod, solver, cell2d, face_area, face_nx, face_ny, face_nz):
+    """Upload a custom 2D-3D interface contract for coupling regressions."""
+    cell2d = np.asarray(cell2d, dtype=np.int32)
+    face_area = np.asarray(face_area, dtype=np.float64)
+    face_nx = np.asarray(face_nx, dtype=np.float64)
+    face_ny = np.asarray(face_ny, dtype=np.float64)
+    face_nz = np.asarray(face_nz, dtype=np.float64)
+    contract = mod.swe2d_contract_create(cell2d, face_area, face_nx, face_ny, face_nz)
+    if not bool(mod.swe2d_contract_is_valid(contract)):
+        raise RuntimeError("Failed to build valid 2D-3D interface contract for test")
+    ok = bool(mod.swe2d_gpu_contract_upload(solver, contract))
+    if not ok:
+        raise RuntimeError("Failed to upload 2D-3D interface contract in test")
+    return contract
+
+
+def _upload_simple_interface_contract(mod, solver, cell_idx=0, nx=-1.0, ny=0.0, nz=0.0, area=1.0):
+    """Upload a one-face contract suitable for focused coupling regressions."""
+    return _upload_interface_contract(
+        mod,
+        solver,
+        [int(cell_idx)],
+        [float(area)],
+        [float(nx)],
+        [float(ny)],
+        [float(nz)],
     )
 
 
@@ -104,6 +169,93 @@ def _flat_surface_vof(stats):
             hi = lo + nx * ny
             vof[lo:hi] = 1.0
     return vof
+
+
+def _x_slab_vof(stats, frac_lo=0.1, frac_hi=0.3):
+    """Build a vertical x-aligned VoF slab replicated over all y,z cells."""
+    nx, ny, nz = int(stats["nx"]), int(stats["ny"]), int(stats["nz"])
+    n_cells = nx * ny * nz
+    vof = np.zeros(n_cells, dtype=np.float64)
+    ix0 = max(0, min(nx - 1, int(np.floor(frac_lo * nx))))
+    ix1 = max(ix0 + 1, min(nx, int(np.ceil(frac_hi * nx))))
+    for iz in range(nz):
+        for iy in range(ny):
+            row = iz * nx * ny + iy * nx
+            vof[row + ix0:row + ix1] = 1.0
+    return vof
+
+
+def _slotted_dam_geometry(stats, frac_x=0.5, thickness_cells=2, slot_frac=0.2):
+    """Build a thin subgrid dam with a centered breach slot."""
+    nx, ny, nz = int(stats["nx"]), int(stats["ny"]), int(stats["nz"])
+    n_cells = nx * ny * nz
+    phi = np.ones(n_cells, dtype=np.float64)
+    ax = np.ones(n_cells, dtype=np.float64)
+    ay = np.ones(n_cells, dtype=np.float64)
+    az = np.ones(n_cells, dtype=np.float64)
+
+    dam_lo = max(1, min(nx - 1, int(np.floor(frac_x * nx)) - max(0, thickness_cells // 2)))
+    dam_hi = min(nx - 1, dam_lo + max(1, int(thickness_cells)))
+    slot_half = max(1, int(np.ceil(0.5 * slot_frac * ny)))
+    slot_center = ny // 2
+    slot_lo = max(0, slot_center - slot_half)
+    slot_hi = min(ny, slot_center + slot_half)
+
+    barrier_mask = np.zeros(n_cells, dtype=bool)
+    slot_mask = np.zeros(n_cells, dtype=bool)
+    for iz in range(nz):
+        for iy in range(ny):
+            row = iz * nx * ny + iy * nx
+            barrier_mask[row + dam_lo:row + dam_hi] = True
+            if slot_lo <= iy < slot_hi:
+                slot_mask[row + dam_lo:row + dam_hi] = True
+
+    solid_mask = barrier_mask & (~slot_mask)
+    phi[solid_mask] = 0.0
+    ax[solid_mask] = 0.0
+    ay[solid_mask] = 0.0
+    az[solid_mask] = 0.0
+    return phi, ax, ay, az, solid_mask, slot_mask
+
+
+def _porous_slotted_dam_geometry(
+    stats,
+    frac_x=0.5,
+    thickness_cells=2,
+    slot_frac=0.2,
+    phi_barrier=0.20,
+    area_barrier=0.10,
+):
+    """Build a thin porous dam with a centered open breach slot."""
+    nx, ny, nz = int(stats["nx"]), int(stats["ny"]), int(stats["nz"])
+    n_cells = nx * ny * nz
+    phi = np.ones(n_cells, dtype=np.float64)
+    ax = np.ones(n_cells, dtype=np.float64)
+    ay = np.ones(n_cells, dtype=np.float64)
+    az = np.ones(n_cells, dtype=np.float64)
+
+    dam_lo = max(1, min(nx - 1, int(np.floor(frac_x * nx)) - max(0, thickness_cells // 2)))
+    dam_hi = min(nx - 1, dam_lo + max(1, int(thickness_cells)))
+    slot_half = max(1, int(np.ceil(0.5 * slot_frac * ny)))
+    slot_center = ny // 2
+    slot_lo = max(0, slot_center - slot_half)
+    slot_hi = min(ny, slot_center + slot_half)
+
+    barrier_mask = np.zeros(n_cells, dtype=bool)
+    slot_mask = np.zeros(n_cells, dtype=bool)
+    for iz in range(nz):
+        for iy in range(ny):
+            row = iz * nx * ny + iy * nx
+            barrier_mask[row + dam_lo:row + dam_hi] = True
+            if slot_lo <= iy < slot_hi:
+                slot_mask[row + dam_lo:row + dam_hi] = True
+
+    porous_mask = barrier_mask & (~slot_mask)
+    phi[porous_mask] = float(phi_barrier)
+    ax[porous_mask] = float(area_barrier)
+    ay[porous_mask] = float(area_barrier)
+    az[porous_mask] = float(area_barrier)
+    return phi, ax, ay, az, porous_mask, slot_mask
 
 
 @unittest.skipUnless(_load_module() is not None, "backwater_swe2d not built")
@@ -141,6 +293,286 @@ class TestSWE3DUncoupledValidation(unittest.TestCase):
         solver = _make_3d_solver(self.mod, self.mesh, self.h0)
         try:
             _ = self.mod.swe2d_step(solver, -1.0)
+        finally:
+            self.mod.swe2d_destroy(solver)
+
+    def test_uncoupled_3d_adaptive_dt_tracks_3d_velocity_magnitude(self):
+        """Adaptive dt should shrink when 3D patch velocity magnitude increases."""
+        solver = _make_3d_solver(self.mod, self.mesh, self.h0)
+        try:
+            stats0 = self.mod.swe2d_get_3d_patch_stats(solver)
+            n = int(stats0["n_cells"])
+            zeros = np.zeros(n, dtype=np.float64)
+            ones = np.ones(n, dtype=np.float64)
+
+            self.mod.swe2d_set_3d_patch_state(
+                solver, u=zeros, v=zeros, w=zeros, p=zeros, vof=ones)
+            diag_slow = self.mod.swe2d_step(solver, -1.0)
+            dt_slow = float(diag_slow["dt"])
+
+            w_fast = np.full(n, 40.0, dtype=np.float64)
+            self.mod.swe2d_set_3d_patch_state(
+                solver, u=zeros, v=zeros, w=w_fast, p=zeros, vof=ones)
+            diag_fast = self.mod.swe2d_step(solver, -1.0)
+            dt_fast = float(diag_fast["dt"])
+
+            self.assertLess(
+                dt_fast,
+                dt_slow,
+                f"Expected adaptive dt to decrease for high 3D velocity: dt_slow={dt_slow:.6e}, dt_fast={dt_fast:.6e}")
+            self.assertLess(
+                dt_fast,
+                5.0e-2,
+                f"Expected high-velocity adaptive dt to become small; got dt_fast={dt_fast:.6e}")
+            self.assertGreaterEqual(
+                float(diag_fast.get("max_courant", -1.0)),
+                0.0,
+                f"Expected non-negative 3D CFL diagnostic; got {diag_fast.get('max_courant')}")
+        finally:
+            self.mod.swe2d_destroy(solver)
+
+    def test_uncoupled_3d_adaptive_dt_shrinks_for_fractional_cut_cells(self):
+        """Geometry-aware adaptive dt should shrink when low-phi cut-cells are present."""
+        if not hasattr(self.mod, "swe2d_set_3d_patch_geometry"):
+            self.skipTest("swe2d_set_3d_patch_geometry not available in native module")
+
+        solver_open = _make_3d_solver(self.mod, self.mesh, self.h0)
+        solver_cut = _make_3d_solver(self.mod, self.mesh, self.h0)
+        try:
+            stats0 = self.mod.swe2d_get_3d_patch_stats(solver_open)
+            nx = int(stats0["nx"])
+            ny = int(stats0["ny"])
+            nz = int(stats0["nz"])
+            n = int(stats0["n_cells"])
+
+            u_fast = np.full(n, 30.0, dtype=np.float64)
+            zeros = np.zeros(n, dtype=np.float64)
+            ones = np.ones(n, dtype=np.float64)
+
+            self.mod.swe2d_set_3d_patch_state(
+                solver_open, u=u_fast, v=zeros, w=zeros, p=zeros, vof=ones)
+
+            idx = np.arange(nx * ny * nz, dtype=np.int64)
+            ix = idx % nx
+            band_lo = max(0, min(nx - 1, nx // 3))
+            band_hi = min(nx, max(band_lo + 1, nx // 3 + 2))
+            cut_band = (ix >= band_lo) & (ix < band_hi)
+
+            phi = np.ones(n, dtype=np.float64)
+            ax = np.ones(n, dtype=np.float64)
+            ay = np.ones(n, dtype=np.float64)
+            az = np.ones(n, dtype=np.float64)
+            phi[cut_band] = 0.08
+            ax[cut_band] = 0.50
+            ay[cut_band] = 0.50
+            az[cut_band] = 0.50
+
+            self.mod.swe2d_set_3d_patch_geometry(solver_cut, phi=phi, ax=ax, ay=ay, az=az)
+            self.mod.swe2d_set_3d_patch_state(
+                solver_cut, u=u_fast, v=zeros, w=zeros, p=zeros, vof=ones)
+
+            diag_open = self.mod.swe2d_step(solver_open, -1.0)
+            diag_cut = self.mod.swe2d_step(solver_cut, -1.0)
+            dt_open = float(diag_open["dt"])
+            dt_cut = float(diag_cut["dt"])
+
+            self.assertGreater(dt_open, 0.0)
+            self.assertGreater(dt_cut, 0.0)
+            self.assertLess(
+                dt_cut,
+                0.8 * dt_open,
+                f"Expected cut-cell-aware dt reduction; dt_open={dt_open:.6e}, dt_cut={dt_cut:.6e}")
+        finally:
+            self.mod.swe2d_destroy(solver_open)
+            self.mod.swe2d_destroy(solver_cut)
+
+    def test_uncoupled_3d_patch_face_length_env_overrides_cell_counts(self):
+        """Target face-length env overrides should drive resolved patch nx/ny/nz."""
+        env = {
+            "BACKWATER_SWE3D_PATCH_NX": "64",
+            "BACKWATER_SWE3D_PATCH_NY": "64",
+            "BACKWATER_SWE3D_PATCH_NZ": "64",
+            "BACKWATER_SWE3D_PATCH_FACE_LEN_X": "20.0",
+            "BACKWATER_SWE3D_PATCH_FACE_LEN_Y": "25.0",
+            "BACKWATER_SWE3D_PATCH_FACE_LEN_Z": "0.25",
+        }
+        solver = _make_3d_solver(self.mod, self.mesh, self.h0, env_overrides=env)
+        try:
+            stats = self.mod.swe2d_get_3d_patch_stats(solver)
+            self.assertEqual(int(stats["nx"]), 10)
+            self.assertEqual(int(stats["ny"]), 4)
+            self.assertEqual(int(stats["nz"]), 4)
+            self.assertAlmostEqual(float(stats["dx"]), 20.0, places=12)
+            self.assertAlmostEqual(float(stats["dy"]), 25.0, places=12)
+            self.assertAlmostEqual(float(stats["dz"]), 0.25, places=12)
+        finally:
+            self.mod.swe2d_destroy(solver)
+
+    # ── Coupling exchange (focused) ──────────────────────────────────────────
+
+    def test_coupled_3d_mode_requires_contract_upload(self):
+        """Coupled 3D mode should fail fast if no interface contract is uploaded."""
+        solver = _make_3d_solver(self.mod, self.mesh, self.h0, coupling_mode=1)
+        try:
+            with self.assertRaises(RuntimeError):
+                self.mod.swe2d_step(solver, 0.1)
+        finally:
+            self.mod.swe2d_destroy(solver)
+
+    def test_one_way_coupling_forces_3d_patch_each_step(self):
+        """One-way coupling should inject 2D-driven momentum into 3D patch boundary cells."""
+        solver = _make_3d_solver(self.mod, self.mesh, self.h0, coupling_mode=1)
+        try:
+            _upload_simple_interface_contract(self.mod, solver, cell_idx=0, nx=-1.0, ny=0.0, nz=0.0, area=50.0)
+
+            h2d, hu2d, hv2d = self.mod.swe2d_get_state(solver)
+            h2d = np.asarray(h2d, dtype=np.float64)
+            hu2d = np.asarray(hu2d, dtype=np.float64)
+            hv2d = np.asarray(hv2d, dtype=np.float64)
+            hu2d[:] = 0.0
+            hv2d[:] = 0.0
+            hu2d[0] = 12.0 * max(h2d[0], 1.0)
+            self.mod.swe2d_set_state(solver, h2d, hu2d, hv2d)
+
+            stats0 = self.mod.swe2d_get_3d_patch_stats(solver)
+            n3d = int(stats0["n_cells"])
+            zeros = np.zeros(n3d, dtype=np.float64)
+            self.mod.swe2d_set_3d_patch_state(solver, u=zeros, v=zeros, w=zeros, p=zeros, vof=zeros)
+
+            self.mod.swe2d_step(solver, 0.1)
+            stats1 = self.mod.swe2d_get_3d_patch_stats(solver)
+
+            self.assertGreater(
+                stats1["u_rms"],
+                1.0e-6,
+                f"Expected one-way coupling to force non-zero 3D u_rms; got {stats1['u_rms']:.4e}")
+        finally:
+            self.mod.swe2d_destroy(solver)
+
+    def test_two_way_coupling_applies_feedback_to_2d_state(self):
+        """Two-way mode should apply non-zero feedback to 2D state when contract is active."""
+        solver = _make_3d_solver(self.mod, self.mesh, self.h0, coupling_mode=2)
+        try:
+            _upload_simple_interface_contract(self.mod, solver, cell_idx=0, nx=1.0, ny=0.0, nz=0.0, area=50.0)
+
+            h2d, hu2d, hv2d = self.mod.swe2d_get_state(solver)
+            h2d = np.asarray(h2d, dtype=np.float64)
+            hu2d = np.asarray(hu2d, dtype=np.float64)
+            hv2d = np.asarray(hv2d, dtype=np.float64)
+            hu2d[:] = 0.0
+            hv2d[:] = 0.0
+            hu2d[0] = 10.0 * max(h2d[0], 1.0)
+            self.mod.swe2d_set_state(solver, h2d, hu2d, hv2d)
+
+            stats0 = self.mod.swe2d_get_3d_patch_stats(solver)
+            n3d = int(stats0["n_cells"])
+            zeros = np.zeros(n3d, dtype=np.float64)
+            self.mod.swe2d_set_3d_patch_state(solver, u=zeros, v=zeros, w=zeros, p=zeros, vof=zeros)
+
+            h_before, _, _ = self.mod.swe2d_get_state(solver)
+            h_before = np.asarray(h_before, dtype=np.float64)
+
+            self.mod.swe2d_step(solver, 0.1)
+
+            h_after, _, _ = self.mod.swe2d_get_state(solver)
+            h_after = np.asarray(h_after, dtype=np.float64)
+            delta = abs(float(h_after[0] - h_before[0]))
+
+            self.assertGreater(
+                delta,
+                1.0e-8,
+                f"Expected two-way coupling to modify 2D depth at contract cell; delta={delta:.4e}")
+        finally:
+            self.mod.swe2d_destroy(solver)
+
+    def test_two_way_coupling_redistributes_depth_conservatively_across_contract(self):
+        """Two-way feedback should redistribute depth across multi-face contract cells in the expected direction."""
+        solver = _make_3d_solver(self.mod, self.mesh, self.h0, coupling_mode=2)
+        try:
+            _upload_interface_contract(
+                self.mod,
+                solver,
+                cell2d=[0, 1],
+                face_area=[30.0, 10.0],
+                face_nx=[1.0, 1.0],
+                face_ny=[0.0, 0.0],
+                face_nz=[0.0, 0.0],
+            )
+
+            h2d, hu2d, hv2d = self.mod.swe2d_get_state(solver)
+            h2d = np.asarray(h2d, dtype=np.float64)
+            hu2d = np.asarray(hu2d, dtype=np.float64)
+            hv2d = np.asarray(hv2d, dtype=np.float64)
+            hu2d[:] = 0.0
+            hv2d[:] = 0.0
+            hu2d[0] = 12.0 * max(h2d[0], 1.0)
+            hu2d[1] = 2.0 * max(h2d[1], 1.0)
+            self.mod.swe2d_set_state(solver, h2d, hu2d, hv2d)
+
+            stats0 = self.mod.swe2d_get_3d_patch_stats(solver)
+            n3d = int(stats0["n_cells"])
+            zeros = np.zeros(n3d, dtype=np.float64)
+            ones = np.ones(n3d, dtype=np.float64)
+            self.mod.swe2d_set_3d_patch_state(solver, u=zeros, v=zeros, w=zeros, p=zeros, vof=ones)
+
+            h_before, _, _ = self.mod.swe2d_get_state(solver)
+            h_before = np.asarray(h_before, dtype=np.float64)
+
+            self.mod.swe2d_step(solver, 0.1)
+
+            h_after, _, _ = self.mod.swe2d_get_state(solver)
+            h_after = np.asarray(h_after, dtype=np.float64)
+
+            self.assertLess(
+                h_after[0],
+                h_before[0],
+                "Expected higher-discharge contract cell to lose depth under conservative redistribution")
+            self.assertGreater(
+                h_after[1],
+                h_before[1],
+                "Expected lower-discharge contract cell to gain depth under conservative redistribution")
+        finally:
+            self.mod.swe2d_destroy(solver)
+
+    def test_two_way_flux_form_outflow_removes_2d_momentum(self):
+        """Flux-form two-way closure should remove 2D momentum for net 2D->3D discharge correction."""
+        solver = _make_3d_solver(self.mod, self.mesh, self.h0, coupling_mode=2)
+        try:
+            _upload_simple_interface_contract(self.mod, solver, cell_idx=0, nx=1.0, ny=0.0, nz=0.0, area=50.0)
+
+            h2d, hu2d, hv2d = self.mod.swe2d_get_state(solver)
+            h2d = np.asarray(h2d, dtype=np.float64)
+            hu2d = np.asarray(hu2d, dtype=np.float64)
+            hv2d = np.asarray(hv2d, dtype=np.float64)
+            hu2d[:] = 0.0
+            hv2d[:] = 0.0
+            hu2d[0] = 14.0 * max(h2d[0], 1.0)
+            self.mod.swe2d_set_state(solver, h2d, hu2d, hv2d)
+
+            stats0 = self.mod.swe2d_get_3d_patch_stats(solver)
+            n3d = int(stats0["n_cells"])
+            zeros = np.zeros(n3d, dtype=np.float64)
+            ones = np.ones(n3d, dtype=np.float64)
+            self.mod.swe2d_set_3d_patch_state(solver, u=zeros, v=zeros, w=zeros, p=zeros, vof=ones)
+
+            h_before, hu_before, _ = self.mod.swe2d_get_state(solver)
+            h_before = np.asarray(h_before, dtype=np.float64)
+            hu_before = np.asarray(hu_before, dtype=np.float64)
+
+            self.mod.swe2d_step(solver, 0.1)
+
+            h_after, hu_after, _ = self.mod.swe2d_get_state(solver)
+            h_after = np.asarray(h_after, dtype=np.float64)
+            hu_after = np.asarray(hu_after, dtype=np.float64)
+
+            self.assertLess(
+                h_after[0],
+                h_before[0],
+                "Expected net 2D->3D correction to reduce depth in donor cell")
+            self.assertLess(
+                hu_after[0],
+                hu_before[0],
+                "Expected flux-form outflow correction to remove 2D momentum from donor cell")
         finally:
             self.mod.swe2d_destroy(solver)
 
@@ -330,7 +762,483 @@ class TestSWE3DUncoupledValidation(unittest.TestCase):
         finally:
             self.mod.swe2d_destroy(solver)
 
+    def test_projection_retry_telemetry_reports_reduction_and_bounds(self):
+        """Sprint 3 gate: retry path should surface bounded, reproducible telemetry."""
+        env = {
+            "BACKWATER_SWE3D_PROJECTION_REJECT_ENABLE": "1",
+            "BACKWATER_SWE3D_PROJECTION_RESIDUAL_TARGET": "1e-12",
+            "BACKWATER_SWE3D_PROJECTION_DT_REDUCTION": "0.5",
+            "BACKWATER_SWE3D_PROJECTION_MAX_RETRIES": "2",
+            "BACKWATER_SWE3D_PROJECTION_MIN_DT_FACTOR": "0.01",
+        }
+        solver = _make_3d_solver(self.mod, self.mesh, self.h0, env_overrides=env)
+        try:
+            stats0 = self.mod.swe2d_get_3d_patch_stats(solver)
+            nx = int(stats0["nx"])
+            ny = int(stats0["ny"])
+            nz = int(stats0["nz"])
+            n = int(stats0["n_cells"])
+
+            u_ic = np.zeros(n, dtype=np.float64)
+            v_ic = np.zeros(n, dtype=np.float64)
+            zeros = np.zeros(n, dtype=np.float64)
+            for iz in range(nz):
+                for iy in range(ny):
+                    for ix in range(nx):
+                        idx = iz * nx * ny + iy * nx + ix
+                        u_ic[idx] = float(ix)
+                        v_ic[idx] = float(iy)
+
+            self.mod.swe2d_set_3d_patch_state(
+                solver, u=u_ic, v=v_ic, w=zeros, p=zeros)
+
+            dt_req = 0.2
+            with _temporary_env(env):
+                diag = self.mod.swe2d_step(solver, dt_req)
+
+            self.assertTrue(bool(diag.get("projection_retry_enabled", False)))
+            self.assertGreaterEqual(int(diag.get("projection_attempt_count", 0)), 1)
+            self.assertGreaterEqual(int(diag.get("projection_retry_count", -1)), 0)
+
+            dt_initial = float(diag.get("projection_retry_dt_initial", -1.0))
+            dt_floor = float(diag.get("projection_retry_dt_floor", -1.0))
+            dt_final = float(diag.get("dt", -1.0))
+            reduction = float(diag.get("projection_retry_dt_reduction", -1.0))
+            resid_target = float(diag.get("projection_retry_residual_target", -1.0))
+            resid_ratio = float(diag.get("projection_retry_residual_ratio", -1.0))
+            resid_ratio_max = float(diag.get("projection_retry_residual_ratio_max", -1.0))
+
+            self.assertTrue(np.isfinite(dt_initial))
+            self.assertTrue(np.isfinite(dt_floor))
+            self.assertTrue(np.isfinite(dt_final))
+            self.assertTrue(np.isfinite(reduction))
+            self.assertTrue(np.isfinite(resid_target))
+            self.assertTrue(np.isfinite(resid_ratio))
+            self.assertTrue(np.isfinite(resid_ratio_max))
+
+            self.assertGreater(dt_initial, 0.0)
+            self.assertLessEqual(dt_initial, dt_req + 1.0e-15)
+            self.assertLessEqual(dt_final, dt_initial + 1.0e-15)
+            self.assertGreaterEqual(dt_final + 1.0e-15, dt_floor)
+            self.assertGreaterEqual(reduction, 0.05)
+            self.assertLessEqual(reduction, 0.99)
+            self.assertGreater(resid_target, 0.0)
+            self.assertGreaterEqual(resid_ratio, 0.0)
+            self.assertGreaterEqual(resid_ratio_max + 1.0e-15, resid_ratio)
+
+            self.assertGreaterEqual(int(diag.get("projection_retry_count", 0)), 1)
+            self.assertTrue(bool(diag.get("projection_retry_exhausted", False)))
+        finally:
+            self.mod.swe2d_destroy(solver)
+
+    def test_projection_retry_telemetry_disabled_path_is_explicit(self):
+        """Sprint 3 gate: disabling retry should report explicit disabled telemetry."""
+        env = {
+            "BACKWATER_SWE3D_PROJECTION_REJECT_ENABLE": "0",
+            "BACKWATER_SWE3D_PROJECTION_MAX_RETRIES": "4",
+            "BACKWATER_SWE3D_PROJECTION_RESIDUAL_TARGET": "1e-12",
+        }
+        solver = _make_3d_solver(self.mod, self.mesh, self.h0, env_overrides=env)
+        try:
+            stats0 = self.mod.swe2d_get_3d_patch_stats(solver)
+            nx = int(stats0["nx"])
+            ny = int(stats0["ny"])
+            nz = int(stats0["nz"])
+            n = int(stats0["n_cells"])
+
+            u_ic = np.zeros(n, dtype=np.float64)
+            v_ic = np.zeros(n, dtype=np.float64)
+            zeros = np.zeros(n, dtype=np.float64)
+            for iz in range(nz):
+                for iy in range(ny):
+                    for ix in range(nx):
+                        idx = iz * nx * ny + iy * nx + ix
+                        u_ic[idx] = float(ix)
+                        v_ic[idx] = float(iy)
+
+            self.mod.swe2d_set_3d_patch_state(
+                solver, u=u_ic, v=v_ic, w=zeros, p=zeros)
+
+            dt_req = 0.2
+            with _temporary_env(env):
+                diag = self.mod.swe2d_step(solver, dt_req)
+
+            self.assertFalse(bool(diag.get("projection_retry_enabled", True)))
+            self.assertFalse(bool(diag.get("projection_retry_exhausted", True)))
+            self.assertEqual(int(diag.get("projection_retry_count", -1)), 0)
+            self.assertEqual(int(diag.get("projection_attempt_count", -1)), 1)
+            self.assertAlmostEqual(
+                float(diag.get("dt", -1.0)),
+                float(diag.get("projection_retry_dt_initial", -2.0)),
+                delta=1.0e-12)
+        finally:
+            self.mod.swe2d_destroy(solver)
+
+    def test_projection_retry_fail_fast_raises_on_exhaustion(self):
+        """Sprint 3 gate: optional fail-fast should abort when projection retries are exhausted."""
+        env = {
+            "BACKWATER_SWE3D_PROJECTION_REJECT_ENABLE": "1",
+            "BACKWATER_SWE3D_PROJECTION_FAIL_FAST": "1",
+            "BACKWATER_SWE3D_PROJECTION_RESIDUAL_TARGET": "1e-12",
+            "BACKWATER_SWE3D_PROJECTION_DT_REDUCTION": "0.5",
+            "BACKWATER_SWE3D_PROJECTION_MAX_RETRIES": "2",
+            "BACKWATER_SWE3D_PROJECTION_MIN_DT_FACTOR": "0.01",
+        }
+        solver = _make_3d_solver(self.mod, self.mesh, self.h0, env_overrides=env)
+        try:
+            stats0 = self.mod.swe2d_get_3d_patch_stats(solver)
+            nx = int(stats0["nx"])
+            ny = int(stats0["ny"])
+            nz = int(stats0["nz"])
+            n = int(stats0["n_cells"])
+
+            u_ic = np.zeros(n, dtype=np.float64)
+            v_ic = np.zeros(n, dtype=np.float64)
+            zeros = np.zeros(n, dtype=np.float64)
+            for iz in range(nz):
+                for iy in range(ny):
+                    for ix in range(nx):
+                        idx = iz * nx * ny + iy * nx + ix
+                        u_ic[idx] = float(ix)
+                        v_ic[idx] = float(iy)
+
+            self.mod.swe2d_set_3d_patch_state(
+                solver, u=u_ic, v=v_ic, w=zeros, p=zeros)
+
+            with self.assertRaisesRegex(RuntimeError, "projection retry exhausted"):
+                with _temporary_env(env):
+                    self.mod.swe2d_step(solver, 0.2)
+        finally:
+            self.mod.swe2d_destroy(solver)
+
+    def test_vof_advection_transports_interface_positive_x(self):
+        """
+        Numerics gate: conservative MUSCL-limited VoF transport should move an x-slab
+        interface in +x under positive uniform u while keeping total VoF nearly
+        conserved in a closed domain.
+        """
+        solver = _make_3d_solver(self.mod, self.mesh, self.h0)
+        try:
+            stats0 = self.mod.swe2d_get_3d_patch_stats(solver)
+            nx = int(stats0["nx"])
+            n = int(stats0["n_cells"])
+            vof_ic = _x_slab_vof(stats0, frac_lo=0.10, frac_hi=0.30)
+            self.mod.swe2d_set_3d_patch_vof(solver, vof_ic)
+
+            u_ic = np.full(n, 0.5, dtype=np.float64)
+            zeros = np.zeros(n, dtype=np.float64)
+            self.mod.swe2d_set_3d_patch_state(
+                solver, u=u_ic, v=zeros, w=zeros, p=zeros)
+
+            def _x_centroid(vof_arr):
+                wsum = float(np.sum(vof_arr))
+                if wsum <= 0.0:
+                    return 0.0
+                idx = np.arange(vof_arr.size, dtype=np.int64)
+                ix = (idx % nx).astype(np.float64)
+                return float(np.sum(ix * vof_arr) / wsum)
+
+            x0 = _x_centroid(vof_ic)
+            sum0 = float(np.sum(vof_ic))
+
+            for _ in range(8):
+                self.mod.swe2d_step(solver, 0.1)
+
+            vof_after = self.mod.swe2d_get_3d_patch_vof(solver)
+            x1 = _x_centroid(vof_after)
+            sum1 = float(np.sum(vof_after))
+
+            self.assertGreater(
+                x1, x0 + 1.0e-3,
+                f"Expected +x transport of VoF centroid; got x0={x0:.6f}, x1={x1:.6f}")
+            rel_err = abs(sum1 - sum0) / max(sum0, 1.0)
+            self.assertLess(
+                rel_err, 5.0e-3,
+                f"VoF mass drift too large during advection: rel_err={rel_err:.3e}")
+        finally:
+            self.mod.swe2d_destroy(solver)
+
+    def test_geometry_obstruction_reduces_downstream_transport_and_velocity(self):
+        """
+        Regression gate: uploading synthetic obstruction tensors should suppress
+        downstream VoF transport across a blocked x-slab and reduce velocity RMS.
+        """
+        if not hasattr(self.mod, "swe2d_set_3d_patch_geometry"):
+            self.skipTest("swe2d_set_3d_patch_geometry not available in native module")
+
+        solver_open = _make_3d_solver(self.mod, self.mesh, self.h0)
+        solver_blocked = _make_3d_solver(self.mod, self.mesh, self.h0)
+        try:
+            stats0 = self.mod.swe2d_get_3d_patch_stats(solver_open)
+            nx = int(stats0["nx"])
+            ny = int(stats0["ny"])
+            nz = int(stats0["nz"])
+            n = int(stats0["n_cells"])
+
+            vof_ic = _x_slab_vof(stats0, frac_lo=0.30, frac_hi=0.48)
+            u_ic = np.full(n, 20.0, dtype=np.float64)
+            zeros = np.zeros(n, dtype=np.float64)
+
+            idx = np.arange(nx * ny * nz, dtype=np.int64)
+            ix = idx % nx
+            barrier_lo = max(1, nx // 2 - 1)
+            barrier_hi = min(nx - 1, barrier_lo + 2)
+            barrier_mask = (ix >= barrier_lo) & (ix < barrier_hi)
+            right_mask = ix >= barrier_hi
+
+            self.mod.swe2d_set_3d_patch_vof(solver_open, vof_ic)
+            self.mod.swe2d_set_3d_patch_state(
+                solver_open, u=u_ic, v=zeros, w=zeros, p=zeros)
+
+            phi = np.ones(n, dtype=np.float64)
+            ax = np.ones(n, dtype=np.float64)
+            ay = np.ones(n, dtype=np.float64)
+            az = np.ones(n, dtype=np.float64)
+            phi[barrier_mask] = 0.0
+            ax[barrier_mask] = 0.0
+            ay[barrier_mask] = 0.0
+            az[barrier_mask] = 0.0
+
+            self.mod.swe2d_set_3d_patch_geometry(
+                solver_blocked, phi=phi, ax=ax, ay=ay, az=az)
+            self.mod.swe2d_set_3d_patch_vof(solver_blocked, vof_ic)
+            self.mod.swe2d_set_3d_patch_state(
+                solver_blocked, u=u_ic, v=zeros, w=zeros, p=zeros)
+
+            for _ in range(12):
+                self.mod.swe2d_step(solver_open, 0.2)
+                self.mod.swe2d_step(solver_blocked, 0.2)
+
+            vof_open = self.mod.swe2d_get_3d_patch_vof(solver_open)
+            vof_blocked = self.mod.swe2d_get_3d_patch_vof(solver_blocked)
+            stats_open = self.mod.swe2d_get_3d_patch_stats(solver_open)
+            stats_blocked = self.mod.swe2d_get_3d_patch_stats(solver_blocked)
+
+            right_open = float(np.sum(vof_open[right_mask]))
+            right_blocked = float(np.sum(vof_blocked[right_mask]))
+            barrier_mass = float(np.sum(vof_blocked[barrier_mask]))
+
+            self.assertGreater(
+                right_open, 1.0e-4,
+                f"Open case did not advect interface downstream; right_open={right_open:.4e}")
+            self.assertLess(
+                right_blocked,
+                0.35 * right_open + 1.0e-10,
+                f"Blocked case leaked too much downstream VoF: "
+                f"right_blocked={right_blocked:.4e}, right_open={right_open:.4e}")
+            self.assertLess(
+                barrier_mass,
+                1.0e-8,
+                f"Blocked slab should remain dry (phi=0); barrier_mass={barrier_mass:.4e}")
+            self.assertLess(
+                stats_blocked["u_rms"],
+                stats_open["u_rms"],
+                f"Blocked case should reduce velocity RMS: "
+                f"u_rms_blocked={stats_blocked['u_rms']:.4e}, "
+                f"u_rms_open={stats_open['u_rms']:.4e}")
+        finally:
+            self.mod.swe2d_destroy(solver_open)
+            self.mod.swe2d_destroy(solver_blocked)
+
+    def test_vof_cfl_substepping_engages_for_large_dt(self):
+        """
+        Numerics gate: VoF transport should switch to multiple CFL-limited
+        substeps when dt is large relative to |u| and cell spacing.
+        """
+        solver = _make_3d_solver(self.mod, self.mesh, self.h0)
+        try:
+            stats0 = self.mod.swe2d_get_3d_patch_stats(solver)
+            n = int(stats0["n_cells"])
+            vof_ic = _x_slab_vof(stats0, frac_lo=0.15, frac_hi=0.25)
+            self.mod.swe2d_set_3d_patch_vof(solver, vof_ic)
+
+            u_ic = np.full(n, 20.0, dtype=np.float64)
+            zeros = np.zeros(n, dtype=np.float64)
+            self.mod.swe2d_set_3d_patch_state(
+                solver, u=u_ic, v=zeros, w=zeros, p=zeros)
+
+            self.mod.swe2d_step(solver, 2.0)
+            stats = self.mod.swe2d_get_3d_patch_stats(solver)
+
+            self.assertGreater(
+                int(stats["vof_transport_substeps"]), 1,
+                f"Expected VoF substepping to engage; got {stats['vof_transport_substeps']}")
+            self.assertGreaterEqual(stats["vof_min"], -1.0e-10)
+            self.assertLessEqual(stats["vof_max"], 1.0 + 1.0e-10)
+        finally:
+            self.mod.swe2d_destroy(solver)
+
+    # ── Boundary conditions (focused regression) ─────────────────────────────
+
+    def test_bc_inflow_xmin_increases_vof_mass(self):
+        """Inflow BC should inject phase volume from xmin face into a dry patch."""
+        env = {
+            "BACKWATER_SWE3D_BC_XMIN_MODE": "1",  # INFLOW
+            "BACKWATER_SWE3D_BC_XMIN_U": "2.0",
+            "BACKWATER_SWE3D_BC_XMIN_VOF": "1.0",
+        }
+        solver = _make_3d_solver(self.mod, self.mesh, self.h0, env_overrides=env)
+        try:
+            stats0 = self.mod.swe2d_get_3d_patch_stats(solver)
+            n = int(stats0["n_cells"])
+            nx = int(stats0["nx"])
+            zeros = np.zeros(n, dtype=np.float64)
+
+            self.mod.swe2d_set_3d_patch_state(
+                solver, u=zeros, v=zeros, w=zeros, p=zeros, vof=zeros)
+
+            for _ in range(10):
+                self.mod.swe2d_step(solver, 0.2)
+
+            vof = self.mod.swe2d_get_3d_patch_vof(solver)
+            total = float(np.sum(vof))
+            idx = np.arange(n, dtype=np.int64)
+            left_mass = float(np.sum(vof[(idx % nx) == 0]))
+
+            self.assertGreater(total, 1.0e-3, f"Expected inflow mass increase; got total={total:.4e}")
+            self.assertGreater(left_mass, 1.0e-4, f"Expected wetting near xmin boundary; got left_mass={left_mass:.4e}")
+        finally:
+            self.mod.swe2d_destroy(solver)
+
+    def test_bc_volumetric_inlet_q_xmin_increases_vof_mass(self):
+        """Volumetric inlet BC should inject phase volume using prescribed flow rate Q."""
+        env = {
+            "BACKWATER_SWE3D_BC_XMIN_MODE": "4",  # INFLOW_FLOW_RATE
+            "BACKWATER_SWE3D_BC_XMIN_Q": "20.0",
+            "BACKWATER_SWE3D_BC_XMIN_VOF": "1.0",
+        }
+        solver = _make_3d_solver(self.mod, self.mesh, self.h0, env_overrides=env)
+        try:
+            stats0 = self.mod.swe2d_get_3d_patch_stats(solver)
+            n = int(stats0["n_cells"])
+            nx = int(stats0["nx"])
+            zeros = np.zeros(n, dtype=np.float64)
+
+            self.mod.swe2d_set_3d_patch_state(
+                solver, u=zeros, v=zeros, w=zeros, p=zeros, vof=zeros)
+
+            for _ in range(10):
+                self.mod.swe2d_step(solver, 0.2)
+
+            vof = self.mod.swe2d_get_3d_patch_vof(solver)
+            total = float(np.sum(vof))
+            idx = np.arange(n, dtype=np.int64)
+            left_mass = float(np.sum(vof[(idx % nx) == 0]))
+
+            self.assertGreater(total, 1.0e-3, f"Expected volumetric inlet mass increase; got total={total:.4e}")
+            self.assertGreater(left_mass, 1.0e-4, f"Expected wetting near xmin boundary; got left_mass={left_mass:.4e}")
+        finally:
+            self.mod.swe2d_destroy(solver)
+
+    def test_bc_outflow_xmax_drains_vof_mass(self):
+        """Outflow (zero-gradient) BC at xmax should release VoF mass from a right-moving slab."""
+        env_outflow = {"BACKWATER_SWE3D_BC_XMAX_MODE": "2"}   # OUTFLOW
+
+        solver_out = _make_3d_solver(self.mod, self.mesh, self.h0, env_overrides=env_outflow)
+        try:
+            stats0 = self.mod.swe2d_get_3d_patch_stats(solver_out)
+            n = int(stats0["n_cells"])
+            vof_ic = _x_slab_vof(stats0, frac_lo=0.75, frac_hi=0.98)
+            u_ic = np.full(n, 5.0, dtype=np.float64)
+            zeros = np.zeros(n, dtype=np.float64)
+            sum0 = float(np.sum(vof_ic))
+
+            self.mod.swe2d_set_3d_patch_vof(solver_out, vof_ic)
+            self.mod.swe2d_set_3d_patch_state(solver_out, u=u_ic, v=zeros, w=zeros, p=zeros)
+
+            for _ in range(12):
+                self.mod.swe2d_step(solver_out, 0.2)
+
+            sum_out = float(np.sum(self.mod.swe2d_get_3d_patch_vof(solver_out)))
+            self.assertLess(
+                sum_out,
+                0.90 * sum0,
+                f"Expected outflow boundary to drain mass: initial={sum0:.6e}, final={sum_out:.6e}")
+        finally:
+            self.mod.swe2d_destroy(solver_out)
+
+    def test_bc_free_surface_zmax_vents_more_than_wall(self):
+        """Free-surface BC at zmax should vent upward flow more than wall mode."""
+        env_wall = {"BACKWATER_SWE3D_BC_ZMAX_MODE": "0"}       # WALL
+        env_free = {
+            "BACKWATER_SWE3D_BC_ZMAX_MODE": "3",               # FREE_SURFACE
+            "BACKWATER_SWE3D_BC_ZMAX_P": "0.0",
+        }
+
+        solver_wall = _make_3d_solver(self.mod, self.mesh, self.h0, env_overrides=env_wall)
+        solver_free = _make_3d_solver(self.mod, self.mesh, self.h0, env_overrides=env_free)
+        try:
+            stats0 = self.mod.swe2d_get_3d_patch_stats(solver_wall)
+            n = int(stats0["n_cells"])
+            vof_ic = np.ones(n, dtype=np.float64)
+            w_ic = np.full(n, 1.5, dtype=np.float64)
+            zeros = np.zeros(n, dtype=np.float64)
+
+            for s in (solver_wall, solver_free):
+                self.mod.swe2d_set_3d_patch_vof(s, vof_ic)
+                self.mod.swe2d_set_3d_patch_state(s, u=zeros, v=zeros, w=w_ic, p=zeros)
+
+            for _ in range(10):
+                self.mod.swe2d_step(solver_wall, 0.2)
+                self.mod.swe2d_step(solver_free, 0.2)
+
+            sum_wall = float(np.sum(self.mod.swe2d_get_3d_patch_vof(solver_wall)))
+            sum_free = float(np.sum(self.mod.swe2d_get_3d_patch_vof(solver_free)))
+            self.assertLess(
+                sum_free,
+                0.95 * sum_wall,
+                f"Expected free-surface venting to reduce mass vs wall: free={sum_free:.6e}, wall={sum_wall:.6e}")
+        finally:
+            self.mod.swe2d_destroy(solver_wall)
+            self.mod.swe2d_destroy(solver_free)
+
     # ── Reference cases (gated) ────────────────────────────────────────────────
+
+    @unittest.skipUnless(
+        _OPENFOAM_DAMBREAK,
+        "Set BACKWATER_RUN_OPENFOAM_DAMBREAK=1 and provide BACKWATER_OPENFOAM_DAMBREAK_REF to enable OpenFOAM cross-code gate.")
+    def test_reference_case_openfoam_dambreak(self):
+        """
+        Optional cross-code gate: compare SWE3D dam-break alpha profile against
+        OpenFOAM damBreak reference sample output.
+        """
+        ref_path = os.environ.get("BACKWATER_OPENFOAM_DAMBREAK_REF", "").strip()
+        if not ref_path:
+            self.skipTest("Set BACKWATER_OPENFOAM_DAMBREAK_REF=<path to OpenFOAM alpha profile>")
+        if not os.path.isfile(ref_path):
+            self.skipTest(f"OpenFOAM reference profile not found: {ref_path}")
+
+        def _env_float(name, default):
+            raw = os.environ.get(name, "")
+            return float(raw) if raw.strip() else float(default)
+
+        def _env_int(name, default):
+            raw = os.environ.get(name, "")
+            return int(raw) if raw.strip() else int(default)
+
+        cfg = {
+            "lx_m": _env_float("BACKWATER_OPENFOAM_DAMBREAK_LX_M", 3.22),
+            "ly_m": _env_float("BACKWATER_OPENFOAM_DAMBREAK_LY_M", 1.00),
+            "lz_m": _env_float("BACKWATER_OPENFOAM_DAMBREAK_LZ_M", 1.00),
+            "patch_nx": _env_int("BACKWATER_OPENFOAM_DAMBREAK_NX", 96),
+            "patch_ny": _env_int("BACKWATER_OPENFOAM_DAMBREAK_NY", 8),
+            "patch_nz": _env_int("BACKWATER_OPENFOAM_DAMBREAK_NZ", 32),
+            "dam_length_m": _env_float("BACKWATER_OPENFOAM_DAMBREAK_COLUMN_LENGTH_M", 1.228),
+            "dam_height_m": _env_float("BACKWATER_OPENFOAM_DAMBREAK_COLUMN_HEIGHT_M", 0.55),
+            "dt_s": _env_float("BACKWATER_OPENFOAM_DAMBREAK_DT_S", 0.02),
+            "n_steps": _env_int("BACKWATER_OPENFOAM_DAMBREAK_STEPS", 20),
+            "alpha_l1_tol": _env_float("BACKWATER_OPENFOAM_DAMBREAK_ALPHA_L1_TOL", 0.25),
+            "front_tol_m": _env_float("BACKWATER_OPENFOAM_DAMBREAK_FRONT_TOL_M", 0.30),
+        }
+
+        from tests.swe3d_reference_harness import run_openfoam_dambreak_compare
+        result = run_openfoam_dambreak_compare(self.mod, ref_path, config=cfg)
+        for metric_name, passed, value, ref, tol in result.iter_metrics():
+            with self.subTest(metric=metric_name):
+                self.assertTrue(
+                    passed,
+                    f"{metric_name}: value={value:.4e} ref={ref:.4e} "
+                    f"delta={abs(value-ref):.4e} tol={tol:.4e}")
 
     @unittest.skipUnless(_PHYSICS_CASES,
         "Set BACKWATER_RUN_SWE3D_PHYSICS_CASES=1 when reference datasets are staged.")
@@ -363,6 +1271,157 @@ class TestSWE3DUncoupledValidation(unittest.TestCase):
                 self.assertTrue(passed,
                     f"{metric_name}: value={value:.4e}  ref={ref:.4e}  "
                     f"delta={abs(value-ref):.4e}  tol={tol:.4e}")
+
+
+@unittest.skipUnless(_load_module() is not None, "backwater_swe2d not built")
+@unittest.skipUnless(_gpu_available(), "CUDA GPU not available")
+@unittest.skipUnless(
+    _SUBGRID_DAMBREAK,
+    "Set BACKWATER_RUN_SWE3D_SUBGRID_DAMBREAK=1 to enable subgrid dam-break regressions.")
+class TestSWE3DSubgridDamBreak(unittest.TestCase):
+    """Focused subgrid dam-break regressions for uploaded 3D geometry tensors."""
+
+    def setUp(self):
+        self.mod = _load_module()
+        self.mesh = _make_rect_mesh(self.mod, 20, 10, 200.0, 100.0)
+        n_cells = self.mod.swe2d_mesh_info(self.mesh)["n_cells"]
+        self.h0 = np.full(n_cells, 1.0, dtype=np.float64)
+        if not hasattr(self.mod, "swe2d_set_3d_patch_geometry"):
+            self.skipTest("swe2d_set_3d_patch_geometry not available in native module")
+
+    def test_subgrid_dam_break_breach_transmits_limited_mass(self):
+        """
+        Dam-break-style regression: a thin subgrid dam with a narrow breach should
+        pass some downstream VoF, but much less than the fully open case.
+        """
+        solver_open = _make_3d_solver(self.mod, self.mesh, self.h0)
+        solver_dam = _make_3d_solver(self.mod, self.mesh, self.h0)
+        try:
+            stats0 = self.mod.swe2d_get_3d_patch_stats(solver_open)
+            nx = int(stats0["nx"])
+            n = int(stats0["n_cells"])
+
+            vof_ic = _x_slab_vof(stats0, frac_lo=0.02, frac_hi=0.45)
+            u_ic = np.full(n, 20.0, dtype=np.float64)
+            zeros = np.zeros(n, dtype=np.float64)
+            phi, ax, ay, az, solid_mask, slot_mask = _slotted_dam_geometry(
+                stats0,
+                frac_x=0.50,
+                thickness_cells=2,
+                slot_frac=0.20,
+            )
+            right_mask = (np.arange(n, dtype=np.int64) % nx) >= (nx // 2 + 1)
+
+            self.mod.swe2d_set_3d_patch_vof(solver_open, vof_ic)
+            self.mod.swe2d_set_3d_patch_state(solver_open, u=u_ic, v=zeros, w=zeros, p=zeros)
+
+            self.mod.swe2d_set_3d_patch_geometry(solver_dam, phi=phi, ax=ax, ay=ay, az=az)
+            self.mod.swe2d_set_3d_patch_vof(solver_dam, vof_ic)
+            self.mod.swe2d_set_3d_patch_state(solver_dam, u=u_ic, v=zeros, w=zeros, p=zeros)
+
+            for _ in range(20):
+                self.mod.swe2d_step(solver_open, 0.1)
+                self.mod.swe2d_step(solver_dam, 0.1)
+
+            vof_open = self.mod.swe2d_get_3d_patch_vof(solver_open)
+            vof_dam = self.mod.swe2d_get_3d_patch_vof(solver_dam)
+
+            right_open = float(np.sum(vof_open[right_mask]))
+            right_dam = float(np.sum(vof_dam[right_mask]))
+            solid_mass = float(np.sum(vof_dam[solid_mask]))
+            slot_mass = float(np.sum(vof_dam[slot_mask]))
+
+            self.assertGreater(
+                right_open,
+                1.0e-3,
+                f"Expected open dam-break case to advect downstream mass; right_open={right_open:.4e}")
+            self.assertGreater(
+                right_dam,
+                1.0e-5,
+                f"Expected breached dam to transmit some downstream mass; right_dam={right_dam:.4e}")
+            self.assertLess(
+                right_dam,
+                0.60 * right_open,
+                f"Expected subgrid dam to restrict downstream transport; right_dam={right_dam:.4e}, right_open={right_open:.4e}")
+            self.assertLess(
+                solid_mass,
+                1.0e-8,
+                f"Expected solid dam cells to remain dry; solid_mass={solid_mass:.4e}")
+            self.assertGreater(
+                slot_mass,
+                1.0e-6,
+                f"Expected breach slot to carry non-zero mass; slot_mass={slot_mass:.4e}")
+        finally:
+            self.mod.swe2d_destroy(solver_open)
+            self.mod.swe2d_destroy(solver_dam)
+
+    def test_subgrid_dam_break_porous_dam_restricts_more_than_open_case(self):
+        """
+        Dam-break-style regression: a porous subgrid dam with a centered breach should
+        leak through the dam body, but still restrict downstream transport versus open.
+        """
+        solver_open = _make_3d_solver(self.mod, self.mesh, self.h0)
+        solver_porous = _make_3d_solver(self.mod, self.mesh, self.h0)
+        try:
+            stats0 = self.mod.swe2d_get_3d_patch_stats(solver_open)
+            nx = int(stats0["nx"])
+            n = int(stats0["n_cells"])
+
+            vof_ic = _x_slab_vof(stats0, frac_lo=0.02, frac_hi=0.45)
+            u_ic = np.full(n, 20.0, dtype=np.float64)
+            zeros = np.zeros(n, dtype=np.float64)
+            phi, ax, ay, az, porous_mask, slot_mask = _porous_slotted_dam_geometry(
+                stats0,
+                frac_x=0.50,
+                thickness_cells=2,
+                slot_frac=0.20,
+                phi_barrier=0.35,
+                area_barrier=0.20,
+            )
+            right_mask = (np.arange(n, dtype=np.int64) % nx) >= (nx // 2 + 1)
+
+            self.mod.swe2d_set_3d_patch_vof(solver_open, vof_ic)
+            self.mod.swe2d_set_3d_patch_state(solver_open, u=u_ic, v=zeros, w=zeros, p=zeros)
+
+            self.mod.swe2d_set_3d_patch_geometry(solver_porous, phi=phi, ax=ax, ay=ay, az=az)
+            self.mod.swe2d_set_3d_patch_vof(solver_porous, vof_ic)
+            self.mod.swe2d_set_3d_patch_state(solver_porous, u=u_ic, v=zeros, w=zeros, p=zeros)
+
+            for _ in range(20):
+                self.mod.swe2d_step(solver_open, 0.1)
+                self.mod.swe2d_step(solver_porous, 0.1)
+
+            vof_open = self.mod.swe2d_get_3d_patch_vof(solver_open)
+            vof_porous = self.mod.swe2d_get_3d_patch_vof(solver_porous)
+
+            right_open = float(np.sum(vof_open[right_mask]))
+            right_porous = float(np.sum(vof_porous[right_mask]))
+            porous_mass = float(np.sum(vof_porous[porous_mask]))
+            slot_mass = float(np.sum(vof_porous[slot_mask]))
+
+            self.assertGreater(
+                right_open,
+                1.0e-3,
+                f"Expected open dam-break case to advect downstream mass; right_open={right_open:.4e}")
+            self.assertGreater(
+                right_porous,
+                1.0e-5,
+                f"Expected porous dam to transmit some downstream mass; right_porous={right_porous:.4e}")
+            self.assertLess(
+                right_porous,
+                0.85 * right_open,
+                f"Expected porous dam to restrict downstream transport; right_porous={right_porous:.4e}, right_open={right_open:.4e}")
+            self.assertGreater(
+                porous_mass,
+                1.0e-6,
+                f"Expected porous dam cells to hold non-zero mass; porous_mass={porous_mass:.4e}")
+            self.assertGreater(
+                slot_mass,
+                1.0e-6,
+                f"Expected breach slot to carry non-zero mass; slot_mass={slot_mass:.4e}")
+        finally:
+            self.mod.swe2d_destroy(solver_open)
+            self.mod.swe2d_destroy(solver_porous)
 
 
 if __name__ == "__main__":

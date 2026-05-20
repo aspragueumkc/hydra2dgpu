@@ -69,6 +69,25 @@ struct SWE2DNonhydroPcDiag {
     bool corrector_applied = false;
 };
 
+enum class SWE3DPatchBoundaryFace : int32_t {
+    XMIN = 0,
+    XMAX = 1,
+    YMIN = 2,
+    YMAX = 3,
+    ZMIN = 4,
+    ZMAX = 5,
+};
+
+enum class SWE3DBoundaryMode : int32_t {
+    WALL = 0,
+    INFLOW = 1,
+    OUTFLOW = 2,
+    FREE_SURFACE = 3,
+    INFLOW_FLOW_RATE = 4,
+};
+
+constexpr int32_t SWE3D_PATCH_FACE_COUNT = 6;
+
 struct SWE3DCartesianPatchDesc {
     int32_t nx = 0;
     int32_t ny = 0;
@@ -80,6 +99,33 @@ struct SWE3DCartesianPatchDesc {
     double origin_y = 0.0;
     double origin_z = 0.0;
     bool single_phase_free_surface = true;
+    // Vertical gravity sign convention in z-momentum source term.
+    // Use -1.0 for z-up coordinates (gravity acts downward).
+    double gravity_z_sign = -1.0;
+    // Near-bed drag controls (Manning-equivalent quadratic drag on u/v).
+    // If enable_bed_drag is true, drag is applied in the lowest bed_drag_layers
+    // layers with coefficient g*n^2 / h_ref^(4/3).
+    bool enable_bed_drag = true;
+    double bed_manning_n = 0.03;
+    double bed_drag_h_ref = 0.0; // <=0 uses dz as reference depth scale
+    int32_t bed_drag_layers = 1;
+    // Per-boundary-face BC mode and prescribed state.
+    // Arrays index by SWE3DPatchBoundaryFace.
+    int32_t bc_mode[SWE3D_PATCH_FACE_COUNT] = {
+        static_cast<int32_t>(SWE3DBoundaryMode::WALL),
+        static_cast<int32_t>(SWE3DBoundaryMode::WALL),
+        static_cast<int32_t>(SWE3DBoundaryMode::WALL),
+        static_cast<int32_t>(SWE3DBoundaryMode::WALL),
+        static_cast<int32_t>(SWE3DBoundaryMode::WALL),
+        static_cast<int32_t>(SWE3DBoundaryMode::WALL),
+    };
+    double bc_u[SWE3D_PATCH_FACE_COUNT] = {0.0, 0.0, 0.0, 0.0, 0.0, 0.0};
+    double bc_v[SWE3D_PATCH_FACE_COUNT] = {0.0, 0.0, 0.0, 0.0, 0.0, 0.0};
+    double bc_w[SWE3D_PATCH_FACE_COUNT] = {0.0, 0.0, 0.0, 0.0, 0.0, 0.0};
+    double bc_vof[SWE3D_PATCH_FACE_COUNT] = {1.0, 1.0, 1.0, 1.0, 1.0, 1.0};
+    double bc_p[SWE3D_PATCH_FACE_COUNT] = {0.0, 0.0, 0.0, 0.0, 0.0, 0.0};
+    // Volumetric flow rate (m^3/s), consumed when mode is INFLOW_FLOW_RATE.
+    double bc_q[SWE3D_PATCH_FACE_COUNT] = {0.0, 0.0, 0.0, 0.0, 0.0, 0.0};
 };
 
 struct SWE3DCartesianPatchDeviceState {
@@ -90,14 +136,27 @@ struct SWE3DCartesianPatchDeviceState {
     double* d_w = nullptr;
     double* d_p = nullptr;
     double* d_vof = nullptr;
+    double* d_vof_tmp = nullptr;
+    // Static geometry tensors for sub-grid solid occupancy and face openness.
+    // Defaults are all-ones (fully open fluid cells/faces).
+    double* d_phi = nullptr;  // cell fluid fraction [0..1]
+    double* d_ax = nullptr;   // x-face open-area fraction [0..1]
+    double* d_ay = nullptr;   // y-face open-area fraction [0..1]
+    double* d_az = nullptr;   // z-face open-area fraction [0..1]
     // 3D projection workspace (uncoupled path): pressure RHS + Jacobi scratch.
     double* d_p_rhs = nullptr;
     double* d_p_tmp = nullptr;
     unsigned long long* d_proj_residual_bits = nullptr;
+    // Per-face boundary open area reduction for volumetric inlet BC conversion.
+    double* d_bc_face_open_area = nullptr; // SWE3D_PATCH_FACE_COUNT entries
+    // Column-integrated liquid depth workspace (nx*ny entries) used for
+    // hydrostatic head-gradient forcing in horizontal predictor components.
+    double* d_column_depth = nullptr;
     // Last projection diagnostics from swe2d_gpu_step_3d_single_phase_free_surface.
     int32_t last_projection_iters = 0;
     double last_projection_residual = -1.0;
     bool last_projection_converged = false;
+    int32_t last_vof_substeps = 1;
 };
 
 struct SWE2D3DInterfaceContractDevice {
@@ -521,7 +580,7 @@ void swe2d_gpu_step_3d_single_phase_free_surface(
     double t_now,
     double dt,
     double g,
-    bool enable_coupling_exchange,
+    int coupling_mode,
     bool sync_diagnostics,
     SWE2DStepDiag* diag);
 
@@ -547,6 +606,16 @@ double swe2d_gpu_compute_dt(
     double cfl_factor,
     double dt_max,
     double cfl_lambda_cap);
+
+// Compute a CFL-limited dt from current 3D patch state.
+// Uses velocity, directional face openness, and open-volume fraction to keep
+// adaptive stepping stable in fractional cut-cells. Returns dt_max when patch
+// is unavailable or effective CFL wave speed is near zero.
+double swe2d_gpu_compute_dt_3d_patch(
+    SWE2DDeviceState* dev,
+    double g,
+    double cfl_factor,
+    double dt_max);
 
 // Copy current state from device to caller-supplied host arrays.
 void swe2d_gpu_get_state(
@@ -693,6 +762,7 @@ void swe2d_gpu_apply_2d3d_exchange_skeleton(
     SWE2DDeviceState* dev,
     double dt,
     double g,
+    int coupling_mode,
     bool apply_head_loss_to_2d_rhs,
     SWE2DStepDiag* diag);
 
@@ -799,6 +869,8 @@ struct SWE3DPatchStats {
     int32_t projection_iters = 0;
     double projection_residual = -1.0;
     bool projection_converged = false;
+    // Last VoF transport substep count (CFL-limited).
+    int32_t vof_transport_substeps = 1;
     // Patch descriptor (for assertions)
     int32_t nx = 0;
     int32_t ny = 0;
@@ -819,6 +891,13 @@ void swe2d_gpu_set_3d_patch_vof(
     const double*     vof_host,
     int64_t           n);
 
+// Download full per-cell VoF field (device → host, length must equal n_cells).
+// Validates length against patch. Throws on mismatch.
+void swe2d_gpu_get_3d_patch_vof(
+    SWE2DDeviceState* dev,
+    double*           vof_host,
+    int64_t           n);
+
 // Upload full per-cell velocity+pressure initial condition (all optional).
 // Pass nullptr for any field to skip that field.  Length must equal n_cells.
 void swe2d_gpu_set_3d_patch_state(
@@ -828,6 +907,16 @@ void swe2d_gpu_set_3d_patch_state(
     const double* w_host,    // nullable
     const double* p_host,    // nullable
     const double* vof_host,  // nullable
+    int64_t n);
+
+// Upload per-cell/facet static geometry tensors for the 3D Cartesian patch.
+// Pass nullptr for any field to keep its current device values.
+void swe2d_gpu_set_3d_patch_geometry(
+    SWE2DDeviceState* dev,
+    const double* phi_host,  // nullable
+    const double* ax_host,   // nullable
+    const double* ay_host,   // nullable
+    const double* az_host,   // nullable
     int64_t n);
 
 // CUDA Graph optimization API (Suggestion 9)
