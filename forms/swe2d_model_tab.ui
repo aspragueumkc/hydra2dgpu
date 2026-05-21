@@ -468,511 +468,146 @@
      <widget class="QComboBox" name="equation_set_combo"/>
     </item>
     <item row="41" column="0">
-     <widget class="QLabel" name="experimental_3d_mode_lbl">
-      <property name="text">
-       <string>3D patch execution mode:</string>
-      </property>
-     </widget>
-    </item>
-    <item row="41" column="1">
-     <widget class="QCheckBox" name="experimental_3d_mode_chk">
-      <property name="text">
-       <string>Run 3D patch solver (GPU)</string>
-      </property>
-     </widget>
-    </item>
-    <item row="42" column="0">
-     <widget class="QLabel" name="experimental_3d_coupling_mode_lbl">
-      <property name="text">
-       <string>3D patch coupling mode:</string>
-      </property>
-     </widget>
-    </item>
-    <item row="42" column="1">
-     <widget class="QComboBox" name="experimental_3d_coupling_mode_combo"/>
-    </item>
-    <item row="43" column="0">
-     <widget class="QLabel" name="experimental_3d_patch_face_len_x_lbl">
-      <property name="text">
-       <string>3D patch target face length x:</string>
-      </property>
-     </widget>
-    </item>
-    <item row="43" column="1">
-     <widget class="QDoubleSpinBox" name="experimental_3d_patch_face_len_x_spin"/>
-    </item>
-    <item row="44" column="0">
-     <widget class="QLabel" name="experimental_3d_patch_face_len_y_lbl">
-      <property name="text">
-       <string>3D patch target face length y:</string>
-      </property>
-     </widget>
-    </item>
-    <item row="44" column="1">
-     <widget class="QDoubleSpinBox" name="experimental_3d_patch_face_len_y_spin"/>
-    </item>
-    <item row="45" column="0">
-     <widget class="QLabel" name="experimental_3d_patch_face_len_z_lbl">
-      <property name="text">
-       <string>3D patch target face length z:</string>
-      </property>
-     </widget>
-    </item>
-    <item row="45" column="1">
-     <widget class="QDoubleSpinBox" name="experimental_3d_patch_face_len_z_spin"/>
-    </item>
-    <item row="46" column="0">
-     <widget class="QLabel" name="experimental_3d_patch_xmin_lbl">
-      <property name="text">
-       <string>3D patch x min:</string>
-      </property>
-     </widget>
-    </item>
-    <item row="46" column="1">
-     <widget class="QLineEdit" name="experimental_3d_patch_xmin_edit"/>
-    </item>
-    <item row="47" column="0">
-     <widget class="QLabel" name="experimental_3d_patch_xmax_lbl">
-      <property name="text">
-       <string>3D patch x max:</string>
-      </property>
-     </widget>
-    </item>
-    <item row="47" column="1">
-     <widget class="QLineEdit" name="experimental_3d_patch_xmax_edit"/>
-    </item>
-    <item row="48" column="0">
-     <widget class="QLabel" name="experimental_3d_patch_ymin_lbl">
-      <property name="text">
-       <string>3D patch y min:</string>
-      </property>
-     </widget>
-    </item>
-    <item row="48" column="1">
-     <widget class="QLineEdit" name="experimental_3d_patch_ymin_edit"/>
-    </item>
-    <item row="49" column="0">
-     <widget class="QLabel" name="experimental_3d_patch_ymax_lbl">
-      <property name="text">
-       <string>3D patch y max:</string>
-      </property>
-     </widget>
-    </item>
-    <item row="49" column="1">
-     <widget class="QLineEdit" name="experimental_3d_patch_ymax_edit"/>
-    </item>
-    <item row="50" column="0">
-     <widget class="QLabel" name="experimental_3d_patch_zmin_lbl">
-      <property name="text">
-       <string>3D patch z min:</string>
-      </property>
-     </widget>
-    </item>
-    <item row="50" column="1">
-     <widget class="QLineEdit" name="experimental_3d_patch_zmin_edit"/>
-    </item>
-    <item row="51" column="0">
-     <widget class="QLabel" name="experimental_3d_patch_zmax_lbl">
-      <property name="text">
-       <string>3D patch z max:</string>
-      </property>
-     </widget>
-    </item>
-    <item row="51" column="1">
-     <widget class="QLineEdit" name="experimental_3d_patch_zmax_edit"/>
-    </item>
-    <item row="52" column="0" colspan="2">
-     <widget class="QPushButton" name="experimental_3d_patch_set_roi_btn">
-      <property name="text">
-       <string>Set ROI From Current Mesh</string>
-      </property>
-     </widget>
-    </item>
-    <item row="53" column="0" colspan="2">
-     <widget class="QLabel" name="experimental_3d_patch_hint_lbl">
-      <property name="wordWrap">
-       <bool>true</bool>
-      </property>
-     </widget>
-    </item>
-    <item row="54" column="0">
-     <widget class="QLabel" name="experimental_3d_patch_bc_lbl">
-      <property name="text">
-       <string>3D patch face BCs:</string>
-      </property>
-     </widget>
-    </item>
-    <item row="54" column="1">
-     <widget class="QWidget" name="experimental_3d_patch_bc_widget" native="true"/>
-    </item>
-    <item row="55" column="0" colspan="2">
-     <widget class="QLabel" name="experimental_3d_patch_bc_hint_lbl">
-      <property name="wordWrap">
-       <bool>true</bool>
-      </property>
-     </widget>
-    </item>
-    <item row="56" column="0">
-     <widget class="QLabel" name="experimental_3d_obj_solids_lbl">
-      <property name="text">
-       <string>3D sub-grid solids:</string>
-      </property>
-     </widget>
-    </item>
-    <item row="56" column="1">
-     <widget class="QCheckBox" name="experimental_3d_obj_solids_chk">
-      <property name="text">
-       <string>Enable</string>
-      </property>
-     </widget>
-    </item>
-    <item row="57" column="0">
-     <widget class="QLabel" name="experimental_3d_obj_method_lbl">
-      <property name="text">
-       <string>3D sub-grid method:</string>
-      </property>
-     </widget>
-    </item>
-    <item row="57" column="1">
-     <widget class="QComboBox" name="experimental_3d_obj_method_combo"/>
-    </item>
-    <item row="58" column="0">
-     <widget class="QLabel" name="experimental_3d_geom_sanitize_lbl">
-      <property name="text">
-       <string>3D sanitize tensors:</string>
-      </property>
-     </widget>
-    </item>
-    <item row="58" column="1">
-     <widget class="QCheckBox" name="experimental_3d_geom_sanitize_chk">
-      <property name="text">
-       <string>Sanitize upload tensors (clamp/snap tiny phi/area)</string>
-      </property>
-     </widget>
-    </item>
-    <item row="59" column="0">
-     <widget class="QLabel" name="experimental_3d_geom_phi_snap_lbl">
-      <property name="text">
-       <string>3D sanitize phi snap min:</string>
-      </property>
-     </widget>
-    </item>
-    <item row="59" column="1">
-     <widget class="QDoubleSpinBox" name="experimental_3d_geom_phi_snap_spin"/>
-    </item>
-    <item row="60" column="0">
-     <widget class="QLabel" name="experimental_3d_geom_area_snap_lbl">
-      <property name="text">
-       <string>3D sanitize area snap min:</string>
-      </property>
-     </widget>
-    </item>
-    <item row="60" column="1">
-     <widget class="QDoubleSpinBox" name="experimental_3d_geom_area_snap_spin"/>
-    </item>
-    <item row="61" column="0">
-     <widget class="QLabel" name="experimental_3d_obj_layer_lbl">
-      <property name="text">
-       <string>3D OBJ instances layer:</string>
-      </property>
-     </widget>
-    </item>
-    <item row="61" column="1">
-     <widget class="QComboBox" name="experimental_3d_obj_layer_combo"/>
-    </item>
-    <item row="62" column="0">
-     <widget class="QLabel" name="experimental_3d_obj_path_field_lbl">
-      <property name="text">
-       <string>3D OBJ path field:</string>
-      </property>
-     </widget>
-    </item>
-    <item row="62" column="1">
-     <widget class="QLineEdit" name="experimental_3d_obj_path_field_edit"/>
-    </item>
-    <item row="63" column="0">
-     <widget class="QLabel" name="experimental_3d_obj_default_path_lbl">
-      <property name="text">
-       <string>3D OBJ fallback path:</string>
-      </property>
-     </widget>
-    </item>
-    <item row="63" column="1">
-     <widget class="QLineEdit" name="experimental_3d_obj_default_path_edit"/>
-    </item>
-    <item row="64" column="0">
-     <widget class="QLabel" name="experimental_3d_obj_scale_field_lbl">
-      <property name="text">
-       <string>3D OBJ scale field:</string>
-      </property>
-     </widget>
-    </item>
-    <item row="64" column="1">
-     <widget class="QLineEdit" name="experimental_3d_obj_scale_field_edit"/>
-    </item>
-    <item row="65" column="0">
-     <widget class="QLabel" name="experimental_3d_obj_yaw_field_lbl">
-      <property name="text">
-       <string>3D OBJ yaw field:</string>
-      </property>
-     </widget>
-    </item>
-    <item row="65" column="1">
-     <widget class="QLineEdit" name="experimental_3d_obj_yaw_field_edit"/>
-    </item>
-    <item row="66" column="0">
-     <widget class="QLabel" name="experimental_3d_obj_z_offset_field_lbl">
-      <property name="text">
-       <string>3D OBJ z-offset field:</string>
-      </property>
-     </widget>
-    </item>
-    <item row="66" column="1">
-     <widget class="QLineEdit" name="experimental_3d_obj_z_offset_field_edit"/>
-    </item>
-    <item row="67" column="0">
-     <widget class="QLabel" name="experimental_3d_obj_inside_points_layer_lbl">
-      <property name="text">
-       <string>3D OBJ outside-point layer:</string>
-      </property>
-     </widget>
-    </item>
-    <item row="67" column="1">
-     <widget class="QComboBox" name="experimental_3d_obj_inside_points_layer_combo"/>
-    </item>
-    <item row="68" column="0">
-     <widget class="QLabel" name="experimental_3d_obj_instance_id_field_lbl">
-      <property name="text">
-       <string>3D OBJ instance id field:</string>
-      </property>
-     </widget>
-    </item>
-    <item row="68" column="1">
-     <widget class="QLineEdit" name="experimental_3d_obj_instance_id_field_edit"/>
-    </item>
-    <item row="69" column="0">
-     <widget class="QLabel" name="experimental_3d_obj_inside_id_field_lbl">
-      <property name="text">
-       <string>3D OBJ outside-point id field:</string>
-      </property>
-     </widget>
-    </item>
-    <item row="69" column="1">
-     <widget class="QLineEdit" name="experimental_3d_obj_inside_id_field_edit"/>
-    </item>
-    <item row="70" column="0">
-     <widget class="QLabel" name="experimental_3d_obj_inside_z_field_lbl">
-      <property name="text">
-       <string>3D OBJ outside-point z field:</string>
-      </property>
-     </widget>
-    </item>
-    <item row="70" column="1">
-     <widget class="QLineEdit" name="experimental_3d_obj_inside_z_field_edit"/>
-    </item>
-    <item row="71" column="0">
-     <widget class="QLabel" name="experimental_3d_obj_use_terrain_lbl">
-      <property name="text">
-       <string>3D terrain solid:</string>
-      </property>
-     </widget>
-    </item>
-    <item row="71" column="1">
-     <widget class="QCheckBox" name="experimental_3d_obj_use_terrain_chk">
-      <property name="text">
-       <string>Use terrain layer as bed solid</string>
-      </property>
-     </widget>
-    </item>
-    <item row="72" column="0">
-     <widget class="QLabel" name="experimental_3d_obj_ab_compare_lbl">
-      <property name="text">
-       <string>3D A/B compare:</string>
-      </property>
-     </widget>
-    </item>
-    <item row="72" column="1">
-     <widget class="QCheckBox" name="experimental_3d_obj_ab_compare_chk">
-      <property name="text">
-       <string>A/B compare methods (startup probe)</string>
-      </property>
-     </widget>
-    </item>
-    <item row="73" column="0">
-     <widget class="QLabel" name="experimental_3d_obj_ab_probe_steps_lbl">
-      <property name="text">
-       <string>3D A/B probe steps:</string>
-      </property>
-     </widget>
-    </item>
-    <item row="73" column="1">
-     <widget class="QSpinBox" name="experimental_3d_obj_ab_probe_steps_spin"/>
-    </item>
-    <item row="74" column="0">
-     <widget class="QLabel" name="experimental_3d_obj_export_obj_lbl">
-      <property name="text">
-       <string>3D export voxel shell OBJ:</string>
-      </property>
-     </widget>
-    </item>
-    <item row="74" column="1">
-     <widget class="QCheckBox" name="experimental_3d_obj_export_obj_chk">
-      <property name="text">
-       <string>Export voxelized solid shell OBJ</string>
-      </property>
-     </widget>
-    </item>
-    <item row="75" column="0">
-     <widget class="QLabel" name="experimental_3d_obj_export_obj_path_lbl">
-      <property name="text">
-       <string>3D solid OBJ export path:</string>
-      </property>
-     </widget>
-    </item>
-    <item row="75" column="1">
-     <widget class="QLineEdit" name="experimental_3d_obj_export_obj_path_edit"/>
-    </item>
-    <item row="76" column="0">
      <widget class="QLabel" name="godunov_mode_lbl">
       <property name="text">
        <string>GPU solver mode:</string>
       </property>
      </widget>
     </item>
-    <item row="76" column="1">
+    <item row="41" column="1">
      <widget class="QComboBox" name="godunov_mode_combo"/>
     </item>
-    <item row="77" column="0">
+    <item row="42" column="0">
      <widget class="QLabel" name="degen_mode_lbl">
       <property name="text">
        <string>Degenerate cell mode:</string>
       </property>
      </widget>
     </item>
-    <item row="77" column="1">
+    <item row="42" column="1">
      <widget class="QComboBox" name="degen_mode_combo"/>
     </item>
-    <item row="78" column="0">
+    <item row="43" column="0">
      <widget class="QLabel" name="coupling_loop_lbl">
       <property name="text">
        <string>Coupling loop:</string>
       </property>
      </widget>
     </item>
-    <item row="78" column="1">
+    <item row="43" column="1">
      <widget class="QComboBox" name="coupling_loop_combo"/>
     </item>
-    <item row="79" column="0">
+    <item row="44" column="0">
      <widget class="QLabel" name="drainage_solver_mode_lbl">
       <property name="text">
        <string>Drainage equation set:</string>
       </property>
      </widget>
     </item>
-    <item row="79" column="1">
+    <item row="44" column="1">
      <widget class="QComboBox" name="drainage_solver_mode_combo"/>
     </item>
-    <item row="80" column="0">
+    <item row="45" column="0">
      <widget class="QLabel" name="drainage_backend_lbl">
       <property name="text">
        <string>Drainage solver backend:</string>
       </property>
      </widget>
     </item>
-    <item row="80" column="1">
+    <item row="45" column="1">
      <widget class="QComboBox" name="drainage_backend_combo"/>
     </item>
-    <item row="81" column="0">
+    <item row="46" column="0">
      <widget class="QLabel" name="drainage_gpu_method_lbl">
       <property name="text">
        <string>Drainage GPU method:</string>
       </property>
      </widget>
     </item>
-    <item row="81" column="1">
+    <item row="46" column="1">
      <widget class="QComboBox" name="drainage_gpu_method_combo"/>
     </item>
-    <item row="82" column="0">
+    <item row="47" column="0">
      <widget class="QLabel" name="drainage_coupling_substeps_lbl">
       <property name="text">
        <string>Drainage substeps:</string>
       </property>
      </widget>
     </item>
-    <item row="82" column="1">
+    <item row="47" column="1">
      <widget class="QSpinBox" name="drainage_coupling_substeps_spin"/>
     </item>
-    <item row="83" column="0">
+    <item row="48" column="0">
      <widget class="QLabel" name="drainage_max_coupling_substeps_lbl">
       <property name="text">
        <string>Drainage max adaptive substeps:</string>
       </property>
      </widget>
     </item>
-    <item row="83" column="1">
+    <item row="48" column="1">
      <widget class="QSpinBox" name="drainage_max_coupling_substeps_spin"/>
     </item>
-    <item row="84" column="0">
+    <item row="49" column="0">
      <widget class="QLabel" name="drainage_head_deadband_lbl">
       <property name="text">
        <string>Drainage head deadband:</string>
       </property>
      </widget>
     </item>
-    <item row="84" column="1">
+    <item row="49" column="1">
      <widget class="QDoubleSpinBox" name="drainage_head_deadband_spin"/>
     </item>
-    <item row="85" column="0">
+    <item row="50" column="0">
      <widget class="QLabel" name="drainage_dynamic_relaxation_lbl">
       <property name="text">
        <string>Drainage dynamic relaxation:</string>
       </property>
      </widget>
     </item>
-    <item row="85" column="1">
+    <item row="50" column="1">
      <widget class="QDoubleSpinBox" name="drainage_dynamic_relaxation_spin"/>
     </item>
-    <item row="86" column="0">
+    <item row="51" column="0">
      <widget class="QLabel" name="drainage_adaptive_depth_fraction_lbl">
       <property name="text">
        <string>Drainage adaptive depth fraction:</string>
       </property>
      </widget>
     </item>
-    <item row="86" column="1">
+    <item row="51" column="1">
      <widget class="QDoubleSpinBox" name="drainage_adaptive_depth_fraction_spin"/>
     </item>
-    <item row="87" column="0">
+    <item row="52" column="0">
      <widget class="QLabel" name="drainage_adaptive_wave_courant_lbl">
       <property name="text">
        <string>Drainage adaptive wave Courant:</string>
       </property>
      </widget>
     </item>
-    <item row="87" column="1">
+    <item row="52" column="1">
      <widget class="QDoubleSpinBox" name="drainage_adaptive_wave_courant_spin"/>
     </item>
-    <item row="88" column="0">
+    <item row="53" column="0">
      <widget class="QLabel" name="drainage_implicit_iters_lbl">
       <property name="text">
        <string>Drainage implicit iterations (GPU):</string>
       </property>
      </widget>
     </item>
-    <item row="88" column="1">
+    <item row="53" column="1">
      <widget class="QSpinBox" name="drainage_implicit_iters_spin"/>
     </item>
-    <item row="89" column="0">
+    <item row="54" column="0">
      <widget class="QLabel" name="drainage_implicit_relax_lbl">
       <property name="text">
        <string>Drainage implicit relaxation (GPU):</string>
       </property>
      </widget>
     </item>
-    <item row="89" column="1">
+    <item row="54" column="1">
      <widget class="QDoubleSpinBox" name="drainage_implicit_relax_spin"/>
     </item>
-    <item row="90" column="0">
+    <item row="55" column="0">
      <widget class="QLabel" name="unit_system_lbl">
       <property name="text">
        <string>Unit system: auto</string>
@@ -982,7 +617,7 @@
       </property>
      </widget>
     </item>
-    <item row="90" column="1">
+    <item row="55" column="1">
      <widget class="QLabel" name="gpu_default_lbl">
       <property name="text">
        <string>GPU is attempted by default when supported by the native backend.</string>
@@ -993,6 +628,380 @@
      </widget>
     </item>
     </layout>
+    </widget>
+   </item>
+   <item>
+    <widget class="QGroupBox" name="patch_3d_group">
+     <property name="title">
+      <string>3D Patch</string>
+     </property>
+     <layout class="QFormLayout" name="patch_3d_form">
+      <item row="0" column="0">
+       <widget class="QLabel" name="experimental_3d_mode_lbl">
+        <property name="text">
+         <string>3D patch execution mode:</string>
+        </property>
+       </widget>
+      </item>
+      <item row="0" column="1">
+       <widget class="QCheckBox" name="experimental_3d_mode_chk">
+        <property name="text">
+         <string>Run 3D patch solver (GPU)</string>
+        </property>
+       </widget>
+      </item>
+      <item row="1" column="0">
+       <widget class="QLabel" name="experimental_3d_coupling_mode_lbl">
+        <property name="text">
+         <string>3D patch coupling mode:</string>
+        </property>
+       </widget>
+      </item>
+      <item row="1" column="1">
+       <widget class="QComboBox" name="experimental_3d_coupling_mode_combo"/>
+      </item>
+      <item row="2" column="0">
+       <widget class="QLabel" name="experimental_3d_patch_face_len_x_lbl">
+        <property name="text">
+         <string>3D patch target face length x:</string>
+        </property>
+       </widget>
+      </item>
+      <item row="2" column="1">
+       <widget class="QDoubleSpinBox" name="experimental_3d_patch_face_len_x_spin"/>
+      </item>
+      <item row="3" column="0">
+       <widget class="QLabel" name="experimental_3d_patch_face_len_y_lbl">
+        <property name="text">
+         <string>3D patch target face length y:</string>
+        </property>
+       </widget>
+      </item>
+      <item row="3" column="1">
+       <widget class="QDoubleSpinBox" name="experimental_3d_patch_face_len_y_spin"/>
+      </item>
+      <item row="4" column="0">
+       <widget class="QLabel" name="experimental_3d_patch_face_len_z_lbl">
+        <property name="text">
+         <string>3D patch target face length z:</string>
+        </property>
+       </widget>
+      </item>
+      <item row="4" column="1">
+       <widget class="QDoubleSpinBox" name="experimental_3d_patch_face_len_z_spin"/>
+      </item>
+      <item row="5" column="0">
+       <widget class="QLabel" name="experimental_3d_patch_xmin_lbl">
+        <property name="text">
+         <string>3D patch x min:</string>
+        </property>
+       </widget>
+      </item>
+      <item row="5" column="1">
+       <widget class="QLineEdit" name="experimental_3d_patch_xmin_edit"/>
+      </item>
+      <item row="6" column="0">
+       <widget class="QLabel" name="experimental_3d_patch_xmax_lbl">
+        <property name="text">
+         <string>3D patch x max:</string>
+        </property>
+       </widget>
+      </item>
+      <item row="6" column="1">
+       <widget class="QLineEdit" name="experimental_3d_patch_xmax_edit"/>
+      </item>
+      <item row="7" column="0">
+       <widget class="QLabel" name="experimental_3d_patch_ymin_lbl">
+        <property name="text">
+         <string>3D patch y min:</string>
+        </property>
+       </widget>
+      </item>
+      <item row="7" column="1">
+       <widget class="QLineEdit" name="experimental_3d_patch_ymin_edit"/>
+      </item>
+      <item row="8" column="0">
+       <widget class="QLabel" name="experimental_3d_patch_ymax_lbl">
+        <property name="text">
+         <string>3D patch y max:</string>
+        </property>
+       </widget>
+      </item>
+      <item row="8" column="1">
+       <widget class="QLineEdit" name="experimental_3d_patch_ymax_edit"/>
+      </item>
+      <item row="9" column="0">
+       <widget class="QLabel" name="experimental_3d_patch_zmin_lbl">
+        <property name="text">
+         <string>3D patch z min:</string>
+        </property>
+       </widget>
+      </item>
+      <item row="9" column="1">
+       <widget class="QLineEdit" name="experimental_3d_patch_zmin_edit"/>
+      </item>
+      <item row="10" column="0">
+       <widget class="QLabel" name="experimental_3d_patch_zmax_lbl">
+        <property name="text">
+         <string>3D patch z max:</string>
+        </property>
+       </widget>
+      </item>
+      <item row="10" column="1">
+       <widget class="QLineEdit" name="experimental_3d_patch_zmax_edit"/>
+      </item>
+      <item row="11" column="0" colspan="2">
+       <widget class="QPushButton" name="experimental_3d_patch_set_roi_btn">
+        <property name="text">
+         <string>Set ROI From Current Mesh</string>
+        </property>
+       </widget>
+      </item>
+      <item row="12" column="0" colspan="2">
+       <widget class="QLabel" name="experimental_3d_patch_hint_lbl">
+        <property name="wordWrap">
+         <bool>true</bool>
+        </property>
+       </widget>
+      </item>
+      <item row="13" column="0">
+       <widget class="QLabel" name="experimental_3d_patch_bc_lbl">
+        <property name="text">
+         <string>3D patch face BCs:</string>
+        </property>
+       </widget>
+      </item>
+      <item row="13" column="1">
+       <widget class="QWidget" name="experimental_3d_patch_bc_widget" native="true"/>
+      </item>
+      <item row="14" column="0" colspan="2">
+       <widget class="QLabel" name="experimental_3d_patch_bc_hint_lbl">
+        <property name="wordWrap">
+         <bool>true</bool>
+        </property>
+       </widget>
+      </item>
+      <item row="15" column="0">
+       <widget class="QLabel" name="experimental_3d_obj_solids_lbl">
+        <property name="text">
+         <string>3D sub-grid solids:</string>
+        </property>
+       </widget>
+      </item>
+      <item row="15" column="1">
+       <widget class="QCheckBox" name="experimental_3d_obj_solids_chk">
+        <property name="text">
+         <string>Enable</string>
+        </property>
+       </widget>
+      </item>
+      <item row="16" column="0">
+       <widget class="QLabel" name="experimental_3d_obj_method_lbl">
+        <property name="text">
+         <string>3D sub-grid method:</string>
+        </property>
+       </widget>
+      </item>
+      <item row="16" column="1">
+       <widget class="QComboBox" name="experimental_3d_obj_method_combo"/>
+      </item>
+      <item row="17" column="0">
+       <widget class="QLabel" name="experimental_3d_geom_sanitize_lbl">
+        <property name="text">
+         <string>3D sanitize tensors:</string>
+        </property>
+       </widget>
+      </item>
+      <item row="17" column="1">
+       <widget class="QCheckBox" name="experimental_3d_geom_sanitize_chk">
+        <property name="text">
+         <string>Sanitize upload tensors (clamp/snap tiny phi/area)</string>
+        </property>
+       </widget>
+      </item>
+      <item row="18" column="0">
+       <widget class="QLabel" name="experimental_3d_geom_phi_snap_lbl">
+        <property name="text">
+         <string>3D sanitize phi snap min:</string>
+        </property>
+       </widget>
+      </item>
+      <item row="18" column="1">
+       <widget class="QDoubleSpinBox" name="experimental_3d_geom_phi_snap_spin"/>
+      </item>
+      <item row="19" column="0">
+       <widget class="QLabel" name="experimental_3d_geom_area_snap_lbl">
+        <property name="text">
+         <string>3D sanitize area snap min:</string>
+        </property>
+       </widget>
+      </item>
+      <item row="19" column="1">
+       <widget class="QDoubleSpinBox" name="experimental_3d_geom_area_snap_spin"/>
+      </item>
+      <item row="20" column="0">
+       <widget class="QLabel" name="experimental_3d_obj_layer_lbl">
+        <property name="text">
+         <string>3D OBJ instances layer:</string>
+        </property>
+       </widget>
+      </item>
+      <item row="20" column="1">
+       <widget class="QComboBox" name="experimental_3d_obj_layer_combo"/>
+      </item>
+      <item row="21" column="0">
+       <widget class="QLabel" name="experimental_3d_obj_path_field_lbl">
+        <property name="text">
+         <string>3D OBJ path field:</string>
+        </property>
+       </widget>
+      </item>
+      <item row="21" column="1">
+       <widget class="QLineEdit" name="experimental_3d_obj_path_field_edit"/>
+      </item>
+      <item row="22" column="0">
+       <widget class="QLabel" name="experimental_3d_obj_default_path_lbl">
+        <property name="text">
+         <string>3D OBJ fallback path:</string>
+        </property>
+       </widget>
+      </item>
+      <item row="22" column="1">
+       <widget class="QLineEdit" name="experimental_3d_obj_default_path_edit"/>
+      </item>
+      <item row="23" column="0">
+       <widget class="QLabel" name="experimental_3d_obj_scale_field_lbl">
+        <property name="text">
+         <string>3D OBJ scale field:</string>
+        </property>
+       </widget>
+      </item>
+      <item row="23" column="1">
+       <widget class="QLineEdit" name="experimental_3d_obj_scale_field_edit"/>
+      </item>
+      <item row="24" column="0">
+       <widget class="QLabel" name="experimental_3d_obj_yaw_field_lbl">
+        <property name="text">
+         <string>3D OBJ yaw field:</string>
+        </property>
+       </widget>
+      </item>
+      <item row="24" column="1">
+       <widget class="QLineEdit" name="experimental_3d_obj_yaw_field_edit"/>
+      </item>
+      <item row="25" column="0">
+       <widget class="QLabel" name="experimental_3d_obj_z_offset_field_lbl">
+        <property name="text">
+         <string>3D OBJ z-offset field:</string>
+        </property>
+       </widget>
+      </item>
+      <item row="25" column="1">
+       <widget class="QLineEdit" name="experimental_3d_obj_z_offset_field_edit"/>
+      </item>
+      <item row="26" column="0">
+       <widget class="QLabel" name="experimental_3d_obj_inside_points_layer_lbl">
+        <property name="text">
+         <string>3D OBJ outside-point layer:</string>
+        </property>
+       </widget>
+      </item>
+      <item row="26" column="1">
+       <widget class="QComboBox" name="experimental_3d_obj_inside_points_layer_combo"/>
+      </item>
+      <item row="27" column="0">
+       <widget class="QLabel" name="experimental_3d_obj_instance_id_field_lbl">
+        <property name="text">
+         <string>3D OBJ instance id field:</string>
+        </property>
+       </widget>
+      </item>
+      <item row="27" column="1">
+       <widget class="QLineEdit" name="experimental_3d_obj_instance_id_field_edit"/>
+      </item>
+      <item row="28" column="0">
+       <widget class="QLabel" name="experimental_3d_obj_inside_id_field_lbl">
+        <property name="text">
+         <string>3D OBJ outside-point id field:</string>
+        </property>
+       </widget>
+      </item>
+      <item row="28" column="1">
+       <widget class="QLineEdit" name="experimental_3d_obj_inside_id_field_edit"/>
+      </item>
+      <item row="29" column="0">
+       <widget class="QLabel" name="experimental_3d_obj_inside_z_field_lbl">
+        <property name="text">
+         <string>3D OBJ outside-point z field:</string>
+        </property>
+       </widget>
+      </item>
+      <item row="29" column="1">
+       <widget class="QLineEdit" name="experimental_3d_obj_inside_z_field_edit"/>
+      </item>
+      <item row="30" column="0">
+       <widget class="QLabel" name="experimental_3d_obj_use_terrain_lbl">
+        <property name="text">
+         <string>3D terrain solid:</string>
+        </property>
+       </widget>
+      </item>
+      <item row="30" column="1">
+       <widget class="QCheckBox" name="experimental_3d_obj_use_terrain_chk">
+        <property name="text">
+         <string>Use terrain layer as bed solid</string>
+        </property>
+       </widget>
+      </item>
+      <item row="31" column="0">
+       <widget class="QLabel" name="experimental_3d_obj_ab_compare_lbl">
+        <property name="text">
+         <string>3D A/B compare:</string>
+        </property>
+       </widget>
+      </item>
+      <item row="31" column="1">
+       <widget class="QCheckBox" name="experimental_3d_obj_ab_compare_chk">
+        <property name="text">
+         <string>A/B compare methods (startup probe)</string>
+        </property>
+       </widget>
+      </item>
+      <item row="32" column="0">
+       <widget class="QLabel" name="experimental_3d_obj_ab_probe_steps_lbl">
+        <property name="text">
+         <string>3D A/B probe steps:</string>
+        </property>
+       </widget>
+      </item>
+      <item row="32" column="1">
+       <widget class="QSpinBox" name="experimental_3d_obj_ab_probe_steps_spin"/>
+      </item>
+      <item row="33" column="0">
+       <widget class="QLabel" name="experimental_3d_obj_export_obj_lbl">
+        <property name="text">
+         <string>3D export voxel shell OBJ:</string>
+        </property>
+       </widget>
+      </item>
+      <item row="33" column="1">
+       <widget class="QCheckBox" name="experimental_3d_obj_export_obj_chk">
+        <property name="text">
+         <string>Export voxelized solid shell OBJ</string>
+        </property>
+       </widget>
+      </item>
+      <item row="34" column="0">
+       <widget class="QLabel" name="experimental_3d_obj_export_obj_path_lbl">
+        <property name="text">
+         <string>3D solid OBJ export path:</string>
+        </property>
+       </widget>
+      </item>
+      <item row="34" column="1">
+       <widget class="QLineEdit" name="experimental_3d_obj_export_obj_path_edit"/>
+      </item>
+     </layout>
     </widget>
    </item>
   </layout>

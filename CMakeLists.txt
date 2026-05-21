@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.16)
-project(backwater_native LANGUAGES CXX)
+project(hydra_native LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -26,18 +26,18 @@ if(NOT pybind11_FOUND)
 endif()
 
 # ── 1D native backend ────────────────────────────────────────────────────────
-pybind11_add_module(backwater_native cpp/src/backwater_native.cpp)
+pybind11_add_module(hydra_native cpp/src/backwater_native.cpp)
 
 find_package(OpenMP QUIET)
 if(OpenMP_CXX_FOUND)
-  target_link_libraries(backwater_native PRIVATE OpenMP::OpenMP_CXX)
-  target_compile_definitions(backwater_native PRIVATE BACKWATER_HAS_OPENMP=1)
+  target_link_libraries(hydra_native PRIVATE OpenMP::OpenMP_CXX)
+  target_compile_definitions(hydra_native PRIVATE HYDRA_HAS_OPENMP=1)
 endif()
 
 if(MSVC)
-  target_compile_options(backwater_native PRIVATE /W4)
+  target_compile_options(hydra_native PRIVATE /W4)
 else()
-  target_compile_options(backwater_native PRIVATE -Wall -Wextra -Wpedantic)
+  target_compile_options(hydra_native PRIVATE -Wall -Wextra -Wpedantic)
 endif()
 
 # ── 2D SWE hybrid GPU/CPU solver ─────────────────────────────────────────────
@@ -68,35 +68,35 @@ if(BACKWATER_USE_CUDA)
   endif()
 endif()
 
-pybind11_add_module(backwater_swe2d
+pybind11_add_module(hydra_swe2d
     ${SWE2D_CPU_SOURCES}
     ${SWE2D_GPU_SOURCES}
 )
 
-target_include_directories(backwater_swe2d PRIVATE cpp/src)
+target_include_directories(hydra_swe2d PRIVATE cpp/src)
 
 # Disable LTO when CUDA is involved to avoid LTO version conflicts
 if(SWE2D_CUDA_FOUND)
-  set_property(TARGET backwater_swe2d PROPERTY INTERPROCEDURAL_OPTIMIZATION OFF)
+  set_property(TARGET hydra_swe2d PROPERTY INTERPROCEDURAL_OPTIMIZATION OFF)
 endif()
 
 if(SWE2D_CUDA_FOUND)
-  target_link_libraries(backwater_swe2d PRIVATE CUDA::cudart)
-  target_compile_definitions(backwater_swe2d PRIVATE BACKWATER_HAS_CUDA=1)
-  set_property(TARGET backwater_swe2d PROPERTY CUDA_SEPARABLE_COMPILATION ON)
+  target_link_libraries(hydra_swe2d PRIVATE CUDA::cudart)
+  target_compile_definitions(hydra_swe2d PRIVATE HYDRA_HAS_CUDA=1)
+  set_property(TARGET hydra_swe2d PROPERTY CUDA_SEPARABLE_COMPILATION ON)
   # Allow CUDA files to find shared headers
   set_source_files_properties(cpp/src/swe2d_gpu.cu PROPERTIES LANGUAGE CUDA)
 endif()
 
 if(OpenMP_CXX_FOUND)
-  target_link_libraries(backwater_swe2d PRIVATE OpenMP::OpenMP_CXX)
-  target_compile_definitions(backwater_swe2d PRIVATE BACKWATER_HAS_OPENMP=1)
+  target_link_libraries(hydra_swe2d PRIVATE OpenMP::OpenMP_CXX)
+  target_compile_definitions(hydra_swe2d PRIVATE HYDRA_HAS_OPENMP=1)
 endif()
 
 if(MSVC)
-  target_compile_options(backwater_swe2d PRIVATE /W4)
+  target_compile_options(hydra_swe2d PRIVATE /W4)
 else()
-  target_compile_options(backwater_swe2d PRIVATE -Wall -Wextra -Wpedantic)
+  target_compile_options(hydra_swe2d PRIVATE -Wall -Wextra -Wpedantic)
 endif()
 
 # ── TQMesh mesh generator ─────────────────────────────────────────────────────
@@ -108,11 +108,11 @@ configure_file(
     ${CMAKE_BINARY_DIR}/TQMeshConfig.h
 )
 
-pybind11_add_module(backwater_tqmesh
+pybind11_add_module(hydra_tqmesh
     cpp/src/tqmesh_bindings.cpp
 )
 
-target_include_directories(backwater_tqmesh PRIVATE
+target_include_directories(hydra_tqmesh PRIVATE
     ${TQMESH_DIR}/src/algorithm
     ${TQMESH_DIR}/src/utils
     ${CMAKE_BINARY_DIR}          # for generated TQMeshConfig.h
@@ -120,9 +120,9 @@ target_include_directories(backwater_tqmesh PRIVATE
 
 # TQMesh uses heavy template / inline code — suppress noisy warnings
 if(MSVC)
-  target_compile_options(backwater_tqmesh PRIVATE /W1)
+  target_compile_options(hydra_tqmesh PRIVATE /W1)
 else()
-  target_compile_options(backwater_tqmesh PRIVATE -w)
+  target_compile_options(hydra_tqmesh PRIVATE -w)
 endif()
 
-set_property(TARGET backwater_tqmesh PROPERTY INTERPROCEDURAL_OPTIMIZATION OFF)
+set_property(TARGET hydra_tqmesh PROPERTY INTERPROCEDURAL_OPTIMIZATION OFF)

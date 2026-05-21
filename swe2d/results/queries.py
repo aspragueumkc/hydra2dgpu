@@ -24,6 +24,11 @@ from typing import Dict, List, Optional, Tuple
 
 import numpy as np
 
+try:
+    from swe2d.results.db_utils import open_ro as _open_ro_shared, table_exists as _table_exists_shared
+except Exception:
+    from .db_utils import open_ro as _open_ro_shared, table_exists as _table_exists_shared
+
 # ---------------------------------------------------------------------------
 # Public dataclass
 # ---------------------------------------------------------------------------
@@ -49,24 +54,11 @@ class ResultsDataset:
 
 def _open_ro(gpkg_path: str) -> Optional[sqlite3.Connection]:
     """Open the GPKG read-only; return None on failure."""
-    try:
-        uri = f"file:{gpkg_path}?mode=ro"
-        conn = sqlite3.connect(uri, uri=True)
-        conn.row_factory = sqlite3.Row
-        return conn
-    except Exception:
-        return None
+    return _open_ro_shared(gpkg_path, row_factory=sqlite3.Row)
 
 
 def _table_exists(conn: sqlite3.Connection, table_name: str) -> bool:
-    try:
-        cur = conn.execute(
-            "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?",
-            (table_name,),
-        )
-        return cur.fetchone() is not None
-    except Exception:
-        return False
+    return _table_exists_shared(conn, table_name)
 
 
 def _resolve_ts_table(conn: sqlite3.Connection, run_id: str) -> Tuple[str, bool]:

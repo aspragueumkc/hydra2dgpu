@@ -7,14 +7,14 @@ class TestSWE2DGPUCouplingKernel(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         try:
-            import backwater_swe2d as mod
+            import hydra_swe2d as mod
         except Exception:
             mod = None
         cls.mod = mod
 
     def _require_cuda_kernel(self):
         if self.mod is None:
-            self.skipTest("backwater_swe2d module not available")
+            self.skipTest("hydra_swe2d module not available")
         if not hasattr(self.mod, "swe2d_gpu_compute_coupling_sources"):
             self.skipTest("swe2d_gpu_compute_coupling_sources not available")
         if not bool(self.mod.swe2d_gpu_available()):

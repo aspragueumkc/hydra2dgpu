@@ -21,8 +21,8 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 def _load_module():
     try:
-        import backwater_swe2d
-        return backwater_swe2d
+        import hydra_swe2d
+        return hydra_swe2d
     except ImportError:
         return None
 
@@ -57,7 +57,7 @@ def _make_rect_mesh(nx, ny, lx, ly):
     return node_x, node_y, node_z, np.array(cells, dtype=np.int32)
 
 
-@unittest.skipUnless(_load_module() is not None, "backwater_swe2d not built")
+@unittest.skipUnless(_load_module() is not None, "hydra_swe2d not built")
 @unittest.skipUnless(_gpu_available(), "CUDA GPU not available")
 class TestSWE2DGPUValidationPerf(unittest.TestCase):
     NX, NY = 80, 40

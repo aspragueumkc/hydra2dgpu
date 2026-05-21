@@ -1,4 +1,4 @@
-"""QGIS plugin entry point for Backwater
+"""QGIS plugin entry point for HYDRA
 
 QGIS expects a `classFactory(iface)` function that returns the plugin
 instance. This file exposes that function.
@@ -6,8 +6,8 @@ instance. This file exposes that function.
 import os as _os
 import sys as _sys
 
-# Add the compiled C++ extension directory so backwater_tqmesh and
-# backwater_swe2d can be imported from anywhere inside the plugin.
+# Add the compiled C++ extension directory so hydra_tqmesh and
+# hydra_swe2d can be imported from anywhere inside the plugin.
 _plugin_dir = _os.path.dirname(_os.path.abspath(__file__))
 _build_dir = _os.path.join(_plugin_dir, "build")
 if _build_dir not in _sys.path:
@@ -17,5 +17,5 @@ if _plugin_dir not in _sys.path:
 
 
 def classFactory(iface):
-    from .backwater_plugin import BackwaterQgisPlugin
-    return BackwaterQgisPlugin(iface)
+    from .hydra_plugin import HydraQgisPlugin
+    return HydraQgisPlugin(iface)

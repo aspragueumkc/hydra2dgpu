@@ -49,7 +49,7 @@ def _ensure_plugin_imports() -> None:
 
 _ensure_plugin_imports()
 
-from swe2d_meshing import (  # noqa: E402
+from swe2d.mesh.meshing import (  # noqa: E402
     CellConstraint,
     ConceptualModel,
     ConceptualRegion,
@@ -93,35 +93,54 @@ def _open_layer(ds: ogr.DataSource, layer_name: str, required: bool) -> Optional
     return lyr
 
 
-def _ring_from_polygon_geom(poly_geom: ogr.Geometry) -> List[Tuple[float, float]]:
-    ring = poly_geom.GetGeometryRef(0)
-    if ring is None:
+def _ring_from_linear_geom(ring_geom: ogr.Geometry) -> List[Tuple[float, float]]:
+    if ring_geom is None:
         return []
-    pts = ring.GetPoints()
+    pts = ring_geom.GetPoints()
     out = [(float(x), float(y)) for x, y, *_ in pts]
     if len(out) >= 2 and out[0] == out[-1]:
         out = out[:-1]
     return out
 
 
-def _iter_polygon_rings(geom: ogr.Geometry) -> Iterable[List[Tuple[float, float]]]:
+def _polygon_parts_from_geom(
+    geom: ogr.Geometry,
+) -> Iterable[Tuple[List[Tuple[float, float]], List[List[Tuple[float, float]]]]]:
     if geom is None:
         return
     gname = geom.GetGeometryName().upper()
     if gname == "POLYGON":
-        ring = _ring_from_polygon_geom(geom)
-        if len(ring) >= 3:
-            yield ring
+        outer = _ring_from_linear_geom(geom.GetGeometryRef(0))
+        if len(outer) < 3:
+            return
+        holes: List[List[Tuple[float, float]]] = []
+        for i in range(1, geom.GetGeometryCount()):
+            h = _ring_from_linear_geom(geom.GetGeometryRef(i))
+            if len(h) >= 3:
+                holes.append(h)
+        yield outer, holes
         return
     if gname == "MULTIPOLYGON":
         for i in range(geom.GetGeometryCount()):
             pg = geom.GetGeometryRef(i)
             if pg is None:
                 continue
-            ring = _ring_from_polygon_geom(pg)
-            if len(ring) >= 3:
-                yield ring
+            outer = _ring_from_linear_geom(pg.GetGeometryRef(0))
+            if len(outer) < 3:
+                continue
+            holes: List[List[Tuple[float, float]]] = []
+            for j in range(1, pg.GetGeometryCount()):
+                h = _ring_from_linear_geom(pg.GetGeometryRef(j))
+                if len(h) >= 3:
+                    holes.append(h)
+            yield outer, holes
         return
+
+
+def _iter_polygon_rings(geom: ogr.Geometry) -> Iterable[List[Tuple[float, float]]]:
+    for outer, _holes in _polygon_parts_from_geom(geom):
+        if len(outer) >= 3:
+            yield outer
 
 
 def _iter_line_coords(geom: ogr.Geometry) -> Iterable[List[Tuple[float, float]]]:
@@ -184,7 +203,7 @@ def load_conceptual_model(
             continue
 
         part_idx = 0
-        for ring in _iter_polygon_rings(geom):
+        for ring, holes in _polygon_parts_from_geom(geom):
             region_id = rid if part_idx == 0 else int(f"{rid}{part_idx}")
             regions.append(
                 ConceptualRegion(
@@ -193,6 +212,7 @@ def load_conceptual_model(
                     default_size=size,
                     default_cell_type=ctype,
                     edge_lengths=use_edge_lengths,
+                    hole_rings=holes,
                 )
             )
             part_idx += 1

@@ -8,14 +8,14 @@ from typing import Callable, Dict, Optional, Sequence
 
 import numpy as np
 
-from swe2d_drainage_network import SWE2DUrbanDrainageModule
-from swe2d_extensions import (
+from swe2d.extensions.drainage_network import SWE2DUrbanDrainageModule
+from swe2d.extensions.extension_models import (
     DrainageSolverMode,
     HydraulicStructureConfig,
     PipeNetworkConfig,
     equivalent_circular_diameter_from_area,
 )
-from swe2d_structures import SWE2DStructureModule
+from swe2d.extensions.structures import SWE2DStructureModule
 
 
 @dataclass
@@ -390,7 +390,7 @@ class SWE2DCouplingController:
 
     def _native_cuda_module(self):
         try:
-            import backwater_swe2d as mod  # type: ignore
+            import hydra_swe2d as mod  # type: ignore
         except Exception:
             return None
         if not hasattr(mod, "swe2d_gpu_compute_coupling_sources"):
@@ -567,11 +567,9 @@ class SWE2DCouplingController:
                     adaptive_substeps = max(1, int(self.drainage._adaptive_substep_count(float(dt_s), solver_mode)))
                 implicit_substeps = max(1, int(getattr(self.drainage.cfg, "implicit_coupling_iterations", 1)))
                 n_substeps = max(base_substeps, adaptive_substeps, implicit_substeps)
-                dt_sub = float(dt_s) / float(n_substeps)
                 implicit_iters = max(1, int(getattr(self.drainage.cfg, "implicit_coupling_iterations", 1)))
                 coupling_relax = float(getattr(self.drainage.cfg, "implicit_coupling_relaxation", 0.5))
                 coupling_relax = min(1.0, max(0.0, coupling_relax))
-                area_safe = np.maximum(self.cell_area, 1.0e-12)
                 static_args = self._ensure_gpu_drainage_static_args()
                 if static_args is None:
                     raise RuntimeError("GPU drainage static args are unavailable")

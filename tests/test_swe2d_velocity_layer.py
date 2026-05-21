@@ -3,7 +3,7 @@ import sqlite3
 import tempfile
 import unittest
 
-from swe2d_velocity_layer import VelocityVectorBuilder
+from swe2d.results.velocity_layer import VelocityVectorBuilder
 
 
 class TestVelocityVectorBuilder(unittest.TestCase):
@@ -114,6 +114,48 @@ class TestVelocityVectorBuilder(unittest.TestCase):
             self.assertIn(7, by_id)
             self.assertAlmostEqual(float(by_id[7]["u"]), 1.5, places=9)
             self.assertAlmostEqual(float(by_id[7]["v"]), 2.0, places=9)
+        finally:
+            os.remove(db)
+
+    def test_build_streamline_traces_from_snapshot(self):
+        db = self._make_db()
+        try:
+            conn = sqlite3.connect(db)
+            try:
+                for j in range(3):
+                    for i in range(3):
+                        cid = j * 3 + i
+                        conn.execute(
+                            "INSERT INTO swe2d_mesh_results(run_id, t_s, cell_id, h, hu, hv) VALUES (?, ?, ?, ?, ?, ?)",
+                            ("run_c", 30.0, cid, 1.0, 1.0, 0.0),
+                        )
+                conn.commit()
+            finally:
+                conn.close()
+
+            builder = VelocityVectorBuilder()
+            snap = builder.load_snapshot(db, "run_c", 30.0, t_tol=0.1)
+            self.assertIsNotNone(snap)
+            assert snap is not None
+
+            cell_xy = {cid: (float(cid % 3), float(cid // 3)) for cid in range(9)}
+            traces = builder.build_streamline_traces(
+                snapshot=snap,
+                cell_xy=cell_xy,
+                seed_count=6,
+                max_steps=6,
+                step_len_factor=0.4,
+                min_depth=1.0e-6,
+                min_speed=0.01,
+                seed_stride=1,
+            )
+            self.assertGreater(len(traces), 0)
+
+            first = traces[0]
+            points = first.get("points", [])
+            self.assertGreaterEqual(len(points), 3)
+            self.assertGreater(float(first.get("length", 0.0)), 0.0)
+            self.assertGreater(float(first.get("mean_speed", 0.0)), 0.1)
         finally:
             os.remove(db)
 

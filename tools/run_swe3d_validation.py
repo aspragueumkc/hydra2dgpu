@@ -23,7 +23,7 @@ Exit codes
 ----------
   0   All active gates passed
   1   One or more gates failed
-  2   Cannot import backwater_swe2d or GPU unavailable (environment error)
+  2   Cannot import hydra_swe2d or GPU unavailable (environment error)
 """
 
 import argparse
@@ -342,9 +342,9 @@ def main():
 
     # ── Preflight ──────────────────────────────────────────────────────────
     try:
-        import backwater_swe2d as mod
+        import hydra_swe2d as mod
     except ImportError:
-        print(_fail("ERROR: cannot import backwater_swe2d — build the extension first."))
+        print(_fail("ERROR: cannot import hydra_swe2d — build the extension first."))
         print(f"  cd build && make -j$(nproc)")
         sys.exit(2)
 

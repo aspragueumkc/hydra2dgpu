@@ -5,7 +5,7 @@ from __future__ import annotations
 import math
 from typing import Dict, List, Sequence, Tuple
 
-from swe2d_extensions import (
+from swe2d.extensions.extension_models import (
     CouplingDiagnostics,
     DrainageCouplingEngine,
     DrainageLink,

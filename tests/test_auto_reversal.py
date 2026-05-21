@@ -7,7 +7,7 @@ This mimics what a user would experience in the Qt frontend.
 import json
 import tempfile
 import os
-import backwater_model as bw
+import hydra_1d as bw
 
 # Create a realistic 3-section model with sections in REVERSED order (upstream to downstream)
 # This is a common mistake when users manually add sections
@@ -86,7 +86,7 @@ try:
     print("-" * 70)
     
     # Run the solver - it will auto-detect and fix the order
-    results = bw.run_backwater(model, solver='py')
+    results = bw.run_hydra_1d(model, solver='py')
     
     print()
     print("RESULTS (after potential auto-reversal):")

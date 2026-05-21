@@ -1,6 +1,6 @@
 [general]
-name=Backwater
-description=Backwater and culvert solver GUI plugin
+name=HYDRA
+description=HYDRA - Hydrodynamics & Runoff Application plugin
 version=0.1
 qgisMinimumVersion=3.0
 author=Auto-generated

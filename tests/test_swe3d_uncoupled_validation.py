@@ -24,6 +24,7 @@ import os
 import sys
 import unittest
 from contextlib import contextmanager
+from datetime import datetime
 from pathlib import Path
 import numpy as np
 
@@ -32,6 +33,215 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 _PHYSICS_CASES = os.environ.get("BACKWATER_RUN_SWE3D_PHYSICS_CASES", "0") == "1"
 _OPENFOAM_DAMBREAK = os.environ.get("BACKWATER_RUN_OPENFOAM_DAMBREAK", "0") == "1"
 _SUBGRID_DAMBREAK = os.environ.get("BACKWATER_RUN_SWE3D_SUBGRID_DAMBREAK", "0") == "1"
+_SWE3D_TEST_VTK_ENABLE = os.environ.get("BACKWATER_SWE3D_TEST_VTK", "1") != "0"
+_SWE3D_TEST_VTK_STRIDE = max(1, int(os.environ.get("BACKWATER_SWE3D_TEST_VTK_STRIDE", "1")))
+_SWE3D_TEST_VTK_RUN = os.environ.get(
+    "BACKWATER_SWE3D_TEST_VTK_RUN_ID",
+    f"{datetime.now().strftime('%Y%m%d_%H%M%S')}_{os.getpid()}",
+)
+_SWE3D_TEST_VTK_BASE = Path(os.environ.get(
+    "BACKWATER_SWE3D_TEST_VTK_DIR",
+    str(Path(__file__).resolve().parent / "artifacts" / "swe3d_vtk"),
+))
+
+
+def _sanitize_path_name(name):
+    return "".join(ch if (ch.isalnum() or ch in "._-") else "_" for ch in str(name))
+
+
+class _SWE3DVTKRecorder:
+    """Writes per-test SWE3D mesh and state snapshots for ParaView inspection."""
+
+    def __init__(self, mod, test_id):
+        self.mod = mod
+        safe_test_id = _sanitize_path_name(test_id)
+        self.test_dir = _SWE3D_TEST_VTK_BASE / _SWE3D_TEST_VTK_RUN / safe_test_id
+        self.test_dir.mkdir(parents=True, exist_ok=True)
+        self._solver_entries = {}
+
+    def _origin(self):
+        def _get(name, default):
+            raw = os.environ.get(name, "").strip()
+            return float(raw) if raw else float(default)
+
+        return (
+            _get("BACKWATER_SWE3D_PATCH_ORIGIN_X", 0.0),
+            _get("BACKWATER_SWE3D_PATCH_ORIGIN_Y", 0.0),
+            _get("BACKWATER_SWE3D_PATCH_ORIGIN_Z", 0.0),
+        )
+
+    @staticmethod
+    def _write_structured_points_header(fh, title, nx, ny, nz, ox, oy, oz, dx, dy, dz):
+        fh.write("# vtk DataFile Version 3.0\n")
+        fh.write(f"{title}\n")
+        fh.write("ASCII\n")
+        fh.write("DATASET STRUCTURED_POINTS\n")
+        fh.write(f"DIMENSIONS {nx} {ny} {nz}\n")
+        fh.write(f"ORIGIN {ox:.9g} {oy:.9g} {oz:.9g}\n")
+        fh.write(f"SPACING {dx:.9g} {dy:.9g} {dz:.9g}\n")
+
+    def _write_state_vtk(self, entry, out_path, title):
+        stats = self.mod.swe2d_get_3d_patch_stats(entry["solver"])
+        nx = int(stats["nx"])
+        ny = int(stats["ny"])
+        nz = int(stats["nz"])
+        dx = float(stats["dx"])
+        dy = float(stats["dy"])
+        dz = float(stats["dz"])
+        n_points = nx * ny * nz
+        vof = np.asarray(self.mod.swe2d_get_3d_patch_vof(entry["solver"]), dtype=np.float64).reshape(-1)
+        if vof.size != n_points:
+            raise RuntimeError(
+                f"Unexpected vof size {vof.size} for dims {nx}x{ny}x{nz} ({n_points} expected)")
+
+        with out_path.open("w", encoding="utf-8") as fh:
+            self._write_structured_points_header(
+                fh,
+                title,
+                nx,
+                ny,
+                nz,
+                entry["origin"][0],
+                entry["origin"][1],
+                entry["origin"][2],
+                dx,
+                dy,
+                dz,
+            )
+            fh.write(f"POINT_DATA {n_points}\n")
+            fh.write("SCALARS vof float 1\n")
+            fh.write("LOOKUP_TABLE default\n")
+            np.savetxt(fh, vof, fmt="%.7g")
+
+    def _write_mesh_vtk(self, entry):
+        mesh_path = entry["solver_dir"] / "mesh.vtk"
+        with mesh_path.open("w", encoding="utf-8") as fh:
+            self._write_structured_points_header(
+                fh,
+                "SWE3D patch mesh",
+                entry["nx"],
+                entry["ny"],
+                entry["nz"],
+                entry["origin"][0],
+                entry["origin"][1],
+                entry["origin"][2],
+                entry["dx"],
+                entry["dy"],
+                entry["dz"],
+            )
+
+    def _ensure_entry(self, solver):
+        key = id(solver)
+        entry = self._solver_entries.get(key)
+        if entry is not None:
+            return entry
+
+        stats = self.mod.swe2d_get_3d_patch_stats(solver)
+        solver_idx = len(self._solver_entries) + 1
+        solver_dir = self.test_dir / f"solver_{solver_idx:02d}"
+        solver_dir.mkdir(parents=True, exist_ok=True)
+
+        entry = {
+            "solver": solver,
+            "solver_dir": solver_dir,
+            "origin": self._origin(),
+            "nx": int(stats["nx"]),
+            "ny": int(stats["ny"]),
+            "nz": int(stats["nz"]),
+            "dx": float(stats["dx"]),
+            "dy": float(stats["dy"]),
+            "dz": float(stats["dz"]),
+            "step": 0,
+            "snapshots": [],
+        }
+        self._solver_entries[key] = entry
+        self._write_mesh_vtk(entry)
+        return entry
+
+    def capture_step(self, solver, diag):
+        try:
+            entry = self._ensure_entry(solver)
+            step_idx = int(entry["step"])
+            entry["step"] = step_idx + 1
+            if (step_idx % _SWE3D_TEST_VTK_STRIDE) != 0:
+                return
+
+            dt = 0.0
+            if isinstance(diag, dict):
+                dt = float(diag.get("dt", 0.0) or 0.0)
+            out_name = f"state_{step_idx:05d}.vtk"
+            out_path = entry["solver_dir"] / out_name
+            self._write_state_vtk(entry, out_path, f"SWE3D state step {step_idx} dt={dt:.6e}")
+            entry["snapshots"].append((float(step_idx), out_name))
+        except Exception:
+            # Test assertions should not be blocked by exporter failures.
+            return
+
+    def capture_final(self, solver, tag="final"):
+        try:
+            entry = self._ensure_entry(solver)
+            out_name = f"state_{_sanitize_path_name(tag)}.vtk"
+            out_path = entry["solver_dir"] / out_name
+            self._write_state_vtk(entry, out_path, f"SWE3D state {tag}")
+            entry["snapshots"].append((float(entry["step"]), out_name))
+            self._write_pvd(entry)
+        except Exception:
+            return
+
+    @staticmethod
+    def _write_pvd(entry):
+        pvd_path = entry["solver_dir"] / "series.pvd"
+        with pvd_path.open("w", encoding="utf-8") as fh:
+            fh.write('<?xml version="1.0"?>\n')
+            fh.write('<VTKFile type="Collection" version="0.1" byte_order="LittleEndian">\n')
+            fh.write('  <Collection>\n')
+            for timestep, filename in entry["snapshots"]:
+                fh.write(
+                    f'    <DataSet timestep="{timestep:.6f}" group="" part="0" file="{filename}"/>\n')
+            fh.write('  </Collection>\n')
+            fh.write('</VTKFile>\n')
+
+
+def _install_swe3d_vtk_hooks(mod, test_id):
+    if not _SWE3D_TEST_VTK_ENABLE:
+        return None
+
+    recorder = _SWE3DVTKRecorder(mod, test_id)
+    orig_step = mod.swe2d_step
+    orig_destroy = mod.swe2d_destroy
+
+    def _step_hook(solver, dt):
+        try:
+            diag = orig_step(solver, dt)
+        except Exception:
+            recorder.capture_final(solver, tag="error")
+            raise
+        recorder.capture_step(solver, diag)
+        return diag
+
+    def _destroy_hook(solver):
+        recorder.capture_final(solver, tag="final")
+        return orig_destroy(solver)
+
+    mod.swe2d_step = _step_hook
+    mod.swe2d_destroy = _destroy_hook
+    return {
+        "recorder": recorder,
+        "orig_step": orig_step,
+        "orig_destroy": orig_destroy,
+        "step_hook": _step_hook,
+        "destroy_hook": _destroy_hook,
+    }
+
+
+def _uninstall_swe3d_vtk_hooks(mod, hook_state):
+    if not hook_state:
+        return
+
+    if getattr(mod, "swe2d_step", None) is hook_state.get("step_hook"):
+        mod.swe2d_step = hook_state["orig_step"]
+    if getattr(mod, "swe2d_destroy", None) is hook_state.get("destroy_hook"):
+        mod.swe2d_destroy = hook_state["orig_destroy"]
 
 
 @contextmanager
@@ -52,8 +262,8 @@ def _temporary_env(overrides):
 
 def _load_module():
     try:
-        import backwater_swe2d
-        return backwater_swe2d
+        import hydra_swe2d
+        return hydra_swe2d
     except ImportError:
         repo_root = Path(__file__).resolve().parent.parent
         build_dir = repo_root / "build"
@@ -62,8 +272,8 @@ def _load_module():
             if build_path not in sys.path:
                 sys.path.insert(0, build_path)
             try:
-                import backwater_swe2d
-                return backwater_swe2d
+                import hydra_swe2d
+                return hydra_swe2d
             except ImportError:
                 return None
         return None
@@ -258,16 +468,20 @@ def _porous_slotted_dam_geometry(
     return phi, ax, ay, az, porous_mask, slot_mask
 
 
-@unittest.skipUnless(_load_module() is not None, "backwater_swe2d not built")
+@unittest.skipUnless(_load_module() is not None, "hydra_swe2d not built")
 @unittest.skipUnless(_gpu_available(), "CUDA GPU not available")
 class TestSWE3DUncoupledValidation(unittest.TestCase):
     """Stage-1 validation gates for uncoupled 3D mode."""
 
     def setUp(self):
         self.mod = _load_module()
+        self._vtk_hook_state = _install_swe3d_vtk_hooks(self.mod, self.id())
         self.mesh = _make_rect_mesh(self.mod, 20, 10, 200.0, 100.0)
         n_cells = self.mod.swe2d_mesh_info(self.mesh)["n_cells"]
         self.h0 = np.full(n_cells, 1.0, dtype=np.float64)
+
+    def tearDown(self):
+        _uninstall_swe3d_vtk_hooks(self.mod, getattr(self, "_vtk_hook_state", None))
 
     # ── Smoke ──────────────────────────────────────────────────────────────────
 
@@ -911,6 +1125,34 @@ class TestSWE3DUncoupledValidation(unittest.TestCase):
         finally:
             self.mod.swe2d_destroy(solver)
 
+    def test_state_guard_fail_fast_raises_on_velocity_blowup(self):
+        """Production hardening: state guard should fail-fast on nonphysical velocity magnitude."""
+        env = {
+            "BACKWATER_SWE3D_PROJECTION_REJECT_ENABLE": "1",
+            "BACKWATER_SWE3D_PROJECTION_FAIL_FAST": "1",
+            "BACKWATER_SWE3D_PROJECTION_RESIDUAL_TARGET": "1.0",
+            "BACKWATER_SWE3D_PROJECTION_MAX_RETRIES": "1",
+            "BACKWATER_SWE3D_STATE_REJECT_ENABLE": "1",
+            "BACKWATER_SWE3D_STATE_MAX_ABS_VELOCITY": "0.25",
+            "BACKWATER_SWE3D_STATE_MAX_ABS_PRESSURE": "1e12",
+            "BACKWATER_SWE3D_STATE_VOF_BOUNDS_TOL": "1e-6",
+        }
+        solver = _make_3d_solver(self.mod, self.mesh, self.h0, env_overrides=env)
+        try:
+            stats0 = self.mod.swe2d_get_3d_patch_stats(solver)
+            n = int(stats0["n_cells"])
+
+            u_ic = np.full(n, 10.0, dtype=np.float64)
+            zeros = np.zeros(n, dtype=np.float64)
+            self.mod.swe2d_set_3d_patch_state(
+                solver, u=u_ic, v=zeros, w=zeros, p=zeros)
+
+            with self.assertRaisesRegex(RuntimeError, "state guard retry exhausted"):
+                with _temporary_env(env):
+                    self.mod.swe2d_step(solver, 0.05)
+        finally:
+            self.mod.swe2d_destroy(solver)
+
     def test_vof_advection_transports_interface_positive_x(self):
         """
         Numerics gate: conservative MUSCL-limited VoF transport should move an x-slab
@@ -1273,7 +1515,7 @@ class TestSWE3DUncoupledValidation(unittest.TestCase):
                     f"delta={abs(value-ref):.4e}  tol={tol:.4e}")
 
 
-@unittest.skipUnless(_load_module() is not None, "backwater_swe2d not built")
+@unittest.skipUnless(_load_module() is not None, "hydra_swe2d not built")
 @unittest.skipUnless(_gpu_available(), "CUDA GPU not available")
 @unittest.skipUnless(
     _SUBGRID_DAMBREAK,
@@ -1283,11 +1525,15 @@ class TestSWE3DSubgridDamBreak(unittest.TestCase):
 
     def setUp(self):
         self.mod = _load_module()
+        self._vtk_hook_state = _install_swe3d_vtk_hooks(self.mod, self.id())
         self.mesh = _make_rect_mesh(self.mod, 20, 10, 200.0, 100.0)
         n_cells = self.mod.swe2d_mesh_info(self.mesh)["n_cells"]
         self.h0 = np.full(n_cells, 1.0, dtype=np.float64)
         if not hasattr(self.mod, "swe2d_set_3d_patch_geometry"):
             self.skipTest("swe2d_set_3d_patch_geometry not available in native module")
+
+    def tearDown(self):
+        _uninstall_swe3d_vtk_hooks(self.mod, getattr(self, "_vtk_hook_state", None))
 
     def test_subgrid_dam_break_breach_transmits_limited_mass(self):
         """

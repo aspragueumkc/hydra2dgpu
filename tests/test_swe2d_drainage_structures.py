@@ -1,10 +1,10 @@
 import unittest
 import numpy as np
 
-from swe2d_backend import SWE2DBackend, swe2d_available, swe2d_gpu_available
-from swe2d_coupling import SWE2DCouplingController, pack_coupling_soa
-from swe2d_drainage_network import SWE2DUrbanDrainageModule
-from swe2d_extensions import (
+from swe2d.runtime.backend import SWE2DBackend, swe2d_available, swe2d_gpu_available
+from swe2d.runtime.coupling import SWE2DCouplingController, pack_coupling_soa
+from swe2d.extensions.drainage_network import SWE2DUrbanDrainageModule
+from swe2d.extensions.extension_models import (
     DrainageLink,
     DrainageNode,
     DrainageSolverMode,
@@ -16,7 +16,7 @@ from swe2d_extensions import (
     PipeNetworkConfig,
     StructureType,
 )
-from swe2d_structures import SWE2DStructureModule
+from swe2d.extensions.structures import SWE2DStructureModule
 
 try:
     import swe2d_workbench_qt as _wbqt

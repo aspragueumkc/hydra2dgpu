@@ -45,8 +45,8 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 def _load_module():
     try:
-        import backwater_swe2d
-        return backwater_swe2d
+        import hydra_swe2d
+        return hydra_swe2d
     except ImportError:
         return None
 
@@ -205,7 +205,7 @@ def stoker_dam_break(x, t, hL, hR, g=9.81):
 # Test: unstructured dam-break stability for all reconstruction modes
 # ─────────────────────────────────────────────────────────────────────────────
 
-@unittest.skipUnless(_load_module() is not None, "backwater_swe2d not built")
+@unittest.skipUnless(_load_module() is not None, "hydra_swe2d not built")
 @unittest.skipUnless(_gmsh_available(), "gmsh not installed")
 class TestDamBreakUnstructuredStability(unittest.TestCase):
     """
@@ -285,7 +285,7 @@ class TestDamBreakUnstructuredStability(unittest.TestCase):
 # Test: unstructured dam-break accuracy (scheme 0 vs analytical)
 # ─────────────────────────────────────────────────────────────────────────────
 
-@unittest.skipUnless(_load_module() is not None, "backwater_swe2d not built")
+@unittest.skipUnless(_load_module() is not None, "hydra_swe2d not built")
 @unittest.skipUnless(_gmsh_available(), "gmsh not installed")
 class TestDamBreakUnstructuredAccuracy(unittest.TestCase):
     """
@@ -356,7 +356,7 @@ class TestDamBreakUnstructuredAccuracy(unittest.TestCase):
 # Test: unstructured lake-at-rest well-balanced for all reconstruction modes
 # ─────────────────────────────────────────────────────────────────────────────
 
-@unittest.skipUnless(_load_module() is not None, "backwater_swe2d not built")
+@unittest.skipUnless(_load_module() is not None, "hydra_swe2d not built")
 @unittest.skipUnless(_gmsh_available(), "gmsh not installed")
 class TestLakeAtRestUnstructured(unittest.TestCase):
     """

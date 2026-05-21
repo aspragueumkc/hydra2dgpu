@@ -14,15 +14,15 @@ import numpy as np
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-from swe2d_backend import SWE2DBackend, swe2d_available
+from swe2d.runtime.backend import SWE2DBackend, swe2d_available
 from tests.test_swe2d_unstructured import _make_gmsh_triangle_mesh
 
 
 def _load_module():
     try:
-        import backwater_swe2d
+        import hydra_swe2d
 
-        return backwater_swe2d
+        return hydra_swe2d
     except Exception:
         return None
 
@@ -46,7 +46,7 @@ def _gmsh_available():
         return False
 
 
-@unittest.skipUnless(swe2d_available(), "backwater_swe2d not built")
+@unittest.skipUnless(swe2d_available(), "hydra_swe2d not built")
 @unittest.skipUnless(_gpu_available(), "CUDA GPU not available")
 @unittest.skipUnless(_gmsh_available(), "gmsh not installed")
 class TestGPUUnstructuredRainOnGrid(unittest.TestCase):

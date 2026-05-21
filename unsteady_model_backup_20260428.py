@@ -59,7 +59,7 @@ except ImportError:
 
 # Shared hydraulic helpers from the steady model
 try:
-    from backwater_model import (
+    from hydra_1d import (
         CrossSection,
         ModelInput,
         submerged_trapezoids_area_perimeter,
@@ -71,7 +71,7 @@ try:
         run_backwater,
     )
 except ImportError:
-    from .backwater_model import (  # type: ignore
+    from .hydra_1d import (  # type: ignore
         CrossSection,
         ModelInput,
         submerged_trapezoids_area_perimeter,

@@ -1,5 +1,5 @@
 import os, csv
-import backwater_model as bw
+import hydra_1d as bw
 
 root = os.path.join(os.getcwd(), 'hec_ras_project')
 # read sections metadata
@@ -56,13 +56,13 @@ S0 = 0.003
 # Scenario A: default minor losses (use class defaults: contraction=0.1, expansion=0.3)
 sections_A = build_sections()
 model_A = bw.ModelInput(flow_cfs=Q, flow_change=None, boundary_condition='normal_depth', boundary_value=S0, sections=sections_A)
-results_A = bw.run_backwater(model_A)
+results_A = bw.run_hydra_1d(model_A)
 compA = {sxn.river_station: st.wse for sxn, st in zip(model_A.sections, results_A)}
 
 # Scenario B: remove minor losses and expansion/contraction (set coeffs=0)
 sections_B = build_sections(contraction=0.0, expansion=0.0)
 model_B = bw.ModelInput(flow_cfs=Q, flow_change=None, boundary_condition='normal_depth', boundary_value=S0, sections=sections_B)
-results_B = bw.run_backwater(model_B)
+results_B = bw.run_hydra_1d(model_B)
 compB = {sxn.river_station: st.wse for sxn, st in zip(model_B.sections, results_B)}
 
 # Compare

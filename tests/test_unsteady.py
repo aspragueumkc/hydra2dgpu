@@ -49,7 +49,7 @@ from unsteady_model import (
     load_hydrograph_from_geopackage,
 )
 
-from backwater_model import CrossSection, ModelInput
+from hydra_1d import CrossSection, ModelInput
 
 
 # ---------------------------------------------------------------------------

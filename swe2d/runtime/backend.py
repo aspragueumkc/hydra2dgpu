@@ -1,6 +1,6 @@
 """
 swe2d_backend.py
-Python bridge for the native 2D SWE hybrid GPU/CPU solver (backwater_swe2d).
+Python bridge for the native 2D SWE hybrid GPU/CPU solver (hydra_swe2d).
 
 Usage example:
     from swe2d_backend import SWE2DBackend, BCType
@@ -21,7 +21,7 @@ import inspect
 import numpy as np
 from typing import Callable, Dict, List, Optional, Tuple, Union
 
-from swe2d_extensions import (
+from swe2d.extensions.extension_models import (
     BedFrictionModel,
     GodunovSolverMode,
     SWE2DEquationSet,
@@ -36,7 +36,11 @@ from swe2d_extensions import (
 # Ensure the native extension (.so) built under ./build/ is findable regardless
 # of how Python was launched (QGIS, standalone terminal, pytest, etc.).
 _here = os.path.dirname(os.path.abspath(__file__))
+_plugin_root = os.path.abspath(os.path.join(_here, "..", ".."))
 for _candidate in (
+    os.path.join(_plugin_root, "build"),
+    os.path.join(_plugin_root, "build", "Release"),
+    os.path.join(_plugin_root, "build", "Debug"),
     os.path.join(_here, "build"),
     os.path.join(_here, "build", "Release"),
     os.path.join(_here, "build", "Debug"),
@@ -71,7 +75,7 @@ def _load_swe2d_module():
     if _swe2d_load_error is not None:
         return None
     try:
-        import backwater_swe2d as mod
+        import hydra_swe2d as mod
         _swe2d_mod = mod
         return mod
     except ImportError as e:
@@ -158,6 +162,10 @@ def configure_swe3d_runtime(
     projection_dt_reduction: Optional[float] = None,
     projection_max_retries: Optional[int] = None,
     projection_min_dt_factor: Optional[float] = None,
+    state_reject_enable: Optional[bool] = None,
+    state_vof_bounds_tol: Optional[float] = None,
+    state_max_abs_velocity: Optional[float] = None,
+    state_max_abs_pressure: Optional[float] = None,
     geometry_gate_strict: Optional[bool] = None,
     geometry_gate_max_solid_fraction: Optional[float] = None,
     geometry_gate_max_seed_leak_fallbacks: Optional[int] = None,
@@ -213,6 +221,29 @@ def configure_swe3d_runtime(
         os.environ["BACKWATER_SWE3D_PROJECTION_MIN_DT_FACTOR"] = f"{min_fac:.17g}"
         applied["projection_min_dt_factor"] = min_fac
 
+    if state_reject_enable is not None:
+        enabled = bool(state_reject_enable)
+        os.environ["BACKWATER_SWE3D_STATE_REJECT_ENABLE"] = "1" if enabled else "0"
+        applied["state_reject_enable"] = enabled
+    if state_vof_bounds_tol is not None:
+        tol = float(state_vof_bounds_tol)
+        if not np.isfinite(tol) or tol < 0.0:
+            raise ValueError("state_vof_bounds_tol must be >= 0")
+        os.environ["BACKWATER_SWE3D_STATE_VOF_BOUNDS_TOL"] = f"{tol:.17g}"
+        applied["state_vof_bounds_tol"] = tol
+    if state_max_abs_velocity is not None:
+        vmax = float(state_max_abs_velocity)
+        if not np.isfinite(vmax) or vmax <= 0.0:
+            raise ValueError("state_max_abs_velocity must be > 0")
+        os.environ["BACKWATER_SWE3D_STATE_MAX_ABS_VELOCITY"] = f"{vmax:.17g}"
+        applied["state_max_abs_velocity"] = vmax
+    if state_max_abs_pressure is not None:
+        pmax = float(state_max_abs_pressure)
+        if not np.isfinite(pmax) or pmax <= 0.0:
+            raise ValueError("state_max_abs_pressure must be > 0")
+        os.environ["BACKWATER_SWE3D_STATE_MAX_ABS_PRESSURE"] = f"{pmax:.17g}"
+        applied["state_max_abs_pressure"] = pmax
+
     if geometry_gate_strict is not None:
         strict = bool(geometry_gate_strict)
         os.environ["BACKWATER_SWE3D_GEOM_STRICT"] = "1" if strict else "0"
@@ -238,7 +269,7 @@ def configure_swe3d_runtime(
 # ─────────────────────────────────────────────────────────────────────────────
 class SWE2DBackend:
     """
-    High-level Python interface to the native backwater_swe2d module.
+    High-level Python interface to the native hydra_swe2d module.
 
     Lifecycle:
         1. Construct (optionally pass use_gpu=False to force CPU path).
@@ -253,7 +284,7 @@ class SWE2DBackend:
         mod = _load_swe2d_module()
         if mod is None:
             raise RuntimeError(
-                f"backwater_swe2d native module not available: {_swe2d_load_error}. "
+                f"hydra_swe2d native module not available: {_swe2d_load_error}. "
                 "Build the native module first (cmake --build build)."
             )
         self._mod = mod
@@ -706,7 +737,7 @@ class SWE2DBackend:
             except AttributeError:
                 raise RuntimeError(
                     "Loaded native solver does not expose GPU capability checks; "
-                    "rebuild backwater_swe2d with CUDA support."
+                    "rebuild hydra_swe2d with CUDA support."
                 )
 
         self._solver_h = self._create_solver_compat(

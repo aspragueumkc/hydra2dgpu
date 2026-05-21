@@ -1,0 +1,2404 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<ui version="4.0">
+  <class>SWE2DWorkbenchDesignerShell</class>
+  <widget class="QWidget" name="SWE2DWorkbenchDesignerShell">
+    <property name="geometry">
+      <rect>
+        <x>0</x>
+        <y>0</y>
+        <width>1280</width>
+        <height>820</height>
+      </rect>
+    </property>
+    <layout class="QVBoxLayout" name="root_layout">
+      <property name="leftMargin">
+        <number>0</number>
+      </property>
+      <property name="topMargin">
+        <number>0</number>
+      </property>
+      <property name="rightMargin">
+        <number>0</number>
+      </property>
+      <property name="bottomMargin">
+        <number>0</number>
+      </property>
+      <item>
+        <widget class="QLabel" name="header_lbl">
+          <property name="text">
+            <string>Interactive 2D SWE workflow</string>
+          </property>
+          <property name="wordWrap">
+            <bool>true</bool>
+          </property>
+        </widget>
+      </item>
+      <item>
+        <widget class="QSplitter" name="main_splitter">
+          <property name="orientation">
+            <enum>Qt::Horizontal</enum>
+          </property>
+          <widget class="QTabWidget" name="left_tabs">
+            <property name="documentMode">
+              <bool>true</bool>
+            </property>
+            <widget class="QWidget" name="mesh_tab">
+              <attribute name="title">
+                <string>Mesh</string>
+              </attribute>
+              <layout class="QVBoxLayout" name="mesh_tab_layout">
+                <property name="leftMargin">
+                  <number>0</number>
+                </property>
+                <property name="topMargin">
+                  <number>0</number>
+                </property>
+                <property name="rightMargin">
+                  <number>0</number>
+                </property>
+                <property name="bottomMargin">
+                  <number>0</number>
+                </property>
+                <item>
+                  <widget class="QGroupBox" name="mesh_group">
+                    <property name="title">
+                      <string>Mesh Generation</string>
+                    </property>
+                    <layout class="QFormLayout" name="mesh_form">
+                      <item row="0" column="1">
+                        <widget class="QSpinBox" name="nx_spin"/>
+                      </item>
+                      <item row="2" column="0">
+                        <widget class="QLabel" name="label_ny">
+                          <property name="text">
+                            <string>Cells in Y:</string>
+                          </property>
+                        </widget>
+                      </item>
+                      <item row="2" column="1">
+                        <widget class="QSpinBox" name="ny_spin"/>
+                      </item>
+                      <item row="3" column="0">
+                        <widget class="QLabel" name="label_lx">
+                          <property name="text">
+                            <string>Length X:</string>
+                          </property>
+                        </widget>
+                      </item>
+                      <item row="3" column="1">
+                        <widget class="QDoubleSpinBox" name="lx_spin"/>
+                      </item>
+                      <item row="4" column="0">
+                        <widget class="QLabel" name="label_ly">
+                          <property name="text">
+                            <string>Length Y:</string>
+                          </property>
+                        </widget>
+                      </item>
+                      <item row="4" column="1">
+                        <widget class="QDoubleSpinBox" name="ly_spin"/>
+                      </item>
+                      <item row="5" column="0">
+                        <widget class="QLabel" name="label_bed_amp">
+                          <property name="toolTip">
+                            <string extracomment="Bed Perturbation Amplitude"/>
+                          </property>
+                          <property name="text">
+                            <string>Bed PA:</string>
+                          </property>
+                        </widget>
+                      </item>
+                      <item row="5" column="1">
+                        <widget class="QDoubleSpinBox" name="bed_amp_spin"/>
+                      </item>
+                      <item row="6" column="0">
+                        <widget class="QLabel" name="label_layout">
+                          <property name="text">
+                            <string>Structured layout:</string>
+                          </property>
+                        </widget>
+                      </item>
+                      <item row="6" column="1">
+                        <widget class="QComboBox" name="mesh_layout_combo"/>
+                      </item>
+                      <item row="8" column="0" colspan="2">
+                        <widget class="QPushButton" name="generate_mesh_btn">
+                          <property name="text">
+                            <string>Generate Mesh</string>
+                          </property>
+                        </widget>
+                      </item>
+                      <item row="9" column="0" colspan="2">
+                        <widget class="QLabel" name="mesh_info_lbl">
+                          <property name="text">
+                            <string>Mesh not generated</string>
+                          </property>
+                          <property name="wordWrap">
+                            <bool>true</bool>
+                          </property>
+                        </widget>
+                      </item>
+                      <item row="0" column="0">
+                        <widget class="QLabel" name="label_nx">
+                          <property name="text">
+                            <string>Cells in X:</string>
+                          </property>
+                        </widget>
+                      </item>
+                    </layout>
+                  </widget>
+                </item>
+              </layout>
+            </widget>
+            <widget class="QWidget" name="map_tab">
+              <attribute name="title">
+                <string>Map</string>
+              </attribute>
+              <layout class="QVBoxLayout" name="map_tab_layout">
+                <property name="leftMargin">
+                  <number>0</number>
+                </property>
+                <property name="topMargin">
+                  <number>0</number>
+                </property>
+                <property name="rightMargin">
+                  <number>0</number>
+                </property>
+                <property name="bottomMargin">
+                  <number>0</number>
+                </property>
+                <item>
+                  <widget class="QGroupBox" name="map_group">
+                    <property name="title">
+                      <string>Map Layer Mesh + Terrain</string>
+                    </property>
+                    <layout class="QVBoxLayout" name="map_layout">
+                      <property name="spacing">
+                        <number>6</number>
+                      </property>
+                      <item>
+                        <widget class="QGroupBox" name="map_data_group">
+                          <property name="title">
+                            <string>Data layers</string>
+                          </property>
+                          <layout class="QGridLayout" name="map_data_layout">
+                            <item row="0" column="0">
+                              <widget class="QLabel" name="label_nodes_layer">
+                                <property name="text">
+                                  <string>Nodes layer:</string>
+                                </property>
+                              </widget>
+                            </item>
+                            <item row="0" column="1">
+                              <widget class="QComboBox" name="nodes_layer_combo"/>
+                            </item>
+                            <item row="1" column="0">
+                              <widget class="QLabel" name="label_cells_layer">
+                                <property name="text">
+                                  <string>Cells layer:</string>
+                                </property>
+                              </widget>
+                            </item>
+                            <item row="1" column="1">
+                              <widget class="QComboBox" name="cells_layer_combo"/>
+                            </item>
+                            <item row="2" column="0">
+                              <widget class="QLabel" name="label_terrain_layer">
+                                <property name="text">
+                                  <string>Terrain raster:</string>
+                                </property>
+                              </widget>
+                            </item>
+                            <item row="2" column="1">
+                              <widget class="QComboBox" name="terrain_layer_combo"/>
+                            </item>
+                            <item row="3" column="0">
+                              <widget class="QLabel" name="label_manning_layer">
+                                <property name="text">
+                                  <string>Manning polygons:</string>
+                                </property>
+                              </widget>
+                            </item>
+                            <item row="3" column="1">
+                              <widget class="QComboBox" name="manning_layer_combo"/>
+                            </item>
+                            <item row="4" column="0">
+                              <widget class="QLabel" name="label_cn_layer">
+                                <property name="text">
+                                  <string>CN polygons:</string>
+                                </property>
+                              </widget>
+                            </item>
+                            <item row="4" column="1">
+                              <widget class="QComboBox" name="cn_layer_combo"/>
+                            </item>
+                            <item row="5" column="0">
+                              <widget class="QLabel" name="label_rain_gage_layer">
+                                <property name="text">
+                                  <string>Rain gages (points):</string>
+                                </property>
+                              </widget>
+                            </item>
+                            <item row="5" column="1">
+                              <widget class="QComboBox" name="rain_gage_layer_combo"/>
+                            </item>
+                            <item row="6" column="0">
+                              <widget class="QLabel" name="label_hyetograph_layer">
+                                <property name="text">
+                                  <string>Rain hyetographs (table):</string>
+                                </property>
+                              </widget>
+                            </item>
+                            <item row="6" column="1">
+                              <widget class="QComboBox" name="hyetograph_layer_combo"/>
+                            </item>
+                            <item row="7" column="0">
+                              <widget class="QLabel" name="label_sample_lines_layer">
+                                <property name="text">
+                                  <string>Sample lines layer:</string>
+                                </property>
+                              </widget>
+                            </item>
+                            <item row="7" column="1">
+                              <widget class="QComboBox" name="sample_lines_layer_combo"/>
+                            </item>
+                            <item row="8" column="0">
+                              <widget class="QLabel" name="label_drain_nodes_layer">
+                                <property name="text">
+                                  <string>Drainage nodes layer:</string>
+                                </property>
+                              </widget>
+                            </item>
+                            <item row="8" column="1">
+                              <widget class="QComboBox" name="drain_nodes_layer_combo"/>
+                            </item>
+                            <item row="9" column="0">
+                              <widget class="QLabel" name="label_drain_links_layer">
+                                <property name="text">
+                                  <string>Drainage links layer:</string>
+                                </property>
+                              </widget>
+                            </item>
+                            <item row="9" column="1">
+                              <widget class="QComboBox" name="drain_links_layer_combo"/>
+                            </item>
+                            <item row="10" column="0">
+                              <widget class="QLabel" name="label_drain_inlets_layer">
+                                <property name="text">
+                                  <string>Drainage inlet types (table):</string>
+                                </property>
+                              </widget>
+                            </item>
+                            <item row="10" column="1">
+                              <widget class="QComboBox" name="drain_inlets_layer_combo"/>
+                            </item>
+                            <item row="11" column="0">
+                              <widget class="QLabel" name="label_drain_node_inlets_layer">
+                                <property name="text">
+                                  <string>Drainage node-inlets (table):</string>
+                                </property>
+                              </widget>
+                            </item>
+                            <item row="11" column="1">
+                              <widget class="QComboBox" name="drain_node_inlets_layer_combo"/>
+                            </item>
+                            <item row="12" column="0">
+                              <widget class="QLabel" name="label_structures_layer">
+                                <property name="text">
+                                  <string>Hydraulic structures layer:</string>
+                                </property>
+                              </widget>
+                            </item>
+                            <item row="12" column="1">
+                              <widget class="QComboBox" name="structures_layer_combo"/>
+                            </item>
+                            <item row="13" column="0">
+                              <widget class="QLabel" name="label_layer_group">
+                                <property name="text">
+                                  <string>Layer group:</string>
+                                </property>
+                              </widget>
+                            </item>
+                            <item row="13" column="1">
+                              <widget class="QComboBox" name="layer_group_combo"/>
+                            </item>
+                            <item row="14" column="0" colspan="2">
+                              <widget class="QPushButton" name="autopop_group_btn">
+                                <property name="text">
+                                  <string>Autopopulate From Group</string>
+                                </property>
+                              </widget>
+                            </item>
+                            <item row="15" column="0">
+                              <widget class="QPushButton" name="refresh_layers_btn">
+                                <property name="text">
+                                  <string>Refresh Layers</string>
+                                </property>
+                              </widget>
+                            </item>
+                            <item row="15" column="1">
+                              <widget class="QPushButton" name="create_model_gpkg_btn">
+                                <property name="text">
+                                  <string>Create 2D Model GeoPackage</string>
+                                </property>
+                              </widget>
+                            </item>
+                          </layout>
+                        </widget>
+                      </item>
+                      <item>
+                        <widget class="QGroupBox" name="map_actions_group">
+                          <property name="title">
+                            <string>Model files and mesh actions</string>
+                          </property>
+                          <layout class="QGridLayout" name="map_actions_layout">
+                            <item row="0" column="0" colspan="2">
+                              <widget class="QPushButton" name="create_lumped_gpkg_btn">
+                                <property name="text">
+                                  <string>Create Lumped Hydro GeoPackage</string>
+                                </property>
+                              </widget>
+                            </item>
+                            <item row="1" column="0">
+                              <widget class="QPushButton" name="load_model_gpkg_btn">
+                                <property name="text">
+                                  <string>Load 2D Model GeoPackage</string>
+                                </property>
+                              </widget>
+                            </item>
+                            <item row="1" column="1">
+                              <widget class="QPushButton" name="migrate_model_gpkg_btn">
+                                <property name="text">
+                                  <string>Update GeoPackage Schema</string>
+                                </property>
+                              </widget>
+                            </item>
+                            <item row="2" column="0" colspan="2">
+                              <widget class="QPushButton" name="preview_coupling_btn">
+                                <property name="text">
+                                  <string>Preview Drainage/Structure Coupling</string>
+                                </property>
+                              </widget>
+                            </item>
+                            <item row="3" column="0">
+                              <widget class="QPushButton" name="export_mesh_layers_btn">
+                                <property name="text">
+                                  <string>Export Mesh To Map Layers</string>
+                                </property>
+                              </widget>
+                            </item>
+                            <item row="3" column="1">
+                              <widget class="QPushButton" name="save_hdf5_btn">
+                                <property name="text">
+                                  <string>Save Mesh To HEC-RAS HDF5</string>
+                                </property>
+                              </widget>
+                            </item>
+                            <item row="4" column="0" colspan="2">
+                              <widget class="QPushButton" name="save_results_hdf5_btn">
+                                <property name="text">
+                                  <string>Save Results To HEC-RAS HDF5</string>
+                                </property>
+                              </widget>
+                            </item>
+                            <item row="5" column="0" colspan="2">
+                              <widget class="QPushButton" name="save_results_ugrid_btn">
+                                <property name="text">
+                                  <string>Save Results To UGRID NetCDF</string>
+                                </property>
+                              </widget>
+                            </item>
+                            <item row="6" column="0" colspan="2">
+                              <widget class="QPushButton" name="import_mesh_layers_btn">
+                                <property name="text">
+                                  <string>Load Mesh From Selected Layers</string>
+                                </property>
+                              </widget>
+                            </item>
+                            <item row="7" column="0" colspan="2">
+                              <widget class="QPushButton" name="terrain_to_nodes_btn">
+                                <property name="text">
+                                  <string>Assign Node Z From Terrain</string>
+                                </property>
+                              </widget>
+                            </item>
+                            <item row="8" column="0" colspan="2">
+                              <widget class="QPushButton" name="pull_node_z_btn">
+                                <property name="text">
+                                  <string>Pull Node Z From Nodes Layer</string>
+                                </property>
+                              </widget>
+                            </item>
+                          </layout>
+                        </widget>
+                      </item>
+                      <item>
+                        <widget class="QGroupBox" name="map_results_group">
+                          <property name="title">
+                            <string>Results and overlays</string>
+                          </property>
+                          <layout class="QGridLayout" name="map_results_layout">
+                            <item row="0" column="0" colspan="2">
+                              <widget class="QCheckBox" name="extended_outputs_chk">
+                                <property name="text">
+                                  <string>Include extended outputs (momentum, qmag, wet mask, Fr, Manning)</string>
+                                </property>
+                              </widget>
+                            </item>
+                            <item row="1" column="0" colspan="2">
+                              <widget class="QCheckBox" name="save_mesh_results_to_gpkg_chk">
+                                <property name="text">
+                                  <string>Save mesh snapshot results to GeoPackage</string>
+                                </property>
+                              </widget>
+                            </item>
+                            <item row="2" column="0" colspan="2">
+                              <widget class="QCheckBox" name="save_line_results_to_gpkg_chk">
+                                <property name="text">
+                                  <string>Save sampled line results to GeoPackage</string>
+                                </property>
+                              </widget>
+                            </item>
+                            <item row="3" column="0" colspan="2">
+                              <widget class="QCheckBox" name="save_coupling_results_to_gpkg_chk">
+                                <property name="text">
+                                  <string>Save drainage/structure results to GeoPackage</string>
+                                </property>
+                              </widget>
+                            </item>
+                            <item row="4" column="0" colspan="2">
+                              <widget class="QCheckBox" name="save_run_log_to_gpkg_chk">
+                                <property name="text">
+                                  <string>Save run log to GeoPackage</string>
+                                </property>
+                              </widget>
+                            </item>
+                            <item row="5" column="0" colspan="2">
+                              <widget class="QPushButton" name="open_results_viewer_btn">
+                                <property name="text">
+                                  <string>Open 2D Results Viewer</string>
+                                </property>
+                              </widget>
+                            </item>
+                            <item row="6" column="0" colspan="2">
+                              <widget class="QPushButton" name="open_results_panel_btn">
+                                <property name="text">
+                                  <string>Results Panel (multi-run)</string>
+                                </property>
+                              </widget>
+                            </item>
+                            <item row="7" column="0" colspan="2">
+                              <widget class="QCheckBox" name="high_perf_canvas_overlay_chk">
+                                <property name="text">
+                                  <string>Show High-Perf Overlay On Map Canvas</string>
+                                </property>
+                              </widget>
+                            </item>
+                            <item row="8" column="0">
+                              <widget class="QLabel" name="label_high_perf_overlay_field">
+                                <property name="text">
+                                  <string>High-perf overlay field:</string>
+                                </property>
+                              </widget>
+                            </item>
+                            <item row="8" column="1">
+                              <widget class="QComboBox" name="high_perf_canvas_overlay_field_combo"/>
+                            </item>
+                            <item row="9" column="0">
+                              <widget class="QLabel" name="label_high_perf_overlay_cmap">
+                                <property name="text">
+                                  <string>High-perf overlay colormap:</string>
+                                </property>
+                              </widget>
+                            </item>
+                            <item row="9" column="1">
+                              <widget class="QComboBox" name="high_perf_canvas_overlay_cmap_combo"/>
+                            </item>
+                            <item row="10" column="0" colspan="2">
+                              <widget class="QCheckBox" name="high_perf_canvas_overlay_lock_canvas_chk">
+                                <property name="text">
+                                  <string>Lock overlay resolution to current canvas size</string>
+                                </property>
+                              </widget>
+                            </item>
+                            <item row="11" column="0">
+                              <widget class="QLabel" name="label_high_perf_overlay_res">
+                                <property name="text">
+                                  <string>High-perf overlay resolution:</string>
+                                </property>
+                              </widget>
+                            </item>
+                            <item row="11" column="1">
+                              <widget class="QComboBox" name="high_perf_canvas_overlay_res_combo"/>
+                            </item>
+                            <item row="12" column="0" colspan="2">
+                              <widget class="QCheckBox" name="high_perf_canvas_overlay_auto_contrast_chk">
+                                <property name="text">
+                                  <string>Auto contrast</string>
+                                </property>
+                              </widget>
+                            </item>
+                            <item row="13" column="0">
+                              <widget class="QLabel" name="label_high_perf_overlay_opacity">
+                                <property name="text">
+                                  <string>High-perf overlay opacity:</string>
+                                </property>
+                              </widget>
+                            </item>
+                            <item row="13" column="1">
+                              <widget class="QDoubleSpinBox" name="high_perf_canvas_overlay_opacity_spin"/>
+                            </item>
+                          </layout>
+                        </widget>
+                      </item>
+                      <item>
+                        <widget class="QGroupBox" name="map_tools_group">
+                          <property name="title">
+                            <string>Utilities and 3D tools</string>
+                          </property>
+                          <layout class="QGridLayout" name="map_tools_layout">
+                            <item row="0" column="0" colspan="2">
+                              <widget class="QPushButton" name="draw_sample_line_btn">
+                                <property name="text">
+                                  <string>Draw Sample Line On Map</string>
+                                </property>
+                              </widget>
+                            </item>
+                            <item row="1" column="0" colspan="2">
+                              <widget class="QPushButton" name="open_coupling_results_viewer_btn">
+                                <property name="text">
+                                  <string>Open Drainage/Structure Results Viewer</string>
+                                </property>
+                              </widget>
+                            </item>
+                            <item row="2" column="0" colspan="2">
+                              <widget class="QPushButton" name="open_run_log_viewer_btn">
+                                <property name="text">
+                                  <string>Open Run Log Viewer</string>
+                                </property>
+                              </widget>
+                            </item>
+                            <item row="3" column="0" colspan="2">
+                              <widget class="QLabel" name="layer_status_lbl">
+                                <property name="text">
+                                  <string>No layer-linked mesh yet</string>
+                                </property>
+                                <property name="wordWrap">
+                                  <bool>true</bool>
+                                </property>
+                              </widget>
+                            </item>
+                            <item row="4" column="0" colspan="2">
+                              <widget class="QPushButton" name="open_3d_patch_viewer_btn">
+                                <property name="text">
+                                  <string>Open 3D Patch Viewer</string>
+                                </property>
+                              </widget>
+                            </item>
+                            <item row="5" column="0" colspan="2">
+                              <widget class="QPushButton" name="publish_3d_patch_surface_btn">
+                                <property name="text">
+                                  <string>Publish Current 3D Surface To QGIS 3D</string>
+                                </property>
+                              </widget>
+                            </item>
+                          </layout>
+                        </widget>
+                      </item>
+                      <item>
+                        <spacer name="verticalSpacer">
+                          <property name="orientation">
+                            <enum>Qt::Vertical</enum>
+                          </property>
+                          <property name="sizeHint" stdset="0">
+                            <size>
+                              <width>20</width>
+                              <height>40</height>
+                            </size>
+                          </property>
+                        </spacer>
+                      </item>
+                    </layout>
+                  </widget>
+                </item>
+              </layout>
+            </widget>
+            <widget class="QWidget" name="topology_tab">
+              <attribute name="title">
+                <string>Topology</string>
+              </attribute>
+              <layout class="QVBoxLayout" name="topology_tab_layout">
+                <property name="leftMargin">
+                  <number>0</number>
+                </property>
+                <property name="topMargin">
+                  <number>0</number>
+                </property>
+                <property name="rightMargin">
+                  <number>0</number>
+                </property>
+                <property name="bottomMargin">
+                  <number>0</number>
+                </property>
+                <item>
+                  <widget class="QGroupBox" name="topo_group">
+                    <property name="title">
+                      <string>Topology Meshing (Face-centric)</string>
+                    </property>
+                    <layout class="QGridLayout" name="topo_layout">
+                      <item row="0" column="0">
+                        <widget class="QLabel" name="topo_nodes_lbl">
+                          <property name="text">
+                            <string>Topology nodes layer:</string>
+                          </property>
+                        </widget>
+                      </item>
+                      <item row="0" column="1">
+                        <widget class="QComboBox" name="topo_nodes_combo"/>
+                      </item>
+                      <item row="1" column="0">
+                        <widget class="QLabel" name="topo_arcs_lbl">
+                          <property name="text">
+                            <string>Topology arcs layer:</string>
+                          </property>
+                        </widget>
+                      </item>
+                      <item row="1" column="1">
+                        <widget class="QComboBox" name="topo_arcs_combo"/>
+                      </item>
+                      <item row="2" column="0">
+                        <widget class="QLabel" name="topo_regions_lbl">
+                          <property name="text">
+                            <string>Topology regions layer:</string>
+                          </property>
+                        </widget>
+                      </item>
+                      <item row="2" column="1">
+                        <widget class="QComboBox" name="topo_regions_combo"/>
+                      </item>
+                      <item row="3" column="0">
+                        <widget class="QLabel" name="topo_constraints_lbl">
+                          <property name="text">
+                            <string>Constraints layer:</string>
+                          </property>
+                        </widget>
+                      </item>
+                      <item row="3" column="1">
+                        <widget class="QComboBox" name="topo_constraints_combo"/>
+                      </item>
+                      <item row="4" column="0">
+                        <widget class="QLabel" name="topo_quad_edges_lbl">
+                          <property name="text">
+                            <string>Quad edges / transition layers:</string>
+                          </property>
+                        </widget>
+                      </item>
+                      <item row="4" column="1">
+                        <widget class="QComboBox" name="topo_quad_edges_combo"/>
+                      </item>
+                      <item row="5" column="0">
+                        <widget class="QLabel" name="topo_backend_lbl">
+                          <property name="text">
+                            <string>Meshing backend:</string>
+                          </property>
+                        </widget>
+                      </item>
+                      <item row="5" column="1">
+                        <widget class="QComboBox" name="topo_backend_combo"/>
+                      </item>
+                      <item row="6" column="0">
+                        <widget class="QLabel" name="topo_default_size_lbl">
+                          <property name="text">
+                            <string>Default target size:</string>
+                          </property>
+                        </widget>
+                      </item>
+                      <item row="6" column="1">
+                        <widget class="QDoubleSpinBox" name="topo_default_size_spin"/>
+                      </item>
+                      <item row="7" column="0">
+                        <widget class="QLabel" name="topo_default_cell_type_lbl">
+                          <property name="text">
+                            <string>Default cell type:</string>
+                          </property>
+                        </widget>
+                      </item>
+                      <item row="7" column="1">
+                        <widget class="QComboBox" name="topo_default_cell_type_combo"/>
+                      </item>
+                      <item row="8" column="0">
+                        <widget class="QLabel" name="topo_gmsh_controls_lbl">
+                          <property name="text">
+                            <string>Gmsh advanced controls:</string>
+                          </property>
+                        </widget>
+                      </item>
+                      <item row="8" column="1">
+                        <widget class="QWidget" name="topo_gmsh_controls_widget" native="true">
+                          <layout class="QFormLayout" name="topo_gmsh_controls_form">
+                            <property name="leftMargin">
+                              <number>0</number>
+                            </property>
+                            <property name="topMargin">
+                              <number>0</number>
+                            </property>
+                            <property name="rightMargin">
+                              <number>0</number>
+                            </property>
+                            <property name="bottomMargin">
+                              <number>0</number>
+                            </property>
+                            <item row="0" column="0">
+                              <widget class="QLabel" name="topo_gmsh_tri_algo_lbl">
+                                <property name="text">
+                                  <string>Triangle algorithm:</string>
+                                </property>
+                              </widget>
+                            </item>
+                            <item row="0" column="1">
+                              <widget class="QComboBox" name="topo_gmsh_tri_algo_combo"/>
+                            </item>
+                            <item row="1" column="0">
+                              <widget class="QLabel" name="topo_gmsh_quad_algo_lbl">
+                                <property name="text">
+                                  <string>Quadrilateral algorithm:</string>
+                                </property>
+                              </widget>
+                            </item>
+                            <item row="1" column="1">
+                              <widget class="QComboBox" name="topo_gmsh_quad_algo_combo"/>
+                            </item>
+                            <item row="2" column="0">
+                              <widget class="QLabel" name="topo_gmsh_recombine_algo_lbl">
+                                <property name="text">
+                                  <string>Recombine algorithm:</string>
+                                </property>
+                              </widget>
+                            </item>
+                            <item row="2" column="1">
+                              <widget class="QComboBox" name="topo_gmsh_recombine_algo_combo"/>
+                            </item>
+                            <item row="3" column="0">
+                              <widget class="QLabel" name="topo_gmsh_smoothing_lbl">
+                                <property name="text">
+                                  <string>Smoothing passes:</string>
+                                </property>
+                              </widget>
+                            </item>
+                            <item row="3" column="1">
+                              <widget class="QSpinBox" name="topo_gmsh_smoothing_spin"/>
+                            </item>
+                            <item row="4" column="0">
+                              <widget class="QLabel" name="topo_gmsh_optimize_iters_lbl">
+                                <property name="text">
+                                  <string>Optimize iterations:</string>
+                                </property>
+                              </widget>
+                            </item>
+                            <item row="4" column="1">
+                              <widget class="QSpinBox" name="topo_gmsh_optimize_iters_spin"/>
+                            </item>
+                            <item row="5" column="0">
+                              <widget class="QLabel" name="topo_gmsh_verbosity_lbl">
+                                <property name="text">
+                                  <string>Verbosity:</string>
+                                </property>
+                              </widget>
+                            </item>
+                            <item row="5" column="1">
+                              <widget class="QSpinBox" name="topo_gmsh_verbosity_spin"/>
+                            </item>
+                            <item row="6" column="0" colspan="2">
+                              <widget class="QCheckBox" name="topo_gmsh_optimize_netgen_chk">
+                                <property name="text">
+                                  <string>Enable Netgen optimize</string>
+                                </property>
+                              </widget>
+                            </item>
+                          </layout>
+                        </widget>
+                      </item>
+                      <item row="9" column="0">
+                        <widget class="QLabel" name="topo_quality_controls_lbl">
+                          <property name="text">
+                            <string>Quality controls (Gmsh + TQMesh):</string>
+                          </property>
+                        </widget>
+                      </item>
+                      <item row="9" column="1">
+                        <widget class="QWidget" name="topo_quality_controls_widget" native="true">
+                          <layout class="QFormLayout" name="topo_quality_controls_form">
+                            <property name="leftMargin">
+                              <number>0</number>
+                            </property>
+                            <property name="topMargin">
+                              <number>0</number>
+                            </property>
+                            <property name="rightMargin">
+                              <number>0</number>
+                            </property>
+                            <property name="bottomMargin">
+                              <number>0</number>
+                            </property>
+                            <item row="0" column="0" colspan="2">
+                              <widget class="QCheckBox" name="topo_gmsh_quality_enable_chk">
+                                <property name="text">
+                                  <string>Enable Gmsh iterative quality loop</string>
+                                </property>
+                              </widget>
+                            </item>
+                            <item row="1" column="0">
+                              <widget class="QLabel" name="topo_gmsh_quality_max_iters_lbl">
+                                <property name="text">
+                                  <string>Gmsh max attempts:</string>
+                                </property>
+                              </widget>
+                            </item>
+                            <item row="1" column="1">
+                              <widget class="QSpinBox" name="topo_gmsh_quality_max_iters_spin"/>
+                            </item>
+                            <item row="2" column="0">
+                              <widget class="QLabel" name="topo_gmsh_quality_time_limit_lbl">
+                                <property name="text">
+                                  <string>Gmsh time budget (s):</string>
+                                </property>
+                              </widget>
+                            </item>
+                            <item row="2" column="1">
+                              <widget class="QDoubleSpinBox" name="topo_gmsh_quality_time_limit_spin"/>
+                            </item>
+                            <item row="3" column="0">
+                              <widget class="QLabel" name="topo_quality_min_angle_lbl">
+                                <property name="text">
+                                  <string>Min angle (deg):</string>
+                                </property>
+                              </widget>
+                            </item>
+                            <item row="3" column="1">
+                              <widget class="QDoubleSpinBox" name="topo_quality_min_angle_spin"/>
+                            </item>
+                            <item row="4" column="0">
+                              <widget class="QLabel" name="topo_quality_max_aspect_lbl">
+                                <property name="text">
+                                  <string>Max aspect ratio:</string>
+                                </property>
+                              </widget>
+                            </item>
+                            <item row="4" column="1">
+                              <widget class="QDoubleSpinBox" name="topo_quality_max_aspect_spin"/>
+                            </item>
+                            <item row="5" column="0">
+                              <widget class="QLabel" name="topo_quality_max_non_orth_lbl">
+                                <property name="text">
+                                  <string>Max non-orthogonality (deg):</string>
+                                </property>
+                              </widget>
+                            </item>
+                            <item row="5" column="1">
+                              <widget class="QDoubleSpinBox" name="topo_quality_max_non_orth_spin"/>
+                            </item>
+                            <item row="6" column="0">
+                              <widget class="QLabel" name="topo_quality_min_area_lbl">
+                                <property name="text">
+                                  <string>Min area / bbox area:</string>
+                                </property>
+                              </widget>
+                            </item>
+                            <item row="6" column="1">
+                              <widget class="QLineEdit" name="topo_quality_min_area_edit"/>
+                            </item>
+                            <item row="7" column="0">
+                              <widget class="QLabel" name="topo_quality_size_scales_lbl">
+                                <property name="text">
+                                  <string>Retry size scales:</string>
+                                </property>
+                              </widget>
+                            </item>
+                            <item row="7" column="1">
+                              <widget class="QLineEdit" name="topo_quality_size_scales_edit"/>
+                            </item>
+                            <item row="8" column="0">
+                              <widget class="QLabel" name="topo_quality_smooth_increments_lbl">
+                                <property name="text">
+                                  <string>Retry smooth increments:</string>
+                                </property>
+                              </widget>
+                            </item>
+                            <item row="8" column="1">
+                              <widget class="QLineEdit" name="topo_quality_smooth_increments_edit"/>
+                            </item>
+                            <item row="9" column="0" colspan="2">
+                              <widget class="QCheckBox" name="topo_quality_strict_chk">
+                                <property name="text">
+                                  <string>Strict quality acceptance</string>
+                                </property>
+                              </widget>
+                            </item>
+                          </layout>
+                        </widget>
+                      </item>
+                      <item row="10" column="0" colspan="2">
+                        <widget class="QPushButton" name="topo_validate_btn">
+                          <property name="text">
+                            <string>Summarize Layer Controls</string>
+                          </property>
+                        </widget>
+                      </item>
+                      <item row="11" column="0">
+                        <widget class="QPushButton" name="topo_edit_regions_btn">
+                          <property name="text">
+                            <string>Edit Region Controls</string>
+                          </property>
+                        </widget>
+                      </item>
+                      <item row="11" column="1">
+                        <widget class="QPushButton" name="topo_edit_quad_edges_btn">
+                          <property name="text">
+                            <string>Edit Transition Layers</string>
+                          </property>
+                        </widget>
+                      </item>
+                      <item row="12" column="0" colspan="2">
+                        <widget class="QLabel" name="topo_controls_summary_lbl">
+                          <property name="text">
+                            <string>Topology-layer controls: use multiple region polygons for multiple blocks. Use region target_size + cell_type, edge_len_1..4 for cartesian/quadrilateral block spacing, use region interior rings or empty regions/constraints for holes, and quad-edge n_layers / first_height / growth_rate for TQMesh transition layers.</string>
+                          </property>
+                          <property name="wordWrap">
+                            <bool>true</bool>
+                          </property>
+                        </widget>
+                      </item>
+                      <item row="13" column="0" colspan="2">
+                        <widget class="QPushButton" name="topo_export_template_btn">
+                          <property name="text">
+                            <string>Create Topology Template Layers</string>
+                          </property>
+                        </widget>
+                      </item>
+                      <item row="14" column="0">
+                        <widget class="QPushButton" name="topo_generate_btn">
+                          <property name="text">
+                            <string>Generate Mesh From Topology Layers</string>
+                          </property>
+                        </widget>
+                      </item>
+                      <item row="14" column="1">
+                        <widget class="QPushButton" name="topo_terminate_btn">
+                          <property name="text">
+                            <string>Terminate Mesh Run</string>
+                          </property>
+                        </widget>
+                      </item>
+                      <item row="15" column="0" colspan="2">
+                        <widget class="QLabel" name="topo_status_lbl">
+                          <property name="text">
+                            <string>Select regions layer and generate face-centric mesh</string>
+                          </property>
+                          <property name="wordWrap">
+                            <bool>true</bool>
+                          </property>
+                        </widget>
+                      </item>
+                    </layout>
+                  </widget>
+                </item>
+              </layout>
+            </widget>
+            <widget class="QWidget" name="boundary_tab">
+              <attribute name="title">
+                <string>Boundary</string>
+              </attribute>
+              <layout class="QVBoxLayout" name="boundary_tab_layout">
+                <property name="leftMargin">
+                  <number>0</number>
+                </property>
+                <property name="topMargin">
+                  <number>0</number>
+                </property>
+                <property name="rightMargin">
+                  <number>0</number>
+                </property>
+                <property name="bottomMargin">
+                  <number>0</number>
+                </property>
+                <item>
+                  <widget class="QGroupBox" name="bc_group">
+                    <property name="title">
+                      <string>Boundary Conditions (side defaults + optional BC polyline overrides)</string>
+                    </property>
+                    <layout class="QGridLayout" name="bc_grid">
+                      <item row="0" column="0">
+                        <widget class="QLabel" name="label_side">
+                          <property name="text">
+                            <string>Side</string>
+                          </property>
+                        </widget>
+                      </item>
+                      <item row="0" column="1">
+                        <widget class="QLabel" name="label_type">
+                          <property name="text">
+                            <string>Type</string>
+                          </property>
+                        </widget>
+                      </item>
+                      <item row="0" column="2">
+                        <widget class="QLabel" name="label_value">
+                          <property name="text">
+                            <string>Value (Q_total for flow)</string>
+                          </property>
+                        </widget>
+                      </item>
+                      <item row="0" column="3">
+                        <widget class="QLabel" name="label_hydrograph">
+                          <property name="text">
+                            <string>Hydrograph (hr,Q_total; hr,Q_total)</string>
+                          </property>
+                        </widget>
+                      </item>
+                      <item row="0" column="4">
+                        <widget class="QLabel" name="label_editor">
+                          <property name="text">
+                            <string>Editor</string>
+                          </property>
+                        </widget>
+                      </item>
+                      <item row="1" column="0">
+                        <widget class="QLabel" name="label_left_side">
+                          <property name="text">
+                            <string>Left</string>
+                          </property>
+                        </widget>
+                      </item>
+                      <item row="1" column="1">
+                        <widget class="QComboBox" name="left_bc_type_combo"/>
+                      </item>
+                      <item row="1" column="2">
+                        <widget class="QDoubleSpinBox" name="left_bc_value_spin"/>
+                      </item>
+                      <item row="1" column="3">
+                        <widget class="QLineEdit" name="left_bc_hydrograph_edit"/>
+                      </item>
+                      <item row="1" column="4">
+                        <widget class="QPushButton" name="left_bc_editor_btn">
+                          <property name="text">
+                            <string>Edit...</string>
+                          </property>
+                        </widget>
+                      </item>
+                      <item row="2" column="0">
+                        <widget class="QLabel" name="label_right_side">
+                          <property name="text">
+                            <string>Right</string>
+                          </property>
+                        </widget>
+                      </item>
+                      <item row="2" column="1">
+                        <widget class="QComboBox" name="right_bc_type_combo"/>
+                      </item>
+                      <item row="2" column="2">
+                        <widget class="QDoubleSpinBox" name="right_bc_value_spin"/>
+                      </item>
+                      <item row="2" column="3">
+                        <widget class="QLineEdit" name="right_bc_hydrograph_edit"/>
+                      </item>
+                      <item row="2" column="4">
+                        <widget class="QPushButton" name="right_bc_editor_btn">
+                          <property name="text">
+                            <string>Edit...</string>
+                          </property>
+                        </widget>
+                      </item>
+                      <item row="3" column="0">
+                        <widget class="QLabel" name="label_bottom_side">
+                          <property name="text">
+                            <string>Bottom</string>
+                          </property>
+                        </widget>
+                      </item>
+                      <item row="3" column="1">
+                        <widget class="QComboBox" name="bottom_bc_type_combo"/>
+                      </item>
+                      <item row="3" column="2">
+                        <widget class="QDoubleSpinBox" name="bottom_bc_value_spin"/>
+                      </item>
+                      <item row="3" column="3">
+                        <widget class="QLineEdit" name="bottom_bc_hydrograph_edit"/>
+                      </item>
+                      <item row="3" column="4">
+                        <widget class="QPushButton" name="bottom_bc_editor_btn">
+                          <property name="text">
+                            <string>Edit...</string>
+                          </property>
+                        </widget>
+                      </item>
+                      <item row="4" column="0">
+                        <widget class="QLabel" name="label_top_side">
+                          <property name="text">
+                            <string>Top</string>
+                          </property>
+                        </widget>
+                      </item>
+                      <item row="4" column="1">
+                        <widget class="QComboBox" name="top_bc_type_combo"/>
+                      </item>
+                      <item row="4" column="2">
+                        <widget class="QDoubleSpinBox" name="top_bc_value_spin"/>
+                      </item>
+                      <item row="4" column="3">
+                        <widget class="QLineEdit" name="top_bc_hydrograph_edit"/>
+                      </item>
+                      <item row="4" column="4">
+                        <widget class="QPushButton" name="top_bc_editor_btn">
+                          <property name="text">
+                            <string>Edit...</string>
+                          </property>
+                        </widget>
+                      </item>
+                      <item row="5" column="0">
+                        <widget class="QLabel" name="label_bc_override">
+                          <property name="text">
+                            <string>BC polyline layer override:</string>
+                          </property>
+                        </widget>
+                      </item>
+                      <item row="5" column="1" colspan="4">
+                        <widget class="QComboBox" name="bc_lines_layer_combo"/>
+                      </item>
+                      <item row="6" column="0" colspan="5">
+                        <widget class="QCheckBox" name="inflow_progressive_chk">
+                          <property name="text">
+                            <string>Flow BC: activate lowest-elevation boundary edges first as Q increases</string>
+                          </property>
+                        </widget>
+                      </item>
+                    </layout>
+                  </widget>
+                </item>
+              </layout>
+            </widget>
+            <widget class="QWidget" name="model_tab">
+              <attribute name="title">
+                <string>Model</string>
+              </attribute>
+              <layout class="QVBoxLayout" name="model_tab_layout">
+                <property name="leftMargin">
+                  <number>0</number>
+                </property>
+                <property name="topMargin">
+                  <number>0</number>
+                </property>
+                <property name="rightMargin">
+                  <number>0</number>
+                </property>
+                <property name="bottomMargin">
+                  <number>0</number>
+                </property>
+                <item>
+                  <widget class="QGroupBox" name="model_group">
+                    <property name="title">
+                      <string>Model Parameters</string>
+                    </property>
+                    <layout class="QFormLayout" name="model_param_form">
+                      <item row="0" column="0">
+                        <widget class="QLabel" name="n_mann_lbl">
+                          <property name="text">
+                            <string>Manning n:</string>
+                          </property>
+                        </widget>
+                      </item>
+                      <item row="0" column="1">
+                        <widget class="QDoubleSpinBox" name="n_mann_spin"/>
+                      </item>
+                      <item row="1" column="0">
+                        <widget class="QLabel" name="cfl_lbl">
+                          <property name="text">
+                            <string>CFL:</string>
+                          </property>
+                        </widget>
+                      </item>
+                      <item row="1" column="1">
+                        <widget class="QDoubleSpinBox" name="cfl_spin"/>
+                      </item>
+                      <item row="2" column="0">
+                        <widget class="QLabel" name="h_min_lbl">
+                          <property name="text">
+                            <string>h_min:</string>
+                          </property>
+                        </widget>
+                      </item>
+                      <item row="2" column="1">
+                        <widget class="QDoubleSpinBox" name="h_min_spin"/>
+                      </item>
+                      <item row="3" column="0">
+                        <widget class="QLabel" name="initial_condition_lbl">
+                          <property name="text">
+                            <string>Initial condition:</string>
+                          </property>
+                        </widget>
+                      </item>
+                      <item row="3" column="1">
+                        <widget class="QComboBox" name="initial_condition_combo"/>
+                      </item>
+                      <item row="4" column="0">
+                        <widget class="QLabel" name="initial_depth_lbl">
+                          <property name="text">
+                            <string>Initial depth:</string>
+                          </property>
+                        </widget>
+                      </item>
+                      <item row="4" column="1">
+                        <widget class="QDoubleSpinBox" name="initial_depth_spin"/>
+                      </item>
+                      <item row="5" column="0">
+                        <widget class="QLabel" name="initial_wse_lbl">
+                          <property name="text">
+                            <string>Initial WSE:</string>
+                          </property>
+                        </widget>
+                      </item>
+                      <item row="5" column="1">
+                        <widget class="QDoubleSpinBox" name="initial_wse_spin"/>
+                      </item>
+                      <item row="6" column="0">
+                        <widget class="QLabel" name="adaptive_cfl_dt_lbl">
+                          <property name="text">
+                            <string>Variable timestep:</string>
+                          </property>
+                        </widget>
+                      </item>
+                      <item row="6" column="1">
+                        <widget class="QCheckBox" name="adaptive_cfl_dt_chk">
+                          <property name="text">
+                            <string>Enable variable timestep (CFL)</string>
+                          </property>
+                        </widget>
+                      </item>
+                      <item row="7" column="0">
+                        <widget class="QLabel" name="dt_lbl">
+                          <property name="text">
+                            <string>dt (fixed or dt_max):</string>
+                          </property>
+                        </widget>
+                      </item>
+                      <item row="7" column="1">
+                        <widget class="QDoubleSpinBox" name="dt_spin"/>
+                      </item>
+                      <item row="8" column="0">
+                        <widget class="QLabel" name="gpu_diag_sync_interval_lbl">
+                          <property name="text">
+                            <string>GPU diag sync (steps):</string>
+                          </property>
+                        </widget>
+                      </item>
+                      <item row="8" column="1">
+                        <widget class="QSpinBox" name="gpu_diag_sync_interval_spin"/>
+                      </item>
+                      <item row="9" column="0">
+                        <widget class="QLabel" name="enable_cuda_graphs_lbl">
+                          <property name="text">
+                            <string>CUDA graph replay:</string>
+                          </property>
+                        </widget>
+                      </item>
+                      <item row="9" column="1">
+                        <widget class="QCheckBox" name="enable_cuda_graphs_chk">
+                          <property name="text">
+                            <string>Enable</string>
+                          </property>
+                        </widget>
+                      </item>
+                      <item row="10" column="0">
+                        <widget class="QLabel" name="max_rel_depth_increase_lbl">
+                          <property name="text">
+                            <string>Max rel depth increase:</string>
+                          </property>
+                        </widget>
+                      </item>
+                      <item row="10" column="1">
+                        <widget class="QDoubleSpinBox" name="max_rel_depth_increase_spin"/>
+                      </item>
+                      <item row="11" column="0">
+                        <widget class="QLabel" name="max_source_depth_step_lbl">
+                          <property name="text">
+                            <string>Max source dh/step:</string>
+                          </property>
+                        </widget>
+                      </item>
+                      <item row="11" column="1">
+                        <widget class="QDoubleSpinBox" name="max_source_depth_step_spin"/>
+                      </item>
+                      <item row="12" column="0">
+                        <widget class="QLabel" name="max_source_rate_lbl">
+                          <property name="text">
+                            <string>Max source rate:</string>
+                          </property>
+                        </widget>
+                      </item>
+                      <item row="12" column="1">
+                        <widget class="QDoubleSpinBox" name="max_source_rate_spin"/>
+                      </item>
+                      <item row="13" column="0">
+                        <widget class="QLabel" name="extreme_rain_mode_lbl">
+                          <property name="text">
+                            <string>Extreme rain mode:</string>
+                          </property>
+                        </widget>
+                      </item>
+                      <item row="13" column="1">
+                        <widget class="QCheckBox" name="extreme_rain_mode_chk">
+                          <property name="text">
+                            <string>Enable</string>
+                          </property>
+                        </widget>
+                      </item>
+                      <item row="14" column="0">
+                        <widget class="QLabel" name="source_cfl_beta_lbl">
+                          <property name="text">
+                            <string>Source CFL beta:</string>
+                          </property>
+                        </widget>
+                      </item>
+                      <item row="14" column="1">
+                        <widget class="QDoubleSpinBox" name="source_cfl_beta_spin"/>
+                      </item>
+                      <item row="15" column="0">
+                        <widget class="QLabel" name="source_max_substeps_lbl">
+                          <property name="text">
+                            <string>Source max substeps:</string>
+                          </property>
+                        </widget>
+                      </item>
+                      <item row="15" column="1">
+                        <widget class="QSpinBox" name="source_max_substeps_spin"/>
+                      </item>
+                      <item row="16" column="0">
+                        <widget class="QLabel" name="source_true_subcycling_lbl">
+                          <property name="text">
+                            <string>True source subcycling:</string>
+                          </property>
+                        </widget>
+                      </item>
+                      <item row="16" column="1">
+                        <widget class="QCheckBox" name="source_true_subcycling_chk">
+                          <property name="text">
+                            <string>Enable</string>
+                          </property>
+                        </widget>
+                      </item>
+                      <item row="17" column="0">
+                        <widget class="QLabel" name="source_imex_split_lbl">
+                          <property name="text">
+                            <string>IMEX source split:</string>
+                          </property>
+                        </widget>
+                      </item>
+                      <item row="17" column="1">
+                        <widget class="QCheckBox" name="source_imex_split_chk">
+                          <property name="text">
+                            <string>Enable</string>
+                          </property>
+                        </widget>
+                      </item>
+                      <item row="18" column="0">
+                        <widget class="QLabel" name="source_stage_coupled_imex_rk2_lbl">
+                          <property name="text">
+                            <string>Stage-coupled IMEX-RK2 sources:</string>
+                          </property>
+                        </widget>
+                      </item>
+                      <item row="18" column="1">
+                        <widget class="QCheckBox" name="source_stage_coupled_imex_rk2_chk">
+                          <property name="text">
+                            <string>Enable</string>
+                          </property>
+                        </widget>
+                      </item>
+                      <item row="19" column="0">
+                        <widget class="QLabel" name="shallow_damping_depth_lbl">
+                          <property name="text">
+                            <string>Shallow damping depth:</string>
+                          </property>
+                        </widget>
+                      </item>
+                      <item row="19" column="1">
+                        <widget class="QDoubleSpinBox" name="shallow_damping_depth_spin"/>
+                      </item>
+                      <item row="20" column="0">
+                        <widget class="QLabel" name="shallow_front_recon_fallback_lbl">
+                          <property name="text">
+                            <string>Shallow-front recon fallback:</string>
+                          </property>
+                        </widget>
+                      </item>
+                      <item row="20" column="1">
+                        <widget class="QCheckBox" name="shallow_front_recon_fallback_chk">
+                          <property name="text">
+                            <string>Enable</string>
+                          </property>
+                        </widget>
+                      </item>
+                      <item row="21" column="0">
+                        <widget class="QLabel" name="front_flux_damping_lbl">
+                          <property name="text">
+                            <string>Front flux damping:</string>
+                          </property>
+                        </widget>
+                      </item>
+                      <item row="21" column="1">
+                        <widget class="QDoubleSpinBox" name="front_flux_damping_spin"/>
+                      </item>
+                      <item row="22" column="0">
+                        <widget class="QLabel" name="active_set_hysteresis_lbl">
+                          <property name="text">
+                            <string>Active-set hysteresis:</string>
+                          </property>
+                        </widget>
+                      </item>
+                      <item row="22" column="1">
+                        <widget class="QCheckBox" name="active_set_hysteresis_chk">
+                          <property name="text">
+                            <string>Enable</string>
+                          </property>
+                        </widget>
+                      </item>
+                      <item row="23" column="0">
+                        <widget class="QLabel" name="depth_cap_lbl">
+                          <property name="text">
+                            <string>Depth cap:</string>
+                          </property>
+                        </widget>
+                      </item>
+                      <item row="23" column="1">
+                        <widget class="QDoubleSpinBox" name="depth_cap_spin"/>
+                      </item>
+                      <item row="24" column="0">
+                        <widget class="QLabel" name="momentum_cap_min_speed_lbl">
+                          <property name="text">
+                            <string>Momentum cap min speed:</string>
+                          </property>
+                        </widget>
+                      </item>
+                      <item row="24" column="1">
+                        <widget class="QDoubleSpinBox" name="momentum_cap_min_speed_spin"/>
+                      </item>
+                      <item row="25" column="0">
+                        <widget class="QLabel" name="momentum_cap_celerity_mult_lbl">
+                          <property name="text">
+                            <string>Momentum cap celerity mult:</string>
+                          </property>
+                        </widget>
+                      </item>
+                      <item row="25" column="1">
+                        <widget class="QDoubleSpinBox" name="momentum_cap_celerity_mult_spin"/>
+                      </item>
+                      <item row="26" column="0">
+                        <widget class="QLabel" name="max_inv_area_lbl">
+                          <property name="text">
+                            <string>Max inv area:</string>
+                          </property>
+                        </widget>
+                      </item>
+                      <item row="26" column="1">
+                        <widget class="QDoubleSpinBox" name="max_inv_area_spin"/>
+                      </item>
+                      <item row="27" column="0">
+                        <widget class="QLabel" name="cfl_lambda_cap_lbl">
+                          <property name="text">
+                            <string>CFL lambda cap:</string>
+                          </property>
+                        </widget>
+                      </item>
+                      <item row="27" column="1">
+                        <widget class="QDoubleSpinBox" name="cfl_lambda_cap_spin"/>
+                      </item>
+                      <item row="28" column="0">
+                        <widget class="QLabel" name="rain_rate_lbl">
+                          <property name="text">
+                            <string>Rain rate:</string>
+                          </property>
+                        </widget>
+                      </item>
+                      <item row="28" column="1">
+                        <widget class="QDoubleSpinBox" name="rain_rate_spin"/>
+                      </item>
+                      <item row="29" column="0">
+                        <widget class="QLabel" name="cn_default_lbl">
+                          <property name="text">
+                            <string>Default CN:</string>
+                          </property>
+                        </widget>
+                      </item>
+                      <item row="29" column="1">
+                        <widget class="QDoubleSpinBox" name="cn_default_spin"/>
+                      </item>
+                      <item row="30" column="0">
+                        <widget class="QLabel" name="ia_ratio_lbl">
+                          <property name="text">
+                            <string>SCS Ia/S ratio:</string>
+                          </property>
+                        </widget>
+                      </item>
+                      <item row="30" column="1">
+                        <widget class="QDoubleSpinBox" name="ia_ratio_spin"/>
+                      </item>
+                      <item row="31" column="0">
+                        <widget class="QLabel" name="use_spatial_rain_cn_lbl">
+                          <property name="text">
+                            <string>Spatial rainfall:</string>
+                          </property>
+                        </widget>
+                      </item>
+                      <item row="31" column="1">
+                        <widget class="QCheckBox" name="use_spatial_rain_cn_chk">
+                          <property name="text">
+                            <string>Use Thiessen gage rainfall when layers are available</string>
+                          </property>
+                        </widget>
+                      </item>
+                      <item row="32" column="0">
+                        <widget class="QLabel" name="infiltration_method_lbl">
+                          <property name="text">
+                            <string>Infiltration method:</string>
+                          </property>
+                        </widget>
+                      </item>
+                      <item row="32" column="1">
+                        <widget class="QComboBox" name="infiltration_method_combo"/>
+                      </item>
+                      <item row="33" column="0">
+                        <widget class="QLabel" name="storm_area_layer_lbl">
+                          <property name="text">
+                            <string>Storm area layer (optional):</string>
+                          </property>
+                        </widget>
+                      </item>
+                      <item row="33" column="1">
+                        <widget class="QComboBox" name="storm_area_layer_combo"/>
+                      </item>
+                      <item row="34" column="0">
+                        <widget class="QLabel" name="rain_boundary_buffer_rings_lbl">
+                          <property name="text">
+                            <string>Rain boundary buffer rings:</string>
+                          </property>
+                        </widget>
+                      </item>
+                      <item row="34" column="1">
+                        <widget class="QSpinBox" name="rain_boundary_buffer_rings_spin"/>
+                      </item>
+                      <item row="35" column="0">
+                        <widget class="QLabel" name="internal_flow_layer_lbl">
+                          <property name="text">
+                            <string>Internal flow layer:</string>
+                          </property>
+                        </widget>
+                      </item>
+                      <item row="35" column="1">
+                        <widget class="QComboBox" name="internal_flow_layer_combo"/>
+                      </item>
+                      <item row="36" column="0">
+                        <widget class="QLabel" name="internal_flow_field_lbl">
+                          <property name="text">
+                            <string>Internal flow field:</string>
+                          </property>
+                        </widget>
+                      </item>
+                      <item row="36" column="1">
+                        <widget class="QLineEdit" name="internal_flow_field_edit"/>
+                      </item>
+                      <item row="37" column="0">
+                        <widget class="QLabel" name="run_time_lbl">
+                          <property name="text">
+                            <string>Run duration (hr or HH:MM):</string>
+                          </property>
+                        </widget>
+                      </item>
+                      <item row="37" column="1">
+                        <widget class="QLineEdit" name="run_time_edit"/>
+                      </item>
+                      <item row="38" column="0">
+                        <widget class="QLabel" name="reconstruction_lbl">
+                          <property name="text">
+                            <string>Reconstruction:</string>
+                          </property>
+                        </widget>
+                      </item>
+                      <item row="38" column="1">
+                        <widget class="QComboBox" name="reconstruction_combo"/>
+                      </item>
+                      <item row="39" column="0">
+                        <widget class="QLabel" name="temporal_order_lbl">
+                          <property name="text">
+                            <string>Temporal discretization:</string>
+                          </property>
+                        </widget>
+                      </item>
+                      <item row="39" column="1">
+                        <widget class="QComboBox" name="temporal_order_combo"/>
+                      </item>
+                      <item row="40" column="0">
+                        <widget class="QLabel" name="equation_set_lbl">
+                          <property name="text">
+                            <string>Equation set:</string>
+                          </property>
+                        </widget>
+                      </item>
+                      <item row="40" column="1">
+                        <widget class="QComboBox" name="equation_set_combo"/>
+                      </item>
+                      <item row="41" column="0">
+                        <widget class="QLabel" name="godunov_mode_lbl">
+                          <property name="text">
+                            <string>GPU solver mode:</string>
+                          </property>
+                        </widget>
+                      </item>
+                      <item row="41" column="1">
+                        <widget class="QComboBox" name="godunov_mode_combo"/>
+                      </item>
+                      <item row="42" column="0">
+                        <widget class="QLabel" name="degen_mode_lbl">
+                          <property name="text">
+                            <string>Degenerate cell mode:</string>
+                          </property>
+                        </widget>
+                      </item>
+                      <item row="42" column="1">
+                        <widget class="QComboBox" name="degen_mode_combo"/>
+                      </item>
+                      <item row="43" column="0">
+                        <widget class="QLabel" name="coupling_loop_lbl">
+                          <property name="text">
+                            <string>Coupling loop:</string>
+                          </property>
+                        </widget>
+                      </item>
+                      <item row="43" column="1">
+                        <widget class="QComboBox" name="coupling_loop_combo"/>
+                      </item>
+                      <item row="44" column="0">
+                        <widget class="QLabel" name="drainage_solver_mode_lbl">
+                          <property name="text">
+                            <string>Drainage equation set:</string>
+                          </property>
+                        </widget>
+                      </item>
+                      <item row="44" column="1">
+                        <widget class="QComboBox" name="drainage_solver_mode_combo"/>
+                      </item>
+                      <item row="45" column="0">
+                        <widget class="QLabel" name="drainage_backend_lbl">
+                          <property name="text">
+                            <string>Drainage solver backend:</string>
+                          </property>
+                        </widget>
+                      </item>
+                      <item row="45" column="1">
+                        <widget class="QComboBox" name="drainage_backend_combo"/>
+                      </item>
+                      <item row="46" column="0">
+                        <widget class="QLabel" name="drainage_gpu_method_lbl">
+                          <property name="text">
+                            <string>Drainage GPU method:</string>
+                          </property>
+                        </widget>
+                      </item>
+                      <item row="46" column="1">
+                        <widget class="QComboBox" name="drainage_gpu_method_combo"/>
+                      </item>
+                      <item row="47" column="0">
+                        <widget class="QLabel" name="drainage_coupling_substeps_lbl">
+                          <property name="text">
+                            <string>Drainage substeps:</string>
+                          </property>
+                        </widget>
+                      </item>
+                      <item row="47" column="1">
+                        <widget class="QSpinBox" name="drainage_coupling_substeps_spin"/>
+                      </item>
+                      <item row="48" column="0">
+                        <widget class="QLabel" name="drainage_max_coupling_substeps_lbl">
+                          <property name="text">
+                            <string>Drainage max adaptive substeps:</string>
+                          </property>
+                        </widget>
+                      </item>
+                      <item row="48" column="1">
+                        <widget class="QSpinBox" name="drainage_max_coupling_substeps_spin"/>
+                      </item>
+                      <item row="49" column="0">
+                        <widget class="QLabel" name="drainage_head_deadband_lbl">
+                          <property name="text">
+                            <string>Drainage head deadband:</string>
+                          </property>
+                        </widget>
+                      </item>
+                      <item row="49" column="1">
+                        <widget class="QDoubleSpinBox" name="drainage_head_deadband_spin"/>
+                      </item>
+                      <item row="50" column="0">
+                        <widget class="QLabel" name="drainage_dynamic_relaxation_lbl">
+                          <property name="text">
+                            <string>Drainage dynamic relaxation:</string>
+                          </property>
+                        </widget>
+                      </item>
+                      <item row="50" column="1">
+                        <widget class="QDoubleSpinBox" name="drainage_dynamic_relaxation_spin"/>
+                      </item>
+                      <item row="51" column="0">
+                        <widget class="QLabel" name="drainage_adaptive_depth_fraction_lbl">
+                          <property name="text">
+                            <string>Drainage adaptive depth fraction:</string>
+                          </property>
+                        </widget>
+                      </item>
+                      <item row="51" column="1">
+                        <widget class="QDoubleSpinBox" name="drainage_adaptive_depth_fraction_spin"/>
+                      </item>
+                      <item row="52" column="0">
+                        <widget class="QLabel" name="drainage_adaptive_wave_courant_lbl">
+                          <property name="text">
+                            <string>Drainage adaptive wave Courant:</string>
+                          </property>
+                        </widget>
+                      </item>
+                      <item row="52" column="1">
+                        <widget class="QDoubleSpinBox" name="drainage_adaptive_wave_courant_spin"/>
+                      </item>
+                      <item row="53" column="0">
+                        <widget class="QLabel" name="drainage_implicit_iters_lbl">
+                          <property name="text">
+                            <string>Drainage implicit iterations (GPU):</string>
+                          </property>
+                        </widget>
+                      </item>
+                      <item row="53" column="1">
+                        <widget class="QSpinBox" name="drainage_implicit_iters_spin"/>
+                      </item>
+                      <item row="54" column="0">
+                        <widget class="QLabel" name="drainage_implicit_relax_lbl">
+                          <property name="text">
+                            <string>Drainage implicit relaxation (GPU):</string>
+                          </property>
+                        </widget>
+                      </item>
+                      <item row="54" column="1">
+                        <widget class="QDoubleSpinBox" name="drainage_implicit_relax_spin"/>
+                      </item>
+                      <item row="55" column="0">
+                        <widget class="QLabel" name="unit_system_lbl">
+                          <property name="text">
+                            <string>Unit system: auto</string>
+                          </property>
+                          <property name="wordWrap">
+                            <bool>true</bool>
+                          </property>
+                        </widget>
+                      </item>
+                      <item row="55" column="1">
+                        <widget class="QLabel" name="gpu_default_lbl">
+                          <property name="text">
+                            <string>GPU is attempted by default when supported by the native backend.</string>
+                          </property>
+                          <property name="wordWrap">
+                            <bool>true</bool>
+                          </property>
+                        </widget>
+                      </item>
+                    </layout>
+                  </widget>
+                </item>
+                <item>
+                  <widget class="QGroupBox" name="patch_3d_group">
+                    <property name="title">
+                      <string>3D Patch</string>
+                    </property>
+                    <layout class="QFormLayout" name="patch_3d_form">
+                      <item row="0" column="0">
+                        <widget class="QLabel" name="experimental_3d_mode_lbl">
+                          <property name="text">
+                            <string>3D patch execution mode:</string>
+                          </property>
+                        </widget>
+                      </item>
+                      <item row="0" column="1">
+                        <widget class="QCheckBox" name="experimental_3d_mode_chk">
+                          <property name="text">
+                            <string>Run 3D patch solver (GPU)</string>
+                          </property>
+                        </widget>
+                      </item>
+                      <item row="1" column="0">
+                        <widget class="QLabel" name="experimental_3d_coupling_mode_lbl">
+                          <property name="text">
+                            <string>3D patch coupling mode:</string>
+                          </property>
+                        </widget>
+                      </item>
+                      <item row="1" column="1">
+                        <widget class="QComboBox" name="experimental_3d_coupling_mode_combo"/>
+                      </item>
+                      <item row="2" column="0">
+                        <widget class="QLabel" name="experimental_3d_patch_face_len_x_lbl">
+                          <property name="text">
+                            <string>3D patch target face length x:</string>
+                          </property>
+                        </widget>
+                      </item>
+                      <item row="2" column="1">
+                        <widget class="QDoubleSpinBox" name="experimental_3d_patch_face_len_x_spin"/>
+                      </item>
+                      <item row="3" column="0">
+                        <widget class="QLabel" name="experimental_3d_patch_face_len_y_lbl">
+                          <property name="text">
+                            <string>3D patch target face length y:</string>
+                          </property>
+                        </widget>
+                      </item>
+                      <item row="3" column="1">
+                        <widget class="QDoubleSpinBox" name="experimental_3d_patch_face_len_y_spin"/>
+                      </item>
+                      <item row="4" column="0">
+                        <widget class="QLabel" name="experimental_3d_patch_face_len_z_lbl">
+                          <property name="text">
+                            <string>3D patch target face length z:</string>
+                          </property>
+                        </widget>
+                      </item>
+                      <item row="4" column="1">
+                        <widget class="QDoubleSpinBox" name="experimental_3d_patch_face_len_z_spin"/>
+                      </item>
+                      <item row="5" column="0">
+                        <widget class="QLabel" name="experimental_3d_patch_xmin_lbl">
+                          <property name="text">
+                            <string>3D patch x min:</string>
+                          </property>
+                        </widget>
+                      </item>
+                      <item row="5" column="1">
+                        <widget class="QLineEdit" name="experimental_3d_patch_xmin_edit"/>
+                      </item>
+                      <item row="6" column="0">
+                        <widget class="QLabel" name="experimental_3d_patch_xmax_lbl">
+                          <property name="text">
+                            <string>3D patch x max:</string>
+                          </property>
+                        </widget>
+                      </item>
+                      <item row="6" column="1">
+                        <widget class="QLineEdit" name="experimental_3d_patch_xmax_edit"/>
+                      </item>
+                      <item row="7" column="0">
+                        <widget class="QLabel" name="experimental_3d_patch_ymin_lbl">
+                          <property name="text">
+                            <string>3D patch y min:</string>
+                          </property>
+                        </widget>
+                      </item>
+                      <item row="7" column="1">
+                        <widget class="QLineEdit" name="experimental_3d_patch_ymin_edit"/>
+                      </item>
+                      <item row="8" column="0">
+                        <widget class="QLabel" name="experimental_3d_patch_ymax_lbl">
+                          <property name="text">
+                            <string>3D patch y max:</string>
+                          </property>
+                        </widget>
+                      </item>
+                      <item row="8" column="1">
+                        <widget class="QLineEdit" name="experimental_3d_patch_ymax_edit"/>
+                      </item>
+                      <item row="9" column="0">
+                        <widget class="QLabel" name="experimental_3d_patch_zmin_lbl">
+                          <property name="text">
+                            <string>3D patch z min:</string>
+                          </property>
+                        </widget>
+                      </item>
+                      <item row="9" column="1">
+                        <widget class="QLineEdit" name="experimental_3d_patch_zmin_edit"/>
+                      </item>
+                      <item row="10" column="0">
+                        <widget class="QLabel" name="experimental_3d_patch_zmax_lbl">
+                          <property name="text">
+                            <string>3D patch z max:</string>
+                          </property>
+                        </widget>
+                      </item>
+                      <item row="10" column="1">
+                        <widget class="QLineEdit" name="experimental_3d_patch_zmax_edit"/>
+                      </item>
+                      <item row="11" column="0" colspan="2">
+                        <widget class="QPushButton" name="experimental_3d_patch_set_roi_btn">
+                          <property name="text">
+                            <string>Set ROI From Current Mesh</string>
+                          </property>
+                        </widget>
+                      </item>
+                      <item row="12" column="0" colspan="2">
+                        <widget class="QLabel" name="experimental_3d_patch_hint_lbl">
+                          <property name="wordWrap">
+                            <bool>true</bool>
+                          </property>
+                        </widget>
+                      </item>
+                      <item row="13" column="0">
+                        <widget class="QLabel" name="experimental_3d_patch_bc_lbl">
+                          <property name="text">
+                            <string>3D patch face BCs:</string>
+                          </property>
+                        </widget>
+                      </item>
+                      <item row="13" column="1">
+                        <widget class="QWidget" name="experimental_3d_patch_bc_widget" native="true"/>
+                      </item>
+                      <item row="14" column="0" colspan="2">
+                        <widget class="QLabel" name="experimental_3d_patch_bc_hint_lbl">
+                          <property name="wordWrap">
+                            <bool>true</bool>
+                          </property>
+                        </widget>
+                      </item>
+                      <item row="15" column="0">
+                        <widget class="QLabel" name="experimental_3d_obj_solids_lbl">
+                          <property name="text">
+                            <string>3D sub-grid solids:</string>
+                          </property>
+                        </widget>
+                      </item>
+                      <item row="15" column="1">
+                        <widget class="QCheckBox" name="experimental_3d_obj_solids_chk">
+                          <property name="text">
+                            <string>Enable</string>
+                          </property>
+                        </widget>
+                      </item>
+                      <item row="16" column="0">
+                        <widget class="QLabel" name="experimental_3d_obj_method_lbl">
+                          <property name="text">
+                            <string>3D sub-grid method:</string>
+                          </property>
+                        </widget>
+                      </item>
+                      <item row="16" column="1">
+                        <widget class="QComboBox" name="experimental_3d_obj_method_combo"/>
+                      </item>
+                      <item row="17" column="0">
+                        <widget class="QLabel" name="experimental_3d_geom_sanitize_lbl">
+                          <property name="text">
+                            <string>3D sanitize tensors:</string>
+                          </property>
+                        </widget>
+                      </item>
+                      <item row="17" column="1">
+                        <widget class="QCheckBox" name="experimental_3d_geom_sanitize_chk">
+                          <property name="text">
+                            <string>Sanitize upload tensors (clamp/snap tiny phi/area)</string>
+                          </property>
+                        </widget>
+                      </item>
+                      <item row="18" column="0">
+                        <widget class="QLabel" name="experimental_3d_geom_phi_snap_lbl">
+                          <property name="text">
+                            <string>3D sanitize phi snap min:</string>
+                          </property>
+                        </widget>
+                      </item>
+                      <item row="18" column="1">
+                        <widget class="QDoubleSpinBox" name="experimental_3d_geom_phi_snap_spin"/>
+                      </item>
+                      <item row="19" column="0">
+                        <widget class="QLabel" name="experimental_3d_geom_area_snap_lbl">
+                          <property name="text">
+                            <string>3D sanitize area snap min:</string>
+                          </property>
+                        </widget>
+                      </item>
+                      <item row="19" column="1">
+                        <widget class="QDoubleSpinBox" name="experimental_3d_geom_area_snap_spin"/>
+                      </item>
+                      <item row="20" column="0">
+                        <widget class="QLabel" name="experimental_3d_obj_layer_lbl">
+                          <property name="text">
+                            <string>3D OBJ instances layer:</string>
+                          </property>
+                        </widget>
+                      </item>
+                      <item row="20" column="1">
+                        <widget class="QComboBox" name="experimental_3d_obj_layer_combo"/>
+                      </item>
+                      <item row="21" column="0">
+                        <widget class="QLabel" name="experimental_3d_obj_path_field_lbl">
+                          <property name="text">
+                            <string>3D OBJ path field:</string>
+                          </property>
+                        </widget>
+                      </item>
+                      <item row="21" column="1">
+                        <widget class="QLineEdit" name="experimental_3d_obj_path_field_edit"/>
+                      </item>
+                      <item row="22" column="0">
+                        <widget class="QLabel" name="experimental_3d_obj_default_path_lbl">
+                          <property name="text">
+                            <string>3D OBJ fallback path:</string>
+                          </property>
+                        </widget>
+                      </item>
+                      <item row="22" column="1">
+                        <widget class="QLineEdit" name="experimental_3d_obj_default_path_edit"/>
+                      </item>
+                      <item row="23" column="0">
+                        <widget class="QLabel" name="experimental_3d_obj_scale_field_lbl">
+                          <property name="text">
+                            <string>3D OBJ scale field:</string>
+                          </property>
+                        </widget>
+                      </item>
+                      <item row="23" column="1">
+                        <widget class="QLineEdit" name="experimental_3d_obj_scale_field_edit"/>
+                      </item>
+                      <item row="24" column="0">
+                        <widget class="QLabel" name="experimental_3d_obj_yaw_field_lbl">
+                          <property name="text">
+                            <string>3D OBJ yaw field:</string>
+                          </property>
+                        </widget>
+                      </item>
+                      <item row="24" column="1">
+                        <widget class="QLineEdit" name="experimental_3d_obj_yaw_field_edit"/>
+                      </item>
+                      <item row="25" column="0">
+                        <widget class="QLabel" name="experimental_3d_obj_z_offset_field_lbl">
+                          <property name="text">
+                            <string>3D OBJ z-offset field:</string>
+                          </property>
+                        </widget>
+                      </item>
+                      <item row="25" column="1">
+                        <widget class="QLineEdit" name="experimental_3d_obj_z_offset_field_edit"/>
+                      </item>
+                      <item row="26" column="0">
+                        <widget class="QLabel" name="experimental_3d_obj_inside_points_layer_lbl">
+                          <property name="text">
+                            <string>3D OBJ outside-point layer:</string>
+                          </property>
+                        </widget>
+                      </item>
+                      <item row="26" column="1">
+                        <widget class="QComboBox" name="experimental_3d_obj_inside_points_layer_combo"/>
+                      </item>
+                      <item row="27" column="0">
+                        <widget class="QLabel" name="experimental_3d_obj_instance_id_field_lbl">
+                          <property name="text">
+                            <string>3D OBJ instance id field:</string>
+                          </property>
+                        </widget>
+                      </item>
+                      <item row="27" column="1">
+                        <widget class="QLineEdit" name="experimental_3d_obj_instance_id_field_edit"/>
+                      </item>
+                      <item row="28" column="0">
+                        <widget class="QLabel" name="experimental_3d_obj_inside_id_field_lbl">
+                          <property name="text">
+                            <string>3D OBJ outside-point id field:</string>
+                          </property>
+                        </widget>
+                      </item>
+                      <item row="28" column="1">
+                        <widget class="QLineEdit" name="experimental_3d_obj_inside_id_field_edit"/>
+                      </item>
+                      <item row="29" column="0">
+                        <widget class="QLabel" name="experimental_3d_obj_inside_z_field_lbl">
+                          <property name="text">
+                            <string>3D OBJ outside-point z field:</string>
+                          </property>
+                        </widget>
+                      </item>
+                      <item row="29" column="1">
+                        <widget class="QLineEdit" name="experimental_3d_obj_inside_z_field_edit"/>
+                      </item>
+                      <item row="30" column="0">
+                        <widget class="QLabel" name="experimental_3d_obj_use_terrain_lbl">
+                          <property name="text">
+                            <string>3D terrain solid:</string>
+                          </property>
+                        </widget>
+                      </item>
+                      <item row="30" column="1">
+                        <widget class="QCheckBox" name="experimental_3d_obj_use_terrain_chk">
+                          <property name="text">
+                            <string>Use terrain layer as bed solid</string>
+                          </property>
+                        </widget>
+                      </item>
+                      <item row="31" column="0">
+                        <widget class="QLabel" name="experimental_3d_obj_ab_compare_lbl">
+                          <property name="text">
+                            <string>3D A/B compare:</string>
+                          </property>
+                        </widget>
+                      </item>
+                      <item row="31" column="1">
+                        <widget class="QCheckBox" name="experimental_3d_obj_ab_compare_chk">
+                          <property name="text">
+                            <string>A/B compare methods (startup probe)</string>
+                          </property>
+                        </widget>
+                      </item>
+                      <item row="32" column="0">
+                        <widget class="QLabel" name="experimental_3d_obj_ab_probe_steps_lbl">
+                          <property name="text">
+                            <string>3D A/B probe steps:</string>
+                          </property>
+                        </widget>
+                      </item>
+                      <item row="32" column="1">
+                        <widget class="QSpinBox" name="experimental_3d_obj_ab_probe_steps_spin"/>
+                      </item>
+                      <item row="33" column="0">
+                        <widget class="QLabel" name="experimental_3d_obj_export_obj_lbl">
+                          <property name="text">
+                            <string>3D export voxel shell OBJ:</string>
+                          </property>
+                        </widget>
+                      </item>
+                      <item row="33" column="1">
+                        <widget class="QCheckBox" name="experimental_3d_obj_export_obj_chk">
+                          <property name="text">
+                            <string>Export voxelized solid shell OBJ</string>
+                          </property>
+                        </widget>
+                      </item>
+                      <item row="34" column="0">
+                        <widget class="QLabel" name="experimental_3d_obj_export_obj_path_lbl">
+                          <property name="text">
+                            <string>3D solid OBJ export path:</string>
+                          </property>
+                        </widget>
+                      </item>
+                      <item row="34" column="1">
+                        <widget class="QLineEdit" name="experimental_3d_obj_export_obj_path_edit"/>
+                      </item>
+                    </layout>
+                  </widget>
+                </item>
+              </layout>
+            </widget>
+            <widget class="QWidget" name="run_tab">
+              <attribute name="title">
+                <string>Run</string>
+              </attribute>
+              <layout class="QVBoxLayout" name="run_tab_layout">
+                <property name="leftMargin">
+                  <number>0</number>
+                </property>
+                <property name="topMargin">
+                  <number>0</number>
+                </property>
+                <property name="rightMargin">
+                  <number>0</number>
+                </property>
+                <property name="bottomMargin">
+                  <number>0</number>
+                </property>
+                <item>
+                  <widget class="QGroupBox" name="run_group">
+                    <property name="title">
+                      <string>Run / Output</string>
+                    </property>
+                    <layout class="QVBoxLayout" name="run_layout">
+                      <item>
+                        <layout class="QHBoxLayout" name="run_row_layout">
+                          <item>
+                            <widget class="QPushButton" name="preview_overrides_btn">
+                              <property name="text">
+                                <string>Preview Overrides</string>
+                              </property>
+                            </widget>
+                          </item>
+                          <item>
+                            <widget class="QPushButton" name="run_btn">
+                              <property name="text">
+                                <string>Run 2D Model</string>
+                              </property>
+                            </widget>
+                          </item>
+                          <item>
+                            <widget class="QPushButton" name="cancel_btn">
+                              <property name="text">
+                                <string>Cancel</string>
+                              </property>
+                            </widget>
+                          </item>
+                        </layout>
+                      </item>
+                      <item>
+                        <widget class="QProgressBar" name="progress_bar">
+                          <property name="value">
+                            <number>0</number>
+                          </property>
+                        </widget>
+                      </item>
+                      <item>
+                        <layout class="QHBoxLayout" name="run_snapshot_row_layout">
+                          <item>
+                            <widget class="QLabel" name="output_interval_lbl">
+                              <property name="text">
+                                <string>Output interval (hr or HH:MM):</string>
+                              </property>
+                            </widget>
+                          </item>
+                          <item>
+                            <widget class="QLineEdit" name="output_interval_edit">
+                              <property name="text">
+                                <string>00:30</string>
+                              </property>
+                            </widget>
+                          </item>
+                          <item>
+                            <widget class="QLabel" name="line_output_interval_lbl">
+                              <property name="text">
+                                <string>Line output interval:</string>
+                              </property>
+                            </widget>
+                          </item>
+                          <item>
+                            <widget class="QLineEdit" name="line_output_interval_edit">
+                              <property name="text">
+                                <string>00:05</string>
+                              </property>
+                            </widget>
+                          </item>
+                          <item>
+                            <widget class="QPushButton" name="snapshot_btn">
+                              <property name="text">
+                                <string>Take Snapshot</string>
+                              </property>
+                            </widget>
+                          </item>
+                        </layout>
+                      </item>
+                    </layout>
+                  </widget>
+                </item>
+              </layout>
+            </widget>
+          </widget>
+          <widget class="QWidget" name="right_pane_host">
+            <layout class="QVBoxLayout" name="right_layout">
+              <property name="leftMargin">
+                <number>0</number>
+              </property>
+              <property name="topMargin">
+                <number>0</number>
+              </property>
+              <property name="rightMargin">
+                <number>0</number>
+              </property>
+              <property name="bottomMargin">
+                <number>0</number>
+              </property>
+              <property name="spacing">
+                <number>4</number>
+              </property>
+              <item>
+                <layout class="QHBoxLayout" name="view_row_layout">
+                  <item>
+                    <widget class="QLabel" name="view_mode_lbl">
+                      <property name="text">
+                        <string>View:</string>
+                      </property>
+                    </widget>
+                  </item>
+                  <item>
+                    <widget class="QComboBox" name="view_mode_combo"/>
+                  </item>
+                  <item>
+                    <spacer name="view_row_spacer">
+                      <property name="orientation">
+                        <enum>Qt::Horizontal</enum>
+                      </property>
+                      <property name="sizeHint" stdset="0">
+                        <size>
+                          <width>40</width>
+                          <height>20</height>
+                        </size>
+                      </property>
+                    </spacer>
+                  </item>
+                </layout>
+              </item>
+              <item>
+                <layout class="QHBoxLayout" name="popout_row_layout">
+                  <item>
+                    <widget class="QPushButton" name="detach_mesh_view_btn">
+                      <property name="text">
+                        <string>Detach Mesh View</string>
+                      </property>
+                    </widget>
+                  </item>
+                  <item>
+                    <widget class="QPushButton" name="detach_runtime_log_btn">
+                      <property name="text">
+                        <string>Detach Runtime Log</string>
+                      </property>
+                    </widget>
+                  </item>
+                  <item>
+                    <spacer name="popout_row_spacer">
+                      <property name="orientation">
+                        <enum>Qt::Horizontal</enum>
+                      </property>
+                      <property name="sizeHint" stdset="0">
+                        <size>
+                          <width>40</width>
+                          <height>20</height>
+                        </size>
+                      </property>
+                    </spacer>
+                  </item>
+                </layout>
+              </item>
+              <item>
+                <widget class="QSplitter" name="right_vertical_split">
+                  <property name="orientation">
+                    <enum>Qt::Vertical</enum>
+                  </property>
+                  <widget class="QWidget" name="right_plot_host">
+                    <layout class="QVBoxLayout" name="right_plot_host_layout">
+                      <property name="leftMargin">
+                        <number>0</number>
+                      </property>
+                      <property name="topMargin">
+                        <number>0</number>
+                      </property>
+                      <property name="rightMargin">
+                        <number>0</number>
+                      </property>
+                      <property name="bottomMargin">
+                        <number>0</number>
+                      </property>
+                    </layout>
+                  </widget>
+                  <widget class="QPlainTextEdit" name="log_view"/>
+                </widget>
+              </item>
+            </layout>
+          </widget>
+        </widget>
+      </item>
+      <item>
+        <widget class="QDialogButtonBox" name="bottom_buttons">
+          <property name="orientation">
+            <enum>Qt::Horizontal</enum>
+          </property>
+          <property name="standardButtons">
+            <set>QDialogButtonBox::Close</set>
+          </property>
+        </widget>
+      </item>
+    </layout>
+  </widget>
+  <resources/>
+  <connections/>
+</ui>

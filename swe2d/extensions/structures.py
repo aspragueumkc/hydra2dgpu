@@ -2,9 +2,9 @@
 
 from __future__ import annotations
 
-from typing import Dict, Sequence
+from typing import Dict, List, Sequence
 
-from swe2d_extensions import (
+from swe2d.extensions.extension_models import (
     HydraulicStructure,
     HydraulicStructureConfig,
     HydraulicStructureEngine,

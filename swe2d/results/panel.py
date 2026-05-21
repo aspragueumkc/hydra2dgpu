@@ -20,7 +20,7 @@ from __future__ import annotations
 import dataclasses
 import json
 import os as _os
-from typing import Dict, List, Optional, Set, Tuple
+from typing import Dict, List, Set, Tuple
 
 import numpy as np
 try:
@@ -31,9 +31,14 @@ except Exception:
     from PyQt5.QtCore import Qt, pyqtSignal
 
 try:
-    from .swe2d_results_animation import ResultsAnimationController
+    from .animation import ResultsAnimationController
 except Exception:
-    from swe2d_results_animation import ResultsAnimationController
+    from swe2d.results.animation import ResultsAnimationController
+
+try:
+    from swe2d.results.db_utils import open_ro as _open_ro_shared, table_exists as _table_exists_shared
+except Exception:
+    from .db_utils import open_ro as _open_ro_shared, table_exists as _table_exists_shared
 
 # ---------------------------------------------------------------------------
 # Optional QGIS imports
@@ -589,7 +594,7 @@ class SWE2DResultsPanel(_BASE_DOCK):  # type: ignore[valid-type,misc]
         return _PANEL_COLORS[index % len(_PANEL_COLORS)]
 
     def _collect_runs_from_gpkg(self, gpkg_path: str) -> List[RunRecord]:
-        from swe2d_results_queries import discover_line_result_runs
+        from swe2d.results.queries import discover_line_result_runs
 
         if not gpkg_path:
             return []
@@ -809,7 +814,7 @@ class SWE2DResultsPanel(_BASE_DOCK):  # type: ignore[valid-type,misc]
     # ------------------------------------------------------------------
 
     def _refresh_line_combo(self):
-        from swe2d_results_queries import load_line_ids
+        from swe2d.results.queries import load_line_ids
 
         self._line_combo.blockSignals(True)
         self._line_combo.clear()
@@ -827,7 +832,7 @@ class SWE2DResultsPanel(_BASE_DOCK):  # type: ignore[valid-type,misc]
             self._line_id = -1
         else:
             for lid in sorted(seen.keys()):
-                display = seen[lid] if seen[lid] else f"Line {lid}"
+                display = seen[lid] or f"Line {lid}"
                 self._line_combo.addItem(display, lid)
             idx = self._line_combo.findData(self._line_id)
             if idx >= 0:
@@ -844,7 +849,7 @@ class SWE2DResultsPanel(_BASE_DOCK):  # type: ignore[valid-type,misc]
     # ------------------------------------------------------------------
 
     def _rebuild_timestep_union(self):
-        from swe2d_results_queries import load_timesteps
+        from swe2d.results.queries import load_timesteps
 
         if self._line_id < 0:
             self._all_timesteps = np.empty(0, dtype=np.float64)
@@ -1070,7 +1075,7 @@ class SWE2DResultsPanel(_BASE_DOCK):  # type: ignore[valid-type,misc]
     def _refresh_timeseries(self):
         if not self._have_mpl or self._ax_ts is None:
             return
-        from swe2d_results_queries import load_timeseries
+        from swe2d.results.queries import load_timeseries
 
         var_key = str(self._ts_var_combo.currentData() or "flow_cms")
         var_label = self._ts_var_combo.currentText()
@@ -1131,7 +1136,7 @@ class SWE2DResultsPanel(_BASE_DOCK):  # type: ignore[valid-type,misc]
     def _refresh_profile(self):
         if not self._have_mpl or self._ax_prof is None:
             return
-        from swe2d_results_queries import (
+        from swe2d.results.queries import (
             find_nearest_timestep,
             load_profile,
             load_structure_flows_at_time,
@@ -1352,7 +1357,6 @@ class SWE2DResultsPanel(_BASE_DOCK):  # type: ignore[valid-type,misc]
                     elev = float(row.get("elev_m", float("nan")))
                     q_cms = float(row.get("flow_cms", 0.0))
                     sid = str(row.get("object_id", ""))
-                    run_lbl = str(row.get("run_label", ""))
                     y_anchor = elev if np.isfinite(elev) else y1
                     y_anchor = min(max(y_anchor, y0 + 0.08 * y_span), y1 - 0.02 * y_span)
                     y_text = min(y1 - 0.02 * y_span, y_anchor + (0.04 + 0.035 * (i % 3)) * y_span)
@@ -1414,18 +1418,13 @@ class SWE2DResultsPanel(_BASE_DOCK):  # type: ignore[valid-type,misc]
     def _load_bound_layer_name(self, gpkg_path: str, role: str, default_name: str) -> str:
         if not gpkg_path:
             return str(default_name)
-        import sqlite3
-
-        conn = None
+        conn = _open_ro_shared(gpkg_path)
+        if conn is None:
+            return str(default_name)
         try:
-            conn = sqlite3.connect(gpkg_path)
-            cur = conn.cursor()
-            cur.execute(
-                "SELECT name FROM sqlite_master WHERE type='table' AND name='swe2d_layer_bindings'"
-            )
-            if cur.fetchone() is None:
+            if not _table_exists_shared(conn, "swe2d_layer_bindings"):
                 return str(default_name)
-            cur.execute(
+            cur = conn.execute(
                 "SELECT layer_name FROM swe2d_layer_bindings WHERE role = ?",
                 (str(role),),
             )
@@ -1537,7 +1536,7 @@ class SWE2DResultsPanel(_BASE_DOCK):  # type: ignore[valid-type,misc]
         return overlays
 
     def _refresh_meta_table(self):
-        from swe2d_results_queries import load_timesteps, load_line_ids
+        from swe2d.results.queries import load_timesteps, load_line_ids
 
         self._meta_table.setRowCount(len(self._run_records))
         for r, rec in enumerate(self._run_records):

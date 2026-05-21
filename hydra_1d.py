@@ -3,7 +3,7 @@
 # -*- coding: utf-8 -*-
 """
 -----------------------------------------------------------------------------
-   backwater_model.py
+   hydra_1d.py
    Author:   Aaron L. Sprague
 
    1D Steady Flow Water Surface Profiles (Backwater) using the standard-step
@@ -22,7 +22,7 @@
 
    ---------------------------------------------------------------------------
     Usage (CLI):
-        python backwater_model.py --input model.gpkg --ds-bc known_wse --ds-value 502.1
+        python hydra_1d.py --input model.gpkg --ds-bc known_wse --ds-value 502.1
 
         or normal depth:
         python backwater.py --input model.gpkg --ds-bc normal_depth --ds-value 0.0005
@@ -167,10 +167,10 @@ def _ensure_culvert_runtime() -> bool:
     try:
         import importlib.util
         _path = os.path.join(os.path.dirname(__file__), 'culvert_routine.py')
-        _spec = importlib.util.spec_from_file_location('qgis_backwater_plugin.culvert_routine', _path)
+        _spec = importlib.util.spec_from_file_location('qgis_hydra_plugin.culvert_routine', _path)
         if _spec is not None and _spec.loader is not None:
             _mod = importlib.util.module_from_spec(_spec)
-            sys.modules['qgis_backwater_plugin.culvert_routine'] = _mod
+            sys.modules['qgis_hydra_plugin.culvert_routine'] = _mod
             _spec.loader.exec_module(_mod)
             if _bind_from_module(_mod):
                 return True
@@ -3189,7 +3189,7 @@ def load_results_from_geopackage(path: str, layer_name: str = 'model_results') -
     return [state for _, state in rows]
 
 
-def run_backwater(model: ModelInput, solver: str = 'py') -> List[SectionState]:
+def run_hydra_1d(model: ModelInput, solver: str = 'py') -> List[SectionState]:
     """
     Execute standard-step solution from downstream to upstream.
     Sections must be ordered from downstream (index 0) to upstream (index N-1).
@@ -3491,7 +3491,7 @@ def main() -> None:
     ALPHA_METHOD = args.alpha_method
     SF_METHOD = args.sf_method
 
-    results = run_backwater(model, solver=args.solver)
+    results = run_hydra_1d(model, solver=args.solver)
 
     print("\n--- Results (Downstream → Upstream) ---")
     print("Idx  RS            WSE(ft)    Depth(ft)  V(ft/s)  Alpha   Energy(ft)  K_total     A_total     Sf_total   Froude")

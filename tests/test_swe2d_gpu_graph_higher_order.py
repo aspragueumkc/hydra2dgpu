@@ -9,8 +9,8 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 def _load_module():
     try:
-        import backwater_swe2d
-        return backwater_swe2d
+        import hydra_swe2d
+        return hydra_swe2d
     except Exception:
         return None
 
@@ -91,7 +91,7 @@ def _cn_exact_depth(total_rain_mm, cn, ia_ratio=0.2, mm_to_model_depth=1.0e-3):
     return pe * mm_to_model_depth
 
 
-@unittest.skipUnless(_load_module() is not None, "backwater_swe2d not built")
+@unittest.skipUnless(_load_module() is not None, "hydra_swe2d not built")
 @unittest.skipUnless(_gpu_available(), "CUDA GPU not available")
 class TestGPUHigherOrderGraphSafe(unittest.TestCase):
     def setUp(self):

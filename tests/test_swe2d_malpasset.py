@@ -109,8 +109,8 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 def _load_module():
     try:
-        import backwater_swe2d
-        return backwater_swe2d
+        import hydra_swe2d
+        return hydra_swe2d
     except ImportError:
         return None
 
@@ -202,7 +202,7 @@ def _dam_break_bc_arrays(nx, ny):
 # Test class
 # ---------------------------------------------------------------------------
 
-@unittest.skipUnless(_load_module() is not None, "backwater_swe2d not built")
+@unittest.skipUnless(_load_module() is not None, "hydra_swe2d not built")
 @unittest.skipUnless(_gpu_available(), "CUDA GPU not available")
 class TestMalpassetScaleDamBreak(unittest.TestCase):
     """
@@ -385,7 +385,7 @@ class TestMalpassetScaleDamBreak(unittest.TestCase):
 # CPU-only smoke test (runs without a CUDA device)
 # ---------------------------------------------------------------------------
 
-@unittest.skipUnless(_load_module() is not None, "backwater_swe2d not built")
+@unittest.skipUnless(_load_module() is not None, "hydra_swe2d not built")
 class TestMalpassetScaleCPU(unittest.TestCase):
     """
     Lightweight CPU smoke test: run 20 steps and verify positivity + mass.

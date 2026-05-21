@@ -14,13 +14,13 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 def _load_module():
     try:
-        import backwater_swe2d
-        return backwater_swe2d
+        import hydra_swe2d
+        return hydra_swe2d
     except ImportError as e:
         return None
 
 
-@unittest.skipUnless(_load_module() is not None, "backwater_swe2d not built")
+@unittest.skipUnless(_load_module() is not None, "hydra_swe2d not built")
 class TestSWE2DMeshRectangle(unittest.TestCase):
     """Build a simple 2-triangle rectangle and verify mesh properties."""
 
@@ -96,7 +96,7 @@ class TestSWE2DMeshRectangle(unittest.TestCase):
         self.assertEqual(info["n_cells"], 2)
 
 
-@unittest.skipUnless(_load_module() is not None, "backwater_swe2d not built")
+@unittest.skipUnless(_load_module() is not None, "hydra_swe2d not built")
 class TestSWE2DMeshLarger(unittest.TestCase):
     """Verify mesh correctness for a larger structured triangulation."""
 
@@ -142,7 +142,7 @@ class TestSWE2DMeshLarger(unittest.TestCase):
         self.assertEqual(V - E + F, 1,
             msg=f"Euler formula failed: V={V} E={E} F={F} => V-E+F={V-E+F}")
 
-@unittest.skipUnless(_load_module() is not None, "backwater_swe2d not built")
+@unittest.skipUnless(_load_module() is not None, "hydra_swe2d not built")
 class TestSWE2DMeshPolygon(unittest.TestCase):
     """Verify native polygon-cell mesh construction path."""
 

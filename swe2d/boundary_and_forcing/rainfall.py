@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import List
 
-from swe2d_extensions import RainFieldConfig, RainfallSourceEngine
+from swe2d.extensions.extension_models import RainFieldConfig, RainfallSourceEngine
 
 
 class SWE2DRainfallModule(RainfallSourceEngine):

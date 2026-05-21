@@ -1019,3 +1019,105 @@ def write_solid_voxels_obj(
         "vertices": float(len(vertices)),
         "faces": float(len(faces)),
     }
+
+
+def write_fluid_voxels_obj(
+    spec: PatchGridSpec,
+    phi: np.ndarray,
+    file_path: str,
+    fluid_threshold: float = 0.5,
+) -> Dict[str, float]:
+    """Export a voxelized fluid-domain shell from phi to OBJ.
+
+    The exported mesh is the exposed-face shell of cells where
+    ``phi >= fluid_threshold``.
+    """
+    phi_arr = np.asarray(phi, dtype=np.float64).ravel(order="C")
+    expected = int(spec.nx) * int(spec.ny) * int(spec.nz)
+    if phi_arr.size != expected:
+        raise ValueError(
+            f"phi size mismatch: expected {expected}, got {phi_arr.size}"
+        )
+
+    phi3 = phi_arr.reshape((spec.nz, spec.ny, spec.nx), order="C")
+    fluid = phi3 >= float(fluid_threshold)
+
+    out_dir = os.path.dirname(os.path.abspath(file_path))
+    if out_dir:
+        os.makedirs(out_dir, exist_ok=True)
+
+    if not np.any(fluid):
+        with open(file_path, "w", encoding="utf-8") as f:
+            f.write("# No fluid voxels for requested threshold\n")
+        return {
+            "fluid_cells": 0.0,
+            "vertices": 0.0,
+            "faces": 0.0,
+        }
+
+    vertex_index: Dict[Tuple[float, float, float], int] = {}
+    vertices: list[Tuple[float, float, float]] = []
+    faces: list[Tuple[int, int, int, int]] = []
+
+    def _add_vertex(v: Tuple[float, float, float]) -> int:
+        key = (float(v[0]), float(v[1]), float(v[2]))
+        idx = vertex_index.get(key)
+        if idx is not None:
+            return idx
+        vertices.append(key)
+        vid = len(vertices)
+        vertex_index[key] = vid
+        return vid
+
+    def _add_face(corners: Sequence[Tuple[float, float, float]]) -> None:
+        ids = [_add_vertex(tuple(c)) for c in corners]
+        faces.append((ids[0], ids[1], ids[2], ids[3]))
+
+    nx = int(spec.nx)
+    ny = int(spec.ny)
+    nz = int(spec.nz)
+    dx = float(spec.dx)
+    dy = float(spec.dy)
+    dz = float(spec.dz)
+    ox = float(spec.origin_x)
+    oy = float(spec.origin_y)
+    oz = float(spec.origin_z)
+
+    for k in range(nz):
+        z0 = oz + k * dz
+        z1 = z0 + dz
+        for j in range(ny):
+            y0 = oy + j * dy
+            y1 = y0 + dy
+            for i in range(nx):
+                if not fluid[k, j, i]:
+                    continue
+                x0 = ox + i * dx
+                x1 = x0 + dx
+
+                if i == 0 or (not fluid[k, j, i - 1]):
+                    _add_face(((x0, y0, z0), (x0, y0, z1), (x0, y1, z1), (x0, y1, z0)))
+                if i == (nx - 1) or (not fluid[k, j, i + 1]):
+                    _add_face(((x1, y0, z0), (x1, y1, z0), (x1, y1, z1), (x1, y0, z1)))
+                if j == 0 or (not fluid[k, j - 1, i]):
+                    _add_face(((x0, y0, z0), (x1, y0, z0), (x1, y0, z1), (x0, y0, z1)))
+                if j == (ny - 1) or (not fluid[k, j + 1, i]):
+                    _add_face(((x0, y1, z0), (x0, y1, z1), (x1, y1, z1), (x1, y1, z0)))
+                if k == 0 or (not fluid[k - 1, j, i]):
+                    _add_face(((x0, y0, z0), (x0, y1, z0), (x1, y1, z0), (x1, y0, z0)))
+                if k == (nz - 1) or (not fluid[k + 1, j, i]):
+                    _add_face(((x0, y0, z1), (x1, y0, z1), (x1, y1, z1), (x0, y1, z1)))
+
+    with open(file_path, "w", encoding="utf-8") as f:
+        f.write("# SWE3D voxel fluid export\n")
+        f.write(f"# fluid_threshold={float(fluid_threshold):.6g}\n")
+        for vx, vy, vz in vertices:
+            f.write(f"v {vx:.17g} {vy:.17g} {vz:.17g}\n")
+        for a, b, c, d in faces:
+            f.write(f"f {a} {b} {c} {d}\n")
+
+    return {
+        "fluid_cells": float(int(np.count_nonzero(fluid))),
+        "vertices": float(len(vertices)),
+        "faces": float(len(faces)),
+    }

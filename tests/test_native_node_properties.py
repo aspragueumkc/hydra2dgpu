@@ -15,7 +15,7 @@ from unsteady_model import (
     _hydraulic_bed_elevation,
     WETTING_DEPTH_FT,
 )
-from backwater_model import CrossSection
+from hydra_1d import CrossSection
 
 
 def _make_sections():
@@ -51,7 +51,7 @@ def _make_sections():
 class TestNativeNodeProperties(unittest.TestCase):
     def setUp(self):
         try:
-            import backwater_native  # noqa: F401
+            import hydra_native  # noqa: F401
         except Exception:
             self.skipTest('native module not built/importable')
 

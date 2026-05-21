@@ -29,7 +29,7 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
 
-from backwater_model import CrossSection, ModelInput
+from hydra_1d import CrossSection, ModelInput
 from unsteady_model import HydrographBC, UnsteadyParams, get_native_solver_runtime, run_unsteady, _build_hydraulic_tables
 
 

@@ -1,5 +1,5 @@
 import os, csv
-import backwater_model as bw
+import hydra_1d as bw
 
 root = os.path.join(os.getcwd(), 'hec_ras_project')
 # read sections metadata
@@ -41,7 +41,7 @@ for r in rows:
 Q = 500.0
 S0 = 0.003
 model = bw.ModelInput(flow_cfs=Q, flow_change=None, boundary_condition='normal_depth', boundary_value=S0, sections=sections)
-results = bw.run_backwater(model)
+results = bw.run_hydra_1d(model)
 
 # Problematic link: 3 -> 4 (sections index 3 downstream, 4 upstream)
 i = 3

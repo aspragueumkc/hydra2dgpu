@@ -1,13 +1,13 @@
-# QGIS Backwater Plugin
+# HYDRA — QGIS Hydrodynamics & Runoff Application
 
 Steady-flow 1D backwater modeling plugin for QGIS with GeoPackage-native model storage, culvert support, and integrated run/result tools.
 
 ## Current State
 
 - Plugin-first architecture.
-- Core solver is in `backwater_model.py` (GUI-free, CLI-capable).
-- QGIS dock widget and UI workflows are in `backwater_qt.py`.
-- QGIS menu integration is in `backwater_plugin.py`.
+- Core solver is in `hydra_1d.py` (GUI-free, CLI-capable).
+- QGIS dock widget and UI workflows are in `hydra_qt.py`.
+- QGIS menu integration is in `hydra_plugin.py`.
 - Model I/O is GeoPackage-only in the plugin workflow.
 
 ## Project Status
@@ -98,8 +98,8 @@ workbench and native API:
 ## Key Features
 
 - Create, load, save, and run backwater models directly from QGIS.
-- Built-in main menu entries under **Backwater** for common actions:
-  - Open Backwater Panel
+- Built-in main menu entries under **HYDRA** for common actions:
+  - Open HYDRA Panel
   - Create New Model GeoPackage...
   - Load Model GeoPackage...
   - Save Model GeoPackage As...
@@ -108,7 +108,7 @@ workbench and native API:
   - Open Results Table
   - Enable/Disable Layer Editing
   - Save Layer Edits
-- New **Options** submenu in the Backwater menu:
+- New **Options** submenu in the **HYDRA** menu:
   - Solver: `py` or `scipy`
   - Alpha Method: `conveyance` or `area`
 - Downstream boundary controls in UI (`known_wse`, `normal_depth`) plus DS value and flow inputs.
@@ -130,9 +130,9 @@ The plugin also writes/reads:
 
 ## Editing Workflow
 
-- Enable editing with **Backwater > Enable/Disable Layer Editing**.
+- Enable editing with **HYDRA > Enable/Disable Layer Editing**.
 - Edit model data through QGIS attribute forms for loaded layers.
-- Save edits with **Backwater > Save Layer Edits** before running.
+- Save edits with **HYDRA > Save Layer Edits** before running.
 - If unsaved layer edits exist, model run is blocked until edits are saved.
 
 Form behavior includes:
@@ -143,9 +143,9 @@ Form behavior includes:
 
 ## Repository Layout
 
-- `backwater_model.py`: hydraulic solver, GeoPackage I/O, CLI entry logic.
-- `backwater_qt.py`: dock widget, run workflow, plotting/table UI.
-- `backwater_plugin.py`: QGIS main menu and action wiring.
+- `hydra_1d.py`: hydraulic solver, GeoPackage I/O, CLI entry logic.
+- `hydra_qt.py`: dock widget, run workflow, plotting/table UI.
+- `hydra_plugin.py`: QGIS main menu and action wiring.
 - `culvert_routine.py`: culvert hydraulics helpers.
 - `forms/`: Qt Designer forms and form-init hooks.
 - `expressions/`: QGIS expression helpers.
@@ -158,7 +158,7 @@ Form behavior includes:
 - Example syntax check:
 
 ```bash
-python3 -m py_compile backwater_model.py backwater_qt.py backwater_plugin.py
+python3 -m py_compile hydra_1d.py hydra_qt.py hydra_plugin.py
 ```
 
 - Python docstring/type-hint coverage audit (project-owned files):

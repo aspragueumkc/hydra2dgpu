@@ -1,6 +1,6 @@
-# QGIS Backwater Plugin User Guide
+# HYDRA — QGIS Hydrodynamics & Runoff Application User Guide
 
-This guide covers day-to-day use of the Backwater plugin inside QGIS.
+This guide covers day-to-day use of the HYDRA plugin inside QGIS.
 
 ## 1. What the Plugin Does
 
@@ -13,7 +13,7 @@ The plugin performs steady-flow 1D backwater calculations using a GeoPackage mod
 ## 2. Prerequisites
 
 - QGIS 3.x with Python plugin support
-- Backwater plugin installed and enabled
+- HYDRA plugin installed and enabled
 - A writable location for GeoPackage model files (`*.gpkg`)
 
 Optional:
@@ -25,13 +25,13 @@ Optional:
 
 From the QGIS menu bar:
 
-- Open **Backwater > Open Backwater Panel**
+- Open **HYDRA > Open HYDRA Panel**
 
 The dock widget opens on the right side of QGIS.
 
 ## 4. Create a New Model
 
-1. Select **Backwater > Create New Model GeoPackage...**
+1. Select **HYDRA > Create New Model GeoPackage...**
 2. Choose output path and file name
 3. Choose CRS when prompted
 4. The plugin creates a starter model and loads it into the panel
@@ -45,7 +45,7 @@ A model GeoPackage includes these key layers:
 
 ## 5. Load an Existing Model
 
-1. Select **Backwater > Load Model GeoPackage...**
+1. Select **HYDRA > Load Model GeoPackage...**
 2. Pick a `*.gpkg` model
 3. The panel loads boundary settings, sections, and persisted results (if present)
 
@@ -53,10 +53,10 @@ A model GeoPackage includes these key layers:
 
 The plugin is designed for layer/form editing in QGIS.
 
-1. Select **Backwater > Enable/Disable Layer Editing** (to enable)
+1. Select **HYDRA > Enable/Disable Layer Editing** (to enable)
 2. Edit features in `cross_sections`, `centerline`, and `boundary_conditions`
 3. Use configured layer forms and actions
-4. Select **Backwater > Save Layer Edits** to commit
+4. Select **HYDRA > Save Layer Edits** to commit
 
 Important:
 
@@ -82,17 +82,17 @@ In the panel Boundary tab, you can set:
 
 From the QGIS menu:
 
-- **Backwater > Options > Solver > Python (py)**
-- **Backwater > Options > Solver > SciPy (scipy)**
-- **Backwater > Options > Alpha Method > Conveyance**
-- **Backwater > Options > Alpha Method > Area**
+- **HYDRA > Options > Solver > Python (py)**
+- **HYDRA > Options > Solver > SciPy (scipy)**
+- **HYDRA > Options > Alpha Method > Conveyance**
+- **HYDRA > Options > Alpha Method > Area**
 
 These menu choices mirror the panel selector state.
 
 ## 8. Run the Model
 
 1. Ensure edits are saved
-2. Select **Backwater > Run Model**
+2. Select **HYDRA > Run Model**
 3. Review status and outputs in the panel
 
 The run persists results to `model_results` in the same GeoPackage.
@@ -101,8 +101,8 @@ The run persists results to `model_results` in the same GeoPackage.
 
 Use menu actions:
 
-- **Backwater > Open Results Plot**
-- **Backwater > Open Results Table**
+- **HYDRA > Open Results Plot**
+- **HYDRA > Open Results Table**
 
 Results can also reload automatically when opening a model with existing `model_results` rows.
 
@@ -138,7 +138,7 @@ Recommended SWE2D wet/dry stability controls in the workbench:
 
 Use:
 
-- **Backwater > Save Model GeoPackage As...**
+- **HYDRA > Save Model GeoPackage As...**
 
 This writes the current model to a selected GeoPackage path.
 
@@ -146,7 +146,7 @@ This writes the current model to a selected GeoPackage path.
 
 ### Run blocked by unsaved edits
 
-- Save with **Backwater > Save Layer Edits**
+- Save with **HYDRA > Save Layer Edits**
 - Re-run the model
 
 ### "GeoPackage required" warnings

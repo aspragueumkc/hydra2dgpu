@@ -21,8 +21,8 @@ from tests.test_swe2d_unstructured import (  # reuse mesh + analytic helpers
 
 def _load_module():
     try:
-        import backwater_swe2d
-        return backwater_swe2d
+        import hydra_swe2d
+        return hydra_swe2d
     except ImportError:
         return None
 
@@ -45,7 +45,7 @@ def _gmsh_available():
         return False
 
 
-@unittest.skipUnless(_load_module() is not None, "backwater_swe2d not built")
+@unittest.skipUnless(_load_module() is not None, "hydra_swe2d not built")
 @unittest.skipUnless(_gpu_available(), "CUDA GPU not available")
 @unittest.skipUnless(_gmsh_available(), "gmsh not installed")
 class TestGPUUnstructuredDamBreak(unittest.TestCase):
@@ -172,7 +172,7 @@ class TestGPUUnstructuredDamBreak(unittest.TestCase):
         self.assertLess(linf, 0.50, f"GPU unstructured scheme0 L_inf too large: {linf:.4f}")
 
 
-@unittest.skipUnless(_load_module() is not None, "backwater_swe2d not built")
+@unittest.skipUnless(_load_module() is not None, "hydra_swe2d not built")
 @unittest.skipUnless(_gpu_available(), "CUDA GPU not available")
 @unittest.skipUnless(_gmsh_available(), "gmsh not installed")
 class TestGPUUnstructuredLakeAtRest(unittest.TestCase):
@@ -244,7 +244,7 @@ def _make_tiny_triangle_pair_mesh():
     return node_x, node_y, node_z, cell_nodes
 
 
-@unittest.skipUnless(_load_module() is not None, "backwater_swe2d not built")
+@unittest.skipUnless(_load_module() is not None, "hydra_swe2d not built")
 @unittest.skipUnless(_gpu_available(), "CUDA GPU not available")
 class TestGPUDegenerateCellHandling(unittest.TestCase):
     """Regression test for tiny / nearly collinear cells.

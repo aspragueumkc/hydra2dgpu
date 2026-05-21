@@ -16,8 +16,8 @@ from pathlib import Path
 plugin_dir = Path(__file__).parent
 sys.path.insert(0, str(plugin_dir))
 
-from backwater_model import (
-    CrossSection, ModelInput, run_backwater, 
+from hydra_1d import (
+    CrossSection, ModelInput, run_hydra_1d, 
     save_to_geopackage, load_from_geopackage
 )
 
@@ -146,7 +146,7 @@ def test_culvert_integration():
         # Solve water surface profile
         print("\n5. Solving water surface profile (with culvert control)...")
         try:
-            results = run_backwater(model_reloaded)
+            results = run_hydra_1d(model_reloaded)
             print(f"   ✓ Solver completed successfully")
             
             print("\n6. Results:")

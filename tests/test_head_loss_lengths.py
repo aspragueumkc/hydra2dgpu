@@ -2,7 +2,7 @@ import unittest
 import math
 import sys
 sys.path.insert(0, '..')
-import backwater_model as bw
+import hydra_1d as bw
 
 class TestHeadLossUsesUpstreamLength(unittest.TestCase):
     def test_head_loss_uses_upstream_lengths(self):

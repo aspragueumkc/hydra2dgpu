@@ -21,8 +21,8 @@ from tests.test_swe2d_compound_channel import compound_conveyance, solve_stage
 
 def _load_module():
     try:
-        import backwater_swe2d
-        return backwater_swe2d
+        import hydra_swe2d
+        return hydra_swe2d
     except ImportError:
         return None
 
@@ -171,7 +171,7 @@ def _cell_centroids_from_nodes(node_x, node_y, cell_nodes):
     return cx, cy
 
 
-@unittest.skipUnless(_load_module() is not None, "backwater_swe2d not built")
+@unittest.skipUnless(_load_module() is not None, "hydra_swe2d not built")
 @unittest.skipUnless(_gpu_available(), "CUDA GPU not available")
 @unittest.skipUnless(_gmsh_available(), "gmsh not installed")
 class TestCompoundChannelGmshMultiscale(unittest.TestCase):

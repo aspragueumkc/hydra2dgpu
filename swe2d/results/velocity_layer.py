@@ -10,9 +10,22 @@ from __future__ import annotations
 from collections import OrderedDict
 from dataclasses import dataclass
 import sqlite3
-from typing import Dict, Iterable, List, Sequence, Tuple
+from typing import Dict, List, Sequence, Tuple
 
 import numpy as np
+
+try:
+    from swe2d.results.db_utils import (
+        open_ro as _open_ro,
+        table_columns as _table_columns,
+        table_exists as _table_exists,
+    )
+except Exception:
+    from .db_utils import (
+        open_ro as _open_ro,
+        table_columns as _table_columns,
+        table_exists as _table_exists,
+    )
 
 
 @dataclass
@@ -401,33 +414,6 @@ class VelocityVectorBuilder:
         if s < 1.5:
             return {"color": "#fdae61", "width": 1.0}
         return {"color": "#d7191c", "width": 1.3}
-
-
-def _open_ro(gpkg_path: str) -> sqlite3.Connection | None:
-    try:
-        conn = sqlite3.connect(f"file:{gpkg_path}?mode=ro", uri=True)
-        return conn
-    except Exception:
-        return None
-
-
-def _table_exists(conn: sqlite3.Connection, table_name: str) -> bool:
-    try:
-        cur = conn.execute(
-            "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?",
-            (table_name,),
-        )
-        return cur.fetchone() is not None
-    except Exception:
-        return False
-
-
-def _table_columns(conn: sqlite3.Connection, table_name: str) -> List[str]:
-    try:
-        cur = conn.execute(f'PRAGMA table_info("{table_name}")')
-        return [str(r[1]) for r in cur.fetchall()]
-    except Exception:
-        return []
 
 
 def _quote_ident(name: str) -> str:

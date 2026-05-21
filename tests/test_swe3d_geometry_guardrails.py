@@ -9,8 +9,8 @@ import numpy as np
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-from swe2d_backend import configure_swe3d_runtime  # noqa: E402
-from swe2d_workbench_non_gui_runtime import upload_experimental_3d_obj_geometry  # noqa: E402
+from swe2d.runtime.backend import configure_swe3d_runtime  # noqa: E402
+from swe2d.workbench.non_gui_runtime import upload_experimental_3d_obj_geometry  # noqa: E402
 
 
 @contextmanager

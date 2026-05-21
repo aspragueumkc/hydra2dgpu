@@ -10,7 +10,7 @@ import numpy as np
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from unsteady_model import _compute_node_properties, _assemble_system_core, _solve_banded, _apply_adaptive_damping, _regularized_wse, WETTING_DEPTH_FT
-from backwater_model import CrossSection, ModelInput
+from hydra_1d import CrossSection, ModelInput
 
 
 class TestNativeTimestep(unittest.TestCase):
@@ -73,7 +73,7 @@ class TestNativeTimestep(unittest.TestCase):
     def test_native_timestep_matches_python(self):
         """Verify native timestep binding matches Python Newton iterations."""
         try:
-            import backwater_native
+            import hydra_native
         except Exception:
             self.skipTest('native module not built/importable in test environment')
 
@@ -127,7 +127,7 @@ class TestNativeTimestep(unittest.TestCase):
                 break
 
         # Run native timestep
-        z_native, Q_native, inner_iters, max_error, converged = backwater_native.run_one_timestep_unsteady_1d_cpp(
+        z_native, Q_native, inner_iters, max_error, converged = hydra_native.run_one_timestep_unsteady_1d_cpp(
             np.array(self.z_n, dtype=np.float64),
             np.array(self.Q_n, dtype=np.float64),
             reach_lengths,

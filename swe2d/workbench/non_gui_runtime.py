@@ -728,6 +728,7 @@ def upload_experimental_3d_obj_geometry(
     apply_instance_transform_fn: object,
     build_static_geometry_tensors_fn: object,
     write_solid_voxels_obj_fn: object,
+    write_fluid_voxels_obj_fn: object = None,
 ) -> None:
     # Reset last geometry gate diagnostics at each upload attempt so postmortem
     # metadata reflects this run's most recent gate evaluation.
@@ -735,19 +736,28 @@ def upload_experimental_3d_obj_geometry(
     setattr(wb, "_swe3d_geom_gate_last_metrics", None)
     setattr(wb, "_swe3d_geom_gate_last_violations", [])
 
-    if not bool(getattr(wb, "experimental_3d_obj_solids_chk", None) and wb.experimental_3d_obj_solids_chk.isChecked()):
+    solids_upload_enabled = bool(
+        getattr(wb, "experimental_3d_obj_solids_chk", None)
+        and wb.experimental_3d_obj_solids_chk.isChecked()
+    )
+    export_enabled = bool(
+        getattr(wb, "experimental_3d_obj_export_obj_chk", None)
+        and wb.experimental_3d_obj_export_obj_chk.isChecked()
+    )
+    if not solids_upload_enabled and not export_enabled:
         return
 
     if patch_grid_spec_cls is None or load_obj_mesh_fn is None or apply_instance_transform_fn is None or build_static_geometry_tensors_fn is None:
         wb._log("3D sub-grid solids requested, but geometry ingest helpers are unavailable in this runtime.")
         return
 
-    if backend is None or not hasattr(backend, "supports_3d_patch_geometry_upload"):
-        wb._log("3D sub-grid solids requested, but backend geometry upload capability is unavailable.")
-        return
-    if not bool(backend.supports_3d_patch_geometry_upload()):
-        wb._log("3D sub-grid solids requested, but native geometry upload API is not available.")
-        return
+    if solids_upload_enabled:
+        if backend is None or not hasattr(backend, "supports_3d_patch_geometry_upload"):
+            wb._log("3D sub-grid solids requested, but backend geometry upload capability is unavailable.")
+            return
+        if not bool(backend.supports_3d_patch_geometry_upload()):
+            wb._log("3D sub-grid solids requested, but native geometry upload API is not available.")
+            return
 
     spec = wb._build_patch_spec_from_stats(patch_stats, swe3d_env_overrides)
     if spec is None:
@@ -1001,8 +1011,16 @@ def upload_experimental_3d_obj_geometry(
         )
 
     if terrain_surface is None and not mesh_items:
-        wb._log("3D sub-grid solids enabled but no terrain or OBJ instances were resolved; skipping geometry upload.")
-        return
+        wb._log("3D sub-grid solids: no terrain or OBJ instances were resolved.")
+        if not export_enabled:
+            wb._log("3D sub-grid solids enabled but no terrain/OBJ content was found; skipping upload.")
+            return
+        if solids_upload_enabled:
+            wb._log(
+                "3D solids upload will be skipped for this run, but fluid OBJ export will continue "
+                "using the open-domain tensor field."
+            )
+            solids_upload_enabled = False
 
     expected = int(patch_stats.get("n_cells", nx * ny * nz) or (nx * ny * nz))
     obstacle_method = wb._experimental_3d_selected_obstacle_method()
@@ -1045,34 +1063,40 @@ def upload_experimental_3d_obj_geometry(
         tensors_by_method[method_name] = (phi_m, ax_m, ay_m, az_m, dict(diag_m))
 
     phi, ax, ay, az, diag = tensors_by_method[obstacle_method]
-    sanitize_kwargs = wb._experimental_3d_geometry_sanitize_options()
-    try:
-        backend.set_3d_patch_geometry(phi=phi, ax=ax, ay=ay, az=az, **sanitize_kwargs)
-    except TypeError:
-        backend.set_3d_patch_geometry(phi=phi, ax=ax, ay=ay, az=az)
-    except Exception as exc:
-        wb._log(f"3D sub-grid tensor upload failed: {exc}")
-        return
+    if solids_upload_enabled:
+        sanitize_kwargs = wb._experimental_3d_geometry_sanitize_options()
+        try:
+            backend.set_3d_patch_geometry(phi=phi, ax=ax, ay=ay, az=az, **sanitize_kwargs)
+        except TypeError:
+            backend.set_3d_patch_geometry(phi=phi, ax=ax, ay=ay, az=az)
+        except Exception as exc:
+            wb._log(f"3D sub-grid tensor upload failed: {exc}")
+            return
 
-    if bool(sanitize_kwargs.get("sanitize", False)):
+        if bool(sanitize_kwargs.get("sanitize", False)):
+            wb._log(
+                "3D geometry sanitization: enabled "
+                f"(phi_snap_min={float(sanitize_kwargs.get('phi_snap_min', 0.0)):.6g}, "
+                f"area_snap_min={float(sanitize_kwargs.get('area_snap_min', 0.0)):.6g})"
+            )
+
         wb._log(
-            "3D geometry sanitization: enabled "
-            f"(phi_snap_min={float(sanitize_kwargs.get('phi_snap_min', 0.0)):.6g}, "
-            f"area_snap_min={float(sanitize_kwargs.get('area_snap_min', 0.0)):.6g})"
+            "3D sub-grid tensors uploaded: "
+            f"method={obstacle_method} "
+            f"solid_cells={int(diag.get('solid_cells', 0.0))}/{expected} "
+            f"solid_fraction={float(diag.get('solid_fraction', 0.0)):.3f} "
+            f"terrain_cells={int(diag.get('terrain_solid_cells', 0.0))} "
+            f"mesh_cells={int(diag.get('mesh_solid_cells', 0.0))} "
+            f"mesh_instances_used={int(diag.get('mesh_instances_used', 0.0))} "
+            f"seed_requests={int(diag.get('mesh_seed_instances_requested', 0.0))} "
+            f"seed_used={int(diag.get('mesh_seed_instances_used', 0.0))} "
+            f"seed_leak_fallbacks={int(diag.get('mesh_seed_leak_fallbacks', 0.0))}"
         )
-
-    wb._log(
-        "3D sub-grid tensors uploaded: "
-        f"method={obstacle_method} "
-        f"solid_cells={int(diag.get('solid_cells', 0.0))}/{expected} "
-        f"solid_fraction={float(diag.get('solid_fraction', 0.0)):.3f} "
-        f"terrain_cells={int(diag.get('terrain_solid_cells', 0.0))} "
-        f"mesh_cells={int(diag.get('mesh_solid_cells', 0.0))} "
-        f"mesh_instances_used={int(diag.get('mesh_instances_used', 0.0))} "
-        f"seed_requests={int(diag.get('mesh_seed_instances_requested', 0.0))} "
-        f"seed_used={int(diag.get('mesh_seed_instances_used', 0.0))} "
-        f"seed_leak_fallbacks={int(diag.get('mesh_seed_leak_fallbacks', 0.0))}"
-    )
+    else:
+        wb._log(
+            "3D sub-grid solids upload disabled; building tensors for fluid OBJ export only. "
+            f"method={obstacle_method}, solid_fraction={float(diag.get('solid_fraction', 0.0)):.3f}"
+        )
     solid_fraction = float(diag.get('solid_fraction', 0.0) or 0.0)
     if solid_fraction >= 0.995:
         wb._log(
@@ -1118,7 +1142,7 @@ def upload_experimental_3d_obj_geometry(
     if gate_violations:
         wb._log("3D geometry quality gate violation: " + " | ".join(gate_violations))
         setattr(wb, "_swe3d_geom_gate_last_violations", list(gate_violations))
-        if geom_gate_strict:
+        if geom_gate_strict and solids_upload_enabled:
             raise RuntimeError(
                 "3D geometry quality gate failed in strict mode. "
                 "Relax geometry, expand ROI/fluid space, or adjust BACKWATER_SWE3D_GEOM_* thresholds."
@@ -1126,31 +1150,39 @@ def upload_experimental_3d_obj_geometry(
     else:
         setattr(wb, "_swe3d_geom_gate_last_violations", [])
 
-    export_enabled = bool(
-        getattr(wb, "experimental_3d_obj_export_obj_chk", None)
-        and wb.experimental_3d_obj_export_obj_chk.isChecked()
-    )
+
     if export_enabled:
-        if write_solid_voxels_obj_fn is None:
-            wb._log("3D solid OBJ export requested, but export helper is unavailable.")
+        # Use fluid domain mesh export instead of solids.
+        fluid_export_fn = write_fluid_voxels_obj_fn
+        if fluid_export_fn is None:
+            try:
+                from swe3d_geometry_ingest import write_fluid_voxels_obj as fluid_export_fn
+            except ImportError:
+                try:
+                    from .swe3d_geometry_ingest import write_fluid_voxels_obj as fluid_export_fn
+                except ImportError:
+                    fluid_export_fn = None
+        if fluid_export_fn is None:
+            wb._log("3D fluid OBJ export requested, but export helper is unavailable.")
         else:
             export_path = wb._resolve_experimental_3d_obj_export_path(obstacle_method)
+            wb._log(f"3D fluid OBJ export target path: {export_path}")
             try:
-                export_threshold = 0.999
-                export_summary = write_solid_voxels_obj_fn(
+                export_threshold = 0.001  # Fluid: phi >= 0.001
+                export_summary = fluid_export_fn(
                     spec=spec,
                     phi=phi,
                     file_path=export_path,
-                    solid_threshold=export_threshold,
+                    fluid_threshold=export_threshold,
                 )
                 wb._log(
-                    "3D solid OBJ export complete: "
+                    "3D fluid OBJ export complete: "
                     f"threshold={export_threshold:.3f}, "
-                    f"path={export_path}, solid_cells={int(export_summary.get('solid_cells', 0.0))}, "
+                    f"path={export_path}, fluid_cells={int(export_summary.get('fluid_cells', 0.0))}, "
                     f"vertices={int(export_summary.get('vertices', 0.0))}, faces={int(export_summary.get('faces', 0.0))}"
                 )
             except Exception as exc:
-                wb._log(f"3D solid OBJ export failed ({export_path}): {exc}")
+                wb._log(f"3D fluid OBJ export failed ({export_path}): {exc}")
 
     if ab_compare_enabled and alt_method in tensors_by_method:
         phi_a, ax_a, ay_a, az_a, _diag_a = tensors_by_method[obstacle_method]

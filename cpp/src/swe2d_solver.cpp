@@ -13,11 +13,11 @@
 #include "swe2d_solver.hpp"
 #include "swe2d_numerics.hpp"
 
-#ifdef BACKWATER_HAS_CUDA
+#ifdef HYDRA_HAS_CUDA
 #  include "swe2d_gpu.cuh"
 #endif
 
-#ifdef BACKWATER_HAS_OPENMP
+#ifdef HYDRA_HAS_OPENMP
 #  include <omp.h>
 #endif
 
@@ -197,7 +197,7 @@ inline double phi_tvd_cpu(double r, int scheme)
     }
 }
 
-#ifdef BACKWATER_HAS_CUDA
+#ifdef HYDRA_HAS_CUDA
 void sync_gpu_state_to_host(SWE2DSolver* s) {
     if (!s || !s->dev) return;
     swe2d_gpu_get_state(s->dev, s->h.data(), s->hu.data(), s->hv.data());
@@ -273,7 +273,7 @@ void swe3d_load_face_bc_from_env(
     desc.bc_p[face] = swe2d_env_double(build_key("P"), desc.bc_p[face], -1.0e300);
 }
 
-#ifdef BACKWATER_HAS_CUDA
+#ifdef HYDRA_HAS_CUDA
 SWE3DCartesianPatchDesc swe3d_default_patch_desc_from_env(
     const SWE2DMesh& mesh,
     bool single_phase_free_surface,
@@ -442,7 +442,7 @@ void dump_flux_summary(const char* tag,
 // ─────────────────────────────────────────────────────────────────────────────
 // swe2d_gpu_available — CPU-only stub (overridden by swe2d_gpu.cu when compiled)
 // ─────────────────────────────────────────────────────────────────────────────
-#ifndef BACKWATER_HAS_CUDA
+#ifndef HYDRA_HAS_CUDA
 bool swe2d_gpu_available() { return false; }
 #endif
 
@@ -470,7 +470,7 @@ SWE2DSolver* swe2d_create(
             "swe2d_create: nonhydrostatic/coupled modes are GPU-only; set use_gpu=true");
     }
 
-#ifdef BACKWATER_HAS_CUDA
+#ifdef HYDRA_HAS_CUDA
     if (advanced_mode_requested && cfg.enforce_gpu_only_advanced_modes && !swe2d_gpu_available()) {
         throw std::runtime_error(
             "swe2d_create: advanced nonhydrostatic/coupled modes require CUDA-enabled runtime");
@@ -507,14 +507,14 @@ SWE2DSolver* swe2d_create(
         s->cfg.enable_shallow_front_recon_fallback = true;
     }
 
-    #ifdef BACKWATER_HAS_OPENMP
+    #ifdef HYDRA_HAS_OPENMP
     if (cfg.n_threads > 0) {
         omp_set_num_threads(cfg.n_threads);
     }
 #endif
 
     // Initialise GPU state if requested and available
-#ifdef BACKWATER_HAS_CUDA
+#ifdef HYDRA_HAS_CUDA
     s->dev = nullptr;
     if (cfg.use_gpu && swe2d_gpu_available()) {
         s->dev = swe2d_gpu_init(mesh,
@@ -555,7 +555,7 @@ SWE2DSolver* swe2d_create(
 // ─────────────────────────────────────────────────────────────────────────────
 void swe2d_destroy(SWE2DSolver* s) {
     if (!s) return;
-#ifdef BACKWATER_HAS_CUDA
+#ifdef HYDRA_HAS_CUDA
     if (s->dev) {
         swe2d_gpu_destroy(s->dev);
         s->dev = nullptr;
@@ -569,7 +569,7 @@ void swe2d_destroy(SWE2DSolver* s) {
 // ─────────────────────────────────────────────────────────────────────────────
 void swe2d_get_state(const SWE2DSolver* s, double* h_out, double* hu_out, double* hv_out) {
     if (!s) return;
-#ifdef BACKWATER_HAS_CUDA
+#ifdef HYDRA_HAS_CUDA
     if (s->dev) {
         // GPU path: transfer directly device → caller; host mirror is not updated.
         // State remains device-resident between explicit snapshots.
@@ -595,7 +595,7 @@ void swe2d_set_state(SWE2DSolver* s, const double* h_in, const double* hu_in, co
         std::copy(hv_in, hv_in + n, s->hv.begin());
     }
 
-#ifdef BACKWATER_HAS_CUDA
+#ifdef HYDRA_HAS_CUDA
     if (s->dev) {
         swe2d_gpu_set_state(s->dev, s->h.data(), s->hu.data(), s->hv.data());
     }
@@ -613,7 +613,7 @@ static double compute_lambda_max(const SWE2DSolver* s) {
 
     double lambda_max = 0.0;
 
-    #ifdef BACKWATER_HAS_OPENMP
+    #ifdef HYDRA_HAS_OPENMP
     #pragma omp parallel for reduction(max:lambda_max) schedule(static)
     #endif
     for (int32_t e = 0; e < mesh.n_edges; ++e) {
@@ -706,7 +706,7 @@ SWE2DStepDiag swe2d_step_cpu(SWE2DSolver* s, double dt) {
     }
 
     // Zero flux accumulators
-    #ifdef BACKWATER_HAS_OPENMP
+    #ifdef HYDRA_HAS_OPENMP
     #pragma omp parallel for schedule(static)
     #endif
     for (int32_t c = 0; c < n_cells; ++c) {
@@ -854,7 +854,7 @@ SWE2DStepDiag swe2d_step_cpu(SWE2DSolver* s, double dt) {
     double  r_mass_total = 0.0;
     double  r_max_wse_elev_error = 0.0;
 
-    #ifdef BACKWATER_HAS_OPENMP
+    #ifdef HYDRA_HAS_OPENMP
     #pragma omp parallel for schedule(static) \
         reduction(+:r_wet_cells, r_mass_total) \
         reduction(max:r_max_depth) \
@@ -980,7 +980,7 @@ SWE2DStepDiag swe2d_step(SWE2DSolver* s, double dt_request) {
     const bool sync_diag_this_step =
         (diag_interval > 0) ? ((s->gpu_steps % static_cast<uint64_t>(diag_interval)) == 0u) : false;
 
-#ifdef BACKWATER_HAS_CUDA
+#ifdef HYDRA_HAS_CUDA
     if (s->dev) {
         if (use_2d3d_coupling && !use_3d_solver_model) {
             throw std::runtime_error(
@@ -1333,7 +1333,7 @@ void swe2d_solver_set_boundary_values(
         mesh.edge_bc[static_cast<size_t>(e)] = static_cast<BCType>(bc_type[static_cast<size_t>(i)]);
         mesh.edge_bc_val[static_cast<size_t>(e)] = bc_val[static_cast<size_t>(i)];
     }
-#ifdef BACKWATER_HAS_CUDA
+#ifdef HYDRA_HAS_CUDA
     if (s->dev) {
         swe2d_gpu_update_boundary_values(s->dev, edge_index, bc_type, bc_val, n_updates);
     }
@@ -1359,7 +1359,7 @@ void swe2d_solver_set_boundary_hydrographs(
     s->hydrographs_enabled = false;
 
     if (n_edges <= 0 || n_samples <= 0 || !edge_index || !bc_type || !offsets || !time_s || !value) {
-#ifdef BACKWATER_HAS_CUDA
+#ifdef HYDRA_HAS_CUDA
         if (s->dev) {
             swe2d_gpu_set_boundary_hydrographs(s->dev, nullptr, nullptr, nullptr, nullptr, nullptr, 0, 0);
         }
@@ -1373,7 +1373,7 @@ void swe2d_solver_set_boundary_hydrographs(
     s->hg_time_s.assign(time_s, time_s + n_samples);
     s->hg_value.assign(value, value + n_samples);
     s->hydrographs_enabled = true;
-#ifdef BACKWATER_HAS_CUDA
+#ifdef HYDRA_HAS_CUDA
     if (s->dev) {
         swe2d_gpu_set_boundary_hydrographs(s->dev, edge_index, bc_type, offsets, time_s, value, n_edges, n_samples);
     }
@@ -1406,7 +1406,7 @@ void swe2d_solver_set_rain_cn_forcing(
     s->rain_mm_to_model_depth = (mm_to_model_depth > 0.0) ? mm_to_model_depth : 1.0e-3;
 
     if (n_cells <= 0 || n_gages <= 0 || n_samples <= 0 || !cell_gage_idx || !gage_offsets || !hg_time_s || !hg_cum_mm || !cn) {
-#ifdef BACKWATER_HAS_CUDA
+#ifdef HYDRA_HAS_CUDA
         if (s->dev) {
             swe2d_gpu_set_rain_cn_forcing(
                 s->dev,
@@ -1434,7 +1434,7 @@ void swe2d_solver_set_rain_cn_forcing(
     s->rain_excess_cum_mm.assign(static_cast<size_t>(n_cells), 0.0);
     s->source_terms.assign(static_cast<size_t>(n_cells), 0.0);
     s->rain_cn_enabled = true;
-#ifdef BACKWATER_HAS_CUDA
+#ifdef HYDRA_HAS_CUDA
     if (s->dev) {
         swe2d_gpu_set_rain_cn_forcing(s->dev,
                                       cell_gage_idx,
@@ -1466,7 +1466,7 @@ void swe2d_solver_set_external_sources(
         s->external_sources_enabled = true;
     }
 
-#ifdef BACKWATER_HAS_CUDA
+#ifdef HYDRA_HAS_CUDA
     if (s->dev) {
         swe2d_gpu_set_external_sources(
             s->dev,

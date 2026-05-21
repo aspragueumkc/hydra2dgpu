@@ -67,7 +67,7 @@ except ImportError:
     _HAVE_QGIS = False
 
 try:
-    from swe2d_backend import SWE2DBackend, swe2d_available
+    from swe2d.runtime.backend import SWE2DBackend, swe2d_available
     _HAVE_SOLVER = swe2d_available()
 except Exception:
     _HAVE_SOLVER = False
@@ -718,7 +718,7 @@ class TestBCLayerOverride(unittest.TestCase):
 # Group 3 – Analytical steady-state test with native solver
 # ===========================================================================
 
-@unittest.skipUnless(_HAVE_SOLVER, "Native 2D solver (backwater_swe2d) not available")
+@unittest.skipUnless(_HAVE_SOLVER, "Native 2D solver (hydra_swe2d) not available")
 class TestChannelSteadyState(unittest.TestCase):
     """
     Rectangular channel driven to steady state; compare interior depth to
@@ -749,7 +749,7 @@ class TestChannelSteadyState(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls):
-        from swe2d_backend import SWE2DBackend
+        from swe2d.runtime.backend import SWE2DBackend
         cls.SWE2DBackend = SWE2DBackend
 
     def _build_mesh_and_bcs(self, right_type: int = 4, right_val: float = 0.0):
@@ -889,7 +889,7 @@ class TestChannelSteadyState(unittest.TestCase):
         Tests the full timeseries interpolation path:
           _BC_TS_FLOW (102) → _apply_timeseries_bc_values → INFLOW_Q (2)
         """
-        from swe2d_backend import SWE2DBackend
+        from swe2d.runtime.backend import SWE2DBackend
         _BC_TS_FLOW = 102
 
         yn = _manning_normal_depth(self.Q_IN, self.LY, self.S, self.N_MANN)

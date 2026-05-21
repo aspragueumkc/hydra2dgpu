@@ -10,7 +10,7 @@ import numpy as np
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from unsteady_model import SectionHydraulicTable, _unsteady_section_state_from_table
-from backwater_model import CrossSection
+from hydra_1d import CrossSection
 
 
 class TestNativeTableState(unittest.TestCase):
@@ -47,11 +47,11 @@ class TestNativeTableState(unittest.TestCase):
 
     def test_native_table_state_matches_python_path(self):
         try:
-            import backwater_native
+            import hydra_native
         except Exception:
             self.skipTest('native module not built/importable in test environment')
 
-        self.assertTrue(hasattr(backwater_native, 'solve_table_state'))
+        self.assertTrue(hasattr(hydra_native, 'solve_table_state'))
 
         old = os.environ.get('BACKWATER_USE_CPP_SOLVER')
         try:

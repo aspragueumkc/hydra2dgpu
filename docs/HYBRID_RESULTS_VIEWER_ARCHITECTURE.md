@@ -5,8 +5,8 @@
 Deliver a hybrid results-viewing system with:
 
 - A QGIS-native results map panel for immediate production use.
-- An optional high-performance viewer panel that can evolve toward GPU-native rendering.
-- Shared data/cache services so both panels use one results pipeline.
+- A high-performance map-canvas overlay renderer that can evolve toward GPU-native rendering.
+- Shared data/cache services so both viewer paths use one results pipeline.
 
 This architecture must support:
 
@@ -33,13 +33,13 @@ A plugin-owned panel with dedicated map canvas behavior and controls:
 - Supports standard QGIS interactions (pan/zoom/identify/select/CRS).
 - Serves as default viewer for broad compatibility.
 
-### 3.2 Panel B: High-Performance Viewer Panel (optional)
+### 3.2 Panel B: High-Performance Canvas Overlay (primary high-perf path)
 
-A custom rendering panel designed for high frame-rate and future all-GPU features:
+A custom rendering overlay designed for high frame-rate and future all-GPU features:
 
-- Initial backend: VTK/OpenGL widget for unstructured mesh rendering.
+- Current backend: NumPy-rasterized unstructured fields drawn via a georeferenced `QgsMapCanvasItem`.
 - Future backend: CUDA/VTK-m/OpenGL compute for streamline particles and interpolation.
-- Dedicated render loop decoupled from QGIS vector layer update constraints.
+- Render loop decoupled from QGIS per-feature vector layer update constraints.
 
 ### 3.3 Shared Core Services
 
@@ -81,7 +81,7 @@ Responsibilities:
 - Multi-level cache:
   - L1: current/adjacent timesteps in RAM.
   - L2: memory-mapped arrays for recent runs.
-  - L3: optional GPU buffer cache in high-performance panel.
+  - L3: optional GPU buffer cache in high-performance overlay renderer.
 - Frame-window prefetch around the active timestep.
 - Cache invalidation on source/run/layer switch.
 
@@ -116,6 +116,11 @@ Responsibilities:
 - Streamline/tracer pathline rendering.
 - Progressive level-of-detail and density controls.
 
+Current status (MVP started):
+
+- Implemented a high-performance map-canvas overlay using NumPy rasterization of unstructured cell snapshots (depth/speed/WSE) to bypass per-feature QGIS map updates for frame playback.
+- Removed the separate high-performance dock panel path from the active UI; overlay controls (field/colormap/resolution/auto-contrast/opacity) are now the primary high-performance control surface.
+
 Roadmap:
 
 - Stage 1: CPU-fed VTK rendering.
@@ -136,6 +141,7 @@ Responsibilities:
 
 - Enable streamlines through existing mesh-capable stack when available (MDAL/Crayfish path).
 - Add basic seeding controls in panel UI (line/area/random/manual seed points).
+- Add QGIS-native per-frame streamline trace overlay from cached velocity snapshots (implemented baseline).
 
 ### 5.2 Mid-term
 

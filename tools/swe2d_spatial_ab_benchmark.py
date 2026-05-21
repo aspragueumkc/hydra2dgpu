@@ -30,11 +30,11 @@ from tests.test_swe2d_unstructured import _build_mesh, _make_gmsh_triangle_mesh
 
 def _load_module():
     try:
-        import backwater_swe2d
+        import hydra_swe2d
 
-        return backwater_swe2d
+        return hydra_swe2d
     except Exception as exc:
-        raise RuntimeError(f"Could not import backwater_swe2d: {exc}")
+        raise RuntimeError(f"Could not import hydra_swe2d: {exc}")
 
 
 @dataclass
@@ -221,7 +221,7 @@ def main() -> int:
 
     mod = _load_module()
     if not bool(mod.swe2d_gpu_available()):
-        raise RuntimeError("CUDA GPU is not available in backwater_swe2d")
+        raise RuntimeError("CUDA GPU is not available in hydra_swe2d")
 
     schemes: List[int] = [int(s.strip()) for s in str(args.schemes).split(",") if s.strip()]
     print("SWE2D Spatial A/B Benchmark (GPU)")

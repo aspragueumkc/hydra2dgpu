@@ -15,7 +15,7 @@ from unsteady_model import _assemble_system_core
 class TestNativeAssemblyCore(unittest.TestCase):
     def test_native_assembly_core_matches_python(self):
         try:
-            import backwater_native
+            import hydra_native
         except Exception:
             self.skipTest('native module not built/importable in test environment')
 
@@ -46,7 +46,7 @@ class TestNativeAssemblyCore(unittest.TestCase):
             ds_bc_value=0.0012,
             ds_bc_ramp_factor=0.75,
         )
-        native_ab, native_rhs = backwater_native.assemble_system_core(
+        native_ab, native_rhs = hydra_native.assemble_system_core(
             reach_lengths,
             z_values,
             q_values,

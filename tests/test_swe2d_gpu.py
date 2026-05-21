@@ -11,7 +11,7 @@ Do not treat failures here as a reason to avoid GPU-focused numerical or
 performance improvements unless the task explicitly requires CPU fallback work.
 
 Skipped automatically when:
-    - backwater_swe2d is not built, OR
+    - hydra_swe2d is not built, OR
     - swe2d_gpu_available() returns False
 """
 
@@ -25,8 +25,8 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 def _load_module():
     try:
-        import backwater_swe2d
-        return backwater_swe2d
+        import hydra_swe2d
+        return hydra_swe2d
     except ImportError:
         return None
 
@@ -76,7 +76,7 @@ def _run_solver(mod, mesh, h0, n_steps, use_gpu, n_mann_cell=None):
     return h, hu, hv, diag
 
 
-@unittest.skipUnless(_load_module() is not None, "backwater_swe2d not built")
+@unittest.skipUnless(_load_module() is not None, "hydra_swe2d not built")
 @unittest.skipUnless(_gpu_available(), "CUDA GPU not available")
 class TestGPUCPUParity(unittest.TestCase):
     """

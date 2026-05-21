@@ -36,7 +36,7 @@ class SWE2DRunController:
             return False
 
         if not bool(self._backend_ready_callback()):
-            msg = "Native 2D backend is not available. Build backwater_swe2d first."
+            msg = "Native 2D backend is not available. Build hydra_swe2d first."
             if callable(self._backend_unavailable_callback):
                 self._backend_unavailable_callback(msg)
             if callable(self._log_callback):

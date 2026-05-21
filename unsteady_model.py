@@ -181,7 +181,7 @@ def _native_solver_backend_label() -> str:
 
 # Shared hydraulic helpers from the steady model
 try:
-    from backwater_model import (
+    from hydra_1d import (
         CrossSection,
         ModelInput,
         submerged_trapezoids_area_perimeter,
@@ -190,10 +190,10 @@ try:
         _sorted_sections_by_river_station,
         solve_normal_depth,
         compute_state,
-        run_backwater,
+        run_hydra_1d,
     )
 except ImportError:
-    from .backwater_model import (  # type: ignore
+    from .hydra_1d import (  # type: ignore
         CrossSection,
         ModelInput,
         submerged_trapezoids_area_perimeter,
@@ -202,7 +202,7 @@ except ImportError:
         _sorted_sections_by_river_station,
         solve_normal_depth,
         compute_state,
-        run_backwater,
+        run_hydra_1d,
     )
 
 # ---------------------------------------------------------------------------
@@ -2036,10 +2036,10 @@ def _initial_conditions(
         steady_model.boundary_condition = 'normal_depth'
         steady_model.boundary_value = ds_bc_value
 
-    # run_backwater orders DS=0, US=N-1
-    steady_results = run_backwater(steady_model, solver='py')
+    # run_hydra_1d orders DS=0, US=N-1
+    steady_results = run_hydra_1d(steady_model, solver='py')
 
-    # sections are ordered DS→US in model after run_backwater
+    # sections are ordered DS→US in model after run_hydra_1d
     ordered = _sorted_sections_by_river_station(model.sections)
     sections_us_to_ds = list(reversed(ordered))      # flip to US→DS
     N = len(sections_us_to_ds)

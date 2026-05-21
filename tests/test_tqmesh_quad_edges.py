@@ -11,15 +11,15 @@ build_dir = os.path.join(here, "build")
 if build_dir not in sys.path:
     sys.path.insert(0, build_dir)
 
-from swe2d_meshing import ConceptualArc, ConceptualModel, ConceptualRegion, QuadEdgeControl, TQMeshBackend, GmshBackend
+from swe2d.mesh.meshing import ConceptualArc, ConceptualModel, ConceptualRegion, QuadEdgeControl, TQMeshBackend, GmshBackend
 
 
 class TestTQMeshQuadEdges(unittest.TestCase):
     def test_multi_vertex_quad_edges_generate_quads(self):
         try:
-            import backwater_tqmesh  # noqa: F401
+            import hydra_tqmesh  # noqa: F401
         except ImportError:
-            self.skipTest("backwater_tqmesh module is not built")
+            self.skipTest("hydra_tqmesh module is not built")
 
         region = ConceptualRegion(
             region_id=1,
@@ -47,9 +47,9 @@ class TestTQMeshQuadEdges(unittest.TestCase):
 
     def test_adjacent_regions_share_interface_edges(self):
         try:
-            import backwater_tqmesh  # noqa: F401
+            import hydra_tqmesh  # noqa: F401
         except ImportError:
-            self.skipTest("backwater_tqmesh module is not built")
+            self.skipTest("hydra_tqmesh module is not built")
 
         regions = [
             ConceptualRegion(

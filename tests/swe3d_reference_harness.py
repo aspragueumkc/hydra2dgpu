@@ -324,3 +324,253 @@ def _build_minimal_mesh(mod, lx: float, ly: float):
         np.empty(0, dtype=np.int32),
         np.empty(0, dtype=np.float64),
     )
+
+
+# ---------------------------------------------------------------------------
+# OpenFOAM dam-break comparator (optional external reference)
+# ---------------------------------------------------------------------------
+
+def _set_patch_env(nx: int, ny: int, nz: int, dx: float, dy: float, dz: float) -> None:
+    os.environ["BACKWATER_SWE3D_PATCH_NX"] = str(nx)
+    os.environ["BACKWATER_SWE3D_PATCH_NY"] = str(ny)
+    os.environ["BACKWATER_SWE3D_PATCH_NZ"] = str(nz)
+    os.environ["BACKWATER_SWE3D_PATCH_DX"] = f"{dx:.8f}"
+    os.environ["BACKWATER_SWE3D_PATCH_DY"] = f"{dy:.8f}"
+    os.environ["BACKWATER_SWE3D_PATCH_DZ"] = f"{dz:.8f}"
+
+
+def _clear_patch_env() -> None:
+    for key in (
+            "BACKWATER_SWE3D_PATCH_NX",
+            "BACKWATER_SWE3D_PATCH_NY",
+            "BACKWATER_SWE3D_PATCH_NZ",
+            "BACKWATER_SWE3D_PATCH_DX",
+            "BACKWATER_SWE3D_PATCH_DY",
+            "BACKWATER_SWE3D_PATCH_DZ"):
+        os.environ.pop(key, None)
+
+
+def _load_openfoam_alpha_profile(path: str) -> Tuple[np.ndarray, np.ndarray]:
+    """
+    Load OpenFOAM alpha profile from JSON or text formats.
+
+    Supported text layouts:
+      - x alpha
+      - x y z alpha.water
+    Comment/empty lines are ignored.
+    """
+    if not os.path.isfile(path):
+        raise FileNotFoundError(f"OpenFOAM profile file not found: {path}")
+
+    if str(path).lower().endswith(".json"):
+        with open(path) as fh:
+            data = json.load(fh)
+        if isinstance(data, dict) and "x" in data and "alpha" in data:
+            x = np.asarray(data["x"], dtype=np.float64)
+            a = np.asarray(data["alpha"], dtype=np.float64)
+        elif isinstance(data, list):
+            x = np.asarray([row["x"] for row in data], dtype=np.float64)
+            a = np.asarray([row["alpha"] for row in data], dtype=np.float64)
+        else:
+            raise ValueError(
+                "JSON OpenFOAM profile must contain keys 'x' and 'alpha' or a list of {'x','alpha'} rows")
+    else:
+        x_vals: List[float] = []
+        a_vals: List[float] = []
+        with open(path) as fh:
+            for line in fh:
+                txt = line.strip()
+                if not txt:
+                    continue
+                if txt.startswith("#") or txt.startswith("//"):
+                    continue
+                txt = txt.replace(",", " ")
+                parts = [p for p in txt.split() if p]
+                vals: List[float] = []
+                ok = True
+                for p in parts:
+                    try:
+                        vals.append(float(p))
+                    except ValueError:
+                        ok = False
+                        break
+                if not ok:
+                    continue
+                if len(vals) >= 4:
+                    x_vals.append(vals[0])
+                    a_vals.append(vals[3])
+                elif len(vals) >= 2:
+                    x_vals.append(vals[0])
+                    a_vals.append(vals[1])
+        if not x_vals:
+            raise ValueError(
+                "No numeric OpenFOAM profile rows found. Expected 'x alpha' or 'x y z alpha' columns.")
+        x = np.asarray(x_vals, dtype=np.float64)
+        a = np.asarray(a_vals, dtype=np.float64)
+
+    if x.size != a.size or x.size < 2:
+        raise ValueError("OpenFOAM profile arrays must have matching length >= 2")
+
+    order = np.argsort(x)
+    x = x[order]
+    a = np.clip(a[order], 0.0, 1.0)
+    return x, a
+
+
+def _build_dambreak_column_vof(
+        nx: int,
+        ny: int,
+        nz: int,
+        dx: float,
+        dz: float,
+        dam_length_m: float,
+        dam_height_m: float) -> np.ndarray:
+    """Build box-column VoF IC for a canonical dam-break tank."""
+    x_centers = (np.arange(nx, dtype=np.float64) + 0.5) * dx
+    z_centers = (np.arange(nz, dtype=np.float64) + 0.5) * dz
+    wet_x = x_centers <= dam_length_m
+    wet_z = z_centers <= dam_height_m
+    vof = np.zeros((nz, ny, nx), dtype=np.float64)
+    for iz in range(nz):
+        if not wet_z[iz]:
+            continue
+        vof[iz, :, wet_x] = 1.0
+    return vof.reshape(nx * ny * nz)
+
+
+def _front_position_from_alpha(
+        x: np.ndarray,
+        alpha: np.ndarray,
+        threshold: float = 0.5) -> float:
+    """Estimate front position as the right-most threshold crossing."""
+    mask = alpha >= threshold
+    if not np.any(mask):
+        return float(x[0])
+    if np.all(mask):
+        return float(x[-1])
+    i = int(np.max(np.where(mask)[0]))
+    if i >= x.size - 1:
+        return float(x[-1])
+    x0, x1 = float(x[i]), float(x[i + 1])
+    a0, a1 = float(alpha[i]), float(alpha[i + 1])
+    if abs(a1 - a0) < 1.0e-12:
+        return x0
+    t = (threshold - a0) / (a1 - a0)
+    t = min(1.0, max(0.0, t))
+    return x0 + t * (x1 - x0)
+
+
+def run_openfoam_dambreak_compare(
+        mod,
+        openfoam_profile_path: str,
+        config: Optional[dict] = None) -> CaseResult:
+    """
+    Compare SWE3D dam-break against an OpenFOAM alpha profile.
+
+    The OpenFOAM profile can come from sample/postProcessing output as either:
+      - whitespace text with columns 'x alpha' or 'x y z alpha'
+      - JSON with arrays: {"x": [...], "alpha": [...]}.
+
+    Returns CaseResult with metrics:
+      - alpha_profile_l1
+      - front_position_m
+      - vof_bounds
+    """
+    cfg = dict(config or {})
+    result = CaseResult(case_name="openfoam_dambreak")
+
+    # OpenFOAM tutorial-like defaults (interFoam damBreak tank).
+    lx = float(cfg.get("lx_m", 3.22))
+    ly = float(cfg.get("ly_m", 1.00))
+    lz = float(cfg.get("lz_m", 1.00))
+    nx = int(cfg.get("patch_nx", 96))
+    ny = int(cfg.get("patch_ny", 8))
+    nz = int(cfg.get("patch_nz", 32))
+    dam_length = float(cfg.get("dam_length_m", 1.228))
+    dam_height = float(cfg.get("dam_height_m", 0.55))
+    dt = float(cfg.get("dt_s", 0.02))
+    n_steps = int(cfg.get("n_steps", 20))
+    alpha_l1_tol = float(cfg.get("alpha_l1_tol", 0.25))
+    front_tol_m = float(cfg.get("front_tol_m", 0.30))
+
+    dx = lx / nx
+    dy = ly / ny
+    dz = lz / nz
+
+    x_ref_raw, alpha_ref = _load_openfoam_alpha_profile(openfoam_profile_path)
+    if np.max(x_ref_raw) <= 1.0 + 1.0e-9 and np.min(x_ref_raw) >= -1.0e-9:
+        x_ref = x_ref_raw * lx
+    else:
+        x_ref = x_ref_raw
+
+    # Minimal 2D mesh is enough for uncoupled 3D patch stepping.
+    mesh_2d = _build_minimal_mesh(mod, lx, ly)
+    n_cells_2d = mod.swe2d_mesh_info(mesh_2d)["n_cells"]
+    h0 = np.full(n_cells_2d, 0.5, dtype=np.float64)
+
+    _set_patch_env(nx, ny, nz, dx, dy, dz)
+    solver = mod.swe2d_create_solver(
+        mesh_2d,
+        h0,
+        use_gpu=True,
+        temporal_order=2,
+        coupling_mode=0,
+        three_d_solver_model=1,
+    )
+
+    try:
+        vof_ic = _build_dambreak_column_vof(nx, ny, nz, dx, dz, dam_length, dam_height)
+        mod.swe2d_set_3d_patch_vof(solver, vof_ic)
+        zeros = np.zeros_like(vof_ic)
+        mod.swe2d_set_3d_patch_state(solver, u=zeros, v=zeros, w=zeros, p=zeros)
+
+        for _ in range(n_steps):
+            mod.swe2d_step(solver, dt)
+
+        stats = mod.swe2d_get_3d_patch_stats(solver)
+        vof = mod.swe2d_get_3d_patch_vof(solver).reshape(nz, ny, nx)
+        alpha_x = np.mean(vof, axis=(0, 1))
+        x_sim = (np.arange(nx, dtype=np.float64) + 0.5) * dx
+
+        x_eval = np.clip(x_ref, x_sim[0], x_sim[-1])
+        alpha_sim_eval = np.interp(x_eval, x_sim, alpha_x)
+        l1 = float(np.mean(np.abs(alpha_sim_eval - alpha_ref)))
+
+        front_ref = _front_position_from_alpha(x_ref, alpha_ref, threshold=0.5)
+        front_sim = _front_position_from_alpha(x_sim, alpha_x, threshold=0.5)
+        front_err = abs(front_sim - front_ref)
+
+        result.metrics.append(MetricResult(
+            name="alpha_profile_l1",
+            passed=(l1 <= alpha_l1_tol),
+            value=l1,
+            ref=0.0,
+            delta=l1,
+            tolerance=alpha_l1_tol,
+            description="L1 error between SWE3D and OpenFOAM alpha(x) profile",
+        ))
+        result.metrics.append(MetricResult(
+            name="front_position_m",
+            passed=(front_err <= front_tol_m),
+            value=front_sim,
+            ref=front_ref,
+            delta=front_err,
+            tolerance=front_tol_m,
+            description="Right-most alpha=0.5 front position",
+        ))
+
+        vof_bound_violation = max(0.0, -stats["vof_min"], stats["vof_max"] - 1.0)
+        result.metrics.append(MetricResult(
+            name="vof_bounds",
+            passed=(vof_bound_violation <= 1.0e-10),
+            value=vof_bound_violation,
+            ref=0.0,
+            delta=vof_bound_violation,
+            tolerance=1.0e-10,
+            description="Boundedness check while matching OpenFOAM profile",
+        ))
+    finally:
+        mod.swe2d_destroy(solver)
+        _clear_patch_env()
+
+    return result

@@ -144,7 +144,7 @@ def _load_set_z_callable():
 
     try:
         candidate_dirs.append(
-            os.path.join(QgsApplication.qgisSettingsDirPath(), 'python', 'plugins', 'qgis-backwater-plugin')
+            os.path.join(QgsApplication.qgisSettingsDirPath(), 'python', 'plugins', 'qgis-hydra-plugin')
         )
     except Exception:
         pass
@@ -161,7 +161,7 @@ def _load_set_z_callable():
             f'Could not resolve vertices_z_from_raster.py. Tried: {candidate_dirs}'
         )
 
-    spec = importlib.util.spec_from_file_location('backwater_vertices_z_from_raster', expr_path)
+    spec = importlib.util.spec_from_file_location('hydra_vertices_z_from_raster', expr_path)
     if spec is None or spec.loader is None:
         raise RuntimeError(f'Could not import raster expression module: {expr_path}')
     mod = importlib.util.module_from_spec(spec)
@@ -369,7 +369,7 @@ def _bind_button(dialog, layer, feature, object_name, action_name, icon_kind, ca
     btn.clicked.connect(_on_click)
 
 
-def backwater_cross_sections_form_open(dialog, layer, feature):
+def hydra_cross_sections_form_open(dialog, layer, feature):
     _bind_button(dialog, layer, feature, 'btn_select_terrain', 'Backwater: Select Terrain Raster', 'terrain')
     _bind_button(
         dialog,
@@ -383,5 +383,5 @@ def backwater_cross_sections_form_open(dialog, layer, feature):
     _wire_culvert_visibility(dialog)
 
 
-def backwater_boundary_form_open(dialog, layer, feature):
+def hydra_boundary_form_open(dialog, layer, feature):
     _bind_button(dialog, layer, feature, 'btn_run_model', 'Backwater: Run Model', 'play')

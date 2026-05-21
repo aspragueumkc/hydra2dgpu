@@ -1,7 +1,7 @@
 #pragma once
 // swe2d_solver.hpp
 // CPU solver for the 2D SWE on an unstructured triangular mesh.
-// Uses OpenMP for parallelism when BACKWATER_HAS_OPENMP is defined.
+// Uses OpenMP for parallelism when HYDRA_HAS_OPENMP is defined.
 //
 // The solver owns its state arrays and an optional GPU device state.
 // At runtime it selects CPU or GPU path based on availability and config.
@@ -50,7 +50,7 @@ enum class SWE2DThreeDSolverModel : int {
 };
 
 // Forward declaration of GPU state (defined in swe2d_gpu.cuh when CUDA present)
-#ifdef BACKWATER_HAS_CUDA
+#ifdef HYDRA_HAS_CUDA
 struct SWE2DDeviceState;
 #endif
 
@@ -242,7 +242,7 @@ struct SWE2DSolver {
     uint64_t gpu_steps = 0;
 
     // ── GPU state (null when CUDA unavailable or use_gpu=false) ─────────────
-#ifdef BACKWATER_HAS_CUDA
+#ifdef HYDRA_HAS_CUDA
     SWE2DDeviceState* dev = nullptr;
 #endif
 };

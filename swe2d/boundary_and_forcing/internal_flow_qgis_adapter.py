@@ -4,27 +4,14 @@ from typing import Callable, Dict, Iterable, Optional, Tuple
 
 import numpy as np
 
-try:
-    from swe2d_internal_flow_logic import (
-        build_hydrograph_lookup_from_features,
-        build_internal_flow_forcing_from_features,
-        first_matching_field,
-        resolve_internal_flow_field_name,
-        resolve_layer_hydrograph_for_feature,
-    )
-except Exception:
-    from .swe2d_internal_flow_logic import (
-        build_hydrograph_lookup_from_features,
-        build_internal_flow_forcing_from_features,
-        first_matching_field,
-        resolve_internal_flow_field_name,
-        resolve_layer_hydrograph_for_feature,
-    )
-
-try:
-    from swe2d_internal_flow_qgis_geometry import internal_flow_geom_to_indices_weights_qgis
-except Exception:
-    from .swe2d_internal_flow_qgis_geometry import internal_flow_geom_to_indices_weights_qgis
+from .internal_flow_logic import (
+    build_hydrograph_lookup_from_features,
+    build_internal_flow_forcing_from_features,
+    first_matching_field,
+    resolve_internal_flow_field_name,
+    resolve_layer_hydrograph_for_feature,
+)
+from .internal_flow_qgis_geometry import internal_flow_geom_to_indices_weights_qgis
 
 
 def build_internal_flow_forcing_qgis(

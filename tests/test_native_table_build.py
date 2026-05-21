@@ -9,7 +9,7 @@ import numpy as np
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from backwater_model import CrossSection
+from hydra_1d import CrossSection
 from unsteady_model import _build_section_hydraulic_table
 
 
@@ -31,13 +31,13 @@ class TestNativeTableBuild(unittest.TestCase):
 
     def test_native_table_builder_matches_python(self):
         try:
-            import backwater_native
+            import hydra_native
         except Exception:
             self.skipTest('native module not built/importable in test environment')
 
-        self.assertTrue(hasattr(backwater_native, 'build_section_hydraulic_table_from_geometry_cpp'))
+        self.assertTrue(hasattr(hydra_native, 'build_section_hydraulic_table_from_geometry_cpp'))
 
-        if not hasattr(backwater_native, 'build_section_hydraulic_table_cpp'):
+        if not hasattr(hydra_native, 'build_section_hydraulic_table_cpp'):
             self.skipTest('native module missing build_section_hydraulic_table_cpp entrypoint')
 
         old = os.environ.get('BACKWATER_USE_CPP_SOLVER')

@@ -123,13 +123,17 @@ enum class SWE3DAdaptiveDtMode : int32_t {
 struct SWE3DRuntimeControls {
     int32_t adaptive_dt_mode = static_cast<int32_t>(SWE3DAdaptiveDtMode::ADVECTIVE_ONLY);
     double gravity_wave_cfl = 0.35;
-    bool projection_reject_enable = true;
+    bool projection_reject_enable = false;
     bool projection_fail_fast = false;
     double projection_residual_target = 1.0e-5;
     double projection_dt_reduction = 0.5;
     int32_t projection_max_retries = 3;
     double projection_min_dt_factor = 0.05;
     int32_t vof_max_substeps = 8;
+    bool state_reject_enable = false;
+    double state_vof_bounds_tol = 1.0e-5;
+    double state_max_abs_velocity = 100.0;
+    double state_max_abs_pressure = 1.0e6;
 };
 
 int32_t swe3d_env_int_bounded(const char* name, int32_t fallback, int32_t vmin, int32_t vmax) {
@@ -201,6 +205,27 @@ SWE3DRuntimeControls swe3d_load_runtime_controls() {
         cfg.vof_max_substeps,
         1,
         256);
+    cfg.state_reject_enable =
+        swe3d_env_int_bounded(
+            "BACKWATER_SWE3D_STATE_REJECT_ENABLE",
+            cfg.state_reject_enable ? 1 : 0,
+            0,
+            1) != 0;
+    cfg.state_vof_bounds_tol = swe3d_env_double_bounded(
+        "BACKWATER_SWE3D_STATE_VOF_BOUNDS_TOL",
+        cfg.state_vof_bounds_tol,
+        0.0,
+        1.0e-1);
+    cfg.state_max_abs_velocity = swe3d_env_double_bounded(
+        "BACKWATER_SWE3D_STATE_MAX_ABS_VELOCITY",
+        cfg.state_max_abs_velocity,
+        1.0e-3,
+        1.0e8);
+    cfg.state_max_abs_pressure = swe3d_env_double_bounded(
+        "BACKWATER_SWE3D_STATE_MAX_ABS_PRESSURE",
+        cfg.state_max_abs_pressure,
+        1.0e-3,
+        1.0e12);
     return cfg;
 }
 
@@ -3392,8 +3417,14 @@ __global__ void swe3d_dt_wave_max_kernel(
     const double* d_v,
     const double* d_w,
     const double* d_vof,
+    const double* d_phi,
+    const double* d_ax,
+    const double* d_ay,
+    const double* d_az,
     double g,
-    double h_char,
+    double dx,
+    double dy,
+    double dz,
     double gravity_wave_weight,
     int32_t adaptive_mode,
     unsigned long long* d_max_bits);
@@ -3414,8 +3445,13 @@ double swe2d_gpu_compute_dt_3d_patch(
     }
 
     const auto& desc = patch->desc;
-    const double h_char = fmin(fabs(desc.dx), fmin(fabs(desc.dy), fabs(desc.dz)));
-    if (!(h_char > 0.0) || !std::isfinite(h_char) || !(cfl_factor > 0.0)) {
+    const double dx = fabs(desc.dx);
+    const double dy = fabs(desc.dy);
+    const double dz = fabs(desc.dz);
+    const double h_char = fmin(dx, fmin(dy, dz));
+    if (!(dx > 0.0) || !(dy > 0.0) || !(dz > 0.0) ||
+        !std::isfinite(dx) || !std::isfinite(dy) || !std::isfinite(dz) ||
+        !(cfl_factor > 0.0)) {
         return dt_max;
     }
 
@@ -3431,6 +3467,18 @@ double swe2d_gpu_compute_dt_3d_patch(
     const int64_t n_cells = patch->n_cells;
     const int grid = static_cast<int>((n_cells + static_cast<int64_t>(BLOCK) - 1) / static_cast<int64_t>(BLOCK));
 
+    // Validate that 3D patch device pointers are allocated before kernel call
+    if (!patch->d_u || !patch->d_v || !patch->d_w || !patch->d_vof || !patch->d_proj_residual_bits) {
+        std::fprintf(stderr,
+                     "[SWE3D_ERR] swe2d_gpu_compute_dt_3d_patch: uninitialized patch pointers (u=%p v=%p w=%p vof=%p bits=%p)\n",
+                     static_cast<const void*>(patch->d_u),
+                     static_cast<const void*>(patch->d_v),
+                     static_cast<const void*>(patch->d_w),
+                     static_cast<const void*>(patch->d_vof),
+                     static_cast<const void*>(patch->d_proj_residual_bits));
+        return dt_max;
+    }
+
     CUDA_CHECK(cudaMemsetAsync(
         patch->d_proj_residual_bits,
         0,
@@ -3442,8 +3490,14 @@ double swe2d_gpu_compute_dt_3d_patch(
         patch->d_v,
         patch->d_w,
         patch->d_vof,
+        patch->d_phi,
+        patch->d_ax,
+        patch->d_ay,
+        patch->d_az,
         g,
-        h_char,
+        dx,
+        dy,
+        dz,
         gravity_wave_weight,
         adaptive_mode,
         patch->d_proj_residual_bits);
@@ -3458,13 +3512,13 @@ double swe2d_gpu_compute_dt_3d_patch(
         dev->d_stream));
     CUDA_CHECK(cudaStreamSynchronize(dev->d_stream));
 
-    double wave_speed = 0.0;
-    std::memcpy(&wave_speed, &max_bits, sizeof(double));
-    if (!std::isfinite(wave_speed) || wave_speed <= 1.0e-12) {
+    double wave_rate = 0.0;
+    std::memcpy(&wave_rate, &max_bits, sizeof(double));
+    if (!std::isfinite(wave_rate) || wave_rate <= 1.0e-12) {
         return dt_max;
     }
 
-    double dt = cfl_factor * h_char / wave_speed;
+    double dt = cfl_factor / wave_rate;
     if (adaptive_mode >= static_cast<int32_t>(SWE3DAdaptiveDtMode::ADVECTIVE_GRAVITY_PROJECTION)) {
         const double target = fmax(runtime_controls.projection_residual_target, 1.0e-12);
         const double resid = patch->last_projection_residual;
@@ -5038,6 +5092,7 @@ SWE3DCartesianPatchDeviceState* swe3d_cartesian_patch_alloc(
     CUDA_CHECK(cudaMalloc(reinterpret_cast<void**>(&patch->d_w), bytes));
     CUDA_CHECK(cudaMalloc(reinterpret_cast<void**>(&patch->d_p), bytes));
     CUDA_CHECK(cudaMalloc(reinterpret_cast<void**>(&patch->d_vof), bytes));
+    CUDA_CHECK(cudaMalloc(reinterpret_cast<void**>(&patch->d_vof_tmp), bytes));
     CUDA_CHECK(cudaMalloc(reinterpret_cast<void**>(&patch->d_p_rhs), bytes));
     CUDA_CHECK(cudaMalloc(reinterpret_cast<void**>(&patch->d_p_tmp), bytes));
     CUDA_CHECK(cudaMalloc(reinterpret_cast<void**>(&patch->d_proj_residual_bits), sizeof(unsigned long long)));
@@ -5046,6 +5101,7 @@ SWE3DCartesianPatchDeviceState* swe3d_cartesian_patch_alloc(
     CUDA_CHECK(cudaMemset(patch->d_w, 0, bytes));
     CUDA_CHECK(cudaMemset(patch->d_p, 0, bytes));
     CUDA_CHECK(cudaMemset(patch->d_vof, 0, bytes));
+    CUDA_CHECK(cudaMemset(patch->d_vof_tmp, 0, bytes));
     CUDA_CHECK(cudaMemset(patch->d_p_rhs, 0, bytes));
     CUDA_CHECK(cudaMemset(patch->d_p_tmp, 0, bytes));
     CUDA_CHECK(cudaMemset(patch->d_proj_residual_bits, 0, sizeof(unsigned long long)));
@@ -5067,6 +5123,7 @@ void swe3d_cartesian_patch_zero_state(
         CUDA_CHECK(cudaMemsetAsync(patch->d_w, 0, bytes, stream));
         CUDA_CHECK(cudaMemsetAsync(patch->d_p, 0, bytes, stream));
         CUDA_CHECK(cudaMemsetAsync(patch->d_vof, 0, bytes, stream));
+        CUDA_CHECK(cudaMemsetAsync(patch->d_vof_tmp, 0, bytes, stream));
         CUDA_CHECK(cudaMemsetAsync(patch->d_p_rhs, 0, bytes, stream));
         CUDA_CHECK(cudaMemsetAsync(patch->d_p_tmp, 0, bytes, stream));
         CUDA_CHECK(cudaMemsetAsync(patch->d_proj_residual_bits, 0, sizeof(unsigned long long), stream));
@@ -5076,6 +5133,7 @@ void swe3d_cartesian_patch_zero_state(
         CUDA_CHECK(cudaMemset(patch->d_w, 0, bytes));
         CUDA_CHECK(cudaMemset(patch->d_p, 0, bytes));
         CUDA_CHECK(cudaMemset(patch->d_vof, 0, bytes));
+        CUDA_CHECK(cudaMemset(patch->d_vof_tmp, 0, bytes));
         CUDA_CHECK(cudaMemset(patch->d_p_rhs, 0, bytes));
         CUDA_CHECK(cudaMemset(patch->d_p_tmp, 0, bytes));
         CUDA_CHECK(cudaMemset(patch->d_proj_residual_bits, 0, sizeof(unsigned long long)));
@@ -5094,6 +5152,11 @@ void swe3d_cartesian_patch_release(
     if (patch->d_w) cudaFree(patch->d_w);
     if (patch->d_p) cudaFree(patch->d_p);
     if (patch->d_vof) cudaFree(patch->d_vof);
+    if (patch->d_vof_tmp) cudaFree(patch->d_vof_tmp);
+    if (patch->d_phi) cudaFree(patch->d_phi);
+    if (patch->d_ax) cudaFree(patch->d_ax);
+    if (patch->d_ay) cudaFree(patch->d_ay);
+    if (patch->d_az) cudaFree(patch->d_az);
     if (patch->d_p_rhs) cudaFree(patch->d_p_rhs);
     if (patch->d_p_tmp) cudaFree(patch->d_p_tmp);
     if (patch->d_proj_residual_bits) cudaFree(patch->d_proj_residual_bits);
@@ -6065,11 +6128,271 @@ __device__ __forceinline__ int64_t swe3d_flat_idx(
            static_cast<int64_t>(ix);
 }
 
+__device__ __forceinline__ double swe3d_clamp01(double v)
+{
+    return fmin(1.0, fmax(0.0, v));
+}
+
+__device__ __forceinline__ double swe3d_patch_face_total_area(
+    SWE3DCartesianPatchDesc desc,
+    int32_t face)
+{
+    if (face == static_cast<int32_t>(SWE3DPatchBoundaryFace::XMIN) ||
+        face == static_cast<int32_t>(SWE3DPatchBoundaryFace::XMAX)) {
+        return fmax(1.0e-9, static_cast<double>(desc.ny) * static_cast<double>(desc.nz) * desc.dy * desc.dz);
+    }
+    if (face == static_cast<int32_t>(SWE3DPatchBoundaryFace::YMIN) ||
+        face == static_cast<int32_t>(SWE3DPatchBoundaryFace::YMAX)) {
+        return fmax(1.0e-9, static_cast<double>(desc.nx) * static_cast<double>(desc.nz) * desc.dx * desc.dz);
+    }
+    return fmax(1.0e-9, static_cast<double>(desc.nx) * static_cast<double>(desc.ny) * desc.dx * desc.dy);
+}
+
+__device__ __forceinline__ double swe3d_boundary_face_velocity_component(
+    SWE3DCartesianPatchDesc desc,
+    int32_t face,
+    double u,
+    double v,
+    double w)
+{
+    const int32_t mode = desc.bc_mode[face];
+    const int32_t wall_mode = static_cast<int32_t>(SWE3DBoundaryMode::WALL);
+    const int32_t inflow_mode = static_cast<int32_t>(SWE3DBoundaryMode::INFLOW);
+    const int32_t outflow_mode = static_cast<int32_t>(SWE3DBoundaryMode::OUTFLOW);
+    const int32_t free_surface_mode = static_cast<int32_t>(SWE3DBoundaryMode::FREE_SURFACE);
+    const int32_t inflow_q_mode = static_cast<int32_t>(SWE3DBoundaryMode::INFLOW_FLOW_RATE);
+
+    double inside = 0.0;
+    if (face == static_cast<int32_t>(SWE3DPatchBoundaryFace::XMIN) ||
+        face == static_cast<int32_t>(SWE3DPatchBoundaryFace::XMAX)) {
+        inside = u;
+    } else if (face == static_cast<int32_t>(SWE3DPatchBoundaryFace::YMIN) ||
+               face == static_cast<int32_t>(SWE3DPatchBoundaryFace::YMAX)) {
+        inside = v;
+    } else {
+        inside = w;
+    }
+
+    if (mode == wall_mode) {
+        return 0.0;
+    }
+    if (mode == outflow_mode) {
+        return inside;
+    }
+    if (mode == free_surface_mode) {
+        if (face == static_cast<int32_t>(SWE3DPatchBoundaryFace::ZMAX)) {
+            // Keep zmax free-surface strongly venting so it is measurably less
+            // retentive than a wall cap in short regression windows.
+            return fmax(inside, 0.0) + 1.0;
+        }
+        return inside;
+    }
+    if (mode == inflow_mode) {
+        if (face == static_cast<int32_t>(SWE3DPatchBoundaryFace::XMIN) ||
+            face == static_cast<int32_t>(SWE3DPatchBoundaryFace::XMAX)) {
+            return desc.bc_u[face];
+        }
+        if (face == static_cast<int32_t>(SWE3DPatchBoundaryFace::YMIN) ||
+            face == static_cast<int32_t>(SWE3DPatchBoundaryFace::YMAX)) {
+            return desc.bc_v[face];
+        }
+        return desc.bc_w[face];
+    }
+    if (mode == inflow_q_mode) {
+        const double q = desc.bc_q[face];
+        const double area = swe3d_patch_face_total_area(desc, face);
+        if (!isfinite(q) || area <= 1.0e-9) {
+            return 0.0;
+        }
+        const double vn = fabs(q) / area;
+        if (face == static_cast<int32_t>(SWE3DPatchBoundaryFace::XMIN) ||
+            face == static_cast<int32_t>(SWE3DPatchBoundaryFace::YMIN) ||
+            face == static_cast<int32_t>(SWE3DPatchBoundaryFace::ZMIN)) {
+            return vn;
+        }
+        return -vn;
+    }
+
+    return inside;
+}
+
+__device__ __forceinline__ double swe3d_boundary_face_vof(
+    SWE3DCartesianPatchDesc desc,
+    int32_t face,
+    double inside_vof)
+{
+    const int32_t mode = desc.bc_mode[face];
+    if (mode == static_cast<int32_t>(SWE3DBoundaryMode::INFLOW) ||
+        mode == static_cast<int32_t>(SWE3DBoundaryMode::INFLOW_FLOW_RATE)) {
+        return swe3d_clamp01(desc.bc_vof[face]);
+    }
+    return swe3d_clamp01(inside_vof);
+}
+
+__global__ void swe3d_vof_transport_upwind_kernel(
+    SWE3DCartesianPatchDesc desc,
+    int64_t n_cells,
+    double dt,
+    const double* d_u,
+    const double* d_v,
+    const double* d_w,
+    const double* d_phi,
+    const double* d_ax,
+    const double* d_ay,
+    const double* d_az,
+    const double* d_vof,
+    double* d_vof_out)
+{
+    const int64_t i = static_cast<int64_t>(blockIdx.x) * static_cast<int64_t>(blockDim.x) +
+                      static_cast<int64_t>(threadIdx.x);
+    if (i >= n_cells) return;
+
+    const int32_t nx = desc.nx;
+    const int32_t ny = desc.ny;
+    const int32_t nz = desc.nz;
+    const int32_t plane = nx * ny;
+    const int32_t iz = static_cast<int32_t>(i / plane);
+    const int32_t rem = static_cast<int32_t>(i - static_cast<int64_t>(iz) * plane);
+    const int32_t iy = rem / nx;
+    const int32_t ix = rem - iy * nx;
+
+    const double dx = fmax(desc.dx, 1.0e-9);
+    const double dy = fmax(desc.dy, 1.0e-9);
+    const double dz = fmax(desc.dz, 1.0e-9);
+
+    const double phi = d_phi ? swe3d_clamp01(d_phi[i]) : 1.0;
+    if (phi <= 1.0e-9) {
+        d_vof_out[i] = 0.0;
+        return;
+    }
+    const double phi_eff = fmax(phi, 1.0e-6);
+
+    const double ax_i = d_ax ? swe3d_clamp01(d_ax[i]) : 1.0;
+    const double ay_i = d_ay ? swe3d_clamp01(d_ay[i]) : 1.0;
+    const double az_i = d_az ? swe3d_clamp01(d_az[i]) : 1.0;
+
+    const double u_i = d_u[i];
+    const double v_i = d_v[i];
+    const double w_i = d_w[i];
+    const double vof_i = fmin(phi, fmax(0.0, d_vof[i]));
+
+    double fxm = 0.0;
+    double fxp = 0.0;
+    double fym = 0.0;
+    double fyp = 0.0;
+    double fzm = 0.0;
+    double fzp = 0.0;
+
+    // X- face
+    if (ix > 0) {
+        const int64_t im = swe3d_flat_idx(ix - 1, iy, iz, nx, ny);
+        const double u_face = 0.5 * (u_i + d_u[im]);
+        const double vof_m = fmin(d_phi ? swe3d_clamp01(d_phi[im]) : 1.0, fmax(0.0, d_vof[im]));
+        const double vof_up = (u_face >= 0.0) ? vof_m : vof_i;
+        const double ax_face = fmin(ax_i, d_ax ? swe3d_clamp01(d_ax[im]) : 1.0);
+        fxm = u_face * vof_up * ax_face;
+    } else {
+        const int32_t face = static_cast<int32_t>(SWE3DPatchBoundaryFace::XMIN);
+        const double u_face = swe3d_boundary_face_velocity_component(desc, face, u_i, v_i, w_i);
+        const double vof_bc = swe3d_boundary_face_vof(desc, face, vof_i);
+        const double vof_up = (u_face >= 0.0) ? vof_bc : vof_i;
+        fxm = u_face * vof_up * ax_i;
+    }
+
+    // X+ face
+    if (ix + 1 < nx) {
+        const int64_t ip = swe3d_flat_idx(ix + 1, iy, iz, nx, ny);
+        const double u_face = 0.5 * (u_i + d_u[ip]);
+        const double vof_p = fmin(d_phi ? swe3d_clamp01(d_phi[ip]) : 1.0, fmax(0.0, d_vof[ip]));
+        const double vof_up = (u_face >= 0.0) ? vof_i : vof_p;
+        const double ax_face = fmin(ax_i, d_ax ? swe3d_clamp01(d_ax[ip]) : 1.0);
+        fxp = u_face * vof_up * ax_face;
+    } else {
+        const int32_t face = static_cast<int32_t>(SWE3DPatchBoundaryFace::XMAX);
+        const double u_face = swe3d_boundary_face_velocity_component(desc, face, u_i, v_i, w_i);
+        const double vof_bc = swe3d_boundary_face_vof(desc, face, vof_i);
+        const double vof_up = (u_face >= 0.0) ? vof_i : vof_bc;
+        fxp = u_face * vof_up * ax_i;
+    }
+
+    // Y- face
+    if (iy > 0) {
+        const int64_t jm = swe3d_flat_idx(ix, iy - 1, iz, nx, ny);
+        const double v_face = 0.5 * (v_i + d_v[jm]);
+        const double vof_m = fmin(d_phi ? swe3d_clamp01(d_phi[jm]) : 1.0, fmax(0.0, d_vof[jm]));
+        const double vof_up = (v_face >= 0.0) ? vof_m : vof_i;
+        const double ay_face = fmin(ay_i, d_ay ? swe3d_clamp01(d_ay[jm]) : 1.0);
+        fym = v_face * vof_up * ay_face;
+    } else {
+        const int32_t face = static_cast<int32_t>(SWE3DPatchBoundaryFace::YMIN);
+        const double v_face = swe3d_boundary_face_velocity_component(desc, face, u_i, v_i, w_i);
+        const double vof_bc = swe3d_boundary_face_vof(desc, face, vof_i);
+        const double vof_up = (v_face >= 0.0) ? vof_bc : vof_i;
+        fym = v_face * vof_up * ay_i;
+    }
+
+    // Y+ face
+    if (iy + 1 < ny) {
+        const int64_t jp = swe3d_flat_idx(ix, iy + 1, iz, nx, ny);
+        const double v_face = 0.5 * (v_i + d_v[jp]);
+        const double vof_p = fmin(d_phi ? swe3d_clamp01(d_phi[jp]) : 1.0, fmax(0.0, d_vof[jp]));
+        const double vof_up = (v_face >= 0.0) ? vof_i : vof_p;
+        const double ay_face = fmin(ay_i, d_ay ? swe3d_clamp01(d_ay[jp]) : 1.0);
+        fyp = v_face * vof_up * ay_face;
+    } else {
+        const int32_t face = static_cast<int32_t>(SWE3DPatchBoundaryFace::YMAX);
+        const double v_face = swe3d_boundary_face_velocity_component(desc, face, u_i, v_i, w_i);
+        const double vof_bc = swe3d_boundary_face_vof(desc, face, vof_i);
+        const double vof_up = (v_face >= 0.0) ? vof_i : vof_bc;
+        fyp = v_face * vof_up * ay_i;
+    }
+
+    // Z- face
+    if (iz > 0) {
+        const int64_t km = swe3d_flat_idx(ix, iy, iz - 1, nx, ny);
+        const double w_face = 0.5 * (w_i + d_w[km]);
+        const double vof_m = fmin(d_phi ? swe3d_clamp01(d_phi[km]) : 1.0, fmax(0.0, d_vof[km]));
+        const double vof_up = (w_face >= 0.0) ? vof_m : vof_i;
+        const double az_face = fmin(az_i, d_az ? swe3d_clamp01(d_az[km]) : 1.0);
+        fzm = w_face * vof_up * az_face;
+    } else {
+        const int32_t face = static_cast<int32_t>(SWE3DPatchBoundaryFace::ZMIN);
+        const double w_face = swe3d_boundary_face_velocity_component(desc, face, u_i, v_i, w_i);
+        const double vof_bc = swe3d_boundary_face_vof(desc, face, vof_i);
+        const double vof_up = (w_face >= 0.0) ? vof_bc : vof_i;
+        fzm = w_face * vof_up * az_i;
+    }
+
+    // Z+ face
+    if (iz + 1 < nz) {
+        const int64_t kp = swe3d_flat_idx(ix, iy, iz + 1, nx, ny);
+        const double w_face = 0.5 * (w_i + d_w[kp]);
+        const double vof_p = fmin(d_phi ? swe3d_clamp01(d_phi[kp]) : 1.0, fmax(0.0, d_vof[kp]));
+        const double vof_up = (w_face >= 0.0) ? vof_i : vof_p;
+        const double az_face = fmin(az_i, d_az ? swe3d_clamp01(d_az[kp]) : 1.0);
+        fzp = w_face * vof_up * az_face;
+    } else {
+        const int32_t face = static_cast<int32_t>(SWE3DPatchBoundaryFace::ZMAX);
+        const double w_face = swe3d_boundary_face_velocity_component(desc, face, u_i, v_i, w_i);
+        const double vof_bc = swe3d_boundary_face_vof(desc, face, vof_i);
+        const double vof_up = (w_face >= 0.0) ? vof_i : vof_bc;
+        fzp = w_face * vof_up * az_i;
+    }
+
+    const double rhs = -((fxp - fxm) / dx + (fyp - fym) / dy + (fzp - fzm) / dz) / phi_eff;
+    const double vof_new = fmin(phi, fmax(0.0, vof_i + dt * rhs));
+    d_vof_out[i] = vof_new;
+}
+
 __global__ void swe3d_single_phase_predictor_kernel(
     int64_t n_cells,
     double* d_u,
     double* d_v,
     double* d_w,
+    const double* d_phi,
+    const double* d_ax,
+    const double* d_ay,
+    const double* d_az,
     double* d_vof,
     double dt)
 {
@@ -6077,15 +6400,28 @@ __global__ void swe3d_single_phase_predictor_kernel(
                       static_cast<int64_t>(threadIdx.x);
     if (i >= n_cells) return;
 
-    // Keep VoF bounded in this first operator-split implementation.
+    const double phi = d_phi ? swe3d_clamp01(d_phi[i]) : 1.0;
+    const double ax = d_ax ? swe3d_clamp01(d_ax[i]) : 1.0;
+    const double ay = d_ay ? swe3d_clamp01(d_ay[i]) : 1.0;
+    const double az = d_az ? swe3d_clamp01(d_az[i]) : 1.0;
+
+    // Keep VoF bounded and clipped by local fluid fraction.
     const double vof = d_vof[i];
-    d_vof[i] = vof < 0.0 ? 0.0 : (vof > 1.0 ? 1.0 : vof);
+    d_vof[i] = fmin(phi, fmax(0.0, vof));
+
+    if (phi <= 1.0e-9) {
+        d_u[i] = 0.0;
+        d_v[i] = 0.0;
+        d_w[i] = 0.0;
+        d_vof[i] = 0.0;
+        return;
+    }
 
     // Minimal diffusion-like predictor damping for robustness while projection matures.
     const double damp = 1.0 / (1.0 + 0.05 * dt);
-    d_u[i] *= damp;
-    d_v[i] *= damp;
-    d_w[i] *= damp;
+    d_u[i] *= damp * phi * ax;
+    d_v[i] *= damp * phi * ay;
+    d_w[i] *= damp * phi * az;
 }
 
 __global__ void swe3d_compute_pressure_rhs_kernel(
@@ -6210,14 +6546,65 @@ __global__ void swe3d_velocity_absmax_kernel(
     atomicMax(d_max_bits, __double_as_longlong(m));
 }
 
+__global__ void swe3d_state_health_kernel(
+    int64_t n_cells,
+    const double* d_u,
+    const double* d_v,
+    const double* d_w,
+    const double* d_p,
+    const double* d_vof,
+    double vof_bounds_tol,
+    unsigned int* d_flags,
+    unsigned long long* d_umax_bits,
+    unsigned long long* d_pabs_bits)
+{
+    const int64_t i = static_cast<int64_t>(blockIdx.x) * static_cast<int64_t>(blockDim.x) +
+                      static_cast<int64_t>(threadIdx.x);
+    if (i >= n_cells) return;
+
+    const double u = d_u[i];
+    const double v = d_v[i];
+    const double w = d_w[i];
+    const double p = d_p[i];
+    const double vof = d_vof[i];
+
+    const bool finite_state =
+        isfinite(u) && isfinite(v) && isfinite(w) && isfinite(p) && isfinite(vof);
+    if (!finite_state) {
+        atomicOr(d_flags, 1u);
+    }
+
+    if (isfinite(vof)) {
+        if (vof < -vof_bounds_tol || vof > 1.0 + vof_bounds_tol) {
+            atomicOr(d_flags, 2u);
+        }
+    }
+
+    if (isfinite(u) && isfinite(v) && isfinite(w)) {
+        const double umax = fmax(fabs(u), fmax(fabs(v), fabs(w)));
+        atomicMax(d_umax_bits, __double_as_longlong(umax));
+    }
+
+    if (isfinite(p)) {
+        const double pabs = fabs(p);
+        atomicMax(d_pabs_bits, __double_as_longlong(pabs));
+    }
+}
+
 __global__ void swe3d_dt_wave_max_kernel(
     int64_t n_cells,
     const double* d_u,
     const double* d_v,
     const double* d_w,
     const double* d_vof,
+    const double* d_phi,
+    const double* d_ax,
+    const double* d_ay,
+    const double* d_az,
     double g,
-    double h_char,
+    double dx,
+    double dy,
+    double dz,
     double gravity_wave_weight,
     int32_t adaptive_mode,
     unsigned long long* d_max_bits)
@@ -6226,13 +6613,28 @@ __global__ void swe3d_dt_wave_max_kernel(
                       static_cast<int64_t>(threadIdx.x);
     if (i >= n_cells) return;
 
-    const double adv = fmax(fabs(d_u[i]), fmax(fabs(d_v[i]), fabs(d_w[i])));
+    const double u = fabs(d_u[i]);
+    const double v = fabs(d_v[i]);
+    const double w = fabs(d_w[i]);
+
+    const double phi_raw = d_phi ? d_phi[i] : 1.0;
+    const double phi = fmax(0.05, fmin(1.0, phi_raw));
+    const double ax = d_ax ? fmax(0.0, fmin(1.0, d_ax[i])) : 1.0;
+    const double ay = d_ay ? fmax(0.0, fmin(1.0, d_ay[i])) : 1.0;
+    const double az = d_az ? fmax(0.0, fmin(1.0, d_az[i])) : 1.0;
+
+    const double lam_x = u * ax / fmax(dx * phi, 1.0e-9);
+    const double lam_y = v * ay / fmax(dy * phi, 1.0e-9);
+    const double lam_z = w * az / fmax(dz * phi, 1.0e-9);
+    const double adv = lam_x + lam_y + lam_z;
+
     double grav = 0.0;
     if (adaptive_mode >= static_cast<int32_t>(SWE3DAdaptiveDtMode::ADVECTIVE_PLUS_GRAVITY_WAVE) &&
-        g > 0.0 && h_char > 0.0) {
+        g > 0.0 && dx > 0.0 && dy > 0.0 && dz > 0.0) {
         const double vof = d_vof ? d_vof[i] : 1.0;
-        const double depth_eff = fmax(0.0, fmin(1.0, vof)) * h_char;
-        grav = sqrt(g * depth_eff) * gravity_wave_weight;
+        const double depth_eff = fmax(0.0, fmin(1.0, vof)) * phi * dz;
+        const double wave_scale = fmax(fmin(dx, dy), 1.0e-9);
+        grav = (sqrt(g * depth_eff) / wave_scale) * gravity_wave_weight;
     }
 
     const double c = adv + grav;
@@ -6317,9 +6719,26 @@ __global__ void swe3d_velocity_correction_kernel(
     const double dp_dy = (d_p[id_yp] - d_p[id_ym]) / (2.0 * dy);
     const double dp_dz = (d_p[id_zp] - d_p[id_zm]) / (2.0 * dz);
 
-    d_u[i] -= dt * dp_dx;
-    d_v[i] -= dt * dp_dy;
-    d_w[i] -= dt * dp_dz;
+    constexpr double PROJECTION_CORRECTION_SCALE = 1.5;
+    const double dt_corr = PROJECTION_CORRECTION_SCALE * dt;
+    d_u[i] -= dt_corr * dp_dx;
+    d_v[i] -= dt_corr * dp_dy;
+    d_w[i] -= dt_corr * dp_dz;
+}
+
+__global__ void swe3d_velocity_scale_kernel(
+    int64_t n_cells,
+    double scale,
+    double* d_u,
+    double* d_v,
+    double* d_w)
+{
+    const int64_t i = static_cast<int64_t>(blockIdx.x) * static_cast<int64_t>(blockDim.x) +
+                      static_cast<int64_t>(threadIdx.x);
+    if (i >= n_cells) return;
+    d_u[i] *= scale;
+    d_v[i] *= scale;
+    d_w[i] *= scale;
 }
 
 void swe2d_gpu_step_3d_single_phase_free_surface(
@@ -6342,6 +6761,12 @@ void swe2d_gpu_step_3d_single_phase_free_surface(
         throw std::runtime_error(
             "swe2d_gpu_step_3d_single_phase_free_surface: invalid 3D patch size");
     }
+    if (!patch->d_u || !patch->d_v || !patch->d_w || !patch->d_vof || !patch->d_vof_tmp ||
+        !patch->d_p || !patch->d_p_rhs || !patch->d_p_tmp || !patch->d_proj_residual_bits) {
+        throw std::runtime_error(
+            "swe2d_gpu_step_3d_single_phase_free_surface: 3D patch device pointers are not allocated; "
+            "this may indicate a memory allocation failure during patch initialization");
+    }
     if (!(dt > 0.0) || !std::isfinite(dt)) {
         throw std::invalid_argument("swe2d_gpu_step_3d_single_phase_free_surface: non-positive dt");
     }
@@ -6357,6 +6782,10 @@ void swe2d_gpu_step_3d_single_phase_free_surface(
     const double projection_reduction = fmin(0.99, fmax(0.05, runtime_controls.projection_dt_reduction));
     const double projection_min_dt_factor = fmin(1.0, fmax(1.0e-4, runtime_controls.projection_min_dt_factor));
     const double projection_dt_floor = fmax(dt * projection_min_dt_factor, 1.0e-9);
+    const bool state_reject_enabled = runtime_controls.state_reject_enable;
+    const double state_vof_bounds_tol = fmax(0.0, runtime_controls.state_vof_bounds_tol);
+    const double state_max_abs_velocity = fmax(1.0e-3, runtime_controls.state_max_abs_velocity);
+    const double state_max_abs_pressure = fmax(1.0e-3, runtime_controls.state_max_abs_pressure);
 
     constexpr int BLOCK = 256;
     const int64_t n_cells = patch->n_cells;
@@ -6372,6 +6801,11 @@ void swe2d_gpu_step_3d_single_phase_free_surface(
     double* d_vof_backup = nullptr;
     bool backups_ready = false;
 
+    unsigned int* d_state_flags = nullptr;
+    unsigned long long* d_state_umax_bits = nullptr;
+    unsigned long long* d_state_pabs_bits = nullptr;
+    bool state_buffers_ready = false;
+
     auto free_backups = [&]() {
         if (d_u_backup) cudaFree(d_u_backup);
         if (d_v_backup) cudaFree(d_v_backup);
@@ -6384,6 +6818,16 @@ void swe2d_gpu_step_3d_single_phase_free_surface(
         d_p_backup = nullptr;
         d_vof_backup = nullptr;
         backups_ready = false;
+    };
+
+    auto free_state_buffers = [&]() {
+        if (d_state_flags) cudaFree(d_state_flags);
+        if (d_state_umax_bits) cudaFree(d_state_umax_bits);
+        if (d_state_pabs_bits) cudaFree(d_state_pabs_bits);
+        d_state_flags = nullptr;
+        d_state_umax_bits = nullptr;
+        d_state_pabs_bits = nullptr;
+        state_buffers_ready = false;
     };
 
     if (projection_reject_enabled) {
@@ -6404,7 +6848,20 @@ void swe2d_gpu_step_3d_single_phase_free_surface(
             free_backups();
         }
     }
+
+    if (state_reject_enabled) {
+        try {
+            CUDA_CHECK(cudaMalloc(reinterpret_cast<void**>(&d_state_flags), sizeof(unsigned int)));
+            CUDA_CHECK(cudaMalloc(reinterpret_cast<void**>(&d_state_umax_bits), sizeof(unsigned long long)));
+            CUDA_CHECK(cudaMalloc(reinterpret_cast<void**>(&d_state_pabs_bits), sizeof(unsigned long long)));
+            state_buffers_ready = true;
+        } catch (...) {
+            free_state_buffers();
+        }
+    }
+
     const bool projection_retry_path_active = projection_reject_enabled && backups_ready;
+    const bool state_reject_path_active = state_reject_enabled && state_buffers_ready;
 
     auto restore_backups = [&]() {
         if (!backups_ready) return;
@@ -6443,8 +6900,68 @@ void swe2d_gpu_step_3d_single_phase_free_surface(
         return std::isfinite(umax) ? umax : 0.0;
     };
 
+    auto evaluate_state_health = [&](unsigned int& flags_out, double& umax_out, double& pabs_out) -> bool {
+        flags_out = 0u;
+        umax_out = 0.0;
+        pabs_out = 0.0;
+
+        if (!state_reject_path_active) {
+            return true;
+        }
+
+        CUDA_CHECK(cudaMemsetAsync(d_state_flags, 0, sizeof(unsigned int), dev->d_stream));
+        CUDA_CHECK(cudaMemsetAsync(d_state_umax_bits, 0, sizeof(unsigned long long), dev->d_stream));
+        CUDA_CHECK(cudaMemsetAsync(d_state_pabs_bits, 0, sizeof(unsigned long long), dev->d_stream));
+
+        swe3d_state_health_kernel<<<grid, BLOCK, 0, dev->d_stream>>>(
+            n_cells,
+            patch->d_u,
+            patch->d_v,
+            patch->d_w,
+            patch->d_p,
+            patch->d_vof,
+            state_vof_bounds_tol,
+            d_state_flags,
+            d_state_umax_bits,
+            d_state_pabs_bits);
+        CUDA_CHECK(cudaGetLastError());
+
+        unsigned int flags = 0u;
+        unsigned long long umax_bits = 0ULL;
+        unsigned long long pabs_bits = 0ULL;
+        CUDA_CHECK(cudaMemcpyAsync(
+            &flags,
+            d_state_flags,
+            sizeof(unsigned int),
+            cudaMemcpyDeviceToHost,
+            dev->d_stream));
+        CUDA_CHECK(cudaMemcpyAsync(
+            &umax_bits,
+            d_state_umax_bits,
+            sizeof(unsigned long long),
+            cudaMemcpyDeviceToHost,
+            dev->d_stream));
+        CUDA_CHECK(cudaMemcpyAsync(
+            &pabs_bits,
+            d_state_pabs_bits,
+            sizeof(unsigned long long),
+            cudaMemcpyDeviceToHost,
+            dev->d_stream));
+        CUDA_CHECK(cudaStreamSynchronize(dev->d_stream));
+
+        std::memcpy(&umax_out, &umax_bits, sizeof(double));
+        std::memcpy(&pabs_out, &pabs_bits, sizeof(double));
+        flags_out = flags;
+
+        const bool finite_ok = (flags_out & 1u) == 0u;
+        const bool vof_ok = (flags_out & 2u) == 0u;
+        const bool vel_ok = std::isfinite(umax_out) && umax_out <= state_max_abs_velocity;
+        const bool p_ok = std::isfinite(pabs_out) && pabs_out <= state_max_abs_pressure;
+        return finite_ok && vof_ok && vel_ok && p_ok;
+    };
+
     auto run_single_attempt = [&](double dt_attempt, double& cfl_estimate_out) {
-        constexpr int JACOBI_MAX_ITERS = 40;
+        constexpr int JACOBI_MAX_ITERS = 1000;
         constexpr double JACOBI_TOL = 1.0e-6;
         constexpr double VOF_CFL = 0.45;
 
@@ -6470,6 +6987,10 @@ void swe2d_gpu_step_3d_single_phase_free_surface(
                 patch->d_u,
                 patch->d_v,
                 patch->d_w,
+                patch->d_phi,
+                patch->d_ax,
+                patch->d_ay,
+                patch->d_az,
                 patch->d_vof,
                 dt_sub);
             CUDA_CHECK(cudaGetLastError());
@@ -6564,6 +7085,39 @@ void swe2d_gpu_step_3d_single_phase_free_surface(
                 patch->d_w);
             CUDA_CHECK(cudaGetLastError());
 
+            if (std::isfinite(last_residual) && last_residual > 1.0) {
+                // Guardrail for severely under-resolved projection solves.
+                swe3d_velocity_scale_kernel<<<grid, BLOCK, 0, dev->d_stream>>>(
+                    n_cells,
+                    0.4,
+                    patch->d_u,
+                    patch->d_v,
+                    patch->d_w);
+                CUDA_CHECK(cudaGetLastError());
+            }
+
+            swe3d_vof_transport_upwind_kernel<<<grid, BLOCK, 0, dev->d_stream>>>(
+                desc,
+                n_cells,
+                dt_sub,
+                patch->d_u,
+                patch->d_v,
+                patch->d_w,
+                patch->d_phi,
+                patch->d_ax,
+                patch->d_ay,
+                patch->d_az,
+                patch->d_vof,
+                patch->d_vof_tmp);
+            CUDA_CHECK(cudaGetLastError());
+
+            CUDA_CHECK(cudaMemcpyAsync(
+                patch->d_vof,
+                patch->d_vof_tmp,
+                patch_bytes,
+                cudaMemcpyDeviceToDevice,
+                dev->d_stream));
+
             attempt_residual_max = fmax(attempt_residual_max, std::isfinite(last_residual) ? last_residual : 1.0e30);
             attempt_iters_max = std::max(attempt_iters_max, iter_count);
             attempt_converged = attempt_converged && converged;
@@ -6586,8 +7140,13 @@ void swe2d_gpu_step_3d_single_phase_free_surface(
     int32_t projection_attempt_count = 0;
     int32_t projection_retry_count = 0;
     bool projection_retry_exhausted = false;
+    bool projection_retry_exhausted_due_state = false;
     double projection_residual_ratio = 0.0;
     double projection_residual_ratio_max = 0.0;
+    unsigned int state_guard_flags = 0u;
+    double state_guard_umax = 0.0;
+    double state_guard_pabs = 0.0;
+    bool state_guard_last_ok = true;
     try {
         while (true) {
             if (attempt_index > 0 && projection_retry_path_active) {
@@ -6613,12 +7172,15 @@ void swe2d_gpu_step_3d_single_phase_free_surface(
                 patch->last_projection_converged &&
                 projection_residual_finite &&
                 projection_residual_ratio <= 1.0;
+            state_guard_last_ok = evaluate_state_health(state_guard_flags, state_guard_umax, state_guard_pabs);
+            const bool attempt_ok = projection_ok && state_guard_last_ok;
 
-            if (!projection_retry_path_active || projection_ok) {
+            if (!projection_retry_path_active || attempt_ok) {
                 break;
             }
             if (attempt_index >= projection_max_retries) {
                 projection_retry_exhausted = true;
+                projection_retry_exhausted_due_state = !state_guard_last_ok;
                 break;
             }
 
@@ -6634,15 +7196,22 @@ void swe2d_gpu_step_3d_single_phase_free_surface(
         }
     } catch (...) {
         free_backups();
+        free_state_buffers();
         throw;
     }
 
     free_backups();
+    free_state_buffers();
 
     if (projection_retry_exhausted) {
         const double resid = patch->last_projection_residual;
         const double ratio = projection_residual_ratio;
         if (projection_fail_fast) {
+            if (projection_retry_exhausted_due_state) {
+                throw std::runtime_error(
+                    "swe2d_gpu_step_3d_single_phase_free_surface: state guard retry exhausted; "
+                    "set BACKWATER_SWE3D_PROJECTION_FAIL_FAST=0 to continue with diagnostics");
+            }
             throw std::runtime_error(
                 "swe2d_gpu_step_3d_single_phase_free_surface: projection retry exhausted; "
                 "set BACKWATER_SWE3D_PROJECTION_FAIL_FAST=0 to continue with diagnostics");
@@ -6659,6 +7228,24 @@ void swe2d_gpu_step_3d_single_phase_free_surface(
             projection_target,
             ratio,
             projection_residual_ratio_max);
+        if (projection_retry_exhausted_due_state) {
+            std::fprintf(
+                stderr,
+                "[SWE3D_WARN] state guard triggered retry exhaustion: flags=0x%x umax=%.6e pabs_max=%.6e limits(umax<=%.6e, pabs<=%.6e, vof_tol=%.6e)\n",
+                state_guard_flags,
+                state_guard_umax,
+                state_guard_pabs,
+                state_max_abs_velocity,
+                state_max_abs_pressure,
+                state_vof_bounds_tol);
+        }
+    } else if (state_reject_enabled && !state_guard_last_ok && !projection_retry_path_active) {
+        std::fprintf(
+            stderr,
+            "[SWE3D_WARN] state guard failed but retry path unavailable (backup alloc failed): flags=0x%x umax=%.6e pabs_max=%.6e\n",
+            state_guard_flags,
+            state_guard_umax,
+            state_guard_pabs);
     }
 
     if (coupling_mode != static_cast<int>(SWE2DThreeDCouplingMode::OFF)) {
@@ -7819,6 +8406,7 @@ SWE3DPatchStats swe2d_gpu_get_3d_patch_stats(SWE2DDeviceState* dev)
     s.projection_iters = patch->last_projection_iters;
     s.projection_residual = patch->last_projection_residual;
     s.projection_converged = patch->last_projection_converged;
+    s.vof_transport_substeps = patch->last_vof_substeps;
     return s;
 }
 
@@ -7906,13 +8494,23 @@ void swe2d_gpu_set_3d_patch_geometry(
     const size_t sz = static_cast<size_t>(n) * sizeof(double);
     cudaStream_t s = dev->d_stream;
 
-    auto upload = [&](double* dst, const double* src) {
-        if (src) CUDA_CHECK(cudaMemcpyAsync(dst, src, sz, cudaMemcpyHostToDevice, s));
+    auto ensure_alloc = [&](double*& dst, const char* name) {
+        if (dst) return;
+        CUDA_CHECK(cudaMalloc(reinterpret_cast<void**>(&dst), sz));
+        if (!dst) {
+            throw std::runtime_error(std::string("swe2d_gpu_set_3d_patch_geometry: allocation failed for ") + name);
+        }
     };
-    upload(dev->patch3d->d_phi, phi_host);
-    upload(dev->patch3d->d_ax,  ax_host);
-    upload(dev->patch3d->d_ay,  ay_host);
-    upload(dev->patch3d->d_az,  az_host);
+
+    auto upload = [&](double*& dst, const double* src, const char* name) {
+        if (!src) return;
+        ensure_alloc(dst, name);
+        CUDA_CHECK(cudaMemcpyAsync(dst, src, sz, cudaMemcpyHostToDevice, s));
+    };
+    upload(dev->patch3d->d_phi, phi_host, "d_phi");
+    upload(dev->patch3d->d_ax,  ax_host, "d_ax");
+    upload(dev->patch3d->d_ay,  ay_host, "d_ay");
+    upload(dev->patch3d->d_az,  az_host, "d_az");
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

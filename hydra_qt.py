@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
-"""backwater_qt.py
+"""hydra_qt.py
 
 A Qt-based GUI wrapper for the backwater solver that reuses the computation
-functions in `backwater_model.py`.
+functions in `hydra_1d.py`.
 
 This provides a minimal, modern GUI with: file open, New Model, Run, textual
 results, and a matplotlib plot area.
@@ -14,6 +14,7 @@ import os
 import sys
 import json
 import math
+import importlib
 import importlib.util
 from typing import Any, Callable, Dict, Optional, Sequence, Tuple
 
@@ -66,21 +67,21 @@ def _import_matplotlib_qt() -> Tuple[object, object, object, object]:
 # Import solver functions from the plugin-local `backwater2` module.
 try:
     try:
-        from . import backwater_model as _bwmod  # type: ignore
+        from . import hydra_1d as _bwmod  # type: ignore
     except Exception:
-        import backwater_model as _bwmod  # type: ignore
+        import hydra_1d as _bwmod  # type: ignore
 
     load_input = _bwmod.load_input
     load_from_geopackage = getattr(_bwmod, 'load_from_geopackage', None)
     save_to_geopackage = getattr(_bwmod, 'save_to_geopackage', None)
     load_results_from_geopackage = getattr(_bwmod, 'load_results_from_geopackage', None)
     save_results_to_geopackage = getattr(_bwmod, 'save_results_to_geopackage', None)
-    run_backwater = _bwmod.run_backwater
+    run_hydra_1d = _bwmod.run_hydra_1d
     ModelInput = _bwmod.ModelInput
     CrossSection = _bwmod.CrossSection
     HAVE_MPL = _detect_matplotlib_qt_available()
 except Exception:
-    load_input = load_from_geopackage = save_to_geopackage = load_results_from_geopackage = save_results_to_geopackage = run_backwater = ModelInput = CrossSection = None
+    load_input = load_from_geopackage = save_to_geopackage = load_results_from_geopackage = save_results_to_geopackage = run_hydra_1d = ModelInput = CrossSection = None
     HAVE_MPL = _detect_matplotlib_qt_available()
 
 try:
@@ -117,7 +118,7 @@ def _load_set_z_from_raster_expr_func() -> Optional[Callable[..., Any]]:
         pass
     try:
         _expr_path = os.path.join(os.path.dirname(__file__), 'expressions', 'vertices_z_from_raster.py')
-        _spec = importlib.util.spec_from_file_location('qgis_backwater_plugin.expressions.vertices_z_from_raster', _expr_path)
+        _spec = importlib.util.spec_from_file_location('qgis_hydra_plugin.expressions.vertices_z_from_raster', _expr_path)
         if _spec is None or _spec.loader is None:
             return None
         _mod = importlib.util.module_from_spec(_spec)
@@ -392,7 +393,7 @@ class BackwaterWidget(QtWidgets.QWidget):
         # Dock-level menu bar so the plugin has a native Backwater menu in QGIS dock mode.
         self.menu_bar = QtWidgets.QMenuBar(self)
         main_layout.setMenuBar(self.menu_bar)
-        self.backwater_menu = self.menu_bar.addMenu('Backwater')
+        self.hydra_menu = self.menu_bar.addMenu('HYDRA')
 
         # Top control row
         controls_row = QtWidgets.QHBoxLayout()
@@ -831,7 +832,7 @@ class BackwaterWidget(QtWidgets.QWidget):
         self.undo_stack = []
         self.redo_stack = []
         self._set_model_editing_enabled(True)
-        self._create_backwater_menu()
+        self._create_hydra_menu()
         self._apply_form_only_ui_mode()
         self._update_geopackage_edit_state()
         self._refresh_scroller_choices()
@@ -843,9 +844,9 @@ class BackwaterWidget(QtWidgets.QWidget):
         """Set host QMainWindow used for detached panel docking/floating."""
         self._dock_host_window = host_window
 
-    def _create_backwater_menu(self) -> None:
+    def _create_hydra_menu(self) -> None:
         """Create the dock-level Backwater menu actions."""
-        menu = getattr(self, 'backwater_menu', None)
+        menu = getattr(self, 'hydra_menu', None)
         if menu is None:
             return
 
@@ -897,6 +898,18 @@ class BackwaterWidget(QtWidgets.QWidget):
         self.action_open_swe2d_demo = QtGui.QAction('2D SWE Workbench...', self)
         self.action_open_swe2d_demo.triggered.connect(self.open_swe2d_demo_dialog)
         menu.addAction(self.action_open_swe2d_demo)
+
+        self.action_open_swe2d_designer = QtGui.QAction('2D SWE Workbench (Designer UI)...', self)
+        self.action_open_swe2d_designer.triggered.connect(self.open_swe2d_designer_dialog)
+        menu.addAction(self.action_open_swe2d_designer)
+
+        self.action_open_swe2d_studio = QtGui.QAction('2D SWE Workbench (Studio)...', self)
+        self.action_open_swe2d_studio.triggered.connect(self.open_swe2d_studio_dialog)
+        menu.addAction(self.action_open_swe2d_studio)
+
+        self.action_open_swe2d_scenario = QtGui.QAction('2D SWE Workbench (Scenario-first)...', self)
+        self.action_open_swe2d_scenario.triggered.connect(self.open_swe2d_scenario_dialog)
+        menu.addAction(self.action_open_swe2d_scenario)
 
         self.action_swe2d_workbench_docked = QtGui.QAction('Dock 2D SWE Workbench Panel', self)
         self.action_swe2d_workbench_docked.setCheckable(True)
@@ -1069,7 +1082,7 @@ class BackwaterWidget(QtWidgets.QWidget):
             host = self.window()
 
         dock = _ReattachDockWidget(title, self._reattach_dock_tab, host)
-        dock.setObjectName(f'backwater_{widget_key}_{title}')
+        dock.setObjectName(f'hydra_{widget_key}_{title}')
         dock.setWidget(page)
         dock.setFeatures(
             QtWidgets.QDockWidget.DockWidgetFeature.DockWidgetClosable |
@@ -2479,9 +2492,9 @@ class BackwaterWidget(QtWidgets.QWidget):
             return
 
         ui_name = 'cross_sections_form.ui' if layer_name == 'cross_sections' else 'boundary_conditions_form.ui'
-        init_function = 'backwater_cross_sections_form_open' if layer_name == 'cross_sections' else 'backwater_boundary_form_open'
+        init_function = 'hydra_cross_sections_form_open' if layer_name == 'cross_sections' else 'hydra_boundary_form_open'
         ui_path = self._forms_file_path(ui_name)
-        init_path = self._forms_file_path('backwater_form_init.py')
+        init_path = self._forms_file_path('hydra_form_init.py')
 
         if os.path.exists(ui_path):
             try:
@@ -2727,9 +2740,9 @@ if not isinstance(raster_layer, QgsRasterLayer) or not raster_layer.isValid():
     raster_layer = rasters[0]
     QgsExpressionContextUtils.setProjectVariable(project, 'backwater_terrain_raster_id', raster_layer.id())
 
-plugin_dir = os.path.join(QgsApplication.qgisSettingsDirPath(), 'python', 'plugins', 'qgis-backwater-plugin')
+plugin_dir = os.path.join(QgsApplication.qgisSettingsDirPath(), 'python', 'plugins', 'qgis-hydra-plugin')
 expr_path = os.path.join(plugin_dir, 'expressions', 'vertices_z_from_raster.py')
-spec = importlib.util.spec_from_file_location('backwater_vertices_z_from_raster', expr_path)
+spec = importlib.util.spec_from_file_location('hydra_vertices_z_from_raster', expr_path)
 if spec is None or spec.loader is None:
     raise RuntimeError(f'Could not import raster expression module: {expr_path}')
 mod = importlib.util.module_from_spec(spec)
@@ -2882,7 +2895,7 @@ else:
             return
         try:
             if hasattr(layer, 'saveStyleToDatabase'):
-                layer.saveStyleToDatabase('backwater_form', 'Backwater form defaults and joins', True, '')
+                layer.saveStyleToDatabase('hydra_form', 'Backwater form defaults and joins', True, '')
         except Exception:
             pass
 
@@ -3414,7 +3427,7 @@ else:
             return
 
         # ensure these names refer to the plugin-local solver module symbols
-        global run_backwater, load_input, load_from_geopackage, save_to_geopackage, load_results_from_geopackage, save_results_to_geopackage, ModelInput, CrossSection, HAVE_MPL
+        global run_hydra_1d, load_input, load_from_geopackage, save_to_geopackage, load_results_from_geopackage, save_results_to_geopackage, ModelInput, CrossSection, HAVE_MPL
 
         if self.model is None:
             p = self.input_path.text().strip()
@@ -3473,20 +3486,20 @@ else:
             # If validation fails for unexpected reasons, don't block run here; let solver surface errors.
             pass
 
-        # Ensure run_backwater is available; try to import/reload the plugin-local module if missing
+        # Ensure run_hydra_1d is available; try to import/reload the plugin-local module if missing
         # Always reload backwater2 so that on-disk edits to the solver are
         # picked up without restarting QGIS.
         try:
             import importlib.util
-            _mod_path = os.path.join(os.path.dirname(__file__), 'backwater_model.py')
-            _spec = importlib.util.spec_from_file_location('qgis_backwater_plugin.backwater2', _mod_path)
+            _mod_path = os.path.join(os.path.dirname(__file__), 'hydra_1d.py')
+            _spec = importlib.util.spec_from_file_location('qgis_hydra_plugin.hydra2', _mod_path)
             if _spec is None or _spec.loader is None:
                 raise ImportError(f'Could not create import spec for {_mod_path}')
             _mod = importlib.util.module_from_spec(_spec)
-            sys.modules['qgis_backwater_plugin.backwater2'] = _mod
+            sys.modules['qgis_hydra_plugin.hydra2'] = _mod
             _spec.loader.exec_module(_mod)
             self._solver_module = _mod
-            run_backwater = getattr(_mod, 'run_backwater', None)
+            run_hydra_1d = getattr(_mod, 'run_hydra_1d', None)
             load_input = getattr(_mod, 'load_input', load_input)
             load_from_geopackage = getattr(_mod, 'load_from_geopackage', load_from_geopackage)
             save_to_geopackage = getattr(_mod, 'save_to_geopackage', save_to_geopackage)
@@ -3498,13 +3511,13 @@ else:
         except Exception:
             pass
 
-        # Fallback if reload failed and run_backwater is still missing
-        if not (('run_backwater' in globals() and callable(run_backwater))):
+        # Fallback if reload failed and run_hydra_1d is still missing
+        if not (('run_hydra_1d' in globals() and callable(run_hydra_1d))):
             try:
                 import importlib
-                _mod = importlib.import_module('qgis_backwater_plugin.backwater2')
+                _mod = importlib.import_module('qgis_hydra_plugin.hydra2')
                 self._solver_module = _mod
-                run_backwater = getattr(_mod, 'run_backwater', None)
+                run_hydra_1d = getattr(_mod, 'run_hydra_1d', None)
                 load_input = getattr(_mod, 'load_input', load_input)
                 load_from_geopackage = getattr(_mod, 'load_from_geopackage', load_from_geopackage)
                 save_to_geopackage = getattr(_mod, 'save_to_geopackage', save_to_geopackage)
@@ -3525,10 +3538,10 @@ else:
                 except Exception:
                     pass
             except Exception as e:
-                ui_warning(self, 'Import failed', f'Could not import qgis_backwater_plugin.backwater2: {e}')
+                ui_warning(self, 'Import failed', f'Could not import qgis_hydra_plugin.hydra2: {e}')
 
-        if not (('run_backwater' in globals() and callable(run_backwater))):
-            ui_warning(self, 'Not available', 'Solver not available (backwater2.run_backwater missing)')
+        if not (('run_hydra_1d' in globals() and callable(run_hydra_1d))):
+            ui_warning(self, 'Not available', 'Solver not available (hydra2.run_hydra_1d missing)')
             return
 
         # If an in-memory model was loaded before the solver reload, culvert XS
@@ -3587,7 +3600,7 @@ else:
                 pass
 
             solver_choice = str(self.solver_combo.currentText()) if hasattr(self, 'solver_combo') else 'py'
-            self.results = run_backwater(self.model, solver=solver_choice)
+            self.results = run_hydra_1d(self.model, solver=solver_choice)
 
             if self.loaded_gpkg_path and callable(save_results_to_geopackage):
                 try:
@@ -5388,7 +5401,7 @@ else:
                     'Load a model GeoPackage before running.')
                 return
             try:
-                import backwater_model as _bwmod
+                import hydra_1d as _bwmod
                 self.model = _bwmod.load_from_geopackage(path)
             except Exception as exc:
                 QMessageBox.critical(self, 'Load Error', str(exc))
@@ -5578,7 +5591,7 @@ else:
         if self.model is None:
             return x
         try:
-            from backwater_model import _sorted_sections_by_river_station
+            from hydra_1d import _sorted_sections_by_river_station
             sections_ds_to_us = _sorted_sections_by_river_station(self.model.sections)
             ds_dist = [0.0]
             for i in range(1, min(n_sections, len(sections_ds_to_us))):
@@ -5620,7 +5633,7 @@ else:
         bed = _np.zeros(N)
         if self.model is not None:
             try:
-                from backwater_model import _sorted_sections_by_river_station
+                from hydra_1d import _sorted_sections_by_river_station
                 ordered_ds_to_us = list(reversed(
                     _sorted_sections_by_river_station(self.model.sections)))
                 for i, xs in enumerate(ordered_ds_to_us[:N]):
@@ -5755,7 +5768,7 @@ else:
         bed = {}
         if self.model is not None:
             try:
-                from backwater_model import _sorted_sections_by_river_station
+                from hydra_1d import _sorted_sections_by_river_station
                 ordered_ds_to_us = list(reversed(
                     _sorted_sections_by_river_station(self.model.sections)))
                 for i, xs in enumerate(ordered_ds_to_us[:results.n_sections]):
@@ -5820,6 +5833,56 @@ else:
                 return
 
         launch_swe2d_workbench(self, host_mode=self._swe2d_workbench_host_mode)
+
+    def open_swe2d_designer_dialog(self):
+        """Open the Qt Designer-owned 2D SWE workbench shell from the plugin UI."""
+        try:
+            from swe2d_workbench_qt import launch_swe2d_workbench_designer
+        except Exception:
+            try:
+                from .swe2d_workbench_qt import launch_swe2d_workbench_designer
+            except Exception as exc:
+                QMessageBox.critical(self, '2D SWE Workbench', f'Unable to open Designer UI workbench: {exc}')
+                return
+
+        launch_swe2d_workbench_designer(self, host_mode=self._swe2d_workbench_host_mode)
+
+    def open_swe2d_studio_dialog(self):
+        """Open the Studio layout 2D SWE workbench shell from the plugin UI."""
+        try:
+            mod = importlib.import_module('swe2d_workbench_qt')
+        except Exception:
+            try:
+                mod = importlib.import_module('.swe2d_workbench_qt', package=__package__)
+            except Exception as exc:
+                QMessageBox.critical(self, '2D SWE Workbench', f'Unable to open Studio workbench: {exc}')
+                return
+
+        try:
+            mod = importlib.reload(mod)
+        except Exception:
+            pass
+
+        launch_swe2d_workbench_studio = getattr(mod, 'launch_swe2d_workbench_studio', None)
+        if not callable(launch_swe2d_workbench_studio):
+            QMessageBox.critical(self, '2D SWE Workbench', 'Unable to open Studio workbench: launcher not found')
+            return
+
+        iface_obj = self._get_qgis_iface()
+        launch_swe2d_workbench_studio(self, iface=iface_obj, host_mode='dock')
+
+    def open_swe2d_scenario_dialog(self):
+        """Open the Scenario-first 2D SWE workbench shell from the plugin UI."""
+        try:
+            from swe2d_workbench_qt import launch_swe2d_workbench_scenario
+        except Exception:
+            try:
+                from .swe2d_workbench_qt import launch_swe2d_workbench_scenario
+            except Exception as exc:
+                QMessageBox.critical(self, '2D SWE Workbench', f'Unable to open Scenario-first workbench: {exc}')
+                return
+
+        launch_swe2d_workbench_scenario(self, host_mode=self._swe2d_workbench_host_mode)
 
     def _load_swe2d_workbench_host_mode(self) -> str:
         try:
@@ -6090,7 +6153,7 @@ else:
         except Exception:
             pass
 
-def create_backwater_dockwidget(
+def create_hydra_dockwidget(
     parent: Optional[QtWidgets.QWidget] = None,
     title: str = 'Backwater',
 ) -> QtWidgets.QDockWidget:

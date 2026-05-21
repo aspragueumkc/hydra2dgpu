@@ -2,7 +2,7 @@ import sys
 sys.path.insert(0, '.')
 
 try:
-    import backwater_swe2d as mod
+    import hydra_swe2d as mod
     print(f"GPU available: {mod.swe2d_gpu_available()}")
     
     # Simple 2x2 mesh

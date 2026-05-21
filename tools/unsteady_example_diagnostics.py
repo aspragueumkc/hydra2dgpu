@@ -26,7 +26,7 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
 
-import backwater_model as bm
+import hydra_1d as bm
 from unsteady_model import HydrographBC, UnsteadyParams, run_unsteady
 
 

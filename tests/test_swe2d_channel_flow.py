@@ -73,8 +73,8 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 def _load_module():
     try:
-        import backwater_swe2d
-        return backwater_swe2d
+        import hydra_swe2d
+        return hydra_swe2d
     except ImportError:
         return None
 
@@ -235,7 +235,7 @@ def macdonald_exact_solution(Lx, n_pts, q, n_mann, S0, amplitude, g=9.81):
 
 # ── Test 1: Uniform Manning channel flow ─────────────────────────────────────
 
-@unittest.skipUnless(_load_module() is not None, "backwater_swe2d not built")
+@unittest.skipUnless(_load_module() is not None, "hydra_swe2d not built")
 @unittest.skipUnless(_gpu_available(), "CUDA GPU not available")
 class TestUniformChannelFlow(unittest.TestCase):
     """
@@ -344,7 +344,7 @@ class TestUniformChannelFlow(unittest.TestCase):
 
 # ── Test 2: Irregular-bed channel stability ───────────────────────────────────
 
-@unittest.skipUnless(_load_module() is not None, "backwater_swe2d not built")
+@unittest.skipUnless(_load_module() is not None, "hydra_swe2d not built")
 @unittest.skipUnless(_gpu_available(), "CUDA GPU not available")
 class TestMacDonaldChannelFlow(unittest.TestCase):
     """

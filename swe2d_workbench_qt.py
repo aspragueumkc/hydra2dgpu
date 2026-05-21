@@ -21,7 +21,6 @@ import os
 import sqlite3
 import time
 import traceback
-import urllib.parse
 from typing import Callable, Dict, List, Optional, Sequence, Tuple
 
 import numpy as np
@@ -32,205 +31,103 @@ try:
 except Exception:
     _qgis_uic = None
 
-try:
-    from swe2d_workbench_view import SWE2DWorkbenchViewAdapter
-except Exception:
-    try:
-        from .swe2d_workbench_view import SWE2DWorkbenchViewAdapter
-    except Exception:
-        SWE2DWorkbenchViewAdapter = None
+from swe2d.workbench.seam_imports import (
+    SWE2DBackendInitializer,
+    SWE2DNativeBoundaryHydrographConfigurator,
+    SWE2DRunController,
+    SWE2DRunDataBuilder,
+    SWE2DRunFinalizer,
+    SWE2DRunLifecycle,
+    SWE2DRunOptionsBuilder,
+    SWE2DRunOrchestrator,
+    SWE2DRunRequest,
+    SWE2DRunSetupConfigurator,
+    SWE2DRuntimeReporter,
+    SWE2DRuntimeSourceManager,
+    SWE2DRuntimeStepExecutor,
+    SWE2DWorkbenchViewAdapter,
+    wire_startup_run_components,
+)
+
+from swe2d.workbench.startup_bootstrap import bootstrap_startup_run_components
+from swe2d.workbench.startup_state import initialize_workbench_startup_state
+from swe2d.workbench.post_init import run_workbench_post_bootstrap_setup
+from swe2d.workbench.results_bridge import (
+    get_velocity_vector_builder as _get_velocity_vector_builder_bridge,
+    maybe_create_results_panel as _maybe_create_results_panel_bridge,
+)
+from swe2d.workbench.high_perf_overlay_bridge import (
+    destroy_high_perf_canvas_overlay_item as _destroy_high_perf_canvas_overlay_item_bridge,
+    sync_high_perf_overlay_data as _sync_high_perf_overlay_data_bridge,
+    update_high_perf_overlay_time as _update_high_perf_overlay_time_bridge,
+)
 
 try:
-    from swe2d_run_helpers import (
-        SWE2DRunController,
-        SWE2DRunDataBuilder,
-        SWE2DRunFinalizer,
-        SWE2DRunLifecycle,
-        SWE2DRunOptionsBuilder,
-        SWE2DRunOrchestrator,
-        SWE2DRunRequest,
-    )
+    from swe2d.extensions.patch_observer import SWE2DThreeDPatchObserver
 except Exception:
     try:
-        from .swe2d_run_helpers import (
-            SWE2DRunController,
-            SWE2DRunDataBuilder,
-            SWE2DRunFinalizer,
-            SWE2DRunLifecycle,
-            SWE2DRunOptionsBuilder,
-            SWE2DRunOrchestrator,
-            SWE2DRunRequest,
-        )
-    except Exception:
-        SWE2DRunController = None
-        SWE2DRunDataBuilder = None
-        SWE2DRunFinalizer = None
-        SWE2DRunLifecycle = None
-        SWE2DRunOptionsBuilder = None
-        SWE2DRunOrchestrator = None
-        SWE2DRunRequest = None
-
-try:
-    from swe2d_backend_initializer import SWE2DBackendInitializer
-except Exception:
-    try:
-        from .swe2d_backend_initializer import SWE2DBackendInitializer
-    except Exception:
-        SWE2DBackendInitializer = None
-
-try:
-    from swe2d_runtime_helpers import (
-        SWE2DNativeBoundaryHydrographConfigurator,
-        SWE2DRunSetupConfigurator,
-        SWE2DRuntimeReporter,
-        SWE2DRuntimeSourceManager,
-        SWE2DRuntimeStepExecutor,
-    )
-except Exception:
-    try:
-        from .swe2d_runtime_helpers import (
-            SWE2DNativeBoundaryHydrographConfigurator,
-            SWE2DRunSetupConfigurator,
-            SWE2DRuntimeReporter,
-            SWE2DRuntimeSourceManager,
-            SWE2DRuntimeStepExecutor,
-        )
-    except Exception:
-        SWE2DNativeBoundaryHydrographConfigurator = None
-        SWE2DRunSetupConfigurator = None
-        SWE2DRuntimeReporter = None
-        SWE2DRuntimeSourceManager = None
-        SWE2DRuntimeStepExecutor = None
-
-try:
-    from swe2d_3d_patch_observer import SWE2DThreeDPatchObserver
-except Exception:
-    try:
-        from .swe2d_3d_patch_observer import SWE2DThreeDPatchObserver
+        from .swe2d.extensions.patch_observer import SWE2DThreeDPatchObserver
     except Exception:
         SWE2DThreeDPatchObserver = None
 
-try:
-    from swe2d_bc_logic import (
-        apply_timeseries_bc_values as _apply_timeseries_bc_values_logic,
-        distribute_total_flow_to_unit_q as _distribute_total_flow_to_unit_q_logic,
-        interp_hydrograph as _interp_hydrograph_logic,
-    )
-except Exception:
-    from .swe2d_bc_logic import (
-        apply_timeseries_bc_values as _apply_timeseries_bc_values_logic,
-        distribute_total_flow_to_unit_q as _distribute_total_flow_to_unit_q_logic,
-        interp_hydrograph as _interp_hydrograph_logic,
-    )
+from swe2d.boundary_and_forcing.bc_logic import (
+    apply_timeseries_bc_values as _apply_timeseries_bc_values_logic,
+    distribute_total_flow_to_unit_q as _distribute_total_flow_to_unit_q_logic,
+    interp_hydrograph as _interp_hydrograph_logic,
+)
+
+from swe2d.boundary_and_forcing.runtime_source_logic import (
+    apply_external_sources as _apply_external_sources_logic,
+    internal_flow_source_cms_at_time as _internal_flow_source_cms_at_time_logic,
+)
+
+from swe2d.boundary_and_forcing.hydrograph_logic import (
+    hydrograph_from_layer as _hydrograph_from_layer_logic,
+    parse_hydrograph_text as _parse_hydrograph_text_logic,
+    parse_time_hours as _parse_time_hours_logic,
+)
 
 try:
-    from swe2d_runtime_source_logic import (
-        apply_external_sources as _apply_external_sources_logic,
-        internal_flow_source_cms_at_time as _internal_flow_source_cms_at_time_logic,
-    )
-except Exception:
-    from .swe2d_runtime_source_logic import (
-        apply_external_sources as _apply_external_sources_logic,
-        internal_flow_source_cms_at_time as _internal_flow_source_cms_at_time_logic,
-    )
-
-try:
-    from swe2d_hydrograph_logic import (
-        hydrograph_from_layer as _hydrograph_from_layer_logic,
-        parse_hydrograph_text as _parse_hydrograph_text_logic,
-        parse_time_hours as _parse_time_hours_logic,
-    )
-except Exception:
-    from .swe2d_hydrograph_logic import (
-        hydrograph_from_layer as _hydrograph_from_layer_logic,
-        parse_hydrograph_text as _parse_hydrograph_text_logic,
-        parse_time_hours as _parse_time_hours_logic,
-    )
-
-try:
-    from swe2d_internal_flow_qgis_adapter import (
+    from swe2d.boundary_and_forcing.internal_flow_qgis_adapter import (
         build_internal_flow_forcing_qgis as _build_internal_flow_forcing_qgis_logic,
     )
 except Exception:
-    from .swe2d_internal_flow_qgis_adapter import (
-        build_internal_flow_forcing_qgis as _build_internal_flow_forcing_qgis_logic,
-    )
+    _build_internal_flow_forcing_qgis_logic = None
 
-try:
-    from swe2d_mesh_runtime_logic import (
-        boundary_buffer_cells as _boundary_buffer_cells_logic,
-        inflow_adjacent_cells as _inflow_adjacent_cells_logic,
-        initial_state as _initial_state_logic,
-        mesh_cell_areas as _mesh_cell_areas_logic,
-        mesh_cell_centroids as _mesh_cell_centroids_logic,
-        mesh_cell_min_bed as _mesh_cell_min_bed_logic,
-    )
-except Exception:
-    from .swe2d_mesh_runtime_logic import (
-        boundary_buffer_cells as _boundary_buffer_cells_logic,
-        inflow_adjacent_cells as _inflow_adjacent_cells_logic,
-        initial_state as _initial_state_logic,
-        mesh_cell_areas as _mesh_cell_areas_logic,
-        mesh_cell_centroids as _mesh_cell_centroids_logic,
-        mesh_cell_min_bed as _mesh_cell_min_bed_logic,
-    )
+from swe2d.mesh.mesh_runtime_logic import (
+    boundary_buffer_cells as _boundary_buffer_cells_logic,
+    inflow_adjacent_cells as _inflow_adjacent_cells_logic,
+    initial_state as _initial_state_logic,
+    mesh_cell_areas as _mesh_cell_areas_logic,
+    mesh_cell_centroids as _mesh_cell_centroids_logic,
+    mesh_cell_min_bed as _mesh_cell_min_bed_logic,
+)
 
-try:
-    from swe2d_spatial_forcing_qgis_adapter import (
-        build_spatial_cn_array_qgis as _build_spatial_cn_array_qgis_logic,
-        build_spatial_manning_array_qgis as _build_spatial_manning_array_qgis_logic,
-        build_thiessen_rain_cn_forcing_qgis as _build_thiessen_rain_cn_forcing_qgis_logic,
-    )
-except Exception:
-    from .swe2d_spatial_forcing_qgis_adapter import (
-        build_spatial_cn_array_qgis as _build_spatial_cn_array_qgis_logic,
-        build_spatial_manning_array_qgis as _build_spatial_manning_array_qgis_logic,
-        build_thiessen_rain_cn_forcing_qgis as _build_thiessen_rain_cn_forcing_qgis_logic,
-    )
+from swe2d.boundary_and_forcing.spatial_forcing_qgis_adapter import (
+    build_spatial_cn_array_qgis as _build_spatial_cn_array_qgis_logic,
+    build_spatial_manning_array_qgis as _build_spatial_manning_array_qgis_logic,
+    build_thiessen_rain_cn_forcing_qgis as _build_thiessen_rain_cn_forcing_qgis_logic,
+)
 
-try:
-    from swe2d_boundary_runtime_logic import (
-        collect_boundary_arrays as _collect_boundary_arrays_logic,
-        mesh_boundary_edges as _mesh_boundary_edges_logic,
-    )
-except Exception:
-    from .swe2d_boundary_runtime_logic import (
-        collect_boundary_arrays as _collect_boundary_arrays_logic,
-        mesh_boundary_edges as _mesh_boundary_edges_logic,
-    )
+from swe2d.boundary_and_forcing.boundary_runtime_logic import (
+    collect_boundary_arrays as _collect_boundary_arrays_logic,
+    mesh_boundary_edges as _mesh_boundary_edges_logic,
+)
 
-try:
-    from swe2d_boundary_qgis_adapter import (
-        apply_bc_layer_overrides_qgis as _apply_bc_layer_overrides_qgis_logic,
-        collect_bc_layer_edge_groups_qgis as _collect_bc_layer_edge_groups_qgis_logic,
-        collect_bc_layer_hydrographs_qgis as _collect_bc_layer_hydrographs_qgis_logic,
-    )
-except Exception:
-    from .swe2d_boundary_qgis_adapter import (
-        apply_bc_layer_overrides_qgis as _apply_bc_layer_overrides_qgis_logic,
-        collect_bc_layer_edge_groups_qgis as _collect_bc_layer_edge_groups_qgis_logic,
-        collect_bc_layer_hydrographs_qgis as _collect_bc_layer_hydrographs_qgis_logic,
-    )
+from swe2d.boundary_and_forcing.boundary_qgis_adapter import (
+    apply_bc_layer_overrides_qgis as _apply_bc_layer_overrides_qgis_logic,
+    collect_bc_layer_edge_groups_qgis as _collect_bc_layer_edge_groups_qgis_logic,
+    collect_bc_layer_hydrographs_qgis as _collect_bc_layer_hydrographs_qgis_logic,
+)
 
-try:
-    from swe2d_3d_patch_runtime_logic import (
-        collect_3d_patch_env_overrides as _collect_3d_patch_env_overrides_logic,
-        parse_optional_float_text as _parse_optional_float_text_logic,
-    )
-except Exception:
-    from .swe2d_3d_patch_runtime_logic import (
-        collect_3d_patch_env_overrides as _collect_3d_patch_env_overrides_logic,
-        parse_optional_float_text as _parse_optional_float_text_logic,
-    )
+from swe2d.extensions.patch_runtime_logic import (
+    collect_3d_patch_env_overrides as _collect_3d_patch_env_overrides_logic,
+    parse_optional_float_text as _parse_optional_float_text_logic,
+)
 
-try:
-    from swe2d_3d_patch_qgis_adapter import (
-        sample_terrain_min_z_for_roi_qgis as _sample_terrain_min_z_for_roi_qgis_logic,
-    )
-except Exception:
-    from .swe2d_3d_patch_qgis_adapter import (
-        sample_terrain_min_z_for_roi_qgis as _sample_terrain_min_z_for_roi_qgis_logic,
-    )
+from swe2d.extensions.patch_qgis_adapter import (
+    sample_terrain_min_z_for_roi_qgis as _sample_terrain_min_z_for_roi_qgis_logic,
+)
 
 try:
     from swe2d_run_log_storage import (
@@ -243,49 +140,26 @@ except Exception:
         persist_run_log_to_geopackage as _persist_run_log_to_geopackage_logic,
     )
 
-try:
-    from swe2d_workbench_non_gui_runtime import (
-        boundary_edge_owner_cells as _boundary_edge_owner_cells_runtime_logic,
-        build_experimental_3d_interface_contract_arrays as _build_experimental_3d_interface_contract_arrays_runtime_logic,
-        build_patch_spec_from_stats as _build_patch_spec_from_stats_runtime_logic,
-        build_mesh_snapshot_rows as _build_mesh_snapshot_rows_logic,
-        execute_run_timestep_loop as _execute_run_timestep_loop_runtime_logic,
-        initialize_experimental_3d_patch_state as _initialize_experimental_3d_patch_state_runtime_logic,
-        parse_obj_scale_value as _parse_obj_scale_value_runtime_logic,
-        run_experimental_3d_obj_method_probe as _run_experimental_3d_obj_method_probe_runtime_logic,
-        resolve_obj_model_path as _resolve_obj_model_path_runtime_logic,
-        upload_experimental_3d_obj_geometry as _upload_experimental_3d_obj_geometry_runtime_logic,
-        upload_experimental_3d_interface_contract as _upload_experimental_3d_interface_contract_runtime_logic,
-    )
-except Exception:
-    from .swe2d_workbench_non_gui_runtime import (
-        boundary_edge_owner_cells as _boundary_edge_owner_cells_runtime_logic,
-        build_experimental_3d_interface_contract_arrays as _build_experimental_3d_interface_contract_arrays_runtime_logic,
-        build_patch_spec_from_stats as _build_patch_spec_from_stats_runtime_logic,
-        build_mesh_snapshot_rows as _build_mesh_snapshot_rows_logic,
-        execute_run_timestep_loop as _execute_run_timestep_loop_runtime_logic,
-        initialize_experimental_3d_patch_state as _initialize_experimental_3d_patch_state_runtime_logic,
-        parse_obj_scale_value as _parse_obj_scale_value_runtime_logic,
-        run_experimental_3d_obj_method_probe as _run_experimental_3d_obj_method_probe_runtime_logic,
-        resolve_obj_model_path as _resolve_obj_model_path_runtime_logic,
-        upload_experimental_3d_obj_geometry as _upload_experimental_3d_obj_geometry_runtime_logic,
-        upload_experimental_3d_interface_contract as _upload_experimental_3d_interface_contract_runtime_logic,
-    )
+from swe2d.workbench.non_gui_runtime import (
+    boundary_edge_owner_cells as _boundary_edge_owner_cells_runtime_logic,
+    build_experimental_3d_interface_contract_arrays as _build_experimental_3d_interface_contract_arrays_runtime_logic,
+    build_patch_spec_from_stats as _build_patch_spec_from_stats_runtime_logic,
+    build_mesh_snapshot_rows as _build_mesh_snapshot_rows_logic,
+    execute_run_timestep_loop as _execute_run_timestep_loop_runtime_logic,
+    initialize_experimental_3d_patch_state as _initialize_experimental_3d_patch_state_runtime_logic,
+    parse_obj_scale_value as _parse_obj_scale_value_runtime_logic,
+    run_experimental_3d_obj_method_probe as _run_experimental_3d_obj_method_probe_runtime_logic,
+    resolve_obj_model_path as _resolve_obj_model_path_runtime_logic,
+    upload_experimental_3d_obj_geometry as _upload_experimental_3d_obj_geometry_runtime_logic,
+    upload_experimental_3d_interface_contract as _upload_experimental_3d_interface_contract_runtime_logic,
+)
 
-try:
-    from swe2d_workbench_non_gui_qgis import (
-        build_patch_terrain_surface as _build_patch_terrain_surface_qgis_logic,
-        infer_obj_path_from_layer_3d_renderer as _infer_obj_path_from_layer_3d_renderer_qgis_logic,
-        parse_feature_float as _parse_feature_float_qgis_logic,
-        resolve_layer_field_name as _resolve_layer_field_name_qgis_logic,
-    )
-except Exception:
-    from .swe2d_workbench_non_gui_qgis import (
-        build_patch_terrain_surface as _build_patch_terrain_surface_qgis_logic,
-        infer_obj_path_from_layer_3d_renderer as _infer_obj_path_from_layer_3d_renderer_qgis_logic,
-        parse_feature_float as _parse_feature_float_qgis_logic,
-        resolve_layer_field_name as _resolve_layer_field_name_qgis_logic,
-    )
+from swe2d.workbench.non_gui_qgis import (
+    build_patch_terrain_surface as _build_patch_terrain_surface_qgis_logic,
+    infer_obj_path_from_layer_3d_renderer as _infer_obj_path_from_layer_3d_renderer_qgis_logic,
+    parse_feature_float as _parse_feature_float_qgis_logic,
+    resolve_layer_field_name as _resolve_layer_field_name_qgis_logic,
+)
 
 try:
     from qgis.core import (
@@ -315,7 +189,7 @@ except Exception:
     _HAVE_QGIS_CORE = False
 
 try:
-    from swe2d_backend import SWE2DBackend, swe2d_available, swe2d_gpu_available
+    from swe2d.runtime.backend import SWE2DBackend, swe2d_available, swe2d_gpu_available
 except Exception:
     try:
         from .swe2d_backend import SWE2DBackend, swe2d_available, swe2d_gpu_available
@@ -335,6 +209,7 @@ try:
         build_static_geometry_tensors,
         load_obj_mesh,
         write_solid_voxels_obj,
+        write_fluid_voxels_obj,
     )
 except Exception:
     try:
@@ -344,6 +219,7 @@ except Exception:
             build_static_geometry_tensors,
             load_obj_mesh,
             write_solid_voxels_obj,
+            write_fluid_voxels_obj,
         )
     except Exception:
         PatchGridSpec = None
@@ -351,75 +227,35 @@ except Exception:
         build_static_geometry_tensors = None
         load_obj_mesh = None
         write_solid_voxels_obj = None
+        write_fluid_voxels_obj = None
 
-try:
-    from swe2d_coupling import SWE2DCouplingController, pack_coupling_soa
-    from swe2d_drainage_network import SWE2DUrbanDrainageModule
-    from swe2d_extensions import (
-        DrainageSolverMode,
-        DrainageLink,
-        DrainageNode,
-        GodunovSolverMode,
-        HydraulicStructure,
-        HydraulicStructureConfig,
-        InletExchange,
-        InletType,
-        NodeInletAssignment,
-        OutfallExchange,
-        PipeEndExchange,
-        PipeNetworkConfig,
-        SWE2DEquationSet,
-        SWE2DThreeDCouplingMode,
-        SWE2DThreeDSolverModel,
-        StructureType,
-        SpatialDiscretization,
-        SolverModelOptions,
-        TemporalScheme,
-    )
-    from swe2d_structures import SWE2DStructureModule
-except Exception:
-    try:
-        from .swe2d_coupling import SWE2DCouplingController, pack_coupling_soa
-        from .swe2d_drainage_network import SWE2DUrbanDrainageModule
-        from .swe2d_extensions import (
-            DrainageSolverMode,
-            DrainageLink,
-            DrainageNode,
-            GodunovSolverMode,
-            HydraulicStructure,
-            HydraulicStructureConfig,
-            InletExchange,
-            InletType,
-            NodeInletAssignment,
-            OutfallExchange,
-            PipeEndExchange,
-            PipeNetworkConfig,
-            SWE2DEquationSet,
-            SWE2DThreeDCouplingMode,
-            SWE2DThreeDSolverModel,
-            StructureType,
-            SpatialDiscretization,
-            SolverModelOptions,
-            TemporalScheme,
-        )
-        from .swe2d_structures import SWE2DStructureModule
-    except Exception:
-        SWE2DCouplingController = None
-        pack_coupling_soa = None
-        SWE2DUrbanDrainageModule = None
-        SWE2DStructureModule = None
-        DrainageLink = DrainageNode = HydraulicStructure = InletExchange = OutfallExchange = None
-        PipeEndExchange = None
-        InletType = NodeInletAssignment = None
-        PipeNetworkConfig = HydraulicStructureConfig = None
-        DrainageSolverMode = None
-        SWE2DEquationSet = None
-        SWE2DThreeDCouplingMode = None
-        SWE2DThreeDSolverModel = None
-        SolverModelOptions = None
-        GodunovSolverMode = None
-        SpatialDiscretization = None
-        StructureType = None
+# Import boundary/forcing/drainage/structures modules
+from swe2d.runtime.coupling import SWE2DCouplingController, pack_coupling_soa
+from swe2d.extensions.drainage_network import SWE2DUrbanDrainageModule
+from swe2d.extensions.extension_models import (
+    DrainageSolverMode,
+    DrainageLink,
+    DrainageNode,
+    GodunovSolverMode,
+    HydraulicStructure,
+    HydraulicStructureConfig,
+    InletExchange,
+    InletType,
+    NodeInletAssignment,
+    OutfallExchange,
+    PipeEndExchange,
+    PipeNetworkConfig,
+    SWE2DEquationSet,
+    SWE2DThreeDCouplingMode,
+    SWE2DThreeDSolverModel,
+    StructureType,
+    SpatialDiscretization,
+    SolverModelOptions,
+    TemporalScheme,
+)
+from swe2d.extensions.structures import SWE2DStructureModule
+
+
 
 
 def _recover_optional_solver_imports() -> None:
@@ -456,7 +292,7 @@ def _recover_optional_solver_imports() -> None:
 
     if SWE2DCouplingController is None or pack_coupling_soa is None:
         try:
-            from swe2d_coupling import SWE2DCouplingController as _Ctrl, pack_coupling_soa as _Pack
+            from swe2d.runtime.coupling import SWE2DCouplingController as _Ctrl, pack_coupling_soa as _Pack
             SWE2DCouplingController = SWE2DCouplingController or _Ctrl
             pack_coupling_soa = pack_coupling_soa or _Pack
         except Exception:
@@ -469,7 +305,7 @@ def _recover_optional_solver_imports() -> None:
 
     if SWE2DUrbanDrainageModule is None:
         try:
-            from swe2d_drainage_network import SWE2DUrbanDrainageModule as _Drain
+            from swe2d.extensions.drainage_network import SWE2DUrbanDrainageModule as _Drain
             SWE2DUrbanDrainageModule = SWE2DUrbanDrainageModule or _Drain
         except Exception:
             try:
@@ -480,7 +316,7 @@ def _recover_optional_solver_imports() -> None:
 
     if SWE2DStructureModule is None:
         try:
-            from swe2d_structures import SWE2DStructureModule as _StructMod
+            from swe2d.extensions.structures import SWE2DStructureModule as _StructMod
             SWE2DStructureModule = SWE2DStructureModule or _StructMod
         except Exception:
             try:
@@ -557,15 +393,31 @@ except ImportError:
     _h5py = None
     _HAVE_H5PY = False
 
-try:
-    import netCDF4 as _netCDF4
-    _HAVE_NETCDF4 = True
-except ImportError:
-    _netCDF4 = None
-    _HAVE_NETCDF4 = False
+_netCDF4 = None
+_HAVE_NETCDF4 = False
+_NETCDF4_IMPORT_ERROR = None
+
+
+def _ensure_netcdf4_available() -> bool:
+    global _netCDF4, _HAVE_NETCDF4, _NETCDF4_IMPORT_ERROR
+    if _HAVE_NETCDF4:
+        return True
+    if _NETCDF4_IMPORT_ERROR is not None:
+        return False
+    try:
+        import netCDF4 as _netcdf4_mod
+        _netCDF4 = _netcdf4_mod
+        _HAVE_NETCDF4 = True
+        _NETCDF4_IMPORT_ERROR = None
+        return True
+    except Exception as exc:
+        _netCDF4 = None
+        _HAVE_NETCDF4 = False
+        _NETCDF4_IMPORT_ERROR = exc
+        return False
 
 try:
-    from swe2d_meshing import conceptual_from_qgis_layers, generate_face_centric_mesh, _gmsh_available, _tqmesh_available
+    from swe2d.mesh.meshing import conceptual_from_qgis_layers, generate_face_centric_mesh, _gmsh_available, _tqmesh_available
 except Exception:
     try:
         from .swe2d_meshing import conceptual_from_qgis_layers, generate_face_centric_mesh, _gmsh_available, _tqmesh_available
@@ -751,6 +603,16 @@ _HYETOGRAPH_UNITS_VALUE_MAP = {
 
 _SWE2D_WORKBENCH_WINDOWS = []
 _SWE2D_WORKBENCH_DOCK = None
+_SWE2D_WORKBENCH_DESIGNER_WINDOWS = []
+_SWE2D_WORKBENCH_DESIGNER_DOCK = None
+_SWE2D_WORKBENCH_STUDIO_WINDOWS = []
+_SWE2D_WORKBENCH_STUDIO_DOCK = None
+_SWE2D_WORKBENCH_SCENARIO_WINDOWS = []
+_SWE2D_WORKBENCH_SCENARIO_DOCK = None
+_SWE2D_STUDIO_HOST_TOOLBAR = None
+_SWE2D_STUDIO_HOST_MENU = None
+_SWE2D_STUDIO_COMPONENT_DOCKS = {}
+_SWE2D_STUDIO_HOST_DIALOG = None
 
 _MODEL_LAYER_BINDINGS = {
     "rain_gages": {
@@ -813,7 +675,7 @@ def _run_topology_mesh_job(conceptual, backend_name: str, options: Optional[Dict
     gen = generate_face_centric_mesh
     if gen is None:
         try:
-            from swe2d_meshing import generate_face_centric_mesh as gen  # type: ignore
+            from swe2d.mesh.meshing import generate_face_centric_mesh as gen  # type: ignore
         except Exception:
             from .swe2d_meshing import generate_face_centric_mesh as gen  # type: ignore
     return gen(conceptual, backend=backend_name, options=options)
@@ -2161,7 +2023,6 @@ class SWE3DPatchViewerDialog(QtWidgets.QDialog):
             self.stats_lbl.setText("No snapshot selected.")
             return
 
-        stats = dict(snap.get("stats", {}) or {})
         arr3d, nx, ny, nz, dz = self._reshape_vof(snap)
         if arr3d is None:
             self.stats_lbl.setText(
@@ -2229,236 +2090,41 @@ class SWE2DWorkbenchDialog(QtWidgets.QDialog):
         self.setModal(False)
         self.setWindowModality(QtCore.Qt.WindowModality.NonModal)
         self._iface = iface
-
-        self._backend: Optional[SWE2DBackend] = None
-        self._cancel_requested = False
-        self._mesh_data: Optional[Dict[str, np.ndarray]] = None
-        self._result_data: Optional[Dict[str, np.ndarray]] = None
-        self._snapshot_timesteps: List[Tuple] = []  # list of (time_s, h, hu, hv)
-        self._line_snapshot_rows: List[Dict[str, object]] = []
-        self._line_snapshot_profile_rows: List[Dict[str, object]] = []
-        self._coupling_snapshot_rows: List[Dict[str, object]] = []
-        self._three_d_patch_snapshots: List[Dict[str, object]] = []
-        self._line_results_latest_run_id: str = ""
-        self._line_results_latest_db_path: str = ""
-        self._coupling_results_latest_run_id: str = ""
-        self._coupling_results_latest_db_path: str = ""
-        self._run_log_latest_run_id: str = ""
-        self._run_log_latest_db_path: str = ""
-        self._swe3d_geom_gate_last_config: Dict[str, object] = {}
-        self._swe3d_geom_gate_last_metrics: Dict[str, object] = {}
-        self._swe3d_geom_gate_last_violations: List[str] = []
-        self._results_mesh_layer_id: str = ""
-        self._results_mesh_source_path: str = ""
-        self._results_mesh_snapshot_count: int = -1
-        self._results_mesh_mode_enabled: bool = True
-        self._runtime_log_lines: List[str] = []
-        self._model_gpkg_path: str = ""
-        self._mesh_nodes_layer_id: Optional[str] = None
-        self._mesh_cells_layer_id: Optional[str] = None
-        self._unit_system = "SI"
-        self._length_unit_name = "m"
-        self._gravity = 9.81
-        self._topology_mesh_future: Optional[concurrent.futures.Future] = None
-        self._topology_mesh_backend: Optional[str] = None
-        self._topology_mesh_default_cell_type: Optional[str] = None
-        self._topology_mesh_run_mode = "full"
-        self._topology_mesh_auto_fallback_used = False
-        self._topology_mesh_conceptual = None
-        self._topology_mesh_options: Dict[str, object] = {}
-        self._topology_mesh_thread_pool = concurrent.futures.ThreadPoolExecutor(max_workers=1)
-        self._topology_mesh_process_pool: Optional[concurrent.futures.ProcessPoolExecutor] = None
-        self._topology_mesh_timer = QtCore.QTimer(self)
-        self._topology_mesh_timer.setInterval(120)
-        self._topology_mesh_timer.timeout.connect(self._poll_topology_mesh_future)
-        self._topology_mesh_started_at: Optional[float] = None
-        self._topology_mesh_poll_count = 0
-        self._topology_mesh_active_timeout_sec = 0.0
-        self._project_layer_state_blocked = False
-        self._initial_layer_restore_pending = True
-        self._experimental_3d_bc_widget_attrs: List[str] = []
-        self._experimental_3d_bc_signal_specs: List[Tuple[str, str]] = []
-        try:
-            timeout_sec = float(os.environ.get("BACKWATER_TOPOLOGY_MESH_TIMEOUT_SEC", "300"))
-        except Exception:
-            timeout_sec = 300.0
-        self._topology_mesh_timeout_sec = max(30.0, timeout_sec)
-        self._topology_mesh_active_timeout_sec = self._topology_mesh_timeout_sec
-
-        self._runtime_log_detached_dialogs: List[object] = []
-        self._mesh_view_detached_dialogs: List[object] = []
-        self._runtime_log_detached_dialog: Optional[object] = None
-        self._mesh_view_detached_dialog: Optional[object] = None
-        self._detached_panel_dialogs: List[object] = []
-
-        FigureCanvas, Figure, mtri = _try_import_matplotlib_qt()
-        self._FigureCanvas = FigureCanvas
-        self._Figure = Figure
-        self._mtri = mtri
-        self._have_mpl = FigureCanvas is not None and Figure is not None and mtri is not None
-        self._view_adapter = None
-        self._run_orchestrator = None
-        self._run_controller = None
-        self._run_data_builder = None
-        self._run_options_builder = None
-        self._backend_initializer = None
-        self._run_finalizer = None
-        self._run_lifecycle = None
-        self._last_run_request = None
-        self._startup_run_component_errors: List[str] = []
+        initialize_workbench_startup_state(
+            self,
+            qtcore_module=QtCore,
+            concurrent_futures_module=concurrent.futures,
+            try_import_matplotlib_qt=_try_import_matplotlib_qt,
+        )
 
         self._build_ui()
-        if SWE2DWorkbenchViewAdapter is not None:
-            self._view_adapter = self._init_startup_component(
-                "view adapter",
-                lambda: SWE2DWorkbenchViewAdapter(self),
-            )
-        if SWE2DRunOrchestrator is not None and SWE2DRunRequest is not None:
-            self._run_orchestrator = self._init_startup_component(
-                "run orchestrator",
-                lambda: SWE2DRunOrchestrator(self._execute_run_request, self._log),
-                required_for_run=True,
-            )
-        else:
-            self._note_startup_component_missing("run orchestrator", required_for_run=True)
-        if SWE2DRunController is not None:
-            self._run_controller = self._init_startup_component(
-                "run controller",
-                lambda: SWE2DRunController(
-                    ensure_mesh_callback=self._ensure_mesh_for_run_preflight,
-                    has_mesh_callback=self._has_mesh_for_run_preflight,
-                    backend_ready_callback=self._native_backend_ready_for_run_preflight,
-                    backend_unavailable_callback=self._show_backend_unavailable_for_run_preflight,
-                    log_callback=self._log,
-                ),
-                required_for_run=True,
-            )
-        else:
-            self._note_startup_component_missing("run controller", required_for_run=True)
-        if SWE2DRunDataBuilder is not None:
-            self._run_data_builder = self._init_startup_component(
-                "run data builder",
-                lambda: SWE2DRunDataBuilder(
-                    get_mesh_data_callback=lambda: self._mesh_data,
-                    collect_boundary_arrays_callback=self._collect_boundary_arrays,
-                    build_side_hydrographs_callback=self._build_side_hydrographs,
-                    collect_bc_layer_hydrographs_callback=self._collect_bc_layer_hydrographs,
-                    collect_bc_layer_edge_groups_callback=self._collect_bc_layer_edge_groups,
-                    initial_state_callback=self._initial_state,
-                    build_spatial_manning_array_callback=self._build_spatial_manning_array,
-                    update_unit_system_callback=self._update_unit_system_from_crs,
-                ),
-                required_for_run=True,
-            )
-        else:
-            self._note_startup_component_missing("run data builder", required_for_run=True)
-        if SWE2DRunOptionsBuilder is not None:
-            self._run_options_builder = self._init_startup_component(
-                "run options builder",
-                lambda: SWE2DRunOptionsBuilder(
-                    ui=self,
-                    log_callback=self._log,
-                    parse_run_duration_seconds_callback=self._parse_run_duration_seconds,
-                    collect_3d_patch_env_overrides_callback=self._collect_3d_patch_env_overrides,
-                    rain_rate_si_to_model_callback=self._rain_rate_si_to_model,
-                    build_internal_flow_forcing_callback=self._build_internal_flow_forcing,
-                    internal_flow_source_cms_at_time_callback=self._internal_flow_source_cms_at_time,
-                    flow_si_to_model_callback=self._flow_si_to_model,
-                    build_thiessen_rain_cn_forcing_callback=self._build_thiessen_rain_cn_forcing,
-                    build_pipe_network_config_callback=self._build_pipe_network_config,
-                    build_hydraulic_structure_config_callback=self._build_hydraulic_structure_config,
-                    swe2d_gpu_available_callback=swe2d_gpu_available,
-                    temporal_scheme_enum=TemporalScheme,
-                    spatial_discretization_enum=SpatialDiscretization,
-                    godunov_solver_mode_enum=GodunovSolverMode,
-                    solver_model_options_cls=SolverModelOptions,
-                    swe2d_equation_set_enum=SWE2DEquationSet,
-                    swe2d_3d_solver_model_enum=SWE2DThreeDSolverModel,
-                    swe2d_3d_coupling_mode_enum=SWE2DThreeDCouplingMode,
-                ),
-                required_for_run=True,
-            )
-        else:
-            self._note_startup_component_missing("run options builder", required_for_run=True)
-        if SWE2DBackendInitializer is not None:
-            self._backend_initializer = self._init_startup_component(
-                "backend initializer",
-                lambda: SWE2DBackendInitializer(
-                    ui=self,
-                    apply_env_overrides_callback=self._apply_env_overrides,
-                    restore_env_overrides_callback=self._restore_env_overrides,
-                    apply_timeseries_bc_values_callback=self._apply_timeseries_bc_values,
-                    distribute_total_flow_to_unit_q_callback=self._distribute_total_flow_to_unit_q,
-                ),
-                required_for_run=True,
-            )
-        else:
-            self._note_startup_component_missing("backend initializer", required_for_run=True)
-        if SWE2DRunFinalizer is not None:
-            self._run_finalizer = self._init_startup_component(
-                "run finalizer",
-                lambda: SWE2DRunFinalizer(self),
-                required_for_run=True,
-            )
-        else:
-            self._note_startup_component_missing("run finalizer", required_for_run=True)
-        if SWE2DRunLifecycle is not None:
-            self._run_lifecycle = self._init_startup_component(
-                "run lifecycle",
-                lambda: SWE2DRunLifecycle(self),
-                required_for_run=True,
-            )
-        else:
-            self._note_startup_component_missing("run lifecycle", required_for_run=True)
-        if self._startup_run_component_errors:
-            self._log(
-                "Startup run seam readiness warning: "
-                + ", ".join(sorted(set(self._startup_run_component_errors)))
-            )
-        self._connect_project_layer_state_signals()
-        self._connect_project_workbench_state_signals()
-        self._connect_project_save_state_signals()
-        self._restore_project_layer_bindings()
-        self._initial_layer_restore_pending = False
-        self._persist_project_layer_bindings()
-        # Note: workbench state restoration moved to showEvent() for more reliable timing
-        self._update_unit_system_from_crs()
-        self._log(
-            f"2D bridge: {'available' if swe2d_available() else 'missing'} | "
-            f"GPU: {'available' if swe2d_gpu_available() else 'cpu-only'}"
+        bootstrap_startup_run_components(
+            self,
+            wire_startup_run_components,
+            view_adapter=SWE2DWorkbenchViewAdapter,
+            run_orchestrator=SWE2DRunOrchestrator,
+            run_request=SWE2DRunRequest,
+            run_controller=SWE2DRunController,
+            run_data_builder=SWE2DRunDataBuilder,
+            run_options_builder=SWE2DRunOptionsBuilder,
+            backend_initializer=SWE2DBackendInitializer,
+            run_finalizer=SWE2DRunFinalizer,
+            run_lifecycle=SWE2DRunLifecycle,
+            swe2d_gpu_available=swe2d_gpu_available,
+            temporal_scheme=TemporalScheme,
+            spatial_discretization=SpatialDiscretization,
+            godunov_solver_mode=GodunovSolverMode,
+            solver_model_options=SolverModelOptions,
+            swe2d_equation_set=SWE2DEquationSet,
+            swe2d_3d_solver_model=SWE2DThreeDSolverModel,
+            swe2d_3d_coupling_mode=SWE2DThreeDCouplingMode,
         )
-        self._log(
-            f"Meshing: Gmsh {'available' if _gmsh_available() else 'NOT INSTALLED — use Structured backend or: pip install gmsh'}"
+        run_workbench_post_bootstrap_setup(
+            self,
+            swe2d_available_fn=swe2d_available,
+            swe2d_gpu_available_fn=swe2d_gpu_available,
+            gmsh_available_fn=_gmsh_available,
         )
-        # Sprint 0: dockable results panel (created lazily on first show)
-        self._results_panel = None
-        self._high_perf_canvas_overlay_item = None
-        self._high_perf_canvas_overlay_enabled: bool = False
-        self._high_perf_overlay_cell_x = np.empty(0, dtype=np.float64)
-        self._high_perf_overlay_cell_y = np.empty(0, dtype=np.float64)
-        self._high_perf_overlay_cell_bed = np.empty(0, dtype=np.float64)
-        self._sample_line_draw_tool = None
-        self._sample_line_prev_map_tool = None
-        self._velocity_vector_builder = None
-        self._velocity_vectors_layer_id: Optional[str] = None
-        self._velocity_overlay_sources: List[Dict[str, str]] = []
-        self._velocity_overlay_layer_ids: Dict[str, str] = {}
-        self._velocity_overlay_feature_ids: Dict[str, Dict[int, int]] = {}
-        self._velocity_overlay_source_mode_logged: Dict[str, bool] = {}
-        self._velocity_cell_xy_cache: Dict[str, Dict[int, Tuple[float, float]]] = {}
-        self._velocity_base_len_cache: Dict[str, float] = {}
-        self._streamline_overlay_layer_ids: Dict[str, str] = {}
-        self._velocity_overlay_manual_gpkg_path: str = ""
-        self._velocity_overlay_manual_run_id: str = ""
-        self._velocity_overlay_manual_layer_name: str = ""
-        self._velocity_overlay_manual_table_name: str = ""
-        self._velocity_overlay_refresh_token: int = 0
-        self._velocity_overlay_frame_counter: int = 0
-        self._velocity_overlay_perf_log_every: int = 30
-        self._streamline_overlay_frame_counter: int = 0
-        self._streamline_overlay_perf_log_every: int = 30
-        self._three_d_patch_surface_layer_id: Optional[str] = None
-        self._three_d_patch_last_spec: Optional[Dict[str, object]] = None
 
     def _note_startup_component_missing(self, name: str, required_for_run: bool = False):
         self._log(f"Startup seam unavailable ({name}): import failed.")
@@ -3249,7 +2915,12 @@ class SWE2DWorkbenchDialog(QtWidgets.QDialog):
         model_param_form = QtWidgets.QFormLayout(model_group)
         model_param_form.setObjectName("model_param_form")
 
+        patch_3d_group = QtWidgets.QGroupBox("3D Patch")
+        patch_3d_form = QtWidgets.QFormLayout(patch_3d_group)
+        patch_3d_form.setObjectName("patch_3d_form")
+
         root_layout.addWidget(model_group)
+        root_layout.addWidget(patch_3d_group)
         return root
 
     def _bind_model_tab_core_controls(self, model_tab_page: QtWidgets.QWidget, param_form: QtWidgets.QFormLayout) -> None:
@@ -3791,15 +3462,17 @@ class SWE2DWorkbenchDialog(QtWidgets.QDialog):
         )
 
     def _bind_model_tab_3d_patch_controls(self, model_tab_page: QtWidgets.QWidget, param_form: QtWidgets.QFormLayout) -> None:
+        patch_form = model_tab_page.findChild(QtWidgets.QFormLayout, "patch_3d_form") or param_form
+
         def _ensure_row(label: str, widget: QtWidgets.QWidget) -> None:
-            if param_form.indexOf(widget) >= 0:
+            if patch_form.indexOf(widget) >= 0:
                 return
-            param_form.addRow(label, widget)
+            patch_form.addRow(label, widget)
 
         def _ensure_widget_row(widget: QtWidgets.QWidget) -> None:
-            if param_form.indexOf(widget) >= 0:
+            if patch_form.indexOf(widget) >= 0:
                 return
-            param_form.addRow(widget)
+            patch_form.addRow(widget)
 
         def _find_or_create_check(name: str, label: str, text: str) -> QtWidgets.QCheckBox:
             w = model_tab_page.findChild(QtWidgets.QCheckBox, name)
@@ -4089,56 +3762,82 @@ class SWE2DWorkbenchDialog(QtWidgets.QDialog):
     def _bind_model_tab_3d_subgrid_drainage_controls(
         self, model_tab_page: QtWidgets.QWidget, param_form: QtWidgets.QFormLayout
     ) -> None:
-        def _ensure_row(label: str, widget: QtWidgets.QWidget) -> None:
-            if param_form.indexOf(widget) >= 0:
-                return
-            param_form.addRow(label, widget)
+        patch_form = model_tab_page.findChild(QtWidgets.QFormLayout, "patch_3d_form") or param_form
 
-        def _ensure_widget_row(widget: QtWidgets.QWidget) -> None:
-            if param_form.indexOf(widget) >= 0:
+        def _ensure_row(label: str, widget: QtWidgets.QWidget, target_form: Optional[QtWidgets.QFormLayout] = None) -> None:
+            form = target_form or patch_form
+            if form.indexOf(widget) >= 0:
                 return
-            param_form.addRow(widget)
+            form.addRow(label, widget)
 
-        def _find_or_create_check(name: str, label: str, text: str) -> QtWidgets.QCheckBox:
+        def _ensure_widget_row(widget: QtWidgets.QWidget, target_form: Optional[QtWidgets.QFormLayout] = None) -> None:
+            form = target_form or patch_form
+            if form.indexOf(widget) >= 0:
+                return
+            form.addRow(widget)
+
+        def _find_or_create_check(
+            name: str,
+            label: str,
+            text: str,
+            target_form: Optional[QtWidgets.QFormLayout] = None,
+        ) -> QtWidgets.QCheckBox:
             w = model_tab_page.findChild(QtWidgets.QCheckBox, name)
             if w is None:
                 w = QtWidgets.QCheckBox(text)
                 w.setObjectName(name)
             if not str(w.text() or "").strip():
                 w.setText(text)
-            _ensure_row(label, w)
+            _ensure_row(label, w, target_form)
             return w
 
-        def _find_or_create_combo(name: str, label: str) -> QtWidgets.QComboBox:
+        def _find_or_create_combo(
+            name: str,
+            label: str,
+            target_form: Optional[QtWidgets.QFormLayout] = None,
+        ) -> QtWidgets.QComboBox:
             w = model_tab_page.findChild(QtWidgets.QComboBox, name)
             if w is None:
                 w = QtWidgets.QComboBox()
                 w.setObjectName(name)
-            _ensure_row(label, w)
+            _ensure_row(label, w, target_form)
             return w
 
-        def _find_or_create_line_edit(name: str, label: str, text: str = "") -> QtWidgets.QLineEdit:
+        def _find_or_create_line_edit(
+            name: str,
+            label: str,
+            text: str = "",
+            target_form: Optional[QtWidgets.QFormLayout] = None,
+        ) -> QtWidgets.QLineEdit:
             w = model_tab_page.findChild(QtWidgets.QLineEdit, name)
             if w is None:
                 w = QtWidgets.QLineEdit(text)
                 w.setObjectName(name)
-            _ensure_row(label, w)
+            _ensure_row(label, w, target_form)
             return w
 
-        def _find_or_create_double_spin(name: str, label: str) -> QtWidgets.QDoubleSpinBox:
+        def _find_or_create_double_spin(
+            name: str,
+            label: str,
+            target_form: Optional[QtWidgets.QFormLayout] = None,
+        ) -> QtWidgets.QDoubleSpinBox:
             w = model_tab_page.findChild(QtWidgets.QDoubleSpinBox, name)
             if w is None:
                 w = QtWidgets.QDoubleSpinBox()
                 w.setObjectName(name)
-            _ensure_row(label, w)
+            _ensure_row(label, w, target_form)
             return w
 
-        def _find_or_create_spin(name: str, label: str) -> QtWidgets.QSpinBox:
+        def _find_or_create_spin(
+            name: str,
+            label: str,
+            target_form: Optional[QtWidgets.QFormLayout] = None,
+        ) -> QtWidgets.QSpinBox:
             w = model_tab_page.findChild(QtWidgets.QSpinBox, name)
             if w is None:
                 w = QtWidgets.QSpinBox()
                 w.setObjectName(name)
-            _ensure_row(label, w)
+            _ensure_row(label, w, target_form)
             return w
 
         self.experimental_3d_obj_solids_chk = _find_or_create_check(
@@ -4337,7 +4036,9 @@ class SWE2DWorkbenchDialog(QtWidgets.QDialog):
             "Default is conservative and mainly targets sliver openings."
         )
 
-        self.godunov_mode_combo = _find_or_create_combo("godunov_mode_combo", "GPU solver mode:")
+        self.godunov_mode_combo = _find_or_create_combo(
+            "godunov_mode_combo", "GPU solver mode:", param_form
+        )
         prev_data = self.godunov_mode_combo.currentData()
         prev_text = self.godunov_mode_combo.currentText()
         self.godunov_mode_combo.blockSignals(True)
@@ -4361,7 +4062,7 @@ class SWE2DWorkbenchDialog(QtWidgets.QDialog):
             "keeps the native solver on the migration path for the new FVM mode."
         )
 
-        self.degen_mode_combo = _find_or_create_combo("degen_mode_combo", "Degenerate cell mode:")
+        self.degen_mode_combo = _find_or_create_combo("degen_mode_combo", "Degenerate cell mode:", param_form)
         prev_data = self.degen_mode_combo.currentData()
         prev_text = self.degen_mode_combo.currentText()
         self.degen_mode_combo.blockSignals(True)
@@ -4392,7 +4093,7 @@ class SWE2DWorkbenchDialog(QtWidgets.QDialog):
             "Merge: redirect flux accumulation to largest non-degenerate neighbor."
         )
 
-        self.coupling_loop_combo = _find_or_create_combo("coupling_loop_combo", "Coupling loop:")
+        self.coupling_loop_combo = _find_or_create_combo("coupling_loop_combo", "Coupling loop:", param_form)
         prev_data = self.coupling_loop_combo.currentData()
         prev_text = self.coupling_loop_combo.currentText()
         self.coupling_loop_combo.blockSignals(True)
@@ -4417,7 +4118,7 @@ class SWE2DWorkbenchDialog(QtWidgets.QDialog):
         )
 
         self.drainage_solver_mode_combo = _find_or_create_combo(
-            "drainage_solver_mode_combo", "Drainage equation set:"
+            "drainage_solver_mode_combo", "Drainage equation set:", param_form
         )
         prev_data = self.drainage_solver_mode_combo.currentData()
         prev_text = self.drainage_solver_mode_combo.currentText()
@@ -4443,7 +4144,9 @@ class SWE2DWorkbenchDialog(QtWidgets.QDialog):
             "Dynamic: semi-implicit Saint-Venant momentum update."
         )
 
-        self.drainage_backend_combo = _find_or_create_combo("drainage_backend_combo", "Drainage solver backend:")
+        self.drainage_backend_combo = _find_or_create_combo(
+            "drainage_backend_combo", "Drainage solver backend:", param_form
+        )
         prev_data = self.drainage_backend_combo.currentData()
         prev_text = self.drainage_backend_combo.currentText()
         self.drainage_backend_combo.blockSignals(True)
@@ -4468,7 +4171,7 @@ class SWE2DWorkbenchDialog(QtWidgets.QDialog):
         )
 
         self.drainage_gpu_method_combo = _find_or_create_combo(
-            "drainage_gpu_method_combo", "Drainage GPU method:"
+            "drainage_gpu_method_combo", "Drainage GPU method:", param_form
         )
         prev_data = self.drainage_gpu_method_combo.currentData()
         prev_text = self.drainage_gpu_method_combo.currentText()
@@ -4495,7 +4198,7 @@ class SWE2DWorkbenchDialog(QtWidgets.QDialog):
         )
 
         self.drainage_coupling_substeps_spin = _find_or_create_spin(
-            "drainage_coupling_substeps_spin", "Drainage substeps:"
+            "drainage_coupling_substeps_spin", "Drainage substeps:", param_form
         )
         self.drainage_coupling_substeps_spin.setRange(1, 256)
         self.drainage_coupling_substeps_spin.setValue(1)
@@ -4505,7 +4208,7 @@ class SWE2DWorkbenchDialog(QtWidgets.QDialog):
         )
 
         self.drainage_max_coupling_substeps_spin = _find_or_create_spin(
-            "drainage_max_coupling_substeps_spin", "Drainage max adaptive substeps:"
+            "drainage_max_coupling_substeps_spin", "Drainage max adaptive substeps:", param_form
         )
         self.drainage_max_coupling_substeps_spin.setRange(1, 1024)
         self.drainage_max_coupling_substeps_spin.setValue(64)
@@ -4515,7 +4218,7 @@ class SWE2DWorkbenchDialog(QtWidgets.QDialog):
         )
 
         self.drainage_head_deadband_spin = _find_or_create_double_spin(
-            "drainage_head_deadband_spin", "Drainage head deadband:"
+            "drainage_head_deadband_spin", "Drainage head deadband:", param_form
         )
         self.drainage_head_deadband_spin.setRange(0.0, 10.0)
         self.drainage_head_deadband_spin.setDecimals(6)
@@ -4526,7 +4229,7 @@ class SWE2DWorkbenchDialog(QtWidgets.QDialog):
         )
 
         self.drainage_dynamic_relaxation_spin = _find_or_create_double_spin(
-            "drainage_dynamic_relaxation_spin", "Drainage dynamic relaxation:"
+            "drainage_dynamic_relaxation_spin", "Drainage dynamic relaxation:", param_form
         )
         self.drainage_dynamic_relaxation_spin.setRange(0.0, 1.0)
         self.drainage_dynamic_relaxation_spin.setDecimals(3)
@@ -4538,7 +4241,7 @@ class SWE2DWorkbenchDialog(QtWidgets.QDialog):
         )
 
         self.drainage_adaptive_depth_fraction_spin = _find_or_create_double_spin(
-            "drainage_adaptive_depth_fraction_spin", "Drainage adaptive depth fraction:"
+            "drainage_adaptive_depth_fraction_spin", "Drainage adaptive depth fraction:", param_form
         )
         self.drainage_adaptive_depth_fraction_spin.setRange(0.001, 1.0)
         self.drainage_adaptive_depth_fraction_spin.setDecimals(3)
@@ -4550,7 +4253,7 @@ class SWE2DWorkbenchDialog(QtWidgets.QDialog):
         )
 
         self.drainage_adaptive_wave_courant_spin = _find_or_create_double_spin(
-            "drainage_adaptive_wave_courant_spin", "Drainage adaptive wave Courant:"
+            "drainage_adaptive_wave_courant_spin", "Drainage adaptive wave Courant:", param_form
         )
         self.drainage_adaptive_wave_courant_spin.setRange(0.001, 10.0)
         self.drainage_adaptive_wave_courant_spin.setDecimals(3)
@@ -4562,7 +4265,7 @@ class SWE2DWorkbenchDialog(QtWidgets.QDialog):
         )
 
         self.drainage_implicit_iters_spin = _find_or_create_spin(
-            "drainage_implicit_iters_spin", "Drainage implicit iterations (GPU):"
+            "drainage_implicit_iters_spin", "Drainage implicit iterations (GPU):", param_form
         )
         self.drainage_implicit_iters_spin.setRange(1, 8)
         self.drainage_implicit_iters_spin.setValue(2)
@@ -4573,7 +4276,7 @@ class SWE2DWorkbenchDialog(QtWidgets.QDialog):
         )
 
         self.drainage_implicit_relax_spin = _find_or_create_double_spin(
-            "drainage_implicit_relax_spin", "Drainage implicit relaxation (GPU):"
+            "drainage_implicit_relax_spin", "Drainage implicit relaxation (GPU):", param_form
         )
         self.drainage_implicit_relax_spin.setRange(0.1, 1.0)
         self.drainage_implicit_relax_spin.setDecimals(2)
@@ -4590,14 +4293,14 @@ class SWE2DWorkbenchDialog(QtWidgets.QDialog):
                 "GPU is attempted by default when supported by the native backend."
             )
             self.gpu_default_lbl.setObjectName("gpu_default_lbl")
-            _ensure_widget_row(self.gpu_default_lbl)
+            _ensure_widget_row(self.gpu_default_lbl, param_form)
         self.gpu_default_lbl.setWordWrap(True)
 
         self.unit_system_lbl = model_tab_page.findChild(QtWidgets.QLabel, "unit_system_lbl")
         if self.unit_system_lbl is None:
             self.unit_system_lbl = QtWidgets.QLabel("Unit system: auto")
             self.unit_system_lbl.setObjectName("unit_system_lbl")
-            _ensure_widget_row(self.unit_system_lbl)
+            _ensure_widget_row(self.unit_system_lbl, param_form)
         self.unit_system_lbl.setWordWrap(True)
 
     def _build_topology_tab_page_fallback(self) -> QtWidgets.QWidget:
@@ -8528,82 +8231,16 @@ class SWE2DWorkbenchDialog(QtWidgets.QDialog):
 
     def _maybe_create_results_panel(self):
         """Create the dockable results panel and register it with iface (hidden)."""
-        try:
-            try:
-                from .swe2d_results_panel import SWE2DResultsPanel
-            except ImportError:
-                from swe2d_results_panel import SWE2DResultsPanel
-        except ImportError:
-            self._log("[Results Panel] swe2d_results_panel not found — panel unavailable.")
-            return
-
-        gpkg = self._model_gpkg_path or ""
-        iface = getattr(self, "_iface", None)
-        try:
-            self._results_panel = SWE2DResultsPanel(
-                gpkg_path=gpkg, iface=iface, parent=None
-            )
-            self._results_panel.setWindowTitle("SWE2D Results")
-            try:
-                self._results_panel.timestep_changed.disconnect(self._on_results_panel_timestep_changed)
-            except Exception:
-                pass
-            self._results_panel.timestep_changed.connect(self._on_results_panel_timestep_changed)
-            try:
-                self._results_panel.velocity_overlay_changed.disconnect(self._on_results_panel_velocity_overlay_changed)
-            except Exception:
-                pass
-            self._results_panel.velocity_overlay_changed.connect(self._on_results_panel_velocity_overlay_changed)
-            try:
-                self._results_panel.velocity_overlay_add_requested.disconnect(self._on_results_panel_velocity_overlay_add_requested)
-            except Exception:
-                pass
-            self._results_panel.velocity_overlay_add_requested.connect(self._on_results_panel_velocity_overlay_add_requested)
-            try:
-                self._results_panel.restore_state()
-            except Exception:
-                pass
-            if iface is not None:
-                iface.addDockWidget(QtCore.Qt.RightDockWidgetArea, self._results_panel)
-                self._results_panel.hide()
-        except Exception as exc:
-            self._log(f"[Results Panel] Failed to create panel: {exc}")
-            self._results_panel = None
+        _maybe_create_results_panel_bridge(self)
 
     def _sync_high_perf_overlay_data(self):
-        if self._mesh_data is None or not self._snapshot_timesteps:
-            self._high_perf_overlay_cell_x = np.empty(0, dtype=np.float64)
-            self._high_perf_overlay_cell_y = np.empty(0, dtype=np.float64)
-            self._high_perf_overlay_cell_bed = np.empty(0, dtype=np.float64)
-            self._refresh_high_perf_canvas_overlay(None)
-            return
-
-        try:
-            cx, cy = self._mesh_cell_centroids()
-            bed = self._mesh_cell_min_bed()
-            self._high_perf_overlay_cell_x = np.asarray(cx, dtype=np.float64)
-            self._high_perf_overlay_cell_y = np.asarray(cy, dtype=np.float64)
-            self._high_perf_overlay_cell_bed = np.asarray(bed, dtype=np.float64)
-        except Exception as exc:
-            self._log(f"[HighPerf Overlay] Data sync failed: {exc}")
-
-        self._refresh_high_perf_canvas_overlay(None)
+        _sync_high_perf_overlay_data_bridge(self)
 
     def _update_high_perf_overlay_time(self, t_s: float):
-        self._refresh_high_perf_canvas_overlay(float(t_s))
+        _update_high_perf_overlay_time_bridge(self, t_s)
 
     def _destroy_high_perf_canvas_overlay_item(self):
-        item = getattr(self, "_high_perf_canvas_overlay_item", None)
-        self._high_perf_canvas_overlay_item = None
-        self._high_perf_canvas_overlay_enabled = False
-        if item is None:
-            return
-        try:
-            canvas = self._resolve_map_canvas()
-            if canvas is not None and hasattr(canvas, "scene"):
-                canvas.scene().removeItem(item)
-        except Exception:
-            pass
+        _destroy_high_perf_canvas_overlay_item_bridge(self)
 
     def _ensure_high_perf_canvas_overlay_item(self):
         item = getattr(self, "_high_perf_canvas_overlay_item", None)
@@ -9359,18 +8996,7 @@ class SWE2DWorkbenchDialog(QtWidgets.QDialog):
         return palette[idx % len(palette)]
 
     def _get_velocity_vector_builder(self):
-        if self._velocity_vector_builder is not None:
-            return self._velocity_vector_builder
-        try:
-            try:
-                from .swe2d_velocity_layer import VelocityVectorBuilder
-            except Exception:
-                from swe2d_velocity_layer import VelocityVectorBuilder
-            self._velocity_vector_builder = VelocityVectorBuilder(max_cache_entries=24)
-        except Exception as exc:
-            self._log(f"Velocity overlay unavailable: could not import builder ({exc})")
-            self._velocity_vector_builder = None
-        return self._velocity_vector_builder
+        return _get_velocity_vector_builder_bridge(self)
 
     def _velocity_vectors_layer_for_source(self, source: Dict[str, str]):
         if not _HAVE_QGIS_CORE or QgsProject is None or QgsVectorLayer is None:
@@ -12735,8 +12361,14 @@ class SWE2DWorkbenchDialog(QtWidgets.QDialog):
         timesteps : list of (time_seconds, h, hu, hv) or None
             When supplied, result variables are written; otherwise topology only.
         """
-        if not _HAVE_NETCDF4:
-            raise RuntimeError("netCDF4 is not installed.  Run: pip install netCDF4")
+        if not _ensure_netcdf4_available():
+            detail = ""
+            if _NETCDF4_IMPORT_ERROR is not None:
+                detail = f" Import error: {_NETCDF4_IMPORT_ERROR}"
+            raise RuntimeError(
+                "netCDF4 is unavailable (missing or binary-incompatible in current QGIS Python)."
+                " Install a compatible netCDF4 build for this QGIS environment." + detail
+            )
         if self._mesh_data is None:
             raise RuntimeError("No mesh data available")
 
@@ -12792,8 +12424,8 @@ class SWE2DWorkbenchDialog(QtWidgets.QDialog):
         with _netCDF4.Dataset(path, "w", format="NETCDF4") as ds:
             # Global attributes (CF + UGRID)
             ds.Conventions = "CF-1.8 UGRID-1.0"
-            ds.title = "SWE2D backwater model results"
-            ds.institution = "qgis-backwater-plugin"
+            ds.title = "SWE2D HYDRA model results"
+            ds.institution = "qgis-hydra-plugin"
             ds.history = "Created by swe2d_workbench_qt"
             ds.featureType = "mesh2D"
             len_unit = self._length_unit_name if self._length_unit_name else "m"
@@ -13788,7 +13420,7 @@ class SWE2DWorkbenchDialog(QtWidgets.QDialog):
 
         safe_method = "".join(ch if (ch.isalnum() or ch in ("_", "-")) else "_" for ch in str(obstacle_method or "method"))
         stamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-        return os.path.join(base_dir, "swe3d_exports", f"swe3d_solids_{safe_method}_{stamp}.obj")
+        return os.path.join(base_dir, "swe3d_exports", f"swe3d_fluid_{safe_method}_{stamp}.obj")
 
     def _run_experimental_3d_obj_method_probe(
         self,
@@ -13924,6 +13556,7 @@ class SWE2DWorkbenchDialog(QtWidgets.QDialog):
             apply_instance_transform_fn=apply_instance_transform,
             build_static_geometry_tensors_fn=build_static_geometry_tensors,
             write_solid_voxels_obj_fn=write_solid_voxels_obj,
+            write_fluid_voxels_obj_fn=write_fluid_voxels_obj,
         )
 
     def _append_3d_patch_snapshot(self, t_s: float, stats: Dict[str, object], vof: np.ndarray) -> None:
@@ -14090,7 +13723,6 @@ class SWE2DWorkbenchDialog(QtWidgets.QDialog):
             dt_request = run_options.dt_request
             reconstruction_mode = run_options.reconstruction_mode
             reconstruction_name = run_options.reconstruction_name
-            temporal_order_value = run_options.temporal_order_value
             temporal_scheme = run_options.temporal_scheme
             temporal_scheme_name = run_options.temporal_scheme_name
             godunov_mode = run_options.godunov_mode
@@ -14098,16 +13730,13 @@ class SWE2DWorkbenchDialog(QtWidgets.QDialog):
             drainage_solver_backend_mode = run_options.drainage_solver_backend_mode
             drainage_gpu_method_mode = run_options.drainage_gpu_method_mode
             cuda_graphs_enabled = run_options.cuda_graphs_enabled
-            equation_set = run_options.equation_set
             experimental_3d_enabled = run_options.experimental_3d_enabled
-            coupling_mode_3d = run_options.coupling_mode_3d
             model_options = run_options.model_options
             swe3d_env_overrides = run_options.swe3d_env_overrides
             self._three_d_patch_snapshots = []
             self._three_d_patch_last_spec = None
             rain_rate_model = run_options.rain_rate_model
             internal_flow_forcing = run_options.internal_flow_forcing
-            cell_source_si = run_options.cell_source_si
             cell_source_model = run_options.cell_source_model
             thiessen_forcing = run_options.thiessen_forcing
             pipe_network_cfg = run_options.pipe_network_cfg
@@ -14447,7 +14076,7 @@ class SWE2DWorkbenchDialog(QtWidgets.QDialog):
             timing_samples = 0
             self._log("Step timing diagnostics enabled (ms): wall, step, coupling, source, state, bc, ui.")
             if dynamic_bc and not backend.supports_dynamic_boundary_update():
-                raise RuntimeError("Native module does not support dynamic boundary updates. Rebuild backwater_swe2d.")
+                raise RuntimeError("Native module does not support dynamic boundary updates. Rebuild hydra_swe2d.")
 
             native_bc_forcing = False
             native_rain_cn_forcing = False
@@ -14728,49 +14357,774 @@ class SWE2DWorkbenchDialog(QtWidgets.QDialog):
                 pass
 
 
+class SWE2DWorkbenchDesignerDialog(SWE2DWorkbenchDialog):
+    """Parallel workbench shell whose full window frame is owned by a .ui file."""
+
+    _DESIGNER_TAB_PAGES = (
+        ("mesh_tab", "Mesh"),
+        ("map_tab", "Map"),
+        ("topology_tab", "Topology"),
+        ("boundary_tab", "Boundary"),
+        ("model_tab", "Model"),
+        ("run_tab", "Run"),
+    )
+
+    def __init__(self, parent=None, iface=None):
+        super().__init__(parent, iface=iface)
+        self.setWindowTitle("2D SWE Workbench (Designer UI)")
+
+    def _build_designer_workbench_shell(self) -> QtWidgets.QWidget:
+        ui_path = self._forms_file_path("swe2d_workbench_designer.ui")
+        shell = None
+        if _qgis_uic is not None and os.path.exists(ui_path):
+            try:
+                shell = _qgis_uic.loadUi(ui_path)
+            except Exception:
+                shell = None
+        if shell is None:
+            shell = self._build_designer_workbench_shell_fallback()
+        return shell
+
+    def _build_designer_workbench_shell_fallback(self) -> QtWidgets.QWidget:
+        shell = QtWidgets.QWidget()
+        root_layout = QtWidgets.QVBoxLayout(shell)
+        root_layout.setContentsMargins(0, 0, 0, 0)
+
+        header_lbl = QtWidgets.QLabel("Interactive 2D SWE workflow")
+        header_lbl.setObjectName("header_lbl")
+        header_lbl.setWordWrap(True)
+        root_layout.addWidget(header_lbl)
+
+        main_splitter = QtWidgets.QSplitter(QtCore.Qt.Orientation.Horizontal)
+        main_splitter.setObjectName("main_splitter")
+
+        left_tabs = QtWidgets.QTabWidget()
+        left_tabs.setObjectName("left_tabs")
+        left_tabs.setDocumentMode(True)
+        for page_name, title in self._DESIGNER_TAB_PAGES:
+            page = QtWidgets.QWidget()
+            page.setObjectName(page_name)
+            page_layout = QtWidgets.QVBoxLayout(page)
+            page_layout.setContentsMargins(0, 0, 0, 0)
+            left_tabs.addTab(page, title)
+        main_splitter.addWidget(left_tabs)
+
+        right_pane_host = QtWidgets.QWidget()
+        right_pane_host.setObjectName("right_pane_host")
+        right_pane_host_layout = QtWidgets.QVBoxLayout(right_pane_host)
+        right_pane_host_layout.setContentsMargins(0, 0, 0, 0)
+        main_splitter.addWidget(right_pane_host)
+
+        root_layout.addWidget(main_splitter, stretch=1)
+
+        bottom_buttons = QtWidgets.QDialogButtonBox(QtWidgets.QDialogButtonBox.StandardButton.Close)
+        bottom_buttons.setObjectName("bottom_buttons")
+        root_layout.addWidget(bottom_buttons)
+        return shell
+
+    def _designer_host_widget(self, shell: QtWidgets.QWidget, object_name: str) -> QtWidgets.QWidget:
+        host = shell.findChild(QtWidgets.QWidget, object_name)
+        if host is None:
+            raise RuntimeError(f"Designer workbench shell is missing {object_name}")
+        return host
+
+    def _mount_widget_in_host(self, host: QtWidgets.QWidget, widget: QtWidgets.QWidget) -> None:
+        layout = host.layout()
+        if not isinstance(layout, QtWidgets.QVBoxLayout):
+            layout = QtWidgets.QVBoxLayout(host)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(0)
+        while layout.count():
+            item = layout.takeAt(0)
+            child = item.widget()
+            if child is not None:
+                child.deleteLater()
+        layout.addWidget(widget, stretch=1)
+
+    def _ensure_designer_tab_scroll(self, tab_page: QtWidgets.QWidget, scroll_object_name: str) -> None:
+        scroll = tab_page.findChild(QtWidgets.QScrollArea, scroll_object_name)
+        if scroll is not None:
+            return
+
+        page_layout = tab_page.layout()
+        if not isinstance(page_layout, QtWidgets.QVBoxLayout):
+            page_layout = QtWidgets.QVBoxLayout(tab_page)
+        margins = page_layout.contentsMargins()
+        spacing = page_layout.spacing()
+
+        content = QtWidgets.QWidget(tab_page)
+        content.setObjectName(f"{tab_page.objectName()}_scroll_content")
+        content_layout = QtWidgets.QVBoxLayout(content)
+        content_layout.setContentsMargins(margins)
+        content_layout.setSpacing(spacing)
+
+        while page_layout.count():
+            item = page_layout.takeAt(0)
+            child_widget = item.widget()
+            child_layout = item.layout()
+            child_spacer = item.spacerItem()
+            if child_widget is not None:
+                content_layout.addWidget(child_widget)
+            elif child_layout is not None:
+                content_layout.addLayout(child_layout)
+            elif child_spacer is not None:
+                content_layout.addItem(child_spacer)
+
+        scroll = QtWidgets.QScrollArea(tab_page)
+        scroll.setObjectName(scroll_object_name)
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QtWidgets.QFrame.Shape.NoFrame)
+        scroll.setWidget(content)
+        page_layout.addWidget(scroll, stretch=1)
+
+    def _populate_designer_left_tabs(self, shell: QtWidgets.QWidget) -> None:
+        self._left_tabs = shell.findChild(QtWidgets.QTabWidget, "left_tabs")
+        if self._left_tabs is None:
+            raise RuntimeError("Designer workbench shell is missing left_tabs")
+
+        for tab_name in ("mesh_tab", "map_tab", "topology_tab", "boundary_tab", "model_tab", "run_tab"):
+            self._ensure_designer_tab_scroll(
+                self._designer_host_widget(shell, tab_name),
+                f"{tab_name}_scroll",
+            )
+
+        mesh_tab_page = self._designer_host_widget(shell, "mesh_tab")
+        self._bind_mesh_tab_controls(mesh_tab_page)
+
+        map_tab_page = self._designer_host_widget(shell, "map_tab")
+        map_data_layout = map_tab_page.findChild(QtWidgets.QGridLayout, "map_data_layout")
+        map_actions_layout = map_tab_page.findChild(QtWidgets.QGridLayout, "map_actions_layout")
+        map_results_layout = map_tab_page.findChild(QtWidgets.QGridLayout, "map_results_layout")
+        map_tools_layout = map_tab_page.findChild(QtWidgets.QGridLayout, "map_tools_layout")
+        if (
+            map_data_layout is None
+            or map_actions_layout is None
+            or map_results_layout is None
+            or map_tools_layout is None
+        ):
+            raise RuntimeError("Designer workbench shell map tab is missing one or more expected layouts")
+        self._bind_map_tab_data_controls(map_tab_page, map_data_layout)
+        self._bind_map_tab_action_controls(map_tab_page, map_actions_layout)
+        self._bind_map_tab_results_controls(map_tab_page, map_results_layout)
+        self._bind_map_tab_tools_controls(map_tab_page, map_tools_layout)
+
+        topology_tab_page = self._designer_host_widget(shell, "topology_tab")
+        topo_layout = topology_tab_page.findChild(QtWidgets.QGridLayout, "topo_layout")
+        if topo_layout is None:
+            raise RuntimeError("Designer workbench shell topology tab is missing topo_layout")
+        self._bind_topology_tab_static_controls(topology_tab_page, topo_layout)
+        self._bind_topology_tab_dynamic_controls(topology_tab_page, topo_layout)
+
+        boundary_tab_page = self._designer_host_widget(shell, "boundary_tab")
+        bc_grid = boundary_tab_page.findChild(QtWidgets.QGridLayout, "bc_grid")
+        if bc_grid is None:
+            raise RuntimeError("Designer workbench shell boundary tab is missing bc_grid")
+        self._populate_boundary_tab_controls(bc_grid)
+
+        model_tab_page = self._designer_host_widget(shell, "model_tab")
+        param_form = model_tab_page.findChild(QtWidgets.QFormLayout, "model_param_form")
+        if param_form is None:
+            raise RuntimeError("Designer workbench shell model tab is missing model_param_form")
+        self._bind_model_tab_core_controls(model_tab_page, param_form)
+        self._bind_model_tab_hydrology_controls(model_tab_page, param_form)
+        self._bind_model_tab_solver_controls(model_tab_page, param_form)
+        self._bind_model_tab_3d_patch_controls(model_tab_page, param_form)
+        self._bind_model_tab_3d_subgrid_drainage_controls(model_tab_page, param_form)
+
+        run_tab_page = self._designer_host_widget(shell, "run_tab")
+        self._bind_run_tab_controls(run_tab_page)
+
+        self._left_tabs.setMinimumWidth(0)
+        for _cb in self._left_tabs.findChildren(QtWidgets.QComboBox):
+            _cb.setMinimumContentsLength(0)
+            _cb.setSizeAdjustPolicy(
+                QtWidgets.QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon
+            )
+        for _btn in self._left_tabs.findChildren(QtWidgets.QPushButton):
+            _btn.setMinimumWidth(0)
+        for _sp in self._left_tabs.findChildren(
+            (QtWidgets.QDoubleSpinBox, QtWidgets.QSpinBox)  # type: ignore[arg-type]
+        ):
+            _sp.setMinimumWidth(0)
+        self._make_left_controls_compact(self._left_tabs)
+        self._register_detachable_tab_widget(self._left_tabs)
+
+    def _build_ui(self):
+        root = self.layout()
+        if not isinstance(root, QtWidgets.QVBoxLayout):
+            root = QtWidgets.QVBoxLayout(self)
+        while root.count():
+            item = root.takeAt(0)
+            widget = item.widget()
+            if widget is not None:
+                widget.deleteLater()
+
+        shell = self._build_designer_workbench_shell()
+        root.addWidget(shell, stretch=1)
+
+        header = shell.findChild(QtWidgets.QLabel, "header_lbl")
+        if header is not None:
+            header.setText(
+                "Interactive 2D SWE workflow: generate mesh, assign side BCs, set model parameters, "
+                "run, and visualize results."
+            )
+            header.setWordWrap(True)
+
+        self._populate_designer_left_tabs(shell)
+        self._bind_right_pane_controls(self._designer_host_widget(shell, "right_pane_host"))
+
+        split = shell.findChild(QtWidgets.QSplitter, "main_splitter")
+        if split is not None:
+            split.setSizes([420, 740])
+
+        buttons = shell.findChild(QtWidgets.QDialogButtonBox, "bottom_buttons")
+        if buttons is not None:
+            try:
+                buttons.rejected.disconnect(self.reject)
+            except Exception:
+                pass
+            try:
+                buttons.accepted.disconnect(self.accept)
+            except Exception:
+                pass
+            buttons.rejected.connect(self.reject)
+            buttons.accepted.connect(self.accept)
+
+        self._refresh_layer_combos()
+
+
+class SWE2DWorkbenchStudioDialog(SWE2DWorkbenchDialog):
+    """Dock-inspired workspace layout with persistent side inspector."""
+
+    def __init__(self, parent=None, iface=None):
+        # Initialize handles before super(); base __init__ calls self._build_ui().
+        self._studio_main_window = None
+        self._studio_status_label = None
+        self._studio_view_mode_combo = None
+        self._studio_theme_combo = None
+        self._studio_left_dock = None
+        self._studio_inspector_dock = None
+        self._studio_feature_flags = {
+            "rainfall": True,
+            "drainage": True,
+            "structures": True,
+        }
+        super().__init__(parent, iface=iface)
+        self.setWindowTitle("2D SWE Workbench (Studio)")
+
+        # Last-resort recovery: if anything failed during _build_ui, build a
+        # minimal visible panel instead of presenting a blank surface.
+        if self._studio_main_window is None:
+            root = self.layout()
+            if not isinstance(root, QtWidgets.QVBoxLayout):
+                root = QtWidgets.QVBoxLayout(self)
+            while root.count():
+                item = root.takeAt(0)
+                widget = item.widget()
+                if widget is not None:
+                    widget.deleteLater()
+            fallback = QtWidgets.QPlainTextEdit(self)
+            fallback.setReadOnly(True)
+            fallback.setPlainText(
+                "Studio UI initialization did not complete.\n"
+                "Please close and reopen this window. If this persists, share the QGIS log."
+            )
+            root.addWidget(fallback, 1)
+
+    def _studio_project_scope_key(self) -> str:
+        project_key = "default"
+        if _HAVE_QGIS_CORE and QgsProject is not None:
+            try:
+                proj = QgsProject.instance()
+                file_name = str(proj.fileName() or "").strip()
+                if file_name:
+                    project_key = file_name
+                else:
+                    project_key = str(proj.homePath() or "").strip() or project_key
+            except Exception:
+                pass
+        safe = "".join(ch if (ch.isalnum() or ch in ("_", "-", ".")) else "_" for ch in project_key)
+        if not safe:
+            safe = "default"
+        return safe
+
+    def _studio_layout_settings_keys(self) -> Tuple[str, str]:
+        scope = self._studio_project_scope_key()
+        base = f"Backwater2DWorkbenchStudio/v2/{scope}"
+        return f"{base}/layout_state", f"{base}/layout_geometry"
+
+    def _restore_studio_layout_state(self) -> None:
+        if self._studio_main_window is None:
+            return
+        state_key, _geom_key = self._studio_layout_settings_keys()
+        settings = QtCore.QSettings()
+        try:
+            state_raw = settings.value(state_key, "")
+        except Exception:
+            state_raw = ""
+
+        restored = False
+        if state_raw:
+            try:
+                state_bytes = QtCore.QByteArray.fromBase64(str(state_raw).encode("ascii"))
+                restored = bool(self._studio_main_window.restoreState(state_bytes))
+            except Exception:
+                pass
+
+        # Safety: always keep the core panes visible so Studio cannot reopen blank.
+        try:
+            center = self._studio_main_window.centralWidget()
+            if center is not None:
+                center.show()
+        except Exception:
+            pass
+        try:
+            if self._studio_left_dock is not None and not self._studio_left_dock.isVisible():
+                self._studio_left_dock.show()
+        except Exception:
+            pass
+        try:
+            if self._studio_inspector_dock is not None and not self._studio_inspector_dock.isVisible():
+                self._studio_inspector_dock.show()
+        except Exception:
+            pass
+
+        if state_raw and not restored:
+            self._studio_main_window.resize(1200, 760)
+
+    def _save_studio_layout_state(self) -> None:
+        if self._studio_main_window is None:
+            return
+        state_key, _geom_key = self._studio_layout_settings_keys()
+        settings = QtCore.QSettings()
+        try:
+            state_b64 = bytes(self._studio_main_window.saveState().toBase64()).decode("ascii")
+            settings.setValue(state_key, state_b64)
+            settings.sync()
+        except Exception:
+            pass
+
+    def _studio_mount_widget(self, host: QtWidgets.QWidget, widget: QtWidgets.QWidget) -> None:
+        layout = host.layout()
+        if not isinstance(layout, QtWidgets.QVBoxLayout):
+            layout = QtWidgets.QVBoxLayout(host)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(0)
+        while layout.count():
+            item = layout.takeAt(0)
+            child = item.widget()
+            if child is not None:
+                child.deleteLater()
+        layout.addWidget(widget, stretch=1)
+
+    def _studio_select_tab(self, name: str) -> None:
+        if not hasattr(self, "_left_tabs") or self._left_tabs is None:
+            return
+        target = str(name or "").strip().lower()
+        for idx in range(self._left_tabs.count()):
+            if str(self._left_tabs.tabText(idx) or "").strip().lower() == target:
+                self._left_tabs.setCurrentIndex(idx)
+                return
+
+    def _studio_set_feature_enabled(self, feature: str, enabled: bool) -> None:
+        key = str(feature or "").strip().lower()
+        if key not in self._studio_feature_flags:
+            return
+        self._studio_feature_flags[key] = bool(enabled)
+        self._studio_apply_feature_filters()
+
+    def _studio_feature_keywords(self) -> Dict[str, Tuple[str, ...]]:
+        return {
+            "rainfall": ("rain", "gauge", "hyet", "storm", "runoff", "precip"),
+            "drainage": ("drain", "node", "link", "inlet", "outfall", "pipe", "network"),
+            "structures": ("structure", "culvert", "weir", "orifice", "gate", "spillway"),
+        }
+
+    def _studio_widget_text_blob(self, widget: QtWidgets.QWidget) -> str:
+        parts = [str(widget.objectName() or "")]
+        try:
+            if hasattr(widget, "text") and callable(widget.text):
+                parts.append(str(widget.text() or ""))
+        except Exception:
+            pass
+        try:
+            if hasattr(widget, "title") and callable(widget.title):
+                parts.append(str(widget.title() or ""))
+        except Exception:
+            pass
+        try:
+            parts.append(str(widget.toolTip() or ""))
+        except Exception:
+            pass
+        return " ".join(parts).lower()
+
+    def _studio_apply_feature_filters(self) -> None:
+        if not hasattr(self, "_left_tabs") or self._left_tabs is None:
+            return
+        keywords = self._studio_feature_keywords()
+        for widget in self._left_tabs.findChildren(QtWidgets.QWidget):
+            if widget is self._left_tabs:
+                continue
+            blob = self._studio_widget_text_blob(widget)
+            matched = []
+            for feature, words in keywords.items():
+                if any(word in blob for word in words):
+                    matched.append(feature)
+            if not matched:
+                continue
+            visible = all(self._studio_feature_flags.get(feature, True) for feature in matched)
+            try:
+                widget.setVisible(visible)
+            except Exception:
+                pass
+
+    def _studio_sync_view_mode(self, idx: int) -> None:
+        if not hasattr(self, "view_mode_combo") or self.view_mode_combo is None:
+            return
+        if idx < 0:
+            return
+        try:
+            self.view_mode_combo.setCurrentIndex(idx)
+        except Exception:
+            pass
+
+    def _studio_apply_visual_profile(self, profile: str) -> None:
+        profile_key = str(profile or "").strip().lower()
+        if self._studio_main_window is None:
+            return
+        if profile_key == "diagnostics":
+            self._studio_main_window.setStyleSheet(
+                "QMainWindow { background: #1f232a; }"
+                "QDockWidget::title { background: #2d3640; color: #f2f4f8; padding: 4px; }"
+                "QToolBar { background: #2b3139; border-bottom: 1px solid #3a424c; }"
+                "QStatusBar { background: #2b3139; color: #e7edf5; }"
+            )
+        elif profile_key == "presentation":
+            self._studio_main_window.setStyleSheet(
+                "QMainWindow { background: #f2f5f8; }"
+                "QDockWidget::title { background: #d9e2ec; color: #243b53; padding: 4px; }"
+                "QToolBar { background: #e4ebf2; border-bottom: 1px solid #c9d4df; }"
+                "QStatusBar { background: #e4ebf2; color: #243b53; }"
+            )
+        else:
+            self._studio_main_window.setStyleSheet("")
+
+    def _studio_update_status(self) -> None:
+        if self._studio_status_label is None:
+            return
+        project_name = "(no project)"
+        project_home = ""
+        if _HAVE_QGIS_CORE and QgsProject is not None:
+            try:
+                proj = QgsProject.instance()
+                project_name = str(proj.baseName() or "").strip() or "(unnamed project)"
+                project_home = str(proj.homePath() or "").strip()
+            except Exception:
+                pass
+        mode_txt = str(getattr(self, "_swe2d_workbench_host_mode", "window") or "window")
+        detail = f"Project: {project_name}"
+        if project_home:
+            detail += f" | Home: {project_home}"
+        detail += f" | Host mode: {mode_txt}"
+        self._studio_status_label.setText(detail)
+
+    def _build_ui(self):
+        root = self.layout()
+        if not isinstance(root, QtWidgets.QVBoxLayout):
+            root = QtWidgets.QVBoxLayout(self)
+        root.setContentsMargins(0, 0, 0, 0)
+        root.setSpacing(0)
+        while root.count():
+            item = root.takeAt(0)
+            widget = item.widget()
+            if widget is not None:
+                widget.deleteLater()
+
+        self._studio_main_window = QtWidgets.QMainWindow(self)
+        self._studio_main_window.setWindowFlags(QtCore.Qt.Widget)
+        self._studio_main_window.setObjectName("SWE2DStudioMainWindow")
+        self._studio_main_window.setDockOptions(
+            QtWidgets.QMainWindow.AllowNestedDocks
+            | QtWidgets.QMainWindow.AllowTabbedDocks
+            | QtWidgets.QMainWindow.AnimatedDocks
+        )
+        root.addWidget(self._studio_main_window, stretch=1)
+
+        toolbar = QtWidgets.QToolBar("CFD Workspace", self._studio_main_window)
+        toolbar.setObjectName("SWE2DStudioToolbar")
+        toolbar.setMovable(False)
+        toolbar.setToolButtonStyle(QtCore.Qt.ToolButtonTextBesideIcon)
+        self._studio_main_window.addToolBar(QtCore.Qt.TopToolBarArea, toolbar)
+
+        act_mesh = toolbar.addAction("Mesh")
+        act_model = toolbar.addAction("Model")
+        act_run = toolbar.addAction("Run")
+        act_map = toolbar.addAction("Map")
+        toolbar.addSeparator()
+        act_refresh = toolbar.addAction("Refresh Layers")
+        act_snapshot = toolbar.addAction("Take Snapshot")
+        toolbar.addSeparator()
+        act_close = toolbar.addAction("Close")
+
+        toolbar.addSeparator()
+        toolbar.addWidget(QtWidgets.QLabel(" View: "))
+        self._studio_view_mode_combo = QtWidgets.QComboBox()
+        self._studio_view_mode_combo.addItems(["Mesh", "Depth", "Velocity magnitude", "Runtime Log"])
+        toolbar.addWidget(self._studio_view_mode_combo)
+
+        toolbar.addWidget(QtWidgets.QLabel(" Theme: "))
+        self._studio_theme_combo = QtWidgets.QComboBox()
+        self._studio_theme_combo.addItems(["Default", "Diagnostics", "Presentation"])
+        toolbar.addWidget(self._studio_theme_combo)
+
+        center_host = QtWidgets.QWidget()
+        self._studio_mount_widget(center_host, self._build_right_pane())
+        self._studio_main_window.setCentralWidget(center_host)
+
+        self._studio_left_dock = QtWidgets.QDockWidget("Model Setup", self._studio_main_window)
+        self._studio_left_dock.setObjectName("SWE2DStudioSetupDock")
+        self._studio_left_dock.setFeatures(
+            QtWidgets.QDockWidget.DockWidgetMovable
+            | QtWidgets.QDockWidget.DockWidgetFloatable
+            | QtWidgets.QDockWidget.DockWidgetClosable
+        )
+        left_host = QtWidgets.QWidget()
+        self._compose_left_pane(left_host)
+        self._studio_left_dock.setWidget(left_host)
+        self._studio_main_window.addDockWidget(QtCore.Qt.LeftDockWidgetArea, self._studio_left_dock)
+
+        self._studio_inspector_dock = QtWidgets.QDockWidget("CFD Inspector", self._studio_main_window)
+        self._studio_inspector_dock.setObjectName("SWE2DStudioInspectorDock")
+        self._studio_inspector_dock.setFeatures(
+            QtWidgets.QDockWidget.DockWidgetMovable
+            | QtWidgets.QDockWidget.DockWidgetFloatable
+            | QtWidgets.QDockWidget.DockWidgetClosable
+        )
+
+        inspector_tabs = QtWidgets.QTabWidget()
+        inspector_tabs.setDocumentMode(True)
+
+        tree_page = QtWidgets.QWidget()
+        tree_layout = QtWidgets.QVBoxLayout(tree_page)
+        tree_layout.setContentsMargins(6, 6, 6, 6)
+        workspace_tree = QtWidgets.QTreeWidget()
+        workspace_tree.setHeaderLabels(["Workspace Area", "Purpose"])
+        root_item = QtWidgets.QTreeWidgetItem(["SWE2D CFD Studio", "QGIS-integrated workflow shell"])
+        root_item.addChild(QtWidgets.QTreeWidgetItem(["Setup Dock", "Mesh/Boundary/Model tabs"]))
+        root_item.addChild(QtWidgets.QTreeWidgetItem(["Central Workspace", "Runtime view and logs"]))
+        root_item.addChild(QtWidgets.QTreeWidgetItem(["Inspector Dock", "QA checks and quick actions"]))
+        workspace_tree.addTopLevelItem(root_item)
+        workspace_tree.expandAll()
+        tree_layout.addWidget(workspace_tree)
+        inspector_tabs.addTab(tree_page, "Workspace")
+
+        quick_page = QtWidgets.QWidget()
+        quick_layout = QtWidgets.QVBoxLayout(quick_page)
+        quick_layout.setContentsMargins(6, 6, 6, 6)
+        tools_box = QtWidgets.QToolBox()
+
+        nav_page = QtWidgets.QWidget()
+        nav_layout = QtWidgets.QVBoxLayout(nav_page)
+        cmd_mesh = QtWidgets.QCommandLinkButton("Open Mesh Setup", "Jump to grid generation and controls")
+        cmd_model = QtWidgets.QCommandLinkButton("Open Model Setup", "Jump to solver and roughness settings")
+        cmd_run = QtWidgets.QCommandLinkButton("Open Run Tab", "Jump to runtime and output controls")
+        nav_layout.addWidget(cmd_mesh)
+        nav_layout.addWidget(cmd_model)
+        nav_layout.addWidget(cmd_run)
+        nav_layout.addStretch(1)
+        tools_box.addItem(nav_page, "Navigation")
+
+        qa_page = QtWidgets.QWidget()
+        qa_layout = QtWidgets.QVBoxLayout(qa_page)
+        qa_hint = QtWidgets.QPlainTextEdit()
+        qa_hint.setReadOnly(True)
+        qa_hint.setPlainText(
+            "CFD pre-run checks:\n"
+            "1. Confirm mesh exists and BC sides are configured.\n"
+            "2. Verify timestep mode and CFL consistency.\n"
+            "3. Confirm output intervals and runtime duration.\n"
+            "4. Enable 3D export toggles only when needed."
+        )
+        qa_layout.addWidget(qa_hint)
+        qa_layout.addStretch(1)
+        tools_box.addItem(qa_page, "Pre-run QA")
+
+        quick_layout.addWidget(tools_box)
+        inspector_tabs.addTab(quick_page, "Operations")
+
+        self._studio_inspector_dock.setWidget(inspector_tabs)
+        self._studio_main_window.addDockWidget(QtCore.Qt.RightDockWidgetArea, self._studio_inspector_dock)
+
+        footer = QtWidgets.QStatusBar(self._studio_main_window)
+        self._studio_main_window.setStatusBar(footer)
+        self._studio_status_label = QtWidgets.QLabel("")
+        footer.addPermanentWidget(self._studio_status_label, 1)
+        self._studio_update_status()
+
+        if hasattr(self, "view_mode_combo") and self.view_mode_combo is not None:
+            try:
+                self._studio_view_mode_combo.setCurrentIndex(max(0, int(self.view_mode_combo.currentIndex())))
+            except Exception:
+                pass
+
+        act_mesh.triggered.connect(lambda: self._studio_select_tab("mesh"))
+        act_model.triggered.connect(lambda: self._studio_select_tab("model"))
+        act_run.triggered.connect(lambda: self._studio_select_tab("run"))
+        act_map.triggered.connect(lambda: self._studio_select_tab("map"))
+        act_refresh.triggered.connect(self._refresh_layer_combos)
+        act_snapshot.triggered.connect(lambda: self.snapshot_btn.click() if hasattr(self, "snapshot_btn") and self.snapshot_btn is not None else None)
+        act_close.triggered.connect(self.reject)
+
+        cmd_mesh.clicked.connect(lambda: self._studio_select_tab("mesh"))
+        cmd_model.clicked.connect(lambda: self._studio_select_tab("model"))
+        cmd_run.clicked.connect(lambda: self._studio_select_tab("run"))
+
+        self._studio_view_mode_combo.currentIndexChanged.connect(self._studio_sync_view_mode)
+        self._studio_theme_combo.currentTextChanged.connect(self._studio_apply_visual_profile)
+
+        self._restore_studio_layout_state()
+        self._studio_apply_visual_profile("Default")
+        self._studio_apply_feature_filters()
+        self._refresh_layer_combos()
+
+    def closeEvent(self, event):  # type: ignore[override]
+        self._save_studio_layout_state()
+        super().closeEvent(event)
+
+
+class SWE2DWorkbenchScenarioDialog(SWE2DWorkbenchDialog):
+    """Scenario-first shell with profile presets for rapid what-if runs."""
+
+    _SCENARIO_PRESETS = {
+        "Balanced": {
+            "cfl": 0.45,
+            "dt": 0.05,
+            "n_mann": 0.020,
+            "adaptive": False,
+            "rain": 0.0,
+            "output_interval": "00:30",
+            "line_output_interval": "00:05",
+        },
+        "Stable": {
+            "cfl": 0.30,
+            "dt": 0.03,
+            "n_mann": 0.025,
+            "adaptive": False,
+            "rain": 5.0,
+            "output_interval": "00:15",
+            "line_output_interval": "00:05",
+        },
+        "Fast": {
+            "cfl": 0.75,
+            "dt": 0.10,
+            "n_mann": 0.018,
+            "adaptive": True,
+            "rain": 0.0,
+            "output_interval": "01:00",
+            "line_output_interval": "00:15",
+        },
+    }
+
+    def __init__(self, parent=None, iface=None):
+        super().__init__(parent, iface=iface)
+        self.setWindowTitle("2D SWE Workbench (Scenario-first)")
+        self._scenario_profile_combo = None
+
+    def _apply_scenario_preset(self, preset_name: str) -> None:
+        preset = self._SCENARIO_PRESETS.get(str(preset_name), None)
+        if not isinstance(preset, dict):
+            return
+
+        if hasattr(self, "cfl_spin") and self.cfl_spin is not None:
+            self.cfl_spin.setValue(float(preset["cfl"]))
+        if hasattr(self, "dt_spin") and self.dt_spin is not None:
+            self.dt_spin.setValue(float(preset["dt"]))
+        if hasattr(self, "n_mann_spin") and self.n_mann_spin is not None:
+            self.n_mann_spin.setValue(float(preset["n_mann"]))
+        if hasattr(self, "adaptive_cfl_dt_chk") and self.adaptive_cfl_dt_chk is not None:
+            self.adaptive_cfl_dt_chk.setChecked(bool(preset["adaptive"]))
+        if hasattr(self, "rain_rate_spin") and self.rain_rate_spin is not None:
+            self.rain_rate_spin.setValue(float(preset["rain"]))
+        if hasattr(self, "output_interval_edit") and self.output_interval_edit is not None:
+            self.output_interval_edit.setText(str(preset["output_interval"]))
+        if hasattr(self, "line_output_interval_edit") and self.line_output_interval_edit is not None:
+            self.line_output_interval_edit.setText(str(preset["line_output_interval"]))
+        self._log(f"Scenario preset applied: {preset_name}")
+
+    def _build_ui(self):
+        root = self.layout()
+        if not isinstance(root, QtWidgets.QVBoxLayout):
+            root = QtWidgets.QVBoxLayout(self)
+        while root.count():
+            item = root.takeAt(0)
+            widget = item.widget()
+            if widget is not None:
+                widget.deleteLater()
+
+        header = QtWidgets.QLabel(
+            "Scenario-first mode: choose a run profile first, then tune details in tabs."
+        )
+        header.setWordWrap(True)
+        root.addWidget(header)
+
+        scenario_group = QtWidgets.QGroupBox("Scenario Profiles")
+        scenario_layout = QtWidgets.QHBoxLayout(scenario_group)
+        scenario_layout.addWidget(QtWidgets.QLabel("Preset:"))
+        self._scenario_profile_combo = QtWidgets.QComboBox()
+        self._scenario_profile_combo.addItems(["Balanced", "Stable", "Fast"])
+        scenario_layout.addWidget(self._scenario_profile_combo)
+        apply_btn = QtWidgets.QPushButton("Apply Preset")
+        scenario_layout.addWidget(apply_btn)
+        quick_balanced_btn = QtWidgets.QPushButton("Balanced")
+        quick_stable_btn = QtWidgets.QPushButton("Stable")
+        quick_fast_btn = QtWidgets.QPushButton("Fast")
+        scenario_layout.addWidget(quick_balanced_btn)
+        scenario_layout.addWidget(quick_stable_btn)
+        scenario_layout.addWidget(quick_fast_btn)
+        scenario_layout.addStretch(1)
+        root.addWidget(scenario_group)
+
+        split = QtWidgets.QSplitter(QtCore.Qt.Orientation.Horizontal)
+        left_host = QtWidgets.QWidget()
+        right_host = QtWidgets.QWidget()
+        split.addWidget(left_host)
+        split.addWidget(right_host)
+        split.setSizes([430, 740])
+        root.addWidget(split, stretch=1)
+
+        buttons = QtWidgets.QDialogButtonBox(QtWidgets.QDialogButtonBox.StandardButton.Close)
+        root.addWidget(buttons)
+
+        self._compose_left_pane(left_host)
+        right_layout = QtWidgets.QVBoxLayout(right_host)
+        right_layout.setContentsMargins(0, 0, 0, 0)
+        right_layout.setSpacing(0)
+        right_layout.addWidget(self._build_right_pane(), stretch=1)
+
+        apply_btn.clicked.connect(lambda: self._apply_scenario_preset(str(self._scenario_profile_combo.currentText())))
+        quick_balanced_btn.clicked.connect(lambda: self._apply_scenario_preset("Balanced"))
+        quick_stable_btn.clicked.connect(lambda: self._apply_scenario_preset("Stable"))
+        quick_fast_btn.clicked.connect(lambda: self._apply_scenario_preset("Fast"))
+
+        try:
+            buttons.rejected.disconnect(self.reject)
+        except Exception:
+            pass
+        try:
+            buttons.accepted.disconnect(self.accept)
+        except Exception:
+            pass
+        buttons.rejected.connect(self.reject)
+        buttons.accepted.connect(self.accept)
+        self._refresh_layer_combos()
+
+
 def _normalize_workbench_host_mode(host_mode: object) -> str:
     mode_txt = str(host_mode or "window").strip().lower()
     return "dock" if mode_txt in {"dock", "docked", "panel"} else "window"
 
 
-def _close_workbench_windows() -> None:
-    # Close detached dialog windows when switching host mode.
-    while _SWE2D_WORKBENCH_WINDOWS:
-        dlg = _SWE2D_WORKBENCH_WINDOWS.pop()
-        try:
-            dlg.close()
-        except Exception:
-            pass
-
-
-def _remove_workbench_dock(iface_obj) -> None:
-    global _SWE2D_WORKBENCH_DOCK
-    dock = _SWE2D_WORKBENCH_DOCK
-    if dock is None:
-        return
-    try:
-        widget = dock.widget()
-        if widget is not None:
-            try:
-                widget.close()
-            except Exception:
-                pass
-    except Exception:
-        pass
-    try:
-        if iface_obj is not None and hasattr(iface_obj, "removeDockWidget"):
-            iface_obj.removeDockWidget(dock)
-    except Exception:
-        pass
-    try:
-        dock.deleteLater()
-    except Exception:
-        pass
-    _SWE2D_WORKBENCH_DOCK = None
-
-
-def launch_swe2d_workbench(parent=None, iface=None, host_mode: str = "window"):
-    global _SWE2D_WORKBENCH_DOCK
+def _resolve_workbench_iface(parent, iface):
     if iface is None and parent is not None:
         if hasattr(parent, "_get_qgis_iface") and callable(getattr(parent, "_get_qgis_iface")):
             try:
@@ -14789,6 +15143,479 @@ def launch_swe2d_workbench(parent=None, iface=None, host_mode: str = "window"):
             iface = getattr(_qutils, "iface", None)
         except Exception:
             iface = None
+    return iface
+
+
+def _close_dialog_windows(window_store: List[QtWidgets.QDialog]) -> None:
+    while window_store:
+        dlg = window_store.pop()
+        try:
+            dlg.close()
+        except Exception:
+            pass
+
+
+def _close_workbench_windows() -> None:
+    # Close detached dialog windows when switching host mode.
+    _close_dialog_windows(_SWE2D_WORKBENCH_WINDOWS)
+
+
+def _close_workbench_designer_windows() -> None:
+    _close_dialog_windows(_SWE2D_WORKBENCH_DESIGNER_WINDOWS)
+
+
+def _close_workbench_studio_windows() -> None:
+    _close_dialog_windows(_SWE2D_WORKBENCH_STUDIO_WINDOWS)
+
+
+def _close_workbench_scenario_windows() -> None:
+    _close_dialog_windows(_SWE2D_WORKBENCH_SCENARIO_WINDOWS)
+
+
+def _remove_workbench_dock_instance(dock, iface_obj):
+    if dock is None:
+        return None
+    try:
+        widget = dock.widget()
+        if widget is not None:
+            try:
+                widget.close()
+            except Exception:
+                pass
+    except Exception:
+        pass
+    try:
+        if iface_obj is not None and hasattr(iface_obj, "removeDockWidget"):
+            iface_obj.removeDockWidget(dock)
+    except Exception:
+        pass
+    try:
+        dock.deleteLater()
+    except Exception:
+        pass
+    return None
+
+
+def _remove_workbench_dock(iface_obj) -> None:
+    global _SWE2D_WORKBENCH_DOCK
+    _SWE2D_WORKBENCH_DOCK = _remove_workbench_dock_instance(_SWE2D_WORKBENCH_DOCK, iface_obj)
+
+
+def _remove_workbench_designer_dock(iface_obj) -> None:
+    global _SWE2D_WORKBENCH_DESIGNER_DOCK
+    _SWE2D_WORKBENCH_DESIGNER_DOCK = _remove_workbench_dock_instance(
+        _SWE2D_WORKBENCH_DESIGNER_DOCK, iface_obj
+    )
+
+
+def _remove_workbench_studio_dock(iface_obj) -> None:
+    global _SWE2D_WORKBENCH_STUDIO_DOCK, _SWE2D_STUDIO_COMPONENT_DOCKS, _SWE2D_STUDIO_HOST_DIALOG
+    seen = set()
+
+    for dock in [_SWE2D_WORKBENCH_STUDIO_DOCK] + list(_SWE2D_STUDIO_COMPONENT_DOCKS.values()):
+        if dock is None:
+            continue
+        key = id(dock)
+        if key in seen:
+            continue
+        seen.add(key)
+        _remove_workbench_dock_instance(dock, iface_obj)
+
+    _SWE2D_WORKBENCH_STUDIO_DOCK = None
+    _SWE2D_STUDIO_COMPONENT_DOCKS = {}
+
+    if _SWE2D_STUDIO_HOST_DIALOG is not None:
+        try:
+            _SWE2D_STUDIO_HOST_DIALOG.close()
+        except Exception:
+            pass
+        try:
+            _SWE2D_STUDIO_HOST_DIALOG.deleteLater()
+        except Exception:
+            pass
+        _SWE2D_STUDIO_HOST_DIALOG = None
+
+    _clear_studio_host_controls(iface_obj)
+
+
+def _attach_host_dock_widget(iface_obj, host_window, dock: QtWidgets.QDockWidget, area) -> bool:
+    attached = False
+    try:
+        if iface_obj is not None and hasattr(iface_obj, "addDockWidget"):
+            iface_obj.addDockWidget(area, dock)
+            attached = True
+    except Exception:
+        attached = False
+    if not attached:
+        try:
+            if host_window is not None and hasattr(host_window, "addDockWidget"):
+                host_window.addDockWidget(area, dock)
+                attached = True
+        except Exception:
+            attached = False
+    if not attached:
+        try:
+            dock.show()
+        except Exception:
+            pass
+        return False
+    try:
+        dock.setFloating(False)
+    except Exception:
+        pass
+    try:
+        dock.show()
+        dock.raise_()
+    except Exception:
+        pass
+    return True
+
+
+def _studio_take_dock_widget(studio_dock, fallback_text: str) -> QtWidgets.QWidget:
+    widget = None
+    try:
+        widget = studio_dock.widget() if studio_dock is not None else None
+    except Exception:
+        widget = None
+
+    if widget is None:
+        fallback = QtWidgets.QWidget()
+        lay = QtWidgets.QVBoxLayout(fallback)
+        lay.setContentsMargins(8, 8, 8, 8)
+        lbl = QtWidgets.QLabel(fallback_text)
+        lbl.setWordWrap(True)
+        lay.addWidget(lbl)
+        lay.addStretch(1)
+        return fallback
+
+    try:
+        if studio_dock is not None:
+            studio_dock.setWidget(QtWidgets.QWidget())
+    except Exception:
+        pass
+    try:
+        widget.setParent(None)
+    except Exception:
+        pass
+    return widget
+
+
+def _build_studio_component_docks(iface_obj, host_window, dlg) -> Dict[str, QtWidgets.QDockWidget]:
+    component_docks: Dict[str, QtWidgets.QDockWidget] = {}
+
+    setup_widget = _studio_take_dock_widget(
+        getattr(dlg, "_studio_left_dock", None),
+        "Model Setup panel is unavailable.",
+    )
+    inspector_widget = _studio_take_dock_widget(
+        getattr(dlg, "_studio_inspector_dock", None),
+        "CFD Inspector panel is unavailable.",
+    )
+
+    view_widget = None
+    log_widget = getattr(dlg, "log_view", None)
+    split = getattr(dlg, "_right_vertical_split", None)
+    if split is not None and hasattr(split, "widget"):
+        try:
+            if split.count() > 0:
+                view_widget = split.widget(0)
+        except Exception:
+            view_widget = None
+
+    if view_widget is None:
+        try:
+            mw = getattr(dlg, "_studio_main_window", None)
+            if mw is not None:
+                view_widget = mw.centralWidget()
+        except Exception:
+            view_widget = None
+
+    if view_widget is None:
+        fallback = QtWidgets.QWidget()
+        lay = QtWidgets.QVBoxLayout(fallback)
+        lay.setContentsMargins(8, 8, 8, 8)
+        lbl = QtWidgets.QLabel("View panel is unavailable.")
+        lbl.setWordWrap(True)
+        lay.addWidget(lbl)
+        lay.addStretch(1)
+        view_widget = fallback
+
+    if log_widget is None:
+        log_widget = QtWidgets.QPlainTextEdit()
+        log_widget.setReadOnly(True)
+        log_widget.setPlainText("Runtime log panel initialized.")
+
+    for w in (view_widget, log_widget):
+        try:
+            w.setParent(None)
+        except Exception:
+            pass
+
+    def _mkdock(title: str, obj_name: str, widget: QtWidgets.QWidget) -> QtWidgets.QDockWidget:
+        dock = QtWidgets.QDockWidget(title, host_window)
+        dock.setObjectName(obj_name)
+        dock.setFeatures(
+            QtWidgets.QDockWidget.DockWidgetMovable
+            | QtWidgets.QDockWidget.DockWidgetFloatable
+            | QtWidgets.QDockWidget.DockWidgetClosable,
+        )
+        dock.setWidget(widget)
+        return dock
+
+    component_docks["setup"] = _mkdock(
+        "SWE2D Studio - Model Setup",
+        "SWE2DStudioSetupHostDock",
+        setup_widget,
+    )
+    component_docks["view"] = _mkdock(
+        "SWE2D Studio - View",
+        "SWE2DStudioViewHostDock",
+        view_widget,
+    )
+    component_docks["log"] = _mkdock(
+        "SWE2D Studio - Runtime Log",
+        "SWE2DStudioLogHostDock",
+        log_widget,
+    )
+    component_docks["inspector"] = _mkdock(
+        "SWE2D Studio - CFD Inspector",
+        "SWE2DStudioInspectorHostDock",
+        inspector_widget,
+    )
+
+    _attach_host_dock_widget(iface_obj, host_window, component_docks["setup"], QtCore.Qt.LeftDockWidgetArea)
+    _attach_host_dock_widget(iface_obj, host_window, component_docks["view"], QtCore.Qt.RightDockWidgetArea)
+    _attach_host_dock_widget(iface_obj, host_window, component_docks["inspector"], QtCore.Qt.RightDockWidgetArea)
+    _attach_host_dock_widget(iface_obj, host_window, component_docks["log"], QtCore.Qt.BottomDockWidgetArea)
+
+    try:
+        if host_window is not None and hasattr(host_window, "tabifyDockWidget"):
+            host_window.tabifyDockWidget(component_docks["view"], component_docks["inspector"])
+    except Exception:
+        pass
+
+    return component_docks
+
+
+def _remove_workbench_scenario_dock(iface_obj) -> None:
+    global _SWE2D_WORKBENCH_SCENARIO_DOCK
+    _SWE2D_WORKBENCH_SCENARIO_DOCK = _remove_workbench_dock_instance(
+        _SWE2D_WORKBENCH_SCENARIO_DOCK, iface_obj
+    )
+
+
+def _studio_host_main_window(iface_obj, fallback_parent=None):
+    host_window = None
+    if iface_obj is not None and hasattr(iface_obj, "mainWindow"):
+        try:
+            host_window = iface_obj.mainWindow()
+        except Exception:
+            host_window = None
+    if host_window is None:
+        host_window = fallback_parent
+    return host_window
+
+
+def _clear_studio_host_controls(iface_obj, fallback_parent=None) -> None:
+    global _SWE2D_STUDIO_HOST_TOOLBAR, _SWE2D_STUDIO_HOST_MENU
+
+    host_window = _studio_host_main_window(iface_obj, fallback_parent)
+
+    if _SWE2D_STUDIO_HOST_TOOLBAR is not None:
+        try:
+            if iface_obj is not None and hasattr(iface_obj, "mainWindow") and host_window is not None:
+                host_window.removeToolBar(_SWE2D_STUDIO_HOST_TOOLBAR)
+        except Exception:
+            pass
+        try:
+            _SWE2D_STUDIO_HOST_TOOLBAR.deleteLater()
+        except Exception:
+            pass
+        _SWE2D_STUDIO_HOST_TOOLBAR = None
+
+    if _SWE2D_STUDIO_HOST_MENU is not None:
+        try:
+            act = _SWE2D_STUDIO_HOST_MENU.menuAction()
+            parent = act.parentWidget()
+            if parent is not None:
+                parent.removeAction(act)
+        except Exception:
+            pass
+        try:
+            _SWE2D_STUDIO_HOST_MENU.deleteLater()
+        except Exception:
+            pass
+        _SWE2D_STUDIO_HOST_MENU = None
+
+
+def _install_studio_host_controls(
+    iface_obj,
+    dlg,
+    fallback_parent=None,
+    component_docks: Optional[Dict[str, QtWidgets.QDockWidget]] = None,
+) -> None:
+    global _SWE2D_STUDIO_HOST_TOOLBAR, _SWE2D_STUDIO_HOST_MENU
+
+    host_window = _studio_host_main_window(iface_obj, fallback_parent)
+    if host_window is None:
+        return
+
+    _clear_studio_host_controls(iface_obj, fallback_parent)
+    component_docks = dict(component_docks or {})
+
+    def _focus_panel(name: str) -> None:
+        dock = component_docks.get(str(name or "").strip().lower())
+        if dock is None:
+            return
+        try:
+            dock.show()
+            dock.raise_()
+        except Exception:
+            pass
+
+    def _close_studio_panels() -> None:
+        try:
+            _remove_workbench_studio_dock(iface_obj)
+        except Exception:
+            pass
+
+    menu_bar = None
+    try:
+        menu_bar = host_window.menuBar()
+    except Exception:
+        menu_bar = None
+
+    if menu_bar is not None:
+        menu = QtWidgets.QMenu("SWE2D Studio", menu_bar)
+        menu.setObjectName("SWE2DStudioHostMenu")
+
+        rainfall_act = menu.addAction("Enable Rainfall")
+        rainfall_act.setCheckable(True)
+        rainfall_act.setChecked(True)
+
+        drainage_act = menu.addAction("Enable Drainage")
+        drainage_act.setCheckable(True)
+        drainage_act.setChecked(True)
+
+        structures_act = menu.addAction("Enable Structures")
+        structures_act.setCheckable(True)
+        structures_act.setChecked(True)
+
+        menu.addSeparator()
+        menu.addAction("Focus Mesh", lambda: dlg._studio_select_tab("mesh"))
+        menu.addAction("Focus Model", lambda: dlg._studio_select_tab("model"))
+        menu.addAction("Focus Run", lambda: dlg._studio_select_tab("run"))
+        menu.addAction("Focus Map", lambda: dlg._studio_select_tab("map"))
+
+        if component_docks:
+            menu.addSeparator()
+            menu.addAction("Show Model Setup Panel", lambda: _focus_panel("setup"))
+            menu.addAction("Show View Panel", lambda: _focus_panel("view"))
+            menu.addAction("Show Runtime Log Panel", lambda: _focus_panel("log"))
+            menu.addAction("Show CFD Inspector Panel", lambda: _focus_panel("inspector"))
+
+        menu.addSeparator()
+        menu.addAction("Close Studio Panels", _close_studio_panels)
+
+        rainfall_act.toggled.connect(lambda checked: dlg._studio_set_feature_enabled("rainfall", checked))
+        drainage_act.toggled.connect(lambda checked: dlg._studio_set_feature_enabled("drainage", checked))
+        structures_act.toggled.connect(lambda checked: dlg._studio_set_feature_enabled("structures", checked))
+
+        menu_bar.addMenu(menu)
+        _SWE2D_STUDIO_HOST_MENU = menu
+
+    toolbar = QtWidgets.QToolBar("SWE2D Studio", host_window)
+    toolbar.setObjectName("SWE2DStudioHostToolbar")
+    toolbar.setMovable(True)
+    toolbar.setToolButtonStyle(QtCore.Qt.ToolButtonTextBesideIcon)
+
+    if component_docks:
+        show_setup = toolbar.addAction("Setup Panel")
+        show_view = toolbar.addAction("View Panel")
+        show_log = toolbar.addAction("Log Panel")
+        show_inspector = toolbar.addAction("Inspector Panel")
+        show_setup.triggered.connect(lambda: _focus_panel("setup"))
+        show_view.triggered.connect(lambda: _focus_panel("view"))
+        show_log.triggered.connect(lambda: _focus_panel("log"))
+        show_inspector.triggered.connect(lambda: _focus_panel("inspector"))
+        toolbar.addSeparator()
+
+    act_mesh = toolbar.addAction("Mesh")
+    act_model = toolbar.addAction("Model")
+    act_run = toolbar.addAction("Run")
+    act_map = toolbar.addAction("Map")
+    toolbar.addSeparator()
+
+    act_refresh = toolbar.addAction("Refresh")
+    act_snapshot = toolbar.addAction("Snapshot")
+    toolbar.addSeparator()
+
+    rainfall_tb = toolbar.addAction("Rainfall")
+    rainfall_tb.setCheckable(True)
+    rainfall_tb.setChecked(True)
+
+    drainage_tb = toolbar.addAction("Drainage")
+    drainage_tb.setCheckable(True)
+    drainage_tb.setChecked(True)
+
+    structures_tb = toolbar.addAction("Structures")
+    structures_tb.setCheckable(True)
+    structures_tb.setChecked(True)
+
+    act_mesh.triggered.connect(lambda: dlg._studio_select_tab("mesh"))
+    act_model.triggered.connect(lambda: dlg._studio_select_tab("model"))
+    act_run.triggered.connect(lambda: dlg._studio_select_tab("run"))
+    act_map.triggered.connect(lambda: dlg._studio_select_tab("map"))
+    act_refresh.triggered.connect(dlg._refresh_layer_combos)
+    act_snapshot.triggered.connect(
+        lambda: dlg.snapshot_btn.click()
+        if hasattr(dlg, "snapshot_btn") and dlg.snapshot_btn is not None
+        else None
+    )
+
+    rainfall_tb.toggled.connect(lambda checked: dlg._studio_set_feature_enabled("rainfall", checked))
+    drainage_tb.toggled.connect(lambda checked: dlg._studio_set_feature_enabled("drainage", checked))
+    structures_tb.toggled.connect(lambda checked: dlg._studio_set_feature_enabled("structures", checked))
+
+    toolbar.addSeparator()
+    toolbar.addWidget(QtWidgets.QLabel(" View: "))
+    host_view_combo = QtWidgets.QComboBox(toolbar)
+    host_view_combo.addItems(["Mesh", "Depth", "Velocity magnitude", "Runtime Log"])
+    try:
+        source_idx = int(getattr(dlg, "view_mode_combo", host_view_combo).currentIndex())
+        host_view_combo.setCurrentIndex(max(0, min(source_idx, host_view_combo.count() - 1)))
+    except Exception:
+        pass
+    host_view_combo.currentIndexChanged.connect(
+        lambda idx: dlg.view_mode_combo.setCurrentIndex(idx)
+        if hasattr(dlg, "view_mode_combo") and dlg.view_mode_combo is not None
+        else None
+    )
+    toolbar.addWidget(host_view_combo)
+
+    toolbar.addWidget(QtWidgets.QLabel(" Theme: "))
+    host_theme_combo = QtWidgets.QComboBox(toolbar)
+    host_theme_combo.addItems(["Default", "Diagnostics", "Presentation"])
+    host_theme_combo.currentTextChanged.connect(dlg._studio_apply_visual_profile)
+    toolbar.addWidget(host_theme_combo)
+
+    toolbar.addSeparator()
+    act_close = toolbar.addAction("Close Studio")
+    act_close.triggered.connect(_close_studio_panels)
+
+    try:
+        host_window.addToolBar(QtCore.Qt.TopToolBarArea, toolbar)
+        _SWE2D_STUDIO_HOST_TOOLBAR = toolbar
+    except Exception:
+        try:
+            toolbar.deleteLater()
+        except Exception:
+            pass
+
+
+def launch_swe2d_workbench(parent=None, iface=None, host_mode: str = "window"):
+    global _SWE2D_WORKBENCH_DOCK
+    iface = _resolve_workbench_iface(parent, iface)
 
     mode = _normalize_workbench_host_mode(host_mode)
 
@@ -14865,3 +15692,276 @@ def launch_swe2d_workbench(parent=None, iface=None, host_mode: str = "window"):
     dlg.show()
     dlg.raise_()
     dlg.activateWindow()
+    return dlg
+
+
+def launch_swe2d_workbench_designer(parent=None, iface=None, host_mode: str = "window"):
+    global _SWE2D_WORKBENCH_DESIGNER_DOCK
+    iface = _resolve_workbench_iface(parent, iface)
+
+    mode = _normalize_workbench_host_mode(host_mode)
+
+    if mode == "dock":
+        _close_workbench_designer_windows()
+        if _SWE2D_WORKBENCH_DESIGNER_DOCK is not None:
+            try:
+                _SWE2D_WORKBENCH_DESIGNER_DOCK.show()
+                _SWE2D_WORKBENCH_DESIGNER_DOCK.raise_()
+            except Exception:
+                pass
+            return _SWE2D_WORKBENCH_DESIGNER_DOCK
+
+        host_window = None
+        if iface is not None and hasattr(iface, "mainWindow"):
+            try:
+                host_window = iface.mainWindow()
+            except Exception:
+                host_window = None
+        if host_window is None:
+            host_window = parent
+
+        dock = QtWidgets.QDockWidget("2D SWE Workbench (Designer UI)", host_window)
+        dock.setObjectName("SWE2DWorkbenchDesignerDock")
+        dock.setFeatures(
+            QtWidgets.QDockWidget.DockWidgetMovable
+            | QtWidgets.QDockWidget.DockWidgetFloatable
+            | QtWidgets.QDockWidget.DockWidgetClosable,
+        )
+        dlg = SWE2DWorkbenchDesignerDialog(host_window, iface=iface)
+        dlg.setWindowFlags(QtCore.Qt.Widget)
+        dock.setWidget(dlg)
+        _SWE2D_WORKBENCH_DESIGNER_DOCK = dock
+
+        try:
+            if iface is not None and hasattr(iface, "addDockWidget"):
+                iface.addDockWidget(QtCore.Qt.RightDockWidgetArea, dock)
+            else:
+                dock.show()
+        except Exception:
+            dock.show()
+        try:
+            dock.raise_()
+        except Exception:
+            pass
+        return dock
+
+    _remove_workbench_designer_dock(iface)
+
+    for existing in list(_SWE2D_WORKBENCH_DESIGNER_WINDOWS):
+        try:
+            if existing.isVisible():
+                existing.show()
+                existing.raise_()
+                existing.activateWindow()
+                return existing
+        except Exception:
+            pass
+
+    dlg = SWE2DWorkbenchDesignerDialog(parent, iface=iface)
+
+    def _cleanup():
+        try:
+            _SWE2D_WORKBENCH_DESIGNER_WINDOWS.remove(dlg)
+        except ValueError:
+            pass
+
+    _SWE2D_WORKBENCH_DESIGNER_WINDOWS.append(dlg)
+    dlg.finished.connect(_cleanup)
+    dlg.show()
+    dlg.raise_()
+    dlg.activateWindow()
+    return dlg
+
+
+def launch_swe2d_workbench_studio(parent=None, iface=None, host_mode: str = "dock"):
+    global _SWE2D_WORKBENCH_STUDIO_DOCK, _SWE2D_STUDIO_COMPONENT_DOCKS, _SWE2D_STUDIO_HOST_DIALOG
+    iface = _resolve_workbench_iface(parent, iface)
+
+    def _enforce_studio_shell_visible(dlg: "SWE2DWorkbenchStudioDialog") -> None:
+        try:
+            mw = getattr(dlg, "_studio_main_window", None)
+            if mw is None:
+                return
+            try:
+                # Ensure Studio's internal shell is embedded in the dock host,
+                # never as a detached top-level window.
+                if mw.isWindow():
+                    mw.setWindowFlags(QtCore.Qt.Widget)
+                    mw.setParent(dlg)
+            except Exception:
+                pass
+            center = mw.centralWidget()
+            if center is None:
+                fallback = QtWidgets.QWidget()
+                lay = QtWidgets.QVBoxLayout(fallback)
+                lay.setContentsMargins(12, 12, 12, 12)
+                msg = QtWidgets.QLabel(
+                    "Studio workspace recovered from an invalid layout state.\n"
+                    "Use the left Model Setup dock to continue."
+                )
+                msg.setWordWrap(True)
+                lay.addWidget(msg)
+                lay.addStretch(1)
+                mw.setCentralWidget(fallback)
+                center = fallback
+            try:
+                center.show()
+            except Exception:
+                pass
+            left_dock = getattr(dlg, "_studio_left_dock", None)
+            if left_dock is not None and not left_dock.isVisible():
+                left_dock.show()
+            inspector_dock = getattr(dlg, "_studio_inspector_dock", None)
+            if inspector_dock is not None and not inspector_dock.isVisible():
+                inspector_dock.show()
+        except Exception:
+            pass
+
+    # Studio is intentionally QGIS-integrated: always mount as a docked panel.
+    mode = "dock"
+
+    if mode == "dock":
+        _close_workbench_studio_windows()
+        # Always rebuild in dock mode to avoid reusing a stale/blank cached dock.
+        _remove_workbench_studio_dock(iface)
+
+        host_window = None
+        if iface is not None and hasattr(iface, "mainWindow"):
+            try:
+                host_window = iface.mainWindow()
+            except Exception:
+                host_window = None
+        if host_window is None:
+            host_window = parent
+
+        dlg = SWE2DWorkbenchStudioDialog(host_window, iface=iface)
+        dlg._swe2d_workbench_host_mode = mode
+        _enforce_studio_shell_visible(dlg)
+        dlg.setWindowFlags(QtCore.Qt.Widget)
+        try:
+            dlg.hide()
+        except Exception:
+            pass
+
+        component_docks = _build_studio_component_docks(iface, host_window, dlg)
+        _SWE2D_STUDIO_COMPONENT_DOCKS = component_docks
+        _SWE2D_STUDIO_HOST_DIALOG = dlg
+
+        _install_studio_host_controls(iface, dlg, host_window, component_docks=component_docks)
+        try:
+            dlg._studio_update_status()
+        except Exception:
+            pass
+
+        _SWE2D_WORKBENCH_STUDIO_DOCK = component_docks.get("view")
+        if _SWE2D_WORKBENCH_STUDIO_DOCK is not None:
+            return _SWE2D_WORKBENCH_STUDIO_DOCK
+        return dlg
+
+    _remove_workbench_studio_dock(iface)
+
+    for existing in list(_SWE2D_WORKBENCH_STUDIO_WINDOWS):
+        try:
+            if existing.isVisible():
+                existing.show()
+                existing.raise_()
+                existing.activateWindow()
+                return existing
+        except Exception:
+            pass
+
+    dlg = SWE2DWorkbenchStudioDialog(parent, iface=iface)
+    _enforce_studio_shell_visible(dlg)
+    _install_studio_host_controls(iface, dlg, parent)
+
+    def _cleanup():
+        try:
+            _SWE2D_WORKBENCH_STUDIO_WINDOWS.remove(dlg)
+        except ValueError:
+            pass
+        _clear_studio_host_controls(iface, parent)
+
+    _SWE2D_WORKBENCH_STUDIO_WINDOWS.append(dlg)
+    dlg.finished.connect(_cleanup)
+    dlg.show()
+    dlg.raise_()
+    dlg.activateWindow()
+    return dlg
+
+
+def launch_swe2d_workbench_scenario(parent=None, iface=None, host_mode: str = "window"):
+    global _SWE2D_WORKBENCH_SCENARIO_DOCK
+    iface = _resolve_workbench_iface(parent, iface)
+
+    mode = _normalize_workbench_host_mode(host_mode)
+
+    if mode == "dock":
+        _close_workbench_scenario_windows()
+        if _SWE2D_WORKBENCH_SCENARIO_DOCK is not None:
+            try:
+                _SWE2D_WORKBENCH_SCENARIO_DOCK.show()
+                _SWE2D_WORKBENCH_SCENARIO_DOCK.raise_()
+            except Exception:
+                pass
+            return _SWE2D_WORKBENCH_SCENARIO_DOCK
+
+        host_window = None
+        if iface is not None and hasattr(iface, "mainWindow"):
+            try:
+                host_window = iface.mainWindow()
+            except Exception:
+                host_window = None
+        if host_window is None:
+            host_window = parent
+
+        dock = QtWidgets.QDockWidget("2D SWE Workbench (Scenario-first)", host_window)
+        dock.setObjectName("SWE2DWorkbenchScenarioDock")
+        dock.setFeatures(
+            QtWidgets.QDockWidget.DockWidgetMovable
+            | QtWidgets.QDockWidget.DockWidgetFloatable
+            | QtWidgets.QDockWidget.DockWidgetClosable,
+        )
+        dlg = SWE2DWorkbenchScenarioDialog(host_window, iface=iface)
+        dlg.setWindowFlags(QtCore.Qt.Widget)
+        dock.setWidget(dlg)
+        _SWE2D_WORKBENCH_SCENARIO_DOCK = dock
+
+        try:
+            if iface is not None and hasattr(iface, "addDockWidget"):
+                iface.addDockWidget(QtCore.Qt.RightDockWidgetArea, dock)
+            else:
+                dock.show()
+        except Exception:
+            dock.show()
+        try:
+            dock.raise_()
+        except Exception:
+            pass
+        return dock
+
+    _remove_workbench_scenario_dock(iface)
+
+    for existing in list(_SWE2D_WORKBENCH_SCENARIO_WINDOWS):
+        try:
+            if existing.isVisible():
+                existing.show()
+                existing.raise_()
+                existing.activateWindow()
+                return existing
+        except Exception:
+            pass
+
+    dlg = SWE2DWorkbenchScenarioDialog(parent, iface=iface)
+
+    def _cleanup():
+        try:
+            _SWE2D_WORKBENCH_SCENARIO_WINDOWS.remove(dlg)
+        except ValueError:
+            pass
+
+    _SWE2D_WORKBENCH_SCENARIO_WINDOWS.append(dlg)
+    dlg.finished.connect(_cleanup)
+    dlg.show()
+    dlg.raise_()
+    dlg.activateWindow()
+    return dlg

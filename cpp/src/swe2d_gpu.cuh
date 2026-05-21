@@ -1,7 +1,7 @@
 #pragma once
 // swe2d_gpu.cuh
 // CUDA device state and host API declarations for the 2D SWE GPU path.
-// Included only when BACKWATER_HAS_CUDA is defined.
+// Included only when HYDRA_HAS_CUDA is defined.
 
 #include "swe2d_mesh.hpp"
 #include "swe2d_solver.hpp"   // SWE2DStepDiag

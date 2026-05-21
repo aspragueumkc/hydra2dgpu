@@ -1395,9 +1395,9 @@ class StructuredFaceCentricBackend(MeshingBackend):
 
 def _gmsh_available() -> bool:
     try:
-        import gmsh  # noqa: F401
-        return True
-    except ImportError:
+        import importlib.util
+        return importlib.util.find_spec("gmsh") is not None
+    except Exception:
         return False
 
 
@@ -2438,9 +2438,9 @@ def conceptual_from_qgis_layers(
 
 def _tqmesh_available() -> bool:
     try:
-        import backwater_tqmesh  # noqa: F401
-        return True
-    except ImportError:
+        import importlib.util
+        return importlib.util.find_spec("hydra_tqmesh") is not None
+    except Exception:
         return False
 
 
@@ -2455,7 +2455,7 @@ class TQMeshBackend(MeshingBackend):
       post-process size fields.
     - Fixed interior vertices / constraint zones natively supported.
 
-    Requires the ``backwater_tqmesh`` C++ extension module built from
+    Requires the ``hydra_tqmesh`` C++ extension module built from
     ``cpp/src/tqmesh_bindings.cpp``.
     """
 
@@ -2572,10 +2572,10 @@ class TQMeshBackend(MeshingBackend):
 
     def generate(self, model: ConceptualModel) -> MeshResult:
         try:
-            import backwater_tqmesh as _tq
+            import hydra_tqmesh as _tq
         except ImportError as exc:
             raise RuntimeError(
-                "backwater_tqmesh C++ module not found.  "
+                "hydra_tqmesh C++ module not found.  "
                 "Rebuild the plugin (cmake + make) to compile TQMesh bindings."
             ) from exc
 

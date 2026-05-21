@@ -9,9 +9,7 @@ from __future__ import annotations
 
 import os
 from dataclasses import dataclass
-from typing import Any, Callable, Dict, Optional
-
-import numpy as np
+from typing import Any, Callable, Dict
 
 
 @dataclass(frozen=True)

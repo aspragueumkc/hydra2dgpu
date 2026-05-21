@@ -30,7 +30,7 @@ def load_native_module() -> Any:
         raise _NATIVE_IMPORT_ERROR
 
     try:
-        _NATIVE = importlib.import_module("backwater_native")
+        _NATIVE = importlib.import_module("hydra_native")
         return _NATIVE
     except Exception as exc:  # pragma: no cover - depends on local build state
         _NATIVE_IMPORT_ERROR = exc

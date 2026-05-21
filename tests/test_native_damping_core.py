@@ -15,7 +15,7 @@ from unsteady_model import _adaptive_damping_scale_core
 class TestNativeDampingCore(unittest.TestCase):
     def test_native_damping_scale_matches_python(self):
         try:
-            import backwater_native
+            import hydra_native
         except Exception:
             self.skipTest('native module not built/importable in test environment')
 
@@ -26,7 +26,7 @@ class TestNativeDampingCore(unittest.TestCase):
         dq_raw = np.array([60.0, -120.0, 30.0], dtype=float)
 
         py_scale = _adaptive_damping_scale_core(bed, z_iter, q_iter, dz_raw, dq_raw)
-        native_scale = backwater_native.adaptive_damping_scale(bed, z_iter, q_iter, dz_raw, dq_raw, 0.001)
+        native_scale = hydra_native.adaptive_damping_scale(bed, z_iter, q_iter, dz_raw, dq_raw, 0.001)
 
         self.assertAlmostEqual(native_scale, py_scale, places=12)
 

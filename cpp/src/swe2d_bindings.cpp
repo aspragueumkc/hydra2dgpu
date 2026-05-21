@@ -11,7 +11,7 @@
 #include "swe2d_mesh.hpp"
 #include "swe2d_solver.hpp"
 
-#ifdef BACKWATER_HAS_CUDA
+#ifdef HYDRA_HAS_CUDA
 #include "swe2d_gpu.cuh"
 #endif
 
@@ -67,14 +67,14 @@ struct PySolver {
 // ─────────────────────────────────────────────────────────────────────────────
 // Module definition
 // ─────────────────────────────────────────────────────────────────────────────
-PYBIND11_MODULE(backwater_swe2d, m) {
+PYBIND11_MODULE(hydra_swe2d, m) {
     m.doc() = "2D SWE hybrid GPU/CPU solver on unstructured polygon mesh";
 
     // ── GPU query ─────────────────────────────────────────────────────────────
     m.def("swe2d_gpu_available", &swe2d_gpu_available,
           "Return True if a CUDA-capable GPU is present and the GPU path was compiled.");
 
-#ifdef BACKWATER_HAS_CUDA
+#ifdef HYDRA_HAS_CUDA
     m.def("swe2d_gpu_compute_coupling_sources",
         [](py::array_t<double, py::array::c_style | py::array::forcecast> cell_area_m2,
            py::array_t<int32_t, py::array::c_style | py::array::forcecast> inlet_cell,
@@ -1509,7 +1509,7 @@ PYBIND11_MODULE(backwater_swe2d, m) {
             if (!contract) 
                 throw std::invalid_argument("null contract handle");
             
-            #ifdef BACKWATER_HAS_CUDA
+            #ifdef HYDRA_HAS_CUDA
             return swe2d_gpu_contract_upload(solver->solver->dev, contract->host_contract);
             #else
             throw std::runtime_error("GPU support not compiled; cannot upload contract");
@@ -1525,7 +1525,7 @@ PYBIND11_MODULE(backwater_swe2d, m) {
             if (!solver || !solver->solver) 
                 throw std::invalid_argument("null solver handle");
             
-            #ifdef BACKWATER_HAS_CUDA
+            #ifdef HYDRA_HAS_CUDA
             swe2d_gpu_contract_free(solver->solver->dev);
             #endif
         },
@@ -1538,7 +1538,7 @@ PYBIND11_MODULE(backwater_swe2d, m) {
         {
             if (!solver || !solver->solver) return false;
             
-            #ifdef BACKWATER_HAS_CUDA
+            #ifdef HYDRA_HAS_CUDA
             return swe2d_gpu_is_contract_uploaded(solver->solver->dev);
             #else
             return false;
@@ -1554,7 +1554,7 @@ PYBIND11_MODULE(backwater_swe2d, m) {
         {
             if (!solver || !solver->solver)
                 throw std::invalid_argument("null or destroyed solver");
-            #ifdef BACKWATER_HAS_CUDA
+            #ifdef HYDRA_HAS_CUDA
             SWE3DPatchStats s = swe2d_gpu_get_3d_patch_stats(solver->solver->dev);
             py::dict d;
             d["n_cells"]   = s.n_cells;
@@ -1594,7 +1594,7 @@ PYBIND11_MODULE(backwater_swe2d, m) {
         {
             if (!solver || !solver->solver)
                 throw std::invalid_argument("null or destroyed solver");
-            #ifdef BACKWATER_HAS_CUDA
+            #ifdef HYDRA_HAS_CUDA
             py::buffer_info buf = vof.request();
             swe2d_gpu_set_3d_patch_vof(
                 solver->solver->dev,
@@ -1613,7 +1613,7 @@ PYBIND11_MODULE(backwater_swe2d, m) {
         {
             if (!solver || !solver->solver)
                 throw std::invalid_argument("null or destroyed solver");
-            #ifdef BACKWATER_HAS_CUDA
+            #ifdef HYDRA_HAS_CUDA
             SWE3DPatchStats s = swe2d_gpu_get_3d_patch_stats(solver->solver->dev);
             py::array_t<double> out(s.n_cells);
             py::buffer_info buf = out.request();
@@ -1639,7 +1639,7 @@ PYBIND11_MODULE(backwater_swe2d, m) {
         {
             if (!solver || !solver->solver)
                 throw std::invalid_argument("null or destroyed solver");
-            #ifdef BACKWATER_HAS_CUDA
+            #ifdef HYDRA_HAS_CUDA
             auto to_ptr = [](py::object& o, std::vector<double>& tmp) -> const double*
             {
                 if (o.is_none()) return nullptr;
@@ -1690,7 +1690,7 @@ PYBIND11_MODULE(backwater_swe2d, m) {
         {
             if (!solver || !solver->solver)
                 throw std::invalid_argument("null or destroyed solver");
-            #ifdef BACKWATER_HAS_CUDA
+            #ifdef HYDRA_HAS_CUDA
             auto infer_n = [](py::object& o) -> int64_t {
                 if (o.is_none()) return -1;
                 auto arr = o.cast<py::array_t<double, py::array::c_style>>();

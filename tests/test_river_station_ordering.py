@@ -6,7 +6,7 @@ here = os.path.dirname(os.path.dirname(__file__))
 if here not in sys.path:
     sys.path.insert(0, here)
 
-import backwater_model as bw
+import hydra_1d as bw
 
 
 class TestRiverStationOrdering(unittest.TestCase):
@@ -24,7 +24,7 @@ class TestRiverStationOrdering(unittest.TestCase):
             L_rob_to_next=0.0,
         )
 
-    def test_run_backwater_sorts_by_numeric_river_station(self):
+    def test_run_hydra_1d_sorts_by_numeric_river_station(self):
         # Intentionally out of order: US, middle, DS — solver must sort ascending (low RS = DS)
         xs_10 = self._make_xs("10", 1.0, 1.0)
         xs_3 = self._make_xs("3", 0.5, 0.5)
@@ -38,14 +38,14 @@ class TestRiverStationOrdering(unittest.TestCase):
             sections=[xs_10, xs_3, xs_0],
         )
 
-        results = bw.run_backwater(model, solver="py")
+        results = bw.run_hydra_1d(model, solver="py")
 
         # DS->US order: 0 is downstream, 10 is upstream
         self.assertEqual(["0", "3", "10"], [xs.river_station for xs in model.sections])
         self.assertEqual(3, len(results))
         self.assertAlmostEqual(2.0, results[0].wse, places=6)
 
-    def test_run_backwater_known_wse_below_bed_raises(self):
+    def test_run_hydra_1d_known_wse_below_bed_raises(self):
         # known_wse below downstream bed must raise a clear error
         xs_10 = self._make_xs("10", 10.0, 10.0)
         xs_0  = self._make_xs("0",   9.0,  9.0)
@@ -59,7 +59,7 @@ class TestRiverStationOrdering(unittest.TestCase):
         )
 
         with self.assertRaises(ValueError):
-            bw.run_backwater(model, solver="py")
+            bw.run_hydra_1d(model, solver="py")
 
 
 if __name__ == "__main__":
