@@ -27,3 +27,8 @@ env/
 # OS
 .DS_Store
 Thumbs.db
+
+# Local generated artifacts and temporary backups
+tests/artifacts/
+temp_archive/
+forms/*.bak
