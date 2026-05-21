@@ -152,9 +152,29 @@ def set_swe3d_vof_max_substeps(max_substeps: int) -> int:
     return cap
 
 
+def set_swe3d_predictor_damping_coeff(coeff: float) -> float:
+    """Set SWE3D predictor damping coefficient (>= 0)."""
+    value = float(coeff)
+    if not np.isfinite(value) or value < 0.0:
+        raise ValueError("SWE3D predictor damping coefficient must be a non-negative finite number")
+    os.environ["BACKWATER_SWE3D_PREDICTOR_DAMPING_COEFF"] = f"{value:.17g}"
+    return value
+
+
+def set_swe3d_free_surface_gauge_tolerance_pa(tolerance_pa: float) -> float:
+    """Set ZMAX free-surface pressure band tolerance in pressure units (Pa-equivalent)."""
+    value = float(tolerance_pa)
+    if not np.isfinite(value) or value < 0.0:
+        raise ValueError("SWE3D free-surface gauge tolerance must be a non-negative finite number")
+    os.environ["BACKWATER_SWE3D_FREE_SURFACE_GAUGE_TOLERANCE_PA"] = f"{value:.17g}"
+    return value
+
+
 def configure_swe3d_runtime(
     adaptive_dt_method: Optional[Union[int, str]] = None,
     vof_max_substeps: Optional[int] = None,
+    predictor_damping_coeff: Optional[float] = None,
+    free_surface_gauge_tolerance_pa: Optional[float] = None,
     gravity_wave_cfl: Optional[float] = None,
     projection_residual_target: Optional[float] = None,
     projection_reject_enable: Optional[bool] = None,
@@ -182,6 +202,12 @@ def configure_swe3d_runtime(
         applied["adaptive_dt_mode"] = set_swe3d_adaptive_dt_method(adaptive_dt_method)
     if vof_max_substeps is not None:
         applied["vof_max_substeps"] = set_swe3d_vof_max_substeps(vof_max_substeps)
+    if predictor_damping_coeff is not None:
+        applied["predictor_damping_coeff"] = set_swe3d_predictor_damping_coeff(predictor_damping_coeff)
+    if free_surface_gauge_tolerance_pa is not None:
+        applied["free_surface_gauge_tolerance_pa"] = (
+            set_swe3d_free_surface_gauge_tolerance_pa(free_surface_gauge_tolerance_pa)
+        )
     if gravity_wave_cfl is not None:
         gw_cfl = float(gravity_wave_cfl)
         if not np.isfinite(gw_cfl) or gw_cfl <= 0.0:
@@ -740,6 +766,19 @@ class SWE2DBackend:
                     "rebuild hydra_swe2d with CUDA support."
                 )
 
+        # Apply conservative SWE3D runtime guardrails for interactive workbench
+        # runs. Use setdefault so explicit user/env tuning still takes priority.
+        three_d_model_enabled = (
+            int(native_opts.get("three_d_solver_model", int(SWE2DThreeDSolverModel.DISABLED)))
+            != int(SWE2DThreeDSolverModel.DISABLED)
+        )
+        if self._use_gpu and three_d_model_enabled:
+            os.environ.setdefault("BACKWATER_SWE3D_ADAPTIVE_DT_MODE", "2")
+            os.environ.setdefault("BACKWATER_SWE3D_PROJECTION_REJECT_ENABLE", "1")
+            os.environ.setdefault("BACKWATER_SWE3D_STATE_REJECT_ENABLE", "1")
+            os.environ.setdefault("BACKWATER_SWE3D_STATE_MAX_ABS_VELOCITY", "50")
+            os.environ.setdefault("BACKWATER_SWE3D_PROJECTION_FAIL_FAST", "0")
+
         self._solver_h = self._create_solver_compat(
             self._mesh_h,
             h0_arr, hu0_arr, hv0_arr, n_mann_cell_arr,
@@ -859,7 +898,41 @@ class SWE2DBackend:
                 dt_request,
                 0  # diag_batch_size=0: minimal diagnostic batching (no per-step overhead)
             )
-            
+
+            # Result is a dict with 'diags' (list of batched diagnostics), 'steps_completed',
+            # 'cancelled', and 'final_time'. For the zero batch case, diags will typically be empty
+            # but we get significant speedup from eliminating Python loop overhead.
+            diags = result.get("diags") or []
+            self._last_diag = None
+
+            # Call progress_callback once at the end if provided.
+            if progress_callback and result.get("steps_completed", 0) > 0:
+                final_time = result.get("final_time", t_end)
+
+                # Prefer the last real diagnostic if available to avoid synthesizing
+                # an incomplete or misleading diag.
+                final_diag = None
+                if diags:
+                    # Flatten possible batches and use the last diagnostic entry
+                    last_batch = diags[-1]
+                    if isinstance(last_batch, (list, tuple)) and last_batch:
+                        final_diag = last_batch[-1]
+                    else:
+                        final_diag = last_batch
+
+                if final_diag is None:
+                    # No real diag available; provide a clearly marked summary object
+                    # so callers can distinguish it from a normal diagnostic entry.
+                    final_diag = {
+                        "summary": True,
+                        "type": "final_run_summary",
+                        "time": final_time,
+                        "steps_completed": result.get("steps_completed", 0),
+                        "cancelled": result.get("cancelled", False),
+                        "dt_request": dt_request,
+                    }
+
+                progress_callback(final_time, final_diag)
             # Result is a dict with 'diags' (list of batched diagnostics), 'steps_completed',
             # 'cancelled', and 'final_time'. For the zero batch case, diags will be empty
             # but we get significant speedup from eliminating Python loop overhead.
@@ -970,6 +1043,28 @@ class SWE2DBackend:
             raise RuntimeError("Native module does not expose swe2d_get_3d_patch_vof().")
         return np.asarray(self._mod.swe2d_get_3d_patch_vof(self._solver_h), dtype=np.float64)
 
+    def get_3d_patch_velocity(self) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+        """Download full 3D patch velocity fields (u, v, w) as flat float64 arrays."""
+        if self._solver_h is None:
+            raise RuntimeError("initialize() must be called before get_3d_patch_velocity().")
+        if not hasattr(self._mod, "swe2d_get_3d_patch_velocity"):
+            raise RuntimeError("Native module does not expose swe2d_get_3d_patch_velocity().")
+        raw = self._mod.swe2d_get_3d_patch_velocity(self._solver_h)
+        if not isinstance(raw, (tuple, list)) or len(raw) != 3:
+            raise RuntimeError("Invalid 3D patch velocity payload returned by native module.")
+        u = np.asarray(raw[0], dtype=np.float64).ravel()
+        v = np.asarray(raw[1], dtype=np.float64).ravel()
+        w = np.asarray(raw[2], dtype=np.float64).ravel()
+        return u, v, w
+
+    def get_3d_patch_pressure(self) -> np.ndarray:
+        """Download full 3D patch pressure field as a flat float64 array."""
+        if self._solver_h is None:
+            raise RuntimeError("initialize() must be called before get_3d_patch_pressure().")
+        if not hasattr(self._mod, "swe2d_get_3d_patch_pressure"):
+            raise RuntimeError("Native module does not expose swe2d_get_3d_patch_pressure().")
+        return np.asarray(self._mod.swe2d_get_3d_patch_pressure(self._solver_h), dtype=np.float64).ravel()
+
     def supports_3d_patch_geometry_upload(self) -> bool:
         """Return True when native 3D geometry tensor upload API is available."""
         if self._solver_h is None:
@@ -983,6 +1078,53 @@ class SWE2DBackend:
         return bool(
             hasattr(self._mod, "swe2d_set_3d_patch_state")
             or hasattr(self._mod, "swe2d_set_3d_patch_vof")
+        )
+
+    def supports_3d_patch_face_bc_upload(self) -> bool:
+        """Return True when native per-face 3D BC runtime API is available."""
+        if self._solver_h is None:
+            return False
+        return bool(hasattr(self._mod, "swe2d_set_3d_patch_face_bc"))
+
+    def set_3d_patch_face_bc(
+        self,
+        *,
+        face: int,
+        mode: int,
+        u: float = 0.0,
+        v: float = 0.0,
+        w: float = 0.0,
+        q: float = 0.0,
+        vof: float = 1.0,
+        p: float = 0.0,
+    ) -> None:
+        """Update a single 3D patch face BC definition at runtime."""
+        if self._solver_h is None:
+            raise RuntimeError("initialize() must be called before set_3d_patch_face_bc().")
+        if not hasattr(self._mod, "swe2d_set_3d_patch_face_bc"):
+            raise RuntimeError("Native module does not expose swe2d_set_3d_patch_face_bc().")
+
+        face_i = int(face)
+        mode_i = int(mode)
+        if face_i < 0 or face_i > 5:
+            raise ValueError("face must be in [0..5] (XMIN,XMAX,YMIN,YMAX,ZMIN,ZMAX)")
+        mode_i = max(0, min(4, mode_i))
+
+        vof_f = float(vof)
+        if not np.isfinite(vof_f):
+            vof_f = 1.0
+        vof_f = max(0.0, min(1.0, vof_f))
+
+        self._mod.swe2d_set_3d_patch_face_bc(
+            self._solver_h,
+            face=face_i,
+            mode=mode_i,
+            u=float(u),
+            v=float(v),
+            w=float(w),
+            q=float(q),
+            vof=vof_f,
+            p=float(p),
         )
 
     def set_3d_patch_vof(self, vof: np.ndarray) -> None:
@@ -1205,25 +1347,23 @@ class SWE2DBackend:
             Contract handle (opaque object); pass to upload_interface_contract().
             Returns None on validation failure.
         """
-        try:
-            cell2d_arr = np.asarray(cell2d, dtype=np.int32, order='C')
-            face_area_arr = np.asarray(face_area, dtype=np.float64, order='C')
-            face_nx_arr = np.asarray(face_nx, dtype=np.float64, order='C')
-            face_ny_arr = np.asarray(face_ny, dtype=np.float64, order='C')
-            face_nz_arr = np.asarray(face_nz, dtype=np.float64, order='C')
-            
-            if not hasattr(self._mod, 'swe2d_contract_create'):
-                raise RuntimeError(
-                    "Native module does not expose swe2d_contract_create. "
-                    "Rebuild with Phase 7 support (cmake --build build)."
-                )
-            
-            return self._mod.swe2d_contract_create(
-                cell2d_arr, face_area_arr, face_nx_arr, face_ny_arr, face_nz_arr
+        cell2d_arr = np.asarray(cell2d, dtype=np.int32, order='C')
+        face_area_arr = np.asarray(face_area, dtype=np.float64, order='C')
+        face_nx_arr = np.asarray(face_nx, dtype=np.float64, order='C')
+        face_ny_arr = np.asarray(face_ny, dtype=np.float64, order='C')
+        face_nz_arr = np.asarray(face_nz, dtype=np.float64, order='C')
+
+        if not hasattr(self._mod, 'swe2d_contract_create'):
+            raise RuntimeError(
+                "Native module does not expose swe2d_contract_create. "
+                "Rebuild with Phase 7 support (cmake --build build)."
             )
-        except Exception as e:
-            print(f"Failed to create interface contract: {e}")
-            return None
+
+        return self._mod.swe2d_contract_create(
+            cell2d_arr, face_area_arr, face_nx_arr, face_ny_arr, face_nz_arr
+        )
+
+        
 
     def is_interface_contract_valid(self, contract) -> bool:
         """

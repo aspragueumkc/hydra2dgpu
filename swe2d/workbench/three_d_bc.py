@@ -114,6 +114,7 @@ def apply_3d_patch_face_bc_to_backend(
     coupling_mode_off: int,
     get_coupling_mode_callback: Callable[[], int],
     log_callback: Callable[[str], None],
+    quiet: bool = False,
 ) -> None:
     if backend is None or not hasattr(backend, "supports_3d_patch_face_bc_upload"):
         return
@@ -182,7 +183,7 @@ def apply_3d_patch_face_bc_to_backend(
             if abs(float(values.get("q", 0.0))) > 1.0e-12:
                 has_nonzero_inflow = True
 
-    if applied_summary:
+    if applied_summary and not bool(quiet):
         log_callback("3D face BC upload (GUI -> backend): " + " | ".join(applied_summary))
 
     try:
@@ -190,7 +191,7 @@ def apply_3d_patch_face_bc_to_backend(
     except Exception:
         coupling_mode = coupling_mode_off
 
-    if coupling_mode == coupling_mode_off and not has_nonzero_inflow:
+    if not bool(quiet) and coupling_mode == coupling_mode_off and not has_nonzero_inflow:
         log_callback(
             "3D BC warning: uncoupled mode has no non-zero inflow BC forcing from GUI. "
             "Set at least one face to Inflow(U/V/W) with non-zero velocity or Volumetric Inlet(Q) with non-zero Q."

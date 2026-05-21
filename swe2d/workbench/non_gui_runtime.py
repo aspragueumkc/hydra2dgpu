@@ -452,6 +452,185 @@ def initialize_experimental_3d_patch_state(
     else:
         bed = np.full((ny, nx), float(oz), dtype=np.float64)
 
+    def _manning_normal_depth_from_profile(
+        q_abs: float,
+        bed_profile: np.ndarray,
+        spacing: float,
+        slope: float,
+        manning_n: float,
+        unit_factor: float,
+    ) -> Optional[Tuple[float, float]]:
+        q_target = abs(float(q_abs))
+        if not np.isfinite(q_target) or q_target <= 1.0e-12:
+            return None
+
+        z = np.asarray(bed_profile, dtype=np.float64).ravel()
+        if z.size <= 0:
+            return None
+        good = np.isfinite(z)
+        if not np.any(good):
+            return None
+        z = z[good]
+        if z.size <= 0:
+            return None
+
+        ds = max(float(spacing), 1.0e-9)
+        s_eff = max(float(slope), 1.0e-12)
+        n_eff = max(float(manning_n), 1.0e-12)
+        u_eff = float(unit_factor)
+        if not np.isfinite(u_eff) or u_eff <= 0.0:
+            u_eff = 1.0
+
+        z_min = float(np.min(z))
+        z_rel = z - z_min
+        relief = float(np.max(z_rel))
+
+        def _q_for_depth(depth: float) -> float:
+            d = max(0.0, float(depth))
+            h = np.maximum(0.0, d - z_rel)
+            if h.size <= 0:
+                return 0.0
+            area = float(np.sum(h) * ds)
+            if area <= 0.0:
+                return 0.0
+            wetted_width = float(np.count_nonzero(h > 1.0e-9)) * ds
+            wetted_perim = max(1.0e-9, wetted_width + 2.0 * d)
+            radius = area / wetted_perim
+            if radius <= 0.0:
+                return 0.0
+            return (u_eff / n_eff) * area * (radius ** (2.0 / 3.0)) * (s_eff ** 0.5)
+
+        d_lo = 0.0
+        d_hi = max(1.0, relief + 1.0)
+        q_hi = _q_for_depth(d_hi)
+        grow_iter = 0
+        while (not np.isfinite(q_hi) or q_hi < q_target) and grow_iter < 48:
+            d_hi *= 1.6
+            q_hi = _q_for_depth(d_hi)
+            grow_iter += 1
+            if d_hi > 1.0e6:
+                break
+        if not np.isfinite(q_hi) or q_hi < q_target:
+            return None
+
+        for _ in range(80):
+            d_mid = 0.5 * (d_lo + d_hi)
+            q_mid = _q_for_depth(d_mid)
+            if not np.isfinite(q_mid):
+                return None
+            if q_mid >= q_target:
+                d_hi = d_mid
+            else:
+                d_lo = d_mid
+
+        d_star = max(0.0, d_hi)
+        wse_star = z_min + d_star
+        return d_star, wse_star
+
+    def _q_boundary_normal_depth_seed() -> Optional[Tuple[int, np.ndarray, float, float, float]]:
+        enabled = bool(
+            getattr(wb, "experimental_3d_patch_normal_depth_enable_chk", None)
+            and wb.experimental_3d_patch_normal_depth_enable_chk.isChecked()
+        )
+        if not enabled:
+            return None
+
+        faces = ("XMIN", "XMAX", "YMIN", "YMAX", "ZMIN", "ZMAX")
+        face_candidates: List[Tuple[float, int, str, float]] = []
+        for face_idx, face_name in enumerate(faces):
+            face_key = str(face_name).lower()
+            mode_combo = getattr(wb, f"experimental_3d_bc_{face_key}_mode_combo", None)
+            q_spin = getattr(wb, f"experimental_3d_bc_{face_key}_q_spin", None)
+            if mode_combo is None or q_spin is None:
+                continue
+            try:
+                mode_raw = mode_combo.currentData()
+                if mode_raw is None:
+                    mode_raw = mode_combo.currentIndex()
+                mode_val = int(mode_raw)
+            except Exception:
+                mode_val = 0
+            if mode_val != 4:
+                continue
+            try:
+                q_val = float(q_spin.value())
+            except Exception:
+                q_val = 0.0
+            if not np.isfinite(q_val) or abs(q_val) <= 1.0e-12:
+                continue
+            face_candidates.append((abs(q_val), face_idx, str(face_name), q_val))
+
+        if not face_candidates:
+            return None
+
+        face_candidates.sort(key=lambda rec: rec[0], reverse=True)
+        _, face_idx, face_name, q_val = face_candidates[0]
+
+        if face_name == "XMIN":
+            profile = bed[:, 0]
+            spacing = float(getattr(spec, "dy", 0.0))
+            side = 0
+        elif face_name == "XMAX":
+            profile = bed[:, -1]
+            spacing = float(getattr(spec, "dy", 0.0))
+            side = 1
+        elif face_name == "YMIN":
+            profile = bed[0, :]
+            spacing = float(getattr(spec, "dx", 0.0))
+            side = 2
+        elif face_name == "YMAX":
+            profile = bed[-1, :]
+            spacing = float(getattr(spec, "dx", 0.0))
+            side = 3
+        else:
+            return None
+
+        slope = 0.001
+        if hasattr(wb, "experimental_3d_patch_normal_depth_slope_spin"):
+            try:
+                slope = float(wb.experimental_3d_patch_normal_depth_slope_spin.value())
+            except Exception:
+                slope = 0.001
+
+        manning_n = 0.02
+        if hasattr(wb, "experimental_3d_patch_normal_depth_n_spin"):
+            try:
+                manning_n = float(wb.experimental_3d_patch_normal_depth_n_spin.value())
+            except Exception:
+                manning_n = 0.02
+
+        use_us = bool(
+            getattr(wb, "experimental_3d_patch_normal_depth_us_units_chk", None)
+            and wb.experimental_3d_patch_normal_depth_us_units_chk.isChecked()
+        )
+        unit_factor = 1.49 if use_us else 1.0
+
+        solved = _manning_normal_depth_from_profile(
+            q_abs=abs(float(q_val)),
+            bed_profile=np.asarray(profile, dtype=np.float64),
+            spacing=max(float(spacing), 1.0e-9),
+            slope=slope,
+            manning_n=manning_n,
+            unit_factor=unit_factor,
+        )
+        if solved is None:
+            if log_notes:
+                wb._log(
+                    "3D patch Manning normal-depth init: unable to solve depth from Q boundary "
+                    f"(face={face_name}, |Q|={abs(float(q_val)):.6g}, S={slope:.6g}, n={manning_n:.6g}, u={unit_factor:.3g})."
+                )
+            return None
+
+        depth_scalar, wse_scalar = solved
+        side_profile_depth = np.maximum(0.0, float(wse_scalar) - np.asarray(profile, dtype=np.float64))
+        if log_notes:
+            wb._log(
+                "3D patch Manning normal-depth init: "
+                f"face={face_name}, |Q|={abs(float(q_val)):.6g}, S={slope:.6g}, n={manning_n:.6g}, u={unit_factor:.3g}, "
+                f"depth={float(depth_scalar):.6g}, wse={float(wse_scalar):.6g}"
+            )
+        return side, np.asarray(side_profile_depth, dtype=np.float64), float(wse_scalar), float(depth_scalar), float(q_val)
+
     mode = str(wb.initial_condition_combo.currentData() if hasattr(wb, "initial_condition_combo") else "dry")
     depth = np.zeros((ny, nx), dtype=np.float64)
     if mode == "uniform_depth":
@@ -521,6 +700,21 @@ def initialize_experimental_3d_patch_state(
                     else:
                         side_depth = np.maximum(0.0, stage_wse - bed[-1, :])
                     _apply_side_depth_max(side, np.asarray(side_depth, dtype=np.float64))
+
+        nd_seed = _q_boundary_normal_depth_seed()
+        if nd_seed is not None:
+            side, side_depth, nd_wse, _nd_depth, _q_raw = nd_seed
+            _apply_side_depth_max(int(side), np.asarray(side_depth, dtype=np.float64))
+            seed_domain = bool(
+                getattr(wb, "experimental_3d_patch_normal_depth_seed_domain_chk", None)
+                and wb.experimental_3d_patch_normal_depth_seed_domain_chk.isChecked()
+            )
+            if seed_domain:
+                depth[:, :] = np.maximum(depth, np.maximum(0.0, float(nd_wse) - bed))
+                if log_notes:
+                    wb._log(
+                        "3D patch Manning normal-depth init: applied domain-wide free-surface seed from normal-depth WSE."
+                    )
 
     wse = bed + np.maximum(0.0, depth)
     zc = float(oz) + (np.arange(nz, dtype=np.float64) + 0.5) * float(dz)
@@ -745,6 +939,10 @@ def upload_experimental_3d_obj_geometry(
         and wb.experimental_3d_obj_export_obj_chk.isChecked()
     )
     if not solids_upload_enabled and not export_enabled:
+        if hasattr(wb, "_log"):
+            wb._log(
+                "3D solids preprocessing skipped: both '3D sub-grid solids' and '3D export voxel shell OBJ' are disabled."
+            )
         return
 
     if patch_grid_spec_cls is None or load_obj_mesh_fn is None or apply_instance_transform_fn is None or build_static_geometry_tensors_fn is None:
@@ -1297,6 +1495,11 @@ def execute_run_timestep_loop(
     process_events_callback: object,
     get_3d_patch_stats_callback: object,
     get_3d_patch_vof_callback: object,
+    get_3d_patch_velocity_callback: Optional[Callable[[], Optional[tuple[np.ndarray, np.ndarray, np.ndarray]]]] = None,
+    physics_diag_enabled: bool = False,
+    front_flux_damping_value: float = 1.0,
+    zmax_bc_mode: Optional[int] = None,
+    apply_3d_patch_face_bc_callback: Optional[Callable[..., None]] = None,
 ) -> Dict[str, object]:
     while float(t_accum) < float(run_duration_s):
         if bool(getattr(wb, "_cancel_requested", False)):
@@ -1333,6 +1536,7 @@ def execute_run_timestep_loop(
             accumulate_source_volume_model_callback=accumulate_source_volume_model_callback,
             apply_external_sources_callback=wb._apply_external_sources,
             native_source_injection_mode=native_source_injection_mode,
+            apply_3d_patch_face_bc_callback=apply_3d_patch_face_bc_callback,
         )
         last_diag = step_result["last_diag"]
         dt_used = float(step_result["dt_used"])
@@ -1406,6 +1610,10 @@ def execute_run_timestep_loop(
             coupling_snapshot_rows=wb._coupling_snapshot_rows,
             get_3d_patch_stats_callback=get_3d_patch_stats_callback,
             get_3d_patch_vof_callback=get_3d_patch_vof_callback,
+            get_3d_patch_velocity_callback=get_3d_patch_velocity_callback,
+            physics_diag_enabled=physics_diag_enabled,
+            front_flux_damping_value=front_flux_damping_value,
+            zmax_bc_mode=zmax_bc_mode,
             append_3d_patch_snapshot_callback=wb._append_3d_patch_snapshot,
             sample_line_metrics_callback=wb._sample_line_metrics,
             sample_coupling_object_metrics_callback=wb._sample_coupling_object_metrics,

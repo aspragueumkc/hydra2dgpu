@@ -2,6 +2,7 @@ from __future__ import annotations
 
 # Extracted methods depend on symbols defined in swe2d_workbench_qt.
 from swe2d_workbench_qt import *  # type: ignore F401,F403
+from swe2d_workbench_qt import _HAVE_QGIS_CORE
 
 def designer_populate_left_tabs(self, shell: QtWidgets.QWidget) -> None:
     self._left_tabs = shell.findChild(QtWidgets.QTabWidget, "left_tabs")

@@ -2,6 +2,17 @@ from __future__ import annotations
 
 # Extracted methods depend on symbols defined in swe2d_workbench_qt.
 from swe2d_workbench_qt import *  # type: ignore F401,F403
+from swe2d_workbench_qt import (
+    _BC_INFLOW_Q,
+    _BC_TS_FLOW,
+    _BC_TS_STAGE,
+    _execute_run_timestep_loop_runtime_logic,
+    _RECONSTRUCTION_OPTIONS,
+    _SWE3D_BC_FIELD_DEFAULTS,
+    _SWE3D_BC_MODE_OPTIONS,
+    _SWE3D_PATCH_FACES,
+    _TEMPORAL_ORDER_OPTIONS,
+)
 
 def _bind_model_tab_core_controls(self, model_tab_page: QtWidgets.QWidget, param_form: QtWidgets.QFormLayout) -> None:
     def _ensure_row(label: str, widget: QtWidgets.QWidget) -> None:
@@ -785,12 +796,36 @@ def _bind_model_tab_3d_patch_controls(self, model_tab_page: QtWidgets.QWidget, p
         hdr.setStyleSheet("font-weight: 600;")
         bc_grid.addWidget(hdr, 0, col)
 
-    for row, face in enumerate(_SWE3D_PATCH_FACES, start=1):
+    swe3d_patch_faces = globals().get("_SWE3D_PATCH_FACES")
+    swe3d_mode_options = globals().get("_SWE3D_BC_MODE_OPTIONS")
+    swe3d_field_defaults = globals().get("_SWE3D_BC_FIELD_DEFAULTS")
+    if swe3d_patch_faces is None or swe3d_mode_options is None or swe3d_field_defaults is None:
+        try:
+            import swe2d_workbench_qt as _wb
+            swe3d_patch_faces = swe3d_patch_faces or getattr(_wb, "_SWE3D_PATCH_FACES", None)
+            swe3d_mode_options = swe3d_mode_options or getattr(_wb, "_SWE3D_BC_MODE_OPTIONS", None)
+            swe3d_field_defaults = swe3d_field_defaults or getattr(_wb, "_SWE3D_BC_FIELD_DEFAULTS", None)
+        except Exception:
+            pass
+    if swe3d_patch_faces is None:
+        swe3d_patch_faces = ("XMIN", "XMAX", "YMIN", "YMAX", "ZMIN", "ZMAX")
+    if swe3d_mode_options is None:
+        swe3d_mode_options = [
+            ("Wall", 0),
+            ("Inflow (U/V/W)", 1),
+            ("Volumetric Inlet (Q)", 4),
+            ("Outflow (zero-gradient)", 2),
+            ("Free Surface", 3),
+        ]
+    if swe3d_field_defaults is None:
+        swe3d_field_defaults = {"q": 0.0, "u": 0.0, "v": 0.0, "w": 0.0, "vof": 1.0, "p": 0.0}
+
+    for row, face in enumerate(swe3d_patch_faces, start=1):
         face_key = str(face).lower()
         bc_grid.addWidget(QtWidgets.QLabel(face), row, 0)
 
         mode_combo = QtWidgets.QComboBox()
-        for mode_label, mode_value in _SWE3D_BC_MODE_OPTIONS:
+        for mode_label, mode_value in swe3d_mode_options:
             mode_combo.addItem(str(mode_label), int(mode_value))
         mode_combo.setCurrentIndex(0)
         mode_combo.setToolTip(
@@ -818,7 +853,7 @@ def _bind_model_tab_3d_patch_controls(self, model_tab_page: QtWidgets.QWidget, p
             else:
                 spin.setRange(-1.0e6, 1.0e6)
                 spin.setSingleStep(0.1)
-            spin.setValue(float(_SWE3D_BC_FIELD_DEFAULTS.get(field_name, 0.0)))
+            spin.setValue(float(swe3d_field_defaults.get(field_name, 0.0)))
             spin.setMaximumWidth(100)
             if field_name == "q":
                 spin.setToolTip(
@@ -840,6 +875,66 @@ def _bind_model_tab_3d_patch_controls(self, model_tab_page: QtWidgets.QWidget, p
         "Outflow is zero-gradient, and Volumetric Inlet uses Q [m^3/s] for the face-normal inflow target.",
     )
     self.experimental_3d_patch_bc_hint_lbl.setWordWrap(True)
+
+    self.experimental_3d_patch_normal_depth_enable_chk = _find_or_create_check(
+        "experimental_3d_patch_normal_depth_enable_chk",
+        "3D patch normal-depth init:",
+        "Use Manning normal depth from active Q face BC",
+    )
+    self.experimental_3d_patch_normal_depth_enable_chk.setChecked(False)
+    self.experimental_3d_patch_normal_depth_enable_chk.setToolTip(
+        "At run start, compute a normal depth for the selected Volumetric Inlet (Q) face\n"
+        "using Manning's equation and seed boundary free-surface from that depth."
+    )
+
+    self.experimental_3d_patch_normal_depth_seed_domain_chk = _find_or_create_check(
+        "experimental_3d_patch_normal_depth_seed_domain_chk",
+        "3D patch normal-depth domain seed:",
+        "Apply computed normal-depth free-surface across full patch domain",
+    )
+    self.experimental_3d_patch_normal_depth_seed_domain_chk.setChecked(False)
+    self.experimental_3d_patch_normal_depth_seed_domain_chk.setToolTip(
+        "If enabled, initial free-surface is seeded across the full 3D patch domain\n"
+        "using the Manning normal-depth WSE computed at the active Q boundary face."
+    )
+
+    self.experimental_3d_patch_normal_depth_slope_spin = _find_or_create_double_spin(
+        "experimental_3d_patch_normal_depth_slope_spin",
+        "3D patch Manning slope S:",
+    )
+    self.experimental_3d_patch_normal_depth_slope_spin.setRange(1.0e-8, 10.0)
+    self.experimental_3d_patch_normal_depth_slope_spin.setDecimals(8)
+    self.experimental_3d_patch_normal_depth_slope_spin.setSingleStep(1.0e-4)
+    self.experimental_3d_patch_normal_depth_slope_spin.setValue(0.001)
+    self.experimental_3d_patch_normal_depth_slope_spin.setToolTip(
+        "Energy grade/channel slope S used in Manning normal-depth solve for Q boundaries."
+    )
+
+    self.experimental_3d_patch_normal_depth_n_spin = _find_or_create_double_spin(
+        "experimental_3d_patch_normal_depth_n_spin",
+        "3D patch Manning n (normal-depth):",
+    )
+    self.experimental_3d_patch_normal_depth_n_spin.setRange(1.0e-4, 1.0)
+    self.experimental_3d_patch_normal_depth_n_spin.setDecimals(6)
+    self.experimental_3d_patch_normal_depth_n_spin.setSingleStep(0.001)
+    try:
+        self.experimental_3d_patch_normal_depth_n_spin.setValue(float(self.n_mann_spin.value()))
+    except Exception:
+        self.experimental_3d_patch_normal_depth_n_spin.setValue(0.02)
+    self.experimental_3d_patch_normal_depth_n_spin.setToolTip(
+        "Manning roughness n used only for the 3D Q-boundary normal-depth initialization solve."
+    )
+
+    self.experimental_3d_patch_normal_depth_us_units_chk = _find_or_create_check(
+        "experimental_3d_patch_normal_depth_us_units_chk",
+        "3D patch Manning units:",
+        "Use US customary Manning factor (u = 1.49)",
+    )
+    self.experimental_3d_patch_normal_depth_us_units_chk.setChecked(True)
+    self.experimental_3d_patch_normal_depth_us_units_chk.setToolTip(
+        "If enabled, Manning coefficient uses u=1.49 (US customary).\n"
+        "If disabled, u=1.0 (SI form)."
+    )
 
     if not self._experimental_3d_mode_supported:
         self.experimental_3d_mode_chk.setChecked(False)
@@ -1798,7 +1893,42 @@ def _connect_project_workbench_state_signals(self) -> None:
     ]
     widget_specs.extend(list(getattr(self, "_experimental_3d_bc_signal_specs", []) or []))
 
+    connected_attrs = set()
+
     for attr_name, signal_name in widget_specs:
+        widget = getattr(self, attr_name, None)
+        if widget is None:
+            continue
+        try:
+            signal = getattr(widget, signal_name, None)
+            if signal is not None:
+                signal.connect(self._persist_project_workbench_state)
+                connected_attrs.add(attr_name)
+        except Exception:
+            pass
+
+    # Fallback auto-wiring: connect all known persistable widget types that may
+    # have been added outside the static spec list.
+    qspin_cls = getattr(QtWidgets, "QSpinBox")
+    qdspin_cls = getattr(QtWidgets, "QDoubleSpinBox")
+    qcombo_cls = getattr(QtWidgets, "QComboBox")
+    qcheck_cls = getattr(QtWidgets, "QCheckBox")
+    qline_cls = getattr(QtWidgets, "QLineEdit")
+
+    auto_specs = []
+    for attr_name, widget in vars(self).items():
+        if attr_name in connected_attrs:
+            continue
+        if isinstance(widget, qspin_cls) or isinstance(widget, qdspin_cls):
+            auto_specs.append((attr_name, "valueChanged"))
+        elif isinstance(widget, qcombo_cls):
+            auto_specs.append((attr_name, "currentIndexChanged"))
+        elif isinstance(widget, qcheck_cls):
+            auto_specs.append((attr_name, "toggled"))
+        elif isinstance(widget, qline_cls):
+            auto_specs.append((attr_name, "textChanged"))
+
+    for attr_name, signal_name in auto_specs:
         widget = getattr(self, attr_name, None)
         if widget is None:
             continue
@@ -2142,6 +2272,7 @@ def _on_run(self):
         _three_d_observer = SWE2DThreeDPatchObserver(backend=backend, runtime_enabled=experimental_3d_runtime)
         _get_3d_patch_stats = _three_d_observer.get_patch_stats
         _get_3d_patch_vof = _three_d_observer.get_patch_vof
+        _get_3d_patch_velocity = _three_d_observer.get_patch_velocity
 
         if experimental_3d_runtime:
             try:
@@ -2387,6 +2518,54 @@ def _on_run(self):
         runtime_step_executor = SWE2DRuntimeStepExecutor()
         runtime_reporter = SWE2DRuntimeReporter()
 
+        _uncoupled_3d_face_bc_reapply_count = 0
+        _uncoupled_3d_face_bc_logged = False
+        _uncoupled_3d_face_bc_error_logged = False
+
+        def _apply_3d_face_bc_during_step(backend_obj: object) -> None:
+            """Re-apply 3D face BCs at each timestep in uncoupled mode."""
+            nonlocal _uncoupled_3d_face_bc_reapply_count
+            nonlocal _uncoupled_3d_face_bc_logged
+            nonlocal _uncoupled_3d_face_bc_error_logged
+
+            if not experimental_3d_runtime or backend_obj is None:
+                return
+
+            if SWE2DThreeDCouplingMode is None:
+                coupling_mode = 0
+            else:
+                try:
+                    coupling_mode = int(self._experimental_3d_selected_coupling_mode())
+                except Exception:
+                    coupling_mode = int(SWE2DThreeDCouplingMode.OFF)
+            if SWE2DThreeDCouplingMode is not None and coupling_mode != int(SWE2DThreeDCouplingMode.OFF):
+                return
+
+            try:
+                self._apply_3d_patch_face_bc_to_backend(backend_obj, quiet=True)
+                _uncoupled_3d_face_bc_reapply_count += 1
+                if (not _uncoupled_3d_face_bc_logged) or (_uncoupled_3d_face_bc_reapply_count % 250 == 0):
+                    self._log(
+                        "3D uncoupled Q-face reimposition active: "
+                        f"applied {_uncoupled_3d_face_bc_reapply_count} timestep updates."
+                    )
+                    _uncoupled_3d_face_bc_logged = True
+            except Exception as exc:
+                if not _uncoupled_3d_face_bc_error_logged:
+                    self._log(f"3D uncoupled Q-face reimposition warning: {exc}")
+                    _uncoupled_3d_face_bc_error_logged = True
+
+        swe3d_phys_diag_enabled = str(os.environ.get("BACKWATER_SWE3D_PHYSICS_DIAGNOSTICS", "0")).strip().lower() not in ("", "0", "false", "off", "no")
+        swe3d_front_flux_damping = float(self.front_flux_damping_spin.value()) if hasattr(self, "front_flux_damping_spin") else 1.0
+        swe3d_zmax_bc_mode = None
+        if hasattr(self, "experimental_3d_bc_zmax_mode_combo") and self.experimental_3d_bc_zmax_mode_combo is not None:
+            try:
+                _z_mode_data = self.experimental_3d_bc_zmax_mode_combo.currentData()
+                if _z_mode_data is not None:
+                    swe3d_zmax_bc_mode = int(_z_mode_data)
+            except Exception:
+                swe3d_zmax_bc_mode = None
+
         loop_result = _execute_run_timestep_loop_runtime_logic(
             wb=self,
             backend=backend,
@@ -2430,6 +2609,11 @@ def _on_run(self):
             process_events_callback=QtWidgets.QApplication.processEvents,
             get_3d_patch_stats_callback=_get_3d_patch_stats,
             get_3d_patch_vof_callback=_get_3d_patch_vof,
+            get_3d_patch_velocity_callback=_get_3d_patch_velocity,
+            physics_diag_enabled=swe3d_phys_diag_enabled,
+            front_flux_damping_value=swe3d_front_flux_damping,
+            zmax_bc_mode=swe3d_zmax_bc_mode,
+            apply_3d_patch_face_bc_callback=_apply_3d_face_bc_during_step if experimental_3d_runtime else None,
         )
         t_accum = float(loop_result.get("t_accum", t_accum))
         i = int(loop_result.get("i", i))
@@ -2442,11 +2626,21 @@ def _on_run(self):
         _last_process_events_wall = float(loop_result.get("last_process_events_wall", _last_process_events_wall))
         timing_samples = int(loop_result.get("timing_samples", timing_samples))
         h, hu, hv = backend.get_state()
+        sim_time_diff = float(t_accum) - float(run_duration_s)
+        self._log(
+            "Runtime simulated-time check: "
+            f"sim_t={float(t_accum):.6f}s, target={float(run_duration_s):.6f}s, "
+            f"delta={sim_time_diff:.6e}s"
+        )
         if experimental_3d_runtime and not self._three_d_patch_snapshots:
             s3 = _get_3d_patch_stats()
             v3 = _get_3d_patch_vof()
             if s3 is not None and v3 is not None:
-                self._append_3d_patch_snapshot(t_accum, s3, v3)
+                vel3 = _get_3d_patch_velocity()
+                if isinstance(vel3, tuple) and len(vel3) == 3:
+                    self._append_3d_patch_snapshot(t_accum, s3, v3, vel3[0], vel3[1], vel3[2])
+                else:
+                    self._append_3d_patch_snapshot(t_accum, s3, v3)
         if native_source_injection_mode:
             try:
                 backend.set_external_sources_native(None)

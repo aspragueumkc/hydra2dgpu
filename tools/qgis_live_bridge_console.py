@@ -85,6 +85,66 @@ class QgisLiveBridge:
             json.dump(payload, f, indent=2)
         os.replace(tmp_path, self.response_path)
 
+    def _resolve_plugin_name(self, requested_name: str) -> str:
+        import qgis.utils as qgis_utils
+
+        plugins = getattr(qgis_utils, "plugins", {}) or {}
+        known_candidates = [
+            "qgis-backwater-plugin",
+            "hydra",
+        ]
+
+        requested = str(requested_name or "").strip()
+        if requested:
+            if requested in plugins:
+                return requested
+            # Accept explicit names even if plugin is currently unloaded.
+            return requested
+
+        if not plugins:
+            # Fall back to known local plugin IDs for this workspace.
+            return known_candidates[0]
+            requested_lower = requested.lower()
+            for name in plugins.keys():
+                if str(name).lower() == requested_lower or requested_lower in str(name).lower():
+                    return str(name)
+            raise ValueError(f"Plugin not found: {requested}")
+
+        # Auto-detect HYDRA plugin instance in this workspace.
+        for name, plugin in plugins.items():
+            cls_name = str(getattr(plugin, "__class__", type(plugin)).__name__).lower()
+            if "hydra" in cls_name:
+                return str(name)
+            try:
+                mod_name = str(plugin.__class__.__module__).lower()
+            except Exception:
+                mod_name = ""
+            if "hydra_plugin" in mod_name or "qgis-backwater-plugin" in mod_name:
+                return str(name)
+
+        # Fall back to known local plugin IDs for this workspace.
+        return known_candidates[0]
+
+    def _get_plugin_instance(self, requested_name: str):
+        import qgis.utils as qgis_utils
+
+        plugin_name = self._resolve_plugin_name(requested_name)
+        plugins = getattr(qgis_utils, "plugins", {}) or {}
+        plugin = plugins.get(plugin_name)
+        if plugin is None:
+            try:
+                if hasattr(qgis_utils, "loadPlugin"):
+                    qgis_utils.loadPlugin(plugin_name)
+                if hasattr(qgis_utils, "startPlugin"):
+                    qgis_utils.startPlugin(plugin_name)
+            except Exception:
+                pass
+            plugins = getattr(qgis_utils, "plugins", {}) or {}
+            plugin = plugins.get(plugin_name)
+        if plugin is None:
+            raise RuntimeError(f"Plugin instance not found: {plugin_name}")
+        return plugin_name, plugin
+
     def _poll_once(self):
         if not os.path.exists(self.command_path):
             return
@@ -441,6 +501,159 @@ class QgisLiveBridge:
             # Trigger asynchronously so modal dialogs do not block bridge polling.
             QTimer.singleShot(0, actions[0].trigger)
             return {"triggered": object_name, "async": True}
+
+        if action == "reload_plugin":
+            import qgis.utils as qgis_utils
+            import sys
+
+            requested_name = str(params.get("plugin_name", "")).strip()
+            plugin_name = self._resolve_plugin_name(requested_name)
+            loaded_before = bool(qgis_utils.isPluginLoaded(plugin_name))
+
+            # Best effort explicit unload before reload to force fresh imports.
+            try:
+                qgis_utils.unloadPlugin(plugin_name)
+            except Exception:
+                pass
+
+            try:
+                qgis_utils.reloadPlugin(plugin_name)
+            except Exception:
+                pass
+
+            # Ensure plugin is loaded/started after reload cycle.
+            if not qgis_utils.isPluginLoaded(plugin_name):
+                try:
+                    if hasattr(qgis_utils, "loadPlugin"):
+                        qgis_utils.loadPlugin(plugin_name)
+                    if hasattr(qgis_utils, "startPlugin"):
+                        qgis_utils.startPlugin(plugin_name)
+                except Exception:
+                    pass
+
+            # Clear cached SWE2D workbench modules so next open uses fresh code.
+            for mod_name in list(sys.modules.keys()):
+                if mod_name == "swe2d_workbench_qt" or mod_name.startswith("swe2d.workbench.extracted."):
+                    try:
+                        sys.modules.pop(mod_name, None)
+                    except Exception:
+                        pass
+            loaded_after = bool(qgis_utils.isPluginLoaded(plugin_name))
+            plugins = getattr(qgis_utils, "plugins", {}) or {}
+            plugin = plugins.get(plugin_name)
+            cls_name = str(getattr(plugin, "__class__", type(plugin)).__name__) if plugin is not None else None
+            return {
+                "plugin_name": plugin_name,
+                "loaded_before": loaded_before,
+                "loaded_after": loaded_after,
+                "plugin_class": cls_name,
+            }
+
+        if action == "plugin_status":
+            import qgis.utils as qgis_utils
+
+            plugins = getattr(qgis_utils, "plugins", {}) or {}
+            return {
+                "loaded_plugins": sorted(str(k) for k in plugins.keys()),
+            }
+
+        if action == "open_swe2d_demo_dialog":
+            import sys
+            import importlib
+
+            requested_name = str(params.get("plugin_name", "")).strip()
+            plugin_name, plugin = self._get_plugin_instance(requested_name)
+
+            run_fn = getattr(plugin, "run", None)
+            if callable(run_fn):
+                run_fn()
+
+            mod = importlib.import_module("swe2d_workbench_qt")
+            mod = importlib.reload(mod)
+
+            for extracted_name in (
+                "swe2d.workbench.extracted.model_and_run_methods",
+                "swe2d.workbench.extracted.topology_and_io_methods",
+                "swe2d.workbench.extracted.results_and_ui_methods",
+                "swe2d.workbench.extracted.results_export_methods",
+            ):
+                extracted_mod = sys.modules.get(extracted_name)
+                if extracted_mod is not None:
+                    try:
+                        importlib.reload(extracted_mod)
+                    except Exception:
+                        pass
+
+            launch = getattr(mod, "launch_swe2d_workbench", None)
+            if not callable(launch):
+                raise RuntimeError("launch_swe2d_workbench is not available")
+            launch(parent=getattr(plugin, "dock", None), iface=iface, host_mode="window")
+
+            windows = []
+            if mod is not None:
+                windows = list(getattr(mod, "_SWE2D_WORKBENCH_WINDOWS", []) or [])
+            return {
+                "plugin_name": plugin_name,
+                "demo_open_invoked": True,
+                "workbench_window_count": int(len(windows)),
+            }
+
+        if action == "open_swe2d_studio_dialog":
+            import importlib
+
+            requested_name = str(params.get("plugin_name", "")).strip()
+            plugin_name, plugin = self._get_plugin_instance(requested_name)
+
+            run_fn = getattr(plugin, "run", None)
+            if callable(run_fn):
+                run_fn()
+
+            mod = importlib.import_module("swe2d_workbench_qt")
+            mod = importlib.reload(mod)
+
+            launch = getattr(mod, "launch_swe2d_workbench_studio", None)
+            if not callable(launch):
+                raise RuntimeError("launch_swe2d_workbench_studio is not available")
+            launch(parent=getattr(plugin, "dock", None), iface=iface, host_mode="dock")
+
+            component_docks = dict(getattr(mod, "_SWE2D_STUDIO_COMPONENT_DOCKS", {}) or {})
+            host_dialog = getattr(mod, "_SWE2D_STUDIO_HOST_DIALOG", None)
+            return {
+                "plugin_name": plugin_name,
+                "studio_open_invoked": True,
+                "studio_component_dock_keys": sorted(str(k) for k in component_docks.keys()),
+                "studio_host_dialog": bool(host_dialog is not None),
+            }
+
+        if action == "invoke_workbench_method":
+            import importlib
+
+            method_name = str(params.get("method_name", "")).strip()
+            target = str(params.get("target", "demo")).strip().lower()
+            if not method_name:
+                raise ValueError("params.method_name is required")
+
+            mod = importlib.import_module("swe2d_workbench_qt")
+
+            dlg = None
+            if target == "studio":
+                dlg = getattr(mod, "_SWE2D_STUDIO_HOST_DIALOG", None)
+            if dlg is None:
+                windows = list(getattr(mod, "_SWE2D_WORKBENCH_WINDOWS", []) or [])
+                dlg = windows[-1] if windows else None
+            if dlg is None:
+                raise RuntimeError("No active workbench dialog found")
+
+            fn = getattr(dlg, method_name, None)
+            if not callable(fn):
+                raise RuntimeError(f"Method not found on active dialog: {method_name}")
+
+            fn()
+            return {
+                "target": target,
+                "method": method_name,
+                "invoked": True,
+            }
 
         if action == "set_env":
             env = params.get("env")

@@ -41,6 +41,7 @@ class SWE2DRuntimeStepExecutor:
         accumulate_source_volume_model_callback: Callable[..., None],
         apply_external_sources_callback: Callable[..., None],
         native_source_injection_mode: bool,
+        apply_3d_patch_face_bc_callback: Optional[Callable[..., None]] = None,
     ) -> Dict[str, Any]:
         step_ms = 0.0
         coupling_ms = 0.0
@@ -102,6 +103,8 @@ class SWE2DRuntimeStepExecutor:
                 prefer_native_injection=native_source_injection_mode,
             )
             source_ms += (time.perf_counter() - _t_src0) * 1000.0
+            if apply_3d_patch_face_bc_callback is not None:
+                apply_3d_patch_face_bc_callback(backend)
             _t_step0 = time.perf_counter()
             _diag_predict = backend.step(dt_request)
             step_ms += (time.perf_counter() - _t_step0) * 1000.0
@@ -171,6 +174,8 @@ class SWE2DRuntimeStepExecutor:
                 prefer_native_injection=native_source_injection_mode,
             )
             source_ms += (time.perf_counter() - _t_src1) * 1000.0
+            if apply_3d_patch_face_bc_callback is not None:
+                apply_3d_patch_face_bc_callback(backend)
             _t_step1 = time.perf_counter()
             last_diag = backend.step(dt_used)
             step_ms += (time.perf_counter() - _t_step1) * 1000.0
@@ -216,6 +221,8 @@ class SWE2DRuntimeStepExecutor:
                 prefer_native_injection=native_source_injection_mode,
             )
             source_ms += (time.perf_counter() - _t_src2) * 1000.0
+            if apply_3d_patch_face_bc_callback is not None:
+                apply_3d_patch_face_bc_callback(backend)
             _t_step2 = time.perf_counter()
             last_diag = backend.step(dt_request)
             step_ms += (time.perf_counter() - _t_step2) * 1000.0

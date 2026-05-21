@@ -2,6 +2,23 @@ from __future__ import annotations
 
 # Extracted methods depend on symbols defined in swe2d_workbench_qt.
 from swe2d_workbench_qt import *  # type: ignore F401,F403
+from swe2d_workbench_qt import (
+    _BC_VALUE_MAP,
+    _CELL_TYPE_OPTIONS,
+    _DRAIN_LINK_SHAPE_VALUE_MAP,
+    _DRAIN_LINK_TYPE_VALUE_MAP,
+    _DRAIN_NODE_TYPE_VALUE_MAP,
+    _HAVE_H5PY,
+    _HAVE_QGIS_CORE,
+    _HYETOGRAPH_UNITS_VALUE_MAP,
+    _HYETOGRAPH_VALUE_TYPE_MAP,
+    _NETCDF4_IMPORT_ERROR,
+    _RAIN_GAGE_UNITS_VALUE_MAP,
+    _STRUCTURE_TYPE_VALUE_MAP,
+    _gmsh_available,
+    _h5py,
+    _tqmesh_available,
+)
 
 def _bind_topology_tab_dynamic_controls(self, topology_tab_page: QtWidgets.QWidget, topo_layout: QtWidgets.QGridLayout) -> None:
     def _ensure(widget: QtWidgets.QWidget, row: int, col: int, row_span: int = 1, col_span: int = 1) -> None:

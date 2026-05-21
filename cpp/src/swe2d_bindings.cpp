@@ -1629,6 +1629,54 @@ PYBIND11_MODULE(hydra_swe2d, m) {
         py::arg("solver"),
         "Download full VoF field from 3D patch as a float64 array of length n_cells.");
 
+    m.def("swe2d_get_3d_patch_velocity",
+        [](const std::shared_ptr<PySolver>& solver) -> py::tuple
+        {
+            if (!solver || !solver->solver)
+                throw std::invalid_argument("null or destroyed solver");
+            #ifdef HYDRA_HAS_CUDA
+            SWE3DPatchStats s = swe2d_gpu_get_3d_patch_stats(solver->solver->dev);
+            py::array_t<double> u_out(s.n_cells);
+            py::array_t<double> v_out(s.n_cells);
+            py::array_t<double> w_out(s.n_cells);
+            py::buffer_info bu = u_out.request();
+            py::buffer_info bv = v_out.request();
+            py::buffer_info bw = w_out.request();
+            swe2d_gpu_get_3d_patch_velocity(
+                solver->solver->dev,
+                static_cast<double*>(bu.ptr),
+                static_cast<double*>(bv.ptr),
+                static_cast<double*>(bw.ptr),
+                s.n_cells);
+            return py::make_tuple(u_out, v_out, w_out);
+            #else
+            throw std::runtime_error("CUDA not compiled; swe2d_get_3d_patch_velocity unavailable");
+            #endif
+        },
+        py::arg("solver"),
+        "Download full 3D patch velocity fields (u, v, w) as float64 arrays of length n_cells.");
+
+    m.def("swe2d_get_3d_patch_pressure",
+        [](const std::shared_ptr<PySolver>& solver) -> py::array_t<double>
+        {
+            if (!solver || !solver->solver)
+                throw std::invalid_argument("null or destroyed solver");
+            #ifdef HYDRA_HAS_CUDA
+            SWE3DPatchStats s = swe2d_gpu_get_3d_patch_stats(solver->solver->dev);
+            py::array_t<double> p_out(s.n_cells);
+            py::buffer_info bp = p_out.request();
+            swe2d_gpu_get_3d_patch_pressure(
+                solver->solver->dev,
+                static_cast<double*>(bp.ptr),
+                s.n_cells);
+            return p_out;
+            #else
+            throw std::runtime_error("CUDA not compiled; swe2d_get_3d_patch_pressure unavailable");
+            #endif
+        },
+        py::arg("solver"),
+        "Download full 3D patch pressure field as a float64 array of length n_cells.");
+
     m.def("swe2d_set_3d_patch_state",
         [](const std::shared_ptr<PySolver>& solver,
            py::object u_obj,
@@ -1740,6 +1788,46 @@ PYBIND11_MODULE(hydra_swe2d, m) {
         "Upload static 3D geometry tensors for sub-grid solids.\n"
         "Pass any combination of phi/ax/ay/az arrays (float64, equal length == n_cells).\n"
         "Pass None for fields that should remain unchanged.");
+
+    m.def("swe2d_set_3d_patch_face_bc",
+        [](const std::shared_ptr<PySolver>& solver,
+           int face,
+           int mode,
+           double u,
+           double v,
+           double w,
+           double q,
+           double vof,
+           double p) -> void
+        {
+            if (!solver || !solver->solver)
+                throw std::invalid_argument("null or destroyed solver");
+            #ifdef HYDRA_HAS_CUDA
+            swe2d_gpu_set_3d_patch_face_bc(
+                solver->solver->dev,
+                static_cast<int32_t>(face),
+                static_cast<int32_t>(mode),
+                u,
+                v,
+                w,
+                q,
+                vof,
+                p);
+            #else
+            throw std::runtime_error("CUDA not compiled; swe2d_set_3d_patch_face_bc unavailable");
+            #endif
+        },
+        py::arg("solver"),
+        py::arg("face"),
+        py::arg("mode"),
+        py::arg("u") = 0.0,
+        py::arg("v") = 0.0,
+        py::arg("w") = 0.0,
+        py::arg("q") = 0.0,
+        py::arg("vof") = 1.0,
+        py::arg("p") = 0.0,
+        "Update one 3D patch face BC definition at runtime.\n"
+        "face uses SWE3DPatchBoundaryFace ordering: 0=XMIN,1=XMAX,2=YMIN,3=YMAX,4=ZMIN,5=ZMAX.");
 
     // ── PyMesh / PySolver as opaque Python types ──────────────────────────────
     py::class_<PyMesh, std::shared_ptr<PyMesh>>(m, "SWE2DMeshHandle")

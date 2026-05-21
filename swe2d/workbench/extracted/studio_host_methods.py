@@ -2,6 +2,14 @@ from __future__ import annotations
 
 # Extracted helpers depend on symbols defined in swe2d_workbench_qt.
 from swe2d_workbench_qt import *  # type: ignore F401,F403
+from swe2d_workbench_qt import (
+    _SWE2D_STUDIO_COMPONENT_DOCKS,
+    _SWE2D_STUDIO_HOST_DIALOG,
+    _SWE2D_STUDIO_HOST_MENU,
+    _SWE2D_STUDIO_HOST_TOOLBAR,
+    _SWE2D_WORKBENCH_STUDIO_DOCK,
+    _remove_workbench_dock_instance as _base_remove_workbench_dock_instance,
+)
 
 def _remove_workbench_studio_dock(iface_obj) -> None:
     global _SWE2D_WORKBENCH_STUDIO_DOCK, _SWE2D_STUDIO_COMPONENT_DOCKS, _SWE2D_STUDIO_HOST_DIALOG
@@ -14,7 +22,7 @@ def _remove_workbench_studio_dock(iface_obj) -> None:
         if key in seen:
             continue
         seen.add(key)
-        _remove_workbench_dock_instance(dock, iface_obj)
+        _base_remove_workbench_dock_instance(dock, iface_obj)
 
     _SWE2D_WORKBENCH_STUDIO_DOCK = None
     _SWE2D_STUDIO_COMPONENT_DOCKS = {}

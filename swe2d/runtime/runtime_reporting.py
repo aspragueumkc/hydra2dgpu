@@ -7,6 +7,7 @@ Phase 9 goal: extract post-step snapshot/progress/logging reporting from
 
 from __future__ import annotations
 
+import os
 import time
 from typing import Any, Callable, Dict, Optional
 
@@ -56,7 +57,14 @@ class SWE2DRuntimeReporter:
         coupling_snapshot_rows: list,
         get_3d_patch_stats_callback: Callable[[], Optional[Dict[str, object]]],
         get_3d_patch_vof_callback: Callable[[], Optional[np.ndarray]],
-        append_3d_patch_snapshot_callback: Callable[[float, Dict[str, object], np.ndarray], None],
+        get_3d_patch_velocity_callback: Optional[Callable[[], Optional[tuple[np.ndarray, np.ndarray, np.ndarray]]]],
+        physics_diag_enabled: bool = False,
+        front_flux_damping_value: float = 1.0,
+        zmax_bc_mode: Optional[int] = None,
+        append_3d_patch_snapshot_callback: Callable[
+            [float, Dict[str, object], np.ndarray, Optional[np.ndarray], Optional[np.ndarray], Optional[np.ndarray]],
+            None,
+        ],
         sample_line_metrics_callback: Callable[..., Any],
         sample_coupling_object_metrics_callback: Callable[..., Any],
         process_events_callback: Callable[[], None],
@@ -92,7 +100,14 @@ class SWE2DRuntimeReporter:
                 s3 = get_3d_patch_stats_callback()
                 v3 = get_3d_patch_vof_callback()
                 if s3 is not None and v3 is not None:
-                    append_3d_patch_snapshot_callback(t_accum, s3, v3)
+                    u3 = v3c = w3 = None
+                    if get_3d_patch_velocity_callback is not None:
+                        vel = get_3d_patch_velocity_callback()
+                        if isinstance(vel, tuple) and len(vel) == 3:
+                            u3 = np.asarray(vel[0], dtype=np.float64).ravel()
+                            v3c = np.asarray(vel[1], dtype=np.float64).ravel()
+                            w3 = np.asarray(vel[2], dtype=np.float64).ravel()
+                    append_3d_patch_snapshot_callback(t_accum, s3, v3, u3, v3c, w3)
             next_snap_t += float(output_interval_s)
 
         if need_line_snap and cell_min_z is not None and h_s is not None and hu_s is not None and hv_s is not None:
@@ -189,6 +204,59 @@ class SWE2DRuntimeReporter:
                         f"w_rms={float(stats.get('w_rms', float('nan'))):.3e} "
                         f"p_abs_max={float(stats.get('p_max_abs', float('nan'))):.3e}"
                     )
+                if physics_diag_enabled:
+                    try:
+                        dt_step = float(last_diag.get("dt", dt_used) or dt_used)
+                    except Exception:
+                        dt_step = float(dt_used)
+                    predictor_damping_coeff = 0.05
+                    try:
+                        coeff_raw = str(os.environ.get("BACKWATER_SWE3D_PREDICTOR_DAMPING_COEFF", "")).strip()
+                        if coeff_raw:
+                            coeff_val = float(coeff_raw)
+                            if np.isfinite(coeff_val) and coeff_val >= 0.0:
+                                predictor_damping_coeff = coeff_val
+                    except Exception:
+                        predictor_damping_coeff = 0.05
+                    predictor_damp = 1.0 / (1.0 + predictor_damping_coeff * max(0.0, dt_step))
+                    log_callback(
+                        "  3d_phys: "
+                        f"dt={dt_step:.6g}s "
+                        f"predictor_damp_coeff={predictor_damping_coeff:.6g} "
+                        f"predictor_damp={predictor_damp:.6e} "
+                        f"front_flux_damping={float(front_flux_damping_value):.6g} "
+                        f"zmax_mode={int(zmax_bc_mode) if zmax_bc_mode is not None else -1}"
+                    )
+                    if get_3d_patch_velocity_callback is not None:
+                        s3 = get_3d_patch_stats_callback()
+                        vel3 = get_3d_patch_velocity_callback()
+                        if (
+                            isinstance(s3, dict)
+                            and isinstance(vel3, tuple)
+                            and len(vel3) == 3
+                        ):
+                            try:
+                                nx3 = max(0, int(s3.get("nx", 0) or 0))
+                                ny3 = max(0, int(s3.get("ny", 0) or 0))
+                                nz3 = max(0, int(s3.get("nz", 0) or 0))
+                                dx3 = float(s3.get("dx", 0.0) or 0.0)
+                                dy3 = float(s3.get("dy", 0.0) or 0.0)
+                                nxy3 = nx3 * ny3
+                                if nxy3 > 0 and nz3 > 0 and dx3 > 0.0 and dy3 > 0.0:
+                                    w3 = np.asarray(vel3[2], dtype=np.float64).ravel()
+                                    n3 = nxy3 * nz3
+                                    if w3.size == n3:
+                                        top = w3[(nz3 - 1) * nxy3 : nz3 * nxy3]
+                                        top_pos = np.maximum(top, 0.0)
+                                        vent_q_est = float(np.sum(top_pos) * dx3 * dy3)
+                                        top_w_max = float(np.max(top)) if top.size else 0.0
+                                        log_callback(
+                                            "  3d_phys_vent: "
+                                            f"q_est={vent_q_est:.6e} m^3/s "
+                                            f"w_top_max={top_w_max:.6e} m/s"
+                                        )
+                            except Exception:
+                                pass
             if timing_samples > 0:
                 avg_wall = timing_totals_ms["wall"] / timing_samples
                 avg_step = timing_totals_ms["step"] / timing_samples
@@ -208,7 +276,6 @@ class SWE2DRuntimeReporter:
                     f"gpu_frac={step_gpu_frac:.1f}%"
                 )
                 log_callback(
-                    "the numbers go UP! they go UP UP UP!!!"
                     "  timing-avg(ms): "
                     f"wall={avg_wall:.2f} step={avg_step:.2f} coupling={avg_cpl:.2f} "
                     f"source={avg_src:.2f} state={avg_state:.2f} bc={avg_bc:.2f} ui={avg_ui:.2f} other={avg_other:.2f} "

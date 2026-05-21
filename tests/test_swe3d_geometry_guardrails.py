@@ -249,6 +249,28 @@ class TestSWE3DRuntimeConfigGuardrails(unittest.TestCase):
         with self.assertRaises(ValueError):
             configure_swe3d_runtime(geometry_gate_max_solid_fraction=1.5)
 
+    def test_configure_runtime_sets_predictor_damping_coeff(self):
+        key = {"BACKWATER_SWE3D_PREDICTOR_DAMPING_COEFF": None}
+        with _temporary_env(key):
+            applied = configure_swe3d_runtime(predictor_damping_coeff=0.12)
+            self.assertAlmostEqual(applied["predictor_damping_coeff"], 0.12)
+            self.assertEqual(os.environ.get("BACKWATER_SWE3D_PREDICTOR_DAMPING_COEFF"), "0.12")
+
+    def test_configure_runtime_rejects_invalid_predictor_damping_coeff(self):
+        with self.assertRaises(ValueError):
+            configure_swe3d_runtime(predictor_damping_coeff=-0.01)
+
+    def test_configure_runtime_sets_free_surface_gauge_tolerance_pa(self):
+        key = {"BACKWATER_SWE3D_FREE_SURFACE_GAUGE_TOLERANCE_PA": None}
+        with _temporary_env(key):
+            applied = configure_swe3d_runtime(free_surface_gauge_tolerance_pa=3000.0)
+            self.assertAlmostEqual(applied["free_surface_gauge_tolerance_pa"], 3000.0)
+            self.assertEqual(os.environ.get("BACKWATER_SWE3D_FREE_SURFACE_GAUGE_TOLERANCE_PA"), "3000")
+
+    def test_configure_runtime_rejects_invalid_free_surface_gauge_tolerance_pa(self):
+        with self.assertRaises(ValueError):
+            configure_swe3d_runtime(free_surface_gauge_tolerance_pa=-1.0)
+
 
 class TestSWE3DWorkbenchDelegateIntegration(unittest.TestCase):
     def test_workbench_delegate_enforces_strict_geometry_gate(self):

@@ -157,6 +157,8 @@ struct SWE3DCartesianPatchDeviceState {
     double last_projection_residual = -1.0;
     bool last_projection_converged = false;
     int32_t last_vof_substeps = 1;
+    // Active-set mask (1=solve this cell in predictor/projection/correction).
+    uint8_t* d_active_mask = nullptr;
 };
 
 struct SWE2D3DInterfaceContractDevice {
@@ -898,6 +900,21 @@ void swe2d_gpu_get_3d_patch_vof(
     double*           vof_host,
     int64_t           n);
 
+// Download full per-cell velocity fields (device -> host, length == n_cells).
+// Any output pointer may be nullptr to skip that component.
+void swe2d_gpu_get_3d_patch_velocity(
+    SWE2DDeviceState* dev,
+    double*           u_host,
+    double*           v_host,
+    double*           w_host,
+    int64_t           n);
+
+// Download full per-cell pressure field (device -> host, length == n_cells).
+void swe2d_gpu_get_3d_patch_pressure(
+    SWE2DDeviceState* dev,
+    double*           p_host,
+    int64_t           n);
+
 // Upload full per-cell velocity+pressure initial condition (all optional).
 // Pass nullptr for any field to skip that field.  Length must equal n_cells.
 void swe2d_gpu_set_3d_patch_state(
@@ -918,6 +935,19 @@ void swe2d_gpu_set_3d_patch_geometry(
     const double* ay_host,   // nullable
     const double* az_host,   // nullable
     int64_t n);
+
+// Update per-face boundary mode/state on an allocated 3D Cartesian patch.
+// Face index uses SWE3DPatchBoundaryFace ordering [0..5].
+void swe2d_gpu_set_3d_patch_face_bc(
+    SWE2DDeviceState* dev,
+    int32_t face,
+    int32_t mode,
+    double u,
+    double v,
+    double w,
+    double q,
+    double vof,
+    double p);
 
 // CUDA Graph optimization API (Suggestion 9)
 // Enable graph capture on next step, and use replayed graphs on subsequent steps.

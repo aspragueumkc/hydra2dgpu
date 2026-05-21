@@ -102,6 +102,20 @@ def parser() -> argparse.ArgumentParser:
     p_trig = sub.add_parser("trigger-action")
     p_trig.add_argument("--object-name", required=True)
 
+    p_reload = sub.add_parser("reload-plugin")
+    p_reload.add_argument(
+        "--plugin-name",
+        default="",
+        help="Optional plugin name; if omitted bridge auto-detects HYDRA plugin",
+    )
+
+    p_open_demo = sub.add_parser("open-swe2d-demo-dialog")
+    p_open_demo.add_argument(
+        "--plugin-name",
+        default="",
+        help="Optional plugin name; if omitted bridge auto-detects HYDRA plugin",
+    )
+
     p_raw = sub.add_parser("raw")
     p_raw.add_argument("--action", required=True)
     p_raw.add_argument("--params-json", default="{}")
@@ -138,6 +152,16 @@ def main() -> int:
     elif args.cmd == "trigger-action":
         action = "trigger_action"
         params = {"object_name": args.object_name}
+    elif args.cmd == "reload-plugin":
+        action = "reload_plugin"
+        params = {}
+        if args.plugin_name:
+            params["plugin_name"] = args.plugin_name
+    elif args.cmd == "open-swe2d-demo-dialog":
+        action = "open_swe2d_demo_dialog"
+        params = {}
+        if args.plugin_name:
+            params["plugin_name"] = args.plugin_name
     elif args.cmd == "run-swe2d":
         action = "run_swe2d_workbench"
         params = {}

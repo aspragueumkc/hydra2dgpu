@@ -5823,14 +5823,35 @@ else:
 
     def open_swe2d_demo_dialog(self):
         """Open the full 2D SWE workbench dialog from the plugin UI."""
+        import importlib
+        import sys
+
         try:
-            from swe2d_workbench_qt import launch_swe2d_workbench
+            mod = importlib.import_module('swe2d_workbench_qt')
         except Exception:
             try:
-                from .swe2d_workbench_qt import launch_swe2d_workbench
+                mod = importlib.import_module('.swe2d_workbench_qt', package=__package__)
             except Exception as exc:
                 QMessageBox.critical(self, '2D SWE Workbench', f'Unable to open 2D workbench: {exc}')
                 return
+
+        # Ensure extracted startup helpers are refreshed after in-session edits.
+        extracted_mod = sys.modules.get('swe2d.workbench.extracted.model_and_run_methods')
+        if extracted_mod is not None:
+            try:
+                importlib.reload(extracted_mod)
+            except Exception:
+                pass
+
+        try:
+            mod = importlib.reload(mod)
+        except Exception:
+            pass
+
+        launch_swe2d_workbench = getattr(mod, 'launch_swe2d_workbench', None)
+        if not callable(launch_swe2d_workbench):
+            QMessageBox.critical(self, '2D SWE Workbench', 'Unable to open 2D workbench: launch function unavailable')
+            return
 
         launch_swe2d_workbench(self, host_mode=self._swe2d_workbench_host_mode)
 

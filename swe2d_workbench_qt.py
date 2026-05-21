@@ -168,6 +168,17 @@ from swe2d.workbench.three_d_bc import (
     sync_experimental_3d_mode_widgets as _sync_experimental_3d_mode_widgets_logic,
     summarize_3d_patch_face_bc_modes as _summarize_3d_patch_face_bc_modes_logic,
 )
+from swe2d.workbench.project_settings import (
+    LAYER_SELECTOR_STATE_KEY,
+    WORKBENCH_STATE_KEY,
+    build_layer_selector_state,
+    collect_workbench_widget_state,
+    load_project_json,
+    parse_layer_selector_state,
+    read_project_entry_text,
+    restore_workbench_widget_state,
+    write_project_json,
+)
 
 try:
     from qgis.core import (
@@ -1933,8 +1944,12 @@ class SWE3DPatchViewerDialog(QtWidgets.QDialog):
         controls.addWidget(QtWidgets.QLabel("Field:"))
         self.field_combo = QtWidgets.QComboBox()
         self.field_combo.addItem("VoF slice (XY)", "vof_slice")
+        self.field_combo.addItem("U velocity slice (XY)", "u_slice")
+        self.field_combo.addItem("V velocity slice (XY)", "v_slice")
+        self.field_combo.addItem("Speed slice (XY)", "speed_slice")
         self.field_combo.addItem("Column fill depth", "column_depth")
         self.field_combo.addItem("Column fill fraction", "column_fraction")
+        self.field_combo.addItem("Column lowest z (bed height)", "column_bed_z")
         controls.addWidget(self.field_combo)
         controls.addWidget(QtWidgets.QLabel("Z index:"))
         self.z_spin = QtWidgets.QSpinBox()
@@ -2013,6 +2028,33 @@ class SWE3DPatchViewerDialog(QtWidgets.QDialog):
             return None, nx, ny, nz, dz
         return vof.reshape((nz, ny, nx)), nx, ny, nz, dz
 
+    def _resolve_bed_field(
+        self,
+        snap: Dict[str, object],
+        nx: int,
+        ny: int,
+        oz: float,
+    ) -> np.ndarray:
+        bed_flat = np.asarray(snap.get("bed_z", np.empty(0, dtype=np.float64)), dtype=np.float64).ravel()
+        nxy = max(0, int(nx) * int(ny))
+        if nxy > 0 and bed_flat.size == nxy:
+            return bed_flat.reshape((ny, nx))
+        return np.full((ny, nx), float(oz), dtype=np.float64)
+
+    def _reshape_optional_field(
+        self,
+        snap: Dict[str, object],
+        key: str,
+        nx: int,
+        ny: int,
+        nz: int,
+    ) -> Optional[np.ndarray]:
+        arr = np.asarray(snap.get(key, np.empty(0, dtype=np.float64)), dtype=np.float64).ravel()
+        n_exp = max(0, int(nx) * int(ny) * int(nz))
+        if n_exp <= 0 or arr.size != n_exp:
+            return None
+        return arr.reshape((nz, ny, nx))
+
     def _refresh_controls(self):
         snap = self._current_snapshot()
         if snap is None:
@@ -2022,7 +2064,7 @@ class SWE3DPatchViewerDialog(QtWidgets.QDialog):
         stats = dict(snap.get("stats", {}) or {})
         nz = max(1, int(stats.get("nz", 1) or 1))
         self.z_spin.setRange(0, max(0, nz - 1))
-        want_slice = str(self.field_combo.currentData() or "") == "vof_slice"
+        want_slice = str(self.field_combo.currentData() or "") in {"vof_slice", "u_slice", "v_slice", "speed_slice"}
         self.z_spin.setEnabled(bool(want_slice))
 
     def _refresh_view(self):
@@ -2040,6 +2082,10 @@ class SWE3DPatchViewerDialog(QtWidgets.QDialog):
             return
 
         field = str(self.field_combo.currentData() or "vof_slice")
+        stats = dict(snap.get("stats", {}) or {})
+        patch_spec = dict(snap.get("patch_spec", {}) or {})
+        oz = float(stats.get("origin_z", patch_spec.get("origin_z", 0.0)) or 0.0)
+
         if field == "column_depth":
             arr = np.sum(np.clip(arr3d, 0.0, 1.0), axis=0) * max(0.0, float(dz))
             title = "Column Fill Depth"
@@ -2052,6 +2098,42 @@ class SWE3DPatchViewerDialog(QtWidgets.QDialog):
             cmap = "magma"
             vmin = 0.0
             vmax = 1.0
+        elif field in {"u_slice", "v_slice", "speed_slice"}:
+            u3d = self._reshape_optional_field(snap, key="u", nx=nx, ny=ny, nz=nz)
+            v3d = self._reshape_optional_field(snap, key="v", nx=nx, ny=ny, nz=nz)
+            if u3d is None or v3d is None:
+                self.stats_lbl.setText(
+                    "Velocity slices unavailable for this snapshot. "
+                    "Re-run with a native build exposing 3D patch velocity observation."
+                )
+                return
+            z_idx = int(np.clip(self.z_spin.value(), 0, max(0, nz - 1)))
+            if field == "u_slice":
+                arr = u3d[z_idx, :, :]
+                title = f"U Velocity Slice (z={z_idx}/{max(0, nz - 1)})"
+                cmap = "coolwarm"
+                vabs = float(np.nanmax(np.abs(arr))) if arr.size else 0.0
+                vmin = -vabs if vabs > 0.0 else None
+                vmax = vabs if vabs > 0.0 else None
+            elif field == "v_slice":
+                arr = v3d[z_idx, :, :]
+                title = f"V Velocity Slice (z={z_idx}/{max(0, nz - 1)})"
+                cmap = "coolwarm"
+                vabs = float(np.nanmax(np.abs(arr))) if arr.size else 0.0
+                vmin = -vabs if vabs > 0.0 else None
+                vmax = vabs if vabs > 0.0 else None
+            else:
+                arr = np.sqrt(np.maximum(0.0, u3d[z_idx, :, :] ** 2 + v3d[z_idx, :, :] ** 2))
+                title = f"Horizontal Speed Slice (z={z_idx}/{max(0, nz - 1)})"
+                cmap = "plasma"
+                vmin = 0.0
+                vmax = None
+        elif field == "column_bed_z":
+            arr = self._resolve_bed_field(snap, nx=nx, ny=ny, oz=oz)
+            title = "Column Lowest Z (Bed Height)"
+            cmap = "terrain"
+            vmin = None
+            vmax = None
         else:
             z_idx = int(np.clip(self.z_spin.value(), 0, max(0, nz - 1)))
             arr = arr3d[z_idx, :, :]
@@ -2799,6 +2881,14 @@ class SWE2DWorkbenchDialog(QtWidgets.QDialog):
 
     def _bind_model_tab_3d_patch_controls(self, model_tab_page: QtWidgets.QWidget, param_form: QtWidgets.QFormLayout) -> None:
         from swe2d.workbench.monolith_methods import _bind_model_tab_3d_patch_controls as _logic
+        try:
+            _g = getattr(_logic, "__globals__", None)
+            if isinstance(_g, dict):
+                _g.setdefault("_SWE3D_PATCH_FACES", _SWE3D_PATCH_FACES)
+                _g.setdefault("_SWE3D_BC_MODE_OPTIONS", _SWE3D_BC_MODE_OPTIONS)
+                _g.setdefault("_SWE3D_BC_FIELD_DEFAULTS", _SWE3D_BC_FIELD_DEFAULTS)
+        except Exception:
+            pass
         return _logic(self, model_tab_page, param_form)
 
     def _bind_model_tab_3d_subgrid_drainage_controls(
@@ -3496,7 +3586,7 @@ class SWE2DWorkbenchDialog(QtWidgets.QDialog):
             mode_label_callback=self._experimental_3d_bc_mode_label,
         )
 
-    def _apply_3d_patch_face_bc_to_backend(self, backend: object) -> None:
+    def _apply_3d_patch_face_bc_to_backend(self, backend: object, quiet: bool = False) -> None:
         return _apply_3d_patch_face_bc_to_backend_logic(
             ui=self,
             backend=backend,
@@ -3505,6 +3595,7 @@ class SWE2DWorkbenchDialog(QtWidgets.QDialog):
             coupling_mode_off=int(SWE2DThreeDCouplingMode.OFF),
             get_coupling_mode_callback=self._experimental_3d_selected_coupling_mode,
             log_callback=self._log,
+            quiet=bool(quiet),
         )
 
     def _sync_experimental_3d_mode_widgets(self, *_args: object) -> None:
@@ -4025,6 +4116,15 @@ class SWE2DWorkbenchDialog(QtWidgets.QDialog):
 
     def _refresh_layer_combos(self):
         from swe2d.workbench.monolith_methods import _refresh_layer_combos as _logic
+        try:
+            _g = getattr(_logic, "__globals__", None)
+            if isinstance(_g, dict):
+                _g.setdefault("_HAVE_QGIS_CORE", _HAVE_QGIS_CORE)
+                _g.setdefault("QgsProject", QgsProject)
+                _g.setdefault("QgsVectorLayer", QgsVectorLayer)
+                _g.setdefault("QgsRasterLayer", QgsRasterLayer)
+        except Exception:
+            pass
         return _logic(self)
 
     def _parse_csv_number_list(self, text: str, cast=float):
@@ -4515,6 +4615,12 @@ class SWE2DWorkbenchDialog(QtWidgets.QDialog):
 
     def _import_mesh_from_layers(self):
         from swe2d.workbench.monolith_methods import _import_mesh_from_layers as _logic
+        try:
+            _g = getattr(_logic, "__globals__", None)
+            if isinstance(_g, dict):
+                _g["_HAVE_QGIS_CORE"] = _HAVE_QGIS_CORE
+        except Exception:
+            pass
         return _logic(self)
 
     def _assign_node_z_from_terrain(self):
@@ -5188,7 +5294,7 @@ class SWE2DWorkbenchDialog(QtWidgets.QDialog):
             QtWidgets.QMessageBox.warning(
                 self, "Results Panel",
                 "Could not create results panel.\n"
-                "Ensure swe2d_results_panel.py is in the plugin directory."
+                "Ensure swe2d.results.panel module is available."
             )
             return
         gpkg = self._model_gpkg_path or ""
@@ -5908,81 +6014,14 @@ class SWE2DWorkbenchDialog(QtWidgets.QDialog):
         gpkg_path: str,
         run_id: Optional[str] = None,
     ) -> Tuple[str, List[Dict[str, object]]]:
-        if not gpkg_path or not os.path.exists(gpkg_path):
-            return "", []
-        conn = sqlite3.connect(gpkg_path)
-        try:
-            cur = conn.cursor()
-            cur.execute(
-                "SELECT name FROM sqlite_master WHERE type='table' AND name='swe2d_coupling_results'"
-            )
-            if cur.fetchone() is None:
-                return "", []
+        from swe2d.workbench.extracted.results_export_methods import load_coupling_results_from_geopackage
 
-            chosen = str(run_id or "").strip()
-            if not chosen:
-                cur.execute(
-                    """
-                    SELECT run_id FROM swe2d_coupling_results_runs
-                    ORDER BY datetime(created_utc) DESC, rowid DESC
-                    LIMIT 1
-                    """
-                )
-                row = cur.fetchone()
-                if row is None:
-                    return "", []
-                chosen = str(row[0])
-
-            cur.execute(
-                """
-                SELECT t_s, component, object_id, object_name, metric, value
-                FROM swe2d_coupling_results
-                WHERE run_id = ?
-                ORDER BY t_s ASC, component ASC, metric ASC, object_id ASC
-                """,
-                (chosen,),
-            )
-            rows: List[Dict[str, object]] = []
-            for t_s, component, object_id, object_name, metric, value in cur.fetchall():
-                rows.append(
-                    {
-                        "t_s": float(t_s),
-                        "component": str(component or ""),
-                        "object_id": str(object_id or ""),
-                        "object_name": str(object_name or ""),
-                        "metric": str(metric or ""),
-                        "value": float(value),
-                    }
-                )
-            return chosen, rows
-        finally:
-            conn.close()
+        return load_coupling_results_from_geopackage(self, gpkg_path, run_id)
 
     def _open_coupling_results_viewer(self):
-        db_path = ""
-        if self._coupling_results_latest_db_path and os.path.exists(self._coupling_results_latest_db_path):
-            db_path = self._coupling_results_latest_db_path
-        if not db_path:
-            db_path = self._current_line_results_storage_path()
-        if not db_path:
-            self._log("No GeoPackage available for coupling results viewer.")
-            return
+        from swe2d.workbench.extracted.results_export_methods import open_coupling_results_viewer
 
-        run_id = self._coupling_results_latest_run_id or None
-        chosen, rows = self._load_coupling_results_from_geopackage(db_path, run_id=run_id)
-        if not chosen or not rows:
-            self._log("No drainage/structure coupling results found in GeoPackage yet.")
-            return
-
-        dlg = SWE2DCouplingResultsViewerDialog(
-            records=rows,
-            run_id=chosen,
-            db_path=db_path,
-            length_unit=self._length_unit_name,
-            flow_unit_label=self._flow_unit_label(),
-            parent=self,
-        )
-        dlg.exec()
+        return open_coupling_results_viewer(self)
 
     def _persist_mesh_results_to_geopackage(
         self,
@@ -5991,137 +6030,17 @@ class SWE2DWorkbenchDialog(QtWidgets.QDialog):
         mesh_rows: List[Dict[str, object]],
         interval_s: float,
     ) -> None:
-        if not gpkg_path or not mesh_rows:
-            return
-        conn = sqlite3.connect(gpkg_path)
-        try:
-            cur = conn.cursor()
-            cur.execute(
-                """
-                CREATE TABLE IF NOT EXISTS swe2d_mesh_results_runs (
-                    run_id TEXT PRIMARY KEY,
-                    created_utc TEXT,
-                    interval_s REAL,
-                    row_count INTEGER
-                )
-                """
-            )
-            cur.execute(
-                """
-                CREATE TABLE IF NOT EXISTS swe2d_mesh_results (
-                    run_id TEXT,
-                    t_s REAL,
-                    cell_id INTEGER,
-                    h REAL,
-                    hu REAL,
-                    hv REAL,
-                    PRIMARY KEY (run_id, t_s, cell_id)
-                )
-                """
-            )
-            cur.execute(
-                "CREATE INDEX IF NOT EXISTS idx_swe2d_mesh_results_run_t_cell "
-                "ON swe2d_mesh_results(run_id, t_s, cell_id)"
-            )
-            cur.execute("DELETE FROM swe2d_mesh_results WHERE run_id = ?", (run_id,))
-            cur.execute(
-                """
-                INSERT OR REPLACE INTO swe2d_mesh_results_runs
-                (run_id, created_utc, interval_s, row_count)
-                VALUES (?, ?, ?, ?)
-                """,
-                (
-                    str(run_id),
-                    datetime.datetime.utcnow().replace(microsecond=0).isoformat() + "Z",
-                    float(interval_s),
-                    int(len(mesh_rows)),
-                ),
-            )
-            cur.executemany(
-                """
-                INSERT OR REPLACE INTO swe2d_mesh_results
-                (run_id, t_s, cell_id, h, hu, hv)
-                VALUES (?, ?, ?, ?, ?, ?)
-                """,
-                [
-                    (
-                        str(run_id),
-                        float(r.get("t_s", 0.0)),
-                        int(r.get("cell_id", -1)),
-                        float(r.get("h", 0.0)),
-                        float(r.get("hu", 0.0)),
-                        float(r.get("hv", 0.0)),
-                    )
-                    for r in mesh_rows
-                ],
-            )
-            conn.commit()
-            support = self._velocity_data_support_for_run(gpkg_path, run_id, "swe2d_mesh_results")
-            if int(support.get("face_rows", 0)) > 0:
-                self._log(
-                    "Velocity persistence check: both cell-centered and face-centered data are present "
-                    f"(run_id={run_id}, cell_rows={int(support.get('cell_rows', 0))}, "
-                    f"face_table={support.get('face_table')}, face_rows={int(support.get('face_rows', 0))})."
-                )
-            else:
-                self._log(
-                    "Velocity persistence check: only cell-centered h/hu/hv rows were stored for this run; "
-                    "no face-centered flux rows were found in GeoPackage tables "
-                    "(swe2d_face_flux_results / swe2d_face_results / swe2d_flux_faces)."
-                )
-            self._log(
-                f"Stored mesh snapshot results in GeoPackage: {gpkg_path} "
-                f"(run_id={run_id}, rows={len(mesh_rows)})"
-            )
-        finally:
-            conn.close()
+        from swe2d.workbench.extracted.results_export_methods import persist_mesh_results_to_geopackage
+
+        return persist_mesh_results_to_geopackage(self, gpkg_path, run_id, mesh_rows, interval_s)
 
     def _build_mesh_snapshot_rows(self) -> List[Dict[str, object]]:
         return _build_mesh_snapshot_rows_logic(self._snapshot_timesteps)
 
     def _collect_run_log_metadata(self) -> Dict[str, object]:
-        gate_cfg = dict(getattr(self, "_swe3d_geom_gate_last_config", {}) or {})
-        gate_metrics = dict(getattr(self, "_swe3d_geom_gate_last_metrics", {}) or {})
-        gate_violations = [str(v) for v in (getattr(self, "_swe3d_geom_gate_last_violations", []) or [])]
+        from swe2d.workbench.extracted.results_export_methods import collect_run_log_metadata
 
-        if not gate_cfg:
-            def _env_bool(name: str, default: bool) -> bool:
-                raw = str(os.environ.get(name, "")).strip().lower()
-                if not raw:
-                    return bool(default)
-                return raw not in ("0", "false", "no", "off")
-
-            def _env_float(name: str, default: float) -> float:
-                try:
-                    return float(os.environ.get(name, str(default)))
-                except Exception:
-                    return float(default)
-
-            def _env_int(name: str, default: int) -> int:
-                try:
-                    return int(os.environ.get(name, str(default)))
-                except Exception:
-                    return int(default)
-
-            gate_cfg = {
-                "strict": _env_bool("BACKWATER_SWE3D_GEOM_STRICT", False),
-                "max_solid_fraction": max(0.0, min(1.0, _env_float("BACKWATER_SWE3D_GEOM_MAX_SOLID_FRACTION", 0.98))),
-                "max_seed_leak_fallbacks": max(0, _env_int("BACKWATER_SWE3D_GEOM_MAX_SEED_LEAK_FALLBACKS", 0)),
-            }
-
-        metadata: Dict[str, object] = {
-            "swe3d_geometry_gate": {
-                "strict": bool(gate_cfg.get("strict", False)),
-                "max_solid_fraction": float(gate_cfg.get("max_solid_fraction", 0.98)),
-                "max_seed_leak_fallbacks": int(gate_cfg.get("max_seed_leak_fallbacks", 0)),
-                "violation_count": int(len(gate_violations)),
-            }
-        }
-        if gate_metrics:
-            metadata["swe3d_geometry_gate"]["metrics"] = gate_metrics
-        if gate_violations:
-            metadata["swe3d_geometry_gate"]["violations"] = gate_violations
-        return metadata
+        return collect_run_log_metadata(self)
 
     def _persist_run_log_to_geopackage(
         self,
@@ -6155,32 +6074,17 @@ class SWE2DWorkbenchDialog(QtWidgets.QDialog):
         return _load_run_logs_from_geopackage_logic(gpkg_path=gpkg_path)
 
     def _open_run_log_viewer(self):
-        db_path = ""
-        if self._run_log_latest_db_path and os.path.exists(self._run_log_latest_db_path):
-            db_path = self._run_log_latest_db_path
-        if not db_path:
-            db_path = self._current_line_results_storage_path()
-        if not db_path:
-            self._log("No GeoPackage available for run log viewer.")
-            return
-        records = self._load_run_logs_from_geopackage(db_path)
-        if not records:
-            self._log("No saved run logs found in GeoPackage yet.")
-            return
-        dlg = SWE2DRunLogViewerDialog(
-            records=records,
-            run_id=self._run_log_latest_run_id,
-            db_path=db_path,
-            parent=self,
-        )
-        dlg.exec()
+        from swe2d.workbench.extracted.results_export_methods import open_run_log_viewer
+
+        return open_run_log_viewer(self)
 
     def _open_3d_patch_viewer(self):
         snaps = list(getattr(self, "_three_d_patch_snapshots", []) or [])
         if not snaps:
             self._log(
                 "No 3D patch snapshots available yet. "
-                "Run with Experimental 3D patch mode enabled and capture mesh snapshots."
+                "Run with Experimental 3D patch mode enabled and capture mesh snapshots. "
+                "Note: 'Snapshot written -> ... .hdf' is a 2D/mesh export and is not the source used by the 3D patch viewer."
             )
             return
         dlg = SWE3DPatchViewerDialog(snaps, parent=self)
@@ -6840,24 +6744,12 @@ class SWE2DWorkbenchDialog(QtWidgets.QDialog):
         return specs
 
     def _project_entry_read_text(self, key: str, default: str = "") -> str:
-        """Read a text value from QGIS project settings.
-
-        Args:
-            key: Project entry key name.
-            default: Fallback value when key is missing.
-
-        Returns:
-            Stored text value, or `default` if unavailable.
-        """
-        if not _HAVE_QGIS_CORE or QgsProject is None:
-            return str(default)
-        try:
-            result = QgsProject.instance().readEntry("Backwater2DWorkbench", key, str(default))
-        except Exception:
-            return str(default)
-        if isinstance(result, tuple):
-            return str(result[0] if result and result[0] not in (None, "") else default)
-        return str(result if result not in (None, "") else default)
+        return read_project_entry_text(
+            have_qgis_core=_HAVE_QGIS_CORE,
+            qgs_project_cls=QgsProject,
+            key=key,
+            default=default,
+        )
 
     def _persist_project_layer_bindings(self, *_args: object) -> None:
         """Persist current layer-combo selections into the QGIS project."""
@@ -6865,38 +6757,27 @@ class SWE2DWorkbenchDialog(QtWidgets.QDialog):
             return
         if bool(getattr(self, "_initial_layer_restore_pending", False)):
             return
-        payload = {"version": 1, "selectors": {}}
-        for attr_name, combo in self._project_layer_binding_specs():
-            idx = combo.currentIndex()
-            label = str(combo.currentText() or "").strip() if idx >= 0 else ""
-            layer_id = combo.currentData()
-            layer_id = "" if layer_id in (None, "") else str(layer_id)
-            payload["selectors"][attr_name] = {
-                "layer_id": layer_id,
-                "layer_name": label,
-            }
-        try:
-            QgsProject.instance().writeEntry(
-                "Backwater2DWorkbench",
-                "layer_selector_state_json",
-                json.dumps(payload, separators=(",", ":")),
-            )
-        except Exception:
-            pass
+        payload = build_layer_selector_state(self._project_layer_binding_specs())
+        write_project_json(
+            have_qgis_core=_HAVE_QGIS_CORE,
+            qgs_project_cls=QgsProject,
+            key=LAYER_SELECTOR_STATE_KEY,
+            payload=payload,
+        )
 
     def _restore_project_layer_bindings(self) -> None:
         """Restore saved layer-combo selections from the QGIS project."""
         if self._project_layer_state_blocked or not _HAVE_QGIS_CORE or QgsProject is None:
             return
-        raw = self._project_entry_read_text("layer_selector_state_json", "")
-        if not raw:
-            return
-        try:
-            payload = json.loads(raw)
-        except Exception:
-            return
-        selectors = payload.get("selectors", {}) if isinstance(payload, dict) else {}
-        if not isinstance(selectors, dict):
+        selectors = parse_layer_selector_state(
+            load_project_json(
+                have_qgis_core=_HAVE_QGIS_CORE,
+                qgs_project_cls=QgsProject,
+                key=LAYER_SELECTOR_STATE_KEY,
+                default={},
+            )
+        )
+        if not selectors:
             return
 
         self._project_layer_state_blocked = True
@@ -6959,15 +6840,11 @@ class SWE2DWorkbenchDialog(QtWidgets.QDialog):
 
         The method captures supported widget types (spin boxes, combo boxes,
         checkboxes, and line edits) and stores a compact JSON payload in the
-        project under `Backwater2DWorkbench/workbench_state_json`.
+        project under the centralized workbench-state key.
         """
         if not _HAVE_QGIS_CORE or QgsProject is None:
             return
-        payload = {
-            "version": 1,
-            "widgets": {}
-        }
-        
+
         # Collect all widgets that should be persisted
         widget_attrs = [
             # Mesh generation
@@ -7023,111 +6900,69 @@ class SWE2DWorkbenchDialog(QtWidgets.QDialog):
             "topo_gmsh_verbosity_spin",
         ]
         widget_attrs.extend(list(getattr(self, "_experimental_3d_bc_widget_attrs", []) or []))
-        
-        for attr_name in widget_attrs:
-            widget = getattr(self, attr_name, None)
-            if widget is None:
-                continue
-            
-            value = None
-            if isinstance(widget, QtWidgets.QSpinBox):
-                value = widget.value()
-            elif isinstance(widget, QtWidgets.QDoubleSpinBox):
-                value = widget.value()
-            elif isinstance(widget, QtWidgets.QComboBox):
-                value = widget.currentData()
-                if value is None:
-                    value = widget.currentIndex()
-            elif isinstance(widget, QtWidgets.QCheckBox):
-                value = widget.isChecked()
-            elif isinstance(widget, QtWidgets.QLineEdit):
-                value = widget.text()
-            else:
-                continue
-            
-            payload["widgets"][attr_name] = {
-                "type": type(widget).__name__,
-                "value": value
-            }
-        
+
+        # Include any additional supported widgets bound on the dialog so newly
+        # added controls persist without requiring manual list maintenance.
         try:
-            json_str = json.dumps(payload, separators=(",", ":"), default=str)
-            QgsProject.instance().writeEntry(
-                "Backwater2DWorkbench",
-                "workbench_state_json",
-                json_str,
+            persistable_classes = (
+                getattr(QtWidgets, "QSpinBox"),
+                getattr(QtWidgets, "QDoubleSpinBox"),
+                getattr(QtWidgets, "QComboBox"),
+                getattr(QtWidgets, "QCheckBox"),
+                getattr(QtWidgets, "QLineEdit"),
             )
+            known_attrs = set(widget_attrs)
+            for attr_name, widget in vars(self).items():
+                if attr_name in known_attrs or attr_name.startswith("_"):
+                    continue
+                if isinstance(widget, persistable_classes):
+                    widget_attrs.append(attr_name)
+                    known_attrs.add(attr_name)
+        except Exception:
+            pass
+
+        payload = collect_workbench_widget_state(
+            ui=self,
+            widget_attrs=widget_attrs,
+            qtwidgets_module=QtWidgets,
+        )
+        if write_project_json(
+            have_qgis_core=_HAVE_QGIS_CORE,
+            qgs_project_cls=QgsProject,
+            key=WORKBENCH_STATE_KEY,
+            payload=payload,
+            log_callback=self._log,
+        ):
             self._log(f"[DEBUG] persist: saved {len(payload['widgets'])} widgets to project")
-        except Exception as e:
-            self._log(f"[DEBUG] persist: writeEntry failed: {e}")
 
     def _restore_project_workbench_state(self, *_args: object) -> None:
         """Restore persisted workbench widget values from QGIS project state."""
         if not _HAVE_QGIS_CORE or QgsProject is None:
             self._log("[DEBUG] restore: QGIS core not available")
             return
-        
-        raw = self._project_entry_read_text("workbench_state_json", "")
-        if not raw:
+
+        payload = load_project_json(
+            have_qgis_core=_HAVE_QGIS_CORE,
+            qgs_project_cls=QgsProject,
+            key=WORKBENCH_STATE_KEY,
+            default=None,
+            log_callback=self._log,
+        )
+        if payload is None:
             self._log("[DEBUG] restore: no saved workbench state found")
             return
-        
-        self._log(f"[DEBUG] restore: found {len(raw)} chars of state data")
-        try:
-            payload = json.loads(raw)
-        except Exception as e:
-            self._log(f"[DEBUG] restore: json parse failed: {e}")
-            return
-        
+
         widgets_data = payload.get("widgets", {}) if isinstance(payload, dict) else {}
-        if not isinstance(widgets_data, dict):
-            self._log("[DEBUG] restore: widgets not a dict")
-            return
-        
         self._log(f"[DEBUG] restore: restoring {len(widgets_data)} widget values")
-        restored_count = 0
-        for attr_name, widget_info in widgets_data.items():
-            widget = getattr(self, attr_name, None)
-            if widget is None or not isinstance(widget_info, dict):
-                continue
-            
-            value = widget_info.get("value")
-            if value is None:
-                continue
-            
-            try:
-                if isinstance(widget, QtWidgets.QSpinBox):
-                    widget.setValue(int(value))
-                    restored_count += 1
-                elif isinstance(widget, QtWidgets.QDoubleSpinBox):
-                    widget.setValue(float(value))
-                    restored_count += 1
-                elif isinstance(widget, QtWidgets.QComboBox):
-                    # Try to find item by data first, then by index
-                    found = False
-                    for i in range(widget.count()):
-                        if widget.itemData(i) == value:
-                            widget.setCurrentIndex(i)
-                            found = True
-                            break
-                    if not found:
-                        # Fallback to index
-                        try:
-                            widget.setCurrentIndex(int(value))
-                        except Exception:
-                            pass
-                    restored_count += 1
-                elif isinstance(widget, QtWidgets.QCheckBox):
-                    widget.setChecked(bool(value))
-                    restored_count += 1
-                elif isinstance(widget, QtWidgets.QLineEdit):
-                    widget.setText(str(value))
-                    restored_count += 1
-            except Exception as e:
-                self._log(f"[DEBUG] restore: failed to restore {attr_name}: {e}")
-                continue
-        
-            self._sync_experimental_3d_mode_widgets()
+
+        restored_count = restore_workbench_widget_state(
+            ui=self,
+            widgets_data=widgets_data,
+            qtwidgets_module=QtWidgets,
+            log_callback=self._log,
+        )
+
+        self._sync_experimental_3d_mode_widgets()
         self._log(f"[DEBUG] restore: successfully restored {restored_count} of {len(widgets_data)} widgets")
 
     def _missing_required_fields(self, layer, required_fields: Sequence[str]) -> List[str]:
@@ -7456,72 +7291,27 @@ class SWE2DWorkbenchDialog(QtWidgets.QDialog):
         return _logic(self, path, timesteps)
 
     def _export_mesh_to_hdf5(self):
-        if self._mesh_data is None:
-            self._on_generate_mesh()
-        if self._mesh_data is None:
-            return
-        out_path, _ = QtWidgets.QFileDialog.getSaveFileName(
-            self,
-            "Save Mesh As HEC-RAS HDF5",
-            "swe2d_mesh.hdf",
-            "HEC-RAS HDF5 (*.hdf)",
-        )
-        if not out_path:
-            return
-        try:
-            out_path = self._normalize_hecras_hdf_path(out_path)
-            self._write_hecras_hdf5(out_path)
-            n_nodes = int(self._mesh_data["node_x"].shape[0])
-            self._log(f"Saved HEC-RAS HDF5 mesh: {out_path} (nodes={n_nodes})")
-            self.layer_status_lbl.setText("Mesh saved to HEC-RAS HDF5.")
-        except Exception as exc:
-            QtWidgets.QMessageBox.critical(self, "HDF5 Export", f"Export failed:\n{exc}")
+        from swe2d.workbench.extracted.results_export_methods import export_mesh_to_hdf5
+
+        return export_mesh_to_hdf5(self)
 
     def _export_results_to_hdf5(self):
-        if self._mesh_data is None or not self._snapshot_timesteps:
-            self._log("Run the model first (snapshots must be captured) to export HDF5 results.")
-            return
-        out_path, _ = QtWidgets.QFileDialog.getSaveFileName(
-            self,
-            "Save Results As HEC-RAS HDF5",
-            "swe2d_results.hdf",
-            "HEC-RAS HDF5 (*.hdf)",
-        )
-        if not out_path:
-            return
-        try:
-            out_path = self._normalize_hecras_hdf_path(out_path)
-            self._write_hecras_hdf5(out_path, timesteps=self._snapshot_timesteps)
-            n_ts = len(self._snapshot_timesteps)
-            self._log(f"Saved HEC-RAS HDF5 results: {out_path} ({n_ts} timesteps)")
-            self.layer_status_lbl.setText(f"Results saved to HEC-RAS HDF5 ({n_ts} timesteps).")
-        except Exception as exc:
-            QtWidgets.QMessageBox.critical(self, "HDF5 Export", f"Export failed:\n{exc}")
+        from swe2d.workbench.extracted.results_export_methods import export_results_to_hdf5
+
+        return export_results_to_hdf5(self)
 
     def _export_results_to_ugrid(self):
-        if self._mesh_data is None or not self._snapshot_timesteps:
-            self._log("Run the model first (snapshots must be captured) to export UGRID results.")
-            return
-        out_path, _ = QtWidgets.QFileDialog.getSaveFileName(
-            self,
-            "Save Results As UGRID NetCDF",
-            "swe2d_results.nc",
-            "UGRID NetCDF (*.nc)",
-        )
-        if not out_path:
-            return
-        if not out_path.lower().endswith(".nc"):
-            out_path += ".nc"
-        try:
-            self._write_ugrid_nc(out_path, timesteps=self._snapshot_timesteps)
-            n_ts = len(self._snapshot_timesteps)
-            self._log(f"Saved UGRID NetCDF results: {out_path} ({n_ts} timesteps)")
-            self.layer_status_lbl.setText(f"Results saved to UGRID NetCDF ({n_ts} timesteps).")
-        except Exception as exc:
-            QtWidgets.QMessageBox.critical(self, "UGRID Export", f"Export failed:\n{exc}")
+        from swe2d.workbench.extracted.results_export_methods import export_results_to_ugrid
+
+        return export_results_to_ugrid(self)
 
     def _on_snapshot(self):
-        """Write all captured run timesteps to a temporary HEC-RAS HDF5 file."""
+        """Write captured 2D mesh timesteps to a temporary HEC-RAS HDF file.
+
+        This export is for mesh/results interoperability. The experimental 3D
+        patch viewer reads in-memory 3D VoF snapshots from
+        `_three_d_patch_snapshots`, not this HDF file.
+        """
         if self._mesh_data is None or not self._snapshot_timesteps:
             self._log("No snapshot data available — run the model with an output interval set first.")
             return
@@ -7536,6 +7326,10 @@ class SWE2DWorkbenchDialog(QtWidgets.QDialog):
                 f"Snapshot written → {snap_path}  "
                 f"({n_ts} timestep(s), last t={last_t_hr:.3f} hr, "
                 f"interval={self.output_interval_edit.text()})"
+            )
+            self._log(
+                "Snapshot export note: this .hdf contains 2D mesh results. "
+                "3D Patch Viewer uses in-memory 3D patch snapshots captured during run."
             )
 
             if self._line_snapshot_rows:
@@ -8270,7 +8064,15 @@ class SWE2DWorkbenchDialog(QtWidgets.QDialog):
             write_fluid_voxels_obj_fn=write_fluid_voxels_obj,
         )
 
-    def _append_3d_patch_snapshot(self, t_s: float, stats: Dict[str, object], vof: np.ndarray) -> None:
+    def _append_3d_patch_snapshot(
+        self,
+        t_s: float,
+        stats: Dict[str, object],
+        vof: np.ndarray,
+        u: Optional[np.ndarray] = None,
+        v: Optional[np.ndarray] = None,
+        w: Optional[np.ndarray] = None,
+    ) -> None:
         if not isinstance(stats, dict):
             return
         arr = np.asarray(vof, dtype=np.float64).ravel()
@@ -8280,15 +8082,64 @@ class SWE2DWorkbenchDialog(QtWidgets.QDialog):
         expected = nx * ny * nz
         if expected <= 0 or arr.size != expected:
             return
+        u_arr = np.asarray(u, dtype=np.float64).ravel() if u is not None else np.empty(0, dtype=np.float64)
+        v_arr = np.asarray(v, dtype=np.float64).ravel() if v is not None else np.empty(0, dtype=np.float64)
+        w_arr = np.asarray(w, dtype=np.float64).ravel() if w is not None else np.empty(0, dtype=np.float64)
+        if u_arr.size != expected:
+            u_arr = np.empty(0, dtype=np.float64)
+        if v_arr.size != expected:
+            v_arr = np.empty(0, dtype=np.float64)
+        if w_arr.size != expected:
+            w_arr = np.empty(0, dtype=np.float64)
         snap_spec = None
         if isinstance(self._three_d_patch_last_spec, dict):
             snap_spec = dict(self._three_d_patch_last_spec)
+
+        bed_flat = np.empty(0, dtype=np.float64)
+        if isinstance(snap_spec, dict):
+            try:
+                nx_s = int(snap_spec.get("nx", 0) or 0)
+                ny_s = int(snap_spec.get("ny", 0) or 0)
+                dx_s = float(snap_spec.get("dx", 0.0) or 0.0)
+                dy_s = float(snap_spec.get("dy", 0.0) or 0.0)
+                ox_s = float(snap_spec.get("origin_x", 0.0) or 0.0)
+                oy_s = float(snap_spec.get("origin_y", 0.0) or 0.0)
+                oz_s = float(snap_spec.get("origin_z", 0.0) or 0.0)
+                if nx_s > 0 and ny_s > 0 and dx_s > 0.0 and dy_s > 0.0:
+                    class _PatchSpecTmp:
+                        pass
+
+                    spec_obj = _PatchSpecTmp()
+                    spec_obj.nx = nx_s
+                    spec_obj.ny = ny_s
+                    spec_obj.dx = dx_s
+                    spec_obj.dy = dy_s
+                    spec_obj.origin_x = ox_s
+                    spec_obj.origin_y = oy_s
+
+                    terrain_surface = self._build_patch_terrain_surface(spec_obj)
+                    if terrain_surface is not None:
+                        bed_arr = np.where(np.isfinite(terrain_surface), terrain_surface, float(oz_s)).astype(np.float64)
+                    else:
+                        bed_arr = np.full((ny_s, nx_s), float(oz_s), dtype=np.float64)
+                    bed_flat = bed_arr.ravel(order="C")
+            except Exception:
+                bed_flat = np.empty(0, dtype=np.float64)
+
+        stats_rec = dict(stats)
+        if "origin_z" not in stats_rec and isinstance(snap_spec, dict) and "origin_z" in snap_spec:
+            stats_rec["origin_z"] = float(snap_spec.get("origin_z", 0.0) or 0.0)
+
         self._three_d_patch_snapshots.append(
             {
                 "t_s": float(t_s),
-                "stats": dict(stats),
+                "stats": stats_rec,
                 "vof": arr.copy(),
+                "u": u_arr.copy(),
+                "v": v_arr.copy(),
+                "w": w_arr.copy(),
                 "patch_spec": snap_spec,
+                "bed_z": bed_flat.copy(),
             }
         )
         max_keep = 48
@@ -8786,11 +8637,15 @@ def _remove_workbench_designer_dock(iface_obj) -> None:
 def _remove_workbench_studio_dock(iface_obj) -> None:
     from swe2d.workbench.extracted.studio_host_methods import _remove_workbench_studio_dock as _logic
 
+    _prepare_studio_host_logic_globals(_logic)
+
     return _logic(iface_obj)
 
 
 def _attach_host_dock_widget(iface_obj, host_window, dock: QtWidgets.QDockWidget, area) -> bool:
     from swe2d.workbench.extracted.studio_host_methods import _attach_host_dock_widget as _logic
+
+    _prepare_studio_host_logic_globals(_logic)
 
     return _logic(iface_obj, host_window, dock, area)
 
@@ -8798,11 +8653,15 @@ def _attach_host_dock_widget(iface_obj, host_window, dock: QtWidgets.QDockWidget
 def _studio_take_dock_widget(studio_dock, fallback_text: str) -> QtWidgets.QWidget:
     from swe2d.workbench.extracted.studio_host_methods import _studio_take_dock_widget as _logic
 
+    _prepare_studio_host_logic_globals(_logic)
+
     return _logic(studio_dock, fallback_text)
 
 
 def _build_studio_component_docks(iface_obj, host_window, dlg) -> Dict[str, QtWidgets.QDockWidget]:
     from swe2d.workbench.extracted.studio_host_methods import _build_studio_component_docks as _logic
+
+    _prepare_studio_host_logic_globals(_logic)
 
     return _logic(iface_obj, host_window, dlg)
 
@@ -8817,11 +8676,15 @@ def _remove_workbench_scenario_dock(iface_obj) -> None:
 def _studio_host_main_window(iface_obj, fallback_parent=None):
     from swe2d.workbench.extracted.studio_host_methods import _studio_host_main_window as _logic
 
+    _prepare_studio_host_logic_globals(_logic)
+
     return _logic(iface_obj, fallback_parent)
 
 
 def _clear_studio_host_controls(iface_obj, fallback_parent=None) -> None:
     from swe2d.workbench.extracted.studio_host_methods import _clear_studio_host_controls as _logic
+
+    _prepare_studio_host_logic_globals(_logic)
 
     return _logic(iface_obj, fallback_parent)
 
@@ -8834,7 +8697,29 @@ def _install_studio_host_controls(
 ) -> None:
     from swe2d.workbench.extracted.studio_host_methods import _install_studio_host_controls as _logic
 
+    _prepare_studio_host_logic_globals(_logic)
+
     return _logic(iface_obj, dlg, fallback_parent, component_docks)
+
+
+def _prepare_studio_host_logic_globals(_logic) -> None:
+    try:
+        _g = getattr(_logic, "__globals__", None)
+        if not isinstance(_g, dict):
+            return
+        if _g.get("_SWE2D_WORKBENCH_STUDIO_DOCK") is None and _SWE2D_WORKBENCH_STUDIO_DOCK is not None:
+            _g["_SWE2D_WORKBENCH_STUDIO_DOCK"] = _SWE2D_WORKBENCH_STUDIO_DOCK
+        if not _g.get("_SWE2D_STUDIO_COMPONENT_DOCKS") and _SWE2D_STUDIO_COMPONENT_DOCKS:
+            _g["_SWE2D_STUDIO_COMPONENT_DOCKS"] = _SWE2D_STUDIO_COMPONENT_DOCKS
+        if _g.get("_SWE2D_STUDIO_HOST_DIALOG") is None and _SWE2D_STUDIO_HOST_DIALOG is not None:
+            _g["_SWE2D_STUDIO_HOST_DIALOG"] = _SWE2D_STUDIO_HOST_DIALOG
+        if _g.get("_SWE2D_STUDIO_HOST_TOOLBAR") is None and _SWE2D_STUDIO_HOST_TOOLBAR is not None:
+            _g["_SWE2D_STUDIO_HOST_TOOLBAR"] = _SWE2D_STUDIO_HOST_TOOLBAR
+        if _g.get("_SWE2D_STUDIO_HOST_MENU") is None and _SWE2D_STUDIO_HOST_MENU is not None:
+            _g["_SWE2D_STUDIO_HOST_MENU"] = _SWE2D_STUDIO_HOST_MENU
+        _g["_remove_workbench_dock_instance"] = _remove_workbench_dock_instance
+    except Exception:
+        pass
 
 
 def launch_swe2d_workbench(parent=None, iface=None, host_mode: str = "window"):
@@ -9023,6 +8908,13 @@ def launch_swe2d_workbench_studio(parent=None, iface=None, host_mode: str = "doc
         dlg = SWE2DWorkbenchStudioDialog(host_window, iface=iface)
         dlg._swe2d_workbench_host_mode = mode
         _enforce_studio_shell_visible(dlg)
+        try:
+            # Studio host keeps the controller dialog hidden, so the base
+            # showEvent restore path may not run. Restore explicitly here.
+            dlg._restore_project_workbench_state()
+            dlg._workbench_state_restored_on_show = True
+        except Exception:
+            pass
         dlg.setWindowFlags(QtCore.Qt.Widget)
         try:
             dlg.hide()
