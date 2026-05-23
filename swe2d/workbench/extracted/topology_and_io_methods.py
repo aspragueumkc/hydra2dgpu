@@ -263,12 +263,78 @@ def _bind_topology_tab_dynamic_controls(self, topology_tab_page: QtWidgets.QWidg
         quality_form.addRow("Min area / bbox area:", self.topo_quality_min_area_edit)
 
     self.topo_quality_size_scales_edit = _find_or_create_line_edit("topo_quality_size_scales_edit", "1.0,0.9,0.8,0.7")
+    self.topo_quality_size_scales_edit.setToolTip(
+        "Comma-separated per-attempt size multipliers. Example: 1.0,0.9,0.8"
+    )
     if self.topo_quality_size_scales_edit.parent() is None:
         quality_form.addRow("Retry size scales:", self.topo_quality_size_scales_edit)
 
     self.topo_quality_smooth_increments_edit = _find_or_create_line_edit("topo_quality_smooth_increments_edit", "0,2,4,6")
+    self.topo_quality_smooth_increments_edit.setToolTip(
+        "Comma-separated extra smoothing passes added per attempt. Example: 0,2,4,6"
+    )
     if self.topo_quality_smooth_increments_edit.parent() is None:
         quality_form.addRow("Retry smooth increments:", self.topo_quality_smooth_increments_edit)
+
+    self.topo_gmsh_quality_recombine_topology_passes_edit = _find_or_create_line_edit(
+        "topo_gmsh_quality_recombine_topology_passes_edit", "5,12,20"
+    )
+    self.topo_gmsh_quality_recombine_topology_passes_edit.setToolTip(
+        "Comma-separated topological optimization passes for quad recombination per attempt. "
+        "Higher values can improve quad layout but cost more runtime."
+    )
+    if self.topo_gmsh_quality_recombine_topology_passes_edit.parent() is None:
+        quality_form.addRow("Retry recombine topology passes:", self.topo_gmsh_quality_recombine_topology_passes_edit)
+
+    self.topo_gmsh_quality_recombine_min_quality_edit = _find_or_create_line_edit(
+        "topo_gmsh_quality_recombine_min_quality_edit", "0.01,0.03,0.06"
+    )
+    self.topo_gmsh_quality_recombine_min_quality_edit.setToolTip(
+        "Comma-separated minimum acceptable recombined quad quality per attempt. "
+        "Typical range: 0.0 to 0.2."
+    )
+    if self.topo_gmsh_quality_recombine_min_quality_edit.parent() is None:
+        quality_form.addRow("Retry recombine min quality:", self.topo_gmsh_quality_recombine_min_quality_edit)
+
+    self.topo_gmsh_quality_random_factors_edit = _find_or_create_line_edit(
+        "topo_gmsh_quality_random_factors_edit", "1e-9,1e-7,1e-6"
+    )
+    self.topo_gmsh_quality_random_factors_edit.setToolTip(
+        "Comma-separated Mesh.RandomFactor values per attempt. "
+        "Use small positive values to perturb deterministic local minima."
+    )
+    if self.topo_gmsh_quality_random_factors_edit.parent() is None:
+        quality_form.addRow("Retry random factors:", self.topo_gmsh_quality_random_factors_edit)
+
+    self.topo_gmsh_quality_optimize_methods_edit = _find_or_create_line_edit(
+        "topo_gmsh_quality_optimize_methods_edit", "Laplace2D,Relocate2D"
+    )
+    self.topo_gmsh_quality_optimize_methods_edit.setToolTip(
+        "Comma-separated gmsh.model.mesh.optimize methods applied each attempt. "
+        "Example: Laplace2D,Relocate2D"
+    )
+    if self.topo_gmsh_quality_optimize_methods_edit.parent() is None:
+        quality_form.addRow("Retry optimize methods:", self.topo_gmsh_quality_optimize_methods_edit)
+
+    self.topo_gmsh_algo_switch_on_failure_chk = _find_or_create_check(
+        "topo_gmsh_algo_switch_on_failure_chk", "Gmsh algorithm switch on failure"
+    )
+    self.topo_gmsh_algo_switch_on_failure_chk.setChecked(True)
+    self.topo_gmsh_algo_switch_on_failure_chk.setToolTip(
+        "Enable Mesh.AlgorithmSwitchOnFailure. Gmsh may switch 2D algorithms (e.g. to MeshAdapt) on failure."
+    )
+    if self.topo_gmsh_algo_switch_on_failure_chk.parent() is None:
+        quality_form.addRow(self.topo_gmsh_algo_switch_on_failure_chk)
+
+    self.topo_gmsh_recombine_node_repositioning_chk = _find_or_create_check(
+        "topo_gmsh_recombine_node_repositioning_chk", "Allow recombine node repositioning"
+    )
+    self.topo_gmsh_recombine_node_repositioning_chk.setChecked(True)
+    self.topo_gmsh_recombine_node_repositioning_chk.setToolTip(
+        "Enable node repositioning during quad recombination (Mesh.RecombineNodeRepositioning)."
+    )
+    if self.topo_gmsh_recombine_node_repositioning_chk.parent() is None:
+        quality_form.addRow(self.topo_gmsh_recombine_node_repositioning_chk)
 
     self.topo_quality_strict_chk = _find_or_create_check("topo_quality_strict_chk", "Strict quality acceptance")
     if self.topo_quality_strict_chk.parent() is None:
@@ -285,6 +351,12 @@ def _bind_topology_tab_dynamic_controls(self, topology_tab_page: QtWidgets.QWidg
     _reconnect(self.topo_quality_strict_chk.toggled, self._update_topology_control_summary)
     _reconnect(self.topo_quality_size_scales_edit.textChanged, self._update_topology_control_summary)
     _reconnect(self.topo_quality_smooth_increments_edit.textChanged, self._update_topology_control_summary)
+    _reconnect(self.topo_gmsh_quality_recombine_topology_passes_edit.textChanged, self._update_topology_control_summary)
+    _reconnect(self.topo_gmsh_quality_recombine_min_quality_edit.textChanged, self._update_topology_control_summary)
+    _reconnect(self.topo_gmsh_quality_random_factors_edit.textChanged, self._update_topology_control_summary)
+    _reconnect(self.topo_gmsh_quality_optimize_methods_edit.textChanged, self._update_topology_control_summary)
+    _reconnect(self.topo_gmsh_algo_switch_on_failure_chk.toggled, self._update_topology_control_summary)
+    _reconnect(self.topo_gmsh_recombine_node_repositioning_chk.toggled, self._update_topology_control_summary)
     _reconnect(self.topo_gmsh_quality_enable_chk.toggled, self._update_topology_control_summary)
     _reconnect(self.topo_gmsh_quality_max_iters_spin.valueChanged, self._update_topology_control_summary)
     _reconnect(self.topo_gmsh_quality_time_limit_spin.valueChanged, self._update_topology_control_summary)
@@ -2030,7 +2102,9 @@ def _update_topology_control_summary(self):
     quality_hint = (
         " Quality UI: min angle >= {min_angle:.1f} deg, max aspect <= {max_aspect:.2f}, "
         "max non-orth <= {max_non_orth:.1f} deg, min area/bbox >= {min_area}, strict={strict}; "
-        "retry scales={size_scales}, smooth increments={smooth_increments}; "
+        "retry scales={size_scales}, smooth increments={smooth_increments}, "
+        "recombine topology={recombine_topology}, recombine minQ={recombine_minq}, rand={random_factors}, "
+        "optimize methods={opt_methods}, algo-switch={algo_switch}, node-reposition={node_reposition}; "
         "Gmsh loop={gmsh_loop}, attempts={attempts}, budget={budget:.1f}s."
     ).format(
         min_angle=float(self.topo_quality_min_angle_spin.value()) if hasattr(self, "topo_quality_min_angle_spin") else 0.0,
@@ -2040,6 +2114,12 @@ def _update_topology_control_summary(self):
         strict="on" if getattr(self, "topo_quality_strict_chk", None) is not None and self.topo_quality_strict_chk.isChecked() else "off",
         size_scales=str(self.topo_quality_size_scales_edit.text()).strip() if hasattr(self, "topo_quality_size_scales_edit") else "1.0",
         smooth_increments=str(self.topo_quality_smooth_increments_edit.text()).strip() if hasattr(self, "topo_quality_smooth_increments_edit") else "0",
+        recombine_topology=str(self.topo_gmsh_quality_recombine_topology_passes_edit.text()).strip() if hasattr(self, "topo_gmsh_quality_recombine_topology_passes_edit") else "5",
+        recombine_minq=str(self.topo_gmsh_quality_recombine_min_quality_edit.text()).strip() if hasattr(self, "topo_gmsh_quality_recombine_min_quality_edit") else "0.01",
+        random_factors=str(self.topo_gmsh_quality_random_factors_edit.text()).strip() if hasattr(self, "topo_gmsh_quality_random_factors_edit") else "1e-9",
+        opt_methods=str(self.topo_gmsh_quality_optimize_methods_edit.text()).strip() if hasattr(self, "topo_gmsh_quality_optimize_methods_edit") else "Laplace2D",
+        algo_switch="on" if getattr(self, "topo_gmsh_algo_switch_on_failure_chk", None) is not None and self.topo_gmsh_algo_switch_on_failure_chk.isChecked() else "off",
+        node_reposition="on" if getattr(self, "topo_gmsh_recombine_node_repositioning_chk", None) is not None and self.topo_gmsh_recombine_node_repositioning_chk.isChecked() else "off",
         gmsh_loop="on" if getattr(self, "topo_gmsh_quality_enable_chk", None) is not None and self.topo_gmsh_quality_enable_chk.isChecked() else "off",
         attempts=int(self.topo_gmsh_quality_max_iters_spin.value()) if hasattr(self, "topo_gmsh_quality_max_iters_spin") else 0,
         budget=float(self.topo_gmsh_quality_time_limit_spin.value()) if hasattr(self, "topo_gmsh_quality_time_limit_spin") else 0.0,
@@ -2273,6 +2353,105 @@ def _configure_swe2d_layer_editors(self, layer):
 
 
 
+def _cleanup_topology_mesh_checkpoint(self) -> None:
+    cp_path = str(getattr(self, "_topology_mesh_checkpoint_path", "") or "").strip()
+    if not cp_path:
+        return
+    try:
+        os.remove(cp_path)
+    except FileNotFoundError:
+        pass
+    except Exception:
+        pass
+    self._topology_mesh_checkpoint_path = ""
+
+
+def _recover_topology_mesh_checkpoint(self, backend_name: str, run_mode: str, elapsed: float) -> bool:
+    if str(backend_name).strip().lower() != "gmsh":
+        return False
+
+    cp_path = str(getattr(self, "_topology_mesh_checkpoint_path", "") or "").strip()
+    if not cp_path or not os.path.exists(cp_path):
+        return False
+
+    try:
+        with np.load(cp_path, allow_pickle=False) as cp:
+            node_x = np.asarray(cp["node_x"], dtype=np.float64)
+            node_y = np.asarray(cp["node_y"], dtype=np.float64)
+            node_z = np.asarray(cp["node_z"], dtype=np.float64)
+            cell_nodes = np.asarray(cp["cell_nodes"], dtype=np.int32)
+            cell_face_offsets = np.asarray(cp["cell_face_offsets"], dtype=np.int32)
+            cell_face_nodes = np.asarray(cp["cell_face_nodes"], dtype=np.int32)
+            cell_type = np.asarray(cp["cell_type"]).astype(object)
+            region_id = np.asarray(cp["region_id"], dtype=np.int32)
+            target_size = np.asarray(cp["target_size"], dtype=np.float64)
+            quality_summary = None
+            if "quality_summary_json" in cp.files:
+                try:
+                    import json as _json
+                    raw = str(np.asarray(cp["quality_summary_json"]).item())
+                    quality_summary = _json.loads(raw) if raw else None
+                except Exception:
+                    quality_summary = None
+    except Exception as exc:
+        self._log(f"mesh> checkpoint-read-fail path={cp_path} error={exc}")
+        return False
+
+    n_nodes = int(node_x.size)
+    n_faces = max(0, int(cell_face_offsets.size) - 1)
+    if n_nodes <= 0 or n_faces <= 0:
+        return False
+
+    self._mesh_data = {
+        "nx": np.array(max(2, int(round(np.sqrt(node_x.size))))),
+        "ny": np.array(max(2, int(round(np.sqrt(node_x.size))))),
+        "lx": np.array(max(float(np.max(node_x) - np.min(node_x)), 1.0)),
+        "ly": np.array(max(float(np.max(node_y) - np.min(node_y)), 1.0)),
+        "node_x": node_x,
+        "node_y": node_y,
+        "node_z": node_z,
+        "cell_nodes": cell_nodes,
+        "cell_face_offsets": cell_face_offsets,
+        "cell_face_nodes": cell_face_nodes,
+        "cell_type": cell_type,
+        "region_id": region_id,
+        "target_size": target_size,
+    }
+
+    n_tris = int(cell_nodes.size // 3)
+    self.mesh_info_lbl.setText(f"Topology mesh: nodes={node_x.size}, faces={n_faces}, plot_triangles={n_tris}")
+    self.topo_status_lbl.setText(
+        f"Recovered {n_faces} computational faces from latest Gmsh attempt after timeout "
+        f"(elapsed={elapsed:.2f}s, backend='{backend_name}')."
+    )
+    self._log(
+        "mesh> recovered-checkpoint "
+        f"backend={backend_name} mode={run_mode} nodes={node_x.size} faces={n_faces} elapsed={elapsed:.2f}s"
+    )
+    if isinstance(quality_summary, dict):
+        best_stats = quality_summary.get("best_stats", {})
+        try:
+            self._log(
+                "mesh> gmsh-quality-summary "
+                f"attempts={int(quality_summary.get('attempts', 0))} "
+                f"strict={bool(quality_summary.get('strict_requested', False))} "
+                f"passed={bool(quality_summary.get('had_passing_candidate', False))} "
+                f"fail_cells(any/angle/aspect/area/non_orth)="
+                f"{int(float(best_stats.get('failed_any_cells', 0.0)))}/"
+                f"{int(float(best_stats.get('failed_min_angle_cells', 0.0)))}/"
+                f"{int(float(best_stats.get('failed_max_aspect_cells', 0.0)))}/"
+                f"{int(float(best_stats.get('failed_min_area_cells', 0.0)))}/"
+                f"{int(float(best_stats.get('failed_max_non_orth_cells', 0.0)))}"
+            )
+        except Exception:
+            pass
+
+    self._result_data = None
+    self.view_mode_combo.setCurrentText("Mesh")
+    self._refresh_plot()
+    return True
+
+
 def _poll_topology_mesh_future(self):
     fut = self._topology_mesh_future
     if fut is None:
@@ -2301,17 +2480,27 @@ def _poll_topology_mesh_future(self):
                 pass
             self._topology_mesh_process_pool = None
 
-        self.topo_status_lbl.setText(
-            f"Topology meshing timed out after {self._topology_mesh_active_timeout_sec:.0f}s "
-            f"(backend '{backend_name}')."
-        )
+        recovered = _recover_topology_mesh_checkpoint(self, backend_name=backend_name, run_mode=run_mode, elapsed=elapsed)
+
+        if not recovered:
+            self.topo_status_lbl.setText(
+                f"Topology meshing timed out after {self._topology_mesh_active_timeout_sec:.0f}s "
+                f"(backend '{backend_name}')."
+            )
         self._log(
             "mesh> timeout "
             f"backend={backend_name} mode={run_mode} elapsed={elapsed:.2f}s "
             f"limit={self._topology_mesh_active_timeout_sec:.0f}s"
         )
 
+        if recovered:
+            self._log(
+                "mesh> timeout-recovery "
+                f"backend={backend_name} mode={run_mode} action=loaded_latest_attempt"
+            )
+
         self._set_topology_mesh_busy(False)
+        _cleanup_topology_mesh_checkpoint(self)
         return
 
     if not fut.done():
@@ -2447,6 +2636,7 @@ def _poll_topology_mesh_future(self):
     finally:
         if not fallback_restarted:
             self._set_topology_mesh_busy(False)
+        _cleanup_topology_mesh_checkpoint(self)
 
 
 

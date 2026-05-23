@@ -155,6 +155,13 @@ Form behavior includes:
 ## Development Notes
 
 - In this environment, use `python3` for checks.
+- QGIS startup hygiene: avoid launching QGIS from a conflicting Python virtual environment.
+  Use `tools/launch_qgis_clean.sh` to start QGIS with a clean `qgis_stable`
+  Python runtime (it avoids conflicting virtualenv contamination and clears conflicting
+  Python environment variables).
+  Run `tools/launch_qgis_clean.sh --doctor` to print the effective Python
+  executable/import path and confirm `math` imports correctly before launching
+  the GUI.
 - Example syntax check:
 
 ```bash

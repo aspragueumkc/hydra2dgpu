@@ -61,3 +61,22 @@ Add hydraulic interpretation overlays by rendering animated velocity vectors on 
 ## Handoff Notes
 - Sprint 4 export/report should consume already-rendered datasets (not recompute heavy overlays).
 - Keep vector/structure query code modular so it can be reused by report generation.
+
+## SWE3D Stabilizer Rules (May 2026)
+- Scope: uncoupled 3D single-phase free-surface path in [cpp/src/swe2d_gpu.cu](cpp/src/swe2d_gpu.cu).
+- Closed-box full-wet low-speed branch:
+  - Trigger: all faces wall/free-surface cap, no transport boundary faces, `vof_min_pre >= active_alpha_wet`, and `umax_pre_step <= 5.0`.
+  - Behavior: apply outer-step dt cap (`BACKWATER_SWE3D_CLOSED_BOX_FULL_WET_DT_CFL`) and stronger predictor damping.
+- Closed-box partial-wet low-speed branch:
+  - Trigger: same closed-box/no-transport predicate, `vof_min_pre < active_alpha_wet`, and `umax_pre_step <= 5.0`.
+  - Behavior: keep normal dt logic, but apply transport-only stabilizers:
+    - residual-triggered velocity attenuation before VoF transport (only when projection residual rises above a mild threshold),
+    - first-order VoF transport fallback for that narrow slice.
+- Guardrail intent:
+  - Preserve transport/outflow/high-speed obstruction behavior outside this slice.
+  - Avoid broad global damping/capping that destabilizes other gates.
+- Runtime knobs:
+  - `BACKWATER_SWE3D_PROJECTION_JACOBI_MAX_ITERS`
+  - `BACKWATER_SWE3D_CLOSED_BOX_FULL_WET_DT_CFL`
+  - `BACKWATER_SWE3D_VELOCITY_SOFT_CAP_CFL`
+  - `BACKWATER_SWE3D_VOF_TRANSPORT_DEBUG` (diagnostic-only mass telemetry)

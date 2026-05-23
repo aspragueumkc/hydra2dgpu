@@ -8,7 +8,7 @@ deltas and exits non-zero if any gate fails.
 Usage
 -----
     cd <repo-root>
-    source .venv/bin/activate
+    conda activate qgis_stable
     PYTHONPATH="$PWD:$PWD/build" python3 tools/run_swe3d_validation.py [options]
 
 Options

@@ -13,6 +13,12 @@ endif()
 include(FetchContent)
 
 find_package(Python3 COMPONENTS Interpreter Development.Module REQUIRED)
+
+# Force pybind11 to use modern FindPython mode so it reuses Python3_* from
+# above instead of classic FindPythonInterp/FindPythonLibs (which can pick up
+# unintended virtualenv interpreters/headers).
+set(PYBIND11_FINDPYTHON ON)
+
 find_package(pybind11 CONFIG QUIET)
 
 if(NOT pybind11_FOUND)
@@ -59,7 +65,13 @@ if(BACKWATER_USE_CUDA)
     enable_language(CUDA)
     set(CMAKE_CUDA_STANDARD 17)
     set(CMAKE_CUDA_STANDARD_REQUIRED ON)
-    set(CMAKE_CUDA_ARCHITECTURES 70 80 90)  # Volta, Ampere, Hopper; allows fallback to native
+    # CUDA 13+ drops support for some older virtual architectures (e.g. compute_70).
+    # Pick an architecture list compatible with the detected toolkit version.
+    if(CMAKE_CUDA_COMPILER_VERSION VERSION_GREATER_EQUAL 13.0)
+      set(CMAKE_CUDA_ARCHITECTURES 75 80 90)
+    else()
+      set(CMAKE_CUDA_ARCHITECTURES 70 80 90)
+    endif()
     list(APPEND SWE2D_GPU_SOURCES cpp/src/swe2d_gpu.cu)
     set(SWE2D_CUDA_FOUND TRUE)
     message(STATUS "CUDA ${CUDAToolkit_VERSION} found — 2D solver GPU path enabled")
@@ -86,6 +98,10 @@ if(SWE2D_CUDA_FOUND)
   set_property(TARGET hydra_swe2d PROPERTY CUDA_SEPARABLE_COMPILATION ON)
   # Allow CUDA files to find shared headers
   set_source_files_properties(cpp/src/swe2d_gpu.cu PROPERTIES LANGUAGE CUDA)
+  if(NOT MSVC)
+    target_compile_options(hydra_swe2d PRIVATE -fno-lto)
+    target_link_options(hydra_swe2d PRIVATE -fno-lto)
+  endif()
 endif()
 
 if(OpenMP_CXX_FOUND)

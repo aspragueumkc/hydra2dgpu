@@ -1,6 +1,7 @@
 import os
 import sys
 import unittest
+from unittest import mock
 import numpy as np
 
 here = os.path.dirname(os.path.dirname(__file__))
@@ -11,7 +12,15 @@ build_dir = os.path.join(here, "build")
 if build_dir not in sys.path:
     sys.path.insert(0, build_dir)
 
-from swe2d.mesh.meshing import ConceptualArc, ConceptualModel, ConceptualRegion, QuadEdgeControl, TQMeshBackend, GmshBackend
+from swe2d.mesh.meshing import (
+    ConceptualArc,
+    ConceptualModel,
+    ConceptualRegion,
+    GmshBackend,
+    MeshResult,
+    QuadEdgeControl,
+    TQMeshBackend,
+)
 
 
 class TestTQMeshQuadEdges(unittest.TestCase):
@@ -239,6 +248,150 @@ class TestGmshConformingInterfaces(unittest.TestCase):
         self.assertGreater(self._count_edges_on_segment(mesh, (20.0, 20.0), (50.0, 20.0)), 0)
         self.assertGreater(self._count_edges_on_segment(mesh, (50.0, 20.0), (50.0, 80.0)), 0)
         self.assertGreater(self._count_edges_on_segment(mesh, (50.0, 80.0), (80.0, 80.0)), 0)
+
+
+class TestGmshQualityBestEffortFallback(unittest.TestCase):
+    def _dummy_mesh(self) -> MeshResult:
+        # One valid triangular face is enough to satisfy non-empty export contract.
+        return MeshResult(
+            node_x=np.asarray([0.0, 1.0, 0.0], dtype=np.float64),
+            node_y=np.asarray([0.0, 0.0, 1.0], dtype=np.float64),
+            node_z=np.asarray([0.0, 0.0, 0.0], dtype=np.float64),
+            cell_nodes=np.asarray([0, 1, 2], dtype=np.int32),
+            cell_face_offsets=np.asarray([0, 3], dtype=np.int32),
+            cell_face_nodes=np.asarray([0, 1, 2], dtype=np.int32),
+            cell_type=np.asarray(["triangular"], dtype=object),
+            region_id=np.asarray([1], dtype=np.int32),
+            target_size=np.asarray([1.0], dtype=np.float64),
+        )
+
+    def test_quality_loop_returns_best_effort_mesh_when_all_retries_fail(self):
+        region = ConceptualRegion(
+            region_id=1,
+            ring_xy=[(0.0, 0.0), (10.0, 0.0), (10.0, 10.0), (0.0, 10.0)],
+            default_size=2.0,
+            default_cell_type="triangular",
+        )
+        model = ConceptualModel(nodes=[], arcs=[], regions=[region], constraints=[], quad_edges=[])
+
+        backend = GmshBackend(
+            {
+                "gmsh_quality_enable": True,
+                "gmsh_quality_max_iterations": 3,
+                "gmsh_quality_time_limit_s": 30.0,
+            }
+        )
+
+        class _FakeGmsh:
+            class _Opt:
+                @staticmethod
+                def setNumber(*_args, **_kwargs):
+                    return None
+
+            class _Model:
+                @staticmethod
+                def add(*_args, **_kwargs):
+                    return None
+
+            option = _Opt()
+            model = _Model()
+
+            @staticmethod
+            def initialize(*_args, **_kwargs):
+                return None
+
+            @staticmethod
+            def finalize(*_args, **_kwargs):
+                return None
+
+            @staticmethod
+            def clear(*_args, **_kwargs):
+                return None
+
+        call_count = {"n": 0}
+
+        def _build_side_effect(*_args, **_kwargs):
+            call_count["n"] += 1
+            # Fail all iterative attempts, succeed only on final best-effort fallback build.
+            if call_count["n"] <= 3:
+                raise RuntimeError("synthetic gmsh attempt failure")
+            return self._dummy_mesh()
+
+        with mock.patch.dict(sys.modules, {"gmsh": _FakeGmsh()}):
+            with mock.patch.object(GmshBackend, "_build", side_effect=_build_side_effect):
+                mesh = backend.generate(model)
+
+        self.assertIsInstance(mesh, MeshResult)
+        self.assertGreater(int(mesh.node_x.size), 0)
+        self.assertGreater(int(mesh.cell_face_offsets.size - 1), 0)
+        self.assertGreaterEqual(call_count["n"], 4)
+        self.assertIsInstance(mesh.quality_summary, dict)
+        self.assertTrue(bool(mesh.quality_summary.get("best_effort_fallback", False)))
+
+    def test_quality_loop_stops_retries_when_budget_too_low_and_returns_best_mesh(self):
+        region = ConceptualRegion(
+            region_id=1,
+            ring_xy=[(0.0, 0.0), (10.0, 0.0), (10.0, 10.0), (0.0, 10.0)],
+            default_size=2.0,
+            default_cell_type="triangular",
+        )
+        model = ConceptualModel(nodes=[], arcs=[], regions=[region], constraints=[], quad_edges=[])
+
+        backend = GmshBackend(
+            {
+                "gmsh_quality_enable": True,
+                "gmsh_quality_max_iterations": 3,
+                "gmsh_quality_time_limit_s": 10.0,
+            }
+        )
+
+        class _FakeGmsh:
+            class _Opt:
+                @staticmethod
+                def setNumber(*_args, **_kwargs):
+                    return None
+
+            class _Model:
+                @staticmethod
+                def add(*_args, **_kwargs):
+                    return None
+
+            option = _Opt()
+            model = _Model()
+
+            @staticmethod
+            def initialize(*_args, **_kwargs):
+                return None
+
+            @staticmethod
+            def finalize(*_args, **_kwargs):
+                return None
+
+            @staticmethod
+            def clear(*_args, **_kwargs):
+                return None
+
+        build_calls = {"n": 0}
+
+        def _build_side_effect(*_args, **_kwargs):
+            build_calls["n"] += 1
+            return self._dummy_mesh()
+
+        # perf_counter call order in generate():
+        # start_t, loop elapsed, attempt_start_t, attempt_end_t, next loop elapsed
+        perf_seq = [0.0, 0.0, 0.0, 8.0, 8.0]
+
+        with mock.patch.dict(sys.modules, {"gmsh": _FakeGmsh()}):
+            with mock.patch("swe2d.mesh.meshing.time.perf_counter", side_effect=perf_seq):
+                with mock.patch.object(GmshBackend, "_build", side_effect=_build_side_effect):
+                    mesh = backend.generate(model)
+
+        self.assertIsInstance(mesh, MeshResult)
+        self.assertEqual(build_calls["n"], 1)
+        self.assertIsInstance(mesh.quality_summary, dict)
+        self.assertTrue(bool(mesh.quality_summary.get("time_budget_exhausted", False)))
+        self.assertGreater(int(mesh.node_x.size), 0)
+        self.assertGreater(int(mesh.cell_face_offsets.size - 1), 0)
 
 
 if __name__ == "__main__":

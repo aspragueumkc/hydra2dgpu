@@ -54,6 +54,11 @@ Status legend:
 - TODO: D7. Validate against spillway and culvert canonical cases.
 - TODO: D8. Add STL-derived geometry regression cases (culvert barrel, bridge deck/piers, multi-solid scene).
 
+### D5 Execution Note (May 2026)
+
+- Use [docs/SWE3D_BC_HARDENING_IMPLEMENTATION_PLAN.md](docs/SWE3D_BC_HARDENING_IMPLEMENTATION_PLAN.md) as the primary implementation guide for uncoupled-first BC hardening and coupled-compatible rollout.
+- Execute in order: U1.1 -> U1.2 -> U1.3 -> U1.4 -> U1.5 -> U2 -> C1 -> C2.
+
 ## Epic H: 3D Geometry + QGIS Viewer Integration
 
 - TODO: H1. Add experimental workbench controls for STL geometry inputs and patch ROI.

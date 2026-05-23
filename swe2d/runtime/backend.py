@@ -189,6 +189,11 @@ def configure_swe3d_runtime(
     geometry_gate_strict: Optional[bool] = None,
     geometry_gate_max_solid_fraction: Optional[float] = None,
     geometry_gate_max_seed_leak_fallbacks: Optional[int] = None,
+    outflow_policy: Optional[int] = None,
+    free_surface_vent_bias: Optional[float] = None,
+    q_inflow_area_policy: Optional[int] = None,
+    open_bc_damping: Optional[float] = None,
+    projection_boundary_policy: Optional[int] = None,
 ) -> Dict[str, object]:
     """
     Convenience helper for configuring SWE3D runtime controls from Python/QGIS console.
@@ -286,6 +291,37 @@ def configure_swe3d_runtime(
             raise ValueError("geometry_gate_max_seed_leak_fallbacks must be >= 0")
         os.environ["BACKWATER_SWE3D_GEOM_MAX_SEED_LEAK_FALLBACKS"] = str(leaks)
         applied["geometry_gate_max_seed_leak_fallbacks"] = leaks
+
+    if outflow_policy is not None:
+        policy = int(outflow_policy)
+        if policy not in (0, 1):
+            raise ValueError("outflow_policy must be 0 (legacy_passive) or 1 (characteristic_nonreflecting)")
+        os.environ["BACKWATER_SWE3D_OUTFLOW_POLICY"] = str(policy)
+        applied["outflow_policy"] = policy
+    if free_surface_vent_bias is not None:
+        vent_bias = float(free_surface_vent_bias)
+        if not np.isfinite(vent_bias):
+            raise ValueError("free_surface_vent_bias must be a finite number")
+        os.environ["BACKWATER_SWE3D_FREE_SURFACE_VENT_BIAS"] = f"{vent_bias:.17g}"
+        applied["free_surface_vent_bias"] = vent_bias
+    if q_inflow_area_policy is not None:
+        area_policy = int(q_inflow_area_policy)
+        if area_policy not in (0, 1):
+            raise ValueError("q_inflow_area_policy must be 0 (total_face_area) or 1 (dynamic_wet_open_area)")
+        os.environ["BACKWATER_SWE3D_Q_INFLOW_AREA_POLICY"] = str(area_policy)
+        applied["q_inflow_area_policy"] = area_policy
+    if open_bc_damping is not None:
+        damping = float(open_bc_damping)
+        if not np.isfinite(damping) or damping < 0.0 or damping > 1.0:
+            raise ValueError("open_bc_damping must be in [0, 1]")
+        os.environ["BACKWATER_SWE3D_OPEN_BC_DAMPING"] = f"{damping:.17g}"
+        applied["open_bc_damping"] = damping
+    if projection_boundary_policy is not None:
+        proj_policy = int(projection_boundary_policy)
+        if proj_policy not in (0, 1):
+            raise ValueError("projection_boundary_policy must be 0 (legacy_zmax_only) or 1 (face_aware)")
+        os.environ["BACKWATER_SWE3D_PROJECTION_BOUNDARY_POLICY"] = str(proj_policy)
+        applied["projection_boundary_policy"] = proj_policy
 
     return applied
 
@@ -777,7 +813,7 @@ class SWE2DBackend:
             os.environ.setdefault("BACKWATER_SWE3D_PROJECTION_REJECT_ENABLE", "1")
             os.environ.setdefault("BACKWATER_SWE3D_STATE_REJECT_ENABLE", "1")
             os.environ.setdefault("BACKWATER_SWE3D_STATE_MAX_ABS_VELOCITY", "50")
-            os.environ.setdefault("BACKWATER_SWE3D_PROJECTION_FAIL_FAST", "0")
+            os.environ.setdefault("BACKWATER_SWE3D_PROJECTION_FAIL_FAST", "1")
 
         self._solver_h = self._create_solver_compat(
             self._mesh_h,

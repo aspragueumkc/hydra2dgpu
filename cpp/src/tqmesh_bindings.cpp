@@ -274,7 +274,7 @@ py::dict generate_triangular_mesh(
 }
 
 // ---------------------------------------------------------------------------
-PYBIND11_MODULE(backwater_tqmesh, m)
+PYBIND11_MODULE(hydra_tqmesh, m)
 {
     m.doc() = "TQMesh advancing-front mesh generator binding for Backwater SWE2D";
 

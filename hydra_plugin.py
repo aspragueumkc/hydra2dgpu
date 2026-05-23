@@ -106,6 +106,9 @@ class HydraQgisPlugin:
         self._qt_quit_hardened = False
         self._window_guard_log_emitted = False
         self._close_guard_filter = None
+        self._enable_app_event_filter = str(os.environ.get('HYDRA_ENABLE_APP_EVENT_FILTER', '')).strip().lower() in (
+            '1', 'true', 'yes', 'on'
+        )
 
     def initGui(self):
         #self.action = QAction('Open HYDRA Panel', self.iface.mainWindow())
@@ -113,7 +116,10 @@ class HydraQgisPlugin:
         #self.iface.addToolBarIcon(self.action)
         #self.iface.addPluginToMenu(self._plugin_menu_path, self.action)
         self._harden_qt_quit_behavior()
-        self._install_close_guard_filter()
+        # App-wide Qt event filters can trigger SIP conversion crashes in some
+        # QGIS/PyQt builds; keep this guard opt-in for debug use only.
+        if self._enable_app_event_filter:
+            self._install_close_guard_filter()
         self._install_main_menu_bar_menu()
 
     def unload(self):
@@ -219,7 +225,8 @@ class HydraQgisPlugin:
 
     def run(self):
         self._harden_qt_quit_behavior()
-        self._install_close_guard_filter()
+        if self._enable_app_event_filter:
+            self._install_close_guard_filter()
         if not self._create_dock:
             self.iface.messageBar().pushMessage('HYDRA', 'UI components not found', level=Qgis.Critical)
             return

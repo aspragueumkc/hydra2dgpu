@@ -3853,9 +3853,11 @@ class SWE2DWorkbenchDialog(QtWidgets.QDialog):
         if not gmsh_loop_enabled:
             return base
         budget_s = max(1.0, self._opt_float(opts.get("gmsh_quality_time_limit_s"), 60.0))
-        # Let Gmsh's internal quality-loop budget decide completion and keep
-        # external watchdog comfortably above it to avoid preempting best-candidate return.
-        return max(base, budget_s + 30.0)
+        # When the iterative Gmsh quality loop is enabled, enforce timeout from
+        # its configured budget rather than the generic topology timeout floor.
+        # Keep a small grace window for candidate finalization/return plumbing.
+        grace_s = max(0.0, self._opt_float(opts.get("gmsh_quality_timeout_grace_s"), 10.0))
+        return max(30.0, budget_s + grace_s)
 
     def _terminate_topology_mesh_run(
         self,
@@ -3896,6 +3898,15 @@ class SWE2DWorkbenchDialog(QtWidgets.QDialog):
                 f"backend={backend_name} mode={run_mode} reason={reason} elapsed={elapsed_str}"
             )
         self._set_topology_mesh_busy(False)
+        cp_path = str(getattr(self, "_topology_mesh_checkpoint_path", "") or "").strip()
+        if cp_path:
+            try:
+                os.remove(cp_path)
+            except FileNotFoundError:
+                pass
+            except Exception:
+                pass
+        self._topology_mesh_checkpoint_path = ""
         return True
 
     def _on_terminate_topology_mesh(self):
@@ -3919,6 +3930,22 @@ class SWE2DWorkbenchDialog(QtWidgets.QDialog):
         self._topology_mesh_run_mode = run_mode
         self._topology_mesh_conceptual = conceptual
         self._topology_mesh_options = dict(mesh_options or {})
+        self._topology_mesh_checkpoint_path = ""
+        if backend_name == "gmsh":
+            cp_dir = os.path.join("/tmp", "qgis-live-bridge")
+            cp_name = f"topology_mesh_checkpoint_{os.getpid()}_{int(time.time() * 1000)}.npz"
+            self._topology_mesh_checkpoint_path = os.path.join(cp_dir, cp_name)
+            self._topology_mesh_options["gmsh_quality_checkpoint_path"] = self._topology_mesh_checkpoint_path
+            try:
+                os.makedirs(cp_dir, exist_ok=True)
+            except Exception:
+                pass
+            try:
+                os.remove(self._topology_mesh_checkpoint_path)
+            except FileNotFoundError:
+                pass
+            except Exception:
+                pass
         if run_mode == "full":
             self._topology_mesh_auto_fallback_used = False
         self._topology_mesh_started_at = time.perf_counter()
@@ -4137,9 +4164,29 @@ class SWE2DWorkbenchDialog(QtWidgets.QDialog):
             values.append(cast(number) if cast is int else cast(number))
         return values
 
+    def _parse_csv_text_list(self, text: str):
+        values = []
+        for part in str(text or "").replace(";", ",").split(","):
+            item = part.strip()
+            if item:
+                values.append(item)
+        return values
+
     def _build_topology_meshing_options(self) -> Dict[str, object]:
         size_scales = tuple(self._parse_csv_number_list(self.topo_quality_size_scales_edit.text(), float) or [1.0])
         smooth_increments = tuple(self._parse_csv_number_list(self.topo_quality_smooth_increments_edit.text(), int) or [0])
+        recombine_topology_passes = tuple(
+            self._parse_csv_number_list(self.topo_gmsh_quality_recombine_topology_passes_edit.text(), int) or [5]
+        )
+        recombine_min_quality = tuple(
+            self._parse_csv_number_list(self.topo_gmsh_quality_recombine_min_quality_edit.text(), float) or [0.01]
+        )
+        random_factors = tuple(
+            self._parse_csv_number_list(self.topo_gmsh_quality_random_factors_edit.text(), float) or [1.0e-9]
+        )
+        optimize_methods = tuple(
+            self._parse_csv_text_list(self.topo_gmsh_quality_optimize_methods_edit.text()) or ["Laplace2D", "Relocate2D"]
+        )
         return {
             "gmsh_tri_algorithm": int(self.topo_gmsh_tri_algo_combo.currentData() or 6),
             "gmsh_quad_algorithm": int(self.topo_gmsh_quad_algo_combo.currentData() or 6),
@@ -4158,6 +4205,12 @@ class SWE2DWorkbenchDialog(QtWidgets.QDialog):
             "gmsh_quality_strict": bool(self.topo_quality_strict_chk.isChecked()),
             "gmsh_quality_size_scales": size_scales,
             "gmsh_quality_smooth_increments": smooth_increments,
+            "gmsh_quality_recombine_topology_passes": recombine_topology_passes,
+            "gmsh_quality_recombine_minimum_quality": recombine_min_quality,
+            "gmsh_quality_random_factors": random_factors,
+            "gmsh_quality_optimize_methods": optimize_methods,
+            "gmsh_algorithm_switch_on_failure": bool(self.topo_gmsh_algo_switch_on_failure_chk.isChecked()),
+            "gmsh_quality_recombine_node_repositioning": bool(self.topo_gmsh_recombine_node_repositioning_chk.isChecked()),
             "tqmesh_min_angle_deg": float(self.topo_quality_min_angle_spin.value()),
             "tqmesh_max_aspect_ratio": float(self.topo_quality_max_aspect_spin.value()),
             "tqmesh_min_area_rel_bbox": float(self.topo_quality_min_area_edit.text().strip() or "0"),

@@ -266,16 +266,21 @@ def _temporary_env(overrides):
 
 
 def _load_module():
+    repo_root = Path(__file__).resolve().parent.parent
+    build_dir = repo_root / "build"
+
+    # Prefer the freshly built extension module over any stale repo-root copy.
+    if build_dir.is_dir():
+        build_path = str(build_dir)
+        if build_path in sys.path:
+            sys.path.remove(build_path)
+        sys.path.insert(0, build_path)
+
     try:
         import hydra_swe2d
         return hydra_swe2d
     except ImportError:
-        repo_root = Path(__file__).resolve().parent.parent
-        build_dir = repo_root / "build"
         if build_dir.is_dir():
-            build_path = str(build_dir)
-            if build_path not in sys.path:
-                sys.path.insert(0, build_path)
             try:
                 import hydra_swe2d
                 return hydra_swe2d
@@ -1257,6 +1262,46 @@ class TestSWE3DUncoupledValidation(unittest.TestCase):
         finally:
             self.mod.swe2d_destroy(solver)
 
+    def test_projection_retry_accepts_bounded_relative_residual(self):
+        """Production hardening: bounded pressure updates should not exhaust retries just because absolute pressure is large."""
+        env = {
+            "BACKWATER_SWE3D_PROJECTION_REJECT_ENABLE": "1",
+            "BACKWATER_SWE3D_PROJECTION_FAIL_FAST": "1",
+            "BACKWATER_SWE3D_PROJECTION_RESIDUAL_TARGET": "1.0",
+            "BACKWATER_SWE3D_PROJECTION_MAX_RETRIES": "1",
+            "BACKWATER_SWE3D_STATE_REJECT_ENABLE": "1",
+            "BACKWATER_SWE3D_STATE_MAX_ABS_VELOCITY": "100.0",
+            "BACKWATER_SWE3D_STATE_MAX_ABS_PRESSURE": "1e12",
+            "BACKWATER_SWE3D_VELOCITY_SOFT_CAP_CFL": "16.0",
+        }
+        solver = _make_3d_solver(self.mod, self.mesh, self.h0, env_overrides=env)
+        try:
+            stats0 = self.mod.swe2d_get_3d_patch_stats(solver)
+            n = int(stats0["n_cells"])
+
+            u_ic = np.full(n, 5.0, dtype=np.float64)
+            zeros = np.zeros(n, dtype=np.float64)
+            vof_ic = np.ones(n, dtype=np.float64)
+            self.mod.swe2d_set_3d_patch_vof(solver, vof_ic)
+            self.mod.swe2d_set_3d_patch_state(
+                solver, u=u_ic, v=zeros, w=zeros, p=zeros)
+
+            with _temporary_env(env):
+                diag = self.mod.swe2d_step(solver, 0.1)
+            stats1 = self.mod.swe2d_get_3d_patch_stats(solver)
+
+            self.assertFalse(bool(diag.get("projection_retry_exhausted", True)))
+            self.assertLessEqual(
+                float(stats1["projection_residual"]),
+                1.0,
+                f"Expected bounded relative projection residual; got {stats1['projection_residual']:.6e}")
+            self.assertLessEqual(
+                float(stats1["p_max_abs"]),
+                1.0e12,
+                f"Expected state guard pressure limit to remain unviolated; got {stats1['p_max_abs']:.6e}")
+        finally:
+            self.mod.swe2d_destroy(solver)
+
     def test_vof_advection_transports_interface_positive_x(self):
         """
         Numerics gate: conservative MUSCL-limited VoF transport should move an x-slab
@@ -1475,6 +1520,65 @@ class TestSWE3DUncoupledValidation(unittest.TestCase):
             self.assertGreater(left_mass, 1.0e-4, f"Expected wetting near xmin boundary; got left_mass={left_mass:.4e}")
         finally:
             self.mod.swe2d_destroy(solver)
+
+    def test_bc_volumetric_inlet_q_dynamic_area_policy_increases_injection_when_wet_area_is_limited(self):
+        """
+        Dynamic wet/open-area normalization (policy=1) should inject more mass
+        than legacy total-face-area normalization (policy=0) when only part of
+        the inlet face is wet/open.
+        """
+        env_common = {
+            "BACKWATER_SWE3D_BC_XMIN_MODE": "4",   # INFLOW_FLOW_RATE
+            "BACKWATER_SWE3D_BC_XMIN_Q": "40.0",
+            "BACKWATER_SWE3D_BC_XMIN_VOF": "1.0",
+            "BACKWATER_SWE3D_BC_XMAX_MODE": "2",   # OUTFLOW
+            "BACKWATER_SWE3D_PATCH_NX": "64",
+            "BACKWATER_SWE3D_PATCH_NY": "8",
+            "BACKWATER_SWE3D_PATCH_NZ": "12",
+        }
+
+        def _run_policy(area_policy: int) -> float:
+            env = dict(env_common)
+            env["BACKWATER_SWE3D_Q_INFLOW_AREA_POLICY"] = str(int(area_policy))
+            # Runtime BC controls are read during stepping, so keep overrides
+            # active for the full create+step+readback lifecycle.
+            with _temporary_env(env):
+                solver = _make_3d_solver(self.mod, self.mesh, self.h0)
+                try:
+                    stats0 = self.mod.swe2d_get_3d_patch_stats(solver)
+                    n = int(stats0["n_cells"])
+                    nx = int(stats0["nx"])
+                    ny = int(stats0["ny"])
+                    nz = int(stats0["nz"])
+
+                    # Prime only the lower third of the xmin boundary as wet so the
+                    # effective inlet area is intentionally smaller than full-face area.
+                    vof0 = np.zeros(n, dtype=np.float64)
+                    z_wet = max(1, nz // 3)
+                    for iz in range(z_wet):
+                        for iy in range(ny):
+                            idx = iz * nx * ny + iy * nx  # ix=0
+                            vof0[idx] = 1.0
+
+                    zeros = np.zeros(n, dtype=np.float64)
+                    self.mod.swe2d_set_3d_patch_state(
+                        solver, u=zeros, v=zeros, w=zeros, p=zeros, vof=vof0)
+
+                    for _ in range(8):
+                        self.mod.swe2d_step(solver, 0.15)
+
+                    return float(np.sum(self.mod.swe2d_get_3d_patch_vof(solver)))
+                finally:
+                    self.mod.swe2d_destroy(solver)
+
+        total_legacy = _run_policy(0)
+        total_dynamic = _run_policy(1)
+
+        self.assertGreater(
+            total_dynamic,
+            total_legacy * 1.01,
+            "Expected dynamic inlet-area normalization to increase injected mass "
+            f"for partially wet inlet: legacy={total_legacy:.6e}, dynamic={total_dynamic:.6e}")
 
     @unittest.skipUnless(
         _SWE3D_CELERITY_SENSITIVITY,

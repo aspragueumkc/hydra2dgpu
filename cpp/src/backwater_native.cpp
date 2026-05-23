@@ -1388,7 +1388,7 @@ int get_table_threads_cpp() {
 
 }  // namespace
 
-PYBIND11_MODULE(backwater_native, m) {
+PYBIND11_MODULE(hydra_native, m) {
     m.doc() = "Native acceleration helpers for qgis-backwater-plugin";
     m.def("assemble_system_core", &assemble_system_core,
           py::arg("reach_lengths"), py::arg("z_values"), py::arg("q_values"),

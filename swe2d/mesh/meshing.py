@@ -24,6 +24,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from typing import Dict, List, Optional, Sequence, Tuple
+import json
 import os
 import time
 import warnings
@@ -123,6 +124,12 @@ class _GmshQualityConfig:
     time_limit_s: float
     size_scales: Tuple[float, ...]
     smooth_increments: Tuple[int, ...]
+    recombine_topology_passes: Tuple[int, ...]
+    recombine_min_quality: Tuple[float, ...]
+    random_factors: Tuple[float, ...]
+    optimize_methods: Tuple[str, ...]
+    algorithm_switch_on_failure: bool
+    recombine_node_repositioning: bool
 
 
 def _polygon_area_xy(xs: np.ndarray, ys: np.ndarray) -> float:
@@ -346,6 +353,54 @@ def _env_csv_floats(name: str, default: Sequence[float]) -> Tuple[float, ...]:
     if not vals:
         return tuple(float(v) for v in default)
     return tuple(vals)
+
+
+def _env_csv_strings(name: str, default: Sequence[str]) -> Tuple[str, ...]:
+    raw = str(os.environ.get(name, "")).strip()
+    if not raw:
+        return tuple(str(v) for v in default)
+    vals: List[str] = []
+    for tok in raw.replace(";", ",").split(","):
+        tok = str(tok).strip()
+        if tok:
+            vals.append(tok)
+    if not vals:
+        return tuple(str(v) for v in default)
+    return tuple(vals)
+
+
+def _write_mesh_checkpoint_npz(
+    path: str,
+    mesh: MeshResult,
+    quality_summary: Optional[Dict[str, object]] = None,
+) -> None:
+    """Persist a best-so-far mesh checkpoint atomically for timeout recovery."""
+    cp = str(path or "").strip()
+    if not cp:
+        return
+    cp_dir = os.path.dirname(cp)
+    if cp_dir:
+        os.makedirs(cp_dir, exist_ok=True)
+
+    payload = {
+        "node_x": np.asarray(mesh.node_x, dtype=np.float64),
+        "node_y": np.asarray(mesh.node_y, dtype=np.float64),
+        "node_z": np.asarray(mesh.node_z, dtype=np.float64),
+        "cell_nodes": np.asarray(mesh.cell_nodes, dtype=np.int32),
+        "cell_face_offsets": np.asarray(mesh.cell_face_offsets, dtype=np.int32),
+        "cell_face_nodes": np.asarray(mesh.cell_face_nodes, dtype=np.int32),
+        "cell_type": np.asarray(mesh.cell_type).astype(np.str_),
+        "region_id": np.asarray(mesh.region_id, dtype=np.int32),
+        "target_size": np.asarray(mesh.target_size, dtype=np.float64),
+        "quality_summary_json": np.asarray(
+            json.dumps(dict(quality_summary or {}), default=float),
+            dtype=np.str_,
+        ),
+    }
+    tmp_path = f"{cp}.tmp"
+    with open(tmp_path, "wb") as fh:
+        np.savez_compressed(fh, **payload)
+    os.replace(tmp_path, cp)
 
 
 def _mesh_quality_stats(
@@ -1485,6 +1540,25 @@ class GmshBackend(MeshingBackend):
             return tuple(float(v) for v in default)
         return tuple(parsed)
 
+    def _opt_str_tuple(self, name: str, default: Tuple[str, ...]) -> Tuple[str, ...]:
+        value = self._options.get(name)
+        if value is None:
+            return tuple(str(v) for v in default)
+        if isinstance(value, str):
+            raw_items = value.replace(";", ",").split(",")
+        elif isinstance(value, (list, tuple)):
+            raw_items = list(value)
+        else:
+            return tuple(str(v) for v in default)
+        parsed: List[str] = []
+        for item in raw_items:
+            text = str(item).strip()
+            if text:
+                parsed.append(text)
+        if not parsed:
+            return tuple(str(v) for v in default)
+        return tuple(parsed)
+
     def _gmsh_quality_config(self) -> _GmshQualityConfig:
         enabled = self._opt_bool(
             "gmsh_quality_enable",
@@ -1550,10 +1624,53 @@ class GmshBackend(MeshingBackend):
                 self._opt_float_tuple("tqmesh_smooth_increments", (0.0, 3.0, 6.0)),
             )
         )
+        recombine_topology_passes = tuple(
+            max(0, int(round(v)))
+            for v in self._opt_float_tuple(
+                "gmsh_quality_recombine_topology_passes",
+                _env_csv_floats("BACKWATER_GMSH_QUALITY_RECOMBINE_TOPOLOGY_PASSES", (5.0, 12.0, 20.0)),
+            )
+        )
+        recombine_min_quality = tuple(
+            max(0.0, float(v))
+            for v in self._opt_float_tuple(
+                "gmsh_quality_recombine_minimum_quality",
+                _env_csv_floats("BACKWATER_GMSH_QUALITY_RECOMBINE_MIN_QUALITY", (0.01, 0.03, 0.06)),
+            )
+        )
+        random_factors = tuple(
+            max(0.0, float(v))
+            for v in self._opt_float_tuple(
+                "gmsh_quality_random_factors",
+                _env_csv_floats("BACKWATER_GMSH_QUALITY_RANDOM_FACTORS", (1.0e-9, 1.0e-7, 1.0e-6)),
+            )
+        )
+        optimize_methods = tuple(
+            str(v)
+            for v in self._opt_str_tuple(
+                "gmsh_quality_optimize_methods",
+                _env_csv_strings("BACKWATER_GMSH_QUALITY_OPTIMIZE_METHODS", ("Laplace2D", "Relocate2D")),
+            )
+            if str(v).strip()
+        )
+        algorithm_switch_on_failure = self._opt_bool(
+            "gmsh_algorithm_switch_on_failure",
+            _env_bool("BACKWATER_GMSH_ALGO_SWITCH_ON_FAILURE", True),
+        )
+        recombine_node_repositioning = self._opt_bool(
+            "gmsh_quality_recombine_node_repositioning",
+            _env_bool("BACKWATER_GMSH_RECOMBINE_NODE_REPOSITIONING", True),
+        )
         if not size_scales:
             size_scales = (1.0,)
         if not smooth_increments:
             smooth_increments = (0,)
+        if not recombine_topology_passes:
+            recombine_topology_passes = (5,)
+        if not recombine_min_quality:
+            recombine_min_quality = (0.01,)
+        if not random_factors:
+            random_factors = (1.0e-9,)
         # Guard against no-op retry ladders (e.g. "1.0" and "0").
         # When iterative quality is enabled, ensure attempts explore distinct
         # candidates even if the UI left legacy single-value defaults.
@@ -1562,6 +1679,12 @@ class GmshBackend(MeshingBackend):
                 size_scales = (1.0, 0.9, 0.8, 0.7)
             if all(int(v) == 0 for v in smooth_increments):
                 smooth_increments = (0, 2, 4, 6)
+            if len(recombine_topology_passes) == 1:
+                recombine_topology_passes = (recombine_topology_passes[0], max(8, recombine_topology_passes[0] * 2))
+            if len(recombine_min_quality) == 1:
+                recombine_min_quality = (recombine_min_quality[0], max(0.02, recombine_min_quality[0] * 1.5))
+            if len(random_factors) == 1:
+                random_factors = (random_factors[0], max(1.0e-8, random_factors[0] * 100.0))
         return _GmshQualityConfig(
             enabled=enabled,
             strict=strict,
@@ -1573,6 +1696,12 @@ class GmshBackend(MeshingBackend):
             time_limit_s=float(time_limit_s),
             size_scales=size_scales,
             smooth_increments=smooth_increments,
+            recombine_topology_passes=recombine_topology_passes,
+            recombine_min_quality=recombine_min_quality,
+            random_factors=random_factors,
+            optimize_methods=optimize_methods,
+            algorithm_switch_on_failure=bool(algorithm_switch_on_failure),
+            recombine_node_repositioning=bool(recombine_node_repositioning),
         )
 
     def generate(self, model: ConceptualModel) -> MeshResult:
@@ -1589,6 +1718,7 @@ class GmshBackend(MeshingBackend):
         optimize_netgen = self._opt_bool("gmsh_optimize_netgen", False)
         verbosity = max(0, self._opt_int("gmsh_verbosity", 1))
         quality_cfg = self._gmsh_quality_config()
+        checkpoint_path = str(self._options.get("gmsh_quality_checkpoint_path", "") or "").strip()
 
         # `interruptible=False` avoids installing a SIGINT handler, which lets
         # the Python API run from the QGIS bridge worker thread.
@@ -1618,9 +1748,12 @@ class GmshBackend(MeshingBackend):
             best_stats: Optional[Dict[str, float]] = None
             best_score = -1.0e30
             attempts = 0
+            attempt_errors: List[str] = []
             scale_i = 0
             smooth_i = 0
             had_passing_candidate = False
+            last_attempt_duration_s: Optional[float] = None
+            hit_time_budget = False
 
             # Alternate between configured and fallback algorithms so retries
             # can escape deterministic local minima with identical topology.
@@ -1639,10 +1772,38 @@ class GmshBackend(MeshingBackend):
             if recomb_alt not in recomb_ladder:
                 recomb_ladder.append(int(recomb_alt))
 
+            recomb_topology_ladder = [int(v) for v in quality_cfg.recombine_topology_passes if int(v) >= 0]
+            if not recomb_topology_ladder:
+                recomb_topology_ladder = [5]
+            recomb_min_quality_ladder = [max(0.0, float(v)) for v in quality_cfg.recombine_min_quality]
+            if not recomb_min_quality_ladder:
+                recomb_min_quality_ladder = [0.01]
+            random_factor_ladder = [max(0.0, float(v)) for v in quality_cfg.random_factors]
+            if not random_factor_ladder:
+                random_factor_ladder = [1.0e-9]
+
             while attempts < quality_cfg.max_iterations:
                 elapsed = time.perf_counter() - start_t
                 if elapsed >= quality_cfg.time_limit_s:
+                    hit_time_budget = True
                     break
+
+                # Avoid starting a fresh attempt when little time remains. A
+                # single Gmsh attempt is non-interruptible, so launching a retry
+                # too close to the deadline can overrun and get killed by the
+                # outer watchdog before best-candidate export runs.
+                remaining_s = max(0.0, quality_cfg.time_limit_s - elapsed)
+                if last_attempt_duration_s is not None and attempts > 0:
+                    min_retry_window_s = max(2.0, 0.75 * float(last_attempt_duration_s))
+                    if remaining_s < min_retry_window_s:
+                        hit_time_budget = True
+                        warnings.warn(
+                            "Gmsh quality loop stopping retries early due to low remaining budget "
+                            f"(remaining={remaining_s:.2f}s, needed~{min_retry_window_s:.2f}s); "
+                            "returning best available candidate.",
+                            RuntimeWarning,
+                        )
+                        break
 
                 gmsh.clear()
                 gmsh.model.add(f"swe2d_try_{attempts + 1}")
@@ -1655,7 +1816,11 @@ class GmshBackend(MeshingBackend):
                 tri_try = tri_algo_ladder[attempts % len(tri_algo_ladder)]
                 quad_try = quad_algo_ladder[(attempts // len(tri_algo_ladder)) % len(quad_algo_ladder)]
                 recomb_try = recomb_ladder[(attempts // max(1, len(tri_algo_ladder) * len(quad_algo_ladder))) % len(recomb_ladder)]
+                recomb_topology_try = recomb_topology_ladder[attempts % len(recomb_topology_ladder)]
+                recomb_min_quality_try = recomb_min_quality_ladder[attempts % len(recomb_min_quality_ladder)]
+                random_factor_try = random_factor_ladder[attempts % len(random_factor_ladder)]
 
+                attempt_start_t = time.perf_counter()
                 try:
                     mesh = _require_nonempty_mesh(
                         self._build(
@@ -1668,11 +1833,37 @@ class GmshBackend(MeshingBackend):
                             recomb_algo=recomb_try,
                             optimize_netgen=optimize_netgen,
                             size_scale=float(size_scale),
+                            recombine_optimize_topology=int(recomb_topology_try),
+                            recombine_node_repositioning=bool(quality_cfg.recombine_node_repositioning),
+                            recombine_minimum_quality=float(recomb_min_quality_try),
+                            optimize_methods=tuple(quality_cfg.optimize_methods),
+                            random_factor=float(random_factor_try),
+                            algorithm_switch_on_failure=bool(quality_cfg.algorithm_switch_on_failure),
                         ),
                         "Gmsh",
                     )
                     stats = _face_mesh_quality_stats(mesh, quality_cfg)
                     score = _gmsh_quality_score(stats, quality_cfg)
+
+                    attempt_summary = {
+                        "attempts": int(attempts + 1),
+                        "strict_requested": bool(quality_cfg.strict),
+                        "had_passing_candidate": bool(_gmsh_quality_passes(stats, quality_cfg)),
+                        "best_stats": dict(stats),
+                        "recombine_topology_passes": int(recomb_topology_try),
+                        "recombine_minimum_quality": float(recomb_min_quality_try),
+                        "random_factor": float(random_factor_try),
+                        "optimize_methods": list(quality_cfg.optimize_methods),
+                        "checkpoint": True,
+                    }
+                    if checkpoint_path:
+                        try:
+                            _write_mesh_checkpoint_npz(checkpoint_path, mesh, attempt_summary)
+                        except Exception as cp_exc:
+                            warnings.warn(
+                                f"Gmsh quality checkpoint write failed (attempt {attempts + 1}): {cp_exc}",
+                                RuntimeWarning,
+                            )
 
                     if score > best_score:
                         best_score = score
@@ -1691,9 +1882,15 @@ class GmshBackend(MeshingBackend):
                             }
                             return mesh
                 except Exception as exc:
-                    warnings.warn(
+                    err_msg = (
                         f"Gmsh quality attempt {attempts + 1} failed for tri={tri_try}, quad={quad_try}, "
-                        f"recomb={recomb_try}, size_scale={size_scale:.3f}, smooth={smoothing_passes + int(smooth_inc)}: {exc}",
+                        f"recomb={recomb_try}, topo={int(recomb_topology_try)}, minq={float(recomb_min_quality_try):.3f}, "
+                        f"rand={float(random_factor_try):.2e}, size_scale={size_scale:.3f}, "
+                        f"smooth={smoothing_passes + int(smooth_inc)}: {exc}"
+                    )
+                    attempt_errors.append(err_msg)
+                    warnings.warn(
+                        err_msg,
                         RuntimeWarning,
                     )
                 else:
@@ -1709,10 +1906,70 @@ class GmshBackend(MeshingBackend):
                         RuntimeWarning,
                     )
 
+                last_attempt_duration_s = max(0.0, time.perf_counter() - attempt_start_t)
                 attempts += 1
 
             if best_mesh is None or best_stats is None:
-                raise RuntimeError("Gmsh quality loop produced no valid non-empty mesh candidate.")
+                # Best-effort fallback: regardless of iterative quality failures,
+                # run one plain baseline build so downstream export still has a mesh
+                # whenever geometry is meshable at all.
+                try:
+                    gmsh.clear()
+                    gmsh.model.add("swe2d_best_effort_fallback")
+                    fallback_mesh = _require_nonempty_mesh(
+                        self._build(
+                            gmsh,
+                            model,
+                            tri_algo=tri_algo,
+                            quad_algo=quad_algo,
+                            smoothing_passes=smoothing_passes,
+                            optimize_iters=optimize_iters,
+                            recomb_algo=recomb_algo,
+                            optimize_netgen=optimize_netgen,
+                            size_scale=1.0,
+                            recombine_optimize_topology=int(recomb_topology_ladder[0]),
+                            recombine_node_repositioning=bool(quality_cfg.recombine_node_repositioning),
+                            recombine_minimum_quality=float(recomb_min_quality_ladder[0]),
+                            optimize_methods=tuple(quality_cfg.optimize_methods),
+                            random_factor=float(random_factor_ladder[0]),
+                            algorithm_switch_on_failure=bool(quality_cfg.algorithm_switch_on_failure),
+                        ),
+                        "Gmsh",
+                    )
+                    fallback_stats = _face_mesh_quality_stats(fallback_mesh, quality_cfg)
+                    fallback_mesh.quality_summary = {
+                        "attempts": int(attempts + 1),
+                        "strict_requested": bool(quality_cfg.strict),
+                        "had_passing_candidate": bool(_gmsh_quality_passes(fallback_stats, quality_cfg)),
+                        "best_stats": dict(fallback_stats),
+                        "best_effort_fallback": True,
+                        "time_budget_exhausted": bool(hit_time_budget),
+                    }
+                    if checkpoint_path:
+                        try:
+                            _write_mesh_checkpoint_npz(
+                                checkpoint_path,
+                                fallback_mesh,
+                                fallback_mesh.quality_summary,
+                            )
+                        except Exception as cp_exc:
+                            warnings.warn(
+                                f"Gmsh fallback checkpoint write failed: {cp_exc}",
+                                RuntimeWarning,
+                            )
+                    warnings.warn(
+                        "Gmsh quality loop produced no valid candidate during iterative retries; "
+                        "using best-effort fallback mesh for export.",
+                        RuntimeWarning,
+                    )
+                    return fallback_mesh
+                except Exception as fallback_exc:
+                    tail = "; ".join(attempt_errors[-3:]) if attempt_errors else "no attempt diagnostics"
+                    raise RuntimeError(
+                        "Gmsh quality loop produced no valid non-empty mesh candidate, and "
+                        f"best-effort fallback also failed: {fallback_exc}. "
+                        f"Recent attempt errors: {tail}"
+                    )
 
             if had_passing_candidate:
                 best_mesh.quality_summary = {
@@ -1720,6 +1977,7 @@ class GmshBackend(MeshingBackend):
                     "strict_requested": bool(quality_cfg.strict),
                     "had_passing_candidate": True,
                     "best_stats": dict(best_stats),
+                    "time_budget_exhausted": bool(hit_time_budget),
                 }
                 return best_mesh
 
@@ -1737,6 +1995,7 @@ class GmshBackend(MeshingBackend):
                 "strict_requested": bool(quality_cfg.strict),
                 "had_passing_candidate": False,
                 "best_stats": dict(best_stats),
+                "time_budget_exhausted": bool(hit_time_budget),
             }
             best_mesh.quality_summary = summary
             warnings.warn(
@@ -1763,6 +2022,12 @@ class GmshBackend(MeshingBackend):
         recomb_algo: int,
         optimize_netgen: bool,
         size_scale: float,
+        recombine_optimize_topology: int = 5,
+        recombine_node_repositioning: bool = True,
+        recombine_minimum_quality: float = 0.01,
+        optimize_methods: Tuple[str, ...] = (),
+        random_factor: float = 1.0e-9,
+        algorithm_switch_on_failure: bool = True,
     ) -> MeshResult:
         # Tolerance for point deduplication (scaled to typical hydraulic coords).
         tol = 1e-6
@@ -2174,8 +2439,13 @@ class GmshBackend(MeshingBackend):
         # ---- 5. Global mesh options ------------------------------------
         gmsh.option.setNumber("Mesh.RecombineAll", 0)          # per-surface only
         gmsh.option.setNumber("Mesh.RecombinationAlgorithm", float(recomb_algo))
+        gmsh.option.setNumber("Mesh.RecombineOptimizeTopology", float(max(0, int(recombine_optimize_topology))))
+        gmsh.option.setNumber("Mesh.RecombineNodeRepositioning", 1.0 if recombine_node_repositioning else 0.0)
+        gmsh.option.setNumber("Mesh.RecombineMinimumQuality", max(0.0, float(recombine_minimum_quality)))
         gmsh.option.setNumber("Mesh.Smoothing", float(smoothing_passes))
         gmsh.option.setNumber("Mesh.OptimizeNetgen", 1.0 if optimize_netgen else 0.0)
+        gmsh.option.setNumber("Mesh.AlgorithmSwitchOnFailure", 1.0 if algorithm_switch_on_failure else 0.0)
+        gmsh.option.setNumber("Mesh.RandomFactor", max(0.0, float(random_factor)))
 
         # ---- 6. Generate -----------------------------------------------
         gmsh.model.mesh.generate(2)
@@ -2185,7 +2455,14 @@ class GmshBackend(MeshingBackend):
             except Exception:
                 pass
         if optimize_iters > 0:
-            gmsh.model.mesh.optimize("Laplace2D", niter=optimize_iters)
+            methods = tuple(str(m).strip() for m in (optimize_methods or ()) if str(m).strip())
+            if not methods:
+                methods = ("Laplace2D",)
+            for method in methods:
+                try:
+                    gmsh.model.mesh.optimize(method, niter=int(optimize_iters))
+                except TypeError:
+                    gmsh.model.mesh.optimize(method)
 
         # ---- 7. Extract nodes ------------------------------------------
         node_tags, node_coords, _ = gmsh.model.mesh.getNodes()

@@ -11,6 +11,7 @@ import sys
 import os
 import tempfile
 from pathlib import Path
+from types import SimpleNamespace
 
 # Add plugin directory to path
 plugin_dir = Path(__file__).parent
@@ -124,7 +125,8 @@ def test_culvert_integration():
     print("\n2. Saving model to GeoPackage...")
     with tempfile.TemporaryDirectory() as tmpdir:
         gpkg_path = Path(tmpdir) / 'test_culvert.gpkg'
-        save_to_geopackage(str(gpkg_path), model)
+        centerline_geom = SimpleNamespace(wkt='LINESTRING (0 0, 100 0, 200 0)')
+        save_to_geopackage(str(gpkg_path), model, centerline_geom=centerline_geom)
         print(f"   Saved to: {gpkg_path}")
         
         # Reload from GeoPackage
@@ -164,15 +166,18 @@ def test_culvert_integration():
             print("\n" + "="*70)
             print("TEST PASSED: Culvert integration successful!")
             print("="*70)
-            return True
+            return
             
         except Exception as e:
             print(f"   ✗ Solver failed: {e}")
             import traceback
             traceback.print_exc()
-            return False
+            raise AssertionError(f"Culvert integration solve failed: {e}") from e
 
 
 if __name__ == '__main__':
-    success = test_culvert_integration()
-    sys.exit(0 if success else 1)
+    try:
+        test_culvert_integration()
+    except Exception:
+        sys.exit(1)
+    sys.exit(0)

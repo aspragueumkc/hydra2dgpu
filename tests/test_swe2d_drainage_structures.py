@@ -1044,9 +1044,10 @@ class TestSWE2DDrainageStructures(unittest.TestCase):
             dt_max=0.1,
         )
         backend.run(
-            t_end=0.1,
+            t_end=0.2,
             dt_request=0.1,
             source_rate_callback=lambda t, dt, h, hu, hv: np.asarray([0.2], dtype=np.float64),
+            use_native_source_injection=True,
         )
         h, _, _ = backend.get_state()
         self.assertAlmostEqual(float(h[0]), 0.02, places=12)

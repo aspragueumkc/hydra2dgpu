@@ -684,7 +684,53 @@ class QgisLiveBridge:
             constraints_name = str(params.get("constraints_layer", "swe2d_topo_constraints"))
             quad_edges_name = str(params.get("quad_edges_layer", "swe2d_topo_quad_edges"))
             backend_name = str(params.get("backend", "tqmesh"))
-            timeout_sec = max(30.0, float(params.get("timeout_sec", os.environ.get("BACKWATER_TOPOLOGY_MESH_TIMEOUT_SEC", "300"))))
+
+            def _as_bool(v, default=False):
+                if v is None:
+                    return bool(default)
+                if isinstance(v, bool):
+                    return v
+                s = str(v).strip().lower()
+                if s in {"1", "true", "yes", "on"}:
+                    return True
+                if s in {"0", "false", "no", "off"}:
+                    return False
+                return bool(default)
+
+            def _as_float(v, default):
+                try:
+                    return float(v)
+                except Exception:
+                    return float(default)
+
+            timeout_default = _as_float(
+                params.get("timeout_sec", os.environ.get("BACKWATER_TOPOLOGY_MESH_TIMEOUT_SEC", "300")),
+                300.0,
+            )
+            timeout_sec = max(30.0, timeout_default)
+
+            if backend_name.strip().lower() == "gmsh":
+                gmsh_loop_enabled = _as_bool(
+                    params.get("gmsh_quality_enable", os.environ.get("BACKWATER_GMSH_QUALITY_ENABLE", "0")),
+                    False,
+                )
+                if gmsh_loop_enabled:
+                    budget_s = max(
+                        1.0,
+                        _as_float(
+                            params.get("gmsh_quality_time_limit_s", os.environ.get("BACKWATER_GMSH_QUALITY_TIME_LIMIT_S", "60")),
+                            60.0,
+                        ),
+                    )
+                    grace_s = max(
+                        0.0,
+                        _as_float(
+                            params.get("gmsh_quality_timeout_grace_s", os.environ.get("BACKWATER_GMSH_QUALITY_TIMEOUT_GRACE_S", "10")),
+                            10.0,
+                        ),
+                    )
+                    timeout_sec = max(30.0, budget_s + grace_s)
+
             result_path = os.path.join("/tmp", "qgis-live-bridge", "topology_mesh_result.json")
 
             # ---------------------------------------------------------------

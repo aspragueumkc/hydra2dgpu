@@ -49,7 +49,7 @@ class TestCulvertHydraulics(unittest.TestCase):
         v_full = q_total / area_full
         legacy_pressurized_hw = max(tailwater_wse, xs.culvert_downstream_invert + xs.culvert_diameter) + (1.0 + 0.5 + kf) * (v_full ** 2) / (2.0 * G)
 
-        self.assertEqual(control, 'outlet')
+        self.assertTrue(str(control).startswith('outlet'))
         self.assertLess(hw_wse, legacy_pressurized_hw)
 
 

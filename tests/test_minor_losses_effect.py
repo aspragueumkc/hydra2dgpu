@@ -1,40 +1,43 @@
-import os, csv
+import csv
+import os
+from pathlib import Path
+
+import pytest
+
 import hydra_1d as bw
 
-root = os.path.join(os.getcwd(), 'hec_ras_project')
-# read sections metadata
-rows = []
-with open(os.path.join(root, 'sections_metadata.csv'), 'r', newline='') as f:
-    rdr = csv.DictReader(f)
-    for r in rdr:
-        rows.append(r)
 
-def build_sections(contraction=None, expansion=None):
+ROOT = Path.cwd() / "hec_ras_project"
+SECTIONS_META = ROOT / "sections_metadata.csv"
+HDF_FILE = ROOT / "test3.p01.hdf"
+
+
+def _build_sections(rows, contraction=None, expansion=None):
     sections = []
     for r in rows:
-        rs = r['river_station']
-        xs_file = r['file']
-        lb = float(r['left_bank_station'])
-        rb = float(r['right_bank_station'])
-        n_lob = float(r['n_lob'])
-        n_ch = float(r['n_ch'])
-        n_rob = float(r['n_rob'])
-        L_lob = float(r['L_lob_to_next'])
-        L_ch = float(r['L_ch_to_next'])
-        L_rob = float(r['L_rob_to_next'])
         geom = []
-        with open(os.path.join(root, xs_file), 'r', newline='') as g:
+        with open(ROOT / r["file"], "r", newline="") as g:
             rdr2 = csv.DictReader(g)
             for row in rdr2:
                 try:
-                    off = float(row['Offset'])
-                    el = float(row['Elevation'])
+                    off = float(row["Offset"])
+                    el = float(row["Elevation"])
                 except Exception:
                     continue
                 geom.append((off, el))
-        xs = bw.CrossSection(river_station=rs, geometry=geom, left_bank_station=lb, right_bank_station=rb,
-                             n_lob=n_lob, n_ch=n_ch, n_rob=n_rob,
-                             L_lob_to_next=L_lob, L_ch_to_next=L_ch, L_rob_to_next=L_rob)
+
+        xs = bw.CrossSection(
+            river_station=r["river_station"],
+            geometry=geom,
+            left_bank_station=float(r["left_bank_station"]),
+            right_bank_station=float(r["right_bank_station"]),
+            n_lob=float(r["n_lob"]),
+            n_ch=float(r["n_ch"]),
+            n_rob=float(r["n_rob"]),
+            L_lob_to_next=float(r["L_lob_to_next"]),
+            L_ch_to_next=float(r["L_ch_to_next"]),
+            L_rob_to_next=float(r["L_rob_to_next"]),
+        )
         if contraction is not None:
             xs.contraction_coeff = contraction
         if expansion is not None:
@@ -42,42 +45,63 @@ def build_sections(contraction=None, expansion=None):
         sections.append(xs)
     return sections
 
-# HEC-RAS reference WSEs
-import h5py
-fn = os.path.join(root, 'test3.p01.hdf')
-with h5py.File(fn, 'r') as f:
-    ws = f['Results']['Steady']['Output']['Output Blocks']['Base Output']['Steady Profiles']['Cross Sections']['Water Surface'][0]
-    attrs = f['Geometry']['Cross Sections']['Attributes'][()]
-    rs_order = [a[2].decode('utf-8') for a in attrs]
 
-Q = 500.0
-S0 = 0.003
+@pytest.mark.skipif(
+    not SECTIONS_META.exists() or not HDF_FILE.exists(),
+    reason="Optional HEC-RAS comparison fixtures are not present in this workspace",
+)
+def test_minor_losses_reduction_does_not_raise_wse():
+    h5py = pytest.importorskip("h5py")
 
-# Scenario A: default minor losses (use class defaults: contraction=0.1, expansion=0.3)
-sections_A = build_sections()
-model_A = bw.ModelInput(flow_cfs=Q, flow_change=None, boundary_condition='normal_depth', boundary_value=S0, sections=sections_A)
-results_A = bw.run_hydra_1d(model_A)
-compA = {sxn.river_station: st.wse for sxn, st in zip(model_A.sections, results_A)}
+    rows = []
+    with open(SECTIONS_META, "r", newline="") as f:
+        rdr = csv.DictReader(f)
+        for r in rdr:
+            rows.append(r)
 
-# Scenario B: remove minor losses and expansion/contraction (set coeffs=0)
-sections_B = build_sections(contraction=0.0, expansion=0.0)
-model_B = bw.ModelInput(flow_cfs=Q, flow_change=None, boundary_condition='normal_depth', boundary_value=S0, sections=sections_B)
-results_B = bw.run_hydra_1d(model_B)
-compB = {sxn.river_station: st.wse for sxn, st in zip(model_B.sections, results_B)}
+    with h5py.File(HDF_FILE, "r") as f:
+        ws = f[
+            "Results/Steady/Output/Output Blocks/Base Output/Steady Profiles/Cross Sections/Water Surface"
+        ][0]
+        attrs = f["Geometry/Cross Sections/Attributes"][()]
+        rs_order = [a[2].decode("utf-8") for a in attrs]
 
-# Compare
-print('RS, HEC_RAS, WITH_LOSSES, NO_LOSSES, DIFF(no-loss - with-loss)')
-any_higher = False
-for i, rs in enumerate(rs_order):
-    hec = float(ws[i])
-    a = compA.get(rs)
-    b = compB.get(rs)
-    diff = b - a if (a is not None and b is not None) else None
-    print(f'{rs}, {hec:.6f}, {a:.6f}, {b:.6f}, {diff:.6f}')
-    if diff is not None and diff > 0:
-        any_higher = True
+    q_val = 500.0
+    slope = 0.003
 
-if any_higher:
-    print('\nWARNING: some no-loss WSEs are HIGHER than with-losses (unexpected)')
-else:
-    print('\nOK: no-loss WSEs are not higher (removing losses produced same or lower WSEs)')
+    sections_a = _build_sections(rows)
+    model_a = bw.ModelInput(
+        flow_cfs=q_val,
+        flow_change=None,
+        boundary_condition="normal_depth",
+        boundary_value=slope,
+        sections=sections_a,
+    )
+    results_a = bw.run_hydra_1d(model_a)
+    comp_a = {sxn.river_station: st.wse for sxn, st in zip(model_a.sections, results_a)}
+
+    sections_b = _build_sections(rows, contraction=0.0, expansion=0.0)
+    model_b = bw.ModelInput(
+        flow_cfs=q_val,
+        flow_change=None,
+        boundary_condition="normal_depth",
+        boundary_value=slope,
+        sections=sections_b,
+    )
+    results_b = bw.run_hydra_1d(model_b)
+    comp_b = {sxn.river_station: st.wse for sxn, st in zip(model_b.sections, results_b)}
+
+    # Sanity-check fixture alignment while preserving historical comparison flow.
+    assert len(rs_order) == len(ws)
+
+    any_higher = False
+    for rs in rs_order:
+        a = comp_a.get(rs)
+        b = comp_b.get(rs)
+        if a is None or b is None:
+            continue
+        if (b - a) > 0:
+            any_higher = True
+            break
+
+    assert not any_higher

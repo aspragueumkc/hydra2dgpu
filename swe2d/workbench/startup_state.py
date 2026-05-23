@@ -59,6 +59,7 @@ def initialize_workbench_startup_state(
     dialog._topology_mesh_started_at = None
     dialog._topology_mesh_poll_count = 0
     dialog._topology_mesh_active_timeout_sec = 0.0
+    dialog._topology_mesh_checkpoint_path = ""
     dialog._project_layer_state_blocked = False
     dialog._initial_layer_restore_pending = True
     dialog._experimental_3d_bc_widget_attrs = []
