@@ -1,0 +1,225 @@
+{
+  "attempts": [
+    {
+      "attempt_label": "requested",
+      "error": "TQMesh completeness failure; front_edges=6; validity_ok=0; invalid_interior_edges=0; invalid_boundary_edges=3; area_ok=0; area_rel_diff=4.12463e-10; mesh_area=127380; domain_area=127603; scale_x=2.25963e+06; scale_y=239399; n_vertices=831; n_triangles=1492; n_quads=0; target_size=10; n_smooth=3; tri_to_quad=0; boundary_split_max_length=0; boundary_splits_applied=0; n_holes=0; n_constraints=0; n_fixed_edges=0; n_fixed_edges_added=0; n_quad_layers=0; invalid_boundary_edge_samples=[(2.25938e+06,238948)->(2.25937e+06,238938), f1=2, f2=0, color=1],[(2.25937e+06,238938)->(2.25937e+06,238928), f1=0, f2=0, color=1],[(2.25937e+06,238928)->(2.25937e+06,238919), f1=0, f2=2, color=1]; front_edge_samples=[(2.25937e+06,238919)->(2.25938e+06,238920), f1=2, f2=4],[(2.25939e+06,238938)->(2.25938e+06,238948), f1=4, f2=2],[(2.25938e+06,238920)->(2.25939e+06,238938), f1=4, f2=4],[(2.25938e+06,238948)->(2.25937e+06,238938), f1=2, f2=0],[(2.25937e+06,238938)->(2.25937e+06,238928), f1=0, f2=0]",
+      "fixed_edge_vertices": 0,
+      "fixed_edges_count": 0,
+      "fixed_variant": "no-fixed-edges",
+      "quad_layers_count": 0,
+      "smooth": 3,
+      "status": "exception",
+      "target_size": 10.0,
+      "tri_to_quad": false
+    },
+    {
+      "attempt_label": "minimal",
+      "error": "TQMesh completeness failure; front_edges=6; validity_ok=0; invalid_interior_edges=0; invalid_boundary_edges=3; area_ok=0; area_rel_diff=4.12463e-10; mesh_area=127380; domain_area=127603; scale_x=2.25963e+06; scale_y=239399; n_vertices=831; n_triangles=1492; n_quads=0; target_size=10; n_smooth=0; tri_to_quad=0; boundary_split_max_length=0; boundary_splits_applied=0; n_holes=0; n_constraints=0; n_fixed_edges=0; n_fixed_edges_added=0; n_quad_layers=0; invalid_boundary_edge_samples=[(2.25938e+06,238948)->(2.25937e+06,238938), f1=2, f2=0, color=1],[(2.25937e+06,238938)->(2.25937e+06,238928), f1=0, f2=0, color=1],[(2.25937e+06,238928)->(2.25937e+06,238919), f1=0, f2=2, color=1]; front_edge_samples=[(2.25937e+06,238919)->(2.25938e+06,238923), f1=2, f2=4],[(2.25938e+06,238939)->(2.25938e+06,238948), f1=4, f2=2],[(2.25938e+06,238923)->(2.25938e+06,238939), f1=4, f2=4],[(2.25938e+06,238948)->(2.25937e+06,238938), f1=2, f2=0],[(2.25937e+06,238938)->(2.25937e+06,238928), f1=0, f2=0]",
+      "fixed_edge_vertices": 0,
+      "fixed_edges_count": 0,
+      "fixed_variant": "no-fixed-edges",
+      "quad_layers_count": 0,
+      "smooth": 0,
+      "status": "exception",
+      "target_size": 10.0,
+      "tri_to_quad": false
+    }
+  ],
+  "boundary_split_max_length": 0.0,
+  "breakline_vertex_snap_tol": 0.1,
+  "cell_type": "triangular",
+  "constraint_counts": {
+    "constraint_vertices": 0,
+    "constraints": 0,
+    "hole_vertices": 0,
+    "holes": 0
+  },
+  "errors": [
+    "no-fixed-edges/requested (size=10, smooth=3): TQMesh completeness failure; front_edges=6; validity_ok=0; invalid_interior_edges=0; invalid_boundary_edges=3; area_ok=0; area_rel_diff=4.12463e-10; mesh_area=127380; domain_area=127603; scale_x=2.25963e+06; scale_y=239399; n_vertices=831; n_triangles=1492; n_quads=0; target_size=10; n_smooth=3; tri_to_quad=0; boundary_split_max_length=0; boundary_splits_applied=0; n_holes=0; n_constraints=0; n_fixed_edges=0; n_fixed_edges_added=0; n_quad_layers=0; invalid_boundary_edge_samples=[(2.25938e+06,238948)->(2.25937e+06,238938), f1=2, f2=0, color=1],[(2.25937e+06,238938)->(2.25937e+06,238928), f1=0, f2=0, color=1],[(2.25937e+06,238928)->(2.25937e+06,238919), f1=0, f2=2, color=1]; front_edge_samples=[(2.25937e+06,238919)->(2.25938e+06,238920), f1=2, f2=4],[(2.25939e+06,238938)->(2.25938e+06,238948), f1=4, f2=2],[(2.25938e+06,238920)->(2.25939e+06,238938), f1=4, f2=4],[(2.25938e+06,238948)->(2.25937e+06,238938), f1=2, f2=0],[(2.25937e+06,238938)->(2.25937e+06,238928), f1=0, f2=0]",
+    "no-fixed-edges/minimal (size=10, smooth=0): TQMesh completeness failure; front_edges=6; validity_ok=0; invalid_interior_edges=0; invalid_boundary_edges=3; area_ok=0; area_rel_diff=4.12463e-10; mesh_area=127380; domain_area=127603; scale_x=2.25963e+06; scale_y=239399; n_vertices=831; n_triangles=1492; n_quads=0; target_size=10; n_smooth=0; tri_to_quad=0; boundary_split_max_length=0; boundary_splits_applied=0; n_holes=0; n_constraints=0; n_fixed_edges=0; n_fixed_edges_added=0; n_quad_layers=0; invalid_boundary_edge_samples=[(2.25938e+06,238948)->(2.25937e+06,238938), f1=2, f2=0, color=1],[(2.25937e+06,238938)->(2.25937e+06,238928), f1=0, f2=0, color=1],[(2.25937e+06,238928)->(2.25937e+06,238919), f1=0, f2=2, color=1]; front_edge_samples=[(2.25937e+06,238919)->(2.25938e+06,238923), f1=2, f2=4],[(2.25938e+06,238939)->(2.25938e+06,238948), f1=4, f2=2],[(2.25938e+06,238923)->(2.25938e+06,238939), f1=4, f2=4],[(2.25938e+06,238948)->(2.25937e+06,238938), f1=2, f2=0],[(2.25937e+06,238938)->(2.25937e+06,238928), f1=0, f2=0]"
+  ],
+  "ext_debug_counts": {
+    "ext_resample_applied": 0,
+    "ext_resample_max_seg": 0.0,
+    "ext_vertices_final": 11,
+    "ext_vertices_post_resample": 11,
+    "ext_vertices_post_sanitize": 11,
+    "ext_vertices_post_stitch": 11,
+    "ext_vertices_raw": 14
+  },
+  "ext_verts_for_tqmesh": [
+    [
+      2259473.241177301,
+      239370.47285102244
+    ],
+    [
+      2259440.169331037,
+      239273.61958696402
+    ],
+    [
+      2259384.262162353,
+      238977.5478204115
+    ],
+    [
+      2259362.2142648436,
+      238889.3562303746
+    ],
+    [
+      2259340.9537922456,
+      238848.4101350003
+    ],
+    [
+      2259318.010595986,
+      238749.1330970133
+    ],
+    [
+      2259412.6721233437,
+      238703.3679820059
+    ],
+    [
+      2259455.1926731467,
+      238692.92433819454
+    ],
+    [
+      2259605.879533854,
+      238890.6075960528
+    ],
+    [
+      2259629.750719709,
+      239089.03682846902
+    ],
+    [
+      2259546.0834873607,
+      239398.89273295522
+    ]
+  ],
+  "fixed_edge_debug_counts": {
+    "active_quad_layers": 0,
+    "fixed_edge_vertices": 0,
+    "fixed_edges": 0
+  },
+  "fixed_edges_after_breakline_preprocess": [],
+  "fixed_edges_after_densify": [],
+  "fixed_edges_raw": [],
+  "int_boundaries_for_tqmesh": [],
+  "region_id": 1,
+  "ring_after_breakline_preprocess": [
+    [
+      2259318.010595986,
+      238749.1330970133
+    ],
+    [
+      2259328.354993669,
+      238796.4400908714
+    ],
+    [
+      2259340.9537922456,
+      238848.4101350003
+    ],
+    [
+      2259362.2142648436,
+      238889.3562303746
+    ],
+    [
+      2259384.262162353,
+      238977.5478204115
+    ],
+    [
+      2259418.1214335277,
+      239166.52979906206
+    ],
+    [
+      2259440.169331037,
+      239273.61958696402
+    ],
+    [
+      2259473.241177301,
+      239370.47285102244
+    ],
+    [
+      2259546.0834873607,
+      239398.89273295522
+    ],
+    [
+      2259552.915340239,
+      239361.31754212288
+    ],
+    [
+      2259629.750719709,
+      239089.03682846902
+    ],
+    [
+      2259605.879533854,
+      238890.6075960528
+    ],
+    [
+      2259455.1926731467,
+      238692.92433819454
+    ],
+    [
+      2259412.6721233437,
+      238703.3679820059
+    ]
+  ],
+  "ring_initial": [
+    [
+      2259318.010595986,
+      238749.1330970133
+    ],
+    [
+      2259328.354993669,
+      238796.4400908714
+    ],
+    [
+      2259340.9537922456,
+      238848.4101350003
+    ],
+    [
+      2259362.2142648436,
+      238889.3562303746
+    ],
+    [
+      2259384.262162353,
+      238977.5478204115
+    ],
+    [
+      2259418.1214335277,
+      239166.52979906206
+    ],
+    [
+      2259440.169331037,
+      239273.61958696402
+    ],
+    [
+      2259473.241177301,
+      239370.47285102244
+    ],
+    [
+      2259546.0834873607,
+      239398.89273295522
+    ],
+    [
+      2259552.915340239,
+      239361.31754212288
+    ],
+    [
+      2259629.750719709,
+      239089.03682846902
+    ],
+    [
+      2259605.879533854,
+      238890.6075960528
+    ],
+    [
+      2259455.1926731467,
+      238692.92433819454
+    ],
+    [
+      2259412.6721233437,
+      238703.3679820059
+    ]
+  ],
+  "target_size": 10.0,
+  "used_label": "requested",
+  "used_quality": null
+}

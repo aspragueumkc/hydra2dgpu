@@ -134,6 +134,18 @@ Recommended SWE2D wet/dry stability controls in the workbench:
 - `Shallow damping depth` and `Max rel depth increase`: additional robustness
 	controls for thin advancing fronts.
 
+Experimental 3D patch projection controls:
+
+- `3D projection residual sample stride`: Jacobi iterations between residual
+	checks (maps to `BACKWATER_SWE3D_PROJECTION_RESIDUAL_SAMPLE_ITERS`).
+- `3D projection divergence gate`: enables divergence-quality gating during
+	projection retry flow (maps to `BACKWATER_SWE3D_PROJECTION_DIVERGENCE_GATE_ENABLE`).
+- `3D projection divergence ratio target`: maximum allowed divergence RMS ratio
+	for accepting a projection attempt (maps to `BACKWATER_SWE3D_PROJECTION_DIVERGENCE_RATIO_TARGET`).
+
+When Experimental 3D mode is active, run logs include a `3D projection controls`
+line so the active projection gate/target settings are visible in the run record.
+
 ## 11. Save a Copy of the Model
 
 Use:

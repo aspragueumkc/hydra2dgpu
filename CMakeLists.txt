@@ -142,3 +142,53 @@ else()
 endif()
 
 set_property(TARGET hydra_tqmesh PROPERTY INTERPROCEDURAL_OPTIMIZATION OFF)
+
+# ── Custom hybrid topology mesher (C++ backend) ────────────────────────────
+pybind11_add_module(hydra_hybridmesh
+    cpp/src/hybrid_mesh_bindings.cpp
+)
+
+if(MSVC)
+  target_compile_options(hydra_hybridmesh PRIVATE /W1)
+else()
+  target_compile_options(hydra_hybridmesh PRIVATE -w)
+endif()
+
+set_property(TARGET hydra_hybridmesh PROPERTY INTERPROCEDURAL_OPTIMIZATION OFF)
+
+# ── MFEM beta mesh optimization bridge ──────────────────────────────────────
+option(HYDRA_ENABLE_MFEM "Enable MFEM beta mesh optimization module" ON)
+
+if(HYDRA_ENABLE_MFEM)
+  pybind11_add_module(hydra_mfem_meshopt
+      cpp/src/mfem_meshopt_bindings.cpp
+  )
+
+  if(MSVC)
+    target_compile_options(hydra_mfem_meshopt PRIVATE /W1)
+  else()
+    target_compile_options(hydra_mfem_meshopt PRIVATE -w)
+  endif()
+
+  set_property(TARGET hydra_mfem_meshopt PROPERTY INTERPROCEDURAL_OPTIMIZATION OFF)
+endif()
+
+# ── High-performance overlay backend (compiled raster core) ────────────────
+pybind11_add_module(hydra_overlay
+    cpp/src/overlay_backend.cpp
+)
+
+if(OpenMP_CXX_FOUND)
+  target_link_libraries(hydra_overlay PRIVATE OpenMP::OpenMP_CXX)
+  target_compile_definitions(hydra_overlay PRIVATE HYDRA_HAS_OPENMP=1)
+endif()
+
+if(SWE2D_CUDA_FOUND)
+  target_compile_definitions(hydra_overlay PRIVATE HYDRA_HAS_CUDA=1)
+endif()
+
+if(MSVC)
+  target_compile_options(hydra_overlay PRIVATE /W4)
+else()
+  target_compile_options(hydra_overlay PRIVATE -Wall -Wextra -Wpedantic)
+endif()

@@ -12,9 +12,11 @@ from swe2d.extensions.drainage_network import SWE2DUrbanDrainageModule
 from swe2d.extensions.extension_models import (
     DrainageSolverMode,
     HydraulicStructureConfig,
+    StructureType,
     PipeNetworkConfig,
     equivalent_circular_diameter_from_area,
 )
+from swe2d.runtime.bridge_stacked_runtime import apply_bridge_stacked_source_weight
 from swe2d.extensions.structures import SWE2DStructureModule
 
 
@@ -347,6 +349,7 @@ class SWE2DCouplingController:
         coupling_loop: str = "cpu",
         drainage_solver_backend: str = "cpu",
         drainage_gpu_method: str = "step",
+        bridge_cuda_coupling: bool = False,
         **legacy_kwargs,
     ):
         if cell_area is None:
@@ -374,6 +377,7 @@ class SWE2DCouplingController:
         self.drainage_gpu_method = str(drainage_gpu_method or "step").strip().lower()
         if self.drainage_gpu_method not in {"step", "iterative"}:
             raise ValueError("drainage_gpu_method must be 'step' or 'iterative'")
+        self.bridge_cuda_coupling = bool(bridge_cuda_coupling)
         self._drainage_soa = pack_pipe_network_soa(self.drainage.cfg, self.n_cells) if self.drainage is not None else None
         self._gpu_node_depth: Optional[np.ndarray] = None
         self._gpu_link_flow: Optional[np.ndarray] = None
@@ -465,6 +469,37 @@ class SWE2DCouplingController:
             "pipe_end_outlet_loss_k": np.ascontiguousarray(dsoa.pipe_end_outlet_loss_k, dtype=np.float64),
         }
         return self._gpu_drainage_static_args
+
+    def _bridge_structure_arrays(self, cell_wse: np.ndarray) -> Optional[Dict[str, np.ndarray]]:
+        if self.structures is None:
+            return None
+        bridge_indices = [
+            i for i, st in enumerate(self.structures.cfg.structures)
+            if st.enabled and st.structure_type == StructureType.BRIDGE
+        ]
+        if not bridge_indices:
+            return None
+
+        flows = np.asarray(self.structures.structure_flows(cell_wse), dtype=np.float64)
+        return {
+            "indices": np.asarray(bridge_indices, dtype=np.int32),
+            "structure_id": np.asarray([str(self.structures.cfg.structures[i].structure_id) for i in bridge_indices], dtype=object),
+            "upstream_cell": np.ascontiguousarray([int(self.structures.cfg.structures[i].upstream_cell) for i in bridge_indices], dtype=np.int32),
+            "downstream_cell": np.ascontiguousarray([int(self.structures.cfg.structures[i].downstream_cell) for i in bridge_indices], dtype=np.int32),
+            "flow_cms": np.ascontiguousarray(flows[bridge_indices], dtype=np.float64),
+            "loss_k_upstream": np.ascontiguousarray([
+                float(self.structures.cfg.structures[i].metadata.get("inlet_loss_k", self.structures.cfg.structures[i].metadata.get("coeff", 0.5)))
+                for i in bridge_indices
+            ], dtype=np.float64),
+            "loss_k_downstream": np.ascontiguousarray([
+                float(self.structures.cfg.structures[i].metadata.get("outlet_loss_k", self.structures.cfg.structures[i].metadata.get("coeff", 0.5)))
+                for i in bridge_indices
+            ], dtype=np.float64),
+            "width_m": np.ascontiguousarray([
+                float(self.structures.cfg.structures[i].metadata.get("width", 1.0))
+                for i in bridge_indices
+            ], dtype=np.float64),
+        }
 
     @property
     def n_cells(self) -> int:
@@ -779,13 +814,49 @@ class SWE2DCouplingController:
             component_sums["drainage_implicit_iters_used"] = float(drainage_diag.get("implicit_iters_used", 0.0))
             component_sums["drainage_inactive_fastpath"] = float(drainage_diag.get("inactive_fastpath", 0.0))
 
+        bridge_total = np.zeros(self.n_cells, dtype=np.float64)
+        bridge_helper_used = False
         if self.structures is not None:
+            bridge_plan_map = {
+                str(plan.structure_id): plan for plan in getattr(self, "bridge_stacked_plans", []) or []
+            }
             flows = np.asarray(self.structures.structure_flows(cell_wse), dtype=np.float64)
             sts = list(self.structures.cfg.structures)
             if flows.size == len(sts) and flows.size > 0:
-                struct_up = np.asarray([int(st.upstream_cell) for st in sts], dtype=np.int32)
-                struct_dn = np.asarray([int(st.downstream_cell) for st in sts], dtype=np.int32)
-                struct_q = flows
+                use_bridge_cuda = self.bridge_cuda_coupling and hasattr(native_mod, "swe2d_gpu_compute_bridge_coupling_sources")
+                if use_bridge_cuda:
+                    non_bridge_mask = np.asarray([st.structure_type != StructureType.BRIDGE for st in sts], dtype=bool)
+                    struct_up = np.asarray([int(st.upstream_cell) for st in sts if st.structure_type != StructureType.BRIDGE], dtype=np.int32)
+                    struct_dn = np.asarray([int(st.downstream_cell) for st in sts if st.structure_type != StructureType.BRIDGE], dtype=np.int32)
+                    struct_q = flows[non_bridge_mask]
+                    bridge_arrays = self._bridge_structure_arrays(cell_wse)
+                    if bridge_arrays is not None:
+                        bridge_helper_used = True
+                        for i in range(int(bridge_arrays["indices"].size)):
+                            src = np.asarray(
+                                native_mod.swe2d_gpu_compute_bridge_coupling_sources(
+                                    np.asarray(self.cell_area, dtype=np.float64),
+                                    np.asarray([int(bridge_arrays["upstream_cell"][i])], dtype=np.int32),
+                                    np.asarray([int(bridge_arrays["downstream_cell"][i])], dtype=np.int32),
+                                    np.asarray([float(bridge_arrays["flow_cms"][i])], dtype=np.float64),
+                                    np.asarray([float(bridge_arrays["loss_k_upstream"][i])], dtype=np.float64),
+                                    np.asarray([float(bridge_arrays["loss_k_downstream"][i])], dtype=np.float64),
+                                    float(bridge_arrays["width_m"][i]),
+                                    float(dt_s),
+                                ),
+                                dtype=np.float64,
+                            )
+                            if src.size != self.n_cells:
+                                raise ValueError("bridge source-rate array size mismatch")
+                            bridge_id = str(bridge_arrays["structure_id"][i])
+                            bridge_plan = bridge_plan_map.get(bridge_id)
+                            if bridge_plan is not None:
+                                src = apply_bridge_stacked_source_weight(src, bridge_plan)
+                            bridge_total += src
+                else:
+                    struct_up = np.asarray([int(st.upstream_cell) for st in sts], dtype=np.int32)
+                    struct_dn = np.asarray([int(st.downstream_cell) for st in sts], dtype=np.int32)
+                    struct_q = flows
             structure_diag = self.structures.compute_structure_fluxes(float(dt_s), cell_wse)
 
         total = np.asarray(
@@ -799,6 +870,9 @@ class SWE2DCouplingController:
             ),
             dtype=np.float64,
         )
+        if bridge_helper_used:
+            total += bridge_total
+            component_sums["bridges"] = float(np.sum(bridge_total))
 
         self.last_diag = SWE2DCouplingDiagnostics(
             time_s=float(t_s) + float(dt_s),

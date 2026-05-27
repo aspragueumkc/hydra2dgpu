@@ -40,6 +40,10 @@ def run_workbench_post_bootstrap_setup(
     dialog._high_perf_overlay_cell_x = np.empty(0, dtype=np.float64)
     dialog._high_perf_overlay_cell_y = np.empty(0, dtype=np.float64)
     dialog._high_perf_overlay_cell_bed = np.empty(0, dtype=np.float64)
+    dialog._high_perf_overlay_node_x = np.empty(0, dtype=np.float64)
+    dialog._high_perf_overlay_node_y = np.empty(0, dtype=np.float64)
+    dialog._high_perf_overlay_cell_nodes = np.empty(0, dtype=np.int32)
+    dialog._high_perf_overlay_mesh_fingerprint = ""
     dialog._sample_line_draw_tool = None
     dialog._sample_line_prev_map_tool = None
     dialog._velocity_vector_builder = None

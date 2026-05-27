@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 from typing import Dict, List, Sequence
 
 from swe2d.extensions.extension_models import (
@@ -99,6 +100,25 @@ class SWE2DStructureModule(HydraulicStructureEngine):
             if wu >= wd:
                 return q
             return -q
+
+        if structure.structure_type == StructureType.BRIDGE:
+            width = max(0.0, float(md.get("width", 0.0)))
+            height = max(0.0, float(md.get("height", 0.0)))
+            opening = max(0.0, min(1.0, float(md.get("opening", 1.0))))
+            area = opening * width * height
+            if area <= 0.0:
+                return 0.0
+
+            k_up = max(0.0, float(md.get("inlet_loss_k", md.get("coeff", 0.5))))
+            k_dn = max(0.0, float(md.get("outlet_loss_k", md.get("coeff", 0.5))))
+            loss_scale = max(1.0e-6, 1.0 + k_up + k_dn)
+            dh = wu - wd
+            if abs(dh) <= 1.0e-12:
+                return 0.0
+            q = area * math.sqrt(max(0.0, 2.0 * g * abs(dh))) / loss_scale
+            if max_q is not None:
+                q = min(q, max(0.0, float(max_q)))
+            return q if dh >= 0.0 else -q
 
         return 0.0
 

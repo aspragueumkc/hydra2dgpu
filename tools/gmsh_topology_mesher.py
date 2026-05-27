@@ -50,6 +50,7 @@ def _ensure_plugin_imports() -> None:
 _ensure_plugin_imports()
 
 from swe2d.mesh.meshing import (  # noqa: E402
+    ConceptualArc,
     CellConstraint,
     ConceptualModel,
     ConceptualRegion,
@@ -81,7 +82,7 @@ def _as_str(v, default: str = "") -> str:
 
 
 def _normalize_cell_type(v: str, default: str = "triangular") -> str:
-    allowed = {"triangular", "quadrilateral", "cartesian", "empty"}
+    allowed = {"triangular", "quadrilateral", "cartesian", "channel_generator", "empty"}
     s = _as_str(v, default).lower()
     return s if s in allowed else default
 
@@ -165,6 +166,7 @@ def _iter_line_coords(geom: ogr.Geometry) -> Iterable[List[Tuple[float, float]]]
 
 def load_conceptual_model(
     source: str,
+    arcs_layer: Optional[str],
     regions_layer: str,
     constraints_layer: Optional[str],
     quad_edges_layer: Optional[str],
@@ -176,12 +178,85 @@ def load_conceptual_model(
         raise RuntimeError(f"Could not open vector source: {source}")
 
     regions_lyr = _open_layer(ds, regions_layer, required=True)
+    arcs_lyr = _open_layer(ds, arcs_layer, required=False) if arcs_layer else None
     constraints_lyr = _open_layer(ds, constraints_layer, required=False) if constraints_layer else None
     quad_edges_lyr = _open_layer(ds, quad_edges_layer, required=False) if quad_edges_layer else None
 
+    arcs: List[ConceptualArc] = []
     regions: List[ConceptualRegion] = []
     constraints: List[CellConstraint] = []
     quad_edges: List[QuadEdgeControl] = []
+
+    if arcs_lyr is not None:
+        arc_auto = 1
+        arc_defn = arcs_lyr.GetLayerDefn()
+        arc_fields = {arc_defn.GetFieldDefn(i).GetNameRef() for i in range(arc_defn.GetFieldCount())}
+        for feat in arcs_lyr:
+            a_id = _as_int(feat.GetField("arc_id"), arc_auto)
+            n0 = _as_int(feat.GetField("node0"), -1) if "node0" in arc_fields else -1
+            n1 = _as_int(feat.GetField("node1"), -1) if "node1" in arc_fields else -1
+            region_id = _as_int(feat.GetField("region_id"), -1) if "region_id" in arc_fields else -1
+
+            arc_role = None
+            if "arc_role" in arc_fields:
+                role_txt = _as_str(feat.GetField("arc_role"), "").lower()
+                if role_txt in {"centerline", "left_bank", "right_bank", "breakline"}:
+                    arc_role = role_txt
+
+            use_global_arc_ctrl = True
+            if "use_global_arc_ctrl" in arc_fields:
+                raw = feat.GetField("use_global_arc_ctrl")
+                txt = _as_str(raw, "1").lower()
+                use_global_arc_ctrl = txt in {"1", "true", "yes", "on", "y"}
+
+            arc_mode_override = None
+            if "arc_mode_override" in arc_fields:
+                mode_txt = _as_str(feat.GetField("arc_mode_override"), "").lower()
+                if mode_txt in {"hard_embed", "soft_size_hint", "disabled"}:
+                    arc_mode_override = mode_txt
+
+            arc_soft_size_override = None
+            if "arc_soft_size_override" in arc_fields:
+                val = feat.GetField("arc_soft_size_override")
+                if val is not None:
+                    try:
+                        fval = float(val)
+                        if fval > 0.0:
+                            arc_soft_size_override = fval
+                    except Exception:
+                        pass
+
+            arc_soft_dist_override = None
+            if "arc_soft_dist_override" in arc_fields:
+                val = feat.GetField("arc_soft_dist_override")
+                if val is not None:
+                    try:
+                        fval = float(val)
+                        if fval > 0.0:
+                            arc_soft_dist_override = fval
+                    except Exception:
+                        pass
+
+            geom = feat.GetGeometryRef()
+            if geom is None:
+                arc_auto += 1
+                continue
+            for pts in _iter_line_coords(geom):
+                arcs.append(
+                    ConceptualArc(
+                        arc_id=a_id,
+                        node0=n0,
+                        node1=n1,
+                        region_id=region_id,
+                        arc_role=arc_role,
+                        points_xy=pts,
+                        use_global_arc_ctrl=use_global_arc_ctrl,
+                        arc_mode_override=arc_mode_override,
+                        arc_soft_size_override=arc_soft_size_override,
+                        arc_soft_dist_override=arc_soft_dist_override,
+                    )
+                )
+            arc_auto += 1
 
     region_auto = 1
     for feat in regions_lyr:
@@ -273,7 +348,8 @@ def load_conceptual_model(
     if not regions:
         raise ValueError("No valid regions were found in regions layer")
 
-    return ConceptualModel(nodes=[], arcs=[], regions=regions, constraints=constraints, quad_edges=quad_edges)
+    return ConceptualModel(nodes=[], arcs=arcs, regions=regions, constraints=constraints, quad_edges=quad_edges)
+
 
 
 def _extract_tri_quad_faces(mesh) -> Tuple[np.ndarray, np.ndarray]:
@@ -444,6 +520,7 @@ def diagnose_constraints_one_by_one(
 def build_arg_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(description="Standalone Gmsh topology mesher")
     p.add_argument("--source", required=True, help="Vector datasource path (e.g., .gpkg)")
+    p.add_argument("--arcs-layer", default="swe2d_topo_arcs", help="Arcs line layer")
     p.add_argument("--regions-layer", default="swe2d_topo_regions", help="Regions polygon layer")
     p.add_argument("--constraints-layer", default="swe2d_topo_constraints", help="Constraints polygon layer")
     p.add_argument("--quad-edges-layer", default="swe2d_topo_quad_edges", help="Quad-edge lines layer")
@@ -453,7 +530,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
     p.add_argument(
         "--default-cell-type",
         default="triangular",
-        choices=["triangular", "quadrilateral", "cartesian", "empty"],
+        choices=["triangular", "quadrilateral", "cartesian", "channel_generator", "empty"],
         help="Fallback cell type",
     )
     p.add_argument("--out-prefix", default="topology_mesh", help="Output file prefix")
@@ -489,6 +566,7 @@ def main() -> int:
     t0 = time.perf_counter()
     model = load_conceptual_model(
         source=args.source,
+        arcs_layer=args.arcs_layer,
         regions_layer=args.regions_layer,
         constraints_layer=constraints_layer,
         quad_edges_layer=quad_edges_layer,
@@ -497,7 +575,7 @@ def main() -> int:
     )
     _log(
         "mesh> load-done "
-        f"regions={len(model.regions)} constraints={len(model.constraints)} "
+        f"arcs={len(model.arcs)} regions={len(model.regions)} constraints={len(model.constraints)} "
         f"quad_edges={len(model.quad_edges)} elapsed={time.perf_counter() - t0:.2f}s"
     )
 
@@ -552,10 +630,12 @@ def main() -> int:
 
     summary: Dict[str, object] = {
         "source": os.path.abspath(args.source),
+        "arcs_layer": args.arcs_layer,
         "regions_layer": args.regions_layer,
         "constraints_layer": constraints_layer,
         "quad_edges_layer": quad_edges_layer,
         "regions": len(model.regions),
+        "arcs": len(model.arcs),
         "constraints": len(model.constraints),
         "quad_edges": len(model.quad_edges),
         "nodes": int(np.asarray(mesh.node_x).size),

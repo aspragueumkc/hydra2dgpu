@@ -79,6 +79,15 @@ except Exception:
     _wbqt = None
     _HAVE_WORKBENCH = False
 
+try:
+    from swe2d.boundary_and_forcing.boundary_qgis_adapter import (
+        apply_bc_layer_overrides_qgis,
+        collect_bc_layer_edge_groups_qgis,
+    )
+except Exception:
+    apply_bc_layer_overrides_qgis = None
+    collect_bc_layer_edge_groups_qgis = None
+
 # ===========================================================================
 # Helpers that replicate the plugin's pure-numpy logic without QGIS
 # ===========================================================================
@@ -411,7 +420,15 @@ class TestTotalQBoundaryDistribution(unittest.TestCase):
             self.node_y[self.n1] - self.node_y[self.n0],
         )
 
-    def _call_distribution(self, progressive: bool, bc_type_step, bc_val_step, bc_type_template, side_hg):
+    def _call_distribution(
+        self,
+        progressive: bool,
+        bc_type_step,
+        bc_val_step,
+        bc_type_template,
+        side_hg,
+        edge_groups=None,
+    ):
         dummy = types.SimpleNamespace(
             _mesh_data={
                 "node_x": self.node_x,
@@ -429,6 +446,7 @@ class TestTotalQBoundaryDistribution(unittest.TestCase):
             bc_type_template,
             side_hg,
             None,
+            edge_groups,
         )
 
     def test_static_total_q_distributes_over_full_length(self):
@@ -491,6 +509,42 @@ class TestTotalQBoundaryDistribution(unittest.TestCase):
         active_mid_local = set(np.where(np.abs(left_mid) > 1.0e-12)[0].tolist())
         self.assertEqual(active_low_local, {int(sorted_left[0])})
         self.assertEqual(active_mid_local, set(sorted_left[:3].tolist()))
+
+    def test_static_total_q_single_group_across_sides_not_duplicated(self):
+        bc_type_step = np.ones(self.n0.size, dtype=np.int32)
+        bc_type_template = bc_type_step.copy()
+        bc_val_step = np.zeros(self.n0.size, dtype=np.float64)
+
+        bottom_edges = np.where(
+            np.abs(0.5 * (self.node_y[self.n0] + self.node_y[self.n1]) - 0.0) < 1.0e-12
+        )[0]
+        self.assertGreater(bottom_edges.size, 0)
+        self.assertGreater(self.left_edges.size, 0)
+
+        left_edge = int(self.left_edges[0])
+        bottom_edge = int(bottom_edges[0])
+        selected = [left_edge, bottom_edge]
+
+        q_total = 8.0
+        bc_type_step[selected] = 2
+        bc_type_template[selected] = 2
+        bc_val_step[selected] = q_total
+
+        edge_groups = {
+            left_edge: "bc_feature_1",
+            bottom_edge: "bc_feature_1",
+        }
+        out = self._call_distribution(
+            progressive=True,
+            bc_type_step=bc_type_step,
+            bc_val_step=bc_val_step,
+            bc_type_template=bc_type_template,
+            side_hg={},
+            edge_groups=edge_groups,
+        )
+
+        q_recon = float(np.sum(out[selected] * self.edge_len[selected]))
+        self.assertAlmostEqual(q_recon, q_total, places=10)
 
 
 class TestBCIntersectionGeometry(unittest.TestCase):
@@ -558,7 +612,7 @@ class TestBCIntersectionGeometry(unittest.TestCase):
 # Group 2 – QGIS-layer override tests
 # ===========================================================================
 
-@unittest.skipUnless(_HAVE_QGIS, "QGIS not available in this environment")
+@unittest.skipUnless(_HAVE_QGIS and apply_bc_layer_overrides_qgis is not None, "QGIS adapter not available")
 class TestBCLayerOverride(unittest.TestCase):
     """
     End-to-end test of _apply_bc_layer_overrides using real QGIS layers.
@@ -611,36 +665,28 @@ class TestBCLayerOverride(unittest.TestCase):
         return layer
 
     def _run_overrides(self, bc_layer, node_x, node_y, n0, n1, bc_type, bc_val):
-        """
-        Reimplementation of _apply_bc_layer_overrides without needing self to be
-        a full workbench dialog instance.
-        """
-        fields = set(bc_layer.fields().names())
-        type_field = "bc_type"
-        val_field = "bc_value"
+        class _Combo:
+            pass
 
-        features = []
-        for ft in bc_layer.getFeatures():
-            geom = ft.geometry()
-            if geom is None or geom.isEmpty():
-                continue
-            t = int(ft[type_field])
-            v = float(ft[val_field]) if val_field in fields else 0.0
-            features.append((0, geom, t, v))
+        combo = _Combo()
+        combo._layer = bc_layer
 
-        bc_type = bc_type.copy()
-        bc_val = bc_val.copy()
-        for i in range(n0.size):
-            x0 = float(node_x[n0[i]]); y0 = float(node_y[n0[i]])
-            x1 = float(node_x[n1[i]]); y1 = float(node_y[n1[i]])
-            tol = math.hypot(x1 - x0, y1 - y0) * 0.5
-            mid = QgsGeometry.fromPointXY(QgsPointXY(0.5 * (x0 + x1), 0.5 * (y0 + y1)))
-            for _, g, t, v in features:
-                if mid.distance(g) < tol:
-                    bc_type[i] = int(t)
-                    bc_val[i] = float(v)
-                    break
-        return bc_type, bc_val
+        def _combo_layer_fn(combo_obj, _kind):
+            return getattr(combo_obj, "_layer", None)
+
+        return apply_bc_layer_overrides_qgis(
+            mesh_data={"node_x": node_x, "node_y": node_y},
+            have_qgis_core=True,
+            bc_lines_layer_combo=combo,
+            combo_layer_fn=_combo_layer_fn,
+            edge_n0=n0,
+            edge_n1=n1,
+            bc_type=bc_type.copy(),
+            bc_val=bc_val.copy(),
+            qgs_geometry_cls=QgsGeometry,
+            qgs_pointxy_cls=QgsPointXY,
+            log_fn=lambda _msg: None,
+        )
 
     def test_upstream_inflow_override(self):
         nx, ny = 10, 4
@@ -712,6 +758,115 @@ class TestBCLayerOverride(unittest.TestCase):
         for i in np.where(left_mask)[0]:
             self.assertEqual(int(bc_type2[i]), 102,
                              f"Timeseries code 102 not preserved on left edge {i}")
+
+    def test_two_static_inflow_lines_on_same_side_remain_separate(self):
+        nx, ny = 8, 4
+        lx, ly = 80.0, 8.0
+        node_x, node_y, _, cell_nodes = _make_structured_mesh(nx, ny, lx, ly)
+        n0, n1 = _boundary_edges(cell_nodes)
+        bc_type, bc_val = _default_bc(
+            n0,
+            n1,
+            node_x,
+            node_y,
+            left_type=1,
+            right_type=1,
+            bottom_type=1,
+            top_type=1,
+        )
+
+        # Two disjoint inflow polylines on the same (left) boundary.
+        lower = f"LINESTRING(0 0, 0 {ly / 2.0})"
+        upper = f"LINESTRING(0 {ly / 2.0}, 0 {ly})"
+        q_lower = 10.0
+        q_upper = 20.0
+        bc_layer = self._make_bc_layer([
+            (lower, 2, q_lower),
+            (upper, 2, q_upper),
+        ])
+
+        bc_type2, bc_val2 = self._run_overrides(bc_layer, node_x, node_y, n0, n1, bc_type, bc_val)
+
+        xmin = float(np.min(node_x))
+        mx = 0.5 * (node_x[n0] + node_x[n1])
+        my = 0.5 * (node_y[n0] + node_y[n1])
+        left_idx = np.where(np.abs(mx - xmin) < 1.0e-9)[0]
+        self.assertGreater(left_idx.size, 0)
+
+        lower_idx = left_idx[my[left_idx] < (ly / 2.0 - 1.0e-9)]
+        upper_idx = left_idx[my[left_idx] > (ly / 2.0 + 1.0e-9)]
+        self.assertGreater(lower_idx.size, 0)
+        self.assertGreater(upper_idx.size, 0)
+
+        for i in lower_idx:
+            self.assertEqual(int(bc_type2[i]), 2)
+            self.assertAlmostEqual(float(bc_val2[i]), q_lower, places=9)
+        for i in upper_idx:
+            self.assertEqual(int(bc_type2[i]), 2)
+            self.assertAlmostEqual(float(bc_val2[i]), q_upper, places=9)
+
+
+@unittest.skipUnless(_HAVE_QGIS and collect_bc_layer_edge_groups_qgis is not None, "QGIS adapter not available")
+class TestBCEdgeGrouping(unittest.TestCase):
+    def _make_bc_layer_with_name(self, features_spec):
+        """
+        features_spec: list of (geom_wkt, name, priority)
+        """
+        layer = QgsVectorLayer("LineString?crs=EPSG:4326", "bc_lines_grouping", "memory")
+        pr = layer.dataProvider()
+        fields = QgsFields()
+        fields.append(QgsField("name", QVariant.String))
+        fields.append(QgsField("priority", QVariant.Int))
+        pr.addAttributes(fields)
+        layer.updateFields()
+
+        feats = []
+        for wkt, name, priority in features_spec:
+            f = QgsFeature()
+            f.setGeometry(QgsGeometry.fromWkt(wkt))
+            f.setAttributes([name, int(priority)])
+            feats.append(f)
+        pr.addFeatures(feats)
+        layer.updateExtents()
+        return layer
+
+    def test_edge_groups_use_feature_id_even_when_name_exists(self):
+        nx, ny = 4, 2
+        lx, ly = 40.0, 5.0
+        node_x, node_y, _, cell_nodes = _make_structured_mesh(nx, ny, lx, ly)
+        n0, n1 = _boundary_edges(cell_nodes)
+
+        left_line = f"LINESTRING(0 0, 0 {ly})"
+        right_line = f"LINESTRING({lx} 0, {lx} {ly})"
+        bc_layer = self._make_bc_layer_with_name([
+            (left_line, "shared_name", 0),
+            (right_line, "shared_name", 0),
+        ])
+
+        class _Combo:
+            pass
+
+        combo = _Combo()
+        combo._layer = bc_layer
+
+        def _combo_layer_fn(_combo_obj, _kind):
+            return getattr(_combo_obj, "_layer", None)
+
+        edge_groups = collect_bc_layer_edge_groups_qgis(
+            mesh_data={"node_x": node_x, "node_y": node_y},
+            have_qgis_core=True,
+            bc_lines_layer_combo=combo,
+            combo_layer_fn=_combo_layer_fn,
+            edge_n0=n0,
+            edge_n1=n1,
+            qgs_geometry_cls=QgsGeometry,
+            qgs_pointxy_cls=QgsPointXY,
+        )
+
+        self.assertTrue(edge_groups, "Expected BC edge groups for at least one edge")
+        vals = set(edge_groups.values())
+        self.assertTrue(all(v.startswith("bc_line:feature_") for v in vals))
+        self.assertGreaterEqual(len(vals), 2, "Distinct features should produce distinct group labels")
 
 
 # ===========================================================================

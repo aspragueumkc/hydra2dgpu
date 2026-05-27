@@ -11,6 +11,8 @@ import os
 from dataclasses import dataclass
 from typing import Any, Callable, Dict
 
+from swe2d.extensions.extension_models import StructureType
+
 
 @dataclass(frozen=True)
 class SWE2DRunOptionsData:
@@ -43,6 +45,7 @@ class SWE2DRunOptionsData:
     thiessen_forcing: Any
     pipe_network_cfg: Any
     hydraulic_structures_cfg: Any
+    bridge_cuda_coupling: bool
 
 
 class SWE2DRunOptionsBuilder:
@@ -89,6 +92,16 @@ class SWE2DRunOptionsBuilder:
         self._SWE2DEquationSet = swe2d_equation_set_enum
         self._SWE2DThreeDSolverModel = swe2d_3d_solver_model_enum
         self._SWE2DThreeDCouplingMode = swe2d_3d_coupling_mode_enum
+
+    @staticmethod
+    def _has_bridge_structures(hydraulic_structures_cfg: Any) -> bool:
+        structures = getattr(hydraulic_structures_cfg, "structures", None)
+        if not structures:
+            return False
+        for structure in structures:
+            if int(getattr(structure, "structure_type", 0)) == int(StructureType.BRIDGE):
+                return True
+        return False
 
     def build(self) -> SWE2DRunOptionsData:
         run_duration_s = self._parse_run_duration_seconds()
@@ -219,6 +232,9 @@ class SWE2DRunOptionsBuilder:
         thiessen_forcing = self._build_thiessen_rain_cn_forcing()
         pipe_network_cfg = self._build_pipe_network_config()
         hydraulic_structures_cfg = self._build_hydraulic_structure_config()
+        bridge_cuda_coupling = bool(self._swe2d_gpu_available()) and self._has_bridge_structures(hydraulic_structures_cfg)
+        if bridge_cuda_coupling:
+            self._log("Bridge coupling CUDA helper enabled for hydraulic structures with bridge entries.")
 
         return SWE2DRunOptionsData(
             run_duration_s=run_duration_s,
@@ -248,4 +264,5 @@ class SWE2DRunOptionsBuilder:
             thiessen_forcing=thiessen_forcing,
             pipe_network_cfg=pipe_network_cfg,
             hydraulic_structures_cfg=hydraulic_structures_cfg,
+            bridge_cuda_coupling=bridge_cuda_coupling,
         )

@@ -16,6 +16,9 @@ _EXPERIMENTAL_3D_MODE_WIDGET_ATTRS = [
     "experimental_3d_patch_face_len_x_spin",
     "experimental_3d_patch_face_len_y_spin",
     "experimental_3d_patch_face_len_z_spin",
+    "experimental_3d_projection_residual_sample_iters_spin",
+    "experimental_3d_projection_divergence_gate_enable_chk",
+    "experimental_3d_projection_divergence_ratio_target_spin",
     "experimental_3d_patch_xmin_edit",
     "experimental_3d_patch_xmax_edit",
     "experimental_3d_patch_ymin_edit",
@@ -257,6 +260,35 @@ def collect_3d_patch_env_overrides(
         terrain_zmin=terrain_zmin,
         bed_manning_n=float(bed_manning_n),
     )
+
+    sample_iters = 1
+    sample_spin = getattr(ui, "experimental_3d_projection_residual_sample_iters_spin", None)
+    if isinstance(sample_spin, QtWidgets.QSpinBox):
+        try:
+            sample_iters = int(sample_spin.value())
+        except Exception:
+            sample_iters = 1
+    sample_iters = max(1, min(1024, sample_iters))
+    overrides["BACKWATER_SWE3D_PROJECTION_RESIDUAL_SAMPLE_ITERS"] = str(sample_iters)
+
+    divergence_gate_enabled = False
+    divergence_gate_chk = getattr(ui, "experimental_3d_projection_divergence_gate_enable_chk", None)
+    if isinstance(divergence_gate_chk, QtWidgets.QCheckBox):
+        try:
+            divergence_gate_enabled = bool(divergence_gate_chk.isChecked())
+        except Exception:
+            divergence_gate_enabled = False
+    overrides["BACKWATER_SWE3D_PROJECTION_DIVERGENCE_GATE_ENABLE"] = "1" if divergence_gate_enabled else "0"
+
+    divergence_ratio_target = 1.0
+    divergence_ratio_spin = getattr(ui, "experimental_3d_projection_divergence_ratio_target_spin", None)
+    if isinstance(divergence_ratio_spin, QtWidgets.QDoubleSpinBox):
+        try:
+            divergence_ratio_target = float(divergence_ratio_spin.value())
+        except Exception:
+            divergence_ratio_target = 1.0
+    divergence_ratio_target = max(1.0e-6, min(100.0, divergence_ratio_target))
+    overrides["BACKWATER_SWE3D_PROJECTION_DIVERGENCE_RATIO_TARGET"] = f"{divergence_ratio_target:.17g}"
 
     if bool(meta.get("terrain_zmin_used", False)):
         zmin_val = float(meta.get("zmin", 0.0))

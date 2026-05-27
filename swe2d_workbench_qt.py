@@ -58,6 +58,7 @@ from swe2d.workbench.results_bridge import (
 )
 from swe2d.workbench.high_perf_overlay_bridge import (
     destroy_high_perf_canvas_overlay_item as _destroy_high_perf_canvas_overlay_item_bridge,
+    mesh_fingerprint_from_mesh_data as _mesh_fingerprint_from_mesh_data_bridge,
     sync_high_perf_overlay_data as _sync_high_perf_overlay_data_bridge,
     update_high_perf_overlay_time as _update_high_perf_overlay_time_bridge,
 )
@@ -436,16 +437,30 @@ def _ensure_netcdf4_available() -> bool:
         return False
 
 try:
-    from swe2d.mesh.meshing import conceptual_from_qgis_layers, generate_face_centric_mesh, _gmsh_available, _tqmesh_available
+    from swe2d.mesh.meshing import (
+        conceptual_from_qgis_layers,
+        generate_face_centric_mesh,
+        _gmsh_available,
+        _tqmesh_available,
+        _mfem_meshopt_available,
+    )
 except Exception:
     try:
-        from .swe2d_meshing import conceptual_from_qgis_layers, generate_face_centric_mesh, _gmsh_available, _tqmesh_available
+        from .swe2d_meshing import (
+            conceptual_from_qgis_layers,
+            generate_face_centric_mesh,
+            _gmsh_available,
+            _tqmesh_available,
+            _mfem_meshopt_available,
+        )
     except Exception:
         conceptual_from_qgis_layers = None
         generate_face_centric_mesh = None
         def _gmsh_available() -> bool:
             return False
         def _tqmesh_available() -> bool:
+            return False
+        def _mfem_meshopt_available() -> bool:
             return False
 
 try:
@@ -520,6 +535,7 @@ _CELL_TYPE_OPTIONS = [
     "triangular",
     "quadrilateral",
     "cartesian",
+    "channel_generator",
     "empty",
 ]
 
@@ -1002,6 +1018,329 @@ class TopologyAttributeTableDialog(QtWidgets.QDialog):
             QtWidgets.QMessageBox.warning(self, "Topology Editor", f"Failed to save layer edits: {exc}")
 
 
+def _quote_sqlite_ident(name: str) -> str:
+    return '"' + str(name).replace('"', '""') + '"'
+
+
+class SWE2DSQLiteTablePreviewDialog(QtWidgets.QDialog):
+    """Simple SQLite/GeoPackage table preview dialog."""
+
+    def __init__(self, gpkg_path: str, table_name: str, title: str = "Table Preview", parent=None):
+        super().__init__(parent)
+        self.setWindowTitle(str(title or "Table Preview"))
+        self.resize(980, 640)
+        self._gpkg_path = str(gpkg_path or "")
+        self._table_name = str(table_name or "")
+
+        root = QtWidgets.QVBoxLayout(self)
+        root.addWidget(QtWidgets.QLabel(f"Source: {self._gpkg_path}\nTable: {self._table_name}"))
+
+        self.table = QtWidgets.QTableWidget()
+        self.table.setEditTriggers(QtWidgets.QAbstractItemView.EditTrigger.NoEditTriggers)
+        self.table.setSelectionBehavior(QtWidgets.QAbstractItemView.SelectionBehavior.SelectRows)
+        self.table.setAlternatingRowColors(True)
+        self.table.horizontalHeader().setStretchLastSection(True)
+        root.addWidget(self.table, stretch=1)
+
+        row = QtWidgets.QHBoxLayout()
+        row.addWidget(QtWidgets.QLabel("Limit:"))
+        self.limit_spin = QtWidgets.QSpinBox()
+        self.limit_spin.setRange(10, 5000)
+        self.limit_spin.setValue(250)
+        row.addWidget(self.limit_spin)
+        self.refresh_btn = QtWidgets.QPushButton("Refresh")
+        row.addWidget(self.refresh_btn)
+        row.addStretch(1)
+        root.addLayout(row)
+
+        buttons = QtWidgets.QDialogButtonBox(QtWidgets.QDialogButtonBox.StandardButton.Close)
+        buttons.rejected.connect(self.reject)
+        buttons.accepted.connect(self.accept)
+        root.addWidget(buttons)
+
+        self.refresh_btn.clicked.connect(self.refresh_table)
+        self.limit_spin.valueChanged.connect(lambda _v: self.refresh_table())
+        self.refresh_table()
+
+    def refresh_table(self):
+        self.table.setRowCount(0)
+        self.table.setColumnCount(0)
+        if not self._gpkg_path or not self._table_name or not os.path.exists(self._gpkg_path):
+            return
+        conn = sqlite3.connect(self._gpkg_path)
+        try:
+            cur = conn.cursor()
+            cur.execute(f"PRAGMA table_info({_quote_sqlite_ident(self._table_name)})")
+            cols = [str(r[1]) for r in cur.fetchall()]
+            if not cols:
+                return
+            self.table.setColumnCount(len(cols))
+            self.table.setHorizontalHeaderLabels(cols)
+            lim = int(self.limit_spin.value())
+            cur.execute(
+                f"SELECT * FROM {_quote_sqlite_ident(self._table_name)} LIMIT ?",
+                (lim,),
+            )
+            rows = cur.fetchall()
+            self.table.setRowCount(len(rows))
+            for i, row in enumerate(rows):
+                for j, val in enumerate(row):
+                    self.table.setItem(i, j, QtWidgets.QTableWidgetItem("" if val is None else str(val)))
+        finally:
+            conn.close()
+
+
+class SWE2DModelGeoPackageExplorerDialog(QtWidgets.QDialog):
+    """GeoPackage table explorer for opening table-aware viewers and table management."""
+
+    def __init__(
+        self,
+        gpkg_path: str,
+        open_run_log_viewer: Callable[[], None],
+        open_line_results_viewer: Callable[[], None],
+        open_coupling_results_viewer: Callable[[], None],
+        logger: Callable[[str], None],
+        parent=None,
+    ):
+        super().__init__(parent)
+        self.setWindowTitle("Model GeoPackage Explorer")
+        self.resize(980, 660)
+        self._gpkg_path = str(gpkg_path or "")
+        self._open_run_log_viewer = open_run_log_viewer
+        self._open_line_results_viewer = open_line_results_viewer
+        self._open_coupling_results_viewer = open_coupling_results_viewer
+        self._log = logger if callable(logger) else (lambda _msg: None)
+
+        root = QtWidgets.QVBoxLayout(self)
+        self.source_lbl = QtWidgets.QLabel(f"GeoPackage: {self._gpkg_path}")
+        self.source_lbl.setWordWrap(True)
+        root.addWidget(self.source_lbl)
+
+        self.table = QtWidgets.QTableWidget()
+        self.table.setEditTriggers(QtWidgets.QAbstractItemView.EditTrigger.NoEditTriggers)
+        self.table.setSelectionBehavior(QtWidgets.QAbstractItemView.SelectionBehavior.SelectRows)
+        self.table.setSelectionMode(QtWidgets.QAbstractItemView.SelectionMode.SingleSelection)
+        self.table.setAlternatingRowColors(True)
+        self.table.setColumnCount(4)
+        self.table.setHorizontalHeaderLabels(["Table", "Rows", "Type", "Actions"])
+        self.table.horizontalHeader().setStretchLastSection(True)
+        root.addWidget(self.table, stretch=1)
+
+        row = QtWidgets.QHBoxLayout()
+        self.refresh_btn = QtWidgets.QPushButton("Refresh")
+        self.open_btn = QtWidgets.QPushButton("Open Viewer")
+        self.preview_btn = QtWidgets.QPushButton("Preview Table")
+        self.rename_btn = QtWidgets.QPushButton("Rename Table")
+        self.delete_btn = QtWidgets.QPushButton("Delete Table")
+        for btn in (self.refresh_btn, self.open_btn, self.preview_btn, self.rename_btn, self.delete_btn):
+            row.addWidget(btn)
+        row.addStretch(1)
+        root.addLayout(row)
+
+        buttons = QtWidgets.QDialogButtonBox(QtWidgets.QDialogButtonBox.StandardButton.Close)
+        buttons.rejected.connect(self.reject)
+        buttons.accepted.connect(self.accept)
+        root.addWidget(buttons)
+
+        self.refresh_btn.clicked.connect(self.refresh_tables)
+        self.open_btn.clicked.connect(self.open_selected)
+        self.preview_btn.clicked.connect(self.preview_selected)
+        self.rename_btn.clicked.connect(self.rename_selected)
+        self.delete_btn.clicked.connect(self.delete_selected)
+        self.table.itemSelectionChanged.connect(self._sync_button_state)
+        self.table.itemDoubleClicked.connect(lambda _item: self.open_selected())
+
+        self.refresh_tables()
+
+    def _selected_table(self) -> str:
+        row = self.table.currentRow()
+        if row < 0:
+            return ""
+        item = self.table.item(row, 0)
+        return "" if item is None else str(item.text() or "").strip()
+
+    def _table_kind(self, name: str) -> str:
+        t = str(name or "").strip().lower()
+        if t in ("swe2d_run_logs",):
+            return "run_log"
+        if t.startswith("swe2d_line_results"):
+            return "line_results"
+        if t.startswith("swe2d_coupling_results"):
+            return "coupling_results"
+        if t.startswith("swe2d_mesh_results") or t in ("swe2d_face_flux_results", "swe2d_face_results", "swe2d_flux_faces"):
+            return "mesh_results"
+        if t.startswith("swe2d_conservation") or t.startswith("swe2d_boundary_flux_forensics") or t.startswith("swe2d_source_budget_forensics"):
+            return "conservation"
+        if t.startswith("gpkg_") or t.startswith("sqlite_") or t.startswith("rtree_"):
+            return "system"
+        return "table"
+
+    def _is_mutable_model_table(self, name: str) -> bool:
+        t = str(name or "").strip().lower()
+        return t.startswith("swe2d_")
+
+    def _sync_button_state(self):
+        name = self._selected_table()
+        has_sel = bool(name)
+        self.open_btn.setEnabled(has_sel)
+        self.preview_btn.setEnabled(has_sel)
+        mutable = has_sel and self._is_mutable_model_table(name)
+        self.rename_btn.setEnabled(mutable)
+        self.delete_btn.setEnabled(mutable)
+
+    def refresh_tables(self):
+        self.table.setRowCount(0)
+        if not self._gpkg_path or not os.path.exists(self._gpkg_path):
+            self._sync_button_state()
+            return
+        conn = sqlite3.connect(self._gpkg_path)
+        try:
+            cur = conn.cursor()
+            cur.execute("SELECT name FROM sqlite_master WHERE type='table' ORDER BY name")
+            names = [str(r[0]) for r in cur.fetchall() if r and r[0] is not None]
+            for name in names:
+                if name.startswith("sqlite_"):
+                    continue
+                row_idx = self.table.rowCount()
+                self.table.insertRow(row_idx)
+                self.table.setItem(row_idx, 0, QtWidgets.QTableWidgetItem(name))
+                try:
+                    cur.execute(f"SELECT COUNT(*) FROM {_quote_sqlite_ident(name)}")
+                    row = cur.fetchone()
+                    n_rows = int(row[0]) if row and row[0] is not None else 0
+                except Exception:
+                    n_rows = -1
+                self.table.setItem(row_idx, 1, QtWidgets.QTableWidgetItem("?" if n_rows < 0 else str(n_rows)))
+                self.table.setItem(row_idx, 2, QtWidgets.QTableWidgetItem(self._table_kind(name)))
+                actions = "open+preview"
+                if self._is_mutable_model_table(name):
+                    actions += "+rename+delete"
+                self.table.setItem(row_idx, 3, QtWidgets.QTableWidgetItem(actions))
+        finally:
+            conn.close()
+        self.table.resizeColumnsToContents()
+        self._sync_button_state()
+
+    def _open_preview(self, name: str, title: str):
+        dlg = SWE2DSQLiteTablePreviewDialog(self._gpkg_path, name, title=title, parent=self)
+        dlg.exec()
+
+    def open_selected(self):
+        name = self._selected_table()
+        if not name:
+            return
+        kind = self._table_kind(name)
+        if kind == "run_log":
+            self._open_run_log_viewer()
+            return
+        if kind == "line_results":
+            self._open_line_results_viewer()
+            return
+        if kind == "coupling_results":
+            self._open_coupling_results_viewer()
+            return
+        if kind == "mesh_results":
+            self._open_preview(name, title=f"Mesh Results Viewer - {name}")
+            return
+        self._open_preview(name, title=f"Table Viewer - {name}")
+
+    def preview_selected(self):
+        name = self._selected_table()
+        if not name:
+            return
+        self._open_preview(name, title=f"Table Viewer - {name}")
+
+    def rename_selected(self):
+        old_name = self._selected_table()
+        if not old_name:
+            return
+        if not self._is_mutable_model_table(old_name):
+            QtWidgets.QMessageBox.warning(self, "Rename Table", "Only model tables (swe2d_*) can be renamed from this explorer.")
+            return
+        new_name, ok = QtWidgets.QInputDialog.getText(self, "Rename Table", "New table name:", text=old_name)
+        if not ok:
+            return
+        new_name = str(new_name or "").strip()
+        if not new_name or new_name == old_name:
+            return
+        conn = sqlite3.connect(self._gpkg_path)
+        try:
+            cur = conn.cursor()
+            cur.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name=?", (new_name,))
+            if cur.fetchone() is not None:
+                QtWidgets.QMessageBox.warning(self, "Rename Table", f"Table '{new_name}' already exists.")
+                return
+            cur.execute(f"ALTER TABLE {_quote_sqlite_ident(old_name)} RENAME TO {_quote_sqlite_ident(new_name)}")
+            for meta_tbl in ("gpkg_contents", "gpkg_geometry_columns", "gpkg_extensions"):
+                cur.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name=?", (meta_tbl,))
+                if cur.fetchone() is None:
+                    continue
+                try:
+                    cur.execute(
+                        f"UPDATE {_quote_sqlite_ident(meta_tbl)} SET table_name=? WHERE table_name=?",
+                        (new_name, old_name),
+                    )
+                except Exception:
+                    pass
+            conn.commit()
+            self._log(f"GeoPackage explorer renamed table: {old_name} -> {new_name}")
+            self.refresh_tables()
+        except Exception as exc:
+            QtWidgets.QMessageBox.warning(self, "Rename Table", f"Failed to rename table:\n{exc}")
+        finally:
+            conn.close()
+
+    def delete_selected(self):
+        name = self._selected_table()
+        if not name:
+            return
+        if not self._is_mutable_model_table(name):
+            QtWidgets.QMessageBox.warning(self, "Delete Table", "Only model tables (swe2d_*) can be deleted from this explorer.")
+            return
+        ans = QtWidgets.QMessageBox.question(
+            self,
+            "Delete Table",
+            f"Delete table '{name}' from GeoPackage?\n\nThis cannot be undone.",
+            QtWidgets.QMessageBox.StandardButton.Yes | QtWidgets.QMessageBox.StandardButton.No,
+            QtWidgets.QMessageBox.StandardButton.No,
+        )
+        if ans != QtWidgets.QMessageBox.StandardButton.Yes:
+            return
+        conn = sqlite3.connect(self._gpkg_path)
+        try:
+            cur = conn.cursor()
+            cur.execute(f"DROP TABLE IF EXISTS {_quote_sqlite_ident(name)}")
+            for meta_tbl in ("gpkg_contents", "gpkg_geometry_columns", "gpkg_extensions"):
+                cur.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name=?", (meta_tbl,))
+                if cur.fetchone() is None:
+                    continue
+                try:
+                    cur.execute(
+                        f"DELETE FROM {_quote_sqlite_ident(meta_tbl)} WHERE table_name=?",
+                        (name,),
+                    )
+                except Exception:
+                    pass
+
+            # Clean up common GeoPackage rtree sidecars if present.
+            cur.execute("SELECT name FROM sqlite_master WHERE type='table' AND name LIKE ?", (f"rtree_{name}_%",))
+            for row in cur.fetchall():
+                t = str(row[0]) if row and row[0] is not None else ""
+                if t:
+                    try:
+                        cur.execute(f"DROP TABLE IF EXISTS {_quote_sqlite_ident(t)}")
+                    except Exception:
+                        pass
+
+            conn.commit()
+            self._log(f"GeoPackage explorer deleted table: {name}")
+            self.refresh_tables()
+        except Exception as exc:
+            QtWidgets.QMessageBox.warning(self, "Delete Table", f"Failed to delete table:\n{exc}")
+        finally:
+            conn.close()
+
+
 class SWE2DLineResultsViewerDialog(QtWidgets.QDialog):
     """Viewer for sampled SWE2D line results stored in GeoPackage/SQLite."""
 
@@ -1047,8 +1386,8 @@ class SWE2DLineResultsViewerDialog(QtWidgets.QDialog):
         profile_records: List[Dict[str, object]],
         run_id: str,
         db_path: str,
-        length_unit: str = "m",
-        flow_unit_label: str = "m3/s",
+        length_unit: str = "",
+        flow_unit_label: str = "",
         parent=None,
     ):
         super().__init__(parent)
@@ -1059,8 +1398,10 @@ class SWE2DLineResultsViewerDialog(QtWidgets.QDialog):
         self._profile_records = list(profile_records)
         self._run_id = str(run_id)
         self._db_path = str(db_path)
-        l_unit = str(length_unit or "m")
-        q_unit = str(flow_unit_label or "m3/s")
+        self._length_unit = str(length_unit).strip() or "m"
+        self._flow_unit = str(flow_unit_label).strip() or f"{self._length_unit}3/s"
+        l_unit = self._length_unit
+        q_unit = self._flow_unit
         self._columns = [(k, lbl.format(L=l_unit, Q=q_unit)) for k, lbl in self._BASE_COLUMNS]
         self._plot_canvas = None
         self._plot_fig = None
@@ -1168,6 +1509,22 @@ class SWE2DLineResultsViewerDialog(QtWidgets.QDialog):
         self.view_mode_combo.currentIndexChanged.connect(self._refresh_table)
         self.view_mode_combo.currentIndexChanged.connect(self._refresh_plot)
 
+    def _unit_label_for_metric(self, metric: str) -> str:
+        m = str(metric or "")
+        if m in ("depth_m", "wse_m", "bed_m", "station_m"):
+            return self._length_unit
+        if m == "velocity_ms":
+            return f"{self._length_unit}/s"
+        if m == "flow_cms":
+            return self._flow_unit
+        if m == "flow_qn":
+            return f"{self._length_unit}^2/s"
+        return ""
+
+    def _label_with_unit(self, label: str, metric: str) -> str:
+        unit = self._unit_label_for_metric(metric)
+        return str(label) if not unit else f"{label} ({unit})"
+
     def _line_filter(self):
         value = self.line_combo.currentData()
         if value is None:
@@ -1273,12 +1630,12 @@ class SWE2DLineResultsViewerDialog(QtWidgets.QDialog):
             ("t_s", "Time (s)"),
             ("line_id", "Line ID"),
             ("line_name", "Line Name"),
-            ("station_m", "Station ({})".format(self._columns[3][1].split("(")[-1].rstrip(")"))),
+            ("station_m", self._label_with_unit("Station", "station_m")),
             ("depth_m", self._columns[3][1]),
             ("velocity_ms", self._columns[4][1]),
             ("wse_m", self._columns[5][1]),
             ("bed_m", self._columns[6][1]),
-            ("flow_qn", "Normal Flow Density"),
+            ("flow_qn", self._label_with_unit("Normal Flow Density", "flow_qn")),
             ("fr", "Froude"),
         ]
         self.table.setColumnCount(len(cols))
@@ -1329,7 +1686,7 @@ class SWE2DLineResultsViewerDialog(QtWidgets.QDialog):
                     label += f" ({name_by_line[lid]})"
                 ax.plot(t_hr, vals, "-", linewidth=1.8, label=label)
             ax.set_xlabel("Time (hr)")
-            ax.set_ylabel(self.metric_combo.currentText())
+            ax.set_ylabel(self._label_with_unit(self.metric_combo.currentText(), metric))
             ax.set_title("Sample line time series")
             if len(by_line) > 1:
                 ax.legend(loc="best")
@@ -1354,8 +1711,8 @@ class SWE2DLineResultsViewerDialog(QtWidgets.QDialog):
             ok = np.isfinite(y)
             if np.any(ok):
                 ax.plot(x[ok], y[ok], "-", linewidth=1.8)
-            ax.set_xlabel("Station")
-            ax.set_ylabel(self.profile_metric_combo.currentText())
+            ax.set_xlabel(self._label_with_unit("Station", "station_m"))
+            ax.set_ylabel(self._label_with_unit(self.profile_metric_combo.currentText(), metric))
             ax.set_title(f"Line {line_id} profile at t={t_s/3600.0:.4f} hr" + (f" ({line_name})" if line_name else ""))
             ax.grid(True, alpha=0.3)
             self._plot_canvas.draw_idle()
@@ -1442,8 +1799,8 @@ class SWE2DLineResultsViewerDialog(QtWidgets.QDialog):
                 fontsize=8,
                 color="0.35",
             )
-        ax.set_xlabel("Station")
-        ax.set_ylabel("Elevation")
+        ax.set_xlabel(self._label_with_unit("Station", "station_m"))
+        ax.set_ylabel(self._label_with_unit("Elevation", "wse_m"))
         ax.set_title(f"Line {line_id} WSE + bed at t={t_s/3600.0:.4f} hr" + (f" ({line_name})" if line_name else ""))
         ax.legend(loc="best")
         ax.grid(True, alpha=0.3)
@@ -1467,8 +1824,8 @@ class SWE2DCouplingResultsViewerDialog(QtWidgets.QDialog):
         records: List[Dict[str, object]],
         run_id: str,
         db_path: str,
-        length_unit: str = "m",
-        flow_unit_label: str = "m3/s",
+        length_unit: str = "",
+        flow_unit_label: str = "",
         parent=None,
     ):
         super().__init__(parent)
@@ -1478,8 +1835,8 @@ class SWE2DCouplingResultsViewerDialog(QtWidgets.QDialog):
         self._records = list(records)
         self._run_id = str(run_id)
         self._db_path = str(db_path)
-        self._length_unit = str(length_unit or "m")
-        self._flow_unit = str(flow_unit_label or "m3/s")
+        self._length_unit = str(length_unit).strip() or "m"
+        self._flow_unit = str(flow_unit_label).strip() or f"{self._length_unit}3/s"
         self._plot_canvas = None
         self._plot_fig = None
 
@@ -2766,6 +3123,9 @@ class SWE2DWorkbenchDialog(QtWidgets.QDialog):
             return w
 
         self.draw_sample_line_btn = _find_or_create_button("draw_sample_line_btn", "Draw Sample Line On Map")
+        self.open_model_gpkg_explorer_btn = _find_or_create_button(
+            "open_model_gpkg_explorer_btn", "Open Model GeoPackage Explorer"
+        )
         self.open_coupling_results_viewer_btn = _find_or_create_button(
             "open_coupling_results_viewer_btn", "Open Drainage/Structure Results Viewer"
         )
@@ -2781,18 +3141,23 @@ class SWE2DWorkbenchDialog(QtWidgets.QDialog):
 
         if map_tools_layout.indexOf(self.draw_sample_line_btn) < 0:
             map_tools_layout.addWidget(self.draw_sample_line_btn, 0, 0, 1, 2)
+        if map_tools_layout.indexOf(self.open_model_gpkg_explorer_btn) < 0:
+            map_tools_layout.addWidget(self.open_model_gpkg_explorer_btn, 1, 0, 1, 2)
         if map_tools_layout.indexOf(self.open_coupling_results_viewer_btn) < 0:
-            map_tools_layout.addWidget(self.open_coupling_results_viewer_btn, 1, 0, 1, 2)
+            map_tools_layout.addWidget(self.open_coupling_results_viewer_btn, 2, 0, 1, 2)
         if map_tools_layout.indexOf(self.open_run_log_viewer_btn) < 0:
-            map_tools_layout.addWidget(self.open_run_log_viewer_btn, 2, 0, 1, 2)
+            map_tools_layout.addWidget(self.open_run_log_viewer_btn, 3, 0, 1, 2)
         if map_tools_layout.indexOf(self.layer_status_lbl) < 0:
-            map_tools_layout.addWidget(self.layer_status_lbl, 3, 0, 1, 2)
+            map_tools_layout.addWidget(self.layer_status_lbl, 4, 0, 1, 2)
         if map_tools_layout.indexOf(self.open_3d_patch_viewer_btn) < 0:
-            map_tools_layout.addWidget(self.open_3d_patch_viewer_btn, 4, 0, 1, 2)
+            map_tools_layout.addWidget(self.open_3d_patch_viewer_btn, 5, 0, 1, 2)
         if map_tools_layout.indexOf(self.publish_3d_patch_surface_btn) < 0:
-            map_tools_layout.addWidget(self.publish_3d_patch_surface_btn, 5, 0, 1, 2)
+            map_tools_layout.addWidget(self.publish_3d_patch_surface_btn, 6, 0, 1, 2)
 
         self.draw_sample_line_btn.setToolTip("Draw a sample polyline directly on the map canvas")
+        self.open_model_gpkg_explorer_btn.setToolTip(
+            "Browse model GeoPackage tables and open matching viewers; rename/delete model result tables."
+        )
         self.open_3d_patch_viewer_btn.setToolTip(
             "Open experimental post-processing viewer for captured 3D patch snapshots."
         )
@@ -2806,6 +3171,7 @@ class SWE2DWorkbenchDialog(QtWidgets.QDialog):
 
         for btn, cb in (
             (self.draw_sample_line_btn, self._activate_sample_line_draw_tool),
+            (self.open_model_gpkg_explorer_btn, self._open_model_gpkg_explorer),
             (self.open_coupling_results_viewer_btn, self._open_coupling_results_viewer),
             (self.open_run_log_viewer_btn, self._open_run_log_viewer),
             (self.open_3d_patch_viewer_btn, self._open_3d_patch_viewer),
@@ -3846,18 +4212,24 @@ class SWE2DWorkbenchDialog(QtWidgets.QDialog):
 
     def _effective_topology_timeout_sec(self, backend_name: str, mesh_options: Optional[Dict[str, object]]) -> float:
         base = float(self._topology_mesh_timeout_sec)
-        if backend_name != "gmsh":
-            return base
         opts = dict(mesh_options or {})
-        gmsh_loop_enabled = self._opt_bool(opts.get("gmsh_quality_enable"), False)
-        if not gmsh_loop_enabled:
-            return base
-        budget_s = max(1.0, self._opt_float(opts.get("gmsh_quality_time_limit_s"), 60.0))
-        # When the iterative Gmsh quality loop is enabled, enforce timeout from
-        # its configured budget rather than the generic topology timeout floor.
-        # Keep a small grace window for candidate finalization/return plumbing.
-        grace_s = max(0.0, self._opt_float(opts.get("gmsh_quality_timeout_grace_s"), 10.0))
-        return max(30.0, budget_s + grace_s)
+        timeout = base
+        if backend_name == "gmsh":
+            gmsh_loop_enabled = self._opt_bool(opts.get("gmsh_quality_enable"), False)
+            if gmsh_loop_enabled:
+                budget_s = max(1.0, self._opt_float(opts.get("gmsh_quality_time_limit_s"), 60.0))
+                # When the iterative Gmsh quality loop is enabled, enforce timeout from
+                # its configured budget rather than the generic topology timeout floor.
+                # Keep a small grace window for candidate finalization/return plumbing.
+                grace_s = max(0.0, self._opt_float(opts.get("gmsh_quality_timeout_grace_s"), 10.0))
+                timeout = max(timeout, max(30.0, budget_s + grace_s))
+
+        mfem_enabled = self._opt_bool(opts.get("mfem_post_opt_enable"), False)
+        if mfem_enabled:
+            mfem_budget = max(1.0, self._opt_float(opts.get("mfem_post_opt_time_limit_s"), 90.0))
+            mfem_grace = max(0.0, self._opt_float(opts.get("mfem_post_opt_timeout_grace_s"), 10.0))
+            timeout = max(timeout, max(30.0, mfem_budget + mfem_grace))
+        return timeout
 
     def _terminate_topology_mesh_run(
         self,
@@ -4187,6 +4559,75 @@ class SWE2DWorkbenchDialog(QtWidgets.QDialog):
         optimize_methods = tuple(
             self._parse_csv_text_list(self.topo_gmsh_quality_optimize_methods_edit.text()) or ["Laplace2D", "Relocate2D"]
         )
+        hybrid_tri_method = "frontal_delaunay"
+        hybrid_transition_width = 1.25
+        hybrid_transition_outer = 2.5
+        hybrid_overbank_grading = 4.0
+        hybrid_constrained_snap_tol = 12.0
+        hybrid_constrained_max_flips = 128
+        hybrid_region_conformance_band = 0.55
+        hybrid_arc_conformance_band = 0.45
+        hybrid_strict_conformance_mode = False
+        # TEMPORARY: MFEM post-optimization is disabled in GUI and backend.
+        # mfem_post_opt_enable = False
+        # if hasattr(self, "topo_mfem_post_opt_enable_chk"):
+        #     mfem_post_opt_enable = bool(self.topo_mfem_post_opt_enable_chk.isChecked())
+        mfem_post_opt_enable = False
+        mfem_seed_backend = "structured"
+        if hasattr(self, "topo_mfem_seed_backend_combo"):
+            mfem_seed_backend = str(self.topo_mfem_seed_backend_combo.currentData() or "structured")
+        mfem_preset = "balanced_shape_size"
+        if hasattr(self, "topo_mfem_preset_combo"):
+            mfem_preset = str(self.topo_mfem_preset_combo.currentData() or "balanced_shape_size")
+        mfem_post_opt_strict = False
+        if hasattr(self, "topo_mfem_post_opt_strict_chk"):
+            mfem_post_opt_strict = bool(self.topo_mfem_post_opt_strict_chk.isChecked())
+        mfem_post_opt_max_iterations = 25
+        if hasattr(self, "topo_mfem_post_opt_max_iters_spin"):
+            mfem_post_opt_max_iterations = int(self.topo_mfem_post_opt_max_iters_spin.value())
+        mfem_post_opt_quality_weight = 1.0
+        if hasattr(self, "topo_mfem_post_opt_quality_weight_spin"):
+            mfem_post_opt_quality_weight = float(self.topo_mfem_post_opt_quality_weight_spin.value())
+        mfem_post_opt_boundary_fit_weight = 0.35
+        if hasattr(self, "topo_mfem_post_opt_boundary_fit_weight_spin"):
+            mfem_post_opt_boundary_fit_weight = float(self.topo_mfem_post_opt_boundary_fit_weight_spin.value())
+        mfem_post_opt_interface_fit_weight = 0.25
+        if hasattr(self, "topo_mfem_post_opt_interface_fit_weight_spin"):
+            mfem_post_opt_interface_fit_weight = float(self.topo_mfem_post_opt_interface_fit_weight_spin.value())
+        mfem_post_opt_min_det_j = 1.0e-9
+        if hasattr(self, "topo_mfem_post_opt_min_det_j_edit"):
+            mfem_post_opt_min_det_j = float(self.topo_mfem_post_opt_min_det_j_edit.text().strip() or "1e-9")
+        mfem_post_opt_lock_boundary_nodes = True
+        if hasattr(self, "topo_mfem_post_opt_lock_boundary_nodes_chk"):
+            mfem_post_opt_lock_boundary_nodes = bool(self.topo_mfem_post_opt_lock_boundary_nodes_chk.isChecked())
+        mfem_post_opt_time_limit_s = 90.0
+        if hasattr(self, "topo_mfem_post_opt_time_limit_spin"):
+            mfem_post_opt_time_limit_s = float(self.topo_mfem_post_opt_time_limit_spin.value())
+
+        tqmesh_boundary_split_max_length = 30.0
+        if hasattr(self, "topo_tqmesh_boundary_split_max_length_spin"):
+            tqmesh_boundary_split_max_length = float(self.topo_tqmesh_boundary_split_max_length_spin.value())
+
+        tqmesh_quad_full_region_flow_align = True
+        if hasattr(self, "topo_tqmesh_quad_full_region_flow_align_chk"):
+            tqmesh_quad_full_region_flow_align = bool(self.topo_tqmesh_quad_full_region_flow_align_chk.isChecked())
+
+        tqmesh_interface_conformance = True
+        if hasattr(self, "topo_tqmesh_interface_conformance_chk"):
+            tqmesh_interface_conformance = bool(self.topo_tqmesh_interface_conformance_chk.isChecked())
+
+        tqmesh_interface_snap_tol = 1.0
+        if hasattr(self, "topo_tqmesh_interface_snap_tol_spin"):
+            tqmesh_interface_snap_tol = float(self.topo_tqmesh_interface_snap_tol_spin.value())
+
+        tqmesh_breakline_fixed_edges = True
+        if hasattr(self, "topo_tqmesh_breakline_fixed_edges_chk"):
+            tqmesh_breakline_fixed_edges = bool(self.topo_tqmesh_breakline_fixed_edges_chk.isChecked())
+
+        tqmesh_breakline_fixed_edges_strict = False
+        if hasattr(self, "topo_tqmesh_breakline_fixed_edges_strict_chk"):
+            tqmesh_breakline_fixed_edges_strict = bool(self.topo_tqmesh_breakline_fixed_edges_strict_chk.isChecked())
+
         return {
             "gmsh_tri_algorithm": int(self.topo_gmsh_tri_algo_combo.currentData() or 6),
             "gmsh_quad_algorithm": int(self.topo_gmsh_quad_algo_combo.currentData() or 6),
@@ -4194,6 +4635,12 @@ class SWE2DWorkbenchDialog(QtWidgets.QDialog):
             "gmsh_smoothing": int(self.topo_gmsh_smoothing_spin.value()),
             "gmsh_optimize_iters": int(self.topo_gmsh_optimize_iters_spin.value()),
             "gmsh_optimize_netgen": bool(self.topo_gmsh_optimize_netgen_chk.isChecked()),
+            "gmsh_arc_mode": str(self.topo_gmsh_arc_mode_combo.currentData() or "hard_embed"),
+            "gmsh_arc_soft_size_factor": float(self.topo_gmsh_arc_soft_size_factor_spin.value()),
+            "gmsh_arc_soft_dist_factor": float(self.topo_gmsh_arc_soft_dist_factor_spin.value()),
+            "gmsh_mesh_size_min": float(self.topo_gmsh_mesh_size_min_spin.value()),
+            "gmsh_tolerance_edge_length": float(self.topo_gmsh_tolerance_edge_length_spin.value()),
+            "gmsh_mesh_size_from_points": bool(self.topo_gmsh_mesh_size_from_points_chk.isChecked()),
             "gmsh_verbosity": int(self.topo_gmsh_verbosity_spin.value()),
             "gmsh_quality_enable": bool(self.topo_gmsh_quality_enable_chk.isChecked()),
             "gmsh_quality_max_iterations": int(self.topo_gmsh_quality_max_iters_spin.value()),
@@ -4211,12 +4658,40 @@ class SWE2DWorkbenchDialog(QtWidgets.QDialog):
             "gmsh_quality_optimize_methods": optimize_methods,
             "gmsh_algorithm_switch_on_failure": bool(self.topo_gmsh_algo_switch_on_failure_chk.isChecked()),
             "gmsh_quality_recombine_node_repositioning": bool(self.topo_gmsh_recombine_node_repositioning_chk.isChecked()),
+            "tri_meshing_method": hybrid_tri_method,
+            "transition_width_factor": hybrid_transition_width,
+            "transition_outer_factor": hybrid_transition_outer,
+            "overbank_grading_factor": hybrid_overbank_grading,
+            "hybridcpp_constrained_edge_snap_tol": hybrid_constrained_snap_tol,
+            "hybridcpp_constrained_edge_max_flips": hybrid_constrained_max_flips,
+            "hybridcpp_region_conformance_band_factor": hybrid_region_conformance_band,
+            "hybridcpp_arc_conformance_band_factor": hybrid_arc_conformance_band,
+            "hybridcpp_strict_conformance_mode": hybrid_strict_conformance_mode,
+            "post_opt_backend": "none",
+            "mfem_post_opt_enable": mfem_post_opt_enable,
+            "mfem_seed_backend": mfem_seed_backend,
+            "mfem_post_opt_preset": mfem_preset,
+            "mfem_post_opt_strict": mfem_post_opt_strict,
+            "mfem_post_opt_max_iterations": mfem_post_opt_max_iterations,
+            "mfem_post_opt_quality_weight": mfem_post_opt_quality_weight,
+            "mfem_post_opt_boundary_fit_weight": mfem_post_opt_boundary_fit_weight,
+            "mfem_post_opt_interface_fit_weight": mfem_post_opt_interface_fit_weight,
+            "mfem_post_opt_min_det_j": mfem_post_opt_min_det_j,
+            "mfem_post_opt_lock_boundary_nodes": mfem_post_opt_lock_boundary_nodes,
+            "mfem_post_opt_preserve_boundary": mfem_post_opt_lock_boundary_nodes,
+            "mfem_post_opt_time_limit_s": mfem_post_opt_time_limit_s,
             "tqmesh_min_angle_deg": float(self.topo_quality_min_angle_spin.value()),
             "tqmesh_max_aspect_ratio": float(self.topo_quality_max_aspect_spin.value()),
             "tqmesh_min_area_rel_bbox": float(self.topo_quality_min_area_edit.text().strip() or "0"),
             "tqmesh_quality_strict": bool(self.topo_quality_strict_chk.isChecked()),
             "tqmesh_size_scales": size_scales,
             "tqmesh_smooth_increments": smooth_increments,
+            "tqmesh_boundary_split_max_length": tqmesh_boundary_split_max_length,
+            "tqmesh_quad_full_region_flow_align": tqmesh_quad_full_region_flow_align,
+            "tqmesh_interface_conformance": tqmesh_interface_conformance,
+            "tqmesh_interface_snap_tol": tqmesh_interface_snap_tol,
+            "tqmesh_breakline_fixed_edges": tqmesh_breakline_fixed_edges,
+            "tqmesh_breakline_fixed_edges_strict": tqmesh_breakline_fixed_edges_strict,
         }
 
     def _open_topology_region_table(self):
@@ -4296,12 +4771,15 @@ class SWE2DWorkbenchDialog(QtWidgets.QDialog):
             "memory",
         )
         arcs = QgsVectorLayer(
-            f"LineString?crs={crs_auth}&field=arc_id:integer&field=node0:integer&field=node1:integer",
+            f"LineString?crs={crs_auth}&field=arc_id:integer&field=node0:integer&field=node1:integer"
+            "&field=region_id:integer&field=arc_role:string(24)"
+            "&field=use_global_arc_ctrl:integer&field=arc_mode_override:string(24)"
+            "&field=arc_soft_size_override:double&field=arc_soft_dist_override:double",
             "SWE2D_Topo_Arcs",
             "memory",
         )
         regions = QgsVectorLayer(
-            f"Polygon?crs={crs_auth}&field=region_id:integer&field=target_size:double&field=cell_type:string(32)&field=edge_len_1:double&field=edge_len_2:double&field=edge_len_3:double&field=edge_len_4:double",
+            f"Polygon?crs={crs_auth}&field=region_id:integer&field=target_size:double&field=cell_type:string(32)&field=channel_generator_type:string(32)&field=edge_len_1:double&field=edge_len_2:double&field=edge_len_3:double&field=edge_len_4:double",
             "SWE2D_Topo_Regions",
             "memory",
         )
@@ -4480,6 +4958,8 @@ class SWE2DWorkbenchDialog(QtWidgets.QDialog):
         if not gpkg_path:
             return
 
+        self._reset_runtime_snapshot_overlay_cache("model GeoPackage loaded")
+
         layer_names = [
             "swe2d_topo_nodes",
             "swe2d_topo_arcs",
@@ -4599,7 +5079,7 @@ class SWE2DWorkbenchDialog(QtWidgets.QDialog):
             "memory",
         )
         cells_layer = QgsVectorLayer(
-            f"Polygon?crs={crs_auth}&field=cell_id:integer&field=n0:integer&field=n1:integer&field=n2:integer&field=cell_type:string(32)&field=region_id:integer&field=target_size:double",
+            f"Polygon?crs={crs_auth}&field=cell_id:integer&field=n0:integer&field=n1:integer&field=n2:integer&field=n3:integer&field=node_ids:string(512)&field=cell_type:string(32)&field=region_id:integer&field=target_size:double",
             "SWE2D_Mesh_Cells",
             "memory",
         )
@@ -4621,23 +5101,32 @@ class SWE2DWorkbenchDialog(QtWidgets.QDialog):
         cell_type_meta = self._mesh_data.get("cell_type")
         region_meta = self._mesh_data.get("region_id")
         size_meta = self._mesh_data.get("target_size")
-        for cid, tri in enumerate(triangles):
-            n0, n1, n2 = [int(v) for v in tri]
-            poly = [
-                QgsPointXY(float(node_x[n0]), float(node_y[n0])),
-                QgsPointXY(float(node_x[n1]), float(node_y[n1])),
-                QgsPointXY(float(node_x[n2]), float(node_y[n2])),
-                QgsPointXY(float(node_x[n0]), float(node_y[n0])),
-            ]
+        face_offsets = self._mesh_data.get("cell_face_offsets")
+        face_nodes = self._mesh_data.get("cell_face_nodes")
+        if face_offsets is not None and face_nodes is not None:
+            offs = np.asarray(face_offsets, dtype=np.int32).ravel()
+            nodes = np.asarray(face_nodes, dtype=np.int32).ravel()
+            face_ids = [nodes[int(offs[i]) : int(offs[i + 1])].tolist() for i in range(max(0, int(offs.size) - 1))]
+        else:
+            face_ids = [tri.tolist() for tri in triangles]
+
+        for cid, ids in enumerate(face_ids):
+            ids_i = [int(v) for v in ids]
+            if len(ids_i) < 3:
+                continue
+            poly = [QgsPointXY(float(node_x[nid]), float(node_y[nid])) for nid in ids_i]
+            poly.append(poly[0])
             f = QgsFeature(cells_layer.fields())
             f.setAttribute("cell_id", int(cid))
-            f.setAttribute("n0", n0)
-            f.setAttribute("n1", n1)
-            f.setAttribute("n2", n2)
+            f.setAttribute("n0", int(ids_i[0]) if len(ids_i) > 0 else None)
+            f.setAttribute("n1", int(ids_i[1]) if len(ids_i) > 1 else None)
+            f.setAttribute("n2", int(ids_i[2]) if len(ids_i) > 2 else None)
+            f.setAttribute("n3", int(ids_i[3]) if len(ids_i) > 3 else None)
+            f.setAttribute("node_ids", ",".join(str(int(nid)) for nid in ids_i))
             if cell_type_meta is not None and cid < len(cell_type_meta):
                 f.setAttribute("cell_type", str(cell_type_meta[cid]))
             else:
-                f.setAttribute("cell_type", "triangular")
+                f.setAttribute("cell_type", "quadrilateral" if len(ids_i) == 4 else "triangular")
             if region_meta is not None and cid < len(region_meta):
                 f.setAttribute("region_id", int(region_meta[cid]))
             else:
@@ -4826,8 +5315,22 @@ class SWE2DWorkbenchDialog(QtWidgets.QDialog):
             velocity_ms = float(np.sum(vel * w) / wsum)
             wse_m = float(np.sum((hh + zb) * w) / wsum)
             bed_m = float(np.sum(zb * w) / wsum)
-            qn = huu * float(sm["normal_x"]) + hvv * float(sm["normal_y"])
-            flow_cms = float(np.sum(qn * w))
+            huu_wet = np.where(wet, huu, 0.0)
+            hvv_wet = np.where(wet, hvv, 0.0)
+            uu = np.where(wet, huu_wet / safe_h, 0.0)
+            vv = np.where(wet, hvv_wet / safe_h, 0.0)
+            normal_v = uu * float(sm["normal_x"]) + vv * float(sm["normal_y"])
+            # Normal unit discharge (m^2/s): qn = h * u_n.
+            qn = np.where(wet, hh * normal_v, 0.0)
+            flow_wx = np.asarray(sm.get("flow_wx", []), dtype=np.float64)
+            flow_wy = np.asarray(sm.get("flow_wy", []), dtype=np.float64)
+            if flow_wx.size == idx.size and flow_wy.size == idx.size:
+                # Exact per-cell line-integral weights from local segment orientation.
+                # Q = sum(h * (u dot n) * ds), where flow_wx/flow_wy carry n*ds.
+                flow_cms = float(np.sum(np.where(wet, hh * (uu * flow_wx + vv * flow_wy), 0.0)))
+            else:
+                # Fallback uses averaged segment lengths per sampled cell.
+                flow_cms = float(np.sum(qn * w))
             fr_arr = np.where(wet, vel / np.sqrt(np.maximum(g * hh, 1.0e-12)), 0.0)
 
             out_ts.append(
@@ -4993,6 +5496,31 @@ class SWE2DWorkbenchDialog(QtWidgets.QDialog):
         """Create the dockable results panel and register it with iface (hidden)."""
         _maybe_create_results_panel_bridge(self)
 
+    def _current_mesh_fingerprint(self) -> str:
+        return _mesh_fingerprint_from_mesh_data_bridge(getattr(self, "_mesh_data", {}) or {})
+
+    def _reset_runtime_snapshot_overlay_cache(self, reason: str = "") -> None:
+        self._snapshot_timesteps = []
+        self._snapshot_mesh_fingerprint = ""
+        self._line_snapshot_rows = []
+        self._line_snapshot_profile_rows = []
+        self._coupling_snapshot_rows = []
+        self._high_perf_overlay_cell_x = np.empty(0, dtype=np.float64)
+        self._high_perf_overlay_cell_y = np.empty(0, dtype=np.float64)
+        self._high_perf_overlay_cell_bed = np.empty(0, dtype=np.float64)
+        self._high_perf_overlay_node_x = np.empty(0, dtype=np.float64)
+        self._high_perf_overlay_node_y = np.empty(0, dtype=np.float64)
+        self._high_perf_overlay_cell_nodes = np.empty(0, dtype=np.int32)
+        self._high_perf_overlay_mesh_fingerprint = ""
+        item = getattr(self, "_high_perf_canvas_overlay_item", None)
+        if item is not None:
+            try:
+                item.clear()
+            except Exception:
+                pass
+        if reason:
+            self._log(f"[HighPerf Overlay] Cleared snapshot/overlay cache: {reason}")
+
     def _sync_high_perf_overlay_data(self):
         _sync_high_perf_overlay_data_bridge(self)
 
@@ -5045,6 +5573,25 @@ class SWE2DWorkbenchDialog(QtWidgets.QDialog):
     def _on_high_perf_canvas_overlay_style_changed(self, *_):
         lock_canvas = bool(self.high_perf_canvas_overlay_lock_canvas_chk.isChecked())
         self.high_perf_canvas_overlay_res_combo.setEnabled(not lock_canvas)
+        if hasattr(self, "high_perf_canvas_overlay_arrows_chk") and hasattr(self, "high_perf_canvas_overlay_arrow_density_spin"):
+            arrows_on = bool(self.high_perf_canvas_overlay_arrows_chk.isChecked())
+            self.high_perf_canvas_overlay_arrow_density_spin.setEnabled(arrows_on)
+            if hasattr(self, "high_perf_canvas_overlay_arrow_length_spin"):
+                self.high_perf_canvas_overlay_arrow_length_spin.setEnabled(arrows_on)
+            if hasattr(self, "high_perf_canvas_overlay_arrow_head_length_spin"):
+                self.high_perf_canvas_overlay_arrow_head_length_spin.setEnabled(arrows_on)
+            if hasattr(self, "high_perf_canvas_overlay_arrow_head_width_spin"):
+                self.high_perf_canvas_overlay_arrow_head_width_spin.setEnabled(arrows_on)
+        if (
+            hasattr(self, "high_perf_canvas_overlay_streamlines_chk")
+            and hasattr(self, "high_perf_canvas_overlay_streamline_backend_combo")
+            and hasattr(self, "high_perf_canvas_overlay_streamline_seed_spin")
+            and hasattr(self, "high_perf_canvas_overlay_streamline_steps_spin")
+        ):
+            stream_on = bool(self.high_perf_canvas_overlay_streamlines_chk.isChecked())
+            self.high_perf_canvas_overlay_streamline_backend_combo.setEnabled(stream_on)
+            self.high_perf_canvas_overlay_streamline_seed_spin.setEnabled(stream_on)
+            self.high_perf_canvas_overlay_streamline_steps_spin.setEnabled(stream_on)
         if bool(getattr(self, "_high_perf_canvas_overlay_enabled", False)):
             self._refresh_high_perf_canvas_overlay(None)
 
@@ -5062,6 +5609,18 @@ class SWE2DWorkbenchDialog(QtWidgets.QDialog):
 
         item = self._ensure_high_perf_canvas_overlay_item()
         if item is None:
+            return
+
+        snap_fp = str(getattr(self, "_snapshot_mesh_fingerprint", "") or "")
+        ov_fp = str(getattr(self, "_high_perf_overlay_mesh_fingerprint", "") or "")
+        if snap_fp and ov_fp and snap_fp != ov_fp:
+            self._log(
+                "[HighPerf Overlay] Mesh fingerprint mismatch; render skipped to avoid wrong cell-index mapping."
+            )
+            try:
+                item.clear()
+            except Exception:
+                pass
             return
 
         t_use = None
@@ -5098,16 +5657,58 @@ class SWE2DWorkbenchDialog(QtWidgets.QDialog):
                 else:
                     res = (1280, 720)
             opacity = float(self.high_perf_canvas_overlay_opacity_spin.value())
+            show_arrows = bool(getattr(self, "high_perf_canvas_overlay_arrows_chk", None) is not None and self.high_perf_canvas_overlay_arrows_chk.isChecked())
+            arrow_stride_px = int(round(float(getattr(self, "high_perf_canvas_overlay_arrow_density_spin", None).value()))) if getattr(self, "high_perf_canvas_overlay_arrow_density_spin", None) is not None else 28
+            arrow_length_scale = float(getattr(self, "high_perf_canvas_overlay_arrow_length_spin", None).value()) if getattr(self, "high_perf_canvas_overlay_arrow_length_spin", None) is not None else 1.0
+            arrow_head_length_scale = float(getattr(self, "high_perf_canvas_overlay_arrow_head_length_spin", None).value()) if getattr(self, "high_perf_canvas_overlay_arrow_head_length_spin", None) is not None else 1.0
+            arrow_head_width_scale = float(getattr(self, "high_perf_canvas_overlay_arrow_head_width_spin", None).value()) if getattr(self, "high_perf_canvas_overlay_arrow_head_width_spin", None) is not None else 1.0
+            show_streamlines = bool(getattr(self, "high_perf_canvas_overlay_streamlines_chk", None) is not None and self.high_perf_canvas_overlay_streamlines_chk.isChecked())
+            streamline_backend = str(getattr(self, "high_perf_canvas_overlay_streamline_backend_combo", None).currentData() or "auto") if getattr(self, "high_perf_canvas_overlay_streamline_backend_combo", None) is not None else "auto"
+            streamline_seed_count = int(round(float(getattr(self, "high_perf_canvas_overlay_streamline_seed_spin", None).value()))) if getattr(self, "high_perf_canvas_overlay_streamline_seed_spin", None) is not None else 48
+            streamline_steps = int(round(float(getattr(self, "high_perf_canvas_overlay_streamline_steps_spin", None).value()))) if getattr(self, "high_perf_canvas_overlay_streamline_steps_spin", None) is not None else 24
+            visible_extent_world = None
+            canvas = self._resolve_map_canvas()
+            if canvas is not None and hasattr(canvas, "extent"):
+                try:
+                    ex = canvas.extent()
+                    visible_extent_world = (
+                        float(ex.xMinimum()),
+                        float(ex.xMaximum()),
+                        float(ex.yMinimum()),
+                        float(ex.yMaximum()),
+                    )
+                except Exception:
+                    visible_extent_world = None
             frame = render_unstructured_snapshot_image(
                 cell_x=self._high_perf_overlay_cell_x,
                 cell_y=self._high_perf_overlay_cell_y,
                 cell_bed=self._high_perf_overlay_cell_bed,
+                node_x=self._high_perf_overlay_node_x,
+                node_y=self._high_perf_overlay_node_y,
+                cell_nodes=self._high_perf_overlay_cell_nodes,
+                tri_to_cell=getattr(self, "_high_perf_overlay_tri_to_cell", None),
                 timesteps=self._snapshot_timesteps,
                 current_time_s=float(t_use),
                 field_key=field_key,
                 cmap_key=cmap_key,
                 resolution=res,
                 auto_contrast=auto_contrast,
+                show_velocity_arrows=show_arrows,
+                arrow_stride_px=arrow_stride_px,
+                arrow_length_scale=arrow_length_scale,
+                arrow_head_length_scale=arrow_head_length_scale,
+                arrow_head_width_scale=arrow_head_width_scale,
+                show_streamlines=show_streamlines,
+                streamline_backend=streamline_backend,
+                streamline_seed_count=streamline_seed_count,
+                streamline_steps=streamline_steps,
+                visible_extent_world=visible_extent_world,
+                show_legend=True,
+                legend_label=(
+                    f"Depth ({self._length_unit_name})" if field_key == "depth"
+                    else (f"Velocity ({self._length_unit_name}/s)" if field_key == "speed"
+                    else f"Water Surface ({self._length_unit_name})")
+                ),
             )
             if not bool(frame.get("ok", False)):
                 try:
@@ -5347,7 +5948,8 @@ class SWE2DWorkbenchDialog(QtWidgets.QDialog):
             QtWidgets.QMessageBox.warning(
                 self, "Results Panel",
                 "Could not create results panel.\n"
-                "Ensure swe2d.results.panel module is available."
+                "Panel import or initialization failed.\n"
+                "Check the plugin log for '[Results Panel]' details."
             )
             return
         gpkg = self._model_gpkg_path or ""
@@ -5912,6 +6514,33 @@ class SWE2DWorkbenchDialog(QtWidgets.QDialog):
         )
         dlg.exec()
 
+    def _open_model_gpkg_explorer(self):
+        db_path = ""
+        if self._model_gpkg_path and os.path.exists(self._model_gpkg_path):
+            db_path = self._model_gpkg_path
+        if not db_path and self._line_results_latest_db_path and os.path.exists(self._line_results_latest_db_path):
+            db_path = self._line_results_latest_db_path
+        if not db_path:
+            db_path = self._current_line_results_storage_path()
+        if not db_path or not os.path.exists(db_path):
+            self._log("No model GeoPackage available for explorer.")
+            QtWidgets.QMessageBox.warning(
+                self,
+                "Model GeoPackage Explorer",
+                "No model GeoPackage was found. Load or create a model GeoPackage first.",
+            )
+            return
+
+        dlg = SWE2DModelGeoPackageExplorerDialog(
+            gpkg_path=db_path,
+            open_run_log_viewer=self._open_run_log_viewer,
+            open_line_results_viewer=self._open_line_results_viewer,
+            open_coupling_results_viewer=self._open_coupling_results_viewer,
+            logger=self._log,
+            parent=self,
+        )
+        dlg.exec()
+
     def _sample_coupling_object_metrics(
         self,
         coupling_controller,
@@ -6086,6 +6715,27 @@ class SWE2DWorkbenchDialog(QtWidgets.QDialog):
         from swe2d.workbench.extracted.results_export_methods import persist_mesh_results_to_geopackage
 
         return persist_mesh_results_to_geopackage(self, gpkg_path, run_id, mesh_rows, interval_s)
+
+    def _persist_conservation_forensics_to_geopackage(
+        self,
+        gpkg_path: str,
+        run_id: str,
+        storage_rows: List[Dict[str, object]],
+        boundary_rows: List[Dict[str, object]],
+        summary: Dict[str, object],
+        source_step_rows: Optional[List[Dict[str, object]]] = None,
+    ) -> None:
+        from swe2d.workbench.extracted.results_export_methods import persist_conservation_forensics_to_geopackage
+
+        return persist_conservation_forensics_to_geopackage(
+            self,
+            gpkg_path,
+            run_id,
+            storage_rows,
+            boundary_rows,
+            summary,
+            source_step_rows=source_step_rows,
+        )
 
     def _build_mesh_snapshot_rows(self) -> List[Dict[str, object]]:
         return _build_mesh_snapshot_rows_logic(self._snapshot_timesteps)
@@ -6673,6 +7323,14 @@ class SWE2DWorkbenchDialog(QtWidgets.QDialog):
             "bridge": StructureType.BRIDGE,
             "pump": StructureType.PUMP,
         }
+        stacked_required_fields = (
+            "influence_width_m",
+            "deck_soffit_elev",
+            "deck_top_elev",
+            "model_top_elev",
+            "under_layers",
+            "over_layers",
+        )
         for ft in layer.getFeatures():
             geom = ft.geometry()
             if geom is None or geom.isEmpty():
@@ -6696,15 +7354,74 @@ class SWE2DWorkbenchDialog(QtWidgets.QDialog):
                 except Exception:
                     structure_type = StructureType.CULVERT
             metadata = {}
-            for key in ("width", "height", "diameter", "length", "roughness_n", "coeff", "cd", "opening", "q_pump", "max_flow"):
+            for key in (
+                "width",
+                "height",
+                "diameter",
+                "length",
+                "roughness_n",
+                "coeff",
+                "cd",
+                "opening",
+                "q_pump",
+                "max_flow",
+                "inlet_loss_k",
+                "outlet_loss_k",
+                "stacked_enabled",
+                "influence_width_m",
+                "upstream_buffer_m",
+                "downstream_buffer_m",
+                "deck_soffit_elev",
+                "deck_top_elev",
+                "model_top_elev",
+                "under_layers",
+                "over_layers",
+                "pier_count",
+                "pier_width",
+            ):
                 if key in fields and ft[key] not in (None, ""):
                     try:
                         metadata[key] = float(ft[key])
                     except Exception:
                         pass
+            metadata["axis_x0"] = float(p0.x())
+            metadata["axis_y0"] = float(p0.y())
+            metadata["axis_x1"] = float(p1.x())
+            metadata["axis_y1"] = float(p1.y())
+            structure_id = str(ft["structure_id"] if "structure_id" in fields else ft.id()).strip()
+
+            if structure_type == StructureType.BRIDGE and int(metadata.get("stacked_enabled", 0)) > 0:
+                missing_schema = [k for k in stacked_required_fields if k not in fields]
+                missing_values = [k for k in stacked_required_fields if k in fields and k not in metadata]
+                if missing_schema or missing_values:
+                    missing_all = ", ".join(missing_schema + missing_values)
+                    self._log(
+                        f"Bridge {structure_id}: stacked geometry disabled due to missing fields: {missing_all}"
+                    )
+                    metadata["stacked_enabled"] = 0.0
+                else:
+                    influence_width_m = float(metadata.get("influence_width_m", 0.0))
+                    under_layers = int(max(1, round(float(metadata.get("under_layers", 1.0)))))
+                    over_layers = int(max(1, round(float(metadata.get("over_layers", 1.0)))))
+                    deck_soffit_elev = float(metadata.get("deck_soffit_elev", 0.0))
+                    deck_top_elev = float(metadata.get("deck_top_elev", deck_soffit_elev + 0.1))
+                    model_top_elev = float(metadata.get("model_top_elev", deck_top_elev + 0.1))
+                    valid_stacked = (
+                        influence_width_m > 0.0
+                        and deck_top_elev > deck_soffit_elev
+                        and model_top_elev > deck_top_elev
+                    )
+                    if not valid_stacked:
+                        self._log(
+                            f"Bridge {structure_id}: stacked geometry disabled due to invalid elevation/width values."
+                        )
+                        metadata["stacked_enabled"] = 0.0
+                    else:
+                        metadata["under_layers"] = float(under_layers)
+                        metadata["over_layers"] = float(over_layers)
             structures.append(
                 HydraulicStructure(
-                    structure_id=str(ft["structure_id"] if "structure_id" in fields else ft.id()).strip(),
+                    structure_id=structure_id,
                     structure_type=structure_type,
                     upstream_cell=self._nearest_cell_index_for_xy(float(p0.x()), float(p0.y())),
                     downstream_cell=self._nearest_cell_index_for_xy(float(p1.x()), float(p1.y())),
@@ -6920,6 +7637,9 @@ class SWE2DWorkbenchDialog(QtWidgets.QDialog):
             "reconstruction_combo", "temporal_order_combo", "equation_set_combo", "experimental_3d_mode_chk",
             "experimental_3d_coupling_mode_combo",
             "experimental_3d_patch_face_len_x_spin", "experimental_3d_patch_face_len_y_spin", "experimental_3d_patch_face_len_z_spin",
+            "experimental_3d_projection_residual_sample_iters_spin",
+            "experimental_3d_projection_divergence_gate_enable_chk",
+            "experimental_3d_projection_divergence_ratio_target_spin",
             "experimental_3d_patch_xmin_edit", "experimental_3d_patch_xmax_edit",
             "experimental_3d_patch_ymin_edit", "experimental_3d_patch_ymax_edit",
             "experimental_3d_patch_zmin_edit", "experimental_3d_patch_zmax_edit",
@@ -7621,6 +8341,7 @@ class SWE2DWorkbenchDialog(QtWidgets.QDialog):
         bc_type_template: np.ndarray,
         side_hydrographs: Dict[str, Tuple[np.ndarray, np.ndarray]],
         edge_hydrographs: Optional[Dict[int, Tuple[int, Tuple[np.ndarray, np.ndarray]]]] = None,
+        edge_groups: Optional[Dict[int, str]] = None,
     ) -> np.ndarray:
         progressive = True
         if hasattr(self, "inflow_progressive_chk") and self.inflow_progressive_chk is not None:
@@ -7628,6 +8349,12 @@ class SWE2DWorkbenchDialog(QtWidgets.QDialog):
                 progressive = bool(self.inflow_progressive_chk.isChecked())
             except Exception:
                 progressive = True
+
+        if edge_groups is None and hasattr(self, "_collect_bc_layer_edge_groups"):
+            try:
+                edge_groups = self._collect_bc_layer_edge_groups(edge_n0, edge_n1)
+            except Exception:
+                edge_groups = None
 
         return _distribute_total_flow_to_unit_q_logic(
             edge_n0=edge_n0,
@@ -7642,6 +8369,7 @@ class SWE2DWorkbenchDialog(QtWidgets.QDialog):
             progressive=progressive,
             ts_flow_code=_BC_TS_FLOW,
             edge_hydrographs=edge_hydrographs,
+            edge_groups=edge_groups,
         )
 
     def _apply_timeseries_bc_values(

@@ -707,6 +707,35 @@ def _bind_map_tab_results_controls(self, map_tab_page: QtWidgets.QWidget, map_re
         "Auto contrast",
     )
     self.high_perf_canvas_overlay_opacity_spin = _find_or_create_double_spin("high_perf_canvas_overlay_opacity_spin")
+    self.high_perf_canvas_overlay_arrows_chk = _find_or_create_check(
+        "high_perf_canvas_overlay_arrows_chk",
+        "Draw velocity arrows",
+    )
+    self.high_perf_canvas_overlay_arrow_density_spin = _find_or_create_double_spin(
+        "high_perf_canvas_overlay_arrow_density_spin"
+    )
+    self.high_perf_canvas_overlay_arrow_length_spin = _find_or_create_double_spin(
+        "high_perf_canvas_overlay_arrow_length_spin"
+    )
+    self.high_perf_canvas_overlay_arrow_head_length_spin = _find_or_create_double_spin(
+        "high_perf_canvas_overlay_arrow_head_length_spin"
+    )
+    self.high_perf_canvas_overlay_arrow_head_width_spin = _find_or_create_double_spin(
+        "high_perf_canvas_overlay_arrow_head_width_spin"
+    )
+    self.high_perf_canvas_overlay_streamlines_chk = _find_or_create_check(
+        "high_perf_canvas_overlay_streamlines_chk",
+        "Draw streamlines",
+    )
+    self.high_perf_canvas_overlay_streamline_seed_spin = _find_or_create_double_spin(
+        "high_perf_canvas_overlay_streamline_seed_spin"
+    )
+    self.high_perf_canvas_overlay_streamline_steps_spin = _find_or_create_double_spin(
+        "high_perf_canvas_overlay_streamline_steps_spin"
+    )
+    self.high_perf_canvas_overlay_streamline_backend_combo = _find_or_create_combo(
+        "high_perf_canvas_overlay_streamline_backend_combo"
+    )
 
     if map_results_layout.indexOf(self.extended_outputs_chk) < 0:
         map_results_layout.addWidget(self.extended_outputs_chk, 0, 0, 1, 2)
@@ -740,6 +769,31 @@ def _bind_map_tab_results_controls(self, map_tab_page: QtWidgets.QWidget, map_re
     if map_results_layout.indexOf(self.high_perf_canvas_overlay_opacity_spin) < 0:
         map_results_layout.addWidget(QtWidgets.QLabel("High-perf overlay opacity:"), 13, 0)
         map_results_layout.addWidget(self.high_perf_canvas_overlay_opacity_spin, 13, 1)
+    if map_results_layout.indexOf(self.high_perf_canvas_overlay_arrows_chk) < 0:
+        map_results_layout.addWidget(self.high_perf_canvas_overlay_arrows_chk, 14, 0, 1, 2)
+    if map_results_layout.indexOf(self.high_perf_canvas_overlay_arrow_density_spin) < 0:
+        map_results_layout.addWidget(QtWidgets.QLabel("Arrow spacing (px):"), 15, 0)
+        map_results_layout.addWidget(self.high_perf_canvas_overlay_arrow_density_spin, 15, 1)
+    if map_results_layout.indexOf(self.high_perf_canvas_overlay_arrow_length_spin) < 0:
+        map_results_layout.addWidget(QtWidgets.QLabel("Arrow length scale:"), 16, 0)
+        map_results_layout.addWidget(self.high_perf_canvas_overlay_arrow_length_spin, 16, 1)
+    if map_results_layout.indexOf(self.high_perf_canvas_overlay_arrow_head_length_spin) < 0:
+        map_results_layout.addWidget(QtWidgets.QLabel("Arrow head length scale:"), 17, 0)
+        map_results_layout.addWidget(self.high_perf_canvas_overlay_arrow_head_length_spin, 17, 1)
+    if map_results_layout.indexOf(self.high_perf_canvas_overlay_arrow_head_width_spin) < 0:
+        map_results_layout.addWidget(QtWidgets.QLabel("Arrow head width scale:"), 18, 0)
+        map_results_layout.addWidget(self.high_perf_canvas_overlay_arrow_head_width_spin, 18, 1)
+    if map_results_layout.indexOf(self.high_perf_canvas_overlay_streamlines_chk) < 0:
+        map_results_layout.addWidget(self.high_perf_canvas_overlay_streamlines_chk, 19, 0, 1, 2)
+    if map_results_layout.indexOf(self.high_perf_canvas_overlay_streamline_backend_combo) < 0:
+        map_results_layout.addWidget(QtWidgets.QLabel("Streamline backend:"), 20, 0)
+        map_results_layout.addWidget(self.high_perf_canvas_overlay_streamline_backend_combo, 20, 1)
+    if map_results_layout.indexOf(self.high_perf_canvas_overlay_streamline_seed_spin) < 0:
+        map_results_layout.addWidget(QtWidgets.QLabel("Streamline seeds:"), 21, 0)
+        map_results_layout.addWidget(self.high_perf_canvas_overlay_streamline_seed_spin, 21, 1)
+    if map_results_layout.indexOf(self.high_perf_canvas_overlay_streamline_steps_spin) < 0:
+        map_results_layout.addWidget(QtWidgets.QLabel("Streamline steps:"), 22, 0)
+        map_results_layout.addWidget(self.high_perf_canvas_overlay_streamline_steps_spin, 22, 1)
 
     self.extended_outputs_chk.setChecked(True)
     self.save_mesh_results_to_gpkg_chk.setChecked(True)
@@ -770,6 +824,37 @@ def _bind_map_tab_results_controls(self, map_tab_page: QtWidgets.QWidget, map_re
     self.high_perf_canvas_overlay_opacity_spin.setRange(0.05, 1.0)
     self.high_perf_canvas_overlay_opacity_spin.setSingleStep(0.05)
     self.high_perf_canvas_overlay_opacity_spin.setValue(0.65)
+    self.high_perf_canvas_overlay_arrows_chk.setChecked(True)
+    self.high_perf_canvas_overlay_arrow_density_spin.setDecimals(0)
+    self.high_perf_canvas_overlay_arrow_density_spin.setRange(8, 80)
+    self.high_perf_canvas_overlay_arrow_density_spin.setSingleStep(2)
+    self.high_perf_canvas_overlay_arrow_density_spin.setValue(28)
+    self.high_perf_canvas_overlay_arrow_length_spin.setDecimals(2)
+    self.high_perf_canvas_overlay_arrow_length_spin.setRange(0.2, 3.0)
+    self.high_perf_canvas_overlay_arrow_length_spin.setSingleStep(0.1)
+    self.high_perf_canvas_overlay_arrow_length_spin.setValue(1.0)
+    self.high_perf_canvas_overlay_arrow_head_length_spin.setDecimals(2)
+    self.high_perf_canvas_overlay_arrow_head_length_spin.setRange(0.2, 3.0)
+    self.high_perf_canvas_overlay_arrow_head_length_spin.setSingleStep(0.1)
+    self.high_perf_canvas_overlay_arrow_head_length_spin.setValue(1.0)
+    self.high_perf_canvas_overlay_arrow_head_width_spin.setDecimals(2)
+    self.high_perf_canvas_overlay_arrow_head_width_spin.setRange(0.2, 3.0)
+    self.high_perf_canvas_overlay_arrow_head_width_spin.setSingleStep(0.1)
+    self.high_perf_canvas_overlay_arrow_head_width_spin.setValue(1.0)
+    self.high_perf_canvas_overlay_streamlines_chk.setChecked(False)
+    self.high_perf_canvas_overlay_streamline_backend_combo.clear()
+    self.high_perf_canvas_overlay_streamline_backend_combo.addItem("Auto (prefer compiled)", "auto")
+    self.high_perf_canvas_overlay_streamline_backend_combo.addItem("CPU", "cpu")
+    self.high_perf_canvas_overlay_streamline_backend_combo.addItem("CUDA", "cuda")
+    self.high_perf_canvas_overlay_streamline_backend_combo.setCurrentIndex(0)
+    self.high_perf_canvas_overlay_streamline_seed_spin.setDecimals(0)
+    self.high_perf_canvas_overlay_streamline_seed_spin.setRange(8, 256)
+    self.high_perf_canvas_overlay_streamline_seed_spin.setSingleStep(8)
+    self.high_perf_canvas_overlay_streamline_seed_spin.setValue(48)
+    self.high_perf_canvas_overlay_streamline_steps_spin.setDecimals(0)
+    self.high_perf_canvas_overlay_streamline_steps_spin.setRange(4, 120)
+    self.high_perf_canvas_overlay_streamline_steps_spin.setSingleStep(2)
+    self.high_perf_canvas_overlay_streamline_steps_spin.setValue(24)
 
     for sig_obj, cb in (
         (self.open_results_viewer_btn.clicked, self._open_line_results_viewer),
@@ -781,6 +866,15 @@ def _bind_map_tab_results_controls(self, map_tab_page: QtWidgets.QWidget, map_re
         (self.high_perf_canvas_overlay_res_combo.currentIndexChanged, self._on_high_perf_canvas_overlay_style_changed),
         (self.high_perf_canvas_overlay_auto_contrast_chk.toggled, self._on_high_perf_canvas_overlay_style_changed),
         (self.high_perf_canvas_overlay_opacity_spin.valueChanged, self._on_high_perf_canvas_overlay_style_changed),
+        (self.high_perf_canvas_overlay_arrows_chk.toggled, self._on_high_perf_canvas_overlay_style_changed),
+        (self.high_perf_canvas_overlay_arrow_density_spin.valueChanged, self._on_high_perf_canvas_overlay_style_changed),
+        (self.high_perf_canvas_overlay_arrow_length_spin.valueChanged, self._on_high_perf_canvas_overlay_style_changed),
+        (self.high_perf_canvas_overlay_arrow_head_length_spin.valueChanged, self._on_high_perf_canvas_overlay_style_changed),
+        (self.high_perf_canvas_overlay_arrow_head_width_spin.valueChanged, self._on_high_perf_canvas_overlay_style_changed),
+        (self.high_perf_canvas_overlay_streamlines_chk.toggled, self._on_high_perf_canvas_overlay_style_changed),
+        (self.high_perf_canvas_overlay_streamline_backend_combo.currentIndexChanged, self._on_high_perf_canvas_overlay_style_changed),
+        (self.high_perf_canvas_overlay_streamline_seed_spin.valueChanged, self._on_high_perf_canvas_overlay_style_changed),
+        (self.high_perf_canvas_overlay_streamline_steps_spin.valueChanged, self._on_high_perf_canvas_overlay_style_changed),
     ):
         try:
             sig_obj.disconnect(cb)
@@ -979,8 +1073,16 @@ def _build_line_sampling_map(self) -> List[Dict[str, object]]:
         try:
             p0 = geom.interpolate(0.0).asPoint()
             p1 = geom.interpolate(max(0.0, line_len - 1.0e-9)).asPoint()
+            # Canonicalize orientation so line metrics do not depend on
+            # digitizing direction (start/end click order).
+            start_key = (float(p0.x()), float(p0.y()))
+            end_key = (float(p1.x()), float(p1.y()))
+            orient_sign = 1.0 if end_key >= start_key else -1.0
             dx = float(p1.x()) - float(p0.x())
             dy = float(p1.y()) - float(p0.y())
+            if orient_sign < 0.0:
+                dx = -dx
+                dy = -dy
             mag = math.hypot(dx, dy)
             if mag <= 0.0:
                 continue
@@ -1001,6 +1103,9 @@ def _build_line_sampling_map(self) -> List[Dict[str, object]]:
         idx: List[int] = []
         lens: List[float] = []
         station_m: List[float] = []
+        flow_wx: List[float] = []
+        flow_wy: List[float] = []
+        overlap_keys_by_row: List[set] = []
         for ci, cell_geom in enumerate(cell_polys):
             bb = cell_bboxes[ci]
             if bb is None or not bb.intersects(line_bbox):
@@ -1014,16 +1119,92 @@ def _build_line_sampling_map(self) -> List[Dict[str, object]]:
             seg_len = float(inter.length())
             if seg_len <= 0.0:
                 continue
+
+            wx = 0.0
+            wy = 0.0
+            seg_keys: set = set()
+            try:
+                parts = inter.asMultiPolyline()
+            except Exception:
+                parts = []
+            if not parts:
+                try:
+                    poly = inter.asPolyline()
+                    if poly:
+                        parts = [poly]
+                except Exception:
+                    parts = []
+            for seg in parts:
+                if seg is None or len(seg) < 2:
+                    continue
+                for k in range(1, len(seg)):
+                    p0 = seg[k - 1]
+                    p1 = seg[k]
+                    dx = float(p1.x()) - float(p0.x())
+                    dy = float(p1.y()) - float(p0.y())
+                    # Orient each intersection segment by along-line station,
+                    # not raw geometry vertex order. This preserves a stable
+                    # sign while respecting polyline curvature.
+                    try:
+                        s0 = float(geom.lineLocatePoint(QgsGeometry.fromPointXY(p0)))
+                        s1 = float(geom.lineLocatePoint(QgsGeometry.fromPointXY(p1)))
+                        if orient_sign < 0.0:
+                            s0 = float(line_len) - s0
+                            s1 = float(line_len) - s1
+                        if s1 < s0:
+                            dx = -dx
+                            dy = -dy
+                    except Exception:
+                        if (dx * tx + dy * ty) < 0.0:
+                            dx = -dx
+                            dy = -dy
+                    wx += dy
+                    wy += -dx
+                    x0 = float(p0.x())
+                    y0 = float(p0.y())
+                    x1 = float(p1.x())
+                    y1 = float(p1.y())
+                    if (x1, y1) < (x0, y0):
+                        x0, y0, x1, y1 = x1, y1, x0, y0
+                    seg_keys.add(
+                        (
+                            round(x0, 9),
+                            round(y0, 9),
+                            round(x1, 9),
+                            round(y1, 9),
+                        )
+                    )
+
             s_loc = float("nan")
             try:
                 cgeom = inter.centroid()
                 if cgeom is not None and not cgeom.isEmpty():
                     s_loc = float(geom.lineLocatePoint(cgeom))
+                    if orient_sign < 0.0:
+                        s_loc = float(line_len) - s_loc
             except Exception:
                 s_loc = float("nan")
             idx.append(ci)
             lens.append(seg_len)
             station_m.append(s_loc)
+            flow_wx.append(wx)
+            flow_wy.append(wy)
+            overlap_keys_by_row.append(seg_keys)
+
+        if idx and overlap_keys_by_row:
+            owner_count = {}
+            for key_set in overlap_keys_by_row:
+                for key in key_set:
+                    owner_count[key] = int(owner_count.get(key, 0)) + 1
+            for j, key_set in enumerate(overlap_keys_by_row):
+                if not key_set:
+                    continue
+                denom = max(owner_count.get(k, 1) for k in key_set)
+                if denom > 1:
+                    scale = 1.0 / float(denom)
+                    lens[j] = float(lens[j]) * scale
+                    flow_wx[j] = float(flow_wx[j]) * scale
+                    flow_wy[j] = float(flow_wy[j]) * scale
 
         if idx:
             ord_idx = np.argsort(np.nan_to_num(np.asarray(station_m, dtype=np.float64), nan=0.0))
@@ -1036,6 +1217,8 @@ def _build_line_sampling_map(self) -> List[Dict[str, object]]:
                     "cell_idx": np.asarray(idx, dtype=np.int32)[ord_idx],
                     "weights": np.asarray(lens, dtype=np.float64)[ord_idx],
                     "station_m": np.asarray(station_m, dtype=np.float64)[ord_idx],
+                    "flow_wx": np.asarray(flow_wx, dtype=np.float64)[ord_idx],
+                    "flow_wy": np.asarray(flow_wy, dtype=np.float64)[ord_idx],
                 }
             )
 

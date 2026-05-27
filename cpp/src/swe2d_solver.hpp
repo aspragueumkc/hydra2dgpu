@@ -136,6 +136,11 @@ struct SWE2DStepDiag {
     double   projection_retry_residual_target = 0.0;
     double   projection_retry_residual_ratio = 0.0;     // last attempt residual / target
     double   projection_retry_residual_ratio_max = 0.0; // worst residual / target across attempts
+    double   projection_divergence_ratio = 1.0;         // last attempt div_rms_post / div_rms_pre
+    double   projection_divergence_ratio_max = 1.0;     // worst div_rms_post / div_rms_pre across attempts
+    bool     projection_divergence_gate_enabled = false;
+    double   projection_divergence_ratio_target = 1.0;
+    double   projection_correction_scale_used = 1.5;
 };
 
 struct SWE2DNonhydroDiag {

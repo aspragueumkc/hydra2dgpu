@@ -32,6 +32,7 @@ def distribute_total_flow_to_unit_q(
     progressive: bool,
     ts_flow_code: int,
     edge_hydrographs: EdgeHydrographMap = None,
+    edge_groups: Optional[Dict[int, str]] = None,
 ) -> np.ndarray:
     """Convert total discharge Q inputs into unit discharge q [L^2/T]."""
     if edge_n0.size == 0:
@@ -63,6 +64,13 @@ def distribute_total_flow_to_unit_q(
         peak_q = abs(float(out_val[i]))
         key: Tuple
 
+        group_label = ""
+        if edge_groups is not None:
+            try:
+                group_label = str(edge_groups.get(int(i), "") or "")
+            except Exception:
+                group_label = ""
+
         if edge_hydrographs is not None and i in edge_hydrographs and int(edge_hydrographs[i][0]) == ts_flow_code:
             hg = edge_hydrographs[i][1]
             try:
@@ -77,9 +85,15 @@ def distribute_total_flow_to_unit_q(
                     peak_q = float(np.max(np.abs(hg[1]))) if hg[1].size else abs(float(out_val[i]))
                 except Exception:
                     peak_q = abs(float(out_val[i]))
-            key = ("side_hg", side)
+            if group_label:
+                key = ("side_hg_group", group_label)
+            else:
+                key = ("side_hg", side)
         else:
-            key = ("static", side, round(float(out_val[i]), 12))
+            if group_label:
+                key = ("static_group", group_label, round(float(out_val[i]), 12))
+            else:
+                key = ("static", side, round(float(out_val[i]), 12))
 
         if key not in groups:
             groups[key] = {

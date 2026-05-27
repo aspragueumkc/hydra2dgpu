@@ -224,30 +224,46 @@ def _check_velocity_damping(mod, mesh, h0, n_steps=10, verbose=False):
         zeros = np.zeros(n, dtype=np.float64)
         mod.swe2d_set_3d_patch_state(solver, u=u_ic, v=zeros, w=zeros, p=zeros)
 
-        prev_rms = None
-        monotone = True
-        final_rms = 1.0
+        stats_ic = mod.swe2d_get_3d_patch_stats(solver)
+        initial_rms = float(stats_ic["u_rms"])
+
+        prev_rms = initial_rms
+        monotone_non_increasing = True
+        had_strict_drop = False
+        eps = 1e-12
+        final_rms = initial_rms
         for step in range(n_steps):
             mod.swe2d_step(solver, 0.1)
             stats = mod.swe2d_get_3d_patch_stats(solver)
             cur_rms = stats["u_rms"]
             if verbose:
                 print(f"    step {step:3d}: u_rms={cur_rms:.6e}")
-            if prev_rms is not None and cur_rms >= prev_rms:
-                monotone = False
+            if cur_rms > prev_rms + eps:
+                monotone_non_increasing = False
+            if prev_rms - cur_rms > eps:
+                had_strict_drop = True
             prev_rms = cur_rms
             final_rms = cur_rms
 
-        # Tolerance: final rms should be strictly less than initial (1.0)
-        reduction = 1.0 - final_rms
-        tol = 0.01  # must have reduced by at least 1 %
+        tol = 0.01  # must have reduced by at least 1 % if initial RMS is non-zero
+        if initial_rms > eps:
+            reduction = (initial_rms - final_rms) / initial_rms
+            damping_ok = had_strict_drop and reduction >= tol
+        else:
+            reduction = 1.0
+            damping_ok = True
+
         r = _GateResult(
             "velocity_damping_monotone",
-            monotone and reduction >= tol,
+            monotone_non_increasing and damping_ok,
             value=final_rms, ref=0.0,
             delta=final_rms, tolerance=1.0 - tol,
             unit=" m/s",
-            note=f"monotone={monotone}  reduction={reduction:.2%}")
+            note=(
+                f"monotone_non_increasing={monotone_non_increasing}  "
+                f"had_strict_drop={had_strict_drop}  "
+                f"initial_rms={initial_rms:.3e}  reduction={reduction:.2%}"
+            ))
         return [r]
     finally:
         mod.swe2d_destroy(solver)

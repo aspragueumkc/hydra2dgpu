@@ -116,6 +116,50 @@ PYBIND11_MODULE(hydra_swe2d, m) {
         py::arg("structure_flow_cms"),
         "Headless CUDA helper: convert inlet/structure transfer flows to per-cell depth-rate sources [m/s].");
 
+    m.def("swe2d_gpu_compute_bridge_coupling_sources",
+        [](py::array_t<double, py::array::c_style | py::array::forcecast> cell_area_m2,
+           py::array_t<int32_t, py::array::c_style | py::array::forcecast> bridge_up_cell,
+           py::array_t<int32_t, py::array::c_style | py::array::forcecast> bridge_down_cell,
+           py::array_t<double, py::array::c_style | py::array::forcecast> bridge_flow_cms,
+           py::array_t<double, py::array::c_style | py::array::forcecast> bridge_loss_k_upstream,
+           py::array_t<double, py::array::c_style | py::array::forcecast> bridge_loss_k_downstream,
+           double bridge_opening_width_m,
+           double dt_s) -> py::array_t<double>
+        {
+            const int32_t n_cells = static_cast<int32_t>(cell_area_m2.size());
+            if (bridge_up_cell.size() != bridge_down_cell.size() ||
+                bridge_up_cell.size() != bridge_flow_cms.size() ||
+                bridge_up_cell.size() != bridge_loss_k_upstream.size() ||
+                bridge_up_cell.size() != bridge_loss_k_downstream.size()) {
+                throw std::invalid_argument(
+                    "bridge_up_cell, bridge_down_cell, bridge_flow_cms, bridge_loss_k_upstream, and bridge_loss_k_downstream must have the same length");
+            }
+
+            auto out = py::array_t<double>(n_cells);
+            swe2d_gpu_compute_bridge_coupling_sources(
+                n_cells,
+                (n_cells > 0) ? cell_area_m2.data() : nullptr,
+                static_cast<int32_t>(bridge_up_cell.size()),
+                bridge_up_cell.size() ? bridge_up_cell.data() : nullptr,
+                bridge_down_cell.size() ? bridge_down_cell.data() : nullptr,
+                bridge_flow_cms.size() ? bridge_flow_cms.data() : nullptr,
+                bridge_loss_k_upstream.size() ? bridge_loss_k_upstream.data() : nullptr,
+                bridge_loss_k_downstream.size() ? bridge_loss_k_downstream.data() : nullptr,
+                bridge_opening_width_m,
+                dt_s,
+                out.mutable_data());
+            return out;
+        },
+        py::arg("cell_area_m2"),
+        py::arg("bridge_up_cell"),
+        py::arg("bridge_down_cell"),
+        py::arg("bridge_flow_cms"),
+        py::arg("bridge_loss_k_upstream"),
+        py::arg("bridge_loss_k_downstream"),
+        py::arg("bridge_opening_width_m") = 1.0,
+        py::arg("dt_s") = 1.0,
+        "Headless CUDA helper: convert bridge transfer flows to per-cell depth-rate sources [m/s] with an empirical loss law.");
+
     m.def("swe2d_gpu_drainage_step",
         [](py::array_t<double, py::array::c_style | py::array::forcecast> cell_wse,
            py::array_t<double, py::array::c_style | py::array::forcecast> cell_area,
@@ -677,6 +721,27 @@ PYBIND11_MODULE(hydra_swe2d, m) {
         py::arg("structure_up_cell"),
         py::arg("structure_down_cell"),
         py::arg("structure_flow_cms"));
+
+    m.def("swe2d_gpu_compute_bridge_coupling_sources",
+        [](py::array_t<double, py::array::c_style | py::array::forcecast>,
+           py::array_t<int32_t, py::array::c_style | py::array::forcecast>,
+           py::array_t<int32_t, py::array::c_style | py::array::forcecast>,
+           py::array_t<double, py::array::c_style | py::array::forcecast>,
+           py::array_t<double, py::array::c_style | py::array::forcecast>,
+           py::array_t<double, py::array::c_style | py::array::forcecast>,
+           double,
+           double) -> py::array_t<double>
+        {
+            throw std::runtime_error("CUDA path not compiled; swe2d_gpu_compute_bridge_coupling_sources is unavailable.");
+        },
+        py::arg("cell_area_m2"),
+        py::arg("bridge_up_cell"),
+        py::arg("bridge_down_cell"),
+        py::arg("bridge_flow_cms"),
+        py::arg("bridge_loss_k_upstream"),
+        py::arg("bridge_loss_k_downstream"),
+        py::arg("bridge_opening_width_m") = 1.0,
+        py::arg("dt_s") = 1.0);
 
     m.def("swe2d_gpu_drainage_step",
         [](py::array_t<double, py::array::c_style | py::array::forcecast>,
@@ -1302,6 +1367,11 @@ PYBIND11_MODULE(hydra_swe2d, m) {
             d["projection_retry_residual_target"] = diag.projection_retry_residual_target;
             d["projection_retry_residual_ratio"] = diag.projection_retry_residual_ratio;
             d["projection_retry_residual_ratio_max"] = diag.projection_retry_residual_ratio_max;
+            d["projection_divergence_ratio"] = diag.projection_divergence_ratio;
+            d["projection_divergence_ratio_max"] = diag.projection_divergence_ratio_max;
+            d["projection_divergence_gate_enabled"] = diag.projection_divergence_gate_enabled;
+            d["projection_divergence_ratio_target"] = diag.projection_divergence_ratio_target;
+            d["projection_correction_scale_used"] = diag.projection_correction_scale_used;
             return d;
         },
         py::arg("solver"), py::arg("dt_request") = -1.0,
@@ -1421,6 +1491,11 @@ PYBIND11_MODULE(hydra_swe2d, m) {
                     d_dict["projection_retry_residual_target"] = d.projection_retry_residual_target;
                     d_dict["projection_retry_residual_ratio"] = d.projection_retry_residual_ratio;
                     d_dict["projection_retry_residual_ratio_max"] = d.projection_retry_residual_ratio_max;
+                    d_dict["projection_divergence_ratio"] = d.projection_divergence_ratio;
+                    d_dict["projection_divergence_ratio_max"] = d.projection_divergence_ratio_max;
+                    d_dict["projection_divergence_gate_enabled"] = d.projection_divergence_gate_enabled;
+                    d_dict["projection_divergence_ratio_target"] = d.projection_divergence_ratio_target;
+                    d_dict["projection_correction_scale_used"] = d.projection_correction_scale_used;
                     diag_list.append(d_dict);
                 }
             }

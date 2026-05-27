@@ -1569,7 +1569,18 @@ def execute_run_timestep_loop(
                 )
             else:
                 bc_tp_flux = bc_tp
-                bc_vl_flux = bc_vl
+                # Static flow BC values are stored as total-Q per group; convert
+                # to unit-q before boundary flux accounting to avoid edge-length
+                # re-scaling of already-totalized values.
+                bc_vl_flux = wb._distribute_total_flow_to_unit_q(
+                    bc_n0,
+                    bc_n1,
+                    bc_tp_flux,
+                    bc_vl,
+                    bc_tp,
+                    side_hydrographs,
+                    edge_hydrographs,
+                )
             accumulate_boundary_flux_volume_model_callback(dt_used, bc_tp_flux, bc_vl_flux)
 
         report_result = runtime_reporter.process_step(

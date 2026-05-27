@@ -36,6 +36,14 @@ def _bind_model_tab_core_controls(self, model_tab_page: QtWidgets.QWidget, param
         _ensure_row(label, w)
         return w
 
+    def _find_or_create_spin(name: str, label: str) -> QtWidgets.QSpinBox:
+        w = model_tab_page.findChild(QtWidgets.QSpinBox, name)
+        if w is None:
+            w = QtWidgets.QSpinBox()
+            w.setObjectName(name)
+        _ensure_row(label, w)
+        return w
+
     def _find_or_create_check(name: str, label: str, text: str) -> QtWidgets.QCheckBox:
         w = model_tab_page.findChild(QtWidgets.QCheckBox, name)
         if w is None:
@@ -603,6 +611,14 @@ def _bind_model_tab_3d_patch_controls(self, model_tab_page: QtWidgets.QWidget, p
         _ensure_row(label, w)
         return w
 
+    def _find_or_create_spin(name: str, label: str) -> QtWidgets.QSpinBox:
+        w = model_tab_page.findChild(QtWidgets.QSpinBox, name)
+        if w is None:
+            w = QtWidgets.QSpinBox()
+            w.setObjectName(name)
+        _ensure_row(label, w)
+        return w
+
     def _find_or_create_line_edit(name: str, label: str) -> QtWidgets.QLineEdit:
         w = model_tab_page.findChild(QtWidgets.QLineEdit, name)
         if w is None:
@@ -715,6 +731,43 @@ def _bind_model_tab_3d_patch_controls(self, model_tab_page: QtWidgets.QWidget, p
     self.experimental_3d_patch_face_len_z_spin.setToolTip(
         "Target z-face length for 3D patch cells (model units).\n"
         "Runtime resolves nz = ceil((zmax-zmin)/target_len_z)."
+    )
+
+    self.experimental_3d_projection_residual_sample_iters_spin = _find_or_create_spin(
+        "experimental_3d_projection_residual_sample_iters_spin",
+        "3D projection residual sample stride:"
+    )
+    self.experimental_3d_projection_residual_sample_iters_spin.setRange(1, 1024)
+    self.experimental_3d_projection_residual_sample_iters_spin.setSingleStep(1)
+    self.experimental_3d_projection_residual_sample_iters_spin.setValue(1)
+    self.experimental_3d_projection_residual_sample_iters_spin.setToolTip(
+        "Jacobi iterations between residual checks in 3D projection.\n"
+        "1 checks every iteration (most responsive, more host sync).\n"
+        "Higher values reduce host sync overhead by sampling every N iterations."
+    )
+
+    self.experimental_3d_projection_divergence_gate_enable_chk = _find_or_create_check(
+        "experimental_3d_projection_divergence_gate_enable_chk",
+        "3D projection divergence gate:",
+        "Enable"
+    )
+    self.experimental_3d_projection_divergence_gate_enable_chk.setChecked(False)
+    self.experimental_3d_projection_divergence_gate_enable_chk.setToolTip(
+        "Reject/retune projection attempts when divergence quality ratio exceeds target.\n"
+        "Maps to BACKWATER_SWE3D_PROJECTION_DIVERGENCE_GATE_ENABLE."
+    )
+
+    self.experimental_3d_projection_divergence_ratio_target_spin = _find_or_create_double_spin(
+        "experimental_3d_projection_divergence_ratio_target_spin",
+        "3D projection divergence ratio target:"
+    )
+    self.experimental_3d_projection_divergence_ratio_target_spin.setRange(1.0e-6, 100.0)
+    self.experimental_3d_projection_divergence_ratio_target_spin.setDecimals(6)
+    self.experimental_3d_projection_divergence_ratio_target_spin.setSingleStep(0.05)
+    self.experimental_3d_projection_divergence_ratio_target_spin.setValue(1.0)
+    self.experimental_3d_projection_divergence_ratio_target_spin.setToolTip(
+        "Maximum allowed divergence RMS ratio (post-correction / pre-projection).\n"
+        "Lower values are stricter; 1.0 matches neutral gate behavior."
     )
 
     self.experimental_3d_patch_xmin_edit = _find_or_create_line_edit(
@@ -1828,6 +1881,9 @@ def _connect_project_workbench_state_signals(self) -> None:
         ("experimental_3d_patch_face_len_x_spin", "valueChanged"),
         ("experimental_3d_patch_face_len_y_spin", "valueChanged"),
         ("experimental_3d_patch_face_len_z_spin", "valueChanged"),
+        ("experimental_3d_projection_residual_sample_iters_spin", "valueChanged"),
+        ("experimental_3d_projection_divergence_gate_enable_chk", "toggled"),
+        ("experimental_3d_projection_divergence_ratio_target_spin", "valueChanged"),
         ("experimental_3d_patch_xmin_edit", "editingFinished"),
         ("experimental_3d_patch_xmax_edit", "editingFinished"),
         ("experimental_3d_patch_ymin_edit", "editingFinished"),
@@ -2018,6 +2074,18 @@ def _on_run(self):
         thiessen_forcing = run_options.thiessen_forcing
         pipe_network_cfg = run_options.pipe_network_cfg
         hydraulic_structures_cfg = run_options.hydraulic_structures_cfg
+        bridge_stacked_plans = []
+
+        try:
+            from swe2d.runtime.bridge_stacked_runtime import build_bridge_stacked_plans_for_runtime
+
+            bridge_stacked_plans = build_bridge_stacked_plans_for_runtime(
+                self._mesh_data,
+                hydraulic_structures_cfg,
+                log_fn=self._log,
+            )
+        except Exception as exc:
+            self._log(f"Bridge stacked-plan mapping warning: {exc}")
 
         # Propagate locally-built drainage/structure configs into model_options
         # so that enable_pipe_network_module and enable_hydraulic_structures flags are set correctly.
@@ -2054,7 +2122,9 @@ def _on_run(self):
                 coupling_loop=coupling_loop_mode,
                 drainage_solver_backend=drainage_solver_backend_mode,
                 drainage_gpu_method=drainage_gpu_method_mode,
+                bridge_cuda_coupling=bool(run_options.bridge_cuda_coupling),
             )
+            setattr(coupling_controller, "bridge_stacked_plans", bridge_stacked_plans)
             # GPU-first runtime policy: for legacy saved projects that still
             # carry CPU coupling selections, opportunistically promote to
             # CUDA/GPU coupling when native bindings are available.
@@ -2085,6 +2155,7 @@ def _on_run(self):
         _line_oi_hr = self._parse_time_hours(self.line_output_interval_edit.text())
         line_output_interval_s = max(1.0, _line_oi_hr * 3600.0)
         self._snapshot_timesteps = []
+        self._snapshot_mesh_fingerprint = self._current_mesh_fingerprint() if hasattr(self, "_current_mesh_fingerprint") else ""
         self._line_snapshot_rows = []
         self._line_snapshot_profile_rows = []
         self._coupling_snapshot_rows = []
@@ -2119,6 +2190,33 @@ def _on_run(self):
         self._log("Starting 2D run...")
         if run_mode_name != "2D":
             self._log(f"Run mode: {run_mode_name} (coupling={coupling_mode_label}).")
+            proj_residual_stride = 1
+            proj_div_gate_enabled = False
+            proj_div_ratio_target = 1.0
+            try:
+                proj_residual_stride = int(
+                    float(str(swe3d_env_overrides.get("BACKWATER_SWE3D_PROJECTION_RESIDUAL_SAMPLE_ITERS", "1")))
+                )
+            except Exception:
+                proj_residual_stride = 1
+            try:
+                proj_div_gate_enabled = int(
+                    float(str(swe3d_env_overrides.get("BACKWATER_SWE3D_PROJECTION_DIVERGENCE_GATE_ENABLE", "0")))
+                ) != 0
+            except Exception:
+                proj_div_gate_enabled = False
+            try:
+                proj_div_ratio_target = float(
+                    str(swe3d_env_overrides.get("BACKWATER_SWE3D_PROJECTION_DIVERGENCE_RATIO_TARGET", "1.0"))
+                )
+            except Exception:
+                proj_div_ratio_target = 1.0
+            self._log(
+                "3D projection controls: "
+                f"residual_stride={max(1, proj_residual_stride)}, "
+                f"divergence_gate={proj_div_gate_enabled}, "
+                f"divergence_ratio_target={proj_div_ratio_target:.6g}"
+            )
         self._log(f"Run wallclock start: {run_wallclock_start}")
         self._log(f"Reconstruction mode: {reconstruction_name}")
         self._log(f"Temporal scheme: {temporal_scheme_name}")
@@ -2188,6 +2286,12 @@ def _on_run(self):
                 else:
                     coupling_runtime_mode = "cpu (cuda requested, fallback active)"
             self._log(f"Coupling runtime mode: {coupling_runtime_mode}")
+            if bridge_stacked_plans:
+                total_bridge_cells = int(sum(int(p.selected_cells.size) for p in bridge_stacked_plans))
+                self._log(
+                    "Bridge stacked plans active: "
+                    f"count={len(bridge_stacked_plans)}, selected_cells={total_bridge_cells}"
+                )
         self._log(f"CUDA graph replay: {'enabled' if cuda_graphs_enabled else 'disabled'}")
         if coupling_soa is not None:
             dn = coupling_soa.drainage
@@ -2482,7 +2586,9 @@ def _on_run(self):
             flow_si_to_model_callback=self._flow_si_to_model,
         )
         source_budget_model = runtime_source_manager.source_budget_model
+        source_step_rows_model = runtime_source_manager.source_step_rows_model
         boundary_flux_budget_model = runtime_source_manager.boundary_flux_budget_model
+        boundary_flux_step_rows_model = runtime_source_manager.boundary_flux_step_rows_model
         _accumulate_boundary_flux_volume_model = runtime_source_manager.accumulate_boundary_flux_volume_model
         _accumulate_source_volume_model = runtime_source_manager.accumulate_source_volume_model
         _rain_source_for_window = runtime_source_manager.rain_source_for_window
@@ -2663,8 +2769,10 @@ def _on_run(self):
             area_model=area_model,
             storage_start_model=storage_start_model,
             source_budget_model=source_budget_model,
+            source_step_rows_model=source_step_rows_model,
             run_duration_s=run_duration_s,
             boundary_flux_budget_model=boundary_flux_budget_model,
+            boundary_flux_step_rows_model=boundary_flux_step_rows_model,
             run_id=run_id,
             output_interval_s=output_interval_s,
             line_output_interval_s=line_output_interval_s,

@@ -50,7 +50,11 @@ class SWE2DRuntimeSourceManager:
             "cell": 0.0,
             "coupling": 0.0,
         }
+        self._source_time_s = 0.0
+        self.source_step_rows_model: List[Dict[str, float]] = []
         self.boundary_flux_budget_model: Dict[str, float] = {}
+        self._boundary_flux_time_s = 0.0
+        self.boundary_flux_step_rows_model: List[Dict[str, float]] = []
 
     def rain_source_for_window(self, t0_s: float, t1_s: float, accumulate: bool, mutate_state: bool) -> Any:
         rain_src_local = self._rain_rate_model
@@ -86,6 +90,10 @@ class SWE2DRuntimeSourceManager:
         if dt_apply <= 0.0 or self._n_area <= 0:
             return
 
+        rain_vol = 0.0
+        cell_vol = 0.0
+        cpl_vol = 0.0
+
         rain_arr = np.asarray(rain_rate_model_local, dtype=np.float64)
         if rain_arr.ndim == 0:
             rain_vol = float(rain_arr) * float(np.sum(self._area_model)) * dt_apply
@@ -111,6 +119,21 @@ class SWE2DRuntimeSourceManager:
                 if np.isfinite(cpl_vol):
                     self.source_budget_model["coupling"] += cpl_vol
 
+        self._source_time_s = float(self._source_time_s + dt_apply)
+        self.source_step_rows_model.append(
+            {
+                "t_s": float(self._source_time_s),
+                "rain_vol_model": float(rain_vol) if np.isfinite(rain_vol) else 0.0,
+                "cell_vol_model": float(cell_vol) if np.isfinite(cell_vol) else 0.0,
+                "coupling_vol_model": float(cpl_vol) if np.isfinite(cpl_vol) else 0.0,
+                "source_total_vol_model": float(
+                    (rain_vol if np.isfinite(rain_vol) else 0.0)
+                    + (cell_vol if np.isfinite(cell_vol) else 0.0)
+                    + (cpl_vol if np.isfinite(cpl_vol) else 0.0)
+                ),
+            }
+        )
+
     def accumulate_boundary_flux_volume_model(
         self,
         dt_apply_s: float,
@@ -134,9 +157,27 @@ class SWE2DRuntimeSourceManager:
         q_total = np.asarray(bv[:n], dtype=np.float64) * np.asarray(self._edge_len_bc[:n], dtype=np.float64)
         vol = q_total * dt_apply
         idx = np.nonzero(flow_mask)[0]
+        group_acc: Dict[str, Dict[str, float]] = {}
         for ii in idx.tolist():
             grp = str(self._edge_group_labels[ii])
+            qv = float(q_total[ii])
             vv = float(vol[ii])
-            if not np.isfinite(vv):
+            if not (np.isfinite(vv) and np.isfinite(qv)):
                 continue
             self.boundary_flux_budget_model[grp] = float(self.boundary_flux_budget_model.get(grp, 0.0) + vv)
+            acc = group_acc.setdefault(grp, {"vol": 0.0, "q": 0.0})
+            acc["vol"] = float(acc["vol"] + vv)
+            acc["q"] = float(acc["q"] + qv)
+
+        self._boundary_flux_time_s = float(self._boundary_flux_time_s + dt_apply)
+        if group_acc:
+            for grp in sorted(group_acc):
+                vals = group_acc[grp]
+                self.boundary_flux_step_rows_model.append(
+                    {
+                        "t_s": float(self._boundary_flux_time_s),
+                        "group": str(grp),
+                        "q_model": float(vals["q"]),
+                        "vol_model": float(vals["vol"]),
+                    }
+                )

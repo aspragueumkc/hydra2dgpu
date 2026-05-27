@@ -137,6 +137,7 @@ struct SWE3DCartesianPatchDeviceState {
     double* d_p = nullptr;
     double* d_vof = nullptr;
     double* d_vof_tmp = nullptr;
+    double* d_vof_sum = nullptr;
     // Static geometry tensors for sub-grid solid occupancy and face openness.
     // Defaults are all-ones (fully open fluid cells/faces).
     double* d_phi = nullptr;  // cell fluid fraction [0..1]
@@ -685,6 +686,21 @@ void swe2d_gpu_compute_coupling_sources(
     const int32_t* structure_up_cell,
     const int32_t* structure_down_cell,
     const double* structure_flow_cms,
+    double* source_rate_mps_out);
+
+// Bridge-specific source helper: apply a bridge loss law to structure flows
+// before converting them to per-cell depth-rate sources [m/s].
+void swe2d_gpu_compute_bridge_coupling_sources(
+    int32_t n_cells,
+    const double* cell_area_m2,
+    int32_t n_bridges,
+    const int32_t* bridge_up_cell,
+    const int32_t* bridge_down_cell,
+    const double* bridge_flow_cms,
+    const double* bridge_loss_k_upstream,
+    const double* bridge_loss_k_downstream,
+    double bridge_opening_width_m,
+    double dt_s,
     double* source_rate_mps_out);
 
 SWE3DCartesianPatchDeviceState* swe3d_cartesian_patch_alloc(

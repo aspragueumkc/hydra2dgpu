@@ -32,4 +32,4 @@ Thumbs.db
 tests/artifacts/
 temp_archive/
 forms/*.bak
-qgis_testing_project/swe2d_model.gpkg
+qgis_testing_project/

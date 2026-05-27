@@ -22,14 +22,18 @@ Output contract
 
 from __future__ import annotations
 
+import copy
 from dataclasses import dataclass
-from typing import Dict, List, Optional, Sequence, Tuple
+from typing import Any, Dict, List, Optional, Sequence, Tuple
 import json
 import os
+import re
 import time
 import warnings
 
 import numpy as np
+
+from .mfem_opt import available_mfem_presets, optimize_with_mfem
 
 
 @dataclass
@@ -44,7 +48,13 @@ class ConceptualArc:
     arc_id: int
     node0: int = -1
     node1: int = -1
+    region_id: int = -1
+    arc_role: Optional[str] = None
     points_xy: Optional[List[Tuple[float, float]]] = None
+    use_global_arc_ctrl: bool = True
+    arc_mode_override: Optional[str] = None
+    arc_soft_size_override: Optional[float] = None
+    arc_soft_dist_override: Optional[float] = None
 
 
 @dataclass
@@ -99,7 +109,7 @@ class MeshResult:
     quality_summary: Optional[Dict[str, object]] = None
 
 
-_CELL_TYPES = {"triangular", "quadrilateral", "cartesian", "empty"}
+_CELL_TYPES = {"triangular", "quadrilateral", "cartesian", "channel_generator", "empty"}
 
 
 @dataclass
@@ -147,9 +157,8 @@ def _repair_mesh_result(mesh: MeshResult, area_tol: float = 1.0e-10) -> MeshResu
 
     offs = mesh.cell_face_offsets.astype(np.int32)
     nodes = mesh.cell_face_nodes.astype(np.int32)
-    keep_face_nodes: List[int] = []
-    keep_offsets: List[int] = [0]
-    keep_idx: List[int] = []
+    candidate_faces: List[List[int]] = []
+    candidate_idx: List[int] = []
 
     for i in range(offs.size - 1):
         s = int(offs[i])
@@ -176,9 +185,47 @@ def _repair_mesh_result(mesh: MeshResult, area_tol: float = 1.0e-10) -> MeshResu
         if area < 0.0:
             compact = list(reversed(compact))
 
-        keep_face_nodes.extend(compact)
+        # Guard against malformed polygons that repeat an undirected edge.
+        # Such faces can trigger non-manifold construction errors downstream.
+        seen_face_edges = set()
+        repeated_edge = False
+        for k in range(len(compact)):
+            a = int(compact[k])
+            b = int(compact[(k + 1) % len(compact)])
+            key = (a, b) if a < b else (b, a)
+            if key in seen_face_edges:
+                repeated_edge = True
+                break
+            seen_face_edges.add(key)
+        if repeated_edge:
+            continue
+
+        candidate_faces.append(compact)
+        candidate_idx.append(i)
+
+    # Keep a manifold-compatible subset: an undirected edge can belong to at
+    # most two faces in the native SWE2D mesh builder.
+    keep_face_nodes: List[int] = []
+    keep_offsets: List[int] = [0]
+    keep_idx: List[int] = []
+    edge_owner_counts: Dict[Tuple[int, int], int] = {}
+
+    for local_i, poly in enumerate(candidate_faces):
+        face_edges = []
+        for k in range(len(poly)):
+            a = int(poly[k])
+            b = int(poly[(k + 1) % len(poly)])
+            key = (a, b) if a < b else (b, a)
+            face_edges.append(key)
+
+        if any(int(edge_owner_counts.get(key, 0)) >= 2 for key in face_edges):
+            continue
+
+        keep_face_nodes.extend(poly)
         keep_offsets.append(len(keep_face_nodes))
-        keep_idx.append(i)
+        keep_idx.append(int(candidate_idx[local_i]))
+        for key in face_edges:
+            edge_owner_counts[key] = int(edge_owner_counts.get(key, 0)) + 1
 
     if not keep_idx:
         raise ValueError("Mesh repair removed all faces (all faces degenerate).")
@@ -228,6 +275,7 @@ def _repair_mesh_result(mesh: MeshResult, area_tol: float = 1.0e-10) -> MeshResu
         cell_type=mesh.cell_type[keep_idx_arr],
         region_id=mesh.region_id[keep_idx_arr],
         target_size=mesh.target_size[keep_idx_arr],
+        quality_summary=dict(mesh.quality_summary or {}),
     )
 
 
@@ -401,6 +449,28 @@ def _write_mesh_checkpoint_npz(
     with open(tmp_path, "wb") as fh:
         np.savez_compressed(fh, **payload)
     os.replace(tmp_path, cp)
+
+
+def _write_json_atomic(path: str, payload: Dict[str, object]) -> None:
+    """Write JSON payload atomically for debug/recovery artifacts."""
+    out = str(path or "").strip()
+    if not out:
+        return
+    out_dir = os.path.dirname(out)
+    if out_dir:
+        os.makedirs(out_dir, exist_ok=True)
+    tmp_path = f"{out}.tmp"
+    with open(tmp_path, "w", encoding="utf-8") as fh:
+        json.dump(payload, fh, indent=2, sort_keys=True)
+    os.replace(tmp_path, out)
+
+
+def _serialize_xy_points(points: Sequence[Tuple[float, float]]) -> List[List[float]]:
+    return [[float(x), float(y)] for x, y in points]
+
+
+def _serialize_xy_lines(lines: Sequence[Sequence[Tuple[float, float]]]) -> List[List[List[float]]]:
+    return [_serialize_xy_points(line) for line in lines]
 
 
 def _mesh_quality_stats(
@@ -669,6 +739,82 @@ def _face_mesh_quality_stats(mesh: MeshResult, cfg: Optional[_GmshQualityConfig]
     return out
 
 
+def _normalize_conceptual_model_to_local_origin(model: ConceptualModel) -> Tuple[float, float]:
+    """Translate conceptual geometry to a local origin for numeric robustness."""
+    xs: List[float] = []
+    ys: List[float] = []
+
+    for node in model.nodes:
+        xs.append(float(node.x))
+        ys.append(float(node.y))
+
+    for arc in model.arcs:
+        if arc.points_xy:
+            for x, y in arc.points_xy:
+                xs.append(float(x))
+                ys.append(float(y))
+
+    for region in model.regions:
+        for x, y in region.ring_xy:
+            xs.append(float(x))
+            ys.append(float(y))
+        if region.hole_rings:
+            for hole in region.hole_rings:
+                for x, y in hole:
+                    xs.append(float(x))
+                    ys.append(float(y))
+
+    for c in model.constraints:
+        for x, y in c.ring_xy:
+            xs.append(float(x))
+            ys.append(float(y))
+
+    for q in model.quad_edges:
+        for x, y in q.points_xy:
+            xs.append(float(x))
+            ys.append(float(y))
+
+    if not xs:
+        return 0.0, 0.0
+
+    x0 = float(min(xs))
+    y0 = float(min(ys))
+    if abs(x0) <= 0.0 and abs(y0) <= 0.0:
+        return 0.0, 0.0
+
+    for node in model.nodes:
+        node.x = float(node.x) - x0
+        node.y = float(node.y) - y0
+
+    for arc in model.arcs:
+        if arc.points_xy:
+            arc.points_xy = [(float(x) - x0, float(y) - y0) for x, y in arc.points_xy]
+
+    for region in model.regions:
+        region.ring_xy = [(float(x) - x0, float(y) - y0) for x, y in region.ring_xy]
+        if region.hole_rings:
+            region.hole_rings = [
+                [(float(x) - x0, float(y) - y0) for x, y in hole]
+                for hole in region.hole_rings
+            ]
+
+    for c in model.constraints:
+        c.ring_xy = [(float(x) - x0, float(y) - y0) for x, y in c.ring_xy]
+
+    for q in model.quad_edges:
+        q.points_xy = [(float(x) - x0, float(y) - y0) for x, y in q.points_xy]
+
+    return x0, y0
+
+
+def _restore_mesh_coordinates(mesh: MeshResult, x_shift: float, y_shift: float) -> MeshResult:
+    if x_shift == 0.0 and y_shift == 0.0:
+        return mesh
+    mesh.node_x = np.asarray(mesh.node_x, dtype=np.float64) + float(x_shift)
+    mesh.node_y = np.asarray(mesh.node_y, dtype=np.float64) + float(y_shift)
+    return mesh
+
+
 def _gmsh_quality_passes(stats: Dict[str, float], cfg: _GmshQualityConfig) -> bool:
     if stats.get("n_cells", 0.0) <= 0.0:
         return False
@@ -873,6 +1019,603 @@ def _region_exclusion_zones(
     return zones
 
 
+def _breakline_fixed_edges_for_region(
+    model: ConceptualModel,
+    region: ConceptualRegion,
+    region_outer_ring: Optional[Sequence[Tuple[float, float]]] = None,
+) -> List[List[Tuple[float, float]]]:
+    """Collect arc breaklines for a region as interior fixed-edge polylines."""
+    outer = list(region_outer_ring) if region_outer_ring is not None else list(region.ring_xy)
+    if outer and outer[0] == outer[-1]:
+        outer = outer[:-1]
+    if len(outer) < 3:
+        return []
+
+    out: List[List[Tuple[float, float]]] = []
+    seen = set()
+
+    def _inside_region(x: float, y: float) -> bool:
+        return _point_in_polygon(float(x), float(y), outer)
+
+    def _line_hits_region(points: Sequence[Tuple[float, float]]) -> bool:
+        for x, y in points:
+            if _inside_region(x, y):
+                return True
+        for i in range(len(points) - 1):
+            x0, y0 = points[i]
+            x1, y1 = points[i + 1]
+            mx = 0.5 * (float(x0) + float(x1))
+            my = 0.5 * (float(y0) + float(y1))
+            if _inside_region(mx, my):
+                return True
+        return False
+
+    def _clip_to_region_segments(points: Sequence[Tuple[float, float]]) -> List[List[Tuple[float, float]]]:
+        chunks: List[List[Tuple[float, float]]] = []
+        cur: List[Tuple[float, float]] = []
+        for i in range(len(points) - 1):
+            p0 = points[i]
+            p1 = points[i + 1]
+            mx = 0.5 * (p0[0] + p1[0])
+            my = 0.5 * (p0[1] + p1[1])
+            keep = _inside_region(mx, my) or _inside_region(p0[0], p0[1]) or _inside_region(p1[0], p1[1])
+            if keep:
+                if not cur:
+                    cur = [p0, p1]
+                else:
+                    if cur[-1] != p0:
+                        cur.append(p0)
+                    cur.append(p1)
+            else:
+                if len(cur) >= 2:
+                    chunks.append(cur)
+                cur = []
+        if len(cur) >= 2:
+            chunks.append(cur)
+        return chunks
+
+    for arc in model.arcs:
+        pts = list(arc.points_xy or [])
+        if len(pts) < 2:
+            continue
+
+        role = str(arc.arc_role or "").strip().lower()
+        if role and role != "breakline":
+            continue
+
+        rid = int(getattr(arc, "region_id", -1))
+        region_id_int = int(region.region_id)
+        if rid not in {-1, region_id_int}:
+            continue
+
+        if not _line_hits_region(pts):
+            continue
+
+        clean: List[Tuple[float, float]] = []
+        for x, y in pts:
+            xx = float(x)
+            yy = float(y)
+            if clean:
+                px, py = clean[-1]
+                if float(np.hypot(xx - px, yy - py)) <= 1.0e-12:
+                    continue
+            clean.append((xx, yy))
+        if len(clean) < 2:
+            continue
+
+        for chunk in _clip_to_region_segments(clean):
+            if len(chunk) < 2:
+                continue
+            key = tuple((round(x, 7), round(y, 7)) for x, y in chunk)
+            if key in seen:
+                continue
+            seen.add(key)
+            out.append(chunk)
+
+    return out
+
+
+def _split_polyline_max_segment_length(
+    points: Sequence[Tuple[float, float]],
+    max_seg_len: float,
+) -> List[Tuple[float, float]]:
+    """Densify an open polyline so each segment length is <= max_seg_len."""
+    pts = list(points)
+    if len(pts) < 2:
+        return pts
+    if (not np.isfinite(float(max_seg_len))) or float(max_seg_len) <= 0.0:
+        return [(float(x), float(y)) for x, y in pts]
+
+    sampled = _sample_polyline([(float(x), float(y)) for x, y in pts], float(max_seg_len))
+    if len(sampled) < 2:
+        return [(float(pts[0][0]), float(pts[0][1])), (float(pts[-1][0]), float(pts[-1][1]))]
+    return sampled
+
+
+def _point_to_segment_projection(
+    p: Tuple[float, float],
+    a: Tuple[float, float],
+    b: Tuple[float, float],
+) -> Tuple[Tuple[float, float], float, float]:
+    """Return closest point on segment AB to P as (point, t, distance)."""
+    px, py = float(p[0]), float(p[1])
+    ax, ay = float(a[0]), float(a[1])
+    bx, by = float(b[0]), float(b[1])
+    vx = bx - ax
+    vy = by - ay
+    den = vx * vx + vy * vy
+    if den <= 1.0e-30:
+        d = float(np.hypot(px - ax, py - ay))
+        return (ax, ay), 0.0, d
+    t = ((px - ax) * vx + (py - ay) * vy) / den
+    t = max(0.0, min(1.0, float(t)))
+    qx = ax + t * vx
+    qy = ay + t * vy
+    d = float(np.hypot(px - qx, py - qy))
+    return (qx, qy), t, d
+
+
+def _segment_intersection_point(
+    p0: Tuple[float, float],
+    p1: Tuple[float, float],
+    q0: Tuple[float, float],
+    q1: Tuple[float, float],
+    eps: float = 1.0e-9,
+) -> Optional[Tuple[Tuple[float, float], float, float]]:
+    """Return segment intersection as (point, t_on_p, u_on_q), if any.
+
+    Collinear overlap is handled conservatively by returning endpoint touches only.
+    """
+    p0x, p0y = float(p0[0]), float(p0[1])
+    p1x, p1y = float(p1[0]), float(p1[1])
+    q0x, q0y = float(q0[0]), float(q0[1])
+    q1x, q1y = float(q1[0]), float(q1[1])
+
+    rx = p1x - p0x
+    ry = p1y - p0y
+    sx = q1x - q0x
+    sy = q1y - q0y
+
+    def _cross(ax: float, ay: float, bx: float, by: float) -> float:
+        return ax * by - ay * bx
+
+    rxs = _cross(rx, ry, sx, sy)
+    qpx = q0x - p0x
+    qpy = q0y - p0y
+    qpxr = _cross(qpx, qpy, rx, ry)
+
+    if abs(rxs) <= eps:
+        if abs(qpxr) > eps:
+            return None
+        # Collinear: only return when endpoints nearly touch.
+        for pt in ((p0x, p0y), (p1x, p1y)):
+            _, u, d = _point_to_segment_projection((pt[0], pt[1]), (q0x, q0y), (q1x, q1y))
+            if d <= eps:
+                seg_len_p = max(float(np.hypot(rx, ry)), 1.0e-30)
+                t = float(np.hypot(pt[0] - p0x, pt[1] - p0y)) / seg_len_p
+                return ((pt[0], pt[1]), t, float(u))
+        for pt in ((q0x, q0y), (q1x, q1y)):
+            _, t, d = _point_to_segment_projection((pt[0], pt[1]), (p0x, p0y), (p1x, p1y))
+            if d <= eps:
+                seg_len_q = max(float(np.hypot(sx, sy)), 1.0e-30)
+                u = float(np.hypot(pt[0] - q0x, pt[1] - q0y)) / seg_len_q
+                return ((pt[0], pt[1]), float(t), u)
+        return None
+
+    t = _cross(qpx, qpy, sx, sy) / rxs
+    u = _cross(qpx, qpy, rx, ry) / rxs
+    if t < -eps or t > 1.0 + eps or u < -eps or u > 1.0 + eps:
+        return None
+
+    t = max(0.0, min(1.0, float(t)))
+    u = max(0.0, min(1.0, float(u)))
+    ix = p0x + t * rx
+    iy = p0y + t * ry
+    return ((ix, iy), t, u)
+
+
+def _snap_and_split_boundary_for_breaklines(
+    ring: Sequence[Tuple[float, float]],
+    fixed_edge_lines: Sequence[Sequence[Tuple[float, float]]],
+    vertex_snap_tol: float = 0.1,
+) -> Tuple[List[Tuple[float, float]], List[List[Tuple[float, float]]]]:
+    """Snap breakline vertices to nearby boundary vertices and split boundary edges.
+
+    Rules:
+    - If a breakline vertex is within ``vertex_snap_tol`` of a boundary vertex,
+      snap breakline vertex to that boundary vertex.
+    - Otherwise, split boundary edges at breakline intersections/touches.
+    """
+    base_ring = list(ring)
+    if len(base_ring) < 3:
+        return list(base_ring), [list(line) for line in fixed_edge_lines]
+    if base_ring[0] == base_ring[-1]:
+        base_ring = base_ring[:-1]
+    if len(base_ring) < 3:
+        return list(base_ring), [list(line) for line in fixed_edge_lines]
+
+    vtol = max(float(vertex_snap_tol), 0.0)
+    line_hit_tol = max(1.0e-9, 1.0e-7 * max(1.0, max(abs(p[0]) + abs(p[1]) for p in base_ring)))
+
+    snapped_lines: List[List[Tuple[float, float]]] = []
+    for line in fixed_edge_lines:
+        clean: List[Tuple[float, float]] = []
+        for x, y in line:
+            pt = (float(x), float(y))
+            best = None
+            best_d = float("inf")
+            if vtol > 0.0:
+                for rv in base_ring:
+                    d = float(np.hypot(pt[0] - rv[0], pt[1] - rv[1]))
+                    if d < best_d:
+                        best_d = d
+                        best = rv
+                if best is not None and best_d < vtol:
+                    pt = (float(best[0]), float(best[1]))
+            if clean:
+                if float(np.hypot(pt[0] - clean[-1][0], pt[1] - clean[-1][1])) <= 1.0e-12:
+                    continue
+            clean.append(pt)
+        if len(clean) >= 2:
+            snapped_lines.append(clean)
+
+    # Collect split parameters per boundary edge index.
+    split_params: Dict[int, List[Tuple[float, Tuple[float, float]]]] = {}
+    n_ring = len(base_ring)
+    for i in range(n_ring):
+        split_params[i] = []
+
+    for line in snapped_lines:
+        # Boundary touches from explicit breakline vertices.
+        for p in line:
+            for i in range(n_ring):
+                a = base_ring[i]
+                b = base_ring[(i + 1) % n_ring]
+                q, u, d = _point_to_segment_projection(p, a, b)
+                if d <= line_hit_tol:
+                    split_params[i].append((float(u), (float(q[0]), float(q[1]))))
+
+        # True segment intersections.
+        for li in range(len(line) - 1):
+            p0 = line[li]
+            p1 = line[li + 1]
+            if float(np.hypot(p1[0] - p0[0], p1[1] - p0[1])) <= 1.0e-15:
+                continue
+            for i in range(n_ring):
+                q0 = base_ring[i]
+                q1 = base_ring[(i + 1) % n_ring]
+                inter = _segment_intersection_point(p0, p1, q0, q1, eps=line_hit_tol)
+                if inter is None:
+                    continue
+                ipt, _t, u = inter
+                split_params[i].append((float(u), (float(ipt[0]), float(ipt[1]))))
+
+    # Rebuild boundary ring with inserted split vertices.
+    new_ring: List[Tuple[float, float]] = []
+    for i in range(n_ring):
+        a = (float(base_ring[i][0]), float(base_ring[i][1]))
+        if not new_ring:
+            new_ring.append(a)
+        elif float(np.hypot(a[0] - new_ring[-1][0], a[1] - new_ring[-1][1])) > 1.0e-12:
+            new_ring.append(a)
+
+        entries = split_params.get(i, [])
+        if not entries:
+            continue
+
+        # Stable/unique interior split points on current edge.
+        entries.sort(key=lambda item: item[0])
+        filtered: List[Tuple[float, Tuple[float, float]]] = []
+        for u, pt in entries:
+            uu = max(0.0, min(1.0, float(u)))
+            if uu <= 1.0e-10 or uu >= 1.0 - 1.0e-10:
+                continue
+            if filtered and abs(uu - filtered[-1][0]) <= 1.0e-9:
+                continue
+            filtered.append((uu, pt))
+
+        for _u, pt in filtered:
+            q = (float(pt[0]), float(pt[1]))
+            if float(np.hypot(q[0] - new_ring[-1][0], q[1] - new_ring[-1][1])) <= 1.0e-12:
+                continue
+            new_ring.append(q)
+
+    # Remove accidental trailing duplicate closure.
+    while len(new_ring) >= 2 and float(np.hypot(new_ring[0][0] - new_ring[-1][0], new_ring[0][1] - new_ring[-1][1])) <= 1.0e-12:
+        new_ring.pop()
+
+    if len(new_ring) < 3:
+        new_ring = list(base_ring)
+
+    # Final snap pass against updated boundary vertices.
+    if vtol > 0.0:
+        snapped2: List[List[Tuple[float, float]]] = []
+        for line in snapped_lines:
+            out: List[Tuple[float, float]] = []
+            for x, y in line:
+                p = (float(x), float(y))
+                best = None
+                best_d = float("inf")
+                for rv in new_ring:
+                    d = float(np.hypot(p[0] - rv[0], p[1] - rv[1]))
+                    if d < best_d:
+                        best_d = d
+                        best = rv
+                if best is not None and best_d < vtol:
+                    p = (float(best[0]), float(best[1]))
+                if out and float(np.hypot(p[0] - out[-1][0], p[1] - out[-1][1])) <= 1.0e-12:
+                    continue
+                out.append(p)
+            if len(out) >= 2:
+                snapped2.append(out)
+        snapped_lines = snapped2
+
+    return new_ring, snapped_lines
+
+
+def _boundary_contact_vertices(
+    ring: Sequence[Tuple[float, float]],
+    fixed_edge_lines: Sequence[Sequence[Tuple[float, float]]],
+    tol: float = 1.0e-6,
+) -> List[Tuple[float, float]]:
+    """Return ring vertices that coincide with any fixed-edge polyline vertex."""
+    rr = list(ring)
+    if rr and rr[0] == rr[-1]:
+        rr = rr[:-1]
+    if not rr:
+        return []
+
+    ttol = max(float(tol), 1.0e-12)
+    out: List[Tuple[float, float]] = []
+    for rv in rr:
+        keep = False
+        for line in fixed_edge_lines:
+            for p in line:
+                if float(np.hypot(float(rv[0]) - float(p[0]), float(rv[1]) - float(p[1]))) <= ttol:
+                    keep = True
+                    break
+            if keep:
+                break
+        if keep:
+            out.append((float(rv[0]), float(rv[1])))
+    return out
+
+
+def _parse_invalid_boundary_edge_sample_points(error_text: str) -> List[Tuple[float, float]]:
+    """Extract boundary edge sample endpoints from TQMesh error text."""
+    txt = str(error_text or "")
+    tag = "invalid_boundary_edge_samples=["
+    i0 = txt.find(tag)
+    if i0 < 0:
+        return []
+    i1 = txt.find(";", i0)
+    if i1 < 0:
+        i1 = len(txt)
+    sample_txt = txt[i0:i1]
+    pat = re.compile(
+        r"\(([-+0-9.eE]+)\s*,\s*([-+0-9.eE]+)\)\s*->\s*\(([-+0-9.eE]+)\s*,\s*([-+0-9.eE]+)\)"
+    )
+    pts: List[Tuple[float, float]] = []
+    seen = set()
+    for m in pat.finditer(sample_txt):
+        p0 = (float(m.group(1)), float(m.group(2)))
+        p1 = (float(m.group(3)), float(m.group(4)))
+        for p in (p0, p1):
+            key = (round(float(p[0]), 6), round(float(p[1]), 6))
+            if key in seen:
+                continue
+            seen.add(key)
+            pts.append((float(p[0]), float(p[1])))
+    return pts
+
+
+def _collapse_boundary_microchains_near_points(
+    ring: Sequence[Tuple[float, float]],
+    focus_points: Sequence[Tuple[float, float]],
+    target_size: float,
+    protect_points: Optional[Sequence[Tuple[float, float]]] = None,
+    protect_tol: Optional[float] = None,
+) -> List[Tuple[float, float]]:
+    """Collapse short near-collinear boundary chains near given focus points."""
+    pts = list(ring)
+    if len(pts) < 4 or not focus_points:
+        return pts
+
+    tgt = max(float(target_size), 1.0e-9)
+    focus_radius = max(1.75 * tgt, 8.0)
+    short_len = max(0.8 * tgt, 1.0)
+    cross_tol = max(0.12 * tgt, 0.5)
+
+    prot = list(protect_points or [])
+    p_tol = max(float(protect_tol) if protect_tol is not None else max(1.0e-6, 1.0e-3 * tgt), 1.0e-12)
+
+    def _is_protected(p: Tuple[float, float]) -> bool:
+        for q in prot:
+            if float(np.hypot(float(p[0]) - float(q[0]), float(p[1]) - float(q[1]))) <= p_tol:
+                return True
+        return False
+
+    def _near_focus(p: Tuple[float, float]) -> bool:
+        for q in focus_points:
+            if float(np.hypot(float(p[0]) - float(q[0]), float(p[1]) - float(q[1]))) <= focus_radius:
+                return True
+        return False
+
+    work = [(float(x), float(y)) for x, y in pts]
+    for _ in range(6):
+        if len(work) <= 3:
+            break
+        changed = False
+        out: List[Tuple[float, float]] = []
+        n = len(work)
+        for i in range(n):
+            p_prev = work[(i - 1) % n]
+            p_cur = work[i]
+            p_next = work[(i + 1) % n]
+
+            if _is_protected(p_cur) or (not _near_focus(p_cur)):
+                out.append(p_cur)
+                continue
+
+            a = np.asarray([p_cur[0] - p_prev[0], p_cur[1] - p_prev[1]], dtype=np.float64)
+            b = np.asarray([p_next[0] - p_cur[0], p_next[1] - p_cur[1]], dtype=np.float64)
+            c = np.asarray([p_next[0] - p_prev[0], p_next[1] - p_prev[1]], dtype=np.float64)
+            la = float(np.hypot(a[0], a[1]))
+            lb = float(np.hypot(b[0], b[1]))
+            lc = float(np.hypot(c[0], c[1]))
+
+            drop = False
+            if min(la, lb) <= short_len:
+                if lc <= 1.0e-14:
+                    drop = True
+                else:
+                    perp = float(abs(c[0] * (p_prev[1] - p_cur[1]) - (p_prev[0] - p_cur[0]) * c[1]) / lc)
+                    dot = float((a[0] * b[0] + a[1] * b[1]) / max(la * lb, 1.0e-30))
+                    if perp <= cross_tol or dot > 0.20:
+                        drop = True
+
+            if drop and len(work) - 1 >= 3:
+                changed = True
+                continue
+            out.append(p_cur)
+
+        if not changed or len(out) < 3:
+            break
+        work = out
+
+    return work if len(work) >= 3 else pts
+
+
+def _ring_key(ring: Sequence[Tuple[float, float]], ndigits: int = 6) -> Tuple[Tuple[float, float], ...]:
+    return tuple((round(float(x), ndigits), round(float(y), ndigits)) for x, y in ring)
+
+
+def _jitter_boundary_vertices_near_points(
+    ring: Sequence[Tuple[float, float]],
+    focus_points: Sequence[Tuple[float, float]],
+    jitter_scale: float,
+    variant_index: int = 0,
+    protect_points: Optional[Sequence[Tuple[float, float]]] = None,
+    protect_tol: Optional[float] = None,
+) -> List[Tuple[float, float]]:
+    """Deterministically jitter boundary vertices near focus points."""
+    pts = [(float(x), float(y)) for x, y in ring]
+    if len(pts) < 3 or not focus_points:
+        return pts
+
+    scale = max(float(jitter_scale), 0.0)
+    if scale <= 0.0:
+        return pts
+
+    prot = list(protect_points or [])
+    p_tol = max(float(protect_tol) if protect_tol is not None else 1.0e-6, 1.0e-12)
+    focus_radius = max(4.0 * scale, 8.0)
+
+    def _is_protected(p: Tuple[float, float]) -> bool:
+        for q in prot:
+            if float(np.hypot(float(p[0]) - float(q[0]), float(p[1]) - float(q[1]))) <= p_tol:
+                return True
+        return False
+
+    out: List[Tuple[float, float]] = []
+    for idx, p in enumerate(pts):
+        if _is_protected(p):
+            out.append(p)
+            continue
+
+        nearest = None
+        nearest_d = float("inf")
+        for q in focus_points:
+            d = float(np.hypot(float(p[0]) - float(q[0]), float(p[1]) - float(q[1])))
+            if d < nearest_d:
+                nearest_d = d
+                nearest = (float(q[0]), float(q[1]))
+        if nearest is None or nearest_d > focus_radius:
+            out.append(p)
+            continue
+
+        vx = float(p[0]) - float(nearest[0])
+        vy = float(p[1]) - float(nearest[1])
+        vn = float(np.hypot(vx, vy))
+        if vn <= 1.0e-12:
+            ang = 0.5 * (1.0 + float(np.sin((idx + 1) * 0.913 + (variant_index + 1) * 1.371))) * (2.0 * np.pi)
+            vx = float(np.cos(ang))
+            vy = float(np.sin(ang))
+            vn = 1.0
+        ux = vx / vn
+        uy = vy / vn
+        tx = -uy
+        ty = ux
+
+        radial = 1.0 + 0.25 * float(np.sin((idx + 1) * (variant_index + 1) * 0.73))
+        tangential = 0.35 * float(np.cos((idx + 1) * (variant_index + 2) * 0.61))
+        sign = 1.0 if ((idx + variant_index) % 2 == 0) else -1.0
+        dx = scale * sign * (radial * ux + tangential * tx)
+        dy = scale * sign * (radial * uy + tangential * ty)
+        out.append((float(p[0] + dx), float(p[1] + dy)))
+
+    return out
+
+
+def _insert_focus_points_on_ring_segments(
+    ring: Sequence[Tuple[float, float]],
+    focus_points: Sequence[Tuple[float, float]],
+    max_dist: float,
+) -> List[Tuple[float, float]]:
+    """Insert projected focus points on nearest ring segments when close enough."""
+    pts = [(float(x), float(y)) for x, y in ring]
+    if len(pts) < 3 or not focus_points:
+        return pts
+
+    dmax = max(float(max_dist), 1.0e-12)
+    n = len(pts)
+    inserts: Dict[int, List[Tuple[float, Tuple[float, float]]]] = {i: [] for i in range(n)}
+
+    for fp in focus_points:
+        p = (float(fp[0]), float(fp[1]))
+        best_i = -1
+        best_u = 0.0
+        best_q = (0.0, 0.0)
+        best_d = float("inf")
+        for i in range(n):
+            a = pts[i]
+            b = pts[(i + 1) % n]
+            q, u, d = _point_to_segment_projection(p, a, b)
+            if d < best_d:
+                best_d = float(d)
+                best_i = i
+                best_u = float(u)
+                best_q = (float(q[0]), float(q[1]))
+        if best_i < 0 or best_d > dmax:
+            continue
+        if best_u <= 1.0e-10 or best_u >= 1.0 - 1.0e-10:
+            continue
+        inserts[best_i].append((best_u, best_q))
+
+    out: List[Tuple[float, float]] = []
+    for i in range(n):
+        a = pts[i]
+        if not out or float(np.hypot(a[0] - out[-1][0], a[1] - out[-1][1])) > 1.0e-12:
+            out.append(a)
+        items = inserts.get(i, [])
+        if not items:
+            continue
+        items.sort(key=lambda it: it[0])
+        filtered: List[Tuple[float, Tuple[float, float]]] = []
+        for u, q in items:
+            if filtered and abs(float(u) - filtered[-1][0]) <= 1.0e-8:
+                continue
+            filtered.append((float(u), (float(q[0]), float(q[1]))))
+        for _u, q in filtered:
+            if float(np.hypot(q[0] - out[-1][0], q[1] - out[-1][1])) <= 1.0e-12:
+                continue
+            out.append(q)
+
+    while len(out) >= 2 and float(np.hypot(out[0][0] - out[-1][0], out[0][1] - out[-1][1])) <= 1.0e-12:
+        out.pop()
+    return out if len(out) >= 3 else pts
+
+
 def _polyline_length(points: Sequence[Tuple[float, float]]) -> float:
     if len(points) < 2:
         return 0.0
@@ -902,6 +1645,38 @@ def _sample_polyline(points: Sequence[Tuple[float, float]], target_size: float) 
             if np.hypot(pt[0] - sampled[-1][0], pt[1] - sampled[-1][1]) > 1.0e-12:
                 sampled.append(pt)
     return sampled
+
+
+def _split_closed_ring_max_segment_length(
+    ring: Sequence[Tuple[float, float]],
+    max_seg_len: float,
+) -> List[Tuple[float, float]]:
+    """Densify a closed ring so each segment length is <= max_seg_len."""
+    pts = list(ring)
+    if len(pts) < 3:
+        return pts
+    if pts and pts[0] == pts[-1]:
+        pts = pts[:-1]
+    if len(pts) < 3:
+        return pts
+    if (not np.isfinite(float(max_seg_len))) or float(max_seg_len) <= 0.0:
+        return [(float(x), float(y)) for x, y in pts]
+
+    out: List[Tuple[float, float]] = []
+    n = len(pts)
+    for i in range(n):
+        a = (float(pts[i][0]), float(pts[i][1]))
+        b = (float(pts[(i + 1) % n][0]), float(pts[(i + 1) % n][1]))
+        seg = _split_polyline_max_segment_length([a, b], float(max_seg_len))
+        if i == 0:
+            out.extend(seg)
+        else:
+            out.extend(seg[1:])
+
+    # remove accidental closure duplicate
+    while len(out) >= 2 and float(np.hypot(out[0][0] - out[-1][0], out[0][1] - out[-1][1])) <= 1.0e-12:
+        out.pop()
+    return out if len(out) >= 3 else [(float(x), float(y)) for x, y in pts]
 
 
 def _rdp_open_polyline(points: Sequence[Tuple[float, float]], tol: float) -> List[Tuple[float, float]]:
@@ -972,6 +1747,191 @@ def _simplify_closed_ring(
         simplified = [simplified[int(i)] for i in idx]
 
     return simplified
+
+
+def _sanitize_closed_ring(
+    ring: Sequence[Tuple[float, float]],
+    length_tol: float,
+    collinear_tol: float,
+    protect_points: Optional[Sequence[Tuple[float, float]]] = None,
+    protect_tol: Optional[float] = None,
+) -> List[Tuple[float, float]]:
+    """Clean a closed ring for meshing robustness.
+
+    Removes near-duplicate points, tiny backtracking spikes, and nearly
+    collinear vertices while preserving ring order.
+    """
+    pts = list(ring)
+    if len(pts) < 3:
+        return pts
+    if pts[0] == pts[-1]:
+        pts = pts[:-1]
+    if len(pts) < 3:
+        return pts
+
+    length_tol = max(float(length_tol), 1.0e-12)
+    collinear_tol = max(float(collinear_tol), 1.0e-12)
+    prot = list(protect_points or [])
+    prot_tol = max(float(protect_tol) if protect_tol is not None else length_tol, 1.0e-12)
+
+    def _is_protected(pt: Tuple[float, float]) -> bool:
+        if not prot:
+            return False
+        for qq in prot:
+            if float(np.hypot(float(pt[0]) - float(qq[0]), float(pt[1]) - float(qq[1]))) <= prot_tol:
+                return True
+        return False
+
+    dedup: List[Tuple[float, float]] = []
+    for p in pts:
+        pp = (float(p[0]), float(p[1]))
+        if not dedup:
+            dedup.append(pp)
+            continue
+        if float(np.hypot(pp[0] - dedup[-1][0], pp[1] - dedup[-1][1])) > length_tol:
+            dedup.append(pp)
+
+    while len(dedup) >= 2 and float(np.hypot(dedup[0][0] - dedup[-1][0], dedup[0][1] - dedup[-1][1])) <= length_tol:
+        dedup.pop()
+    if len(dedup) < 3:
+        return dedup
+
+    work = list(dedup)
+    changed = True
+    for _ in range(6):
+        if not changed or len(work) <= 3:
+            break
+        changed = False
+        out: List[Tuple[float, float]] = []
+        n = len(work)
+        for i in range(n):
+            p_prev = work[(i - 1) % n]
+            p_cur = work[i]
+            p_next = work[(i + 1) % n]
+
+            a = np.asarray([p_cur[0] - p_prev[0], p_cur[1] - p_prev[1]], dtype=np.float64)
+            b = np.asarray([p_next[0] - p_cur[0], p_next[1] - p_cur[1]], dtype=np.float64)
+            c = np.asarray([p_next[0] - p_prev[0], p_next[1] - p_prev[1]], dtype=np.float64)
+            la = float(np.hypot(a[0], a[1]))
+            lb = float(np.hypot(b[0], b[1]))
+            lc = float(np.hypot(c[0], c[1]))
+
+            drop = False
+            if _is_protected(p_cur):
+                out.append(p_cur)
+                continue
+            if la <= length_tol or lb <= length_tol:
+                drop = True
+            elif lc > 1.0e-14:
+                perp = float(abs(c[0] * (p_prev[1] - p_cur[1]) - (p_prev[0] - p_cur[0]) * c[1]) / lc)
+                dot = float((a[0] * b[0] + a[1] * b[1]) / max(la * lb, 1.0e-30))
+                if perp <= collinear_tol:
+                    drop = True
+                elif dot < -0.985 and min(la, lb) <= max(4.0 * length_tol, 5.0 * collinear_tol):
+                    drop = True
+
+            if drop and len(work) - 1 >= 3:
+                changed = True
+                continue
+            out.append(p_cur)
+
+        if len(out) < 3:
+            break
+        work = out
+
+    return work if len(work) >= 3 else dedup
+
+
+def _resample_closed_ring(points: Sequence[Tuple[float, float]], target_step: float) -> List[Tuple[float, float]]:
+    """Uniformly resample a closed ring with approximate step size."""
+    pts = list(points)
+    if len(pts) < 3:
+        return pts
+    if pts[0] == pts[-1]:
+        pts = pts[:-1]
+    if len(pts) < 3:
+        return pts
+    closed = list(pts) + [pts[0]]
+    sampled = _sample_polyline(closed, max(float(target_step), 1.0e-9))
+    if len(sampled) >= 2 and float(np.hypot(sampled[0][0] - sampled[-1][0], sampled[0][1] - sampled[-1][1])) <= 1.0e-9:
+        sampled = sampled[:-1]
+    return sampled if len(sampled) >= 3 else pts
+
+
+def _stitch_boundary_microchains(
+    ring: Sequence[Tuple[float, float]],
+    target_size: float,
+    protect_points: Optional[Sequence[Tuple[float, float]]] = None,
+    protect_tol: Optional[float] = None,
+) -> List[Tuple[float, float]]:
+    """Collapse short near-collinear boundary chains that can stall front closure."""
+    pts = list(ring)
+    if len(pts) < 4:
+        return pts
+
+    tgt = max(float(target_size), 1.0e-9)
+    short_len = 1.35 * tgt
+    tiny_len = 0.35 * tgt
+    cross_tol = 0.30 * tgt
+    prot = list(protect_points or [])
+    prot_tol = max(float(protect_tol) if protect_tol is not None else max(1.0e-6, 1.0e-3 * tgt), 1.0e-12)
+
+    def _is_protected(pt: Tuple[float, float]) -> bool:
+        if not prot:
+            return False
+        for qq in prot:
+            if float(np.hypot(float(pt[0]) - float(qq[0]), float(pt[1]) - float(qq[1]))) <= prot_tol:
+                return True
+        return False
+
+    work = list(pts)
+    for _ in range(8):
+        if len(work) <= 3:
+            break
+        changed = False
+        out: List[Tuple[float, float]] = []
+        n = len(work)
+        for i in range(n):
+            p_prev = work[(i - 1) % n]
+            p_cur = work[i]
+            p_next = work[(i + 1) % n]
+
+            a = np.asarray([p_cur[0] - p_prev[0], p_cur[1] - p_prev[1]], dtype=np.float64)
+            b = np.asarray([p_next[0] - p_cur[0], p_next[1] - p_cur[1]], dtype=np.float64)
+            la = float(np.hypot(a[0], a[1]))
+            lb = float(np.hypot(b[0], b[1]))
+
+            drop = False
+            if _is_protected(p_cur):
+                out.append(p_cur)
+                continue
+            if la <= tiny_len or lb <= tiny_len:
+                drop = True
+            elif la <= short_len and lb <= short_len:
+                denom = max(la * lb, 1.0e-30)
+                dot = float((a[0] * b[0] + a[1] * b[1]) / denom)
+                c = np.asarray([p_next[0] - p_prev[0], p_next[1] - p_prev[1]], dtype=np.float64)
+                lc = float(np.hypot(c[0], c[1]))
+                if lc > 1.0e-14:
+                    perp = float(abs(c[0] * (p_prev[1] - p_cur[1]) - (p_prev[0] - p_cur[0]) * c[1]) / lc)
+                else:
+                    perp = 0.0
+                # Accept both straight-ish continuation and tiny jogs.
+                if dot > 0.35 or perp <= cross_tol:
+                    drop = True
+
+            if drop and len(work) - 1 >= 3:
+                changed = True
+                continue
+            out.append(p_cur)
+
+        if not changed:
+            break
+        if len(out) < 3:
+            break
+        work = out
+
+    return work if len(work) >= 3 else pts
 
 
 def _orient_quad_edge_chains(edges: Sequence[QuadEdgeControl]) -> List[QuadEdgeControl]:
@@ -1226,6 +2186,7 @@ def _transfinite_quad_point(
 def _structured_quad_region_mesh(
     region: ConceptualRegion,
     quad_controls: List[QuadEdgeControl],
+    max_cells: Optional[int] = None,
 ) -> Optional[Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]]:
     if len(quad_controls) != 4:
         return None
@@ -1238,8 +2199,17 @@ def _structured_quad_region_mesh(
         return None
 
     default_edge_sizes = list(region.edge_lengths) if region.edge_lengths and len(region.edge_lengths) == 4 else [region.default_size] * 4
-    x_target = max(float(0.5 * (default_edge_sizes[0] + default_edge_sizes[2])), 1.0e-9)
-    y_target = max(float(0.5 * (default_edge_sizes[1] + default_edge_sizes[3])), 1.0e-9)
+
+    def _edge_target(edge_idx: int, fallback: float) -> float:
+        if 0 <= edge_idx < len(quad_controls):
+            ts = quad_controls[edge_idx].target_size
+            if ts is not None and float(ts) > 0.0:
+                return float(ts)
+        return float(fallback)
+
+    # Prefer explicit quad-edge target sizes when available.
+    x_target = max(float(0.5 * (_edge_target(0, default_edge_sizes[0]) + _edge_target(2, default_edge_sizes[2]))), 1.0e-9)
+    y_target = max(float(0.5 * (_edge_target(1, default_edge_sizes[1]) + _edge_target(3, default_edge_sizes[3]))), 1.0e-9)
     x_len = 0.5 * (_polyline_length(bottom) + _polyline_length(top))
     y_len = 0.5 * (_polyline_length(left) + _polyline_length(right))
 
@@ -1247,6 +2217,25 @@ def _structured_quad_region_mesh(
     eta_vals = _build_axis_params(y_len, y_target, quad_controls[0], quad_controls[2])
     nx = max(1, int(xi_vals.size - 1))
     ny = max(1, int(eta_vals.size - 1))
+
+    max_cells_int = int(max_cells) if max_cells is not None else 0
+    if max_cells_int > 0 and nx * ny > max_cells_int:
+        # Coarsen uniformly to keep full-region aligned generation bounded.
+        scale = float(np.sqrt(float(nx * ny) / float(max_cells_int)))
+        scale = max(scale, 1.0)
+        xi_vals = _build_axis_params(x_len, x_target * scale, quad_controls[3], quad_controls[1])
+        eta_vals = _build_axis_params(y_len, y_target * scale, quad_controls[0], quad_controls[2])
+        nx = max(1, int(xi_vals.size - 1))
+        ny = max(1, int(eta_vals.size - 1))
+
+    if max_cells_int > 0 and nx * ny > max_cells_int:
+        aspect = max(float(x_len), 1.0e-9) / max(float(y_len), 1.0e-9)
+        nx_cap = max(1, int(round(np.sqrt(float(max_cells_int) * aspect))))
+        ny_cap = max(1, int(max_cells_int // max(nx_cap, 1)))
+        xi_vals = np.linspace(0.0, 1.0, nx_cap + 1, dtype=np.float64)
+        eta_vals = np.linspace(0.0, 1.0, ny_cap + 1, dtype=np.float64)
+        nx = max(1, int(xi_vals.size - 1))
+        ny = max(1, int(eta_vals.size - 1))
 
     node_x: List[float] = []
     node_y: List[float] = []
@@ -1285,6 +2274,228 @@ def _structured_quad_region_mesh(
     )
 
 
+def _point_to_segment_distance_s(
+    px: float,
+    py: float,
+    ax: float,
+    ay: float,
+    bx: float,
+    by: float,
+) -> Tuple[float, float]:
+    vx = float(bx - ax)
+    vy = float(by - ay)
+    wx = float(px - ax)
+    wy = float(py - ay)
+    vv = float(vx * vx + vy * vy)
+    if vv <= 1.0e-20:
+        return float(np.hypot(px - ax, py - ay)), 0.0
+    t = max(0.0, min(1.0, float((wx * vx + wy * vy) / vv)))
+    qx = ax + t * vx
+    qy = ay + t * vy
+    return float(np.hypot(px - qx, py - qy)), t
+
+
+def _polyline_distance_and_s(points: Sequence[Tuple[float, float]], x: float, y: float) -> Tuple[float, float]:
+    if len(points) < 2:
+        return float("inf"), 0.0
+    best_d = float("inf")
+    best_s = 0.0
+    acc = 0.0
+    for i in range(len(points) - 1):
+        ax, ay = points[i]
+        bx, by = points[i + 1]
+        seg = float(np.hypot(bx - ax, by - ay))
+        d, t = _point_to_segment_distance_s(x, y, ax, ay, bx, by)
+        s = acc + t * seg
+        if d < best_d:
+            best_d = d
+            best_s = s
+        acc += seg
+    return best_d, best_s
+
+
+def _region_node_sets_from_mesh(mesh: MeshResult) -> Dict[int, set]:
+    rid = np.asarray(mesh.region_id, dtype=np.int32)
+    offs = np.asarray(mesh.cell_face_offsets, dtype=np.int32)
+    nodes = np.asarray(mesh.cell_face_nodes, dtype=np.int32)
+    out: Dict[int, set] = {}
+    for r in np.unique(rid):
+        nset: set = set()
+        for ci in np.where(rid == int(r))[0]:
+            s = int(offs[ci])
+            e = int(offs[ci + 1])
+            nset.update(nodes[s:e].tolist())
+        out[int(r)] = nset
+    return out
+
+
+def _region_boundary_node_sets_from_mesh(mesh: MeshResult) -> Dict[int, set]:
+    """Return region->node ids that lie on region exterior or inter-region interfaces."""
+    rid = np.asarray(mesh.region_id, dtype=np.int32)
+    offs = np.asarray(mesh.cell_face_offsets, dtype=np.int32)
+    nodes = np.asarray(mesh.cell_face_nodes, dtype=np.int32)
+
+    edge_regions: Dict[Tuple[int, int], set] = {}
+    edge_nodes: Dict[Tuple[int, int], Tuple[int, int]] = {}
+
+    for ci in range(offs.size - 1):
+        s = int(offs[ci])
+        e = int(offs[ci + 1])
+        poly = nodes[s:e]
+        if poly.size < 2:
+            continue
+        rr = int(rid[ci])
+        for k in range(poly.size):
+            a = int(poly[k])
+            b = int(poly[(k + 1) % poly.size])
+            key = (a, b) if a < b else (b, a)
+            if key not in edge_nodes:
+                edge_nodes[key] = (a, b)
+            edge_regions.setdefault(key, set()).add(rr)
+
+    out: Dict[int, set] = {}
+    for key, owners in edge_regions.items():
+        a, b = edge_nodes[key]
+        for rr in owners:
+            out.setdefault(int(rr), set())
+
+        # Region exterior edge (single owner) or interface (multi-owner):
+        # keep both endpoints as boundary candidates for participating regions.
+        for rr in owners:
+            bucket = out.setdefault(int(rr), set())
+            bucket.add(int(a))
+            bucket.add(int(b))
+
+    return out
+
+
+def _enforce_quad_interface_conformance(
+    mesh: MeshResult,
+    model: ConceptualModel,
+    snap_tol: float = 1.0,
+) -> MeshResult:
+    """Snap adjacent-region interface nodes onto quad-region edge node lines.
+
+    This enforces shared node placement along interfaces for independently meshed
+    regions (e.g. triangular region next to a flow-aligned quad block).
+    """
+    tol = max(float(snap_tol), 1.0e-9)
+    node_x = np.asarray(mesh.node_x, dtype=np.float64).copy()
+    node_y = np.asarray(mesh.node_y, dtype=np.float64).copy()
+
+    region_nodes = _region_node_sets_from_mesh(mesh)
+    region_boundary_nodes = _region_boundary_node_sets_from_mesh(mesh)
+    if not region_nodes:
+        return mesh
+
+    rid_to_region: Dict[int, ConceptualRegion] = {int(r.region_id): r for r in model.regions}
+    quad_region_ids = [
+        rid
+        for rid, region in rid_to_region.items()
+        if str(region.default_cell_type).strip().lower() in {"quadrilateral", "cartesian", "channel_generator"}
+    ]
+
+    for qrid in quad_region_ids:
+        region = rid_to_region.get(int(qrid))
+        if region is None:
+            continue
+        quad_setup = _quad_controls_for_region(model, region)
+        if quad_setup is None:
+            continue
+        _ring, quad_edges = quad_setup
+        q_nodes_all = region_boundary_nodes.get(int(qrid), set())
+        if not q_nodes_all:
+            continue
+
+        for edge in quad_edges:
+            edge_pts = [(float(x), float(y)) for (x, y) in edge.points_xy]
+            if len(edge_pts) < 2:
+                continue
+
+            ex = np.asarray([p[0] for p in edge_pts], dtype=np.float64)
+            ey = np.asarray([p[1] for p in edge_pts], dtype=np.float64)
+            xmin = float(np.min(ex) - tol)
+            xmax = float(np.max(ex) + tol)
+            ymin = float(np.min(ey) - tol)
+            ymax = float(np.max(ey) + tol)
+
+            q_edge_pairs: List[Tuple[float, int]] = []
+            for n in q_nodes_all:
+                x = float(node_x[n])
+                y = float(node_y[n])
+                if x < xmin or x > xmax or y < ymin or y > ymax:
+                    continue
+                d, s = _polyline_distance_and_s(edge_pts, float(node_x[n]), float(node_y[n]))
+                if d <= tol:
+                    q_edge_pairs.append((s, int(n)))
+            if len(q_edge_pairs) < 2:
+                continue
+
+            q_edge_pairs.sort(key=lambda p: p[0])
+            q_s = np.asarray([p[0] for p in q_edge_pairs], dtype=np.float64)
+            q_n = np.asarray([p[1] for p in q_edge_pairs], dtype=np.int32)
+
+            # Pick adjacent region with strongest geometric support on this edge.
+            best_adj = None
+            best_count = 0
+            for other_rid, other_nodes in region_boundary_nodes.items():
+                if int(other_rid) == int(qrid):
+                    continue
+                count = 0
+                for n in other_nodes:
+                    x = float(node_x[n])
+                    y = float(node_y[n])
+                    if x < xmin or x > xmax or y < ymin or y > ymax:
+                        continue
+                    d, _s = _polyline_distance_and_s(edge_pts, x, y)
+                    if d <= tol:
+                        count += 1
+                if count > best_count:
+                    best_count = count
+                    best_adj = int(other_rid)
+            if best_adj is None or best_count <= 0:
+                continue
+
+            for n in region_boundary_nodes.get(best_adj, set()):
+                x = float(node_x[n])
+                y = float(node_y[n])
+                if x < xmin or x > xmax or y < ymin or y > ymax:
+                    continue
+                d, s = _polyline_distance_and_s(edge_pts, x, y)
+                if d > tol:
+                    continue
+                j = int(np.argmin(np.abs(q_s - s)))
+                ref = int(q_n[j])
+                node_x[n] = node_x[ref]
+                node_y[n] = node_y[ref]
+
+    # Weld after snapping so interfaces become topologically shared.
+    remap_conn = (
+        np.asarray(mesh.cell_nodes, dtype=np.int32),
+        np.asarray(mesh.cell_face_nodes, dtype=np.int32),
+    )
+    node_x2, node_y2, (cell_nodes2, cell_face_nodes2) = _weld_mesh_nodes(
+        node_x,
+        node_y,
+        remap_conn[0],
+        remap_conn[1],
+        tol=1.0e-6,
+    )
+
+    return MeshResult(
+        node_x=node_x2,
+        node_y=node_y2,
+        node_z=np.zeros_like(node_x2),
+        cell_nodes=cell_nodes2,
+        cell_face_offsets=np.asarray(mesh.cell_face_offsets, dtype=np.int32),
+        cell_face_nodes=cell_face_nodes2,
+        cell_type=np.asarray(mesh.cell_type, dtype=object),
+        region_id=np.asarray(mesh.region_id, dtype=np.int32),
+        target_size=np.asarray(mesh.target_size, dtype=np.float64),
+        quality_summary=dict(mesh.quality_summary or {}),
+    )
+
+
 class StructuredFaceCentricBackend(MeshingBackend):
     """Face-centric generator using a structured seed with topology constraints.
 
@@ -1319,7 +2530,7 @@ class StructuredFaceCentricBackend(MeshingBackend):
             region_constraints = _constraints_for_region(model, ring)
             region_exclusions = _region_exclusion_zones(model, region, ring)
 
-            if region.default_cell_type in ("cartesian", "quadrilateral") and not region_constraints and not region_exclusions:
+            if region.default_cell_type in ("cartesian", "quadrilateral", "channel_generator") and not region_constraints and not region_exclusions:
                 quad_setup = _quad_controls_for_region(model, region)
                 if quad_setup is not None:
                     _, quad_controls = quad_setup
@@ -1399,7 +2610,7 @@ class StructuredFaceCentricBackend(MeshingBackend):
 
                     # Solver faces are native polygons; `cell_nodes` remains triangulated
                     # for plotting and layer export compatibility.
-                    if local_type in ("cartesian", "quadrilateral"):
+                    if local_type in ("cartesian", "quadrilateral", "channel_generator"):
                         all_face_nodes.extend([n00, n10, n11, n01])
                         all_face_offsets.append(len(all_face_nodes))
                         all_tris.extend([n00, n10, n11, n00, n11, n01])
@@ -1452,6 +2663,14 @@ def _gmsh_available() -> bool:
     try:
         import importlib.util
         return importlib.util.find_spec("gmsh") is not None
+    except Exception:
+        return False
+
+
+def _mfem_meshopt_available() -> bool:
+    try:
+        import importlib.util
+        return importlib.util.find_spec("hydra_mfem_meshopt") is not None
     except Exception:
         return False
 
@@ -2029,6 +3248,15 @@ class GmshBackend(MeshingBackend):
         random_factor: float = 1.0e-9,
         algorithm_switch_on_failure: bool = True,
     ) -> MeshResult:
+        arc_mode = str(self._options.get("gmsh_arc_mode", "hard_embed") or "hard_embed").strip().lower()
+        if arc_mode not in {"hard_embed", "soft_size_hint", "disabled"}:
+            arc_mode = "hard_embed"
+        mesh_size_min = max(0.0, self._opt_float("gmsh_mesh_size_min", 0.0))
+        tolerance_edge_length = max(0.0, self._opt_float("gmsh_tolerance_edge_length", 0.0))
+        mesh_size_from_points = self._opt_bool("gmsh_mesh_size_from_points", True)
+        arc_soft_size_factor = min(1.0, max(0.05, self._opt_float("gmsh_arc_soft_size_factor", 0.5)))
+        arc_soft_dist_factor = max(0.1, self._opt_float("gmsh_arc_soft_dist_factor", 2.0))
+
         # Tolerance for point deduplication (scaled to typical hydraulic coords).
         tol = 1e-6
         surface_tags: List[int] = []
@@ -2179,8 +3407,9 @@ class GmshBackend(MeshingBackend):
             raise ValueError("GmshBackend: no non-empty regions to mesh.")
 
         # ---- 2. Embed arc breaklines into surfaces ----------------------
-        if model.arcs:
-            arc_curve_tags: List[int] = []
+        arc_soft_groups: Dict[Tuple[float, float], Dict[str, List[int]]] = {}
+        if model.arcs and arc_mode != "disabled":
+            arc_hard_curve_tags: List[int] = []
             # Build a quick node-id -> (x,y) lookup
             node_xy = {n.node_id: (n.x, n.y) for n in model.nodes}
             arc_lc = min(
@@ -2191,30 +3420,84 @@ class GmshBackend(MeshingBackend):
                 ),
                 default=1.0,
             )
+
+            channel_region_ids = {
+                int(r.region_id)
+                for r in model.regions
+                if str(r.default_cell_type).strip().lower() == "channel_generator"
+            }
+
+            def _arc_mode_for(arc: ConceptualArc) -> str:
+                mode_local = str(getattr(arc, "arc_mode_override", "") or "").strip().lower()
+                if mode_local in {"hard_embed", "soft_size_hint", "disabled"}:
+                    return mode_local
+
+                role_local = str(getattr(arc, "arc_role", "") or "").strip().lower()
+                in_channel_region = int(getattr(arc, "region_id", -1)) in channel_region_ids
+                if in_channel_region and role_local in {"left_bank", "right_bank"}:
+                    return "hard_embed"
+                if in_channel_region and role_local == "centerline":
+                    return "soft_size_hint"
+
+                if bool(getattr(arc, "use_global_arc_ctrl", True)):
+                    return arc_mode
+                return arc_mode
+
+            def _arc_soft_size_factor_for(arc: ConceptualArc) -> float:
+                if bool(getattr(arc, "use_global_arc_ctrl", True)):
+                    return float(arc_soft_size_factor)
+                cand = getattr(arc, "arc_soft_size_override", None)
+                if cand is None:
+                    return float(arc_soft_size_factor)
+                return min(1.0, max(0.05, float(cand)))
+
+            def _arc_soft_dist_factor_for(arc: ConceptualArc) -> float:
+                if bool(getattr(arc, "use_global_arc_ctrl", True)):
+                    return float(arc_soft_dist_factor)
+                cand = getattr(arc, "arc_soft_dist_override", None)
+                if cand is None:
+                    return float(arc_soft_dist_factor)
+                return max(0.1, float(cand))
+
             for arc in model.arcs:
                 pts_xy = list(arc.points_xy or [])
+                arc_point_tags_local: List[int] = []
+                arc_curve_tags_local: List[int] = []
                 if len(pts_xy) >= 2:
                     gp_tags: List[int] = []
                     for x, y in pts_xy:
                         ptag = _geo_pt(float(x), float(y), arc_lc)
                         if not gp_tags or gp_tags[-1] != ptag:
                             gp_tags.append(ptag)
+                    arc_point_tags_local.extend(gp_tags)
                     for i in range(len(gp_tags) - 1):
                         seg = _geo_seg(gp_tags[i], gp_tags[i + 1])
-                        arc_curve_tags.append(abs(int(seg)))
-                    continue
+                        seg_abs = abs(int(seg))
+                        arc_curve_tags_local.append(seg_abs)
+                else:
+                    # Backward-compatible fallback: endpoint IDs in topo_nodes.
+                    p0_xy = node_xy.get(arc.node0)
+                    p1_xy = node_xy.get(arc.node1)
+                    if p0_xy is None or p1_xy is None:
+                        continue
+                    gp0 = _geo_pt(p0_xy[0], p0_xy[1], arc_lc)
+                    gp1 = _geo_pt(p1_xy[0], p1_xy[1], arc_lc)
+                    arc_point_tags_local.extend([gp0, gp1])
+                    arc_curve_tags_local.append(abs(int(_geo_seg(gp0, gp1))))
 
-                # Backward-compatible fallback: endpoint IDs in topo_nodes.
-                p0_xy = node_xy.get(arc.node0)
-                p1_xy = node_xy.get(arc.node1)
-                if p0_xy is None or p1_xy is None:
-                    continue
-                gp0 = _geo_pt(p0_xy[0], p0_xy[1], arc_lc)
-                gp1 = _geo_pt(p1_xy[0], p1_xy[1], arc_lc)
-                arc_curve_tags.append(abs(int(_geo_seg(gp0, gp1))))
+                mode_local = _arc_mode_for(arc)
+                if mode_local == "hard_embed":
+                    arc_hard_curve_tags.extend(arc_curve_tags_local)
+                elif mode_local == "soft_size_hint":
+                    size_factor_local = _arc_soft_size_factor_for(arc)
+                    dist_factor_local = _arc_soft_dist_factor_for(arc)
+                    key = (round(float(size_factor_local), 6), round(float(dist_factor_local), 6))
+                    group = arc_soft_groups.setdefault(key, {"curves": [], "points": []})
+                    group["curves"].extend(arc_curve_tags_local)
+                    group["points"].extend(arc_point_tags_local)
 
-            if arc_curve_tags:
-                arc_curve_tags = sorted({int(tag) for tag in arc_curve_tags if int(tag) > 0})
+            if arc_hard_curve_tags:
+                arc_curve_tags = sorted({int(tag) for tag in arc_hard_curve_tags if int(tag) > 0})
                 gmsh.model.geo.synchronize()
                 for surf in surface_tags:
                     try:
@@ -2300,7 +3583,7 @@ class GmshBackend(MeshingBackend):
 
         gmsh.model.geo.synchronize()
 
-        if constraint_point_lists:
+        if constraint_point_lists or arc_soft_groups:
             all_fields: List[int] = list(base_surface_fields)
             max_region_size = max(max(float(sz), 1.0e-9) for (_, _, sz) in surface_meta)
             for pt_list, cst_size in zip(constraint_point_lists, constraint_target_sizes):
@@ -2320,6 +3603,36 @@ class GmshBackend(MeshingBackend):
                 gmsh.model.mesh.field.setNumbers(f_restrict, "SurfacesList", [int(s) for s in surface_tags])
                 all_fields.append(f_restrict)
 
+            if arc_soft_groups:
+                min_region_size = max(min(float(sz) for (_, _, sz) in surface_meta), 1.0e-9)
+                for (size_factor_local, dist_factor_local), group in arc_soft_groups.items():
+                    arc_curves = sorted({int(t) for t in group.get("curves", []) if int(t) > 0})
+                    arc_pts = sorted({int(t) for t in group.get("points", []) if int(t) > 0})
+                    if not arc_curves and not arc_pts:
+                        continue
+
+                    arc_size = max(mesh_size_min, min_region_size * float(size_factor_local))
+                    arc_dist = max(arc_size, float(dist_factor_local) * arc_size)
+
+                    f_dist = gmsh.model.mesh.field.add("Distance")
+                    if arc_curves:
+                        gmsh.model.mesh.field.setNumbers(f_dist, "CurvesList", arc_curves)
+                    if arc_pts:
+                        gmsh.model.mesh.field.setNumbers(f_dist, "PointsList", arc_pts)
+
+                    f_thresh = gmsh.model.mesh.field.add("Threshold")
+                    gmsh.model.mesh.field.setNumber(f_thresh, "InField", float(f_dist))
+                    gmsh.model.mesh.field.setNumber(f_thresh, "SizeMin", float(arc_size))
+                    gmsh.model.mesh.field.setNumber(f_thresh, "SizeMax", float(max_region_size))
+                    gmsh.model.mesh.field.setNumber(f_thresh, "DistMin", 0.0)
+                    gmsh.model.mesh.field.setNumber(f_thresh, "DistMax", float(arc_dist))
+                    gmsh.model.mesh.field.setNumber(f_thresh, "StopAtDistMax", 1.0)
+
+                    f_restrict = gmsh.model.mesh.field.add("Restrict")
+                    gmsh.model.mesh.field.setNumber(f_restrict, "InField", float(f_thresh))
+                    gmsh.model.mesh.field.setNumbers(f_restrict, "SurfacesList", [int(s) for s in surface_tags])
+                    all_fields.append(f_restrict)
+
             if len(all_fields) == 1:
                 bg_field = all_fields[0]
             else:
@@ -2327,7 +3640,6 @@ class GmshBackend(MeshingBackend):
                 gmsh.model.mesh.field.setNumbers(bg_field, "FieldsList", [int(fid) for fid in all_fields])
 
             gmsh.model.mesh.field.setAsBackgroundMesh(int(bg_field))
-            gmsh.option.setNumber("Mesh.MeshSizeFromPoints", 1.0)
             gmsh.option.setNumber("Mesh.MeshSizeFromCurvature", 0.0)
             gmsh.option.setNumber("Mesh.MeshSizeExtendFromBoundary", 0.0)
 
@@ -2389,7 +3701,7 @@ class GmshBackend(MeshingBackend):
                     gmsh.model.mesh.setAlgorithm(2, surf, quad_algo)
                 except Exception:
                     gmsh.option.setNumber("Mesh.Algorithm", float(quad_algo))
-            elif ctype == "quadrilateral":
+            elif ctype in {"quadrilateral", "channel_generator"}:
                 # Unstructured quads via Blossom recombination.
                 if region is not None and region.edge_lengths and len(lines) == 4 and len(region.edge_lengths) == 4:
                     try:
@@ -2446,6 +3758,9 @@ class GmshBackend(MeshingBackend):
         gmsh.option.setNumber("Mesh.OptimizeNetgen", 1.0 if optimize_netgen else 0.0)
         gmsh.option.setNumber("Mesh.AlgorithmSwitchOnFailure", 1.0 if algorithm_switch_on_failure else 0.0)
         gmsh.option.setNumber("Mesh.RandomFactor", max(0.0, float(random_factor)))
+        gmsh.option.setNumber("Mesh.MeshSizeMin", float(mesh_size_min))
+        gmsh.option.setNumber("Mesh.ToleranceEdgeLength", float(tolerance_edge_length))
+        gmsh.option.setNumber("Mesh.MeshSizeFromPoints", 1.0 if mesh_size_from_points else 0.0)
 
         # ---- 6. Generate -----------------------------------------------
         gmsh.model.mesh.generate(2)
@@ -2540,9 +3855,14 @@ def conceptual_from_qgis_layers(
 
         Expected fields (optional unless noted):
         - nodes: node_id
-        - arcs: arc_id
+                - arcs: arc_id
             - breakline is read from arc geometry vertices (preferred)
             - node0/node1 are optional fallback endpoints
+            - optional channel metadata: region_id, arc_role
+                        - optional per-arc controls:
+                            use_global_arc_ctrl (0/1), arc_mode_override
+                            (hard_embed|soft_size_hint|disabled),
+                            arc_soft_size_override, arc_soft_dist_override
     - regions (required geometry): region_id, target_size, cell_type
     - constraints: constraint_id, target_size, cell_type
     - quad_edges: region_id, edge_id, target_size, n_layers, first_height, growth_rate
@@ -2569,6 +3889,21 @@ def conceptual_from_qgis_layers(
             auto_id += 1
 
     if arcs_layer is not None:
+        def _as_bool(v, default: bool) -> bool:
+            if v in (None, ""):
+                return bool(default)
+            if isinstance(v, bool):
+                return bool(v)
+            txt = str(v).strip().lower()
+            if txt in {"1", "true", "yes", "on", "y"}:
+                return True
+            if txt in {"0", "false", "no", "off", "n"}:
+                return False
+            try:
+                return float(v) != 0.0
+            except Exception:
+                return bool(default)
+
         arc_fields = set(arcs_layer.fields().names())
         auto_id = 0
         for ft in arcs_layer.getFeatures():
@@ -2591,12 +3926,44 @@ def conceptual_from_qgis_layers(
             a_id = _as_int(ft["arc_id"], auto_id) if "arc_id" in arc_fields else auto_id
             n0 = _as_int(ft["node0"], -1) if "node0" in arc_fields else -1
             n1 = _as_int(ft["node1"], -1) if "node1" in arc_fields else -1
+            region_id = _as_int(ft["region_id"], -1) if "region_id" in arc_fields else -1
+            arc_role = None
+            if "arc_role" in arc_fields:
+                role_txt = str(ft["arc_role"] or "").strip().lower()
+                if role_txt in {"centerline", "left_bank", "right_bank", "breakline"}:
+                    arc_role = role_txt
+            use_global_arc_ctrl = _as_bool(ft["use_global_arc_ctrl"], True) if "use_global_arc_ctrl" in arc_fields else True
+
+            arc_mode_override = None
+            if "arc_mode_override" in arc_fields:
+                mode_txt = str(ft["arc_mode_override"] or "").strip().lower()
+                if mode_txt in {"hard_embed", "soft_size_hint", "disabled"}:
+                    arc_mode_override = mode_txt
+
+            arc_soft_size_override = None
+            if "arc_soft_size_override" in arc_fields:
+                cand = _as_float(ft["arc_soft_size_override"], -1.0)
+                if cand > 0.0:
+                    arc_soft_size_override = float(cand)
+
+            arc_soft_dist_override = None
+            if "arc_soft_dist_override" in arc_fields:
+                cand = _as_float(ft["arc_soft_dist_override"], -1.0)
+                if cand > 0.0:
+                    arc_soft_dist_override = float(cand)
+
             arcs.append(
                 ConceptualArc(
                     arc_id=a_id,
                     node0=n0,
                     node1=n1,
+                    region_id=region_id,
+                    arc_role=arc_role,
                     points_xy=pts if len(pts) >= 2 else None,
+                    use_global_arc_ctrl=use_global_arc_ctrl,
+                    arc_mode_override=arc_mode_override,
+                    arc_soft_size_override=arc_soft_size_override,
+                    arc_soft_dist_override=arc_soft_dist_override,
                 )
             )
             auto_id += 1
@@ -2847,6 +4214,28 @@ class TQMeshBackend(MeshingBackend):
     def _quad_controls_for_region(model: ConceptualModel, region: ConceptualRegion) -> Optional[Tuple[List[Tuple[float, float]], List[QuadEdgeControl]]]:
         return _quad_controls_for_region(model, region)
 
+    def _opt_bool(self, name: str, default: bool) -> bool:
+        value = self._options.get(name)
+        if value is None:
+            return bool(default)
+        if isinstance(value, bool):
+            return value
+        text = str(value).strip().lower()
+        if text in {"1", "true", "yes", "on"}:
+            return True
+        if text in {"0", "false", "no", "off"}:
+            return False
+        return bool(default)
+
+    @staticmethod
+    def _is_ccw(ring: List[Tuple[float, float]]) -> bool:
+        """Return True if the ring has counter-clockwise winding (positive area)."""
+        area = _polygon_area_xy(
+            np.asarray([p[0] for p in ring]),
+            np.asarray([p[1] for p in ring]),
+        )
+        return area > 0.0
+
     def generate(self, model: ConceptualModel) -> MeshResult:
         try:
             import hydra_tqmesh as _tq
@@ -2860,6 +4249,13 @@ class TQMeshBackend(MeshingBackend):
             raise ValueError("TQMeshBackend: no conceptual regions provided.")
 
         quality_cfg = self._quality_config()
+        debug_dump_dir = str(
+            self._options.get(
+                "tqmesh_debug_dump_dir",
+                os.environ.get("BACKWATER_TQMESH_DEBUG_DUMP_DIR", ""),
+            )
+            or ""
+        ).strip()
 
         # ---- Process each region independently then merge results ----------
         # For the common single-region case this is straightforward.
@@ -2892,8 +4288,33 @@ class TQMeshBackend(MeshingBackend):
                 continue
 
             target_size = max(float(region.default_size), 1e-10)
+            ring_initial = list(ring)
+            boundary_split_max_length = _as_float(
+                self._options.get("tqmesh_boundary_split_max_length"),
+                _env_float("BACKWATER_TQMESH_BOUNDARY_SPLIT_MAX_LENGTH", 0.0),
+            )
+            if (not np.isfinite(boundary_split_max_length)) or boundary_split_max_length <= 0.0:
+                boundary_split_max_length = 0.0
             region_constraints = _constraints_for_region(model, ring)
             region_exclusions = _region_exclusion_zones(model, region, ring)
+            fixed_edge_lines = _breakline_fixed_edges_for_region(model, region, ring)
+            fixed_edge_lines_raw = [list(line) for line in fixed_edge_lines]
+            if fixed_edge_lines:
+                ring, fixed_edge_lines = _snap_and_split_boundary_for_breaklines(
+                    ring,
+                    fixed_edge_lines,
+                    vertex_snap_tol=0.1,
+                )
+            ring_after_breakline_preprocess = list(ring)
+            fixed_edge_lines_after_breakline_preprocess = [list(line) for line in fixed_edge_lines]
+            if boundary_split_max_length > 0.0 and fixed_edge_lines:
+                split_lines: List[List[Tuple[float, float]]] = []
+                for line in fixed_edge_lines:
+                    densified = _split_polyline_max_segment_length(line, boundary_split_max_length)
+                    if len(densified) >= 2:
+                        split_lines.append(densified)
+                fixed_edge_lines = split_lines
+            fixed_edge_lines_after_densify = [list(line) for line in fixed_edge_lines]
 
             quad_controls = None
             quad_boundary = None
@@ -2902,13 +4323,97 @@ class TQMeshBackend(MeshingBackend):
                 if quad_setup is not None:
                     quad_boundary, quad_controls = quad_setup
 
+            full_quad_align = self._opt_bool(
+                "tqmesh_quad_full_region_flow_align",
+                _env_bool("BACKWATER_TQMESH_QUAD_FULL_REGION_FLOW_ALIGN", True),
+            )
+            quad_full_region_max_cells = _as_int(
+                self._options.get("tqmesh_quad_full_region_max_cells"),
+                _as_int(os.environ.get("BACKWATER_TQMESH_QUAD_FULL_REGION_MAX_CELLS", 250000), 250000),
+            )
+            if quad_full_region_max_cells <= 0:
+                quad_full_region_max_cells = 0
+            if quad_controls is not None and full_quad_align:
+                # Build a full-region flow-aligned quad block using transfinite
+                # interpolation and quad-edge spacing/layer controls.
+                block = _structured_quad_region_mesh(
+                    region,
+                    quad_controls,
+                    max_cells=quad_full_region_max_cells,
+                )
+                if block is not None:
+                    vx, vy, tris, face_offsets, face_nodes, _target_sizes = block
+                    offset = len(all_vx)
+                    all_vx.extend(vx.tolist())
+                    all_vy.extend(vy.tolist())
+
+                    shifted_faces = np.asarray(face_nodes, dtype=np.int32) + int(offset)
+                    for ci in range(int(face_offsets.size - 1)):
+                        s = int(face_offsets[ci])
+                        e = int(face_offsets[ci + 1])
+                        poly = shifted_faces[s:e].tolist()
+                        if len(poly) == 4:
+                            all_quads.extend(poly)
+                            all_ctype.append("quadrilateral")
+                            all_rid.append(region.region_id)
+                            all_size.append(target_size)
+                        elif len(poly) == 3:
+                            all_tris.extend(poly)
+                            all_ctype.append("triangular")
+                            all_rid.append(region.region_id)
+                            all_size.append(target_size)
+                    continue
+
             # Exterior boundary — TQMesh expects CCW; ensure correct winding
             ext_verts = list(quad_boundary) if quad_boundary is not None else ring
+            ext_verts_raw_count = len(ext_verts)
+            protected_boundary_points = _boundary_contact_vertices(
+                ext_verts,
+                fixed_edge_lines_after_breakline_preprocess,
+                tol=max(1.0e-6, 1.0e-3 * float(target_size)),
+            )
             if quad_controls is None:
-                simp_factor = max(_env_float("BACKWATER_TQMESH_BOUNDARY_SIMPLIFY_FACTOR", 0.35), 0.0)
-                simp_tol = float(target_size) * simp_factor
-                simp_max = max(8, int(round(_env_float("BACKWATER_TQMESH_BOUNDARY_MAX_VERTS", 64.0))))
-                ext_verts = _simplify_closed_ring(ext_verts, tol=simp_tol, max_vertices=simp_max)
+                # Preserve boundary coincidence points used by fixed edges.
+                if not protected_boundary_points:
+                    simp_factor = max(_env_float("BACKWATER_TQMESH_BOUNDARY_SIMPLIFY_FACTOR", 0.35), 0.0)
+                    simp_tol = float(target_size) * simp_factor
+                    simp_max = max(8, int(round(_env_float("BACKWATER_TQMESH_BOUNDARY_MAX_VERTS", 64.0))))
+                    ext_verts = _simplify_closed_ring(ext_verts, tol=simp_tol, max_vertices=simp_max)
+            ext_verts = _sanitize_closed_ring(
+                ext_verts,
+                length_tol=max(1.0e-6, 1.0e-3 * float(target_size)),
+                collinear_tol=max(1.0e-6, 1.5e-3 * float(target_size)),
+                protect_points=protected_boundary_points,
+                protect_tol=max(1.0e-6, 1.0e-3 * float(target_size)),
+            )
+            ext_verts_post_sanitize_count = len(ext_verts)
+            ext_verts = _stitch_boundary_microchains(
+                ext_verts,
+                target_size=float(target_size),
+                protect_points=protected_boundary_points,
+                protect_tol=max(1.0e-6, 1.0e-3 * float(target_size)),
+            )
+            ext_verts_post_stitch_count = len(ext_verts)
+            resample_applied = False
+            resample_max_seg = 0.0
+            if quad_controls is None and _env_bool("BACKWATER_TQMESH_BOUNDARY_RESAMPLE", False):
+                seg_lens = []
+                for i in range(len(ext_verts)):
+                    a = ext_verts[i]
+                    b = ext_verts[(i + 1) % len(ext_verts)]
+                    seg_lens.append(float(np.hypot(b[0] - a[0], b[1] - a[1])))
+                max_seg = max(seg_lens) if seg_lens else 0.0
+                resample_max_seg = float(max_seg)
+                # Resample when long segments could destabilize front closure.
+                if max_seg > 4.0 * float(target_size):
+                    ext_verts = _resample_closed_ring(ext_verts, target_step=max(0.75 * float(target_size), 1.0e-6))
+                    ext_verts = _sanitize_closed_ring(
+                        ext_verts,
+                        length_tol=max(1.0e-6, 1.0e-3 * float(target_size)),
+                        collinear_tol=1.0e-12,
+                    )
+                    resample_applied = True
+            ext_verts_post_resample_count = len(ext_verts)
             if quad_controls is None and not self._is_ccw(ext_verts):
                 ext_verts = list(reversed(ext_verts))
             ext_is_ccw = self._is_ccw(ext_verts)
@@ -2924,6 +4429,12 @@ class TQMeshBackend(MeshingBackend):
                 hring = list(ering)
                 if hring and hring[0] == hring[-1]:
                     hring = hring[:-1]
+                hring = _sanitize_closed_ring(
+                    hring,
+                    length_tol=max(1.0e-6, 1.0e-3 * float(target_size)),
+                    collinear_tol=max(1.0e-6, 1.5e-3 * float(target_size)),
+                )
+                hring = _stitch_boundary_microchains(hring, target_size=float(target_size))
                 if len(hring) < 3:
                     continue
                 if self._is_ccw(hring) == ext_is_ccw:
@@ -2971,85 +4482,440 @@ class TQMeshBackend(MeshingBackend):
                 int_colors=int_colors,
                 constraint_verts=[[list(v) for v in cverts] for cverts in constraint_verts_list],
                 constraint_sizes=constraint_sizes_list,
+                fixed_edges=[[[float(x), float(y)] for (x, y) in line] for line in fixed_edge_lines],
                 target_size=target_size,
             )
+            breakline_fixed_edges_enabled = self._opt_bool(
+                "tqmesh_breakline_fixed_edges",
+                _env_bool("BACKWATER_TQMESH_BREAKLINE_FIXED_EDGES", True),
+            )
+            breakline_fixed_edges_strict = self._opt_bool(
+                "tqmesh_breakline_fixed_edges_strict",
+                _env_bool("BACKWATER_TQMESH_BREAKLINE_FIXED_EDGES_STRICT", False),
+            )
+            strict_fixed_edge_region = bool(
+                breakline_fixed_edges_enabled
+                and breakline_fixed_edges_strict
+                and len(base_args["fixed_edges"]) > 0
+            )
+            if not breakline_fixed_edges_enabled:
+                base_args["fixed_edges"] = []
+
+            boundary_split_for_call = float(boundary_split_max_length)
+
+            fixed_edge_variants: List[Tuple[str, List[List[List[float]]]]] = []
+            if len(base_args["fixed_edges"]) > 0:
+                fixed_edge_variants.append(("with-fixed-edges", base_args["fixed_edges"]))
+                if not breakline_fixed_edges_strict:
+                    fixed_edge_variants.append(("no-fixed-edges", []))
+            else:
+                fixed_edge_variants.append(("no-fixed-edges", []))
+
             want_quads = ctype in ("quadrilateral", "cartesian")
+            has_fixed_edges = len(base_args["fixed_edges"]) > 0
+            requested_smooth = 0 if has_fixed_edges else 3
+            tri_only_smooth = 0 if has_fixed_edges else 1
 
             attempts = [
-                ("requested", active_quad_layers, want_quads, 3),
+                ("requested", active_quad_layers, want_quads, requested_smooth),
             ]
             if active_quad_layers:
-                attempts.append(("no-quad-layers", [], want_quads, 3))
+                attempts.append(("no-quad-layers", [], want_quads, requested_smooth))
             if want_quads:
-                attempts.append(("triangles-only", [], False, 1))
+                attempts.append(("triangles-only", [], False, tri_only_smooth))
             attempts.append(("minimal", [], False, 0))
 
             result = None
             errors: List[str] = []
+            debug_attempts: List[Dict[str, object]] = []
             seen_cfg = set()
             used_label = "requested"
             used_quality: Optional[Dict[str, float]] = None
             best_nonpassing = None
             best_nonpassing_score = -float("inf")
-            for label, quad_layers_try, tri_to_quad_try, n_smooth_try in attempts:
-                for size_scale in quality_cfg.size_scales:
-                    target_try = max(target_size * max(float(size_scale), 1e-6), 1e-10)
-                    csz_try = [max(float(cs) * max(float(size_scale), 1e-6), 1e-10) for cs in constraint_sizes_list]
-                    for ds in quality_cfg.smooth_increments:
-                        smooth_try = max(0, int(n_smooth_try) + int(ds))
-                        cfg_key = (
-                            label,
-                            tuple(tuple(q) for q in quad_layers_try),
-                            bool(tri_to_quad_try),
-                            int(smooth_try),
-                            float(round(target_try, 12)),
-                        )
-                        if cfg_key in seen_cfg:
-                            continue
-                        seen_cfg.add(cfg_key)
-
-                        try:
-                            candidate = _tq.generate_triangular_mesh(
-                                ext_verts=base_args["ext_verts"],
-                                ext_colors=base_args["ext_colors"],
-                                int_boundaries=base_args["int_boundaries"],
-                                int_colors=base_args["int_colors"],
-                                constraint_verts=base_args["constraint_verts"],
-                                constraint_sizes=csz_try,
-                                target_size=target_try,
-                                quad_layers=quad_layers_try,
-                                tri_to_quad=tri_to_quad_try,
-                                n_smooth=smooth_try,
+            microchain_retry_done = set()
+            for fixed_label, fixed_edges_try in fixed_edge_variants:
+                for label, quad_layers_try, tri_to_quad_try, n_smooth_try in attempts:
+                    for size_scale in quality_cfg.size_scales:
+                        target_try = max(target_size * max(float(size_scale), 1e-6), 1e-10)
+                        csz_try = [max(float(cs) * max(float(size_scale), 1e-6), 1e-10) for cs in constraint_sizes_list]
+                        for ds in quality_cfg.smooth_increments:
+                            smooth_try = max(0, int(n_smooth_try) + int(ds))
+                            cfg_key = (
+                                fixed_label,
+                                label,
+                                tuple(tuple(q) for q in quad_layers_try),
+                                bool(tri_to_quad_try),
+                                int(smooth_try),
+                                float(round(target_try, 12)),
                             )
-                        except Exception as exc:
+                            if cfg_key in seen_cfg:
+                                continue
+                            seen_cfg.add(cfg_key)
+
+                            try:
+                                candidate = _tq.generate_triangular_mesh(
+                                    ext_verts=base_args["ext_verts"],
+                                    ext_colors=base_args["ext_colors"],
+                                    int_boundaries=base_args["int_boundaries"],
+                                    int_colors=base_args["int_colors"],
+                                    constraint_verts=base_args["constraint_verts"],
+                                    constraint_sizes=csz_try,
+                                    fixed_edges=fixed_edges_try,
+                                    target_size=target_try,
+                                    quad_layers=quad_layers_try,
+                                    tri_to_quad=tri_to_quad_try,
+                                    n_smooth=smooth_try,
+                                    boundary_split_max_length=float(boundary_split_for_call),
+                                )
+                            except Exception as exc:
+                                exc_txt = str(exc)
+                                debug_attempts.append(
+                                    {
+                                        "fixed_variant": str(fixed_label),
+                                        "attempt_label": str(label),
+                                        "target_size": float(target_try),
+                                        "smooth": int(smooth_try),
+                                        "tri_to_quad": bool(tri_to_quad_try),
+                                        "quad_layers_count": int(len(quad_layers_try)),
+                                        "fixed_edges_count": int(len(fixed_edges_try)),
+                                        "fixed_edge_vertices": int(sum(len(line) for line in fixed_edges_try)),
+                                        "status": "exception",
+                                        "error": exc_txt,
+                                    }
+                                )
+
+                                # Targeted strict-mode rescue path for known boundary
+                                # microchain completeness failures in region 2.
+                                can_microchain_retry = (
+                                    int(region.region_id) == 2
+                                    and str(fixed_label) == "with-fixed-edges"
+                                    and len(fixed_edges_try) > 0
+                                    and "invalid_boundary_edge_samples" in exc_txt
+                                    and cfg_key not in microchain_retry_done
+                                )
+                                if can_microchain_retry:
+                                    microchain_retry_done.add(cfg_key)
+                                    focus_points = _parse_invalid_boundary_edge_sample_points(exc_txt)
+                                    ext_before = [(float(v[0]), float(v[1])) for v in base_args["ext_verts"]]
+                                    ext_retry = _collapse_boundary_microchains_near_points(
+                                        ext_before,
+                                        focus_points,
+                                        target_size=float(target_try),
+                                        protect_points=protected_boundary_points,
+                                        protect_tol=max(1.0e-6, 1.0e-3 * float(target_try)),
+                                    )
+
+                                    candidate_rings: List[Tuple[str, List[Tuple[float, float]]]] = []
+                                    ring_seen = set()
+
+                                    def _push_candidate(tag: str, rr: List[Tuple[float, float]]) -> None:
+                                        if len(rr) < 3:
+                                            return
+                                        key = _ring_key(rr, ndigits=6)
+                                        if key in ring_seen:
+                                            return
+                                        ring_seen.add(key)
+                                        candidate_rings.append((tag, rr))
+
+                                    if len(ext_retry) >= 3 and ext_retry != ext_before:
+                                        _push_candidate("microchain-merge", ext_retry)
+                                    else:
+                                        debug_attempts.append(
+                                            {
+                                                "fixed_variant": str(fixed_label),
+                                                "attempt_label": f"{label}/microchain-merge",
+                                                "target_size": float(target_try),
+                                                "smooth": int(smooth_try),
+                                                "tri_to_quad": bool(tri_to_quad_try),
+                                                "quad_layers_count": int(len(quad_layers_try)),
+                                                "fixed_edges_count": int(len(fixed_edges_try)),
+                                                "fixed_edge_vertices": int(sum(len(line) for line in fixed_edges_try)),
+                                                "status": "skipped",
+                                                "reason": "microchain-no-geometry-change",
+                                                "focus_points": [[float(x), float(y)] for x, y in focus_points],
+                                                "ext_vertices_before": int(len(base_args["ext_verts"])),
+                                                "ext_vertices_after": int(len(ext_retry)),
+                                            }
+                                        )
+
+                                    focus_insert = _insert_focus_points_on_ring_segments(
+                                        ext_before,
+                                        focus_points,
+                                        max_dist=max(1.5 * float(target_try), 12.0),
+                                    )
+                                    if len(focus_insert) >= 3 and focus_insert != ext_before:
+                                        _push_candidate("focus-split", focus_insert)
+                                    else:
+                                        debug_attempts.append(
+                                            {
+                                                "fixed_variant": str(fixed_label),
+                                                "attempt_label": f"{label}/focus-split",
+                                                "target_size": float(target_try),
+                                                "smooth": int(smooth_try),
+                                                "tri_to_quad": bool(tri_to_quad_try),
+                                                "quad_layers_count": int(len(quad_layers_try)),
+                                                "fixed_edges_count": int(len(fixed_edges_try)),
+                                                "fixed_edge_vertices": int(sum(len(line) for line in fixed_edges_try)),
+                                                "status": "skipped",
+                                                "reason": "focus-split-no-geometry-change",
+                                                "focus_points": [[float(x), float(y)] for x, y in focus_points],
+                                                "ext_vertices_before": int(len(base_args["ext_verts"])),
+                                                "ext_vertices_after": int(len(focus_insert)),
+                                            }
+                                        )
+
+                                    jitter_tries = _as_int(
+                                        self._options.get("tqmesh_strict_local_jitter_tries"),
+                                        _as_int(os.environ.get("BACKWATER_TQMESH_STRICT_LOCAL_JITTER_TRIES", 3), 3),
+                                    )
+                                    jitter_tries = max(0, int(jitter_tries))
+                                    jitter_frac = _as_float(
+                                        self._options.get("tqmesh_strict_local_jitter_frac"),
+                                        _env_float("BACKWATER_TQMESH_STRICT_LOCAL_JITTER_FRAC", 0.02),
+                                    )
+                                    jitter_frac = min(max(float(jitter_frac), 1.0e-5), 0.2)
+                                    for ji in range(jitter_tries):
+                                        js = max(1.0e-4, float(target_try) * jitter_frac * float(ji + 1))
+                                        jitter_base = focus_insert if len(focus_insert) >= 3 else ext_before
+                                        ext_j = _jitter_boundary_vertices_near_points(
+                                            jitter_base,
+                                            focus_points,
+                                            jitter_scale=js,
+                                            variant_index=ji,
+                                            protect_points=protected_boundary_points,
+                                            protect_tol=max(1.0e-6, 1.0e-3 * float(target_try)),
+                                        )
+                                        ext_j = _collapse_boundary_microchains_near_points(
+                                            ext_j,
+                                            focus_points,
+                                            target_size=float(target_try),
+                                            protect_points=protected_boundary_points,
+                                            protect_tol=max(1.0e-6, 1.0e-3 * float(target_try)),
+                                        )
+                                        if len(ext_j) >= 3 and ext_j != ext_before:
+                                            _push_candidate(f"local-jitter-{ji + 1}", ext_j)
+                                        else:
+                                            debug_attempts.append(
+                                                {
+                                                    "fixed_variant": str(fixed_label),
+                                                    "attempt_label": f"{label}/local-jitter-{ji + 1}",
+                                                    "target_size": float(target_try),
+                                                    "smooth": int(smooth_try),
+                                                    "tri_to_quad": bool(tri_to_quad_try),
+                                                    "quad_layers_count": int(len(quad_layers_try)),
+                                                    "fixed_edges_count": int(len(fixed_edges_try)),
+                                                    "fixed_edge_vertices": int(sum(len(line) for line in fixed_edges_try)),
+                                                    "status": "skipped",
+                                                    "reason": "jitter-no-geometry-change",
+                                                    "jitter_scale": float(js),
+                                                    "focus_points": [[float(x), float(y)] for x, y in focus_points],
+                                                    "ext_vertices_before": int(len(base_args["ext_verts"])),
+                                                    "ext_vertices_after": int(len(ext_j)),
+                                                }
+                                            )
+
+                                    for variant_tag, ext_variant in candidate_rings:
+                                        try:
+                                            candidate = _tq.generate_triangular_mesh(
+                                                ext_verts=[[float(v[0]), float(v[1])] for v in ext_variant],
+                                                ext_colors=[1] * int(len(ext_variant)),
+                                                int_boundaries=base_args["int_boundaries"],
+                                                int_colors=base_args["int_colors"],
+                                                constraint_verts=base_args["constraint_verts"],
+                                                constraint_sizes=csz_try,
+                                                fixed_edges=fixed_edges_try,
+                                                target_size=target_try,
+                                                quad_layers=quad_layers_try,
+                                                tri_to_quad=tri_to_quad_try,
+                                                n_smooth=smooth_try,
+                                                boundary_split_max_length=float(boundary_split_for_call),
+                                            )
+                                        except Exception as exc2:
+                                            debug_attempts.append(
+                                                {
+                                                    "fixed_variant": str(fixed_label),
+                                                    "attempt_label": f"{label}/{variant_tag}",
+                                                    "target_size": float(target_try),
+                                                    "smooth": int(smooth_try),
+                                                    "tri_to_quad": bool(tri_to_quad_try),
+                                                    "quad_layers_count": int(len(quad_layers_try)),
+                                                    "fixed_edges_count": int(len(fixed_edges_try)),
+                                                    "fixed_edge_vertices": int(sum(len(line) for line in fixed_edges_try)),
+                                                    "status": "exception",
+                                                    "error": str(exc2),
+                                                    "focus_points": [[float(x), float(y)] for x, y in focus_points],
+                                                    "ext_vertices_before": int(len(base_args["ext_verts"])),
+                                                    "ext_vertices_after": int(len(ext_variant)),
+                                                }
+                                            )
+                                            errors.append(
+                                                f"{fixed_label}/{label}/{variant_tag} (size={target_try:.4g}, smooth={smooth_try}): {exc2}"
+                                            )
+                                            continue
+
+                                        cand_vx = np.asarray(candidate["verts_x"], dtype=np.float64)
+                                        cand_vy = np.asarray(candidate["verts_y"], dtype=np.float64)
+                                        cand_tris = np.asarray(candidate["triangles"], dtype=np.int32)
+                                        cand_quads = np.asarray(candidate["quads"], dtype=np.int32)
+                                        stats = _mesh_quality_stats(cand_vx, cand_vy, cand_tris, cand_quads)
+
+                                        if _quality_passes(stats, quality_cfg):
+                                            debug_attempts.append(
+                                                {
+                                                    "fixed_variant": str(fixed_label),
+                                                    "attempt_label": f"{label}/{variant_tag}",
+                                                    "target_size": float(target_try),
+                                                    "smooth": int(smooth_try),
+                                                    "tri_to_quad": bool(tri_to_quad_try),
+                                                    "quad_layers_count": int(len(quad_layers_try)),
+                                                    "fixed_edges_count": int(len(fixed_edges_try)),
+                                                    "fixed_edge_vertices": int(sum(len(line) for line in fixed_edges_try)),
+                                                    "status": "quality-pass",
+                                                    "n_vertices": int(cand_vx.size),
+                                                    "n_triangles": int(cand_tris.shape[0]) if cand_tris.ndim == 2 else 0,
+                                                    "n_quads": int(cand_quads.shape[0]) if cand_quads.ndim == 2 else 0,
+                                                    "quality": {
+                                                        "min_angle_deg": float(stats["min_angle_deg"]),
+                                                        "max_aspect_ratio": float(stats["max_aspect_ratio"]),
+                                                        "min_area": float(stats["min_area"]),
+                                                        "bbox_area": float(stats["bbox_area"]),
+                                                    },
+                                                    "focus_points": [[float(x), float(y)] for x, y in focus_points],
+                                                    "ext_vertices_before": int(len(base_args["ext_verts"])),
+                                                    "ext_vertices_after": int(len(ext_variant)),
+                                                }
+                                            )
+                                            result = candidate
+                                            used_label = (
+                                                f"{fixed_label}/{label}/{variant_tag} "
+                                                f"(size={target_try:.4g}, smooth={smooth_try})"
+                                            )
+                                            used_quality = stats
+                                            break
+
+                                        score = _quality_score(stats, quality_cfg)
+                                        if score > best_nonpassing_score:
+                                            best_nonpassing_score = score
+                                            best_nonpassing = (
+                                                candidate,
+                                                f"{fixed_label}/{label}/{variant_tag}",
+                                                target_try,
+                                                smooth_try,
+                                                stats,
+                                            )
+                                        debug_attempts.append(
+                                            {
+                                                "fixed_variant": str(fixed_label),
+                                                "attempt_label": f"{label}/{variant_tag}",
+                                                "target_size": float(target_try),
+                                                "smooth": int(smooth_try),
+                                                "tri_to_quad": bool(tri_to_quad_try),
+                                                "quad_layers_count": int(len(quad_layers_try)),
+                                                "fixed_edges_count": int(len(fixed_edges_try)),
+                                                "fixed_edge_vertices": int(sum(len(line) for line in fixed_edges_try)),
+                                                "status": "quality-fail",
+                                                "n_vertices": int(cand_vx.size),
+                                                "n_triangles": int(cand_tris.shape[0]) if cand_tris.ndim == 2 else 0,
+                                                "n_quads": int(cand_quads.shape[0]) if cand_quads.ndim == 2 else 0,
+                                                "quality": {
+                                                    "min_angle_deg": float(stats["min_angle_deg"]),
+                                                    "max_aspect_ratio": float(stats["max_aspect_ratio"]),
+                                                    "min_area": float(stats["min_area"]),
+                                                    "bbox_area": float(stats["bbox_area"]),
+                                                },
+                                                "focus_points": [[float(x), float(y)] for x, y in focus_points],
+                                                "ext_vertices_before": int(len(base_args["ext_verts"])),
+                                                "ext_vertices_after": int(len(ext_variant)),
+                                            }
+                                        )
+                                        errors.append(
+                                            "quality-fail "
+                                            f"{fixed_label}/{label}/{variant_tag} (size={target_try:.4g}, smooth={smooth_try}): "
+                                            f"min_angle={stats['min_angle_deg']:.2f}, "
+                                            f"max_aspect={stats['max_aspect_ratio']:.2f}, "
+                                            f"min_area={stats['min_area']:.3e}"
+                                        )
+
+                                    if result is not None:
+                                        break
+
+                                errors.append(
+                                    f"{fixed_label}/{label} (size={target_try:.4g}, smooth={smooth_try}): {exc_txt}"
+                                )
+                                if result is not None:
+                                    break
+                                continue
+
+                            cand_vx = np.asarray(candidate["verts_x"], dtype=np.float64)
+                            cand_vy = np.asarray(candidate["verts_y"], dtype=np.float64)
+                            cand_tris = np.asarray(candidate["triangles"], dtype=np.int32)
+                            cand_quads = np.asarray(candidate["quads"], dtype=np.int32)
+                            stats = _mesh_quality_stats(cand_vx, cand_vy, cand_tris, cand_quads)
+
+                            if _quality_passes(stats, quality_cfg):
+                                debug_attempts.append(
+                                    {
+                                        "fixed_variant": str(fixed_label),
+                                        "attempt_label": str(label),
+                                        "target_size": float(target_try),
+                                        "smooth": int(smooth_try),
+                                        "tri_to_quad": bool(tri_to_quad_try),
+                                        "quad_layers_count": int(len(quad_layers_try)),
+                                        "fixed_edges_count": int(len(fixed_edges_try)),
+                                        "fixed_edge_vertices": int(sum(len(line) for line in fixed_edges_try)),
+                                        "status": "quality-pass",
+                                        "n_vertices": int(cand_vx.size),
+                                        "n_triangles": int(cand_tris.shape[0]) if cand_tris.ndim == 2 else 0,
+                                        "n_quads": int(cand_quads.shape[0]) if cand_quads.ndim == 2 else 0,
+                                        "quality": {
+                                            "min_angle_deg": float(stats["min_angle_deg"]),
+                                            "max_aspect_ratio": float(stats["max_aspect_ratio"]),
+                                            "min_area": float(stats["min_area"]),
+                                            "bbox_area": float(stats["bbox_area"]),
+                                        },
+                                    }
+                                )
+                                result = candidate
+                                used_label = f"{fixed_label}/{label} (size={target_try:.4g}, smooth={smooth_try})"
+                                used_quality = stats
+                                break
+
+                            score = _quality_score(stats, quality_cfg)
+                            if score > best_nonpassing_score:
+                                best_nonpassing_score = score
+                                best_nonpassing = (candidate, f"{fixed_label}/{label}", target_try, smooth_try, stats)
+                            debug_attempts.append(
+                                {
+                                    "fixed_variant": str(fixed_label),
+                                    "attempt_label": str(label),
+                                    "target_size": float(target_try),
+                                    "smooth": int(smooth_try),
+                                    "tri_to_quad": bool(tri_to_quad_try),
+                                    "quad_layers_count": int(len(quad_layers_try)),
+                                    "fixed_edges_count": int(len(fixed_edges_try)),
+                                    "fixed_edge_vertices": int(sum(len(line) for line in fixed_edges_try)),
+                                    "status": "quality-fail",
+                                    "n_vertices": int(cand_vx.size),
+                                    "n_triangles": int(cand_tris.shape[0]) if cand_tris.ndim == 2 else 0,
+                                    "n_quads": int(cand_quads.shape[0]) if cand_quads.ndim == 2 else 0,
+                                    "quality": {
+                                        "min_angle_deg": float(stats["min_angle_deg"]),
+                                        "max_aspect_ratio": float(stats["max_aspect_ratio"]),
+                                        "min_area": float(stats["min_area"]),
+                                        "bbox_area": float(stats["bbox_area"]),
+                                    },
+                                }
+                            )
                             errors.append(
-                                f"{label} (size={target_try:.4g}, smooth={smooth_try}): {exc}"
+                                "quality-fail "
+                                f"{fixed_label}/{label} (size={target_try:.4g}, smooth={smooth_try}): "
+                                f"min_angle={stats['min_angle_deg']:.2f}, "
+                                f"max_aspect={stats['max_aspect_ratio']:.2f}, "
+                                f"min_area={stats['min_area']:.3e}"
                             )
-                            continue
-
-                        cand_vx = np.asarray(candidate["verts_x"], dtype=np.float64)
-                        cand_vy = np.asarray(candidate["verts_y"], dtype=np.float64)
-                        cand_tris = np.asarray(candidate["triangles"], dtype=np.int32)
-                        cand_quads = np.asarray(candidate["quads"], dtype=np.int32)
-                        stats = _mesh_quality_stats(cand_vx, cand_vy, cand_tris, cand_quads)
-
-                        if _quality_passes(stats, quality_cfg):
-                            result = candidate
-                            used_label = f"{label} (size={target_try:.4g}, smooth={smooth_try})"
-                            used_quality = stats
+                        if result is not None:
                             break
-
-                        score = _quality_score(stats, quality_cfg)
-                        if score > best_nonpassing_score:
-                            best_nonpassing_score = score
-                            best_nonpassing = (candidate, label, target_try, smooth_try, stats)
-                        errors.append(
-                            "quality-fail "
-                            f"{label} (size={target_try:.4g}, smooth={smooth_try}): "
-                            f"min_angle={stats['min_angle_deg']:.2f}, "
-                            f"max_aspect={stats['max_aspect_ratio']:.2f}, "
-                            f"min_area={stats['min_area']:.3e}"
-                        )
                     if result is not None:
                         break
                 if result is not None:
@@ -3071,9 +4937,90 @@ class TQMeshBackend(MeshingBackend):
                 )
 
             if result is None:
+                ext_vertex_count = len(base_args["ext_verts"])
+                ext_vertex_raw_count = int(ext_verts_raw_count)
+                ext_vertex_post_sanitize_count = int(ext_verts_post_sanitize_count)
+                ext_vertex_post_stitch_count = int(ext_verts_post_stitch_count)
+                ext_vertex_post_resample_count = int(ext_verts_post_resample_count)
+                ext_resample_applied = int(resample_applied)
+                ext_resample_max_seg = float(resample_max_seg)
+                hole_count = len(base_args["int_boundaries"])
+                hole_vertices = sum(len(hole) for hole in base_args["int_boundaries"])
+                constraint_count = len(base_args["constraint_verts"])
+                constraint_vertices = sum(len(cverts) for cverts in base_args["constraint_verts"])
+                fixed_edge_count = len(base_args["fixed_edges"])
+                fixed_edge_vertices = sum(len(line) for line in base_args["fixed_edges"])
+                quad_layer_count = len(active_quad_layers)
+                if debug_dump_dir:
+                    dump_path = os.path.join(
+                        debug_dump_dir,
+                        f"tqmesh_region_{int(region.region_id)}_failure.json",
+                    )
+                    _write_json_atomic(
+                        dump_path,
+                        {
+                            "region_id": int(region.region_id),
+                            "cell_type": str(ctype),
+                            "target_size": float(target_size),
+                            "boundary_split_max_length": float(boundary_split_max_length),
+                            "boundary_split_for_call": float(boundary_split_for_call),
+                            "strict_fixed_edge_region": bool(strict_fixed_edge_region),
+                            "breakline_vertex_snap_tol": 0.1,
+                            "ring_initial": _serialize_xy_points(ring_initial),
+                            "ring_after_breakline_preprocess": _serialize_xy_points(ring_after_breakline_preprocess),
+                            "fixed_edges_raw": _serialize_xy_lines(fixed_edge_lines_raw),
+                            "fixed_edges_after_breakline_preprocess": _serialize_xy_lines(fixed_edge_lines_after_breakline_preprocess),
+                            "fixed_edges_after_densify": _serialize_xy_lines(fixed_edge_lines_after_densify),
+                            "ext_verts_for_tqmesh": [[float(v[0]), float(v[1])] for v in base_args["ext_verts"]],
+                            "int_boundaries_for_tqmesh": base_args["int_boundaries"],
+                            "constraint_counts": {
+                                "constraints": int(constraint_count),
+                                "constraint_vertices": int(constraint_vertices),
+                                "holes": int(hole_count),
+                                "hole_vertices": int(hole_vertices),
+                            },
+                            "ext_debug_counts": {
+                                "ext_vertices_raw": int(ext_vertex_raw_count),
+                                "ext_vertices_post_sanitize": int(ext_vertex_post_sanitize_count),
+                                "ext_vertices_post_stitch": int(ext_vertex_post_stitch_count),
+                                "ext_vertices_post_resample": int(ext_vertex_post_resample_count),
+                                "ext_resample_applied": int(ext_resample_applied),
+                                "ext_resample_max_seg": float(ext_resample_max_seg),
+                                "ext_vertices_final": int(ext_vertex_count),
+                            },
+                            "fixed_edge_debug_counts": {
+                                "fixed_edges": int(fixed_edge_count),
+                                "fixed_edge_vertices": int(fixed_edge_vertices),
+                                "active_quad_layers": int(quad_layer_count),
+                            },
+                            "attempts": debug_attempts,
+                            "errors": [str(e) for e in errors],
+                            "used_label": str(used_label),
+                            "used_quality": None if used_quality is None else {
+                                "min_angle_deg": float(used_quality["min_angle_deg"]),
+                                "max_aspect_ratio": float(used_quality["max_aspect_ratio"]),
+                                "min_area": float(used_quality["min_area"]),
+                                "bbox_area": float(used_quality["bbox_area"]),
+                            },
+                        },
+                    )
                 raise RuntimeError(
                     "TQMesh failed for region "
                     f"{region.region_id} after fallback attempts. "
+                    f"region_debug(cell_type={ctype}, target_size={target_size:.6g}, "
+                    f"ext_vertices_raw={ext_vertex_raw_count}, "
+                    f"ext_vertices_post_sanitize={ext_vertex_post_sanitize_count}, "
+                    f"ext_vertices_post_stitch={ext_vertex_post_stitch_count}, "
+                    f"ext_vertices_post_resample={ext_vertex_post_resample_count}, "
+                    f"ext_resample_applied={ext_resample_applied}, "
+                    f"ext_resample_max_seg={ext_resample_max_seg:.6g}, "
+                    f"boundary_split_max_length={boundary_split_max_length:.6g}, "
+                    f"ext_vertices={ext_vertex_count}, holes={hole_count}, "
+                    f"hole_vertices={hole_vertices}, constraints={constraint_count}, "
+                    f"constraint_vertices={constraint_vertices}, "
+                    f"fixed_edges={fixed_edge_count}, "
+                    f"fixed_edge_vertices={fixed_edge_vertices}, "
+                    f"active_quad_layers={quad_layer_count}). "
                     + " | ".join(errors)
                 )
 
@@ -3100,6 +5047,53 @@ class TQMeshBackend(MeshingBackend):
             bv0: np.ndarray   = np.asarray(result["bdry_v0"],   dtype=np.int32)
             bv1: np.ndarray   = np.asarray(result["bdry_v1"],   dtype=np.int32)
             bc:  np.ndarray   = np.asarray(result["bdry_color"],dtype=np.int32)
+            n_fixed_input = int(result.get("n_fixed_edges_input", len(base_args.get("fixed_edges", []))))
+            n_fixed_added = int(result.get("n_fixed_edges_added", 0))
+            if debug_dump_dir:
+                dump_path = os.path.join(
+                    debug_dump_dir,
+                    f"tqmesh_region_{int(region.region_id)}_success.json",
+                )
+                _write_json_atomic(
+                    dump_path,
+                    {
+                        "region_id": int(region.region_id),
+                        "cell_type": str(ctype),
+                        "target_size": float(target_size),
+                        "boundary_split_max_length": float(boundary_split_max_length),
+                        "boundary_split_for_call": float(boundary_split_for_call),
+                        "strict_fixed_edge_region": bool(strict_fixed_edge_region),
+                        "breakline_vertex_snap_tol": 0.1,
+                        "ring_initial": _serialize_xy_points(ring_initial),
+                        "ring_after_breakline_preprocess": _serialize_xy_points(ring_after_breakline_preprocess),
+                        "fixed_edges_raw": _serialize_xy_lines(fixed_edge_lines_raw),
+                        "fixed_edges_after_breakline_preprocess": _serialize_xy_lines(fixed_edge_lines_after_breakline_preprocess),
+                        "fixed_edges_after_densify": _serialize_xy_lines(fixed_edge_lines_after_densify),
+                        "ext_verts_for_tqmesh": [[float(v[0]), float(v[1])] for v in base_args["ext_verts"]],
+                        "int_boundaries_for_tqmesh": base_args["int_boundaries"],
+                        "attempts": debug_attempts,
+                        "used_label": str(used_label),
+                        "used_quality": None if used_quality is None else {
+                            "min_angle_deg": float(used_quality["min_angle_deg"]),
+                            "max_aspect_ratio": float(used_quality["max_aspect_ratio"]),
+                            "min_area": float(used_quality["min_area"]),
+                            "bbox_area": float(used_quality["bbox_area"]),
+                        },
+                        "result_counts": {
+                            "n_vertices": int(vx.size),
+                            "n_triangles": int(tris.shape[0]) if tris.ndim == 2 else 0,
+                            "n_quads": int(quads.shape[0]) if quads.ndim == 2 else 0,
+                            "n_fixed_edges_input": int(n_fixed_input),
+                            "n_fixed_edges_added": int(n_fixed_added),
+                        },
+                    },
+                )
+            if n_fixed_input > 0 and n_fixed_added <= 0:
+                warnings.warn(
+                    f"TQMesh region {region.region_id}: fixed-edge breaklines were provided "
+                    f"(count={n_fixed_input}) but none were accepted by the core mesher.",
+                    RuntimeWarning,
+                )
 
             offset = len(all_vx)
             all_vx.extend(vx.tolist())
@@ -3167,6 +5161,180 @@ class TQMeshBackend(MeshingBackend):
             region_id=np.asarray(all_rid, dtype=np.int32),
             target_size=np.asarray(all_size, dtype=np.float64),
         )
+        iface_conformance = self._opt_bool(
+            "tqmesh_interface_conformance",
+            _env_bool("BACKWATER_TQMESH_INTERFACE_CONFORMANCE", True),
+        )
+        if iface_conformance:
+            snap_tol = _as_float(
+                self._options.get("tqmesh_interface_snap_tol"),
+                _env_float("BACKWATER_TQMESH_INTERFACE_SNAP_TOL", 1.0),
+            )
+            out = _enforce_quad_interface_conformance(out, model, snap_tol=snap_tol)
+        return _repair_mesh_result(out)
+
+
+def _hybrid_cpp_available() -> bool:
+    try:
+        import importlib.util
+        return importlib.util.find_spec("hydra_hybridmesh") is not None
+    except Exception:
+        return False
+
+
+class HybridCppBackend(MeshingBackend):
+    """Custom C++ hybrid backend tailored for topology-layer workflows.
+
+    This backend uses a deterministic region-wise Cartesian sweep in C++ and
+    emits quad-like faces for ``cartesian``, ``quadrilateral``, and
+    ``channel_generator`` regions while preserving triangular regions.
+    """
+
+    name = "hybrid-cpp"
+
+    def __init__(self, options: Optional[Dict[str, object]] = None):
+        self._options = dict(options or {})
+
+    def generate(self, model: ConceptualModel) -> MeshResult:
+        try:
+            import hydra_hybridmesh as _hm
+        except Exception as exc:
+            # Fallback: load the freshly-built extension from local build/.
+            try:
+                import importlib.util
+                from pathlib import Path
+
+                root = Path(__file__).resolve().parents[2]
+                build_dir = root / "build"
+                cand = sorted(build_dir.glob("hydra_hybridmesh*.so"))
+                if not cand:
+                    raise FileNotFoundError("hydra_hybridmesh*.so not found under build/")
+                spec = importlib.util.spec_from_file_location("hydra_hybridmesh", str(cand[0]))
+                if spec is None or spec.loader is None:
+                    raise RuntimeError("could not create module spec for hydra_hybridmesh")
+                _hm = importlib.util.module_from_spec(spec)
+                spec.loader.exec_module(_hm)
+            except Exception as load_exc:
+                raise RuntimeError(
+                    "hydra_hybridmesh C++ module not found. Rebuild native extensions "
+                    "(cmake --build build -j) before using backend='hybrid_cpp'."
+                ) from load_exc
+
+        region_rings = [
+            [(float(x), float(y)) for (x, y) in region.ring_xy]
+            for region in model.regions
+        ]
+        region_holes = [
+            [
+                [(float(x), float(y)) for (x, y) in hring]
+                for hring in (region.hole_rings or [])
+            ]
+            for region in model.regions
+        ]
+        region_target_sizes = [float(max(region.default_size, 1.0e-9)) for region in model.regions]
+        region_cell_types = [str(region.default_cell_type) for region in model.regions]
+        region_ids = [int(region.region_id) for region in model.regions]
+
+        constraint_rings = [
+            [(float(x), float(y)) for (x, y) in cst.ring_xy]
+            for cst in model.constraints
+            if len(cst.ring_xy) >= 3
+        ]
+        constraint_target_sizes = [
+            float(max(cst.target_size, 1.0e-9))
+            for cst in model.constraints
+            if len(cst.ring_xy) >= 3
+        ]
+        constraint_cell_types = [
+            str(cst.cell_type)
+            for cst in model.constraints
+            if len(cst.ring_xy) >= 3
+        ]
+
+        arc_region_ids = []
+        arc_roles = []
+        arc_lines = []
+        for arc in model.arcs:
+            if not arc.points_xy or len(arc.points_xy) < 2:
+                continue
+            role = str(arc.arc_role or "").strip().lower()
+            if role not in {"centerline", "left_bank", "right_bank", "breakline"}:
+                continue
+            arc_region_ids.append(int(arc.region_id))
+            arc_roles.append(role)
+            arc_lines.append([(float(x), float(y)) for (x, y) in arc.points_xy])
+
+        tri_meshing_method = str(
+            self._options.get("tri_meshing_method", "frontal_delaunay")
+        ).strip().lower()
+        transition_width_factor = float(self._options.get("transition_width_factor", 1.25))
+        transition_outer_factor = float(self._options.get("transition_outer_factor", 2.5))
+        overbank_grading_factor = float(self._options.get("overbank_grading_factor", 4.0))
+        constrained_edge_snap_tol = float(
+            self._options.get("hybridcpp_constrained_edge_snap_tol", 12.0)
+        )
+        constrained_edge_max_flips = int(
+            self._options.get("hybridcpp_constrained_edge_max_flips", 128)
+        )
+        region_conformance_band_factor = float(
+            self._options.get("hybridcpp_region_conformance_band_factor", 0.55)
+        )
+        arc_conformance_band_factor = float(
+            self._options.get("hybridcpp_arc_conformance_band_factor", 0.45)
+        )
+        strict_conformance_mode = bool(
+            self._options.get("hybridcpp_strict_conformance_mode", False)
+        )
+
+        if strict_conformance_mode:
+            constrained_edge_snap_tol = max(constrained_edge_snap_tol, 16.0)
+            constrained_edge_max_flips = max(constrained_edge_max_flips, 1024)
+            region_conformance_band_factor = max(region_conformance_band_factor, 0.90)
+            arc_conformance_band_factor = max(arc_conformance_band_factor, 0.90)
+
+        raw = _hm.generate_hybrid_mesh(
+            region_rings=region_rings,
+            region_holes=region_holes,
+            region_target_sizes=region_target_sizes,
+            region_cell_types=region_cell_types,
+            region_ids=region_ids,
+            constraint_rings=constraint_rings,
+            constraint_target_sizes=constraint_target_sizes,
+            constraint_cell_types=constraint_cell_types,
+            arc_region_ids=arc_region_ids,
+            arc_roles=arc_roles,
+            arc_lines=arc_lines,
+            tri_meshing_method=tri_meshing_method,
+            transition_width_factor=transition_width_factor,
+            transition_outer_factor=transition_outer_factor,
+            overbank_grading_factor=overbank_grading_factor,
+            constrained_edge_snap_tol=constrained_edge_snap_tol,
+            constrained_edge_max_flips=constrained_edge_max_flips,
+            region_conformance_band_factor=region_conformance_band_factor,
+            arc_conformance_band_factor=arc_conformance_band_factor,
+            strict_conformance_mode=strict_conformance_mode,
+        )
+
+        node_x = np.asarray(raw["node_x"], dtype=np.float64)
+        node_y = np.asarray(raw["node_y"], dtype=np.float64)
+        cell_nodes = np.asarray(raw["cell_nodes"], dtype=np.int32)
+        cell_face_offsets = np.asarray(raw["cell_face_offsets"], dtype=np.int32)
+        cell_face_nodes = np.asarray(raw["cell_face_nodes"], dtype=np.int32)
+        cell_type = np.asarray(raw["cell_type"], dtype=object)
+        region_id = np.asarray(raw["region_id"], dtype=np.int32)
+        target_size = np.asarray(raw["target_size"], dtype=np.float64)
+
+        out = MeshResult(
+            node_x=node_x,
+            node_y=node_y,
+            node_z=np.zeros_like(node_x),
+            cell_nodes=cell_nodes,
+            cell_face_offsets=cell_face_offsets,
+            cell_face_nodes=cell_face_nodes,
+            cell_type=cell_type,
+            region_id=region_id,
+            target_size=target_size,
+        )
         return _repair_mesh_result(out)
 
     @staticmethod
@@ -3195,15 +5363,277 @@ def generate_face_centric_mesh(
     options : Optional backend-specific options dictionary used for TQMesh and
               Gmsh advanced controls from the GUI.
     """
+    opts = dict(options or {})
+    # Always mesh in a local coordinate frame, then restore original CRS-space
+    # coordinates on the result for downstream IO and visualization.
+    work_model = copy.deepcopy(model)
+    x_shift, y_shift = _normalize_conceptual_model_to_local_origin(work_model)
+
     if backend == "gmsh":
         if not _gmsh_available():
             raise RuntimeError(
                 "gmsh Python package is not installed.  "
                 "Run: pip install gmsh   (or select the 'Structured' backend)."
             )
-        return GmshBackend(options=options).generate(model)
+        mesh = GmshBackend(options=opts).generate(work_model)
+        mesh = _apply_optional_post_optimization(mesh, work_model, opts, backend_name="gmsh")
+        return _restore_mesh_coordinates(mesh, x_shift, y_shift)
     if backend == "structured":
-        return StructuredFaceCentricBackend().generate(model)
+        mesh = StructuredFaceCentricBackend().generate(work_model)
+        mesh = _apply_optional_post_optimization(mesh, work_model, opts, backend_name="structured")
+        return _restore_mesh_coordinates(mesh, x_shift, y_shift)
     if backend == "tqmesh":
-        return TQMeshBackend(options=options).generate(model)
+        mesh = TQMeshBackend(options=opts).generate(work_model)
+        mesh = _apply_optional_post_optimization(mesh, work_model, opts, backend_name="tqmesh")
+        return _restore_mesh_coordinates(mesh, x_shift, y_shift)
+    if backend in {"hybrid_cpp", "mfem_opt"}:
+        # TEMPORARY: disabled per user request; keep implementation in-tree for later re-enable.
+        raise ValueError(
+            f"Meshing backend {backend!r} is temporarily disabled. "
+            "Choose 'gmsh', 'structured', or 'tqmesh'."
+        )
     raise ValueError(f"Unknown meshing backend: {backend!r}. Choose 'gmsh', 'structured', or 'tqmesh'.")
+
+
+def _as_bool_opt(value: object, default: bool = False) -> bool:
+    if value is None:
+        return bool(default)
+    if isinstance(value, bool):
+        return value
+    text = str(value).strip().lower()
+    if text in {"1", "true", "yes", "on"}:
+        return True
+    if text in {"0", "false", "no", "off"}:
+        return False
+    return bool(default)
+
+
+def _normalize_post_opt_backend(options: Dict[str, object]) -> str:
+    # TEMPORARY: MFEM post-optimization is disabled in backend execution paths.
+    # backend = str(options.get("post_opt_backend") or "").strip().lower()
+    # enabled = _as_bool_opt(options.get("mfem_post_opt_enable"), False)
+    # if not backend:
+    #     backend = "mfem_tmop" if enabled else "none"
+    # if backend in {"", "none", "off", "disabled"}:
+    #     return "none"
+    # if backend in {"mfem", "mfem_tmop", "tmop"}:
+    #     return "mfem_tmop"
+    # return backend
+    return "none"
+
+
+def _collect_arc_constraints(model: ConceptualModel) -> Tuple[List[int], List[str], List[List[Tuple[float, float]]]]:
+    arc_region_ids: List[int] = []
+    arc_roles: List[str] = []
+    arc_lines: List[List[Tuple[float, float]]] = []
+    for arc in model.arcs:
+        if not arc.points_xy or len(arc.points_xy) < 2:
+            continue
+        role = str(arc.arc_role or "").strip().lower()
+        if role not in {"centerline", "left_bank", "right_bank", "breakline"}:
+            continue
+        arc_region_ids.append(int(arc.region_id))
+        arc_roles.append(role)
+        arc_lines.append([(float(x), float(y)) for (x, y) in arc.points_xy])
+    return arc_region_ids, arc_roles, arc_lines
+
+
+def _result_from_mapping(raw: Dict[str, Any], fallback: MeshResult) -> MeshResult:
+    node_x = np.asarray(raw.get("node_x", fallback.node_x), dtype=np.float64)
+    node_y = np.asarray(raw.get("node_y", fallback.node_y), dtype=np.float64)
+    node_z = np.asarray(raw.get("node_z", fallback.node_z), dtype=np.float64)
+    if node_z.shape[0] != node_x.shape[0]:
+        node_z = np.zeros_like(node_x)
+
+    cell_nodes = np.asarray(raw.get("cell_nodes", fallback.cell_nodes), dtype=np.int32)
+    cell_face_offsets = np.asarray(raw.get("cell_face_offsets", fallback.cell_face_offsets), dtype=np.int32)
+    cell_face_nodes = np.asarray(raw.get("cell_face_nodes", fallback.cell_face_nodes), dtype=np.int32)
+
+    cell_type = raw.get("cell_type", fallback.cell_type)
+    cell_type = np.asarray(cell_type, dtype=object)
+    region_id = np.asarray(raw.get("region_id", fallback.region_id), dtype=np.int32)
+    target_size = np.asarray(raw.get("target_size", fallback.target_size), dtype=np.float64)
+
+    quality_summary = fallback.quality_summary
+    if isinstance(raw.get("quality_summary"), dict):
+        quality_summary = dict(raw["quality_summary"])
+
+    return MeshResult(
+        node_x=node_x,
+        node_y=node_y,
+        node_z=node_z,
+        cell_nodes=cell_nodes,
+        cell_face_offsets=cell_face_offsets,
+        cell_face_nodes=cell_face_nodes,
+        cell_type=cell_type,
+        region_id=region_id,
+        target_size=target_size,
+        quality_summary=quality_summary,
+    )
+
+
+def _apply_mfem_tmop_post_optimization(
+    mesh: MeshResult,
+    model: ConceptualModel,
+    options: Dict[str, object],
+    backend_name: str,
+) -> MeshResult:
+    strict = _as_bool_opt(options.get("mfem_post_opt_strict"), False)
+    preset_name = str(options.get("mfem_post_opt_preset") or "balanced_shape_size").strip().lower()
+    if preset_name not in available_mfem_presets():
+        msg = f"Unknown MFEM preset: {preset_name!r}"
+        if strict:
+            raise RuntimeError(msg)
+        warnings.warn(f"{msg}; using balanced_shape_size.", RuntimeWarning)
+        preset_name = "balanced_shape_size"
+
+    real_opt_exc: Optional[Exception] = None
+    try:
+        optimized = optimize_with_mfem(
+            mesh,
+            preset_name=preset_name,
+            max_iterations=int(options.get("mfem_post_opt_max_iterations", 120) or 120),
+            quality_weight=float(options.get("mfem_post_opt_quality_weight", 1.0) or 1.0),
+            boundary_fit_weight=float(options.get("mfem_post_opt_boundary_fit_weight", 0.35) or 0.35),
+            interface_fit_weight=float(options.get("mfem_post_opt_interface_fit_weight", 0.25) or 0.25),
+            min_det_j=float(options.get("mfem_post_opt_min_det_j", 1.0e-9) or 1.0e-9),
+            preserve_boundary=_as_bool_opt(options.get("mfem_post_opt_preserve_boundary"), True),
+            lock_boundary_nodes=_as_bool_opt(options.get("mfem_post_opt_lock_boundary_nodes"), True),
+        )
+        summary = dict(optimized.quality_summary or {})
+        summary.update(
+            {
+                "engine": "mfem_mesh_optimizer",
+                "preset": preset_name,
+                "backend_name": backend_name,
+                "quality_weight": float(options.get("mfem_post_opt_quality_weight", 1.0) or 1.0),
+                "boundary_fit_weight": float(options.get("mfem_post_opt_boundary_fit_weight", 0.35) or 0.35),
+                "interface_fit_weight": float(options.get("mfem_post_opt_interface_fit_weight", 0.25) or 0.25),
+                "max_iterations": int(options.get("mfem_post_opt_max_iterations", 120) or 120),
+                "min_det_j": float(options.get("mfem_post_opt_min_det_j", 1.0e-9) or 1.0e-9),
+                "lock_boundary_nodes": _as_bool_opt(options.get("mfem_post_opt_lock_boundary_nodes"), True),
+            }
+        )
+        optimized.quality_summary = summary
+        optimized = _repair_mesh_result(optimized)
+        return _require_nonempty_mesh(optimized, f"{backend_name}+mfem_tmop")
+    except Exception as exc:
+        real_opt_exc = exc
+        warnings.warn(
+            f"MFEM mesh-optimizer execution failed: {real_opt_exc}. Falling back to module path.",
+            RuntimeWarning,
+        )
+
+    try:
+        import hydra_mfem_meshopt as _mfem_opt
+    except Exception as exc:
+        # Fallback: try loading a freshly built extension from local build/.
+        try:
+            import importlib.util
+            from pathlib import Path
+
+            root = Path(__file__).resolve().parents[2]
+            build_dir = root / "build"
+            cand = sorted(build_dir.glob("hydra_mfem_meshopt*.so"))
+            if not cand:
+                raise FileNotFoundError("hydra_mfem_meshopt*.so not found under build/")
+            spec = importlib.util.spec_from_file_location("hydra_mfem_meshopt", str(cand[0]))
+            if spec is None or spec.loader is None:
+                raise RuntimeError("could not create module spec for hydra_mfem_meshopt")
+            _mfem_opt = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(_mfem_opt)
+        except Exception as load_exc:
+            msg = (
+                "MFEM TMOP post-optimization requested but hydra_mfem_meshopt is unavailable. "
+                "Build with MFEM support or disable MFEM post-opt."
+            )
+            if strict:
+                if real_opt_exc is not None:
+                    raise RuntimeError(
+                        f"MFEM mesh-optimizer execution failed: {real_opt_exc}; and {msg}"
+                    ) from load_exc
+                raise RuntimeError(msg) from load_exc
+            warnings.warn(f"{msg} Continuing with base {backend_name} mesh.", RuntimeWarning)
+            return mesh
+
+    optimize_fn = getattr(_mfem_opt, "optimize_mesh_tmop", None)
+    if optimize_fn is None:
+        optimize_fn = getattr(_mfem_opt, "optimize_mesh", None)
+    if optimize_fn is None:
+        msg = "hydra_mfem_meshopt module does not export optimize_mesh_tmop/optimize_mesh."
+        if strict:
+            raise RuntimeError(msg)
+        warnings.warn(f"{msg} Continuing with base {backend_name} mesh.", RuntimeWarning)
+        return mesh
+
+    arc_region_ids, arc_roles, arc_lines = _collect_arc_constraints(model)
+    call_payload: Dict[str, Any] = {
+        "node_x": mesh.node_x,
+        "node_y": mesh.node_y,
+        "cell_face_offsets": mesh.cell_face_offsets,
+        "cell_face_nodes": mesh.cell_face_nodes,
+        "cell_nodes": mesh.cell_nodes,
+        "cell_type": mesh.cell_type,
+        "region_id": mesh.region_id,
+        "target_size": mesh.target_size,
+        "arc_region_ids": arc_region_ids,
+        "arc_roles": arc_roles,
+        "arc_lines": arc_lines,
+        "quality_weight": float(options.get("mfem_post_opt_quality_weight", 1.0) or 1.0),
+        "boundary_fit_weight": float(options.get("mfem_post_opt_boundary_fit_weight", 0.35) or 0.35),
+        "interface_fit_weight": float(options.get("mfem_post_opt_interface_fit_weight", 0.25) or 0.25),
+        "max_iterations": int(options.get("mfem_post_opt_max_iterations", 120) or 120),
+        "min_det_j": float(options.get("mfem_post_opt_min_det_j", 1.0e-9) or 1.0e-9),
+        "preserve_boundary": _as_bool_opt(options.get("mfem_post_opt_preserve_boundary"), True),
+        "lock_boundary_nodes": _as_bool_opt(options.get("mfem_post_opt_lock_boundary_nodes"), True),
+    }
+
+    try:
+        raw = optimize_fn(**call_payload)
+    except TypeError:
+        # Backward-compatible fallback for simpler bindings.
+        raw = optimize_fn(
+            node_x=mesh.node_x,
+            node_y=mesh.node_y,
+            cell_face_offsets=mesh.cell_face_offsets,
+            cell_face_nodes=mesh.cell_face_nodes,
+        )
+    except Exception as exc:
+        msg = f"MFEM TMOP post-optimization failed: {exc}"
+        if strict:
+            raise RuntimeError(msg) from exc
+        warnings.warn(f"{msg}. Continuing with base {backend_name} mesh.", RuntimeWarning)
+        return mesh
+
+    if not isinstance(raw, dict):
+        msg = "MFEM TMOP post-optimization returned unexpected payload type."
+        if strict:
+            raise RuntimeError(msg)
+        warnings.warn(f"{msg} Continuing with base {backend_name} mesh.", RuntimeWarning)
+        return mesh
+
+    out = _result_from_mapping(raw, mesh)
+    summary = dict(out.quality_summary or {})
+    summary.setdefault("engine", "hydra_mfem_meshopt_beta_stub")
+    summary.setdefault("preset", preset_name)
+    out.quality_summary = summary
+    out = _repair_mesh_result(out)
+    return _require_nonempty_mesh(out, f"{backend_name}+mfem_tmop")
+
+
+def _apply_optional_post_optimization(
+    mesh: MeshResult,
+    model: ConceptualModel,
+    options: Dict[str, object],
+    backend_name: str,
+) -> MeshResult:
+    base = _require_nonempty_mesh(_repair_mesh_result(mesh), backend_name)
+    post_opt_backend = _normalize_post_opt_backend(options)
+    if post_opt_backend == "none":
+        return base
+    if post_opt_backend == "mfem_tmop":
+        return _apply_mfem_tmop_post_optimization(base, model, options, backend_name)
+    raise ValueError(
+        f"Unknown post optimization backend: {post_opt_backend!r}. "
+        "Choose 'none' or 'mfem_tmop'."
+    )

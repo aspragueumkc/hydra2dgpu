@@ -6,6 +6,61 @@ from typing import Callable, Dict, Iterable, Optional, Tuple
 import numpy as np
 
 
+def _edge_midpoint_distance_to_feature(
+    *,
+    x0: float,
+    y0: float,
+    x1: float,
+    y1: float,
+    feature_geom,
+    qgs_geometry_cls,
+    qgs_pointxy_cls,
+) -> float:
+    mid = qgs_geometry_cls.fromPointXY(qgs_pointxy_cls(0.5 * (x0 + x1), 0.5 * (y0 + y1)))
+    return float(mid.distance(feature_geom))
+
+
+def _edge_matches_feature(
+    *,
+    x0: float,
+    y0: float,
+    x1: float,
+    y1: float,
+    feature_geom,
+    qgs_geometry_cls,
+    qgs_pointxy_cls,
+) -> bool:
+    edge_len = float(math.hypot(x1 - x0, y1 - y0))
+    dist = _edge_midpoint_distance_to_feature(
+        x0=x0,
+        y0=y0,
+        x1=x1,
+        y1=y1,
+        feature_geom=feature_geom,
+        qgs_geometry_cls=qgs_geometry_cls,
+        qgs_pointxy_cls=qgs_pointxy_cls,
+    )
+
+    # Tight midpoint criterion to keep assignments local to the intended edge set.
+    tol_local = max(1.0e-9, 0.10 * edge_len)
+    if dist <= tol_local:
+        return True
+
+    try:
+        edge_geom = qgs_geometry_cls.fromPolylineXY([
+            qgs_pointxy_cls(x0, y0),
+            qgs_pointxy_cls(x1, y1),
+        ])
+        if bool(edge_geom.intersects(feature_geom)):
+            # Intersection-only can include endpoint touches at corners; require
+            # the midpoint to still be reasonably close before accepting.
+            return bool(dist <= max(1.0e-9, 0.25 * edge_len))
+    except Exception:
+        pass
+
+    return False
+
+
 def apply_bc_layer_overrides_qgis(
     *,
     mesh_data,
@@ -75,23 +130,45 @@ def apply_bc_layer_overrides_qgis(
     if not features:
         return bc_type, bc_val
 
-    features.sort(key=lambda x: x[0], reverse=True)
     applied = 0
     for i in range(edge_n0.size):
         x0 = float(node_x[edge_n0[i]])
         y0 = float(node_y[edge_n0[i]])
         x1 = float(node_x[edge_n1[i]])
         y1 = float(node_y[edge_n1[i]])
-        tol = math.hypot(x1 - x0, y1 - y0) * 0.5
-        mid = qgs_geometry_cls.fromPointXY(qgs_pointxy_cls(0.5 * (x0 + x1), 0.5 * (y0 + y1)))
-        for _, g, t, v in features:
-            if mid.distance(g) < tol:
-                changed = (int(bc_type[i]) != int(t)) or (not np.isclose(float(bc_val[i]), float(v)))
-                bc_type[i] = int(t)
-                bc_val[i] = float(v)
-                if changed:
-                    applied += 1
-                break
+        best = None
+        best_key = None
+        for pr, g, t, v in features:
+            if not _edge_matches_feature(
+                x0=x0,
+                y0=y0,
+                x1=x1,
+                y1=y1,
+                feature_geom=g,
+                qgs_geometry_cls=qgs_geometry_cls,
+                qgs_pointxy_cls=qgs_pointxy_cls,
+            ):
+                continue
+            dist = _edge_midpoint_distance_to_feature(
+                x0=x0,
+                y0=y0,
+                x1=x1,
+                y1=y1,
+                feature_geom=g,
+                qgs_geometry_cls=qgs_geometry_cls,
+                qgs_pointxy_cls=qgs_pointxy_cls,
+            )
+            key = (int(pr), -float(dist))
+            if best is None or key > best_key:
+                best = (t, v)
+                best_key = key
+        if best is not None:
+            t, v = best
+            changed = (int(bc_type[i]) != int(t)) or (not np.isclose(float(bc_val[i]), float(v)))
+            bc_type[i] = int(t)
+            bc_val[i] = float(v)
+            if changed:
+                applied += 1
 
     if applied:
         log_fn(f"BC line static overrides applied to {applied}/{edge_n0.size} boundary edges from '{bc_layer.name()}'.")
@@ -231,18 +308,40 @@ def collect_bc_layer_hydrographs_qgis(
     if not features:
         return edge_hydro
 
-    features.sort(key=lambda x: x[0], reverse=True)
     for i in range(edge_n0.size):
         x0 = float(node_x[edge_n0[i]])
         y0 = float(node_y[edge_n0[i]])
         x1 = float(node_x[edge_n1[i]])
         y1 = float(node_y[edge_n1[i]])
-        tol = math.hypot(x1 - x0, y1 - y0) * 0.5
-        mid = qgs_geometry_cls.fromPointXY(qgs_pointxy_cls(0.5 * (x0 + x1), 0.5 * (y0 + y1)))
-        for _pr, g, t, hg in features:
-            if mid.distance(g) < tol:
-                edge_hydro[i] = (t, hg)
-                break
+        best = None
+        best_key = None
+        for pr, g, t, hg in features:
+            if not _edge_matches_feature(
+                x0=x0,
+                y0=y0,
+                x1=x1,
+                y1=y1,
+                feature_geom=g,
+                qgs_geometry_cls=qgs_geometry_cls,
+                qgs_pointxy_cls=qgs_pointxy_cls,
+            ):
+                continue
+            dist = _edge_midpoint_distance_to_feature(
+                x0=x0,
+                y0=y0,
+                x1=x1,
+                y1=y1,
+                feature_geom=g,
+                qgs_geometry_cls=qgs_geometry_cls,
+                qgs_pointxy_cls=qgs_pointxy_cls,
+            )
+            key = (int(pr), -float(dist))
+            if best is None or key > best_key:
+                best = (t, hg)
+                best_key = key
+        if best is not None:
+            t, hg = best
+            edge_hydro[i] = (t, hg)
 
     if edge_hydro:
         log_fn(f"BC line hydrographs applied to {len(edge_hydro)} boundary edges.")
@@ -271,7 +370,6 @@ def collect_bc_layer_edge_groups_qgis(
         return edge_groups
 
     fields = set(bc_layer.fields().names())
-    name_field = "name" if "name" in fields else None
     prio_field = "priority" if "priority" in fields else None
 
     node_x = mesh_data["node_x"]
@@ -288,33 +386,47 @@ def collect_bc_layer_edge_groups_qgis(
                 pr = int(ft[prio_field])
             except Exception:
                 pr = 0
-        nm = ""
-        if name_field is not None:
-            try:
-                nm = str(ft[name_field] or "").strip()
-            except Exception:
-                nm = ""
-        if not nm:
-            try:
-                nm = f"feature_{int(ft.id())}"
-            except Exception:
-                nm = "feature"
+        try:
+            nm = f"feature_{int(ft.id())}"
+        except Exception:
+            nm = "feature"
         features.append((pr, geom, nm))
 
     if not features:
         return edge_groups
 
-    features.sort(key=lambda x: x[0], reverse=True)
     for i in range(edge_n0.size):
         x0 = float(node_x[edge_n0[i]])
         y0 = float(node_y[edge_n0[i]])
         x1 = float(node_x[edge_n1[i]])
         y1 = float(node_y[edge_n1[i]])
-        tol = math.hypot(x1 - x0, y1 - y0) * 0.5
-        mid = qgs_geometry_cls.fromPointXY(qgs_pointxy_cls(0.5 * (x0 + x1), 0.5 * (y0 + y1)))
-        for _pr, g, nm in features:
-            if mid.distance(g) < tol:
-                edge_groups[i] = f"bc_line:{nm}"
-                break
+        best_nm = None
+        best_key = None
+        for pr, g, nm in features:
+            if not _edge_matches_feature(
+                x0=x0,
+                y0=y0,
+                x1=x1,
+                y1=y1,
+                feature_geom=g,
+                qgs_geometry_cls=qgs_geometry_cls,
+                qgs_pointxy_cls=qgs_pointxy_cls,
+            ):
+                continue
+            dist = _edge_midpoint_distance_to_feature(
+                x0=x0,
+                y0=y0,
+                x1=x1,
+                y1=y1,
+                feature_geom=g,
+                qgs_geometry_cls=qgs_geometry_cls,
+                qgs_pointxy_cls=qgs_pointxy_cls,
+            )
+            key = (int(pr), -float(dist))
+            if best_nm is None or key > best_key:
+                best_nm = nm
+                best_key = key
+        if best_nm is not None:
+            edge_groups[i] = f"bc_line:{best_nm}"
 
     return edge_groups

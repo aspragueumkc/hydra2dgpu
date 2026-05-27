@@ -179,6 +179,8 @@ def configure_swe3d_runtime(
     projection_residual_target: Optional[float] = None,
     projection_reject_enable: Optional[bool] = None,
     projection_fail_fast: Optional[bool] = None,
+    projection_divergence_gate_enable: Optional[bool] = None,
+    projection_divergence_ratio_target: Optional[float] = None,
     projection_dt_reduction: Optional[float] = None,
     projection_max_retries: Optional[int] = None,
     projection_min_dt_factor: Optional[float] = None,
@@ -233,6 +235,16 @@ def configure_swe3d_runtime(
         fail_fast = bool(projection_fail_fast)
         os.environ["BACKWATER_SWE3D_PROJECTION_FAIL_FAST"] = "1" if fail_fast else "0"
         applied["projection_fail_fast"] = fail_fast
+    if projection_divergence_gate_enable is not None:
+        enabled = bool(projection_divergence_gate_enable)
+        os.environ["BACKWATER_SWE3D_PROJECTION_DIVERGENCE_GATE_ENABLE"] = "1" if enabled else "0"
+        applied["projection_divergence_gate_enable"] = enabled
+    if projection_divergence_ratio_target is not None:
+        div_ratio = float(projection_divergence_ratio_target)
+        if not np.isfinite(div_ratio) or div_ratio <= 0.0:
+            raise ValueError("projection_divergence_ratio_target must be a positive finite number")
+        os.environ["BACKWATER_SWE3D_PROJECTION_DIVERGENCE_RATIO_TARGET"] = f"{div_ratio:.17g}"
+        applied["projection_divergence_ratio_target"] = div_ratio
     if projection_dt_reduction is not None:
         reduction = float(projection_dt_reduction)
         if not np.isfinite(reduction) or reduction <= 0.0 or reduction >= 1.0:

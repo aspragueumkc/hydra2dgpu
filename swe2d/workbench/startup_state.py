@@ -20,6 +20,7 @@ def initialize_workbench_startup_state(
     dialog._mesh_data = None
     dialog._result_data = None
     dialog._snapshot_timesteps = []
+    dialog._snapshot_mesh_fingerprint = ""
     dialog._line_snapshot_rows = []
     dialog._line_snapshot_profile_rows = []
     dialog._coupling_snapshot_rows = []

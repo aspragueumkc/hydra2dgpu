@@ -184,6 +184,470 @@ def persist_mesh_results_to_geopackage(
         conn.close()
 
 
+def _try_extract_boundary_face_flux_totals(conn: sqlite3.Connection, run_id: str) -> Dict[str, object]:
+    cur = conn.cursor()
+    face_tables = ("swe2d_face_flux_results", "swe2d_face_results", "swe2d_flux_faces")
+    for table_name in face_tables:
+        cur.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name=?",
+            (table_name,),
+        )
+        if cur.fetchone() is None:
+            continue
+
+        cur.execute(f"PRAGMA table_info({table_name})")
+        cols = [str(r[1]) for r in cur.fetchall()]
+        col_set = set(cols)
+        if "run_id" not in col_set:
+            continue
+
+        flux_col = ""
+        for cand in ("flux_n", "flux", "q_n", "qn", "flow", "q"):
+            if cand in col_set:
+                flux_col = cand
+                break
+        if not flux_col:
+            continue
+
+        boundary_where = ""
+        for cand in ("is_boundary", "boundary", "boundary_face", "at_boundary"):
+            if cand in col_set:
+                boundary_where = f" AND COALESCE({cand}, 0) <> 0"
+                break
+        if not boundary_where:
+            for cand in ("nbr_cell_id", "cell_id_nbr", "cell_j", "neighbor_cell", "adj_cell_id"):
+                if cand in col_set:
+                    boundary_where = f" AND COALESCE({cand}, -1) < 0"
+                    break
+        if not boundary_where:
+            return {
+                "table": table_name,
+                "status": "table_found_boundary_detection_unavailable",
+            }
+
+        if "t_s" in col_set:
+            cur.execute(
+                f"SELECT COUNT(*), COALESCE(SUM({flux_col}), 0.0) FROM {table_name} "
+                "WHERE run_id = ?" + boundary_where,
+                (str(run_id),),
+            )
+            row_count, total_flux = cur.fetchone()
+            return {
+                "table": table_name,
+                "status": "ok",
+                "rows": int(row_count or 0),
+                "total_flux_model": float(total_flux or 0.0),
+            }
+
+        cur.execute(
+            f"SELECT COUNT(*), COALESCE(SUM({flux_col}), 0.0) FROM {table_name} "
+            "WHERE run_id = ?" + boundary_where,
+            (str(run_id),),
+        )
+        row_count, total_flux = cur.fetchone()
+        return {
+            "table": table_name,
+            "status": "ok_no_timestep",
+            "rows": int(row_count or 0),
+            "total_flux_model": float(total_flux or 0.0),
+        }
+
+    return {
+        "table": "",
+        "status": "table_not_found",
+    }
+
+
+def persist_conservation_forensics_to_geopackage(
+    self,
+    gpkg_path: str,
+    run_id: str,
+    storage_rows: List[Dict[str, object]],
+    boundary_rows: List[Dict[str, object]],
+    summary: Dict[str, object],
+    source_step_rows: Optional[List[Dict[str, object]]] = None,
+) -> None:
+    if not gpkg_path or not run_id:
+        return
+
+    l_scale = float(self._length_scale_si_to_model())
+    vol_to_si = 1.0 / (l_scale ** 3)
+    flow_to_si = vol_to_si
+
+    conn = sqlite3.connect(gpkg_path)
+    try:
+        cur = conn.cursor()
+
+        def _ensure_columns(table_name: str, columns: Dict[str, str]) -> None:
+            cur.execute(f"PRAGMA table_info({table_name})")
+            existing = {str(r[1]) for r in cur.fetchall()}
+            for col_name, col_type in columns.items():
+                if str(col_name) in existing:
+                    continue
+                cur.execute(f"ALTER TABLE {table_name} ADD COLUMN {col_name} {col_type}")
+
+        cur.execute(
+            """
+            CREATE TABLE IF NOT EXISTS swe2d_conservation_runs (
+                run_id TEXT PRIMARY KEY,
+                created_utc TEXT,
+                run_duration_s REAL,
+                source_rain_model REAL,
+                source_cell_model REAL,
+                source_coupling_model REAL,
+                source_total_model REAL,
+                storage_start_model REAL,
+                storage_end_model REAL,
+                storage_delta_model REAL,
+                implied_net_boundary_out_model REAL,
+                avg_implied_boundary_q_model REAL,
+                boundary_group_volume_sum_model REAL,
+                source_total_m3 REAL,
+                storage_start_m3 REAL,
+                storage_end_m3 REAL,
+                storage_delta_m3 REAL,
+                implied_net_boundary_out_m3 REAL,
+                avg_implied_boundary_q_cms REAL,
+                boundary_group_volume_sum_m3 REAL,
+                boundary_face_flux_table TEXT,
+                boundary_face_flux_status TEXT,
+                boundary_face_flux_rows INTEGER,
+                boundary_face_flux_total_model REAL,
+                boundary_face_flux_total_cms REAL,
+                effective_net_boundary_method TEXT,
+                effective_net_boundary_out_model REAL,
+                effective_net_boundary_out_m3 REAL,
+                effective_avg_q_model REAL,
+                effective_avg_q_cms REAL,
+                closure_residual_model REAL,
+                closure_residual_m3 REAL
+            )
+            """
+        )
+        _ensure_columns(
+            "swe2d_conservation_runs",
+            {
+                "boundary_face_flux_table": "TEXT",
+                "boundary_face_flux_status": "TEXT",
+                "boundary_face_flux_rows": "INTEGER",
+                "boundary_face_flux_total_model": "REAL",
+                "boundary_face_flux_total_cms": "REAL",
+                "effective_net_boundary_method": "TEXT",
+                "effective_net_boundary_out_model": "REAL",
+                "effective_net_boundary_out_m3": "REAL",
+                "effective_avg_q_model": "REAL",
+                "effective_avg_q_cms": "REAL",
+                "closure_residual_model": "REAL",
+                "closure_residual_m3": "REAL",
+            },
+        )
+        cur.execute(
+            """
+            CREATE TABLE IF NOT EXISTS swe2d_conservation_storage_ts (
+                run_id TEXT,
+                t_s REAL,
+                storage_model REAL,
+                storage_delta_model REAL,
+                storage_m3 REAL,
+                storage_delta_m3 REAL,
+                PRIMARY KEY (run_id, t_s)
+            )
+            """
+        )
+        _ensure_columns(
+            "swe2d_conservation_storage_ts",
+            {
+                "storage_m3": "REAL",
+                "storage_delta_m3": "REAL",
+            },
+        )
+        cur.execute(
+            "CREATE INDEX IF NOT EXISTS idx_swe2d_cons_storage_run_t "
+            "ON swe2d_conservation_storage_ts(run_id, t_s)"
+        )
+        cur.execute(
+            """
+            CREATE TABLE IF NOT EXISTS swe2d_boundary_flux_forensics_ts (
+                run_id TEXT,
+                t_s REAL,
+                group_name TEXT,
+                q_requested_model REAL,
+                q_effective_model REAL,
+                vol_requested_model REAL,
+                vol_effective_model REAL,
+                q_requested_cms REAL,
+                q_effective_cms REAL,
+                vol_requested_m3 REAL,
+                vol_effective_m3 REAL,
+                source_note TEXT,
+                PRIMARY KEY (run_id, t_s, group_name)
+            )
+            """
+        )
+        _ensure_columns(
+            "swe2d_boundary_flux_forensics_ts",
+            {
+                "q_requested_model": "REAL",
+                "q_effective_model": "REAL",
+                "vol_requested_model": "REAL",
+                "vol_effective_model": "REAL",
+                "q_requested_cms": "REAL",
+                "q_effective_cms": "REAL",
+                "vol_requested_m3": "REAL",
+                "vol_effective_m3": "REAL",
+                "source_note": "TEXT",
+            },
+        )
+        cur.execute(
+            "CREATE INDEX IF NOT EXISTS idx_swe2d_cons_boundary_run_t_grp "
+            "ON swe2d_boundary_flux_forensics_ts(run_id, t_s, group_name)"
+        )
+        cur.execute(
+            """
+            CREATE TABLE IF NOT EXISTS swe2d_source_budget_forensics_ts (
+                run_id TEXT,
+                t_s REAL,
+                rain_vol_model REAL,
+                cell_vol_model REAL,
+                coupling_vol_model REAL,
+                source_total_vol_model REAL,
+                rain_vol_m3 REAL,
+                cell_vol_m3 REAL,
+                coupling_vol_m3 REAL,
+                source_total_vol_m3 REAL,
+                PRIMARY KEY (run_id, t_s)
+            )
+            """
+        )
+        _ensure_columns(
+            "swe2d_source_budget_forensics_ts",
+            {
+                "rain_vol_m3": "REAL",
+                "cell_vol_m3": "REAL",
+                "coupling_vol_m3": "REAL",
+                "source_total_vol_m3": "REAL",
+            },
+        )
+        cur.execute(
+            "CREATE INDEX IF NOT EXISTS idx_swe2d_cons_source_run_t "
+            "ON swe2d_source_budget_forensics_ts(run_id, t_s)"
+        )
+
+        cur.execute("DELETE FROM swe2d_conservation_storage_ts WHERE run_id = ?", (str(run_id),))
+        cur.execute("DELETE FROM swe2d_boundary_flux_forensics_ts WHERE run_id = ?", (str(run_id),))
+        cur.execute("DELETE FROM swe2d_source_budget_forensics_ts WHERE run_id = ?", (str(run_id),))
+
+        storage_batch = []
+        for row in list(storage_rows or []):
+            t_s = float(row.get("t_s", 0.0))
+            storage_model = float(row.get("storage_model", 0.0))
+            storage_delta_model = float(row.get("storage_delta_model", 0.0))
+            storage_batch.append(
+                (
+                    str(run_id),
+                    t_s,
+                    storage_model,
+                    storage_delta_model,
+                    storage_model * vol_to_si,
+                    storage_delta_model * vol_to_si,
+                )
+            )
+        if storage_batch:
+            cur.executemany(
+                """
+                INSERT OR REPLACE INTO swe2d_conservation_storage_ts
+                (run_id, t_s, storage_model, storage_delta_model, storage_m3, storage_delta_m3)
+                VALUES (?, ?, ?, ?, ?, ?)
+                """,
+                storage_batch,
+            )
+
+        boundary_batch = []
+        for row in list(boundary_rows or []):
+            t_s = float(row.get("t_s", 0.0))
+            group_name = str(row.get("group_name", "") or "")
+            q_effective_model = float(row.get("q_effective_model", 0.0))
+            vol_effective_model = float(row.get("vol_effective_model", 0.0))
+            # Requested values are currently equivalent to the applied BC values
+            # captured at runtime; this keeps a stable schema for future split accounting.
+            q_requested_model = q_effective_model
+            vol_requested_model = vol_effective_model
+            boundary_batch.append(
+                (
+                    str(run_id),
+                    t_s,
+                    group_name,
+                    q_requested_model,
+                    q_effective_model,
+                    vol_requested_model,
+                    vol_effective_model,
+                    q_requested_model * flow_to_si,
+                    q_effective_model * flow_to_si,
+                    vol_requested_model * vol_to_si,
+                    vol_effective_model * vol_to_si,
+                    "requested_from_applied_bc_values",
+                )
+            )
+        if boundary_batch:
+            cur.executemany(
+                """
+                INSERT OR REPLACE INTO swe2d_boundary_flux_forensics_ts
+                (
+                    run_id,
+                    t_s,
+                    group_name,
+                    q_requested_model,
+                    q_effective_model,
+                    vol_requested_model,
+                    vol_effective_model,
+                    q_requested_cms,
+                    q_effective_cms,
+                    vol_requested_m3,
+                    vol_effective_m3,
+                    source_note
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                boundary_batch,
+            )
+
+        source_batch = []
+        for row in list(source_step_rows or []):
+            rain_vol_model = float(row.get("rain_vol_model", 0.0))
+            cell_vol_model = float(row.get("cell_vol_model", 0.0))
+            coupling_vol_model = float(row.get("coupling_vol_model", 0.0))
+            source_total_vol_model = float(row.get("source_total_vol_model", 0.0))
+            source_batch.append(
+                (
+                    str(run_id),
+                    float(row.get("t_s", 0.0)),
+                    rain_vol_model,
+                    cell_vol_model,
+                    coupling_vol_model,
+                    source_total_vol_model,
+                    rain_vol_model * vol_to_si,
+                    cell_vol_model * vol_to_si,
+                    coupling_vol_model * vol_to_si,
+                    source_total_vol_model * vol_to_si,
+                )
+            )
+        if source_batch:
+            cur.executemany(
+                """
+                INSERT OR REPLACE INTO swe2d_source_budget_forensics_ts
+                (
+                    run_id,
+                    t_s,
+                    rain_vol_model,
+                    cell_vol_model,
+                    coupling_vol_model,
+                    source_total_vol_model,
+                    rain_vol_m3,
+                    cell_vol_m3,
+                    coupling_vol_m3,
+                    source_total_vol_m3
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                source_batch,
+            )
+
+        face_flux_info = _try_extract_boundary_face_flux_totals(conn, run_id)
+
+        source_total_model = float(summary.get("source_total_model", 0.0))
+        storage_start_model = float(summary.get("storage_start_model", 0.0))
+        storage_end_model = float(summary.get("storage_end_model", 0.0))
+        storage_delta_model = float(summary.get("storage_delta_model", 0.0))
+        implied_boundary_model = float(summary.get("implied_net_boundary_out_model", 0.0))
+        avg_implied_q_model = float(summary.get("avg_implied_boundary_q_model", 0.0))
+        boundary_group_sum_model = float(summary.get("boundary_group_volume_sum_model", 0.0))
+        closure_residual_model = float(source_total_model - storage_delta_model - implied_boundary_model)
+
+        cur.execute(
+            """
+            INSERT OR REPLACE INTO swe2d_conservation_runs
+            (
+                run_id,
+                created_utc,
+                run_duration_s,
+                source_rain_model,
+                source_cell_model,
+                source_coupling_model,
+                source_total_model,
+                storage_start_model,
+                storage_end_model,
+                storage_delta_model,
+                implied_net_boundary_out_model,
+                avg_implied_boundary_q_model,
+                boundary_group_volume_sum_model,
+                source_total_m3,
+                storage_start_m3,
+                storage_end_m3,
+                storage_delta_m3,
+                implied_net_boundary_out_m3,
+                avg_implied_boundary_q_cms,
+                boundary_group_volume_sum_m3,
+                boundary_face_flux_table,
+                boundary_face_flux_status,
+                boundary_face_flux_rows,
+                boundary_face_flux_total_model,
+                boundary_face_flux_total_cms,
+                effective_net_boundary_method,
+                effective_net_boundary_out_model,
+                effective_net_boundary_out_m3,
+                effective_avg_q_model,
+                effective_avg_q_cms,
+                closure_residual_model,
+                closure_residual_m3
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                str(run_id),
+                datetime.datetime.utcnow().replace(microsecond=0).isoformat() + "Z",
+                float(summary.get("run_duration_s", 0.0)),
+                float(summary.get("source_rain_model", 0.0)),
+                float(summary.get("source_cell_model", 0.0)),
+                float(summary.get("source_coupling_model", 0.0)),
+                source_total_model,
+                storage_start_model,
+                storage_end_model,
+                storage_delta_model,
+                implied_boundary_model,
+                avg_implied_q_model,
+                boundary_group_sum_model,
+                source_total_model * vol_to_si,
+                storage_start_model * vol_to_si,
+                storage_end_model * vol_to_si,
+                storage_delta_model * vol_to_si,
+                implied_boundary_model * vol_to_si,
+                avg_implied_q_model * flow_to_si,
+                boundary_group_sum_model * vol_to_si,
+                str(face_flux_info.get("table", "") or ""),
+                str(face_flux_info.get("status", "") or ""),
+                int(face_flux_info.get("rows", 0) or 0),
+                float(face_flux_info.get("total_flux_model", 0.0) or 0.0),
+                float(face_flux_info.get("total_flux_model", 0.0) or 0.0) * flow_to_si,
+                "conservation_identity",
+                implied_boundary_model,
+                implied_boundary_model * vol_to_si,
+                avg_implied_q_model,
+                avg_implied_q_model * flow_to_si,
+                closure_residual_model,
+                closure_residual_model * vol_to_si,
+            ),
+        )
+
+        conn.commit()
+        self._log(
+            f"Stored conservation forensics in GeoPackage: {gpkg_path} "
+            f"(run_id={run_id}, storage_rows={len(storage_batch)}, source_rows={len(source_batch)}, boundary_rows={len(boundary_batch)}, "
+            f"face_flux_status={str(face_flux_info.get('status', ''))})"
+        )
+    finally:
+        conn.close()
+
+
 def collect_run_log_metadata(self) -> Dict[str, object]:
     gate_cfg = dict(getattr(self, "_swe3d_geom_gate_last_config", {}) or {})
     gate_metrics = dict(getattr(self, "_swe3d_geom_gate_last_metrics", {}) or {})

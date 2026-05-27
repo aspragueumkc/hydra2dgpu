@@ -8,8 +8,9 @@ logging from `_on_run` into a focused helper module.
 from __future__ import annotations
 
 import datetime
+import math
 import time
-from typing import Any, Dict
+from typing import Any, Dict, List
 
 import numpy as np
 
@@ -30,8 +31,10 @@ class SWE2DRunFinalizer:
         area_model: np.ndarray,
         storage_start_model: float,
         source_budget_model: Dict[str, float],
+        source_step_rows_model: List[Dict[str, float]],
         run_duration_s: float,
         boundary_flux_budget_model: Dict[str, float],
+        boundary_flux_step_rows_model: List[Dict[str, float]],
         run_id: str,
         output_interval_s: float,
         line_output_interval_s: float,
@@ -79,7 +82,76 @@ class SWE2DRunFinalizer:
                     f"avg_q={avg_q_model:.6f} {self._ui._flow_unit_label()}"
                 )
 
+        storage_rows: List[Dict[str, float]] = [
+            {
+                "t_s": 0.0,
+                "storage_model": float(storage_start_model),
+                "storage_delta_model": 0.0,
+            }
+        ]
+        snapshot_timesteps = list(getattr(self._ui, "_snapshot_timesteps", []) or [])
+        if snapshot_timesteps:
+            for snap in snapshot_timesteps:
+                try:
+                    t_s, h_snap, _, _ = snap
+                    hh = np.asarray(h_snap, dtype=np.float64).ravel()
+                    n_snap = min(int(n_area), int(hh.size), int(area_model.size))
+                    if n_snap <= 0:
+                        continue
+                    storage_t_model = float(np.sum(hh[:n_snap] * area_model[:n_snap]))
+                    if not math.isfinite(storage_t_model):
+                        continue
+                    storage_rows.append(
+                        {
+                            "t_s": float(t_s),
+                            "storage_model": storage_t_model,
+                            "storage_delta_model": float(storage_t_model - float(storage_start_model)),
+                        }
+                    )
+                except Exception:
+                    continue
+
+        boundary_rows: List[Dict[str, float]] = []
+        for row in list(boundary_flux_step_rows_model or []):
+            try:
+                boundary_rows.append(
+                    {
+                        "t_s": float(row.get("t_s", 0.0)),
+                        "group_name": str(row.get("group", "") or ""),
+                        "q_effective_model": float(row.get("q_model", 0.0)),
+                        "vol_effective_model": float(row.get("vol_model", 0.0)),
+                    }
+                )
+            except Exception:
+                continue
+
+        conservation_summary = {
+            "run_duration_s": float(run_duration_s),
+            "source_rain_model": float(source_budget_model.get("rain", 0.0)),
+            "source_cell_model": float(source_budget_model.get("cell", 0.0)),
+            "source_coupling_model": float(source_budget_model.get("coupling", 0.0)),
+            "source_total_model": float(source_total_model),
+            "storage_start_model": float(storage_start_model),
+            "storage_end_model": float(storage_end_model),
+            "storage_delta_model": float(storage_delta_model),
+            "implied_net_boundary_out_model": float(implied_boundary_out_model),
+            "avg_implied_boundary_q_model": float(avg_implied_boundary_q_model),
+            "boundary_group_volume_sum_model": float(sum(float(v) for v in boundary_flux_budget_model.values())),
+        }
+
         gpkg_results_path = self._ui._current_line_results_storage_path()
+        if gpkg_results_path and hasattr(self._ui, "_persist_conservation_forensics_to_geopackage"):
+            try:
+                self._ui._persist_conservation_forensics_to_geopackage(
+                    gpkg_results_path,
+                    run_id,
+                    storage_rows,
+                    boundary_rows,
+                    conservation_summary,
+                    source_step_rows=list(source_step_rows_model or []),
+                )
+            except Exception as exc:
+                self._ui._log(f"Conservation forensic persistence warning: {exc}")
         if gpkg_results_path and bool(self._ui.save_line_results_to_gpkg_chk.isChecked()) and self._ui._line_snapshot_rows:
             self._ui._persist_line_results_to_geopackage(
                 gpkg_results_path,
