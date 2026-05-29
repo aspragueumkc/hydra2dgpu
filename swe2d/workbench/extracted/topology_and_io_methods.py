@@ -16,15 +16,26 @@ from swe2d_workbench_qt import (
     _RAIN_GAGE_UNITS_VALUE_MAP,
     _STRUCTURE_TYPE_VALUE_MAP,
     _gmsh_available,
-    _mfem_meshopt_available,
     _h5py,
     _tqmesh_available,
 )
 
 def _bind_topology_tab_dynamic_controls(self, topology_tab_page: QtWidgets.QWidget, topo_layout: QtWidgets.QGridLayout) -> None:
     def _ensure(widget: QtWidgets.QWidget, row: int, col: int, row_span: int = 1, col_span: int = 1) -> None:
-        if topo_layout.indexOf(widget) >= 0:
-            return
+        idx = topo_layout.indexOf(widget)
+        if idx >= 0:
+            try:
+                cur_row, cur_col, cur_row_span, cur_col_span = topo_layout.getItemPosition(idx)
+                if (
+                    int(cur_row) == int(row)
+                    and int(cur_col) == int(col)
+                    and int(cur_row_span) == int(row_span)
+                    and int(cur_col_span) == int(col_span)
+                ):
+                    return
+            except Exception:
+                pass
+            topo_layout.removeWidget(widget)
         topo_layout.addWidget(widget, row, col, row_span, col_span)
 
     def _find_or_create_combo(name: str, row: int) -> QtWidgets.QComboBox:
@@ -91,12 +102,18 @@ def _bind_topology_tab_dynamic_controls(self, topology_tab_page: QtWidgets.QWidg
             w.setText(text)
         return w
 
-    def _find_or_create_form_container(name: str, row: int) -> QtWidgets.QFormLayout:
+    def _find_or_create_form_container(
+        name: str,
+        row: int,
+        col: int = 1,
+        row_span: int = 1,
+        col_span: int = 1,
+    ) -> QtWidgets.QFormLayout:
         container = topology_tab_page.findChild(QtWidgets.QWidget, name)
         if container is None:
             container = QtWidgets.QWidget()
             container.setObjectName(name)
-        _ensure(container, row, 1)
+        _ensure(container, row, col, row_span, col_span)
         layout = container.layout()
         if not isinstance(layout, QtWidgets.QFormLayout):
             layout = QtWidgets.QFormLayout(container)
@@ -161,12 +178,24 @@ def _bind_topology_tab_dynamic_controls(self, topology_tab_page: QtWidgets.QWidg
     self.topo_default_size_spin.setDecimals(3)
     self.topo_default_size_spin.setValue(20.0)
 
-    gmsh_form = _find_or_create_form_container("topo_gmsh_controls_widget", 8)
-    tqmesh_form = _find_or_create_form_container("topo_tqmesh_controls_widget", 9)
-    quality_form = _find_or_create_form_container("topo_quality_controls_widget", 10)
+    gmsh_form = _find_or_create_form_container("topo_gmsh_controls_widget", 8, col=1)
+    # Share the same backend-controls row as Gmsh and toggle visibility by backend.
+    tqmesh_form = _find_or_create_form_container("topo_tqmesh_controls_widget", 8, col=1)
+    quality_form = _find_or_create_form_container("topo_quality_controls_widget", 9, col=1)
     self.topo_gmsh_controls_widget = topology_tab_page.findChild(QtWidgets.QWidget, "topo_gmsh_controls_widget")
     self.topo_tqmesh_controls_widget = topology_tab_page.findChild(QtWidgets.QWidget, "topo_tqmesh_controls_widget")
     self.topo_quality_controls_widget = topology_tab_page.findChild(QtWidgets.QWidget, "topo_quality_controls_widget")
+    self.topo_backend_controls_lbl = topology_tab_page.findChild(QtWidgets.QLabel, "topo_gmsh_controls_lbl")
+    if self.topo_backend_controls_lbl is None:
+        self.topo_backend_controls_lbl = QtWidgets.QLabel("Backend advanced controls:")
+        self.topo_backend_controls_lbl.setObjectName("topo_gmsh_controls_lbl")
+    _ensure(self.topo_backend_controls_lbl, 8, 0)
+
+    self.topo_quality_controls_lbl = topology_tab_page.findChild(QtWidgets.QLabel, "topo_quality_controls_lbl")
+    if self.topo_quality_controls_lbl is None:
+        self.topo_quality_controls_lbl = QtWidgets.QLabel("Quality controls (Gmsh + TQMesh):")
+        self.topo_quality_controls_lbl.setObjectName("topo_quality_controls_lbl")
+    _ensure(self.topo_quality_controls_lbl, 9, 0)
 
     self.topo_quality_shared_group = topology_tab_page.findChild(QtWidgets.QGroupBox, "topo_quality_shared_group")
     if self.topo_quality_shared_group is None:
@@ -232,6 +261,31 @@ def _bind_topology_tab_dynamic_controls(self, topology_tab_page: QtWidgets.QWidg
         default_data=1,
     )
 
+    self.topo_gmsh_global_recombine_chk = _find_or_create_check(
+        "topo_gmsh_global_recombine_chk",
+        "Apply global recombine pass after mesh generation",
+    )
+    self.topo_gmsh_global_recombine_chk.setChecked(False)
+    self.topo_gmsh_global_recombine_chk.setToolTip(
+        "If enabled, runs gmsh.model.mesh.recombine() globally after mesh generation. "
+        "Default is off to avoid recombining non-quad-targeted regions."
+    )
+    if self.topo_gmsh_global_recombine_chk.parent() is None:
+        gmsh_form.addRow(self.topo_gmsh_global_recombine_chk)
+
+    self.topo_gmsh_quad_full_region_flow_align_chk = _find_or_create_check(
+        "topo_gmsh_quad_full_region_flow_align_chk",
+        "Gmsh full-region flow-aligned quads",
+    )
+    self.topo_gmsh_quad_full_region_flow_align_chk.setChecked(False)
+    self.topo_gmsh_quad_full_region_flow_align_chk.setToolTip(
+        "For quadrilateral/channel-generator regions with complete quad-edge controls, "
+        "apply TransfiniteCurve + TransfiniteSurface + Recombine so edge-aligned spacing "
+        "propagates across the full region."
+    )
+    if self.topo_gmsh_quad_full_region_flow_align_chk.parent() is None:
+        gmsh_form.addRow(self.topo_gmsh_quad_full_region_flow_align_chk)
+
     self.topo_gmsh_smoothing_spin = _find_or_create_spin("topo_gmsh_smoothing_spin")
     self.topo_gmsh_smoothing_spin.setRange(0, 100)
     self.topo_gmsh_smoothing_spin.setValue(5)
@@ -249,6 +303,24 @@ def _bind_topology_tab_dynamic_controls(self, topology_tab_page: QtWidgets.QWidg
     self.topo_gmsh_verbosity_spin.setValue(1)
     if self.topo_gmsh_verbosity_spin.parent() is None:
         gmsh_form.addRow("Verbosity:", self.topo_gmsh_verbosity_spin)
+
+    self.topo_gmsh_num_threads_spin = _find_or_create_spin("topo_gmsh_num_threads_spin")
+    self.topo_gmsh_num_threads_spin.setRange(0, 256)
+    self.topo_gmsh_num_threads_spin.setValue(1)
+    self.topo_gmsh_num_threads_spin.setToolTip(
+        "General.NumThreads. Set 0 to use Gmsh default/auto behavior."
+    )
+    if self.topo_gmsh_num_threads_spin.parent() is None:
+        gmsh_form.addRow("Num threads:", self.topo_gmsh_num_threads_spin)
+
+    self.topo_gmsh_max_num_threads_2d_spin = _find_or_create_spin("topo_gmsh_max_num_threads_2d_spin")
+    self.topo_gmsh_max_num_threads_2d_spin.setRange(0, 256)
+    self.topo_gmsh_max_num_threads_2d_spin.setValue(0)
+    self.topo_gmsh_max_num_threads_2d_spin.setToolTip(
+        "Mesh.MaxNumThreads2D cap. Set 0 to keep Gmsh default/auto behavior."
+    )
+    if self.topo_gmsh_max_num_threads_2d_spin.parent() is None:
+        gmsh_form.addRow("Max 2D threads:", self.topo_gmsh_max_num_threads_2d_spin)
 
     self.topo_gmsh_optimize_netgen_chk = _find_or_create_check("topo_gmsh_optimize_netgen_chk", "Enable Netgen optimize")
     if self.topo_gmsh_optimize_netgen_chk.parent() is None:
@@ -289,6 +361,96 @@ def _bind_topology_tab_dynamic_controls(self, topology_tab_page: QtWidgets.QWidg
     )
     _ensure_form_row(gmsh_form, self.topo_gmsh_arc_soft_dist_factor_spin, "Soft arc dist factor:")
 
+    self.topo_gmsh_interface_transition_enable_chk = _find_or_create_check(
+        "topo_gmsh_interface_transition_enable_chk",
+        "Enable interface transition grading",
+    )
+    self.topo_gmsh_interface_transition_enable_chk.setChecked(True)
+    self.topo_gmsh_interface_transition_enable_chk.setToolTip(
+        "Apply Distance/Threshold grading near shared interfaces on non-transfinite regions only."
+    )
+    _ensure_form_row(gmsh_form, self.topo_gmsh_interface_transition_enable_chk)
+
+    self.topo_gmsh_interface_transition_dist_factor_spin = _find_or_create_double_spin(
+        "topo_gmsh_interface_transition_dist_factor_spin"
+    )
+    self.topo_gmsh_interface_transition_dist_factor_spin.setRange(0.25, 20.0)
+    self.topo_gmsh_interface_transition_dist_factor_spin.setDecimals(3)
+    self.topo_gmsh_interface_transition_dist_factor_spin.setSingleStep(0.25)
+    self.topo_gmsh_interface_transition_dist_factor_spin.setValue(2.5)
+    self.topo_gmsh_interface_transition_dist_factor_spin.setToolTip(
+        "Distance multiplier for interface grading influence width. Higher values widen the transition band."
+    )
+    _ensure_form_row(
+        gmsh_form,
+        self.topo_gmsh_interface_transition_dist_factor_spin,
+        "Interface transition dist factor:",
+    )
+
+    self.topo_gmsh_interface_transition_min_ratio_spin = _find_or_create_double_spin(
+        "topo_gmsh_interface_transition_min_ratio_spin"
+    )
+    self.topo_gmsh_interface_transition_min_ratio_spin.setRange(1.0, 10.0)
+    self.topo_gmsh_interface_transition_min_ratio_spin.setDecimals(3)
+    self.topo_gmsh_interface_transition_min_ratio_spin.setSingleStep(0.05)
+    self.topo_gmsh_interface_transition_min_ratio_spin.setValue(1.25)
+    self.topo_gmsh_interface_transition_min_ratio_spin.setToolTip(
+        "Only apply interface grading when adjacent region target sizes differ by at least this ratio."
+    )
+    _ensure_form_row(
+        gmsh_form,
+        self.topo_gmsh_interface_transition_min_ratio_spin,
+        "Interface transition min ratio:",
+    )
+
+    self.topo_gmsh_interface_conformance_chk = _find_or_create_check(
+        "topo_gmsh_interface_conformance_chk",
+        "Enable transverse interface conformance post-process",
+    )
+    self.topo_gmsh_interface_conformance_chk.setChecked(False)
+    self.topo_gmsh_interface_conformance_chk.setToolTip(
+        "Snap and weld mixed-interface nodes after Gmsh extraction to enforce shared boundary topology."
+    )
+    _ensure_form_row(gmsh_form, self.topo_gmsh_interface_conformance_chk)
+
+    self.topo_gmsh_transverse_interface_centroid_merge_chk = _find_or_create_check(
+        "topo_gmsh_transverse_interface_centroid_merge_chk",
+        "Use centroid merge for matched transverse interface nodes",
+    )
+    self.topo_gmsh_transverse_interface_centroid_merge_chk.setChecked(False)
+    self.topo_gmsh_transverse_interface_centroid_merge_chk.setToolTip(
+        "Move matched interface-node groups to their centroid before welding instead of one-sided snapping."
+    )
+    _ensure_form_row(gmsh_form, self.topo_gmsh_transverse_interface_centroid_merge_chk)
+
+    self.topo_gmsh_interface_snap_tol_spin = _find_or_create_double_spin("topo_gmsh_interface_snap_tol_spin")
+    self.topo_gmsh_interface_snap_tol_spin.setRange(1.0e-6, 1.0e5)
+    self.topo_gmsh_interface_snap_tol_spin.setDecimals(6)
+    self.topo_gmsh_interface_snap_tol_spin.setValue(1.0)
+    self.topo_gmsh_interface_snap_tol_spin.setToolTip(
+        "Distance tolerance used by transverse interface conformance snapping."
+    )
+    _ensure_form_row(gmsh_form, self.topo_gmsh_interface_snap_tol_spin, "Interface conformance snap tol:")
+
+    self.topo_gmsh_interface_reject_near_unshared_chk = _find_or_create_check(
+        "topo_gmsh_interface_reject_near_unshared_chk",
+        "Reject mixed interfaces with near-coincident unshared nodes",
+    )
+    self.topo_gmsh_interface_reject_near_unshared_chk.setChecked(True)
+    self.topo_gmsh_interface_reject_near_unshared_chk.setToolTip(
+        "Fail meshing when a transfinite/tri interface shows hanging-node style near-miss pairs."
+    )
+    _ensure_form_row(gmsh_form, self.topo_gmsh_interface_reject_near_unshared_chk)
+
+    self.topo_gmsh_interface_reject_tol_spin = _find_or_create_double_spin("topo_gmsh_interface_reject_tol_spin")
+    self.topo_gmsh_interface_reject_tol_spin.setRange(1.0e-6, 1.0e3)
+    self.topo_gmsh_interface_reject_tol_spin.setDecimals(6)
+    self.topo_gmsh_interface_reject_tol_spin.setValue(1.0e-3)
+    self.topo_gmsh_interface_reject_tol_spin.setToolTip(
+        "Tolerance for detecting near-coincident unshared interface nodes (hanging-node signature)."
+    )
+    _ensure_form_row(gmsh_form, self.topo_gmsh_interface_reject_tol_spin, "Interface reject tol:")
+
     self.topo_gmsh_mesh_size_min_spin = _find_or_create_double_spin("topo_gmsh_mesh_size_min_spin")
     self.topo_gmsh_mesh_size_min_spin.setRange(0.0, 1.0e6)
     self.topo_gmsh_mesh_size_min_spin.setDecimals(6)
@@ -309,112 +471,6 @@ def _bind_topology_tab_dynamic_controls(self, topology_tab_page: QtWidgets.QWidg
     self.topo_gmsh_mesh_size_from_points_chk.setChecked(True)
     if self.topo_gmsh_mesh_size_from_points_chk.parent() is None:
         gmsh_form.addRow(self.topo_gmsh_mesh_size_from_points_chk)
-
-    _mfem_label = (
-        "Enable MFEM TMOP post-optimization (beta)"
-        if _mfem_meshopt_available()
-        else "Enable MFEM TMOP post-optimization (beta, build plugin with MFEM)"
-    )
-    self.topo_mfem_post_opt_enable_chk = _find_or_create_check(
-        "topo_mfem_post_opt_enable_chk",
-        _mfem_label,
-    )
-    self.topo_mfem_post_opt_enable_chk.setChecked(False)
-    self.topo_mfem_post_opt_enable_chk.setToolTip(
-        "Run MFEM TMOP optimization after base meshing. This is optional and experimental."
-    )
-    if self.topo_mfem_post_opt_enable_chk.parent() is None:
-        quality_form.addRow(self.topo_mfem_post_opt_enable_chk)
-
-    self.topo_mfem_seed_backend_combo = topology_tab_page.findChild(QtWidgets.QComboBox, "topo_mfem_seed_backend_combo")
-    if self.topo_mfem_seed_backend_combo is None:
-        self.topo_mfem_seed_backend_combo = QtWidgets.QComboBox()
-        self.topo_mfem_seed_backend_combo.setObjectName("topo_mfem_seed_backend_combo")
-    _set_combo_items(
-        self.topo_mfem_seed_backend_combo,
-        [
-            ("Structured seed", "structured"),
-            (_gmsh_label, "gmsh"),
-            (_tqmesh_label, "tqmesh"),
-        ],
-        default_data="structured",
-    )
-    _ensure_form_row(quality_form, self.topo_mfem_seed_backend_combo, "MFEM seed backend:")
-
-    self.topo_mfem_preset_combo = topology_tab_page.findChild(QtWidgets.QComboBox, "topo_mfem_preset_combo")
-    if self.topo_mfem_preset_combo is None:
-        self.topo_mfem_preset_combo = QtWidgets.QComboBox()
-        self.topo_mfem_preset_combo.setObjectName("topo_mfem_preset_combo")
-    _set_combo_items(
-        self.topo_mfem_preset_combo,
-        [
-            ("Shape unit", "shape_unit"),
-            ("Shape equal size", "shape_equal_size"),
-            ("Shape initial size", "shape_initial_size"),
-            ("Shape + given size", "shape_size_given"),
-            ("Balanced shape + size", "balanced_shape_size"),
-            ("Shape + size + orientation", "shape_size_orientation"),
-        ],
-        default_data="balanced_shape_size",
-    )
-    _ensure_form_row(quality_form, self.topo_mfem_preset_combo, "MFEM preset:")
-
-    self.topo_mfem_post_opt_strict_chk = _find_or_create_check(
-        "topo_mfem_post_opt_strict_chk",
-        "MFEM strict mode (fail if unavailable/error)",
-    )
-    self.topo_mfem_post_opt_strict_chk.setChecked(False)
-    self.topo_mfem_post_opt_strict_chk.setToolTip(
-        "When enabled, meshing fails if MFEM post-optimization cannot run."
-    )
-    if self.topo_mfem_post_opt_strict_chk.parent() is None:
-        quality_form.addRow(self.topo_mfem_post_opt_strict_chk)
-
-    self.topo_mfem_post_opt_max_iters_spin = _find_or_create_spin("topo_mfem_post_opt_max_iters_spin")
-    self.topo_mfem_post_opt_max_iters_spin.setRange(1, 500)
-    self.topo_mfem_post_opt_max_iters_spin.setValue(25)
-    _ensure_form_row(quality_form, self.topo_mfem_post_opt_max_iters_spin, "MFEM max iterations:")
-
-    self.topo_mfem_post_opt_quality_weight_spin = _find_or_create_double_spin("topo_mfem_post_opt_quality_weight_spin")
-    self.topo_mfem_post_opt_quality_weight_spin.setRange(0.0, 100.0)
-    self.topo_mfem_post_opt_quality_weight_spin.setDecimals(3)
-    self.topo_mfem_post_opt_quality_weight_spin.setSingleStep(0.05)
-    self.topo_mfem_post_opt_quality_weight_spin.setValue(1.0)
-    _ensure_form_row(quality_form, self.topo_mfem_post_opt_quality_weight_spin, "MFEM quality weight:")
-
-    self.topo_mfem_post_opt_boundary_fit_weight_spin = _find_or_create_double_spin("topo_mfem_post_opt_boundary_fit_weight_spin")
-    self.topo_mfem_post_opt_boundary_fit_weight_spin.setRange(0.0, 100.0)
-    self.topo_mfem_post_opt_boundary_fit_weight_spin.setDecimals(3)
-    self.topo_mfem_post_opt_boundary_fit_weight_spin.setSingleStep(0.05)
-    self.topo_mfem_post_opt_boundary_fit_weight_spin.setValue(0.35)
-    _ensure_form_row(quality_form, self.topo_mfem_post_opt_boundary_fit_weight_spin, "MFEM boundary fit weight:")
-
-    self.topo_mfem_post_opt_interface_fit_weight_spin = _find_or_create_double_spin("topo_mfem_post_opt_interface_fit_weight_spin")
-    self.topo_mfem_post_opt_interface_fit_weight_spin.setRange(0.0, 100.0)
-    self.topo_mfem_post_opt_interface_fit_weight_spin.setDecimals(3)
-    self.topo_mfem_post_opt_interface_fit_weight_spin.setSingleStep(0.05)
-    self.topo_mfem_post_opt_interface_fit_weight_spin.setValue(0.25)
-    _ensure_form_row(quality_form, self.topo_mfem_post_opt_interface_fit_weight_spin, "MFEM interface fit weight:")
-
-    self.topo_mfem_post_opt_min_det_j_edit = _find_or_create_line_edit("topo_mfem_post_opt_min_det_j_edit", "1e-9")
-    self.topo_mfem_post_opt_min_det_j_edit.setToolTip(
-        "Minimum determinant-Jacobian threshold used by MFEM post-optimization safeguards."
-    )
-    _ensure_form_row(quality_form, self.topo_mfem_post_opt_min_det_j_edit, "MFEM min det(J):")
-
-    self.topo_mfem_post_opt_lock_boundary_nodes_chk = _find_or_create_check(
-        "topo_mfem_post_opt_lock_boundary_nodes_chk",
-        "MFEM lock boundary nodes",
-    )
-    self.topo_mfem_post_opt_lock_boundary_nodes_chk.setChecked(True)
-    if self.topo_mfem_post_opt_lock_boundary_nodes_chk.parent() is None:
-        quality_form.addRow(self.topo_mfem_post_opt_lock_boundary_nodes_chk)
-
-    self.topo_mfem_post_opt_time_limit_spin = _find_or_create_double_spin("topo_mfem_post_opt_time_limit_spin")
-    self.topo_mfem_post_opt_time_limit_spin.setRange(1.0, 3600.0)
-    self.topo_mfem_post_opt_time_limit_spin.setDecimals(1)
-    self.topo_mfem_post_opt_time_limit_spin.setValue(90.0)
-    _ensure_form_row(quality_form, self.topo_mfem_post_opt_time_limit_spin, "MFEM time budget (s):")
 
     self.topo_gmsh_quality_enable_chk = _find_or_create_check(
         "topo_gmsh_quality_enable_chk", "Enable Gmsh iterative quality loop"
@@ -488,6 +544,38 @@ def _bind_topology_tab_dynamic_controls(self, topology_tab_page: QtWidgets.QWidg
     )
     if self.topo_tqmesh_quad_full_region_flow_align_chk.parent() is None:
         tqmesh_form.addRow(self.topo_tqmesh_quad_full_region_flow_align_chk)
+
+    self.topo_tqmesh_quad_region_method_combo = topology_tab_page.findChild(
+        QtWidgets.QComboBox,
+        "topo_tqmesh_quad_region_method_combo",
+    )
+    if self.topo_tqmesh_quad_region_method_combo is None:
+        self.topo_tqmesh_quad_region_method_combo = QtWidgets.QComboBox()
+        self.topo_tqmesh_quad_region_method_combo.setObjectName("topo_tqmesh_quad_region_method_combo")
+    _set_combo_items(
+        self.topo_tqmesh_quad_region_method_combo,
+        [
+            ("Auto (legacy flow-align toggle)", "auto"),
+            ("QGIS structured full-region flow align", "qgis_structured"),
+            ("TQMesh native quad recipe", "tqmesh_native_recipe"),
+        ],
+        default_data="auto",
+    )
+    self.topo_tqmesh_quad_region_method_combo.setToolTip(
+        "Choose how quadrilateral/cartesian regions are meshed in the TQMesh backend. "
+        "Native recipe uses TQMesh triangulation + tri2quad + quad refinement."
+    )
+    if self.topo_tqmesh_quad_region_method_combo.parent() is None:
+        tqmesh_form.addRow("Quad-region method:", self.topo_tqmesh_quad_region_method_combo)
+
+    self.topo_tqmesh_quad_refinements_spin = _find_or_create_spin("topo_tqmesh_quad_refinements_spin")
+    self.topo_tqmesh_quad_refinements_spin.setRange(0, 12)
+    self.topo_tqmesh_quad_refinements_spin.setValue(1)
+    self.topo_tqmesh_quad_refinements_spin.setToolTip(
+        "Number of TQMesh quad-refinement passes applied after tri-to-quad in native recipe mode."
+    )
+    if self.topo_tqmesh_quad_refinements_spin.parent() is None:
+        tqmesh_form.addRow("Native recipe quad refinements:", self.topo_tqmesh_quad_refinements_spin)
 
     self.topo_tqmesh_interface_conformance_chk = _find_or_create_check(
         "topo_tqmesh_interface_conformance_chk",
@@ -608,60 +696,36 @@ def _bind_topology_tab_dynamic_controls(self, topology_tab_page: QtWidgets.QWidg
     _reconnect(self.topo_quality_smooth_increments_edit.textChanged, self._update_topology_control_summary)
     _reconnect(self.topo_tqmesh_boundary_split_max_length_spin.valueChanged, self._update_topology_control_summary)
     _reconnect(self.topo_tqmesh_quad_full_region_flow_align_chk.toggled, self._update_topology_control_summary)
+    _reconnect(self.topo_tqmesh_quad_region_method_combo.currentIndexChanged, self._update_topology_control_summary)
+    _reconnect(self.topo_tqmesh_quad_refinements_spin.valueChanged, self._update_topology_control_summary)
     _reconnect(self.topo_tqmesh_interface_conformance_chk.toggled, self._update_topology_control_summary)
     _reconnect(self.topo_tqmesh_interface_snap_tol_spin.valueChanged, self._update_topology_control_summary)
     _reconnect(self.topo_tqmesh_breakline_fixed_edges_chk.toggled, self._update_topology_control_summary)
     _reconnect(self.topo_tqmesh_breakline_fixed_edges_strict_chk.toggled, self._update_topology_control_summary)
+    _reconnect(self.topo_gmsh_quad_full_region_flow_align_chk.toggled, self._update_topology_control_summary)
     _reconnect(self.topo_gmsh_quality_recombine_topology_passes_edit.textChanged, self._update_topology_control_summary)
     _reconnect(self.topo_gmsh_quality_recombine_min_quality_edit.textChanged, self._update_topology_control_summary)
     _reconnect(self.topo_gmsh_quality_random_factors_edit.textChanged, self._update_topology_control_summary)
     _reconnect(self.topo_gmsh_quality_optimize_methods_edit.textChanged, self._update_topology_control_summary)
     _reconnect(self.topo_gmsh_algo_switch_on_failure_chk.toggled, self._update_topology_control_summary)
     _reconnect(self.topo_gmsh_recombine_node_repositioning_chk.toggled, self._update_topology_control_summary)
+    _reconnect(self.topo_gmsh_global_recombine_chk.toggled, self._update_topology_control_summary)
     _reconnect(self.topo_gmsh_arc_mode_combo.currentIndexChanged, self._update_topology_control_summary)
     _reconnect(self.topo_gmsh_arc_soft_size_factor_spin.valueChanged, self._update_topology_control_summary)
     _reconnect(self.topo_gmsh_arc_soft_dist_factor_spin.valueChanged, self._update_topology_control_summary)
+    _reconnect(self.topo_gmsh_interface_transition_enable_chk.toggled, self._update_topology_control_summary)
+    _reconnect(self.topo_gmsh_interface_transition_dist_factor_spin.valueChanged, self._update_topology_control_summary)
+    _reconnect(self.topo_gmsh_interface_transition_min_ratio_spin.valueChanged, self._update_topology_control_summary)
     _reconnect(self.topo_gmsh_mesh_size_min_spin.valueChanged, self._update_topology_control_summary)
     _reconnect(self.topo_gmsh_tolerance_edge_length_spin.valueChanged, self._update_topology_control_summary)
     _reconnect(self.topo_gmsh_mesh_size_from_points_chk.toggled, self._update_topology_control_summary)
+    _reconnect(self.topo_gmsh_num_threads_spin.valueChanged, self._update_topology_control_summary)
+    _reconnect(self.topo_gmsh_max_num_threads_2d_spin.valueChanged, self._update_topology_control_summary)
     _reconnect(self.topo_gmsh_quality_enable_chk.toggled, self._update_topology_control_summary)
     _reconnect(self.topo_gmsh_quality_max_iters_spin.valueChanged, self._update_topology_control_summary)
     _reconnect(self.topo_gmsh_quality_time_limit_spin.valueChanged, self._update_topology_control_summary)
-    _reconnect(self.topo_mfem_post_opt_enable_chk.toggled, self._update_topology_control_summary)
-    _reconnect(self.topo_mfem_seed_backend_combo.currentIndexChanged, self._update_topology_control_summary)
-    _reconnect(self.topo_mfem_preset_combo.currentIndexChanged, self._update_topology_control_summary)
-    _reconnect(self.topo_mfem_post_opt_strict_chk.toggled, self._update_topology_control_summary)
-    _reconnect(self.topo_mfem_post_opt_max_iters_spin.valueChanged, self._update_topology_control_summary)
-    _reconnect(self.topo_mfem_post_opt_quality_weight_spin.valueChanged, self._update_topology_control_summary)
-    _reconnect(self.topo_mfem_post_opt_boundary_fit_weight_spin.valueChanged, self._update_topology_control_summary)
-    _reconnect(self.topo_mfem_post_opt_interface_fit_weight_spin.valueChanged, self._update_topology_control_summary)
-    _reconnect(self.topo_mfem_post_opt_min_det_j_edit.textChanged, self._update_topology_control_summary)
-    _reconnect(self.topo_mfem_post_opt_lock_boundary_nodes_chk.toggled, self._update_topology_control_summary)
-    _reconnect(self.topo_mfem_post_opt_time_limit_spin.valueChanged, self._update_topology_control_summary)
 
-    # TEMPORARY: hide MFEM controls from the topology tab.
-    _disabled_widgets = [
-        getattr(self, "topo_mfem_post_opt_enable_chk", None),
-        getattr(self, "topo_mfem_seed_backend_combo", None),
-        getattr(self, "topo_mfem_preset_combo", None),
-        getattr(self, "topo_mfem_post_opt_strict_chk", None),
-        getattr(self, "topo_mfem_post_opt_max_iters_spin", None),
-        getattr(self, "topo_mfem_post_opt_quality_weight_spin", None),
-        getattr(self, "topo_mfem_post_opt_boundary_fit_weight_spin", None),
-        getattr(self, "topo_mfem_post_opt_interface_fit_weight_spin", None),
-        getattr(self, "topo_mfem_post_opt_min_det_j_edit", None),
-        getattr(self, "topo_mfem_post_opt_lock_boundary_nodes_chk", None),
-        getattr(self, "topo_mfem_post_opt_time_limit_spin", None),
-    ]
-    for _w in _disabled_widgets:
-        if _w is None:
-            continue
-        try:
-            _w.setChecked(False)
-        except Exception:
-            pass
-        _w.setEnabled(False)
-        _w.setVisible(False)
+    self._update_topology_control_summary()
 
 
 
@@ -2400,6 +2464,8 @@ def _update_topology_control_summary(self):
     quality_controls_widget = getattr(self, "topo_quality_controls_widget", None)
     quality_shared_group = getattr(self, "topo_quality_shared_group", None)
     quality_gmsh_retry_group = getattr(self, "topo_quality_gmsh_retry_group", None)
+    backend_controls_lbl = getattr(self, "topo_backend_controls_lbl", None)
+    quality_controls_lbl = getattr(self, "topo_quality_controls_lbl", None)
     if gmsh_controls_widget is None and hasattr(self, "findChild"):
         gmsh_controls_widget = self.findChild(QtWidgets.QWidget, "topo_gmsh_controls_widget")
     if tqmesh_controls_widget is None and hasattr(self, "findChild"):
@@ -2410,12 +2476,26 @@ def _update_topology_control_summary(self):
         quality_shared_group = self.findChild(QtWidgets.QGroupBox, "topo_quality_shared_group")
     if quality_gmsh_retry_group is None and hasattr(self, "findChild"):
         quality_gmsh_retry_group = self.findChild(QtWidgets.QGroupBox, "topo_quality_gmsh_retry_group")
+    if backend_controls_lbl is None and hasattr(self, "findChild"):
+        backend_controls_lbl = self.findChild(QtWidgets.QLabel, "topo_gmsh_controls_lbl")
+    if quality_controls_lbl is None and hasattr(self, "findChild"):
+        quality_controls_lbl = self.findChild(QtWidgets.QLabel, "topo_quality_controls_lbl")
     if gmsh_controls_widget is not None:
         gmsh_controls_widget.setVisible(backend_name == "gmsh")
     if tqmesh_controls_widget is not None:
         tqmesh_controls_widget.setVisible(backend_name == "tqmesh")
+    if backend_controls_lbl is not None:
+        backend_controls_lbl.setVisible(backend_name in {"gmsh", "tqmesh"})
+        if backend_name == "gmsh":
+            backend_controls_lbl.setText("Gmsh advanced controls:")
+        elif backend_name == "tqmesh":
+            backend_controls_lbl.setText("TQMesh advanced controls:")
+        else:
+            backend_controls_lbl.setText("Backend advanced controls:")
     if quality_controls_widget is not None:
         quality_controls_widget.setVisible(backend_name in {"gmsh", "tqmesh"})
+    if quality_controls_lbl is not None:
+        quality_controls_lbl.setVisible(backend_name in {"gmsh", "tqmesh"})
     if quality_shared_group is not None:
         quality_shared_group.setVisible(backend_name in {"gmsh", "tqmesh"})
     if quality_gmsh_retry_group is not None:
@@ -2433,6 +2513,7 @@ def _update_topology_control_summary(self):
         getattr(self, "topo_gmsh_quality_optimize_methods_edit", None),
         getattr(self, "topo_gmsh_algo_switch_on_failure_chk", None),
         getattr(self, "topo_gmsh_recombine_node_repositioning_chk", None),
+        getattr(self, "topo_gmsh_global_recombine_chk", None),
     ]
     generic_quality_widgets = [
         getattr(self, "topo_quality_min_angle_spin", None),
@@ -2455,6 +2536,7 @@ def _update_topology_control_summary(self):
             "Gmsh: use multiple region polygons for multiblock meshes. "
             "Set region cell_type to 'cartesian' or 'quadrilateral' and populate edge_len_1..4 "
             "for per-edge structured spacing. Opposite edges are matched automatically. "
+            "Enable full-region flow-aligned quads to drive transfinite spacing from quad-edge controls. "
             "Region interior rings plus empty regions/constraints are meshed as cutout holes."
         )
     elif backend_name == "tqmesh":
@@ -2475,15 +2557,17 @@ def _update_topology_control_summary(self):
         "max non-orth <= {max_non_orth:.1f} deg, min area/bbox >= {min_area}, strict={strict}; "
         "retry scales={size_scales}, smooth increments={smooth_increments}, "
         "recombine topology={recombine_topology}, recombine minQ={recombine_minq}, rand={random_factors}, "
-        "optimize methods={opt_methods}, algo-switch={algo_switch}, node-reposition={node_reposition}; "
+        "optimize methods={opt_methods}, algo-switch={algo_switch}, node-reposition={node_reposition}, "
+        "global-recombine={global_recombine}; "
+        "gmsh-full-align={gmsh_full_align}; "
         "arc-mode={arc_mode}, soft-size={arc_soft_size:.3g}, soft-dist={arc_soft_dist:.3g}, "
+        "iface-transition={iface_transition}, iface-dist={iface_dist:.3g}, iface-ratio>={iface_ratio:.3g}, "
+        "threads={gmsh_threads}, max2d={gmsh_max2d_threads}, "
         "min-cell={mesh_size_min:.6g}, edge-tol={edge_tol:.6g}, "
         "point-refine={point_refine}; Gmsh loop={gmsh_loop}, attempts={attempts}, budget={budget:.1f}s; "
-        "TQMesh split-max={tq_split:.6g}, full-align={tq_align}, iface-conform={tq_iface}, "
+        "TQMesh split-max={tq_split:.6g}, method={tq_method}, full-align={tq_align}, qref={tq_qref}, iface-conform={tq_iface}, "
         "iface-snap={tq_iface_snap:.6g}, breakline-fixed={tq_breakline}, strict-fixed={tq_breakline_strict}; "
-        "MFEM post-opt={mfem_enabled}, seed={mfem_seed}, preset={mfem_preset}, strict={mfem_strict}, max-iters={mfem_max_iters}, "
-        "wq={mfem_wq:.3g}, wb={mfem_wb:.3g}, wi={mfem_wi:.3g}, "
-        "min-detJ={mfem_min_detj}, lock-bnd={mfem_lock_bnd}, budget={mfem_budget:.1f}s."
+        ""
     ).format(
         min_angle=float(self.topo_quality_min_angle_spin.value()) if hasattr(self, "topo_quality_min_angle_spin") else 0.0,
         max_aspect=float(self.topo_quality_max_aspect_spin.value()) if hasattr(self, "topo_quality_max_aspect_spin") else 0.0,
@@ -2498,9 +2582,16 @@ def _update_topology_control_summary(self):
         opt_methods=str(self.topo_gmsh_quality_optimize_methods_edit.text()).strip() if hasattr(self, "topo_gmsh_quality_optimize_methods_edit") else "Laplace2D",
         algo_switch="on" if getattr(self, "topo_gmsh_algo_switch_on_failure_chk", None) is not None and self.topo_gmsh_algo_switch_on_failure_chk.isChecked() else "off",
         node_reposition="on" if getattr(self, "topo_gmsh_recombine_node_repositioning_chk", None) is not None and self.topo_gmsh_recombine_node_repositioning_chk.isChecked() else "off",
+        global_recombine="on" if getattr(self, "topo_gmsh_global_recombine_chk", None) is not None and self.topo_gmsh_global_recombine_chk.isChecked() else "off",
+        gmsh_full_align="on" if getattr(self, "topo_gmsh_quad_full_region_flow_align_chk", None) is not None and self.topo_gmsh_quad_full_region_flow_align_chk.isChecked() else "off",
         arc_mode=str(self.topo_gmsh_arc_mode_combo.currentData() or "hard_embed") if hasattr(self, "topo_gmsh_arc_mode_combo") else "hard_embed",
         arc_soft_size=float(self.topo_gmsh_arc_soft_size_factor_spin.value()) if hasattr(self, "topo_gmsh_arc_soft_size_factor_spin") else 0.5,
         arc_soft_dist=float(self.topo_gmsh_arc_soft_dist_factor_spin.value()) if hasattr(self, "topo_gmsh_arc_soft_dist_factor_spin") else 2.0,
+        iface_transition="on" if getattr(self, "topo_gmsh_interface_transition_enable_chk", None) is not None and self.topo_gmsh_interface_transition_enable_chk.isChecked() else "off",
+        iface_dist=float(self.topo_gmsh_interface_transition_dist_factor_spin.value()) if hasattr(self, "topo_gmsh_interface_transition_dist_factor_spin") else 2.5,
+        iface_ratio=float(self.topo_gmsh_interface_transition_min_ratio_spin.value()) if hasattr(self, "topo_gmsh_interface_transition_min_ratio_spin") else 1.25,
+        gmsh_threads=int(self.topo_gmsh_num_threads_spin.value()) if hasattr(self, "topo_gmsh_num_threads_spin") else 1,
+        gmsh_max2d_threads=int(self.topo_gmsh_max_num_threads_2d_spin.value()) if hasattr(self, "topo_gmsh_max_num_threads_2d_spin") else 0,
         mesh_size_min=float(self.topo_gmsh_mesh_size_min_spin.value()) if hasattr(self, "topo_gmsh_mesh_size_min_spin") else 0.0,
         edge_tol=float(self.topo_gmsh_tolerance_edge_length_spin.value()) if hasattr(self, "topo_gmsh_tolerance_edge_length_spin") else 0.0,
         point_refine="on" if getattr(self, "topo_gmsh_mesh_size_from_points_chk", None) is not None and self.topo_gmsh_mesh_size_from_points_chk.isChecked() else "off",
@@ -2508,22 +2599,13 @@ def _update_topology_control_summary(self):
         attempts=int(self.topo_gmsh_quality_max_iters_spin.value()) if hasattr(self, "topo_gmsh_quality_max_iters_spin") else 0,
         budget=float(self.topo_gmsh_quality_time_limit_spin.value()) if hasattr(self, "topo_gmsh_quality_time_limit_spin") else 0.0,
         tq_split=float(self.topo_tqmesh_boundary_split_max_length_spin.value()) if hasattr(self, "topo_tqmesh_boundary_split_max_length_spin") else 30.0,
+        tq_method=str(self.topo_tqmesh_quad_region_method_combo.currentData() or "auto") if hasattr(self, "topo_tqmesh_quad_region_method_combo") else "auto",
         tq_align="on" if getattr(self, "topo_tqmesh_quad_full_region_flow_align_chk", None) is not None and self.topo_tqmesh_quad_full_region_flow_align_chk.isChecked() else "off",
+        tq_qref=int(self.topo_tqmesh_quad_refinements_spin.value()) if hasattr(self, "topo_tqmesh_quad_refinements_spin") else 0,
         tq_iface="on" if getattr(self, "topo_tqmesh_interface_conformance_chk", None) is not None and self.topo_tqmesh_interface_conformance_chk.isChecked() else "off",
         tq_iface_snap=float(self.topo_tqmesh_interface_snap_tol_spin.value()) if hasattr(self, "topo_tqmesh_interface_snap_tol_spin") else 1.0,
         tq_breakline="on" if getattr(self, "topo_tqmesh_breakline_fixed_edges_chk", None) is not None and self.topo_tqmesh_breakline_fixed_edges_chk.isChecked() else "off",
         tq_breakline_strict="on" if getattr(self, "topo_tqmesh_breakline_fixed_edges_strict_chk", None) is not None and self.topo_tqmesh_breakline_fixed_edges_strict_chk.isChecked() else "off",
-        mfem_enabled="on" if getattr(self, "topo_mfem_post_opt_enable_chk", None) is not None and self.topo_mfem_post_opt_enable_chk.isChecked() else "off",
-        mfem_seed=str(self.topo_mfem_seed_backend_combo.currentData() or "structured") if hasattr(self, "topo_mfem_seed_backend_combo") else "structured",
-        mfem_preset=str(self.topo_mfem_preset_combo.currentData() or "balanced_shape_size") if hasattr(self, "topo_mfem_preset_combo") else "balanced_shape_size",
-        mfem_strict="on" if getattr(self, "topo_mfem_post_opt_strict_chk", None) is not None and self.topo_mfem_post_opt_strict_chk.isChecked() else "off",
-        mfem_max_iters=int(self.topo_mfem_post_opt_max_iters_spin.value()) if hasattr(self, "topo_mfem_post_opt_max_iters_spin") else 25,
-        mfem_wq=float(self.topo_mfem_post_opt_quality_weight_spin.value()) if hasattr(self, "topo_mfem_post_opt_quality_weight_spin") else 1.0,
-        mfem_wb=float(self.topo_mfem_post_opt_boundary_fit_weight_spin.value()) if hasattr(self, "topo_mfem_post_opt_boundary_fit_weight_spin") else 0.35,
-        mfem_wi=float(self.topo_mfem_post_opt_interface_fit_weight_spin.value()) if hasattr(self, "topo_mfem_post_opt_interface_fit_weight_spin") else 0.25,
-        mfem_min_detj=str(self.topo_mfem_post_opt_min_det_j_edit.text()).strip() if hasattr(self, "topo_mfem_post_opt_min_det_j_edit") else "1e-9",
-        mfem_lock_bnd="on" if getattr(self, "topo_mfem_post_opt_lock_boundary_nodes_chk", None) is not None and self.topo_mfem_post_opt_lock_boundary_nodes_chk.isChecked() else "off",
-        mfem_budget=float(self.topo_mfem_post_opt_time_limit_spin.value()) if hasattr(self, "topo_mfem_post_opt_time_limit_spin") else 90.0,
     )
 
     details: List[str] = []
@@ -2776,15 +2858,27 @@ def _configure_swe2d_layer_editors(self, layer):
 
 def _cleanup_topology_mesh_checkpoint(self) -> None:
     cp_path = str(getattr(self, "_topology_mesh_checkpoint_path", "") or "").strip()
-    if not cp_path:
-        return
-    try:
-        os.remove(cp_path)
-    except FileNotFoundError:
-        pass
-    except Exception:
-        pass
+    if cp_path:
+        try:
+            os.remove(cp_path)
+        except FileNotFoundError:
+            pass
+        except Exception:
+            pass
     self._topology_mesh_checkpoint_path = ""
+
+    progress_path = str(getattr(self, "_topology_mesh_progress_path", "") or "").strip()
+    if progress_path:
+        try:
+            os.remove(progress_path)
+        except FileNotFoundError:
+            pass
+        except Exception:
+            pass
+    self._topology_mesh_progress_path = ""
+    self._topology_mesh_progress_last_seq = -1
+    self._topology_mesh_progress_last_sig = ""
+    self._topology_mesh_progress = None
 
 
 def _recover_topology_mesh_checkpoint(self, backend_name: str, run_mode: str, elapsed: float) -> bool:
@@ -2838,6 +2932,8 @@ def _recover_topology_mesh_checkpoint(self, backend_name: str, run_mode: str, el
         "region_id": region_id,
         "target_size": target_size,
     }
+    if isinstance(quality_summary, dict):
+        self._mesh_data["quality_summary"] = dict(quality_summary)
     if hasattr(self, "_reset_runtime_snapshot_overlay_cache"):
         self._reset_runtime_snapshot_overlay_cache("topology mesh checkpoint recovered")
 
@@ -2875,6 +2971,64 @@ def _recover_topology_mesh_checkpoint(self, backend_name: str, run_mode: str, el
     return True
 
 
+def _poll_tqmesh_progress(self) -> None:
+    backend_name = str(getattr(self, "_topology_mesh_backend", "") or "").strip().lower()
+    if backend_name not in {"tqmesh", "gmsh"}:
+        return
+
+    progress_path = str(getattr(self, "_topology_mesh_progress_path", "") or "").strip()
+    if not progress_path or not os.path.exists(progress_path):
+        return
+
+    try:
+        import json as _json
+
+        with open(progress_path, "r", encoding="utf-8") as fh:
+            payload = _json.load(fh)
+    except Exception:
+        return
+
+    if not isinstance(payload, dict):
+        return
+
+    try:
+        seq = int(payload.get("seq", -1))
+    except Exception:
+        seq = -1
+
+    last_seq = int(getattr(self, "_topology_mesh_progress_last_seq", -1))
+    payload_sig = (
+        f"{payload.get('stage', '')}|{payload.get('region_id', '')}|"
+        f"{payload.get('attempt', '')}|{payload.get('detail', '')}|{seq}"
+    )
+    last_sig = str(getattr(self, "_topology_mesh_progress_last_sig", "") or "")
+    if (seq >= 0 and seq == last_seq) or (payload_sig == last_sig):
+        return
+    self._topology_mesh_progress_last_seq = seq
+    self._topology_mesh_progress_last_sig = payload_sig
+    self._topology_mesh_progress = dict(payload)
+
+    stage = str(payload.get("stage", "")).strip() or "update"
+    detail = str(payload.get("detail", "")).strip()
+    region_id = payload.get("region_id", None)
+    attempt = payload.get("attempt", None)
+    elapsed_s = payload.get("elapsed_s", None)
+
+    parts = [f"stage={stage}"]
+    if region_id is not None:
+        parts.append(f"region={region_id}")
+    if attempt is not None:
+        parts.append(f"attempt={attempt}")
+    if elapsed_s is not None:
+        try:
+            parts.append(f"elapsed={float(elapsed_s):.2f}s")
+        except Exception:
+            pass
+    if detail:
+        parts.append(f"detail={detail}")
+    self._log(f"mesh> {backend_name}-progress " + " ".join(parts))
+
+
 def _poll_topology_mesh_future(self):
     fut = self._topology_mesh_future
     if fut is None:
@@ -2894,9 +3048,9 @@ def _poll_topology_mesh_future(self):
         self._topology_mesh_started_at = None
         self._topology_mesh_poll_count = 0
 
-        # For gmsh (process executor), terminate and recreate the pool to
-        # ensure stuck native meshing work is not left running.
-        if backend_name == "gmsh" and self._topology_mesh_process_pool is not None:
+        # For process-executed backends (gmsh/tqmesh), terminate and recreate
+        # the pool to ensure stuck native meshing work is not left running.
+        if backend_name in {"gmsh", "tqmesh"} and self._topology_mesh_process_pool is not None:
             try:
                 self._topology_mesh_process_pool.shutdown(wait=False, cancel_futures=True)
             except Exception:
@@ -2928,14 +3082,40 @@ def _poll_topology_mesh_future(self):
 
     if not fut.done():
         self._topology_mesh_poll_count += 1
+        _poll_tqmesh_progress(self)
         # Emit lightweight runtime heartbeat at ~1 second cadence.
         if self._topology_mesh_poll_count % 8 == 0:
+            backend_running = str(self._topology_mesh_backend or "unknown").strip().lower()
             spinner = "|/-\\"[(self._topology_mesh_poll_count // 8) % 4]
-            self._log(
-                "mesh> run "
-                f"status={spinner} backend={self._topology_mesh_backend or 'unknown'} "
-                f"elapsed={self._format_elapsed(self._topology_mesh_started_at)}"
-            )
+            if backend_running == "gmsh":
+                try:
+                    status_txt = str(self.topo_status_lbl.text() or "").strip()
+                except Exception:
+                    status_txt = ""
+                elapsed_s = 0.0
+                if self._topology_mesh_started_at is not None:
+                    elapsed_s = max(0.0, time.perf_counter() - self._topology_mesh_started_at)
+                self._topology_mesh_progress = {
+                    "backend": "gmsh",
+                    "stage": "running",
+                    "spinner": str(spinner),
+                    "elapsed_s": float(elapsed_s),
+                    "detail": str(status_txt),
+                }
+                parts = [
+                    "stage=running",
+                    f"status={spinner}",
+                    f"elapsed={self._format_elapsed(self._topology_mesh_started_at)}",
+                ]
+                if status_txt:
+                    parts.append(f"detail={status_txt}")
+                self._log("mesh> gmsh-progress " + " ".join(parts))
+            else:
+                self._log(
+                    "mesh> run "
+                    f"status={spinner} backend={self._topology_mesh_backend or 'unknown'} "
+                    f"elapsed={self._format_elapsed(self._topology_mesh_started_at)}"
+                )
         return
 
     self._topology_mesh_timer.stop()
@@ -2946,6 +3126,7 @@ def _poll_topology_mesh_future(self):
     self._topology_mesh_future = None
     self._topology_mesh_started_at = None
     self._topology_mesh_poll_count = 0
+    self._topology_mesh_progress = None
     fallback_restarted = False
 
     try:
@@ -2972,6 +3153,9 @@ def _poll_topology_mesh_future(self):
             "region_id": mesh.region_id,
             "target_size": mesh.target_size,
         }
+        quality_summary = getattr(mesh, "quality_summary", None)
+        if isinstance(quality_summary, dict):
+            self._mesh_data["quality_summary"] = dict(quality_summary)
         if hasattr(self, "_reset_runtime_snapshot_overlay_cache"):
             self._reset_runtime_snapshot_overlay_cache("topology mesh regenerated")
         n_faces = int(mesh.cell_face_offsets.size - 1)

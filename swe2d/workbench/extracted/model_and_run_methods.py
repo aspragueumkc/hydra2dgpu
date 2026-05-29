@@ -1946,6 +1946,11 @@ def _connect_project_workbench_state_signals(self) -> None:
         ("topo_gmsh_optimize_iters_spin", "valueChanged"),
         ("topo_gmsh_optimize_netgen_chk", "toggled"),
         ("topo_gmsh_verbosity_spin", "valueChanged"),
+        ("topo_gmsh_interface_conformance_chk", "toggled"),
+        ("topo_gmsh_transverse_interface_centroid_merge_chk", "toggled"),
+        ("topo_gmsh_interface_snap_tol_spin", "valueChanged"),
+        ("topo_gmsh_interface_reject_near_unshared_chk", "toggled"),
+        ("topo_gmsh_interface_reject_tol_spin", "valueChanged"),
     ]
     widget_specs.extend(list(getattr(self, "_experimental_3d_bc_signal_specs", []) or []))
 

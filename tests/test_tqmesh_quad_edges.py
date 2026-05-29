@@ -1,6 +1,9 @@
+import itertools
 import os
 import sys
+import types
 import unittest
+import warnings
 from unittest import mock
 import numpy as np
 
@@ -20,6 +23,9 @@ from swe2d.mesh.meshing import (
     MeshResult,
     QuadEdgeControl,
     TQMeshBackend,
+    _breakline_fixed_edges_for_region,
+    _relax_fixed_edges_and_hints,
+    _structured_quad_region_mesh,
 )
 
 
@@ -93,6 +99,174 @@ class TestTQMeshQuadEdges(unittest.TestCase):
 
         shared_edges = [edge for edge, rids in edge_regions.items() if rids == {1, 2}]
         self.assertGreater(len(shared_edges), 0)
+
+
+class TestTQMeshBreaklineSelection(unittest.TestCase):
+    def test_untyped_arc_not_breakline_by_default(self):
+        region = ConceptualRegion(
+            region_id=1,
+            ring_xy=[(0.0, 0.0), (100.0, 0.0), (100.0, 100.0), (0.0, 100.0), (0.0, 0.0)],
+            default_size=10.0,
+            default_cell_type="triangular",
+        )
+        arc = ConceptualArc(
+            arc_id=1,
+            region_id=1,
+            arc_role=None,
+            points_xy=[(10.0, 20.0), (90.0, 20.0)],
+        )
+        model = ConceptualModel(nodes=[], arcs=[arc], regions=[region], constraints=[], quad_edges=[])
+
+        with mock.patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("BACKWATER_TQMESH_UNTYPED_ARCS_ARE_BREAKLINES", None)
+            fixed = _breakline_fixed_edges_for_region(model, region, region.ring_xy)
+        self.assertEqual(len(fixed), 0)
+
+    def test_untyped_arc_breakline_when_legacy_env_enabled(self):
+        region = ConceptualRegion(
+            region_id=1,
+            ring_xy=[(0.0, 0.0), (100.0, 0.0), (100.0, 100.0), (0.0, 100.0), (0.0, 0.0)],
+            default_size=10.0,
+            default_cell_type="triangular",
+        )
+        arc = ConceptualArc(
+            arc_id=1,
+            region_id=1,
+            arc_role=None,
+            points_xy=[(10.0, 20.0), (90.0, 20.0)],
+        )
+        model = ConceptualModel(nodes=[], arcs=[arc], regions=[region], constraints=[], quad_edges=[])
+
+        with mock.patch.dict(os.environ, {"BACKWATER_TQMESH_UNTYPED_ARCS_ARE_BREAKLINES": "1"}, clear=False):
+            fixed = _breakline_fixed_edges_for_region(model, region, region.ring_xy)
+        self.assertEqual(len(fixed), 1)
+
+    def test_soft_size_hint_override_disables_hard_breakline(self):
+        region = ConceptualRegion(
+            region_id=1,
+            ring_xy=[(0.0, 0.0), (100.0, 0.0), (100.0, 100.0), (0.0, 100.0), (0.0, 0.0)],
+            default_size=10.0,
+            default_cell_type="triangular",
+        )
+        arc = ConceptualArc(
+            arc_id=1,
+            region_id=1,
+            arc_role="breakline",
+            arc_mode_override="soft_size_hint",
+            points_xy=[(10.0, 20.0), (90.0, 20.0)],
+        )
+        model = ConceptualModel(nodes=[], arcs=[arc], regions=[region], constraints=[], quad_edges=[])
+
+        fixed = _breakline_fixed_edges_for_region(model, region, region.ring_xy)
+        self.assertEqual(len(fixed), 0)
+
+
+class TestTQMeshRelaxedBreaklineFallback(unittest.TestCase):
+    def test_relax_fixed_edges_preserves_endpoints(self):
+        polyline = [
+            (0.0, 0.0),
+            (1.0, 0.05),
+            (2.0, -0.04),
+            (3.0, 0.03),
+            (4.0, 0.0),
+        ]
+        relaxed, hints, hint_sizes = _relax_fixed_edges_and_hints(
+            [polyline],
+            target_size=1.0,
+            simplify_tol_factor=0.20,
+            max_hint_boxes=32,
+        )
+
+        self.assertEqual(len(relaxed), 1)
+        self.assertGreaterEqual(len(relaxed[0]), 2)
+        self.assertEqual(tuple(relaxed[0][0]), polyline[0])
+        self.assertEqual(tuple(relaxed[0][-1]), polyline[-1])
+        self.assertGreater(len(hints), 0)
+        self.assertEqual(len(hints), len(hint_sizes))
+
+    def test_relax_fixed_edges_respects_hint_cap(self):
+        polyline = [(float(i), 0.0) for i in range(50)]
+        _relaxed, hints, hint_sizes = _relax_fixed_edges_and_hints(
+            [polyline],
+            target_size=0.5,
+            max_hint_boxes=8,
+        )
+
+        self.assertLessEqual(len(hints), 8)
+        self.assertEqual(len(hints), len(hint_sizes))
+
+
+class TestStructuredQuadRingValidityGate(unittest.TestCase):
+    def test_structured_quad_rejects_self_intersecting_control_ring(self):
+        region = ConceptualRegion(
+            region_id=4,
+            ring_xy=[(0.0, 0.0), (2.0, 0.0), (2.0, 2.0), (0.0, 2.0)],
+            default_size=0.5,
+            default_cell_type="quadrilateral",
+            edge_lengths=[0.5, 0.5, 0.5, 0.5],
+        )
+        # Assembled ring from these chains is a bow-tie and must be rejected.
+        quad_controls = [
+            QuadEdgeControl(4, 1, [(0.0, 0.0), (2.0, 0.0)], 0.5, 0, None, 1.0),
+            QuadEdgeControl(4, 2, [(2.0, 0.0), (0.0, 2.0)], 0.5, 0, None, 1.0),
+            QuadEdgeControl(4, 3, [(2.0, 2.0), (0.0, 2.0)], 0.5, 0, None, 1.0),
+            QuadEdgeControl(4, 4, [(0.0, 0.0), (2.0, 2.0)], 0.5, 0, None, 1.0),
+        ]
+
+        with warnings.catch_warnings(record=True) as w:
+            warnings.simplefilter("always")
+            block = _structured_quad_region_mesh(region, quad_controls, max_cells=500)
+
+        self.assertIsNone(block)
+        self.assertTrue(any("validity gate" in str(item.message).lower() for item in w))
+
+
+class TestTQMeshQuadRegionMethodSelection(unittest.TestCase):
+    def test_native_recipe_does_not_call_structured_block(self):
+        region = ConceptualRegion(
+            region_id=10,
+            ring_xy=[(0.0, 0.0), (10.0, 0.0), (10.0, 10.0), (0.0, 10.0)],
+            default_size=2.0,
+            default_cell_type="quadrilateral",
+            edge_lengths=[2.0, 2.0, 2.0, 2.0],
+        )
+        quad_edges = [
+            QuadEdgeControl(10, 1, [(0.0, 0.0), (10.0, 0.0)], 2.0, 0, None, 1.0),
+            QuadEdgeControl(10, 2, [(10.0, 0.0), (10.0, 10.0)], 2.0, 0, None, 1.0),
+            QuadEdgeControl(10, 3, [(10.0, 10.0), (0.0, 10.0)], 2.0, 0, None, 1.0),
+            QuadEdgeControl(10, 4, [(0.0, 10.0), (0.0, 0.0)], 2.0, 0, None, 1.0),
+        ]
+        model = ConceptualModel(nodes=[], arcs=[], regions=[region], constraints=[], quad_edges=quad_edges)
+
+        fake_tqmesh = types.SimpleNamespace(
+            generate_triangular_mesh=lambda **_kwargs: {
+                "verts_x": [0.0, 10.0, 0.0],
+                "verts_y": [0.0, 0.0, 10.0],
+                "triangles": [[0, 1, 2]],
+                "quads": [],
+                "bdry_v0": [0, 1, 2],
+                "bdry_v1": [1, 2, 0],
+                "bdry_color": [1, 1, 1],
+            }
+        )
+
+        options = {
+            "tqmesh_native_merge": False,
+            "tqmesh_quad_region_method": "tqmesh_native_recipe",
+            "tqmesh_interface_conformance": False,
+            "tqmesh_quad_refinements": 1,
+        }
+
+        with mock.patch.dict(sys.modules, {"hydra_tqmesh": fake_tqmesh}):
+            with mock.patch(
+                "swe2d.mesh.meshing._structured_quad_region_mesh",
+                side_effect=AssertionError("structured path should not be used in native recipe mode"),
+            ) as structured_block:
+                mesh = TQMeshBackend(options=options).generate(model)
+
+        structured_block.assert_not_called()
+        self.assertGreater(int(mesh.node_x.size), 0)
+        self.assertGreater(int(mesh.cell_face_offsets.size), 1)
 
 
 class TestGmshConformingInterfaces(unittest.TestCase):
@@ -378,8 +552,10 @@ class TestGmshQualityBestEffortFallback(unittest.TestCase):
             return self._dummy_mesh()
 
         # perf_counter call order in generate():
-        # start_t, loop elapsed, attempt_start_t, attempt_end_t, next loop elapsed
-        perf_seq = [0.0, 0.0, 0.0, 8.0, 8.0]
+        # t_start, start_t, loop elapsed, attempt_start_t, attempt_end_t, next loop elapsed
+        # Keep attempt_start_t at 0 and attempt_end_t at 8 so remaining budget
+        # triggers the low-budget retry stop gate after the first attempt.
+        perf_seq = itertools.chain([0.0, 0.0, 0.0, 0.0, 8.0, 8.0], itertools.repeat(8.0))
 
         with mock.patch.dict(sys.modules, {"gmsh": _FakeGmsh()}):
             with mock.patch("swe2d.mesh.meshing.time.perf_counter", side_effect=perf_seq):

@@ -23,6 +23,7 @@ Output contract
 from __future__ import annotations
 
 import copy
+import hashlib
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 import json
@@ -383,6 +384,50 @@ def _env_float(name: str, default: float) -> float:
 def _env_bool(name: str, default: bool) -> bool:
     raw = str(os.environ.get(name, "1" if default else "0")).strip().lower()
     return raw in {"1", "true", "yes", "on"}
+
+
+_HYDRA_MESHING_NATIVE_MODULE = None
+_HYDRA_MESHING_NATIVE_LOAD_ATTEMPTED = False
+
+
+def _gmsh_cpp_prebuild_enabled() -> bool:
+    return _env_bool("BACKWATER_GMSH_CPP_PREBUILD", True)
+
+
+def _load_hydra_meshing_native():
+    global _HYDRA_MESHING_NATIVE_MODULE, _HYDRA_MESHING_NATIVE_LOAD_ATTEMPTED
+    if not _gmsh_cpp_prebuild_enabled():
+        return None
+    if _HYDRA_MESHING_NATIVE_LOAD_ATTEMPTED:
+        return _HYDRA_MESHING_NATIVE_MODULE
+
+    _HYDRA_MESHING_NATIVE_LOAD_ATTEMPTED = True
+    try:
+        import hydra_meshing_native as _mn
+        _HYDRA_MESHING_NATIVE_MODULE = _mn
+        return _HYDRA_MESHING_NATIVE_MODULE
+    except Exception:
+        pass
+
+    try:
+        import importlib.util
+        from pathlib import Path
+
+        root = Path(__file__).resolve().parents[2]
+        build_dir = root / "build"
+        cand = sorted(build_dir.glob("hydra_meshing_native*.so"))
+        if not cand:
+            return None
+        spec = importlib.util.spec_from_file_location("hydra_meshing_native", str(cand[0]))
+        if spec is None or spec.loader is None:
+            return None
+        _mn = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(_mn)
+        _HYDRA_MESHING_NATIVE_MODULE = _mn
+        return _HYDRA_MESHING_NATIVE_MODULE
+    except Exception:
+        _HYDRA_MESHING_NATIVE_MODULE = None
+        return None
 
 
 def _env_csv_floats(name: str, default: Sequence[float]) -> Tuple[float, ...]:
@@ -1034,6 +1079,21 @@ def _breakline_fixed_edges_for_region(
     out: List[List[Tuple[float, float]]] = []
     seen = set()
 
+    def _is_hard_breakline_arc(arc: ConceptualArc) -> bool:
+        mode = str(getattr(arc, "arc_mode_override", "") or "").strip().lower()
+        if mode == "hard_embed":
+            return True
+        if mode in {"soft_size_hint", "disabled"}:
+            return False
+
+        role = str(getattr(arc, "arc_role", "") or "").strip().lower()
+        if role:
+            return role == "breakline"
+
+        # Legacy compatibility for older projects that used untyped topo arcs
+        # as breaklines; disabled by default to avoid accidental over-constraint.
+        return _env_bool("BACKWATER_TQMESH_UNTYPED_ARCS_ARE_BREAKLINES", False)
+
     def _inside_region(x: float, y: float) -> bool:
         return _point_in_polygon(float(x), float(y), outer)
 
@@ -1079,8 +1139,7 @@ def _breakline_fixed_edges_for_region(
         if len(pts) < 2:
             continue
 
-        role = str(arc.arc_role or "").strip().lower()
-        if role and role != "breakline":
+        if not _is_hard_breakline_arc(arc):
             continue
 
         rid = int(getattr(arc, "region_id", -1))
@@ -1568,11 +1627,21 @@ def _insert_focus_points_on_ring_segments(
         return pts
 
     dmax = max(float(max_dist), 1.0e-12)
+    rx = [float(p[0]) for p in pts]
+    ry = [float(p[1]) for p in pts]
+    ring_bbox = (float(min(rx)), float(min(ry)), float(max(rx)), float(max(ry)))
     n = len(pts)
     inserts: Dict[int, List[Tuple[float, Tuple[float, float]]]] = {i: [] for i in range(n)}
 
     for fp in focus_points:
         p = (float(fp[0]), float(fp[1]))
+        if (
+            p[0] < ring_bbox[0] - dmax
+            or p[0] > ring_bbox[2] + dmax
+            or p[1] < ring_bbox[1] - dmax
+            or p[1] > ring_bbox[3] + dmax
+        ):
+            continue
         best_i = -1
         best_u = 0.0
         best_q = (0.0, 0.0)
@@ -1627,6 +1696,1449 @@ def _polyline_length(points: Sequence[Tuple[float, float]]) -> float:
     return length
 
 
+def _ring_from_quad_controls(controls: Sequence[QuadEdgeControl]) -> List[Tuple[float, float]]:
+    """Assemble a closed ring (without duplicate closure point) from ordered edges."""
+    ring: List[Tuple[float, float]] = []
+    for edge in controls:
+        pts = [(float(x), float(y)) for (x, y) in list(edge.points_xy or [])]
+        if len(pts) < 2:
+            continue
+        if ring:
+            prev = ring[-1]
+            cur0 = pts[0]
+            if np.hypot(prev[0] - cur0[0], prev[1] - cur0[1]) <= 1.0e-6:
+                ring.extend(pts[1:])
+            else:
+                ring.extend(pts)
+        else:
+            ring.extend(pts)
+    if len(ring) >= 2 and np.hypot(ring[0][0] - ring[-1][0], ring[0][1] - ring[-1][1]) <= 1.0e-6:
+        ring = ring[:-1]
+    return ring
+
+
+def _densify_polyline_subset(
+    points: Sequence[Tuple[float, float]],
+    subset_start_frac: float,
+    subset_end_frac: float,
+    target_spacing: float,
+) -> List[Tuple[float, float]]:
+    """Insert points only within an arc-length subset of a polyline."""
+    pts = [(float(x), float(y)) for (x, y) in list(points or [])]
+    if len(pts) < 2:
+        return pts
+
+    total_len = _polyline_length(pts)
+    if total_len <= 1.0e-12:
+        return pts
+
+    s0_frac = max(0.0, min(1.0, float(subset_start_frac)))
+    s1_frac = max(0.0, min(1.0, float(subset_end_frac)))
+    if s1_frac <= s0_frac + 1.0e-12:
+        return pts
+
+    spacing = max(float(target_spacing), 1.0e-9)
+    s0 = s0_frac * total_len
+    s1 = s1_frac * total_len
+
+    out: List[Tuple[float, float]] = [pts[0]]
+    acc = 0.0
+    for i in range(1, len(pts)):
+        ax, ay = pts[i - 1]
+        bx, by = pts[i]
+        seg = float(np.hypot(bx - ax, by - ay))
+        if seg <= 1.0e-15:
+            continue
+
+        seg_s0 = acc
+        seg_s1 = acc + seg
+        t_vals = [0.0, 1.0]
+
+        over0 = max(seg_s0, s0)
+        over1 = min(seg_s1, s1)
+        if over1 - over0 > 1.0e-12:
+            over_len = over1 - over0
+            n_div = max(1, int(np.ceil(over_len / spacing)))
+            for j in range(1, n_div):
+                sj = over0 + (float(j) / float(n_div)) * over_len
+                tj = (sj - seg_s0) / seg
+                if 1.0e-12 < tj < 1.0 - 1.0e-12:
+                    t_vals.append(float(tj))
+
+        t_vals = sorted(set(float(round(t, 12)) for t in t_vals))
+        for t in t_vals[1:]:
+            x = ax + t * (bx - ax)
+            y = ay + t * (by - ay)
+            if np.hypot(x - out[-1][0], y - out[-1][1]) <= 1.0e-12:
+                continue
+            out.append((float(x), float(y)))
+        acc += seg
+
+    if np.hypot(out[-1][0] - pts[-1][0], out[-1][1] - pts[-1][1]) > 1.0e-12:
+        out.append(pts[-1])
+    return out
+
+
+def _sample_closed_polyline(points: Sequence[Tuple[float, float]], step: float) -> List[Tuple[float, float]]:
+    pts = [(float(x), float(y)) for (x, y) in list(points or [])]
+    if len(pts) < 3:
+        return pts
+    if np.hypot(pts[0][0] - pts[-1][0], pts[0][1] - pts[-1][1]) <= 1.0e-12:
+        pts = pts[:-1]
+    if len(pts) < 3:
+        return pts
+
+    h = max(float(step), 1.0e-9)
+    out: List[Tuple[float, float]] = [pts[0]]
+    n = len(pts)
+    for i in range(n):
+        ax, ay = pts[i]
+        bx, by = pts[(i + 1) % n]
+        seg = float(np.hypot(bx - ax, by - ay))
+        ndiv = max(1, int(np.ceil(seg / h)))
+        for j in range(1, ndiv + 1):
+            t = float(j) / float(ndiv)
+            x = ax + t * (bx - ax)
+            y = ay + t * (by - ay)
+            if np.hypot(x - out[-1][0], y - out[-1][1]) <= 1.0e-12:
+                continue
+            out.append((float(x), float(y)))
+
+    if len(out) >= 2 and np.hypot(out[0][0] - out[-1][0], out[0][1] - out[-1][1]) <= 1.0e-12:
+        out.pop()
+    return out
+
+
+def _longest_cyclic_true_run(mask: Sequence[bool]) -> Optional[Tuple[int, int, int]]:
+    flags = [bool(v) for v in list(mask or [])]
+    n = len(flags)
+    if n == 0 or not any(flags):
+        return None
+
+    doubled = flags + flags
+    best_len = 0
+    best_end = -1
+    cur = 0
+    for i, v in enumerate(doubled):
+        if v:
+            cur = min(n, cur + 1)
+            if cur > best_len:
+                best_len = cur
+                best_end = i
+        else:
+            cur = 0
+
+    if best_len <= 0 or best_end < 0:
+        return None
+    start = (best_end - best_len + 1) % n
+    end = best_end % n
+    return int(start), int(end), int(best_len)
+
+
+def _downsample_polyline_samples(
+    points: Sequence[Tuple[float, float]],
+    max_points: int,
+) -> List[Tuple[float, float]]:
+    pts = [(float(x), float(y)) for (x, y) in list(points or [])]
+    max_pts = max(4, int(max_points))
+    if len(pts) <= max_pts:
+        return pts
+    stride = max(1, int(np.ceil(float(len(pts)) / float(max_pts))))
+    out = [pts[i] for i in range(0, len(pts), stride)]
+    if out[-1] != pts[-1]:
+        out.append(pts[-1])
+    return out
+
+
+def _interface_overlap_metrics(
+    ring_a: Sequence[Tuple[float, float]],
+    ring_b: Sequence[Tuple[float, float]],
+    sample_step: float,
+    near_tol: float,
+) -> Dict[str, float]:
+    native = _load_hydra_meshing_native()
+    if native is not None and hasattr(native, "interface_overlap_metrics_closed"):
+        try:
+            out_native = native.interface_overlap_metrics_closed(
+                ring_a,
+                ring_b,
+                float(sample_step),
+                float(near_tol),
+                1800,
+            )
+            return {
+                "overlap_ab": float(out_native.get("overlap_ab", 0.0)),
+                "overlap_ba": float(out_native.get("overlap_ba", 0.0)),
+                "endpoint_delta_ab_max": float(out_native.get("endpoint_delta_ab_max", float("inf"))),
+                "endpoint_delta_ba_max": float(out_native.get("endpoint_delta_ba_max", float("inf"))),
+                "endpoint_delta_ab_mean": float(out_native.get("endpoint_delta_ab_mean", float("inf"))),
+                "endpoint_delta_ba_mean": float(out_native.get("endpoint_delta_ba_mean", float("inf"))),
+            }
+        except Exception:
+            pass
+
+    pa = _sample_closed_polyline(ring_a, step=sample_step)
+    pb = _sample_closed_polyline(ring_b, step=sample_step)
+    # This preflight is diagnostic-only. Cap sample cardinality to avoid
+    # quadratic distance sweeps on very long/split boundaries.
+    pa = _downsample_polyline_samples(pa, max_points=1800)
+    pb = _downsample_polyline_samples(pb, max_points=1800)
+    if len(pa) < 2 or len(pb) < 2:
+        return {
+            "overlap_ab": 0.0,
+            "overlap_ba": 0.0,
+            "endpoint_delta_ab_max": float("inf"),
+            "endpoint_delta_ba_max": float("inf"),
+            "endpoint_delta_ab_mean": float("inf"),
+            "endpoint_delta_ba_mean": float("inf"),
+        }
+
+    pb_open = list(pb) + [pb[0]]
+    pa_open = list(pa) + [pa[0]]
+
+    d_ab = [float(_polyline_distance_and_s(pb_open, float(x), float(y))[0]) for (x, y) in pa]
+    d_ba = [float(_polyline_distance_and_s(pa_open, float(x), float(y))[0]) for (x, y) in pb]
+    near_ab = [bool(d <= near_tol) for d in d_ab]
+    near_ba = [bool(d <= near_tol) for d in d_ba]
+
+    overlap_ab = float(sum(1 for v in near_ab if v)) / float(max(1, len(near_ab)))
+    overlap_ba = float(sum(1 for v in near_ba if v)) / float(max(1, len(near_ba)))
+
+    def _endpoint_deltas(samples: Sequence[Tuple[float, float]], near_mask: Sequence[bool], ref_open: Sequence[Tuple[float, float]]) -> Tuple[float, float]:
+        run = _longest_cyclic_true_run(near_mask)
+        if run is None:
+            return float("inf"), float("inf")
+        i0, i1, _ = run
+        p0 = samples[int(i0)]
+        p1 = samples[int(i1)]
+        d0 = float(_polyline_distance_and_s(ref_open, float(p0[0]), float(p0[1]))[0])
+        d1 = float(_polyline_distance_and_s(ref_open, float(p1[0]), float(p1[1]))[0])
+        return float(max(d0, d1)), float(0.5 * (d0 + d1))
+
+    ep_ab_max, ep_ab_mean = _endpoint_deltas(pa, near_ab, pb_open)
+    ep_ba_max, ep_ba_mean = _endpoint_deltas(pb, near_ba, pa_open)
+
+    return {
+        "overlap_ab": float(overlap_ab),
+        "overlap_ba": float(overlap_ba),
+        "endpoint_delta_ab_max": float(ep_ab_max),
+        "endpoint_delta_ba_max": float(ep_ba_max),
+        "endpoint_delta_ab_mean": float(ep_ab_mean),
+        "endpoint_delta_ba_mean": float(ep_ba_mean),
+    }
+
+
+def _gmsh_interface_coincidence_report(
+    model: ConceptualModel,
+    region_quad_setups: Optional[Dict[int, Tuple[List[Tuple[float, float]], List[QuadEdgeControl]]]] = None,
+) -> List[Dict[str, object]]:
+    region_quad_setups = region_quad_setups or {}
+
+    boundaries: List[
+        Tuple[
+            int,
+            str,
+            float,
+            List[Tuple[float, float]],
+            Tuple[float, float, float, float],
+        ]
+    ] = []
+    for region in model.regions:
+        ctype = str(region.default_cell_type).strip().lower()
+        if ctype == "empty":
+            continue
+        rid = int(region.region_id)
+        setup = region_quad_setups.get(rid)
+        ring_src = list(setup[0]) if setup is not None and len(setup[0]) >= 3 else list(region.ring_xy)
+        if ring_src and np.hypot(float(ring_src[0][0]) - float(ring_src[-1][0]), float(ring_src[0][1]) - float(ring_src[-1][1])) <= 1.0e-12:
+            ring_src = ring_src[:-1]
+        ring = [(float(x), float(y)) for (x, y) in ring_src]
+        if len(ring) < 3:
+            continue
+        size_ref = max(float(region.default_size), 1.0e-9)
+        xmin, ymin, xmax, ymax = _bbox_from_ring(ring)
+        boundaries.append((rid, ctype, size_ref, ring, (float(xmin), float(ymin), float(xmax), float(ymax))))
+
+    report: List[Dict[str, object]] = []
+    for i in range(len(boundaries)):
+        rid_a, ctype_a, size_a, ring_a, bbox_a = boundaries[i]
+        for j in range(i + 1, len(boundaries)):
+            rid_b, ctype_b, size_b, ring_b, bbox_b = boundaries[j]
+            size_ref = max(min(float(size_a), float(size_b)), 1.0e-9)
+            near_tol = max(1.0e-6, min(0.5, 0.05 * size_ref))
+            sample_step = max(near_tol, 0.25 * size_ref)
+
+            # Cheap spatial reject before expensive overlap metrics.
+            if (
+                float(bbox_a[2]) < float(bbox_b[0]) - float(near_tol)
+                or float(bbox_b[2]) < float(bbox_a[0]) - float(near_tol)
+                or float(bbox_a[3]) < float(bbox_b[1]) - float(near_tol)
+                or float(bbox_b[3]) < float(bbox_a[1]) - float(near_tol)
+            ):
+                continue
+
+            m = _interface_overlap_metrics(
+                ring_a=ring_a,
+                ring_b=ring_b,
+                sample_step=sample_step,
+                near_tol=near_tol,
+            )
+            overlap_ab = float(m["overlap_ab"])
+            overlap_ba = float(m["overlap_ba"])
+            if max(overlap_ab, overlap_ba) < 0.05:
+                continue
+
+            endpoint_delta_max = max(float(m["endpoint_delta_ab_max"]), float(m["endpoint_delta_ba_max"]))
+            endpoint_delta_mean = max(float(m["endpoint_delta_ab_mean"]), float(m["endpoint_delta_ba_mean"]))
+            overlap_delta = abs(float(overlap_ab) - float(overlap_ba))
+
+            report.append(
+                {
+                    "region_a": int(rid_a),
+                    "region_b": int(rid_b),
+                    "cell_type_a": str(ctype_a),
+                    "cell_type_b": str(ctype_b),
+                    "near_tol": float(near_tol),
+                    "sample_step": float(sample_step),
+                    "overlap_ab": float(overlap_ab),
+                    "overlap_ba": float(overlap_ba),
+                    "overlap_delta": float(overlap_delta),
+                    "endpoint_delta_max": float(endpoint_delta_max),
+                    "endpoint_delta_mean": float(endpoint_delta_mean),
+                }
+            )
+
+    report.sort(
+        key=lambda r: (
+            -max(float(r.get("overlap_ab", 0.0)), float(r.get("overlap_ba", 0.0))),
+            float(r.get("endpoint_delta_max", float("inf"))),
+            int(r.get("region_a", 0)),
+            int(r.get("region_b", 0)),
+        )
+    )
+    return report
+
+
+def _sample_open_polyline(points: Sequence[Tuple[float, float]], step: float) -> List[Tuple[float, float]]:
+    pts = [(float(x), float(y)) for (x, y) in list(points or [])]
+    if len(pts) < 2:
+        return pts
+    h = max(float(step), 1.0e-9)
+    out: List[Tuple[float, float]] = [pts[0]]
+    for i in range(1, len(pts)):
+        ax, ay = pts[i - 1]
+        bx, by = pts[i]
+        seg = float(np.hypot(bx - ax, by - ay))
+        ndiv = max(1, int(np.ceil(seg / h)))
+        for j in range(1, ndiv + 1):
+            t = float(j) / float(ndiv)
+            x = ax + t * (bx - ax)
+            y = ay + t * (by - ay)
+            if np.hypot(x - out[-1][0], y - out[-1][1]) <= 1.0e-12:
+                continue
+            out.append((float(x), float(y)))
+    return out
+
+
+def _polyline_overlap_fractions_open(
+    poly_a: Sequence[Tuple[float, float]],
+    poly_b: Sequence[Tuple[float, float]],
+    sample_step: float,
+    near_tol: float,
+) -> Tuple[float, float]:
+    native = _load_hydra_meshing_native()
+    if native is not None and hasattr(native, "polyline_overlap_fractions_open"):
+        try:
+            ov_ab, ov_ba = native.polyline_overlap_fractions_open(
+                poly_a,
+                poly_b,
+                float(sample_step),
+                float(near_tol),
+                1200,
+            )
+            return float(ov_ab), float(ov_ba)
+        except Exception:
+            pass
+
+    a_pts = [(float(x), float(y)) for (x, y) in list(poly_a or [])]
+    b_pts = [(float(x), float(y)) for (x, y) in list(poly_b or [])]
+    if len(a_pts) < 2 or len(b_pts) < 2:
+        return 0.0, 0.0
+
+    ax = [p[0] for p in a_pts]
+    ay = [p[1] for p in a_pts]
+    bx = [p[0] for p in b_pts]
+    by = [p[1] for p in b_pts]
+    tol = max(float(near_tol), 0.0)
+    if (
+        max(ax) < min(bx) - tol
+        or max(bx) < min(ax) - tol
+        or max(ay) < min(by) - tol
+        or max(by) < min(ay) - tol
+    ):
+        return 0.0, 0.0
+
+    pa = _sample_open_polyline(a_pts, step=sample_step)
+    pb = _sample_open_polyline(b_pts, step=sample_step)
+    if len(pa) < 2 or len(pb) < 2:
+        return 0.0, 0.0
+
+    d_ab = [float(_polyline_distance_and_s(pb, float(x), float(y))[0]) for (x, y) in pa]
+    d_ba = [float(_polyline_distance_and_s(pa, float(x), float(y))[0]) for (x, y) in pb]
+    overlap_ab = float(sum(1 for d in d_ab if d <= near_tol)) / float(max(1, len(d_ab)))
+    overlap_ba = float(sum(1 for d in d_ba if d <= near_tol)) / float(max(1, len(d_ba)))
+    return float(overlap_ab), float(overlap_ba)
+
+
+def _split_polyline_at_focus_points(
+    points: Sequence[Tuple[float, float]],
+    focus_points: Sequence[Tuple[float, float]],
+    dmax: float,
+) -> List[Tuple[float, float]]:
+    pts = [(float(x), float(y)) for (x, y) in list(points or [])]
+    if len(pts) < 2 or not focus_points:
+        return pts
+
+    n_seg = len(pts) - 1
+    inserts: Dict[int, List[Tuple[float, Tuple[float, float]]]] = {i: [] for i in range(n_seg)}
+    dlim = max(float(dmax), 1.0e-12)
+
+    for fp in focus_points:
+        px, py = float(fp[0]), float(fp[1])
+        best_i = -1
+        best_u = 0.0
+        best_q = (0.0, 0.0)
+        best_d = float("inf")
+        for i in range(n_seg):
+            q, u, d = _point_to_segment_projection((px, py), pts[i], pts[i + 1])
+            if d < best_d:
+                best_d = float(d)
+                best_i = i
+                best_u = float(u)
+                best_q = (float(q[0]), float(q[1]))
+        if best_i < 0 or best_d > dlim:
+            continue
+        if best_u <= 1.0e-10 or best_u >= 1.0 - 1.0e-10:
+            continue
+        inserts[best_i].append((best_u, best_q))
+
+    out: List[Tuple[float, float]] = [pts[0]]
+    for i in range(n_seg):
+        items = sorted(inserts.get(i, []), key=lambda it: it[0])
+        prev_u = -1.0
+        for u, q in items:
+            if abs(float(u) - prev_u) <= 1.0e-8:
+                continue
+            prev_u = float(u)
+            if np.hypot(float(q[0]) - out[-1][0], float(q[1]) - out[-1][1]) <= 1.0e-12:
+                continue
+            out.append((float(q[0]), float(q[1])))
+        p1 = pts[i + 1]
+        if np.hypot(float(p1[0]) - out[-1][0], float(p1[1]) - out[-1][1]) <= 1.0e-12:
+            continue
+        out.append((float(p1[0]), float(p1[1])))
+
+    return out
+
+
+def _junction_points_on_interface(
+    interface_chain: Sequence[Tuple[float, float]],
+    owner_region_ids: Sequence[int],
+    all_region_rings: Dict[int, Sequence[Tuple[float, float]]],
+    snap_tol: float,
+    endpoint_margin_frac: float = 0.02,
+) -> List[Tuple[float, float]]:
+    chain = [(float(x), float(y)) for (x, y) in list(interface_chain or [])]
+    if len(chain) < 2:
+        return []
+
+    owner_set = {int(v) for v in owner_region_ids}
+    ttol = max(float(snap_tol), 1.0e-9)
+
+    c_len = _polyline_length(chain)
+    if c_len <= 1.0e-12:
+        return []
+
+    margin_frac = max(0.0, min(0.49, float(endpoint_margin_frac)))
+    s_start = margin_frac * c_len
+    s_end = (1.0 - margin_frac) * c_len
+    found: List[Tuple[float, float]] = []
+
+    def _consider_point(px: float, py: float) -> None:
+        d, s = _polyline_distance_and_s(chain, float(px), float(py))
+        if (not np.isfinite(float(d))) or float(d) > ttol:
+            return
+        if float(s) <= s_start or float(s) >= s_end:
+            return
+        q = _interp_polyline_fraction(chain, float(s) / c_len)
+        found.append((float(q[0]), float(q[1])))
+
+    for rid, ring_in in all_region_rings.items():
+        if int(rid) in owner_set:
+            continue
+        ring = [(float(x), float(y)) for (x, y) in list(ring_in or [])]
+        if ring and np.hypot(ring[0][0] - ring[-1][0], ring[0][1] - ring[-1][1]) <= 1.0e-12:
+            ring = ring[:-1]
+        if len(ring) < 2:
+            continue
+
+        for px, py in ring:
+            _consider_point(float(px), float(py))
+
+        for i in range(1, len(ring)):
+            p0 = (float(ring[i - 1][0]), float(ring[i - 1][1]))
+            p1 = (float(ring[i][0]), float(ring[i][1]))
+            for j in range(1, len(chain)):
+                q0 = (float(chain[j - 1][0]), float(chain[j - 1][1]))
+                q1 = (float(chain[j][0]), float(chain[j][1]))
+                inter = _segment_intersection_point(p0, p1, q0, q1, eps=ttol)
+                if inter is None:
+                    continue
+                ip, _t, _u = inter
+                _consider_point(float(ip[0]), float(ip[1]))
+
+    out: List[Tuple[float, float]] = []
+    seen = set()
+    for p in found:
+        key = (round(float(p[0]), 6), round(float(p[1]), 6))
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append((float(p[0]), float(p[1])))
+    return out
+
+
+def _harmonize_transfinite_shared_quad_interfaces(
+    region_quad_setups: Dict[int, Tuple[List[Tuple[float, float]], List[QuadEdgeControl]]],
+    region_cell_types: Dict[int, str],
+    gmsh_quad_full_region_flow_align: bool,
+    all_region_rings: Optional[Dict[int, Sequence[Tuple[float, float]]]] = None,
+    opposite_subset_start_frac: float = 0.30,
+    opposite_subset_end_frac: float = 0.70,
+    opposite_subset_density_scale: float = 0.50,
+    subset_containment_enable: bool = True,
+    subset_containment_high_overlap: float = 0.95,
+    subset_containment_min_overlap: float = 0.02,
+    subset_containment_max_length_ratio: float = 0.35,
+    debug_capture: Optional[Dict[str, object]] = None,
+) -> Tuple[Dict[Tuple[int, int], int], Dict[str, int]]:
+    """Share densest interface chains across transfinite neighbors.
+
+    Returns
+    -------
+    edge_min_nodes: map of ``(region_id, edge_id) -> min transfinite nodes``.
+    stats: integer counters used for runtime diagnostics.
+    """
+
+    def _is_transfinite_region(region_id: int) -> bool:
+        ctype = str(region_cell_types.get(int(region_id), "")).strip().lower()
+        if ctype == "cartesian":
+            return True
+        if gmsh_quad_full_region_flow_align and ctype in {"quadrilateral", "channel_generator"}:
+            return True
+        return False
+
+    subset_enable = bool(subset_containment_enable)
+    subset_high_overlap = max(0.0, min(1.0, float(subset_containment_high_overlap)))
+    subset_min_overlap = max(0.0, min(1.0, float(subset_containment_min_overlap)))
+    subset_max_ratio = max(1.0e-6, float(subset_containment_max_length_ratio))
+    collect_debug = isinstance(debug_capture, dict)
+
+    def _edge_key(edge: QuadEdgeControl) -> Optional[Tuple[Tuple[float, float], Tuple[float, float]]]:
+        pts = list(edge.points_xy or [])
+        if len(pts) < 2:
+            return None
+        a = (round(float(pts[0][0]), 6), round(float(pts[0][1]), 6))
+        b = (round(float(pts[-1][0]), 6), round(float(pts[-1][1]), 6))
+        return (a, b) if a <= b else (b, a)
+
+    def _density_nodes(edge: QuadEdgeControl) -> int:
+        pts = [(float(x), float(y)) for (x, y) in list(edge.points_xy or [])]
+        if len(pts) < 2:
+            return 2
+        length = max(_polyline_length(pts), 1.0e-9)
+        spacing = edge.target_size if (edge.target_size is not None and float(edge.target_size) > 0.0) else (length / max(1.0, float(len(pts) - 1)))
+        spacing = max(float(spacing), 1.0e-9)
+        est = max(2, int(round(length / spacing)) + 1)
+        return max(int(est), int(len(pts)))
+
+    def _oriented_chain_like(edge: QuadEdgeControl, chain: Sequence[Tuple[float, float]]) -> List[Tuple[float, float]]:
+        pts = list(edge.points_xy or [])
+        cand = [(float(x), float(y)) for (x, y) in chain]
+        if len(cand) < 2 or len(pts) < 2:
+            return cand
+        fwd = float(np.hypot(float(pts[0][0]) - cand[0][0], float(pts[0][1]) - cand[0][1]))
+        fwd += float(np.hypot(float(pts[-1][0]) - cand[-1][0], float(pts[-1][1]) - cand[-1][1]))
+        rev = float(np.hypot(float(pts[0][0]) - cand[-1][0], float(pts[0][1]) - cand[-1][1]))
+        rev += float(np.hypot(float(pts[-1][0]) - cand[0][0], float(pts[-1][1]) - cand[0][1]))
+        if rev + 1.0e-12 < fwd:
+            cand = list(reversed(cand))
+        return cand
+
+    edge_records: List[Tuple[int, int, QuadEdgeControl]] = []
+    edge_keys: List[Optional[Tuple[Tuple[float, float], Tuple[float, float]]]] = []
+    edge_points_xy: List[List[Tuple[float, float]]] = []
+    edge_lengths: List[float] = []
+    edge_bboxes: List[Tuple[float, float, float, float]] = []
+    edge_size_hints: List[float] = []
+    edge_bucket_scales: List[float] = []
+    for rid, (_ring, controls) in region_quad_setups.items():
+        if not _is_transfinite_region(int(rid)):
+            continue
+        for edge in list(controls or []):
+            edge_records.append((int(rid), int(edge.edge_id), edge))
+            edge_keys.append(_edge_key(edge))
+
+            pts = [(float(x), float(y)) for (x, y) in list(edge.points_xy or [])]
+            edge_points_xy.append(pts)
+            if len(pts) >= 2:
+                edge_len = max(_polyline_length(pts), 1.0e-12)
+                xs = [float(p[0]) for p in pts]
+                ys = [float(p[1]) for p in pts]
+                edge_bboxes.append((float(min(xs)), float(min(ys)), float(max(xs)), float(max(ys))))
+            else:
+                edge_len = 0.0
+                edge_bboxes.append((0.0, 0.0, 0.0, 0.0))
+            edge_lengths.append(float(edge_len))
+
+            ts_hint = float(edge.target_size) if (edge.target_size is not None and float(edge.target_size) > 0.0) else max(float(edge_len), 1.0e-9)
+            edge_size_hints.append(float(ts_hint))
+            edge_bucket_scales.append(max(float(ts_hint), max(float(edge_len), 1.0e-9)))
+
+    n_edges = len(edge_records)
+    if n_edges == 0:
+        if isinstance(debug_capture, dict):
+            debug_capture.clear()
+            debug_capture.update(
+                {
+                    "n_edges": 0,
+                    "candidate_pair_count": 0,
+                    "overlap_rule": {
+                        "min_overlap_strict": 0.55,
+                        "min_overlap_relaxed": 0.35,
+                        "max_overlap_relaxed": 0.75,
+                        "subset_containment_enable": bool(subset_enable),
+                        "subset_containment_high_overlap": float(subset_high_overlap),
+                        "subset_containment_min_overlap": float(subset_min_overlap),
+                        "subset_containment_max_length_ratio": float(subset_max_ratio),
+                    },
+                    "pair_debug": [],
+                    "region_pair_summary": [],
+                    "groups": [],
+                }
+            )
+        return {}, {
+            "shared_groups": 0,
+            "canonicalized_edges": 0,
+            "opposite_subset_requests": 0,
+            "junction_points_inserted": 0,
+            "subset_containment_requests": 0,
+            "singleton_external_junction_edges": 0,
+            "candidate_pair_count_prefilter": 0,
+            "candidate_pair_count": 0,
+            "pair_bbox_reject_count": 0,
+        }
+
+    parent = list(range(n_edges))
+
+    def _find(i: int) -> int:
+        while parent[i] != i:
+            parent[i] = parent[parent[i]]
+            i = parent[i]
+        return i
+
+    def _union(i: int, j: int) -> None:
+        ri = _find(i)
+        rj = _find(j)
+        if ri != rj:
+            parent[rj] = ri
+
+    key_first: Dict[Tuple[Tuple[float, float], Tuple[float, float]], int] = {}
+    for i, key in enumerate(edge_keys):
+        if key is None:
+            continue
+        j = key_first.get(key)
+        if j is None:
+            key_first[key] = i
+        else:
+            _union(i, j)
+
+    pair_debug_records: List[Dict[str, object]] = []
+    subset_pair_requests: List[Dict[str, object]] = []
+    pair_bbox_reject_count = 0
+    candidate_pair_count_eval = 0
+
+    def _edge_endpoints(points: Sequence[Tuple[float, float]]) -> Tuple[Optional[Tuple[float, float]], Optional[Tuple[float, float]]]:
+        pts = [(float(x), float(y)) for (x, y) in list(points or [])]
+        if len(pts) < 2:
+            return None, None
+        a = (float(pts[0][0]), float(pts[0][1]))
+        b = (float(pts[-1][0]), float(pts[-1][1]))
+        return a, b
+
+    candidate_neighbors: List[set] = [set() for _ in range(n_edges)]
+    max_pair_near_tol = 0.5
+    if n_edges <= 32:
+        for i in range(n_edges):
+            for j in range(i + 1, n_edges):
+                candidate_neighbors[i].add(int(j))
+    else:
+        valid_scales = [
+            float(edge_bucket_scales[i])
+            for i in range(n_edges)
+            if len(edge_points_xy[i]) >= 2 and np.isfinite(float(edge_bucket_scales[i])) and float(edge_bucket_scales[i]) > 0.0
+        ]
+        if valid_scales:
+            bucket_size = max(2.0 * float(max_pair_near_tol), float(np.median(np.asarray(valid_scales, dtype=np.float64))))
+        else:
+            bucket_size = 1.0
+        bucket_size = max(float(bucket_size), 1.0e-6)
+
+        edge_buckets: Dict[Tuple[int, int], List[int]] = {}
+        for idx in range(n_edges):
+            if len(edge_points_xy[idx]) < 2:
+                continue
+            xmin, ymin, xmax, ymax = edge_bboxes[idx]
+            ix0 = int(np.floor((float(xmin) - float(max_pair_near_tol)) / float(bucket_size)))
+            ix1 = int(np.floor((float(xmax) + float(max_pair_near_tol)) / float(bucket_size)))
+            iy0 = int(np.floor((float(ymin) - float(max_pair_near_tol)) / float(bucket_size)))
+            iy1 = int(np.floor((float(ymax) + float(max_pair_near_tol)) / float(bucket_size)))
+
+            # Guard against pathological huge boxes exploding bucket inserts.
+            if (ix1 - ix0 + 1) * (iy1 - iy0 + 1) > 2048:
+                cx = 0.5 * (float(xmin) + float(xmax))
+                cy = 0.5 * (float(ymin) + float(ymax))
+                ix0 = int(np.floor((cx - float(max_pair_near_tol)) / float(bucket_size)))
+                ix1 = int(np.floor((cx + float(max_pair_near_tol)) / float(bucket_size)))
+                iy0 = int(np.floor((cy - float(max_pair_near_tol)) / float(bucket_size)))
+                iy1 = int(np.floor((cy + float(max_pair_near_tol)) / float(bucket_size)))
+
+            for ix in range(ix0, ix1 + 1):
+                for iy in range(iy0, iy1 + 1):
+                    edge_buckets.setdefault((int(ix), int(iy)), []).append(int(idx))
+
+        for members in edge_buckets.values():
+            uniq = sorted(set(int(v) for v in members))
+            for ai in range(len(uniq)):
+                i = int(uniq[ai])
+                for bj in range(ai + 1, len(uniq)):
+                    j = int(uniq[bj])
+                    lo = int(min(i, j))
+                    hi = int(max(i, j))
+                    candidate_neighbors[lo].add(hi)
+
+        # Safety fallback to preserve legacy behavior if the spatial prefilter
+        # produced no candidates due to degenerate indexing.
+        if not any(len(v) > 0 for v in candidate_neighbors):
+            for i in range(n_edges):
+                for j in range(i + 1, n_edges):
+                    candidate_neighbors[i].add(int(j))
+
+    bucket_prefilter_candidate_pairs = int(sum(len(v) for v in candidate_neighbors))
+
+    for i in range(n_edges):
+        rid_i, eid_i, edge_i = edge_records[i]
+        edge_i_pts = edge_points_xy[i]
+        if len(edge_i_pts) < 2:
+            continue
+        for j in sorted(candidate_neighbors[i]):
+            rid_j, eid_j, edge_j = edge_records[j]
+            edge_j_pts = edge_points_xy[j]
+            if rid_i == rid_j:
+                continue
+            if len(edge_j_pts) < 2:
+                continue
+
+            ts_i = float(edge_size_hints[i])
+            ts_j = float(edge_size_hints[j])
+            size_ref = max(min(float(ts_i), float(ts_j)), 1.0e-9)
+            near_tol = max(1.0e-6, min(0.5, 0.05 * size_ref))
+
+            bbi = edge_bboxes[i]
+            bbj = edge_bboxes[j]
+            if (
+                float(bbi[2]) < float(bbj[0]) - float(near_tol)
+                or float(bbj[2]) < float(bbi[0]) - float(near_tol)
+                or float(bbi[3]) < float(bbj[1]) - float(near_tol)
+                or float(bbj[3]) < float(bbi[1]) - float(near_tol)
+            ):
+                pair_bbox_reject_count += 1
+                continue
+
+            candidate_pair_count_eval += 1
+            sample_step = max(near_tol, 0.25 * size_ref)
+
+            o_ij, o_ji = _polyline_overlap_fractions_open(
+                edge_i_pts,
+                edge_j_pts,
+                sample_step=sample_step,
+                near_tol=near_tol,
+            )
+            edge_len_i = max(float(edge_lengths[i]), 1.0e-12)
+            edge_len_j = max(float(edge_lengths[j]), 1.0e-12)
+            overlap_min = min(float(o_ij), float(o_ji))
+            overlap_max = max(float(o_ij), float(o_ji))
+            pass_strict = overlap_min >= 0.55
+            pass_relaxed = overlap_max >= 0.75 and overlap_min >= 0.35
+            length_ratio = min(float(edge_len_i), float(edge_len_j)) / max(float(edge_len_i), float(edge_len_j))
+            pass_subset_containment = bool(
+                subset_enable
+                and (not pass_strict)
+                and (not pass_relaxed)
+                and overlap_max >= float(subset_high_overlap)
+                and overlap_min >= float(subset_min_overlap)
+                and length_ratio <= float(subset_max_ratio)
+            )
+
+            pre_grouped = bool(_find(i) == _find(j))
+            grouped_by = "key" if pre_grouped and edge_keys[i] is not None and edge_keys[i] == edge_keys[j] else ("prior" if pre_grouped else "none")
+            if (not pre_grouped) and (pass_strict or pass_relaxed or pass_subset_containment):
+                _union(i, j)
+                if pass_strict or pass_relaxed:
+                    grouped_by = "overlap"
+                else:
+                    grouped_by = "overlap_subset_containment"
+                    if float(o_ij) >= float(o_ji):
+                        subset_pair_requests.append(
+                            {
+                                "contained_index": int(i),
+                                "container_index": int(j),
+                                "near_tol": float(near_tol),
+                            }
+                        )
+                    else:
+                        subset_pair_requests.append(
+                            {
+                                "contained_index": int(j),
+                                "container_index": int(i),
+                                "near_tol": float(near_tol),
+                            }
+                        )
+
+            post_grouped = bool(_find(i) == _find(j))
+            if collect_debug:
+                e0a, e0b = _edge_endpoints(edge_i_pts)
+                e1a, e1b = _edge_endpoints(edge_j_pts)
+                pair_debug_records.append(
+                    {
+                        "region_i": int(rid_i),
+                        "edge_i": int(eid_i),
+                        "region_j": int(rid_j),
+                        "edge_j": int(eid_j),
+                        "edge_i_n_points": int(len(edge_i_pts)),
+                        "edge_j_n_points": int(len(edge_j_pts)),
+                        "edge_i_len": float(edge_len_i),
+                        "edge_j_len": float(edge_len_j),
+                        "length_ratio": float(length_ratio),
+                        "edge_i_start": e0a,
+                        "edge_i_end": e0b,
+                        "edge_j_start": e1a,
+                        "edge_j_end": e1b,
+                        "key_match": bool(edge_keys[i] is not None and edge_keys[i] == edge_keys[j]),
+                        "near_tol": float(near_tol),
+                        "sample_step": float(sample_step),
+                        "overlap_ij": float(o_ij),
+                        "overlap_ji": float(o_ji),
+                        "overlap_min": float(overlap_min),
+                        "overlap_max": float(overlap_max),
+                        "pass_strict": bool(pass_strict),
+                        "pass_relaxed": bool(pass_relaxed),
+                        "pass_subset_containment": bool(pass_subset_containment),
+                        "pre_grouped": bool(pre_grouped),
+                        "grouped": bool(post_grouped),
+                        "grouped_by": str(grouped_by),
+                    }
+                )
+
+    edge_groups: Dict[int, List[Tuple[int, int, QuadEdgeControl]]] = {}
+    edge_groups_indices: Dict[int, List[int]] = {}
+    for i, rec in enumerate(edge_records):
+        root = _find(i)
+        edge_groups.setdefault(int(root), []).append(rec)
+        edge_groups_indices.setdefault(int(root), []).append(int(i))
+
+    edge_min_nodes: Dict[Tuple[int, int], int] = {}
+    opposite_subset_requests: Dict[Tuple[int, int], float] = {}
+    stats = {
+        "shared_groups": 0,
+        "canonicalized_edges": 0,
+        "opposite_subset_requests": 0,
+        "junction_points_inserted": 0,
+        "subset_containment_requests": 0,
+        "singleton_external_junction_edges": 0,
+        "candidate_pair_count_prefilter": int(bucket_prefilter_candidate_pairs),
+        "candidate_pair_count": int(candidate_pair_count_eval),
+        "pair_bbox_reject_count": int(pair_bbox_reject_count),
+    }
+
+    subset_container_indices = {
+        int(req.get("container_index", -1))
+        for req in subset_pair_requests
+        if int(req.get("container_index", -1)) >= 0
+    }
+    subset_contained_indices = {
+        int(req.get("contained_index", -1))
+        for req in subset_pair_requests
+        if int(req.get("contained_index", -1)) >= 0
+    }
+
+    region_rings = dict(all_region_rings or {})
+
+    def _split_edge_with_external_junctions(
+        rid: int,
+        edge: QuadEdgeControl,
+        owner_region_ids: Sequence[int],
+    ) -> int:
+        if not region_rings:
+            return 0
+        pts = [(float(x), float(y)) for (x, y) in list(edge.points_xy or [])]
+        if len(pts) < 2:
+            return 0
+
+        if edge.target_size is not None and float(edge.target_size) > 0.0:
+            size_ref = max(float(edge.target_size), 1.0e-6)
+        else:
+            size_ref = max(_polyline_length(pts) / max(1, len(pts) - 1), 1.0e-6)
+        # Singleton interfaces can be slightly offset from neighboring rings.
+        # Use an adaptive tolerance and filter by overlap to avoid unrelated rings.
+        snap_tol = max(1.0e-6, min(8.0, max(0.5, 0.25 * float(size_ref))))
+
+        owner_set = {int(v) for v in owner_region_ids} if owner_region_ids else {int(rid)}
+
+        chain_x = [float(p[0]) for p in pts]
+        chain_y = [float(p[1]) for p in pts]
+        xmin = min(chain_x) - float(snap_tol)
+        xmax = max(chain_x) + float(snap_tol)
+        ymin = min(chain_y) - float(snap_tol)
+        ymax = max(chain_y) + float(snap_tol)
+
+        sample_step = max(float(snap_tol), 0.25 * float(size_ref))
+        candidate_rings: Dict[int, Sequence[Tuple[float, float]]] = {}
+        for rrid, ring_src in region_rings.items():
+            if int(rrid) in owner_set:
+                continue
+            ring_pts = [(float(x), float(y)) for (x, y) in list(ring_src or [])]
+            if ring_pts and np.hypot(float(ring_pts[0][0]) - float(ring_pts[-1][0]), float(ring_pts[0][1]) - float(ring_pts[-1][1])) <= 1.0e-12:
+                ring_pts = ring_pts[:-1]
+            if len(ring_pts) < 2:
+                continue
+
+            ring_x = [float(p[0]) for p in ring_pts]
+            ring_y = [float(p[1]) for p in ring_pts]
+            if max(ring_x) < xmin or min(ring_x) > xmax or max(ring_y) < ymin or min(ring_y) > ymax:
+                continue
+
+            ring_open = list(ring_pts)
+            if np.hypot(
+                float(ring_open[0][0]) - float(ring_open[-1][0]),
+                float(ring_open[0][1]) - float(ring_open[-1][1]),
+            ) > 1.0e-12:
+                ring_open.append((float(ring_open[0][0]), float(ring_open[0][1])))
+
+            overlap_edge, overlap_ring = _polyline_overlap_fractions_open(
+                pts,
+                ring_open,
+                sample_step=float(sample_step),
+                near_tol=float(snap_tol),
+            )
+            if max(float(overlap_edge), float(overlap_ring)) < 0.01:
+                continue
+            candidate_rings[int(rrid)] = ring_pts
+
+        if not candidate_rings:
+            return 0
+
+        jpts = _junction_points_on_interface(
+            interface_chain=pts,
+            owner_region_ids=sorted(owner_set),
+            all_region_rings=candidate_rings,
+            snap_tol=float(snap_tol),
+            endpoint_margin_frac=0.002,
+        )
+        if not jpts:
+            return 0
+
+        split_pts = _split_polyline_at_focus_points(
+            points=pts,
+            focus_points=jpts,
+            dmax=float(snap_tol),
+        )
+        if len(split_pts) <= len(pts):
+            return 0
+
+        edge.points_xy = split_pts
+        return int(len(split_pts) - len(pts))
+
+    for _root, members in edge_groups.items():
+        member_indices = list(edge_groups_indices.get(int(_root), []))
+        if len(member_indices) != len(members):
+            member_indices = []
+        owner_ids = sorted(set(int(rid) for rid, _eid, _edge in members))
+        if len(owner_ids) < 2:
+            # Even without a transfinite peer edge, split this transfinite edge
+            # at neighboring region-ring junctions so interface vertices are
+            # projected consistently across mixed transfinite/non-transfinite
+            # adjacencies.
+            for rid, _eid, edge in members:
+                inserted = _split_edge_with_external_junctions(
+                    rid=int(rid),
+                    edge=edge,
+                    owner_region_ids=[int(rid)],
+                )
+                if inserted > 0:
+                    stats["junction_points_inserted"] += int(inserted)
+                    stats["singleton_external_junction_edges"] += 1
+            continue
+
+        stats["shared_groups"] += 1
+        densest = max(members, key=lambda item: _density_nodes(item[2]))
+        dense_chain = [(float(x), float(y)) for (x, y) in list(densest[2].points_xy or [])]
+        if len(dense_chain) < 2:
+            continue
+        old_dense_len = len(dense_chain)
+        positive_targets = [float(edge.target_size) for (_rid, _eid, edge) in members if edge.target_size is not None and float(edge.target_size) > 0.0]
+        dense_target = min(positive_targets) if positive_targets else None
+
+        if region_rings:
+            if dense_target is not None and dense_target > 0.0:
+                snap_tol = max(1.0e-6, min(0.5, 0.05 * float(dense_target)))
+            else:
+                avg_step = max(_polyline_length(dense_chain) / max(1, len(dense_chain) - 1), 1.0e-6)
+                snap_tol = max(1.0e-6, min(0.5, 0.10 * float(avg_step)))
+
+            jpts = _junction_points_on_interface(
+                interface_chain=dense_chain,
+                owner_region_ids=owner_ids,
+                all_region_rings=region_rings,
+                snap_tol=float(snap_tol),
+            )
+            if jpts:
+                dense_chain = _split_polyline_at_focus_points(
+                    points=dense_chain,
+                    focus_points=jpts,
+                    dmax=float(snap_tol),
+                )
+                if len(dense_chain) > old_dense_len:
+                    stats["junction_points_inserted"] += int(len(dense_chain) - old_dense_len)
+
+        dense_len = max(_polyline_length(dense_chain), 1.0e-9)
+        if dense_target is not None and dense_target > 0.0:
+            dense_nodes = max(int(len(dense_chain)), int(round(dense_len / float(dense_target))) + 1)
+        else:
+            dense_nodes = max(int(len(dense_chain)), int(_density_nodes(densest[2])))
+
+        for member_k, (rid, eid, edge) in enumerate(members):
+            idx_member = int(member_indices[member_k]) if member_k < len(member_indices) else -1
+            subset_related = bool(
+                idx_member in subset_container_indices or idx_member in subset_contained_indices
+            )
+            member_pts = list(edge.points_xy or [])
+            if len(member_pts) < 2:
+                continue
+            ts_member = float(edge.target_size) if (edge.target_size is not None and float(edge.target_size) > 0.0) else max(_polyline_length(member_pts), 1.0e-9)
+            ts_dense = float(dense_target) if (dense_target is not None and float(dense_target) > 0.0) else ts_member
+            size_ref_member = max(min(float(ts_member), float(ts_dense)), 1.0e-9)
+            near_tol_member = max(1.0e-6, min(0.5, 0.05 * float(size_ref_member)))
+            sample_step_member = max(float(near_tol_member), 0.25 * float(size_ref_member))
+            o_member_dense, o_dense_member = _polyline_overlap_fractions_open(
+                member_pts,
+                dense_chain,
+                sample_step=sample_step_member,
+                near_tol=near_tol_member,
+            )
+            overlap_min_member = min(float(o_member_dense), float(o_dense_member))
+            overlap_max_member = max(float(o_member_dense), float(o_dense_member))
+            pass_member_strict = overlap_min_member >= 0.55
+            pass_member_relaxed = overlap_max_member >= 0.75 and overlap_min_member >= 0.35
+            if not (pass_member_strict or pass_member_relaxed):
+                # Subset-contained interfaces are handled by targeted container-edge
+                # splitting/densification later; avoid replacing full edge geometry.
+                continue
+
+            oriented_chain = _oriented_chain_like(edge, dense_chain)
+            if len(oriented_chain) >= 2:
+                if len(oriented_chain) != len(list(edge.points_xy or [])):
+                    stats["canonicalized_edges"] += 1
+                edge.points_xy = oriented_chain
+            if dense_target is not None and (not subset_related):
+                edge.target_size = min(float(dense_target), float(edge.target_size)) if (edge.target_size is not None and float(edge.target_size) > 0.0) else float(dense_target)
+
+            if subset_related:
+                # Subset containment should not enforce whole-edge transfinite
+                # floors, otherwise a localized junction refinement propagates
+                # density across the entire opposite edge pair.
+                continue
+
+            edge_min_nodes[(int(rid), int(eid))] = max(int(edge_min_nodes.get((int(rid), int(eid)), 0)), int(dense_nodes))
+
+            opp_id = 1 + ((int(eid) + 1) % 4)
+            controls = region_quad_setups.get(int(rid), ([], []))[1]
+            opp_edge = next((e for e in controls if int(e.edge_id) == int(opp_id)), None)
+            if opp_edge is None:
+                continue
+            opp_len = _polyline_length(list(opp_edge.points_xy or []))
+            if opp_len <= 1.0e-9 or dense_nodes <= 2:
+                continue
+            desired_spacing = opp_len / max(float(dense_nodes - 1), 1.0)
+            subset_spacing = max(1.0e-9, float(opposite_subset_density_scale) * float(desired_spacing))
+            prev = opposite_subset_requests.get((int(rid), int(opp_id)))
+            opposite_subset_requests[(int(rid), int(opp_id))] = subset_spacing if prev is None else min(float(prev), float(subset_spacing))
+
+    for (rid, opp_id), spacing in opposite_subset_requests.items():
+        controls = region_quad_setups.get(int(rid), ([], []))[1]
+        opp_edge = next((e for e in controls if int(e.edge_id) == int(opp_id)), None)
+        if opp_edge is None:
+            continue
+        densified = _densify_polyline_subset(
+            points=list(opp_edge.points_xy or []),
+            subset_start_frac=float(opposite_subset_start_frac),
+            subset_end_frac=float(opposite_subset_end_frac),
+            target_spacing=float(spacing),
+        )
+        if len(densified) > len(list(opp_edge.points_xy or [])):
+            stats["opposite_subset_requests"] += 1
+            opp_edge.points_xy = densified
+
+    for req in subset_pair_requests:
+        i_contained = int(req.get("contained_index", -1))
+        i_container = int(req.get("container_index", -1))
+        if i_contained < 0 or i_container < 0:
+            continue
+        if i_contained >= len(edge_records) or i_container >= len(edge_records):
+            continue
+        if _find(i_contained) != _find(i_container):
+            continue
+
+        rid_contained, _eid_contained, edge_contained = edge_records[i_contained]
+        rid_container, eid_container, edge_container = edge_records[i_container]
+        contained_pts = list(edge_contained.points_xy or [])
+        container_pts = list(edge_container.points_xy or [])
+        if len(contained_pts) < 2 or len(container_pts) < 2:
+            continue
+
+        near_tol_req = max(1.0e-6, float(req.get("near_tol", 1.0e-6)))
+        focus_pts = [
+            (float(p[0]), float(p[1]))
+            for p in contained_pts
+        ]
+        if len(focus_pts) < 2:
+            continue
+        split_container = _split_polyline_at_focus_points(
+            points=container_pts,
+            focus_points=focus_pts,
+            dmax=max(near_tol_req, 2.0e-6),
+        )
+        if len(split_container) < 2:
+            continue
+
+        d0, s0 = _polyline_distance_and_s(split_container, focus_pts[0][0], focus_pts[0][1])
+        d1, s1 = _polyline_distance_and_s(split_container, focus_pts[-1][0], focus_pts[-1][1])
+        if (not np.isfinite(float(d0))) or (not np.isfinite(float(d1))):
+            continue
+        if float(max(d0, d1)) > 3.0 * float(near_tol_req):
+            continue
+
+        if len(split_container) > len(container_pts):
+            edge_container.points_xy = split_container
+            stats["subset_containment_requests"] += 1
+
+    for rid, (_ring, controls) in list(region_quad_setups.items()):
+        ring_new = _ring_from_quad_controls(controls)
+        if len(ring_new) >= 4:
+            region_quad_setups[int(rid)] = (ring_new, controls)
+
+    if collect_debug:
+        region_pair_summary_map: Dict[Tuple[int, int], Dict[str, object]] = {}
+        for rec in pair_debug_records:
+            a = int(rec["region_i"])
+            b = int(rec["region_j"])
+            key = (min(a, b), max(a, b))
+            ent = region_pair_summary_map.get(key)
+            if ent is None:
+                ent = {
+                    "region_a": int(key[0]),
+                    "region_b": int(key[1]),
+                    "pair_count": 0,
+                    "grouped_pair_count": 0,
+                    "grouped_any": False,
+                    "best_overlap_max": 0.0,
+                    "best_overlap_min": 0.0,
+                    "best_pair": None,
+                }
+                region_pair_summary_map[key] = ent
+
+            ent["pair_count"] = int(ent["pair_count"]) + 1
+            if bool(rec.get("grouped", False)):
+                ent["grouped_pair_count"] = int(ent["grouped_pair_count"]) + 1
+                ent["grouped_any"] = True
+
+            best_now = (float(rec.get("overlap_max", 0.0)), float(rec.get("overlap_min", 0.0)))
+            best_prev = (float(ent.get("best_overlap_max", 0.0)), float(ent.get("best_overlap_min", 0.0)))
+            if best_now > best_prev:
+                ent["best_overlap_max"] = float(best_now[0])
+                ent["best_overlap_min"] = float(best_now[1])
+                ent["best_pair"] = {
+                    "edge_a": int(rec["edge_i"]) if int(rec["region_i"]) == int(key[0]) else int(rec["edge_j"]),
+                    "edge_b": int(rec["edge_j"]) if int(rec["region_j"]) == int(key[1]) else int(rec["edge_i"]),
+                    "grouped": bool(rec.get("grouped", False)),
+                    "grouped_by": str(rec.get("grouped_by", "none")),
+                    "overlap_ij": float(rec.get("overlap_ij", 0.0)),
+                    "overlap_ji": float(rec.get("overlap_ji", 0.0)),
+                    "near_tol": float(rec.get("near_tol", 0.0)),
+                }
+
+        groups_debug: List[Dict[str, object]] = []
+        for root, members in edge_groups.items():
+            owners = sorted({int(rid) for rid, _eid, _edge in members})
+            groups_debug.append(
+                {
+                    "group_id": int(root),
+                    "owner_region_ids": [int(v) for v in owners],
+                    "member_count": int(len(members)),
+                    "members": [
+                        {
+                            "region_id": int(rid),
+                            "edge_id": int(eid),
+                            "n_points": int(len(list(edge.points_xy or []))),
+                            "target_size": None if edge.target_size is None else float(edge.target_size),
+                        }
+                        for rid, eid, edge in members
+                    ],
+                }
+            )
+
+        region_pair_summary = sorted(
+            list(region_pair_summary_map.values()),
+            key=lambda x: (
+                -float(x.get("best_overlap_max", 0.0)),
+                -float(x.get("best_overlap_min", 0.0)),
+                int(x.get("region_a", 0)),
+                int(x.get("region_b", 0)),
+            ),
+        )
+
+        debug_capture.clear()
+        debug_capture.update(
+            {
+                "n_edges": int(n_edges),
+                "candidate_pair_count": int(candidate_pair_count_eval),
+                "candidate_pair_count_prefilter": int(bucket_prefilter_candidate_pairs),
+                "bbox_reject_count": int(pair_bbox_reject_count),
+                "overlap_rule": {
+                    "min_overlap_strict": 0.55,
+                    "min_overlap_relaxed": 0.35,
+                    "max_overlap_relaxed": 0.75,
+                    "subset_containment_enable": bool(subset_enable),
+                    "subset_containment_high_overlap": float(subset_high_overlap),
+                    "subset_containment_min_overlap": float(subset_min_overlap),
+                    "subset_containment_max_length_ratio": float(subset_max_ratio),
+                },
+                "pair_debug": list(pair_debug_records),
+                "region_pair_summary": region_pair_summary,
+                "groups": groups_debug,
+            }
+        )
+
+    return edge_min_nodes, stats
+
+
+def _gmsh_flow_aligned_curve_counts(
+    quad_controls: Sequence[QuadEdgeControl],
+    fallback_size: float,
+    min_nodes: Optional[Sequence[int]] = None,
+) -> Optional[List[int]]:
+    """Compute transfinite node counts for a 4-edge flow-aligned block.
+
+    Opposite edges are matched to satisfy Gmsh transfinite surface rules.
+    """
+    if len(quad_controls) != 4:
+        return None
+
+    base_size = max(float(fallback_size), 1.0e-9)
+    counts: List[int] = []
+    for edge in quad_controls:
+        pts = list(edge.points_xy)
+        if len(pts) < 2:
+            return None
+        edge_len = max(_polyline_length(pts), 1.0e-9)
+        spacing = base_size
+        if edge.target_size is not None:
+            try:
+                edge_sz = float(edge.target_size)
+                if np.isfinite(edge_sz) and edge_sz > 0.0:
+                    spacing = max(edge_sz, 1.0e-9)
+            except Exception:
+                pass
+        ndiv = max(1, int(round(edge_len / spacing)))
+        counts.append(max(2, ndiv + 1))
+
+    if min_nodes is not None:
+        mins = [max(0, int(v)) for v in list(min_nodes)]
+        if len(mins) == 4:
+            for i in range(4):
+                if mins[i] > 0:
+                    counts[i] = max(int(counts[i]), int(mins[i]))
+
+    # Transfinite requires equal node counts on opposite edges. Prefer
+    # canonical edge-id pairing when available so ordering/reversal of ring
+    # traversal does not change which edges are equalized.
+    edge_ids = [int(getattr(edge, "edge_id", -1)) for edge in quad_controls]
+    if len(edge_ids) == 4 and set(edge_ids) == {1, 2, 3, 4}:
+        idx_by_edge = {int(eid): int(i) for i, eid in enumerate(edge_ids)}
+        i1 = idx_by_edge.get(1)
+        i3 = idx_by_edge.get(3)
+        if i1 is not None and i3 is not None:
+            paired = max(int(counts[i1]), int(counts[i3]))
+            counts[i1] = int(paired)
+            counts[i3] = int(paired)
+        i2 = idx_by_edge.get(2)
+        i4 = idx_by_edge.get(4)
+        if i2 is not None and i4 is not None:
+            paired = max(int(counts[i2]), int(counts[i4]))
+            counts[i2] = int(paired)
+            counts[i4] = int(paired)
+    else:
+        counts[0] = counts[2] = max(counts[0], counts[2])
+        counts[1] = counts[3] = max(counts[1], counts[3])
+    return counts
+
+
+def _gmsh_flow_align_region_preflight(
+    region_id: int,
+    cell_type: str,
+    curve_tags: Sequence[int],
+    edge_controls: Optional[Sequence[QuadEdgeControl]],
+    fallback_size: float,
+    min_nodes: Optional[Sequence[int]] = None,
+) -> Dict[str, object]:
+    """Validate whether full-region flow-aligned transfinite is safe to apply."""
+    diag: Dict[str, object] = {
+        "region_id": int(region_id),
+        "cell_type": str(cell_type),
+        "curve_count": int(len(curve_tags)),
+        "eligible": False,
+        "fallback": True,
+        "reasons": [],
+    }
+    reasons: List[str] = []
+    notes: List[str] = []
+
+    if edge_controls is None:
+        reasons.append("missing-quad-edge-controls")
+    else:
+        controls = list(edge_controls)
+        diag["edge_count"] = int(len(controls))
+        edge_ids = sorted(int(getattr(e, "edge_id", -1)) for e in controls)
+        diag["edge_ids"] = edge_ids
+        edge_vertex_counts_by_id: Dict[int, int] = {}
+        for e in controls:
+            eid = int(getattr(e, "edge_id", -1))
+            edge_vertex_counts_by_id[eid] = int(len(list(e.points_xy or [])))
+        if edge_vertex_counts_by_id:
+            diag["edge_vertex_counts"] = [
+                {
+                    "edge_id": int(eid),
+                    "n_vertices": int(edge_vertex_counts_by_id[eid]),
+                }
+                for eid in sorted(edge_vertex_counts_by_id.keys())
+            ]
+            if 1 in edge_vertex_counts_by_id and 3 in edge_vertex_counts_by_id:
+                diag["edge_vertex_count_delta_1_3"] = int(
+                    abs(int(edge_vertex_counts_by_id[1]) - int(edge_vertex_counts_by_id[3]))
+                )
+            if 2 in edge_vertex_counts_by_id and 4 in edge_vertex_counts_by_id:
+                diag["edge_vertex_count_delta_2_4"] = int(
+                    abs(int(edge_vertex_counts_by_id[2]) - int(edge_vertex_counts_by_id[4]))
+                )
+        if len(controls) != 4:
+            reasons.append(f"expected-4-quad-edges-got-{len(controls)}")
+        if set(edge_ids) != {1, 2, 3, 4}:
+            reasons.append(f"edge-ids-must-be-1-2-3-4-got-{edge_ids}")
+
+        join_gap_tol = max(1.0e-6, 1.0e-3 * max(float(fallback_size), 1.0e-9))
+        join_gaps: List[float] = []
+        for i in range(len(controls)):
+            a_pts = list(controls[i].points_xy or [])
+            b_pts = list(controls[(i + 1) % len(controls)].points_xy or [])
+            if (not a_pts) or (not b_pts):
+                join_gaps.append(float("inf"))
+                continue
+            ax, ay = float(a_pts[-1][0]), float(a_pts[-1][1])
+            bx, by = float(b_pts[0][0]), float(b_pts[0][1])
+            join_gaps.append(float(np.hypot(ax - bx, ay - by)))
+        if join_gaps:
+            diag["join_gaps"] = [float(v) for v in join_gaps]
+            bad_join_idx = [i + 1 for i, g in enumerate(join_gaps) if np.isfinite(g) and g > join_gap_tol]
+            if bad_join_idx:
+                reasons.append(
+                    "quad-edge-chain-disconnected "
+                    f"(joins={bad_join_idx}, tol={join_gap_tol:.3e})"
+                )
+
+        ring: List[Tuple[float, float]] = []
+        edge_lengths: List[float] = []
+        tiny_seg_count = 0
+        tiny_seg_tol = max(1.0e-9, 1.0e-3 * max(float(fallback_size), 1.0e-9))
+
+        for ei, edge in enumerate(controls):
+            pts = [(float(p[0]), float(p[1])) for p in list(edge.points_xy or [])]
+            if len(pts) < 2:
+                reasons.append(f"edge-{ei + 1}-has-fewer-than-2-points")
+                continue
+            edge_len = _polyline_length(pts)
+            edge_lengths.append(float(edge_len))
+            if edge_len <= 1.0e-9:
+                reasons.append(f"edge-{ei + 1}-has-near-zero-length")
+
+            for pi in range(1, len(pts)):
+                seg_len = float(np.hypot(pts[pi][0] - pts[pi - 1][0], pts[pi][1] - pts[pi - 1][1]))
+                if seg_len <= tiny_seg_tol:
+                    tiny_seg_count += 1
+
+            if not ring:
+                ring.extend(pts)
+            else:
+                ring.extend(pts[1:])
+
+        if edge_lengths:
+            diag["edge_lengths"] = [float(v) for v in edge_lengths]
+        if tiny_seg_count > 0:
+            notes.append(f"contains-{tiny_seg_count}-very-short-segments<= {tiny_seg_tol:.3e}")
+
+        if len(ring) >= 2 and np.hypot(ring[0][0] - ring[-1][0], ring[0][1] - ring[-1][1]) <= 1.0e-6:
+            ring = ring[:-1]
+        if len(ring) >= 4:
+            inter_tol = _ring_intersection_tolerance(ring)
+            inter_hits = _ring_self_intersections(ring, tol=inter_tol)
+            if inter_hits:
+                reasons.append(f"ring-self-intersections={len(inter_hits)}")
+
+        counts = _gmsh_flow_aligned_curve_counts(
+            controls,
+            fallback_size=fallback_size,
+            min_nodes=min_nodes,
+        )
+        if counts is None:
+            reasons.append("could-not-compute-transfinite-counts")
+        else:
+            diag["transfinite_counts"] = [int(v) for v in counts]
+            max_count = int(max(counts)) if counts else 0
+            if max_count > 4096:
+                reasons.append(f"transfinite-count-too-large={max_count}")
+
+    if len(curve_tags) < 4:
+        reasons.append(f"surface-must-have-4-curves-got-{len(curve_tags)}")
+    elif len(curve_tags) != 4:
+        notes.append(f"surface-curves-are-split({len(curve_tags)})")
+
+    if notes:
+        diag["notes"] = notes
+    diag["reasons"] = reasons
+    diag["eligible"] = len(reasons) == 0
+    diag["fallback"] = not bool(diag["eligible"])
+    return diag
+
+
 def _sample_polyline(points: Sequence[Tuple[float, float]], target_size: float) -> List[Tuple[float, float]]:
     if len(points) < 2:
         return list(points)
@@ -1645,6 +3157,27 @@ def _sample_polyline(points: Sequence[Tuple[float, float]], target_size: float) 
             if np.hypot(pt[0] - sampled[-1][0], pt[1] - sampled[-1][1]) > 1.0e-12:
                 sampled.append(pt)
     return sampled
+
+
+def _sample_polyline_to_count(points: Sequence[Tuple[float, float]], n_vertices: int) -> List[Tuple[float, float]]:
+    """Resample a polyline to an exact vertex count (including endpoints)."""
+    pts = [(float(p[0]), float(p[1])) for p in list(points or [])]
+    if len(pts) < 2:
+        return pts
+
+    n = max(2, int(n_vertices))
+    if len(pts) == n:
+        return pts
+
+    out: List[Tuple[float, float]] = []
+    for i in range(n):
+        frac = float(i) / float(max(1, n - 1))
+        out.append(_interp_polyline_fraction(pts, frac))
+
+    if out:
+        out[0] = (float(pts[0][0]), float(pts[0][1]))
+        out[-1] = (float(pts[-1][0]), float(pts[-1][1]))
+    return out
 
 
 def _split_closed_ring_max_segment_length(
@@ -1707,6 +3240,84 @@ def _rdp_open_polyline(points: Sequence[Tuple[float, float]], tol: float) -> Lis
     left = _rdp_open_polyline(points[: max_idx + 1], tol)
     right = _rdp_open_polyline(points[max_idx:], tol)
     return left[:-1] + right
+
+
+def _relax_fixed_edges_and_hints(
+    fixed_edge_lines: Sequence[Sequence[Tuple[float, float]]],
+    target_size: float,
+    simplify_tol_factor: float = 0.35,
+    hint_size_factor: float = 0.65,
+    hint_spacing_factor: float = 1.25,
+    hint_box_half_factor: float = 0.45,
+    max_hint_boxes: int = 256,
+) -> Tuple[List[List[Tuple[float, float]]], List[List[Tuple[float, float]]], List[float]]:
+    """Build a relaxed breakline representation for fallback meshing.
+
+    Returns simplified fixed-edge polylines plus soft local-size hint polygons.
+    The hints preserve breakline influence without forcing strict edge conformance.
+    """
+    tsize = max(float(target_size), 1.0e-9)
+    tol = max(1.0e-6, float(simplify_tol_factor) * tsize)
+    hint_size = max(1.0e-9, float(hint_size_factor) * tsize)
+    hint_step = max(1.0e-6, float(hint_spacing_factor) * tsize)
+    hint_half = max(1.0e-6, float(hint_box_half_factor) * tsize)
+    max_boxes = max(0, int(max_hint_boxes))
+
+    relaxed_lines: List[List[Tuple[float, float]]] = []
+    hint_polygons: List[List[Tuple[float, float]]] = []
+    hint_sizes: List[float] = []
+    seen_hint_keys = set()
+
+    for line in fixed_edge_lines:
+        clean: List[Tuple[float, float]] = []
+        for p in line:
+            pt = (float(p[0]), float(p[1]))
+            if clean:
+                if float(np.hypot(pt[0] - clean[-1][0], pt[1] - clean[-1][1])) <= 1.0e-12:
+                    continue
+            clean.append(pt)
+        if len(clean) < 2:
+            continue
+
+        simplified = list(clean)
+        if len(clean) > 2:
+            simplified = _rdp_open_polyline(clean, tol=tol)
+            if len(simplified) < 2:
+                simplified = [clean[0], clean[-1]]
+            else:
+                simplified[0] = clean[0]
+                simplified[-1] = clean[-1]
+
+        relaxed_lines.append([(float(x), float(y)) for (x, y) in simplified])
+
+        if max_boxes <= 0:
+            continue
+        sampled = _sample_polyline(simplified, hint_step)
+        if not sampled:
+            sampled = [simplified[0], simplified[-1]]
+
+        for x, y in sampled:
+            key = (int(np.rint(float(x) / hint_half)), int(np.rint(float(y) / hint_half)))
+            if key in seen_hint_keys:
+                continue
+            seen_hint_keys.add(key)
+
+            hint_polygons.append(
+                [
+                    (float(x - hint_half), float(y - hint_half)),
+                    (float(x + hint_half), float(y - hint_half)),
+                    (float(x + hint_half), float(y + hint_half)),
+                    (float(x - hint_half), float(y + hint_half)),
+                ]
+            )
+            hint_sizes.append(float(hint_size))
+            if len(hint_polygons) >= max_boxes:
+                break
+
+        if len(hint_polygons) >= max_boxes:
+            break
+
+    return relaxed_lines, hint_polygons, hint_sizes
 
 
 def _simplify_closed_ring(
@@ -1985,6 +3596,149 @@ def _orient_quad_edge_chains(edges: Sequence[QuadEdgeControl]) -> List[QuadEdgeC
     return candidates[0]
 
 
+def _ring_self_intersections(
+    ring: Sequence[Tuple[float, float]],
+    tol: float = 1.0e-6,
+) -> List[Tuple[int, int, Tuple[float, float]]]:
+    """Return non-adjacent segment intersections in a closed ring.
+
+    The returned tuples are ``(edge_i, edge_j, (x, y))`` where ``edge_i`` is the
+    segment ``ring[i] -> ring[(i+1)%n]``.
+    """
+    pts = [(float(x), float(y)) for (x, y) in ring]
+    if len(pts) >= 2 and np.hypot(pts[0][0] - pts[-1][0], pts[0][1] - pts[-1][1]) <= tol:
+        pts = pts[:-1]
+    n = len(pts)
+    if n < 4:
+        return []
+
+    hits: List[Tuple[int, int, Tuple[float, float]]] = []
+    for i in range(n):
+        p0 = pts[i]
+        p1 = pts[(i + 1) % n]
+        if np.hypot(p1[0] - p0[0], p1[1] - p0[1]) <= tol:
+            continue
+        for j in range(i + 1, n):
+            # Adjacent edges share a vertex by construction and are excluded.
+            if j == i or j == (i + 1) % n or i == (j + 1) % n:
+                continue
+            if i == 0 and j == n - 1:
+                continue
+            q0 = pts[j]
+            q1 = pts[(j + 1) % n]
+            if np.hypot(q1[0] - q0[0], q1[1] - q0[1]) <= tol:
+                continue
+            inter = _segment_intersection_point(p0, p1, q0, q1, eps=tol)
+            if inter is None:
+                continue
+            hits.append((i, j, (float(inter[0][0]), float(inter[0][1]))))
+    return hits
+
+
+def _ring_intersection_tolerance(ring: Sequence[Tuple[float, float]]) -> float:
+    if not ring:
+        return 1.0e-6
+    rx = np.asarray([float(p[0]) for p in ring], dtype=np.float64)
+    ry = np.asarray([float(p[1]) for p in ring], dtype=np.float64)
+    return max(1.0e-6, 1.0e-9 * max(float(np.ptp(rx)), float(np.ptp(ry)), 1.0))
+
+
+def _recover_tqmesh_exterior_boundary(
+    ext_ring: Sequence[Tuple[float, float]],
+    fallback_ring: Optional[Sequence[Tuple[float, float]]],
+    target_size: float,
+    protect_points: Optional[Sequence[Tuple[float, float]]] = None,
+    protect_tol: float = 1.0e-6,
+    region_id: Optional[int] = None,
+) -> Tuple[List[Tuple[float, float]], bool]:
+    """Recover a safer exterior boundary if sanitize/stitch produced crossings.
+
+    Returns ``(ring, used_fallback_source)``.  If no improvement is found,
+    the original ``ext_ring`` is returned unchanged.
+    """
+    base = [(float(x), float(y)) for (x, y) in ext_ring]
+    if len(base) >= 2 and np.hypot(base[0][0] - base[-1][0], base[0][1] - base[-1][1]) <= 1.0e-12:
+        base = base[:-1]
+    if len(base) < 4:
+        return base, False
+
+    tsize = max(float(target_size), 1.0e-9)
+    tol = _ring_intersection_tolerance(base)
+    base_hits = _ring_self_intersections(base, tol=tol)
+    if not base_hits:
+        return base, False
+
+    best_ring = list(base)
+    best_hits = len(base_hits)
+    best_tag = "base"
+    best_used_fallback = False
+
+    def _register_candidate(tag: str, ring_xy: Sequence[Tuple[float, float]], used_fallback: bool) -> None:
+        nonlocal best_ring, best_hits, best_tag, best_used_fallback
+        cand = [(float(x), float(y)) for (x, y) in ring_xy]
+        if len(cand) >= 2 and np.hypot(cand[0][0] - cand[-1][0], cand[0][1] - cand[-1][1]) <= 1.0e-12:
+            cand = cand[:-1]
+        if len(cand) < 3:
+            return
+        ct = _ring_intersection_tolerance(cand)
+        hits = len(_ring_self_intersections(cand, tol=ct))
+        if hits < best_hits:
+            best_ring = cand
+            best_hits = hits
+            best_tag = tag
+            best_used_fallback = bool(used_fallback)
+
+    def _prepare_from_source(
+        source_ring: Sequence[Tuple[float, float]],
+        do_stitch: bool,
+        do_simplify: bool,
+    ) -> List[Tuple[float, float]]:
+        rr = [(float(x), float(y)) for (x, y) in source_ring]
+        if len(rr) >= 2 and np.hypot(rr[0][0] - rr[-1][0], rr[0][1] - rr[-1][1]) <= 1.0e-12:
+            rr = rr[:-1]
+        if len(rr) < 3:
+            return []
+        if do_simplify:
+            simp_max = max(24, min(192, int(len(rr))))
+            rr = _simplify_closed_ring(rr, tol=max(1.0e-6, 0.15 * tsize), max_vertices=simp_max)
+        rr = _sanitize_closed_ring(
+            rr,
+            length_tol=max(1.0e-6, 1.0e-3 * tsize),
+            collinear_tol=max(1.0e-8, 7.5e-4 * tsize),
+            protect_points=protect_points,
+            protect_tol=max(1.0e-6, float(protect_tol)),
+        )
+        if do_stitch:
+            rr = _stitch_boundary_microchains(
+                rr,
+                target_size=float(tsize),
+                protect_points=protect_points,
+                protect_tol=max(1.0e-6, float(protect_tol)),
+            )
+        return [(float(x), float(y)) for (x, y) in rr]
+
+    _register_candidate("base-no-stitch", _prepare_from_source(base, do_stitch=False, do_simplify=False), used_fallback=False)
+    _register_candidate("base-simplified", _prepare_from_source(base, do_stitch=True, do_simplify=True), used_fallback=False)
+
+    if fallback_ring is not None:
+        fb = [(float(x), float(y)) for (x, y) in fallback_ring]
+        _register_candidate("fallback-no-stitch", _prepare_from_source(fb, do_stitch=False, do_simplify=False), used_fallback=True)
+        _register_candidate("fallback-stitched", _prepare_from_source(fb, do_stitch=True, do_simplify=False), used_fallback=True)
+        _register_candidate("fallback-simplified", _prepare_from_source(fb, do_stitch=True, do_simplify=True), used_fallback=True)
+
+    if best_hits < len(base_hits):
+        rid_txt = "?" if region_id is None else str(int(region_id))
+        warnings.warn(
+            "TQMesh exterior boundary recovery adjusted region "
+            f"{rid_txt} after sanitize/stitch produced self-intersections "
+            f"(before={len(base_hits)}, after={best_hits}, strategy={best_tag}).",
+            RuntimeWarning,
+        )
+        return best_ring, bool(best_used_fallback)
+
+    return base, False
+
+
 def _quad_controls_for_region(
     model: ConceptualModel,
     region: ConceptualRegion,
@@ -2035,10 +3789,66 @@ def _quad_controls_for_region(
             )
         )
 
+    # Ensure opposite edges carry identical sampled vertex counts, so shared
+    # transfinite interfaces are not sensitive to length-only discretization.
+    idx_by_edge_id = {
+        int(edge.edge_id): int(i)
+        for i, edge in enumerate(normalized_edges)
+        if int(edge.edge_id) in {1, 2, 3, 4}
+    }
+    for edge_a, edge_b in ((1, 3), (2, 4)):
+        ia = idx_by_edge_id.get(int(edge_a))
+        ib = idx_by_edge_id.get(int(edge_b))
+        if ia is None or ib is None:
+            continue
+
+        pts_a = list(normalized_edges[int(ia)].points_xy or [])
+        pts_b = list(normalized_edges[int(ib)].points_xy or [])
+        if len(pts_a) < 2 or len(pts_b) < 2:
+            continue
+
+        n_target = max(2, int(len(pts_a)), int(len(pts_b)))
+        if len(pts_a) != n_target:
+            normalized_edges[int(ia)] = QuadEdgeControl(
+                region_id=normalized_edges[int(ia)].region_id,
+                edge_id=normalized_edges[int(ia)].edge_id,
+                points_xy=_sample_polyline_to_count(pts_a, int(n_target)),
+                target_size=normalized_edges[int(ia)].target_size,
+                n_layers=normalized_edges[int(ia)].n_layers,
+                first_height=normalized_edges[int(ia)].first_height,
+                growth_rate=normalized_edges[int(ia)].growth_rate,
+            )
+        if len(pts_b) != n_target:
+            normalized_edges[int(ib)] = QuadEdgeControl(
+                region_id=normalized_edges[int(ib)].region_id,
+                edge_id=normalized_edges[int(ib)].edge_id,
+                points_xy=_sample_polyline_to_count(pts_b, int(n_target)),
+                target_size=normalized_edges[int(ib)].target_size,
+                n_layers=normalized_edges[int(ib)].n_layers,
+                first_height=normalized_edges[int(ib)].first_height,
+                growth_rate=normalized_edges[int(ib)].growth_rate,
+            )
+
+    # Rebuild closed ring from parity-adjusted edge samples.
+    ring = []
+    for edge in normalized_edges:
+        sampled = [(float(p[0]), float(p[1])) for p in list(edge.points_xy or [])]
+        if len(sampled) < 2:
+            return None
+        if ring:
+            join = sampled[0]
+            prev = ring[-1]
+            if np.hypot(join[0] - prev[0], join[1] - prev[1]) <= 1.0e-6:
+                sampled = [prev] + sampled[1:]
+            ring.extend(sampled[1:])
+        else:
+            ring.extend(sampled)
+
     if len(ring) >= 2 and np.hypot(ring[0][0] - ring[-1][0], ring[0][1] - ring[-1][1]) <= 1.0e-6:
         ring = ring[:-1]
     if len(ring) < 4:
         return None
+
     area = _polygon_area_xy(
         np.asarray([p[0] for p in ring], dtype=np.float64),
         np.asarray([p[1] for p in ring], dtype=np.float64),
@@ -2196,6 +4006,42 @@ def _structured_quad_region_mesh(
     top = list(reversed(quad_controls[2].points_xy))
     left = list(reversed(quad_controls[3].points_xy))
     if len(bottom) < 2 or len(right) < 2 or len(top) < 2 or len(left) < 2:
+        return None
+
+    # Validity gate: reject self-intersecting assembled quad rings and fall
+    # back to non-structured region meshing.
+    quad_ring: List[Tuple[float, float]] = []
+    for chain in (bottom, right, top, left):
+        if not quad_ring:
+            quad_ring.extend((float(x), float(y)) for (x, y) in chain)
+            continue
+        prev = quad_ring[-1]
+        cur = chain[0]
+        if np.hypot(prev[0] - cur[0], prev[1] - cur[1]) <= 1.0e-6:
+            quad_ring.extend((float(x), float(y)) for (x, y) in chain[1:])
+        else:
+            quad_ring.extend((float(x), float(y)) for (x, y) in chain)
+    if len(quad_ring) >= 2 and np.hypot(quad_ring[0][0] - quad_ring[-1][0], quad_ring[0][1] - quad_ring[-1][1]) <= 1.0e-6:
+        quad_ring = quad_ring[:-1]
+    if len(quad_ring) < 4:
+        return None
+
+    rx = np.asarray([p[0] for p in quad_ring], dtype=np.float64)
+    ry = np.asarray([p[1] for p in quad_ring], dtype=np.float64)
+    gate_tol = max(1.0e-6, 1.0e-9 * max(float(np.ptp(rx)), float(np.ptp(ry)), 1.0))
+    intersections = _ring_self_intersections(quad_ring, tol=gate_tol)
+    if intersections:
+        preview = ", ".join(
+            f"e{i}-e{j}@({pt[0]:.3f},{pt[1]:.3f})"
+            for i, j, pt in intersections[:3]
+        )
+        warnings.warn(
+            "Structured quad ring validity gate rejected region "
+            f"{int(region.region_id)} due to self-intersections "
+            f"(count={len(intersections)}, sample={preview}). "
+            "Falling back to non-structured meshing for this region.",
+            RuntimeWarning,
+        )
         return None
 
     default_edge_sizes = list(region.edge_lengths) if region.edge_lengths and len(region.edge_lengths) == 4 else [region.default_size] * 4
@@ -2369,19 +4215,196 @@ def _region_boundary_node_sets_from_mesh(mesh: MeshResult) -> Dict[int, set]:
     return out
 
 
+def _is_transfinite_cell_type_label(cell_type_label: object) -> bool:
+    label = str(cell_type_label).strip().lower()
+    return label in {"cartesian", "quadrilateral", "channel_generator"}
+
+
+def _mixed_transfinite_tri_near_unshared_report(
+    mesh: MeshResult,
+    tol: float = 1.0e-3,
+    max_pairs: int = 32,
+) -> Dict[str, object]:
+    """Detect near-coincident but unshared nodes on mixed transfinite/tri interfaces.
+
+    This catches the classic hanging-node pattern where one side has a split
+    edge but the neighboring side does not share the intermediate node.
+    """
+    tol_use = max(float(tol), 1.0e-9)
+    tol2 = float(tol_use * tol_use)
+
+    node_x = np.asarray(mesh.node_x, dtype=np.float64)
+    node_y = np.asarray(mesh.node_y, dtype=np.float64)
+    offs = np.asarray(mesh.cell_face_offsets, dtype=np.int32)
+    conn = np.asarray(mesh.cell_face_nodes, dtype=np.int32)
+    rid = np.asarray(mesh.region_id, dtype=np.int32)
+    ctype = np.asarray(mesh.cell_type)
+
+    if offs.size < 2:
+        return {
+            "tol": float(tol_use),
+            "pair_count_checked": 0,
+            "flagged_pair_count": 0,
+            "flagged_pairs": [],
+        }
+
+    edge_owner_cells: Dict[Tuple[int, int], List[int]] = {}
+    boundary_nodes_by_region: Dict[int, set] = {}
+
+    for ci in range(int(offs.size) - 1):
+        s = int(offs[ci])
+        e = int(offs[ci + 1])
+        poly = conn[s:e]
+        if poly.size < 2:
+            continue
+        rr = int(rid[ci])
+        rnodes = boundary_nodes_by_region.setdefault(rr, set())
+        for k in range(int(poly.size)):
+            a = int(poly[k])
+            b = int(poly[(k + 1) % poly.size])
+            key = (a, b) if a < b else (b, a)
+            edge_owner_cells.setdefault(key, []).append(int(ci))
+            rnodes.add(int(a))
+            rnodes.add(int(b))
+
+    pair_shared_edges: Dict[Tuple[int, int], List[Tuple[int, int]]] = {}
+    pair_shared_nodes: Dict[Tuple[int, int], set] = {}
+
+    for key, owners in edge_owner_cells.items():
+        if len(owners) != 2:
+            continue
+        c0 = int(owners[0])
+        c1 = int(owners[1])
+        r0 = int(rid[c0])
+        r1 = int(rid[c1])
+        if r0 == r1:
+            continue
+
+        c0_tf = _is_transfinite_cell_type_label(ctype[c0])
+        c1_tf = _is_transfinite_cell_type_label(ctype[c1])
+        c0_tri = str(ctype[c0]).strip().lower() == "triangular"
+        c1_tri = str(ctype[c1]).strip().lower() == "triangular"
+        is_mixed = (c0_tf and c1_tri) or (c1_tf and c0_tri)
+        if not is_mixed:
+            continue
+
+        pair = (r0, r1) if r0 < r1 else (r1, r0)
+        pair_shared_edges.setdefault(pair, []).append((int(key[0]), int(key[1])))
+        pnodes = pair_shared_nodes.setdefault(pair, set())
+        pnodes.add(int(key[0]))
+        pnodes.add(int(key[1]))
+
+    flagged_pairs: List[Dict[str, object]] = []
+    pair_count_checked = 0
+
+    for pair, edges in sorted(pair_shared_edges.items(), key=lambda kv: len(kv[1]), reverse=True):
+        if not edges:
+            continue
+        pair_count_checked += 1
+        ra, rb = int(pair[0]), int(pair[1])
+        segs = [
+            (
+                float(node_x[int(a)]),
+                float(node_y[int(a)]),
+                float(node_x[int(b)]),
+                float(node_y[int(b)]),
+            )
+            for a, b in edges
+        ]
+        sx = [float(v) for seg in segs for v in (seg[0], seg[2])]
+        sy = [float(v) for seg in segs for v in (seg[1], seg[3])]
+        seg_bbox = (
+            float(min(sx) - tol_use),
+            float(min(sy) - tol_use),
+            float(max(sx) + tol_use),
+            float(max(sy) + tol_use),
+        )
+
+        def _near_shared_geometry(node_id: int) -> bool:
+            px = float(node_x[int(node_id)])
+            py = float(node_y[int(node_id)])
+            if px < seg_bbox[0] or px > seg_bbox[2] or py < seg_bbox[1] or py > seg_bbox[3]:
+                return False
+            for ax, ay, bx, by in segs:
+                d, _ = _point_to_segment_distance_s(px, py, ax, ay, bx, by)
+                if float(d) <= float(tol_use):
+                    return True
+            return False
+
+        cand_a = [int(n) for n in boundary_nodes_by_region.get(int(ra), set()) if _near_shared_geometry(int(n))]
+        cand_b = [int(n) for n in boundary_nodes_by_region.get(int(rb), set()) if _near_shared_geometry(int(n))]
+
+        if not cand_a or not cand_b:
+            continue
+
+        set_a = set(int(v) for v in cand_a)
+        set_b = set(int(v) for v in cand_b)
+        shared_exact = int(len(set_a & set_b))
+
+        xb = node_x[np.asarray(cand_b, dtype=np.int32)]
+        yb = node_y[np.asarray(cand_b, dtype=np.int32)]
+        xa = node_x[np.asarray(cand_a, dtype=np.int32)]
+        ya = node_y[np.asarray(cand_a, dtype=np.int32)]
+
+        near_only_a = 0
+        for n in set_a:
+            if int(n) in set_b:
+                continue
+            dx = xb - float(node_x[int(n)])
+            dy = yb - float(node_y[int(n)])
+            if np.any((dx * dx + dy * dy) <= tol2):
+                near_only_a += 1
+
+        near_only_b = 0
+        for n in set_b:
+            if int(n) in set_a:
+                continue
+            dx = xa - float(node_x[int(n)])
+            dy = ya - float(node_y[int(n)])
+            if np.any((dx * dx + dy * dy) <= tol2):
+                near_only_b += 1
+
+        if near_only_a > 0 or near_only_b > 0:
+            flagged_pairs.append(
+                {
+                    "region_pair": [int(ra), int(rb)],
+                    "shared_edge_count": int(len(edges)),
+                    "shared_nodes_exact": int(shared_exact),
+                    "candidate_nodes_a": int(len(cand_a)),
+                    "candidate_nodes_b": int(len(cand_b)),
+                    "near_only_a": int(near_only_a),
+                    "near_only_b": int(near_only_b),
+                }
+            )
+
+    return {
+        "tol": float(tol_use),
+        "pair_count_checked": int(pair_count_checked),
+        "flagged_pair_count": int(len(flagged_pairs)),
+        "flagged_pairs": list(flagged_pairs[: max(1, int(max_pairs))]),
+    }
+
+
 def _enforce_quad_interface_conformance(
     mesh: MeshResult,
     model: ConceptualModel,
     snap_tol: float = 1.0,
+    centroid_merge: bool = False,
 ) -> MeshResult:
     """Snap adjacent-region interface nodes onto quad-region edge node lines.
 
     This enforces shared node placement along interfaces for independently meshed
     regions (e.g. triangular region next to a flow-aligned quad block).
+
+    When ``centroid_merge`` is enabled, matched interface node groups are moved
+    to their centroid prior to welding instead of snapping one side directly
+    onto the other side's node coordinates.
     """
     tol = max(float(snap_tol), 1.0e-9)
     node_x = np.asarray(mesh.node_x, dtype=np.float64).copy()
     node_y = np.asarray(mesh.node_y, dtype=np.float64).copy()
+    orig_x = node_x.copy()
+    orig_y = node_y.copy()
 
     region_nodes = _region_node_sets_from_mesh(mesh)
     region_boundary_nodes = _region_boundary_node_sets_from_mesh(mesh)
@@ -2394,6 +4417,9 @@ def _enforce_quad_interface_conformance(
         for rid, region in rid_to_region.items()
         if str(region.default_cell_type).strip().lower() in {"quadrilateral", "cartesian", "channel_generator"}
     ]
+
+    matched_pairs: List[Tuple[int, int]] = []
+    matched_pair_seen: set = set()
 
     for qrid in quad_region_ids:
         region = rid_to_region.get(int(qrid))
@@ -2466,8 +4492,67 @@ def _enforce_quad_interface_conformance(
                     continue
                 j = int(np.argmin(np.abs(q_s - s)))
                 ref = int(q_n[j])
-                node_x[n] = node_x[ref]
-                node_y[n] = node_y[ref]
+
+                if int(n) == int(ref):
+                    continue
+
+                pair = (int(min(n, ref)), int(max(n, ref)))
+                if pair in matched_pair_seen:
+                    continue
+                matched_pair_seen.add(pair)
+                matched_pairs.append((int(n), int(ref)))
+
+    centroid_group_count = 0
+    if matched_pairs:
+        if bool(centroid_merge):
+            # Merge matched interface node groups at their group centroid.
+            parent = np.arange(node_x.size, dtype=np.int32)
+            rank = np.zeros(node_x.size, dtype=np.int8)
+
+            def _find(i: int) -> int:
+                j = int(i)
+                while int(parent[j]) != j:
+                    parent[j] = parent[int(parent[j])]
+                    j = int(parent[j])
+                return int(j)
+
+            def _union(a: int, b: int) -> None:
+                ra = _find(int(a))
+                rb = _find(int(b))
+                if ra == rb:
+                    return
+                if int(rank[ra]) < int(rank[rb]):
+                    parent[ra] = int(rb)
+                elif int(rank[ra]) > int(rank[rb]):
+                    parent[rb] = int(ra)
+                else:
+                    parent[rb] = int(ra)
+                    rank[ra] = np.int8(int(rank[ra]) + 1)
+
+            touched: set = set()
+            for n, ref in matched_pairs:
+                touched.add(int(n))
+                touched.add(int(ref))
+                _union(int(n), int(ref))
+
+            groups: Dict[int, List[int]] = {}
+            for idx in touched:
+                root = _find(int(idx))
+                groups.setdefault(int(root), []).append(int(idx))
+
+            for group_nodes in groups.values():
+                if not group_nodes:
+                    continue
+                gx = float(np.mean(orig_x[np.asarray(group_nodes, dtype=np.int32)]))
+                gy = float(np.mean(orig_y[np.asarray(group_nodes, dtype=np.int32)]))
+                for nid in group_nodes:
+                    node_x[int(nid)] = float(gx)
+                    node_y[int(nid)] = float(gy)
+            centroid_group_count = int(len(groups))
+        else:
+            for n, ref in matched_pairs:
+                node_x[int(n)] = node_x[int(ref)]
+                node_y[int(n)] = node_y[int(ref)]
 
     # Weld after snapping so interfaces become topologically shared.
     remap_conn = (
@@ -2482,6 +4567,14 @@ def _enforce_quad_interface_conformance(
         tol=1.0e-6,
     )
 
+    quality_summary = dict(mesh.quality_summary or {})
+    quality_summary["interface_conformance_postprocess"] = {
+        "snap_tol": float(tol),
+        "centroid_merge": bool(centroid_merge),
+        "matched_pair_count": int(len(matched_pairs)),
+        "centroid_group_count": int(centroid_group_count),
+    }
+
     return MeshResult(
         node_x=node_x2,
         node_y=node_y2,
@@ -2492,7 +4585,7 @@ def _enforce_quad_interface_conformance(
         cell_type=np.asarray(mesh.cell_type, dtype=object),
         region_id=np.asarray(mesh.region_id, dtype=np.int32),
         target_size=np.asarray(mesh.target_size, dtype=np.float64),
-        quality_summary=dict(mesh.quality_summary or {}),
+        quality_summary=quality_summary,
     )
 
 
@@ -2704,6 +4797,10 @@ class GmshBackend(MeshingBackend):
 
     def __init__(self, options: Optional[Dict[str, object]] = None):
         self._options = dict(options or {})
+        self._last_flow_align_diagnostics: List[Dict[str, object]] = []
+        self._last_build_order_fingerprint: Dict[str, object] = {}
+        self._last_build_order_stage_ladder: Dict[str, object] = {}
+        self._last_pre_generate_entity_signature: Dict[str, object] = {}
 
     def _opt_int(self, name: str, default: int) -> int:
         value = self._options.get(name)
@@ -2938,29 +5035,228 @@ class GmshBackend(MeshingBackend):
         verbosity = max(0, self._opt_int("gmsh_verbosity", 1))
         quality_cfg = self._gmsh_quality_config()
         checkpoint_path = str(self._options.get("gmsh_quality_checkpoint_path", "") or "").strip()
+        progress_path = str(self._options.get("gmsh_progress_path", "") or "").strip()
+        progress_emit_interval_s = _as_float(
+            self._options.get("gmsh_progress_emit_interval_s"),
+            0.75,
+        )
+        if (not np.isfinite(progress_emit_interval_s)) or progress_emit_interval_s <= 0.0:
+            progress_emit_interval_s = 0.75
+        progress_emit_interval_s = max(float(progress_emit_interval_s), 0.2)
+        progress_seq = 0
+        progress_last_emit = -1.0
+        t_start = time.perf_counter()
+
+        def _clip_progress_detail(detail: object, max_len: int = 240) -> str:
+            txt = str(detail or "").strip()
+            if len(txt) <= max_len:
+                return txt
+            return txt[: max_len - 3] + "..."
+
+        def _emit_progress(
+            stage: str,
+            attempt: Optional[int] = None,
+            detail: str = "",
+            force: bool = False,
+        ) -> None:
+            nonlocal progress_seq, progress_last_emit
+            if not progress_path:
+                return
+            now = time.perf_counter()
+            if (not force) and progress_last_emit >= 0.0:
+                if (now - progress_last_emit) < progress_emit_interval_s:
+                    return
+            progress_seq += 1
+            payload: Dict[str, object] = {
+                "seq": int(progress_seq),
+                "stage": str(stage),
+                "timestamp": float(time.time()),
+                "elapsed_s": float(max(0.0, now - t_start)),
+                "backend": "gmsh",
+                "quality_loop_enabled": bool(quality_cfg.enabled),
+            }
+            if attempt is not None:
+                payload["attempt"] = int(attempt)
+            clipped = _clip_progress_detail(detail)
+            if clipped:
+                payload["detail"] = clipped
+            try:
+                _write_json_atomic(progress_path, payload)
+                progress_last_emit = now
+            except Exception:
+                pass
+
+        _emit_progress(
+            "start",
+            detail=(
+                f"quality_loop={bool(quality_cfg.enabled)} max_iters={int(quality_cfg.max_iterations)} "
+                f"budget_s={float(quality_cfg.time_limit_s):.2f}"
+            ),
+            force=True,
+        )
+
+        gmsh_logger_started = False
+        gmsh_logger_emitted: set = set()
+
+        def _emit_gmsh_logger_warnings() -> None:
+            if not gmsh_logger_started:
+                return
+            try:
+                msgs = list(gmsh.logger.get())
+            except Exception:
+                return
+            for raw in msgs:
+                msg = str(raw).strip()
+                if not msg:
+                    continue
+                low = msg.lower()
+                if ("warning" not in low) and ("error" not in low):
+                    continue
+                if msg in gmsh_logger_emitted:
+                    continue
+                gmsh_logger_emitted.add(msg)
+                warnings.warn(
+                    f"Gmsh logger: {msg}",
+                    RuntimeWarning,
+                )
 
         # `interruptible=False` avoids installing a SIGINT handler, which lets
         # the Python API run from the QGIS bridge worker thread.
         gmsh.initialize(interruptible=False)
         gmsh.option.setNumber("General.Verbosity", float(verbosity))
+        try:
+            gmsh.logger.start()
+            gmsh_logger_started = True
+        except Exception:
+            gmsh_logger_started = False
 
         try:
             if not quality_cfg.enabled:
-                gmsh.model.add("swe2d")
-                return _require_nonempty_mesh(
-                    self._build(
-                        gmsh,
-                        model,
-                        tri_algo=tri_algo,
-                        quad_algo=quad_algo,
-                        smoothing_passes=smoothing_passes,
-                        optimize_iters=optimize_iters,
-                        recomb_algo=recomb_algo,
-                        optimize_netgen=optimize_netgen,
-                        size_scale=1.0,
-                    ),
-                    "Gmsh",
+                flow_align_requested = self._opt_bool(
+                    "gmsh_quad_full_region_flow_align",
+                    _env_bool("BACKWATER_GMSH_QUAD_FULL_REGION_FLOW_ALIGN", False),
                 )
+                gmsh.model.add("swe2d")
+                _emit_progress("build-start", detail="single-pass mode", force=True)
+                try:
+                    mesh = _require_nonempty_mesh(
+                        self._build(
+                            gmsh,
+                            model,
+                            tri_algo=tri_algo,
+                            quad_algo=quad_algo,
+                            smoothing_passes=smoothing_passes,
+                            optimize_iters=optimize_iters,
+                            recomb_algo=recomb_algo,
+                            optimize_netgen=optimize_netgen,
+                            size_scale=1.0,
+                        ),
+                        "Gmsh",
+                    )
+                    _emit_gmsh_logger_warnings()
+                    n_nodes = int(np.asarray(mesh.node_x).size)
+                    n_faces = max(0, int(np.asarray(mesh.cell_face_offsets).size) - 1)
+                    _emit_progress("done", detail=f"nodes={n_nodes} faces={n_faces}", force=True)
+                    return mesh
+                except Exception as exc:
+                    _emit_gmsh_logger_warnings()
+                    if not flow_align_requested:
+                        _emit_progress("fail", detail=f"single-pass build failed: {exc}", force=True)
+                        raise
+
+                    _emit_progress(
+                        "flow-align-fallback-start",
+                        detail=f"initial flow-align build failed: {exc}",
+                        force=True,
+                    )
+                    diagnostics = copy.deepcopy(self._last_flow_align_diagnostics)
+                    warnings.warn(
+                        "Gmsh full-region flow-aligned quads failed on initial pass; "
+                        "retrying with per-region flow-align disabled. "
+                        f"Initial error: {exc}",
+                        RuntimeWarning,
+                    )
+
+                    prev_flow_align = self._options.get("gmsh_quad_full_region_flow_align", None)
+                    self._options["gmsh_quad_full_region_flow_align"] = False
+                    try:
+                        gmsh.clear()
+                        gmsh.model.add("swe2d_fallback_no_flow_align")
+                        _emit_progress(
+                            "build-retry",
+                            detail="retry with per-region flow-align disabled",
+                            force=True,
+                        )
+                        try:
+                            fallback_mesh = _require_nonempty_mesh(
+                                self._build(
+                                    gmsh,
+                                    model,
+                                    tri_algo=tri_algo,
+                                    quad_algo=quad_algo,
+                                    smoothing_passes=smoothing_passes,
+                                    optimize_iters=optimize_iters,
+                                    recomb_algo=recomb_algo,
+                                    optimize_netgen=optimize_netgen,
+                                    size_scale=1.0,
+                                ),
+                                "Gmsh",
+                            )
+                            _emit_gmsh_logger_warnings()
+                            n_nodes = int(np.asarray(fallback_mesh.node_x).size)
+                            n_faces = max(0, int(np.asarray(fallback_mesh.cell_face_offsets).size) - 1)
+                            _emit_progress(
+                                "done",
+                                detail=(
+                                    f"flow-align fallback success nodes={n_nodes} faces={n_faces} "
+                                    "mode=no-flow-align"
+                                ),
+                                force=True,
+                            )
+                        except Exception as fallback_exc:
+                            _emit_gmsh_logger_warnings()
+                            diag_txt = "none"
+                            if diagnostics:
+                                parts = []
+                                for d in diagnostics:
+                                    rid_txt = str(d.get("region_id", "?"))
+                                    status_txt = str(d.get("status", "unknown"))
+                                    reasons_txt = ",".join(str(x) for x in d.get("reasons", []) if str(x))
+                                    if not reasons_txt:
+                                        reasons_txt = "none"
+                                    parts.append(
+                                        f"region={rid_txt};status={status_txt};reasons={reasons_txt}"
+                                    )
+                                diag_txt = " | ".join(parts)
+                            _emit_progress(
+                                "fail",
+                                detail=(
+                                    "flow-align fallback failed "
+                                    f"initial={_clip_progress_detail(exc)} "
+                                    f"fallback={_clip_progress_detail(fallback_exc)}"
+                                ),
+                                force=True,
+                            )
+                            raise RuntimeError(
+                                "Gmsh flow-align fallback retry failed. "
+                                f"initial_error={exc}; fallback_error={fallback_exc}; "
+                                f"per_region_diagnostics={diag_txt}"
+                            )
+                    finally:
+                        if prev_flow_align is None:
+                            self._options.pop("gmsh_quad_full_region_flow_align", None)
+                        else:
+                            self._options["gmsh_quad_full_region_flow_align"] = prev_flow_align
+
+                    merged_summary = dict(fallback_mesh.quality_summary or {})
+                    merged_summary["gmsh_flow_align_runtime_fallback"] = {
+                        "triggered": True,
+                        "initial_error": str(exc),
+                    }
+                    if diagnostics:
+                        merged_summary["gmsh_flow_align_diagnostics"] = diagnostics
+                    fallback_mesh.quality_summary = merged_summary
+                    return fallback_mesh
 
             start_t = time.perf_counter()
             best_mesh: Optional[MeshResult] = None
@@ -3005,6 +5301,14 @@ class GmshBackend(MeshingBackend):
                 elapsed = time.perf_counter() - start_t
                 if elapsed >= quality_cfg.time_limit_s:
                     hit_time_budget = True
+                    _emit_progress(
+                        "budget-stop",
+                        attempt=int(attempts),
+                        detail=(
+                            f"elapsed={elapsed:.2f}s reached budget={float(quality_cfg.time_limit_s):.2f}s"
+                        ),
+                        force=True,
+                    )
                     break
 
                 # Avoid starting a fresh attempt when little time remains. A
@@ -3016,6 +5320,15 @@ class GmshBackend(MeshingBackend):
                     min_retry_window_s = max(2.0, 0.75 * float(last_attempt_duration_s))
                     if remaining_s < min_retry_window_s:
                         hit_time_budget = True
+                        _emit_progress(
+                            "budget-stop",
+                            attempt=int(attempts),
+                            detail=(
+                                f"remaining={remaining_s:.2f}s too low for new attempt "
+                                f"need~{min_retry_window_s:.2f}s"
+                            ),
+                            force=True,
+                        )
                         warnings.warn(
                             "Gmsh quality loop stopping retries early due to low remaining budget "
                             f"(remaining={remaining_s:.2f}s, needed~{min_retry_window_s:.2f}s); "
@@ -3039,6 +5352,18 @@ class GmshBackend(MeshingBackend):
                 recomb_min_quality_try = recomb_min_quality_ladder[attempts % len(recomb_min_quality_ladder)]
                 random_factor_try = random_factor_ladder[attempts % len(random_factor_ladder)]
 
+                _emit_progress(
+                    "attempt-start",
+                    attempt=int(attempts + 1),
+                    detail=(
+                        f"tri={tri_try} quad={quad_try} recomb={recomb_try} "
+                        f"topo={int(recomb_topology_try)} minq={float(recomb_min_quality_try):.3f} "
+                        f"rand={float(random_factor_try):.2e} size_scale={float(size_scale):.3f} "
+                        f"smooth={int(max(0, smoothing_passes + int(smooth_inc)))}"
+                    ),
+                    force=True,
+                )
+
                 attempt_start_t = time.perf_counter()
                 try:
                     mesh = _require_nonempty_mesh(
@@ -3061,6 +5386,7 @@ class GmshBackend(MeshingBackend):
                         ),
                         "Gmsh",
                     )
+                    _emit_gmsh_logger_warnings()
                     stats = _face_mesh_quality_stats(mesh, quality_cfg)
                     score = _gmsh_quality_score(stats, quality_cfg)
 
@@ -3092,15 +5418,24 @@ class GmshBackend(MeshingBackend):
                     if _gmsh_quality_passes(stats, quality_cfg):
                         had_passing_candidate = True
                         if quality_cfg.strict:
+                            _emit_progress(
+                                "done",
+                                attempt=int(attempts + 1),
+                                detail="strict mode accepted first passing candidate",
+                                force=True,
+                            )
                             # Strict mode only needs the first passing candidate.
-                            mesh.quality_summary = {
+                            summary = dict(mesh.quality_summary or {})
+                            summary.update({
                                 "attempts": int(attempts + 1),
                                 "strict_requested": bool(quality_cfg.strict),
                                 "had_passing_candidate": True,
                                 "best_stats": dict(stats),
-                            }
+                            })
+                            mesh.quality_summary = summary
                             return mesh
                 except Exception as exc:
+                    _emit_gmsh_logger_warnings()
                     err_msg = (
                         f"Gmsh quality attempt {attempts + 1} failed for tri={tri_try}, quad={quad_try}, "
                         f"recomb={recomb_try}, topo={int(recomb_topology_try)}, minq={float(recomb_min_quality_try):.3f}, "
@@ -3111,6 +5446,12 @@ class GmshBackend(MeshingBackend):
                     warnings.warn(
                         err_msg,
                         RuntimeWarning,
+                    )
+                    _emit_progress(
+                        "attempt-fail",
+                        attempt=int(attempts + 1),
+                        detail=err_msg,
+                        force=True,
                     )
                 else:
                     warnings.warn(
@@ -3124,6 +5465,15 @@ class GmshBackend(MeshingBackend):
                         f"{int(stats.get('failed_max_non_orth_cells', 0.0))}",
                         RuntimeWarning,
                     )
+                    _emit_progress(
+                        "attempt-done",
+                        attempt=int(attempts + 1),
+                        detail=(
+                            f"passed={bool(_gmsh_quality_passes(stats, quality_cfg))} "
+                            f"fail_any={int(stats.get('failed_any_cells', 0.0))}"
+                        ),
+                        force=True,
+                    )
 
                 last_attempt_duration_s = max(0.0, time.perf_counter() - attempt_start_t)
                 attempts += 1
@@ -3133,6 +5483,7 @@ class GmshBackend(MeshingBackend):
                 # run one plain baseline build so downstream export still has a mesh
                 # whenever geometry is meshable at all.
                 try:
+                    _emit_progress("fallback-start", detail="building best-effort baseline candidate", force=True)
                     gmsh.clear()
                     gmsh.model.add("swe2d_best_effort_fallback")
                     fallback_mesh = _require_nonempty_mesh(
@@ -3155,15 +5506,18 @@ class GmshBackend(MeshingBackend):
                         ),
                         "Gmsh",
                     )
+                    _emit_gmsh_logger_warnings()
                     fallback_stats = _face_mesh_quality_stats(fallback_mesh, quality_cfg)
-                    fallback_mesh.quality_summary = {
+                    fallback_summary = dict(fallback_mesh.quality_summary or {})
+                    fallback_summary.update({
                         "attempts": int(attempts + 1),
                         "strict_requested": bool(quality_cfg.strict),
                         "had_passing_candidate": bool(_gmsh_quality_passes(fallback_stats, quality_cfg)),
                         "best_stats": dict(fallback_stats),
                         "best_effort_fallback": True,
                         "time_budget_exhausted": bool(hit_time_budget),
-                    }
+                    })
+                    fallback_mesh.quality_summary = fallback_summary
                     if checkpoint_path:
                         try:
                             _write_mesh_checkpoint_npz(
@@ -3181,9 +5535,24 @@ class GmshBackend(MeshingBackend):
                         "using best-effort fallback mesh for export.",
                         RuntimeWarning,
                     )
+                    n_nodes = int(np.asarray(fallback_mesh.node_x).size)
+                    n_faces = max(0, int(np.asarray(fallback_mesh.cell_face_offsets).size) - 1)
+                    _emit_progress(
+                        "done",
+                        detail=f"best-effort fallback nodes={n_nodes} faces={n_faces}",
+                        force=True,
+                    )
                     return fallback_mesh
                 except Exception as fallback_exc:
                     tail = "; ".join(attempt_errors[-3:]) if attempt_errors else "no attempt diagnostics"
+                    _emit_progress(
+                        "fail",
+                        detail=(
+                            "quality loop had no viable candidate and fallback failed: "
+                            f"{_clip_progress_detail(fallback_exc)}"
+                        ),
+                        force=True,
+                    )
                     raise RuntimeError(
                         "Gmsh quality loop produced no valid non-empty mesh candidate, and "
                         f"best-effort fallback also failed: {fallback_exc}. "
@@ -3191,13 +5560,25 @@ class GmshBackend(MeshingBackend):
                     )
 
             if had_passing_candidate:
-                best_mesh.quality_summary = {
+                summary = dict(best_mesh.quality_summary or {})
+                summary.update({
                     "attempts": int(attempts),
                     "strict_requested": bool(quality_cfg.strict),
                     "had_passing_candidate": True,
                     "best_stats": dict(best_stats),
                     "time_budget_exhausted": bool(hit_time_budget),
-                }
+                })
+                best_mesh.quality_summary = summary
+                n_nodes = int(np.asarray(best_mesh.node_x).size)
+                n_faces = max(0, int(np.asarray(best_mesh.cell_face_offsets).size) - 1)
+                _emit_progress(
+                    "done",
+                    detail=(
+                        f"best passing candidate nodes={n_nodes} faces={n_faces} "
+                        f"attempts={int(attempts)}"
+                    ),
+                    force=True,
+                )
                 return best_mesh
 
             diag = (
@@ -3209,21 +5590,38 @@ class GmshBackend(MeshingBackend):
                     float(best_stats.get("max_non_orth_deg", 90.0)),
                 )
             )
-            summary = {
+            summary = dict(best_mesh.quality_summary or {})
+            summary.update({
                 "attempts": int(attempts),
                 "strict_requested": bool(quality_cfg.strict),
                 "had_passing_candidate": False,
                 "best_stats": dict(best_stats),
                 "time_budget_exhausted": bool(hit_time_budget),
-            }
+            })
             best_mesh.quality_summary = summary
             warnings.warn(
                 "Gmsh quality constraints were not met; using best available candidate "
                 f"(attempts={attempts}, time_limit_s={quality_cfg.time_limit_s:.1f}). {diag}",
                 RuntimeWarning,
             )
+            n_nodes = int(np.asarray(best_mesh.node_x).size)
+            n_faces = max(0, int(np.asarray(best_mesh.cell_face_offsets).size) - 1)
+            _emit_progress(
+                "done",
+                detail=(
+                    f"best nonpassing candidate nodes={n_nodes} faces={n_faces} "
+                    f"attempts={int(attempts)}"
+                ),
+                force=True,
+            )
             return best_mesh
         finally:
+            _emit_gmsh_logger_warnings()
+            if gmsh_logger_started:
+                try:
+                    gmsh.logger.stop()
+                except Exception:
+                    pass
             gmsh.finalize()
 
     # ------------------------------------------------------------------
@@ -3248,12 +5646,161 @@ class GmshBackend(MeshingBackend):
         random_factor: float = 1.0e-9,
         algorithm_switch_on_failure: bool = True,
     ) -> MeshResult:
+        build_started_at = time.perf_counter()
+        gmsh_phase_timings_s: Dict[str, float] = {}
+
+        def _record_phase(phase_name: str, started_at: float) -> None:
+            gmsh_phase_timings_s[str(phase_name)] = float(max(0.0, time.perf_counter() - started_at))
+
         arc_mode = str(self._options.get("gmsh_arc_mode", "hard_embed") or "hard_embed").strip().lower()
         if arc_mode not in {"hard_embed", "soft_size_hint", "disabled"}:
             arc_mode = "hard_embed"
         mesh_size_min = max(0.0, self._opt_float("gmsh_mesh_size_min", 0.0))
         tolerance_edge_length = max(0.0, self._opt_float("gmsh_tolerance_edge_length", 0.0))
         mesh_size_from_points = self._opt_bool("gmsh_mesh_size_from_points", True)
+        gmsh_num_threads = max(
+            0,
+            int(
+                round(
+                    self._opt_float(
+                        "gmsh_num_threads",
+                        _env_float("BACKWATER_GMSH_NUM_THREADS", 1.0),
+                    )
+                )
+            ),
+        )
+        gmsh_max_num_threads_2d = max(
+            0,
+            int(
+                round(
+                    self._opt_float(
+                        "gmsh_max_num_threads_2d",
+                        _env_float("BACKWATER_GMSH_MAX_NUM_THREADS_2D", 0.0),
+                    )
+                )
+            ),
+        )
+        gmsh_global_recombine = self._opt_bool(
+            "gmsh_global_recombine",
+            _env_bool("BACKWATER_GMSH_GLOBAL_RECOMBINE", False),
+        )
+        gmsh_quad_full_region_flow_align = self._opt_bool(
+            "gmsh_quad_full_region_flow_align",
+            _env_bool("BACKWATER_GMSH_QUAD_FULL_REGION_FLOW_ALIGN", False),
+        )
+        gmsh_interface_transition_enable = self._opt_bool(
+            "gmsh_interface_transition_enable",
+            _env_bool("BACKWATER_GMSH_INTERFACE_TRANSITION_ENABLE", True),
+        )
+        gmsh_interface_transition_dist_factor = max(
+            0.25,
+            self._opt_float(
+                "gmsh_interface_transition_dist_factor",
+                _env_float("BACKWATER_GMSH_INTERFACE_TRANSITION_DIST_FACTOR", 2.5),
+            ),
+        )
+        gmsh_interface_transition_min_ratio = max(
+            1.0,
+            self._opt_float(
+                "gmsh_interface_transition_min_ratio",
+                _env_float("BACKWATER_GMSH_INTERFACE_TRANSITION_MIN_RATIO", 1.25),
+            ),
+        )
+        gmsh_transfinite_shared_interface_harmonize = self._opt_bool(
+            "gmsh_transfinite_shared_interface_harmonize",
+            _env_bool("BACKWATER_GMSH_TRANSFINITE_SHARED_INTERFACE_HARMONIZE", False),
+        )
+        gmsh_interface_conformance = self._opt_bool(
+            "gmsh_interface_conformance",
+            _env_bool("BACKWATER_GMSH_INTERFACE_CONFORMANCE", False),
+        )
+        gmsh_transverse_interface_centroid_merge = self._opt_bool(
+            "gmsh_transverse_interface_centroid_merge",
+            _env_bool("BACKWATER_GMSH_TRANSVERSE_INTERFACE_CENTROID_MERGE", False),
+        )
+        gmsh_interface_snap_tol = max(
+            1.0e-9,
+            self._opt_float(
+                "gmsh_interface_snap_tol",
+                _env_float("BACKWATER_GMSH_INTERFACE_SNAP_TOL", 1.0),
+            ),
+        )
+        gmsh_interface_reject_near_unshared = self._opt_bool(
+            "gmsh_interface_reject_near_unshared",
+            _env_bool("BACKWATER_GMSH_INTERFACE_REJECT_NEAR_UNSHARED", True),
+        )
+        gmsh_interface_reject_tol = max(
+            1.0e-9,
+            self._opt_float(
+                "gmsh_interface_reject_tol",
+                _env_float("BACKWATER_GMSH_INTERFACE_REJECT_TOL", 1.0e-3),
+            ),
+        )
+        if gmsh_transverse_interface_centroid_merge:
+            gmsh_interface_conformance = True
+        gmsh_shared_transverse_edge_count_normalize = True
+        gmsh_transfinite_opposite_subset_start = max(
+            0.0,
+            min(
+                1.0,
+                self._opt_float(
+                    "gmsh_transfinite_opposite_subset_start",
+                    _env_float("BACKWATER_GMSH_TRANSFINITE_OPPOSITE_SUBSET_START", 0.30),
+                ),
+            ),
+        )
+        gmsh_transfinite_opposite_subset_end = max(
+            0.0,
+            min(
+                1.0,
+                self._opt_float(
+                    "gmsh_transfinite_opposite_subset_end",
+                    _env_float("BACKWATER_GMSH_TRANSFINITE_OPPOSITE_SUBSET_END", 0.70),
+                ),
+            ),
+        )
+        gmsh_transfinite_opposite_subset_density_scale = max(
+            0.05,
+            self._opt_float(
+                "gmsh_transfinite_opposite_subset_density_scale",
+                _env_float("BACKWATER_GMSH_TRANSFINITE_OPPOSITE_SUBSET_DENSITY_SCALE", 0.50),
+            ),
+        )
+        gmsh_transfinite_interface_debug = self._opt_bool(
+            "gmsh_transfinite_interface_debug",
+            _env_bool("BACKWATER_GMSH_TRANSFINITE_INTERFACE_DEBUG", False),
+        )
+        gmsh_transfinite_subset_containment_enable = self._opt_bool(
+            "gmsh_transfinite_subset_containment_enable",
+            _env_bool("BACKWATER_GMSH_TRANSFINITE_SUBSET_CONTAINMENT_ENABLE", True),
+        )
+        gmsh_transfinite_subset_containment_high_overlap = max(
+            0.50,
+            min(
+                1.0,
+                self._opt_float(
+                    "gmsh_transfinite_subset_containment_high_overlap",
+                    _env_float("BACKWATER_GMSH_TRANSFINITE_SUBSET_CONTAINMENT_HIGH_OVERLAP", 0.95),
+                ),
+            ),
+        )
+        gmsh_transfinite_subset_containment_min_overlap = max(
+            0.0,
+            min(
+                gmsh_transfinite_subset_containment_high_overlap,
+                self._opt_float(
+                    "gmsh_transfinite_subset_containment_min_overlap",
+                    _env_float("BACKWATER_GMSH_TRANSFINITE_SUBSET_CONTAINMENT_MIN_OVERLAP", 0.02),
+                ),
+            ),
+        )
+        gmsh_transfinite_subset_containment_max_length_ratio = max(
+            1.0e-6,
+            self._opt_float(
+                "gmsh_transfinite_subset_containment_max_length_ratio",
+                _env_float("BACKWATER_GMSH_TRANSFINITE_SUBSET_CONTAINMENT_MAX_LENGTH_RATIO", 0.35),
+            ),
+        )
         arc_soft_size_factor = min(1.0, max(0.05, self._opt_float("gmsh_arc_soft_size_factor", 0.5)))
         arc_soft_dist_factor = max(0.1, self._opt_float("gmsh_arc_soft_dist_factor", 2.0))
 
@@ -3263,6 +5810,9 @@ class GmshBackend(MeshingBackend):
         surface_meta: List[Tuple[int, str, float]] = []  # (region_id, cell_type, target_size)
         surface_curve_tags: Dict[int, List[int]] = {}
         surface_quad_controls: Dict[int, Optional[List[QuadEdgeControl]]] = {}
+        surface_quad_edge_curve_groups: Dict[int, Optional[List[List[int]]]] = {}
+        flow_align_diagnostics: List[Dict[str, object]] = []
+        self._last_flow_align_diagnostics = []
 
         # Shared geometry registries for conforming inter-region interfaces.
         # Points and single-segment lines on shared boundaries are reused so
@@ -3273,30 +5823,875 @@ class GmshBackend(MeshingBackend):
         # immediately destabilise the FVM solver.
         _pt_prec = 6  # rounding digits ≈ 1 µm — sufficient for hydraulic coords
         pt_reg: Dict[Tuple[float, float], int] = {}   # (rx,ry) -> gmsh point tag
+        pt_xy_by_tag: Dict[int, Tuple[float, float]] = {}
         seg_reg: Dict[Tuple[int, int], int] = {}       # (p0,p1) -> signed curve tag
+        polycurve_reg: Dict[Tuple[int, ...], int] = {}  # polyline point tag chain -> curve tag
+        polycurve_chain_by_tag: Dict[int, Tuple[int, ...]] = {}
+        quad_curve_chain_by_abs: Dict[int, Tuple[int, ...]] = {}
+        quad_curve_candidates_by_endpoint: Dict[int, List[int]] = {}
+        build_order_events: List[str] = []
+        build_order_stage_marks: List[Tuple[str, int]] = []
+        build_order_event_cap = min(
+            200000,
+            max(2000, self._opt_int("gmsh_build_order_event_cap", 50000)),
+        )
+        build_order_overflow = False
+        global_option_tokens: List[str] = []
 
-        def _geo_pt(x: float, y: float, lc: float) -> int:
+        def _fmt_event_part(value: object) -> str:
+            if isinstance(value, float):
+                if np.isfinite(float(value)):
+                    return f"{float(value):.12g}"
+                return "nan"
+            if isinstance(value, (list, tuple)):
+                return "[" + ",".join(_fmt_event_part(v) for v in value) + "]"
+            return str(value)
+
+        def _record_build_event(event: str, *parts: object) -> None:
+            nonlocal build_order_overflow
+            if len(build_order_events) >= int(build_order_event_cap):
+                build_order_overflow = True
+                return
+            if parts:
+                build_order_events.append(
+                    str(event) + "|" + "|".join(_fmt_event_part(p) for p in parts)
+                )
+            else:
+                build_order_events.append(str(event))
+
+        def _sha256_lines(lines: Sequence[str]) -> str:
+            digest = hashlib.sha256()
+            for line in lines:
+                digest.update(str(line).encode("utf-8", "replace"))
+                digest.update(b"\n")
+            return digest.hexdigest()
+
+        def _preview_tokens(lines: Sequence[str], n: int = 12) -> Dict[str, List[str]]:
+            items = [str(v) for v in list(lines or [])]
+            n_use = max(0, int(n))
+            if len(items) <= 2 * n_use:
+                return {"head": items, "tail": []}
+            return {"head": items[:n_use], "tail": items[-n_use:]}
+
+        def _hash_int_sequence(values: Sequence[int], limit: int = 1024) -> str:
+            vals = [int(v) for v in list(values or [])[: max(1, int(limit))]]
+            return _sha256_lines([",".join(str(v) for v in vals)])
+
+        def _build_order_fingerprint_payload() -> Dict[str, object]:
+            return {
+                "sha256": _sha256_lines(build_order_events),
+                "event_count": int(len(build_order_events)),
+                "event_cap": int(build_order_event_cap),
+                "overflow": bool(build_order_overflow),
+                "preview": _preview_tokens(build_order_events, n=16),
+            }
+
+        def _mark_build_stage(label: str) -> None:
+            build_order_stage_marks.append((str(label), int(len(build_order_events))))
+
+        def _build_order_stage_ladder_payload() -> Dict[str, object]:
+            stages: List[Dict[str, object]] = []
+            prev_idx = 0
+            marks = list(build_order_stage_marks)
+            if not marks:
+                marks = [("full", int(len(build_order_events)))]
+
+            for label, end_idx_raw in marks:
+                end_idx = max(prev_idx, min(int(end_idx_raw), int(len(build_order_events))))
+                stage_lines = list(build_order_events[prev_idx:end_idx])
+                stage_sha = _sha256_lines(stage_lines)
+                cumulative_sha = _sha256_lines(build_order_events[:end_idx])
+                stages.append({
+                    "label": str(label),
+                    "start_index": int(prev_idx),
+                    "end_index": int(end_idx),
+                    "event_count": int(max(0, end_idx - prev_idx)),
+                    "stage_sha256": str(stage_sha),
+                    "cumulative_sha256": str(cumulative_sha),
+                })
+                prev_idx = int(end_idx)
+
+            if prev_idx < len(build_order_events):
+                end_idx = int(len(build_order_events))
+                stage_lines = list(build_order_events[prev_idx:end_idx])
+                stage_sha = _sha256_lines(stage_lines)
+                cumulative_sha = _sha256_lines(build_order_events[:end_idx])
+                stages.append({
+                    "label": "tail",
+                    "start_index": int(prev_idx),
+                    "end_index": int(end_idx),
+                    "event_count": int(max(0, end_idx - prev_idx)),
+                    "stage_sha256": str(stage_sha),
+                    "cumulative_sha256": str(cumulative_sha),
+                })
+
+            compact_lines = [
+                f"{str(s.get('label', ''))}|{int(s.get('event_count', 0))}|{str(s.get('stage_sha256', ''))}"
+                for s in stages
+            ]
+            return {
+                "sha256": _sha256_lines(compact_lines),
+                "stage_count": int(len(stages)),
+                "stages": stages,
+            }
+
+        def _build_order_stage_ladder_compact_text(payload: Dict[str, object]) -> str:
+            stages = list(payload.get("stages") or [])
+            parts: List[str] = []
+            for stage in stages:
+                label = str(stage.get("label", ""))
+                count = int(stage.get("event_count", 0) or 0)
+                sha = str(stage.get("stage_sha256", ""))
+                parts.append(f"{label}:{count}:{sha[:12]}")
+            txt = ",".join(parts)
+            if len(txt) > 420:
+                return txt[:417] + "..."
+            return txt
+
+        def _global_option_value_text(value: object) -> str:
+            return _fmt_event_part(value).replace("\n", "\\n")
+
+        def _record_global_option(name: str, value: object) -> None:
+            opt_name = str(name)
+            opt_value = _global_option_value_text(value)
+            global_option_tokens.append(f"{opt_name}={opt_value}")
+            _record_build_event("mesh-option", opt_name, opt_value)
+
+        def _global_options_payload() -> Dict[str, object]:
+            entries = [str(v) for v in global_option_tokens]
+            return {
+                "sha256": _sha256_lines(entries),
+                "count": int(len(entries)),
+                "entries": entries,
+                "preview": _preview_tokens(entries, n=20),
+            }
+
+        def _global_options_compact_text(payload: Dict[str, object]) -> str:
+            entries = [str(v) for v in list(payload.get("entries") or [])]
+            txt = ";".join(entries)
+            if len(txt) > 420:
+                return txt[:417] + "..."
+            return txt
+
+        def _fmt_float_token(value: object, digits: int = 9) -> str:
+            try:
+                fv = float(value)
+            except Exception:
+                return "nan"
+            if not np.isfinite(fv):
+                return "nan"
+            rounded = round(float(fv), int(digits))
+            return f"{rounded:.{int(digits)}f}"
+
+        def _safe_bbox(dim: int, tag: int) -> Tuple[float, float, float, float, float, float]:
+            try:
+                bbox = gmsh.model.getBoundingBox(int(dim), int(tag))
+                if bbox is None or len(bbox) != 6:
+                    raise ValueError("invalid bbox")
+                return tuple(float(v) for v in bbox)
+            except Exception:
+                return (float("nan"),) * 6
+
+        def _entity_tokens_pre_generate() -> Tuple[List[str], List[str], List[str]]:
+            point_tokens: List[str] = []
+            curve_tokens: List[str] = []
+            surface_tokens: List[str] = []
+
+            try:
+                point_entities = gmsh.model.getEntities(0)
+            except Exception:
+                point_entities = []
+            point_tags = sorted(
+                int(tag)
+                for dim, tag in list(point_entities or [])
+                if int(dim) == 0
+            )
+            for ptag in point_tags:
+                pxy = pt_xy_by_tag.get(int(ptag))
+                if pxy is not None:
+                    px = float(pxy[0])
+                    py = float(pxy[1])
+                else:
+                    bb = _safe_bbox(0, int(ptag))
+                    px = float(bb[0])
+                    py = float(bb[1])
+                point_tokens.append(
+                    f"{int(ptag)}:{_fmt_float_token(px)}:{_fmt_float_token(py)}"
+                )
+
+            try:
+                curve_entities = gmsh.model.getEntities(1)
+            except Exception:
+                curve_entities = []
+            curve_tags = sorted(
+                int(tag)
+                for dim, tag in list(curve_entities or [])
+                if int(dim) == 1
+            )
+            for ctag in curve_tags:
+                try:
+                    boundary = gmsh.model.getBoundary(
+                        [(1, int(ctag))],
+                        combined=False,
+                        oriented=True,
+                        recursive=False,
+                    )
+                except Exception:
+                    boundary = []
+                btags = [
+                    int(t)
+                    for d, t in list(boundary or [])
+                    if int(d) == 0
+                ]
+                bb = _safe_bbox(1, int(ctag))
+                bb_tok = ",".join(_fmt_float_token(v, digits=6) for v in bb)
+                bnd_tok = ",".join(str(int(v)) for v in btags)
+                curve_tokens.append(f"{int(ctag)}:{bnd_tok}:{bb_tok}")
+
+            try:
+                surface_entities = gmsh.model.getEntities(2)
+            except Exception:
+                surface_entities = []
+            surface_tags_local = sorted(
+                int(tag)
+                for dim, tag in list(surface_entities or [])
+                if int(dim) == 2
+            )
+            for stag in surface_tags_local:
+                try:
+                    boundary = gmsh.model.getBoundary(
+                        [(2, int(stag))],
+                        combined=False,
+                        oriented=True,
+                        recursive=False,
+                    )
+                except Exception:
+                    boundary = []
+                btags = [
+                    int(t)
+                    for d, t in list(boundary or [])
+                    if int(d) == 1
+                ]
+                bb = _safe_bbox(2, int(stag))
+                bb_tok = ",".join(_fmt_float_token(v, digits=6) for v in bb)
+                bnd_tok = ",".join(str(int(v)) for v in btags)
+                surface_tokens.append(f"{int(stag)}:{bnd_tok}:{bb_tok}")
+
+            return point_tokens, curve_tokens, surface_tokens
+
+        def _pre_generate_entity_signature_payload() -> Dict[str, object]:
+            point_tokens, curve_tokens, surface_tokens = _entity_tokens_pre_generate()
+            point_sha = _sha256_lines(point_tokens)
+            curve_sha = _sha256_lines(curve_tokens)
+            surface_sha = _sha256_lines(surface_tokens)
+            all_sha = _sha256_lines([point_sha, curve_sha, surface_sha])
+            return {
+                "sha256": all_sha,
+                "counts": {
+                    "points": int(len(point_tokens)),
+                    "curves": int(len(curve_tokens)),
+                    "surfaces": int(len(surface_tokens)),
+                },
+                "point_sha256": point_sha,
+                "curve_sha256": curve_sha,
+                "surface_sha256": surface_sha,
+                "point_preview": _preview_tokens(point_tokens, n=10),
+                "curve_preview": _preview_tokens(curve_tokens, n=10),
+                "surface_preview": _preview_tokens(surface_tokens, n=10),
+            }
+
+        def _compact_ptag_chain(ptags: Sequence[int]) -> List[int]:
+            tags = [int(t) for t in ptags]
+            if not tags:
+                return []
+            out = [tags[0]]
+            for t in tags[1:]:
+                if t != out[-1]:
+                    out.append(t)
+            return out
+
+        def _register_quad_curve_candidate(curve_tag: int, edge_ptags: Sequence[int]) -> None:
+            cabs = abs(int(curve_tag))
+            if cabs <= 0:
+                return
+            chain = polycurve_chain_by_tag.get(cabs)
+            if not chain:
+                compact = _compact_ptag_chain(edge_ptags)
+                if len(compact) < 2:
+                    return
+                chain = tuple(compact if int(curve_tag) > 0 else list(reversed(compact)))
+            if len(chain) < 2:
+                return
+            if cabs in quad_curve_chain_by_abs:
+                return
+            quad_curve_chain_by_abs[cabs] = tuple(int(t) for t in chain)
+            a = int(chain[0])
+            b = int(chain[-1])
+            quad_curve_candidates_by_endpoint.setdefault(a, []).append(cabs)
+            if b != a:
+                quad_curve_candidates_by_endpoint.setdefault(b, []).append(cabs)
+
+        def _match_quad_curve_along_ring(
+            ptags: Sequence[int],
+            start_idx: int,
+        ) -> Optional[Tuple[int, int, int, int]]:
+            n = len(ptags)
+            if n < 2:
+                return None
+            a = int(ptags[start_idx])
+            match_tol = max(1.0e-6, 10.0 * float(tol))
+            candidate_abs = list(quad_curve_candidates_by_endpoint.get(a, []))
+            if not candidate_abs:
+                a_xy = pt_xy_by_tag.get(a)
+                if a_xy is not None:
+                    for cabs, chain in quad_curve_chain_by_abs.items():
+                        if len(chain) < 2:
+                            continue
+                        p0 = pt_xy_by_tag.get(int(chain[0]))
+                        p1 = pt_xy_by_tag.get(int(chain[-1]))
+                        if p0 is None or p1 is None:
+                            continue
+                        d0 = float(np.hypot(float(a_xy[0]) - float(p0[0]), float(a_xy[1]) - float(p0[1])))
+                        d1 = float(np.hypot(float(a_xy[0]) - float(p1[0]), float(a_xy[1]) - float(p1[1])))
+                        if d0 <= match_tol or d1 <= match_tol:
+                            candidate_abs.append(int(cabs))
+            if not candidate_abs:
+                return None
+
+            best: Optional[Tuple[int, int, float, int, int]] = None
+            # (span_edges, signed_curve_tag, proj_err_sum, start_tag, end_tag)
+            for cabs in candidate_abs:
+                chain = quad_curve_chain_by_abs.get(int(cabs))
+                if not chain or len(chain) < 2:
+                    continue
+
+                if a == int(chain[0]):
+                    target = int(chain[-1])
+                    oriented_chain = tuple(int(t) for t in chain)
+                    signed = int(cabs)
+                elif a == int(chain[-1]):
+                    rev = tuple(reversed(chain))
+                    oriented_chain = tuple(int(t) for t in rev)
+                    target = int(oriented_chain[-1])
+                    signed = -int(cabs)
+                else:
+                    a_xy = pt_xy_by_tag.get(a)
+                    p0 = pt_xy_by_tag.get(int(chain[0]))
+                    p1 = pt_xy_by_tag.get(int(chain[-1]))
+                    if a_xy is None or p0 is None or p1 is None:
+                        continue
+                    d0 = float(np.hypot(float(a_xy[0]) - float(p0[0]), float(a_xy[1]) - float(p0[1])))
+                    d1 = float(np.hypot(float(a_xy[0]) - float(p1[0]), float(a_xy[1]) - float(p1[1])))
+                    if d0 <= d1 and d0 <= match_tol:
+                        oriented_chain = tuple(int(t) for t in chain)
+                        target = int(oriented_chain[-1])
+                        signed = int(cabs)
+                    elif d1 < d0 and d1 <= match_tol:
+                        oriented_chain = tuple(int(t) for t in reversed(chain))
+                        target = int(oriented_chain[-1])
+                        signed = -int(cabs)
+                    else:
+                        continue
+
+                idx_map = {int(t): i for i, t in enumerate(oriented_chain)}
+                chain_xy: List[Tuple[float, float]] = []
+                for t in oriented_chain:
+                    xy = pt_xy_by_tag.get(int(t))
+                    if xy is None:
+                        chain_xy = []
+                        break
+                    chain_xy.append((float(xy[0]), float(xy[1])))
+                if len(chain_xy) < 2:
+                    continue
+                chain_len = max(_polyline_length(chain_xy), 1.0e-12)
+                target_xy = pt_xy_by_tag.get(int(target))
+
+                prev_pos = 0.0
+                span_edges = 0
+                ok = True
+                proj_err_sum = 0.0
+                while span_edges < n:
+                    p = int(ptags[(start_idx + span_edges + 1) % n])
+                    span_edges += 1
+                    ci = idx_map.get(p)
+                    p_xy = pt_xy_by_tag.get(int(p))
+                    if p_xy is None:
+                        ok = False
+                        break
+                    if ci is not None:
+                        pos = float(ci)
+                        proj_err = 0.0
+                    else:
+                        proj_err, s_pos = _polyline_distance_and_s(chain_xy, float(p_xy[0]), float(p_xy[1]))
+                        if (not np.isfinite(float(proj_err))) or float(proj_err) > match_tol:
+                            ok = False
+                            break
+                        pos = (float(s_pos) / float(chain_len)) * float(max(1, len(oriented_chain) - 1))
+
+                    if pos + 1.0e-8 < prev_pos:
+                        ok = False
+                        break
+                    prev_pos = float(pos)
+                    proj_err_sum += float(proj_err)
+
+                    if p == target:
+                        break
+                    if target_xy is not None and np.hypot(float(p_xy[0]) - float(target_xy[0]), float(p_xy[1]) - float(target_xy[1])) <= match_tol:
+                        break
+
+                if not ok:
+                    continue
+                end_tag = int(ptags[(start_idx + span_edges) % n])
+                end_ok = (end_tag == target)
+                if not end_ok:
+                    end_xy = pt_xy_by_tag.get(int(end_tag))
+                    if end_xy is not None and target_xy is not None:
+                        end_ok = np.hypot(float(end_xy[0]) - float(target_xy[0]), float(end_xy[1]) - float(target_xy[1])) <= match_tol
+                if not end_ok:
+                    continue
+                if span_edges <= 0:
+                    continue
+
+                if best is None:
+                    best = (
+                        int(span_edges),
+                        int(signed),
+                        float(proj_err_sum),
+                        int(oriented_chain[0]),
+                        int(oriented_chain[-1]),
+                    )
+                else:
+                    if int(span_edges) > int(best[0]) or (
+                        int(span_edges) == int(best[0]) and float(proj_err_sum) < float(best[2])
+                    ):
+                        best = (
+                            int(span_edges),
+                            int(signed),
+                            float(proj_err_sum),
+                            int(oriented_chain[0]),
+                            int(oriented_chain[-1]),
+                        )
+
+            if best is None:
+                return None
+            return int(best[0]), int(best[1]), int(best[3]), int(best[4])
+
+        def _nearest_quad_endpoint_tag(x: float, y: float, snap_tol: float) -> Optional[int]:
+            if float(snap_tol) <= 0.0:
+                return None
+            endpoint_tags = list(quad_curve_candidates_by_endpoint.keys())
+            if not endpoint_tags:
+                return None
+            x0 = float(x)
+            y0 = float(y)
+            best_tag: Optional[int] = None
+            best_d = float(snap_tol)
+            for ptag in endpoint_tags:
+                pxy = pt_xy_by_tag.get(int(ptag))
+                if pxy is None:
+                    continue
+                d = float(np.hypot(x0 - float(pxy[0]), y0 - float(pxy[1])))
+                if d <= best_d:
+                    best_d = d
+                    best_tag = int(ptag)
+            return best_tag
+
+        def _geo_pt(x: float, y: float, lc: float, *, endpoint_snap_tol: Optional[float] = None) -> int:
             """Return existing gmsh point tag at (x,y) or create a new one."""
             key = (round(float(x), _pt_prec), round(float(y), _pt_prec))
             if key in pt_reg:
-                return pt_reg[key]
+                tag = int(pt_reg[key])
+                pt_xy_by_tag.setdefault(tag, (float(x), float(y)))
+                _record_build_event("geo-pt-reuse", key[0], key[1], int(tag))
+                return tag
+
+            snap_tol = float(endpoint_snap_tol) if endpoint_snap_tol is not None else 0.0
+            if snap_tol > 0.0:
+                snap_tag = _nearest_quad_endpoint_tag(float(x), float(y), float(snap_tol))
+                if snap_tag is not None:
+                    pt_reg[key] = int(snap_tag)
+                    _record_build_event(
+                        "geo-pt-snap",
+                        key[0],
+                        key[1],
+                        int(snap_tag),
+                        float(snap_tol),
+                    )
+                    return int(snap_tag)
+
             tag = gmsh.model.geo.addPoint(float(x), float(y), 0.0, lc)
             pt_reg[key] = tag
+            pt_xy_by_tag[int(tag)] = (float(x), float(y))
+            _record_build_event("geo-pt-new", int(tag), key[0], key[1], float(lc))
             return tag
 
         def _geo_seg(p0: int, p1: int) -> int:
             """Return signed line tag for directed segment p0->p1, sharing if it
             already exists in either direction."""
             if (p0, p1) in seg_reg:
-                return seg_reg[(p0, p1)]
+                tag = int(seg_reg[(p0, p1)])
+                polycurve_chain_by_tag.setdefault(abs(tag), (int(p0), int(p1)))
+                _record_build_event("geo-seg-reuse-fwd", int(tag), int(p0), int(p1))
+                return tag
             if (p1, p0) in seg_reg:
-                return -seg_reg[(p1, p0)]
+                tag = int(seg_reg[(p1, p0)])
+                polycurve_chain_by_tag.setdefault(abs(tag), (int(p1), int(p0)))
+                _record_build_event("geo-seg-reuse-rev", int(tag), int(p0), int(p1))
+                return -tag
             tag = gmsh.model.geo.addLine(p0, p1)
             seg_reg[(p0, p1)] = tag
-            return tag
+            polycurve_chain_by_tag[int(tag)] = (int(p0), int(p1))
+            _record_build_event("geo-seg-new", int(tag), int(p0), int(p1))
+            return int(tag)
+
+        def _geo_polycurve(ptags: Sequence[int]) -> int:
+            """Return a shared directed curve for a polyline point-tag sequence.
+
+            Reuses existing spline/line entities in forward or reversed direction
+            so neighboring regions can share exact same interface entities.
+            """
+            compact = _compact_ptag_chain(ptags)
+            if len(compact) < 2:
+                raise ValueError("polycurve requires at least two points")
+
+            if len(compact) == 2:
+                return _geo_seg(compact[0], compact[1])
+
+            fwd = tuple(compact)
+            rev = tuple(reversed(compact))
+            if fwd in polycurve_reg:
+                tag_reuse = int(polycurve_reg[fwd])
+                _record_build_event(
+                    "geo-polycurve-reuse-fwd",
+                    int(tag_reuse),
+                    int(len(fwd)),
+                    int(fwd[0]),
+                    int(fwd[-1]),
+                )
+                return int(tag_reuse)
+            if rev in polycurve_reg:
+                tag_reuse = int(polycurve_reg[rev])
+                _record_build_event(
+                    "geo-polycurve-reuse-rev",
+                    int(tag_reuse),
+                    int(len(rev)),
+                    int(rev[0]),
+                    int(rev[-1]),
+                )
+                return -int(tag_reuse)
+
+            tag = gmsh.model.geo.addSpline(list(compact))
+            polycurve_reg[fwd] = int(tag)
+            polycurve_chain_by_tag[int(tag)] = tuple(compact)
+            _record_build_event(
+                "geo-polycurve-new",
+                int(tag),
+                int(len(compact)),
+                int(compact[0]),
+                int(compact[-1]),
+                _hash_int_sequence(compact),
+            )
+            return int(tag)
+
+        prebuild_subphase_started_at = time.perf_counter()
+
+        region_cell_types: Dict[int, str] = {
+            int(r.region_id): str(r.default_cell_type).strip().lower()
+            for r in model.regions
+        }
+        region_quad_setups: Dict[int, Tuple[List[Tuple[float, float]], List[QuadEdgeControl]]] = {}
+        for region in model.regions:
+            ctype_local = str(region.default_cell_type).strip().lower()
+            if ctype_local not in {"quadrilateral", "cartesian", "channel_generator"}:
+                continue
+            quad_setup_local = _quad_controls_for_region(model, region)
+            if quad_setup_local is None:
+                continue
+            region_quad_setups[int(region.region_id)] = quad_setup_local
+        _record_phase("prebuild_region_quad_setup", prebuild_subphase_started_at)
+
+        prebuild_subphase_started_at = time.perf_counter()
+        region_rings_for_junctions: Dict[int, List[Tuple[float, float]]] = {}
+        for region in model.regions:
+            rid_local = int(region.region_id)
+            setup_local = region_quad_setups.get(rid_local)
+            ring_local = list(setup_local[0]) if setup_local is not None else list(region.ring_xy)
+            if ring_local and np.hypot(float(ring_local[0][0]) - float(ring_local[-1][0]), float(ring_local[0][1]) - float(ring_local[-1][1])) <= 1.0e-12:
+                ring_local = ring_local[:-1]
+            if len(ring_local) >= 3:
+                region_rings_for_junctions[rid_local] = [(float(x), float(y)) for (x, y) in ring_local]
+
+        transfinite_edge_min_nodes: Dict[Tuple[int, int], int] = {}
+        transfinite_harmonize_stats: Dict[str, int] = {
+            "shared_groups": 0,
+            "canonicalized_edges": 0,
+            "opposite_subset_requests": 0,
+            "junction_points_inserted": 0,
+            "subset_containment_requests": 0,
+            "singleton_external_junction_edges": 0,
+            "candidate_pair_count_prefilter": 0,
+            "candidate_pair_count": 0,
+            "pair_bbox_reject_count": 0,
+            "nontrans_chain_bbox_reject_count": 0,
+            "nontrans_overlap_pair_count": 0,
+            "nontrans_point_bbox_reject_count": 0,
+        }
+        transfinite_harmonize_debug: Dict[str, object] = {}
+        if gmsh_transfinite_shared_interface_harmonize and region_quad_setups:
+            transfinite_edge_min_nodes, transfinite_harmonize_stats = _harmonize_transfinite_shared_quad_interfaces(
+                region_quad_setups=region_quad_setups,
+                region_cell_types=region_cell_types,
+                gmsh_quad_full_region_flow_align=bool(gmsh_quad_full_region_flow_align),
+                all_region_rings=region_rings_for_junctions,
+                opposite_subset_start_frac=float(gmsh_transfinite_opposite_subset_start),
+                opposite_subset_end_frac=float(gmsh_transfinite_opposite_subset_end),
+                opposite_subset_density_scale=float(gmsh_transfinite_opposite_subset_density_scale),
+                subset_containment_enable=bool(gmsh_transfinite_subset_containment_enable),
+                subset_containment_high_overlap=float(gmsh_transfinite_subset_containment_high_overlap),
+                subset_containment_min_overlap=float(gmsh_transfinite_subset_containment_min_overlap),
+                subset_containment_max_length_ratio=float(gmsh_transfinite_subset_containment_max_length_ratio),
+                debug_capture=transfinite_harmonize_debug if gmsh_transfinite_interface_debug else None,
+            )
+        _record_phase("prebuild_transfinite_harmonize", prebuild_subphase_started_at)
+
+        def _is_transfinite_region_local(region_id: int) -> bool:
+            ctype_local = str(region_cell_types.get(int(region_id), "")).strip().lower()
+            if ctype_local == "cartesian":
+                return True
+            if gmsh_quad_full_region_flow_align and ctype_local in {"quadrilateral", "channel_generator"}:
+                return True
+            return False
+
+        # Project/split non-transfinite neighboring rings against transfinite
+        # interface chains so mixed interfaces can reuse shared geometry.
+        prebuild_subphase_started_at = time.perf_counter()
+        nontrans_neighbor_projection_rings = 0
+        nontrans_chain_bbox_reject_count = 0
+        nontrans_overlap_pair_count = 0
+        nontrans_point_bbox_reject_count = 0
+        transfinite_interface_chains: List[
+            Tuple[
+                int,
+                int,
+                List[Tuple[float, float]],
+                float,
+                Tuple[float, float, float, float],
+            ]
+        ] = []
+        for rid_tf, (_ring_tf, controls_tf) in region_quad_setups.items():
+            if not _is_transfinite_region_local(int(rid_tf)):
+                continue
+            for edge_tf in list(controls_tf or []):
+                pts_tf = [(float(x), float(y)) for (x, y) in list(edge_tf.points_xy or [])]
+                if len(pts_tf) < 2:
+                    continue
+                if edge_tf.target_size is not None and float(edge_tf.target_size) > 0.0:
+                    size_ref_tf = float(edge_tf.target_size)
+                else:
+                    size_ref_tf = max(_polyline_length(pts_tf) / max(1, len(pts_tf) - 1), 1.0e-6)
+                tx = [float(p[0]) for p in pts_tf]
+                ty = [float(p[1]) for p in pts_tf]
+                chain_bbox = (float(min(tx)), float(min(ty)), float(max(tx)), float(max(ty)))
+                transfinite_interface_chains.append(
+                    (
+                        int(rid_tf),
+                        int(edge_tf.edge_id),
+                        pts_tf,
+                        float(max(size_ref_tf, 1.0e-6)),
+                        chain_bbox,
+                    )
+                )
+
+        if transfinite_interface_chains:
+            for region in model.regions:
+                rid_nt = int(region.region_id)
+                if _is_transfinite_region_local(rid_nt):
+                    continue
+
+                ring_nt = [(float(x), float(y)) for (x, y) in list(region.ring_xy or [])]
+                if ring_nt and np.hypot(
+                    float(ring_nt[0][0]) - float(ring_nt[-1][0]),
+                    float(ring_nt[0][1]) - float(ring_nt[-1][1]),
+                ) <= 1.0e-12:
+                    ring_nt = ring_nt[:-1]
+                if len(ring_nt) < 3:
+                    continue
+
+                ring_changed = False
+                rx = [float(p[0]) for p in ring_nt]
+                ry = [float(p[1]) for p in ring_nt]
+                ring_bbox = (float(min(rx)), float(min(ry)), float(max(rx)), float(max(ry)))
+
+                for _owner_tf, _eid_tf, chain_tf, size_ref_tf, chain_bbox in transfinite_interface_chains:
+                    size_ref = max(min(float(max(region.default_size, 1.0e-6)), float(size_ref_tf)), 1.0e-6)
+                    near_tol = max(1.0e-6, min(8.0, max(0.5, 0.25 * float(size_ref))))
+                    sample_step = max(float(near_tol), 0.25 * float(size_ref))
+
+                    if (
+                        float(chain_bbox[2]) < float(ring_bbox[0]) - float(near_tol)
+                        or float(ring_bbox[2]) < float(chain_bbox[0]) - float(near_tol)
+                        or float(chain_bbox[3]) < float(ring_bbox[1]) - float(near_tol)
+                        or float(ring_bbox[3]) < float(chain_bbox[1]) - float(near_tol)
+                    ):
+                        nontrans_chain_bbox_reject_count += 1
+                        continue
+
+                    ring_open = list(ring_nt)
+                    if ring_open:
+                        ring_open.append((float(ring_open[0][0]), float(ring_open[0][1])))
+
+                    nontrans_overlap_pair_count += 1
+                    overlap_tf_nt, overlap_nt_tf = _polyline_overlap_fractions_open(
+                        chain_tf,
+                        ring_open,
+                        sample_step=float(sample_step),
+                        near_tol=float(near_tol),
+                    )
+                    if max(float(overlap_tf_nt), float(overlap_nt_tf)) < 0.01:
+                        continue
+
+                    ring_split = _insert_focus_points_on_ring_segments(
+                        ring=ring_nt,
+                        focus_points=chain_tf,
+                        max_dist=float(near_tol),
+                    )
+                    if len(ring_split) < 3:
+                        continue
+
+                    chain_len = _polyline_length(chain_tf)
+                    if chain_len <= 1.0e-12:
+                        continue
+
+                    ring_proj: List[Tuple[float, float]] = []
+                    moved_any = False
+                    native = _load_hydra_meshing_native()
+                    if native is not None and hasattr(native, "project_ring_to_chain"):
+                        try:
+                            proj_out = native.project_ring_to_chain(
+                                ring_split,
+                                chain_tf,
+                                float(near_tol),
+                            )
+                            ring_proj = [
+                                (float(p[0]), float(p[1]))
+                                for p in list(proj_out.get("ring_proj", []))
+                                if isinstance(p, (list, tuple)) and len(p) >= 2
+                            ]
+                            moved_any = bool(proj_out.get("moved_any", False))
+                            nontrans_point_bbox_reject_count += int(proj_out.get("point_bbox_reject_count", 0))
+                        except Exception:
+                            ring_proj = []
+
+                    if not ring_proj:
+                        chain_bbox_exp = (
+                            float(chain_bbox[0]) - float(near_tol),
+                            float(chain_bbox[1]) - float(near_tol),
+                            float(chain_bbox[2]) + float(near_tol),
+                            float(chain_bbox[3]) + float(near_tol),
+                        )
+                        for px, py in ring_split:
+                            if (
+                                float(px) < float(chain_bbox_exp[0])
+                                or float(px) > float(chain_bbox_exp[2])
+                                or float(py) < float(chain_bbox_exp[1])
+                                or float(py) > float(chain_bbox_exp[3])
+                            ):
+                                nontrans_point_bbox_reject_count += 1
+                                ring_proj.append((float(px), float(py)))
+                                continue
+                            d_loc, s_loc = _polyline_distance_and_s(chain_tf, float(px), float(py))
+                            if np.isfinite(float(d_loc)) and float(d_loc) <= float(near_tol):
+                                frac_loc = max(0.0, min(1.0, float(s_loc) / float(chain_len)))
+                                qx, qy = _interp_polyline_fraction(chain_tf, frac_loc)
+                                ring_proj.append((float(qx), float(qy)))
+                                if float(np.hypot(float(qx) - float(px), float(qy) - float(py))) > 1.0e-10:
+                                    moved_any = True
+                            else:
+                                ring_proj.append((float(px), float(py)))
+
+                    if len(ring_proj) < 3:
+                        continue
+                    ring_clean: List[Tuple[float, float]] = []
+                    for px, py in ring_proj:
+                        if ring_clean and np.hypot(float(px) - float(ring_clean[-1][0]), float(py) - float(ring_clean[-1][1])) <= 1.0e-12:
+                            continue
+                        ring_clean.append((float(px), float(py)))
+                    while len(ring_clean) >= 2 and np.hypot(
+                        float(ring_clean[0][0]) - float(ring_clean[-1][0]),
+                        float(ring_clean[0][1]) - float(ring_clean[-1][1]),
+                    ) <= 1.0e-12:
+                        ring_clean.pop()
+                    if len(ring_clean) < 3:
+                        continue
+
+                    if moved_any or len(ring_clean) > len(ring_nt):
+                        ring_nt = ring_clean
+                        rx = [float(p[0]) for p in ring_nt]
+                        ry = [float(p[1]) for p in ring_nt]
+                        ring_bbox = (float(min(rx)), float(min(ry)), float(max(rx)), float(max(ry)))
+                        ring_changed = True
+
+                if ring_changed:
+                    region.ring_xy = [(float(x), float(y)) for (x, y) in ring_nt]
+                    region_rings_for_junctions[rid_nt] = [(float(x), float(y)) for (x, y) in ring_nt]
+                    nontrans_neighbor_projection_rings += 1
+                    transfinite_harmonize_stats["nontrans_neighbor_projection_rings"] = int(
+                        transfinite_harmonize_stats.get("nontrans_neighbor_projection_rings", 0)
+                    ) + 1
+        transfinite_harmonize_stats["nontrans_chain_bbox_reject_count"] = int(
+            transfinite_harmonize_stats.get("nontrans_chain_bbox_reject_count", 0)
+        ) + int(nontrans_chain_bbox_reject_count)
+        transfinite_harmonize_stats["nontrans_overlap_pair_count"] = int(
+            transfinite_harmonize_stats.get("nontrans_overlap_pair_count", 0)
+        ) + int(nontrans_overlap_pair_count)
+        transfinite_harmonize_stats["nontrans_point_bbox_reject_count"] = int(
+            transfinite_harmonize_stats.get("nontrans_point_bbox_reject_count", 0)
+        ) + int(nontrans_point_bbox_reject_count)
+        _record_phase("prebuild_nontrans_projection", prebuild_subphase_started_at)
+
+        prebuild_subphase_started_at = time.perf_counter()
+        interface_coincidence_report: List[Dict[str, object]] = []
+        interface_coincidence_suspects: List[Dict[str, object]] = []
+        try:
+            interface_coincidence_report = _gmsh_interface_coincidence_report(
+                model,
+                region_quad_setups=region_quad_setups,
+            )
+            for entry in interface_coincidence_report:
+                overlap_delta = float(entry.get("overlap_delta", 0.0))
+                endpoint_delta_max = float(entry.get("endpoint_delta_max", float("inf")))
+                near_tol = max(float(entry.get("near_tol", 1.0e-6)), 1.0e-9)
+                if overlap_delta > 0.20 or endpoint_delta_max > 2.0 * near_tol:
+                    interface_coincidence_suspects.append(dict(entry))
+            if interface_coincidence_suspects:
+                preview = "; ".join(
+                    (
+                        f"{int(e.get('region_a', -1))}-{int(e.get('region_b', -1))} "
+                        f"(overlap_delta={float(e.get('overlap_delta', 0.0)):.3f}, "
+                        f"endpoint_delta_max={float(e.get('endpoint_delta_max', float('inf'))):.4g})"
+                    )
+                    for e in interface_coincidence_suspects[:6]
+                )
+                warnings.warn(
+                    "Gmsh interface coincidence preflight flagged potential geometry mismatches: "
+                    + preview,
+                    RuntimeWarning,
+                )
+        except Exception:
+            interface_coincidence_report = []
+            interface_coincidence_suspects = []
+        _record_phase("prebuild_interface_coincidence", prebuild_subphase_started_at)
+
+        _record_phase("prebuild_setup", build_started_at)
+        _mark_build_stage("after-prebuild-setup")
 
         # ---- 1. Build one Gmsh surface per region ----------------------
-        for region in model.regions:
+        phase_started_at = time.perf_counter()
+        def _region_priority(r: ConceptualRegion) -> int:
+            c = str(r.default_cell_type).strip().lower()
+            return 0 if c in {"quadrilateral", "cartesian", "channel_generator"} else 1
+
+        for region in sorted(model.regions, key=_region_priority):
             ring = list(region.ring_xy)
             if ring and ring[0] == ring[-1]:
                 ring = ring[:-1]
@@ -3309,16 +6704,21 @@ class GmshBackend(MeshingBackend):
             region_size = max(float(region.default_size) * float(size_scale), 1.0e-9)
 
             quad_controls = None
-            if ctype in ("quadrilateral", "cartesian"):
-                quad_setup = _quad_controls_for_region(model, region)
+            if ctype in ("quadrilateral", "cartesian", "channel_generator"):
+                quad_setup = region_quad_setups.get(int(region.region_id))
                 if quad_setup is not None:
                     ring, quad_controls = quad_setup
 
             lines: List[int] = []
+            edge_curve_groups: List[List[int]] = []
             if quad_controls is not None:
                 first_pt_tag: Optional[int] = None
                 first_xy: Optional[Tuple[float, float]] = None
                 prev_end_tag: Optional[int] = None
+                # Use a slightly looser closure tolerance than point-dedup tol
+                # to prevent tiny residual seam segments on assembled quad
+                # rings, which can break transfinite opposite-side matching.
+                closure_snap_tol = max(float(tol), min(1.0e-3, 0.01 * float(region_size)))
                 for ei, edge in enumerate(quad_controls):
                     edge_pts = list(edge.points_xy)
                     if len(edge_pts) < 2:
@@ -3330,7 +6730,7 @@ class GmshBackend(MeshingBackend):
                             edge_tags.append(prev_end_tag)
                             continue
                         if ei == len(quad_controls) - 1 and pj == len(edge_pts) - 1 and first_pt_tag is not None and first_xy is not None:
-                            if np.hypot(x - first_xy[0], y - first_xy[1]) <= tol:
+                            if np.hypot(x - first_xy[0], y - first_xy[1]) <= float(closure_snap_tol):
                                 edge_tags.append(first_pt_tag)
                                 continue
                         ptag = _geo_pt(x, y, edge_lc)
@@ -3341,26 +6741,93 @@ class GmshBackend(MeshingBackend):
                     if len(edge_tags) < 2:
                         continue
                     try:
-                        # Share single-segment edges via _geo_seg so adjacent
-                        # regions referencing the same boundary line reuse the
-                        # same Gmsh curve tag (possibly negated for direction).
-                        curve = gmsh.model.geo.addSpline(edge_tags) if len(edge_tags) > 2 else _geo_seg(edge_tags[0], edge_tags[1])
-                        lines.append(curve)
+                        # Build quad interfaces as shared segment chains so
+                        # neighboring non-transfinite regions can reuse
+                        # interior subsets of the same interface geometry.
+                        edge_curves: List[int] = []
+                        for k in range(len(edge_tags) - 1):
+                            seg = int(_geo_seg(edge_tags[k], edge_tags[k + 1]))
+                            edge_curves.append(int(seg))
+                            lines.append(int(seg))
+                            _register_quad_curve_candidate(int(seg), [edge_tags[k], edge_tags[k + 1]])
+                        if edge_curves:
+                            edge_curve_groups.append(edge_curves)
                     except Exception:
+                        edge_curve_groups.append([])
                         for k in range(len(edge_tags) - 1):
                             lines.append(_geo_seg(edge_tags[k], edge_tags[k + 1]))
                     prev_end_tag = edge_tags[-1]
                 if first_pt_tag is not None and prev_end_tag is not None and prev_end_tag != first_pt_tag:
-                    lines.append(_geo_seg(prev_end_tag, first_pt_tag))
+                    p_prev = pt_xy_by_tag.get(int(prev_end_tag))
+                    p_first = pt_xy_by_tag.get(int(first_pt_tag))
+                    can_snap_close = False
+                    if p_prev is not None and p_first is not None:
+                        can_snap_close = bool(
+                            np.hypot(
+                                float(p_prev[0]) - float(p_first[0]),
+                                float(p_prev[1]) - float(p_first[1]),
+                            ) <= float(closure_snap_tol)
+                        )
+                    if can_snap_close:
+                        prev_end_tag = first_pt_tag
+                    else:
+                        closing_seg = _geo_seg(prev_end_tag, first_pt_tag)
+                        lines.append(closing_seg)
+                        if edge_curve_groups:
+                            edge_curve_groups[-1].append(int(closing_seg))
             else:
-                pts = [_geo_pt(x, y, region_size) for x, y in ring]
-                for i in range(len(pts)):
-                    lines.append(_geo_seg(pts[i], pts[(i + 1) % len(pts)]))
+                # Canonicalize near-coincident interface junction points onto
+                # previously built quad endpoints to avoid duplicate corner
+                # entities across mixed transfinite/non-transfinite neighbors.
+                junction_snap_tol = max(20.0 * float(tol), min(1.0e-3, 0.01 * float(region_size)))
+                pts = [
+                    _geo_pt(x, y, region_size, endpoint_snap_tol=float(junction_snap_tol))
+                    for x, y in ring
+                ]
+
+                pts_compact: List[int] = []
+                for ptag in pts:
+                    if not pts_compact or int(ptag) != int(pts_compact[-1]):
+                        pts_compact.append(int(ptag))
+                while len(pts_compact) >= 2 and int(pts_compact[0]) == int(pts_compact[-1]):
+                    pts_compact.pop()
+                if len(pts_compact) >= 3:
+                    pts = [int(t) for t in pts_compact]
+
+                n_pts = len(pts)
+                i = 0
+                consumed_edges = 0
+                while consumed_edges < n_pts:
+                    match = _match_quad_curve_along_ring(pts, i)
+                    if match is not None:
+                        span, signed_curve, start_tag, end_tag = match
+                        if span > 0:
+                            # Force exact endpoint tag reuse at matched curve
+                            # boundaries so subsequent ring segments stay
+                            # topologically connected to the shared chain.
+                            if int(pts[i]) != int(start_tag):
+                                pts[i] = int(start_tag)
+                            end_idx = (i + int(span)) % n_pts
+                            if int(pts[end_idx]) != int(end_tag):
+                                pts[end_idx] = int(end_tag)
+                            lines.append(int(signed_curve))
+                            i = int(end_idx)
+                            consumed_edges += int(span)
+                            continue
+                    lines.append(_geo_seg(pts[i], pts[(i + 1) % n_pts]))
+                    i = (i + 1) % n_pts
+                    consumed_edges += 1
 
             if len(lines) < 3:
                 continue
 
             loop = gmsh.model.geo.addCurveLoop(lines)
+            _record_build_event(
+                "geo-loop-new",
+                int(loop),
+                int(len(lines)),
+                _hash_int_sequence(lines),
+            )
             hole_loops: List[int] = []
             exclusion_zones = _region_exclusion_zones(model, region, ring)
             if exclusion_zones:
@@ -3393,20 +6860,40 @@ class GmshBackend(MeshingBackend):
                     if len(hlines) < 3:
                         continue
                     try:
-                        hole_loops.append(gmsh.model.geo.addCurveLoop(hlines))
+                        hole_loop = gmsh.model.geo.addCurveLoop(hlines)
+                        hole_loops.append(hole_loop)
+                        _record_build_event(
+                            "geo-hole-loop-new",
+                            int(hole_loop),
+                            int(len(hlines)),
+                            _hash_int_sequence(hlines),
+                        )
                     except Exception:
                         pass
 
             surf = gmsh.model.geo.addPlaneSurface([loop] + hole_loops)
+            _record_build_event(
+                "geo-surface-new",
+                int(surf),
+                int(region.region_id),
+                str(ctype),
+                int(loop),
+                int(len(hole_loops)),
+                int(len(lines)),
+            )
             surface_tags.append(surf)
             surface_meta.append((region.region_id, ctype, region_size))
             surface_curve_tags[surf] = lines
             surface_quad_controls[surf] = quad_controls
+            surface_quad_edge_curve_groups[surf] = edge_curve_groups if quad_controls is not None else None
 
         if not surface_tags:
             raise ValueError("GmshBackend: no non-empty regions to mesh.")
+        _record_phase("build_surfaces", phase_started_at)
+        _mark_build_stage("after-build-surfaces")
 
         # ---- 2. Embed arc breaklines into surfaces ----------------------
+        phase_started_at = time.perf_counter()
         arc_soft_groups: Dict[Tuple[float, float], Dict[str, List[int]]] = {}
         if model.arcs and arc_mode != "disabled":
             arc_hard_curve_tags: List[int] = []
@@ -3498,16 +6985,81 @@ class GmshBackend(MeshingBackend):
 
             if arc_hard_curve_tags:
                 arc_curve_tags = sorted({int(tag) for tag in arc_hard_curve_tags if int(tag) > 0})
+                _record_build_event(
+                    "geo-sync",
+                    "arc-hard-embed-start",
+                    int(len(arc_curve_tags)),
+                    _hash_int_sequence(arc_curve_tags),
+                )
                 gmsh.model.geo.synchronize()
                 for surf in surface_tags:
                     try:
                         gmsh.model.mesh.embed(1, arc_curve_tags, 2, surf)
+                        _record_build_event(
+                            "mesh-embed-curves",
+                            int(surf),
+                            int(len(arc_curve_tags)),
+                            _hash_int_sequence(arc_curve_tags),
+                        )
                     except Exception:
                         pass  # arc may not intersect this surface; skip
 
+        _record_build_event("geo-sync", "post-arc-and-surfaces")
         gmsh.model.geo.synchronize()
 
+        surface_size_map: Dict[int, float] = {int(s): float(sz) for s, (_, _, sz) in zip(surface_tags, surface_meta)}
+        surface_ctype_map: Dict[int, str] = {int(s): str(ct) for s, (_, ct, _) in zip(surface_tags, surface_meta)}
+        protected_transfinite_surfaces: set = set()
+        for surf in surface_tags:
+            s = int(surf)
+            ctype = str(surface_ctype_map.get(s, "")).strip().lower()
+            if ctype == "cartesian":
+                protected_transfinite_surfaces.add(s)
+            elif gmsh_quad_full_region_flow_align and ctype in {"quadrilateral", "channel_generator"}:
+                protected_transfinite_surfaces.add(s)
+
+        interface_transition_specs: List[Dict[str, object]] = []
+        if gmsh_interface_transition_enable:
+            curve_to_surfaces: Dict[int, List[int]] = {}
+            for surf, lines in surface_curve_tags.items():
+                s = int(surf)
+                for ltag in lines:
+                    cabs = abs(int(ltag))
+                    if cabs <= 0:
+                        continue
+                    curve_to_surfaces.setdefault(cabs, []).append(s)
+
+            for cabs, owners in curve_to_surfaces.items():
+                uniq = sorted(set(int(v) for v in owners))
+                if len(uniq) < 2:
+                    continue
+
+                sizes = [float(surface_size_map.get(s, 0.0)) for s in uniq if float(surface_size_map.get(s, 0.0)) > 0.0]
+                if len(sizes) < 2:
+                    continue
+                smin = max(min(sizes), 1.0e-9)
+                smax = max(sizes)
+                if smax < float(gmsh_interface_transition_min_ratio) * smin:
+                    continue
+
+                target_surfaces = [int(s) for s in uniq if int(s) not in protected_transfinite_surfaces]
+                if not target_surfaces:
+                    continue
+
+                interface_transition_specs.append(
+                    {
+                        "curve_tag": int(cabs),
+                        "owner_surfaces": [int(s) for s in uniq],
+                        "target_surfaces": [int(s) for s in target_surfaces],
+                        "size_min": float(smin),
+                        "size_max": float(smax),
+                    }
+                )
+        _record_phase("embed_arcs_and_interfaces", phase_started_at)
+        _mark_build_stage("after-embed-arcs-and-interfaces")
+
         # ---- 3. Constraint refinement zones (background field) ----------
+        phase_started_at = time.perf_counter()
         # Build a region baseline size field and overlay per-constraint
         # threshold fields derived from polygon-clipped point sampling.
         # This is stronger than pure point embedding and enforces local sizing.
@@ -3583,7 +7135,8 @@ class GmshBackend(MeshingBackend):
 
         gmsh.model.geo.synchronize()
 
-        if constraint_point_lists or arc_soft_groups:
+        interface_transition_field_count = 0
+        if constraint_point_lists or arc_soft_groups or interface_transition_specs:
             all_fields: List[int] = list(base_surface_fields)
             max_region_size = max(max(float(sz), 1.0e-9) for (_, _, sz) in surface_meta)
             for pt_list, cst_size in zip(constraint_point_lists, constraint_target_sizes):
@@ -3633,6 +7186,34 @@ class GmshBackend(MeshingBackend):
                     gmsh.model.mesh.field.setNumbers(f_restrict, "SurfacesList", [int(s) for s in surface_tags])
                     all_fields.append(f_restrict)
 
+            if interface_transition_specs:
+                for spec in interface_transition_specs:
+                    curve_tag = int(spec["curve_tag"])
+                    target_surfaces = [int(s) for s in spec["target_surfaces"]]
+                    size_min_local = max(mesh_size_min, float(spec["size_min"]))
+                    size_max_local = max(size_min_local, float(spec["size_max"]))
+                    dist_max_local = max(
+                        size_min_local,
+                        float(gmsh_interface_transition_dist_factor) * size_max_local,
+                    )
+
+                    f_dist = gmsh.model.mesh.field.add("Distance")
+                    gmsh.model.mesh.field.setNumbers(f_dist, "CurvesList", [int(curve_tag)])
+
+                    f_thresh = gmsh.model.mesh.field.add("Threshold")
+                    gmsh.model.mesh.field.setNumber(f_thresh, "InField", float(f_dist))
+                    gmsh.model.mesh.field.setNumber(f_thresh, "SizeMin", float(size_min_local))
+                    gmsh.model.mesh.field.setNumber(f_thresh, "SizeMax", float(size_max_local))
+                    gmsh.model.mesh.field.setNumber(f_thresh, "DistMin", 0.0)
+                    gmsh.model.mesh.field.setNumber(f_thresh, "DistMax", float(dist_max_local))
+                    gmsh.model.mesh.field.setNumber(f_thresh, "StopAtDistMax", 1.0)
+
+                    f_restrict = gmsh.model.mesh.field.add("Restrict")
+                    gmsh.model.mesh.field.setNumber(f_restrict, "InField", float(f_thresh))
+                    gmsh.model.mesh.field.setNumbers(f_restrict, "SurfacesList", [int(s) for s in target_surfaces])
+                    all_fields.append(f_restrict)
+                    interface_transition_field_count += 1
+
             if len(all_fields) == 1:
                 bg_field = all_fields[0]
             else:
@@ -3642,50 +7223,483 @@ class GmshBackend(MeshingBackend):
             gmsh.model.mesh.field.setAsBackgroundMesh(int(bg_field))
             gmsh.option.setNumber("Mesh.MeshSizeFromCurvature", 0.0)
             gmsh.option.setNumber("Mesh.MeshSizeExtendFromBoundary", 0.0)
+        _record_phase("build_size_fields", phase_started_at)
+        _mark_build_stage("after-build-size-fields")
 
         # ---- 4. Per-surface algorithm and recombination flags ----------
+        phase_started_at = time.perf_counter()
         want_recombine = False
+
+        def _oriented_curve_chain(curve_tag_signed: int) -> Optional[Tuple[int, ...]]:
+            chain = polycurve_chain_by_tag.get(abs(int(curve_tag_signed)))
+            if not chain:
+                return None
+            if int(curve_tag_signed) < 0:
+                return tuple(int(t) for t in reversed(chain))
+            return tuple(int(t) for t in chain)
+
+        def _curve_length_from_chain(chain: Sequence[int]) -> float:
+            if len(chain) < 2:
+                return 0.0
+            total = 0.0
+            for i in range(len(chain) - 1):
+                p0 = pt_xy_by_tag.get(int(chain[i]))
+                p1 = pt_xy_by_tag.get(int(chain[i + 1]))
+                if p0 is None or p1 is None:
+                    continue
+                total += float(np.hypot(float(p1[0]) - float(p0[0]), float(p1[1]) - float(p0[1])))
+            return float(total)
+
+        def _distribute_divisions(total_div: int, seg_lengths: Sequence[float]) -> List[int]:
+            n = int(len(seg_lengths))
+            if n <= 0:
+                return []
+            total_div_local = max(int(total_div), int(n))
+            base = [1] * n
+            remaining = int(total_div_local - n)
+            if remaining <= 0:
+                return base
+
+            lengths = [max(float(v), 0.0) for v in seg_lengths]
+            lsum = float(sum(lengths))
+            if lsum <= 1.0e-12:
+                for i in range(remaining):
+                    base[i % n] += 1
+                return base
+
+            raw = [float(remaining) * (float(v) / lsum) for v in lengths]
+            adds = [int(np.floor(v)) for v in raw]
+            used = int(sum(adds))
+            rem = int(remaining - used)
+            if rem > 0:
+                frac_rank = sorted(
+                    [(i, float(raw[i]) - float(adds[i])) for i in range(n)],
+                    key=lambda it: it[1],
+                    reverse=True,
+                )
+                for i in range(rem):
+                    adds[int(frac_rank[i % n][0])] += 1
+            return [int(base[i] + adds[i]) for i in range(n)]
+
+        def _transfinite_corners_from_edge_groups(edge_curve_groups: Sequence[Sequence[int]]) -> Optional[List[int]]:
+            if len(edge_curve_groups) != 4:
+                return None
+            corners: List[int] = []
+            for group in edge_curve_groups:
+                if not group:
+                    return None
+                chain = _oriented_curve_chain(int(group[0]))
+                if chain is None or len(chain) < 2:
+                    return None
+                corners.append(int(chain[0]))
+            if len(corners) != 4:
+                return None
+            return corners
+
+        def _transfinite_corners_from_edge_controls(
+            edge_controls: Optional[Sequence[QuadEdgeControl]],
+        ) -> Optional[List[int]]:
+            if edge_controls is None or len(edge_controls) != 4:
+                return None
+            corners: List[int] = []
+            corner_lc = max(float(tol), 1.0e-9)
+            for edge in edge_controls:
+                pts = list(edge.points_xy or [])
+                if not pts:
+                    return None
+                x0 = float(pts[0][0])
+                y0 = float(pts[0][1])
+                tag = _geo_pt(x0, y0, float(corner_lc))
+                corners.append(int(tag))
+            if len(corners) != 4:
+                return None
+            if len(set(int(v) for v in corners)) != 4:
+                return None
+            return corners
+
+        def _apply_flow_aligned_transfinite(
+            surf_tag: int,
+            curve_tags: Sequence[int],
+            edge_controls: Optional[List[QuadEdgeControl]],
+            fallback_size: float,
+            counts_override: Optional[Sequence[int]] = None,
+            min_nodes: Optional[Sequence[int]] = None,
+            edge_curve_groups: Optional[Sequence[Sequence[int]]] = None,
+        ) -> Tuple[bool, Optional[str]]:
+            if edge_controls is None:
+                return False, "missing edge controls"
+            edge_ids_local = [int(getattr(edge, "edge_id", -1)) for edge in list(edge_controls)]
+            counts = list(counts_override) if counts_override is not None else _gmsh_flow_aligned_curve_counts(
+                edge_controls,
+                fallback_size=fallback_size,
+                min_nodes=min_nodes,
+            )
+            if counts is None:
+                return False, "could not compute transfinite counts"
+            counts = [int(max(2, int(v))) for v in list(counts)]
+            if len(edge_ids_local) == 4 and set(edge_ids_local) == {1, 2, 3, 4}:
+                idx_by_edge_local = {int(eid): int(i) for i, eid in enumerate(edge_ids_local)}
+                i1 = idx_by_edge_local.get(1)
+                i3 = idx_by_edge_local.get(3)
+                if i1 is not None and i3 is not None:
+                    paired = max(int(counts[i1]), int(counts[i3]))
+                    counts[i1] = int(paired)
+                    counts[i3] = int(paired)
+                i2 = idx_by_edge_local.get(2)
+                i4 = idx_by_edge_local.get(4)
+                if i2 is not None and i4 is not None:
+                    paired = max(int(counts[i2]), int(counts[i4]))
+                    counts[i2] = int(paired)
+                    counts[i4] = int(paired)
+            else:
+                counts[0] = counts[2] = max(int(counts[0]), int(counts[2]))
+                counts[1] = counts[3] = max(int(counts[1]), int(counts[3]))
+            try:
+                _record_build_event(
+                    "transfinite-apply-start",
+                    int(surf_tag),
+                    int(len(curve_tags)),
+                    int(len(counts)),
+                    _hash_int_sequence([int(v) for v in counts]),
+                )
+                groups = list(edge_curve_groups) if edge_curve_groups is not None else []
+                has_group_data = len(groups) == 4 and all(len(g) > 0 for g in groups)
+                if has_group_data:
+                    # Segmented interfaces require at least one division per
+                    # segment. If a side has many segments, raise counts to a
+                    # feasible minimum and then re-equalize opposite edges.
+                    effective_counts = [int(max(2, int(v))) for v in counts]
+                    for ei in range(4):
+                        nseg = int(len(groups[ei]))
+                        effective_counts[ei] = max(int(effective_counts[ei]), int(nseg + 1))
+                    if len(edge_ids_local) == 4 and set(edge_ids_local) == {1, 2, 3, 4}:
+                        idx_by_edge_local = {int(eid): int(i) for i, eid in enumerate(edge_ids_local)}
+                        i1 = idx_by_edge_local.get(1)
+                        i3 = idx_by_edge_local.get(3)
+                        if i1 is not None and i3 is not None:
+                            paired = max(int(effective_counts[i1]), int(effective_counts[i3]))
+                            effective_counts[i1] = int(paired)
+                            effective_counts[i3] = int(paired)
+                        i2 = idx_by_edge_local.get(2)
+                        i4 = idx_by_edge_local.get(4)
+                        if i2 is not None and i4 is not None:
+                            paired = max(int(effective_counts[i2]), int(effective_counts[i4]))
+                            effective_counts[i2] = int(paired)
+                            effective_counts[i4] = int(paired)
+                    else:
+                        pair0 = max(int(effective_counts[0]), int(effective_counts[2]))
+                        pair1 = max(int(effective_counts[1]), int(effective_counts[3]))
+                        effective_counts[0] = effective_counts[2] = int(pair0)
+                        effective_counts[1] = effective_counts[3] = int(pair1)
+
+                    for ei in range(4):
+                        group = [int(v) for v in groups[ei]]
+                        n_total = max(2, int(effective_counts[ei]))
+                        seg_lengths: List[float] = []
+                        for ltag in group:
+                            chain = _oriented_curve_chain(int(ltag))
+                            seg_lengths.append(_curve_length_from_chain(chain or ()))
+                        divs = _distribute_divisions(max(1, int(n_total) - 1), seg_lengths)
+                        for ltag, div in zip(group, divs):
+                            gmsh.model.mesh.setTransfiniteCurve(abs(int(ltag)), int(max(2, int(div) + 1)))
+                            _record_build_event(
+                                "transfinite-curve",
+                                int(abs(int(ltag))),
+                                int(max(2, int(div) + 1)),
+                            )
+
+                    corners = _transfinite_corners_from_edge_controls(edge_controls)
+                    if corners is None:
+                        corners = _transfinite_corners_from_edge_groups(groups)
+                    if corners is not None and len(corners) == 4:
+                        gmsh.model.mesh.setTransfiniteSurface(int(surf_tag), "Left", [int(v) for v in corners])
+                        _record_build_event(
+                            "transfinite-surface",
+                            int(surf_tag),
+                            "Left",
+                            _hash_int_sequence([int(v) for v in corners]),
+                        )
+                    else:
+                        gmsh.model.mesh.setTransfiniteSurface(int(surf_tag))
+                        _record_build_event("transfinite-surface", int(surf_tag), "auto")
+                else:
+                    if len(curve_tags) != 4:
+                        return False, "missing edge group data for non-4-curve surface"
+                    for ltag, npt in zip(curve_tags, counts):
+                        gmsh.model.mesh.setTransfiniteCurve(abs(int(ltag)), int(npt))
+                        _record_build_event(
+                            "transfinite-curve",
+                            int(abs(int(ltag))),
+                            int(npt),
+                        )
+                    gmsh.model.mesh.setTransfiniteSurface(int(surf_tag))
+                    _record_build_event("transfinite-surface", int(surf_tag), "auto")
+                return True, None
+            except Exception as exc:
+                return False, str(exc)
+
+        shared_transverse_count_normalize_diag: Dict[str, object] = {
+            "enabled": bool(gmsh_shared_transverse_edge_count_normalize),
+            "shared_group_count": 0,
+            "affected_surface_count": 0,
+        }
+        shared_transverse_count_overrides: Dict[int, List[int]] = {}
+        if gmsh_shared_transverse_edge_count_normalize and gmsh_quad_full_region_flow_align:
+            def _edge_group_key(curve_group: Sequence[int]) -> Tuple[int, ...]:
+                return tuple(sorted({abs(int(t)) for t in list(curve_group or []) if int(t) != 0}))
+
+            base_counts_by_surface: Dict[int, List[int]] = {}
+            edge_ids_by_surface: Dict[int, List[int]] = {}
+            region_id_by_surface: Dict[int, int] = {}
+            entries: List[Tuple[int, int, int, Tuple[int, ...]]] = []
+
+            for surf, (rid, ctype, sz) in zip(surface_tags, surface_meta):
+                ctype_local = str(ctype).strip().lower()
+                if ctype_local not in {"cartesian", "quadrilateral", "channel_generator"}:
+                    continue
+                edge_controls_local = surface_quad_controls.get(surf)
+                groups_local = surface_quad_edge_curve_groups.get(surf)
+                if edge_controls_local is None or len(edge_controls_local) != 4:
+                    continue
+                if groups_local is None or len(groups_local) != 4:
+                    continue
+
+                min_nodes_local = [
+                    int(transfinite_edge_min_nodes.get((int(rid), int(edge.edge_id)), 0))
+                    for edge in edge_controls_local
+                ]
+                min_nodes_local_use: Optional[List[int]] = None
+                if any(int(v) > 0 for v in min_nodes_local):
+                    min_nodes_local_use = [int(v) for v in min_nodes_local]
+
+                counts_local = _gmsh_flow_aligned_curve_counts(
+                    edge_controls_local,
+                    fallback_size=float(sz),
+                    min_nodes=min_nodes_local_use,
+                )
+                if counts_local is None:
+                    continue
+
+                s = int(surf)
+                base_counts_by_surface[s] = [int(v) for v in counts_local]
+                edge_ids_local = [int(getattr(edge, "edge_id", -1)) for edge in edge_controls_local]
+                edge_ids_by_surface[s] = edge_ids_local
+                region_id_by_surface[s] = int(rid)
+
+                for idx, curve_group in enumerate(groups_local):
+                    if idx >= len(edge_ids_local):
+                        continue
+                    edge_id_local = int(edge_ids_local[idx])
+                    if edge_id_local not in {1, 2, 3, 4}:
+                        continue
+                    key = _edge_group_key(curve_group)
+                    if not key:
+                        continue
+                    entries.append((s, int(idx), int(edge_id_local), key))
+
+            owners_by_key: Dict[Tuple[int, ...], set] = {}
+            for s, _idx, _eid, key in entries:
+                owners_by_key.setdefault(key, set()).add(int(s))
+
+            target_by_key: Dict[Tuple[int, ...], int] = {}
+            for key, owners in owners_by_key.items():
+                if len(owners) < 2:
+                    continue
+                vals: List[int] = []
+                for s, idx, _eid, key_local in entries:
+                    if key_local != key:
+                        continue
+                    if int(s) not in owners:
+                        continue
+                    vals.append(int(base_counts_by_surface.get(int(s), [0, 0, 0, 0])[int(idx)]))
+                if vals:
+                    target_by_key[key] = int(max(vals))
+
+            preview: List[Dict[str, object]] = []
+            entries_by_surface: Dict[int, List[Tuple[int, int, int, Tuple[int, ...]]]] = {}
+            for rec in entries:
+                s, _idx, _eid, key = rec
+                if key not in target_by_key:
+                    continue
+                entries_by_surface.setdefault(int(s), []).append(rec)
+
+            for s, recs in entries_by_surface.items():
+                base_counts = list(base_counts_by_surface.get(int(s), []))
+                edge_ids_local = list(edge_ids_by_surface.get(int(s), []))
+                if len(base_counts) != 4 or len(edge_ids_local) != 4:
+                    continue
+
+                counts_new = [int(v) for v in base_counts]
+                changed = False
+                for _s, idx, edge_id_local, key in recs:
+                    target_nodes = int(target_by_key.get(key, 0))
+                    if target_nodes <= 0:
+                        continue
+                    if int(target_nodes) > int(counts_new[idx]):
+                        counts_new[idx] = int(target_nodes)
+                        changed = True
+                    if len(preview) < 12:
+                        preview.append(
+                            {
+                                "surface_tag": int(s),
+                                "region_id": int(region_id_by_surface.get(int(s), -1)),
+                                "edge_id": int(edge_id_local),
+                                "base_nodes": int(base_counts[idx]),
+                                "target_nodes": int(target_nodes),
+                                "shared_curve_count": int(len(key)),
+                            }
+                        )
+
+                if not changed:
+                    continue
+
+                if len(edge_ids_local) == 4 and set(edge_ids_local) == {1, 2, 3, 4}:
+                    idx_by_edge_local = {int(eid): int(i) for i, eid in enumerate(edge_ids_local)}
+                    i1 = idx_by_edge_local.get(1)
+                    i3 = idx_by_edge_local.get(3)
+                    if i1 is not None and i3 is not None:
+                        paired = max(int(counts_new[i1]), int(counts_new[i3]))
+                        counts_new[i1] = int(paired)
+                        counts_new[i3] = int(paired)
+                    i2 = idx_by_edge_local.get(2)
+                    i4 = idx_by_edge_local.get(4)
+                    if i2 is not None and i4 is not None:
+                        paired = max(int(counts_new[i2]), int(counts_new[i4]))
+                        counts_new[i2] = int(paired)
+                        counts_new[i4] = int(paired)
+                else:
+                    counts_new[0] = counts_new[2] = max(int(counts_new[0]), int(counts_new[2]))
+                    counts_new[1] = counts_new[3] = max(int(counts_new[1]), int(counts_new[3]))
+
+                shared_transverse_count_overrides[int(s)] = [int(v) for v in counts_new]
+
+            shared_transverse_count_normalize_diag["shared_group_count"] = int(len(target_by_key))
+            shared_transverse_count_normalize_diag["affected_surface_count"] = int(len(shared_transverse_count_overrides))
+            if preview:
+                shared_transverse_count_normalize_diag["preview"] = list(preview)
+
         for surf, (rid, ctype, sz) in zip(surface_tags, surface_meta):
             region = next((r for r in model.regions if int(r.region_id) == int(rid)), None)
             lines = surface_curve_tags.get(surf, [])
             quad_controls = surface_quad_controls.get(surf)
+            edge_curve_groups = surface_quad_edge_curve_groups.get(surf)
+            edge_min_nodes: Optional[List[int]] = None
+            if quad_controls is not None and len(quad_controls) == 4:
+                min_nodes_local = [
+                    int(transfinite_edge_min_nodes.get((int(rid), int(edge.edge_id)), 0))
+                    for edge in quad_controls
+                ]
+                if any(int(v) > 0 for v in min_nodes_local):
+                    edge_min_nodes = min_nodes_local
+            flow_aligned_applied = False
+            flow_align_preflight_fallback = False
+            if gmsh_quad_full_region_flow_align and ctype in {"cartesian", "quadrilateral", "channel_generator"}:
+                diag = _gmsh_flow_align_region_preflight(
+                    region_id=int(rid),
+                    cell_type=str(ctype),
+                    curve_tags=lines,
+                    edge_controls=quad_controls,
+                    fallback_size=float(sz),
+                    min_nodes=edge_min_nodes,
+                )
+                diag["surface_tag"] = int(surf)
+                diag["requested"] = True
+                normalized_counts_override = shared_transverse_count_overrides.get(int(surf))
+                if normalized_counts_override is not None:
+                    diag["shared_transverse_count_normalized"] = True
+                    diag["transfinite_counts_normalized"] = [int(v) for v in list(normalized_counts_override)]
+                else:
+                    diag["shared_transverse_count_normalized"] = False
+                counts_for_apply = normalized_counts_override
+                if counts_for_apply is None:
+                    counts_for_apply = diag.get("transfinite_counts")
+                if bool(diag.get("eligible", False)):
+                    ok, err = _apply_flow_aligned_transfinite(
+                        surf_tag=int(surf),
+                        curve_tags=lines,
+                        edge_controls=quad_controls,
+                        fallback_size=float(sz),
+                        counts_override=counts_for_apply,
+                        min_nodes=edge_min_nodes,
+                        edge_curve_groups=edge_curve_groups,
+                    )
+                    flow_aligned_applied = bool(ok)
+                    if ok:
+                        diag["status"] = "applied"
+                        diag["fallback"] = False
+                    else:
+                        diag["status"] = "fallback"
+                        diag["fallback"] = True
+                        flow_align_preflight_fallback = True
+                        diag["reasons"] = list(diag.get("reasons", [])) + [
+                            "gmsh-transfinite-apply-failed"
+                        ]
+                        if err:
+                            diag["apply_error"] = str(err)
+                        warnings.warn(
+                            "Gmsh flow-align fallback for region "
+                            f"{int(rid)}: transfinite apply failed ({err}).",
+                            RuntimeWarning,
+                        )
+                else:
+                    diag["status"] = "fallback"
+                    flow_align_preflight_fallback = True
+                    reason_txt = ", ".join(str(x) for x in diag.get("reasons", []) if str(x)) or "unknown"
+                    warnings.warn(
+                        "Gmsh flow-align fallback for region "
+                        f"{int(rid)}: {reason_txt}",
+                        RuntimeWarning,
+                    )
+                if flow_align_preflight_fallback:
+                    diag["transfinite_skipped_after_fallback"] = True
+                flow_align_diagnostics.append(diag)
+                self._last_flow_align_diagnostics = list(flow_align_diagnostics)
             if ctype == "cartesian":
                 # Transfinite + Recombine: structured, fast, pure quads.
-                if region is not None and region.edge_lengths and len(lines) == 4 and len(region.edge_lengths) == 4:
+                if (
+                    (not flow_align_preflight_fallback)
+                    and
+                    (not flow_aligned_applied)
+                    and region is not None
+                    and region.edge_lengths
+                    and len(region.edge_lengths) == 4
+                    and quad_controls is not None
+                    and len(quad_controls) == 4
+                ):
                     try:
                         edge_geom_len = []
-                        if quad_controls is not None and len(quad_controls) == 4:
-                            edge_geom_len = [_polyline_length(edge.points_xy) for edge in quad_controls]
-                        else:
-                            p_ring = list(region.ring_xy)
-                            if p_ring and p_ring[0] == p_ring[-1]:
-                                p_ring = p_ring[:-1]
-                            for i in range(4):
-                                x0, y0 = p_ring[i]
-                                x1, y1 = p_ring[(i + 1) % 4]
-                                edge_geom_len.append(float(np.hypot(x1 - x0, y1 - y0)))
+                        edge_geom_len = [_polyline_length(edge.points_xy) for edge in quad_controls]
                         counts = []
                         for i in range(4):
                             tlen = max(float(region.edge_lengths[i]), tol)
                             ndiv = max(1, int(round(edge_geom_len[i] / tlen)))
                             counts.append(max(2, ndiv + 1))
 
+                        if edge_min_nodes is not None and len(edge_min_nodes) == 4:
+                            counts = [max(int(c), int(mn)) if int(mn) > 0 else int(c) for c, mn in zip(counts, edge_min_nodes)]
+
                         # Opposite edges must match for transfinite surface.
                         n0 = max(counts[0], counts[2])
                         n1 = max(counts[1], counts[3])
                         counts[0] = counts[2] = n0
                         counts[1] = counts[3] = n1
-
-                        for ltag, npt in zip(lines, counts):
-                            # abs(): shared reversed curves carry negative tags
-                            gmsh.model.mesh.setTransfiniteCurve(abs(ltag), int(npt))
-                        gmsh.model.mesh.setTransfiniteSurface(surf)
+                        ok_tf, _err_tf = _apply_flow_aligned_transfinite(
+                            surf_tag=int(surf),
+                            curve_tags=lines,
+                            edge_controls=quad_controls,
+                            fallback_size=float(sz),
+                            counts_override=counts,
+                            min_nodes=edge_min_nodes,
+                            edge_curve_groups=edge_curve_groups,
+                        )
+                        if not ok_tf:
+                            gmsh.model.mesh.setTransfiniteSurface(surf)
                     except Exception:
                         try:
                             gmsh.model.mesh.setTransfiniteSurface(surf)
                         except Exception:
                             pass
-                else:
+                elif (not flow_align_preflight_fallback) and (not flow_aligned_applied):
                     try:
                         gmsh.model.mesh.setTransfiniteSurface(surf)
                     except Exception:
@@ -3703,31 +7717,39 @@ class GmshBackend(MeshingBackend):
                     gmsh.option.setNumber("Mesh.Algorithm", float(quad_algo))
             elif ctype in {"quadrilateral", "channel_generator"}:
                 # Unstructured quads via Blossom recombination.
-                if region is not None and region.edge_lengths and len(lines) == 4 and len(region.edge_lengths) == 4:
+                if (
+                    (not flow_align_preflight_fallback)
+                    and
+                    (not flow_aligned_applied)
+                    and region is not None
+                    and region.edge_lengths
+                    and len(region.edge_lengths) == 4
+                    and quad_controls is not None
+                    and len(quad_controls) == 4
+                ):
                     try:
                         edge_geom_len = []
-                        if quad_controls is not None and len(quad_controls) == 4:
-                            edge_geom_len = [_polyline_length(edge.points_xy) for edge in quad_controls]
-                        else:
-                            p_ring = list(region.ring_xy)
-                            if p_ring and p_ring[0] == p_ring[-1]:
-                                p_ring = p_ring[:-1]
-                            for i in range(4):
-                                x0, y0 = p_ring[i]
-                                x1, y1 = p_ring[(i + 1) % 4]
-                                edge_geom_len.append(float(np.hypot(x1 - x0, y1 - y0)))
+                        edge_geom_len = [_polyline_length(edge.points_xy) for edge in quad_controls]
                         counts = []
                         for i in range(4):
                             tlen = max(float(region.edge_lengths[i]), tol)
                             ndiv = max(1, int(round(edge_geom_len[i] / tlen)))
                             counts.append(max(2, ndiv + 1))
+                        if edge_min_nodes is not None and len(edge_min_nodes) == 4:
+                            counts = [max(int(c), int(mn)) if int(mn) > 0 else int(c) for c, mn in zip(counts, edge_min_nodes)]
                         n0 = max(counts[0], counts[2])
                         n1 = max(counts[1], counts[3])
                         counts[0] = counts[2] = n0
                         counts[1] = counts[3] = n1
-                        for ltag, npt in zip(lines, counts):
-                            gmsh.model.mesh.setTransfiniteCurve(abs(ltag), int(npt))
-                        gmsh.model.mesh.setTransfiniteSurface(surf)
+                        _apply_flow_aligned_transfinite(
+                            surf_tag=int(surf),
+                            curve_tags=lines,
+                            edge_controls=quad_controls,
+                            fallback_size=float(sz),
+                            counts_override=counts,
+                            min_nodes=edge_min_nodes,
+                            edge_curve_groups=edge_curve_groups,
+                        )
                     except Exception:
                         pass
                 gmsh.model.mesh.setRecombine(2, surf)
@@ -3747,24 +7769,69 @@ class GmshBackend(MeshingBackend):
                     gmsh.model.mesh.setAlgorithm(2, surf, tri_algo)
                 except Exception:
                     gmsh.option.setNumber("Mesh.Algorithm", float(tri_algo))
+        _record_phase("configure_per_surface", phase_started_at)
+        _mark_build_stage("after-configure-per-surface")
 
         # ---- 5. Global mesh options ------------------------------------
-        gmsh.option.setNumber("Mesh.RecombineAll", 0)          # per-surface only
-        gmsh.option.setNumber("Mesh.RecombinationAlgorithm", float(recomb_algo))
-        gmsh.option.setNumber("Mesh.RecombineOptimizeTopology", float(max(0, int(recombine_optimize_topology))))
-        gmsh.option.setNumber("Mesh.RecombineNodeRepositioning", 1.0 if recombine_node_repositioning else 0.0)
-        gmsh.option.setNumber("Mesh.RecombineMinimumQuality", max(0.0, float(recombine_minimum_quality)))
-        gmsh.option.setNumber("Mesh.Smoothing", float(smoothing_passes))
-        gmsh.option.setNumber("Mesh.OptimizeNetgen", 1.0 if optimize_netgen else 0.0)
-        gmsh.option.setNumber("Mesh.AlgorithmSwitchOnFailure", 1.0 if algorithm_switch_on_failure else 0.0)
-        gmsh.option.setNumber("Mesh.RandomFactor", max(0.0, float(random_factor)))
-        gmsh.option.setNumber("Mesh.MeshSizeMin", float(mesh_size_min))
-        gmsh.option.setNumber("Mesh.ToleranceEdgeLength", float(tolerance_edge_length))
-        gmsh.option.setNumber("Mesh.MeshSizeFromPoints", 1.0 if mesh_size_from_points else 0.0)
+        phase_started_at = time.perf_counter()
+        def _set_global_mesh_option(name: str, value: object) -> None:
+            numeric_value = float(value)
+            gmsh.option.setNumber(str(name), float(numeric_value))
+            _record_global_option(str(name), float(numeric_value))
+
+        _set_global_mesh_option("Mesh.RecombineAll", 0.0)  # per-surface only
+        _set_global_mesh_option("Mesh.RecombinationAlgorithm", float(recomb_algo))
+        _set_global_mesh_option("Mesh.RecombineOptimizeTopology", float(max(0, int(recombine_optimize_topology))))
+        _set_global_mesh_option("Mesh.RecombineNodeRepositioning", 1.0 if recombine_node_repositioning else 0.0)
+        _set_global_mesh_option("Mesh.RecombineMinimumQuality", max(0.0, float(recombine_minimum_quality)))
+        _set_global_mesh_option("Mesh.Smoothing", float(smoothing_passes))
+        _set_global_mesh_option("Mesh.OptimizeNetgen", 1.0 if optimize_netgen else 0.0)
+        _set_global_mesh_option("Mesh.AlgorithmSwitchOnFailure", 1.0 if algorithm_switch_on_failure else 0.0)
+        _set_global_mesh_option("Mesh.RandomFactor", max(0.0, float(random_factor)))
+        _set_global_mesh_option("Mesh.MeshSizeMin", float(mesh_size_min))
+        _set_global_mesh_option("Mesh.ToleranceEdgeLength", float(tolerance_edge_length))
+        _set_global_mesh_option("Mesh.MeshSizeFromPoints", 1.0 if mesh_size_from_points else 0.0)
+        _set_global_mesh_option("General.NumThreads", float(gmsh_num_threads))
+        _set_global_mesh_option("Mesh.MaxNumThreads2D", float(gmsh_max_num_threads_2d))
+        _record_build_event(
+            "mesh-options-summary",
+            int(tri_algo),
+            int(quad_algo),
+            int(recomb_algo),
+            int(smoothing_passes),
+            int(optimize_iters),
+            float(mesh_size_min),
+            float(tolerance_edge_length),
+            bool(mesh_size_from_points),
+            int(gmsh_num_threads),
+            int(gmsh_max_num_threads_2d),
+        )
+        _record_phase("configure_global_options", phase_started_at)
+        _mark_build_stage("after-configure-global-options")
 
         # ---- 6. Generate -----------------------------------------------
-        gmsh.model.mesh.generate(2)
-        if want_recombine:
+        phase_started_at = time.perf_counter()
+        gmsh_build_order_fingerprint = _build_order_fingerprint_payload()
+        gmsh_build_order_stage_ladder = _build_order_stage_ladder_payload()
+        gmsh_global_options = _global_options_payload()
+        gmsh_pre_generate_entity_signature = _pre_generate_entity_signature_payload()
+        self._last_build_order_fingerprint = dict(gmsh_build_order_fingerprint)
+        self._last_build_order_stage_ladder = dict(gmsh_build_order_stage_ladder)
+        self._last_pre_generate_entity_signature = dict(gmsh_pre_generate_entity_signature)
+        try:
+            gmsh.model.mesh.generate(2)
+        except Exception as exc:
+            raise RuntimeError(
+                "Gmsh mesh.generate(2) failed "
+                f"(build_order_sha256={gmsh_build_order_fingerprint.get('sha256', '')}, "
+                f"build_stage_ladder_sha256={gmsh_build_order_stage_ladder.get('sha256', '')}, "
+                f"build_stage_ladder={_build_order_stage_ladder_compact_text(gmsh_build_order_stage_ladder)}, "
+                f"global_options_sha256={gmsh_global_options.get('sha256', '')}, "
+                f"global_options={_global_options_compact_text(gmsh_global_options)}, "
+                f"entity_sha256={gmsh_pre_generate_entity_signature.get('sha256', '')}, "
+                f"entity_counts={gmsh_pre_generate_entity_signature.get('counts', {})}): {exc}"
+            ) from exc
+        if want_recombine and bool(gmsh_global_recombine):
             try:
                 gmsh.model.mesh.recombine()
             except Exception:
@@ -3778,8 +7845,65 @@ class GmshBackend(MeshingBackend):
                     gmsh.model.mesh.optimize(method, niter=int(optimize_iters))
                 except TypeError:
                     gmsh.model.mesh.optimize(method)
+        _record_phase("generate_and_optimize", phase_started_at)
+
+        phase_started_at = time.perf_counter()
+        duplicate_cleanup_summary: Optional[Dict[str, object]] = None
+        duplicate_before_count = 0
+        duplicate_after_count = 0
+        duplicate_cleanup_ran = False
+        try:
+            dup_before = gmsh.model.mesh.getDuplicateNodes([])
+        except TypeError:
+            dup_before = gmsh.model.mesh.getDuplicateNodes()
+        except Exception:
+            dup_before = []
+        if dup_before is None:
+            dup_before = []
+        duplicate_before_count = int(len(dup_before))
+        if duplicate_before_count > 0:
+            duplicate_cleanup_ran = True
+            warnings.warn(
+                "Gmsh mesh duplicate-node cleanup triggered "
+                f"(duplicates={duplicate_before_count}).",
+                RuntimeWarning,
+            )
+            try:
+                gmsh.model.mesh.removeDuplicateNodes([])
+            except TypeError:
+                gmsh.model.mesh.removeDuplicateNodes()
+            except Exception:
+                pass
+            try:
+                gmsh.model.mesh.removeDuplicateElements([])
+            except TypeError:
+                gmsh.model.mesh.removeDuplicateElements()
+            except Exception:
+                pass
+            try:
+                dup_after = gmsh.model.mesh.getDuplicateNodes([])
+            except TypeError:
+                dup_after = gmsh.model.mesh.getDuplicateNodes()
+            except Exception:
+                dup_after = []
+            if dup_after is None:
+                dup_after = []
+            duplicate_after_count = int(len(dup_after))
+            if duplicate_after_count > 0:
+                warnings.warn(
+                    "Gmsh duplicate-node cleanup completed with remaining duplicates "
+                    f"(remaining={duplicate_after_count}).",
+                    RuntimeWarning,
+                )
+            duplicate_cleanup_summary = {
+                "duplicate_nodes_before": int(duplicate_before_count),
+                "duplicate_nodes_after": int(duplicate_after_count),
+                "cleanup_ran": bool(duplicate_cleanup_ran),
+            }
+        _record_phase("duplicate_cleanup", phase_started_at)
 
         # ---- 7. Extract nodes ------------------------------------------
+        phase_started_at = time.perf_counter()
         node_tags, node_coords, _ = gmsh.model.mesh.getNodes()
         # node_coords: flat [x0,y0,z0, x1,y1,z1, ...]
         node_coords = np.array(node_coords, dtype=np.float64).reshape(-1, 3)
@@ -3787,8 +7911,10 @@ class GmshBackend(MeshingBackend):
         node_x = node_coords[:, 0].copy()
         node_y = node_coords[:, 1].copy()
         node_z = np.zeros(node_x.shape[0], dtype=np.float64)
+        _record_phase("extract_nodes", phase_started_at)
 
         # ---- 8. Extract elements per surface with metadata -------------
+        phase_started_at = time.perf_counter()
         all_face_offsets: List[int] = [0]
         all_face_nodes: List[int] = []
         all_tris: List[int] = []
@@ -3826,7 +7952,25 @@ class GmshBackend(MeshingBackend):
                         all_size.append(sz)
 
         if not all_face_offsets or len(all_face_offsets) == 1:
+            self._last_flow_align_diagnostics = list(flow_align_diagnostics)
+            if flow_align_diagnostics:
+                diag_parts: List[str] = []
+                for d in flow_align_diagnostics:
+                    rid_txt = str(d.get("region_id", "?"))
+                    status_txt = str(d.get("status", "unknown"))
+                    reasons_txt = ",".join(str(x) for x in d.get("reasons", []) if str(x))
+                    if not reasons_txt:
+                        reasons_txt = "none"
+                    diag_parts.append(
+                        f"region={rid_txt};status={status_txt};reasons={reasons_txt}"
+                    )
+                raise ValueError(
+                    "GmshBackend: no elements extracted from mesh. "
+                    "Flow-align per-region diagnostics: " + " | ".join(diag_parts)
+                )
             raise ValueError("GmshBackend: no elements extracted from mesh.")
+        _record_phase("extract_elements", phase_started_at)
+        gmsh_phase_timings_s["total_build"] = float(max(0.0, time.perf_counter() - build_started_at))
 
         out = MeshResult(
             node_x=node_x,
@@ -3839,6 +7983,112 @@ class GmshBackend(MeshingBackend):
             region_id=np.asarray(all_region_id, dtype=np.int32),
             target_size=np.asarray(all_size, dtype=np.float64),
         )
+        if bool(gmsh_interface_conformance):
+            out = _enforce_quad_interface_conformance(
+                out,
+                model,
+                snap_tol=float(gmsh_interface_snap_tol),
+                centroid_merge=bool(gmsh_transverse_interface_centroid_merge),
+            )
+        out.quality_summary = dict(out.quality_summary or {})
+        if bool(gmsh_interface_reject_near_unshared):
+            near_unshared_report = _mixed_transfinite_tri_near_unshared_report(
+                out,
+                tol=float(gmsh_interface_reject_tol),
+            )
+            out.quality_summary["gmsh_interface_near_unshared_check"] = dict(near_unshared_report)
+            flagged_pair_count = int(near_unshared_report.get("flagged_pair_count", 0) or 0)
+            if flagged_pair_count > 0:
+                flagged_pairs = list(near_unshared_report.get("flagged_pairs") or [])
+                preview = "; ".join(
+                    (
+                        f"{int(p.get('region_pair', [-1, -1])[0])}-{int(p.get('region_pair', [-1, -1])[1])} "
+                        f"(near_only={int(p.get('near_only_a', 0))}/{int(p.get('near_only_b', 0))}, "
+                        f"shared_edges={int(p.get('shared_edge_count', 0))})"
+                    )
+                    for p in flagged_pairs[:6]
+                )
+                raise ValueError(
+                    "Gmsh mixed transfinite/tri interface check failed: detected "
+                    f"{flagged_pair_count} region pair(s) with near-coincident unshared nodes "
+                    f"(tol={float(gmsh_interface_reject_tol):.6g}). "
+                    + (f"Examples: {preview}" if preview else "")
+                )
+        out.quality_summary["gmsh_phase_timings_s"] = dict(gmsh_phase_timings_s)
+        out.quality_summary["gmsh_build_order_fingerprint"] = dict(gmsh_build_order_fingerprint)
+        out.quality_summary["gmsh_build_order_stage_ladder"] = dict(gmsh_build_order_stage_ladder)
+        out.quality_summary["gmsh_global_options"] = dict(gmsh_global_options)
+        out.quality_summary["gmsh_pre_generate_entity_signature"] = dict(gmsh_pre_generate_entity_signature)
+        out.quality_summary["gmsh_phase_counts"] = {
+            "surface_count": int(len(surface_tags)),
+            "constraint_count": int(len(constraint_point_lists)),
+            "arc_count": int(len(model.arcs)),
+            "face_count": int(max(0, len(all_face_offsets) - 1)),
+        }
+        meshing_native = _load_hydra_meshing_native()
+        out.quality_summary["gmsh_cpp_prebuild_native"] = {
+            "enabled": bool(_gmsh_cpp_prebuild_enabled()),
+            "module_loaded": bool(meshing_native is not None),
+            "has_interface_overlap_metrics_closed": bool(
+                meshing_native is not None and hasattr(meshing_native, "interface_overlap_metrics_closed")
+            ),
+            "has_polyline_overlap_fractions_open": bool(
+                meshing_native is not None and hasattr(meshing_native, "polyline_overlap_fractions_open")
+            ),
+            "has_project_ring_to_chain": bool(
+                meshing_native is not None and hasattr(meshing_native, "project_ring_to_chain")
+            ),
+        }
+        has_transfinite_harmonize_diag = any(int(v) > 0 for v in transfinite_harmonize_stats.values())
+        has_transfinite_harmonize_debug = bool(transfinite_harmonize_debug)
+        has_interface_coincidence_diag = bool(interface_coincidence_report)
+        has_shared_transverse_count_normalize_diag = bool(gmsh_shared_transverse_edge_count_normalize)
+        if flow_align_diagnostics or duplicate_cleanup_summary is not None or interface_transition_specs or has_transfinite_harmonize_diag or has_transfinite_harmonize_debug or has_interface_coincidence_diag or has_shared_transverse_count_normalize_diag:
+            out.quality_summary["gmsh_flow_align_diagnostics"] = list(flow_align_diagnostics)
+            if duplicate_cleanup_summary is not None:
+                out.quality_summary["gmsh_duplicate_cleanup"] = dict(duplicate_cleanup_summary)
+            if interface_transition_specs:
+                out.quality_summary["gmsh_interface_transition"] = {
+                    "enabled": bool(gmsh_interface_transition_enable),
+                    "protected_transfinite_surfaces": sorted(int(s) for s in protected_transfinite_surfaces),
+                    "spec_count": int(len(interface_transition_specs)),
+                    "field_count": int(interface_transition_field_count),
+                }
+            if has_shared_transverse_count_normalize_diag:
+                out.quality_summary["gmsh_shared_transverse_edge_count_normalize"] = dict(shared_transverse_count_normalize_diag)
+            if has_transfinite_harmonize_diag:
+                out.quality_summary["gmsh_transfinite_interface_harmonize"] = {
+                    "enabled": bool(gmsh_transfinite_shared_interface_harmonize),
+                    "subset_start": float(gmsh_transfinite_opposite_subset_start),
+                    "subset_end": float(gmsh_transfinite_opposite_subset_end),
+                    "subset_density_scale": float(gmsh_transfinite_opposite_subset_density_scale),
+                    "subset_containment_enable": bool(gmsh_transfinite_subset_containment_enable),
+                    "subset_containment_high_overlap": float(gmsh_transfinite_subset_containment_high_overlap),
+                    "subset_containment_min_overlap": float(gmsh_transfinite_subset_containment_min_overlap),
+                    "subset_containment_max_length_ratio": float(gmsh_transfinite_subset_containment_max_length_ratio),
+                    "shared_groups": int(transfinite_harmonize_stats.get("shared_groups", 0)),
+                    "canonicalized_edges": int(transfinite_harmonize_stats.get("canonicalized_edges", 0)),
+                    "opposite_subset_densified": int(transfinite_harmonize_stats.get("opposite_subset_requests", 0)),
+                    "junction_points_inserted": int(transfinite_harmonize_stats.get("junction_points_inserted", 0)),
+                    "subset_containment_densified": int(transfinite_harmonize_stats.get("subset_containment_requests", 0)),
+                    "singleton_external_junction_edges": int(transfinite_harmonize_stats.get("singleton_external_junction_edges", 0)),
+                    "nontrans_neighbor_projection_rings": int(transfinite_harmonize_stats.get("nontrans_neighbor_projection_rings", 0)),
+                    "candidate_pair_count_prefilter": int(transfinite_harmonize_stats.get("candidate_pair_count_prefilter", 0)),
+                    "candidate_pair_count": int(transfinite_harmonize_stats.get("candidate_pair_count", 0)),
+                    "pair_bbox_reject_count": int(transfinite_harmonize_stats.get("pair_bbox_reject_count", 0)),
+                    "nontrans_chain_bbox_reject_count": int(transfinite_harmonize_stats.get("nontrans_chain_bbox_reject_count", 0)),
+                    "nontrans_overlap_pair_count": int(transfinite_harmonize_stats.get("nontrans_overlap_pair_count", 0)),
+                    "nontrans_point_bbox_reject_count": int(transfinite_harmonize_stats.get("nontrans_point_bbox_reject_count", 0)),
+                }
+            if has_transfinite_harmonize_debug:
+                out.quality_summary["gmsh_transfinite_interface_debug"] = dict(transfinite_harmonize_debug)
+            if has_interface_coincidence_diag:
+                out.quality_summary["gmsh_interface_coincidence_report"] = {
+                    "pair_count": int(len(interface_coincidence_report)),
+                    "suspect_pair_count": int(len(interface_coincidence_suspects)),
+                    "pairs": list(interface_coincidence_report),
+                }
+            self._last_flow_align_diagnostics = list(flow_align_diagnostics)
         return _repair_mesh_result(out)
 
 
@@ -4227,6 +8477,29 @@ class TQMeshBackend(MeshingBackend):
             return False
         return bool(default)
 
+    def _quad_region_method(self) -> str:
+        raw = self._options.get(
+            "tqmesh_quad_region_method",
+            os.environ.get("BACKWATER_TQMESH_QUAD_REGION_METHOD", "auto"),
+        )
+        text = str(raw).strip().lower()
+        if text in {"qgis_structured", "structured", "structured_full_region", "full_region"}:
+            return "qgis_structured"
+        if text in {"tqmesh_native_recipe", "native", "recipe", "quad_recipe"}:
+            return "tqmesh_native_recipe"
+        return "auto"
+
+    def _use_structured_quad_region_method(self) -> bool:
+        method = self._quad_region_method()
+        if method == "qgis_structured":
+            return True
+        if method == "tqmesh_native_recipe":
+            return False
+        return self._opt_bool(
+            "tqmesh_quad_full_region_flow_align",
+            _env_bool("BACKWATER_TQMESH_QUAD_FULL_REGION_FLOW_ALIGN", True),
+        )
+
     @staticmethod
     def _is_ccw(ring: List[Tuple[float, float]]) -> bool:
         """Return True if the ring has counter-clockwise winding (positive area)."""
@@ -4236,14 +8509,339 @@ class TQMeshBackend(MeshingBackend):
         )
         return area > 0.0
 
+    def _try_generate_native_merged_mesh(self, _tq, model: ConceptualModel, progress_emit=None) -> Optional[MeshResult]:
+        if len(model.regions) <= 1:
+            return None
+
+        def _emit(stage: str, region_id: Optional[int] = None, detail: str = "", force: bool = False) -> None:
+            if progress_emit is None:
+                return
+            try:
+                progress_emit(stage=stage, region_id=region_id, detail=detail, force=force)
+            except Exception:
+                pass
+
+        use_structured_quad_region = self._use_structured_quad_region_method()
+        breakline_fixed_edges_enabled = self._opt_bool(
+            "tqmesh_breakline_fixed_edges",
+            _env_bool("BACKWATER_TQMESH_BREAKLINE_FIXED_EDGES", True),
+        )
+        boundary_split_max_length = _as_float(
+            self._options.get("tqmesh_boundary_split_max_length"),
+            _env_float("BACKWATER_TQMESH_BOUNDARY_SPLIT_MAX_LENGTH", 0.0),
+        )
+        if (not np.isfinite(boundary_split_max_length)) or boundary_split_max_length <= 0.0:
+            boundary_split_max_length = 0.0
+
+        mesh_specs: List[Dict[str, object]] = []
+        region_size_by_id: Dict[int, float] = {}
+
+        _emit("native-merge-prepare", detail=f"regions={len(model.regions)}", force=True)
+        for region_index, region in enumerate(model.regions, start=1):
+            ring = list(region.ring_xy)
+            if ring and ring[0] == ring[-1]:
+                ring = ring[:-1]
+            if len(ring) < 3:
+                continue
+
+            ctype = str(region.default_cell_type).strip().lower()
+            if ctype == "empty":
+                continue
+
+            _emit(
+                "native-merge-region",
+                region_id=int(region.region_id),
+                detail=f"{region_index}/{len(model.regions)} cell_type={ctype}",
+            )
+
+            target_size = max(float(region.default_size), 1.0e-10)
+            region_constraints = _constraints_for_region(model, ring)
+            region_exclusions = _region_exclusion_zones(model, region, ring)
+            fixed_edge_lines = _breakline_fixed_edges_for_region(model, region, ring)
+            if fixed_edge_lines:
+                ring, fixed_edge_lines = _snap_and_split_boundary_for_breaklines(
+                    ring,
+                    fixed_edge_lines,
+                    vertex_snap_tol=0.1,
+                )
+            if boundary_split_max_length > 0.0 and fixed_edge_lines:
+                split_lines: List[List[Tuple[float, float]]] = []
+                for line in fixed_edge_lines:
+                    densified = _split_polyline_max_segment_length(line, boundary_split_max_length)
+                    if len(densified) >= 2:
+                        split_lines.append(densified)
+                fixed_edge_lines = split_lines
+
+            quad_controls = None
+            quad_boundary = None
+            if ctype in ("quadrilateral", "cartesian"):
+                quad_setup = self._quad_controls_for_region(model, region)
+                if quad_setup is not None:
+                    quad_boundary, quad_controls = quad_setup
+
+            # The structured full-region flow-aligned branch is still handled by
+            # the legacy Python path.
+            if quad_controls is not None and use_structured_quad_region:
+                return None
+
+            ext_verts = list(quad_boundary) if quad_boundary is not None else ring
+            protected_boundary_points = _boundary_contact_vertices(
+                ext_verts,
+                fixed_edge_lines,
+                tol=max(1.0e-6, 1.0e-3 * float(target_size)),
+            )
+            ext_verts = _sanitize_closed_ring(
+                ext_verts,
+                length_tol=max(1.0e-6, 1.0e-3 * float(target_size)),
+                collinear_tol=max(1.0e-6, 1.5e-3 * float(target_size)),
+                protect_points=protected_boundary_points,
+                protect_tol=max(1.0e-6, 1.0e-3 * float(target_size)),
+            )
+            ext_verts = _stitch_boundary_microchains(
+                ext_verts,
+                target_size=float(target_size),
+                protect_points=protected_boundary_points,
+                protect_tol=max(1.0e-6, 1.0e-3 * float(target_size)),
+            )
+            ext_verts, used_fallback_boundary = _recover_tqmesh_exterior_boundary(
+                ext_verts,
+                fallback_ring=ring,
+                target_size=float(target_size),
+                protect_points=protected_boundary_points,
+                protect_tol=max(1.0e-6, 1.0e-3 * float(target_size)),
+                region_id=int(region.region_id),
+            )
+            if used_fallback_boundary:
+                quad_controls = None
+                quad_boundary = None
+            if len(ext_verts) < 3:
+                continue
+            if not self._is_ccw(ext_verts):
+                ext_verts = list(reversed(ext_verts))
+            ext_is_ccw = self._is_ccw(ext_verts)
+
+            int_boundaries: List[List[List[float]]] = []
+            int_colors: List[List[int]] = []
+            for ering, _esize in region_exclusions:
+                hring = list(ering)
+                if hring and hring[0] == hring[-1]:
+                    hring = hring[:-1]
+                hring = _sanitize_closed_ring(
+                    hring,
+                    length_tol=max(1.0e-6, 1.0e-3 * float(target_size)),
+                    collinear_tol=max(1.0e-6, 1.5e-3 * float(target_size)),
+                )
+                hring = _stitch_boundary_microchains(hring, target_size=float(target_size))
+                if len(hring) < 3:
+                    continue
+                if self._is_ccw(hring) == ext_is_ccw:
+                    hring = list(reversed(hring))
+                int_boundaries.append([[float(v[0]), float(v[1])] for v in hring])
+                int_colors.append([1] * len(hring))
+
+            constraint_verts_list: List[List[Tuple[float, float]]] = []
+            constraint_sizes_list: List[float] = []
+            for cst in region_constraints:
+                if len(cst.ring_xy) < 3 or str(cst.cell_type).strip().lower() == "empty":
+                    continue
+                constraint_verts_list.append([(float(x), float(y)) for (x, y) in cst.ring_xy])
+                constraint_sizes_list.append(float(cst.target_size))
+
+            active_quad_layers: List[List[float]] = []
+            if quad_controls is not None:
+                active_quad_layers = [
+                    [
+                        edge.points_xy[0][0],
+                        edge.points_xy[0][1],
+                        edge.points_xy[-1][0],
+                        edge.points_xy[-1][1],
+                        float(edge.n_layers),
+                        float(edge.first_height if edge.first_height is not None else target_size),
+                        float(edge.growth_rate),
+                    ]
+                    for edge in quad_controls
+                    if edge.n_layers > 0 and edge.first_height is not None and edge.first_height > 0.0
+                ]
+                if len(active_quad_layers) >= 4:
+                    active_quad_layers = []
+
+            want_quads = ctype in ("quadrilateral", "cartesian")
+            quad_refinements = _as_int(
+                self._options.get("tqmesh_quad_refinements"),
+                _as_int(os.environ.get("BACKWATER_TQMESH_QUAD_REFINEMENTS", 0), 0),
+            )
+            if quad_refinements < 0:
+                quad_refinements = 0
+            fixed_for_spec = fixed_edge_lines if breakline_fixed_edges_enabled else []
+            smooth_for_spec = 0 if len(fixed_for_spec) > 0 else 3
+            region_id = int(region.region_id)
+
+            mesh_specs.append(
+                {
+                    "ext_verts": [[float(v[0]), float(v[1])] for v in ext_verts],
+                    "ext_colors": [1] * len(ext_verts),
+                    "int_boundaries": int_boundaries,
+                    "int_colors": int_colors,
+                    "constraint_verts": [
+                        [[float(v[0]), float(v[1])] for v in cverts]
+                        for cverts in constraint_verts_list
+                    ],
+                    "constraint_sizes": [float(cs) for cs in constraint_sizes_list],
+                    "fixed_edges": [
+                        [[float(x), float(y)] for (x, y) in line]
+                        for line in fixed_for_spec
+                    ],
+                    "target_size": float(target_size),
+                    "quad_layers": active_quad_layers,
+                    "tri_to_quad": bool(want_quads),
+                    "quad_refinements": int(quad_refinements if want_quads else 0),
+                    "n_smooth": int(smooth_for_spec),
+                    "boundary_split_max_length": float(boundary_split_max_length),
+                    "mesh_id": int(region_id),
+                    "element_color": int(region_id),
+                }
+            )
+            region_size_by_id[region_id] = float(target_size)
+
+        if len(mesh_specs) <= 1:
+            return None
+
+        _emit("native-merge-run", detail=f"mesh_specs={len(mesh_specs)}", force=True)
+
+        merged = None
+        merge_errors: List[str] = []
+        for receiver_index in range(len(mesh_specs)):
+            try:
+                merged = _tq.generate_merged_triangular_meshes(
+                    mesh_specs=mesh_specs,
+                    receiver_index=int(receiver_index),
+                    tri_to_quad=False,
+                    n_smooth=0,
+                    boundary_split_max_length=float(boundary_split_max_length),
+                    post_merge_smooth=0,
+                )
+                break
+            except Exception as exc:
+                merge_errors.append(f"receiver_index={receiver_index}: {exc}")
+
+        if merged is None:
+            _emit("native-merge-fail", detail="all receiver indices failed", force=True)
+            raise RuntimeError(
+                "Native TQMesh merge failed for all receiver indices: "
+                + " | ".join(merge_errors)
+            )
+
+        node_x = np.asarray(merged["verts_x"], dtype=np.float64)
+        node_y = np.asarray(merged["verts_y"], dtype=np.float64)
+        tris_arr = np.asarray(merged["triangles"], dtype=np.int32)
+        quads_arr = np.asarray(merged["quads"], dtype=np.int32)
+        tri_colors = np.asarray(merged.get("tri_colors", []), dtype=np.int32)
+        quad_colors = np.asarray(merged.get("quad_colors", []), dtype=np.int32)
+
+        if tris_arr.size:
+            tris_arr = tris_arr.reshape((-1, 3))
+        else:
+            tris_arr = np.empty((0, 3), dtype=np.int32)
+        if quads_arr.size:
+            quads_arr = quads_arr.reshape((-1, 4))
+        else:
+            quads_arr = np.empty((0, 4), dtype=np.int32)
+
+        if tri_colors.size != tris_arr.shape[0]:
+            tri_colors = np.full((tris_arr.shape[0],), 0, dtype=np.int32)
+        if quad_colors.size != quads_arr.shape[0]:
+            quad_colors = np.full((quads_arr.shape[0],), 0, dtype=np.int32)
+
+        face_nodes_list: List[int] = []
+        face_offsets: List[int] = [0]
+        plot_tris: List[int] = []
+
+        for tri in tris_arr:
+            face_nodes_list.extend(tri.tolist())
+            face_offsets.append(len(face_nodes_list))
+            plot_tris.extend(tri.tolist())
+
+        for quad in quads_arr:
+            face_nodes_list.extend(quad.tolist())
+            face_offsets.append(len(face_nodes_list))
+            plot_tris.extend([quad[0], quad[1], quad[2], quad[0], quad[2], quad[3]])
+
+        all_cell_types = ["triangular"] * int(tris_arr.shape[0]) + ["quadrilateral"] * int(quads_arr.shape[0])
+        all_region_ids = tri_colors.tolist() + quad_colors.tolist()
+        all_target_sizes = [
+            float(region_size_by_id.get(int(rid), 0.0))
+            for rid in all_region_ids
+        ]
+
+        out = MeshResult(
+            node_x=node_x,
+            node_y=node_y,
+            node_z=np.zeros(node_x.size, dtype=np.float64),
+            cell_nodes=np.asarray(plot_tris, dtype=np.int32),
+            cell_face_offsets=np.asarray(face_offsets, dtype=np.int32),
+            cell_face_nodes=np.asarray(face_nodes_list, dtype=np.int32),
+            cell_type=np.asarray(all_cell_types, dtype=object),
+            region_id=np.asarray(all_region_ids, dtype=np.int32),
+            target_size=np.asarray(all_target_sizes, dtype=np.float64),
+            quality_summary={
+                "backend": "tqmesh_native_merge",
+                "merged_mesh_count": int(len(mesh_specs)),
+            },
+        )
+        _emit(
+            "native-merge-done",
+            detail=(
+                f"nodes={int(node_x.size)} triangles={int(tris_arr.shape[0])} "
+                f"quads={int(quads_arr.shape[0])}"
+            ),
+            force=True,
+        )
+        return _repair_mesh_result(out)
+
     def generate(self, model: ConceptualModel) -> MeshResult:
         try:
             import hydra_tqmesh as _tq
-        except ImportError as exc:
-            raise RuntimeError(
-                "hydra_tqmesh C++ module not found.  "
-                "Rebuild the plugin (cmake + make) to compile TQMesh bindings."
-            ) from exc
+        except ImportError:
+            _tq = None
+
+        if _tq is None or not hasattr(_tq, "generate_triangular_mesh"):
+            try:
+                import importlib.util
+                from pathlib import Path
+
+                root = Path(__file__).resolve().parents[2]
+                build_dir = root / "build"
+                cand = sorted(build_dir.glob("hydra_tqmesh*.so"))
+                if not cand:
+                    raise FileNotFoundError("hydra_tqmesh*.so not found under build/")
+                spec = importlib.util.spec_from_file_location("hydra_tqmesh", str(cand[0]))
+                if spec is None or spec.loader is None:
+                    raise RuntimeError("could not create module spec for hydra_tqmesh")
+                _tq = importlib.util.module_from_spec(spec)
+                spec.loader.exec_module(_tq)
+            except Exception as load_exc:
+                raise RuntimeError(
+                    "hydra_tqmesh C++ module not found.  "
+                    "Rebuild the plugin (cmake + make) to compile TQMesh bindings."
+                ) from load_exc
+        elif not hasattr(_tq, "generate_merged_triangular_meshes"):
+            # Prefer a freshly built module if the imported one is stale.
+            try:
+                import importlib.util
+                from pathlib import Path
+
+                root = Path(__file__).resolve().parents[2]
+                build_dir = root / "build"
+                cand = sorted(build_dir.glob("hydra_tqmesh*.so"))
+                if cand:
+                    spec = importlib.util.spec_from_file_location("hydra_tqmesh", str(cand[0]))
+                    if spec is not None and spec.loader is not None:
+                        fresh = importlib.util.module_from_spec(spec)
+                        spec.loader.exec_module(fresh)
+                        if hasattr(fresh, "generate_merged_triangular_meshes"):
+                            _tq = fresh
+            except Exception:
+                pass
 
         if not model.regions:
             raise ValueError("TQMeshBackend: no conceptual regions provided.")
@@ -4257,6 +8855,107 @@ class TQMeshBackend(MeshingBackend):
             or ""
         ).strip()
 
+        progress_path = str(self._options.get("tqmesh_progress_path", "") or "").strip()
+        progress_emit_interval_s = _as_float(
+            self._options.get("tqmesh_progress_emit_interval_s"),
+            0.75,
+        )
+        if (not np.isfinite(progress_emit_interval_s)) or progress_emit_interval_s <= 0.0:
+            progress_emit_interval_s = 0.75
+        progress_emit_interval_s = max(float(progress_emit_interval_s), 0.2)
+        progress_seq = 0
+        progress_last_emit = -1.0
+
+        def _clip_detail(detail: object, max_len: int = 220) -> str:
+            txt = str(detail or "").strip()
+            if len(txt) <= max_len:
+                return txt
+            return txt[: max_len - 3] + "..."
+
+        def _emit_progress(
+            stage: str,
+            region_id: Optional[int] = None,
+            attempt: Optional[int] = None,
+            detail: str = "",
+            force: bool = False,
+        ) -> None:
+            nonlocal progress_seq, progress_last_emit
+            if not progress_path:
+                return
+            now = time.perf_counter()
+            if (not force) and progress_last_emit >= 0.0:
+                if (now - progress_last_emit) < progress_emit_interval_s:
+                    return
+            progress_seq += 1
+            payload: Dict[str, object] = {
+                "seq": int(progress_seq),
+                "stage": str(stage),
+                "timestamp": float(time.time()),
+                "elapsed_s": float(max(0.0, now - t_start)),
+                "regions_total": int(len(model.regions)),
+            }
+            if region_id is not None:
+                payload["region_id"] = int(region_id)
+            if attempt is not None:
+                payload["attempt"] = int(attempt)
+            clipped = _clip_detail(detail)
+            if clipped:
+                payload["detail"] = clipped
+            try:
+                _write_json_atomic(progress_path, payload)
+                progress_last_emit = now
+            except Exception:
+                pass
+
+        t_start = time.perf_counter()
+        _emit_progress("start", detail=f"regions={len(model.regions)}", force=True)
+
+        native_merge_enabled = self._opt_bool(
+            "tqmesh_native_merge",
+            _env_bool("BACKWATER_TQMESH_NATIVE_MERGE", True),
+        )
+        native_merge_strict = self._opt_bool(
+            "tqmesh_native_merge_strict",
+            _env_bool("BACKWATER_TQMESH_NATIVE_MERGE_STRICT", False),
+        )
+        native_merge_available = hasattr(_tq, "generate_merged_triangular_meshes")
+        if native_merge_enabled and native_merge_available:
+            try:
+                _emit_progress("native-merge-start", force=True)
+                native_merged = self._try_generate_native_merged_mesh(
+                    _tq,
+                    model,
+                    progress_emit=_emit_progress,
+                )
+                if native_merged is not None:
+                    _emit_progress(
+                        "done",
+                        detail=(
+                            f"native-merge nodes={int(native_merged.node_x.size)} "
+                            f"faces={max(0, int(native_merged.cell_face_offsets.size) - 1)}"
+                        ),
+                        force=True,
+                    )
+                    return native_merged
+            except Exception as exc:
+                if native_merge_strict:
+                    _emit_progress("native-merge-fail", detail=_clip_detail(exc), force=True)
+                    raise RuntimeError(
+                        f"TQMesh native merge path failed in strict mode: {exc}"
+                    ) from exc
+                _emit_progress("native-merge-fallback", detail=_clip_detail(exc), force=True)
+                warnings.warn(
+                    f"TQMesh native merge path failed; falling back to legacy region weld path: {exc}",
+                    RuntimeWarning,
+                )
+        elif native_merge_enabled and (not native_merge_available):
+            _emit_progress("native-merge-unavailable", force=True)
+            warnings.warn(
+                "TQMesh native merge requested but this hydra_tqmesh module does not expose "
+                "generate_merged_triangular_meshes; using legacy region weld path.",
+                RuntimeWarning,
+            )
+
         # ---- Process each region independently then merge results ----------
         # For the common single-region case this is straightforward.
         # Multi-region models are meshed separately and node indices merged.
@@ -4268,11 +8967,12 @@ class TQMeshBackend(MeshingBackend):
         all_bv0:  List[int]   = []
         all_bv1:  List[int]   = []
         all_bc:   List[int]   = []
-        all_ctype: List[str]  = []
-        all_rid:   List[int]  = []
-        all_size:  List[float]= []
+        all_tri_rid: List[int] = []
+        all_quad_rid: List[int] = []
+        all_tri_size: List[float] = []
+        all_quad_size: List[float] = []
 
-        for region in model.regions:
+        for region_index, region in enumerate(model.regions, start=1):
             ring = list(region.ring_xy)
             if len(ring) < 3:
                 continue
@@ -4286,6 +8986,13 @@ class TQMeshBackend(MeshingBackend):
             ctype = str(region.default_cell_type).strip().lower()
             if ctype == "empty":
                 continue
+
+            _emit_progress(
+                "region-start",
+                region_id=int(region.region_id),
+                detail=f"{region_index}/{len(model.regions)} cell_type={ctype}",
+                force=True,
+            )
 
             target_size = max(float(region.default_size), 1e-10)
             ring_initial = list(ring)
@@ -4323,17 +9030,14 @@ class TQMeshBackend(MeshingBackend):
                 if quad_setup is not None:
                     quad_boundary, quad_controls = quad_setup
 
-            full_quad_align = self._opt_bool(
-                "tqmesh_quad_full_region_flow_align",
-                _env_bool("BACKWATER_TQMESH_QUAD_FULL_REGION_FLOW_ALIGN", True),
-            )
+            use_structured_quad_region = self._use_structured_quad_region_method()
             quad_full_region_max_cells = _as_int(
                 self._options.get("tqmesh_quad_full_region_max_cells"),
                 _as_int(os.environ.get("BACKWATER_TQMESH_QUAD_FULL_REGION_MAX_CELLS", 250000), 250000),
             )
             if quad_full_region_max_cells <= 0:
                 quad_full_region_max_cells = 0
-            if quad_controls is not None and full_quad_align:
+            if quad_controls is not None and use_structured_quad_region:
                 # Build a full-region flow-aligned quad block using transfinite
                 # interpolation and quad-edge spacing/layer controls.
                 block = _structured_quad_region_mesh(
@@ -4354,14 +9058,18 @@ class TQMeshBackend(MeshingBackend):
                         poly = shifted_faces[s:e].tolist()
                         if len(poly) == 4:
                             all_quads.extend(poly)
-                            all_ctype.append("quadrilateral")
-                            all_rid.append(region.region_id)
-                            all_size.append(target_size)
+                            all_quad_rid.append(int(region.region_id))
+                            all_quad_size.append(float(target_size))
                         elif len(poly) == 3:
                             all_tris.extend(poly)
-                            all_ctype.append("triangular")
-                            all_rid.append(region.region_id)
-                            all_size.append(target_size)
+                            all_tri_rid.append(int(region.region_id))
+                            all_tri_size.append(float(target_size))
+                    _emit_progress(
+                        "region-done",
+                        region_id=int(region.region_id),
+                        detail="structured-quad-region",
+                        force=True,
+                    )
                     continue
 
             # Exterior boundary — TQMesh expects CCW; ensure correct winding
@@ -4414,6 +9122,24 @@ class TQMeshBackend(MeshingBackend):
                     )
                     resample_applied = True
             ext_verts_post_resample_count = len(ext_verts)
+
+            ext_verts, used_fallback_boundary = _recover_tqmesh_exterior_boundary(
+                ext_verts,
+                fallback_ring=ring,
+                target_size=float(target_size),
+                protect_points=protected_boundary_points,
+                protect_tol=max(1.0e-6, 1.0e-3 * float(target_size)),
+                region_id=int(region.region_id),
+            )
+            if used_fallback_boundary:
+                quad_controls = None
+                quad_boundary = None
+            ext_verts_post_resample_count = len(ext_verts)
+
+            if len(ext_verts) < 3:
+                raise RuntimeError(
+                    f"TQMesh region {region.region_id}: boundary recovery produced fewer than 3 vertices"
+                )
             if quad_controls is None and not self._is_ccw(ext_verts):
                 ext_verts = list(reversed(ext_verts))
             ext_is_ccw = self._is_ccw(ext_verts)
@@ -4503,15 +9229,92 @@ class TQMeshBackend(MeshingBackend):
 
             boundary_split_for_call = float(boundary_split_max_length)
 
-            fixed_edge_variants: List[Tuple[str, List[List[List[float]]]]] = []
+            fixed_edge_variants: List[
+                Tuple[str, List[List[List[float]]], List[List[List[float]]], List[float]]
+            ] = []
             if len(base_args["fixed_edges"]) > 0:
-                fixed_edge_variants.append(("with-fixed-edges", base_args["fixed_edges"]))
+                fixed_edge_variants.append(("with-fixed-edges", base_args["fixed_edges"], [], []))
                 if not breakline_fixed_edges_strict:
-                    fixed_edge_variants.append(("no-fixed-edges", []))
+                    relaxed_breakline_fallback = self._opt_bool(
+                        "tqmesh_breakline_relaxed_fallback",
+                        _env_bool("BACKWATER_TQMESH_BREAKLINE_RELAXED_FALLBACK", True),
+                    )
+                    if relaxed_breakline_fallback:
+                        relax_simplify_tol_factor = _as_float(
+                            self._options.get("tqmesh_breakline_relax_simplify_tol_factor"),
+                            _env_float("BACKWATER_TQMESH_BREAKLINE_RELAX_SIMPLIFY_TOL_FACTOR", 0.35),
+                        )
+                        relax_hint_size_factor = _as_float(
+                            self._options.get("tqmesh_breakline_relax_hint_size_factor"),
+                            _env_float("BACKWATER_TQMESH_BREAKLINE_RELAX_HINT_SIZE_FACTOR", 0.65),
+                        )
+                        relax_hint_spacing_factor = _as_float(
+                            self._options.get("tqmesh_breakline_relax_hint_spacing_factor"),
+                            _env_float("BACKWATER_TQMESH_BREAKLINE_RELAX_HINT_SPACING_FACTOR", 1.25),
+                        )
+                        relax_hint_box_half_factor = _as_float(
+                            self._options.get("tqmesh_breakline_relax_hint_box_half_factor"),
+                            _env_float("BACKWATER_TQMESH_BREAKLINE_RELAX_HINT_BOX_HALF_FACTOR", 0.45),
+                        )
+                        relax_max_hint_boxes = _as_int(
+                            self._options.get("tqmesh_breakline_relax_max_hint_boxes"),
+                            _as_int(os.environ.get("BACKWATER_TQMESH_BREAKLINE_RELAX_MAX_HINT_BOXES", 256), 256),
+                        )
+
+                        relaxed_lines_xy, relaxed_hint_xy, relaxed_hint_sizes = _relax_fixed_edges_and_hints(
+                            [
+                                [(float(x), float(y)) for x, y in line]
+                                for line in base_args["fixed_edges"]
+                            ],
+                            target_size=float(target_size),
+                            simplify_tol_factor=float(relax_simplify_tol_factor),
+                            hint_size_factor=float(relax_hint_size_factor),
+                            hint_spacing_factor=float(relax_hint_spacing_factor),
+                            hint_box_half_factor=float(relax_hint_box_half_factor),
+                            max_hint_boxes=int(relax_max_hint_boxes),
+                        )
+
+                        relaxed_edges = [
+                            [[float(x), float(y)] for (x, y) in line]
+                            for line in relaxed_lines_xy
+                            if len(line) >= 2
+                        ]
+                        relaxed_hint_verts = [
+                            [[float(x), float(y)] for (x, y) in ring]
+                            for ring in relaxed_hint_xy
+                            if len(ring) >= 3
+                        ]
+
+                        if relaxed_edges and relaxed_edges != base_args["fixed_edges"]:
+                            fixed_edge_variants.append(
+                                (
+                                    "with-relaxed-fixed-edges",
+                                    relaxed_edges,
+                                    relaxed_hint_verts,
+                                    [float(v) for v in relaxed_hint_sizes],
+                                )
+                            )
+                        if relaxed_hint_verts:
+                            fixed_edge_variants.append(
+                                (
+                                    "soft-breakline-hints",
+                                    [],
+                                    relaxed_hint_verts,
+                                    [float(v) for v in relaxed_hint_sizes],
+                                )
+                            )
+
+                    fixed_edge_variants.append(("no-fixed-edges", [], [], []))
             else:
-                fixed_edge_variants.append(("no-fixed-edges", []))
+                fixed_edge_variants.append(("no-fixed-edges", [], [], []))
 
             want_quads = ctype in ("quadrilateral", "cartesian")
+            quad_refinements_requested = _as_int(
+                self._options.get("tqmesh_quad_refinements"),
+                _as_int(os.environ.get("BACKWATER_TQMESH_QUAD_REFINEMENTS", 0), 0),
+            )
+            if quad_refinements_requested < 0:
+                quad_refinements_requested = 0
             has_fixed_edges = len(base_args["fixed_edges"]) > 0
             requested_smooth = 0 if has_fixed_edges else 3
             tri_only_smooth = 0 if has_fixed_edges else 1
@@ -4534,24 +9337,42 @@ class TQMeshBackend(MeshingBackend):
             best_nonpassing = None
             best_nonpassing_score = -float("inf")
             microchain_retry_done = set()
-            for fixed_label, fixed_edges_try in fixed_edge_variants:
+            attempt_counter = 0
+            for fixed_label, fixed_edges_try, extra_constraint_verts, extra_constraint_sizes in fixed_edge_variants:
+                constraint_verts_try = list(base_args["constraint_verts"]) + list(extra_constraint_verts)
+                constraint_sizes_try_base = list(constraint_sizes_list) + [float(v) for v in extra_constraint_sizes]
                 for label, quad_layers_try, tri_to_quad_try, n_smooth_try in attempts:
                     for size_scale in quality_cfg.size_scales:
                         target_try = max(target_size * max(float(size_scale), 1e-6), 1e-10)
-                        csz_try = [max(float(cs) * max(float(size_scale), 1e-6), 1e-10) for cs in constraint_sizes_list]
+                        csz_try = [
+                            max(float(cs) * max(float(size_scale), 1e-6), 1e-10)
+                            for cs in constraint_sizes_try_base
+                        ]
                         for ds in quality_cfg.smooth_increments:
                             smooth_try = max(0, int(n_smooth_try) + int(ds))
+                            refine_try = int(quad_refinements_requested if tri_to_quad_try else 0)
                             cfg_key = (
                                 fixed_label,
                                 label,
                                 tuple(tuple(q) for q in quad_layers_try),
                                 bool(tri_to_quad_try),
+                                int(refine_try),
                                 int(smooth_try),
                                 float(round(target_try, 12)),
                             )
                             if cfg_key in seen_cfg:
                                 continue
                             seen_cfg.add(cfg_key)
+                            attempt_counter += 1
+                            _emit_progress(
+                                "attempt",
+                                region_id=int(region.region_id),
+                                attempt=int(attempt_counter),
+                                detail=(
+                                    f"{fixed_label}/{label} size={target_try:.4g} "
+                                    f"smooth={smooth_try} tri_to_quad={int(bool(tri_to_quad_try))}"
+                                ),
+                            )
 
                             try:
                                 candidate = _tq.generate_triangular_mesh(
@@ -4559,17 +9380,25 @@ class TQMeshBackend(MeshingBackend):
                                     ext_colors=base_args["ext_colors"],
                                     int_boundaries=base_args["int_boundaries"],
                                     int_colors=base_args["int_colors"],
-                                    constraint_verts=base_args["constraint_verts"],
+                                    constraint_verts=constraint_verts_try,
                                     constraint_sizes=csz_try,
                                     fixed_edges=fixed_edges_try,
                                     target_size=target_try,
                                     quad_layers=quad_layers_try,
                                     tri_to_quad=tri_to_quad_try,
+                                    quad_refinements=refine_try,
                                     n_smooth=smooth_try,
                                     boundary_split_max_length=float(boundary_split_for_call),
                                 )
                             except Exception as exc:
                                 exc_txt = str(exc)
+                                _emit_progress(
+                                    "attempt-exception",
+                                    region_id=int(region.region_id),
+                                    attempt=int(attempt_counter),
+                                    detail=_clip_detail(exc_txt),
+                                    force=True,
+                                )
                                 debug_attempts.append(
                                     {
                                         "fixed_variant": str(fixed_label),
@@ -4722,12 +9551,13 @@ class TQMeshBackend(MeshingBackend):
                                                 ext_colors=[1] * int(len(ext_variant)),
                                                 int_boundaries=base_args["int_boundaries"],
                                                 int_colors=base_args["int_colors"],
-                                                constraint_verts=base_args["constraint_verts"],
+                                                constraint_verts=constraint_verts_try,
                                                 constraint_sizes=csz_try,
                                                 fixed_edges=fixed_edges_try,
                                                 target_size=target_try,
                                                 quad_layers=quad_layers_try,
                                                 tri_to_quad=tri_to_quad_try,
+                                                quad_refinements=refine_try,
                                                 n_smooth=smooth_try,
                                                 boundary_split_max_length=float(boundary_split_for_call),
                                             )
@@ -4937,6 +9767,15 @@ class TQMeshBackend(MeshingBackend):
                 )
 
             if result is None:
+                _emit_progress(
+                    "region-fail",
+                    region_id=int(region.region_id),
+                    detail=(
+                        f"attempts={attempt_counter} errors={len(errors)} "
+                        f"cell_type={ctype}"
+                    ),
+                    force=True,
+                )
                 ext_vertex_count = len(base_args["ext_verts"])
                 ext_vertex_raw_count = int(ext_verts_raw_count)
                 ext_vertex_post_sanitize_count = int(ext_verts_post_sanitize_count)
@@ -5040,6 +9879,16 @@ class TQMeshBackend(MeshingBackend):
                     RuntimeWarning,
                 )
 
+            _emit_progress(
+                "region-done",
+                region_id=int(region.region_id),
+                detail=(
+                    f"attempts={attempt_counter} used={used_label} "
+                    f"errors={len(errors)}"
+                ),
+                force=True,
+            )
+
             vx: np.ndarray = np.asarray(result["verts_x"], dtype=np.float64)
             vy: np.ndarray = np.asarray(result["verts_y"], dtype=np.float64)
             tris: np.ndarray  = np.asarray(result["triangles"], dtype=np.int32)
@@ -5101,23 +9950,23 @@ class TQMeshBackend(MeshingBackend):
 
             if tris.size > 0:
                 all_tris.extend((tris.ravel() + offset).tolist())
-                all_ctype.extend(["triangular"] * tris.shape[0])
-                all_rid.extend([region.region_id] * tris.shape[0])
-                all_size.extend([target_size] * tris.shape[0])
+                all_tri_rid.extend([int(region.region_id)] * int(tris.shape[0]))
+                all_tri_size.extend([float(target_size)] * int(tris.shape[0]))
 
             if quads.size > 0:
                 all_quads.extend((quads.ravel() + offset).tolist())
-                all_ctype.extend(["quadrilateral"] * quads.shape[0])
-                all_rid.extend([region.region_id] * quads.shape[0])
-                all_size.extend([target_size] * quads.shape[0])
+                all_quad_rid.extend([int(region.region_id)] * int(quads.shape[0]))
+                all_quad_size.extend([float(target_size)] * int(quads.shape[0]))
 
             all_bv0.extend((bv0 + offset).tolist())
             all_bv1.extend((bv1 + offset).tolist())
             all_bc.extend(bc.tolist())
 
         if not all_vx:
+            _emit_progress("fail", detail="generated no vertices", force=True)
             raise ValueError("TQMesh generated no vertices.")
         if not all_tris and not all_quads:
+            _emit_progress("fail", detail="generated no cells", force=True)
             raise ValueError("TQMesh generated no cells.")
 
         tri_conn = np.asarray(all_tris, dtype=np.int32)
@@ -5150,6 +9999,20 @@ class TQMeshBackend(MeshingBackend):
             plot_tris.extend([quad[0], quad[1], quad[2],
                                quad[0], quad[2], quad[3]])
 
+        face_cell_type = np.asarray(
+            ["triangular"] * len(all_tri_rid) + ["quadrilateral"] * len(all_quad_rid),
+            dtype=object,
+        )
+        face_region_id = np.asarray(all_tri_rid + all_quad_rid, dtype=np.int32)
+        face_target_size = np.asarray(all_tri_size + all_quad_size, dtype=np.float64)
+        n_faces = int(len(face_offsets) - 1)
+        if face_cell_type.size != n_faces or face_region_id.size != n_faces or face_target_size.size != n_faces:
+            raise RuntimeError(
+                "TQMesh assembly metadata mismatch: "
+                f"faces={n_faces}, cell_type={face_cell_type.size}, "
+                f"region_id={face_region_id.size}, target_size={face_target_size.size}"
+            )
+
         out = MeshResult(
             node_x=node_x,
             node_y=node_y,
@@ -5157,9 +10020,9 @@ class TQMeshBackend(MeshingBackend):
             cell_nodes=np.asarray(plot_tris, dtype=np.int32),
             cell_face_offsets=np.asarray(face_offsets, dtype=np.int32),
             cell_face_nodes=np.asarray(face_nodes_list, dtype=np.int32),
-            cell_type=np.asarray(all_ctype, dtype=object),
-            region_id=np.asarray(all_rid, dtype=np.int32),
-            target_size=np.asarray(all_size, dtype=np.float64),
+            cell_type=face_cell_type,
+            region_id=face_region_id,
+            target_size=face_target_size,
         )
         iface_conformance = self._opt_bool(
             "tqmesh_interface_conformance",
@@ -5171,6 +10034,14 @@ class TQMeshBackend(MeshingBackend):
                 _env_float("BACKWATER_TQMESH_INTERFACE_SNAP_TOL", 1.0),
             )
             out = _enforce_quad_interface_conformance(out, model, snap_tol=snap_tol)
+        _emit_progress(
+            "done",
+            detail=(
+                f"nodes={int(out.node_x.size)} faces={max(0, int(out.cell_face_offsets.size) - 1)} "
+                f"triangles={int(len(all_tri_rid))} quads={int(len(all_quad_rid))}"
+            ),
+            force=True,
+        )
         return _repair_mesh_result(out)
 
 

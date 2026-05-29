@@ -18,6 +18,7 @@ import datetime
 import json
 import math
 import os
+import sys
 import sqlite3
 import time
 import traceback
@@ -442,7 +443,6 @@ try:
         generate_face_centric_mesh,
         _gmsh_available,
         _tqmesh_available,
-        _mfem_meshopt_available,
     )
 except Exception:
     try:
@@ -451,7 +451,6 @@ except Exception:
             generate_face_centric_mesh,
             _gmsh_available,
             _tqmesh_available,
-            _mfem_meshopt_available,
         )
     except Exception:
         conceptual_from_qgis_layers = None
@@ -460,9 +459,6 @@ except Exception:
             return False
         def _tqmesh_available() -> bool:
             return False
-        def _mfem_meshopt_available() -> bool:
-            return False
-
 try:
     from rainfall_hydrology import (
         Gauge,
@@ -705,15 +701,94 @@ _MODEL_LAYER_BINDINGS_VERSION = 5
 
 def _run_topology_mesh_job(conceptual, backend_name: str, options: Optional[Dict[str, object]] = None):
     """Run heavy topology meshing work off the GUI thread/process."""
+    options_local = dict(options or {})
+
+    # For GUI parity with the headless harness, optionally load meshing from a
+    # workspace root explicitly provided by the caller.
+    preferred_root = str(options_local.get("workspace_module_root", "") or "").strip()
+    preferred_meshing_py = ""
+    if preferred_root:
+        candidate = os.path.join(preferred_root, "swe2d", "mesh", "meshing.py")
+        if os.path.isfile(candidate):
+            preferred_meshing_py = os.path.abspath(candidate)
+
+    workspace_first_loaded = False
+    workspace_first_error = ""
+    gen_origin = ""
+
     # Use the already-imported function when available; fall back to local import
     # in subprocess contexts.
-    gen = generate_face_centric_mesh
+    gen = None
+    if preferred_meshing_py:
+        try:
+            import importlib
+
+            preferred_root_abs = os.path.abspath(preferred_root)
+            if preferred_root_abs not in sys.path:
+                sys.path.insert(0, preferred_root_abs)
+
+            # Force package reload so import resolution honors workspace-first
+            # sys.path ordering in worker processes.
+            stale = [name for name in list(sys.modules.keys()) if name == "swe2d" or name.startswith("swe2d.")]
+            for name in stale:
+                try:
+                    sys.modules.pop(name, None)
+                except Exception:
+                    pass
+            importlib.invalidate_caches()
+
+            from swe2d.mesh.meshing import generate_face_centric_mesh as _workspace_gen  # type: ignore
+
+            gen = _workspace_gen
+            workspace_first_loaded = True
+            try:
+                gen_origin = str(inspect.getsourcefile(gen) or inspect.getfile(gen) or "")
+            except Exception:
+                gen_origin = ""
+            if not gen_origin:
+                try:
+                    mod_obj = sys.modules.get(getattr(gen, "__module__", ""))
+                    gen_origin = str(getattr(mod_obj, "__file__", "") or "")
+                except Exception:
+                    gen_origin = ""
+            if gen_origin:
+                gen_origin_abs = os.path.abspath(gen_origin)
+                workspace_first_loaded = bool(
+                    gen_origin_abs.startswith(preferred_root_abs + os.sep)
+                    or gen_origin_abs == preferred_root_abs
+                )
+        except Exception as exc:
+            workspace_first_error = str(exc)
+            gen = None
+
+    if gen is None:
+        gen = generate_face_centric_mesh
     if gen is None:
         try:
             from swe2d.mesh.meshing import generate_face_centric_mesh as gen  # type: ignore
         except Exception:
             from .swe2d_meshing import generate_face_centric_mesh as gen  # type: ignore
-    return gen(conceptual, backend=backend_name, options=options)
+
+    if not gen_origin:
+        try:
+            gen_origin = str(inspect.getsourcefile(gen) or inspect.getfile(gen) or "")
+        except Exception:
+            gen_origin = ""
+
+    mesh = gen(conceptual, backend=backend_name, options=options_local)
+    try:
+        summary = dict(getattr(mesh, "quality_summary", {}) or {})
+        summary["meshing_module_origin"] = str(gen_origin)
+        summary["meshing_module_workspace_first_requested"] = bool(preferred_meshing_py)
+        summary["meshing_module_workspace_first_loaded"] = bool(workspace_first_loaded)
+        if workspace_first_error:
+            summary["meshing_module_workspace_first_error"] = str(workspace_first_error)
+        if preferred_root:
+            summary["workspace_module_root"] = str(os.path.abspath(preferred_root))
+        mesh.quality_summary = summary
+    except Exception:
+        pass
+    return mesh
 
 
 def _clone_conceptual_without_constraints(conceptual):
@@ -4224,11 +4299,6 @@ class SWE2DWorkbenchDialog(QtWidgets.QDialog):
                 grace_s = max(0.0, self._opt_float(opts.get("gmsh_quality_timeout_grace_s"), 10.0))
                 timeout = max(timeout, max(30.0, budget_s + grace_s))
 
-        mfem_enabled = self._opt_bool(opts.get("mfem_post_opt_enable"), False)
-        if mfem_enabled:
-            mfem_budget = max(1.0, self._opt_float(opts.get("mfem_post_opt_time_limit_s"), 90.0))
-            mfem_grace = max(0.0, self._opt_float(opts.get("mfem_post_opt_timeout_grace_s"), 10.0))
-            timeout = max(timeout, max(30.0, mfem_budget + mfem_grace))
         return timeout
 
     def _terminate_topology_mesh_run(
@@ -4255,7 +4325,7 @@ class SWE2DWorkbenchDialog(QtWidgets.QDialog):
         except Exception:
             pass
 
-        if backend_name == "gmsh" and self._topology_mesh_process_pool is not None:
+        if backend_name in {"gmsh", "tqmesh"} and self._topology_mesh_process_pool is not None:
             try:
                 self._topology_mesh_process_pool.shutdown(wait=False, cancel_futures=True)
             except Exception:
@@ -4279,6 +4349,17 @@ class SWE2DWorkbenchDialog(QtWidgets.QDialog):
             except Exception:
                 pass
         self._topology_mesh_checkpoint_path = ""
+        progress_path = str(getattr(self, "_topology_mesh_progress_path", "") or "").strip()
+        if progress_path:
+            try:
+                os.remove(progress_path)
+            except FileNotFoundError:
+                pass
+            except Exception:
+                pass
+        self._topology_mesh_progress_path = ""
+        self._topology_mesh_progress_last_seq = -1
+        self._topology_mesh_progress_last_sig = ""
         return True
 
     def _on_terminate_topology_mesh(self):
@@ -4303,17 +4384,47 @@ class SWE2DWorkbenchDialog(QtWidgets.QDialog):
         self._topology_mesh_conceptual = conceptual
         self._topology_mesh_options = dict(mesh_options or {})
         self._topology_mesh_checkpoint_path = ""
+        self._topology_mesh_progress_path = ""
+        self._topology_mesh_progress_last_seq = -1
+        self._topology_mesh_progress_last_sig = ""
+        self._topology_mesh_progress = None
         if backend_name == "gmsh":
             cp_dir = os.path.join("/tmp", "qgis-live-bridge")
             cp_name = f"topology_mesh_checkpoint_{os.getpid()}_{int(time.time() * 1000)}.npz"
             self._topology_mesh_checkpoint_path = os.path.join(cp_dir, cp_name)
             self._topology_mesh_options["gmsh_quality_checkpoint_path"] = self._topology_mesh_checkpoint_path
+            progress_name = f"topology_gmsh_progress_{os.getpid()}_{int(time.time() * 1000)}.json"
+            self._topology_mesh_progress_path = os.path.join(cp_dir, progress_name)
+            self._topology_mesh_options["gmsh_progress_path"] = self._topology_mesh_progress_path
+            self._topology_mesh_options.setdefault("gmsh_progress_emit_interval_s", 0.75)
             try:
                 os.makedirs(cp_dir, exist_ok=True)
             except Exception:
                 pass
             try:
                 os.remove(self._topology_mesh_checkpoint_path)
+            except FileNotFoundError:
+                pass
+            except Exception:
+                pass
+            try:
+                os.remove(self._topology_mesh_progress_path)
+            except FileNotFoundError:
+                pass
+            except Exception:
+                pass
+        elif backend_name == "tqmesh":
+            cp_dir = os.path.join("/tmp", "qgis-live-bridge")
+            progress_name = f"topology_tqmesh_progress_{os.getpid()}_{int(time.time() * 1000)}.json"
+            self._topology_mesh_progress_path = os.path.join(cp_dir, progress_name)
+            self._topology_mesh_options["tqmesh_progress_path"] = self._topology_mesh_progress_path
+            self._topology_mesh_options.setdefault("tqmesh_progress_emit_interval_s", 0.75)
+            try:
+                os.makedirs(cp_dir, exist_ok=True)
+            except Exception:
+                pass
+            try:
+                os.remove(self._topology_mesh_progress_path)
             except FileNotFoundError:
                 pass
             except Exception:
@@ -4327,7 +4438,7 @@ class SWE2DWorkbenchDialog(QtWidgets.QDialog):
             self._topology_mesh_options,
         )
 
-        if backend_name == "gmsh":
+        if backend_name in {"gmsh", "tqmesh"}:
             # Keep Gmsh in a separate process to avoid UI freezes from C++
             # meshing work and signal-handler constraints.
             if self._topology_mesh_process_pool is None:
@@ -4568,49 +4679,68 @@ class SWE2DWorkbenchDialog(QtWidgets.QDialog):
         hybrid_region_conformance_band = 0.55
         hybrid_arc_conformance_band = 0.45
         hybrid_strict_conformance_mode = False
-        # TEMPORARY: MFEM post-optimization is disabled in GUI and backend.
-        # mfem_post_opt_enable = False
-        # if hasattr(self, "topo_mfem_post_opt_enable_chk"):
-        #     mfem_post_opt_enable = bool(self.topo_mfem_post_opt_enable_chk.isChecked())
-        mfem_post_opt_enable = False
-        mfem_seed_backend = "structured"
-        if hasattr(self, "topo_mfem_seed_backend_combo"):
-            mfem_seed_backend = str(self.topo_mfem_seed_backend_combo.currentData() or "structured")
-        mfem_preset = "balanced_shape_size"
-        if hasattr(self, "topo_mfem_preset_combo"):
-            mfem_preset = str(self.topo_mfem_preset_combo.currentData() or "balanced_shape_size")
-        mfem_post_opt_strict = False
-        if hasattr(self, "topo_mfem_post_opt_strict_chk"):
-            mfem_post_opt_strict = bool(self.topo_mfem_post_opt_strict_chk.isChecked())
-        mfem_post_opt_max_iterations = 25
-        if hasattr(self, "topo_mfem_post_opt_max_iters_spin"):
-            mfem_post_opt_max_iterations = int(self.topo_mfem_post_opt_max_iters_spin.value())
-        mfem_post_opt_quality_weight = 1.0
-        if hasattr(self, "topo_mfem_post_opt_quality_weight_spin"):
-            mfem_post_opt_quality_weight = float(self.topo_mfem_post_opt_quality_weight_spin.value())
-        mfem_post_opt_boundary_fit_weight = 0.35
-        if hasattr(self, "topo_mfem_post_opt_boundary_fit_weight_spin"):
-            mfem_post_opt_boundary_fit_weight = float(self.topo_mfem_post_opt_boundary_fit_weight_spin.value())
-        mfem_post_opt_interface_fit_weight = 0.25
-        if hasattr(self, "topo_mfem_post_opt_interface_fit_weight_spin"):
-            mfem_post_opt_interface_fit_weight = float(self.topo_mfem_post_opt_interface_fit_weight_spin.value())
-        mfem_post_opt_min_det_j = 1.0e-9
-        if hasattr(self, "topo_mfem_post_opt_min_det_j_edit"):
-            mfem_post_opt_min_det_j = float(self.topo_mfem_post_opt_min_det_j_edit.text().strip() or "1e-9")
-        mfem_post_opt_lock_boundary_nodes = True
-        if hasattr(self, "topo_mfem_post_opt_lock_boundary_nodes_chk"):
-            mfem_post_opt_lock_boundary_nodes = bool(self.topo_mfem_post_opt_lock_boundary_nodes_chk.isChecked())
-        mfem_post_opt_time_limit_s = 90.0
-        if hasattr(self, "topo_mfem_post_opt_time_limit_spin"):
-            mfem_post_opt_time_limit_s = float(self.topo_mfem_post_opt_time_limit_spin.value())
-
         tqmesh_boundary_split_max_length = 30.0
         if hasattr(self, "topo_tqmesh_boundary_split_max_length_spin"):
             tqmesh_boundary_split_max_length = float(self.topo_tqmesh_boundary_split_max_length_spin.value())
 
+        gmsh_quad_full_region_flow_align = False
+        if hasattr(self, "topo_gmsh_quad_full_region_flow_align_chk"):
+            gmsh_quad_full_region_flow_align = bool(self.topo_gmsh_quad_full_region_flow_align_chk.isChecked())
+
+        gmsh_global_recombine = False
+        if hasattr(self, "topo_gmsh_global_recombine_chk"):
+            gmsh_global_recombine = bool(self.topo_gmsh_global_recombine_chk.isChecked())
+
+        gmsh_interface_transition_enable = True
+        if hasattr(self, "topo_gmsh_interface_transition_enable_chk"):
+            gmsh_interface_transition_enable = bool(self.topo_gmsh_interface_transition_enable_chk.isChecked())
+
+        gmsh_interface_transition_dist_factor = 2.5
+        if hasattr(self, "topo_gmsh_interface_transition_dist_factor_spin"):
+            gmsh_interface_transition_dist_factor = float(self.topo_gmsh_interface_transition_dist_factor_spin.value())
+
+        gmsh_interface_transition_min_ratio = 1.25
+        if hasattr(self, "topo_gmsh_interface_transition_min_ratio_spin"):
+            gmsh_interface_transition_min_ratio = float(self.topo_gmsh_interface_transition_min_ratio_spin.value())
+
+        gmsh_interface_conformance = False
+        if hasattr(self, "topo_gmsh_interface_conformance_chk"):
+            gmsh_interface_conformance = bool(self.topo_gmsh_interface_conformance_chk.isChecked())
+
+        gmsh_transverse_interface_centroid_merge = False
+        if hasattr(self, "topo_gmsh_transverse_interface_centroid_merge_chk"):
+            gmsh_transverse_interface_centroid_merge = bool(
+                self.topo_gmsh_transverse_interface_centroid_merge_chk.isChecked()
+            )
+
+        gmsh_interface_snap_tol = 1.0
+        if hasattr(self, "topo_gmsh_interface_snap_tol_spin"):
+            gmsh_interface_snap_tol = float(self.topo_gmsh_interface_snap_tol_spin.value())
+
+        gmsh_interface_reject_near_unshared = True
+        if hasattr(self, "topo_gmsh_interface_reject_near_unshared_chk"):
+            gmsh_interface_reject_near_unshared = bool(
+                self.topo_gmsh_interface_reject_near_unshared_chk.isChecked()
+            )
+
+        gmsh_interface_reject_tol = 1.0e-3
+        if hasattr(self, "topo_gmsh_interface_reject_tol_spin"):
+            gmsh_interface_reject_tol = float(self.topo_gmsh_interface_reject_tol_spin.value())
+
         tqmesh_quad_full_region_flow_align = True
         if hasattr(self, "topo_tqmesh_quad_full_region_flow_align_chk"):
             tqmesh_quad_full_region_flow_align = bool(self.topo_tqmesh_quad_full_region_flow_align_chk.isChecked())
+
+        tqmesh_quad_region_method = "auto"
+        if hasattr(self, "topo_tqmesh_quad_region_method_combo"):
+            tqmesh_quad_region_method = str(self.topo_tqmesh_quad_region_method_combo.currentData() or "auto").strip().lower()
+            if tqmesh_quad_region_method not in {"auto", "qgis_structured", "tqmesh_native_recipe"}:
+                tqmesh_quad_region_method = "auto"
+
+        tqmesh_quad_refinements = 1
+        if hasattr(self, "topo_tqmesh_quad_refinements_spin"):
+            tqmesh_quad_refinements = int(self.topo_tqmesh_quad_refinements_spin.value())
+        tqmesh_quad_refinements = max(0, tqmesh_quad_refinements)
 
         tqmesh_interface_conformance = True
         if hasattr(self, "topo_tqmesh_interface_conformance_chk"):
@@ -4638,10 +4768,22 @@ class SWE2DWorkbenchDialog(QtWidgets.QDialog):
             "gmsh_arc_mode": str(self.topo_gmsh_arc_mode_combo.currentData() or "hard_embed"),
             "gmsh_arc_soft_size_factor": float(self.topo_gmsh_arc_soft_size_factor_spin.value()),
             "gmsh_arc_soft_dist_factor": float(self.topo_gmsh_arc_soft_dist_factor_spin.value()),
+            "gmsh_interface_transition_enable": gmsh_interface_transition_enable,
+            "gmsh_interface_transition_dist_factor": gmsh_interface_transition_dist_factor,
+            "gmsh_interface_transition_min_ratio": gmsh_interface_transition_min_ratio,
+            "gmsh_interface_conformance": gmsh_interface_conformance,
+            "gmsh_transverse_interface_centroid_merge": gmsh_transverse_interface_centroid_merge,
+            "gmsh_interface_snap_tol": gmsh_interface_snap_tol,
+            "gmsh_interface_reject_near_unshared": gmsh_interface_reject_near_unshared,
+            "gmsh_interface_reject_tol": gmsh_interface_reject_tol,
             "gmsh_mesh_size_min": float(self.topo_gmsh_mesh_size_min_spin.value()),
             "gmsh_tolerance_edge_length": float(self.topo_gmsh_tolerance_edge_length_spin.value()),
             "gmsh_mesh_size_from_points": bool(self.topo_gmsh_mesh_size_from_points_chk.isChecked()),
             "gmsh_verbosity": int(self.topo_gmsh_verbosity_spin.value()),
+            "gmsh_num_threads": int(self.topo_gmsh_num_threads_spin.value()) if hasattr(self, "topo_gmsh_num_threads_spin") else 1,
+            "gmsh_max_num_threads_2d": int(self.topo_gmsh_max_num_threads_2d_spin.value()) if hasattr(self, "topo_gmsh_max_num_threads_2d_spin") else 0,
+            "gmsh_quad_full_region_flow_align": gmsh_quad_full_region_flow_align,
+            "gmsh_global_recombine": gmsh_global_recombine,
             "gmsh_quality_enable": bool(self.topo_gmsh_quality_enable_chk.isChecked()),
             "gmsh_quality_max_iterations": int(self.topo_gmsh_quality_max_iters_spin.value()),
             "gmsh_quality_time_limit_s": float(self.topo_gmsh_quality_time_limit_spin.value()),
@@ -4668,18 +4810,6 @@ class SWE2DWorkbenchDialog(QtWidgets.QDialog):
             "hybridcpp_arc_conformance_band_factor": hybrid_arc_conformance_band,
             "hybridcpp_strict_conformance_mode": hybrid_strict_conformance_mode,
             "post_opt_backend": "none",
-            "mfem_post_opt_enable": mfem_post_opt_enable,
-            "mfem_seed_backend": mfem_seed_backend,
-            "mfem_post_opt_preset": mfem_preset,
-            "mfem_post_opt_strict": mfem_post_opt_strict,
-            "mfem_post_opt_max_iterations": mfem_post_opt_max_iterations,
-            "mfem_post_opt_quality_weight": mfem_post_opt_quality_weight,
-            "mfem_post_opt_boundary_fit_weight": mfem_post_opt_boundary_fit_weight,
-            "mfem_post_opt_interface_fit_weight": mfem_post_opt_interface_fit_weight,
-            "mfem_post_opt_min_det_j": mfem_post_opt_min_det_j,
-            "mfem_post_opt_lock_boundary_nodes": mfem_post_opt_lock_boundary_nodes,
-            "mfem_post_opt_preserve_boundary": mfem_post_opt_lock_boundary_nodes,
-            "mfem_post_opt_time_limit_s": mfem_post_opt_time_limit_s,
             "tqmesh_min_angle_deg": float(self.topo_quality_min_angle_spin.value()),
             "tqmesh_max_aspect_ratio": float(self.topo_quality_max_aspect_spin.value()),
             "tqmesh_min_area_rel_bbox": float(self.topo_quality_min_area_edit.text().strip() or "0"),
@@ -4687,12 +4817,68 @@ class SWE2DWorkbenchDialog(QtWidgets.QDialog):
             "tqmesh_size_scales": size_scales,
             "tqmesh_smooth_increments": smooth_increments,
             "tqmesh_boundary_split_max_length": tqmesh_boundary_split_max_length,
+            "tqmesh_quad_region_method": tqmesh_quad_region_method,
+            "tqmesh_quad_refinements": tqmesh_quad_refinements,
             "tqmesh_quad_full_region_flow_align": tqmesh_quad_full_region_flow_align,
             "tqmesh_interface_conformance": tqmesh_interface_conformance,
             "tqmesh_interface_snap_tol": tqmesh_interface_snap_tol,
             "tqmesh_breakline_fixed_edges": tqmesh_breakline_fixed_edges,
             "tqmesh_breakline_fixed_edges_strict": tqmesh_breakline_fixed_edges_strict,
         }
+
+    def _infer_workspace_root_for_meshing(self) -> str:
+        """Best-effort workspace root discovery for workspace-first meshing imports."""
+
+        env_root = str(os.environ.get("QGIS_BACKWATER_WORKSPACE_ROOT", "") or "").strip()
+        if env_root:
+            env_root_abs = os.path.abspath(env_root)
+            if os.path.isfile(os.path.join(env_root_abs, "swe2d", "mesh", "meshing.py")):
+                return env_root_abs
+
+        candidates: List[str] = []
+        if self._model_gpkg_path:
+            candidates.append(str(self._model_gpkg_path))
+
+        try:
+            reg_layer = self._combo_layer(self.topo_regions_combo, "vector")
+            if reg_layer is not None and hasattr(reg_layer, "source"):
+                candidates.append(str(reg_layer.source() or ""))
+        except Exception:
+            pass
+
+        try:
+            if _HAVE_QGIS_CORE and QgsProject is not None:
+                proj_path = str(QgsProject.instance().fileName() or "").strip()
+                if proj_path:
+                    candidates.append(proj_path)
+        except Exception:
+            pass
+
+        for raw in candidates:
+            src = str(raw or "").strip()
+            if not src:
+                continue
+            root = src.split("|", 1)[0].strip()
+            if not root:
+                continue
+            probe = os.path.abspath(root)
+            if os.path.isfile(probe):
+                probe = os.path.dirname(probe)
+            if not os.path.isdir(probe):
+                continue
+
+            here = probe
+            while True:
+                meshing_py = os.path.join(here, "swe2d", "mesh", "meshing.py")
+                workbench_py = os.path.join(here, "swe2d_workbench_qt.py")
+                if os.path.isfile(meshing_py) and os.path.isfile(workbench_py):
+                    return os.path.abspath(here)
+                parent = os.path.dirname(here)
+                if parent == here:
+                    break
+                here = parent
+
+        return ""
 
     def _open_topology_region_table(self):
         layer = self._combo_layer(self.topo_regions_combo, "vector")
@@ -5009,6 +5195,10 @@ class SWE2DWorkbenchDialog(QtWidgets.QDialog):
         regions_layer = self._combo_layer(self.topo_regions_combo, "vector")
         constraints_layer = self._combo_layer(self.topo_constraints_combo, "vector")
         quad_edges_layer = self._combo_layer(self.topo_quad_edges_combo, "vector")
+        if self.topo_nodes_combo.currentData() is None:
+            nodes_layer = None
+        if self.topo_arcs_combo.currentData() is None:
+            arcs_layer = None
         if self.topo_constraints_combo.currentData() is None:
             constraints_layer = None
         if self.topo_quad_edges_combo.currentData() is None:
@@ -5025,6 +5215,11 @@ class SWE2DWorkbenchDialog(QtWidgets.QDialog):
 
         try:
             mesh_options = self._build_topology_meshing_options()
+            if backend_name == "gmsh":
+                workspace_root = self._infer_workspace_root_for_meshing()
+                if workspace_root:
+                    mesh_options["workspace_module_root"] = workspace_root
+                    self._log(f"mesh> module-path workspace-root={workspace_root}")
             conceptual = conceptual_from_qgis_layers(
                 nodes_layer=nodes_layer,
                 arcs_layer=arcs_layer,
@@ -7670,7 +7865,11 @@ class SWE2DWorkbenchDialog(QtWidgets.QDialog):
             "topo_gmsh_tri_algo_combo", "topo_gmsh_quad_algo_combo",
             "topo_gmsh_recombine_algo_combo", "topo_gmsh_smoothing_spin",
             "topo_gmsh_optimize_iters_spin", "topo_gmsh_optimize_netgen_chk",
-            "topo_gmsh_verbosity_spin",
+            "topo_gmsh_verbosity_spin", "topo_gmsh_num_threads_spin",
+            "topo_gmsh_max_num_threads_2d_spin", "topo_gmsh_global_recombine_chk",
+            "topo_gmsh_interface_conformance_chk", "topo_gmsh_transverse_interface_centroid_merge_chk",
+            "topo_gmsh_interface_snap_tol_spin", "topo_gmsh_interface_reject_near_unshared_chk",
+            "topo_gmsh_interface_reject_tol_spin",
         ]
         widget_attrs.extend(list(getattr(self, "_experimental_3d_bc_widget_attrs", []) or []))
 
