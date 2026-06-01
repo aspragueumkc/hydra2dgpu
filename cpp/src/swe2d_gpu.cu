@@ -3820,6 +3820,10 @@ SWE2DDeviceState* swe2d_gpu_init(
     CUDA_CHECK(cudaMemset(dev->d_cell_source_mps, 0, sz_cells * sizeof(double)));
     CUDA_CHECK(cudaMemset(dev->d_stage_cell_source_mps, 0, static_cast<size_t>(SWE2D_GRAPH_STAGE_SLOTS) * sz_cells * sizeof(double)));
 
+    // External coupling source buffer — allocated once, reused every step.
+    alloc_d(reinterpret_cast<void**>(&dev->d_external_source_mps), sz_cells * sizeof(double));
+    CUDA_CHECK(cudaMemset(dev->d_external_source_mps, 0, sz_cells * sizeof(double)));
+
     // Edge flux buffers (consumed by the cell-centric update kernel).
     alloc_d(reinterpret_cast<void**>(&dev->d_flux_h),    sz_edges * sizeof(double));
     alloc_d(reinterpret_cast<void**>(&dev->d_flux_hu),   sz_edges * sizeof(double));
@@ -7083,23 +7087,24 @@ void swe2d_gpu_set_external_sources(
     int32_t n_cells)
 {
     if (!dev) return;
-    if (dev->d_external_source_mps) {
-        CUDA_CHECK(cudaFree(dev->d_external_source_mps));
-        dev->d_external_source_mps = nullptr;
-    }
-
-    if (!source_mps || n_cells <= 0 || n_cells != dev->n_cells) {
+    if (!dev->d_external_source_mps || n_cells <= 0 || n_cells != dev->n_cells) {
         return;
     }
 
-    CUDA_CHECK(cudaMalloc(
-        reinterpret_cast<void**>(&dev->d_external_source_mps),
-        static_cast<size_t>(n_cells) * sizeof(double)));
-    CUDA_CHECK(cudaMemcpy(
-        dev->d_external_source_mps,
-        source_mps,
-        static_cast<size_t>(n_cells) * sizeof(double),
-        cudaMemcpyHostToDevice));
+    if (source_mps) {
+        CUDA_CHECK(cudaMemcpyAsync(
+            dev->d_external_source_mps,
+            source_mps,
+            static_cast<size_t>(n_cells) * sizeof(double),
+            cudaMemcpyHostToDevice,
+            dev->d_stream));
+    } else {
+        CUDA_CHECK(cudaMemsetAsync(
+            dev->d_external_source_mps,
+            0,
+            static_cast<size_t>(n_cells) * sizeof(double),
+            dev->d_stream));
+    }
 }
 
 SWE3DCartesianPatchDeviceState* swe3d_cartesian_patch_alloc(
