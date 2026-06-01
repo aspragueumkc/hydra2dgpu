@@ -400,8 +400,11 @@ struct SWE2DDeviceState {
     // Persistent structure-flow workspace: caches all device buffers for the
     // 33-parameter structure flow kernel, eliminating per-step cudaMalloc churn.
     struct StructureFlowWorkspace {
+        bool     params_preloaded = false;
+        int32_t  n_structures = 0;
         int32_t  cell_capacity = 0;
         int32_t  struct_capacity = 0;
+        double   gravity_mps2 = 9.81;
         double*  d_cell_wse = nullptr;
         double*  d_cell_bed = nullptr;
         int32_t* d_structure_type = nullptr;
@@ -973,6 +976,28 @@ void swe2d_gpu_compute_structure_and_coupling_sources(
     const int32_t* inlet_cell,
     const double* inlet_flow_cms,
     double* source_rate_mps_out);
+
+// ── Persistent GPU coupling path ──
+void swe2d_gpu_set_coupling_device_global(SWE2DDeviceState* dev);
+void swe2d_gpu_preload_structure_params(
+    SWE2DDeviceState* dev, int32_t n_structures,
+    const int32_t* structure_type, const int32_t* upstream_cell, const int32_t* downstream_cell,
+    const double* crest_elev, const double* width, const double* height,
+    const double* diameter, const double* length, const double* roughness_n,
+    const double* coeff, const double* cd, const double* opening,
+    const double* q_pump, const double* max_flow,
+    const int32_t* culvert_code, const int32_t* culvert_shape,
+    const double* culvert_rise, const double* culvert_span, const double* culvert_area_m2,
+    const double* culvert_barrels, const double* culvert_slope,
+    const double* inlet_invert_elev, const double* outlet_invert_elev,
+    const double* entrance_loss_k, const double* exit_loss_k,
+    const int32_t* embankment_enabled, const double* embankment_crest_elev,
+    const double* embankment_overflow_width, const double* embankment_weir_coeff,
+    double gravity_mps2);
+void swe2d_gpu_preload_coupling_cell_area(SWE2DDeviceState* dev, int32_t n_cells, const double* cell_area_m2);
+void swe2d_gpu_compute_coupling_full_on_device(
+    SWE2DDeviceState* dev, int32_t n_cells, int32_t n_structures, const double* cell_wse_host,
+    int32_t n_inlets, const int32_t* inlet_cell, const double* inlet_flow_cms);
 
 SWE3DCartesianPatchDeviceState* swe3d_cartesian_patch_alloc(
     const SWE3DCartesianPatchDesc& desc);

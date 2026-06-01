@@ -18,6 +18,14 @@
 #include <cmath>
 #include <cstring>
 #include <stdexcept>
+
+// Forward declarations for file-scope globals used by culvert/coupling paths.
+extern int32_t s_culvert_solver_mode;
+extern double* s_culvert_table_header;
+extern double* s_culvert_table_data;
+extern int32_t s_culvert_table_n_hw;
+extern int32_t s_culvert_table_n_tw;
+extern SWE2DDeviceState* s_coupling_dev;
 #include <limits>
 #include <cstdio>
 #include <cstdlib>
@@ -3958,6 +3966,7 @@ SWE2DDeviceState* swe2d_gpu_init(
     // (Allocation can also happen lazily on first nonhydro step; done here for early validation)
     // Note: deferred for now to avoid allocation overhead for hydrostatic-only runs.
 
+    s_coupling_dev = dev;
     return dev;
 }
 
@@ -7107,6 +7116,258 @@ void swe2d_gpu_set_external_sources(
     }
 }
 
+// ── Persistent coupling globals ──
+SWE2DDeviceState* s_coupling_dev = nullptr;
+
+void swe2d_gpu_set_coupling_device_global(SWE2DDeviceState* dev) {
+    s_coupling_dev = dev;
+}
+
+// ── Fused structure-flows + coupling-sources ──
+void swe2d_gpu_compute_structure_and_coupling_sources(
+    int32_t n_cells, const double* cell_area_m2,
+    int32_t n_structures,
+    const double* cell_wse, const double* cell_bed,
+    const int32_t* structure_type, const int32_t* upstream_cell, const int32_t* downstream_cell,
+    const double* crest_elev, const double* width, const double* height,
+    const double* diameter, const double* length, const double* roughness_n,
+    const double* coeff, const double* cd, const double* opening,
+    const double* q_pump, const double* max_flow,
+    const int32_t* culvert_code, const int32_t* culvert_shape,
+    const double* culvert_rise, const double* culvert_span, const double* culvert_area_m2,
+    const double* culvert_barrels, const double* culvert_slope,
+    const double* inlet_invert_elev, const double* outlet_invert_elev,
+    const double* entrance_loss_k, const double* exit_loss_k,
+    const int32_t* embankment_enabled, const double* embankment_crest_elev,
+    const double* embankment_overflow_width, const double* embankment_weir_coeff,
+    double gravity_mps2,
+    int32_t n_inlets, const int32_t* inlet_cell, const double* inlet_flow_cms,
+    double* source_rate_mps_out)
+{
+    if (!source_rate_mps_out || n_cells <= 0) return;
+    std::fill(source_rate_mps_out, source_rate_mps_out + static_cast<size_t>(n_cells), 0.0);
+    if (n_structures > 0) {
+        std::vector<double> sf(static_cast<size_t>(n_structures), 0.0);
+        swe2d_gpu_compute_structure_flows(
+            n_cells, n_structures, cell_wse, cell_bed,
+            structure_type, upstream_cell, downstream_cell,
+            crest_elev, width, height, diameter, length, roughness_n,
+            coeff, cd, opening, q_pump, max_flow,
+            culvert_code, culvert_shape, culvert_rise, culvert_span, culvert_area_m2,
+            culvert_barrels, culvert_slope, inlet_invert_elev, outlet_invert_elev,
+            entrance_loss_k, exit_loss_k, embankment_enabled, embankment_crest_elev,
+            embankment_overflow_width, embankment_weir_coeff, gravity_mps2, sf.data());
+        swe2d_gpu_compute_coupling_sources(
+            nullptr, n_cells, cell_area_m2, n_inlets, inlet_cell, inlet_flow_cms,
+            n_structures, upstream_cell, downstream_cell, sf.data(), source_rate_mps_out);
+    }
+}
+
+// ── Persistent on-device coupling: preload and run ──
+namespace {
+template <typename T>
+void sf_ensure_buf(T*& ptr, int32_t& cap, int32_t need) {
+    if (cap < need) {
+        if (ptr) cudaFree(ptr);
+        CUDA_CHECK(cudaMalloc(reinterpret_cast<void**>(&ptr), static_cast<size_t>(need) * sizeof(T)));
+        cap = need;
+    }
+}
+template <typename T>
+void sf_upload_buf(const T* src, T* dst, int32_t n, cudaStream_t stream) {
+    if (n > 0 && src && dst) {
+        CUDA_CHECK(cudaMemcpyAsync(dst, src, static_cast<size_t>(n) * sizeof(T), cudaMemcpyHostToDevice, stream));
+    }
+}
+}
+
+void swe2d_gpu_preload_structure_params(
+    SWE2DDeviceState* dev, int32_t n_structures,
+    const int32_t* structure_type, const int32_t* upstream_cell, const int32_t* downstream_cell,
+    const double* crest_elev, const double* width, const double* height,
+    const double* diameter, const double* length, const double* roughness_n,
+    const double* coeff, const double* cd, const double* opening,
+    const double* q_pump, const double* max_flow,
+    const int32_t* culvert_code, const int32_t* culvert_shape,
+    const double* culvert_rise, const double* culvert_span, const double* culvert_area_m2,
+    const double* culvert_barrels, const double* culvert_slope,
+    const double* inlet_invert_elev, const double* outlet_invert_elev,
+    const double* entrance_loss_k, const double* exit_loss_k,
+    const int32_t* embankment_enabled, const double* embankment_crest_elev,
+    const double* embankment_overflow_width, const double* embankment_weir_coeff,
+    double gravity_mps2)
+{
+    if (!dev) dev = s_coupling_dev;
+    if (!dev) {
+        if (n_structures <= 0) return;
+        throw std::runtime_error("preload_structure_params: no GPU device state");
+    }
+    if (n_structures <= 0) return;
+    auto& ws = dev->sf_ws;
+    if (ws.params_preloaded && ws.n_structures == n_structures && ws.gravity_mps2 == gravity_mps2) return;
+    cudaStream_t stream = dev->d_stream;
+
+    sf_ensure_buf(ws.d_cell_wse, ws.cell_capacity, dev->n_cells);
+    sf_ensure_buf(ws.d_structure_type, ws.struct_capacity, n_structures);
+    sf_ensure_buf(ws.d_upstream_cell, ws.struct_capacity, n_structures);
+    sf_ensure_buf(ws.d_downstream_cell, ws.struct_capacity, n_structures);
+    sf_ensure_buf(ws.d_crest_elev, ws.struct_capacity, n_structures);
+    sf_ensure_buf(ws.d_width, ws.struct_capacity, n_structures);
+    sf_ensure_buf(ws.d_height, ws.struct_capacity, n_structures);
+    sf_ensure_buf(ws.d_diameter, ws.struct_capacity, n_structures);
+    sf_ensure_buf(ws.d_length, ws.struct_capacity, n_structures);
+    sf_ensure_buf(ws.d_roughness_n, ws.struct_capacity, n_structures);
+    sf_ensure_buf(ws.d_coeff, ws.struct_capacity, n_structures);
+    sf_ensure_buf(ws.d_cd, ws.struct_capacity, n_structures);
+    sf_ensure_buf(ws.d_opening, ws.struct_capacity, n_structures);
+    sf_ensure_buf(ws.d_q_pump, ws.struct_capacity, n_structures);
+    sf_ensure_buf(ws.d_max_flow, ws.struct_capacity, n_structures);
+    sf_ensure_buf(ws.d_culvert_code, ws.struct_capacity, n_structures);
+    sf_ensure_buf(ws.d_culvert_shape, ws.struct_capacity, n_structures);
+    sf_ensure_buf(ws.d_culvert_rise, ws.struct_capacity, n_structures);
+    sf_ensure_buf(ws.d_culvert_span, ws.struct_capacity, n_structures);
+    sf_ensure_buf(ws.d_culvert_area_m2, ws.struct_capacity, n_structures);
+    sf_ensure_buf(ws.d_culvert_barrels, ws.struct_capacity, n_structures);
+    sf_ensure_buf(ws.d_culvert_slope, ws.struct_capacity, n_structures);
+    sf_ensure_buf(ws.d_inlet_invert_elev, ws.struct_capacity, n_structures);
+    sf_ensure_buf(ws.d_outlet_invert_elev, ws.struct_capacity, n_structures);
+    sf_ensure_buf(ws.d_entrance_loss_k, ws.struct_capacity, n_structures);
+    sf_ensure_buf(ws.d_exit_loss_k, ws.struct_capacity, n_structures);
+    sf_ensure_buf(ws.d_embankment_enabled, ws.struct_capacity, n_structures);
+    sf_ensure_buf(ws.d_embankment_crest_elev, ws.struct_capacity, n_structures);
+    sf_ensure_buf(ws.d_embankment_overflow_width, ws.struct_capacity, n_structures);
+    sf_ensure_buf(ws.d_embankment_weir_coeff, ws.struct_capacity, n_structures);
+    sf_ensure_buf(ws.d_structure_flow, ws.struct_capacity, n_structures);
+
+    sf_upload_buf(structure_type, ws.d_structure_type, n_structures, stream);
+    sf_upload_buf(upstream_cell, ws.d_upstream_cell, n_structures, stream);
+    sf_upload_buf(downstream_cell, ws.d_downstream_cell, n_structures, stream);
+    sf_upload_buf(crest_elev, ws.d_crest_elev, n_structures, stream);
+    sf_upload_buf(width, ws.d_width, n_structures, stream);
+    sf_upload_buf(height, ws.d_height, n_structures, stream);
+    sf_upload_buf(diameter, ws.d_diameter, n_structures, stream);
+    sf_upload_buf(length, ws.d_length, n_structures, stream);
+    sf_upload_buf(roughness_n, ws.d_roughness_n, n_structures, stream);
+    sf_upload_buf(coeff, ws.d_coeff, n_structures, stream);
+    sf_upload_buf(cd, ws.d_cd, n_structures, stream);
+    sf_upload_buf(opening, ws.d_opening, n_structures, stream);
+    sf_upload_buf(q_pump, ws.d_q_pump, n_structures, stream);
+    sf_upload_buf(max_flow, ws.d_max_flow, n_structures, stream);
+    sf_upload_buf(culvert_code, ws.d_culvert_code, n_structures, stream);
+    sf_upload_buf(culvert_shape, ws.d_culvert_shape, n_structures, stream);
+    sf_upload_buf(culvert_rise, ws.d_culvert_rise, n_structures, stream);
+    sf_upload_buf(culvert_span, ws.d_culvert_span, n_structures, stream);
+    sf_upload_buf(culvert_area_m2, ws.d_culvert_area_m2, n_structures, stream);
+    sf_upload_buf(culvert_barrels, ws.d_culvert_barrels, n_structures, stream);
+    sf_upload_buf(culvert_slope, ws.d_culvert_slope, n_structures, stream);
+    sf_upload_buf(inlet_invert_elev, ws.d_inlet_invert_elev, n_structures, stream);
+    sf_upload_buf(outlet_invert_elev, ws.d_outlet_invert_elev, n_structures, stream);
+    sf_upload_buf(entrance_loss_k, ws.d_entrance_loss_k, n_structures, stream);
+    sf_upload_buf(exit_loss_k, ws.d_exit_loss_k, n_structures, stream);
+    sf_upload_buf(embankment_enabled, ws.d_embankment_enabled, n_structures, stream);
+    sf_upload_buf(embankment_crest_elev, ws.d_embankment_crest_elev, n_structures, stream);
+    sf_upload_buf(embankment_overflow_width, ws.d_embankment_overflow_width, n_structures, stream);
+    sf_upload_buf(embankment_weir_coeff, ws.d_embankment_weir_coeff, n_structures, stream);
+
+    ws.n_structures = n_structures;
+    ws.gravity_mps2 = gravity_mps2;
+    ws.params_preloaded = true;
+    CUDA_CHECK(cudaStreamSynchronize(stream));
+}
+
+void swe2d_gpu_preload_coupling_cell_area(SWE2DDeviceState* dev, int32_t n_cells, const double* cell_area_m2)
+{
+    if (!dev) dev = s_coupling_dev;
+    if (!dev || n_cells <= 0 || !cell_area_m2) {
+        if (!dev && cell_area_m2) throw std::runtime_error("preload_coupling_cell_area: no GPU device state");
+        return;
+    }
+    auto& ws = dev->coupling_ws;
+    if (ws.cell_capacity < n_cells) {
+        if (ws.d_cell_area) cudaFree(ws.d_cell_area);
+        CUDA_CHECK(cudaMalloc(reinterpret_cast<void**>(&ws.d_cell_area), static_cast<size_t>(n_cells) * sizeof(double)));
+        ws.cell_capacity = n_cells;
+    }
+    CUDA_CHECK(cudaMemcpyAsync(ws.d_cell_area, cell_area_m2, static_cast<size_t>(n_cells) * sizeof(double),
+                               cudaMemcpyHostToDevice, dev->d_stream));
+    CUDA_CHECK(cudaStreamSynchronize(dev->d_stream));
+}
+
+void swe2d_gpu_compute_coupling_full_on_device(
+    SWE2DDeviceState* dev, int32_t n_cells, int32_t n_structures, const double* cell_wse_host,
+    int32_t n_inlets, const int32_t* inlet_cell, const double* inlet_flow_cms)
+{
+    if (!dev) dev = s_coupling_dev;
+    if (!dev) throw std::runtime_error("compute_coupling_full_on_device: no GPU device state");
+    if (n_cells <= 0 || !dev->d_external_source_mps) return;
+    auto& sf_ws = dev->sf_ws;
+    auto& cpl_ws = dev->coupling_ws;
+    cudaStream_t stream = dev->d_stream;
+    constexpr int BLOCK = 256;
+
+    CUDA_CHECK(cudaMemsetAsync(dev->d_external_source_mps, 0, static_cast<size_t>(n_cells) * sizeof(double), stream));
+
+    if (cell_wse_host && sf_ws.cell_capacity >= n_cells && sf_ws.d_cell_wse) {
+        CUDA_CHECK(cudaMemcpyAsync(sf_ws.d_cell_wse, cell_wse_host, static_cast<size_t>(n_cells) * sizeof(double),
+                                   cudaMemcpyHostToDevice, stream));
+    }
+
+    if (n_structures > 0 && sf_ws.params_preloaded) {
+        CUDA_CHECK(cudaMemsetAsync(sf_ws.d_structure_flow, 0, static_cast<size_t>(n_structures) * sizeof(double), stream));
+        int grid = (n_structures + BLOCK - 1) / BLOCK;
+        swe2d_compute_structure_flows_kernel<<<grid, BLOCK, 0, stream>>>(
+            n_cells, n_structures, sf_ws.d_cell_wse,
+            sf_ws.d_structure_type, sf_ws.d_upstream_cell, sf_ws.d_downstream_cell,
+            sf_ws.d_crest_elev, sf_ws.d_width, sf_ws.d_height,
+            sf_ws.d_diameter, sf_ws.d_length, sf_ws.d_roughness_n,
+            sf_ws.d_coeff, sf_ws.d_cd, sf_ws.d_opening,
+            sf_ws.d_q_pump, sf_ws.d_max_flow,
+            sf_ws.d_culvert_code, sf_ws.d_culvert_shape,
+            sf_ws.d_culvert_rise, sf_ws.d_culvert_span, sf_ws.d_culvert_area_m2,
+            sf_ws.d_culvert_barrels, sf_ws.d_culvert_slope,
+            sf_ws.d_inlet_invert_elev, sf_ws.d_outlet_invert_elev,
+            sf_ws.d_entrance_loss_k, sf_ws.d_exit_loss_k,
+            sf_ws.d_embankment_enabled, sf_ws.d_embankment_crest_elev,
+            sf_ws.d_embankment_overflow_width, sf_ws.d_embankment_weir_coeff,
+            sf_ws.gravity_mps2, sf_ws.d_structure_flow,
+            s_culvert_solver_mode, s_culvert_table_header, s_culvert_table_data,
+            s_culvert_table_n_hw, s_culvert_table_n_tw);
+        CUDA_CHECK(cudaGetLastError());
+
+        sf_ensure_buf(cpl_ws.d_struct_up, cpl_ws.structure_capacity, n_structures);
+        sf_ensure_buf(cpl_ws.d_struct_dn, cpl_ws.structure_capacity, n_structures);
+        sf_ensure_buf(cpl_ws.d_struct_q, cpl_ws.structure_capacity, n_structures);
+        CUDA_CHECK(cudaMemcpyAsync(cpl_ws.d_struct_up, sf_ws.d_upstream_cell, static_cast<size_t>(n_structures) * sizeof(int32_t), cudaMemcpyDeviceToDevice, stream));
+        CUDA_CHECK(cudaMemcpyAsync(cpl_ws.d_struct_dn, sf_ws.d_downstream_cell, static_cast<size_t>(n_structures) * sizeof(int32_t), cudaMemcpyDeviceToDevice, stream));
+        CUDA_CHECK(cudaMemcpyAsync(cpl_ws.d_struct_q, sf_ws.d_structure_flow, static_cast<size_t>(n_structures) * sizeof(double), cudaMemcpyDeviceToDevice, stream));
+        grid = (n_structures + BLOCK - 1) / BLOCK;
+        swe2d_coupling_structure_source_kernel<<<grid, BLOCK, 0, stream>>>(
+            n_structures, cpl_ws.d_struct_up, cpl_ws.d_struct_dn, cpl_ws.d_struct_q, cpl_ws.d_cell_area, n_cells,
+            dev->d_external_source_mps);
+        CUDA_CHECK(cudaGetLastError());
+    }
+
+    if (n_inlets > 0 && inlet_cell && inlet_flow_cms) {
+        sf_ensure_buf(cpl_ws.d_inlet_cell, cpl_ws.inlet_capacity, n_inlets);
+        sf_ensure_buf(cpl_ws.d_inlet_q, cpl_ws.inlet_capacity, n_inlets);
+        CUDA_CHECK(cudaMemcpyAsync(cpl_ws.d_inlet_cell, inlet_cell, static_cast<size_t>(n_inlets) * sizeof(int32_t), cudaMemcpyHostToDevice, stream));
+        CUDA_CHECK(cudaMemcpyAsync(cpl_ws.d_inlet_q, inlet_flow_cms, static_cast<size_t>(n_inlets) * sizeof(double), cudaMemcpyHostToDevice, stream));
+        int grid = (n_inlets + BLOCK - 1) / BLOCK;
+        swe2d_coupling_inlet_source_kernel<<<grid, BLOCK, 0, stream>>>(
+            n_inlets, cpl_ws.d_inlet_cell, cpl_ws.d_inlet_q, cpl_ws.d_cell_area, n_cells, dev->d_external_source_mps);
+        CUDA_CHECK(cudaGetLastError());
+    }
+
+    CUDA_CHECK(cudaStreamSynchronize(stream));
+}
+
+// ── Culvert table-mode globals ──
+int32_t s_culvert_solver_mode = 0;
+double* s_culvert_table_header = nullptr;
+double* s_culvert_table_data = nullptr;
+int32_t s_culvert_table_n_hw = 32;
+int32_t s_culvert_table_n_tw = 16;
+
 SWE3DCartesianPatchDeviceState* swe3d_cartesian_patch_alloc(
     const SWE3DCartesianPatchDesc& desc)
 {
@@ -7627,12 +7888,8 @@ void swe2d_gpu_compute_bridge_coupling_sources(
     }
 }
 
-// ── Culvert table-mode globals (file scope, shared across functions) ──
-static int32_t s_culvert_solver_mode = 0;  // 0=direct, 1=table
-static double* s_culvert_table_header = nullptr;
-static double* s_culvert_table_data = nullptr;
-static int32_t s_culvert_table_n_hw = 32;
-static int32_t s_culvert_table_n_tw = 16;
+// ── Culvert table-mode globals defined above ──
+// (see non-static definitions after set_external_sources)
 
 void swe2d_gpu_set_culvert_solver_mode_impl(
     int32_t mode, const double* data, const double* header,
