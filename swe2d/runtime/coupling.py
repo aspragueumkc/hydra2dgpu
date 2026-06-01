@@ -547,8 +547,14 @@ class SWE2DCouplingController:
                     np.asarray(ssoa.embankment_weir_coeff, dtype=np.float64),
                     float(getattr(self.structures.cfg, "gravity", 9.81)) if self.structures is not None else 9.81,
                 )
-            except Exception:
-                pass
+            except Exception as exc:
+                import traceback
+                try:
+                    import sys
+                    print(f"[SWE2D coupling] preload_structure_params FAILED: {exc}", file=sys.stderr)
+                    traceback.print_exc(file=sys.stderr)
+                except Exception:
+                    pass
         if preload_cell_fn is not None:
             try:
                 preload_cell_fn(np.asarray(self.cell_area, dtype=np.float64))
@@ -1048,42 +1054,50 @@ class SWE2DCouplingController:
                         or getattr(native_mod, "swe2d_gpu_compute_coupling_full_on_device", None)
                     )
                     if coupling_fn is not None:
-                        coupling_fn(
-                        np.asarray(cell_wse, dtype=np.float64),
-                        n_non_bridge,
-                    )
-                    component_sums["structures_persistent_path"] = 1.0
-                    # Bridges still need separate handling below.
-                    if bridge_mask.any():
-                        bridge_flows = self._native_structure_flows(native_mod, cell_wse)
-                        if bridge_flows is None:
-                            bridge_flows = np.asarray(self.structures.structure_flows(cell_wse), dtype=np.float64)
-                            component_sums["structures_native_helper"] = 0.0
-                        else:
-                            component_sums["structures_native_helper"] = 1.0
-                        if bridge_flows is not None and bridge_flows.size == len(sts) and bridge_flows.size > 0:
-                            use_bridge_cuda = self.bridge_cuda_coupling and hasattr(native_mod, "swe2d_gpu_compute_bridge_coupling_sources")
-                            if use_bridge_cuda:
-                                bridge_arrays = self._bridge_structure_arrays(cell_wse)
-                                if bridge_arrays is not None:
-                                    bridge_helper_used = True
-                                    for i in range(int(bridge_arrays["indices"].size)):
-                                        src = np.asarray(
-                                            native_mod.swe2d_gpu_compute_bridge_coupling_sources(
-                                                np.asarray(self.cell_area, dtype=np.float64),
-                                                np.asarray([int(bridge_arrays["upstream_cell"][i])], dtype=np.int32),
-                                                np.asarray([int(bridge_arrays["downstream_cell"][i])], dtype=np.int32),
-                                                np.asarray([float(bridge_arrays["flow_cms"][i])], dtype=np.float64),
-                                                np.asarray([float(bridge_arrays["loss_k_upstream"][i])], dtype=np.float64),
-                                                np.asarray([float(bridge_arrays["loss_k_downstream"][i])], dtype=np.float64),
-                                                float(bridge_arrays["width_m"][i]),
-                                                float(dt_s),
-                                            ),
-                                            dtype=np.float64,
-                                        )
-                                        bridge_total += src
-                total = np.zeros(self.n_cells, dtype=np.float64)
-                flows = None
+                        try:
+                            coupling_fn(
+                                np.asarray(cell_wse, dtype=np.float64),
+                                n_non_bridge,
+                            )
+                            component_sums["structures_persistent_path"] = 1.0
+                            # Bridges still need separate handling below.
+                            if bridge_mask.any():
+                                bridge_flows = self._native_structure_flows(native_mod, cell_wse)
+                                if bridge_flows is None:
+                                    bridge_flows = np.asarray(self.structures.structure_flows(cell_wse), dtype=np.float64)
+                                    component_sums["structures_native_helper"] = 0.0
+                                else:
+                                    component_sums["structures_native_helper"] = 1.0
+                                if bridge_flows is not None and bridge_flows.size == len(sts) and bridge_flows.size > 0:
+                                    use_bridge_cuda = self.bridge_cuda_coupling and hasattr(native_mod, "swe2d_gpu_compute_bridge_coupling_sources")
+                                    if use_bridge_cuda:
+                                        bridge_arrays = self._bridge_structure_arrays(cell_wse)
+                                        if bridge_arrays is not None:
+                                            bridge_helper_used = True
+                                            for i in range(int(bridge_arrays["indices"].size)):
+                                                src = np.asarray(
+                                                    native_mod.swe2d_gpu_compute_bridge_coupling_sources(
+                                                        np.asarray(self.cell_area, dtype=np.float64),
+                                                        np.asarray([int(bridge_arrays["upstream_cell"][i])], dtype=np.int32),
+                                                        np.asarray([int(bridge_arrays["downstream_cell"][i])], dtype=np.int32),
+                                                        np.asarray([float(bridge_arrays["flow_cms"][i])], dtype=np.float64),
+                                                        np.asarray([float(bridge_arrays["loss_k_upstream"][i])], dtype=np.float64),
+                                                        np.asarray([float(bridge_arrays["loss_k_downstream"][i])], dtype=np.float64),
+                                                        float(bridge_arrays["width_m"][i]),
+                                                        float(dt_s),
+                                                    ),
+                                                    dtype=np.float64,
+                                                )
+                                                bridge_total += src
+                        except Exception:
+                            # Persistent path failed — fall through to fused/legacy path
+                            component_sums["structures_persistent_path"] = 0.0
+                    if component_sums.get("structures_persistent_path", 0.0) > 0.0:
+                        total = np.zeros(self.n_cells, dtype=np.float64)
+                        flows = None
+            persistent_ok = bool(component_sums.get("structures_persistent_path", 0.0))
+            if persistent_ok:
+                pass  # path already handled above
             elif use_fused and flows.size == 0:
                 # Fused path: structure flows + coupling sources in one device-resident call.
                 # Bridges handled separately below via the individual bridge helper.

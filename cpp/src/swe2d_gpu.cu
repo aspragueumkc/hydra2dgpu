@@ -7189,7 +7189,14 @@ void swe2d_gpu_preload_structure_params(
     double gravity_mps2)
 {
     if (!dev) dev = s_coupling_dev;
-    if (!dev || n_structures <= 0) return;
+    if (!dev) {
+        if (n_structures <= 0) return;  // no-op: no structures to preload
+        // Throw so Python knows preload wasn't possible
+        throw std::runtime_error(
+            "swe2d_gpu_preload_structure_params: no GPU device state available. "
+            "Ensure GPU solver init runs before coupling starts.");
+    }
+    if (n_structures <= 0) return;
     auto& ws = dev->sf_ws;
     cudaStream_t stream = dev->d_stream;
 
@@ -7282,7 +7289,13 @@ void swe2d_gpu_preload_coupling_cell_area(
     const double* cell_area_m2)
 {
     if (!dev) dev = s_coupling_dev;
-    if (!dev || n_cells <= 0 || !cell_area_m2) return;
+    if (!dev || n_cells <= 0 || !cell_area_m2) {
+        if (!dev && cell_area_m2) {
+            throw std::runtime_error(
+                "swe2d_gpu_preload_coupling_cell_area: no GPU device state available.");
+        }
+        return;
+    }
     auto& ws = dev->coupling_ws;
 
     if (ws.cell_capacity < n_cells) {
@@ -7308,7 +7321,13 @@ void swe2d_gpu_compute_coupling_full_on_device(
     const double* inlet_flow_cms)
 {
     if (!dev) dev = s_coupling_dev;
-    if (!dev || n_cells <= 0 || !dev->d_external_source_mps) return;
+    if (!dev) {
+        // No device — this is a critical error for the persistent path.
+        throw std::runtime_error(
+            "swe2d_gpu_compute_coupling_full_on_device: no GPU device state. "
+            "Preload must succeed before compute.");
+    }
+    if (n_cells <= 0 || !dev->d_external_source_mps) return;
     auto& sf_ws = dev->sf_ws;
     auto& cpl_ws = dev->coupling_ws;
     cudaStream_t stream = dev->d_stream;
