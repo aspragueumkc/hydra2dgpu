@@ -7422,6 +7422,87 @@ void swe2d_gpu_compute_coupling_full_on_device(
     CUDA_CHECK(cudaStreamSynchronize(stream));
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// Fused structure-flows + coupling-sources (legacy host-callable path).
+// Calls the existing compute_structure_flows then compute_coupling_sources,
+// avoiding the intermediate D2H+H2D round trip by reusing device-side buffers.
+// ─────────────────────────────────────────────────────────────────────────────
+void swe2d_gpu_compute_structure_and_coupling_sources(
+    int32_t n_cells,
+    const double* cell_area_m2,
+    int32_t n_structures,
+    const double* cell_wse,
+    const double* cell_bed,
+    const int32_t* structure_type,
+    const int32_t* upstream_cell,
+    const int32_t* downstream_cell,
+    const double* crest_elev,
+    const double* width,
+    const double* height,
+    const double* diameter,
+    const double* length,
+    const double* roughness_n,
+    const double* coeff,
+    const double* cd,
+    const double* opening,
+    const double* q_pump,
+    const double* max_flow,
+    const int32_t* culvert_code,
+    const int32_t* culvert_shape,
+    const double* culvert_rise,
+    const double* culvert_span,
+    const double* culvert_area_m2,
+    const double* culvert_barrels,
+    const double* culvert_slope,
+    const double* inlet_invert_elev,
+    const double* outlet_invert_elev,
+    const double* entrance_loss_k,
+    const double* exit_loss_k,
+    const int32_t* embankment_enabled,
+    const double* embankment_crest_elev,
+    const double* embankment_overflow_width,
+    const double* embankment_weir_coeff,
+    double gravity_mps2,
+    int32_t n_inlets,
+    const int32_t* inlet_cell,
+    const double* inlet_flow_cms,
+    double* source_rate_mps_out)
+{
+    if (!source_rate_mps_out || n_cells <= 0) return;
+    std::fill(source_rate_mps_out, source_rate_mps_out + static_cast<size_t>(n_cells), 0.0);
+
+    // Step 1: compute structure flows using the existing host→device function.
+    std::vector<double> struct_flows(static_cast<size_t>(n_structures > 0 ? n_structures : 0), 0.0);
+    if (n_structures > 0) {
+        swe2d_gpu_compute_structure_flows(
+            n_cells, n_structures,
+            cell_wse, cell_bed,
+            structure_type, upstream_cell, downstream_cell,
+            crest_elev, width, height, diameter, length, roughness_n,
+            coeff, cd, opening, q_pump, max_flow,
+            culvert_code, culvert_shape,
+            culvert_rise, culvert_span, culvert_area_m2,
+            culvert_barrels, culvert_slope,
+            inlet_invert_elev, outlet_invert_elev,
+            entrance_loss_k, exit_loss_k,
+            embankment_enabled, embankment_crest_elev,
+            embankment_overflow_width, embankment_weir_coeff,
+            gravity_mps2,
+            struct_flows.data());
+    }
+
+    // Step 2: convert structure flows + inlets into per-cell source rates.
+    swe2d_gpu_compute_coupling_sources(
+        nullptr,  // dev
+        n_cells, cell_area_m2,
+        n_inlets, inlet_cell, inlet_flow_cms,
+        n_structures,
+        n_structures > 0 ? upstream_cell : nullptr,
+        n_structures > 0 ? downstream_cell : nullptr,
+        n_structures > 0 ? struct_flows.data() : nullptr,
+        source_rate_mps_out);
+}
+
 SWE3DCartesianPatchDeviceState* swe3d_cartesian_patch_alloc(
     const SWE3DCartesianPatchDesc& desc)
 {
