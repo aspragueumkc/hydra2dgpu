@@ -93,6 +93,12 @@ class SWE2DBackendInitializer:
             else:
                 b.build_mesh(node_x, node_y, node_z, cell_nodes, bc_n0, bc_n1, bc_tp_init, bc_vl_init)
 
+            # Commit any in-progress editor text before reading numeric values.
+            try:
+                self._ui.gpu_diag_sync_interval_spin.interpretText()
+            except Exception:
+                pass
+
             b.initialize(
                 h0,
                 hu0,
@@ -120,6 +126,12 @@ class SWE2DBackendInitializer:
                 source_imex_split=bool(self._ui.source_imex_split_chk.isChecked()),
                 enable_shallow_front_recon_fallback=bool(self._ui.shallow_front_recon_fallback_chk.isChecked()),
                 gpu_diag_sync_interval_steps=int(self._ui.gpu_diag_sync_interval_spin.value()),
+                tiny_mode=int(getattr(self._ui, "tiny_mode_combo", None).currentData())
+                if getattr(self._ui, "tiny_mode_combo", None) is not None
+                else 3,
+                tiny_wet_cell_threshold=int(getattr(self._ui, "tiny_wet_cell_threshold_spin", None).value())
+                if getattr(self._ui, "tiny_wet_cell_threshold_spin", None) is not None
+                else 2000,
                 model_options=model_options,
                 spatial_discretization=reconstruction_mode,
                 temporal_scheme=temporal_scheme,

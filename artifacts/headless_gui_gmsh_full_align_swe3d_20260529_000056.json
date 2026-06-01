@@ -1,0 +1,37 @@
+{
+  "ok": true,
+  "gpkg": "/home/aaron/QGIS_Plugins_dev/qgis-backwater-plugin/qgis_testing_project/swe3d_model.gpkg",
+  "region_ids": [
+    4,
+    5
+  ],
+  "backend": "gmsh",
+  "gmsh_quad_full_region_flow_align": true,
+  "artifacts": {
+    "npz": "/home/aaron/QGIS_Plugins_dev/qgis-backwater-plugin/artifacts/headless_gui_gmsh_full_align_swe3d_20260529_000056.npz",
+    "json": "/home/aaron/QGIS_Plugins_dev/qgis-backwater-plugin/artifacts/headless_gui_gmsh_full_align_swe3d_20260529_000056.json",
+    "png": "/home/aaron/QGIS_Plugins_dev/qgis-backwater-plugin/artifacts/headless_gui_gmsh_full_align_swe3d_20260529_000056.png"
+  },
+  "mesh": {
+    "n_nodes": 5040,
+    "n_faces": 4699,
+    "n_tris": 0,
+    "n_quads": 4699
+  },
+  "timings_s": {
+    "headless_meshing_elapsed": 43.42959039099969,
+    "gmsh_phase": {
+      "build_surfaces": 0.004029188999993494,
+      "build_size_fields": 0.002635875000123633,
+      "configure_per_surface": 0.22269938799990996,
+      "configure_global_options": 3.4280999898328446e-05,
+      "generate_and_optimize": 0.015329029999975319,
+      "duplicate_cleanup": 0.0025664939998932823,
+      "extract_nodes": 0.001182379000056244,
+      "extract_elements": 0.005605385999842838,
+      "total_build": 43.0335766459998
+    }
+  },
+  "topology_status": "Generated 4699 computational faces using backend 'gmsh'. Cell metadata (type/size/region) stored in mesh state.",
+  "timestamp": "20260529_000056"
+}

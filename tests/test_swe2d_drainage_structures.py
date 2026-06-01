@@ -365,6 +365,213 @@ class TestSWE2DDrainageStructures(unittest.TestCase):
         self.assertAlmostEqual(sum(q_cells), 0.0, places=12)
         self.assertAlmostEqual((rates[0] + rates[1]) * 4.0, 0.0, places=12)
 
+    def test_structure_module_culvert_tailwater_reduces_flow(self):
+        structure = HydraulicStructure(
+            structure_id="C0",
+            structure_type=StructureType.CULVERT,
+            upstream_cell=0,
+            downstream_cell=1,
+            crest_elev=0.0,
+            metadata={
+                "culvert_shape": "circular",
+                "culvert_code": 1,
+                "diameter": 1.2,
+                "culvert_rise": 1.2,
+                "length": 20.0,
+                "roughness_n": 0.013,
+                "inlet_invert_elev": 0.0,
+                "outlet_invert_elev": -0.1,
+                "entrance_loss_k": 0.5,
+                "exit_loss_k": 1.0,
+            },
+        )
+        mod = SWE2DStructureModule(HydraulicStructureConfig(enabled=True, structures=[structure]))
+
+        low_tailwater = mod.compute_flux_adjustments(1.0, [2.2, 0.3])["total_structure_flow"]
+        high_tailwater = mod.compute_flux_adjustments(1.0, [2.2, 1.8])["total_structure_flow"]
+
+        self.assertGreater(low_tailwater, 0.0)
+        self.assertGreater(high_tailwater, 0.0)
+        self.assertLess(high_tailwater, low_tailwater)
+
+    def test_structure_module_embankment_overflow_adds_flow(self):
+        base_metadata = {
+            "culvert_shape": "circular",
+            "culvert_code": 1,
+            "diameter": 1.0,
+            "culvert_rise": 1.0,
+            "length": 15.0,
+            "roughness_n": 0.013,
+            "inlet_invert_elev": 0.0,
+            "outlet_invert_elev": -0.05,
+        }
+        culvert_only = HydraulicStructure(
+            structure_id="C0",
+            structure_type=StructureType.CULVERT,
+            upstream_cell=0,
+            downstream_cell=1,
+            crest_elev=0.0,
+            metadata=dict(base_metadata),
+        )
+        culvert_plus_embankment = HydraulicStructure(
+            structure_id="C1",
+            structure_type=StructureType.CULVERT,
+            upstream_cell=0,
+            downstream_cell=1,
+            crest_elev=0.0,
+            metadata={
+                **base_metadata,
+                "embankment_enabled": 1,
+                "embankment_crest_elev": 1.25,
+                "embankment_overflow_width": 5.0,
+                "embankment_weir_coeff": 1.7,
+            },
+        )
+
+        mod_base = SWE2DStructureModule(HydraulicStructureConfig(enabled=True, structures=[culvert_only]))
+        mod_emb = SWE2DStructureModule(HydraulicStructureConfig(enabled=True, structures=[culvert_plus_embankment]))
+
+        q_base = mod_base.compute_flux_adjustments(1.0, [2.0, 0.4])["total_structure_flow"]
+        q_emb = mod_emb.compute_flux_adjustments(1.0, [2.0, 0.4])["total_structure_flow"]
+
+        self.assertGreater(q_base, 0.0)
+        self.assertGreater(q_emb, q_base)
+
+    def test_cuda_coupling_uses_native_structure_helper_when_available(self):
+        structure = HydraulicStructure(
+            structure_id="C0",
+            structure_type=StructureType.CULVERT,
+            upstream_cell=0,
+            downstream_cell=1,
+            crest_elev=0.0,
+            metadata={
+                "culvert_shape": "circular",
+                "culvert_code": 1,
+                "diameter": 1.0,
+                "culvert_rise": 1.0,
+                "length": 12.0,
+                "roughness_n": 0.013,
+                "inlet_invert_elev": 0.0,
+                "outlet_invert_elev": -0.05,
+            },
+        )
+        structures = SWE2DStructureModule(HydraulicStructureConfig(enabled=True, structures=[structure]))
+        controller = SWE2DCouplingController(
+            cell_area=[5.0, 5.0],
+            cell_bed=[0.0, 0.0],
+            structures=structures,
+            coupling_loop="cuda",
+        )
+
+        class _FakeNative:
+            @staticmethod
+            def swe2d_gpu_compute_structure_flows(*args, **kwargs):
+                return np.asarray([9.99], dtype=np.float64)
+
+            @staticmethod
+            def swe2d_gpu_compute_coupling_sources(cell_area_m2, inlet_cell, inlet_flow_cms, structure_up_cell, structure_down_cell, structure_flow_cms):
+                out = np.zeros(int(np.asarray(cell_area_m2).size), dtype=np.float64)
+                area = np.asarray(cell_area_m2, dtype=np.float64)
+                up = np.asarray(structure_up_cell, dtype=np.int32)
+                dn = np.asarray(structure_down_cell, dtype=np.int32)
+                qq = np.asarray(structure_flow_cms, dtype=np.float64)
+                for i in range(int(qq.size)):
+                    out[int(up[i])] -= float(qq[i]) / float(area[int(up[i])])
+                    out[int(dn[i])] += float(qq[i]) / float(area[int(dn[i])])
+                return out
+
+        controller._native_cuda_module = lambda: _FakeNative()  # type: ignore[method-assign]
+
+        src = controller.compute_source_rates(
+            t_s=0.0,
+            dt_s=1.0,
+            h=np.asarray([1.5, 0.8], dtype=np.float64),
+            hu=np.zeros(2, dtype=np.float64),
+            hv=np.zeros(2, dtype=np.float64),
+        )
+
+        self.assertAlmostEqual(float(src[0]), -9.99 / 5.0, places=12)
+        self.assertAlmostEqual(float(src[1]), 9.99 / 5.0, places=12)
+        self.assertEqual(float(controller.last_diag.component_sums.get("structures_native_helper", 0.0)), 1.0)
+
+    def test_compiled_helper_matches_python_reference_for_culvert(self):
+        try:
+            import hydra_swe2d as native_mod
+        except Exception:
+            self.skipTest("hydra_swe2d not available")
+        if not hasattr(native_mod, "swe2d_gpu_compute_structure_flows"):
+            self.skipTest("native structure helper unavailable")
+
+        structure = HydraulicStructure(
+            structure_id="C0",
+            structure_type=StructureType.CULVERT,
+            upstream_cell=0,
+            downstream_cell=1,
+            crest_elev=0.0,
+            metadata={
+                "culvert_shape": "circular",
+                "culvert_code": 1,
+                "diameter": 1.1,
+                "culvert_rise": 1.1,
+                "length": 15.0,
+                "roughness_n": 0.013,
+                "cd": 0.75,
+                "inlet_invert_elev": 0.0,
+                "outlet_invert_elev": -0.08,
+                "entrance_loss_k": 0.5,
+                "exit_loss_k": 1.0,
+                "culvert_barrels": 2,
+            },
+        )
+        structures = SWE2DStructureModule(HydraulicStructureConfig(enabled=True, structures=[structure]))
+        controller = SWE2DCouplingController(
+            cell_area=[5.0, 5.0],
+            cell_bed=[0.0, 0.0],
+            structures=structures,
+            coupling_loop="cuda",
+        )
+        ssoa = controller._structures_soa
+        self.assertIsNotNone(ssoa)
+        cell_wse = np.asarray([1.7, 0.9], dtype=np.float64)
+        py_q = float(structures.structure_flows(cell_wse)[0])
+        native_q = float(
+            native_mod.swe2d_gpu_compute_structure_flows(
+                np.asarray(cell_wse, dtype=np.float64),
+                np.asarray(controller.cell_bed, dtype=np.float64),
+                np.asarray(ssoa.structure_type, dtype=np.int32),
+                np.asarray(ssoa.upstream_cell, dtype=np.int32),
+                np.asarray(ssoa.downstream_cell, dtype=np.int32),
+                np.asarray(ssoa.crest_elev, dtype=np.float64),
+                np.asarray(ssoa.width, dtype=np.float64),
+                np.asarray(ssoa.height, dtype=np.float64),
+                np.asarray(ssoa.diameter, dtype=np.float64),
+                np.asarray(ssoa.length, dtype=np.float64),
+                np.asarray(ssoa.roughness_n, dtype=np.float64),
+                np.asarray(ssoa.coeff, dtype=np.float64),
+                np.asarray(ssoa.cd, dtype=np.float64),
+                np.asarray(ssoa.opening, dtype=np.float64),
+                np.asarray(ssoa.q_pump, dtype=np.float64),
+                np.asarray(ssoa.max_flow, dtype=np.float64),
+                np.asarray(ssoa.culvert_code, dtype=np.int32),
+                np.asarray(ssoa.culvert_shape, dtype=np.int32),
+                np.asarray(ssoa.culvert_rise, dtype=np.float64),
+                np.asarray(ssoa.culvert_span, dtype=np.float64),
+                np.asarray(ssoa.culvert_area_m2, dtype=np.float64),
+                np.asarray(ssoa.culvert_barrels, dtype=np.float64),
+                np.asarray(ssoa.culvert_slope, dtype=np.float64),
+                np.asarray(ssoa.inlet_invert_elev, dtype=np.float64),
+                np.asarray(ssoa.outlet_invert_elev, dtype=np.float64),
+                np.asarray(ssoa.entrance_loss_k, dtype=np.float64),
+                np.asarray(ssoa.exit_loss_k, dtype=np.float64),
+                np.asarray(ssoa.embankment_enabled, dtype=np.int32),
+                np.asarray(ssoa.embankment_crest_elev, dtype=np.float64),
+                np.asarray(ssoa.embankment_overflow_width, dtype=np.float64),
+                np.asarray(ssoa.embankment_weir_coeff, dtype=np.float64),
+                float(getattr(structures.cfg, "gravity", 9.81)),
+            )[0]
+        )
+        self.assertAlmostEqual(native_q, py_q, delta=1.0e-8)
+
     def test_coupling_controller_combines_modules(self):
         drainage = self._build_simple_network()
         drainage.state.node_depth["N0"] = 0.1

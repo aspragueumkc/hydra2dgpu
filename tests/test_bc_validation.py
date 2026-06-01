@@ -82,11 +82,22 @@ except Exception:
 try:
     from swe2d.boundary_and_forcing.boundary_qgis_adapter import (
         apply_bc_layer_overrides_qgis,
+        collect_bc_layer_hydrographs_qgis,
         collect_bc_layer_edge_groups_qgis,
     )
 except Exception:
     apply_bc_layer_overrides_qgis = None
+    collect_bc_layer_hydrographs_qgis = None
     collect_bc_layer_edge_groups_qgis = None
+
+try:
+    from swe2d.boundary_and_forcing.hydrograph_logic import (
+        hydrograph_from_layer,
+        parse_hydrograph_text,
+    )
+except Exception:
+    hydrograph_from_layer = None
+    parse_hydrograph_text = None
 
 # ===========================================================================
 # Helpers that replicate the plugin's pure-numpy logic without QGIS
@@ -804,6 +815,127 @@ class TestBCLayerOverride(unittest.TestCase):
         for i in upper_idx:
             self.assertEqual(int(bc_type2[i]), 2)
             self.assertAlmostEqual(float(bc_val2[i]), q_upper, places=9)
+
+
+@unittest.skipUnless(
+    _HAVE_QGIS
+    and collect_bc_layer_hydrographs_qgis is not None
+    and hydrograph_from_layer is not None
+    and parse_hydrograph_text is not None,
+    "QGIS hydrograph adapter not available",
+)
+class TestBCHydrographCollection(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        try:
+            app = QgsApplication.instance()
+            if app is None:
+                cls._app = QgsApplication([], False)
+                cls._app.initQgis()
+            else:
+                cls._app = None
+        except Exception:
+            cls._app = None
+
+    @classmethod
+    def tearDownClass(cls):
+        if cls._app is not None:
+            cls._app.exitQgis()
+
+    def _make_bc_layer(self, ly: float):
+        layer = QgsVectorLayer("LineString?crs=EPSG:4326", "swe2d_bc_lines", "memory")
+        pr = layer.dataProvider()
+        fields = QgsFields()
+        fields.append(QgsField("bc_type", QVariant.Int))
+        fields.append(QgsField("bc_value", QVariant.Double))
+        fields.append(QgsField("priority", QVariant.Int))
+        fields.append(QgsField("hydrograph", QVariant.String))
+        fields.append(QgsField("hydrograph_id", QVariant.String))
+        fields.append(QgsField("hydrograph_layer", QVariant.String))
+        pr.addAttributes(fields)
+        layer.updateFields()
+
+        f = QgsFeature()
+        f.setGeometry(QgsGeometry.fromWkt(f"LINESTRING(0 0, 0 {ly})"))
+        # Match culvert_test pattern: hydrograph field stores token "1",
+        # actual timeseries is in swe2d_hydrographs rows filtered by hydrograph_id.
+        f.setAttributes([102, 0.0, 1, "1", "1", "swe2d_hydrographs"])
+        pr.addFeatures([f])
+        layer.updateExtents()
+        return layer
+
+    def _make_hydro_layer(self):
+        layer = QgsVectorLayer(
+            "None?field=hydrograph_id:string(64)&field=bc_type:integer&field=Time:string(32)&field=Value:double",
+            "swe2d_hydrographs",
+            "memory",
+        )
+        pr = layer.dataProvider()
+
+        rows = [
+            ("1", 102, "0:00", 500.0),
+            ("1", 102, "1:00", 1000.0),
+            ("1", 102, "2:00", 5000.0),
+        ]
+        feats = []
+        for hid, bct, tstr, val in rows:
+            f = QgsFeature(layer.fields())
+            f.setAttributes([hid, int(bct), tstr, float(val)])
+            feats.append(f)
+        pr.addFeatures(feats)
+        return layer
+
+    def test_hydrograph_layer_lookup_when_hydrograph_field_is_token(self):
+        nx, ny = 4, 2
+        lx, ly = 40.0, 5.0
+        node_x, node_y, _, cell_nodes = _make_structured_mesh(nx, ny, lx, ly)
+        n0, n1 = _boundary_edges(cell_nodes)
+
+        bc_layer = self._make_bc_layer(ly)
+        hydro_layer = self._make_hydro_layer()
+
+        class _Combo:
+            pass
+
+        combo = _Combo()
+        combo._layer = bc_layer
+
+        def _combo_layer_fn(_combo_obj, _kind):
+            return getattr(_combo_obj, "_layer", None)
+
+        def _iter_layers():
+            return [bc_layer, hydro_layer]
+
+        edge_hydro = collect_bc_layer_hydrographs_qgis(
+            mesh_data={"node_x": node_x, "node_y": node_y},
+            have_qgis_core=True,
+            bc_lines_layer_combo=combo,
+            combo_layer_fn=_combo_layer_fn,
+            iter_project_layers_fn=_iter_layers,
+            hydrograph_from_layer_fn=hydrograph_from_layer,
+            parse_hydrograph_text_fn=parse_hydrograph_text,
+            edge_n0=n0,
+            edge_n1=n1,
+            ts_flow_code=102,
+            ts_stage_code=103,
+            qgs_vector_layer_cls=QgsVectorLayer,
+            qgs_geometry_cls=QgsGeometry,
+            qgs_pointxy_cls=QgsPointXY,
+            log_fn=lambda _msg: None,
+        )
+
+        xmin = float(np.min(node_x))
+        mx = 0.5 * (node_x[n0] + node_x[n1])
+        left_idx = np.where(np.abs(mx - xmin) < 1.0e-9)[0]
+        self.assertGreater(left_idx.size, 0)
+
+        for i in left_idx:
+            self.assertIn(int(i), edge_hydro, f"Missing timeseries mapping for left edge {i}")
+            bct, hg = edge_hydro[int(i)]
+            self.assertEqual(int(bct), 102)
+            tsec, vals = hg
+            self.assertTrue(np.allclose(tsec, np.array([0.0, 3600.0, 7200.0], dtype=np.float64)))
+            self.assertTrue(np.allclose(vals, np.array([500.0, 1000.0, 5000.0], dtype=np.float64)))
 
 
 @unittest.skipUnless(_HAVE_QGIS and collect_bc_layer_edge_groups_qgis is not None, "QGIS adapter not available")

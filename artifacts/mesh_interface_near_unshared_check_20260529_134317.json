@@ -1,0 +1,139 @@
+{
+  "source_nonmanifold_report": "artifacts/mesh_topology_nonmanifold_check_20260529_134317.json",
+  "source_npz": "/home/aaron/QGIS_Plugins_dev/qgis-backwater-plugin/artifacts/headless_gui_gmsh_full_align_swe3d_20260529_134038.npz",
+  "near_tol": 0.001,
+  "pair_results": [
+    {
+      "region_pair": [
+        1,
+        5
+      ],
+      "shared_edge_count": 88,
+      "shared_nodes_exact": 89,
+      "cand_nodes_a": 89,
+      "cand_nodes_b": 89,
+      "near_only_a": 0,
+      "near_only_b": 0
+    },
+    {
+      "region_pair": [
+        3,
+        5
+      ],
+      "shared_edge_count": 88,
+      "shared_nodes_exact": 89,
+      "cand_nodes_a": 89,
+      "cand_nodes_b": 89,
+      "near_only_a": 0,
+      "near_only_b": 0
+    },
+    {
+      "region_pair": [
+        2,
+        7
+      ],
+      "shared_edge_count": 83,
+      "shared_nodes_exact": 84,
+      "cand_nodes_a": 84,
+      "cand_nodes_b": 84,
+      "near_only_a": 0,
+      "near_only_b": 0
+    },
+    {
+      "region_pair": [
+        1,
+        7
+      ],
+      "shared_edge_count": 83,
+      "shared_nodes_exact": 84,
+      "cand_nodes_a": 84,
+      "cand_nodes_b": 84,
+      "near_only_a": 0,
+      "near_only_b": 0
+    },
+    {
+      "region_pair": [
+        2,
+        9
+      ],
+      "shared_edge_count": 69,
+      "shared_nodes_exact": 70,
+      "cand_nodes_a": 70,
+      "cand_nodes_b": 70,
+      "near_only_a": 0,
+      "near_only_b": 0
+    },
+    {
+      "region_pair": [
+        3,
+        9
+      ],
+      "shared_edge_count": 69,
+      "shared_nodes_exact": 70,
+      "cand_nodes_a": 70,
+      "cand_nodes_b": 70,
+      "near_only_a": 0,
+      "near_only_b": 0
+    },
+    {
+      "region_pair": [
+        2,
+        4
+      ],
+      "shared_edge_count": 61,
+      "shared_nodes_exact": 62,
+      "cand_nodes_a": 62,
+      "cand_nodes_b": 62,
+      "near_only_a": 0,
+      "near_only_b": 0
+    },
+    {
+      "region_pair": [
+        1,
+        4
+      ],
+      "shared_edge_count": 61,
+      "shared_nodes_exact": 62,
+      "cand_nodes_a": 62,
+      "cand_nodes_b": 62,
+      "near_only_a": 0,
+      "near_only_b": 0
+    },
+    {
+      "region_pair": [
+        2,
+        6
+      ],
+      "shared_edge_count": 25,
+      "shared_nodes_exact": 26,
+      "cand_nodes_a": 26,
+      "cand_nodes_b": 26,
+      "near_only_a": 0,
+      "near_only_b": 0
+    },
+    {
+      "region_pair": [
+        1,
+        6
+      ],
+      "shared_edge_count": 24,
+      "shared_nodes_exact": 25,
+      "cand_nodes_a": 25,
+      "cand_nodes_b": 25,
+      "near_only_a": 0,
+      "near_only_b": 0
+    },
+    {
+      "region_pair": [
+        2,
+        8
+      ],
+      "shared_edge_count": 12,
+      "shared_nodes_exact": 13,
+      "cand_nodes_a": 13,
+      "cand_nodes_b": 13,
+      "near_only_a": 0,
+      "near_only_b": 0
+    }
+  ]
+}

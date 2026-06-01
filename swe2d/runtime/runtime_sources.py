@@ -30,6 +30,10 @@ class SWE2DRuntimeSourceManager:
         rain_rate_si_to_model_callback: Callable[[Any], Any],
         internal_flow_source_cms_at_time_callback: Callable[[Any, float], Any],
         flow_si_to_model_callback: Callable[[Any], Any],
+        enable_source_volume_accounting: bool = True,
+        enable_boundary_flux_accounting: bool = True,
+        record_source_step_rows: bool = True,
+        record_boundary_flux_step_rows: bool = True,
     ):
         self._rain_rate_model = rain_rate_model
         self._thiessen_forcing = thiessen_forcing
@@ -44,6 +48,10 @@ class SWE2DRuntimeSourceManager:
         self._rain_rate_si_to_model = rain_rate_si_to_model_callback
         self._internal_flow_source_cms_at_time = internal_flow_source_cms_at_time_callback
         self._flow_si_to_model = flow_si_to_model_callback
+        self._enable_source_volume_accounting = bool(enable_source_volume_accounting)
+        self._enable_boundary_flux_accounting = bool(enable_boundary_flux_accounting)
+        self._record_source_step_rows = bool(record_source_step_rows)
+        self._record_boundary_flux_step_rows = bool(record_boundary_flux_step_rows)
 
         self.source_budget_model: Dict[str, float] = {
             "rain": 0.0,
@@ -86,6 +94,8 @@ class SWE2DRuntimeSourceManager:
         cell_source_model_local: Optional[np.ndarray],
         coupled_source_rate_local: Optional[np.ndarray],
     ) -> None:
+        if not self._enable_source_volume_accounting:
+            return
         dt_apply = max(0.0, float(dt_apply_s))
         if dt_apply <= 0.0 or self._n_area <= 0:
             return
@@ -120,19 +130,20 @@ class SWE2DRuntimeSourceManager:
                     self.source_budget_model["coupling"] += cpl_vol
 
         self._source_time_s = float(self._source_time_s + dt_apply)
-        self.source_step_rows_model.append(
-            {
-                "t_s": float(self._source_time_s),
-                "rain_vol_model": float(rain_vol) if np.isfinite(rain_vol) else 0.0,
-                "cell_vol_model": float(cell_vol) if np.isfinite(cell_vol) else 0.0,
-                "coupling_vol_model": float(cpl_vol) if np.isfinite(cpl_vol) else 0.0,
-                "source_total_vol_model": float(
-                    (rain_vol if np.isfinite(rain_vol) else 0.0)
-                    + (cell_vol if np.isfinite(cell_vol) else 0.0)
-                    + (cpl_vol if np.isfinite(cpl_vol) else 0.0)
-                ),
-            }
-        )
+        if self._record_source_step_rows:
+            self.source_step_rows_model.append(
+                {
+                    "t_s": float(self._source_time_s),
+                    "rain_vol_model": float(rain_vol) if np.isfinite(rain_vol) else 0.0,
+                    "cell_vol_model": float(cell_vol) if np.isfinite(cell_vol) else 0.0,
+                    "coupling_vol_model": float(cpl_vol) if np.isfinite(cpl_vol) else 0.0,
+                    "source_total_vol_model": float(
+                        (rain_vol if np.isfinite(rain_vol) else 0.0)
+                        + (cell_vol if np.isfinite(cell_vol) else 0.0)
+                        + (cpl_vol if np.isfinite(cpl_vol) else 0.0)
+                    ),
+                }
+            )
 
     def accumulate_boundary_flux_volume_model(
         self,
@@ -140,6 +151,8 @@ class SWE2DRuntimeSourceManager:
         bc_type_local: np.ndarray,
         bc_val_local: np.ndarray,
     ) -> None:
+        if not self._enable_boundary_flux_accounting:
+            return
         dt_apply = max(0.0, float(dt_apply_s))
         if dt_apply <= 0.0:
             return
@@ -170,7 +183,7 @@ class SWE2DRuntimeSourceManager:
             acc["q"] = float(acc["q"] + qv)
 
         self._boundary_flux_time_s = float(self._boundary_flux_time_s + dt_apply)
-        if group_acc:
+        if self._record_boundary_flux_step_rows and group_acc:
             for grp in sorted(group_acc):
                 vals = group_acc[grp]
                 self.boundary_flux_step_rows_model.append(

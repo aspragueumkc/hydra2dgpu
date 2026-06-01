@@ -74,6 +74,24 @@ def mesh_cell_min_bed(mesh_data: Dict[str, np.ndarray]) -> np.ndarray:
     return np.min(node_z[tri], axis=1).astype(np.float64)
 
 
+def mesh_cell_solver_bed(mesh_data: Dict[str, np.ndarray]) -> np.ndarray:
+    """Cell bed elevation consistent with solver cell_zb (mean vertex bed)."""
+    node_z = mesh_data["node_z"]
+    if "cell_face_offsets" in mesh_data and "cell_face_nodes" in mesh_data:
+        offs = mesh_data["cell_face_offsets"].astype(np.int32)
+        faces = mesh_data["cell_face_nodes"].astype(np.int32)
+        out = np.zeros(offs.size - 1, dtype=np.float64)
+        for i in range(offs.size - 1):
+            s = int(offs[i])
+            e = int(offs[i + 1])
+            ids = faces[s:e]
+            if ids.size:
+                out[i] = float(np.mean(node_z[ids]))
+        return out
+    tri = mesh_data["cell_nodes"].reshape(-1, 3).astype(np.int32)
+    return np.mean(node_z[tri], axis=1).astype(np.float64)
+
+
 def inflow_adjacent_cells(
     mesh_data: Dict[str, np.ndarray],
     bc_n0: np.ndarray,

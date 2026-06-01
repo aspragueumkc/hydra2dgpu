@@ -103,6 +103,7 @@ from swe2d.mesh.mesh_runtime_logic import (
     mesh_cell_areas as _mesh_cell_areas_logic,
     mesh_cell_centroids as _mesh_cell_centroids_logic,
     mesh_cell_min_bed as _mesh_cell_min_bed_logic,
+    mesh_cell_solver_bed as _mesh_cell_solver_bed_logic,
 )
 
 from swe2d.boundary_and_forcing.spatial_forcing_qgis_adapter import (
@@ -1236,15 +1237,22 @@ class SWE2DModelGeoPackageExplorerDialog(QtWidgets.QDialog):
 
     def _table_kind(self, name: str) -> str:
         t = str(name or "").strip().lower()
-        if t in ("swe2d_run_logs",):
+        if t == "swe2d_run_logs" or t.endswith("_swe2d_run_logs"):
             return "run_log"
-        if t.startswith("swe2d_line_results"):
+        if t.startswith("swe2d_line_results") or "_swe2d_line_results" in t:
             return "line_results"
-        if t.startswith("swe2d_coupling_results"):
+        if t.startswith("swe2d_coupling_results") or "_swe2d_coupling_results" in t:
             return "coupling_results"
-        if t.startswith("swe2d_mesh_results") or t in ("swe2d_face_flux_results", "swe2d_face_results", "swe2d_flux_faces"):
+        if t.startswith("swe2d_mesh_results") or t.endswith("_swe2d_mesh_results") or t in ("swe2d_face_flux_results", "swe2d_face_results", "swe2d_flux_faces"):
             return "mesh_results"
-        if t.startswith("swe2d_conservation") or t.startswith("swe2d_boundary_flux_forensics") or t.startswith("swe2d_source_budget_forensics"):
+        if (
+            t.startswith("swe2d_conservation")
+            or t.startswith("swe2d_boundary_flux_forensics")
+            or t.startswith("swe2d_source_budget_forensics")
+            or "_swe2d_conservation" in t
+            or "_swe2d_boundary_flux_forensics" in t
+            or "_swe2d_source_budget_forensics" in t
+        ):
             return "conservation"
         if t.startswith("gpkg_") or t.startswith("sqlite_") or t.startswith("rtree_"):
             return "system"
@@ -1427,7 +1435,8 @@ class SWE2DLineResultsViewerDialog(QtWidgets.QDialog):
         ("velocity_ms", "Velocity ({L}/s)"),
         ("wse_m", "Water Surface ({L})"),
         ("bed_m", "Bed ({L})"),
-        ("flow_cms", "Flow ({Q})"),
+        ("flow_cms", "Flow FV Face ({Q})"),
+        ("flow_cell_cms", "Flow Cell ({Q})"),
     ]
 
     _PLOT_OPTIONS = [
@@ -1435,7 +1444,8 @@ class SWE2DLineResultsViewerDialog(QtWidgets.QDialog):
         ("Velocity", "velocity_ms"),
         ("Water Surface", "wse_m"),
         ("Bed", "bed_m"),
-        ("Flow", "flow_cms"),
+        ("Flow FV Face", "flow_cms"),
+        ("Flow Cell", "flow_cell_cms"),
     ]
 
     _PROFILE_OPTIONS = [
@@ -1480,6 +1490,7 @@ class SWE2DLineResultsViewerDialog(QtWidgets.QDialog):
         self._columns = [(k, lbl.format(L=l_unit, Q=q_unit)) for k, lbl in self._BASE_COLUMNS]
         self._plot_canvas = None
         self._plot_fig = None
+        self._mpl_motion_cid = None
 
         root = QtWidgets.QVBoxLayout(self)
 
@@ -1562,6 +1573,8 @@ class SWE2DLineResultsViewerDialog(QtWidgets.QDialog):
         root.addWidget(split, stretch=1)
 
         buttons = QtWidgets.QDialogButtonBox(QtWidgets.QDialogButtonBox.StandardButton.Close)
+        export_btn = buttons.addButton("Export Table CSV...", QtWidgets.QDialogButtonBox.ButtonRole.ActionRole)
+        export_btn.clicked.connect(self._export_current_table_csv)
         buttons.rejected.connect(self.reject)
         buttons.accepted.connect(self.accept)
         root.addWidget(buttons)
@@ -1571,9 +1584,11 @@ class SWE2DLineResultsViewerDialog(QtWidgets.QDialog):
         self._sync_control_visibility()
         self._refresh_table()
         self._refresh_plot()
+        self._notify_parent_line_selection()
 
         self.line_combo.currentIndexChanged.connect(self._refresh_table)
         self.line_combo.currentIndexChanged.connect(self._refresh_plot)
+        self.line_combo.currentIndexChanged.connect(self._notify_parent_line_selection)
         self.metric_combo.currentIndexChanged.connect(self._refresh_plot)
         self.profile_metric_combo.currentIndexChanged.connect(self._refresh_plot)
         self.time_combo.currentIndexChanged.connect(self._refresh_table)
@@ -1583,6 +1598,14 @@ class SWE2DLineResultsViewerDialog(QtWidgets.QDialog):
         self.view_mode_combo.currentIndexChanged.connect(self._sync_control_visibility)
         self.view_mode_combo.currentIndexChanged.connect(self._refresh_table)
         self.view_mode_combo.currentIndexChanged.connect(self._refresh_plot)
+        self.view_mode_combo.currentIndexChanged.connect(self._notify_parent_line_selection)
+        self.finished.connect(self._notify_parent_closed)
+
+        if self._have_mpl and self._plot_canvas is not None:
+            try:
+                self._mpl_motion_cid = self._plot_canvas.mpl_connect("motion_notify_event", self._on_plot_hover)
+            except Exception:
+                self._mpl_motion_cid = None
 
     def _unit_label_for_metric(self, metric: str) -> str:
         m = str(metric or "")
@@ -1590,7 +1613,7 @@ class SWE2DLineResultsViewerDialog(QtWidgets.QDialog):
             return self._length_unit
         if m == "velocity_ms":
             return f"{self._length_unit}/s"
-        if m == "flow_cms":
+        if m in ("flow_cms", "flow_cell_cms", "flow_fv_cms"):
             return self._flow_unit
         if m == "flow_qn":
             return f"{self._length_unit}^2/s"
@@ -1685,6 +1708,13 @@ class SWE2DLineResultsViewerDialog(QtWidgets.QDialog):
         return out
 
     def _refresh_table(self):
+        def _fmt(v):
+            if v is None:
+                return ""
+            if isinstance(v, float):
+                return f"{v:.6f}" if np.isfinite(v) else ""
+            return str(v)
+
         mode = str(self.view_mode_combo.currentData())
         if mode == "time":
             rows = self._filtered_records()
@@ -1695,7 +1725,7 @@ class SWE2DLineResultsViewerDialog(QtWidgets.QDialog):
             for r, rec in enumerate(rows):
                 for c, (key, _) in enumerate(self._columns):
                     val = rec.get(key)
-                    txt = f"{val:.6f}" if isinstance(val, float) else str(val)
+                    txt = _fmt(val)
                     self.table.setItem(r, c, QtWidgets.QTableWidgetItem(txt))
             return
 
@@ -1719,7 +1749,7 @@ class SWE2DLineResultsViewerDialog(QtWidgets.QDialog):
         for r, rec in enumerate(rows):
             for c, (key, _) in enumerate(cols):
                 val = rec.get(key)
-                txt = f"{val:.6f}" if isinstance(val, float) else str(val)
+                txt = _fmt(val)
                 self.table.setItem(r, c, QtWidgets.QTableWidgetItem(txt))
 
     def _refresh_plot(self):
@@ -1880,6 +1910,86 @@ class SWE2DLineResultsViewerDialog(QtWidgets.QDialog):
         ax.legend(loc="best")
         ax.grid(True, alpha=0.3)
         self._plot_canvas.draw_idle()
+
+    def _table_rows_for_export(self) -> Tuple[List[str], List[List[str]]]:
+        headers = [str(self.table.horizontalHeaderItem(i).text()) if self.table.horizontalHeaderItem(i) is not None else f"col_{i}" for i in range(self.table.columnCount())]
+        rows: List[List[str]] = []
+        for r in range(self.table.rowCount()):
+            row = []
+            for c in range(self.table.columnCount()):
+                it = self.table.item(r, c)
+                row.append(str(it.text()) if it is not None else "")
+            rows.append(row)
+        return headers, rows
+
+    def _export_current_table_csv(self):
+        default_name = f"line_results_{self._run_id}.csv" if self._run_id else "line_results.csv"
+        out_path, _ = QtWidgets.QFileDialog.getSaveFileName(
+            self,
+            "Export Current Table to CSV",
+            default_name,
+            "CSV files (*.csv)",
+        )
+        if not out_path:
+            return
+        if not out_path.lower().endswith(".csv"):
+            out_path += ".csv"
+        headers, rows = self._table_rows_for_export()
+        try:
+            with open(out_path, "w", newline="", encoding="utf-8") as f:
+                w = csv.writer(f)
+                w.writerow(headers)
+                w.writerows(rows)
+            QtWidgets.QMessageBox.information(self, "Export CSV", f"Exported {len(rows)} row(s) to:\n{out_path}")
+        except Exception as exc:
+            QtWidgets.QMessageBox.warning(self, "Export CSV", f"Failed to export CSV:\n{exc}")
+
+    def _notify_parent_line_selection(self, *_):
+        self._notify_parent_hover_station(None)
+        p = self.parent()
+        if p is None or not hasattr(p, "_on_line_viewer_selection_changed"):
+            return
+        try:
+            p._on_line_viewer_selection_changed(self._line_filter())
+        except Exception:
+            pass
+
+    def _notify_parent_hover_station(self, station_m: Optional[float]):
+        p = self.parent()
+        if p is None or not hasattr(p, "_on_line_viewer_hover_station"):
+            return
+        try:
+            p._on_line_viewer_hover_station(self._line_filter(), station_m)
+        except Exception:
+            pass
+
+    def _notify_parent_closed(self, *_):
+        self._notify_parent_hover_station(None)
+        p = self.parent()
+        if p is None or not hasattr(p, "_on_line_viewer_selection_changed"):
+            return
+        try:
+            p._on_line_viewer_selection_changed(None)
+        except Exception:
+            pass
+
+    def _on_plot_hover(self, event):
+        mode = str(self.view_mode_combo.currentData())
+        if mode not in ("profile", "wse_bed"):
+            self._notify_parent_hover_station(None)
+            return
+        if event is None or event.inaxes is None or event.xdata is None:
+            self._notify_parent_hover_station(None)
+            return
+        try:
+            station_m = float(event.xdata)
+        except Exception:
+            self._notify_parent_hover_station(None)
+            return
+        if not np.isfinite(station_m):
+            self._notify_parent_hover_station(None)
+            return
+        self._notify_parent_hover_station(station_m)
 
 
 class SWE2DCouplingResultsViewerDialog(QtWidgets.QDialog):
@@ -2162,12 +2272,20 @@ class SWE2DCouplingResultsViewerDialog(QtWidgets.QDialog):
 class SWE2DRunLogViewerDialog(QtWidgets.QDialog):
     """Viewer for saved SWE2D run logs stored in GeoPackage/SQLite."""
 
-    def __init__(self, records: List[Dict[str, object]], run_id: str, db_path: str, parent=None):
+    def __init__(
+        self,
+        records: List[Dict[str, object]],
+        run_id: str,
+        db_path: str,
+        parent=None,
+        apply_run_settings_callback=None,
+    ):
         super().__init__(parent)
         self.setWindowTitle("SWE2D Run Log Viewer")
         self.resize(900, 620)
         self._records = list(records)
         self._db_path = str(db_path)
+        self._apply_run_settings_callback = apply_run_settings_callback
 
         root = QtWidgets.QVBoxLayout(self)
         root.addWidget(QtWidgets.QLabel(f"Source: {self._db_path}"))
@@ -2188,6 +2306,13 @@ class SWE2DRunLogViewerDialog(QtWidgets.QDialog):
         root.addWidget(self.text, stretch=1)
 
         buttons = QtWidgets.QDialogButtonBox(QtWidgets.QDialogButtonBox.StandardButton.Close)
+        self._apply_btn = None
+        if callable(self._apply_run_settings_callback):
+            self._apply_btn = buttons.addButton(
+                "Apply Inputs To UI",
+                QtWidgets.QDialogButtonBox.ButtonRole.ActionRole,
+            )
+            self._apply_btn.clicked.connect(self._apply_selected_run_settings)
         buttons.rejected.connect(self.reject)
         buttons.accepted.connect(self.accept)
         root.addWidget(buttons)
@@ -2198,6 +2323,13 @@ class SWE2DRunLogViewerDialog(QtWidgets.QDialog):
             self.run_combo.setCurrentIndex(idx)
         self.run_combo.currentIndexChanged.connect(self._refresh_view)
         self._refresh_view()
+
+    def _selected_record(self) -> Optional[Dict[str, object]]:
+        rid = str(self.run_combo.currentData() or "")
+        for rec in self._records:
+            if str(rec.get("run_id", "") or "") == rid:
+                return rec
+        return None
 
     def _populate_run_combo(self):
         self.run_combo.clear()
@@ -2210,11 +2342,7 @@ class SWE2DRunLogViewerDialog(QtWidgets.QDialog):
 
     def _refresh_view(self):
         rid = str(self.run_combo.currentData() or "")
-        rec = None
-        for r in self._records:
-            if str(r.get("run_id", "") or "") == rid:
-                rec = r
-                break
+        rec = self._selected_record()
         if rec is None:
             self.meta_lbl.setText("No run selected.")
             self.text.setPlainText("")
@@ -2226,6 +2354,35 @@ class SWE2DRunLogViewerDialog(QtWidgets.QDialog):
             f"Duration: {float(rec.get('duration_s', 0.0) or 0.0):.2f} s"
         )
         self.text.setPlainText(str(rec.get("log_text", "") or ""))
+
+    def _apply_selected_run_settings(self) -> None:
+        if not callable(self._apply_run_settings_callback):
+            return
+        rec = self._selected_record()
+        if rec is None:
+            QtWidgets.QMessageBox.information(self, "Run Inputs", "No run record selected.")
+            return
+        metadata = rec.get("metadata")
+        if not isinstance(metadata, dict):
+            QtWidgets.QMessageBox.information(self, "Run Inputs", "Selected run has no metadata payload.")
+            return
+        try:
+            restored = int(self._apply_run_settings_callback(metadata) or 0)
+        except Exception as exc:
+            QtWidgets.QMessageBox.warning(self, "Run Inputs", f"Failed to apply saved inputs: {exc}")
+            return
+        if restored <= 0:
+            QtWidgets.QMessageBox.information(
+                self,
+                "Run Inputs",
+                "Selected run metadata does not include restorable workbench inputs.",
+            )
+            return
+        QtWidgets.QMessageBox.information(
+            self,
+            "Run Inputs",
+            f"Applied {restored} saved input setting(s) to the workbench UI.",
+        )
 
 
 class SWE2DDetachedRuntimeLogDialog(QtWidgets.QDialog):
@@ -2960,6 +3117,14 @@ class SWE2DWorkbenchDialog(QtWidgets.QDialog):
             self._bc_value_spins[side] = spin
             self._bc_ts_edits[side] = ts_edit
 
+            # Expose boundary controls as direct attributes so the generic
+            # workbench-state persistence auto-discovery (vars(self)) can
+            # save/restore values across QGIS sessions.
+            setattr(self, f"{side}_bc_type_combo", cb)
+            setattr(self, f"{side}_bc_value_spin", spin)
+            setattr(self, f"{side}_bc_hydrograph_edit", ts_edit)
+            setattr(self, f"{side}_bc_editor_btn", edit_btn)
+
         self.bc_lines_layer_combo = _find_or_create_combo("bc_lines_layer_combo")
         if self.bc_lines_layer_combo.count() == 0:
             self.bc_lines_layer_combo.addItem("(none)", None)
@@ -3137,6 +3302,16 @@ class SWE2DWorkbenchDialog(QtWidgets.QDialog):
         self.import_mesh_layers_btn = _find_or_create_button("import_mesh_layers_btn", "Load Mesh From Selected Layers")
         self.terrain_to_nodes_btn = _find_or_create_button("terrain_to_nodes_btn", "Assign Node Z From Terrain")
         self.pull_node_z_btn = _find_or_create_button("pull_node_z_btn", "Pull Node Z From Nodes Layer")
+
+        # Keep labels explicit even when loaded from a .ui shell with older text.
+        self.terrain_to_nodes_btn.setText("Assign Mesh Node Z From Terrain")
+        self.pull_node_z_btn.setText("Pull Mesh Node Z From Nodes Layer")
+        self.terrain_to_nodes_btn.setToolTip(
+            "Sample the selected terrain raster directly at in-memory mesh nodes and update mesh node_z."
+        )
+        self.pull_node_z_btn.setToolTip(
+            "Legacy workflow: read bed_z values from the selected nodes layer into in-memory mesh node_z."
+        )
 
         if map_actions_layout.indexOf(self.create_lumped_gpkg_btn) < 0:
             map_actions_layout.addWidget(self.create_lumped_gpkg_btn, 0, 0, 1, 2)
@@ -3914,7 +4089,13 @@ class SWE2DWorkbenchDialog(QtWidgets.QDialog):
                     dlg.append_text(msg_txt)
             except Exception:
                 pass
-        QtWidgets.QApplication.processEvents()
+        # Avoid pumping the Qt event loop on every log line; the run loop
+        # already performs throttled processEvents calls for UI responsiveness.
+        now = time.perf_counter()
+        last = float(getattr(self, "_last_log_process_events_wall", 0.0) or 0.0)
+        if (now - last) >= 0.10:
+            QtWidgets.QApplication.processEvents()
+            self._last_log_process_events_wall = now
 
     def _render_workbench_mesh_view(self, ax, mode: str) -> None:
         if self._mesh_data is None:
@@ -5015,7 +5196,7 @@ class SWE2DWorkbenchDialog(QtWidgets.QDialog):
             "memory",
         )
         structures = QgsVectorLayer(
-            f"LineString?crs={crs_auth}&field=structure_id:string(64)&field=structure_type:integer&field=crest_elev:double&field=enabled:integer&field=width:double&field=height:double&field=diameter:double&field=length:double&field=roughness_n:double&field=coeff:double&field=cd:double&field=opening:double&field=q_pump:double&field=max_flow:double",
+            f"LineString?crs={crs_auth}&field=structure_id:string(64)&field=structure_type:integer&field=crest_elev:double&field=enabled:integer&field=width:double&field=height:double&field=diameter:double&field=culvert_shape:string(32)&field=culvert_code:integer&field=culvert_rise:double&field=culvert_span:double&field=culvert_area_m2:double&field=culvert_barrels:integer&field=culvert_slope:double&field=inlet_invert_elev:double&field=outlet_invert_elev:double&field=entrance_loss_k:double&field=exit_loss_k:double&field=embankment_enabled:integer&field=embankment_crest_elev:double&field=embankment_overflow_width:double&field=embankment_weir_coeff:double&field=length:double&field=roughness_n:double&field=coeff:double&field=cd:double&field=opening:double&field=q_pump:double&field=max_flow:double",
             "SWE2D_Structures",
             "memory",
         )
@@ -5363,13 +5544,48 @@ class SWE2DWorkbenchDialog(QtWidgets.QDialog):
     def _assign_node_z_from_terrain(self):
         if not _HAVE_QGIS_CORE:
             return
-        nodes_layer = self._combo_layer(self.nodes_layer_combo, "vector")
         raster_layer = self._combo_layer(self.terrain_layer_combo, "raster")
-        if nodes_layer is None:
-            self._log("Select a nodes point layer first.")
-            return
         if raster_layer is None:
             self._log("Select a terrain raster layer first.")
+            return
+
+        provider = raster_layer.dataProvider()
+
+        # Preferred path: sample directly onto in-memory mesh nodes so large
+        # meshes do not require export/edit/re-import layer workflows.
+        if self._mesh_data is not None:
+            node_x = np.asarray(self._mesh_data.get("node_x", np.empty(0)), dtype=np.float64).ravel()
+            node_y = np.asarray(self._mesh_data.get("node_y", np.empty(0)), dtype=np.float64).ravel()
+            if node_x.size <= 0 or node_y.size <= 0:
+                self._log("Mesh node coordinates are unavailable; regenerate or load a mesh first.")
+                return
+            n = int(min(node_x.size, node_y.size))
+            node_z = np.asarray(self._mesh_data.get("node_z", np.zeros(n, dtype=np.float64)), dtype=np.float64).ravel()
+            if node_z.size < n:
+                node_z = np.pad(node_z, (0, n - node_z.size), mode="constant")
+            elif node_z.size > n:
+                node_z = node_z[:n]
+
+            sampled = 0
+            for i in range(n):
+                val, ok = provider.sample(QgsPointXY(float(node_x[i]), float(node_y[i])), 1)
+                if ok:
+                    node_z[i] = float(val)
+                    sampled += 1
+
+            self._mesh_data["node_z"] = node_z.astype(np.float64, copy=False)
+            self._result_data = None
+            if hasattr(self, "_reset_runtime_snapshot_overlay_cache"):
+                self._reset_runtime_snapshot_overlay_cache("terrain Z assigned to mesh nodes")
+            self._log(f"Assigned terrain node_z for {sampled}/{n} mesh nodes (direct mesh update).")
+            self.layer_status_lbl.setText("Terrain Z assigned directly to in-memory mesh nodes.")
+            self._refresh_plot()
+            return
+
+        # Legacy fallback when operating on map layers without an active mesh.
+        nodes_layer = self._combo_layer(self.nodes_layer_combo, "vector")
+        if nodes_layer is None:
+            self._log("Generate/load a mesh first, or select a nodes point layer for legacy workflow.")
             return
 
         field_names = nodes_layer.fields().names()
@@ -5377,7 +5593,6 @@ class SWE2DWorkbenchDialog(QtWidgets.QDialog):
             nodes_layer.dataProvider().addAttributes([QgsField("bed_z", QVariant.Double)])
             nodes_layer.updateFields()
 
-        provider = raster_layer.dataProvider()
         z_idx = nodes_layer.fields().indexOf("bed_z")
         changed = {}
         sampled = 0
@@ -5394,7 +5609,7 @@ class SWE2DWorkbenchDialog(QtWidgets.QDialog):
         if changed:
             nodes_layer.dataProvider().changeAttributeValues(changed)
             nodes_layer.triggerRepaint()
-        self._log(f"Assigned terrain bed_z for {sampled} node features.")
+        self._log(f"Assigned terrain bed_z for {sampled} node features (nodes layer workflow).")
         self.layer_status_lbl.setText("Terrain Z assigned to nodes layer bed_z field.")
 
     def _pull_node_z_from_layer(self):
@@ -5440,6 +5655,10 @@ class SWE2DWorkbenchDialog(QtWidgets.QDialog):
         assert self._mesh_data is not None
         return _mesh_cell_min_bed_logic(self._mesh_data)
 
+    def _mesh_cell_solver_bed(self) -> np.ndarray:
+        assert self._mesh_data is not None
+        return _mesh_cell_solver_bed_logic(self._mesh_data)
+
     def _mesh_cell_polygons(self) -> List[QgsGeometry]:
         assert self._mesh_data is not None
         node_x = self._mesh_data["node_x"]
@@ -5474,7 +5693,24 @@ class SWE2DWorkbenchDialog(QtWidgets.QDialog):
 
     def _build_line_sampling_map(self) -> List[Dict[str, object]]:
         from swe2d.workbench.monolith_methods import _build_line_sampling_map as _logic
-        return _logic(self)
+        smap = _logic(self)
+        try:
+            self._line_sampling_map_cache = list(smap or [])
+            by_line: Dict[int, np.ndarray] = {}
+            for sm in self._line_sampling_map_cache:
+                try:
+                    lid = int(sm.get("line_id", -1))
+                except Exception:
+                    continue
+                seg = np.asarray(sm.get("flux_face_segments", np.empty((0, 4))), dtype=np.float64)
+                if seg.ndim != 2 or seg.shape[1] != 4 or seg.size <= 0:
+                    continue
+                by_line[lid] = seg
+            self._line_flux_face_segments_by_line = by_line
+        except Exception:
+            self._line_sampling_map_cache = []
+            self._line_flux_face_segments_by_line = {}
+        return smap
 
     def _sample_line_metrics(
         self,
@@ -5519,13 +5755,49 @@ class SWE2DWorkbenchDialog(QtWidgets.QDialog):
             qn = np.where(wet, hh * normal_v, 0.0)
             flow_wx = np.asarray(sm.get("flow_wx", []), dtype=np.float64)
             flow_wy = np.asarray(sm.get("flow_wy", []), dtype=np.float64)
+            flow_cell_cms = float("nan")
             if flow_wx.size == idx.size and flow_wy.size == idx.size:
                 # Exact per-cell line-integral weights from local segment orientation.
                 # Q = sum(h * (u dot n) * ds), where flow_wx/flow_wy carry n*ds.
-                flow_cms = float(np.sum(np.where(wet, hh * (uu * flow_wx + vv * flow_wy), 0.0)))
+                flow_cell_cms = float(np.sum(np.where(wet, hh * (uu * flow_wx + vv * flow_wy), 0.0)))
             else:
                 # Fallback uses averaged segment lengths per sampled cell.
-                flow_cms = float(np.sum(qn * w))
+                flow_cell_cms = float(np.sum(qn * w))
+
+            # Finite-volume face-based approximation: project sample-line normal
+            # integral weights onto nearest mesh faces and use face-centered
+            # momentum (averaged from adjacent cells).
+            flow_fv_cms = float("nan")
+            f_idx = np.asarray(sm.get("flux_face_idx", []), dtype=np.int32)
+            f_wx = np.asarray(sm.get("flux_face_wx", []), dtype=np.float64)
+            f_wy = np.asarray(sm.get("flux_face_wy", []), dtype=np.float64)
+            f_c0 = np.asarray(sm.get("flux_face_c0", []), dtype=np.int32)
+            f_c1 = np.asarray(sm.get("flux_face_c1", []), dtype=np.int32)
+            if (
+                f_idx.size > 0
+                and f_wx.size == f_idx.size
+                and f_wy.size == f_idx.size
+                and f_c0.size == f_idx.size
+                and f_c1.size == f_idx.size
+            ):
+                c0 = np.asarray(f_c0, dtype=np.int32)
+                c1 = np.asarray(f_c1, dtype=np.int32)
+                valid_c0 = (c0 >= 0) & (c0 < h.size)
+                valid_c1 = (c1 >= 0) & (c1 < h.size)
+                hu_f = np.zeros(f_idx.size, dtype=np.float64)
+                hv_f = np.zeros(f_idx.size, dtype=np.float64)
+                if np.any(valid_c0):
+                    hu_f[valid_c0] = hu[c0[valid_c0]]
+                    hv_f[valid_c0] = hv[c0[valid_c0]]
+                both = valid_c0 & valid_c1
+                if np.any(both):
+                    hu_f[both] = 0.5 * (hu[c0[both]] + hu[c1[both]])
+                    hv_f[both] = 0.5 * (hv[c0[both]] + hv[c1[both]])
+                valid_face = valid_c0 | valid_c1
+                if np.any(valid_face):
+                    flow_fv_cms = float(np.sum((hu_f[valid_face] * f_wx[valid_face]) + (hv_f[valid_face] * f_wy[valid_face])))
+
+            flow_cms = flow_fv_cms if np.isfinite(flow_fv_cms) else flow_cell_cms
             fr_arr = np.where(wet, vel / np.sqrt(np.maximum(g * hh, 1.0e-12)), 0.0)
 
             out_ts.append(
@@ -5538,33 +5810,100 @@ class SWE2DWorkbenchDialog(QtWidgets.QDialog):
                     "wse_m": wse_m,
                     "bed_m": bed_m,
                     "flow_cms": flow_cms,
+                    "flow_cell_cms": flow_cell_cms,
+                    "flow_fv_cms": flow_fv_cms,
                     "wet_frac": float(np.mean(wet.astype(np.float64))),
                     "fr": float(np.mean(fr_arr)),
                 }
             )
 
-            sta = np.asarray(sm.get("station_m", np.arange(idx.size, dtype=np.float64)), dtype=np.float64)
-            if sta.size != idx.size:
-                sta = np.linspace(0.0, float(idx.size - 1), idx.size, dtype=np.float64)
-            for j in range(idx.size):
-                out_prof.append(
-                    {
-                        "t_s": float(t_s),
-                        "line_id": int(sm["line_id"]),
-                        "line_name": str(sm.get("line_name", "") or ""),
-                        "station_m": float(sta[j]),
-                        "depth_m": float(hh[j]),
-                        "velocity_ms": float(vel[j]),
-                        "wse_m": float(hh[j] + zb[j]),
-                        "bed_m": float(zb[j]),
-                        "flow_qn": float(qn[j]),
-                        "wet": int(bool(wet[j])),
-                        "fr": float(fr_arr[j]),
-                    }
-                )
+            p_sta = np.asarray(sm.get("profile_station_m", np.empty(0, dtype=np.float64)), dtype=np.float64)
+            p_idx = np.asarray(sm.get("profile_cell_idx", np.empty((0, 0), dtype=np.int32)), dtype=np.int32)
+            p_w = np.asarray(sm.get("profile_cell_w", np.empty((0, 0), dtype=np.float64)), dtype=np.float64)
+
+            use_hi_fidelity = (
+                p_sta.ndim == 1
+                and p_sta.size > 0
+                and p_idx.ndim == 2
+                and p_w.ndim == 2
+                and p_idx.shape == p_w.shape
+                and p_idx.shape[0] == p_sta.size
+            )
+
+            if use_hi_fidelity:
+                valid = p_idx >= 0
+                safe_idx = np.where(valid, p_idx, 0)
+                ww = np.where(valid, p_w, 0.0)
+                wsum = np.sum(ww, axis=1)
+                good = np.isfinite(wsum) & (wsum > 0.0)
+
+                h_nei = h[safe_idx]
+                hu_nei = hu[safe_idx]
+                hv_nei = hv[safe_idx]
+                zb_nei = cell_bed[safe_idx]
+
+                hh_p = np.where(good, np.sum(h_nei * ww, axis=1) / np.maximum(wsum, 1.0e-12), np.nan)
+                huu_p = np.where(good, np.sum(hu_nei * ww, axis=1) / np.maximum(wsum, 1.0e-12), np.nan)
+                hvv_p = np.where(good, np.sum(hv_nei * ww, axis=1) / np.maximum(wsum, 1.0e-12), np.nan)
+                zb_p = np.where(good, np.sum(zb_nei * ww, axis=1) / np.maximum(wsum, 1.0e-12), np.nan)
+
+                wet_p = good & np.isfinite(hh_p) & (hh_p > h_min)
+                safe_h_p = np.maximum(hh_p, 1.0e-12)
+                uu_p = np.where(wet_p, huu_p / safe_h_p, 0.0)
+                vv_p = np.where(wet_p, hvv_p / safe_h_p, 0.0)
+                vel_p = np.where(wet_p, np.sqrt(uu_p * uu_p + vv_p * vv_p), 0.0)
+                qn_p = np.where(wet_p, hh_p * (uu_p * float(sm["normal_x"]) + vv_p * float(sm["normal_y"])), 0.0)
+                fr_p = np.where(wet_p, vel_p / np.sqrt(np.maximum(g * hh_p, 1.0e-12)), 0.0)
+
+                for j in range(p_sta.size):
+                    if not np.isfinite(p_sta[j]):
+                        continue
+                    out_prof.append(
+                        {
+                            "t_s": float(t_s),
+                            "line_id": int(sm["line_id"]),
+                            "line_name": str(sm.get("line_name", "") or ""),
+                            "station_m": float(p_sta[j]),
+                            "depth_m": float(hh_p[j]) if np.isfinite(hh_p[j]) else float("nan"),
+                            "velocity_ms": float(vel_p[j]) if np.isfinite(vel_p[j]) else float("nan"),
+                            "wse_m": float(hh_p[j] + zb_p[j]) if np.isfinite(hh_p[j]) and np.isfinite(zb_p[j]) else float("nan"),
+                            "bed_m": float(zb_p[j]) if np.isfinite(zb_p[j]) else float("nan"),
+                            "flow_qn": float(qn_p[j]) if np.isfinite(qn_p[j]) else float("nan"),
+                            "wet": int(bool(wet_p[j])),
+                            "fr": float(fr_p[j]) if np.isfinite(fr_p[j]) else float("nan"),
+                        }
+                    )
+            else:
+                sta = np.asarray(sm.get("station_m", np.arange(idx.size, dtype=np.float64)), dtype=np.float64)
+                if sta.size != idx.size:
+                    sta = np.linspace(0.0, float(idx.size - 1), idx.size, dtype=np.float64)
+                for j in range(idx.size):
+                    out_prof.append(
+                        {
+                            "t_s": float(t_s),
+                            "line_id": int(sm["line_id"]),
+                            "line_name": str(sm.get("line_name", "") or ""),
+                            "station_m": float(sta[j]),
+                            "depth_m": float(hh[j]),
+                            "velocity_ms": float(vel[j]),
+                            "wse_m": float(hh[j] + zb[j]),
+                            "bed_m": float(zb[j]),
+                            "flow_qn": float(qn[j]),
+                            "wet": int(bool(wet[j])),
+                            "fr": float(fr_arr[j]),
+                        }
+                    )
         return out_ts, out_prof
 
     def _current_line_results_storage_path(self) -> str:
+        path_edit = getattr(self, "results_gpkg_path_edit", None)
+        if path_edit is not None:
+            override_raw = str(path_edit.text() or "").strip()
+            if override_raw:
+                override = os.path.abspath(os.path.expanduser(override_raw))
+                parent_dir = os.path.dirname(override) or "."
+                if os.path.isdir(parent_dir):
+                    return override
         if self._model_gpkg_path and os.path.exists(self._model_gpkg_path):
             return self._model_gpkg_path
         if hasattr(self, "sample_lines_layer_combo"):
@@ -5602,17 +5941,43 @@ class SWE2DWorkbenchDialog(QtWidgets.QDialog):
         conn = sqlite3.connect(gpkg_path)
         try:
             cur = conn.cursor()
-            cur.execute(
-                "SELECT name FROM sqlite_master WHERE type='table' AND name='swe2d_line_results_ts'"
-            )
-            if cur.fetchone() is None:
+            def _table_exists(name: str) -> bool:
+                cur.execute(
+                    "SELECT name FROM sqlite_master WHERE type='table' AND name=?",
+                    (str(name),),
+                )
+                return cur.fetchone() is not None
+
+            ts_candidates = [
+                self._results_table_name("swe2d_line_results_ts"),
+                "swe2d_line_results_ts",
+            ]
+            ts_table = ""
+            for cand in ts_candidates:
+                if _table_exists(cand):
+                    ts_table = str(cand)
+                    break
+            if not ts_table:
                 return "", [], []
+
+            runs_candidates = [
+                self._results_table_name("swe2d_line_results_runs"),
+                "swe2d_line_results_runs",
+            ]
+            runs_table = ""
+            for cand in runs_candidates:
+                if _table_exists(cand):
+                    runs_table = str(cand)
+                    break
 
             chosen = str(run_id or "").strip()
             if not chosen:
+                if not runs_table:
+                    return "", [], []
+                q_runs = runs_table.replace('"', '""')
                 cur.execute(
-                    """
-                    SELECT run_id FROM swe2d_line_results_runs
+                    f"""
+                    SELECT run_id FROM \"{q_runs}\"
                     ORDER BY datetime(created_utc) DESC, rowid DESC
                     LIMIT 1
                     """
@@ -5622,10 +5987,12 @@ class SWE2DWorkbenchDialog(QtWidgets.QDialog):
                     return "", [], []
                 chosen = str(row[0])
 
+            q_ts = ts_table.replace('"', '""')
+
             cur.execute(
-                """
+                f"""
                 SELECT t_s, line_id, line_name, depth_m, velocity_ms, wse_m, bed_m, flow_cms, wet_frac, fr
-                FROM swe2d_line_results_ts
+                FROM \"{q_ts}\"
                 WHERE run_id = ?
                 ORDER BY t_s ASC, line_id ASC
                 """,
@@ -5649,14 +6016,21 @@ class SWE2DWorkbenchDialog(QtWidgets.QDialog):
                 )
 
             profile_rows: List[Dict[str, object]] = []
-            cur.execute(
-                "SELECT name FROM sqlite_master WHERE type='table' AND name='swe2d_line_results_profile'"
-            )
-            if cur.fetchone() is not None:
+            profile_candidates = [
+                self._results_table_name("swe2d_line_results_profile"),
+                "swe2d_line_results_profile",
+            ]
+            profile_table = ""
+            for cand in profile_candidates:
+                if _table_exists(cand):
+                    profile_table = str(cand)
+                    break
+            if profile_table:
+                q_profile = profile_table.replace('"', '""')
                 cur.execute(
-                    """
+                    f"""
                     SELECT t_s, line_id, line_name, station_m, depth_m, velocity_ms, wse_m, bed_m, flow_qn, wet, fr
-                    FROM swe2d_line_results_profile
+                    FROM \"{q_profile}\"
                     WHERE run_id = ?
                     ORDER BY line_id ASC, t_s ASC, station_m ASC
                     """,
@@ -5766,8 +6140,11 @@ class SWE2DWorkbenchDialog(QtWidgets.QDialog):
         self._sync_high_perf_overlay_data()
 
     def _on_high_perf_canvas_overlay_style_changed(self, *_):
+        field_key = str(self.high_perf_canvas_overlay_field_combo.currentData() or "depth") if hasattr(self, "high_perf_canvas_overlay_field_combo") else "depth"
         lock_canvas = bool(self.high_perf_canvas_overlay_lock_canvas_chk.isChecked())
         self.high_perf_canvas_overlay_res_combo.setEnabled(not lock_canvas)
+        if hasattr(self, "high_perf_canvas_overlay_wse_render_combo"):
+            self.high_perf_canvas_overlay_wse_render_combo.setEnabled(field_key == "wse")
         if hasattr(self, "high_perf_canvas_overlay_arrows_chk") and hasattr(self, "high_perf_canvas_overlay_arrow_density_spin"):
             arrows_on = bool(self.high_perf_canvas_overlay_arrows_chk.isChecked())
             self.high_perf_canvas_overlay_arrow_density_spin.setEnabled(arrows_on)
@@ -5836,9 +6213,18 @@ class SWE2DWorkbenchDialog(QtWidgets.QDialog):
                 from swe2d_high_perf_viewer import render_unstructured_snapshot_image
 
             field_key = str(self.high_perf_canvas_overlay_field_combo.currentData() or "depth")
+            wse_render_mode = (
+                str(getattr(self, "high_perf_canvas_overlay_wse_render_combo", None).currentData() or "cell")
+                if getattr(self, "high_perf_canvas_overlay_wse_render_combo", None) is not None
+                else "cell"
+            )
             cmap_key = str(self.high_perf_canvas_overlay_cmap_combo.currentData() or "turbo")
             auto_contrast = bool(self.high_perf_canvas_overlay_auto_contrast_chk.isChecked())
             lock_canvas = bool(self.high_perf_canvas_overlay_lock_canvas_chk.isChecked())
+            visible_only = bool(
+                getattr(self, "high_perf_canvas_overlay_visible_only_chk", None) is not None
+                and self.high_perf_canvas_overlay_visible_only_chk.isChecked()
+            )
             if lock_canvas:
                 canvas = self._resolve_map_canvas()
                 if canvas is not None:
@@ -5874,6 +6260,8 @@ class SWE2DWorkbenchDialog(QtWidgets.QDialog):
                     )
                 except Exception:
                     visible_extent_world = None
+
+            render_extent_world = visible_extent_world if (visible_only and visible_extent_world is not None) else None
             frame = render_unstructured_snapshot_image(
                 cell_x=self._high_perf_overlay_cell_x,
                 cell_y=self._high_perf_overlay_cell_y,
@@ -5885,6 +6273,7 @@ class SWE2DWorkbenchDialog(QtWidgets.QDialog):
                 timesteps=self._snapshot_timesteps,
                 current_time_s=float(t_use),
                 field_key=field_key,
+                wse_render_mode=wse_render_mode,
                 cmap_key=cmap_key,
                 resolution=res,
                 auto_contrast=auto_contrast,
@@ -5898,7 +6287,8 @@ class SWE2DWorkbenchDialog(QtWidgets.QDialog):
                 streamline_seed_count=streamline_seed_count,
                 streamline_steps=streamline_steps,
                 visible_extent_world=visible_extent_world,
-                show_legend=True,
+                render_extent_world=render_extent_world,
+                show_legend=False,
                 legend_label=(
                     f"Depth ({self._length_unit_name})" if field_key == "depth"
                     else (f"Velocity ({self._length_unit_name}/s)" if field_key == "speed"
@@ -5921,6 +6311,36 @@ class SWE2DWorkbenchDialog(QtWidgets.QDialog):
                     pass
                 return
             item.set_frame(image, extent, opacity=opacity)
+            try:
+                item.set_legend(
+                    enabled=True,
+                    cmap_key=cmap_key,
+                    vmin=float(frame.get("vmin", 0.0)),
+                    vmax=float(frame.get("vmax", 1.0)),
+                    label=(
+                        f"Depth ({self._length_unit_name})" if field_key == "depth"
+                        else (f"Velocity ({self._length_unit_name}/s)" if field_key == "speed"
+                        else f"Water Surface ({self._length_unit_name})")
+                    ),
+                )
+            except Exception:
+                pass
+            try:
+                face_seg = np.asarray(getattr(self, "_line_viewer_face_segments_world", np.empty((0, 4))), dtype=np.float64)
+                if hasattr(item, "set_face_segments"):
+                    item.set_face_segments(face_seg)
+            except Exception:
+                pass
+            try:
+                hover_pt = getattr(self, "_line_viewer_hover_point_world", None)
+                hover_station = getattr(self, "_line_viewer_hover_station_m", None)
+                hover_label = ""
+                if hover_station is not None and np.isfinite(float(hover_station)):
+                    hover_label = f"Sta {float(hover_station):.2f} {self._length_unit_name}"
+                if hasattr(item, "set_station_indicator"):
+                    item.set_station_indicator(hover_pt, hover_label)
+            except Exception:
+                pass
             iface = self._resolve_qgis_iface()
             if iface is not None and hasattr(iface, "mapCanvas"):
                 try:
@@ -5929,6 +6349,82 @@ class SWE2DWorkbenchDialog(QtWidgets.QDialog):
                     pass
         except Exception as exc:
             self._log(f"[HighPerf Overlay] refresh failed: {exc}")
+
+    def _on_line_viewer_selection_changed(self, line_id: Optional[int]) -> None:
+        try:
+            if not hasattr(self, "_line_flux_face_segments_by_line") or not getattr(self, "_line_flux_face_segments_by_line", {}):
+                self._build_line_sampling_map()
+            seg_map = getattr(self, "_line_flux_face_segments_by_line", {}) or {}
+            lid = int(line_id) if line_id is not None else None
+            if lid is None:
+                self._line_viewer_face_segments_world = np.empty((0, 4), dtype=np.float64)
+            else:
+                self._line_viewer_face_segments_world = np.asarray(seg_map.get(lid, np.empty((0, 4))), dtype=np.float64)
+        except Exception:
+            self._line_viewer_face_segments_world = np.empty((0, 4), dtype=np.float64)
+        self._refresh_high_perf_canvas_overlay(None)
+
+    def _sample_line_world_point_at_station(self, line_id: int, station_m: float) -> Optional[Tuple[float, float]]:
+        if not _HAVE_QGIS_CORE or not hasattr(self, "sample_lines_layer_combo"):
+            return None
+        line_layer = self._combo_layer(self.sample_lines_layer_combo, "vector")
+        if line_layer is None:
+            return None
+        fields = set(line_layer.fields().names())
+        id_field = "line_id" if "line_id" in fields else None
+        if id_field is None:
+            return None
+        for ft in line_layer.getFeatures():
+            try:
+                if int(ft[id_field]) != int(line_id):
+                    continue
+            except Exception:
+                continue
+            geom = ft.geometry()
+            if geom is None or geom.isEmpty():
+                return None
+            line_len = float(geom.length())
+            if line_len <= 0.0:
+                return None
+            try:
+                p0 = geom.interpolate(0.0).asPoint()
+                p1 = geom.interpolate(max(0.0, line_len - 1.0e-9)).asPoint()
+                start_key = (float(p0.x()), float(p0.y()))
+                end_key = (float(p1.x()), float(p1.y()))
+                orient_sign = 1.0 if end_key >= start_key else -1.0
+            except Exception:
+                orient_sign = 1.0
+            s = float(station_m)
+            s = max(0.0, min(float(line_len), s))
+            raw_s = (float(line_len) - s) if orient_sign < 0.0 else s
+            try:
+                p = geom.interpolate(float(raw_s)).asPoint()
+                return (float(p.x()), float(p.y()))
+            except Exception:
+                return None
+        return None
+
+    def _on_line_viewer_hover_station(self, line_id: Optional[int], station_m: Optional[float]) -> None:
+        self._line_viewer_hover_station_m = None
+        self._line_viewer_hover_point_world = None
+        try:
+            if line_id is None or station_m is None:
+                self._refresh_high_perf_canvas_overlay(None)
+                return
+            s = float(station_m)
+            if not np.isfinite(s):
+                self._refresh_high_perf_canvas_overlay(None)
+                return
+            pt = self._sample_line_world_point_at_station(int(line_id), s)
+            if pt is None:
+                self._refresh_high_perf_canvas_overlay(None)
+                return
+            self._line_viewer_hover_station_m = float(s)
+            self._line_viewer_hover_point_world = (float(pt[0]), float(pt[1]))
+        except Exception:
+            self._line_viewer_hover_station_m = None
+            self._line_viewer_hover_point_world = None
+        self._refresh_high_perf_canvas_overlay(None)
 
     def _activate_sample_line_draw_tool(self):
         """Activate map-canvas tool for drawing one sample line."""
@@ -6071,7 +6567,7 @@ class SWE2DWorkbenchDialog(QtWidgets.QDialog):
             h = np.asarray(result_data.get("h"), dtype=np.float64).ravel()
             hu = np.asarray(result_data.get("hu"), dtype=np.float64).ravel()
             hv = np.asarray(result_data.get("hv"), dtype=np.float64).ravel()
-            cell_bed = np.asarray(self._mesh_cell_min_bed(), dtype=np.float64).ravel()
+            cell_bed = np.asarray(self._mesh_cell_solver_bed(), dtype=np.float64).ravel()
         except Exception as exc:
             self._log(f"Sample line refresh skipped (state decode failed): {exc}")
             return
@@ -6698,6 +7194,10 @@ class SWE2DWorkbenchDialog(QtWidgets.QDialog):
         if not chosen or not rows:
             self._log("No sampled line results found in GeoPackage yet.")
             return
+        try:
+            self._build_line_sampling_map()
+        except Exception:
+            pass
         dlg = SWE2DLineResultsViewerDialog(
             ts_records=rows,
             profile_records=profile_rows,
@@ -6783,20 +7283,37 @@ class SWE2DWorkbenchDialog(QtWidgets.QDialog):
             try:
                 hh = np.ascontiguousarray(h, dtype=np.float64).ravel()
                 cell_wse = hh + np.asarray(coupling_controller.cell_bed_m, dtype=np.float64).ravel()
-                flows = list(structures_mod.structure_flows(cell_wse))
+                details = list(structures_mod.structure_details(cell_wse))
                 for i, st in enumerate(structures_mod.cfg.structures):
                     sid = str(st.structure_id)
-                    q = float(flows[i]) if i < len(flows) else 0.0
-                    rows.append(
-                        {
-                            "t_s": float(t_s),
-                            "component": "structure",
-                            "object_id": sid,
-                            "object_name": str(st.structure_type.name).lower(),
-                            "metric": "flow",
-                            "value": q,
-                        }
-                    )
+                    detail = details[i] if i < len(details) else {}
+                    base_name = str(st.structure_type.name).lower()
+                    metric_map = {
+                        "flow": float(detail.get("flow_cms", 0.0) or 0.0),
+                    }
+                    if base_name == "culvert":
+                        metric_map.update(
+                            {
+                                "inlet_control_flow_cms": float(detail.get("inlet_control_flow_cms", 0.0) or 0.0),
+                                "outlet_control_flow_cms": float(detail.get("outlet_control_flow_cms", 0.0) or 0.0),
+                                "orifice_cap_cms": float(detail.get("orifice_cap_cms", 0.0) or 0.0),
+                                "manning_cap_cms": float(detail.get("manning_cap_cms", 0.0) or 0.0),
+                                "embankment_flow_cms": float(detail.get("embankment_flow_cms", 0.0) or 0.0),
+                                "available_head_up_m": float(detail.get("available_head_up_m", 0.0) or 0.0),
+                                "tailwater_depth_m": float(detail.get("tailwater_depth_m", 0.0) or 0.0),
+                            }
+                        )
+                    for metric_name, metric_value in metric_map.items():
+                        rows.append(
+                            {
+                                "t_s": float(t_s),
+                                "component": "structure",
+                                "object_id": sid,
+                                "object_name": f"{base_name}:{str(detail.get('control_mode', 'none') or 'none')}",
+                                "metric": metric_name,
+                                "value": float(metric_value),
+                            }
+                        )
             except Exception:
                 pass
 
@@ -6811,12 +7328,20 @@ class SWE2DWorkbenchDialog(QtWidgets.QDialog):
     ) -> None:
         if not gpkg_path or not rows:
             return
+        runs_table = self._results_table_name("swe2d_coupling_results_runs")
+        data_table = self._results_table_name("swe2d_coupling_results")
+
+        def _q(name: str) -> str:
+            return '"' + str(name).replace('"', '""') + '"'
+
+        q_runs = _q(runs_table)
+        q_data = _q(data_table)
         conn = sqlite3.connect(gpkg_path)
         try:
             cur = conn.cursor()
             cur.execute(
-                """
-                CREATE TABLE IF NOT EXISTS swe2d_coupling_results_runs (
+                f"""
+                CREATE TABLE IF NOT EXISTS {q_runs} (
                     run_id TEXT PRIMARY KEY,
                     created_utc TEXT,
                     interval_s REAL,
@@ -6825,8 +7350,8 @@ class SWE2DWorkbenchDialog(QtWidgets.QDialog):
                 """
             )
             cur.execute(
-                """
-                CREATE TABLE IF NOT EXISTS swe2d_coupling_results (
+                f"""
+                CREATE TABLE IF NOT EXISTS {q_data} (
                     run_id TEXT,
                     t_s REAL,
                     component TEXT,
@@ -6839,19 +7364,19 @@ class SWE2DWorkbenchDialog(QtWidgets.QDialog):
                 """
             )
             cur.execute(
-                "CREATE INDEX IF NOT EXISTS idx_swe2d_coupling_run_component_metric_obj_t "
-                "ON swe2d_coupling_results(run_id, component, metric, object_id, t_s)"
+                f"CREATE INDEX IF NOT EXISTS idx_{data_table}_run_component_metric_obj_t "
+                f"ON {q_data}(run_id, component, metric, object_id, t_s)"
             )
-            cur.execute("DELETE FROM swe2d_coupling_results WHERE run_id = ?", (run_id,))
+            cur.execute(f"DELETE FROM {q_data} WHERE run_id = ?", (run_id,))
             cur.execute(
-                """
-                INSERT OR REPLACE INTO swe2d_coupling_results_runs
+                f"""
+                INSERT OR REPLACE INTO {q_runs}
                 (run_id, created_utc, interval_s, row_count)
                 VALUES (?, ?, ?, ?)
                 """,
                 (
                     str(run_id),
-                    datetime.datetime.utcnow().replace(microsecond=0).isoformat() + "Z",
+                    datetime.datetime.now().astimezone().replace(microsecond=0).isoformat(),
                     float(interval_s),
                     int(len(rows)),
                 ),
@@ -6869,8 +7394,8 @@ class SWE2DWorkbenchDialog(QtWidgets.QDialog):
                 for r in rows
             ]
             cur.executemany(
-                """
-                INSERT OR REPLACE INTO swe2d_coupling_results
+                f"""
+                INSERT OR REPLACE INTO {q_data}
                 (run_id, t_s, component, object_id, object_name, metric, value)
                 VALUES (?, ?, ?, ?, ?, ?, ?)
                 """,
@@ -6906,10 +7431,11 @@ class SWE2DWorkbenchDialog(QtWidgets.QDialog):
         run_id: str,
         mesh_rows: List[Dict[str, object]],
         interval_s: float,
+        table_name: str = "swe2d_mesh_results",
     ) -> None:
         from swe2d.workbench.extracted.results_export_methods import persist_mesh_results_to_geopackage
 
-        return persist_mesh_results_to_geopackage(self, gpkg_path, run_id, mesh_rows, interval_s)
+        return persist_mesh_results_to_geopackage(self, gpkg_path, run_id, mesh_rows, interval_s, table_name=table_name)
 
     def _persist_conservation_forensics_to_geopackage(
         self,
@@ -6958,6 +7484,7 @@ class SWE2DWorkbenchDialog(QtWidgets.QDialog):
             duration_s=duration_s,
             log_text=log_text,
             metadata=metadata,
+            table_prefix=self._selected_results_table_prefix(),
         )
         if not ok:
             return
@@ -6969,7 +7496,10 @@ class SWE2DWorkbenchDialog(QtWidgets.QDialog):
         self,
         gpkg_path: str,
     ) -> List[Dict[str, object]]:
-        return _load_run_logs_from_geopackage_logic(gpkg_path=gpkg_path)
+        return _load_run_logs_from_geopackage_logic(
+            gpkg_path=gpkg_path,
+            table_prefix=self._selected_results_table_prefix(),
+        )
 
     def _open_run_log_viewer(self):
         from swe2d.workbench.extracted.results_export_methods import open_run_log_viewer
@@ -7553,6 +8083,21 @@ class SWE2DWorkbenchDialog(QtWidgets.QDialog):
                 "width",
                 "height",
                 "diameter",
+                "culvert_shape",
+                "culvert_code",
+                "culvert_rise",
+                "culvert_span",
+                "culvert_area_m2",
+                "culvert_barrels",
+                "culvert_slope",
+                "inlet_invert_elev",
+                "outlet_invert_elev",
+                "entrance_loss_k",
+                "exit_loss_k",
+                "embankment_enabled",
+                "embankment_crest_elev",
+                "embankment_overflow_width",
+                "embankment_weir_coeff",
                 "length",
                 "roughness_n",
                 "coeff",
@@ -7575,10 +8120,13 @@ class SWE2DWorkbenchDialog(QtWidgets.QDialog):
                 "pier_width",
             ):
                 if key in fields and ft[key] not in (None, ""):
-                    try:
-                        metadata[key] = float(ft[key])
-                    except Exception:
-                        pass
+                    if key in ("culvert_shape",):
+                        metadata[key] = str(ft[key])
+                    else:
+                        try:
+                            metadata[key] = float(ft[key])
+                        except Exception:
+                            pass
             metadata["axis_x0"] = float(p0.x())
             metadata["axis_y0"] = float(p0.y())
             metadata["axis_x1"] = float(p1.x())
@@ -7970,7 +8518,7 @@ class SWE2DWorkbenchDialog(QtWidgets.QDialog):
                 """
             )
 
-            now = datetime.datetime.utcnow().replace(microsecond=0).isoformat() + "Z"
+            now = datetime.datetime.now().astimezone().replace(microsecond=0).isoformat()
             cur.execute(
                 "INSERT OR REPLACE INTO swe2d_model_metadata(key, value, updated_utc) VALUES (?, ?, ?)",
                 ("swe2d_coupling_schema_version", str(_MODEL_LAYER_BINDINGS_VERSION), now),
@@ -8304,12 +8852,34 @@ class SWE2DWorkbenchDialog(QtWidgets.QDialog):
                 "3D Patch Viewer uses in-memory 3D patch snapshots captured during run."
             )
 
-            if self._line_snapshot_rows:
-                gpkg_results_path = self._current_line_results_storage_path()
-                if gpkg_results_path:
-                    snap_run_id = datetime.datetime.utcnow().strftime("swe2d_snapshot_%Y%m%dT%H%M%SZ")
-                    mesh_interval_s = max(1.0, self._parse_time_hours(self.output_interval_edit.text()) * 3600.0)
-                    line_interval_s = max(1.0, self._parse_time_hours(self.line_output_interval_edit.text()) * 3600.0)
+            gpkg_results_path = self._current_line_results_storage_path()
+            if gpkg_results_path:
+                snap_run_id = datetime.datetime.now().astimezone().strftime("swe2d_snapshot_%Y%m%dT%H%M%S%z")
+                mesh_interval_s = max(1.0, self._parse_time_hours(self.output_interval_edit.text()) * 3600.0)
+                line_interval_s = max(1.0, self._parse_time_hours(self.line_output_interval_edit.text()) * 3600.0)
+
+                if bool(getattr(self, "save_mesh_results_to_gpkg_chk", None) is None or self.save_mesh_results_to_gpkg_chk.isChecked()):
+                    mesh_rows = self._build_mesh_snapshot_rows()
+                    if mesh_rows:
+                        mesh_table_name = "swe2d_mesh_results"
+                        if hasattr(self, "_selected_mesh_results_table_name"):
+                            try:
+                                mesh_table_name = str(self._selected_mesh_results_table_name() or "swe2d_mesh_results")
+                            except Exception:
+                                mesh_table_name = "swe2d_mesh_results"
+                        self._persist_mesh_results_to_geopackage(
+                            gpkg_results_path,
+                            snap_run_id,
+                            mesh_rows,
+                            interval_s=mesh_interval_s,
+                            table_name=mesh_table_name,
+                        )
+                        self._log(
+                            f"Mesh snapshot stored → {gpkg_results_path} "
+                            f"(table={mesh_table_name}, rows={len(mesh_rows)}, run_id={snap_run_id})"
+                        )
+
+                if self._line_snapshot_rows:
                     self._persist_line_results_to_geopackage(
                         gpkg_results_path,
                         snap_run_id,
@@ -9129,6 +9699,99 @@ class SWE2DWorkbenchDialog(QtWidgets.QDialog):
     def _on_cancel(self):
         self._cancel_requested = True
         self._log("Cancellation requested...")
+
+    def _on_select_results_gpkg(self) -> None:
+        default_path = str(self._current_line_results_storage_path() or "")
+        if not os.path.exists(default_path):
+            default_path = str(self._model_gpkg_path or "")
+        gpkg_path, _ = QtWidgets.QFileDialog.getOpenFileName(
+            self,
+            "Select Existing Results GeoPackage",
+            default_path,
+            "GeoPackage (*.gpkg)",
+        )
+        if not gpkg_path:
+            return
+        if not os.path.exists(gpkg_path):
+            QtWidgets.QMessageBox.warning(
+                self,
+                "Results GeoPackage",
+                "Please select an existing GeoPackage file.",
+            )
+            return
+        if hasattr(self, "results_gpkg_path_edit") and self.results_gpkg_path_edit is not None:
+            self.results_gpkg_path_edit.setText(str(gpkg_path))
+        self._log(f"Results GeoPackage override set: {gpkg_path}")
+
+    def _selected_results_table_prefix(self) -> str:
+        raw = ""
+        if hasattr(self, "results_table_name_edit") and self.results_table_name_edit is not None:
+            raw = str(self.results_table_name_edit.text() or "").strip()
+        if not raw:
+            return ""
+        cleaned_chars = []
+        for ch in raw:
+            if ch.isalnum() or ch == "_":
+                cleaned_chars.append(ch)
+            else:
+                cleaned_chars.append("_")
+        cleaned = "".join(cleaned_chars).strip("_")
+        if not cleaned:
+            return ""
+        if not (cleaned[0].isalpha() or cleaned[0] == "_"):
+            cleaned = f"p_{cleaned}"
+        return cleaned
+
+    def _results_table_name(self, base_name: str) -> str:
+        base = str(base_name or "").strip() or "swe2d_mesh_results"
+        prefix = str(self._selected_results_table_prefix() or "").strip("_")
+        if not prefix:
+            return base
+        if base.startswith(prefix + "_"):
+            return base
+        return f"{prefix}_{base}"
+
+    # Back-compat shim for older call sites.
+    def _selected_mesh_results_table_name(self) -> str:
+        return self._results_table_name("swe2d_mesh_results")
+
+    def _apply_run_log_metadata_to_ui(self, metadata: Dict[str, object]) -> int:
+        if not isinstance(metadata, dict):
+            return 0
+        state_payload = metadata.get("workbench_widget_state")
+        if not isinstance(state_payload, dict):
+            return 0
+        widgets_data = state_payload.get("widgets")
+        restored = restore_workbench_widget_state(
+            ui=self,
+            widgets_data=widgets_data,
+            qtwidgets_module=QtWidgets,
+            log_callback=self._log,
+        )
+        try:
+            self._sync_experimental_3d_mode_widgets()
+        except Exception:
+            pass
+        self._log(f"Applied run metadata settings: restored_widgets={int(restored)}")
+        return int(restored)
+
+    def _on_load_run_settings_from_results(self) -> None:
+        db_path = str(self._current_line_results_storage_path() or "")
+        if not db_path or not os.path.exists(db_path):
+            self._log("Load run inputs skipped: results GeoPackage not found.")
+            return
+        records = self._load_run_logs_from_geopackage(db_path)
+        if not records:
+            self._log("Load run inputs skipped: no saved run logs found in selected GeoPackage.")
+            return
+        dlg = SWE2DRunLogViewerDialog(
+            records=records,
+            run_id=self._run_log_latest_run_id,
+            db_path=db_path,
+            parent=self,
+            apply_run_settings_callback=self._apply_run_log_metadata_to_ui,
+        )
+        dlg.exec()
 
     def _build_run_request(self):
         if SWE2DRunRequest is None:

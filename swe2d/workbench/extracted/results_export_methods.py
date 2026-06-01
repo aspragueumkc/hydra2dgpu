@@ -18,17 +18,43 @@ def load_coupling_results_from_geopackage(
     conn = sqlite3.connect(gpkg_path)
     try:
         cur = conn.cursor()
-        cur.execute(
-            "SELECT name FROM sqlite_master WHERE type='table' AND name='swe2d_coupling_results'"
-        )
-        if cur.fetchone() is None:
+        def _table_exists(name: str) -> bool:
+            cur.execute(
+                "SELECT name FROM sqlite_master WHERE type='table' AND name=?",
+                (str(name),),
+            )
+            return cur.fetchone() is not None
+
+        data_candidates = [
+            self._results_table_name("swe2d_coupling_results") if hasattr(self, "_results_table_name") else "swe2d_coupling_results",
+            "swe2d_coupling_results",
+        ]
+        data_table = ""
+        for cand in data_candidates:
+            if _table_exists(cand):
+                data_table = str(cand)
+                break
+        if not data_table:
             return "", []
+
+        runs_candidates = [
+            self._results_table_name("swe2d_coupling_results_runs") if hasattr(self, "_results_table_name") else "swe2d_coupling_results_runs",
+            "swe2d_coupling_results_runs",
+        ]
+        runs_table = ""
+        for cand in runs_candidates:
+            if _table_exists(cand):
+                runs_table = str(cand)
+                break
 
         chosen = str(run_id or "").strip()
         if not chosen:
+            if not runs_table:
+                return "", []
+            q_runs = runs_table.replace('"', '""')
             cur.execute(
-                """
-                SELECT run_id FROM swe2d_coupling_results_runs
+                f"""
+                SELECT run_id FROM \"{q_runs}\"
                 ORDER BY datetime(created_utc) DESC, rowid DESC
                 LIMIT 1
                 """
@@ -38,10 +64,12 @@ def load_coupling_results_from_geopackage(
                 return "", []
             chosen = str(row[0])
 
+        q_data = data_table.replace('"', '""')
+
         cur.execute(
-            """
+            f"""
             SELECT t_s, component, object_id, object_name, metric, value
-            FROM swe2d_coupling_results
+            FROM \"{q_data}\"
             WHERE run_id = ?
             ORDER BY t_s ASC, component ASC, metric ASC, object_id ASC
             """,
@@ -97,15 +125,30 @@ def persist_mesh_results_to_geopackage(
     run_id: str,
     mesh_rows: List[Dict[str, object]],
     interval_s: float,
+    table_name: str = "swe2d_mesh_results",
 ) -> None:
     if not gpkg_path or not mesh_rows:
         return
+    base_table_name = str(table_name or "swe2d_mesh_results").strip() or "swe2d_mesh_results"
+    if hasattr(self, "_results_table_name"):
+        try:
+            base_table_name = str(self._results_table_name(base_table_name) or base_table_name)
+        except Exception:
+            pass
+    runs_table_name = f"{base_table_name}_runs"
+
+    def _quote_ident(name: str) -> str:
+        return '"' + str(name).replace('"', '""') + '"'
+
+    q_table = _quote_ident(base_table_name)
+    q_runs = _quote_ident(runs_table_name)
+
     conn = sqlite3.connect(gpkg_path)
     try:
         cur = conn.cursor()
         cur.execute(
-            """
-            CREATE TABLE IF NOT EXISTS swe2d_mesh_results_runs (
+            f"""
+            CREATE TABLE IF NOT EXISTS {q_runs} (
                 run_id TEXT PRIMARY KEY,
                 created_utc TEXT,
                 interval_s REAL,
@@ -114,8 +157,8 @@ def persist_mesh_results_to_geopackage(
             """
         )
         cur.execute(
-            """
-            CREATE TABLE IF NOT EXISTS swe2d_mesh_results (
+            f"""
+            CREATE TABLE IF NOT EXISTS {q_table} (
                 run_id TEXT,
                 t_s REAL,
                 cell_id INTEGER,
@@ -127,26 +170,26 @@ def persist_mesh_results_to_geopackage(
             """
         )
         cur.execute(
-            "CREATE INDEX IF NOT EXISTS idx_swe2d_mesh_results_run_t_cell "
-            "ON swe2d_mesh_results(run_id, t_s, cell_id)"
+            f"CREATE INDEX IF NOT EXISTS idx_{base_table_name}_run_t_cell "
+            f"ON {q_table}(run_id, t_s, cell_id)"
         )
-        cur.execute("DELETE FROM swe2d_mesh_results WHERE run_id = ?", (run_id,))
+        cur.execute(f"DELETE FROM {q_table} WHERE run_id = ?", (run_id,))
         cur.execute(
-            """
-            INSERT OR REPLACE INTO swe2d_mesh_results_runs
+            f"""
+            INSERT OR REPLACE INTO {q_runs}
             (run_id, created_utc, interval_s, row_count)
             VALUES (?, ?, ?, ?)
             """,
             (
                 str(run_id),
-                datetime.datetime.utcnow().replace(microsecond=0).isoformat() + "Z",
+                datetime.datetime.now().astimezone().replace(microsecond=0).isoformat(),
                 float(interval_s),
                 int(len(mesh_rows)),
             ),
         )
         cur.executemany(
-            """
-            INSERT OR REPLACE INTO swe2d_mesh_results
+            f"""
+            INSERT OR REPLACE INTO {q_table}
             (run_id, t_s, cell_id, h, hu, hv)
             VALUES (?, ?, ?, ?, ?, ?)
             """,
@@ -163,7 +206,7 @@ def persist_mesh_results_to_geopackage(
             ],
         )
         conn.commit()
-        support = self._velocity_data_support_for_run(gpkg_path, run_id, "swe2d_mesh_results")
+        support = self._velocity_data_support_for_run(gpkg_path, run_id, base_table_name)
         if int(support.get("face_rows", 0)) > 0:
             self._log(
                 "Velocity persistence check: both cell-centered and face-centered data are present "
@@ -178,7 +221,7 @@ def persist_mesh_results_to_geopackage(
             )
         self._log(
             f"Stored mesh snapshot results in GeoPackage: {gpkg_path} "
-            f"(run_id={run_id}, rows={len(mesh_rows)})"
+            f"(run_id={run_id}, table={base_table_name}, rows={len(mesh_rows)})"
         )
     finally:
         conn.close()
@@ -270,6 +313,30 @@ def persist_conservation_forensics_to_geopackage(
     if not gpkg_path or not run_id:
         return
 
+    runs_table = "swe2d_conservation_runs"
+    storage_table = "swe2d_conservation_storage_ts"
+    boundary_table = "swe2d_boundary_flux_forensics_ts"
+    source_table = "swe2d_source_budget_forensics_ts"
+    if hasattr(self, "_results_table_name"):
+        try:
+            runs_table = str(self._results_table_name(runs_table) or runs_table)
+            storage_table = str(self._results_table_name(storage_table) or storage_table)
+            boundary_table = str(self._results_table_name(boundary_table) or boundary_table)
+            source_table = str(self._results_table_name(source_table) or source_table)
+        except Exception:
+            runs_table = "swe2d_conservation_runs"
+            storage_table = "swe2d_conservation_storage_ts"
+            boundary_table = "swe2d_boundary_flux_forensics_ts"
+            source_table = "swe2d_source_budget_forensics_ts"
+
+    def _q(name: str) -> str:
+        return '"' + str(name).replace('"', '""') + '"'
+
+    q_runs = _q(runs_table)
+    q_storage = _q(storage_table)
+    q_boundary = _q(boundary_table)
+    q_source = _q(source_table)
+
     l_scale = float(self._length_scale_si_to_model())
     vol_to_si = 1.0 / (l_scale ** 3)
     flow_to_si = vol_to_si
@@ -279,16 +346,16 @@ def persist_conservation_forensics_to_geopackage(
         cur = conn.cursor()
 
         def _ensure_columns(table_name: str, columns: Dict[str, str]) -> None:
-            cur.execute(f"PRAGMA table_info({table_name})")
+            cur.execute(f"PRAGMA table_info({_q(table_name)})")
             existing = {str(r[1]) for r in cur.fetchall()}
             for col_name, col_type in columns.items():
                 if str(col_name) in existing:
                     continue
-                cur.execute(f"ALTER TABLE {table_name} ADD COLUMN {col_name} {col_type}")
+                cur.execute(f"ALTER TABLE {_q(table_name)} ADD COLUMN {col_name} {col_type}")
 
         cur.execute(
-            """
-            CREATE TABLE IF NOT EXISTS swe2d_conservation_runs (
+            f"""
+            CREATE TABLE IF NOT EXISTS {q_runs} (
                 run_id TEXT PRIMARY KEY,
                 created_utc TEXT,
                 run_duration_s REAL,
@@ -325,7 +392,7 @@ def persist_conservation_forensics_to_geopackage(
             """
         )
         _ensure_columns(
-            "swe2d_conservation_runs",
+            runs_table,
             {
                 "boundary_face_flux_table": "TEXT",
                 "boundary_face_flux_status": "TEXT",
@@ -342,8 +409,8 @@ def persist_conservation_forensics_to_geopackage(
             },
         )
         cur.execute(
-            """
-            CREATE TABLE IF NOT EXISTS swe2d_conservation_storage_ts (
+            f"""
+            CREATE TABLE IF NOT EXISTS {q_storage} (
                 run_id TEXT,
                 t_s REAL,
                 storage_model REAL,
@@ -355,19 +422,19 @@ def persist_conservation_forensics_to_geopackage(
             """
         )
         _ensure_columns(
-            "swe2d_conservation_storage_ts",
+            storage_table,
             {
                 "storage_m3": "REAL",
                 "storage_delta_m3": "REAL",
             },
         )
         cur.execute(
-            "CREATE INDEX IF NOT EXISTS idx_swe2d_cons_storage_run_t "
-            "ON swe2d_conservation_storage_ts(run_id, t_s)"
+            f"CREATE INDEX IF NOT EXISTS idx_{storage_table}_run_t "
+            f"ON {q_storage}(run_id, t_s)"
         )
         cur.execute(
-            """
-            CREATE TABLE IF NOT EXISTS swe2d_boundary_flux_forensics_ts (
+            f"""
+            CREATE TABLE IF NOT EXISTS {q_boundary} (
                 run_id TEXT,
                 t_s REAL,
                 group_name TEXT,
@@ -385,7 +452,7 @@ def persist_conservation_forensics_to_geopackage(
             """
         )
         _ensure_columns(
-            "swe2d_boundary_flux_forensics_ts",
+            boundary_table,
             {
                 "q_requested_model": "REAL",
                 "q_effective_model": "REAL",
@@ -399,12 +466,12 @@ def persist_conservation_forensics_to_geopackage(
             },
         )
         cur.execute(
-            "CREATE INDEX IF NOT EXISTS idx_swe2d_cons_boundary_run_t_grp "
-            "ON swe2d_boundary_flux_forensics_ts(run_id, t_s, group_name)"
+            f"CREATE INDEX IF NOT EXISTS idx_{boundary_table}_run_t_grp "
+            f"ON {q_boundary}(run_id, t_s, group_name)"
         )
         cur.execute(
-            """
-            CREATE TABLE IF NOT EXISTS swe2d_source_budget_forensics_ts (
+            f"""
+            CREATE TABLE IF NOT EXISTS {q_source} (
                 run_id TEXT,
                 t_s REAL,
                 rain_vol_model REAL,
@@ -420,7 +487,7 @@ def persist_conservation_forensics_to_geopackage(
             """
         )
         _ensure_columns(
-            "swe2d_source_budget_forensics_ts",
+            source_table,
             {
                 "rain_vol_m3": "REAL",
                 "cell_vol_m3": "REAL",
@@ -429,13 +496,13 @@ def persist_conservation_forensics_to_geopackage(
             },
         )
         cur.execute(
-            "CREATE INDEX IF NOT EXISTS idx_swe2d_cons_source_run_t "
-            "ON swe2d_source_budget_forensics_ts(run_id, t_s)"
+            f"CREATE INDEX IF NOT EXISTS idx_{source_table}_run_t "
+            f"ON {q_source}(run_id, t_s)"
         )
 
-        cur.execute("DELETE FROM swe2d_conservation_storage_ts WHERE run_id = ?", (str(run_id),))
-        cur.execute("DELETE FROM swe2d_boundary_flux_forensics_ts WHERE run_id = ?", (str(run_id),))
-        cur.execute("DELETE FROM swe2d_source_budget_forensics_ts WHERE run_id = ?", (str(run_id),))
+        cur.execute(f"DELETE FROM {q_storage} WHERE run_id = ?", (str(run_id),))
+        cur.execute(f"DELETE FROM {q_boundary} WHERE run_id = ?", (str(run_id),))
+        cur.execute(f"DELETE FROM {q_source} WHERE run_id = ?", (str(run_id),))
 
         storage_batch = []
         for row in list(storage_rows or []):
@@ -454,8 +521,8 @@ def persist_conservation_forensics_to_geopackage(
             )
         if storage_batch:
             cur.executemany(
-                """
-                INSERT OR REPLACE INTO swe2d_conservation_storage_ts
+                f"""
+                INSERT OR REPLACE INTO {q_storage}
                 (run_id, t_s, storage_model, storage_delta_model, storage_m3, storage_delta_m3)
                 VALUES (?, ?, ?, ?, ?, ?)
                 """,
@@ -490,8 +557,8 @@ def persist_conservation_forensics_to_geopackage(
             )
         if boundary_batch:
             cur.executemany(
-                """
-                INSERT OR REPLACE INTO swe2d_boundary_flux_forensics_ts
+                f"""
+                INSERT OR REPLACE INTO {q_boundary}
                 (
                     run_id,
                     t_s,
@@ -533,8 +600,8 @@ def persist_conservation_forensics_to_geopackage(
             )
         if source_batch:
             cur.executemany(
-                """
-                INSERT OR REPLACE INTO swe2d_source_budget_forensics_ts
+                f"""
+                INSERT OR REPLACE INTO {q_source}
                 (
                     run_id,
                     t_s,
@@ -564,8 +631,8 @@ def persist_conservation_forensics_to_geopackage(
         closure_residual_model = float(source_total_model - storage_delta_model - implied_boundary_model)
 
         cur.execute(
-            """
-            INSERT OR REPLACE INTO swe2d_conservation_runs
+            f"""
+            INSERT OR REPLACE INTO {q_runs}
             (
                 run_id,
                 created_utc,
@@ -604,7 +671,7 @@ def persist_conservation_forensics_to_geopackage(
             """,
             (
                 str(run_id),
-                datetime.datetime.utcnow().replace(microsecond=0).isoformat() + "Z",
+                datetime.datetime.now().astimezone().replace(microsecond=0).isoformat(),
                 float(summary.get("run_duration_s", 0.0)),
                 float(summary.get("source_rain_model", 0.0)),
                 float(summary.get("source_cell_model", 0.0)),
@@ -690,6 +757,33 @@ def collect_run_log_metadata(self) -> Dict[str, object]:
         metadata["swe3d_geometry_gate"]["metrics"] = gate_metrics
     if gate_violations:
         metadata["swe3d_geometry_gate"]["violations"] = gate_violations
+
+    try:
+        persistable_classes = (
+            getattr(QtWidgets, "QSpinBox"),
+            getattr(QtWidgets, "QDoubleSpinBox"),
+            getattr(QtWidgets, "QComboBox"),
+            getattr(QtWidgets, "QCheckBox"),
+            getattr(QtWidgets, "QLineEdit"),
+        )
+        widget_attrs: List[str] = []
+        for attr_name, widget in vars(self).items():
+            if attr_name.startswith("_"):
+                continue
+            if isinstance(widget, persistable_classes):
+                widget_attrs.append(str(attr_name))
+        metadata["workbench_widget_state"] = collect_workbench_widget_state(
+            ui=self,
+            widget_attrs=widget_attrs,
+            qtwidgets_module=QtWidgets,
+        )
+    except Exception:
+        pass
+
+    try:
+        metadata["results_gpkg_path"] = str(self._current_line_results_storage_path() or "")
+    except Exception:
+        pass
     return metadata
 
 
@@ -711,6 +805,7 @@ def open_run_log_viewer(self) -> None:
         run_id=self._run_log_latest_run_id,
         db_path=db_path,
         parent=self,
+        apply_run_settings_callback=self._apply_run_log_metadata_to_ui,
     )
     dlg.exec()
 

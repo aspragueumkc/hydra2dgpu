@@ -91,7 +91,7 @@ struct SWE2DSolverConfig {
     double  depth_cap = 1.0e6;                 // hard upper bound on depth
     double  max_rel_depth_increase = 2.0;      // per-step limit: h <= h_old + rel*max(h_old,h_min)
     double  shallow_damping_depth = 1.0e-4;    // blend momentum to zero as h approaches h_min
-    int     gpu_diag_sync_interval_steps = 1;  // 1=sync diagnostics every step, N=every N steps, <=0 disables
+    int     gpu_diag_sync_interval_steps = 50; // 1=sync diagnostics every step, N=every N steps, <=0 disables
     int     degen_mode = 0; // 0=none, 1=skip (permanently inactive), 2=repair (neighbor-avg inv_area), 3=merge (redirect flux to neighbor)
 
     // Wet/dry front stability controls
@@ -107,6 +107,16 @@ struct SWE2DSolverConfig {
     double  source_depth_step_cap = 0.0;    // hard cap on positive source depth increment per step [depth], 0=off
     bool    source_true_subcycling = false; // true: apply real source sub-iterations per hydro step
     bool    source_imex_split = false;      // true: flux step first, then source+friction split substeps
+
+    // Tiny-N GPU execution controls (GPU-first perf tuning for small wet domains).
+    // 0=off, 1=auto, 2=fused(preferred tiny path), 3=persistent(experimental).
+    int     tiny_mode = 1;
+    int     tiny_cell_threshold = 8000;
+    int     tiny_edge_threshold = 24000;
+    int     tiny_wet_cell_threshold = 2000;
+    int     tiny_persistent_chunk_substeps = 8;
+    int     tiny_active_compaction_stride_steps = 8;
+    bool    tiny_enable_active_compaction = true;
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -141,6 +151,17 @@ struct SWE2DStepDiag {
     bool     projection_divergence_gate_enabled = false;
     double   projection_divergence_ratio_target = 1.0;
     double   projection_correction_scale_used = 1.5;
+
+    // Tiny-N telemetry.
+    int32_t  tiny_mode_requested = 0;
+    int32_t  tiny_mode_selected = 0;
+    int32_t  tiny_mode_effective = 0;
+    bool     tiny_mode_fallback = false;
+    int32_t  tiny_active_cells_est = 0;
+    int32_t  tiny_active_edges_est = 0;
+    int64_t  tiny_mode_fallback_count_total = 0;
+    int64_t  fused_path_steps_total = 0;
+    int64_t  persistent_path_steps_total = 0;
 };
 
 struct SWE2DNonhydroDiag {
@@ -245,6 +266,10 @@ struct SWE2DSolver {
     // ── Simulation time ──────────────────────────────────────────────────────
     double t = 0.0;
     uint64_t gpu_steps = 0;
+    int32_t last_wet_cells = -1;
+    uint64_t tiny_mode_fallback_count = 0;
+    uint64_t fused_path_steps = 0;
+    uint64_t persistent_path_steps = 0;
 
     // ── GPU state (null when CUDA unavailable or use_gpu=false) ─────────────
 #ifdef HYDRA_HAS_CUDA

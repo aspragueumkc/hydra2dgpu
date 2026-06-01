@@ -138,6 +138,31 @@ def _bind_model_tab_core_controls(self, model_tab_page: QtWidgets.QWidget, param
         "Higher values reduce host sync overhead but update diagnostics less often."
     )
 
+    self.tiny_mode_combo = _find_or_create_combo("tiny_mode_combo", "Tiny mode:")
+    if self.tiny_mode_combo.count() == 0:
+        self.tiny_mode_combo.addItem("Off (0)", 0)
+        self.tiny_mode_combo.addItem("Auto (1)", 1)
+        self.tiny_mode_combo.addItem("Fused (2)", 2)
+        self.tiny_mode_combo.addItem("Persistent (3)", 3)
+    tiny_mode_idx = self.tiny_mode_combo.findData(3)
+    if tiny_mode_idx >= 0:
+        self.tiny_mode_combo.setCurrentIndex(tiny_mode_idx)
+    self.tiny_mode_combo.setToolTip(
+        "Tiny-N dispatch mode for low-cell-count/low-wet runs.\n"
+        "0=off, 1=auto, 2=fused, 3=persistent.\n"
+        "Persistent (3) is recommended for minimizing kernel-launch overhead in GUI runs."
+    )
+
+    self.tiny_wet_cell_threshold_spin = _find_or_create_spin(
+        "tiny_wet_cell_threshold_spin", "Tiny active/wet cell threshold:"
+    )
+    self.tiny_wet_cell_threshold_spin.setRange(1, 10000000)
+    self.tiny_wet_cell_threshold_spin.setValue(2000)
+    self.tiny_wet_cell_threshold_spin.setToolTip(
+        "Maximum active/wet cell count used by tiny-mode dispatch gating.\n"
+        "Lower values limit tiny-mode activation to smaller wetted domains."
+    )
+
     self.enable_cuda_graphs_chk = _find_or_create_check(
         "enable_cuda_graphs_chk", "CUDA graph replay:", "Enable"
     )
@@ -145,6 +170,16 @@ def _bind_model_tab_core_controls(self, model_tab_page: QtWidgets.QWidget, param
     self.enable_cuda_graphs_chk.setToolTip(
         "Enable CUDA graph capture/replay for the core GPU step kernel chain.\n"
         "Can reduce launch overhead and improve throughput on compatible runs."
+    )
+
+    self.swe2d_perf_mode_chk = _find_or_create_check(
+        "swe2d_perf_mode_chk", "SWE2D perf mode:", "Enable"
+    )
+    self.swe2d_perf_mode_chk.setChecked(False)
+    self.swe2d_perf_mode_chk.setToolTip(
+        "Toggle BACKWATER_SWE2D_PERF_MODE for this run.\n"
+        "When enabled, reduces runtime logging cadence and disables per-step\n"
+        "source/boundary forensic accounting to minimize host overhead."
     )
 
 
@@ -1361,6 +1396,62 @@ def _bind_model_tab_3d_subgrid_drainage_controls(
         "falls back to CPU reference automatically if CUDA binding/device is unavailable."
     )
 
+    self.culvert_solver_mode_combo = _find_or_create_combo(
+        "culvert_solver_mode_combo", "Culvert solver mode:", param_form
+    )
+    prev_data = self.culvert_solver_mode_combo.currentData()
+    prev_text = self.culvert_solver_mode_combo.currentText()
+    self.culvert_solver_mode_combo.blockSignals(True)
+    try:
+        self.culvert_solver_mode_combo.clear()
+        self.culvert_solver_mode_combo.addItem("Direct culvert outlet solver (Newton/secant)", int(0))
+        self.culvert_solver_mode_combo.addItem("Precomputed culvert lookup table", int(1))
+        idx = self.culvert_solver_mode_combo.findData(prev_data)
+        if idx < 0 and prev_text:
+            idx = self.culvert_solver_mode_combo.findText(prev_text)
+        if idx < 0:
+            idx = 0
+        if idx >= 0:
+            self.culvert_solver_mode_combo.setCurrentIndex(idx)
+    finally:
+        self.culvert_solver_mode_combo.blockSignals(False)
+    self.culvert_solver_mode_combo.setToolTip(
+        "Select the native GPU culvert solver mode.\n"
+        "Direct: uses the outlet control solver per structure.\n"
+        "Lookup table: uses precomputed Q(hw,tw) tables when available.\n"
+        "Requires the native CUDA backend for GPU structure flow evaluation."
+    )
+
+    self.bridge_stacked_coupling_mode_combo = _find_or_create_combo(
+        "bridge_stacked_coupling_mode_combo", "Bridge stacked coupling mode:", param_form
+    )
+    prev_data = self.bridge_stacked_coupling_mode_combo.currentData()
+    prev_text = self.bridge_stacked_coupling_mode_combo.currentText()
+    self.bridge_stacked_coupling_mode_combo.blockSignals(True)
+    try:
+        self.bridge_stacked_coupling_mode_combo.clear()
+        self.bridge_stacked_coupling_mode_combo.addItem(
+            "Phase 3 spatial redistribution (recommended)", "phase3_spatial"
+        )
+        self.bridge_stacked_coupling_mode_combo.addItem(
+            "Legacy scalar weighting (backward-compatible)", "legacy_scalar"
+        )
+        idx = self.bridge_stacked_coupling_mode_combo.findData(prev_data)
+        if idx < 0 and prev_text:
+            idx = self.bridge_stacked_coupling_mode_combo.findText(prev_text)
+        if idx < 0:
+            idx = 0
+        if idx >= 0:
+            self.bridge_stacked_coupling_mode_combo.setCurrentIndex(idx)
+    finally:
+        self.bridge_stacked_coupling_mode_combo.blockSignals(False)
+    self.bridge_stacked_coupling_mode_combo.setToolTip(
+        "Select how stacked bridge geometry modifies bridge coupling sources.\n"
+        "Phase 3 spatial redistribution: attenuates and redistributes bridge source/sink\n"
+        "across stacked corridor cells while preserving total source conservation.\n"
+        "Legacy scalar weighting: multiplies helper bridge sources by one plan-scale factor."
+    )
+
     self.drainage_solver_mode_combo = _find_or_create_combo(
         "drainage_solver_mode_combo", "Drainage equation set:", param_form
     )
@@ -1658,6 +1749,66 @@ def _bind_run_tab_controls(self, run_tab_page: QtWidgets.QWidget) -> None:
     if snap_row.indexOf(self.snapshot_btn) < 0:
         snap_row.addWidget(self.snapshot_btn)
 
+    results_row = run_tab_page.findChild(QtWidgets.QHBoxLayout, "run_results_gpkg_row_layout")
+    if results_row is None:
+        results_row = QtWidgets.QHBoxLayout()
+        results_row.setObjectName("run_results_gpkg_row_layout")
+        run_layout.addLayout(results_row)
+
+    results_gpkg_lbl = run_tab_page.findChild(QtWidgets.QLabel, "results_gpkg_lbl")
+    if results_gpkg_lbl is None:
+        results_gpkg_lbl = QtWidgets.QLabel("Results GeoPackage:")
+        results_gpkg_lbl.setObjectName("results_gpkg_lbl")
+    if results_row.indexOf(results_gpkg_lbl) < 0:
+        results_row.addWidget(results_gpkg_lbl)
+
+    self.results_gpkg_path_edit = run_tab_page.findChild(QtWidgets.QLineEdit, "results_gpkg_path_edit")
+    if self.results_gpkg_path_edit is None:
+        self.results_gpkg_path_edit = QtWidgets.QLineEdit("")
+        self.results_gpkg_path_edit.setObjectName("results_gpkg_path_edit")
+    self.results_gpkg_path_edit.setPlaceholderText(
+        "Optional override (blank = model/sample-line/default fallback)"
+    )
+    if results_row.indexOf(self.results_gpkg_path_edit) < 0:
+        results_row.addWidget(self.results_gpkg_path_edit, stretch=1)
+
+    self.results_gpkg_browse_btn = run_tab_page.findChild(QtWidgets.QPushButton, "results_gpkg_browse_btn")
+    if self.results_gpkg_browse_btn is None:
+        self.results_gpkg_browse_btn = QtWidgets.QPushButton("Browse...")
+        self.results_gpkg_browse_btn.setObjectName("results_gpkg_browse_btn")
+    if results_row.indexOf(self.results_gpkg_browse_btn) < 0:
+        results_row.addWidget(self.results_gpkg_browse_btn)
+
+    self.load_run_settings_btn = run_tab_page.findChild(QtWidgets.QPushButton, "load_run_settings_btn")
+    if self.load_run_settings_btn is None:
+        self.load_run_settings_btn = QtWidgets.QPushButton("Load Inputs From Results...")
+        self.load_run_settings_btn.setObjectName("load_run_settings_btn")
+    if results_row.indexOf(self.load_run_settings_btn) < 0:
+        results_row.addWidget(self.load_run_settings_btn)
+
+    table_row = run_tab_page.findChild(QtWidgets.QHBoxLayout, "run_results_table_row_layout")
+    if table_row is None:
+        table_row = QtWidgets.QHBoxLayout()
+        table_row.setObjectName("run_results_table_row_layout")
+        run_layout.addLayout(table_row)
+
+    results_table_lbl = run_tab_page.findChild(QtWidgets.QLabel, "results_table_lbl")
+    if results_table_lbl is None:
+        results_table_lbl = QtWidgets.QLabel("Results table prefix:")
+        results_table_lbl.setObjectName("results_table_lbl")
+    else:
+        results_table_lbl.setText("Results table prefix:")
+    if table_row.indexOf(results_table_lbl) < 0:
+        table_row.addWidget(results_table_lbl)
+
+    self.results_table_name_edit = run_tab_page.findChild(QtWidgets.QLineEdit, "results_table_name_edit")
+    if self.results_table_name_edit is None:
+        self.results_table_name_edit = QtWidgets.QLineEdit("")
+        self.results_table_name_edit.setObjectName("results_table_name_edit")
+    self.results_table_name_edit.setPlaceholderText("Optional prefix, e.g. scenario_a")
+    if table_row.indexOf(self.results_table_name_edit) < 0:
+        table_row.addWidget(self.results_table_name_edit, stretch=1)
+
     self.cancel_btn.setEnabled(False)
 
     self.progress_bar.setRange(0, 100)
@@ -1683,12 +1834,32 @@ def _bind_run_tab_controls(self, run_tab_page: QtWidgets.QWidget) -> None:
         "Write all captured timesteps up to now to a temporary HEC-RAS HDF5 file.\n"
         "The file path is logged in the message panel."
     )
+    self.results_gpkg_path_edit.setToolTip(
+        "Optional output GeoPackage path for all run persistence tables\n"
+        "(run logs, mesh snapshots, line/coupling outputs, conservation forensics).\n"
+        "Leave blank to use the model GeoPackage fallback chain."
+    )
+    self.results_gpkg_browse_btn.setToolTip(
+        "Choose/create a GeoPackage target used for all persisted run outputs."
+    )
+    self.load_run_settings_btn.setToolTip(
+        "Open run logs from the selected results GeoPackage and apply saved\n"
+        "input widget settings from a prior run to the current UI."
+    )
+    self.results_table_name_edit.setToolTip(
+        "Optional prefix prepended to all persisted SWE2D results tables for this run.\n"
+        "Example: prefix 'scenario_a' writes tables such as\n"
+        "scenario_a_swe2d_mesh_results and scenario_a_swe2d_line_results_ts.\n"
+        "Leave blank to use default SWE2D table names."
+    )
 
     for btn, cb in (
         (self.run_btn, self._on_run_requested),
         (self.preview_overrides_btn, self._on_preview_overrides),
         (self.cancel_btn, self._on_cancel),
         (self.snapshot_btn, self._on_snapshot),
+        (self.results_gpkg_browse_btn, self._on_select_results_gpkg),
+        (self.load_run_settings_btn, self._on_load_run_settings_from_results),
     ):
         try:
             btn.clicked.disconnect(cb)
@@ -2067,6 +2238,7 @@ def _on_run(self):
         coupling_loop_mode = run_options.coupling_loop_mode
         drainage_solver_backend_mode = run_options.drainage_solver_backend_mode
         drainage_gpu_method_mode = run_options.drainage_gpu_method_mode
+        culvert_solver_mode = getattr(run_options, "culvert_solver_mode", 0)
         cuda_graphs_enabled = run_options.cuda_graphs_enabled
         experimental_3d_enabled = run_options.experimental_3d_enabled
         model_options = run_options.model_options
@@ -2127,7 +2299,9 @@ def _on_run(self):
                 coupling_loop=coupling_loop_mode,
                 drainage_solver_backend=drainage_solver_backend_mode,
                 drainage_gpu_method=drainage_gpu_method_mode,
+                culvert_solver_mode=culvert_solver_mode,
                 bridge_cuda_coupling=bool(run_options.bridge_cuda_coupling),
+                bridge_stacked_coupling_mode=str(getattr(run_options, "bridge_stacked_coupling_mode", "phase3_spatial")),
             )
             setattr(coupling_controller, "bridge_stacked_plans", bridge_stacked_plans)
             # GPU-first runtime policy: for legacy saved projects that still
@@ -2168,8 +2342,8 @@ def _on_run(self):
         _next_line_snap_t = line_output_interval_s
         _next_coupling_snap_t = line_output_interval_s
         sample_map = self._build_line_sampling_map()
-        cell_min_z = self._mesh_cell_min_bed() if sample_map else None
-        run_id = datetime.datetime.utcnow().strftime("swe2d_%Y%m%dT%H%M%SZ")
+        cell_solver_z = self._mesh_cell_solver_bed() if sample_map else None
+        run_id = datetime.datetime.now().astimezone().strftime("swe2d_%Y%m%dT%H%M%S%z")
         run_wallclock_start = datetime.datetime.now().replace(microsecond=0).isoformat(sep=" ")
 
         dynamic_bc = bool(np.any((bc_tp == _BC_TS_FLOW) | (bc_tp == _BC_TS_STAGE)) or edge_hydrographs)
@@ -2226,8 +2400,21 @@ def _on_run(self):
         self._log(f"Reconstruction mode: {reconstruction_name}")
         self._log(f"Temporal scheme: {temporal_scheme_name}")
         self._log(
+            "SWE2D perf mode env: "
+            f"{str(swe3d_env_overrides.get('BACKWATER_SWE2D_PERF_MODE', '0'))}"
+        )
+        self._log(
+            "Tiny-mode config: "
+            f"mode={int(getattr(self, 'tiny_mode_combo').currentData()) if getattr(self, 'tiny_mode_combo', None) is not None else 3}, "
+            f"wet_cell_threshold={int(getattr(self, 'tiny_wet_cell_threshold_spin').value()) if getattr(self, 'tiny_wet_cell_threshold_spin', None) is not None else 2000}"
+        )
+        self._log(
             f"Output intervals: mesh={output_interval_s:.1f}s, sample-lines={line_output_interval_s:.1f}s"
         )
+        try:
+            self.gpu_diag_sync_interval_spin.interpretText()
+        except Exception:
+            pass
         self._log(
             "Stability controls: "
             f"max_rel_dh={float(self.max_rel_depth_increase_spin.value()):.3f}, "
@@ -2455,6 +2642,12 @@ def _on_run(self):
         # solver steps are short (e.g. small meshes, fast GPU).
         _PROCESS_EVENTS_INTERVAL_S = 0.10  # 100 ms
         _last_process_events_wall = time.perf_counter()
+        perf_mode = str(os.environ.get("BACKWATER_SWE2D_PERF_MODE", "0")).strip().lower() in (
+            "1",
+            "true",
+            "yes",
+            "on",
+        )
         timing_totals_ms = {
             "wall": 0.0,
             "step": 0.0,
@@ -2466,6 +2659,10 @@ def _on_run(self):
         }
         timing_samples = 0
         self._log("Step timing diagnostics enabled (ms): wall, step, coupling, source, state, bc, ui.")
+        if perf_mode:
+            self._log(
+                "SWE2D perf mode active: reduced runtime logging and disabled per-step source/boundary forensic accounting."
+            )
         if dynamic_bc and not backend.supports_dynamic_boundary_update():
             raise RuntimeError("Native module does not support dynamic boundary updates. Rebuild hydra_swe2d.")
 
@@ -2589,6 +2786,10 @@ def _on_run(self):
             rain_rate_si_to_model_callback=self._rain_rate_si_to_model,
             internal_flow_source_cms_at_time_callback=self._internal_flow_source_cms_at_time,
             flow_si_to_model_callback=self._flow_si_to_model,
+            enable_source_volume_accounting=(not perf_mode),
+            enable_boundary_flux_accounting=(not perf_mode),
+            record_source_step_rows=(not perf_mode),
+            record_boundary_flux_step_rows=(not perf_mode),
         )
         source_budget_model = runtime_source_manager.source_budget_model
         source_step_rows_model = runtime_source_manager.source_step_rows_model
@@ -2706,7 +2907,7 @@ def _on_run(self):
             native_source_injection_mode=native_source_injection_mode,
             accumulate_boundary_flux_volume_model_callback=_accumulate_boundary_flux_volume_model,
             sample_map=sample_map,
-            cell_min_z=cell_min_z,
+            cell_solver_z=cell_solver_z,
             experimental_3d_runtime=experimental_3d_runtime,
             timing_totals_ms=timing_totals_ms,
             timing_samples=timing_samples,
@@ -2725,6 +2926,7 @@ def _on_run(self):
             front_flux_damping_value=swe3d_front_flux_damping,
             zmax_bc_mode=swe3d_zmax_bc_mode,
             apply_3d_patch_face_bc_callback=_apply_3d_face_bc_during_step if experimental_3d_runtime else None,
+            perf_mode=perf_mode,
         )
         t_accum = float(loop_result.get("t_accum", t_accum))
         i = int(loop_result.get("i", i))

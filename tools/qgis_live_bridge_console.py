@@ -28,8 +28,10 @@ Command JSON shape:
 
 import json
 import os
+import time
 import traceback
 import uuid
+import hashlib
 from datetime import datetime, timezone
 
 import numpy as np
@@ -51,8 +53,10 @@ class QgisLiveBridge:
         self.poll_ms = int(max(100, poll_ms))
         self.command_path = os.path.join(self.runtime_dir, "command.json")
         self.response_path = os.path.join(self.runtime_dir, "response.json")
+        self.topology_mesh_gui_result_path = os.path.join(self.runtime_dir, "topology_mesh_gui_result.json")
         self.last_request_id = None
         self.timer = None
+        self._active_topology_mesh_gui_run = None
 
     def start(self):
         os.makedirs(self.runtime_dir, exist_ok=True)
@@ -146,6 +150,7 @@ class QgisLiveBridge:
         return plugin_name, plugin
 
     def _poll_once(self):
+        self._poll_topology_mesh_gui_run()
         if not os.path.exists(self.command_path):
             return
         try:
@@ -170,6 +175,7 @@ class QgisLiveBridge:
                 }
             )
             return
+
         if request_id == self.last_request_id:
             return
         self.last_request_id = request_id
@@ -210,6 +216,503 @@ class QgisLiveBridge:
                     "traceback": traceback.format_exc(),
                 }
             )
+
+    def _json_safe(self, value):
+        if value is None or isinstance(value, (bool, int, float, str)):
+            return value
+        if isinstance(value, dict):
+            return {str(k): self._json_safe(v) for k, v in value.items()}
+        if isinstance(value, (list, tuple)):
+            return [self._json_safe(v) for v in value]
+        try:
+            if isinstance(value, np.generic):
+                return value.item()
+        except Exception:
+            pass
+        return str(value)
+
+    def _write_json_file(self, path: str, payload: dict):
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        tmp_path = path + ".tmp"
+        with open(tmp_path, "w", encoding="utf-8") as f:
+            json.dump(payload, f, indent=2)
+        os.replace(tmp_path, path)
+
+    def _read_json_file(self, path: str):
+        with open(path, "r", encoding="utf-8") as f:
+            return json.load(f)
+
+    def _find_workbench_dialog(self, target: str = "auto"):
+        import sys
+
+        mod = sys.modules.get("swe2d_workbench_qt")
+        if mod is None:
+            raise RuntimeError("swe2d_workbench_qt module is not loaded in this QGIS session")
+
+        target_l = str(target or "auto").strip().lower()
+        studio_dlg = getattr(mod, "_SWE2D_STUDIO_HOST_DIALOG", None)
+        demo_windows = list(getattr(mod, "_SWE2D_WORKBENCH_WINDOWS", []) or [])
+        demo_dlg = demo_windows[-1] if demo_windows else None
+
+        if target_l == "studio":
+            if studio_dlg is None:
+                raise RuntimeError("No active SWE2D studio dialog found")
+            return studio_dlg, "studio"
+        if target_l == "demo":
+            if demo_dlg is None:
+                raise RuntimeError("No active SWE2D demo workbench window found")
+            return demo_dlg, "demo"
+
+        if studio_dlg is not None:
+            return studio_dlg, "studio"
+        if demo_dlg is not None:
+            return demo_dlg, "demo"
+        raise RuntimeError("No active SWE2D workbench dialog found")
+
+    def _set_combo_layer_by_name_or_none(self, dlg, combo_attr: str, value):
+        combo = getattr(dlg, combo_attr, None)
+        if combo is None:
+            raise RuntimeError(f"Dialog has no combo: {combo_attr}")
+
+        txt = "" if value is None else str(value).strip()
+        if txt == "" or txt.lower() in {"none", "(none)", "null"}:
+            idx = combo.findData(None)
+            if idx < 0:
+                idx = 0 if combo.count() > 0 else -1
+            if idx >= 0:
+                combo.setCurrentIndex(idx)
+                return
+            raise RuntimeError(f"Could not set {combo_attr} to None")
+
+        set_by_name = getattr(dlg, "_set_combo_by_layer_name", None)
+        if callable(set_by_name):
+            ok = bool(set_by_name(combo, txt))
+            if ok:
+                return
+
+        for i in range(combo.count()):
+            if str(combo.itemText(i) or "").strip() == txt:
+                combo.setCurrentIndex(i)
+                return
+
+        raise RuntimeError(f"Could not resolve layer '{txt}' for {combo_attr}")
+
+    def _set_combo_data(self, combo, data_value) -> bool:
+        if combo is None:
+            return False
+        for i in range(combo.count()):
+            if combo.itemData(i) == data_value:
+                combo.setCurrentIndex(i)
+                return True
+        return False
+
+    def _combo_layer_snapshot(self, dlg, combo_attr: str) -> dict:
+        combo = getattr(dlg, combo_attr, None)
+        if combo is None:
+            return {"present": False}
+
+        snap = {
+            "present": True,
+            "current_index": int(combo.currentIndex()),
+            "current_text": str(combo.currentText() or ""),
+            "current_data": combo.currentData(),
+        }
+
+        layer = None
+        combo_layer = getattr(dlg, "_combo_layer", None)
+        if callable(combo_layer):
+            try:
+                layer = combo_layer(combo, "vector")
+            except Exception:
+                layer = None
+        if layer is not None:
+            try:
+                snap.update(
+                    {
+                        "layer_id": str(layer.id()),
+                        "layer_name": str(layer.name()),
+                        "layer_source": str(layer.source()) if hasattr(layer, "source") else "",
+                        "subset_sql": str(layer.subsetString() or "") if hasattr(layer, "subsetString") else "",
+                        "feature_count": int(layer.featureCount()) if hasattr(layer, "featureCount") else None,
+                    }
+                )
+            except Exception:
+                pass
+        return self._json_safe(snap)
+
+    def _polyline_metrics(self, points) -> dict:
+        pts = []
+        for p in list(points or []):
+            if isinstance(p, (list, tuple)) and len(p) >= 2:
+                try:
+                    pts.append((float(p[0]), float(p[1])))
+                except Exception:
+                    continue
+        if not pts:
+            return {
+                "n_vertices": 0,
+                "length": 0.0,
+                "bbox": None,
+                "points_sha256": "",
+            }
+        length = 0.0
+        for i in range(len(pts) - 1):
+            x0, y0 = pts[i]
+            x1, y1 = pts[i + 1]
+            length += float(np.hypot(float(x1) - float(x0), float(y1) - float(y0)))
+        xs = [float(p[0]) for p in pts]
+        ys = [float(p[1]) for p in pts]
+        pts_norm = [[round(float(x), 9), round(float(y), 9)] for x, y in pts]
+        pts_txt = json.dumps(pts_norm, separators=(",", ":"), ensure_ascii=True)
+        pts_sha = hashlib.sha256(pts_txt.encode("utf-8")).hexdigest()
+        return {
+            "n_vertices": int(len(pts)),
+            "length": float(length),
+            "bbox": [float(min(xs)), float(min(ys)), float(max(xs)), float(max(ys))],
+            "points_sha256": str(pts_sha),
+        }
+
+    def _ring_metrics(self, ring) -> dict:
+        pts = []
+        for p in list(ring or []):
+            if isinstance(p, (list, tuple)) and len(p) >= 2:
+                try:
+                    pts.append((float(p[0]), float(p[1])))
+                except Exception:
+                    continue
+        if len(pts) >= 2:
+            if float(np.hypot(float(pts[0][0]) - float(pts[-1][0]), float(pts[0][1]) - float(pts[-1][1]))) <= 1.0e-12:
+                pts = pts[:-1]
+        poly = self._polyline_metrics(pts)
+        if len(pts) >= 2:
+            poly["perimeter"] = float(poly.get("length", 0.0) + np.hypot(
+                float(pts[0][0]) - float(pts[-1][0]),
+                float(pts[0][1]) - float(pts[-1][1]),
+            ))
+        else:
+            poly["perimeter"] = 0.0
+        area = 0.0
+        if len(pts) >= 3:
+            acc = 0.0
+            for i in range(len(pts)):
+                x0, y0 = pts[i]
+                x1, y1 = pts[(i + 1) % len(pts)]
+                acc += float(x0) * float(y1) - float(x1) * float(y0)
+            area = 0.5 * acc
+        poly["signed_area"] = float(area)
+        return poly
+
+    def _build_conceptual_from_dialog(self, dlg):
+        combo_layer = getattr(dlg, "_combo_layer", None)
+        if not callable(combo_layer):
+            raise RuntimeError("Dialog does not expose _combo_layer")
+
+        nodes_layer = combo_layer(getattr(dlg, "topo_nodes_combo"), "vector")
+        arcs_layer = combo_layer(getattr(dlg, "topo_arcs_combo"), "vector")
+        regions_layer = combo_layer(getattr(dlg, "topo_regions_combo"), "vector")
+        constraints_layer = combo_layer(getattr(dlg, "topo_constraints_combo"), "vector")
+        quad_edges_layer = combo_layer(getattr(dlg, "topo_quad_edges_combo"), "vector")
+
+        if getattr(getattr(dlg, "topo_nodes_combo", None), "currentData", lambda: None)() is None:
+            nodes_layer = None
+        if getattr(getattr(dlg, "topo_arcs_combo", None), "currentData", lambda: None)() is None:
+            arcs_layer = None
+        if getattr(getattr(dlg, "topo_constraints_combo", None), "currentData", lambda: None)() is None:
+            constraints_layer = None
+        if getattr(getattr(dlg, "topo_quad_edges_combo", None), "currentData", lambda: None)() is None:
+            quad_edges_layer = None
+
+        import importlib
+        import sys
+
+        builder = None
+        wbqt_mod = sys.modules.get("swe2d_workbench_qt")
+        if wbqt_mod is not None:
+            cand = getattr(wbqt_mod, "conceptual_from_qgis_layers", None)
+            if callable(cand):
+                builder = cand
+        if builder is None:
+            for mod_name in ("swe2d.mesh.meshing", "swe2d_meshing"):
+                try:
+                    mod = importlib.import_module(mod_name)
+                except Exception:
+                    continue
+                cand = getattr(mod, "conceptual_from_qgis_layers", None)
+                if callable(cand):
+                    builder = cand
+                    break
+        if builder is None:
+            raise RuntimeError("conceptual_from_qgis_layers callable not available")
+
+        default_size = float(getattr(getattr(dlg, "topo_default_size_spin", None), "value", lambda: 20.0)())
+        default_cell_type = str(getattr(getattr(dlg, "topo_default_cell_type_combo", None), "currentText", lambda: "triangular")())
+
+        return builder(
+            nodes_layer=nodes_layer,
+            arcs_layer=arcs_layer,
+            regions_layer=regions_layer,
+            constraints_layer=constraints_layer,
+            quad_edges_layer=quad_edges_layer,
+            default_size=default_size,
+            default_cell_type=default_cell_type,
+        )
+
+    def _conceptual_digest(self, conceptual) -> dict:
+        nodes = sorted(
+            [
+                {
+                    "node_id": int(getattr(n, "node_id", -1)),
+                    "x": round(float(getattr(n, "x", 0.0)), 9),
+                    "y": round(float(getattr(n, "y", 0.0)), 9),
+                }
+                for n in list(getattr(conceptual, "nodes", []) or [])
+            ],
+            key=lambda r: (int(r.get("node_id", -1)), float(r.get("x", 0.0)), float(r.get("y", 0.0))),
+        )
+
+        arcs = []
+        for a in list(getattr(conceptual, "arcs", []) or []):
+            pm = self._polyline_metrics(getattr(a, "points_xy", None))
+            arcs.append(
+                {
+                    "arc_id": int(getattr(a, "arc_id", -1)),
+                    "node0": int(getattr(a, "node0", -1)),
+                    "node1": int(getattr(a, "node1", -1)),
+                    "region_id": int(getattr(a, "region_id", -1)),
+                    "arc_role": str(getattr(a, "arc_role", "") or ""),
+                    "use_global_arc_ctrl": bool(getattr(a, "use_global_arc_ctrl", True)),
+                    "arc_mode_override": str(getattr(a, "arc_mode_override", "") or ""),
+                    "arc_soft_size_override": round(float(getattr(a, "arc_soft_size_override", 0.0) or 0.0), 9),
+                    "arc_soft_dist_override": round(float(getattr(a, "arc_soft_dist_override", 0.0) or 0.0), 9),
+                    "n_vertices": int(pm.get("n_vertices", 0)),
+                    "length": round(float(pm.get("length", 0.0)), 9),
+                    "bbox": pm.get("bbox"),
+                    "points_sha256": str(pm.get("points_sha256", "")),
+                }
+            )
+        arcs = sorted(arcs, key=lambda r: (int(r.get("arc_id", -1)), int(r.get("region_id", -1))))
+
+        regions = []
+        for r in list(getattr(conceptual, "regions", []) or []):
+            rm = self._ring_metrics(getattr(r, "ring_xy", None))
+            hole_rings = list(getattr(r, "hole_rings", []) or [])
+            hole_hashes = [self._ring_metrics(h).get("points_sha256", "") for h in hole_rings]
+            regions.append(
+                {
+                    "region_id": int(getattr(r, "region_id", -1)),
+                    "default_size": round(float(getattr(r, "default_size", 0.0)), 9),
+                    "default_cell_type": str(getattr(r, "default_cell_type", "") or ""),
+                    "edge_lengths": [round(float(v), 9) for v in list(getattr(r, "edge_lengths", []) or [])],
+                    "ring_vertices": int(rm.get("n_vertices", 0)),
+                    "ring_perimeter": round(float(rm.get("perimeter", 0.0)), 9),
+                    "ring_signed_area": round(float(rm.get("signed_area", 0.0)), 9),
+                    "ring_bbox": rm.get("bbox"),
+                    "ring_sha256": str(rm.get("points_sha256", "")),
+                    "hole_count": int(len(hole_rings)),
+                    "hole_rings_sha256": sorted(str(v) for v in hole_hashes if str(v)),
+                }
+            )
+        regions = sorted(regions, key=lambda r: int(r.get("region_id", -1)))
+
+        constraints = []
+        for c in list(getattr(conceptual, "constraints", []) or []):
+            cm = self._ring_metrics(getattr(c, "ring_xy", None))
+            constraints.append(
+                {
+                    "constraint_id": int(getattr(c, "constraint_id", -1)),
+                    "target_size": round(float(getattr(c, "target_size", 0.0)), 9),
+                    "cell_type": str(getattr(c, "cell_type", "") or ""),
+                    "ring_vertices": int(cm.get("n_vertices", 0)),
+                    "ring_perimeter": round(float(cm.get("perimeter", 0.0)), 9),
+                    "ring_signed_area": round(float(cm.get("signed_area", 0.0)), 9),
+                    "ring_bbox": cm.get("bbox"),
+                    "ring_sha256": str(cm.get("points_sha256", "")),
+                }
+            )
+        constraints = sorted(constraints, key=lambda r: int(r.get("constraint_id", -1)))
+
+        quad_edges = []
+        for q in list(getattr(conceptual, "quad_edges", []) or []):
+            qm = self._polyline_metrics(getattr(q, "points_xy", None))
+            quad_edges.append(
+                {
+                    "region_id": int(getattr(q, "region_id", -1)),
+                    "edge_id": int(getattr(q, "edge_id", -1)),
+                    "target_size": round(float(getattr(q, "target_size", 0.0) or 0.0), 9),
+                    "n_layers": int(getattr(q, "n_layers", 0) or 0),
+                    "first_height": round(float(getattr(q, "first_height", 0.0) or 0.0), 9),
+                    "growth_rate": round(float(getattr(q, "growth_rate", 1.0) or 1.0), 9),
+                    "n_vertices": int(qm.get("n_vertices", 0)),
+                    "length": round(float(qm.get("length", 0.0)), 9),
+                    "bbox": qm.get("bbox"),
+                    "points_sha256": str(qm.get("points_sha256", "")),
+                }
+            )
+        quad_edges = sorted(quad_edges, key=lambda r: (int(r.get("region_id", -1)), int(r.get("edge_id", -1))))
+
+        canonical = {
+            "nodes": nodes,
+            "arcs": arcs,
+            "regions": regions,
+            "constraints": constraints,
+            "quad_edges": quad_edges,
+        }
+        canonical_txt = json.dumps(canonical, sort_keys=True, separators=(",", ":"), ensure_ascii=True)
+        digest = hashlib.sha256(canonical_txt.encode("utf-8")).hexdigest()
+        return {
+            "sha256": str(digest),
+            "counts": {
+                "nodes": int(len(nodes)),
+                "arcs": int(len(arcs)),
+                "regions": int(len(regions)),
+                "constraints": int(len(constraints)),
+                "quad_edges": int(len(quad_edges)),
+            },
+            "regions": regions,
+            "arcs": arcs,
+            "constraints": constraints,
+            "quad_edges": quad_edges,
+        }
+
+    def _topology_gui_snapshot(self, dlg) -> dict:
+        snapshot = {
+            "backend": str(getattr(dlg, "_topology_mesh_backend", "") or ""),
+            "run_mode": str(getattr(dlg, "_topology_mesh_run_mode", "") or ""),
+            "status_label": str(getattr(getattr(dlg, "topo_status_lbl", None), "text", lambda: "")() or ""),
+            "active_timeout_sec": float(getattr(dlg, "_topology_mesh_active_timeout_sec", 0.0) or 0.0),
+            "progress_path": str(getattr(dlg, "_topology_mesh_progress_path", "") or ""),
+            "combos": {
+                "topo_nodes_combo": self._combo_layer_snapshot(dlg, "topo_nodes_combo"),
+                "topo_arcs_combo": self._combo_layer_snapshot(dlg, "topo_arcs_combo"),
+                "topo_regions_combo": self._combo_layer_snapshot(dlg, "topo_regions_combo"),
+                "topo_constraints_combo": self._combo_layer_snapshot(dlg, "topo_constraints_combo"),
+                "topo_quad_edges_combo": self._combo_layer_snapshot(dlg, "topo_quad_edges_combo"),
+            },
+        }
+
+        build_opts = getattr(dlg, "_build_topology_meshing_options", None)
+        if callable(build_opts):
+            try:
+                snapshot["options"] = self._json_safe(dict(build_opts() or {}))
+            except Exception as exc:
+                snapshot["options_error"] = str(exc)
+
+        try:
+            conceptual = self._build_conceptual_from_dialog(dlg)
+            conceptual_digest = self._conceptual_digest(conceptual)
+            snapshot["conceptual_counts"] = dict(conceptual_digest.get("counts", {}))
+            snapshot["conceptual_digest"] = conceptual_digest
+        except Exception as exc:
+            snapshot["conceptual_counts_error"] = str(exc)
+
+        return self._json_safe(snapshot)
+
+    def _dialog_log_text(self, dlg) -> str:
+        log_view = getattr(dlg, "log_view", None)
+        if log_view is not None and hasattr(log_view, "toPlainText"):
+            try:
+                return str(log_view.toPlainText() or "")
+            except Exception:
+                return ""
+        return ""
+
+    def _mesh_counts_snapshot(self, dlg) -> dict:
+        mesh_data = getattr(dlg, "_mesh_data", None)
+        if not isinstance(mesh_data, dict):
+            return {}
+        try:
+            node_x = np.asarray(mesh_data.get("node_x", np.empty(0, dtype=np.float64)))
+            offsets = np.asarray(mesh_data.get("cell_face_offsets", np.empty(0, dtype=np.int64)))
+            cell_type = np.asarray(mesh_data.get("cell_type", np.empty(0, dtype=object)))
+            out = {
+                "n_nodes": int(node_x.size),
+                "n_faces": int(max(0, offsets.size - 1)),
+                "n_tris": int(np.sum(cell_type == "triangular")) if cell_type.size else 0,
+                "n_quads": int(np.sum(cell_type == "quadrilateral")) if cell_type.size else 0,
+            }
+            quality_summary = mesh_data.get("quality_summary")
+            if isinstance(quality_summary, dict):
+                out["quality_summary"] = self._json_safe(quality_summary)
+            return out
+        except Exception:
+            return {}
+
+    def _build_topology_gui_run_result(self, state: dict, status: str, error: str = "") -> dict:
+        dlg = state.get("dialog")
+        now_log = self._dialog_log_text(dlg)
+        pre_log = str(state.get("pre_log", "") or "")
+        if now_log.startswith(pre_log):
+            delta_log = now_log[len(pre_log):]
+        else:
+            delta_log = now_log[-12000:]
+        delta_lines = [ln for ln in str(delta_log or "").splitlines() if ln.strip()]
+        fail_lines = [ln for ln in delta_lines if "mesh> fail" in ln.lower()]
+        warn_lines = [ln for ln in delta_lines if "warning" in ln.lower()]
+
+        result = {
+            "status": str(status),
+            "request_id": str(state.get("request_id", "")),
+            "target": str(state.get("target", "")),
+            "started_utc": str(state.get("started_utc", "")),
+            "finished_utc": _utc_now(),
+            "elapsed_s": float(max(0.0, time.time() - float(state.get("started_epoch", time.time())))),
+            "topology_status_label": str(getattr(getattr(dlg, "topo_status_lbl", None), "text", lambda: "")() or ""),
+            "mesh_counts": self._mesh_counts_snapshot(dlg),
+            "snapshot_before": self._json_safe(state.get("snapshot_before", {})),
+            "snapshot_after": self._topology_gui_snapshot(dlg),
+            "log_tail": delta_lines[-40:],
+            "log_fail_lines": fail_lines[-20:],
+            "log_warning_lines": warn_lines[-20:],
+        }
+        if error:
+            result["error"] = str(error)
+
+        mesh_counts = result.get("mesh_counts") or {}
+        n_faces = int(mesh_counts.get("n_faces", 0) or 0)
+        status_txt = str(result.get("topology_status_label", "") or "").lower()
+        result["ok"] = bool(status == "complete" and n_faces > 0 and "failed" not in status_txt)
+        return self._json_safe(result)
+
+    def _poll_topology_mesh_gui_run(self):
+        state = self._active_topology_mesh_gui_run
+        if not isinstance(state, dict):
+            return
+        dlg = state.get("dialog")
+        fut = state.get("future")
+        timeout_s = float(state.get("wait_timeout_sec", 1800.0))
+        elapsed_s = max(0.0, time.time() - float(state.get("started_epoch", time.time())))
+
+        if elapsed_s > timeout_s:
+            try:
+                terminate = getattr(dlg, "_terminate_topology_mesh_run", None)
+                if callable(terminate):
+                    terminate(reason="bridge-timeout")
+            except Exception:
+                pass
+            result = self._build_topology_gui_run_result(state, status="timeout", error=f"GUI topology run timed out after {timeout_s:.1f}s")
+            self._write_json_file(self.topology_mesh_gui_result_path, result)
+            self._active_topology_mesh_gui_run = None
+            return
+
+        if fut is None:
+            result = self._build_topology_gui_run_result(state, status="error", error="Topology run did not start")
+            self._write_json_file(self.topology_mesh_gui_result_path, result)
+            self._active_topology_mesh_gui_run = None
+            return
+
+        if not fut.done():
+            return
+
+        try:
+            poll_fn = getattr(dlg, "_poll_topology_mesh_future", None)
+            if callable(poll_fn):
+                poll_fn()
+        except Exception:
+            pass
+
+        result = self._build_topology_gui_run_result(state, status="complete")
+        self._write_json_file(self.topology_mesh_gui_result_path, result)
+        self._active_topology_mesh_gui_run = None
 
     def _execute(self, action: str, params: dict):
         if action == "ping":
@@ -663,13 +1166,134 @@ class QgisLiveBridge:
                 os.environ[str(k)] = str(v)
             return {"set": list(env.keys())}
 
+        if action == "run_topology_mesh_gui":
+            target = str(params.get("target", "auto") or "auto")
+            wait_for_completion = bool(params.get("wait_for_completion", False))
+            wait_timeout_sec = float(max(30.0, float(params.get("wait_timeout_sec", 1800.0))))
+
+            dlg, resolved_target = self._find_workbench_dialog(target)
+
+            # Optional combo/layer overrides for deterministic GUI-run parity tests.
+            layer_overrides = {
+                "topo_nodes_combo": params.get("nodes_layer"),
+                "topo_arcs_combo": params.get("arcs_layer"),
+                "topo_regions_combo": params.get("regions_layer"),
+                "topo_constraints_combo": params.get("constraints_layer"),
+                "topo_quad_edges_combo": params.get("quad_edges_layer"),
+            }
+            for combo_attr, layer_name in layer_overrides.items():
+                if layer_name is not None:
+                    self._set_combo_layer_by_name_or_none(dlg, combo_attr, layer_name)
+
+            backend_override = params.get("backend")
+            if backend_override is not None:
+                backend_combo = getattr(dlg, "topo_backend_combo", None)
+                backend_txt = str(backend_override).strip().lower()
+                if not self._set_combo_data(backend_combo, backend_txt):
+                    found = False
+                    if backend_combo is not None:
+                        for i in range(backend_combo.count()):
+                            if str(backend_combo.itemText(i) or "").strip().lower() == backend_txt:
+                                backend_combo.setCurrentIndex(i)
+                                found = True
+                                break
+                    if not found:
+                        raise RuntimeError(f"Could not set backend to '{backend_override}'")
+
+            region_subset_sql = params.get("regions_subset_sql")
+            if region_subset_sql is not None:
+                reg_layer = getattr(dlg, "_combo_layer", lambda *_: None)(getattr(dlg, "topo_regions_combo"), "vector")
+                if reg_layer is not None and hasattr(reg_layer, "setSubsetString"):
+                    reg_layer.setSubsetString(str(region_subset_sql))
+
+            quad_subset_sql = params.get("quad_edges_subset_sql")
+            if quad_subset_sql is not None:
+                qe_layer = getattr(dlg, "_combo_layer", lambda *_: None)(getattr(dlg, "topo_quad_edges_combo"), "vector")
+                if qe_layer is not None and hasattr(qe_layer, "setSubsetString"):
+                    qe_layer.setSubsetString(str(quad_subset_sql))
+
+            try:
+                os.remove(self.topology_mesh_gui_result_path)
+            except FileNotFoundError:
+                pass
+            except Exception:
+                pass
+
+            pre_log = self._dialog_log_text(dlg)
+            snapshot_before = self._topology_gui_snapshot(dlg)
+
+            run_fn = getattr(dlg, "_generate_mesh_from_topology_layers", None)
+            if not callable(run_fn):
+                raise RuntimeError("Active dialog does not expose _generate_mesh_from_topology_layers")
+
+            run_fn()
+            fut = getattr(dlg, "_topology_mesh_future", None)
+            request_id = str(uuid.uuid4())
+
+            state = {
+                "request_id": request_id,
+                "target": resolved_target,
+                "dialog": dlg,
+                "future": fut,
+                "started_epoch": float(time.time()),
+                "started_utc": _utc_now(),
+                "wait_timeout_sec": float(wait_timeout_sec),
+                "pre_log": pre_log,
+                "snapshot_before": snapshot_before,
+            }
+
+            self._active_topology_mesh_gui_run = state
+
+            if wait_for_completion:
+                from qgis.PyQt.QtWidgets import QApplication
+
+                t0 = time.time()
+                while self._active_topology_mesh_gui_run is not None and (time.time() - t0) < wait_timeout_sec:
+                    QApplication.processEvents()
+                    self._poll_topology_mesh_gui_run()
+                    time.sleep(0.05)
+
+                if os.path.exists(self.topology_mesh_gui_result_path):
+                    out = self._read_json_file(self.topology_mesh_gui_result_path)
+                    out["result_path"] = self.topology_mesh_gui_result_path
+                    return out
+
+            return {
+                "status": "running",
+                "request_id": request_id,
+                "target": resolved_target,
+                "result_path": self.topology_mesh_gui_result_path,
+            }
+
+        if action == "get_topology_mesh_gui_result":
+            if os.path.exists(self.topology_mesh_gui_result_path):
+                data = self._read_json_file(self.topology_mesh_gui_result_path)
+                data["status"] = data.get("status", "complete")
+                data["result_path"] = self.topology_mesh_gui_result_path
+                return self._json_safe(data)
+
+            state = self._active_topology_mesh_gui_run
+            if isinstance(state, dict):
+                dlg = state.get("dialog")
+                return {
+                    "status": "pending",
+                    "request_id": str(state.get("request_id", "")),
+                    "elapsed_s": float(max(0.0, time.time() - float(state.get("started_epoch", time.time())))),
+                    "topology_status_label": str(getattr(getattr(dlg, "topo_status_lbl", None), "text", lambda: "")() or ""),
+                    "result_path": self.topology_mesh_gui_result_path,
+                }
+
+            return {
+                "status": "idle",
+                "result_path": self.topology_mesh_gui_result_path,
+            }
+
         if action == "run_topology_mesh":
             import sys
             import threading
             import multiprocessing as _mp
             import json as _json
             import importlib
-            import time
             import warnings
             import traceback as _tb
 
@@ -705,7 +1329,7 @@ class QgisLiveBridge:
 
             timeout_default = _as_float(
                 params.get("timeout_sec", os.environ.get("BACKWATER_TOPOLOGY_MESH_TIMEOUT_SEC", "300")),
-                300.0,
+                3000.0,
             )
             timeout_sec = max(30.0, timeout_default)
 

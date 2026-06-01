@@ -61,10 +61,62 @@ def _table_exists(conn: sqlite3.Connection, table_name: str) -> bool:
     return _table_exists_shared(conn, table_name)
 
 
+def _find_prefixed_or_default_table(conn: sqlite3.Connection, base_name: str) -> str:
+    base = str(base_name or "").strip()
+    if not base:
+        return ""
+    if _table_exists(conn, base):
+        return base
+    try:
+        cur = conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name LIKE ? ORDER BY name",
+            (f"%_{base}",),
+        )
+        for row in cur.fetchall():
+            nm = str(row[0] or "").strip()
+            if nm.endswith("_" + base):
+                return nm
+    except Exception:
+        return ""
+    return ""
+
+
+def _find_all_prefixed_or_default_tables(conn: sqlite3.Connection, base_name: str) -> List[str]:
+    """Return all matching tables for a shared base name.
+
+    Includes the exact base table (if present) plus any prefixed variants like
+    ``<prefix>_<base_name>``.
+    """
+    base = str(base_name or "").strip()
+    if not base:
+        return []
+    out: List[str] = []
+    seen = set()
+    if _table_exists(conn, base):
+        out.append(base)
+        seen.add(base)
+    try:
+        cur = conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name LIKE ? ORDER BY name",
+            (f"%_{base}",),
+        )
+        for row in cur.fetchall():
+            nm = str(row[0] or "").strip()
+            if not nm or nm in seen:
+                continue
+            if nm.endswith("_" + base):
+                out.append(nm)
+                seen.add(nm)
+    except Exception:
+        return out
+    return out
+
+
 def _resolve_ts_table(conn: sqlite3.Connection, run_id: str) -> Tuple[str, bool]:
     """Return (table_name, uses_run_id_column) for timeseries storage."""
-    if _table_exists(conn, "swe2d_line_results_ts"):
-        return "swe2d_line_results_ts", True
+    shared = _find_prefixed_or_default_table(conn, "swe2d_line_results_ts")
+    if shared:
+        return shared, True
     legacy = f"swe2d_line_results_ts_{run_id}"
     if _table_exists(conn, legacy):
         return legacy, False
@@ -73,8 +125,9 @@ def _resolve_ts_table(conn: sqlite3.Connection, run_id: str) -> Tuple[str, bool]
 
 def _resolve_profile_table(conn: sqlite3.Connection, run_id: str) -> Tuple[str, bool]:
     """Return (table_name, uses_run_id_column) for profile storage."""
-    if _table_exists(conn, "swe2d_line_results_profile"):
-        return "swe2d_line_results_profile", True
+    shared = _find_prefixed_or_default_table(conn, "swe2d_line_results_profile")
+    if shared:
+        return shared, True
     legacy = f"swe2d_line_results_profile_{run_id}"
     if _table_exists(conn, legacy):
         return legacy, False
@@ -86,7 +139,7 @@ def _resolve_profile_table(conn: sqlite3.Connection, run_id: str) -> Tuple[str, 
 # ---------------------------------------------------------------------------
 
 def discover_line_result_runs(gpkg_path: str) -> List[Dict]:
-    """Return metadata for every run stored in *gpkg_path*.
+    """Return metadata for every discoverable SWE2D run stored in *gpkg_path*.
 
     Returns a list of dicts:
         {
@@ -96,8 +149,12 @@ def discover_line_result_runs(gpkg_path: str) -> List[Dict]:
             "has_profile": bool,
         }
 
+    Discovery is line-results-first (shared or legacy schemas), with a mesh
+    results fallback so mesh-only snapshot runs still appear in the multi-run
+    results panel.
+
     Returns an empty list if the file does not exist, is not a valid SQLite
-    database, or contains no matching tables.
+    database, or contains no matching SWE2D result tables.
     """
     conn = _open_ro(gpkg_path)
     if conn is None:
@@ -105,38 +162,64 @@ def discover_line_result_runs(gpkg_path: str) -> List[Dict]:
     try:
         results: List[Dict] = []
 
+        def _upsert_run(run_id: str, table_ts: str, table_profile: str, has_profile: bool) -> None:
+            rid = str(run_id or "").strip()
+            if not rid:
+                return
+            for rec in results:
+                if str(rec.get("run_id", "")) != rid:
+                    continue
+                # Prefer entries that have line/profile context; merge flags.
+                if table_ts and str(rec.get("table_ts", "")) != table_ts:
+                    rec["table_ts"] = str(table_ts)
+                if table_profile and not str(rec.get("table_profile", "")):
+                    rec["table_profile"] = str(table_profile)
+                rec["has_profile"] = bool(rec.get("has_profile", False) or bool(has_profile))
+                return
+            results.append(
+                {
+                    "run_id": rid,
+                    "table_ts": str(table_ts or ""),
+                    "table_profile": str(table_profile or ""),
+                    "has_profile": bool(has_profile),
+                }
+            )
+
         # New shared-schema support: swe2d_line_results_ts/profile with run_id columns.
-        if _table_exists(conn, "swe2d_line_results_ts"):
+        # Scan all prefixed variants to avoid silently missing runs when multiple
+        # results-table prefixes exist in one GeoPackage.
+        shared_ts_tables = _find_all_prefixed_or_default_tables(conn, "swe2d_line_results_ts")
+        for shared_ts in shared_ts_tables:
             run_ids: List[str] = []
-            if _table_exists(conn, "swe2d_line_results_runs"):
+            shared_runs = f"{shared_ts}_runs"
+            if not _table_exists(conn, shared_runs):
+                # Legacy naming fallback when table names are not strict companions.
+                shared_runs = _find_prefixed_or_default_table(conn, "swe2d_line_results_runs")
+            if shared_runs:
                 cur = conn.execute(
-                    "SELECT run_id FROM swe2d_line_results_runs "
+                    f"SELECT run_id FROM \"{shared_runs}\" "
                     "ORDER BY datetime(created_utc) DESC, rowid DESC"
                 )
                 run_ids = [str(r[0]) for r in cur.fetchall() if str(r[0] or "").strip()]
             if not run_ids:
                 cur = conn.execute(
-                    "SELECT DISTINCT run_id FROM swe2d_line_results_ts ORDER BY run_id"
+                    f"SELECT DISTINCT run_id FROM \"{shared_ts}\" ORDER BY run_id"
                 )
                 run_ids = [str(r[0]) for r in cur.fetchall() if str(r[0] or "").strip()]
 
-            has_profile_table = _table_exists(conn, "swe2d_line_results_profile")
+            shared_profile = shared_ts.replace("_line_results_ts", "_line_results_profile")
+            if not _table_exists(conn, shared_profile):
+                shared_profile = _find_prefixed_or_default_table(conn, "swe2d_line_results_profile")
+            has_profile_table = bool(shared_profile)
             for run_id in run_ids:
                 has_profile = False
                 if has_profile_table:
                     cur = conn.execute(
-                        "SELECT 1 FROM swe2d_line_results_profile WHERE run_id=? LIMIT 1",
+                        f"SELECT 1 FROM \"{shared_profile}\" WHERE run_id=? LIMIT 1",
                         (run_id,),
                     )
                     has_profile = cur.fetchone() is not None
-                results.append(
-                    {
-                        "run_id": run_id,
-                        "table_ts": "swe2d_line_results_ts",
-                        "table_profile": "swe2d_line_results_profile",
-                        "has_profile": has_profile,
-                    }
-                )
+                _upsert_run(run_id, shared_ts, shared_profile or "", has_profile)
 
         # Legacy per-run table support: swe2d_line_results_ts_<run_id>.
         cur = conn.execute(
@@ -145,25 +228,40 @@ def discover_line_result_runs(gpkg_path: str) -> List[Dict]:
             "ORDER BY name"
         )
         rows = cur.fetchall()
-        existing = {str(r.get("run_id", "")) for r in results}
         for row in rows:
             table_ts = str(row[0])
             prefix = "swe2d_line_results_ts_"
             if not table_ts.startswith(prefix):
                 continue
             run_id = table_ts[len(prefix):]
-            if run_id in existing:
-                continue
             table_profile = f"swe2d_line_results_profile_{run_id}"
             has_profile = _table_exists(conn, table_profile)
-            results.append(
-                {
-                    "run_id": run_id,
-                    "table_ts": table_ts,
-                    "table_profile": table_profile,
-                    "has_profile": has_profile,
-                }
+            _upsert_run(run_id, table_ts, table_profile, has_profile)
+
+        # Mesh-results fallback for snapshot runs where line sampling is absent.
+        mesh_runs_tables = _find_all_prefixed_or_default_tables(conn, "swe2d_mesh_results_runs")
+        for runs_table in mesh_runs_tables:
+            mesh_table = runs_table[:-5] if runs_table.endswith("_runs") else ""
+            if not mesh_table or not _table_exists(conn, mesh_table):
+                continue
+            cur = conn.execute(
+                f"SELECT run_id FROM \"{runs_table}\" ORDER BY datetime(created_utc) DESC, rowid DESC"
             )
+            for row in cur.fetchall():
+                rid = str(row[0] or "").strip()
+                if rid:
+                    _upsert_run(rid, mesh_table, "", False)
+
+        mesh_tables = _find_all_prefixed_or_default_tables(conn, "swe2d_mesh_results")
+        for mesh_table in mesh_tables:
+            cur = conn.execute(
+                f"SELECT DISTINCT run_id FROM \"{mesh_table}\" WHERE run_id IS NOT NULL ORDER BY run_id"
+            )
+            for row in cur.fetchall():
+                rid = str(row[0] or "").strip()
+                if rid:
+                    _upsert_run(rid, mesh_table, "", False)
+
         return results
     except Exception:
         return []
@@ -372,12 +470,13 @@ def load_structure_flows_at_time(
     if conn is None:
         return []
     try:
-        if not _table_exists(conn, "swe2d_coupling_results"):
+        coupling_table = _find_prefixed_or_default_table(conn, "swe2d_coupling_results")
+        if not coupling_table:
             return []
         cur = conn.execute(
-            """
+            f"""
             SELECT object_id, object_name, value, t_s
-            FROM swe2d_coupling_results
+            FROM "{coupling_table}"
             WHERE run_id = ?
               AND component = 'structure'
               AND metric = 'flow'

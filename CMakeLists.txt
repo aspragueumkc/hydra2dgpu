@@ -98,6 +98,10 @@ if(SWE2D_CUDA_FOUND)
   set_property(TARGET hydra_swe2d PROPERTY CUDA_SEPARABLE_COMPILATION ON)
   # Allow CUDA files to find shared headers
   set_source_files_properties(cpp/src/swe2d_gpu.cu PROPERTIES LANGUAGE CUDA)
+  # Relaxed constexpr and extended lambda support for device-side std:: functions
+  target_compile_options(hydra_swe2d PRIVATE
+    $<$<COMPILE_LANGUAGE:CUDA>:--expt-relaxed-constexpr --expt-extended-lambda>
+  )
   if(NOT MSVC)
     target_compile_options(hydra_swe2d PRIVATE -fno-lto)
     target_link_options(hydra_swe2d PRIVATE -fno-lto)
@@ -172,6 +176,19 @@ if(HYDRA_ENABLE_MFEM)
 
   set_property(TARGET hydra_mfem_meshopt PROPERTY INTERPROCEDURAL_OPTIMIZATION OFF)
 endif()
+
+# ── Meshing prebuild native kernels ────────────────────────────────────────
+pybind11_add_module(hydra_meshing_native
+    cpp/src/meshing_native_bindings.cpp
+)
+
+if(MSVC)
+  target_compile_options(hydra_meshing_native PRIVATE /W4)
+else()
+  target_compile_options(hydra_meshing_native PRIVATE -Wall -Wextra -Wpedantic)
+endif()
+
+set_property(TARGET hydra_meshing_native PROPERTY INTERPROCEDURAL_OPTIMIZATION OFF)
 
 # ── High-performance overlay backend (compiled raster core) ────────────────
 pybind11_add_module(hydra_overlay

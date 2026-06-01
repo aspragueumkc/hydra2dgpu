@@ -491,6 +491,12 @@ def studio_build_ui(self):
     act_map.triggered.connect(lambda: self._studio_select_tab("map"))
     act_refresh.triggered.connect(self._refresh_layer_combos)
     act_snapshot.triggered.connect(lambda: self.snapshot_btn.click() if hasattr(self, "snapshot_btn") and self.snapshot_btn is not None else None)
+    act_open_coupling_results = toolbar.addAction("Open Drainage/Structure Results")
+    act_open_coupling_results.triggered.connect(
+        lambda: self._open_coupling_results_viewer()
+        if hasattr(self, "_open_coupling_results_viewer")
+        else None
+    )
     act_close.triggered.connect(self.reject)
 
     cmd_mesh.clicked.connect(lambda: self._studio_select_tab("mesh"))

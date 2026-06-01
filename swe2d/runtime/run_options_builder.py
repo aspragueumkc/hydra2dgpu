@@ -32,6 +32,7 @@ class SWE2DRunOptionsData:
     coupling_loop_mode: str
     drainage_solver_backend_mode: str
     drainage_gpu_method_mode: str
+    culvert_solver_mode: int
     cuda_graphs_enabled: bool
     equation_set: Any
     experimental_3d_enabled: bool
@@ -46,6 +47,7 @@ class SWE2DRunOptionsData:
     pipe_network_cfg: Any
     hydraulic_structures_cfg: Any
     bridge_cuda_coupling: bool
+    bridge_stacked_coupling_mode: str
 
 
 class SWE2DRunOptionsBuilder:
@@ -138,6 +140,7 @@ class SWE2DRunOptionsBuilder:
         coupling_loop_mode = str(self._ui.coupling_loop_combo.currentData() if hasattr(self._ui, "coupling_loop_combo") else "cpu")
         drainage_solver_backend_mode = str(self._ui.drainage_backend_combo.currentData() if hasattr(self._ui, "drainage_backend_combo") else "cpu")
         drainage_gpu_method_mode = str(self._ui.drainage_gpu_method_combo.currentData() if hasattr(self._ui, "drainage_gpu_method_combo") else "step")
+        culvert_solver_mode = int(self._ui.culvert_solver_mode_combo.currentData() if hasattr(self._ui, "culvert_solver_mode_combo") else 0)
 
         cuda_graphs_enabled = bool(getattr(self._ui, "enable_cuda_graphs_chk", None) and self._ui.enable_cuda_graphs_chk.isChecked())
         if (
@@ -225,6 +228,12 @@ class SWE2DRunOptionsBuilder:
                 f"{self._ui._summarize_3d_patch_face_bc_modes(swe3d_env_overrides)}"
             )
 
+        swe2d_perf_mode_enabled = bool(
+            getattr(self._ui, "swe2d_perf_mode_chk", None)
+            and self._ui.swe2d_perf_mode_chk.isChecked()
+        )
+        swe3d_env_overrides["BACKWATER_SWE2D_PERF_MODE"] = "1" if swe2d_perf_mode_enabled else "0"
+
         rain_rate_model = self._rain_rate_si_to_model(float(self._ui.rain_rate_spin.value()) / 1000.0 / 3600.0)
         internal_flow_forcing = self._build_internal_flow_forcing()
         cell_source_si = self._internal_flow_source_cms_at_time(internal_flow_forcing, 0.0)
@@ -233,8 +242,18 @@ class SWE2DRunOptionsBuilder:
         pipe_network_cfg = self._build_pipe_network_config()
         hydraulic_structures_cfg = self._build_hydraulic_structure_config()
         bridge_cuda_coupling = bool(self._swe2d_gpu_available()) and self._has_bridge_structures(hydraulic_structures_cfg)
+        bridge_stacked_coupling_mode = str(
+            self._ui.bridge_stacked_coupling_mode_combo.currentData()
+            if hasattr(self._ui, "bridge_stacked_coupling_mode_combo")
+            else "phase3_spatial"
+        ).strip().lower()
+        if bridge_stacked_coupling_mode not in {"legacy_scalar", "phase3_spatial"}:
+            bridge_stacked_coupling_mode = "phase3_spatial"
         if bridge_cuda_coupling:
-            self._log("Bridge coupling CUDA helper enabled for hydraulic structures with bridge entries.")
+            self._log(
+                "Bridge coupling CUDA helper enabled for hydraulic structures with bridge entries "
+                f"(stacked mode={bridge_stacked_coupling_mode})."
+            )
 
         return SWE2DRunOptionsData(
             run_duration_s=run_duration_s,
@@ -251,6 +270,7 @@ class SWE2DRunOptionsBuilder:
             coupling_loop_mode=coupling_loop_mode,
             drainage_solver_backend_mode=drainage_solver_backend_mode,
             drainage_gpu_method_mode=drainage_gpu_method_mode,
+            culvert_solver_mode=culvert_solver_mode,
             cuda_graphs_enabled=cuda_graphs_enabled,
             equation_set=equation_set,
             experimental_3d_enabled=experimental_3d_enabled,
@@ -265,4 +285,5 @@ class SWE2DRunOptionsBuilder:
             pipe_network_cfg=pipe_network_cfg,
             hydraulic_structures_cfg=hydraulic_structures_cfg,
             bridge_cuda_coupling=bridge_cuda_coupling,
+            bridge_stacked_coupling_mode=bridge_stacked_coupling_mode,
         )

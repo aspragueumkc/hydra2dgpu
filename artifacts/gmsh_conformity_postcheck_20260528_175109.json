@@ -1,0 +1,58 @@
+{
+  "ok": true,
+  "source_npz": "/home/aaron/QGIS_Plugins_dev/qgis-backwater-plugin/artifacts/headless_gui_gmsh_full_align_swe3d_20260528_174224.npz",
+  "results": {
+    "pair_4_1": {
+      "pair": [
+        4,
+        1
+      ],
+      "near_tol": 0.0002637855883045544,
+      "shared_edge_count": 152,
+      "shared_node_count": 153,
+      "shared_length": 2824.293482426669,
+      "a_near_b_unshared_node_count": 0,
+      "b_near_a_unshared_node_count": 0,
+      "is_conforming": true
+    },
+    "pair_4_3": {
+      "pair": [
+        4,
+        3
+      ],
+      "near_tol": 0.0002637855883045544,
+      "shared_edge_count": 66,
+      "shared_node_count": 67,
+      "shared_length": 1178.8703202286433,
+      "a_near_b_unshared_node_count": 0,
+      "b_near_a_unshared_node_count": 0,
+      "is_conforming": true
+    },
+    "pair_5_1": {
+      "pair": [
+        5,
+        1
+      ],
+      "near_tol": 0.0002637855883045544,
+      "shared_edge_count": 88,
+      "shared_node_count": 89,
+      "shared_length": 1524.2775200022347,
+      "a_near_b_unshared_node_count": 0,
+      "b_near_a_unshared_node_count": 0,
+      "is_conforming": true
+    },
+    "pair_5_3": {
+      "pair": [
+        5,
+        3
+      ],
+      "near_tol": 0.0002637855883045544,
+      "shared_edge_count": 78,
+      "shared_node_count": 81,
+      "shared_length": 1405.8632162124507,
+      "a_near_b_unshared_node_count": 1,
+      "b_near_a_unshared_node_count": 1,
+      "is_conforming": false
+    }
+  }
+}

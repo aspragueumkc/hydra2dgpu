@@ -58,7 +58,7 @@ def sync_high_perf_overlay_data(dialog: Any) -> None:
 
     try:
         cx, cy = dialog._mesh_cell_centroids()
-        bed = dialog._mesh_cell_min_bed()
+        bed = dialog._mesh_cell_solver_bed()
         dialog._high_perf_overlay_cell_x = np.asarray(cx, dtype=np.float64)
         dialog._high_perf_overlay_cell_y = np.asarray(cy, dtype=np.float64)
         dialog._high_perf_overlay_cell_bed = np.asarray(bed, dtype=np.float64)

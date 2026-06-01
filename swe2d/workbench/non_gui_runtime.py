@@ -1481,7 +1481,7 @@ def execute_run_timestep_loop(
     native_source_injection_mode: bool,
     accumulate_boundary_flux_volume_model_callback: object,
     sample_map: object,
-    cell_min_z: object,
+    cell_solver_z: object,
     experimental_3d_runtime: bool,
     timing_totals_ms: Dict[str, float],
     timing_samples: int,
@@ -1500,6 +1500,7 @@ def execute_run_timestep_loop(
     front_flux_damping_value: float = 1.0,
     zmax_bc_mode: Optional[int] = None,
     apply_3d_patch_face_bc_callback: Optional[Callable[..., None]] = None,
+    perf_mode: bool = False,
 ) -> Dict[str, object]:
     while float(t_accum) < float(run_duration_s):
         if bool(getattr(wb, "_cancel_requested", False)):
@@ -1548,6 +1549,7 @@ def execute_run_timestep_loop(
         bc_ms += float(step_result["bc_ms"])
 
         if bc_n0.size > 0:
+            _t_bc_acc = time.perf_counter()
             if dynamic_bc:
                 bc_tp_flux, bc_vl_flux = wb._apply_timeseries_bc_values(
                     bc_n0,
@@ -1582,6 +1584,7 @@ def execute_run_timestep_loop(
                     edge_hydrographs,
                 )
             accumulate_boundary_flux_volume_model_callback(dt_used, bc_tp_flux, bc_vl_flux)
+            bc_ms += (time.perf_counter() - _t_bc_acc) * 1000.0
 
         report_result = runtime_reporter.process_step(
             backend=backend,
@@ -1591,7 +1594,7 @@ def execute_run_timestep_loop(
             last_valid_cmax=last_valid_cmax,
             last_valid_wse_res=last_valid_wse_res,
             sample_map=sample_map,
-            cell_min_z=cell_min_z,
+            cell_solver_z=cell_solver_z,
             coupling_controller=coupling_controller,
             experimental_3d_runtime=experimental_3d_runtime,
             rain_src=rain_src,
@@ -1631,6 +1634,7 @@ def execute_run_timestep_loop(
             process_events_callback=process_events_callback,
             set_progress_callback=wb.progress_bar.setValue,
             log_callback=wb._log,
+            perf_mode=perf_mode,
         )
         t_accum = float(report_result["t_accum"])
         last_valid_cmax = float(report_result["last_valid_cmax"])

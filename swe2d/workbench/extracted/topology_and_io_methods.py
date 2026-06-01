@@ -9,14 +9,17 @@ from swe2d_workbench_qt import (
     _DRAIN_LINK_TYPE_VALUE_MAP,
     _DRAIN_NODE_TYPE_VALUE_MAP,
     _HAVE_H5PY,
+    _HAVE_NETCDF4,
     _HAVE_QGIS_CORE,
     _HYETOGRAPH_UNITS_VALUE_MAP,
     _HYETOGRAPH_VALUE_TYPE_MAP,
     _NETCDF4_IMPORT_ERROR,
     _RAIN_GAGE_UNITS_VALUE_MAP,
     _STRUCTURE_TYPE_VALUE_MAP,
+    _ensure_netcdf4_available,
     _gmsh_available,
     _h5py,
+    _netCDF4,
     _tqmesh_available,
 )
 
@@ -1273,14 +1276,14 @@ def _write_ugrid_nc(self, path: str, timesteps=None):
         face_node = np.full((n_cells, max_vp), -1, dtype=np.int32)
         cell_cx = np.empty(n_cells, dtype=np.float64)
         cell_cy = np.empty(n_cells, dtype=np.float64)
-        cell_min_z = np.empty(n_cells, dtype=np.float64)
+        cell_solver_z = np.empty(n_cells, dtype=np.float64)
         for i in range(n_cells):
             s, e = int(offsets[i]), int(offsets[i + 1])
             ring = face_nodes_arr[s:e].astype(np.int32)
             face_node[i, : e - s] = ring
             cell_cx[i] = float(np.mean(node_x[ring]))
             cell_cy[i] = float(np.mean(node_y[ring]))
-            cell_min_z[i] = float(np.min(node_z[ring]))
+            cell_solver_z[i] = float(np.mean(node_z[ring]))
     else:
         tri = cell_nodes_tri.reshape(-1, 3).astype(np.int32)
         n_cells = tri.shape[0]
@@ -1288,7 +1291,7 @@ def _write_ugrid_nc(self, path: str, timesteps=None):
         face_node = tri
         cell_cx = np.mean(node_x[tri], axis=1)
         cell_cy = np.mean(node_y[tri], axis=1)
-        cell_min_z = np.min(node_z[tri], axis=1)
+        cell_solver_z = np.mean(node_z[tri], axis=1)
 
     n_nodes = int(node_x.size)
 
@@ -1376,14 +1379,14 @@ def _write_ugrid_nc(self, path: str, timesteps=None):
         fy_var.grid_mapping = "crs"
         fy_var[:] = cell_cy.astype(np.float64)
 
-        # Face minimum bed elevation
+        # Face bed elevation consistent with solver cell_zb.
         fz_var = ds.createVariable("face_z", "f8", ("face",))
-        fz_var.long_name = "minimum bed elevation at face"
+        fz_var.long_name = "face bed elevation (mean vertex bed, solver-consistent)"
         fz_var.units = len_unit
         fz_var.mesh = "mesh2d"
         fz_var.location = "face"
         fz_var.grid_mapping = "crs"
-        fz_var[:] = cell_min_z.astype(np.float64)
+        fz_var[:] = cell_solver_z.astype(np.float64)
 
         # Face→node connectivity (1-indexed as UGRID standard; -1 = fill)
         fn_var = ds.createVariable(
@@ -1436,7 +1439,7 @@ def _write_ugrid_nc(self, path: str, timesteps=None):
                 u = np.where(wet, hu_f / hmag, 0.0)
                 v = np.where(wet, hv_f / hmag, 0.0)
                 depth_arr[ti] = h_f.astype(np.float32)
-                wse_arr[ti] = (h_f + cell_min_z[:n_cells]).astype(np.float32)
+                wse_arr[ti] = (h_f + cell_solver_z[:n_cells]).astype(np.float32)
                 vel_u_arr[ti] = u.astype(np.float32)
                 vel_v_arr[ti] = v.astype(np.float32)
                 vel_mag_arr[ti] = np.sqrt(u ** 2 + v ** 2).astype(np.float32)
@@ -1614,21 +1617,21 @@ def _write_hecras_hdf5(self, path: str, timesteps=None):
         fp_idx = np.full((n_cells, max_vp), -1, dtype=np.int32)
         cell_cx = np.empty(n_cells, dtype=np.float64)
         cell_cy = np.empty(n_cells, dtype=np.float64)
-        cell_min_z = np.empty(n_cells, dtype=np.float64)
+        cell_solver_z = np.empty(n_cells, dtype=np.float64)
         for i in range(n_cells):
             s, e = int(offsets[i]), int(offsets[i + 1])
             ring = face_nodes_arr[s:e].astype(np.int32)
             fp_idx[i, : e - s] = ring
             cell_cx[i] = float(np.mean(node_x[ring]))
             cell_cy[i] = float(np.mean(node_y[ring]))
-            cell_min_z[i] = float(np.min(node_z[ring]))
+            cell_solver_z[i] = float(np.mean(node_z[ring]))
     else:
         tri = cell_nodes_tri.reshape(-1, 3).astype(np.int32)
         n_cells = tri.shape[0]
         fp_idx = tri
         cell_cx = np.mean(node_x[tri], axis=1)
         cell_cy = np.mean(node_y[tri], axis=1)
-        cell_min_z = np.min(node_z[tri], axis=1)
+        cell_solver_z = np.mean(node_z[tri], axis=1)
 
     area_name = "Perimeter 1"
 
@@ -1722,10 +1725,10 @@ def _write_hecras_hdf5(self, path: str, timesteps=None):
             "Cells Center Coordinate",
             data=np.column_stack([cell_cx, cell_cy]).astype(np.float64),
         )
-        # Minimum bed elevation per cell
+        # Solver-consistent bed elevation per cell.
         area_grp.create_dataset(
             "Cells Minimum Elevation",
-            data=cell_min_z.astype(np.float32),
+            data=cell_solver_z.astype(np.float32),
         )
         if include_extra:
             if self._result_data is not None and "n_mann_cell" in self._result_data:
@@ -1783,7 +1786,7 @@ def _write_hecras_hdf5(self, path: str, timesteps=None):
                 u = np.where(wet, hu_f / hmag, 0.0)
                 v = np.where(wet, hv_f / hmag, 0.0)
                 depth_arr[ti] = h_f.astype(np.float32)
-                wse_arr[ti] = (h_f + cell_min_z[:n_cells]).astype(np.float32)
+                wse_arr[ti] = (h_f + cell_solver_z[:n_cells]).astype(np.float32)
                 vel_arr[ti] = np.sqrt(u ** 2 + v ** 2).astype(np.float32)
                 vel_u_arr[ti] = u.astype(np.float32)
                 vel_v_arr[ti] = v.astype(np.float32)
@@ -1987,12 +1990,32 @@ def _persist_line_results_to_geopackage(
     if not gpkg_path or not rows:
         return
     profile_rows = list(profile_rows or [])
+    runs_table = "swe2d_line_results_runs"
+    ts_table = "swe2d_line_results_ts"
+    profile_table = "swe2d_line_results_profile"
+    if hasattr(self, "_results_table_name"):
+        try:
+            runs_table = str(self._results_table_name(runs_table) or runs_table)
+            ts_table = str(self._results_table_name(ts_table) or ts_table)
+            profile_table = str(self._results_table_name(profile_table) or profile_table)
+        except Exception:
+            runs_table = "swe2d_line_results_runs"
+            ts_table = "swe2d_line_results_ts"
+            profile_table = "swe2d_line_results_profile"
+
+    def _q(name: str) -> str:
+        return '"' + str(name).replace('"', '""') + '"'
+
+    q_runs = _q(runs_table)
+    q_ts = _q(ts_table)
+    q_profile = _q(profile_table)
+
     conn = sqlite3.connect(gpkg_path)
     try:
         cur = conn.cursor()
         cur.execute(
-            """
-            CREATE TABLE IF NOT EXISTS swe2d_line_results_runs (
+            f"""
+            CREATE TABLE IF NOT EXISTS {q_runs} (
                 run_id TEXT PRIMARY KEY,
                 created_utc TEXT,
                 mesh_interval_s REAL,
@@ -2002,8 +2025,8 @@ def _persist_line_results_to_geopackage(
             """
         )
         cur.execute(
-            """
-            CREATE TABLE IF NOT EXISTS swe2d_line_results_ts (
+            f"""
+            CREATE TABLE IF NOT EXISTS {q_ts} (
                 run_id TEXT,
                 t_s REAL,
                 line_id INTEGER,
@@ -2020,11 +2043,11 @@ def _persist_line_results_to_geopackage(
             """
         )
         cur.execute(
-            "CREATE INDEX IF NOT EXISTS idx_swe2d_line_ts_run_line_t ON swe2d_line_results_ts(run_id, line_id, t_s)"
+            f"CREATE INDEX IF NOT EXISTS idx_{ts_table}_run_line_t ON {q_ts}(run_id, line_id, t_s)"
         )
         cur.execute(
-            """
-            CREATE TABLE IF NOT EXISTS swe2d_line_results_profile (
+            f"""
+            CREATE TABLE IF NOT EXISTS {q_profile} (
                 run_id TEXT,
                 t_s REAL,
                 line_id INTEGER,
@@ -2042,19 +2065,19 @@ def _persist_line_results_to_geopackage(
             """
         )
         cur.execute(
-            "CREATE INDEX IF NOT EXISTS idx_swe2d_line_prof_run_line_t_s ON swe2d_line_results_profile(run_id, line_id, t_s, station_m)"
+            f"CREATE INDEX IF NOT EXISTS idx_{profile_table}_run_line_t_s ON {q_profile}(run_id, line_id, t_s, station_m)"
         )
-        cur.execute("DELETE FROM swe2d_line_results_ts WHERE run_id = ?", (run_id,))
-        cur.execute("DELETE FROM swe2d_line_results_profile WHERE run_id = ?", (run_id,))
+        cur.execute(f"DELETE FROM {q_ts} WHERE run_id = ?", (run_id,))
+        cur.execute(f"DELETE FROM {q_profile} WHERE run_id = ?", (run_id,))
         cur.execute(
-            """
-            INSERT OR REPLACE INTO swe2d_line_results_runs
+            f"""
+            INSERT OR REPLACE INTO {q_runs}
             (run_id, created_utc, mesh_interval_s, line_interval_s, row_count)
             VALUES (?, ?, ?, ?, ?)
             """,
             (
                 str(run_id),
-                datetime.datetime.utcnow().replace(microsecond=0).isoformat() + "Z",
+                datetime.datetime.now().astimezone().replace(microsecond=0).isoformat(),
                 float(mesh_interval_s),
                 float(line_interval_s),
                 int(len(rows)),
@@ -2077,8 +2100,8 @@ def _persist_line_results_to_geopackage(
             for r in rows
         ]
         cur.executemany(
-            """
-            INSERT OR REPLACE INTO swe2d_line_results_ts
+            f"""
+            INSERT OR REPLACE INTO {q_ts}
             (run_id, t_s, line_id, line_name, depth_m, velocity_ms, wse_m, bed_m, flow_cms, wet_frac, fr)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
@@ -2103,8 +2126,8 @@ def _persist_line_results_to_geopackage(
                 for r in profile_rows
             ]
             cur.executemany(
-                """
-                INSERT OR REPLACE INTO swe2d_line_results_profile
+                f"""
+                INSERT OR REPLACE INTO {q_profile}
                 (run_id, t_s, line_id, line_name, station_m, depth_m, velocity_ms, wse_m, bed_m, flow_qn, wet, fr)
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
@@ -2232,7 +2255,7 @@ def _create_2d_model_geopackage(self):
         "memory",
     )
     structures = QgsVectorLayer(
-        f"LineString?crs={crs_auth}&field=structure_id:string(64)&field=structure_type:integer&field=crest_elev:double&field=enabled:integer&field=width:double&field=height:double&field=diameter:double&field=length:double&field=roughness_n:double&field=coeff:double&field=cd:double&field=opening:double&field=q_pump:double&field=max_flow:double&field=inlet_loss_k:double&field=outlet_loss_k:double&field=stacked_enabled:integer&field=influence_width_m:double&field=upstream_buffer_m:double&field=downstream_buffer_m:double&field=deck_soffit_elev:double&field=deck_top_elev:double&field=model_top_elev:double&field=under_layers:integer&field=over_layers:integer&field=pier_count:integer&field=pier_width:double",
+        f"LineString?crs={crs_auth}&field=structure_id:string(64)&field=structure_type:integer&field=crest_elev:double&field=enabled:integer&field=width:double&field=height:double&field=diameter:double&field=culvert_shape:string(32)&field=culvert_code:integer&field=culvert_rise:double&field=culvert_span:double&field=culvert_area_m2:double&field=culvert_barrels:integer&field=culvert_slope:double&field=inlet_invert_elev:double&field=outlet_invert_elev:double&field=entrance_loss_k:double&field=exit_loss_k:double&field=embankment_enabled:integer&field=embankment_crest_elev:double&field=embankment_overflow_width:double&field=embankment_weir_coeff:double&field=length:double&field=roughness_n:double&field=coeff:double&field=cd:double&field=opening:double&field=q_pump:double&field=max_flow:double&field=inlet_loss_k:double&field=outlet_loss_k:double&field=stacked_enabled:integer&field=influence_width_m:double&field=upstream_buffer_m:double&field=downstream_buffer_m:double&field=deck_soffit_elev:double&field=deck_top_elev:double&field=model_top_elev:double&field=under_layers:integer&field=over_layers:integer&field=pier_count:integer&field=pier_width:double",
         "swe2d_structures",
         "memory",
     )
@@ -2361,8 +2384,15 @@ def _migrate_2d_model_geopackage(self):
         ("swe2d_structures",
          f"LineString?crs={crs_auth}&field=structure_id:string(64)"
          "&field=structure_type:integer&field=crest_elev:double&field=enabled:integer"
-         "&field=width:double&field=height:double&field=diameter:double"
-         "&field=length:double&field=roughness_n:double&field=coeff:double"
+            "&field=width:double&field=height:double&field=diameter:double"
+            "&field=culvert_shape:string(32)&field=culvert_code:integer"
+            "&field=culvert_rise:double&field=culvert_span:double"
+            "&field=culvert_area_m2:double&field=culvert_barrels:integer"
+            "&field=culvert_slope:double&field=inlet_invert_elev:double"
+            "&field=outlet_invert_elev:double&field=entrance_loss_k:double"
+            "&field=exit_loss_k:double&field=embankment_enabled:integer"
+            "&field=embankment_crest_elev:double&field=embankment_overflow_width:double"
+            "&field=embankment_weir_coeff:double&field=length:double&field=roughness_n:double&field=coeff:double"
             "&field=cd:double&field=opening:double&field=q_pump:double&field=max_flow:double"
             "&field=inlet_loss_k:double&field=outlet_loss_k:double"
             "&field=stacked_enabled:integer&field=influence_width_m:double"
@@ -2716,6 +2746,14 @@ def _configure_swe2d_layer_editors(self, layer):
     except Exception:
         pass
 
+    def _set_alias(field_name: str, alias: str) -> None:
+        try:
+            idx = layer.fields().indexOf(field_name)
+            if idx >= 0:
+                layer.setFieldAlias(idx, alias)
+        except Exception:
+            pass
+
     is_region = "topo_regions" in lname or lname.endswith("swe2d_topo_regions")
     is_arc = "topo_arcs" in lname or lname.endswith("swe2d_topo_arcs")
     is_constraint = "topo_constraints" in lname or lname.endswith("swe2d_topo_constraints")
@@ -2848,9 +2886,54 @@ def _configure_swe2d_layer_editors(self, layer):
 
     if is_structures:
         self._set_value_map_editor(layer, "structure_type", _STRUCTURE_TYPE_VALUE_MAP)
+        self._set_value_map_editor(layer, "culvert_shape", {"Circular": "circular", "Box": "box", "Rectangular": "rectangular"})
+        self._set_value_map_editor(layer, "embankment_enabled", {"No": 0, "Yes": 1})
         self._set_expression_constraint(layer, "structure_id", 'length(trim("structure_id")) > 0')
         self._set_expression_constraint(layer, "structure_type", '"structure_type" IN (1,2,3,4,5)')
         self._set_expression_constraint(layer, "enabled", '"enabled" IS NULL OR "enabled" IN (0,1)')
+        self._set_expression_constraint(layer, "culvert_code", '"culvert_code" IS NULL OR "culvert_code" >= 1')
+        self._set_expression_constraint(layer, "culvert_rise", '"culvert_rise" IS NULL OR "culvert_rise" > 0')
+        self._set_expression_constraint(layer, "culvert_span", '"culvert_span" IS NULL OR "culvert_span" > 0')
+        self._set_expression_constraint(layer, "culvert_area_m2", '"culvert_area_m2" IS NULL OR "culvert_area_m2" > 0')
+        self._set_expression_constraint(layer, "culvert_barrels", '"culvert_barrels" IS NULL OR "culvert_barrels" >= 1')
+        self._set_expression_constraint(layer, "length", '"length" IS NULL OR "length" > 0')
+        self._set_expression_constraint(layer, "roughness_n", '"roughness_n" IS NULL OR "roughness_n" > 0')
+        self._set_expression_constraint(layer, "entrance_loss_k", '"entrance_loss_k" IS NULL OR "entrance_loss_k" >= 0')
+        self._set_expression_constraint(layer, "exit_loss_k", '"exit_loss_k" IS NULL OR "exit_loss_k" >= 0')
+        self._set_expression_constraint(layer, "embankment_enabled", '"embankment_enabled" IS NULL OR "embankment_enabled" IN (0,1)')
+        self._set_expression_constraint(layer, "embankment_overflow_width", '"embankment_overflow_width" IS NULL OR "embankment_overflow_width" >= 0')
+        self._set_expression_constraint(layer, "embankment_weir_coeff", '"embankment_weir_coeff" IS NULL OR "embankment_weir_coeff" > 0')
+
+        for field_name, alias in (
+            ("culvert_shape", "Culvert Shape"),
+            ("culvert_code", "FHWA Culvert Code"),
+            ("culvert_rise", "Culvert Rise"),
+            ("culvert_span", "Culvert Span"),
+            ("culvert_area_m2", "Override Area"),
+            ("culvert_barrels", "Barrel Count"),
+            ("culvert_slope", "Culvert Slope"),
+            ("inlet_invert_elev", "Inlet Invert Elev."),
+            ("outlet_invert_elev", "Outlet Invert Elev."),
+            ("entrance_loss_k", "Entrance Loss K"),
+            ("exit_loss_k", "Exit Loss K"),
+            ("embankment_enabled", "Enable Embankment Overflow"),
+            ("embankment_crest_elev", "Embankment Crest Elev."),
+            ("embankment_overflow_width", "Overflow Width"),
+            ("embankment_weir_coeff", "Weir Coefficient"),
+        ):
+            _set_alias(field_name, alias)
+
+        try:
+            from qgis.core import QgsEditFormConfig
+            cfg = layer.editFormConfig()
+            form_path = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), "forms", "swe2d_structures_culvert_form.ui")
+            if os.path.exists(form_path) and hasattr(cfg, "setUiForm"):
+                cfg.setUiForm(form_path)
+                if hasattr(QgsEditFormConfig, "UiFileLayout") and hasattr(cfg, "setLayout"):
+                    cfg.setLayout(QgsEditFormConfig.UiFileLayout)
+                layer.setEditFormConfig(cfg)
+        except Exception:
+            pass
 
 
 

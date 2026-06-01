@@ -12,16 +12,21 @@
 // ─────────────────────────────────────────────────────────────────────────────
 // CUDA Graph cache for optimized kernel sequence replay
 // ─────────────────────────────────────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────
+// CUDA Graph cache for optimized kernel sequence replay
+// ─────────────────────────────────────────────────────────────────────────────
+
 struct KernelGraphCache {
     cudaGraph_t       graph = nullptr;       // Captured graph template
     cudaGraphExec_t   exec = nullptr;        // Executable instance for replay
     int32_t           n_cells = 0;           // Mesh size at capture time
     int32_t           n_edges = 0;           // Edge count at capture time
     int32_t           spatial_scheme = 0;    // Spatial scheme at capture
-    int32_t           time_integrator = 0;   // RK order (2 or 4) at capture
+    int32_t           time_integrator = 0;   // RK order (2/4/5/6) at capture
+    int32_t           variant_key = 0;       // Encodes has_hydrograph + need_gradient
     uint64_t          config_signature = 0;  // Scalar/runtime config signature
     bool              is_valid = false;      // True if graph can be replayed
-    
+
     void destroy() {
         if (exec != nullptr) {
             cudaGraphExecDestroy(exec);
@@ -209,6 +214,13 @@ struct SWE2DDeviceState {
     int32_t  n_hg_edges = 0;
     int32_t  n_hg_samples = 0;
 
+    // Reusable upload buffers for per-step boundary value updates.
+    // Capacity is in element count, not bytes.
+    int32_t* d_bc_upd_edge = nullptr;
+    int32_t* d_bc_upd_type = nullptr;
+    double*  d_bc_upd_val = nullptr;
+    int32_t  bc_upd_capacity = 0;
+
     double*  d_cell_zb     = nullptr;
     double*  d_cell_area   = nullptr;
     double*  d_cell_inv_area = nullptr;
@@ -266,6 +278,9 @@ struct SWE2DDeviceState {
     // CFL workspace (device scalar)
     double*  d_lambda_max = nullptr;
     double*  d_max_wse_elev_error = nullptr;
+    // Two-level CFL reduction: block maxima are written here by swe2d_cfl_kernel,
+    // then a lightweight second kernel reduces them to d_lambda_max.
+    double*  d_cfl_block_max = nullptr;   // [grid_size] for CFL reduction
     // Packed diagnostic buffer: [0]=lambda_max, [1]=max_wse_elev_error, [2]=(double)n_wet.
     // Filled on-device by pack_diag_kernel after each step; a single cudaMemcpy
     // of 24 bytes transfers all three values when sync_diagnostics is true.
@@ -283,6 +298,11 @@ struct SWE2DDeviceState {
     // still have h > 0 are kept active for one extra step, suppressing
     // rapid oscillatory activation/deactivation at wet/dry fronts.
     int32_t* d_was_active = nullptr;  // n_cells
+
+    // Optional active-edge compaction workspace for tiny persistent stepping.
+    // d_active_edge_ids[k] stores edge indices selected from d_active mask.
+    int32_t* d_active_edge_ids = nullptr; // n_edges
+    int32_t* d_n_active_edges = nullptr;  // device scalar
 
     // Degenerate-cell handling (computed once at init; all null when degen_mode == 0).
     // degen_mode mirrors SWE2DSolverConfig::degen_mode.
@@ -347,6 +367,74 @@ struct SWE2DDeviceState {
         int preconditioner_last = -1;
         bool is_configured = false;
     } nh_workspace{};
+
+    // Persistent coupling workspace: reused across coupling calls to eliminate
+    // per-call cudaMalloc/cudaFree and H→D re-upload when data is unchanged.
+    // Allocated lazily on first use; survives for the lifetime of the device state.
+    struct CouplingWorkspace {
+        int32_t  cell_capacity = 0;
+        double*  d_cell_area = nullptr;
+        double*  d_source = nullptr;
+        int32_t  inlet_capacity = 0;
+        int32_t* d_inlet_cell = nullptr;
+        double*  d_inlet_q = nullptr;
+        int32_t  structure_capacity = 0;
+        int32_t* d_struct_up = nullptr;
+        int32_t* d_struct_dn = nullptr;
+        double*  d_struct_q = nullptr;
+        int32_t  bridge_cell_capacity = 0;
+        double*  d_bridge_cell_area = nullptr;
+        double*  d_bridge_source = nullptr;
+        int32_t  bridge_capacity = 0;
+        int32_t* d_bridge_up = nullptr;
+        int32_t* d_bridge_dn = nullptr;
+        double*  d_bridge_q = nullptr;
+        double*  d_bridge_ku = nullptr;
+        double*  d_bridge_kd = nullptr;
+        // Content hashes for dirtiness tracking (skip re-upload if unchanged).
+        uint64_t inlet_data_hash = 0;
+        uint64_t structure_data_hash = 0;
+        uint64_t bridge_data_hash = 0;
+    } coupling_ws{};
+
+    // Persistent structure-flow workspace: caches all device buffers for the
+    // 33-parameter structure flow kernel, eliminating per-step cudaMalloc churn.
+    struct StructureFlowWorkspace {
+        int32_t  cell_capacity = 0;
+        int32_t  struct_capacity = 0;
+        double*  d_cell_wse = nullptr;
+        double*  d_cell_bed = nullptr;
+        int32_t* d_structure_type = nullptr;
+        int32_t* d_upstream_cell = nullptr;
+        int32_t* d_downstream_cell = nullptr;
+        double*  d_crest_elev = nullptr;
+        double*  d_width = nullptr;
+        double*  d_height = nullptr;
+        double*  d_diameter = nullptr;
+        double*  d_length = nullptr;
+        double*  d_roughness_n = nullptr;
+        double*  d_coeff = nullptr;
+        double*  d_cd = nullptr;
+        double*  d_opening = nullptr;
+        double*  d_q_pump = nullptr;
+        double*  d_max_flow = nullptr;
+        int32_t* d_culvert_code = nullptr;
+        int32_t* d_culvert_shape = nullptr;
+        double*  d_culvert_rise = nullptr;
+        double*  d_culvert_span = nullptr;
+        double*  d_culvert_area_m2 = nullptr;
+        double*  d_culvert_barrels = nullptr;
+        double*  d_culvert_slope = nullptr;
+        double*  d_inlet_invert_elev = nullptr;
+        double*  d_outlet_invert_elev = nullptr;
+        double*  d_entrance_loss_k = nullptr;
+        double*  d_exit_loss_k = nullptr;
+        int32_t* d_embankment_enabled = nullptr;
+        double*  d_embankment_crest_elev = nullptr;
+        double*  d_embankment_overflow_width = nullptr;
+        double*  d_embankment_weir_coeff = nullptr;
+        double*  d_structure_flow = nullptr;
+    } sf_ws{};
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -392,6 +480,40 @@ void swe2d_gpu_step(
     double front_flux_damping    = 0.5,
     bool   active_set_hysteresis = true);
 
+// Persistent cooperative-kernel chunk stepping for tiny-N runs.
+// Executes chunk_substeps internal substeps with dt/chunk_substeps each.
+// This path is currently constrained to first-order single-stage hydrostatic
+// stepping and falls back to baseline stepping when unsupported.
+void swe2d_gpu_step_persistent_chunk(
+    SWE2DDeviceState* dev,
+    double t_now,
+    double dt,
+    int chunk_substeps,
+    double g,
+    double h_min,
+    int spatial_scheme,
+    double cfl_factor,
+    double max_inv_area,
+    double cfl_lambda_cap,
+    double momentum_cap_min_speed,
+    double momentum_cap_celerity_mult,
+    double depth_cap,
+    double max_rel_depth_increase,
+    double shallow_damping_depth,
+    bool extreme_rain_mode,
+    double source_cfl_beta,
+    int source_max_substeps,
+    double source_rate_cap,
+    double source_depth_step_cap,
+    bool source_true_subcycling,
+    bool source_imex_split,
+    bool enable_shallow_front_recon_fallback,
+    bool enable_active_edge_compaction,
+    bool sync_diagnostics,
+    SWE2DStepDiag* diag,
+    double front_flux_damping    = 0.5,
+    bool   active_set_hysteresis = true);
+
 // Advance one SSPRK2 (Heun) timestep fully on GPU.
 void swe2d_gpu_step_rk2(
     SWE2DDeviceState* dev,
@@ -416,6 +538,38 @@ void swe2d_gpu_step_rk2(
     bool source_true_subcycling,
     bool source_imex_split,
     bool enable_shallow_front_recon_fallback,
+    bool sync_diagnostics,
+    SWE2DStepDiag* diag,
+    double front_flux_damping    = 0.5,
+    bool   active_set_hysteresis = true);
+
+// Advance one SSPRK2 (Heun) timestep using persistent chunk stepping for
+// each RK stage when supported.
+void swe2d_gpu_step_rk2_persistent_chunk(
+    SWE2DDeviceState* dev,
+    double t_now,
+    double dt,
+    int chunk_substeps,
+    double g,
+    double h_min,
+    int spatial_scheme,
+    double cfl_factor,
+    double max_inv_area,
+    double cfl_lambda_cap,
+    double momentum_cap_min_speed,
+    double momentum_cap_celerity_mult,
+    double depth_cap,
+    double max_rel_depth_increase,
+    double shallow_damping_depth,
+    bool extreme_rain_mode,
+    double source_cfl_beta,
+    int source_max_substeps,
+    double source_rate_cap,
+    double source_depth_step_cap,
+    bool source_true_subcycling,
+    bool source_imex_split,
+    bool enable_shallow_front_recon_fallback,
+    bool enable_active_edge_compaction,
     bool sync_diagnostics,
     SWE2DStepDiag* diag,
     double front_flux_damping    = 0.5,
@@ -520,6 +674,38 @@ void swe2d_gpu_step_rk4_graph(
     SWE2DDeviceState* dev,
     double t_now,
     double dt,
+    double g,
+    double h_min,
+    int spatial_scheme,
+    double cfl_factor,
+    double max_inv_area,
+    double cfl_lambda_cap,
+    double momentum_cap_min_speed,
+    double momentum_cap_celerity_mult,
+    double depth_cap,
+    double max_rel_depth_increase,
+    double shallow_damping_depth,
+    bool extreme_rain_mode,
+    double source_cfl_beta,
+    int source_max_substeps,
+    double source_rate_cap,
+    double source_depth_step_cap,
+    bool source_true_subcycling,
+    bool source_imex_split,
+    bool enable_shallow_front_recon_fallback,
+    bool sync_diagnostics,
+    SWE2DStepDiag* diag,
+    double front_flux_damping    = 0.5,
+    bool   active_set_hysteresis = true);
+
+// Advance one graph-safe RK4 timestep using chunked persistent execution.
+// Current implementation executes chunk_substeps RK4-graph substeps with
+// dt/chunk_substeps each and syncs diagnostics on the final substep.
+void swe2d_gpu_step_rk4_graph_persistent_chunk(
+    SWE2DDeviceState* dev,
+    double t_now,
+    double dt,
+    int chunk_substeps,
     double g,
     double h_min,
     int spatial_scheme,
@@ -676,7 +862,10 @@ void swe2d_gpu_set_external_sources(
 
 // Headless coupling helper: compute per-cell depth-rate sources [m/s] from
 // packed drainage/structure transfer arrays using CUDA kernels.
+// When dev is non-null, uses persistent device buffers and dev->d_stream
+// for async execution; falls back to synchronous static-cache path otherwise.
 void swe2d_gpu_compute_coupling_sources(
+    SWE2DDeviceState* dev,   // nullable: enables persistent workspace + async stream
     int32_t n_cells,
     const double* cell_area_m2,
     int32_t n_inlets,
@@ -691,6 +880,7 @@ void swe2d_gpu_compute_coupling_sources(
 // Bridge-specific source helper: apply a bridge loss law to structure flows
 // before converting them to per-cell depth-rate sources [m/s].
 void swe2d_gpu_compute_bridge_coupling_sources(
+    SWE2DDeviceState* dev,   // nullable: enables persistent workspace + async stream
     int32_t n_cells,
     const double* cell_area_m2,
     int32_t n_bridges,
@@ -701,6 +891,87 @@ void swe2d_gpu_compute_bridge_coupling_sources(
     const double* bridge_loss_k_downstream,
     double bridge_opening_width_m,
     double dt_s,
+    double* source_rate_mps_out);
+
+// Structure-flow helper: compute per-structure transfer flow [m^3/s] on CUDA.
+void swe2d_gpu_compute_structure_flows(
+    int32_t n_cells,
+    int32_t n_structures,
+    const double* cell_wse,
+    const double* cell_bed,
+    const int32_t* structure_type,
+    const int32_t* upstream_cell,
+    const int32_t* downstream_cell,
+    const double* crest_elev,
+    const double* width,
+    const double* height,
+    const double* diameter,
+    const double* length,
+    const double* roughness_n,
+    const double* coeff,
+    const double* cd,
+    const double* opening,
+    const double* q_pump,
+    const double* max_flow,
+    const int32_t* culvert_code,
+    const int32_t* culvert_shape,
+    const double* culvert_rise,
+    const double* culvert_span,
+    const double* culvert_area_m2,
+    const double* culvert_barrels,
+    const double* culvert_slope,
+    const double* inlet_invert_elev,
+    const double* outlet_invert_elev,
+    const double* entrance_loss_k,
+    const double* exit_loss_k,
+    const int32_t* embankment_enabled,
+    const double* embankment_crest_elev,
+    const double* embankment_overflow_width,
+    const double* embankment_weir_coeff,
+    double gravity_mps2,
+    double* structure_flow_cms_out);
+
+// Fused structure-flows + coupling-sources: runs both kernels on-device and
+// returns per-cell source rates [m/s] without the intermediate H→D→H round trip.
+void swe2d_gpu_compute_structure_and_coupling_sources(
+    int32_t n_cells,
+    const double* cell_area_m2,
+    int32_t n_structures,
+    const double* cell_wse,
+    const double* cell_bed,
+    const int32_t* structure_type,
+    const int32_t* upstream_cell,
+    const int32_t* downstream_cell,
+    const double* crest_elev,
+    const double* width,
+    const double* height,
+    const double* diameter,
+    const double* length,
+    const double* roughness_n,
+    const double* coeff,
+    const double* cd,
+    const double* opening,
+    const double* q_pump,
+    const double* max_flow,
+    const int32_t* culvert_code,
+    const int32_t* culvert_shape,
+    const double* culvert_rise,
+    const double* culvert_span,
+    const double* culvert_area_m2,
+    const double* culvert_barrels,
+    const double* culvert_slope,
+    const double* inlet_invert_elev,
+    const double* outlet_invert_elev,
+    const double* entrance_loss_k,
+    const double* exit_loss_k,
+    const int32_t* embankment_enabled,
+    const double* embankment_crest_elev,
+    const double* embankment_overflow_width,
+    const double* embankment_weir_coeff,
+    double gravity_mps2,
+    int32_t n_inlets,
+    const int32_t* inlet_cell,
+    const double* inlet_flow_cms,
     double* source_rate_mps_out);
 
 SWE3DCartesianPatchDeviceState* swe3d_cartesian_patch_alloc(
@@ -977,3 +1248,52 @@ void swe2d_gpu_destroy(SWE2DDeviceState* dev);
 
 // Query: returns true if a CUDA-capable device is available.
 bool swe2d_gpu_available();
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Culvert lookup-table mode: pre-computed Q(headwater,tailwater) tables.
+// When culvert_solver_mode=1, the kernel uses bilinear interpolation on these
+// tables instead of the iterative secant solver, reducing per-culvert compute.
+// ─────────────────────────────────────────────────────────────────────────────
+
+struct CulvertLookupTableDesc {
+    int32_t n_hw = 32;   // headwater axis points
+    int32_t n_tw = 16;   // tailwater axis points
+    // All tables packed into flat arrays; per-culvert offsets into these arrays.
+    // Offset i points to a block of (n_hw * n_tw) doubles, stored row-major
+    // (hw varies fastest).
+    double* d_table_data = nullptr;     // [total_table_points] on device
+    double* d_table_header = nullptr;   // [n_culverts * 6] header data:
+                                        //   [n_hw, n_tw, hw_min, hw_max, tw_min, tw_max]
+    int32_t n_culverts = 0;
+    int32_t capacity = 0;
+    bool uploaded = false;
+};
+
+// Host-side table generation: for each culvert, compute Q(hw,tw) on a grid
+// using the secant outlet-control solver.  Returns packed arrays ready for
+// cudaMemcpy.  Called once at solver init.
+bool swe2d_gpu_build_culvert_tables(
+    int32_t n_culverts,
+    const int32_t* culvert_code,
+    const int32_t* culvert_shape,
+    const double* culvert_rise,
+    const double* culvert_span,
+    const double* culvert_diameter,
+    const double* culvert_length,
+    const double* culvert_roughness_n,
+    const double* culvert_slope,
+    const double* entrance_loss_k,
+    const double* exit_loss_k,
+    int32_t n_hw,
+    int32_t n_tw,
+    std::vector<double>& table_data_out,
+    std::vector<double>& table_header_out);
+
+// Upload pre-built tables to device.  Must be called after CUDA context is active.
+void swe2d_gpu_upload_culvert_tables(
+    CulvertLookupTableDesc& desc,
+    const std::vector<double>& table_data,
+    const std::vector<double>& table_header);
+
+// Release table device memory.
+void swe2d_gpu_release_culvert_tables(CulvertLookupTableDesc& desc);

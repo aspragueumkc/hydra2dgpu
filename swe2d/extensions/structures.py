@@ -3,8 +3,9 @@
 from __future__ import annotations
 
 import math
-from typing import Dict, List, Sequence
+from typing import Any, Dict, List, Sequence
 
+from culvert_routine import CircularXsect, RectangularXsect, direct_step_culvert_upstream_energy, inlet_controlled_flow
 from swe2d.extensions.extension_models import (
     HydraulicStructure,
     HydraulicStructureConfig,
@@ -16,6 +17,109 @@ from swe2d.extensions.extension_models import (
     compute_pipe_manning_capacity_full,
     compute_weir_flow,
 )
+
+
+_FT_PER_M = 3.280839895013123
+_CFS_PER_CMS = 35.31466672148859
+
+
+def _m_to_ft(value_m: float) -> float:
+    return float(value_m) * _FT_PER_M
+
+
+def _ft_to_m(value_ft: float) -> float:
+    return float(value_ft) / _FT_PER_M
+
+
+def _cms_to_cfs(value_cms: float) -> float:
+    return float(value_cms) * _CFS_PER_CMS
+
+
+def _cfs_to_cms(value_cfs: float) -> float:
+    return float(value_cfs) / _CFS_PER_CMS
+
+
+def _culvert_xsect_from_metadata(md: Dict[str, float]):
+    shape = str(md.get("culvert_shape", md.get("shape", "circular")) or "circular").strip().lower()
+    code = int(round(float(md.get("culvert_code", 1.0))))
+    rise_m = float(md.get("culvert_rise", md.get("height", md.get("diameter", 0.0))) or 0.0)
+    span_m = float(md.get("culvert_span", md.get("width", rise_m)) or 0.0)
+    diameter_m = float(md.get("diameter", rise_m) or 0.0)
+
+    if shape in ("box", "rect", "rectangular"):
+        width_ft = max(1.0e-6, _m_to_ft(span_m))
+        height_ft = max(1.0e-6, _m_to_ft(rise_m))
+        return RectangularXsect(width_ft=width_ft, height_ft=height_ft, culvert_code=code)
+
+    return CircularXsect(diameter_ft=max(1.0e-6, _m_to_ft(diameter_m)), culvert_code=code)
+
+
+def _culvert_outlet_control_flow_cms(
+    *,
+    xsect,
+    available_head_up_ft: float,
+    tailwater_depth_ft: float,
+    length_ft: float,
+    slope_ftft: float,
+    roughness_n: float,
+    entrance_loss_k: float,
+    exit_loss_k: float,
+    q_hint_cfs: float,
+) -> float:
+    if available_head_up_ft <= 0.0:
+        return 0.0
+
+    max_q = max(1.0, q_hint_cfs * 2.0)
+
+    def required_head_ft(q_cfs: float) -> float:
+        if q_cfs <= 0.0:
+            return 0.0
+        e_up_ft, y_up_ft, _mode = direct_step_culvert_upstream_energy(
+            xsect=xsect,
+            Q=q_cfs,
+            n_value=max(1.0e-6, roughness_n),
+            slope=max(1.0e-6, slope_ftft),
+            length=max(1.0, length_ft),
+            tailwater_depth=max(0.0, tailwater_depth_ft),
+        )
+        area_ft2 = max(xsect.area(max(1.0e-6, min(y_up_ft, xsect.yFull))), 1.0e-9)
+        vel_ft_s = q_cfs / area_ft2
+        hv_loss = (max(0.0, entrance_loss_k) + max(0.0, exit_loss_k)) * (vel_ft_s * vel_ft_s) / (2.0 * 32.2)
+        return float(e_up_ft + hv_loss)
+
+    q_lo = 0.0
+    q_hi = max_q
+    for _ in range(12):
+        if required_head_ft(q_hi) >= available_head_up_ft:
+            break
+        q_hi *= 2.0
+
+    if required_head_ft(q_hi) < available_head_up_ft:
+        return _cfs_to_cms(q_hi)
+
+    for _ in range(60):
+        q_mid = 0.5 * (q_lo + q_hi)
+        if required_head_ft(q_mid) <= available_head_up_ft:
+            q_lo = q_mid
+        else:
+            q_hi = q_mid
+    return _cfs_to_cms(q_lo)
+
+
+def _signed_weir_flow(
+    upstream_wse_m: float,
+    downstream_wse_m: float,
+    crest_elev_m: float,
+    width_m: float,
+    coeff: float,
+) -> float:
+    return compute_weir_flow(
+        upstream_wse_m=upstream_wse_m,
+        downstream_wse_m=downstream_wse_m,
+        crest_elev_m=crest_elev_m,
+        width_m=width_m,
+        coeff=coeff,
+    )
 
 
 class SWE2DStructureModule(HydraulicStructureEngine):
@@ -30,13 +134,17 @@ class SWE2DStructureModule(HydraulicStructureEngine):
     - pumps
     """
 
-    def _structure_flow(self, structure: HydraulicStructure, cell_wse: Sequence[float]) -> float:
+    def __init__(self, cfg: HydraulicStructureConfig):
+        super().__init__(cfg)
+        self._last_structure_details: List[Dict[str, Any]] = []
+
+    def _structure_detail(self, structure: HydraulicStructure, cell_wse: Sequence[float]) -> Dict[str, Any]:
         if not structure.enabled:
-            return 0.0
+            return {"flow_cms": 0.0, "active": False, "control_mode": "disabled"}
         iu = int(structure.upstream_cell)
         idn = int(structure.downstream_cell)
         if iu < 0 or idn < 0 or iu >= len(cell_wse) or idn >= len(cell_wse):
-            return 0.0
+            return {"flow_cms": 0.0, "active": False, "control_mode": "invalid_cells"}
 
         wu = float(cell_wse[iu])
         wd = float(cell_wse[idn])
@@ -45,48 +153,147 @@ class SWE2DStructureModule(HydraulicStructureEngine):
         max_q = md.get("max_flow")
         g = max(1.0e-6, float(getattr(self.cfg, "gravity", 9.81)))
 
+        detail: Dict[str, Any] = {
+            "structure_id": str(structure.structure_id),
+            "structure_type": str(structure.structure_type.name).lower(),
+            "upstream_cell": iu,
+            "downstream_cell": idn,
+            "upstream_wse_m": wu,
+            "downstream_wse_m": wd,
+            "flow_cms": 0.0,
+            "active": True,
+            "control_mode": "none",
+        }
+
         if structure.structure_type == StructureType.CULVERT:
-            diameter = float(md.get("diameter", 0.0) or 0.0)
-            area = float(md.get("area_m2", 0.0) or 0.0)
-            if area <= 0.0 and diameter > 0.0:
+            inlet_invert = float(md.get("inlet_invert_elev", dz))
+            outlet_invert = float(md.get("outlet_invert_elev", inlet_invert))
+            sign = 1.0 if wu >= wd else -1.0
+            upstream_wse = wu if sign >= 0.0 else wd
+            downstream_wse = wd if sign >= 0.0 else wu
+            upstream_invert = inlet_invert if sign >= 0.0 else outlet_invert
+            downstream_invert = outlet_invert if sign >= 0.0 else inlet_invert
+            available_head_up_m = max(0.0, upstream_wse - upstream_invert)
+            tailwater_depth_m = max(0.0, downstream_wse - downstream_invert)
+            length_m = max(0.1, float(md.get("length", 1.0) or 1.0))
+            slope_mpm = float(md.get("culvert_slope", (upstream_invert - downstream_invert) / length_m if length_m > 0.0 else 0.0))
+            slope_mpm = max(1.0e-6, abs(slope_mpm))
+            roughness_n = max(1.0e-6, float(md.get("roughness_n", 0.013) or 0.013))
+            entrance_loss_k = float(md.get("inlet_loss_k", md.get("entrance_loss_k", 0.5)) or 0.5)
+            exit_loss_k = float(md.get("outlet_loss_k", md.get("exit_loss_k", 1.0)) or 1.0)
+            detail.update(
+                {
+                    "sign": sign,
+                    "inlet_invert_elev_m": inlet_invert,
+                    "outlet_invert_elev_m": outlet_invert,
+                    "available_head_up_m": available_head_up_m,
+                    "tailwater_depth_m": tailwater_depth_m,
+                    "culvert_slope": slope_mpm,
+                    "entrance_loss_k": entrance_loss_k,
+                    "exit_loss_k": exit_loss_k,
+                }
+            )
+
+            xsect = _culvert_xsect_from_metadata(md)
+            q_inlet_cfs, _dqh, _condition, _yr = inlet_controlled_flow(
+                xsect,
+                max(1.0e-6, slope_mpm),
+                max(0.0, _m_to_ft(available_head_up_m)),
+            )
+            q_inlet = _cfs_to_cms(q_inlet_cfs)
+            detail["inlet_control_flow_cms"] = q_inlet
+
+            diameter = float(md.get("diameter", md.get("culvert_rise", 0.0)) or 0.0)
+            area = float(md.get("culvert_area_m2", md.get("area_m2", 0.0)) or 0.0)
+            if area <= 0.0 and diameter > 0.0 and str(md.get("culvert_shape", "circular")).strip().lower() in ("circular", "pipe", "round"):
                 area = circular_area_from_diameter(diameter)
-            if area <= 0.0:
-                return 0.0
-            q_orifice = compute_orifice_flow(
-                head_up_m=wu,
-                head_down_m=wd,
-                area_m2=area,
-                discharge_coeff=float(md.get("cd", 0.75)),
-                g=g,
-                max_flow=float(max_q) if max_q is not None else None,
-            )
-            length = max(1.0, float(md.get("length", 1.0)))
-            slope = max(1.0e-6, abs(wu - wd) / length)
-            q_cap = compute_pipe_manning_capacity_full(
+            q_orifice = 0.0
+            if area > 0.0:
+                q_orifice = abs(
+                    compute_orifice_flow(
+                        head_up_m=available_head_up_m,
+                        head_down_m=tailwater_depth_m,
+                        area_m2=area,
+                        discharge_coeff=float(md.get("cd", 0.75)),
+                        g=g,
+                        max_flow=float(max_q) if max_q is not None else None,
+                    )
+                )
+            detail["orifice_cap_cms"] = q_orifice
+            q_manning_cap = compute_pipe_manning_capacity_full(
                 diameter_m=max(diameter, float(md.get("equiv_diameter_m", 0.0) or 0.0)),
-                slope_m_per_m=slope,
-                roughness_n=float(md.get("roughness_n", 0.013)),
+                slope_m_per_m=slope_mpm,
+                roughness_n=roughness_n,
+            ) if diameter > 0.0 else 0.0
+            detail["manning_cap_cms"] = q_manning_cap
+            q_outlet = _culvert_outlet_control_flow_cms(
+                xsect=xsect,
+                available_head_up_ft=max(0.0, _m_to_ft(available_head_up_m)),
+                tailwater_depth_ft=max(0.0, _m_to_ft(tailwater_depth_m)),
+                length_ft=max(0.1, _m_to_ft(length_m)),
+                slope_ftft=max(1.0e-6, slope_mpm),
+                roughness_n=roughness_n,
+                entrance_loss_k=entrance_loss_k,
+                exit_loss_k=exit_loss_k,
+                q_hint_cfs=max(q_inlet_cfs, _cms_to_cfs(max(q_orifice, q_manning_cap, 0.0))),
             )
-            if q_cap > 0.0:
-                q_orifice = (1.0 if q_orifice >= 0.0 else -1.0) * min(abs(q_orifice), q_cap)
-            return q_orifice
+            detail["outlet_control_flow_cms"] = q_outlet
+            q_culvert = max(0.0, min(q_inlet, q_outlet if q_outlet > 0.0 else q_inlet))
+            control_mode = "inlet_control"
+            if q_outlet > 0.0 and q_outlet < q_culvert + 1.0e-12:
+                control_mode = "outlet_control"
+            if q_orifice > 0.0:
+                if q_culvert > 0.0 and q_orifice < q_culvert - 1.0e-12:
+                    control_mode = "orifice_cap"
+                q_culvert = min(q_culvert, q_orifice) if q_culvert > 0.0 else q_orifice
+            if q_manning_cap > 0.0:
+                if q_culvert > 0.0 and q_manning_cap < q_culvert - 1.0e-12:
+                    control_mode = "manning_cap"
+                q_culvert = min(q_culvert, q_manning_cap) if q_culvert > 0.0 else q_manning_cap
+
+            q_emb = 0.0
+            if int(round(float(md.get("embankment_enabled", 0.0) or 0.0))) > 0:
+                q_emb = abs(_signed_weir_flow(
+                    upstream_wse_m=upstream_wse,
+                    downstream_wse_m=downstream_wse,
+                    crest_elev_m=float(md.get("embankment_crest_elev", md.get("road_crest_elev", dz)) or dz),
+                    width_m=float(md.get("embankment_overflow_width", md.get("road_overflow_width", md.get("width", 1.0))) or 1.0),
+                    coeff=float(md.get("embankment_weir_coeff", md.get("road_weir_coeff", 1.7)) or 1.7),
+                ))
+                q_culvert += q_emb
+
+            detail["embankment_flow_cms"] = q_emb
+
+            barrels = max(1.0, float(md.get("culvert_barrels", 1.0) or 1.0))
+            q_culvert *= barrels
+            if max_q is not None:
+                q_culvert = min(q_culvert, max(0.0, float(max_q)))
+                if q_culvert >= max(0.0, float(max_q)) - 1.0e-12:
+                    control_mode = "max_flow"
+            detail["barrels"] = barrels
+            detail["control_mode"] = control_mode
+            detail["flow_cms"] = q_culvert if sign >= 0.0 else -q_culvert
+            return detail
 
         if structure.structure_type == StructureType.WEIR:
-            return compute_weir_flow(
+            q = _signed_weir_flow(
                 upstream_wse_m=wu,
                 downstream_wse_m=wd,
                 crest_elev_m=dz,
                 width_m=float(md.get("width", 1.0)),
                 coeff=float(md.get("coeff", 1.7)),
-                max_flow=float(max_q) if max_q is not None else None,
             )
+            if max_q is not None:
+                q = max(-float(max_q), min(float(max_q), q))
+            detail.update({"control_mode": "weir", "flow_cms": q})
+            return detail
 
         if structure.structure_type == StructureType.GATE:
             opening = max(0.0, min(1.0, float(md.get("opening", 1.0))))
             width = max(0.0, float(md.get("width", 1.0)))
             height = max(0.0, float(md.get("height", 1.0)))
             area = opening * width * height
-            return compute_orifice_flow(
+            q = compute_orifice_flow(
                 head_up_m=wu,
                 head_down_m=wd,
                 area_m2=area,
@@ -94,12 +301,16 @@ class SWE2DStructureModule(HydraulicStructureEngine):
                 g=g,
                 max_flow=float(max_q) if max_q is not None else None,
             )
+            detail.update({"control_mode": "gate", "flow_cms": q})
+            return detail
 
         if structure.structure_type == StructureType.PUMP:
             q = max(0.0, float(md.get("q_pump", 0.0)))
             if wu >= wd:
-                return q
-            return -q
+                detail.update({"control_mode": "pump", "flow_cms": q})
+                return detail
+            detail.update({"control_mode": "pump", "flow_cms": -q})
+            return detail
 
         if structure.structure_type == StructureType.BRIDGE:
             width = max(0.0, float(md.get("width", 0.0)))
@@ -114,28 +325,50 @@ class SWE2DStructureModule(HydraulicStructureEngine):
             loss_scale = max(1.0e-6, 1.0 + k_up + k_dn)
             dh = wu - wd
             if abs(dh) <= 1.0e-12:
-                return 0.0
+                detail.update({"control_mode": "bridge", "flow_cms": 0.0})
+                return detail
             q = area * math.sqrt(max(0.0, 2.0 * g * abs(dh))) / loss_scale
             if max_q is not None:
                 q = min(q, max(0.0, float(max_q)))
-            return q if dh >= 0.0 else -q
+            detail.update({"control_mode": "bridge", "flow_cms": q if dh >= 0.0 else -q})
+            return detail
 
-        return 0.0
+        detail.update({"flow_cms": 0.0, "active": False, "control_mode": "unsupported"})
+        return detail
+
+    def _structure_flow(self, structure: HydraulicStructure, cell_wse: Sequence[float]) -> float:
+        return float(self._structure_detail(structure, cell_wse).get("flow_cms", 0.0))
+
+    def structure_details(self, cell_wse: Sequence[float]) -> List[Dict[str, Any]]:
+        details = [self._structure_detail(st, cell_wse) for st in self.cfg.structures]
+        self._last_structure_details = [dict(d) for d in details]
+        return details
+
+    @property
+    def last_structure_details(self) -> List[Dict[str, Any]]:
+        return [dict(d) for d in self._last_structure_details]
 
     def compute_structure_fluxes(self, dt: float, cell_wse: Sequence[float]) -> Dict[str, float]:
         _ = dt
         total_q = 0.0
-        for st in self.cfg.structures:
-            q = self._structure_flow(st, cell_wse)
-            total_q += abs(q)
+        details = self.structure_details(cell_wse)
+        culvert_count = 0.0
+        embankment_total = 0.0
+        for detail in details:
+            total_q += abs(float(detail.get("flow_cms", 0.0)))
+            if str(detail.get("structure_type", "")) == "culvert":
+                culvert_count += 1.0
+                embankment_total += abs(float(detail.get("embankment_flow_cms", 0.0) or 0.0))
         return {
             "active_structures": float(sum(1 for s in self.cfg.structures if s.enabled)),
             "total_structure_flow": float(total_q),
+            "culvert_count": culvert_count,
+            "culvert_embankment_total_flow": float(embankment_total),
         }
 
     def structure_flows(self, cell_wse: Sequence[float]) -> List[float]:
         """Return signed flow for each configured structure (upstream -> downstream positive)."""
-        return [float(self._structure_flow(st, cell_wse)) for st in self.cfg.structures]
+        return [float(d.get("flow_cms", 0.0)) for d in self.structure_details(cell_wse)]
 
     def structure_flows_cms(self, cell_wse: Sequence[float]) -> List[float]:
         """Backward-compatible alias for older callers."""

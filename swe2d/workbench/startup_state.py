@@ -61,14 +61,18 @@ def initialize_workbench_startup_state(
     dialog._topology_mesh_poll_count = 0
     dialog._topology_mesh_active_timeout_sec = 0.0
     dialog._topology_mesh_checkpoint_path = ""
+    dialog._topology_mesh_progress_path = ""
+    dialog._topology_mesh_progress_last_seq = -1
+    dialog._topology_mesh_progress_last_sig = ""
+    dialog._topology_mesh_progress = None
     dialog._project_layer_state_blocked = False
     dialog._initial_layer_restore_pending = True
     dialog._experimental_3d_bc_widget_attrs = []
     dialog._experimental_3d_bc_signal_specs = []
     try:
-        timeout_sec = float(os.environ.get("BACKWATER_TOPOLOGY_MESH_TIMEOUT_SEC", "300"))
+        timeout_sec = float(os.environ.get("BACKWATER_TOPOLOGY_MESH_TIMEOUT_SEC", "3000"))
     except Exception:
-        timeout_sec = 300.0
+        timeout_sec = 3000.0
     dialog._topology_mesh_timeout_sec = max(30.0, timeout_sec)
     dialog._topology_mesh_active_timeout_sec = dialog._topology_mesh_timeout_sec
 

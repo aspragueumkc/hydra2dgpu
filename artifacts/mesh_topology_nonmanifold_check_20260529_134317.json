@@ -1,0 +1,469 @@
+{
+  "source_json": "artifacts/headless_gui_gmsh_full_align_swe3d_20260529_134038.json",
+  "source_npz": "/home/aaron/QGIS_Plugins_dev/qgis-backwater-plugin/artifacts/headless_gui_gmsh_full_align_swe3d_20260529_134038.npz",
+  "mesh_counts": {
+    "nodes": 22203,
+    "faces": 39211,
+    "unique_edges": 61413
+  },
+  "topology": {
+    "edge_owner_histogram": {
+      "1": 583,
+      "2": 60830
+    },
+    "nonmanifold_edge_count": 0,
+    "faces_with_repeated_edge_count": 0,
+    "degenerate_face_count": 0,
+    "zero_area_face_count": 0
+  },
+  "mixed_transfinite_tri_interface": {
+    "shared_edge_count": 663,
+    "region_pair_shared_edges": [
+      {
+        "region_pair": [
+          1,
+          5
+        ],
+        "shared_edge_count": 88
+      },
+      {
+        "region_pair": [
+          3,
+          5
+        ],
+        "shared_edge_count": 88
+      },
+      {
+        "region_pair": [
+          2,
+          7
+        ],
+        "shared_edge_count": 83
+      },
+      {
+        "region_pair": [
+          1,
+          7
+        ],
+        "shared_edge_count": 83
+      },
+      {
+        "region_pair": [
+          2,
+          9
+        ],
+        "shared_edge_count": 69
+      },
+      {
+        "region_pair": [
+          3,
+          9
+        ],
+        "shared_edge_count": 69
+      },
+      {
+        "region_pair": [
+          2,
+          4
+        ],
+        "shared_edge_count": 61
+      },
+      {
+        "region_pair": [
+          1,
+          4
+        ],
+        "shared_edge_count": 61
+      },
+      {
+        "region_pair": [
+          2,
+          6
+        ],
+        "shared_edge_count": 25
+      },
+      {
+        "region_pair": [
+          1,
+          6
+        ],
+        "shared_edge_count": 24
+      },
+      {
+        "region_pair": [
+          2,
+          8
+        ],
+        "shared_edge_count": 12
+      }
+    ]
+  },
+  "samples": {
+    "nonmanifold_edges": [],
+    "faces_with_repeated_edge": [],
+    "degenerate_faces": [],
+    "zero_area_faces": [],
+    "mixed_interface_edges": [
+      {
+        "edge_nodes": [
+          0,
+          1
+        ],
+        "cells": [
+          0,
+          22447
+        ],
+        "regions": [
+          7,
+          2
+        ],
+        "cell_types": [
+          "quadrilateral",
+          "triangular"
+        ]
+      },
+      {
+        "edge_nodes": [
+          178,
+          179
+        ],
+        "cells": [
+          12,
+          5652
+        ],
+        "regions": [
+          7,
+          1
+        ],
+        "cell_types": [
+          "quadrilateral",
+          "triangular"
+        ]
+      },
+      {
+        "edge_nodes": [
+          1,
+          2
+        ],
+        "cells": [
+          13,
+          22692
+        ],
+        "regions": [
+          7,
+          2
+        ],
+        "cell_types": [
+          "quadrilateral",
+          "triangular"
+        ]
+      },
+      {
+        "edge_nodes": [
+          177,
+          178
+        ],
+        "cells": [
+          25,
+          5716
+        ],
+        "regions": [
+          7,
+          1
+        ],
+        "cell_types": [
+          "quadrilateral",
+          "triangular"
+        ]
+      },
+      {
+        "edge_nodes": [
+          2,
+          3
+        ],
+        "cells": [
+          26,
+          22790
+        ],
+        "regions": [
+          7,
+          2
+        ],
+        "cell_types": [
+          "quadrilateral",
+          "triangular"
+        ]
+      },
+      {
+        "edge_nodes": [
+          176,
+          177
+        ],
+        "cells": [
+          38,
+          5905
+        ],
+        "regions": [
+          7,
+          1
+        ],
+        "cell_types": [
+          "quadrilateral",
+          "triangular"
+        ]
+      },
+      {
+        "edge_nodes": [
+          3,
+          4
+        ],
+        "cells": [
+          39,
+          22693
+        ],
+        "regions": [
+          7,
+          2
+        ],
+        "cell_types": [
+          "quadrilateral",
+          "triangular"
+        ]
+      },
+      {
+        "edge_nodes": [
+          175,
+          176
+        ],
+        "cells": [
+          51,
+          5622
+        ],
+        "regions": [
+          7,
+          1
+        ],
+        "cell_types": [
+          "quadrilateral",
+          "triangular"
+        ]
+      },
+      {
+        "edge_nodes": [
+          4,
+          5
+        ],
+        "cells": [
+          52,
+          22055
+        ],
+        "regions": [
+          7,
+          2
+        ],
+        "cell_types": [
+          "quadrilateral",
+          "triangular"
+        ]
+      },
+      {
+        "edge_nodes": [
+          174,
+          175
+        ],
+        "cells": [
+          64,
+          5719
+        ],
+        "regions": [
+          7,
+          1
+        ],
+        "cell_types": [
+          "quadrilateral",
+          "triangular"
+        ]
+      },
+      {
+        "edge_nodes": [
+          5,
+          6
+        ],
+        "cells": [
+          65,
+          22479
+        ],
+        "regions": [
+          7,
+          2
+        ],
+        "cell_types": [
+          "quadrilateral",
+          "triangular"
+        ]
+      },
+      {
+        "edge_nodes": [
+          173,
+          174
+        ],
+        "cells": [
+          77,
+          6119
+        ],
+        "regions": [
+          7,
+          1
+        ],
+        "cell_types": [
+          "quadrilateral",
+          "triangular"
+        ]
+      },
+      {
+        "edge_nodes": [
+          6,
+          7
+        ],
+        "cells": [
+          78,
+          22725
+        ],
+        "regions": [
+          7,
+          2
+        ],
+        "cell_types": [
+          "quadrilateral",
+          "triangular"
+        ]
+      },
+      {
+        "edge_nodes": [
+          172,
+          173
+        ],
+        "cells": [
+          90,
+          5907
+        ],
+        "regions": [
+          7,
+          1
+        ],
+        "cell_types": [
+          "quadrilateral",
+          "triangular"
+        ]
+      },
+      {
+        "edge_nodes": [
+          7,
+          8
+        ],
+        "cells": [
+          91,
+          22480
+        ],
+        "regions": [
+          7,
+          2
+        ],
+        "cell_types": [
+          "quadrilateral",
+          "triangular"
+        ]
+      },
+      {
+        "edge_nodes": [
+          171,
+          172
+        ],
+        "cells": [
+          103,
+          5717
+        ],
+        "regions": [
+          7,
+          1
+        ],
+        "cell_types": [
+          "quadrilateral",
+          "triangular"
+        ]
+      },
+      {
+        "edge_nodes": [
+          8,
+          9
+        ],
+        "cells": [
+          104,
+          22379
+        ],
+        "regions": [
+          7,
+          2
+        ],
+        "cell_types": [
+          "quadrilateral",
+          "triangular"
+        ]
+      },
+      {
+        "edge_nodes": [
+          170,
+          171
+        ],
+        "cells": [
+          116,
+          6039
+        ],
+        "regions": [
+          7,
+          1
+        ],
+        "cell_types": [
+          "quadrilateral",
+          "triangular"
+        ]
+      },
+      {
+        "edge_nodes": [
+          9,
+          10
+        ],
+        "cells": [
+          117,
+          22217
+        ],
+        "regions": [
+          7,
+          2
+        ],
+        "cell_types": [
+          "quadrilateral",
+          "triangular"
+        ]
+      },
+      {
+        "edge_nodes": [
+          169,
+          170
+        ],
+        "cells": [
+          129,
+          5931
+        ],
+        "regions": [
+          7,
+          1
+        ],
+        "cell_types": [
+          "quadrilateral",
+          "triangular"
+        ]
+      }
+    ]
+  }
+}

@@ -116,6 +116,21 @@ def parser() -> argparse.ArgumentParser:
         help="Optional plugin name; if omitted bridge auto-detects HYDRA plugin",
     )
 
+    p_run_topo_gui = sub.add_parser("run-topology-mesh-gui")
+    p_run_topo_gui.add_argument("--target", choices=["auto", "demo", "studio"], default="auto")
+    p_run_topo_gui.add_argument("--backend", default=None, help="Optional topology backend override (gmsh|tqmesh)")
+    p_run_topo_gui.add_argument("--regions-layer", default=None)
+    p_run_topo_gui.add_argument("--arcs-layer", default=None)
+    p_run_topo_gui.add_argument("--nodes-layer", default=None)
+    p_run_topo_gui.add_argument("--constraints-layer", default=None)
+    p_run_topo_gui.add_argument("--quad-edges-layer", default=None)
+    p_run_topo_gui.add_argument("--regions-subset-sql", default=None)
+    p_run_topo_gui.add_argument("--quad-edges-subset-sql", default=None)
+    p_run_topo_gui.add_argument("--wait", action="store_true", help="Wait for completion and return result payload")
+    p_run_topo_gui.add_argument("--wait-timeout-sec", type=float, default=1800.0)
+
+    sub.add_parser("get-topology-mesh-gui-result")
+
     p_raw = sub.add_parser("raw")
     p_raw.add_argument("--action", required=True)
     p_raw.add_argument("--params-json", default="{}")
@@ -162,6 +177,32 @@ def main() -> int:
         params = {}
         if args.plugin_name:
             params["plugin_name"] = args.plugin_name
+    elif args.cmd == "run-topology-mesh-gui":
+        action = "run_topology_mesh_gui"
+        params = {
+            "target": args.target,
+            "wait_for_completion": bool(args.wait),
+            "wait_timeout_sec": float(args.wait_timeout_sec),
+        }
+        if args.backend is not None:
+            params["backend"] = args.backend
+        if args.regions_layer is not None:
+            params["regions_layer"] = args.regions_layer
+        if args.arcs_layer is not None:
+            params["arcs_layer"] = args.arcs_layer
+        if args.nodes_layer is not None:
+            params["nodes_layer"] = args.nodes_layer
+        if args.constraints_layer is not None:
+            params["constraints_layer"] = args.constraints_layer
+        if args.quad_edges_layer is not None:
+            params["quad_edges_layer"] = args.quad_edges_layer
+        if args.regions_subset_sql is not None:
+            params["regions_subset_sql"] = args.regions_subset_sql
+        if args.quad_edges_subset_sql is not None:
+            params["quad_edges_subset_sql"] = args.quad_edges_subset_sql
+    elif args.cmd == "get-topology-mesh-gui-result":
+        action = "get_topology_mesh_gui_result"
+        params = {}
     elif args.cmd == "run-swe2d":
         action = "run_swe2d_workbench"
         params = {}

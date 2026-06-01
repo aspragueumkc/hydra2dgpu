@@ -7,10 +7,40 @@ import sqlite3
 from typing import Any, Dict, List, Optional
 
 
-def _ensure_run_log_schema(cur: sqlite3.Cursor) -> None:
+def _normalize_table_prefix(prefix: Optional[str]) -> str:
+    raw = str(prefix or "").strip()
+    if not raw:
+        return ""
+    chars: List[str] = []
+    for ch in raw:
+        if ch.isalnum() or ch == "_":
+            chars.append(ch)
+        else:
+            chars.append("_")
+    cleaned = "".join(chars).strip("_")
+    if not cleaned:
+        return ""
+    if not (cleaned[0].isalpha() or cleaned[0] == "_"):
+        cleaned = f"p_{cleaned}"
+    return cleaned
+
+
+def _run_logs_table_name(table_prefix: Optional[str] = None) -> str:
+    prefix = _normalize_table_prefix(table_prefix)
+    if not prefix:
+        return "swe2d_run_logs"
+    return f"{prefix}_swe2d_run_logs"
+
+
+def _q(name: str) -> str:
+    return '"' + str(name).replace('"', '""') + '"'
+
+
+def _ensure_run_log_schema(cur: sqlite3.Cursor, table_name: str) -> None:
+    q_table = _q(table_name)
     cur.execute(
-        """
-        CREATE TABLE IF NOT EXISTS swe2d_run_logs (
+        f"""
+        CREATE TABLE IF NOT EXISTS {q_table} (
             run_id TEXT PRIMARY KEY,
             created_utc TEXT,
             start_wallclock TEXT,
@@ -22,10 +52,10 @@ def _ensure_run_log_schema(cur: sqlite3.Cursor) -> None:
         """
     )
 
-    cur.execute("PRAGMA table_info(swe2d_run_logs)")
+    cur.execute(f"PRAGMA table_info({q_table})")
     cols = {str(row[1]) for row in cur.fetchall()}
     if "metadata_json" not in cols:
-        cur.execute("ALTER TABLE swe2d_run_logs ADD COLUMN metadata_json TEXT")
+        cur.execute(f"ALTER TABLE {q_table} ADD COLUMN metadata_json TEXT")
 
 
 def persist_run_log_to_geopackage(
@@ -37,6 +67,7 @@ def persist_run_log_to_geopackage(
     duration_s: float,
     log_text: str,
     metadata: Optional[Dict[str, Any]] = None,
+    table_prefix: Optional[str] = None,
 ) -> bool:
     if not gpkg_path or not run_id:
         return False
@@ -44,7 +75,9 @@ def persist_run_log_to_geopackage(
     conn = sqlite3.connect(gpkg_path)
     try:
         cur = conn.cursor()
-        _ensure_run_log_schema(cur)
+        table_name = _run_logs_table_name(table_prefix)
+        q_table = _q(table_name)
+        _ensure_run_log_schema(cur, table_name)
 
         metadata_json = ""
         if metadata:
@@ -54,14 +87,14 @@ def persist_run_log_to_geopackage(
                 metadata_json = json.dumps({"raw": str(metadata)}, sort_keys=True, separators=(",", ":"))
 
         cur.execute(
-            """
-            INSERT OR REPLACE INTO swe2d_run_logs
+            f"""
+            INSERT OR REPLACE INTO {q_table}
             (run_id, created_utc, start_wallclock, end_wallclock, duration_s, log_text, metadata_json)
             VALUES (?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 str(run_id),
-                datetime.datetime.now(datetime.timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z"),
+                datetime.datetime.now().astimezone().replace(microsecond=0).isoformat(),
                 str(start_wallclock or ""),
                 str(end_wallclock or ""),
                 float(duration_s),
@@ -75,34 +108,51 @@ def persist_run_log_to_geopackage(
         conn.close()
 
 
-def load_run_logs_from_geopackage(*, gpkg_path: str) -> List[Dict[str, object]]:
+def load_run_logs_from_geopackage(
+    *,
+    gpkg_path: str,
+    table_prefix: Optional[str] = None,
+) -> List[Dict[str, object]]:
     if not gpkg_path or not os.path.exists(gpkg_path):
         return []
 
     conn = sqlite3.connect(gpkg_path)
     try:
         cur = conn.cursor()
-        cur.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='swe2d_run_logs'")
-        if cur.fetchone() is None:
+        # Prefer prefixed table when configured, but remain backward-compatible.
+        table_candidates = [_run_logs_table_name(table_prefix=None)]
+        prefixed = _run_logs_table_name(table_prefix)
+        if prefixed not in table_candidates:
+            table_candidates.insert(0, prefixed)
+
+        table_name = ""
+        for cand in table_candidates:
+            cur.execute("SELECT name FROM sqlite_master WHERE type='table' AND name=?", (cand,))
+            if cur.fetchone() is not None:
+                table_name = str(cand)
+                break
+        if not table_name:
             return []
 
-        cur.execute("PRAGMA table_info(swe2d_run_logs)")
+        q_table = _q(table_name)
+
+        cur.execute(f"PRAGMA table_info({q_table})")
         cols = {str(row[1]) for row in cur.fetchall()}
         has_metadata_json = "metadata_json" in cols
 
         if has_metadata_json:
             cur.execute(
-                """
+                f"""
                 SELECT run_id, created_utc, start_wallclock, end_wallclock, duration_s, log_text, metadata_json
-                FROM swe2d_run_logs
+                FROM {q_table}
                 ORDER BY datetime(created_utc) DESC, rowid DESC
                 """
             )
         else:
             cur.execute(
-                """
+                f"""
                 SELECT run_id, created_utc, start_wallclock, end_wallclock, duration_s, log_text
-                FROM swe2d_run_logs
+                FROM {q_table}
                 ORDER BY datetime(created_utc) DESC, rowid DESC
                 """
             )

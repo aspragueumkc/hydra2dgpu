@@ -171,11 +171,18 @@ class SWE2DRunFinalizer:
         if gpkg_results_path and bool(self._ui.save_mesh_results_to_gpkg_chk.isChecked()) and self._ui._snapshot_timesteps:
             mesh_rows = self._ui._build_mesh_snapshot_rows()
             if mesh_rows:
+                mesh_table_name = "swe2d_mesh_results"
+                if hasattr(self._ui, "_selected_mesh_results_table_name"):
+                    try:
+                        mesh_table_name = str(self._ui._selected_mesh_results_table_name() or "swe2d_mesh_results")
+                    except Exception:
+                        mesh_table_name = "swe2d_mesh_results"
                 self._ui._persist_mesh_results_to_geopackage(
                     gpkg_results_path,
                     run_id,
                     mesh_rows,
                     interval_s=output_interval_s,
+                    table_name=mesh_table_name,
                 )
         if self._ui._results_mesh_mode_enabled and self._ui._snapshot_timesteps:
             try:

@@ -1,0 +1,143 @@
+{
+  "timestamp": "20260529_091447",
+  "region_ids": [
+    1,
+    2,
+    3,
+    4,
+    5,
+    6,
+    7,
+    8,
+    9
+  ],
+  "profiling": {
+    "script_phase_s": {
+      "path_setup": 0.00012362199777271599,
+      "imports_qgis_workbench": 0.2660396999999648,
+      "qgis_init": 0.09012727299705148,
+      "dialog_init": 0.3690685219989973,
+      "load_geopackage": 0.18723497700557346,
+      "bind_preferred_layers": 0.005378859998018015,
+      "subset_layers_and_snapshot": 0.013484290000633337,
+      "configure_ui_controls": 0.010390513001766521,
+      "build_topology_options": 4.626100417226553e-05,
+      "dispatch_async_meshing": 0.011990342005447019,
+      "async_wait_for_meshing": 309.31983525100077,
+      "extract_mesh_arrays": 0.002345774002606049,
+      "write_npz": 0.12019763900025282,
+      "write_png": 0.24303265599883161,
+      "total_script": 310.63991096099926
+    },
+    "script_marks_s": {
+      "env_ready": 1.134999911300838e-05,
+      "qgis_initialized": 0.3563779260002775,
+      "meshing_dispatched": 0.9539991019992158,
+      "payload_build_start": 310.63987695000105
+    },
+    "async_wait": {
+      "timeout_s": 1800.0,
+      "iterations": 6166,
+      "process_events_s": 0.32762273206026293,
+      "progress_file_read_s": 0.23033350260084262,
+      "sleep_s": 308.70103657445,
+      "progress_events_observed": 2,
+      "status_changes_observed": 1,
+      "progress_path": "/tmp/qgis-live-bridge/topology_gmsh_progress_28487_1780064087991.json",
+      "wait_elapsed_s": 309.3198321410018
+    },
+    "timeline": [
+      {
+        "t_s": 0.0001609130049473606,
+        "event": "region_scope",
+        "requested": "1,2,3,4,5,6,7,8,9",
+        "resolved": [
+          1,
+          2,
+          3,
+          4,
+          5,
+          6,
+          7,
+          8,
+          9
+        ]
+      },
+      {
+        "t_s": 0.9315542650001589,
+        "event": "layer_snapshot",
+        "regions": 9,
+        "quad_edges": 24
+      },
+      {
+        "t_s": 0.9540647530011483,
+        "event": "status_change",
+        "status": "Meshing in progress with backend 'gmsh'..."
+      },
+      {
+        "t_s": 1.0043309160028002,
+        "event": "backend_progress",
+        "seq": 2,
+        "stage": "build-start",
+        "detail": "single-pass mode",
+        "backend_elapsed_s": 0.0008298559987451881,
+        "backend_epoch_s": 1780064088.0401278
+      },
+      {
+        "t_s": 309.23320872600016,
+        "event": "backend_progress",
+        "seq": 3,
+        "stage": "done",
+        "detail": "nodes=24991 faces=42087",
+        "backend_elapsed_s": 308.19897446600226,
+        "backend_epoch_s": 1780064396.2382724
+      }
+    ]
+  },
+  "timings_s": {
+    "headless_meshing_elapsed": 309.33187324400205,
+    "gmsh_phase": {
+      "prebuild_region_quad_setup": 0.0018182740022893995,
+      "prebuild_transfinite_harmonize": 47.38779793900176,
+      "prebuild_nontrans_projection": 55.01544274499611,
+      "prebuild_interface_coincidence": 200.4295311850001,
+      "prebuild_setup": 302.8346476739971,
+      "build_surfaces": 0.08965848200023174,
+      "embed_arcs_and_interfaces": 0.0031899289970169775,
+      "build_size_fields": 0.035498777993780095,
+      "configure_per_surface": 0.12335447799705435,
+      "configure_global_options": 3.496100543998182e-05,
+      "generate_and_optimize": 4.041621425007179,
+      "duplicate_cleanup": 0.08916480300104013,
+      "extract_nodes": 0.004068485999596305,
+      "extract_elements": 0.04531074999977136,
+      "total_build": 307.2665657059988
+    }
+  },
+  "layer_snapshot": {
+    "regions_subset_sql": "region_id IN (1,2,3,4,5,6,7,8,9)",
+    "regions_subset_count": 9,
+    "regions_subset_ids": [
+      1,
+      2,
+      3,
+      4,
+      5,
+      6,
+      7,
+      8,
+      9
+    ],
+    "quad_edges_subset_sql": "region_id IN (1,2,3,4,5,6,7,8,9)",
+    "quad_edges_subset_count": 24
+  },
+  "options_snapshot": {
+    "gmsh_quad_full_region_flow_align": true,
+    "gmsh_quality_enable": false,
+    "gmsh_smoothing": 0,
+    "gmsh_optimize_iters": 0,
+    "gmsh_verbosity": 2,
+    "gmsh_algo_switch_on_failure": false,
+    "gmsh_mesh_size_from_points": false
+  }
+}

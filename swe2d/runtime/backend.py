@@ -382,6 +382,8 @@ class SWE2DBackend:
         self._supports_solver_external_sources = hasattr(self._mod, "swe2d_solver_set_external_sources")
         self._h_min = 1.0e-6
         self._cell_area = np.empty(0, dtype=np.float64)
+        self._tiny_mode = 1
+        self._tiny_persistent_chunk_substeps = 8
 
         # Last step diagnostics
         self._last_diag: Optional[dict] = None
@@ -423,6 +425,13 @@ class SWE2DBackend:
             "source_true_subcycling",
             "source_imex_split",
             "enable_shallow_front_recon_fallback",
+            "tiny_mode",
+            "tiny_cell_threshold",
+            "tiny_edge_threshold",
+            "tiny_wet_cell_threshold",
+            "tiny_persistent_chunk_substeps",
+            "tiny_active_compaction_stride_steps",
+            "tiny_enable_active_compaction",
             "godunov_mode",
             "equation_set",
             "coupling_mode",
@@ -690,6 +699,13 @@ class SWE2DBackend:
         source_imex_split: bool = False,
         enable_shallow_front_recon_fallback: bool = True,
         gpu_diag_sync_interval_steps: int = 50,  # Production-friendly: reduce host sync overhead. Set 1 for high-frequency monitoring.
+        tiny_mode: int = 1,
+        tiny_cell_threshold: int = 8000,
+        tiny_edge_threshold: int = 24000,
+        tiny_wet_cell_threshold: int = 2000,
+        tiny_persistent_chunk_substeps: int = 8,
+        tiny_active_compaction_stride_steps: int = 8,
+        tiny_enable_active_compaction: bool = True,
         n_threads: int  = 0,
         temporal_scheme: TemporalScheme = TemporalScheme.SSP_RK2,
         spatial_discretization: SpatialDiscretization = SpatialDiscretization.FV_FIRST_ORDER,
@@ -826,6 +842,7 @@ class SWE2DBackend:
             os.environ.setdefault("BACKWATER_SWE3D_STATE_REJECT_ENABLE", "1")
             os.environ.setdefault("BACKWATER_SWE3D_STATE_MAX_ABS_VELOCITY", "50")
             os.environ.setdefault("BACKWATER_SWE3D_PROJECTION_FAIL_FAST", "1")
+            os.environ.setdefault("BACKWATER_SWE3D_VOF_TRANSPORT_DEBUG", "0")
 
         self._solver_h = self._create_solver_compat(
             self._mesh_h,
@@ -848,6 +865,13 @@ class SWE2DBackend:
             source_imex_split=bool(source_imex_split),
             enable_shallow_front_recon_fallback=bool(enable_shallow_front_recon_fallback),
             gpu_diag_sync_interval_steps=int(gpu_diag_sync_interval_steps),
+            tiny_mode=int(tiny_mode),
+            tiny_cell_threshold=int(tiny_cell_threshold),
+            tiny_edge_threshold=int(tiny_edge_threshold),
+            tiny_wet_cell_threshold=int(tiny_wet_cell_threshold),
+            tiny_persistent_chunk_substeps=int(tiny_persistent_chunk_substeps),
+            tiny_active_compaction_stride_steps=int(tiny_active_compaction_stride_steps),
+            tiny_enable_active_compaction=bool(tiny_enable_active_compaction),
             use_gpu=self._use_gpu, n_threads=n_threads,
             temporal_order=int(native_opts["temporal_order"]),
             spatial_scheme=int(native_opts["spatial_scheme"]),
@@ -866,6 +890,8 @@ class SWE2DBackend:
             front_flux_damping=float(front_flux_damping),
             active_set_hysteresis=bool(active_set_hysteresis),
         )
+        self._tiny_mode = int(tiny_mode)
+        self._tiny_persistent_chunk_substeps = int(tiny_persistent_chunk_substeps)
         self._h_min = float(h_min)
 
     # ── Stepping ─────────────────────────────────────────────────────────────
@@ -938,13 +964,17 @@ class SWE2DBackend:
         diags: List[dict] = []
 
         if has_native_run:
+            diag_batch_size = 0
+            if int(self._tiny_mode) == 3:
+                diag_batch_size = max(1, int(self._tiny_persistent_chunk_substeps))
+
             # Use native run-to-time API: eliminates per-step Python orchestration.
             # Returns dict with keys: 'diags', 'steps_completed', 'cancelled', 'final_time'
             result = self._mod.swe2d_run_to_time(
                 self._solver_h,
                 t_end,
                 dt_request,
-                0  # diag_batch_size=0: minimal diagnostic batching (no per-step overhead)
+                diag_batch_size
             )
 
             # Result is a dict with 'diags' (list of batched diagnostics), 'steps_completed',

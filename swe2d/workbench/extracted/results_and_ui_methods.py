@@ -78,8 +78,10 @@ def _refresh_layer_combos(self):
             self.experimental_3d_obj_inside_points_layer_combo.addItem("(none)", None)
         if hasattr(self, "topo_nodes_combo"):
             self.topo_nodes_combo.clear()
+            self.topo_nodes_combo.addItem("(none)", None)
         if hasattr(self, "topo_arcs_combo"):
             self.topo_arcs_combo.clear()
+            self.topo_arcs_combo.addItem("(none)", None)
         if hasattr(self, "topo_regions_combo"):
             self.topo_regions_combo.clear()
         if hasattr(self, "topo_constraints_combo"):
@@ -696,10 +698,15 @@ def _bind_map_tab_results_controls(self, map_tab_page: QtWidgets.QWidget, map_re
         "Show High-Perf Overlay On Map Canvas",
     )
     self.high_perf_canvas_overlay_field_combo = _find_or_create_combo("high_perf_canvas_overlay_field_combo")
+    self.high_perf_canvas_overlay_wse_render_combo = _find_or_create_combo("high_perf_canvas_overlay_wse_render_combo")
     self.high_perf_canvas_overlay_cmap_combo = _find_or_create_combo("high_perf_canvas_overlay_cmap_combo")
     self.high_perf_canvas_overlay_lock_canvas_chk = _find_or_create_check(
         "high_perf_canvas_overlay_lock_canvas_chk",
         "Lock overlay resolution to current canvas size",
+    )
+    self.high_perf_canvas_overlay_visible_only_chk = _find_or_create_check(
+        "high_perf_canvas_overlay_visible_only_chk",
+        "Render only visible map extent",
     )
     self.high_perf_canvas_overlay_res_combo = _find_or_create_combo("high_perf_canvas_overlay_res_combo")
     self.high_perf_canvas_overlay_auto_contrast_chk = _find_or_create_check(
@@ -756,44 +763,49 @@ def _bind_map_tab_results_controls(self, map_tab_page: QtWidgets.QWidget, map_re
     if map_results_layout.indexOf(self.high_perf_canvas_overlay_field_combo) < 0:
         map_results_layout.addWidget(QtWidgets.QLabel("High-perf overlay field:"), 8, 0)
         map_results_layout.addWidget(self.high_perf_canvas_overlay_field_combo, 8, 1)
+    if map_results_layout.indexOf(self.high_perf_canvas_overlay_wse_render_combo) < 0:
+        map_results_layout.addWidget(QtWidgets.QLabel("WSE rendering mode:"), 24, 0)
+        map_results_layout.addWidget(self.high_perf_canvas_overlay_wse_render_combo, 24, 1)
     if map_results_layout.indexOf(self.high_perf_canvas_overlay_cmap_combo) < 0:
         map_results_layout.addWidget(QtWidgets.QLabel("High-perf overlay colormap:"), 9, 0)
         map_results_layout.addWidget(self.high_perf_canvas_overlay_cmap_combo, 9, 1)
     if map_results_layout.indexOf(self.high_perf_canvas_overlay_lock_canvas_chk) < 0:
         map_results_layout.addWidget(self.high_perf_canvas_overlay_lock_canvas_chk, 10, 0, 1, 2)
+    if map_results_layout.indexOf(self.high_perf_canvas_overlay_visible_only_chk) < 0:
+        map_results_layout.addWidget(self.high_perf_canvas_overlay_visible_only_chk, 11, 0, 1, 2)
     if map_results_layout.indexOf(self.high_perf_canvas_overlay_res_combo) < 0:
-        map_results_layout.addWidget(QtWidgets.QLabel("High-perf overlay resolution:"), 11, 0)
-        map_results_layout.addWidget(self.high_perf_canvas_overlay_res_combo, 11, 1)
+        map_results_layout.addWidget(QtWidgets.QLabel("High-perf overlay resolution:"), 12, 0)
+        map_results_layout.addWidget(self.high_perf_canvas_overlay_res_combo, 12, 1)
     if map_results_layout.indexOf(self.high_perf_canvas_overlay_auto_contrast_chk) < 0:
-        map_results_layout.addWidget(self.high_perf_canvas_overlay_auto_contrast_chk, 12, 0, 1, 2)
+        map_results_layout.addWidget(self.high_perf_canvas_overlay_auto_contrast_chk, 13, 0, 1, 2)
     if map_results_layout.indexOf(self.high_perf_canvas_overlay_opacity_spin) < 0:
-        map_results_layout.addWidget(QtWidgets.QLabel("High-perf overlay opacity:"), 13, 0)
-        map_results_layout.addWidget(self.high_perf_canvas_overlay_opacity_spin, 13, 1)
+        map_results_layout.addWidget(QtWidgets.QLabel("High-perf overlay opacity:"), 14, 0)
+        map_results_layout.addWidget(self.high_perf_canvas_overlay_opacity_spin, 14, 1)
     if map_results_layout.indexOf(self.high_perf_canvas_overlay_arrows_chk) < 0:
-        map_results_layout.addWidget(self.high_perf_canvas_overlay_arrows_chk, 14, 0, 1, 2)
+        map_results_layout.addWidget(self.high_perf_canvas_overlay_arrows_chk, 15, 0, 1, 2)
     if map_results_layout.indexOf(self.high_perf_canvas_overlay_arrow_density_spin) < 0:
-        map_results_layout.addWidget(QtWidgets.QLabel("Arrow spacing (px):"), 15, 0)
-        map_results_layout.addWidget(self.high_perf_canvas_overlay_arrow_density_spin, 15, 1)
+        map_results_layout.addWidget(QtWidgets.QLabel("Arrow spacing (px):"), 16, 0)
+        map_results_layout.addWidget(self.high_perf_canvas_overlay_arrow_density_spin, 16, 1)
     if map_results_layout.indexOf(self.high_perf_canvas_overlay_arrow_length_spin) < 0:
-        map_results_layout.addWidget(QtWidgets.QLabel("Arrow length scale:"), 16, 0)
-        map_results_layout.addWidget(self.high_perf_canvas_overlay_arrow_length_spin, 16, 1)
+        map_results_layout.addWidget(QtWidgets.QLabel("Arrow length scale:"), 17, 0)
+        map_results_layout.addWidget(self.high_perf_canvas_overlay_arrow_length_spin, 17, 1)
     if map_results_layout.indexOf(self.high_perf_canvas_overlay_arrow_head_length_spin) < 0:
-        map_results_layout.addWidget(QtWidgets.QLabel("Arrow head length scale:"), 17, 0)
-        map_results_layout.addWidget(self.high_perf_canvas_overlay_arrow_head_length_spin, 17, 1)
+        map_results_layout.addWidget(QtWidgets.QLabel("Arrow head length scale:"), 18, 0)
+        map_results_layout.addWidget(self.high_perf_canvas_overlay_arrow_head_length_spin, 18, 1)
     if map_results_layout.indexOf(self.high_perf_canvas_overlay_arrow_head_width_spin) < 0:
-        map_results_layout.addWidget(QtWidgets.QLabel("Arrow head width scale:"), 18, 0)
-        map_results_layout.addWidget(self.high_perf_canvas_overlay_arrow_head_width_spin, 18, 1)
+        map_results_layout.addWidget(QtWidgets.QLabel("Arrow head width scale:"), 19, 0)
+        map_results_layout.addWidget(self.high_perf_canvas_overlay_arrow_head_width_spin, 19, 1)
     if map_results_layout.indexOf(self.high_perf_canvas_overlay_streamlines_chk) < 0:
-        map_results_layout.addWidget(self.high_perf_canvas_overlay_streamlines_chk, 19, 0, 1, 2)
+        map_results_layout.addWidget(self.high_perf_canvas_overlay_streamlines_chk, 20, 0, 1, 2)
     if map_results_layout.indexOf(self.high_perf_canvas_overlay_streamline_backend_combo) < 0:
-        map_results_layout.addWidget(QtWidgets.QLabel("Streamline backend:"), 20, 0)
-        map_results_layout.addWidget(self.high_perf_canvas_overlay_streamline_backend_combo, 20, 1)
+        map_results_layout.addWidget(QtWidgets.QLabel("Streamline backend:"), 21, 0)
+        map_results_layout.addWidget(self.high_perf_canvas_overlay_streamline_backend_combo, 21, 1)
     if map_results_layout.indexOf(self.high_perf_canvas_overlay_streamline_seed_spin) < 0:
-        map_results_layout.addWidget(QtWidgets.QLabel("Streamline seeds:"), 21, 0)
-        map_results_layout.addWidget(self.high_perf_canvas_overlay_streamline_seed_spin, 21, 1)
+        map_results_layout.addWidget(QtWidgets.QLabel("Streamline seeds:"), 22, 0)
+        map_results_layout.addWidget(self.high_perf_canvas_overlay_streamline_seed_spin, 22, 1)
     if map_results_layout.indexOf(self.high_perf_canvas_overlay_streamline_steps_spin) < 0:
-        map_results_layout.addWidget(QtWidgets.QLabel("Streamline steps:"), 22, 0)
-        map_results_layout.addWidget(self.high_perf_canvas_overlay_streamline_steps_spin, 22, 1)
+        map_results_layout.addWidget(QtWidgets.QLabel("Streamline steps:"), 23, 0)
+        map_results_layout.addWidget(self.high_perf_canvas_overlay_streamline_steps_spin, 23, 1)
 
     self.extended_outputs_chk.setChecked(True)
     self.save_mesh_results_to_gpkg_chk.setChecked(True)
@@ -807,18 +819,34 @@ def _bind_map_tab_results_controls(self, map_tab_page: QtWidgets.QWidget, map_re
     self.high_perf_canvas_overlay_field_combo.addItem("Depth", "depth")
     self.high_perf_canvas_overlay_field_combo.addItem("Velocity", "speed")
     self.high_perf_canvas_overlay_field_combo.addItem("Water Surface", "wse")
+    self.high_perf_canvas_overlay_wse_render_combo.clear()
+    self.high_perf_canvas_overlay_wse_render_combo.addItem("Raw (cell-centered)", "cell")
+    self.high_perf_canvas_overlay_wse_render_combo.addItem("Smoothed (nodal eta)", "nodal")
+    self.high_perf_canvas_overlay_wse_render_combo.setCurrentIndex(0)
+    self.high_perf_canvas_overlay_wse_render_combo.setToolTip(
+        "Raw uses cell-centered WSE values. Smoothed reconstructs nodal eta and linearly interpolates across triangles."
+    )
     self.high_perf_canvas_overlay_cmap_combo.clear()
     self.high_perf_canvas_overlay_cmap_combo.addItem("Turbo", "turbo")
     self.high_perf_canvas_overlay_cmap_combo.addItem("Viridis", "viridis")
     self.high_perf_canvas_overlay_cmap_combo.addItem("Plasma", "plasma")
+    self.high_perf_canvas_overlay_cmap_combo.addItem("Magma", "magma")
+    self.high_perf_canvas_overlay_cmap_combo.addItem("Inferno", "inferno")
+    self.high_perf_canvas_overlay_cmap_combo.addItem("Cividis", "cividis")
+    self.high_perf_canvas_overlay_cmap_combo.addItem("Terrain", "terrain")
+    self.high_perf_canvas_overlay_cmap_combo.addItem("Ocean", "ocean")
     self.high_perf_canvas_overlay_cmap_combo.addItem("Gray", "gray")
     self.high_perf_canvas_overlay_res_combo.clear()
     self.high_perf_canvas_overlay_res_combo.addItem("640 x 360", (640, 360))
     self.high_perf_canvas_overlay_res_combo.addItem("960 x 540", (960, 540))
     self.high_perf_canvas_overlay_res_combo.addItem("1280 x 720", (1280, 720))
     self.high_perf_canvas_overlay_res_combo.addItem("1920 x 1080", (1920, 1080))
+    self.high_perf_canvas_overlay_res_combo.addItem("2560 x 1440", (2560, 1440))
+    self.high_perf_canvas_overlay_res_combo.addItem("3200 x 1800", (3200, 1800))
+    self.high_perf_canvas_overlay_res_combo.addItem("3840 x 2160 (4K)", (3840, 2160))
     self.high_perf_canvas_overlay_res_combo.setCurrentIndex(2)
     self.high_perf_canvas_overlay_lock_canvas_chk.setChecked(True)
+    self.high_perf_canvas_overlay_visible_only_chk.setChecked(True)
     self.high_perf_canvas_overlay_auto_contrast_chk.setChecked(True)
     self.high_perf_canvas_overlay_opacity_spin.setDecimals(2)
     self.high_perf_canvas_overlay_opacity_spin.setRange(0.05, 1.0)
@@ -861,8 +889,10 @@ def _bind_map_tab_results_controls(self, map_tab_page: QtWidgets.QWidget, map_re
         (self.open_results_panel_btn.clicked, self._show_results_panel),
         (self.high_perf_canvas_overlay_chk.toggled, self._on_high_perf_canvas_overlay_toggled),
         (self.high_perf_canvas_overlay_field_combo.currentIndexChanged, self._on_high_perf_canvas_overlay_style_changed),
+        (self.high_perf_canvas_overlay_wse_render_combo.currentIndexChanged, self._on_high_perf_canvas_overlay_style_changed),
         (self.high_perf_canvas_overlay_cmap_combo.currentIndexChanged, self._on_high_perf_canvas_overlay_style_changed),
         (self.high_perf_canvas_overlay_lock_canvas_chk.toggled, self._on_high_perf_canvas_overlay_style_changed),
+        (self.high_perf_canvas_overlay_visible_only_chk.toggled, self._on_high_perf_canvas_overlay_style_changed),
         (self.high_perf_canvas_overlay_res_combo.currentIndexChanged, self._on_high_perf_canvas_overlay_style_changed),
         (self.high_perf_canvas_overlay_auto_contrast_chk.toggled, self._on_high_perf_canvas_overlay_style_changed),
         (self.high_perf_canvas_overlay_opacity_spin.valueChanged, self._on_high_perf_canvas_overlay_style_changed),
@@ -1056,7 +1086,84 @@ def _build_line_sampling_map(self) -> List[Dict[str, object]]:
         return []
     cell_bboxes = [g.boundingBox() if g is not None and not g.isEmpty() else None for g in cell_polys]
 
+    # Build a unique mesh-face table and per-cell face adjacency so line
+    # sampling can project onto nearest finite-volume faces.
+    node_x = np.asarray(self._mesh_data.get("node_x", np.empty(0)), dtype=np.float64).ravel()
+    node_y = np.asarray(self._mesh_data.get("node_y", np.empty(0)), dtype=np.float64).ravel()
+    n_cells = int(len(cell_polys))
+    cell_face_ids: List[List[int]] = [[] for _ in range(n_cells)]
+    edge_map: Dict[Tuple[int, int], int] = {}
+    edge_n0_l: List[int] = []
+    edge_n1_l: List[int] = []
+    edge_c0_l: List[int] = []
+    edge_c1_l: List[int] = []
+
+    def _register_edge(ci: int, a: int, b: int) -> None:
+        if a == b:
+            return
+        ka = int(a)
+        kb = int(b)
+        key = (ka, kb) if ka < kb else (kb, ka)
+        eid = edge_map.get(key)
+        if eid is None:
+            eid = int(len(edge_n0_l))
+            edge_map[key] = eid
+            edge_n0_l.append(int(key[0]))
+            edge_n1_l.append(int(key[1]))
+            edge_c0_l.append(int(ci))
+            edge_c1_l.append(-1)
+        else:
+            if edge_c0_l[eid] != int(ci) and edge_c1_l[eid] < 0:
+                edge_c1_l[eid] = int(ci)
+        if 0 <= int(ci) < n_cells:
+            cell_face_ids[int(ci)].append(int(eid))
+
+    if "cell_face_offsets" in self._mesh_data and "cell_face_nodes" in self._mesh_data:
+        offs = np.asarray(self._mesh_data["cell_face_offsets"], dtype=np.int32).ravel()
+        faces = np.asarray(self._mesh_data["cell_face_nodes"], dtype=np.int32).ravel()
+        for ci in range(max(0, int(offs.size) - 1)):
+            s = int(offs[ci])
+            e = int(offs[ci + 1])
+            poly = faces[s:e]
+            if poly.size < 2:
+                continue
+            for k in range(int(poly.size)):
+                a = int(poly[k])
+                b = int(poly[(k + 1) % int(poly.size)])
+                _register_edge(ci, a, b)
+    else:
+        tri = np.asarray(self._mesh_data.get("cell_nodes", np.empty(0)), dtype=np.int32).reshape((-1, 3))
+        for ci, t in enumerate(tri):
+            _register_edge(ci, int(t[0]), int(t[1]))
+            _register_edge(ci, int(t[1]), int(t[2]))
+            _register_edge(ci, int(t[2]), int(t[0]))
+
+    edge_n0 = np.asarray(edge_n0_l, dtype=np.int32)
+    edge_n1 = np.asarray(edge_n1_l, dtype=np.int32)
+    edge_c0 = np.asarray(edge_c0_l, dtype=np.int32)
+    edge_c1 = np.asarray(edge_c1_l, dtype=np.int32)
+    edge_coord_map: Dict[Tuple[Tuple[float, float], Tuple[float, float]], int] = {}
+    if node_x.size > 0 and node_y.size > 0 and edge_n0.size > 0 and edge_n1.size > 0:
+        for eid in range(int(edge_n0.size)):
+            n0 = int(edge_n0[eid])
+            n1 = int(edge_n1[eid])
+            if n0 < 0 or n1 < 0 or n0 >= int(node_x.size) or n1 >= int(node_x.size):
+                continue
+            p0 = (round(float(node_x[n0]), 9), round(float(node_y[n0]), 9))
+            p1 = (round(float(node_x[n1]), 9), round(float(node_y[n1]), 9))
+            key = (p0, p1) if p0 <= p1 else (p1, p0)
+            edge_coord_map[key] = int(eid)
+
     sample_map: List[Dict[str, object]] = []
+    total_profile_points = 0
+    try:
+        cx_all, cy_all = self._mesh_cell_centroids()
+    except Exception:
+        cx_all, cy_all = np.empty(0, dtype=np.float64), np.empty(0, dtype=np.float64)
+    try:
+        area_all = self._mesh_cell_areas()
+    except Exception:
+        area_all = np.empty(0, dtype=np.float64)
     for ft in line_layer.getFeatures():
         geom = ft.geometry()
         if geom is None or geom.isEmpty():
@@ -1105,6 +1212,7 @@ def _build_line_sampling_map(self) -> List[Dict[str, object]]:
         station_m: List[float] = []
         flow_wx: List[float] = []
         flow_wy: List[float] = []
+        flow_face_idx: List[int] = []
         overlap_keys_by_row: List[set] = []
         for ci, cell_geom in enumerate(cell_polys):
             bb = cell_bboxes[ci]
@@ -1166,29 +1274,99 @@ def _build_line_sampling_map(self) -> List[Dict[str, object]]:
                     y1 = float(p1.y())
                     if (x1, y1) < (x0, y0):
                         x0, y0, x1, y1 = x1, y1, x0, y0
+                    seg_key = (
+                        (round(x0, 9), round(y0, 9)),
+                        (round(x1, 9), round(y1, 9)),
+                    )
                     seg_keys.add(
                         (
-                            round(x0, 9),
-                            round(y0, 9),
-                            round(x1, 9),
-                            round(y1, 9),
+                            seg_key[0][0],
+                            seg_key[0][1],
+                            seg_key[1][0],
+                            seg_key[1][1],
                         )
                     )
+                    face_id = edge_coord_map.get(seg_key)
+                    if face_id is not None and face_id in cell_face_ids[int(ci)]:
+                        exact_face_lens[int(face_id)] = float(exact_face_lens.get(int(face_id), 0.0) + seg_len)
 
             s_loc = float("nan")
+            cx_i = float("nan")
+            cy_i = float("nan")
             try:
                 cgeom = inter.centroid()
                 if cgeom is not None and not cgeom.isEmpty():
+                    cp = cgeom.asPoint()
+                    cx_i = float(cp.x())
+                    cy_i = float(cp.y())
                     s_loc = float(geom.lineLocatePoint(cgeom))
                     if orient_sign < 0.0:
                         s_loc = float(line_len) - s_loc
             except Exception:
                 s_loc = float("nan")
+
+            nearest_face = -1
+            exact_face_lens: Dict[int, float] = {}
+            if (
+                np.isfinite(cx_i)
+                and np.isfinite(cy_i)
+                and 0 <= int(ci) < len(cell_face_ids)
+                and edge_n0.size > 0
+                and edge_n1.size > 0
+                and node_x.size > 0
+                and node_y.size > 0
+            ):
+                best_score = float("inf")
+                for eid in cell_face_ids[int(ci)]:
+                    if eid < 0 or eid >= int(edge_n0.size):
+                        continue
+                    n0 = int(edge_n0[eid])
+                    n1 = int(edge_n1[eid])
+                    if (
+                        n0 < 0
+                        or n1 < 0
+                        or n0 >= int(node_x.size)
+                        or n1 >= int(node_x.size)
+                    ):
+                        continue
+                    x0 = float(node_x[n0])
+                    y0 = float(node_y[n0])
+                    x1 = float(node_x[n1])
+                    y1 = float(node_y[n1])
+                    ex = x1 - x0
+                    ey = y1 - y0
+                    el2 = ex * ex + ey * ey
+                    if el2 <= 1.0e-18:
+                        continue
+                    t = ((cx_i - x0) * ex + (cy_i - y0) * ey) / el2
+                    t = max(0.0, min(1.0, t))
+                    px = x0 + t * ex
+                    py = y0 + t * ey
+                    try:
+                        dist = float(geom.distance(QgsGeometry.fromPointXY(QgsPointXY(px, py))))
+                    except Exception:
+                        dist = math.hypot(cx_i - px, cy_i - py)
+                    el = math.sqrt(el2)
+                    nx_e = ey / el
+                    ny_e = -ex / el
+                    align = abs(nx_e * nx + ny_e * ny)
+                    score = dist / (0.25 + align)
+                    if score < best_score:
+                        best_score = score
+                        nearest_face = int(eid)
+
             idx.append(ci)
             lens.append(seg_len)
             station_m.append(s_loc)
             flow_wx.append(wx)
             flow_wy.append(wy)
+            if exact_face_lens:
+                if len(exact_face_lens) == 1:
+                    flow_face_idx.append(int(next(iter(exact_face_lens.keys()))))
+                else:
+                    flow_face_idx.append(int(max(exact_face_lens.items(), key=lambda kv: kv[1])[0]))
+            else:
+                flow_face_idx.append(nearest_face)
             overlap_keys_by_row.append(seg_keys)
 
         if idx and overlap_keys_by_row:
@@ -1208,22 +1386,140 @@ def _build_line_sampling_map(self) -> List[Dict[str, object]]:
 
         if idx:
             ord_idx = np.argsort(np.nan_to_num(np.asarray(station_m, dtype=np.float64), nan=0.0))
+            idx_sorted = np.asarray(idx, dtype=np.int32)[ord_idx]
+            len_sorted = np.asarray(lens, dtype=np.float64)[ord_idx]
+            sta_sorted = np.asarray(station_m, dtype=np.float64)[ord_idx]
+            flow_wx_sorted = np.asarray(flow_wx, dtype=np.float64)[ord_idx]
+            flow_wy_sorted = np.asarray(flow_wy, dtype=np.float64)[ord_idx]
+            flow_face_sorted = np.asarray(flow_face_idx, dtype=np.int32)[ord_idx]
+
+            # Aggregate line-integral weights per selected finite-volume face.
+            face_wx_acc: Dict[int, float] = {}
+            face_wy_acc: Dict[int, float] = {}
+            face_len_acc: Dict[int, float] = {}
+            for j in range(int(flow_face_sorted.size)):
+                eid = int(flow_face_sorted[j])
+                if eid < 0:
+                    continue
+                face_wx_acc[eid] = float(face_wx_acc.get(eid, 0.0) + float(flow_wx_sorted[j]))
+                face_wy_acc[eid] = float(face_wy_acc.get(eid, 0.0) + float(flow_wy_sorted[j]))
+                face_len_acc[eid] = float(face_len_acc.get(eid, 0.0) + float(len_sorted[j]))
+
+            if face_wx_acc:
+                f_idx = np.asarray(sorted(face_wx_acc.keys()), dtype=np.int32)
+                f_wx = np.asarray([face_wx_acc[int(e)] for e in f_idx], dtype=np.float64)
+                f_wy = np.asarray([face_wy_acc[int(e)] for e in f_idx], dtype=np.float64)
+                f_len = np.asarray([face_len_acc[int(e)] for e in f_idx], dtype=np.float64)
+                f_c0 = edge_c0[f_idx] if edge_c0.size > 0 else np.full(f_idx.size, -1, dtype=np.int32)
+                f_c1 = edge_c1[f_idx] if edge_c1.size > 0 else np.full(f_idx.size, -1, dtype=np.int32)
+                if node_x.size > 0 and node_y.size > 0 and edge_n0.size > 0 and edge_n1.size > 0:
+                    f_seg = np.column_stack(
+                        [
+                            node_x[edge_n0[f_idx]],
+                            node_y[edge_n0[f_idx]],
+                            node_x[edge_n1[f_idx]],
+                            node_y[edge_n1[f_idx]],
+                        ]
+                    ).astype(np.float64)
+                else:
+                    f_seg = np.empty((0, 4), dtype=np.float64)
+            else:
+                f_idx = np.empty(0, dtype=np.int32)
+                f_wx = np.empty(0, dtype=np.float64)
+                f_wy = np.empty(0, dtype=np.float64)
+                f_len = np.empty(0, dtype=np.float64)
+                f_c0 = np.empty(0, dtype=np.int32)
+                f_c1 = np.empty(0, dtype=np.int32)
+                f_seg = np.empty((0, 4), dtype=np.float64)
+
+            profile_station_m = np.empty(0, dtype=np.float64)
+            profile_cell_idx = np.empty((0, 0), dtype=np.int32)
+            profile_cell_w = np.empty((0, 0), dtype=np.float64)
+            try:
+                if idx_sorted.size > 0 and cx_all.size > 0 and cy_all.size > 0:
+                    area_local = np.asarray(area_all[idx_sorted], dtype=np.float64) if area_all.size > 0 else np.empty(0, dtype=np.float64)
+                    good_area = area_local[np.isfinite(area_local) & (area_local > 0.0)]
+                    if good_area.size > 0:
+                        char_len = max(1.0e-6, float(np.sqrt(np.median(good_area))))
+                    else:
+                        # Fallback when area is unavailable/invalid.
+                        char_len = max(1.0, float(line_len) / 64.0)
+
+                    target_ds = max(0.25 * char_len, min(2.0 * char_len, float(line_len) / 256.0 if line_len > 0.0 else char_len))
+                    n_profile = int(max(32, min(1600, int(np.ceil(float(line_len) / max(target_ds, 1.0e-6))) + 1)))
+
+                    # Canonical station increases independent of digitization direction.
+                    profile_station_m = np.linspace(0.0, float(line_len), n_profile, dtype=np.float64)
+                    raw_station_m = (
+                        (float(line_len) - profile_station_m)
+                        if orient_sign < 0.0
+                        else profile_station_m
+                    )
+
+                    k_nei = int(max(1, min(4, int(idx_sorted.size))))
+                    profile_cell_idx = np.full((n_profile, k_nei), -1, dtype=np.int32)
+                    profile_cell_w = np.zeros((n_profile, k_nei), dtype=np.float64)
+
+                    cx_local = np.asarray(cx_all[idx_sorted], dtype=np.float64)
+                    cy_local = np.asarray(cy_all[idx_sorted], dtype=np.float64)
+                    eps = 1.0e-12
+                    for jj, s_raw in enumerate(raw_station_m.tolist()):
+                        try:
+                            pt = geom.interpolate(float(s_raw)).asPoint()
+                            px = float(pt.x())
+                            py = float(pt.y())
+                        except Exception:
+                            continue
+                        d2 = (cx_local - px) * (cx_local - px) + (cy_local - py) * (cy_local - py)
+                        if d2.size <= k_nei:
+                            nei_local = np.arange(d2.size, dtype=np.int32)
+                        else:
+                            nei_local = np.argpartition(d2, k_nei - 1)[:k_nei].astype(np.int32)
+                        nei_d2 = np.maximum(d2[nei_local], eps)
+                        w_nei = 1.0 / nei_d2
+                        wsum = float(np.sum(w_nei))
+                        if not np.isfinite(wsum) or wsum <= 0.0:
+                            continue
+                        w_nei = w_nei / wsum
+                        n_eff = int(nei_local.size)
+                        profile_cell_idx[jj, :n_eff] = idx_sorted[nei_local]
+                        profile_cell_w[jj, :n_eff] = w_nei
+
+                    total_profile_points += int(n_profile)
+            except Exception:
+                profile_station_m = np.empty(0, dtype=np.float64)
+                profile_cell_idx = np.empty((0, 0), dtype=np.int32)
+                profile_cell_w = np.empty((0, 0), dtype=np.float64)
+
             sample_map.append(
                 {
                     "line_id": int(line_id),
                     "line_name": line_name,
                     "normal_x": float(nx),
                     "normal_y": float(ny),
-                    "cell_idx": np.asarray(idx, dtype=np.int32)[ord_idx],
-                    "weights": np.asarray(lens, dtype=np.float64)[ord_idx],
-                    "station_m": np.asarray(station_m, dtype=np.float64)[ord_idx],
-                    "flow_wx": np.asarray(flow_wx, dtype=np.float64)[ord_idx],
-                    "flow_wy": np.asarray(flow_wy, dtype=np.float64)[ord_idx],
+                    "cell_idx": idx_sorted,
+                    "weights": len_sorted,
+                    "station_m": sta_sorted,
+                    "flow_wx": flow_wx_sorted,
+                    "flow_wy": flow_wy_sorted,
+                    "flux_face_idx": f_idx,
+                    "flux_face_wx": f_wx,
+                    "flux_face_wy": f_wy,
+                    "flux_face_len": f_len,
+                    "flux_face_c0": f_c0,
+                    "flux_face_c1": f_c1,
+                    "flux_face_segments": f_seg,
+                    "profile_station_m": profile_station_m,
+                    "profile_cell_idx": profile_cell_idx,
+                    "profile_cell_w": profile_cell_w,
                 }
             )
 
     if sample_map:
-        self._log(f"Sample line mapping ready: {len(sample_map)} line(s).")
+        self._log(
+            f"Sample line mapping ready: {len(sample_map)} line(s), "
+            f"high-fidelity profile samples={int(total_profile_points)}."
+        )
     return sample_map
 
 

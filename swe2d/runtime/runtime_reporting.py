@@ -27,7 +27,7 @@ class SWE2DRuntimeReporter:
         last_valid_cmax: float,
         last_valid_wse_res: float,
         sample_map: Any,
-        cell_min_z: Optional[np.ndarray],
+        cell_solver_z: Optional[np.ndarray],
         coupling_controller: Any,
         experimental_3d_runtime: bool,
         rain_src: Any,
@@ -70,6 +70,7 @@ class SWE2DRuntimeReporter:
         process_events_callback: Callable[[], None],
         set_progress_callback: Callable[[int], None],
         log_callback: Callable[[str], None],
+        perf_mode: bool = False,
     ) -> Dict[str, Any]:
         step_cmax = float(last_diag.get("max_courant", float("nan")))
         if np.isfinite(step_cmax) and step_cmax >= 0.0:
@@ -110,14 +111,14 @@ class SWE2DRuntimeReporter:
                     append_3d_patch_snapshot_callback(t_accum, s3, v3, u3, v3c, w3)
             next_snap_t += float(output_interval_s)
 
-        if need_line_snap and cell_min_z is not None and h_s is not None and hu_s is not None and hv_s is not None:
+        if need_line_snap and cell_solver_z is not None and h_s is not None and hu_s is not None and hv_s is not None:
             rows, profile_rows = sample_line_metrics_callback(
                 sample_map,
                 t_accum,
                 h_s,
                 hu_s,
                 hv_s,
-                cell_min_z,
+                cell_solver_z,
             )
             if rows:
                 line_snapshot_rows.extend(rows)
@@ -152,14 +153,16 @@ class SWE2DRuntimeReporter:
         set_progress_callback(pct)
         i += 1
 
-        if i == 1 or i % 10 == 0 or pct >= 100:
+        should_log_default = (i == 1 or i % 10 == 0 or pct >= 100)
+        should_log_perf = (i == 1 or i % 200 == 0 or pct >= 100)
+        if (not perf_mode and should_log_default) or (perf_mode and should_log_perf):
             max_courant = last_valid_cmax
             max_wse_res = last_valid_wse_res
             cmax_txt = f"{max_courant:.5f}" if np.isfinite(max_courant) and max_courant >= 0.0 else "n/a"
             wse_res_txt = f"{max_wse_res:.6e}" if np.isfinite(max_wse_res) and max_wse_res >= 0.0 else "n/a"
             rain_diag_txt = ""
             rain_arr_diag = np.asarray(rain_src, dtype=np.float64)
-            if np.any(rain_arr_diag > 0.0):
+            if (not perf_mode) and np.any(rain_arr_diag > 0.0):
                 _t_state4 = time.perf_counter()
                 h_d, hu_d, hv_d = backend.get_state()
                 state_ms += (time.perf_counter() - _t_state4) * 1000.0
@@ -191,6 +194,36 @@ class SWE2DRuntimeReporter:
                     f"{rain_diag_txt}"
                 )
             )
+            tiny_keys = (
+                "tiny_mode_requested",
+                "tiny_mode_selected",
+                "tiny_mode_effective",
+                "tiny_mode_fallback",
+                "tiny_mode_fallback_count_total",
+            )
+            if all(k in last_diag for k in tiny_keys):
+                log_callback(
+                    "  tiny: "
+                    f"req={int(last_diag.get('tiny_mode_requested', -1))} "
+                    f"sel={int(last_diag.get('tiny_mode_selected', -1))} "
+                    f"eff={int(last_diag.get('tiny_mode_effective', -1))} "
+                    f"fallback={bool(last_diag.get('tiny_mode_fallback', False))} "
+                    f"fallback_total={int(last_diag.get('tiny_mode_fallback_count_total', 0))}"
+                )
+            if perf_mode:
+                return {
+                    "t_accum": t_accum,
+                    "last_valid_cmax": last_valid_cmax,
+                    "last_valid_wse_res": last_valid_wse_res,
+                    "next_snap_t": next_snap_t,
+                    "next_line_snap_t": next_line_snap_t,
+                    "next_coupling_snap_t": next_coupling_snap_t,
+                    "last_process_events_wall": last_process_events_wall,
+                    "timing_samples": timing_samples,
+                    "i": i,
+                    "state_ms": state_ms,
+                    "ui_ms": ui_ms,
+                }
             if experimental_3d_runtime:
                 stats = get_3d_patch_stats_callback()
                 if stats is not None:

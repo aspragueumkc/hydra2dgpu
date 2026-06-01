@@ -95,6 +95,52 @@ _COLOR_LUTS = {
         ]
     ),
     "gray": _build_color_lut([(0.0, (0, 0, 0)), (1.0, (255, 255, 255))]),
+    "magma": _build_color_lut(
+        [
+            (0.0, (0, 0, 4)),
+            (0.25, (84, 15, 109)),
+            (0.50, (187, 55, 84)),
+            (0.75, (249, 142, 8)),
+            (1.0, (252, 253, 191)),
+        ]
+    ),
+    "cividis": _build_color_lut(
+        [
+            (0.0, (0, 34, 78)),
+            (0.25, (44, 81, 110)),
+            (0.50, (86, 122, 119)),
+            (0.75, (132, 168, 115)),
+            (1.0, (253, 231, 55)),
+        ]
+    ),
+    "inferno": _build_color_lut(
+        [
+            (0.0, (0, 0, 4)),
+            (0.25, (87, 15, 109)),
+            (0.50, (187, 55, 84)),
+            (0.75, (249, 142, 8)),
+            (1.0, (252, 255, 164)),
+        ]
+    ),
+    "terrain": _build_color_lut(
+        [
+            (0.0, (50, 90, 150)),
+            (0.20, (70, 140, 170)),
+            (0.40, (110, 160, 90)),
+            (0.60, (170, 140, 90)),
+            (0.80, (205, 185, 145)),
+            (1.0, (245, 245, 245)),
+        ]
+    ),
+    "ocean": _build_color_lut(
+        [
+            (0.0, (3, 35, 76)),
+            (0.25, (12, 72, 135)),
+            (0.50, (35, 126, 180)),
+            (0.75, (82, 173, 196)),
+            (1.0, (173, 222, 228)),
+        ]
+    ),
 }
 
 
@@ -202,6 +248,89 @@ def _nearest_fill(mask_known: np.ndarray, values: np.ndarray) -> np.ndarray:
     ok = (vy >= 0) & (vx >= 0)
     out[my[ok], mx[ok]] = out[vy[ok], vx[ok]]
     return out
+
+
+def _smooth_wse_grid_nodal_eta(
+    tri_node_x: np.ndarray,
+    tri_node_y: np.ndarray,
+    tri_nodes: np.ndarray,
+    tri_eta: np.ndarray,
+    tri_wet: np.ndarray,
+    width: int,
+    height: int,
+    x_min: float,
+    x_max: float,
+    y_min: float,
+    y_max: float,
+) -> Optional[np.ndarray]:
+    """Build a smooth WSE raster by reconstructing nodal eta from triangle values.
+
+    Each triangle contributes its eta to all three vertices (area-weighted), then
+    eta is linearly interpolated over the triangulation.
+    """
+    try:
+        from matplotlib.tri import Triangulation, LinearTriInterpolator
+    except Exception:
+        return None
+
+    try:
+        n_nodes = int(tri_node_x.size)
+        tri_idx = np.asarray(tri_nodes, dtype=np.int32).reshape((-1, 3))
+        tri_eta = np.asarray(tri_eta, dtype=np.float64).ravel()
+        tri_wet = np.asarray(tri_wet, dtype=bool).ravel()
+        n_tri = int(tri_idx.shape[0])
+        if n_nodes <= 0 or n_tri <= 0 or tri_eta.size < n_tri or tri_wet.size < n_tri:
+            return None
+        if int(np.max(tri_idx)) >= n_nodes or int(np.min(tri_idx)) < 0:
+            return None
+
+        active = np.isfinite(tri_eta[:n_tri]) & tri_wet[:n_tri]
+        if not np.any(active):
+            return None
+
+        tri_idx_a = tri_idx[active]
+        tri_eta_a = tri_eta[:n_tri][active]
+
+        x0 = tri_node_x[tri_idx_a[:, 0]]
+        y0 = tri_node_y[tri_idx_a[:, 0]]
+        x1 = tri_node_x[tri_idx_a[:, 1]]
+        y1 = tri_node_y[tri_idx_a[:, 1]]
+        x2 = tri_node_x[tri_idx_a[:, 2]]
+        y2 = tri_node_y[tri_idx_a[:, 2]]
+        tri_area = 0.5 * np.abs((x1 - x0) * (y2 - y0) - (x2 - x0) * (y1 - y0))
+        tri_area = np.maximum(tri_area, 1.0e-12)
+
+        node_sum = np.zeros(n_nodes, dtype=np.float64)
+        node_w = np.zeros(n_nodes, dtype=np.float64)
+        for col in range(3):
+            v = tri_idx_a[:, col]
+            node_sum += np.bincount(v, weights=tri_eta_a * tri_area, minlength=n_nodes).astype(np.float64)
+            node_w += np.bincount(v, weights=tri_area, minlength=n_nodes).astype(np.float64)
+
+        node_eta = np.full(n_nodes, np.nan, dtype=np.float64)
+        known_nodes = node_w > 0.0
+        node_eta[known_nodes] = node_sum[known_nodes] / np.maximum(node_w[known_nodes], 1.0e-12)
+
+        if np.count_nonzero(np.isfinite(node_eta)) < 3:
+            return None
+
+        tri_full = Triangulation(tri_node_x, tri_node_y, tri_idx)
+        # Mask triangles outside active/wet region to avoid extrapolating across dry zones.
+        tri_mask = ~active
+        if tri_mask.size == tri_full.triangles.shape[0]:
+            tri_full.set_mask(tri_mask)
+
+        interp = LinearTriInterpolator(tri_full, node_eta)
+        gx = np.linspace(float(x_min), float(x_max), int(width), dtype=np.float64)
+        gy = np.linspace(float(y_max), float(y_min), int(height), dtype=np.float64)
+        xx, yy = np.meshgrid(gx, gy)
+        zz = interp(xx, yy)
+        grid = np.asarray(np.ma.filled(zz, np.nan), dtype=np.float64)
+        if grid.shape != (int(height), int(width)):
+            return None
+        return grid
+    except Exception:
+        return None
 
 
 def _interp_grid(field: np.ndarray, x: float, y: float) -> float:
@@ -410,6 +539,57 @@ def _draw_scalar_legend(
     painter.end()
 
 
+def draw_scalar_legend_on_painter(
+    painter: QtGui.QPainter,
+    canvas_w: int,
+    canvas_h: int,
+    cmap: np.ndarray,
+    vmin: float,
+    vmax: float,
+    label: str,
+) -> None:
+    if painter is None or cmap is None or cmap.shape[0] < 2:
+        return
+    if not (np.isfinite(vmin) and np.isfinite(vmax)):
+        return
+
+    w = max(32, int(canvas_w))
+    h = max(32, int(canvas_h))
+    bar_h = max(96, int(round(0.42 * h)))
+    bar_w = 16
+    pad = 12
+    box_w = 140
+    box_h = bar_h + 32
+    x0 = max(0, w - box_w - pad)
+    y0 = max(0, pad)
+
+    painter.setRenderHint(QtGui.QPainter.Antialiasing, True)
+    painter.setPen(QtCore.Qt.PenStyle.NoPen)
+    painter.setBrush(QtGui.QColor(0, 0, 0, 120))
+    painter.drawRoundedRect(QtCore.QRectF(float(x0), float(y0), float(box_w), float(box_h)), 6.0, 6.0)
+
+    bar_x = x0 + 12
+    bar_y = y0 + 18
+    for i in range(bar_h):
+        t = 1.0 - (float(i) / max(1.0, float(bar_h - 1)))
+        k = int(max(0, min(255, round(t * 255.0))))
+        c = cmap[k]
+        painter.setPen(QtGui.QColor(int(c[0]), int(c[1]), int(c[2]), 255))
+        painter.drawLine(bar_x, bar_y + i, bar_x + bar_w, bar_y + i)
+
+    painter.setPen(QtGui.QColor(255, 255, 255, 230))
+    painter.setBrush(QtCore.Qt.BrushStyle.NoBrush)
+    painter.drawRect(bar_x, bar_y, bar_w, bar_h)
+
+    font = painter.font()
+    font.setPointSize(max(8, font.pointSize()))
+    painter.setFont(font)
+    txt_x = bar_x + bar_w + 8
+    painter.drawText(QtCore.QPointF(float(txt_x), float(bar_y + 9)), f"{vmax:.3g}")
+    painter.drawText(QtCore.QPointF(float(txt_x), float(bar_y + bar_h - 2)), f"{vmin:.3g}")
+    painter.drawText(QtCore.QPointF(float(bar_x), float(y0 + box_h - 6)), str(label or "Field"))
+
+
 def render_unstructured_snapshot_image(
     cell_x: np.ndarray,
     cell_y: np.ndarray,
@@ -417,6 +597,7 @@ def render_unstructured_snapshot_image(
     timesteps: Sequence[Tuple[float, np.ndarray, np.ndarray, np.ndarray]],
     current_time_s: float,
     field_key: str = "depth",
+    wse_render_mode: str = "cell",
     cmap_key: str = "turbo",
     resolution: Tuple[int, int] = (960, 540),
     auto_contrast: bool = True,
@@ -433,6 +614,7 @@ def render_unstructured_snapshot_image(
     streamline_steps: int = 22,
     streamline_step_px: float = 4.0,
     visible_extent_world: Optional[Tuple[float, float, float, float]] = None,
+    render_extent_world: Optional[Tuple[float, float, float, float]] = None,
     node_x: Optional[np.ndarray] = None,
     node_y: Optional[np.ndarray] = None,
     cell_nodes: Optional[np.ndarray] = None,
@@ -481,6 +663,22 @@ def render_unstructured_snapshot_image(
         x_min, x_max = 0.0, 1.0
     if not np.isfinite(y_min) or not np.isfinite(y_max) or y_max <= y_min:
         y_min, y_max = 0.0, 1.0
+
+    if render_extent_world is not None:
+        try:
+            rx_min, rx_max, ry_min, ry_max = [float(v) for v in render_extent_world]
+            if rx_max < rx_min:
+                rx_min, rx_max = rx_max, rx_min
+            if ry_max < ry_min:
+                ry_min, ry_max = ry_max, ry_min
+            if np.isfinite(rx_min) and np.isfinite(rx_max) and (rx_max - rx_min) > 1.0e-12:
+                x_min = rx_min
+                x_max = rx_max
+            if np.isfinite(ry_min) and np.isfinite(ry_max) and (ry_max - ry_min) > 1.0e-12:
+                y_min = ry_min
+                y_max = ry_max
+        except Exception:
+            pass
     out["extent"] = (x_min, x_max, y_min, y_max)
 
     ts_list = list(timesteps or [])
@@ -534,6 +732,11 @@ def render_unstructured_snapshot_image(
         vals = h.copy()
 
     vals_cell = np.asarray(vals, dtype=np.float64).ravel()
+
+    if render_extent_world is not None:
+        in_view = (x_all[:n] >= x_min) & (x_all[:n] <= x_max) & (y_all[:n] >= y_min) & (y_all[:n] <= y_max)
+        if np.any(in_view):
+            wet_all = wet_all & in_view
 
     valid = np.isfinite(x) & np.isfinite(y) & np.isfinite(vals) & wet_all
     if not np.any(valid):
@@ -667,6 +870,22 @@ def render_unstructured_snapshot_image(
     grid[has_data] = sum_vals[has_data] / cnt_vals[has_data]
     grid = grid.reshape((h_img, w))
 
+    smooth_grid = None
+    if mode == "wse" and str(wse_render_mode or "cell").lower() in ("nodal", "smooth", "smoothed"):
+        smooth_grid = _smooth_wse_grid_nodal_eta(
+            tri_node_x=tri_node_x,
+            tri_node_y=tri_node_y,
+            tri_nodes=tri_nodes,
+            tri_eta=_vals_cell_tri,
+            tri_wet=_wet_all_tri,
+            width=int(w),
+            height=int(h_img),
+            x_min=float(x_min),
+            x_max=float(x_max),
+            y_min=float(y_min),
+            y_max=float(y_max),
+        )
+
     # Build shell mask and fill to avoid sparse center-point appearance.
     mask_known = has_data.reshape((h_img, w))
     if np.any(mask_known):
@@ -694,6 +913,12 @@ def render_unstructured_snapshot_image(
             grid = _nearest_fill(mask_known, grid)
     else:
         shell_mask = np.zeros((h_img, w), dtype=bool)
+
+    if smooth_grid is not None:
+        grid = smooth_grid
+        mask_known = np.isfinite(grid)
+        shell_mask = mask_known.copy()
+        out["backend"] = str(out.get("backend", "numpy")) + "+wse_nodal"
 
     finite = np.isfinite(grid) & shell_mask
     if not np.any(finite):
@@ -893,6 +1118,14 @@ if QgsMapCanvasItem is not None and QgsPointXY is not None:
             self._image = QtGui.QImage()
             self._extent = (0.0, 1.0, 0.0, 1.0)
             self._opacity = 0.65
+            self._legend_enabled = False
+            self._legend_label = ""
+            self._legend_vmin = 0.0
+            self._legend_vmax = 1.0
+            self._legend_cmap_key = "turbo"
+            self._face_segments = np.empty((0, 4), dtype=np.float64)
+            self._station_point = None
+            self._station_label = ""
             self.setZValue(9999.0)
             self.setVisible(False)
 
@@ -929,7 +1162,38 @@ if QgsMapCanvasItem is not None and QgsPointXY is not None:
 
         def clear(self):
             self._image = QtGui.QImage()
+            self._face_segments = np.empty((0, 4), dtype=np.float64)
+            self._station_point = None
+            self._station_label = ""
             self.setVisible(False)
+            self.update()
+
+        def set_face_segments(self, segments_world: np.ndarray):
+            seg = np.asarray(segments_world if segments_world is not None else np.empty((0, 4)), dtype=np.float64)
+            if seg.ndim != 2 or seg.shape[1] != 4:
+                seg = np.empty((0, 4), dtype=np.float64)
+            self._face_segments = seg
+            self.update()
+
+        def set_station_indicator(self, world_point: Optional[Tuple[float, float]], label: str = ""):
+            if world_point is None:
+                self._station_point = None
+                self._station_label = ""
+            else:
+                try:
+                    self._station_point = (float(world_point[0]), float(world_point[1]))
+                    self._station_label = str(label or "")
+                except Exception:
+                    self._station_point = None
+                    self._station_label = ""
+            self.update()
+
+        def set_legend(self, enabled: bool, cmap_key: str, vmin: float, vmax: float, label: str):
+            self._legend_enabled = bool(enabled)
+            self._legend_cmap_key = str(cmap_key or "turbo").strip().lower() or "turbo"
+            self._legend_vmin = float(vmin)
+            self._legend_vmax = float(vmax)
+            self._legend_label = str(label or "")
             self.update()
 
         def boundingRect(self):
@@ -956,6 +1220,57 @@ if QgsMapCanvasItem is not None and QgsPointXY is not None:
             painter.save()
             painter.setOpacity(self._opacity)
             painter.drawImage(target, self._image)
+
+            # Highlight selected finite-volume faces used for line-flux sampling.
+            if self._face_segments.size > 0:
+                try:
+                    painter.setOpacity(1.0)
+                    pen = QtGui.QPen(QtGui.QColor(220, 40, 40, 230))
+                    pen.setWidthF(2.2)
+                    painter.setPen(pen)
+                    for seg in self._face_segments:
+                        x0, y0, x1, y1 = [float(v) for v in seg]
+                        p0 = self.toCanvasCoordinates(QgsPointXY(x0, y0))
+                        p1 = self.toCanvasCoordinates(QgsPointXY(x1, y1))
+                        painter.drawLine(
+                            QtCore.QPointF(float(p0.x()), float(p0.y())),
+                            QtCore.QPointF(float(p1.x()), float(p1.y())),
+                        )
+                except Exception:
+                    pass
+
+            # Station marker synced from line-profile hover.
+            if self._station_point is not None:
+                try:
+                    sp = self.toCanvasCoordinates(QgsPointXY(float(self._station_point[0]), float(self._station_point[1])))
+                    sx = float(sp.x())
+                    sy = float(sp.y())
+                    painter.setOpacity(1.0)
+                    ring_pen = QtGui.QPen(QtGui.QColor(255, 226, 46, 240))
+                    ring_pen.setWidthF(2.0)
+                    painter.setPen(ring_pen)
+                    painter.setBrush(QtGui.QColor(255, 226, 46, 80))
+                    painter.drawEllipse(QtCore.QPointF(sx, sy), 5.0, 5.0)
+                    painter.drawLine(QtCore.QPointF(sx - 8.0, sy), QtCore.QPointF(sx + 8.0, sy))
+                    painter.drawLine(QtCore.QPointF(sx, sy - 8.0), QtCore.QPointF(sx, sy + 8.0))
+                    if self._station_label:
+                        painter.setPen(QtGui.QPen(QtGui.QColor(255, 255, 255, 235)))
+                        painter.drawText(QtCore.QPointF(sx + 8.0, sy - 8.0), self._station_label)
+                except Exception:
+                    pass
+
+            if self._legend_enabled:
+                cmap = _COLOR_LUTS.get(self._legend_cmap_key, _COLOR_LUTS.get("turbo"))
+                if cmap is not None:
+                    draw_scalar_legend_on_painter(
+                        painter,
+                        int(self.boundingRect().width()),
+                        int(self.boundingRect().height()),
+                        cmap,
+                        float(self._legend_vmin),
+                        float(self._legend_vmax),
+                        str(self._legend_label),
+                    )
             painter.restore()
 
 else:

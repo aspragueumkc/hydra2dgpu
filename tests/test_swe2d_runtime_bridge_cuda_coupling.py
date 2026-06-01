@@ -50,6 +50,7 @@ class TestSWE2DRuntimeBridgeCudaCoupling(unittest.TestCase):
             structures=structures,
             coupling_loop="cuda",
             bridge_cuda_coupling=True,
+            bridge_stacked_coupling_mode="legacy_scalar",
         )
 
         calls = {"generic": None, "bridge": None}

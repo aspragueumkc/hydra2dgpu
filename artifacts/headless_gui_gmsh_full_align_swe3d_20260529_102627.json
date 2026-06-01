@@ -1,0 +1,686 @@
+{
+  "ok": true,
+  "gpkg": "/home/aaron/QGIS_Plugins_dev/qgis-backwater-plugin/qgis_testing_project/swe3d_model.gpkg",
+  "region_ids": [
+    1,
+    2,
+    3,
+    4,
+    5,
+    6,
+    7,
+    8,
+    9
+  ],
+  "backend": "gmsh",
+  "gmsh_quad_full_region_flow_align": true,
+  "artifacts": {
+    "npz": "/home/aaron/QGIS_Plugins_dev/qgis-backwater-plugin/artifacts/headless_gui_gmsh_full_align_swe3d_20260529_102627.npz",
+    "json": "/home/aaron/QGIS_Plugins_dev/qgis-backwater-plugin/artifacts/headless_gui_gmsh_full_align_swe3d_20260529_102627.json",
+    "png": "/home/aaron/QGIS_Plugins_dev/qgis-backwater-plugin/artifacts/headless_gui_gmsh_full_align_swe3d_20260529_102627.png",
+    "profile_json": "/home/aaron/QGIS_Plugins_dev/qgis-backwater-plugin/artifacts/headless_gui_gmsh_full_align_swe3d_20260529_102627.profile.json"
+  },
+  "mesh": {
+    "n_nodes": 24712,
+    "n_faces": 41791,
+    "n_tris": 34740,
+    "n_quads": 7051
+  },
+  "timings_s": {
+    "headless_meshing_elapsed": 215.441346419997,
+    "gmsh_phase": {
+      "prebuild_region_quad_setup": 0.0017551530036143959,
+      "prebuild_transfinite_harmonize": 47.67663029299729,
+      "prebuild_nontrans_projection": 54.975585163003416,
+      "prebuild_interface_coincidence": 106.16114855399792,
+      "prebuild_setup": 208.81518014399626,
+      "build_surfaces": 0.08503579399985028,
+      "embed_arcs_and_interfaces": 0.0029895560001023114,
+      "build_size_fields": 0.030188930002623238,
+      "configure_per_surface": 0.11924166900280397,
+      "configure_global_options": 2.9950999305583537e-05,
+      "generate_and_optimize": 4.355226073996164,
+      "duplicate_cleanup": 0.08794886000396218,
+      "extract_nodes": 0.003820501995505765,
+      "extract_elements": 0.044424338004319,
+      "total_build": 213.5441005879984
+    }
+  },
+  "layer_snapshot": {
+    "regions_subset_sql": "region_id IN (1,2,3,4,5,6,7,8,9)",
+    "regions_subset_count": -1,
+    "regions_subset_ids": [
+      1,
+      2,
+      3,
+      4,
+      5,
+      6,
+      7,
+      8,
+      9
+    ],
+    "quad_edges_subset_sql": "region_id IN (1,2,3,4,5,6,7,8,9)",
+    "quad_edges_subset_count": -1
+  },
+  "options_snapshot": {
+    "gmsh_quad_full_region_flow_align": true,
+    "gmsh_quality_enable": false,
+    "gmsh_smoothing": 0,
+    "gmsh_optimize_iters": 0,
+    "gmsh_verbosity": 2,
+    "gmsh_algo_switch_on_failure": false,
+    "gmsh_mesh_size_from_points": false
+  },
+  "quality_summary": {
+    "gmsh_phase_timings_s": {
+      "prebuild_region_quad_setup": 0.0017551530036143959,
+      "prebuild_transfinite_harmonize": 47.67663029299729,
+      "prebuild_nontrans_projection": 54.975585163003416,
+      "prebuild_interface_coincidence": 106.16114855399792,
+      "prebuild_setup": 208.81518014399626,
+      "build_surfaces": 0.08503579399985028,
+      "embed_arcs_and_interfaces": 0.0029895560001023114,
+      "build_size_fields": 0.030188930002623238,
+      "configure_per_surface": 0.11924166900280397,
+      "configure_global_options": 2.9950999305583537e-05,
+      "generate_and_optimize": 4.355226073996164,
+      "duplicate_cleanup": 0.08794886000396218,
+      "extract_nodes": 0.003820501995505765,
+      "extract_elements": 0.044424338004319,
+      "total_build": 213.5441005879984
+    },
+    "gmsh_phase_counts": {
+      "surface_count": 9,
+      "constraint_count": 0,
+      "arc_count": 0,
+      "face_count": 41791
+    },
+    "gmsh_cpp_prebuild_native": {
+      "enabled": false,
+      "module_loaded": false,
+      "has_interface_overlap_metrics_closed": false,
+      "has_polyline_overlap_fractions_open": false,
+      "has_project_ring_to_chain": false
+    },
+    "gmsh_flow_align_diagnostics": [
+      {
+        "region_id": 7,
+        "cell_type": "quadrilateral",
+        "curve_count": 195,
+        "eligible": true,
+        "fallback": false,
+        "reasons": [],
+        "edge_count": 4,
+        "edge_ids": [
+          1,
+          2,
+          3,
+          4
+        ],
+        "join_gaps": [
+          0.0,
+          0.0,
+          0.0,
+          0.0
+        ],
+        "edge_lengths": [
+          1513.0291766431576,
+          114.9281956414876,
+          1327.6254034739745,
+          121.45300552461833
+        ],
+        "transfinite_counts": [
+          77,
+          14,
+          77,
+          14
+        ],
+        "notes": [
+          "surface-curves-are-split(195)"
+        ],
+        "surface_tag": 1,
+        "requested": true,
+        "status": "applied"
+      },
+      {
+        "region_id": 5,
+        "cell_type": "quadrilateral",
+        "curve_count": 201,
+        "eligible": true,
+        "fallback": false,
+        "reasons": [],
+        "edge_count": 4,
+        "edge_ids": [
+          1,
+          2,
+          3,
+          4
+        ],
+        "join_gaps": [
+          0.0,
+          0.0,
+          0.0,
+          0.0
+        ],
+        "edge_lengths": [
+          1524.277520002234,
+          115.48975642464038,
+          1482.1056685476415,
+          97.93931141562437
+        ],
+        "transfinite_counts": [
+          77,
+          13,
+          77,
+          13
+        ],
+        "notes": [
+          "surface-curves-are-split(201)"
+        ],
+        "surface_tag": 2,
+        "requested": true,
+        "status": "applied"
+      },
+      {
+        "region_id": 4,
+        "cell_type": "quadrilateral",
+        "curve_count": 152,
+        "eligible": true,
+        "fallback": false,
+        "reasons": [],
+        "edge_count": 4,
+        "edge_ids": [
+          1,
+          2,
+          3,
+          4
+        ],
+        "join_gaps": [
+          0.0,
+          0.0,
+          0.0,
+          0.0
+        ],
+        "edge_lengths": [
+          1096.2344253281851,
+          142.97178383220157,
+          1071.058496240387,
+          116.61292808602055
+        ],
+        "transfinite_counts": [
+          56,
+          16,
+          56,
+          16
+        ],
+        "notes": [
+          "surface-curves-are-split(152)"
+        ],
+        "surface_tag": 3,
+        "requested": true,
+        "status": "applied"
+      },
+      {
+        "region_id": 6,
+        "cell_type": "quadrilateral",
+        "curve_count": 85,
+        "eligible": true,
+        "fallback": false,
+        "reasons": [],
+        "edge_count": 4,
+        "edge_ids": [
+          1,
+          2,
+          3,
+          4
+        ],
+        "join_gaps": [
+          0.0,
+          0.0,
+          0.0,
+          0.0
+        ],
+        "edge_lengths": [
+          304.4377237984397,
+          121.45300552461839,
+          425.6095827123063,
+          142.97178383220157
+        ],
+        "transfinite_counts": [
+          22,
+          16,
+          22,
+          16
+        ],
+        "notes": [
+          "surface-curves-are-split(85)"
+        ],
+        "surface_tag": 4,
+        "requested": true,
+        "status": "applied"
+      },
+      {
+        "region_id": 9,
+        "cell_type": "quadrilateral",
+        "curve_count": 170,
+        "eligible": true,
+        "fallback": false,
+        "reasons": [],
+        "edge_count": 4,
+        "edge_ids": [
+          1,
+          2,
+          3,
+          4
+        ],
+        "join_gaps": [
+          0.0,
+          0.0,
+          0.0,
+          0.0
+        ],
+        "edge_lengths": [
+          1190.9157301331957,
+          143.20581567540393,
+          1178.8703202286426,
+          121.19755408003323
+        ],
+        "transfinite_counts": [
+          61,
+          15,
+          61,
+          15
+        ],
+        "notes": [
+          "surface-curves-are-split(170)"
+        ],
+        "surface_tag": 5,
+        "requested": true,
+        "status": "applied"
+      },
+      {
+        "region_id": 8,
+        "cell_type": "quadrilateral",
+        "curve_count": 68,
+        "eligible": false,
+        "fallback": true,
+        "reasons": [
+          "quad-edge-chain-disconnected (joins=[2], tol=1.000e-02)"
+        ],
+        "edge_count": 4,
+        "edge_ids": [
+          1,
+          2,
+          3,
+          4
+        ],
+        "join_gaps": [
+          0.0,
+          0.028792644012675662,
+          0.0,
+          0.0
+        ],
+        "edge_lengths": [
+          93.82680957487817,
+          121.19755408003324,
+          115.48975642464038,
+          114.92819564148762
+        ],
+        "transfinite_counts": [
+          13,
+          14,
+          13,
+          14
+        ],
+        "notes": [
+          "surface-curves-are-split(68)"
+        ],
+        "surface_tag": 6,
+        "requested": true,
+        "status": "fallback",
+        "transfinite_skipped_after_fallback": true
+      }
+    ],
+    "gmsh_duplicate_cleanup": {
+      "duplicate_nodes_before": 10,
+      "duplicate_nodes_after": 0,
+      "cleanup_ran": true
+    },
+    "gmsh_interface_transition": {
+      "enabled": true,
+      "protected_transfinite_surfaces": [
+        1,
+        2,
+        3,
+        4,
+        5,
+        6
+      ],
+      "spec_count": 633,
+      "field_count": 633
+    },
+    "gmsh_transfinite_interface_harmonize": {
+      "enabled": true,
+      "subset_start": 0.3,
+      "subset_end": 0.7,
+      "subset_density_scale": 0.5,
+      "subset_containment_enable": true,
+      "subset_containment_high_overlap": 0.95,
+      "subset_containment_min_overlap": 0.02,
+      "subset_containment_max_length_ratio": 0.35,
+      "shared_groups": 5,
+      "canonicalized_edges": 0,
+      "opposite_subset_densified": 10,
+      "junction_points_inserted": 4,
+      "subset_containment_densified": 0,
+      "singleton_external_junction_edges": 3,
+      "nontrans_neighbor_projection_rings": 3,
+      "candidate_pair_count_prefilter": 276,
+      "candidate_pair_count": 44,
+      "pair_bbox_reject_count": 196,
+      "nontrans_chain_bbox_reject_count": 22,
+      "nontrans_overlap_pair_count": 50,
+      "nontrans_point_bbox_reject_count": 6174
+    },
+    "gmsh_interface_coincidence_report": {
+      "pair_count": 16,
+      "suspect_pair_count": 13,
+      "pairs": [
+        {
+          "region_a": 2,
+          "region_b": 7,
+          "cell_type_a": "triangular",
+          "cell_type_b": "quadrilateral",
+          "near_tol": 0.5,
+          "sample_step": 2.5,
+          "overlap_ab": 0.15541031227305738,
+          "overlap_ba": 0.49079754601226994,
+          "overlap_delta": 0.33538723373921253,
+          "endpoint_delta_max": 0.25871361944917176,
+          "endpoint_delta_mean": 0.23423581024599666
+        },
+        {
+          "region_a": 1,
+          "region_b": 5,
+          "cell_type_a": "triangular",
+          "cell_type_b": "quadrilateral",
+          "near_tol": 0.5,
+          "sample_step": 2.5,
+          "overlap_ab": 0.18237590630228667,
+          "overlap_ba": 0.4721216509775525,
+          "overlap_delta": 0.2897457446752658,
+          "endpoint_delta_max": 0.0,
+          "endpoint_delta_mean": 0.0
+        },
+        {
+          "region_a": 3,
+          "region_b": 5,
+          "cell_type_a": "triangular",
+          "cell_type_b": "quadrilateral",
+          "near_tol": 0.5,
+          "sample_step": 2.5,
+          "overlap_ab": 0.2846911369740376,
+          "overlap_ba": 0.45763939174511226,
+          "overlap_delta": 0.17294825477107467,
+          "endpoint_delta_max": 0.0,
+          "endpoint_delta_mean": 0.0
+        },
+        {
+          "region_a": 2,
+          "region_b": 9,
+          "cell_type_a": "triangular",
+          "cell_type_b": "quadrilateral",
+          "near_tol": 0.5,
+          "sample_step": 2.5,
+          "overlap_ab": 0.12418300653594772,
+          "overlap_ba": 0.45204262877442275,
+          "overlap_delta": 0.32785962223847503,
+          "endpoint_delta_max": 0.35886810650973744,
+          "endpoint_delta_mean": 0.17943405325486872
+        },
+        {
+          "region_a": 2,
+          "region_b": 4,
+          "cell_type_a": "triangular",
+          "cell_type_b": "quadrilateral",
+          "near_tol": 0.5,
+          "sample_step": 2.5,
+          "overlap_ab": 0.1111111111111111,
+          "overlap_ba": 0.4485798237022527,
+          "overlap_delta": 0.3374687125911416,
+          "endpoint_delta_max": 0.0,
+          "endpoint_delta_mean": 0.0
+        },
+        {
+          "region_a": 3,
+          "region_b": 9,
+          "cell_type_a": "triangular",
+          "cell_type_b": "quadrilateral",
+          "near_tol": 0.5,
+          "sample_step": 2.5,
+          "overlap_ab": 0.22560429722470904,
+          "overlap_ba": 0.4422735346358792,
+          "overlap_delta": 0.21666923741117017,
+          "endpoint_delta_max": 0.001588578266166538,
+          "endpoint_delta_mean": 0.000794289133083269
+        },
+        {
+          "region_a": 1,
+          "region_b": 4,
+          "cell_type_a": "triangular",
+          "cell_type_b": "quadrilateral",
+          "near_tol": 0.5,
+          "sample_step": 2.5,
+          "overlap_ab": 0.12548800892359174,
+          "overlap_ba": 0.4397649363369246,
+          "overlap_delta": 0.31427692741333285,
+          "endpoint_delta_max": 4.263256414560601e-14,
+          "endpoint_delta_mean": 2.1316282072803006e-14
+        },
+        {
+          "region_a": 1,
+          "region_b": 7,
+          "cell_type_a": "triangular",
+          "cell_type_b": "quadrilateral",
+          "near_tol": 0.5,
+          "sample_step": 2.5,
+          "overlap_ab": 0.1550474065811489,
+          "overlap_ba": 0.4256134969325153,
+          "overlap_delta": 0.2705660903513664,
+          "endpoint_delta_max": 2.9118037843694986e-12,
+          "endpoint_delta_mean": 1.4559018921847493e-12
+        },
+        {
+          "region_a": 1,
+          "region_b": 6,
+          "cell_type_a": "triangular",
+          "cell_type_b": "quadrilateral",
+          "near_tol": 0.5,
+          "sample_step": 2.5,
+          "overlap_ab": 0.051310652537646405,
+          "overlap_ba": 0.42494226327944573,
+          "overlap_delta": 0.37363161074179935,
+          "endpoint_delta_max": 2.9118037843694986e-12,
+          "endpoint_delta_mean": 1.4559018921847493e-12
+        },
+        {
+          "region_a": 2,
+          "region_b": 6,
+          "cell_type_a": "triangular",
+          "cell_type_b": "quadrilateral",
+          "near_tol": 0.5,
+          "sample_step": 2.5,
+          "overlap_ab": 0.03122730573710966,
+          "overlap_ba": 0.2956120092378753,
+          "overlap_delta": 0.26438470350076565,
+          "endpoint_delta_max": 0.0,
+          "endpoint_delta_mean": 0.0
+        },
+        {
+          "region_a": 7,
+          "region_b": 8,
+          "cell_type_a": "quadrilateral",
+          "cell_type_b": "quadrilateral",
+          "near_tol": 0.5,
+          "sample_step": 2.5,
+          "overlap_ab": 0.04371165644171779,
+          "overlap_ba": 0.27403846153846156,
+          "overlap_delta": 0.23032680509674378,
+          "endpoint_delta_max": 0.0,
+          "endpoint_delta_mean": 0.0
+        },
+        {
+          "region_a": 9,
+          "region_b": 8,
+          "cell_type_a": "quadrilateral",
+          "cell_type_b": "quadrilateral",
+          "near_tol": 0.5,
+          "sample_step": 2.5,
+          "overlap_ab": 0.04706927175843695,
+          "overlap_ba": 0.25961538461538464,
+          "overlap_delta": 0.2125461128569477,
+          "endpoint_delta_max": 0.02042886752964366,
+          "endpoint_delta_mean": 0.01021443376482183
+        },
+        {
+          "region_a": 2,
+          "region_b": 8,
+          "cell_type_a": "triangular",
+          "cell_type_b": "quadrilateral",
+          "near_tol": 0.5,
+          "sample_step": 2.5,
+          "overlap_ab": 0.012345679012345678,
+          "overlap_ba": 0.25,
+          "overlap_delta": 0.23765432098765432,
+          "endpoint_delta_max": 0.20975800104282158,
+          "endpoint_delta_mean": 0.10487900052455522
+        },
+        {
+          "region_a": 5,
+          "region_b": 8,
+          "cell_type_a": "quadrilateral",
+          "cell_type_b": "quadrilateral",
+          "near_tol": 0.5,
+          "sample_step": 2.5,
+          "overlap_ab": 0.03548153511947864,
+          "overlap_ba": 0.2403846153846154,
+          "overlap_delta": 0.20490308026513676,
+          "endpoint_delta_max": 0.01054999386085621,
+          "endpoint_delta_mean": 0.005274996930428105
+        },
+        {
+          "region_a": 7,
+          "region_b": 6,
+          "cell_type_a": "quadrilateral",
+          "cell_type_b": "quadrilateral",
+          "near_tol": 0.5,
+          "sample_step": 2.5,
+          "overlap_ab": 0.040644171779141106,
+          "overlap_ba": 0.14549653579676675,
+          "overlap_delta": 0.10485236401762564,
+          "endpoint_delta_max": 0.0,
+          "endpoint_delta_mean": 0.0
+        },
+        {
+          "region_a": 4,
+          "region_b": 6,
+          "cell_type_a": "quadrilateral",
+          "cell_type_b": "quadrilateral",
+          "near_tol": 0.5,
+          "sample_step": 2.5,
+          "overlap_ab": 0.059745347698334964,
+          "overlap_ba": 0.14318706697459585,
+          "overlap_delta": 0.08344171927626089,
+          "endpoint_delta_max": 0.13326659786946538,
+          "endpoint_delta_mean": 0.06663329893473269
+        }
+      ]
+    }
+  },
+  "topology_status": "Generated 41791 computational faces using backend 'gmsh'. Cell metadata (type/size/region) stored in mesh state.",
+  "timestamp": "20260529_102627",
+  "profiling": {
+    "script_phase_s": {
+      "path_setup": 0.00012518300354713574,
+      "imports_qgis_workbench": 0.2543538950048969,
+      "qgis_init": 0.08706068100582343,
+      "dialog_init": 0.3649221710002166,
+      "load_geopackage": 0.19109597300121095,
+      "bind_preferred_layers": 0.005248048997600563,
+      "subset_layers_and_snapshot": 0.0293767140028649,
+      "configure_ui_controls": 0.0110415879971697,
+      "build_topology_options": 4.552099562715739e-05,
+      "dispatch_async_meshing": 0.012247721002495382,
+      "async_wait_for_meshing": 215.42906171899813,
+      "extract_mesh_arrays": 0.002395625000644941,
+      "write_npz": 0.11747176600329112,
+      "write_png": 0.2423263520031469,
+      "total_script": 216.74738814900047
+    },
+    "script_marks_s": {
+      "env_ready": 1.778000296326354e-05,
+      "qgis_initialized": 0.3416337509988807,
+      "meshing_dispatched": 0.9556355680033448,
+      "payload_build_start": 216.74735555900406
+    },
+    "async_wait": {
+      "timeout_s": 1800.0,
+      "iterations": 4294,
+      "process_events_s": 0.249420712752908,
+      "progress_file_read_s": 0.16874133795499802,
+      "sleep_s": 214.96500766890676,
+      "progress_events_observed": 2,
+      "status_changes_observed": 1,
+      "progress_path": "/tmp/qgis-live-bridge/topology_gmsh_progress_35704_1780068388153.json",
+      "wait_elapsed_s": 215.4290585380004
+    },
+    "timeline": [
+      {
+        "t_s": 0.0001691229990683496,
+        "event": "region_scope",
+        "requested": "1,2,3,4,5,6,7,8,9",
+        "resolved": [
+          1,
+          2,
+          3,
+          4,
+          5,
+          6,
+          7,
+          8,
+          9
+        ]
+      },
+      {
+        "t_s": 0.9322861580003519,
+        "event": "layer_snapshot",
+        "regions": -1,
+        "quad_edges": -1
+      },
+      {
+        "t_s": 0.955690159004007,
+        "event": "status_change",
+        "status": "Meshing in progress with backend 'gmsh'..."
+      },
+      {
+        "t_s": 1.005977218002954,
+        "event": "backend_progress",
+        "seq": 2,
+        "stage": "build-start",
+        "detail": "single-pass mode",
+        "backend_elapsed_s": 0.0008468060041195713,
+        "backend_epoch_s": 1780068388.2021568
+      },
+      {
+        "t_s": 215.49617043400212,
+        "event": "backend_progress",
+        "seq": 3,
+        "stage": "done",
+        "detail": "nodes=24712 faces=41791",
+        "backend_elapsed_s": 214.46215467800357,
+        "backend_epoch_s": 1780068602.663465
+      }
+    ]
+  }
+}

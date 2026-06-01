@@ -321,6 +321,10 @@ def _install_studio_host_controls(
             menu.addAction("Show View Panel", lambda: _focus_panel("view"))
             menu.addAction("Show Runtime Log Panel", lambda: _focus_panel("log"))
             menu.addAction("Show CFD Inspector Panel", lambda: _focus_panel("inspector"))
+            menu.addAction(
+                "Open Drainage/Structure Results Viewer",
+                lambda: dlg._open_coupling_results_viewer() if hasattr(dlg, "_open_coupling_results_viewer") else None,
+            )
 
         menu.addSeparator()
         menu.addAction("Close Studio Panels", _close_studio_panels)
@@ -378,6 +382,12 @@ def _install_studio_host_controls(
     act_snapshot.triggered.connect(
         lambda: dlg.snapshot_btn.click()
         if hasattr(dlg, "snapshot_btn") and dlg.snapshot_btn is not None
+        else None
+    )
+    act_open_coupling_results = toolbar.addAction("Open Drainage/Structure Results")
+    act_open_coupling_results.triggered.connect(
+        lambda: dlg._open_coupling_results_viewer()
+        if hasattr(dlg, "_open_coupling_results_viewer")
         else None
     )
 

@@ -1,0 +1,81 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<ui version="4.0">
+ <class>SWE2DStructuresCulvertForm</class>
+ <widget class="QWidget" name="SWE2DStructuresCulvertForm">
+  <layout class="QVBoxLayout" name="verticalLayout">
+   <item>
+    <widget class="QGroupBox" name="groupCore">
+     <property name="title">
+      <string>Structure Core</string>
+     </property>
+     <layout class="QFormLayout" name="formCore">
+      <item row="0" column="0"><widget class="QLabel" name="label_structure_id"><property name="text"><string>Structure ID</string></property></widget></item>
+      <item row="0" column="1"><widget class="QLineEdit" name="structure_id"/></item>
+      <item row="1" column="0"><widget class="QLabel" name="label_structure_type"><property name="text"><string>Structure Type</string></property></widget></item>
+      <item row="1" column="1"><widget class="QComboBox" name="structure_type"/></item>
+      <item row="2" column="0"><widget class="QLabel" name="label_enabled"><property name="text"><string>Enabled</string></property></widget></item>
+      <item row="2" column="1"><widget class="QCheckBox" name="enabled"><property name="text"><string/></property></widget></item>
+      <item row="3" column="0"><widget class="QLabel" name="label_crest_elev"><property name="text"><string>Crest Elevation</string></property></widget></item>
+      <item row="3" column="1"><widget class="QDoubleSpinBox" name="crest_elev"><property name="decimals"><number>4</number></property><property name="maximum"><double>1000000.0</double></property></widget></item>
+      <item row="4" column="0"><widget class="QLabel" name="label_length"><property name="text"><string>Length</string></property></widget></item>
+      <item row="4" column="1"><widget class="QDoubleSpinBox" name="length"><property name="decimals"><number>4</number></property><property name="maximum"><double>1000000.0</double></property></widget></item>
+      <item row="5" column="0"><widget class="QLabel" name="label_roughness_n"><property name="text"><string>Roughness n</string></property></widget></item>
+      <item row="5" column="1"><widget class="QDoubleSpinBox" name="roughness_n"><property name="decimals"><number>6</number></property><property name="maximum"><double>1000.0</double></property></widget></item>
+      <item row="6" column="0"><widget class="QLabel" name="label_max_flow"><property name="text"><string>Max Flow</string></property></widget></item>
+      <item row="6" column="1"><widget class="QDoubleSpinBox" name="max_flow"><property name="decimals"><number>4</number></property><property name="maximum"><double>1000000.0</double></property></widget></item>
+     </layout>
+    </widget>
+   </item>
+   <item>
+    <widget class="QGroupBox" name="groupCulvert">
+     <property name="title">
+      <string>Culvert Hydraulics</string>
+     </property>
+     <layout class="QFormLayout" name="formCulvert">
+      <item row="0" column="0"><widget class="QLabel" name="label_culvert_shape"><property name="text"><string>Culvert Shape</string></property></widget></item>
+      <item row="0" column="1"><widget class="QComboBox" name="culvert_shape"/></item>
+      <item row="1" column="0"><widget class="QLabel" name="label_culvert_code"><property name="text"><string>FHWA Culvert Code</string></property></widget></item>
+      <item row="1" column="1"><widget class="QSpinBox" name="culvert_code"><property name="maximum"><number>999</number></property></widget></item>
+      <item row="2" column="0"><widget class="QLabel" name="label_culvert_rise"><property name="text"><string>Rise</string></property></widget></item>
+      <item row="2" column="1"><widget class="QDoubleSpinBox" name="culvert_rise"><property name="decimals"><number>4</number></property><property name="maximum"><double>1000000.0</double></property></widget></item>
+      <item row="3" column="0"><widget class="QLabel" name="label_culvert_span"><property name="text"><string>Span</string></property></widget></item>
+      <item row="3" column="1"><widget class="QDoubleSpinBox" name="culvert_span"><property name="decimals"><number>4</number></property><property name="maximum"><double>1000000.0</double></property></widget></item>
+      <item row="4" column="0"><widget class="QLabel" name="label_culvert_barrels"><property name="text"><string>Barrels</string></property></widget></item>
+      <item row="4" column="1"><widget class="QSpinBox" name="culvert_barrels"><property name="minimum"><number>1</number></property><property name="maximum"><number>128</number></property></widget></item>
+      <item row="5" column="0"><widget class="QLabel" name="label_culvert_slope"><property name="text"><string>Slope</string></property></widget></item>
+      <item row="5" column="1"><widget class="QDoubleSpinBox" name="culvert_slope"><property name="decimals"><number>6</number></property><property name="maximum"><double>1000.0</double></property></widget></item>
+      <item row="6" column="0"><widget class="QLabel" name="label_inlet_invert"><property name="text"><string>Inlet Invert</string></property></widget></item>
+      <item row="6" column="1"><widget class="QDoubleSpinBox" name="inlet_invert_elev"><property name="decimals"><number>4</number></property><property name="maximum"><double>1000000.0</double></property></widget></item>
+      <item row="7" column="0"><widget class="QLabel" name="label_outlet_invert"><property name="text"><string>Outlet Invert</string></property></widget></item>
+      <item row="7" column="1"><widget class="QDoubleSpinBox" name="outlet_invert_elev"><property name="decimals"><number>4</number></property><property name="maximum"><double>1000000.0</double></property></widget></item>
+      <item row="8" column="0"><widget class="QLabel" name="label_entrance_loss"><property name="text"><string>Entrance Loss K</string></property></widget></item>
+      <item row="8" column="1"><widget class="QDoubleSpinBox" name="entrance_loss_k"><property name="decimals"><number>4</number></property><property name="maximum"><double>1000.0</double></property></widget></item>
+      <item row="9" column="0"><widget class="QLabel" name="label_exit_loss"><property name="text"><string>Exit Loss K</string></property></widget></item>
+      <item row="9" column="1"><widget class="QDoubleSpinBox" name="exit_loss_k"><property name="decimals"><number>4</number></property><property name="maximum"><double>1000.0</double></property></widget></item>
+      <item row="10" column="0"><widget class="QLabel" name="label_culvert_area"><property name="text"><string>Override Area</string></property></widget></item>
+      <item row="10" column="1"><widget class="QDoubleSpinBox" name="culvert_area_m2"><property name="decimals"><number>4</number></property><property name="maximum"><double>1000000.0</double></property></widget></item>
+     </layout>
+    </widget>
+   </item>
+   <item>
+    <widget class="QGroupBox" name="groupEmbankment">
+     <property name="title">
+      <string>Embankment Overflow</string>
+     </property>
+     <layout class="QFormLayout" name="formEmbankment">
+      <item row="0" column="0"><widget class="QLabel" name="label_embankment_enabled"><property name="text"><string>Enable Overflow</string></property></widget></item>
+      <item row="0" column="1"><widget class="QCheckBox" name="embankment_enabled"><property name="text"><string/></property></widget></item>
+      <item row="1" column="0"><widget class="QLabel" name="label_embankment_crest"><property name="text"><string>Crest Elevation</string></property></widget></item>
+      <item row="1" column="1"><widget class="QDoubleSpinBox" name="embankment_crest_elev"><property name="decimals"><number>4</number></property><property name="maximum"><double>1000000.0</double></property></widget></item>
+      <item row="2" column="0"><widget class="QLabel" name="label_embankment_width"><property name="text"><string>Overflow Width</string></property></widget></item>
+      <item row="2" column="1"><widget class="QDoubleSpinBox" name="embankment_overflow_width"><property name="decimals"><number>4</number></property><property name="maximum"><double>1000000.0</double></property></widget></item>
+      <item row="3" column="0"><widget class="QLabel" name="label_embankment_coeff"><property name="text"><string>Weir Coefficient</string></property></widget></item>
+      <item row="3" column="1"><widget class="QDoubleSpinBox" name="embankment_weir_coeff"><property name="decimals"><number>4</number></property><property name="maximum"><double>1000.0</double></property></widget></item>
+     </layout>
+    </widget>
+   </item>
+  </layout>
+ </widget>
+ <resources/>
+ <connections/>
+</ui>
