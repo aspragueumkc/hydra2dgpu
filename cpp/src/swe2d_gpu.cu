@@ -880,6 +880,22 @@ __global__ void swe2d_degen_sync_kernel(
         }                                                                       \
     } while (0)
 
+static inline void swe2d_ensure_cfl_block_workspace(
+    SWE2DDeviceState* dev,
+    int32_t n_blocks)
+{
+    if (!dev || n_blocks <= 0) return;
+    if (!dev->d_cfl_block_max || dev->cfl_block_capacity < n_blocks) {
+        if (dev->d_cfl_block_max) {
+            CUDA_CHECK(cudaFree(dev->d_cfl_block_max));
+            dev->d_cfl_block_max = nullptr;
+        }
+        CUDA_CHECK(cudaMalloc(reinterpret_cast<void**>(&dev->d_cfl_block_max),
+                              static_cast<size_t>(n_blocks) * sizeof(double)));
+        dev->cfl_block_capacity = n_blocks;
+    }
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Double-precision atomicAdd via CAS loop (used by edge-centric gradient kernel).
 // ─────────────────────────────────────────────────────────────────────────────
@@ -3847,6 +3863,7 @@ SWE2DDeviceState* swe2d_gpu_init(
     // Two-level CFL reduction: block-max array sized for worst-case grid.
     // Reallocated if mesh grows; zero-sized for now, filled on first step.
     dev->d_cfl_block_max = nullptr;
+    dev->cfl_block_capacity = 0;
 
     // Wet/dry active-set arrays
     alloc_d(reinterpret_cast<void**>(&dev->d_active),    sz_cells * sizeof(int32_t));
@@ -4253,31 +4270,21 @@ void swe2d_gpu_step(
                 CUDA_CHECK(cudaMemsetAsync(dev->d_lambda_max, 0, sizeof(double), dev->d_stream));
                 {
                     int grid_cfl = (n_edges + BLOCK - 1) / BLOCK;
-                    {
-                        static int32_t s_cfl_block_cap = 0;
-                        static double* s_cfl_block_ptr = nullptr;
-                        if (s_cfl_block_cap < grid_cfl) {
-                            double* new_ptr = nullptr;
-                            CUDA_CHECK(cudaMalloc(reinterpret_cast<void**>(&new_ptr),
-                                                  static_cast<size_t>(grid_cfl) * sizeof(double)));
-                            if (s_cfl_block_ptr) cudaFree(s_cfl_block_ptr);
-                            s_cfl_block_ptr = new_ptr;
-                            s_cfl_block_cap = grid_cfl;
-                        }
-                        dev->d_cfl_block_max = s_cfl_block_ptr;
+                    if (grid_cfl > 0) {
+                        swe2d_ensure_cfl_block_workspace(dev, grid_cfl);
+                        swe2d_cfl_kernel<<<grid_cfl, BLOCK, BLOCK * static_cast<int>(sizeof(double)), dev->d_stream>>>(
+                            n_edges,
+                            dev->d_edge_c0, dev->d_edge_c1,
+                            dev->d_edge_nx, dev->d_edge_ny, dev->d_edge_len,
+                            dev->d_h, dev->d_hu, dev->d_hv,
+                            dev->d_cell_area,
+                            g, h_min,
+                            cfl_lambda_cap,
+                            dev->d_cfl_block_max,
+                            dev->d_degen_mask, dev->degen_mode);
+                        swe2d_cfl_reduce_blocks_kernel<<<1, BLOCK, BLOCK * static_cast<int>(sizeof(double)), dev->d_stream>>>(
+                            grid_cfl, dev->d_cfl_block_max, dev->d_lambda_max);
                     }
-                    swe2d_cfl_kernel<<<grid_cfl, BLOCK, BLOCK * static_cast<int>(sizeof(double)), dev->d_stream>>>(
-                        n_edges,
-                        dev->d_edge_c0, dev->d_edge_c1,
-                        dev->d_edge_nx, dev->d_edge_ny, dev->d_edge_len,
-                        dev->d_h, dev->d_hu, dev->d_hv,
-                        dev->d_cell_area,
-                        g, h_min,
-                        cfl_lambda_cap,
-                        dev->d_cfl_block_max,
-                        dev->d_degen_mask, dev->degen_mode);
-                    swe2d_cfl_reduce_blocks_kernel<<<1, BLOCK, BLOCK * static_cast<int>(sizeof(double)), dev->d_stream>>>(
-                        grid_cfl, dev->d_cfl_block_max, dev->d_lambda_max);
                 }
                 pack_diag_kernel<<<1, 1, 0, dev->d_stream>>>(
                     dev->d_lambda_max, dev->d_max_wse_elev_error, dev->d_n_wet, dev->d_diag_packed);
@@ -4495,34 +4502,23 @@ void swe2d_gpu_step(
     CUDA_CHECK(cudaMemsetAsync(dev->d_lambda_max, 0, sizeof(double), dev->d_stream));
     {
         int grid = (n_edges + BLOCK - 1) / BLOCK;
-        // Ensure cfl_block_max is sized for this grid
-        {
-            static int32_t s_cfl_block_cap2 = 0;
-            static double* s_cfl_block_ptr2 = nullptr;
-            if (s_cfl_block_cap2 < grid) {
-                double* new_ptr = nullptr;
-                CUDA_CHECK(cudaMalloc(reinterpret_cast<void**>(&new_ptr),
-                                      static_cast<size_t>(grid) * sizeof(double)));
-                if (s_cfl_block_ptr2) cudaFree(s_cfl_block_ptr2);
-                s_cfl_block_ptr2 = new_ptr;
-                s_cfl_block_cap2 = grid;
-            }
-            dev->d_cfl_block_max = s_cfl_block_ptr2;
+        if (grid > 0) {
+            swe2d_ensure_cfl_block_workspace(dev, grid);
+            swe2d_cfl_kernel<<<grid, BLOCK, BLOCK * static_cast<int>(sizeof(double)), dev->d_stream>>>(
+                n_edges,
+                dev->d_edge_c0, dev->d_edge_c1,
+                dev->d_edge_nx, dev->d_edge_ny, dev->d_edge_len,
+                dev->d_h, dev->d_hu, dev->d_hv,
+                dev->d_cell_area,
+                g, h_min,
+                cfl_lambda_cap,
+                dev->d_cfl_block_max,
+                dev->d_degen_mask, dev->degen_mode);
+            CUDA_CHECK(cudaGetLastError());
+            swe2d_cfl_reduce_blocks_kernel<<<1, BLOCK, BLOCK * static_cast<int>(sizeof(double)), dev->d_stream>>>(
+                grid, dev->d_cfl_block_max, dev->d_lambda_max);
+            CUDA_CHECK(cudaGetLastError());
         }
-        swe2d_cfl_kernel<<<grid, BLOCK, BLOCK * static_cast<int>(sizeof(double)), dev->d_stream>>>(
-            n_edges,
-            dev->d_edge_c0, dev->d_edge_c1,
-            dev->d_edge_nx, dev->d_edge_ny, dev->d_edge_len,
-            dev->d_h, dev->d_hu, dev->d_hv,
-            dev->d_cell_area,
-            g, h_min,
-            cfl_lambda_cap,
-            dev->d_cfl_block_max,
-            dev->d_degen_mask, dev->degen_mode);
-        CUDA_CHECK(cudaGetLastError());
-        swe2d_cfl_reduce_blocks_kernel<<<1, BLOCK, BLOCK * static_cast<int>(sizeof(double)), dev->d_stream>>>(
-            grid, dev->d_cfl_block_max, dev->d_lambda_max);
-        CUDA_CHECK(cudaGetLastError());
     }
     // Pack all three diagnostic scalars into contiguous buffer for single-transfer readback.
     pack_diag_kernel<<<1, 1, 0, dev->d_stream>>>(dev->d_lambda_max, dev->d_max_wse_elev_error, dev->d_n_wet, dev->d_diag_packed);
@@ -5159,17 +5155,25 @@ double swe2d_gpu_compute_dt(
 
     CUDA_CHECK(cudaMemsetAsync(dev->d_lambda_max, 0, sizeof(double), dev->d_stream));
     int grid = (n_edges + BLOCK - 1) / BLOCK;
-    swe2d_cfl_kernel<<<grid, BLOCK, BLOCK * static_cast<int>(sizeof(double)), dev->d_stream>>>(
-        n_edges,
-        dev->d_edge_c0, dev->d_edge_c1,
-        dev->d_edge_nx, dev->d_edge_ny, dev->d_edge_len,
-        dev->d_h, dev->d_hu, dev->d_hv,
-        dev->d_cell_area,
-        g, h_min,
-        cfl_lambda_cap,
-        dev->d_lambda_max,
-        dev->d_degen_mask, dev->degen_mode);
-    CUDA_CHECK(cudaGetLastError());
+    if (grid > 0) {
+        // Match the two-stage CFL reduction path used in the solver step kernels.
+        swe2d_ensure_cfl_block_workspace(dev, grid);
+
+        swe2d_cfl_kernel<<<grid, BLOCK, BLOCK * static_cast<int>(sizeof(double)), dev->d_stream>>>(
+            n_edges,
+            dev->d_edge_c0, dev->d_edge_c1,
+            dev->d_edge_nx, dev->d_edge_ny, dev->d_edge_len,
+            dev->d_h, dev->d_hu, dev->d_hv,
+            dev->d_cell_area,
+            g, h_min,
+            cfl_lambda_cap,
+            dev->d_cfl_block_max,
+            dev->d_degen_mask, dev->degen_mode);
+        CUDA_CHECK(cudaGetLastError());
+        swe2d_cfl_reduce_blocks_kernel<<<1, BLOCK, BLOCK * static_cast<int>(sizeof(double)), dev->d_stream>>>(
+            grid, dev->d_cfl_block_max, dev->d_lambda_max);
+        CUDA_CHECK(cudaGetLastError());
+    }
     CUDA_CHECK(cudaStreamSynchronize(dev->d_stream));
 
     double lambda_max = 0.0;
@@ -7167,7 +7171,7 @@ void swe2d_gpu_compute_structure_and_coupling_sources(
 namespace {
 template <typename T>
 void sf_ensure_buf(T*& ptr, int32_t& cap, int32_t need) {
-    if (cap < need) {
+    if (!ptr || cap < need) {
         if (ptr) cudaFree(ptr);
         CUDA_CHECK(cudaMalloc(reinterpret_cast<void**>(&ptr), static_cast<size_t>(need) * sizeof(T)));
         cap = need;
@@ -7993,7 +7997,7 @@ void swe2d_gpu_compute_structure_flows(
 
     // Grow buffers if needed (template-free explicit approach to avoid CUDA lambda issues)
     #define SF_ENSURE(ptr, cap, need, sz) do { \
-        if ((cap) < (need)) { \
+        if (!(ptr) || (cap) < (need)) { \
             void* _np = nullptr; \
             CUDA_CHECK(cudaMalloc(&_np, static_cast<size_t>(need) * (sz))); \
             if (ptr) cudaFree(ptr); \
@@ -8041,6 +8045,7 @@ void swe2d_gpu_compute_structure_flows(
         CUDA_CHECK(cudaMemcpy(dst, static_cast<const void*>(src), n * sizeof(std::decay_t<decltype(*src)>), cudaMemcpyHostToDevice));
     };
     try {
+        if (cell_wse) upload(s_d_cell_wse, cell_wse, n_cells);
         if (structure_type) upload(s_d_structure_type, structure_type, n_structures);
         if (upstream_cell) upload(s_d_upstream_cell, upstream_cell, n_structures);
         if (downstream_cell) upload(s_d_downstream_cell, downstream_cell, n_structures);

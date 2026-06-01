@@ -281,6 +281,7 @@ struct SWE2DDeviceState {
     // Two-level CFL reduction: block maxima are written here by swe2d_cfl_kernel,
     // then a lightweight second kernel reduces them to d_lambda_max.
     double*  d_cfl_block_max = nullptr;   // [grid_size] for CFL reduction
+    int32_t  cfl_block_capacity = 0;      // allocated length of d_cfl_block_max
     // Packed diagnostic buffer: [0]=lambda_max, [1]=max_wse_elev_error, [2]=(double)n_wet.
     // Filled on-device by pack_diag_kernel after each step; a single cudaMemcpy
     // of 24 bytes transfers all three values when sync_diagnostics is true.
