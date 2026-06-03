@@ -85,8 +85,8 @@ def maybe_create_results_panel(dialog: Any) -> None:
         dialog._results_panel = SWE2DResultsPanel(gpkg_path=gpkg, iface=iface, parent=None)
         dialog._results_panel.setWindowTitle("SWE2D Results")
         _connect_if_available("timestep_changed", "_on_results_panel_timestep_changed")
-        _connect_if_available("velocity_overlay_changed", "_on_velocity_overlay_changed")
-        _connect_if_available("velocity_overlay_add_requested", "_on_velocity_overlay_add_requested")
+        _connect_if_available("velocity_overlay_changed", "_on_results_panel_velocity_overlay_changed")
+        _connect_if_available("velocity_overlay_add_requested", "_on_results_panel_velocity_overlay_add_requested")
         if iface is not None and hasattr(iface, "addDockWidget"):
             try:
                 from qgis.PyQt import QtCore

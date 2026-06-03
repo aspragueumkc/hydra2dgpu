@@ -1,4 +1,4 @@
-<?xml version="1.0" encoding="UTF-8"?>
+<?xml version='1.0' encoding='UTF-8'?>
 <ui version="4.0">
  <class>SWE2DTopologyTabPage</class>
  <widget class="QWidget" name="SWE2DTopologyTabPage">
@@ -29,7 +29,7 @@
           </widget>
          </item>
          <item row="0" column="1">
-          <widget class="QComboBox" name="topo_nodes_combo"/>
+          <widget class="QComboBox" name="topo_nodes_combo" />
          </item>
          <item row="1" column="0">
           <widget class="QLabel" name="topo_arcs_lbl">
@@ -39,7 +39,7 @@
           </widget>
          </item>
          <item row="1" column="1">
-          <widget class="QComboBox" name="topo_arcs_combo"/>
+          <widget class="QComboBox" name="topo_arcs_combo" />
          </item>
          <item row="2" column="0">
           <widget class="QLabel" name="topo_regions_lbl">
@@ -49,7 +49,7 @@
           </widget>
          </item>
          <item row="2" column="1">
-          <widget class="QComboBox" name="topo_regions_combo"/>
+          <widget class="QComboBox" name="topo_regions_combo" />
          </item>
          <item row="3" column="0">
           <widget class="QLabel" name="topo_constraints_lbl">
@@ -59,7 +59,7 @@
           </widget>
          </item>
          <item row="3" column="1">
-          <widget class="QComboBox" name="topo_constraints_combo"/>
+          <widget class="QComboBox" name="topo_constraints_combo" />
          </item>
          <item row="4" column="0">
           <widget class="QLabel" name="topo_quad_edges_lbl">
@@ -69,7 +69,7 @@
           </widget>
          </item>
          <item row="4" column="1">
-          <widget class="QComboBox" name="topo_quad_edges_combo"/>
+          <widget class="QComboBox" name="topo_quad_edges_combo" />
          </item>
          <item row="5" column="0">
           <widget class="QLabel" name="topo_backend_lbl">
@@ -79,7 +79,7 @@
           </widget>
          </item>
          <item row="5" column="1">
-          <widget class="QComboBox" name="topo_backend_combo"/>
+          <widget class="QComboBox" name="topo_backend_combo" />
          </item>
          <item row="6" column="0">
           <widget class="QLabel" name="topo_default_size_lbl">
@@ -89,7 +89,7 @@
           </widget>
          </item>
          <item row="6" column="1">
-          <widget class="QDoubleSpinBox" name="topo_default_size_spin"/>
+          <widget class="QDoubleSpinBox" name="topo_default_size_spin" />
          </item>
          <item row="7" column="0">
           <widget class="QLabel" name="topo_default_cell_type_lbl">
@@ -99,7 +99,7 @@
           </widget>
          </item>
          <item row="7" column="1">
-          <widget class="QComboBox" name="topo_default_cell_type_combo"/>
+          <widget class="QComboBox" name="topo_default_cell_type_combo" />
          </item>
          <item row="8" column="0">
           <widget class="QLabel" name="topo_gmsh_controls_lbl">
@@ -131,7 +131,7 @@
              </widget>
             </item>
             <item row="0" column="1">
-             <widget class="QComboBox" name="topo_gmsh_tri_algo_combo"/>
+             <widget class="QComboBox" name="topo_gmsh_tri_algo_combo" />
             </item>
             <item row="1" column="0">
              <widget class="QLabel" name="topo_gmsh_quad_algo_lbl">
@@ -141,7 +141,7 @@
              </widget>
             </item>
             <item row="1" column="1">
-             <widget class="QComboBox" name="topo_gmsh_quad_algo_combo"/>
+             <widget class="QComboBox" name="topo_gmsh_quad_algo_combo" />
             </item>
             <item row="2" column="0">
              <widget class="QLabel" name="topo_gmsh_recombine_algo_lbl">
@@ -151,7 +151,7 @@
              </widget>
             </item>
             <item row="2" column="1">
-             <widget class="QComboBox" name="topo_gmsh_recombine_algo_combo"/>
+             <widget class="QComboBox" name="topo_gmsh_recombine_algo_combo" />
             </item>
             <item row="3" column="0">
              <widget class="QLabel" name="topo_gmsh_smoothing_lbl">
@@ -161,7 +161,7 @@
              </widget>
             </item>
             <item row="3" column="1">
-             <widget class="QSpinBox" name="topo_gmsh_smoothing_spin"/>
+             <widget class="QSpinBox" name="topo_gmsh_smoothing_spin" />
             </item>
             <item row="4" column="0">
              <widget class="QLabel" name="topo_gmsh_optimize_iters_lbl">
@@ -171,7 +171,7 @@
              </widget>
             </item>
             <item row="4" column="1">
-             <widget class="QSpinBox" name="topo_gmsh_optimize_iters_spin"/>
+             <widget class="QSpinBox" name="topo_gmsh_optimize_iters_spin" />
             </item>
             <item row="5" column="0">
              <widget class="QLabel" name="topo_gmsh_verbosity_lbl">
@@ -181,7 +181,7 @@
              </widget>
             </item>
             <item row="5" column="1">
-             <widget class="QSpinBox" name="topo_gmsh_verbosity_spin"/>
+             <widget class="QSpinBox" name="topo_gmsh_verbosity_spin" />
             </item>
             <item row="6" column="0" colspan="2">
              <widget class="QCheckBox" name="topo_gmsh_optimize_netgen_chk">
@@ -190,13 +190,93 @@
               </property>
              </widget>
             </item>
-           </layout>
+            <item row="7" column="0">
+             <widget class="QLabel" name="topo_gmsh_mesh_size_min_lbl">
+              <property name="text">
+               <string>Global min cell size:</string>
+              </property>
+             </widget>
+            </item>
+            <item row="7" column="1">
+             <widget class="QDoubleSpinBox" name="topo_gmsh_mesh_size_min_spin" />
+            </item>
+            <item row="8" column="0">
+             <widget class="QLabel" name="topo_gmsh_tolerance_edge_length_lbl">
+              <property name="text">
+               <string>Ignore edges shorter than:</string>
+              </property>
+             </widget>
+            </item>
+            <item row="8" column="1">
+             <widget class="QDoubleSpinBox" name="topo_gmsh_tolerance_edge_length_spin" />
+            </item>
+            <item row="9" column="0">
+             <widget class="QLabel" name="topo_gmsh_interface_snap_tol_lbl">
+              <property name="text">
+               <string>Interface snap tolerance:</string>
+              </property>
+             </widget>
+            </item>
+            <item row="9" column="1">
+             <widget class="QDoubleSpinBox" name="topo_gmsh_interface_snap_tol_spin" />
+            </item>
+            <item row="10" column="0">
+             <widget class="QLabel" name="topo_gmsh_interface_reject_tol_lbl">
+              <property name="text">
+               <string>Interface reject tolerance:</string>
+              </property>
+             </widget>
+            </item>
+            <item row="10" column="1">
+             <widget class="QDoubleSpinBox" name="topo_gmsh_interface_reject_tol_spin" />
+            </item>
+            <item row="11" column="0">
+             <widget class="QLabel" name="topo_gmsh_num_threads_lbl">
+              <property name="text">
+               <string>Gmsh threads:</string>
+              </property>
+             </widget>
+            </item>
+            <item row="11" column="1">
+             <widget class="QSpinBox" name="topo_gmsh_num_threads_spin" />
+            </item>
+            <item row="12" column="0">
+             <widget class="QLabel" name="topo_gmsh_max_num_threads_2d_lbl">
+              <property name="text">
+               <string>Gmsh max 2D threads:</string>
+              </property>
+             </widget>
+            </item>
+            <item row="12" column="1">
+             <widget class="QSpinBox" name="topo_gmsh_max_num_threads_2d_spin" />
+            </item>
+            <item row="13" column="0">
+             <widget class="QLabel" name="topo_gmsh_arc_soft_dist_factor_lbl">
+              <property name="text">
+               <string>Arc soft distance factor:</string>
+              </property>
+             </widget>
+            </item>
+            <item row="13" column="1">
+             <widget class="QDoubleSpinBox" name="topo_gmsh_arc_soft_dist_factor_spin" />
+            </item>
+            <item row="14" column="0">
+             <widget class="QLabel" name="topo_gmsh_arc_soft_size_factor_lbl">
+              <property name="text">
+               <string>Arc soft size factor:</string>
+              </property>
+             </widget>
+            </item>
+            <item row="14" column="1">
+             <widget class="QDoubleSpinBox" name="topo_gmsh_arc_soft_size_factor_spin" />
+            </item>
+           <item row="15" column="0"><widget class="QLabel" name="topo_gmsh_arc_mode_lbl"><property name="text"><string>Arc handling mode:</string></property></widget></item><item row="15" column="1"><widget class="QComboBox" name="topo_gmsh_arc_mode_combo" /></item><item row="16" column="0" colspan="2"><widget class="QCheckBox" name="topo_gmsh_interface_transition_enable_chk"><property name="text"><string>Enable interface transition grading</string></property></widget></item><item row="17" column="0"><widget class="QLabel" name="topo_gmsh_interface_transition_dist_factor_lbl"><property name="text"><string>Interface transition dist factor:</string></property></widget></item><item row="17" column="1"><widget class="QDoubleSpinBox" name="topo_gmsh_interface_transition_dist_factor_spin" /></item><item row="18" column="0"><widget class="QLabel" name="topo_gmsh_interface_transition_min_ratio_lbl"><property name="text"><string>Interface transition min ratio:</string></property></widget></item><item row="18" column="1"><widget class="QDoubleSpinBox" name="topo_gmsh_interface_transition_min_ratio_spin" /></item><item row="19" column="0" colspan="2"><widget class="QCheckBox" name="topo_gmsh_interface_conformance_chk"><property name="text"><string>Enable transverse interface conformance post-process</string></property></widget></item><item row="20" column="0" colspan="2"><widget class="QCheckBox" name="topo_gmsh_transverse_interface_centroid_merge_chk"><property name="text"><string>Use centroid merge for matched transverse interface nodes</string></property></widget></item><item row="21" column="0" colspan="2"><widget class="QCheckBox" name="topo_gmsh_interface_reject_near_unshared_chk"><property name="text"><string>Reject mixed interfaces with near-coincident unshared nodes</string></property></widget></item><item row="22" column="0" colspan="2"><widget class="QCheckBox" name="topo_gmsh_mesh_size_from_points_chk"><property name="text"><string>Allow point-driven size refinement</string></property></widget></item><item row="23" column="0" colspan="2"><widget class="QCheckBox" name="topo_gmsh_global_recombine_chk"><property name="text"><string>Apply global recombine pass after mesh generation</string></property></widget></item><item row="24" column="0" colspan="2"><widget class="QCheckBox" name="topo_gmsh_quad_full_region_flow_align_chk"><property name="text"><string>Gmsh full-region flow-aligned quads</string></property></widget></item></layout>
           </widget>
          </item>
          <item row="9" column="0">
           <widget class="QLabel" name="topo_quality_controls_lbl">
            <property name="text">
-            <string>Quality controls (Gmsh + TQMesh):</string>
+            <string>Quality controls (Gmsh):</string>
            </property>
           </widget>
          </item>
@@ -230,7 +310,7 @@
              </widget>
             </item>
             <item row="1" column="1">
-             <widget class="QSpinBox" name="topo_gmsh_quality_max_iters_spin"/>
+             <widget class="QSpinBox" name="topo_gmsh_quality_max_iters_spin" />
             </item>
             <item row="2" column="0">
              <widget class="QLabel" name="topo_gmsh_quality_time_limit_lbl">
@@ -240,7 +320,7 @@
              </widget>
             </item>
             <item row="2" column="1">
-             <widget class="QDoubleSpinBox" name="topo_gmsh_quality_time_limit_spin"/>
+             <widget class="QDoubleSpinBox" name="topo_gmsh_quality_time_limit_spin" />
             </item>
             <item row="3" column="0">
              <widget class="QLabel" name="topo_quality_min_angle_lbl">
@@ -250,7 +330,7 @@
              </widget>
             </item>
             <item row="3" column="1">
-             <widget class="QDoubleSpinBox" name="topo_quality_min_angle_spin"/>
+             <widget class="QDoubleSpinBox" name="topo_quality_min_angle_spin" />
             </item>
             <item row="4" column="0">
              <widget class="QLabel" name="topo_quality_max_aspect_lbl">
@@ -260,7 +340,7 @@
              </widget>
             </item>
             <item row="4" column="1">
-             <widget class="QDoubleSpinBox" name="topo_quality_max_aspect_spin"/>
+             <widget class="QDoubleSpinBox" name="topo_quality_max_aspect_spin" />
             </item>
             <item row="5" column="0">
              <widget class="QLabel" name="topo_quality_max_non_orth_lbl">
@@ -270,7 +350,7 @@
              </widget>
             </item>
             <item row="5" column="1">
-             <widget class="QDoubleSpinBox" name="topo_quality_max_non_orth_spin"/>
+             <widget class="QDoubleSpinBox" name="topo_quality_max_non_orth_spin" />
             </item>
             <item row="6" column="0">
              <widget class="QLabel" name="topo_quality_min_area_lbl">
@@ -280,7 +360,7 @@
              </widget>
             </item>
             <item row="6" column="1">
-             <widget class="QLineEdit" name="topo_quality_min_area_edit"/>
+             <widget class="QLineEdit" name="topo_quality_min_area_edit" />
             </item>
             <item row="7" column="0">
              <widget class="QLabel" name="topo_quality_size_scales_lbl">
@@ -290,7 +370,7 @@
              </widget>
             </item>
             <item row="7" column="1">
-             <widget class="QLineEdit" name="topo_quality_size_scales_edit"/>
+             <widget class="QLineEdit" name="topo_quality_size_scales_edit" />
             </item>
             <item row="8" column="0">
              <widget class="QLabel" name="topo_quality_smooth_increments_lbl">
@@ -300,7 +380,7 @@
              </widget>
             </item>
             <item row="8" column="1">
-             <widget class="QLineEdit" name="topo_quality_smooth_increments_edit"/>
+             <widget class="QLineEdit" name="topo_quality_smooth_increments_edit" />
             </item>
             <item row="9" column="0" colspan="2">
              <widget class="QCheckBox" name="topo_quality_strict_chk">
@@ -309,7 +389,7 @@
               </property>
              </widget>
             </item>
-           </layout>
+            <item row="10" column="0"><widget class="QLabel" name="topo_gmsh_quality_recombine_topology_passes_lbl"><property name="text"><string>Retry recombine topology passes:</string></property></widget></item><item row="10" column="1"><widget class="QLineEdit" name="topo_gmsh_quality_recombine_topology_passes_edit" /></item><item row="11" column="0"><widget class="QLabel" name="topo_gmsh_quality_recombine_min_quality_lbl"><property name="text"><string>Retry recombine min quality:</string></property></widget></item><item row="11" column="1"><widget class="QLineEdit" name="topo_gmsh_quality_recombine_min_quality_edit" /></item><item row="12" column="0"><widget class="QLabel" name="topo_gmsh_quality_random_factors_lbl"><property name="text"><string>Retry random factors:</string></property></widget></item><item row="12" column="1"><widget class="QLineEdit" name="topo_gmsh_quality_random_factors_edit" /></item><item row="13" column="0"><widget class="QLabel" name="topo_gmsh_quality_optimize_methods_lbl"><property name="text"><string>Retry optimize methods:</string></property></widget></item><item row="13" column="1"><widget class="QLineEdit" name="topo_gmsh_quality_optimize_methods_edit" /></item><item row="14" column="0" colspan="2"><widget class="QCheckBox" name="topo_gmsh_algo_switch_on_failure_chk"><property name="text"><string>Gmsh algorithm switch on failure</string></property></widget></item><item row="15" column="0" colspan="2"><widget class="QCheckBox" name="topo_gmsh_recombine_node_repositioning_chk"><property name="text"><string>Allow recombine node repositioning</string></property></widget></item></layout>
           </widget>
          </item>
          <item row="10" column="0" colspan="2">
@@ -336,7 +416,7 @@
          <item row="12" column="0" colspan="2">
           <widget class="QLabel" name="topo_controls_summary_lbl">
            <property name="text">
-            <string>Topology-layer controls: use multiple region polygons for multiple blocks. Use region target_size + cell_type, edge_len_1..4 for cartesian/quadrilateral block spacing, use region interior rings or empty regions/constraints for holes, and quad-edge n_layers / first_height / growth_rate for TQMesh transition layers.</string>
+            <string>Gmsh topology-layer controls: use multiple region polygons for multiblock meshes. Set region cell_type and target_size. Use region interior rings or empty regions/constraints for cutout holes. Configure quad-edge lines for structured spacing.</string>
            </property>
            <property name="wordWrap">
             <bool>true</bool>
@@ -379,6 +459,6 @@
    </item>
   </layout>
  </widget>
- <resources/>
- <connections/>
+ <resources />
+ <connections />
 </ui>

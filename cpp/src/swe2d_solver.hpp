@@ -58,9 +58,10 @@ struct SWE2DDeviceState;
 // Solver configuration
 // ─────────────────────────────────────────────────────────────────────────────
 struct SWE2DSolverConfig {
-    double  g        = 9.81;    // gravitational acceleration (m/s²)
-    double  n_mann   = 0.035;   // Manning's n (global; m^{-1/3} s)
-    double  h_min    = 1.0e-6;  // wet/dry threshold (m)
+    double  g        = 9.81;    // gravitational acceleration (L/T²)
+    double  k_mann   = 1.0;     // Manning unit factor: 1.0 (SI), 1.486 (USC).  V = (k/n)·R^(2/3)·S^(1/2)
+    double  n_mann   = 0.035;   // Manning's n (global)
+    double  h_min    = 1.0e-6;  // wet/dry threshold (L)
     double  cfl      = 0.45;    // CFL safety factor
     double  dt_max   = 10.0;    // maximum allowable timestep (s)
     double  dt_fixed = -1.0;    // if > 0, use this fixed dt (overrides CFL)

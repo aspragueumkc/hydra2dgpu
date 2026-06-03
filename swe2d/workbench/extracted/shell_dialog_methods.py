@@ -56,7 +56,7 @@ def designer_populate_left_tabs(self, shell: QtWidgets.QWidget) -> None:
     self._bind_model_tab_hydrology_controls(model_tab_page, param_form)
     self._bind_model_tab_solver_controls(model_tab_page, param_form)
     self._bind_model_tab_3d_patch_controls(model_tab_page, param_form)
-    self._bind_model_tab_3d_subgrid_drainage_controls(model_tab_page, param_form)
+    self._bind_model_tab_3d_subgrid_drainage_controls(model_tab_page, param_form)  # legacy: single param_form, no separate solver_form
 
     run_tab_page = self._designer_host_widget(shell, "run_tab")
     self._bind_run_tab_controls(run_tab_page)
@@ -231,6 +231,17 @@ def studio_select_tab(self, name: str) -> None:
 
 
 def studio_set_feature_enabled(self, feature: str, enabled: bool) -> None:
+    """Set a Studio feature flag and re-apply visibility filters.
+
+    Valid feature keys are defined in self._studio_feature_flags.
+    After updating the flag, calls _studio_apply_feature_filters() to
+    immediately show/hide matching widgets and tabs.
+
+    To add a new feature:
+      1. Add the key to self._studio_feature_flags in the dialog __init__
+      2. Add keyword entries in studio_feature_keywords() below
+      3. Add menu + toolbar toggles in _install_studio_host_controls()
+    """
     key = str(feature or "").strip().lower()
     if key not in self._studio_feature_flags:
         return
@@ -240,10 +251,27 @@ def studio_set_feature_enabled(self, feature: str, enabled: bool) -> None:
 
 
 def studio_feature_keywords(self) -> Dict[str, Tuple[str, ...]]:
+    """Return {feature_key: (keyword_strings)} for widget-to-feature matching.
+
+    Each widget's objectName and text is lowercased and checked against
+    these keywords.  If ANY keyword from a feature set appears in the
+    widget's blob, the widget is controlled by that feature's visibility.
+
+    When adding a new feature, add an entry here with keywords that
+    appear in the objectNames of the widgets that feature controls.
+    Use precise keywords (e.g. "3d_patch" not just "patch") to avoid
+    unintended matches with widgets in other tabs.
+
+    See docs/STUDIO_UI_ARCHITECTURE.md section C.
+    """
     return {
         "rainfall": ("rain", "gauge", "hyet", "storm", "runoff", "precip"),
-        "drainage": ("drain", "node", "link", "inlet", "outfall", "pipe", "network"),
-        "structures": ("structure", "culvert", "weir", "orifice", "gate", "spillway"),
+        "drainage_structures": (
+            "drain", "node", "link", "inlet", "outfall", "pipe", "network",
+            "structure", "culvert", "weir", "orifice", "gate", "spillway",
+            "coupling",
+        ),
+        "3d_patch": ("3d_patch", "patch_3d", "swe3d"),
     }
 
 
@@ -285,6 +313,25 @@ def studio_apply_feature_filters(self) -> None:
         visible = all(self._studio_feature_flags.get(feature, True) for feature in matched)
         try:
             widget.setVisible(visible)
+        except Exception:
+            pass
+    # Sync tab page visibility: hide/show tabs whose page or content matches
+    # a feature flag, so the tab bar entry disappears when the feature is off.
+    tabs = self._left_tabs
+    for i in range(tabs.count()):
+        page = tabs.widget(i)
+        if page is None:
+            continue
+        blob = self._studio_widget_text_blob(page)
+        matched = []
+        for feature, words in keywords.items():
+            if any(word in blob for word in words):
+                matched.append(feature)
+        if not matched:
+            continue
+        visible = all(self._studio_feature_flags.get(feature, True) for feature in matched)
+        try:
+            tabs.setTabVisible(i, visible)
         except Exception:
             pass
 
@@ -347,6 +394,11 @@ def studio_update_status(self) -> None:
 
 
 def studio_build_ui(self):
+    # Diagnostic: log that studio_build_ui was entered
+    try:
+        self._log("[Studio] studio_build_ui entered")
+    except Exception:
+        pass
     root = self.layout()
     if not isinstance(root, QtWidgets.QVBoxLayout):
         root = QtWidgets.QVBoxLayout(self)
@@ -378,6 +430,14 @@ def studio_build_ui(self):
     act_model = toolbar.addAction("Model")
     act_run = toolbar.addAction("Run")
     act_map = toolbar.addAction("Map")
+    toolbar.addSeparator()
+    act_3d_patch = toolbar.addAction("3D Patch")
+    act_3d_patch.setCheckable(True)
+    act_3d_patch.setChecked(False)
+    try:
+        self._log("[Studio] 3D Patch toolbar action created")
+    except Exception:
+        pass
     toolbar.addSeparator()
     act_refresh = toolbar.addAction("Refresh Layers")
     act_snapshot = toolbar.addAction("Take Snapshot")
@@ -491,6 +551,39 @@ def studio_build_ui(self):
     act_map.triggered.connect(lambda: self._studio_select_tab("map"))
     act_refresh.triggered.connect(self._refresh_layer_combos)
     act_snapshot.triggered.connect(lambda: self.snapshot_btn.click() if hasattr(self, "snapshot_btn") and self.snapshot_btn is not None else None)
+
+    # 3D Patch toggle — creates/hides a dock widget
+    _SWE2D_3D_PATCH_DOCK_ATTR = "_swe2d_3d_patch_dock"
+
+    def _toggle_3d_patch(checked: bool) -> None:
+        try:
+            self._log(f"[Studio] 3D Patch toggled: {checked}")
+        except Exception:
+            pass
+        dock = getattr(self, _SWE2D_3D_PATCH_DOCK_ATTR, None)
+        if checked and dock is None:
+            patch_page = self._build_3d_patch_tab_page()
+            dock = QtWidgets.QDockWidget("3D Patch Settings", self._studio_main_window)
+            dock.setObjectName("SWE2D3DPatchDock")
+            dock.setWidget(patch_page)
+            dock.setFeatures(
+                QtWidgets.QDockWidget.DockWidgetMovable
+                | QtWidgets.QDockWidget.DockWidgetFloatable
+                | QtWidgets.QDockWidget.DockWidgetClosable
+            )
+            dock.visibilityChanged.connect(
+                lambda visible: act_3d_patch.setChecked(visible)
+            )
+            self._studio_main_window.addDockWidget(
+                QtCore.Qt.RightDockWidgetArea, dock
+            )
+            setattr(self, _SWE2D_3D_PATCH_DOCK_ATTR, dock)
+        elif not checked and dock is not None:
+            self._studio_main_window.removeDockWidget(dock)
+            dock.deleteLater()
+            setattr(self, _SWE2D_3D_PATCH_DOCK_ATTR, None)
+
+    act_3d_patch.toggled.connect(_toggle_3d_patch)
     act_open_coupling_results = toolbar.addAction("Open Drainage/Structure Results")
     act_open_coupling_results.triggered.connect(
         lambda: self._open_coupling_results_viewer()

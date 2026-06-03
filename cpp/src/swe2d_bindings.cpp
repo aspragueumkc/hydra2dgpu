@@ -75,7 +75,7 @@ static inline double bw2d_pipe_manning_capacity_full(double diameter_m, double s
     const double wetted_perimeter = bw2d_circular_perimeter_full(d);
     if (wetted_perimeter <= 0.0) return 0.0;
     const double rh = area / wetted_perimeter;
-    return (1.0 / n) * area * std::pow(rh, 2.0 / 3.0) * std::sqrt(s);
+    return (1.486 / n) * area * std::pow(rh, 2.0 / 3.0) * std::sqrt(s);
 }
 
 static inline double bw2d_orifice_q(double head_up_m, double head_down_m, double area_m2, double cd, double g)
@@ -659,7 +659,6 @@ static double bw2d_culvert_outlet_control_flow_cms(
     double q_hint_cfs)
 {
     if (available_head_up_ft <= 0.0) return 0.0;
-    double q_hi = std::max(1.0, q_hint_cfs * 2.0);
 
     auto required_head = [&](double q_cfs) {
         if (q_cfs <= 0.0) return 0.0;
@@ -678,24 +677,44 @@ static double bw2d_culvert_outlet_control_flow_cms(
         return e_up + hv_loss;
     };
 
-    for (int i = 0; i < 12; ++i) {
-        if (required_head(q_hi) >= available_head_up_ft) break;
+    // Illinois algorithm: secant with stalling-side damping.
+    // Same robustness as bisection, converges in ~8-10 iterations.
+    double q_lo = 0.0;
+    double f_lo = -available_head_up_ft;
+    double q_hi = std::max(1.0, q_hint_cfs * 2.0);
+    double f_hi = required_head(q_hi) - available_head_up_ft;
+    for (int br = 0; br < 12 && f_hi < 0.0; ++br) {
+        q_lo = q_hi; f_lo = f_hi;
         q_hi *= 2.0;
+        f_hi = required_head(q_hi) - available_head_up_ft;
     }
-    if (required_head(q_hi) < available_head_up_ft) {
+    if (f_hi < 0.0) {
         return q_hi / 35.31466672148859;
     }
 
-    double q_lo = 0.0;
-    for (int it = 0; it < 60; ++it) {
-        const double q_mid = 0.5 * (q_lo + q_hi);
-        if (required_head(q_mid) <= available_head_up_ft) {
-            q_lo = q_mid;
+    int side = 0;
+    for (int it = 0; it < 16; ++it) {
+        const double denom = f_hi - f_lo;
+        if (std::abs(denom) < 1.0e-30) break;
+        double q_mid = (q_lo * f_hi - q_hi * f_lo) / denom;
+        if (q_mid <= q_lo || q_mid >= q_hi) {
+            q_mid = 0.5 * (q_lo + q_hi);
+        }
+        const double f_mid = required_head(q_mid) - available_head_up_ft;
+        if (std::abs(f_mid) < 1.0e-8 * available_head_up_ft) {
+            return std::max(0.0, q_mid) / 35.31466672148859;
+        }
+        if (f_lo * f_mid < 0.0) {
+            q_hi = q_mid; f_hi = f_mid;
+            if (side == 1) f_lo *= 0.5;
+            side = 1;
         } else {
-            q_hi = q_mid;
+            q_lo = q_mid; f_lo = f_mid;
+            if (side == 0) f_hi *= 0.5;
+            side = 0;
         }
     }
-    return q_lo / 35.31466672148859;
+    return std::max(0.0, 0.5 * (q_lo + q_hi)) / 35.31466672148859;
 }
 
 } // namespace
@@ -838,17 +857,17 @@ static py::array_t<double> compute_structure_flows_native(
         xsect.code = code;
         xsect.rectangular = (culvert_shape.data()[i] == 1);
         if (xsect.rectangular) {
-            xsect.width = std::max(1.0e-6, span * FT_PER_M);
-            xsect.y_full = std::max(1.0e-6, rise * FT_PER_M);
+            xsect.width = std::max(1.0e-6, span);
+            xsect.y_full = std::max(1.0e-6, rise);
             xsect.a_full = xsect.width * xsect.y_full;
         } else {
-            const double dia = std::max(1.0e-6, std::max(diameter.data()[i], rise)) * FT_PER_M;
+            const double dia = std::max(1.0e-6, std::max(diameter.data()[i], rise));
             xsect.radius = 0.5 * dia;
             xsect.y_full = dia;
             xsect.a_full = M_PI * xsect.radius * xsect.radius;
         }
 
-        const double q_inlet_cfs = std::max(0.0, bw2d_inlet_controlled_flow_cfs(xsect, slope, std::max(0.0, available_head_up * FT_PER_M), nullptr));
+        const double q_inlet_cfs = std::max(0.0, bw2d_inlet_controlled_flow_cfs(xsect, slope, std::max(0.0, available_head_up), nullptr));
         const double q_inlet_cms = q_inlet_cfs / CFS_PER_CMS;
 
         double area = std::max(0.0, culvert_area_m2.data()[i]);
@@ -858,22 +877,24 @@ static py::array_t<double> compute_structure_flows_native(
 
         double q_orifice = 0.0;
         if (area > 0.0) {
-            q_orifice = std::abs(bw2d_orifice_q(available_head_up, tailwater_depth, area, cd.data()[i], gravity_mps2));
+            q_orifice = std::abs(bw2d_orifice_q(available_head_up, tailwater_depth, area, cd.data()[i], BW2D_GRAVITY_FTPS2));
             if (qmax >= 0.0) q_orifice = std::min(q_orifice, qmax);
+            q_orifice /= CFS_PER_CMS;  // CFS → CMS
         }
 
         double q_manning_cap = 0.0;
         const double dia_for_cap = std::max(std::max(diameter.data()[i], rise), bw2d_equiv_diameter_from_area(std::max(0.0, area)));
         if (dia_for_cap > 0.0) {
             q_manning_cap = bw2d_pipe_manning_capacity_full(dia_for_cap, slope, roughness_n.data()[i]);
+            q_manning_cap /= CFS_PER_CMS;  // CFS → CMS
         }
 
         const double q_hint_cfs = std::max(q_inlet_cfs, std::max(q_orifice, q_manning_cap) * CFS_PER_CMS);
         const double q_outlet = bw2d_culvert_outlet_control_flow_cms(
             xsect,
-            std::max(0.0, available_head_up * FT_PER_M),
-            std::max(0.0, tailwater_depth * FT_PER_M),
-            std::max(0.1, len * FT_PER_M),
+            std::max(0.0, available_head_up),
+            std::max(0.0, tailwater_depth),
+            std::max(0.1, len),
             std::max(1.0e-6, slope),
             std::max(1.0e-6, roughness_n.data()[i]),
             entrance_loss_k.data()[i],
@@ -1036,7 +1057,11 @@ struct PySolver {
 // ─────────────────────────────────────────────────────────────────────────────
 // Module definition
 // ─────────────────────────────────────────────────────────────────────────────
-PYBIND11_MODULE(hydra_swe2d, m) {
+#ifndef HYDRA_SWE2D_PY_MODULE_NAME
+#define HYDRA_SWE2D_PY_MODULE_NAME hydra_swe2d
+#endif
+
+PYBIND11_MODULE(HYDRA_SWE2D_PY_MODULE_NAME, m) {
     m.doc() = "2D SWE hybrid GPU/CPU solver on unstructured polygon mesh";
 
     // ── GPU query ─────────────────────────────────────────────────────────────
@@ -1082,6 +1107,42 @@ PYBIND11_MODULE(hydra_swe2d, m) {
         py::arg("embankment_weir_coeff"),
         py::arg("gravity_mps2") = 9.81,
         "Compiled helper: compute per-structure flow transfers [m^3/s] from structure arrays and cell WSE.");
+
+    m.def("swe2d_cpu_compute_structure_flows",
+        &compute_structure_flows_native,
+        py::arg("cell_wse"),
+        py::arg("cell_bed"),
+        py::arg("structure_type"),
+        py::arg("upstream_cell"),
+        py::arg("downstream_cell"),
+        py::arg("crest_elev"),
+        py::arg("width"),
+        py::arg("height"),
+        py::arg("diameter"),
+        py::arg("length"),
+        py::arg("roughness_n"),
+        py::arg("coeff"),
+        py::arg("cd"),
+        py::arg("opening"),
+        py::arg("q_pump"),
+        py::arg("max_flow"),
+        py::arg("culvert_code"),
+        py::arg("culvert_shape"),
+        py::arg("culvert_rise"),
+        py::arg("culvert_span"),
+        py::arg("culvert_area_m2"),
+        py::arg("culvert_barrels"),
+        py::arg("culvert_slope"),
+        py::arg("inlet_invert_elev"),
+        py::arg("outlet_invert_elev"),
+        py::arg("entrance_loss_k"),
+        py::arg("exit_loss_k"),
+        py::arg("embankment_enabled"),
+        py::arg("embankment_crest_elev"),
+        py::arg("embankment_overflow_width"),
+        py::arg("embankment_weir_coeff"),
+        py::arg("gravity_mps2") = 9.81,
+        "Compiled CPU helper: compute per-structure flow transfers [m^3/s] from structure arrays and cell WSE.");
 
 #ifdef HYDRA_HAS_CUDA
     m.def("swe2d_gpu_compute_structure_and_coupling_sources",
@@ -1286,6 +1347,14 @@ PYBIND11_MODULE(hydra_swe2d, m) {
            py::arg("inlet_cell")=py::array_t<int32_t>(),
            py::arg("inlet_flow_cms")=py::array_t<double>(),
         "Run full coupling on-device using preloaded params.");
+
+    m.def("swe2d_gpu_readback_coupling_sources",
+        [](int32_t n_cells) -> py::array_t<double> {
+            auto result = py::array_t<double>(n_cells);
+            swe2d_gpu_readback_coupling_sources(result.mutable_data(), n_cells);
+            return result;
+        }, py::arg("n_cells"),
+        "Read back coupling source rates [m/s] from device after on-device compute.");
 
     // Culvert table mode: build pre-computed Q(hw,tw) lookup tables from culvert params.
     m.def("swe2d_gpu_build_culvert_tables",
@@ -2296,7 +2365,7 @@ PYBIND11_MODULE(hydra_swe2d, m) {
     // ── Boundary edges + runtime BC updates ─────────────────────────────────
     m.def("swe2d_boundary_edges",
         [](const std::shared_ptr<PyMesh>& pm)
-            -> std::tuple<py::array_t<int32_t>, py::array_t<int32_t>, py::array_t<int32_t>, py::array_t<int32_t>, py::array_t<double>>
+            -> std::tuple<py::array_t<int32_t>, py::array_t<int32_t>, py::array_t<int32_t>, py::array_t<int32_t>, py::array_t<double>, py::array_t<int32_t>>
         {
             if (!pm) throw std::invalid_argument("null mesh handle");
 
@@ -2305,12 +2374,14 @@ PYBIND11_MODULE(hydra_swe2d, m) {
             std::vector<int32_t> n1;
             std::vector<int32_t> bc_type;
             std::vector<double> bc_val;
+            std::vector<int32_t> cell0;
 
             edge_idx.reserve(static_cast<size_t>(pm->mesh.n_edges));
             n0.reserve(static_cast<size_t>(pm->mesh.n_edges));
             n1.reserve(static_cast<size_t>(pm->mesh.n_edges));
             bc_type.reserve(static_cast<size_t>(pm->mesh.n_edges));
             bc_val.reserve(static_cast<size_t>(pm->mesh.n_edges));
+            cell0.reserve(static_cast<size_t>(pm->mesh.n_edges));
 
             for (int32_t e = 0; e < pm->mesh.n_edges; ++e) {
                 if (pm->mesh.edge_c1[e] != -1) continue;
@@ -2319,6 +2390,7 @@ PYBIND11_MODULE(hydra_swe2d, m) {
                 n1.push_back(pm->mesh.edge_n1[e]);
                 bc_type.push_back(static_cast<int32_t>(pm->mesh.edge_bc[e]));
                 bc_val.push_back(pm->mesh.edge_bc_val[e]);
+                cell0.push_back(pm->mesh.edge_c0[e]);
             }
 
             py::array_t<int32_t> edge_idx_arr(edge_idx.size());
@@ -2326,13 +2398,15 @@ PYBIND11_MODULE(hydra_swe2d, m) {
             py::array_t<int32_t> n1_arr(n1.size());
             py::array_t<int32_t> bc_type_arr(bc_type.size());
             py::array_t<double> bc_val_arr(bc_val.size());
+            py::array_t<int32_t> cell0_arr(cell0.size());
             std::copy(edge_idx.begin(), edge_idx.end(), edge_idx_arr.mutable_data());
             std::copy(n0.begin(), n0.end(), n0_arr.mutable_data());
             std::copy(n1.begin(), n1.end(), n1_arr.mutable_data());
             std::copy(bc_type.begin(), bc_type.end(), bc_type_arr.mutable_data());
             std::copy(bc_val.begin(), bc_val.end(), bc_val_arr.mutable_data());
+            std::copy(cell0.begin(), cell0.end(), cell0_arr.mutable_data());
 
-            return {edge_idx_arr, n0_arr, n1_arr, bc_type_arr, bc_val_arr};
+            return {edge_idx_arr, n0_arr, n1_arr, bc_type_arr, bc_val_arr, cell0_arr};
         },
         py::arg("mesh"),
         "Return boundary edge arrays: (edge_index, node0, node1, bc_type, bc_val).");
@@ -2464,7 +2538,7 @@ PYBIND11_MODULE(hydra_swe2d, m) {
            py::object hu0_obj,
            py::object hv0_obj,
            py::object n_mann_cell_obj,
-           double g, double n_mann, double h_min,
+           double g, double k_mann, double n_mann, double h_min,
            double cfl, double dt_max, double dt_fixed,
                   double max_inv_area,
                   double cfl_lambda_cap,
@@ -2542,6 +2616,7 @@ PYBIND11_MODULE(hydra_swe2d, m) {
 
             SWE2DSolverConfig cfg;
             cfg.g         = g;
+            cfg.k_mann    = k_mann;
             cfg.n_mann    = n_mann;
             cfg.h_min     = h_min;
             cfg.cfl       = cfl;
@@ -2600,6 +2675,7 @@ PYBIND11_MODULE(hydra_swe2d, m) {
         py::arg("hv0")      = py::none(),
         py::arg("n_mann_cell") = py::none(),
         py::arg("g")        = 9.81,
+        py::arg("k_mann")   = 1.0,
         py::arg("n_mann")   = 0.035,
         py::arg("h_min")    = 1.0e-6,
         py::arg("cfl")      = 0.45,

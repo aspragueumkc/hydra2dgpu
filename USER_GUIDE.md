@@ -2,6 +2,8 @@
 
 This guide covers day-to-day use of the HYDRA plugin inside QGIS.
 
+For the broader documentation index and lifecycle buckets, see [docs/README.md](docs/README.md).
+
 ## 1. What the Plugin Does
 
 The plugin performs steady-flow 1D backwater calculations using a GeoPackage model and shows:

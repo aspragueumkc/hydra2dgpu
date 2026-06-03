@@ -1,13 +1,5 @@
 # AGENTS
 
-## SWE2D Direction
-
-- Treat SWE2D as a GPU-first and GPU-only-in-practice solver effort.
-- Prioritize CUDA numerics, CUDA validation, and CUDA performance work.
-- Do not treat CPU/GPU parity as an acceptance criterion for SWE2D changes unless a task explicitly asks for a CPU fallback fix.
-- The CPU SWE2D path in `cpp/src/swe2d_solver.cpp` is maintenance/debug fallback code only.
-- If there is a tradeoff between improving CUDA behavior and preserving CPU similarity, prefer the CUDA path.
-
 ## Validation Priority
 
 - Prefer GPU-focused validation suites first:
@@ -29,3 +21,31 @@
 
 - Store implementation handoff and recovery notes in repository-tracked docs under `docs/` so they can be pushed to origin.
 - Current rolling session log: [docs/AGENT_SESSION_RECOVERY_LOG.md](docs/AGENT_SESSION_RECOVERY_LOG.md).
+
+## Python Cache Discipline
+
+- After any structural change to a Python module (signature changes, new return values, new classes, changed imports), **always purge `__pycache__`** before the user restarts QGIS:
+  ```bash
+  find . -type d -name __pycache__ -exec rm -rf {} +
+  ```
+- QGIS holds modules in memory for the session, and stale `.pyc` files cause invisible failures (wrong arity, missing attributes, silent fallback paths).
+- When in doubt, purge before asking the user to restart.
+
+## Studio UI Architecture & Structural Changes
+
+- **`.ui` files are the source of truth** for widget layout and properties.
+  Use Qt Designer to edit them.  Only create widgets programmatically when
+  they cannot live in a `.ui` file (dynamically populated combos, etc.).
+- When making structural changes (new tabs, new forms, new feature toggles,
+  widget moves/renames), follow the checklists in
+  [docs/STUDIO_UI_ARCHITECTURE.md](docs/STUDIO_UI_ARCHITECTURE.md).
+- After any `.ui` change, run:
+  ```bash
+  python tools/ui_bind_sync.py forms/swe2d_<name>.ui <py_files> --missing
+  ```
+  to verify all widgets have bindings and no orphans remain.
+- The Studio and legacy shell dialog have **parallel tab lists** — changes
+  to `_compose_left_pane()` must be mirrored in `studio_build_ui()` within
+  `swe2d/workbench/extracted/shell_dialog_methods.py`.
+- Feature toggles touch 4 files: feature flags dict, keyword function,
+  menu actions, and toolbar buttons.  All four must be updated together.

@@ -17,26 +17,23 @@ from swe2d.extensions.extension_models import (
     compute_pipe_manning_capacity_full,
     compute_weir_flow,
 )
-
-
-_FT_PER_M = 3.280839895013123
-_CFS_PER_CMS = 35.31466672148859
+from swe2d import units as _u
 
 
 def _m_to_ft(value_m: float) -> float:
-    return float(value_m) * _FT_PER_M
+    return float(value_m) * _u.USC_FT_PER_SI_M
 
 
 def _ft_to_m(value_ft: float) -> float:
-    return float(value_ft) / _FT_PER_M
+    return float(value_ft) / _u.USC_FT_PER_SI_M
 
 
 def _cms_to_cfs(value_cms: float) -> float:
-    return float(value_cms) * _CFS_PER_CMS
+    return float(value_cms) * _u.USC_FT3_PER_SI_M3
 
 
 def _cfs_to_cms(value_cfs: float) -> float:
-    return float(value_cfs) / _CFS_PER_CMS
+    return float(value_cfs) / _u.USC_FT3_PER_SI_M3
 
 
 def _culvert_xsect_from_metadata(md: Dict[str, float]):
@@ -88,22 +85,41 @@ def _culvert_outlet_control_flow_cms(
         return float(e_up_ft + hv_loss)
 
     q_lo = 0.0
-    q_hi = max_q
+    f_lo = -available_head_up_ft
+    q_hi = max(1.0, q_hint_cfs * 2.0)
+    f_hi = required_head_ft(q_hi) - available_head_up_ft
     for _ in range(12):
-        if required_head_ft(q_hi) >= available_head_up_ft:
+        if f_hi >= 0.0:
             break
+        q_lo, f_lo = q_hi, f_hi
         q_hi *= 2.0
-
-    if required_head_ft(q_hi) < available_head_up_ft:
+        f_hi = required_head_ft(q_hi) - available_head_up_ft
+    if f_hi < 0.0:
         return _cfs_to_cms(q_hi)
 
-    for _ in range(60):
-        q_mid = 0.5 * (q_lo + q_hi)
-        if required_head_ft(q_mid) <= available_head_up_ft:
-            q_lo = q_mid
+    # Illinois algorithm: secant with stalling-side damping
+    side = 0
+    for _ in range(16):
+        denom = f_hi - f_lo
+        if abs(denom) < 1.0e-30:
+            break
+        q_mid = (q_lo * f_hi - q_hi * f_lo) / denom
+        if q_mid <= q_lo or q_mid >= q_hi:
+            q_mid = 0.5 * (q_lo + q_hi)
+        f_mid = required_head_ft(q_mid) - available_head_up_ft
+        if abs(f_mid) < 1.0e-8 * available_head_up_ft:
+            return _cfs_to_cms(max(0.0, q_mid))
+        if f_lo * f_mid < 0.0:
+            q_hi, f_hi = q_mid, f_mid
+            if side == 1:
+                f_lo *= 0.5
+            side = 1
         else:
-            q_hi = q_mid
-    return _cfs_to_cms(q_lo)
+            q_lo, f_lo = q_mid, f_mid
+            if side == 0:
+                f_hi *= 0.5
+            side = 0
+    return _cfs_to_cms(max(0.0, 0.5 * (q_lo + q_hi)))
 
 
 def _signed_weir_flow(
@@ -179,8 +195,10 @@ class SWE2DStructureModule(HydraulicStructureEngine):
             slope_mpm = float(md.get("culvert_slope", (upstream_invert - downstream_invert) / length_m if length_m > 0.0 else 0.0))
             slope_mpm = max(1.0e-6, abs(slope_mpm))
             roughness_n = max(1.0e-6, float(md.get("roughness_n", 0.013) or 0.013))
-            entrance_loss_k = float(md.get("inlet_loss_k", md.get("entrance_loss_k", 0.5)) or 0.5)
-            exit_loss_k = float(md.get("outlet_loss_k", md.get("exit_loss_k", 1.0)) or 1.0)
+            _ent_raw = md.get("inlet_loss_k") if "inlet_loss_k" in md else md.get("entrance_loss_k")
+            entrance_loss_k = float(_ent_raw) if _ent_raw is not None else 0.5
+            _ext_raw = md.get("outlet_loss_k") if "outlet_loss_k" in md else md.get("exit_loss_k")
+            exit_loss_k = float(_ext_raw) if _ext_raw is not None else 1.0
             detail.update(
                 {
                     "sign": sign,

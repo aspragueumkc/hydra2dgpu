@@ -301,13 +301,14 @@ def _install_studio_host_controls(
         rainfall_act.setCheckable(True)
         rainfall_act.setChecked(True)
 
-        drainage_act = menu.addAction("Enable Drainage")
-        drainage_act.setCheckable(True)
-        drainage_act.setChecked(True)
+        drainage_structures_act = menu.addAction("Enable Drainage & Structures")
+        drainage_structures_act.setCheckable(True)
+        drainage_structures_act.setChecked(True)
 
-        structures_act = menu.addAction("Enable Structures")
-        structures_act.setCheckable(True)
-        structures_act.setChecked(True)
+        menu.addSeparator()
+        _3d_patch_act = menu.addAction("Enable 3D Patch")
+        _3d_patch_act.setCheckable(True)
+        _3d_patch_act.setChecked(False)
 
         menu.addSeparator()
         menu.addAction("Focus Mesh", lambda: dlg._studio_select_tab("mesh"))
@@ -330,8 +331,8 @@ def _install_studio_host_controls(
         menu.addAction("Close Studio Panels", _close_studio_panels)
 
         rainfall_act.toggled.connect(lambda checked: dlg._studio_set_feature_enabled("rainfall", checked))
-        drainage_act.toggled.connect(lambda checked: dlg._studio_set_feature_enabled("drainage", checked))
-        structures_act.toggled.connect(lambda checked: dlg._studio_set_feature_enabled("structures", checked))
+        drainage_structures_act.toggled.connect(lambda checked: dlg._studio_set_feature_enabled("drainage_structures", checked))
+        _3d_patch_act.toggled.connect(lambda checked: dlg._studio_set_feature_enabled("3d_patch", checked))
 
         menu_bar.addMenu(menu)
         _SWE2D_STUDIO_HOST_MENU = menu
@@ -366,13 +367,13 @@ def _install_studio_host_controls(
     rainfall_tb.setCheckable(True)
     rainfall_tb.setChecked(True)
 
-    drainage_tb = toolbar.addAction("Drainage")
-    drainage_tb.setCheckable(True)
-    drainage_tb.setChecked(True)
+    drainage_structures_tb = toolbar.addAction("Drain/Struct")
+    drainage_structures_tb.setCheckable(True)
+    drainage_structures_tb.setChecked(True)
 
-    structures_tb = toolbar.addAction("Structures")
-    structures_tb.setCheckable(True)
-    structures_tb.setChecked(True)
+    _3d_patch_tb = toolbar.addAction("3D Patch")
+    _3d_patch_tb.setCheckable(True)
+    _3d_patch_tb.setChecked(False)
 
     act_mesh.triggered.connect(lambda: dlg._studio_select_tab("mesh"))
     act_model.triggered.connect(lambda: dlg._studio_select_tab("model"))
@@ -392,8 +393,8 @@ def _install_studio_host_controls(
     )
 
     rainfall_tb.toggled.connect(lambda checked: dlg._studio_set_feature_enabled("rainfall", checked))
-    drainage_tb.toggled.connect(lambda checked: dlg._studio_set_feature_enabled("drainage", checked))
-    structures_tb.toggled.connect(lambda checked: dlg._studio_set_feature_enabled("structures", checked))
+    drainage_structures_tb.toggled.connect(lambda checked: dlg._studio_set_feature_enabled("drainage_structures", checked))
+    _3d_patch_tb.toggled.connect(lambda checked: dlg._studio_set_feature_enabled("3d_patch", checked))
 
     toolbar.addSeparator()
     toolbar.addWidget(QtWidgets.QLabel(" View: "))

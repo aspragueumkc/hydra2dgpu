@@ -33,6 +33,8 @@ class SWE2DBackendInitializer:
         self,
         *,
         backend_cls: Any,
+        use_gpu: bool,
+        openmp_enabled: bool,
         swe3d_env_overrides: Dict[str, str],
         dynamic_bc: bool,
         node_x: np.ndarray,
@@ -60,7 +62,13 @@ class SWE2DBackendInitializer:
     ) -> Any:
         _prev_env = self._apply_env_overrides(swe3d_env_overrides)
         try:
-            b = backend_cls()
+            try:
+                b = backend_cls(use_gpu=bool(use_gpu), openmp_enabled=bool(openmp_enabled))
+            except TypeError:
+                try:
+                    b = backend_cls(use_gpu=bool(use_gpu))
+                except TypeError:
+                    b = backend_cls()
 
             bc_tp_init = bc_tp.copy()
             bc_vl_init = bc_vl.copy()
@@ -104,6 +112,7 @@ class SWE2DBackendInitializer:
                 hu0,
                 hv0,
                 g=float(self._ui._gravity),
+                k_mann=float(self._ui._k_mann),
                 n_mann=float(self._ui.n_mann_spin.value()),
                 n_mann_cell=n_mann_cell,
                 cfl=float(self._ui.cfl_spin.value()),
@@ -126,6 +135,9 @@ class SWE2DBackendInitializer:
                 source_imex_split=bool(self._ui.source_imex_split_chk.isChecked()),
                 enable_shallow_front_recon_fallback=bool(self._ui.shallow_front_recon_fallback_chk.isChecked()),
                 gpu_diag_sync_interval_steps=int(self._ui.gpu_diag_sync_interval_spin.value()),
+                n_threads=int(getattr(self._ui, "solver_cpu_threads_spin", None).value())
+                if getattr(self._ui, "solver_cpu_threads_spin", None) is not None
+                else 0,
                 tiny_mode=int(getattr(self._ui, "tiny_mode_combo", None).currentData())
                 if getattr(self._ui, "tiny_mode_combo", None) is not None
                 else 3,

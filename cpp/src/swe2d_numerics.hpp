@@ -259,7 +259,7 @@ SWE2D_HOSTDEV inline void bed_slope_correction(
 // ─────────────────────────────────────────────────────────────────────────────
 SWE2D_HOSTDEV inline void apply_friction(
     double& h, double& hu, double& hv,
-    double dt, double n_mann, double g, double h_min)
+    double dt, double n_mann, double g, double h_min, double k_mann = 1.0)
 {
     if (h <= h_min) {
         hu = hv = 0.0;
@@ -271,9 +271,10 @@ SWE2D_HOSTDEV inline void apply_friction(
     // Regularize shallow-cell friction stiffness to avoid large Cf spikes
     // right above h_min at advancing wet/dry fronts.
     const double h_fric = std::max(h, 4.0 * h_min);
-    // Cf = g * n^2 / h^(4/3)
+    // Cf = g * n² / (k² * h^(4/3))   where k = 1.0 (SI) or 1.486 (USC)
+    double k2   = k_mann * k_mann;
     double h43  = std::pow(h_fric, 4.0 / 3.0);
-    double Cf   = (h43 > 0.0) ? (g * n_mann * n_mann / h43) : 0.0;
+    double Cf   = (h43 > 0.0) ? (g * n_mann * n_mann / (k2 * h43)) : 0.0;
     double denom = 1.0 + dt * Cf * spd;
     hu /= denom;
     hv /= denom;

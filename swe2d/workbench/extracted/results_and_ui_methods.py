@@ -807,6 +807,21 @@ def _bind_map_tab_results_controls(self, map_tab_page: QtWidgets.QWidget, map_re
         map_results_layout.addWidget(QtWidgets.QLabel("Streamline steps:"), 23, 0)
         map_results_layout.addWidget(self.high_perf_canvas_overlay_streamline_steps_spin, 23, 1)
 
+    self.high_perf_overlay_export_geotiff_btn = _find_or_create_button(
+        "high_perf_overlay_export_geotiff_btn",
+        "Export Overlay to GeoTIFF...",
+    )
+    self.high_perf_overlay_export_res_spin = _find_or_create_double_spin(
+        "high_perf_overlay_export_res_spin"
+    )
+    if self.high_perf_overlay_export_res_spin.value() < 0.00001:
+        self.high_perf_overlay_export_res_spin.setValue(10.0)
+    if map_results_layout.indexOf(self.high_perf_overlay_export_geotiff_btn) < 0:
+        map_results_layout.addWidget(self.high_perf_overlay_export_geotiff_btn, 25, 0, 1, 2)
+    if map_results_layout.indexOf(self.high_perf_overlay_export_res_spin) < 0:
+        map_results_layout.addWidget(QtWidgets.QLabel("GeoTIFF pixel size (map units):"), 26, 0)
+        map_results_layout.addWidget(self.high_perf_overlay_export_res_spin, 26, 1)
+
     self.extended_outputs_chk.setChecked(True)
     self.save_mesh_results_to_gpkg_chk.setChecked(True)
     self.save_line_results_to_gpkg_chk.setChecked(True)
@@ -905,6 +920,7 @@ def _bind_map_tab_results_controls(self, map_tab_page: QtWidgets.QWidget, map_re
         (self.high_perf_canvas_overlay_streamline_backend_combo.currentIndexChanged, self._on_high_perf_canvas_overlay_style_changed),
         (self.high_perf_canvas_overlay_streamline_seed_spin.valueChanged, self._on_high_perf_canvas_overlay_style_changed),
         (self.high_perf_canvas_overlay_streamline_steps_spin.valueChanged, self._on_high_perf_canvas_overlay_style_changed),
+        (self.high_perf_overlay_export_geotiff_btn.clicked, self._export_high_perf_overlay_to_geotiff),
     ):
         try:
             sig_obj.disconnect(cb)

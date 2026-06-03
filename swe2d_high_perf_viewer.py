@@ -920,6 +920,11 @@ def render_unstructured_snapshot_image(
         shell_mask = mask_known.copy()
         out["backend"] = str(out.get("backend", "numpy")) + "+wse_nodal"
 
+    # Expose the raw scalar field and mask so callers that need data values
+    # (e.g. GeoTIFF export) can avoid re‑rendering.
+    out["grid"] = grid.copy()
+    out["grid_mask"] = np.isfinite(grid) & shell_mask
+
     finite = np.isfinite(grid) & shell_mask
     if not np.any(finite):
         out["message"] = "No rasterized values at this frame."

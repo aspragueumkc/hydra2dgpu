@@ -1502,6 +1502,47 @@ def execute_run_timestep_loop(
     apply_3d_patch_face_bc_callback: Optional[Callable[..., None]] = None,
     perf_mode: bool = False,
 ) -> Dict[str, object]:
+
+    # Pre-compute boundary edge lengths for uniform-velocity normalization.
+    _bc_edge_len = None
+    if bc_n0.size > 0:
+        try:
+            _node_x = np.asarray(wb._mesh_data["node_x"], dtype=np.float64)
+            _node_y = np.asarray(wb._mesh_data["node_y"], dtype=np.float64)
+            _bc_edge_len = np.hypot(
+                _node_x[bc_n1] - _node_x[bc_n0],
+                _node_y[bc_n1] - _node_y[bc_n0],
+            ).astype(np.float64)
+        except Exception:
+            _bc_edge_len = None
+
+    def _make_uniform_velocity_cb() -> Optional[Callable[..., np.ndarray]]:
+        if not hasattr(wb, "uniform_inflow_velocity_chk"):
+            return None
+        try:
+            if not bool(wb.uniform_inflow_velocity_chk.isChecked()):
+                return None
+        except Exception:
+            return None
+        if _bc_edge_len is None or backend is None:
+            return None
+        edge_cells = backend.boundary_edge_cells()
+        if edge_cells is None:
+            return None
+
+        def _normalize(bc_vl_step, bc_tp_step, backend_obj):
+            try:
+                h_arr, _, _ = backend_obj.get_state()
+                edge_h = np.asarray(h_arr, dtype=np.float64)[edge_cells]
+                from swe2d.boundary_and_forcing.bc_logic import normalize_inflow_to_uniform_velocity as _norm
+                return _norm(bc_vl_step, bc_tp_step, edge_h, _bc_edge_len)
+            except Exception:
+                return bc_vl_step
+
+        return _normalize
+
+    _uniform_velocity_cb = _make_uniform_velocity_cb()
+
     while float(t_accum) < float(run_duration_s):
         if bool(getattr(wb, "_cancel_requested", False)):
             break
@@ -1538,6 +1579,7 @@ def execute_run_timestep_loop(
             apply_external_sources_callback=wb._apply_external_sources,
             native_source_injection_mode=native_source_injection_mode,
             apply_3d_patch_face_bc_callback=apply_3d_patch_face_bc_callback,
+            uniform_inflow_velocity_normalize_callback=_uniform_velocity_cb,
         )
         last_diag = step_result["last_diag"]
         dt_used = float(step_result["dt_used"])

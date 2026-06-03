@@ -182,6 +182,8 @@ python3 tools/python_style_audit.py
 
 See `USER_GUIDE.md` for step-by-step usage in QGIS.
 
+For the documentation tree map and lifecycle buckets, see [docs/README.md](docs/README.md).
+
 ## Implementation Roadmap
 
 For the current native-backend roadmap (1D C++ port + 2D SWE solver), see:

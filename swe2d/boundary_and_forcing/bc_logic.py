@@ -151,6 +151,64 @@ def distribute_total_flow_to_unit_q(
     return out_val
 
 
+def normalize_inflow_to_uniform_velocity(
+    bc_val_step: np.ndarray,
+    bc_type_step: np.ndarray,
+    edge_h: np.ndarray,
+    edge_len: np.ndarray,
+    eps: float = 1.0e-12,
+) -> np.ndarray:
+    """Reweight unit discharge *q* per edge so that *u = q/h* is uniform across
+    all active inflow (type 2) boundary edges.
+
+    Parameters
+    ----------
+    bc_val_step : np.ndarray
+        Current per-edge unit discharge q [L2/T] after standard distribution.
+    bc_type_step : np.ndarray
+        Per-edge BC type code.
+    edge_h : np.ndarray
+        SWE depth *h* at the interior cell adjacent to each boundary edge.
+    edge_len : np.ndarray
+        Length of each boundary edge.
+    eps : float
+        Small value to avoid division by zero.
+
+    Returns
+    -------
+    np.ndarray
+        Updated bc_val_step with uniform-velocity-normalized q values.
+    """
+    out = bc_val_step.astype(np.float64, copy=True)
+    flow_idx = np.where(bc_type_step.astype(np.int32) == 2)[0]
+    if flow_idx.size == 0:
+        return out
+
+    qi = np.abs(out[flow_idx])
+    hi = np.asarray(edge_h, dtype=np.float64)[flow_idx]
+    li = np.asarray(edge_len, dtype=np.float64)[flow_idx]
+
+    valid = (hi > eps) & (li > eps) & (np.isfinite(qi))
+    if not np.any(valid):
+        return out
+
+    qi = qi[valid]
+    hi = hi[valid]
+    li = li[valid]
+
+    total_q = float(np.sum(qi * li))
+    total_area = float(np.sum(hi * li))
+    if total_area <= eps or total_q <= eps:
+        return out
+    u_target = total_q / total_area
+
+    flow_idx_valid = flow_idx[valid]
+    for ii, idx in enumerate(flow_idx_valid):
+        out[idx] = u_target * hi[ii]
+
+    return out
+
+
 def apply_timeseries_bc_values(
     edge_n0: np.ndarray,
     edge_n1: np.ndarray,

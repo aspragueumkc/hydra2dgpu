@@ -12,6 +12,8 @@ from typing import Any, Callable, Dict, Optional
 
 import numpy as np
 
+from swe2d.boundary_and_forcing.bc_logic import normalize_inflow_to_uniform_velocity as _normalize_inflow_to_uniform_velocity
+
 
 class SWE2DRuntimeStepExecutor:
     """Executes one runtime step with stage-coupled or standard source path."""
@@ -42,6 +44,7 @@ class SWE2DRuntimeStepExecutor:
         apply_external_sources_callback: Callable[..., None],
         native_source_injection_mode: bool,
         apply_3d_patch_face_bc_callback: Optional[Callable[..., None]] = None,
+        uniform_inflow_velocity_normalize_callback: Optional[Callable[[np.ndarray, np.ndarray, np.ndarray], np.ndarray]] = None,
     ) -> Dict[str, Any]:
         step_ms = 0.0
         coupling_ms = 0.0
@@ -63,6 +66,10 @@ class SWE2DRuntimeStepExecutor:
                 side_hydrographs,
                 edge_hydrographs,
             )
+            if uniform_inflow_velocity_normalize_callback is not None:
+                bc_vl_step = uniform_inflow_velocity_normalize_callback(
+                    bc_vl_step, bc_tp_step, backend,
+                )
             backend.set_boundary_conditions(bc_n0, bc_n1, bc_tp_step, bc_vl_step)
             bc_ms += (time.perf_counter() - _t_bc0) * 1000.0
 
@@ -140,6 +147,10 @@ class SWE2DRuntimeStepExecutor:
                     side_hydrographs,
                     edge_hydrographs,
                 )
+                if uniform_inflow_velocity_normalize_callback is not None:
+                    bc_vl_step = uniform_inflow_velocity_normalize_callback(
+                        bc_vl_step, bc_tp_step, backend,
+                    )
                 backend.set_boundary_conditions(bc_n0, bc_n1, bc_tp_step, bc_vl_step)
                 bc_ms += (time.perf_counter() - _t_bc1) * 1000.0
             rain_src = rain_source_for_window_callback(

@@ -17,6 +17,7 @@ import csv
 import datetime
 import json
 import math
+import multiprocessing
 import os
 import sys
 import sqlite3
@@ -76,6 +77,7 @@ from swe2d.boundary_and_forcing.bc_logic import (
     apply_timeseries_bc_values as _apply_timeseries_bc_values_logic,
     distribute_total_flow_to_unit_q as _distribute_total_flow_to_unit_q_logic,
     interp_hydrograph as _interp_hydrograph_logic,
+    normalize_inflow_to_uniform_velocity as _normalize_inflow_to_uniform_velocity_logic,
 )
 
 from swe2d.boundary_and_forcing.runtime_source_logic import (
@@ -3137,6 +3139,13 @@ class SWE2DWorkbenchDialog(QtWidgets.QDialog):
         self.inflow_progressive_chk.setChecked(True)
         _ensure_widget(self.inflow_progressive_chk, 6, 0, 1, 5)
 
+        self.uniform_inflow_velocity_chk = _find_or_create_check(
+            "uniform_inflow_velocity_chk",
+            "Inflow BC: uniform velocity across all boundary edges (distributes Q by depth)"
+        )
+        self.uniform_inflow_velocity_chk.setChecked(False)
+        _ensure_widget(self.uniform_inflow_velocity_chk, 7, 0, 1, 5)
+
     def _build_map_tab_page(self) -> Tuple[QtWidgets.QWidget, QtWidgets.QGridLayout, QtWidgets.QGridLayout, QtWidgets.QGridLayout, QtWidgets.QGridLayout]:
         ui_path = self._forms_file_path("swe2d_map_tab.ui")
         map_tab_page = None
@@ -3449,7 +3458,21 @@ class SWE2DWorkbenchDialog(QtWidgets.QDialog):
             raise RuntimeError("Topology tab UI missing topo_layout")
         return topology_tab_page, topo_layout
 
-    def _build_model_tab_page(self) -> Tuple[QtWidgets.QWidget, QtWidgets.QFormLayout]:
+    def _build_model_tab_page(self) -> Tuple[QtWidgets.QWidget, QtWidgets.QFormLayout, QtWidgets.QFormLayout, QtWidgets.QFormLayout]:
+        """Load the Model tab from swe2d_model_tab.ui.
+
+        Returns (page_widget, solver_form, rain_form, drain_form).
+        The .ui contains a QToolBox with three pages:
+          - model_solver_form  (Solver Parameters)
+          - model_rain_form    (Rain / Hydrology)
+          - model_drain_form   (Structures & Drainage)
+
+        Each form's interactive widgets are wired by a corresponding
+        _bind_model_tab_*_controls() call in _compose_left_pane().
+        If you add a new QToolBox page to the .ui, update this
+        method to find and return the new form, then add its bind
+        call in _compose_left_pane().  See docs/STUDIO_UI_ARCHITECTURE.md.
+        """
         ui_path = self._forms_file_path("swe2d_model_tab.ui")
         model_tab_page = None
         if _qgis_uic is not None and os.path.exists(ui_path):
@@ -3460,10 +3483,12 @@ class SWE2DWorkbenchDialog(QtWidgets.QDialog):
         if model_tab_page is None:
             model_tab_page = self._build_model_tab_page_fallback()
 
-        model_param_form = model_tab_page.findChild(QtWidgets.QFormLayout, "model_param_form")
-        if model_param_form is None:
-            raise RuntimeError("Model tab UI missing model_param_form")
-        return model_tab_page, model_param_form
+        solver_form = model_tab_page.findChild(QtWidgets.QFormLayout, "model_solver_form")
+        rain_form = model_tab_page.findChild(QtWidgets.QFormLayout, "model_rain_form")
+        drain_form = model_tab_page.findChild(QtWidgets.QFormLayout, "model_drain_form")
+        if solver_form is None or rain_form is None or drain_form is None:
+            raise RuntimeError("Model tab UI missing one or more form layouts")
+        return model_tab_page, solver_form, rain_form, drain_form
 
     def _build_model_tab_page_fallback(self) -> QtWidgets.QWidget:
         root = QtWidgets.QWidget()
@@ -3471,17 +3496,49 @@ class SWE2DWorkbenchDialog(QtWidgets.QDialog):
         root_layout.setContentsMargins(0, 0, 0, 0)
         root_layout.setSpacing(0)
 
-        model_group = QtWidgets.QGroupBox("Model Parameters")
-        model_param_form = QtWidgets.QFormLayout(model_group)
-        model_param_form.setObjectName("model_param_form")
+        toolbox = QtWidgets.QToolBox()
+        toolbox.setSizePolicy(
+            QtWidgets.QSizePolicy.Preferred, QtWidgets.QSizePolicy.Expanding
+        )
 
-        patch_3d_group = QtWidgets.QGroupBox("3D Patch")
-        patch_3d_form = QtWidgets.QFormLayout(patch_3d_group)
-        patch_3d_form.setObjectName("patch_3d_form")
+        for name, label in [
+            ("model_solver_page", "Solver Parameters"),
+            ("model_rain_page", "Rain / Hydrology"),
+            ("model_drain_page", "Structures & Drainage"),
+        ]:
+            page = QtWidgets.QWidget()
+            page.setObjectName(name)
+            page_layout = QtWidgets.QVBoxLayout(page)
+            page_layout.setContentsMargins(0, 0, 0, 0)
+            form = QtWidgets.QFormLayout()
+            form.setObjectName(name.replace("_page", "_form"))
+            page_layout.addLayout(form)
+            toolbox.addItem(page, label)
 
-        root_layout.addWidget(model_group)
-        root_layout.addWidget(patch_3d_group)
+        root_layout.addWidget(toolbox)
         return root
+
+    def _build_3d_patch_tab_page(self) -> QtWidgets.QWidget:
+        """Load the 3D Patch settings from its dedicated .ui file."""
+        ui_path = self._forms_file_path("swe2d_3d_patch_tab.ui")
+        patch_page = None
+        if _qgis_uic is not None and os.path.exists(ui_path):
+            try:
+                patch_page = _qgis_uic.loadUi(ui_path)
+            except Exception:
+                patch_page = None
+        if patch_page is None:
+            patch_page = QtWidgets.QWidget()
+            patch_layout = QtWidgets.QVBoxLayout(patch_page)
+            patch_layout.setContentsMargins(0, 0, 0, 0)
+            patch_form = QtWidgets.QFormLayout()
+            patch_form.setObjectName("patch_3d_form")
+            patch_layout.addLayout(patch_form)
+
+        patch_form = patch_page.findChild(QtWidgets.QFormLayout, "patch_3d_form")
+        if patch_form is not None:
+            self._bind_model_tab_3d_patch_controls(patch_page, patch_form)
+        return patch_page
 
     def _bind_model_tab_core_controls(self, model_tab_page: QtWidgets.QWidget, param_form: QtWidgets.QFormLayout) -> None:
         from swe2d.workbench.monolith_methods import _bind_model_tab_core_controls as _logic
@@ -3508,10 +3565,11 @@ class SWE2DWorkbenchDialog(QtWidgets.QDialog):
         return _logic(self, model_tab_page, param_form)
 
     def _bind_model_tab_3d_subgrid_drainage_controls(
-        self, model_tab_page: QtWidgets.QWidget, param_form: QtWidgets.QFormLayout
+        self, model_tab_page: QtWidgets.QWidget, param_form: QtWidgets.QFormLayout,
+        solver_form: Optional[QtWidgets.QFormLayout] = None,
     ) -> None:
         from swe2d.workbench.monolith_methods import _bind_model_tab_3d_subgrid_drainage_controls as _logic
-        return _logic(self, model_tab_page, param_form)
+        return _logic(self, model_tab_page, param_form, solver_form)
 
     def _build_topology_tab_page_fallback(self) -> QtWidgets.QWidget:
         root = QtWidgets.QWidget()
@@ -3558,7 +3616,7 @@ class SWE2DWorkbenchDialog(QtWidgets.QDialog):
             ("topo_default_size_lbl", "Default target size:", 6),
             ("topo_default_cell_type_lbl", "Default cell type:", 7),
             ("topo_gmsh_controls_lbl", "Gmsh advanced controls:", 8),
-            ("topo_quality_controls_lbl", "Quality controls (Gmsh + TQMesh):", 9),
+            ("topo_quality_controls_lbl", "Quality controls (Gmsh):", 9),
         ]
         for name, text, row in static_labels:
             _ensure(_find_or_create_label(name, text), row, 0)
@@ -3571,7 +3629,7 @@ class SWE2DWorkbenchDialog(QtWidgets.QDialog):
             "Topology-layer controls: use multiple region polygons for multiple blocks. "
             "Use region target_size + cell_type, edge_len_1..4 for cartesian/quadrilateral block spacing, "
             "use region interior rings or empty regions/constraints for holes, "
-            "and quad-edge n_layers / first_height / growth_rate for TQMesh transition layers.",
+            "and quad-edge n_layers / first_height / growth_rate for Gmsh transition spacing.",
         )
         self.topo_export_template_btn = _find_or_create_button("topo_export_template_btn", "Create Topology Template Layers")
         self.topo_generate_btn = _find_or_create_button("topo_generate_btn", "Generate Mesh From Topology Layers")
@@ -3839,6 +3897,19 @@ class SWE2DWorkbenchDialog(QtWidgets.QDialog):
         return shell, header_lbl, main_splitter, left_host, right_host, bottom_buttons
 
     def _compose_left_pane(self, left_host: QtWidgets.QWidget) -> QtWidgets.QWidget:
+        """Build the Studio left-pane QTabWidget with all setup tabs.
+
+        This is THE canonical tab registry for the Studio UI.  Every tab
+        that appears in the left pane is added here via:
+            page = self._build_<name>_tab_page()
+            self._left_tabs.addTab(self._wrap_left_tab_page(page), "Label")
+
+        If you add a new tab page (new .ui file or new QToolBox page),
+        add it here AFTER building and binding it.
+        The legacy shell dialog (shell_dialog_methods.py) has a parallel
+        tab list in studio_build_ui() that must be kept in sync.
+        See docs/STUDIO_UI_ARCHITECTURE.md for the full checklist.
+        """
         left = left_host
         left_layout = left.layout()
         if not isinstance(left_layout, QtWidgets.QVBoxLayout):
@@ -3879,13 +3950,17 @@ class SWE2DWorkbenchDialog(QtWidgets.QDialog):
         boundary_tab_page = self._build_boundary_tab_page()
         self._left_tabs.addTab(self._wrap_left_tab_page(boundary_tab_page), "Boundary")
 
-        model_tab_page, param_form = self._build_model_tab_page()
-        self._bind_model_tab_core_controls(model_tab_page, param_form)
-        self._bind_model_tab_hydrology_controls(model_tab_page, param_form)
-        self._bind_model_tab_solver_controls(model_tab_page, param_form)
-        self._bind_model_tab_3d_patch_controls(model_tab_page, param_form)
-        self._bind_model_tab_3d_subgrid_drainage_controls(model_tab_page, param_form)
+        model_tab_page, solver_form, rain_form, drain_form = self._build_model_tab_page()
+        self._bind_model_tab_core_controls(model_tab_page, solver_form)
+        self._bind_model_tab_hydrology_controls(model_tab_page, rain_form)
+        self._bind_model_tab_solver_controls(model_tab_page, solver_form)
+        self._bind_model_tab_3d_subgrid_drainage_controls(model_tab_page, drain_form, solver_form)
         self._left_tabs.addTab(self._wrap_left_tab_page(model_tab_page), "Model")
+
+        patch_tab_page = self._build_3d_patch_tab_page()
+        patch_scroll = self._wrap_left_tab_page(patch_tab_page)
+        patch_scroll.setObjectName("patch_3d_tab_page")
+        self._left_tabs.addTab(patch_scroll, "3D Patch")
 
         run_tab_page = self._build_run_tab_page()
         self._left_tabs.addTab(self._wrap_left_tab_page(run_tab_page), "Run")
@@ -4623,7 +4698,16 @@ class SWE2DWorkbenchDialog(QtWidgets.QDialog):
             # Keep Gmsh in a separate process to avoid UI freezes from C++
             # meshing work and signal-handler constraints.
             if self._topology_mesh_process_pool is None:
-                self._topology_mesh_process_pool = concurrent.futures.ProcessPoolExecutor(max_workers=1)
+                try:
+                    mp_ctx = multiprocessing.get_context("spawn")
+                    self._topology_mesh_process_pool = concurrent.futures.ProcessPoolExecutor(
+                        max_workers=1,
+                        mp_context=mp_ctx,
+                    )
+                    self._log("mesh> worker-start-method method=spawn")
+                except Exception as exc:
+                    self._topology_mesh_process_pool = concurrent.futures.ProcessPoolExecutor(max_workers=1)
+                    self._log(f"mesh> worker-start-method method=default reason={exc}")
             executor = self._topology_mesh_process_pool
         else:
             executor = self._topology_mesh_thread_pool
@@ -4716,6 +4800,7 @@ class SWE2DWorkbenchDialog(QtWidgets.QDialog):
         unit_name = "m"
         sys_name = "SI"
         g = 9.81
+        k_mann = 1.0
 
         if QgsUnitTypes is not None and unit is not None:
             try:
@@ -4736,21 +4821,25 @@ class SWE2DWorkbenchDialog(QtWidgets.QDialog):
                     unit_name = "ft"
                     sys_name = "US Customary"
                     g = 32.174
+                    k_mann = 1.486
                 elif unit == getattr(QgsUnitTypes, "DistanceMeters", None):
                     unit_name = "m"
                     sys_name = "SI"
                     g = 9.81
+                    k_mann = 1.0
                 else:
                     # Fallback to SI for unknown map units.
                     unit_name = str(QgsUnitTypes.toString(unit)) if hasattr(QgsUnitTypes, "toString") else "m"
                     sys_name = "SI (fallback)"
                     g = 9.81
+                    k_mann = 1.0
             except Exception:
                 pass
 
         self._unit_system = sys_name
         self._length_unit_name = unit_name
         self._gravity = g
+        self._k_mann = k_mann
         if hasattr(self, "unit_system_lbl"):
             self.unit_system_lbl.setText(
                 f"Unit system: {sys_name} (CRS length unit: {unit_name}, gravity={g:.3f})"
@@ -4760,8 +4849,10 @@ class SWE2DWorkbenchDialog(QtWidgets.QDialog):
         return str(self._length_unit_name).strip().lower() == "ft"
 
     def _length_scale_si_to_model(self) -> float:
-        # Solver state units follow CRS map units. Convert SI length to solver length.
-        return 3.280839895013123 if self._is_us_customary_units() else 1.0
+        from swe2d import units as _u
+        scale = 3.280839895013123 if self._is_us_customary_units() else 1.0
+        _u.configure(scale)
+        return scale
 
     def _rain_mm_to_model_depth(self) -> float:
         # 1 mm = 0.001 m, then convert SI meters to solver-space length units.
@@ -4860,9 +4951,6 @@ class SWE2DWorkbenchDialog(QtWidgets.QDialog):
         hybrid_region_conformance_band = 0.55
         hybrid_arc_conformance_band = 0.45
         hybrid_strict_conformance_mode = False
-        tqmesh_boundary_split_max_length = 30.0
-        if hasattr(self, "topo_tqmesh_boundary_split_max_length_spin"):
-            tqmesh_boundary_split_max_length = float(self.topo_tqmesh_boundary_split_max_length_spin.value())
 
         gmsh_quad_full_region_flow_align = False
         if hasattr(self, "topo_gmsh_quad_full_region_flow_align_chk"):
@@ -4907,37 +4995,6 @@ class SWE2DWorkbenchDialog(QtWidgets.QDialog):
         gmsh_interface_reject_tol = 1.0e-3
         if hasattr(self, "topo_gmsh_interface_reject_tol_spin"):
             gmsh_interface_reject_tol = float(self.topo_gmsh_interface_reject_tol_spin.value())
-
-        tqmesh_quad_full_region_flow_align = True
-        if hasattr(self, "topo_tqmesh_quad_full_region_flow_align_chk"):
-            tqmesh_quad_full_region_flow_align = bool(self.topo_tqmesh_quad_full_region_flow_align_chk.isChecked())
-
-        tqmesh_quad_region_method = "auto"
-        if hasattr(self, "topo_tqmesh_quad_region_method_combo"):
-            tqmesh_quad_region_method = str(self.topo_tqmesh_quad_region_method_combo.currentData() or "auto").strip().lower()
-            if tqmesh_quad_region_method not in {"auto", "qgis_structured", "tqmesh_native_recipe"}:
-                tqmesh_quad_region_method = "auto"
-
-        tqmesh_quad_refinements = 1
-        if hasattr(self, "topo_tqmesh_quad_refinements_spin"):
-            tqmesh_quad_refinements = int(self.topo_tqmesh_quad_refinements_spin.value())
-        tqmesh_quad_refinements = max(0, tqmesh_quad_refinements)
-
-        tqmesh_interface_conformance = True
-        if hasattr(self, "topo_tqmesh_interface_conformance_chk"):
-            tqmesh_interface_conformance = bool(self.topo_tqmesh_interface_conformance_chk.isChecked())
-
-        tqmesh_interface_snap_tol = 1.0
-        if hasattr(self, "topo_tqmesh_interface_snap_tol_spin"):
-            tqmesh_interface_snap_tol = float(self.topo_tqmesh_interface_snap_tol_spin.value())
-
-        tqmesh_breakline_fixed_edges = True
-        if hasattr(self, "topo_tqmesh_breakline_fixed_edges_chk"):
-            tqmesh_breakline_fixed_edges = bool(self.topo_tqmesh_breakline_fixed_edges_chk.isChecked())
-
-        tqmesh_breakline_fixed_edges_strict = False
-        if hasattr(self, "topo_tqmesh_breakline_fixed_edges_strict_chk"):
-            tqmesh_breakline_fixed_edges_strict = bool(self.topo_tqmesh_breakline_fixed_edges_strict_chk.isChecked())
 
         return {
             "gmsh_tri_algorithm": int(self.topo_gmsh_tri_algo_combo.currentData() or 6),
@@ -4991,20 +5048,6 @@ class SWE2DWorkbenchDialog(QtWidgets.QDialog):
             "hybridcpp_arc_conformance_band_factor": hybrid_arc_conformance_band,
             "hybridcpp_strict_conformance_mode": hybrid_strict_conformance_mode,
             "post_opt_backend": "none",
-            "tqmesh_min_angle_deg": float(self.topo_quality_min_angle_spin.value()),
-            "tqmesh_max_aspect_ratio": float(self.topo_quality_max_aspect_spin.value()),
-            "tqmesh_min_area_rel_bbox": float(self.topo_quality_min_area_edit.text().strip() or "0"),
-            "tqmesh_quality_strict": bool(self.topo_quality_strict_chk.isChecked()),
-            "tqmesh_size_scales": size_scales,
-            "tqmesh_smooth_increments": smooth_increments,
-            "tqmesh_boundary_split_max_length": tqmesh_boundary_split_max_length,
-            "tqmesh_quad_region_method": tqmesh_quad_region_method,
-            "tqmesh_quad_refinements": tqmesh_quad_refinements,
-            "tqmesh_quad_full_region_flow_align": tqmesh_quad_full_region_flow_align,
-            "tqmesh_interface_conformance": tqmesh_interface_conformance,
-            "tqmesh_interface_snap_tol": tqmesh_interface_snap_tol,
-            "tqmesh_breakline_fixed_edges": tqmesh_breakline_fixed_edges,
-            "tqmesh_breakline_fixed_edges_strict": tqmesh_breakline_fixed_edges_strict,
         }
 
     def _infer_workspace_root_for_meshing(self) -> str:
@@ -5215,7 +5258,7 @@ class SWE2DWorkbenchDialog(QtWidgets.QDialog):
         self._refresh_layer_combos()
         self.topo_status_lbl.setText(
             "Topology template layers created. Define regions (required); use interior rings or cell_type='empty' zones for holes; "
-            "add optional arcs/constraints and optional TQMesh quad-edge lines; then generate mesh."
+            "add optional arcs/constraints and optional quad-edge control lines; then generate mesh."
         )
         self._log("Created topology template layers: SWE2D_Topo_Nodes/Arcs/Regions/Constraints/Quad_Edges + SWE2D_Manning_Zones + SWE2D_BC_Lines + SWE2D_Sample_Lines + SWE2D_Drainage_* + SWE2D_Structures + SWE2D_Hydrographs")
 
@@ -5392,7 +5435,7 @@ class SWE2DWorkbenchDialog(QtWidgets.QDialog):
 
         default_size = float(self.topo_default_size_spin.value())
         default_cell_type = str(self.topo_default_cell_type_combo.currentText())
-        backend_name = str(self.topo_backend_combo.currentData() or "structured")
+        backend_name = str(self.topo_backend_combo.currentData() or "gmsh")
 
         try:
             mesh_options = self._build_topology_meshing_options()
@@ -6350,6 +6393,203 @@ class SWE2DWorkbenchDialog(QtWidgets.QDialog):
         except Exception as exc:
             self._log(f"[HighPerf Overlay] refresh failed: {exc}")
 
+    def _export_high_perf_overlay_to_geotiff(self):
+        if self._high_perf_overlay_cell_x.size <= 0 or not self._snapshot_timesteps:
+            QtWidgets.QMessageBox.warning(
+                self,
+                "Export GeoTIFF",
+                "No high-perf overlay data is available. "
+                "Run a model with output intervals set, then enable the overlay.",
+            )
+            return
+
+        start_dir = str(self._current_line_results_storage_path() or ".")
+        if start_dir and os.path.exists(os.path.dirname(start_dir)):
+            start_dir = os.path.dirname(start_dir)
+        out_path, _ = QtWidgets.QFileDialog.getSaveFileName(
+            self,
+            "Export High-Perf Overlay to GeoTIFF",
+            start_dir,
+            "GeoTIFF (*.tif *.tiff)",
+        )
+        if not out_path:
+            return
+        if not out_path.lower().endswith((".tif", ".tiff")):
+            out_path += ".tif"
+
+        # -- gather overlay state -------------------------------------------------
+        try:
+            try:
+                from .swe2d_high_perf_viewer import render_unstructured_snapshot_image
+            except ImportError:
+                from swe2d_high_perf_viewer import render_unstructured_snapshot_image
+        except Exception as exc:
+            self._log(f"[GeoTIFF Export] render import failed: {exc}")
+            QtWidgets.QMessageBox.critical(self, "Export GeoTIFF", f"Could not import overlay renderer:\n{exc}")
+            return
+
+        field_key = str(getattr(self, "high_perf_canvas_overlay_field_combo", None).currentData() or "depth")
+        cmap_key = str(getattr(self, "high_perf_canvas_overlay_cmap_combo", None).currentData() or "turbo")
+        wse_render_mode = (
+            str(getattr(self, "high_perf_canvas_overlay_wse_render_combo", None).currentData() or "cell")
+            if getattr(self, "high_perf_canvas_overlay_wse_render_combo", None) is not None
+            else "cell"
+        )
+        auto_contrast = bool(
+            getattr(self, "high_perf_canvas_overlay_auto_contrast_chk", None) is not None
+            and self.high_perf_canvas_overlay_auto_contrast_chk.isChecked()
+        )
+
+        t_use = None
+        if self._results_panel is not None:
+            try:
+                t_use = float(self._results_panel.current_time_sec())
+            except Exception:
+                t_use = None
+        if t_use is None:
+            t_use = float(self._snapshot_timesteps[-1][0])
+
+        pixel_size = float(getattr(self, "high_perf_overlay_export_res_spin", None).value() or 10.0)
+        pixel_size = max(1.0e-6, abs(pixel_size))
+
+        # -- compute extent and pixel dimensions ----------------------------------
+        cx = self._high_perf_overlay_cell_x
+        cy = self._high_perf_overlay_cell_y
+        x_min = float(np.nanmin(cx))
+        x_max = float(np.nanmax(cx))
+        y_min = float(np.nanmin(cy))
+        y_max = float(np.nanmax(cy))
+        if not np.isfinite(x_min) or not np.isfinite(x_max) or x_max <= x_min:
+            x_min, x_max = 0.0, 1.0
+        if not np.isfinite(y_min) or not np.isfinite(y_max) or y_max <= y_min:
+            y_min, y_max = 0.0, 1.0
+
+        nx = max(32, int(np.ceil((x_max - x_min) / pixel_size)))
+        ny = max(32, int(np.ceil((y_max - y_min) / pixel_size)))
+
+        # -- render ---------------------------------------------------------------
+        field_labels = {
+            "depth": f"Depth ({self._length_unit_name})",
+            "speed": f"Velocity ({self._length_unit_name}/s)",
+            "wse": f"Water Surface ({self._length_unit_name})",
+        }
+        legend_label = field_labels.get(field_key, str(field_key))
+        try:
+            frame = render_unstructured_snapshot_image(
+                cell_x=cx,
+                cell_y=cy,
+                cell_bed=self._high_perf_overlay_cell_bed,
+                node_x=self._high_perf_overlay_node_x,
+                node_y=self._high_perf_overlay_node_y,
+                cell_nodes=self._high_perf_overlay_cell_nodes,
+                tri_to_cell=getattr(self, "_high_perf_overlay_tri_to_cell", None),
+                timesteps=self._snapshot_timesteps,
+                current_time_s=float(t_use),
+                field_key=field_key,
+                wse_render_mode=wse_render_mode,
+                cmap_key=cmap_key,
+                resolution=(nx, ny),
+                auto_contrast=auto_contrast,
+                show_velocity_arrows=False,
+                show_streamlines=False,
+                render_extent_world=(x_min, x_max, y_min, y_max),
+                show_legend=True,
+                legend_label=legend_label,
+            )
+        except Exception as exc:
+            self._log(f"[GeoTIFF Export] render error: {exc}")
+            QtWidgets.QMessageBox.critical(self, "Export GeoTIFF", f"Overlay render failed:\n{exc}")
+            return
+
+        if not bool(frame.get("ok", False)):
+            msg = str(frame.get("message", "unknown render error"))
+            self._log(f"[GeoTIFF Export] empty frame: {msg}")
+            QtWidgets.QMessageBox.warning(self, "Export GeoTIFF", f"Nothing rendered:\n{msg}")
+            return
+
+        # -- extract the raw scalar grid (data values, not RGB) ------------------
+        scalar_grid = frame.get("grid")
+        grid_mask = frame.get("grid_mask")
+        if scalar_grid is None or grid_mask is None:
+            self._log("[GeoTIFF Export] renderer did not return a scalar grid.")
+            QtWidgets.QMessageBox.warning(
+                self, "Export GeoTIFF",
+                "The overlay renderer did not expose raw data values.\n"
+                "A code update is required in swe2d_high_perf_viewer.",
+            )
+            return
+
+        h_img, w = scalar_grid.shape
+
+        # Mask out non-finite / out-of-mesh pixels → NaN
+        grid_out = np.full((h_img, w), np.nan, dtype=np.float64)
+        grid_out[grid_mask] = scalar_grid[grid_mask]
+
+        # -- write via GDAL -------------------------------------------------------
+        try:
+            from osgeo import gdal, osr
+        except ImportError:
+            gdal = None
+            osr = None
+
+        crs_auth = "EPSG:4326"
+        if _HAVE_QGIS_CORE and QgsProject is not None:
+            try:
+                proj_crs = QgsProject.instance().crs()
+                if proj_crs is not None and proj_crs.isValid():
+                    crs_auth = proj_crs.authid() or crs_auth
+            except Exception:
+                pass
+
+        if gdal is not None:
+            driver = gdal.GetDriverByName("GTiff")
+            ds = driver.Create(out_path, w, h_img, 1, gdal.GDT_Float64)
+            if ds is None:
+                raise RuntimeError("GDAL could not create output dataset.")
+            x_res = (x_max - x_min) / max(1, w)
+            y_res = (y_max - y_min) / max(1, h_img)
+            gt = (x_min, x_res, 0.0, y_max, 0.0, -y_res)
+            ds.SetGeoTransform(gt)
+
+            srs = osr.SpatialReference()
+            srs.SetFromUserInput(crs_auth)
+            ds.SetProjection(srs.ExportToWkt())
+
+            band = ds.GetRasterBand(1)
+            band.WriteArray(grid_out)
+            band.SetNoDataValue(np.nan)
+            band.SetDescription(str(field_key))
+            ds.FlushCache()
+            ds = None
+        else:
+            # Fallback: use PIL to write a single-band float TIFF (no CRS)
+            try:
+                from PIL import Image as _PILImage
+            except ImportError:
+                _PILImage = None
+            if _PILImage is not None:
+                # PIL can't write float TIFF natively → use GDAL-style temp
+                raise RuntimeError("GDAL required for scalar GeoTIFF export.")
+            else:
+                raise RuntimeError("GDAL is not available. Cannot write GeoTIFF.")
+
+        vmin = float(np.nanmin(grid_out))
+        vmax = float(np.nanmax(grid_out))
+        self._log(
+            f"High-perf overlay exported to GeoTIFF: {out_path} "
+            f"({w}x{h_img}, CRS={crs_auth}, field={field_key}, t={t_use / 3600.0:.3f} hr, "
+            f"range=[{vmin:.6g}, {vmax:.6g}])"
+        )
+        QtWidgets.QMessageBox.information(
+            self,
+            "Export GeoTIFF",
+            f"Exported {w}x{h_img} single-band Float64 to:\n{out_path}\n"
+            f"CRS: {crs_auth}\n"
+            f"Field: {field_key}  Time: {t_use / 3600.0:.3f} hr\n"
+            f"Pixel size: {pixel_size:.4f} map units\n"
+            f"Value range: [{vmin:.6g}, {vmax:.6g}] {self._length_unit_name}",
+        )
+
     def _on_line_viewer_selection_changed(self, line_id: Optional[int]) -> None:
         try:
             if not hasattr(self, "_line_flux_face_segments_by_line") or not getattr(self, "_line_flux_face_segments_by_line", {}):
@@ -6749,8 +6989,65 @@ class SWE2DWorkbenchDialog(QtWidgets.QDialog):
 
     def _on_results_panel_velocity_overlay_changed(self):
         panel = getattr(self, "_results_panel", None)
+        if panel is not None and panel.velocity_overlay_enabled():
+            self._auto_add_velocity_overlay_sources_from_panel()
         t_s = panel.current_time_sec() if panel is not None else 0.0
         self._refresh_results_map_overlays(float(t_s))
+
+    def _auto_add_velocity_overlay_sources_from_panel(self) -> int:
+        panel = getattr(self, "_results_panel", None)
+        if panel is None or not hasattr(panel, "enabled_overlay_targets"):
+            return 0
+        if self._velocity_overlay_sources:
+            return 0
+
+        added = 0
+        for gpkg_path, run_id in panel.enabled_overlay_targets():
+            gpkg_path = str(gpkg_path or "").strip()
+            run_id = str(run_id or "").strip()
+            if not gpkg_path or not run_id or not os.path.exists(gpkg_path):
+                continue
+
+            table_choices = self._list_velocity_candidate_tables(gpkg_path)
+            if not table_choices:
+                continue
+
+            ordered_tables: List[str] = []
+            if "swe2d_mesh_results" in table_choices:
+                ordered_tables.append("swe2d_mesh_results")
+            for name in table_choices:
+                if name not in ordered_tables:
+                    ordered_tables.append(name)
+
+            chosen_table = ""
+            for table_name in ordered_tables:
+                table_run_ids = self._run_ids_for_velocity_table(gpkg_path, table_name)
+                if run_id in table_run_ids:
+                    chosen_table = table_name
+                    break
+            if not chosen_table:
+                continue
+
+            source_key = f"{gpkg_path}::{chosen_table}::{run_id}"
+            if any(str(rec.get("key", "")) == source_key for rec in self._velocity_overlay_sources):
+                continue
+
+            self._velocity_overlay_sources.append(
+                {
+                    "key": source_key,
+                    "gpkg_path": gpkg_path,
+                    "table_name": chosen_table,
+                    "run_id": run_id,
+                    "label": f"{os.path.basename(gpkg_path)}:{chosen_table}:{run_id}",
+                }
+            )
+            added += 1
+
+        if added:
+            self._log(
+                f"Velocity arrows auto-added {added} source(s) from enabled results-panel runs."
+            )
+        return added
 
     def _refresh_results_map_overlays(self, t_s: float):
         self._refresh_velocity_vectors_overlay(float(t_s))
@@ -7294,13 +7591,13 @@ class SWE2DWorkbenchDialog(QtWidgets.QDialog):
                     if base_name == "culvert":
                         metric_map.update(
                             {
-                                "inlet_control_flow_cms": float(detail.get("inlet_control_flow_cms", 0.0) or 0.0),
-                                "outlet_control_flow_cms": float(detail.get("outlet_control_flow_cms", 0.0) or 0.0),
-                                "orifice_cap_cms": float(detail.get("orifice_cap_cms", 0.0) or 0.0),
-                                "manning_cap_cms": float(detail.get("manning_cap_cms", 0.0) or 0.0),
-                                "embankment_flow_cms": float(detail.get("embankment_flow_cms", 0.0) or 0.0),
-                                "available_head_up_m": float(detail.get("available_head_up_m", 0.0) or 0.0),
-                                "tailwater_depth_m": float(detail.get("tailwater_depth_m", 0.0) or 0.0),
+                                "inlet_control_flow": float(detail.get("inlet_control_flow_cms", 0.0) or 0.0),
+                                "outlet_control_flow": float(detail.get("outlet_control_flow_cms", 0.0) or 0.0),
+                                "orifice_cap": float(detail.get("orifice_cap_cms", 0.0) or 0.0),
+                                "manning_cap": float(detail.get("manning_cap_cms", 0.0) or 0.0),
+                                "embankment_flow": float(detail.get("embankment_flow_cms", 0.0) or 0.0),
+                                "available_head_up": float(detail.get("available_head_up_m", 0.0) or 0.0),
+                                "tailwater_depth": float(detail.get("tailwater_depth_m", 0.0) or 0.0),
                             }
                         )
                     for metric_name, metric_value in metric_map.items():
@@ -8040,6 +8337,28 @@ class SWE2DWorkbenchDialog(QtWidgets.QDialog):
         if layer is None:
             return None
         fields = set(layer.fields().names())
+        # ── Schema validation: warn if the layer is missing essential fields ──
+        _essential_fields = {"structure_type", "crest_elev"}
+        _missing_essential = _essential_fields - fields
+        if _missing_essential:
+            self._log(
+                f"Structures layer '{layer.name()}' is missing required fields: "
+                f"{', '.join(sorted(_missing_essential))}. "
+                f"Coupling will be disabled. Select a valid structures layer."
+            )
+            return None
+        _recommended_culvert_fields = {
+            "culvert_code", "culvert_shape", "inlet_invert_elev",
+            "outlet_invert_elev", "length", "roughness_n", "culvert_slope",
+        }
+        _missing_recommended = _recommended_culvert_fields - fields
+        if _missing_recommended:
+            self._log(
+                f"Structures layer '{layer.name()}' missing culvert fields: "
+                f"{', '.join(sorted(_missing_recommended))}. "
+                f"Defaults will be used; results may be inaccurate."
+            )
+        # ── End schema validation ──
         structures: List[HydraulicStructure] = []
         type_name_map = {
             "weir": StructureType.WEIR,
@@ -8174,6 +8493,13 @@ class SWE2DWorkbenchDialog(QtWidgets.QDialog):
                 )
             )
         if not structures:
+            feature_count = layer.featureCount() if hasattr(layer, "featureCount") else -1
+            if feature_count > 0:
+                self._log(
+                    f"Structures layer '{layer.name()}' has {feature_count} features "
+                    f"but produced 0 valid structures. Check that geometries are valid "
+                    f"and that 'enabled' is not 0."
+                )
             return None
         gravity = float(getattr(self, "_gravity", 9.81))
         self._log(f"Hydraulic structures configured: count={len(structures)}, gravity={gravity:.3f}")
@@ -8395,7 +8721,7 @@ class SWE2DWorkbenchDialog(QtWidgets.QDialog):
             "experimental_3d_obj_inside_z_field_edit", "experimental_3d_obj_use_terrain_chk",
             "experimental_3d_obj_ab_compare_chk", "experimental_3d_obj_ab_probe_steps_spin",
             "experimental_3d_obj_export_obj_chk", "experimental_3d_obj_export_obj_path_edit",
-            "degen_mode_combo", "coupling_loop_combo",
+            "degen_mode_combo", "solver_backend_combo", "solver_openmp_enabled_chk", "solver_cpu_threads_spin", "coupling_loop_combo",
             "drainage_solver_mode_combo", "drainage_backend_combo", "drainage_gpu_method_combo", "drainage_coupling_substeps_spin",
             "drainage_max_coupling_substeps_spin", "drainage_head_deadband_spin",
             "drainage_dynamic_relaxation_spin", "drainage_adaptive_depth_fraction_spin",
@@ -9838,7 +10164,7 @@ class SWE2DWorkbenchDialog(QtWidgets.QDialog):
 
     def _execute_run_request(self, request):
         self._last_run_request = request
-        self._on_run()
+        self._on_run(request)
 
     def _ensure_mesh_for_run_preflight(self):
         if self._mesh_data is None:
@@ -9848,7 +10174,16 @@ class SWE2DWorkbenchDialog(QtWidgets.QDialog):
         return self._mesh_data is not None
 
     def _native_backend_ready_for_run_preflight(self) -> bool:
-        return bool(swe2d_available() and SWE2DBackend is not None)
+        openmp_enabled = True
+        try:
+            if getattr(self, "solver_openmp_enabled_chk", None) is not None:
+                openmp_enabled = bool(self.solver_openmp_enabled_chk.isChecked())
+        except Exception:
+            openmp_enabled = True
+        try:
+            return bool(swe2d_available(openmp_enabled=openmp_enabled) and SWE2DBackend is not None)
+        except TypeError:
+            return bool(swe2d_available() and SWE2DBackend is not None)
 
     def _show_backend_unavailable_for_run_preflight(self, message: str):
         QtWidgets.QMessageBox.critical(self, "2D SWE", str(message))
@@ -9871,9 +10206,9 @@ class SWE2DWorkbenchDialog(QtWidgets.QDialog):
             return
         self._run_orchestrator.run(request)
 
-    def _on_run(self):
+    def _on_run(self, request=None):
         from swe2d.workbench.monolith_methods import _on_run as _logic
-        return _logic(self)
+        return _logic(self, request)
 
     def _refresh_plot(self):
         if not self._have_mpl or self._mesh_data is None:
@@ -10039,8 +10374,8 @@ class SWE2DWorkbenchStudioDialog(SWE2DWorkbenchDialog):
         self._studio_inspector_dock = None
         self._studio_feature_flags = {
             "rainfall": True,
-            "drainage": True,
-            "structures": True,
+            "drainage_structures": True,
+            "3d_patch": False,
         }
         super().__init__(parent, iface=iface)
         self.setWindowTitle("2D SWE Workbench (Studio)")
@@ -10095,6 +10430,18 @@ class SWE2DWorkbenchStudioDialog(SWE2DWorkbenchDialog):
         return studio_select_tab(self, name)
 
     def _studio_set_feature_enabled(self, feature: str, enabled: bool) -> None:
+        """Toggle a Studio feature on/off (Rainfall, Drainage/Structures, 3D Patch).
+
+        Updates self._studio_feature_flags and calls _studio_apply_feature_filters()
+        to show/hide matching widgets and tabs.  Called by menu actions and
+        toolbar buttons in _install_studio_host_controls().
+
+        To add a new feature toggle:
+          1. Add entry to self._studio_feature_flags dict
+          2. Add keywords in studio_feature_keywords() (shell_dialog_methods.py)
+          3. Add menu + toolbar actions in _install_studio_host_controls()
+        See docs/STUDIO_UI_ARCHITECTURE.md section C.
+        """
         from swe2d.workbench.extracted.shell_dialog_methods import studio_set_feature_enabled
 
         return studio_set_feature_enabled(self, feature, enabled)
@@ -10110,6 +10457,15 @@ class SWE2DWorkbenchStudioDialog(SWE2DWorkbenchDialog):
         return studio_widget_text_blob(self, widget)
 
     def _studio_apply_feature_filters(self) -> None:
+        """Show/hide widgets and tabs based on _studio_feature_flags.
+
+        Iterates all children of self._left_tabs, matches each widget's
+        objectName/text against studio_feature_keywords(), and calls
+        setVisible() / setTabVisible() accordingly.
+
+        Called automatically by _studio_set_feature_enabled().
+        See docs/STUDIO_UI_ARCHITECTURE.md section C.
+        """
         from swe2d.workbench.extracted.shell_dialog_methods import studio_apply_feature_filters
 
         return studio_apply_feature_filters(self)
@@ -10302,6 +10658,15 @@ def _studio_take_dock_widget(studio_dock, fallback_text: str) -> QtWidgets.QWidg
 
 
 def _build_studio_component_docks(iface_obj, host_window, dlg) -> Dict[str, QtWidgets.QDockWidget]:
+    """Extract Studio component docks from the hidden dialog QMainWindow.
+
+    The Studio dialog builds its full UI (toolbar, left tabs, right pane,
+    log, inspector) inside a hidden QMainWindow.  This function tears down
+    that window and re-parents its docks into the QGIS host window so the
+    user sees native QGIS dock widgets.
+
+    Returns a dict of dock references keyed by panel name.
+    """
     from swe2d.workbench.extracted.studio_host_methods import _build_studio_component_docks as _logic
 
     _prepare_studio_host_logic_globals(_logic)
@@ -10338,6 +10703,18 @@ def _install_studio_host_controls(
     fallback_parent=None,
     component_docks: Optional[Dict[str, QtWidgets.QDockWidget]] = None,
 ) -> None:
+    """Install the SWE2D Studio menu and toolbar into the QGIS host window.
+
+    Creates:
+      - QGIS menu bar entry "SWE2D Studio" with feature toggles and focus actions
+      - QGIS toolbar "SWE2D Studio" with tab-select, refresh, snapshot, and
+        feature toggle checkable buttons
+
+    Feature toggles (Rainfall, Drainage/Structures, 3D Patch) are wired to
+    dlg._studio_set_feature_enabled().  When adding a new toggle, add both
+    a menu action AND a toolbar button here.
+    See docs/STUDIO_UI_ARCHITECTURE.md section C.
+    """
     from swe2d.workbench.extracted.studio_host_methods import _install_studio_host_controls as _logic
 
     _prepare_studio_host_logic_globals(_logic)

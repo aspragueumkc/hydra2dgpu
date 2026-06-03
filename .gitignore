@@ -10,6 +10,7 @@ __pycache__/
 
 # CMake / build outputs
 build/
+lib/
 dist/
 *.egg-info/
 

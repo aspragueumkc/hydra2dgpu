@@ -526,6 +526,9 @@ SWE2DSolver* swe2d_create(
             const bool enable_cuda_graphs = swe2d_env_enabled("BACKWATER_ENABLE_CUDA_GRAPHS");
             swe2d_gpu_enable_kernel_graphs(s->dev, enable_cuda_graphs);
 
+            // Set Manning unit-conversion factor for GPU constant memory.
+            swe2d_gpu_set_k_mann(cfg.k_mann);
+
             if (cfg.three_d_solver_model == static_cast<int>(SWE2DThreeDSolverModel::SINGLE_PHASE_FREE_SURFACE_VOF)) {
                 const SWE3DCartesianPatchDesc patch_desc = swe3d_default_patch_desc_from_env(
                     mesh,
@@ -898,7 +901,7 @@ SWE2DStepDiag swe2d_step_cpu(SWE2DSolver* s, double dt) {
                     if (s->cfg.source_imex_split && s->h[c] > h_min) {
                         double n_mann_sub = s->n_mann_cell[c];
                         swe2d::apply_friction(s->h[c], s->hu[c], s->hv[c],
-                                              dt_sub, n_mann_sub, g, h_min);
+                                              dt_sub, n_mann_sub, g, h_min, s->cfg.k_mann);
                         friction_applied_in_substeps = true;
                     }
                 }
@@ -921,7 +924,7 @@ SWE2DStepDiag swe2d_step_cpu(SWE2DSolver* s, double dt) {
         if (!friction_applied_in_substeps) {
             double n_mann = s->n_mann_cell[c];
             swe2d::apply_friction(s->h[c], s->hu[c], s->hv[c],
-                                  dt, n_mann, g, h_min);
+                                  dt, n_mann, g, h_min, s->cfg.k_mann);
         }
 
         const double wse_err = std::abs(s->h[c] - h_old);

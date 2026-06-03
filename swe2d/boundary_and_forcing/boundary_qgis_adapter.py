@@ -61,6 +61,26 @@ def _edge_matches_feature(
     return False
 
 
+def _edge_intersects_feature(
+    *,
+    x0: float,
+    y0: float,
+    x1: float,
+    y1: float,
+    feature_geom,
+    qgs_geometry_cls,
+    qgs_pointxy_cls,
+) -> bool:
+    try:
+        edge_geom = qgs_geometry_cls.fromPolylineXY([
+            qgs_pointxy_cls(x0, y0),
+            qgs_pointxy_cls(x1, y1),
+        ])
+        return bool(edge_geom.intersects(feature_geom))
+    except Exception:
+        return False
+
+
 def apply_bc_layer_overrides_qgis(
     *,
     mesh_data,
@@ -159,7 +179,7 @@ def apply_bc_layer_overrides_qgis(
                 qgs_pointxy_cls=qgs_pointxy_cls,
             )
             key = (int(pr), -float(dist))
-            if best is None or key > best_key:
+            if best is None or best_key is None or key > best_key:
                 best = (t, v)
                 best_key = key
         if best is not None:
@@ -172,6 +192,53 @@ def apply_bc_layer_overrides_qgis(
 
     if applied:
         log_fn(f"BC line static overrides applied to {applied}/{edge_n0.size} boundary edges from '{bc_layer.name()}'.")
+    elif features:
+        # Fallback path for legacy/offset geometries where strict midpoint
+        # proximity misses all intended edges.
+        fallback_applied = 0
+        for i in range(edge_n0.size):
+            x0 = float(node_x[edge_n0[i]])
+            y0 = float(node_y[edge_n0[i]])
+            x1 = float(node_x[edge_n1[i]])
+            y1 = float(node_y[edge_n1[i]])
+            best = None
+            best_key = None
+            for pr, g, t, v in features:
+                if not _edge_intersects_feature(
+                    x0=x0,
+                    y0=y0,
+                    x1=x1,
+                    y1=y1,
+                    feature_geom=g,
+                    qgs_geometry_cls=qgs_geometry_cls,
+                    qgs_pointxy_cls=qgs_pointxy_cls,
+                ):
+                    continue
+                dist = _edge_midpoint_distance_to_feature(
+                    x0=x0,
+                    y0=y0,
+                    x1=x1,
+                    y1=y1,
+                    feature_geom=g,
+                    qgs_geometry_cls=qgs_geometry_cls,
+                    qgs_pointxy_cls=qgs_pointxy_cls,
+                )
+                key = (int(pr), -float(dist))
+                if best is None or best_key is None or key > best_key:
+                    best = (t, v)
+                    best_key = key
+            if best is not None:
+                t, v = best
+                changed = (int(bc_type[i]) != int(t)) or (not np.isclose(float(bc_val[i]), float(v)))
+                bc_type[i] = int(t)
+                bc_val[i] = float(v)
+                if changed:
+                    fallback_applied += 1
+        if fallback_applied:
+            log_fn(
+                "BC line static overrides fallback applied via geometry intersections "
+                f"to {fallback_applied}/{edge_n0.size} boundary edges from '{bc_layer.name()}'."
+            )
 
     return bc_type, bc_val
 
@@ -365,12 +432,48 @@ def collect_bc_layer_hydrographs_qgis(
                 qgs_pointxy_cls=qgs_pointxy_cls,
             )
             key = (int(pr), -float(dist))
-            if best is None or key > best_key:
+            if best is None or best_key is None or key > best_key:
                 best = (t, hg)
                 best_key = key
         if best is not None:
             t, hg = best
             edge_hydro[i] = (t, hg)
+
+    if not edge_hydro and features:
+        for i in range(edge_n0.size):
+            x0 = float(node_x[edge_n0[i]])
+            y0 = float(node_y[edge_n0[i]])
+            x1 = float(node_x[edge_n1[i]])
+            y1 = float(node_y[edge_n1[i]])
+            best = None
+            best_key = None
+            for pr, g, t, hg in features:
+                if not _edge_intersects_feature(
+                    x0=x0,
+                    y0=y0,
+                    x1=x1,
+                    y1=y1,
+                    feature_geom=g,
+                    qgs_geometry_cls=qgs_geometry_cls,
+                    qgs_pointxy_cls=qgs_pointxy_cls,
+                ):
+                    continue
+                dist = _edge_midpoint_distance_to_feature(
+                    x0=x0,
+                    y0=y0,
+                    x1=x1,
+                    y1=y1,
+                    feature_geom=g,
+                    qgs_geometry_cls=qgs_geometry_cls,
+                    qgs_pointxy_cls=qgs_pointxy_cls,
+                )
+                key = (int(pr), -float(dist))
+                if best is None or best_key is None or key > best_key:
+                    best = (t, hg)
+                    best_key = key
+            if best is not None:
+                t, hg = best
+                edge_hydro[i] = (t, hg)
 
     if edge_hydro:
         log_fn(f"BC line hydrographs applied to {len(edge_hydro)} boundary edges.")
@@ -452,10 +555,45 @@ def collect_bc_layer_edge_groups_qgis(
                 qgs_pointxy_cls=qgs_pointxy_cls,
             )
             key = (int(pr), -float(dist))
-            if best_nm is None or key > best_key:
+            if best_nm is None or best_key is None or key > best_key:
                 best_nm = nm
                 best_key = key
         if best_nm is not None:
             edge_groups[i] = f"bc_line:{best_nm}"
+
+    if not edge_groups and features:
+        for i in range(edge_n0.size):
+            x0 = float(node_x[edge_n0[i]])
+            y0 = float(node_y[edge_n0[i]])
+            x1 = float(node_x[edge_n1[i]])
+            y1 = float(node_y[edge_n1[i]])
+            best_nm = None
+            best_key = None
+            for pr, g, nm in features:
+                if not _edge_intersects_feature(
+                    x0=x0,
+                    y0=y0,
+                    x1=x1,
+                    y1=y1,
+                    feature_geom=g,
+                    qgs_geometry_cls=qgs_geometry_cls,
+                    qgs_pointxy_cls=qgs_pointxy_cls,
+                ):
+                    continue
+                dist = _edge_midpoint_distance_to_feature(
+                    x0=x0,
+                    y0=y0,
+                    x1=x1,
+                    y1=y1,
+                    feature_geom=g,
+                    qgs_geometry_cls=qgs_geometry_cls,
+                    qgs_pointxy_cls=qgs_pointxy_cls,
+                )
+                key = (int(pr), -float(dist))
+                if best_nm is None or best_key is None or key > best_key:
+                    best_nm = nm
+                    best_key = key
+            if best_nm is not None:
+                edge_groups[i] = f"bc_line:{best_nm}"
 
     return edge_groups

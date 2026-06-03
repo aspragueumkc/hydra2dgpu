@@ -28,6 +28,8 @@ class SWE2DRunOptionsData:
     temporal_order_value: int
     temporal_scheme: Any
     temporal_scheme_name: str
+    solver_backend_mode: str
+    openmp_enabled: bool
     godunov_mode: Any
     coupling_loop_mode: str
     drainage_solver_backend_mode: str
@@ -137,14 +139,54 @@ class SWE2DRunOptionsBuilder:
                 if idx_r >= 0:
                     reconstruction_name = self._ui.reconstruction_combo.itemText(idx_r).strip()
 
+        openmp_enabled = bool(
+            not hasattr(self._ui, "solver_openmp_enabled_chk")
+            or getattr(self._ui, "solver_openmp_enabled_chk", None) is None
+            or self._ui.solver_openmp_enabled_chk.isChecked()
+        )
+        os.environ["BACKWATER_SWE2D_OPENMP"] = "1" if openmp_enabled else "0"
+
+        def _gpu_available_for_selected_module() -> bool:
+            if self._swe2d_gpu_available is None:
+                return False
+            try:
+                return bool(self._swe2d_gpu_available(openmp_enabled=openmp_enabled))
+            except TypeError:
+                try:
+                    return bool(self._swe2d_gpu_available())
+                except Exception:
+                    return False
+            except Exception:
+                return False
+
+        solver_backend_mode = str(
+            self._ui.solver_backend_combo.currentData()
+            if hasattr(self._ui, "solver_backend_combo")
+            else "gpu"
+        ).strip().lower()
+        if solver_backend_mode not in {"cpu", "gpu"}:
+            solver_backend_mode = "gpu"
+        if solver_backend_mode == "gpu" and not _gpu_available_for_selected_module():
+            self._log("GPU solver backend selected but CUDA is unavailable; falling back to CPU solver backend.")
+            solver_backend_mode = "cpu"
+
         coupling_loop_mode = str(self._ui.coupling_loop_combo.currentData() if hasattr(self._ui, "coupling_loop_combo") else "cpu")
         drainage_solver_backend_mode = str(self._ui.drainage_backend_combo.currentData() if hasattr(self._ui, "drainage_backend_combo") else "cpu")
         drainage_gpu_method_mode = str(self._ui.drainage_gpu_method_combo.currentData() if hasattr(self._ui, "drainage_gpu_method_combo") else "step")
         culvert_solver_mode = int(self._ui.culvert_solver_mode_combo.currentData() if hasattr(self._ui, "culvert_solver_mode_combo") else 0)
 
+        if solver_backend_mode == "cpu":
+            if str(coupling_loop_mode).strip().lower() != "cpu":
+                self._log("CPU solver backend selected: forcing coupling loop to CPU mode.")
+            if str(drainage_solver_backend_mode).strip().lower() != "cpu":
+                self._log("CPU solver backend selected: forcing drainage backend to CPU mode.")
+            coupling_loop_mode = "cpu"
+            drainage_solver_backend_mode = "cpu"
+
         cuda_graphs_enabled = bool(getattr(self._ui, "enable_cuda_graphs_chk", None) and self._ui.enable_cuda_graphs_chk.isChecked())
         if (
             cuda_graphs_enabled
+            and str(solver_backend_mode).strip().lower() == "gpu"
             and int(temporal_order_value) >= 4
             and str(coupling_loop_mode).strip().lower() == "cuda"
             and str(drainage_solver_backend_mode).strip().lower() == "gpu"
@@ -184,7 +226,9 @@ class SWE2DRunOptionsBuilder:
             if experimental_3d_enabled:
                 if self._SWE2DThreeDSolverModel is None or self._SWE2DThreeDCouplingMode is None:
                     raise RuntimeError("Experimental 3D mode requested but 3D enum support is unavailable in this build.")
-                if not bool(self._swe2d_gpu_available()):
+                if str(solver_backend_mode).strip().lower() != "gpu":
+                    raise RuntimeError("Experimental 3D mode requires the solver backend set to GPU.")
+                if not _gpu_available_for_selected_module():
                     raise RuntimeError("Experimental 3D mode requires CUDA GPU availability.")
                 if self._SWE2DEquationSet is not None and equation_set != self._SWE2DEquationSet.HYDROSTATIC_2D:
                     self._log(
@@ -241,7 +285,11 @@ class SWE2DRunOptionsBuilder:
         thiessen_forcing = self._build_thiessen_rain_cn_forcing()
         pipe_network_cfg = self._build_pipe_network_config()
         hydraulic_structures_cfg = self._build_hydraulic_structure_config()
-        bridge_cuda_coupling = bool(self._swe2d_gpu_available()) and self._has_bridge_structures(hydraulic_structures_cfg)
+        bridge_cuda_coupling = (
+            str(solver_backend_mode).strip().lower() == "gpu"
+            and _gpu_available_for_selected_module()
+            and self._has_bridge_structures(hydraulic_structures_cfg)
+        )
         bridge_stacked_coupling_mode = str(
             self._ui.bridge_stacked_coupling_mode_combo.currentData()
             if hasattr(self._ui, "bridge_stacked_coupling_mode_combo")
@@ -266,6 +314,8 @@ class SWE2DRunOptionsBuilder:
             temporal_order_value=temporal_order_value,
             temporal_scheme=temporal_scheme,
             temporal_scheme_name=temporal_scheme_name,
+            solver_backend_mode=solver_backend_mode,
+            openmp_enabled=openmp_enabled,
             godunov_mode=godunov_mode,
             coupling_loop_mode=coupling_loop_mode,
             drainage_solver_backend_mode=drainage_solver_backend_mode,

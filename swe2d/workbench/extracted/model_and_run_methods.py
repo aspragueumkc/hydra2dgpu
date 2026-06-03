@@ -1039,9 +1039,11 @@ def _bind_model_tab_3d_patch_controls(self, model_tab_page: QtWidgets.QWidget, p
 
 
 def _bind_model_tab_3d_subgrid_drainage_controls(
-    self, model_tab_page: QtWidgets.QWidget, param_form: QtWidgets.QFormLayout
+    self, model_tab_page: QtWidgets.QWidget, param_form: QtWidgets.QFormLayout,
+    solver_form: Optional[QtWidgets.QFormLayout] = None,
 ) -> None:
     patch_form = model_tab_page.findChild(QtWidgets.QFormLayout, "patch_3d_form") or param_form
+    _sf = solver_form or param_form  # solver-target items go here, not into the drainage form
 
     def _ensure_row(label: str, widget: QtWidgets.QWidget, target_form: Optional[QtWidgets.QFormLayout] = None) -> None:
         form = target_form or patch_form
@@ -1316,7 +1318,7 @@ def _bind_model_tab_3d_subgrid_drainage_controls(
     )
 
     self.godunov_mode_combo = _find_or_create_combo(
-        "godunov_mode_combo", "GPU solver mode:", param_form
+        "godunov_mode_combo", "GPU solver mode:", _sf
     )
     prev_data = self.godunov_mode_combo.currentData()
     prev_text = self.godunov_mode_combo.currentText()
@@ -1341,7 +1343,7 @@ def _bind_model_tab_3d_subgrid_drainage_controls(
         "keeps the native solver on the migration path for the new FVM mode."
     )
 
-    self.degen_mode_combo = _find_or_create_combo("degen_mode_combo", "Degenerate cell mode:", param_form)
+    self.degen_mode_combo = _find_or_create_combo("degen_mode_combo", "Degenerate cell mode:", _sf)
     prev_data = self.degen_mode_combo.currentData()
     prev_text = self.degen_mode_combo.currentText()
     self.degen_mode_combo.blockSignals(True)
@@ -1372,7 +1374,49 @@ def _bind_model_tab_3d_subgrid_drainage_controls(
         "Merge: redirect flux accumulation to largest non-degenerate neighbor."
     )
 
-    self.coupling_loop_combo = _find_or_create_combo("coupling_loop_combo", "Coupling loop:", param_form)
+    self.solver_backend_combo = _find_or_create_combo("solver_backend_combo", "SWE2D solver backend:", _sf)
+    prev_data = self.solver_backend_combo.currentData()
+    prev_text = self.solver_backend_combo.currentText()
+    self.solver_backend_combo.blockSignals(True)
+    try:
+        self.solver_backend_combo.clear()
+        self.solver_backend_combo.addItem("GPU solver backend (CUDA)", "gpu")
+        self.solver_backend_combo.addItem("CPU solver backend", "cpu")
+        idx = self.solver_backend_combo.findData(prev_data)
+        if idx < 0 and prev_text:
+            idx = self.solver_backend_combo.findText(prev_text)
+        if idx < 0:
+            idx = 0
+        if idx >= 0:
+            self.solver_backend_combo.setCurrentIndex(idx)
+    finally:
+        self.solver_backend_combo.blockSignals(False)
+    self.solver_backend_combo.setToolTip(
+        "Select the SWE2D time-integration backend.\n"
+        "GPU: uses CUDA kernels for SWE stepping and enables CUDA-native coupling paths.\n"
+        "CPU: forces CPU SWE stepping and CPU coupling/source assembly paths."
+    )
+
+    self.solver_openmp_enabled_chk = _find_or_create_check(
+        "solver_openmp_enabled_chk", "SWE2D OpenMP:", "Enabled", _sf
+    )
+    self.solver_openmp_enabled_chk.setChecked(True)
+    self.solver_openmp_enabled_chk.setToolTip(
+        "Enable OpenMP-native SWE2D module variant.\n"
+        "Off loads the serial non-OpenMP module variant built from the same sources."
+    )
+
+    self.solver_cpu_threads_spin = _find_or_create_spin(
+        "solver_cpu_threads_spin", "SWE2D CPU threads:", _sf
+    )
+    self.solver_cpu_threads_spin.setRange(0, 256)
+    self.solver_cpu_threads_spin.setValue(0)
+    self.solver_cpu_threads_spin.setToolTip(
+        "CPU thread count for SWE2D CPU backend.\n"
+        "0 = auto (OpenMP runtime decides, e.g., OMP_NUM_THREADS/hardware)."
+    )
+
+    self.coupling_loop_combo = _find_or_create_combo("coupling_loop_combo", "Coupling loop:", _sf)
     prev_data = self.coupling_loop_combo.currentData()
     prev_text = self.coupling_loop_combo.currentText()
     self.coupling_loop_combo.blockSignals(True)
@@ -2082,6 +2126,9 @@ def _connect_project_workbench_state_signals(self) -> None:
         ("experimental_3d_obj_export_obj_chk", "toggled"),
         ("experimental_3d_obj_export_obj_path_edit", "editingFinished"),
         ("degen_mode_combo", "currentIndexChanged"),
+        ("solver_backend_combo", "currentIndexChanged"),
+        ("solver_openmp_enabled_chk", "toggled"),
+        ("solver_cpu_threads_spin", "valueChanged"),
         ("coupling_loop_combo", "currentIndexChanged"),
         ("drainage_solver_mode_combo", "currentIndexChanged"),
         ("drainage_backend_combo", "currentIndexChanged"),
@@ -2175,7 +2222,9 @@ def _connect_project_workbench_state_signals(self) -> None:
 
 
 
-def _on_run(self):
+def _on_run(self, request=None):
+    if request is None:
+        request = getattr(self, "_last_run_request", None)
     if self._mesh_data is None:
         self._log("Run aborted: mesh not available after preflight.")
         return
@@ -2226,6 +2275,13 @@ def _on_run(self):
 
         run_options = self._run_options_builder.build()
         run_duration_s = run_options.run_duration_s
+        if request is not None:
+            request_run_duration_text = getattr(request, "run_duration_text", None)
+            if request_run_duration_text is not None and str(request_run_duration_text).strip():
+                try:
+                    run_duration_s = max(0.0, self._parse_time_hours(str(request_run_duration_text).strip()) * 3600.0)
+                except Exception:
+                    pass
         dt_cfg = run_options.dt_cfg
         adaptive_cfl_dt = run_options.adaptive_cfl_dt
         dt_fixed = run_options.dt_fixed
@@ -2234,6 +2290,9 @@ def _on_run(self):
         reconstruction_name = run_options.reconstruction_name
         temporal_scheme = run_options.temporal_scheme
         temporal_scheme_name = run_options.temporal_scheme_name
+        solver_backend_mode = str(getattr(run_options, "solver_backend_mode", "gpu")).strip().lower()
+        openmp_enabled = bool(getattr(run_options, "openmp_enabled", True))
+        os.environ["BACKWATER_SWE2D_OPENMP"] = "1" if openmp_enabled else "0"
         godunov_mode = run_options.godunov_mode
         coupling_loop_mode = run_options.coupling_loop_mode
         drainage_solver_backend_mode = run_options.drainage_solver_backend_mode
@@ -2291,6 +2350,9 @@ def _on_run(self):
             if drainage_mod is not None:
                 drainage_mod.initialize()
             structures_mod = SWE2DStructureModule(hydraulic_structures_cfg) if hydraulic_structures_cfg is not None and SWE2DStructureModule is not None else None
+            if solver_backend_mode == "cpu":
+                coupling_loop_mode = "cpu"
+                drainage_solver_backend_mode = "cpu"
             coupling_controller = SWE2DCouplingController(
                 cell_area_m2=self._mesh_cell_areas(),
                 cell_bed_m=self._mesh_cell_min_bed(),
@@ -2302,13 +2364,14 @@ def _on_run(self):
                 culvert_solver_mode=culvert_solver_mode,
                 bridge_cuda_coupling=bool(run_options.bridge_cuda_coupling),
                 bridge_stacked_coupling_mode=str(getattr(run_options, "bridge_stacked_coupling_mode", "phase3_spatial")),
+                length_scale_si_to_model=self._length_scale_si_to_model(),
             )
             setattr(coupling_controller, "bridge_stacked_plans", bridge_stacked_plans)
             # GPU-first runtime policy: for legacy saved projects that still
             # carry CPU coupling selections, opportunistically promote to
             # CUDA/GPU coupling when native bindings are available.
             force_cpu_coupling = os.environ.get("BACKWATER_SWE2D_FORCE_CPU_COUPLING", "").strip() == "1"
-            if not force_cpu_coupling:
+            if (solver_backend_mode == "gpu") and (not force_cpu_coupling):
                 try:
                     native_mod = coupling_controller._native_cuda_module() if hasattr(coupling_controller, "_native_cuda_module") else None
                 except Exception:
@@ -2328,19 +2391,36 @@ def _on_run(self):
                     self._log("Drainage backend auto-promoted: CPU -> GPU (native CUDA drainage available).")
         rain_stats_acc = {"rain_mm": 0.0, "excess_mm": 0.0, "samples": 0}
 
-        # Snapshot output interval — clamp to at least 1 s to avoid div-by-zero
-        _oi_hr = self._parse_time_hours(self.output_interval_edit.text())
+        if request is not None:
+            self._last_run_request = request
+
+        def _parse_interval_text(text, default_widget_text):
+            if text is not None and str(text).strip():
+                return self._parse_time_hours(str(text).strip())
+            return self._parse_time_hours(str(default_widget_text or ""))
+
+        request_output_interval_text = getattr(request, "output_interval_text", None) if request is not None else None
+        request_line_output_interval_text = getattr(request, "line_output_interval_text", None) if request is not None else None
+
+        _oi_hr = _parse_interval_text(
+            request_output_interval_text,
+            self.output_interval_edit.text() if hasattr(self, "output_interval_edit") else "",
+        )
         output_interval_s = max(1.0, _oi_hr * 3600.0)
-        _line_oi_hr = self._parse_time_hours(self.line_output_interval_edit.text())
+        _line_oi_hr = _parse_interval_text(
+            request_line_output_interval_text,
+            self.line_output_interval_edit.text() if hasattr(self, "line_output_interval_edit") else "",
+        )
         line_output_interval_s = max(1.0, _line_oi_hr * 3600.0)
         self._snapshot_timesteps = []
         self._snapshot_mesh_fingerprint = self._current_mesh_fingerprint() if hasattr(self, "_current_mesh_fingerprint") else ""
         self._line_snapshot_rows = []
         self._line_snapshot_profile_rows = []
         self._coupling_snapshot_rows = []
-        _next_snap_t = output_interval_s
-        _next_line_snap_t = line_output_interval_s
-        _next_coupling_snap_t = line_output_interval_s
+        run_span_s = max(float(run_duration_s), 1.0e-9)
+        _next_snap_t = min(output_interval_s, run_span_s)
+        _next_line_snap_t = min(line_output_interval_s, run_span_s)
+        _next_coupling_snap_t = min(line_output_interval_s, run_span_s)
         sample_map = self._build_line_sampling_map()
         cell_solver_z = self._mesh_cell_solver_bed() if sample_map else None
         run_id = datetime.datetime.now().astimezone().strftime("swe2d_%Y%m%dT%H%M%S%z")
@@ -2397,6 +2477,8 @@ def _on_run(self):
                 f"divergence_ratio_target={proj_div_ratio_target:.6g}"
             )
         self._log(f"Run wallclock start: {run_wallclock_start}")
+        self._log(f"SWE2D solver backend: {solver_backend_mode}")
+        self._log(f"SWE2D OpenMP: {'enabled' if openmp_enabled else 'disabled (serial module)'}")
         self._log(f"Reconstruction mode: {reconstruction_name}")
         self._log(f"Temporal scheme: {temporal_scheme_name}")
         self._log(
@@ -2505,6 +2587,8 @@ def _on_run(self):
         def _build_and_initialize_backend() -> SWE2DBackend:
             return self._backend_initializer.build_and_initialize(
                 backend_cls=SWE2DBackend,
+                use_gpu=(solver_backend_mode == "gpu"),
+                openmp_enabled=openmp_enabled,
                 swe3d_env_overrides=swe3d_env_overrides,
                 dynamic_bc=dynamic_bc,
                 node_x=node_x,
@@ -2972,6 +3056,7 @@ def _on_run(self):
             h=h,
             hu=hu,
             hv=hv,
+            final_sim_time_s=float(t_accum),
             n_area=n_area,
             area_model=area_model,
             storage_start_model=storage_start_model,

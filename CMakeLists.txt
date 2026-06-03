@@ -80,44 +80,50 @@ if(BACKWATER_USE_CUDA)
   endif()
 endif()
 
-pybind11_add_module(hydra_swe2d
-    ${SWE2D_CPU_SOURCES}
-    ${SWE2D_GPU_SOURCES}
-)
-
-target_include_directories(hydra_swe2d PRIVATE cpp/src)
-
-# Disable LTO when CUDA is involved to avoid LTO version conflicts
-if(SWE2D_CUDA_FOUND)
-  set_property(TARGET hydra_swe2d PROPERTY INTERPROCEDURAL_OPTIMIZATION OFF)
-endif()
-
-if(SWE2D_CUDA_FOUND)
-  target_link_libraries(hydra_swe2d PRIVATE CUDA::cudart)
-  target_compile_definitions(hydra_swe2d PRIVATE HYDRA_HAS_CUDA=1)
-  set_property(TARGET hydra_swe2d PROPERTY CUDA_SEPARABLE_COMPILATION ON)
-  # Allow CUDA files to find shared headers
-  set_source_files_properties(cpp/src/swe2d_gpu.cu PROPERTIES LANGUAGE CUDA)
-  # Relaxed constexpr and extended lambda support for device-side std:: functions
-  target_compile_options(hydra_swe2d PRIVATE
-    $<$<COMPILE_LANGUAGE:CUDA>:--expt-relaxed-constexpr --expt-extended-lambda>
+function(_configure_swe2d_module target_name py_module_name enable_openmp)
+  pybind11_add_module(${target_name}
+      ${SWE2D_CPU_SOURCES}
+      ${SWE2D_GPU_SOURCES}
   )
-  if(NOT MSVC)
-    target_compile_options(hydra_swe2d PRIVATE -fno-lto)
-    target_link_options(hydra_swe2d PRIVATE -fno-lto)
+
+  target_include_directories(${target_name} PRIVATE cpp/src)
+  target_compile_definitions(${target_name} PRIVATE HYDRA_SWE2D_PY_MODULE_NAME=${py_module_name})
+
+  # Disable LTO when CUDA is involved to avoid LTO version conflicts
+  if(SWE2D_CUDA_FOUND)
+    set_property(TARGET ${target_name} PROPERTY INTERPROCEDURAL_OPTIMIZATION OFF)
+    target_link_libraries(${target_name} PRIVATE CUDA::cudart)
+    target_compile_definitions(${target_name} PRIVATE HYDRA_HAS_CUDA=1)
+    set_property(TARGET ${target_name} PROPERTY CUDA_SEPARABLE_COMPILATION ON)
+    # Allow CUDA files to find shared headers
+    set_source_files_properties(cpp/src/swe2d_gpu.cu PROPERTIES LANGUAGE CUDA)
+    # Relaxed constexpr and extended lambda support for device-side std:: functions
+    target_compile_options(${target_name} PRIVATE
+      $<$<COMPILE_LANGUAGE:CUDA>:--expt-relaxed-constexpr --expt-extended-lambda>
+    )
+    if(NOT MSVC)
+      target_compile_options(${target_name} PRIVATE -fno-lto)
+      target_link_options(${target_name} PRIVATE -fno-lto)
+    endif()
   endif()
-endif()
 
-if(OpenMP_CXX_FOUND)
-  target_link_libraries(hydra_swe2d PRIVATE OpenMP::OpenMP_CXX)
-  target_compile_definitions(hydra_swe2d PRIVATE HYDRA_HAS_OPENMP=1)
-endif()
+  if(enable_openmp AND OpenMP_CXX_FOUND)
+    target_link_libraries(${target_name} PRIVATE OpenMP::OpenMP_CXX)
+    target_compile_definitions(${target_name} PRIVATE HYDRA_HAS_OPENMP=1)
+  endif()
 
-if(MSVC)
-  target_compile_options(hydra_swe2d PRIVATE /W4)
-else()
-  target_compile_options(hydra_swe2d PRIVATE -Wall -Wextra -Wpedantic)
-endif()
+  if(MSVC)
+    target_compile_options(${target_name} PRIVATE /W4)
+  else()
+    target_compile_options(${target_name} PRIVATE -Wall -Wextra -Wpedantic)
+  endif()
+endfunction()
+
+# OpenMP-enabled default module (existing import path).
+_configure_swe2d_module(hydra_swe2d hydra_swe2d TRUE)
+
+# Serial module variant for true non-OpenMP runs from the same build tree.
+_configure_swe2d_module(hydra_swe2d_serial hydra_swe2d_serial FALSE)
 
 # ── TQMesh mesh generator ─────────────────────────────────────────────────────
 set(TQMESH_DIR ${CMAKE_CURRENT_SOURCE_DIR}/cpp/third_party/TQMesh)

@@ -27,6 +27,7 @@ class SWE2DRunFinalizer:
         h: np.ndarray,
         hu: np.ndarray,
         hv: np.ndarray,
+        final_sim_time_s: float,
         n_area: int,
         area_model: np.ndarray,
         storage_start_model: float,
@@ -90,6 +91,34 @@ class SWE2DRunFinalizer:
             }
         ]
         snapshot_timesteps = list(getattr(self._ui, "_snapshot_timesteps", []) or [])
+        terminal_t_s = max(0.0, float(final_sim_time_s))
+        if not snapshot_timesteps:
+            terminal_snapshot = (
+                terminal_t_s,
+                np.asarray(h, dtype=np.float64).copy(),
+                np.asarray(hu, dtype=np.float64).copy(),
+                np.asarray(hv, dtype=np.float64).copy(),
+            )
+            self._ui._snapshot_timesteps = [terminal_snapshot]
+            snapshot_timesteps = [terminal_snapshot]
+            self._ui._log(
+                "Snapshot capture fallback: no interval snapshots recorded; "
+                "stored terminal state snapshot for overlay/results."
+            )
+        else:
+            try:
+                last_t_s = float(snapshot_timesteps[-1][0])
+            except Exception:
+                last_t_s = terminal_t_s
+            if terminal_t_s > last_t_s + 1.0e-6:
+                terminal_snapshot = (
+                    terminal_t_s,
+                    np.asarray(h, dtype=np.float64).copy(),
+                    np.asarray(hu, dtype=np.float64).copy(),
+                    np.asarray(hv, dtype=np.float64).copy(),
+                )
+                self._ui._snapshot_timesteps.append(terminal_snapshot)
+                snapshot_timesteps.append(terminal_snapshot)
         if snapshot_timesteps:
             for snap in snapshot_timesteps:
                 try:

@@ -455,6 +455,12 @@ SWE2DDeviceState* swe2d_gpu_init(
     int              degen_mode   = 0,
     double           max_inv_area = 1.0e6);
 
+// Set the Manning unit-conversion factor in GPU constant memory.
+// Call once after swe2d_gpu_init and before any step call.
+//   k_mann = 1.0   for SI (meters)
+//   k_mann = 1.486 for US Customary (feet)
+void swe2d_gpu_set_k_mann(double k_mann);
+
 // Advance one timestep on GPU.  Writes diagnostics to *diag.
 void swe2d_gpu_step(
     SWE2DDeviceState* dev,
@@ -999,6 +1005,7 @@ void swe2d_gpu_preload_coupling_cell_area(SWE2DDeviceState* dev, int32_t n_cells
 void swe2d_gpu_compute_coupling_full_on_device(
     SWE2DDeviceState* dev, int32_t n_cells, int32_t n_structures, const double* cell_wse_host,
     int32_t n_inlets, const int32_t* inlet_cell, const double* inlet_flow_cms);
+void swe2d_gpu_readback_coupling_sources(double* host_buf, int32_t n_cells);
 
 SWE3DCartesianPatchDeviceState* swe3d_cartesian_patch_alloc(
     const SWE3DCartesianPatchDesc& desc);

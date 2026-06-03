@@ -18,6 +18,7 @@ from __future__ import annotations
 import os
 import sys
 import inspect
+import importlib
 import numpy as np
 from typing import Callable, Dict, List, Optional, Tuple, Union
 
@@ -64,33 +65,73 @@ class BCType:
 # ─────────────────────────────────────────────────────────────────────────────
 # Module loader (lazy, with fallback messaging)
 # ─────────────────────────────────────────────────────────────────────────────
+_swe2d_mod_cache: Dict[str, object] = {}
+_swe2d_load_errors: Dict[str, str] = {}
+_swe2d_last_load_error: Optional[str] = None
+# Backward-compatible globals used by older tests and monkeypatches.
 _swe2d_mod = None
 _swe2d_load_error: Optional[str] = None
 
 
-def _load_swe2d_module():
-    global _swe2d_mod, _swe2d_load_error
+def _env_openmp_enabled_default() -> bool:
+    raw = str(os.environ.get("BACKWATER_SWE2D_OPENMP", "1") or "1").strip().lower()
+    return raw not in {"0", "false", "off", "no"}
+
+
+def _module_name_for_openmp_enabled(openmp_enabled: Optional[bool] = None) -> str:
+    use_openmp = _env_openmp_enabled_default() if openmp_enabled is None else bool(openmp_enabled)
+    return "hydra_swe2d" if use_openmp else "hydra_swe2d_serial"
+
+
+def _load_swe2d_module(openmp_enabled: Optional[bool] = None):
+    global _swe2d_last_load_error, _swe2d_mod, _swe2d_load_error
     if _swe2d_mod is not None:
+        _swe2d_last_load_error = None
+        _swe2d_load_error = None
         return _swe2d_mod
-    if _swe2d_load_error is not None:
-        return None
+    module_name = _module_name_for_openmp_enabled(openmp_enabled)
+    if module_name in _swe2d_mod_cache:
+        _swe2d_last_load_error = None
+        _swe2d_load_error = None
+        return _swe2d_mod_cache[module_name]
+    for loaded_name in _swe2d_mod_cache.keys():
+        if loaded_name != module_name:
+            _swe2d_last_load_error = (
+                "Cannot switch SWE2D native module variant in the same Python process "
+                f"(loaded={loaded_name}, requested={module_name}). "
+                "Restart QGIS/Python and run again with the desired OpenMP setting."
+            )
+            _swe2d_load_error = _swe2d_last_load_error
+            return None
     try:
-        import hydra_swe2d as mod
-        _swe2d_mod = mod
+        mod = importlib.import_module(module_name)
+        _swe2d_mod_cache[module_name] = mod
+        if module_name == "hydra_swe2d":
+            _swe2d_mod = mod
+        _swe2d_last_load_error = None
+        _swe2d_load_error = None
         return mod
     except ImportError as e:
-        _swe2d_load_error = str(e)
+        err = f"{module_name}: {e}"
+        _swe2d_load_errors[module_name] = err
+        _swe2d_last_load_error = err
+        _swe2d_load_error = err
         return None
 
 
-def swe2d_available() -> bool:
+def swe2d_available(openmp_enabled: Optional[bool] = None) -> bool:
     """Return True if the native 2D solver module is importable."""
-    return _load_swe2d_module() is not None
+    return _load_swe2d_module(openmp_enabled=openmp_enabled) is not None
 
 
-def swe2d_gpu_available() -> bool:
+def load_swe2d_native_module(openmp_enabled: Optional[bool] = None):
+    """Load and return the selected SWE2D native module, or None on failure."""
+    return _load_swe2d_module(openmp_enabled=openmp_enabled)
+
+
+def swe2d_gpu_available(openmp_enabled: Optional[bool] = None) -> bool:
     """Return True if the native module is loaded AND a CUDA device is present."""
-    mod = _load_swe2d_module()
+    mod = _load_swe2d_module(openmp_enabled=openmp_enabled)
     if mod is None:
         return False
     try:
@@ -354,11 +395,13 @@ class SWE2DBackend:
         6. destroy()        — free native resources (or let GC handle it).
     """
 
-    def __init__(self, use_gpu: bool = True):
-        mod = _load_swe2d_module()
+    def __init__(self, use_gpu: bool = True, openmp_enabled: Optional[bool] = None):
+        self._openmp_enabled = _env_openmp_enabled_default() if openmp_enabled is None else bool(openmp_enabled)
+        self._native_module_name = _module_name_for_openmp_enabled(self._openmp_enabled)
+        mod = _load_swe2d_module(openmp_enabled=self._openmp_enabled)
         if mod is None:
             raise RuntimeError(
-                f"hydra_swe2d native module not available: {_swe2d_load_error}. "
+                f"{self._native_module_name} native module not available: {_swe2d_last_load_error}. "
                 "Build the native module first (cmake --build build)."
             )
         self._mod = mod
@@ -540,8 +583,10 @@ class SWE2DBackend:
         self._n_cells = info["n_cells"]
 
         self._boundary_edge_index_by_nodes = {}
+        self._boundary_edge_cells: Optional[np.ndarray] = None
         try:
-            edge_idx, n0, n1, _, _ = self._mod.swe2d_boundary_edges(self._mesh_h)
+            edge_idx, n0, n1, _, _, cell0 = self._mod.swe2d_boundary_edges(self._mesh_h)
+            self._boundary_edge_cells = np.asarray(cell0, dtype=np.int32)
             for i in range(edge_idx.size):
                 a = int(n0[i])
                 b = int(n1[i])
@@ -551,6 +596,11 @@ class SWE2DBackend:
             # Older binaries may not expose boundary-edge query; dynamic BC updates
             # will be unavailable in that case.
             self._boundary_edge_index_by_nodes = {}
+            self._boundary_edge_cells = None
+
+    def boundary_edge_cells(self) -> Optional[np.ndarray]:
+        """Return interior cell index for each boundary edge, or None."""
+        return self._boundary_edge_cells
 
     def supports_dynamic_boundary_update(self) -> bool:
         return bool(self._boundary_edge_index_by_nodes)
@@ -678,6 +728,7 @@ class SWE2DBackend:
         hv0: Optional[np.ndarray] = None,
         n_mann_cell: Optional[np.ndarray] = None,
         g:        float = 9.81,
+        k_mann:   float = 1.0,
         n_mann:   float = 0.035,
         h_min:    float = 1.0e-6,
         cfl:      float = 0.45,
@@ -847,7 +898,7 @@ class SWE2DBackend:
         self._solver_h = self._create_solver_compat(
             self._mesh_h,
             h0_arr, hu0_arr, hv0_arr, n_mann_cell_arr,
-            g=g, n_mann=n_mann, h_min=h_min,
+            g=g, k_mann=k_mann, n_mann=n_mann, h_min=h_min,
             cfl=cfl, dt_max=dt_max, dt_fixed=dt_fixed,
             max_inv_area=max_inv_area,
             cfl_lambda_cap=cfl_lambda_cap,
@@ -1047,10 +1098,23 @@ class SWE2DBackend:
             diag = self.step(dt_request)
             dt = float(diag["dt"])
             if source_rate_callback is not None and dt > 0.0:
-                h, hu, hv = self.get_state()
-                src = source_rate_callback(t, dt, h, hu, hv)
+                native_device_applied = False
                 if use_native_source_injection:
-                    self.set_external_sources_native(src)
+                    owner = getattr(source_rate_callback, "__self__", None)
+                    apply_native_device_sources = getattr(owner, "apply_native_device_sources", None)
+                    if callable(apply_native_device_sources):
+                        try:
+                            native_device_applied = bool(apply_native_device_sources(t, dt))
+                        except Exception:
+                            native_device_applied = False
+                if native_device_applied:
+                    src = None
+                else:
+                    h, hu, hv = self.get_state()
+                    src = source_rate_callback(t, dt, h, hu, hv)
+                if use_native_source_injection:
+                    if not native_device_applied:
+                        self.set_external_sources_native(src)
                 elif emulate_native_lag:
                     if src is not None:
                         src_arr = np.ascontiguousarray(src, dtype=np.float64).ravel()

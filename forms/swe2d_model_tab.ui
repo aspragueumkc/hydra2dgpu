@@ -1,1011 +1,733 @@
-<?xml version="1.0" encoding="UTF-8"?>
+<?xml version='1.0' encoding='UTF-8'?>
 <ui version="4.0">
- <class>SWE2DModelTabPage</class>
- <widget class="QWidget" name="SWE2DModelTabPage">
-  <layout class="QVBoxLayout" name="verticalLayout">
-   <property name="leftMargin">
-    <number>0</number>
-   </property>
-   <property name="topMargin">
-    <number>0</number>
-   </property>
-   <property name="rightMargin">
-    <number>0</number>
-   </property>
-   <property name="bottomMargin">
-    <number>0</number>
-   </property>
-   <item>
-    <widget class="QGroupBox" name="model_group">
-     <property name="title">
-      <string>Model Parameters</string>
-     </property>
-    <layout class="QFormLayout" name="model_param_form">
-     <item row="0" column="0">
-      <widget class="QLabel" name="n_mann_lbl">
-       <property name="text">
-        <string>Manning n:</string>
-       </property>
-      </widget>
-     </item>
-     <item row="0" column="1">
-      <widget class="QDoubleSpinBox" name="n_mann_spin"/>
-     </item>
-     <item row="1" column="0">
-      <widget class="QLabel" name="cfl_lbl">
-       <property name="text">
-        <string>CFL:</string>
-       </property>
-      </widget>
-     </item>
-     <item row="1" column="1">
-      <widget class="QDoubleSpinBox" name="cfl_spin"/>
-     </item>
-     <item row="2" column="0">
-      <widget class="QLabel" name="h_min_lbl">
-       <property name="text">
-        <string>h_min:</string>
-       </property>
-      </widget>
-     </item>
-     <item row="2" column="1">
-      <widget class="QDoubleSpinBox" name="h_min_spin"/>
-     </item>
-     <item row="3" column="0">
-      <widget class="QLabel" name="initial_condition_lbl">
-       <property name="text">
-        <string>Initial condition:</string>
-       </property>
-      </widget>
-     </item>
-     <item row="3" column="1">
-      <widget class="QComboBox" name="initial_condition_combo"/>
-     </item>
-     <item row="4" column="0">
-      <widget class="QLabel" name="initial_depth_lbl">
-       <property name="text">
-        <string>Initial depth:</string>
-       </property>
-      </widget>
-     </item>
-     <item row="4" column="1">
-      <widget class="QDoubleSpinBox" name="initial_depth_spin"/>
-     </item>
-     <item row="5" column="0">
-      <widget class="QLabel" name="initial_wse_lbl">
-       <property name="text">
-        <string>Initial WSE:</string>
-       </property>
-      </widget>
-     </item>
-     <item row="5" column="1">
-      <widget class="QDoubleSpinBox" name="initial_wse_spin"/>
-     </item>
-     <item row="6" column="0">
-      <widget class="QLabel" name="adaptive_cfl_dt_lbl">
-       <property name="text">
-        <string>Variable timestep:</string>
-       </property>
-      </widget>
-     </item>
-     <item row="6" column="1">
-      <widget class="QCheckBox" name="adaptive_cfl_dt_chk">
-       <property name="text">
-        <string>Enable variable timestep (CFL)</string>
-       </property>
-      </widget>
-     </item>
-     <item row="7" column="0">
-      <widget class="QLabel" name="dt_lbl">
-       <property name="text">
-        <string>dt (fixed or dt_max):</string>
-       </property>
-      </widget>
-     </item>
-     <item row="7" column="1">
-      <widget class="QDoubleSpinBox" name="dt_spin"/>
-     </item>
-     <item row="8" column="0">
-      <widget class="QLabel" name="gpu_diag_sync_interval_lbl">
-       <property name="text">
-        <string>GPU diag sync (steps):</string>
-       </property>
-      </widget>
-     </item>
-     <item row="8" column="1">
-      <widget class="QSpinBox" name="gpu_diag_sync_interval_spin"/>
-     </item>
-     <item row="9" column="0">
-      <widget class="QLabel" name="enable_cuda_graphs_lbl">
-       <property name="text">
-        <string>CUDA graph replay:</string>
-       </property>
-      </widget>
-     </item>
-     <item row="9" column="1">
-      <widget class="QCheckBox" name="enable_cuda_graphs_chk">
-       <property name="text">
-        <string>Enable</string>
-       </property>
-      </widget>
-     </item>
-    <item row="10" column="0">
-     <widget class="QLabel" name="max_rel_depth_increase_lbl">
-      <property name="text">
-       <string>Max rel depth increase:</string>
+  <class>SWE2DModelTabPage</class>
+  <widget class="QWidget" name="SWE2DModelTabPage">
+    <layout class="QVBoxLayout" name="verticalLayout">
+      <property name="leftMargin">
+        <number>0</number>
       </property>
-     </widget>
-    </item>
-    <item row="10" column="1">
-     <widget class="QDoubleSpinBox" name="max_rel_depth_increase_spin"/>
-    </item>
-    <item row="11" column="0">
-     <widget class="QLabel" name="max_source_depth_step_lbl">
-      <property name="text">
-       <string>Max source dh/step:</string>
+      <property name="topMargin">
+        <number>0</number>
       </property>
-     </widget>
-    </item>
-    <item row="11" column="1">
-     <widget class="QDoubleSpinBox" name="max_source_depth_step_spin"/>
-    </item>
-    <item row="12" column="0">
-     <widget class="QLabel" name="max_source_rate_lbl">
-      <property name="text">
-       <string>Max source rate:</string>
+      <property name="rightMargin">
+        <number>0</number>
       </property>
-     </widget>
-    </item>
-    <item row="12" column="1">
-     <widget class="QDoubleSpinBox" name="max_source_rate_spin"/>
-    </item>
-    <item row="13" column="0">
-     <widget class="QLabel" name="extreme_rain_mode_lbl">
-      <property name="text">
-       <string>Extreme rain mode:</string>
+      <property name="bottomMargin">
+        <number>0</number>
       </property>
-     </widget>
-    </item>
-    <item row="13" column="1">
-     <widget class="QCheckBox" name="extreme_rain_mode_chk">
-      <property name="text">
-       <string>Enable</string>
-      </property>
-     </widget>
-    </item>
-    <item row="14" column="0">
-     <widget class="QLabel" name="source_cfl_beta_lbl">
-      <property name="text">
-       <string>Source CFL beta:</string>
-      </property>
-     </widget>
-    </item>
-    <item row="14" column="1">
-     <widget class="QDoubleSpinBox" name="source_cfl_beta_spin"/>
-    </item>
-    <item row="15" column="0">
-     <widget class="QLabel" name="source_max_substeps_lbl">
-      <property name="text">
-       <string>Source max substeps:</string>
-      </property>
-     </widget>
-    </item>
-    <item row="15" column="1">
-     <widget class="QSpinBox" name="source_max_substeps_spin"/>
-    </item>
-    <item row="16" column="0">
-     <widget class="QLabel" name="source_true_subcycling_lbl">
-      <property name="text">
-       <string>True source subcycling:</string>
-      </property>
-     </widget>
-    </item>
-    <item row="16" column="1">
-     <widget class="QCheckBox" name="source_true_subcycling_chk">
-      <property name="text">
-       <string>Enable</string>
-      </property>
-     </widget>
-    </item>
-    <item row="17" column="0">
-     <widget class="QLabel" name="source_imex_split_lbl">
-      <property name="text">
-       <string>IMEX source split:</string>
-      </property>
-     </widget>
-    </item>
-    <item row="17" column="1">
-     <widget class="QCheckBox" name="source_imex_split_chk">
-      <property name="text">
-       <string>Enable</string>
-      </property>
-     </widget>
-    </item>
-    <item row="18" column="0">
-     <widget class="QLabel" name="source_stage_coupled_imex_rk2_lbl">
-      <property name="text">
-       <string>Stage-coupled IMEX-RK2 sources:</string>
-      </property>
-     </widget>
-    </item>
-    <item row="18" column="1">
-     <widget class="QCheckBox" name="source_stage_coupled_imex_rk2_chk">
-      <property name="text">
-       <string>Enable</string>
-      </property>
-     </widget>
-    </item>
-    <item row="19" column="0">
-     <widget class="QLabel" name="shallow_damping_depth_lbl">
-      <property name="text">
-       <string>Shallow damping depth:</string>
-      </property>
-     </widget>
-    </item>
-    <item row="19" column="1">
-     <widget class="QDoubleSpinBox" name="shallow_damping_depth_spin"/>
-    </item>
-    <item row="20" column="0">
-     <widget class="QLabel" name="shallow_front_recon_fallback_lbl">
-      <property name="text">
-       <string>Shallow-front recon fallback:</string>
-      </property>
-     </widget>
-    </item>
-    <item row="20" column="1">
-     <widget class="QCheckBox" name="shallow_front_recon_fallback_chk">
-      <property name="text">
-       <string>Enable</string>
-      </property>
-     </widget>
-    </item>
-    <item row="21" column="0">
-     <widget class="QLabel" name="front_flux_damping_lbl">
-      <property name="text">
-       <string>Front flux damping:</string>
-      </property>
-     </widget>
-    </item>
-    <item row="21" column="1">
-     <widget class="QDoubleSpinBox" name="front_flux_damping_spin"/>
-    </item>
-    <item row="22" column="0">
-     <widget class="QLabel" name="active_set_hysteresis_lbl">
-      <property name="text">
-       <string>Active-set hysteresis:</string>
-      </property>
-     </widget>
-    </item>
-    <item row="22" column="1">
-     <widget class="QCheckBox" name="active_set_hysteresis_chk">
-      <property name="text">
-       <string>Enable</string>
-      </property>
-     </widget>
-    </item>
-    <item row="23" column="0">
-     <widget class="QLabel" name="depth_cap_lbl">
-      <property name="text">
-       <string>Depth cap:</string>
-      </property>
-     </widget>
-    </item>
-    <item row="23" column="1">
-     <widget class="QDoubleSpinBox" name="depth_cap_spin"/>
-    </item>
-    <item row="24" column="0">
-     <widget class="QLabel" name="momentum_cap_min_speed_lbl">
-      <property name="text">
-       <string>Momentum cap min speed:</string>
-      </property>
-     </widget>
-    </item>
-    <item row="24" column="1">
-     <widget class="QDoubleSpinBox" name="momentum_cap_min_speed_spin"/>
-    </item>
-    <item row="25" column="0">
-     <widget class="QLabel" name="momentum_cap_celerity_mult_lbl">
-      <property name="text">
-       <string>Momentum cap celerity mult:</string>
-      </property>
-     </widget>
-    </item>
-    <item row="25" column="1">
-     <widget class="QDoubleSpinBox" name="momentum_cap_celerity_mult_spin"/>
-    </item>
-    <item row="26" column="0">
-     <widget class="QLabel" name="max_inv_area_lbl">
-      <property name="text">
-       <string>Max inv area:</string>
-      </property>
-     </widget>
-    </item>
-    <item row="26" column="1">
-     <widget class="QDoubleSpinBox" name="max_inv_area_spin"/>
-    </item>
-    <item row="27" column="0">
-     <widget class="QLabel" name="cfl_lambda_cap_lbl">
-      <property name="text">
-       <string>CFL lambda cap:</string>
-      </property>
-     </widget>
-    </item>
-    <item row="27" column="1">
-     <widget class="QDoubleSpinBox" name="cfl_lambda_cap_spin"/>
-    </item>
-    <item row="28" column="0">
-     <widget class="QLabel" name="rain_rate_lbl">
-      <property name="text">
-       <string>Rain rate:</string>
-      </property>
-     </widget>
-    </item>
-    <item row="28" column="1">
-     <widget class="QDoubleSpinBox" name="rain_rate_spin"/>
-    </item>
-    <item row="29" column="0">
-     <widget class="QLabel" name="cn_default_lbl">
-      <property name="text">
-       <string>Default CN:</string>
-      </property>
-     </widget>
-    </item>
-    <item row="29" column="1">
-     <widget class="QDoubleSpinBox" name="cn_default_spin"/>
-    </item>
-    <item row="30" column="0">
-     <widget class="QLabel" name="ia_ratio_lbl">
-      <property name="text">
-       <string>SCS Ia/S ratio:</string>
-      </property>
-     </widget>
-    </item>
-    <item row="30" column="1">
-     <widget class="QDoubleSpinBox" name="ia_ratio_spin"/>
-    </item>
-    <item row="31" column="0">
-     <widget class="QLabel" name="use_spatial_rain_cn_lbl">
-      <property name="text">
-       <string>Spatial rainfall:</string>
-      </property>
-     </widget>
-    </item>
-    <item row="31" column="1">
-     <widget class="QCheckBox" name="use_spatial_rain_cn_chk">
-      <property name="text">
-       <string>Use Thiessen gage rainfall when layers are available</string>
-      </property>
-     </widget>
-    </item>
-    <item row="32" column="0">
-     <widget class="QLabel" name="infiltration_method_lbl">
-      <property name="text">
-       <string>Infiltration method:</string>
-      </property>
-     </widget>
-    </item>
-    <item row="32" column="1">
-     <widget class="QComboBox" name="infiltration_method_combo"/>
-    </item>
-    <item row="33" column="0">
-     <widget class="QLabel" name="storm_area_layer_lbl">
-      <property name="text">
-       <string>Storm area layer (optional):</string>
-      </property>
-     </widget>
-    </item>
-    <item row="33" column="1">
-     <widget class="QComboBox" name="storm_area_layer_combo"/>
-    </item>
-    <item row="34" column="0">
-     <widget class="QLabel" name="rain_boundary_buffer_rings_lbl">
-      <property name="text">
-       <string>Rain boundary buffer rings:</string>
-      </property>
-     </widget>
-    </item>
-    <item row="34" column="1">
-     <widget class="QSpinBox" name="rain_boundary_buffer_rings_spin"/>
-    </item>
-    <item row="35" column="0">
-     <widget class="QLabel" name="internal_flow_layer_lbl">
-      <property name="text">
-       <string>Internal flow layer:</string>
-      </property>
-     </widget>
-    </item>
-    <item row="35" column="1">
-     <widget class="QComboBox" name="internal_flow_layer_combo"/>
-    </item>
-    <item row="36" column="0">
-     <widget class="QLabel" name="internal_flow_field_lbl">
-      <property name="text">
-       <string>Internal flow field:</string>
-      </property>
-     </widget>
-    </item>
-    <item row="36" column="1">
-     <widget class="QLineEdit" name="internal_flow_field_edit"/>
-    </item>
-    <item row="37" column="0">
-     <widget class="QLabel" name="run_time_lbl">
-      <property name="text">
-       <string>Run duration (hr or HH:MM):</string>
-      </property>
-     </widget>
-    </item>
-    <item row="37" column="1">
-     <widget class="QLineEdit" name="run_time_edit"/>
-    </item>
-    <item row="38" column="0">
-     <widget class="QLabel" name="reconstruction_lbl">
-      <property name="text">
-       <string>Reconstruction:</string>
-      </property>
-     </widget>
-    </item>
-    <item row="38" column="1">
-     <widget class="QComboBox" name="reconstruction_combo"/>
-    </item>
-    <item row="39" column="0">
-     <widget class="QLabel" name="temporal_order_lbl">
-      <property name="text">
-       <string>Temporal discretization:</string>
-      </property>
-     </widget>
-    </item>
-    <item row="39" column="1">
-     <widget class="QComboBox" name="temporal_order_combo"/>
-    </item>
-    <item row="40" column="0">
-     <widget class="QLabel" name="equation_set_lbl">
-      <property name="text">
-       <string>Equation set:</string>
-      </property>
-     </widget>
-    </item>
-    <item row="40" column="1">
-     <widget class="QComboBox" name="equation_set_combo"/>
-    </item>
-    <item row="41" column="0">
-     <widget class="QLabel" name="godunov_mode_lbl">
-      <property name="text">
-       <string>GPU solver mode:</string>
-      </property>
-     </widget>
-    </item>
-    <item row="41" column="1">
-     <widget class="QComboBox" name="godunov_mode_combo"/>
-    </item>
-    <item row="42" column="0">
-     <widget class="QLabel" name="degen_mode_lbl">
-      <property name="text">
-       <string>Degenerate cell mode:</string>
-      </property>
-     </widget>
-    </item>
-    <item row="42" column="1">
-     <widget class="QComboBox" name="degen_mode_combo"/>
-    </item>
-    <item row="43" column="0">
-     <widget class="QLabel" name="coupling_loop_lbl">
-      <property name="text">
-       <string>Coupling loop:</string>
-      </property>
-     </widget>
-    </item>
-    <item row="43" column="1">
-     <widget class="QComboBox" name="coupling_loop_combo"/>
-    </item>
-    <item row="44" column="0">
-     <widget class="QLabel" name="drainage_solver_mode_lbl">
-      <property name="text">
-       <string>Drainage equation set:</string>
-      </property>
-     </widget>
-    </item>
-    <item row="44" column="1">
-     <widget class="QComboBox" name="drainage_solver_mode_combo"/>
-    </item>
-    <item row="45" column="0">
-     <widget class="QLabel" name="drainage_backend_lbl">
-      <property name="text">
-       <string>Drainage solver backend:</string>
-      </property>
-     </widget>
-    </item>
-    <item row="45" column="1">
-     <widget class="QComboBox" name="drainage_backend_combo"/>
-    </item>
-    <item row="46" column="0">
-     <widget class="QLabel" name="drainage_gpu_method_lbl">
-      <property name="text">
-       <string>Drainage GPU method:</string>
-      </property>
-     </widget>
-    </item>
-    <item row="46" column="1">
-     <widget class="QComboBox" name="drainage_gpu_method_combo"/>
-    </item>
-    <item row="47" column="0">
-     <widget class="QLabel" name="drainage_coupling_substeps_lbl">
-      <property name="text">
-       <string>Drainage substeps:</string>
-      </property>
-     </widget>
-    </item>
-    <item row="47" column="1">
-     <widget class="QSpinBox" name="drainage_coupling_substeps_spin"/>
-    </item>
-    <item row="48" column="0">
-     <widget class="QLabel" name="drainage_max_coupling_substeps_lbl">
-      <property name="text">
-       <string>Drainage max adaptive substeps:</string>
-      </property>
-     </widget>
-    </item>
-    <item row="48" column="1">
-     <widget class="QSpinBox" name="drainage_max_coupling_substeps_spin"/>
-    </item>
-    <item row="49" column="0">
-     <widget class="QLabel" name="drainage_head_deadband_lbl">
-      <property name="text">
-       <string>Drainage head deadband:</string>
-      </property>
-     </widget>
-    </item>
-    <item row="49" column="1">
-     <widget class="QDoubleSpinBox" name="drainage_head_deadband_spin"/>
-    </item>
-    <item row="50" column="0">
-     <widget class="QLabel" name="drainage_dynamic_relaxation_lbl">
-      <property name="text">
-       <string>Drainage dynamic relaxation:</string>
-      </property>
-     </widget>
-    </item>
-    <item row="50" column="1">
-     <widget class="QDoubleSpinBox" name="drainage_dynamic_relaxation_spin"/>
-    </item>
-    <item row="51" column="0">
-     <widget class="QLabel" name="drainage_adaptive_depth_fraction_lbl">
-      <property name="text">
-       <string>Drainage adaptive depth fraction:</string>
-      </property>
-     </widget>
-    </item>
-    <item row="51" column="1">
-     <widget class="QDoubleSpinBox" name="drainage_adaptive_depth_fraction_spin"/>
-    </item>
-    <item row="52" column="0">
-     <widget class="QLabel" name="drainage_adaptive_wave_courant_lbl">
-      <property name="text">
-       <string>Drainage adaptive wave Courant:</string>
-      </property>
-     </widget>
-    </item>
-    <item row="52" column="1">
-     <widget class="QDoubleSpinBox" name="drainage_adaptive_wave_courant_spin"/>
-    </item>
-    <item row="53" column="0">
-     <widget class="QLabel" name="drainage_implicit_iters_lbl">
-      <property name="text">
-       <string>Drainage implicit iterations (GPU):</string>
-      </property>
-     </widget>
-    </item>
-    <item row="53" column="1">
-     <widget class="QSpinBox" name="drainage_implicit_iters_spin"/>
-    </item>
-    <item row="54" column="0">
-     <widget class="QLabel" name="drainage_implicit_relax_lbl">
-      <property name="text">
-       <string>Drainage implicit relaxation (GPU):</string>
-      </property>
-     </widget>
-    </item>
-    <item row="54" column="1">
-     <widget class="QDoubleSpinBox" name="drainage_implicit_relax_spin"/>
-    </item>
-    <item row="55" column="0">
-     <widget class="QLabel" name="unit_system_lbl">
-      <property name="text">
-       <string>Unit system: auto</string>
-      </property>
-      <property name="wordWrap">
-       <bool>true</bool>
-      </property>
-     </widget>
-    </item>
-    <item row="55" column="1">
-     <widget class="QLabel" name="gpu_default_lbl">
-      <property name="text">
-       <string>GPU is attempted by default when supported by the native backend.</string>
-      </property>
-      <property name="wordWrap">
-       <bool>true</bool>
-      </property>
-     </widget>
+      <item>
+        <widget class="QToolBox" name="toolBox">
+          <property name="sizePolicy">
+            <sizepolicy hsizetype="Preferred" vsizetype="Expanding">
+              <horstretch>0</horstretch>
+              <verstretch>1</verstretch>
+            </sizepolicy>
+          </property>
+          <property name="styleSheet">
+            <string notr="true">QToolBox::tab { font-weight: bold; }</string>
+          </property>
+          <property name="currentIndex">
+            <number>0</number>
+          </property>
+          <widget class="QWidget" name="model_solver_page">
+            <attribute name="label">
+              <string>Solver Parameters</string>
+            </attribute>
+            <layout class="QVBoxLayout" name="model_solver_layout">
+              <item>
+                <layout class="QFormLayout" name="model_solver_form">
+                  <item row="0" column="0">
+                    <widget class="QLabel" name="n_mann_lbl">
+                      <property name="text">
+                        <string>Manning n:</string>
+                      </property>
+                    </widget>
+                  </item>
+                  <item row="0" column="1">
+                    <widget class="QDoubleSpinBox" name="n_mann_spin" />
+                  </item>
+                  <item row="1" column="0">
+                    <widget class="QLabel" name="cfl_lbl">
+                      <property name="text">
+                        <string>CFL:</string>
+                      </property>
+                    </widget>
+                  </item>
+                  <item row="1" column="1">
+                    <widget class="QDoubleSpinBox" name="cfl_spin" />
+                  </item>
+                  <item row="2" column="0">
+                    <widget class="QLabel" name="h_min_lbl">
+                      <property name="text">
+                        <string>h_min:</string>
+                      </property>
+                    </widget>
+                  </item>
+                  <item row="2" column="1">
+                    <widget class="QDoubleSpinBox" name="h_min_spin" />
+                  </item>
+                  <item row="3" column="0">
+                    <widget class="QLabel" name="initial_condition_lbl">
+                      <property name="text">
+                        <string>Initial condition:</string>
+                      </property>
+                    </widget>
+                  </item>
+                  <item row="3" column="1">
+                    <widget class="QComboBox" name="initial_condition_combo" />
+                  </item>
+                  <item row="4" column="0">
+                    <widget class="QLabel" name="initial_depth_lbl">
+                      <property name="text">
+                        <string>Initial depth:</string>
+                      </property>
+                    </widget>
+                  </item>
+                  <item row="4" column="1">
+                    <widget class="QDoubleSpinBox" name="initial_depth_spin" />
+                  </item>
+                  <item row="5" column="0">
+                    <widget class="QLabel" name="initial_wse_lbl">
+                      <property name="text">
+                        <string>Initial WSE:</string>
+                      </property>
+                    </widget>
+                  </item>
+                  <item row="5" column="1">
+                    <widget class="QDoubleSpinBox" name="initial_wse_spin" />
+                  </item>
+                  <item row="6" column="0">
+                    <widget class="QLabel" name="adaptive_cfl_dt_lbl">
+                      <property name="text">
+                        <string>Variable timestep:</string>
+                      </property>
+                    </widget>
+                  </item>
+                  <item row="6" column="1">
+                    <widget class="QCheckBox" name="adaptive_cfl_dt_chk">
+                      <property name="text">
+                        <string>Enable variable timestep (CFL)</string>
+                      </property>
+                    </widget>
+                  </item>
+                  <item row="7" column="0">
+                    <widget class="QLabel" name="dt_lbl">
+                      <property name="text">
+                        <string>dt (fixed or dt_max):</string>
+                      </property>
+                    </widget>
+                  </item>
+                  <item row="7" column="1">
+                    <widget class="QDoubleSpinBox" name="dt_spin" />
+                  </item>
+                  <item row="8" column="0">
+                    <widget class="QLabel" name="gpu_diag_sync_interval_lbl">
+                      <property name="text">
+                        <string>GPU diag sync (steps):</string>
+                      </property>
+                    </widget>
+                  </item>
+                  <item row="8" column="1">
+                    <widget class="QSpinBox" name="gpu_diag_sync_interval_spin" />
+                  </item>
+                  <item row="9" column="0">
+                    <widget class="QLabel" name="enable_cuda_graphs_lbl">
+                      <property name="text">
+                        <string>CUDA graph replay:</string>
+                      </property>
+                    </widget>
+                  </item>
+                  <item row="9" column="1">
+                    <widget class="QCheckBox" name="enable_cuda_graphs_chk">
+                      <property name="text">
+                        <string>Enable</string>
+                      </property>
+                    </widget>
+                  </item>
+                  <item row="10" column="0">
+                    <widget class="QLabel" name="max_rel_depth_increase_lbl">
+                      <property name="text">
+                        <string>Max rel depth increase:</string>
+                      </property>
+                    </widget>
+                  </item>
+                  <item row="10" column="1">
+                    <widget class="QDoubleSpinBox" name="max_rel_depth_increase_spin" />
+                  </item>
+                  <item row="11" column="0">
+                    <widget class="QLabel" name="max_source_depth_step_lbl">
+                      <property name="text">
+                        <string>Max source dh/step:</string>
+                      </property>
+                    </widget>
+                  </item>
+                  <item row="11" column="1">
+                    <widget class="QDoubleSpinBox" name="max_source_depth_step_spin" />
+                  </item>
+                  <item row="12" column="0">
+                    <widget class="QLabel" name="max_source_rate_lbl">
+                      <property name="text">
+                        <string>Max source rate:</string>
+                      </property>
+                    </widget>
+                  </item>
+                  <item row="12" column="1">
+                    <widget class="QDoubleSpinBox" name="max_source_rate_spin" />
+                  </item>
+                  <item row="14" column="0">
+                    <widget class="QLabel" name="source_cfl_beta_lbl">
+                      <property name="text">
+                        <string>Source CFL beta:</string>
+                      </property>
+                    </widget>
+                  </item>
+                  <item row="14" column="1">
+                    <widget class="QDoubleSpinBox" name="source_cfl_beta_spin" />
+                  </item>
+                  <item row="15" column="0">
+                    <widget class="QLabel" name="source_max_substeps_lbl">
+                      <property name="text">
+                        <string>Source max substeps:</string>
+                      </property>
+                    </widget>
+                  </item>
+                  <item row="15" column="1">
+                    <widget class="QSpinBox" name="source_max_substeps_spin" />
+                  </item>
+                  <item row="16" column="0">
+                    <widget class="QLabel" name="source_true_subcycling_lbl">
+                      <property name="text">
+                        <string>True source subcycling:</string>
+                      </property>
+                    </widget>
+                  </item>
+                  <item row="16" column="1">
+                    <widget class="QCheckBox" name="source_true_subcycling_chk">
+                      <property name="text">
+                        <string>Enable</string>
+                      </property>
+                    </widget>
+                  </item>
+                  <item row="17" column="0">
+                    <widget class="QLabel" name="source_imex_split_lbl">
+                      <property name="text">
+                        <string>IMEX source split:</string>
+                      </property>
+                    </widget>
+                  </item>
+                  <item row="17" column="1">
+                    <widget class="QCheckBox" name="source_imex_split_chk">
+                      <property name="text">
+                        <string>Enable</string>
+                      </property>
+                    </widget>
+                  </item>
+                  <item row="18" column="0">
+                    <widget class="QLabel" name="source_stage_coupled_imex_rk2_lbl">
+                      <property name="text">
+                        <string>Stage-coupled IMEX-RK2 sources:</string>
+                      </property>
+                    </widget>
+                  </item>
+                  <item row="18" column="1">
+                    <widget class="QCheckBox" name="source_stage_coupled_imex_rk2_chk">
+                      <property name="text">
+                        <string>Enable</string>
+                      </property>
+                    </widget>
+                  </item>
+                  <item row="19" column="0">
+                    <widget class="QLabel" name="shallow_damping_depth_lbl">
+                      <property name="text">
+                        <string>Shallow damping depth:</string>
+                      </property>
+                    </widget>
+                  </item>
+                  <item row="19" column="1">
+                    <widget class="QDoubleSpinBox" name="shallow_damping_depth_spin" />
+                  </item>
+                  <item row="20" column="0">
+                    <widget class="QLabel" name="shallow_front_recon_fallback_lbl">
+                      <property name="text">
+                        <string>Shallow-front recon fallback:</string>
+                      </property>
+                    </widget>
+                  </item>
+                  <item row="20" column="1">
+                    <widget class="QCheckBox" name="shallow_front_recon_fallback_chk">
+                      <property name="text">
+                        <string>Enable</string>
+                      </property>
+                    </widget>
+                  </item>
+                  <item row="21" column="0">
+                    <widget class="QLabel" name="front_flux_damping_lbl">
+                      <property name="text">
+                        <string>Front flux damping:</string>
+                      </property>
+                    </widget>
+                  </item>
+                  <item row="21" column="1">
+                    <widget class="QDoubleSpinBox" name="front_flux_damping_spin" />
+                  </item>
+                  <item row="22" column="0">
+                    <widget class="QLabel" name="active_set_hysteresis_lbl">
+                      <property name="text">
+                        <string>Active-set hysteresis:</string>
+                      </property>
+                    </widget>
+                  </item>
+                  <item row="22" column="1">
+                    <widget class="QCheckBox" name="active_set_hysteresis_chk">
+                      <property name="text">
+                        <string>Enable</string>
+                      </property>
+                    </widget>
+                  </item>
+                  <item row="23" column="0">
+                    <widget class="QLabel" name="depth_cap_lbl">
+                      <property name="text">
+                        <string>Depth cap:</string>
+                      </property>
+                    </widget>
+                  </item>
+                  <item row="23" column="1">
+                    <widget class="QDoubleSpinBox" name="depth_cap_spin" />
+                  </item>
+                  <item row="24" column="0">
+                    <widget class="QLabel" name="momentum_cap_min_speed_lbl">
+                      <property name="text">
+                        <string>Momentum cap min speed:</string>
+                      </property>
+                    </widget>
+                  </item>
+                  <item row="24" column="1">
+                    <widget class="QDoubleSpinBox" name="momentum_cap_min_speed_spin" />
+                  </item>
+                  <item row="25" column="0">
+                    <widget class="QLabel" name="momentum_cap_celerity_mult_lbl">
+                      <property name="text">
+                        <string>Momentum cap celerity mult:</string>
+                      </property>
+                    </widget>
+                  </item>
+                  <item row="25" column="1">
+                    <widget class="QDoubleSpinBox" name="momentum_cap_celerity_mult_spin" />
+                  </item>
+                  <item row="26" column="0">
+                    <widget class="QLabel" name="max_inv_area_lbl">
+                      <property name="text">
+                        <string>Max inv area:</string>
+                      </property>
+                    </widget>
+                  </item>
+                  <item row="26" column="1">
+                    <widget class="QDoubleSpinBox" name="max_inv_area_spin" />
+                  </item>
+                  <item row="27" column="0">
+                    <widget class="QLabel" name="cfl_lambda_cap_lbl">
+                      <property name="text">
+                        <string>CFL lambda cap:</string>
+                      </property>
+                    </widget>
+                  </item>
+                  <item row="27" column="1">
+                    <widget class="QDoubleSpinBox" name="cfl_lambda_cap_spin" />
+                  </item>
+                  <item row="38" column="0">
+                    <widget class="QLabel" name="reconstruction_lbl">
+                      <property name="text">
+                        <string>Reconstruction:</string>
+                      </property>
+                    </widget>
+                  </item>
+                  <item row="38" column="1">
+                    <widget class="QComboBox" name="reconstruction_combo" />
+                  </item>
+                  <item row="39" column="0">
+                    <widget class="QLabel" name="temporal_order_lbl">
+                      <property name="text">
+                        <string>Temporal discretization:</string>
+                      </property>
+                    </widget>
+                  </item>
+                  <item row="39" column="1">
+                    <widget class="QComboBox" name="temporal_order_combo" />
+                  </item>
+                  <item row="40" column="0">
+                    <widget class="QLabel" name="equation_set_lbl">
+                      <property name="text">
+                        <string>Equation set:</string>
+                      </property>
+                    </widget>
+                  </item>
+                  <item row="40" column="1">
+                    <widget class="QComboBox" name="equation_set_combo" />
+                  </item>
+                  <item row="41" column="0">
+                    <widget class="QLabel" name="godunov_mode_lbl">
+                      <property name="text">
+                        <string>GPU solver mode:</string>
+                      </property>
+                    </widget>
+                  </item>
+                  <item row="41" column="1">
+                    <widget class="QComboBox" name="godunov_mode_combo" />
+                  </item>
+                  <item row="42" column="0">
+                    <widget class="QLabel" name="degen_mode_lbl">
+                      <property name="text">
+                        <string>Degenerate cell mode:</string>
+                      </property>
+                    </widget>
+                  </item>
+                  <item row="42" column="1">
+                    <widget class="QComboBox" name="degen_mode_combo" />
+                  </item>
+                  <item row="55" column="0">
+                    <widget class="QLabel" name="unit_system_lbl">
+                      <property name="text">
+                        <string>Unit system: auto</string>
+                      </property>
+                      <property name="wordWrap">
+                        <bool>true</bool>
+                      </property>
+                    </widget>
+                  </item>
+                  <item row="55" column="1">
+                    <widget class="QLabel" name="gpu_default_lbl">
+                      <property name="text">
+                        <string>GPU is attempted by default when supported by the native backend.</string>
+                      </property>
+                      <property name="wordWrap">
+                        <bool>true</bool>
+                      </property>
+                    </widget>
+                  </item>
+                  <item row="56" column="0">
+                    <widget class="QLabel" name="tiny_mode_lbl">
+                      <property name="text">
+                        <string>Tiny mode:</string>
+                      </property>
+                    </widget>
+                  </item>
+                  <item row="56" column="1">
+                    <widget class="QComboBox" name="tiny_mode_combo" />
+                  </item>
+                  <item row="57" column="0">
+                    <widget class="QLabel" name="tiny_wet_cell_threshold_lbl">
+                      <property name="text">
+                        <string>Tiny active/wet cell threshold:</string>
+                      </property>
+                    </widget>
+                  </item>
+                  <item row="57" column="1">
+                    <widget class="QSpinBox" name="tiny_wet_cell_threshold_spin" />
+                  </item>
+                  <item row="58" column="0">
+                    <widget class="QLabel" name="solver_backend_lbl">
+                      <property name="text">
+                        <string>SWE2D solver backend:</string>
+                      </property>
+                    </widget>
+                  </item>
+                  <item row="58" column="1">
+                    <widget class="QComboBox" name="solver_backend_combo" />
+                  </item>
+                  <item row="59" column="0">
+                    <widget class="QLabel" name="solver_openmp_enabled_lbl">
+                      <property name="text">
+                        <string>SWE2D OpenMP:</string>
+                      </property>
+                    </widget>
+                  </item>
+                  <item row="59" column="1">
+                    <widget class="QCheckBox" name="solver_openmp_enabled_chk">
+                      <property name="text">
+                        <string>Enabled</string>
+                      </property>
+                    </widget>
+                  </item>
+                  <item row="60" column="0">
+                    <widget class="QLabel" name="solver_cpu_threads_lbl">
+                      <property name="text">
+                        <string>SWE2D CPU threads:</string>
+                      </property>
+                    </widget>
+                  </item>
+                  <item row="60" column="1">
+                    <widget class="QSpinBox" name="solver_cpu_threads_spin" />
+                  </item>
+                  <item row="37" column="0">
+                    <widget class="QLabel" name="run_time_lbl">
+                      <property name="text">
+                        <string>Run duration (hr or HH:MM):</string>
+                      </property>
+                    </widget>
+                  </item>
+                  <item row="37" column="1">
+                    <widget class="QLineEdit" name="run_time_edit" />
+                  </item>
+                </layout>
+              </item>
+            </layout>
+          </widget>
+          <widget class="QWidget" name="model_rain_page">
+            <attribute name="label">
+              <string>Rain / Hydrology</string>
+            </attribute>
+            <layout class="QVBoxLayout" name="model_rain_layout">
+              <item>
+                <layout class="QFormLayout" name="model_rain_form">
+                  <item row="28" column="0">
+                    <widget class="QLabel" name="rain_rate_lbl">
+                      <property name="text">
+                        <string>Rain rate:</string>
+                      </property>
+                    </widget>
+                  </item>
+                  <item row="28" column="1">
+                    <widget class="QDoubleSpinBox" name="rain_rate_spin" />
+                  </item>
+                  <item row="29" column="0">
+                    <widget class="QLabel" name="cn_default_lbl">
+                      <property name="text">
+                        <string>Default CN:</string>
+                      </property>
+                    </widget>
+                  </item>
+                  <item row="29" column="1">
+                    <widget class="QDoubleSpinBox" name="cn_default_spin" />
+                  </item>
+                  <item row="31" column="0">
+                    <widget class="QLabel" name="use_spatial_rain_cn_lbl">
+                      <property name="text">
+                        <string>Spatial rainfall:</string>
+                      </property>
+                    </widget>
+                  </item>
+                  <item row="31" column="1">
+                    <widget class="QCheckBox" name="use_spatial_rain_cn_chk">
+                      <property name="text">
+                        <string>Use Thiessen gage rainfall when layers are available</string>
+                      </property>
+                    </widget>
+                  </item>
+                  <item row="32" column="0">
+                    <widget class="QLabel" name="infiltration_method_lbl">
+                      <property name="text">
+                        <string>Infiltration method:</string>
+                      </property>
+                    </widget>
+                  </item>
+                  <item row="32" column="1">
+                    <widget class="QComboBox" name="infiltration_method_combo" />
+                  </item>
+                  <item row="33" column="0">
+                    <widget class="QLabel" name="storm_area_layer_lbl">
+                      <property name="text">
+                        <string>Storm area layer (optional):</string>
+                      </property>
+                    </widget>
+                  </item>
+                  <item row="33" column="1">
+                    <widget class="QComboBox" name="storm_area_layer_combo" />
+                  </item>
+                  <item row="34" column="0">
+                    <widget class="QLabel" name="rain_boundary_buffer_rings_lbl">
+                      <property name="text">
+                        <string>Rain boundary buffer rings:</string>
+                      </property>
+                    </widget>
+                  </item>
+                  <item row="34" column="1">
+                    <widget class="QSpinBox" name="rain_boundary_buffer_rings_spin" />
+                  </item>
+                  <item row="35" column="0">
+                    <widget class="QLabel" name="internal_flow_layer_lbl">
+                      <property name="text">
+                        <string>Internal flow layer:</string>
+                      </property>
+                    </widget>
+                  </item>
+                  <item row="35" column="1">
+                    <widget class="QComboBox" name="internal_flow_layer_combo" />
+                  </item>
+                  <item row="36" column="0">
+                    <widget class="QLabel" name="internal_flow_field_lbl">
+                      <property name="text">
+                        <string>Internal flow field:</string>
+                      </property>
+                    </widget>
+                  </item>
+                  <item row="36" column="1">
+                    <widget class="QLineEdit" name="internal_flow_field_edit" />
+                  </item>
+                <item row="30" column="0">
+                    <widget class="QLabel" name="extreme_rain_mode_lbl">
+                      <property name="text">
+                        <string>Extreme rain mode:</string>
+                      </property>
+                    </widget>
+                  </item>
+                  <item row="30" column="1">
+                    <widget class="QCheckBox" name="extreme_rain_mode_chk">
+                      <property name="text">
+                        <string>Enable</string>
+                      </property>
+                    </widget>
+                  </item>
+                  <item row="37" column="0">
+                    <widget class="QLabel" name="ia_ratio_lbl">
+                      <property name="text">
+                        <string>SCS Ia/S ratio:</string>
+                      </property>
+                    </widget>
+                  </item>
+                  <item row="37" column="1">
+                    <widget class="QDoubleSpinBox" name="ia_ratio_spin" />
+                  </item>
+                  </layout>
+              </item>
+            </layout>
+          </widget>
+          <widget class="QWidget" name="model_drain_page">
+            <attribute name="label">
+              <string>Structures &amp; Drainage</string>
+            </attribute>
+            <layout class="QVBoxLayout" name="model_drain_layout">
+              <item>
+                <layout class="QFormLayout" name="model_drain_form">
+                  <item row="43" column="0">
+                    <widget class="QLabel" name="coupling_loop_lbl">
+                      <property name="text">
+                        <string>Coupling loop:</string>
+                      </property>
+                    </widget>
+                  </item>
+                  <item row="43" column="1">
+                    <widget class="QComboBox" name="coupling_loop_combo" />
+                  </item>
+                  <item row="44" column="0">
+                    <widget class="QLabel" name="drainage_solver_mode_lbl">
+                      <property name="text">
+                        <string>Drainage equation set:</string>
+                      </property>
+                    </widget>
+                  </item>
+                  <item row="44" column="1">
+                    <widget class="QComboBox" name="drainage_solver_mode_combo" />
+                  </item>
+                  <item row="45" column="0">
+                    <widget class="QLabel" name="drainage_backend_lbl">
+                      <property name="text">
+                        <string>Drainage solver backend:</string>
+                      </property>
+                    </widget>
+                  </item>
+                  <item row="45" column="1">
+                    <widget class="QComboBox" name="drainage_backend_combo" />
+                  </item>
+                  <item row="46" column="0">
+                    <widget class="QLabel" name="drainage_gpu_method_lbl">
+                      <property name="text">
+                        <string>Drainage GPU method:</string>
+                      </property>
+                    </widget>
+                  </item>
+                  <item row="46" column="1">
+                    <widget class="QComboBox" name="drainage_gpu_method_combo" />
+                  </item>
+                  <item row="47" column="0">
+                    <widget class="QLabel" name="drainage_coupling_substeps_lbl">
+                      <property name="text">
+                        <string>Drainage substeps:</string>
+                      </property>
+                    </widget>
+                  </item>
+                  <item row="47" column="1">
+                    <widget class="QSpinBox" name="drainage_coupling_substeps_spin" />
+                  </item>
+                  <item row="48" column="0">
+                    <widget class="QLabel" name="drainage_max_coupling_substeps_lbl">
+                      <property name="text">
+                        <string>Drainage max adaptive substeps:</string>
+                      </property>
+                    </widget>
+                  </item>
+                  <item row="48" column="1">
+                    <widget class="QSpinBox" name="drainage_max_coupling_substeps_spin" />
+                  </item>
+                  <item row="49" column="0">
+                    <widget class="QLabel" name="drainage_head_deadband_lbl">
+                      <property name="text">
+                        <string>Drainage head deadband:</string>
+                      </property>
+                    </widget>
+                  </item>
+                  <item row="49" column="1">
+                    <widget class="QDoubleSpinBox" name="drainage_head_deadband_spin" />
+                  </item>
+                  <item row="50" column="0">
+                    <widget class="QLabel" name="drainage_dynamic_relaxation_lbl">
+                      <property name="text">
+                        <string>Drainage dynamic relaxation:</string>
+                      </property>
+                    </widget>
+                  </item>
+                  <item row="50" column="1">
+                    <widget class="QDoubleSpinBox" name="drainage_dynamic_relaxation_spin" />
+                  </item>
+                  <item row="51" column="0">
+                    <widget class="QLabel" name="drainage_adaptive_depth_fraction_lbl">
+                      <property name="text">
+                        <string>Drainage adaptive depth fraction:</string>
+                      </property>
+                    </widget>
+                  </item>
+                  <item row="51" column="1">
+                    <widget class="QDoubleSpinBox" name="drainage_adaptive_depth_fraction_spin" />
+                  </item>
+                  <item row="52" column="0">
+                    <widget class="QLabel" name="drainage_adaptive_wave_courant_lbl">
+                      <property name="text">
+                        <string>Drainage adaptive wave Courant:</string>
+                      </property>
+                    </widget>
+                  </item>
+                  <item row="52" column="1">
+                    <widget class="QDoubleSpinBox" name="drainage_adaptive_wave_courant_spin" />
+                  </item>
+                  <item row="53" column="0">
+                    <widget class="QLabel" name="drainage_implicit_iters_lbl">
+                      <property name="text">
+                        <string>Drainage implicit iterations (GPU):</string>
+                      </property>
+                    </widget>
+                  </item>
+                  <item row="53" column="1">
+                    <widget class="QSpinBox" name="drainage_implicit_iters_spin" />
+                  </item>
+                  <item row="54" column="0">
+                    <widget class="QLabel" name="drainage_implicit_relax_lbl">
+                      <property name="text">
+                        <string>Drainage implicit relaxation (GPU):</string>
+                      </property>
+                    </widget>
+                  </item>
+                  <item row="54" column="1">
+                    <widget class="QDoubleSpinBox" name="drainage_implicit_relax_spin" />
+                  </item>
+                </layout>
+              </item>
+            </layout>
+          </widget>
+        </widget>
+      </item>
+      <item>
     </item>
     </layout>
-    </widget>
-   </item>
-   <item>
-    <widget class="QGroupBox" name="patch_3d_group">
-     <property name="title">
-      <string>3D Patch</string>
-     </property>
-     <layout class="QFormLayout" name="patch_3d_form">
-      <item row="0" column="0">
-       <widget class="QLabel" name="experimental_3d_mode_lbl">
-        <property name="text">
-         <string>3D patch execution mode:</string>
-        </property>
-       </widget>
-      </item>
-      <item row="0" column="1">
-       <widget class="QCheckBox" name="experimental_3d_mode_chk">
-        <property name="text">
-         <string>Run 3D patch solver (GPU)</string>
-        </property>
-       </widget>
-      </item>
-      <item row="1" column="0">
-       <widget class="QLabel" name="experimental_3d_coupling_mode_lbl">
-        <property name="text">
-         <string>3D patch coupling mode:</string>
-        </property>
-       </widget>
-      </item>
-      <item row="1" column="1">
-       <widget class="QComboBox" name="experimental_3d_coupling_mode_combo"/>
-      </item>
-      <item row="2" column="0">
-       <widget class="QLabel" name="experimental_3d_patch_face_len_x_lbl">
-        <property name="text">
-         <string>3D patch target face length x:</string>
-        </property>
-       </widget>
-      </item>
-      <item row="2" column="1">
-       <widget class="QDoubleSpinBox" name="experimental_3d_patch_face_len_x_spin"/>
-      </item>
-      <item row="3" column="0">
-       <widget class="QLabel" name="experimental_3d_patch_face_len_y_lbl">
-        <property name="text">
-         <string>3D patch target face length y:</string>
-        </property>
-       </widget>
-      </item>
-      <item row="3" column="1">
-       <widget class="QDoubleSpinBox" name="experimental_3d_patch_face_len_y_spin"/>
-      </item>
-      <item row="4" column="0">
-       <widget class="QLabel" name="experimental_3d_patch_face_len_z_lbl">
-        <property name="text">
-         <string>3D patch target face length z:</string>
-        </property>
-       </widget>
-      </item>
-      <item row="4" column="1">
-       <widget class="QDoubleSpinBox" name="experimental_3d_patch_face_len_z_spin"/>
-      </item>
-      <item row="5" column="0">
-       <widget class="QLabel" name="experimental_3d_patch_xmin_lbl">
-        <property name="text">
-         <string>3D patch x min:</string>
-        </property>
-       </widget>
-      </item>
-      <item row="5" column="1">
-       <widget class="QLineEdit" name="experimental_3d_patch_xmin_edit"/>
-      </item>
-      <item row="6" column="0">
-       <widget class="QLabel" name="experimental_3d_patch_xmax_lbl">
-        <property name="text">
-         <string>3D patch x max:</string>
-        </property>
-       </widget>
-      </item>
-      <item row="6" column="1">
-       <widget class="QLineEdit" name="experimental_3d_patch_xmax_edit"/>
-      </item>
-      <item row="7" column="0">
-       <widget class="QLabel" name="experimental_3d_patch_ymin_lbl">
-        <property name="text">
-         <string>3D patch y min:</string>
-        </property>
-       </widget>
-      </item>
-      <item row="7" column="1">
-       <widget class="QLineEdit" name="experimental_3d_patch_ymin_edit"/>
-      </item>
-      <item row="8" column="0">
-       <widget class="QLabel" name="experimental_3d_patch_ymax_lbl">
-        <property name="text">
-         <string>3D patch y max:</string>
-        </property>
-       </widget>
-      </item>
-      <item row="8" column="1">
-       <widget class="QLineEdit" name="experimental_3d_patch_ymax_edit"/>
-      </item>
-      <item row="9" column="0">
-       <widget class="QLabel" name="experimental_3d_patch_zmin_lbl">
-        <property name="text">
-         <string>3D patch z min:</string>
-        </property>
-       </widget>
-      </item>
-      <item row="9" column="1">
-       <widget class="QLineEdit" name="experimental_3d_patch_zmin_edit"/>
-      </item>
-      <item row="10" column="0">
-       <widget class="QLabel" name="experimental_3d_patch_zmax_lbl">
-        <property name="text">
-         <string>3D patch z max:</string>
-        </property>
-       </widget>
-      </item>
-      <item row="10" column="1">
-       <widget class="QLineEdit" name="experimental_3d_patch_zmax_edit"/>
-      </item>
-      <item row="11" column="0" colspan="2">
-       <widget class="QPushButton" name="experimental_3d_patch_set_roi_btn">
-        <property name="text">
-         <string>Set ROI From Current Mesh</string>
-        </property>
-       </widget>
-      </item>
-      <item row="12" column="0" colspan="2">
-       <widget class="QLabel" name="experimental_3d_patch_hint_lbl">
-        <property name="wordWrap">
-         <bool>true</bool>
-        </property>
-       </widget>
-      </item>
-      <item row="13" column="0">
-       <widget class="QLabel" name="experimental_3d_patch_bc_lbl">
-        <property name="text">
-         <string>3D patch face BCs:</string>
-        </property>
-       </widget>
-      </item>
-      <item row="13" column="1">
-       <widget class="QWidget" name="experimental_3d_patch_bc_widget" native="true"/>
-      </item>
-      <item row="14" column="0" colspan="2">
-       <widget class="QLabel" name="experimental_3d_patch_bc_hint_lbl">
-        <property name="wordWrap">
-         <bool>true</bool>
-        </property>
-       </widget>
-      </item>
-      <item row="15" column="0">
-       <widget class="QLabel" name="experimental_3d_obj_solids_lbl">
-        <property name="text">
-         <string>3D sub-grid solids:</string>
-        </property>
-       </widget>
-      </item>
-      <item row="15" column="1">
-       <widget class="QCheckBox" name="experimental_3d_obj_solids_chk">
-        <property name="text">
-         <string>Enable</string>
-        </property>
-       </widget>
-      </item>
-      <item row="16" column="0">
-       <widget class="QLabel" name="experimental_3d_obj_method_lbl">
-        <property name="text">
-         <string>3D sub-grid method:</string>
-        </property>
-       </widget>
-      </item>
-      <item row="16" column="1">
-       <widget class="QComboBox" name="experimental_3d_obj_method_combo"/>
-      </item>
-      <item row="17" column="0">
-       <widget class="QLabel" name="experimental_3d_geom_sanitize_lbl">
-        <property name="text">
-         <string>3D sanitize tensors:</string>
-        </property>
-       </widget>
-      </item>
-      <item row="17" column="1">
-       <widget class="QCheckBox" name="experimental_3d_geom_sanitize_chk">
-        <property name="text">
-         <string>Sanitize upload tensors (clamp/snap tiny phi/area)</string>
-        </property>
-       </widget>
-      </item>
-      <item row="18" column="0">
-       <widget class="QLabel" name="experimental_3d_geom_phi_snap_lbl">
-        <property name="text">
-         <string>3D sanitize phi snap min:</string>
-        </property>
-       </widget>
-      </item>
-      <item row="18" column="1">
-       <widget class="QDoubleSpinBox" name="experimental_3d_geom_phi_snap_spin"/>
-      </item>
-      <item row="19" column="0">
-       <widget class="QLabel" name="experimental_3d_geom_area_snap_lbl">
-        <property name="text">
-         <string>3D sanitize area snap min:</string>
-        </property>
-       </widget>
-      </item>
-      <item row="19" column="1">
-       <widget class="QDoubleSpinBox" name="experimental_3d_geom_area_snap_spin"/>
-      </item>
-      <item row="20" column="0">
-       <widget class="QLabel" name="experimental_3d_obj_layer_lbl">
-        <property name="text">
-         <string>3D OBJ instances layer:</string>
-        </property>
-       </widget>
-      </item>
-      <item row="20" column="1">
-       <widget class="QComboBox" name="experimental_3d_obj_layer_combo"/>
-      </item>
-      <item row="21" column="0">
-       <widget class="QLabel" name="experimental_3d_obj_path_field_lbl">
-        <property name="text">
-         <string>3D OBJ path field:</string>
-        </property>
-       </widget>
-      </item>
-      <item row="21" column="1">
-       <widget class="QLineEdit" name="experimental_3d_obj_path_field_edit"/>
-      </item>
-      <item row="22" column="0">
-       <widget class="QLabel" name="experimental_3d_obj_default_path_lbl">
-        <property name="text">
-         <string>3D OBJ fallback path:</string>
-        </property>
-       </widget>
-      </item>
-      <item row="22" column="1">
-       <widget class="QLineEdit" name="experimental_3d_obj_default_path_edit"/>
-      </item>
-      <item row="23" column="0">
-       <widget class="QLabel" name="experimental_3d_obj_scale_field_lbl">
-        <property name="text">
-         <string>3D OBJ scale field:</string>
-        </property>
-       </widget>
-      </item>
-      <item row="23" column="1">
-       <widget class="QLineEdit" name="experimental_3d_obj_scale_field_edit"/>
-      </item>
-      <item row="24" column="0">
-       <widget class="QLabel" name="experimental_3d_obj_yaw_field_lbl">
-        <property name="text">
-         <string>3D OBJ yaw field:</string>
-        </property>
-       </widget>
-      </item>
-      <item row="24" column="1">
-       <widget class="QLineEdit" name="experimental_3d_obj_yaw_field_edit"/>
-      </item>
-      <item row="25" column="0">
-       <widget class="QLabel" name="experimental_3d_obj_z_offset_field_lbl">
-        <property name="text">
-         <string>3D OBJ z-offset field:</string>
-        </property>
-       </widget>
-      </item>
-      <item row="25" column="1">
-       <widget class="QLineEdit" name="experimental_3d_obj_z_offset_field_edit"/>
-      </item>
-      <item row="26" column="0">
-       <widget class="QLabel" name="experimental_3d_obj_inside_points_layer_lbl">
-        <property name="text">
-         <string>3D OBJ outside-point layer:</string>
-        </property>
-       </widget>
-      </item>
-      <item row="26" column="1">
-       <widget class="QComboBox" name="experimental_3d_obj_inside_points_layer_combo"/>
-      </item>
-      <item row="27" column="0">
-       <widget class="QLabel" name="experimental_3d_obj_instance_id_field_lbl">
-        <property name="text">
-         <string>3D OBJ instance id field:</string>
-        </property>
-       </widget>
-      </item>
-      <item row="27" column="1">
-       <widget class="QLineEdit" name="experimental_3d_obj_instance_id_field_edit"/>
-      </item>
-      <item row="28" column="0">
-       <widget class="QLabel" name="experimental_3d_obj_inside_id_field_lbl">
-        <property name="text">
-         <string>3D OBJ outside-point id field:</string>
-        </property>
-       </widget>
-      </item>
-      <item row="28" column="1">
-       <widget class="QLineEdit" name="experimental_3d_obj_inside_id_field_edit"/>
-      </item>
-      <item row="29" column="0">
-       <widget class="QLabel" name="experimental_3d_obj_inside_z_field_lbl">
-        <property name="text">
-         <string>3D OBJ outside-point z field:</string>
-        </property>
-       </widget>
-      </item>
-      <item row="29" column="1">
-       <widget class="QLineEdit" name="experimental_3d_obj_inside_z_field_edit"/>
-      </item>
-      <item row="30" column="0">
-       <widget class="QLabel" name="experimental_3d_obj_use_terrain_lbl">
-        <property name="text">
-         <string>3D terrain solid:</string>
-        </property>
-       </widget>
-      </item>
-      <item row="30" column="1">
-       <widget class="QCheckBox" name="experimental_3d_obj_use_terrain_chk">
-        <property name="text">
-         <string>Use terrain layer as bed solid</string>
-        </property>
-       </widget>
-      </item>
-      <item row="31" column="0">
-       <widget class="QLabel" name="experimental_3d_obj_ab_compare_lbl">
-        <property name="text">
-         <string>3D A/B compare:</string>
-        </property>
-       </widget>
-      </item>
-      <item row="31" column="1">
-       <widget class="QCheckBox" name="experimental_3d_obj_ab_compare_chk">
-        <property name="text">
-         <string>A/B compare methods (startup probe)</string>
-        </property>
-       </widget>
-      </item>
-      <item row="32" column="0">
-       <widget class="QLabel" name="experimental_3d_obj_ab_probe_steps_lbl">
-        <property name="text">
-         <string>3D A/B probe steps:</string>
-        </property>
-       </widget>
-      </item>
-      <item row="32" column="1">
-       <widget class="QSpinBox" name="experimental_3d_obj_ab_probe_steps_spin"/>
-      </item>
-      <item row="33" column="0">
-       <widget class="QLabel" name="experimental_3d_obj_export_obj_lbl">
-        <property name="text">
-         <string>3D export voxel shell OBJ:</string>
-        </property>
-       </widget>
-      </item>
-      <item row="33" column="1">
-       <widget class="QCheckBox" name="experimental_3d_obj_export_obj_chk">
-        <property name="text">
-         <string>Export voxelized solid shell OBJ</string>
-        </property>
-       </widget>
-      </item>
-      <item row="34" column="0">
-       <widget class="QLabel" name="experimental_3d_obj_export_obj_path_lbl">
-        <property name="text">
-         <string>3D solid OBJ export path:</string>
-        </property>
-       </widget>
-      </item>
-      <item row="34" column="1">
-       <widget class="QLineEdit" name="experimental_3d_obj_export_obj_path_edit"/>
-      </item>
-     </layout>
-    </widget>
-   </item>
-  </layout>
- </widget>
- <resources/>
- <connections/>
+  </widget>
+  <resources />
+  <connections />
 </ui>

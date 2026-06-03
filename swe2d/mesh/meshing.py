@@ -4916,14 +4916,14 @@ class GmshBackend(MeshingBackend):
             1,
             self._opt_int(
                 "gmsh_quality_max_iterations",
-                int(round(_env_float("BACKWATER_GMSH_QUALITY_MAX_ITERATIONS", 6.0))),
+                int(round(_env_float("BACKWATER_GMSH_QUALITY_MAX_ITERATIONS", 2.0))),
             ),
         )
         time_limit_s = max(
             1.0,
             self._opt_float(
                 "gmsh_quality_time_limit_s",
-                _env_float("BACKWATER_GMSH_QUALITY_TIME_LIMIT_S", 60.0),
+                _env_float("BACKWATER_GMSH_QUALITY_TIME_LIMIT_S", 55.0),
             ),
         )
         size_scales = tuple(
@@ -4971,7 +4971,7 @@ class GmshBackend(MeshingBackend):
         )
         algorithm_switch_on_failure = self._opt_bool(
             "gmsh_algorithm_switch_on_failure",
-            _env_bool("BACKWATER_GMSH_ALGO_SWITCH_ON_FAILURE", True),
+            _env_bool("BACKWATER_GMSH_ALGO_SWITCH_ON_FAILURE", False),
         )
         recombine_node_repositioning = self._opt_bool(
             "gmsh_quality_recombine_node_repositioning",
@@ -5028,11 +5028,11 @@ class GmshBackend(MeshingBackend):
 
         tri_algo = self._opt_int("gmsh_tri_algorithm", self._ALGO_FRONTAL)
         quad_algo = self._opt_int("gmsh_quad_algorithm", self._ALGO_FRONTAL)
-        smoothing_passes = max(0, self._opt_int("gmsh_smoothing", 5))
-        optimize_iters = max(0, self._opt_int("gmsh_optimize_iters", 3))
+        smoothing_passes = max(0, self._opt_int("gmsh_smoothing", 0))
+        optimize_iters = max(0, self._opt_int("gmsh_optimize_iters", 0))
         recomb_algo = self._opt_int("gmsh_recombination_algorithm", 1)
         optimize_netgen = self._opt_bool("gmsh_optimize_netgen", False)
-        verbosity = max(0, self._opt_int("gmsh_verbosity", 1))
+        verbosity = max(0, self._opt_int("gmsh_verbosity", 2))
         quality_cfg = self._gmsh_quality_config()
         checkpoint_path = str(self._options.get("gmsh_quality_checkpoint_path", "") or "").strip()
         progress_path = str(self._options.get("gmsh_progress_path", "") or "").strip()
@@ -5657,7 +5657,7 @@ class GmshBackend(MeshingBackend):
             arc_mode = "hard_embed"
         mesh_size_min = max(0.0, self._opt_float("gmsh_mesh_size_min", 0.0))
         tolerance_edge_length = max(0.0, self._opt_float("gmsh_tolerance_edge_length", 0.0))
-        mesh_size_from_points = self._opt_bool("gmsh_mesh_size_from_points", True)
+        mesh_size_from_points = self._opt_bool("gmsh_mesh_size_from_points", False)
         gmsh_num_threads = max(
             0,
             int(

@@ -36,7 +36,10 @@ class SWE2DRunController:
             return False
 
         if not bool(self._backend_ready_callback()):
-            msg = "Native 2D backend is not available. Build hydra_swe2d first."
+            msg = (
+                "Native 2D backend is not available for the selected OpenMP mode. "
+                "Build hydra_swe2d and hydra_swe2d_serial, then restart if you switched OpenMP mode."
+            )
             if callable(self._backend_unavailable_callback):
                 self._backend_unavailable_callback(msg)
             if callable(self._log_callback):
