@@ -290,16 +290,12 @@ def pack_pipe_network_soa(cfg: Optional[PipeNetworkConfig], n_cells: int) -> Opt
 def pack_structures_soa(cfg: Optional[HydraulicStructureConfig], n_cells: int, model_to_ft: float = 1.0) -> Optional[SWE2DStructuresSoA]:
     """Pack hydraulic structure metadata into SoA arrays for GPU/CPU computation.
 
-    Input metadata is in MODEL UNITS (SI or USC depending on CRS).
-    Output SoA arrays are in COMPUTATION UNITS:
-      - SI model: computation uses feet (so m → ft via model_to_ft ≈ 3.28)
-      - USC model: computation uses feet (model is already ft, model_to_ft = 1.0)
+    Input metadata and output SoA arrays are in MODEL UNITS (meters for SI,
+    feet for USC).  The kernel receives model units directly; its culvert path
+    converts to feet internally using the caller-supplied model_to_ft parameter.
 
-    The computation unit system is determined by model_to_ft
-    (USC_FT_PER_SI_M / SI_M_PER_MODEL).
-
-    All length values [L] are multiplied by model_to_ft.
-    All area values [L²] are multiplied by model_to_ft².
+    The model_to_ft argument is retained for API compatibility but should
+    always be 1.0 (no pre-conversion) with the new unit-agnostic kernel.
     """
     if cfg is None or not cfg.enabled:
         return None
@@ -447,10 +443,10 @@ class SWE2DCouplingController:
         # Configure unit system from CRS-derived length scale.
         self._si_m_per_model = max(1.0e-6, float(length_scale_si_to_model))
         _u.configure(self._si_m_per_model)
-        # Factor to convert model metadata lengths → feet for the C++ kernel.
-        #   SI model: metadata in m → ×3.28 → ft
-        #   US model:  metadata in ft → ×1.0 → ft
-        self._model_to_ft = _u.compute_length_factor()
+        self._model_to_ft = _u.model_to_ft()
+        self._gravity = _u.gravity()
+        # Kernel works in model units.  HDS-5 culvert tables are the only
+        # code path that converts to feet internally (via model_to_ft).
         if self.cell_area.size != self.cell_bed.size:
             raise ValueError("cell_area and cell_bed must have the same length")
         self.drainage = drainage
@@ -481,7 +477,7 @@ class SWE2DCouplingController:
         self._culvert_solver_mode_applied = False
         self._persistent_coupling_preloaded = False
         self._drainage_soa = pack_pipe_network_soa(self.drainage.cfg, self.n_cells) if self.drainage is not None else None
-        self._structures_soa = pack_structures_soa(self.structures.cfg, self.n_cells, model_to_ft=self._model_to_ft) if self.structures is not None else None
+        self._structures_soa = pack_structures_soa(self.structures.cfg, self.n_cells, model_to_ft=1.0) if self.structures is not None else None
         self._structures_cfg = tuple(self.structures.cfg.structures) if self.structures is not None else tuple()
         self._structure_count = len(self._structures_cfg)
         if self._structure_count > 0:
@@ -917,7 +913,8 @@ class SWE2DCouplingController:
                     np.asarray(ssoa.embankment_crest_elev, dtype=np.float64),
                     np.asarray(ssoa.embankment_overflow_width, dtype=np.float64),
                     np.asarray(ssoa.embankment_weir_coeff, dtype=np.float64),
-                    float(getattr(self.structures.cfg, "gravity", 9.81)) if self.structures is not None else 9.81,
+                    self._gravity,
+                    self._model_to_ft,
                 )
             except Exception:
                 return
@@ -1040,14 +1037,11 @@ class SWE2DCouplingController:
         compute_fn = getattr(native_mod, fn_name, None)
         if compute_fn is None:
             return None
-        # Convert cell_wse and cell_bed from model units → feet for the kernel.
-        m2ft = self._model_to_ft
-        cell_wse_ft = np.asarray(cell_wse, dtype=np.float64) * m2ft
-        cell_bed_ft = np.asarray(self.cell_bed, dtype=np.float64) * m2ft
-        gravity_mps2 = float(getattr(self.structures.cfg, "gravity", 9.81)) if self.structures is not None else 9.81
+        # Pass model units directly.  Kernel is unit-agnostic for weir/orifice/
+        # bridge/pump; only the HDS-5 culvert path converts to ft internally.
         args = (
-            np.asarray(cell_wse_ft, dtype=np.float64),
-            np.asarray(cell_bed_ft, dtype=np.float64),
+            np.asarray(cell_wse, dtype=np.float64),
+            np.asarray(self.cell_bed, dtype=np.float64),
             np.asarray(ssoa.structure_type, dtype=np.int32),
             np.asarray(ssoa.upstream_cell, dtype=np.int32),
             np.asarray(ssoa.downstream_cell, dtype=np.int32),
@@ -1077,7 +1071,8 @@ class SWE2DCouplingController:
             np.asarray(ssoa.embankment_crest_elev, dtype=np.float64),
             np.asarray(ssoa.embankment_overflow_width, dtype=np.float64),
             np.asarray(ssoa.embankment_weir_coeff, dtype=np.float64),
-            gravity_mps2,
+            self._gravity,
+            self._model_to_ft,
         )
         try:
             return np.asarray(compute_fn(*args), dtype=np.float64)
@@ -1117,24 +1112,17 @@ class SWE2DCouplingController:
         upv = up[valid]
         dnv = dn[valid]
         qv = flows[valid]
-        # qv is in SI (m³/s).  Convert to model flow units (model-length³/s)
-        # so division by model-length² cell_area gives model-length/s depth rate.
-        # TODO: The native kernel returns mixed units — CMS for culverts (type 2)
-        # but CFS for weir/orifice/bridge/pump (types 1/3/4/5).  This path
-        # assumes CMS throughout, which over-applies the conversion for
-        # non-culvert structures by ~35× when running in USC (ft) CRS mode.
-        # This is a known pre-existing issue; the viewer metrics path has been
-        # fixed separately with type-aware unit conversion.
-        qv_model = qv * _u.si_m3_per_model_volume()
-        np.add.at(src, upv, -qv_model / np.maximum(self.cell_area[upv], 1.0e-12))
-        np.add.at(src, dnv, qv_model / np.maximum(self.cell_area[dnv], 1.0e-12))
+        # Kernel returns model-unit flow (L³/T) for all structure types.
+        # Divide by model-unit cell_area (L²) → model-unit depth rate (L/T).
+        np.add.at(src, upv, -qv / np.maximum(self.cell_area[upv], 1.0e-12))
+        np.add.at(src, dnv, qv / np.maximum(self.cell_area[dnv], 1.0e-12))
 
         # Apply influence-width redistribution (replaces single-cell injection
         # with multi-cell distribution for structures that have corridor data).
         # Uses CUDA kernel when native_mod provides it, else Python fallback.
         if self._redist_offsets is not None and self._redist_offsets.size > 1:
-            # Convert flows from model units back to SI for redistribution
-            qv_si = qv_model / _u.si_m3_per_model_volume()
+            # Convert flows from model units to SI for redistribution kernel
+            qv_si = qv * _u.si_m3_per_model_volume()
             src = self._apply_redistribution(src, qv_si, up, dn, native_mod=native_mod)
         return src
 
@@ -1203,10 +1191,9 @@ class SWE2DCouplingController:
             if native_cpu_flows is not None and native_cpu_flows.size == self._structure_count:
                 src = self._structure_source_rate_from_flows(native_cpu_flows, native_mod=native_mod)
                 component_sums["structures_native_cpu_helper"] = 1.0
-                structure_diag = {
-                    "active_structures": float(np.sum(np.asarray([bool(st.enabled) for st in self._structures_cfg], dtype=np.float64))),
-                    "total_structure_flow": float(np.sum(np.abs(native_cpu_flows))),
-                }
+                # Use Python structure module for diagnostics (returns CMS).
+                # The constructor converts CMS → model units uniformly.
+                structure_diag = self.structures.compute_structure_fluxes(float(dt_s), cell_wse)
             else:
                 src = np.asarray(
                     self.structures.compute_cell_source_rate(float(dt_s), cell_wse, self.cell_area),
@@ -1226,9 +1213,9 @@ class SWE2DCouplingController:
         self.last_diag = SWE2DCouplingDiagnostics(
             time_s=float(t_s) + float(dt_s),
             dt_s=float(dt_s),
-            drainage_max_node_depth=float(drainage_diag.get("max_node_depth", drainage_diag.get("max_node_depth_m", 0.0))),
-            drainage_max_link_flow=float(drainage_diag.get("max_link_flow", drainage_diag.get("max_link_flow_cms", 0.0))),
-            structure_total_flow=float(structure_diag.get("total_structure_flow", 0.0)),
+            drainage_max_node_depth=float(drainage_diag.get("max_node_depth", drainage_diag.get("max_node_depth_m", 0.0))) * _u.model_per_si_m(),
+            drainage_max_link_flow=float(drainage_diag.get("max_link_flow", drainage_diag.get("max_link_flow_cms", 0.0))) / _u.si_m3_per_model_volume(),
+            structure_total_flow=float(structure_diag.get("total_structure_flow", 0.0)) / _u.si_m3_per_model_volume(),
             source_sum=float(np.sum(total)),
             source_min=float(np.min(total)) if total.size else 0.0,
             source_max=float(np.max(total)) if total.size else 0.0,
@@ -1356,7 +1343,7 @@ class SWE2DCouplingController:
                             node_depth_state,
                             link_flow_state,
                             float(dt_s),
-                            float(getattr(self.drainage.cfg, "gravity", 9.81)),
+                            float(getattr(self.drainage.cfg, "gravity", _u.gravity())),
                             int(dsoa.solver_mode),
                             float(getattr(self.drainage.cfg, "head_deadband_m", 1.0e-3)),
                             float(getattr(self.drainage.cfg, "dynamic_flow_relaxation", 1.0)),
@@ -1416,7 +1403,7 @@ class SWE2DCouplingController:
                                 node_depth_state,
                                 link_flow_state,
                                 float(dt_s),
-                                float(getattr(self.drainage.cfg, "gravity", 9.81)),
+                                float(getattr(self.drainage.cfg, "gravity", _u.gravity())),
                                 int(dsoa.solver_mode),
                                 float(getattr(self.drainage.cfg, "head_deadband_m", 1.0e-3)),
                                 float(getattr(self.drainage.cfg, "dynamic_flow_relaxation", 1.0)),
@@ -1644,7 +1631,8 @@ class SWE2DCouplingController:
                             np.asarray(ssoa.embankment_crest_elev[non_bridge_mask], dtype=np.float64),
                             np.asarray(ssoa.embankment_overflow_width[non_bridge_mask], dtype=np.float64),
                             np.asarray(ssoa.embankment_weir_coeff[non_bridge_mask], dtype=np.float64),
-                            float(getattr(self.structures.cfg, "gravity", 9.81)) if self.structures is not None else 9.81,
+                            self._gravity,
+                            self._model_to_ft,
                             inlet_cell,
                             inlet_flow,
                         ),
@@ -1800,9 +1788,9 @@ class SWE2DCouplingController:
         self.last_diag = SWE2DCouplingDiagnostics(
             time_s=float(t_s) + float(dt_s),
             dt_s=float(dt_s),
-            drainage_max_node_depth=float(drainage_diag.get("max_node_depth", drainage_diag.get("max_node_depth_m", 0.0))),
-            drainage_max_link_flow=float(drainage_diag.get("max_link_flow", drainage_diag.get("max_link_flow_cms", 0.0))),
-            structure_total_flow=float(structure_diag.get("total_structure_flow", 0.0)),
+            drainage_max_node_depth=float(drainage_diag.get("max_node_depth", drainage_diag.get("max_node_depth_m", 0.0))) * _u.model_per_si_m(),
+            drainage_max_link_flow=float(drainage_diag.get("max_link_flow", drainage_diag.get("max_link_flow_cms", 0.0))) / _u.si_m3_per_model_volume(),
+            structure_total_flow=float(structure_diag.get("total_structure_flow", 0.0)) / _u.si_m3_per_model_volume(),
             source_sum=float(np.sum(diag_total)),
             source_min=float(np.min(diag_total)) if diag_total.size else 0.0,
             source_max=float(np.max(diag_total)) if diag_total.size else 0.0,

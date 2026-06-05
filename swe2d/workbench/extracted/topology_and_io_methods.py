@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from swe2d import units as _u
+
 # Extracted methods depend on symbols defined in swe2d_workbench_qt.
 from swe2d_workbench_qt import *  # type: ignore F401,F403
 from swe2d_workbench_qt import (
@@ -1023,7 +1025,7 @@ def _build_pipe_network_config(self):
                 )
                 assigned_pipe_end_nodes.add(nid)
 
-    gravity = float(getattr(self, "_gravity", 9.81))
+    gravity = float(getattr(self, "_gravity", _u.gravity()))
     solver_mode = int(self.drainage_solver_mode_combo.currentData() if hasattr(self, "drainage_solver_mode_combo") else 0)
     solver_mode_name = str(self.drainage_solver_mode_combo.currentText() if hasattr(self, "drainage_solver_mode_combo") else "EGL")
     self._log(

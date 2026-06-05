@@ -20,6 +20,7 @@ from typing import Any, Callable, Dict, Optional, Sequence, Tuple
 
 from qgis.PyQt import QtWidgets, QtCore, QtGui
 from qgis.PyQt.QtWidgets import QFileDialog, QMessageBox
+from swe2d.units import USC_GRAVITY
 
 
 def _detect_matplotlib_qt_available() -> bool:
@@ -1773,10 +1774,10 @@ class BackwaterWidget(QtWidgets.QWidget):
         """Populate the left Results table from self.results and self.model."""
         try:
             import math as _math
-            G_val = getattr(_bwmod, 'G', 32.174)
+            G_val = getattr(_bwmod, 'G', USC_GRAVITY)
         except Exception:
             _math = None
-            G_val = 32.174
+            G_val = USC_GRAVITY
         headers = ['Idx', 'Station', 'WSE (ft)', 'Depth (ft)', 'V (ft/s)', 'Alpha', 'Energy (ft)', 'K_total', 'A_total', 'Sf_total', 'Froude']
         self.results_table.clear()
         self.results_table.setColumnCount(len(headers))
@@ -3752,7 +3753,7 @@ else:
                 ax0.plot(chainage[:len(wse_vals)], wse_vals, '-o', color='#1f77b4', lw=2, markersize=6)
                 # Energy grade line (E = wse + alpha * V^2 / (2g))
                 try:
-                    G_val = getattr(_bwmod, 'G', 32.174)
+                    G_val = getattr(_bwmod, 'G', USC_GRAVITY)
                     energy_vals = [s.wse + (getattr(s, 'alpha', 0.0) * getattr(s, 'V_t', 0.0) ** 2) / (2.0 * G_val) for s in self.results]
                     ax0.plot(chainage[:len(energy_vals)], energy_vals, '--', color='orange', lw=1.8, label='Energy Grade')
                     ax0.legend()

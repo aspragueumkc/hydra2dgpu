@@ -270,6 +270,11 @@ SWE2DMesh swe2d_build_mesh_poly(
     // Reorder edges by (c0, c1) for GPU memory coalescing.
     swe2d_reorder_edges_for_gpu(mesh);
 
+    // Build the 2-ring cell stencil (CSR) used by the least-squares gradient
+    // (spatial scheme 6 / FV_WENO5).  Neighbour cell indices are invariant under
+    // the edge reordering above, so this may run before or after the reorder.
+    swe2d_build_cell_ring2(mesh);
+
     return mesh;
 }
 
@@ -365,6 +370,73 @@ void swe2d_reorder_edges_for_gpu(SWE2DMesh& mesh) {
         eidx = inv_perm[static_cast<size_t>(eidx)];
 
     // cell_edge_offsets unchanged (each cell has the same number of incident edges).
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 2-ring cell stencil builder (for least-squares gradient / FV_WENO5)
+// ─────────────────────────────────────────────────────────────────────────────
+void swe2d_build_cell_ring2(SWE2DMesh& mesh) {
+    const int32_t n_cells = mesh.n_cells;
+    mesh.cell_ring2_offsets.assign(static_cast<size_t>(n_cells) + 1, 0);
+    mesh.cell_ring2_ids.clear();
+    mesh.cell_ring2_dcx.clear();
+    mesh.cell_ring2_dcy.clear();
+    mesh.cell_ring2_inv_dist2.clear();
+    if (n_cells <= 0) return;
+
+    // Helper: the face-neighbour of cell `c` across edge `eidx` (or -1 if boundary).
+    auto edge_peer = [&](int32_t eidx, int32_t c) -> int32_t {
+        const int32_t a = mesh.edge_c0[static_cast<size_t>(eidx)];
+        const int32_t b = mesh.edge_c1[static_cast<size_t>(eidx)];
+        if (a == c) return b;
+        if (b == c) return a;
+        return -1;
+    };
+
+    std::vector<int32_t> ring2;  // scratch, reused per cell
+    ring2.reserve(32);
+
+    for (int32_t c0 = 0; c0 < n_cells; ++c0) {
+        ring2.clear();
+        const int32_t es = mesh.cell_edge_offsets[static_cast<size_t>(c0)];
+        const int32_t ee = mesh.cell_edge_offsets[static_cast<size_t>(c0) + 1];
+        for (int32_t k = es; k < ee; ++k) {
+            const int32_t e1 = mesh.cell_edge_ids[static_cast<size_t>(k)];
+            const int32_t peer = edge_peer(e1, c0);
+            if (peer < 0) continue;
+            ring2.push_back(peer);  // 1-hop
+
+            // 2-hop: face-neighbours of the 1-hop peer.
+            const int32_t ps = mesh.cell_edge_offsets[static_cast<size_t>(peer)];
+            const int32_t pe = mesh.cell_edge_offsets[static_cast<size_t>(peer) + 1];
+            for (int32_t k2 = ps; k2 < pe; ++k2) {
+                const int32_t e2 = mesh.cell_edge_ids[static_cast<size_t>(k2)];
+                const int32_t peer2 = edge_peer(e2, peer);
+                if (peer2 >= 0 && peer2 != c0) {
+                    ring2.push_back(peer2);
+                }
+            }
+        }
+
+        // Deduplicate (and sort for deterministic ordering).
+        std::sort(ring2.begin(), ring2.end());
+        ring2.erase(std::unique(ring2.begin(), ring2.end()), ring2.end());
+
+        const double cx0 = mesh.cell_cx[static_cast<size_t>(c0)];
+        const double cy0 = mesh.cell_cy[static_cast<size_t>(c0)];
+        for (int32_t j : ring2) {
+            const double dx = mesh.cell_cx[static_cast<size_t>(j)] - cx0;
+            const double dy = mesh.cell_cy[static_cast<size_t>(j)] - cy0;
+            const double d2 = dx * dx + dy * dy;
+            const double w  = (d2 > 0.0) ? (1.0 / d2) : 0.0;
+            mesh.cell_ring2_ids.push_back(j);
+            mesh.cell_ring2_dcx.push_back(dx);
+            mesh.cell_ring2_dcy.push_back(dy);
+            mesh.cell_ring2_inv_dist2.push_back(w);
+        }
+        mesh.cell_ring2_offsets[static_cast<size_t>(c0) + 1] =
+            static_cast<int32_t>(mesh.cell_ring2_ids.size());
+    }
 }
 
 std::string swe2d_validate_mesh(const SWE2DMesh& mesh) {

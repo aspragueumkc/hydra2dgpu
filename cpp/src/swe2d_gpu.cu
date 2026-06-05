@@ -1017,6 +1017,108 @@ __global__ __launch_bounds__(256, 4) void swe2d_gradient_kernel(
     }
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// Least-squares (2-ring) gradient kernel — spatial scheme 6 (FV_WENO5).
+//
+// Cell-parallel (one thread per cell), no atomics: each thread solves a 2×2
+// weighted normal-equations system over its 2-ring neighbour set and writes the
+// gradient of η = h + z_b, hu, hv into the SAME grad_* arrays used by the
+// Green-Gauss path.  This kernel is launched AFTER swe2d_gradient_kernel for
+// scheme 6, so it overwrites the GG gradient for cells with a well-posed
+// stencil.  Cells with fewer than 3 ring-2 neighbours return early WITHOUT
+// writing, leaving the Green-Gauss gradient in place as an automatic fallback.
+// ─────────────────────────────────────────────────────────────────────────────
+__global__ __launch_bounds__(256, 4) void swe2d_lsq_gradient_kernel(
+    int32_t                     n_cells,
+    const int32_t* __restrict__ cell_ring2_offsets,
+    const int32_t* __restrict__ cell_ring2_ids,
+    const double*  __restrict__ cell_ring2_dcx,
+    const double*  __restrict__ cell_ring2_dcy,
+    const double*  __restrict__ cell_ring2_inv_dist2,
+    const double*  __restrict__ cell_h,
+    const double*  __restrict__ cell_zb,
+    const double*  __restrict__ cell_hu,
+    const double*  __restrict__ cell_hv,
+    const int32_t* __restrict__ d_active,
+    double*                     grad_hx,  double* grad_hy,
+    double*                     grad_hux, double* grad_huy,
+    double*                     grad_hvx, double* grad_hvy)
+{
+    int32_t c = blockIdx.x * blockDim.x + threadIdx.x;
+    if (c >= n_cells) return;
+    if (d_active && !d_active[c]) return;
+
+    const int32_t s = cell_ring2_offsets[c];
+    const int32_t e = cell_ring2_offsets[c + 1];
+
+    // Degenerate / under-determined stencil: keep the Green-Gauss gradient.
+    if (e - s < 3) return;
+
+    const double eta0 = cell_h[c] + cell_zb[c];
+    const double hu0  = cell_hu[c];
+    const double hv0  = cell_hv[c];
+
+    // Weighted normal-equations accumulators for the 2×2 LSQ system.
+    double a11 = 0.0, a12 = 0.0, a22 = 0.0;
+    double b1_eta = 0.0, b2_eta = 0.0;
+    double b1_hu  = 0.0, b2_hu  = 0.0;
+    double b1_hv  = 0.0, b2_hv  = 0.0;
+
+    for (int32_t k = s; k < e; ++k) {
+        const int32_t j  = cell_ring2_ids[k];
+        const double  dx = cell_ring2_dcx[k];
+        const double  dy = cell_ring2_dcy[k];
+        const double  w  = cell_ring2_inv_dist2[k];   // 1/|Δr|²
+
+        const double d_eta = (cell_h[j] + cell_zb[j]) - eta0;
+        const double d_hu  = cell_hu[j] - hu0;
+        const double d_hv  = cell_hv[j] - hv0;
+
+        const double wdx = w * dx;
+        const double wdy = w * dy;
+        a11 += wdx * dx;
+        a12 += wdx * dy;
+        a22 += wdy * dy;
+        b1_eta += wdx * d_eta;  b2_eta += wdy * d_eta;
+        b1_hu  += wdx * d_hu;   b2_hu  += wdy * d_hu;
+        b1_hv  += wdx * d_hv;   b2_hv  += wdy * d_hv;
+    }
+
+    // Solve via Cramer's rule.  Near-singular systems fall back to GG.
+    const double det = a11 * a22 - a12 * a12;
+    if (fabs(det) <= 1.0e-30) return;
+    const double inv_det = 1.0 / det;
+
+    grad_hx[c]  = inv_det * (a22 * b1_eta - a12 * b2_eta);
+    grad_hy[c]  = inv_det * (a11 * b2_eta - a12 * b1_eta);
+    grad_hux[c] = inv_det * (a22 * b1_hu  - a12 * b2_hu);
+    grad_huy[c] = inv_det * (a11 * b2_hu  - a12 * b1_hu);
+    grad_hvx[c] = inv_det * (a22 * b1_hv  - a12 * b2_hv);
+    grad_hvy[c] = inv_det * (a11 * b2_hv  - a12 * b1_hv);
+}
+
+// Launch the LSQ 2-ring gradient kernel for scheme 6, overwriting the
+// Green-Gauss gradient that was just computed into dev->d_grad_*.  No-op for
+// any other scheme or when the 2-ring stencil is unavailable.  Must be called
+// inside any active CUDA-graph capture region (it issues onto dev->d_stream).
+static inline void swe2d_maybe_launch_lsq_gradient(
+    SWE2DDeviceState* dev, int spatial_scheme, int32_t n_cells, int block,
+    const double* cell_h, const double* cell_hu, const double* cell_hv)
+{
+    if (spatial_scheme != static_cast<int>(SWE2DSpatialScheme::FV_WENO5)) return;
+    if (dev->d_cell_ring2_offsets == nullptr) return;
+    const int grid = (n_cells + block - 1) / block;
+    swe2d_lsq_gradient_kernel<<<grid, block, 0, dev->d_stream>>>(
+        n_cells,
+        dev->d_cell_ring2_offsets, dev->d_cell_ring2_ids,
+        dev->d_cell_ring2_dcx, dev->d_cell_ring2_dcy, dev->d_cell_ring2_inv_dist2,
+        cell_h, dev->d_cell_zb, cell_hu, cell_hv,
+        dev->d_active,
+        dev->d_grad_hx,  dev->d_grad_hy,
+        dev->d_grad_hux, dev->d_grad_huy,
+        dev->d_grad_hvx, dev->d_grad_hvy);
+}
+
 __device__ __forceinline__ double interp_series_clamped_cuda(
     const double* __restrict__ t,
     const double* __restrict__ v,
@@ -1394,6 +1496,7 @@ __global__ __launch_bounds__(256, 4) void swe2d_flux_kernel(
         const int scheme_mc     = static_cast<int>(SWE2DSpatialScheme::FV_MUSCL_MC);
         const int scheme_vl     = static_cast<int>(SWE2DSpatialScheme::FV_MUSCL_VAN_LEER);
         const int scheme_weno3  = static_cast<int>(SWE2DSpatialScheme::FV_WENO3_LIKE);
+        const int scheme_weno5  = static_cast<int>(SWE2DSpatialScheme::FV_WENO5);
         const double recon_fallback_depth = fmax(h_min, 0.5 * shallow_damping_depth);
         const bool shallow_pair = (hL < recon_fallback_depth) || (hR < recon_fallback_depth);
         const bool disable_higher_order = enable_shallow_front_recon_fallback && shallow_pair;
@@ -1504,13 +1607,90 @@ __global__ __launch_bounds__(256, 4) void swe2d_flux_kernel(
                 qR_out = fmin(qmax, fmax(qmin, rawR));
             };
 
+            // WENO5 helper on unstructured cell pairs (scheme 6):
+            // The grad_* arrays here hold least-squares 2-ring gradients
+            // (swe2d_lsq_gradient_kernel overwrote the Green-Gauss values for
+            // degree>=3 cells; degenerate cells keep the GG fallback). Three
+            // candidate face values per side are blended with nonlinear WENO
+            // weights biased toward the high-order LSQ candidate, then clamped
+            // to the local cell-pair bounds for monotonicity/well-balancing.
+            auto weno5_reconstruct = [&](double q0, double q1,
+                                         double gx0, double gy0,
+                                         double gx1, double gy1,
+                                         double& qL_out, double& qR_out) {
+                const double dq = q1 - q0;
+                const double dxL = fx - cell_cx[c0];
+                const double dyL = fy - cell_cy[c0];
+                const double dxR = fx - cell_cx[c1];
+                const double dyR = fy - cell_cy[c1];
+
+                // LSQ-extrapolated face slope projections (high-order candidate).
+                const double sL = gx0 * dxL + gy0 * dyL;
+                const double sR = gx1 * dxR + gy1 * dyR;
+
+                // Van Leer TVD-limited LSQ slope using the pair jump as the
+                // monotonicity reference (robust candidate).
+                const double sign_dq = (dq >= 0.0) ? 1.0 : -1.0;
+                const double s0_pair = gx0 * dcx + gy0 * dcy;
+                const double r0 = s0_pair / (dq + sign_dq * EPS);
+                const double s1_pair = -(gx1 * dcx + gy1 * dcy);
+                const double r1 = s1_pair / (-dq + (-sign_dq) * EPS);
+                const double phi0 = (r0 + fabs(r0)) / (1.0 + fabs(r0));
+                const double phi1 = (r1 + fabs(r1)) / (1.0 + fabs(r1));
+
+                // Three candidate face values per side.
+                const double pL0 = q0 + 0.5 * dq;   // pair midpoint (low order)
+                const double pL1 = q0 + sL;         // unlimited LSQ (high order)
+                const double pL2 = q0 + phi0 * sL;  // TVD-limited LSQ (robust)
+                const double pR0 = q1 - 0.5 * dq;
+                const double pR1 = q1 + sR;
+                const double pR2 = q1 + phi1 * sR;
+
+                // Smoothness indicators (squared deviation from cell mean).
+                const double scale = q0 * q0 + q1 * q1 + dq * dq;
+                const double eps_weno = 1.0e-20 + 1.0e-6 * fmax(1.0, scale);
+                const double betaL0 = (pL0 - q0) * (pL0 - q0);
+                const double betaL1 = (pL1 - q0) * (pL1 - q0);
+                const double betaL2 = (pL2 - q0) * (pL2 - q0);
+                const double betaR0 = (pR0 - q1) * (pR0 - q1);
+                const double betaR1 = (pR1 - q1) * (pR1 - q1);
+                const double betaR2 = (pR2 - q1) * (pR2 - q1);
+
+                // Linear (ideal) weights: bias toward high-order LSQ candidate.
+                const double d0 = 0.10, d1 = 0.30, d2 = 0.60;
+                const double aL0 = d0 / ((eps_weno + betaL0) * (eps_weno + betaL0));
+                const double aL1 = d1 / ((eps_weno + betaL1) * (eps_weno + betaL1));
+                const double aL2 = d2 / ((eps_weno + betaL2) * (eps_weno + betaL2));
+                const double sumL = aL0 + aL1 + aL2;
+                const double rawL = (sumL > 0.0)
+                    ? (aL0 * pL0 + aL1 * pL1 + aL2 * pL2) / sumL
+                    : pL0;
+
+                const double aR0 = d0 / ((eps_weno + betaR0) * (eps_weno + betaR0));
+                const double aR1 = d1 / ((eps_weno + betaR1) * (eps_weno + betaR1));
+                const double aR2 = d2 / ((eps_weno + betaR2) * (eps_weno + betaR2));
+                const double sumR = aR0 + aR1 + aR2;
+                const double rawR = (sumR > 0.0)
+                    ? (aR0 * pR0 + aR1 * pR1 + aR2 * pR2) / sumR
+                    : pR0;
+
+                const double qmin = fmin(q0, q1);
+                const double qmax = fmax(q0, q1);
+                qL_out = fmin(qmax, fmax(qmin, rawL));
+                qR_out = fmin(qmax, fmax(qmin, rawR));
+            };
+
             // Reconstruct free surface eta=h+zb using grad_h* (which stores
             // Green-Gauss gradients of eta from swe2d_gradient_kernel), then
             // convert back to depth for hydrostatic reconstruction.
             double etaL_rec, etaR_rec, huL_rec, huR_rec, hvL_rec, hvR_rec;
             const double etaL = hL + zbL;
             const double etaR = hR + zbR;
-            if (spatial_scheme == scheme_weno3) {
+            if (spatial_scheme == scheme_weno5) {
+                weno5_reconstruct(etaL, etaR, grad_hx[c0], grad_hy[c0], grad_hx[c1], grad_hy[c1], etaL_rec, etaR_rec);
+                weno5_reconstruct(huL, huR, grad_hux[c0], grad_huy[c0], grad_hux[c1], grad_huy[c1], huL_rec, huR_rec);
+                weno5_reconstruct(hvL, hvR, grad_hvx[c0], grad_hvy[c0], grad_hvx[c1], grad_hvy[c1], hvL_rec, hvR_rec);
+            } else if (spatial_scheme == scheme_weno3) {
                 weno3_like_reconstruct(etaL, etaR, grad_hx[c0], grad_hy[c0], grad_hx[c1], grad_hy[c1], etaL_rec, etaR_rec);
                 weno3_like_reconstruct(huL, huR, grad_hux[c0], grad_huy[c0], grad_hux[c1], grad_huy[c1], huL_rec, huR_rec);
                 weno3_like_reconstruct(hvL, hvR, grad_hvx[c0], grad_hvy[c0], grad_hvx[c1], grad_hvy[c1], hvL_rec, hvR_rec);
@@ -3084,6 +3264,7 @@ __global__ __launch_bounds__(256, 4) void swe2d_compute_structure_flows_kernel(
     const double* __restrict__ embankment_overflow_width,
     const double* __restrict__ embankment_weir_coeff,
     double gravity,
+    double model_to_ft,
     double* __restrict__ structure_flow,
     int32_t culvert_solver_mode,
     const double* __restrict__ culvert_table_header,
@@ -3135,78 +3316,75 @@ __global__ __launch_bounds__(256, 4) void swe2d_compute_structure_flows_kernel(
     }
     if (structure_type[i] != 2) return;
 
+    // ── Culvert path: convert model-unit inputs to feet for HDS-5 ──
+    const double to_ft = fmax(1.0e-6, model_to_ft);
     const double sign = (wu >= wd) ? 1.0 : -1.0;
     const double upstream_wse = (sign >= 0.0) ? wu : wd;
     const double downstream_wse = (sign >= 0.0) ? wd : wu;
     const double upstream_invert = (sign >= 0.0) ? inlet_invert_elev[i] : outlet_invert_elev[i];
     const double downstream_invert = (sign >= 0.0) ? outlet_invert_elev[i] : inlet_invert_elev[i];
-    const double available_head_up = fmax(0.0, upstream_wse - upstream_invert);
-    const double tailwater_depth = fmax(0.0, downstream_wse - downstream_invert);
-    const double len = fmax(0.1, length[i]);
+    const double available_head_up_ft = fmax(0.0, (upstream_wse - upstream_invert) * to_ft);
+    const double tailwater_depth_ft = fmax(0.0, (downstream_wse - downstream_invert) * to_ft);
+    const double len_ft = fmax(0.1, length[i] * to_ft);
 
     double slope = culvert_slope[i];
     if (!(slope > 0.0)) {
-        slope = fabs(upstream_invert - downstream_invert) / len;
+        slope = fabs((upstream_invert - downstream_invert) * to_ft) / len_ft;
     }
     slope = fmax(1.0e-6, slope);
 
-    const double rise = fmax(0.0, (culvert_rise[i] > 0.0) ? culvert_rise[i] : fmax(height[i], diameter[i]));
-    const double span = fmax(0.0, (culvert_span[i] > 0.0) ? culvert_span[i] : fmax(width[i], rise));
+    const double rise_ft = fmax(0.0, (culvert_rise[i] > 0.0 ? culvert_rise[i] : fmax(height[i], diameter[i])) * to_ft);
+    const double span_ft = fmax(0.0, (culvert_span[i] > 0.0 ? culvert_span[i] : fmax(width[i], rise_ft / to_ft)) * to_ft);
     const int code = max(1, min(57, static_cast<int>(culvert_code[i])));
 
     swe2d_culvert_xsect_cuda xsect{};
     xsect.code = code;
     xsect.is_rect = (culvert_shape[i] == 1) ? 1 : 0;
     if (xsect.is_rect) {
-        xsect.width_ft = fmax(1.0e-6, span);
-        xsect.y_full_ft = fmax(1.0e-6, rise);
+        xsect.width_ft = fmax(1.0e-6, span_ft);
+        xsect.y_full_ft = fmax(1.0e-6, rise_ft);
         xsect.a_full_ft2 = xsect.width_ft * xsect.y_full_ft;
         xsect.radius_ft = 0.0;
     } else {
-        const double dia_ft = fmax(1.0e-6, fmax(diameter[i], rise));
+        const double dia_ft = fmax(1.0e-6, fmax(diameter[i] * to_ft, rise_ft));
         xsect.radius_ft = 0.5 * dia_ft;
         xsect.y_full_ft = dia_ft;
         xsect.a_full_ft2 = M_PI * xsect.radius_ft * xsect.radius_ft;
         xsect.width_ft = 0.0;
     }
 
-    const double q_inlet = fmax(0.0, swe2d_culvert_inlet_controlled_flow_cfs_cuda(xsect, slope, fmax(0.0, available_head_up)));
-    const double q_inlet_si = q_inlet / USC_FT3_PER_SI_M3;
+    const double q_inlet = fmax(0.0, swe2d_culvert_inlet_controlled_flow_cfs_cuda(xsect, slope, fmax(0.0, available_head_up_ft)));
 
-    double area = fmax(0.0, culvert_area[i]);
-    if (area <= 0.0 && fmax(diameter[i], rise) > 0.0 && culvert_shape[i] == 0) {
-        area = bw2d_circular_area(fmax(diameter[i], rise));
+    double area_ft2 = fmax(0.0, culvert_area[i] * to_ft * to_ft);
+    if (area_ft2 <= 0.0 && fmax(diameter[i] * to_ft, rise_ft) > 0.0 && culvert_shape[i] == 0) {
+        area_ft2 = bw2d_circular_area(fmax(diameter[i] * to_ft, rise_ft));
     }
 
     double q_orifice = 0.0;
-    if (area > 0.0) {
-        q_orifice = fabs(bw2d_orifice_q(available_head_up, tailwater_depth, area, cd[i], USC_GRAVITY));
+    if (area_ft2 > 0.0) {
+        q_orifice = fabs(bw2d_orifice_q(available_head_up_ft, tailwater_depth_ft, area_ft2, cd[i], USC_GRAVITY));
         if (qmax >= 0.0) q_orifice = fmin(q_orifice, qmax);
-        q_orifice /= USC_FT3_PER_SI_M3;  // CFS → CMS
     }
 
     double q_manning_cap = 0.0;
     if (xsect.is_rect) {
-        // Rectangular culvert: A = w*h, P = 2(w+h), R = A/P
         q_manning_cap = bw2d_rect_manning_capacity_full(xsect.width_ft, xsect.y_full_ft, slope, roughness_n[i]);
-        q_manning_cap /= USC_FT3_PER_SI_M3;  // CFS → CMS
     } else {
-        const double dia_for_cap = fmax(fmax(diameter[i], rise), bw2d_equiv_diameter_from_area(fmax(0.0, area)));
-        if (dia_for_cap > 0.0) {
-            q_manning_cap = bw2d_pipe_manning_capacity_full(dia_for_cap, slope, roughness_n[i]);
-            q_manning_cap /= USC_FT3_PER_SI_M3;  // CFS → CMS
+        const double dia_for_cap_ft = fmax(fmax(diameter[i] * to_ft, rise_ft), bw2d_equiv_diameter_from_area(fmax(0.0, area_ft2)));
+        if (dia_for_cap_ft > 0.0) {
+            q_manning_cap = bw2d_pipe_manning_capacity_full(dia_for_cap_ft, slope, roughness_n[i]);
         }
     }
 
-    const double q_hint = fmax(1.0, fmax(q_inlet, fmax(q_orifice, q_manning_cap) * USC_FT3_PER_SI_M3));
+    const double q_hint = fmax(1.0, fmax(q_inlet, fmax(q_orifice, q_manning_cap)));
 
     double q_outlet = 0.0;
     if (culvert_solver_mode == 1 && culvert_table_data && culvert_table_header) {
         // Table lookup: bilinear interpolation from pre-computed Q(hw,tw) grid.
         q_outlet = swe2d_culvert_table_lookup_cuda(
             i,  // culvert index (local to the table, matches upload order)
-            fmax(0.0, available_head_up),
-            fmax(0.0, tailwater_depth),
+            fmax(0.0, available_head_up_ft),
+            fmax(0.0, tailwater_depth_ft),
             n_structures,
             culvert_table_header,
             culvert_table_data,
@@ -3216,9 +3394,9 @@ __global__ __launch_bounds__(256, 4) void swe2d_compute_structure_flows_kernel(
         // Direct secant solver (default)
         q_outlet = swe2d_culvert_outlet_control_flow_cms_cuda(
             xsect,
-            fmax(0.0, available_head_up),
-            fmax(0.0, tailwater_depth),
-            fmax(0.1, len),
+            fmax(0.0, available_head_up_ft),
+            fmax(0.0, tailwater_depth_ft),
+            fmax(0.1, len_ft),
             fmax(1.0e-6, slope),
             fmax(1.0e-6, roughness_n[i]),
             entrance_loss_k[i],
@@ -3226,23 +3404,24 @@ __global__ __launch_bounds__(256, 4) void swe2d_compute_structure_flows_kernel(
             q_hint);
     }
 
-    double q = fmax(0.0, fmin(q_inlet_si, (q_outlet > 0.0) ? q_outlet : q_inlet_si));
+    double q = fmax(0.0, fmin(q_inlet, q_outlet > 0.0 ? q_outlet : q_inlet));
     if (q_orifice > 0.0) q = (q > 0.0) ? fmin(q, q_orifice) : q_orifice;
     if (q_manning_cap > 0.0) q = (q > 0.0) ? fmin(q, q_manning_cap) : q_manning_cap;
 
     if (embankment_enabled[i] != 0) {
         const double q_emb = fabs(bw2d_weir_q(
-            upstream_wse,
-            downstream_wse,
-            embankment_crest_elev[i],
-            fmax(0.0, embankment_overflow_width[i]),
+            upstream_wse * to_ft,
+            downstream_wse * to_ft,
+            embankment_crest_elev[i] * to_ft,
+            fmax(0.0, embankment_overflow_width[i]) * to_ft,
             fmax(1.0e-6, embankment_weir_coeff[i])));
         q += q_emb;
     }
 
     q *= fmax(1.0, culvert_barrels[i]);
     if (qmax >= 0.0) q = fmin(q, qmax);
-    structure_flow[i] = sign * q;
+    // Convert from CFS back to model units: ÷ to_ft³
+    structure_flow[i] = sign * q / (to_ft * to_ft * to_ft);
 }
 
 __device__ __forceinline__ void swe2d_circular_section_cuda(
@@ -3819,6 +3998,24 @@ SWE2DDeviceState* swe2d_gpu_init(
     copy_h2d_i(dev->d_cell_edge_offsets, mesh.cell_edge_offsets.data(), sz_cells + 1);
     copy_h2d_i(dev->d_cell_edge_ids, mesh.cell_edge_ids.data(), mesh.cell_edge_ids.size());
 
+    // 2-ring cell stencil CSR for the least-squares gradient (scheme 6).
+    {
+        const size_t n_ring2 = mesh.cell_ring2_ids.size();
+        dev->n_cell_ring2 = static_cast<int32_t>(n_ring2);
+        alloc_d(reinterpret_cast<void**>(&dev->d_cell_ring2_offsets), (sz_cells + 1) * sizeof(int32_t));
+        copy_h2d_i(dev->d_cell_ring2_offsets, mesh.cell_ring2_offsets.data(), sz_cells + 1);
+        if (n_ring2 > 0) {
+            alloc_d(reinterpret_cast<void**>(&dev->d_cell_ring2_ids),       n_ring2 * sizeof(int32_t));
+            alloc_d(reinterpret_cast<void**>(&dev->d_cell_ring2_dcx),       n_ring2 * sizeof(double));
+            alloc_d(reinterpret_cast<void**>(&dev->d_cell_ring2_dcy),       n_ring2 * sizeof(double));
+            alloc_d(reinterpret_cast<void**>(&dev->d_cell_ring2_inv_dist2), n_ring2 * sizeof(double));
+            copy_h2d_i(dev->d_cell_ring2_ids,       mesh.cell_ring2_ids.data(),       n_ring2);
+            copy_h2d_d(dev->d_cell_ring2_dcx,       mesh.cell_ring2_dcx.data(),       n_ring2);
+            copy_h2d_d(dev->d_cell_ring2_dcy,       mesh.cell_ring2_dcy.data(),       n_ring2);
+            copy_h2d_d(dev->d_cell_ring2_inv_dist2, mesh.cell_ring2_inv_dist2.data(), n_ring2);
+        }
+    }
+
     // Cell geometry
     alloc_d(reinterpret_cast<void**>(&dev->d_cell_zb),      sz_cells * sizeof(double));
     alloc_d(reinterpret_cast<void**>(&dev->d_cell_area),    sz_cells * sizeof(double));
@@ -4259,6 +4456,8 @@ void swe2d_gpu_step(
                         dev->d_active,
                         dev->d_degen_mask,
                         dev->degen_mode);
+                    swe2d_maybe_launch_lsq_gradient(dev, spatial_scheme, n_cells, BLOCK,
+                                                    dev->d_h, dev->d_hu, dev->d_hv);
                 }
                 // flux
                 int grid_flux = (n_edges + BLOCK - 1) / BLOCK;
@@ -4425,6 +4624,8 @@ void swe2d_gpu_step(
             dev->d_grad_hvx, dev->d_grad_hvy,
             dev->d_active, dev->d_degen_mask, dev->degen_mode);
         CUDA_CHECK(cudaGetLastError());
+        swe2d_maybe_launch_lsq_gradient(dev, spatial_scheme, n_cells, BLOCK,
+                                        dev->d_h, dev->d_hu, dev->d_hv);
     }
 
     // ── Flux ────────────────────────────────────────────────────────────
@@ -6116,6 +6317,7 @@ void swe2d_gpu_step_rk4_graph(
     precompute_stage_forcing();
 
     // Wet/dry classification based on U^0
+    // Wet/dry classification based on U^0 (rk4_graph)
     if (dev->d_active && dev->d_n_wet) {
         if (active_set_hysteresis && dev->d_was_active) {
             CUDA_CHECK(cudaMemcpyAsync(dev->d_was_active, dev->d_active,
@@ -6130,7 +6332,7 @@ void swe2d_gpu_step_rk4_graph(
             dev->d_active, dev->d_n_wet, h_min,
             active_set_hysteresis ? dev->d_was_active : nullptr);
         CUDA_CHECK(cudaGetLastError());
-        
+
         const int e_grid = (n_edges + BLOCK - 1) / BLOCK;
         swe2d_mark_neighbor_kernel<<<e_grid, BLOCK, 0, dev->d_stream>>>(
             n_edges, dev->d_edge_c0, dev->d_edge_c1, dev->d_active);
@@ -6182,6 +6384,9 @@ void swe2d_gpu_step_rk4_graph(
                 dev->d_active,
                 dev->d_degen_mask,
                 dev->degen_mode);
+            CUDA_CHECK(cudaGetLastError());
+            swe2d_maybe_launch_lsq_gradient(dev, spatial_scheme, n_cells, BLOCK,
+                                            dev->d_h, dev->d_hu, dev->d_hv);
             CUDA_CHECK(cudaGetLastError());
         }
 
@@ -6642,6 +6847,7 @@ void swe2d_gpu_step_rk5_graph(
 
     precompute_stage_forcing();
 
+    // Wet/dry classification based on U^0 (rk5_graph)
     if (dev->d_active && dev->d_n_wet) {
         if (active_set_hysteresis && dev->d_was_active) {
             CUDA_CHECK(cudaMemcpyAsync(dev->d_was_active, dev->d_active,
@@ -6708,6 +6914,9 @@ void swe2d_gpu_step_rk5_graph(
                 dev->d_active,
                 dev->d_degen_mask,
                 dev->degen_mode);
+            CUDA_CHECK(cudaGetLastError());
+            swe2d_maybe_launch_lsq_gradient(dev, spatial_scheme, n_cells, BLOCK,
+                                            dev->d_h, dev->d_hu, dev->d_hv);
             CUDA_CHECK(cudaGetLastError());
         }
 
@@ -7196,6 +7405,7 @@ void swe2d_gpu_compute_structure_and_coupling_sources(
     const int32_t* embankment_enabled, const double* embankment_crest_elev,
     const double* embankment_overflow_width, const double* embankment_weir_coeff,
     double gravity,
+    double model_to_ft,
     int32_t n_inlets, const int32_t* inlet_cell, const double* inlet_flow_cms,
     double* source_rate_out)
 {
@@ -7211,7 +7421,7 @@ void swe2d_gpu_compute_structure_and_coupling_sources(
             culvert_code, culvert_shape, culvert_rise, culvert_span, culvert_area,
             culvert_barrels, culvert_slope, inlet_invert_elev, outlet_invert_elev,
             entrance_loss_k, exit_loss_k, embankment_enabled, embankment_crest_elev,
-            embankment_overflow_width, embankment_weir_coeff, gravity, sf.data());
+            embankment_overflow_width, embankment_weir_coeff, gravity, model_to_ft, sf.data());
         swe2d_gpu_compute_coupling_sources(
             nullptr, n_cells, cell_area, n_inlets, inlet_cell, inlet_flow_cms,
             n_structures, upstream_cell, downstream_cell, sf.data(), source_rate_out);
@@ -7250,7 +7460,7 @@ void swe2d_gpu_preload_structure_params(
     const double* entrance_loss_k, const double* exit_loss_k,
     const int32_t* embankment_enabled, const double* embankment_crest_elev,
     const double* embankment_overflow_width, const double* embankment_weir_coeff,
-    double gravity)
+    double gravity, double model_to_ft)
 {
     if (!dev) dev = s_coupling_dev;
     if (!dev) {
@@ -7259,7 +7469,7 @@ void swe2d_gpu_preload_structure_params(
     }
     if (n_structures <= 0) return;
     auto& ws = dev->sf_ws;
-    if (ws.params_preloaded && ws.n_structures == n_structures && ws.gravity == gravity) return;
+    if (ws.params_preloaded && ws.n_structures == n_structures && ws.gravity == gravity && ws.model_to_ft == model_to_ft) return;
     cudaStream_t stream = dev->d_stream;
 
     sf_ensure_buf(ws.d_cell_wse, ws.cell_capacity, dev->n_cells);
@@ -7326,6 +7536,7 @@ void swe2d_gpu_preload_structure_params(
 
     ws.n_structures = n_structures;
     ws.gravity = gravity;
+    ws.model_to_ft = model_to_ft;
     ws.params_preloaded = true;
     CUDA_CHECK(cudaStreamSynchronize(stream));
 }
@@ -7410,7 +7621,7 @@ void swe2d_gpu_compute_coupling_full_on_device(
             sf_ws.d_entrance_loss_k, sf_ws.d_exit_loss_k,
             sf_ws.d_embankment_enabled, sf_ws.d_embankment_crest_elev,
             sf_ws.d_embankment_overflow_width, sf_ws.d_embankment_weir_coeff,
-            sf_ws.gravity, sf_ws.d_structure_flow,
+            sf_ws.gravity, sf_ws.model_to_ft, sf_ws.d_structure_flow,
             s_culvert_solver_mode, s_culvert_table_header, s_culvert_table_data,
             s_culvert_table_n_hw, s_culvert_table_n_tw);
         CUDA_CHECK(cudaGetLastError());
@@ -8047,6 +8258,7 @@ void swe2d_gpu_compute_structure_flows(
     const double* embankment_overflow_width,
     const double* embankment_weir_coeff,
     double gravity,
+    double model_to_ft,
     double* structure_flow_out)
 {
     if (!structure_flow_out || n_structures <= 0 || n_cells <= 0) {
@@ -8194,7 +8406,7 @@ void swe2d_gpu_compute_structure_flows(
             s_d_entrance_loss_k, s_d_exit_loss_k,
             s_d_embankment_enabled, s_d_embankment_crest_elev,
             s_d_embankment_overflow_width, s_d_embankment_weir_coeff,
-            gravity, s_d_structure_flow,
+            gravity, model_to_ft, s_d_structure_flow,
             s_culvert_solver_mode,
             s_culvert_table_header, s_culvert_table_data,
             s_culvert_table_n_hw, s_culvert_table_n_tw);
@@ -12744,6 +12956,11 @@ void swe2d_gpu_destroy(SWE2DDeviceState* dev) {
     safe_free(dev->d_edge_bc_val);
     safe_free(dev->d_cell_edge_offsets);
     safe_free(dev->d_cell_edge_ids);
+    safe_free(dev->d_cell_ring2_offsets);
+    safe_free(dev->d_cell_ring2_ids);
+    safe_free(dev->d_cell_ring2_dcx);
+    safe_free(dev->d_cell_ring2_dcy);
+    safe_free(dev->d_cell_ring2_inv_dist2);
     safe_free(dev->d_hg_edge_index);
     safe_free(dev->d_hg_bc_type);
     safe_free(dev->d_hg_offsets);

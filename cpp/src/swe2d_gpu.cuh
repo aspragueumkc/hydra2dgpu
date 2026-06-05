@@ -206,6 +206,14 @@ struct SWE2DDeviceState {
     int32_t* d_cell_edge_offsets = nullptr;  // [n_cells + 1]
     int32_t* d_cell_edge_ids     = nullptr;   // [sum(n_verts_cell)]
 
+    // 2-ring cell stencil (CSR), used by the least-squares gradient (scheme 6).
+    int32_t* d_cell_ring2_offsets   = nullptr;  // [n_cells + 1]
+    int32_t* d_cell_ring2_ids       = nullptr;  // [sum(ring2_counts)]
+    double*  d_cell_ring2_dcx       = nullptr;  // [sum(ring2_counts)]
+    double*  d_cell_ring2_dcy       = nullptr;  // [sum(ring2_counts)]
+    double*  d_cell_ring2_inv_dist2 = nullptr;  // [sum(ring2_counts)]
+    int32_t  n_cell_ring2           = 0;        // length of ring2 id/Δ arrays
+
     // Per-edge hydrograph forcing (optional, evaluated on GPU each step).
     int32_t* d_hg_edge_index = nullptr;   // [n_hg_edges]
     int32_t* d_hg_bc_type = nullptr;      // [n_hg_edges]
@@ -407,6 +415,7 @@ struct SWE2DDeviceState {
         int32_t  cell_capacity = 0;
         int32_t  struct_capacity = 0;
         double   gravity = 9.81;
+        double   model_to_ft = 3.28084;
         double*  d_cell_wse = nullptr;
         double*  d_cell_bed = nullptr;
         int32_t* d_structure_type = nullptr;
@@ -1000,7 +1009,8 @@ void swe2d_gpu_compute_structure_flows(
     const double* embankment_overflow_width,
     const double* embankment_weir_coeff,
     double gravity,
-    double* structure_flow_cms_out);
+    double model_to_ft,
+    double* structure_flow_out);
 
 // Fused structure-flows + coupling-sources: runs both kernels on-device and
 // returns per-cell source rates [m/s] without the intermediate H→D→H round trip.
@@ -1040,6 +1050,7 @@ void swe2d_gpu_compute_structure_and_coupling_sources(
     const double* embankment_overflow_width,
     const double* embankment_weir_coeff,
     double gravity,
+    double model_to_ft,
     int32_t n_inlets,
     const int32_t* inlet_cell,
     const double* inlet_flow_cms,
@@ -1061,7 +1072,7 @@ void swe2d_gpu_preload_structure_params(
     const double* entrance_loss_k, const double* exit_loss_k,
     const int32_t* embankment_enabled, const double* embankment_crest_elev,
     const double* embankment_overflow_width, const double* embankment_weir_coeff,
-    double gravity);
+    double gravity, double model_to_ft);
 void swe2d_gpu_preload_coupling_cell_area(SWE2DDeviceState* dev, int32_t n_cells, const double* cell_area_m2);
 void swe2d_gpu_compute_coupling_full_on_device(
     SWE2DDeviceState* dev, int32_t n_cells, int32_t n_structures, const double* cell_wse_host,

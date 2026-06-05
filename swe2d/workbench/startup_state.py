@@ -6,6 +6,8 @@ from __future__ import annotations
 import os
 from typing import Any, Callable, Tuple
 
+from swe2d import units as _u
+
 
 def initialize_workbench_startup_state(
     dialog: Any,
@@ -44,7 +46,7 @@ def initialize_workbench_startup_state(
     dialog._mesh_cells_layer_id = None
     dialog._unit_system = "SI"
     dialog._length_unit_name = "m"
-    dialog._gravity = 9.81
+    dialog._gravity = _u.gravity()
     dialog._topology_mesh_future = None
     dialog._topology_mesh_backend = None
     dialog._topology_mesh_default_cell_type = None

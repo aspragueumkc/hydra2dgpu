@@ -5,6 +5,7 @@ from __future__ import annotations
 import math
 from typing import Dict, List, Sequence, Tuple
 
+from swe2d import units as _u
 from swe2d.extensions.extension_models import (
     CouplingDiagnostics,
     DrainageCouplingEngine,
@@ -174,7 +175,7 @@ class SWE2DUrbanDrainageModule(DrainageCouplingEngine):
 
         node_abs_q: Dict[str, float] = {n.node_id: 0.0 for n in self.cfg.nodes}
         dt_limit = float("inf")
-        g = max(1.0e-6, float(getattr(self.cfg, "gravity", 9.81)))
+        g = max(1.0e-6, float(getattr(self.cfg, "gravity", _u.gravity())))
 
         for link in self.cfg.links:
             q_est = abs(float(self.state.link_flow.get(link.link_id, 0.0)))
@@ -207,7 +208,7 @@ class SWE2DUrbanDrainageModule(DrainageCouplingEngine):
         n1 = self._node_by_id(link.to_node_id)
         h0 = self._node_head(n0)
         h1 = self._node_head(n1)
-        g = max(1.0e-6, float(getattr(self.cfg, "gravity", 9.81)))
+        g = max(1.0e-6, float(getattr(self.cfg, "gravity", _u.gravity())))
         dh = self._effective_head_difference(h0, h1)
         if abs(dh) <= 1.0e-12:
             return 0.0
@@ -268,7 +269,7 @@ class SWE2DUrbanDrainageModule(DrainageCouplingEngine):
         n1 = self._node_by_id(link.to_node_id)
         h0 = self._node_head(n0)
         h1 = self._node_head(n1)
-        g = max(1.0e-6, float(getattr(self.cfg, "gravity", 9.81)))
+        g = max(1.0e-6, float(getattr(self.cfg, "gravity", _u.gravity())))
         dh = self._effective_head_difference(h0, h1)
         if abs(dh) <= 1.0e-12:
             return 0.0
@@ -366,7 +367,7 @@ class SWE2DUrbanDrainageModule(DrainageCouplingEngine):
         n1 = self._node_by_id(link.to_node_id)
         h0 = self._node_head(n0)
         h1 = self._node_head(n1)
-        g = max(1.0e-6, float(getattr(self.cfg, "gravity", 9.81)))
+        g = max(1.0e-6, float(getattr(self.cfg, "gravity", _u.gravity())))
         dh = self._effective_head_difference(h0, h1)
         dt_s = max(1.0e-9, float(dt))
 
@@ -542,7 +543,7 @@ class SWE2DUrbanDrainageModule(DrainageCouplingEngine):
         cell_depth_m: Sequence[float] | None = None,
     ):
         dt_s = max(1.0e-6, float(dt))
-        g = max(1.0e-6, float(getattr(self.cfg, "gravity", 9.81)))
+        g = max(1.0e-6, float(getattr(self.cfg, "gravity", _u.gravity())))
         if not self._node_index:
             self.initialize()
         n_cells = len(cell_wse)

@@ -35,6 +35,9 @@ _si_m_per_model: float = 1.0
 _model_per_si_m: float = 1.0
 _si_m2_per_model_area: float = 1.0
 _si_m3_per_model_volume: float = 1.0
+_model_to_ft: float = USC_FT_PER_SI_M  # model units → ft (for HDS-5 culverts only)
+_gravity: float = SI_GRAVITY           # L/T² in model units
+_manning: float = SI_MANNING_FACTOR    # Manning multiplier in model units
 
 
 def configure(length_scale_si_to_model: float) -> None:
@@ -42,14 +45,21 @@ def configure(length_scale_si_to_model: float) -> None:
     Call once at startup with the CRS-derived length scale.
     
     Args:
-        length_scale_si_to_model: How many model-length units per SI meter.
-            1.0 for metric CRS, 3.28084 for US-foot CRS.
+        length_scale_si_to_model: How many SI meters per model unit.
+            1.0 for metric CRS (m), 0.3048 for US-foot CRS (ft).
     """
     global _si_m_per_model, _model_per_si_m, _si_m2_per_model_area, _si_m3_per_model_volume
+    global _model_to_ft, _gravity, _manning
     _si_m_per_model = float(length_scale_si_to_model)
     _model_per_si_m = 1.0 / _si_m_per_model
     _si_m2_per_model_area = _si_m_per_model ** 2
     _si_m3_per_model_volume = _si_m_per_model ** 3
+    # Model-unit gravity: g_SI / si_m_per_model → ft/s² for USC, m/s² for SI
+    _gravity = SI_GRAVITY * _model_per_si_m
+    # Culvert-only: factor to convert model lengths → ft for HDS-5 tables
+    _model_to_ft = USC_FT_PER_SI_M / _si_m_per_model
+    # Manning multiplier: 1.0 for SI, 1.486 for USC
+    _manning = USC_MANNING_FACTOR if _model_to_ft < 2.0 else SI_MANNING_FACTOR
 
 
 def si_m_per_model() -> float:
@@ -72,16 +82,25 @@ def si_m3_per_model_volume() -> float:
     return _si_m3_per_model_volume
 
 
+def gravity() -> float:
+    """Gravity in model units (L/T²). 9.81 for metric, 32.17 for US-foot."""
+    return _gravity
+
+
+def model_to_ft() -> float:
+    """
+    Factor to convert model lengths → feet for HDS-5 culvert tables.
+    3.28 for SI model (m→ft), 1.0 for US-foot model (ft stays ft).
+    """
+    return _model_to_ft
+
+
+def manning_factor() -> float:
+    """Manning multiplier for model units. 1.0 for metric, 1.486 for US-foot."""
+    return _manning
+
+
+# ── deprecated aliases (kept for existing callers) ──
 def compute_length_factor() -> float:
-    """
-    Factor to convert model metadata lengths → computation units.
-    
-    Computation units are:
-      - SI model: feet (so kernel uses USC constant set)
-      - USC model: feet (model is already feet)
-    
-    Always returns USC_FT_PER_SI_M / si_m_per_model().
-    For SI model: 3.28 / 1.0 = 3.28  (m → ft)
-    For USC model: 3.28 / 3.28 = 1.0  (ft stays ft)
-    """
-    return USC_FT_PER_SI_M / si_m_per_model()
+    """Deprecated: use model_to_ft() instead."""
+    return _model_to_ft

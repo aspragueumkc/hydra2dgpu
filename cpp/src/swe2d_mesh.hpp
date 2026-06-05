@@ -65,6 +65,16 @@ struct SWE2DMesh {
     // ── Derived per-cell geometry (built once, used by solver) ───────────────
     // For each cell c, inverse area is stored for the update step.
     std::vector<double>  cell_inv_area; // [n_cells] 1/area (m⁻²)
+
+    // ── 2-ring cell stencil (CSR) — used by least-squares gradient (scheme 6) ─
+    // For each cell, the set of unique neighbour cells reachable via 1 or 2
+    // interior-edge traversals (excluding self).  Precomputed Δx/Δy to each
+    // neighbour centroid and inverse-distance² weights feed the LSQ gradient.
+    std::vector<int32_t> cell_ring2_offsets;   // [n_cells + 1] CSR offsets
+    std::vector<int32_t> cell_ring2_ids;       // [sum(ring2_counts)] neighbour cell indices
+    std::vector<double>  cell_ring2_dcx;        // [sum(ring2_counts)] Δx = cx[j]-cx[c]
+    std::vector<double>  cell_ring2_dcy;        // [sum(ring2_counts)] Δy = cy[j]-cy[c]
+    std::vector<double>  cell_ring2_inv_dist2;  // [sum(ring2_counts)] 1/|Δr|² weight
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -106,6 +116,15 @@ SWE2DMesh swe2d_build_mesh_poly(
 // All edge arrays are permuted in-place; cell_edge_ids are remapped.
 // Safe to call on any mesh.  No-op for empty meshes.
 void swe2d_reorder_edges_for_gpu(SWE2DMesh& mesh);
+
+// Build the 2-ring cell stencil (CSR) used by the least-squares gradient
+// (spatial scheme 6 / FV_WENO5).  For each cell, collects the unique set of
+// cells reachable via 1 or 2 interior-edge traversals (excluding self), and
+// precomputes Δx, Δy and 1/|Δr|² to each neighbour centroid.
+// Requires cell_edge_offsets/ids, edge_c0/c1, and cell_cx/cy to be populated.
+// Safe to call after swe2d_reorder_edges_for_gpu (neighbour indices are
+// invariant under edge reordering).
+void swe2d_build_cell_ring2(SWE2DMesh& mesh);
 
 // Legacy triangle builder retained for backward compatibility.
 SWE2DMesh swe2d_build_mesh(

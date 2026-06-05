@@ -70,7 +70,7 @@ def run_gpu_nonorth_vs_orth_sweep(
     rows: List[Dict[str, object]] = []
     for temporal_order in (1, 2):
         for godunov_mode in (0, 1):
-            for spatial_scheme in range(6):
+            for spatial_scheme in range(7):
                 try:
                     h_o, hu_o, hv_o, gpu_o = _run_case(
                         node_x_o, node_y_o, node_z_o, cell_nodes_o,

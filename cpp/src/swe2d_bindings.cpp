@@ -3,6 +3,13 @@
 //
 // Exposes the 2D SWE hybrid GPU/CPU solver to Python as an opaque capsule-based API.
 // Python users interact through swe2d_backend.py which wraps this module.
+//
+// UNIT CONVENTION: The kernel receives geometry in model units (feet or meters).
+// Weir, orifice, bridge, and pump formulas are unit-agnostic — they produce
+// correct results in whatever units the inputs are in, as long as the gravity
+// parameter matches.  Only the HDS-5 culvert tables require USC internally;
+// the culvert path converts geometry to feet, computes in USC, then converts
+// the result back to model units using the caller-supplied model_to_ft factor.
 
 #include <pybind11/pybind11.h>
 #include <pybind11/numpy.h>
@@ -49,27 +56,27 @@ static inline double bw2d_clamp(double v, double lo, double hi)
     return std::max(lo, std::min(hi, v));
 }
 
-static inline double bw2d_circular_area(double diameter_m)
+static inline double bw2d_circular_area(double diameter)
 {
-    const double d = std::max(0.0, diameter_m);
+    const double d = std::max(0.0, diameter);
     return 0.25 * M_PI * d * d;
 }
 
-static inline double bw2d_circular_perimeter_full(double diameter_m)
+static inline double bw2d_circular_perimeter_full(double diameter)
 {
-    return M_PI * std::max(0.0, diameter_m);
+    return M_PI * std::max(0.0, diameter);
 }
 
-static inline double bw2d_equiv_diameter_from_area(double area_m2)
+static inline double bw2d_equiv_diameter_from_area(double area)
 {
-    const double a = std::max(0.0, area_m2);
+    const double a = std::max(0.0, area);
     return (a > 0.0) ? std::sqrt(4.0 * a / M_PI) : 0.0;
 }
 
-static inline double bw2d_pipe_manning_capacity_full(double diameter_m, double slope_m_per_m, double roughness_n)
+static inline double bw2d_pipe_manning_capacity_full(double diameter, double slope, double roughness_n)
 {
-    const double d = std::max(0.0, diameter_m);
-    const double s = std::max(0.0, slope_m_per_m);
+    const double d = std::max(0.0, diameter);
+    const double s = std::max(0.0, slope);
     const double n = std::max(1.0e-6, roughness_n);
     if (d <= 0.0 || s <= 0.0) return 0.0;
     const double area = bw2d_circular_area(d);
@@ -79,37 +86,37 @@ static inline double bw2d_pipe_manning_capacity_full(double diameter_m, double s
     return (1.486 / n) * area * std::pow(rh, 2.0 / 3.0) * std::sqrt(s);
 }
 
-static inline double bw2d_rect_manning_capacity_full(double width_ft, double height_ft, double slope_m_per_m, double roughness_n)
+static inline double bw2d_rect_manning_capacity_full(double width, double height, double slope, double roughness_n)
 {
-    const double w = std::max(0.0, width_ft);
-    const double h = std::max(0.0, height_ft);
-    const double s = std::max(0.0, slope_m_per_m);
+    const double w = std::max(0.0, width);
+    const double h = std::max(0.0, height);
+    const double s = std::max(0.0, slope);
     const double n = std::max(1.0e-6, roughness_n);
     if (w <= 0.0 || h <= 0.0 || s <= 0.0) return 0.0;
-    const double area_ft2 = w * h;
-    const double perim_ft = 2.0 * (w + h);
-    if (perim_ft <= 0.0) return 0.0;
-    const double rh_ft = area_ft2 / perim_ft;
-    return (1.486 / n) * area_ft2 * std::pow(rh_ft, 2.0 / 3.0) * std::sqrt(s);
+    const double area = w * h;
+    const double perim = 2.0 * (w + h);
+    if (perim <= 0.0) return 0.0;
+    const double rh = area / perim;
+    return (1.486 / n) * area * std::pow(rh, 2.0 / 3.0) * std::sqrt(s);
 }
 
-static inline double bw2d_orifice_q(double head_up_m, double head_down_m, double area_m2, double cd, double g)
+static inline double bw2d_orifice_q(double head_up, double head_down, double area, double cd, double g)
 {
-    const double a = std::max(0.0, area_m2);
-    const double dh = head_up_m - head_down_m;
+    const double a = std::max(0.0, area);
+    const double dh = head_up - head_down;
     if (a <= 0.0 || std::abs(dh) <= 1.0e-12) return 0.0;
     const double q = cd * a * std::sqrt(std::max(0.0, 2.0 * g * std::abs(dh)));
     return (dh >= 0.0) ? q : -q;
 }
 
-static inline double bw2d_weir_q(double upstream_wse_m, double downstream_wse_m, double crest_elev_m, double width_m, double coeff)
+static inline double bw2d_weir_q(double upstream_wse, double downstream_wse, double crest_elev, double width, double coeff)
 {
-    const double b = std::max(0.0, width_m);
+    const double b = std::max(0.0, width);
     if (b <= 0.0) return 0.0;
-    const double hup = std::max(0.0, upstream_wse_m - crest_elev_m);
-    const double hdn = std::max(0.0, downstream_wse_m - crest_elev_m);
+    const double hup = std::max(0.0, upstream_wse - crest_elev);
+    const double hdn = std::max(0.0, downstream_wse - crest_elev);
     if (hup <= 0.0 && hdn <= 0.0) return 0.0;
-    if (upstream_wse_m >= downstream_wse_m) {
+    if (upstream_wse >= downstream_wse) {
         return coeff * b * std::pow(hup, 1.5);
     }
     return -coeff * b * std::pow(hdn, 1.5);
@@ -123,7 +130,7 @@ constexpr int BW2D_M = 2;
 constexpr int BW2D_C = 3;
 constexpr int BW2D_Y = 4;
 constexpr int BW2D_MAX_CULVERT_CODE = 57;
-constexpr double BW2D_GRAVITY_FTPS2 = 32.2;  // L/T²  (ft/s²) — kept for HDS-5 table lookups
+// BW2D_GRAVITY is provided by swe2d_units.cuh (USC gravity for HDS-5 culvert tables)
 constexpr double BW2D_BIG = 1.0e20;
 
 static const std::array<std::array<double, 5>, 58> BW2D_CULVERT_PARAMS = {{
@@ -285,7 +292,7 @@ static double bw2d_form1_eqn(double yc, Bw2dCulvert& culvert)
     const double ac = bw2d_xsect_area(*culvert.xsect, yc);
     const double wc = bw2d_xsect_top_width(*culvert.xsect, yc);
     const double yh = (wc > 0.0) ? (ac / wc) : 0.0;
-    culvert.q_critical = ac * std::sqrt(BW2D_GRAVITY_FTPS2 * yh);
+    culvert.q_critical = ac * std::sqrt(BW2D_GRAVITY * yh);
     return culvert.h_plus - yc / culvert.y_full - yh / (2.0 * culvert.y_full)
         - culvert.kk * std::pow(culvert.q_critical / culvert.ad, culvert.mm);
 }
@@ -370,7 +377,7 @@ static double bw2d_get_transition_flow(int code, double h, double h1, double h2,
     return q;
 }
 
-static double bw2d_inlet_controlled_flow_cfs(const Bw2dXsect& xsect, double slope, double h, double* d_q_d_h_out)
+static double bw2d_inlet_controlled_flow(const Bw2dXsect& xsect, double slope, double h, double* d_q_d_h_out)
 {
     const int code = bw2d_clamp(static_cast<double>(xsect.code), 1.0, static_cast<double>(BW2D_MAX_CULVERT_CODE));
     Bw2dCulvert culvert;
@@ -401,15 +408,15 @@ static double bw2d_inlet_controlled_flow_cfs(const Bw2dXsect& xsect, double slop
     return q;
 }
 
-static double bw2d_critical_depth(const Bw2dXsect& xsect, double q_cfs)
+static double bw2d_critical_depth(const Bw2dXsect& xsect, double q)
 {
-    if (q_cfs <= 0.0) return 0.0;
+    if (q <= 0.0) return 0.0;
     if (xsect.rectangular) {
-        const double q_unit = q_cfs / std::max(1.0e-12, xsect.width);
-        return std::min(std::pow((q_unit * q_unit) / BW2D_GRAVITY_FTPS2, 1.0 / 3.0), xsect.y_full);
+        const double q_unit = q / std::max(1.0e-12, xsect.width);
+        return std::min(std::pow((q_unit * q_unit) / BW2D_GRAVITY, 1.0 / 3.0), xsect.y_full);
     }
 
-    const double target = (q_cfs * q_cfs) / BW2D_GRAVITY_FTPS2;
+    const double target = (q * q) / BW2D_GRAVITY;
     double lo = 1.0e-4 * xsect.y_full;
     double hi = xsect.y_full;
     auto f = [&](double y) {
@@ -439,41 +446,41 @@ static double bw2d_critical_depth(const Bw2dXsect& xsect, double q_cfs)
     return 0.5 * (lo + hi);
 }
 
-static inline double bw2d_velocity(const Bw2dXsect& xsect, double q_cfs, double depth_ft)
+static inline double bw2d_velocity(const Bw2dXsect& xsect, double q, double depth)
 {
-    const double area = bw2d_xsect_area(xsect, depth_ft);
+    const double area = bw2d_xsect_area(xsect, depth);
     if (area <= 0.0) return 0.0;
-    return q_cfs / area;
+    return q / area;
 }
 
-static inline double bw2d_specific_energy(const Bw2dXsect& xsect, double q_cfs, double depth_ft)
+static inline double bw2d_specific_energy(const Bw2dXsect& xsect, double q, double depth)
 {
-    const double v = bw2d_velocity(xsect, q_cfs, depth_ft);
-    return depth_ft + v * v / (2.0 * BW2D_GRAVITY_FTPS2);
+    const double v = bw2d_velocity(xsect, q, depth);
+    return depth + v * v / (2.0 * BW2D_GRAVITY);
 }
 
-static inline double bw2d_friction_slope(const Bw2dXsect& xsect, double q_cfs, double n_value, double depth_ft)
+static inline double bw2d_friction_slope(const Bw2dXsect& xsect, double q, double n_value, double depth)
 {
-    if (depth_ft <= 0.0 || n_value <= 0.0) return 0.0;
-    const double area = bw2d_xsect_area(xsect, depth_ft);
-    const double radius = bw2d_xsect_hydraulic_radius(xsect, depth_ft);
+    if (depth <= 0.0 || n_value <= 0.0) return 0.0;
+    const double area = bw2d_xsect_area(xsect, depth);
+    const double radius = bw2d_xsect_hydraulic_radius(xsect, depth);
     if (area <= 0.0 || radius <= 0.0) return 0.0;
     const double conveyance = (1.49 / n_value) * area * std::pow(radius, 2.0 / 3.0);
     if (conveyance <= 0.0) return 0.0;
-    return std::pow(q_cfs / conveyance, 2.0);
+    return std::pow(q / conveyance, 2.0);
 }
 
-static double bw2d_solve_supercritical_depth_for_energy(const Bw2dXsect& xsect, double q_cfs, double target_energy)
+static double bw2d_solve_supercritical_depth_for_energy(const Bw2dXsect& xsect, double q, double target_energy)
 {
-    if (q_cfs <= 0.0) return 0.0;
-    const double dc = bw2d_critical_depth(xsect, q_cfs);
+    if (q <= 0.0) return 0.0;
+    const double dc = bw2d_critical_depth(xsect, q);
     const double eps = std::max(1.0e-6, 1.0e-6 * xsect.y_full);
     const double lo = eps;
     const double hi = std::max(eps, std::min(dc, xsect.y_full - eps));
     if (hi <= lo) return std::max(eps, std::min(dc, xsect.y_full - eps));
 
     auto residual = [&](double depth) {
-        return bw2d_specific_energy(xsect, q_cfs, depth) - target_energy;
+        return bw2d_specific_energy(xsect, q, depth) - target_energy;
     };
 
     const int samples = 240;
@@ -526,37 +533,37 @@ static double bw2d_solve_supercritical_depth_for_energy(const Bw2dXsect& xsect, 
 
 static double bw2d_direct_step_upstream_energy(
     const Bw2dXsect& xsect,
-    double q_cfs,
+    double q,
     double n_value,
     double slope,
-    double length_ft,
-    double tailwater_depth_ft,
-    double* upstream_depth_ft)
+    double length,
+    double tailwater_depth,
+    double* upstream_depth)
 {
-    if (q_cfs <= 0.0) {
-        if (upstream_depth_ft != nullptr) *upstream_depth_ft = 0.0;
+    if (q <= 0.0) {
+        if (upstream_depth != nullptr) *upstream_depth = 0.0;
         return 0.0;
     }
-    const double dc = bw2d_critical_depth(xsect, q_cfs);
+    const double dc = bw2d_critical_depth(xsect, q);
     const double y_full = xsect.y_full;
     const double eps = std::max(1.0e-6, 1.0e-6 * y_full);
-    const double y_ds = std::min(std::max(tailwater_depth_ft, dc), y_full);
+    const double y_ds = std::min(std::max(tailwater_depth, dc), y_full);
     const double step_depth = std::min(std::max(0.01, 0.02 * y_full), 0.05);
 
     if (y_ds >= y_full - eps) {
-        const double sf_full = bw2d_friction_slope(xsect, q_cfs, n_value, y_full - eps);
-        const double e_full = bw2d_specific_energy(xsect, q_cfs, y_full - eps);
-        if (upstream_depth_ft != nullptr) *upstream_depth_ft = y_full - eps;
-        return e_full + std::max(0.0, sf_full - slope) * length_ft;
+        const double sf_full = bw2d_friction_slope(xsect, q, n_value, y_full - eps);
+        const double e_full = bw2d_specific_energy(xsect, q, y_full - eps);
+        if (upstream_depth != nullptr) *upstream_depth = y_full - eps;
+        return e_full + std::max(0.0, sf_full - slope) * length;
     }
 
     auto dx_to_depth = [&](double y_from, double e_from, double y_to, double* dx_out) {
-        const double sf_from = bw2d_friction_slope(xsect, q_cfs, n_value, y_from);
-        const double sf_to = bw2d_friction_slope(xsect, q_cfs, n_value, y_to);
+        const double sf_from = bw2d_friction_slope(xsect, q, n_value, y_from);
+        const double sf_to = bw2d_friction_slope(xsect, q, n_value, y_to);
         const double sf_avg = 0.5 * (sf_from + sf_to);
         const double denom = slope - sf_avg;
         if (std::abs(denom) < 1.0e-12) return false;
-        const double e_to = bw2d_specific_energy(xsect, q_cfs, y_to);
+        const double e_to = bw2d_specific_energy(xsect, q, y_to);
         const double dx = (e_from - e_to) / denom;
         if (!std::isfinite(dx) || dx <= 0.0) return false;
         *dx_out = dx;
@@ -565,13 +572,13 @@ static double bw2d_direct_step_upstream_energy(
 
     double distance = 0.0;
     double y_cur = std::max(y_ds, eps);
-    double e_cur = bw2d_specific_energy(xsect, q_cfs, y_cur);
+    double e_cur = bw2d_specific_energy(xsect, q, y_cur);
 
-    while (distance < length_ft - 1.0e-8) {
+    while (distance < length - 1.0e-8) {
         if (y_cur >= y_full - eps) {
-            const double sf_full = bw2d_friction_slope(xsect, q_cfs, n_value, y_full - eps);
-            const double rem = length_ft - distance;
-            if (upstream_depth_ft != nullptr) *upstream_depth_ft = y_full;
+            const double sf_full = bw2d_friction_slope(xsect, q, n_value, y_full - eps);
+            const double rem = length - distance;
+            if (upstream_depth != nullptr) *upstream_depth = y_full;
             return e_cur + std::max(0.0, sf_full - slope) * rem;
         }
 
@@ -591,13 +598,13 @@ static double bw2d_direct_step_upstream_energy(
         }
 
         if (!have_step) {
-            const double y_super = bw2d_solve_supercritical_depth_for_energy(xsect, q_cfs, e_cur);
-            if (upstream_depth_ft != nullptr) *upstream_depth_ft = y_super;
-            return bw2d_specific_energy(xsect, q_cfs, y_super);
+            const double y_super = bw2d_solve_supercritical_depth_for_energy(xsect, q, e_cur);
+            if (upstream_depth != nullptr) *upstream_depth = y_super;
+            return bw2d_specific_energy(xsect, q, y_super);
         }
 
-        if (distance + dx >= length_ft) {
-            const double remaining = length_ft - distance;
+        if (distance + dx >= length) {
+            const double remaining = length - distance;
             auto g = [&](double y_target) {
                 double dx_target = 0.0;
                 if (!dx_to_depth(y_cur, e_cur, y_target, &dx_target)) {
@@ -649,62 +656,62 @@ static double bw2d_direct_step_upstream_energy(
                 }
             }
 
-            if (upstream_depth_ft != nullptr) *upstream_depth_ft = best_y;
-            return bw2d_specific_energy(xsect, q_cfs, best_y);
+            if (upstream_depth != nullptr) *upstream_depth = best_y;
+            return bw2d_specific_energy(xsect, q, best_y);
         }
 
         distance += dx;
         y_cur = y_next;
-        e_cur = bw2d_specific_energy(xsect, q_cfs, y_cur);
+        e_cur = bw2d_specific_energy(xsect, q, y_cur);
     }
 
-    if (upstream_depth_ft != nullptr) *upstream_depth_ft = y_cur;
+    if (upstream_depth != nullptr) *upstream_depth = y_cur;
     return e_cur;
 }
 
-static double bw2d_culvert_outlet_control_flow_cms(
+static double bw2d_culvert_outlet_control_flow(
     const Bw2dXsect& xsect,
-    double available_head_up_ft,
-    double tailwater_depth_ft,
-    double length_ft,
-    double slope_ftft,
+    double available_head_up,
+    double tailwater_depth,
+    double length,
+    double slope,
     double roughness_n,
     double entrance_loss_k,
     double exit_loss_k,
-    double q_hint_cfs)
+    double q_hint)
 {
-    if (available_head_up_ft <= 0.0) return 0.0;
+    if (available_head_up <= 0.0) return 0.0;
 
-    auto required_head = [&](double q_cfs) {
-        if (q_cfs <= 0.0) return 0.0;
+    auto required_head = [&](double q) {
+        if (q <= 0.0) return 0.0;
         double y_up = 0.0;
         const double e_up = bw2d_direct_step_upstream_energy(
             xsect,
-            q_cfs,
+            q,
             std::max(1.0e-6, roughness_n),
-            std::max(1.0e-6, slope_ftft),
-            std::max(1.0, length_ft),
-            std::max(0.0, tailwater_depth_ft),
+            std::max(1.0e-6, slope),
+            std::max(1.0, length),
+            std::max(0.0, tailwater_depth),
             &y_up);
         const double area = std::max(bw2d_xsect_area(xsect, bw2d_clamp(y_up, 1.0e-6, xsect.y_full)), 1.0e-9);
-        const double vel = q_cfs / area;
-        const double hv_loss = (std::max(0.0, entrance_loss_k) + std::max(0.0, exit_loss_k)) * vel * vel / (2.0 * BW2D_GRAVITY_FTPS2);
+        const double vel = q / area;
+        const double hv_loss = (std::max(0.0, entrance_loss_k) + std::max(0.0, exit_loss_k)) * vel * vel / (2.0 * BW2D_GRAVITY);
         return e_up + hv_loss;
     };
 
     // Illinois algorithm: secant with stalling-side damping.
     // Same robustness as bisection, converges in ~8-10 iterations.
     double q_lo = 0.0;
-    double f_lo = -available_head_up_ft;
-    double q_hi = std::max(1.0, q_hint_cfs * 2.0);
-    double f_hi = required_head(q_hi) - available_head_up_ft;
+    double f_lo = -available_head_up;
+    double q_hi = std::max(1.0, q_hint * 2.0);
+    double f_hi = required_head(q_hi) - available_head_up;
     for (int br = 0; br < 12 && f_hi < 0.0; ++br) {
         q_lo = q_hi; f_lo = f_hi;
         q_hi *= 2.0;
-        f_hi = required_head(q_hi) - available_head_up_ft;
+        f_hi = required_head(q_hi) - available_head_up;
     }
     if (f_hi < 0.0) {
-        return q_hi / 35.31466672148859;
+        return q_hi;
     }
 
     int side = 0;
@@ -715,9 +722,9 @@ static double bw2d_culvert_outlet_control_flow_cms(
         if (q_mid <= q_lo || q_mid >= q_hi) {
             q_mid = 0.5 * (q_lo + q_hi);
         }
-        const double f_mid = required_head(q_mid) - available_head_up_ft;
-        if (std::abs(f_mid) < 1.0e-8 * available_head_up_ft) {
-            return std::max(0.0, q_mid) / 35.31466672148859;
+        const double f_mid = required_head(q_mid) - available_head_up;
+        if (std::abs(f_mid) < 1.0e-8 * available_head_up) {
+            return std::max(0.0, q_mid);
         }
         if (f_lo * f_mid < 0.0) {
             q_hi = q_mid; f_hi = f_mid;
@@ -729,7 +736,7 @@ static double bw2d_culvert_outlet_control_flow_cms(
             side = 0;
         }
     }
-    return std::max(0.0, 0.5 * (q_lo + q_hi)) / 35.31466672148859;
+    return std::max(0.0, 0.5 * (q_lo + q_hi));
 }
 
 } // namespace
@@ -766,7 +773,8 @@ static py::array_t<double> compute_structure_flows_native(
     py::array_t<double, py::array::c_style | py::array::forcecast> embankment_crest_elev,
     py::array_t<double, py::array::c_style | py::array::forcecast> embankment_overflow_width,
     py::array_t<double, py::array::c_style | py::array::forcecast> embankment_weir_coeff,
-    double gravity)
+    double gravity,
+    double model_to_ft)
 {
     const py::ssize_t n_cells = cell_wse.size();
     const py::ssize_t ns = structure_type.size();
@@ -806,9 +814,6 @@ static py::array_t<double> compute_structure_flows_native(
     const auto* up = upstream_cell.data();
     const auto* dn = downstream_cell.data();
     auto* qout = out.mutable_data();
-
-    constexpr double USC_FT_PER_SI_M = 3.280839895013123;    // ft per m
-    constexpr double USC_FT3_PER_SI_M3 = 35.31466672148859;  // ft³/s per m³/s
 
     for (py::ssize_t i = 0; i < ns; ++i) {
         qout[i] = 0.0;
@@ -856,90 +861,89 @@ static py::array_t<double> compute_structure_flows_native(
         const double downstream_wse = (sign >= 0.0) ? wd : wu;
         const double upstream_invert = (sign >= 0.0) ? inlet_invert_elev.data()[i] : outlet_invert_elev.data()[i];
         const double downstream_invert = (sign >= 0.0) ? outlet_invert_elev.data()[i] : inlet_invert_elev.data()[i];
-        const double available_head_up = std::max(0.0, upstream_wse - upstream_invert);
-        const double tailwater_depth = std::max(0.0, downstream_wse - downstream_invert);
-        const double len = std::max(0.1, length.data()[i]);
+
+        // HDS-5 culvert tables are hardcoded USC.  Convert geometry to feet.
+        const double to_ft = std::max(1.0e-6, model_to_ft);
+        const double available_head_up_ft = std::max(0.0, (upstream_wse - upstream_invert) * to_ft);
+        const double tailwater_depth_ft = std::max(0.0, (downstream_wse - downstream_invert) * to_ft);
+        const double len_ft = std::max(0.1, length.data()[i] * to_ft);
         double slope = culvert_slope.data()[i];
         if (!(slope > 0.0)) {
-            slope = std::abs(upstream_invert - downstream_invert) / len;
+            slope = std::abs(upstream_invert - downstream_invert) / std::max(0.1, length.data()[i]);
         }
         slope = std::max(1.0e-6, slope);
-        const double rise = std::max(0.0, culvert_rise.data()[i] > 0.0 ? culvert_rise.data()[i] : std::max(height.data()[i], diameter.data()[i]));
-        const double span = std::max(0.0, culvert_span.data()[i] > 0.0 ? culvert_span.data()[i] : std::max(width.data()[i], rise));
+        const double rise_ft = std::max(0.0, culvert_rise.data()[i] > 0.0 ? culvert_rise.data()[i] : std::max(height.data()[i], diameter.data()[i])) * to_ft;
+        const double span_ft = std::max(0.0, culvert_span.data()[i] > 0.0 ? culvert_span.data()[i] : std::max(width.data()[i], rise_ft / to_ft)) * to_ft;
         const int code = static_cast<int>(bw2d_clamp(static_cast<double>(culvert_code.data()[i]), 1.0, static_cast<double>(BW2D_MAX_CULVERT_CODE)));
 
         Bw2dXsect xsect;
         xsect.code = code;
         xsect.rectangular = (culvert_shape.data()[i] == 1);
         if (xsect.rectangular) {
-            xsect.width = std::max(1.0e-6, span);
-            xsect.y_full = std::max(1.0e-6, rise);
+            xsect.width = std::max(1.0e-6, span_ft);
+            xsect.y_full = std::max(1.0e-6, rise_ft);
             xsect.a_full = xsect.width * xsect.y_full;
         } else {
-            const double dia = std::max(1.0e-6, std::max(diameter.data()[i], rise));
-            xsect.radius = 0.5 * dia;
-            xsect.y_full = dia;
+            const double dia_ft = std::max(1.0e-6, std::max(diameter.data()[i] * to_ft, rise_ft));
+            xsect.radius = 0.5 * dia_ft;
+            xsect.y_full = dia_ft;
             xsect.a_full = M_PI * xsect.radius * xsect.radius;
         }
 
-        const double q_inlet_cfs = std::max(0.0, bw2d_inlet_controlled_flow_cfs(xsect, slope, std::max(0.0, available_head_up), nullptr));
-        const double q_inlet_cms = q_inlet_cfs / USC_FT3_PER_SI_M3;
+        const double q_inlet = std::max(0.0, bw2d_inlet_controlled_flow(xsect, slope, std::max(0.0, available_head_up_ft), nullptr));
 
-        double area = std::max(0.0, culvert_area.data()[i]);
-        if (area <= 0.0 && std::max(diameter.data()[i], rise) > 0.0 && culvert_shape.data()[i] == 0) {
-            area = bw2d_circular_area(std::max(diameter.data()[i], rise));
+        double area_ft2 = std::max(0.0, culvert_area.data()[i]);
+        if (area_ft2 <= 0.0 && std::max(diameter.data()[i], rise_ft / to_ft) > 0.0 && culvert_shape.data()[i] == 0) {
+            area_ft2 = bw2d_circular_area(std::max(diameter.data()[i] * to_ft, rise_ft));
         }
 
         double q_orifice = 0.0;
-        if (area > 0.0) {
-            q_orifice = std::abs(bw2d_orifice_q(available_head_up, tailwater_depth, area, cd.data()[i], BW2D_GRAVITY_FTPS2));
+        if (area_ft2 > 0.0) {
+            q_orifice = std::abs(bw2d_orifice_q(available_head_up_ft, tailwater_depth_ft, area_ft2, cd.data()[i], BW2D_GRAVITY));
             if (qmax >= 0.0) q_orifice = std::min(q_orifice, qmax);
-            q_orifice /= USC_FT3_PER_SI_M3;  // CFS → CMS
         }
 
         double q_manning_cap = 0.0;
         if (xsect.rectangular) {
-            // Rectangular culvert: A = w*h, P = 2(w+h), R = A/P
             q_manning_cap = bw2d_rect_manning_capacity_full(xsect.width, xsect.y_full, slope, roughness_n.data()[i]);
-            q_manning_cap /= USC_FT3_PER_SI_M3;  // CFS → CMS
         } else {
-            const double dia_for_cap = std::max(std::max(diameter.data()[i], rise), bw2d_equiv_diameter_from_area(std::max(0.0, area)));
-            if (dia_for_cap > 0.0) {
-                q_manning_cap = bw2d_pipe_manning_capacity_full(dia_for_cap, slope, roughness_n.data()[i]);
-                q_manning_cap /= USC_FT3_PER_SI_M3;  // CFS → CMS
+            const double dia_for_cap_ft = std::max(std::max(diameter.data()[i] * to_ft, rise_ft), bw2d_equiv_diameter_from_area(std::max(0.0, area_ft2)));
+            if (dia_for_cap_ft > 0.0) {
+                q_manning_cap = bw2d_pipe_manning_capacity_full(dia_for_cap_ft, slope, roughness_n.data()[i]);
             }
         }
 
-        const double q_hint_cfs = std::max(q_inlet_cfs, std::max(q_orifice, q_manning_cap) * USC_FT3_PER_SI_M3);
-        const double q_outlet = bw2d_culvert_outlet_control_flow_cms(
+        const double q_hint = std::max(q_inlet, std::max(q_orifice, q_manning_cap));
+        const double q_outlet = bw2d_culvert_outlet_control_flow(
             xsect,
-            std::max(0.0, available_head_up),
-            std::max(0.0, tailwater_depth),
-            std::max(0.1, len),
+            std::max(0.0, available_head_up_ft),
+            std::max(0.0, tailwater_depth_ft),
+            std::max(0.1, len_ft),
             std::max(1.0e-6, slope),
             std::max(1.0e-6, roughness_n.data()[i]),
             entrance_loss_k.data()[i],
             exit_loss_k.data()[i],
-            std::max(1.0, q_hint_cfs));
+            std::max(1.0, q_hint));
 
-        double q = std::max(0.0, std::min(q_inlet_cms, q_outlet > 0.0 ? q_outlet : q_inlet_cms));
+        double q = std::max(0.0, std::min(q_inlet, q_outlet > 0.0 ? q_outlet : q_inlet));
         if (q_orifice > 0.0) q = (q > 0.0) ? std::min(q, q_orifice) : q_orifice;
         if (q_manning_cap > 0.0) q = (q > 0.0) ? std::min(q, q_manning_cap) : q_manning_cap;
 
         if (embankment_enabled.data()[i] != 0) {
             const double q_emb = std::abs(
                 bw2d_weir_q(
-                    upstream_wse,
-                    downstream_wse,
-                    embankment_crest_elev.data()[i],
-                    std::max(0.0, embankment_overflow_width.data()[i]),
+                    upstream_wse * to_ft,
+                    downstream_wse * to_ft,
+                    embankment_crest_elev.data()[i] * to_ft,
+                    std::max(0.0, embankment_overflow_width.data()[i]) * to_ft,
                     std::max(1.0e-6, embankment_weir_coeff.data()[i])));
             q += q_emb;
         }
 
         q *= std::max(1.0, culvert_barrels.data()[i]);
         if (qmax >= 0.0) q = std::min(q, qmax);
-        qout[i] = sign * q;
+        // Convert from CFS back to model units: ÷ to_ft³
+        qout[i] = sign * q / (to_ft * to_ft * to_ft);
     }
     return out;
 }
@@ -977,7 +981,8 @@ static py::array_t<double> compute_structure_flows_cuda(
     py::array_t<double, py::array::c_style | py::array::forcecast> embankment_crest_elev,
     py::array_t<double, py::array::c_style | py::array::forcecast> embankment_overflow_width,
     py::array_t<double, py::array::c_style | py::array::forcecast> embankment_weir_coeff,
-    double gravity)
+    double gravity,
+    double model_to_ft)
 {
     const py::ssize_t n_cells = cell_wse.size();
     const py::ssize_t ns = structure_type.size();
@@ -1047,6 +1052,7 @@ static py::array_t<double> compute_structure_flows_cuda(
         ns ? embankment_overflow_width.data() : nullptr,
         ns ? embankment_weir_coeff.data() : nullptr,
         gravity,
+        model_to_ft,
         ns ? out.mutable_data() : nullptr);
     return out;
 }
@@ -1127,7 +1133,11 @@ PYBIND11_MODULE(HYDRA_SWE2D_PY_MODULE_NAME, m) {
         py::arg("embankment_overflow_width"),
         py::arg("embankment_weir_coeff"),
         py::arg("gravity") = 9.81,
-        "Compiled helper: compute per-structure flow transfers [m^3/s] from structure arrays and cell WSE.");
+        py::arg("model_to_ft") = 3.28084,
+        "Compute per-structure flow transfers in model units.\n"
+        "Weir/orifice/bridge/pump formulas are unit-agnostic; use the correct\n"
+        "gravity for your model units.  Culverts convert to ft internally for\n"
+        "HDS-5 tables, then convert results back to model units via model_to_ft.");
 
     m.def("swe2d_cpu_compute_structure_flows",
         &compute_structure_flows_native,
@@ -1163,7 +1173,9 @@ PYBIND11_MODULE(HYDRA_SWE2D_PY_MODULE_NAME, m) {
         py::arg("embankment_overflow_width"),
         py::arg("embankment_weir_coeff"),
         py::arg("gravity") = 9.81,
-        "Compiled CPU helper: compute per-structure flow transfers [m^3/s] from structure arrays and cell WSE.");
+        py::arg("model_to_ft") = 3.28084,
+        "Compute per-structure flow transfers in model units (CPU fallback).\n"
+        "Same unit convention as the GPU path.");
 
 #ifdef HYDRA_HAS_CUDA
     m.def("swe2d_gpu_compute_structure_and_coupling_sources",
@@ -1200,8 +1212,9 @@ PYBIND11_MODULE(HYDRA_SWE2D_PY_MODULE_NAME, m) {
            py::array_t<double, py::array::c_style | py::array::forcecast> embankment_overflow_width,
            py::array_t<double, py::array::c_style | py::array::forcecast> embankment_weir_coeff,
            double gravity,
+           double model_to_ft,
            py::array_t<int32_t, py::array::c_style | py::array::forcecast> inlet_cell,
-           py::array_t<double, py::array::c_style | py::array::forcecast> inlet_flow_cms)
+           py::array_t<double, py::array::c_style | py::array::forcecast> inlet_flow)
            -> py::array_t<double>
         {
             const int32_t n_cells = static_cast<int32_t>(cell_area.size());
@@ -1243,9 +1256,10 @@ PYBIND11_MODULE(HYDRA_SWE2D_PY_MODULE_NAME, m) {
                 (n_structures > 0) ? embankment_overflow_width.data() : nullptr,
                 (n_structures > 0) ? embankment_weir_coeff.data() : nullptr,
                 gravity,
+                model_to_ft,
                 static_cast<int32_t>(inlet_cell.size()),
                 inlet_cell.size() > 0 ? inlet_cell.data() : nullptr,
-                inlet_flow_cms.size() > 0 ? inlet_flow_cms.data() : nullptr,
+                inlet_flow.size() > 0 ? inlet_flow.data() : nullptr,
                 out.mutable_data());
             return out;
         },
@@ -1282,6 +1296,7 @@ PYBIND11_MODULE(HYDRA_SWE2D_PY_MODULE_NAME, m) {
         py::arg("embankment_overflow_width"),
         py::arg("embankment_weir_coeff"),
         py::arg("gravity") = 9.81,
+        py::arg("model_to_ft") = 3.28084,
         py::arg("inlet_cell"),
         py::arg("inlet_flow"),
         "Fused CUDA helper: compute structure flows and coupling sources on-device, returning per-cell source rates [m/s].");
@@ -1329,7 +1344,8 @@ PYBIND11_MODULE(HYDRA_SWE2D_PY_MODULE_NAME, m) {
            py::array_t<double, py::array::c_style|py::array::forcecast> embankment_crest_elev,
            py::array_t<double, py::array::c_style|py::array::forcecast> embankment_overflow_width,
            py::array_t<double, py::array::c_style|py::array::forcecast> embankment_weir_coeff,
-           double gravity = 9.81)
+           double gravity = 9.81,
+           double model_to_ft = 3.28084)
         {
             int32_t n = static_cast<int32_t>(structure_type.size());
             swe2d_gpu_preload_structure_params(
@@ -1346,7 +1362,7 @@ PYBIND11_MODULE(HYDRA_SWE2D_PY_MODULE_NAME, m) {
                 n>0?entrance_loss_k.data():nullptr, n>0?exit_loss_k.data():nullptr,
                 n>0?embankment_enabled.data():nullptr, n>0?embankment_crest_elev.data():nullptr,
                 n>0?embankment_overflow_width.data():nullptr, n>0?embankment_weir_coeff.data():nullptr,
-                gravity);
+                gravity, model_to_ft);
         }, "Preload structure params to GPU once.");
 
     m.def("swe2d_gpu_preload_coupling_cell_area",
@@ -1358,7 +1374,7 @@ PYBIND11_MODULE(HYDRA_SWE2D_PY_MODULE_NAME, m) {
         [](py::object cell_wse_obj,
            int32_t n_structures,
            py::array_t<int32_t, py::array::c_style|py::array::forcecast> inlet_cell,
-           py::array_t<double, py::array::c_style|py::array::forcecast> inlet_flow_cms) {
+           py::array_t<double, py::array::c_style|py::array::forcecast> inlet_flow) {
             const double* cell_wse_ptr = nullptr;
             int32_t n_cells = 0;
             if (!cell_wse_obj.is_none()) {
@@ -1370,7 +1386,7 @@ PYBIND11_MODULE(HYDRA_SWE2D_PY_MODULE_NAME, m) {
                 nullptr, n_cells, n_structures, cell_wse_ptr,
                 static_cast<int32_t>(inlet_cell.size()),
                 inlet_cell.size()>0?inlet_cell.data():nullptr,
-                inlet_flow_cms.size()>0?inlet_flow_cms.data():nullptr);
+                inlet_flow.size()>0?inlet_flow.data():nullptr);
         }, py::arg("cell_wse")=py::none(), py::arg("n_structures")=0,
            py::arg("inlet_cell")=py::array_t<int32_t>(),
            py::arg("inlet_flow")=py::array_t<double>(),
@@ -1477,15 +1493,15 @@ PYBIND11_MODULE(HYDRA_SWE2D_PY_MODULE_NAME, m) {
     m.def("swe2d_gpu_compute_coupling_sources",
         [](py::array_t<double, py::array::c_style | py::array::forcecast> cell_area,
            py::array_t<int32_t, py::array::c_style | py::array::forcecast> inlet_cell,
-           py::array_t<double, py::array::c_style | py::array::forcecast> inlet_flow_cms,
+           py::array_t<double, py::array::c_style | py::array::forcecast> inlet_flow,
            py::array_t<int32_t, py::array::c_style | py::array::forcecast> structure_up_cell,
            py::array_t<int32_t, py::array::c_style | py::array::forcecast> structure_down_cell,
            py::array_t<double, py::array::c_style | py::array::forcecast> structure_flow)
            -> py::array_t<double>
         {
             const int32_t n_cells = static_cast<int32_t>(cell_area.size());
-            if (inlet_cell.size() != inlet_flow_cms.size()) {
-                throw std::invalid_argument("inlet_cell and inlet_flow_cms must have the same length");
+            if (inlet_cell.size() != inlet_flow.size()) {
+                throw std::invalid_argument("inlet_cell and inlet_flow must have the same length");
             }
             if (structure_up_cell.size() != structure_down_cell.size() ||
                 structure_up_cell.size() != structure_flow.size()) {
@@ -1500,7 +1516,7 @@ PYBIND11_MODULE(HYDRA_SWE2D_PY_MODULE_NAME, m) {
                 (n_cells > 0) ? cell_area.data() : nullptr,
                 static_cast<int32_t>(inlet_cell.size()),
                 inlet_cell.size() ? inlet_cell.data() : nullptr,
-                inlet_flow_cms.size() ? inlet_flow_cms.data() : nullptr,
+                inlet_flow.size() ? inlet_flow.data() : nullptr,
                 static_cast<int32_t>(structure_up_cell.size()),
                 structure_up_cell.size() ? structure_up_cell.data() : nullptr,
                 structure_down_cell.size() ? structure_down_cell.data() : nullptr,
@@ -1618,7 +1634,7 @@ PYBIND11_MODULE(HYDRA_SWE2D_PY_MODULE_NAME, m) {
            py::array_t<int32_t, py::array::c_style | py::array::forcecast> orig_up_cell,
            py::array_t<int32_t, py::array::c_style | py::array::forcecast> orig_dn_cell,
            int32_t n_cells,
-           double si_m_per_model_factor) -> void
+           double unit_to_si_factor) -> void
         {
             const int32_t n_struct = static_cast<int32_t>(struct_flow.size());
 
@@ -1644,7 +1660,7 @@ PYBIND11_MODULE(HYDRA_SWE2D_PY_MODULE_NAME, m) {
                 cell_idx_host.data(),
                 weights_host.data(),
                 n_cells,
-                si_m_per_model_factor);
+                unit_to_si_factor);
         },
         py::arg("dist_offsets"),
         py::arg("dist_cell_idx"),
@@ -1653,7 +1669,7 @@ PYBIND11_MODULE(HYDRA_SWE2D_PY_MODULE_NAME, m) {
         py::arg("orig_up_cell"),
         py::arg("orig_dn_cell"),
         py::arg("n_cells"),
-        py::arg("si_m_per_model_factor"),
+        py::arg("unit_to_si_factor"),
         "CUDA helper (device-only): redistribute single-cell structure sources "
         "directly on d_external_source_mps with no host readback.  Call after "
         "swe2d_gpu_compute_coupling_full_on_device then return None from Python "

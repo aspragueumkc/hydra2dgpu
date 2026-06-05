@@ -23,6 +23,9 @@ import os as _os
 from typing import Dict, List, Set, Tuple
 
 import numpy as np
+
+from swe2d import units as _u
+
 try:
     from qgis.PyQt import QtCore, QtGui, QtWidgets
     from qgis.PyQt.QtCore import Qt, pyqtSignal
@@ -1259,7 +1262,7 @@ class SWE2DResultsPanel(_BASE_DOCK):  # type: ignore[valid-type,misc]
                         continue
                     y = np.asarray(wse, dtype=np.float64) + (
                         np.asarray(vel, dtype=np.float64) ** 2.0
-                    ) / (2.0 * 9.81)
+                    ) / (2.0 * _u.gravity())
                 else:
                     if mode not in data:
                         continue

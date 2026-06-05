@@ -55,10 +55,15 @@ try:
 except ImportError:
     HAS_MPL = False
 
-_G = 32.1740  # ft/s²  (standard gravity in US customary units)
-_FT3_PER_M3 = 35.3147
-_ACREFT_PER_FT3 = 1.0 / 43560.0
-_FT_TO_M = 0.3048
+try:
+    from swe2d import units as _u
+    _G = _u.USC_GRAVITY
+    _FT3_PER_M3 = _u.USC_FT3_PER_SI_M3
+    _FT_TO_M = _u.SI_M_PER_USC_FT
+except ImportError:
+    _G = 32.1740
+    _FT3_PER_M3 = 35.3147
+    _FT_TO_M = 0.3048
 
 # ===================================================================
 #  GeoPackage helpers
@@ -487,7 +492,7 @@ def mannings_full_flow(
     US customary:  Q = (1.486/n) * A * R^(2/3) * S^(1/2)   [ft³/s]
     SI:            Q = (1.0/n)   * A * R^(2/3) * S^(1/2)   [m³/s]
     """
-    k = 1.486 if us_customary else 1.0
+    k = _u.USC_MANNING_FACTOR if us_customary else _u.SI_MANNING_FACTOR
     if area <= 0 or hyd_radius <= 0 or slope <= 0:
         return 0.0
     return k / n * area * hyd_radius ** (2.0 / 3.0) * slope ** 0.5
@@ -500,7 +505,7 @@ def normal_depth_box_culvert(
     Iteratively find the normal depth in a rectangular culvert.
     Returns depth *y* in ft (or m if SI).
     """
-    k = 1.486 if us_customary else 1.0
+    k = _u.USC_MANNING_FACTOR if us_customary else _u.SI_MANNING_FACTOR
     # Binary search between 0 and b (max reasonable depth = width)
     lo, hi = 0.001, b
     for _ in range(50):

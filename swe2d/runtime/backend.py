@@ -22,6 +22,7 @@ import importlib
 import numpy as np
 from typing import Callable, Dict, List, Optional, Tuple, Union
 
+from swe2d import units as _u
 from swe2d.extensions.extension_models import (
     BedFrictionModel,
     GodunovSolverMode,
@@ -728,7 +729,7 @@ class SWE2DBackend:
         hu0: Optional[np.ndarray] = None,
         hv0: Optional[np.ndarray] = None,
         n_mann_cell: Optional[np.ndarray] = None,
-        g:        float = 9.81,
+        g:        float = _u.gravity(),
         k_mann:   float = 1.0,
         n_mann:   float = 0.035,
         h_min:    float = 1.0e-6,

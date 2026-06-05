@@ -103,7 +103,7 @@ def _culvert_outlet_control_flow(
         )
         area_ft2 = max(xsect.area(max(1.0e-6, min(y_up_ft, xsect.yFull))), 1.0e-9)
         vel_ft_s = q_cfs / area_ft2
-        hv_loss = (max(0.0, entrance_loss_k) + max(0.0, exit_loss_k)) * (vel_ft_s * vel_ft_s) / (2.0 * 32.2)
+        hv_loss = (max(0.0, entrance_loss_k) + max(0.0, exit_loss_k)) * (vel_ft_s * vel_ft_s) / (2.0 * _u.USC_GRAVITY)
         return float(e_up_ft + hv_loss)
 
     q_lo = 0.0
@@ -192,7 +192,7 @@ class SWE2DStructureModule(HydraulicStructureEngine):
         dz = float(structure.crest_elev)
         md = structure.metadata
         max_q = md.get("max_flow")
-        g = max(1.0e-6, float(getattr(self.cfg, "gravity", 9.81)))
+        g = max(1.0e-6, float(getattr(self.cfg, "gravity", _u.gravity())))
 
         detail: Dict[str, Any] = {
             "structure_id": str(structure.structure_id),
@@ -281,7 +281,7 @@ class SWE2DStructureModule(HydraulicStructureEngine):
                 perim_ft = 2.0 * (xsect.width_ft + xsect.yFull)
                 if perim_ft > 0:
                     rh_ft = area_ft2 / perim_ft
-                    q_manning_cap_cfs = (1.486 / roughness_n) * area_ft2 * (rh_ft ** (2.0 / 3.0)) * (slope_ftft ** 0.5)
+                    q_manning_cap_cfs = (_u.USC_MANNING_FACTOR / roughness_n) * area_ft2 * (rh_ft ** (2.0 / 3.0)) * (slope_ftft ** 0.5)
                     q_manning_cap = q_manning_cap_cfs / _u.USC_FT3_PER_SI_M3
             elif hasattr(xsect, 'radius_ft') and xsect.radius_ft > 0:
                 # Circular culvert — delegate to existing function

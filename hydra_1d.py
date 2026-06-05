@@ -181,8 +181,10 @@ def _ensure_culvert_runtime() -> bool:
 
     return HAVE_CULVERT
 
-G = 32.174  # gravitational acceleration (ft/s^2)
-MANNING_CONST = 1.49  # US customary
+from swe2d.units import USC_GRAVITY, USC_MANNING_FACTOR
+
+G = USC_GRAVITY  # gravitational acceleration (ft/s^2)
+MANNING_CONST = USC_MANNING_FACTOR  # US customary
 
 # Selection hooks (can be overridden via CLI)
 ALPHA_METHOD = 'conveyance'  # options: 'conveyance' (default), 'area'
@@ -1010,7 +1012,7 @@ def solve_culvert_headwater(
     # -------------------------------------------------------------------
     Ke = 0.5   # entrance loss coefficient (square-edge headwall default)
     if R_full > 0.0 and L > 0.0:
-        Kf = (2.0 * G * n_barrel ** 2 * L) / (1.486 ** 2 * R_full ** (4.0 / 3.0))
+        Kf = (2.0 * G * n_barrel ** 2 * L) / (USC_MANNING_FACTOR ** 2 * R_full ** (4.0 / 3.0))
     else:
         Kf = 0.0
 

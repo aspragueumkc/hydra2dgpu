@@ -545,6 +545,7 @@ _RECONSTRUCTION_OPTIONS = [
     ("MUSCL MC (less-diffusive TVD)",    3),
     ("MUSCL Van Leer (smooth TVD)",      4),
     ("WENO3-like (GPU experimental)",    5),
+    ("WENO5 (GPU, 3rd-order LSQ)",        6),
 ]
 
 _TEMPORAL_ORDER_OPTIONS = [
@@ -4825,11 +4826,11 @@ class SWE2DWorkbenchDialog(QtWidgets.QDialog):
             return None
 
     def _update_unit_system_from_crs(self):
+        from swe2d import units as _u
         unit = self._detect_map_unit()
         unit_name = "m"
         sys_name = "SI"
-        g = 9.81
-        k_mann = 1.0
+        scale = 1.0
 
         if QgsUnitTypes is not None and unit is not None:
             try:
@@ -4849,21 +4850,22 @@ class SWE2DWorkbenchDialog(QtWidgets.QDialog):
                 if unit in feet_candidates or is_feet_like_text:
                     unit_name = "ft"
                     sys_name = "US Customary"
-                    g = 32.174
-                    k_mann = 1.486
+                    scale = 0.3048  # si_m_per_model for ft
                 elif unit == getattr(QgsUnitTypes, "DistanceMeters", None):
                     unit_name = "m"
                     sys_name = "SI"
-                    g = 9.81
-                    k_mann = 1.0
+                    scale = 1.0
                 else:
                     # Fallback to SI for unknown map units.
                     unit_name = str(QgsUnitTypes.toString(unit)) if hasattr(QgsUnitTypes, "toString") else "m"
                     sys_name = "SI (fallback)"
-                    g = 9.81
-                    k_mann = 1.0
+                    scale = 1.0
             except Exception:
                 pass
+
+        _u.configure(scale)
+        g = _u.gravity()
+        k_mann = _u.manning_factor()
 
         self._unit_system = sys_name
         self._length_unit_name = unit_name
@@ -4878,10 +4880,10 @@ class SWE2DWorkbenchDialog(QtWidgets.QDialog):
         return str(self._length_unit_name).strip().lower() == "ft"
 
     def _length_scale_si_to_model(self) -> float:
+        # _update_unit_system_from_crs already called configure().
+        # Return model units per SI meter for SI→model conversions.
         from swe2d import units as _u
-        scale = 3.280839895013123 if self._is_us_customary_units() else 1.0
-        _u.configure(scale)
-        return scale
+        return _u.model_per_si_m()
 
     def _rain_mm_to_model_depth(self) -> float:
         # 1 mm = 0.001 m, then convert SI meters to solver-space length units.
@@ -8576,7 +8578,8 @@ class SWE2DWorkbenchDialog(QtWidgets.QDialog):
                     f"and that 'enabled' is not 0."
                 )
             return None
-        gravity = float(getattr(self, "_gravity", 9.81))
+        from swe2d import units as _u
+        gravity = float(getattr(self, "_gravity", _u.gravity()))
         self._log(f"Hydraulic structures configured: count={len(structures)}, gravity={gravity:.3f}")
         return HydraulicStructureConfig(enabled=True, structures=structures, gravity=gravity)
 

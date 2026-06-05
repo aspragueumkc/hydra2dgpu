@@ -4,6 +4,8 @@ from typing import Callable, Dict, Optional, Tuple
 
 import numpy as np
 
+from swe2d import units as _u
+
 
 def internal_flow_source_cms_at_time(
     forcing: Optional[Dict[str, object]],
@@ -124,11 +126,10 @@ def apply_external_sources(
         hu = hu * damp
         hv = hv * damp
 
-    gravity = 9.81
     abs_u = np.abs(hu) / np.maximum(h, 1.0e-12)
     abs_v = np.abs(hv) / np.maximum(h, 1.0e-12)
     abs_speed = np.sqrt(abs_u**2 + abs_v**2)
-    wave_speed = np.sqrt(gravity * np.maximum(h, 1.0e-12))
+    wave_speed = np.sqrt(_u.gravity() * np.maximum(h, 1.0e-12))
     speed_cap = np.maximum(momentum_cap_min_speed, momentum_cap_celerity_mult * wave_speed)
     clipped = abs_speed > speed_cap
     if np.any(clipped):

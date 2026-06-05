@@ -43,8 +43,8 @@ from typing import Callable, Optional
 FORM, K, M, C, Y = 0, 1, 2, 3, 4
 MAX_CULVERT_CODE = 57
 
-# Physical constants
-GRAVITY = 32.2  # ft/s^2 (SWMM standard)
+from swe2d.units import USC_GRAVITY
+GRAVITY = USC_GRAVITY  # ft/s^2 (SWMM standard)
 BIG = 1.0e20    # large placeholder used in submerged formula when arg <= 0
 
 # -----------------------------------------------------------------------------
