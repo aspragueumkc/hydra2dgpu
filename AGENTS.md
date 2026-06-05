@@ -53,8 +53,6 @@
   python tools/ui_bind_sync.py forms/swe2d_<name>.ui <py_files> --missing
   ```
   to verify all widgets have bindings and no orphans remain.
-- The Studio and legacy shell dialog have **parallel tab lists** — changes
-  to `_compose_left_pane()` must be mirrored in `studio_build_ui()` within
-  `swe2d/workbench/extracted/shell_dialog_methods.py`.
-- Feature toggles touch 4 files: feature flags dict, keyword function,
-  menu actions, and toolbar buttons.  All four must be updated together.
+- Feature toggles touch 3 files: feature flags dict + keyword function in
+  `SWE2DWorkbenchStudioDialog`, and menu/toolbar actions in `studio_host_methods.py`.
+  All three must be updated together.

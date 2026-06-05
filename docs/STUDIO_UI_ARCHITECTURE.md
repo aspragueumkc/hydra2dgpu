@@ -1,4 +1,4 @@
-# SWE2D Studio UI Architecture & Structural Change Pipeline
+# SWE2D Studio UI Architecture
 
 ## Philosophy
 
@@ -12,6 +12,12 @@
 - **`tools/ui_bind_sync.py`** automates the cleanup of stale Python bindings
   when widgets are removed from `.ui` files, and reports new widgets that
   need bindings (`--missing` mode).
+
+- **Widget binding validation**: `SWE2DWorkbenchStudioDialog._build_ui()`
+  calls `_validate_widget_bindings()` after all tabs are composed.  Critical
+  widgets (e.g. run button) raise `RuntimeError` if missing; optional widgets
+  log a warning.  Run `python tools/ui_bind_sync.py forms/swe2d_<name>.ui <py_files> --missing`
+  for full `.ui`-level validation.
 
 ---
 
@@ -29,9 +35,8 @@ feature toggles), touch EVERY item in the relevant checklist below.
 | 3 | `swe2d_workbench_qt.py` | Add `_bind_<name>_controls()` or reuse an existing bind method |
 | 4 | `swe2d_workbench_qt.py` | Add tab to `_compose_left_pane()` via `_left_tabs.addTab()` |
 | 5 | `swe2d/workbench/extracted/model_and_run_methods.py` | Add `_find_or_create_*` calls for each interactive widget |
-| 6 | `swe2d/workbench/extracted/shell_dialog_methods.py` (legacy shell) | Mirror tab addition in `studio_build_ui()` |
-| 7 | Run `tools/ui_bind_sync.py forms/swe2d_<name>.ui <py_files> --missing` | Verify all widgets have bindings |
-| 8 | Purge `__pycache__` before testing in QGIS | `find . -type d -name __pycache__ -exec rm -rf {} +` |
+| 6 | Run `tools/ui_bind_sync.py forms/swe2d_<name>.ui <py_files> --missing` | Verify all widgets have bindings |
+| 7 | Purge `__pycache__` before testing in QGIS | `find . -type d -name __pycache__ -exec rm -rf {} +` |
 
 ### B. Adding a new form to an existing tab page (e.g. a new QToolBox page)
 
@@ -41,17 +46,16 @@ feature toggles), touch EVERY item in the relevant checklist below.
 | 2 | `swe2d_workbench_qt.py` | Update `_build_model_tab_page()` to find and return the new form |
 | 3 | `swe2d_workbench_qt.py` | Add `_bind_<name>_controls(model_tab_page, new_form)` call in `_compose_left_pane()` |
 | 4 | `swe2d/workbench/extracted/model_and_run_methods.py` | Add `_find_or_create_*` calls for each interactive widget in the new form |
-| 5 | `swe2d/workbench/extracted/shell_dialog_methods.py` (legacy shell) | Mirror the bind call |
-| 6 | Run `tools/ui_bind_sync.py forms/swe2d_model_tab.ui <py_files> --missing` | Verify form coverage |
-| 7 | Purge `__pycache__` | |
+| 5 | Run `tools/ui_bind_sync.py forms/swe2d_model_tab.ui <py_files> --missing` | Verify form coverage |
+| 6 | Purge `__pycache__` | |
 
 ### C. Adding/removing a feature toggle (Rainfall, Drainage/Structures, 3D Patch)
 
 | Step | Where | What |
 |------|-------|------|
 | 1 | `swe2d_workbench_qt.py` | Add/remove entry in `self._studio_feature_flags` dict |
-| 2 | `swe2d/workbench/extracted/shell_dialog_methods.py` | Add/remove entry in `studio_feature_keywords()` |
-| 3 | `swe2d/workbench/extracted/shell_dialog_methods.py` | Ensure `studio_apply_feature_filters()` handles tab visibility |
+| 2 | `swe2d_workbench_qt.py` | Add/remove entry in `_studio_feature_keywords()` |
+| 3 | `swe2d_workbench_qt.py` | Ensure `_studio_apply_feature_filters()` handles tab visibility |
 | 4 | `swe2d/workbench/extracted/studio_host_methods.py` | Add/remove menu action (QGIS menu bar) |
 | 5 | `swe2d/workbench/extracted/studio_host_methods.py` | Add/remove toolbar button (QGIS toolbar) |
 | 6 | Verify keyword matching: interactive widgets in the target tab MUST have objectNames containing at least one keyword |
@@ -75,7 +79,7 @@ feature toggles), touch EVERY item in the relevant checklist below.
 | 2 | `swe2d/workbench/extracted/model_and_run_methods.py` | Update `_find_or_create_*("old_name", ...)` → `_find_or_create_*("new_name", ...)` |
 | 3 | Any `.py` file with `findChild(..., "old_name")` | Update the string literal |
 | 4 | Run `tools/ui_bind_sync.py forms/swe2d_*.ui <py_files>` | Removes old-name references |
-| 5 | `swe2d/workbench/extracted/shell_dialog_methods.py` | Update `studio_feature_keywords()` if the name contained a keyword |
+| 5 | `swe2d_workbench_qt.py` | Update `_studio_feature_keywords()` if the name contained a keyword |
 | 6 | Purge `__pycache__` | |
 
 ---
@@ -103,8 +107,8 @@ Each tab page is wrapped in `_wrap_left_tab_page()` which returns a QScrollArea.
 ### Feature flag pipeline
 
 1. **Flag store**: `self._studio_feature_flags` dict in `SWE2DWorkbenchStudioDialog.__init__()`
-2. **Keyword matching**: `studio_feature_keywords()` in `shell_dialog_methods.py`
-3. **Filter application**: `studio_apply_feature_filters()` iterates `_left_tabs` children and calls `setVisible()` / `setTabVisible()`
+2. **Keyword matching**: `_studio_feature_keywords()` in `SWE2DWorkbenchStudioDialog`
+3. **Filter application**: `_studio_apply_feature_filters()` iterates `_left_tabs` children and calls `setVisible()` / `setTabVisible()`
 4. **User toggle**: menu actions + toolbar buttons in `_install_studio_host_controls()` (in `studio_host_methods.py`), wired to `_studio_set_feature_enabled()`
 
 ### Bind methods → implementation mapping
@@ -119,18 +123,10 @@ Each tab page is wrapped in `_wrap_left_tab_page()` which returns a QScrollArea.
 
 ---
 
-## Two parallel UI paths
+#### Studio (modern): `SWE2DWorkbenchStudioDialog`
 
-### 1. Studio (modern): `SWE2DWorkbenchStudioDialog`
-
-- Used when user clicks "SWE2D Studio" in QGIS toolbar
+- Used when user clicks "2D SWE Workbench" in QGIS toolbar
 - `_compose_left_pane()` builds the left tab widget with all tabs
 - Each tab is loaded from its own `.ui` file
 - Feature flags control tab/page visibility
-
-### 2. Shell (legacy): Designer-based workbench
-
-- Used for the legacy dialog launched via the plugin toolbar
-- `studio_build_ui()` in `shell_dialog_methods.py` mirrors the Studio layout
-- Uses a single `swe2d_workbench_designer.ui` shell with named placeholders
-- **Must be updated in parallel** with Studio changes for any tab/form additions
+- Widget binding validation run on `_build_ui()` completion

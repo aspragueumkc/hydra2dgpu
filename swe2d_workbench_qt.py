@@ -637,12 +637,8 @@ _HYETOGRAPH_UNITS_VALUE_MAP = {
 
 _SWE2D_WORKBENCH_WINDOWS = []
 _SWE2D_WORKBENCH_DOCK = None
-_SWE2D_WORKBENCH_DESIGNER_WINDOWS = []
-_SWE2D_WORKBENCH_DESIGNER_DOCK = None
 _SWE2D_WORKBENCH_STUDIO_WINDOWS = []
 _SWE2D_WORKBENCH_STUDIO_DOCK = None
-_SWE2D_WORKBENCH_SCENARIO_WINDOWS = []
-_SWE2D_WORKBENCH_SCENARIO_DOCK = None
 _SWE2D_STUDIO_HOST_TOOLBAR = None
 _SWE2D_STUDIO_HOST_MENU = None
 _SWE2D_STUDIO_COMPONENT_DOCKS = {}
@@ -2812,6 +2808,20 @@ class SWE2DWorkbenchDialog(QtWidgets.QDialog):
         if required_for_run:
             self._startup_run_component_errors.append(name)
 
+    def _find_child_or_raise(self, parent: QtWidgets.QWidget, widget_type: type, name: str) -> QtWidgets.QWidget:
+        """Find a child widget by type and name, raising RuntimeError if missing.
+
+        Replaces bare findChild() calls to fail fast on missing widgets
+        instead of propagating None silently.
+        """
+        w = parent.findChild(widget_type, name)
+        if w is None:
+            raise RuntimeError(
+                f"Required widget '{name}' of type {widget_type.__name__} "
+                f"not found in {parent.objectName() or type(parent).__name__}"
+            )
+        return w
+
     def _init_startup_component(self, name: str, builder: Callable[[], object], required_for_run: bool = False):
         try:
             return builder()
@@ -3808,7 +3818,7 @@ class SWE2DWorkbenchDialog(QtWidgets.QDialog):
         QtWidgets.QWidget,
         QtWidgets.QDialogButtonBox,
     ]:
-        ui_path = self._forms_file_path("swe2d_workbench_shell.ui")
+        ui_path = self._forms_file_path("swe2d_workbench.ui")
         shell = None
         if _qgis_uic is not None and os.path.exists(ui_path):
             try:
@@ -3906,7 +3916,7 @@ class SWE2DWorkbenchDialog(QtWidgets.QDialog):
 
         If you add a new tab page (new .ui file or new QToolBox page),
         add it here AFTER building and binding it.
-        The legacy shell dialog (shell_dialog_methods.py) has a parallel
+        The legacy shell dialog has a parallel
         tab list in studio_build_ui() that must be kept in sync.
         See docs/STUDIO_UI_ARCHITECTURE.md for the full checklist.
         """
@@ -10243,137 +10253,6 @@ class SWE2DWorkbenchDialog(QtWidgets.QDialog):
                 pass
 
 
-class SWE2DWorkbenchDesignerDialog(SWE2DWorkbenchDialog):
-    """Parallel workbench shell whose full window frame is owned by a .ui file."""
-
-    _DESIGNER_TAB_PAGES = (
-        ("mesh_tab", "Mesh"),
-        ("map_tab", "Map"),
-        ("topology_tab", "Topology"),
-        ("boundary_tab", "Boundary"),
-        ("model_tab", "Model"),
-        ("run_tab", "Run"),
-    )
-
-    def __init__(self, parent=None, iface=None):
-        super().__init__(parent, iface=iface)
-        self.setWindowTitle("2D SWE Workbench (Designer UI)")
-
-    def _build_designer_workbench_shell(self) -> QtWidgets.QWidget:
-        ui_path = self._forms_file_path("swe2d_workbench_designer.ui")
-        shell = None
-        if _qgis_uic is not None and os.path.exists(ui_path):
-            try:
-                shell = _qgis_uic.loadUi(ui_path)
-            except Exception:
-                shell = None
-        if shell is None:
-            shell = self._build_designer_workbench_shell_fallback()
-        return shell
-
-    def _build_designer_workbench_shell_fallback(self) -> QtWidgets.QWidget:
-        shell = QtWidgets.QWidget()
-        root_layout = QtWidgets.QVBoxLayout(shell)
-        root_layout.setContentsMargins(0, 0, 0, 0)
-
-        header_lbl = QtWidgets.QLabel("Interactive 2D SWE workflow")
-        header_lbl.setObjectName("header_lbl")
-        header_lbl.setWordWrap(True)
-        root_layout.addWidget(header_lbl)
-
-        main_splitter = QtWidgets.QSplitter(QtCore.Qt.Orientation.Horizontal)
-        main_splitter.setObjectName("main_splitter")
-
-        left_tabs = QtWidgets.QTabWidget()
-        left_tabs.setObjectName("left_tabs")
-        left_tabs.setDocumentMode(True)
-        for page_name, title in self._DESIGNER_TAB_PAGES:
-            page = QtWidgets.QWidget()
-            page.setObjectName(page_name)
-            page_layout = QtWidgets.QVBoxLayout(page)
-            page_layout.setContentsMargins(0, 0, 0, 0)
-            left_tabs.addTab(page, title)
-        main_splitter.addWidget(left_tabs)
-
-        right_pane_host = QtWidgets.QWidget()
-        right_pane_host.setObjectName("right_pane_host")
-        right_pane_host_layout = QtWidgets.QVBoxLayout(right_pane_host)
-        right_pane_host_layout.setContentsMargins(0, 0, 0, 0)
-        main_splitter.addWidget(right_pane_host)
-
-        root_layout.addWidget(main_splitter, stretch=1)
-
-        bottom_buttons = QtWidgets.QDialogButtonBox(QtWidgets.QDialogButtonBox.StandardButton.Close)
-        bottom_buttons.setObjectName("bottom_buttons")
-        root_layout.addWidget(bottom_buttons)
-        return shell
-
-    def _designer_host_widget(self, shell: QtWidgets.QWidget, object_name: str) -> QtWidgets.QWidget:
-        host = shell.findChild(QtWidgets.QWidget, object_name)
-        if host is None:
-            raise RuntimeError(f"Designer workbench shell is missing {object_name}")
-        return host
-
-    def _mount_widget_in_host(self, host: QtWidgets.QWidget, widget: QtWidgets.QWidget) -> None:
-        layout = host.layout()
-        if not isinstance(layout, QtWidgets.QVBoxLayout):
-            layout = QtWidgets.QVBoxLayout(host)
-        layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(0)
-        while layout.count():
-            item = layout.takeAt(0)
-            child = item.widget()
-            if child is not None:
-                child.deleteLater()
-        layout.addWidget(widget, stretch=1)
-
-    def _ensure_designer_tab_scroll(self, tab_page: QtWidgets.QWidget, scroll_object_name: str) -> None:
-        scroll = tab_page.findChild(QtWidgets.QScrollArea, scroll_object_name)
-        if scroll is not None:
-            return
-
-        page_layout = tab_page.layout()
-        if not isinstance(page_layout, QtWidgets.QVBoxLayout):
-            page_layout = QtWidgets.QVBoxLayout(tab_page)
-        margins = page_layout.contentsMargins()
-        spacing = page_layout.spacing()
-
-        content = QtWidgets.QWidget(tab_page)
-        content.setObjectName(f"{tab_page.objectName()}_scroll_content")
-        content_layout = QtWidgets.QVBoxLayout(content)
-        content_layout.setContentsMargins(margins)
-        content_layout.setSpacing(spacing)
-
-        while page_layout.count():
-            item = page_layout.takeAt(0)
-            child_widget = item.widget()
-            child_layout = item.layout()
-            child_spacer = item.spacerItem()
-            if child_widget is not None:
-                content_layout.addWidget(child_widget)
-            elif child_layout is not None:
-                content_layout.addLayout(child_layout)
-            elif child_spacer is not None:
-                content_layout.addItem(child_spacer)
-
-        scroll = QtWidgets.QScrollArea(tab_page)
-        scroll.setObjectName(scroll_object_name)
-        scroll.setWidgetResizable(True)
-        scroll.setFrameShape(QtWidgets.QFrame.Shape.NoFrame)
-        scroll.setWidget(content)
-        page_layout.addWidget(scroll, stretch=1)
-
-    def _populate_designer_left_tabs(self, shell: QtWidgets.QWidget) -> None:
-        from swe2d.workbench.extracted.shell_dialog_methods import designer_populate_left_tabs
-
-        return designer_populate_left_tabs(self, shell)
-
-    def _build_ui(self):
-        from swe2d.workbench.extracted.shell_dialog_methods import designer_build_ui
-
-        return designer_build_ui(self)
-
-
 class SWE2DWorkbenchStudioDialog(SWE2DWorkbenchDialog):
     """Dock-inspired workspace layout with persistent side inspector."""
 
@@ -10413,148 +10292,492 @@ class SWE2DWorkbenchStudioDialog(SWE2DWorkbenchDialog):
             root.addWidget(fallback, 1)
 
     def _studio_project_scope_key(self) -> str:
-        from swe2d.workbench.extracted.shell_dialog_methods import studio_project_scope_key
-
-        return studio_project_scope_key(self)
+        project_key = "default"
+        if _HAVE_QGIS_CORE and QgsProject is not None:
+            try:
+                proj = QgsProject.instance()
+                file_name = str(proj.fileName() or "").strip()
+                if file_name:
+                    project_key = file_name
+                else:
+                    project_key = str(proj.homePath() or "").strip() or project_key
+            except Exception:
+                pass
+        safe = "".join(ch if (ch.isalnum() or ch in ("_", "-", ".")) else "_" for ch in project_key)
+        if not safe:
+            safe = "default"
+        return safe
 
     def _studio_layout_settings_keys(self) -> Tuple[str, str]:
-        from swe2d.workbench.extracted.shell_dialog_methods import studio_layout_settings_keys
-
-        return studio_layout_settings_keys(self)
+        scope = self._studio_project_scope_key()
+        base = f"Backwater2DWorkbenchStudio/v2/{scope}"
+        return f"{base}/layout_state", f"{base}/layout_geometry"
 
     def _restore_studio_layout_state(self) -> None:
-        from swe2d.workbench.extracted.shell_dialog_methods import restore_studio_layout_state
+        if self._studio_main_window is None:
+            return
+        state_key, _geom_key = self._studio_layout_settings_keys()
+        settings = QtCore.QSettings()
+        try:
+            state_raw = settings.value(state_key, "")
+        except Exception:
+            state_raw = ""
 
-        return restore_studio_layout_state(self)
+        restored = False
+        if state_raw:
+            try:
+                state_bytes = QtCore.QByteArray.fromBase64(str(state_raw).encode("ascii"))
+                restored = bool(self._studio_main_window.restoreState(state_bytes))
+            except Exception:
+                pass
+
+        # Safety: always keep the core panes visible so Studio cannot reopen blank.
+        try:
+            center = self._studio_main_window.centralWidget()
+            if center is not None:
+                center.show()
+        except Exception:
+            pass
+        try:
+            if self._studio_left_dock is not None and not self._studio_left_dock.isVisible():
+                self._studio_left_dock.show()
+        except Exception:
+            pass
+        try:
+            if self._studio_inspector_dock is not None and not self._studio_inspector_dock.isVisible():
+                self._studio_inspector_dock.show()
+        except Exception:
+            pass
+
+        if state_raw and not restored:
+            self._studio_main_window.resize(1200, 760)
 
     def _save_studio_layout_state(self) -> None:
-        from swe2d.workbench.extracted.shell_dialog_methods import save_studio_layout_state
-
-        return save_studio_layout_state(self)
+        if self._studio_main_window is None:
+            return
+        state_key, _geom_key = self._studio_layout_settings_keys()
+        settings = QtCore.QSettings()
+        try:
+            state_b64 = bytes(self._studio_main_window.saveState().toBase64()).decode("ascii")
+            settings.setValue(state_key, state_b64)
+            settings.sync()
+        except Exception:
+            pass
 
     def _studio_mount_widget(self, host: QtWidgets.QWidget, widget: QtWidgets.QWidget) -> None:
-        from swe2d.workbench.extracted.shell_dialog_methods import studio_mount_widget
-
-        return studio_mount_widget(self, host, widget)
+        layout = host.layout()
+        if not isinstance(layout, QtWidgets.QVBoxLayout):
+            layout = QtWidgets.QVBoxLayout(host)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(0)
+        while layout.count():
+            item = layout.takeAt(0)
+            child = item.widget()
+            if child is not None:
+                child.deleteLater()
+        layout.addWidget(widget, stretch=1)
 
     def _studio_select_tab(self, name: str) -> None:
-        from swe2d.workbench.extracted.shell_dialog_methods import studio_select_tab
-
-        return studio_select_tab(self, name)
+        if not hasattr(self, "_left_tabs") or self._left_tabs is None:
+            return
+        target = str(name or "").strip().lower()
+        for idx in range(self._left_tabs.count()):
+            if str(self._left_tabs.tabText(idx) or "").strip().lower() == target:
+                self._left_tabs.setCurrentIndex(idx)
+                return
 
     def _studio_set_feature_enabled(self, feature: str, enabled: bool) -> None:
-        """Toggle a Studio feature on/off (Rainfall, Drainage/Structures, 3D Patch).
+        """Set a Studio feature flag and re-apply visibility filters.
 
-        Updates self._studio_feature_flags and calls _studio_apply_feature_filters()
-        to show/hide matching widgets and tabs.  Called by menu actions and
-        toolbar buttons in _install_studio_host_controls().
+        Valid feature keys are defined in self._studio_feature_flags.
+        After updating the flag, calls _studio_apply_feature_filters() to
+        immediately show/hide matching widgets and tabs.
 
-        To add a new feature toggle:
-          1. Add entry to self._studio_feature_flags dict
-          2. Add keywords in studio_feature_keywords() (shell_dialog_methods.py)
-          3. Add menu + toolbar actions in _install_studio_host_controls()
+        To add a new feature:
+          1. Add the key to self._studio_feature_flags in the dialog __init__
+          2. Add keyword entries in _studio_feature_keywords() below
+          3. Add menu + toolbar toggles in _install_studio_host_controls()
         See docs/STUDIO_UI_ARCHITECTURE.md section C.
         """
-        from swe2d.workbench.extracted.shell_dialog_methods import studio_set_feature_enabled
-
-        return studio_set_feature_enabled(self, feature, enabled)
+        key = str(feature or "").strip().lower()
+        if key not in self._studio_feature_flags:
+            return
+        self._studio_feature_flags[key] = bool(enabled)
+        self._studio_apply_feature_filters()
 
     def _studio_feature_keywords(self) -> Dict[str, Tuple[str, ...]]:
-        from swe2d.workbench.extracted.shell_dialog_methods import studio_feature_keywords
-
-        return studio_feature_keywords(self)
+        return {
+            "rainfall": ("rain", "gauge", "hyet", "storm", "runoff", "precip"),
+            "drainage_structures": (
+                "drain", "node", "link", "inlet", "outfall", "pipe", "network",
+                "structure", "culvert", "weir", "orifice", "gate", "spillway",
+                "coupling",
+            ),
+            "3d_patch": ("3d_patch", "patch_3d", "swe3d"),
+        }
 
     def _studio_widget_text_blob(self, widget: QtWidgets.QWidget) -> str:
-        from swe2d.workbench.extracted.shell_dialog_methods import studio_widget_text_blob
-
-        return studio_widget_text_blob(self, widget)
+        parts = [str(widget.objectName() or "")]
+        try:
+            if hasattr(widget, "text") and callable(widget.text):
+                parts.append(str(widget.text() or ""))
+        except Exception:
+            pass
+        try:
+            if hasattr(widget, "title") and callable(widget.title):
+                parts.append(str(widget.title() or ""))
+        except Exception:
+            pass
+        try:
+            parts.append(str(widget.toolTip() or ""))
+        except Exception:
+            pass
+        return " ".join(parts).lower()
 
     def _studio_apply_feature_filters(self) -> None:
-        """Show/hide widgets and tabs based on _studio_feature_flags.
-
-        Iterates all children of self._left_tabs, matches each widget's
-        objectName/text against studio_feature_keywords(), and calls
-        setVisible() / setTabVisible() accordingly.
-
-        Called automatically by _studio_set_feature_enabled().
-        See docs/STUDIO_UI_ARCHITECTURE.md section C.
-        """
-        from swe2d.workbench.extracted.shell_dialog_methods import studio_apply_feature_filters
-
-        return studio_apply_feature_filters(self)
+        if not hasattr(self, "_left_tabs") or self._left_tabs is None:
+            return
+        keywords = self._studio_feature_keywords()
+        for widget in self._left_tabs.findChildren(QtWidgets.QWidget):
+            if widget is self._left_tabs:
+                continue
+            blob = self._studio_widget_text_blob(widget)
+            matched = []
+            for feature, words in keywords.items():
+                if any(word in blob for word in words):
+                    matched.append(feature)
+            if not matched:
+                continue
+            visible = all(self._studio_feature_flags.get(feature, True) for feature in matched)
+            try:
+                widget.setVisible(visible)
+            except Exception:
+                pass
+        # Sync tab page visibility: hide/show tabs whose page or content matches
+        # a feature flag, so the tab bar entry disappears when the feature is off.
+        tabs = self._left_tabs
+        for i in range(tabs.count()):
+            page = tabs.widget(i)
+            if page is None:
+                continue
+            blob = self._studio_widget_text_blob(page)
+            matched = []
+            for feature, words in keywords.items():
+                if any(word in blob for word in words):
+                    matched.append(feature)
+            if not matched:
+                continue
+            visible = all(self._studio_feature_flags.get(feature, True) for feature in matched)
+            try:
+                tabs.setTabVisible(i, visible)
+            except Exception:
+                pass
 
     def _studio_sync_view_mode(self, idx: int) -> None:
-        from swe2d.workbench.extracted.shell_dialog_methods import studio_sync_view_mode
-
-        return studio_sync_view_mode(self, idx)
+        if not hasattr(self, "view_mode_combo") or self.view_mode_combo is None:
+            return
+        if idx < 0:
+            return
+        try:
+            self.view_mode_combo.setCurrentIndex(idx)
+        except Exception:
+            pass
 
     def _studio_apply_visual_profile(self, profile: str) -> None:
-        from swe2d.workbench.extracted.shell_dialog_methods import studio_apply_visual_profile
-
-        return studio_apply_visual_profile(self, profile)
+        profile_key = str(profile or "").strip().lower()
+        if self._studio_main_window is None:
+            return
+        if profile_key == "diagnostics":
+            self._studio_main_window.setStyleSheet(
+                "QMainWindow { background: #1f232a; }"
+                "QDockWidget::title { background: #2d3640; color: #f2f4f8; padding: 4px; }"
+                "QToolBar { background: #2b3139; border-bottom: 1px solid #3a424c; }"
+                "QStatusBar { background: #2b3139; color: #e7edf5; }"
+            )
+        elif profile_key == "presentation":
+            self._studio_main_window.setStyleSheet(
+                "QMainWindow { background: #f2f5f8; }"
+                "QDockWidget::title { background: #d9e2ec; color: #243b53; padding: 4px; }"
+                "QToolBar { background: #e4ebf2; border-bottom: 1px solid #c9d4df; }"
+                "QStatusBar { background: #e4ebf2; color: #243b53; }"
+            )
+        else:
+            self._studio_main_window.setStyleSheet("")
 
     def _studio_update_status(self) -> None:
-        from swe2d.workbench.extracted.shell_dialog_methods import studio_update_status
-
-        return studio_update_status(self)
+        if self._studio_status_label is None:
+            return
+        project_name = "(no project)"
+        project_home = ""
+        if _HAVE_QGIS_CORE and QgsProject is not None:
+            try:
+                proj = QgsProject.instance()
+                project_name = str(proj.baseName() or "").strip() or "(unnamed project)"
+                project_home = str(proj.homePath() or "").strip()
+            except Exception:
+                pass
+        mode_txt = str(getattr(self, "_swe2d_workbench_host_mode", "window") or "window")
+        detail = f"Project: {project_name}"
+        if project_home:
+            detail += f" | Home: {project_home}"
+        detail += f" | Host mode: {mode_txt}"
+        self._studio_status_label.setText(detail)
 
     def _build_ui(self):
-        from swe2d.workbench.extracted.shell_dialog_methods import studio_build_ui
+        # Diagnostic: log that _build_ui was entered
+        try:
+            self._log("[Studio] _build_ui entered")
+        except Exception:
+            pass
+        root = self.layout()
+        if not isinstance(root, QtWidgets.QVBoxLayout):
+            root = QtWidgets.QVBoxLayout(self)
+        root.setContentsMargins(0, 0, 0, 0)
+        root.setSpacing(0)
+        while root.count():
+            item = root.takeAt(0)
+            widget = item.widget()
+            if widget is not None:
+                widget.deleteLater()
 
-        return studio_build_ui(self)
+        self._studio_main_window = QtWidgets.QMainWindow(self)
+        self._studio_main_window.setWindowFlags(QtCore.Qt.Widget)
+        self._studio_main_window.setObjectName("SWE2DStudioMainWindow")
+        self._studio_main_window.setDockOptions(
+            QtWidgets.QMainWindow.AllowNestedDocks
+            | QtWidgets.QMainWindow.AllowTabbedDocks
+            | QtWidgets.QMainWindow.AnimatedDocks
+        )
+        root.addWidget(self._studio_main_window, stretch=1)
+
+        toolbar = QtWidgets.QToolBar("CFD Workspace", self._studio_main_window)
+        toolbar.setObjectName("SWE2DStudioToolbar")
+        toolbar.setMovable(False)
+        toolbar.setToolButtonStyle(QtCore.Qt.ToolButtonTextBesideIcon)
+        self._studio_main_window.addToolBar(QtCore.Qt.TopToolBarArea, toolbar)
+
+        act_mesh = toolbar.addAction("Mesh")
+        act_model = toolbar.addAction("Model")
+        act_run = toolbar.addAction("Run")
+        act_map = toolbar.addAction("Map")
+        toolbar.addSeparator()
+        act_3d_patch = toolbar.addAction("3D Patch")
+        act_3d_patch.setCheckable(True)
+        act_3d_patch.setChecked(False)
+        try:
+            self._log("[Studio] 3D Patch toolbar action created")
+        except Exception:
+            pass
+        toolbar.addSeparator()
+        act_refresh = toolbar.addAction("Refresh Layers")
+        act_snapshot = toolbar.addAction("Take Snapshot")
+        toolbar.addSeparator()
+        act_close = toolbar.addAction("Close")
+
+        toolbar.addSeparator()
+        toolbar.addWidget(QtWidgets.QLabel(" View: "))
+        self._studio_view_mode_combo = QtWidgets.QComboBox()
+        self._studio_view_mode_combo.addItems(["Mesh", "Depth", "Velocity magnitude", "Runtime Log"])
+        toolbar.addWidget(self._studio_view_mode_combo)
+
+        toolbar.addWidget(QtWidgets.QLabel(" Theme: "))
+        self._studio_theme_combo = QtWidgets.QComboBox()
+        self._studio_theme_combo.addItems(["Default", "Diagnostics", "Presentation"])
+        toolbar.addWidget(self._studio_theme_combo)
+
+        center_host = QtWidgets.QWidget()
+        self._studio_mount_widget(center_host, self._build_right_pane())
+        self._studio_main_window.setCentralWidget(center_host)
+
+        self._studio_left_dock = QtWidgets.QDockWidget("Model Setup", self._studio_main_window)
+        self._studio_left_dock.setObjectName("SWE2DStudioSetupDock")
+        self._studio_left_dock.setFeatures(
+            QtWidgets.QDockWidget.DockWidgetMovable
+            | QtWidgets.QDockWidget.DockWidgetFloatable
+            | QtWidgets.QDockWidget.DockWidgetClosable
+        )
+        left_host = QtWidgets.QWidget()
+        self._compose_left_pane(left_host)
+        self._studio_left_dock.setWidget(left_host)
+        self._studio_main_window.addDockWidget(QtCore.Qt.LeftDockWidgetArea, self._studio_left_dock)
+
+        self._studio_inspector_dock = QtWidgets.QDockWidget("CFD Inspector", self._studio_main_window)
+        self._studio_inspector_dock.setObjectName("SWE2DStudioInspectorDock")
+        self._studio_inspector_dock.setFeatures(
+            QtWidgets.QDockWidget.DockWidgetMovable
+            | QtWidgets.QDockWidget.DockWidgetFloatable
+            | QtWidgets.QDockWidget.DockWidgetClosable
+        )
+
+        inspector_tabs = QtWidgets.QTabWidget()
+        inspector_tabs.setDocumentMode(True)
+
+        tree_page = QtWidgets.QWidget()
+        tree_layout = QtWidgets.QVBoxLayout(tree_page)
+        tree_layout.setContentsMargins(6, 6, 6, 6)
+        workspace_tree = QtWidgets.QTreeWidget()
+        workspace_tree.setHeaderLabels(["Workspace Area", "Purpose"])
+        root_item = QtWidgets.QTreeWidgetItem(["SWE2D CFD Studio", "QGIS-integrated workflow shell"])
+        root_item.addChild(QtWidgets.QTreeWidgetItem(["Setup Dock", "Mesh/Boundary/Model tabs"]))
+        root_item.addChild(QtWidgets.QTreeWidgetItem(["Central Workspace", "Runtime view and logs"]))
+        root_item.addChild(QtWidgets.QTreeWidgetItem(["Inspector Dock", "QA checks and quick actions"]))
+        workspace_tree.addTopLevelItem(root_item)
+        workspace_tree.expandAll()
+        tree_layout.addWidget(workspace_tree)
+        inspector_tabs.addTab(tree_page, "Workspace")
+
+        quick_page = QtWidgets.QWidget()
+        quick_layout = QtWidgets.QVBoxLayout(quick_page)
+        quick_layout.setContentsMargins(6, 6, 6, 6)
+        tools_box = QtWidgets.QToolBox()
+
+        nav_page = QtWidgets.QWidget()
+        nav_layout = QtWidgets.QVBoxLayout(nav_page)
+        cmd_mesh = QtWidgets.QCommandLinkButton("Open Mesh Setup", "Jump to grid generation and controls")
+        cmd_model = QtWidgets.QCommandLinkButton("Open Model Setup", "Jump to solver and roughness settings")
+        cmd_run = QtWidgets.QCommandLinkButton("Open Run Tab", "Jump to runtime and output controls")
+        nav_layout.addWidget(cmd_mesh)
+        nav_layout.addWidget(cmd_model)
+        nav_layout.addWidget(cmd_run)
+        nav_layout.addStretch(1)
+        tools_box.addItem(nav_page, "Navigation")
+
+        qa_page = QtWidgets.QWidget()
+        qa_layout = QtWidgets.QVBoxLayout(qa_page)
+        qa_hint = QtWidgets.QPlainTextEdit()
+        qa_hint.setReadOnly(True)
+        qa_hint.setPlainText(
+            "CFD pre-run checks:\n"
+            "1. Confirm mesh exists and BC sides are configured.\n"
+            "2. Verify timestep mode and CFL consistency.\n"
+            "3. Confirm output intervals and runtime duration.\n"
+            "4. Enable 3D export toggles only when needed."
+        )
+        qa_layout.addWidget(qa_hint)
+        qa_layout.addStretch(1)
+        tools_box.addItem(qa_page, "Pre-run QA")
+
+        quick_layout.addWidget(tools_box)
+        inspector_tabs.addTab(quick_page, "Operations")
+
+        self._studio_inspector_dock.setWidget(inspector_tabs)
+        self._studio_main_window.addDockWidget(QtCore.Qt.RightDockWidgetArea, self._studio_inspector_dock)
+
+        footer = QtWidgets.QStatusBar(self._studio_main_window)
+        self._studio_main_window.setStatusBar(footer)
+        self._studio_status_label = QtWidgets.QLabel("")
+        footer.addPermanentWidget(self._studio_status_label, 1)
+        self._studio_update_status()
+
+        if hasattr(self, "view_mode_combo") and self.view_mode_combo is not None:
+            try:
+                self._studio_view_mode_combo.setCurrentIndex(max(0, int(self.view_mode_combo.currentIndex())))
+            except Exception:
+                pass
+
+        act_mesh.triggered.connect(lambda: self._studio_select_tab("mesh"))
+        act_model.triggered.connect(lambda: self._studio_select_tab("model"))
+        act_run.triggered.connect(lambda: self._studio_select_tab("run"))
+        act_map.triggered.connect(lambda: self._studio_select_tab("map"))
+        act_refresh.triggered.connect(self._refresh_layer_combos)
+        act_snapshot.triggered.connect(lambda: self.snapshot_btn.click() if hasattr(self, "snapshot_btn") and self.snapshot_btn is not None else None)
+
+        # 3D Patch toggle — creates/hides a dock widget
+        _SWE2D_3D_PATCH_DOCK_ATTR = "_swe2d_3d_patch_dock"
+
+        def _toggle_3d_patch(checked: bool) -> None:
+            try:
+                self._log(f"[Studio] 3D Patch toggled: {checked}")
+            except Exception:
+                pass
+            dock = getattr(self, _SWE2D_3D_PATCH_DOCK_ATTR, None)
+            if checked and dock is None:
+                patch_page = self._build_3d_patch_tab_page()
+                dock = QtWidgets.QDockWidget("3D Patch Settings", self._studio_main_window)
+                dock.setObjectName("SWE2D3DPatchDock")
+                dock.setWidget(patch_page)
+                dock.setFeatures(
+                    QtWidgets.QDockWidget.DockWidgetMovable
+                    | QtWidgets.QDockWidget.DockWidgetFloatable
+                    | QtWidgets.QDockWidget.DockWidgetClosable
+                )
+                dock.visibilityChanged.connect(
+                    lambda visible: act_3d_patch.setChecked(visible)
+                )
+                self._studio_main_window.addDockWidget(
+                    QtCore.Qt.RightDockWidgetArea, dock
+                )
+                setattr(self, _SWE2D_3D_PATCH_DOCK_ATTR, dock)
+            elif not checked and dock is not None:
+                self._studio_main_window.removeDockWidget(dock)
+                dock.deleteLater()
+                setattr(self, _SWE2D_3D_PATCH_DOCK_ATTR, None)
+
+        act_3d_patch.toggled.connect(_toggle_3d_patch)
+        act_open_coupling_results = toolbar.addAction("Open Drainage/Structure Results")
+        act_open_coupling_results.triggered.connect(
+            lambda: self._open_coupling_results_viewer()
+            if hasattr(self, "_open_coupling_results_viewer")
+            else None
+        )
+        act_close.triggered.connect(self.reject)
+
+        cmd_mesh.clicked.connect(lambda: self._studio_select_tab("mesh"))
+        cmd_model.clicked.connect(lambda: self._studio_select_tab("model"))
+        cmd_run.clicked.connect(lambda: self._studio_select_tab("run"))
+
+        self._studio_view_mode_combo.currentIndexChanged.connect(self._studio_sync_view_mode)
+        self._studio_theme_combo.currentTextChanged.connect(self._studio_apply_visual_profile)
+
+        self._restore_studio_layout_state()
+        self._studio_apply_visual_profile("Default")
+        self._studio_apply_feature_filters()
+        self._refresh_layer_combos()
+
+        # ── Widget binding validation ─────────────────────────────────
+        self._validate_widget_bindings()
+
+    def _validate_widget_bindings(self) -> None:
+        """Check that critical widgets have Python bindings.
+
+        Logs warnings for missing optional widgets.  Raises RuntimeError
+        for absolutely critical missing widgets (e.g. run button).
+        """
+        critical = {
+            "run_btn": QtWidgets.QPushButton,
+        }
+        optional = {
+            "cfl_spin": QtWidgets.QDoubleSpinBox,
+            "dt_spin": QtWidgets.QDoubleSpinBox,
+            "n_mann_spin": QtWidgets.QDoubleSpinBox,
+            "view_mode_combo": QtWidgets.QComboBox,
+            "snapshot_btn": QtWidgets.QPushButton,
+        }
+        missing_optional: List[str] = []
+
+        for name, wtype in critical.items():
+            w = self.findChild(wtype, name)
+            if w is None:
+                raise RuntimeError(
+                    f"Critical widget '{name}' ({wtype.__name__}) has no Python "
+                    f"binding in {type(self).__name__}.  Check that the widget "
+                    f"objectName is correct and the .ui file is loaded."
+                )
+
+        for name, wtype in optional.items():
+            w = self.findChild(wtype, name)
+            if w is None:
+                missing_optional.append(name)
+
+        if missing_optional:
+            self._log(
+                f"[Studio] Optional widgets missing bindings: {', '.join(missing_optional)}"
+            )
 
     def closeEvent(self, event):  # type: ignore[override]
         self._save_studio_layout_state()
         super().closeEvent(event)
 
-
-class SWE2DWorkbenchScenarioDialog(SWE2DWorkbenchDialog):
-    """Scenario-first shell with profile presets for rapid what-if runs."""
-
-    _SCENARIO_PRESETS = {
-        "Balanced": {
-            "cfl": 0.45,
-            "dt": 0.05,
-            "n_mann": 0.020,
-            "adaptive": False,
-            "rain": 0.0,
-            "output_interval": "00:30",
-            "line_output_interval": "00:05",
-        },
-        "Stable": {
-            "cfl": 0.30,
-            "dt": 0.03,
-            "n_mann": 0.025,
-            "adaptive": False,
-            "rain": 5.0,
-            "output_interval": "00:15",
-            "line_output_interval": "00:05",
-        },
-        "Fast": {
-            "cfl": 0.75,
-            "dt": 0.10,
-            "n_mann": 0.018,
-            "adaptive": True,
-            "rain": 0.0,
-            "output_interval": "01:00",
-            "line_output_interval": "00:15",
-        },
-    }
-
-    def __init__(self, parent=None, iface=None):
-        super().__init__(parent, iface=iface)
-        self.setWindowTitle("2D SWE Workbench (Scenario-first)")
-        self._scenario_profile_combo = None
-
-    def _apply_scenario_preset(self, preset_name: str) -> None:
-        from swe2d.workbench.extracted.shell_dialog_methods import scenario_apply_preset
-
-        return scenario_apply_preset(self, preset_name)
-
-    def _build_ui(self):
-        from swe2d.workbench.extracted.shell_dialog_methods import scenario_build_ui
-
-        return scenario_build_ui(self)
 
 
 def _normalize_workbench_host_mode(host_mode: object) -> str:
@@ -10598,16 +10821,8 @@ def _close_workbench_windows() -> None:
     _close_dialog_windows(_SWE2D_WORKBENCH_WINDOWS)
 
 
-def _close_workbench_designer_windows() -> None:
-    _close_dialog_windows(_SWE2D_WORKBENCH_DESIGNER_WINDOWS)
-
-
 def _close_workbench_studio_windows() -> None:
     _close_dialog_windows(_SWE2D_WORKBENCH_STUDIO_WINDOWS)
-
-
-def _close_workbench_scenario_windows() -> None:
-    _close_dialog_windows(_SWE2D_WORKBENCH_SCENARIO_WINDOWS)
 
 
 def _remove_workbench_dock_instance(dock, iface_obj):
@@ -10637,13 +10852,6 @@ def _remove_workbench_dock_instance(dock, iface_obj):
 def _remove_workbench_dock(iface_obj) -> None:
     global _SWE2D_WORKBENCH_DOCK
     _SWE2D_WORKBENCH_DOCK = _remove_workbench_dock_instance(_SWE2D_WORKBENCH_DOCK, iface_obj)
-
-
-def _remove_workbench_designer_dock(iface_obj) -> None:
-    global _SWE2D_WORKBENCH_DESIGNER_DOCK
-    _SWE2D_WORKBENCH_DESIGNER_DOCK = _remove_workbench_dock_instance(
-        _SWE2D_WORKBENCH_DESIGNER_DOCK, iface_obj
-    )
 
 
 def _remove_workbench_studio_dock(iface_obj) -> None:
@@ -10685,13 +10893,6 @@ def _build_studio_component_docks(iface_obj, host_window, dlg) -> Dict[str, QtWi
     _prepare_studio_host_logic_globals(_logic)
 
     return _logic(iface_obj, host_window, dlg)
-
-
-def _remove_workbench_scenario_dock(iface_obj) -> None:
-    global _SWE2D_WORKBENCH_SCENARIO_DOCK
-    _SWE2D_WORKBENCH_SCENARIO_DOCK = _remove_workbench_dock_instance(
-        _SWE2D_WORKBENCH_SCENARIO_DOCK, iface_obj
-    )
 
 
 def _studio_host_main_window(iface_obj, fallback_parent=None):
@@ -10753,166 +10954,6 @@ def _prepare_studio_host_logic_globals(_logic) -> None:
         _g["_remove_workbench_dock_instance"] = _remove_workbench_dock_instance
     except Exception:
         pass
-
-
-def launch_swe2d_workbench(parent=None, iface=None, host_mode: str = "window"):
-    global _SWE2D_WORKBENCH_DOCK
-    iface = _resolve_workbench_iface(parent, iface)
-
-    mode = _normalize_workbench_host_mode(host_mode)
-
-    if mode == "dock":
-        _close_workbench_windows()
-        if _SWE2D_WORKBENCH_DOCK is not None:
-            try:
-                _SWE2D_WORKBENCH_DOCK.show()
-                _SWE2D_WORKBENCH_DOCK.raise_()
-            except Exception:
-                pass
-            return _SWE2D_WORKBENCH_DOCK
-
-        host_window = None
-        if iface is not None and hasattr(iface, "mainWindow"):
-            try:
-                host_window = iface.mainWindow()
-            except Exception:
-                host_window = None
-        if host_window is None:
-            host_window = parent
-
-        dock = QtWidgets.QDockWidget("2D SWE Workbench", host_window)
-        dock.setObjectName("SWE2DWorkbenchDock")
-        dock.setFeatures(
-            QtWidgets.QDockWidget.DockWidgetMovable
-            | QtWidgets.QDockWidget.DockWidgetFloatable
-            | QtWidgets.QDockWidget.DockWidgetClosable,
-        )
-        dlg = SWE2DWorkbenchDialog(host_window, iface=iface)
-        # QDialog carries Qt::Dialog window flags that force an independent OS
-        # window, preventing embedding in a QDockWidget.  Resetting to
-        # Qt::Widget removes those flags so the dialog content sits inline in
-        # the dock panel exactly like any other embedded QWidget.
-        dlg.setWindowFlags(QtCore.Qt.Widget)
-        dock.setWidget(dlg)
-        _SWE2D_WORKBENCH_DOCK = dock
-
-        try:
-            if iface is not None and hasattr(iface, "addDockWidget"):
-                iface.addDockWidget(QtCore.Qt.RightDockWidgetArea, dock)
-            else:
-                dock.show()
-        except Exception:
-            dock.show()
-        try:
-            dock.raise_()
-        except Exception:
-            pass
-        return dock
-
-    _remove_workbench_dock(iface)
-
-    for existing in list(_SWE2D_WORKBENCH_WINDOWS):
-        try:
-            if existing.isVisible():
-                existing.show()
-                existing.raise_()
-                existing.activateWindow()
-                return existing
-        except Exception:
-            pass
-
-    dlg = SWE2DWorkbenchDialog(parent, iface=iface)
-
-    def _cleanup():
-        try:
-            _SWE2D_WORKBENCH_WINDOWS.remove(dlg)
-        except ValueError:
-            pass
-
-    _SWE2D_WORKBENCH_WINDOWS.append(dlg)
-    dlg.finished.connect(_cleanup)
-    dlg.show()
-    dlg.raise_()
-    dlg.activateWindow()
-    return dlg
-
-
-def launch_swe2d_workbench_designer(parent=None, iface=None, host_mode: str = "window"):
-    global _SWE2D_WORKBENCH_DESIGNER_DOCK
-    iface = _resolve_workbench_iface(parent, iface)
-
-    mode = _normalize_workbench_host_mode(host_mode)
-
-    if mode == "dock":
-        _close_workbench_designer_windows()
-        if _SWE2D_WORKBENCH_DESIGNER_DOCK is not None:
-            try:
-                _SWE2D_WORKBENCH_DESIGNER_DOCK.show()
-                _SWE2D_WORKBENCH_DESIGNER_DOCK.raise_()
-            except Exception:
-                pass
-            return _SWE2D_WORKBENCH_DESIGNER_DOCK
-
-        host_window = None
-        if iface is not None and hasattr(iface, "mainWindow"):
-            try:
-                host_window = iface.mainWindow()
-            except Exception:
-                host_window = None
-        if host_window is None:
-            host_window = parent
-
-        dock = QtWidgets.QDockWidget("2D SWE Workbench (Designer UI)", host_window)
-        dock.setObjectName("SWE2DWorkbenchDesignerDock")
-        dock.setFeatures(
-            QtWidgets.QDockWidget.DockWidgetMovable
-            | QtWidgets.QDockWidget.DockWidgetFloatable
-            | QtWidgets.QDockWidget.DockWidgetClosable,
-        )
-        dlg = SWE2DWorkbenchDesignerDialog(host_window, iface=iface)
-        dlg.setWindowFlags(QtCore.Qt.Widget)
-        dock.setWidget(dlg)
-        _SWE2D_WORKBENCH_DESIGNER_DOCK = dock
-
-        try:
-            if iface is not None and hasattr(iface, "addDockWidget"):
-                iface.addDockWidget(QtCore.Qt.RightDockWidgetArea, dock)
-            else:
-                dock.show()
-        except Exception:
-            dock.show()
-        try:
-            dock.raise_()
-        except Exception:
-            pass
-        return dock
-
-    _remove_workbench_designer_dock(iface)
-
-    for existing in list(_SWE2D_WORKBENCH_DESIGNER_WINDOWS):
-        try:
-            if existing.isVisible():
-                existing.show()
-                existing.raise_()
-                existing.activateWindow()
-                return existing
-        except Exception:
-            pass
-
-    dlg = SWE2DWorkbenchDesignerDialog(parent, iface=iface)
-
-    def _cleanup():
-        try:
-            _SWE2D_WORKBENCH_DESIGNER_WINDOWS.remove(dlg)
-        except ValueError:
-            pass
-
-    _SWE2D_WORKBENCH_DESIGNER_WINDOWS.append(dlg)
-    dlg.finished.connect(_cleanup)
-    dlg.show()
-    dlg.raise_()
-    dlg.activateWindow()
-    return dlg
 
 
 def launch_swe2d_workbench_studio(parent=None, iface=None, host_mode: str = "dock"):
@@ -11000,79 +11041,3 @@ def launch_swe2d_workbench_studio(parent=None, iface=None, host_mode: str = "doc
     return dlg
 
 
-def launch_swe2d_workbench_scenario(parent=None, iface=None, host_mode: str = "window"):
-    global _SWE2D_WORKBENCH_SCENARIO_DOCK
-    iface = _resolve_workbench_iface(parent, iface)
-
-    mode = _normalize_workbench_host_mode(host_mode)
-
-    if mode == "dock":
-        _close_workbench_scenario_windows()
-        if _SWE2D_WORKBENCH_SCENARIO_DOCK is not None:
-            try:
-                _SWE2D_WORKBENCH_SCENARIO_DOCK.show()
-                _SWE2D_WORKBENCH_SCENARIO_DOCK.raise_()
-            except Exception:
-                pass
-            return _SWE2D_WORKBENCH_SCENARIO_DOCK
-
-        host_window = None
-        if iface is not None and hasattr(iface, "mainWindow"):
-            try:
-                host_window = iface.mainWindow()
-            except Exception:
-                host_window = None
-        if host_window is None:
-            host_window = parent
-
-        dock = QtWidgets.QDockWidget("2D SWE Workbench (Scenario-first)", host_window)
-        dock.setObjectName("SWE2DWorkbenchScenarioDock")
-        dock.setFeatures(
-            QtWidgets.QDockWidget.DockWidgetMovable
-            | QtWidgets.QDockWidget.DockWidgetFloatable
-            | QtWidgets.QDockWidget.DockWidgetClosable,
-        )
-        dlg = SWE2DWorkbenchScenarioDialog(host_window, iface=iface)
-        dlg.setWindowFlags(QtCore.Qt.Widget)
-        dock.setWidget(dlg)
-        _SWE2D_WORKBENCH_SCENARIO_DOCK = dock
-
-        try:
-            if iface is not None and hasattr(iface, "addDockWidget"):
-                iface.addDockWidget(QtCore.Qt.RightDockWidgetArea, dock)
-            else:
-                dock.show()
-        except Exception:
-            dock.show()
-        try:
-            dock.raise_()
-        except Exception:
-            pass
-        return dock
-
-    _remove_workbench_scenario_dock(iface)
-
-    for existing in list(_SWE2D_WORKBENCH_SCENARIO_WINDOWS):
-        try:
-            if existing.isVisible():
-                existing.show()
-                existing.raise_()
-                existing.activateWindow()
-                return existing
-        except Exception:
-            pass
-
-    dlg = SWE2DWorkbenchScenarioDialog(parent, iface=iface)
-
-    def _cleanup():
-        try:
-            _SWE2D_WORKBENCH_SCENARIO_WINDOWS.remove(dlg)
-        except ValueError:
-            pass
-
-    _SWE2D_WORKBENCH_SCENARIO_WINDOWS.append(dlg)
-    dlg.finished.connect(_cleanup)
-    dlg.show()
-    dlg.raise_()
-    dlg.activateWindow()
-    return dlg

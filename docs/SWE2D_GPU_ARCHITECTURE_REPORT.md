@@ -476,9 +476,9 @@ The SWE2D workbench has two parallel UI paths that must stay in sync:
 | Path | File | Builder |
 |---|---|---|
 | **Studio (modern)** | `swe2d_workbench_qt.py` | `_compose_left_pane()` — constructs `QTabWidget` from individual `.ui` files |
-| **Shell (legacy)** | `swe2d/workbench/extracted/shell_dialog_methods.py` | `studio_build_ui()` — populates a single shell `.ui` placeholder |
+| **Studio only** | `SWE2DWorkbenchStudioDialog` in `swe2d_workbench_qt.py` | `_build_ui()` — programmatic QMainWindow + docks + toolbar construction |
 
-Both call the same `_bind_*_controls()` methods to wire widget behavior.
+Widget behavior is wired by `_bind_*_controls()` methods in `model_and_run_methods.py`.
 
 ### 7.2 Tab Structure
 
@@ -516,10 +516,9 @@ self._studio_feature_flags = {
 }
 ```
 
-#### File 2: Keyword Matching Function
-`swe2d/workbench/extracted/shell_dialog_methods.py` (line ~253):
+#### File 2: Keyword Matching Function (in SWE2DWorkbenchStudioDialog)
 ```python
-def studio_feature_keywords(self) -> Dict[str, Tuple[str, ...]]:
+def _studio_feature_keywords(self) -> Dict[str, Tuple[str, ...]]:
     return {
         "rainfall": ("rain", "gauge", "hyet", "storm", "runoff", "precip"),
         "drainage_structures": (
@@ -533,10 +532,9 @@ def studio_feature_keywords(self) -> Dict[str, Tuple[str, ...]]:
 
 Widgets whose `objectName` or text contains **any** keyword from a feature set are shown/hidden by that feature's flag.
 
-#### File 3: Filter Application
-`swe2d/workbench/extracted/shell_dialog_methods.py` (line ~299):
+#### File 3: Filter Application (in SWE2DWorkbenchStudioDialog)
 ```python
-def studio_apply_feature_filters(self) -> None:
+def _studio_apply_feature_filters(self) -> None:
     # Iterates all _left_tabs children
     # Matches widget names/text against keywords
     # Calls setVisible() and setTabVisible() based on flags
@@ -548,12 +546,11 @@ def studio_apply_feature_filters(self) -> None:
 - **Toolbar**: "Rainfall", "Drain/Struct", "3D Patch" (checkable toggle buttons)
 - All wired to `_studio_set_feature_enabled(feature_key, checked)`
 
-### 7.4 Parallel Tab Synchronization
+### 7.4 Single-UI Path — Studio Only
 
-When adding/removing/changing tabs, both builders must be updated:
+The legacy Shell path has been removed. All UI goes through the Studio path in `swe2d_workbench_qt.py`:
 
 ```python
-# Studio path (swe2d_workbench_qt.py)
 def _compose_left_pane(self):
     mesh_tab = self._build_mesh_tab_page()
     self._left_tabs.addTab(self._wrap_left_tab_page(mesh_tab), "Mesh")
@@ -561,13 +558,7 @@ def _compose_left_pane(self):
     self._bind_map_tab_data_controls(map_tab, ...)
     self._left_tabs.addTab(self._wrap_left_tab_page(map_tab), "Map")
     # ... each tab
-
-# Shell path (shell_dialog_methods.py)
-def studio_build_ui(self):
-    mesh_tab = self._build_mesh_tab_page()
-    shell.set_tab("Mesh", mesh_tab)
-    map_tab = self._build_map_tab_page()
-    self._bind_map_tab_data_controls(map_tab, ...)
+```
     shell.set_tab("Map", map_tab)
     # ... MUST mirror Studio order and bind calls
 ```
@@ -620,12 +611,10 @@ SWE2DBackend.run(..., source_rate_callback=coupling_controller.source_rate_callb
 
 | Issue | Severity | Detail |
 |---|---|---|
-| **Parallel tab lists drift** | High | `_compose_left_pane()` and `studio_build_ui()` are in different files and must be manually kept in sync. A tab added to Studio but not Shell silently fails at runtime with an `AttributeError` or `KeyError` on the missing shell placeholder. No automated check enforces this parity. |
-| **Feature toggle 4-file update discipline** | Medium | Adding a feature toggle requires changes to: (1) `_studio_feature_flags` dict, (2) `studio_feature_keywords()` return value, (3) menu actions in `studio_host_methods.py`, and (4) toolbar buttons in `studio_host_methods.py`. Missing any one produces inconsistent UI state — the toggle appears in the menu but doesn't hide widgets, or vice versa. |
+| **Feature toggle 3-file update discipline** | Medium | Adding a feature toggle requires changes to: (1) `_studio_feature_flags` dict, (2) `_studio_feature_keywords()` return value, and (3) menu + toolbar actions in `studio_host_methods.py`. Missing any one produces inconsistent UI state. |
 | **Stale `__pycache__` after `.ui` changes** | High | After editing `.ui` files in Qt Designer, QGIS holds compiled Python modules in memory. Old `.pyc` files cause widgets to be looked up by stale `objectName` values, producing silent `None` returns from `findChild()`. The AGENTS.md mandate to purge `__pycache__` is easily forgotten. |
 | **Keyword matching false positives** | Medium | Widget naming collisions can cause unintended hiding. For example, a "drainage_outlet_width" widget in the Boundary tab would be matched by the `"drain"` keyword and hidden when `drainage_structures=False`, even though it's not on the Model tab. |
-| **Missing bindings silently ignored** | Medium | Widgets in `.ui` files that lack corresponding Python `_find_or_create_*` bindings produce no runtime error. Their values are simply never read or written. Running `ui_bind_sync.py --missing` is not part of any automated CI/CD pipeline. |
-| **`_designer_host_widget` name resolution** | Low | The shell path uses `_designer_host_widget(shell, tab_name)` to find placeholder widgets by name. If a `.ui` file is renamed but the placeholder name in shell `.ui` is not updated, the tab silently fails to load. |
+| **Widget binding validation** | Low | `_validate_widget_bindings()` in Studio `_build_ui()` checks critical widgets at startup and raises `RuntimeError` if missing. Run `ui_bind_sync.py --missing` for full `.ui`-level coverage. |
 | **Feature toggle doesn't disable GPU path** | Low | Toggling `drainage_structures=False` hides UI widgets but does not disable the coupling controller's GPU path. If a user runs with hidden drainage widgets but drainage layers are loaded, the controller still computes drainage sources. |
 
 ---
@@ -724,7 +713,7 @@ sequenceDiagram
 | File | Role |
 |---|---|
 | `swe2d_workbench_qt.py` | Main Studio dialog, `_compose_left_pane()`, feature flags dict, tab builders |
-| `swe2d/workbench/extracted/shell_dialog_methods.py` | `studio_build_ui()`, `studio_feature_keywords()`, `studio_apply_feature_filters()` |
+| **`swe2d_workbench_qt.py`** | Main Studio dialog, `_compose_left_pane()`, feature flags dict + keywords + filter, tab builders |
 | `swe2d/workbench/extracted/studio_host_methods.py` | Menu actions + toolbar buttons for feature toggles |
 | `swe2d/workbench/extracted/model_and_run_methods.py` | `_bind_model_tab_*()` methods, config serialization, run orchestration |
 | `forms/swe2d_model_tab.ui` | Model tab with 3 QToolBox forms (solver, rain, drainage) |

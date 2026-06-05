@@ -1087,9 +1087,9 @@ class QgisLiveBridge:
                     except Exception:
                         pass
 
-            launch = getattr(mod, "launch_swe2d_workbench", None)
+            launch = getattr(mod, "launch_swe2d_workbench_studio", None)
             if not callable(launch):
-                raise RuntimeError("launch_swe2d_workbench is not available")
+                raise RuntimeError("launch_swe2d_workbench_studio is not available")
             launch(parent=getattr(plugin, "dock", None), iface=iface, host_mode="window")
 
             windows = []

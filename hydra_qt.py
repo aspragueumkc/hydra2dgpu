@@ -899,17 +899,9 @@ class BackwaterWidget(QtWidgets.QWidget):
         self.action_open_swe2d_demo.triggered.connect(self.open_swe2d_demo_dialog)
         menu.addAction(self.action_open_swe2d_demo)
 
-        self.action_open_swe2d_designer = QtGui.QAction('2D SWE Workbench (Designer UI)...', self)
-        self.action_open_swe2d_designer.triggered.connect(self.open_swe2d_designer_dialog)
-        menu.addAction(self.action_open_swe2d_designer)
-
         self.action_open_swe2d_studio = QtGui.QAction('2D SWE Workbench (Studio)...', self)
         self.action_open_swe2d_studio.triggered.connect(self.open_swe2d_studio_dialog)
         menu.addAction(self.action_open_swe2d_studio)
-
-        self.action_open_swe2d_scenario = QtGui.QAction('2D SWE Workbench (Scenario-first)...', self)
-        self.action_open_swe2d_scenario.triggered.connect(self.open_swe2d_scenario_dialog)
-        menu.addAction(self.action_open_swe2d_scenario)
 
         self.action_swe2d_workbench_docked = QtGui.QAction('Dock 2D SWE Workbench Panel', self)
         self.action_swe2d_workbench_docked.setCheckable(True)
@@ -5822,7 +5814,7 @@ else:
         dlg.exec()
 
     def open_swe2d_demo_dialog(self):
-        """Open the full 2D SWE workbench dialog from the plugin UI."""
+        """Open the Studio 2D SWE workbench dialog from the plugin UI."""
         import importlib
         import sys
 
@@ -5848,25 +5840,13 @@ else:
         except Exception:
             pass
 
-        launch_swe2d_workbench = getattr(mod, 'launch_swe2d_workbench', None)
-        if not callable(launch_swe2d_workbench):
-            QMessageBox.critical(self, '2D SWE Workbench', 'Unable to open 2D workbench: launch function unavailable')
+        launch_swe2d_workbench_studio = getattr(mod, 'launch_swe2d_workbench_studio', None)
+        if not callable(launch_swe2d_workbench_studio):
+            QMessageBox.critical(self, '2D SWE Workbench', 'Unable to open 2D workbench: launcher not found')
             return
 
-        launch_swe2d_workbench(self, host_mode=self._swe2d_workbench_host_mode)
-
-    def open_swe2d_designer_dialog(self):
-        """Open the Qt Designer-owned 2D SWE workbench shell from the plugin UI."""
-        try:
-            from swe2d_workbench_qt import launch_swe2d_workbench_designer
-        except Exception:
-            try:
-                from .swe2d_workbench_qt import launch_swe2d_workbench_designer
-            except Exception as exc:
-                QMessageBox.critical(self, '2D SWE Workbench', f'Unable to open Designer UI workbench: {exc}')
-                return
-
-        launch_swe2d_workbench_designer(self, host_mode=self._swe2d_workbench_host_mode)
+        iface_obj = self._get_qgis_iface()
+        launch_swe2d_workbench_studio(self, iface=iface_obj, host_mode=self._swe2d_workbench_host_mode)
 
     def open_swe2d_studio_dialog(self):
         """Open the Studio layout 2D SWE workbench shell from the plugin UI."""
@@ -5891,19 +5871,6 @@ else:
 
         iface_obj = self._get_qgis_iface()
         launch_swe2d_workbench_studio(self, iface=iface_obj, host_mode='dock')
-
-    def open_swe2d_scenario_dialog(self):
-        """Open the Scenario-first 2D SWE workbench shell from the plugin UI."""
-        try:
-            from swe2d_workbench_qt import launch_swe2d_workbench_scenario
-        except Exception:
-            try:
-                from .swe2d_workbench_qt import launch_swe2d_workbench_scenario
-            except Exception as exc:
-                QMessageBox.critical(self, '2D SWE Workbench', f'Unable to open Scenario-first workbench: {exc}')
-                return
-
-        launch_swe2d_workbench_scenario(self, host_mode=self._swe2d_workbench_host_mode)
 
     def _load_swe2d_workbench_host_mode(self) -> str:
         try:
@@ -5937,13 +5904,14 @@ else:
         self._swe2d_workbench_host_mode = 'dock' if checked else 'window'
         self._save_swe2d_workbench_host_mode(self._swe2d_workbench_host_mode)
         try:
-            from swe2d_workbench_qt import launch_swe2d_workbench
+            from swe2d_workbench_qt import launch_swe2d_workbench_studio
         except Exception:
             try:
-                from .swe2d_workbench_qt import launch_swe2d_workbench
+                from .swe2d_workbench_qt import launch_swe2d_workbench_studio
             except Exception:
                 return
-        launch_swe2d_workbench(self, host_mode=self._swe2d_workbench_host_mode)
+        iface_obj = self._get_qgis_iface()
+        launch_swe2d_workbench_studio(self, iface=iface_obj, host_mode=self._swe2d_workbench_host_mode)
 
     def open_unsteady_debug_log_viewer(self):
         """Open a dialog for browsing saved unsteady debug records."""

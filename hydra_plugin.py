@@ -454,9 +454,7 @@ class HydraQgisPlugin:
             ('HYDRAMenuSaveEditsAction', 'Save Layer Edits', lambda: self._invoke_widget_method('on_save_layer_edits')),
             ('HYDRAMenuUnsteadyInputDialogAction', 'Unsteady Input...', lambda: self._invoke_widget_method('open_unsteady_input_dialog')),
             ('HYDRAMenuSWE2DDemoAction', '2D SWE Workbench...', lambda: self._invoke_widget_method('open_swe2d_demo_dialog')),
-            ('HYDRAMenuSWE2DDesignerAction', '2D SWE Workbench (Designer UI)...', lambda: self._invoke_widget_method('open_swe2d_designer_dialog')),
-            ('HYDRAMenuSWE2DStudioAction', '2D SWE Workbench (Studio)...', lambda: self._invoke_widget_method('open_swe2d_studio_dialog')),
-            ('HYDRAMenuSWE2DScenarioAction', '2D SWE Workbench (Scenario-first)...', lambda: self._invoke_widget_method('open_swe2d_scenario_dialog')),
+
             ('HYDRAMenuRunUnsteadyAction', 'Run Unsteady Model', lambda: self._invoke_widget_method('on_run_unsteady')),
             ('HYDRAMenuLoadUnsteadyRunAction', 'Load Saved Unsteady Run...', lambda: self._invoke_widget_method('on_load_unsteady_results')),
             ('HYDRAMenuUnsteadyDebugOptionsAction', 'Unsteady Debug Options...', lambda: self._invoke_widget_method('open_unsteady_debug_dialog')),
