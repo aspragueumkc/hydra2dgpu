@@ -700,7 +700,7 @@ __device__ inline void hllc_flux_cuda_local(
 
 // swe2d_classify_kernel: standalone classification (no mark-neighbor).
 // Retained for backward compatibility with persistent-chunk / RK step functions.
-__global__ void swe2d_classify_kernel(
+__global__ __launch_bounds__(256, 4) void swe2d_classify_kernel(
     int32_t                     n_cells,
     const double*  __restrict__ d_h,
     const double*  __restrict__ d_cell_source_mps,
@@ -738,7 +738,7 @@ __global__ void swe2d_classify_kernel(
 }
 
 // swe2d_mark_neighbor_kernel: retained for backward compatibility.
-__global__ void swe2d_mark_neighbor_kernel(
+__global__ __launch_bounds__(256, 4) void swe2d_mark_neighbor_kernel(
     int32_t                     n_edges,
     const int32_t* __restrict__ edge_c0,
     const int32_t* __restrict__ edge_c1,
@@ -757,7 +757,7 @@ __global__ void swe2d_mark_neighbor_kernel(
 // One thread per cell for classification; after block-level sync, each block
 // also processes a contiguous segment of edges to mark dry neighbors of active
 // cells.  This eliminates a separate kernel launch for the mark-neighbor pass.
-__global__ void swe2d_classify_and_mark_kernel(
+__global__ __launch_bounds__(256, 4) void swe2d_classify_and_mark_kernel(
     int32_t                     n_cells,
     int32_t                     n_edges,
     const double*  __restrict__ d_h,
@@ -931,7 +931,7 @@ __device__ inline void atomicAddDouble(double* address, double val) {
 // This halves the work compared to the cell-centric version (each edge was
 // visited twice, once from each incident cell's perspective).
 // ─────────────────────────────────────────────────────────────────────────────
-__global__ void swe2d_gradient_kernel(
+__global__ __launch_bounds__(256, 4) void swe2d_gradient_kernel(
     int32_t                     n_edges,
     const int32_t* __restrict__ edge_c0,
     const int32_t* __restrict__ edge_c1,
@@ -1283,7 +1283,7 @@ __global__ void swe2d_rk_multi_stage_build_kernel(
 // Writes one flux contribution per edge. The update kernel consumes the edge
 // fluxes through the cell-edge CSR, removing the need for atomic accumulation.
 // ─────────────────────────────────────────────────────────────────────────────
-__global__ void swe2d_flux_kernel(
+__global__ __launch_bounds__(256, 4) void swe2d_flux_kernel(
     int32_t                     n_edges,
     const int32_t* __restrict__ edge_c0,
     const int32_t* __restrict__ edge_c1,
@@ -1612,7 +1612,7 @@ __global__ void swe2d_flux_kernel(
 // Reduces the incident edge fluxes through the cell-edge CSR, removing the
 // need for atomic cell accumulation in the flux kernel.
 // ─────────────────────────────────────────────────────────────────────────────
-__global__ void swe2d_update_kernel(
+__global__ __launch_bounds__(256, 4) void swe2d_update_kernel(
     int32_t                     n_cells,
     const int32_t* __restrict__ cell_edge_offsets,
     const int32_t* __restrict__ cell_edge_ids,
@@ -1806,7 +1806,7 @@ __global__ void swe2d_update_kernel(
     }
 }
 
-__global__ void swe2d_rk2_combine_kernel(
+__global__ __launch_bounds__(256, 4) void swe2d_rk2_combine_kernel(
     int32_t n_cells,
     double* cell_h,
     double* cell_hu,
@@ -1974,7 +1974,7 @@ __global__ void swe2d_rk4_combine_kernel(
 // Accumulates the flux divergence + source into a k-vector (slope × dt).
 // Does NOT update cell state, does NOT apply friction or positivity.
 // Safe to capture in a CUDA graph: pointer addresses are fixed across steps.
-__global__ void swe2d_rk4_rhs_collect_kernel(
+__global__ __launch_bounds__(256, 4) void swe2d_rk4_rhs_collect_kernel(
     int32_t                     n_cells,
     const int32_t* __restrict__ cell_edge_offsets,
     const int32_t* __restrict__ cell_edge_ids,
@@ -2053,7 +2053,7 @@ __global__ void swe2d_rk4_rhs_collect_kernel(
 // Combines the four RK4 slopes with Butcher-tableau weights (1,2,2,1)/6,
 // then applies positivity, shallow damping, Manning friction, momentum cap,
 // and NaN guard on the final combined state.  Writes into cell_h/hu/hv.
-__global__ void swe2d_rk4_graph_combine_kernel(
+__global__ __launch_bounds__(256, 4) void swe2d_rk4_graph_combine_kernel(
     int32_t                     n_cells,
     double*                     cell_h,
     double*                     cell_hu,
@@ -2142,7 +2142,7 @@ __global__ void swe2d_rk4_graph_combine_kernel(
     }
 }
 
-__global__ void swe2d_rk5_graph_combine_kernel(
+__global__ __launch_bounds__(256, 4) void swe2d_rk5_graph_combine_kernel(
     int32_t                     n_cells,
     double*                     cell_h,
     double*                     cell_hu,
@@ -2242,7 +2242,7 @@ __global__ void swe2d_rk5_graph_combine_kernel(
 // reduces d_cfl_block_max → d_lambda_max (single atomic per block instead
 // of per-edge).
 // ─────────────────────────────────────────────────────────────────────────────
-__global__ void swe2d_cfl_kernel(
+__global__ __launch_bounds__(256, 4) void swe2d_cfl_kernel(
     int32_t                     n_edges,
     const int32_t* __restrict__ edge_c0,
     const int32_t* __restrict__ edge_c1,
@@ -2331,7 +2331,7 @@ __global__ void swe2d_cfl_kernel(
 }
 
 // Second-level reduction: one block reduces d_cfl_block_max → d_lambda_max.
-__global__ void swe2d_cfl_reduce_blocks_kernel(
+__global__ __launch_bounds__(256, 4) void swe2d_cfl_reduce_blocks_kernel(
     int32_t n_blocks,
     const double* __restrict__ d_cfl_block_max,
     double* __restrict__ d_lambda_max)
@@ -2384,7 +2384,7 @@ __global__ void pack_diag_kernel(
     d_out[2] = d_n_wet ? static_cast<double>(d_n_wet[0]) : -1.0;
 }
 
-__global__ void swe2d_coupling_inlet_source_kernel(
+__global__ __launch_bounds__(256, 4) void swe2d_coupling_inlet_source_kernel(
     int32_t n_inlets,
     const int32_t* __restrict__ inlet_cell,
     const double* __restrict__ inlet_flow_cms,
@@ -2403,7 +2403,7 @@ __global__ void swe2d_coupling_inlet_source_kernel(
     atomicAdd(&source_rate_mps[c], -q / area);
 }
 
-__global__ void swe2d_coupling_structure_source_kernel(
+__global__ __launch_bounds__(256, 4) void swe2d_coupling_structure_source_kernel(
     int32_t n_structures,
     const int32_t* __restrict__ structure_up_cell,
     const int32_t* __restrict__ structure_down_cell,
@@ -2427,7 +2427,7 @@ __global__ void swe2d_coupling_structure_source_kernel(
     atomicAdd(&source_rate_mps[cd],  q / ad);
 }
 
-__global__ void swe2d_coupling_bridge_source_kernel(
+__global__ __launch_bounds__(256, 4) void swe2d_coupling_bridge_source_kernel(
     int32_t n_bridges,
     const int32_t* __restrict__ bridge_up_cell,
     const int32_t* __restrict__ bridge_down_cell,
@@ -2517,6 +2517,16 @@ __device__ __forceinline__ double bw2d_pipe_manning_capacity_full(double diamete
     const double area = bw2d_circular_area(diameter_m);
     const double rh = diameter_m / 4.0;
     return (1.486 / n) * area * pow(rh, 2.0 / 3.0) * sqrt(slope);  // US Manning constant
+}
+
+__device__ __forceinline__ double bw2d_rect_manning_capacity_full(double width_ft, double height_ft, double slope, double n)
+{
+    if (width_ft <= 0.0 || height_ft <= 0.0 || n <= 0.0 || slope <= 0.0) return 0.0;
+    const double area_ft2 = width_ft * height_ft;
+    const double perim_ft = 2.0 * (width_ft + height_ft);
+    if (perim_ft <= 0.0) return 0.0;
+    const double rh_ft = area_ft2 / perim_ft;
+    return (1.486 / n) * area_ft2 * pow(rh_ft, 2.0 / 3.0) * sqrt(slope);  // US Manning constant
 }
 
 struct swe2d_culvert_xsect_cuda {
@@ -3039,7 +3049,7 @@ __device__ double swe2d_culvert_table_lookup_cuda(
     int32_t n_culverts, const double* d_table_header, const double* d_table_data,
     int32_t n_hw_global, int32_t n_tw_global);
 
-__global__ void swe2d_compute_structure_flows_kernel(
+__global__ __launch_bounds__(256, 4) void swe2d_compute_structure_flows_kernel(
     int32_t n_cells,
     int32_t n_structures,
     const double* __restrict__ cell_wse,
@@ -3175,10 +3185,16 @@ __global__ void swe2d_compute_structure_flows_kernel(
     }
 
     double q_manning_cap = 0.0;
-    const double dia_for_cap = fmax(fmax(diameter[i], rise), bw2d_equiv_diameter_from_area(fmax(0.0, area)));
-    if (dia_for_cap > 0.0) {
-        q_manning_cap = bw2d_pipe_manning_capacity_full(dia_for_cap, slope, roughness_n[i]);
+    if (xsect.is_rect) {
+        // Rectangular culvert: A = w*h, P = 2(w+h), R = A/P
+        q_manning_cap = bw2d_rect_manning_capacity_full(xsect.width_ft, xsect.y_full_ft, slope, roughness_n[i]);
         q_manning_cap /= 35.31466672148859;  // CFS → CMS
+    } else {
+        const double dia_for_cap = fmax(fmax(diameter[i], rise), bw2d_equiv_diameter_from_area(fmax(0.0, area)));
+        if (dia_for_cap > 0.0) {
+            q_manning_cap = bw2d_pipe_manning_capacity_full(dia_for_cap, slope, roughness_n[i]);
+            q_manning_cap /= 35.31466672148859;  // CFS → CMS
+        }
     }
 
     const double q_hint_cfs = fmax(1.0, fmax(q_inlet_cfs, fmax(q_orifice, q_manning_cap) * 35.31466672148859));
@@ -3252,7 +3268,7 @@ __device__ __forceinline__ void swe2d_circular_section_cuda(
     *perimeter = 0.5 * D * theta;
 }
 
-__global__ void swe2d_drainage_link_kernel(
+__global__ __launch_bounds__(256, 4) void swe2d_drainage_link_kernel(
     int32_t n_links,
     const int32_t* __restrict__ link_from,
     const int32_t* __restrict__ link_to,
@@ -3398,7 +3414,7 @@ __global__ void swe2d_drainage_pipe_end_qleave_kernel(
     atomicAdd(&node_qleave[n1], -q);
 }
 
-__global__ void swe2d_drainage_pipe_end_bc_kernel(
+__global__ __launch_bounds__(256, 4) void swe2d_drainage_pipe_end_bc_kernel(
     int32_t n_pipe_ends,
     int32_t n_cells,
     const int32_t* __restrict__ pipe_end_cell,
@@ -3462,7 +3478,7 @@ __global__ void swe2d_drainage_pipe_end_bc_kernel(
     pipe_end_node_area[i] = area_node;
 }
 
-__global__ void swe2d_drainage_pipe_end_exchange_kernel(
+__global__ __launch_bounds__(256, 4) void swe2d_drainage_pipe_end_exchange_kernel(
     int32_t n_pipe_ends,
     int32_t n_cells,
     const int32_t* __restrict__ pipe_end_cell,
@@ -3514,7 +3530,7 @@ __global__ void swe2d_drainage_pipe_end_exchange_kernel(
     node_depth_write[n] = fmax(0.0, fmin(node_max_depth[n], d_reconciled));
 }
 
-__global__ void swe2d_drainage_inlet_exchange_kernel(
+__global__ __launch_bounds__(256, 4) void swe2d_drainage_inlet_exchange_kernel(
     int32_t n_inlets,
     int32_t n_cells,
     const int32_t* __restrict__ inlet_cell,
@@ -3595,7 +3611,7 @@ __global__ void swe2d_drainage_inlet_exchange_kernel(
     atomicAdd(&node_depth_delta[n], dt_s * (q_capture - q_relief) / node_area);
 }
 
-__global__ void swe2d_drainage_outfall_exchange_kernel(
+__global__ __launch_bounds__(256, 4) void swe2d_drainage_outfall_exchange_kernel(
     int32_t n_outfalls,
     int32_t n_cells,
     const int32_t* __restrict__ outfall_cell,
@@ -4580,7 +4596,7 @@ void swe2d_gpu_step(
     }
 }
 
-__global__ void swe2d_persistent_chunk_kernel_first_order(
+__global__ __launch_bounds__(256, 4) void swe2d_persistent_chunk_kernel_first_order(
     int32_t n_edges,
     int32_t n_active_edges,
     int32_t n_cells,
@@ -7317,7 +7333,9 @@ void swe2d_gpu_preload_coupling_cell_area(SWE2DDeviceState* dev, int32_t n_cells
     auto& ws = dev->coupling_ws;
     if (ws.cell_capacity < n_cells) {
         if (ws.d_cell_area) cudaFree(ws.d_cell_area);
+        if (ws.d_source) cudaFree(ws.d_source);
         CUDA_CHECK(cudaMalloc(reinterpret_cast<void**>(&ws.d_cell_area), static_cast<size_t>(n_cells) * sizeof(double)));
+        CUDA_CHECK(cudaMalloc(reinterpret_cast<void**>(&ws.d_source), static_cast<size_t>(n_cells) * sizeof(double)));
         ws.cell_capacity = n_cells;
     }
     CUDA_CHECK(cudaMemcpyAsync(ws.d_cell_area, cell_area_m2, static_cast<size_t>(n_cells) * sizeof(double),
@@ -7423,6 +7441,20 @@ void swe2d_gpu_readback_coupling_sources(double* host_buf, int32_t n_cells)
     }
     CUDA_CHECK(cudaMemcpy(host_buf, dev->d_external_source_mps,
                           static_cast<size_t>(n_cells) * sizeof(double),
+                          cudaMemcpyDeviceToHost));
+}
+
+void swe2d_gpu_readback_structure_flows(double* host_buf, int32_t n_structures)
+{
+    SWE2DDeviceState* dev = s_coupling_dev;
+    if (!dev || !dev->sf_ws.d_structure_flow || n_structures <= 0) {
+        if (host_buf && n_structures > 0) {
+            std::memset(host_buf, 0, static_cast<size_t>(n_structures) * sizeof(double));
+        }
+        return;
+    }
+    CUDA_CHECK(cudaMemcpy(host_buf, dev->sf_ws.d_structure_flow,
+                          static_cast<size_t>(n_structures) * sizeof(double),
                           cudaMemcpyDeviceToHost));
 }
 
@@ -12792,6 +12824,8 @@ void swe2d_gpu_destroy(SWE2DDeviceState* dev) {
         safe_free(ws.d_embankment_overflow_width); safe_free(ws.d_embankment_weir_coeff);
         safe_free(ws.d_structure_flow);
     }
+    // Redistribution workspace cleanup
+    dev->redist_ws.destroy();
     if (dev->d_stream) {
         cudaStreamSynchronize(dev->d_stream);
         cudaStreamDestroy(dev->d_stream);

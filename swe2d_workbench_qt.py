@@ -26,7 +26,7 @@ import traceback
 from typing import Callable, Dict, List, Optional, Sequence, Tuple
 
 import numpy as np
-from qgis.PyQt import QtCore, QtWidgets
+from qgis.PyQt import QtCore, QtGui, QtWidgets
 
 try:
     from qgis.PyQt import uic as _qgis_uic
@@ -4157,7 +4157,12 @@ class SWE2DWorkbenchDialog(QtWidgets.QDialog):
     def _log(self, msg: str):
         msg_txt = str(msg)
         self._runtime_log_lines.append(msg_txt)
-        self.log_view.appendPlainText(msg_txt)
+        # Render [ERROR] messages in red using appendHtml.
+        if msg_txt.startswith("[ERROR]"):
+            self.log_view.appendHtml(
+                f'<span style="color:red;font-weight:bold;">{msg_txt}</span>')
+        else:
+            self.log_view.appendPlainText(msg_txt)
         for dlg in list(getattr(self, "_runtime_log_detached_dialogs", [])):
             try:
                 if dlg is not None:
@@ -7581,12 +7586,20 @@ class SWE2DWorkbenchDialog(QtWidgets.QDialog):
                 hh = np.ascontiguousarray(h, dtype=np.float64).ravel()
                 cell_wse = hh + np.asarray(coupling_controller.cell_bed_m, dtype=np.float64).ravel()
                 details = list(structures_mod.structure_details(cell_wse))
+                # Use the native path flows (which actually drove the simulation)
+                # for the 'flow' metric, falling back to Python path if unavailable.
+                native_flows = getattr(coupling_controller, "_last_native_structure_flows", None)
                 for i, st in enumerate(structures_mod.cfg.structures):
                     sid = str(st.structure_id)
                     detail = details[i] if i < len(details) else {}
                     base_name = str(st.structure_type.name).lower()
+                    # Use native path flow if available
+                    if native_flows is not None and i < len(native_flows) and np.isfinite(native_flows[i]):
+                        flow_val = float(native_flows[i])
+                    else:
+                        flow_val = float(detail.get("flow_cms", 0.0) or 0.0)
                     metric_map = {
-                        "flow": float(detail.get("flow_cms", 0.0) or 0.0),
+                        "flow": flow_val,
                     }
                     if base_name == "culvert":
                         metric_map.update(

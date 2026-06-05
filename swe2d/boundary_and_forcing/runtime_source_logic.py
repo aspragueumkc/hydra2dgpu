@@ -54,11 +54,13 @@ def apply_external_sources(
         and coupled_source_rate is None
     )
     if no_external_sources:
+        # When prefer_native_injection is True, the CUDA coupling kernel has
+        # already written structure/drainage source rates directly to the
+        # device-resident d_external_source_mps buffer.  Do NOT call
+        # set_external_sources_native(None) here — that would memset the
+        # buffer to zero, erasing the on-device sources.  Just return.
         if prefer_native_injection and hasattr(backend, "set_external_sources_native"):
-            try:
-                backend.set_external_sources_native(None)
-            except Exception:
-                pass
+            pass  # GPU buffer already populated by coupling kernel
         return
 
     n_cells_raw = getattr(backend, "n_cells", 0)

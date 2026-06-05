@@ -36,19 +36,41 @@ def _cfs_to_cms(value_cfs: float) -> float:
     return float(value_cfs) / _u.USC_FT3_PER_SI_M3
 
 
-def _culvert_xsect_from_metadata(md: Dict[str, float]):
+def _model_to_ft(value_model: float, model_to_ft: float = 1.0) -> float:
+    """Convert a model-unit value to feet.
+
+    For a foot-based model (model_to_ft=1.0) this is a no-op.
+    For an SI model (model_to_ft=3.28084) this converts meters to feet.
+    """
+    return float(value_model) * float(model_to_ft)
+
+
+def _model3_to_cfs(value_model3: float, model_to_ft: float = 1.0) -> float:
+    """Convert a model-unit-volume/s flow to ft³/s.
+
+    For foot model (model_to_ft=1.0): value already in ft³/s → no change.
+    For SI model (model_to_ft=3.28): value in m³/s → multiply by ft³/m³.
+    """
+    v = float(value_model3)
+    scale = float(model_to_ft) ** 3 / _u.USC_FT3_PER_SI_M3  # model³/s → ft³/s
+    return v * scale if abs(scale - 1.0) > 1e-12 else v
+
+
+def _culvert_xsect_from_metadata(md: Dict[str, float], model_to_ft: float = 1.0):
     shape = str(md.get("culvert_shape", md.get("shape", "circular")) or "circular").strip().lower()
     code = int(round(float(md.get("culvert_code", 1.0))))
-    rise_m = float(md.get("culvert_rise", md.get("height", md.get("diameter", 0.0))) or 0.0)
-    span_m = float(md.get("culvert_span", md.get("width", rise_m)) or 0.0)
-    diameter_m = float(md.get("diameter", rise_m) or 0.0)
+    # GPKG stores dimensions in model units (feet for US model, meters for SI).
+    # Convert to feet using the model_to_ft factor.
+    rise_model = float(md.get("culvert_rise", md.get("height", md.get("diameter", 0.0))) or 0.0)
+    span_model = float(md.get("culvert_span", md.get("width", rise_model)) or 0.0)
+    diameter_model = float(md.get("diameter", rise_model) or 0.0)
 
     if shape in ("box", "rect", "rectangular"):
-        width_ft = max(1.0e-6, _m_to_ft(span_m))
-        height_ft = max(1.0e-6, _m_to_ft(rise_m))
+        width_ft = max(1.0e-6, _model_to_ft(span_model, model_to_ft))
+        height_ft = max(1.0e-6, _model_to_ft(rise_model, model_to_ft))
         return RectangularXsect(width_ft=width_ft, height_ft=height_ft, culvert_code=code)
 
-    return CircularXsect(diameter_ft=max(1.0e-6, _m_to_ft(diameter_m)), culvert_code=code)
+    return CircularXsect(diameter_ft=max(1.0e-6, _model_to_ft(diameter_model, model_to_ft)), culvert_code=code)
 
 
 def _culvert_outlet_control_flow_cms(
@@ -150,11 +172,14 @@ class SWE2DStructureModule(HydraulicStructureEngine):
     - pumps
     """
 
-    def __init__(self, cfg: HydraulicStructureConfig):
+    def __init__(self, cfg: HydraulicStructureConfig, model_to_ft: float = 1.0):
         super().__init__(cfg)
+        self._model_to_ft = float(model_to_ft)
         self._last_structure_details: List[Dict[str, Any]] = []
 
     def _structure_detail(self, structure: HydraulicStructure, cell_wse: Sequence[float]) -> Dict[str, Any]:
+        m2ft = float(self._model_to_ft)
+        inv_m2ft = 1.0 / m2ft if m2ft > 0 else 1.0
         if not structure.enabled:
             return {"flow_cms": 0.0, "active": False, "control_mode": "disabled"}
         iu = int(structure.upstream_cell)
@@ -189,11 +214,13 @@ class SWE2DStructureModule(HydraulicStructureEngine):
             downstream_wse = wd if sign >= 0.0 else wu
             upstream_invert = inlet_invert if sign >= 0.0 else outlet_invert
             downstream_invert = outlet_invert if sign >= 0.0 else inlet_invert
-            available_head_up_m = max(0.0, upstream_wse - upstream_invert)
-            tailwater_depth_m = max(0.0, downstream_wse - downstream_invert)
-            length_m = max(0.1, float(md.get("length", 1.0) or 1.0))
-            slope_mpm = float(md.get("culvert_slope", (upstream_invert - downstream_invert) / length_m if length_m > 0.0 else 0.0))
-            slope_mpm = max(1.0e-6, abs(slope_mpm))
+
+            # Convert model-unit values → feet for the culvert hydraulics routines
+            available_head_up_ft = max(0.0, _model_to_ft(upstream_wse - upstream_invert, m2ft))
+            tailwater_depth_ft = max(0.0, _model_to_ft(downstream_wse - downstream_invert, m2ft))
+            length_ft = max(0.1, _model_to_ft(float(md.get("length", 1.0) or 1.0), m2ft))
+            slope_ftft = float(md.get("culvert_slope", (upstream_invert - downstream_invert) / max(length_ft, 0.1) if length_ft > 0.0 else 0.0))
+            slope_ftft = max(1.0e-6, abs(slope_ftft))
             roughness_n = max(1.0e-6, float(md.get("roughness_n", 0.013) or 0.013))
             _ent_raw = md.get("inlet_loss_k") if "inlet_loss_k" in md else md.get("entrance_loss_k")
             entrance_loss_k = float(_ent_raw) if _ent_raw is not None else 0.5
@@ -204,83 +231,106 @@ class SWE2DStructureModule(HydraulicStructureEngine):
                     "sign": sign,
                     "inlet_invert_elev_m": inlet_invert,
                     "outlet_invert_elev_m": outlet_invert,
-                    "available_head_up_m": available_head_up_m,
-                    "tailwater_depth_m": tailwater_depth_m,
-                    "culvert_slope": slope_mpm,
+                    "available_head_up_m": available_head_up_ft * inv_m2ft,
+                    "tailwater_depth_m": tailwater_depth_ft * inv_m2ft,
+                    "culvert_slope": slope_ftft,
                     "entrance_loss_k": entrance_loss_k,
                     "exit_loss_k": exit_loss_k,
                 }
             )
 
-            xsect = _culvert_xsect_from_metadata(md)
+            # Cross-section with model-unit-aware conversion to feet
+            xsect = _culvert_xsect_from_metadata(md, m2ft)
+
+            # Inlet control — routines expect feet
             q_inlet_cfs, _dqh, _condition, _yr = inlet_controlled_flow(
                 xsect,
-                max(1.0e-6, slope_mpm),
-                max(0.0, _m_to_ft(available_head_up_m)),
+                max(1.0e-6, slope_ftft),
+                max(0.0, available_head_up_ft),
             )
-            q_inlet = _cfs_to_cms(q_inlet_cfs)
-            detail["inlet_control_flow_cms"] = q_inlet
+            q_inlet_cms = q_inlet_cfs / _u.USC_FT3_PER_SI_M3
+            detail["inlet_control_flow_cms"] = q_inlet_cms
 
-            diameter = float(md.get("diameter", md.get("culvert_rise", 0.0)) or 0.0)
-            area = float(md.get("culvert_area_m2", md.get("area_m2", 0.0)) or 0.0)
-            if area <= 0.0 and diameter > 0.0 and str(md.get("culvert_shape", "circular")).strip().lower() in ("circular", "pipe", "round"):
-                area = circular_area_from_diameter(diameter)
-            q_orifice = 0.0
-            if area > 0.0:
-                q_orifice = abs(
+            # Orifice capacity
+            diameter_model = float(md.get("diameter", md.get("culvert_rise", 0.0)) or 0.0)
+            diameter_ft = _model_to_ft(diameter_model, m2ft)
+            area_m2_input = float(md.get("culvert_area_m2", md.get("area_m2", 0.0)) or 0.0)
+            shape = str(md.get("culvert_shape", "circular")).strip().lower()
+            if area_m2_input <= 0.0 and diameter_ft > 0.0 and shape in ("circular", "pipe", "round"):
+                area_m2_input = circular_area_from_diameter(diameter_ft * _u.SI_M_PER_USC_FT)
+            q_orifice_cms = 0.0
+            if area_m2_input > 0.0:
+                q_orifice_cms = abs(
                     compute_orifice_flow(
-                        head_up_m=available_head_up_m,
-                        head_down_m=tailwater_depth_m,
-                        area_m2=area,
+                        head_up_m=available_head_up_ft * inv_m2ft,
+                        head_down_m=tailwater_depth_ft * inv_m2ft,
+                        area_m2=area_m2_input,
                         discharge_coeff=float(md.get("cd", 0.75)),
                         g=g,
                         max_flow=float(max_q) if max_q is not None else None,
                     )
                 )
-            detail["orifice_cap_cms"] = q_orifice
-            q_manning_cap = compute_pipe_manning_capacity_full(
-                diameter_m=max(diameter, float(md.get("equiv_diameter_m", 0.0) or 0.0)),
-                slope_m_per_m=slope_mpm,
-                roughness_n=roughness_n,
-            ) if diameter > 0.0 else 0.0
-            detail["manning_cap_cms"] = q_manning_cap
-            q_outlet = _culvert_outlet_control_flow_cms(
+            detail["orifice_cap_cms"] = q_orifice_cms
+
+            # Manning capacity — use correct geometry based on shape
+            q_manning_cap_cms = 0.0
+            is_rect = hasattr(xsect, 'width_ft') and xsect.width_ft > 0
+            if is_rect:
+                # Rectangular culvert: A = w*h, P = 2(w+h), R = A/P
+                area_ft2 = xsect.width_ft * xsect.yFull
+                perim_ft = 2.0 * (xsect.width_ft + xsect.yFull)
+                if perim_ft > 0:
+                    rh_ft = area_ft2 / perim_ft
+                    q_manning_cap_cfs = (1.486 / roughness_n) * area_ft2 * (rh_ft ** (2.0 / 3.0)) * (slope_ftft ** 0.5)
+                    q_manning_cap_cms = q_manning_cap_cfs / _u.USC_FT3_PER_SI_M3
+            elif hasattr(xsect, 'radius_ft') and xsect.radius_ft > 0:
+                # Circular culvert — delegate to existing function
+                q_manning_cap_cms = compute_pipe_manning_capacity_full(
+                    diameter_m=_ft_to_m(2.0 * xsect.radius_ft),
+                    slope_m_per_m=slope_ftft,
+                    roughness_n=roughness_n,
+                )
+            detail["manning_cap_cms"] = q_manning_cap_cms
+
+            # Outlet control
+            q_hint_cfs = max(q_inlet_cfs, _model3_to_cfs(max(q_orifice_cms, q_manning_cap_cms, 0.0), m2ft))
+            q_outlet_cms = _culvert_outlet_control_flow_cms(
                 xsect=xsect,
-                available_head_up_ft=max(0.0, _m_to_ft(available_head_up_m)),
-                tailwater_depth_ft=max(0.0, _m_to_ft(tailwater_depth_m)),
-                length_ft=max(0.1, _m_to_ft(length_m)),
-                slope_ftft=max(1.0e-6, slope_mpm),
+                available_head_up_ft=max(0.0, available_head_up_ft),
+                tailwater_depth_ft=max(0.0, tailwater_depth_ft),
+                length_ft=max(0.1, length_ft),
+                slope_ftft=max(1.0e-6, slope_ftft),
                 roughness_n=roughness_n,
                 entrance_loss_k=entrance_loss_k,
                 exit_loss_k=exit_loss_k,
-                q_hint_cfs=max(q_inlet_cfs, _cms_to_cfs(max(q_orifice, q_manning_cap, 0.0))),
+                q_hint_cfs=q_hint_cfs,
             )
-            detail["outlet_control_flow_cms"] = q_outlet
-            q_culvert = max(0.0, min(q_inlet, q_outlet if q_outlet > 0.0 else q_inlet))
-            control_mode = "inlet_control"
-            if q_outlet > 0.0 and q_outlet < q_culvert + 1.0e-12:
-                control_mode = "outlet_control"
-            if q_orifice > 0.0:
-                if q_culvert > 0.0 and q_orifice < q_culvert - 1.0e-12:
-                    control_mode = "orifice_cap"
-                q_culvert = min(q_culvert, q_orifice) if q_culvert > 0.0 else q_orifice
-            if q_manning_cap > 0.0:
-                if q_culvert > 0.0 and q_manning_cap < q_culvert - 1.0e-12:
-                    control_mode = "manning_cap"
-                q_culvert = min(q_culvert, q_manning_cap) if q_culvert > 0.0 else q_manning_cap
+            detail["outlet_control_flow_cms"] = q_outlet_cms
 
-            q_emb = 0.0
+            q_culvert = max(0.0, min(q_inlet_cms, q_outlet_cms if q_outlet_cms > 0.0 else q_inlet_cms))
+            control_mode = "inlet_control"
+            if q_outlet_cms > 0.0 and q_outlet_cms < q_culvert + 1.0e-12:
+                control_mode = "outlet_control"
+            if q_orifice_cms > 0.0:
+                if q_culvert > 0.0 and q_orifice_cms < q_culvert - 1.0e-12:
+                    control_mode = "orifice_cap"
+                q_culvert = min(q_culvert, q_orifice_cms) if q_culvert > 0.0 else q_orifice_cms
+            if q_manning_cap_cms > 0.0:
+                if q_culvert > 0.0 and q_manning_cap_cms < q_culvert - 1.0e-12:
+                    control_mode = "manning_cap"
+                q_culvert = min(q_culvert, q_manning_cap_cms) if q_culvert > 0.0 else q_manning_cap_cms
+
+            q_emb_cms = 0.0
             if int(round(float(md.get("embankment_enabled", 0.0) or 0.0))) > 0:
-                q_emb = abs(_signed_weir_flow(
+                q_emb_cms = abs(_signed_weir_flow(
                     upstream_wse_m=upstream_wse,
                     downstream_wse_m=downstream_wse,
                     crest_elev_m=float(md.get("embankment_crest_elev", md.get("road_crest_elev", dz)) or dz),
                     width_m=float(md.get("embankment_overflow_width", md.get("road_overflow_width", md.get("width", 1.0))) or 1.0),
                     coeff=float(md.get("embankment_weir_coeff", md.get("road_weir_coeff", 1.7)) or 1.7),
                 ))
-                q_culvert += q_emb
-
-            detail["embankment_flow_cms"] = q_emb
+                q_culvert += q_emb_cms
+            detail["embankment_flow_cms"] = q_emb_cms
 
             barrels = max(1.0, float(md.get("culvert_barrels", 1.0) or 1.0))
             q_culvert *= barrels

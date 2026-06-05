@@ -1113,7 +1113,7 @@ class SWE2DBackend:
                     h, hu, hv = self.get_state()
                     src = source_rate_callback(t, dt, h, hu, hv)
                 if use_native_source_injection:
-                    if not native_device_applied:
+                    if not native_device_applied and src is not None:
                         self.set_external_sources_native(src)
                 elif emulate_native_lag:
                     if src is not None:

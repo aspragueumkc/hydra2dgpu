@@ -5,6 +5,11 @@ set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
+# Default to release-with-debug-info (optimized + profileable)
+if(NOT CMAKE_BUILD_TYPE)
+  set(CMAKE_BUILD_TYPE "RelWithDebInfo" CACHE STRING "Build type" FORCE)
+endif()
+
 # Disable LTO globally if CUDA will be used (to avoid version conflicts)
 if(BACKWATER_USE_CUDA)
   set(CMAKE_INTERPROCEDURAL_OPTIMIZATION OFF)
@@ -67,12 +72,15 @@ if(BACKWATER_USE_CUDA)
     set(CMAKE_CUDA_STANDARD_REQUIRED ON)
     # CUDA 13+ drops support for some older virtual architectures (e.g. compute_70).
     # Pick an architecture list compatible with the detected toolkit version.
+    # Includes sm_86 (RTX 3080/3090) and sm_89 (RTX 4060/4070/4080/4090) for
+    # optimal kernel generation on modern consumer GPUs.
     if(CMAKE_CUDA_COMPILER_VERSION VERSION_GREATER_EQUAL 13.0)
-      set(CMAKE_CUDA_ARCHITECTURES 75 80 90)
+      set(CMAKE_CUDA_ARCHITECTURES 75 80 86 89 90)
     else()
-      set(CMAKE_CUDA_ARCHITECTURES 70 80 90)
+      set(CMAKE_CUDA_ARCHITECTURES 70 75 80 86)
     endif()
     list(APPEND SWE2D_GPU_SOURCES cpp/src/swe2d_gpu.cu)
+    list(APPEND SWE2D_GPU_SOURCES cpp/src/swe2d_gpu_redistribute.cu)
     set(SWE2D_CUDA_FOUND TRUE)
     message(STATUS "CUDA ${CUDAToolkit_VERSION} found — 2D solver GPU path enabled")
   else()
@@ -97,14 +105,34 @@ function(_configure_swe2d_module target_name py_module_name enable_openmp)
     set_property(TARGET ${target_name} PROPERTY CUDA_SEPARABLE_COMPILATION ON)
     # Allow CUDA files to find shared headers
     set_source_files_properties(cpp/src/swe2d_gpu.cu PROPERTIES LANGUAGE CUDA)
+    set_source_files_properties(cpp/src/swe2d_gpu_redistribute.cu PROPERTIES LANGUAGE CUDA)
     # Relaxed constexpr and extended lambda support for device-side std:: functions
     target_compile_options(${target_name} PRIVATE
       $<$<COMPILE_LANGUAGE:CUDA>:--expt-relaxed-constexpr --expt-extended-lambda>
+    )
+    # Enable fast math (relaxed IEEE precision) for GPU kernels.
+    # Adds --use_fast_math to nvcc which enables:
+    #   - faster div/rsqrt/sqrt/log/exp
+    #   - Flush-To-Zero / Denormals-Are-Zero
+    #   - relaxed signed-zero and rounding comparisons
+    target_compile_options(${target_name} PRIVATE
+      $<$<COMPILE_LANGUAGE:CUDA>:-use_fast_math>
+    )
+    # High optimization level for GPU device code
+    target_compile_options(${target_name} PRIVATE
+      $<$<COMPILE_LANGUAGE:CUDA>:-O3>
     )
     if(NOT MSVC)
       target_compile_options(${target_name} PRIVATE -fno-lto)
       target_link_options(${target_name} PRIVATE -fno-lto)
     endif()
+  endif()
+
+  # Host compiler: optimize for the build machine's CPU and enable fast math
+  if(CMAKE_BUILD_TYPE MATCHES "Release|RelWithDebInfo|MinSizeRel")
+    target_compile_options(${target_name} PRIVATE
+      $<$<COMPILE_LANGUAGE:CXX>:-O3 -mtune=native -march=native -ffast-math>
+    )
   endif()
 
   if(enable_openmp AND OpenMP_CXX_FOUND)

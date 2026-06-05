@@ -2349,7 +2349,11 @@ def _on_run(self, request=None):
             drainage_mod = SWE2DUrbanDrainageModule(pipe_network_cfg) if pipe_network_cfg is not None and SWE2DUrbanDrainageModule is not None else None
             if drainage_mod is not None:
                 drainage_mod.initialize()
-            structures_mod = SWE2DStructureModule(hydraulic_structures_cfg) if hydraulic_structures_cfg is not None and SWE2DStructureModule is not None else None
+            # Compute model-to-feet factor: for a foot model (length_scale=3.28)
+            # this gives 1.0 (no conversion); for SI (length_scale=1.0) this gives 3.28.
+            _ls = max(1.0e-6, float(self._length_scale_si_to_model()))
+            _model_to_ft = 3.280839895013123 / _ls
+            structures_mod = SWE2DStructureModule(hydraulic_structures_cfg, model_to_ft=_model_to_ft) if hydraulic_structures_cfg is not None and SWE2DStructureModule is not None else None
             if solver_backend_mode == "cpu":
                 coupling_loop_mode = "cpu"
                 drainage_solver_backend_mode = "cpu"
@@ -2365,8 +2369,18 @@ def _on_run(self, request=None):
                 bridge_cuda_coupling=bool(run_options.bridge_cuda_coupling),
                 bridge_stacked_coupling_mode=str(getattr(run_options, "bridge_stacked_coupling_mode", "phase3_spatial")),
                 length_scale_si_to_model=self._length_scale_si_to_model(),
+                log_callback=self._log,
             )
             setattr(coupling_controller, "bridge_stacked_plans", bridge_stacked_plans)
+            # Provide cell centroids for influence-width redistribution.
+            try:
+                cx, cy = self._mesh_cell_centroids()
+                if hasattr(coupling_controller, "set_cell_centroids"):
+                    coupling_controller.set_cell_centroids(cx, cy)
+                if hasattr(coupling_controller, "_build_redistribution_data"):
+                    coupling_controller._build_redistribution_data()
+            except Exception:
+                pass
             # GPU-first runtime policy: for legacy saved projects that still
             # carry CPU coupling selections, opportunistically promote to
             # CUDA/GPU coupling when native bindings are available.

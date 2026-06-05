@@ -4,7 +4,10 @@
 #include "swe2d_mesh.hpp"
 
 #include <algorithm>
+#include <climits>
+#include <cstdint>
 #include <cmath>
+#include <numeric>
 #include <sstream>
 #include <stdexcept>
 #include <unordered_map>
@@ -264,6 +267,9 @@ SWE2DMesh swe2d_build_mesh_poly(
         }
     }
 
+    // Reorder edges by (c0, c1) for GPU memory coalescing.
+    swe2d_reorder_edges_for_gpu(mesh);
+
     return mesh;
 }
 
@@ -299,6 +305,66 @@ SWE2DMesh swe2d_build_mesh(
         bc_edge_type,
         bc_edge_val,
         n_bc_edges);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Edge reordering for GPU memory coalescing
+// ─────────────────────────────────────────────────────────────────────────────
+void swe2d_reorder_edges_for_gpu(SWE2DMesh& mesh) {
+    const int32_t n_edges = mesh.n_edges;
+    if (n_edges <= 0) return;
+
+    // 1. Build permutation: sort edges by (c0, c1).
+    //    Boundary edges (c1 == -1) sort after all interior edges.
+    std::vector<int32_t> perm(static_cast<size_t>(n_edges));
+    std::iota(perm.begin(), perm.end(), 0);
+    std::sort(perm.begin(), perm.end(), [&](int32_t a, int32_t b) {
+        const int32_t c0a = mesh.edge_c0[a];
+        const int32_t c0b = mesh.edge_c0[b];
+        if (c0a != c0b) return c0a < c0b;
+        // c1 == -1 (boundary) sorts after all interior edges
+        const int32_t c1a = (mesh.edge_c1[a] >= 0) ? mesh.edge_c1[a] : INT32_MAX;
+        const int32_t c1b = (mesh.edge_c1[b] >= 0) ? mesh.edge_c1[b] : INT32_MAX;
+        return c1a < c1b;
+    });
+
+    // 2. Build inverse permutation: perm[i] == old_index, inv_perm[old] == new_index.
+    std::vector<int32_t> inv_perm(static_cast<size_t>(n_edges));
+    for (int32_t i = 0; i < n_edges; ++i)
+        inv_perm[static_cast<size_t>(perm[i])] = i;
+
+    // 3. Apply permutation to all edge arrays.
+    auto perm_i32 = [&](std::vector<int32_t>& arr) {
+        std::vector<int32_t> tmp(arr);
+        for (int32_t i = 0; i < n_edges; ++i)
+            arr[static_cast<size_t>(i)] = tmp[static_cast<size_t>(perm[i])];
+    };
+    auto perm_dbl = [&](std::vector<double>& arr) {
+        std::vector<double> tmp(arr);
+        for (int32_t i = 0; i < n_edges; ++i)
+            arr[static_cast<size_t>(i)] = tmp[static_cast<size_t>(perm[i])];
+    };
+    auto perm_bc = [&](std::vector<BCType>& arr) {
+        std::vector<BCType> tmp(arr);
+        for (int32_t i = 0; i < n_edges; ++i)
+            arr[static_cast<size_t>(i)] = tmp[static_cast<size_t>(perm[i])];
+    };
+
+    perm_i32(mesh.edge_c0);
+    perm_i32(mesh.edge_c1);
+    perm_i32(mesh.edge_n0);
+    perm_i32(mesh.edge_n1);
+    perm_dbl(mesh.edge_nx);
+    perm_dbl(mesh.edge_ny);
+    perm_dbl(mesh.edge_len);
+    perm_bc(mesh.edge_bc);
+    perm_dbl(mesh.edge_bc_val);
+
+    // 4. Remap cell_edge_ids through the inverse permutation.
+    for (auto& eidx : mesh.cell_edge_ids)
+        eidx = inv_perm[static_cast<size_t>(eidx)];
+
+    // cell_edge_offsets unchanged (each cell has the same number of incident edges).
 }
 
 std::string swe2d_validate_mesh(const SWE2DMesh& mesh) {

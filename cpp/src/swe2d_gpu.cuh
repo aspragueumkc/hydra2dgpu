@@ -439,6 +439,33 @@ struct SWE2DDeviceState {
         double*  d_embankment_weir_coeff = nullptr;
         double*  d_structure_flow = nullptr;
     } sf_ws{};
+
+    // Persistent redistribution workspace: caches all redistribution
+    // geometry arrays on-device, eliminating per-step cudaMalloc/free churn.
+    // Static data (offsets, cell_idx, weights, up/down cells) is uploaded
+    // once via content-hash tracking; flow values are re-uploaded each
+    // step but are tiny (n_structures * 8 bytes).
+    struct RedistWorkspace {
+        int32_t  n_struct_capacity = 0;
+        int32_t  dist_cell_capacity = 0;
+        uint64_t data_hash = 0;
+        int32_t* d_offsets = nullptr;    // [n_struct + 1]
+        int32_t* d_cell_idx = nullptr;   // [total_dist_cells]
+        double*  d_weights = nullptr;    // [total_dist_cells]
+        int32_t* d_up = nullptr;         // [n_struct]
+        int32_t* d_dn = nullptr;         // [n_struct]
+
+        void destroy() {
+            if (d_offsets) { cudaFree(d_offsets); d_offsets = nullptr; }
+            if (d_cell_idx) { cudaFree(d_cell_idx); d_cell_idx = nullptr; }
+            if (d_weights) { cudaFree(d_weights); d_weights = nullptr; }
+            if (d_up) { cudaFree(d_up); d_up = nullptr; }
+            if (d_dn) { cudaFree(d_dn); d_dn = nullptr; }
+            n_struct_capacity = 0;
+            dist_cell_capacity = 0;
+            data_hash = 0;
+        }
+    } redist_ws{};
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -903,6 +930,39 @@ void swe2d_gpu_compute_bridge_coupling_sources(
     double dt_s,
     double* source_rate_mps_out);
 
+// Redistribution: after coupling sources have been computed with single-cell
+// injection, redistribute flow across a pre-computed corridor of cells for
+// structures with influence_width > 0.  Pre-computed weights are stored as
+// flat arrays with per-structure offsets.
+void swe2d_gpu_redistribute_structure_sources(
+    SWE2DDeviceState* dev,   // nullable
+    int32_t n_structures,
+    const double* structure_flow_cms,
+    const int32_t* orig_up_cell,
+    const int32_t* orig_dn_cell,
+    const double* cell_area_m2,
+    const int32_t* dist_offsets,
+    const int32_t* dist_cell_idx,
+    const double* dist_weights,
+    int32_t n_cells,
+    double* source_rate_mps_inout);
+
+// On-device-only redistribution (no host readback of source array).
+// Operates directly on dev->d_external_source_mps.  Call this after
+// swe2d_gpu_compute_coupling_full_on_device, then skip the coupling
+// readback  (return None from Python to keep GPU sources current).
+void swe2d_gpu_redistribute_structure_sources_persistent(
+    SWE2DDeviceState* dev,
+    int32_t n_structures,
+    const double* structure_flow_cms,
+    const int32_t* orig_up_cell,
+    const int32_t* orig_dn_cell,
+    const int32_t* dist_offsets,
+    const int32_t* dist_cell_idx,
+    const double*  dist_weights,
+    int32_t n_cells,
+    double si_m_per_model_factor);
+
 // Structure-flow helper: compute per-structure transfer flow [m^3/s] on CUDA.
 void swe2d_gpu_compute_structure_flows(
     int32_t n_cells,
@@ -1006,6 +1066,7 @@ void swe2d_gpu_compute_coupling_full_on_device(
     SWE2DDeviceState* dev, int32_t n_cells, int32_t n_structures, const double* cell_wse_host,
     int32_t n_inlets, const int32_t* inlet_cell, const double* inlet_flow_cms);
 void swe2d_gpu_readback_coupling_sources(double* host_buf, int32_t n_cells);
+void swe2d_gpu_readback_structure_flows(double* host_buf, int32_t n_structures);
 
 SWE3DCartesianPatchDeviceState* swe3d_cartesian_patch_alloc(
     const SWE3DCartesianPatchDesc& desc);

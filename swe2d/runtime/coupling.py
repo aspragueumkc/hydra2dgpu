@@ -287,7 +287,7 @@ def pack_pipe_network_soa(cfg: Optional[PipeNetworkConfig], n_cells: int) -> Opt
     )
 
 
-def pack_structures_soa(cfg: Optional[HydraulicStructureConfig], n_cells: int, model_to_ft: float = 3.280839895013123) -> Optional[SWE2DStructuresSoA]:
+def pack_structures_soa(cfg: Optional[HydraulicStructureConfig], n_cells: int, model_to_ft: float = 1.0) -> Optional[SWE2DStructuresSoA]:
     if cfg is None or not cfg.enabled:
         return None
     if not cfg.structures:
@@ -420,6 +420,7 @@ class SWE2DCouplingController:
         bridge_cuda_coupling: bool = False,
         bridge_stacked_coupling_mode: str = "phase3_spatial",
         length_scale_si_to_model: float = 1.0,
+        log_callback: Optional[Callable[[str], None]] = None,
         **legacy_kwargs,
     ):
         if cell_area is None:
@@ -434,6 +435,10 @@ class SWE2DCouplingController:
 
         self.cell_area = np.ascontiguousarray(cell_area, dtype=np.float64).ravel()
         self.cell_bed = np.ascontiguousarray(cell_bed, dtype=np.float64).ravel()
+        self._log_callback: Optional[Callable[[str], None]] = None
+        # Optional cell centroid coordinates for influence-width redistribution.
+        self._cell_cx: Optional[np.ndarray] = None
+        self._cell_cy: Optional[np.ndarray] = None
         # Configure unit system from CRS-derived length scale.
         self._length_scale = max(1.0e-6, float(length_scale_si_to_model))
         _u.configure(self._length_scale)
@@ -493,6 +498,11 @@ class SWE2DCouplingController:
             self._structure_non_bridge_mask = np.zeros(0, dtype=bool)
             self._structure_bridge_indices = np.zeros(0, dtype=np.int32)
             self._enabled_bridge_indices = np.zeros(0, dtype=np.int32)
+        self._last_native_structure_flows = None
+        # Influence-width redistribution data (computed by _build_redistribution_data)
+        self._redist_offsets: Optional[np.ndarray] = None
+        self._redist_cell_idx: Optional[np.ndarray] = None
+        self._redist_weights: Optional[np.ndarray] = None
         self._has_bridge_structures = bool(self._structure_bridge_indices.size > 0)
         self._has_enabled_bridge_structures = bool(self._enabled_bridge_indices.size > 0)
         self._n_non_bridge_structures = int(np.sum(self._structure_non_bridge_mask))
@@ -502,6 +512,203 @@ class SWE2DCouplingController:
         self._gpu_link_flow: Optional[np.ndarray] = None
         self._gpu_drainage_static_args: Optional[Dict[str, np.ndarray]] = None
         self.last_diag = SWE2DCouplingDiagnostics()
+        self._log_callback = log_callback
+
+    def set_cell_centroids(self, cx: np.ndarray, cy: np.ndarray) -> None:
+        """Provide cell centroid coordinates for influence-width redistribution."""
+        self._cell_cx = np.ascontiguousarray(cx, dtype=np.float64).ravel()
+        self._cell_cy = np.ascontiguousarray(cy, dtype=np.float64).ravel()
+
+    def _build_redistribution_data(self) -> None:
+        """Pre-compute redistribution weights for structures with influence_width.
+
+        For each structure end, finds cells within a corridor of width
+        `influence_width_m` perpendicular to the structure axis, centered
+        on the structure endpoint.  Weights are uniform per cell.
+        Results are stored as flat arrays with per-structure offsets.
+        """
+        if self.structures is None or self._cell_cx is None or self._cell_cy is None:
+            self._redist_offsets = np.array([0], dtype=np.int32)
+            self._redist_cell_idx = np.empty(0, dtype=np.int32)
+            self._redist_weights = np.empty(0, dtype=np.float64)
+            return
+
+        n_cells = self._cell_cx.size
+        offsets = [0]
+        all_idx: list = []
+        all_w: list = []
+
+        for st in self.structures.cfg.structures:
+            md = st.metadata
+            iw = float(md.get("influence_width_m", 0.0) or 0.0)
+            if iw <= 0.0:
+                offsets.append(offsets[-1])
+                continue
+            # Get structure line endpoints (in model units)
+            p0x = float(md.get("axis_x0", 0.0))
+            p0y = float(md.get("axis_y0", 0.0))
+            p1x = float(md.get("axis_x1", 0.0))
+            p1y = float(md.get("axis_y1", 0.0))
+            if p0x == 0.0 and p0y == 0.0 and p1x == 0.0 and p1y == 0.0:
+                offsets.append(offsets[-1])
+                continue
+
+            # Structure axis and perpendicular normal
+            dx = p1x - p0x
+            dy = p1y - p0y
+            length = max(1.0e-12, math.sqrt(dx * dx + dy * dy))
+            nx = -dy / length  # perpendicular unit normal
+            ny = dx / length
+            # Streamwise direction
+            sx = dx / length
+            sy = dy / length
+
+            half_iw = iw / 2.0
+
+            # Find cells within the perpendicular corridor
+            # centered on the structure line midpoint, extending half_iw
+            # in both perpendicular directions.
+            cx = self._cell_cx
+            cy = self._cell_cy
+            midx = (p0x + p1x) * 0.5
+            midy = (p0y + p1y) * 0.5
+
+            # Perpendicular distance from structure axis
+            perp_dist = np.abs((cx - midx) * nx + (cy - midy) * ny)
+            # Streamwise projection (to limit along-axis extent)
+            along = (cx - midx) * sx + (cy - midy) * sy
+            half_len = length * 0.5 + half_iw  # extend slightly beyond ends
+
+            mask = (perp_dist <= half_iw) & (np.abs(along) <= half_len)
+            sel_idx = np.flatnonzero(mask).astype(np.int32)
+
+            if sel_idx.size == 0:
+                offsets.append(offsets[-1])
+                continue
+
+            # Weights: for now uniform (all 1.0). Could be refined to
+            # use distance-from-structure or cell-area weighting.
+            sel_w = np.ones(sel_idx.size, dtype=np.float64)
+
+            all_idx.append(sel_idx)
+            all_w.append(sel_w)
+            offsets.append(offsets[-1] + sel_idx.size)
+
+        self._redist_offsets = np.array(offsets, dtype=np.int32)
+        if all_idx:
+            self._redist_cell_idx = np.concatenate(all_idx).astype(np.int32)
+            self._redist_weights = np.concatenate(all_w).astype(np.float64)
+        else:
+            self._redist_cell_idx = np.empty(0, dtype=np.int32)
+            self._redist_weights = np.empty(0, dtype=np.float64)
+
+    def _log(self, msg: str) -> None:
+        """Route a message to the runtime log callback, if any."""
+        if callable(self._log_callback):
+            self._log_callback(str(msg))
+
+    def _apply_redistribution(
+        self,
+        source_rate: np.ndarray,
+        structure_flow_cms: np.ndarray,
+        up_cells: np.ndarray,
+        dn_cells: np.ndarray,
+        native_mod=None,
+    ) -> np.ndarray:
+        """Apply influence-width redistribution to a source-rate array.
+
+        Reverses the single-cell injection (up/dn) and redistributes
+        across the pre-computed corridor cells.
+
+        Uses the CUDA `swe2d_redistribute_sources_kernel` when a native
+        module with that binding is available, otherwise falls back to the
+        pure-Python numpy loop.  The fallback is logged to the runtime log
+        (in red via ``[ERROR]`` prefix).
+
+        Args:
+            source_rate: Per-cell source rates [m/s], will be modified in-place.
+            structure_flow_cms: Per-structure flow [m³/s].
+            up_cells: Original single upstream cell indices.
+            dn_cells: Original single downstream cell indices.
+            native_mod: Optional native CUDA module.  When provided and has
+                ``swe2d_gpu_redistribute_structure_sources``, the CUDA kernel
+                is used instead of the Python loop.
+
+        Returns:
+            The modified source_rate array (same object as input).
+        """
+        if self._redist_offsets is None or self._redist_offsets.size <= 1:
+            return source_rate  # no redistribution data
+
+        n_struct = len(structure_flow_cms)
+        if n_struct == 0:
+            return source_rate
+
+        # CUDA path
+        if native_mod is not None and hasattr(native_mod, "swe2d_gpu_redistribute_structure_sources"):
+            try:
+                return np.asarray(
+                    native_mod.swe2d_gpu_redistribute_structure_sources(
+                        np.asarray(source_rate, dtype=np.float64, order='C'),
+                        np.asarray(self._redist_offsets, dtype=np.int32, order='C'),
+                        np.asarray(self._redist_cell_idx, dtype=np.int32, order='C'),
+                        np.asarray(self._redist_weights, dtype=np.float64, order='C'),
+                        np.asarray(structure_flow_cms, dtype=np.float64, order='C'),
+                        np.asarray(up_cells, dtype=np.int32, order='C'),
+                        np.asarray(dn_cells, dtype=np.int32, order='C'),
+                        np.asarray(self.cell_area, dtype=np.float64, order='C'),
+                    ),
+                    dtype=np.float64,
+                )
+            except Exception as exc:
+                # Log CUDA fallback to runtime log in red.
+                self._log(
+                    "[ERROR] swe2d_redistribute_sources_kernel failed, "
+                    f"falling back to CPU redistribution: {exc}"
+                )
+                pass
+
+        # Python fallback path
+        offsets = self._redist_offsets
+        cell_idx = self._redist_cell_idx
+        weights = self._redist_weights
+        areas = np.maximum(self.cell_area, 1.0e-12)
+
+        for i in range(n_struct):
+            start = int(offsets[i])
+            end = int(offsets[i + 1])
+            count = end - start
+            if count <= 0:
+                continue
+
+            q = float(structure_flow_cms[i])
+            if not np.isfinite(q) or q == 0.0:
+                continue
+
+            cu = int(up_cells[i])
+            cd = int(dn_cells[i])
+
+            # Reverse single-cell injection
+            if 0 <= cu < source_rate.size:
+                source_rate[cu] += q / areas[cu]     # undo upstream removal
+            if 0 <= cd < source_rate.size:
+                source_rate[cd] -= q / areas[cd]     # undo downstream addition
+
+            # Redistribute across corridor
+            wsum = float(np.sum(weights[start:end]))
+            if wsum <= 0.0:
+                continue
+            norm_w = weights[start:end] / wsum
+
+            dist_cells = cell_idx[start:end]
+            valid = (dist_cells >= 0) & (dist_cells < source_rate.size)
+            if not np.any(valid):
+                continue
+
+            src_contrib = norm_w[valid] * q / areas[dist_cells[valid]]
+            np.add.at(source_rate, dist_cells[valid], src_contrib)
+
+        return source_rate
 
     @property
     def cell_area_m2(self) -> np.ndarray:
@@ -587,11 +794,17 @@ class SWE2DCouplingController:
 
         Returns True when external sources were written on device and the
         caller can skip get_state()/Python callback source array handling.
+
+        When redistribution is active and the persistent on-device function
+        is available, redistribution is also applied on-device (eliminating
+        all D2H/H2D transfers of the source array).
         """
         _ = (t_s, dt_s)
         if self.coupling_loop != "cuda":
             return False
-        if self.structures is None or self.drainage is not None:
+        if self.structures is None:
+            return False
+        if self.drainage is not None:
             return False
         if self._has_enabled_bridge_structures:
             return False
@@ -617,6 +830,47 @@ class SWE2DCouplingController:
             )
         except Exception:
             return False
+
+        # ── On-device redistribution ────────────────────────────────────
+        # When the model has redistribution geometry and the persistent
+        # on-device function is available, apply redistribution directly
+        # on dev->d_external_source_mps with no host readback.
+        if (self._redist_offsets is not None
+            and self._redist_offsets.size > 1
+            and hasattr(native_mod, "swe2d_gpu_redistribute_structure_sources_persistent")):
+            ssoa = self._structures_soa
+            non_bridge_mask = self._structure_non_bridge_mask
+            if ssoa is not None and non_bridge_mask is not None and np.any(non_bridge_mask):
+                nb_n = int(self._n_non_bridge_structures)
+                if nb_n > 0 and hasattr(native_mod, "swe2d_gpu_readback_structure_flows"):
+                    nb_flows = np.asarray(
+                        native_mod.swe2d_gpu_readback_structure_flows(nb_n),
+                        dtype=np.float64,
+                    )
+                else:
+                    nb_flows = None
+                if nb_flows is not None and nb_flows.size > 0:
+                    nb_up = np.asarray(ssoa.upstream_cell[non_bridge_mask], dtype=np.int32)
+                    nb_dn = np.asarray(ssoa.downstream_cell[non_bridge_mask], dtype=np.int32)
+                    try:
+                        native_mod.swe2d_gpu_redistribute_structure_sources_persistent(
+                            np.asarray(self._redist_offsets, dtype=np.int32, order='C'),
+                            np.asarray(self._redist_cell_idx, dtype=np.int32, order='C'),
+                            np.asarray(self._redist_weights, dtype=np.float64, order='C'),
+                            np.asarray(nb_flows, dtype=np.float64, order='C'),
+                            nb_up,
+                            nb_dn,
+                            int(self.n_cells),
+                            float(_u.si_m_per_model()),
+                        )
+                    except Exception:
+                        # If on-device redistribution fails, fall through
+                        # to the old path (return True without redist).
+                        # The caller will see native_device_applied=True and
+                        # skip the callback — but redistribution will NOT
+                        # be applied.  This is the same behavior as before
+                        # this method was extended.
+                        pass
 
         self.last_diag = SWE2DCouplingDiagnostics(
             time_s=float(t_s) + float(dt_s),
@@ -833,7 +1087,7 @@ class SWE2DCouplingController:
         except Exception:
             return None
 
-    def _structure_source_rate_from_flows(self, structure_flow_cms: np.ndarray) -> np.ndarray:
+    def _structure_source_rate_from_flows(self, structure_flow_cms: np.ndarray, native_mod=None) -> np.ndarray:
         flows = np.ascontiguousarray(structure_flow_cms, dtype=np.float64).ravel()
         if flows.size == 0:
             return np.zeros(self.n_cells, dtype=np.float64)
@@ -871,6 +1125,14 @@ class SWE2DCouplingController:
         qv_model = qv * _u.si_m3_per_model_volume()
         np.add.at(src, upv, -qv_model / np.maximum(self.cell_area[upv], 1.0e-12))
         np.add.at(src, dnv, qv_model / np.maximum(self.cell_area[dnv], 1.0e-12))
+
+        # Apply influence-width redistribution (replaces single-cell injection
+        # with multi-cell distribution for structures that have corridor data).
+        # Uses CUDA kernel when native_mod provides it, else Python fallback.
+        if self._redist_offsets is not None and self._redist_offsets.size > 1:
+            # Convert flows from model units back to SI for redistribution
+            qv_si = qv_model / _u.si_m3_per_model_volume()
+            src = self._apply_redistribution(src, qv_si, up, dn, native_mod=native_mod)
         return src
 
     @property
@@ -934,8 +1196,9 @@ class SWE2DCouplingController:
                     cell_wse,
                     use_cuda=False,
                 )
+            self._last_native_structure_flows = native_cpu_flows
             if native_cpu_flows is not None and native_cpu_flows.size == self._structure_count:
-                src = self._structure_source_rate_from_flows(native_cpu_flows)
+                src = self._structure_source_rate_from_flows(native_cpu_flows, native_mod=native_mod)
                 component_sums["structures_native_cpu_helper"] = 1.0
                 structure_diag = {
                     "active_structures": float(np.sum(np.asarray([bool(st.enabled) for st in self._structures_cfg], dtype=np.float64))),
@@ -1005,6 +1268,8 @@ class SWE2DCouplingController:
                 static_args = self._ensure_gpu_drainage_static_args()
                 if static_args is None:
                     raise RuntimeError("GPU drainage static args are unavailable")
+                # hh64 still needed for GPU drainage calls that don't have
+                # device-resident WSE yet; can be eliminated in a future pass.
                 hh64 = np.asarray(hh, dtype=np.float64)
                 node_depth_state = np.asarray(self._gpu_node_depth, dtype=np.float64)
                 link_flow_state = np.asarray(self._gpu_link_flow, dtype=np.float64)
@@ -1235,8 +1500,11 @@ class SWE2DCouplingController:
                 # re-uploads the same values (identity overwrite).
                 if ssoa is not None:
                     try:
+                        # Pass None for cell_wse: GPU computes WSE = h + zb
+                        # directly from device-resident state, eliminating two
+                        # PCIe transfers (D2H state readback + H2D wse upload).
                         native_mod.swe2d_gpu_compute_coupling_full_on_device(
-                            np.asarray(cell_wse, dtype=np.float64),
+                            None,  # cell_wse=None → on-device WSE computation
                             int(self._n_non_bridge_structures),
                         )
                         component_sums["structures_persistent_path"] = 1.0
@@ -1266,16 +1534,72 @@ class SWE2DCouplingController:
                                                 float(bridge_arrays["width_m"][i]), float(dt_s),
                                             ), dtype=np.float64)
                                         bridge_total += src
-                # Read back the on-device source rates so the host return
-                # value matches what the solver will see.
-                # GPU kernel produces m/s (CMS / m²); solver expects
-                # model-length/s (ft/s for US-foot).  Convert.
-                total = np.asarray(
-                    native_mod.swe2d_gpu_readback_coupling_sources(self.n_cells),
-                    dtype=np.float64,
-                )
-                total *= _u.si_m_per_model()  # m/s → model-length/s (×3.28 for US-foot, ×1.0 for SI)
+                # On-device sources are already in d_external_source_mps.
+                # Skip the readback for the common case (no redistribution):
+                # the solver step consumes directly from device memory.
+                # Return None so apply_external_sources knows the GPU buffer
+                # is already populated and skips its upload.
+                if (self._redist_offsets is not None
+                    and self._redist_offsets.size > 1
+                    and non_bridge_mask is not None
+                    and np.any(non_bridge_mask)):
+                    # Redistribution active: read back only the
+                    # per-structure flow values (tiny: n_struct doubles)
+                    # from the persistent GPU buffer, skipping the
+                    # expensive _native_structure_flows re-upload.
+                    nb_n = int(self._n_non_bridge_structures)
+                    if nb_n > 0 and hasattr(native_mod, "swe2d_gpu_readback_structure_flows"):
+                        nb_flows = np.asarray(
+                            native_mod.swe2d_gpu_readback_structure_flows(nb_n),
+                            dtype=np.float64,
+                        )
+                    else:
+                        nb_flows = None
+
+                    # ── On-device redistribution path ─────────────────
+                    # The redistribution kernel runs directly on
+                    # dev->d_external_source_mps using the persistent
+                    # device buffer for structure flows.  No D2H readback
+                    # or H2D re-upload of the source array — the solver
+                    # step consumes it directly from device memory.
+                    # This eliminates THREE 90 KB PCIe transfers per step.
+                    if (nb_flows is not None and nb_flows.size > 0
+                        and hasattr(native_mod, "swe2d_gpu_redistribute_structure_sources_persistent")):
+                        nb_up = np.asarray(ssoa.upstream_cell[non_bridge_mask], dtype=np.int32)
+                        nb_dn = np.asarray(ssoa.downstream_cell[non_bridge_mask], dtype=np.int32)
+                        native_mod.swe2d_gpu_redistribute_structure_sources_persistent(
+                            np.asarray(self._redist_offsets, dtype=np.int32, order='C'),
+                            np.asarray(self._redist_cell_idx, dtype=np.int32, order='C'),
+                            np.asarray(self._redist_weights, dtype=np.float64, order='C'),
+                            np.asarray(nb_flows, dtype=np.float64, order='C'),
+                            nb_up,
+                            nb_dn,
+                            int(self.n_cells),
+                            float(_u.si_m_per_model()),
+                        )
+                        total = None  # GPU sources are current
+                    else:
+                        # ── Fallback: readback + host redistribution ──
+                        total_for_redist = np.asarray(
+                            native_mod.swe2d_gpu_readback_coupling_sources(self.n_cells),
+                            dtype=np.float64,
+                        )
+                        total_for_redist *= _u.si_m_per_model()
+                        if nb_flows is not None and nb_flows.size > 0:
+                            nb_q = nb_flows
+                            nb_up = np.asarray(ssoa.upstream_cell[non_bridge_mask], dtype=np.int32)
+                            nb_dn = np.asarray(ssoa.downstream_cell[non_bridge_mask], dtype=np.int32)
+                            total_for_redist = self._apply_redistribution(
+                                total_for_redist, nb_q, nb_up, nb_dn, native_mod=native_mod)
+                        total = total_for_redist
+                else:
+                    # No redistribution: GPU has correct sources.  Signal
+                    # to caller by returning None so the host skips upload.
+                    total = None
+                # Signal that persistent path handled non-bridge structures
+                # so the fallback path below is skipped.
                 flows = None
+                non_bridge_handled = True
             elif use_fused and flows.size == 0:
                 # Fused path: structure flows + coupling sources in one device-resident call.
                 # Bridges handled separately below via the individual bridge helper.
@@ -1326,6 +1650,20 @@ class SWE2DCouplingController:
                     component_sums["structures_native_helper"] = 1.0
                     component_sums["structures_fused_path"] = 1.0
                     total *= _u.si_m_per_model()  # m/s → model-length/s
+                    # Apply influence-width redistribution for non-bridge
+                    # structures.  Fused kernel already did single-cell
+                    # injection; we reverse it and redistribute.
+                    if (self._redist_offsets is not None
+                        and self._redist_offsets.size > 1
+                        and non_bridge_mask is not None
+                        and np.any(non_bridge_mask)):
+                        nb_flows = self._native_structure_flows(native_mod, cell_wse)
+                        if nb_flows is not None and nb_flows.size > 0:
+                            nb_q = nb_flows[non_bridge_mask]
+                            nb_up = np.asarray(ssoa.upstream_cell[non_bridge_mask], dtype=np.int32)
+                            nb_dn = np.asarray(ssoa.downstream_cell[non_bridge_mask], dtype=np.int32)
+                            total = self._apply_redistribution(
+                                total, nb_q, nb_up, nb_dn, native_mod=native_mod)
                     # Handle bridges separately
                     if self._has_bridge_structures:
                         bridge_flow_indices = self._structure_bridge_indices
@@ -1429,22 +1767,45 @@ class SWE2DCouplingController:
                 dtype=np.float64,
             )
             total *= _u.si_m_per_model()  # m/s → model-length/s
+            # Apply influence-width redistribution (replaces GPU single-cell
+            # injection with multi-cell distribution).
+            # Uses CUDA kernel when native_mod provides it, else Python fallback.
+            if struct_q.size > 0 and struct_up.size == struct_q.size:
+                total = self._apply_redistribution(total, struct_q, struct_up, struct_dn, native_mod=native_mod)
         if bridge_helper_used:
+            if total is None:
+                # On-device sources are already in d_external_source_mps.
+                # We need to add bridge sources (host-resident) to the
+                # device array.  The simplest safe approach: read back,
+                # add bridges, return host array for re-upload.
+                total = np.asarray(
+                    native_mod.swe2d_gpu_readback_coupling_sources(self.n_cells),
+                    dtype=np.float64,
+                )
+                total *= _u.si_m_per_model()
             total += bridge_total
             component_sums["bridges"] = float(np.sum(bridge_total))
 
+        # When the persistent CUDA path was used and there's no redistribution
+        # (and no bridges), total is None (sources are already on GPU).  Build
+        # a zero diagnostics array so diagnostic stats are well-defined, then
+        # return None to signal to the caller that GPU sources are current.
+        if total is None:
+            diag_total = np.zeros(max(1, self.n_cells), dtype=np.float64)
+        else:
+            diag_total = total
         self.last_diag = SWE2DCouplingDiagnostics(
             time_s=float(t_s) + float(dt_s),
             dt_s=float(dt_s),
             drainage_max_node_depth=float(drainage_diag.get("max_node_depth", drainage_diag.get("max_node_depth_m", 0.0))),
             drainage_max_link_flow=float(drainage_diag.get("max_link_flow", drainage_diag.get("max_link_flow_cms", 0.0))),
             structure_total_flow=float(structure_diag.get("total_structure_flow", 0.0)),
-            source_sum=float(np.sum(total)),
-            source_min=float(np.min(total)) if total.size else 0.0,
-            source_max=float(np.max(total)) if total.size else 0.0,
+            source_sum=float(np.sum(diag_total)),
+            source_min=float(np.min(diag_total)) if diag_total.size else 0.0,
+            source_max=float(np.max(diag_total)) if diag_total.size else 0.0,
             component_sums=component_sums,
         )
-        return total
+        return total  # None signals GPU-resident sources to caller
 
 
 __all__ = [

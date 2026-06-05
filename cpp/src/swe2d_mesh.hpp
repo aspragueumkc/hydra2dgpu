@@ -100,6 +100,13 @@ SWE2DMesh swe2d_build_mesh_poly(
     int32_t        n_bc_edges
 );
 
+// Reorder edges by (c0, c1) to improve GPU memory coalescing.
+// Edges sharing the same c0 cell become contiguous, so that adjacent warp
+// threads in the flux/gradient kernels read from the same cell for c0.
+// All edge arrays are permuted in-place; cell_edge_ids are remapped.
+// Safe to call on any mesh.  No-op for empty meshes.
+void swe2d_reorder_edges_for_gpu(SWE2DMesh& mesh);
+
 // Legacy triangle builder retained for backward compatibility.
 SWE2DMesh swe2d_build_mesh(
     const double*  node_x,

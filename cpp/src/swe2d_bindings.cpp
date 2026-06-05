@@ -78,6 +78,20 @@ static inline double bw2d_pipe_manning_capacity_full(double diameter_m, double s
     return (1.486 / n) * area * std::pow(rh, 2.0 / 3.0) * std::sqrt(s);
 }
 
+static inline double bw2d_rect_manning_capacity_full(double width_ft, double height_ft, double slope_m_per_m, double roughness_n)
+{
+    const double w = std::max(0.0, width_ft);
+    const double h = std::max(0.0, height_ft);
+    const double s = std::max(0.0, slope_m_per_m);
+    const double n = std::max(1.0e-6, roughness_n);
+    if (w <= 0.0 || h <= 0.0 || s <= 0.0) return 0.0;
+    const double area_ft2 = w * h;
+    const double perim_ft = 2.0 * (w + h);
+    if (perim_ft <= 0.0) return 0.0;
+    const double rh_ft = area_ft2 / perim_ft;
+    return (1.486 / n) * area_ft2 * std::pow(rh_ft, 2.0 / 3.0) * std::sqrt(s);
+}
+
 static inline double bw2d_orifice_q(double head_up_m, double head_down_m, double area_m2, double cd, double g)
 {
     const double a = std::max(0.0, area_m2);
@@ -883,10 +897,16 @@ static py::array_t<double> compute_structure_flows_native(
         }
 
         double q_manning_cap = 0.0;
-        const double dia_for_cap = std::max(std::max(diameter.data()[i], rise), bw2d_equiv_diameter_from_area(std::max(0.0, area)));
-        if (dia_for_cap > 0.0) {
-            q_manning_cap = bw2d_pipe_manning_capacity_full(dia_for_cap, slope, roughness_n.data()[i]);
+        if (xsect.rectangular) {
+            // Rectangular culvert: A = w*h, P = 2(w+h), R = A/P
+            q_manning_cap = bw2d_rect_manning_capacity_full(xsect.width, xsect.y_full, slope, roughness_n.data()[i]);
             q_manning_cap /= CFS_PER_CMS;  // CFS → CMS
+        } else {
+            const double dia_for_cap = std::max(std::max(diameter.data()[i], rise), bw2d_equiv_diameter_from_area(std::max(0.0, area)));
+            if (dia_for_cap > 0.0) {
+                q_manning_cap = bw2d_pipe_manning_capacity_full(dia_for_cap, slope, roughness_n.data()[i]);
+                q_manning_cap /= CFS_PER_CMS;  // CFS → CMS
+            }
         }
 
         const double q_hint_cfs = std::max(q_inlet_cfs, std::max(q_orifice, q_manning_cap) * CFS_PER_CMS);
@@ -1334,19 +1354,27 @@ PYBIND11_MODULE(HYDRA_SWE2D_PY_MODULE_NAME, m) {
         }, py::arg("cell_area_m2"), "Preload cell areas to GPU once.");
 
     m.def("swe2d_gpu_compute_coupling_full_on_device",
-        [](py::array_t<double, py::array::c_style|py::array::forcecast> cell_wse,
+        [](py::object cell_wse_obj,
            int32_t n_structures,
            py::array_t<int32_t, py::array::c_style|py::array::forcecast> inlet_cell,
            py::array_t<double, py::array::c_style|py::array::forcecast> inlet_flow_cms) {
+            const double* cell_wse_ptr = nullptr;
+            int32_t n_cells = 0;
+            if (!cell_wse_obj.is_none()) {
+                auto cell_wse = cell_wse_obj.cast<py::array_t<double, py::array::c_style|py::array::forcecast>>();
+                cell_wse_ptr = cell_wse.data();
+                n_cells = static_cast<int32_t>(cell_wse.size());
+            }
             swe2d_gpu_compute_coupling_full_on_device(
-                nullptr, static_cast<int32_t>(cell_wse.size()), n_structures, cell_wse.data(),
+                nullptr, n_cells, n_structures, cell_wse_ptr,
                 static_cast<int32_t>(inlet_cell.size()),
                 inlet_cell.size()>0?inlet_cell.data():nullptr,
                 inlet_flow_cms.size()>0?inlet_flow_cms.data():nullptr);
-        }, py::arg("cell_wse"), py::arg("n_structures")=0,
+        }, py::arg("cell_wse")=py::none(), py::arg("n_structures")=0,
            py::arg("inlet_cell")=py::array_t<int32_t>(),
            py::arg("inlet_flow_cms")=py::array_t<double>(),
-        "Run full coupling on-device using preloaded params.");
+        "Run full coupling on-device using preloaded params. "
+        "Pass cell_wse=None to compute WSE = h + zb on GPU.");
 
     m.def("swe2d_gpu_readback_coupling_sources",
         [](int32_t n_cells) -> py::array_t<double> {
@@ -1355,6 +1383,14 @@ PYBIND11_MODULE(HYDRA_SWE2D_PY_MODULE_NAME, m) {
             return result;
         }, py::arg("n_cells"),
         "Read back coupling source rates [m/s] from device after on-device compute.");
+
+    m.def("swe2d_gpu_readback_structure_flows",
+        [](int32_t n_structures) -> py::array_t<double> {
+            auto result = py::array_t<double>(n_structures);
+            swe2d_gpu_readback_structure_flows(result.mutable_data(), n_structures);
+            return result;
+        }, py::arg("n_structures"),
+        "Read back per-structure flow rates [m^3/s] from persistent GPU buffer.");
 
     // Culvert table mode: build pre-computed Q(hw,tw) lookup tables from culvert params.
     m.def("swe2d_gpu_build_culvert_tables",
@@ -1523,6 +1559,105 @@ PYBIND11_MODULE(HYDRA_SWE2D_PY_MODULE_NAME, m) {
         py::arg("bridge_opening_width_m") = 1.0,
         py::arg("dt_s") = 1.0,
         "Headless CUDA helper: convert bridge transfer flows to per-cell depth-rate sources [m/s] with an empirical loss law.");
+
+#ifdef HYDRA_HAS_CUDA
+    m.def("swe2d_gpu_redistribute_structure_sources",
+        [](py::array_t<double, py::array::c_style | py::array::forcecast> source_rate_mps_inout,
+           py::array_t<int32_t, py::array::c_style | py::array::forcecast> dist_offsets,
+           py::array_t<int32_t, py::array::c_style | py::array::forcecast> dist_cell_idx,
+           py::array_t<double, py::array::c_style | py::array::forcecast> dist_weights,
+           py::array_t<double, py::array::c_style | py::array::forcecast> struct_flow_cms,
+           py::array_t<int32_t, py::array::c_style | py::array::forcecast> orig_up_cell,
+           py::array_t<int32_t, py::array::c_style | py::array::forcecast> orig_dn_cell,
+           py::array_t<double, py::array::c_style | py::array::forcecast> cell_area_m2) -> py::array_t<double>
+        {
+            auto src = source_rate_mps_inout;
+            const int32_t n_cells = static_cast<int32_t>(src.size());
+            const int32_t n_struct = static_cast<int32_t>(struct_flow_cms.size());
+
+            // Build contiguous host arrays
+            auto offsets_host = dist_offsets;
+            auto cell_idx_host = dist_cell_idx;
+            auto weights_host = dist_weights;
+            auto flow_host = struct_flow_cms;
+            auto up_host = orig_up_cell;
+            auto dn_host = orig_dn_cell;
+            auto area_host = cell_area_m2;
+
+            extern SWE2DDeviceState* s_coupling_dev;
+            swe2d_gpu_redistribute_structure_sources(
+                s_coupling_dev,  // persistent device buffers when available
+                n_struct,
+                flow_host.data(),
+                up_host.data(),
+                dn_host.data(),
+                area_host.data(),
+                offsets_host.data(),
+                cell_idx_host.data(),
+                weights_host.data(),
+                n_cells,
+                src.mutable_data());
+            return src;
+        },
+        py::arg("source_rate_mps_inout"),
+        py::arg("dist_offsets"),
+        py::arg("dist_cell_idx"),
+        py::arg("dist_weights"),
+        py::arg("struct_flow_cms"),
+        py::arg("orig_up_cell"),
+        py::arg("orig_dn_cell"),
+        py::arg("cell_area_m2"),
+        "CUDA helper: redistribute single-cell structure sources across a pre-computed corridor of cells using influence-width weights.");
+
+    m.def("swe2d_gpu_redistribute_structure_sources_persistent",
+        [](py::array_t<int32_t, py::array::c_style | py::array::forcecast> dist_offsets,
+           py::array_t<int32_t, py::array::c_style | py::array::forcecast> dist_cell_idx,
+           py::array_t<double, py::array::c_style | py::array::forcecast> dist_weights,
+           py::array_t<double, py::array::c_style | py::array::forcecast> struct_flow_cms,
+           py::array_t<int32_t, py::array::c_style | py::array::forcecast> orig_up_cell,
+           py::array_t<int32_t, py::array::c_style | py::array::forcecast> orig_dn_cell,
+           int32_t n_cells,
+           double si_m_per_model_factor) -> void
+        {
+            const int32_t n_struct = static_cast<int32_t>(struct_flow_cms.size());
+
+            auto offsets_host = dist_offsets;
+            auto cell_idx_host = dist_cell_idx;
+            auto weights_host = dist_weights;
+            auto flow_host = struct_flow_cms;
+            auto up_host = orig_up_cell;
+            auto dn_host = orig_dn_cell;
+
+            extern SWE2DDeviceState* s_coupling_dev;
+            if (!s_coupling_dev) {
+                pybind11::set_error(PyExc_RuntimeError, "s_coupling_dev is null");
+                return;
+            }
+            swe2d_gpu_redistribute_structure_sources_persistent(
+                s_coupling_dev,
+                n_struct,
+                flow_host.data(),
+                up_host.data(),
+                dn_host.data(),
+                offsets_host.data(),
+                cell_idx_host.data(),
+                weights_host.data(),
+                n_cells,
+                si_m_per_model_factor);
+        },
+        py::arg("dist_offsets"),
+        py::arg("dist_cell_idx"),
+        py::arg("dist_weights"),
+        py::arg("struct_flow_cms"),
+        py::arg("orig_up_cell"),
+        py::arg("orig_dn_cell"),
+        py::arg("n_cells"),
+        py::arg("si_m_per_model_factor"),
+        "CUDA helper (device-only): redistribute single-cell structure sources "
+        "directly on d_external_source_mps with no host readback.  Call after "
+        "swe2d_gpu_compute_coupling_full_on_device then return None from Python "
+        "to keep GPU sources current.");
+#endif
 
     m.def("swe2d_gpu_drainage_step",
         [](py::array_t<double, py::array::c_style | py::array::forcecast> cell_wse,

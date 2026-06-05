@@ -1592,7 +1592,10 @@ def execute_run_timestep_loop(
 
         if bc_n0.size > 0:
             _t_bc_acc = time.perf_counter()
+            _t_bc_diag = 0.0
+            _t_bc_accu = 0.0
             if dynamic_bc:
+                _t0 = time.perf_counter()
                 bc_tp_flux, bc_vl_flux = wb._apply_timeseries_bc_values(
                     bc_n0,
                     bc_n1,
@@ -1602,6 +1605,8 @@ def execute_run_timestep_loop(
                     t_accum,
                     edge_hydrographs,
                 )
+                _t_bc_diag += (time.perf_counter() - _t0) * 1000.0
+                _t0 = time.perf_counter()
                 bc_vl_flux = wb._distribute_total_flow_to_unit_q(
                     bc_n0,
                     bc_n1,
@@ -1611,11 +1616,10 @@ def execute_run_timestep_loop(
                     side_hydrographs,
                     edge_hydrographs,
                 )
+                _t_bc_diag += (time.perf_counter() - _t0) * 1000.0
             else:
                 bc_tp_flux = bc_tp
-                # Static flow BC values are stored as total-Q per group; convert
-                # to unit-q before boundary flux accounting to avoid edge-length
-                # re-scaling of already-totalized values.
+                _t0 = time.perf_counter()
                 bc_vl_flux = wb._distribute_total_flow_to_unit_q(
                     bc_n0,
                     bc_n1,
@@ -1625,8 +1629,14 @@ def execute_run_timestep_loop(
                     side_hydrographs,
                     edge_hydrographs,
                 )
+                _t_bc_diag += (time.perf_counter() - _t0) * 1000.0
+            _t0 = time.perf_counter()
             accumulate_boundary_flux_volume_model_callback(dt_used, bc_tp_flux, bc_vl_flux)
+            _t_bc_accu += (time.perf_counter() - _t0) * 1000.0
             bc_ms += (time.perf_counter() - _t_bc_acc) * 1000.0
+            # TEMPORARY: log bc timing breakdown every N steps
+            if int(t_accum / max(dt_used, 1.0)) % 100 == 0:
+                print(f"[BC_DIAG] distribute_ms={_t_bc_diag:.3f} accumulate_ms={_t_bc_accu:.3f} n_bc_edges={bc_n0.size} dynamic_bc={dynamic_bc}")
 
         report_result = runtime_reporter.process_step(
             backend=backend,
