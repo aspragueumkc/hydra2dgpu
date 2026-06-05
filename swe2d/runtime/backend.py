@@ -481,6 +481,7 @@ class SWE2DBackend:
             "three_d_solver_model",
             "enforce_gpu_only_advanced_modes",
             "three_d_single_phase_free_surface",
+            "dt_initial",
         ):
             filtered.pop(key, None)
         return self._mod.swe2d_create_solver(*args, **filtered)
@@ -734,6 +735,7 @@ class SWE2DBackend:
         cfl:      float = 0.45,
         dt_max:   float = 10.0,
         dt_fixed: float = -1.0,
+        dt_initial: float = -1.0,
         max_inv_area: float = 1.0e6,
         cfl_lambda_cap: float = 1.0e6,
         momentum_cap_min_speed: float = 50.0,
@@ -792,6 +794,10 @@ class SWE2DBackend:
             Maximum timestep (s).
         dt_fixed : float
             If > 0, override CFL with this fixed dt.
+        dt_initial : float
+            If > 0, use this dt for the first step only (cold-start override).
+            Useful for CFL adaptive stepping on dry domains where lambda_max=0
+            causes compute_cfl_dt() to return dt_max.
         max_inv_area : float
             Cap on 1/area used by GPU flux/update kernels for tiny cells.
         cfl_lambda_cap : float
@@ -899,7 +905,7 @@ class SWE2DBackend:
             self._mesh_h,
             h0_arr, hu0_arr, hv0_arr, n_mann_cell_arr,
             g=g, k_mann=k_mann, n_mann=n_mann, h_min=h_min,
-            cfl=cfl, dt_max=dt_max, dt_fixed=dt_fixed,
+            cfl=cfl, dt_max=dt_max, dt_fixed=dt_fixed, dt_initial=dt_initial,
             max_inv_area=max_inv_area,
             cfl_lambda_cap=cfl_lambda_cap,
             momentum_cap_min_speed=momentum_cap_min_speed,

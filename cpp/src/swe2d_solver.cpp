@@ -1077,7 +1077,13 @@ SWE2DStepDiag swe2d_step(SWE2DSolver* s, double dt_request) {
         }
 
         double dt;
-        if (s->cfg.dt_fixed > 0.0) {
+        // Initial dt override: use dt_initial for the first step only.
+        // This is critical for cold-start stability with CFL adaptive stepping,
+        // where lambda_max=0 on a dry domain causes compute_cfl_dt() to return dt_max.
+        if (s->cfg.dt_initial > 0.0 && !s->first_step_done) {
+            dt = s->cfg.dt_initial;
+            s->first_step_done = true;
+        } else if (s->cfg.dt_fixed > 0.0) {
             dt = s->cfg.dt_fixed;
         } else {
             const double dt_cfl = use_3d_solver_model
@@ -1577,7 +1583,11 @@ SWE2DStepDiag swe2d_step(SWE2DSolver* s, double dt_request) {
 
     // Determine timestep (CPU path)
     double dt;
-    if (s->cfg.dt_fixed > 0.0) {
+    // Initial dt override for CPU fallback path (mirrors GPU path logic).
+    if (s->cfg.dt_initial > 0.0 && !s->first_step_done) {
+        dt = s->cfg.dt_initial;
+        s->first_step_done = true;
+    } else if (s->cfg.dt_fixed > 0.0) {
         dt = s->cfg.dt_fixed;
     } else {
         double dt_cfl = compute_cfl_dt(s);

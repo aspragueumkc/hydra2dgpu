@@ -127,6 +127,17 @@ def _bind_model_tab_core_controls(self, model_tab_page: QtWidgets.QWidget, param
     self.dt_spin.setDecimals(5)
     self.dt_spin.setValue(0.05)
 
+    self.initial_dt_spin = _find_or_create_double_spin("initial_dt_spin", "Initial dt (0 = auto):")
+    self.initial_dt_spin.setRange(0.0, 1.0e6)
+    self.initial_dt_spin.setDecimals(5)
+    self.initial_dt_spin.setValue(0.0)
+    self.initial_dt_spin.setToolTip(
+        "If > 0, use this dt for the first timestep only.\n"
+        "Useful for cold-start stability with CFL adaptive stepping\n"
+        "on dry domains where lambda_max=0 causes dt to jump to dt_max.\n"
+        "0 = use CFL dt from step 1 (default)."
+    )
+
     self.gpu_diag_sync_interval_spin = _find_or_create_spin(
         "gpu_diag_sync_interval_spin", "GPU diag sync (steps):"
     )
@@ -2058,6 +2069,7 @@ def _connect_project_workbench_state_signals(self) -> None:
         ("initial_wse_spin", "valueChanged"),
         ("adaptive_cfl_dt_chk", "toggled"),
         ("dt_spin", "valueChanged"),
+        ("initial_dt_spin", "valueChanged"),
         ("gpu_diag_sync_interval_spin", "valueChanged"),
         ("enable_cuda_graphs_chk", "toggled"),
         ("max_rel_depth_increase_spin", "valueChanged"),
@@ -2286,6 +2298,7 @@ def _on_run(self, request=None):
         adaptive_cfl_dt = run_options.adaptive_cfl_dt
         dt_fixed = run_options.dt_fixed
         dt_request = run_options.dt_request
+        initial_dt = getattr(run_options, "initial_dt", 0.0)
         reconstruction_mode = run_options.reconstruction_mode
         reconstruction_name = run_options.reconstruction_name
         temporal_scheme = run_options.temporal_scheme
@@ -2534,6 +2547,8 @@ def _on_run(self, request=None):
             self._log(f"Timestep mode: variable CFL (dt_max={dt_cfg:.5f} s)")
         else:
             self._log(f"Timestep mode: fixed dt ({dt_cfg:.5f} s)")
+        if initial_dt > 0.0:
+            self._log(f"Initial dt override: {initial_dt:.5f} s (first step only)")
         if float(np.asarray(rain_rate_model, dtype=np.float64)) > 0.0:
             self._log(
                 f"Rain-on-grid active: {float(self.rain_rate_spin.value()):.3f} mm/hr "
@@ -2623,6 +2638,7 @@ def _on_run(self, request=None):
                 n_mann_cell=n_mann_cell,
                 dt_fixed=dt_fixed,
                 dt_max=dt_cfg,
+                dt_initial=initial_dt,
                 model_options=model_options,
                 reconstruction_mode=reconstruction_mode,
                 temporal_scheme=temporal_scheme,

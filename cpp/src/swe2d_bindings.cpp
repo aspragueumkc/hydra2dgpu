@@ -2674,7 +2674,7 @@ PYBIND11_MODULE(HYDRA_SWE2D_PY_MODULE_NAME, m) {
            py::object hv0_obj,
            py::object n_mann_cell_obj,
            double g, double k_mann, double n_mann, double h_min,
-           double cfl, double dt_max, double dt_fixed,
+           double cfl, double dt_max, double dt_fixed, double dt_initial,
                   double max_inv_area,
                   double cfl_lambda_cap,
                   double momentum_cap_min_speed,
@@ -2757,6 +2757,7 @@ PYBIND11_MODULE(HYDRA_SWE2D_PY_MODULE_NAME, m) {
             cfg.cfl       = cfl;
             cfg.dt_max    = dt_max;
             cfg.dt_fixed  = dt_fixed;
+            cfg.dt_initial = dt_initial;
             cfg.max_inv_area = max_inv_area;
             cfg.cfl_lambda_cap = cfl_lambda_cap;
             cfg.momentum_cap_min_speed = momentum_cap_min_speed;
@@ -2816,6 +2817,7 @@ PYBIND11_MODULE(HYDRA_SWE2D_PY_MODULE_NAME, m) {
         py::arg("cfl")      = 0.45,
         py::arg("dt_max")   = 10.0,
         py::arg("dt_fixed") = -1.0,
+        py::arg("dt_initial") = -1.0,
         py::arg("max_inv_area") = 1.0e6,
         py::arg("cfl_lambda_cap") = 1.0e6,
         py::arg("momentum_cap_min_speed") = 50.0,

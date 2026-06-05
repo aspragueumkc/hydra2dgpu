@@ -65,6 +65,7 @@ struct SWE2DSolverConfig {
     double  cfl      = 0.45;    // CFL safety factor
     double  dt_max   = 10.0;    // maximum allowable timestep (s)
     double  dt_fixed = -1.0;    // if > 0, use this fixed dt (overrides CFL)
+    double  dt_initial = -1.0;  // if > 0, use this dt for the first step only (cold-start override)
     int     temporal_order = 2; // 1 = Euler, 2 = SSPRK2 (Heun), 4 = classic RK4 (composed), 5 = true RK4 (graph-safe), 6 = true RK5 (graph-safe)
     int     spatial_scheme = static_cast<int>(SWE2DSpatialScheme::FV_FIRST_ORDER);
     int     godunov_mode = 0;   // 0 = current GPU step, 1 = Godunov rollout mode
@@ -267,6 +268,7 @@ struct SWE2DSolver {
     // ── Simulation time ──────────────────────────────────────────────────────
     double t = 0.0;
     uint64_t gpu_steps = 0;
+    bool first_step_done = false; // set after first swe2d_step() call when dt_initial override applies
     int32_t last_wet_cells = -1;
     uint64_t tiny_mode_fallback_count = 0;
     uint64_t fused_path_steps = 0;

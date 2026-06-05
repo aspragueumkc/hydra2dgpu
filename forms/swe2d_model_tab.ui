@@ -121,80 +121,90 @@
                     <widget class="QDoubleSpinBox" name="dt_spin" />
                   </item>
                   <item row="8" column="0">
+                    <widget class="QLabel" name="initial_dt_lbl">
+                      <property name="text">
+                        <string>Initial dt (0 = auto):</string>
+                      </property>
+                    </widget>
+                  </item>
+                  <item row="8" column="1">
+                    <widget class="QDoubleSpinBox" name="initial_dt_spin" />
+                  </item>
+                  <item row="9" column="0">
                     <widget class="QLabel" name="gpu_diag_sync_interval_lbl">
                       <property name="text">
                         <string>GPU diag sync (steps):</string>
                       </property>
                     </widget>
                   </item>
-                  <item row="8" column="1">
+                  <item row="9" column="1">
                     <widget class="QSpinBox" name="gpu_diag_sync_interval_spin" />
                   </item>
-                  <item row="9" column="0">
+                  <item row="10" column="0">
                     <widget class="QLabel" name="enable_cuda_graphs_lbl">
                       <property name="text">
                         <string>CUDA graph replay:</string>
                       </property>
                     </widget>
                   </item>
-                  <item row="9" column="1">
+                  <item row="10" column="1">
                     <widget class="QCheckBox" name="enable_cuda_graphs_chk">
                       <property name="text">
                         <string>Enable</string>
                       </property>
                     </widget>
                   </item>
-                  <item row="10" column="0">
+                  <item row="11" column="0">
                     <widget class="QLabel" name="max_rel_depth_increase_lbl">
                       <property name="text">
                         <string>Max rel depth increase:</string>
                       </property>
                     </widget>
                   </item>
-                  <item row="10" column="1">
+                  <item row="11" column="1">
                     <widget class="QDoubleSpinBox" name="max_rel_depth_increase_spin" />
                   </item>
-                  <item row="11" column="0">
+                  <item row="12" column="0">
                     <widget class="QLabel" name="max_source_depth_step_lbl">
                       <property name="text">
                         <string>Max source dh/step:</string>
                       </property>
                     </widget>
                   </item>
-                  <item row="11" column="1">
+                  <item row="12" column="1">
                     <widget class="QDoubleSpinBox" name="max_source_depth_step_spin" />
                   </item>
-                  <item row="12" column="0">
+                  <item row="13" column="0">
                     <widget class="QLabel" name="max_source_rate_lbl">
                       <property name="text">
                         <string>Max source rate:</string>
                       </property>
                     </widget>
                   </item>
-                  <item row="12" column="1">
+                  <item row="13" column="1">
                     <widget class="QDoubleSpinBox" name="max_source_rate_spin" />
                   </item>
-                  <item row="14" column="0">
+                  <item row="15" column="0">
                     <widget class="QLabel" name="source_cfl_beta_lbl">
                       <property name="text">
                         <string>Source CFL beta:</string>
                       </property>
                     </widget>
                   </item>
-                  <item row="14" column="1">
+                  <item row="15" column="1">
                     <widget class="QDoubleSpinBox" name="source_cfl_beta_spin" />
                   </item>
-                  <item row="15" column="0">
+                  <item row="16" column="0">
                     <widget class="QLabel" name="source_max_substeps_lbl">
                       <property name="text">
                         <string>Source max substeps:</string>
                       </property>
                     </widget>
                   </item>
-                  <item row="15" column="1">
+                  <item row="16" column="1">
                     <widget class="QSpinBox" name="source_max_substeps_spin" />
                   </item>
-                  <item row="16" column="0">
+                  <item row="17" column="0">
                     <widget class="QLabel" name="source_true_subcycling_lbl">
                       <property name="text">
                         <string>True source subcycling:</string>

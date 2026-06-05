@@ -23,6 +23,7 @@ class SWE2DRunOptionsData:
     adaptive_cfl_dt: bool
     dt_fixed: float
     dt_request: float
+    initial_dt: float
     reconstruction_mode: int
     reconstruction_name: str
     temporal_order_value: int
@@ -113,6 +114,7 @@ class SWE2DRunOptionsBuilder:
         adaptive_cfl_dt = bool(self._ui.adaptive_cfl_dt_chk.isChecked())
         dt_fixed = -1.0 if adaptive_cfl_dt else dt_cfg
         dt_request = -1.0 if adaptive_cfl_dt else dt_cfg
+        initial_dt = float(self._ui.initial_dt_spin.value()) if hasattr(self._ui, "initial_dt_spin") else 0.0
 
         reconstruction_mode = int(self._ui.reconstruction_combo.currentData())
         reconstruction_name = self._ui.reconstruction_combo.currentText().strip()
@@ -309,6 +311,7 @@ class SWE2DRunOptionsBuilder:
             adaptive_cfl_dt=adaptive_cfl_dt,
             dt_fixed=dt_fixed,
             dt_request=dt_request,
+            initial_dt=initial_dt,
             reconstruction_mode=reconstruction_mode,
             reconstruction_name=reconstruction_name,
             temporal_order_value=temporal_order_value,
