@@ -76,14 +76,14 @@ def _culvert_xsect_from_metadata(md: Dict[str, float], model_to_ft: float = 1.0)
 def _culvert_outlet_control_flow_cms(
     *,
     xsect,
-    available_head_up_ft: float,
-    tailwater_depth_ft: float,
-    length_ft: float,
-    slope_ftft: float,
+    available_head_up_ft: float,  # L  (upstream head in feet)
+    tailwater_depth_ft: float,   # L  (tailwater depth in feet)
+    length_ft: float,            # L  (culvert barrel length in feet)
+    slope_ftft: float,           # L/L (dimensionless slope)
     roughness_n: float,
     entrance_loss_k: float,
     exit_loss_k: float,
-    q_hint_cfs: float,
+    q_hint_cfs: float,           # L³T⁻¹ (flow hint in ft³/s)
 ) -> float:
     if available_head_up_ft <= 0.0:
         return 0.0
@@ -181,11 +181,11 @@ class SWE2DStructureModule(HydraulicStructureEngine):
         m2ft = float(self._model_to_ft)
         inv_m2ft = 1.0 / m2ft if m2ft > 0 else 1.0
         if not structure.enabled:
-            return {"flow_cms": 0.0, "active": False, "control_mode": "disabled"}
+            return {"flow": 0.0, "active": False, "control_mode": "disabled"}
         iu = int(structure.upstream_cell)
         idn = int(structure.downstream_cell)
         if iu < 0 or idn < 0 or iu >= len(cell_wse) or idn >= len(cell_wse):
-            return {"flow_cms": 0.0, "active": False, "control_mode": "invalid_cells"}
+            return {"flow": 0.0, "active": False, "control_mode": "invalid_cells"}
 
         wu = float(cell_wse[iu])
         wd = float(cell_wse[idn])
@@ -199,9 +199,9 @@ class SWE2DStructureModule(HydraulicStructureEngine):
             "structure_type": str(structure.structure_type.name).lower(),
             "upstream_cell": iu,
             "downstream_cell": idn,
-            "upstream_wse_m": wu,
-            "downstream_wse_m": wd,
-            "flow_cms": 0.0,
+            "upstream_wse": wu,
+            "downstream_wse": wd,
+            "flow": 0.0,
             "active": True,
             "control_mode": "none",
         }
@@ -229,10 +229,10 @@ class SWE2DStructureModule(HydraulicStructureEngine):
             detail.update(
                 {
                     "sign": sign,
-                    "inlet_invert_elev_m": inlet_invert,
-                    "outlet_invert_elev_m": outlet_invert,
-                    "available_head_up_m": available_head_up_ft * inv_m2ft,
-                    "tailwater_depth_m": tailwater_depth_ft * inv_m2ft,
+                    "inlet_invert_elev": inlet_invert,
+                    "outlet_invert_elev": outlet_invert,
+                    "available_head_up": available_head_up_ft * inv_m2ft,
+                    "tailwater_depth": tailwater_depth_ft * inv_m2ft,
                     "culvert_slope": slope_ftft,
                     "entrance_loss_k": entrance_loss_k,
                     "exit_loss_k": exit_loss_k,
@@ -249,7 +249,7 @@ class SWE2DStructureModule(HydraulicStructureEngine):
                 max(0.0, available_head_up_ft),
             )
             q_inlet_cms = q_inlet_cfs / _u.USC_FT3_PER_SI_M3
-            detail["inlet_control_flow_cms"] = q_inlet_cms
+            detail["inlet_control_flow"] = q_inlet_cms
 
             # Orifice capacity
             diameter_model = float(md.get("diameter", md.get("culvert_rise", 0.0)) or 0.0)
@@ -270,7 +270,7 @@ class SWE2DStructureModule(HydraulicStructureEngine):
                         max_flow=float(max_q) if max_q is not None else None,
                     )
                 )
-            detail["orifice_cap_cms"] = q_orifice_cms
+            detail["orifice_cap"] = q_orifice_cms
 
             # Manning capacity — use correct geometry based on shape
             q_manning_cap_cms = 0.0
@@ -290,7 +290,7 @@ class SWE2DStructureModule(HydraulicStructureEngine):
                     slope_m_per_m=slope_ftft,
                     roughness_n=roughness_n,
                 )
-            detail["manning_cap_cms"] = q_manning_cap_cms
+            detail["manning_cap"] = q_manning_cap_cms
 
             # Outlet control
             q_hint_cfs = max(q_inlet_cfs, _model3_to_cfs(max(q_orifice_cms, q_manning_cap_cms, 0.0), m2ft))
@@ -305,7 +305,7 @@ class SWE2DStructureModule(HydraulicStructureEngine):
                 exit_loss_k=exit_loss_k,
                 q_hint_cfs=q_hint_cfs,
             )
-            detail["outlet_control_flow_cms"] = q_outlet_cms
+            detail["outlet_control_flow"] = q_outlet_cms
 
             q_culvert = max(0.0, min(q_inlet_cms, q_outlet_cms if q_outlet_cms > 0.0 else q_inlet_cms))
             control_mode = "inlet_control"
@@ -330,7 +330,7 @@ class SWE2DStructureModule(HydraulicStructureEngine):
                     coeff=float(md.get("embankment_weir_coeff", md.get("road_weir_coeff", 1.7)) or 1.7),
                 ))
                 q_culvert += q_emb_cms
-            detail["embankment_flow_cms"] = q_emb_cms
+            detail["embankment_flow"] = q_emb_cms
 
             barrels = max(1.0, float(md.get("culvert_barrels", 1.0) or 1.0))
             q_culvert *= barrels
@@ -340,7 +340,7 @@ class SWE2DStructureModule(HydraulicStructureEngine):
                     control_mode = "max_flow"
             detail["barrels"] = barrels
             detail["control_mode"] = control_mode
-            detail["flow_cms"] = q_culvert if sign >= 0.0 else -q_culvert
+            detail["flow"] = q_culvert if sign >= 0.0 else -q_culvert
             return detail
 
         if structure.structure_type == StructureType.WEIR:
@@ -353,7 +353,7 @@ class SWE2DStructureModule(HydraulicStructureEngine):
             )
             if max_q is not None:
                 q = max(-float(max_q), min(float(max_q), q))
-            detail.update({"control_mode": "weir", "flow_cms": q})
+            detail.update({"control_mode": "weir", "flow": q})
             return detail
 
         if structure.structure_type == StructureType.GATE:
@@ -369,15 +369,15 @@ class SWE2DStructureModule(HydraulicStructureEngine):
                 g=g,
                 max_flow=float(max_q) if max_q is not None else None,
             )
-            detail.update({"control_mode": "gate", "flow_cms": q})
+            detail.update({"control_mode": "gate", "flow": q})
             return detail
 
         if structure.structure_type == StructureType.PUMP:
             q = max(0.0, float(md.get("q_pump", 0.0)))
             if wu >= wd:
-                detail.update({"control_mode": "pump", "flow_cms": q})
+                detail.update({"control_mode": "pump", "flow": q})
                 return detail
-            detail.update({"control_mode": "pump", "flow_cms": -q})
+            detail.update({"control_mode": "pump", "flow": -q})
             return detail
 
         if structure.structure_type == StructureType.BRIDGE:
@@ -393,22 +393,43 @@ class SWE2DStructureModule(HydraulicStructureEngine):
             loss_scale = max(1.0e-6, 1.0 + k_up + k_dn)
             dh = wu - wd
             if abs(dh) <= 1.0e-12:
-                detail.update({"control_mode": "bridge", "flow_cms": 0.0})
+                detail.update({"control_mode": "bridge", "flow": 0.0})
                 return detail
             q = area * math.sqrt(max(0.0, 2.0 * g * abs(dh))) / loss_scale
             if max_q is not None:
                 q = min(q, max(0.0, float(max_q)))
-            detail.update({"control_mode": "bridge", "flow_cms": q if dh >= 0.0 else -q})
+            detail.update({"control_mode": "bridge", "flow": q if dh >= 0.0 else -q})
             return detail
 
-        detail.update({"flow_cms": 0.0, "active": False, "control_mode": "unsupported"})
+        detail.update({"flow": 0.0, "active": False, "control_mode": "unsupported"})
         return detail
 
     def _structure_flow(self, structure: HydraulicStructure, cell_wse: Sequence[float]) -> float:
-        return float(self._structure_detail(structure, cell_wse).get("flow_cms", 0.0))
+        return float(self._structure_detail(structure, cell_wse).get("flow", 0.0))
 
     def structure_details(self, cell_wse: Sequence[float]) -> List[Dict[str, Any]]:
         details = [self._structure_detail(st, cell_wse) for st in self.cfg.structures]
+        # Add backward-compatible aliases for unit-agnostic key names.
+        # New code should use "flow", "inlet_control_flow", etc.
+        # Old code that reads "flow_cms", "inlet_control_flow_cms" etc. still works.
+        _ALIASES = {
+            "flow": "flow_cms",
+            "inlet_control_flow": "inlet_control_flow_cms",
+            "outlet_control_flow": "outlet_control_flow_cms",
+            "orifice_cap": "orifice_cap_cms",
+            "manning_cap": "manning_cap_cms",
+            "embankment_flow": "embankment_flow_cms",
+            "upstream_wse": "upstream_wse_m",
+            "downstream_wse": "downstream_wse_m",
+            "available_head_up": "available_head_up_m",
+            "tailwater_depth": "tailwater_depth_m",
+            "inlet_invert_elev": "inlet_invert_elev_m",
+            "outlet_invert_elev": "outlet_invert_elev_m",
+        }
+        for detail in details:
+            for new_key, old_key in _ALIASES.items():
+                if new_key in detail and old_key not in detail:
+                    detail[old_key] = detail[new_key]
         self._last_structure_details = [dict(d) for d in details]
         return details
 
@@ -423,10 +444,10 @@ class SWE2DStructureModule(HydraulicStructureEngine):
         culvert_count = 0.0
         embankment_total = 0.0
         for detail in details:
-            total_q += abs(float(detail.get("flow_cms", 0.0)))
+            total_q += abs(float(detail.get("flow", 0.0)))
             if str(detail.get("structure_type", "")) == "culvert":
                 culvert_count += 1.0
-                embankment_total += abs(float(detail.get("embankment_flow_cms", 0.0) or 0.0))
+                embankment_total += abs(float(detail.get("embankment_flow", 0.0) or 0.0))
         return {
             "active_structures": float(sum(1 for s in self.cfg.structures if s.enabled)),
             "total_structure_flow": float(total_q),
@@ -436,7 +457,7 @@ class SWE2DStructureModule(HydraulicStructureEngine):
 
     def structure_flows(self, cell_wse: Sequence[float]) -> List[float]:
         """Return signed flow for each configured structure (upstream -> downstream positive)."""
-        return [float(d.get("flow_cms", 0.0)) for d in self.structure_details(cell_wse)]
+        return [float(d.get("flow", 0.0)) for d in self.structure_details(cell_wse)]
 
     def structure_flows_cms(self, cell_wse: Sequence[float]) -> List[float]:
         """Backward-compatible alias for older callers."""
@@ -465,10 +486,10 @@ class SWE2DStructureModule(HydraulicStructureEngine):
         self,
         dt: float,
         cell_wse: Sequence[float],
-        cell_area_m2: Sequence[float],
+        cell_area: Sequence[float],
     ) -> List[float]:
         net = self.compute_cell_source_terms(dt=dt, cell_wse=cell_wse)
-        return convert_cell_flows_to_depth_rates(net, cell_area_m2)
+        return convert_cell_flows_to_depth_rates(net, cell_area)
 
     def compute_flux_adjustments(self, dt: float, cell_wse: Sequence[float]) -> Dict[str, float]:
         fluxes = self.compute_structure_fluxes(dt=dt, cell_wse=cell_wse)

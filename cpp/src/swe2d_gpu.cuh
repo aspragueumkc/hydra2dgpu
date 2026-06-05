@@ -5,6 +5,7 @@
 
 #include "swe2d_mesh.hpp"
 #include "swe2d_solver.hpp"   // SWE2DStepDiag
+#include "swe2d_units.cuh"
 
 #include <cuda_runtime.h>
 #include <cstdint>
@@ -405,7 +406,7 @@ struct SWE2DDeviceState {
         int32_t  n_structures = 0;
         int32_t  cell_capacity = 0;
         int32_t  struct_capacity = 0;
-        double   gravity_mps2 = 9.81;
+        double   gravity = 9.81;
         double*  d_cell_wse = nullptr;
         double*  d_cell_bed = nullptr;
         int32_t* d_structure_type = nullptr;
@@ -426,7 +427,7 @@ struct SWE2DDeviceState {
         int32_t* d_culvert_shape = nullptr;
         double*  d_culvert_rise = nullptr;
         double*  d_culvert_span = nullptr;
-        double*  d_culvert_area_m2 = nullptr;
+        double*  d_culvert_area = nullptr;
         double*  d_culvert_barrels = nullptr;
         double*  d_culvert_slope = nullptr;
         double*  d_inlet_invert_elev = nullptr;
@@ -998,7 +999,7 @@ void swe2d_gpu_compute_structure_flows(
     const double* embankment_crest_elev,
     const double* embankment_overflow_width,
     const double* embankment_weir_coeff,
-    double gravity_mps2,
+    double gravity,
     double* structure_flow_cms_out);
 
 // Fused structure-flows + coupling-sources: runs both kernels on-device and
@@ -1038,7 +1039,7 @@ void swe2d_gpu_compute_structure_and_coupling_sources(
     const double* embankment_crest_elev,
     const double* embankment_overflow_width,
     const double* embankment_weir_coeff,
-    double gravity_mps2,
+    double gravity,
     int32_t n_inlets,
     const int32_t* inlet_cell,
     const double* inlet_flow_cms,
@@ -1060,7 +1061,7 @@ void swe2d_gpu_preload_structure_params(
     const double* entrance_loss_k, const double* exit_loss_k,
     const int32_t* embankment_enabled, const double* embankment_crest_elev,
     const double* embankment_overflow_width, const double* embankment_weir_coeff,
-    double gravity_mps2);
+    double gravity);
 void swe2d_gpu_preload_coupling_cell_area(SWE2DDeviceState* dev, int32_t n_cells, const double* cell_area_m2);
 void swe2d_gpu_compute_coupling_full_on_device(
     SWE2DDeviceState* dev, int32_t n_cells, int32_t n_structures, const double* cell_wse_host,

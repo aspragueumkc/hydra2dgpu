@@ -10,6 +10,7 @@
 // keep GPU optimization decoupled from the CPU fallback implementation.
 
 #include "swe2d_gpu.cuh"
+#include "swe2d_units.cuh"
 
 #include <cuda_runtime.h>
 #include <device_launch_parameters.h>
@@ -2388,9 +2389,9 @@ __global__ __launch_bounds__(256, 4) void swe2d_coupling_inlet_source_kernel(
     int32_t n_inlets,
     const int32_t* __restrict__ inlet_cell,
     const double* __restrict__ inlet_flow_cms,
-    const double* __restrict__ cell_area_m2,
+    const double* __restrict__ cell_area,
     int32_t n_cells,
-    double* __restrict__ source_rate_mps)
+    double* __restrict__ source_rate)
 {
     int32_t i = blockIdx.x * blockDim.x + threadIdx.x;
     if (i >= n_inlets) return;
@@ -2398,33 +2399,33 @@ __global__ __launch_bounds__(256, 4) void swe2d_coupling_inlet_source_kernel(
     if (c < 0 || c >= n_cells) return;
     const double q = inlet_flow_cms[i];
     if (!isfinite(q) || q == 0.0) return;
-    const double area = fmax(cell_area_m2[c], 1.0e-12);
+    const double area = fmax(cell_area[c], 1.0e-12);
     // Positive inlet capture removes water from the surface cell.
-    atomicAdd(&source_rate_mps[c], -q / area);
+    atomicAdd(&source_rate[c], -q / area);
 }
 
 __global__ __launch_bounds__(256, 4) void swe2d_coupling_structure_source_kernel(
     int32_t n_structures,
     const int32_t* __restrict__ structure_up_cell,
     const int32_t* __restrict__ structure_down_cell,
-    const double* __restrict__ structure_flow_cms,
-    const double* __restrict__ cell_area_m2,
+    const double* __restrict__ structure_flow,
+    const double* __restrict__ cell_area,
     int32_t n_cells,
-    double* __restrict__ source_rate_mps)
+    double* __restrict__ source_rate)
 {
     int32_t i = blockIdx.x * blockDim.x + threadIdx.x;
     if (i >= n_structures) return;
     const int32_t cu = structure_up_cell[i];
     const int32_t cd = structure_down_cell[i];
     if (cu < 0 || cu >= n_cells || cd < 0 || cd >= n_cells) return;
-    const double q = structure_flow_cms[i];
+    const double q = structure_flow[i];
     if (!isfinite(q) || q == 0.0) return;
 
-    const double au = fmax(cell_area_m2[cu], 1.0e-12);
-    const double ad = fmax(cell_area_m2[cd], 1.0e-12);
+    const double au = fmax(cell_area[cu], 1.0e-12);
+    const double ad = fmax(cell_area[cd], 1.0e-12);
     // Positive q transfers mass from upstream cell -> downstream cell.
-    atomicAdd(&source_rate_mps[cu], -q / au);
-    atomicAdd(&source_rate_mps[cd],  q / ad);
+    atomicAdd(&source_rate[cu], -q / au);
+    atomicAdd(&source_rate[cd],  q / ad);
 }
 
 __global__ __launch_bounds__(256, 4) void swe2d_coupling_bridge_source_kernel(
@@ -2434,11 +2435,11 @@ __global__ __launch_bounds__(256, 4) void swe2d_coupling_bridge_source_kernel(
     const double* __restrict__ bridge_flow_cms,
     const double* __restrict__ bridge_loss_k_upstream,
     const double* __restrict__ bridge_loss_k_downstream,
-    const double* __restrict__ cell_area_m2,
+    const double* __restrict__ cell_area,
     int32_t n_cells,
     double bridge_opening_width_m,
     double dt_s,
-    double* __restrict__ source_rate_mps)
+    double* __restrict__ source_rate)
 {
     int32_t i = blockIdx.x * blockDim.x + threadIdx.x;
     if (i >= n_bridges) return;
@@ -2450,8 +2451,8 @@ __global__ __launch_bounds__(256, 4) void swe2d_coupling_bridge_source_kernel(
     const double q = bridge_flow_cms[i];
     if (!isfinite(q) || q == 0.0) return;
 
-    const double au = fmax(cell_area_m2[cu], 1.0e-12);
-    const double ad = fmax(cell_area_m2[cd], 1.0e-12);
+    const double au = fmax(cell_area[cu], 1.0e-12);
+    const double ad = fmax(cell_area[cd], 1.0e-12);
     const double area_proxy = fmax(0.5 * (au + ad), 1.0e-12);
     const double char_len = fmax(bridge_opening_width_m, sqrt(area_proxy));
     const double vel_proxy = fabs(q) / area_proxy;
@@ -2468,8 +2469,8 @@ __global__ __launch_bounds__(256, 4) void swe2d_coupling_bridge_source_kernel(
     }
 
     // Positive q transfers mass from upstream cell -> downstream cell.
-    atomicAdd(&source_rate_mps[cu], -q_eff / au);
-    atomicAdd(&source_rate_mps[cd],  q_eff / ad);
+    atomicAdd(&source_rate[cu], -q_eff / au);
+    atomicAdd(&source_rate[cd],  q_eff / ad);
 }
 
 __device__ __forceinline__ double bw2d_clamp(double x, double lo, double hi)
@@ -2623,7 +2624,7 @@ __device__ __forceinline__ double swe2d_culvert_form1_eqn_cuda(double yc, swe2d_
     const double ac = swe2d_culvert_area_ft2_cuda(c->xsect, yc);
     const double wc = swe2d_culvert_top_width_ft_cuda(c->xsect, yc);
     const double yh = (wc > 0.0) ? (ac / wc) : 0.0;
-    c->q_critical = ac * sqrt(32.2 * yh);
+    c->q_critical = ac * sqrt(USC_GRAVITY * yh);
     return c->h_plus - yc / c->y_full - yh / (2.0 * c->y_full)
         - c->kk * pow(c->q_critical / c->ad, c->mm);
 }
@@ -2742,9 +2743,9 @@ __device__ __forceinline__ double swe2d_culvert_critical_depth_ft_cuda(const swe
     if (q_cfs <= 0.0) return 0.0;
     if (xsect.is_rect) {
         const double q_unit = q_cfs / fmax(1.0e-12, xsect.width_ft);
-        return fmin(pow((q_unit * q_unit) / 32.2, 1.0 / 3.0), xsect.y_full_ft);
+        return fmin(pow((q_unit * q_unit)  / USC_GRAVITY, 1.0 / 3.0), xsect.y_full_ft);
     }
-    const double target = q_cfs * q_cfs / 32.2;
+    const double target = q_cfs * q_cfs  / USC_GRAVITY;
     double lo = 1.0e-4 * xsect.y_full_ft;
     double hi = xsect.y_full_ft;
     auto residual = [&](double y) {
@@ -2775,7 +2776,7 @@ __device__ __forceinline__ double swe2d_culvert_specific_energy_ft_cuda(const sw
 {
     const double a = swe2d_culvert_area_ft2_cuda(xsect, depth_ft);
     const double v = (a > 0.0) ? (q_cfs / a) : 0.0;
-    return depth_ft + v * v / (2.0 * 32.2);
+    return depth_ft + v * v / (2.0 * USC_GRAVITY);
 }
 
 __device__ __forceinline__ double swe2d_culvert_friction_slope_cuda(const swe2d_culvert_xsect_cuda& xsect, double q_cfs, double n_value, double depth_ft)
@@ -2845,7 +2846,7 @@ __device__ __forceinline__ void swe2d_direct_step_culvert_upstream_energy_cuda(
     double n_value,
     double slope,
     double length_ft,
-    double tailwater_depth_ft,
+    double tailwater_depth,
     double* e_upstream_ft,
     double* y_upstream_ft)
 {
@@ -2858,7 +2859,7 @@ __device__ __forceinline__ void swe2d_direct_step_culvert_upstream_energy_cuda(
     const double dc = swe2d_culvert_critical_depth_ft_cuda(xsect, q_cfs);
     const double y_full = xsect.y_full_ft;
     const double eps = fmax(1.0e-6, 1.0e-6 * y_full);
-    const double y_ds = fmin(fmax(tailwater_depth_ft, dc), y_full);
+    const double y_ds = fmin(fmax(tailwater_depth, dc), y_full);
     const double step_depth = fmin(fmax(0.01, 0.02 * y_full), 0.05);
 
     if (y_ds >= y_full - eps) {
@@ -2967,16 +2968,16 @@ __device__ __forceinline__ void swe2d_direct_step_culvert_upstream_energy_cuda(
 
 __device__ __forceinline__ double swe2d_culvert_outlet_control_flow_cms_cuda(
     const swe2d_culvert_xsect_cuda& xsect,
-    double available_head_up_ft,
-    double tailwater_depth_ft,
+    double available_head_up,
+    double tailwater_depth,
     double length_ft,
-    double slope_ftft,
+    double slope,
     double roughness_n,
     double entrance_loss_k,
     double exit_loss_k,
-    double q_hint_cfs)
+    double q_hint)
 {
-    if (available_head_up_ft <= 0.0) return 0.0;
+    if (available_head_up <= 0.0) return 0.0;
 
     auto required_head_ft = [&](double q_cfs) {
         if (q_cfs <= 0.0) return 0.0;
@@ -2986,14 +2987,14 @@ __device__ __forceinline__ double swe2d_culvert_outlet_control_flow_cms_cuda(
             xsect,
             q_cfs,
             fmax(1.0e-6, roughness_n),
-            fmax(1.0e-6, slope_ftft),
+            fmax(1.0e-6, slope),
             fmax(1.0, length_ft),
-            fmax(0.0, tailwater_depth_ft),
+            fmax(0.0, tailwater_depth),
             &e_up,
             &y_up);
         const double area = fmax(1.0e-9, swe2d_culvert_area_ft2_cuda(xsect, fmax(1.0e-6, fmin(y_up, xsect.y_full_ft))));
         const double vel = q_cfs / area;
-        const double hv = (fmax(0.0, entrance_loss_k) + fmax(0.0, exit_loss_k)) * vel * vel / (2.0 * 32.2);
+        const double hv = (fmax(0.0, entrance_loss_k) + fmax(0.0, exit_loss_k)) * vel * vel / (2.0 * USC_GRAVITY);
         return e_up + hv;
     };
 
@@ -3002,16 +3003,16 @@ __device__ __forceinline__ double swe2d_culvert_outlet_control_flow_cms_cuda(
     // Converges in ~8-10 iterations vs 12+ for pure secant; handles flat
     // tails and near-zero-loss cases that cause pure secant to diverge.
     double q_lo = 0.0;
-    double f_lo = -available_head_up_ft;  // F(0) = -available_head
-    double q_hi = fmax(1.0, q_hint_cfs * 2.0);
-    double f_hi = required_head_ft(q_hi) - available_head_up_ft;
+    double f_lo = -available_head_up;  // F(0) = -available_head
+    double q_hi = fmax(1.0, q_hint * 2.0);
+    double f_hi = required_head_ft(q_hi) - available_head_up;
     for (int br = 0; br < 12 && f_hi < 0.0; ++br) {
         q_lo = q_hi; f_lo = f_hi;
         q_hi *= 2.0;
-        f_hi = required_head_ft(q_hi) - available_head_up_ft;
+        f_hi = required_head_ft(q_hi) - available_head_up;
     }
     if (f_hi < 0.0) {
-        return q_hi / 35.31466672148859;
+        return q_hi / USC_FT3_PER_SI_M3;
     }
 
     // Illinois: track which side last moved so we halve the stalling f-value.
@@ -3024,9 +3025,9 @@ __device__ __forceinline__ double swe2d_culvert_outlet_control_flow_cms_cuda(
         if (q_mid <= q_lo || q_mid >= q_hi) {
             q_mid = 0.5 * (q_lo + q_hi);
         }
-        const double f_mid = required_head_ft(q_mid) - available_head_up_ft;
-        if (fabs(f_mid) < 1.0e-8 * available_head_up_ft) {
-            return fmax(0.0, q_mid) / 35.31466672148859;
+        const double f_mid = required_head_ft(q_mid) - available_head_up;
+        if (fabs(f_mid) < 1.0e-8 * available_head_up) {
+            return fmax(0.0, q_mid) / USC_FT3_PER_SI_M3;
         }
         if (f_lo * f_mid < 0.0) {
             // Root is between lo and mid
@@ -3040,7 +3041,7 @@ __device__ __forceinline__ double swe2d_culvert_outlet_control_flow_cms_cuda(
             side = 0;
         }
     }
-    return fmax(0.0, 0.5 * (q_lo + q_hi)) / 35.31466672148859;
+    return fmax(0.0, 0.5 * (q_lo + q_hi)) / USC_FT3_PER_SI_M3;
 }
 
 // Forward-declare table lookup for use inside the structure flow kernel.
@@ -3071,7 +3072,7 @@ __global__ __launch_bounds__(256, 4) void swe2d_compute_structure_flows_kernel(
     const int32_t* __restrict__ culvert_shape,
     const double* __restrict__ culvert_rise,
     const double* __restrict__ culvert_span,
-    const double* __restrict__ culvert_area_m2,
+    const double* __restrict__ culvert_area,
     const double* __restrict__ culvert_barrels,
     const double* __restrict__ culvert_slope,
     const double* __restrict__ inlet_invert_elev,
@@ -3082,8 +3083,8 @@ __global__ __launch_bounds__(256, 4) void swe2d_compute_structure_flows_kernel(
     const double* __restrict__ embankment_crest_elev,
     const double* __restrict__ embankment_overflow_width,
     const double* __restrict__ embankment_weir_coeff,
-    double gravity_mps2,
-    double* __restrict__ structure_flow_cms,
+    double gravity,
+    double* __restrict__ structure_flow,
     int32_t culvert_solver_mode,
     const double* __restrict__ culvert_table_header,
     const double* __restrict__ culvert_table_data,
@@ -3105,14 +3106,14 @@ __global__ __launch_bounds__(256, 4) void swe2d_compute_structure_flows_kernel(
     if (structure_type[i] == 1) {
         double q = bw2d_weir_q(wu, wd, crest, width[i], coeff[i]);
         if (qmax >= 0.0) q = fmax(-qmax, fmin(q, qmax));
-        structure_flow_cms[i] = q;
+        structure_flow[i] = q;
         return;
     }
     if (structure_type[i] == 3) {
         const double area = fmax(0.0, opening[i]) * fmax(0.0, width[i]) * fmax(0.0, height[i]);
-        double q = bw2d_orifice_q(wu, wd, area, cd[i], gravity_mps2);
+        double q = bw2d_orifice_q(wu, wd, area, cd[i], gravity);
         if (qmax >= 0.0) q = fmax(-qmax, fmin(q, qmax));
-        structure_flow_cms[i] = q;
+        structure_flow[i] = q;
         return;
     }
     if (structure_type[i] == 4) {
@@ -3120,16 +3121,16 @@ __global__ __launch_bounds__(256, 4) void swe2d_compute_structure_flows_kernel(
         const double loss_scale = fmax(1.0e-6, 1.0 + fmax(0.0, entrance_loss_k[i]) + fmax(0.0, exit_loss_k[i]));
         const double dh = wu - wd;
         if (area > 0.0 && fabs(dh) > 1.0e-12) {
-            double q = area * sqrt(fmax(0.0, 2.0 * gravity_mps2 * fabs(dh))) / loss_scale;
+            double q = area * sqrt(fmax(0.0, 2.0 * gravity * fabs(dh))) / loss_scale;
             if (qmax >= 0.0) q = fmin(q, qmax);
-            structure_flow_cms[i] = (dh >= 0.0) ? q : -q;
+            structure_flow[i] = (dh >= 0.0) ? q : -q;
         }
         return;
     }
     if (structure_type[i] == 5) {
         double q = fmax(0.0, q_pump[i]);
         if (qmax >= 0.0) q = fmin(q, qmax);
-        structure_flow_cms[i] = (wu >= wd) ? q : -q;
+        structure_flow[i] = (wu >= wd) ? q : -q;
         return;
     }
     if (structure_type[i] != 2) return;
@@ -3169,35 +3170,35 @@ __global__ __launch_bounds__(256, 4) void swe2d_compute_structure_flows_kernel(
         xsect.width_ft = 0.0;
     }
 
-    const double q_inlet_cfs = fmax(0.0, swe2d_culvert_inlet_controlled_flow_cfs_cuda(xsect, slope, fmax(0.0, available_head_up)));
-    const double q_inlet_cms = q_inlet_cfs / 35.31466672148859;
+    const double q_inlet = fmax(0.0, swe2d_culvert_inlet_controlled_flow_cfs_cuda(xsect, slope, fmax(0.0, available_head_up)));
+    const double q_inlet_si = q_inlet / USC_FT3_PER_SI_M3;
 
-    double area = fmax(0.0, culvert_area_m2[i]);
+    double area = fmax(0.0, culvert_area[i]);
     if (area <= 0.0 && fmax(diameter[i], rise) > 0.0 && culvert_shape[i] == 0) {
         area = bw2d_circular_area(fmax(diameter[i], rise));
     }
 
     double q_orifice = 0.0;
     if (area > 0.0) {
-        q_orifice = fabs(bw2d_orifice_q(available_head_up, tailwater_depth, area, cd[i], 32.2));
+        q_orifice = fabs(bw2d_orifice_q(available_head_up, tailwater_depth, area, cd[i], USC_GRAVITY));
         if (qmax >= 0.0) q_orifice = fmin(q_orifice, qmax);
-        q_orifice /= 35.31466672148859;  // CFS → CMS
+        q_orifice /= USC_FT3_PER_SI_M3;  // CFS → CMS
     }
 
     double q_manning_cap = 0.0;
     if (xsect.is_rect) {
         // Rectangular culvert: A = w*h, P = 2(w+h), R = A/P
         q_manning_cap = bw2d_rect_manning_capacity_full(xsect.width_ft, xsect.y_full_ft, slope, roughness_n[i]);
-        q_manning_cap /= 35.31466672148859;  // CFS → CMS
+        q_manning_cap /= USC_FT3_PER_SI_M3;  // CFS → CMS
     } else {
         const double dia_for_cap = fmax(fmax(diameter[i], rise), bw2d_equiv_diameter_from_area(fmax(0.0, area)));
         if (dia_for_cap > 0.0) {
             q_manning_cap = bw2d_pipe_manning_capacity_full(dia_for_cap, slope, roughness_n[i]);
-            q_manning_cap /= 35.31466672148859;  // CFS → CMS
+            q_manning_cap /= USC_FT3_PER_SI_M3;  // CFS → CMS
         }
     }
 
-    const double q_hint_cfs = fmax(1.0, fmax(q_inlet_cfs, fmax(q_orifice, q_manning_cap) * 35.31466672148859));
+    const double q_hint = fmax(1.0, fmax(q_inlet, fmax(q_orifice, q_manning_cap) * USC_FT3_PER_SI_M3));
 
     double q_outlet = 0.0;
     if (culvert_solver_mode == 1 && culvert_table_data && culvert_table_header) {
@@ -3222,10 +3223,10 @@ __global__ __launch_bounds__(256, 4) void swe2d_compute_structure_flows_kernel(
             fmax(1.0e-6, roughness_n[i]),
             entrance_loss_k[i],
             exit_loss_k[i],
-            q_hint_cfs);
+            q_hint);
     }
 
-    double q = fmax(0.0, fmin(q_inlet_cms, (q_outlet > 0.0) ? q_outlet : q_inlet_cms));
+    double q = fmax(0.0, fmin(q_inlet_si, (q_outlet > 0.0) ? q_outlet : q_inlet_si));
     if (q_orifice > 0.0) q = (q > 0.0) ? fmin(q, q_orifice) : q_orifice;
     if (q_manning_cap > 0.0) q = (q > 0.0) ? fmin(q, q_manning_cap) : q_manning_cap;
 
@@ -3241,7 +3242,7 @@ __global__ __launch_bounds__(256, 4) void swe2d_compute_structure_flows_kernel(
 
     q *= fmax(1.0, culvert_barrels[i]);
     if (qmax >= 0.0) q = fmin(q, qmax);
-    structure_flow_cms[i] = sign * q;
+    structure_flow[i] = sign * q;
 }
 
 __device__ __forceinline__ void swe2d_circular_section_cuda(
@@ -7173,7 +7174,7 @@ void swe2d_gpu_set_coupling_device_global(SWE2DDeviceState* dev) {
 
 // ── Fused structure-flows + coupling-sources ──
 void swe2d_gpu_compute_structure_and_coupling_sources(
-    int32_t n_cells, const double* cell_area_m2,
+    int32_t n_cells, const double* cell_area,
     int32_t n_structures,
     const double* cell_wse, const double* cell_bed,
     const int32_t* structure_type, const int32_t* upstream_cell, const int32_t* downstream_cell,
@@ -7182,18 +7183,18 @@ void swe2d_gpu_compute_structure_and_coupling_sources(
     const double* coeff, const double* cd, const double* opening,
     const double* q_pump, const double* max_flow,
     const int32_t* culvert_code, const int32_t* culvert_shape,
-    const double* culvert_rise, const double* culvert_span, const double* culvert_area_m2,
+    const double* culvert_rise, const double* culvert_span, const double* culvert_area,
     const double* culvert_barrels, const double* culvert_slope,
     const double* inlet_invert_elev, const double* outlet_invert_elev,
     const double* entrance_loss_k, const double* exit_loss_k,
     const int32_t* embankment_enabled, const double* embankment_crest_elev,
     const double* embankment_overflow_width, const double* embankment_weir_coeff,
-    double gravity_mps2,
+    double gravity,
     int32_t n_inlets, const int32_t* inlet_cell, const double* inlet_flow_cms,
-    double* source_rate_mps_out)
+    double* source_rate_out)
 {
-    if (!source_rate_mps_out || n_cells <= 0) return;
-    std::fill(source_rate_mps_out, source_rate_mps_out + static_cast<size_t>(n_cells), 0.0);
+    if (!source_rate_out || n_cells <= 0) return;
+    std::fill(source_rate_out, source_rate_out + static_cast<size_t>(n_cells), 0.0);
     if (n_structures > 0) {
         std::vector<double> sf(static_cast<size_t>(n_structures), 0.0);
         swe2d_gpu_compute_structure_flows(
@@ -7201,13 +7202,13 @@ void swe2d_gpu_compute_structure_and_coupling_sources(
             structure_type, upstream_cell, downstream_cell,
             crest_elev, width, height, diameter, length, roughness_n,
             coeff, cd, opening, q_pump, max_flow,
-            culvert_code, culvert_shape, culvert_rise, culvert_span, culvert_area_m2,
+            culvert_code, culvert_shape, culvert_rise, culvert_span, culvert_area,
             culvert_barrels, culvert_slope, inlet_invert_elev, outlet_invert_elev,
             entrance_loss_k, exit_loss_k, embankment_enabled, embankment_crest_elev,
-            embankment_overflow_width, embankment_weir_coeff, gravity_mps2, sf.data());
+            embankment_overflow_width, embankment_weir_coeff, gravity, sf.data());
         swe2d_gpu_compute_coupling_sources(
-            nullptr, n_cells, cell_area_m2, n_inlets, inlet_cell, inlet_flow_cms,
-            n_structures, upstream_cell, downstream_cell, sf.data(), source_rate_mps_out);
+            nullptr, n_cells, cell_area, n_inlets, inlet_cell, inlet_flow_cms,
+            n_structures, upstream_cell, downstream_cell, sf.data(), source_rate_out);
     }
 }
 
@@ -7237,13 +7238,13 @@ void swe2d_gpu_preload_structure_params(
     const double* coeff, const double* cd, const double* opening,
     const double* q_pump, const double* max_flow,
     const int32_t* culvert_code, const int32_t* culvert_shape,
-    const double* culvert_rise, const double* culvert_span, const double* culvert_area_m2,
+    const double* culvert_rise, const double* culvert_span, const double* culvert_area,
     const double* culvert_barrels, const double* culvert_slope,
     const double* inlet_invert_elev, const double* outlet_invert_elev,
     const double* entrance_loss_k, const double* exit_loss_k,
     const int32_t* embankment_enabled, const double* embankment_crest_elev,
     const double* embankment_overflow_width, const double* embankment_weir_coeff,
-    double gravity_mps2)
+    double gravity)
 {
     if (!dev) dev = s_coupling_dev;
     if (!dev) {
@@ -7252,7 +7253,7 @@ void swe2d_gpu_preload_structure_params(
     }
     if (n_structures <= 0) return;
     auto& ws = dev->sf_ws;
-    if (ws.params_preloaded && ws.n_structures == n_structures && ws.gravity_mps2 == gravity_mps2) return;
+    if (ws.params_preloaded && ws.n_structures == n_structures && ws.gravity == gravity) return;
     cudaStream_t stream = dev->d_stream;
 
     sf_ensure_buf(ws.d_cell_wse, ws.cell_capacity, dev->n_cells);
@@ -7274,7 +7275,7 @@ void swe2d_gpu_preload_structure_params(
     sf_ensure_buf(ws.d_culvert_shape, ws.struct_capacity, n_structures);
     sf_ensure_buf(ws.d_culvert_rise, ws.struct_capacity, n_structures);
     sf_ensure_buf(ws.d_culvert_span, ws.struct_capacity, n_structures);
-    sf_ensure_buf(ws.d_culvert_area_m2, ws.struct_capacity, n_structures);
+    sf_ensure_buf(ws.d_culvert_area, ws.struct_capacity, n_structures);
     sf_ensure_buf(ws.d_culvert_barrels, ws.struct_capacity, n_structures);
     sf_ensure_buf(ws.d_culvert_slope, ws.struct_capacity, n_structures);
     sf_ensure_buf(ws.d_inlet_invert_elev, ws.struct_capacity, n_structures);
@@ -7305,7 +7306,7 @@ void swe2d_gpu_preload_structure_params(
     sf_upload_buf(culvert_shape, ws.d_culvert_shape, n_structures, stream);
     sf_upload_buf(culvert_rise, ws.d_culvert_rise, n_structures, stream);
     sf_upload_buf(culvert_span, ws.d_culvert_span, n_structures, stream);
-    sf_upload_buf(culvert_area_m2, ws.d_culvert_area_m2, n_structures, stream);
+    sf_upload_buf(culvert_area, ws.d_culvert_area, n_structures, stream);
     sf_upload_buf(culvert_barrels, ws.d_culvert_barrels, n_structures, stream);
     sf_upload_buf(culvert_slope, ws.d_culvert_slope, n_structures, stream);
     sf_upload_buf(inlet_invert_elev, ws.d_inlet_invert_elev, n_structures, stream);
@@ -7318,16 +7319,16 @@ void swe2d_gpu_preload_structure_params(
     sf_upload_buf(embankment_weir_coeff, ws.d_embankment_weir_coeff, n_structures, stream);
 
     ws.n_structures = n_structures;
-    ws.gravity_mps2 = gravity_mps2;
+    ws.gravity = gravity;
     ws.params_preloaded = true;
     CUDA_CHECK(cudaStreamSynchronize(stream));
 }
 
-void swe2d_gpu_preload_coupling_cell_area(SWE2DDeviceState* dev, int32_t n_cells, const double* cell_area_m2)
+void swe2d_gpu_preload_coupling_cell_area(SWE2DDeviceState* dev, int32_t n_cells, const double* cell_area)
 {
     if (!dev) dev = s_coupling_dev;
-    if (!dev || n_cells <= 0 || !cell_area_m2) {
-        if (!dev && cell_area_m2) throw std::runtime_error("preload_coupling_cell_area: no GPU device state");
+    if (!dev || n_cells <= 0 || !cell_area) {
+        if (!dev && cell_area) throw std::runtime_error("preload_coupling_cell_area: no GPU device state");
         return;
     }
     auto& ws = dev->coupling_ws;
@@ -7338,7 +7339,7 @@ void swe2d_gpu_preload_coupling_cell_area(SWE2DDeviceState* dev, int32_t n_cells
         CUDA_CHECK(cudaMalloc(reinterpret_cast<void**>(&ws.d_source), static_cast<size_t>(n_cells) * sizeof(double)));
         ws.cell_capacity = n_cells;
     }
-    CUDA_CHECK(cudaMemcpyAsync(ws.d_cell_area, cell_area_m2, static_cast<size_t>(n_cells) * sizeof(double),
+    CUDA_CHECK(cudaMemcpyAsync(ws.d_cell_area, cell_area, static_cast<size_t>(n_cells) * sizeof(double),
                                cudaMemcpyHostToDevice, dev->d_stream));
     CUDA_CHECK(cudaStreamSynchronize(dev->d_stream));
 }
@@ -7397,13 +7398,13 @@ void swe2d_gpu_compute_coupling_full_on_device(
             sf_ws.d_coeff, sf_ws.d_cd, sf_ws.d_opening,
             sf_ws.d_q_pump, sf_ws.d_max_flow,
             sf_ws.d_culvert_code, sf_ws.d_culvert_shape,
-            sf_ws.d_culvert_rise, sf_ws.d_culvert_span, sf_ws.d_culvert_area_m2,
+            sf_ws.d_culvert_rise, sf_ws.d_culvert_span, sf_ws.d_culvert_area,
             sf_ws.d_culvert_barrels, sf_ws.d_culvert_slope,
             sf_ws.d_inlet_invert_elev, sf_ws.d_outlet_invert_elev,
             sf_ws.d_entrance_loss_k, sf_ws.d_exit_loss_k,
             sf_ws.d_embankment_enabled, sf_ws.d_embankment_crest_elev,
             sf_ws.d_embankment_overflow_width, sf_ws.d_embankment_weir_coeff,
-            sf_ws.gravity_mps2, sf_ws.d_structure_flow,
+            sf_ws.gravity, sf_ws.d_structure_flow,
             s_culvert_solver_mode, s_culvert_table_header, s_culvert_table_data,
             s_culvert_table_n_hw, s_culvert_table_n_tw);
         CUDA_CHECK(cudaGetLastError());
@@ -7679,18 +7680,18 @@ bool swe2d_gpu_is_contract_uploaded(const SWE2DDeviceState* dev)
 void swe2d_gpu_compute_coupling_sources(
     SWE2DDeviceState* dev,
     int32_t n_cells,
-    const double* cell_area_m2,
+    const double* cell_area,
     int32_t n_inlets,
     const int32_t* inlet_cell,
     const double* inlet_flow_cms,
     int32_t n_structures,
     const int32_t* structure_up_cell,
     const int32_t* structure_down_cell,
-    const double* structure_flow_cms,
-    double* source_rate_mps_out)
+    const double* structure_flow,
+    double* source_rate_out)
 {
-    if (!source_rate_mps_out || n_cells <= 0) return;
-    std::fill(source_rate_mps_out, source_rate_mps_out + static_cast<size_t>(n_cells), 0.0);
+    if (!source_rate_out || n_cells <= 0) return;
+    std::fill(source_rate_out, source_rate_out + static_cast<size_t>(n_cells), 0.0);
     if (n_inlets <= 0 && n_structures <= 0) return;
 
     constexpr int BLOCK = 256;
@@ -7740,7 +7741,7 @@ void swe2d_gpu_compute_coupling_sources(
             d_inlet_q = ws.d_inlet_q;
         }
 
-        if (n_structures > 0 && structure_up_cell && structure_down_cell && structure_flow_cms) {
+        if (n_structures > 0 && structure_up_cell && structure_down_cell && structure_flow) {
             if (ws.structure_capacity < n_structures) {
                 int32_t* new_struct_up = nullptr;
                 int32_t* new_struct_dn = nullptr;
@@ -7775,7 +7776,7 @@ void swe2d_gpu_compute_coupling_sources(
                 CUDA_CHECK(cudaMemcpy(dst, src, bytes, cudaMemcpyDeviceToHost));
         };
 
-        copy_h2d(d_cell_area, cell_area_m2, static_cast<size_t>(n_cells) * sizeof(double));
+        copy_h2d(d_cell_area, cell_area, static_cast<size_t>(n_cells) * sizeof(double));
         if (use_stream)
             CUDA_CHECK(cudaMemsetAsync(d_source, 0, static_cast<size_t>(n_cells) * sizeof(double), stream));
         else
@@ -7793,14 +7794,14 @@ void swe2d_gpu_compute_coupling_sources(
         if (n_structures > 0 && d_struct_up && d_struct_dn && d_struct_q) {
             copy_h2d(d_struct_up, structure_up_cell, static_cast<size_t>(n_structures) * sizeof(int32_t));
             copy_h2d(d_struct_dn, structure_down_cell, static_cast<size_t>(n_structures) * sizeof(int32_t));
-            copy_h2d(d_struct_q, structure_flow_cms, static_cast<size_t>(n_structures) * sizeof(double));
+            copy_h2d(d_struct_q, structure_flow, static_cast<size_t>(n_structures) * sizeof(double));
             const int grid = (n_structures + BLOCK - 1) / BLOCK;
             swe2d_coupling_structure_source_kernel<<<grid, BLOCK, 0, stream>>>(
                 n_structures, d_struct_up, d_struct_dn, d_struct_q, d_cell_area, n_cells, d_source);
             CUDA_CHECK(cudaGetLastError());
         }
 
-        copy_d2h(source_rate_mps_out, d_source, static_cast<size_t>(n_cells) * sizeof(double));
+        copy_d2h(source_rate_out, d_source, static_cast<size_t>(n_cells) * sizeof(double));
         if (use_stream) CUDA_CHECK(cudaStreamSynchronize(stream));
     } catch (...) {
         throw;
@@ -7872,7 +7873,7 @@ bool swe2d_gpu_allocate_pressure_workspace(
 void swe2d_gpu_compute_bridge_coupling_sources(
     SWE2DDeviceState* dev,
     int32_t n_cells,
-    const double* cell_area_m2,
+    const double* cell_area,
     int32_t n_bridges,
     const int32_t* bridge_up_cell,
     const int32_t* bridge_down_cell,
@@ -7881,10 +7882,10 @@ void swe2d_gpu_compute_bridge_coupling_sources(
     const double* bridge_loss_k_downstream,
     double bridge_opening_width_m,
     double dt_s,
-    double* source_rate_mps_out)
+    double* source_rate_out)
 {
-    if (!source_rate_mps_out || n_cells <= 0) return;
-    std::fill(source_rate_mps_out, source_rate_mps_out + static_cast<size_t>(n_cells), 0.0);
+    if (!source_rate_out || n_cells <= 0) return;
+    std::fill(source_rate_out, source_rate_out + static_cast<size_t>(n_cells), 0.0);
     if (n_bridges <= 0) return;
 
     constexpr int BLOCK = 256;
@@ -7959,7 +7960,7 @@ void swe2d_gpu_compute_bridge_coupling_sources(
                 CUDA_CHECK(cudaMemcpy(dst, src, bytes, cudaMemcpyDeviceToHost));
         };
 
-        copy_h2d(d_cell_area, cell_area_m2, static_cast<size_t>(n_cells) * sizeof(double));
+        copy_h2d(d_cell_area, cell_area, static_cast<size_t>(n_cells) * sizeof(double));
         if (use_stream)
             CUDA_CHECK(cudaMemsetAsync(d_source, 0, static_cast<size_t>(n_cells) * sizeof(double), stream));
         else
@@ -7978,7 +7979,7 @@ void swe2d_gpu_compute_bridge_coupling_sources(
             CUDA_CHECK(cudaGetLastError());
         }
 
-        copy_d2h(source_rate_mps_out, d_source, static_cast<size_t>(n_cells) * sizeof(double));
+        copy_d2h(source_rate_out, d_source, static_cast<size_t>(n_cells) * sizeof(double));
         if (use_stream) CUDA_CHECK(cudaStreamSynchronize(stream));
     } catch (...) {
         throw;
@@ -8028,7 +8029,7 @@ void swe2d_gpu_compute_structure_flows(
     const int32_t* culvert_shape,
     const double* culvert_rise,
     const double* culvert_span,
-    const double* culvert_area_m2,
+    const double* culvert_area,
     const double* culvert_barrels,
     const double* culvert_slope,
     const double* inlet_invert_elev,
@@ -8039,13 +8040,13 @@ void swe2d_gpu_compute_structure_flows(
     const double* embankment_crest_elev,
     const double* embankment_overflow_width,
     const double* embankment_weir_coeff,
-    double gravity_mps2,
-    double* structure_flow_cms_out)
+    double gravity,
+    double* structure_flow_out)
 {
-    if (!structure_flow_cms_out || n_structures <= 0 || n_cells <= 0) {
+    if (!structure_flow_out || n_structures <= 0 || n_cells <= 0) {
         return;
     }
-    std::fill(structure_flow_cms_out, structure_flow_cms_out + static_cast<size_t>(n_structures), 0.0);
+    std::fill(structure_flow_out, structure_flow_out + static_cast<size_t>(n_structures), 0.0);
 
     constexpr int BLOCK = 256;
     // Persistent workspace: function-local static survives for process lifetime,
@@ -8071,7 +8072,7 @@ void swe2d_gpu_compute_structure_flows(
     static int32_t* s_d_culvert_shape = nullptr;
     static double* s_d_culvert_rise = nullptr;
     static double* s_d_culvert_span = nullptr;
-    static double* s_d_culvert_area_m2 = nullptr;
+    static double* s_d_culvert_area = nullptr;
     static double* s_d_culvert_barrels = nullptr;
     static double* s_d_culvert_slope = nullptr;
     static double* s_d_inlet_invert_elev = nullptr;
@@ -8119,7 +8120,7 @@ void swe2d_gpu_compute_structure_flows(
     SF_ENSURE(s_d_culvert_shape, s_struct_cap, n_structures, sizeof(int32_t));
     SF_ENSURE(s_d_culvert_rise, s_struct_cap, n_structures, sizeof(double));
     SF_ENSURE(s_d_culvert_span, s_struct_cap, n_structures, sizeof(double));
-    SF_ENSURE(s_d_culvert_area_m2, s_struct_cap, n_structures, sizeof(double));
+    SF_ENSURE(s_d_culvert_area, s_struct_cap, n_structures, sizeof(double));
     SF_ENSURE(s_d_culvert_barrels, s_struct_cap, n_structures, sizeof(double));
     SF_ENSURE(s_d_culvert_slope, s_struct_cap, n_structures, sizeof(double));
     SF_ENSURE(s_d_inlet_invert_elev, s_struct_cap, n_structures, sizeof(double));
@@ -8157,7 +8158,7 @@ void swe2d_gpu_compute_structure_flows(
         if (culvert_shape) upload(s_d_culvert_shape, culvert_shape, n_structures);
         if (culvert_rise) upload(s_d_culvert_rise, culvert_rise, n_structures);
         if (culvert_span) upload(s_d_culvert_span, culvert_span, n_structures);
-        if (culvert_area_m2) upload(s_d_culvert_area_m2, culvert_area_m2, n_structures);
+        if (culvert_area) upload(s_d_culvert_area, culvert_area, n_structures);
         if (culvert_barrels) upload(s_d_culvert_barrels, culvert_barrels, n_structures);
         if (culvert_slope) upload(s_d_culvert_slope, culvert_slope, n_structures);
         if (inlet_invert_elev) upload(s_d_inlet_invert_elev, inlet_invert_elev, n_structures);
@@ -8181,19 +8182,19 @@ void swe2d_gpu_compute_structure_flows(
             s_d_coeff, s_d_cd, s_d_opening,
             s_d_q_pump, s_d_max_flow,
             s_d_culvert_code, s_d_culvert_shape,
-            s_d_culvert_rise, s_d_culvert_span, s_d_culvert_area_m2,
+            s_d_culvert_rise, s_d_culvert_span, s_d_culvert_area,
             s_d_culvert_barrels, s_d_culvert_slope,
             s_d_inlet_invert_elev, s_d_outlet_invert_elev,
             s_d_entrance_loss_k, s_d_exit_loss_k,
             s_d_embankment_enabled, s_d_embankment_crest_elev,
             s_d_embankment_overflow_width, s_d_embankment_weir_coeff,
-            gravity_mps2, s_d_structure_flow,
+            gravity, s_d_structure_flow,
             s_culvert_solver_mode,
             s_culvert_table_header, s_culvert_table_data,
             s_culvert_table_n_hw, s_culvert_table_n_tw);
         CUDA_CHECK(cudaGetLastError());
         CUDA_CHECK(cudaDeviceSynchronize());
-        CUDA_CHECK(cudaMemcpy(structure_flow_cms_out, s_d_structure_flow,
+        CUDA_CHECK(cudaMemcpy(structure_flow_out, s_d_structure_flow,
                               static_cast<size_t>(n_structures) * sizeof(double),
                               cudaMemcpyDeviceToHost));
     } catch (...) {
@@ -8265,28 +8266,28 @@ __global__ void swe2d_culvert_build_table_kernel(
     double len_ft = fmax(0.1, culvert_length[ci]);
 
     // Inlet control for hint
-    const double q_inlet_cfs = fmax(0.0, swe2d_culvert_inlet_controlled_flow_cfs_cuda(xsect, slope, hw_ft));
-    const double q_inlet_cms = q_inlet_cfs / 35.31466672148859;
+    const double q_inlet = fmax(0.0, swe2d_culvert_inlet_controlled_flow_cfs_cuda(xsect, slope, hw_ft));
+    const double q_inlet_si = q_inlet / USC_FT3_PER_SI_M3;
 
     double orifice_cap = 0.0;
     if (culvert_diameter[ci] > 0.0) {
         const double a_orif = bw2d_circular_area(culvert_diameter[ci]);
         const double dh_orif = fmax(0.0, hw_ft - tw_ft);
         if (a_orif > 0.0 && dh_orif > 1.0e-12) {
-            orifice_cap = a_orif * sqrt(2.0 * 32.2 * dh_orif) / 35.31466672148859;  // CFS → CMS
+            orifice_cap = a_orif * sqrt(2.0 * USC_GRAVITY * dh_orif) / USC_FT3_PER_SI_M3;  // CFS → CMS
         }
     }
-    const double q_hint_cfs = fmax(1.0, fmax(q_inlet_cfs, orifice_cap * 35.31466672148859));
+    const double q_hint = fmax(1.0, fmax(q_inlet, orifice_cap * USC_FT3_PER_SI_M3));
 
     double q_outlet_cms = 0.0;
     if (hw_ft > 0.0) {
         q_outlet_cms = swe2d_culvert_outlet_control_flow_cms_cuda(
             xsect, hw_ft, tw_ft, len_ft, slope,
             fmax(1.0e-6, culvert_roughness_n[ci]),
-            entrance_loss_k[ci], exit_loss_k[ci], q_hint_cfs);
+            entrance_loss_k[ci], exit_loss_k[ci], q_hint);
     }
 
-    double q = fmax(0.0, fmin(q_inlet_cms, (q_outlet_cms > 0.0) ? q_outlet_cms : q_inlet_cms));
+    double q = fmax(0.0, fmin(q_inlet_si, (q_outlet_cms > 0.0) ? q_outlet_cms : q_inlet_si));
     if (orifice_cap > 0.0) q = (q > 0.0) ? fmin(q, orifice_cap) : orifice_cap;
 
     // Write result
@@ -12817,7 +12818,7 @@ void swe2d_gpu_destroy(SWE2DDeviceState* dev) {
         safe_free(ws.d_q_pump); safe_free(ws.d_max_flow);
         safe_free(ws.d_culvert_code); safe_free(ws.d_culvert_shape);
         safe_free(ws.d_culvert_rise); safe_free(ws.d_culvert_span);
-        safe_free(ws.d_culvert_area_m2); safe_free(ws.d_culvert_barrels); safe_free(ws.d_culvert_slope);
+        safe_free(ws.d_culvert_area); safe_free(ws.d_culvert_barrels); safe_free(ws.d_culvert_slope);
         safe_free(ws.d_inlet_invert_elev); safe_free(ws.d_outlet_invert_elev);
         safe_free(ws.d_entrance_loss_k); safe_free(ws.d_exit_loss_k);
         safe_free(ws.d_embankment_enabled); safe_free(ws.d_embankment_crest_elev);

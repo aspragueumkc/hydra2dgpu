@@ -2327,6 +2327,7 @@ def _on_run(self, request=None):
 
         try:
             from swe2d.runtime.bridge_stacked_runtime import build_bridge_stacked_plans_for_runtime
+            from swe2d import units as _u
 
             bridge_stacked_plans = build_bridge_stacked_plans_for_runtime(
                 self._mesh_data,
@@ -2365,14 +2366,14 @@ def _on_run(self, request=None):
             # Compute model-to-feet factor: for a foot model (length_scale=3.28)
             # this gives 1.0 (no conversion); for SI (length_scale=1.0) this gives 3.28.
             _ls = max(1.0e-6, float(self._length_scale_si_to_model()))
-            _model_to_ft = 3.280839895013123 / _ls
+            _model_to_ft = _u.USC_FT_PER_SI_M / _ls
             structures_mod = SWE2DStructureModule(hydraulic_structures_cfg, model_to_ft=_model_to_ft) if hydraulic_structures_cfg is not None and SWE2DStructureModule is not None else None
             if solver_backend_mode == "cpu":
                 coupling_loop_mode = "cpu"
                 drainage_solver_backend_mode = "cpu"
             coupling_controller = SWE2DCouplingController(
-                cell_area_m2=self._mesh_cell_areas(),
-                cell_bed_m=self._mesh_cell_min_bed(),
+                cell_area=self._mesh_cell_areas(),
+                cell_bed=self._mesh_cell_min_bed(),
                 drainage=drainage_mod,
                 structures=structures_mod,
                 coupling_loop=coupling_loop_mode,

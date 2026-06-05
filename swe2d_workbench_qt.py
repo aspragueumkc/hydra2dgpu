@@ -7594,7 +7594,7 @@ class SWE2DWorkbenchDialog(QtWidgets.QDialog):
         if structures_mod is not None:
             try:
                 hh = np.ascontiguousarray(h, dtype=np.float64).ravel()
-                cell_wse = hh + np.asarray(coupling_controller.cell_bed_m, dtype=np.float64).ravel()
+                cell_wse = hh + np.asarray(coupling_controller.cell_bed, dtype=np.float64).ravel()
                 details = list(structures_mod.structure_details(cell_wse))
                 # Use the native path flows (which actually drove the simulation)
                 # for the 'flow' metric, falling back to Python path if unavailable.

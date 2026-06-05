@@ -469,12 +469,12 @@ class TestSWE2DDrainageStructures(unittest.TestCase):
                 return np.asarray([9.99], dtype=np.float64)
 
             @staticmethod
-            def swe2d_gpu_compute_coupling_sources(cell_area_m2, inlet_cell, inlet_flow_cms, structure_up_cell, structure_down_cell, structure_flow_cms):
-                out = np.zeros(int(np.asarray(cell_area_m2).size), dtype=np.float64)
-                area = np.asarray(cell_area_m2, dtype=np.float64)
+            def swe2d_gpu_compute_coupling_sources(cell_area, inlet_cell, inlet_flow_cms, structure_up_cell, structure_down_cell, structure_flow):
+                out = np.zeros(int(np.asarray(cell_area).size), dtype=np.float64)
+                area = np.asarray(cell_area, dtype=np.float64)
                 up = np.asarray(structure_up_cell, dtype=np.int32)
                 dn = np.asarray(structure_down_cell, dtype=np.int32)
-                qq = np.asarray(structure_flow_cms, dtype=np.float64)
+                qq = np.asarray(structure_flow, dtype=np.float64)
                 for i in range(int(qq.size)):
                     out[int(up[i])] -= float(qq[i]) / float(area[int(up[i])])
                     out[int(dn[i])] += float(qq[i]) / float(area[int(dn[i])])
@@ -556,7 +556,7 @@ class TestSWE2DDrainageStructures(unittest.TestCase):
                 np.asarray(ssoa.culvert_shape, dtype=np.int32),
                 np.asarray(ssoa.culvert_rise, dtype=np.float64),
                 np.asarray(ssoa.culvert_span, dtype=np.float64),
-                np.asarray(ssoa.culvert_area_m2, dtype=np.float64),
+                np.asarray(ssoa.culvert_area, dtype=np.float64),
                 np.asarray(ssoa.culvert_barrels, dtype=np.float64),
                 np.asarray(ssoa.culvert_slope, dtype=np.float64),
                 np.asarray(ssoa.inlet_invert_elev, dtype=np.float64),

@@ -123,7 +123,7 @@ class SWE2DStructuresSoA:
     culvert_shape: np.ndarray
     culvert_rise: np.ndarray
     culvert_span: np.ndarray
-    culvert_area_m2: np.ndarray
+    culvert_area: np.ndarray  # L²  (in computation units)
     culvert_barrels: np.ndarray
     culvert_slope: np.ndarray
     inlet_invert_elev: np.ndarray
@@ -288,6 +288,19 @@ def pack_pipe_network_soa(cfg: Optional[PipeNetworkConfig], n_cells: int) -> Opt
 
 
 def pack_structures_soa(cfg: Optional[HydraulicStructureConfig], n_cells: int, model_to_ft: float = 1.0) -> Optional[SWE2DStructuresSoA]:
+    """Pack hydraulic structure metadata into SoA arrays for GPU/CPU computation.
+
+    Input metadata is in MODEL UNITS (SI or USC depending on CRS).
+    Output SoA arrays are in COMPUTATION UNITS:
+      - SI model: computation uses feet (so m → ft via model_to_ft ≈ 3.28)
+      - USC model: computation uses feet (model is already ft, model_to_ft = 1.0)
+
+    The computation unit system is determined by model_to_ft
+    (USC_FT_PER_SI_M / SI_M_PER_MODEL).
+
+    All length values [L] are multiplied by model_to_ft.
+    All area values [L²] are multiplied by model_to_ft².
+    """
     if cfg is None or not cfg.enabled:
         return None
     if not cfg.structures:
@@ -312,7 +325,7 @@ def pack_structures_soa(cfg: Optional[HydraulicStructureConfig], n_cells: int, m
     culvert_shape = np.zeros(ns, dtype=np.int32)
     culvert_rise = np.zeros(ns, dtype=np.float64)
     culvert_span = np.zeros(ns, dtype=np.float64)
-    culvert_area_m2 = np.zeros(ns, dtype=np.float64)
+    culvert_area = np.zeros(ns, dtype=np.float64)
     culvert_barrels = np.ones(ns, dtype=np.float64)
     culvert_slope = np.zeros(ns, dtype=np.float64)
     inlet_invert_elev = np.zeros(ns, dtype=np.float64)
@@ -347,7 +360,7 @@ def pack_structures_soa(cfg: Optional[HydraulicStructureConfig], n_cells: int, m
         culvert_shape[i] = int(culvert_shape_map.get(str(st.metadata.get("culvert_shape", "circular") or "circular").strip().lower(), 0))
         culvert_rise[i] = float(st.metadata.get("culvert_rise", st.metadata.get("height", st.metadata.get("diameter", 0.0))) or 0.0) * m2ft
         culvert_span[i] = float(st.metadata.get("culvert_span", st.metadata.get("width", culvert_rise[i] / max(1.0e-6, m2ft))) or 0.0) * m2ft
-        culvert_area_m2[i] = float(st.metadata.get("culvert_area_m2", st.metadata.get("area_m2", 0.0)) or 0.0) * (m2ft * m2ft)
+        culvert_area[i] = float(st.metadata.get("culvert_area_m2", st.metadata.get("area_m2", 0.0)) or 0.0) * (m2ft * m2ft)  # L²
         culvert_barrels[i] = float(st.metadata.get("culvert_barrels", 1.0) or 1.0)
         culvert_slope[i] = float(st.metadata.get("culvert_slope", 0.0) or 0.0)
         inlet_invert_elev[i] = float(st.metadata.get("inlet_invert_elev", st.crest_elev) or st.crest_elev) * m2ft
@@ -378,7 +391,7 @@ def pack_structures_soa(cfg: Optional[HydraulicStructureConfig], n_cells: int, m
         culvert_shape=culvert_shape,
         culvert_rise=culvert_rise,
         culvert_span=culvert_span,
-        culvert_area_m2=culvert_area_m2,
+        culvert_area=culvert_area,
         culvert_barrels=culvert_barrels,
         culvert_slope=culvert_slope,
         inlet_invert_elev=inlet_invert_elev,
@@ -440,8 +453,8 @@ class SWE2DCouplingController:
         self._cell_cx: Optional[np.ndarray] = None
         self._cell_cy: Optional[np.ndarray] = None
         # Configure unit system from CRS-derived length scale.
-        self._length_scale = max(1.0e-6, float(length_scale_si_to_model))
-        _u.configure(self._length_scale)
+        self._si_m_per_model = max(1.0e-6, float(length_scale_si_to_model))
+        _u.configure(self._si_m_per_model)
         # Factor to convert model metadata lengths → feet for the C++ kernel.
         #   SI model: metadata in m → ×3.28 → ft
         #   US model:  metadata in ft → ×1.0 → ft
@@ -610,7 +623,7 @@ class SWE2DCouplingController:
     def _apply_redistribution(
         self,
         source_rate: np.ndarray,
-        structure_flow_cms: np.ndarray,
+        structure_flows: np.ndarray,
         up_cells: np.ndarray,
         dn_cells: np.ndarray,
         native_mod=None,
@@ -627,7 +640,7 @@ class SWE2DCouplingController:
 
         Args:
             source_rate: Per-cell source rates [m/s], will be modified in-place.
-            structure_flow_cms: Per-structure flow [m³/s].
+            structure_flows: Per-structure flow [m³/s].
             up_cells: Original single upstream cell indices.
             dn_cells: Original single downstream cell indices.
             native_mod: Optional native CUDA module.  When provided and has
@@ -640,7 +653,7 @@ class SWE2DCouplingController:
         if self._redist_offsets is None or self._redist_offsets.size <= 1:
             return source_rate  # no redistribution data
 
-        n_struct = len(structure_flow_cms)
+        n_struct = len(structure_flows)
         if n_struct == 0:
             return source_rate
 
@@ -653,7 +666,7 @@ class SWE2DCouplingController:
                         np.asarray(self._redist_offsets, dtype=np.int32, order='C'),
                         np.asarray(self._redist_cell_idx, dtype=np.int32, order='C'),
                         np.asarray(self._redist_weights, dtype=np.float64, order='C'),
-                        np.asarray(structure_flow_cms, dtype=np.float64, order='C'),
+                        np.asarray(structure_flows, dtype=np.float64, order='C'),
                         np.asarray(up_cells, dtype=np.int32, order='C'),
                         np.asarray(dn_cells, dtype=np.int32, order='C'),
                         np.asarray(self.cell_area, dtype=np.float64, order='C'),
@@ -681,7 +694,7 @@ class SWE2DCouplingController:
             if count <= 0:
                 continue
 
-            q = float(structure_flow_cms[i])
+            q = float(structure_flows[i])
             if not np.isfinite(q) or q == 0.0:
                 continue
 
@@ -712,10 +725,12 @@ class SWE2DCouplingController:
 
     @property
     def cell_area_m2(self) -> np.ndarray:
+        """Backward-compatible alias for cell_area (L² in model units)."""
         return self.cell_area
 
     @property
     def cell_bed_m(self) -> np.ndarray:
+        """Backward-compatible alias for cell_bed (L in model units)."""
         return self.cell_bed
 
     def _native_cuda_module(self):
@@ -909,7 +924,7 @@ class SWE2DCouplingController:
                     np.asarray(ssoa.culvert_shape, dtype=np.int32),
                     np.asarray(ssoa.culvert_rise, dtype=np.float64),
                     np.asarray(ssoa.culvert_span, dtype=np.float64),
-                    np.asarray(ssoa.culvert_area_m2, dtype=np.float64),
+                    np.asarray(ssoa.culvert_area, dtype=np.float64),
                     np.asarray(ssoa.culvert_barrels, dtype=np.float64),
                     np.asarray(ssoa.culvert_slope, dtype=np.float64),
                     np.asarray(ssoa.inlet_invert_elev, dtype=np.float64),
@@ -1012,7 +1027,7 @@ class SWE2DCouplingController:
             "structure_id": np.asarray([str(sts[i].structure_id) for i in bridge_indices], dtype=object),
             "upstream_cell": np.ascontiguousarray([int(sts[i].upstream_cell) for i in bridge_indices], dtype=np.int32),
             "downstream_cell": np.ascontiguousarray([int(sts[i].downstream_cell) for i in bridge_indices], dtype=np.int32),
-            "flow_cms": np.ascontiguousarray(flows[bridge_indices], dtype=np.float64),
+            "flow": np.ascontiguousarray(flows[bridge_indices], dtype=np.float64),
             "loss_k_upstream": np.ascontiguousarray([
                 float(sts[i].metadata.get("inlet_loss_k", sts[i].metadata.get("coeff", 0.5)))
                 for i in bridge_indices
@@ -1069,7 +1084,7 @@ class SWE2DCouplingController:
             np.asarray(ssoa.culvert_shape, dtype=np.int32),
             np.asarray(ssoa.culvert_rise, dtype=np.float64),
             np.asarray(ssoa.culvert_span, dtype=np.float64),
-            np.asarray(ssoa.culvert_area_m2, dtype=np.float64),
+            np.asarray(ssoa.culvert_area, dtype=np.float64),
             np.asarray(ssoa.culvert_barrels, dtype=np.float64),
             np.asarray(ssoa.culvert_slope, dtype=np.float64),
             np.asarray(ssoa.inlet_invert_elev, dtype=np.float64),
@@ -1087,8 +1102,8 @@ class SWE2DCouplingController:
         except Exception:
             return None
 
-    def _structure_source_rate_from_flows(self, structure_flow_cms: np.ndarray, native_mod=None) -> np.ndarray:
-        flows = np.ascontiguousarray(structure_flow_cms, dtype=np.float64).ravel()
+    def _structure_source_rate_from_flows(self, structure_flows: np.ndarray, native_mod=None) -> np.ndarray:
+        flows = np.ascontiguousarray(structure_flows, dtype=np.float64).ravel()
         if flows.size == 0:
             return np.zeros(self.n_cells, dtype=np.float64)
 
@@ -1211,7 +1226,7 @@ class SWE2DCouplingController:
                 )
                 # Python structure module returns CMS flows; convert to model
                 # flow units so division by model-unit cell_area is consistent.
-                src *= (self._length_scale * self._length_scale * self._length_scale)
+                src *= _u.si_m3_per_model_volume()
                 component_sums["structures_native_cpu_helper"] = 0.0
                 structure_diag = self.structures.compute_structure_fluxes(float(dt_s), cell_wse)
 
@@ -1528,7 +1543,7 @@ class SWE2DCouplingController:
                                                 np.asarray(self.cell_area, dtype=np.float64),
                                                 np.asarray([int(bridge_arrays["upstream_cell"][i])], dtype=np.int32),
                                                 np.asarray([int(bridge_arrays["downstream_cell"][i])], dtype=np.int32),
-                                                np.asarray([float(bridge_arrays["flow_cms"][i])], dtype=np.float64),
+                                                np.asarray([float(bridge_arrays["flow"][i])], dtype=np.float64),
                                                 np.asarray([float(bridge_arrays["loss_k_upstream"][i])], dtype=np.float64),
                                                 np.asarray([float(bridge_arrays["loss_k_downstream"][i])], dtype=np.float64),
                                                 float(bridge_arrays["width_m"][i]), float(dt_s),
@@ -1630,7 +1645,7 @@ class SWE2DCouplingController:
                             np.asarray(ssoa.culvert_shape[non_bridge_mask], dtype=np.int32),
                             np.asarray(ssoa.culvert_rise[non_bridge_mask], dtype=np.float64),
                             np.asarray(ssoa.culvert_span[non_bridge_mask], dtype=np.float64),
-                            np.asarray(ssoa.culvert_area_m2[non_bridge_mask], dtype=np.float64),
+                            np.asarray(ssoa.culvert_area[non_bridge_mask], dtype=np.float64),
                             np.asarray(ssoa.culvert_barrels[non_bridge_mask], dtype=np.float64),
                             np.asarray(ssoa.culvert_slope[non_bridge_mask], dtype=np.float64),
                             np.asarray(ssoa.inlet_invert_elev[non_bridge_mask], dtype=np.float64),
@@ -1686,7 +1701,7 @@ class SWE2DCouplingController:
                                                 np.asarray(self.cell_area, dtype=np.float64),
                                                 np.asarray([int(bridge_arrays["upstream_cell"][i])], dtype=np.int32),
                                                 np.asarray([int(bridge_arrays["downstream_cell"][i])], dtype=np.int32),
-                                                np.asarray([float(bridge_arrays["flow_cms"][i])], dtype=np.float64),
+                                                np.asarray([float(bridge_arrays["flow"][i])], dtype=np.float64),
                                                 np.asarray([float(bridge_arrays["loss_k_upstream"][i])], dtype=np.float64),
                                                 np.asarray([float(bridge_arrays["loss_k_downstream"][i])], dtype=np.float64),
                                                 float(bridge_arrays["width_m"][i]),
@@ -1722,7 +1737,7 @@ class SWE2DCouplingController:
                                     np.asarray(self.cell_area, dtype=np.float64),
                                     np.asarray([int(bridge_arrays["upstream_cell"][i])], dtype=np.int32),
                                     np.asarray([int(bridge_arrays["downstream_cell"][i])], dtype=np.int32),
-                                    np.asarray([float(bridge_arrays["flow_cms"][i])], dtype=np.float64),
+                                    np.asarray([float(bridge_arrays["flow"][i])], dtype=np.float64),
                                     np.asarray([float(bridge_arrays["loss_k_upstream"][i])], dtype=np.float64),
                                     np.asarray([float(bridge_arrays["loss_k_downstream"][i])], dtype=np.float64),
                                     float(bridge_arrays["width_m"][i]),

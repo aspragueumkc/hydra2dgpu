@@ -10,6 +10,7 @@
 
 #include "swe2d_mesh.hpp"
 #include "swe2d_solver.hpp"
+#include "swe2d_units.cuh"
 
 #ifdef HYDRA_HAS_CUDA
 #include "swe2d_gpu.cuh"
@@ -122,7 +123,7 @@ constexpr int BW2D_M = 2;
 constexpr int BW2D_C = 3;
 constexpr int BW2D_Y = 4;
 constexpr int BW2D_MAX_CULVERT_CODE = 57;
-constexpr double BW2D_GRAVITY_FTPS2 = 32.2;
+constexpr double BW2D_GRAVITY_FTPS2 = 32.2;  // L/T²  (ft/s²) — kept for HDS-5 table lookups
 constexpr double BW2D_BIG = 1.0e20;
 
 static const std::array<std::array<double, 5>, 58> BW2D_CULVERT_PARAMS = {{
@@ -754,7 +755,7 @@ static py::array_t<double> compute_structure_flows_native(
     py::array_t<int32_t, py::array::c_style | py::array::forcecast> culvert_shape,
     py::array_t<double, py::array::c_style | py::array::forcecast> culvert_rise,
     py::array_t<double, py::array::c_style | py::array::forcecast> culvert_span,
-    py::array_t<double, py::array::c_style | py::array::forcecast> culvert_area_m2,
+    py::array_t<double, py::array::c_style | py::array::forcecast> culvert_area,
     py::array_t<double, py::array::c_style | py::array::forcecast> culvert_barrels,
     py::array_t<double, py::array::c_style | py::array::forcecast> culvert_slope,
     py::array_t<double, py::array::c_style | py::array::forcecast> inlet_invert_elev,
@@ -765,7 +766,7 @@ static py::array_t<double> compute_structure_flows_native(
     py::array_t<double, py::array::c_style | py::array::forcecast> embankment_crest_elev,
     py::array_t<double, py::array::c_style | py::array::forcecast> embankment_overflow_width,
     py::array_t<double, py::array::c_style | py::array::forcecast> embankment_weir_coeff,
-    double gravity_mps2)
+    double gravity)
 {
     const py::ssize_t n_cells = cell_wse.size();
     const py::ssize_t ns = structure_type.size();
@@ -787,7 +788,7 @@ static py::array_t<double> compute_structure_flows_native(
     require_array(culvert_shape, ns, "culvert_shape");
     require_array(culvert_rise, ns, "culvert_rise");
     require_array(culvert_span, ns, "culvert_span");
-    require_array(culvert_area_m2, ns, "culvert_area_m2");
+    require_array(culvert_area, ns, "culvert_area_m2");
     require_array(culvert_barrels, ns, "culvert_barrels");
     require_array(culvert_slope, ns, "culvert_slope");
     require_array(inlet_invert_elev, ns, "inlet_invert_elev");
@@ -806,8 +807,8 @@ static py::array_t<double> compute_structure_flows_native(
     const auto* dn = downstream_cell.data();
     auto* qout = out.mutable_data();
 
-    constexpr double FT_PER_M = 3.280839895013123;
-    constexpr double CFS_PER_CMS = 35.31466672148859;
+    constexpr double USC_FT_PER_SI_M = 3.280839895013123;    // ft per m
+    constexpr double USC_FT3_PER_SI_M3 = 35.31466672148859;  // ft³/s per m³/s
 
     for (py::ssize_t i = 0; i < ns; ++i) {
         qout[i] = 0.0;
@@ -827,7 +828,7 @@ static py::array_t<double> compute_structure_flows_native(
         }
         if (stype[i] == 3) {
             const double area = std::max(0.0, opening.data()[i]) * std::max(0.0, width.data()[i]) * std::max(0.0, height.data()[i]);
-            double q = bw2d_orifice_q(wu, wd, area, cd.data()[i], gravity_mps2);
+            double q = bw2d_orifice_q(wu, wd, area, cd.data()[i], gravity);
             if (qmax >= 0.0) q = bw2d_clamp(q, -qmax, qmax);
             qout[i] = q;
             continue;
@@ -837,7 +838,7 @@ static py::array_t<double> compute_structure_flows_native(
             const double loss_scale = std::max(1.0e-6, 1.0 + std::max(0.0, entrance_loss_k.data()[i]) + std::max(0.0, exit_loss_k.data()[i]));
             const double dh = wu - wd;
             if (area > 0.0 && std::abs(dh) > 1.0e-12) {
-                double q = area * std::sqrt(std::max(0.0, 2.0 * gravity_mps2 * std::abs(dh))) / loss_scale;
+                double q = area * std::sqrt(std::max(0.0, 2.0 * gravity * std::abs(dh))) / loss_scale;
                 if (qmax >= 0.0) q = std::min(q, qmax);
                 qout[i] = (dh >= 0.0) ? q : -q;
             }
@@ -882,9 +883,9 @@ static py::array_t<double> compute_structure_flows_native(
         }
 
         const double q_inlet_cfs = std::max(0.0, bw2d_inlet_controlled_flow_cfs(xsect, slope, std::max(0.0, available_head_up), nullptr));
-        const double q_inlet_cms = q_inlet_cfs / CFS_PER_CMS;
+        const double q_inlet_cms = q_inlet_cfs / USC_FT3_PER_SI_M3;
 
-        double area = std::max(0.0, culvert_area_m2.data()[i]);
+        double area = std::max(0.0, culvert_area.data()[i]);
         if (area <= 0.0 && std::max(diameter.data()[i], rise) > 0.0 && culvert_shape.data()[i] == 0) {
             area = bw2d_circular_area(std::max(diameter.data()[i], rise));
         }
@@ -893,23 +894,23 @@ static py::array_t<double> compute_structure_flows_native(
         if (area > 0.0) {
             q_orifice = std::abs(bw2d_orifice_q(available_head_up, tailwater_depth, area, cd.data()[i], BW2D_GRAVITY_FTPS2));
             if (qmax >= 0.0) q_orifice = std::min(q_orifice, qmax);
-            q_orifice /= CFS_PER_CMS;  // CFS → CMS
+            q_orifice /= USC_FT3_PER_SI_M3;  // CFS → CMS
         }
 
         double q_manning_cap = 0.0;
         if (xsect.rectangular) {
             // Rectangular culvert: A = w*h, P = 2(w+h), R = A/P
             q_manning_cap = bw2d_rect_manning_capacity_full(xsect.width, xsect.y_full, slope, roughness_n.data()[i]);
-            q_manning_cap /= CFS_PER_CMS;  // CFS → CMS
+            q_manning_cap /= USC_FT3_PER_SI_M3;  // CFS → CMS
         } else {
             const double dia_for_cap = std::max(std::max(diameter.data()[i], rise), bw2d_equiv_diameter_from_area(std::max(0.0, area)));
             if (dia_for_cap > 0.0) {
                 q_manning_cap = bw2d_pipe_manning_capacity_full(dia_for_cap, slope, roughness_n.data()[i]);
-                q_manning_cap /= CFS_PER_CMS;  // CFS → CMS
+                q_manning_cap /= USC_FT3_PER_SI_M3;  // CFS → CMS
             }
         }
 
-        const double q_hint_cfs = std::max(q_inlet_cfs, std::max(q_orifice, q_manning_cap) * CFS_PER_CMS);
+        const double q_hint_cfs = std::max(q_inlet_cfs, std::max(q_orifice, q_manning_cap) * USC_FT3_PER_SI_M3);
         const double q_outlet = bw2d_culvert_outlet_control_flow_cms(
             xsect,
             std::max(0.0, available_head_up),
@@ -965,7 +966,7 @@ static py::array_t<double> compute_structure_flows_cuda(
     py::array_t<int32_t, py::array::c_style | py::array::forcecast> culvert_shape,
     py::array_t<double, py::array::c_style | py::array::forcecast> culvert_rise,
     py::array_t<double, py::array::c_style | py::array::forcecast> culvert_span,
-    py::array_t<double, py::array::c_style | py::array::forcecast> culvert_area_m2,
+    py::array_t<double, py::array::c_style | py::array::forcecast> culvert_area,
     py::array_t<double, py::array::c_style | py::array::forcecast> culvert_barrels,
     py::array_t<double, py::array::c_style | py::array::forcecast> culvert_slope,
     py::array_t<double, py::array::c_style | py::array::forcecast> inlet_invert_elev,
@@ -976,7 +977,7 @@ static py::array_t<double> compute_structure_flows_cuda(
     py::array_t<double, py::array::c_style | py::array::forcecast> embankment_crest_elev,
     py::array_t<double, py::array::c_style | py::array::forcecast> embankment_overflow_width,
     py::array_t<double, py::array::c_style | py::array::forcecast> embankment_weir_coeff,
-    double gravity_mps2)
+    double gravity)
 {
     const py::ssize_t n_cells = cell_wse.size();
     const py::ssize_t ns = structure_type.size();
@@ -998,7 +999,7 @@ static py::array_t<double> compute_structure_flows_cuda(
     require_array(culvert_shape, ns, "culvert_shape");
     require_array(culvert_rise, ns, "culvert_rise");
     require_array(culvert_span, ns, "culvert_span");
-    require_array(culvert_area_m2, ns, "culvert_area_m2");
+    require_array(culvert_area, ns, "culvert_area_m2");
     require_array(culvert_barrels, ns, "culvert_barrels");
     require_array(culvert_slope, ns, "culvert_slope");
     require_array(inlet_invert_elev, ns, "inlet_invert_elev");
@@ -1034,7 +1035,7 @@ static py::array_t<double> compute_structure_flows_cuda(
         ns ? culvert_shape.data() : nullptr,
         ns ? culvert_rise.data() : nullptr,
         ns ? culvert_span.data() : nullptr,
-        ns ? culvert_area_m2.data() : nullptr,
+        ns ? culvert_area.data() : nullptr,
         ns ? culvert_barrels.data() : nullptr,
         ns ? culvert_slope.data() : nullptr,
         ns ? inlet_invert_elev.data() : nullptr,
@@ -1045,7 +1046,7 @@ static py::array_t<double> compute_structure_flows_cuda(
         ns ? embankment_crest_elev.data() : nullptr,
         ns ? embankment_overflow_width.data() : nullptr,
         ns ? embankment_weir_coeff.data() : nullptr,
-        gravity_mps2,
+        gravity,
         ns ? out.mutable_data() : nullptr);
     return out;
 }
@@ -1166,7 +1167,7 @@ PYBIND11_MODULE(HYDRA_SWE2D_PY_MODULE_NAME, m) {
 
 #ifdef HYDRA_HAS_CUDA
     m.def("swe2d_gpu_compute_structure_and_coupling_sources",
-        [](py::array_t<double, py::array::c_style | py::array::forcecast> cell_area_m2,
+        [](py::array_t<double, py::array::c_style | py::array::forcecast> cell_area,
            py::array_t<double, py::array::c_style | py::array::forcecast> cell_wse,
            py::array_t<double, py::array::c_style | py::array::forcecast> cell_bed,
            py::array_t<int32_t, py::array::c_style | py::array::forcecast> structure_type,
@@ -1187,7 +1188,7 @@ PYBIND11_MODULE(HYDRA_SWE2D_PY_MODULE_NAME, m) {
            py::array_t<int32_t, py::array::c_style | py::array::forcecast> culvert_shape,
            py::array_t<double, py::array::c_style | py::array::forcecast> culvert_rise,
            py::array_t<double, py::array::c_style | py::array::forcecast> culvert_span,
-           py::array_t<double, py::array::c_style | py::array::forcecast> culvert_area_m2,
+           py::array_t<double, py::array::c_style | py::array::forcecast> culvert_area,
            py::array_t<double, py::array::c_style | py::array::forcecast> culvert_barrels,
            py::array_t<double, py::array::c_style | py::array::forcecast> culvert_slope,
            py::array_t<double, py::array::c_style | py::array::forcecast> inlet_invert_elev,
@@ -1198,17 +1199,17 @@ PYBIND11_MODULE(HYDRA_SWE2D_PY_MODULE_NAME, m) {
            py::array_t<double, py::array::c_style | py::array::forcecast> embankment_crest_elev,
            py::array_t<double, py::array::c_style | py::array::forcecast> embankment_overflow_width,
            py::array_t<double, py::array::c_style | py::array::forcecast> embankment_weir_coeff,
-           double gravity_mps2,
+           double gravity,
            py::array_t<int32_t, py::array::c_style | py::array::forcecast> inlet_cell,
            py::array_t<double, py::array::c_style | py::array::forcecast> inlet_flow_cms)
            -> py::array_t<double>
         {
-            const int32_t n_cells = static_cast<int32_t>(cell_area_m2.size());
+            const int32_t n_cells = static_cast<int32_t>(cell_area.size());
             const int32_t n_structures = static_cast<int32_t>(structure_type.size());
             auto out = py::array_t<double>(n_cells);
             swe2d_gpu_compute_structure_and_coupling_sources(
                 n_cells,
-                (n_cells > 0) ? cell_area_m2.data() : nullptr,
+                (n_cells > 0) ? cell_area.data() : nullptr,
                 n_structures,
                 (n_cells > 0) ? cell_wse.data() : nullptr,
                 (n_cells > 0) ? cell_bed.data() : nullptr,
@@ -1230,7 +1231,7 @@ PYBIND11_MODULE(HYDRA_SWE2D_PY_MODULE_NAME, m) {
                 (n_structures > 0) ? culvert_shape.data() : nullptr,
                 (n_structures > 0) ? culvert_rise.data() : nullptr,
                 (n_structures > 0) ? culvert_span.data() : nullptr,
-                (n_structures > 0) ? culvert_area_m2.data() : nullptr,
+                (n_structures > 0) ? culvert_area.data() : nullptr,
                 (n_structures > 0) ? culvert_barrels.data() : nullptr,
                 (n_structures > 0) ? culvert_slope.data() : nullptr,
                 (n_structures > 0) ? inlet_invert_elev.data() : nullptr,
@@ -1241,7 +1242,7 @@ PYBIND11_MODULE(HYDRA_SWE2D_PY_MODULE_NAME, m) {
                 (n_structures > 0) ? embankment_crest_elev.data() : nullptr,
                 (n_structures > 0) ? embankment_overflow_width.data() : nullptr,
                 (n_structures > 0) ? embankment_weir_coeff.data() : nullptr,
-                gravity_mps2,
+                gravity,
                 static_cast<int32_t>(inlet_cell.size()),
                 inlet_cell.size() > 0 ? inlet_cell.data() : nullptr,
                 inlet_flow_cms.size() > 0 ? inlet_flow_cms.data() : nullptr,
@@ -1317,7 +1318,7 @@ PYBIND11_MODULE(HYDRA_SWE2D_PY_MODULE_NAME, m) {
            py::array_t<int32_t, py::array::c_style|py::array::forcecast> culvert_shape,
            py::array_t<double, py::array::c_style|py::array::forcecast> culvert_rise,
            py::array_t<double, py::array::c_style|py::array::forcecast> culvert_span,
-           py::array_t<double, py::array::c_style|py::array::forcecast> culvert_area_m2,
+           py::array_t<double, py::array::c_style|py::array::forcecast> culvert_area,
            py::array_t<double, py::array::c_style|py::array::forcecast> culvert_barrels,
            py::array_t<double, py::array::c_style|py::array::forcecast> culvert_slope,
            py::array_t<double, py::array::c_style|py::array::forcecast> inlet_invert_elev,
@@ -1328,7 +1329,7 @@ PYBIND11_MODULE(HYDRA_SWE2D_PY_MODULE_NAME, m) {
            py::array_t<double, py::array::c_style|py::array::forcecast> embankment_crest_elev,
            py::array_t<double, py::array::c_style|py::array::forcecast> embankment_overflow_width,
            py::array_t<double, py::array::c_style|py::array::forcecast> embankment_weir_coeff,
-           double gravity_mps2 = 9.81)
+           double gravity = 9.81)
         {
             int32_t n = static_cast<int32_t>(structure_type.size());
             swe2d_gpu_preload_structure_params(
@@ -1339,18 +1340,18 @@ PYBIND11_MODULE(HYDRA_SWE2D_PY_MODULE_NAME, m) {
                 n>0?coeff.data():nullptr, n>0?cd.data():nullptr, n>0?opening.data():nullptr,
                 n>0?q_pump.data():nullptr, n>0?max_flow.data():nullptr,
                 n>0?culvert_code.data():nullptr, n>0?culvert_shape.data():nullptr,
-                n>0?culvert_rise.data():nullptr, n>0?culvert_span.data():nullptr, n>0?culvert_area_m2.data():nullptr,
+                n>0?culvert_rise.data():nullptr, n>0?culvert_span.data():nullptr, n>0?culvert_area.data():nullptr,
                 n>0?culvert_barrels.data():nullptr, n>0?culvert_slope.data():nullptr,
                 n>0?inlet_invert_elev.data():nullptr, n>0?outlet_invert_elev.data():nullptr,
                 n>0?entrance_loss_k.data():nullptr, n>0?exit_loss_k.data():nullptr,
                 n>0?embankment_enabled.data():nullptr, n>0?embankment_crest_elev.data():nullptr,
                 n>0?embankment_overflow_width.data():nullptr, n>0?embankment_weir_coeff.data():nullptr,
-                gravity_mps2);
+                gravity);
         }, "Preload structure params to GPU once.");
 
     m.def("swe2d_gpu_preload_coupling_cell_area",
-        [](py::array_t<double, py::array::c_style|py::array::forcecast> cell_area_m2) {
-            swe2d_gpu_preload_coupling_cell_area(nullptr, static_cast<int32_t>(cell_area_m2.size()), cell_area_m2.data());
+        [](py::array_t<double, py::array::c_style|py::array::forcecast> cell_area) {
+            swe2d_gpu_preload_coupling_cell_area(nullptr, static_cast<int32_t>(cell_area.size()), cell_area.data());
         }, py::arg("cell_area_m2"), "Preload cell areas to GPU once.");
 
     m.def("swe2d_gpu_compute_coupling_full_on_device",
@@ -1474,36 +1475,36 @@ PYBIND11_MODULE(HYDRA_SWE2D_PY_MODULE_NAME, m) {
 
 #ifdef HYDRA_HAS_CUDA
     m.def("swe2d_gpu_compute_coupling_sources",
-        [](py::array_t<double, py::array::c_style | py::array::forcecast> cell_area_m2,
+        [](py::array_t<double, py::array::c_style | py::array::forcecast> cell_area,
            py::array_t<int32_t, py::array::c_style | py::array::forcecast> inlet_cell,
            py::array_t<double, py::array::c_style | py::array::forcecast> inlet_flow_cms,
            py::array_t<int32_t, py::array::c_style | py::array::forcecast> structure_up_cell,
            py::array_t<int32_t, py::array::c_style | py::array::forcecast> structure_down_cell,
-           py::array_t<double, py::array::c_style | py::array::forcecast> structure_flow_cms)
+           py::array_t<double, py::array::c_style | py::array::forcecast> structure_flow)
            -> py::array_t<double>
         {
-            const int32_t n_cells = static_cast<int32_t>(cell_area_m2.size());
+            const int32_t n_cells = static_cast<int32_t>(cell_area.size());
             if (inlet_cell.size() != inlet_flow_cms.size()) {
                 throw std::invalid_argument("inlet_cell and inlet_flow_cms must have the same length");
             }
             if (structure_up_cell.size() != structure_down_cell.size() ||
-                structure_up_cell.size() != structure_flow_cms.size()) {
+                structure_up_cell.size() != structure_flow.size()) {
                 throw std::invalid_argument(
-                    "structure_up_cell, structure_down_cell, and structure_flow_cms must have the same length");
+                    "structure_up_cell, structure_down_cell, and structure_flow must have the same length");
             }
 
             auto out = py::array_t<double>(n_cells);
             swe2d_gpu_compute_coupling_sources(
                 nullptr,  // dev: nullptr uses static-cache fallback
                 n_cells,
-                (n_cells > 0) ? cell_area_m2.data() : nullptr,
+                (n_cells > 0) ? cell_area.data() : nullptr,
                 static_cast<int32_t>(inlet_cell.size()),
                 inlet_cell.size() ? inlet_cell.data() : nullptr,
                 inlet_flow_cms.size() ? inlet_flow_cms.data() : nullptr,
                 static_cast<int32_t>(structure_up_cell.size()),
                 structure_up_cell.size() ? structure_up_cell.data() : nullptr,
                 structure_down_cell.size() ? structure_down_cell.data() : nullptr,
-                structure_flow_cms.size() ? structure_flow_cms.data() : nullptr,
+                structure_flow.size() ? structure_flow.data() : nullptr,
                 out.mutable_data());
             return out;
         },
@@ -1516,7 +1517,7 @@ PYBIND11_MODULE(HYDRA_SWE2D_PY_MODULE_NAME, m) {
         "Headless CUDA helper: convert inlet/structure transfer flows to per-cell depth-rate sources [m/s].");
 
     m.def("swe2d_gpu_compute_bridge_coupling_sources",
-        [](py::array_t<double, py::array::c_style | py::array::forcecast> cell_area_m2,
+        [](py::array_t<double, py::array::c_style | py::array::forcecast> cell_area,
            py::array_t<int32_t, py::array::c_style | py::array::forcecast> bridge_up_cell,
            py::array_t<int32_t, py::array::c_style | py::array::forcecast> bridge_down_cell,
            py::array_t<double, py::array::c_style | py::array::forcecast> bridge_flow_cms,
@@ -1525,7 +1526,7 @@ PYBIND11_MODULE(HYDRA_SWE2D_PY_MODULE_NAME, m) {
            double bridge_opening_width_m,
            double dt_s) -> py::array_t<double>
         {
-            const int32_t n_cells = static_cast<int32_t>(cell_area_m2.size());
+            const int32_t n_cells = static_cast<int32_t>(cell_area.size());
             if (bridge_up_cell.size() != bridge_down_cell.size() ||
                 bridge_up_cell.size() != bridge_flow_cms.size() ||
                 bridge_up_cell.size() != bridge_loss_k_upstream.size() ||
@@ -1538,7 +1539,7 @@ PYBIND11_MODULE(HYDRA_SWE2D_PY_MODULE_NAME, m) {
             swe2d_gpu_compute_bridge_coupling_sources(
                 nullptr,  // dev: nullptr uses static-cache fallback
                 n_cells,
-                (n_cells > 0) ? cell_area_m2.data() : nullptr,
+                (n_cells > 0) ? cell_area.data() : nullptr,
                 static_cast<int32_t>(bridge_up_cell.size()),
                 bridge_up_cell.size() ? bridge_up_cell.data() : nullptr,
                 bridge_down_cell.size() ? bridge_down_cell.data() : nullptr,
@@ -1562,27 +1563,27 @@ PYBIND11_MODULE(HYDRA_SWE2D_PY_MODULE_NAME, m) {
 
 #ifdef HYDRA_HAS_CUDA
     m.def("swe2d_gpu_redistribute_structure_sources",
-        [](py::array_t<double, py::array::c_style | py::array::forcecast> source_rate_mps_inout,
+        [](py::array_t<double, py::array::c_style | py::array::forcecast> source_rate_inout,
            py::array_t<int32_t, py::array::c_style | py::array::forcecast> dist_offsets,
            py::array_t<int32_t, py::array::c_style | py::array::forcecast> dist_cell_idx,
            py::array_t<double, py::array::c_style | py::array::forcecast> dist_weights,
-           py::array_t<double, py::array::c_style | py::array::forcecast> struct_flow_cms,
+           py::array_t<double, py::array::c_style | py::array::forcecast> struct_flow,
            py::array_t<int32_t, py::array::c_style | py::array::forcecast> orig_up_cell,
            py::array_t<int32_t, py::array::c_style | py::array::forcecast> orig_dn_cell,
-           py::array_t<double, py::array::c_style | py::array::forcecast> cell_area_m2) -> py::array_t<double>
+           py::array_t<double, py::array::c_style | py::array::forcecast> cell_area) -> py::array_t<double>
         {
-            auto src = source_rate_mps_inout;
+            auto src = source_rate_inout;
             const int32_t n_cells = static_cast<int32_t>(src.size());
-            const int32_t n_struct = static_cast<int32_t>(struct_flow_cms.size());
+            const int32_t n_struct = static_cast<int32_t>(struct_flow.size());
 
             // Build contiguous host arrays
             auto offsets_host = dist_offsets;
             auto cell_idx_host = dist_cell_idx;
             auto weights_host = dist_weights;
-            auto flow_host = struct_flow_cms;
+            auto flow_host = struct_flow;
             auto up_host = orig_up_cell;
             auto dn_host = orig_dn_cell;
-            auto area_host = cell_area_m2;
+            auto area_host = cell_area;
 
             extern SWE2DDeviceState* s_coupling_dev;
             swe2d_gpu_redistribute_structure_sources(
@@ -1599,11 +1600,11 @@ PYBIND11_MODULE(HYDRA_SWE2D_PY_MODULE_NAME, m) {
                 src.mutable_data());
             return src;
         },
-        py::arg("source_rate_mps_inout"),
+        py::arg("source_rate_inout"),
         py::arg("dist_offsets"),
         py::arg("dist_cell_idx"),
         py::arg("dist_weights"),
-        py::arg("struct_flow_cms"),
+        py::arg("struct_flow"),
         py::arg("orig_up_cell"),
         py::arg("orig_dn_cell"),
         py::arg("cell_area_m2"),
@@ -1613,18 +1614,18 @@ PYBIND11_MODULE(HYDRA_SWE2D_PY_MODULE_NAME, m) {
         [](py::array_t<int32_t, py::array::c_style | py::array::forcecast> dist_offsets,
            py::array_t<int32_t, py::array::c_style | py::array::forcecast> dist_cell_idx,
            py::array_t<double, py::array::c_style | py::array::forcecast> dist_weights,
-           py::array_t<double, py::array::c_style | py::array::forcecast> struct_flow_cms,
+           py::array_t<double, py::array::c_style | py::array::forcecast> struct_flow,
            py::array_t<int32_t, py::array::c_style | py::array::forcecast> orig_up_cell,
            py::array_t<int32_t, py::array::c_style | py::array::forcecast> orig_dn_cell,
            int32_t n_cells,
            double si_m_per_model_factor) -> void
         {
-            const int32_t n_struct = static_cast<int32_t>(struct_flow_cms.size());
+            const int32_t n_struct = static_cast<int32_t>(struct_flow.size());
 
             auto offsets_host = dist_offsets;
             auto cell_idx_host = dist_cell_idx;
             auto weights_host = dist_weights;
-            auto flow_host = struct_flow_cms;
+            auto flow_host = struct_flow;
             auto up_host = orig_up_cell;
             auto dn_host = orig_dn_cell;
 
@@ -1648,7 +1649,7 @@ PYBIND11_MODULE(HYDRA_SWE2D_PY_MODULE_NAME, m) {
         py::arg("dist_offsets"),
         py::arg("dist_cell_idx"),
         py::arg("dist_weights"),
-        py::arg("struct_flow_cms"),
+        py::arg("struct_flow"),
         py::arg("orig_up_cell"),
         py::arg("orig_dn_cell"),
         py::arg("n_cells"),

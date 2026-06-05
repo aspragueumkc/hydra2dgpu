@@ -78,15 +78,13 @@ def _culvert_inlet_control_flow_cms(
 ) -> float:
     """Direct inlet-control flow estimate for a circular culvert."""
     from culvert_routine import CircularXsect, inlet_controlled_flow
+    from swe2d.units import USC_FT_PER_SI_M, USC_FT3_PER_SI_M3
 
-    _FT_PER_M = 3.280839895013123
-    _CFS_PER_CMS = 35.31466672148859
-
-    diam_ft = max(1.0e-6, diameter_m * _FT_PER_M)
-    head_ft = max(0.0, available_head_m * _FT_PER_M)
+    diam_ft = max(1.0e-6, diameter_m * USC_FT_PER_SI_M)
+    head_ft = max(0.0, available_head_m * USC_FT_PER_SI_M)
     xsect = CircularXsect(diameter_ft=diam_ft, culvert_code=culvert_code)
     q_cfs, _dqh, _cond, _yr = inlet_controlled_flow(xsect, max(1.0e-6, slope_mpm), head_ft)
-    return q_cfs / _CFS_PER_CMS
+    return q_cfs / USC_FT3_PER_SI_M3
 
 
 # ---------------------------------------------------------------------------
@@ -338,9 +336,9 @@ class TestCulvertCoupledValidation(unittest.TestCase):
             details = struct_mod.structure_details(cell_wse)
             if details:
                 d = details[0]
-                flow_history.append(float(d.get("flow_cms", 0.0)))
-                wse_up_history.append(float(d.get("upstream_wse_m", 0.0)))
-                wse_dn_history.append(float(d.get("downstream_wse_m", 0.0)))
+                flow_history.append(float(d.get("flow", 0.0)))
+                wse_up_history.append(float(d.get("upstream_wse", 0.0)))
+                wse_dn_history.append(float(d.get("downstream_wse", 0.0)))
 
         mod.swe2d_destroy(solver)
 
@@ -357,7 +355,7 @@ class TestCulvertCoupledValidation(unittest.TestCase):
         cell_wse_ref[up_cell] = avg_wse_up
         cell_wse_ref[dn_cell] = avg_wse_dn
         ref_details = struct_mod.structure_details(cell_wse_ref)
-        ref_flow = float(ref_details[0].get("flow_cms", 0.0)) if ref_details else 0.0
+        ref_flow = float(ref_details[0].get("flow", 0.0)) if ref_details else 0.0
 
         self.assertGreater(ref_flow, 0.0,
                            f"Reference culvert flow must be > 0; got {ref_flow:.4f} cms")
@@ -401,9 +399,9 @@ class TestCulvertCoupledValidation(unittest.TestCase):
             details = self._hardwired_struct_mod.structure_details(cell_wse)
             if details:
                 d = details[0]
-                flow_history.append(float(d.get("flow_cms", 0.0)))
-                wse_up_history.append(float(d.get("upstream_wse_m", 0.0)))
-                wse_dn_history.append(float(d.get("downstream_wse_m", 0.0)))
+                flow_history.append(float(d.get("flow", 0.0)))
+                wse_up_history.append(float(d.get("upstream_wse", 0.0)))
+                wse_dn_history.append(float(d.get("downstream_wse", 0.0)))
             if up_cell < src.size:
                 src_up_history.append(float(src[up_cell]))
             if dn_cell < src.size:
@@ -473,7 +471,7 @@ class TestCulvertCoupledValidation(unittest.TestCase):
         cell_wse_full[dn_cell] = avg_wse_dn
 
         ref_details = self._build_culvert_struct_mod().structure_details(cell_wse_full)  # type: ignore[attr-defined]
-        ref_flow = float(ref_details[0].get("flow_cms", 0.0)) if ref_details else 0.0
+        ref_flow = float(ref_details[0].get("flow", 0.0)) if ref_details else 0.0
 
         rel_err = abs(avg_flow - ref_flow) / max(1.0e-9, ref_flow)
         self.assertLess(
@@ -541,7 +539,7 @@ class TestCulvertCoupledValidation(unittest.TestCase):
         cell_wse_full[dn_cell] = avg_wse_dn
 
         ref_details = self._build_culvert_struct_mod().structure_details(cell_wse_full)  # type: ignore[attr-defined]
-        ref_flow = float(ref_details[0].get("flow_cms", 0.0)) if ref_details else 0.0
+        ref_flow = float(ref_details[0].get("flow", 0.0)) if ref_details else 0.0
 
         rel_err = abs(avg_flow - ref_flow) / max(1.0e-9, ref_flow)
         self.assertLess(
@@ -603,12 +601,12 @@ class TestCulvertCoupledValidation(unittest.TestCase):
             # Python path — get all intermediate caps
             py_details = struct_mod.structure_details(cell_wse)
             py_d = py_details[0]
-            py_flow = float(py_d.get("flow_cms", 0.0))
-            py_inlet = float(py_d.get("inlet_control_flow_cms", 0.0))
-            py_outlet = float(py_d.get("outlet_control_flow_cms", 0.0))
-            py_orifice = float(py_d.get("orifice_cap_cms", 0.0))
-            py_manning = float(py_d.get("manning_cap_cms", 0.0))
-            py_emb = float(py_d.get("embankment_flow_cms", 0.0))
+            py_flow = float(py_d.get("flow", 0.0))
+            py_inlet = float(py_d.get("inlet_control_flow", 0.0))
+            py_outlet = float(py_d.get("outlet_control_flow", 0.0))
+            py_orifice = float(py_d.get("orifice_cap", 0.0))
+            py_manning = float(py_d.get("manning_cap", 0.0))
+            py_emb = float(py_d.get("embankment_flow", 0.0))
             py_control = str(py_d.get("control_mode", ""))
 
             # Native C++ path — try CUDA first, fall back to CPU
@@ -682,8 +680,8 @@ class TestCulvertCoupledValidation(unittest.TestCase):
         details = smod.structure_details(cell_wse)
         d = details[0]
 
-        q_struct = float(d.get("flow_cms", 0.0))
-        q_inlet = float(d.get("inlet_control_flow_cms", 0.0))
+        q_struct = float(d.get("flow", 0.0))
+        q_inlet = float(d.get("inlet_control_flow", 0.0))
         control = str(d.get("control_mode", ""))
 
         # Pure inlet control reference from culvert_routine
@@ -849,10 +847,10 @@ class TestCulvertModuleCPU(unittest.TestCase):
         d = details[0]
 
         control_mode = str(d.get("control_mode", ""))
-        q_struct = float(d.get("flow_cms", 0.0))
-        q_inlet = float(d.get("inlet_control_flow_cms", 0.0))
-        q_outlet = float(d.get("outlet_control_flow_cms", 0.0))
-        q_manning_cap = float(d.get("manning_cap_cms", 0.0))
+        q_struct = float(d.get("flow", 0.0))
+        q_inlet = float(d.get("inlet_control_flow", 0.0))
+        q_outlet = float(d.get("outlet_control_flow", 0.0))
+        q_manning_cap = float(d.get("manning_cap", 0.0))
 
         self.assertGreater(q_struct, 0.0, "Outlet-controlled flow must be > 0")
 
