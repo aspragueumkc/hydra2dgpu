@@ -4194,6 +4194,12 @@ void swe2d_gpu_step(
         } else {
             cache.destroy();
             CUDA_CHECK(cudaStreamSynchronize(dev->d_stream));
+            // Pre-allocate CFL workspace outside capture — cudaMalloc/cudaFree
+            // are not permitted inside a graph capture region.
+            int grid_cfl_pre = (n_edges + BLOCK - 1) / BLOCK;
+            if (grid_cfl_pre > 0) {
+                swe2d_ensure_cfl_block_workspace(dev, grid_cfl_pre);
+            }
             cudaError_t cap_begin = cudaStreamBeginCapture(dev->d_stream, cudaStreamCaptureModeThreadLocal);
             if (cap_begin == cudaSuccess) {
                 // ── Expanded graph: classify_and_mark → degen → hg_bc → gradient → flux → update → cfl → reduce → pack ──
@@ -4316,7 +4322,7 @@ void swe2d_gpu_step(
                 {
                     int grid_cfl = (n_edges + BLOCK - 1) / BLOCK;
                     if (grid_cfl > 0) {
-                        swe2d_ensure_cfl_block_workspace(dev, grid_cfl);
+                        // workspace pre-allocated before graph capture above
                         swe2d_cfl_kernel<<<grid_cfl, BLOCK, BLOCK * static_cast<int>(sizeof(double)), dev->d_stream>>>(
                             n_edges,
                             dev->d_edge_c0, dev->d_edge_c1,

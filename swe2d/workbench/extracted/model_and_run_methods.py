@@ -2867,6 +2867,7 @@ def _on_run(self, request=None):
         ymax_bc = float(np.max(node_y_bc)) if node_y_bc.size else 0.0
         mx_bc = 0.5 * (node_x_bc[bc_n0] + node_x_bc[bc_n1]) if bc_n0.size else np.empty(0, dtype=np.float64)
         my_bc = 0.5 * (node_y_bc[bc_n0] + node_y_bc[bc_n1]) if bc_n0.size else np.empty(0, dtype=np.float64)
+        self._log(f"The numbers they go UP! They go UP UP UP!!!")        
         if bc_n0.size:
             d_bc = np.vstack([
                 np.abs(mx_bc - xmin_bc),

@@ -4178,9 +4178,13 @@ class SWE2DWorkbenchDialog(QtWidgets.QDialog):
         msg_txt = str(msg)
         self._runtime_log_lines.append(msg_txt)
         # Render [ERROR] messages in red using appendHtml.
+        # Render [ERROR] messages in red using appendHtml if available.
         if msg_txt.startswith("[ERROR]"):
-            self.log_view.appendHtml(
-                f'<span style="color:red;font-weight:bold;">{msg_txt}</span>')
+            try:
+                self.log_view.appendHtml(
+                    f'<span style="color:red;font-weight:bold;">{msg_txt}</span>')
+            except Exception:
+                self.log_view.appendPlainText(msg_txt)
         else:
             self.log_view.appendPlainText(msg_txt)
         for dlg in list(getattr(self, "_runtime_log_detached_dialogs", [])):

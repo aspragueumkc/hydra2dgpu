@@ -285,8 +285,8 @@ class SWE2DRuntimeReporter:
                                         top_w_max = float(np.max(top)) if top.size else 0.0
                                         log_callback(
                                             "  3d_phys_vent: "
-                                            f"q_est={vent_q_est:.6e} m^3/s "
-                                            f"w_top_max={top_w_max:.6e} m/s"
+                                            f"q_est={vent_q_est:.6e} {length_unit_name}^3/s "
+                                            f"w_top_max={top_w_max:.6e} {length_unit_name}/s"
                                         )
                             except Exception:
                                 pass
@@ -317,19 +317,19 @@ class SWE2DRuntimeReporter:
             if coupling_controller is not None:
                 cdiag = coupling_controller.last_diag
                 limiter_events = float(cdiag.component_sums.get("drainage_limiter_events", 0.0))
-                limiter_vol_m3 = float(cdiag.component_sums.get("drainage_limiter_volume_m3", 0.0))
+                limiter_vol_model3 = float(cdiag.component_sums.get("drainage_limiter_volume_m3", 0.0))
                 drain_substeps = float(cdiag.component_sums.get("drainage_substeps_used", 1.0))
                 native_iterative = int(cdiag.component_sums.get("drainage_native_iterative", 0))
                 log_callback(
                     "  coupling: "
-                    f"drain_qmax={cdiag.drainage_max_link_flow:.4f} cms, "
-                    f"drain_hmax={cdiag.drainage_max_node_depth:.4f}, "
-                    f"struct_qsum={cdiag.structure_total_flow_cms:.4f} cms, "
-                    f"src_range=[{cdiag.source_min_mps:.3e}, {cdiag.source_max_mps:.3e}], "
+                    f"drain_qmax={cdiag.drainage_max_link_flow:.4f} {length_unit_name}^3/s, "
+                    f"drain_hmax={cdiag.drainage_max_node_depth:.4f} {length_unit_name}, "
+                    f"struct_qsum={cdiag.structure_total_flow:.4f} {length_unit_name}^3/s, "
+                    f"src_range=[{cdiag.source_min_mps:.3e}, {cdiag.source_max_mps:.3e}] {length_unit_name}/s, "
                     f"drain_substeps={drain_substeps:.0f}, "
                     f"native_iter={native_iterative}, "
                     f"limiter_events={limiter_events:.0f}, "
-                    f"limiter_vol={limiter_vol_m3:.6f} m3"
+                    f"limiter_vol={limiter_vol_model3:.6f} {length_unit_name}^3"
                 )
 
         return {
