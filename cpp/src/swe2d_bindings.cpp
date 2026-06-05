@@ -788,7 +788,7 @@ static py::array_t<double> compute_structure_flows_native(
     require_array(culvert_shape, ns, "culvert_shape");
     require_array(culvert_rise, ns, "culvert_rise");
     require_array(culvert_span, ns, "culvert_span");
-    require_array(culvert_area, ns, "culvert_area_m2");
+    require_array(culvert_area, ns, "culvert_area");
     require_array(culvert_barrels, ns, "culvert_barrels");
     require_array(culvert_slope, ns, "culvert_slope");
     require_array(inlet_invert_elev, ns, "inlet_invert_elev");
@@ -999,7 +999,7 @@ static py::array_t<double> compute_structure_flows_cuda(
     require_array(culvert_shape, ns, "culvert_shape");
     require_array(culvert_rise, ns, "culvert_rise");
     require_array(culvert_span, ns, "culvert_span");
-    require_array(culvert_area, ns, "culvert_area_m2");
+    require_array(culvert_area, ns, "culvert_area");
     require_array(culvert_barrels, ns, "culvert_barrels");
     require_array(culvert_slope, ns, "culvert_slope");
     require_array(inlet_invert_elev, ns, "inlet_invert_elev");
@@ -1115,7 +1115,7 @@ PYBIND11_MODULE(HYDRA_SWE2D_PY_MODULE_NAME, m) {
         py::arg("culvert_shape"),
         py::arg("culvert_rise"),
         py::arg("culvert_span"),
-        py::arg("culvert_area_m2"),
+        py::arg("culvert_area"),
         py::arg("culvert_barrels"),
         py::arg("culvert_slope"),
         py::arg("inlet_invert_elev"),
@@ -1126,7 +1126,7 @@ PYBIND11_MODULE(HYDRA_SWE2D_PY_MODULE_NAME, m) {
         py::arg("embankment_crest_elev"),
         py::arg("embankment_overflow_width"),
         py::arg("embankment_weir_coeff"),
-        py::arg("gravity_mps2") = 9.81,
+        py::arg("gravity") = 9.81,
         "Compiled helper: compute per-structure flow transfers [m^3/s] from structure arrays and cell WSE.");
 
     m.def("swe2d_cpu_compute_structure_flows",
@@ -1151,7 +1151,7 @@ PYBIND11_MODULE(HYDRA_SWE2D_PY_MODULE_NAME, m) {
         py::arg("culvert_shape"),
         py::arg("culvert_rise"),
         py::arg("culvert_span"),
-        py::arg("culvert_area_m2"),
+        py::arg("culvert_area"),
         py::arg("culvert_barrels"),
         py::arg("culvert_slope"),
         py::arg("inlet_invert_elev"),
@@ -1162,7 +1162,7 @@ PYBIND11_MODULE(HYDRA_SWE2D_PY_MODULE_NAME, m) {
         py::arg("embankment_crest_elev"),
         py::arg("embankment_overflow_width"),
         py::arg("embankment_weir_coeff"),
-        py::arg("gravity_mps2") = 9.81,
+        py::arg("gravity") = 9.81,
         "Compiled CPU helper: compute per-structure flow transfers [m^3/s] from structure arrays and cell WSE.");
 
 #ifdef HYDRA_HAS_CUDA
@@ -1249,7 +1249,7 @@ PYBIND11_MODULE(HYDRA_SWE2D_PY_MODULE_NAME, m) {
                 out.mutable_data());
             return out;
         },
-        py::arg("cell_area_m2"),
+        py::arg("cell_area"),
         py::arg("cell_wse"),
         py::arg("cell_bed"),
         py::arg("structure_type"),
@@ -1270,7 +1270,7 @@ PYBIND11_MODULE(HYDRA_SWE2D_PY_MODULE_NAME, m) {
         py::arg("culvert_shape"),
         py::arg("culvert_rise"),
         py::arg("culvert_span"),
-        py::arg("culvert_area_m2"),
+        py::arg("culvert_area"),
         py::arg("culvert_barrels"),
         py::arg("culvert_slope"),
         py::arg("inlet_invert_elev"),
@@ -1281,9 +1281,9 @@ PYBIND11_MODULE(HYDRA_SWE2D_PY_MODULE_NAME, m) {
         py::arg("embankment_crest_elev"),
         py::arg("embankment_overflow_width"),
         py::arg("embankment_weir_coeff"),
-        py::arg("gravity_mps2") = 9.81,
+        py::arg("gravity") = 9.81,
         py::arg("inlet_cell"),
-        py::arg("inlet_flow_cms"),
+        py::arg("inlet_flow"),
         "Fused CUDA helper: compute structure flows and coupling sources on-device, returning per-cell source rates [m/s].");
 #else
     m.def("swe2d_gpu_compute_structure_and_coupling_sources",
@@ -1352,7 +1352,7 @@ PYBIND11_MODULE(HYDRA_SWE2D_PY_MODULE_NAME, m) {
     m.def("swe2d_gpu_preload_coupling_cell_area",
         [](py::array_t<double, py::array::c_style|py::array::forcecast> cell_area) {
             swe2d_gpu_preload_coupling_cell_area(nullptr, static_cast<int32_t>(cell_area.size()), cell_area.data());
-        }, py::arg("cell_area_m2"), "Preload cell areas to GPU once.");
+        }, py::arg("cell_area"), "Preload cell areas to GPU once.");
 
     m.def("swe2d_gpu_compute_coupling_full_on_device",
         [](py::object cell_wse_obj,
@@ -1373,7 +1373,7 @@ PYBIND11_MODULE(HYDRA_SWE2D_PY_MODULE_NAME, m) {
                 inlet_flow_cms.size()>0?inlet_flow_cms.data():nullptr);
         }, py::arg("cell_wse")=py::none(), py::arg("n_structures")=0,
            py::arg("inlet_cell")=py::array_t<int32_t>(),
-           py::arg("inlet_flow_cms")=py::array_t<double>(),
+           py::arg("inlet_flow")=py::array_t<double>(),
         "Run full coupling on-device using preloaded params. "
         "Pass cell_wse=None to compute WSE = h + zb on GPU.");
 
@@ -1508,31 +1508,31 @@ PYBIND11_MODULE(HYDRA_SWE2D_PY_MODULE_NAME, m) {
                 out.mutable_data());
             return out;
         },
-        py::arg("cell_area_m2"),
+        py::arg("cell_area"),
         py::arg("inlet_cell"),
-        py::arg("inlet_flow_cms"),
+        py::arg("inlet_flow"),
         py::arg("structure_up_cell"),
         py::arg("structure_down_cell"),
-        py::arg("structure_flow_cms"),
+        py::arg("structure_flow"),
         "Headless CUDA helper: convert inlet/structure transfer flows to per-cell depth-rate sources [m/s].");
 
     m.def("swe2d_gpu_compute_bridge_coupling_sources",
         [](py::array_t<double, py::array::c_style | py::array::forcecast> cell_area,
            py::array_t<int32_t, py::array::c_style | py::array::forcecast> bridge_up_cell,
            py::array_t<int32_t, py::array::c_style | py::array::forcecast> bridge_down_cell,
-           py::array_t<double, py::array::c_style | py::array::forcecast> bridge_flow_cms,
+           py::array_t<double, py::array::c_style | py::array::forcecast> bridge_flow,
            py::array_t<double, py::array::c_style | py::array::forcecast> bridge_loss_k_upstream,
            py::array_t<double, py::array::c_style | py::array::forcecast> bridge_loss_k_downstream,
-           double bridge_opening_width_m,
+           double bridge_opening_width,
            double dt_s) -> py::array_t<double>
         {
             const int32_t n_cells = static_cast<int32_t>(cell_area.size());
             if (bridge_up_cell.size() != bridge_down_cell.size() ||
-                bridge_up_cell.size() != bridge_flow_cms.size() ||
+                bridge_up_cell.size() != bridge_flow.size() ||
                 bridge_up_cell.size() != bridge_loss_k_upstream.size() ||
                 bridge_up_cell.size() != bridge_loss_k_downstream.size()) {
                 throw std::invalid_argument(
-                    "bridge_up_cell, bridge_down_cell, bridge_flow_cms, bridge_loss_k_upstream, and bridge_loss_k_downstream must have the same length");
+                    "bridge_up_cell, bridge_down_cell, bridge_flow, bridge_loss_k_upstream, and bridge_loss_k_downstream must have the same length");
             }
 
             auto out = py::array_t<double>(n_cells);
@@ -1543,21 +1543,21 @@ PYBIND11_MODULE(HYDRA_SWE2D_PY_MODULE_NAME, m) {
                 static_cast<int32_t>(bridge_up_cell.size()),
                 bridge_up_cell.size() ? bridge_up_cell.data() : nullptr,
                 bridge_down_cell.size() ? bridge_down_cell.data() : nullptr,
-                bridge_flow_cms.size() ? bridge_flow_cms.data() : nullptr,
+                bridge_flow.size() ? bridge_flow.data() : nullptr,
                 bridge_loss_k_upstream.size() ? bridge_loss_k_upstream.data() : nullptr,
                 bridge_loss_k_downstream.size() ? bridge_loss_k_downstream.data() : nullptr,
-                bridge_opening_width_m,
+                bridge_opening_width,
                 dt_s,
                 out.mutable_data());
             return out;
         },
-        py::arg("cell_area_m2"),
+        py::arg("cell_area"),
         py::arg("bridge_up_cell"),
         py::arg("bridge_down_cell"),
-        py::arg("bridge_flow_cms"),
+        py::arg("bridge_flow"),
         py::arg("bridge_loss_k_upstream"),
         py::arg("bridge_loss_k_downstream"),
-        py::arg("bridge_opening_width_m") = 1.0,
+        py::arg("bridge_opening_width") = 1.0,
         py::arg("dt_s") = 1.0,
         "Headless CUDA helper: convert bridge transfer flows to per-cell depth-rate sources [m/s] with an empirical loss law.");
 
@@ -1607,7 +1607,7 @@ PYBIND11_MODULE(HYDRA_SWE2D_PY_MODULE_NAME, m) {
         py::arg("struct_flow"),
         py::arg("orig_up_cell"),
         py::arg("orig_dn_cell"),
-        py::arg("cell_area_m2"),
+        py::arg("cell_area"),
         "CUDA helper: redistribute single-cell structure sources across a pre-computed corridor of cells using influence-width weights.");
 
     m.def("swe2d_gpu_redistribute_structure_sources_persistent",
@@ -1854,7 +1854,7 @@ PYBIND11_MODULE(HYDRA_SWE2D_PY_MODULE_NAME, m) {
         py::arg("dt_s"),
         py::arg("gravity"),
         py::arg("solver_mode"),
-        py::arg("head_deadband_m") = 1.0e-3,
+        py::arg("head_deadband") = 1.0e-3,
         py::arg("dynamic_flow_relaxation") = 1.0,
         "Headless CUDA helper: advance 1D drainage network one step (EGL/diffusion/dynamic).");
 
@@ -2179,7 +2179,7 @@ PYBIND11_MODULE(HYDRA_SWE2D_PY_MODULE_NAME, m) {
         py::arg("dt_s"),
         py::arg("gravity"),
         py::arg("solver_mode"),
-        py::arg("head_deadband_m") = 1.0e-3,
+        py::arg("head_deadband") = 1.0e-3,
         py::arg("dynamic_flow_relaxation") = 1.0,
         py::arg("n_substeps") = 1,
         py::arg("implicit_iters") = 1,
@@ -2215,12 +2215,12 @@ PYBIND11_MODULE(HYDRA_SWE2D_PY_MODULE_NAME, m) {
         {
             throw std::runtime_error("CUDA path not compiled; swe2d_gpu_compute_coupling_sources is unavailable.");
         },
-        py::arg("cell_area_m2"),
+        py::arg("cell_area"),
         py::arg("inlet_cell"),
-        py::arg("inlet_flow_cms"),
+        py::arg("inlet_flow"),
         py::arg("structure_up_cell"),
         py::arg("structure_down_cell"),
-        py::arg("structure_flow_cms"));
+        py::arg("structure_flow"));
 
     m.def("swe2d_gpu_compute_bridge_coupling_sources",
         [](py::array_t<double, py::array::c_style | py::array::forcecast>,
@@ -2234,13 +2234,13 @@ PYBIND11_MODULE(HYDRA_SWE2D_PY_MODULE_NAME, m) {
         {
             throw std::runtime_error("CUDA path not compiled; swe2d_gpu_compute_bridge_coupling_sources is unavailable.");
         },
-        py::arg("cell_area_m2"),
+        py::arg("cell_area"),
         py::arg("bridge_up_cell"),
         py::arg("bridge_down_cell"),
-        py::arg("bridge_flow_cms"),
+        py::arg("bridge_flow"),
         py::arg("bridge_loss_k_upstream"),
         py::arg("bridge_loss_k_downstream"),
-        py::arg("bridge_opening_width_m") = 1.0,
+        py::arg("bridge_opening_width") = 1.0,
         py::arg("dt_s") = 1.0);
 
     m.def("swe2d_gpu_drainage_step",
@@ -2651,20 +2651,20 @@ PYBIND11_MODULE(HYDRA_SWE2D_PY_MODULE_NAME, m) {
 
     m.def("swe2d_solver_set_external_sources",
         [](const std::shared_ptr<PySolver>& ps,
-           py::object source_mps_obj) {
+           py::object external_source_obj) {
             if (!ps || !ps->solver) throw std::invalid_argument("null solver handle");
-            if (source_mps_obj.is_none()) {
+            if (external_source_obj.is_none()) {
                 swe2d_solver_set_external_sources(ps->solver, nullptr, 0);
                 return;
             }
-            auto src = source_mps_obj.cast<py::array_t<double, py::array::c_style | py::array::forcecast>>();
+            auto src = external_source_obj.cast<py::array_t<double, py::array::c_style | py::array::forcecast>>();
             const int32_t nc = ps->solver->mesh->n_cells;
             if (src.size() != static_cast<size_t>(nc)) {
-                throw std::invalid_argument("source_mps length must equal n_cells");
+                throw std::invalid_argument("external_source length must equal n_cells");
             }
             swe2d_solver_set_external_sources(ps->solver, src.data(), nc);
         },
-        py::arg("solver"), py::arg("source_mps") = py::none(),
+        py::arg("solver"), py::arg("external_source") = py::none(),
         "Set per-cell external depth source rates [m/s] on solver (None clears).");
 
     // ── Solver creation ───────────────────────────────────────────────────────

@@ -375,8 +375,8 @@ class TestSWE2DDrainageStructures(unittest.TestCase):
             metadata={
                 "culvert_shape": "circular",
                 "culvert_code": 1,
-                "diameter": 1.2,
-                "culvert_rise": 1.2,
+                "diameter": 8.0,
+                "culvert_rise": 8.0,
                 "length": 20.0,
                 "roughness_n": 0.013,
                 "inlet_invert_elev": 0.0,

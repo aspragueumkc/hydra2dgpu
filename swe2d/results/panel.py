@@ -1303,9 +1303,9 @@ class SWE2DResultsPanel(_BASE_DOCK):  # type: ignore[valid-type,misc]
                             {
                                 "run_label": rec.display_label(),
                                 "object_id": sid,
-                                "flow_cms": float(rr.get("value", 0.0)),
-                                "station_m": float("nan"),
-                                "elev_m": float("nan"),
+                                "flow": float(rr.get("value", 0.0)),
+                                "station": float("nan"),
+                                "elev": float("nan"),
                                 "placement": "unplaced",
                             }
                         )
@@ -1348,14 +1348,14 @@ class SWE2DResultsPanel(_BASE_DOCK):  # type: ignore[valid-type,misc]
         if plotted and self._show_structures_chk.isChecked() and structure_rows:
             x0, x1 = self._ax_prof.get_xlim()
             y0, y1 = self._ax_prof.get_ylim()
-            placed = [r for r in structure_rows if np.isfinite(float(r.get("station_m", float("nan"))))]
+            placed = [r for r in structure_rows if np.isfinite(float(r.get("station", float("nan"))))]
             if np.isfinite(x0) and np.isfinite(x1) and x1 > x0 and np.isfinite(y0) and np.isfinite(y1) and placed:
-                placed = sorted(placed, key=lambda r: float(r.get("station_m", 0.0)))[:12]
+                placed = sorted(placed, key=lambda r: float(r.get("station", 0.0)))[:12]
                 y_span = max(y1 - y0, 1.0e-6)
                 for i, row in enumerate(placed):
-                    xs = float(row.get("station_m", 0.0))
-                    elev = float(row.get("elev_m", float("nan")))
-                    q_cms = float(row.get("flow_cms", 0.0))
+                    xs = float(row.get("station", 0.0))
+                    elev = float(row.get("elev", float("nan")))
+                    q_val = float(row.get("flow", 0.0))
                     sid = str(row.get("object_id", ""))
                     y_anchor = elev if np.isfinite(elev) else y1
                     y_anchor = min(max(y_anchor, y0 + 0.08 * y_span), y1 - 0.02 * y_span)
@@ -1381,7 +1381,7 @@ class SWE2DResultsPanel(_BASE_DOCK):  # type: ignore[valid-type,misc]
                     self._ax_prof.text(
                         xs,
                         y_text,
-                        f"{sid} {q_cms:.2f}",
+                        f"{sid} {q_val:.2f}",
                         fontsize=7,
                         rotation=90,
                         va="top",

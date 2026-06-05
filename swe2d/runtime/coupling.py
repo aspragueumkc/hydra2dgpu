@@ -434,15 +434,7 @@ class SWE2DCouplingController:
         bridge_stacked_coupling_mode: str = "phase3_spatial",
         length_scale_si_to_model: float = 1.0,
         log_callback: Optional[Callable[[str], None]] = None,
-        **legacy_kwargs,
-    ):
-        if cell_area is None:
-            cell_area = legacy_kwargs.pop("cell_area_m2", None)
-        if cell_bed is None:
-            cell_bed = legacy_kwargs.pop("cell_bed_m", None)
-        if legacy_kwargs:
-            unknown = ", ".join(sorted(legacy_kwargs.keys()))
-            raise TypeError(f"Unexpected keyword argument(s): {unknown}")
+):
         if cell_area is None or cell_bed is None:
             raise ValueError("cell_area and cell_bed are required")
 
@@ -722,16 +714,6 @@ class SWE2DCouplingController:
             np.add.at(source_rate, dist_cells[valid], src_contrib)
 
         return source_rate
-
-    @property
-    def cell_area_m2(self) -> np.ndarray:
-        """Backward-compatible alias for cell_area (L² in model units)."""
-        return self.cell_area
-
-    @property
-    def cell_bed_m(self) -> np.ndarray:
-        """Backward-compatible alias for cell_bed (L in model units)."""
-        return self.cell_bed
 
     def _native_cuda_module(self):
         if self._native_cuda_mod_checked:
@@ -1137,6 +1119,12 @@ class SWE2DCouplingController:
         qv = flows[valid]
         # qv is in SI (m³/s).  Convert to model flow units (model-length³/s)
         # so division by model-length² cell_area gives model-length/s depth rate.
+        # TODO: The native kernel returns mixed units — CMS for culverts (type 2)
+        # but CFS for weir/orifice/bridge/pump (types 1/3/4/5).  This path
+        # assumes CMS throughout, which over-applies the conversion for
+        # non-culvert structures by ~35× when running in USC (ft) CRS mode.
+        # This is a known pre-existing issue; the viewer metrics path has been
+        # fixed separately with type-aware unit conversion.
         qv_model = qv * _u.si_m3_per_model_volume()
         np.add.at(src, upv, -qv_model / np.maximum(self.cell_area[upv], 1.0e-12))
         np.add.at(src, dnv, qv_model / np.maximum(self.cell_area[dnv], 1.0e-12))

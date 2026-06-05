@@ -284,23 +284,6 @@ class PipeNetworkState:
     node_depth: Dict[str, float] = field(default_factory=dict)
     link_flow: Dict[str, float] = field(default_factory=dict)
 
-    # Backward-compatible aliases retained for existing callers/tests.
-    @property
-    def node_depth_m(self) -> Dict[str, float]:
-        return self.node_depth
-
-    @node_depth_m.setter
-    def node_depth_m(self, value: Dict[str, float]) -> None:
-        self.node_depth = value
-
-    @property
-    def link_flow_cms(self) -> Dict[str, float]:
-        return self.link_flow
-
-    @link_flow_cms.setter
-    def link_flow_cms(self, value: Dict[str, float]) -> None:
-        self.link_flow = value
-
 
 @dataclass
 class CouplingDiagnostics:
@@ -312,47 +295,6 @@ class CouplingDiagnostics:
     total_surcharge: float = 0.0
     max_node_depth: float = 0.0
     max_link_flow: float = 0.0
-
-    # Backward-compatible aliases retained for existing callers/tests.
-    @property
-    def max_node_depth_m(self) -> float:
-        return self.max_node_depth
-
-    @max_node_depth_m.setter
-    def max_node_depth_m(self, value: float) -> None:
-        self.max_node_depth = float(value)
-
-    @property
-    def max_link_flow_cms(self) -> float:
-        return self.max_link_flow
-
-    @max_link_flow_cms.setter
-    def max_link_flow_cms(self, value: float) -> None:
-        self.max_link_flow = float(value)
-
-    @property
-    def net_node_inflow_cms(self) -> float:
-        return self.net_node_inflow
-
-    @net_node_inflow_cms.setter
-    def net_node_inflow_cms(self, value: float) -> None:
-        self.net_node_inflow = float(value)
-
-    @property
-    def total_capture_cms(self) -> float:
-        return self.total_capture
-
-    @total_capture_cms.setter
-    def total_capture_cms(self, value: float) -> None:
-        self.total_capture = float(value)
-
-    @property
-    def total_surcharge_cms(self) -> float:
-        return self.total_surcharge
-
-    @total_surcharge_cms.setter
-    def total_surcharge_cms(self, value: float) -> None:
-        self.total_surcharge = float(value)
 
 
 class StructureType(IntEnum):
@@ -425,53 +367,53 @@ def circular_section_from_depth(depth_m: float, diameter_m: float) -> Tuple[floa
 
 
 def compute_orifice_flow(
-    head_up_m: float,
-    head_down_m: float,
-    area_m2: float,
+    head_up: float,
+    head_down: float,
+    area: float,
     discharge_coeff: float = 0.62,
     g: float = 9.81,
     max_flow: Optional[float] = None,
-    max_flow_cms: Optional[float] = None,
+    legacy_max_flow_cms: Optional[float] = None,
 ) -> float:
     """Return signed orifice flow from up to down based on head difference."""
-    a = max(0.0, float(area_m2))
+    a = max(0.0, float(area))
     if a <= 0.0:
         return 0.0
-    dh = float(head_up_m) - float(head_down_m)
+    dh = float(head_up) - float(head_down)
     if abs(dh) <= 1.0e-12:
         return 0.0
     q = float(discharge_coeff) * a * math.sqrt(max(0.0, 2.0 * float(g) * abs(dh)))
-    q_limit = max_flow if max_flow is not None else max_flow_cms
+    q_limit = max_flow if max_flow is not None else legacy_max_flow_cms
     if q_limit is not None:
         q = min(q, max(0.0, float(q_limit)))
     return q if dh >= 0.0 else -q
 
 
 def compute_weir_flow(
-    upstream_wse_m: float,
-    downstream_wse_m: float,
-    crest_elev_m: float,
-    width_m: float,
+    upstream_wse: float,
+    downstream_wse: float,
+    crest_elev: float,
+    width: float,
     coeff: float = 1.7,
     max_flow: Optional[float] = None,
-    max_flow_cms: Optional[float] = None,
+    legacy_max_flow_cms: Optional[float] = None,
 ) -> float:
     """Broad-crested style weir discharge using upstream head over crest."""
-    b = max(0.0, float(width_m))
+    b = max(0.0, float(width))
     if b <= 0.0:
         return 0.0
-    hup = max(0.0, float(upstream_wse_m) - float(crest_elev_m))
-    hdn = max(0.0, float(downstream_wse_m) - float(crest_elev_m))
+    hup = max(0.0, float(upstream_wse) - float(crest_elev))
+    hdn = max(0.0, float(downstream_wse) - float(crest_elev))
     if hup <= 0.0 and hdn <= 0.0:
         return 0.0
-    if float(upstream_wse_m) >= float(downstream_wse_m):
+    if float(upstream_wse) >= float(downstream_wse):
         h = hup
         sign = 1.0
     else:
         h = hdn
         sign = -1.0
     q = float(coeff) * b * (h ** 1.5)
-    q_limit = max_flow if max_flow is not None else max_flow_cms
+    q_limit = max_flow if max_flow is not None else legacy_max_flow_cms
     if q_limit is not None:
         q = min(q, max(0.0, float(q_limit)))
     return sign * q
@@ -499,15 +441,15 @@ def compute_pipe_manning_capacity_full(
 
 
 def convert_cell_flows_to_depth_rates(
-    cell_flow_cms: Sequence[float],
-    cell_area_m2: Sequence[float],
+    cell_flow: Sequence[float],
+    cell_area: Sequence[float],
 ) -> List[float]:
-    """Convert per-cell volumetric source terms [m^3/s] to depth rates [m/s]."""
-    n = min(len(cell_flow_cms), len(cell_area_m2))
+    """Convert per-cell volumetric source terms to depth rates."""
+    n = min(len(cell_flow), len(cell_area))
     out = [0.0] * n
     for i in range(n):
-        area = max(1.0e-12, float(cell_area_m2[i]))
-        out[i] = float(cell_flow_cms[i]) / area
+        area = max(1.0e-12, float(cell_area[i]))
+        out[i] = float(cell_flow[i]) / area
     return out
 
 

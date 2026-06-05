@@ -73,7 +73,7 @@ def _culvert_xsect_from_metadata(md: Dict[str, float], model_to_ft: float = 1.0)
     return CircularXsect(diameter_ft=max(1.0e-6, _model_to_ft(diameter_model, model_to_ft)), culvert_code=code)
 
 
-def _culvert_outlet_control_flow_cms(
+def _culvert_outlet_control_flow(
     *,
     xsect,
     available_head_up_ft: float,  # L  (upstream head in feet)
@@ -145,17 +145,17 @@ def _culvert_outlet_control_flow_cms(
 
 
 def _signed_weir_flow(
-    upstream_wse_m: float,
-    downstream_wse_m: float,
-    crest_elev_m: float,
-    width_m: float,
+    upstream_wse: float,
+    downstream_wse: float,
+    crest_elev: float,
+    width: float,
     coeff: float,
 ) -> float:
     return compute_weir_flow(
-        upstream_wse_m=upstream_wse_m,
-        downstream_wse_m=downstream_wse_m,
-        crest_elev_m=crest_elev_m,
-        width_m=width_m,
+        upstream_wse=upstream_wse,
+        downstream_wse=downstream_wse,
+        crest_elev=crest_elev,
+        width=width,
         coeff=coeff,
     )
 
@@ -248,8 +248,8 @@ class SWE2DStructureModule(HydraulicStructureEngine):
                 max(1.0e-6, slope_ftft),
                 max(0.0, available_head_up_ft),
             )
-            q_inlet_cms = q_inlet_cfs / _u.USC_FT3_PER_SI_M3
-            detail["inlet_control_flow"] = q_inlet_cms
+            q_inlet = q_inlet_cfs / _u.USC_FT3_PER_SI_M3
+            detail["inlet_control_flow"] = q_inlet
 
             # Orifice capacity
             diameter_model = float(md.get("diameter", md.get("culvert_rise", 0.0)) or 0.0)
@@ -258,22 +258,22 @@ class SWE2DStructureModule(HydraulicStructureEngine):
             shape = str(md.get("culvert_shape", "circular")).strip().lower()
             if area_m2_input <= 0.0 and diameter_ft > 0.0 and shape in ("circular", "pipe", "round"):
                 area_m2_input = circular_area_from_diameter(diameter_ft * _u.SI_M_PER_USC_FT)
-            q_orifice_cms = 0.0
+            q_orifice = 0.0
             if area_m2_input > 0.0:
-                q_orifice_cms = abs(
+                q_orifice = abs(
                     compute_orifice_flow(
-                        head_up_m=available_head_up_ft * inv_m2ft,
-                        head_down_m=tailwater_depth_ft * inv_m2ft,
-                        area_m2=area_m2_input,
+                        head_up=available_head_up_ft * inv_m2ft,
+                        head_down=tailwater_depth_ft * inv_m2ft,
+                        area=area_m2_input,
                         discharge_coeff=float(md.get("cd", 0.75)),
                         g=g,
                         max_flow=float(max_q) if max_q is not None else None,
                     )
                 )
-            detail["orifice_cap"] = q_orifice_cms
+            detail["orifice_cap"] = q_orifice
 
             # Manning capacity — use correct geometry based on shape
-            q_manning_cap_cms = 0.0
+            q_manning_cap = 0.0
             is_rect = hasattr(xsect, 'width_ft') and xsect.width_ft > 0
             if is_rect:
                 # Rectangular culvert: A = w*h, P = 2(w+h), R = A/P
@@ -282,19 +282,19 @@ class SWE2DStructureModule(HydraulicStructureEngine):
                 if perim_ft > 0:
                     rh_ft = area_ft2 / perim_ft
                     q_manning_cap_cfs = (1.486 / roughness_n) * area_ft2 * (rh_ft ** (2.0 / 3.0)) * (slope_ftft ** 0.5)
-                    q_manning_cap_cms = q_manning_cap_cfs / _u.USC_FT3_PER_SI_M3
+                    q_manning_cap = q_manning_cap_cfs / _u.USC_FT3_PER_SI_M3
             elif hasattr(xsect, 'radius_ft') and xsect.radius_ft > 0:
                 # Circular culvert — delegate to existing function
-                q_manning_cap_cms = compute_pipe_manning_capacity_full(
+                q_manning_cap = compute_pipe_manning_capacity_full(
                     diameter_m=_ft_to_m(2.0 * xsect.radius_ft),
                     slope_m_per_m=slope_ftft,
                     roughness_n=roughness_n,
                 )
-            detail["manning_cap"] = q_manning_cap_cms
+            detail["manning_cap"] = q_manning_cap
 
             # Outlet control
-            q_hint_cfs = max(q_inlet_cfs, _model3_to_cfs(max(q_orifice_cms, q_manning_cap_cms, 0.0), m2ft))
-            q_outlet_cms = _culvert_outlet_control_flow_cms(
+            q_hint_cfs = max(q_inlet_cfs, _model3_to_cfs(max(q_orifice, q_manning_cap, 0.0), m2ft))
+            q_outlet = _culvert_outlet_control_flow(
                 xsect=xsect,
                 available_head_up_ft=max(0.0, available_head_up_ft),
                 tailwater_depth_ft=max(0.0, tailwater_depth_ft),
@@ -305,32 +305,32 @@ class SWE2DStructureModule(HydraulicStructureEngine):
                 exit_loss_k=exit_loss_k,
                 q_hint_cfs=q_hint_cfs,
             )
-            detail["outlet_control_flow"] = q_outlet_cms
+            detail["outlet_control_flow"] = q_outlet
 
-            q_culvert = max(0.0, min(q_inlet_cms, q_outlet_cms if q_outlet_cms > 0.0 else q_inlet_cms))
+            q_culvert = max(0.0, min(q_inlet, q_outlet if q_outlet > 0.0 else q_inlet))
             control_mode = "inlet_control"
-            if q_outlet_cms > 0.0 and q_outlet_cms < q_culvert + 1.0e-12:
+            if q_outlet > 0.0 and q_outlet < q_culvert + 1.0e-12:
                 control_mode = "outlet_control"
-            if q_orifice_cms > 0.0:
-                if q_culvert > 0.0 and q_orifice_cms < q_culvert - 1.0e-12:
+            if q_orifice > 0.0:
+                if q_culvert > 0.0 and q_orifice < q_culvert - 1.0e-12:
                     control_mode = "orifice_cap"
-                q_culvert = min(q_culvert, q_orifice_cms) if q_culvert > 0.0 else q_orifice_cms
-            if q_manning_cap_cms > 0.0:
-                if q_culvert > 0.0 and q_manning_cap_cms < q_culvert - 1.0e-12:
+                q_culvert = min(q_culvert, q_orifice) if q_culvert > 0.0 else q_orifice
+            if q_manning_cap > 0.0:
+                if q_culvert > 0.0 and q_manning_cap < q_culvert - 1.0e-12:
                     control_mode = "manning_cap"
-                q_culvert = min(q_culvert, q_manning_cap_cms) if q_culvert > 0.0 else q_manning_cap_cms
+                q_culvert = min(q_culvert, q_manning_cap) if q_culvert > 0.0 else q_manning_cap
 
-            q_emb_cms = 0.0
+            q_emb = 0.0
             if int(round(float(md.get("embankment_enabled", 0.0) or 0.0))) > 0:
-                q_emb_cms = abs(_signed_weir_flow(
-                    upstream_wse_m=upstream_wse,
-                    downstream_wse_m=downstream_wse,
-                    crest_elev_m=float(md.get("embankment_crest_elev", md.get("road_crest_elev", dz)) or dz),
-                    width_m=float(md.get("embankment_overflow_width", md.get("road_overflow_width", md.get("width", 1.0))) or 1.0),
+                q_emb = abs(_signed_weir_flow(
+                    upstream_wse=upstream_wse,
+                    downstream_wse=downstream_wse,
+                    crest_elev=float(md.get("embankment_crest_elev", md.get("road_crest_elev", dz)) or dz),
+                    width=float(md.get("embankment_overflow_width", md.get("road_overflow_width", md.get("width", 1.0))) or 1.0),
                     coeff=float(md.get("embankment_weir_coeff", md.get("road_weir_coeff", 1.7)) or 1.7),
                 ))
-                q_culvert += q_emb_cms
-            detail["embankment_flow"] = q_emb_cms
+                q_culvert += q_emb
+            detail["embankment_flow"] = q_emb
 
             barrels = max(1.0, float(md.get("culvert_barrels", 1.0) or 1.0))
             q_culvert *= barrels
@@ -345,10 +345,10 @@ class SWE2DStructureModule(HydraulicStructureEngine):
 
         if structure.structure_type == StructureType.WEIR:
             q = _signed_weir_flow(
-                upstream_wse_m=wu,
-                downstream_wse_m=wd,
-                crest_elev_m=dz,
-                width_m=float(md.get("width", 1.0)),
+                upstream_wse=wu,
+                downstream_wse=wd,
+                crest_elev=dz,
+                width=float(md.get("width", 1.0)),
                 coeff=float(md.get("coeff", 1.7)),
             )
             if max_q is not None:
@@ -362,9 +362,9 @@ class SWE2DStructureModule(HydraulicStructureEngine):
             height = max(0.0, float(md.get("height", 1.0)))
             area = opening * width * height
             q = compute_orifice_flow(
-                head_up_m=wu,
-                head_down_m=wd,
-                area_m2=area,
+                head_up=wu,
+                head_down=wd,
+                area=area,
                 discharge_coeff=float(md.get("cd", 0.67)),
                 g=g,
                 max_flow=float(max_q) if max_q is not None else None,
@@ -409,27 +409,6 @@ class SWE2DStructureModule(HydraulicStructureEngine):
 
     def structure_details(self, cell_wse: Sequence[float]) -> List[Dict[str, Any]]:
         details = [self._structure_detail(st, cell_wse) for st in self.cfg.structures]
-        # Add backward-compatible aliases for unit-agnostic key names.
-        # New code should use "flow", "inlet_control_flow", etc.
-        # Old code that reads "flow_cms", "inlet_control_flow_cms" etc. still works.
-        _ALIASES = {
-            "flow": "flow_cms",
-            "inlet_control_flow": "inlet_control_flow_cms",
-            "outlet_control_flow": "outlet_control_flow_cms",
-            "orifice_cap": "orifice_cap_cms",
-            "manning_cap": "manning_cap_cms",
-            "embankment_flow": "embankment_flow_cms",
-            "upstream_wse": "upstream_wse_m",
-            "downstream_wse": "downstream_wse_m",
-            "available_head_up": "available_head_up_m",
-            "tailwater_depth": "tailwater_depth_m",
-            "inlet_invert_elev": "inlet_invert_elev_m",
-            "outlet_invert_elev": "outlet_invert_elev_m",
-        }
-        for detail in details:
-            for new_key, old_key in _ALIASES.items():
-                if new_key in detail and old_key not in detail:
-                    detail[old_key] = detail[new_key]
         self._last_structure_details = [dict(d) for d in details]
         return details
 
@@ -459,10 +438,6 @@ class SWE2DStructureModule(HydraulicStructureEngine):
         """Return signed flow for each configured structure (upstream -> downstream positive)."""
         return [float(d.get("flow", 0.0)) for d in self.structure_details(cell_wse)]
 
-    def structure_flows_cms(self, cell_wse: Sequence[float]) -> List[float]:
-        """Backward-compatible alias for older callers."""
-        return self.structure_flows(cell_wse)
-
     def compute_cell_source_terms(self, dt: float, cell_wse: Sequence[float]) -> List[float]:
         _ = dt
         net = [0.0] * len(cell_wse)
@@ -477,10 +452,6 @@ class SWE2DStructureModule(HydraulicStructureEngine):
             if 0 <= idn < len(net):
                 net[idn] += q
         return net
-
-    def compute_cell_source_terms_cms(self, dt: float, cell_wse: Sequence[float]) -> List[float]:
-        """Backward-compatible alias for older callers."""
-        return self.compute_cell_source_terms(dt=dt, cell_wse=cell_wse)
 
     def compute_cell_source_rate(
         self,

@@ -207,6 +207,7 @@ class CircularXsect(Xsect):
         a_full = math.pi * R * R
         super().__init__(y_full=diameter_ft, a_full=a_full, culvert_code=culvert_code)
         self.R = R
+        self.radius_ft = R
 
     def area(self, y: float) -> float:
         y = max(0.0, min(y, 2.0 * self.R))

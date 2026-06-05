@@ -618,19 +618,19 @@ class SWE2DUrbanDrainageModule(DrainageCouplingEngine):
                 if submerged_capture:
                     a_eff = area if area > 0.0 else max(0.0, length) * max(0.01, capture_head)
                     q_capture = compute_orifice_flow(
-                        head_up_m=wse_surface,
-                        head_down_m=wse_node,
-                        area_m2=a_eff,
+                        head_up=wse_surface,
+                        head_down=wse_node,
+                        area=a_eff,
                         discharge_coeff=co,
                         g=g,
                         max_flow=inlet.max_capture,
                     )
                 else:
                     q_capture = compute_weir_flow(
-                        upstream_wse_m=wse_surface,
-                        downstream_wse_m=wse_node,
-                        crest_elev_m=crest,
-                        width_m=length,
+                        upstream_wse=wse_surface,
+                        downstream_wse=wse_node,
+                        crest_elev=crest,
+                        width=length,
                         coeff=cw,
                         max_flow=inlet.max_capture,
                     )
@@ -654,19 +654,19 @@ class SWE2DUrbanDrainageModule(DrainageCouplingEngine):
                 if submerged_relief:
                     a_eff = area if area > 0.0 else max(0.0, length) * max(0.01, surcharge_head)
                     q_relief = compute_orifice_flow(
-                        head_up_m=wse_node,
-                        head_down_m=wse_surface,
-                        area_m2=a_eff,
+                        head_up=wse_node,
+                        head_down=wse_surface,
+                        area=a_eff,
                         discharge_coeff=co,
                         g=g,
                         max_flow=inlet.max_capture,
                     )
                 else:
                     q_relief = compute_weir_flow(
-                        upstream_wse_m=wse_node,
-                        downstream_wse_m=wse_surface,
-                        crest_elev_m=crest,
-                        width_m=length,
+                        upstream_wse=wse_node,
+                        downstream_wse=wse_surface,
+                        crest_elev=crest,
+                        width=length,
                         coeff=cw,
                         max_flow=inlet.max_capture,
                     )
@@ -715,9 +715,9 @@ class SWE2DUrbanDrainageModule(DrainageCouplingEngine):
             if wse_node > wse_surface + deadband and wse_node > float(outfall.invert_elev):
                 # Pressurized / surcharge: discharge from network into 2D surface cell
                 q_out = compute_orifice_flow(
-                    head_up_m=wse_node,
-                    head_down_m=wse_surface,
-                    area_m2=area_pipe,
+                    head_up=wse_node,
+                    head_down=wse_surface,
+                    area=area_pipe,
                     discharge_coeff=float(outfall.coefficient),
                     g=g,
                     max_flow=outfall.max_flow,
@@ -735,9 +735,9 @@ class SWE2DUrbanDrainageModule(DrainageCouplingEngine):
             elif wse_surface > wse_node + deadband and wse_surface > float(outfall.invert_elev):
                 # Backwater / submerged outfall: 2D surface drains into outfall node
                 q_in = compute_orifice_flow(
-                    head_up_m=wse_surface,
-                    head_down_m=wse_node,
-                    area_m2=area_pipe,
+                    head_up=wse_surface,
+                    head_down=wse_node,
+                    area=area_pipe,
                     discharge_coeff=float(outfall.coefficient),
                     g=g,
                     max_flow=outfall.max_flow,

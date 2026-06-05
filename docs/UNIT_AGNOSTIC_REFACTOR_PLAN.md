@@ -1,5 +1,8 @@
 # Unit-Agnostic Refactor Plan
 
+> **Status**: Phases 1–5 COMPLETE. Phases 6–8 REMAINING.
+> See `docs/UNIT_AGNOSTIC_REFACTOR_COMPLETED.md` for done items.
+
 ## Goal
 
 Make all code (except culvert empiricism) unit-agnostic. The CRS defines the length unit; all conversions derive from a single `LENGTH_SCALE` factor (SI meters → model units). No variable names shall carry unit labels (`_m`, `_ft`, `_cms`, `_cfs`). Constants use system labels (`SI_FACTOR`, `USC_FACTOR`). Where needed, dimensional comments use `// L³T⁻¹` notation.
@@ -257,3 +260,208 @@ def test_pack_structures_soa_dimensional_consistency():
 - `cpp/src/swe2d_gpu.cuh`
 - `tests/test_swe2d_culvert_validation.py`
 - `tests/test_swe2d_drainage_structures.py`
+
+---
+
+## Phase 6: Remove Backward-Compatibility Aliases ⏳
+
+The Phase 2 rename added `_cms`/`_m`/`_m2`/`_mps2` backward-compat aliases everywhere.
+These aliases are **now the primary source of unit confusion** — they suggest SI units
+(`_m`, `_cms`) but the values they alias are often in model units (feet for USC CRS).
+
+### 6.1 Python dict-key aliases in `structures.py`
+
+**Current**: `structure_details()` adds both `"flow"` AND `"flow_cms"` to every dict.
+The `_cms` key implies SI m³/s, but the value is actually in model³/s (ft³/s for USC).
+
+**Remove**: The `_ALIASES` dict and the loop that adds aliased keys.
+All callers should use the canonical names (`flow`, `inlet_control_flow`, etc.).
+
+**Files to update**:
+| File | Change |
+|------|--------|
+| `swe2d/extensions/structures.py` | Remove `_ALIASES` dict and alias loop |
+| `swe2d_workbench_qt.py` | Update all `.get("flow_cms")` → `.get("flow")` etc. |
+| `swe2d/results/panel.py` | Update `flow_cms` dict keys |
+| `tests/test_swe2d_culvert_validation.py` | Update `.get("flow_cms")` → `.get("flow")` etc. |
+| `tests/test_swe2d_drainage_structures.py` | Update dict key accesses |
+
+### 6.2 Python property aliases in `extension_models.py`
+
+**Remove**: All backward-compat properties on `PipeNetworkState` and `CouplingDiagnostics`:
+
+```python
+# REMOVE these properties from PipeNetworkState:
+@property node_depth_m → just use node_depth
+@property node_depth_m.setter
+@property link_flow_cms → just use link_flow
+@property link_flow_cms.setter
+
+# REMOVE these properties from CouplingDiagnostics:
+@property max_node_depth_m → use max_node_depth
+@property max_link_flow_cms → use max_link_flow
+@property net_node_inflow_cms → use net_node_inflow
+@property total_capture_cms → use total_capture
+@property total_surcharge_cms → use total_surcharge
+# ... and their setters
+```
+
+**Files to update**:
+| File | Change |
+|------|--------|
+| `swe2d/extensions/extension_models.py` | Remove property aliases |
+| `swe2d_workbench_qt.py` | Change `.node_depth_m` → `.node_depth` etc. |
+| `swe2d/runtime/coupling.py` | Change `.link_flow_cms` → `.link_flow` etc. |
+| `tests/*.py` | Update any property accesses |
+
+### 6.3 Python property aliases in `coupling.py`
+
+**Remove**: Backward-compat kwargs and properties on `SWE2DCouplingController`:
+
+```python
+# REMOVE: cell_area_m2 property (alias for cell_area)
+# REMOVE: cell_bed_m property (alias for cell_bed)
+# REMOVE: cell_area_m2= keyword arg in __init__
+# REMOVE: cell_bed_m= keyword arg in __init__
+```
+
+**Files to update**:
+| File | Change |
+|------|--------|
+| `swe2d/runtime/coupling.py` | Remove `cell_area_m2` / `cell_bed_m` kwargs and properties |
+| `swe2d_workbench_qt.py` | Change `cell_area_m2=` → `cell_area=` etc. |
+| `swe2d/workbench/extracted/model_and_run_methods.py` | Change `cell_area_m2=` → `cell_area=` etc. |
+| `tests/test_swe2d_drainage_structures.py` | Change `cell_area_m2=` → `cell_area=` etc. |
+
+### 6.4 C++ `py::arg()` backward-compat strings ✅ **COMPLETE**
+
+**Status**: Done. All `py::arg()` strings in `swe2d_bindings.cpp` and parameter
+names in `swe2d_gpu_redistribute.cu` have been renamed to canonical forms.
+Python callers verified to use positional args for these bindings (no breakage).
+C++ compilation required after changes.
+
+**Completed renames**:
+| Old py::arg | New py::arg |
+|---|---|
+| `cell_area_m2` | `cell_area` |
+| `culvert_area_m2` | `culvert_area` |
+| `inlet_flow_cms` | `inlet_flow` |
+| `structure_flow_cms` | `structure_flow` |
+| `bridge_flow_cms` | `bridge_flow` |
+| `bridge_opening_width_m` | `bridge_opening_width` |
+| `head_deadband_m` | `head_deadband` |
+| `gravity_mps2` | `gravity` |
+| `source_mps` | `external_source` |
+
+**Files modified**:
+| File | Changes |
+|------|---------|
+| `cpp/src/swe2d_bindings.cpp` | All 23+ `py::arg()` strings, lambda params, error messages |
+| `cpp/src/swe2d_gpu_redistribute.cu` | `struct_flow_cms→struct_flow`, `structure_flow_cms→structure_flow`, `cell_area_m2→cell_area`, `source_rate_mps→source_rate`, `source_rate_mps_inout→source_rate_inout` |
+
+### 6.5 Rename model-unit parameters with misleading `_cms` / `_m` suffixes ✅ **COMPLETE**
+
+These are the last holdouts where the *parameter name* implies a specific unit
+but the value is in model units:
+
+| Current Name | Location | New Name | Notes |
+|-------------|----------|----------|-------|
+| `cell_flow_cms` | `extension_models.py:convert_cell_flows_to_depth_rates()` | `cell_flow` | |
+| `cell_area_m2` | `extension_models.py:convert_cell_flows_to_depth_rates()` | `cell_area` | |
+| `max_flow_cms` | `extension_models.py:compute_weir_flow()` | `max_flow` (keep both args with union logic) | Already takes `max_flow` also |
+| `max_flow_cms` | `extension_models.py:compute_orifice_flow()` | same pattern | |
+| `_culvert_outlet_control_flow_cms` | `structures.py` | `_culvert_outlet_control_flow` | |
+| `node_depth_m` | `extension_models.py:PipeNetworkState` | `node_depth` | Already the canonical field |
+| `link_flow_cms` | `extension_models.py:PipeNetworkState` | `link_flow` | Already the canonical field |
+| `head_up_m` / `head_down_m` | `extension_models.py:compute_orifice_flow()` | `head_up` / `head_down` | |
+| `area_m2` | `extension_models.py:compute_orifice_flow()` | `area` | |
+| `depth_m` / `diameter_m` | `extension_models.py:circular_section_from_depth()` | `depth` / `diameter` | |
+| `_model_to_ft()` | `structures.py` helper | Already internal, rename to `_model_length_to_ft()` | |
+| `inv_m2ft` | `structures.py:_structure_detail()` | `inv_model_to_ft` | |
+
+---
+
+## Phase 7: Fix Native Flow Unit Inconsistency ⏳
+
+### 7.1 The Core Problem
+
+The C++ kernel `swe2d_compute_structure_flows_kernel` returns **mixed units**:
+- **Culvert (type 2)**: Returns CMS (m³/s) after converting from internal CFS
+- **Non-culvert (types 1/3/4/5)**: Returns CFS (ft³/s)
+
+This makes `_last_native_structure_flows` a mixed-unit array. The Python path
+(`structure_details()`) returns mixed units too:
+- **Culvert**: Returns CMS
+- **Non-culvert**: Returns model³/s
+
+### 7.2 The Fix
+
+**Option A (Recommended)**: Make the kernel return all flows in model³/s.
+
+In `swe2d_compute_structure_flows_kernel`, after computing the final flow
+for each structure type, convert to model³/s by dividing by
+`USC_FT3_PER_SI_M3 / model_per_ft_cubed`. Since the kernel receives
+`m2ft` via Python, add a conversion factor parameter.
+
+For the kernel return path:
+```c++
+// After weir/orifice/bridge/pump flow computation (currently in CFS):
+structure_flow[i] = sign * q / ft3_per_model3;  // CFS → model³/s
+
+// For culvert (currently returns CMS):
+structure_flow[i] = sign * q * m3_per_model3;  // CMS → model³/s
+```
+
+Where `ft3_per_model3 = USC_FT3_PER_SI_M3 / si_m_per_model³` and
+`m3_per_model3 = si_m_per_model³`.
+
+**Option B (Minimal)**: Accept mixed units and document the contract clearly.
+The viewer-side fix (Phase 6 / already done) handles this at the display layer,
+and `_structure_source_rate_from_flows()` needs type-aware conversion.
+
+### 7.3 Files
+
+| File | Change |
+|------|--------|
+| `cpp/src/swe2d_gpu.cu` | Add model conversion factor param, apply to all return paths |
+| `cpp/src/swe2d_bindings.cpp` | Pass `model_per_ft3` / `si_m3_per_model_volume` as new param |
+| `swe2d/runtime/coupling.py` | Pass conversion args to native kernel; update `_native_structure_flows()` |
+| `swe2d/runtime/coupling.py` | Fix `_structure_source_rate_from_flows()` for mixed units |
+| `swe2d_workbench_qt.py` | Simplify `_sample_coupling_object_metrics()` (remove `_cfs_to_model` branch) |
+
+---
+
+## Phase 8: Remove `convert_cell_flows_to_depth_rates` `_cms` / `_m2` Suffixes ⏳
+
+### 8.1 `extension_models.py:function convert_cell_flows_to_depth_rates`
+
+Rename `cell_flow_cms` → `cell_flow` and `cell_area_m2` → `cell_area`.
+Update docstring to say "model-length³/T flow" and "model-length² area" instead of
+"m³/s" and "m²".
+
+### 8.2 `DrainageCouplingState` aliases
+
+Remove `node_depth_m` / `link_flow_cms` / `max_node_depth_m` / `max_link_flow_cms`
+/ `net_node_inflow_cms` / `total_capture_cms` / `total_surcharge_cms` property
+aliases. These all suggest SI units but their values are in model units.
+
+### 8.3 Results schema
+
+The GeoPackage schema uses column names like `station_m`, `elev_m`, `flow_cms`
+in line/mesh results. These are in model units. Consider adding a `unit_system`
+metadata field or a schema version column, and rename columns in a future
+schema migration.
+
+---
+
+## Priority Order for Phases 6–8
+
+| Priority | Phase | Scope | Risk | Impact |
+|----------|-------|-------|------|--------|
+| **6.1** | Remove dict-key aliases | `structures.py` + callers | Medium | Eliminates primary confusion source |
+| **6.2** | Remove `PipeNetworkState` prop aliases | `extension_models.py` + callers | Low | Clean API |
+| **6.3** | Remove `CouplingController` prop aliases | `coupling.py` + callers | Medium | Clean API |
+| **6.5** | Rename `_cms`/`_m` params | Wide | Low | Consistency |
+| **7.2** | Fix native flow units | C++ kernel + Python | **High** | Correctness fix |
+| **6.4** | Update C++ `py::arg` strings | `swe2d_bindings.cpp` | Low | Must follow 6.3 |
+| **8.1** | Rename `convert_cell_flows_...` params | `extension_models.py` | Low | Consistency |

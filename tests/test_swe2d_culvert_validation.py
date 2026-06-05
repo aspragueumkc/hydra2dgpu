@@ -34,6 +34,8 @@ import unittest
 
 import numpy as np
 
+from swe2d.units import USC_FT_PER_SI_M
+
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 
@@ -322,7 +324,7 @@ class TestCulvertCoupledValidation(unittest.TestCase):
         struct_cfg = self._build_culvert_structure_cfg(up_cell, dn_cell)
 
         from swe2d.extensions.structures import SWE2DStructureModule
-        struct_mod = SWE2DStructureModule(struct_cfg)
+        struct_mod = SWE2DStructureModule(struct_cfg, model_to_ft=USC_FT_PER_SI_M)
 
         # Run coupled steps, collecting culvert flow each step
         flow_history = []
@@ -432,7 +434,7 @@ class TestCulvertCoupledValidation(unittest.TestCase):
         mod.swe2d_destroy(solver)
 
         struct_cfg = self._build_culvert_structure_cfg(up_cell, dn_cell)
-        struct_mod = SWE2DStructureModule(struct_cfg)
+        struct_mod = SWE2DStructureModule(struct_cfg, model_to_ft=USC_FT_PER_SI_M)
         self._hardwired_struct_mod = struct_mod
 
         cell_area = np.full(len(cx), 200.0 * 100.0 / len(cx), dtype=np.float64)
@@ -486,7 +488,7 @@ class TestCulvertCoupledValidation(unittest.TestCase):
         mod, solver, cx, cy, z_bed_cell = self._make_solver_with_coupling()
         up_cell, dn_cell = self._find_embankment_cells(cx, cy)
         mod.swe2d_destroy(solver)
-        return SWE2DStructureModule(self._build_culvert_structure_cfg(up_cell, dn_cell))
+        return SWE2DStructureModule(self._build_culvert_structure_cfg(up_cell, dn_cell), model_to_ft=USC_FT_PER_SI_M)
 
     # ── Test: native CUDA coupling path ──────────────────────────────────────
     @unittest.skipUnless(_gpu_available(), "CUDA GPU not available for native coupling test")
@@ -504,7 +506,7 @@ class TestCulvertCoupledValidation(unittest.TestCase):
         mod.swe2d_destroy(solver)
 
         struct_cfg = self._build_culvert_structure_cfg(up_cell, dn_cell)
-        struct_mod = SWE2DStructureModule(struct_cfg)
+        struct_mod = SWE2DStructureModule(struct_cfg, model_to_ft=USC_FT_PER_SI_M)
         self._hardwired_struct_mod = struct_mod
 
         cell_area = np.full(len(cx), 200.0 * 100.0 / len(cx), dtype=np.float64)
@@ -570,7 +572,7 @@ class TestCulvertCoupledValidation(unittest.TestCase):
         mod.swe2d_destroy(solver)
 
         struct_cfg = self._build_culvert_structure_cfg(up_cell, dn_cell)
-        struct_mod = SWE2DStructureModule(struct_cfg)
+        struct_mod = SWE2DStructureModule(struct_cfg, model_to_ft=USC_FT_PER_SI_M)
 
         cell_area = np.full(len(cx), 200.0 * 100.0 / len(cx), dtype=np.float64)
         cell_bed = z_bed_cell
@@ -674,7 +676,7 @@ class TestCulvertCoupledValidation(unittest.TestCase):
             },
         )
         cfg = HydraulicStructureConfig(enabled=True, structures=[st])
-        smod = SWE2DStructureModule(cfg)
+        smod = SWE2DStructureModule(cfg, model_to_ft=USC_FT_PER_SI_M)
 
         cell_wse = np.array([wu_mid, wd_mid], dtype=np.float64)
         details = smod.structure_details(cell_wse)
@@ -740,7 +742,7 @@ class TestCulvertModuleCPU(unittest.TestCase):
             },
         )
         cfg = HydraulicStructureConfig(enabled=True, structures=[st])
-        smod = SWE2DStructureModule(cfg)
+        smod = SWE2DStructureModule(cfg, model_to_ft=USC_FT_PER_SI_M)
 
         # Upstream pool 2.0m, downstream 0.5m → positive head
         cell_wse = np.array([2.0, 0.5], dtype=np.float64)
@@ -785,7 +787,7 @@ class TestCulvertModuleCPU(unittest.TestCase):
             },
         )
         cfg = HydraulicStructureConfig(enabled=True, structures=[st])
-        smod = SWE2DStructureModule(cfg)
+        smod = SWE2DStructureModule(cfg, model_to_ft=USC_FT_PER_SI_M)
 
         # Both pools at same WSE → no driving head below culvert crown
         cell_wse = np.array([0.5, 0.5], dtype=np.float64)
@@ -839,7 +841,7 @@ class TestCulvertModuleCPU(unittest.TestCase):
             },
         )
         cfg = HydraulicStructureConfig(enabled=True, structures=[st])
-        smod = SWE2DStructureModule(cfg)
+        smod = SWE2DStructureModule(cfg, model_to_ft=USC_FT_PER_SI_M)
 
         # Upstream pool at 2.0 m, downstream at 0.3 m
         cell_wse = np.array([2.0, 0.3], dtype=np.float64)

@@ -48,15 +48,15 @@
  */
 __global__ __launch_bounds__(256, 4) void swe2d_redistribute_sources_kernel(
     int32_t     n_structures,
-    const double* __restrict__ struct_flow_cms,
+    const double* __restrict__ struct_flow,
     const int32_t* __restrict__ orig_up_cell,
     const int32_t* __restrict__ orig_dn_cell,
-    const double* __restrict__ cell_area_m2,
+    const double* __restrict__ cell_area,
     const int32_t* __restrict__ dist_offsets,
     const int32_t* __restrict__ dist_cell_idx,
     const double* __restrict__ dist_weights,
     int32_t     n_cells,
-    double* __restrict__ source_rate_mps)
+    double* __restrict__ source_rate)
 {
     int32_t i = blockIdx.x * blockDim.x + threadIdx.x;
     if (i >= n_structures) return;
@@ -66,17 +66,17 @@ __global__ __launch_bounds__(256, 4) void swe2d_redistribute_sources_kernel(
     const int32_t count = end - start;
     if (count <= 0) return;
 
-    const double q = struct_flow_cms[i];
+    const double q = struct_flow[i];
     if (!isfinite(q) || q == 0.0) return;
 
     // Step 1: Reverse the single-cell injection that was already applied
     const int32_t cu = orig_up_cell[i];
     const int32_t cd = orig_dn_cell[i];
     if (cu >= 0 && cu < n_cells) {
-        atomicAdd(&source_rate_mps[cu], q / fmax(cell_area_m2[cu], 1.0e-12));
+        atomicAdd(&source_rate[cu], q / fmax(cell_area[cu], 1.0e-12));
     }
     if (cd >= 0 && cd < n_cells) {
-        atomicAdd(&source_rate_mps[cd], -q / fmax(cell_area_m2[cd], 1.0e-12));
+        atomicAdd(&source_rate[cd], -q / fmax(cell_area[cd], 1.0e-12));
     }
 
     // Step 2: Normalize weights
@@ -89,8 +89,8 @@ __global__ __launch_bounds__(256, 4) void swe2d_redistribute_sources_kernel(
     for (int32_t j = start; j < end; j++) {
         const int32_t c = dist_cell_idx[j];
         if (c < 0 || c >= n_cells) continue;
-        const double a = fmax(cell_area_m2[c], 1.0e-12);
-        atomicAdd(&source_rate_mps[c], (dist_weights[j] * inv_wsum) * q / a);
+        const double a = fmax(cell_area[c], 1.0e-12);
+        atomicAdd(&source_rate[c], (dist_weights[j] * inv_wsum) * q / a);
     }
 }
 
@@ -155,17 +155,17 @@ static uint64_t hash_redist_data(
 void swe2d_gpu_redistribute_structure_sources(
     SWE2DDeviceState* dev,
     int32_t n_structures,
-    const double* structure_flow_cms,
+    const double* structure_flow,
     const int32_t* orig_up_cell,
     const int32_t* orig_dn_cell,
-    const double* cell_area_m2,
+    const double* cell_area,
     const int32_t* dist_offsets,
     const int32_t* dist_cell_idx,
     const double* dist_weights,
     int32_t n_cells,
-    double* source_rate_mps_inout)
+    double* source_rate_inout)
 {
-    if (n_structures <= 0 || !source_rate_mps_inout) return;
+    if (n_structures <= 0 || !source_rate_inout) return;
 
     constexpr int BLOCK = 256;
     cudaStream_t stream = dev ? dev->d_stream : nullptr;
@@ -226,12 +226,12 @@ void swe2d_gpu_redistribute_structure_sources(
 
         // Flow: always upload (changes every step, but tiny: n_structures * 8 bytes)
         CUDA_CHECK(cudaMalloc(&d_flow, static_cast<size_t>(n_structures) * sizeof(double)));
-        h2d(d_flow, structure_flow_cms, static_cast<size_t>(n_structures) * sizeof(double));
+        h2d(d_flow, structure_flow, static_cast<size_t>(n_structures) * sizeof(double));
         own_temp = true;
 
         // Source array: upload every step (source rates change each timestep).
         // d_source is now pre-allocated by swe2d_gpu_preload_coupling_cell_area.
-        h2d(d_source, source_rate_mps_inout, static_cast<size_t>(n_cells) * sizeof(double));
+        h2d(d_source, source_rate_inout, static_cast<size_t>(n_cells) * sizeof(double));
     } else {
         // Non-persistent path: allocate and upload everything (legacy).
         CUDA_CHECK(cudaMalloc(&d_offsets, static_cast<size_t>(n_structures + 1) * sizeof(int32_t)));
@@ -254,13 +254,13 @@ void swe2d_gpu_redistribute_structure_sources(
         h2d(d_offsets, dist_offsets, static_cast<size_t>(n_structures + 1) * sizeof(int32_t));
         h2d(d_up,      orig_up_cell, static_cast<size_t>(n_structures) * sizeof(int32_t));
         h2d(d_dn,      orig_dn_cell, static_cast<size_t>(n_structures) * sizeof(int32_t));
-        h2d(d_flow,    structure_flow_cms, static_cast<size_t>(n_structures) * sizeof(double));
+        h2d(d_flow,    structure_flow, static_cast<size_t>(n_structures) * sizeof(double));
         if (total_dist_cells > 0) {
             h2d(d_cell_idx, dist_cell_idx, static_cast<size_t>(total_dist_cells) * sizeof(int32_t));
             h2d(d_weights,  dist_weights,  static_cast<size_t>(total_dist_cells) * sizeof(double));
         }
-        h2d(d_cell_area, cell_area_m2, static_cast<size_t>(n_cells) * sizeof(double));
-        h2d(d_source,    source_rate_mps_inout, static_cast<size_t>(n_cells) * sizeof(double));
+        h2d(d_cell_area, cell_area, static_cast<size_t>(n_cells) * sizeof(double));
+        h2d(d_source,    source_rate_inout, static_cast<size_t>(n_cells) * sizeof(double));
     }
 
     const int grid = (n_structures + BLOCK - 1) / BLOCK;
@@ -282,7 +282,7 @@ void swe2d_gpu_redistribute_structure_sources(
             else
                 CUDA_CHECK(cudaMemcpy(h, d, bytes, cudaMemcpyDeviceToHost));
         };
-        d2h(source_rate_mps_inout, d_source, static_cast<size_t>(n_cells) * sizeof(double));
+        d2h(source_rate_inout, d_source, static_cast<size_t>(n_cells) * sizeof(double));
     }
 
     // Free per-step allocations.
@@ -334,7 +334,7 @@ __global__ __launch_bounds__(256, 4) void scale_array_kernel(
 void swe2d_gpu_redistribute_structure_sources_persistent(
     SWE2DDeviceState* dev,
     int32_t n_structures,
-    const double* structure_flow_cms,
+    const double* structure_flow,
     const int32_t* orig_up_cell,
     const int32_t* orig_dn_cell,
     const int32_t* dist_offsets,
@@ -387,7 +387,7 @@ void swe2d_gpu_redistribute_structure_sources_persistent(
     // Flow: upload every step (tiny: n_struct * 8 bytes).
     double* d_flow = nullptr;
     CUDA_CHECK(cudaMalloc(&d_flow, static_cast<size_t>(n_structures) * sizeof(double)));
-    upload(d_flow, structure_flow_cms, static_cast<size_t>(n_structures) * sizeof(double));
+    upload(d_flow, structure_flow, static_cast<size_t>(n_structures) * sizeof(double));
 
     // Source: operate directly on dev->d_external_source_mps in place.
     double* d_source = dev->d_external_source_mps;

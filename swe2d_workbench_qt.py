@@ -2101,10 +2101,20 @@ class SWE2DCouplingResultsViewerDialog(QtWidgets.QDialog):
             return self._flow_unit
         if m == "source":
             return f"{self._length_unit}/s"
-        if m.endswith("_m"):
-            return self._length_unit
-        if m.endswith("_cms"):
+        # Unit-agnostic metric names (no suffix) — all flows are in model³/s,
+        # all depths/lengths in model units, as displayed to the user.
+        _FLOW_METRICS = {
+            "inlet_control_flow", "outlet_control_flow", "orifice_cap",
+            "manning_cap", "embankment_flow",
+        }
+        _LENGTH_METRICS = {
+            "available_head_up", "tailwater_depth",
+            "inlet_invert_elev", "outlet_invert_elev",
+        }
+        if m in _FLOW_METRICS or m.endswith("_cms"):
             return self._flow_unit
+        if m in _LENGTH_METRICS or m.endswith("_m"):
+            return self._length_unit
         if m.endswith("_mps"):
             return f"{self._length_unit}/s"
         return ""
@@ -7593,34 +7603,72 @@ class SWE2DWorkbenchDialog(QtWidgets.QDialog):
         structures_mod = getattr(coupling_controller, "structures", None)
         if structures_mod is not None:
             try:
+                from swe2d.extensions.extension_models import StructureType
+                from swe2d import units as _u
+
                 hh = np.ascontiguousarray(h, dtype=np.float64).ravel()
                 cell_wse = hh + np.asarray(coupling_controller.cell_bed, dtype=np.float64).ravel()
                 details = list(structures_mod.structure_details(cell_wse))
                 # Use the native path flows (which actually drove the simulation)
                 # for the 'flow' metric, falling back to Python path if unavailable.
                 native_flows = getattr(coupling_controller, "_last_native_structure_flows", None)
+
+                # UI unit helpers: convert internal values → model units for display.
+                # Culvert routines operate in USC (ft) and return flows in SI (m³/s = CMS).
+                # Non-culvert kernel routines operate in USC and return CFS (ft³/s).
+                # Python structure_details() also returns culvert flows in CMS
+                # but non-culvert flows in model³/s.
+                # We normalise everything to model³/s so the unit label matches the value.
+                is_usc = self._is_us_customary_units()
+
+                def _cms_to_model(v: float) -> float:
+                    """Convert SI m³/s → model³/s (ft³/s for USC, m³/s for SI)."""
+                    return float(self._flow_si_to_model(v))
+
+                def _cfs_to_model(v: float) -> float:
+                    """Convert USC ft³/s → model³/s."""
+                    if is_usc:
+                        return v  # already ft³/s = model³/s
+                    # SI model: CFS → m³/s
+                    return v / _u.USC_FT3_PER_SI_M3
+
                 for i, st in enumerate(structures_mod.cfg.structures):
                     sid = str(st.structure_id)
                     detail = details[i] if i < len(details) else {}
-                    base_name = str(st.structure_type.name).lower()
-                    # Use native path flow if available
+                    stype = st.structure_type if hasattr(st, "structure_type") else StructureType.WEIR
+                    base_name = str(stype.name).lower() if isinstance(stype, StructureType) else str(stype).lower()
+                    is_culvert = (stype == StructureType.CULVERT)
+
+                    # Native path flow: CMS for culverts, CFS for non-culvert types.
+                    # Python fallback: CMS for culverts, model³/s for non-culvert.
                     if native_flows is not None and i < len(native_flows) and np.isfinite(native_flows[i]):
-                        flow_val = float(native_flows[i])
+                        native_val = float(native_flows[i])
+                        if is_culvert:
+                            flow_val = _cms_to_model(native_val)
+                        else:
+                            flow_val = _cfs_to_model(native_val)
                     else:
-                        flow_val = float(detail.get("flow_cms", 0.0) or 0.0)
-                    metric_map = {
+                        flow_py = float(detail.get("flow", 0.0) or 0.0)
+                        if is_culvert:
+                            flow_val = _cms_to_model(flow_py)
+                        else:
+                            # Non-culvert Python flows are already in model³/s.
+                            flow_val = flow_py
+
+                    metric_map: Dict[str, float] = {
                         "flow": flow_val,
                     }
-                    if base_name == "culvert":
+                    if is_culvert:
                         metric_map.update(
                             {
-                                "inlet_control_flow": float(detail.get("inlet_control_flow_cms", 0.0) or 0.0),
-                                "outlet_control_flow": float(detail.get("outlet_control_flow_cms", 0.0) or 0.0),
-                                "orifice_cap": float(detail.get("orifice_cap_cms", 0.0) or 0.0),
-                                "manning_cap": float(detail.get("manning_cap_cms", 0.0) or 0.0),
-                                "embankment_flow": float(detail.get("embankment_flow_cms", 0.0) or 0.0),
-                                "available_head_up": float(detail.get("available_head_up_m", 0.0) or 0.0),
-                                "tailwater_depth": float(detail.get("tailwater_depth_m", 0.0) or 0.0),
+                                "inlet_control_flow": _cms_to_model(float(detail.get("inlet_control_flow", 0.0) or 0.0)),
+                                "outlet_control_flow": _cms_to_model(float(detail.get("outlet_control_flow", 0.0) or 0.0)),
+                                "orifice_cap": _cms_to_model(float(detail.get("orifice_cap", 0.0) or 0.0)),
+                                "manning_cap": _cms_to_model(float(detail.get("manning_cap", 0.0) or 0.0)),
+                                "embankment_flow": _cms_to_model(float(detail.get("embankment_flow", 0.0) or 0.0)),
+                                # available_head_up and tailwater_depth are already in model units.
+                                "available_head_up": float(detail.get("available_head_up", 0.0) or 0.0),
+                                "tailwater_depth": float(detail.get("tailwater_depth", 0.0) or 0.0),
                             }
                         )
                     for metric_name, metric_value in metric_map.items():
