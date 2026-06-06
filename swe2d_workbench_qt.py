@@ -74,6 +74,7 @@ except Exception:
         SWE2DThreeDPatchObserver = None
 
 from swe2d.boundary_and_forcing.bc_logic import (
+    _bc_side_classification,
     apply_timeseries_bc_values as _apply_timeseries_bc_values_logic,
     distribute_total_flow_to_unit_q as _distribute_total_flow_to_unit_q_logic,
     interp_hydrograph as _interp_hydrograph_logic,
@@ -9523,11 +9524,32 @@ class SWE2DWorkbenchDialog(QtWidgets.QDialog):
             except Exception:
                 progressive = True
 
-        if edge_groups is None and hasattr(self, "_collect_bc_layer_edge_groups"):
-            try:
-                edge_groups = self._collect_bc_layer_edge_groups(edge_n0, edge_n1)
-            except Exception:
-                edge_groups = None
+        if edge_groups is None:
+            if hasattr(self, "_cached_edge_groups") and self._cached_edge_groups is not None:
+                edge_groups = self._cached_edge_groups
+            elif hasattr(self, "_collect_bc_layer_edge_groups"):
+                try:
+                    edge_groups = self._collect_bc_layer_edge_groups(edge_n0, edge_n1)
+                    self._cached_edge_groups = edge_groups
+                except Exception:
+                    edge_groups = None
+
+        # Cache mesh-constant BC geometry after first call.
+        bc_cache = self.__dict__.setdefault("_bc_geom_cache", {})
+        if "_side_idx" not in bc_cache or "_edge_len" not in bc_cache or "_edge_z" not in bc_cache:
+            side_idx, _mx, _my, _xmin, _xmax, _ymin, _ymax = _bc_side_classification(
+                edge_n0, edge_n1,
+                self._mesh_data["node_x"],
+                self._mesh_data["node_y"],
+            )
+            bc_cache["_side_idx"] = side_idx
+            bc_cache["_edge_len"] = np.hypot(
+                self._mesh_data["node_x"][edge_n1] - self._mesh_data["node_x"][edge_n0],
+                self._mesh_data["node_y"][edge_n1] - self._mesh_data["node_y"][edge_n0],
+            )
+            bc_cache["_edge_z"] = 0.5 * (
+                self._mesh_data["node_z"][edge_n0] + self._mesh_data["node_z"][edge_n1]
+            )
 
         return _distribute_total_flow_to_unit_q_logic(
             edge_n0=edge_n0,
@@ -9543,6 +9565,9 @@ class SWE2DWorkbenchDialog(QtWidgets.QDialog):
             ts_flow_code=_BC_TS_FLOW,
             edge_hydrographs=edge_hydrographs,
             edge_groups=edge_groups,
+            _side_idx=bc_cache.get("_side_idx"),
+            _edge_len=bc_cache.get("_edge_len"),
+            _edge_z=bc_cache.get("_edge_z"),
         )
 
     def _apply_timeseries_bc_values(
@@ -9555,6 +9580,15 @@ class SWE2DWorkbenchDialog(QtWidgets.QDialog):
         t_sec: float,
         edge_hydrographs: Optional[Dict[int, Tuple[int, Tuple[np.ndarray, np.ndarray]]]] = None,
     ) -> Tuple[np.ndarray, np.ndarray]:
+        # Cache mesh-constant BC geometry after first call.
+        bc_cache = self.__dict__.setdefault("_bc_geom_cache", {})
+        if "_side_idx" not in bc_cache:
+            side_idx, _mx, _my, _xmin, _xmax, _ymin, _ymax = _bc_side_classification(
+                edge_n0, edge_n1,
+                self._mesh_data["node_x"],
+                self._mesh_data["node_y"],
+            )
+            bc_cache["_side_idx"] = side_idx
         return _apply_timeseries_bc_values_logic(
             edge_n0=edge_n0,
             edge_n1=edge_n1,
@@ -9567,6 +9601,7 @@ class SWE2DWorkbenchDialog(QtWidgets.QDialog):
             ts_flow_code=_BC_TS_FLOW,
             ts_stage_code=_BC_TS_STAGE,
             edge_hydrographs=edge_hydrographs,
+            _side_idx=bc_cache["_side_idx"],
         )
 
     def _on_generate_mesh(self):

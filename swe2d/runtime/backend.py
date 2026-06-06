@@ -483,6 +483,12 @@ class SWE2DBackend:
             "enforce_gpu_only_advanced_modes",
             "three_d_single_phase_free_surface",
             "dt_initial",
+            "friction_substep_enabled",
+            "friction_target_courant",
+            "friction_max_substeps",
+            "shallow_friction_correction",
+            "shallow_friction_depth_alpha",
+            "shallow_friction_exponent",
         ):
             filtered.pop(key, None)
         return self._mod.swe2d_create_solver(*args, **filtered)
@@ -770,6 +776,12 @@ class SWE2DBackend:
         degen_mode: int = 0,
         front_flux_damping: float = 0.5,
         active_set_hysteresis: bool = True,
+        friction_substep_enabled: bool = True,
+        friction_target_courant: float = 1.0,
+        friction_max_substeps: int = 64,
+        shallow_friction_correction: bool = True,
+        shallow_friction_depth_alpha: float = 5.0,
+        shallow_friction_exponent: float = 0.4,
     ) -> None:
         """
         Create the solver with initial conditions.
@@ -859,6 +871,12 @@ class SWE2DBackend:
             "enable_rain_module": False,
             "enable_pipe_network_module": False,
             "enable_hydraulic_structures": False,
+            "friction_substep_enabled": friction_substep_enabled,
+            "friction_target_courant": friction_target_courant,
+            "friction_max_substeps": friction_max_substeps,
+            "shallow_friction_correction": shallow_friction_correction,
+            "shallow_friction_depth_alpha": shallow_friction_depth_alpha,
+            "shallow_friction_exponent": shallow_friction_exponent,
         }
         if model_options is not None:
             native_opts.update(model_options.to_native_dict())
@@ -944,6 +962,12 @@ class SWE2DBackend:
             enable_rain_module=bool(native_opts["enable_rain_module"]),
             enable_pipe_network_module=bool(native_opts["enable_pipe_network_module"]),
             enable_hydraulic_structures=bool(native_opts["enable_hydraulic_structures"]),
+            friction_substep_enabled=bool(native_opts["friction_substep_enabled"]),
+            friction_target_courant=float(native_opts["friction_target_courant"]),
+            friction_max_substeps=int(native_opts["friction_max_substeps"]),
+            shallow_friction_correction=bool(native_opts["shallow_friction_correction"]),
+            shallow_friction_depth_alpha=float(native_opts["shallow_friction_depth_alpha"]),
+            shallow_friction_exponent=float(native_opts["shallow_friction_exponent"]),
             degen_mode=int(degen_mode),
             front_flux_damping=float(front_flux_damping),
             active_set_hysteresis=bool(active_set_hysteresis),

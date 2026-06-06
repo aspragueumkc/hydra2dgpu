@@ -51,6 +51,7 @@ class SWE2DRunOptionsData:
     hydraulic_structures_cfg: Any
     bridge_cuda_coupling: bool
     bridge_stacked_coupling_mode: str
+    culvert_face_flux_mode: str
 
 
 class SWE2DRunOptionsBuilder:
@@ -305,6 +306,22 @@ class SWE2DRunOptionsBuilder:
                 f"(stacked mode={bridge_stacked_coupling_mode})."
             )
 
+        # Face-based culvert flux coupling (GPU only)
+        culvert_face_flux_mode = "off"
+        if (
+            hasattr(self._ui, "culvert_face_flux_chk")
+            and self._ui.culvert_face_flux_chk is not None
+            and self._ui.culvert_face_flux_chk.isChecked()
+            and str(solver_backend_mode).strip().lower() == "gpu"
+            and str(coupling_loop_mode).strip().lower() == "cuda"
+        ):
+            culvert_face_flux_mode = "face_flux"
+            self._log(
+                "Culvert face-based flux coupling enabled (GPU only). "
+                "Culvert flows will be applied as FVM face fluxes with "
+                "momentum transfer."
+            )
+
         return SWE2DRunOptionsData(
             run_duration_s=run_duration_s,
             dt_cfg=dt_cfg,
@@ -339,4 +356,5 @@ class SWE2DRunOptionsBuilder:
             hydraulic_structures_cfg=hydraulic_structures_cfg,
             bridge_cuda_coupling=bridge_cuda_coupling,
             bridge_stacked_coupling_mode=bridge_stacked_coupling_mode,
+            culvert_face_flux_mode=culvert_face_flux_mode,
         )

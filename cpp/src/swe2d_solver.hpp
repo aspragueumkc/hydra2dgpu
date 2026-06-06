@@ -111,6 +111,16 @@ struct SWE2DSolverConfig {
     bool    source_true_subcycling = false; // true: apply real source sub-iterations per hydro step
     bool    source_imex_split = false;      // true: flux step first, then source+friction split substeps
 
+    // Friction temporal-order hardening (adaptive sub-stepping for RK4/RK5).
+    bool    friction_substep_enabled     = true;   // enable adaptive friction sub-stepping
+    double  friction_target_courant      = 1.0;    // target nu_fric for substep count (>0)
+    int     friction_max_substeps        = 64;     // hard cap on friction substeps per cell
+
+    // Shallow-flow friction correction (Keulegan-based Cf enhancement).
+    bool    shallow_friction_correction  = false;  // enable depth-limited Cf enhancement
+    double  shallow_friction_depth_alpha = 5.0;    // h_ref = alpha * n^(3/2) (L^(1/2)/T)
+    double  shallow_friction_exponent    = 0.4;    // Cf *= (h_ref/max(h,h_min))^beta
+
     // Tiny-N GPU execution controls (GPU-first perf tuning for small wet domains).
     // 0=off, 1=auto, 2=fused(preferred tiny path), 3=persistent(experimental).
     int     tiny_mode = 1;

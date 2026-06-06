@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+import math
 import os
 from typing import Callable, Dict, Optional, Sequence
 
@@ -134,6 +135,28 @@ class SWE2DStructuresSoA:
     embankment_crest_elev: np.ndarray
     embankment_overflow_width: np.ndarray
     embankment_weir_coeff: np.ndarray
+
+
+@dataclass
+class SWE2DCulvertFaceFluxSoA:
+    """Face-based flux parameters for culvert structures.
+
+    Only populated for structures where structure_type == CULVERT
+    and the face_flux coupling mode is active.
+    """
+    # Index into the full structure arrays (culverts only)
+    structure_index: np.ndarray       # [n_culvert_faces]
+    # Face geometry (unit normal from upstream → downstream centroid)
+    face_nx: np.ndarray              # [n_culvert_faces]
+    face_ny: np.ndarray              # [n_culvert_faces]
+    face_width: np.ndarray            # [n_culvert_faces] culvert face width L_s
+    # Donor/receiver cell indices
+    donor_cell: np.ndarray            # [n_culvert_faces] upstream cell
+    receiver_cell: np.ndarray         # [n_culvert_faces] downstream cell
+    # Invert elevation for depth limiting
+    invert_elev: np.ndarray           # [n_culvert_faces]
+    # Depth limiter safety factor (0..1, default 0.5)
+    depth_safety_factor: np.ndarray   # [n_culvert_faces]
 
 
 @dataclass
@@ -429,6 +452,7 @@ class SWE2DCouplingController:
         bridge_cuda_coupling: bool = False,
         bridge_stacked_coupling_mode: str = "phase3_spatial",
         length_scale_si_to_model: float = 1.0,
+        culvert_face_flux_mode: str = "off",
         log_callback: Optional[Callable[[str], None]] = None,
 ):
         if cell_area is None or cell_bed is None:
@@ -467,6 +491,12 @@ class SWE2DCouplingController:
         self.culvert_solver_mode = int(culvert_solver_mode)
         if self.culvert_solver_mode not in {0, 1}:
             raise ValueError("culvert_solver_mode must be 0 or 1")
+        # Face-based culvert flux coupling: "off" | "face_flux"
+        self.culvert_face_flux_mode = str(culvert_face_flux_mode or "off").strip().lower()
+        if self.culvert_face_flux_mode not in {"off", "face_flux"}:
+            raise ValueError("culvert_face_flux_mode must be 'off' or 'face_flux'")
+        self._face_flux_soa: Optional[SWE2DCulvertFaceFluxSoA] = None
+        self._culvert_face_flux_preloaded = False
         self._culvert_table_n_hw = max(
             8, int(os.environ.get("BACKWATER_SWE2D_CULVERT_TABLE_N_HW", "32"))
         )
@@ -607,6 +637,114 @@ class SWE2DCouplingController:
         """Route a message to the runtime log callback, if any."""
         if callable(self._log_callback):
             self._log_callback(str(msg))
+
+    # ── Face-based culvert flux coupling ──────────────────────────────────
+    def _build_face_flux_soa(self) -> Optional[SWE2DCulvertFaceFluxSoA]:
+        """Build SoA for face-based culvert flux coupling.
+
+        Computes face normals from cell centroids, determines face widths,
+        and packs invert elevations and depth safety factors for all active
+        culvert structures.
+        """
+        if self.structures is None or self.culvert_face_flux_mode != "face_flux":
+            return None
+        if self._cell_cx is None or self._cell_cy is None:
+            return None  # need cell centroids
+
+        cfg = self.structures.cfg
+        culvert_indices = [
+            i for i, st in enumerate(cfg.structures)
+            if st.structure_type == StructureType.CULVERT and st.enabled
+        ]
+        if not culvert_indices:
+            return None
+
+        n = len(culvert_indices)
+        struct_idx = np.array(culvert_indices, dtype=np.int32)
+        donor_cell = np.zeros(n, dtype=np.int32)
+        receiver_cell = np.zeros(n, dtype=np.int32)
+        face_nx = np.zeros(n, dtype=np.float64)
+        face_ny = np.zeros(n, dtype=np.float64)
+        face_width = np.zeros(n, dtype=np.float64)
+        invert_elev = np.zeros(n, dtype=np.float64)
+        depth_safety = np.full(n, 0.5, dtype=np.float64)  # default α = 0.5
+
+        for j, i in enumerate(culvert_indices):
+            st = cfg.structures[i]
+            cu = int(st.upstream_cell)
+            cd = int(st.downstream_cell)
+            if cu < 0 or cd < 0 or cu >= self.n_cells or cd >= self.n_cells:
+                continue
+
+            # Face normal from upstream → downstream centroid
+            dx = self._cell_cx[cd] - self._cell_cx[cu]
+            dy = self._cell_cy[cd] - self._cell_cy[cu]
+            length = max(1.0e-12, math.sqrt(dx * dx + dy * dy))
+            face_nx[j] = dx / length
+            face_ny[j] = dy / length
+
+            donor_cell[j] = cu
+            receiver_cell[j] = cd
+
+            # Face width: culvert_span for box, diameter for circular
+            md = st.metadata
+            fwo = float(md.get("face_width_override", 0.0) or 0.0)
+            if fwo > 0.0:
+                face_width[j] = fwo
+            else:
+                shape = str(md.get("culvert_shape", "circular")).strip().lower()
+                if shape in ("box", "rect", "rectangular"):
+                    face_width[j] = float(md.get("culvert_span", md.get("width", 1.0)) or 1.0)
+                else:
+                    face_width[j] = float(md.get("diameter", md.get("culvert_rise", 1.0)) or 1.0)
+
+            invert_elev[j] = float(md.get("inlet_invert_elev", st.crest_elev) or st.crest_elev)
+            depth_safety[j] = float(md.get("face_flux_depth_safety", 0.5) or 0.5)
+
+        return SWE2DCulvertFaceFluxSoA(
+            structure_index=struct_idx,
+            face_nx=face_nx,
+            face_ny=face_ny,
+            face_width=face_width,
+            donor_cell=donor_cell,
+            receiver_cell=receiver_cell,
+            invert_elev=invert_elev,
+            depth_safety_factor=depth_safety,
+        )
+
+    def _ensure_culvert_face_flux_preloaded(self, native_mod) -> None:
+        """Upload culvert face-flux geometry to GPU if not yet done."""
+        if self._culvert_face_flux_preloaded:
+            return
+        if self.culvert_face_flux_mode != "face_flux":
+            return
+        if not hasattr(native_mod, "swe2d_gpu_upload_culvert_face_flux_params"):
+            return
+
+        # Build the SoA if not yet built
+        if self._face_flux_soa is None:
+            self._face_flux_soa = self._build_face_flux_soa()
+        if self._face_flux_soa is None or self._face_flux_soa.structure_index.size == 0:
+            self._culvert_face_flux_preloaded = True
+            return
+
+        ff = self._face_flux_soa
+        try:
+            native_mod.swe2d_gpu_upload_culvert_face_flux_params(
+                np.ascontiguousarray(ff.structure_index, dtype=np.int32),
+                np.ascontiguousarray(ff.face_nx, dtype=np.float64),
+                np.ascontiguousarray(ff.face_ny, dtype=np.float64),
+                np.ascontiguousarray(ff.face_width, dtype=np.float64),
+                np.ascontiguousarray(ff.donor_cell, dtype=np.int32),
+                np.ascontiguousarray(ff.receiver_cell, dtype=np.int32),
+                np.ascontiguousarray(ff.invert_elev, dtype=np.float64),
+                np.ascontiguousarray(ff.depth_safety_factor, dtype=np.float64),
+                True,  # use_face_flux
+            )
+            self._culvert_face_flux_preloaded = True
+        except Exception as exc:
+            self._log(f"[WARNING] culvert face-flux upload failed: {exc}")
+            self._culvert_face_flux_preloaded = True  # don't retry
 
     def _apply_redistribution(
         self,
@@ -813,7 +951,14 @@ class SWE2DCouplingController:
         if not self._persistent_coupling_preloaded:
             return False
 
+        # Ensure face-flux params are uploaded before full_on_device
+        if self.culvert_face_flux_mode == "face_flux":
+            self._ensure_culvert_face_flux_preloaded(native_mod)
+
         n_structures = int(self._structure_count)
+        # Set coupling dt for face-flux depth limiter
+        if hasattr(native_mod, "swe2d_gpu_set_coupling_dt"):
+            native_mod.swe2d_gpu_set_coupling_dt(float(dt_s))
         try:
             native_mod.swe2d_gpu_compute_coupling_full_on_device(
                 np.empty(0, dtype=np.float64),
@@ -1191,9 +1336,11 @@ class SWE2DCouplingController:
             if native_cpu_flows is not None and native_cpu_flows.size == self._structure_count:
                 src = self._structure_source_rate_from_flows(native_cpu_flows, native_mod=native_mod)
                 component_sums["structures_native_cpu_helper"] = 1.0
-                # Use Python structure module for diagnostics (returns CMS).
-                # The constructor converts CMS → model units uniformly.
-                structure_diag = self.structures.compute_structure_fluxes(float(dt_s), cell_wse)
+                # Derive diagnostics from already-computed native flows instead
+                # of re-evaluating all structure hydraulics for a second time.
+                structure_diag = {
+                    "total_structure_flow": float(np.sum(np.abs(native_cpu_flows))),
+                }
             else:
                 src = np.asarray(
                     self.structures.compute_cell_source_rate(float(dt_s), cell_wse, self.cell_area),

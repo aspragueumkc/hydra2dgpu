@@ -1590,7 +1590,7 @@ def execute_run_timestep_loop(
         state_ms += float(step_result["state_ms"])
         bc_ms += float(step_result["bc_ms"])
 
-        if bc_n0.size > 0:
+        if not perf_mode and bc_n0.size > 0:
             _t_bc_acc = time.perf_counter()
             _t_bc_diag = 0.0
             _t_bc_accu = 0.0

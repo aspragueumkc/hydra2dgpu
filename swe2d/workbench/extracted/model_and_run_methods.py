@@ -1477,6 +1477,18 @@ def _bind_model_tab_3d_subgrid_drainage_controls(
         "Requires the native CUDA backend for GPU structure flow evaluation."
     )
 
+    self.culvert_face_flux_chk = _find_or_create_check(
+        "culvert_face_flux_chk", "Culvert coupling mode:", "Face-based flux (GPU only)",
+        target_form=param_form,
+    )
+    self.culvert_face_flux_chk.setToolTip(
+        "When enabled, culvert flows are applied as face-based fluxes\n"
+        "instead of cell-center source/sink terms on the GPU path.\n"
+        "This preserves strict mass conservation and transfers momentum\n"
+        "proportional to discharge. Only applies to culvert structures.\n"
+        "Requires CUDA GPU backend and coupling loop set to CUDA."
+    )
+
     self.bridge_stacked_coupling_mode_combo = _find_or_create_combo(
         "bridge_stacked_coupling_mode_combo", "Bridge stacked coupling mode:", param_form
     )
@@ -2383,6 +2395,7 @@ def _on_run(self, request=None):
                 bridge_cuda_coupling=bool(run_options.bridge_cuda_coupling),
                 bridge_stacked_coupling_mode=str(getattr(run_options, "bridge_stacked_coupling_mode", "phase3_spatial")),
                 length_scale_si_to_model=self._length_scale_si_to_model(),
+                culvert_face_flux_mode=str(getattr(run_options, "culvert_face_flux_mode", "off")),
                 log_callback=self._log,
             )
             setattr(coupling_controller, "bridge_stacked_plans", bridge_stacked_plans)

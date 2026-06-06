@@ -33,10 +33,40 @@ extern SWE2DDeviceState* s_coupling_dev;
 // k_mann = 1.486 for US Customary units (feet)
 __constant__ double c_k_mann = 1.0;
 
+// Friction sub-stepping and shallow-correction constants.
+// Set via swe2d_gpu_set_friction_config(); accessed by all kernels.
+__constant__ int    c_friction_substep_enabled     = 1;
+__constant__ double c_friction_target_courant      = 1.0;
+__constant__ int    c_friction_max_substeps        = 64;
+__constant__ int    c_shallow_friction_correction  = 0;
+__constant__ double c_shallow_friction_depth_alpha = 5.0;
+__constant__ double c_shallow_friction_exponent    = 0.4;
+
 /// Host-side setter for the GPU constant-memory k_mann value.
 /// Must be called before any step that uses friction.
 void swe2d_gpu_set_k_mann(double k_mann) {
     cudaMemcpyToSymbol(c_k_mann, &k_mann, sizeof(double));
+}
+
+/// Host-side setter for GPU constant-memory friction configuration.
+/// Must be called after swe2d_gpu_init() and before any step call.
+void swe2d_gpu_set_friction_config(
+    bool   substep_enabled,
+    double target_courant,
+    int    max_substeps,
+    bool   shallow_correction,
+    double depth_alpha,
+    double exponent)
+{
+    int v;
+    v = substep_enabled ? 1 : 0;
+    cudaMemcpyToSymbol(c_friction_substep_enabled, &v, sizeof(int));
+    cudaMemcpyToSymbol(c_friction_target_courant, &target_courant, sizeof(double));
+    cudaMemcpyToSymbol(c_friction_max_substeps, &max_substeps, sizeof(int));
+    v = shallow_correction ? 1 : 0;
+    cudaMemcpyToSymbol(c_shallow_friction_correction, &v, sizeof(int));
+    cudaMemcpyToSymbol(c_shallow_friction_depth_alpha, &depth_alpha, sizeof(double));
+    cudaMemcpyToSymbol(c_shallow_friction_exponent, &exponent, sizeof(double));
 }
 
 #include <limits>
@@ -538,18 +568,41 @@ __device__ __forceinline__ void apply_friction_cuda_local(
         hv = 0.0;
         return;
     }
-    const double u = hu / h;
-    const double v = hv / h;
-    const double spd = ::sqrt(u * u + v * v);
+    const double k2 = c_k_mann * c_k_mann;
     // Regularize shallow-cell friction stiffness to avoid large Cf spikes
     // right above h_min at advancing wet/dry fronts.
     const double h_fric = fmax(h, 4.0 * h_min);
-    const double k2 = c_k_mann * c_k_mann;
     const double h43 = ::pow(h_fric, 4.0 / 3.0);
-    const double cf = (h43 > 0.0) ? (g * n_mann * n_mann / (k2 * h43)) : 0.0;
-    const double denom = 1.0 + dt * cf * spd;
-    hu /= denom;
-    hv /= denom;
+    double cf = (h43 > 0.0) ? (g * n_mann * n_mann / (k2 * h43)) : 0.0;
+
+    // Shallow-flow depth correction (Keulegan-based Cf enhancement).
+    if (c_shallow_friction_correction != 0 && cf > 0.0) {
+        const double h_ref = c_shallow_friction_depth_alpha * ::pow(n_mann, 1.5);
+        if (h_fric < h_ref) {
+            cf *= ::pow(h_ref / h_fric, c_shallow_friction_exponent);
+        }
+    }
+
+    // Adaptive sub-stepping for temporal-order hardening.
+    int n_sub = 1;
+    if (c_friction_substep_enabled != 0 && c_friction_target_courant > 0.0) {
+        const double u = hu / h;
+        const double v = hv / h;
+        const double spd = ::sqrt(u * u + v * v);
+        const double nu_fric = dt * cf * spd;
+        n_sub = max(1, min(c_friction_max_substeps,
+                           static_cast<int>(::ceil(nu_fric / c_friction_target_courant))));
+    }
+
+    const double dt_sub = dt / static_cast<double>(n_sub);
+    for (int k = 0; k < n_sub; ++k) {
+        const double u_k = hu / h;
+        const double v_k = hv / h;
+        const double spd_k = ::sqrt(u_k * u_k + v_k * v_k);
+        const double denom = 1.0 + dt_sub * cf * spd_k;
+        hu /= denom;
+        hv /= denom;
+    }
 }
 
 bool swe2d_debug_enabled(const char* name) {
@@ -1829,7 +1882,10 @@ __global__ __launch_bounds__(256, 4) void swe2d_update_kernel(
     const double*  __restrict__ d_inv_area_repaired,
     int                         degen_mode,
     const double* __restrict__  cell_source_mps,
-    const double* __restrict__  external_source_mps)
+    const double* __restrict__  external_source_mps,
+    const double* __restrict__  ext_struct_flux_h,   // nullable: face-based culvert mass flux
+    const double* __restrict__  ext_struct_flux_hu,  // nullable: face-based culvert x-mom flux
+    const double* __restrict__  ext_struct_flux_hv)  // nullable: face-based culvert y-mom flux
 {
     int32_t c = blockIdx.x * blockDim.x + threadIdx.x;
     if (c >= n_cells) return;
@@ -1936,6 +1992,19 @@ __global__ __launch_bounds__(256, 4) void swe2d_update_kernel(
     cell_h[c]  = h_trial;
     cell_hu[c] += dt * fhu * inv_a;
     cell_hv[c] += dt * fhv * inv_a;
+
+    // Face-based structure flux: add mass + momentum from culvert face coupling.
+    // ext_struct_flux_h/hu/hv are accumulated per-cell by swe2d_culvert_face_flux_kernel.
+    // Convention: positive flux_h means mass is flowing INTO this cell.
+    if (ext_struct_flux_h) {
+        cell_h[c]  += dt * ext_struct_flux_h[c]  * inv_a;
+    }
+    if (ext_struct_flux_hu) {
+        cell_hu[c] += dt * ext_struct_flux_hu[c] * inv_a;
+    }
+    if (ext_struct_flux_hv) {
+        cell_hv[c] += dt * ext_struct_flux_hv[c] * inv_a;
+    }
 
     // Positivity enforcement
     if (cell_h[c] < 0.0) cell_h[c] = 0.0;
@@ -2651,6 +2720,133 @@ __global__ __launch_bounds__(256, 4) void swe2d_coupling_bridge_source_kernel(
     // Positive q transfers mass from upstream cell -> downstream cell.
     atomicAdd(&source_rate[cu], -q_eff / au);
     atomicAdd(&source_rate[cd],  q_eff / ad);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Face-based culvert coupling kernel
+//
+// Converts pre-computed culvert discharge Q_c into a three-component FVM
+// face flux (mass + momentum) and accumulates into per-cell external flux
+// arrays.  This replaces the cell-center source/sink for culverts when
+// culvert_face_flux_mode == "face_flux".
+//
+// Theory:
+//   Structure face normal: n̂ = (x_d - x_u) / |x_d - x_u|
+//   Mass flux:   F_h  = Q_c * L_s
+//   x-momentum:  F_hu = Q_c * u_donor * L_s  +  0.5 * g * h_s² * n_x * L_s
+//   y-momentum:  F_hv = Q_c * v_donor * L_s  +  0.5 * g * h_s² * n_y * L_s
+//
+// where u_donor,v_donor are donor-cell velocity and h_s = max(h_donor - z_invert, 0).
+// ─────────────────────────────────────────────────────────────────────────────
+__global__ __launch_bounds__(256, 4) void swe2d_culvert_face_flux_kernel(
+    int32_t n_culvert_faces,
+    const double*  __restrict__ structure_flow,       // [n_structures] Q_c in model units
+    const int32_t* __restrict__ culvert_struct_idx,    // [n_culvert_faces]
+    const double*  __restrict__ face_nx,               // [n_culvert_faces]
+    const double*  __restrict__ face_ny,               // [n_culvert_faces]
+    const double*  __restrict__ face_width,             // [n_culvert_faces] L_s
+    const int32_t* __restrict__ donor_cell,            // [n_culvert_faces]
+    const int32_t* __restrict__ receiver_cell,         // [n_culvert_faces]
+    const double*  __restrict__ invert_elev,            // [n_culvert_faces]
+    const double*  __restrict__ depth_safety,           // [n_culvert_faces]
+    const double*  __restrict__ cell_h,                // [n_cells]
+    const double*  __restrict__ cell_hu,               // [n_cells]
+    const double*  __restrict__ cell_hv,               // [n_cells]
+    const double*  __restrict__ cell_zb,               // [n_cells]
+    double gravity,
+    double dt,
+    double h_min,
+    int32_t n_cells,
+    double* __restrict__ ext_flux_h,                   // [n_cells]
+    double* __restrict__ ext_flux_hu,                  // [n_cells]
+    double* __restrict__ ext_flux_hv)                  // [n_cells]
+{
+    const int32_t i = blockIdx.x * blockDim.x + threadIdx.x;
+    if (i >= n_culvert_faces) return;
+
+    const int32_t si = culvert_struct_idx[i];
+    const double Q_c = structure_flow[si];
+    if (!isfinite(Q_c) || Q_c == 0.0) return;
+
+    const int32_t cu = donor_cell[i];
+    const int32_t cd = receiver_cell[i];
+    if (cu < 0 || cu >= n_cells || cd < 0 || cd >= n_cells) return;
+
+    // Determine flow direction: positive Q_c = upstream→downstream
+    const double sign = (Q_c >= 0.0) ? 1.0 : -1.0;
+    const int32_t donor    = (sign >= 0.0) ? cu : cd;
+    const int32_t receiver = (sign >= 0.0) ? cd : cu;
+    if (donor < 0 || donor >= n_cells || receiver < 0 || receiver >= n_cells) return;
+
+    const double h_donor = cell_h[donor];
+    if (h_donor <= h_min) return;  // dry donor → no flux
+
+    const double hu_donor = cell_hu[donor];
+    const double hv_donor = cell_hv[donor];
+    const double zb_donor = cell_zb[donor];
+    const double inv_h = 1.0 / fmax(h_donor, h_min);
+    const double u_donor = hu_donor * inv_h;
+    const double v_donor = hv_donor * inv_h;
+
+    // Invert elevation for depth limiting
+    const double invert = invert_elev[i];
+    const double wse_donor = h_donor + zb_donor;
+    const double depth_above_invert = fmax(0.0, wse_donor - invert);
+
+    // Face width and normal
+    const double L_s = face_width[i];
+    const double nx = face_nx[i];
+    const double ny = face_ny[i];
+    const double alpha = depth_safety[i];
+
+    // ── Depth limiter: prevent drying the donor cell ──
+    const double A_donor = fmax(cell_h[donor], h_min);  // use h as proxy (area not available here)
+    double Q_lim = Q_c;
+    // Limit: Q*dt / (h_donor * L_s) <= alpha * h_donor  →  Q <= alpha * h_donor² * L_s / dt
+    // Simplified: use alpha * h_donor * L_s / max(dt, 1e-12) as the max flux
+    const double max_flux = alpha * h_donor * L_s / fmax(dt, 1.0e-12);
+    if (fabs(Q_c) > max_flux && max_flux > 0.0) {
+        Q_lim = sign * max_flux;
+    }
+
+    // ── Hydrostatic pressure at the face: depth above invert ──
+    const double h_s = fmax(depth_above_invert, 0.0);
+
+    // ── Three-component flux (per unit of face width) ──
+    const double F_h  = Q_lim;
+    const double F_hu = Q_lim * u_donor + 0.5 * gravity * h_s * h_s * nx;
+    const double F_hv = Q_lim * v_donor + 0.5 * gravity * h_s * h_s * ny;
+
+    // Scale by face width (virtual "edge length")
+    const double scale = L_s;
+    const double fh  = F_h  * scale;
+    const double fhu = F_hu * scale;
+    const double fhv = F_hv * scale;
+
+    // Accumulate into per-cell external flux arrays (opposite signs for donor/receiver)
+    atomicAdd(&ext_flux_h[donor],    -fh);
+    atomicAdd(&ext_flux_hu[donor],   -fhu);
+    atomicAdd(&ext_flux_hv[donor],   -fhv);
+    atomicAdd(&ext_flux_h[receiver],  fh);
+    atomicAdd(&ext_flux_hu[receiver], fhu);
+    atomicAdd(&ext_flux_hv[receiver], fhv);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Culvert flow masking kernel
+//
+// Zeroes out structure_flow[i] for all culvert indices so that the
+// swe2d_coupling_structure_source_kernel skips them (avoids double-counting
+// when face-based coupling is active).
+// ─────────────────────────────────────────────────────────────────────────────
+__global__ void swe2d_mask_culvert_source_kernel(
+    int32_t n_culvert,
+    const int32_t* __restrict__ culvert_indices,
+    double* __restrict__ structure_flow)
+{
+    const int32_t j = blockIdx.x * blockDim.x + threadIdx.x;
+    if (j >= n_culvert) return;
+    structure_flow[culvert_indices[j]] = 0.0;
 }
 
 __device__ __forceinline__ double bw2d_clamp(double x, double lo, double hi)
@@ -4515,7 +4711,10 @@ void swe2d_gpu_step(
                     dev->d_active,
                     dev->d_degen_mask, dev->d_inv_area_repaired, dev->degen_mode,
                     (dev->n_rain_samples > 0) ? dev->d_cell_source_mps : nullptr,
-                    dev->d_external_source_mps);
+                    dev->d_external_source_mps,
+                    dev->use_culvert_face_flux ? dev->d_ext_struct_flux_h  : nullptr,
+                    dev->use_culvert_face_flux ? dev->d_ext_struct_flux_hu : nullptr,
+                    dev->use_culvert_face_flux ? dev->d_ext_struct_flux_hv : nullptr);
                 // cfl + cfl_reduce (two-level)
                 CUDA_CHECK(cudaMemsetAsync(dev->d_lambda_max, 0, sizeof(double), dev->d_stream));
                 {
@@ -4746,7 +4945,10 @@ void swe2d_gpu_step(
             dev->d_active,
             dev->d_degen_mask, dev->d_inv_area_repaired, dev->degen_mode,
             (dev->n_rain_samples > 0) ? dev->d_cell_source_mps : nullptr,
-            dev->d_external_source_mps);
+            dev->d_external_source_mps,
+            dev->use_culvert_face_flux ? dev->d_ext_struct_flux_h  : nullptr,
+            dev->use_culvert_face_flux ? dev->d_ext_struct_flux_hu : nullptr,
+            dev->use_culvert_face_flux ? dev->d_ext_struct_flux_hv : nullptr);
         CUDA_CHECK(cudaGetLastError());
     }
 
@@ -7383,6 +7585,16 @@ void swe2d_gpu_set_external_sources(
 // ── Persistent coupling globals ──
 SWE2DDeviceState* s_coupling_dev = nullptr;
 
+// ── Coupling dt for face-flux depth limiter ──
+// Set by swe2d_gpu_set_coupling_dt before the full_on_device call;
+// consumed by swe2d_culvert_face_flux_kernel for depth limiting.
+static double s_coupling_dt = 0.0;
+
+void swe2d_gpu_set_coupling_dt(double dt)
+{
+    s_coupling_dt = dt;
+}
+
 void swe2d_gpu_set_coupling_device_global(SWE2DDeviceState* dev) {
     s_coupling_dev = dev;
 }
@@ -7625,6 +7837,47 @@ void swe2d_gpu_compute_coupling_full_on_device(
             s_culvert_solver_mode, s_culvert_table_header, s_culvert_table_data,
             s_culvert_table_n_hw, s_culvert_table_n_tw);
         CUDA_CHECK(cudaGetLastError());
+
+        // ── Face-based culvert flux: apply before source kernel ─────────
+        // When face-flux mode is active, apply culvert face fluxes FIRST
+        // and zero out culvert flows from d_structure_flow.  This way the
+        // source kernel below only applies non-culvert structures (weirs,
+        // orifices, pumps, bridges).
+        if (dev->use_culvert_face_flux
+            && dev->culvert_ff_ws.params_preloaded
+            && dev->culvert_ff_ws.n_culvert_faces > 0) {
+            auto& ff = dev->culvert_ff_ws;
+            // Ensure external flux accumulators exist and zero them
+            swe2d_gpu_alloc_ext_struct_flux(dev, n_cells);
+            CUDA_CHECK(cudaMemsetAsync(dev->d_ext_struct_flux_h,  0, static_cast<size_t>(n_cells) * sizeof(double), stream));
+            CUDA_CHECK(cudaMemsetAsync(dev->d_ext_struct_flux_hu, 0, static_cast<size_t>(n_cells) * sizeof(double), stream));
+            CUDA_CHECK(cudaMemsetAsync(dev->d_ext_struct_flux_hv, 0, static_cast<size_t>(n_cells) * sizeof(double), stream));
+
+            {
+                int grid_ff = (ff.n_culvert_faces + BLOCK - 1) / BLOCK;
+                swe2d_culvert_face_flux_kernel<<<grid_ff, BLOCK, 0, stream>>>(
+                    ff.n_culvert_faces,
+                    sf_ws.d_structure_flow,
+                    ff.d_culvert_struct_idx,
+                    ff.d_face_nx, ff.d_face_ny, ff.d_face_width,
+                    ff.d_donor_cell, ff.d_receiver_cell,
+                    ff.d_invert_elev, ff.d_depth_safety,
+                    dev->d_h, dev->d_hu, dev->d_hv, dev->d_cell_zb,
+                    sf_ws.gravity, s_coupling_dt, 1.0e-6,
+                    n_cells,
+                    dev->d_ext_struct_flux_h, dev->d_ext_struct_flux_hu, dev->d_ext_struct_flux_hv);
+                CUDA_CHECK(cudaGetLastError());
+            }
+            // Mask culvert flows so source kernel skips them
+            {
+                int grid_m = (ff.n_culvert_faces + BLOCK - 1) / BLOCK;
+                swe2d_mask_culvert_source_kernel<<<grid_m, BLOCK, 0, stream>>>(
+                    ff.n_culvert_faces, ff.d_culvert_struct_idx, sf_ws.d_structure_flow);
+                CUDA_CHECK(cudaGetLastError());
+            }
+        }
+
+        // ── Source kernel: applies non-culvert structures ──────────────
         grid = (n_structures + BLOCK - 1) / BLOCK;
         swe2d_coupling_structure_source_kernel<<<grid, BLOCK, 0, stream>>>(
             n_structures, sf_ws.d_upstream_cell, sf_ws.d_downstream_cell, sf_ws.d_structure_flow, cpl_ws.d_cell_area, n_cells,
@@ -7674,6 +7927,215 @@ void swe2d_gpu_readback_structure_flows(double* host_buf, int32_t n_structures)
     CUDA_CHECK(cudaMemcpy(host_buf, dev->sf_ws.d_structure_flow,
                           static_cast<size_t>(n_structures) * sizeof(double),
                           cudaMemcpyDeviceToHost));
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Face-based culvert coupling: upload + orchestration
+// ─────────────────────────────────────────────────────────────────────────────
+
+static void sf_ensure_buf_ff_d(double*& ptr, int32_t& cap, int32_t needed)
+{
+    if (needed <= cap && ptr) return;
+    if (ptr) cudaFree(ptr);
+    CUDA_CHECK(cudaMalloc(&ptr, static_cast<size_t>(needed) * sizeof(double)));
+    cap = needed;
+}
+
+static void sf_ensure_buf_ff_i(int32_t*& ptr, int32_t& cap, int32_t needed)
+{
+    if (needed <= cap && ptr) return;
+    if (ptr) cudaFree(ptr);
+    CUDA_CHECK(cudaMalloc(&ptr, static_cast<size_t>(needed) * sizeof(int32_t)));
+    cap = needed;
+}
+
+void swe2d_gpu_alloc_ext_struct_flux(SWE2DDeviceState* dev, int32_t n_cells)
+{
+    if (!dev || n_cells <= 0) return;
+    if (dev->d_ext_struct_flux_h && dev->n_cells == n_cells) return;
+    // Free old if size changed
+    if (dev->d_ext_struct_flux_h)  { cudaFree(dev->d_ext_struct_flux_h);  dev->d_ext_struct_flux_h  = nullptr; }
+    if (dev->d_ext_struct_flux_hu) { cudaFree(dev->d_ext_struct_flux_hu); dev->d_ext_struct_flux_hu = nullptr; }
+    if (dev->d_ext_struct_flux_hv) { cudaFree(dev->d_ext_struct_flux_hv); dev->d_ext_struct_flux_hv = nullptr; }
+    CUDA_CHECK(cudaMalloc(&dev->d_ext_struct_flux_h,  static_cast<size_t>(n_cells) * sizeof(double)));
+    CUDA_CHECK(cudaMalloc(&dev->d_ext_struct_flux_hu, static_cast<size_t>(n_cells) * sizeof(double)));
+    CUDA_CHECK(cudaMalloc(&dev->d_ext_struct_flux_hv, static_cast<size_t>(n_cells) * sizeof(double)));
+}
+
+void swe2d_gpu_upload_culvert_face_flux_params(
+    SWE2DDeviceState* dev,
+    int32_t n_culvert_faces,
+    const int32_t* culvert_struct_idx,
+    const double*  face_nx,
+    const double*  face_ny,
+    const double*  face_width,
+    const int32_t* donor_cell,
+    const int32_t* receiver_cell,
+    const double*  invert_elev,
+    const double*  depth_safety,
+    bool use_face_flux)
+{
+    if (!dev) throw std::runtime_error("upload_culvert_face_flux_params: no GPU device state");
+    auto& ff = dev->culvert_ff_ws;
+
+    if (n_culvert_faces <= 0) {
+        ff.n_culvert_faces = 0;
+        ff.params_preloaded = false;
+        dev->use_culvert_face_flux = false;
+        return;
+    }
+
+    // Ensure ext_struct_flux arrays exist
+    swe2d_gpu_alloc_ext_struct_flux(dev, dev->n_cells);
+
+    // Upload culvert struct index
+    sf_ensure_buf_ff_i(ff.d_culvert_struct_idx, ff.face_capacity, n_culvert_faces);
+    CUDA_CHECK(cudaMemcpy(ff.d_culvert_struct_idx, culvert_struct_idx,
+                          static_cast<size_t>(n_culvert_faces) * sizeof(int32_t),
+                          cudaMemcpyHostToDevice));
+
+    // Upload face geometry
+    sf_ensure_buf_ff_d(ff.d_face_nx, ff.face_capacity, n_culvert_faces);
+    sf_ensure_buf_ff_d(ff.d_face_ny, ff.face_capacity, n_culvert_faces);
+    sf_ensure_buf_ff_d(ff.d_face_width, ff.face_capacity, n_culvert_faces);
+    CUDA_CHECK(cudaMemcpy(ff.d_face_nx, face_nx,
+                          static_cast<size_t>(n_culvert_faces) * sizeof(double), cudaMemcpyHostToDevice));
+    CUDA_CHECK(cudaMemcpy(ff.d_face_ny, face_ny,
+                          static_cast<size_t>(n_culvert_faces) * sizeof(double), cudaMemcpyHostToDevice));
+    CUDA_CHECK(cudaMemcpy(ff.d_face_width, face_width,
+                          static_cast<size_t>(n_culvert_faces) * sizeof(double), cudaMemcpyHostToDevice));
+
+    // Upload cell topology
+    sf_ensure_buf_ff_i(ff.d_donor_cell, ff.face_capacity, n_culvert_faces);
+    sf_ensure_buf_ff_i(ff.d_receiver_cell, ff.face_capacity, n_culvert_faces);
+    CUDA_CHECK(cudaMemcpy(ff.d_donor_cell, donor_cell,
+                          static_cast<size_t>(n_culvert_faces) * sizeof(int32_t), cudaMemcpyHostToDevice));
+    CUDA_CHECK(cudaMemcpy(ff.d_receiver_cell, receiver_cell,
+                          static_cast<size_t>(n_culvert_faces) * sizeof(int32_t), cudaMemcpyHostToDevice));
+
+    // Upload invert elevation and depth safety
+    sf_ensure_buf_ff_d(ff.d_invert_elev, ff.face_capacity, n_culvert_faces);
+    sf_ensure_buf_ff_d(ff.d_depth_safety, ff.face_capacity, n_culvert_faces);
+    CUDA_CHECK(cudaMemcpy(ff.d_invert_elev, invert_elev,
+                          static_cast<size_t>(n_culvert_faces) * sizeof(double), cudaMemcpyHostToDevice));
+    CUDA_CHECK(cudaMemcpy(ff.d_depth_safety, depth_safety,
+                          static_cast<size_t>(n_culvert_faces) * sizeof(double), cudaMemcpyHostToDevice));
+
+    ff.n_culvert_faces = n_culvert_faces;
+    ff.params_preloaded = true;
+    dev->use_culvert_face_flux = use_face_flux;
+}
+
+void swe2d_gpu_apply_culvert_face_flux(
+    SWE2DDeviceState* dev,
+    double dt,
+    double h_min)
+{
+    if (!dev || !dev->culvert_ff_ws.params_preloaded || dev->culvert_ff_ws.n_culvert_faces <= 0) return;
+
+    auto& ff = dev->culvert_ff_ws;
+    auto& sf = dev->sf_ws;
+    cudaStream_t stream = dev->d_stream;
+    constexpr int BLOCK = 256;
+
+    // Ensure per-cell flux accumulators exist
+    swe2d_gpu_alloc_ext_struct_flux(dev, dev->n_cells);
+
+    // Zero the external flux accumulators
+    CUDA_CHECK(cudaMemsetAsync(dev->d_ext_struct_flux_h,  0,
+                               static_cast<size_t>(dev->n_cells) * sizeof(double), stream));
+    CUDA_CHECK(cudaMemsetAsync(dev->d_ext_struct_flux_hu, 0,
+                               static_cast<size_t>(dev->n_cells) * sizeof(double), stream));
+    CUDA_CHECK(cudaMemsetAsync(dev->d_ext_struct_flux_hv, 0,
+                               static_cast<size_t>(dev->n_cells) * sizeof(double), stream));
+
+    // Ensure structure flows are computed (Q_c must be in sf.d_structure_flow)
+    if (sf.d_structure_flow && sf.params_preloaded && sf.n_structures > 0) {
+        CUDA_CHECK(cudaMemsetAsync(sf.d_structure_flow, 0,
+                                   static_cast<size_t>(sf.n_structures) * sizeof(double), stream));
+        int grid_sf = (sf.n_structures + BLOCK - 1) / BLOCK;
+        swe2d_compute_structure_flows_kernel<<<grid_sf, BLOCK, 0, stream>>>(
+            dev->n_cells, sf.n_structures, sf.d_cell_wse,
+            sf.d_structure_type, sf.d_upstream_cell, sf.d_downstream_cell,
+            sf.d_crest_elev, sf.d_width, sf.d_height,
+            sf.d_diameter, sf.d_length, sf.d_roughness_n,
+            sf.d_coeff, sf.d_cd, sf.d_opening,
+            sf.d_q_pump, sf.d_max_flow,
+            sf.d_culvert_code, sf.d_culvert_shape,
+            sf.d_culvert_rise, sf.d_culvert_span, sf.d_culvert_area,
+            sf.d_culvert_barrels, sf.d_culvert_slope,
+            sf.d_inlet_invert_elev, sf.d_outlet_invert_elev,
+            sf.d_entrance_loss_k, sf.d_exit_loss_k,
+            sf.d_embankment_enabled, sf.d_embankment_crest_elev,
+            sf.d_embankment_overflow_width, sf.d_embankment_weir_coeff,
+            sf.gravity, sf.model_to_ft, sf.d_structure_flow,
+            s_culvert_solver_mode, s_culvert_table_header, s_culvert_table_data,
+            s_culvert_table_n_hw, s_culvert_table_n_tw);
+        CUDA_CHECK(cudaGetLastError());
+    }
+
+    // Launch face-flux kernel
+    {
+        int grid = (ff.n_culvert_faces + BLOCK - 1) / BLOCK;
+        swe2d_culvert_face_flux_kernel<<<grid, BLOCK, 0, stream>>>(
+            ff.n_culvert_faces,
+            sf.d_structure_flow,
+            ff.d_culvert_struct_idx,
+            ff.d_face_nx,
+            ff.d_face_ny,
+            ff.d_face_width,
+            ff.d_donor_cell,
+            ff.d_receiver_cell,
+            ff.d_invert_elev,
+            ff.d_depth_safety,
+            dev->d_h,
+            dev->d_hu,
+            dev->d_hv,
+            dev->d_cell_zb,
+            sf.gravity,
+            dt,
+            h_min,
+            dev->n_cells,
+            dev->d_ext_struct_flux_h,
+            dev->d_ext_struct_flux_hu,
+            dev->d_ext_struct_flux_hv);
+        CUDA_CHECK(cudaGetLastError());
+    }
+
+    // Mask culvert flows so the source-kernel skips them
+    if (sf.d_structure_flow && ff.n_culvert_faces > 0) {
+        int grid_m = (ff.n_culvert_faces + BLOCK - 1) / BLOCK;
+        swe2d_mask_culvert_source_kernel<<<grid_m, BLOCK, 0, stream>>>(
+            ff.n_culvert_faces,
+            ff.d_culvert_struct_idx,
+            sf.d_structure_flow);
+        CUDA_CHECK(cudaGetLastError());
+    }
+
+    if (swe2d_debug_enabled("BACKWATER_SWE2D_SYNC_COUPLING")) {
+        CUDA_CHECK(cudaStreamSynchronize(stream));
+    }
+}
+
+void swe2d_gpu_readback_ext_struct_flux(
+    double* host_h, double* host_hu, double* host_hv, int32_t n_cells)
+{
+    SWE2DDeviceState* dev = s_coupling_dev;
+    if (!dev || n_cells <= 0) {
+        if (host_h)  std::memset(host_h,  0, static_cast<size_t>(n_cells) * sizeof(double));
+        if (host_hu) std::memset(host_hu, 0, static_cast<size_t>(n_cells) * sizeof(double));
+        if (host_hv) std::memset(host_hv, 0, static_cast<size_t>(n_cells) * sizeof(double));
+        return;
+    }
+    if (host_h && dev->d_ext_struct_flux_h)
+        CUDA_CHECK(cudaMemcpy(host_h, dev->d_ext_struct_flux_h,
+                              static_cast<size_t>(n_cells) * sizeof(double), cudaMemcpyDeviceToHost));
+    if (host_hu && dev->d_ext_struct_flux_hu)
+        CUDA_CHECK(cudaMemcpy(host_hu, dev->d_ext_struct_flux_hu,
+                              static_cast<size_t>(n_cells) * sizeof(double), cudaMemcpyDeviceToHost));
+    if (host_hv && dev->d_ext_struct_flux_hv)
+        CUDA_CHECK(cudaMemcpy(host_hv, dev->d_ext_struct_flux_hv,
+                              static_cast<size_t>(n_cells) * sizeof(double), cudaMemcpyDeviceToHost));
 }
 
 // ── Culvert table-mode globals ──
@@ -13050,6 +13512,11 @@ void swe2d_gpu_destroy(SWE2DDeviceState* dev) {
     }
     // Redistribution workspace cleanup
     dev->redist_ws.destroy();
+    // Culvert face-flux workspace cleanup
+    dev->culvert_ff_ws.destroy();
+    if (dev->d_ext_struct_flux_h)  { cudaFree(dev->d_ext_struct_flux_h);  dev->d_ext_struct_flux_h  = nullptr; }
+    if (dev->d_ext_struct_flux_hu) { cudaFree(dev->d_ext_struct_flux_hu); dev->d_ext_struct_flux_hu = nullptr; }
+    if (dev->d_ext_struct_flux_hv) { cudaFree(dev->d_ext_struct_flux_hv); dev->d_ext_struct_flux_hv = nullptr; }
     if (dev->d_stream) {
         cudaStreamSynchronize(dev->d_stream);
         cudaStreamDestroy(dev->d_stream);

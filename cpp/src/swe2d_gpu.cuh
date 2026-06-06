@@ -476,6 +476,57 @@ struct SWE2DDeviceState {
             data_hash = 0;
         }
     } redist_ws{};
+
+    // ── Face-based culvert coupling workspace ─────────────────────────
+    // When culvert_face_flux_mode == "face_flux", culvert flows are applied
+    // as proper FVM face fluxes (mass + momentum) instead of cell-center
+    // source/sink terms.  This preserves strict mass conservation and
+    // momentum balance.
+    struct CulvertFaceFluxWorkspace {
+        bool     params_preloaded = false;
+        int32_t  n_culvert_faces = 0;
+        int32_t  face_capacity = 0;
+        int32_t  n_struct_flows_capacity = 0;
+
+        // Culvert index into the full structure arrays (for reading Q_c)
+        int32_t* d_culvert_struct_idx = nullptr;  // [n_culvert_faces]
+        // Face geometry
+        double*  d_face_nx = nullptr;              // [n_culvert_faces]
+        double*  d_face_ny = nullptr;              // [n_culvert_faces]
+        double*  d_face_width = nullptr;           // [n_culvert_faces]
+        // Donor / receiver cell topology
+        int32_t* d_donor_cell = nullptr;           // [n_culvert_faces]
+        int32_t* d_receiver_cell = nullptr;        // [n_culvert_faces]
+        // Invert elevation for depth limiting
+        double*  d_invert_elev = nullptr;          // [n_culvert_faces]
+        double*  d_depth_safety = nullptr;          // [n_culvert_faces]
+
+        void destroy() {
+            if (d_culvert_struct_idx) { cudaFree(d_culvert_struct_idx); d_culvert_struct_idx = nullptr; }
+            if (d_face_nx) { cudaFree(d_face_nx); d_face_nx = nullptr; }
+            if (d_face_ny) { cudaFree(d_face_ny); d_face_ny = nullptr; }
+            if (d_face_width) { cudaFree(d_face_width); d_face_width = nullptr; }
+            if (d_donor_cell) { cudaFree(d_donor_cell); d_donor_cell = nullptr; }
+            if (d_receiver_cell) { cudaFree(d_receiver_cell); d_receiver_cell = nullptr; }
+            if (d_invert_elev) { cudaFree(d_invert_elev); d_invert_elev = nullptr; }
+            if (d_depth_safety) { cudaFree(d_depth_safety); d_depth_safety = nullptr; }
+            n_culvert_faces = 0;
+            face_capacity = 0;
+            n_struct_flows_capacity = 0;
+            params_preloaded = false;
+        }
+    } culvert_ff_ws{};
+
+    // Per-cell external structure flux accumulators for face-based culvert coupling.
+    // Written by swe2d_culvert_face_flux_kernel, consumed by swe2d_update_kernel.
+    // Zeroed each step before the face-flux kernel runs.
+    double*  d_ext_struct_flux_h  = nullptr;   // [n_cells] net mass flux (L²·L/T = L³/T)
+    double*  d_ext_struct_flux_hu = nullptr;   // [n_cells] net x-momentum flux
+    double*  d_ext_struct_flux_hv = nullptr;   // [n_cells] net y-momentum flux
+
+    // Toggle: when true, swe2d_update_kernel reads d_ext_struct_flux_* instead
+    // of applying external_source_mps for culvert mass transfers.
+    bool     use_culvert_face_flux = false;
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -497,6 +548,17 @@ SWE2DDeviceState* swe2d_gpu_init(
 //   k_mann = 1.0   for SI (meters)
 //   k_mann = 1.486 for US Customary (feet)
 void swe2d_gpu_set_k_mann(double k_mann);
+
+// Set friction temporal-order hardening and shallow-correction params
+// in GPU constant memory.  Call once after swe2d_gpu_init and before
+// any step call.
+void swe2d_gpu_set_friction_config(
+    bool   substep_enabled,
+    double target_courant,
+    int    max_substeps,
+    bool   shallow_correction,
+    double depth_alpha,
+    double exponent);
 
 // Advance one timestep on GPU.  Writes diagnostics to *diag.
 void swe2d_gpu_step(
@@ -1079,6 +1141,41 @@ void swe2d_gpu_compute_coupling_full_on_device(
     int32_t n_inlets, const int32_t* inlet_cell, const double* inlet_flow_cms);
 void swe2d_gpu_readback_coupling_sources(double* host_buf, int32_t n_cells);
 void swe2d_gpu_readback_structure_flows(double* host_buf, int32_t n_structures);
+
+// ── Face-based culvert flux coupling ───────────────────────────────────────
+// Upload culvert face-flux geometry (face normals, widths, donor/receiver
+// cells, invert elevations) to the GPU.  Called once when the mesh or
+// structure configuration changes.
+void swe2d_gpu_upload_culvert_face_flux_params(
+    SWE2DDeviceState* dev,
+    int32_t n_culvert_faces,
+    const int32_t* culvert_struct_idx,
+    const double*  face_nx,
+    const double*  face_ny,
+    const double*  face_width,
+    const int32_t* donor_cell,
+    const int32_t* receiver_cell,
+    const double*  invert_elev,
+    const double*  depth_safety,
+    bool use_face_flux);
+
+// Compute per-cell structure flows (Q_c) on device, then apply face-based
+// culvert fluxes (mass + momentum) into d_ext_struct_flux_h/hu/hv and
+// zero out culvert flows from the source-kernel path.
+void swe2d_gpu_apply_culvert_face_flux(
+    SWE2DDeviceState* dev,
+    double dt,
+    double h_min);
+
+// Allocate and zero the per-cell external flux accumulators on device.
+void swe2d_gpu_alloc_ext_struct_flux(SWE2DDeviceState* dev, int32_t n_cells);
+
+// Read back per-cell external structure flux arrays from device (for debug).
+void swe2d_gpu_readback_ext_struct_flux(
+    double* host_h, double* host_hu, double* host_hv, int32_t n_cells);
+
+// Set the coupling time step (used by face-flux depth limiter).
+void swe2d_gpu_set_coupling_dt(double dt);
 
 SWE3DCartesianPatchDeviceState* swe3d_cartesian_patch_alloc(
     const SWE3DCartesianPatchDesc& desc);

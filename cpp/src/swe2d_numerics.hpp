@@ -256,10 +256,18 @@ SWE2D_HOSTDEV inline void bed_slope_correction(
 //   u^{n+1} = u^n / (1 + dt * Cf * |u^n| / h)
 //
 // where Cf = g * n^2 / h^(4/3) is the linearised friction coefficient.
+//
+// Optional shallow-flow correction enhances Cf when the log boundary layer
+// fills a significant fraction of the water column (Keulegan-based model):
+//   Cf *= (h_ref / h_fric)^exponent   if h_fric < h_ref
+//   h_ref = depth_alpha * n^(3/2)
 // ─────────────────────────────────────────────────────────────────────────────
 SWE2D_HOSTDEV inline void apply_friction(
     double& h, double& hu, double& hv,
-    double dt, double n_mann, double g, double h_min, double k_mann = 1.0)
+    double dt, double n_mann, double g, double h_min, double k_mann = 1.0,
+    bool   shallow_correction = false,
+    double depth_alpha = 5.0,
+    double exponent = 0.4)
 {
     if (h <= h_min) {
         hu = hv = 0.0;
@@ -275,9 +283,92 @@ SWE2D_HOSTDEV inline void apply_friction(
     double k2   = k_mann * k_mann;
     double h43  = std::pow(h_fric, 4.0 / 3.0);
     double Cf   = (h43 > 0.0) ? (g * n_mann * n_mann / (k2 * h43)) : 0.0;
+
+    // Shallow-flow depth correction: enhance Cf when h < h_ref.
+    if (shallow_correction && Cf > 0.0) {
+        const double h_ref = depth_alpha * std::pow(n_mann, 1.5);
+        if (h_fric < h_ref) {
+            Cf *= std::pow(h_ref / h_fric, exponent);
+        }
+    }
+
     double denom = 1.0 + dt * Cf * spd;
     hu /= denom;
     hv /= denom;
+}
+
+// Compute the number of friction sub-steps for adaptive temporal accuracy.
+// Returns 1 when sub-stepping is disabled or the friction Courant number
+// is below the target threshold.
+SWE2D_HOSTDEV inline int friction_substep_count(
+    double h, double hu, double hv,
+    double dt, double n_mann, double g, double h_min, double k_mann,
+    bool substep_enabled, double target_courant, int max_substeps)
+{
+    if (!substep_enabled || target_courant <= 0.0) return 1;
+    if (h <= h_min) return 1;
+    const double inv_h = 1.0 / h;
+    const double u = hu * inv_h;
+    const double v = hv * inv_h;
+    const double spd = std::sqrt(u*u + v*v);
+    const double k2 = k_mann * k_mann;
+    const double h_fric = std::max(h, 4.0 * h_min);
+    const double h43 = std::pow(h_fric, 4.0 / 3.0);
+    const double Cf = (h43 > 0.0) ? (g * n_mann * n_mann / (k2 * h43)) : 0.0;
+    const double nu_fric = dt * Cf * spd;
+    const int n_sub = static_cast<int>(std::ceil(nu_fric / target_courant));
+    return std::max(1, std::min(n_sub, max_substeps));
+}
+
+// Apply Manning friction with adaptive sub-stepping for temporal-order
+// hardening.  Subdivides dt into N substeps when the friction Courant
+// number exceeds the target threshold.
+SWE2D_HOSTDEV inline void apply_friction_substepped(
+    double& h, double& hu, double& hv,
+    double dt, double n_mann, double g, double h_min, double k_mann,
+    bool substep_enabled, double target_courant, int max_substeps,
+    bool shallow_correction = false,
+    double depth_alpha = 5.0,
+    double exponent = 0.4)
+{
+    if (h <= h_min) {
+        hu = hv = 0.0;
+        return;
+    }
+
+    const double k2 = k_mann * k_mann;
+    const double h_fric = std::max(h, 4.0 * h_min);
+    const double h43 = std::pow(h_fric, 4.0 / 3.0);
+    double Cf = (h43 > 0.0) ? (g * n_mann * n_mann / (k2 * h43)) : 0.0;
+
+    // Shallow-flow depth correction.
+    if (shallow_correction && Cf > 0.0) {
+        const double h_ref = depth_alpha * std::pow(n_mann, 1.5);
+        if (h_fric < h_ref) {
+            Cf *= std::pow(h_ref / h_fric, exponent);
+        }
+    }
+
+    // Determine sub-step count.
+    const double u0 = hu / h;
+    const double v0 = hv / h;
+    const double spd0 = std::sqrt(u0*u0 + v0*v0);
+    const double nu_fric = dt * Cf * spd0;
+    int n_sub = 1;
+    if (substep_enabled && target_courant > 0.0) {
+        n_sub = static_cast<int>(std::ceil(nu_fric / target_courant));
+        n_sub = std::max(1, std::min(n_sub, max_substeps));
+    }
+
+    const double dt_sub = dt / static_cast<double>(n_sub);
+    for (int k = 0; k < n_sub; ++k) {
+        const double u_k = hu / h;
+        const double v_k = hv / h;
+        const double spd_k = std::sqrt(u_k*u_k + v_k*v_k);
+        const double denom = 1.0 + dt_sub * Cf * spd_k;
+        hu /= denom;
+        hv /= denom;
+    }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

@@ -529,6 +529,16 @@ SWE2DSolver* swe2d_create(
             // Set Manning unit-conversion factor for GPU constant memory.
             swe2d_gpu_set_k_mann(cfg.k_mann);
 
+            // Set friction temporal-order hardening and shallow-correction
+            // params in GPU constant memory.
+            swe2d_gpu_set_friction_config(
+                cfg.friction_substep_enabled,
+                cfg.friction_target_courant,
+                cfg.friction_max_substeps,
+                cfg.shallow_friction_correction,
+                cfg.shallow_friction_depth_alpha,
+                cfg.shallow_friction_exponent);
+
             if (cfg.three_d_solver_model == static_cast<int>(SWE2DThreeDSolverModel::SINGLE_PHASE_FREE_SURFACE_VOF)) {
                 const SWE3DCartesianPatchDesc patch_desc = swe3d_default_patch_desc_from_env(
                     mesh,
@@ -920,11 +930,18 @@ SWE2DStepDiag swe2d_step_cpu(SWE2DSolver* s, double dt) {
             s->hv[c] = 0.0;
         }
 
-        // Manning friction (semi-implicit)
+        // Manning friction (semi-implicit, with adaptive sub-stepping).
         if (!friction_applied_in_substeps) {
             double n_mann = s->n_mann_cell[c];
-            swe2d::apply_friction(s->h[c], s->hu[c], s->hv[c],
-                                  dt, n_mann, g, h_min, s->cfg.k_mann);
+            swe2d::apply_friction_substepped(
+                s->h[c], s->hu[c], s->hv[c],
+                dt, n_mann, g, h_min, s->cfg.k_mann,
+                s->cfg.friction_substep_enabled,
+                s->cfg.friction_target_courant,
+                s->cfg.friction_max_substeps,
+                s->cfg.shallow_friction_correction,
+                s->cfg.shallow_friction_depth_alpha,
+                s->cfg.shallow_friction_exponent);
         }
 
         const double wse_err = std::abs(s->h[c] - h_old);

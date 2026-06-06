@@ -1409,6 +1409,83 @@ PYBIND11_MODULE(HYDRA_SWE2D_PY_MODULE_NAME, m) {
         }, py::arg("n_structures"),
         "Read back per-structure flow rates [m^3/s] from persistent GPU buffer.");
 
+    // ── Face-based culvert flux coupling ──────────────────────────────────────
+    m.def("swe2d_gpu_upload_culvert_face_flux_params",
+        [](py::array_t<int32_t, py::array::c_style | py::array::forcecast> culvert_struct_idx,
+           py::array_t<double, py::array::c_style | py::array::forcecast> face_nx,
+           py::array_t<double, py::array::c_style | py::array::forcecast> face_ny,
+           py::array_t<double, py::array::c_style | py::array::forcecast> face_width,
+           py::array_t<int32_t, py::array::c_style | py::array::forcecast> donor_cell,
+           py::array_t<int32_t, py::array::c_style | py::array::forcecast> receiver_cell,
+           py::array_t<double, py::array::c_style | py::array::forcecast> invert_elev,
+           py::array_t<double, py::array::c_style | py::array::forcecast> depth_safety,
+           bool use_face_flux)
+        {
+            int32_t n = static_cast<int32_t>(culvert_struct_idx.size());
+            swe2d_gpu_upload_culvert_face_flux_params(
+                nullptr,
+                n,
+                n > 0 ? culvert_struct_idx.data() : nullptr,
+                n > 0 ? face_nx.data() : nullptr,
+                n > 0 ? face_ny.data() : nullptr,
+                n > 0 ? face_width.data() : nullptr,
+                n > 0 ? donor_cell.data() : nullptr,
+                n > 0 ? receiver_cell.data() : nullptr,
+                n > 0 ? invert_elev.data() : nullptr,
+                n > 0 ? depth_safety.data() : nullptr,
+                use_face_flux);
+        },
+        py::arg("culvert_struct_idx"),
+        py::arg("face_nx"),
+        py::arg("face_ny"),
+        py::arg("face_width"),
+        py::arg("donor_cell"),
+        py::arg("receiver_cell"),
+        py::arg("invert_elev"),
+        py::arg("depth_safety"),
+        py::arg("use_face_flux"),
+        "Upload culvert face-flux geometry to GPU for face-based coupling.");
+
+    m.def("swe2d_gpu_apply_culvert_face_flux",
+        [](double dt, double h_min)
+        {
+            swe2d_gpu_apply_culvert_face_flux(nullptr, dt, h_min);
+        },
+        py::arg("dt"),
+        py::arg("h_min") = 1.0e-6,
+        "Apply face-based culvert flux coupling on device (computes Q_c, "
+        "builds face fluxes, masks culverts from source kernel).");
+
+    m.def("swe2d_gpu_readback_ext_struct_flux",
+        [](int32_t n_cells)
+           -> std::tuple<py::array_t<double>, py::array_t<double>, py::array_t<double>>
+        {
+            auto h  = py::array_t<double>(n_cells);
+            auto hu = py::array_t<double>(n_cells);
+            auto hv = py::array_t<double>(n_cells);
+            swe2d_gpu_readback_ext_struct_flux(
+                h.mutable_data(), hu.mutable_data(), hv.mutable_data(), n_cells);
+            return std::make_tuple(h, hu, hv);
+        },
+        py::arg("n_cells"),
+        "Read back per-cell external structure flux arrays (for debug).");
+
+    m.def("swe2d_gpu_alloc_ext_struct_flux",
+        [](int32_t n_cells)
+        {
+            swe2d_gpu_alloc_ext_struct_flux(nullptr, n_cells);
+        },
+        py::arg("n_cells"),
+        "Allocate per-cell external structure flux accumulators on device.");
+
+    m.def("swe2d_gpu_set_coupling_dt",
+        [](double dt)
+        {
+            swe2d_gpu_set_coupling_dt(dt);
+        },
+        py::arg("dt"),
+        "Set the coupling time step for the face-flux depth limiter.");
+
     // Culvert table mode: build pre-computed Q(hw,tw) lookup tables from culvert params.
     m.def("swe2d_gpu_build_culvert_tables",
         [](py::array_t<int32_t, py::array::c_style | py::array::forcecast> culvert_code,
@@ -2731,7 +2808,13 @@ PYBIND11_MODULE(HYDRA_SWE2D_PY_MODULE_NAME, m) {
               bool enable_hydraulic_structures,
               int degen_mode,
               double front_flux_damping,
-              bool   active_set_hysteresis)
+              bool   active_set_hysteresis,
+              bool   friction_substep_enabled,
+              double friction_target_courant,
+              int    friction_max_substeps,
+              bool   shallow_friction_correction,
+              double shallow_friction_depth_alpha,
+              double shallow_friction_exponent)
            -> std::shared_ptr<PySolver>
         {
             if (!pm) throw std::invalid_argument("null mesh handle");
@@ -2816,6 +2899,12 @@ PYBIND11_MODULE(HYDRA_SWE2D_PY_MODULE_NAME, m) {
             cfg.degen_mode = degen_mode;
             cfg.front_flux_damping = front_flux_damping;
             cfg.active_set_hysteresis = active_set_hysteresis;
+            cfg.friction_substep_enabled = friction_substep_enabled;
+            cfg.friction_target_courant = friction_target_courant;
+            cfg.friction_max_substeps = friction_max_substeps;
+            cfg.shallow_friction_correction = shallow_friction_correction;
+            cfg.shallow_friction_depth_alpha = shallow_friction_depth_alpha;
+            cfg.shallow_friction_exponent = shallow_friction_exponent;
 
             auto ps = std::make_shared<PySolver>();
             ps->mesh_owner = pm;
@@ -2876,6 +2965,12 @@ PYBIND11_MODULE(HYDRA_SWE2D_PY_MODULE_NAME, m) {
         py::arg("degen_mode") = 0,
         py::arg("front_flux_damping") = 0.5,
         py::arg("active_set_hysteresis") = true,
+        py::arg("friction_substep_enabled") = true,
+        py::arg("friction_target_courant") = 1.0,
+        py::arg("friction_max_substeps") = 64,
+        py::arg("shallow_friction_correction") = false,
+        py::arg("shallow_friction_depth_alpha") = 5.0,
+        py::arg("shallow_friction_exponent") = 0.4,
         "Create a 2D SWE solver.\n\n"
         "Parameters\n----------\n"
         "mesh : PyMesh handle from swe2d_build_mesh\n"
