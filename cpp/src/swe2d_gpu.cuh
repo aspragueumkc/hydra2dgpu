@@ -500,6 +500,8 @@ struct SWE2DDeviceState {
         // Invert elevation for depth limiting
         double*  d_invert_elev = nullptr;          // [n_culvert_faces]
         double*  d_depth_safety = nullptr;          // [n_culvert_faces]
+        // Donor-cell area for depth safety limiter
+        double*  d_donor_cell_area = nullptr;      // [n_culvert_faces]
 
         void destroy() {
             if (d_culvert_struct_idx) { cudaFree(d_culvert_struct_idx); d_culvert_struct_idx = nullptr; }
@@ -510,6 +512,7 @@ struct SWE2DDeviceState {
             if (d_receiver_cell) { cudaFree(d_receiver_cell); d_receiver_cell = nullptr; }
             if (d_invert_elev) { cudaFree(d_invert_elev); d_invert_elev = nullptr; }
             if (d_depth_safety) { cudaFree(d_depth_safety); d_depth_safety = nullptr; }
+            if (d_donor_cell_area) { cudaFree(d_donor_cell_area); d_donor_cell_area = nullptr; }
             n_culvert_faces = 0;
             face_capacity = 0;
             n_struct_flows_capacity = 0;
@@ -1157,6 +1160,7 @@ void swe2d_gpu_upload_culvert_face_flux_params(
     const int32_t* receiver_cell,
     const double*  invert_elev,
     const double*  depth_safety,
+    const double*  donor_cell_area,
     bool use_face_flux);
 
 // Compute per-cell structure flows (Q_c) on device, then apply face-based

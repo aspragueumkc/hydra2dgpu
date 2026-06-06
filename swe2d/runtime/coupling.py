@@ -157,6 +157,8 @@ class SWE2DCulvertFaceFluxSoA:
     invert_elev: np.ndarray           # [n_culvert_faces]
     # Depth limiter safety factor (0..1, default 0.5)
     depth_safety_factor: np.ndarray   # [n_culvert_faces]
+    # Donor-cell area for depth safety limiter
+    donor_cell_area: np.ndarray       # [n_culvert_faces]
 
 
 @dataclass
@@ -452,7 +454,7 @@ class SWE2DCouplingController:
         bridge_cuda_coupling: bool = False,
         bridge_stacked_coupling_mode: str = "phase3_spatial",
         length_scale_si_to_model: float = 1.0,
-        culvert_face_flux_mode: str = "on",
+        culvert_face_flux_mode: str = "off",
         log_callback: Optional[Callable[[str], None]] = None,
 ):
         if cell_area is None or cell_bed is None:
@@ -668,6 +670,7 @@ class SWE2DCouplingController:
         face_width = np.zeros(n, dtype=np.float64)
         invert_elev = np.zeros(n, dtype=np.float64)
         depth_safety = np.full(n, 0.5, dtype=np.float64)  # default α = 0.5
+        donor_cell_area = np.ones(n, dtype=np.float64)
 
         for j, i in enumerate(culvert_indices):
             st = cfg.structures[i]
@@ -685,6 +688,7 @@ class SWE2DCouplingController:
 
             donor_cell[j] = cu
             receiver_cell[j] = cd
+            donor_cell_area[j] = float(self.cell_area[cu])
 
             # Face width: culvert_span for box, diameter for circular
             md = st.metadata
@@ -710,6 +714,7 @@ class SWE2DCouplingController:
             receiver_cell=receiver_cell,
             invert_elev=invert_elev,
             depth_safety_factor=depth_safety,
+            donor_cell_area=donor_cell_area,
         )
 
     def _ensure_culvert_face_flux_preloaded(self, native_mod) -> None:
@@ -739,6 +744,7 @@ class SWE2DCouplingController:
                 np.ascontiguousarray(ff.receiver_cell, dtype=np.int32),
                 np.ascontiguousarray(ff.invert_elev, dtype=np.float64),
                 np.ascontiguousarray(ff.depth_safety_factor, dtype=np.float64),
+                np.ascontiguousarray(ff.donor_cell_area, dtype=np.float64),
                 True,  # use_face_flux
             )
             self._culvert_face_flux_preloaded = True

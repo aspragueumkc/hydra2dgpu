@@ -2749,6 +2749,7 @@ __global__ __launch_bounds__(256, 4) void swe2d_culvert_face_flux_kernel(
     const int32_t* __restrict__ receiver_cell,         // [n_culvert_faces]
     const double*  __restrict__ invert_elev,            // [n_culvert_faces]
     const double*  __restrict__ depth_safety,           // [n_culvert_faces]
+    const double*  __restrict__ donor_cell_area,        // [n_culvert_faces]
     const double*  __restrict__ cell_h,                // [n_cells]
     const double*  __restrict__ cell_hu,               // [n_cells]
     const double*  __restrict__ cell_hv,               // [n_cells]
@@ -2800,28 +2801,28 @@ __global__ __launch_bounds__(256, 4) void swe2d_culvert_face_flux_kernel(
     const double alpha = depth_safety[i];
 
     // ── Depth limiter: prevent drying the donor cell ──
-    const double A_donor = fmax(cell_h[donor], h_min);  // use h as proxy (area not available here)
+    // Safety constraint: limit depth removal so Δh ≤ α · h_donor per timestep.
+    // Convert depth rate → volume flux: Q_max = α · h_donor · A_donor / dt.
+    const double A_donor = fmax(donor_cell_area[i], 1.0e-12);
     double Q_lim = Q_c;
-    // Limit: Q*dt / (h_donor * L_s) <= alpha * h_donor  →  Q <= alpha * h_donor² * L_s / dt
-    // Simplified: use alpha * h_donor * L_s / max(dt, 1e-12) as the max flux
-    const double max_flux = alpha * h_donor * L_s / fmax(dt, 1.0e-12);
+    const double max_flux = alpha * h_donor * A_donor / fmax(dt, 1.0e-12);
     if (fabs(Q_c) > max_flux && max_flux > 0.0) {
         Q_lim = sign * max_flux;
     }
 
-    // ── Hydrostatic pressure at the face: depth above invert ──
+    // ── Hydrostatic pressure at the face ──
+    // h_s is the depth above invert at the donor cell (structure head).
+    // The pressure force at the culvert face is ½·g·h_s² per unit width,
+    // integrated over the face width L_s.  This represents the pressure
+    // head driving flow through the structure.
     const double h_s = fmax(depth_above_invert, 0.0);
 
-    // ── Three-component flux (per unit of face width) ──
-    const double F_h  = Q_lim;
-    const double F_hu = Q_lim * u_donor + 0.5 * gravity * h_s * h_s * nx;
-    const double F_hv = Q_lim * v_donor + 0.5 * gravity * h_s * h_s * ny;
-
-    // Scale by face width (virtual "edge length")
-    const double scale = L_s;
-    const double fh  = F_h  * scale;
-    const double fhu = F_hu * scale;
-    const double fhv = F_hv * scale;
+    // ── Three-component flux ──
+    // Mass flux: total culvert discharge (L³/T)
+    const double fh  = Q_lim;
+    // Momentum flux: advective transport + hydrostatic pressure force
+    const double fhu = Q_lim * u_donor + 0.5 * gravity * h_s * h_s * nx * L_s;
+    const double fhv = Q_lim * v_donor + 0.5 * gravity * h_s * h_s * ny * L_s;
 
     // Accumulate into per-cell external flux arrays (opposite signs for donor/receiver)
     atomicAdd(&ext_flux_h[donor],    -fh);
@@ -7862,6 +7863,7 @@ void swe2d_gpu_compute_coupling_full_on_device(
                     ff.d_face_nx, ff.d_face_ny, ff.d_face_width,
                     ff.d_donor_cell, ff.d_receiver_cell,
                     ff.d_invert_elev, ff.d_depth_safety,
+                    ff.d_donor_cell_area,
                     dev->d_h, dev->d_hu, dev->d_hv, dev->d_cell_zb,
                     sf_ws.gravity, s_coupling_dt, 1.0e-6,
                     n_cells,
@@ -7973,6 +7975,7 @@ void swe2d_gpu_upload_culvert_face_flux_params(
     const int32_t* receiver_cell,
     const double*  invert_elev,
     const double*  depth_safety,
+    const double*  donor_cell_area,
     bool use_face_flux)
 {
     if (!dev) throw std::runtime_error("upload_culvert_face_flux_params: no GPU device state");
@@ -8019,6 +8022,11 @@ void swe2d_gpu_upload_culvert_face_flux_params(
     CUDA_CHECK(cudaMemcpy(ff.d_invert_elev, invert_elev,
                           static_cast<size_t>(n_culvert_faces) * sizeof(double), cudaMemcpyHostToDevice));
     CUDA_CHECK(cudaMemcpy(ff.d_depth_safety, depth_safety,
+                          static_cast<size_t>(n_culvert_faces) * sizeof(double), cudaMemcpyHostToDevice));
+
+    // Upload donor-cell area for depth safety limiter
+    sf_ensure_buf_ff_d(ff.d_donor_cell_area, ff.face_capacity, n_culvert_faces);
+    CUDA_CHECK(cudaMemcpy(ff.d_donor_cell_area, donor_cell_area,
                           static_cast<size_t>(n_culvert_faces) * sizeof(double), cudaMemcpyHostToDevice));
 
     ff.n_culvert_faces = n_culvert_faces;
@@ -8088,6 +8096,7 @@ void swe2d_gpu_apply_culvert_face_flux(
             ff.d_receiver_cell,
             ff.d_invert_elev,
             ff.d_depth_safety,
+            ff.d_donor_cell_area,
             dev->d_h,
             dev->d_hu,
             dev->d_hv,

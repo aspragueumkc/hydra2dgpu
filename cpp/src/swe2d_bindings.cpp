@@ -1419,6 +1419,7 @@ PYBIND11_MODULE(HYDRA_SWE2D_PY_MODULE_NAME, m) {
            py::array_t<int32_t, py::array::c_style | py::array::forcecast> receiver_cell,
            py::array_t<double, py::array::c_style | py::array::forcecast> invert_elev,
            py::array_t<double, py::array::c_style | py::array::forcecast> depth_safety,
+           py::array_t<double, py::array::c_style | py::array::forcecast> donor_cell_area,
            bool use_face_flux)
         {
             int32_t n = static_cast<int32_t>(culvert_struct_idx.size());
@@ -1433,6 +1434,7 @@ PYBIND11_MODULE(HYDRA_SWE2D_PY_MODULE_NAME, m) {
                 n > 0 ? receiver_cell.data() : nullptr,
                 n > 0 ? invert_elev.data() : nullptr,
                 n > 0 ? depth_safety.data() : nullptr,
+                n > 0 ? donor_cell_area.data() : nullptr,
                 use_face_flux);
         },
         py::arg("culvert_struct_idx"),
@@ -1443,6 +1445,7 @@ PYBIND11_MODULE(HYDRA_SWE2D_PY_MODULE_NAME, m) {
         py::arg("receiver_cell"),
         py::arg("invert_elev"),
         py::arg("depth_safety"),
+        py::arg("donor_cell_area"),
         py::arg("use_face_flux"),
         "Upload culvert face-flux geometry to GPU for face-based coupling.");
 
