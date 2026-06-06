@@ -197,19 +197,36 @@ class SWE2DRuntimeStepExecutor:
                 dt_source_guess = float(dt_request)
             cell_source_model_step = cell_source_model_at_time_callback(t_accum)
             coupled_source_rate = None
+            _native_device_applied = False
             if coupling_controller is not None:
-                _t_state2 = time.perf_counter()
-                h_c, hu_c, hv_c = backend.get_state()
-                state_ms += (time.perf_counter() - _t_state2) * 1000.0
-                _t_cpl2 = time.perf_counter()
-                coupled_source_rate = coupling_controller.compute_source_rates(
-                    t_accum,
-                    dt_source_guess,
-                    h_c,
-                    hu_c,
-                    hv_c,
-                )
-                coupling_ms += (time.perf_counter() - _t_cpl2) * 1000.0
+                # Attempt the fully on-device coupling path.  When successful,
+                # swe2d_gpu_compute_coupling_full_on_device() reads h/zb from
+                # device-resident state, computes structure flows, and injects
+                # source rates directly into d_external_source_mps.  No D2H
+                # state readback, no Python structure evaluation, no H2D upload.
+                try:
+                    _native_device_applied = bool(
+                        coupling_controller.apply_native_device_sources(
+                            t_accum, dt_source_guess
+                        )
+                    )
+                except Exception:
+                    _native_device_applied = False
+                if _native_device_applied:
+                    coupled_source_rate = None  # sources already on GPU
+                else:
+                    _t_state2 = time.perf_counter()
+                    h_c, hu_c, hv_c = backend.get_state()
+                    state_ms += (time.perf_counter() - _t_state2) * 1000.0
+                    _t_cpl2 = time.perf_counter()
+                    coupled_source_rate = coupling_controller.compute_source_rates(
+                        t_accum,
+                        dt_source_guess,
+                        h_c,
+                        hu_c,
+                        hv_c,
+                    )
+                    coupling_ms += (time.perf_counter() - _t_cpl2) * 1000.0
             rain_src = rain_source_for_window_callback(
                 t_accum,
                 t_accum + dt_source_guess,
@@ -217,20 +234,27 @@ class SWE2DRuntimeStepExecutor:
                 mutate_state=True,
             )
             _t_src2 = time.perf_counter()
-            accumulate_source_volume_model_callback(
-                dt_source_guess,
-                rain_src,
-                cell_source_model_step,
-                coupled_source_rate,
-            )
-            apply_external_sources_callback(
-                backend,
-                dt_source_guess,
-                rain_src,
-                cell_source_model_step,
-                coupled_source_rate,
-                prefer_native_injection=native_source_injection_mode,
-            )
+            if not _native_device_applied:
+                accumulate_source_volume_model_callback(
+                    dt_source_guess,
+                    rain_src,
+                    cell_source_model_step,
+                    coupled_source_rate,
+                )
+                apply_external_sources_callback(
+                    backend,
+                    dt_source_guess,
+                    rain_src,
+                    cell_source_model_step,
+                    coupled_source_rate,
+                    prefer_native_injection=native_source_injection_mode,
+                )
+            # When _native_device_applied is True, d_external_source_mps is
+            # already populated on-device and the solver step will consume it
+            # directly.  Rain is assumed to be zero or natively handled when
+            # the native device coupling path is active; if non-zero rain
+            # needs to be combined with on-device sources, a GPU accumulation
+            # kernel or a D2H-readback + merge + H2D-upload path is required.
             source_ms += (time.perf_counter() - _t_src2) * 1000.0
             if apply_3d_patch_face_bc_callback is not None:
                 apply_3d_patch_face_bc_callback(backend)

@@ -452,7 +452,7 @@ class SWE2DCouplingController:
         bridge_cuda_coupling: bool = False,
         bridge_stacked_coupling_mode: str = "phase3_spatial",
         length_scale_si_to_model: float = 1.0,
-        culvert_face_flux_mode: str = "off",
+        culvert_face_flux_mode: str = "on",
         log_callback: Optional[Callable[[str], None]] = None,
 ):
         if cell_area is None or cell_bed is None:
@@ -960,11 +960,14 @@ class SWE2DCouplingController:
         if hasattr(native_mod, "swe2d_gpu_set_coupling_dt"):
             native_mod.swe2d_gpu_set_coupling_dt(float(dt_s))
         try:
+            # Pass None for cell_wse: GPU computes WSE = h + zb directly
+            # from device-resident state, eliminating two PCIe transfers.
+            # np.empty(0) would be catastrophic here — pybind11 sees a
+            # non-null array pointer and the C++ kernel reads garbage data
+            # for cell WSE, producing wildly incorrect structure flows.
             native_mod.swe2d_gpu_compute_coupling_full_on_device(
-                np.empty(0, dtype=np.float64),
+                None,
                 n_structures,
-                np.empty(0, dtype=np.int32),
-                np.empty(0, dtype=np.float64),
             )
         except Exception:
             return False
