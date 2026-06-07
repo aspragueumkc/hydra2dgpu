@@ -1552,6 +1552,136 @@ class TestSWE2DDrainageStructures(unittest.TestCase):
         self.assertGreater(q_sink_low, q_sink_high, "Higher end-loss coefficients should reduce routed transfer")
         self.assertGreater(q_src_low, q_src_high, "Higher end-loss coefficients should reduce routed transfer")
 
+    # ── Phase 1: face-flux + drainage coexistence ─────────────────────────
+    def test_face_flux_preloaded_with_drainage(self):
+        """Face-flux culvert preload succeeds when drainage is active.
+
+        This validates the Phase 1 isolation fix: when drainage blocks the
+        apply_native_device_sources fast path, the fallback path in
+        _compute_source_rates_cuda must still call _ensure_culvert_face_flux_preloaded
+        so the GPU's use_culvert_face_flux toggle is set to true.
+        """
+        # Simple drainage network: two nodes with pipe-end exchange.
+        drainage_nodes = [
+            DrainageNode(node_id="n0", x=0.0, y=0.0, invert_elev=0.0, max_depth=3.0,
+                          metadata={"surface_area": 50.0}),
+            DrainageNode(node_id="n1", x=10.0, y=0.0, invert_elev=0.0, max_depth=3.0,
+                          metadata={"surface_area": 50.0}),
+        ]
+        drainage_links = [
+            DrainageLink(link_id="L0", from_node_id="n0", to_node_id="n1",
+                          length=10.0, roughness_n=0.013, diameter=1.0),
+        ]
+        drain_cfg = PipeNetworkConfig(
+            enabled=True, nodes=drainage_nodes, links=drainage_links,
+            inlets=[], outfalls=[], pipe_ends=[
+                PipeEndExchange(pipe_end_id="pe0", cell_id=0, node_id="n0",
+                                 invert_elev=0.0, diameter=1.0),
+                PipeEndExchange(pipe_end_id="pe1", cell_id=1, node_id="n1",
+                                 invert_elev=0.0, diameter=1.0),
+            ],
+            solver_mode=DrainageSolverMode.EGL,
+        )
+        drain_mod = SWE2DUrbanDrainageModule(drain_cfg)
+
+        # Single face-flux culvert (HydraulicStructure).
+        structure = HydraulicStructure(
+            structure_id="C0",
+            structure_type=StructureType.CULVERT,
+            upstream_cell=0,
+            downstream_cell=1,
+            crest_elev=0.0,
+            metadata={
+                "culvert_shape": "circular",
+                "culvert_code": 1,
+                "diameter": 1.0,
+                "culvert_rise": 1.0,
+                "length": 12.0,
+                "roughness_n": 0.013,
+                "inlet_invert_elev": 0.0,
+                "outlet_invert_elev": -0.05,
+            },
+        )
+        struct_mod = SWE2DStructureModule(
+            HydraulicStructureConfig(enabled=True, structures=[structure])
+        )
+
+        controller = SWE2DCouplingController(
+            cell_area=[50.0, 50.0],
+            cell_bed=[0.0, 0.0],
+            drainage=drain_mod,
+            structures=struct_mod,
+            coupling_loop="cuda",
+            drainage_solver_backend="cpu",
+            culvert_face_flux_mode="face_flux",
+        )
+
+        # Verify initial state: not preloaded.
+        self.assertFalse(controller._culvert_face_flux_preloaded)
+
+        # Cell centroids are needed by _build_face_flux_soa().
+        controller.set_cell_centroids(
+            cx=np.asarray([0.0, 10.0], dtype=np.float64),
+            cy=np.asarray([0.0, 0.0], dtype=np.float64),
+        )
+
+        # Fake native module that supports structure flows and face-flux upload.
+        face_flux_uploaded = []
+
+        class _FakeNative:
+            @staticmethod
+            def swe2d_gpu_upload_culvert_face_flux_params(**kwargs):
+                face_flux_uploaded.append(True)
+                # Accept any kwargs but do nothing (no real GPU).
+
+            @staticmethod
+            def swe2d_gpu_compute_structure_flows(*args, **kwargs):
+                return np.asarray([9.99], dtype=np.float64)
+
+            @staticmethod
+            def swe2d_gpu_compute_coupling_sources(
+                cell_area, inlet_cell, inlet_flow_cms,
+                structure_up_cell, structure_down_cell, structure_flow,
+            ):
+                out = np.zeros(int(np.asarray(cell_area).size), dtype=np.float64)
+                area = np.asarray(cell_area, dtype=np.float64)
+                up = np.asarray(structure_up_cell, dtype=np.int32)
+                dn = np.asarray(structure_down_cell, dtype=np.int32)
+                qq = np.asarray(structure_flow, dtype=np.float64)
+                for i in range(int(qq.size)):
+                    out[int(up[i])] -= float(qq[i]) / float(area[int(up[i])])
+                    out[int(dn[i])] += float(qq[i]) / float(area[int(dn[i])])
+                return out
+
+        controller._native_cuda_module = lambda: _FakeNative()  # type: ignore[method-assign]
+
+        # This call exercises _compute_source_rates_cuda, which should
+        # now call _ensure_culvert_face_flux_preloaded before the
+        # structures section.
+        src = controller.compute_source_rates(
+            t_s=0.0, dt_s=1.0,
+            h=np.asarray([1.5, 0.8], dtype=np.float64),
+            hu=np.zeros(2, dtype=np.float64),
+            hv=np.zeros(2, dtype=np.float64),
+        )
+
+        # The face-flux preload should have succeeded.
+        self.assertTrue(controller._culvert_face_flux_preloaded,
+                        "Face-flux parameters should be preloaded even with drainage active")
+        self.assertEqual(len(face_flux_uploaded), 1,
+                         "swe2d_gpu_upload_culvert_face_flux_params should be called once")
+
+        # Source array should be produced (structure flows + drainage
+        # surface exchange combined).
+        self.assertIsNotNone(src, "Source array should not be None")
+        self.assertEqual(src.size, 2)
+
+        # Diagnostic log should record the bypass.
+        self.assertEqual(
+            float(controller.last_diag.component_sums.get("structures_native_helper", 0.0)),
+            1.0,
+        )
+
 
 @unittest.skipUnless(_HAVE_WORKBENCH, "workbench module unavailable")
 class TestSWE2DExternalSourceApplication(unittest.TestCase):

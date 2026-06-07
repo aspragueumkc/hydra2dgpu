@@ -1013,6 +1013,11 @@ class SWE2DCouplingController:
         if self.structures is None:
             return False
         if self.drainage is not None:
+            self._log(
+                "apply_native_device_sources: drainage present — "
+                "falling back to host path (face-flux culverts still active "
+                "via _compute_source_rates_cuda)"
+            )
             return False
         if self._has_enabled_bridge_structures:
             return False
@@ -1808,6 +1813,12 @@ class SWE2DCouplingController:
             component_sums["drainage_substeps_used"] = float(drainage_diag.get("substeps_used", 1.0))
             component_sums["drainage_implicit_iters_used"] = float(drainage_diag.get("implicit_iters_used", 0.0))
             component_sums["drainage_inactive_fastpath"] = float(drainage_diag.get("inactive_fastpath", 0.0))
+
+        # ── Face-flux preload (isolation fix: drainage bypasses
+        # apply_native_device_sources, so we must preload here) ──────
+        if self.culvert_face_flux_mode == "face_flux" and self._structures_soa is not None:
+            if hasattr(native_mod, "swe2d_gpu_upload_culvert_face_flux_params"):
+                self._ensure_culvert_face_flux_preloaded(native_mod)
 
         bridge_total = np.zeros(self.n_cells, dtype=np.float64)
         bridge_helper_used = False
