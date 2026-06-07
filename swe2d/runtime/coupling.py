@@ -1011,43 +1011,41 @@ class SWE2DCouplingController:
             # ── Diagnostic: check face-flux application ──
             if self.culvert_face_flux_mode == "face_flux" and n_structures > 0:
                 try:
-                    _src_rate = np.asarray(
-                        native_mod.swe2d_gpu_readback_coupling_sources(int(self.n_cells)),
-                        dtype=np.float64)
                     _struct_flows = np.asarray(
                         native_mod.swe2d_gpu_readback_structure_flows(n_structures),
                         dtype=np.float64)
-                    _face_flux_h_tup = native_mod.swe2d_gpu_readback_ext_struct_flux(
+                    _flux_tuple = native_mod.swe2d_gpu_readback_ext_struct_flux(
                         int(self.n_cells))
-                    _face_flux_h = np.asarray(_face_flux_h_tup[0], dtype=np.float64)
+                    _face_flux_h = np.asarray(_flux_tuple[0], dtype=np.float64)
                     ssoa = self._structures_soa
                     ds_cell = int(ssoa.downstream_cell[0]) if ssoa is not None and ssoa.downstream_cell.size > 0 else -1
                     us_cell = int(ssoa.upstream_cell[0]) if ssoa is not None and ssoa.upstream_cell.size > 0 else -1
                     print(f"[FLUX_DIAG] struct_flow[0]={_struct_flows[0]:.6f}  "
-                          f"face_flux_h sum={np.sum(_face_flux_h):.6f}  "
-                          f"src_rate sum={np.sum(_src_rate):.6f}")
+                          f"face_flux_h sum={np.sum(_face_flux_h):.6f}")
                     if ds_cell >= 0 and us_cell >= 0:
-                        print(f"[FLUX_DIAG] us_cell={us_cell} ds_cell={ds_cell}  "
-                              f"face_flux_h[us]={_face_flux_h[us_cell]:.6f}  "
-                              f"face_flux_h[ds]={_face_flux_h[ds_cell]:.6f}  "
-                              f"src_rate[us]={_src_rate[us_cell]:.6f}  "
-                              f"src_rate[ds]={_src_rate[ds_cell]:.6f}")
+                        print(f"[FLUX_DIAG] us={us_cell} ds={ds_cell}  "
+                              f"flux_h[us]={_face_flux_h[us_cell]:.6f}  "
+                              f"flux_h[ds]={_face_flux_h[ds_cell]:.6f}")
                 except Exception as e:
                     print(f"[FLUX_DIAG] readback failed: {e}")
         except Exception:
             return False
 
-        # When face-flux is active, the update kernel already reads
-        # d_ext_struct_flux_h directly — do NOT fold into d_external_source_mps
-        # as that would double-count the culvert flow (once via source rate,
-        # once via face-flux arrays).  The solver's positivity limiter then
-        # clips the double-applied source to zero, making the flow vanish.
-        if (self.culvert_face_flux_mode != "face_flux"
-            and hasattr(native_mod, "swe2d_gpu_fold_culvert_mass_to_source")):
-            try:
-                native_mod.swe2d_gpu_fold_culvert_mass_to_source(int(self.n_cells))
-            except Exception:
-                pass
+        # When face-flux mode is active, the culvert face flux is already
+        # applied via d_ext_struct_flux_h which the update kernel reads
+        # directly inside the source subcycling loop (line 1972 of
+        # swe2d_gpu.cu).  Folding into d_external_source_mps would
+        # double-count the culvert mass because the update kernel would
+        # then receive it from both paths.
+        # The fold is only needed in the non-face-flux fallback where
+        # ext_struct_flux_h is never populated and the culvert mass must
+        # travel through d_external_source_mps like other sources.
+        if self.culvert_face_flux_mode != "face_flux":
+            if hasattr(native_mod, "swe2d_gpu_fold_culvert_mass_to_source"):
+                try:
+                    native_mod.swe2d_gpu_fold_culvert_mass_to_source(int(self.n_cells))
+                except Exception:
+                    pass
 
         # ── On-device redistribution ────────────────────────────────────
         # When the model has redistribution geometry and the persistent

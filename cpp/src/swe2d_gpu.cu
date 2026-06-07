@@ -1894,10 +1894,17 @@ __global__ __launch_bounds__(256, 4) void swe2d_update_kernel(
 
     // Skip fully isolated dry cells when there is no local source term.
     // If a positive rain/source term exists, allow a source-only wet-up update.
+    // Also include face-based culvert flux (ext_struct_flux_h) which carries
+    // mass from the face-flux path — without this, a dry downstream cell
+    // receiving water through a culvert face would be skipped because
+    // external_source_mps is 0 (culvert flow goes through ext_struct_flux_h).
     if (d_active && !d_active[c]) {
-        const double src =
+        double src =
             (cell_source_mps ? cell_source_mps[c] : 0.0) +
             (external_source_mps ? external_source_mps[c] : 0.0);
+        if (ext_struct_flux_h) {
+            src += fmax(0.0, ext_struct_flux_h[c]);  // only positive (incoming) flux
+        }
         if (!(isfinite(src) && src > 0.0)) return;
     }
 
@@ -1967,6 +1974,11 @@ __global__ __launch_bounds__(256, 4) void swe2d_update_kernel(
         const double dt_sub = dt / static_cast<double>(nsub);
         for (int k = 0; k < nsub; ++k) {
             h_trial += dt_sub * src;
+            // Apply face-flux within subcycling so it's subject to the same
+            // depth limiting as the source rate (prevents donor going negative).
+            if (ext_struct_flux_h) {
+                h_trial += dt_sub * ext_struct_flux_h[c] * inv_a;
+            }
             if (h_trial < 0.0) h_trial = 0.0;
             if (source_imex_split && h_trial > h_min) {
                 double n_mann = cell_n_mann[c];
@@ -1979,6 +1991,10 @@ __global__ __launch_bounds__(256, 4) void swe2d_update_kernel(
             src *= (1.0 / static_cast<double>(nsub));
         }
         h_trial += dt * src;
+        // Apply face-flux mass in non-subcycling path
+        if (ext_struct_flux_h) {
+            h_trial += dt * ext_struct_flux_h[c] * inv_a;
+        }
     }
 
     if (!isfinite(h_trial)) h_trial = 0.0;
@@ -1995,15 +2011,8 @@ __global__ __launch_bounds__(256, 4) void swe2d_update_kernel(
     cell_hu[c] += dt * fhu * inv_a;
     cell_hv[c] += dt * fhv * inv_a;
 
-    // Face-based structure flux: apply mass + momentum from culvert face coupling.
-    // Mass component: ext_struct_flux_h is written by swe2d_culvert_face_flux_kernel
-    // and represents total discharge Q_c [L³/T] per cell (donor=-Q, receiver=+Q).
-    // The fold kernel (swe2d_fold_culvert_mass_to_source_kernel) also adds this
-    // to d_external_source_mps for subcycling — this direct read ensures the
-    // mass flux is always applied even when the fold is gated off.
-    if (ext_struct_flux_h) {
-        cell_h[c]  += dt * ext_struct_flux_h[c]  * inv_a;
-    }
+    // Face-based structure flux: apply momentum from culvert face coupling.
+    // Mass component was already applied inside source subcycling above.
     if (ext_struct_flux_hu) {
         cell_hu[c] += dt * ext_struct_flux_hu[c] * inv_a;
     }
@@ -2818,11 +2827,10 @@ __global__ __launch_bounds__(256, 4) void swe2d_culvert_face_flux_kernel(
     const double v_donor = hv_donor * inv_h;
 
     // ── Depth limiter: prevent drying the donor cell ──
-    // Use depth above invert (not total cell depth) for the limit,
-    // since the culvert only draws from water above its invert.
-    // Q_max = alpha * depth_above_invert * A_donor / dt.
+    // Q_max = alpha * h_limit * A_donor / dt.
     double Q_lim = Q_c;
-    const double max_flux = alpha * depth_above_invert * A_donor / fmax(dt, 1.0e-12);
+    const double h_limit = fmax(depth_above_invert, h_donor);
+    const double max_flux = alpha * h_limit * A_donor / fmax(dt, 1.0e-12);
     if (fabs(Q_c) > max_flux && max_flux > 0.0) {
         Q_lim = sign * max_flux;
     }
