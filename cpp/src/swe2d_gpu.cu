@@ -778,7 +778,11 @@ __global__ __launch_bounds__(256, 4) void swe2d_classify_kernel(
         const int32_t w      = (d_h[c] > h_min) ? 1 : 0;
         const double src_rain = d_cell_source_mps ? d_cell_source_mps[c] : 0.0;
         const double src_ext  = d_external_source_mps ? d_external_source_mps[c] : 0.0;
-        const double src_ff   = d_ext_struct_flux_h ? fmax(0.0, d_ext_struct_flux_h[c]) : 0.0;
+        // Both positive (incoming) and negative (outgoing) face flux keeps
+        // the cell active — a culvert donor cell losing water must stay
+        // active so the edge-flux Riemann solver communicates its drawdown
+        // to upstream neighbors.  Otherwise the drawdown can't propagate.
+        const double src_ff   = d_ext_struct_flux_h ? fabs(d_ext_struct_flux_h[c]) : 0.0;
         const double src      = src_rain + src_ext + src_ff;
         const int32_t src_on  = (isfinite(src) && src > 0.0) ? 1 : 0;
         const int32_t grace  = (d_was_active && d_was_active[c] && d_h[c] > 0.0) ? 1 : 0;
@@ -841,7 +845,11 @@ __global__ __launch_bounds__(256, 4) void swe2d_classify_and_mark_kernel(
         const int32_t w      = (d_h[c] > h_min) ? 1 : 0;
         const double src_rain = d_cell_source_mps ? d_cell_source_mps[c] : 0.0;
         const double src_ext  = d_external_source_mps ? d_external_source_mps[c] : 0.0;
-        const double src_ff   = d_ext_struct_flux_h ? fmax(0.0, d_ext_struct_flux_h[c]) : 0.0;
+        // Both positive (incoming) and negative (outgoing) face flux keeps
+        // the cell active — a culvert donor cell losing water must stay
+        // active so the edge-flux Riemann solver communicates its drawdown
+        // to upstream neighbors.  Otherwise the drawdown can't propagate.
+        const double src_ff   = d_ext_struct_flux_h ? fabs(d_ext_struct_flux_h[c]) : 0.0;
         const double src      = src_rain + src_ext + src_ff;
         const int32_t src_on  = (isfinite(src) && src > 0.0) ? 1 : 0;
         // Hysteretic wetting: cells that were active last step and still carry
@@ -2898,6 +2906,64 @@ __global__ void swe2d_fold_culvert_mass_to_source_kernel(
     atomicAdd(&source_rate[c], fh * inv_a);
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// Enquiry-cell WSE correction kernel
+//
+// For each culvert face with enquiry-cell support, overwrites the WSE at the
+// face cell (donor/receiver) with the total energy (WSE + v²/2g) sampled at
+// an offset enquiry cell.  This lets the structure-flows kernel use approach-
+// flow energy rather than the locally-drawn-down WSE at the face, producing
+// a correct driving head for the culvert hydraulic solver.
+//
+// Must run AFTER the WSE array is built from h+zb and BEFORE the structure
+// flows kernel.
+// ─────────────────────────────────────────────────────────────────────────────
+__global__ void swe2d_apply_enquiry_wse_kernel(
+    int32_t n_culvert_faces,
+    const int32_t* __restrict__ d_enquiry_up_cell,  // [n_faces] enquiry cell for upstream
+    const int32_t* __restrict__ d_enquiry_dn_cell,  // [n_faces] enquiry cell for downstream
+    const int32_t* __restrict__ d_donor_cell,        // [n_faces] face upstream cell
+    const int32_t* __restrict__ d_receiver_cell,     // [n_faces] face downstream cell
+    const double*  __restrict__ d_cell_wse,          // [n_cells] WSE at all cells
+    const double*  __restrict__ d_cell_h,            // [n_cells] depth
+    const double*  __restrict__ d_cell_hu,           // [n_cells] x-momentum
+    const double*  __restrict__ d_cell_hv,           // [n_cells] y-momentum
+    double  gravity,
+    double  h_min,
+    double* __restrict__ d_cell_wse_out)             // [n_cells] modified WSE output
+{
+    const int32_t i = blockIdx.x * blockDim.x + threadIdx.x;
+    if (i >= n_culvert_faces) return;
+
+    // ── Upstream side: use enquiry cell WSE + velocity head ──────────
+    const int32_t fc_up = d_donor_cell[i];
+    const int32_t enq_up = d_enquiry_up_cell[i];
+    if (enq_up >= 0 && enq_up != fc_up) {
+        double wse = d_cell_wse[enq_up];
+        const double h_enq = d_cell_h[enq_up];
+        if (h_enq > h_min) {
+            const double u = d_cell_hu[enq_up] / h_enq;
+            const double v = d_cell_hv[enq_up] / h_enq;
+            wse += 0.5 * (u*u + v*v) / gravity;  // velocity head
+        }
+        d_cell_wse_out[fc_up] = wse;
+    }
+
+    // ── Downstream side: use enquiry cell WSE + velocity head ────────
+    const int32_t fc_dn = d_receiver_cell[i];
+    const int32_t enq_dn = d_enquiry_dn_cell[i];
+    if (enq_dn >= 0 && enq_dn != fc_dn) {
+        double wse = d_cell_wse[enq_dn];
+        const double h_enq = d_cell_h[enq_dn];
+        if (h_enq > h_min) {
+            const double u = d_cell_hu[enq_dn] / h_enq;
+            const double v = d_cell_hv[enq_dn] / h_enq;
+            wse += 0.5 * (u*u + v*v) / gravity;  // velocity head
+        }
+        d_cell_wse_out[fc_dn] = wse;
+    }
+}
+
 __device__ __forceinline__ double bw2d_clamp(double x, double lo, double hi)
 {
     return fmin(hi, fmax(lo, x));
@@ -3675,6 +3741,9 @@ __global__ __launch_bounds__(256, 4) void swe2d_compute_structure_flows_kernel(
     structure_flow[i] = sign * q / (to_ft * to_ft * to_ft);
 
     // ── Diagnostic: print culvert params for first structure (index 0) ──
+    // Enable by compiling with -DCULVERT_DIAG or uncommenting the #define below.
+    // Device-side printf is SLOW — don't leave enabled in production runs.
+    #ifdef CULVERT_DIAG
     if (i == 0) {
         printf("[CULVERT_DIAG] i=%d type=%d shape=%d code=%d\n",
                i, structure_type[i], culvert_shape[i], code);
@@ -3691,6 +3760,7 @@ __global__ __launch_bounds__(256, 4) void swe2d_compute_structure_flows_kernel(
         printf("[CULVERT_DIAG] structure_flow=%.6f (model units)\n",
                structure_flow[i]);
     }
+    #endif
 }
 
 __device__ __forceinline__ void swe2d_circular_section_cuda(
@@ -7954,6 +8024,29 @@ void swe2d_gpu_compute_coupling_full_on_device(
                 CUDA_CHECK(cudaGetLastError());
             }
 
+            // ── Apply enquiry-cell WSE correction for total-energy driving head ──
+            // Overwrite the WSE at face cells with the total energy (WSE + v²/2g)
+            // sampled at offset enquiry cells.  This avoids the local drawdown
+            // singularity that occurs when sampling directly at the face.
+            if (ff.d_enquiry_up_cell && ff.d_enquiry_dn_cell
+                && dev->d_hu && dev->d_hv && dev->d_h) {
+                int grid_enq = (ff.n_culvert_faces + BLOCK - 1) / BLOCK;
+                swe2d_apply_enquiry_wse_kernel<<<grid_enq, BLOCK, 0, stream>>>(
+                    ff.n_culvert_faces,
+                    ff.d_enquiry_up_cell,
+                    ff.d_enquiry_dn_cell,
+                    ff.d_donor_cell,
+                    ff.d_receiver_cell,
+                    sf_ws.d_cell_wse,
+                    dev->d_h,
+                    dev->d_hu,
+                    dev->d_hv,
+                    sf_ws.gravity,
+                    1.0e-6,
+                    sf_ws.d_cell_wse);
+                CUDA_CHECK(cudaGetLastError());
+            }
+
             // Recompute structure flows from fresh WSE
             // Ensure solver mode is correct: if table data is null but mode=1,
             // fall back to mode 0 (direct secant).  This handles the case where
@@ -8165,6 +8258,8 @@ void swe2d_gpu_upload_culvert_face_flux_params(
     const double*  invert_elev,
     const double*  depth_safety,
     const double*  donor_cell_area,
+    const int32_t* enquiry_up_cell,   // nullable: enquiry cells for WSE sampling
+    const int32_t* enquiry_dn_cell,   // nullable: enquiry cells for WSE sampling
     bool use_face_flux)
 {
     if (!dev) dev = s_coupling_dev;
@@ -8218,6 +8313,17 @@ void swe2d_gpu_upload_culvert_face_flux_params(
     sf_ensure_buf_ff_d(ff.d_donor_cell_area, ff.face_capacity, n_culvert_faces);
     CUDA_CHECK(cudaMemcpy(ff.d_donor_cell_area, donor_cell_area,
                           static_cast<size_t>(n_culvert_faces) * sizeof(double), cudaMemcpyHostToDevice));
+
+    // Upload enquiry cell indices (nullable — if null, face cells are used,
+    // so the kernel skips the WSE override and uses the face-cell WSE directly).
+    if (enquiry_up_cell && enquiry_dn_cell) {
+        sf_ensure_buf_ff_i(ff.d_enquiry_up_cell, ff.face_capacity, n_culvert_faces);
+        sf_ensure_buf_ff_i(ff.d_enquiry_dn_cell, ff.face_capacity, n_culvert_faces);
+        CUDA_CHECK(cudaMemcpy(ff.d_enquiry_up_cell, enquiry_up_cell,
+                              static_cast<size_t>(n_culvert_faces) * sizeof(int32_t), cudaMemcpyHostToDevice));
+        CUDA_CHECK(cudaMemcpy(ff.d_enquiry_dn_cell, enquiry_dn_cell,
+                              static_cast<size_t>(n_culvert_faces) * sizeof(int32_t), cudaMemcpyHostToDevice));
+    }
 
     ff.n_culvert_faces = n_culvert_faces;
     ff.params_preloaded = true;
@@ -8335,6 +8441,15 @@ void swe2d_gpu_readback_ext_struct_flux(
     if (host_hv && dev->d_ext_struct_flux_hv)
         CUDA_CHECK(cudaMemcpy(host_hv, dev->d_ext_struct_flux_hv,
                               static_cast<size_t>(n_cells) * sizeof(double), cudaMemcpyDeviceToHost));
+}
+
+void swe2d_gpu_upload_ext_struct_flux_h(const double* host_h, int32_t n_cells)
+{
+    SWE2DDeviceState* dev = s_coupling_dev;
+    if (!dev || !dev->d_ext_struct_flux_h || n_cells <= 0 || !host_h) return;
+    CUDA_CHECK(cudaMemcpy(dev->d_ext_struct_flux_h, host_h,
+                          static_cast<size_t>(n_cells) * sizeof(double),
+                          cudaMemcpyHostToDevice));
 }
 
 // ── Culvert table-mode globals ──

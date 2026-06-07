@@ -502,6 +502,14 @@ struct SWE2DDeviceState {
         double*  d_depth_safety = nullptr;          // [n_culvert_faces]
         // Donor-cell area for depth safety limiter
         double*  d_donor_cell_area = nullptr;      // [n_culvert_faces]
+        // Enquiry cells for total-energy-based driving head.
+        // These are cells offset from the face from which we sample WSE and
+        // velocity to compute the driving head (WSE + v²/2g) for the culvert
+        // solver — avoiding the local drawdown singularity at the face cell.
+        int32_t* d_enquiry_up_cell = nullptr;      // [n_culvert_faces]
+        int32_t* d_enquiry_dn_cell = nullptr;      // [n_culvert_faces]
+        // Enquiry offset distance (in model units, default 0 = use face cell)
+        double enquiry_offset = 0.0;
 
         void destroy() {
             if (d_culvert_struct_idx) { cudaFree(d_culvert_struct_idx); d_culvert_struct_idx = nullptr; }
@@ -513,6 +521,8 @@ struct SWE2DDeviceState {
             if (d_invert_elev) { cudaFree(d_invert_elev); d_invert_elev = nullptr; }
             if (d_depth_safety) { cudaFree(d_depth_safety); d_depth_safety = nullptr; }
             if (d_donor_cell_area) { cudaFree(d_donor_cell_area); d_donor_cell_area = nullptr; }
+            if (d_enquiry_up_cell) { cudaFree(d_enquiry_up_cell); d_enquiry_up_cell = nullptr; }
+            if (d_enquiry_dn_cell) { cudaFree(d_enquiry_dn_cell); d_enquiry_dn_cell = nullptr; }
             n_culvert_faces = 0;
             face_capacity = 0;
             n_struct_flows_capacity = 0;
@@ -1164,6 +1174,8 @@ void swe2d_gpu_upload_culvert_face_flux_params(
     const double*  invert_elev,
     const double*  depth_safety,
     const double*  donor_cell_area,
+    const int32_t* enquiry_up_cell,   // nullable: enquiry cells for WSE sampling
+    const int32_t* enquiry_dn_cell,   // nullable: enquiry cells for WSE sampling
     bool use_face_flux);
 
 // Compute per-cell structure flows (Q_c) on device, then apply face-based
@@ -1183,6 +1195,9 @@ void swe2d_gpu_fold_culvert_mass_to_source(SWE2DDeviceState* dev, int32_t n_cell
 // Read back per-cell external structure flux arrays from device (for debug).
 void swe2d_gpu_readback_ext_struct_flux(
     double* host_h, double* host_hu, double* host_hv, int32_t n_cells);
+
+// Upload host mass flux to device d_ext_struct_flux_h (for redistribution).
+void swe2d_gpu_upload_ext_struct_flux_h(const double* host_h, int32_t n_cells);
 
 // Set the coupling time step (used by face-flux depth limiter).
 void swe2d_gpu_set_coupling_dt(double dt);

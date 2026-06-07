@@ -1446,9 +1446,21 @@ PYBIND11_MODULE(HYDRA_SWE2D_PY_MODULE_NAME, m) {
            py::array_t<double, py::array::c_style | py::array::forcecast> invert_elev,
            py::array_t<double, py::array::c_style | py::array::forcecast> depth_safety,
            py::array_t<double, py::array::c_style | py::array::forcecast> donor_cell_area,
-           bool use_face_flux)
+           bool use_face_flux,
+           py::object enquiry_up_cell_obj,
+           py::object enquiry_dn_cell_obj)
         {
             int32_t n = static_cast<int32_t>(culvert_struct_idx.size());
+            const int32_t* enq_up_ptr = nullptr;
+            const int32_t* enq_dn_ptr = nullptr;
+            if (!enquiry_up_cell_obj.is_none()) {
+                auto enq_up = enquiry_up_cell_obj.cast<py::array_t<int32_t, py::array::c_style | py::array::forcecast>>();
+                enq_up_ptr = enq_up.data();
+            }
+            if (!enquiry_dn_cell_obj.is_none()) {
+                auto enq_dn = enquiry_dn_cell_obj.cast<py::array_t<int32_t, py::array::c_style | py::array::forcecast>>();
+                enq_dn_ptr = enq_dn.data();
+            }
             swe2d_gpu_upload_culvert_face_flux_params(
                 nullptr,
                 n,
@@ -1461,6 +1473,8 @@ PYBIND11_MODULE(HYDRA_SWE2D_PY_MODULE_NAME, m) {
                 n > 0 ? invert_elev.data() : nullptr,
                 n > 0 ? depth_safety.data() : nullptr,
                 n > 0 ? donor_cell_area.data() : nullptr,
+                enq_up_ptr,
+                enq_dn_ptr,
                 use_face_flux);
         },
         py::arg("culvert_struct_idx"),
@@ -1473,6 +1487,8 @@ PYBIND11_MODULE(HYDRA_SWE2D_PY_MODULE_NAME, m) {
         py::arg("depth_safety"),
         py::arg("donor_cell_area"),
         py::arg("use_face_flux"),
+        py::arg("enquiry_up_cell")=py::none(),
+        py::arg("enquiry_dn_cell")=py::none(),
         "Upload culvert face-flux geometry to GPU for face-based coupling.");
 
     m.def("swe2d_gpu_apply_culvert_face_flux",
@@ -1515,6 +1531,15 @@ PYBIND11_MODULE(HYDRA_SWE2D_PY_MODULE_NAME, m) {
         py::arg("n_cells"),
         "Allocate per-cell external structure flux accumulators on device.");
 
+    m.def("swe2d_gpu_upload_ext_struct_flux_h",
+        [](py::array_t<double, py::array::c_style | py::array::forcecast> flux_h)
+        {
+            int32_t n = static_cast<int32_t>(flux_h.size());
+            swe2d_gpu_upload_ext_struct_flux_h(n > 0 ? flux_h.data() : nullptr, n);
+        },
+        py::arg("flux_h"),
+        "Upload redistributed mass flux to device d_ext_struct_flux_h.");
+
     m.def("swe2d_gpu_set_coupling_dt",
         [](double dt)
         {
@@ -1522,6 +1547,14 @@ PYBIND11_MODULE(HYDRA_SWE2D_PY_MODULE_NAME, m) {
         },
         py::arg("dt"),
         "Set the coupling time step for the face-flux depth limiter.");
+
+    m.def("swe2d_gpu_set_culvert_diag",
+        [](bool enabled)
+        {
+            swe2d_gpu_set_culvert_diag(enabled);
+        },
+        py::arg("enabled"),
+        "Enable/disable device-side culvert diagnostic printf.");
 
     // Culvert table mode: build pre-computed Q(hw,tw) lookup tables from culvert params.
     m.def("swe2d_gpu_build_culvert_tables",

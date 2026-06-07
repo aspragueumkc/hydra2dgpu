@@ -514,6 +514,8 @@ class SWE2DCouplingController:
         if self.culvert_face_flux_mode not in {"off", "face_flux"}:
             raise ValueError("culvert_face_flux_mode must be 'off' or 'face_flux'")
         self._face_flux_soa: Optional[SWE2DCulvertFaceFluxSoA] = None
+        self._enquiry_up_cell: Optional[np.ndarray] = None
+        self._enquiry_dn_cell: Optional[np.ndarray] = None
         self._culvert_face_flux_preloaded = False
         self._culvert_table_n_hw = max(
             8, int(os.environ.get("BACKWATER_SWE2D_CULVERT_TABLE_N_HW", "32"))
@@ -721,6 +723,41 @@ class SWE2DCouplingController:
             invert_elev[j] = float(md.get("inlet_invert_elev", st.crest_elev) or st.crest_elev)
             depth_safety[j] = float(md.get("face_flux_depth_safety", 0.5) or 0.5)
 
+        # ── Compute enquiry cells for total-energy driving head ──────────
+        # For each culvert face, find cells offset from the face in the
+        # outward-normal direction.  WSE + velocity head at these cells is
+        # used as the driving head for the culvert solver, avoiding the
+        # local drawdown singularity at the face cell.
+        enquiry_up_cell = np.full(n, -1, dtype=np.int32)
+        enquiry_dn_cell = np.full(n, -1, dtype=np.int32)
+        enq_offset = float(self._structures_cfg[0].metadata.get(
+            "enquiry_offset", 2.0)) if self._structure_count > 0 else 2.0
+        cx = np.asarray(self._cell_cx, dtype=np.float64).ravel()
+        cy = np.asarray(self._cell_cy, dtype=np.float64).ravel()
+        for j in range(n):
+            cu = int(donor_cell[j])
+            cd = int(receiver_cell[j])
+            if cu < 0 or cd >= cx.size:
+                enquiry_up_cell[j] = cu
+                enquiry_dn_cell[j] = cd
+                continue
+            # Upstream enquiry: offset opposite face normal from donor centroid
+            nx = face_nx[j]
+            ny = face_ny[j]
+            cell_size = math.sqrt(max(self.cell_area[cu], self.cell_area[cd]))
+            offset = enq_offset * cell_size
+            enq_x = cx[cu] - nx * offset
+            enq_y = cy[cu] - ny * offset
+            dist2 = (cx - enq_x)**2 + (cy - enq_y)**2
+            best = int(np.argmin(dist2))
+            enquiry_up_cell[j] = best if 0 <= best < self.n_cells else cu
+            # Downstream enquiry: offset along face normal from receiver centroid
+            enq_x = cx[cd] + nx * offset
+            enq_y = cy[cd] + ny * offset
+            dist2 = (cx - enq_x)**2 + (cy - enq_y)**2
+            best = int(np.argmin(dist2))
+            enquiry_dn_cell[j] = best if 0 <= best < self.n_cells else cd
+
         return SWE2DCulvertFaceFluxSoA(
             structure_index=struct_idx,
             face_nx=face_nx,
@@ -731,7 +768,7 @@ class SWE2DCouplingController:
             invert_elev=invert_elev,
             depth_safety_factor=depth_safety,
             donor_cell_area=donor_cell_area,
-        )
+        ), enquiry_up_cell, enquiry_dn_cell
 
     def _ensure_culvert_face_flux_preloaded(self, native_mod) -> None:
         """Upload culvert face-flux geometry to GPU if not yet done."""
@@ -744,25 +781,38 @@ class SWE2DCouplingController:
 
         # Build the SoA if not yet built
         if self._face_flux_soa is None:
-            self._face_flux_soa = self._build_face_flux_soa()
+            result = self._build_face_flux_soa()
+            if result is None:
+                self._face_flux_soa = None
+                self._enquiry_up_cell = None
+                self._enquiry_dn_cell = None
+            else:
+                self._face_flux_soa, self._enquiry_up_cell, self._enquiry_dn_cell = result
         if self._face_flux_soa is None or self._face_flux_soa.structure_index.size == 0:
             self._culvert_face_flux_preloaded = True
             return
 
         ff = self._face_flux_soa
+        # Build kwargs for upload, adding enquiry cells if available
+        upload_kwargs = dict(
+            culvert_struct_idx=np.ascontiguousarray(ff.structure_index, dtype=np.int32),
+            face_nx=np.ascontiguousarray(ff.face_nx, dtype=np.float64),
+            face_ny=np.ascontiguousarray(ff.face_ny, dtype=np.float64),
+            face_width=np.ascontiguousarray(ff.face_width, dtype=np.float64),
+            donor_cell=np.ascontiguousarray(ff.donor_cell, dtype=np.int32),
+            receiver_cell=np.ascontiguousarray(ff.receiver_cell, dtype=np.int32),
+            invert_elev=np.ascontiguousarray(ff.invert_elev, dtype=np.float64),
+            depth_safety=np.ascontiguousarray(ff.depth_safety_factor, dtype=np.float64),
+            donor_cell_area=np.ascontiguousarray(ff.donor_cell_area, dtype=np.float64),
+            use_face_flux=True,
+        )
+        if self._enquiry_up_cell is not None and self._enquiry_dn_cell is not None:
+            upload_kwargs["enquiry_up_cell"] = np.ascontiguousarray(
+                self._enquiry_up_cell, dtype=np.int32)
+            upload_kwargs["enquiry_dn_cell"] = np.ascontiguousarray(
+                self._enquiry_dn_cell, dtype=np.int32)
         try:
-            native_mod.swe2d_gpu_upload_culvert_face_flux_params(
-                np.ascontiguousarray(ff.structure_index, dtype=np.int32),
-                np.ascontiguousarray(ff.face_nx, dtype=np.float64),
-                np.ascontiguousarray(ff.face_ny, dtype=np.float64),
-                np.ascontiguousarray(ff.face_width, dtype=np.float64),
-                np.ascontiguousarray(ff.donor_cell, dtype=np.int32),
-                np.ascontiguousarray(ff.receiver_cell, dtype=np.int32),
-                np.ascontiguousarray(ff.invert_elev, dtype=np.float64),
-                np.ascontiguousarray(ff.depth_safety_factor, dtype=np.float64),
-                np.ascontiguousarray(ff.donor_cell_area, dtype=np.float64),
-                True,  # use_face_flux
-            )
+            native_mod.swe2d_gpu_upload_culvert_face_flux_params(**upload_kwargs)
             self._culvert_face_flux_preloaded = True
         except Exception as exc:
             self._log(f"[WARNING] culvert face-flux upload failed: {exc}")
@@ -991,6 +1041,11 @@ class SWE2DCouplingController:
                 self._culvert_solver_mode_applied = False
 
         n_structures = int(self._structure_count)
+        # Set culvert diagnostic (disabled by default, enable via env var).
+        if hasattr(native_mod, "swe2d_gpu_set_culvert_diag"):
+            dbg_culvert = os.environ.get("BACKWATER_SWE2D_DEBUG_CULVERT", "")
+            native_mod.swe2d_gpu_set_culvert_diag(
+                bool(dbg_culvert.strip() not in {"", "0"}))
         # Set coupling dt for face-flux depth limiter
         if hasattr(native_mod, "swe2d_gpu_set_coupling_dt"):
             native_mod.swe2d_gpu_set_coupling_dt(float(dt_s))
@@ -1046,6 +1101,77 @@ class SWE2DCouplingController:
                     native_mod.swe2d_gpu_fold_culvert_mass_to_source(int(self.n_cells))
                 except Exception:
                     pass
+
+        # ── Face-flux influence-width redistribution ─────────────────────
+        # When face-flux is active and redistribution geometry exists,
+        # spread the culvert mass flux from single donor/receiver cells
+        # across the pre-computed corridor cells.  This prevents excessive
+        # local drawdown (and spurious velocity spikes) at the culvert
+        # inlet/outlet cells.  The redistribution reverses the single-cell
+        # injection in d_ext_struct_flux_h and distributes Q across a
+        # wider set of cells, then re-uploads to device.
+        if (self.culvert_face_flux_mode == "face_flux"
+            and self._redist_offsets is not None
+            and self._redist_offsets.size > 1
+            and self._face_flux_soa is not None
+            and self._face_flux_soa.structure_index.size > 0
+            and hasattr(native_mod, "swe2d_gpu_readback_ext_struct_flux")
+            and hasattr(native_mod, "swe2d_gpu_upload_ext_struct_flux_h")):
+            try:
+                _flux_tuple = native_mod.swe2d_gpu_readback_ext_struct_flux(
+                    int(self.n_cells))
+                _ext_h = np.asarray(_flux_tuple[0], dtype=np.float64)
+                ff = self._face_flux_soa
+                offsets = self._redist_offsets
+                redist_idx = self._redist_cell_idx
+                redist_w = self._redist_weights
+                areas = np.maximum(self.cell_area, 1.0e-12)
+                modified = False
+                for j in range(int(ff.structure_index.size)):
+                    cu = int(ff.donor_cell[j])
+                    cd = int(ff.receiver_cell[j])
+                    # Build Q from the receiver cell's mass flux (positive means
+                    # water arriving).  If both cells have zero flux, skip.
+                    q_recv = float(_ext_h[cd]) if 0 <= cd < _ext_h.size else 0.0
+                    q_don = float(_ext_h[cu]) if 0 <= cu < _ext_h.size else 0.0
+                    if abs(q_recv) < 1.0e-12 and abs(q_don) < 1.0e-12:
+                        continue
+                    # Use the receiver-side flux as Q (positive = water arriving)
+                    Q = q_recv
+                    if abs(Q) < 1.0e-12:
+                        # Fallback: use donor-side magnitude
+                        Q = -q_don
+                    if abs(Q) < 1.0e-12:
+                        continue
+                    si = int(ff.structure_index[j])
+                    start = int(offsets[si])
+                    end = int(offsets[si + 1])
+                    count = end - start
+                    if count <= 0:
+                        continue
+                    # Reverse single-cell injection in ext_struct_flux_h
+                    if 0 <= cu < _ext_h.size:
+                        _ext_h[cu] = 0.0
+                    if 0 <= cd < _ext_h.size:
+                        _ext_h[cd] = 0.0
+                    # Redistribute Q across corridor cells as a mass flux
+                    # (L³/T) — no area division since ext_struct_flux_h is
+                    # a mass flux, not a depth rate.
+                    wsum = float(np.sum(redist_w[start:end]))
+                    if wsum <= 0.0:
+                        continue
+                    norm_w = redist_w[start:end] / wsum
+                    dist_cells = redist_idx[start:end]
+                    valid = (dist_cells >= 0) & (dist_cells < _ext_h.size)
+                    if not np.any(valid):
+                        continue
+                    _ext_h[dist_cells[valid]] += norm_w[valid] * Q
+                    modified = True
+                if modified:
+                    native_mod.swe2d_gpu_upload_ext_struct_flux_h(
+                        np.ascontiguousarray(_ext_h, dtype=np.float64))
+            except Exception:
+                pass
 
         # ── On-device redistribution ────────────────────────────────────
         # When the model has redistribution geometry and the persistent
