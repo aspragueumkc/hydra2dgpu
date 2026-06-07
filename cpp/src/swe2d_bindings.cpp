@@ -1374,24 +1374,35 @@ PYBIND11_MODULE(HYDRA_SWE2D_PY_MODULE_NAME, m) {
         [](py::object cell_wse_obj,
            int32_t n_structures,
            py::array_t<int32_t, py::array::c_style|py::array::forcecast> inlet_cell,
-           py::array_t<double, py::array::c_style|py::array::forcecast> inlet_flow) {
+           py::array_t<double, py::array::c_style|py::array::forcecast> inlet_flow,
+           py::object host_flows_obj) {
             const double* cell_wse_ptr = nullptr;
             int32_t n_cells = 0;
+            const double* host_flows_ptr = nullptr;
+            int32_t n_host_flows = 0;
             if (!cell_wse_obj.is_none()) {
                 auto cell_wse = cell_wse_obj.cast<py::array_t<double, py::array::c_style|py::array::forcecast>>();
                 cell_wse_ptr = cell_wse.data();
                 n_cells = static_cast<int32_t>(cell_wse.size());
             }
+            if (!host_flows_obj.is_none()) {
+                auto host_flows = host_flows_obj.cast<py::array_t<double, py::array::c_style|py::array::forcecast>>();
+                host_flows_ptr = host_flows.data();
+                n_host_flows = static_cast<int32_t>(host_flows.size());
+            }
             swe2d_gpu_compute_coupling_full_on_device(
                 nullptr, n_cells, n_structures, cell_wse_ptr,
                 static_cast<int32_t>(inlet_cell.size()),
                 inlet_cell.size()>0?inlet_cell.data():nullptr,
-                inlet_flow.size()>0?inlet_flow.data():nullptr);
+                inlet_flow.size()>0?inlet_flow.data():nullptr,
+                host_flows_ptr);
         }, py::arg("cell_wse")=py::none(), py::arg("n_structures")=0,
            py::arg("inlet_cell")=py::array_t<int32_t>(),
            py::arg("inlet_flow")=py::array_t<double>(),
+           py::arg("host_structure_flows")=py::none(),
         "Run full coupling on-device using preloaded params. "
-        "Pass cell_wse=None to compute WSE = h + zb on GPU.");
+        "Pass cell_wse=None to compute WSE = h + zb on GPU. "
+        "Pass host_structure_flows to override GPU-computed structure flows.");
 
     m.def("swe2d_gpu_readback_coupling_sources",
         [](int32_t n_cells) -> py::array_t<double> {
@@ -1408,6 +1419,21 @@ PYBIND11_MODULE(HYDRA_SWE2D_PY_MODULE_NAME, m) {
             return result;
         }, py::arg("n_structures"),
         "Read back per-structure flow rates [m^3/s] from persistent GPU buffer.");
+
+    m.def("swe2d_gpu_upload_structure_flows",
+        [](py::array_t<double, py::array::c_style | py::array::forcecast> flows) {
+            int32_t n = static_cast<int32_t>(flows.size());
+            swe2d_gpu_upload_structure_flows(n > 0 ? flows.data() : nullptr, n);
+        }, py::arg("flows"),
+        "Upload per-structure flow rates [model-units] to the persistent GPU buffer.");
+
+    m.def("swe2d_gpu_readback_coupling_wse",
+        [](int32_t n_cells) -> py::array_t<double> {
+            auto result = py::array_t<double>(n_cells);
+            swe2d_gpu_readback_coupling_wse(result.mutable_data(), n_cells);
+            return result;
+        }, py::arg("n_cells"),
+        "Read back coupling WSE array [model-units] from device.");
 
     // ── Face-based culvert flux coupling ──────────────────────────────────────
     m.def("swe2d_gpu_upload_culvert_face_flux_params",
@@ -1458,6 +1484,14 @@ PYBIND11_MODULE(HYDRA_SWE2D_PY_MODULE_NAME, m) {
         py::arg("h_min") = 1.0e-6,
         "Apply face-based culvert flux coupling on device (computes Q_c, "
         "builds face fluxes, masks culverts from source kernel).");
+
+    m.def("swe2d_gpu_fold_culvert_mass_to_source",
+        [](int32_t n_cells)
+        {
+            swe2d_gpu_fold_culvert_mass_to_source(nullptr, n_cells);
+        },
+        py::arg("n_cells"),
+        "Fold culvert face-flux mass into d_external_source_mps for subcycling support.");
 
     m.def("swe2d_gpu_readback_ext_struct_flux",
         [](int32_t n_cells)

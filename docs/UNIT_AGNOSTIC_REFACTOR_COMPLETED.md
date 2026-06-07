@@ -204,3 +204,21 @@ The refactor maintains backward compatibility through:
 - `cpp/src/swe2d_gpu.cuh`
 - `tests/test_swe2d_culvert_validation.py`
 - `tests/test_swe2d_drainage_structures.py`
+
+---
+
+## Known Deferred: GPU Variable Name Suffixes
+
+The following C++ GPU device-state variables still retain legacy unit suffixes
+despite storing **model-unit** values (meters for SI, feet for USC):
+
+| Variable | Suffix | Actual unit | Location |
+|---|---|---|---|
+| `d_external_source_mps` | `_mps` | model-length/time | `SWE2DDeviceState` in `swe2d_gpu.cuh` |
+| `d_cell_source_mps` | `_mps` | model-length/time | `SWE2DDeviceState` in `swe2d_gpu.cuh` |
+
+These are deferred from the Phase 2 rename because they are CUDA kernel
+parameter names and struct fields that span multiple translation units
+(`swe2d_gpu.cu`, `swe2d_bindings.cpp`, `swe2d_gpu_redistribute.cu`).
+Renaming requires a coordinated rebuild of all CUDA modules and is
+cosmetic only — the values are already model-unit-agnostic at runtime.

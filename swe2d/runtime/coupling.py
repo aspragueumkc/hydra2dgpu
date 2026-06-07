@@ -358,7 +358,15 @@ def pack_structures_soa(cfg: Optional[HydraulicStructureConfig], n_cells: int, m
     embankment_overflow_width = np.zeros(ns, dtype=np.float64)
     embankment_weir_coeff = np.zeros(ns, dtype=np.float64)
     culvert_shape_map = {"circular": 0, "pipe": 0, "round": 0, "box": 1, "rect": 1, "rectangular": 1}
-    m2ft = max(1.0e-6, float(model_to_ft))
+
+    # Helper: read metadata value, return default only when key is missing
+    # (NOT when value is 0.0 — zero is a legitimate value for invert
+    # elevations, widths, etc.).  The old `or default` pattern silently
+    # replaced 0.0 with the default because 0.0 is falsy in Python.
+    def _mf(meta, key, default):
+        """Metadata float: value if present, else default.  0.0 passes through."""
+        v = meta.get(key)
+        return float(v) if v is not None else float(default)
 
     for i, st in enumerate(cfg.structures):
         structure_type[i] = int(st.structure_type)
@@ -366,32 +374,33 @@ def pack_structures_soa(cfg: Optional[HydraulicStructureConfig], n_cells: int, m
         idn = int(st.downstream_cell)
         upstream_cell[i] = iu if 0 <= iu < int(n_cells) else -1
         downstream_cell[i] = idn if 0 <= idn < int(n_cells) else -1
-        crest_elev[i] = float(st.crest_elev) * m2ft
-        width[i] = float(st.metadata.get("width") or 0.0) * m2ft
-        height[i] = float(st.metadata.get("height") or 0.0) * m2ft
-        diameter[i] = float(st.metadata.get("diameter") or 0.0) * m2ft
-        length[i] = float(st.metadata.get("length") or 0.0) * m2ft
-        roughness_n[i] = float(st.metadata.get("roughness_n") or 0.013)
-        coeff[i] = float(st.metadata.get("coeff") or 1.7)
-        cd[i] = float(st.metadata.get("cd") or 0.75)
-        opening[i] = float(st.metadata.get("opening") or 1.0)
-        q_pump[i] = float(st.metadata.get("q_pump") or 0.0)
+        # Geometry in model units — kernel converts to feet via model_to_ft.
+        crest_elev[i] = _mf(st.metadata, "crest_elev", st.crest_elev)
+        width[i] = _mf(st.metadata, "width", 0.0)
+        height[i] = _mf(st.metadata, "height", 0.0)
+        diameter[i] = _mf(st.metadata, "diameter", 0.0)
+        length[i] = _mf(st.metadata, "length", 0.0)
+        roughness_n[i] = _mf(st.metadata, "roughness_n", 0.013)
+        coeff[i] = _mf(st.metadata, "coeff", 1.7)
+        cd[i] = _mf(st.metadata, "cd", 0.75)
+        opening[i] = _mf(st.metadata, "opening", 1.0)
+        q_pump[i] = _mf(st.metadata, "q_pump", 0.0)
         max_flow[i] = np.nan if st.metadata.get("max_flow") is None else float(st.metadata.get("max_flow"))
         culvert_code[i] = int(float(st.metadata.get("culvert_code", 1) or 1))
         culvert_shape[i] = int(culvert_shape_map.get(str(st.metadata.get("culvert_shape", "circular") or "circular").strip().lower(), 0))
-        culvert_rise[i] = float(st.metadata.get("culvert_rise", st.metadata.get("height", st.metadata.get("diameter", 0.0))) or 0.0) * m2ft
-        culvert_span[i] = float(st.metadata.get("culvert_span", st.metadata.get("width", culvert_rise[i] / max(1.0e-6, m2ft))) or 0.0) * m2ft
-        culvert_area[i] = float(st.metadata.get("culvert_area_m2", st.metadata.get("area_m2", 0.0)) or 0.0) * (m2ft * m2ft)  # L²
-        culvert_barrels[i] = float(st.metadata.get("culvert_barrels", 1.0) or 1.0)
-        culvert_slope[i] = float(st.metadata.get("culvert_slope", 0.0) or 0.0)
-        inlet_invert_elev[i] = float(st.metadata.get("inlet_invert_elev", st.crest_elev) or st.crest_elev) * m2ft
-        outlet_invert_elev[i] = float(st.metadata.get("outlet_invert_elev", inlet_invert_elev[i] / max(1.0e-6, m2ft)) or 0.0) * m2ft
-        entrance_loss_k[i] = float(st.metadata.get("entrance_loss_k", st.metadata.get("inlet_loss_k", 0.5)) or 0.5)
-        exit_loss_k[i] = float(st.metadata.get("exit_loss_k", st.metadata.get("outlet_loss_k", 1.0)) or 1.0)
-        embankment_enabled[i] = int(float(st.metadata.get("embankment_enabled", 0.0) or 0.0))
-        embankment_crest_elev[i] = float(st.metadata.get("embankment_crest_elev", st.metadata.get("road_crest_elev", st.crest_elev)) or st.crest_elev) * m2ft
-        embankment_overflow_width[i] = float(st.metadata.get("embankment_overflow_width", st.metadata.get("road_overflow_width", st.metadata.get("width", 0.0))) or 0.0) * m2ft
-        embankment_weir_coeff[i] = float(st.metadata.get("embankment_weir_coeff", st.metadata.get("road_weir_coeff", 1.7)) or 1.7)
+        culvert_rise[i] = _mf(st.metadata, "culvert_rise", _mf(st.metadata, "height", _mf(st.metadata, "diameter", 0.0)))
+        culvert_span[i] = _mf(st.metadata, "culvert_span", _mf(st.metadata, "width", culvert_rise[i]))
+        culvert_area[i] = _mf(st.metadata, "culvert_area_m2", _mf(st.metadata, "area_m2", 0.0))  # L²
+        culvert_barrels[i] = _mf(st.metadata, "culvert_barrels", 1.0)
+        culvert_slope[i] = _mf(st.metadata, "culvert_slope", 0.0)
+        inlet_invert_elev[i] = _mf(st.metadata, "inlet_invert_elev", st.crest_elev)
+        outlet_invert_elev[i] = _mf(st.metadata, "outlet_invert_elev", inlet_invert_elev[i])
+        entrance_loss_k[i] = _mf(st.metadata, "entrance_loss_k", _mf(st.metadata, "inlet_loss_k", 0.5))
+        exit_loss_k[i] = _mf(st.metadata, "exit_loss_k", _mf(st.metadata, "outlet_loss_k", 1.0))
+        embankment_enabled[i] = int(_mf(st.metadata, "embankment_enabled", 0.0))
+        embankment_crest_elev[i] = _mf(st.metadata, "embankment_crest_elev", _mf(st.metadata, "road_crest_elev", st.crest_elev))
+        embankment_overflow_width[i] = _mf(st.metadata, "embankment_overflow_width", _mf(st.metadata, "road_overflow_width", _mf(st.metadata, "width", 0.0)))
+        embankment_weir_coeff[i] = _mf(st.metadata, "embankment_weir_coeff", _mf(st.metadata, "road_weir_coeff", 1.7))
 
     return SWE2DStructuresSoA(
         structure_type=structure_type,
@@ -457,6 +466,13 @@ class SWE2DCouplingController:
         culvert_face_flux_mode: str = "off",
         log_callback: Optional[Callable[[str], None]] = None,
 ):
+        """Coupling controller for SWE2D surface/drainage/structure exchange.
+
+        Args:
+            length_scale_si_to_model: SI meters per model unit (e.g. 0.3048
+                for US-foot CRS, 1.0 for metric CRS).  Used to configure
+                the unit system and compute model_to_ft for HDS-5 culverts.
+        """
         if cell_area is None or cell_bed is None:
             raise ValueError("cell_area and cell_bed are required")
 
@@ -750,7 +766,10 @@ class SWE2DCouplingController:
             self._culvert_face_flux_preloaded = True
         except Exception as exc:
             self._log(f"[WARNING] culvert face-flux upload failed: {exc}")
-            self._culvert_face_flux_preloaded = True  # don't retry
+            # Do NOT set _culvert_face_flux_preloaded = True here.
+            # The GPU device state may not be initialized yet on the first
+            # call.  Leaving the flag False allows retry on the next step
+            # once the solver has allocated its device buffers.
 
     def _apply_redistribution(
         self,
@@ -921,7 +940,12 @@ class SWE2DCouplingController:
             except Exception:
                 self._culvert_table_uploaded = False
         try:
-            native_mod.swe2d_gpu_set_culvert_solver_mode(int(self.culvert_solver_mode))
+            # When face-flux is active, force mode 0 (direct secant solver).
+            # The table-lookup path (mode 1) requires properly built HDS-5
+            # tables that are captured in the CUDA graph as kernel arguments,
+            # making mode switches invisible to the graph replay.
+            fallback_mode = 0
+            native_mod.swe2d_gpu_set_culvert_solver_mode(fallback_mode)
         except Exception:
             pass
         self._culvert_solver_mode_applied = True
@@ -959,24 +983,71 @@ class SWE2DCouplingController:
 
         # Ensure face-flux params are uploaded before full_on_device
         if self.culvert_face_flux_mode == "face_flux":
+            was_preloaded = self._culvert_face_flux_preloaded
             self._ensure_culvert_face_flux_preloaded(native_mod)
+            # If face-flux state changed, reset solver mode so it gets
+            # reconfigured on the next call (graph will re-capture).
+            if self._culvert_face_flux_preloaded != was_preloaded:
+                self._culvert_solver_mode_applied = False
 
         n_structures = int(self._structure_count)
         # Set coupling dt for face-flux depth limiter
         if hasattr(native_mod, "swe2d_gpu_set_coupling_dt"):
             native_mod.swe2d_gpu_set_coupling_dt(float(dt_s))
         try:
-            # Pass None for cell_wse: GPU computes WSE = h + zb directly
-            # from device-resident state, eliminating two PCIe transfers.
-            # np.empty(0) would be catastrophic here — pybind11 sees a
-            # non-null array pointer and the C++ kernel reads garbage data
-            # for cell WSE, producing wildly incorrect structure flows.
+            # The GPU culvert solver (both table-lookup and direct secant)
+            # now computes correct flows after the model_to_ft and CFS/CMS
+            # unit fixes.  Pass None for cell_wse and host_flows to let the
+            # GPU read WSE directly from device-resident state (h+zb) and
+            # compute structure flows entirely on-device — no Python-side
+            # culvert evaluation and no D2H WSE readback needed.
             native_mod.swe2d_gpu_compute_coupling_full_on_device(
                 None,
                 n_structures,
+                np.empty(0, dtype=np.int32),
+                np.empty(0, dtype=np.float64),
+                None,
             )
+            # ── Diagnostic: check face-flux application ──
+            if self.culvert_face_flux_mode == "face_flux" and n_structures > 0:
+                try:
+                    _src_rate = np.asarray(
+                        native_mod.swe2d_gpu_readback_coupling_sources(int(self.n_cells)),
+                        dtype=np.float64)
+                    _struct_flows = np.asarray(
+                        native_mod.swe2d_gpu_readback_structure_flows(n_structures),
+                        dtype=np.float64)
+                    _face_flux_h_tup = native_mod.swe2d_gpu_readback_ext_struct_flux(
+                        int(self.n_cells))
+                    _face_flux_h = np.asarray(_face_flux_h_tup[0], dtype=np.float64)
+                    ssoa = self._structures_soa
+                    ds_cell = int(ssoa.downstream_cell[0]) if ssoa is not None and ssoa.downstream_cell.size > 0 else -1
+                    us_cell = int(ssoa.upstream_cell[0]) if ssoa is not None and ssoa.upstream_cell.size > 0 else -1
+                    print(f"[FLUX_DIAG] struct_flow[0]={_struct_flows[0]:.6f}  "
+                          f"face_flux_h sum={np.sum(_face_flux_h):.6f}  "
+                          f"src_rate sum={np.sum(_src_rate):.6f}")
+                    if ds_cell >= 0 and us_cell >= 0:
+                        print(f"[FLUX_DIAG] us_cell={us_cell} ds_cell={ds_cell}  "
+                              f"face_flux_h[us]={_face_flux_h[us_cell]:.6f}  "
+                              f"face_flux_h[ds]={_face_flux_h[ds_cell]:.6f}  "
+                              f"src_rate[us]={_src_rate[us_cell]:.6f}  "
+                              f"src_rate[ds]={_src_rate[ds_cell]:.6f}")
+                except Exception as e:
+                    print(f"[FLUX_DIAG] readback failed: {e}")
         except Exception:
             return False
+
+        # When face-flux is active, the update kernel already reads
+        # d_ext_struct_flux_h directly — do NOT fold into d_external_source_mps
+        # as that would double-count the culvert flow (once via source rate,
+        # once via face-flux arrays).  The solver's positivity limiter then
+        # clips the double-applied source to zero, making the flow vanish.
+        if (self.culvert_face_flux_mode != "face_flux"
+            and hasattr(native_mod, "swe2d_gpu_fold_culvert_mass_to_source")):
+            try:
+                native_mod.swe2d_gpu_fold_culvert_mass_to_source(int(self.n_cells))
+            except Exception:
+                pass
 
         # ── On-device redistribution ────────────────────────────────────
         # When the model has redistribution geometry and the persistent

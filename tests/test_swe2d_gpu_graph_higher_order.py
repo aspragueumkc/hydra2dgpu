@@ -159,7 +159,7 @@ class TestGPUHigherOrderGraphSafe(unittest.TestCase):
     def test_dynamic_hydrograph_keeps_graph_path_live(self):
         mesh_args = _make_rect_channel_mesh(24, 1, 48.0, 2.0)
         mesh = self.mod.swe2d_build_mesh(*mesh_args)
-        edge_idx, n0, n1, _bc_type, _bc_val = self.mod.swe2d_boundary_edges(mesh)
+        edge_idx, n0, n1, _bc_type, _bc_val, _cell0 = self.mod.swe2d_boundary_edges(mesh)
         node_x = mesh_args[0]
         left_mask = np.isclose(node_x[n0], 0.0) & np.isclose(node_x[n1], 0.0)
         left_edges = np.asarray(edge_idx)[left_mask]

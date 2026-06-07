@@ -1026,8 +1026,9 @@ def render_unstructured_snapshot_image(
             sum_v = np.bincount(pix, weights=v_cell, minlength=wh).astype(np.float64)
         u_grid = np.full((h_img, w), np.nan, dtype=np.float64)
         v_grid = np.full((h_img, w), np.nan, dtype=np.float64)
-        u_grid[has_data] = (sum_u[has_data] / cnt_vals[has_data])
-        v_grid[has_data] = (sum_v[has_data] / cnt_vals[has_data])
+        has_data_2d = has_data.reshape((h_img, w))
+        u_grid[has_data_2d] = (sum_u[has_data] / cnt_vals[has_data])
+        v_grid[has_data_2d] = (sum_v[has_data] / cnt_vals[has_data])
         if _hydra_overlay is not None:
             try:
                 km = mask_known.astype(np.uint8, copy=False)

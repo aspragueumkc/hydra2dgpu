@@ -1141,9 +1141,12 @@ void swe2d_gpu_preload_structure_params(
 void swe2d_gpu_preload_coupling_cell_area(SWE2DDeviceState* dev, int32_t n_cells, const double* cell_area_m2);
 void swe2d_gpu_compute_coupling_full_on_device(
     SWE2DDeviceState* dev, int32_t n_cells, int32_t n_structures, const double* cell_wse_host,
-    int32_t n_inlets, const int32_t* inlet_cell, const double* inlet_flow_cms);
+    int32_t n_inlets, const int32_t* inlet_cell, const double* inlet_flow_cms,
+    const double* host_structure_flows = nullptr);
 void swe2d_gpu_readback_coupling_sources(double* host_buf, int32_t n_cells);
 void swe2d_gpu_readback_structure_flows(double* host_buf, int32_t n_structures);
+void swe2d_gpu_upload_structure_flows(const double* host_buf, int32_t n_structures);
+void swe2d_gpu_readback_coupling_wse(double* host_buf, int32_t n_cells);
 
 // ── Face-based culvert flux coupling ───────────────────────────────────────
 // Upload culvert face-flux geometry (face normals, widths, donor/receiver
@@ -1173,6 +1176,9 @@ void swe2d_gpu_apply_culvert_face_flux(
 
 // Allocate and zero the per-cell external flux accumulators on device.
 void swe2d_gpu_alloc_ext_struct_flux(SWE2DDeviceState* dev, int32_t n_cells);
+
+// Fold culvert face-flux mass into d_external_source_mps for subcycling.
+void swe2d_gpu_fold_culvert_mass_to_source(SWE2DDeviceState* dev, int32_t n_cells);
 
 // Read back per-cell external structure flux arrays from device (for debug).
 void swe2d_gpu_readback_ext_struct_flux(

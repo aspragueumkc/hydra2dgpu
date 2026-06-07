@@ -56,8 +56,10 @@ def configure(length_scale_si_to_model: float) -> None:
     _si_m3_per_model_volume = _si_m_per_model ** 3
     # Model-unit gravity: g_SI / si_m_per_model → ft/s² for USC, m/s² for SI
     _gravity = SI_GRAVITY * _model_per_si_m
-    # Culvert-only: factor to convert model lengths → ft for HDS-5 tables
-    _model_to_ft = USC_FT_PER_SI_M / _si_m_per_model
+    # Culvert-only: factor to convert model lengths → ft for HDS-5 tables.
+    # For SI (1 m/model): _si_m_per_model * USC_FT_PER_SI_M = 1.0 * 3.28084 = 3.28084 ft/m
+    # For USC ft (0.3048 m/ft): 0.3048 * 3.28084 = 1.0 ft/ft
+    _model_to_ft = _si_m_per_model * USC_FT_PER_SI_M
     # Manning multiplier: 1.0 for SI, 1.486 for USC
     _manning = USC_MANNING_FACTOR if _model_to_ft < 2.0 else SI_MANNING_FACTOR
 

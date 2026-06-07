@@ -2377,8 +2377,12 @@ def _on_run(self, request=None):
                 drainage_mod.initialize()
             # Compute model-to-feet factor: for a foot model (length_scale=3.28)
             # this gives 1.0 (no conversion); for SI (length_scale=1.0) this gives 3.28.
+            # _ls = model units per SI meter (e.g. 3.28 for feet, 1.0 for meters)
+            # Convert to si_m_per_model (e.g. 0.3048 for feet, 1.0 for meters)
+            # which the coupling controller and units.configure() expect.
             _ls = max(1.0e-6, float(self._length_scale_si_to_model()))
-            _model_to_ft = _u.USC_FT_PER_SI_M / _ls
+            _si_m_per_model = 1.0 / _ls
+            _model_to_ft = _u.USC_FT_PER_SI_M * _si_m_per_model
             structures_mod = SWE2DStructureModule(hydraulic_structures_cfg, model_to_ft=_model_to_ft) if hydraulic_structures_cfg is not None and SWE2DStructureModule is not None else None
             if solver_backend_mode == "cpu":
                 coupling_loop_mode = "cpu"
@@ -2394,7 +2398,7 @@ def _on_run(self, request=None):
                 culvert_solver_mode=culvert_solver_mode,
                 bridge_cuda_coupling=bool(run_options.bridge_cuda_coupling),
                 bridge_stacked_coupling_mode=str(getattr(run_options, "bridge_stacked_coupling_mode", "phase3_spatial")),
-                length_scale_si_to_model=self._length_scale_si_to_model(),
+                length_scale_si_to_model=_si_m_per_model,
                 culvert_face_flux_mode=str(getattr(run_options, "culvert_face_flux_mode", "off")),
                 log_callback=self._log,
             )

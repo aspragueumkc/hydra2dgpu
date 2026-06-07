@@ -131,7 +131,8 @@ inline uint64_t swe2d_kernel_graph_signature(
     bool source_true_subcycling,
     bool source_imex_split,
     bool enable_shallow_front_recon_fallback,
-    double front_flux_damping)
+    double front_flux_damping,
+    bool use_culvert_face_flux = false)
 {
     uint64_t h = 1469598103934665603ULL;
     h = swe2d_mix_u64(h, swe2d_u64_from_double(dt));
@@ -153,6 +154,7 @@ inline uint64_t swe2d_kernel_graph_signature(
     h = swe2d_mix_u64(h, static_cast<uint64_t>(source_imex_split ? 1 : 0));
     h = swe2d_mix_u64(h, static_cast<uint64_t>(enable_shallow_front_recon_fallback ? 1 : 0));
     h = swe2d_mix_u64(h, swe2d_u64_from_double(front_flux_damping));
+    h = swe2d_mix_u64(h, static_cast<uint64_t>(use_culvert_face_flux ? 1 : 0));
     return h;
 }
 
@@ -1993,9 +1995,12 @@ __global__ __launch_bounds__(256, 4) void swe2d_update_kernel(
     cell_hu[c] += dt * fhu * inv_a;
     cell_hv[c] += dt * fhv * inv_a;
 
-    // Face-based structure flux: add mass + momentum from culvert face coupling.
-    // ext_struct_flux_h/hu/hv are accumulated per-cell by swe2d_culvert_face_flux_kernel.
-    // Convention: positive flux_h means mass is flowing INTO this cell.
+    // Face-based structure flux: apply mass + momentum from culvert face coupling.
+    // Mass component: ext_struct_flux_h is written by swe2d_culvert_face_flux_kernel
+    // and represents total discharge Q_c [L³/T] per cell (donor=-Q, receiver=+Q).
+    // The fold kernel (swe2d_fold_culvert_mass_to_source_kernel) also adds this
+    // to d_external_source_mps for subcycling — this direct read ensures the
+    // mass flux is always applied even when the fold is gated off.
     if (ext_struct_flux_h) {
         cell_h[c]  += dt * ext_struct_flux_h[c]  * inv_a;
     }
@@ -2780,14 +2785,9 @@ __global__ __launch_bounds__(256, 4) void swe2d_culvert_face_flux_kernel(
     if (donor < 0 || donor >= n_cells || receiver < 0 || receiver >= n_cells) return;
 
     const double h_donor = cell_h[donor];
-    if (h_donor <= h_min) return;  // dry donor → no flux
-
     const double hu_donor = cell_hu[donor];
     const double hv_donor = cell_hv[donor];
     const double zb_donor = cell_zb[donor];
-    const double inv_h = 1.0 / fmax(h_donor, h_min);
-    const double u_donor = hu_donor * inv_h;
-    const double v_donor = hv_donor * inv_h;
 
     // Invert elevation for depth limiting
     const double invert = invert_elev[i];
@@ -2799,28 +2799,39 @@ __global__ __launch_bounds__(256, 4) void swe2d_culvert_face_flux_kernel(
     const double nx = face_nx[i];
     const double ny = face_ny[i];
     const double alpha = depth_safety[i];
+    const double A_donor = fmax(donor_cell_area[i], 1.0e-12);
+
+    // ── Handle dry donor: allow culvert to wet downstream even when
+    //    upstream cell is dry (embankment wetting front).  The culvert
+    //    has already computed Q_c based on available head; we pass it
+    //    through as-is with zero momentum.
+    if (h_donor <= h_min) {
+        // Dry donor: apply full culvert discharge to receiver only
+        // (no donor removal since there's nothing to remove).
+        atomicAdd(&ext_flux_h[receiver], Q_c);
+        // No momentum flux from a dry donor
+        return;
+    }
+
+    const double inv_h = 1.0 / fmax(h_donor, h_min);
+    const double u_donor = hu_donor * inv_h;
+    const double v_donor = hv_donor * inv_h;
 
     // ── Depth limiter: prevent drying the donor cell ──
-    // Safety constraint: limit depth removal so Δh ≤ α · h_donor per timestep.
-    // Convert depth rate → volume flux: Q_max = α · h_donor · A_donor / dt.
-    const double A_donor = fmax(donor_cell_area[i], 1.0e-12);
+    // Use depth above invert (not total cell depth) for the limit,
+    // since the culvert only draws from water above its invert.
+    // Q_max = alpha * depth_above_invert * A_donor / dt.
     double Q_lim = Q_c;
-    const double max_flux = alpha * h_donor * A_donor / fmax(dt, 1.0e-12);
+    const double max_flux = alpha * depth_above_invert * A_donor / fmax(dt, 1.0e-12);
     if (fabs(Q_c) > max_flux && max_flux > 0.0) {
         Q_lim = sign * max_flux;
     }
 
     // ── Hydrostatic pressure at the face ──
-    // h_s is the depth above invert at the donor cell (structure head).
-    // The pressure force at the culvert face is ½·g·h_s² per unit width,
-    // integrated over the face width L_s.  This represents the pressure
-    // head driving flow through the structure.
     const double h_s = fmax(depth_above_invert, 0.0);
 
     // ── Three-component flux ──
-    // Mass flux: total culvert discharge (L³/T)
     const double fh  = Q_lim;
-    // Momentum flux: advective transport + hydrostatic pressure force
     const double fhu = Q_lim * u_donor + 0.5 * gravity * h_s * h_s * nx * L_s;
     const double fhv = Q_lim * v_donor + 0.5 * gravity * h_s * h_s * ny * L_s;
 
@@ -2848,6 +2859,31 @@ __global__ void swe2d_mask_culvert_source_kernel(
     const int32_t j = blockIdx.x * blockDim.x + threadIdx.x;
     if (j >= n_culvert) return;
     structure_flow[culvert_indices[j]] = 0.0;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Culvert face-flux mass → depth-rate folding kernel
+//
+// Converts per-cell culvert mass flux (ext_struct_flux_h) into a depth rate
+// (Q / A_cell) and adds it to d_external_source_mps.  This allows the
+// culvert mass contribution to benefit from the same subcycling, rate
+// limiting, and IMEX stage coupling as other external sources.
+//
+// Must run AFTER the source kernel (which accumulates non-culvert terms)
+// and BEFORE the update kernel consumes d_external_source_mps.
+// ─────────────────────────────────────────────────────────────────────────────
+__global__ void swe2d_fold_culvert_mass_to_source_kernel(
+    int32_t n_cells,
+    const double* __restrict__ ext_struct_flux_h,   // [n_cells] mass flux (L³/T)
+    const double* __restrict__ cell_area,            // [n_cells] cell area (L²)
+    double* __restrict__ source_rate)                // [n_cells] depth rate (L/T), atomicAdd
+{
+    const int32_t c = blockIdx.x * blockDim.x + threadIdx.x;
+    if (c >= n_cells) return;
+    const double fh = ext_struct_flux_h[c];
+    if (!isfinite(fh) || fh == 0.0) return;
+    const double inv_a = 1.0 / fmax(cell_area[c], 1.0e-12);
+    atomicAdd(&source_rate[c], fh * inv_a);
 }
 
 __device__ __forceinline__ double bw2d_clamp(double x, double lo, double hi)
@@ -3354,6 +3390,12 @@ __device__ __forceinline__ double swe2d_culvert_outlet_control_flow_cms_cuda(
     double exit_loss_k,
     double q_hint)
 {
+    // NOTE: Despite the "_cms" name suffix, this function returns CFS
+    // (cubic feet per second).  The name is retained for API compatibility;
+    // the previous implementation erroneously divided by USC_FT3_PER_SI_M3
+    // which caused a unit mismatch with q_inlet (also CFS) and the final
+    // kernel conversion `sign * q / to_ft³`.  The CMS conversion is now
+    // handled exclusively by the final `sign * q / (to_ft³)` in the caller.
     if (available_head_up <= 0.0) return 0.0;
 
     auto required_head_ft = [&](double q_cfs) {
@@ -3389,7 +3431,7 @@ __device__ __forceinline__ double swe2d_culvert_outlet_control_flow_cms_cuda(
         f_hi = required_head_ft(q_hi) - available_head_up;
     }
     if (f_hi < 0.0) {
-        return q_hi / USC_FT3_PER_SI_M3;
+        return q_hi;
     }
 
     // Illinois: track which side last moved so we halve the stalling f-value.
@@ -3404,7 +3446,7 @@ __device__ __forceinline__ double swe2d_culvert_outlet_control_flow_cms_cuda(
         }
         const double f_mid = required_head_ft(q_mid) - available_head_up;
         if (fabs(f_mid) < 1.0e-8 * available_head_up) {
-            return fmax(0.0, q_mid) / USC_FT3_PER_SI_M3;
+            return fmax(0.0, q_mid);
         }
         if (f_lo * f_mid < 0.0) {
             // Root is between lo and mid
@@ -3418,7 +3460,7 @@ __device__ __forceinline__ double swe2d_culvert_outlet_control_flow_cms_cuda(
             side = 0;
         }
     }
-    return fmax(0.0, 0.5 * (q_lo + q_hi)) / USC_FT3_PER_SI_M3;
+    return fmax(0.0, 0.5 * (q_lo + q_hi));
 }
 
 // Forward-declare table lookup for use inside the structure flow kernel.
@@ -3619,6 +3661,24 @@ __global__ __launch_bounds__(256, 4) void swe2d_compute_structure_flows_kernel(
     if (qmax >= 0.0) q = fmin(q, qmax);
     // Convert from CFS back to model units: ÷ to_ft³
     structure_flow[i] = sign * q / (to_ft * to_ft * to_ft);
+
+    // ── Diagnostic: print culvert params for first structure (index 0) ──
+    if (i == 0) {
+        printf("[CULVERT_DIAG] i=%d type=%d shape=%d code=%d\n",
+               i, structure_type[i], culvert_shape[i], code);
+        printf("[CULVERT_DIAG] wu=%.4f wd=%.4f invert_up=%.4f invert_dn=%.4f\n",
+               wu, wd, upstream_invert, downstream_invert);
+        printf("[CULVERT_DIAG] head_ft=%.4f tw_ft=%.4f len_ft=%.4f slope=%.6f\n",
+               available_head_up_ft, tailwater_depth_ft, len_ft, slope);
+        printf("[CULVERT_DIAG] span_ft=%.4f rise_ft=%.4f area_ft2=%.4f\n",
+               span_ft, rise_ft, xsect.a_full_ft2);
+        printf("[CULVERT_DIAG] q_inlet=%.4f q_outlet=%.4f q_orifice=%.4f q_manning=%.4f\n",
+               q_inlet, q_outlet, q_orifice, q_manning_cap);
+        printf("[CULVERT_DIAG] barrels=%.1f qmax=%.4f q_final_CFS=%.4f to_ft=%.6f\n",
+               culvert_barrels[i], qmax, q, to_ft);
+        printf("[CULVERT_DIAG] structure_flow=%.6f (model units)\n",
+               structure_flow[i]);
+    }
 }
 
 __device__ __forceinline__ void swe2d_circular_section_cuda(
@@ -4566,7 +4626,7 @@ void swe2d_gpu_step(
         source_true_subcycling,
         source_imex_split,
         enable_shallow_front_recon_fallback,
-        front_flux_damping);
+        front_flux_damping, dev->use_culvert_face_flux);
 
     bool used_graph_replay = false;
     if (try_kernel_graph) {
@@ -6738,7 +6798,7 @@ void swe2d_gpu_step_rk4_graph(
         source_true_subcycling,
         source_imex_split,
         enable_shallow_front_recon_fallback,
-        front_flux_damping);
+        front_flux_damping, dev->use_culvert_face_flux);
 
     bool used_graph_replay = false;
     if (try_kernel_graph) {
@@ -7283,7 +7343,7 @@ void swe2d_gpu_step_rk5_graph(
         source_rate_cap, source_depth_step_cap,
         source_true_subcycling, source_imex_split,
         enable_shallow_front_recon_fallback,
-        front_flux_damping);
+        front_flux_damping, dev->use_culvert_face_flux);
 
     bool used_graph_replay = false;
     if (try_kernel_graph) {
@@ -7789,7 +7849,8 @@ __global__ void swe2d_coupling_wse_from_state_kernel(
 
 void swe2d_gpu_compute_coupling_full_on_device(
     SWE2DDeviceState* dev, int32_t n_cells, int32_t n_structures, const double* cell_wse_host,
-    int32_t n_inlets, const int32_t* inlet_cell, const double* inlet_flow_cms)
+    int32_t n_inlets, const int32_t* inlet_cell, const double* inlet_flow_cms,
+    const double* host_structure_flows)  // if non-null, override computed structure flows
 {
     if (!dev) dev = s_coupling_dev;
     if (!dev) throw std::runtime_error("compute_coupling_full_on_device: no GPU device state");
@@ -7819,25 +7880,33 @@ void swe2d_gpu_compute_coupling_full_on_device(
 
     if (n_structures > 0 && sf_ws.params_preloaded) {
         CUDA_CHECK(cudaMemsetAsync(sf_ws.d_structure_flow, 0, static_cast<size_t>(n_structures) * sizeof(double), stream));
-        int grid = (n_structures + BLOCK - 1) / BLOCK;
-        swe2d_compute_structure_flows_kernel<<<grid, BLOCK, 0, stream>>>(
-            n_cells, n_structures, sf_ws.d_cell_wse,
-            sf_ws.d_structure_type, sf_ws.d_upstream_cell, sf_ws.d_downstream_cell,
-            sf_ws.d_crest_elev, sf_ws.d_width, sf_ws.d_height,
-            sf_ws.d_diameter, sf_ws.d_length, sf_ws.d_roughness_n,
-            sf_ws.d_coeff, sf_ws.d_cd, sf_ws.d_opening,
-            sf_ws.d_q_pump, sf_ws.d_max_flow,
-            sf_ws.d_culvert_code, sf_ws.d_culvert_shape,
-            sf_ws.d_culvert_rise, sf_ws.d_culvert_span, sf_ws.d_culvert_area,
-            sf_ws.d_culvert_barrels, sf_ws.d_culvert_slope,
-            sf_ws.d_inlet_invert_elev, sf_ws.d_outlet_invert_elev,
-            sf_ws.d_entrance_loss_k, sf_ws.d_exit_loss_k,
-            sf_ws.d_embankment_enabled, sf_ws.d_embankment_crest_elev,
-            sf_ws.d_embankment_overflow_width, sf_ws.d_embankment_weir_coeff,
-            sf_ws.gravity, sf_ws.model_to_ft, sf_ws.d_structure_flow,
-            s_culvert_solver_mode, s_culvert_table_header, s_culvert_table_data,
-            s_culvert_table_n_hw, s_culvert_table_n_tw);
-        CUDA_CHECK(cudaGetLastError());
+        if (host_structure_flows) {
+            // Use host-provided flows (pre-computed in Python) — avoids
+            // the GPU culvert solver which may return incorrect Q_c.
+            CUDA_CHECK(cudaMemcpyAsync(sf_ws.d_structure_flow, host_structure_flows,
+                                      static_cast<size_t>(n_structures) * sizeof(double),
+                                      cudaMemcpyHostToDevice, stream));
+        } else {
+            int grid = (n_structures + BLOCK - 1) / BLOCK;
+            swe2d_compute_structure_flows_kernel<<<grid, BLOCK, 0, stream>>>(
+                n_cells, n_structures, sf_ws.d_cell_wse,
+                sf_ws.d_structure_type, sf_ws.d_upstream_cell, sf_ws.d_downstream_cell,
+                sf_ws.d_crest_elev, sf_ws.d_width, sf_ws.d_height,
+                sf_ws.d_diameter, sf_ws.d_length, sf_ws.d_roughness_n,
+                sf_ws.d_coeff, sf_ws.d_cd, sf_ws.d_opening,
+                sf_ws.d_q_pump, sf_ws.d_max_flow,
+                sf_ws.d_culvert_code, sf_ws.d_culvert_shape,
+                sf_ws.d_culvert_rise, sf_ws.d_culvert_span, sf_ws.d_culvert_area,
+                sf_ws.d_culvert_barrels, sf_ws.d_culvert_slope,
+                sf_ws.d_inlet_invert_elev, sf_ws.d_outlet_invert_elev,
+                sf_ws.d_entrance_loss_k, sf_ws.d_exit_loss_k,
+                sf_ws.d_embankment_enabled, sf_ws.d_embankment_crest_elev,
+                sf_ws.d_embankment_overflow_width, sf_ws.d_embankment_weir_coeff,
+                sf_ws.gravity, sf_ws.model_to_ft, sf_ws.d_structure_flow,
+                s_culvert_solver_mode, s_culvert_table_header, s_culvert_table_data,
+                s_culvert_table_n_hw, s_culvert_table_n_tw);
+            CUDA_CHECK(cudaGetLastError());
+        }
 
         // ── Face-based culvert flux: apply before source kernel ─────────
         // When face-flux mode is active, apply culvert face fluxes FIRST
@@ -7854,6 +7923,46 @@ void swe2d_gpu_compute_coupling_full_on_device(
             CUDA_CHECK(cudaMemsetAsync(dev->d_ext_struct_flux_hu, 0, static_cast<size_t>(n_cells) * sizeof(double), stream));
             CUDA_CHECK(cudaMemsetAsync(dev->d_ext_struct_flux_hv, 0, static_cast<size_t>(n_cells) * sizeof(double), stream));
 
+            // Recompute WSE from current device state (h + zb) so structure
+            // flows reflect the latest water levels, not stale host uploads.
+            if (sf_ws.cell_capacity >= n_cells && sf_ws.d_cell_wse) {
+                int grid_wse = (n_cells + BLOCK - 1) / BLOCK;
+                swe2d_coupling_wse_from_state_kernel<<<grid_wse, BLOCK, 0, stream>>>(
+                    n_cells, dev->d_h, dev->d_cell_zb, sf_ws.d_cell_wse);
+                CUDA_CHECK(cudaGetLastError());
+            }
+
+            // Recompute structure flows from fresh WSE
+            // Ensure solver mode is correct: if table data is null but mode=1,
+            // fall back to mode 0 (direct secant).  This handles the case where
+            // table build failed during initialization.
+            if (s_culvert_solver_mode == 1 && !s_culvert_table_data) {
+                s_culvert_solver_mode = 0;
+            }
+            CUDA_CHECK(cudaMemsetAsync(sf_ws.d_structure_flow, 0, static_cast<size_t>(n_structures) * sizeof(double), stream));
+            {
+                int grid_sf = (n_structures + BLOCK - 1) / BLOCK;
+                swe2d_compute_structure_flows_kernel<<<grid_sf, BLOCK, 0, stream>>>(
+                    n_cells, n_structures, sf_ws.d_cell_wse,
+                    sf_ws.d_structure_type, sf_ws.d_upstream_cell, sf_ws.d_downstream_cell,
+                    sf_ws.d_crest_elev, sf_ws.d_width, sf_ws.d_height,
+                    sf_ws.d_diameter, sf_ws.d_length, sf_ws.d_roughness_n,
+                    sf_ws.d_coeff, sf_ws.d_cd, sf_ws.d_opening,
+                    sf_ws.d_q_pump, sf_ws.d_max_flow,
+                    sf_ws.d_culvert_code, sf_ws.d_culvert_shape,
+                    sf_ws.d_culvert_rise, sf_ws.d_culvert_span, sf_ws.d_culvert_area,
+                    sf_ws.d_culvert_barrels, sf_ws.d_culvert_slope,
+                    sf_ws.d_inlet_invert_elev, sf_ws.d_outlet_invert_elev,
+                    sf_ws.d_entrance_loss_k, sf_ws.d_exit_loss_k,
+                    sf_ws.d_embankment_enabled, sf_ws.d_embankment_crest_elev,
+                    sf_ws.d_embankment_overflow_width, sf_ws.d_embankment_weir_coeff,
+                    sf_ws.gravity, sf_ws.model_to_ft, sf_ws.d_structure_flow,
+                    s_culvert_solver_mode, s_culvert_table_header, s_culvert_table_data,
+                    s_culvert_table_n_hw, s_culvert_table_n_tw);
+                CUDA_CHECK(cudaGetLastError());
+            }
+
+            // Face-flux kernel: reads fresh culvert flows BEFORE masking
             {
                 int grid_ff = (ff.n_culvert_faces + BLOCK - 1) / BLOCK;
                 swe2d_culvert_face_flux_kernel<<<grid_ff, BLOCK, 0, stream>>>(
@@ -7880,11 +7989,30 @@ void swe2d_gpu_compute_coupling_full_on_device(
         }
 
         // ── Source kernel: applies non-culvert structures ──────────────
-        grid = (n_structures + BLOCK - 1) / BLOCK;
-        swe2d_coupling_structure_source_kernel<<<grid, BLOCK, 0, stream>>>(
+        int grid_src = (n_structures + BLOCK - 1) / BLOCK;
+        swe2d_coupling_structure_source_kernel<<<grid_src, BLOCK, 0, stream>>>(
             n_structures, sf_ws.d_upstream_cell, sf_ws.d_downstream_cell, sf_ws.d_structure_flow, cpl_ws.d_cell_area, n_cells,
             dev->d_external_source_mps);
         CUDA_CHECK(cudaGetLastError());
+
+        // ── Fold culvert face-flux mass into external source ──────────
+        // When face-flux mode is active, the face-flux kernel already adds
+        // mass via ext_struct_flux_h which the update kernel reads directly.
+        // The fold is only needed when face-flux is NOT active (fallback
+        // path where culvert mass was folded by apply_native_device_sources
+        // before the graph was captured).
+        if (!dev->use_culvert_face_flux
+            && dev->culvert_ff_ws.params_preloaded
+            && dev->culvert_ff_ws.n_culvert_faces > 0
+            && dev->d_ext_struct_flux_h) {
+            int grid_fold = (n_cells + BLOCK - 1) / BLOCK;
+            swe2d_fold_culvert_mass_to_source_kernel<<<grid_fold, BLOCK, 0, stream>>>(
+                n_cells,
+                dev->d_ext_struct_flux_h,
+                cpl_ws.d_cell_area,
+                dev->d_external_source_mps);
+            CUDA_CHECK(cudaGetLastError());
+        }
     }
 
     if (n_inlets > 0 && inlet_cell && inlet_flow_cms) {
@@ -7931,6 +8059,29 @@ void swe2d_gpu_readback_structure_flows(double* host_buf, int32_t n_structures)
                           cudaMemcpyDeviceToHost));
 }
 
+void swe2d_gpu_readback_coupling_wse(double* host_buf, int32_t n_cells)
+{
+    SWE2DDeviceState* dev = s_coupling_dev;
+    if (!dev || !dev->sf_ws.d_cell_wse || n_cells <= 0) {
+        if (host_buf && n_cells > 0) {
+            std::memset(host_buf, 0, static_cast<size_t>(n_cells) * sizeof(double));
+        }
+        return;
+    }
+    CUDA_CHECK(cudaMemcpy(host_buf, dev->sf_ws.d_cell_wse,
+                          static_cast<size_t>(n_cells) * sizeof(double),
+                          cudaMemcpyDeviceToHost));
+}
+
+void swe2d_gpu_upload_structure_flows(const double* host_buf, int32_t n_structures)
+{
+    SWE2DDeviceState* dev = s_coupling_dev;
+    if (!dev || !dev->sf_ws.d_structure_flow || n_structures <= 0 || !host_buf) return;
+    CUDA_CHECK(cudaMemcpy(dev->sf_ws.d_structure_flow, host_buf,
+                          static_cast<size_t>(n_structures) * sizeof(double),
+                          cudaMemcpyHostToDevice));
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Face-based culvert coupling: upload + orchestration
 // ─────────────────────────────────────────────────────────────────────────────
@@ -7964,6 +8115,22 @@ void swe2d_gpu_alloc_ext_struct_flux(SWE2DDeviceState* dev, int32_t n_cells)
     CUDA_CHECK(cudaMalloc(&dev->d_ext_struct_flux_hv, static_cast<size_t>(n_cells) * sizeof(double)));
 }
 
+void swe2d_gpu_fold_culvert_mass_to_source(SWE2DDeviceState* dev, int32_t n_cells)
+{
+    if (!dev || n_cells <= 0) return;
+    if (!dev->d_ext_struct_flux_h || !dev->d_external_source_mps) return;
+    auto& cpl_ws = dev->coupling_ws;
+    if (!cpl_ws.d_cell_area) return;
+    constexpr int BLOCK = 256;
+    int grid = (n_cells + BLOCK - 1) / BLOCK;
+    swe2d_fold_culvert_mass_to_source_kernel<<<grid, BLOCK, 0, dev->d_stream>>>(
+        n_cells,
+        dev->d_ext_struct_flux_h,
+        cpl_ws.d_cell_area,
+        dev->d_external_source_mps);
+    CUDA_CHECK(cudaGetLastError());
+}
+
 void swe2d_gpu_upload_culvert_face_flux_params(
     SWE2DDeviceState* dev,
     int32_t n_culvert_faces,
@@ -7978,6 +8145,7 @@ void swe2d_gpu_upload_culvert_face_flux_params(
     const double*  donor_cell_area,
     bool use_face_flux)
 {
+    if (!dev) dev = s_coupling_dev;
     if (!dev) throw std::runtime_error("upload_culvert_face_flux_params: no GPU device state");
     auto& ff = dev->culvert_ff_ws;
 
@@ -8956,27 +9124,26 @@ __global__ void swe2d_culvert_build_table_kernel(
 
     // Inlet control for hint
     const double q_inlet = fmax(0.0, swe2d_culvert_inlet_controlled_flow_cfs_cuda(xsect, slope, hw_ft));
-    const double q_inlet_si = q_inlet / USC_FT3_PER_SI_M3;
 
     double orifice_cap = 0.0;
     if (culvert_diameter[ci] > 0.0) {
         const double a_orif = bw2d_circular_area(culvert_diameter[ci]);
         const double dh_orif = fmax(0.0, hw_ft - tw_ft);
         if (a_orif > 0.0 && dh_orif > 1.0e-12) {
-            orifice_cap = a_orif * sqrt(2.0 * USC_GRAVITY * dh_orif) / USC_FT3_PER_SI_M3;  // CFS → CMS
+            orifice_cap = a_orif * sqrt(2.0 * USC_GRAVITY * dh_orif);  // CFS
         }
     }
-    const double q_hint = fmax(1.0, fmax(q_inlet, orifice_cap * USC_FT3_PER_SI_M3));
+    const double q_hint = fmax(1.0, fmax(q_inlet, orifice_cap));
 
-    double q_outlet_cms = 0.0;
+    double q_outlet_cfs = 0.0;
     if (hw_ft > 0.0) {
-        q_outlet_cms = swe2d_culvert_outlet_control_flow_cms_cuda(
+        q_outlet_cfs = swe2d_culvert_outlet_control_flow_cms_cuda(
             xsect, hw_ft, tw_ft, len_ft, slope,
             fmax(1.0e-6, culvert_roughness_n[ci]),
             entrance_loss_k[ci], exit_loss_k[ci], q_hint);
     }
 
-    double q = fmax(0.0, fmin(q_inlet_si, (q_outlet_cms > 0.0) ? q_outlet_cms : q_inlet_si));
+    double q = fmax(0.0, fmin(q_inlet, (q_outlet_cfs > 0.0) ? q_outlet_cfs : q_inlet));
     if (orifice_cap > 0.0) q = (q > 0.0) ? fmin(q, orifice_cap) : orifice_cap;
 
     // Write result
