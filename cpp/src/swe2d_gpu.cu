@@ -2267,6 +2267,7 @@ __global__ __launch_bounds__(256, 4) void swe2d_rk4_rhs_collect_kernel(
     const double*  __restrict__ cell_inv_area,
     const double*  __restrict__ cell_source_mps,
     const double*  __restrict__ external_source_mps,
+    const double*  __restrict__ ext_struct_flux_h,  // nullable: face-based culvert mass flux
     const int32_t* __restrict__ d_active,
     const int32_t* __restrict__ d_degen_mask,
     const double*  __restrict__ d_inv_area_repaired,
@@ -2320,8 +2321,11 @@ __global__ __launch_bounds__(256, 4) void swe2d_rk4_rhs_collect_kernel(
     const double src = ((cell_source_mps    ? cell_source_mps[c]    : 0.0) +
                         (external_source_mps ? external_source_mps[c] : 0.0));
     const double src_safe = isfinite(src) ? src : 0.0;
+    // Include face-based culvert mass flux as a depth rate (mass / area)
+    const double ff_src = (ext_struct_flux_h ? ext_struct_flux_h[c] : 0.0);
+    const double ff_safe = isfinite(ff_src) ? ff_src : 0.0;
 
-    k_h[c]  = dt * (fh  * inv_a + src_safe);
+    k_h[c]  = dt * (fh  * inv_a + src_safe + ff_safe * inv_a);
     k_hu[c] = dt *  fhu * inv_a;
     k_hv[c] = dt *  fhv * inv_a;
 }
@@ -6558,6 +6562,10 @@ void swe2d_gpu_step_rk4(
     dev->kernel_graph_cache.time_integrator = prev_graph_integrator;
 }
 
+// ── Forward declarations for coupling kernels defined later in this file ──
+__global__ void swe2d_coupling_wse_from_state_kernel(
+    int32_t n_cells, const double* d_h, const double* d_cell_zb, double* d_cell_wse);
+
 // ─────────────────────────────────────────────────────────────────────────────
 // swe2d_gpu_step_rk4_graph: Graph-safe true Butcher-tableau RK4
 // ─────────────────────────────────────────────────────────────────────────────
@@ -6797,6 +6805,7 @@ void swe2d_gpu_step_rk4_graph(
             dev->d_cell_inv_area,
             stage_source,
             dev->d_external_source_mps,
+            dev->d_ext_struct_flux_h,
             dev->d_active,
             dev->d_degen_mask,
             dev->d_inv_area_repaired,
@@ -6806,7 +6815,109 @@ void swe2d_gpu_step_rk4_graph(
         CUDA_CHECK(cudaGetLastError());
     };
 
+    // ── Per-stage structure-flow recomputation ────────────────────────
+    // Recomputes culvert face fluxes from the current stage state (d_h).
+    // Called before each evaluate_rhs so RK stages see structure coupling.
+    auto compute_coupling = [&]() {
+        if (!dev->use_culvert_face_flux
+            || !dev->culvert_ff_ws.params_preloaded
+            || dev->culvert_ff_ws.n_culvert_faces <= 0)
+            return;
+
+        auto& sf_ws = dev->sf_ws;
+        auto& ff = dev->culvert_ff_ws;
+        cudaStream_t stream = dev->d_stream;
+
+        // 1. Zero external structure flux accumulators
+        CUDA_CHECK(cudaMemsetAsync(dev->d_ext_struct_flux_h,  0, static_cast<size_t>(n_cells) * sizeof(double), stream));
+        CUDA_CHECK(cudaMemsetAsync(dev->d_ext_struct_flux_hu, 0, static_cast<size_t>(n_cells) * sizeof(double), stream));
+        CUDA_CHECK(cudaMemsetAsync(dev->d_ext_struct_flux_hv, 0, static_cast<size_t>(n_cells) * sizeof(double), stream));
+
+        // 2. Compute WSE from current stage state (h + zb)
+        if (sf_ws.cell_capacity >= n_cells && sf_ws.d_cell_wse) {
+            int grid_wse = (n_cells + BLOCK - 1) / BLOCK;
+            swe2d_coupling_wse_from_state_kernel<<<grid_wse, BLOCK, 0, stream>>>(
+                n_cells, dev->d_h, dev->d_cell_zb, sf_ws.d_cell_wse);
+            CUDA_CHECK(cudaGetLastError());
+        }
+
+        // 3. Apply enquiry-cell WSE correction (total-energy driving head)
+        if (ff.d_enquiry_up_cell && ff.d_enquiry_dn_cell
+            && dev->d_hu && dev->d_hv && dev->d_h) {
+            int grid_enq = (ff.n_culvert_faces + BLOCK - 1) / BLOCK;
+            swe2d_apply_enquiry_wse_kernel<<<grid_enq, BLOCK, 0, stream>>>(
+                ff.n_culvert_faces,
+                ff.d_enquiry_up_cell,
+                ff.d_enquiry_dn_cell,
+                ff.d_donor_cell,
+                ff.d_receiver_cell,
+                sf_ws.d_cell_wse,
+                dev->d_h,
+                dev->d_hu,
+                dev->d_hv,
+                sf_ws.gravity,
+                1.0e-6,
+                sf_ws.d_cell_wse);
+            CUDA_CHECK(cudaGetLastError());
+        }
+
+        // 4. Recompute structure flows from fresh WSE (table or secant)
+        if (sf_ws.n_structures > 0) {
+            if (s_culvert_solver_mode == 1 && !s_culvert_table_data) {
+                s_culvert_solver_mode = 0;
+            }
+            CUDA_CHECK(cudaMemsetAsync(sf_ws.d_structure_flow, 0,
+                                       static_cast<size_t>(sf_ws.n_structures) * sizeof(double), stream));
+            int grid_sf = (sf_ws.n_structures + BLOCK - 1) / BLOCK;
+            swe2d_compute_structure_flows_kernel<<<grid_sf, BLOCK, 0, stream>>>(
+                n_cells, sf_ws.n_structures, sf_ws.d_cell_wse,
+                sf_ws.d_structure_type, sf_ws.d_upstream_cell, sf_ws.d_downstream_cell,
+                sf_ws.d_crest_elev, sf_ws.d_width, sf_ws.d_height,
+                sf_ws.d_diameter, sf_ws.d_length, sf_ws.d_roughness_n,
+                sf_ws.d_coeff, sf_ws.d_cd, sf_ws.d_opening,
+                sf_ws.d_q_pump, sf_ws.d_max_flow,
+                sf_ws.d_culvert_code, sf_ws.d_culvert_shape,
+                sf_ws.d_culvert_rise, sf_ws.d_culvert_span, sf_ws.d_culvert_area,
+                sf_ws.d_culvert_barrels, sf_ws.d_culvert_slope,
+                sf_ws.d_inlet_invert_elev, sf_ws.d_outlet_invert_elev,
+                sf_ws.d_entrance_loss_k, sf_ws.d_exit_loss_k,
+                sf_ws.d_embankment_enabled, sf_ws.d_embankment_crest_elev,
+                sf_ws.d_embankment_overflow_width, sf_ws.d_embankment_weir_coeff,
+                sf_ws.gravity, sf_ws.model_to_ft, sf_ws.d_structure_flow,
+                s_culvert_solver_mode, s_culvert_table_header, s_culvert_table_data,
+                s_culvert_table_n_hw, s_culvert_table_n_tw);
+            CUDA_CHECK(cudaGetLastError());
+        }
+
+        // 5. Face-flux kernel: apply fresh culvert flows to cells
+        {
+            int grid_ff = (ff.n_culvert_faces + BLOCK - 1) / BLOCK;
+            swe2d_culvert_face_flux_kernel<<<grid_ff, BLOCK, 0, stream>>>(
+                ff.n_culvert_faces,
+                sf_ws.d_structure_flow,
+                ff.d_culvert_struct_idx,
+                ff.d_face_nx, ff.d_face_ny, ff.d_face_width,
+                ff.d_donor_cell, ff.d_receiver_cell,
+                ff.d_invert_elev, ff.d_depth_safety,
+                ff.d_donor_cell_area,
+                dev->d_h, dev->d_hu, dev->d_hv, dev->d_cell_zb,
+                sf_ws.gravity, dt, 1.0e-6,
+                n_cells,
+                dev->d_ext_struct_flux_h, dev->d_ext_struct_flux_hu, dev->d_ext_struct_flux_hv);
+            CUDA_CHECK(cudaGetLastError());
+        }
+
+        // 6. Mask culvert flows so source kernel skips them
+        {
+            int grid_m = (ff.n_culvert_faces + BLOCK - 1) / BLOCK;
+            swe2d_mask_culvert_source_kernel<<<grid_m, BLOCK, 0, stream>>>(
+                ff.n_culvert_faces, ff.d_culvert_struct_idx, sf_ws.d_structure_flow);
+            CUDA_CHECK(cudaGetLastError());
+        }
+    };
+
     auto run_rk4_stages_and_combine = [&]() {
+        compute_coupling();
         evaluate_rhs(swe2d_stage_edge_bc_slot(dev, 0), swe2d_stage_edge_bc_val_slot(dev, 0), swe2d_stage_source_slot(dev, 0),
                      dev->d_h1, dev->d_hu1, dev->d_hv1);
 
@@ -6817,6 +6928,7 @@ void swe2d_gpu_step_rk4_graph(
             dev->d_h1, dev->d_hu1, dev->d_hv1,
             0.5);
         CUDA_CHECK(cudaGetLastError());
+        compute_coupling();
         evaluate_rhs(swe2d_stage_edge_bc_slot(dev, 1), swe2d_stage_edge_bc_val_slot(dev, 1), swe2d_stage_source_slot(dev, 1),
                      dev->d_h2, dev->d_hu2, dev->d_hv2);
 
@@ -6827,6 +6939,7 @@ void swe2d_gpu_step_rk4_graph(
             dev->d_h2, dev->d_hu2, dev->d_hv2,
             0.5);
         CUDA_CHECK(cudaGetLastError());
+        compute_coupling();
         evaluate_rhs(swe2d_stage_edge_bc_slot(dev, 2), swe2d_stage_edge_bc_val_slot(dev, 2), swe2d_stage_source_slot(dev, 2),
                      dev->d_h3, dev->d_hu3, dev->d_hv3);
 
@@ -6837,6 +6950,7 @@ void swe2d_gpu_step_rk4_graph(
             dev->d_h3, dev->d_hu3, dev->d_hv3,
             1.0);
         CUDA_CHECK(cudaGetLastError());
+        compute_coupling();
         evaluate_rhs(swe2d_stage_edge_bc_slot(dev, 3), swe2d_stage_edge_bc_val_slot(dev, 3), swe2d_stage_source_slot(dev, 3),
                      dev->d_k4_h, dev->d_k4_hu, dev->d_k4_hv);
 
@@ -7329,6 +7443,7 @@ void swe2d_gpu_step_rk5_graph(
             dev->d_cell_inv_area,
             stage_source,
             dev->d_external_source_mps,
+            dev->d_ext_struct_flux_h,
             dev->d_active,
             dev->d_degen_mask,
             dev->d_inv_area_repaired,
@@ -7338,7 +7453,109 @@ void swe2d_gpu_step_rk5_graph(
         CUDA_CHECK(cudaGetLastError());
     };
 
+    // ── Per-stage structure-flow recomputation ────────────────────────
+    // Recomputes culvert face fluxes from the current stage state (d_h).
+    // Called before each evaluate_rhs so RK stages see structure coupling.
+    auto compute_coupling = [&]() {
+        if (!dev->use_culvert_face_flux
+            || !dev->culvert_ff_ws.params_preloaded
+            || dev->culvert_ff_ws.n_culvert_faces <= 0)
+            return;
+
+        auto& sf_ws = dev->sf_ws;
+        auto& ff = dev->culvert_ff_ws;
+        cudaStream_t stream = dev->d_stream;
+
+        // 1. Zero external structure flux accumulators
+        CUDA_CHECK(cudaMemsetAsync(dev->d_ext_struct_flux_h,  0, static_cast<size_t>(n_cells) * sizeof(double), stream));
+        CUDA_CHECK(cudaMemsetAsync(dev->d_ext_struct_flux_hu, 0, static_cast<size_t>(n_cells) * sizeof(double), stream));
+        CUDA_CHECK(cudaMemsetAsync(dev->d_ext_struct_flux_hv, 0, static_cast<size_t>(n_cells) * sizeof(double), stream));
+
+        // 2. Compute WSE from current stage state (h + zb)
+        if (sf_ws.cell_capacity >= n_cells && sf_ws.d_cell_wse) {
+            int grid_wse = (n_cells + BLOCK - 1) / BLOCK;
+            swe2d_coupling_wse_from_state_kernel<<<grid_wse, BLOCK, 0, stream>>>(
+                n_cells, dev->d_h, dev->d_cell_zb, sf_ws.d_cell_wse);
+            CUDA_CHECK(cudaGetLastError());
+        }
+
+        // 3. Apply enquiry-cell WSE correction (total-energy driving head)
+        if (ff.d_enquiry_up_cell && ff.d_enquiry_dn_cell
+            && dev->d_hu && dev->d_hv && dev->d_h) {
+            int grid_enq = (ff.n_culvert_faces + BLOCK - 1) / BLOCK;
+            swe2d_apply_enquiry_wse_kernel<<<grid_enq, BLOCK, 0, stream>>>(
+                ff.n_culvert_faces,
+                ff.d_enquiry_up_cell,
+                ff.d_enquiry_dn_cell,
+                ff.d_donor_cell,
+                ff.d_receiver_cell,
+                sf_ws.d_cell_wse,
+                dev->d_h,
+                dev->d_hu,
+                dev->d_hv,
+                sf_ws.gravity,
+                1.0e-6,
+                sf_ws.d_cell_wse);
+            CUDA_CHECK(cudaGetLastError());
+        }
+
+        // 4. Recompute structure flows from fresh WSE (table or secant)
+        if (sf_ws.n_structures > 0) {
+            if (s_culvert_solver_mode == 1 && !s_culvert_table_data) {
+                s_culvert_solver_mode = 0;
+            }
+            CUDA_CHECK(cudaMemsetAsync(sf_ws.d_structure_flow, 0,
+                                       static_cast<size_t>(sf_ws.n_structures) * sizeof(double), stream));
+            int grid_sf = (sf_ws.n_structures + BLOCK - 1) / BLOCK;
+            swe2d_compute_structure_flows_kernel<<<grid_sf, BLOCK, 0, stream>>>(
+                n_cells, sf_ws.n_structures, sf_ws.d_cell_wse,
+                sf_ws.d_structure_type, sf_ws.d_upstream_cell, sf_ws.d_downstream_cell,
+                sf_ws.d_crest_elev, sf_ws.d_width, sf_ws.d_height,
+                sf_ws.d_diameter, sf_ws.d_length, sf_ws.d_roughness_n,
+                sf_ws.d_coeff, sf_ws.d_cd, sf_ws.d_opening,
+                sf_ws.d_q_pump, sf_ws.d_max_flow,
+                sf_ws.d_culvert_code, sf_ws.d_culvert_shape,
+                sf_ws.d_culvert_rise, sf_ws.d_culvert_span, sf_ws.d_culvert_area,
+                sf_ws.d_culvert_barrels, sf_ws.d_culvert_slope,
+                sf_ws.d_inlet_invert_elev, sf_ws.d_outlet_invert_elev,
+                sf_ws.d_entrance_loss_k, sf_ws.d_exit_loss_k,
+                sf_ws.d_embankment_enabled, sf_ws.d_embankment_crest_elev,
+                sf_ws.d_embankment_overflow_width, sf_ws.d_embankment_weir_coeff,
+                sf_ws.gravity, sf_ws.model_to_ft, sf_ws.d_structure_flow,
+                s_culvert_solver_mode, s_culvert_table_header, s_culvert_table_data,
+                s_culvert_table_n_hw, s_culvert_table_n_tw);
+            CUDA_CHECK(cudaGetLastError());
+        }
+
+        // 5. Face-flux kernel: apply fresh culvert flows to cells
+        {
+            int grid_ff = (ff.n_culvert_faces + BLOCK - 1) / BLOCK;
+            swe2d_culvert_face_flux_kernel<<<grid_ff, BLOCK, 0, stream>>>(
+                ff.n_culvert_faces,
+                sf_ws.d_structure_flow,
+                ff.d_culvert_struct_idx,
+                ff.d_face_nx, ff.d_face_ny, ff.d_face_width,
+                ff.d_donor_cell, ff.d_receiver_cell,
+                ff.d_invert_elev, ff.d_depth_safety,
+                ff.d_donor_cell_area,
+                dev->d_h, dev->d_hu, dev->d_hv, dev->d_cell_zb,
+                sf_ws.gravity, dt, 1.0e-6,
+                n_cells,
+                dev->d_ext_struct_flux_h, dev->d_ext_struct_flux_hu, dev->d_ext_struct_flux_hv);
+            CUDA_CHECK(cudaGetLastError());
+        }
+
+        // 6. Mask culvert flows so source kernel skips them
+        {
+            int grid_m = (ff.n_culvert_faces + BLOCK - 1) / BLOCK;
+            swe2d_mask_culvert_source_kernel<<<grid_m, BLOCK, 0, stream>>>(
+                ff.n_culvert_faces, ff.d_culvert_struct_idx, sf_ws.d_structure_flow);
+            CUDA_CHECK(cudaGetLastError());
+        }
+    };
+
     auto run_rk5_stages_and_combine = [&]() {
+        compute_coupling();
         evaluate_rhs(swe2d_stage_edge_bc_slot(dev, 0), swe2d_stage_edge_bc_val_slot(dev, 0), swe2d_stage_source_slot(dev, 0),
                      dev->d_h1, dev->d_hu1, dev->d_hv1);
 
@@ -7352,6 +7569,7 @@ void swe2d_gpu_step_rk5_graph(
             nullptr, nullptr, nullptr, 0.0,
             nullptr, nullptr, nullptr, 0.0);
         CUDA_CHECK(cudaGetLastError());
+        compute_coupling();
         evaluate_rhs(swe2d_stage_edge_bc_slot(dev, 1), swe2d_stage_edge_bc_val_slot(dev, 1), swe2d_stage_source_slot(dev, 1),
                      dev->d_h2, dev->d_hu2, dev->d_hv2);
 
@@ -7365,6 +7583,7 @@ void swe2d_gpu_step_rk5_graph(
             nullptr, nullptr, nullptr, 0.0,
             nullptr, nullptr, nullptr, 0.0);
         CUDA_CHECK(cudaGetLastError());
+        compute_coupling();
         evaluate_rhs(swe2d_stage_edge_bc_slot(dev, 2), swe2d_stage_edge_bc_val_slot(dev, 2), swe2d_stage_source_slot(dev, 2),
                      dev->d_h3, dev->d_hu3, dev->d_hv3);
 
@@ -7378,6 +7597,7 @@ void swe2d_gpu_step_rk5_graph(
             nullptr, nullptr, nullptr, 0.0,
             nullptr, nullptr, nullptr, 0.0);
         CUDA_CHECK(cudaGetLastError());
+        compute_coupling();
         evaluate_rhs(swe2d_stage_edge_bc_slot(dev, 3), swe2d_stage_edge_bc_val_slot(dev, 3), swe2d_stage_source_slot(dev, 3),
                      dev->d_k4_h, dev->d_k4_hu, dev->d_k4_hv);
 
@@ -7391,6 +7611,7 @@ void swe2d_gpu_step_rk5_graph(
             nullptr, nullptr, nullptr, 0.0,
             nullptr, nullptr, nullptr, 0.0);
         CUDA_CHECK(cudaGetLastError());
+        compute_coupling();
         evaluate_rhs(swe2d_stage_edge_bc_slot(dev, 4), swe2d_stage_edge_bc_val_slot(dev, 4), swe2d_stage_source_slot(dev, 4),
                      dev->d_k5_h, dev->d_k5_hu, dev->d_k5_hv);
 
@@ -7404,6 +7625,7 @@ void swe2d_gpu_step_rk5_graph(
             dev->d_k5_h, dev->d_k5_hu, dev->d_k5_hv, 253.0 / 4096.0,
             nullptr, nullptr, nullptr, 0.0);
         CUDA_CHECK(cudaGetLastError());
+        compute_coupling();
         evaluate_rhs(swe2d_stage_edge_bc_slot(dev, 5), swe2d_stage_edge_bc_val_slot(dev, 5), swe2d_stage_source_slot(dev, 5),
                      dev->d_k6_h, dev->d_k6_hu, dev->d_k6_hv);
 

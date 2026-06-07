@@ -2695,7 +2695,7 @@ def _configure_swe2d_layer_editors(self, layer):
         node_field_names = set(layer.fields().names())
         self._set_value_map_editor(layer, "node_type", _DRAIN_NODE_TYPE_VALUE_MAP)
         self._set_expression_constraint(layer, "node_id", 'length(trim("node_id")) > 0')
-        self._set_expression_constraint(layer, "node_type", '"node_type" IN (\'junction\',\'outfall\',\'storage\',\'inlet\')')
+        self._set_expression_constraint(layer, "node_type", '"node_type" IN (\'junction\',\'outfall\',\'storage\',\'inlet\',\'pipe_end\')')
         self._set_expression_constraint(layer, "max_depth", '"max_depth" IS NULL OR "max_depth" > 0')
         self._set_expression_constraint(layer, "rim_elev", '"rim_elev" IS NULL OR "rim_elev" >= "invert_elev"')
         self._set_expression_constraint(layer, "crest_elev", '"crest_elev" IS NULL OR "crest_elev" >= "invert_elev"')

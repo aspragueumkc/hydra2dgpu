@@ -990,10 +990,7 @@ class SWE2DCouplingController:
             except Exception:
                 self._culvert_table_uploaded = False
         try:
-            # When face-flux is active, force mode 0 (direct secant solver).
-            # The table-lookup path (mode 1) requires properly built HDS-5
-            # tables that are captured in the CUDA graph as kernel arguments,
-            # making mode switches invisible to the graph replay.
+            # Fallback to mode 0 (direct secant solver) if table mode failed
             fallback_mode = 0
             native_mod.swe2d_gpu_set_culvert_solver_mode(fallback_mode)
         except Exception:
@@ -1041,11 +1038,6 @@ class SWE2DCouplingController:
                 self._culvert_solver_mode_applied = False
 
         n_structures = int(self._structure_count)
-        # Set culvert diagnostic (disabled by default, enable via env var).
-        if hasattr(native_mod, "swe2d_gpu_set_culvert_diag"):
-            dbg_culvert = os.environ.get("BACKWATER_SWE2D_DEBUG_CULVERT", "")
-            native_mod.swe2d_gpu_set_culvert_diag(
-                bool(dbg_culvert.strip() not in {"", "0"}))
         # Set coupling dt for face-flux depth limiter
         if hasattr(native_mod, "swe2d_gpu_set_coupling_dt"):
             native_mod.swe2d_gpu_set_coupling_dt(float(dt_s))

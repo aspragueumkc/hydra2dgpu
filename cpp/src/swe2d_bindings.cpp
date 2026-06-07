@@ -1548,14 +1548,6 @@ PYBIND11_MODULE(HYDRA_SWE2D_PY_MODULE_NAME, m) {
         py::arg("dt"),
         "Set the coupling time step for the face-flux depth limiter.");
 
-    m.def("swe2d_gpu_set_culvert_diag",
-        [](bool enabled)
-        {
-            swe2d_gpu_set_culvert_diag(enabled);
-        },
-        py::arg("enabled"),
-        "Enable/disable device-side culvert diagnostic printf.");
-
     // Culvert table mode: build pre-computed Q(hw,tw) lookup tables from culvert params.
     m.def("swe2d_gpu_build_culvert_tables",
         [](py::array_t<int32_t, py::array::c_style | py::array::forcecast> culvert_code,

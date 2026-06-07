@@ -600,6 +600,7 @@ _DRAIN_NODE_TYPE_VALUE_MAP = {
     "Outfall": "outfall",
     "Storage": "storage",
     "Inlet": "inlet",
+    "Pipe end": "pipe_end",
 }
 
 _DRAIN_LINK_TYPE_VALUE_MAP = {
