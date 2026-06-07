@@ -761,6 +761,7 @@ __global__ __launch_bounds__(256, 4) void swe2d_classify_kernel(
     const double*  __restrict__ d_h,
     const double*  __restrict__ d_cell_source_mps,
     const double*  __restrict__ d_external_source_mps,
+    const double*  __restrict__ d_ext_struct_flux_h,  // nullable: face-based culvert flux
     const int32_t* __restrict__ d_bc_forced,
     int32_t*                    d_active,
     int32_t*                    d_n_wet,
@@ -777,7 +778,8 @@ __global__ __launch_bounds__(256, 4) void swe2d_classify_kernel(
         const int32_t w      = (d_h[c] > h_min) ? 1 : 0;
         const double src_rain = d_cell_source_mps ? d_cell_source_mps[c] : 0.0;
         const double src_ext  = d_external_source_mps ? d_external_source_mps[c] : 0.0;
-        const double src      = src_rain + src_ext;
+        const double src_ff   = d_ext_struct_flux_h ? fmax(0.0, d_ext_struct_flux_h[c]) : 0.0;
+        const double src      = src_rain + src_ext + src_ff;
         const int32_t src_on  = (isfinite(src) && src > 0.0) ? 1 : 0;
         const int32_t grace  = (d_was_active && d_was_active[c] && d_h[c] > 0.0) ? 1 : 0;
         d_active[c] = w | forced | grace | src_on;
@@ -819,6 +821,7 @@ __global__ __launch_bounds__(256, 4) void swe2d_classify_and_mark_kernel(
     const double*  __restrict__ d_h,
     const double*  __restrict__ d_cell_source_mps,
     const double*  __restrict__ d_external_source_mps,
+    const double*  __restrict__ d_ext_struct_flux_h,  // nullable: face-based culvert flux
     const int32_t* __restrict__ d_bc_forced,
     const int32_t* __restrict__ edge_c0,
     const int32_t* __restrict__ edge_c1,
@@ -838,7 +841,8 @@ __global__ __launch_bounds__(256, 4) void swe2d_classify_and_mark_kernel(
         const int32_t w      = (d_h[c] > h_min) ? 1 : 0;
         const double src_rain = d_cell_source_mps ? d_cell_source_mps[c] : 0.0;
         const double src_ext  = d_external_source_mps ? d_external_source_mps[c] : 0.0;
-        const double src      = src_rain + src_ext;
+        const double src_ff   = d_ext_struct_flux_h ? fmax(0.0, d_ext_struct_flux_h[c]) : 0.0;
+        const double src      = src_rain + src_ext + src_ff;
         const int32_t src_on  = (isfinite(src) && src > 0.0) ? 1 : 0;
         // Hysteretic wetting: cells that were active last step and still carry
         // non-zero depth stay active for one additional step.
@@ -4673,7 +4677,9 @@ void swe2d_gpu_step(
                     CUDA_CHECK(cudaMemsetAsync(dev->d_n_wet, 0, sizeof(int32_t), dev->d_stream));
                     swe2d_classify_and_mark_kernel<<<c_grid, BLOCK, BLOCK * sizeof(int32_t), dev->d_stream>>>(
                         n_cells, n_edges,
-                        dev->d_h, dev->d_cell_source_mps, dev->d_external_source_mps, dev->d_bc_forced,
+                        dev->d_h, dev->d_cell_source_mps, dev->d_external_source_mps,
+                        dev->d_ext_struct_flux_h,
+                        dev->d_bc_forced,
                         dev->d_edge_c0, dev->d_edge_c1,
                         dev->d_active, dev->d_n_wet, h_min,
                         active_set_hysteresis ? dev->d_was_active : nullptr);
@@ -4844,7 +4850,9 @@ void swe2d_gpu_step(
         const int c_grid = (n_cells + BLOCK - 1) / BLOCK;
         swe2d_classify_and_mark_kernel<<<c_grid, BLOCK, BLOCK * sizeof(int32_t), dev->d_stream>>>(
             n_cells, n_edges,
-            dev->d_h, dev->d_cell_source_mps, dev->d_external_source_mps, dev->d_bc_forced,
+            dev->d_h, dev->d_cell_source_mps, dev->d_external_source_mps,
+            dev->d_ext_struct_flux_h,
+            dev->d_bc_forced,
             dev->d_edge_c0, dev->d_edge_c1,
             dev->d_active, dev->d_n_wet, h_min,
             active_set_hysteresis ? dev->d_was_active : nullptr);
@@ -5487,7 +5495,9 @@ void swe2d_gpu_step_persistent_chunk(
         CUDA_CHECK(cudaMemsetAsync(dev->d_n_wet, 0, sizeof(int32_t), dev->d_stream));
         const int c_grid = (n_cells + BLOCK - 1) / BLOCK;
         swe2d_classify_kernel<<<c_grid, BLOCK, BLOCK * sizeof(int32_t), dev->d_stream>>>(
-            n_cells, dev->d_h, dev->d_cell_source_mps, dev->d_external_source_mps, dev->d_bc_forced,
+            n_cells, dev->d_h, dev->d_cell_source_mps, dev->d_external_source_mps,
+            dev->d_ext_struct_flux_h,
+            dev->d_bc_forced,
             dev->d_active, dev->d_n_wet, h_min,
             active_set_hysteresis ? dev->d_was_active : nullptr);
         CUDA_CHECK(cudaGetLastError());
@@ -6599,7 +6609,9 @@ void swe2d_gpu_step_rk4_graph(
         CUDA_CHECK(cudaMemsetAsync(dev->d_n_wet, 0, sizeof(int32_t), dev->d_stream));
         const int c_grid = (n_cells + BLOCK - 1) / BLOCK;
         swe2d_classify_kernel<<<c_grid, BLOCK, BLOCK * sizeof(int32_t), dev->d_stream>>>(
-            n_cells, dev->d_h, dev->d_cell_source_mps, dev->d_external_source_mps, dev->d_bc_forced,
+            n_cells, dev->d_h, dev->d_cell_source_mps, dev->d_external_source_mps,
+            dev->d_ext_struct_flux_h,
+            dev->d_bc_forced,
             dev->d_active, dev->d_n_wet, h_min,
             active_set_hysteresis ? dev->d_was_active : nullptr);
         CUDA_CHECK(cudaGetLastError());
@@ -7129,7 +7141,9 @@ void swe2d_gpu_step_rk5_graph(
         CUDA_CHECK(cudaMemsetAsync(dev->d_n_wet, 0, sizeof(int32_t), dev->d_stream));
         const int c_grid = (n_cells + BLOCK - 1) / BLOCK;
         swe2d_classify_kernel<<<c_grid, BLOCK, BLOCK * sizeof(int32_t), dev->d_stream>>>(
-            n_cells, dev->d_h, dev->d_cell_source_mps, dev->d_external_source_mps, dev->d_bc_forced,
+            n_cells, dev->d_h, dev->d_cell_source_mps, dev->d_external_source_mps,
+            dev->d_ext_struct_flux_h,
+            dev->d_bc_forced,
             dev->d_active, dev->d_n_wet, h_min,
             active_set_hysteresis ? dev->d_was_active : nullptr);
         CUDA_CHECK(cudaGetLastError());
