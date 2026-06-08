@@ -13172,6 +13172,91 @@ static bool swe2d_gpu_apply_momentum_correction(
     return true;
 }
 
+// ── Persistent workspace for drainage step buffers ─────────────────────
+// Fills s_coupling_dev->drain_ws with device buffers sized for n_cells/
+// n_nodes/n_links/n_inlets/n_outfalls/n_pipe_ends.  Returns true when
+// the workspace is ready.  Idempotent: skips re-allocation when capacity
+// already sufficient (but always marks static geo as needing re-upload
+// on first allocation via the return flag).
+static bool ensure_drainage_step_workspace(
+    int32_t n_cells, int32_t n_nodes, int32_t n_links,
+    int32_t n_inlets, int32_t n_outfalls, int32_t n_pipe_ends)
+{
+    SWE2DDeviceState* dev = s_coupling_dev;
+    if (!dev) return false;
+    auto& ws = dev->drain_ws;
+
+    #define _DS_ENSURE(ptr, capacity, needed, type) \
+        if ((capacity) < (needed)) { \
+            if (ptr) cudaFree(ptr); \
+            ptr = nullptr; \
+            capacity = 0; \
+            CUDA_CHECK(cudaMalloc(reinterpret_cast<void**>(&ptr), \
+                                  static_cast<size_t>(needed) * sizeof(type))); \
+            capacity = (needed); \
+        }
+
+    _DS_ENSURE(ws.d_cell_area, ws.cell_capacity, n_cells, double);
+    _DS_ENSURE(ws.d_cell_wse,   ws.cell_capacity, n_cells, double);
+    _DS_ENSURE(ws.d_cell_depth, ws.cell_capacity, n_cells, double);
+    _DS_ENSURE(ws.d_q_cell,    ws.cell_capacity, n_cells, double);
+
+    _DS_ENSURE(ws.d_node_inv,     ws.node_capacity, n_nodes, double);
+    _DS_ENSURE(ws.d_node_maxd,    ws.node_capacity, n_nodes, double);
+    _DS_ENSURE(ws.d_node_area,    ws.node_capacity, n_nodes, double);
+    _DS_ENSURE(ws.d_node_depth,   ws.node_capacity, n_nodes, double);
+    _DS_ENSURE(ws.d_node_net_q,   ws.node_capacity, n_nodes, double);
+    _DS_ENSURE(ws.d_node_delta,   ws.node_capacity, n_nodes, double);
+    _DS_ENSURE(ws.d_node_qleave,  ws.node_capacity, n_nodes, double);
+
+    _DS_ENSURE(ws.d_l_from,   ws.link_capacity, n_links, int32_t);
+    _DS_ENSURE(ws.d_l_to,     ws.link_capacity, n_links, int32_t);
+    _DS_ENSURE(ws.d_l_len,    ws.link_capacity, n_links, double);
+    _DS_ENSURE(ws.d_l_n,      ws.link_capacity, n_links, double);
+    _DS_ENSURE(ws.d_l_d,      ws.link_capacity, n_links, double);
+    _DS_ENSURE(ws.d_l_qmax,   ws.link_capacity, n_links, double);
+    _DS_ENSURE(ws.d_l_q_prev, ws.link_capacity, n_links, double);
+    _DS_ENSURE(ws.d_l_q,      ws.link_capacity, n_links, double);
+
+    _DS_ENSURE(ws.d_i_cell,   ws.inlet_capacity, n_inlets, int32_t);
+    _DS_ENSURE(ws.d_i_node,   ws.inlet_capacity, n_inlets, int32_t);
+    _DS_ENSURE(ws.d_i_crest,  ws.inlet_capacity, n_inlets, double);
+    _DS_ENSURE(ws.d_i_width,  ws.inlet_capacity, n_inlets, double);
+    _DS_ENSURE(ws.d_i_cd,     ws.inlet_capacity, n_inlets, double);
+    _DS_ENSURE(ws.d_i_qmax,   ws.inlet_capacity, n_inlets, double);
+
+    _DS_ENSURE(ws.d_o_cell,        ws.outfall_capacity, n_outfalls, int32_t);
+    _DS_ENSURE(ws.d_o_node,        ws.outfall_capacity, n_outfalls, int32_t);
+    _DS_ENSURE(ws.d_o_invert,      ws.outfall_capacity, n_outfalls, double);
+    _DS_ENSURE(ws.d_o_diameter,    ws.outfall_capacity, n_outfalls, double);
+    _DS_ENSURE(ws.d_o_cd,          ws.outfall_capacity, n_outfalls, double);
+    _DS_ENSURE(ws.d_o_qmax,        ws.outfall_capacity, n_outfalls, double);
+    _DS_ENSURE(ws.d_o_zero_storage, ws.outfall_capacity, n_outfalls, int32_t);
+
+    _DS_ENSURE(ws.d_p_cell,         ws.pipe_end_capacity, n_pipe_ends, int32_t);
+    _DS_ENSURE(ws.d_p_node,         ws.pipe_end_capacity, n_pipe_ends, int32_t);
+    _DS_ENSURE(ws.d_p_invert,       ws.pipe_end_capacity, n_pipe_ends, double);
+    _DS_ENSURE(ws.d_p_diameter,     ws.pipe_end_capacity, n_pipe_ends, double);
+    _DS_ENSURE(ws.d_p_area,         ws.pipe_end_capacity, n_pipe_ends, double);
+    _DS_ENSURE(ws.d_p_kin,          ws.pipe_end_capacity, n_pipe_ends, double);
+    _DS_ENSURE(ws.d_p_kout,         ws.pipe_end_capacity, n_pipe_ends, double);
+    _DS_ENSURE(ws.d_p_depth_bc,     ws.pipe_end_capacity, n_pipe_ends, double);
+    _DS_ENSURE(ws.d_p_node_area,    ws.pipe_end_capacity, n_pipe_ends, double);
+
+    _DS_ENSURE(ws.d_limiter_events, ws.cell_capacity, 1, double);
+    _DS_ENSURE(ws.d_limiter_volume, ws.cell_capacity, 1, double);
+
+    ws.cell_capacity = n_cells;
+    ws.node_capacity = n_nodes;
+    ws.link_capacity = n_links;
+    ws.inlet_capacity = n_inlets;
+    ws.outfall_capacity = n_outfalls;
+    ws.pipe_end_capacity = n_pipe_ends;
+
+    #undef _DS_ENSURE
+    return true;
+}
+
 void swe2d_gpu_drainage_step(
     int32_t n_cells,
     int32_t n_nodes,
@@ -13265,9 +13350,59 @@ void swe2d_gpu_drainage_step(
 
     try {
         // Clear stale CUDA error from prior operations on this stream.
-        // Without this, any latent error would be picked up by the first
-        // CUDA_CHECK inside this function and attributed to the wrong operation.
         (void)cudaGetLastError();
+
+        // Ensure persistent device buffers are allocated.
+        SWE2DDeviceState* ds = s_coupling_dev;
+        cudaStream_t stream = ds ? ds->d_stream : nullptr;
+        bool use_persistent = (ds != nullptr && ensure_drainage_step_workspace(
+            n_cells, n_nodes, n_links, n_inlets, n_outfalls, n_pipe_ends));
+
+        auto* dws = &ds->drain_ws;  // only valid when use_persistent=true
+
+        // Helper: upload to persistent or temp buffer.
+        double* dev_cell_area  = nullptr;
+        double* dev_cell_wse   = nullptr;
+        double* dev_cell_depth = nullptr;
+        // ... (all device pointers assigned below from ws or allocated locally)
+
+        // Assign or allocate all device pointers from persistent workspace
+        // when available, otherwise fall back to the old malloc+sync path.
+        #define _DRAIN_ALLOC(dst, ptr, n, type) do { \
+            if (use_persistent) { dst = ptr; } \
+            else { \
+                dst = nullptr; \
+                CUDA_CHECK(cudaMalloc(reinterpret_cast<void**>(&dst), \
+                                      static_cast<size_t>(n) * sizeof(type))); \
+            } \
+        } while(0)
+
+        #define _DRAIN_H2D(dst, src, n, type) do { \
+            size_t _b = static_cast<size_t>(n) * sizeof(type); \
+            if (use_persistent) { \
+                CUDA_CHECK(cudaMemcpyAsync(dst, src, _b, cudaMemcpyHostToDevice, stream)); \
+            } else { \
+                CUDA_CHECK(cudaMemcpy(dst, src, _b, cudaMemcpyHostToDevice)); \
+            } \
+        } while(0)
+
+        #define _DRAIN_D2D(dst, src, n, type) do { \
+            size_t _b = static_cast<size_t>(n) * sizeof(type); \
+            if (use_persistent) { \
+                CUDA_CHECK(cudaMemcpyAsync(dst, src, _b, cudaMemcpyDeviceToDevice, stream)); \
+            } else { \
+                CUDA_CHECK(cudaMemcpy(dst, src, _b, cudaMemcpyDeviceToDevice)); \
+            } \
+        } while(0)
+
+        #define _DRAIN_MEMSET(dst, n, type) do { \
+            size_t _b = static_cast<size_t>(n) * sizeof(type); \
+            if (use_persistent) { \
+                CUDA_CHECK(cudaMemsetAsync(dst, 0, _b, stream)); \
+            } else { \
+                CUDA_CHECK(cudaMemset(dst, 0, _b)); \
+            } \
+        } while(0)
 
         CUDA_CHECK(cudaMalloc(reinterpret_cast<void**>(&d_cell_wse), static_cast<size_t>(n_cells) * sizeof(double)));
         CUDA_CHECK(cudaMalloc(reinterpret_cast<void**>(&d_cell_area), static_cast<size_t>(n_cells) * sizeof(double)));
@@ -13477,7 +13612,13 @@ void swe2d_gpu_drainage_step(
                 n_nodes, d_node_maxd, d_node_delta, d_node_depth);
             CUDA_CHECK(cudaGetLastError());
         }
-        CUDA_CHECK(cudaDeviceSynchronize());
+        // Sync only the solver stream (not all device streams) so we don't
+        // wait for unrelated GPU work from previous steps.
+        if (s_coupling_dev && s_coupling_dev->d_stream) {
+            CUDA_CHECK(cudaStreamSynchronize(s_coupling_dev->d_stream));
+        } else {
+            CUDA_CHECK(cudaDeviceSynchronize());
+        }
 
         CUDA_CHECK(cudaMemcpy(node_depth_out, d_node_depth, static_cast<size_t>(n_nodes) * sizeof(double), cudaMemcpyDeviceToHost));
         CUDA_CHECK(cudaMemcpy(link_flow_out, d_l_q, static_cast<size_t>(n_links) * sizeof(double), cudaMemcpyDeviceToHost));

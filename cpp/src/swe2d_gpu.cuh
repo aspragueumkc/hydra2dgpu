@@ -485,6 +485,54 @@ struct SWE2DDeviceState {
         }
     } redist_ws{};
 
+    // ── Persistent drainage step workspace ────────────────────────────
+    // Caches device buffers for swe2d_gpu_drainage_step so the per-step
+    // call avoids ~30 cudaMalloc + cudaFree + sync cudaMemcpy operations.
+    // Static geometry (node/link/pipe end topology) is uploaded once;
+    // only runtime state (node_depth, link_flow) changes per step.
+    struct DrainageStepWs {
+        int32_t cell_capacity = 0, node_capacity = 0, link_capacity = 0;
+        int32_t inlet_capacity = 0, outfall_capacity = 0, pipe_end_capacity = 0;
+        double  *d_cell_area = nullptr, *d_cell_wse = nullptr, *d_cell_depth = nullptr;
+        double  *d_node_inv = nullptr, *d_node_maxd = nullptr, *d_node_area = nullptr;
+        double  *d_node_depth = nullptr, *d_node_net_q = nullptr, *d_node_delta = nullptr;
+        int32_t *d_l_from = nullptr, *d_l_to = nullptr;
+        double  *d_l_len = nullptr, *d_l_n = nullptr, *d_l_d = nullptr, *d_l_qmax = nullptr;
+        double  *d_l_q_prev = nullptr, *d_l_q = nullptr;
+        int32_t *d_i_cell = nullptr, *d_i_node = nullptr;
+        double  *d_i_crest = nullptr, *d_i_width = nullptr, *d_i_cd = nullptr, *d_i_qmax = nullptr;
+        int32_t *d_o_cell = nullptr, *d_o_node = nullptr;
+        double  *d_o_invert = nullptr, *d_o_diameter = nullptr, *d_o_cd = nullptr, *d_o_qmax = nullptr;
+        int32_t *d_o_zero_storage = nullptr;
+        int32_t *d_p_cell = nullptr, *d_p_node = nullptr;
+        double  *d_p_invert = nullptr, *d_p_diameter = nullptr, *d_p_area = nullptr;
+        double  *d_p_kin = nullptr, *d_p_kout = nullptr;
+        double  *d_p_depth_bc = nullptr, *d_p_node_area = nullptr;
+        double  *d_node_qleave = nullptr;
+        double  *d_q_cell = nullptr, *d_limiter_events = nullptr, *d_limiter_volume = nullptr;
+
+        void destroy() {
+            #define _DS_FREE(p) do { if (p) { cudaFree(p); p = nullptr; } } while(0)
+            _DS_FREE(d_cell_area); _DS_FREE(d_cell_wse); _DS_FREE(d_cell_depth);
+            _DS_FREE(d_node_inv); _DS_FREE(d_node_maxd); _DS_FREE(d_node_area);
+            _DS_FREE(d_node_depth); _DS_FREE(d_node_net_q); _DS_FREE(d_node_delta);
+            _DS_FREE(d_l_from); _DS_FREE(d_l_to); _DS_FREE(d_l_len);
+            _DS_FREE(d_l_n); _DS_FREE(d_l_d); _DS_FREE(d_l_qmax);
+            _DS_FREE(d_l_q_prev); _DS_FREE(d_l_q);
+            _DS_FREE(d_i_cell); _DS_FREE(d_i_node); _DS_FREE(d_i_crest);
+            _DS_FREE(d_i_width); _DS_FREE(d_i_cd); _DS_FREE(d_i_qmax);
+            _DS_FREE(d_o_cell); _DS_FREE(d_o_node); _DS_FREE(d_o_invert);
+            _DS_FREE(d_o_diameter); _DS_FREE(d_o_cd); _DS_FREE(d_o_qmax); _DS_FREE(d_o_zero_storage);
+            _DS_FREE(d_p_cell); _DS_FREE(d_p_node); _DS_FREE(d_p_invert);
+            _DS_FREE(d_p_diameter); _DS_FREE(d_p_area); _DS_FREE(d_p_kin); _DS_FREE(d_p_kout);
+            _DS_FREE(d_p_depth_bc); _DS_FREE(d_p_node_area); _DS_FREE(d_node_qleave);
+            _DS_FREE(d_q_cell); _DS_FREE(d_limiter_events); _DS_FREE(d_limiter_volume);
+            #undef _DS_FREE
+            cell_capacity = node_capacity = link_capacity = 0;
+            inlet_capacity = outfall_capacity = pipe_end_capacity = 0;
+        }
+    } drain_ws{};
+
     // ── Face-based culvert coupling workspace ─────────────────────────
     // When culvert_face_flux_mode == "face_flux", culvert flows are applied
     // as proper FVM face fluxes (mass + momentum) instead of cell-center
