@@ -497,32 +497,6 @@ _TEMPORAL_ORDER_OPTIONS = [
     ("Graph-safe RK5 (Cash-Karp)",       6),
 ]
 
-_SWE3D_PATCH_FACES = (
-    "XMIN",
-    "XMAX",
-    "YMIN",
-    "YMAX",
-    "ZMIN",
-    "ZMAX",
-)
-
-_SWE3D_BC_MODE_OPTIONS = [
-    ("Wall", 0),
-    ("Inflow (U/V/W)", 1),
-    ("Volumetric Inlet (Q)", 4),
-    ("Outflow (zero-gradient)", 2),
-    ("Free Surface", 3),
-]
-
-_SWE3D_BC_FIELD_DEFAULTS = {
-    "q": 0.0,
-    "u": 0.0,
-    "v": 0.0,
-    "w": 0.0,
-    "vof": 1.0,
-    "p": 0.0,
-}
-
 _BC_VALUE_MAP = {
     "Wall (zero normal flux)": 1,
     "Inflow Q (total discharge)": 2,
@@ -2744,9 +2718,7 @@ class SWE2DWorkbenchDialog(QtWidgets.QDialog):
             swe2d_gpu_available=swe2d_gpu_available,
             temporal_scheme=TemporalScheme,
             spatial_discretization=SpatialDiscretization,
-            godunov_solver_mode=GodunovSolverMode,
             solver_model_options=SolverModelOptions,
-            swe2d_equation_set=SWE2DEquationSet,
         )
         run_workbench_post_bootstrap_setup(
             self,
@@ -3497,9 +3469,6 @@ class SWE2DWorkbenchDialog(QtWidgets.QDialog):
             patch_form.setObjectName("patch_3d_form")
             patch_layout.addLayout(patch_form)
 
-        patch_form = patch_page.findChild(QtWidgets.QFormLayout, "patch_3d_form")
-        if patch_form is not None:
-            self._bind_model_tab_3d_patch_controls(patch_page, patch_form)
         return patch_page
 
     def _bind_model_tab_core_controls(self, model_tab_page: QtWidgets.QWidget, param_form: QtWidgets.QFormLayout) -> None:
@@ -3514,23 +3483,11 @@ class SWE2DWorkbenchDialog(QtWidgets.QDialog):
         from swe2d.workbench.monolith_methods import _bind_model_tab_solver_controls as _logic
         return _logic(self, model_tab_page, param_form)
 
-    def _bind_model_tab_3d_patch_controls(self, model_tab_page: QtWidgets.QWidget, param_form: QtWidgets.QFormLayout) -> None:
-        from swe2d.workbench.monolith_methods import _bind_model_tab_3d_patch_controls as _logic
-        try:
-            _g = getattr(_logic, "__globals__", None)
-            if isinstance(_g, dict):
-                _g.setdefault("_SWE3D_PATCH_FACES", _SWE3D_PATCH_FACES)
-                _g.setdefault("_SWE3D_BC_MODE_OPTIONS", _SWE3D_BC_MODE_OPTIONS)
-                _g.setdefault("_SWE3D_BC_FIELD_DEFAULTS", _SWE3D_BC_FIELD_DEFAULTS)
-        except Exception:
-            pass
-        return _logic(self, model_tab_page, param_form)
-
     def _bind_model_tab_3d_subgrid_drainage_controls(
         self, model_tab_page: QtWidgets.QWidget, param_form: QtWidgets.QFormLayout,
         solver_form: Optional[QtWidgets.QFormLayout] = None,
     ) -> None:
-        from swe2d.workbench.monolith_methods import _bind_model_tab_3d_subgrid_drainage_controls as _logic
+        from swe2d.workbench.monolith_methods import _bind_model_tab_subgrid_drainage_controls as _logic
         return _logic(self, model_tab_page, param_form, solver_form)
 
     def _build_topology_tab_page_fallback(self) -> QtWidgets.QWidget:

@@ -7,8 +7,7 @@ organized into domain modules for maintainability.
 """
 
 from swe2d.workbench.extracted.model_and_run_methods import (  # noqa: F401
-    _bind_model_tab_3d_patch_controls,
-    _bind_model_tab_3d_subgrid_drainage_controls,
+    _bind_model_tab_subgrid_drainage_controls,
     _bind_model_tab_core_controls,
     _bind_model_tab_hydrology_controls,
     _bind_model_tab_solver_controls,

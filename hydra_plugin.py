@@ -166,16 +166,13 @@ class HydraQgisPlugin:
             self._qt_quit_hardened = False
 
     def run(self):
-        """Open the HYDRA2DGPU workbench dialog."""
+        """Open the HYDRA2DGPU workbench docked into the QGIS main window."""
         self._harden_qt_quit_behavior()
         if self._enable_app_event_filter:
             self._install_close_guard_filter()
         try:
-            from swe2d_workbench_qt import SWE2DWorkbenchStudioDialog
-            if self._swe2d_dialog is None:
-                self._swe2d_dialog = SWE2DWorkbenchStudioDialog(self.iface)
-            self._swe2d_dialog.show()
-            self._swe2d_dialog.raise_()
+            from swe2d_workbench_qt import launch_swe2d_workbench_studio
+            launch_swe2d_workbench_studio(parent=self.iface.mainWindow(), iface=self.iface, host_mode="dock")
         except Exception as exc:
             self.iface.messageBar().pushMessage(
                 'HYDRA2DGPU', f'Failed to open workbench: {exc}', level=Qgis.Critical
