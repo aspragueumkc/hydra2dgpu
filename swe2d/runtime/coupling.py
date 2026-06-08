@@ -463,7 +463,7 @@ class SWE2DCouplingController:
         bridge_cuda_coupling: bool = False,
         bridge_stacked_coupling_mode: str = "phase3_spatial",
         length_scale_si_to_model: float = 1.0,
-        culvert_face_flux_mode: str = "off",
+        culvert_face_flux_mode: str = "face_flux",
         log_callback: Optional[Callable[[str], None]] = None,
 ):
         """Coupling controller for SWE2D surface/drainage/structure exchange.
@@ -510,7 +510,11 @@ class SWE2DCouplingController:
         if self.culvert_solver_mode not in {0, 1}:
             raise ValueError("culvert_solver_mode must be 0 or 1")
         # Face-based culvert flux coupling: "off" | "face_flux"
-        self.culvert_face_flux_mode = str(culvert_face_flux_mode or "off").strip().lower()
+        raw_mode = str(culvert_face_flux_mode or "off").strip().lower()
+        # Allow BACKWATER_DISABLE_FACE_FLUX env override for debugging
+        if os.environ.get("BACKWATER_DISABLE_FACE_FLUX", "").strip() in ("1", "true", "yes"):
+            raw_mode = "off"
+        self.culvert_face_flux_mode = raw_mode
         if self.culvert_face_flux_mode not in {"off", "face_flux"}:
             raise ValueError("culvert_face_flux_mode must be 'off' or 'face_flux'")
         self._face_flux_soa: Optional[SWE2DCulvertFaceFluxSoA] = None
@@ -530,6 +534,14 @@ class SWE2DCouplingController:
         self._structures_soa = pack_structures_soa(self.structures.cfg, self.n_cells, model_to_ft=1.0) if self.structures is not None else None
         self._structures_cfg = tuple(self.structures.cfg.structures) if self.structures is not None else tuple()
         self._structure_count = len(self._structures_cfg)
+        self._log(
+            f"[COUPLING_INIT] coupling_loop={self.coupling_loop} "
+            f"face_flux_mode={self.culvert_face_flux_mode} "
+            f"n_structures={self._structure_count} "
+            f"drainage={'yes' if self.drainage is not None else 'no'} "
+            f"n_cells={self.n_cells} "
+            f"model_to_ft={self._model_to_ft:.4f}"
+        )
         if self._structure_count > 0:
             self._structure_bridge_mask = np.asarray(
                 [st.structure_type == StructureType.BRIDGE for st in self._structures_cfg],
@@ -786,13 +798,20 @@ class SWE2DCouplingController:
                 self._face_flux_soa = None
                 self._enquiry_up_cell = None
                 self._enquiry_dn_cell = None
+                self._log("[COUPLING_FF] _build_face_flux_soa returned None (no culvert structures with face data)")
             else:
                 self._face_flux_soa, self._enquiry_up_cell, self._enquiry_dn_cell = result
+                self._log(f"[COUPLING_FF] built face-flux SoA: {self._face_flux_soa.structure_index.size} face(s)")
         if self._face_flux_soa is None or self._face_flux_soa.structure_index.size == 0:
             self._culvert_face_flux_preloaded = True
+            self._log("[COUPLING_FF] no face-flux faces — marked preloaded (no upload)")
             return
 
         ff = self._face_flux_soa
+        self._log(
+            f"[COUPLING_FF] uploading {ff.structure_index.size} face(s) to GPU, "
+            f"n_cells={self.n_cells}"
+        )
         # Build kwargs for upload, adding enquiry cells if available
         upload_kwargs = dict(
             culvert_struct_idx=np.ascontiguousarray(ff.structure_index, dtype=np.int32),
@@ -1010,14 +1029,7 @@ class SWE2DCouplingController:
         _ = (t_s, dt_s)
         if self.coupling_loop != "cuda":
             return False
-        if self.structures is None:
-            return False
-        if self.drainage is not None:
-            self._log(
-                "apply_native_device_sources: drainage present — "
-                "falling back to host path (face-flux culverts still active "
-                "via _compute_source_rates_cuda)"
-            )
+        if self.structures is None and self.drainage is None:
             return False
         if self._has_enabled_bridge_structures:
             return False
@@ -1025,39 +1037,128 @@ class SWE2DCouplingController:
         native_mod = self._native_cuda_module()
         if native_mod is None:
             return False
+
+        # Need compute_coupling_full_on_device for the final on-device write.
+        # Without it we cannot return True (no way to get sources to device).
         if not hasattr(native_mod, "swe2d_gpu_compute_coupling_full_on_device"):
             return False
 
         self._ensure_native_culvert_solver_mode(native_mod)
+
+        # ── Drainage: compute q_cell on-device via swe2d_gpu_drainage_step ──
+        # cell_wse and cell_depth are passed as None so the C++ function computes
+        # WSE = h + zb and copies h directly from device-resident state, avoiding
+        # all D2H readback of h.
+        inlet_cell = np.empty(0, dtype=np.int32)
+        inlet_flow = np.empty(0, dtype=np.float64)
+        if self.drainage is not None:
+            # GPU drainage step — same call as _compute_source_rates_cuda.
+            if (
+                self.drainage_solver_backend == "gpu"
+                and self._drainage_soa is not None
+                and hasattr(native_mod, "swe2d_gpu_drainage_step")
+            ):
+                self._ensure_gpu_drainage_state()
+                dsoa = self._drainage_soa
+                solver_mode = DrainageSolverMode(int(dsoa.solver_mode))
+                static_args = self._ensure_gpu_drainage_static_args()
+                if static_args is None:
+                    return False
+                node_depth_state = np.asarray(self._gpu_node_depth, dtype=np.float64)
+                link_flow_state = np.asarray(self._gpu_link_flow, dtype=np.float64)
+                g = float(getattr(self.drainage.cfg, "gravity", _u.gravity()))
+                head_deadband = float(getattr(self.drainage.cfg, "head_deadband_m", 1.0e-3))
+                dynamic_relax = float(getattr(self.drainage.cfg, "dynamic_flow_relaxation", 1.0))
+                nd_out, lf_out, q_cell_step, _diag = (
+                    native_mod.swe2d_gpu_drainage_step(
+                        None,  # cell_wse=None → compute on-device from h+zb
+                        static_args["cell_area"],
+                        static_args["node_invert_elev"],
+                        static_args["node_max_depth"],
+                        static_args["node_surface_area"],
+                        static_args["link_from"],
+                        static_args["link_to"],
+                        static_args["link_length"],
+                        static_args["link_roughness_n"],
+                        static_args["link_diameter"],
+                        static_args["link_max_flow"],
+                        static_args["inlet_cell"],
+                        static_args["inlet_node"],
+                        static_args["inlet_crest_elev"],
+                        static_args["inlet_width"],
+                        static_args["inlet_coefficient"],
+                        static_args["inlet_max_capture"],
+                        static_args["outfall_cell"],
+                        static_args["outfall_node"],
+                        static_args["outfall_invert_elev"],
+                        static_args["outfall_diameter"],
+                        static_args["outfall_coefficient"],
+                        static_args["outfall_max_flow"],
+                        static_args["outfall_zero_storage"],
+                        static_args["pipe_end_cell"],
+                        static_args["pipe_end_node"],
+                        static_args["pipe_end_invert_elev"],
+                        static_args["pipe_end_diameter"],
+                        static_args["pipe_end_area"],
+                        static_args["pipe_end_inlet_loss_k"],
+                        static_args["pipe_end_outlet_loss_k"],
+                        None,  # cell_depth=None → compute on-device from d_h
+                        node_depth_state,
+                        link_flow_state,
+                        float(dt_s),
+                        float(g),
+                        int(dsoa.solver_mode),
+                        float(head_deadband),
+                        float(dynamic_relax),
+                    )
+                )
+                self._gpu_node_depth = np.asarray(nd_out, dtype=np.float64)
+                self._gpu_link_flow = np.asarray(lf_out, dtype=np.float64)
+                self._sync_gpu_state_back_to_drainage()
+                q_cell = np.asarray(q_cell_step, dtype=np.float64)
+            else:
+                return False  # no GPU drainage backend available
+
+            # Pack sparse inlet arrays for the coupling function
+            nz = np.nonzero(np.abs(q_cell) > 0.0)[0]
+            if nz.size > 0:
+                inlet_cell = nz.astype(np.int32, copy=False)
+                # Kernel convention: positive inlet flow removes surface water.
+                inlet_flow = (-q_cell[nz]).astype(np.float64, copy=False)
+            # Note: do NOT update component_sums here — the caller skips the
+            # callback entirely when we return True, so there's no diagnostics
+            # path that needs them from this function.
+        else:
+            # No drainage — ensure persistent preload for structures-only path.
+            self._ensure_persistent_coupling_preloaded(native_mod)
+
+        # ── Structures: run on-device coupling ──────────────────────────
+        # The C++ compute_coupling_full_on_device reads WSE from device-resident
+        # h+zb (cell_wse_host=None), computes structure flows on-device
+        # (host_structure_flows=None), and writes the combined result
+        # (structures + drainage inlets) directly to d_external_source_mps.
         self._ensure_persistent_coupling_preloaded(native_mod)
         if not self._persistent_coupling_preloaded:
             return False
 
-        # Ensure face-flux params are uploaded before full_on_device
         if self.culvert_face_flux_mode == "face_flux":
             was_preloaded = self._culvert_face_flux_preloaded
             self._ensure_culvert_face_flux_preloaded(native_mod)
-            # If face-flux state changed, reset solver mode so it gets
-            # reconfigured on the next call (graph will re-capture).
             if self._culvert_face_flux_preloaded != was_preloaded:
                 self._culvert_solver_mode_applied = False
 
-        n_structures = int(self._structure_count)
-        # Set coupling dt for face-flux depth limiter
+        n_structures = int(self._structure_count) if self.structures is not None else 0
         if hasattr(native_mod, "swe2d_gpu_set_coupling_dt"):
             native_mod.swe2d_gpu_set_coupling_dt(float(dt_s))
         try:
-            # The GPU culvert solver (both table-lookup and direct secant)
-            # now computes correct flows after the model_to_ft and CFS/CMS
-            # unit fixes.  Pass None for cell_wse and host_flows to let the
-            # GPU read WSE directly from device-resident state (h+zb) and
-            # compute structure flows entirely on-device — no Python-side
-            # culvert evaluation and no D2H WSE readback needed.
+            # cell_wse_host=None → GPU computes WSE from device h+zb
+            # host_structure_flows=None → GPU computes flows on-device
+            # inlet_cell/inlet_flow → drainage contribution (can be empty)
             native_mod.swe2d_gpu_compute_coupling_full_on_device(
                 None,
                 n_structures,
-                np.empty(0, dtype=np.int32),
-                np.empty(0, dtype=np.float64),
+                inlet_cell,
+                inlet_flow,
                 None,
             )
             # ── Diagnostic: check face-flux application ──
@@ -1082,6 +1183,30 @@ class SWE2DCouplingController:
                     print(f"[FLUX_DIAG] readback failed: {e}")
         except Exception:
             return False
+
+        # Full device sync + error reset.  Must use cudaStreamSynchronize on the
+        # solver's stream (device sync alone may leave a thread-local error state).
+        # This ensures the solver/graph capture on the next step sees a clean stream.
+        if hasattr(native_mod, "swe2d_gpu_device_sync"):
+            native_mod.swe2d_gpu_device_sync()
+
+        # ── When drainage is active, reset the persistent coupling flag ────
+        # _ensure_persistent_coupling_preloaded above set the flag to True
+        # (needed by compute_coupling_full_on_device).  We must clear it
+        # before returning so the next callback-driven step does NOT enter
+        # the persistent path (which can't handle drainage + redistribution).
+        if self.drainage is not None:
+            self._persistent_coupling_preloaded = False
+
+        # ── Invalidate the cached CUDA graph because dev->use_culvert_face_flux
+        # changed from the pre-coupling state (false) to the post-coupling state
+        # (true).  The graph signature includes use_culvert_face_flux, so the
+        # solver will detect a cache miss and re-capture on the next step.
+        # Without explicit invalidation, the solver tries to replay the OLD graph
+        # which has use_culvert_face_flux=false baked in, leading to incorrect
+        # kernel arguments for the face-flux path.
+        if hasattr(native_mod, "swe2d_gpu_invalidate_graph_cache"):
+            native_mod.swe2d_gpu_invalidate_graph_cache()
 
         # When face-flux mode is active, the culvert face flux is already
         # applied via d_ext_struct_flux_h which the update kernel reads
@@ -1495,7 +1620,21 @@ class SWE2DCouplingController:
             mod = self._native_cuda_module()
             if mod is not None:
                 self._ensure_native_culvert_solver_mode(mod)
-                self._ensure_persistent_coupling_preloaded(mod)
+                # When drainage is active, skip the persistent path because
+                # swe2d_gpu_compute_coupling_full_on_device does not accept
+                # inlet_cell/inlet_flow — drainage q_cell would be silently
+                # dropped.  The fused path (which handles both structures and
+                # drainage) falls through in _compute_source_rates_cuda.
+                skip_persistent = (self.drainage is not None)
+                self._log(
+                    f"[COUPLING_CSR] coupling_loop=cuda, drainage={'yes' if skip_persistent else 'no'}, "
+                    f"structures={'yes' if self.structures is not None else 'no'}, "
+                    f"face_flux_mode={self.culvert_face_flux_mode}, "
+                    f"persistent_preloaded={self._persistent_coupling_preloaded}, "
+                    f"face_flux_preloaded={self._culvert_face_flux_preloaded}"
+                )
+                if not skip_persistent:
+                    self._ensure_persistent_coupling_preloaded(mod)
                 return self._compute_source_rates_cuda(mod, t_s, dt_s, hh)
         cell_wse = hh + self.cell_bed
         total = np.zeros(self.n_cells, dtype=np.float64)
@@ -1836,20 +1975,30 @@ class SWE2DCouplingController:
             )
             use_fused = (not use_persistent
                          and hasattr(native_mod, "swe2d_gpu_compute_structure_and_coupling_sources"))
+            self._log(
+                f"[COUPLING_CSR] structures dispatch: "
+                f"use_persistent={use_persistent} "
+                f"use_fused={use_fused} "
+                f"drainage_active={self.drainage is not None} "
+                f"n_structures={len(sts) if sts is not None else 0} "
+                f"face_flux_mode={self.culvert_face_flux_mode} "
+                f"face_flux_preloaded={self._culvert_face_flux_preloaded}"
+            )
             if use_persistent:
                 # Persistent device path: structure params preloaded on GPU.
-                # Only cell_wse is transferred per step. Source rates are
-                # written directly to dev->d_external_source_mps, then
-                # read back to host so the backend's set_external_sources_native
-                # re-uploads the same values (identity overwrite).
+                # All work is done on-device — WSE computed from device h+zb,
+                # structure flows computed on GPU, drainage inlet sources
+                # folded in via inlet_cell/inlet_flow.  Source rates written
+                # directly to dev->d_external_source_mps — zero PCIe transfers
+                # of the source array.
                 if ssoa is not None:
                     try:
-                        # Pass None for cell_wse: GPU computes WSE = h + zb
-                        # directly from device-resident state, eliminating two
-                        # PCIe transfers (D2H state readback + H2D wse upload).
                         native_mod.swe2d_gpu_compute_coupling_full_on_device(
                             None,  # cell_wse=None → on-device WSE computation
                             int(self._n_non_bridge_structures),
+                            inlet_cell,
+                            inlet_flow,
+                            None,  # host_structure_flows=None → GPU computes
                         )
                         component_sums["structures_persistent_path"] = 1.0
                     except Exception:

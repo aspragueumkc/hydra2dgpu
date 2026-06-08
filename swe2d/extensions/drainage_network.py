@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import math
-from typing import Dict, List, Sequence, Tuple
+from typing import Any, Dict, List, Sequence, Tuple
 
 from swe2d import units as _u
 from swe2d.extensions.extension_models import (
@@ -23,6 +23,12 @@ from swe2d.extensions.extension_models import (
     compute_orifice_flow,
     compute_weir_flow,
     compute_pipe_manning_capacity_full,
+)
+from culvert_routine import (
+    CircularXsect,
+    RectangularXsect,
+    direct_step_culvert_upstream_energy,
+    inlet_controlled_flow,
 )
 
 
@@ -46,6 +52,122 @@ def _interp_rating_curve(table: list, wse_m: float) -> float:
             dw = w1 - w0
             return q0 if dw <= 0.0 else q0 + (wse_m - w0) / dw * (q1 - q0)
     return 0.0
+
+
+# ── HDS-5 culvert helper functions ────────────────────────────────────
+
+def _model_to_ft(value_model: float, model_to_ft_factor: float = 1.0) -> float:
+    """Convert a model-unit value to feet for HDS-5 culvert routines."""
+    return float(value_model) * float(model_to_ft_factor)
+
+
+def _ft_to_m(value_ft: float) -> float:
+    """Convert feet to SI meters."""
+    return float(value_ft) * _u.SI_M_PER_USC_FT
+
+
+def _model3_to_cfs(value_model3: float, model_to_ft_factor: float = 1.0) -> float:
+    """Convert model³/s flow to ft³/s (CFS) for HDS-5 secant solver."""
+    v = float(value_model3)
+    scale = float(model_to_ft_factor) ** 3 / _u.USC_FT3_PER_SI_M3
+    return v * scale if abs(scale - 1.0) > 1e-12 else v
+
+
+def _cfs_to_cms(value_cfs: float) -> float:
+    """Convert CFS to CMS."""
+    return float(value_cfs) / _u.USC_FT3_PER_SI_M3
+
+
+def _culvert_xsect_from_metadata(md: Dict[str, Any], model_to_ft_factor: float = 1.0):
+    """Build a CircularXsect or RectangularXsect from culvert metadata dict.
+
+    Mirrors the same logic in ``structures.py`` so that HDS-5 evaluation
+    is identical for both code paths.
+    """
+    shape = str(md.get("culvert_shape", md.get("shape", "circular")) or "circular").strip().lower()
+    code = int(round(float(md.get("culvert_code", 1.0))))
+    rise_model = float(md.get("culvert_rise", md.get("height", md.get("diameter", 0.0))) or 0.0)
+    span_model = float(md.get("culvert_span", md.get("width", rise_model)) or 0.0)
+    diameter_model = float(md.get("diameter", rise_model) or 0.0)
+
+    if shape in ("box", "rect", "rectangular"):
+        width_ft = max(1.0e-6, _model_to_ft(span_model, model_to_ft_factor))
+        height_ft = max(1.0e-6, _model_to_ft(rise_model, model_to_ft_factor))
+        return RectangularXsect(width_ft=width_ft, height_ft=height_ft, culvert_code=code)
+
+    return CircularXsect(diameter_ft=max(1.0e-6, _model_to_ft(diameter_model, model_to_ft_factor)), culvert_code=code)
+
+
+def _culvert_outlet_control_flow(
+    *,
+    xsect,
+    available_head_up_ft: float,
+    tailwater_depth_ft: float,
+    length_ft: float,
+    slope_ftft: float,
+    roughness_n: float,
+    entrance_loss_k: float,
+    exit_loss_k: float,
+    q_hint_cfs: float,
+) -> float:
+    """Secant solve for outlet-control culvert flow (HDS-5).
+
+    Mirrors ``structures.py`` exactly so both paths give the same answer.
+    """
+    if available_head_up_ft <= 0.0:
+        return 0.0
+
+    def required_head_ft(q_cfs: float) -> float:
+        if q_cfs <= 0.0:
+            return 0.0
+        e_up_ft, y_up_ft, _mode = direct_step_culvert_upstream_energy(
+            xsect=xsect,
+            Q=q_cfs,
+            n_value=max(1.0e-6, roughness_n),
+            slope=max(1.0e-6, slope_ftft),
+            length=max(1.0, length_ft),
+            tailwater_depth=max(0.0, tailwater_depth_ft),
+        )
+        area_ft2 = max(xsect.area(max(1.0e-6, min(y_up_ft, xsect.yFull))), 1.0e-9)
+        vel_ft_s = q_cfs / area_ft2
+        hv_loss = (max(0.0, entrance_loss_k) + max(0.0, exit_loss_k)) * (vel_ft_s * vel_ft_s) / (2.0 * _u.USC_GRAVITY)
+        return float(e_up_ft + hv_loss)
+
+    q_lo = 0.0
+    f_lo = -available_head_up_ft
+    q_hi = max(1.0, q_hint_cfs * 2.0)
+    f_hi = required_head_ft(q_hi) - available_head_up_ft
+    for _ in range(12):
+        if f_hi >= 0.0:
+            break
+        q_lo, f_lo = q_hi, f_hi
+        q_hi *= 2.0
+        f_hi = required_head_ft(q_hi) - available_head_up_ft
+    if f_hi < 0.0:
+        return _cfs_to_cms(q_hi)
+
+    side = 0
+    for _ in range(16):
+        denom = f_hi - f_lo
+        if abs(denom) < 1.0e-30:
+            break
+        q_mid = (q_lo * f_hi - q_hi * f_lo) / denom
+        if q_mid <= q_lo or q_mid >= q_hi:
+            q_mid = 0.5 * (q_lo + q_hi)
+        f_mid = required_head_ft(q_mid) - available_head_up_ft
+        if abs(f_mid) < 1.0e-8 * available_head_up_ft:
+            return _cfs_to_cms(max(0.0, q_mid))
+        if f_lo * f_mid < 0.0:
+            q_hi, f_hi = q_mid, f_mid
+            if side == 1:
+                f_lo *= 0.5
+            side = 1
+        else:
+            q_lo, f_lo = q_mid, f_mid
+            if side == 0:
+                f_hi *= 0.5
+            side = 0
+    return _cfs_to_cms(max(0.0, 0.5 * (q_lo + q_hi)))
 
 
 class SWE2DUrbanDrainageModule(DrainageCouplingEngine):
@@ -249,6 +371,137 @@ class SWE2DUrbanDrainageModule(DrainageCouplingEngine):
         return bool(md.get("simplified", False) or md.get("ignore_inertia", False))
 
     # ------------------------------------------------------------------
+    # Culvert HDS-5 hydraulics (for link_type == "culvert")
+    # ------------------------------------------------------------------
+
+    def _culvert_link_flow(self, link: DrainageLink) -> float:
+        """HDS-5 culvert hydraulics for a drainage-network link.
+
+        Uses the same FHWA inlet/outlet control methodology as the
+        HydraulicStructure culvert path, but driven by drainage-node
+        heads instead of 2D mesh cell WSE.
+
+        Returns signed flow (model³/s) where positive = from_node -> to_node.
+        """
+        n0 = self._node_by_id(link.from_node_id)
+        n1 = self._node_by_id(link.to_node_id)
+        h0 = self._node_head(n0)
+        h1 = self._node_head(n1)
+        g = max(1.0e-6, float(getattr(self.cfg, "gravity", _u.gravity())))
+        dh = self._effective_head_difference(h0, h1)
+        if abs(dh) <= 1.0e-12:
+            return 0.0
+
+        sign = 1.0 if dh >= 0.0 else -1.0
+        upstream_wse = h0 if sign >= 0.0 else h1
+        downstream_wse = h1 if sign >= 0.0 else h0
+
+        m2ft = float(getattr(self.cfg, "model_to_ft", _u.model_to_ft()) or 1.0)
+        inv_m2ft = 1.0 / m2ft if m2ft > 0 else 1.0
+
+        inlet_invert = float(link.inlet_invert_elev or link.metadata.get("inlet_invert_elev", n0.invert_elev))
+        outlet_invert = float(link.outlet_invert_elev or link.metadata.get("outlet_invert_elev", n1.invert_elev))
+        upstream_invert = inlet_invert if sign >= 0.0 else outlet_invert
+        downstream_invert = outlet_invert if sign >= 0.0 else inlet_invert
+
+        available_head_up_ft = max(0.0, _model_to_ft(upstream_wse - upstream_invert, m2ft))
+        tailwater_depth_ft = max(0.0, _model_to_ft(downstream_wse - downstream_invert, m2ft))
+
+        length_m = max(1.0, float(link.length or 1.0))
+        length_ft = max(0.1, _model_to_ft(length_m, m2ft))
+        roughness_n = max(1.0e-6, float(link.roughness_n or 0.013))
+
+        # Effective slope from invert difference or link metadata
+        md_slope = None
+        if "culvert_slope" in link.metadata:
+            md_slope = float(link.metadata["culvert_slope"])
+        slope_ftft = abs(upstream_invert - downstream_invert) / max(length_m, 0.1) if md_slope is None else md_slope
+        slope_ftft = max(1.0e-6, abs(slope_ftft))
+
+        entrance_loss_k = float(link.entrance_loss_k)
+        exit_loss_k = float(link.exit_loss_k)
+        barrel_count = max(1, int(link.barrel_count))
+
+        # Build cross-section from link metadata
+        md = dict(link.metadata)
+        md["culvert_shape"] = link.culvert_shape or md.get("culvert_shape", "circular")
+        md["culvert_code"] = float(link.culvert_code)
+        md["culvert_rise"] = float(link.culvert_rise or link.diameter or 0.0)
+        md["culvert_span"] = float(link.culvert_span or link.diameter or 0.0)
+        md["diameter"] = float(link.diameter or md["culvert_rise"])
+        xsect = _culvert_xsect_from_metadata(md, m2ft)
+
+        # ── Inlet control (USC ft) ──
+        q_inlet_cfs, _dqh, _condition, _yr = inlet_controlled_flow(
+            xsect,
+            max(1.0e-6, slope_ftft),
+            max(0.0, available_head_up_ft),
+        )
+        q_inlet = q_inlet_cfs / _u.USC_FT3_PER_SI_M3  # CFS → CMS
+
+        # ── Orifice capacity ──
+        diameter_model = float(link.diameter or md.get("culvert_rise", 0.0) or 0.0)
+        area_m2_input = float(md.get("culvert_area_m2", md.get("area_m2", 0.0)) or 0.0)
+        if area_m2_input <= 0.0 and diameter_model > 0.0:
+            area_m2_input = circular_area_from_diameter(diameter_model)
+        q_orifice = 0.0
+        if area_m2_input > 0.0:
+            q_orifice = abs(
+                compute_orifice_flow(
+                    head_up=available_head_up_ft * inv_m2ft,
+                    head_down=tailwater_depth_ft * inv_m2ft,
+                    area=area_m2_input,
+                    discharge_coeff=float(link.cd or 0.75),
+                    g=g,
+                    max_flow=link.max_flow,
+                )
+            )
+
+        # ── Manning capacity ──
+        q_manning_cap = 0.0
+        is_rect = hasattr(xsect, 'width_ft') and xsect.width_ft > 0
+        if is_rect:
+            area_ft2 = xsect.width_ft * xsect.yFull
+            perim_ft = 2.0 * (xsect.width_ft + xsect.yFull)
+            if perim_ft > 0:
+                rh_ft = area_ft2 / perim_ft
+                q_manning_cap_cfs = (_u.USC_MANNING_FACTOR / roughness_n) * area_ft2 * (rh_ft ** (2.0 / 3.0)) * (slope_ftft ** 0.5)
+                q_manning_cap = q_manning_cap_cfs / _u.USC_FT3_PER_SI_M3
+        elif hasattr(xsect, 'radius_ft') and xsect.radius_ft > 0:
+            q_manning_cap = compute_pipe_manning_capacity_full(
+                diameter_m=_ft_to_m(2.0 * xsect.radius_ft),
+                slope_m_per_m=slope_ftft,
+                roughness_n=roughness_n,
+            )
+
+        # ── Outlet control ──
+        q_hint_cfs = max(q_inlet_cfs, _model3_to_cfs(max(q_orifice, q_manning_cap, 0.0), m2ft))
+        q_outlet = _culvert_outlet_control_flow(
+            xsect=xsect,
+            available_head_up_ft=max(0.0, available_head_up_ft),
+            tailwater_depth_ft=max(0.0, tailwater_depth_ft),
+            length_ft=max(0.1, length_ft),
+            slope_ftft=max(1.0e-6, slope_ftft),
+            roughness_n=roughness_n,
+            entrance_loss_k=entrance_loss_k,
+            exit_loss_k=exit_loss_k,
+            q_hint_cfs=q_hint_cfs,
+        )
+
+        # ── Combine controls ──
+        q_culvert = max(0.0, min(q_inlet, q_outlet if q_outlet > 0.0 else q_inlet))
+        if q_orifice > 0.0:
+            q_culvert = min(q_culvert, q_orifice) if q_culvert > 0.0 else q_orifice
+        if q_manning_cap > 0.0:
+            q_culvert = min(q_culvert, q_manning_cap) if q_culvert > 0.0 else q_manning_cap
+
+        q_culvert *= float(barrel_count)
+        if link.max_flow is not None:
+            q_culvert = min(q_culvert, max(0.0, float(link.max_flow)))
+
+        return q_culvert if sign >= 0.0 else -q_culvert
+
+    # ------------------------------------------------------------------
     # Solver-mode implementations
     # ------------------------------------------------------------------
 
@@ -447,29 +700,26 @@ class SWE2DUrbanDrainageModule(DrainageCouplingEngine):
         """
         node_net_q: Dict[str, float] = {n.node_id: 0.0 for n in self.cfg.nodes}
         max_q = 0.0
-        if solver_mode == DrainageSolverMode.DYNAMIC:
-            for link in self.cfg.links:
-                q = self._estimate_link_flow(link) if self._use_simplified_link_model(link) else self._dynamic_link_flow_update(link, dt_sub)
-                if self._use_simplified_link_model(link):
-                    self.state.link_flow[link.link_id] = q
-                node_net_q[link.from_node_id] -= q
-                node_net_q[link.to_node_id]   += q
-                max_q = max(max_q, abs(q))
-        elif solver_mode == DrainageSolverMode.DIFFUSION:
-            for link in self.cfg.links:
-                q = self._estimate_link_flow(link) if self._use_simplified_link_model(link) else self._diffusion_link_flow(link)
-                self.state.link_flow[link.link_id] = q
-                node_net_q[link.from_node_id] -= q
-                node_net_q[link.to_node_id]   += q
-                max_q = max(max_q, abs(q))
-        else:
-            # EGL (default)
-            for link in self.cfg.links:
-                q = self._estimate_link_flow(link) if self._use_simplified_link_model(link) else self._egl_link_flow(link)
-                self.state.link_flow[link.link_id] = q
-                node_net_q[link.from_node_id] -= q
-                node_net_q[link.to_node_id]   += q
-                max_q = max(max_q, abs(q))
+
+        # ── Helper: dispatch a single link ──
+        def _link_flow(link: DrainageLink) -> float:
+            """Route one link: culvert uses HDS-5, simplified uses estimate, else solver-dependent."""
+            if str(link.link_type or "").strip().lower() == "culvert":
+                return self._culvert_link_flow(link)
+            if self._use_simplified_link_model(link):
+                return self._estimate_link_flow(link)
+            if solver_mode == DrainageSolverMode.DYNAMIC:
+                return self._dynamic_link_flow_update(link, dt_sub)
+            if solver_mode == DrainageSolverMode.DIFFUSION:
+                return self._diffusion_link_flow(link)
+            return self._egl_link_flow(link)
+
+        for link in self.cfg.links:
+            q = _link_flow(link)
+            self.state.link_flow[link.link_id] = q
+            node_net_q[link.from_node_id] -= q
+            node_net_q[link.to_node_id]   += q
+            max_q = max(max_q, abs(q))
 
         for node in self.cfg.nodes:
             area = max(1.0, float(self._node_area.get(node.node_id, 50.0)))

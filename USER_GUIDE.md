@@ -148,7 +148,88 @@ Experimental 3D patch projection controls:
 When Experimental 3D mode is active, run logs include a `3D projection controls`
 line so the active projection gate/target settings are visible in the run record.
 
-## 11. Save a Copy of the Model
+## 11. Drainage Network & Culvert Coupling
+
+The 2D SWE workbench supports a 1D drainage network (pipe network) that
+exchanges flow with the 2D surface via inlets, outfalls, and pipe-end
+exchange objects. Structure culverts (HDS-5 FHWA hydraulics) are coupled
+through a face-flux mechanism.
+
+### Drainage Link Types
+
+Each drainage link has a `link_type` field set via a value-map dropdown:
+
+| Type | Value | Description |
+|---|---|---|
+| Conduit | `conduit` | Circular pipe flow (orifice + Manning capacity) |
+| Short lateral | `lateral_simple` | Simplified algebraic flow (estimate only) |
+| Pump | `pump` | Fixed-flow pump link |
+| Weir | `weir` | Broad-crested weir link |
+| Orifice | `orifice` | Orifice link |
+| **Culvert (HDS-5)** | `culvert` | FHWA HEC-5 inlet/outlet control hydraulics |
+
+### Culvert Drainage Links (`link_type = "culvert"`)
+
+When a drainage link is set to `"culvert"`, the network solver computes
+flow using the same FHWA HDS-5 methodology as the HydraulicStructure
+culvert path: inlet control, outlet control (secant solve), orifice
+capacity, and Manning full-flow capacity — the minimum of all four
+controls determines the link flow.
+
+Required fields for culvert links:
+
+- `link_id`, `from_node`, `to_node` — connectivity
+- `length` — barrel length (model units)
+- `diameter` or `culvert_rise`/`culvert_span` — cross-section dimensions
+- `roughness_n` — Manning's n
+- `culvert_shape` — `circular`, `box`, `rectangular`, `pipe_arch`
+
+Optional fields:
+
+- `inlet_invert_elev`, `outlet_invert_elev` — invert elevations (defaults
+  to connected-node invert)
+- `entrance_loss_k` — Ke entrance loss coefficient (default 0.5)
+- `exit_loss_k` — Kx exit loss coefficient (default 1.0)
+- `culvert_barrels` — number of barrels (default 1)
+- `culvert_code` — FHWA culvert code (default 1)
+- `max_flow` — total flow cap
+
+### Pipe-End Exchange
+
+Culvert links that connect to a `pipe_end`-type drainage node
+automatically generate a `PipeEndExchange` object, enabling two-way
+flow exchange between the 1D network and the co-located 2D surface
+cell. This is the same mechanism used for daylighted pipe ends.
+
+### Structure Culverts (Face-Flux)
+
+HydraulicStructure culverts use face-flux coupling by default
+(`culvert_face_flux_mode = "face_flux"`). In this mode, culvert mass
+is applied through face-based flux arrays (`d_ext_struct_flux_h/hu/hv`)
+rather than the cell-center source kernel, providing FVM-consistent
+mass+momentum transfer at the culvert inlet/outlet faces.
+
+When the drainage network is also active, the coupling controller
+automatically falls back to the fused CUDA path (or CPU path) that
+handles both drainage source terms and structure flows together,
+preventing the drainage contribution from being silently dropped.
+
+### Coexistence of Drainage + Face-Flux Culverts
+
+Running a model with both the 1D drainage network and face-flux
+structure culverts is fully supported:
+
+| Code Path | Drainage Handled? | Structures Handled? |
+|---|---|---|
+| CPU | ✓ surface exchange | ✓ Python HDS-5 |
+| CUDA (fused) | ✓ inlet_cell/inlet_flow | ✓ GPU source kernel |
+| CUDA (persistent, drainage=None) | N/A | ✓ face-flux kernel |
+
+The persistent GPU path is automatically disabled when drainage is
+present, ensuring the fused path (which accepts drainage arrays) is
+used.
+
+## 11a. Save a Copy of the Model
 
 Use:
 

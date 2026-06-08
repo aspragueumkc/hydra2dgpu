@@ -4611,9 +4611,26 @@ void swe2d_gpu_step(
             ? dev->kernel_graph_cache.time_integrator
             : 1;
 
+    // Clear any stale CUDA error left by prior host-side work (coupling,
+    // face-flux uploads, diagnostics, etc.) before any solver GPU work begins.
+    (void)cudaGetLastError();
+
     if (swe2d_debug_enabled("BACKWATER_SWE2D_DEBUG_GPU_INPUT")) {
         std::fprintf(stderr, "[SWE2D_DEBUG] GPU input: n_cells=%d n_edges=%d dt=%.9e g=%.9e h_min=%.9e\n",
                      static_cast<int>(n_cells), static_cast<int>(n_edges), dt, g, h_min);
+        std::fprintf(stderr,
+                     "[SWE2D_DEBUG] face-flux: use_culvert_face_flux=%d n_ff_faces=%d ff_preloaded=%d "
+                     "d_ext_h=%p d_ext_hu=%p d_ext_hv=%p n_structures=%d sf_params_preloaded=%d "
+                     "graph_replay_count=%lu\n",
+                     static_cast<int>(dev->use_culvert_face_flux),
+                     dev->culvert_ff_ws.params_preloaded ? static_cast<int>(dev->culvert_ff_ws.n_culvert_faces) : -1,
+                     static_cast<int>(dev->culvert_ff_ws.params_preloaded),
+                     static_cast<void*>(dev->d_ext_struct_flux_h),
+                     static_cast<void*>(dev->d_ext_struct_flux_hu),
+                     static_cast<void*>(dev->d_ext_struct_flux_hv),
+                     static_cast<int>(dev->sf_ws.n_structures),
+                     static_cast<int>(dev->sf_ws.params_preloaded),
+                     static_cast<unsigned long>(dev->graph_replay_count));
         const size_t e_show = std::min<size_t>(static_cast<size_t>(n_edges), 8);
         std::vector<int32_t> e_c0(e_show), e_c1(e_show);
         std::vector<double> e_nx(e_show), e_ny(e_show), e_len(e_show);
@@ -5759,6 +5776,10 @@ double swe2d_gpu_compute_dt(
 {
     constexpr int BLOCK = 256;
     const int32_t n_edges = dev->n_edges;
+
+    // Clear any stale CUDA error from prior operations so the CFL kernel
+    // error check is not triggered by a latent error.
+    (void)cudaGetLastError();
 
     CUDA_CHECK(cudaMemsetAsync(dev->d_lambda_max, 0, sizeof(double), dev->d_stream));
     int grid = (n_edges + BLOCK - 1) / BLOCK;
@@ -7788,6 +7809,21 @@ void swe2d_gpu_get_state(
     if (hv_out) CUDA_CHECK(cudaMemcpy(hv_out, dev->d_hv, sz, cudaMemcpyDeviceToHost));
 }
 
+void swe2d_gpu_readback_h(double* host_buf, int32_t n_cells)
+{
+    SWE2DDeviceState* dev = s_coupling_dev;
+    if (!dev || !dev->d_h || n_cells <= 0) {
+        if (host_buf && n_cells > 0)
+            std::memset(host_buf, 0, static_cast<size_t>(n_cells) * sizeof(double));
+        return;
+    }
+    if (n_cells > dev->n_cells)
+        n_cells = dev->n_cells;
+    CUDA_CHECK(cudaMemcpy(host_buf, dev->d_h,
+                          static_cast<size_t>(n_cells) * sizeof(double),
+                          cudaMemcpyDeviceToHost));
+}
+
 void swe2d_gpu_set_state(
     SWE2DDeviceState* dev,
     const double* h_in,
@@ -8363,9 +8399,12 @@ void swe2d_gpu_compute_coupling_full_on_device(
         CUDA_CHECK(cudaGetLastError());
     }
 
-    if (swe2d_debug_enabled("BACKWATER_SWE2D_SYNC_COUPLING")) {
-        CUDA_CHECK(cudaStreamSynchronize(stream));
-    }
+    // Sync stream after coupling work so the solver's graph capture on the next
+    // step starts with a clean stream.  The coupling function is called from host
+    // code (apply_native_device_sources) and the solver's graph capture/replay
+    // uses the same stream; without this sync, pending async work causes
+    // cudaStreamBeginCapture to fail on the next solver step.
+    CUDA_CHECK(cudaStreamSynchronize(stream));
 }
 
 void swe2d_gpu_readback_coupling_sources(double* host_buf, int32_t n_cells)
@@ -13187,7 +13226,7 @@ void swe2d_gpu_drainage_step(
     double* limiter_event_count_out,
     double* limiter_volume_m3_out)
 {
-    if (!cell_wse || !cell_area || !node_invert_elev || !node_max_depth || !node_surface_area ||
+    if (!cell_area || !node_invert_elev || !node_max_depth || !node_surface_area ||
         !link_from || !link_to || !link_length || !link_roughness_n || !link_diameter || !link_max_flow ||
         !inlet_cell || !inlet_node || !inlet_crest_elev || !inlet_width || !inlet_coefficient || !inlet_max_capture ||
         !outfall_cell || !outfall_node || !outfall_invert_elev || !outfall_diameter || !outfall_coefficient || !outfall_max_flow || !outfall_zero_storage ||
@@ -13225,13 +13264,38 @@ void swe2d_gpu_drainage_step(
     double *d_limiter_events = nullptr, *d_limiter_volume = nullptr;
 
     try {
+        // Clear stale CUDA error from prior operations on this stream.
+        // Without this, any latent error would be picked up by the first
+        // CUDA_CHECK inside this function and attributed to the wrong operation.
+        (void)cudaGetLastError();
+
         CUDA_CHECK(cudaMalloc(reinterpret_cast<void**>(&d_cell_wse), static_cast<size_t>(n_cells) * sizeof(double)));
         CUDA_CHECK(cudaMalloc(reinterpret_cast<void**>(&d_cell_area), static_cast<size_t>(n_cells) * sizeof(double)));
-        CUDA_CHECK(cudaMemcpy(d_cell_wse, cell_wse, static_cast<size_t>(n_cells) * sizeof(double), cudaMemcpyHostToDevice));
         CUDA_CHECK(cudaMemcpy(d_cell_area, cell_area, static_cast<size_t>(n_cells) * sizeof(double), cudaMemcpyHostToDevice));
+
+        // When cell_wse is null, compute WSE on-device from s_coupling_dev state.
+        // This eliminates the D2H readback of h + host-side WSE computation.
+        if (cell_wse) {
+            CUDA_CHECK(cudaMemcpy(d_cell_wse, cell_wse, static_cast<size_t>(n_cells) * sizeof(double), cudaMemcpyHostToDevice));
+        } else {
+            SWE2DDeviceState* ds = s_coupling_dev;
+            if (ds && ds->d_h && ds->d_cell_zb) {
+                int grid = (n_cells + BLOCK - 1) / BLOCK;
+                swe2d_coupling_wse_from_state_kernel<<<grid, BLOCK, 0, 0>>>(
+                    n_cells, ds->d_h, ds->d_cell_zb, d_cell_wse);
+                CUDA_CHECK(cudaGetLastError());
+            }
+        }
         if (cell_depth) {
             CUDA_CHECK(cudaMalloc(reinterpret_cast<void**>(&d_cell_depth), static_cast<size_t>(n_cells) * sizeof(double)));
             CUDA_CHECK(cudaMemcpy(d_cell_depth, cell_depth, static_cast<size_t>(n_cells) * sizeof(double), cudaMemcpyHostToDevice));
+        } else {
+            // Compute depth on-device from s_coupling_dev->d_h
+            SWE2DDeviceState* ds = s_coupling_dev;
+            if (ds && ds->d_h) {
+                CUDA_CHECK(cudaMalloc(reinterpret_cast<void**>(&d_cell_depth), static_cast<size_t>(n_cells) * sizeof(double)));
+                CUDA_CHECK(cudaMemcpy(d_cell_depth, ds->d_h, static_cast<size_t>(n_cells) * sizeof(double), cudaMemcpyDeviceToDevice));
+            }
         }
 
         CUDA_CHECK(cudaMalloc(reinterpret_cast<void**>(&d_node_inv), static_cast<size_t>(n_nodes) * sizeof(double)));

@@ -134,11 +134,22 @@ class DrainageLink:
     link_id: str
     from_node_id: str
     to_node_id: str
-    link_type: str = "conduit"  # conduit, pump, weir, orifice
+    link_type: str = "conduit"  # conduit, pump, weir, orifice, culvert
     length: float = 0.0
     roughness_n: float = 0.013
     diameter: Optional[float] = None
     max_flow: Optional[float] = None
+    # Culvert-specific fields (used when link_type == "culvert")
+    culvert_shape: Optional[str] = None       # circular, box, rectangular, pipe_arch
+    culvert_code: int = 1                      # FHWA culvert code
+    culvert_rise: Optional[float] = None       # vertical dimension (model units)
+    culvert_span: Optional[float] = None       # horizontal dimension (model units)
+    inlet_invert_elev: Optional[float] = None  # upstream invert (model units)
+    outlet_invert_elev: Optional[float] = None # downstream invert (model units)
+    entrance_loss_k: float = 0.5               # Ke (FHWA entrance loss)
+    exit_loss_k: float = 1.0                   # Kx (FHWA exit loss)
+    barrel_count: int = 1                      # number of barrels
+    cd: float = 0.75                           # orifice discharge coefficient
     metadata: Dict[str, float] = field(default_factory=dict)
 
 

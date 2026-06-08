@@ -458,12 +458,16 @@ struct SWE2DDeviceState {
     struct RedistWorkspace {
         int32_t  n_struct_capacity = 0;
         int32_t  dist_cell_capacity = 0;
+        int32_t  cell_capacity = 0;
         uint64_t data_hash = 0;
         int32_t* d_offsets = nullptr;    // [n_struct + 1]
         int32_t* d_cell_idx = nullptr;   // [total_dist_cells]
         double*  d_weights = nullptr;    // [total_dist_cells]
         int32_t* d_up = nullptr;         // [n_struct]
         int32_t* d_dn = nullptr;         // [n_struct]
+        double*  d_flow = nullptr;       // [n_struct] per-step flows (pre-allocated)
+        double*  d_cell_area = nullptr;  // [n_cells] area, owned by RedistWorkspace
+        double*  d_source = nullptr;     // [n_cells] source, owned by RedistWorkspace
 
         void destroy() {
             if (d_offsets) { cudaFree(d_offsets); d_offsets = nullptr; }
@@ -471,8 +475,12 @@ struct SWE2DDeviceState {
             if (d_weights) { cudaFree(d_weights); d_weights = nullptr; }
             if (d_up) { cudaFree(d_up); d_up = nullptr; }
             if (d_dn) { cudaFree(d_dn); d_dn = nullptr; }
+            if (d_flow) { cudaFree(d_flow); d_flow = nullptr; }
+            if (d_cell_area) { cudaFree(d_cell_area); d_cell_area = nullptr; }
+            if (d_source) { cudaFree(d_source); d_source = nullptr; }
             n_struct_capacity = 0;
             dist_cell_capacity = 0;
+            cell_capacity = 0;
             data_hash = 0;
         }
     } redist_ws{};
@@ -934,6 +942,10 @@ void swe2d_gpu_get_state(
     double* h_out,
     double* hu_out,
     double* hv_out);
+
+// Lightweight readback of just h (depth) from the coupling device state.
+// Uses s_coupling_dev global — no device pointer needed.
+void swe2d_gpu_readback_h(double* host_buf, int32_t n_cells);
 
 // Upload host state arrays into the current device solver state.
 void swe2d_gpu_set_state(

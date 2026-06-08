@@ -102,17 +102,20 @@ __global__ __launch_bounds__(256, 4) void swe2d_redistribute_sources_kernel(
 static void ensure_redist_buffers(
     SWE2DDeviceState* dev,
     int32_t n_structures,
-    int32_t total_dist_cells)
+    int32_t total_dist_cells,
+    int32_t n_cells = 0)
 {
     auto& ws = dev->redist_ws;
     if (ws.n_struct_capacity < n_structures + 1) {
         if (ws.d_offsets) cudaFree(ws.d_offsets);
         if (ws.d_up)      cudaFree(ws.d_up);
         if (ws.d_dn)      cudaFree(ws.d_dn);
-        ws.d_offsets = nullptr; ws.d_up = nullptr; ws.d_dn = nullptr;
+        if (ws.d_flow)    cudaFree(ws.d_flow);
+        ws.d_offsets = nullptr; ws.d_up = nullptr; ws.d_dn = nullptr; ws.d_flow = nullptr;
         CUDA_CHECK(cudaMalloc(&ws.d_offsets, static_cast<size_t>(n_structures + 1) * sizeof(int32_t)));
         CUDA_CHECK(cudaMalloc(&ws.d_up,      static_cast<size_t>(n_structures) * sizeof(int32_t)));
         CUDA_CHECK(cudaMalloc(&ws.d_dn,      static_cast<size_t>(n_structures) * sizeof(int32_t)));
+        CUDA_CHECK(cudaMalloc(&ws.d_flow,    static_cast<size_t>(n_structures) * sizeof(double)));
         ws.n_struct_capacity = n_structures + 1;
         ws.data_hash = 0;  // force re-upload
     }
@@ -124,6 +127,17 @@ static void ensure_redist_buffers(
         CUDA_CHECK(cudaMalloc(&ws.d_weights,  static_cast<size_t>(total_dist_cells) * sizeof(double)));
         ws.dist_cell_capacity = total_dist_cells;
         ws.data_hash = 0;  // force re-upload
+    }
+    if (n_cells > 0 && ws.cell_capacity < n_cells) {
+        if (ws.d_cell_area) cudaFree(ws.d_cell_area);
+        if (ws.d_source) cudaFree(ws.d_source);
+        ws.d_cell_area = nullptr; ws.d_source = nullptr;
+        CUDA_CHECK(cudaMalloc(reinterpret_cast<void**>(&ws.d_cell_area),
+                              static_cast<size_t>(n_cells) * sizeof(double)));
+        CUDA_CHECK(cudaMalloc(reinterpret_cast<void**>(&ws.d_source),
+                              static_cast<size_t>(n_cells) * sizeof(double)));
+        ws.cell_capacity = n_cells;
+        ws.data_hash = 0;
     }
 }
 
@@ -189,22 +203,15 @@ void swe2d_gpu_redistribute_structure_sources(
     if (dev) {
         // Persistent path: use device-resident buffers with content-hash
         // tracking to skip re-upload of static redistribution geometry.
-        ensure_redist_buffers(dev, n_structures, total_dist_cells);
+        ensure_redist_buffers(dev, n_structures, total_dist_cells, n_cells);
         auto& ws = dev->redist_ws;
         d_offsets = ws.d_offsets;
         d_up      = ws.d_up;
         d_dn      = ws.d_dn;
         d_cell_idx = ws.d_cell_idx;
         d_weights  = ws.d_weights;
-        d_cell_area = dev->coupling_ws.d_cell_area;
-        d_source    = dev->coupling_ws.d_source;
-
-        // Flow values change every step (tiny array); always upload.
-        // Static geometry: upload only when hash changed.
-        const uint64_t new_hash = hash_redist_data(
-            n_structures, dist_offsets, dist_cell_idx, dist_weights,
-            orig_up_cell, orig_dn_cell, total_dist_cells);
-        const bool data_changed = (new_hash != ws.data_hash);
+        d_cell_area = ws.d_cell_area;
+        d_source    = ws.d_source;
 
         auto h2d = [stream](void* d, const void* h, size_t bytes) {
             if (stream)
@@ -212,6 +219,16 @@ void swe2d_gpu_redistribute_structure_sources(
             else
                 CUDA_CHECK(cudaMemcpy(d, h, bytes, cudaMemcpyHostToDevice));
         };
+
+        // Upload cell area to the redist-owned buffer (host pointer is parameter)
+        h2d(d_cell_area, cell_area, static_cast<size_t>(n_cells) * sizeof(double));
+
+        // Flow values change every step (tiny array); always upload.
+        // Static geometry: upload only when hash changed.
+        const uint64_t new_hash = hash_redist_data(
+            n_structures, dist_offsets, dist_cell_idx, dist_weights,
+            orig_up_cell, orig_dn_cell, total_dist_cells);
+        const bool data_changed = (new_hash != ws.data_hash);
 
         if (data_changed) {
             h2d(d_offsets, dist_offsets, static_cast<size_t>(n_structures + 1) * sizeof(int32_t));
@@ -224,10 +241,15 @@ void swe2d_gpu_redistribute_structure_sources(
             ws.data_hash = new_hash;
         }
 
-        // Flow: always upload (changes every step, but tiny: n_structures * 8 bytes)
-        CUDA_CHECK(cudaMalloc(&d_flow, static_cast<size_t>(n_structures) * sizeof(double)));
+        // Upload cell area to the redist-owned buffer (host pointer is function param)
+        h2d(d_cell_area, cell_area, static_cast<size_t>(n_cells) * sizeof(double));
+
+        // Flow: always upload (changes every step, but tiny: n_structures * 8 bytes).
+        // d_flow is pre-allocated in the persistent workspace so this never calls
+        // cudaMalloc inside a CUDA graph capture region.
+        d_flow = ws.d_flow;
         h2d(d_flow, structure_flow, static_cast<size_t>(n_structures) * sizeof(double));
-        own_temp = true;
+        own_temp = false;
 
         // Source array: upload every step (source rates change each timestep).
         // d_source is now pre-allocated by swe2d_gpu_preload_coupling_cell_area.
@@ -359,8 +381,8 @@ void swe2d_gpu_redistribute_structure_sources_persistent(
         total_dist_cells += (end - start > 0) ? (end - start) : 0;
     }
 
-    // Ensure persistent redistribution buffers have capacity.
-    ensure_redist_buffers(dev, n_structures, total_dist_cells);
+    // Ensure persistent redistribution buffers have capacity (includes n_cells).
+    ensure_redist_buffers(dev, n_structures, total_dist_cells, n_cells);
     auto& ws = dev->redist_ws;
 
     // Upload / re-upload static geometry only when hash changed.
@@ -385,15 +407,23 @@ void swe2d_gpu_redistribute_structure_sources_persistent(
     }
 
     // Flow: upload every step (tiny: n_struct * 8 bytes).
-    double* d_flow = nullptr;
-    CUDA_CHECK(cudaMalloc(&d_flow, static_cast<size_t>(n_structures) * sizeof(double)));
+    // d_flow is pre-allocated in the persistent workspace so this never calls
+    // cudaMalloc inside a CUDA graph capture region.
+    double* d_flow = ws.d_flow;
     upload(d_flow, structure_flow, static_cast<size_t>(n_structures) * sizeof(double));
 
     // Source: operate directly on dev->d_external_source_mps in place.
     double* d_source = dev->d_external_source_mps;
 
-    // Cell area from coupling workspace (pre-loaded, SI m²).
-    double* d_cell_area = dev->coupling_ws.d_cell_area;
+    // Cell area: use the redist-owned buffer. Copy from coupling_ws (which was
+    // loaded by swe2d_gpu_preload_coupling_cell_area in SI m²) on first call
+    // or when size changed (hash reset indicates fresh allocation).
+    double* d_cell_area = ws.d_cell_area;
+    if (ws.data_hash == 0 && dev->coupling_ws.d_cell_area) {
+        CUDA_CHECK(cudaMemcpyAsync(ws.d_cell_area, dev->coupling_ws.d_cell_area,
+                                   static_cast<size_t>(n_cells) * sizeof(double),
+                                   cudaMemcpyDeviceToDevice, stream));
+    }
 
     // ── Step 1: convert source array from SI (m/s) → model units ─────
     // compute_coupling_full_on_device writes m/s (q_cms / area_m2).
@@ -448,9 +478,6 @@ void swe2d_gpu_redistribute_structure_sources_persistent(
     // in model units.  The redistribution kernel's contribution is m/s
     // (q_cms / area_m2) which has the same intentional 3.28x mismatch
     // as the original Python path.
-
-    // Free temp flow buffer.
-    cudaFree(d_flow);
 
     // No sync needed — the solver step uses the same stream and will
     // see the updated sources when it launches its kernels.

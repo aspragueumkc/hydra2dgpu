@@ -768,16 +768,107 @@ def _build_pipe_network_config(self):
         if (diameter_val is None or diameter_val <= 0.0) and (area_val is None or area_val <= 0.0) and (equiv_d_val is None or equiv_d_val <= 0.0):
             links_missing_capacity.append(link_id)
 
+        link_type_raw = str(ft["link_type"] if "link_type" in link_fields else "conduit").strip() or "conduit"
+        is_culvert = (link_type_raw.lower() == "culvert")
+
+        # Parse culvert-specific fields when link_type is "culvert"
+        culvert_shape_val = None
+        if is_culvert:
+            raw_shape = str(ft.get("culvert_shape", "") or "").strip().lower()
+            if raw_shape in ("", "none", "null"):
+                raw_shape = "circular"
+            culvert_shape_val = raw_shape
+
+        culvert_code_val = 1
+        if is_culvert and "culvert_code" in link_fields:
+            try:
+                culvert_code_val = int(round(float(ft["culvert_code"])))
+            except Exception:
+                pass
+
+        culvert_rise_val = None
+        if is_culvert and "culvert_rise" in link_fields:
+            try:
+                rv = float(ft["culvert_rise"])
+                if rv > 0.0:
+                    culvert_rise_val = rv
+            except Exception:
+                pass
+
+        culvert_span_val = None
+        if is_culvert and "culvert_span" in link_fields:
+            try:
+                sv = float(ft["culvert_span"])
+                if sv > 0.0:
+                    culvert_span_val = sv
+            except Exception:
+                pass
+
+        inlet_invert_val = None
+        if is_culvert and "inlet_invert_elev" in link_fields:
+            try:
+                iiv = float(ft["inlet_invert_elev"])
+                inlet_invert_val = iiv
+            except Exception:
+                pass
+
+        outlet_invert_val = None
+        if is_culvert and "outlet_invert_elev" in link_fields:
+            try:
+                oiv = float(ft["outlet_invert_elev"])
+                outlet_invert_val = oiv
+            except Exception:
+                pass
+
+        entrance_loss_val = 0.5
+        if is_culvert:
+            for cand in ("entrance_loss_k", "inlet_loss_k", "entry_loss_k"):
+                if cand in link_fields and ft[cand] not in (None, ""):
+                    try:
+                        entrance_loss_val = float(ft[cand])
+                        break
+                    except Exception:
+                        pass
+
+        exit_loss_val = 1.0
+        if is_culvert:
+            for cand in ("exit_loss_k", "outlet_loss_k"):
+                if cand in link_fields and ft[cand] not in (None, ""):
+                    try:
+                        exit_loss_val = float(ft[cand])
+                        break
+                    except Exception:
+                        pass
+
+        barrel_count_val = 1
+        if is_culvert and "culvert_barrels" in link_fields:
+            try:
+                bc = int(round(float(ft["culvert_barrels"])))
+                if bc >= 1:
+                    barrel_count_val = bc
+            except Exception:
+                pass
+
         links.append(
             DrainageLink(
                 link_id=link_id,
                 from_node_id=from_node,
                 to_node_id=to_node,
-                link_type=str(ft["link_type"] if "link_type" in link_fields else "conduit").strip() or "conduit",
+                link_type=link_type_raw,
                 length=float(ft["length"]) if "length" in link_fields and ft["length"] not in (None, "") else float(geom.length()),
                 roughness_n=float(ft["roughness_n"] if "roughness_n" in link_fields and ft["roughness_n"] not in (None, "") else 0.013),
                 diameter=diameter_val,
                 max_flow=float(ft["max_flow"]) if "max_flow" in link_fields and ft["max_flow"] not in (None, "") else None,
+                culvert_shape=culvert_shape_val,
+                culvert_code=culvert_code_val,
+                culvert_rise=culvert_rise_val,
+                culvert_span=culvert_span_val,
+                inlet_invert_elev=inlet_invert_val,
+                outlet_invert_elev=outlet_invert_val,
+                entrance_loss_k=entrance_loss_val,
+                exit_loss_k=exit_loss_val,
+                barrel_count=barrel_count_val,
+                cd=float(ft["cd"] if "cd" in link_fields and ft["cd"] not in (None, "") else 0.75),
                 metadata={
                     "area_m2": float(area_val) if area_val is not None else 0.0,
                     "equiv_diameter_m": float(equiv_d_val) if equiv_d_val is not None else 0.0,
@@ -805,6 +896,16 @@ def _build_pipe_network_config(self):
                     "link_shape": link_shape,
                     "span_m": float(span_val) if span_val is not None else 0.0,
                     "rise_m": float(rise_val) if rise_val is not None else 0.0,
+                    # Culvert fields also mirrored in metadata for back-compat
+                    "culvert_shape": culvert_shape_val or "circular",
+                    "culvert_code": float(culvert_code_val),
+                    "culvert_rise": float(culvert_rise_val) if culvert_rise_val is not None else 0.0,
+                    "culvert_span": float(culvert_span_val) if culvert_span_val is not None else 0.0,
+                    "inlet_invert_elev": float(inlet_invert_val) if inlet_invert_val is not None else 0.0,
+                    "outlet_invert_elev": float(outlet_invert_val) if outlet_invert_val is not None else 0.0,
+                    "entrance_loss_k": entrance_loss_val,
+                    "exit_loss_k": exit_loss_val,
+                    "culvert_barrels": float(barrel_count_val),
                 },
             )
         )
@@ -978,7 +1079,8 @@ def _build_pipe_network_config(self):
     pipe_ends: List[PipeEndExchange] = []
     if PipeEndExchange is not None:
         pipe_end_link_types = {
-            "pipe_end", "pipe-end", "daylighted_pipe", "daylighted", "daylight_pipe"
+            "pipe_end", "pipe-end", "daylighted_pipe", "daylighted", "daylight_pipe",
+            "culvert",  # culvert links terminating at pipe_end nodes
         }
         pipe_end_nodes = {
             str(n.node_id) for n in nodes
@@ -2711,7 +2813,7 @@ def _configure_swe2d_layer_editors(self, layer):
         self._set_expression_constraint(layer, "link_id", 'length(trim("link_id")) > 0')
         self._set_expression_constraint(layer, "from_node", 'length(trim("from_node")) > 0')
         self._set_expression_constraint(layer, "to_node", 'length(trim("to_node")) > 0')
-        self._set_expression_constraint(layer, "link_type", '"link_type" IN (\'conduit\',\'lateral_simple\',\'pump\',\'weir\',\'orifice\')')
+        self._set_expression_constraint(layer, "link_type", '"link_type" IN (\'conduit\',\'lateral_simple\',\'pump\',\'weir\',\'orifice\',\'culvert\')')
         self._set_expression_constraint(layer, "link_shape", '"link_shape" IS NULL OR "link_shape" IN (\'circular\',\'box\',\'pipe_arch\',\'custom\')')
         self._set_expression_constraint(layer, "length", '"length" IS NULL OR "length" > 0')
         self._set_expression_constraint(layer, "roughness_n", '"roughness_n" IS NULL OR "roughness_n" > 0')

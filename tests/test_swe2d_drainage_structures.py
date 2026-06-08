@@ -1682,6 +1682,340 @@ class TestSWE2DDrainageStructures(unittest.TestCase):
             1.0,
         )
 
+    # ── Phase 2+3: Culvert-as-Drainage-Link + Coexistence tests ─────────
+
+    def test_culvert_link_flow_positive_gradient(self):
+        """Culvert link with from_node head > to_node head → positive HDS-5 flow."""
+        nodes = [
+            DrainageNode(node_id="N0", x=0.0, y=0.0, invert_elev=0.0, max_depth=5.0,
+                         metadata={"surface_area": 10.0}),
+            DrainageNode(node_id="N1", x=10.0, y=0.0, invert_elev=0.0, max_depth=5.0,
+                         metadata={"surface_area": 10.0}),
+        ]
+        link = DrainageLink(
+            link_id="C0", from_node_id="N0", to_node_id="N1",
+            link_type="culvert", length=12.0, roughness_n=0.013,
+            diameter=1.0, culvert_shape="circular", cd=0.75,
+        )
+        cfg = PipeNetworkConfig(enabled=True, nodes=nodes, links=[link])
+        mod = SWE2DUrbanDrainageModule(cfg)
+        mod.initialize()
+        mod.state.node_depth["N0"] = 2.0
+        mod.state.node_depth["N1"] = 0.5
+        q = mod._culvert_link_flow(link)
+        self.assertGreater(q, 0.0, "Flow should be positive (N0 → N1)")
+        self.assertLess(q, 50.0, "Flow should be physically bounded")
+
+    def test_culvert_link_flow_reverse_gradient(self):
+        """Culvert link with from_node head < to_node head → negative flow."""
+        nodes = [
+            DrainageNode(node_id="N0", x=0.0, y=0.0, invert_elev=0.0, max_depth=5.0,
+                         metadata={"surface_area": 10.0}),
+            DrainageNode(node_id="N1", x=10.0, y=0.0, invert_elev=0.0, max_depth=5.0,
+                         metadata={"surface_area": 10.0}),
+        ]
+        link = DrainageLink(
+            link_id="C0", from_node_id="N0", to_node_id="N1",
+            link_type="culvert", length=12.0, roughness_n=0.013,
+            diameter=1.0, culvert_shape="circular", cd=0.75,
+        )
+        cfg = PipeNetworkConfig(enabled=True, nodes=nodes, links=[link])
+        mod = SWE2DUrbanDrainageModule(cfg)
+        mod.initialize()
+        mod.state.node_depth["N0"] = 0.5
+        mod.state.node_depth["N1"] = 2.0
+        q = mod._culvert_link_flow(link)
+        self.assertLess(q, 0.0, "Flow should be negative (N1 → N0)")
+
+    def test_culvert_link_flow_invert_elevation(self):
+        """Culvert with non-zero inlet/outlet invert elevations still computes flow."""
+        nodes = [
+            DrainageNode(node_id="N0", x=0.0, y=0.0, invert_elev=1.0, max_depth=5.0,
+                         metadata={"surface_area": 10.0}),
+            DrainageNode(node_id="N1", x=10.0, y=0.0, invert_elev=1.0, max_depth=5.0,
+                         metadata={"surface_area": 10.0}),
+        ]
+        link = DrainageLink(
+            link_id="C0", from_node_id="N0", to_node_id="N1",
+            link_type="culvert", length=12.0, roughness_n=0.013,
+            diameter=0.5, inlet_invert_elev=1.0, outlet_invert_elev=0.8,
+            culvert_shape="circular",
+        )
+        cfg = PipeNetworkConfig(enabled=True, nodes=nodes, links=[link])
+        mod = SWE2DUrbanDrainageModule(cfg)
+        mod.initialize()
+        mod.state.node_depth["N0"] = 1.5
+        mod.state.node_depth["N1"] = 0.3
+        q = mod._culvert_link_flow(link)
+        self.assertGreater(q, 0.0, "Flow positive with head difference")
+        self.assertTrue(np.isfinite(q), "Flow must be finite")
+
+    def test_culvert_link_flow_dispatch_in_step_network(self):
+        """_step_network_once dispatches culvert links through _culvert_link_flow."""
+        nodes = [
+            DrainageNode(node_id="N0", x=0.0, y=0.0, invert_elev=0.0, max_depth=5.0,
+                         metadata={"surface_area": 10.0}),
+            DrainageNode(node_id="N1", x=10.0, y=0.0, invert_elev=0.0, max_depth=5.0,
+                         metadata={"surface_area": 10.0}),
+        ]
+        link = DrainageLink(
+            link_id="C0", from_node_id="N0", to_node_id="N1",
+            link_type="culvert", length=12.0, roughness_n=0.013,
+            diameter=0.6, culvert_shape="circular",
+        )
+        cfg = PipeNetworkConfig(
+            enabled=True, nodes=nodes, links=[link],
+            solver_mode=DrainageSolverMode.EGL,
+        )
+        mod = SWE2DUrbanDrainageModule(cfg)
+        mod.initialize()
+        mod.state.node_depth["N0"] = 3.0
+        mod.state.node_depth["N1"] = 0.5
+        max_q, _max_depth, _net = mod._step_network_once(
+            dt_sub=1.0, solver_mode=DrainageSolverMode.EGL)
+        self.assertGreater(max_q, 0.0, "Culvert flow must be > 0")
+        self.assertIn("C0", mod.state.link_flow)
+        self.assertAlmostEqual(
+            mod.state.link_flow["C0"], mod._culvert_link_flow(link), places=10,
+            msg="Dispatch must call _culvert_link_flow")
+
+    def test_coupling_drainage_and_face_flux_culvert_no_drainage_drop(self):
+        """Regression: drainage q_cell not dropped when face-flux culvert is also active."""
+        from swe2d import units as _u
+        _u.configure(1.0)
+        drainage_mod = self._build_simple_network()
+        drainage_mod.state.node_depth["N0"] = 1.0
+        structure = HydraulicStructure(
+            structure_id="C0", structure_type=StructureType.CULVERT,
+            upstream_cell=0, downstream_cell=1, crest_elev=0.0,
+            metadata={"diameter": 1.0, "length": 12.0, "roughness_n": 0.013, "cd": 0.75},
+        )
+        structures_mod = SWE2DStructureModule(
+            HydraulicStructureConfig(enabled=True, structures=[structure]),
+            model_to_ft=_u.model_to_ft(),
+        )
+        controller = SWE2DCouplingController(
+            cell_area=[5.0, 5.0], cell_bed=[0.0, 0.0],
+            drainage=drainage_mod, structures=structures_mod,
+            coupling_loop="cpu", culvert_face_flux_mode="face_flux",
+        )
+        src = controller.compute_source_rates(
+            t_s=0.0, dt_s=1.0,
+            h=np.asarray([1.8, 1.0], dtype=np.float64),
+            hu=np.zeros(2, dtype=np.float64),
+            hv=np.zeros(2, dtype=np.float64),
+        )
+        self.assertEqual(src.size, 2)
+        diag = controller.last_diag
+        self.assertIsNotNone(diag)
+        self.assertGreater(
+            abs(diag.component_sums.get("drainage", 0.0)), 0.0,
+            "Drainage contribution must NOT be dropped")
+        # Structures flow may appear under 'structures_native_cpu_helper' (CPU
+        # native helper path) or 'structures' (pure Python path).
+        struct_key = "structures" if diag.component_sums.get("structures", 0.0) != 0.0 else "structures_native_cpu_helper"
+        self.assertGreater(
+            abs(diag.component_sums.get(struct_key, 0.0)), 0.0,
+            f"Structure contribution must be present (checked key='{struct_key}')")
+
+    def test_culvert_drainage_link_parity_with_hydraulic_structure(self):
+        """Same culvert geometry → comparable flow in DrainageLink vs HydraulicStructure."""
+        from swe2d import units as _u
+        _u.configure(1.0)
+        nodes = [
+            DrainageNode(node_id="N0", x=0.0, y=0.0, invert_elev=1.0, max_depth=5.0,
+                         metadata={"surface_area": 10.0}),
+            DrainageNode(node_id="N1", x=12.0, y=0.0, invert_elev=0.5, max_depth=5.0,
+                         metadata={"surface_area": 10.0}),
+        ]
+        link = DrainageLink(
+            link_id="C0", from_node_id="N0", to_node_id="N1",
+            link_type="culvert", length=12.0, roughness_n=0.013,
+            diameter=1.0, inlet_invert_elev=1.0, outlet_invert_elev=0.5,
+            culvert_shape="circular", cd=0.75,
+        )
+        cfg = PipeNetworkConfig(enabled=True, nodes=nodes, links=[link])
+        drain_mod = SWE2DUrbanDrainageModule(cfg)
+        drain_mod.initialize()
+        drain_mod.state.node_depth["N0"] = 2.0
+        drain_mod.state.node_depth["N1"] = 0.3
+        q_drain = drain_mod._culvert_link_flow(link)
+
+        structure = HydraulicStructure(
+            structure_id="C0", structure_type=StructureType.CULVERT,
+            upstream_cell=0, downstream_cell=1, crest_elev=0.5,
+            metadata={"diameter": 1.0, "length": 12.0, "roughness_n": 0.013,
+                      "inlet_invert_elev": 1.0, "outlet_invert_elev": 0.5, "cd": 0.75},
+        )
+        struct_mod = SWE2DStructureModule(
+            HydraulicStructureConfig(enabled=True, structures=[structure]),
+            model_to_ft=_u.model_to_ft(),
+        )
+        flow = struct_mod.structure_flows([3.0, 0.8])
+        q_struct = abs(flow[0] if flow else 0.0)
+
+        self.assertGreater(q_drain, 0.0)
+        self.assertGreater(q_struct, 0.0)
+        ratio = max(q_drain, q_struct) / max(min(q_drain, q_struct), 1.0e-12)
+        self.assertLess(ratio, 5.0,
+                        f"Drain ({q_drain:.4f}) vs Structure ({q_struct:.4f}) "
+                        f"should agree within 5x (same HDS-5 methodology)")
+
+    def test_link_type_value_map_includes_culvert(self):
+        """_DRAIN_LINK_TYPE_VALUE_MAP must include the culvert entry."""
+        if not _HAVE_WORKBENCH:
+            self.skipTest("workbench module not importable")
+        self.assertIn(
+            "culvert",
+            _wbqt._DRAIN_LINK_TYPE_VALUE_MAP.values(),
+            "_DRAIN_LINK_TYPE_VALUE_MAP must contain 'culvert'")
+
+    # ── Phase 4: GPU integration test — drainage + 2 face-flux culverts ─────
+
+    @unittest.skipUnless(swe2d_available() and swe2d_gpu_available(),
+                         "native SWE2D CUDA backend not available")
+    def test_gpu_persistent_path_with_drainage_and_culverts(self):
+        """GPU integration test matching real-world case:
+        - 2D mesh, two face-flux culvert structures
+        - Drainage network with pipe-end exchange
+        - Coupling controller in CUDA mode with real native module
+        - Verifies persistent path handles drainage + structures together
+        """
+        from swe2d import units as _u
+        _u.configure(1.0)
+
+        backend = SWE2DBackend(use_gpu=True)
+        node_x = np.asarray([0.0, 12.0, 12.0, 0.0, 0.0, 12.0, 12.0, 0.0],
+                            dtype=np.float64)
+        node_y = np.asarray([0.0, 0.0, 8.0, 8.0, 0.0, 0.0, 8.0, 8.0],
+                            dtype=np.float64)
+        node_z = np.zeros(8, dtype=np.float64)
+        cell_nodes = np.asarray([
+            0, 1, 2, 0, 2, 3,
+            4, 5, 6, 4, 6, 7,
+        ], dtype=np.int32)
+        backend.build_mesh(node_x, node_y, node_z, cell_nodes)
+
+        n_cells = backend.n_cells
+
+        # ── Two face-flux culvert structures ──
+        structures_list = [
+            HydraulicStructure(
+                structure_id="C0", structure_type=StructureType.CULVERT,
+                upstream_cell=0, downstream_cell=1, crest_elev=0.0,
+                metadata={
+                    "culvert_shape": "circular", "culvert_code": 1,
+                    "diameter": 1.0, "culvert_rise": 1.0,
+                    "length": 12.0, "roughness_n": 0.013,
+                    "inlet_invert_elev": 0.0, "outlet_invert_elev": -0.05,
+                    "entrance_loss_k": 0.5, "exit_loss_k": 1.0,
+                },
+            ),
+            HydraulicStructure(
+                structure_id="C1", structure_type=StructureType.CULVERT,
+                upstream_cell=2, downstream_cell=3, crest_elev=0.0,
+                metadata={
+                    "culvert_shape": "circular", "culvert_code": 1,
+                    "diameter": 0.8, "culvert_rise": 0.8,
+                    "length": 10.0, "roughness_n": 0.014,
+                    "inlet_invert_elev": -0.1, "outlet_invert_elev": -0.15,
+                    "entrance_loss_k": 0.5, "exit_loss_k": 1.0,
+                },
+            ),
+        ]
+        struct_cfg = HydraulicStructureConfig(enabled=True, structures=structures_list)
+        struct_mod = SWE2DStructureModule(struct_cfg, model_to_ft=_u.model_to_ft())
+
+        # ── Drainage network with pipe-end exchange ──
+        drain_nodes = [
+            DrainageNode(node_id="N0", x=0.0, y=0.0, invert_elev=0.0, max_depth=4.0,
+                         metadata={"surface_area": 50.0}),
+            DrainageNode(node_id="N1", x=0.0, y=8.0, invert_elev=-0.5, max_depth=4.0,
+                         metadata={"surface_area": 50.0}),
+        ]
+        drain_links = [
+            DrainageLink(link_id="L0", from_node_id="N0", to_node_id="N1",
+                          length=8.0, roughness_n=0.013, diameter=0.5),
+        ]
+        drain_cfg = PipeNetworkConfig(
+            enabled=True, nodes=drain_nodes, links=drain_links,
+            inlets=[], outfalls=[],
+            pipe_ends=[
+                PipeEndExchange(pipe_end_id="pe_N0", cell_id=0, node_id="N0",
+                                 invert_elev=0.0, diameter=0.5, area_m2=0.19635),
+                PipeEndExchange(pipe_end_id="pe_N1", cell_id=2, node_id="N1",
+                                 invert_elev=-0.5, diameter=0.5, area_m2=0.19635),
+            ],
+            solver_mode=DrainageSolverMode.EGL,
+        )
+        drain_mod = SWE2DUrbanDrainageModule(drain_cfg)
+        drain_mod.initialize()
+        drain_mod.state.node_depth["N0"] = 1.5
+        drain_mod.state.node_depth["N1"] = 0.8
+
+        # ── Coupling controller with real CUDA path ──
+        controller = SWE2DCouplingController(
+            cell_area=backend.cell_areas(),
+            cell_bed=np.zeros(n_cells, dtype=np.float64),
+            drainage=drain_mod,
+            structures=struct_mod,
+            coupling_loop="cuda",
+            drainage_solver_backend="gpu",
+            culvert_face_flux_mode="face_flux",
+            length_scale_si_to_model=_u.si_m_per_model(),
+        )
+        # Cell centroids needed for face-flux SoA builder
+        cx = np.asarray([6.0, 6.0, 6.0, 6.0], dtype=np.float64)
+        cy = np.asarray([4.0, 4.0, 4.0, 4.0], dtype=np.float64)
+        controller.set_cell_centroids(cx=cx, cy=cy)
+
+        # ── Run the backend with coupling via bound method ──
+        backend.initialize(
+            h0=np.asarray([1.8, 0.5, 1.2, 0.4], dtype=np.float64),
+            hu0=np.zeros(n_cells, dtype=np.float64),
+            hv0=np.zeros(n_cells, dtype=np.float64),
+            dt_fixed=0.05,
+            dt_max=0.05,
+        )
+
+        backend.run(
+            t_end=0.1,
+            dt_request=0.05,
+            source_rate_callback=controller.compute_source_rates,
+        )
+
+        h, _, _ = backend.get_state()
+        self.assertTrue(np.all(np.isfinite(h)),
+                        "GPU solver must produce finite state")
+        self.assertTrue(backend.gpu_active(),
+                        "GPU must be active for CUDA path")
+
+        # Water should have moved through face-flux culverts and drainage.
+        # Initial h[0]=1.8 should have decreased (drainage extracts at cell 0
+        # + culvert C0 moves water from cell 0 to cell 1).
+        self.assertLess(
+            float(h[0]), 1.79,
+            "Upstream cell depth should decrease below 1.79 from initial 1.8 "
+            "(drainage extracts + culvert face-flux moves water)")
+
+        # Drainage: verify through actual network state synced back from GPU.
+        # The apply_native_device_sources path (use_persistent=True) runs the
+        # GPU drainage step and syncs results back to the Python-side drainage
+        # module via _sync_gpu_state_back_to_drainage.
+        drain_state = controller.drainage.state
+        node_n0_depth = float(drain_state.node_depth.get("N0", 0.0))
+        node_n1_depth = float(drain_state.node_depth.get("N1", 0.0))
+        self.assertNotEqual(
+            node_n0_depth, 1.5,
+            "Drainage node N0 depth must change from initial 1.5 "
+            "(pipe-end exchange should transfer water)")
+        self.assertNotEqual(
+            node_n1_depth, 0.8,
+            "Drainage node N1 depth must change from initial 0.8 "
+            "(pipe-end exchange should transfer water)")
+
+        backend.destroy()
+
 
 @unittest.skipUnless(_HAVE_WORKBENCH, "workbench module unavailable")
 class TestSWE2DExternalSourceApplication(unittest.TestCase):

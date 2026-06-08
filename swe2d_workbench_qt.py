@@ -609,6 +609,7 @@ _DRAIN_LINK_TYPE_VALUE_MAP = {
     "Pump": "pump",
     "Weir": "weir",
     "Orifice": "orifice",
+    "Culvert (HDS-5)": "culvert",
 }
 
 _DRAIN_LINK_SHAPE_VALUE_MAP = {
@@ -5257,7 +5258,7 @@ class SWE2DWorkbenchDialog(QtWidgets.QDialog):
             "memory",
         )
         drainage_links = QgsVectorLayer(
-            f"LineString?crs={crs_auth}&field=link_id:string(64)&field=from_node:string(64)&field=to_node:string(64)&field=link_type:string(32)&field=link_shape:string(32)&field=length:double&field=roughness_n:double&field=diameter:double&field=span:double&field=rise:double&field=area_m2:double&field=equiv_diameter_m:double&field=max_flow:double&field=cd:double",
+            f"LineString?crs={crs_auth}&field=link_id:string(64)&field=from_node:string(64)&field=to_node:string(64)&field=link_type:string(32)&field=link_shape:string(32)&field=length:double&field=roughness_n:double&field=diameter:double&field=span:double&field=rise:double&field=area_m2:double&field=equiv_diameter_m:double&field=max_flow:double&field=cd:double&field=culvert_shape:string(32)&field=culvert_code:integer&field=culvert_rise:double&field=culvert_span:double&field=culvert_area_m2:double&field=culvert_barrels:integer&field=culvert_slope:double&field=inlet_invert_elev:double&field=outlet_invert_elev:double&field=entrance_loss_k:double&field=exit_loss_k:double&field=inlet_loss_k:double&field=outlet_loss_k:double",
             "SWE2D_Drainage_Links",
             "memory",
         )

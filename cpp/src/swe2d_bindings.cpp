@@ -1095,6 +1095,16 @@ PYBIND11_MODULE(HYDRA_SWE2D_PY_MODULE_NAME, m) {
     m.def("swe2d_gpu_available", &swe2d_gpu_available,
           "Return True if a CUDA-capable GPU is present and the GPU path was compiled.");
 
+#ifdef HYDRA_HAS_CUDA
+    m.def("swe2d_gpu_device_sync", []() {
+        cudaDeviceSynchronize();
+        cudaGetLastError();
+    }, "Full device sync + error clear.  Call after coupling work before solver step.");
+#else
+    m.def("swe2d_gpu_device_sync", []() {
+    }, "No-op: device sync not available without CUDA.");
+#endif
+
     m.def("swe2d_gpu_compute_structure_flows",
 #ifdef HYDRA_HAS_CUDA
         &compute_structure_flows_cuda,
@@ -1419,6 +1429,13 @@ PYBIND11_MODULE(HYDRA_SWE2D_PY_MODULE_NAME, m) {
             return result;
         }, py::arg("n_structures"),
         "Read back per-structure flow rates [m^3/s] from persistent GPU buffer.");
+
+    m.def("swe2d_gpu_readback_h",
+        [](py::array_t<double, py::array::c_style | py::array::forcecast> h_out,
+           int32_t n_cells) {
+            swe2d_gpu_readback_h(h_out.mutable_data(), n_cells);
+        }, py::arg("h_out"), py::arg("n_cells"),
+        "Read back current depth array h from coupling device state (lightweight, no solver handle needed).");
 
     m.def("swe2d_gpu_upload_structure_flows",
         [](py::array_t<double, py::array::c_style | py::array::forcecast> flows) {
@@ -1816,7 +1833,7 @@ PYBIND11_MODULE(HYDRA_SWE2D_PY_MODULE_NAME, m) {
 #endif
 
     m.def("swe2d_gpu_drainage_step",
-        [](py::array_t<double, py::array::c_style | py::array::forcecast> cell_wse,
+        [](py::object cell_wse_obj,
            py::array_t<double, py::array::c_style | py::array::forcecast> cell_area,
            py::array_t<double, py::array::c_style | py::array::forcecast> node_invert_elev,
            py::array_t<double, py::array::c_style | py::array::forcecast> node_max_depth,
@@ -1847,7 +1864,7 @@ PYBIND11_MODULE(HYDRA_SWE2D_PY_MODULE_NAME, m) {
                   py::array_t<double, py::array::c_style | py::array::forcecast> pipe_end_area,
                   py::array_t<double, py::array::c_style | py::array::forcecast> pipe_end_inlet_loss_k,
                   py::array_t<double, py::array::c_style | py::array::forcecast> pipe_end_outlet_loss_k,
-              py::array_t<double, py::array::c_style | py::array::forcecast> cell_depth,
+              py::object cell_depth_obj,
            py::array_t<double, py::array::c_style | py::array::forcecast> node_depth,
            py::array_t<double, py::array::c_style | py::array::forcecast> link_flow,
            double dt_s,
@@ -1857,9 +1874,28 @@ PYBIND11_MODULE(HYDRA_SWE2D_PY_MODULE_NAME, m) {
               double dynamic_flow_relaxation)
            -> py::tuple
         {
-            const int32_t n_cells = static_cast<int32_t>(cell_wse.size());
-            if (cell_area.size() != static_cast<size_t>(n_cells)) {
-                throw std::invalid_argument("cell_wse and cell_area must have same length");
+            // cell_wse and cell_depth accept None for on-device WSE computation
+            const double* cell_wse_ptr = nullptr;
+            const double* cell_depth_ptr = nullptr;
+            int32_t n_cells = 0;
+
+            if (cell_wse_obj.is_none()) {
+                n_cells = static_cast<int32_t>(cell_area.size());
+            } else {
+                auto cell_wse = cell_wse_obj.cast<py::array_t<double, py::array::c_style | py::array::forcecast>>();
+                n_cells = static_cast<int32_t>(cell_wse.size());
+                if (cell_area.size() != static_cast<size_t>(n_cells)) {
+                    throw std::invalid_argument("cell_wse and cell_area must have same length");
+                }
+                cell_wse_ptr = cell_wse.data();
+            }
+
+            if (!cell_depth_obj.is_none()) {
+                auto cell_depth_arr = cell_depth_obj.cast<py::array_t<double, py::array::c_style | py::array::forcecast>>();
+                if (cell_depth_arr.size() != static_cast<size_t>(n_cells)) {
+                    throw std::invalid_argument("cell_depth length must match n_cells");
+                }
+                cell_depth_ptr = cell_depth_arr.data();
             }
             const int32_t n_nodes = static_cast<int32_t>(node_invert_elev.size());
             if (node_max_depth.size() != static_cast<size_t>(n_nodes) ||
@@ -1918,7 +1954,7 @@ PYBIND11_MODULE(HYDRA_SWE2D_PY_MODULE_NAME, m) {
                 n_inlets,
                 n_outfalls,
                 n_pipe_ends,
-                cell_wse.data(),
+                cell_wse_ptr,
                 cell_area.data(),
                 node_invert_elev.data(),
                 node_max_depth.data(),
@@ -1949,7 +1985,7 @@ PYBIND11_MODULE(HYDRA_SWE2D_PY_MODULE_NAME, m) {
                 pipe_end_area.data(),
                 pipe_end_inlet_loss_k.data(),
                 pipe_end_outlet_loss_k.data(),
-                (cell_depth.size() == static_cast<size_t>(n_cells)) ? cell_depth.data() : nullptr,
+                cell_depth_ptr,
                 node_depth.data(),
                 link_flow.data(),
                 dt_s,
