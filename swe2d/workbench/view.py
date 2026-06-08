@@ -7,9 +7,12 @@ modularization without changing existing runtime behavior.
 
 from __future__ import annotations
 
+import logging
 from typing import Callable, Optional
 
 from qgis.PyQt import QtWidgets
+
+logger = logging.getLogger(__name__)
 
 
 class SWE2DWorkbenchViewAdapter:
@@ -62,7 +65,8 @@ class SWE2DWorkbenchViewAdapter:
             return ""
         try:
             return str(log_view.toPlainText())
-        except Exception:
+        except Exception as exc:
+            logger.debug("[UI] runtime_log_text fallback: %s", exc)
             return ""
 
     def run_duration_text(self) -> str:
@@ -83,7 +87,8 @@ class SWE2DWorkbenchViewAdapter:
             return False
         try:
             return bool(widget.isChecked())
-        except Exception:
+        except Exception as exc:
+            logger.debug("[UI] adaptive_dt_enabled fallback: %s", exc)
             return False
 
     def requested_dt(self) -> float:
@@ -92,7 +97,8 @@ class SWE2DWorkbenchViewAdapter:
             return 0.0
         try:
             return float(widget.value())
-        except Exception:
+        except Exception as exc:
+            logger.debug("[UI] requested_dt fallback: %s", exc)
             return 0.0
 
     def selected_view_mode(self) -> Optional[str]:
@@ -101,5 +107,6 @@ class SWE2DWorkbenchViewAdapter:
             return None
         try:
             return str(combo.currentText())
-        except Exception:
+        except Exception as exc:
+            logger.debug("[UI] selected_view_mode fallback: %s", exc)
             return None

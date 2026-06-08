@@ -13,7 +13,7 @@ from swe2d.runtime.backend import SWE2DBackend
 
 class TestSWE2DTinyModeDispatch(unittest.TestCase):
     def _build_backend(self) -> SWE2DBackend:
-        b = SWE2DBackend(use_gpu=True)
+        b = SWE2DBackend()
         node_x = np.array([0.0, 1.0, 0.0], dtype=np.float64)
         node_y = np.array([0.0, 0.0, 1.0], dtype=np.float64)
         node_z = np.array([0.0, 0.0, 0.0], dtype=np.float64)
@@ -115,7 +115,7 @@ class TestSWE2DTinyModeDispatch(unittest.TestCase):
         b = self._build_backend()
         b.initialize(
             np.array([0.1], dtype=np.float64),
-            temporal_scheme=TemporalScheme.CLASSIC_RK4,
+            temporal_scheme=TemporalScheme.SSP_RK3,
             tiny_mode=3,
             tiny_cell_threshold=16,
             tiny_edge_threshold=32,

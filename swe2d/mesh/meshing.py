@@ -34,7 +34,7 @@ import warnings
 
 import numpy as np
 
-from .mfem_opt import available_mfem_presets, optimize_with_mfem
+from swe2d.mesh.mfem_opt import available_mfem_presets, optimize_with_mfem
 
 
 @dataclass
@@ -10258,7 +10258,7 @@ def generate_face_centric_mesh(
         mesh = _apply_optional_post_optimization(mesh, work_model, opts, backend_name="tqmesh")
         return _restore_mesh_coordinates(mesh, x_shift, y_shift)
     if backend in {"hybrid_cpp", "mfem_opt"}:
-        # TEMPORARY: disabled per user request; keep implementation in-tree for later re-enable.
+        # Disabled per user request; keep implementation in-tree for later re-enable.
         raise ValueError(
             f"Meshing backend {backend!r} is temporarily disabled. "
             "Choose 'gmsh', 'structured', or 'tqmesh'."
@@ -10280,16 +10280,6 @@ def _as_bool_opt(value: object, default: bool = False) -> bool:
 
 
 def _normalize_post_opt_backend(options: Dict[str, object]) -> str:
-    # TEMPORARY: MFEM post-optimization is disabled in backend execution paths.
-    # backend = str(options.get("post_opt_backend") or "").strip().lower()
-    # enabled = _as_bool_opt(options.get("mfem_post_opt_enable"), False)
-    # if not backend:
-    #     backend = "mfem_tmop" if enabled else "none"
-    # if backend in {"", "none", "off", "disabled"}:
-    #     return "none"
-    # if backend in {"mfem", "mfem_tmop", "tmop"}:
-    #     return "mfem_tmop"
-    # return backend
     return "none"
 
 

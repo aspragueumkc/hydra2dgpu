@@ -1038,7 +1038,7 @@ class TestSWE2DDrainageStructures(unittest.TestCase):
 
     @unittest.skipUnless(swe2d_available() and swe2d_gpu_available(), "native SWE2D CUDA backend not available")
     def test_backend_gpu_run_combines_rain_and_drainage_sources(self):
-        backend = SWE2DBackend(use_gpu=True)
+        backend = SWE2DBackend()
         node_x = np.asarray([0.0, 1.0, 1.0, 0.0], dtype=np.float64)
         node_y = np.asarray([0.0, 0.0, 1.0, 1.0], dtype=np.float64)
         node_z = np.asarray([0.0, 0.0, 0.0, 0.0], dtype=np.float64)
@@ -1084,7 +1084,7 @@ class TestSWE2DDrainageStructures(unittest.TestCase):
 
     @unittest.skipUnless(swe2d_available() and swe2d_gpu_available(), "native SWE2D CUDA backend not available")
     def test_backend_gpu_run_combines_rain_and_drainage_sources_rollout_mode(self):
-        backend = SWE2DBackend(use_gpu=True)
+        backend = SWE2DBackend()
         node_x = np.asarray([0.0, 1.0, 1.0, 0.0], dtype=np.float64)
         node_y = np.asarray([0.0, 0.0, 1.0, 1.0], dtype=np.float64)
         node_z = np.asarray([0.0, 0.0, 0.0, 0.0], dtype=np.float64)
@@ -1131,7 +1131,7 @@ class TestSWE2DDrainageStructures(unittest.TestCase):
 
     @unittest.skipUnless(swe2d_available(), "native SWE2D backend not available")
     def test_backend_run_with_coupling_controller(self):
-        backend = SWE2DBackend(use_gpu=False)
+        backend = SWE2DBackend()
         node_x = np.asarray([0.0, 1.0, 1.0, 0.0], dtype=np.float64)
         node_y = np.asarray([0.0, 0.0, 1.0, 1.0], dtype=np.float64)
         node_z = np.asarray([0.0, 0.0, 0.0, 0.0], dtype=np.float64)
@@ -1181,7 +1181,7 @@ class TestSWE2DDrainageStructures(unittest.TestCase):
 
     @unittest.skipUnless(swe2d_available(), "native SWE2D backend not available")
     def test_backend_run_with_coupling_controller_native_injection(self):
-        backend = SWE2DBackend(use_gpu=False)
+        backend = SWE2DBackend()
         node_x = np.asarray([0.0, 1.0, 0.0, 1.0], dtype=np.float64)
         node_y = np.asarray([0.0, 0.0, 1.0, 1.0], dtype=np.float64)
         node_z = np.asarray([0.0, 0.0, 0.0, 0.0], dtype=np.float64)
@@ -1233,7 +1233,7 @@ class TestSWE2DDrainageStructures(unittest.TestCase):
 
     @unittest.skipUnless(swe2d_available(), "native SWE2D backend not available")
     def test_backend_cell_area_cache_and_source_callback(self):
-        backend = SWE2DBackend(use_gpu=False)
+        backend = SWE2DBackend()
         node_x = np.asarray([0.0, 1.0, 0.0], dtype=np.float64)
         node_y = np.asarray([0.0, 0.0, 1.0], dtype=np.float64)
         node_z = np.asarray([0.0, 0.0, 0.0], dtype=np.float64)
@@ -1884,7 +1884,7 @@ class TestSWE2DDrainageStructures(unittest.TestCase):
         from swe2d import units as _u
         _u.configure(1.0)
 
-        backend = SWE2DBackend(use_gpu=True)
+        backend = SWE2DBackend()
         node_x = np.asarray([0.0, 12.0, 12.0, 0.0, 0.0, 12.0, 12.0, 0.0],
                             dtype=np.float64)
         node_y = np.asarray([0.0, 0.0, 8.0, 8.0, 0.0, 0.0, 8.0, 8.0],
@@ -2076,22 +2076,16 @@ class TestSWE2DExternalSourceApplication(unittest.TestCase):
             rain_rate_model=0.01,
             cell_source_model=None,
             coupled_source_rate=None,
-            prefer_native_injection=False,
         )
 
-        h, hu, hv = backend.get_state()
-        np.testing.assert_allclose(h, np.asarray([0.02, 0.02], dtype=np.float64), rtol=0.0, atol=1.0e-12)
-        np.testing.assert_allclose(hu, 0.0, rtol=0.0, atol=1.0e-12)
-        np.testing.assert_allclose(hv, 0.0, rtol=0.0, atol=1.0e-12)
+        # GPU-native path: source written to device buffer, no set_state
+        self.assertEqual(len(backend.native_calls), 1)
+        expected_src = np.asarray([0.01, 0.01], dtype=np.float64)
+        np.testing.assert_allclose(backend.native_calls[0], expected_src, rtol=0.0, atol=1.0e-12)
 
     def test_apply_external_sources_drainage_only_uses_coupled_source(self):
         harness = self._Harness(cell_area=[1.0, 1.0], h_min=1.0e-6)
         backend = self._BackendStub(n_cells=2, n_cells_as_callable=True)
-        backend.set_state(
-            np.asarray([0.2, 0.1], dtype=np.float64),
-            np.asarray([0.0, 0.0], dtype=np.float64),
-            np.asarray([0.0, 0.0], dtype=np.float64),
-        )
 
         _wbqt.SWE2DWorkbenchDialog._apply_external_sources(
             harness,
@@ -2100,33 +2094,30 @@ class TestSWE2DExternalSourceApplication(unittest.TestCase):
             rain_rate_model=0.0,
             cell_source_model=None,
             coupled_source_rate=np.asarray([-0.10, 0.05], dtype=np.float64),
-            prefer_native_injection=False,
         )
 
-        h, _, _ = backend.get_state()
-        np.testing.assert_allclose(h, np.asarray([0.10, 0.15], dtype=np.float64), rtol=0.0, atol=1.0e-12)
+        # GPU-native path: source written via set_external_sources_native
+        self.assertEqual(len(backend.native_calls), 1)
+        expected_src = np.asarray([-0.10, 0.05], dtype=np.float64)
+        np.testing.assert_allclose(backend.native_calls[0], expected_src, rtol=0.0, atol=1.0e-12)
 
-    def test_apply_external_sources_combines_terms_and_falls_back_from_native(self):
+    def test_apply_external_sources_raises_when_native_unavailable(self):
         harness = self._Harness(cell_area=[2.0, 4.0], h_min=1.0e-6)
         backend = self._BackendFallbackStub(n_cells=2, n_cells_as_callable=False)
 
-        _wbqt.SWE2DWorkbenchDialog._apply_external_sources(
-            harness,
-            backend,
-            dt_step=2.0,
-            rain_rate_model=0.02,
-            cell_source_model=np.asarray([0.2, 0.0], dtype=np.float64),
-            coupled_source_rate=np.asarray([-0.01, 0.03], dtype=np.float64),
-            prefer_native_injection=True,
-        )
-
-        h, _, _ = backend.get_state()
-        # src = rain + (Qcell/area) + coupled = [0.11, 0.05] m/s; dt=2 s
-        np.testing.assert_allclose(h, np.asarray([0.22, 0.10], dtype=np.float64), rtol=0.0, atol=1.0e-12)
+        with self.assertRaises(RuntimeError):
+            _wbqt.SWE2DWorkbenchDialog._apply_external_sources(
+                harness,
+                backend,
+                dt_step=2.0,
+                rain_rate_model=0.02,
+                cell_source_model=np.asarray([0.2, 0.0], dtype=np.float64),
+                coupled_source_rate=np.asarray([-0.01, 0.03], dtype=np.float64),
+            )
 
     @unittest.skipUnless(swe2d_available(), "native SWE2D backend not available")
     def test_backend_native_source_injection_mode(self):
-        backend = SWE2DBackend(use_gpu=False)
+        backend = SWE2DBackend()
         node_x = np.asarray([0.0, 1.0, 0.0], dtype=np.float64)
         node_y = np.asarray([0.0, 0.0, 1.0], dtype=np.float64)
         node_z = np.asarray([0.0, 0.0, 0.0], dtype=np.float64)

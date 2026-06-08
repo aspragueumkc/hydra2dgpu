@@ -7,18 +7,11 @@ the workbench to import a compact runtime-helper surface.
 
 from __future__ import annotations
 
-try:
-    from swe2d.runtime.native_bc_forcing import SWE2DNativeBoundaryHydrographConfigurator
-    from swe2d.runtime.runtime_reporting import SWE2DRuntimeReporter
-    from swe2d.runtime.runtime_setup_configurator import SWE2DRunSetupConfigurator
-    from swe2d.runtime.runtime_sources import SWE2DRuntimeSourceManager
-    from swe2d.runtime.runtime_step_executor import SWE2DRuntimeStepExecutor
-except Exception:
-    from .native_bc_forcing import SWE2DNativeBoundaryHydrographConfigurator
-    from .runtime_reporting import SWE2DRuntimeReporter
-    from .runtime_setup_configurator import SWE2DRunSetupConfigurator
-    from .runtime_sources import SWE2DRuntimeSourceManager
-    from .runtime_step_executor import SWE2DRuntimeStepExecutor
+from swe2d.runtime.native_bc_forcing import SWE2DNativeBoundaryHydrographConfigurator
+from swe2d.runtime.runtime_reporting import SWE2DRuntimeReporter
+from swe2d.runtime.runtime_setup_configurator import SWE2DRunSetupConfigurator
+from swe2d.runtime.runtime_sources import SWE2DRuntimeSourceManager
+from swe2d.runtime.runtime_step_executor import SWE2DRuntimeStepExecutor
 
 __all__ = [
     "SWE2DNativeBoundaryHydrographConfigurator",

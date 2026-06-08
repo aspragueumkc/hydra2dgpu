@@ -20,7 +20,6 @@ class SpatialDiscretization(IntEnum):
     FV_MUSCL_MINMOD   = 2
     FV_MUSCL_MC       = 3   # Monotonized-Central limiter (gradient-based TVD)
     FV_MUSCL_VAN_LEER = 4   # Van Leer smooth limiter (gradient-based TVD)
-    FV_WENO3_LIKE     = 5   # WENO3-like nonlinear blend (GPU-first experimental)
     FV_WENO5          = 6   # WENO5 + LSQ 2-ring gradient (~3rd-order, GPU-first)
     # Backward-compatibility aliases
     FV_MUSCL = FV_MUSCL_FAST
@@ -31,7 +30,6 @@ class TemporalScheme(IntEnum):
     EULER_1ST = 1
     SSP_RK2 = 2
     SSP_RK3 = 3
-    CLASSIC_RK4 = 4
     GRAPH_SAFE_RK4 = 5      # True RK4 stage path with graph-safe staged forcing
     GRAPH_SAFE_RK5 = 6      # Cash-Karp RK5 stage path with graph-safe staged forcing
 
@@ -52,23 +50,10 @@ class BedFrictionModel(IntEnum):
 
 class GodunovSolverMode(IntEnum):
     CURRENT_GPU_STEP = 0
-    GODUNOV_ROLLOUT = 1
 
 
 class SWE2DEquationSet(IntEnum):
     HYDROSTATIC_2D = 0
-    NONHYDROSTATIC_2D = 1
-
-
-class SWE2DThreeDCouplingMode(IntEnum):
-    OFF = 0
-    ONE_WAY_2D_TO_3D = 1
-    TWO_WAY_2D_3D = 2
-
-
-class SWE2DThreeDSolverModel(IntEnum):
-    DISABLED = 0
-    SINGLE_PHASE_FREE_SURFACE_VOF = 1
 
 
 class DrainageSolverMode(IntEnum):
@@ -385,7 +370,6 @@ def compute_orifice_flow(
     discharge_coeff: float = 0.62,
     g: float = 9.81,
     max_flow: Optional[float] = None,
-    legacy_max_flow_cms: Optional[float] = None,
 ) -> float:
     """Return signed orifice flow from up to down based on head difference."""
     a = max(0.0, float(area))
@@ -395,9 +379,8 @@ def compute_orifice_flow(
     if abs(dh) <= 1.0e-12:
         return 0.0
     q = float(discharge_coeff) * a * math.sqrt(max(0.0, 2.0 * float(g) * abs(dh)))
-    q_limit = max_flow if max_flow is not None else legacy_max_flow_cms
-    if q_limit is not None:
-        q = min(q, max(0.0, float(q_limit)))
+    if max_flow is not None:
+        q = min(q, max(0.0, float(max_flow)))
     return q if dh >= 0.0 else -q
 
 
@@ -408,7 +391,6 @@ def compute_weir_flow(
     width: float,
     coeff: float = 1.7,
     max_flow: Optional[float] = None,
-    legacy_max_flow_cms: Optional[float] = None,
 ) -> float:
     """Broad-crested style weir discharge using upstream head over crest."""
     b = max(0.0, float(width))
@@ -425,9 +407,8 @@ def compute_weir_flow(
         h = hdn
         sign = -1.0
     q = float(coeff) * b * (h ** 1.5)
-    q_limit = max_flow if max_flow is not None else legacy_max_flow_cms
-    if q_limit is not None:
-        q = min(q, max(0.0, float(q_limit)))
+    if max_flow is not None:
+        q = min(q, max(0.0, float(max_flow)))
     return sign * q
 
 
@@ -473,10 +454,6 @@ class SolverModelOptions:
     turbulence_model: TurbulenceModel = TurbulenceModel.NONE
     bed_friction_model: BedFrictionModel = BedFrictionModel.MANNING
     equation_set: SWE2DEquationSet = SWE2DEquationSet.HYDROSTATIC_2D
-    coupling_mode: SWE2DThreeDCouplingMode = SWE2DThreeDCouplingMode.OFF
-    three_d_solver_model: SWE2DThreeDSolverModel = SWE2DThreeDSolverModel.DISABLED
-    enforce_gpu_only_advanced_modes: bool = True
-    three_d_single_phase_free_surface: bool = True
     rain: RainFieldConfig = field(default_factory=RainFieldConfig)
     pipe_network: PipeNetworkConfig = field(default_factory=PipeNetworkConfig)
     hydraulic_structures: HydraulicStructureConfig = field(default_factory=HydraulicStructureConfig)
@@ -490,10 +467,6 @@ class SolverModelOptions:
             "turbulence_model": int(self.turbulence_model),
             "bed_friction_model": int(self.bed_friction_model),
             "equation_set": int(self.equation_set),
-            "coupling_mode": int(self.coupling_mode),
-            "three_d_solver_model": int(self.three_d_solver_model),
-            "enforce_gpu_only_advanced_modes": bool(self.enforce_gpu_only_advanced_modes),
-            "three_d_single_phase_free_surface": bool(self.three_d_single_phase_free_surface),
             "enable_rain_module": bool(self.rain.enabled),
             "enable_pipe_network_module": bool(self.pipe_network.enabled),
             "enable_hydraulic_structures": bool(self.hydraulic_structures.enabled),

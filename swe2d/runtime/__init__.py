@@ -1,5 +1,9 @@
 """Run/runtime orchestration exports for incremental package migration."""
 
+from swe2d.runtime.diagnostics import SWE2DRunReport, _configure_diagnostics_mode
+
+_configure_diagnostics_mode()
+
 from swe2d.runtime.bridge_stacked_runtime import build_bridge_stacked_plans_for_runtime
 from swe2d.runtime.backend_initializer import SWE2DBackendInitializer
 from swe2d.runtime.native_bc_forcing import SWE2DNativeBoundaryHydrographConfigurator

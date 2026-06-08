@@ -20,11 +20,7 @@ def wire_startup_run_components(dialog: Any, ns: Dict[str, Any]) -> None:
     swe2d_gpu_available = ns.get("swe2d_gpu_available")
     TemporalScheme = ns.get("TemporalScheme")
     SpatialDiscretization = ns.get("SpatialDiscretization")
-    GodunovSolverMode = ns.get("GodunovSolverMode")
     SolverModelOptions = ns.get("SolverModelOptions")
-    SWE2DEquationSet = ns.get("SWE2DEquationSet")
-    SWE2DThreeDSolverModel = ns.get("SWE2DThreeDSolverModel")
-    SWE2DThreeDCouplingMode = ns.get("SWE2DThreeDCouplingMode")
 
     if SWE2DWorkbenchViewAdapter is not None:
         dialog._view_adapter = dialog._init_startup_component(
@@ -81,7 +77,6 @@ def wire_startup_run_components(dialog: Any, ns: Dict[str, Any]) -> None:
                 ui=dialog,
                 log_callback=dialog._log,
                 parse_run_duration_seconds_callback=dialog._parse_run_duration_seconds,
-                collect_3d_patch_env_overrides_callback=dialog._collect_3d_patch_env_overrides,
                 rain_rate_si_to_model_callback=dialog._rain_rate_si_to_model,
                 build_internal_flow_forcing_callback=dialog._build_internal_flow_forcing,
                 internal_flow_source_cms_at_time_callback=dialog._internal_flow_source_cms_at_time,
@@ -92,11 +87,7 @@ def wire_startup_run_components(dialog: Any, ns: Dict[str, Any]) -> None:
                 swe2d_gpu_available_callback=swe2d_gpu_available,
                 temporal_scheme_enum=TemporalScheme,
                 spatial_discretization_enum=SpatialDiscretization,
-                godunov_solver_mode_enum=GodunovSolverMode,
                 solver_model_options_cls=SolverModelOptions,
-                swe2d_equation_set_enum=SWE2DEquationSet,
-                swe2d_3d_solver_model_enum=SWE2DThreeDSolverModel,
-                swe2d_3d_coupling_mode_enum=SWE2DThreeDCouplingMode,
             ),
             required_for_run=True,
         )
@@ -108,8 +99,6 @@ def wire_startup_run_components(dialog: Any, ns: Dict[str, Any]) -> None:
             "backend initializer",
             lambda: SWE2DBackendInitializer(
                 ui=dialog,
-                apply_env_overrides_callback=dialog._apply_env_overrides,
-                restore_env_overrides_callback=dialog._restore_env_overrides,
                 apply_timeseries_bc_values_callback=dialog._apply_timeseries_bc_values,
                 distribute_total_flow_to_unit_q_callback=dialog._distribute_total_flow_to_unit_q,
             ),

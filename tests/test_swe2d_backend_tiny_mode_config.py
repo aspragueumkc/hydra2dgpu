@@ -8,7 +8,7 @@ import numpy as np
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import swe2d.runtime.backend as backend_mod
-from swe2d.extensions.extension_models import SolverModelOptions, SWE2DThreeDSolverModel
+from swe2d.extensions.extension_models import SolverModelOptions
 
 
 class _FakeModuleBase:
@@ -106,27 +106,6 @@ class TestSWE2DBackendTinyModeConfig(unittest.TestCase):
         b.initialize(np.array([0.1], dtype=np.float64))
 
         self.assertEqual(fake.create_kwargs, {})
-
-    def test_initialize_sets_3d_vof_transport_debug_default_off(self):
-        fake = _FakeModuleNew()
-        backend_mod._swe2d_mod = fake
-        backend_mod._swe2d_load_error = None
-
-        prev = os.environ.get("BACKWATER_SWE3D_VOF_TRANSPORT_DEBUG")
-        os.environ.pop("BACKWATER_SWE3D_VOF_TRANSPORT_DEBUG", None)
-        try:
-            b = backend_mod.SWE2DBackend(use_gpu=True)
-            self._build_minimal_mesh(b)
-            opts = SolverModelOptions(
-                three_d_solver_model=SWE2DThreeDSolverModel.SINGLE_PHASE_FREE_SURFACE_VOF,
-            )
-            b.initialize(np.array([0.1], dtype=np.float64), model_options=opts)
-            self.assertEqual(os.environ.get("BACKWATER_SWE3D_VOF_TRANSPORT_DEBUG"), "0")
-        finally:
-            if prev is None:
-                os.environ.pop("BACKWATER_SWE3D_VOF_TRANSPORT_DEBUG", None)
-            else:
-                os.environ["BACKWATER_SWE3D_VOF_TRANSPORT_DEBUG"] = prev
 
     def test_run_uses_chunked_batching_in_persistent_tiny_mode(self):
         fake = _FakeModuleNew()

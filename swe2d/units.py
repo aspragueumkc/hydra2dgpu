@@ -102,7 +102,9 @@ def manning_factor() -> float:
     return _manning
 
 
-# ── deprecated aliases (kept for existing callers) ──
+# ── deprecated aliases ──
 def compute_length_factor() -> float:
     """Deprecated: use model_to_ft() instead."""
+    import warnings
+    warnings.warn("compute_length_factor() is deprecated; use model_to_ft() instead.", DeprecationWarning, stacklevel=2)
     return _model_to_ft

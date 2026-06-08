@@ -2,7 +2,11 @@ from __future__ import annotations
 
 from typing import Callable, Optional
 
+import logging
+
 import numpy as np
+
+logger = logging.getLogger(__name__)
 
 
 def sample_terrain_min_z_for_roi_qgis(
@@ -33,7 +37,8 @@ def sample_terrain_min_z_for_roi_qgis(
 
     try:
         provider = raster_layer.dataProvider()
-    except Exception:
+    except Exception as exc:
+        logger.debug("[DRAINAGE] Failed to get raster provider: %s", exc)
         return None
 
     sx = max(8, min(256, int(nx_hint) if int(nx_hint) > 0 else 64))
@@ -46,7 +51,8 @@ def sample_terrain_min_z_for_roi_qgis(
         for xv in xs:
             try:
                 val, ok = provider.sample(qgs_pointxy_cls(float(xv), float(yv)), 1)
-            except Exception:
+            except Exception as exc:
+                logger.debug("[DRAINAGE] Failed to sample raster point: %s", exc)
                 ok = False
                 val = np.nan
             if ok and np.isfinite(val):

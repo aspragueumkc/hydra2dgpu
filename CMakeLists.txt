@@ -153,34 +153,6 @@ _configure_swe2d_module(hydra_swe2d hydra_swe2d TRUE)
 # Serial module variant for true non-OpenMP runs from the same build tree.
 _configure_swe2d_module(hydra_swe2d_serial hydra_swe2d_serial FALSE)
 
-# ── TQMesh mesh generator ─────────────────────────────────────────────────────
-set(TQMESH_DIR ${CMAKE_CURRENT_SOURCE_DIR}/cpp/third_party/TQMesh)
-
-# Generate TQMeshConfig.h (only defines version + source path macros)
-configure_file(
-    ${TQMESH_DIR}/auxiliary/TQMeshConfig.h.in
-    ${CMAKE_BINARY_DIR}/TQMeshConfig.h
-)
-
-pybind11_add_module(hydra_tqmesh
-    cpp/src/tqmesh_bindings.cpp
-)
-
-target_include_directories(hydra_tqmesh PRIVATE
-    ${TQMESH_DIR}/src/algorithm
-    ${TQMESH_DIR}/src/utils
-    ${CMAKE_BINARY_DIR}          # for generated TQMeshConfig.h
-)
-
-# TQMesh uses heavy template / inline code — suppress noisy warnings
-if(MSVC)
-  target_compile_options(hydra_tqmesh PRIVATE /W1)
-else()
-  target_compile_options(hydra_tqmesh PRIVATE -w)
-endif()
-
-set_property(TARGET hydra_tqmesh PROPERTY INTERPROCEDURAL_OPTIMIZATION OFF)
-
 # ── Custom hybrid topology mesher (C++ backend) ────────────────────────────
 pybind11_add_module(hydra_hybridmesh
     cpp/src/hybrid_mesh_bindings.cpp

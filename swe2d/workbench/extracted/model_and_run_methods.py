@@ -8,9 +8,6 @@ from swe2d_workbench_qt import (
     _BC_TS_STAGE,
     _execute_run_timestep_loop_runtime_logic,
     _RECONSTRUCTION_OPTIONS,
-    _SWE3D_BC_FIELD_DEFAULTS,
-    _SWE3D_BC_MODE_OPTIONS,
-    _SWE3D_PATCH_FACES,
     _TEMPORAL_ORDER_OPTIONS,
 )
 
@@ -581,489 +578,32 @@ def _bind_model_tab_solver_controls(self, model_tab_page: QtWidgets.QWidget, par
         "Select temporal integration scheme:\n"
         "  Euler (RK1)  - 1st-order, fastest, use for dry-bed or debugging\n"
         "  RK2 (Heun)   - 2nd-order (default), balanced stability and speed\n"
-        "  RK4 (classic) - 4th-order composed path\n"
         "  Graph-safe RK4 - true staged RK4 with CUDA-graph-safe forcing\n"
         "  Graph-safe RK5 - Cash-Karp staged RK5 with CUDA-graph-safe forcing\n"
         "Higher-order schemes are GPU-oriented and may be auto-adjusted by runtime guards."
     )
 
-    self.equation_set_combo = _find_or_create_combo("equation_set_combo", "Equation set:")
-    prev_data = self.equation_set_combo.currentData()
-    prev_text = self.equation_set_combo.currentText()
-    self.equation_set_combo.blockSignals(True)
-    try:
-        self.equation_set_combo.clear()
-        if SWE2DEquationSet is not None:
-            self.equation_set_combo.addItem("Hydrostatic 2D (default)", int(SWE2DEquationSet.HYDROSTATIC_2D))
-            self.equation_set_combo.addItem("Nonhydrostatic 2D", int(SWE2DEquationSet.NONHYDROSTATIC_2D))
-        else:
-            self.equation_set_combo.addItem("Hydrostatic 2D (default)", 0)
-            self.equation_set_combo.addItem("Nonhydrostatic 2D", 1)
-        idx = self.equation_set_combo.findData(prev_data)
-        if idx < 0 and prev_text:
-            idx = self.equation_set_combo.findText(prev_text)
-        if idx < 0:
-            idx = 0
-        if idx >= 0:
-            self.equation_set_combo.setCurrentIndex(idx)
-    finally:
-        self.equation_set_combo.blockSignals(False)
-    self.equation_set_combo.setToolTip(
-        "Choose the governing equation set for the 2D solver.\n"
-        "Hydrostatic 2D keeps the existing shallow-water path.\n"
-        "Nonhydrostatic 2D enables the pressure-correction solver and requires GPU."
-    )
 
 
 
 
 
-def _bind_model_tab_3d_patch_controls(self, model_tab_page: QtWidgets.QWidget, param_form: QtWidgets.QFormLayout) -> None:
-    patch_form = model_tab_page.findChild(QtWidgets.QFormLayout, "patch_3d_form") or param_form
-
-    def _ensure_row(label: str, widget: QtWidgets.QWidget) -> None:
-        if patch_form.indexOf(widget) >= 0:
-            return
-        patch_form.addRow(label, widget)
-
-    def _ensure_widget_row(widget: QtWidgets.QWidget) -> None:
-        if patch_form.indexOf(widget) >= 0:
-            return
-        patch_form.addRow(widget)
-
-    def _find_or_create_check(name: str, label: str, text: str) -> QtWidgets.QCheckBox:
-        w = model_tab_page.findChild(QtWidgets.QCheckBox, name)
-        if w is None:
-            w = QtWidgets.QCheckBox(text)
-            w.setObjectName(name)
-        if not str(w.text() or "").strip():
-            w.setText(text)
-        _ensure_row(label, w)
-        return w
-
-    def _find_or_create_combo(name: str, label: str) -> QtWidgets.QComboBox:
-        w = model_tab_page.findChild(QtWidgets.QComboBox, name)
-        if w is None:
-            w = QtWidgets.QComboBox()
-            w.setObjectName(name)
-        _ensure_row(label, w)
-        return w
-
-    def _find_or_create_double_spin(name: str, label: str) -> QtWidgets.QDoubleSpinBox:
-        w = model_tab_page.findChild(QtWidgets.QDoubleSpinBox, name)
-        if w is None:
-            w = QtWidgets.QDoubleSpinBox()
-            w.setObjectName(name)
-        _ensure_row(label, w)
-        return w
-
-    def _find_or_create_spin(name: str, label: str) -> QtWidgets.QSpinBox:
-        w = model_tab_page.findChild(QtWidgets.QSpinBox, name)
-        if w is None:
-            w = QtWidgets.QSpinBox()
-            w.setObjectName(name)
-        _ensure_row(label, w)
-        return w
-
-    def _find_or_create_line_edit(name: str, label: str) -> QtWidgets.QLineEdit:
-        w = model_tab_page.findChild(QtWidgets.QLineEdit, name)
-        if w is None:
-            w = QtWidgets.QLineEdit()
-            w.setObjectName(name)
-        _ensure_row(label, w)
-        return w
-
-    def _find_or_create_button(name: str, text: str) -> QtWidgets.QPushButton:
-        w = model_tab_page.findChild(QtWidgets.QPushButton, name)
-        if w is None:
-            w = QtWidgets.QPushButton(text)
-            w.setObjectName(name)
-        if not str(w.text() or "").strip():
-            w.setText(text)
-        _ensure_widget_row(w)
-        return w
-
-    def _find_or_create_label(name: str, text: str) -> QtWidgets.QLabel:
-        w = model_tab_page.findChild(QtWidgets.QLabel, name)
-        if w is None:
-            w = QtWidgets.QLabel(text)
-            w.setObjectName(name)
-        if not str(w.text() or "").strip():
-            w.setText(text)
-        _ensure_widget_row(w)
-        return w
-
-    self.experimental_3d_mode_chk = _find_or_create_check(
-        "experimental_3d_mode_chk", "3D patch execution mode:", "Run 3D patch solver (GPU)"
-    )
-    self.experimental_3d_mode_chk.setChecked(False)
-    self.experimental_3d_mode_chk.setToolTip(
-        "Experimental 3D patch solver mode for validation/smoke testing.\n"
-        "Enables SINGLE_PHASE_FREE_SURFACE_VOF and optional 2D-3D coupling."
-    )
-    self._experimental_3d_mode_supported = bool(
-        SolverModelOptions is not None
-        and SWE2DThreeDSolverModel is not None
-        and SWE2DThreeDCouplingMode is not None
-    )
-
-    self.experimental_3d_coupling_mode_combo = _find_or_create_combo(
-        "experimental_3d_coupling_mode_combo", "3D patch coupling mode:"
-    )
-    prev_data = self.experimental_3d_coupling_mode_combo.currentData()
-    prev_text = self.experimental_3d_coupling_mode_combo.currentText()
-    self.experimental_3d_coupling_mode_combo.blockSignals(True)
-    try:
-        self.experimental_3d_coupling_mode_combo.clear()
-        if SWE2DThreeDCouplingMode is not None:
-            self.experimental_3d_coupling_mode_combo.addItem(
-                "Off (uncoupled)", int(SWE2DThreeDCouplingMode.OFF)
-            )
-            self.experimental_3d_coupling_mode_combo.addItem(
-                "One-way (2D -> 3D)", int(SWE2DThreeDCouplingMode.ONE_WAY_2D_TO_3D)
-            )
-            self.experimental_3d_coupling_mode_combo.addItem(
-                "Two-way (2D <-> 3D)", int(SWE2DThreeDCouplingMode.TWO_WAY_2D_3D)
-            )
-        else:
-            self.experimental_3d_coupling_mode_combo.addItem("Off (uncoupled)", 0)
-            self.experimental_3d_coupling_mode_combo.addItem("One-way (2D -> 3D)", 1)
-            self.experimental_3d_coupling_mode_combo.addItem("Two-way (2D <-> 3D)", 2)
-        idx = self.experimental_3d_coupling_mode_combo.findData(prev_data)
-        if idx < 0 and prev_text:
-            idx = self.experimental_3d_coupling_mode_combo.findText(prev_text)
-        if idx < 0:
-            idx = 0
-        if idx >= 0:
-            self.experimental_3d_coupling_mode_combo.setCurrentIndex(idx)
-    finally:
-        self.experimental_3d_coupling_mode_combo.blockSignals(False)
-    self.experimental_3d_coupling_mode_combo.setToolTip(
-        "Select 2D-3D exchange mode for the 3D patch runtime.\n"
-        "When coupling is ON, the GUI auto-builds and uploads a boundary-edge interface contract."
-    )
-
-    self.experimental_3d_patch_face_len_x_spin = _find_or_create_double_spin(
-        "experimental_3d_patch_face_len_x_spin", "3D patch target face length x:"
-    )
-    self.experimental_3d_patch_face_len_x_spin.setRange(1.0e-4, 1.0e6)
-    self.experimental_3d_patch_face_len_x_spin.setDecimals(6)
-    self.experimental_3d_patch_face_len_x_spin.setSingleStep(0.5)
-    self.experimental_3d_patch_face_len_x_spin.setValue(5.0)
-    self.experimental_3d_patch_face_len_x_spin.setToolTip(
-        "Target x-face length for 3D patch cells (model units).\n"
-        "Runtime resolves nx = ceil((xmax-xmin)/target_len_x)."
-    )
-
-    self.experimental_3d_patch_face_len_y_spin = _find_or_create_double_spin(
-        "experimental_3d_patch_face_len_y_spin", "3D patch target face length y:"
-    )
-    self.experimental_3d_patch_face_len_y_spin.setRange(1.0e-4, 1.0e6)
-    self.experimental_3d_patch_face_len_y_spin.setDecimals(6)
-    self.experimental_3d_patch_face_len_y_spin.setSingleStep(0.5)
-    self.experimental_3d_patch_face_len_y_spin.setValue(5.0)
-    self.experimental_3d_patch_face_len_y_spin.setToolTip(
-        "Target y-face length for 3D patch cells (model units).\n"
-        "Runtime resolves ny = ceil((ymax-ymin)/target_len_y)."
-    )
-
-    self.experimental_3d_patch_face_len_z_spin = _find_or_create_double_spin(
-        "experimental_3d_patch_face_len_z_spin", "3D patch target face length z:"
-    )
-    self.experimental_3d_patch_face_len_z_spin.setRange(1.0e-4, 1.0e6)
-    self.experimental_3d_patch_face_len_z_spin.setDecimals(6)
-    self.experimental_3d_patch_face_len_z_spin.setSingleStep(0.25)
-    self.experimental_3d_patch_face_len_z_spin.setValue(2.0)
-    self.experimental_3d_patch_face_len_z_spin.setToolTip(
-        "Target z-face length for 3D patch cells (model units).\n"
-        "Runtime resolves nz = ceil((zmax-zmin)/target_len_z)."
-    )
-
-    self.experimental_3d_projection_residual_sample_iters_spin = _find_or_create_spin(
-        "experimental_3d_projection_residual_sample_iters_spin",
-        "3D projection residual sample stride:"
-    )
-    self.experimental_3d_projection_residual_sample_iters_spin.setRange(1, 1024)
-    self.experimental_3d_projection_residual_sample_iters_spin.setSingleStep(1)
-    self.experimental_3d_projection_residual_sample_iters_spin.setValue(1)
-    self.experimental_3d_projection_residual_sample_iters_spin.setToolTip(
-        "Jacobi iterations between residual checks in 3D projection.\n"
-        "1 checks every iteration (most responsive, more host sync).\n"
-        "Higher values reduce host sync overhead by sampling every N iterations."
-    )
-
-    self.experimental_3d_projection_divergence_gate_enable_chk = _find_or_create_check(
-        "experimental_3d_projection_divergence_gate_enable_chk",
-        "3D projection divergence gate:",
-        "Enable"
-    )
-    self.experimental_3d_projection_divergence_gate_enable_chk.setChecked(False)
-    self.experimental_3d_projection_divergence_gate_enable_chk.setToolTip(
-        "Reject/retune projection attempts when divergence quality ratio exceeds target.\n"
-        "Maps to BACKWATER_SWE3D_PROJECTION_DIVERGENCE_GATE_ENABLE."
-    )
-
-    self.experimental_3d_projection_divergence_ratio_target_spin = _find_or_create_double_spin(
-        "experimental_3d_projection_divergence_ratio_target_spin",
-        "3D projection divergence ratio target:"
-    )
-    self.experimental_3d_projection_divergence_ratio_target_spin.setRange(1.0e-6, 100.0)
-    self.experimental_3d_projection_divergence_ratio_target_spin.setDecimals(6)
-    self.experimental_3d_projection_divergence_ratio_target_spin.setSingleStep(0.05)
-    self.experimental_3d_projection_divergence_ratio_target_spin.setValue(1.0)
-    self.experimental_3d_projection_divergence_ratio_target_spin.setToolTip(
-        "Maximum allowed divergence RMS ratio (post-correction / pre-projection).\n"
-        "Lower values are stricter; 1.0 matches neutral gate behavior."
-    )
-
-    self.experimental_3d_patch_xmin_edit = _find_or_create_line_edit(
-        "experimental_3d_patch_xmin_edit", "3D patch x min:"
-    )
-    self.experimental_3d_patch_xmax_edit = _find_or_create_line_edit(
-        "experimental_3d_patch_xmax_edit", "3D patch x max:"
-    )
-    self.experimental_3d_patch_ymin_edit = _find_or_create_line_edit(
-        "experimental_3d_patch_ymin_edit", "3D patch y min:"
-    )
-    self.experimental_3d_patch_ymax_edit = _find_or_create_line_edit(
-        "experimental_3d_patch_ymax_edit", "3D patch y max:"
-    )
-    self.experimental_3d_patch_zmin_edit = _find_or_create_line_edit(
-        "experimental_3d_patch_zmin_edit", "3D patch z min:"
-    )
-    self.experimental_3d_patch_zmax_edit = _find_or_create_line_edit(
-        "experimental_3d_patch_zmax_edit", "3D patch z max:"
-    )
-    for _w in (
-        self.experimental_3d_patch_xmin_edit,
-        self.experimental_3d_patch_xmax_edit,
-        self.experimental_3d_patch_ymin_edit,
-        self.experimental_3d_patch_ymax_edit,
-        self.experimental_3d_patch_zmin_edit,
-        self.experimental_3d_patch_zmax_edit,
-    ):
-        _w.setPlaceholderText("auto from mesh")
-    self.experimental_3d_patch_zmin_edit.setPlaceholderText("auto from terrain")
-
-    self.experimental_3d_patch_set_roi_btn = _find_or_create_button(
-        "experimental_3d_patch_set_roi_btn", "Set ROI From Current Mesh"
-    )
-    self.experimental_3d_patch_set_roi_btn.setToolTip(
-        "Populate x/y/z min-max fields from the current 2D mesh extents.\n"
-        "Used only when Experimental 3D patch mode is enabled."
-    )
-    try:
-        self.experimental_3d_patch_set_roi_btn.clicked.disconnect(self._set_3d_patch_roi_from_mesh)
-    except Exception:
-        pass
-    self.experimental_3d_patch_set_roi_btn.clicked.connect(self._set_3d_patch_roi_from_mesh)
-
-    self.experimental_3d_patch_hint_lbl = _find_or_create_label(
-        "experimental_3d_patch_hint_lbl",
-        "3D patch ROI/resolution override (experimental): resolution is driven by target face lengths; "
-        "leave min/max empty to auto-use mesh extents; z-min is terrain-driven when a DEM is available.",
-    )
-    self.experimental_3d_patch_hint_lbl.setWordWrap(True)
-
-    self._experimental_3d_bc_widget_attrs = []
-    self._experimental_3d_bc_signal_specs = []
-    self.experimental_3d_patch_bc_widget = model_tab_page.findChild(
-        QtWidgets.QWidget, "experimental_3d_patch_bc_widget"
-    )
-    if self.experimental_3d_patch_bc_widget is None:
-        self.experimental_3d_patch_bc_widget = QtWidgets.QWidget()
-        self.experimental_3d_patch_bc_widget.setObjectName("experimental_3d_patch_bc_widget")
-    _ensure_row("3D patch face BCs:", self.experimental_3d_patch_bc_widget)
-
-    existing_layout = self.experimental_3d_patch_bc_widget.layout()
-    if isinstance(existing_layout, QtWidgets.QGridLayout):
-        while existing_layout.count():
-            item = existing_layout.takeAt(0)
-            widget = item.widget()
-            if widget is not None:
-                widget.deleteLater()
-        bc_grid = existing_layout
-    else:
-        bc_grid = QtWidgets.QGridLayout(self.experimental_3d_patch_bc_widget)
-    bc_grid.setContentsMargins(0, 0, 0, 0)
-    bc_grid.setHorizontalSpacing(4)
-    bc_grid.setVerticalSpacing(2)
-
-    bc_headers = ["Face", "Mode", "Q", "U", "V", "W", "VOF", "P"]
-    for col, label in enumerate(bc_headers):
-        hdr = QtWidgets.QLabel(label)
-        hdr.setStyleSheet("font-weight: 600;")
-        bc_grid.addWidget(hdr, 0, col)
-
-    swe3d_patch_faces = globals().get("_SWE3D_PATCH_FACES")
-    swe3d_mode_options = globals().get("_SWE3D_BC_MODE_OPTIONS")
-    swe3d_field_defaults = globals().get("_SWE3D_BC_FIELD_DEFAULTS")
-    if swe3d_patch_faces is None or swe3d_mode_options is None or swe3d_field_defaults is None:
-        try:
-            import swe2d_workbench_qt as _wb
-            swe3d_patch_faces = swe3d_patch_faces or getattr(_wb, "_SWE3D_PATCH_FACES", None)
-            swe3d_mode_options = swe3d_mode_options or getattr(_wb, "_SWE3D_BC_MODE_OPTIONS", None)
-            swe3d_field_defaults = swe3d_field_defaults or getattr(_wb, "_SWE3D_BC_FIELD_DEFAULTS", None)
-        except Exception:
-            pass
-    if swe3d_patch_faces is None:
-        swe3d_patch_faces = ("XMIN", "XMAX", "YMIN", "YMAX", "ZMIN", "ZMAX")
-    if swe3d_mode_options is None:
-        swe3d_mode_options = [
-            ("Wall", 0),
-            ("Inflow (U/V/W)", 1),
-            ("Volumetric Inlet (Q)", 4),
-            ("Outflow (zero-gradient)", 2),
-            ("Free Surface", 3),
-        ]
-    if swe3d_field_defaults is None:
-        swe3d_field_defaults = {"q": 0.0, "u": 0.0, "v": 0.0, "w": 0.0, "vof": 1.0, "p": 0.0}
-
-    for row, face in enumerate(swe3d_patch_faces, start=1):
-        face_key = str(face).lower()
-        bc_grid.addWidget(QtWidgets.QLabel(face), row, 0)
-
-        mode_combo = QtWidgets.QComboBox()
-        for mode_label, mode_value in swe3d_mode_options:
-            mode_combo.addItem(str(mode_label), int(mode_value))
-        mode_combo.setCurrentIndex(0)
-        mode_combo.setToolTip(
-            "Boundary mode for this 3D patch face "
-            "(0=Wall, 1=Inflow(U/V/W), 2=Outflow(zero-gradient), 3=Free Surface, 4=Volumetric Inlet(Q))."
-        )
-        mode_attr = f"experimental_3d_bc_{face_key}_mode_combo"
-        setattr(self, mode_attr, mode_combo)
-        self._experimental_3d_bc_widget_attrs.append(mode_attr)
-        self._experimental_3d_bc_signal_specs.append((mode_attr, "currentIndexChanged"))
-        bc_grid.addWidget(mode_combo, row, 1)
-
-        for col, field_name in enumerate(("q", "u", "v", "w", "vof", "p"), start=2):
-            spin = QtWidgets.QDoubleSpinBox()
-            spin.setDecimals(6)
-            if field_name == "q":
-                spin.setRange(-1.0e9, 1.0e9)
-                spin.setSingleStep(1.0)
-            elif field_name == "vof":
-                spin.setRange(0.0, 1.0)
-                spin.setSingleStep(0.05)
-            elif field_name == "p":
-                spin.setRange(-1.0e9, 1.0e9)
-                spin.setSingleStep(1000.0)
-            else:
-                spin.setRange(-1.0e6, 1.0e6)
-                spin.setSingleStep(0.1)
-            spin.setValue(float(swe3d_field_defaults.get(field_name, 0.0)))
-            spin.setMaximumWidth(100)
-            if field_name == "q":
-                spin.setToolTip(
-                    f"Prescribed volumetric flow rate Q [m^3/s] for {face} when mode=Volumetric Inlet (Q)."
-                )
-            else:
-                spin.setToolTip(
-                    f"Prescribed {field_name.upper()} state for {face} when mode uses boundary state input."
-                )
-            field_attr = f"experimental_3d_bc_{face_key}_{field_name}_spin"
-            setattr(self, field_attr, spin)
-            self._experimental_3d_bc_widget_attrs.append(field_attr)
-            self._experimental_3d_bc_signal_specs.append((field_attr, "valueChanged"))
-            bc_grid.addWidget(spin, row, col)
-
-    self.experimental_3d_patch_bc_hint_lbl = _find_or_create_label(
-        "experimental_3d_patch_bc_hint_lbl",
-        "3D face BCs map to BACKWATER_SWE3D_BC_<FACE>_<FIELD> env overrides; "
-        "Outflow is zero-gradient, and Volumetric Inlet uses Q [m^3/s] for the face-normal inflow target.",
-    )
-    self.experimental_3d_patch_bc_hint_lbl.setWordWrap(True)
-
-    self.experimental_3d_patch_normal_depth_enable_chk = _find_or_create_check(
-        "experimental_3d_patch_normal_depth_enable_chk",
-        "3D patch normal-depth init:",
-        "Use Manning normal depth from active Q face BC",
-    )
-    self.experimental_3d_patch_normal_depth_enable_chk.setChecked(False)
-    self.experimental_3d_patch_normal_depth_enable_chk.setToolTip(
-        "At run start, compute a normal depth for the selected Volumetric Inlet (Q) face\n"
-        "using Manning's equation and seed boundary free-surface from that depth."
-    )
-
-    self.experimental_3d_patch_normal_depth_seed_domain_chk = _find_or_create_check(
-        "experimental_3d_patch_normal_depth_seed_domain_chk",
-        "3D patch normal-depth domain seed:",
-        "Apply computed normal-depth free-surface across full patch domain",
-    )
-    self.experimental_3d_patch_normal_depth_seed_domain_chk.setChecked(False)
-    self.experimental_3d_patch_normal_depth_seed_domain_chk.setToolTip(
-        "If enabled, initial free-surface is seeded across the full 3D patch domain\n"
-        "using the Manning normal-depth WSE computed at the active Q boundary face."
-    )
-
-    self.experimental_3d_patch_normal_depth_slope_spin = _find_or_create_double_spin(
-        "experimental_3d_patch_normal_depth_slope_spin",
-        "3D patch Manning slope S:",
-    )
-    self.experimental_3d_patch_normal_depth_slope_spin.setRange(1.0e-8, 10.0)
-    self.experimental_3d_patch_normal_depth_slope_spin.setDecimals(8)
-    self.experimental_3d_patch_normal_depth_slope_spin.setSingleStep(1.0e-4)
-    self.experimental_3d_patch_normal_depth_slope_spin.setValue(0.001)
-    self.experimental_3d_patch_normal_depth_slope_spin.setToolTip(
-        "Energy grade/channel slope S used in Manning normal-depth solve for Q boundaries."
-    )
-
-    self.experimental_3d_patch_normal_depth_n_spin = _find_or_create_double_spin(
-        "experimental_3d_patch_normal_depth_n_spin",
-        "3D patch Manning n (normal-depth):",
-    )
-    self.experimental_3d_patch_normal_depth_n_spin.setRange(1.0e-4, 1.0)
-    self.experimental_3d_patch_normal_depth_n_spin.setDecimals(6)
-    self.experimental_3d_patch_normal_depth_n_spin.setSingleStep(0.001)
-    try:
-        self.experimental_3d_patch_normal_depth_n_spin.setValue(float(self.n_mann_spin.value()))
-    except Exception:
-        self.experimental_3d_patch_normal_depth_n_spin.setValue(0.02)
-    self.experimental_3d_patch_normal_depth_n_spin.setToolTip(
-        "Manning roughness n used only for the 3D Q-boundary normal-depth initialization solve."
-    )
-
-    self.experimental_3d_patch_normal_depth_us_units_chk = _find_or_create_check(
-        "experimental_3d_patch_normal_depth_us_units_chk",
-        "3D patch Manning units:",
-        "Use US customary Manning factor (u = 1.49)",
-    )
-    self.experimental_3d_patch_normal_depth_us_units_chk.setChecked(True)
-    self.experimental_3d_patch_normal_depth_us_units_chk.setToolTip(
-        "If enabled, Manning coefficient uses u=1.49 (US customary).\n"
-        "If disabled, u=1.0 (SI form)."
-    )
-
-    if not self._experimental_3d_mode_supported:
-        self.experimental_3d_mode_chk.setChecked(False)
-        self.experimental_3d_mode_chk.setEnabled(False)
-        self.experimental_3d_coupling_mode_combo.setEnabled(False)
-        self.experimental_3d_mode_chk.setText("3D patch solver unavailable in this runtime")
-        self.experimental_3d_mode_chk.setToolTip(
-            "3D patch runtime enums (SolverModelOptions / SWE2DThreeD*) are unavailable.\n"
-            "This session will run 2D only until the Python runtime imports swe2d_extensions fully."
-        )
 
 
-
-
-
-def _bind_model_tab_3d_subgrid_drainage_controls(
+def _bind_model_tab_subgrid_drainage_controls(
     self, model_tab_page: QtWidgets.QWidget, param_form: QtWidgets.QFormLayout,
     solver_form: Optional[QtWidgets.QFormLayout] = None,
 ) -> None:
-    patch_form = model_tab_page.findChild(QtWidgets.QFormLayout, "patch_3d_form") or param_form
     _sf = solver_form or param_form  # solver-target items go here, not into the drainage form
 
     def _ensure_row(label: str, widget: QtWidgets.QWidget, target_form: Optional[QtWidgets.QFormLayout] = None) -> None:
-        form = target_form or patch_form
+        form = target_form or param_form
         if form.indexOf(widget) >= 0:
             return
         form.addRow(label, widget)
 
     def _ensure_widget_row(widget: QtWidgets.QWidget, target_form: Optional[QtWidgets.QFormLayout] = None) -> None:
-        form = target_form or patch_form
+        form = target_form or param_form
         if form.indexOf(widget) >= 0:
             return
         form.addRow(widget)
@@ -1132,227 +672,7 @@ def _bind_model_tab_3d_subgrid_drainage_controls(
         _ensure_row(label, w, target_form)
         return w
 
-    self.experimental_3d_obj_solids_chk = _find_or_create_check(
-        "experimental_3d_obj_solids_chk", "3D sub-grid solids:", "Enable"
-    )
-    self.experimental_3d_obj_solids_chk.setChecked(True)
-    self.experimental_3d_obj_solids_chk.setToolTip(
-        "Upload static sub-grid geometry tensors (phi/ax/ay/az) before run start.\n"
-        "Sources geometry from an OBJ instance point layer and optional terrain DEM solid fill."
-    )
 
-    self.experimental_3d_obj_method_combo = _find_or_create_combo(
-        "experimental_3d_obj_method_combo", "3D sub-grid method:"
-    )
-    prev_data = self.experimental_3d_obj_method_combo.currentData()
-    prev_text = self.experimental_3d_obj_method_combo.currentText()
-    self.experimental_3d_obj_method_combo.blockSignals(True)
-    try:
-        self.experimental_3d_obj_method_combo.clear()
-        self.experimental_3d_obj_method_combo.addItem("Fractional cut-cell (current)", "fractional_cutcell")
-        self.experimental_3d_obj_method_combo.addItem("Porosity (Hirt-Nichols/FAVOR-like)", "favor1981_porosity")
-        idx = self.experimental_3d_obj_method_combo.findData(prev_data)
-        if idx < 0 and prev_text:
-            idx = self.experimental_3d_obj_method_combo.findText(prev_text)
-        if idx < 0:
-            idx = 0
-        if idx >= 0:
-            self.experimental_3d_obj_method_combo.setCurrentIndex(idx)
-    finally:
-        self.experimental_3d_obj_method_combo.blockSignals(False)
-    self.experimental_3d_obj_method_combo.setToolTip(
-        "Static-obstacle tensor reconstruction method.\n"
-        "Fractional cut-cell: current phi + pair-min face openness.\n"
-        "Porosity/FAVOR-like: direct directional face-open sampling."
-    )
-
-    self.experimental_3d_obj_layer_combo = _find_or_create_combo(
-        "experimental_3d_obj_layer_combo", "3D OBJ instances layer:"
-    )
-    prev_data = self.experimental_3d_obj_layer_combo.currentData()
-    prev_text = self.experimental_3d_obj_layer_combo.currentText()
-    self.experimental_3d_obj_layer_combo.blockSignals(True)
-    try:
-        self.experimental_3d_obj_layer_combo.clear()
-        self.experimental_3d_obj_layer_combo.addItem("(none)", None)
-        idx = self.experimental_3d_obj_layer_combo.findData(prev_data)
-        if idx < 0 and prev_text:
-            idx = self.experimental_3d_obj_layer_combo.findText(prev_text)
-        if idx >= 0:
-            self.experimental_3d_obj_layer_combo.setCurrentIndex(idx)
-    finally:
-        self.experimental_3d_obj_layer_combo.blockSignals(False)
-
-    self.experimental_3d_obj_path_field_edit = _find_or_create_line_edit(
-        "experimental_3d_obj_path_field_edit", "3D OBJ path field:", "model_path"
-    )
-    if not str(self.experimental_3d_obj_path_field_edit.text() or "").strip():
-        self.experimental_3d_obj_path_field_edit.setText("model_path")
-    self.experimental_3d_obj_path_field_edit.setPlaceholderText("attribute with OBJ file path")
-
-    self.experimental_3d_obj_default_path_edit = _find_or_create_line_edit(
-        "experimental_3d_obj_default_path_edit", "3D OBJ fallback path:"
-    )
-    self.experimental_3d_obj_default_path_edit.setPlaceholderText("fallback OBJ path (optional)")
-
-    self.experimental_3d_obj_scale_field_edit = _find_or_create_line_edit(
-        "experimental_3d_obj_scale_field_edit", "3D OBJ scale field:", "scale"
-    )
-    if not str(self.experimental_3d_obj_scale_field_edit.text() or "").strip():
-        self.experimental_3d_obj_scale_field_edit.setText("scale")
-    self.experimental_3d_obj_scale_field_edit.setPlaceholderText("optional scale field (1 or sx,sy,sz)")
-
-    self.experimental_3d_obj_yaw_field_edit = _find_or_create_line_edit(
-        "experimental_3d_obj_yaw_field_edit", "3D OBJ yaw field:", "yaw_deg"
-    )
-    if not str(self.experimental_3d_obj_yaw_field_edit.text() or "").strip():
-        self.experimental_3d_obj_yaw_field_edit.setText("yaw_deg")
-    self.experimental_3d_obj_yaw_field_edit.setPlaceholderText("optional yaw field (degrees)")
-
-    self.experimental_3d_obj_z_offset_field_edit = _find_or_create_line_edit(
-        "experimental_3d_obj_z_offset_field_edit", "3D OBJ z-offset field:", "z_offset"
-    )
-    if not str(self.experimental_3d_obj_z_offset_field_edit.text() or "").strip():
-        self.experimental_3d_obj_z_offset_field_edit.setText("z_offset")
-    self.experimental_3d_obj_z_offset_field_edit.setPlaceholderText("optional per-instance z offset")
-
-    self.experimental_3d_obj_inside_points_layer_combo = _find_or_create_combo(
-        "experimental_3d_obj_inside_points_layer_combo", "3D OBJ outside-point layer:"
-    )
-    prev_data = self.experimental_3d_obj_inside_points_layer_combo.currentData()
-    prev_text = self.experimental_3d_obj_inside_points_layer_combo.currentText()
-    self.experimental_3d_obj_inside_points_layer_combo.blockSignals(True)
-    try:
-        self.experimental_3d_obj_inside_points_layer_combo.clear()
-        self.experimental_3d_obj_inside_points_layer_combo.addItem("(none)", None)
-        idx = self.experimental_3d_obj_inside_points_layer_combo.findData(prev_data)
-        if idx < 0 and prev_text:
-            idx = self.experimental_3d_obj_inside_points_layer_combo.findText(prev_text)
-        if idx >= 0:
-            self.experimental_3d_obj_inside_points_layer_combo.setCurrentIndex(idx)
-    finally:
-        self.experimental_3d_obj_inside_points_layer_combo.blockSignals(False)
-
-    self.experimental_3d_obj_instance_id_field_edit = _find_or_create_line_edit(
-        "experimental_3d_obj_instance_id_field_edit", "3D OBJ instance id field:", "instance_id"
-    )
-    if not str(self.experimental_3d_obj_instance_id_field_edit.text() or "").strip():
-        self.experimental_3d_obj_instance_id_field_edit.setText("instance_id")
-    self.experimental_3d_obj_instance_id_field_edit.setPlaceholderText("optional OBJ instance id field")
-
-    self.experimental_3d_obj_inside_id_field_edit = _find_or_create_line_edit(
-        "experimental_3d_obj_inside_id_field_edit", "3D OBJ outside-point id field:", "instance_id"
-    )
-    if not str(self.experimental_3d_obj_inside_id_field_edit.text() or "").strip():
-        self.experimental_3d_obj_inside_id_field_edit.setText("instance_id")
-    self.experimental_3d_obj_inside_id_field_edit.setPlaceholderText("optional outside-point id field")
-
-    self.experimental_3d_obj_inside_z_field_edit = _find_or_create_line_edit(
-        "experimental_3d_obj_inside_z_field_edit", "3D OBJ outside-point z field:", "z"
-    )
-    if not str(self.experimental_3d_obj_inside_z_field_edit.text() or "").strip():
-        self.experimental_3d_obj_inside_z_field_edit.setText("z")
-    self.experimental_3d_obj_inside_z_field_edit.setPlaceholderText("optional outside-point z field")
-
-    self.experimental_3d_obj_use_terrain_chk = _find_or_create_check(
-        "experimental_3d_obj_use_terrain_chk", "3D terrain solid:", "Use terrain layer as bed solid"
-    )
-    self.experimental_3d_obj_use_terrain_chk.setChecked(True)
-    self.experimental_3d_obj_use_terrain_chk.setToolTip(
-        "Treat cells below sampled terrain DEM elevation as solid (phi=0)."
-    )
-
-    self.experimental_3d_obj_ab_compare_chk = _find_or_create_check(
-        "experimental_3d_obj_ab_compare_chk", "3D A/B compare:", "A/B compare methods (startup probe)"
-    )
-    self.experimental_3d_obj_ab_compare_chk.setChecked(False)
-    self.experimental_3d_obj_ab_compare_chk.setToolTip(
-        "Run a short pre-run probe on temporary backends to compare fractional cut-cell and FAVOR-like methods.\n"
-        "Logs mass drift proxy, max Courant, p_max_abs, and u_rms deltas before the main run starts."
-    )
-
-    self.experimental_3d_obj_ab_probe_steps_spin = _find_or_create_spin(
-        "experimental_3d_obj_ab_probe_steps_spin", "3D A/B probe steps:"
-    )
-    self.experimental_3d_obj_ab_probe_steps_spin.setRange(1, 64)
-    self.experimental_3d_obj_ab_probe_steps_spin.setValue(8)
-    self.experimental_3d_obj_ab_probe_steps_spin.setToolTip(
-        "Number of adaptive 3D probe steps used for each obstacle method in A/B compare mode."
-    )
-
-    self.experimental_3d_obj_export_obj_chk = _find_or_create_check(
-        "experimental_3d_obj_export_obj_chk", "3D export voxel shell OBJ:", "Export voxelized solid shell OBJ"
-    )
-    self.experimental_3d_obj_export_obj_chk.setChecked(False)
-    self.experimental_3d_obj_export_obj_chk.setToolTip(
-        "Write the reconstructed solid representation (from phi thresholding) as an OBJ mesh for inspection."
-    )
-
-    self.experimental_3d_obj_export_obj_path_edit = _find_or_create_line_edit(
-        "experimental_3d_obj_export_obj_path_edit", "3D solid OBJ export path:"
-    )
-    self.experimental_3d_obj_export_obj_path_edit.setPlaceholderText("optional OBJ output path (auto if empty)")
-
-    self.experimental_3d_geom_sanitize_chk = _find_or_create_check(
-        "experimental_3d_geom_sanitize_chk",
-        "3D sanitize tensors:",
-        "Sanitize upload tensors (clamp/snap tiny phi/area)",
-    )
-    self.experimental_3d_geom_sanitize_chk.setChecked(True)
-    self.experimental_3d_geom_sanitize_chk.setToolTip(
-        "Preprocess uploaded phi/ax/ay/az tensors for numerical robustness.\n"
-        "Clamps all tensors to [0,1], snaps tiny phi cells to solid, and snaps tiny face-open areas to zero."
-    )
-
-    self.experimental_3d_geom_phi_snap_spin = _find_or_create_double_spin(
-        "experimental_3d_geom_phi_snap_spin", "3D sanitize phi snap min:"
-    )
-    self.experimental_3d_geom_phi_snap_spin.setRange(0.0, 1.0)
-    self.experimental_3d_geom_phi_snap_spin.setDecimals(6)
-    self.experimental_3d_geom_phi_snap_spin.setSingleStep(0.001)
-    self.experimental_3d_geom_phi_snap_spin.setValue(0.005)
-    self.experimental_3d_geom_phi_snap_spin.setToolTip(
-        "If phi < threshold, the cell is snapped to solid (phi=0) during geometry upload.\n"
-        "Default is conservative to avoid over-sanitizing valid cut cells."
-    )
-
-    self.experimental_3d_geom_area_snap_spin = _find_or_create_double_spin(
-        "experimental_3d_geom_area_snap_spin", "3D sanitize area snap min:"
-    )
-    self.experimental_3d_geom_area_snap_spin.setRange(0.0, 1.0)
-    self.experimental_3d_geom_area_snap_spin.setDecimals(6)
-    self.experimental_3d_geom_area_snap_spin.setSingleStep(0.001)
-    self.experimental_3d_geom_area_snap_spin.setValue(0.01)
-    self.experimental_3d_geom_area_snap_spin.setToolTip(
-        "If ax/ay/az < threshold, the face-open fraction is snapped to zero during upload.\n"
-        "Default is conservative and mainly targets sliver openings."
-    )
-
-    self.godunov_mode_combo = _find_or_create_combo(
-        "godunov_mode_combo", "GPU solver mode:", _sf
-    )
-    prev_data = self.godunov_mode_combo.currentData()
-    prev_text = self.godunov_mode_combo.currentText()
-    self.godunov_mode_combo.blockSignals(True)
-    try:
-        self.godunov_mode_combo.clear()
-        self.godunov_mode_combo.addItem("Current GPU solver", int(GodunovSolverMode.CURRENT_GPU_STEP))
-        self.godunov_mode_combo.addItem("Godunov rollout (2nd-order)", int(GodunovSolverMode.GODUNOV_ROLLOUT))
-        idx = self.godunov_mode_combo.findData(prev_data)
-        if idx < 0 and prev_text:
-            idx = self.godunov_mode_combo.findText(prev_text)
-        if idx < 0:
-            idx = 0
-        if idx >= 0:
-            self.godunov_mode_combo.setCurrentIndex(idx)
-    finally:
-        self.godunov_mode_combo.blockSignals(False)
-    self.godunov_mode_combo.setToolTip(
-        "Select the solver implementation used by the GPU path.\n"
-        "Current GPU solver: existing production path.\n"
-        "Godunov rollout: enables the second-order rollout configuration and\n"
-        "keeps the native solver on the migration path for the new FVM mode."
-    )
 
     self.degen_mode_combo = _find_or_create_combo("degen_mode_combo", "Degenerate cell mode:", _sf)
     prev_data = self.degen_mode_combo.currentData()
@@ -1392,39 +712,13 @@ def _bind_model_tab_3d_subgrid_drainage_controls(
     try:
         self.solver_backend_combo.clear()
         self.solver_backend_combo.addItem("GPU solver backend (CUDA)", "gpu")
-        self.solver_backend_combo.addItem("CPU solver backend", "cpu")
-        idx = self.solver_backend_combo.findData(prev_data)
-        if idx < 0 and prev_text:
-            idx = self.solver_backend_combo.findText(prev_text)
-        if idx < 0:
-            idx = 0
+        idx = 0
         if idx >= 0:
             self.solver_backend_combo.setCurrentIndex(idx)
     finally:
         self.solver_backend_combo.blockSignals(False)
     self.solver_backend_combo.setToolTip(
-        "Select the SWE2D time-integration backend.\n"
-        "GPU: uses CUDA kernels for SWE stepping and enables CUDA-native coupling paths.\n"
-        "CPU: forces CPU SWE stepping and CPU coupling/source assembly paths."
-    )
-
-    self.solver_openmp_enabled_chk = _find_or_create_check(
-        "solver_openmp_enabled_chk", "SWE2D OpenMP:", "Enabled", _sf
-    )
-    self.solver_openmp_enabled_chk.setChecked(True)
-    self.solver_openmp_enabled_chk.setToolTip(
-        "Enable OpenMP-native SWE2D module variant.\n"
-        "Off loads the serial non-OpenMP module variant built from the same sources."
-    )
-
-    self.solver_cpu_threads_spin = _find_or_create_spin(
-        "solver_cpu_threads_spin", "SWE2D CPU threads:", _sf
-    )
-    self.solver_cpu_threads_spin.setRange(0, 256)
-    self.solver_cpu_threads_spin.setValue(0)
-    self.solver_cpu_threads_spin.setToolTip(
-        "CPU thread count for SWE2D CPU backend.\n"
-        "0 = auto (OpenMP runtime decides, e.g., OMP_NUM_THREADS/hardware)."
+        "GPU solver backend using CUDA for SWE time integration, source assembly, and coupling."
     )
 
     self.coupling_loop_combo = _find_or_create_combo("coupling_loop_combo", "Coupling loop:", _sf)
@@ -1433,22 +727,14 @@ def _bind_model_tab_3d_subgrid_drainage_controls(
     self.coupling_loop_combo.blockSignals(True)
     try:
         self.coupling_loop_combo.clear()
-        self.coupling_loop_combo.addItem("CPU coupling loop (reference)", "cpu")
-        self.coupling_loop_combo.addItem("CUDA coupling loop (source assembly)", "cuda")
-        idx = self.coupling_loop_combo.findData(prev_data)
-        if idx < 0 and prev_text:
-            idx = self.coupling_loop_combo.findText(prev_text)
-        if idx < 0:
-            idx = min(1, max(0, self.coupling_loop_combo.count() - 1))
+        self.coupling_loop_combo.addItem("CUDA coupling loop (GPU)", "cuda")
+        idx = 0
         if idx >= 0:
             self.coupling_loop_combo.setCurrentIndex(idx)
     finally:
         self.coupling_loop_combo.blockSignals(False)
     self.coupling_loop_combo.setToolTip(
-        "Select coupling source assembly mode.\n"
-        "CPU: Python reference path for drainage/structure source rates.\n"
-        "CUDA: uses native CUDA kernel for per-cell source assembly when available;\n"
-        "falls back to CPU reference automatically if CUDA binding/device is unavailable."
+        "GPU coupling loop using native CUDA kernel for per-cell source assembly."
     )
 
     self.culvert_solver_mode_combo = _find_or_create_combo(
@@ -1554,22 +840,14 @@ def _bind_model_tab_3d_subgrid_drainage_controls(
     self.drainage_backend_combo.blockSignals(True)
     try:
         self.drainage_backend_combo.clear()
-        self.drainage_backend_combo.addItem("CPU drainage solver (reference)", "cpu")
         self.drainage_backend_combo.addItem("GPU drainage solver (CUDA)", "gpu")
-        idx = self.drainage_backend_combo.findData(prev_data)
-        if idx < 0 and prev_text:
-            idx = self.drainage_backend_combo.findText(prev_text)
-        if idx < 0:
-            idx = min(1, max(0, self.drainage_backend_combo.count() - 1))
+        idx = 0
         if idx >= 0:
             self.drainage_backend_combo.setCurrentIndex(idx)
     finally:
         self.drainage_backend_combo.blockSignals(False)
     self.drainage_backend_combo.setToolTip(
-        "Select drainage network solver backend.\n"
-        "CPU: Python reference implementation.\n"
-        "GPU: native CUDA drainage solver for EGL/Diffusion/Dynamic modes;\n"
-        "falls back to CPU path when CUDA drainage bindings are unavailable."
+        "GPU drainage solver using native CUDA kernels for EGL/Diffusion/Dynamic modes."
     )
 
     self.drainage_gpu_method_combo = _find_or_create_combo(
@@ -1934,16 +1212,6 @@ def _bind_run_tab_controls(self, run_tab_page: QtWidgets.QWidget) -> None:
             pass
         btn.clicked.connect(cb)
 
-    try:
-        self.experimental_3d_mode_chk.toggled.disconnect(self._sync_experimental_3d_mode_widgets)
-    except Exception:
-        pass
-    try:
-        self.experimental_3d_mode_chk.toggled.connect(self._sync_experimental_3d_mode_widgets)
-    except Exception:
-        pass
-    self._sync_experimental_3d_mode_widgets()
-
 
 
 
@@ -2114,45 +1382,10 @@ def _connect_project_workbench_state_signals(self) -> None:
         ("line_output_interval_edit", "editingFinished"),
         ("reconstruction_combo", "currentIndexChanged"),
         ("temporal_order_combo", "currentIndexChanged"),
-        ("equation_set_combo", "currentIndexChanged"),
-        ("experimental_3d_mode_chk", "toggled"),
-        ("experimental_3d_coupling_mode_combo", "currentIndexChanged"),
-        ("experimental_3d_patch_face_len_x_spin", "valueChanged"),
-        ("experimental_3d_patch_face_len_y_spin", "valueChanged"),
-        ("experimental_3d_patch_face_len_z_spin", "valueChanged"),
-        ("experimental_3d_projection_residual_sample_iters_spin", "valueChanged"),
-        ("experimental_3d_projection_divergence_gate_enable_chk", "toggled"),
-        ("experimental_3d_projection_divergence_ratio_target_spin", "valueChanged"),
-        ("experimental_3d_patch_xmin_edit", "editingFinished"),
-        ("experimental_3d_patch_xmax_edit", "editingFinished"),
-        ("experimental_3d_patch_ymin_edit", "editingFinished"),
-        ("experimental_3d_patch_ymax_edit", "editingFinished"),
-        ("experimental_3d_patch_zmin_edit", "editingFinished"),
-        ("experimental_3d_patch_zmax_edit", "editingFinished"),
-        ("experimental_3d_obj_solids_chk", "toggled"),
-        ("experimental_3d_obj_method_combo", "currentIndexChanged"),
-        ("experimental_3d_geom_sanitize_chk", "toggled"),
-        ("experimental_3d_geom_phi_snap_spin", "valueChanged"),
-        ("experimental_3d_geom_area_snap_spin", "valueChanged"),
-        ("experimental_3d_obj_layer_combo", "currentIndexChanged"),
-        ("experimental_3d_obj_path_field_edit", "editingFinished"),
-        ("experimental_3d_obj_default_path_edit", "editingFinished"),
-        ("experimental_3d_obj_scale_field_edit", "editingFinished"),
-        ("experimental_3d_obj_yaw_field_edit", "editingFinished"),
-        ("experimental_3d_obj_z_offset_field_edit", "editingFinished"),
-        ("experimental_3d_obj_inside_points_layer_combo", "currentIndexChanged"),
-        ("experimental_3d_obj_instance_id_field_edit", "editingFinished"),
-        ("experimental_3d_obj_inside_id_field_edit", "editingFinished"),
-        ("experimental_3d_obj_inside_z_field_edit", "editingFinished"),
-        ("experimental_3d_obj_use_terrain_chk", "toggled"),
-        ("experimental_3d_obj_ab_compare_chk", "toggled"),
-        ("experimental_3d_obj_ab_probe_steps_spin", "valueChanged"),
-        ("experimental_3d_obj_export_obj_chk", "toggled"),
-        ("experimental_3d_obj_export_obj_path_edit", "editingFinished"),
+
         ("degen_mode_combo", "currentIndexChanged"),
         ("solver_backend_combo", "currentIndexChanged"),
-        ("solver_openmp_enabled_chk", "toggled"),
-        ("solver_cpu_threads_spin", "valueChanged"),
+
         ("coupling_loop_combo", "currentIndexChanged"),
         ("drainage_solver_mode_combo", "currentIndexChanged"),
         ("drainage_backend_combo", "currentIndexChanged"),
@@ -2194,7 +1427,6 @@ def _connect_project_workbench_state_signals(self) -> None:
         ("topo_gmsh_interface_reject_near_unshared_chk", "toggled"),
         ("topo_gmsh_interface_reject_tol_spin", "valueChanged"),
     ]
-    widget_specs.extend(list(getattr(self, "_experimental_3d_bc_signal_specs", []) or []))
 
     connected_attrs = set()
 
@@ -2316,19 +1548,13 @@ def _on_run(self, request=None):
         temporal_scheme = run_options.temporal_scheme
         temporal_scheme_name = run_options.temporal_scheme_name
         solver_backend_mode = str(getattr(run_options, "solver_backend_mode", "gpu")).strip().lower()
-        openmp_enabled = bool(getattr(run_options, "openmp_enabled", True))
-        os.environ["BACKWATER_SWE2D_OPENMP"] = "1" if openmp_enabled else "0"
-        godunov_mode = run_options.godunov_mode
+        openmp_enabled = True
         coupling_loop_mode = run_options.coupling_loop_mode
         drainage_solver_backend_mode = run_options.drainage_solver_backend_mode
         drainage_gpu_method_mode = run_options.drainage_gpu_method_mode
         culvert_solver_mode = getattr(run_options, "culvert_solver_mode", 0)
         cuda_graphs_enabled = run_options.cuda_graphs_enabled
-        experimental_3d_enabled = run_options.experimental_3d_enabled
         model_options = run_options.model_options
-        swe3d_env_overrides = run_options.swe3d_env_overrides
-        self._three_d_patch_snapshots = []
-        self._three_d_patch_last_spec = None
         rain_rate_model = run_options.rain_rate_model
         internal_flow_forcing = run_options.internal_flow_forcing
         cell_source_model = run_options.cell_source_model
@@ -2475,60 +1701,15 @@ def _on_run(self, request=None):
         if dynamic_bc:
             self._log("Timeseries BC mode active (flow/stage hydrographs).")
 
-        run_mode_name = "2D"
-        if model_options is not None and SWE2DThreeDSolverModel is not None:
-            if int(model_options.three_d_solver_model) == int(SWE2DThreeDSolverModel.SINGLE_PHASE_FREE_SURFACE_VOF):
-                run_mode_name = "2D + Experimental 3D patch"
-
-        coupling_mode_label = "off"
-        if model_options is not None and SWE2DThreeDCouplingMode is not None:
-            try:
-                cm = int(model_options.coupling_mode)
-                if cm == int(SWE2DThreeDCouplingMode.ONE_WAY_2D_TO_3D):
-                    coupling_mode_label = "one-way (2D -> 3D)"
-                elif cm == int(SWE2DThreeDCouplingMode.TWO_WAY_2D_3D):
-                    coupling_mode_label = "two-way (2D <-> 3D)"
-            except Exception:
-                coupling_mode_label = "off"
-
         self._log("Starting 2D run...")
-        if run_mode_name != "2D":
-            self._log(f"Run mode: {run_mode_name} (coupling={coupling_mode_label}).")
-            proj_residual_stride = 1
-            proj_div_gate_enabled = False
-            proj_div_ratio_target = 1.0
-            try:
-                proj_residual_stride = int(
-                    float(str(swe3d_env_overrides.get("BACKWATER_SWE3D_PROJECTION_RESIDUAL_SAMPLE_ITERS", "1")))
-                )
-            except Exception:
-                proj_residual_stride = 1
-            try:
-                proj_div_gate_enabled = int(
-                    float(str(swe3d_env_overrides.get("BACKWATER_SWE3D_PROJECTION_DIVERGENCE_GATE_ENABLE", "0")))
-                ) != 0
-            except Exception:
-                proj_div_gate_enabled = False
-            try:
-                proj_div_ratio_target = float(
-                    str(swe3d_env_overrides.get("BACKWATER_SWE3D_PROJECTION_DIVERGENCE_RATIO_TARGET", "1.0"))
-                )
-            except Exception:
-                proj_div_ratio_target = 1.0
-            self._log(
-                "3D projection controls: "
-                f"residual_stride={max(1, proj_residual_stride)}, "
-                f"divergence_gate={proj_div_gate_enabled}, "
-                f"divergence_ratio_target={proj_div_ratio_target:.6g}"
-            )
         self._log(f"Run wallclock start: {run_wallclock_start}")
         self._log(f"SWE2D solver backend: {solver_backend_mode}")
-        self._log(f"SWE2D OpenMP: {'enabled' if openmp_enabled else 'disabled (serial module)'}")
+        self._log("SWE2D OpenMP: enabled (GPU hydra_swe2d module)")
         self._log(f"Reconstruction mode: {reconstruction_name}")
         self._log(f"Temporal scheme: {temporal_scheme_name}")
         self._log(
-            "SWE2D perf mode env: "
-            f"{str(swe3d_env_overrides.get('BACKWATER_SWE2D_PERF_MODE', '0'))}"
+            "SWE2D perf mode: "
+            f"{'enabled' if bool(os.environ.get('BACKWATER_SWE2D_PERF_MODE', '0')) == '1' else 'disabled'}"
         )
         self._log(
             "Tiny-mode config: "
@@ -2634,9 +1815,6 @@ def _on_run(self, request=None):
         def _build_and_initialize_backend() -> SWE2DBackend:
             return self._backend_initializer.build_and_initialize(
                 backend_cls=SWE2DBackend,
-                use_gpu=(solver_backend_mode == "gpu"),
-                openmp_enabled=openmp_enabled,
-                swe3d_env_overrides=swe3d_env_overrides,
                 dynamic_bc=dynamic_bc,
                 node_x=node_x,
                 node_y=node_y,
@@ -2657,10 +1835,8 @@ def _on_run(self, request=None):
                 dt_fixed=dt_fixed,
                 dt_max=dt_cfg,
                 dt_initial=initial_dt,
-                model_options=model_options,
                 reconstruction_mode=reconstruction_mode,
                 temporal_scheme=temporal_scheme,
-                godunov_mode=godunov_mode,
             )
 
         try:
@@ -2680,88 +1856,7 @@ def _on_run(self, request=None):
             else:
                 raise
 
-        experimental_3d_runtime = bool(
-            model_options is not None
-            and SWE2DThreeDSolverModel is not None
-            and int(model_options.three_d_solver_model) == int(SWE2DThreeDSolverModel.SINGLE_PHASE_FREE_SURFACE_VOF)
-        )
-        if experimental_3d_enabled and not experimental_3d_runtime:
-            raise RuntimeError(
-                "Experimental 3D mode was requested but solver model options did not activate 3D runtime."
-            )
-        if experimental_3d_runtime and not bool(backend.supports_3d_patch_observation()):
-            raise RuntimeError(
-                "Experimental 3D mode requires native 3D patch observation APIs; "
-                "current native module does not expose them."
-            )
 
-        if SWE2DThreeDPatchObserver is None:
-            raise RuntimeError("SWE2DThreeDPatchObserver seam is unavailable.")
-        _three_d_observer = SWE2DThreeDPatchObserver(backend=backend, runtime_enabled=experimental_3d_runtime)
-        _get_3d_patch_stats = _three_d_observer.get_patch_stats
-        _get_3d_patch_vof = _three_d_observer.get_patch_vof
-        _get_3d_patch_velocity = _three_d_observer.get_patch_velocity
-
-        if experimental_3d_runtime:
-            try:
-                self._apply_3d_patch_face_bc_to_backend(backend)
-            except Exception as exc:
-                self._log(f"3D face BC upload warning (continuing with env defaults): {exc}")
-            stats0 = _get_3d_patch_stats()
-            if stats0 is not None:
-                try:
-                    spec0 = self._build_patch_spec_from_stats(stats0, swe3d_env_overrides)
-                    spec0_dict = self._patch_spec_to_dict(spec0)
-                    if isinstance(spec0_dict, dict):
-                        self._three_d_patch_last_spec = dict(spec0_dict)
-                except Exception:
-                    self._three_d_patch_last_spec = None
-                self._log(
-                    "3D patch initialized: "
-                    f"nx={int(stats0.get('nx', 0))} ny={int(stats0.get('ny', 0))} nz={int(stats0.get('nz', 0))} "
-                    f"dx={float(stats0.get('dx', 0.0)):.3f} dy={float(stats0.get('dy', 0.0)):.3f} dz={float(stats0.get('dz', 0.0)):.3f} "
-                    f"cells={int(stats0.get('n_cells', 0))}"
-                )
-                try:
-                    self._upload_experimental_3d_obj_geometry(
-                        backend=backend,
-                        patch_stats=stats0,
-                        swe3d_env_overrides=swe3d_env_overrides,
-                        backend_builder=_build_and_initialize_backend,
-                        bc_n0=bc_n0,
-                        bc_n1=bc_n1,
-                        bc_tp=bc_tp,
-                        bc_vl=bc_vl,
-                    )
-                except Exception as exc:
-                    self._log(f"3D sub-grid preprocessing failed (run continues): {exc}")
-                try:
-                    self._initialize_experimental_3d_patch_state(
-                        backend=backend,
-                        patch_stats=stats0,
-                        swe3d_env_overrides=swe3d_env_overrides,
-                        bc_n0=bc_n0,
-                        bc_n1=bc_n1,
-                        bc_tp=bc_tp,
-                        bc_vl=bc_vl,
-                    )
-                except Exception as exc:
-                    self._log(f"3D patch initial-state seeding failed (run continues): {exc}")
-                try:
-                    self._upload_experimental_3d_interface_contract(
-                        backend=backend,
-                        patch_stats=stats0,
-                        bc_n0=bc_n0,
-                        bc_n1=bc_n1,
-                        bc_tp=bc_tp,
-                        coupling_mode=int(model_options.coupling_mode) if model_options is not None else 0,
-                    )
-                except Exception as exc:
-                    raise RuntimeError(f"3D coupling contract setup failed: {exc}")
-            else:
-                raise RuntimeError(
-                    "Experimental 3D mode requested, but native 3D patch stats are unavailable after initialization."
-                )
 
         last_diag = None
         t_accum = 0.0
@@ -2963,54 +2058,6 @@ def _on_run(self, request=None):
         runtime_step_executor = SWE2DRuntimeStepExecutor()
         runtime_reporter = SWE2DRuntimeReporter()
 
-        _uncoupled_3d_face_bc_reapply_count = 0
-        _uncoupled_3d_face_bc_logged = False
-        _uncoupled_3d_face_bc_error_logged = False
-
-        def _apply_3d_face_bc_during_step(backend_obj: object) -> None:
-            """Re-apply 3D face BCs at each timestep in uncoupled mode."""
-            nonlocal _uncoupled_3d_face_bc_reapply_count
-            nonlocal _uncoupled_3d_face_bc_logged
-            nonlocal _uncoupled_3d_face_bc_error_logged
-
-            if not experimental_3d_runtime or backend_obj is None:
-                return
-
-            if SWE2DThreeDCouplingMode is None:
-                coupling_mode = 0
-            else:
-                try:
-                    coupling_mode = int(self._experimental_3d_selected_coupling_mode())
-                except Exception:
-                    coupling_mode = int(SWE2DThreeDCouplingMode.OFF)
-            if SWE2DThreeDCouplingMode is not None and coupling_mode != int(SWE2DThreeDCouplingMode.OFF):
-                return
-
-            try:
-                self._apply_3d_patch_face_bc_to_backend(backend_obj, quiet=True)
-                _uncoupled_3d_face_bc_reapply_count += 1
-                if (not _uncoupled_3d_face_bc_logged) or (_uncoupled_3d_face_bc_reapply_count % 250 == 0):
-                    self._log(
-                        "3D uncoupled Q-face reimposition active: "
-                        f"applied {_uncoupled_3d_face_bc_reapply_count} timestep updates."
-                    )
-                    _uncoupled_3d_face_bc_logged = True
-            except Exception as exc:
-                if not _uncoupled_3d_face_bc_error_logged:
-                    self._log(f"3D uncoupled Q-face reimposition warning: {exc}")
-                    _uncoupled_3d_face_bc_error_logged = True
-
-        swe3d_phys_diag_enabled = str(os.environ.get("BACKWATER_SWE3D_PHYSICS_DIAGNOSTICS", "0")).strip().lower() not in ("", "0", "false", "off", "no")
-        swe3d_front_flux_damping = float(self.front_flux_damping_spin.value()) if hasattr(self, "front_flux_damping_spin") else 1.0
-        swe3d_zmax_bc_mode = None
-        if hasattr(self, "experimental_3d_bc_zmax_mode_combo") and self.experimental_3d_bc_zmax_mode_combo is not None:
-            try:
-                _z_mode_data = self.experimental_3d_bc_zmax_mode_combo.currentData()
-                if _z_mode_data is not None:
-                    swe3d_zmax_bc_mode = int(_z_mode_data)
-            except Exception:
-                swe3d_zmax_bc_mode = None
-
         loop_result = _execute_run_timestep_loop_runtime_logic(
             wb=self,
             backend=backend,
@@ -3041,7 +2088,6 @@ def _on_run(self, request=None):
             accumulate_boundary_flux_volume_model_callback=_accumulate_boundary_flux_volume_model,
             sample_map=sample_map,
             cell_solver_z=cell_solver_z,
-            experimental_3d_runtime=experimental_3d_runtime,
             timing_totals_ms=timing_totals_ms,
             timing_samples=timing_samples,
             next_snap_t=_next_snap_t,
@@ -3052,13 +2098,6 @@ def _on_run(self, request=None):
             process_events_interval_s=_PROCESS_EVENTS_INTERVAL_S,
             last_process_events_wall=_last_process_events_wall,
             process_events_callback=QtWidgets.QApplication.processEvents,
-            get_3d_patch_stats_callback=_get_3d_patch_stats,
-            get_3d_patch_vof_callback=_get_3d_patch_vof,
-            get_3d_patch_velocity_callback=_get_3d_patch_velocity,
-            physics_diag_enabled=swe3d_phys_diag_enabled,
-            front_flux_damping_value=swe3d_front_flux_damping,
-            zmax_bc_mode=swe3d_zmax_bc_mode,
-            apply_3d_patch_face_bc_callback=_apply_3d_face_bc_during_step if experimental_3d_runtime else None,
             perf_mode=perf_mode,
         )
         t_accum = float(loop_result.get("t_accum", t_accum))
@@ -3078,15 +2117,6 @@ def _on_run(self, request=None):
             f"sim_t={float(t_accum):.6f}s, target={float(run_duration_s):.6f}s, "
             f"delta={sim_time_diff:.6e}s"
         )
-        if experimental_3d_runtime and not self._three_d_patch_snapshots:
-            s3 = _get_3d_patch_stats()
-            v3 = _get_3d_patch_vof()
-            if s3 is not None and v3 is not None:
-                vel3 = _get_3d_patch_velocity()
-                if isinstance(vel3, tuple) and len(vel3) == 3:
-                    self._append_3d_patch_snapshot(t_accum, s3, v3, vel3[0], vel3[1], vel3[2])
-                else:
-                    self._append_3d_patch_snapshot(t_accum, s3, v3)
         if native_source_injection_mode:
             try:
                 backend.set_external_sources_native(None)

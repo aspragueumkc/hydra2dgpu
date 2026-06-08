@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import json
+import logging
 from typing import Dict, Optional, Sequence
 
+logger = logging.getLogger(__name__)
 
 PROJECT_SETTINGS_SCOPE = "Backwater2DWorkbench"
 LAYER_SELECTOR_STATE_KEY = "layer_selector_state_json"
@@ -22,7 +24,8 @@ def read_project_entry_text(
         return str(default)
     try:
         result = qgs_project_cls.instance().readEntry(PROJECT_SETTINGS_SCOPE, key, str(default))
-    except Exception:
+    except Exception as exc:
+        logger.debug("[UI] readEntry failed for key %s: %s", key, exc)
         return str(default)
     if isinstance(result, tuple):
         return str(result[0] if result and result[0] not in (None, "") else default)
@@ -125,8 +128,8 @@ def collect_workbench_widget_state(*, ui: object, widget_attrs: Sequence[str], q
         if abstract_spin_box_cls is not None and isinstance(widget, abstract_spin_box_cls):
             try:
                 widget.interpretText()
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.debug("[UI] interpretText failed for %s: %s", attr_name, exc)
 
         value = None
         if isinstance(widget, spin_box_cls):

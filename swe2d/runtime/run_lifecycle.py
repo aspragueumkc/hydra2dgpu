@@ -27,7 +27,7 @@ class SWE2DRunLifecycle:
         try:
             if backend is not None:
                 backend.destroy()
-        except Exception:
-            pass
+        except Exception as exc:
+            self._ui._log(f"[BACKEND] Backend destroy() failed: {exc}")
         self._ui.run_btn.setEnabled(True)
         self._ui.cancel_btn.setEnabled(False)

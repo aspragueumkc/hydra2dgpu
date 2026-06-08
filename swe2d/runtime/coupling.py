@@ -848,27 +848,22 @@ class SWE2DCouplingController:
         dn_cells: np.ndarray,
         native_mod=None,
     ) -> np.ndarray:
-        """Apply influence-width redistribution to a source-rate array.
-
-        Reverses the single-cell injection (up/dn) and redistributes
-        across the pre-computed corridor cells.
-
-        Uses the CUDA `swe2d_redistribute_sources_kernel` when a native
-        module with that binding is available, otherwise falls back to the
-        pure-Python numpy loop.  The fallback is logged to the runtime log
-        (in red via ``[ERROR]`` prefix).
+        """Apply influence-width redistribution via GPU kernel (no CPU fallback).
 
         Args:
             source_rate: Per-cell source rates [m/s], will be modified in-place.
             structure_flows: Per-structure flow [m³/s].
             up_cells: Original single upstream cell indices.
             dn_cells: Original single downstream cell indices.
-            native_mod: Optional native CUDA module.  When provided and has
-                ``swe2d_gpu_redistribute_structure_sources``, the CUDA kernel
-                is used instead of the Python loop.
+            native_mod: Native CUDA module with
+                ``swe2d_gpu_redistribute_structure_sources`` binding.
 
         Returns:
             The modified source_rate array (same object as input).
+
+        Raises:
+            RuntimeError: If the GPU redistribution function is unavailable
+                or the kernel call fails.
         """
         if self._redist_offsets is None or self._redist_offsets.size <= 1:
             return source_rate  # no redistribution data
@@ -877,78 +872,35 @@ class SWE2DCouplingController:
         if n_struct == 0:
             return source_rate
 
-        # CUDA path
-        if native_mod is not None and hasattr(native_mod, "swe2d_gpu_redistribute_structure_sources"):
-            try:
-                return np.asarray(
-                    native_mod.swe2d_gpu_redistribute_structure_sources(
-                        np.asarray(source_rate, dtype=np.float64, order='C'),
-                        np.asarray(self._redist_offsets, dtype=np.int32, order='C'),
-                        np.asarray(self._redist_cell_idx, dtype=np.int32, order='C'),
-                        np.asarray(self._redist_weights, dtype=np.float64, order='C'),
-                        np.asarray(structure_flows, dtype=np.float64, order='C'),
-                        np.asarray(up_cells, dtype=np.int32, order='C'),
-                        np.asarray(dn_cells, dtype=np.int32, order='C'),
-                        np.asarray(self.cell_area, dtype=np.float64, order='C'),
-                    ),
-                    dtype=np.float64,
-                )
-            except Exception as exc:
-                # Log CUDA fallback to runtime log in red.
-                self._log(
-                    "[ERROR] swe2d_redistribute_sources_kernel failed, "
-                    f"falling back to CPU redistribution: {exc}"
-                )
-                pass
-
-        # Python fallback path
-        offsets = self._redist_offsets
-        cell_idx = self._redist_cell_idx
-        weights = self._redist_weights
-        areas = np.maximum(self.cell_area, 1.0e-12)
-
-        for i in range(n_struct):
-            start = int(offsets[i])
-            end = int(offsets[i + 1])
-            count = end - start
-            if count <= 0:
-                continue
-
-            q = float(structure_flows[i])
-            if not np.isfinite(q) or q == 0.0:
-                continue
-
-            cu = int(up_cells[i])
-            cd = int(dn_cells[i])
-
-            # Reverse single-cell injection
-            if 0 <= cu < source_rate.size:
-                source_rate[cu] += q / areas[cu]     # undo upstream removal
-            if 0 <= cd < source_rate.size:
-                source_rate[cd] -= q / areas[cd]     # undo downstream addition
-
-            # Redistribute across corridor
-            wsum = float(np.sum(weights[start:end]))
-            if wsum <= 0.0:
-                continue
-            norm_w = weights[start:end] / wsum
-
-            dist_cells = cell_idx[start:end]
-            valid = (dist_cells >= 0) & (dist_cells < source_rate.size)
-            if not np.any(valid):
-                continue
-
-            src_contrib = norm_w[valid] * q / areas[dist_cells[valid]]
-            np.add.at(source_rate, dist_cells[valid], src_contrib)
-
-        return source_rate
+        if not (native_mod is not None and hasattr(native_mod, "swe2d_gpu_redistribute_structure_sources")):
+            raise RuntimeError(
+                "GPU redistribution function swe2d_gpu_redistribute_structure_sources "
+                "is unavailable — no CPU fallback."
+            )
+        try:
+            return np.asarray(
+                native_mod.swe2d_gpu_redistribute_structure_sources(
+                    np.asarray(source_rate, dtype=np.float64, order='C'),
+                    np.asarray(self._redist_offsets, dtype=np.int32, order='C'),
+                    np.asarray(self._redist_cell_idx, dtype=np.int32, order='C'),
+                    np.asarray(self._redist_weights, dtype=np.float64, order='C'),
+                    np.asarray(structure_flows, dtype=np.float64, order='C'),
+                    np.asarray(up_cells, dtype=np.int32, order='C'),
+                    np.asarray(dn_cells, dtype=np.int32, order='C'),
+                    np.asarray(self.cell_area, dtype=np.float64, order='C'),
+                ),
+                dtype=np.float64,
+            )
+        except Exception as exc:
+            raise RuntimeError(
+                "GPU redistribution kernel failed — no CPU fallback. "
+                f"Error: {exc}"
+            )
 
     def _native_cuda_module(self):
         if self._native_cuda_mod_checked:
             return self._native_cuda_mod_cache
-        openmp_raw = str(os.environ.get("BACKWATER_SWE2D_OPENMP", "1") or "1").strip().lower()
-        use_openmp_module = openmp_raw not in {"0", "false", "off", "no"}
-        mod = load_swe2d_native_module(openmp_enabled=use_openmp_module)
+        mod = load_swe2d_native_module()
         if mod is None:
             self._native_cuda_mod_checked = True
             self._native_cuda_mod_cache = None
@@ -1221,8 +1173,11 @@ class SWE2DCouplingController:
             if hasattr(native_mod, "swe2d_gpu_fold_culvert_mass_to_source"):
                 try:
                     native_mod.swe2d_gpu_fold_culvert_mass_to_source(int(self.n_cells))
-                except Exception:
-                    pass
+                except Exception as exc:
+                    self._log(
+                        "[COUPLING] Failed to fold culvert mass to source; "
+                        "redistribution may be incomplete. Error: " + str(exc)
+                    )
 
         # ── Face-flux influence-width redistribution ─────────────────────
         # When face-flux is active and redistribution geometry exists,
@@ -1292,8 +1247,11 @@ class SWE2DCouplingController:
                 if modified:
                     native_mod.swe2d_gpu_upload_ext_struct_flux_h(
                         np.ascontiguousarray(_ext_h, dtype=np.float64))
-            except Exception:
-                pass
+            except Exception as exc:
+                raise RuntimeError(
+                    "GPU face-flux redistribution failed — no CPU fallback. "
+                    f"Error: {exc}"
+                )
 
         # ── On-device redistribution ────────────────────────────────────
         # When the model has redistribution geometry and the persistent
@@ -1327,14 +1285,11 @@ class SWE2DCouplingController:
                             int(self.n_cells),
                             float(_u.si_m_per_model()),
                         )
-                    except Exception:
-                        # If on-device redistribution fails, fall through
-                        # to the old path (return True without redist).
-                        # The caller will see native_device_applied=True and
-                        # skip the callback — but redistribution will NOT
-                        # be applied.  This is the same behavior as before
-                        # this method was extended.
-                        pass
+                    except Exception as exc:
+                        raise RuntimeError(
+                            "GPU on-device redistribution failed — no fallback. "
+                            f"Error: {exc}"
+                        )
 
         self.last_diag = SWE2DCouplingDiagnostics(
             time_s=float(t_s) + float(dt_s),
@@ -1350,7 +1305,10 @@ class SWE2DCouplingController:
         if self._persistent_coupling_preloaded:
             return
         if not hasattr(native_mod, "swe2d_gpu_preload_structure_params"):
-            return
+            raise RuntimeError(
+                "GPU structure preloading function swe2d_gpu_preload_structure_params "
+                "is unavailable — required for persistent coupling path."
+            )
         ssoa = self._structures_soa
         if ssoa is not None and int(len(ssoa.structure_type)) > 0:
             try:
@@ -1387,16 +1345,24 @@ class SWE2DCouplingController:
                     self._gravity,
                     self._model_to_ft,
                 )
-            except Exception:
-                return
-        if hasattr(native_mod, "swe2d_gpu_preload_coupling_cell_area"):
-            try:
-                # GPU source-rate kernel divides flow (L³/T) by cell area (L²) → depth rate (L/T).
-                # Flows are in SI (m³/s); cell area must be in SI (m²) for correct m/s output.
-                cell_area_si = np.asarray(self.cell_area, dtype=np.float64) / _u.si_m2_per_model_area()
-                native_mod.swe2d_gpu_preload_coupling_cell_area(cell_area_si)
-            except Exception:
-                return
+            except Exception as exc:
+                raise RuntimeError(
+                    "Failed to preload structure params on device — no CPU fallback. "
+                    f"Error: {exc}"
+                )
+        if not hasattr(native_mod, "swe2d_gpu_preload_coupling_cell_area"):
+            raise RuntimeError(
+                "GPU cell area preloading function swe2d_gpu_preload_coupling_cell_area "
+                "is unavailable — required for persistent coupling path."
+            )
+        try:
+            cell_area_si = np.asarray(self.cell_area, dtype=np.float64) / _u.si_m2_per_model_area()
+            native_mod.swe2d_gpu_preload_coupling_cell_area(cell_area_si)
+        except Exception as exc:
+            raise RuntimeError(
+                "Failed to preload coupling cell area on device — no CPU fallback. "
+                f"Error: {exc}"
+            )
         self._persistent_coupling_preloaded = True
 
     def _ensure_gpu_drainage_state(self) -> None:
@@ -1590,7 +1556,6 @@ class SWE2DCouplingController:
 
         # Apply influence-width redistribution (replaces single-cell injection
         # with multi-cell distribution for structures that have corridor data).
-        # Uses CUDA kernel when native_mod provides it, else Python fallback.
         if self._redist_offsets is not None and self._redist_offsets.size > 1:
             # Convert flows from model units to SI for redistribution kernel
             qv_si = qv * _u.si_m3_per_model_volume()
@@ -2056,8 +2021,13 @@ class SWE2DCouplingController:
                     # or H2D re-upload of the source array — the solver
                     # step consumes it directly from device memory.
                     # This eliminates THREE 90 KB PCIe transfers per step.
-                    if (nb_flows is not None and nb_flows.size > 0
-                        and hasattr(native_mod, "swe2d_gpu_redistribute_structure_sources_persistent")):
+                    if nb_flows is not None and nb_flows.size > 0:
+                        if not hasattr(native_mod, "swe2d_gpu_redistribute_structure_sources_persistent"):
+                            raise RuntimeError(
+                                "GPU on-device redistribution function "
+                                "swe2d_gpu_redistribute_structure_sources_persistent "
+                                "is unavailable — no CPU fallback."
+                            )
                         nb_up = np.asarray(ssoa.upstream_cell[non_bridge_mask], dtype=np.int32)
                         nb_dn = np.asarray(ssoa.downstream_cell[non_bridge_mask], dtype=np.int32)
                         native_mod.swe2d_gpu_redistribute_structure_sources_persistent(
@@ -2070,21 +2040,7 @@ class SWE2DCouplingController:
                             int(self.n_cells),
                             float(_u.si_m_per_model()),
                         )
-                        total = None  # GPU sources are current
-                    else:
-                        # ── Fallback: readback + host redistribution ──
-                        total_for_redist = np.asarray(
-                            native_mod.swe2d_gpu_readback_coupling_sources(self.n_cells),
-                            dtype=np.float64,
-                        )
-                        total_for_redist *= _u.si_m_per_model()
-                        if nb_flows is not None and nb_flows.size > 0:
-                            nb_q = nb_flows
-                            nb_up = np.asarray(ssoa.upstream_cell[non_bridge_mask], dtype=np.int32)
-                            nb_dn = np.asarray(ssoa.downstream_cell[non_bridge_mask], dtype=np.int32)
-                            total_for_redist = self._apply_redistribution(
-                                total_for_redist, nb_q, nb_up, nb_dn, native_mod=native_mod)
-                        total = total_for_redist
+                    total = None  # GPU sources are current
                 else:
                     # No redistribution: GPU has correct sources.  Signal
                     # to caller by returning None so the host skips upload.
@@ -2261,9 +2217,7 @@ class SWE2DCouplingController:
                 dtype=np.float64,
             )
             total *= _u.si_m_per_model()  # m/s → model-length/s
-            # Apply influence-width redistribution (replaces GPU single-cell
-            # injection with multi-cell distribution).
-            # Uses CUDA kernel when native_mod provides it, else Python fallback.
+            # Apply influence-width redistribution via GPU kernel.
             if struct_q.size > 0 and struct_up.size == struct_q.size:
                 total = self._apply_redistribution(total, struct_q, struct_up, struct_dn, native_mod=native_mod)
         if bridge_helper_used:

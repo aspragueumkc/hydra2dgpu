@@ -1124,7 +1124,7 @@ class TestChannelSteadyState(unittest.TestCase):
         hu0 = np.zeros(n_cells)
         hv0 = np.zeros(n_cells)
 
-        backend = self.SWE2DBackend(use_gpu=False)
+        backend = self.SWE2DBackend()
         backend.build_mesh(node_x, node_y, node_z, cell_nodes,
                            n0, n1, bc_type, bc_val)
         backend.initialize(h0, hu0, hv0,
@@ -1210,7 +1210,7 @@ class TestChannelSteadyState(unittest.TestCase):
         hu0 = np.zeros(n_cells)
         hv0 = np.zeros(n_cells)
 
-        backend = SWE2DBackend(use_gpu=False)
+        backend = SWE2DBackend()
 
         # Build with initial t=0 values from hydrograph
         bc_tp_init = bc_type_ts.copy()
@@ -1269,7 +1269,7 @@ class TestChannelSteadyState(unittest.TestCase):
         hu0 = np.zeros(n_cells)
         hv0 = np.zeros(n_cells)
 
-        backend = self.SWE2DBackend(use_gpu=False)
+        backend = self.SWE2DBackend()
         backend.build_mesh(node_x, node_y, node_z, cell_nodes,
                            n0, n1, bc_type, bc_val)
         backend.initialize(h0, hu0, hv0,

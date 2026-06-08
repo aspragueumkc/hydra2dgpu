@@ -22,11 +22,7 @@ def bootstrap_startup_run_components(
     swe2d_gpu_available: Any,
     temporal_scheme: Any,
     spatial_discretization: Any,
-    godunov_solver_mode: Any,
     solver_model_options: Any,
-    swe2d_equation_set: Any,
-    swe2d_3d_solver_model: Any,
-    swe2d_3d_coupling_mode: Any,
 ) -> None:
     """Wire startup run seams or emit the existing unavailable warning path."""
     if wire_fn is not None:
@@ -43,11 +39,7 @@ def bootstrap_startup_run_components(
             "swe2d_gpu_available": swe2d_gpu_available,
             "TemporalScheme": temporal_scheme,
             "SpatialDiscretization": spatial_discretization,
-            "GodunovSolverMode": godunov_solver_mode,
             "SolverModelOptions": solver_model_options,
-            "SWE2DEquationSet": swe2d_equation_set,
-            "SWE2DThreeDSolverModel": swe2d_3d_solver_model,
-            "SWE2DThreeDCouplingMode": swe2d_3d_coupling_mode,
         }
         wire_fn(dialog, startup_ns)
         return

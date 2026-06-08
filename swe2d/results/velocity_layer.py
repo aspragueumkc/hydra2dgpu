@@ -9,23 +9,19 @@ from __future__ import annotations
 
 from collections import OrderedDict
 from dataclasses import dataclass
+import logging
 import sqlite3
 from typing import Dict, List, Sequence, Tuple
 
 import numpy as np
 
-try:
-    from swe2d.results.db_utils import (
-        open_ro as _open_ro,
-        table_columns as _table_columns,
-        table_exists as _table_exists,
-    )
-except Exception:
-    from .db_utils import (
-        open_ro as _open_ro,
-        table_columns as _table_columns,
-        table_exists as _table_exists,
-    )
+from swe2d.results.db_utils import (
+    open_ro as _open_ro,
+    table_columns as _table_columns,
+    table_exists as _table_exists,
+)
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -66,7 +62,8 @@ class VelocityVectorBuilder:
             )
             vals = [float(r[0]) for r in cur.fetchall()]
             return np.asarray(vals, dtype=np.float64)
-        except Exception:
+        except Exception as exc:
+            logger.debug("[RESULTS] Failed to load available timesteps: %s", exc)
             return np.empty(0, dtype=np.float64)
         finally:
             conn.close()
@@ -145,7 +142,8 @@ class VelocityVectorBuilder:
             while len(self._cache) > self._max_cache_entries:
                 self._cache.popitem(last=False)
             return snap
-        except Exception:
+        except Exception as exc:
+            logger.debug("[RESULTS] Failed to load snapshot: %s", exc)
             return None
         finally:
             conn.close()
@@ -477,7 +475,8 @@ def _reconstruct_cell_momentum_from_face_flux(
 
     try:
         rows = conn.execute(q, tuple(params)).fetchall()
-    except Exception:
+    except Exception as exc:
+        logger.debug("[RESULTS] Failed to query face flux data: %s", exc)
         return None
     if not rows:
         return None

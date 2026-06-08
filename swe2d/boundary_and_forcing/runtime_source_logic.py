@@ -4,8 +4,6 @@ from typing import Callable, Dict, Optional, Tuple
 
 import numpy as np
 
-from swe2d import units as _u
-
 
 def internal_flow_source_cms_at_time(
     forcing: Optional[Dict[str, object]],
@@ -30,9 +28,8 @@ def apply_external_sources(
     backend,
     dt_step: float,
     rain_rate_model,
-    cell_source_model: Optional[np.ndarray],
+    cell_source_model: Optional[np.ndarray] = None,
     coupled_source_rate: Optional[np.ndarray] = None,
-    prefer_native_injection: bool = False,
     mesh_cell_areas: Optional[np.ndarray] = None,
     max_source_rate: float = 0.0,
     h_min: float = 1.0e-4,
@@ -42,12 +39,9 @@ def apply_external_sources(
     momentum_cap_min_speed: float = 50.0,
     momentum_cap_celerity_mult: float = 20.0,
 ) -> None:
+    """Apply external sources via GPU-native injection (no CPU fallback)."""
     if dt_step <= 0.0:
-        if prefer_native_injection and hasattr(backend, "set_external_sources_native"):
-            try:
-                backend.set_external_sources_native(None)
-            except Exception:
-                pass
+        backend.set_external_sources_native(None)
         return
 
     no_external_sources = (
@@ -56,14 +50,13 @@ def apply_external_sources(
         and coupled_source_rate is None
     )
     if no_external_sources:
-        # When prefer_native_injection is True, the CUDA coupling kernel has
-        # already written structure/drainage source rates directly to the
-        # device-resident d_external_source_mps buffer.  Do NOT call
-        # set_external_sources_native(None) here — that would memset the
-        # buffer to zero, erasing the on-device sources.  Just return.
-        if prefer_native_injection and hasattr(backend, "set_external_sources_native"):
-            pass  # GPU buffer already populated by coupling kernel
         return
+
+    if not hasattr(backend, "set_external_sources_native"):
+        raise RuntimeError(
+            "GPU-native source injection required but "
+            "set_external_sources_native is not available on the backend."
+        )
 
     n_cells_raw = getattr(backend, "n_cells", 0)
     n_cells = int(n_cells_raw() if callable(n_cells_raw) else n_cells_raw)
@@ -90,51 +83,4 @@ def apply_external_sources(
     if max_source_rate > 0.0:
         src = np.where(src > max_source_rate, max_source_rate, src)
 
-    if prefer_native_injection and hasattr(backend, "set_external_sources_native"):
-        try:
-            backend.set_external_sources_native(src)
-            return
-        except Exception:
-            pass
-
-    h, hu, hv = backend.get_state()
-    h_prev = np.asarray(h, dtype=np.float64)
-
-    dh = dt_step * src
-
-    if max_rel_depth_increase > 0.0:
-        dh_pos_cap = np.maximum(h_prev, h_min) * max_rel_depth_increase
-        dh = np.where(dh > dh_pos_cap, dh_pos_cap, dh)
-
-    if max_source_depth_step > 0.0:
-        dh = np.where(dh > max_source_depth_step, max_source_depth_step, dh)
-
-    h = h_prev + dh
-    h = np.where(np.isfinite(h), h, 0.0)
-    h = np.maximum(h, 0.0)
-
-    dry = h < h_min
-    hu = np.where(dry, 0.0, hu)
-    hv = np.where(dry, 0.0, hv)
-
-    newly_wet = (h_prev < h_min) & (~dry)
-    hu = np.where(newly_wet, 0.0, hu)
-    hv = np.where(newly_wet, 0.0, hv)
-
-    if shallow_damping_depth > h_min:
-        damp = np.clip(h / shallow_damping_depth, 0.0, 1.0)
-        hu = hu * damp
-        hv = hv * damp
-
-    abs_u = np.abs(hu) / np.maximum(h, 1.0e-12)
-    abs_v = np.abs(hv) / np.maximum(h, 1.0e-12)
-    abs_speed = np.sqrt(abs_u**2 + abs_v**2)
-    wave_speed = np.sqrt(_u.gravity() * np.maximum(h, 1.0e-12))
-    speed_cap = np.maximum(momentum_cap_min_speed, momentum_cap_celerity_mult * wave_speed)
-    clipped = abs_speed > speed_cap
-    if np.any(clipped):
-        scale = np.where(clipped, speed_cap / np.maximum(abs_speed, 1.0e-12), 1.0)
-        hu = hu * scale
-        hv = hv * scale
-
-    backend.set_state(h, hu, hv)
+    backend.set_external_sources_native(src)

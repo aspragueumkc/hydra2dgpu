@@ -24,10 +24,7 @@ from typing import Dict, List, Optional, Tuple
 
 import numpy as np
 
-try:
-    from swe2d.results.db_utils import open_ro as _open_ro_shared, table_exists as _table_exists_shared
-except Exception:
-    from .db_utils import open_ro as _open_ro_shared, table_exists as _table_exists_shared
+from swe2d.results.db_utils import open_ro as _open_ro_shared, table_exists as _table_exists_shared
 
 # ---------------------------------------------------------------------------
 # Public dataclass

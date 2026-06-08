@@ -65,14 +65,6 @@ from swe2d.workbench.high_perf_overlay_bridge import (
     update_high_perf_overlay_time as _update_high_perf_overlay_time_bridge,
 )
 
-try:
-    from swe2d.extensions.patch_observer import SWE2DThreeDPatchObserver
-except Exception:
-    try:
-        from .swe2d.extensions.patch_observer import SWE2DThreeDPatchObserver
-    except Exception:
-        SWE2DThreeDPatchObserver = None
-
 from swe2d.boundary_and_forcing.bc_logic import (
     _bc_side_classification,
     apply_timeseries_bc_values as _apply_timeseries_bc_values_logic,
@@ -127,12 +119,7 @@ from swe2d.boundary_and_forcing.boundary_qgis_adapter import (
 )
 
 from swe2d.extensions.patch_runtime_logic import (
-    collect_3d_patch_env_overrides as _collect_3d_patch_env_overrides_logic,
     parse_optional_float_text as _parse_optional_float_text_logic,
-)
-
-from swe2d.extensions.patch_qgis_adapter import (
-    sample_terrain_min_z_for_roi_qgis as _sample_terrain_min_z_for_roi_qgis_logic,
 )
 
 try:
@@ -148,32 +135,18 @@ except Exception:
 
 from swe2d.workbench.non_gui_runtime import (
     boundary_edge_owner_cells as _boundary_edge_owner_cells_runtime_logic,
-    build_experimental_3d_interface_contract_arrays as _build_experimental_3d_interface_contract_arrays_runtime_logic,
-    build_patch_spec_from_stats as _build_patch_spec_from_stats_runtime_logic,
     build_mesh_snapshot_rows as _build_mesh_snapshot_rows_logic,
     execute_run_timestep_loop as _execute_run_timestep_loop_runtime_logic,
-    initialize_experimental_3d_patch_state as _initialize_experimental_3d_patch_state_runtime_logic,
     parse_obj_scale_value as _parse_obj_scale_value_runtime_logic,
-    run_experimental_3d_obj_method_probe as _run_experimental_3d_obj_method_probe_runtime_logic,
     resolve_obj_model_path as _resolve_obj_model_path_runtime_logic,
-    upload_experimental_3d_obj_geometry as _upload_experimental_3d_obj_geometry_runtime_logic,
-    upload_experimental_3d_interface_contract as _upload_experimental_3d_interface_contract_runtime_logic,
 )
 
 from swe2d.workbench.non_gui_qgis import (
     build_patch_terrain_surface as _build_patch_terrain_surface_qgis_logic,
-    infer_obj_path_from_layer_3d_renderer as _infer_obj_path_from_layer_3d_renderer_qgis_logic,
     parse_feature_float as _parse_feature_float_qgis_logic,
     resolve_layer_field_name as _resolve_layer_field_name_qgis_logic,
 )
 
-from swe2d.workbench.three_d_bc import (
-    apply_3d_patch_face_bc_to_backend as _apply_3d_patch_face_bc_to_backend_logic,
-    collect_3d_patch_env_overrides as _collect_3d_patch_env_overrides_delegate_logic,
-    collect_3d_patch_face_bc_env_overrides as _collect_3d_patch_face_bc_env_overrides_logic,
-    sync_experimental_3d_mode_widgets as _sync_experimental_3d_mode_widgets_logic,
-    summarize_3d_patch_face_bc_modes as _summarize_3d_patch_face_bc_modes_logic,
-)
 from swe2d.workbench.project_settings import (
     LAYER_SELECTOR_STATE_KEY,
     WORKBENCH_STATE_KEY,
@@ -227,32 +200,7 @@ except Exception:
         def swe2d_gpu_available() -> bool:
             return False
 
-try:
-    from swe3d_geometry_ingest import (
-        PatchGridSpec,
-        apply_instance_transform,
-        build_static_geometry_tensors,
-        load_obj_mesh,
-        write_solid_voxels_obj,
-        write_fluid_voxels_obj,
-    )
-except Exception:
-    try:
-        from .swe3d_geometry_ingest import (
-            PatchGridSpec,
-            apply_instance_transform,
-            build_static_geometry_tensors,
-            load_obj_mesh,
-            write_solid_voxels_obj,
-            write_fluid_voxels_obj,
-        )
-    except Exception:
-        PatchGridSpec = None
-        apply_instance_transform = None
-        build_static_geometry_tensors = None
-        load_obj_mesh = None
-        write_solid_voxels_obj = None
-        write_fluid_voxels_obj = None
+
 
 # Import boundary/forcing/drainage/structures modules
 from swe2d.runtime.coupling import SWE2DCouplingController, pack_coupling_soa
@@ -271,8 +219,6 @@ from swe2d.extensions.extension_models import (
     PipeEndExchange,
     PipeNetworkConfig,
     SWE2DEquationSet,
-    SWE2DThreeDCouplingMode,
-    SWE2DThreeDSolverModel,
     StructureType,
     SpatialDiscretization,
     SolverModelOptions,
@@ -308,8 +254,6 @@ def _recover_optional_solver_imports() -> None:
     global PipeEndExchange
     global PipeNetworkConfig
     global SWE2DEquationSet
-    global SWE2DThreeDCouplingMode
-    global SWE2DThreeDSolverModel
     global StructureType
     global SpatialDiscretization
     global SolverModelOptions
@@ -366,8 +310,6 @@ def _recover_optional_solver_imports() -> None:
             PipeEndExchange,
             PipeNetworkConfig,
             SWE2DEquationSet,
-            SWE2DThreeDCouplingMode,
-            SWE2DThreeDSolverModel,
             StructureType,
             SpatialDiscretization,
             SolverModelOptions,
@@ -401,8 +343,6 @@ def _recover_optional_solver_imports() -> None:
     PipeEndExchange = PipeEndExchange or getattr(ext, "PipeEndExchange", None)
     PipeNetworkConfig = PipeNetworkConfig or getattr(ext, "PipeNetworkConfig", None)
     SWE2DEquationSet = SWE2DEquationSet or getattr(ext, "SWE2DEquationSet", None)
-    SWE2DThreeDCouplingMode = SWE2DThreeDCouplingMode or getattr(ext, "SWE2DThreeDCouplingMode", None)
-    SWE2DThreeDSolverModel = SWE2DThreeDSolverModel or getattr(ext, "SWE2DThreeDSolverModel", None)
     StructureType = StructureType or getattr(ext, "StructureType", None)
     SpatialDiscretization = SpatialDiscretization or getattr(ext, "SpatialDiscretization", None)
     SolverModelOptions = SolverModelOptions or getattr(ext, "SolverModelOptions", None)
@@ -2807,8 +2747,6 @@ class SWE2DWorkbenchDialog(QtWidgets.QDialog):
             godunov_solver_mode=GodunovSolverMode,
             solver_model_options=SolverModelOptions,
             swe2d_equation_set=SWE2DEquationSet,
-            swe2d_3d_solver_model=SWE2DThreeDSolverModel,
-            swe2d_3d_coupling_mode=SWE2DThreeDCouplingMode,
         )
         run_workbench_post_bootstrap_setup(
             self,
@@ -4276,64 +4214,6 @@ class SWE2DWorkbenchDialog(QtWidgets.QDialog):
         dlg.finished.connect(_cleanup)
         dlg.show()
 
-    def _is_experimental_3d_requested(self) -> bool:
-        return bool(
-            getattr(self, "experimental_3d_mode_chk", None)
-            and self.experimental_3d_mode_chk.isChecked()
-        )
-
-    def _experimental_3d_selected_coupling_mode(self) -> int:
-        if SWE2DThreeDCouplingMode is None:
-            return 0
-        combo = getattr(self, "experimental_3d_coupling_mode_combo", None)
-        if combo is None:
-            return int(SWE2DThreeDCouplingMode.OFF)
-        try:
-            value = combo.currentData()
-            if value is None:
-                value = combo.currentIndex()
-            return int(SWE2DThreeDCouplingMode(int(value)))
-        except Exception:
-            return int(SWE2DThreeDCouplingMode.OFF)
-
-    def _experimental_3d_bc_mode_label(self, mode_value: int) -> str:
-        for label, value in _SWE3D_BC_MODE_OPTIONS:
-            if int(value) == int(mode_value):
-                return str(label)
-        return f"mode{int(mode_value)}"
-
-    def _collect_3d_patch_face_bc_env_overrides(self) -> Dict[str, str]:
-        return _collect_3d_patch_face_bc_env_overrides_logic(
-            ui=self,
-            faces=_SWE3D_PATCH_FACES,
-            field_defaults=_SWE3D_BC_FIELD_DEFAULTS,
-        )
-
-    def _summarize_3d_patch_face_bc_modes(self, overrides: Dict[str, str]) -> str:
-        return _summarize_3d_patch_face_bc_modes_logic(
-            overrides=overrides,
-            faces=_SWE3D_PATCH_FACES,
-            mode_label_callback=self._experimental_3d_bc_mode_label,
-        )
-
-    def _apply_3d_patch_face_bc_to_backend(self, backend: object, quiet: bool = False) -> None:
-        return _apply_3d_patch_face_bc_to_backend_logic(
-            ui=self,
-            backend=backend,
-            faces=_SWE3D_PATCH_FACES,
-            field_defaults=_SWE3D_BC_FIELD_DEFAULTS,
-            coupling_mode_off=int(SWE2DThreeDCouplingMode.OFF),
-            get_coupling_mode_callback=self._experimental_3d_selected_coupling_mode,
-            log_callback=self._log,
-            quiet=bool(quiet),
-        )
-
-    def _sync_experimental_3d_mode_widgets(self, *_args: object) -> None:
-        requested = self._is_experimental_3d_requested()
-        supported = bool(getattr(self, "_experimental_3d_mode_supported", True))
-        active = bool(requested and supported)
-        _sync_experimental_3d_mode_widgets_logic(ui=self, active=active)
-
     def _log_exception(self, context: str, exc: Exception) -> None:
         """Emit a concise error and full traceback into the runtime log pane."""
         self._log(f"{context}: {exc}")
@@ -4454,13 +4334,6 @@ class SWE2DWorkbenchDialog(QtWidgets.QDialog):
             "drain_inlets_layer_combo": ["swe2d_drainage_inlets"],
             "drain_node_inlets_layer_combo": ["swe2d_drainage_node_inlets"],
             "structures_layer_combo": ["swe2d_structures"],
-            "experimental_3d_obj_layer_combo": ["swe2d_obj_instances", "swe3d_obj_instances", "obj_instances"],
-            "experimental_3d_obj_inside_points_layer_combo": [
-                "swe2d_obj_inside_points",
-                "swe3d_obj_inside_points",
-                "obj_inside_points",
-                "inside_points",
-            ],
             "bc_lines_layer_combo": ["swe2d_bc_lines"],
             "topo_nodes_combo": ["swe2d_topo_nodes"],
             "topo_arcs_combo": ["swe2d_topo_arcs"],
@@ -7972,12 +7845,10 @@ class SWE2DWorkbenchDialog(QtWidgets.QDialog):
         stats = snapshot.get("stats")
         if isinstance(stats, dict):
             try:
-                env = self._collect_3d_patch_env_overrides()
-                spec = self._build_patch_spec_from_stats(stats, env)
-                spec_dict = self._patch_spec_to_dict(spec)
-                if isinstance(spec_dict, dict):
-                    self._three_d_patch_last_spec = dict(spec_dict)
-                    return dict(spec_dict)
+                spec = self._patch_spec_to_dict(None)
+                if isinstance(spec, dict):
+                    self._three_d_patch_last_spec = dict(spec)
+                    return dict(spec)
             except Exception:
                 pass
         return None
@@ -8310,7 +8181,6 @@ class SWE2DWorkbenchDialog(QtWidgets.QDialog):
         rain_rate_model,
         cell_source_model: Optional[np.ndarray],
         coupled_source_rate: Optional[np.ndarray] = None,
-        prefer_native_injection: bool = False,
     ) -> None:
         src_cap_widget = getattr(self, "max_source_rate_spin", None)
         max_rel_widget = getattr(self, "max_rel_depth_increase_spin", None)
@@ -8328,7 +8198,6 @@ class SWE2DWorkbenchDialog(QtWidgets.QDialog):
             rain_rate_model=rain_rate_model,
             cell_source_model=cell_source_model,
             coupled_source_rate=coupled_source_rate,
-            prefer_native_injection=prefer_native_injection,
             mesh_cell_areas=mesh_cell_areas,
             max_source_rate=float(src_cap_widget.value()) if src_cap_widget is not None else 0.0,
             h_min=float(hmin_widget.value()) if hmin_widget is not None else 1.0e-4,
@@ -8648,8 +8517,6 @@ class SWE2DWorkbenchDialog(QtWidgets.QDialog):
             "drain_inlets_layer_combo",
             "drain_node_inlets_layer_combo",
             "structures_layer_combo",
-            "experimental_3d_obj_layer_combo",
-            "experimental_3d_obj_inside_points_layer_combo",
             "bc_lines_layer_combo",
             "topo_nodes_combo",
             "topo_arcs_combo",
@@ -8784,24 +8651,6 @@ class SWE2DWorkbenchDialog(QtWidgets.QDialog):
             "source_imex_split_chk", "source_stage_coupled_imex_rk2_chk",
             "use_spatial_rain_cn_chk", "infiltration_method_combo", "rain_boundary_buffer_rings_spin", "internal_flow_field_edit",
             "run_time_edit", "output_interval_edit", "line_output_interval_edit",
-            "reconstruction_combo", "temporal_order_combo", "equation_set_combo", "experimental_3d_mode_chk",
-            "experimental_3d_coupling_mode_combo",
-            "experimental_3d_patch_face_len_x_spin", "experimental_3d_patch_face_len_y_spin", "experimental_3d_patch_face_len_z_spin",
-            "experimental_3d_projection_residual_sample_iters_spin",
-            "experimental_3d_projection_divergence_gate_enable_chk",
-            "experimental_3d_projection_divergence_ratio_target_spin",
-            "experimental_3d_patch_xmin_edit", "experimental_3d_patch_xmax_edit",
-            "experimental_3d_patch_ymin_edit", "experimental_3d_patch_ymax_edit",
-            "experimental_3d_patch_zmin_edit", "experimental_3d_patch_zmax_edit",
-            "experimental_3d_obj_solids_chk", "experimental_3d_obj_method_combo", "experimental_3d_obj_layer_combo",
-            "experimental_3d_geom_sanitize_chk", "experimental_3d_geom_phi_snap_spin", "experimental_3d_geom_area_snap_spin",
-            "experimental_3d_obj_path_field_edit", "experimental_3d_obj_default_path_edit",
-            "experimental_3d_obj_scale_field_edit", "experimental_3d_obj_yaw_field_edit",
-            "experimental_3d_obj_z_offset_field_edit", "experimental_3d_obj_inside_points_layer_combo",
-            "experimental_3d_obj_instance_id_field_edit", "experimental_3d_obj_inside_id_field_edit",
-            "experimental_3d_obj_inside_z_field_edit", "experimental_3d_obj_use_terrain_chk",
-            "experimental_3d_obj_ab_compare_chk", "experimental_3d_obj_ab_probe_steps_spin",
-            "experimental_3d_obj_export_obj_chk", "experimental_3d_obj_export_obj_path_edit",
             "degen_mode_combo", "solver_backend_combo", "solver_openmp_enabled_chk", "solver_cpu_threads_spin", "coupling_loop_combo",
             "drainage_solver_mode_combo", "drainage_backend_combo", "drainage_gpu_method_combo", "drainage_coupling_substeps_spin",
             "drainage_max_coupling_substeps_spin", "drainage_head_deadband_spin",
@@ -8826,8 +8675,6 @@ class SWE2DWorkbenchDialog(QtWidgets.QDialog):
             "topo_gmsh_interface_snap_tol_spin", "topo_gmsh_interface_reject_near_unshared_chk",
             "topo_gmsh_interface_reject_tol_spin",
         ]
-        widget_attrs.extend(list(getattr(self, "_experimental_3d_bc_widget_attrs", []) or []))
-
         # Include any additional supported widgets bound on the dialog so newly
         # added controls persist without requiring manual list maintenance.
         try:
@@ -8889,7 +8736,6 @@ class SWE2DWorkbenchDialog(QtWidgets.QDialog):
             log_callback=self._log,
         )
 
-        self._sync_experimental_3d_mode_widgets()
         self._log(f"[DEBUG] restore: successfully restored {restored_count} of {len(widgets_data)} widgets")
 
     def _missing_required_fields(self, layer, required_fields: Sequence[str]) -> List[str]:
@@ -9676,129 +9522,8 @@ class SWE2DWorkbenchDialog(QtWidgets.QDialog):
             log_fn=self._log,
         )
 
-    def _set_3d_patch_roi_from_mesh(self):
-        if self._mesh_data is None:
-            self._log("3D patch ROI sync skipped: generate or import mesh first.")
-            return
-        try:
-            node_x = np.asarray(self._mesh_data.get("node_x", np.empty(0)), dtype=np.float64).ravel()
-            node_y = np.asarray(self._mesh_data.get("node_y", np.empty(0)), dtype=np.float64).ravel()
-            node_z = np.asarray(self._mesh_data.get("node_z", np.empty(0)), dtype=np.float64).ravel()
-            if node_x.size <= 0 or node_y.size <= 0:
-                self._log("3D patch ROI sync skipped: mesh node coordinates are unavailable.")
-                return
-            xmin = float(np.min(node_x))
-            xmax = float(np.max(node_x))
-            ymin = float(np.min(node_y))
-            ymax = float(np.max(node_y))
-            target_len_x = (
-                float(self.experimental_3d_patch_face_len_x_spin.value())
-                if hasattr(self, "experimental_3d_patch_face_len_x_spin")
-                else 5.0
-            )
-            target_len_y = (
-                float(self.experimental_3d_patch_face_len_y_spin.value())
-                if hasattr(self, "experimental_3d_patch_face_len_y_spin")
-                else 5.0
-            )
-            nx_hint = max(8, min(256, int(math.ceil(max(xmax - xmin, 1.0e-9) / max(target_len_x, 1.0e-6)))))
-            ny_hint = max(8, min(256, int(math.ceil(max(ymax - ymin, 1.0e-9) / max(target_len_y, 1.0e-6)))))
-            terrain_zmin = self._sample_terrain_min_z_for_roi(
-                xmin=xmin,
-                xmax=xmax,
-                ymin=ymin,
-                ymax=ymax,
-                nx_hint=nx_hint,
-                ny_hint=ny_hint,
-            )
-            if node_z.size > 0:
-                zmin = float(np.min(node_z))
-                zmax = float(np.max(node_z))
-                if zmax <= zmin:
-                    zmax = zmin + 1.0
-            else:
-                zmin = 0.0
-                zmax = 1.0
-
-            if terrain_zmin is not None and np.isfinite(terrain_zmin):
-                zmin = float(terrain_zmin)
-                if zmax <= zmin:
-                    zmax = zmin + 1.0
-
-            self.experimental_3d_patch_xmin_edit.setText(f"{xmin:.9g}")
-            self.experimental_3d_patch_xmax_edit.setText(f"{xmax:.9g}")
-            self.experimental_3d_patch_ymin_edit.setText(f"{ymin:.9g}")
-            self.experimental_3d_patch_ymax_edit.setText(f"{ymax:.9g}")
-            self.experimental_3d_patch_zmin_edit.setText(f"{zmin:.9g}")
-            self.experimental_3d_patch_zmax_edit.setText(f"{zmax:.9g}")
-            self._log(
-                "3D patch ROI set from mesh extents: "
-                f"x=[{xmin:.3f}, {xmax:.3f}], y=[{ymin:.3f}, {ymax:.3f}], z=[{zmin:.3f}, {zmax:.3f}]"
-            )
-            if terrain_zmin is not None and np.isfinite(terrain_zmin):
-                self._log(
-                    "3D patch z-min source: terrain DEM minimum sampled in ROI "
-                    f"(zmin={float(terrain_zmin):.3f})."
-                )
-        except Exception as exc:
-            self._log(f"3D patch ROI sync failed: {exc}")
-
     def _edit_optional_float(self, edit: QtWidgets.QLineEdit) -> Optional[float]:
         return _parse_optional_float_text_logic(str(edit.text() or ""))
-
-    def _sample_terrain_min_z_for_roi(
-        self,
-        xmin: float,
-        xmax: float,
-        ymin: float,
-        ymax: float,
-        nx_hint: int = 64,
-        ny_hint: int = 64,
-    ) -> Optional[float]:
-        return _sample_terrain_min_z_for_roi_qgis_logic(
-            have_qgis_core=_HAVE_QGIS_CORE,
-            qgs_pointxy_cls=QgsPointXY,
-            terrain_layer_combo=getattr(self, "terrain_layer_combo", None),
-            combo_layer_fn=self._combo_layer,
-            xmin=xmin,
-            xmax=xmax,
-            ymin=ymin,
-            ymax=ymax,
-            nx_hint=nx_hint,
-            ny_hint=ny_hint,
-        )
-
-    def _collect_3d_patch_env_overrides(self) -> Dict[str, str]:
-        if self._mesh_data is None:
-            raise RuntimeError("Mesh is required before configuring 3D patch ROI/resolution.")
-        return _collect_3d_patch_env_overrides_delegate_logic(
-            ui=self,
-            mesh_data=self._mesh_data,
-            target_len_x=float(self.experimental_3d_patch_face_len_x_spin.value()),
-            target_len_y=float(self.experimental_3d_patch_face_len_y_spin.value()),
-            target_len_z=float(self.experimental_3d_patch_face_len_z_spin.value()),
-            edit_optional_float_callback=self._edit_optional_float,
-            sample_terrain_min_z_for_roi_callback=self._sample_terrain_min_z_for_roi,
-            collect_patch_env_overrides_callback=_collect_3d_patch_env_overrides_logic,
-            bed_manning_n=float(self.n_mann_spin.value()),
-            log_callback=self._log,
-            set_patch_zmin_text_callback=self.experimental_3d_patch_zmin_edit.setText,
-            collect_face_bc_env_overrides_callback=self._collect_3d_patch_face_bc_env_overrides,
-        )
-
-    def _apply_env_overrides(self, overrides: Dict[str, str]) -> Dict[str, Optional[str]]:
-        previous: Dict[str, Optional[str]] = {}
-        for key, value in (overrides or {}).items():
-            previous[key] = os.environ.get(key)
-            os.environ[key] = str(value)
-        return previous
-
-    def _restore_env_overrides(self, previous: Dict[str, Optional[str]]) -> None:
-        for key, old in (previous or {}).items():
-            if old is None:
-                os.environ.pop(key, None)
-            else:
-                os.environ[key] = str(old)
 
     def _resolve_layer_field_name(self, layer: object, requested_name: str) -> str:
         return _resolve_layer_field_name_qgis_logic(layer, requested_name)
@@ -9824,9 +9549,6 @@ class SWE2DWorkbenchDialog(QtWidgets.QDialog):
             cwd=os.getcwd(),
         )
 
-    def _infer_obj_path_from_layer_3d_renderer(self, layer: object) -> str:
-        return _infer_obj_path_from_layer_3d_renderer_qgis_logic(layer)
-
     def _build_patch_terrain_surface(self, spec: object) -> Optional[np.ndarray]:
         if not _HAVE_QGIS_CORE or QgsPointXY is None:
             return None
@@ -9838,304 +9560,6 @@ class SWE2DWorkbenchDialog(QtWidgets.QDialog):
             raster_layer=raster_layer,
             qgs_point_xy_cls=QgsPointXY,
         )
-
-    def _build_patch_spec_from_stats(
-        self,
-        patch_stats: Dict[str, object],
-        swe3d_env_overrides: Dict[str, str],
-    ) -> Optional[object]:
-        return _build_patch_spec_from_stats_runtime_logic(
-            patch_stats=patch_stats,
-            swe3d_env_overrides=swe3d_env_overrides,
-            patch_grid_spec_cls=PatchGridSpec,
-        )
-
-    def _experimental_3d_selected_obstacle_method(self) -> str:
-        obstacle_method = "fractional_cutcell"
-        method_combo = getattr(self, "experimental_3d_obj_method_combo", None)
-        if isinstance(method_combo, QtWidgets.QComboBox):
-            try:
-                raw_method = method_combo.currentData()
-                if raw_method is None:
-                    raw_method = method_combo.currentText()
-                obstacle_method = str(raw_method or "fractional_cutcell").strip() or "fractional_cutcell"
-            except Exception:
-                obstacle_method = "fractional_cutcell"
-        if obstacle_method not in ("fractional_cutcell", "favor1981_porosity"):
-            obstacle_method = "fractional_cutcell"
-        return obstacle_method
-
-    def _experimental_3d_geometry_sanitize_options(self) -> Dict[str, object]:
-        enabled = bool(
-            getattr(self, "experimental_3d_geom_sanitize_chk", None)
-            and self.experimental_3d_geom_sanitize_chk.isChecked()
-        )
-
-        phi_snap_min = 0.005
-        area_snap_min = 0.01
-        try:
-            if hasattr(self, "experimental_3d_geom_phi_snap_spin"):
-                phi_snap_min = float(self.experimental_3d_geom_phi_snap_spin.value())
-        except Exception:
-            phi_snap_min = 0.005
-        try:
-            if hasattr(self, "experimental_3d_geom_area_snap_spin"):
-                area_snap_min = float(self.experimental_3d_geom_area_snap_spin.value())
-        except Exception:
-            area_snap_min = 0.01
-
-        if not np.isfinite(phi_snap_min):
-            phi_snap_min = 0.005
-        if not np.isfinite(area_snap_min):
-            area_snap_min = 0.01
-        phi_snap_min = max(0.0, min(1.0, phi_snap_min))
-        area_snap_min = max(0.0, min(1.0, area_snap_min))
-
-        return {
-            "sanitize": enabled,
-            "phi_snap_min": phi_snap_min,
-            "area_snap_min": area_snap_min,
-        }
-
-    def _resolve_experimental_3d_obj_export_path(self, obstacle_method: str) -> str:
-        path_edit = getattr(self, "experimental_3d_obj_export_obj_path_edit", None)
-        configured = ""
-        if isinstance(path_edit, QtWidgets.QLineEdit):
-            configured = str(path_edit.text() or "").strip()
-        if configured:
-            return os.path.abspath(os.path.expanduser(configured))
-
-        base_dir = ""
-        if _HAVE_QGIS_CORE and QgsProject is not None:
-            try:
-                base_dir = str(QgsProject.instance().homePath() or "").strip()
-            except Exception:
-                base_dir = ""
-        if not base_dir:
-            base_dir = os.path.dirname(os.path.abspath(__file__))
-
-        safe_method = "".join(ch if (ch.isalnum() or ch in ("_", "-")) else "_" for ch in str(obstacle_method or "method"))
-        stamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-        return os.path.join(base_dir, "swe3d_exports", f"swe3d_fluid_{safe_method}_{stamp}.obj")
-
-    def _run_experimental_3d_obj_method_probe(
-        self,
-        backend_builder: Callable[[], object],
-        method_name: str,
-        phi: np.ndarray,
-        ax: np.ndarray,
-        ay: np.ndarray,
-        az: np.ndarray,
-        swe3d_env_overrides: Dict[str, str],
-        bc_n0: np.ndarray,
-        bc_n1: np.ndarray,
-        bc_tp: np.ndarray,
-        bc_vl: np.ndarray,
-        probe_steps: int,
-    ) -> Dict[str, float]:
-        return _run_experimental_3d_obj_method_probe_runtime_logic(
-            wb=self,
-            backend_builder=backend_builder,
-            method_name=method_name,
-            phi=phi,
-            ax=ax,
-            ay=ay,
-            az=az,
-            swe3d_env_overrides=swe3d_env_overrides,
-            bc_n0=bc_n0,
-            bc_n1=bc_n1,
-            bc_tp=bc_tp,
-            bc_vl=bc_vl,
-            probe_steps=probe_steps,
-            coupling_mode_enum=SWE2DThreeDCouplingMode,
-        )
-
-    def _boundary_edge_owner_cells(
-        self,
-        edge_n0: np.ndarray,
-        edge_n1: np.ndarray,
-    ) -> np.ndarray:
-        return _boundary_edge_owner_cells_runtime_logic(
-            mesh_data=self._mesh_data,
-            edge_n0=edge_n0,
-            edge_n1=edge_n1,
-        )
-
-    def _build_experimental_3d_interface_contract_arrays(
-        self,
-        patch_stats: Dict[str, object],
-        bc_n0: np.ndarray,
-        bc_n1: np.ndarray,
-        bc_tp: np.ndarray,
-    ) -> Optional[Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]]:
-        return _build_experimental_3d_interface_contract_arrays_runtime_logic(
-            wb=self,
-            patch_stats=patch_stats,
-            bc_n0=bc_n0,
-            bc_n1=bc_n1,
-            bc_tp=bc_tp,
-            bc_inflow_q=_BC_INFLOW_Q,
-            bc_ts_flow=_BC_TS_FLOW,
-            bc_ts_stage=_BC_TS_STAGE,
-        )
-
-    def _upload_experimental_3d_interface_contract(
-        self,
-        backend: object,
-        patch_stats: Dict[str, object],
-        bc_n0: np.ndarray,
-        bc_n1: np.ndarray,
-        bc_tp: np.ndarray,
-        coupling_mode: int,
-    ) -> None:
-        _upload_experimental_3d_interface_contract_runtime_logic(
-            wb=self,
-            backend=backend,
-            patch_stats=patch_stats,
-            bc_n0=bc_n0,
-            bc_n1=bc_n1,
-            bc_tp=bc_tp,
-            coupling_mode=coupling_mode,
-            coupling_mode_enum=SWE2DThreeDCouplingMode,
-        )
-
-    def _initialize_experimental_3d_patch_state(
-        self,
-        backend: object,
-        patch_stats: Dict[str, object],
-        swe3d_env_overrides: Dict[str, str],
-        bc_n0: np.ndarray,
-        bc_n1: np.ndarray,
-        bc_tp: np.ndarray,
-        bc_vl: np.ndarray,
-        log_notes: bool = True,
-    ) -> None:
-        _initialize_experimental_3d_patch_state_runtime_logic(
-            wb=self,
-            backend=backend,
-            patch_stats=patch_stats,
-            swe3d_env_overrides=swe3d_env_overrides,
-            bc_n0=bc_n0,
-            bc_n1=bc_n1,
-            bc_tp=bc_tp,
-            bc_vl=bc_vl,
-            log_notes=bool(log_notes),
-            bc_inflow_q=_BC_INFLOW_Q,
-            bc_ts_flow=_BC_TS_FLOW,
-            bc_ts_stage=_BC_TS_STAGE,
-            coupling_mode_enum=SWE2DThreeDCouplingMode,
-        )
-
-    def _upload_experimental_3d_obj_geometry(
-        self,
-        backend: object,
-        patch_stats: Dict[str, object],
-        swe3d_env_overrides: Dict[str, str],
-        backend_builder: Optional[Callable[[], object]] = None,
-        bc_n0: Optional[np.ndarray] = None,
-        bc_n1: Optional[np.ndarray] = None,
-        bc_tp: Optional[np.ndarray] = None,
-        bc_vl: Optional[np.ndarray] = None,
-    ) -> None:
-        _upload_experimental_3d_obj_geometry_runtime_logic(
-            wb=self,
-            backend=backend,
-            patch_stats=patch_stats,
-            swe3d_env_overrides=swe3d_env_overrides,
-            backend_builder=backend_builder,
-            bc_n0=bc_n0,
-            bc_n1=bc_n1,
-            bc_tp=bc_tp,
-            bc_vl=bc_vl,
-            patch_grid_spec_cls=PatchGridSpec,
-            load_obj_mesh_fn=load_obj_mesh,
-            apply_instance_transform_fn=apply_instance_transform,
-            build_static_geometry_tensors_fn=build_static_geometry_tensors,
-            write_solid_voxels_obj_fn=write_solid_voxels_obj,
-            write_fluid_voxels_obj_fn=write_fluid_voxels_obj,
-        )
-
-    def _append_3d_patch_snapshot(
-        self,
-        t_s: float,
-        stats: Dict[str, object],
-        vof: np.ndarray,
-        u: Optional[np.ndarray] = None,
-        v: Optional[np.ndarray] = None,
-        w: Optional[np.ndarray] = None,
-    ) -> None:
-        if not isinstance(stats, dict):
-            return
-        arr = np.asarray(vof, dtype=np.float64).ravel()
-        nx = max(0, int(stats.get("nx", 0) or 0))
-        ny = max(0, int(stats.get("ny", 0) or 0))
-        nz = max(0, int(stats.get("nz", 0) or 0))
-        expected = nx * ny * nz
-        if expected <= 0 or arr.size != expected:
-            return
-        u_arr = np.asarray(u, dtype=np.float64).ravel() if u is not None else np.empty(0, dtype=np.float64)
-        v_arr = np.asarray(v, dtype=np.float64).ravel() if v is not None else np.empty(0, dtype=np.float64)
-        w_arr = np.asarray(w, dtype=np.float64).ravel() if w is not None else np.empty(0, dtype=np.float64)
-        if u_arr.size != expected:
-            u_arr = np.empty(0, dtype=np.float64)
-        if v_arr.size != expected:
-            v_arr = np.empty(0, dtype=np.float64)
-        if w_arr.size != expected:
-            w_arr = np.empty(0, dtype=np.float64)
-        snap_spec = None
-        if isinstance(self._three_d_patch_last_spec, dict):
-            snap_spec = dict(self._three_d_patch_last_spec)
-
-        bed_flat = np.empty(0, dtype=np.float64)
-        if isinstance(snap_spec, dict):
-            try:
-                nx_s = int(snap_spec.get("nx", 0) or 0)
-                ny_s = int(snap_spec.get("ny", 0) or 0)
-                dx_s = float(snap_spec.get("dx", 0.0) or 0.0)
-                dy_s = float(snap_spec.get("dy", 0.0) or 0.0)
-                ox_s = float(snap_spec.get("origin_x", 0.0) or 0.0)
-                oy_s = float(snap_spec.get("origin_y", 0.0) or 0.0)
-                oz_s = float(snap_spec.get("origin_z", 0.0) or 0.0)
-                if nx_s > 0 and ny_s > 0 and dx_s > 0.0 and dy_s > 0.0:
-                    class _PatchSpecTmp:
-                        pass
-
-                    spec_obj = _PatchSpecTmp()
-                    spec_obj.nx = nx_s
-                    spec_obj.ny = ny_s
-                    spec_obj.dx = dx_s
-                    spec_obj.dy = dy_s
-                    spec_obj.origin_x = ox_s
-                    spec_obj.origin_y = oy_s
-
-                    terrain_surface = self._build_patch_terrain_surface(spec_obj)
-                    if terrain_surface is not None:
-                        bed_arr = np.where(np.isfinite(terrain_surface), terrain_surface, float(oz_s)).astype(np.float64)
-                    else:
-                        bed_arr = np.full((ny_s, nx_s), float(oz_s), dtype=np.float64)
-                    bed_flat = bed_arr.ravel(order="C")
-            except Exception:
-                bed_flat = np.empty(0, dtype=np.float64)
-
-        stats_rec = dict(stats)
-        if "origin_z" not in stats_rec and isinstance(snap_spec, dict) and "origin_z" in snap_spec:
-            stats_rec["origin_z"] = float(snap_spec.get("origin_z", 0.0) or 0.0)
-
-        self._three_d_patch_snapshots.append(
-            {
-                "t_s": float(t_s),
-                "stats": stats_rec,
-                "vof": arr.copy(),
-                "u": u_arr.copy(),
-                "v": v_arr.copy(),
-                "w": w_arr.copy(),
-                "patch_spec": snap_spec,
-                "bed_z": bed_flat.copy(),
-            }
-        )
-        max_keep = 48
-        if len(self._three_d_patch_snapshots) > max_keep:
-            self._three_d_patch_snapshots = self._three_d_patch_snapshots[-max_keep:]
 
     def _on_cancel(self):
         self._cancel_requested = True
@@ -10209,10 +9633,6 @@ class SWE2DWorkbenchDialog(QtWidgets.QDialog):
             qtwidgets_module=QtWidgets,
             log_callback=self._log,
         )
-        try:
-            self._sync_experimental_3d_mode_widgets()
-        except Exception:
-            pass
         self._log(f"Applied run metadata settings: restored_widgets={int(restored)}")
         return int(restored)
 
@@ -10290,15 +9710,7 @@ class SWE2DWorkbenchDialog(QtWidgets.QDialog):
 
     def _native_backend_ready_for_run_preflight(self) -> bool:
         openmp_enabled = True
-        try:
-            if getattr(self, "solver_openmp_enabled_chk", None) is not None:
-                openmp_enabled = bool(self.solver_openmp_enabled_chk.isChecked())
-        except Exception:
-            openmp_enabled = True
-        try:
-            return bool(swe2d_available(openmp_enabled=openmp_enabled) and SWE2DBackend is not None)
-        except TypeError:
-            return bool(swe2d_available() and SWE2DBackend is not None)
+        return bool(swe2d_available() and SWE2DBackend is not None)
 
     def _show_backend_unavailable_for_run_preflight(self, message: str):
         QtWidgets.QMessageBox.critical(self, "2D SWE", str(message))

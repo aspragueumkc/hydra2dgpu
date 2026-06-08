@@ -107,7 +107,6 @@ class SWE2DRuntimeStepExecutor:
                 rain_src_pred,
                 cell_source_model_0,
                 coupled_source_rate_0,
-                prefer_native_injection=native_source_injection_mode,
             )
             source_ms += (time.perf_counter() - _t_src0) * 1000.0
             if apply_3d_patch_face_bc_callback is not None:
@@ -182,7 +181,6 @@ class SWE2DRuntimeStepExecutor:
                 rain_src,
                 cell_source_model_stage,
                 coupled_source_rate,
-                prefer_native_injection=native_source_injection_mode,
             )
             source_ms += (time.perf_counter() - _t_src1) * 1000.0
             if apply_3d_patch_face_bc_callback is not None:
@@ -247,7 +245,6 @@ class SWE2DRuntimeStepExecutor:
                     rain_src,
                     cell_source_model_step,
                     coupled_source_rate,
-                    prefer_native_injection=native_source_injection_mode,
                 )
             # When _native_device_applied is True, d_external_source_mps is
             # already populated on-device and the solver step will consume it

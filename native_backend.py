@@ -3,10 +3,13 @@
 from __future__ import annotations
 
 import importlib
+import logging
 import os
 from typing import Any, Dict, List, Optional
 
 import numpy as np
+
+logger = logging.getLogger(__name__)
 
 _NATIVE = None
 _NATIVE_IMPORT_ERROR: Optional[Exception] = None
@@ -33,6 +36,7 @@ def load_native_module() -> Any:
         _NATIVE = importlib.import_module("hydra_native")
         return _NATIVE
     except Exception as exc:  # pragma: no cover - depends on local build state
+        logger.debug("[BACKEND] failed to import hydra_native: %s", exc)
         _NATIVE_IMPORT_ERROR = exc
         raise
 

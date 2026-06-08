@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import dataclasses
 import json
+import logging
 import os as _os
 from typing import Dict, List, Set, Tuple
 
@@ -33,15 +34,10 @@ except Exception:
     from PyQt5 import QtCore, QtGui, QtWidgets
     from PyQt5.QtCore import Qt, pyqtSignal
 
-try:
-    from .animation import ResultsAnimationController
-except Exception:
-    from swe2d.results.animation import ResultsAnimationController
+from swe2d.results.animation import ResultsAnimationController
+from swe2d.results.db_utils import open_ro as _open_ro_shared, table_exists as _table_exists_shared
 
-try:
-    from swe2d.results.db_utils import open_ro as _open_ro_shared, table_exists as _table_exists_shared
-except Exception:
-    from .db_utils import open_ro as _open_ro_shared, table_exists as _table_exists_shared
+logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
 # Optional QGIS imports
@@ -1132,8 +1128,8 @@ class SWE2DResultsPanel(_BASE_DOCK):  # type: ignore[valid-type,misc]
                 self._ts_vline.set_xdata([t_hr, t_hr])
                 self._canvas_ts.draw_idle()
                 return
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.debug("[RESULTS] Failed to update ts vline: %s", exc)
         self._refresh_timeseries()
 
     def _refresh_profile(self):
@@ -1154,8 +1150,8 @@ class SWE2DResultsPanel(_BASE_DOCK):  # type: ignore[valid-type,misc]
         if self._prof_fill_cbar is not None:
             try:
                 self._prof_fill_cbar.remove()
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.debug("[RESULTS] Failed to remove colorbar: %s", exc)
             self._prof_fill_cbar = None
 
         self._ax_prof.cla()
@@ -1312,8 +1308,8 @@ class SWE2DResultsPanel(_BASE_DOCK):  # type: ignore[valid-type,misc]
                                 "placement": "unplaced",
                             }
                         )
-                except Exception:
-                    pass
+                except Exception as exc:
+                    logger.warning("[RESULTS] Failed to load structure overlays: %s", exc)
 
         if use_fill_cmap and fill_segments and fill_values:
             try:
@@ -1345,8 +1341,8 @@ class SWE2DResultsPanel(_BASE_DOCK):  # type: ignore[valid-type,misc]
                         ax=self._ax_prof,
                         label=self._prof_fill_combo.currentText(),
                     )
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.debug("[RESULTS] Failed to render fill segments: %s", exc)
 
         if plotted and self._show_structures_chk.isChecked() and structure_rows:
             x0, x1 = self._ax_prof.get_xlim()
@@ -1435,7 +1431,8 @@ class SWE2DResultsPanel(_BASE_DOCK):  # type: ignore[valid-type,misc]
             if row is None or not row[0]:
                 return str(default_name)
             return str(row[0])
-        except Exception:
+        except Exception as exc:
+            logger.debug("[RESULTS] Failed to load bound layer name: %s", exc)
             return str(default_name)
         finally:
             if conn is not None:
@@ -1453,13 +1450,13 @@ class SWE2DResultsPanel(_BASE_DOCK):  # type: ignore[valid-type,misc]
             try:
                 if "line_id" in fields and int(ft["line_id"]) == int(line_id):
                     return ft.geometry()
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.debug("[RESULTS] Failed to match line by id: %s", exc)
             try:
                 if line_name and "name" in fields and str(ft["name"] or "") == line_name:
                     return ft.geometry()
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.debug("[RESULTS] Failed to match line by name: %s", exc)
         return None
 
     def _resolve_structure_profile_overlays(
@@ -1505,7 +1502,8 @@ class SWE2DResultsPanel(_BASE_DOCK):  # type: ignore[valid-type,misc]
                 inter = geom.intersection(line_geom)
                 if inter is not None and not inter.isEmpty():
                     station_m = float(line_geom.lineLocatePoint(inter.centroid()))
-            except Exception:
+            except Exception as exc:
+                logger.debug("[RESULTS] Failed to compute station intersection: %s", exc)
                 station_m = float("nan")
 
             if not np.isfinite(station_m):
@@ -1515,14 +1513,16 @@ class SWE2DResultsPanel(_BASE_DOCK):  # type: ignore[valid-type,misc]
                         nearest = line_geom.nearestPoint(centroid)
                         if nearest is not None and not nearest.isEmpty():
                             station_m = float(line_geom.lineLocatePoint(nearest))
-                except Exception:
+                except Exception as exc:
+                    logger.debug("[RESULTS] Failed to compute fallback station: %s", exc)
                     station_m = float("nan")
 
             crest = float("nan")
             try:
                 if "crest_elev" in fields and ft["crest_elev"] not in (None, ""):
                     crest = float(ft["crest_elev"])
-            except Exception:
+            except Exception as exc:
+                logger.debug("[RESULTS] Failed to read crest elevation: %s", exc)
                 crest = float("nan")
 
             overlays.append(
@@ -1602,8 +1602,8 @@ class SWE2DResultsPanel(_BASE_DOCK):  # type: ignore[valid-type,misc]
             _QgsProject.instance().writeEntry(
                 _PERSISTENCE_GROUP, _PERSISTENCE_KEY, json.dumps(state)
             )
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.debug("[RESULTS] Failed to save panel state: %s", exc)
 
     def restore_state(self):
         if not _HAVE_QGSPROJECT or _QgsProject is None:
@@ -1615,7 +1615,8 @@ class SWE2DResultsPanel(_BASE_DOCK):  # type: ignore[valid-type,misc]
             if not raw:
                 return
             state = json.loads(raw)
-        except Exception:
+        except Exception as exc:
+            logger.warning("[RESULTS] Failed to restore panel state: %s", exc)
             return
 
         self._manual_gpkg_paths = [

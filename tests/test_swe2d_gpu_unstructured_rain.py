@@ -61,7 +61,7 @@ class TestGPUUnstructuredRainOnGrid(unittest.TestCase):
             self.SIZE,
         )
 
-        backend = SWE2DBackend(use_gpu=True)
+        backend = SWE2DBackend()
         backend.build_mesh(node_x, node_y, node_z, cell_nodes)
         n_cells = backend.n_cells
         h0 = np.full((n_cells,), float(h0_scalar), dtype=np.float64)

@@ -9,7 +9,11 @@ from __future__ import annotations
 
 from typing import Any, Dict, Optional
 
+import logging
+
 import numpy as np
+
+logger = logging.getLogger(__name__)
 
 
 class SWE2DThreeDPatchObserver:
@@ -28,7 +32,8 @@ class SWE2DThreeDPatchObserver:
             if not self._backend.supports_3d_patch_observation():
                 return None
             return dict(self._backend.get_3d_patch_stats())
-        except Exception:
+        except Exception as exc:
+            logger.debug("[DRAINAGE] Failed to get 3D patch stats: %s", exc)
             return None
 
     def get_patch_vof(self) -> Optional[np.ndarray]:
@@ -40,7 +45,8 @@ class SWE2DThreeDPatchObserver:
             if not self._backend.supports_3d_patch_observation():
                 return None
             return np.asarray(self._backend.get_3d_patch_vof(), dtype=np.float64).ravel()
-        except Exception:
+        except Exception as exc:
+            logger.debug("[DRAINAGE] Failed to get 3D patch VOF: %s", exc)
             return None
 
     def get_patch_velocity(self) -> Optional[tuple[np.ndarray, np.ndarray, np.ndarray]]:
@@ -57,5 +63,6 @@ class SWE2DThreeDPatchObserver:
                 np.asarray(v, dtype=np.float64).ravel(),
                 np.asarray(w, dtype=np.float64).ravel(),
             )
-        except Exception:
+        except Exception as exc:
+            logger.debug("[DRAINAGE] Failed to get 3D patch velocity: %s", exc)
             return None

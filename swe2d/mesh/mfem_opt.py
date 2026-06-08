@@ -10,7 +10,7 @@ from typing import TYPE_CHECKING, Dict, List, Optional, Sequence, Tuple
 import numpy as np
 
 if TYPE_CHECKING:
-    from .meshing import MeshResult
+    from swe2d.mesh.meshing import MeshResult
 
 
 @dataclass(frozen=True)
@@ -205,7 +205,7 @@ def _find_section(lines: Sequence[str], name: str) -> int:
 
 
 def read_mfem_mesh(path: str, seed_mesh: MeshResult) -> MeshResult:
-    from .meshing import MeshResult
+    from swe2d.mesh.meshing import MeshResult
 
     with open(path, "r", encoding="utf-8") as f:
         lines = [ln.rstrip("\n") for ln in f]

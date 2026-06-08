@@ -16,7 +16,6 @@ enum class SWE2DSpatialScheme : int {
     FV_MUSCL_MINMOD   = 2,
     FV_MUSCL_MC       = 3,   // Monotonized-Central limiter (gradient-based TVD)
     FV_MUSCL_VAN_LEER = 4,   // Van Leer smooth limiter (gradient-based TVD)
-    FV_WENO3_LIKE     = 5,   // WENO3-like nonlinear blend (GPU-first experimental)
     FV_WENO5          = 6,   // WENO5 + least-squares 2-ring gradient (~3rd order, GPU-first)
 };
 
@@ -36,18 +35,6 @@ enum class SWE2DBedFrictionModel : int {
 
 enum class SWE2DEquationSet : int {
     HYDROSTATIC_2D = 0,
-    NONHYDROSTATIC_2D = 1,
-};
-
-enum class SWE2DThreeDCouplingMode : int {
-    OFF = 0,
-    ONE_WAY_2D_TO_3D = 1,
-    TWO_WAY_2D_3D = 2,
-};
-
-enum class SWE2DThreeDSolverModel : int {
-    DISABLED = 0,
-    SINGLE_PHASE_FREE_SURFACE_VOF = 1,
 };
 
 // Forward declaration of GPU state (defined in swe2d_gpu.cuh when CUDA present)
@@ -67,17 +54,11 @@ struct SWE2DSolverConfig {
     double  dt_max   = 10.0;    // maximum allowable timestep (s)
     double  dt_fixed = -1.0;    // if > 0, use this fixed dt (overrides CFL)
     double  dt_initial = -1.0;  // if > 0, use this dt for the first step only (cold-start override)
-    int     temporal_order = 2; // 1 = Euler, 2 = SSPRK2 (Heun), 4 = classic RK4 (composed), 5 = true RK4 (graph-safe), 6 = true RK5 (graph-safe)
+    int     temporal_order = 2; // 1 = Euler, 2 = SSPRK2 (Heun), 5 = true RK4 (graph-safe), 6 = true RK5 (graph-safe)
     int     spatial_scheme = static_cast<int>(SWE2DSpatialScheme::FV_FIRST_ORDER);
-    int     godunov_mode = 0;   // 0 = current GPU step, 1 = Godunov rollout mode
     int     turbulence_model = static_cast<int>(SWE2DTurbulenceModel::NONE);
     int     bed_friction_model = static_cast<int>(SWE2DBedFrictionModel::MANNING);
     int     equation_set = static_cast<int>(SWE2DEquationSet::HYDROSTATIC_2D);
-    int     coupling_mode = static_cast<int>(SWE2DThreeDCouplingMode::OFF);
-    int     three_d_solver_model = static_cast<int>(SWE2DThreeDSolverModel::DISABLED);
-    bool    enforce_gpu_only_advanced_modes = true;
-    // 3D roadmap constraint: single-phase free-surface only for near-term VoF work.
-    bool    three_d_single_phase_free_surface = true;
     bool    enable_rain_module = false;
     bool    enable_pipe_network_module = false;
     bool    enable_hydraulic_structures = false;
@@ -111,7 +92,7 @@ struct SWE2DSolverConfig {
     bool    source_true_subcycling = false; // true: apply real source sub-iterations per hydro step
     bool    source_imex_split = false;      // true: flux step first, then source+friction split substeps
 
-    // Friction temporal-order hardening (adaptive sub-stepping for RK4/RK5).
+    // Friction temporal-order hardening (adaptive sub-stepping for higher-order RK).
     bool    friction_substep_enabled     = true;   // enable adaptive friction sub-stepping
     double  friction_target_courant      = 1.0;    // target nu_fric for substep count (>0)
     int     friction_max_substeps        = 64;     // hard cap on friction substeps per cell
