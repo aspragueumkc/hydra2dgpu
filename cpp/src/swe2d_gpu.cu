@@ -2706,7 +2706,7 @@ __device__ __forceinline__ void swe2d_direct_step_culvert_upstream_energy_cuda(
     const double y_full = xsect.y_full_ft;
     const double eps = fmax(1.0e-6, 1.0e-6 * y_full);
     const double y_ds = fmin(fmax(tailwater_depth, dc), y_full);
-    const double step_depth = fmin(fmax(0.01, 0.02 * y_full), 0.05);
+    const double step_depth = fmin(fmax(0.01, 0.02 * y_full), 0.50);
 
     if (y_ds >= y_full - eps) {
         const double sf_full = swe2d_culvert_friction_slope_cuda(xsect, q_cfs, n_value, y_full - eps);
@@ -2938,6 +2938,7 @@ __global__ __launch_bounds__(256, 4) void swe2d_compute_structure_flows_kernel(
     double gravity,
     double model_to_ft,
     double* __restrict__ structure_flow,
+    const double* __restrict__ prev_structure_flow,
     int32_t culvert_solver_mode,
     const double* __restrict__ culvert_table_header,
     const double* __restrict__ culvert_table_data,
@@ -3048,7 +3049,12 @@ __global__ __launch_bounds__(256, 4) void swe2d_compute_structure_flows_kernel(
         }
     }
 
-    const double q_hint = fmax(1.0, fmax(q_inlet, fmax(q_orifice, q_manning_cap)));
+    // Use the previous step's flow as a secant-solver hint, falling back
+    // to the computed max of inlet/orifice/Manning estimates.
+    double q_hint = (prev_structure_flow) ? fabs(prev_structure_flow[i]) : 0.0;
+    if (!(q_hint > 0.0 && isfinite(q_hint))) {
+        q_hint = fmax(1.0, fmax(q_inlet, fmax(q_orifice, q_manning_cap)));
+    }
 
     double q_outlet = 0.0;
     if (culvert_solver_mode == 1 && culvert_table_data && culvert_table_header) {
@@ -5762,6 +5768,7 @@ void swe2d_gpu_step_rk5_graph(
                 sf_ws.d_embankment_enabled, sf_ws.d_embankment_crest_elev,
                 sf_ws.d_embankment_overflow_width, sf_ws.d_embankment_weir_coeff,
                 sf_ws.gravity, sf_ws.model_to_ft, sf_ws.d_structure_flow,
+                sf_ws.d_prev_structure_flow,
                 s_culvert_solver_mode, s_culvert_table_header, s_culvert_table_data,
                 s_culvert_table_n_hw, s_culvert_table_n_tw);
             CUDA_CHECK(cudaGetLastError());
@@ -6345,6 +6352,7 @@ void swe2d_gpu_preload_structure_params(
     sf_ensure_buf(ws.d_embankment_overflow_width, ws.struct_capacity, n_structures);
     sf_ensure_buf(ws.d_embankment_weir_coeff, ws.struct_capacity, n_structures);
     sf_ensure_buf(ws.d_structure_flow, ws.struct_capacity, n_structures);
+    sf_ensure_buf(ws.d_prev_structure_flow, ws.struct_capacity, n_structures);
 
     sf_upload_buf(structure_type, ws.d_structure_type, n_structures, stream);
     sf_upload_buf(upstream_cell, ws.d_upstream_cell, n_structures, stream);
@@ -6448,6 +6456,12 @@ void swe2d_gpu_compute_coupling_full_on_device(
     }
 
     if (n_structures > 0 && sf_ws.params_preloaded) {
+        // Save previous-step flows as secant-solver hint before zeroing.
+        if (sf_ws.d_prev_structure_flow) {
+            CUDA_CHECK(cudaMemcpyAsync(sf_ws.d_prev_structure_flow, sf_ws.d_structure_flow,
+                                       static_cast<size_t>(n_structures) * sizeof(double),
+                                       cudaMemcpyDeviceToDevice, stream));
+        }
         CUDA_CHECK(cudaMemsetAsync(sf_ws.d_structure_flow, 0, static_cast<size_t>(n_structures) * sizeof(double), stream));
         if (host_structure_flows) {
             // Use host-provided flows (pre-computed in Python) — avoids
@@ -6472,6 +6486,7 @@ void swe2d_gpu_compute_coupling_full_on_device(
                 sf_ws.d_embankment_enabled, sf_ws.d_embankment_crest_elev,
                 sf_ws.d_embankment_overflow_width, sf_ws.d_embankment_weir_coeff,
                 sf_ws.gravity, sf_ws.model_to_ft, sf_ws.d_structure_flow,
+                sf_ws.d_prev_structure_flow,
                 s_culvert_solver_mode, s_culvert_table_header, s_culvert_table_data,
                 s_culvert_table_n_hw, s_culvert_table_n_tw);
             CUDA_CHECK(cudaGetLastError());
@@ -6531,6 +6546,11 @@ void swe2d_gpu_compute_coupling_full_on_device(
             if (s_culvert_solver_mode == 1 && !s_culvert_table_data) {
                 s_culvert_solver_mode = 0;
             }
+            if (sf_ws.d_prev_structure_flow) {
+                CUDA_CHECK(cudaMemcpyAsync(sf_ws.d_prev_structure_flow, sf_ws.d_structure_flow,
+                                           static_cast<size_t>(n_structures) * sizeof(double),
+                                           cudaMemcpyDeviceToDevice, stream));
+            }
             CUDA_CHECK(cudaMemsetAsync(sf_ws.d_structure_flow, 0, static_cast<size_t>(n_structures) * sizeof(double), stream));
             {
                 int grid_sf = (n_structures + BLOCK - 1) / BLOCK;
@@ -6549,6 +6569,7 @@ void swe2d_gpu_compute_coupling_full_on_device(
                     sf_ws.d_embankment_enabled, sf_ws.d_embankment_crest_elev,
                     sf_ws.d_embankment_overflow_width, sf_ws.d_embankment_weir_coeff,
                     sf_ws.gravity, sf_ws.model_to_ft, sf_ws.d_structure_flow,
+                    sf_ws.d_prev_structure_flow,
                     s_culvert_solver_mode, s_culvert_table_header, s_culvert_table_data,
                     s_culvert_table_n_hw, s_culvert_table_n_tw);
                 CUDA_CHECK(cudaGetLastError());
@@ -6835,6 +6856,11 @@ void swe2d_gpu_apply_culvert_face_flux(
 
     // Ensure structure flows are computed (Q_c must be in sf.d_structure_flow)
     if (sf.d_structure_flow && sf.params_preloaded && sf.n_structures > 0) {
+        if (sf.d_prev_structure_flow) {
+            CUDA_CHECK(cudaMemcpyAsync(sf.d_prev_structure_flow, sf.d_structure_flow,
+                                       static_cast<size_t>(sf.n_structures) * sizeof(double),
+                                       cudaMemcpyDeviceToDevice, stream));
+        }
         CUDA_CHECK(cudaMemsetAsync(sf.d_structure_flow, 0,
                                    static_cast<size_t>(sf.n_structures) * sizeof(double), stream));
         int grid_sf = (sf.n_structures + BLOCK - 1) / BLOCK;
@@ -6853,6 +6879,7 @@ void swe2d_gpu_apply_culvert_face_flux(
             sf.d_embankment_enabled, sf.d_embankment_crest_elev,
             sf.d_embankment_overflow_width, sf.d_embankment_weir_coeff,
             sf.gravity, sf.model_to_ft, sf.d_structure_flow,
+            sf.d_prev_structure_flow,
             s_culvert_solver_mode, s_culvert_table_header, s_culvert_table_data,
             s_culvert_table_n_hw, s_culvert_table_n_tw);
         CUDA_CHECK(cudaGetLastError());
@@ -7390,6 +7417,7 @@ void swe2d_gpu_compute_structure_flows(
             s_d_embankment_enabled, s_d_embankment_crest_elev,
             s_d_embankment_overflow_width, s_d_embankment_weir_coeff,
             gravity, model_to_ft, s_d_structure_flow,
+            nullptr,  // no prev-flow tracking in legacy path
             s_culvert_solver_mode,
             s_culvert_table_header, s_culvert_table_data,
             s_culvert_table_n_hw, s_culvert_table_n_tw);
@@ -8363,6 +8391,7 @@ void swe2d_gpu_destroy(SWE2DDeviceState* dev) {
         safe_free(ws.d_embankment_enabled); safe_free(ws.d_embankment_crest_elev);
         safe_free(ws.d_embankment_overflow_width); safe_free(ws.d_embankment_weir_coeff);
         safe_free(ws.d_structure_flow);
+        safe_free(ws.d_prev_structure_flow);
     }
     // Redistribution workspace cleanup
     dev->redist_ws.destroy();

@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.16)
-project(hydra_native LANGUAGES CXX)
+project(hydra_swe2d LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -34,17 +34,6 @@ if(NOT pybind11_FOUND)
     GIT_TAG v2.13.6
   )
   FetchContent_MakeAvailable(pybind11)
-endif()
-
-# ── 1D native backend ────────────────────────────────────────────────────────
-pybind11_add_module(hydra_native cpp/src/backwater_native.cpp)
-
-# GPU-only: no OpenMP (CPU path removed)
-
-if(MSVC)
-  target_compile_options(hydra_native PRIVATE /W4)
-else()
-  target_compile_options(hydra_native PRIVATE -Wall -Wextra -Wpedantic)
 endif()
 
 # ── 2D SWE hybrid GPU/CPU solver ─────────────────────────────────────────────
@@ -169,23 +158,6 @@ else()
 endif()
 
 set_property(TARGET hydra_hybridmesh PROPERTY INTERPROCEDURAL_OPTIMIZATION OFF)
-
-# ── MFEM beta mesh optimization bridge ──────────────────────────────────────
-option(HYDRA_ENABLE_MFEM "Enable MFEM beta mesh optimization module" ON)
-
-if(HYDRA_ENABLE_MFEM)
-  pybind11_add_module(hydra_mfem_meshopt
-      cpp/src/mfem_meshopt_bindings.cpp
-  )
-
-  if(MSVC)
-    target_compile_options(hydra_mfem_meshopt PRIVATE /W1)
-  else()
-    target_compile_options(hydra_mfem_meshopt PRIVATE -w)
-  endif()
-
-  set_property(TARGET hydra_mfem_meshopt PROPERTY INTERPROCEDURAL_OPTIMIZATION OFF)
-endif()
 
 # ── Meshing prebuild native kernels ────────────────────────────────────────
 pybind11_add_module(hydra_meshing_native

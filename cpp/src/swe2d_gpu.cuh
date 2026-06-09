@@ -448,6 +448,7 @@ struct SWE2DDeviceState {
         double*  d_embankment_overflow_width = nullptr;
         double*  d_embankment_weir_coeff = nullptr;
         double*  d_structure_flow = nullptr;
+        double*  d_prev_structure_flow = nullptr;   // previous-step flows for secant hint
     } sf_ws{};
 
     // Persistent redistribution workspace: caches all redistribution

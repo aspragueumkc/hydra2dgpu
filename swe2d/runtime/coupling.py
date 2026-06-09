@@ -923,7 +923,7 @@ class SWE2DCouplingController:
         return mod
 
     def _ensure_native_culvert_solver_mode(self, native_mod) -> None:
-        if self._culvert_solver_mode_applied:
+        if self._culvert_solver_mode_applied and self._culvert_solver_mode_applied == self.culvert_solver_mode:
             return
         if not hasattr(native_mod, "swe2d_gpu_set_culvert_solver_mode"):
             return
@@ -956,7 +956,7 @@ class SWE2DCouplingController:
                     int(self._culvert_table_n_tw),
                 )
                 self._culvert_table_uploaded = True
-                self._culvert_solver_mode_applied = True
+                self._culvert_solver_mode_applied = 1
                 return
             except Exception:
                 self._culvert_table_uploaded = False
@@ -966,7 +966,10 @@ class SWE2DCouplingController:
             native_mod.swe2d_gpu_set_culvert_solver_mode(fallback_mode)
         except Exception:
             pass
-        self._culvert_solver_mode_applied = True
+        self._culvert_solver_mode_applied = 0
+
+
+
 
     def apply_native_device_sources(self, t_s: float, dt_s: float) -> bool:
         """Attempt full on-device source update without host state fetch.
@@ -1097,7 +1100,7 @@ class SWE2DCouplingController:
             was_preloaded = self._culvert_face_flux_preloaded
             self._ensure_culvert_face_flux_preloaded(native_mod)
             if self._culvert_face_flux_preloaded != was_preloaded:
-                self._culvert_solver_mode_applied = False
+                self._culvert_solver_mode_applied = -1  # not yet applied
 
         n_structures = int(self._structure_count) if self.structures is not None else 0
         if hasattr(native_mod, "swe2d_gpu_set_coupling_dt"):

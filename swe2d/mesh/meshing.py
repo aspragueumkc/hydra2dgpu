@@ -34,8 +34,6 @@ import warnings
 
 import numpy as np
 
-from swe2d.mesh.mfem_opt import available_mfem_presets, optimize_with_mfem
-
 
 @dataclass
 class ConceptualNode:
@@ -4756,14 +4754,6 @@ def _gmsh_available() -> bool:
     try:
         import importlib.util
         return importlib.util.find_spec("gmsh") is not None
-    except Exception:
-        return False
-
-
-def _mfem_meshopt_available() -> bool:
-    try:
-        import importlib.util
-        return importlib.util.find_spec("hydra_mfem_meshopt") is not None
     except Exception:
         return False
 
@@ -10257,12 +10247,6 @@ def generate_face_centric_mesh(
         mesh = TQMeshBackend(options=opts).generate(work_model)
         mesh = _apply_optional_post_optimization(mesh, work_model, opts, backend_name="tqmesh")
         return _restore_mesh_coordinates(mesh, x_shift, y_shift)
-    if backend in {"hybrid_cpp", "mfem_opt"}:
-        # Disabled per user request; keep implementation in-tree for later re-enable.
-        raise ValueError(
-            f"Meshing backend {backend!r} is temporarily disabled. "
-            "Choose 'gmsh', 'structured', or 'tqmesh'."
-        )
     raise ValueError(f"Unknown meshing backend: {backend!r}. Choose 'gmsh', 'structured', or 'tqmesh'.")
 
 
@@ -10279,222 +10263,10 @@ def _as_bool_opt(value: object, default: bool = False) -> bool:
     return bool(default)
 
 
-def _normalize_post_opt_backend(options: Dict[str, object]) -> str:
-    return "none"
-
-
-def _collect_arc_constraints(model: ConceptualModel) -> Tuple[List[int], List[str], List[List[Tuple[float, float]]]]:
-    arc_region_ids: List[int] = []
-    arc_roles: List[str] = []
-    arc_lines: List[List[Tuple[float, float]]] = []
-    for arc in model.arcs:
-        if not arc.points_xy or len(arc.points_xy) < 2:
-            continue
-        role = str(arc.arc_role or "").strip().lower()
-        if role not in {"centerline", "left_bank", "right_bank", "breakline"}:
-            continue
-        arc_region_ids.append(int(arc.region_id))
-        arc_roles.append(role)
-        arc_lines.append([(float(x), float(y)) for (x, y) in arc.points_xy])
-    return arc_region_ids, arc_roles, arc_lines
-
-
-def _result_from_mapping(raw: Dict[str, Any], fallback: MeshResult) -> MeshResult:
-    node_x = np.asarray(raw.get("node_x", fallback.node_x), dtype=np.float64)
-    node_y = np.asarray(raw.get("node_y", fallback.node_y), dtype=np.float64)
-    node_z = np.asarray(raw.get("node_z", fallback.node_z), dtype=np.float64)
-    if node_z.shape[0] != node_x.shape[0]:
-        node_z = np.zeros_like(node_x)
-
-    cell_nodes = np.asarray(raw.get("cell_nodes", fallback.cell_nodes), dtype=np.int32)
-    cell_face_offsets = np.asarray(raw.get("cell_face_offsets", fallback.cell_face_offsets), dtype=np.int32)
-    cell_face_nodes = np.asarray(raw.get("cell_face_nodes", fallback.cell_face_nodes), dtype=np.int32)
-
-    cell_type = raw.get("cell_type", fallback.cell_type)
-    cell_type = np.asarray(cell_type, dtype=object)
-    region_id = np.asarray(raw.get("region_id", fallback.region_id), dtype=np.int32)
-    target_size = np.asarray(raw.get("target_size", fallback.target_size), dtype=np.float64)
-
-    quality_summary = fallback.quality_summary
-    if isinstance(raw.get("quality_summary"), dict):
-        quality_summary = dict(raw["quality_summary"])
-
-    return MeshResult(
-        node_x=node_x,
-        node_y=node_y,
-        node_z=node_z,
-        cell_nodes=cell_nodes,
-        cell_face_offsets=cell_face_offsets,
-        cell_face_nodes=cell_face_nodes,
-        cell_type=cell_type,
-        region_id=region_id,
-        target_size=target_size,
-        quality_summary=quality_summary,
-    )
-
-
-def _apply_mfem_tmop_post_optimization(
-    mesh: MeshResult,
-    model: ConceptualModel,
-    options: Dict[str, object],
-    backend_name: str,
-) -> MeshResult:
-    strict = _as_bool_opt(options.get("mfem_post_opt_strict"), False)
-    preset_name = str(options.get("mfem_post_opt_preset") or "balanced_shape_size").strip().lower()
-    if preset_name not in available_mfem_presets():
-        msg = f"Unknown MFEM preset: {preset_name!r}"
-        if strict:
-            raise RuntimeError(msg)
-        warnings.warn(f"{msg}; using balanced_shape_size.", RuntimeWarning)
-        preset_name = "balanced_shape_size"
-
-    real_opt_exc: Optional[Exception] = None
-    try:
-        optimized = optimize_with_mfem(
-            mesh,
-            preset_name=preset_name,
-            max_iterations=int(options.get("mfem_post_opt_max_iterations", 120) or 120),
-            quality_weight=float(options.get("mfem_post_opt_quality_weight", 1.0) or 1.0),
-            boundary_fit_weight=float(options.get("mfem_post_opt_boundary_fit_weight", 0.35) or 0.35),
-            interface_fit_weight=float(options.get("mfem_post_opt_interface_fit_weight", 0.25) or 0.25),
-            min_det_j=float(options.get("mfem_post_opt_min_det_j", 1.0e-9) or 1.0e-9),
-            preserve_boundary=_as_bool_opt(options.get("mfem_post_opt_preserve_boundary"), True),
-            lock_boundary_nodes=_as_bool_opt(options.get("mfem_post_opt_lock_boundary_nodes"), True),
-        )
-        summary = dict(optimized.quality_summary or {})
-        summary.update(
-            {
-                "engine": "mfem_mesh_optimizer",
-                "preset": preset_name,
-                "backend_name": backend_name,
-                "quality_weight": float(options.get("mfem_post_opt_quality_weight", 1.0) or 1.0),
-                "boundary_fit_weight": float(options.get("mfem_post_opt_boundary_fit_weight", 0.35) or 0.35),
-                "interface_fit_weight": float(options.get("mfem_post_opt_interface_fit_weight", 0.25) or 0.25),
-                "max_iterations": int(options.get("mfem_post_opt_max_iterations", 120) or 120),
-                "min_det_j": float(options.get("mfem_post_opt_min_det_j", 1.0e-9) or 1.0e-9),
-                "lock_boundary_nodes": _as_bool_opt(options.get("mfem_post_opt_lock_boundary_nodes"), True),
-            }
-        )
-        optimized.quality_summary = summary
-        optimized = _repair_mesh_result(optimized)
-        return _require_nonempty_mesh(optimized, f"{backend_name}+mfem_tmop")
-    except Exception as exc:
-        real_opt_exc = exc
-        warnings.warn(
-            f"MFEM mesh-optimizer execution failed: {real_opt_exc}. Falling back to module path.",
-            RuntimeWarning,
-        )
-
-    try:
-        import hydra_mfem_meshopt as _mfem_opt
-    except Exception as exc:
-        # Fallback: try loading a freshly built extension from local build/.
-        try:
-            import importlib.util
-            from pathlib import Path
-
-            root = Path(__file__).resolve().parents[2]
-            build_dir = root / "build"
-            cand = sorted(build_dir.glob("hydra_mfem_meshopt*.so"))
-            if not cand:
-                raise FileNotFoundError("hydra_mfem_meshopt*.so not found under build/")
-            spec = importlib.util.spec_from_file_location("hydra_mfem_meshopt", str(cand[0]))
-            if spec is None or spec.loader is None:
-                raise RuntimeError("could not create module spec for hydra_mfem_meshopt")
-            _mfem_opt = importlib.util.module_from_spec(spec)
-            spec.loader.exec_module(_mfem_opt)
-        except Exception as load_exc:
-            msg = (
-                "MFEM TMOP post-optimization requested but hydra_mfem_meshopt is unavailable. "
-                "Build with MFEM support or disable MFEM post-opt."
-            )
-            if strict:
-                if real_opt_exc is not None:
-                    raise RuntimeError(
-                        f"MFEM mesh-optimizer execution failed: {real_opt_exc}; and {msg}"
-                    ) from load_exc
-                raise RuntimeError(msg) from load_exc
-            warnings.warn(f"{msg} Continuing with base {backend_name} mesh.", RuntimeWarning)
-            return mesh
-
-    optimize_fn = getattr(_mfem_opt, "optimize_mesh_tmop", None)
-    if optimize_fn is None:
-        optimize_fn = getattr(_mfem_opt, "optimize_mesh", None)
-    if optimize_fn is None:
-        msg = "hydra_mfem_meshopt module does not export optimize_mesh_tmop/optimize_mesh."
-        if strict:
-            raise RuntimeError(msg)
-        warnings.warn(f"{msg} Continuing with base {backend_name} mesh.", RuntimeWarning)
-        return mesh
-
-    arc_region_ids, arc_roles, arc_lines = _collect_arc_constraints(model)
-    call_payload: Dict[str, Any] = {
-        "node_x": mesh.node_x,
-        "node_y": mesh.node_y,
-        "cell_face_offsets": mesh.cell_face_offsets,
-        "cell_face_nodes": mesh.cell_face_nodes,
-        "cell_nodes": mesh.cell_nodes,
-        "cell_type": mesh.cell_type,
-        "region_id": mesh.region_id,
-        "target_size": mesh.target_size,
-        "arc_region_ids": arc_region_ids,
-        "arc_roles": arc_roles,
-        "arc_lines": arc_lines,
-        "quality_weight": float(options.get("mfem_post_opt_quality_weight", 1.0) or 1.0),
-        "boundary_fit_weight": float(options.get("mfem_post_opt_boundary_fit_weight", 0.35) or 0.35),
-        "interface_fit_weight": float(options.get("mfem_post_opt_interface_fit_weight", 0.25) or 0.25),
-        "max_iterations": int(options.get("mfem_post_opt_max_iterations", 120) or 120),
-        "min_det_j": float(options.get("mfem_post_opt_min_det_j", 1.0e-9) or 1.0e-9),
-        "preserve_boundary": _as_bool_opt(options.get("mfem_post_opt_preserve_boundary"), True),
-        "lock_boundary_nodes": _as_bool_opt(options.get("mfem_post_opt_lock_boundary_nodes"), True),
-    }
-
-    try:
-        raw = optimize_fn(**call_payload)
-    except TypeError:
-        # Backward-compatible fallback for simpler bindings.
-        raw = optimize_fn(
-            node_x=mesh.node_x,
-            node_y=mesh.node_y,
-            cell_face_offsets=mesh.cell_face_offsets,
-            cell_face_nodes=mesh.cell_face_nodes,
-        )
-    except Exception as exc:
-        msg = f"MFEM TMOP post-optimization failed: {exc}"
-        if strict:
-            raise RuntimeError(msg) from exc
-        warnings.warn(f"{msg}. Continuing with base {backend_name} mesh.", RuntimeWarning)
-        return mesh
-
-    if not isinstance(raw, dict):
-        msg = "MFEM TMOP post-optimization returned unexpected payload type."
-        if strict:
-            raise RuntimeError(msg)
-        warnings.warn(f"{msg} Continuing with base {backend_name} mesh.", RuntimeWarning)
-        return mesh
-
-    out = _result_from_mapping(raw, mesh)
-    summary = dict(out.quality_summary or {})
-    summary.setdefault("engine", "hydra_mfem_meshopt_beta_stub")
-    summary.setdefault("preset", preset_name)
-    out.quality_summary = summary
-    out = _repair_mesh_result(out)
-    return _require_nonempty_mesh(out, f"{backend_name}+mfem_tmop")
-
-
 def _apply_optional_post_optimization(
     mesh: MeshResult,
     model: ConceptualModel,
     options: Dict[str, object],
     backend_name: str,
 ) -> MeshResult:
-    base = _require_nonempty_mesh(_repair_mesh_result(mesh), backend_name)
-    post_opt_backend = _normalize_post_opt_backend(options)
-    if post_opt_backend == "none":
-        return base
-    if post_opt_backend == "mfem_tmop":
-        return _apply_mfem_tmop_post_optimization(base, model, options, backend_name)
-    raise ValueError(
-        f"Unknown post optimization backend: {post_opt_backend!r}. "
-        "Choose 'none' or 'mfem_tmop'."
-    )
+    return _require_nonempty_mesh(_repair_mesh_result(mesh), backend_name)
