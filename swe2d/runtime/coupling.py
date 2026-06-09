@@ -1896,11 +1896,12 @@ class SWE2DCouplingController:
 
         # ── Face-flux preload (isolation fix: drainage bypasses
         # apply_native_device_sources, so we must preload here) ──────
-        if self.culvert_face_flux_mode == "face_flux" and self._structures_soa is not None:
+        if (self.culvert_face_flux_mode == "face_flux" and self._structures_soa is not None
+                and not self._culvert_face_flux_preloaded):
             if hasattr(native_mod, "swe2d_gpu_upload_culvert_face_flux_params"):
                 self._ensure_culvert_face_flux_preloaded(native_mod)
 
-        bridge_total = np.zeros(self.n_cells, dtype=np.float64)
+        bridge_total = None
         bridge_helper_used = False
         if self.structures is not None:
             bridge_plan_map = {
@@ -1954,6 +1955,7 @@ class SWE2DCouplingController:
                         bridge_arrays = self._bridge_structure_arrays(cell_wse)
                         if bridge_arrays is not None and len(bridge_q) > 0:
                             bridge_helper_used = True
+                            bridge_total = np.zeros(self.n_cells, dtype=np.float64)
                             bridge_plan_map = {
                                 str(plan.structure_id): plan
                                 for plan in getattr(self, "bridge_stacked_plans", []) or []
@@ -2052,6 +2054,7 @@ class SWE2DCouplingController:
                     bridge_arrays = self._bridge_structure_arrays(cell_wse)
                     if bridge_arrays is not None:
                         bridge_helper_used = True
+                        bridge_total = np.zeros(self.n_cells, dtype=np.float64)
                         for i in range(int(bridge_arrays["indices"].size)):
                             src = np.asarray(
                                 native_mod.swe2d_gpu_compute_bridge_coupling_sources(
@@ -2088,7 +2091,10 @@ class SWE2DCouplingController:
                         struct_up = np.asarray([int(st.upstream_cell) for st in sts], dtype=np.int32)
                         struct_dn = np.asarray([int(st.downstream_cell) for st in sts], dtype=np.int32)
                     struct_q = flows
-            structure_diag = self.structures.compute_structure_fluxes(float(dt_s), cell_wse)
+            # Skip the Python culvert solver re-compute when the persistent
+            # GPU path already computed everything on-device.
+            if flows is not None:
+                structure_diag = self.structures.compute_structure_fluxes(float(dt_s), cell_wse)
 
         if flows is not None:
             total = np.asarray(
