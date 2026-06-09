@@ -456,7 +456,6 @@ class SWE2DCouplingController:
         cell_bed: Optional[Sequence[float]] = None,
         drainage: Optional[SWE2DUrbanDrainageModule] = None,
         structures: Optional[SWE2DStructureModule] = None,
-        coupling_loop: str = "cuda",
         drainage_solver_backend: str = "gpu",
         drainage_gpu_method: str = "step",
         culvert_solver_mode: int = 0,
@@ -493,10 +492,8 @@ class SWE2DCouplingController:
             raise ValueError("cell_area and cell_bed must have the same length")
         self.drainage = drainage
         self.structures = structures
-        self.coupling_loop = str(coupling_loop or "cuda").strip().lower()
-        if self.coupling_loop not in {"cuda"}:
-            raise ValueError("coupling_loop must be 'cuda' (GPU-only)")
         self.drainage_solver_backend = str(drainage_solver_backend or "gpu").strip().lower()
+        self.coupling_loop = "cuda"  # GPU-only: always CUDA
         if self.drainage_solver_backend not in {"gpu"}:
             raise ValueError("drainage_solver_backend must be 'gpu' (GPU-only)")
         self.drainage_gpu_method = str(drainage_gpu_method or "step").strip().lower()
@@ -982,8 +979,6 @@ class SWE2DCouplingController:
         all D2H/H2D transfers of the source array).
         """
         _ = (t_s, dt_s)
-        if self.coupling_loop != "cuda":
-            return False
         if self.structures is None and self.drainage is None:
             return False
         if self._has_enabled_bridge_structures:
@@ -1566,93 +1561,12 @@ class SWE2DCouplingController:
         hh = np.ascontiguousarray(h, dtype=np.float64).ravel()
         if hh.size != self.n_cells:
             raise ValueError("state size does not match coupling cell arrays")
-        if self.coupling_loop == "cuda":
-            mod = self._native_cuda_module()
-            if mod is not None:
-                self._ensure_native_culvert_solver_mode(mod)
-                # When drainage is active, skip the persistent path because
-                # swe2d_gpu_compute_coupling_full_on_device does not accept
-                # inlet_cell/inlet_flow — drainage q_cell would be silently
-                # dropped.  The fused path (which handles both structures and
-                # drainage) falls through in _compute_source_rates_cuda.
-                skip_persistent = (self.drainage is not None)
-                pass  # [COUPLING_CSR] diagnostics removed for performance
-                if not skip_persistent:
-                    self._ensure_persistent_coupling_preloaded(mod)
-                return self._compute_source_rates_cuda(mod, t_s, dt_s, hh)
-        cell_wse = hh + self.cell_bed
-        total = np.zeros(self.n_cells, dtype=np.float64)
-        component_sums: Dict[str, float] = {}
-        drainage_diag: Dict[str, float] = {}
-        structure_diag: Dict[str, float] = {}
-
-        if self.drainage is not None:
-            has_pipe_end_routing = bool(getattr(self.drainage.cfg, "pipe_ends", []))
-            if not has_pipe_end_routing:
-                drainage_diag = self.drainage.solve_network_step(float(dt_s))
-            src = np.asarray(
-                self.drainage.surface_exchange_source_rate(
-                    float(dt_s),
-                    cell_wse,
-                    self.cell_area,
-                    cell_depth_m=hh,
-                ),
-                dtype=np.float64,
-            )
-            if has_pipe_end_routing:
-                drainage_diag = dict(getattr(self.drainage, "_last_network_diag", {}))
-            if src.size != self.n_cells:
-                raise ValueError("drainage source-rate array size mismatch")
-            total += src
-            component_sums["drainage"] = float(np.sum(src))
-
-        if self.structures is not None:
-            src: Optional[np.ndarray] = None
-            native_mod = self._native_cuda_module()
-            native_cpu_flows = None
-            if native_mod is not None:
-                native_cpu_flows = self._native_structure_flows(
-                    native_mod,
-                    cell_wse,
-                    use_cuda=False,
-                )
-            self._last_native_structure_flows = native_cpu_flows
-            if native_cpu_flows is not None and native_cpu_flows.size == self._structure_count:
-                src = self._structure_source_rate_from_flows(native_cpu_flows, native_mod=native_mod)
-                component_sums["structures_native_cpu_helper"] = 1.0
-                # Derive diagnostics from already-computed native flows instead
-                # of re-evaluating all structure hydraulics for a second time.
-                structure_diag = {
-                    "total_structure_flow": float(np.sum(np.abs(native_cpu_flows))),
-                }
-            else:
-                src = np.asarray(
-                    self.structures.compute_cell_source_rate(float(dt_s), cell_wse, self.cell_area),
-                    dtype=np.float64,
-                )
-                # Python structure module returns CMS flows; convert to model
-                # flow units so division by model-unit cell_area is consistent.
-                src *= _u.si_m3_per_model_volume()
-                component_sums["structures_native_cpu_helper"] = 0.0
-                structure_diag = self.structures.compute_structure_fluxes(float(dt_s), cell_wse)
-
-            if src.size != self.n_cells:
-                raise ValueError("structure source-rate array size mismatch")
-            total += src
-            component_sums["structures"] = float(np.sum(src))
-
-        self.last_diag = SWE2DCouplingDiagnostics(
-            time_s=float(t_s) + float(dt_s),
-            dt_s=float(dt_s),
-            drainage_max_node_depth=float(drainage_diag.get("max_node_depth", drainage_diag.get("max_node_depth_m", 0.0))) * _u.model_per_si_m(),
-            drainage_max_link_flow=float(drainage_diag.get("max_link_flow", drainage_diag.get("max_link_flow_cms", 0.0))) / _u.si_m3_per_model_volume(),
-            structure_total_flow=float(structure_diag.get("total_structure_flow", 0.0)) / _u.si_m3_per_model_volume(),
-            source_sum=float(np.sum(total)),
-            source_min=float(np.min(total)) if total.size else 0.0,
-            source_max=float(np.max(total)) if total.size else 0.0,
-            component_sums=component_sums,
-        )
-        return total
+        mod = self._native_cuda_module()
+        if mod is None:
+            raise RuntimeError("CUDA coupling module unavailable")
+        self._ensure_native_culvert_solver_mode(mod)
+        self._ensure_persistent_coupling_preloaded(mod)
+        return self._compute_source_rates_cuda(mod, t_s, dt_s, hh)
 
     def _compute_source_rates_cuda(self, native_mod, t_s: float, dt_s: float, hh: np.ndarray) -> np.ndarray:
         cell_wse = hh + self.cell_bed

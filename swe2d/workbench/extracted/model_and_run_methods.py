@@ -1599,7 +1599,6 @@ def _on_run(self, request=None):
                 cell_bed=self._mesh_cell_min_bed(),
                 drainage=drainage_mod,
                 structures=structures_mod,
-                coupling_loop=coupling_loop_mode,
                 drainage_solver_backend=drainage_solver_backend_mode,
                 drainage_gpu_method=drainage_gpu_method_mode,
                 culvert_solver_mode=culvert_solver_mode,
@@ -1735,19 +1734,10 @@ def _on_run(self, request=None):
             self._log(
                 "Coupled drainage/structure forcing active: "
                 f"drainage={pipe_network_cfg is not None}, structures={hydraulic_structures_cfg is not None}, "
-                f"loop={coupling_loop_mode}, drainage_backend={drainage_solver_backend_mode}, "
+                f"drainage_backend={drainage_solver_backend_mode}, "
                 f"drainage_gpu_method={drainage_gpu_method_mode}"
             )
-            coupling_runtime_mode = "cpu"
-            if str(coupling_loop_mode).strip().lower() == "cuda":
-                try:
-                    mod = coupling_controller._native_cuda_module() if hasattr(coupling_controller, "_native_cuda_module") else None
-                except Exception:
-                    mod = None
-                if mod is not None:
-                    coupling_runtime_mode = "cuda"
-                else:
-                    coupling_runtime_mode = "cpu (cuda requested, fallback active)"
+            coupling_runtime_mode = "cuda"
             self._log(f"Coupling runtime mode: {coupling_runtime_mode}")
             if bridge_stacked_plans:
                 total_bridge_cells = int(sum(int(p.selected_cells.size) for p in bridge_stacked_plans))
@@ -1870,6 +1860,7 @@ def _on_run(self, request=None):
                     progressive = bool(self.inflow_progressive_chk.isChecked())
                 node_x = self._mesh_data["node_x"]
                 node_y = self._mesh_data["node_y"]
+                node_z = self._mesh_data["node_z"]
                 native_bc_res = native_bc_cfg.configure(
                     backend=backend,
                     bc_n0=bc_n0,
@@ -1879,14 +1870,21 @@ def _on_run(self, request=None):
                     edge_hydrographs=edge_hydrographs,
                     node_x=node_x,
                     node_y=node_y,
+                    node_z=node_z,
                     inflow_q_bc_type=int(_BC_INFLOW_Q),
                     progressive=progressive,
+                    ts_flow_code=int(_BC_TS_FLOW),
+                    ts_stage_code=int(_BC_TS_STAGE),
                 )
                 if bool(native_bc_res.get("native_bc_forcing", False)):
                     native_bc_forcing = True
                     self._log(
                         f"Native BC hydrograph forcing configured for {int(native_bc_res.get('configured_edges', 0))} boundary edges."
                     )
+                    if bool(native_bc_res.get("progressive_uploaded", False)):
+                        self._log(
+                            f"Progressive inflow data uploaded for {int(native_bc_res.get('n_prog_edges', 0))} edges."
+                        )
                 elif bool(native_bc_res.get("skipped_progressive", False)):
                     self._log("Native BC hydrographs skipped: progressive inflow activation is enabled for flow hydrographs.")
             except Exception as exc:

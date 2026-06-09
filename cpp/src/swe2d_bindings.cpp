@@ -2806,6 +2806,28 @@ PYBIND11_MODULE(HYDRA_SWE2D_PY_MODULE_NAME, m) {
         py::arg("solver"), py::arg("edge_index"), py::arg("bc_type"), py::arg("offsets"), py::arg("time_s"), py::arg("value"),
         "Register per-boundary-edge hydrograph timeseries on the solver.");
 
+    m.def("swe2d_solver_set_progressive_bc_data",
+        [](const std::shared_ptr<PySolver>& ps,
+           int32_t n_groups,
+           int32_t n_edges_total,
+           py::array_t<int32_t, py::array::c_style | py::array::forcecast> group_offsets,
+           py::array_t<int32_t, py::array::c_style | py::array::forcecast> edge_hg_idx,
+           py::array_t<double, py::array::c_style | py::array::forcecast> edge_len,
+           py::array_t<double, py::array::c_style | py::array::forcecast> edge_cum_len,
+           py::array_t<double, py::array::c_style | py::array::forcecast> group_peak_q,
+           py::array_t<double, py::array::c_style | py::array::forcecast> group_total_len) {
+            if (!ps || !ps->solver) throw std::invalid_argument("null solver handle");
+            swe2d_solver_set_progressive_bc_data(ps->solver,
+                n_groups, n_edges_total,
+                group_offsets.data(), edge_hg_idx.data(), edge_len.data(),
+                edge_cum_len.data(), group_peak_q.data(), group_total_len.data());
+        },
+        py::arg("solver"), py::arg("n_groups"), py::arg("n_edges_total"),
+        py::arg("group_offsets"), py::arg("edge_hg_idx"),
+        py::arg("edge_len"), py::arg("edge_cum_len"),
+        py::arg("group_peak_q"), py::arg("group_total_len"),
+        "Upload progressive BC group data for on-device Q->q distribution.");
+
     m.def("swe2d_solver_set_rain_cn_forcing",
         [](const std::shared_ptr<PySolver>& ps,
            py::array_t<int32_t, py::array::c_style | py::array::forcecast> cell_gage_idx,
@@ -2857,6 +2879,31 @@ PYBIND11_MODULE(HYDRA_SWE2D_PY_MODULE_NAME, m) {
         },
         py::arg("solver"), py::arg("external_source") = py::none(),
         "Set per-cell external depth source rates [m/s] on solver (None clears).");
+
+    // ── Predictor-corrector GPU helpers ──────────────────────────────────
+    m.def("swe2d_solver_save_coupling_pred",
+        [](const std::shared_ptr<PySolver>& ps) {
+            if (!ps || !ps->solver) throw std::invalid_argument("null solver handle");
+            if (!ps->solver->dev) throw std::runtime_error("GPU not initialized");
+            swe2d_gpu_save_coupling_pred(ps->solver->dev);
+        },
+        "Save current coupling source to predictor buffer (GPU D2D copy).");
+
+    m.def("swe2d_solver_average_coupling_sources",
+        [](const std::shared_ptr<PySolver>& ps) {
+            if (!ps || !ps->solver) throw std::invalid_argument("null solver handle");
+            if (!ps->solver->dev) throw std::runtime_error("GPU not initialized");
+            swe2d_gpu_average_coupling_sources(ps->solver->dev);
+        },
+        "Average predictor and corrector coupling sources on GPU: ext = 0.5*(pred + ext).");
+
+    m.def("swe2d_solver_restore_state_from_backup",
+        [](const std::shared_ptr<PySolver>& ps) {
+            if (!ps || !ps->solver) throw std::invalid_argument("null solver handle");
+            if (!ps->solver->dev) throw std::runtime_error("GPU not initialized");
+            swe2d_gpu_restore_state_from_backup(ps->solver->dev);
+        },
+        "Restore state from backup (d_h0/d_hu0/d_hv0 → d_h/d_hu/d_hv) on GPU.");
 
     // ── Solver creation ───────────────────────────────────────────────────────
     m.def("swe2d_create_solver",

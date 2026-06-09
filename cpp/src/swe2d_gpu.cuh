@@ -223,6 +223,18 @@ struct SWE2DDeviceState {
     int32_t  n_hg_edges = 0;
     int32_t  n_hg_samples = 0;
 
+    // Progressive BC group data (for on-device Q→q distribution).
+    // One block per group; each block iterates over its edges in sorted order
+    // and determines the active set based on frac = |Q|/peak_q.
+    int32_t  n_prog_groups = 0;
+    int32_t  n_prog_edges_total = 0;
+    int32_t* d_prog_group_offsets = nullptr; // [n_prog_groups + 1]
+    int32_t* d_prog_edge_hg_idx = nullptr;   // [n_prog_edges_total] hg index
+    double*  d_prog_edge_len = nullptr;      // [n_prog_edges_total]
+    double*  d_prog_edge_cum_len = nullptr;  // [n_prog_edges_total] cumulative length
+    double*  d_prog_group_peak_q = nullptr;  // [n_prog_groups]
+    double*  d_prog_group_total_len = nullptr; // [n_prog_groups]
+
     // Reusable upload buffers for per-step boundary value updates.
     // Capacity is in element count, not bytes.
     int32_t* d_bc_upd_edge = nullptr;
@@ -331,6 +343,9 @@ struct SWE2DDeviceState {
     double*  d_rain_excess_cum_mm = nullptr; // [n_cells]
     double*  d_cell_source_mps    = nullptr; // [n_cells]
     double*  d_external_source_mps = nullptr; // [n_cells]
+    // Predictor-corrector source buffer: stores coupling source from predictor step
+    // so it can be averaged with the corrector step result on device.
+    double*  d_coupling_pred_source = nullptr; // [n_cells]
     // Per-stage rain/source snapshots used by graph-safe higher-order schemes.
     // Layout is contiguous by stage: slot*n_cells + cell.
     double*  d_stage_cell_source_mps = nullptr;
@@ -1022,6 +1037,19 @@ void swe2d_gpu_set_boundary_hydrographs(
     int32_t n_edges,
     int32_t n_samples);
 
+// Upload progressive BC group metadata.
+// The kernel uses one block per group to do on-device Q→q distribution.
+void swe2d_gpu_set_progressive_bc_data(
+    SWE2DDeviceState* dev,
+    int32_t n_groups,
+    int32_t n_edges_total,
+    const int32_t* group_offsets,
+    const int32_t* edge_hg_idx,
+    const double* edge_len,
+    const double* edge_cum_len,
+    const double* group_peak_q,
+    const double* group_total_len);
+
 // Upload per-cell rain+CN forcing arrays.
 void swe2d_gpu_set_rain_cn_forcing(
     SWE2DDeviceState* dev,
@@ -1042,6 +1070,14 @@ void swe2d_gpu_set_external_sources(
     SWE2DDeviceState* dev,
     const double* source_mps,
     int32_t n_cells);
+
+// Predictor-corrector helpers: eliminate per-step D2H/H2D transfers.
+// 1. Save the current coupling source to a temporary buffer (predictor step).
+// 2. Average the predictor source with the current source: ext = 0.5*(pred + ext).
+// 3. Restore state from backup arrays (d_h0/d_hu0/d_hv0 → d_h/d_hu/d_hv).
+void swe2d_gpu_save_coupling_pred(SWE2DDeviceState* dev);
+void swe2d_gpu_average_coupling_sources(SWE2DDeviceState* dev);
+void swe2d_gpu_restore_state_from_backup(SWE2DDeviceState* dev);
 
 // Headless coupling helper: compute per-cell depth-rate sources [m/s] from
 // packed drainage/structure transfer arrays using CUDA kernels.

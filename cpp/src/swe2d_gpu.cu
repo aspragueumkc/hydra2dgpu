@@ -975,6 +975,149 @@ __global__ void swe2d_apply_hydrograph_bc_kernel(
     edge_bc_val[e] = interp_series_clamped_cuda(hg_time_s, hg_value, s, eoff, t_now);
 }
 
+/**
+ * Apply progressive inflow distribution: one block per group.
+ *
+ * The hydrograph kernel above writes interpolated raw Q values into
+ * edge_bc_val.  This kernel redistributes those Q values per group
+ * using progressive activation: edges in each group are sorted by
+ * bed elevation (lowest first), and only the lowest edges sufficient
+ * to convey the current flow are activated.  q_unit = Q / active_len
+ * for active edges; inactive edges get 0.
+ *
+ * Run AFTER swe2d_apply_hydrograph_bc_kernel when n_prog_groups > 0.
+ */
+__global__ void swe2d_apply_progressive_bc_kernel(
+    int32_t n_groups,
+    const int32_t* __restrict__ group_offsets,
+    const int32_t* __restrict__ edge_hg_idx,
+    const double*  __restrict__ edge_len,
+    const double*  __restrict__ edge_cum_len,
+    const double*  __restrict__ group_peak_q,
+    const double*  __restrict__ group_total_len,
+    const int32_t* __restrict__ hg_edge_index,
+    const double*  __restrict__ edge_bc_val_in,
+    double*  __restrict__ edge_bc_val_out)
+{
+    int32_t gid = blockIdx.x;
+    if (gid >= n_groups) return;
+
+    const int32_t s = group_offsets[gid];
+    const int32_t e = group_offsets[gid + 1];
+    const int32_t n_edge = e - s;
+
+    if (n_edge <= 0) return;
+
+    // Read the interpolated Q from the first edge in this group.
+    // All edges in a group share the same hydrograph time series.
+    const double peak_q = fmax(group_peak_q[gid], 1.0e-12);
+    const double total_len = fmax(group_total_len[gid], 1.0e-12);
+    const int32_t hg_idx0 = edge_hg_idx[s];
+    const int32_t edge0 = hg_edge_index[hg_idx0];
+    const double q_raw = edge_bc_val_in[edge0];
+
+    // Compute progressive fraction
+    double frac = fmin(1.0, fabs(q_raw) / peak_q);
+    double target_len = frac * total_len;
+
+    // Scan cumulative lengths to find last active edge
+    int32_t last_active = -1;
+    for (int32_t k = 0; k < n_edge; ++k) {
+        if (edge_cum_len[s + k] >= target_len) {
+            last_active = k;
+            break;
+        }
+    }
+    if (last_active < 0) last_active = n_edge - 1;
+
+    double active_len = edge_cum_len[s + last_active];
+    double q_unit = (active_len > 1.0e-12) ? q_raw / active_len : 0.0;
+
+    // Write q_unit to active edges, 0 to inactive
+    for (int32_t k = 0; k < n_edge; ++k) {
+        const int32_t hg_idx_k = edge_hg_idx[s + k];
+        const int32_t edge_k = hg_edge_index[hg_idx_k];
+        edge_bc_val_out[edge_k] = (k <= last_active) ? q_unit : 0.0;
+    }
+}
+
+/**
+ * Host helper: launch the progressive BC kernel after the hydrograph kernel.
+ */
+static void launch_progressive_bc_kernel(
+    SWE2DDeviceState* dev,
+    cudaStream_t stream)
+{
+    if (dev->n_prog_groups <= 0) return;
+    swe2d_apply_progressive_bc_kernel<<<dev->n_prog_groups, 1, 0, stream>>>(
+        dev->n_prog_groups,
+        dev->d_prog_group_offsets,
+        dev->d_prog_edge_hg_idx,
+        dev->d_prog_edge_len,
+        dev->d_prog_edge_cum_len,
+        dev->d_prog_group_peak_q,
+        dev->d_prog_group_total_len,
+        dev->d_hg_edge_index,
+        dev->d_edge_bc_val,
+        dev->d_edge_bc_val);
+    CUDA_CHECK(cudaGetLastError());
+}
+
+// ── Predictor-corrector GPU helpers ──────────────────────────────────────────
+// These kernels eliminate the per-step D2H/H2D transfers in the IMEX
+// predictor-corrector path by keeping all state and source arrays on device.
+
+__global__ void swe2d_copy_kernel(int32_t n, const double* __restrict__ src, double* __restrict__ dst)
+{
+    int32_t i = blockIdx.x * blockDim.x + threadIdx.x;
+    if (i >= n) return;
+    dst[i] = src[i];
+}
+
+__global__ void swe2d_average_sources_kernel(
+    int32_t n,
+    const double* __restrict__ src_pred,
+    double* __restrict__ src_corr)
+{
+    int32_t i = blockIdx.x * blockDim.x + threadIdx.x;
+    if (i >= n) return;
+    src_corr[i] = 0.5 * (src_pred[i] + src_corr[i]);
+}
+
+void swe2d_gpu_save_coupling_pred(SWE2DDeviceState* dev)
+{
+    if (!dev || !dev->d_external_source_mps || !dev->d_coupling_pred_source) return;
+    constexpr int BLOCK = 256;
+    const int grid = (dev->n_cells + BLOCK - 1) / BLOCK;
+    swe2d_copy_kernel<<<grid, BLOCK, 0, dev->d_stream>>>(
+        dev->n_cells, dev->d_external_source_mps, dev->d_coupling_pred_source);
+    CUDA_CHECK(cudaGetLastError());
+}
+
+void swe2d_gpu_average_coupling_sources(SWE2DDeviceState* dev)
+{
+    if (!dev || !dev->d_external_source_mps || !dev->d_coupling_pred_source) return;
+    constexpr int BLOCK = 256;
+    const int grid = (dev->n_cells + BLOCK - 1) / BLOCK;
+    // After corrector step, d_external_source_mps has the corrector result.
+    // Average: ext = 0.5 * (pred + corr)
+    swe2d_average_sources_kernel<<<grid, BLOCK, 0, dev->d_stream>>>(
+        dev->n_cells, dev->d_coupling_pred_source, dev->d_external_source_mps);
+    CUDA_CHECK(cudaGetLastError());
+}
+
+void swe2d_gpu_restore_state_from_backup(SWE2DDeviceState* dev)
+{
+    if (!dev) return;
+    constexpr int BLOCK = 256;
+    const int grid = (dev->n_cells + BLOCK - 1) / BLOCK;
+    // Restore d_h0 → d_h, d_hu0 → d_hu, d_hv0 → d_hv (GPU D2D copy)
+    if (dev->d_h0)  swe2d_copy_kernel<<<grid, BLOCK, 0, dev->d_stream>>>(dev->n_cells, dev->d_h0, dev->d_h);
+    if (dev->d_hu0) swe2d_copy_kernel<<<grid, BLOCK, 0, dev->d_stream>>>(dev->n_cells, dev->d_hu0, dev->d_hu);
+    if (dev->d_hv0) swe2d_copy_kernel<<<grid, BLOCK, 0, dev->d_stream>>>(dev->n_cells, dev->d_hv0, dev->d_hv);
+    CUDA_CHECK(cudaGetLastError());
+}
+
 __global__ void swe2d_apply_boundary_updates_kernel(
     int32_t n,
     const int32_t* __restrict__ upd_edge,
@@ -3771,6 +3914,10 @@ SWE2DDeviceState* swe2d_gpu_init(
     alloc_d(reinterpret_cast<void**>(&dev->d_external_source_mps), sz_cells * sizeof(double));
     CUDA_CHECK(cudaMemset(dev->d_external_source_mps, 0, sz_cells * sizeof(double)));
 
+    // Predictor-corrector source buffer — stores coupling source from predictor step.
+    alloc_d(reinterpret_cast<void**>(&dev->d_coupling_pred_source), sz_cells * sizeof(double));
+    CUDA_CHECK(cudaMemset(dev->d_coupling_pred_source, 0, sz_cells * sizeof(double)));
+
     // Edge flux buffers (consumed by the cell-centric update kernel).
     alloc_d(reinterpret_cast<void**>(&dev->d_flux_h),    sz_edges * sizeof(double));
     alloc_d(reinterpret_cast<void**>(&dev->d_flux_hu),   sz_edges * sizeof(double));
@@ -4045,7 +4192,22 @@ void swe2d_gpu_step(
     const bool try_kernel_graph = dev->enable_kernel_graphs && !dbg_edge_flux && !dbg_flux_summary;
     const bool has_hg = (dev->n_hg_edges > 0);
     // Variant key: bit 0 = has hydrograph BCs, bit 1 = needs gradient pre-pass.
-    const int32_t graph_variant_key = (has_hg ? 1 : 0) | (need_gradients ? 2 : 0);
+    // NOTE: bit 0 is no longer needed since hydrograph kernel runs outside graph,
+    // but kept for backward compatibility with cached graphs.
+    const int32_t graph_variant_key = (need_gradients ? 2 : 0);
+
+    // ── Hydrograph BCs: run OUTSIDE graph capture so t_now is always current ──
+    // CUDA graphs capture scalar kernel arguments by value; running this
+    // inside the graph would freeze t_now at the capture timestep.
+    if (has_hg) {
+        const int hg_grid = (dev->n_hg_edges + BLOCK - 1) / BLOCK;
+        swe2d_apply_hydrograph_bc_kernel<<<hg_grid, BLOCK, 0, dev->d_stream>>>(
+            dev->n_hg_edges, dev->d_hg_edge_index, dev->d_hg_bc_type,
+            dev->d_hg_offsets, dev->d_hg_time_s, dev->d_hg_value,
+            dev->d_edge_bc, dev->d_edge_bc_val, t_now);
+        CUDA_CHECK(cudaGetLastError());
+    }
+
     const uint64_t graph_signature = swe2d_kernel_graph_signature(
         dt,
         g,
@@ -4121,15 +4283,6 @@ void swe2d_gpu_step(
                             n_cells, dev->d_degen_mask, dev->d_merge_owner,
                             dev->d_h, dev->d_hu, dev->d_hv);
                     }
-                }
-                // hydrograph BCs
-                if (has_hg) {
-                    const int hg_grid = (dev->n_hg_edges + BLOCK - 1) / BLOCK;
-                    swe2d_apply_hydrograph_bc_kernel<<<hg_grid, BLOCK, 0, dev->d_stream>>>(
-                        dev->n_hg_edges,
-                        dev->d_hg_edge_index, dev->d_hg_bc_type,
-                        dev->d_hg_offsets, dev->d_hg_time_s, dev->d_hg_value,
-                        dev->d_edge_bc, dev->d_edge_bc_val, t_now);
                 }
                 // gradient pre-pass
                 if (need_gradients) {
@@ -4269,6 +4422,14 @@ void swe2d_gpu_step(
         }
     }
 
+    // Progressive BC redistribution — runs AFTER graph replay (or non-graph
+    // hydrograph kernel) converting interpolated raw Q → q_unit per group.
+    // This is intentionally outside the captured graph because the grid
+    // size (n_prog_groups) and it avoids a variant-key dimension increase.
+    if (used_graph_replay || dev->n_prog_groups > 0) {
+        launch_progressive_bc_kernel(dev, dev->d_stream);
+    }
+
     // Kernel 1: Flux
     if (!used_graph_replay) {
     // ── Pre-flux: classify_and_mark → degen → hg_bc → gradient ──────────
@@ -4299,14 +4460,8 @@ void swe2d_gpu_step(
         }
     }
 
-    if (dev->n_hg_edges > 0 && dev->d_hg_edge_index && dev->d_hg_offsets && dev->d_hg_time_s && dev->d_hg_value) {
-        const int hg_grid = (dev->n_hg_edges + BLOCK - 1) / BLOCK;
-        swe2d_apply_hydrograph_bc_kernel<<<hg_grid, BLOCK, 0, dev->d_stream>>>(
-            dev->n_hg_edges, dev->d_hg_edge_index, dev->d_hg_bc_type,
-            dev->d_hg_offsets, dev->d_hg_time_s, dev->d_hg_value,
-            dev->d_edge_bc, dev->d_edge_bc_val, t_now);
-        CUDA_CHECK(cudaGetLastError());
-    }
+    // Hydrograph BCs already applied before graph replay — skip duplicate here.
+    // The progressive kernel runs after graph replay to convert Q→q.
 
     if (need_gradients) {
         const size_t sz_c = static_cast<size_t>(n_cells) * sizeof(double);
@@ -4977,6 +5132,11 @@ void swe2d_gpu_step_persistent_chunk(
             dev->d_edge_bc_val,
             t_now);
         CUDA_CHECK(cudaGetLastError());
+    }
+
+    // Progressive BC redistribution (runs after hydrograph interpolation)
+    if (dev->n_prog_groups > 0) {
+        launch_progressive_bc_kernel(dev, dev->d_stream);
     }
 
     cudaDeviceProp prop{};
@@ -5956,6 +6116,11 @@ void swe2d_gpu_step_rk5_graph(
         run_rk5_stages_and_combine();
     }
 
+    // Progressive BC redistribution after post-RK5 hydrograph interpolation
+    if (dev->n_prog_groups > 0) {
+        launch_progressive_bc_kernel(dev, dev->d_stream);
+    }
+
     if (dev->n_rain_samples > 0 && dev->d_cell_gage_idx && dev->d_rain_hg_offsets &&
         dev->d_rain_hg_time_s && dev->d_rain_hg_cum_mm && dev->d_rain_cn) {
         const int r_grid = (n_cells + BLOCK - 1) / BLOCK;
@@ -6131,6 +6296,47 @@ void swe2d_gpu_set_boundary_hydrographs(
     CUDA_CHECK(cudaMemcpy(dev->d_hg_value, value, static_cast<size_t>(n_samples) * sizeof(double), cudaMemcpyHostToDevice));
     dev->n_hg_edges = n_edges;
     dev->n_hg_samples = n_samples;
+}
+
+void swe2d_gpu_set_progressive_bc_data(
+    SWE2DDeviceState* dev,
+    int32_t n_groups,
+    int32_t n_edges_total,
+    const int32_t* group_offsets,
+    const int32_t* edge_hg_idx,
+    const double* edge_len,
+    const double* edge_cum_len,
+    const double* group_peak_q,
+    const double* group_total_len)
+{
+    if (!dev) return;
+    // Free existing
+    if (dev->d_prog_group_offsets) { cudaFree(dev->d_prog_group_offsets); dev->d_prog_group_offsets = nullptr; }
+    if (dev->d_prog_edge_hg_idx)   { cudaFree(dev->d_prog_edge_hg_idx);   dev->d_prog_edge_hg_idx = nullptr; }
+    if (dev->d_prog_edge_len)      { cudaFree(dev->d_prog_edge_len);      dev->d_prog_edge_len = nullptr; }
+    if (dev->d_prog_edge_cum_len)  { cudaFree(dev->d_prog_edge_cum_len);  dev->d_prog_edge_cum_len = nullptr; }
+    if (dev->d_prog_group_peak_q)  { cudaFree(dev->d_prog_group_peak_q);  dev->d_prog_group_peak_q = nullptr; }
+    if (dev->d_prog_group_total_len) { cudaFree(dev->d_prog_group_total_len); dev->d_prog_group_total_len = nullptr; }
+    dev->n_prog_groups = 0;
+    dev->n_prog_edges_total = 0;
+
+    if (n_groups <= 0 || n_edges_total <= 0) return;
+
+    CUDA_CHECK(cudaMalloc(reinterpret_cast<void**>(&dev->d_prog_group_offsets), static_cast<size_t>(n_groups + 1) * sizeof(int32_t)));
+    CUDA_CHECK(cudaMalloc(reinterpret_cast<void**>(&dev->d_prog_edge_hg_idx), static_cast<size_t>(n_edges_total) * sizeof(int32_t)));
+    CUDA_CHECK(cudaMalloc(reinterpret_cast<void**>(&dev->d_prog_edge_len), static_cast<size_t>(n_edges_total) * sizeof(double)));
+    CUDA_CHECK(cudaMalloc(reinterpret_cast<void**>(&dev->d_prog_edge_cum_len), static_cast<size_t>(n_edges_total) * sizeof(double)));
+    CUDA_CHECK(cudaMalloc(reinterpret_cast<void**>(&dev->d_prog_group_peak_q), static_cast<size_t>(n_groups) * sizeof(double)));
+    CUDA_CHECK(cudaMalloc(reinterpret_cast<void**>(&dev->d_prog_group_total_len), static_cast<size_t>(n_groups) * sizeof(double)));
+
+    CUDA_CHECK(cudaMemcpy(dev->d_prog_group_offsets, group_offsets, static_cast<size_t>(n_groups + 1) * sizeof(int32_t), cudaMemcpyHostToDevice));
+    CUDA_CHECK(cudaMemcpy(dev->d_prog_edge_hg_idx, edge_hg_idx, static_cast<size_t>(n_edges_total) * sizeof(int32_t), cudaMemcpyHostToDevice));
+    CUDA_CHECK(cudaMemcpy(dev->d_prog_edge_len, edge_len, static_cast<size_t>(n_edges_total) * sizeof(double), cudaMemcpyHostToDevice));
+    CUDA_CHECK(cudaMemcpy(dev->d_prog_edge_cum_len, edge_cum_len, static_cast<size_t>(n_edges_total) * sizeof(double), cudaMemcpyHostToDevice));
+    CUDA_CHECK(cudaMemcpy(dev->d_prog_group_peak_q, group_peak_q, static_cast<size_t>(n_groups) * sizeof(double), cudaMemcpyHostToDevice));
+    CUDA_CHECK(cudaMemcpy(dev->d_prog_group_total_len, group_total_len, static_cast<size_t>(n_groups) * sizeof(double), cudaMemcpyHostToDevice));
+    dev->n_prog_groups = n_groups;
+    dev->n_prog_edges_total = n_edges_total;
 }
 
 void swe2d_gpu_set_rain_cn_forcing(

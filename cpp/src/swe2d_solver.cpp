@@ -1093,6 +1093,27 @@ void swe2d_solver_set_boundary_hydrographs(
 #endif
 }
 
+void swe2d_solver_set_progressive_bc_data(
+    SWE2DSolver* s,
+    int32_t n_groups,
+    int32_t n_edges_total,
+    const int32_t* group_offsets,
+    const int32_t* edge_hg_idx,
+    const double* edge_len,
+    const double* edge_cum_len,
+    const double* group_peak_q,
+    const double* group_total_len)
+{
+    if (!s) return;
+#ifdef HYDRA_HAS_CUDA
+    if (s->dev) {
+        swe2d_gpu_set_progressive_bc_data(s->dev, n_groups, n_edges_total, group_offsets,
+                                          edge_hg_idx, edge_len, edge_cum_len,
+                                          group_peak_q, group_total_len);
+    }
+#endif
+}
+
 void swe2d_solver_set_rain_cn_forcing(
     SWE2DSolver* s,
     const int32_t* cell_gage_idx,

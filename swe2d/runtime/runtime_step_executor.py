@@ -77,23 +77,29 @@ class SWE2DRuntimeStepExecutor:
         dt_used = float(dt_cfg)
 
         if stage_coupled_imex_enabled:
-            _t_state0 = time.perf_counter()
-            h0_c, hu0_c, hv0_c = backend.get_state()
-            state_ms += (time.perf_counter() - _t_state0) * 1000.0
+            # ── GPU-only predictor-corrector path ──────────────────────────
+            # Step 1: Evaluate coupling at current state (reads d_h directly).
             if dt_request <= 0.0:
                 dt_stage_guess = float(last_diag.get("dt", dt_cfg)) if isinstance(last_diag, dict) else dt_cfg
             else:
                 dt_stage_guess = float(dt_request)
             cell_source_model_0 = cell_source_model_at_time_callback(t_accum)
             _t_cpl0 = time.perf_counter()
-            coupled_source_rate_0 = coupling_controller.compute_source_rates(
-                t_accum,
-                dt_stage_guess,
-                h0_c,
-                hu0_c,
-                hv0_c,
-            )
+            _native_pred_applied = False
+            if coupling_controller is not None:
+                try:
+                    _native_pred_applied = bool(
+                        coupling_controller.apply_native_device_sources(
+                            t_accum, dt_stage_guess
+                        )
+                    )
+                except Exception:
+                    _native_pred_applied = False
+            if _native_pred_applied:
+                # Save coupling source to predictor buffer (GPU D2D copy)
+                backend.save_coupling_pred()
             coupling_ms += (time.perf_counter() - _t_cpl0) * 1000.0
+
             rain_src_pred = rain_source_for_window_callback(
                 t_accum,
                 t_accum + dt_stage_guess,
@@ -101,12 +107,21 @@ class SWE2DRuntimeStepExecutor:
                 mutate_state=False,
             )
             _t_src0 = time.perf_counter()
+            h0_c, hu0_c, hv0_c = None, None, None
+            if not _native_pred_applied:
+                # Fallback: Python source evaluation (D2H + H2D)
+                h0_c, hu0_c, hv0_c = backend.get_state()
+                state_ms += (time.perf_counter() - _t_src0) * 1000.0
+                coupled_source_rate_0 = coupling_controller.compute_source_rates(
+                    t_accum, dt_stage_guess, h0_c, hu0_c, hv0_c,
+                )
+                coupling_ms += (time.perf_counter() - _t_src0) * 1000.0
             apply_external_sources_callback(
                 backend,
                 dt_stage_guess,
                 rain_src_pred,
                 cell_source_model_0,
-                coupled_source_rate_0,
+                coupled_source_rate_0 if not _native_pred_applied else None,
             )
             source_ms += (time.perf_counter() - _t_src0) * 1000.0
             if apply_3d_patch_face_bc_callback is not None:
@@ -115,23 +130,29 @@ class SWE2DRuntimeStepExecutor:
             _diag_predict = backend.step(dt_request)
             step_ms += (time.perf_counter() - _t_step0) * 1000.0
             dt_used = float(_diag_predict.get("dt", dt_cfg))
-            _t_state1 = time.perf_counter()
-            h1_c, hu1_c, hv1_c = backend.get_state()
-            state_ms += (time.perf_counter() - _t_state1) * 1000.0
+            # ── Corrector: evaluate coupling at updated state ───────────
             _t_cpl1 = time.perf_counter()
-            coupled_source_rate_1 = coupling_controller.compute_source_rates(
-                t_accum + dt_used,
-                dt_used,
-                h1_c,
-                hu1_c,
-                hv1_c,
-            )
+            _native_corr_applied = False
+            if coupling_controller is not None:
+                try:
+                    _native_corr_applied = bool(
+                        coupling_controller.apply_native_device_sources(
+                            t_accum + dt_used, dt_used
+                        )
+                    )
+                except Exception:
+                    _native_corr_applied = False
+            if _native_corr_applied:
+                # Average predictor and corrector on GPU
+                backend.average_coupling_sources()
             coupling_ms += (time.perf_counter() - _t_cpl1) * 1000.0
-            coupled_source_rate = 0.5 * (
-                np.asarray(coupled_source_rate_0, dtype=np.float64)
-                + np.asarray(coupled_source_rate_1, dtype=np.float64)
-            )
-            backend.set_state(h0_c, hu0_c, hv0_c)
+
+            if not _native_pred_applied:
+                # Fallback: restore state from host backup (H2D)
+                backend.set_state(h0_c, hu0_c, hv0_c)
+            else:
+                # GPU-only: restore from device backup (D2D)
+                backend.restore_state_from_backup()
             if dynamic_bc and not native_bc_forcing:
                 _t_bc1 = time.perf_counter()
                 bc_tp_step, bc_vl_step = apply_timeseries_bc_values_callback(

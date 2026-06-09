@@ -344,6 +344,40 @@ class SWE2DBackend:
             raise ValueError("time_s and value must have same length")
         self._mod.swe2d_solver_set_boundary_hydrographs(self._solver_h, e, t, o, ts, v)
 
+    def set_progressive_bc_data(
+        self,
+        n_groups: int,
+        n_edges_total: int,
+        group_offsets: np.ndarray,
+        edge_hg_idx: np.ndarray,
+        edge_len: np.ndarray,
+        edge_cum_len: np.ndarray,
+        group_peak_q: np.ndarray,
+        group_total_len: np.ndarray,
+    ) -> None:
+        if self._solver_h is None:
+            raise RuntimeError("initialize() must be called before set_progressive_bc_data().")
+        if not self._supports_solver_hydrographs:
+            raise RuntimeError("Native boundary hydrograph API not supported by current module.")
+        if not hasattr(self._mod, "swe2d_solver_set_progressive_bc_data"):
+            raise RuntimeError("Progressive BC data API not supported by current module.")
+        go = np.ascontiguousarray(group_offsets, dtype=np.int32).ravel()
+        ehi = np.ascontiguousarray(edge_hg_idx, dtype=np.int32).ravel()
+        el = np.ascontiguousarray(edge_len, dtype=np.float64).ravel()
+        ecl = np.ascontiguousarray(edge_cum_len, dtype=np.float64).ravel()
+        gpq = np.ascontiguousarray(group_peak_q, dtype=np.float64).ravel()
+        gtl = np.ascontiguousarray(group_total_len, dtype=np.float64).ravel()
+        if go.size != n_groups + 1:
+            raise ValueError("group_offsets length must be n_groups + 1")
+        if ehi.size != n_edges_total or el.size != n_edges_total or ecl.size != n_edges_total:
+            raise ValueError("edge arrays must have n_edges_total elements")
+        if gpq.size != n_groups or gtl.size != n_groups:
+            raise ValueError("group arrays must have n_groups elements")
+        self._mod.swe2d_solver_set_progressive_bc_data(
+            self._solver_h, n_groups, n_edges_total,
+            go, ehi, el, ecl, gpq, gtl,
+        )
+
     def set_rain_cn_forcing_native(
         self,
         cell_gage_idx: np.ndarray,
@@ -829,6 +863,24 @@ class SWE2DBackend:
         if h_arr.size != self._n_cells or hu_arr.size != self._n_cells or hv_arr.size != self._n_cells:
             raise ValueError("h/hu/hv lengths must all equal n_cells")
         self._mod.swe2d_set_state(self._solver_h, h_arr, hu_arr, hv_arr)
+
+    def save_coupling_pred(self) -> None:
+        """Save current external source buffer to predictor buffer (GPU D2D copy)."""
+        if self._solver_h is None:
+            raise RuntimeError("initialize() must be called before save_coupling_pred().")
+        self._mod.swe2d_solver_save_coupling_pred(self._solver_h)
+
+    def average_coupling_sources(self) -> None:
+        """Average predictor and corrector coupling sources: ext = 0.5*(pred + ext)."""
+        if self._solver_h is None:
+            raise RuntimeError("initialize() must be called before average_coupling_sources().")
+        self._mod.swe2d_solver_average_coupling_sources(self._solver_h)
+
+    def restore_state_from_backup(self) -> None:
+        """Restore state from backup arrays (d_h0/d_hu0/d_hv0 → d_h/d_hu/d_hv) on GPU."""
+        if self._solver_h is None:
+            raise RuntimeError("initialize() must be called before restore_state_from_backup().")
+        self._mod.swe2d_solver_restore_state_from_backup(self._solver_h)
 
     # ── Diagnostics ───────────────────────────────────────────────────────────
 

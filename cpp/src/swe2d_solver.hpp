@@ -310,6 +310,19 @@ void swe2d_solver_set_boundary_hydrographs(
     int32_t n_edges,
     int32_t n_samples);
 
+// Upload progressive BC group data for on-device Q→q distribution.
+// The solver retains no host copy; forwards directly to the GPU.
+void swe2d_solver_set_progressive_bc_data(
+    SWE2DSolver* s,
+    int32_t n_groups,
+    int32_t n_edges_total,
+    const int32_t* group_offsets,
+    const int32_t* edge_hg_idx,
+    const double* edge_len,
+    const double* edge_cum_len,
+    const double* group_peak_q,
+    const double* group_total_len);
+
 // Configure per-cell rain+CN forcing (evaluated each step).
 void swe2d_solver_set_rain_cn_forcing(
     SWE2DSolver* s,
