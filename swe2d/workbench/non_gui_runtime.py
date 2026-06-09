@@ -362,11 +362,7 @@ def execute_run_timestep_loop(
             accumulate_boundary_flux_volume_model_callback(dt_used, bc_tp_flux, bc_vl_flux)
             _t_bc_accu += (time.perf_counter() - _t0) * 1000.0
             bc_ms += (time.perf_counter() - _t_bc_acc) * 1000.0
-            wb._log(
-                f"[BC_DIAG] distribute_ms={_t_bc_diag:.3f} "
-                f"accumulate_ms={_t_bc_accu:.3f} "
-                f"n_bc_edges={bc_n0.size} dynamic_bc={dynamic_bc}"
-            )
+            # [BC_DIAG] removed for performance
 
         report_result = runtime_reporter.process_step(
             backend=backend,

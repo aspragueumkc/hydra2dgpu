@@ -369,6 +369,13 @@ void swe2d_gpu_redistribute_structure_sources_persistent(
         throw std::runtime_error("redistribute_persistent: dev is null");
     }
     if (n_structures <= 0) return;
+    if (n_cells <= 0) return;
+    if (!dev->d_external_source_mps) {
+        throw std::runtime_error("redistribute_persistent: d_external_source_mps is null");
+    }
+    // Reset any stale CUDA error from prior operations (e.g. a caught
+    // exception in the Python caller that left the error state dirty).
+    (void)cudaGetLastError();
 
     constexpr int BLOCK = 256;
     cudaStream_t stream = dev->d_stream;

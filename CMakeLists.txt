@@ -65,6 +65,20 @@ if(BACKWATER_USE_CUDA)
   if(CUDAToolkit_FOUND)
     enable_language(CUDA)
     set(CMAKE_CUDA_STANDARD 17)
+    # CUDA 13.x is incompatible with GCC 14+ host headers.  When the
+    # default host compiler is too new, fall back to gcc-13 if available.
+    if(NOT CMAKE_CUDA_HOST_COMPILER)
+      execute_process(COMMAND ${CMAKE_CXX_COMPILER} -dumpversion
+        OUTPUT_VARIABLE _host_gcc_ver OUTPUT_STRIP_TRAILING_WHITESPACE)
+      if(_host_gcc_ver VERSION_GREATER_EQUAL 14)
+        find_program(_gcc13 gcc-13)
+        if(_gcc13)
+          set(CMAKE_CUDA_HOST_COMPILER "${_gcc13}" CACHE FILEPATH "CUDA host compiler (gcc-13)")
+          message(STATUS "CUDA host compiler: ${_gcc13} (gcc-13 for GCC 14+ compat)")
+        endif()
+        unset(_gcc13)
+      endif()
+    endif()
     set(CMAKE_CUDA_STANDARD_REQUIRED ON)
     # CUDA 13+ drops support for some older virtual architectures (e.g. compute_70).
     # Pick an architecture list compatible with the detected toolkit version.

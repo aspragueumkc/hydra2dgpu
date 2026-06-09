@@ -1114,25 +1114,7 @@ class SWE2DCouplingController:
                 None,
             )
             # ── Diagnostic: check face-flux application ──
-            if self.culvert_face_flux_mode == "face_flux" and n_structures > 0:
-                try:
-                    _struct_flows = np.asarray(
-                        native_mod.swe2d_gpu_readback_structure_flows(n_structures),
-                        dtype=np.float64)
-                    _flux_tuple = native_mod.swe2d_gpu_readback_ext_struct_flux(
-                        int(self.n_cells))
-                    _face_flux_h = np.asarray(_flux_tuple[0], dtype=np.float64)
-                    ssoa = self._structures_soa
-                    ds_cell = int(ssoa.downstream_cell[0]) if ssoa is not None and ssoa.downstream_cell.size > 0 else -1
-                    us_cell = int(ssoa.upstream_cell[0]) if ssoa is not None and ssoa.upstream_cell.size > 0 else -1
-                    print(f"[FLUX_DIAG] struct_flow[0]={_struct_flows[0]:.6f}  "
-                          f"face_flux_h sum={np.sum(_face_flux_h):.6f}")
-                    if ds_cell >= 0 and us_cell >= 0:
-                        print(f"[FLUX_DIAG] us={us_cell} ds={ds_cell}  "
-                              f"flux_h[us]={_face_flux_h[us_cell]:.6f}  "
-                              f"flux_h[ds]={_face_flux_h[ds_cell]:.6f}")
-                except Exception as e:
-                    print(f"[FLUX_DIAG] readback failed: {e}")
+            # (disabled — the D2H readbacks added ~2× latency per step)
         except Exception:
             return False
 
@@ -1591,13 +1573,7 @@ class SWE2DCouplingController:
                 # dropped.  The fused path (which handles both structures and
                 # drainage) falls through in _compute_source_rates_cuda.
                 skip_persistent = (self.drainage is not None)
-                self._log(
-                    f"[COUPLING_CSR] coupling_loop=cuda, drainage={'yes' if skip_persistent else 'no'}, "
-                    f"structures={'yes' if self.structures is not None else 'no'}, "
-                    f"face_flux_mode={self.culvert_face_flux_mode}, "
-                    f"persistent_preloaded={self._persistent_coupling_preloaded}, "
-                    f"face_flux_preloaded={self._culvert_face_flux_preloaded}"
-                )
+                pass  # [COUPLING_CSR] diagnostics removed for performance
                 if not skip_persistent:
                     self._ensure_persistent_coupling_preloaded(mod)
                 return self._compute_source_rates_cuda(mod, t_s, dt_s, hh)
@@ -1938,14 +1914,7 @@ class SWE2DCouplingController:
                 self._persistent_coupling_preloaded
                 and hasattr(native_mod, "swe2d_gpu_compute_coupling_full_on_device")
             )
-            self._log(
-                f"[COUPLING_CSR] structures dispatch: "
-                f"use_persistent={use_persistent} "
-                f"drainage_active={self.drainage is not None} "
-                f"n_structures={len(sts) if sts is not None else 0} "
-                f"face_flux_mode={self.culvert_face_flux_mode} "
-                f"face_flux_preloaded={self._culvert_face_flux_preloaded}"
-            )
+            # [COUPLING_CSR] diagnostic removed for performance
             if use_persistent:
                 # Persistent device path: structure params preloaded on GPU.
                 # All work is done on-device — WSE computed from device h+zb,
