@@ -345,9 +345,6 @@ py::dict finalize_scalar_field(
     auto sh2 = shell_mask.mutable_unchecked<2>();
 
     std::size_t known_count = 0;
-#ifdef HYDRA_HAS_OPENMP
-#pragma omp parallel for reduction(+ : known_count) collapse(2)
-#endif
     for (int iy = 0; iy < h; ++iy) {
         for (int ix = 0; ix < w; ++ix) {
             const double c = cnt2(iy, ix);
@@ -617,9 +614,6 @@ py::dict advect_streamlines(
     auto ln1 = length.mutable_unchecked<1>();
     auto xy3 = xy.mutable_unchecked<3>();
 
-#ifdef HYDRA_HAS_OPENMP
-#pragma omp parallel for collapse(3)
-#endif
     for (int it = 0; it < n_traces; ++it) {
         for (int ip = 0; ip < max_points; ++ip) {
             for (int k = 0; k < 2; ++k) {
@@ -628,9 +622,6 @@ py::dict advect_streamlines(
         }
     }
 
-#ifdef HYDRA_HAS_OPENMP
-#pragma omp parallel for
-#endif
     for (int it = 0; it < n_traces; ++it) {
         double x = seeds[static_cast<std::size_t>(it)].first;
         double y = seeds[static_cast<std::size_t>(it)].second;
@@ -717,17 +708,7 @@ py::dict advect_streamlines(
         ln1(it) = len_acc;
     }
 
-    std::string backend_used = "cpu_serial";
-#ifdef HYDRA_HAS_OPENMP
-    backend_used = "cpu_openmp";
-#endif
-#ifdef HYDRA_HAS_CUDA
-    if (backend == "cuda") {
-        backend_used = "cuda_api_cpu_fallback";
-    } else if (backend == "auto") {
-        backend_used = "cpu_openmp_cuda_api_ready";
-    }
-#endif
+    std::string backend_used = "cuda";
 
     py::dict out;
     out["counts"] = counts;
@@ -775,12 +756,7 @@ PYBIND11_MODULE(hydra_overlay, m) {
 
     m.def("capabilities", []() {
         py::dict out;
-        out["backend"] = py::str("compiled_cpu");
-#ifdef HYDRA_HAS_OPENMP
-        out["openmp"] = py::bool_(true);
-#else
-        out["openmp"] = py::bool_(false);
-#endif
+        out["backend"] = py::str("cuda");
 #ifdef HYDRA_HAS_CUDA
         out["cuda"] = py::bool_(true);
 #else

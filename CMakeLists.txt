@@ -39,11 +39,7 @@ endif()
 # ── 1D native backend ────────────────────────────────────────────────────────
 pybind11_add_module(hydra_native cpp/src/backwater_native.cpp)
 
-find_package(OpenMP QUIET)
-if(OpenMP_CXX_FOUND)
-  target_link_libraries(hydra_native PRIVATE OpenMP::OpenMP_CXX)
-  target_compile_definitions(hydra_native PRIVATE HYDRA_HAS_OPENMP=1)
-endif()
+# GPU-only: no OpenMP (CPU path removed)
 
 if(MSVC)
   target_compile_options(hydra_native PRIVATE /W4)
@@ -84,11 +80,11 @@ if(BACKWATER_USE_CUDA)
     set(SWE2D_CUDA_FOUND TRUE)
     message(STATUS "CUDA ${CUDAToolkit_VERSION} found — 2D solver GPU path enabled")
   else()
-    message(STATUS "CUDA not found — 2D solver will use CPU (OpenMP) path only")
+    message(FATAL_ERROR "CUDA not found — GPU-only 2D solver cannot build")
   endif()
 endif()
 
-function(_configure_swe2d_module target_name py_module_name enable_openmp)
+function(_configure_swe2d_module target_name py_module_name)
   pybind11_add_module(${target_name}
       ${SWE2D_CPU_SOURCES}
       ${SWE2D_GPU_SOURCES}
@@ -135,10 +131,7 @@ function(_configure_swe2d_module target_name py_module_name enable_openmp)
     )
   endif()
 
-  if(enable_openmp AND OpenMP_CXX_FOUND)
-    target_link_libraries(${target_name} PRIVATE OpenMP::OpenMP_CXX)
-    target_compile_definitions(${target_name} PRIVATE HYDRA_HAS_OPENMP=1)
-  endif()
+  # GPU-only: no OpenMP
 
   if(MSVC)
     target_compile_options(${target_name} PRIVATE /W4)
@@ -147,11 +140,8 @@ function(_configure_swe2d_module target_name py_module_name enable_openmp)
   endif()
 endfunction()
 
-# OpenMP-enabled default module (existing import path).
-_configure_swe2d_module(hydra_swe2d hydra_swe2d TRUE)
-
-# Serial module variant for true non-OpenMP runs from the same build tree.
-_configure_swe2d_module(hydra_swe2d_serial hydra_swe2d_serial FALSE)
+# GPU-only SWE2D module.
+_configure_swe2d_module(hydra_swe2d hydra_swe2d)
 
 # ── Custom hybrid topology mesher (C++ backend) ────────────────────────────
 pybind11_add_module(hydra_hybridmesh
@@ -201,10 +191,7 @@ pybind11_add_module(hydra_overlay
     cpp/src/overlay_backend.cpp
 )
 
-if(OpenMP_CXX_FOUND)
-  target_link_libraries(hydra_overlay PRIVATE OpenMP::OpenMP_CXX)
-  target_compile_definitions(hydra_overlay PRIVATE HYDRA_HAS_OPENMP=1)
-endif()
+# GPU-only: no OpenMP for hydra_overlay
 
 if(SWE2D_CUDA_FOUND)
   target_compile_definitions(hydra_overlay PRIVATE HYDRA_HAS_CUDA=1)

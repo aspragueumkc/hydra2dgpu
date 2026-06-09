@@ -691,7 +691,7 @@ class TestSWE2DDrainageStructures(unittest.TestCase):
             cell_bed=[0.0, 0.0],
             drainage=drainage,
             structures=structures,
-            coupling_loop="cpu",
+            coupling_loop="cuda",
         )
         src = controller.compute_source_rates(
             t_s=0.0,
@@ -761,14 +761,14 @@ class TestSWE2DDrainageStructures(unittest.TestCase):
             cell_bed=[0.0],
             drainage=drainage_cpu,
             structures=None,
-            coupling_loop="cpu",
+            coupling_loop="cuda",
         )
         gpu_controller = SWE2DCouplingController(
             cell_area=[5.0],
             cell_bed=[0.0],
             drainage=drainage_gpu,
             structures=None,
-            coupling_loop="cpu",
+            coupling_loop="cuda",
         )
 
         h = np.asarray([0.2], dtype=np.float64)
@@ -1612,7 +1612,7 @@ class TestSWE2DDrainageStructures(unittest.TestCase):
             drainage=drain_mod,
             structures=struct_mod,
             coupling_loop="cuda",
-            drainage_solver_backend="cpu",
+            drainage_solver_backend="gpu",
             culvert_face_flux_mode="face_flux",
         )
 
@@ -1797,7 +1797,7 @@ class TestSWE2DDrainageStructures(unittest.TestCase):
         controller = SWE2DCouplingController(
             cell_area=[5.0, 5.0], cell_bed=[0.0, 0.0],
             drainage=drainage_mod, structures=structures_mod,
-            coupling_loop="cpu", culvert_face_flux_mode="face_flux",
+            coupling_loop="cuda", culvert_face_flux_mode="face_flux",
         )
         src = controller.compute_source_rates(
             t_s=0.0, dt_s=1.0,

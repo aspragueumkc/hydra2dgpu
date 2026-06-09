@@ -705,21 +705,7 @@ def _bind_model_tab_subgrid_drainage_controls(
         "Merge: redirect flux accumulation to largest non-degenerate neighbor."
     )
 
-    self.solver_backend_combo = _find_or_create_combo("solver_backend_combo", "SWE2D solver backend:", _sf)
-    prev_data = self.solver_backend_combo.currentData()
-    prev_text = self.solver_backend_combo.currentText()
-    self.solver_backend_combo.blockSignals(True)
-    try:
-        self.solver_backend_combo.clear()
-        self.solver_backend_combo.addItem("GPU solver backend (CUDA)", "gpu")
-        idx = 0
-        if idx >= 0:
-            self.solver_backend_combo.setCurrentIndex(idx)
-    finally:
-        self.solver_backend_combo.blockSignals(False)
-    self.solver_backend_combo.setToolTip(
-        "GPU solver backend using CUDA for SWE time integration, source assembly, and coupling."
-    )
+    # GPU-only: solver_backend_combo is removed; always uses CUDA.
 
     self.coupling_loop_combo = _find_or_create_combo("coupling_loop_combo", "Coupling loop:", _sf)
     prev_data = self.coupling_loop_combo.currentData()
@@ -1384,7 +1370,6 @@ def _connect_project_workbench_state_signals(self) -> None:
         ("temporal_order_combo", "currentIndexChanged"),
 
         ("degen_mode_combo", "currentIndexChanged"),
-        ("solver_backend_combo", "currentIndexChanged"),
 
         ("coupling_loop_combo", "currentIndexChanged"),
         ("drainage_solver_mode_combo", "currentIndexChanged"),
@@ -1548,7 +1533,6 @@ def _on_run(self, request=None):
         temporal_scheme = run_options.temporal_scheme
         temporal_scheme_name = run_options.temporal_scheme_name
         solver_backend_mode = str(getattr(run_options, "solver_backend_mode", "gpu")).strip().lower()
-        openmp_enabled = True
         coupling_loop_mode = run_options.coupling_loop_mode
         drainage_solver_backend_mode = run_options.drainage_solver_backend_mode
         drainage_gpu_method_mode = run_options.drainage_gpu_method_mode
@@ -1610,9 +1594,6 @@ def _on_run(self, request=None):
             _si_m_per_model = 1.0 / _ls
             _model_to_ft = _u.USC_FT_PER_SI_M * _si_m_per_model
             structures_mod = SWE2DStructureModule(hydraulic_structures_cfg, model_to_ft=_model_to_ft) if hydraulic_structures_cfg is not None and SWE2DStructureModule is not None else None
-            if solver_backend_mode == "cpu":
-                coupling_loop_mode = "cpu"
-                drainage_solver_backend_mode = "cpu"
             coupling_controller = SWE2DCouplingController(
                 cell_area=self._mesh_cell_areas(),
                 cell_bed=self._mesh_cell_min_bed(),
@@ -1638,28 +1619,8 @@ def _on_run(self, request=None):
                     coupling_controller._build_redistribution_data()
             except Exception:
                 pass
-            # GPU-first runtime policy: for legacy saved projects that still
-            # carry CPU coupling selections, opportunistically promote to
-            # CUDA/GPU coupling when native bindings are available.
-            force_cpu_coupling = os.environ.get("BACKWATER_SWE2D_FORCE_CPU_COUPLING", "").strip() == "1"
-            if (solver_backend_mode == "gpu") and (not force_cpu_coupling):
-                try:
-                    native_mod = coupling_controller._native_cuda_module() if hasattr(coupling_controller, "_native_cuda_module") else None
-                except Exception:
-                    native_mod = None
-                if native_mod is not None and str(coupling_loop_mode).strip().lower() == "cpu":
-                    coupling_loop_mode = "cuda"
-                    coupling_controller.coupling_loop = "cuda"
-                    self._log("Coupling loop auto-promoted: CPU -> CUDA (native CUDA coupling available).")
-                if (
-                    native_mod is not None
-                    and str(drainage_solver_backend_mode).strip().lower() == "cpu"
-                    and hasattr(native_mod, "swe2d_gpu_drainage_step")
-                    and getattr(coupling_controller, "drainage", None) is not None
-                ):
-                    drainage_solver_backend_mode = "gpu"
-                    coupling_controller.drainage_solver_backend = "gpu"
-                    self._log("Drainage backend auto-promoted: CPU -> GPU (native CUDA drainage available).")
+            # GPU-only runtime: all coupling/drainage paths use CUDA.
+
         rain_stats_acc = {"rain_mm": 0.0, "excess_mm": 0.0, "samples": 0}
 
         if request is not None:
@@ -1704,7 +1665,7 @@ def _on_run(self, request=None):
         self._log("Starting 2D run...")
         self._log(f"Run wallclock start: {run_wallclock_start}")
         self._log(f"SWE2D solver backend: {solver_backend_mode}")
-        self._log("SWE2D OpenMP: enabled (GPU hydra_swe2d module)")
+        self._log("SWE2D solver: GPU-only mode (CUDA)")
         self._log(f"Reconstruction mode: {reconstruction_name}")
         self._log(f"Temporal scheme: {temporal_scheme_name}")
         self._log(

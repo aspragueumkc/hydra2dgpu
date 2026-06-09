@@ -43,7 +43,7 @@ def wire_startup_run_components(dialog: Any, ns: Dict[str, Any]) -> None:
             lambda: SWE2DRunController(
                 ensure_mesh_callback=dialog._ensure_mesh_for_run_preflight,
                 has_mesh_callback=dialog._has_mesh_for_run_preflight,
-                backend_ready_callback=dialog._native_backend_ready_for_run_preflight,
+                backend_ready_callback=dialog._backend_ready_for_run_preflight,
                 backend_unavailable_callback=dialog._show_backend_unavailable_for_run_preflight,
                 log_callback=dialog._log,
             ),

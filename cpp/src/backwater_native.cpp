@@ -6,10 +6,6 @@
 #include <pybind11/numpy.h>
 #include <pybind11/pybind11.h>
 
-#if defined(HYDRA_HAS_OPENMP)
-#include <omp.h>
-#endif
-
 namespace py = pybind11;
 
 namespace {
@@ -928,12 +924,6 @@ py::tuple build_section_hydraulic_table_cpp(
     auto* k_total_ptr = static_cast<double*>(k_total_buf.ptr);
     auto* dk_dz_ptr = static_cast<double*>(dk_dz_buf.ptr);
 
-    #if defined(HYDRA_HAS_OPENMP)
-    if (g_table_threads > 0) {
-        omp_set_num_threads(g_table_threads);
-    }
-    #pragma omp parallel for if(n_points >= 64)
-    #endif
     for (int i = 0; i < n_points; ++i) {
         const double z_eval = z_ptr[i];
 
@@ -1082,12 +1072,6 @@ py::tuple build_section_hydraulic_table_from_geometry_cpp(
     auto* k_total_ptr = static_cast<double*>(k_total_buf.ptr);
     auto* dk_dz_ptr = static_cast<double*>(dk_dz_buf.ptr);
 
-    #if defined(HYDRA_HAS_OPENMP)
-    if (g_table_threads > 0) {
-        omp_set_num_threads(g_table_threads);
-    }
-    #pragma omp parallel for if(n_points >= 64)
-    #endif
     for (int i = 0; i < n_points; ++i) {
         const double z_eval = z_ptr[i];
 
@@ -1375,11 +1359,6 @@ py::tuple compute_node_properties_cpp(
 
 void configure_table_threads_cpp(int thread_count) {
     g_table_threads = std::max(0, thread_count);
-#if defined(HYDRA_HAS_OPENMP)
-    if (g_table_threads > 0) {
-        omp_set_num_threads(g_table_threads);
-    }
-#endif
 }
 
 int get_table_threads_cpp() {

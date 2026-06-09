@@ -118,9 +118,6 @@ from swe2d.boundary_and_forcing.boundary_qgis_adapter import (
     collect_bc_layer_hydrographs_qgis as _collect_bc_layer_hydrographs_qgis_logic,
 )
 
-from swe2d.extensions.patch_runtime_logic import (
-    parse_optional_float_text as _parse_optional_float_text_logic,
-)
 
 try:
     from swe2d_run_log_storage import (
@@ -187,15 +184,12 @@ except Exception:
     _HAVE_QGIS_CORE = False
 
 try:
-    from swe2d.runtime.backend import SWE2DBackend, swe2d_available, swe2d_gpu_available
+    from swe2d.runtime.backend import SWE2DBackend, swe2d_gpu_available
 except Exception:
     try:
-        from .swe2d_backend import SWE2DBackend, swe2d_available, swe2d_gpu_available
+        from .swe2d_backend import SWE2DBackend, swe2d_gpu_available
     except Exception:
         SWE2DBackend = None
-
-        def swe2d_available() -> bool:
-            return False
 
         def swe2d_gpu_available() -> bool:
             return False
@@ -2431,262 +2425,6 @@ class SWE2DDetachedPanelDialog(QtWidgets.QDialog):
         super().closeEvent(event)
 
 
-class SWE3DPatchViewerDialog(QtWidgets.QDialog):
-    """Quick-look viewer for stored 3D patch snapshots (VoF-focused MVP)."""
-
-    def __init__(self, snapshots: List[Dict[str, object]], parent=None):
-        super().__init__(parent)
-        self.setWindowTitle("3D Patch Viewer (Experimental)")
-        self.resize(940, 680)
-
-        self._snapshots = sorted(
-            [dict(s) for s in snapshots if isinstance(s, dict)],
-            key=lambda s: float(s.get("t_s", 0.0) or 0.0),
-        )
-
-        root = QtWidgets.QVBoxLayout(self)
-        header = QtWidgets.QLabel(
-            "Experimental 3D patch QA view. "
-            "Displays stored VoF snapshots and simple derived fields."
-        )
-        header.setWordWrap(True)
-        root.addWidget(header)
-
-        controls = QtWidgets.QHBoxLayout()
-        controls.addWidget(QtWidgets.QLabel("Snapshot:"))
-        self.snapshot_combo = QtWidgets.QComboBox()
-        controls.addWidget(self.snapshot_combo)
-        controls.addWidget(QtWidgets.QLabel("Field:"))
-        self.field_combo = QtWidgets.QComboBox()
-        self.field_combo.addItem("VoF slice (XY)", "vof_slice")
-        self.field_combo.addItem("U velocity slice (XY)", "u_slice")
-        self.field_combo.addItem("V velocity slice (XY)", "v_slice")
-        self.field_combo.addItem("Speed slice (XY)", "speed_slice")
-        self.field_combo.addItem("Column fill depth", "column_depth")
-        self.field_combo.addItem("Column fill fraction", "column_fraction")
-        self.field_combo.addItem("Column lowest z (bed height)", "column_bed_z")
-        controls.addWidget(self.field_combo)
-        controls.addWidget(QtWidgets.QLabel("Z index:"))
-        self.z_spin = QtWidgets.QSpinBox()
-        self.z_spin.setRange(0, 0)
-        controls.addWidget(self.z_spin)
-        controls.addStretch(1)
-        root.addLayout(controls)
-
-        self.stats_lbl = QtWidgets.QLabel("")
-        self.stats_lbl.setWordWrap(True)
-        root.addWidget(self.stats_lbl)
-
-        self._have_mpl = False
-        self._plot_fig = None
-        self._plot_canvas = None
-        FigureCanvas, Figure, _ = _try_import_matplotlib_qt()
-        if FigureCanvas is not None and Figure is not None:
-            self._have_mpl = True
-            self._plot_fig = Figure(figsize=(7.8, 4.6), tight_layout=True)
-            self._plot_canvas = FigureCanvas(self._plot_fig)
-            root.addWidget(self._plot_canvas, stretch=1)
-        else:
-            note = QtWidgets.QLabel(
-                "Matplotlib Qt backend unavailable; numeric summary only."
-            )
-            note.setWordWrap(True)
-            root.addWidget(note)
-
-        buttons = QtWidgets.QDialogButtonBox(QtWidgets.QDialogButtonBox.StandardButton.Close)
-        buttons.rejected.connect(self.reject)
-        buttons.accepted.connect(self.accept)
-        root.addWidget(buttons)
-
-        self._populate_snapshot_combo()
-        self.snapshot_combo.currentIndexChanged.connect(self._refresh_controls)
-        self.snapshot_combo.currentIndexChanged.connect(self._refresh_view)
-        self.field_combo.currentIndexChanged.connect(self._refresh_controls)
-        self.field_combo.currentIndexChanged.connect(self._refresh_view)
-        self.z_spin.valueChanged.connect(self._refresh_view)
-
-        self._refresh_controls()
-        self._refresh_view()
-
-    def _populate_snapshot_combo(self):
-        self.snapshot_combo.clear()
-        for i, snap in enumerate(self._snapshots):
-            t_s = float(snap.get("t_s", 0.0) or 0.0)
-            stats = dict(snap.get("stats", {}) or {})
-            nx = int(stats.get("nx", 0) or 0)
-            ny = int(stats.get("ny", 0) or 0)
-            nz = int(stats.get("nz", 0) or 0)
-            label = f"t={t_s/3600.0:.4f} hr (nx={nx}, ny={ny}, nz={nz})"
-            self.snapshot_combo.addItem(label, i)
-
-    def _current_snapshot(self) -> Optional[Dict[str, object]]:
-        idx = self.snapshot_combo.currentData()
-        if idx is None:
-            idx = self.snapshot_combo.currentIndex()
-        try:
-            i = int(idx)
-        except Exception:
-            return None
-        if i < 0 or i >= len(self._snapshots):
-            return None
-        return self._snapshots[i]
-
-    def _reshape_vof(self, snap: Dict[str, object]) -> Tuple[Optional[np.ndarray], int, int, int, float]:
-        stats = dict(snap.get("stats", {}) or {})
-        vof = np.asarray(snap.get("vof", np.empty(0, dtype=np.float64)), dtype=np.float64).ravel()
-        nx = max(0, int(stats.get("nx", 0) or 0))
-        ny = max(0, int(stats.get("ny", 0) or 0))
-        nz = max(0, int(stats.get("nz", 0) or 0))
-        dz = float(stats.get("dz", 0.0) or 0.0)
-        n_exp = nx * ny * nz
-        if n_exp <= 0 or vof.size != n_exp:
-            return None, nx, ny, nz, dz
-        return vof.reshape((nz, ny, nx)), nx, ny, nz, dz
-
-    def _resolve_bed_field(
-        self,
-        snap: Dict[str, object],
-        nx: int,
-        ny: int,
-        oz: float,
-    ) -> np.ndarray:
-        bed_flat = np.asarray(snap.get("bed_z", np.empty(0, dtype=np.float64)), dtype=np.float64).ravel()
-        nxy = max(0, int(nx) * int(ny))
-        if nxy > 0 and bed_flat.size == nxy:
-            return bed_flat.reshape((ny, nx))
-        return np.full((ny, nx), float(oz), dtype=np.float64)
-
-    def _reshape_optional_field(
-        self,
-        snap: Dict[str, object],
-        key: str,
-        nx: int,
-        ny: int,
-        nz: int,
-    ) -> Optional[np.ndarray]:
-        arr = np.asarray(snap.get(key, np.empty(0, dtype=np.float64)), dtype=np.float64).ravel()
-        n_exp = max(0, int(nx) * int(ny) * int(nz))
-        if n_exp <= 0 or arr.size != n_exp:
-            return None
-        return arr.reshape((nz, ny, nx))
-
-    def _refresh_controls(self):
-        snap = self._current_snapshot()
-        if snap is None:
-            self.z_spin.setRange(0, 0)
-            self.z_spin.setEnabled(False)
-            return
-        stats = dict(snap.get("stats", {}) or {})
-        nz = max(1, int(stats.get("nz", 1) or 1))
-        self.z_spin.setRange(0, max(0, nz - 1))
-        want_slice = str(self.field_combo.currentData() or "") in {"vof_slice", "u_slice", "v_slice", "speed_slice"}
-        self.z_spin.setEnabled(bool(want_slice))
-
-    def _refresh_view(self):
-        snap = self._current_snapshot()
-        if snap is None:
-            self.stats_lbl.setText("No snapshot selected.")
-            return
-
-        arr3d, nx, ny, nz, dz = self._reshape_vof(snap)
-        if arr3d is None:
-            self.stats_lbl.setText(
-                "Snapshot data is incomplete. "
-                f"Expected nx*ny*nz={max(0, nx*ny*nz)} cells but data shape does not match."
-            )
-            return
-
-        field = str(self.field_combo.currentData() or "vof_slice")
-        stats = dict(snap.get("stats", {}) or {})
-        patch_spec = dict(snap.get("patch_spec", {}) or {})
-        oz = float(stats.get("origin_z", patch_spec.get("origin_z", 0.0)) or 0.0)
-
-        if field == "column_depth":
-            arr = np.sum(np.clip(arr3d, 0.0, 1.0), axis=0) * max(0.0, float(dz))
-            title = "Column Fill Depth"
-            cmap = "viridis"
-            vmin = None
-            vmax = None
-        elif field == "column_fraction":
-            arr = np.mean(np.clip(arr3d, 0.0, 1.0), axis=0)
-            title = "Column Fill Fraction"
-            cmap = "magma"
-            vmin = 0.0
-            vmax = 1.0
-        elif field in {"u_slice", "v_slice", "speed_slice"}:
-            u3d = self._reshape_optional_field(snap, key="u", nx=nx, ny=ny, nz=nz)
-            v3d = self._reshape_optional_field(snap, key="v", nx=nx, ny=ny, nz=nz)
-            if u3d is None or v3d is None:
-                self.stats_lbl.setText(
-                    "Velocity slices unavailable for this snapshot. "
-                    "Re-run with a native build exposing 3D patch velocity observation."
-                )
-                return
-            z_idx = int(np.clip(self.z_spin.value(), 0, max(0, nz - 1)))
-            if field == "u_slice":
-                arr = u3d[z_idx, :, :]
-                title = f"U Velocity Slice (z={z_idx}/{max(0, nz - 1)})"
-                cmap = "coolwarm"
-                vabs = float(np.nanmax(np.abs(arr))) if arr.size else 0.0
-                vmin = -vabs if vabs > 0.0 else None
-                vmax = vabs if vabs > 0.0 else None
-            elif field == "v_slice":
-                arr = v3d[z_idx, :, :]
-                title = f"V Velocity Slice (z={z_idx}/{max(0, nz - 1)})"
-                cmap = "coolwarm"
-                vabs = float(np.nanmax(np.abs(arr))) if arr.size else 0.0
-                vmin = -vabs if vabs > 0.0 else None
-                vmax = vabs if vabs > 0.0 else None
-            else:
-                arr = np.sqrt(np.maximum(0.0, u3d[z_idx, :, :] ** 2 + v3d[z_idx, :, :] ** 2))
-                title = f"Horizontal Speed Slice (z={z_idx}/{max(0, nz - 1)})"
-                cmap = "plasma"
-                vmin = 0.0
-                vmax = None
-        elif field == "column_bed_z":
-            arr = self._resolve_bed_field(snap, nx=nx, ny=ny, oz=oz)
-            title = "Column Lowest Z (Bed Height)"
-            cmap = "terrain"
-            vmin = None
-            vmax = None
-        else:
-            z_idx = int(np.clip(self.z_spin.value(), 0, max(0, nz - 1)))
-            arr = arr3d[z_idx, :, :]
-            title = f"VoF Slice (z={z_idx}/{max(0, nz - 1)})"
-            cmap = "cividis"
-            vmin = 0.0
-            vmax = 1.0
-
-        t_s = float(snap.get("t_s", 0.0) or 0.0)
-        txt = (
-            f"t={t_s/3600.0:.4f} hr | "
-            f"nx={nx}, ny={ny}, nz={nz}, dz={dz:.6g} | "
-            f"min={float(np.nanmin(arr)):.6e}, max={float(np.nanmax(arr)):.6e}, "
-            f"mean={float(np.nanmean(arr)):.6e}"
-        )
-        self.stats_lbl.setText(txt)
-
-        if not self._have_mpl or self._plot_fig is None or self._plot_canvas is None:
-            return
-
-        self._plot_fig.clear()
-        ax = self._plot_fig.add_subplot(111)
-        im = ax.imshow(
-            np.asarray(arr, dtype=np.float64),
-            origin="lower",
-            interpolation="nearest",
-            cmap=cmap,
-            vmin=vmin,
-            vmax=vmax,
-            aspect="auto",
-        )
-        self._plot_fig.colorbar(im, ax=ax)
-        ax.set_xlabel("X index")
-        ax.set_ylabel("Y index")
-        ax.set_title(title)
-        self._plot_canvas.draw_idle()
-
-
 class SWE2DWorkbenchDialog(QtWidgets.QDialog):
     def __init__(self, parent=None, iface=None):
         super().__init__(parent)
@@ -2722,7 +2460,6 @@ class SWE2DWorkbenchDialog(QtWidgets.QDialog):
         )
         run_workbench_post_bootstrap_setup(
             self,
-            swe2d_available_fn=swe2d_available,
             swe2d_gpu_available_fn=swe2d_gpu_available,
             gmsh_available_fn=_gmsh_available,
         )
@@ -3323,10 +3060,6 @@ class SWE2DWorkbenchDialog(QtWidgets.QDialog):
             "open_coupling_results_viewer_btn", "Open Drainage/Structure Results Viewer"
         )
         self.open_run_log_viewer_btn = _find_or_create_button("open_run_log_viewer_btn", "Open Run Log Viewer")
-        self.open_3d_patch_viewer_btn = _find_or_create_button("open_3d_patch_viewer_btn", "Open 3D Patch Viewer")
-        self.publish_3d_patch_surface_btn = _find_or_create_button(
-            "publish_3d_patch_surface_btn", "Publish Current 3D Surface To QGIS 3D"
-        )
         self.layer_status_lbl = map_tab_page.findChild(QtWidgets.QLabel, "layer_status_lbl")
         if self.layer_status_lbl is None:
             self.layer_status_lbl = QtWidgets.QLabel("No layer-linked mesh yet")
@@ -3342,21 +3075,10 @@ class SWE2DWorkbenchDialog(QtWidgets.QDialog):
             map_tools_layout.addWidget(self.open_run_log_viewer_btn, 3, 0, 1, 2)
         if map_tools_layout.indexOf(self.layer_status_lbl) < 0:
             map_tools_layout.addWidget(self.layer_status_lbl, 4, 0, 1, 2)
-        if map_tools_layout.indexOf(self.open_3d_patch_viewer_btn) < 0:
-            map_tools_layout.addWidget(self.open_3d_patch_viewer_btn, 5, 0, 1, 2)
-        if map_tools_layout.indexOf(self.publish_3d_patch_surface_btn) < 0:
-            map_tools_layout.addWidget(self.publish_3d_patch_surface_btn, 6, 0, 1, 2)
 
         self.draw_sample_line_btn.setToolTip("Draw a sample polyline directly on the map canvas")
         self.open_model_gpkg_explorer_btn.setToolTip(
             "Browse model GeoPackage tables and open matching viewers; rename/delete model result tables."
-        )
-        self.open_3d_patch_viewer_btn.setToolTip(
-            "Open experimental post-processing viewer for captured 3D patch snapshots."
-        )
-        self.publish_3d_patch_surface_btn.setToolTip(
-            "Build/update a triangulated free-surface layer from the nearest captured 3D patch snapshot\n"
-            "and push it into the current QGIS project for native 3D map viewing."
         )
         self.layer_status_lbl.setWordWrap(True)
         if not str(self.layer_status_lbl.text() or "").strip():
@@ -3367,8 +3089,6 @@ class SWE2DWorkbenchDialog(QtWidgets.QDialog):
             (self.open_model_gpkg_explorer_btn, self._open_model_gpkg_explorer),
             (self.open_coupling_results_viewer_btn, self._open_coupling_results_viewer),
             (self.open_run_log_viewer_btn, self._open_run_log_viewer),
-            (self.open_3d_patch_viewer_btn, self._open_3d_patch_viewer),
-            (self.publish_3d_patch_surface_btn, self._publish_current_3d_surface_to_qgis_3d),
         ):
             try:
                 btn.clicked.disconnect(cb)
@@ -6849,7 +6569,6 @@ class SWE2DWorkbenchDialog(QtWidgets.QDialog):
     def _on_results_panel_timestep_changed(self, t_s: float):
         self._refresh_results_map_overlays(float(t_s))
         self._update_high_perf_overlay_time(float(t_s))
-        self._refresh_published_3d_surface_layer(float(t_s))
 
     def _on_results_panel_velocity_overlay_changed(self):
         panel = getattr(self, "_results_panel", None)
@@ -7713,393 +7432,6 @@ class SWE2DWorkbenchDialog(QtWidgets.QDialog):
 
         return open_run_log_viewer(self)
 
-    def _open_3d_patch_viewer(self):
-        snaps = list(getattr(self, "_three_d_patch_snapshots", []) or [])
-        if not snaps:
-            self._log(
-                "No 3D patch snapshots available yet. "
-                "Run with Experimental 3D patch mode enabled and capture mesh snapshots. "
-                "Note: 'Snapshot written -> ... .hdf' is a 2D/mesh export and is not the source used by the 3D patch viewer."
-            )
-            return
-        dlg = SWE3DPatchViewerDialog(snaps, parent=self)
-        dlg.exec()
-
-    def _refresh_published_3d_surface_layer(self, t_s: float) -> None:
-        if not _HAVE_QGIS_CORE or QgsProject is None:
-            return
-        layer_id = str(getattr(self, "_three_d_patch_surface_layer_id", "") or "").strip()
-        if not layer_id:
-            return
-        try:
-            lyr = QgsProject.instance().mapLayer(layer_id)
-        except Exception:
-            lyr = None
-        if lyr is None:
-            self._three_d_patch_surface_layer_id = None
-            return
-        self._publish_current_3d_surface_to_qgis_3d(target_time_s=float(t_s), quiet=True)
-
-    def _select_3d_patch_snapshot(self, target_time_s: Optional[float] = None) -> Optional[Dict[str, object]]:
-        snaps = list(getattr(self, "_three_d_patch_snapshots", []) or [])
-        if not snaps:
-            return None
-
-        t_use = target_time_s
-        if t_use is None:
-            panel = getattr(self, "_results_panel", None)
-            if panel is not None and hasattr(panel, "current_time_sec"):
-                try:
-                    t_use = float(panel.current_time_sec())
-                except Exception:
-                    t_use = None
-
-        if t_use is None:
-            return snaps[-1]
-
-        best = None
-        best_dt = float("inf")
-        for rec in snaps:
-            try:
-                t_rec = float(rec.get("t_s", 0.0))
-            except Exception:
-                t_rec = 0.0
-            dt = abs(t_rec - float(t_use))
-            if dt < best_dt:
-                best_dt = dt
-                best = rec
-        return best if isinstance(best, dict) else snaps[-1]
-
-    def _patch_spec_to_dict(self, spec: object) -> Optional[Dict[str, object]]:
-        if spec is None:
-            return None
-        try:
-            return {
-                "nx": int(getattr(spec, "nx")),
-                "ny": int(getattr(spec, "ny")),
-                "nz": int(getattr(spec, "nz")),
-                "dx": float(getattr(spec, "dx")),
-                "dy": float(getattr(spec, "dy")),
-                "dz": float(getattr(spec, "dz")),
-                "origin_x": float(getattr(spec, "origin_x")),
-                "origin_y": float(getattr(spec, "origin_y")),
-                "origin_z": float(getattr(spec, "origin_z")),
-            }
-        except Exception:
-            return None
-
-    def _resolve_3d_patch_spec_for_snapshot(self, snapshot: Dict[str, object]) -> Optional[Dict[str, object]]:
-        if not isinstance(snapshot, dict):
-            return None
-
-        snap_spec = snapshot.get("patch_spec")
-        if isinstance(snap_spec, dict):
-            return dict(snap_spec)
-
-        if isinstance(self._three_d_patch_last_spec, dict):
-            return dict(self._three_d_patch_last_spec)
-
-        stats = snapshot.get("stats")
-        if isinstance(stats, dict):
-            try:
-                spec = self._patch_spec_to_dict(None)
-                if isinstance(spec, dict):
-                    self._three_d_patch_last_spec = dict(spec)
-                    return dict(spec)
-            except Exception:
-                pass
-        return None
-
-    def _compute_3d_patch_top_surface(
-        self,
-        snapshot: Dict[str, object],
-        spec: Dict[str, object],
-    ) -> Optional[np.ndarray]:
-        if not isinstance(snapshot, dict) or not isinstance(spec, dict):
-            return None
-
-        nx = max(0, int(spec.get("nx", 0) or 0))
-        ny = max(0, int(spec.get("ny", 0) or 0))
-        nz = max(0, int(spec.get("nz", 0) or 0))
-        dz = float(spec.get("dz", 0.0) or 0.0)
-        oz = float(spec.get("origin_z", 0.0) or 0.0)
-        if nx <= 0 or ny <= 0 or nz <= 0 or dz <= 0.0:
-            return None
-
-        vof = np.asarray(snapshot.get("vof", np.empty(0)), dtype=np.float64).ravel()
-        expected = nx * ny * nz
-        if expected <= 0 or vof.size != expected:
-            return None
-
-        vof_3d = np.reshape(vof, (nz, ny, nx), order="C")
-        wet = vof_3d > 1.0e-6
-        wet_any = np.any(wet, axis=0)
-        out = np.full((ny, nx), np.nan, dtype=np.float64)
-        if not np.any(wet_any):
-            return out
-
-        top_from_back = np.argmax(wet[::-1, :, :], axis=0)
-        k_top = (nz - 1 - top_from_back).astype(np.int32)
-
-        j_idx, i_idx = np.where(wet_any)
-        k_idx = k_top[j_idx, i_idx]
-        f_top = np.clip(vof_3d[k_idx, j_idx, i_idx], 0.0, 1.0)
-        out[j_idx, i_idx] = oz + (k_idx.astype(np.float64) + f_top) * dz
-        return out
-
-    def _get_or_create_3d_patch_surface_layer(self):
-        if not _HAVE_QGIS_CORE or QgsProject is None or QgsVectorLayer is None:
-            return None
-
-        proj = QgsProject.instance()
-        layer_id = str(getattr(self, "_three_d_patch_surface_layer_id", "") or "").strip()
-        if layer_id:
-            try:
-                lyr = proj.mapLayer(layer_id)
-            except Exception:
-                lyr = None
-            if lyr is not None:
-                return lyr
-
-        for lyr in proj.mapLayers().values():
-            try:
-                if isinstance(lyr, QgsVectorLayer) and str(lyr.name()) == "SWE3D_Patch_FreeSurface":
-                    self._three_d_patch_surface_layer_id = str(lyr.id())
-                    return lyr
-            except Exception:
-                continue
-
-        crs_auth = "EPSG:4326"
-        try:
-            proj_crs = proj.crs()
-            if proj_crs is not None and proj_crs.isValid():
-                crs_auth = proj_crs.authid() or crs_auth
-        except Exception:
-            pass
-
-        uri = (
-            f"PolygonZ?crs={crs_auth}"
-            "&field=tri_id:integer"
-            "&field=t_s:double"
-            "&field=z_mean:double"
-        )
-        lyr = QgsVectorLayer(uri, "SWE3D_Patch_FreeSurface", "memory")
-        if lyr is None or not lyr.isValid():
-            self._log("Could not create SWE3D_Patch_FreeSurface memory layer.")
-            return None
-
-        try:
-            proj.addMapLayer(lyr)
-            self._three_d_patch_surface_layer_id = str(lyr.id())
-        except Exception as exc:
-            self._log(f"Could not add SWE3D_Patch_FreeSurface layer to project: {exc}")
-            return None
-
-        self._apply_3d_renderer_to_patch_surface_layer(lyr)
-        return lyr
-
-    def _apply_3d_renderer_to_patch_surface_layer(self, layer) -> bool:
-        if layer is None or not hasattr(layer, "setRenderer3D"):
-            return False
-        try:
-            from qgis._3d import QgsPolygon3DSymbol, QgsVectorLayer3DRenderer
-        except Exception:
-            return False
-        try:
-            symbol = QgsPolygon3DSymbol()
-            try:
-                from qgis.core import Qgis
-
-                if hasattr(symbol, "setAltitudeClamping") and hasattr(Qgis, "AltitudeClamping"):
-                    symbol.setAltitudeClamping(Qgis.AltitudeClamping.Absolute)
-            except Exception:
-                pass
-            renderer = QgsVectorLayer3DRenderer(symbol)
-            layer.setRenderer3D(renderer)
-            return True
-        except Exception as exc:
-            self._log(f"SWE3D free-surface 3D renderer setup warning: {exc}")
-            return False
-
-    def _update_3d_patch_surface_layer(
-        self,
-        layer,
-        t_s: float,
-        spec: Dict[str, object],
-        z_top: np.ndarray,
-    ) -> int:
-        if layer is None:
-            return 0
-        if z_top is None or z_top.ndim != 2:
-            return 0
-
-        nx = max(0, int(spec.get("nx", 0) or 0))
-        ny = max(0, int(spec.get("ny", 0) or 0))
-        dx = float(spec.get("dx", 0.0) or 0.0)
-        dy = float(spec.get("dy", 0.0) or 0.0)
-        ox = float(spec.get("origin_x", 0.0) or 0.0)
-        oy = float(spec.get("origin_y", 0.0) or 0.0)
-        if nx <= 1 or ny <= 1 or dx <= 0.0 or dy <= 0.0:
-            return 0
-        if z_top.shape[0] != ny or z_top.shape[1] != nx:
-            return 0
-
-        provider = layer.dataProvider()
-        if provider is None:
-            raise RuntimeError("SWE3D surface layer has no data provider.")
-
-        cleared = False
-        if hasattr(provider, "truncate"):
-            try:
-                cleared = bool(provider.truncate())
-            except Exception:
-                cleared = False
-        if not cleared:
-            try:
-                fids = [int(ft.id()) for ft in layer.getFeatures()]
-                if fids:
-                    provider.deleteFeatures(fids)
-            except Exception:
-                pass
-
-        x_centers = ox + (np.arange(nx, dtype=np.float64) + 0.5) * dx
-        y_centers = oy + (np.arange(ny, dtype=np.float64) + 0.5) * dy
-        fields = layer.fields()
-        feats: List[QgsFeature] = []
-        tri_id = 0
-
-        def _append_tri(x0: float, y0: float, z0: float, x1: float, y1: float, z1: float, x2: float, y2: float, z2: float):
-            nonlocal tri_id
-            if not (
-                np.isfinite(z0)
-                and np.isfinite(z1)
-                and np.isfinite(z2)
-                and np.isfinite(x0)
-                and np.isfinite(y0)
-                and np.isfinite(x1)
-                and np.isfinite(y1)
-                and np.isfinite(x2)
-                and np.isfinite(y2)
-            ):
-                return
-
-            wkt = (
-                f"Polygon Z (({x0:.9g} {y0:.9g} {z0:.9g}, "
-                f"{x1:.9g} {y1:.9g} {z1:.9g}, "
-                f"{x2:.9g} {y2:.9g} {z2:.9g}, "
-                f"{x0:.9g} {y0:.9g} {z0:.9g}))"
-            )
-            geom = QgsGeometry.fromWkt(wkt)
-            if geom is None or geom.isEmpty():
-                return
-
-            tri_id += 1
-            ft = QgsFeature(fields)
-            ft.setGeometry(geom)
-            ft["tri_id"] = int(tri_id)
-            ft["t_s"] = float(t_s)
-            ft["z_mean"] = float((z0 + z1 + z2) / 3.0)
-            feats.append(ft)
-
-        for j in range(ny - 1):
-            y0 = float(y_centers[j])
-            y1 = float(y_centers[j + 1])
-            for i in range(nx - 1):
-                x0 = float(x_centers[i])
-                x1 = float(x_centers[i + 1])
-
-                z00 = float(z_top[j, i])
-                z10 = float(z_top[j, i + 1])
-                z01 = float(z_top[j + 1, i])
-                z11 = float(z_top[j + 1, i + 1])
-
-                _append_tri(x0, y0, z00, x1, y0, z10, x1, y1, z11)
-                _append_tri(x0, y0, z00, x1, y1, z11, x0, y1, z01)
-
-        if feats:
-            add_result = provider.addFeatures(feats)
-            add_ok = bool(add_result[0]) if isinstance(add_result, tuple) else bool(add_result)
-            if not add_ok:
-                raise RuntimeError("Failed to write free-surface features to memory layer.")
-
-        layer.updateExtents()
-        layer.triggerRepaint()
-        try:
-            layer.setCustomProperty("swe2d/three_d_surface_time_s", float(t_s))
-        except Exception:
-            pass
-        return int(tri_id)
-
-    def _publish_current_3d_surface_to_qgis_3d(
-        self,
-        target_time_s: Optional[float] = None,
-        quiet: bool = False,
-    ) -> None:
-        if not _HAVE_QGIS_CORE or QgsProject is None:
-            if not quiet:
-                self._log("QGIS core APIs are unavailable; cannot publish 3D free-surface layer.")
-            return
-
-        snapshot = self._select_3d_patch_snapshot(target_time_s=target_time_s)
-        if snapshot is None:
-            if not quiet:
-                self._log("No 3D patch snapshots are available for map publication.")
-            return
-
-        spec = self._resolve_3d_patch_spec_for_snapshot(snapshot)
-        if not isinstance(spec, dict):
-            if not quiet:
-                self._log(
-                    "3D patch spec is unavailable for this snapshot. "
-                    "Run Experimental 3D mode again so ROI/origin metadata is captured."
-                )
-            return
-
-        z_top = self._compute_3d_patch_top_surface(snapshot, spec)
-        if z_top is None:
-            if not quiet:
-                self._log("Could not compute 3D free-surface elevations from snapshot VOF data.")
-            return
-
-        layer = self._get_or_create_3d_patch_surface_layer()
-        if layer is None:
-            return
-
-        renderer_ok = self._apply_3d_renderer_to_patch_surface_layer(layer)
-        if not renderer_ok and not quiet:
-            self._log(
-                "QGIS 3D renderer API is unavailable in this runtime; "
-                "surface layer was still published as a regular vector layer."
-            )
-
-        try:
-            t_s = float(snapshot.get("t_s", 0.0))
-        except Exception:
-            t_s = 0.0
-
-        try:
-            n_tri = self._update_3d_patch_surface_layer(layer=layer, t_s=t_s, spec=spec, z_top=z_top)
-        except Exception as exc:
-            if not quiet:
-                self._log(f"3D free-surface publish failed: {exc}")
-            return
-
-        if not quiet:
-            wet_cols = int(np.count_nonzero(np.isfinite(z_top)))
-            nx = int(spec.get("nx", 0) or 0)
-            ny = int(spec.get("ny", 0) or 0)
-            self._log(
-                "Published 3D free-surface layer for QGIS 3D view: "
-                f"time={t_s:.3f}s, wet_columns={wet_cols}/{max(1, nx * ny)}, triangles={n_tri}."
-            )
-
-        canvas = self._resolve_map_canvas()
-        if canvas is not None:
-            try:
-                canvas.refresh()
-            except Exception:
-                pass
-
     def _build_internal_flow_source_cms(self) -> Optional[np.ndarray]:
         forcing = self._build_internal_flow_forcing()
         if forcing is None:
@@ -8133,7 +7465,7 @@ class SWE2DWorkbenchDialog(QtWidgets.QDialog):
 
     def _apply_external_sources(
         self,
-        backend: SWE2DBackend,
+        backend,
         dt_step: float,
         rain_rate_model,
         cell_source_model: Optional[np.ndarray],
@@ -8608,7 +7940,7 @@ class SWE2DWorkbenchDialog(QtWidgets.QDialog):
             "source_imex_split_chk", "source_stage_coupled_imex_rk2_chk",
             "use_spatial_rain_cn_chk", "infiltration_method_combo", "rain_boundary_buffer_rings_spin", "internal_flow_field_edit",
             "run_time_edit", "output_interval_edit", "line_output_interval_edit",
-            "degen_mode_combo", "solver_backend_combo", "solver_openmp_enabled_chk", "solver_cpu_threads_spin", "coupling_loop_combo",
+            "degen_mode_combo", "coupling_loop_combo",
             "drainage_solver_mode_combo", "drainage_backend_combo", "drainage_gpu_method_combo", "drainage_coupling_substeps_spin",
             "drainage_max_coupling_substeps_spin", "drainage_head_deadband_spin",
             "drainage_dynamic_relaxation_spin", "drainage_adaptive_depth_fraction_spin",
@@ -9038,9 +8370,7 @@ class SWE2DWorkbenchDialog(QtWidgets.QDialog):
     def _on_snapshot(self):
         """Write captured 2D mesh timesteps to a temporary HEC-RAS HDF file.
 
-        This export is for mesh/results interoperability. The experimental 3D
-        patch viewer reads in-memory 3D VoF snapshots from
-        `_three_d_patch_snapshots`, not this HDF file.
+        This export is for mesh/results interoperability.
         """
         if self._mesh_data is None or not self._snapshot_timesteps:
             self._log("No snapshot data available — run the model with an output interval set first.")
@@ -9665,9 +8995,8 @@ class SWE2DWorkbenchDialog(QtWidgets.QDialog):
     def _has_mesh_for_run_preflight(self) -> bool:
         return self._mesh_data is not None
 
-    def _native_backend_ready_for_run_preflight(self) -> bool:
-        openmp_enabled = True
-        return bool(swe2d_available() and SWE2DBackend is not None)
+    def _backend_ready_for_run_preflight(self) -> bool:
+        return bool(swe2d_gpu_available())
 
     def _show_backend_unavailable_for_run_preflight(self, message: str):
         QtWidgets.QMessageBox.critical(self, "2D SWE", str(message))
@@ -9874,7 +9203,7 @@ class SWE2DWorkbenchStudioDialog(SWE2DWorkbenchDialog):
                 "structure", "culvert", "weir", "orifice", "gate", "spillway",
                 "coupling",
             ),
-            "3d_patch": ("3d_patch", "patch_3d", "swe3d"),
+            "3d_patch": ("3d_patch", "patch_3d"),
         }
 
     def _studio_widget_text_blob(self, widget: QtWidgets.QWidget) -> str:

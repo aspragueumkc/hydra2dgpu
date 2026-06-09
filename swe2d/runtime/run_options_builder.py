@@ -30,7 +30,6 @@ class SWE2DRunOptionsData:
     temporal_scheme: Any
     temporal_scheme_name: str
     solver_backend_mode: str
-    openmp_enabled: bool
     coupling_loop_mode: str
     drainage_solver_backend_mode: str
     drainage_gpu_method_mode: str
@@ -107,8 +106,6 @@ class SWE2DRunOptionsBuilder:
         temporal_order_value = int(self._ui.temporal_order_combo.currentData())
         temporal_scheme = self._TemporalScheme(temporal_order_value)
         temporal_scheme_name = self._ui.temporal_order_combo.currentText().strip()
-        openmp_enabled = True
-
         def _gpu_available_for_selected_module() -> bool:
             if self._swe2d_gpu_available is None:
                 return False
@@ -208,7 +205,6 @@ class SWE2DRunOptionsBuilder:
             temporal_scheme=temporal_scheme,
             temporal_scheme_name=temporal_scheme_name,
             solver_backend_mode=solver_backend_mode,
-            openmp_enabled=openmp_enabled,
             coupling_loop_mode=coupling_loop_mode,
             drainage_solver_backend_mode=drainage_solver_backend_mode,
             drainage_gpu_method_mode=drainage_gpu_method_mode,

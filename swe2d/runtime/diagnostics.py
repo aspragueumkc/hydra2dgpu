@@ -11,7 +11,6 @@ class SWE2DRunReport:
     """Captures fallback events and execution metadata for a SWE2D run."""
     fallback_events: List[Dict[str, object]] = field(default_factory=list)
     gpu_available: bool = True
-    openmp_enabled: bool = True
     backend_version: int = 0
 
     def record_fallback(self, component: str, reason: str, details: str = "") -> None:
@@ -23,7 +22,7 @@ class SWE2DRunReport:
 
     def summary(self) -> str:
         n = len(self.fallback_events)
-        return f"[RUNTIME] Run report: {n} fallback(s), GPU={self.gpu_available}, OpenMP={self.openmp_enabled}"
+        return f"[RUNTIME] Run report: {n} fallback(s), GPU={self.gpu_available}"
 
 
 def _configure_diagnostics_mode() -> None:

@@ -887,7 +887,6 @@ def _bind_map_tab_results_controls(self, map_tab_page: QtWidgets.QWidget, map_re
     self.high_perf_canvas_overlay_streamlines_chk.setChecked(False)
     self.high_perf_canvas_overlay_streamline_backend_combo.clear()
     self.high_perf_canvas_overlay_streamline_backend_combo.addItem("Auto (prefer compiled)", "auto")
-    self.high_perf_canvas_overlay_streamline_backend_combo.addItem("CPU", "cpu")
     self.high_perf_canvas_overlay_streamline_backend_combo.addItem("CUDA", "cuda")
     self.high_perf_canvas_overlay_streamline_backend_combo.setCurrentIndex(0)
     self.high_perf_canvas_overlay_streamline_seed_spin.setDecimals(0)

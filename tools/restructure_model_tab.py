@@ -22,8 +22,7 @@ SOLVER_PATTERNS = [
     "godunov_mode", "temporal_order", "degen_mode", "depth_cap", "cfl_lambda_cap",
     "front_flux", "shallow_damping", "shallow_front", "max_rel_depth", "max_source",
     "max_inv_area", "ia_ratio", "source_cfl", "source_imex", "source_true",
-    "source_stage", "source_max", "momentum_cap", "active_set", "solver_backend",
-    "solver_openmp", "solver_cpu", "extreme_rain_mode", "unit_system", "gpu_default",
+    "source_stage", "source_max", "momentum_cap", "active_set", "extreme_rain_mode", "unit_system", "gpu_default",
 ]
 
 RAIN_PATTERNS = [

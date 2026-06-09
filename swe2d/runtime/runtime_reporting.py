@@ -243,14 +243,6 @@ class SWE2DRuntimeReporter:
                     except Exception:
                         dt_step = float(dt_used)
                     predictor_damping_coeff = 0.05
-                    try:
-                        coeff_raw = str(os.environ.get("BACKWATER_SWE3D_PREDICTOR_DAMPING_COEFF", "")).strip()
-                        if coeff_raw:
-                            coeff_val = float(coeff_raw)
-                            if np.isfinite(coeff_val) and coeff_val >= 0.0:
-                                predictor_damping_coeff = coeff_val
-                    except Exception:
-                        predictor_damping_coeff = 0.05
                     predictor_damp = 1.0 / (1.0 + predictor_damping_coeff * max(0.0, dt_step))
                     log_callback(
                         "  3d_phys: "

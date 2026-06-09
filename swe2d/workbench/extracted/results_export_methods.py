@@ -716,47 +716,7 @@ def persist_conservation_forensics_to_geopackage(
 
 
 def collect_run_log_metadata(self) -> Dict[str, object]:
-    gate_cfg = dict(getattr(self, "_swe3d_geom_gate_last_config", {}) or {})
-    gate_metrics = dict(getattr(self, "_swe3d_geom_gate_last_metrics", {}) or {})
-    gate_violations = [str(v) for v in (getattr(self, "_swe3d_geom_gate_last_violations", []) or [])]
-
-    if not gate_cfg:
-        def _env_bool(name: str, default: bool) -> bool:
-            raw = str(os.environ.get(name, "")).strip().lower()
-            if not raw:
-                return bool(default)
-            return raw not in ("0", "false", "no", "off")
-
-        def _env_float(name: str, default: float) -> float:
-            try:
-                return float(os.environ.get(name, str(default)))
-            except Exception:
-                return float(default)
-
-        def _env_int(name: str, default: int) -> int:
-            try:
-                return int(os.environ.get(name, str(default)))
-            except Exception:
-                return int(default)
-
-        gate_cfg = {
-            "strict": _env_bool("BACKWATER_SWE3D_GEOM_STRICT", False),
-            "max_solid_fraction": max(0.0, min(1.0, _env_float("BACKWATER_SWE3D_GEOM_MAX_SOLID_FRACTION", 0.98))),
-            "max_seed_leak_fallbacks": max(0, _env_int("BACKWATER_SWE3D_GEOM_MAX_SEED_LEAK_FALLBACKS", 0)),
-        }
-
-    metadata: Dict[str, object] = {
-        "swe3d_geometry_gate": {
-            "strict": bool(gate_cfg.get("strict", False)),
-            "max_solid_fraction": float(gate_cfg.get("max_solid_fraction", 0.98)),
-            "max_seed_leak_fallbacks": int(gate_cfg.get("max_seed_leak_fallbacks", 0)),
-            "violation_count": int(len(gate_violations)),
-        }
-    }
-    if gate_metrics:
-        metadata["swe3d_geometry_gate"]["metrics"] = gate_metrics
-    if gate_violations:
-        metadata["swe3d_geometry_gate"]["violations"] = gate_violations
+    metadata: Dict[str, object] = {}
 
     try:
         persistable_classes = (

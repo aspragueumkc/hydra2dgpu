@@ -271,6 +271,5 @@ class SWE2DRunFinalizer:
             )
         if self._ui._coupling_snapshot_rows:
             self._ui._log(f"Coupling rows captured: {len(self._ui._coupling_snapshot_rows)}")
-        if self._ui._three_d_patch_snapshots:
-            self._ui._log(f"3D patch snapshots captured: {len(self._ui._three_d_patch_snapshots)}")
+        # Experimental 3D patch mode removed
         self._ui._refresh_plot()

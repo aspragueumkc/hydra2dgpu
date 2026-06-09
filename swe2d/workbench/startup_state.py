@@ -26,16 +26,12 @@ def initialize_workbench_startup_state(
     dialog._line_snapshot_rows = []
     dialog._line_snapshot_profile_rows = []
     dialog._coupling_snapshot_rows = []
-    dialog._three_d_patch_snapshots = []
     dialog._line_results_latest_run_id = ""
     dialog._line_results_latest_db_path = ""
     dialog._coupling_results_latest_run_id = ""
     dialog._coupling_results_latest_db_path = ""
     dialog._run_log_latest_run_id = ""
     dialog._run_log_latest_db_path = ""
-    dialog._swe3d_geom_gate_last_config = {}
-    dialog._swe3d_geom_gate_last_metrics = {}
-    dialog._swe3d_geom_gate_last_violations = []
     dialog._results_mesh_layer_id = ""
     dialog._results_mesh_source_path = ""
     dialog._results_mesh_snapshot_count = -1

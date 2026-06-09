@@ -1798,7 +1798,7 @@
                       <item row="55" column="1">
                         <widget class="QLabel" name="gpu_default_lbl">
                           <property name="text">
-                            <string>GPU is attempted by default when supported by the native backend.</string>
+                            <string>GPU-only mode (CUDA) — no CPU/OpenMP fallback.</string>
                           </property>
                           <property name="wordWrap">
                             <bool>true</bool>

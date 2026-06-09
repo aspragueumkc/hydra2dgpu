@@ -434,40 +434,7 @@
                   <item row="57" column="1">
                     <widget class="QSpinBox" name="tiny_wet_cell_threshold_spin" />
                   </item>
-                  <item row="58" column="0">
-                    <widget class="QLabel" name="solver_backend_lbl">
-                      <property name="text">
-                        <string>SWE2D solver backend:</string>
-                      </property>
-                    </widget>
-                  </item>
-                  <item row="58" column="1">
-                    <widget class="QComboBox" name="solver_backend_combo" />
-                  </item>
-                  <item row="59" column="0">
-                    <widget class="QLabel" name="solver_openmp_enabled_lbl">
-                      <property name="text">
-                        <string>SWE2D OpenMP:</string>
-                      </property>
-                    </widget>
-                  </item>
-                  <item row="59" column="1">
-                    <widget class="QCheckBox" name="solver_openmp_enabled_chk">
-                      <property name="text">
-                        <string>Enabled</string>
-                      </property>
-                    </widget>
-                  </item>
-                  <item row="60" column="0">
-                    <widget class="QLabel" name="solver_cpu_threads_lbl">
-                      <property name="text">
-                        <string>SWE2D CPU threads:</string>
-                      </property>
-                    </widget>
-                  </item>
-                  <item row="60" column="1">
-                    <widget class="QSpinBox" name="solver_cpu_threads_spin" />
-                  </item>
+
                   <item row="37" column="0">
                     <widget class="QLabel" name="run_time_lbl">
                       <property name="text">

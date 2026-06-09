@@ -52,7 +52,7 @@ class SWE2DBackendInitializer:
         reconstruction_mode: int,
         temporal_scheme: Any,
     ) -> Any:
-        b = backend_cls(use_gpu=True, openmp_enabled=True)
+        b = backend_cls(use_gpu=True)
 
         bc_tp_init = bc_tp.copy()
         bc_vl_init = bc_vl.copy()

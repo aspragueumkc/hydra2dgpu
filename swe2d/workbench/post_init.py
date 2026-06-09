@@ -11,7 +11,6 @@ import numpy as np
 def run_workbench_post_bootstrap_setup(
     dialog: Any,
     *,
-    swe2d_available_fn,
     swe2d_gpu_available_fn,
     gmsh_available_fn,
 ) -> None:
@@ -25,8 +24,7 @@ def run_workbench_post_bootstrap_setup(
     # Workbench state restoration remains in showEvent() for reliable timing.
     dialog._update_unit_system_from_crs()
     dialog._log(
-        f"2D bridge: {'available' if swe2d_available_fn() else 'missing'} | "
-        f"GPU: {'available' if swe2d_gpu_available_fn() else 'cpu-only'}"
+        f"GPU backend: {'available' if swe2d_gpu_available_fn() else 'unavailable'}"
     )
     dialog._log(
         "Meshing: Gmsh "
