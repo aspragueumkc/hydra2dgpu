@@ -48,12 +48,31 @@ for _candidate in (
     os.path.join(_plugin_root, "build"),
     os.path.join(_plugin_root, "build", "Release"),
     os.path.join(_plugin_root, "build", "Debug"),
+    os.path.join(_plugin_root, "lib"),
     os.path.join(_here, "build"),
     os.path.join(_here, "build", "Release"),
     os.path.join(_here, "build", "Debug"),
+    os.path.join(_here, "lib"),
 ):
     if os.path.isdir(_candidate) and _candidate not in sys.path:
         sys.path.insert(0, _candidate)
+
+
+def _platform_tag() -> str:
+    """Return a platform tag matching the release ZIP naming convention."""
+    import platform as _plat
+    system = _plat.system().lower()
+    machine = _plat.machine().lower()
+    tag_map = {
+        "x86_64": "x86_64",
+        "amd64": "x86_64",
+        "aarch64": "aarch64",
+        "arm64": "arm64",
+    }
+    arch = tag_map.get(machine, machine)
+    if system == "windows":
+        system = "windows"
+    return f"{system}-{arch}"
 
 # ─────────────────────────────────────────────────────────────────────────────
 # BCType constants (mirrored from native module; imported after module load)
@@ -77,11 +96,27 @@ _swe2d_last_load_error: Optional[str] = None
 
 
 def _load_swe2d_module():
+    """Load and return the hydra_swe2d native module.
+
+    Search order:
+      1. Already loaded (cached).
+      2. Standard Python import paths (including build/ dirs added above).
+      3. Pre-compiled binary in ``lib/`` (release ZIP layout).
+    """
     global _swe2d_last_load_error, _swe2d_mod, _swe2d_load_error
     if _swe2d_mod is not None:
         _swe2d_last_load_error = None
         _swe2d_load_error = None
         return _swe2d_mod
+
+    # Build search path candidates (release layout places .so/.pyd in lib/)
+    for _candidate in (
+        os.path.join(_plugin_root, "lib"),
+        os.path.join(_here, "lib"),
+    ):
+        if os.path.isdir(_candidate) and _candidate not in sys.path:
+            sys.path.insert(0, _candidate)
+
     try:
         mod = importlib.import_module("hydra_swe2d")
         _swe2d_mod = mod
@@ -89,7 +124,13 @@ def _load_swe2d_module():
         _swe2d_load_error = None
         return mod
     except ImportError as e:
-        err = f"hydra_swe2d: {e}"
+        err = (
+            f"hydra_swe2d native module not found ({e}). "
+            f"Platform: {_platform_tag()}. "
+            "Either build from source (see README.md) or download the "
+            "pre-compiled binary for your platform from "
+            "https://github.com/aspragueumkc/hydra2dgpu/releases"
+        )
         _swe2d_last_load_error = err
         _swe2d_load_error = err
         return None
@@ -137,8 +178,9 @@ class SWE2DBackend:
         mod = _load_swe2d_module()
         if mod is None:
             raise RuntimeError(
-                f"hydra_swe2d native module not available: {_swe2d_last_load_error}. "
-                "Build the native module first (cmake --build build)."
+                f"{_swe2d_last_load_error} "
+                "Build from source or download the pre-compiled binary "
+                "from https://github.com/aspragueumkc/hydra2dgpu/releases"
             )
         self._mod = mod
         self._use_gpu = True
