@@ -3,13 +3,26 @@
 set -e
 
 ENV_NAME="qgis_stable"
-ENV_BASE="/home/aaron/miniforge3/envs/$ENV_NAME"
-WORKSPACE="/home/aaron/QGIS_Plugins_dev/qgis-backwater-plugin-GPU_ONLY"
+# Resolve paths relative to this script's location
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+WORKSPACE="$(dirname "$SCRIPT_DIR")"
+
+# Auto-detect conda base from the active environment
+if [ -n "${CONDA_PREFIX:-}" ]; then
+    ENV_BASE="$(dirname "$CONDA_PREFIX")"
+else
+    echo "ERROR: conda not active. Please activate a conda environment first." >&2
+    exit 1
+fi
 
 # If not already in the target env, try to activate it
 if [ "$CONDA_DEFAULT_ENV" != "$ENV_NAME" ]; then
     # shellcheck disable=SC1091
-    source /home/aaron/miniforge3/etc/profile.d/conda.sh
+    source "$ENV_BASE/../etc/profile.d/conda.sh" 2>/dev/null || \
+    source "$(conda info --base)/etc/profile.d/conda.sh" 2>/dev/null || {
+        echo "ERROR: Cannot locate conda.sh. Ensure conda is installed." >&2
+        exit 1
+    }
     conda activate "$ENV_NAME"
 fi
 

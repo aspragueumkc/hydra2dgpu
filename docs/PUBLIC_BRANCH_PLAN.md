@@ -10,7 +10,7 @@
 
 ```bash
 # Ensure working tree is clean on GPU_ONLY
-cd /home/aaron/QGIS_Plugins_dev/qgis-backwater-plugin-GPU_ONLY
+cd /path/to/your/clone
 git stash  # if needed
 
 # Create the public branch from GPU_ONLY
@@ -177,8 +177,8 @@ name=HYDRA
 description=HYDRA - Hydrodynamics & Runoff Application plugin
 version=0.1
 qgisMinimumVersion=3.0
-author=UMKC ASPIRe Lab
-email=asprague@umkc.edu
+author=Aaron Sprague
+email=contact@example.com
 homepage=
 ```
 
@@ -257,7 +257,7 @@ tools/_tmp_*
 #!/usr/bin/env bash
 set -euo pipefail
 
-cd /home/aaron/QGIS_Plugins_dev/qgis-backwater-plugin-GPU_ONLY
+cd /path/to/your/clone
 
 # ── Step 1: Create branch ────────────────────────────────────────
 git checkout -b public GPU_ONLY

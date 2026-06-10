@@ -1,8 +1,8 @@
 [general]
-name=HYDRA
-description=HYDRA - Hydrodynamics & Runoff Application plugin
+name=HYDRA2DGPU
+description=HYDRA - Hydrodynamics & Runoff Application plugin 2DGPU 
 version=0.1
 qgisMinimumVersion=3.0
-author=Auto-generated
+author= Aaron Sprague
 email=
 homepage=

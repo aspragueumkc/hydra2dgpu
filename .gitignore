@@ -34,3 +34,16 @@ tests/artifacts/
 temp_archive/
 forms/*.bak
 qgis_testing_project/
+
+# Secrets and credentials — never commit these
+.env
+.env.*
+*.pem
+*.key
+*.p12
+*.pfx
+*.jks
+*secret*
+*credential*
+*api_key*
+

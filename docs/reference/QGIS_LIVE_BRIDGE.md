@@ -16,7 +16,8 @@ Set token/runtime dir for this QGIS process, then run bridge:
 import os
 os.environ['QGIS_LIVE_BRIDGE_TOKEN'] = 'my-local-secret-token'
 os.environ['QGIS_LIVE_BRIDGE_DIR'] = '/tmp/qgis-live-bridge'
-exec(open('/home/aaron/.local/share/QGIS/QGIS3/profiles/default/python/plugins/qgis-backwater-plugin/tools/qgis_live_bridge_console.py').read(), globals())
+# Adjust the path below to match your QGIS plugin installation
+exec(open('<QGIS_PLUGIN_DIR>/tools/qgis_live_bridge_console.py').read(), globals())
 ```
 
 You should see: `[QGIS-LIVE-BRIDGE] started ...`
@@ -32,7 +33,7 @@ QGIS_LIVE_BRIDGE.stop()
 Use the same token/runtime dir:
 
 ```bash
-cd /home/aaron/.local/share/QGIS/QGIS3/profiles/default/python/plugins/qgis-backwater-plugin
+cd <QGIS_PLUGIN_DIR>
 export QGIS_LIVE_BRIDGE_TOKEN='my-local-secret-token'
 export QGIS_LIVE_BRIDGE_DIR='/tmp/qgis-live-bridge'
 python3 tools/qgis_live_bridge_send.py ping

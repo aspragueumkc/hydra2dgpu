@@ -38,5 +38,5 @@
     "Use the generated bed grid CSV to assign terrain/node bed elevations with the requested trapezoid + longitudinal slope.",
     "This package preconfigures topology, Manning zone, BC lines, and sample line for flow-integration validation."
   ],
-  "bed_grid_csv": "/home/aaron/QGIS_Plugins_dev/qgis-backwater-plugin/example_project/trapezoid_sampleline_bed_grid_5ft.csv"
+  "bed_grid_csv": "example_project/trapezoid_sampleline_bed_grid_5ft.csv"
 }

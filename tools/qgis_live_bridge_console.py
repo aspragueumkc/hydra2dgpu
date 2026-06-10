@@ -1297,7 +1297,8 @@ class QgisLiveBridge:
             import warnings
             import traceback as _tb
 
-            plugin_dir = "/home/aaron/.local/share/QGIS/QGIS3/profiles/default/python/plugins/qgis-backwater-plugin"
+            # Dynamically resolve plugin directory from this file's location
+            plugin_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
             build_dir = os.path.join(plugin_dir, "build")
             if plugin_dir not in sys.path:
                 sys.path.insert(0, plugin_dir)
