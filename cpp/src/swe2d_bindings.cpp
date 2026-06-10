@@ -1106,7 +1106,6 @@ PYBIND11_MODULE(HYDRA_SWE2D_PY_MODULE_NAME, m) {
 #endif
 
     m.def("swe2d_gpu_compute_structure_flows",
-        py::doc("Compute structure flow rates (weir/culvert/gate/bridge/pump) on device."),
 #ifdef HYDRA_HAS_CUDA
         &compute_structure_flows_cuda,
 #else
