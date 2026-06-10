@@ -83,8 +83,8 @@ HYDRA is a QGIS-integrated plugin for 2D shallow water equation (SWE) modeling, 
 
 ```bash
 # Clone the repository
-git clone https://github.com/user/qgis-backwater-plugin-GPU_ONLY.git
-cd qgis-backwater-plugin-GPU_ONLY
+git clone https://github.com/aspragueumkc/hydra2dgpu.git
+cd hydra2dgpu
 
 # Create build directory
 mkdir build && cd build
@@ -111,8 +111,8 @@ The build produces:
 # 3. Select the plugin archive or point to the repository root
 
 # Or symlink into QGIS plugin directory:
-ln -s /path/to/qgis-backwater-plugin-GPU_ONLY \
-  ~/.local/share/QGIS/QGIS3/profiles/default/python/plugins/backwater_2d
+ln -s /path/to/hydra2dgpu \
+  ~/.local/share/QGIS/QGIS3/profiles/default/python/plugins/hydra2dgpu
 ```
 
 ### 3.3 Verify Installation
