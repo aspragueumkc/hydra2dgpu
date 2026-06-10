@@ -17,14 +17,19 @@ endif()
 
 # ── MSVC + CUDA: prevent /Fd and /FS from reaching nvcc ──────────────────
 # CMake's MSVC platform module injects /Fd (PDB path) and /FS (force sync
-# PDB writes) directly into the compile command — they never appear in
-# CMAKE_CXX_FLAGS, so string(REPLACE) cannot touch them.
+# PDB writes) into compile commands.  nvcc's -Xcompiler splits on commas,
+# so -Xcompiler=-FdFoo,-FS becomes two args and nvcc sees -FS as an input
+# file → "single input file required" fatal error.
 #
-# nvcc's -Xcompiler splits on commas, so -Xcompiler=-FdFoo,-FS becomes two
-# args and nvcc sees -FS as an input file → fatal error.
-#
-# Fix: disable PDB generation entirely so /Fd is never generated (/FS alone
-# without /Fd has no comma and passes through nvcc fine).
+# Fix: force /Z7 (embed debug info in .obj) so no PDB file is generated,
+# which prevents both /Fd and /FS from being added.
+if(MSVC)
+  string(REPLACE "/Zi" "/Z7" CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS}")
+  string(REPLACE "/FS" "" CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS}")
+  string(REPLACE "/Zi" "/Z7" CMAKE_C_FLAGS "${CMAKE_C_FLAGS}")
+  string(REPLACE "/FS" "" CMAKE_C_FLAGS "${CMAKE_C_FLAGS}")
+endif()
+
 include(FetchContent)
 
 find_package(Python3 COMPONENTS Interpreter Development.Module REQUIRED)
@@ -95,30 +100,6 @@ if(BACKWATER_USE_CUDA)
   else()
     message(FATAL_ERROR "CUDA not found — GPU-only 2D solver cannot build")
   endif()
-
-  # ── MSVC + CUDA: prevent /Fd and /FS from reaching nvcc ────────────
-  # CMake's MSVC platform module injects /Fd (PDB path) and /FS (force sync
-  # PDB writes) directly into the compile command — they never appear in
-  # CMAKE_CXX_FLAGS, so string(REPLACE) cannot touch them.
-  #
-  # nvcc's -Xcompiler splits on commas, so -Xcompiler=-FdFoo,-FS becomes two
-  # args and nvcc sees -FS as an input file → fatal error.
-  #
-  # Fix: disable PDB generation entirely so /Fd is never generated (/FS alone
-  # without /Fd has no comma and passes through nvcc fine).
-  if(MSVC)
-    set(CMAKE_COMPILE_PDB_NAME "")
-    set(CMAKE_COMPILE_PDB_OUTPUT_DIRECTORY "")
-    foreach(_var CMAKE_CXX_FLAGS CMAKE_CXX_FLAGS_RELEASE CMAKE_CXX_FLAGS_RELWITHDEBINFO
-                 CMAKE_CXX_FLAGS_DEBUG CMAKE_C_FLAGS CMAKE_C_FLAGS_RELEASE
-                 CMAKE_C_FLAGS_RELWITHDEBINFO CMAKE_C_FLAGS_DEBUG
-                 CMAKE_CUDA_FLAGS CMAKE_CUDA_FLAGS_RELEASE CMAKE_CUDA_FLAGS_RELWITHDEBINFO)
-      if(DEFINED ${_var})
-        string(REPLACE "/Fd" "" ${_var} "${${_var}}")
-        string(REPLACE "/FS" "" ${_var} "${${_var}}")
-      endif()
-    endforeach()
-  endif()
 endif()
 
 function(_configure_swe2d_module target_name py_module_name)
@@ -154,14 +135,6 @@ function(_configure_swe2d_module target_name py_module_name)
     if(NOT MSVC)
       target_compile_options(${target_name} PRIVATE -fno-lto)
       target_link_options(${target_name} PRIVATE -fno-lto)
-    endif()
-    if(MSVC)
-      # Disable PDB generation for CUDA targets — CMake passes /Fd and /FS
-      # through nvcc's -Xcompiler which splits on commas and fails
-      set_target_properties(${target_name} PROPERTIES
-        COMPILE_PDB_NAME ""
-        COMPILE_PDB_OUTPUT_DIRECTORY ""
-      )
     endif()
   endif()
 
