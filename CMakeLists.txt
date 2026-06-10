@@ -15,6 +15,16 @@ if(BACKWATER_USE_CUDA)
   set(CMAKE_INTERPROCEDURAL_OPTIMIZATION OFF)
 endif()
 
+# ── MSVC + CUDA: prevent /Fd and /FS from reaching nvcc ──────────────────
+# CMake's MSVC platform module injects /Fd (PDB path) and /FS (force sync
+# PDB writes) directly into the compile command — they never appear in
+# CMAKE_CXX_FLAGS, so string(REPLACE) cannot touch them.
+#
+# nvcc's -Xcompiler splits on commas, so -Xcompiler=-FdFoo,-FS becomes two
+# args and nvcc sees -FS as an input file → fatal error.
+#
+# Fix: disable PDB generation entirely so /Fd is never generated (/FS alone
+# without /Fd has no comma and passes through nvcc fine).
 include(FetchContent)
 
 find_package(Python3 COMPONENTS Interpreter Development.Module REQUIRED)
@@ -85,20 +95,30 @@ if(BACKWATER_USE_CUDA)
   else()
     message(FATAL_ERROR "CUDA not found — GPU-only 2D solver cannot build")
   endif()
-endif()
 
-# ── MSVC + CUDA: strip /Fd and /FS from compile flags globally ────────────
-# CMake generates these PDB flags and passes them through nvcc's -Xcompiler.
-# nvcc splits on the comma and sees -FS as a second input file, causing:
-#   "nvcc fatal: A single input file is required for a non-link phase..."
-if(MSVC AND SWE2D_CUDA_FOUND)
-  foreach(_var CMAKE_CXX_FLAGS CMAKE_CXX_FLAGS_RELEASE CMAKE_CXX_FLAGS_RELWITHDEBINFO
-               CMAKE_CXX_FLAGS_DEBUG CMAKE_C_FLAGS CMAKE_C_FLAGS_RELEASE)
-    if(${_var})
-      string(REPLACE "/Fd" "" ${_var} "${${_var}}")
-      string(REPLACE "/FS" "" ${_var} "${${_var}}")
-    endif()
-  endforeach()
+  # ── MSVC + CUDA: prevent /Fd and /FS from reaching nvcc ────────────
+  # CMake's MSVC platform module injects /Fd (PDB path) and /FS (force sync
+  # PDB writes) directly into the compile command — they never appear in
+  # CMAKE_CXX_FLAGS, so string(REPLACE) cannot touch them.
+  #
+  # nvcc's -Xcompiler splits on commas, so -Xcompiler=-FdFoo,-FS becomes two
+  # args and nvcc sees -FS as an input file → fatal error.
+  #
+  # Fix: disable PDB generation entirely so /Fd is never generated (/FS alone
+  # without /Fd has no comma and passes through nvcc fine).
+  if(MSVC)
+    set(CMAKE_COMPILE_PDB_NAME "")
+    set(CMAKE_COMPILE_PDB_OUTPUT_DIRECTORY "")
+    foreach(_var CMAKE_CXX_FLAGS CMAKE_CXX_FLAGS_RELEASE CMAKE_CXX_FLAGS_RELWITHDEBINFO
+                 CMAKE_CXX_FLAGS_DEBUG CMAKE_C_FLAGS CMAKE_C_FLAGS_RELEASE
+                 CMAKE_C_FLAGS_RELWITHDEBINFO CMAKE_C_FLAGS_DEBUG
+                 CMAKE_CUDA_FLAGS CMAKE_CUDA_FLAGS_RELEASE CMAKE_CUDA_FLAGS_RELWITHDEBINFO)
+      if(DEFINED ${_var})
+        string(REPLACE "/Fd" "" ${_var} "${${_var}}")
+        string(REPLACE "/FS" "" ${_var} "${${_var}}")
+      endif()
+    endforeach()
+  endif()
 endif()
 
 function(_configure_swe2d_module target_name py_module_name)
