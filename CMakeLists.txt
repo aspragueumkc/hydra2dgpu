@@ -87,6 +87,20 @@ if(BACKWATER_USE_CUDA)
   endif()
 endif()
 
+# ── MSVC + CUDA: strip /Fd and /FS from compile flags globally ────────────
+# CMake generates these PDB flags and passes them through nvcc's -Xcompiler.
+# nvcc splits on the comma and sees -FS as a second input file, causing:
+#   "nvcc fatal: A single input file is required for a non-link phase..."
+if(MSVC AND SWE2D_CUDA_FOUND)
+  foreach(_var CMAKE_CXX_FLAGS CMAKE_CXX_FLAGS_RELEASE CMAKE_CXX_FLAGS_RELWITHDEBINFO
+               CMAKE_CXX_FLAGS_DEBUG CMAKE_C_FLAGS CMAKE_C_FLAGS_RELEASE)
+    if(${_var})
+      string(REPLACE "/Fd" "" ${_var} "${${_var}}")
+      string(REPLACE "/FS" "" ${_var} "${${_var}}")
+    endif()
+  endforeach()
+endif()
+
 function(_configure_swe2d_module target_name py_module_name)
   pybind11_add_module(${target_name}
       ${SWE2D_CPU_SOURCES}
@@ -110,10 +124,6 @@ function(_configure_swe2d_module target_name py_module_name)
       $<$<COMPILE_LANGUAGE:CUDA>:--expt-relaxed-constexpr --expt-extended-lambda>
     )
     # Enable fast math (relaxed IEEE precision) for GPU kernels.
-    # Adds --use_fast_math to nvcc which enables:
-    #   - faster div/rsqrt/sqrt/log/exp
-    #   - Flush-To-Zero / Denormals-Are-Zero
-    #   - relaxed signed-zero and rounding comparisons
     target_compile_options(${target_name} PRIVATE
       $<$<COMPILE_LANGUAGE:CUDA>:-use_fast_math>
     )
@@ -124,6 +134,14 @@ function(_configure_swe2d_module target_name py_module_name)
     if(NOT MSVC)
       target_compile_options(${target_name} PRIVATE -fno-lto)
       target_link_options(${target_name} PRIVATE -fno-lto)
+    endif()
+    if(MSVC)
+      # Disable PDB generation for CUDA targets — CMake passes /Fd and /FS
+      # through nvcc's -Xcompiler which splits on commas and fails
+      set_target_properties(${target_name} PROPERTIES
+        COMPILE_PDB_NAME ""
+        COMPILE_PDB_OUTPUT_DIRECTORY ""
+      )
     endif()
   endif()
 
@@ -144,20 +162,8 @@ function(_configure_swe2d_module target_name py_module_name)
 
   if(MSVC)
     target_compile_options(${target_name} PRIVATE /W4)
-    # Ensure M_PI and other math constants are available on MSVC
     target_compile_definitions(${target_name} PRIVATE _USE_MATH_DEFINES)
-    # Suppress secure CRT warnings (getenv etc.)
     target_compile_definitions(${target_name} PRIVATE _CRT_SECURE_NO_WARNINGS)
-    if(SWE2D_CUDA_FOUND)
-      # Strip /Fd and /FS from CXX flags — nvcc's -Xcompiler splits on commas
-      # and these MSVC PDB flags cause "single input file required" fatal error
-      string(REPLACE "/Fd" "" CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS}")
-      string(REPLACE "/FS" "" CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS}")
-      string(REPLACE "/Fd" "" CMAKE_CXX_FLAGS_RELWITHDEBINFO "${CMAKE_CXX_FLAGS_RELWITHDEBINFO}")
-      string(REPLACE "/FS" "" CMAKE_CXX_FLAGS_RELWITHDEBINFO "${CMAKE_CXX_FLAGS_RELWITHDEBINFO}")
-      string(REPLACE "/Fd" "" CMAKE_CXX_FLAGS_RELEASE "${CMAKE_CXX_FLAGS_RELEASE}")
-      string(REPLACE "/FS" "" CMAKE_CXX_FLAGS_RELEASE "${CMAKE_CXX_FLAGS_RELEASE}")
-    endif()
   else()
     target_compile_options(${target_name} PRIVATE -Wall -Wextra -Wpedantic)
   endif()
