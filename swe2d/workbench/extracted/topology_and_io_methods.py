@@ -37,8 +37,8 @@ def _bind_topology_tab_dynamic_controls(self, topology_tab_page: QtWidgets.QWidg
                     and int(cur_col_span) == int(col_span)
                 ):
                     return
-            except Exception:
-                pass
+            except Exception as e:
+                self._log(f"[ERROR] layout position check: {e}")
             topo_layout.removeWidget(widget)
         topo_layout.addWidget(widget, row, col, row_span, col_span)
 
@@ -136,8 +136,8 @@ def _bind_topology_tab_dynamic_controls(self, topology_tab_page: QtWidgets.QWidg
             row, _ = form.getWidgetPosition(widget)
             if row >= 0:
                 return
-        except Exception:
-            pass
+        except Exception as e:
+            self._log(f"[ERROR] form row position check: {e}")
         if label is None:
             form.addRow(widget)
         else:
@@ -146,8 +146,8 @@ def _bind_topology_tab_dynamic_controls(self, topology_tab_page: QtWidgets.QWidg
     def _reconnect(signal: object, callback: Callable[[], None]) -> None:
         try:
             signal.disconnect(callback)
-        except Exception:
-            pass
+        except Exception as e:
+            self._log(f"[ERROR] signal disconnect: {e}")
         signal.connect(callback)
 
     self.topo_nodes_combo = _find_or_create_combo("topo_nodes_combo", 0)
@@ -589,7 +589,8 @@ def _build_pipe_network_config(self):
             return fallback
         try:
             return float(value)
-        except Exception:
+        except Exception as e:
+            self._log(f"[ERROR] opt_float conversion: {e}")
             return fallback
 
     def _opt_bool(value, fallback=False):
@@ -606,7 +607,8 @@ def _build_pipe_network_config(self):
             return False
         try:
             return float(value) != 0.0
-        except Exception:
+        except Exception as e:
+            self._log(f"[ERROR] opt_bool float conversion: {e}")
             return fallback
 
     for ft in node_layer.getFeatures():
@@ -615,7 +617,8 @@ def _build_pipe_network_config(self):
             continue
         try:
             pt = geom.asPoint()
-        except Exception:
+        except Exception as e:
+            self._log(f"[ERROR] node feature geometry asPoint: {e}")
             continue
         node_id = str(ft["node_id"] if "node_id" in node_fields else ft.id()).strip()
         if not node_id:
@@ -692,8 +695,8 @@ def _build_pipe_network_config(self):
                     if d_try > 0.0:
                         diameter_val = d_try
                         break
-                except Exception:
-                    pass
+                except Exception as e:
+                    self._log(f"[ERROR] link diameter float conversion: {e}")
 
         area_val = None
         for nm in ("area_m2", "area", "cross_area"):
@@ -703,8 +706,8 @@ def _build_pipe_network_config(self):
                     if a_try > 0.0:
                         area_val = a_try
                         break
-                except Exception:
-                    pass
+                except Exception as e:
+                    self._log(f"[ERROR] link area float conversion: {e}")
 
         span_val = None
         for nm in ("span", "span_m", "width", "width_m"):
@@ -714,8 +717,8 @@ def _build_pipe_network_config(self):
                     if s_try > 0.0:
                         span_val = s_try
                         break
-                except Exception:
-                    pass
+                except Exception as e:
+                    self._log(f"[ERROR] link span float conversion: {e}")
 
         rise_val = None
         for nm in ("rise", "rise_m", "height", "height_m"):
@@ -725,8 +728,8 @@ def _build_pipe_network_config(self):
                     if r_try > 0.0:
                         rise_val = r_try
                         break
-                except Exception:
-                    pass
+                except Exception as e:
+                    self._log(f"[ERROR] link rise float conversion: {e}")
 
         equiv_d_val = None
         for nm in ("equiv_diameter_m", "equiv_diameter"):
@@ -736,8 +739,8 @@ def _build_pipe_network_config(self):
                     if eq_try > 0.0:
                         equiv_d_val = eq_try
                         break
-                except Exception:
-                    pass
+                except Exception as e:
+                    self._log(f"[ERROR] link equiv_diameter float conversion: {e}")
 
         if (area_val is None or area_val <= 0.0):
             if link_shape == "circular" and diameter_val is not None and diameter_val > 0.0:
@@ -783,8 +786,8 @@ def _build_pipe_network_config(self):
         if is_culvert and "culvert_code" in link_fields:
             try:
                 culvert_code_val = int(round(float(ft["culvert_code"])))
-            except Exception:
-                pass
+            except Exception as e:
+                self._log(f"[ERROR] culvert_code conversion: {e}")
 
         culvert_rise_val = None
         if is_culvert and "culvert_rise" in link_fields:
@@ -792,8 +795,8 @@ def _build_pipe_network_config(self):
                 rv = float(ft["culvert_rise"])
                 if rv > 0.0:
                     culvert_rise_val = rv
-            except Exception:
-                pass
+            except Exception as e:
+                self._log(f"[ERROR] culvert_rise float conversion: {e}")
 
         culvert_span_val = None
         if is_culvert and "culvert_span" in link_fields:
@@ -801,24 +804,24 @@ def _build_pipe_network_config(self):
                 sv = float(ft["culvert_span"])
                 if sv > 0.0:
                     culvert_span_val = sv
-            except Exception:
-                pass
+            except Exception as e:
+                self._log(f"[ERROR] culvert_span float conversion: {e}")
 
         inlet_invert_val = None
         if is_culvert and "inlet_invert_elev" in link_fields:
             try:
                 iiv = float(ft["inlet_invert_elev"])
                 inlet_invert_val = iiv
-            except Exception:
-                pass
+            except Exception as e:
+                self._log(f"[ERROR] inlet_invert_elev float conversion: {e}")
 
         outlet_invert_val = None
         if is_culvert and "outlet_invert_elev" in link_fields:
             try:
                 oiv = float(ft["outlet_invert_elev"])
                 outlet_invert_val = oiv
-            except Exception:
-                pass
+            except Exception as e:
+                self._log(f"[ERROR] outlet_invert_elev float conversion: {e}")
 
         entrance_loss_val = 0.5
         if is_culvert:
@@ -827,8 +830,8 @@ def _build_pipe_network_config(self):
                     try:
                         entrance_loss_val = float(ft[cand])
                         break
-                    except Exception:
-                        pass
+                    except Exception as e:
+                        self._log(f"[ERROR] entrance_loss_k float conversion: {e}")
 
         exit_loss_val = 1.0
         if is_culvert:
@@ -837,8 +840,8 @@ def _build_pipe_network_config(self):
                     try:
                         exit_loss_val = float(ft[cand])
                         break
-                    except Exception:
-                        pass
+                    except Exception as e:
+                        self._log(f"[ERROR] exit_loss_k float conversion: {e}")
 
         barrel_count_val = 1
         if is_culvert and "culvert_barrels" in link_fields:
@@ -846,8 +849,8 @@ def _build_pipe_network_config(self):
                 bc = int(round(float(ft["culvert_barrels"])))
                 if bc >= 1:
                     barrel_count_val = bc
-            except Exception:
-                pass
+            except Exception as e:
+                self._log(f"[ERROR] culvert_barrels int conversion: {e}")
 
         links.append(
             DrainageLink(
@@ -992,11 +995,13 @@ def _build_pipe_network_config(self):
                     continue
                 try:
                     pt = geom.asPoint()
-                except Exception:
+                except Exception as e:
+                    self._log(f"[ERROR] inlet geometry asPoint: {e}")
                     try:
                         c = geom.centroid()
                         pt = c.asPoint() if c is not None and not c.isEmpty() else None
-                    except Exception:
+                    except Exception as e2:
+                        self._log(f"[ERROR] inlet centroid asPoint: {e2}")
                         pt = None
                 if pt is None:
                     continue
@@ -1234,8 +1239,8 @@ def _write_ugrid_nc(self, path: str, timesteps=None):
             if project_crs is not None and project_crs.isValid():
                 crs_wkt = project_crs.toWkt()
                 epsg_code = project_crs.postgisSrid() or None
-        except Exception:
-            pass
+        except Exception as e:
+            self._log(f"[ERROR] CRS query for NetCDF export: {e}")
 
     include_extra = bool(getattr(self, "extended_outputs_chk", None) is None or self.extended_outputs_chk.isChecked())
 
@@ -1579,8 +1584,8 @@ def _write_hecras_hdf5(self, path: str, timesteps=None):
                 project_crs = QgsProject.instance().crs()
                 if project_crs is not None and project_crs.isValid():
                     projection_wkt = project_crs.toWkt()
-            except Exception:
-                pass
+            except Exception as e:
+                self._log(f"[ERROR] CRS query for HDF5 export: {e}")
         f.attrs["Projection"] = np.bytes_(projection_wkt.encode("utf-8"))
 
         # ---- Geometry ----
@@ -1816,7 +1821,8 @@ def _mesh_cell_centers_for_gpkg(
                     cur.execute(f"SELECT COUNT(*) FROM {_quote_ident(lname)}")
                     row = cur.fetchone()
                     n_cells = int(row[0]) if row and row[0] is not None else 0
-                except Exception:
+                except Exception as e:
+                    self._log(f"[ERROR] SQL count for layer {lname}: {e}")
                     continue
                 if n_cells <= 0:
                     continue
@@ -1830,13 +1836,14 @@ def _mesh_cell_centers_for_gpkg(
                 elif not best_layer:
                     best_layer = lname
             mesh_layer_name = best_layer
-        except Exception:
+        except Exception as e:
+            self._log(f"[ERROR] velocity overlay GPKG scan: {e}")
             mesh_layer_name = ""
         finally:
             try:
                 conn.close()
-            except Exception:
-                pass
+            except Exception as e:
+                self._log(f"[ERROR] velocity overlay GPKG close: {e}")
 
     if _HAVE_QGIS_CORE and QgsVectorLayer is not None and gpkg_path and os.path.exists(gpkg_path):
         for lname in ([mesh_layer_name] if mesh_layer_name else []) + ["swe2d_mesh_cells", "SWE2D_Mesh_Cells"]:
@@ -1863,9 +1870,10 @@ def _mesh_cell_centers_for_gpkg(
                             a = float(geom.area())
                             if a > 0.0:
                                 areas.append(a)
-                        except Exception:
-                            pass
-                    except Exception:
+                        except Exception as e:
+                            self._log(f"[ERROR] cell area float conversion: {e}")
+                    except Exception as e:
+                        self._log(f"[ERROR] cell feature iteration: {e}")
                         continue
 
                 if cell_xy:
@@ -1877,7 +1885,8 @@ def _mesh_cell_centers_for_gpkg(
                             f"(run_id={run_id}, table={table_name}, expected={expected_n_cells}, got={len(cell_xy)}, layer={lname})."
                         )
                     break
-            except Exception:
+            except Exception as e:
+                self._log(f"[ERROR] velocity overlay layer iteration: {e}")
                 continue
 
     # Fallback for current active in-memory mesh if mesh layer was unavailable.
@@ -1888,7 +1897,8 @@ def _mesh_cell_centers_for_gpkg(
             cell_xy = {i: (float(cx[i]), float(cy[i])) for i in range(n_cells)}
             area = np.asarray(self._mesh_cell_areas(), dtype=np.float64)
             base_len = max(0.05, float(np.sqrt(max(float(np.nanmean(area)), 1.0e-9))))
-        except Exception:
+        except Exception as e:
+            self._log(f"[ERROR] velocity overlay fallback centroids: {e}")
             cell_xy = {}
             base_len = 1.0
 
@@ -1928,7 +1938,8 @@ def _persist_line_results_to_geopackage(
             runs_table = str(self._results_table_name(runs_table) or runs_table)
             ts_table = str(self._results_table_name(ts_table) or ts_table)
             profile_table = str(self._results_table_name(profile_table) or profile_table)
-        except Exception:
+        except Exception as e:
+            self._log(f"[ERROR] results table name resolution: {e}")
             runs_table = "swe2d_line_results_runs"
             ts_table = "swe2d_line_results_ts"
             profile_table = "swe2d_line_results_profile"
@@ -2098,8 +2109,8 @@ def _create_2d_model_geopackage(self):
         crs = QgsProject.instance().crs()
         if crs is not None and crs.isValid():
             crs_auth = crs.authid() or crs_auth
-    except Exception:
-        pass
+    except Exception as e:
+        self._log(f"[ERROR] CRS auth for GPKG export: {e}")
 
     nodes = QgsVectorLayer(f"Point?crs={crs_auth}&field=node_id:integer", "swe2d_topo_nodes", "memory")
     arcs = QgsVectorLayer(
@@ -2246,8 +2257,8 @@ def _migrate_2d_model_geopackage(self):
         crs = QgsProject.instance().crs()
         if crs is not None and crs.isValid():
             crs_auth = crs.authid() or crs_auth
-    except Exception:
-        pass
+    except Exception as e:
+        self._log(f"[ERROR] CRS auth for GPKG migration: {e}")
 
     # Canonical schema: list of (layer_name, memory_uri) pairs.
     # Geometry-less tables use "None?" as the URI prefix.
@@ -2432,7 +2443,8 @@ def _update_topology_control_summary(self):
             return bool(default)
         try:
             return bool(w.isChecked())
-        except Exception:
+        except Exception as e:
+            self._log(f"[ERROR] _safe_checked {name}: {e}")
             return bool(default)
 
     def _safe_spin_value(name: str, default: float = 0.0) -> float:
@@ -2441,7 +2453,8 @@ def _update_topology_control_summary(self):
             return float(default)
         try:
             return float(w.value())
-        except Exception:
+        except Exception as e:
+            self._log(f"[ERROR] _safe_spin_value {name}: {e}")
             return float(default)
 
     def _safe_line_text(name: str, default: str = "") -> str:
@@ -2450,7 +2463,8 @@ def _update_topology_control_summary(self):
             return str(default)
         try:
             return str(w.text()).strip()
-        except Exception:
+        except Exception as e:
+            self._log(f"[ERROR] _safe_line_text {name}: {e}")
             return str(default)
 
     def _safe_combo_data(name: str, default: object = None):
@@ -2460,7 +2474,8 @@ def _update_topology_control_summary(self):
         try:
             data = w.currentData()
             return default if data is None else data
-        except Exception:
+        except Exception as e:
+            self._log(f"[ERROR] _safe_combo_data {name}: {e}")
             return default
 
     topo_backend_combo = getattr(self, "topo_backend_combo", None)
@@ -2613,7 +2628,8 @@ def _update_topology_control_summary(self):
                             if float(ft[name]) <= 0.0:
                                 edge_ok = False
                                 break
-                        except Exception:
+                        except Exception as e:
+                            self._log(f"[ERROR] edge_len float conversion: {e}")
                             edge_ok = False
                             break
                     if not edge_ok:
@@ -2623,8 +2639,8 @@ def _update_topology_control_summary(self):
                 if "target_size" in region_fields and ft["target_size"] not in (None, ""):
                     try:
                         size_values.add(round(float(ft["target_size"]), 6))
-                    except Exception:
-                        pass
+                    except Exception as e:
+                        self._log(f"[ERROR] target_size float conversion: {e}")
             details.append(f"regions={region_count}")
             if cartesian_count > 0:
                 details.append(f"structured-block-regions={cartesian_count}")
@@ -2634,8 +2650,8 @@ def _update_topology_control_summary(self):
                 details.append(f"multi-block sizes={len(size_values)}")
             if missing_edge_lengths > 0:
                 details.append(f"structured regions missing edge_len_1..4={missing_edge_lengths}")
-        except Exception:
-            pass
+        except Exception as e:
+            self._log(f"[ERROR] regions layer summary: {e}")
 
     if constraints_layer is not None and _alive(topo_constraints_combo) and topo_constraints_combo.currentData() is not None:
         try:
@@ -2650,8 +2666,8 @@ def _update_topology_control_summary(self):
             details.append(f"constraints={constraint_count}")
             if empty_constraints > 0:
                 details.append(f"empty-constraints={empty_constraints}")
-        except Exception:
-            pass
+        except Exception as e:
+            self._log(f"[ERROR] constraints layer summary: {e}")
 
     if quad_edges_layer is not None and _alive(topo_quad_edges_combo) and topo_quad_edges_combo.currentData() is not None:
         try:
@@ -2670,8 +2686,8 @@ def _update_topology_control_summary(self):
             if layered_edges > 0:
                 details.append(f"transition-layer-edges={layered_edges}")
                 details.append(f"total-n_layers={total_layers}")
-        except Exception:
-            pass
+        except Exception as e:
+            self._log(f"[ERROR] quad_edges layer summary: {e}")
 
     suffix = " | ".join(details)
     if suffix:
@@ -2694,16 +2710,16 @@ def _configure_swe2d_layer_editors(self, layer):
         if hasattr(QgsEditFormConfig, "DragAndDrop") and hasattr(cfg, "setLayout"):
             cfg.setLayout(QgsEditFormConfig.DragAndDrop)
             layer.setEditFormConfig(cfg)
-    except Exception:
-        pass
+    except Exception as e:
+        self._log(f"[ERROR] set layer edit form config: {e}")
 
     def _set_alias(field_name: str, alias: str) -> None:
         try:
             idx = layer.fields().indexOf(field_name)
             if idx >= 0:
                 layer.setFieldAlias(idx, alias)
-        except Exception:
-            pass
+        except Exception as e:
+            self._log(f"[ERROR] set field alias {field_name}: {e}")
 
     is_region = "topo_regions" in lname or lname.endswith("swe2d_topo_regions")
     is_arc = "topo_arcs" in lname or lname.endswith("swe2d_topo_arcs")
@@ -2883,8 +2899,8 @@ def _configure_swe2d_layer_editors(self, layer):
                 if hasattr(QgsEditFormConfig, "UiFileLayout") and hasattr(cfg, "setLayout"):
                     cfg.setLayout(QgsEditFormConfig.UiFileLayout)
                 layer.setEditFormConfig(cfg)
-        except Exception:
-            pass
+        except Exception as e:
+            self._log(f"[ERROR] culvert form config: {e}")
 
 
 
@@ -2897,8 +2913,8 @@ def _cleanup_topology_mesh_checkpoint(self) -> None:
             os.remove(cp_path)
         except FileNotFoundError:
             pass
-        except Exception:
-            pass
+        except Exception as e:
+            self._log(f"[ERROR] checkpoint cleanup remove: {e}")
     self._topology_mesh_checkpoint_path = ""
 
     progress_path = str(getattr(self, "_topology_mesh_progress_path", "") or "").strip()
@@ -2907,8 +2923,8 @@ def _cleanup_topology_mesh_checkpoint(self) -> None:
             os.remove(progress_path)
         except FileNotFoundError:
             pass
-        except Exception:
-            pass
+        except Exception as e:
+            self._log(f"[ERROR] progress cleanup remove: {e}")
     self._topology_mesh_progress_path = ""
     self._topology_mesh_progress_last_seq = -1
     self._topology_mesh_progress_last_sig = ""
@@ -2940,7 +2956,8 @@ def _recover_topology_mesh_checkpoint(self, backend_name: str, run_mode: str, el
                     import json as _json
                     raw = str(np.asarray(cp["quality_summary_json"]).item())
                     quality_summary = _json.loads(raw) if raw else None
-                except Exception:
+                except Exception as e:
+                    self._log(f"[ERROR] checkpoint quality_summary json parse: {e}")
                     quality_summary = None
     except Exception as exc:
         self._log(f"mesh> checkpoint-read-fail path={cp_path} error={exc}")
@@ -2996,8 +3013,8 @@ def _recover_topology_mesh_checkpoint(self, backend_name: str, run_mode: str, el
                 f"{int(float(best_stats.get('failed_min_area_cells', 0.0)))}/"
                 f"{int(float(best_stats.get('failed_max_non_orth_cells', 0.0)))}"
             )
-        except Exception:
-            pass
+        except Exception as e:
+            self._log(f"[ERROR] checkpoint quality summary log: {e}")
 
     self._result_data = None
     self.view_mode_combo.setCurrentText("Mesh")
@@ -3019,7 +3036,8 @@ def _poll_tqmesh_progress(self) -> None:
 
         with open(progress_path, "r", encoding="utf-8") as fh:
             payload = _json.load(fh)
-    except Exception:
+    except Exception as e:
+        self._log(f"[ERROR] progress json read: {e}")
         return
 
     if not isinstance(payload, dict):
@@ -3027,7 +3045,8 @@ def _poll_tqmesh_progress(self) -> None:
 
     try:
         seq = int(payload.get("seq", -1))
-    except Exception:
+    except Exception as e:
+        self._log(f"[ERROR] progress seq parse: {e}")
         seq = -1
 
     last_seq = int(getattr(self, "_topology_mesh_progress_last_seq", -1))
@@ -3056,8 +3075,8 @@ def _poll_tqmesh_progress(self) -> None:
     if elapsed_s is not None:
         try:
             parts.append(f"elapsed={float(elapsed_s):.2f}s")
-        except Exception:
-            pass
+        except Exception as e:
+            self._log(f"[ERROR] progress elapsed_s format: {e}")
     if detail:
         parts.append(f"detail={detail}")
     self._log(f"mesh> {backend_name}-progress " + " ".join(parts))
@@ -3087,8 +3106,8 @@ def _poll_topology_mesh_future(self):
         if backend_name in {"gmsh", "tqmesh"} and self._topology_mesh_process_pool is not None:
             try:
                 self._topology_mesh_process_pool.shutdown(wait=False, cancel_futures=True)
-            except Exception:
-                pass
+            except Exception as e:
+                self._log(f"[ERROR] process pool shutdown: {e}")
             self._topology_mesh_process_pool = None
 
         recovered = _recover_topology_mesh_checkpoint(self, backend_name=backend_name, run_mode=run_mode, elapsed=elapsed)
@@ -3124,7 +3143,8 @@ def _poll_topology_mesh_future(self):
             if backend_running == "gmsh":
                 try:
                     status_txt = str(self.topo_status_lbl.text() or "").strip()
-                except Exception:
+                except Exception as e:
+                    self._log(f"[ERROR] gmsh status text read: {e}")
                     status_txt = ""
                 elapsed_s = 0.0
                 if self._topology_mesh_started_at is not None:
@@ -3228,8 +3248,8 @@ def _poll_topology_mesh_future(self):
                     f"{int(float(best_stats.get('failed_min_area_cells', 0.0)))}/"
                     f"{int(float(best_stats.get('failed_max_non_orth_cells', 0.0)))}"
                 )
-            except Exception:
-                pass
+            except Exception as e:
+                self._log(f"[ERROR] quality summary log in poll: {e}")
         self._result_data = None
         self.view_mode_combo.setCurrentText("Mesh")
         self._refresh_plot()
@@ -3307,13 +3327,15 @@ def _import_mesh_from_layers(self):
             auto_id += 1
         try:
             nid_i = int(nid)
-        except Exception:
+        except Exception as e:
+            self._log(f"[ERROR] import node_id int conversion: {e}")
             continue
         z = 0.0
         if "bed_z" in nodes_layer.fields().names():
             try:
                 z = float(ft["bed_z"])
-            except Exception:
+            except Exception as e:
+                self._log(f"[ERROR] import bed_z float conversion: {e}")
                 z = 0.0
         nodes_by_id[nid_i] = (float(pt.x()), float(pt.y()), z)
 
@@ -3348,7 +3370,8 @@ def _import_mesh_from_layers(self):
                 continue
             try:
                 out.append(id_to_idx[int(p)])
-            except Exception:
+            except Exception as e:
+                self._log(f"[ERROR] face node id lookup: {e}")
                 continue
         return out
 
@@ -3359,7 +3382,8 @@ def _import_mesh_from_layers(self):
         if "node_ids" in cell_field_names:
             try:
                 ids = _parse_face_node_ids(ft["node_ids"])
-            except Exception:
+            except Exception as e:
+                self._log(f"[ERROR] face node ids parse: {e}")
                 ids = []
 
         if not ids:
@@ -3371,12 +3395,14 @@ def _import_mesh_from_layers(self):
                     if v is None:
                         continue
                     raw_ids.append(int(v))
-                except Exception:
+                except Exception as e:
+                    self._log(f"[ERROR] n_key {key} int conversion: {e}")
                     continue
             if len(raw_ids) >= 3:
                 try:
                     ids = [id_to_idx[v] for v in raw_ids]
-                except Exception:
+                except Exception as e:
+                    self._log(f"[ERROR] raw_ids to idx lookup: {e}")
                     ids = []
 
         if not ids:
@@ -3416,7 +3442,8 @@ def _import_mesh_from_layers(self):
         if "cell_type" in cell_field_names:
             try:
                 ctype = str(ft["cell_type"] or "").strip().lower()
-            except Exception:
+            except Exception as e:
+                self._log(f"[ERROR] cell_type field read: {e}")
                 ctype = ""
         if not ctype:
             ctype = "quadrilateral" if len(ids) == 4 else "triangular"
@@ -3426,7 +3453,8 @@ def _import_mesh_from_layers(self):
         if "region_id" in cell_field_names:
             try:
                 reg_v = int(ft["region_id"])
-            except Exception:
+            except Exception as e:
+                self._log(f"[ERROR] region_id int conversion: {e}")
                 reg_v = -1
         region_vals.append(reg_v)
 
@@ -3434,7 +3462,8 @@ def _import_mesh_from_layers(self):
         if "target_size" in cell_field_names:
             try:
                 ts_v = float(ft["target_size"])
-            except Exception:
+            except Exception as e:
+                self._log(f"[ERROR] target_size float conversion: {e}")
                 ts_v = 0.0
         size_vals.append(ts_v)
 

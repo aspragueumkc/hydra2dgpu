@@ -27,12 +27,15 @@ import hashlib
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 import json
+import logging
 import os
 import re
 import time
 import warnings
 
 import numpy as np
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -354,14 +357,16 @@ def _weld_mesh_nodes(
 def _as_float(v, default: float) -> float:
     try:
         return float(v)
-    except Exception:
+    except Exception as e:
+        logger.warning("_as_float conversion failed: %s", e, exc_info=True)
         return float(default)
 
 
 def _as_int(v, default: int) -> int:
     try:
         return int(v)
-    except Exception:
+    except Exception as e:
+        logger.warning("_as_int conversion failed: %s", e, exc_info=True)
         return int(default)
 
 
@@ -375,7 +380,8 @@ def _normalize_cell_type(v: str, default: str = "triangular") -> str:
 def _env_float(name: str, default: float) -> float:
     try:
         return float(os.environ.get(name, default))
-    except Exception:
+    except Exception as e:
+        logger.warning("_env_float failed for %s: %s", name, e, exc_info=True)
         return float(default)
 
 
@@ -404,7 +410,8 @@ def _load_hydra_meshing_native():
         import hydra_meshing_native as _mn
         _HYDRA_MESHING_NATIVE_MODULE = _mn
         return _HYDRA_MESHING_NATIVE_MODULE
-    except Exception:
+    except Exception as e:
+        logger.warning("hydra_meshing_native direct import failed: %s", e, exc_info=True)
         pass
 
     try:
@@ -423,7 +430,8 @@ def _load_hydra_meshing_native():
         spec.loader.exec_module(_mn)
         _HYDRA_MESHING_NATIVE_MODULE = _mn
         return _HYDRA_MESHING_NATIVE_MODULE
-    except Exception:
+    except Exception as e:
+        logger.warning("hydra_meshing_native fallback import failed: %s", e, exc_info=True)
         _HYDRA_MESHING_NATIVE_MODULE = None
         return None
 
@@ -439,7 +447,8 @@ def _env_csv_floats(name: str, default: Sequence[float]) -> Tuple[float, ...]:
             continue
         try:
             vals.append(float(tok))
-        except Exception:
+        except Exception as e:
+            logger.warning("_env_csv_floats token parse failed: %s", e, exc_info=True)
             continue
     if not vals:
         return tuple(float(v) for v in default)
@@ -969,7 +978,8 @@ def _iter_qgis_polygon_parts(
                 parts.append((outer, holes))
             if parts:
                 return parts
-    except Exception:
+    except Exception as e:
+        logger.warning("_iter_qgis_polygon_parts geom.asMultiPolygon failed: %s", e, exc_info=True)
         pass
 
     try:
@@ -983,7 +993,8 @@ def _iter_qgis_polygon_parts(
                     if len(hring) >= 3:
                         holes.append(hring)
                 parts.append((outer, holes))
-    except Exception:
+    except Exception as e:
+        logger.warning("_iter_qgis_polygon_parts geom.asPolygon failed: %s", e, exc_info=True)
         pass
 
     return parts
@@ -1872,7 +1883,8 @@ def _interface_overlap_metrics(
                 "endpoint_delta_ab_mean": float(out_native.get("endpoint_delta_ab_mean", float("inf"))),
                 "endpoint_delta_ba_mean": float(out_native.get("endpoint_delta_ba_mean", float("inf"))),
             }
-        except Exception:
+        except Exception as e:
+            logger.warning("gmsh native overlap diagnostics failed: %s", e, exc_info=True)
             pass
 
     pa = _sample_closed_polyline(ring_a, step=sample_step)
@@ -2055,7 +2067,8 @@ def _polyline_overlap_fractions_open(
                 1200,
             )
             return float(ov_ab), float(ov_ba)
-        except Exception:
+        except Exception as e:
+            logger.warning("gmsh native polyline_overlap_fractions failed: %s", e, exc_info=True)
             pass
 
     a_pts = [(float(x), float(y)) for (x, y) in list(poly_a or [])]
@@ -2965,7 +2978,8 @@ def _gmsh_flow_aligned_curve_counts(
                 edge_sz = float(edge.target_size)
                 if np.isfinite(edge_sz) and edge_sz > 0.0:
                     spacing = max(edge_sz, 1.0e-9)
-            except Exception:
+            except Exception as e:
+                logger.warning("edge target_size parse failed: %s", e, exc_info=True)
                 pass
         ndiv = max(1, int(round(edge_len / spacing)))
         counts.append(max(2, ndiv + 1))
@@ -4754,7 +4768,8 @@ def _gmsh_available() -> bool:
     try:
         import importlib.util
         return importlib.util.find_spec("gmsh") is not None
-    except Exception:
+    except Exception as e:
+        logger.warning("_gmsh_available check failed: %s", e, exc_info=True)
         return False
 
 
@@ -4798,7 +4813,8 @@ class GmshBackend(MeshingBackend):
             return int(default)
         try:
             return int(round(float(value)))
-        except Exception:
+        except Exception as e:
+            logger.warning("_opt_int conversion failed for %s: %s", name, e, exc_info=True)
             return int(default)
 
     def _opt_bool(self, name: str, default: bool) -> bool:
@@ -4820,7 +4836,8 @@ class GmshBackend(MeshingBackend):
             return float(default)
         try:
             return float(value)
-        except Exception:
+        except Exception as e:
+            logger.warning("_opt_float conversion failed for %s: %s", name, e, exc_info=True)
             return float(default)
 
     def _opt_float_tuple(self, name: str, default: Tuple[float, ...]) -> Tuple[float, ...]:
@@ -4840,7 +4857,8 @@ class GmshBackend(MeshingBackend):
                 continue
             try:
                 parsed.append(float(text))
-            except Exception:
+            except Exception as e:
+                logger.warning("_opt_float_tuple item parse failed: %s", e, exc_info=True)
                 continue
         if not parsed:
             return tuple(float(v) for v in default)
@@ -5073,7 +5091,8 @@ class GmshBackend(MeshingBackend):
             try:
                 _write_json_atomic(progress_path, payload)
                 progress_last_emit = now
-            except Exception:
+            except Exception as e:
+                logger.warning("gmsh progress emit write failed: %s", e, exc_info=True)
                 pass
 
         _emit_progress(
@@ -5093,7 +5112,8 @@ class GmshBackend(MeshingBackend):
                 return
             try:
                 msgs = list(gmsh.logger.get())
-            except Exception:
+            except Exception as e:
+                logger.warning("gmsh logger.get failed: %s", e, exc_info=True)
                 return
             for raw in msgs:
                 msg = str(raw).strip()
@@ -5117,7 +5137,8 @@ class GmshBackend(MeshingBackend):
         try:
             gmsh.logger.start()
             gmsh_logger_started = True
-        except Exception:
+        except Exception as e:
+            logger.warning("gmsh logger.start failed: %s", e, exc_info=True)
             gmsh_logger_started = False
 
         try:
@@ -5610,7 +5631,8 @@ class GmshBackend(MeshingBackend):
             if gmsh_logger_started:
                 try:
                     gmsh.logger.stop()
-                except Exception:
+                except Exception as e:
+                    logger.warning("gmsh logger.stop failed: %s", e, exc_info=True)
                     pass
             gmsh.finalize()
 
@@ -5966,7 +5988,8 @@ class GmshBackend(MeshingBackend):
         def _fmt_float_token(value: object, digits: int = 9) -> str:
             try:
                 fv = float(value)
-            except Exception:
+            except Exception as e:
+                logger.warning("_fmt_float_token conversion failed: %s", e, exc_info=True)
                 return "nan"
             if not np.isfinite(fv):
                 return "nan"
@@ -5979,7 +6002,8 @@ class GmshBackend(MeshingBackend):
                 if bbox is None or len(bbox) != 6:
                     raise ValueError("invalid bbox")
                 return tuple(float(v) for v in bbox)
-            except Exception:
+            except Exception as e:
+                logger.warning("_safe_bbox failed for dim=%s tag=%s: %s", dim, tag, e, exc_info=True)
                 return (float("nan"),) * 6
 
         def _entity_tokens_pre_generate() -> Tuple[List[str], List[str], List[str]]:
@@ -5989,7 +6013,8 @@ class GmshBackend(MeshingBackend):
 
             try:
                 point_entities = gmsh.model.getEntities(0)
-            except Exception:
+            except Exception as e:
+                logger.warning("gmsh getEntities(0) failed: %s", e, exc_info=True)
                 point_entities = []
             point_tags = sorted(
                 int(tag)
@@ -6011,7 +6036,8 @@ class GmshBackend(MeshingBackend):
 
             try:
                 curve_entities = gmsh.model.getEntities(1)
-            except Exception:
+            except Exception as e:
+                logger.warning("gmsh getEntities(1) failed: %s", e, exc_info=True)
                 curve_entities = []
             curve_tags = sorted(
                 int(tag)
@@ -6026,7 +6052,8 @@ class GmshBackend(MeshingBackend):
                         oriented=True,
                         recursive=False,
                     )
-                except Exception:
+                except Exception as e:
+                    logger.warning("gmsh curve getBoundary failed for tag=%s: %s", ctag, e, exc_info=True)
                     boundary = []
                 btags = [
                     int(t)
@@ -6040,7 +6067,8 @@ class GmshBackend(MeshingBackend):
 
             try:
                 surface_entities = gmsh.model.getEntities(2)
-            except Exception:
+            except Exception as e:
+                logger.warning("gmsh getEntities(2) failed: %s", e, exc_info=True)
                 surface_entities = []
             surface_tags_local = sorted(
                 int(tag)
@@ -6055,7 +6083,8 @@ class GmshBackend(MeshingBackend):
                         oriented=True,
                         recursive=False,
                     )
-                except Exception:
+                except Exception as e:
+                    logger.warning("gmsh surface getBoundary failed for tag=%s: %s", stag, e, exc_info=True)
                     boundary = []
                 btags = [
                     int(t)
@@ -6569,7 +6598,8 @@ class GmshBackend(MeshingBackend):
                             ]
                             moved_any = bool(proj_out.get("moved_any", False))
                             nontrans_point_bbox_reject_count += int(proj_out.get("point_bbox_reject_count", 0))
-                        except Exception:
+                        except Exception as e:
+                            logger.warning("nontrans neighbor projection failed: %s", e, exc_info=True)
                             ring_proj = []
 
                     if not ring_proj:
@@ -6667,7 +6697,8 @@ class GmshBackend(MeshingBackend):
                     + preview,
                     RuntimeWarning,
                 )
-        except Exception:
+        except Exception as e:
+            logger.warning("gmsh interface coincidence preflight failed: %s", e, exc_info=True)
             interface_coincidence_report = []
             interface_coincidence_suspects = []
         _record_phase("prebuild_interface_coincidence", prebuild_subphase_started_at)
@@ -6742,7 +6773,8 @@ class GmshBackend(MeshingBackend):
                             _register_quad_curve_candidate(int(seg), [edge_tags[k], edge_tags[k + 1]])
                         if edge_curves:
                             edge_curve_groups.append(edge_curves)
-                    except Exception:
+                    except Exception as e:
+                        logger.warning("quad edge curve build failed: %s", e, exc_info=True)
                         edge_curve_groups.append([])
                         for k in range(len(edge_tags) - 1):
                             lines.append(_geo_seg(edge_tags[k], edge_tags[k + 1]))
@@ -6858,7 +6890,8 @@ class GmshBackend(MeshingBackend):
                             int(len(hlines)),
                             _hash_int_sequence(hlines),
                         )
-                    except Exception:
+                    except Exception as e:
+                        logger.warning("gmsh addCurveLoop for hole failed: %s", e, exc_info=True)
                         pass
 
             surf = gmsh.model.geo.addPlaneSurface([loop] + hole_loops)
@@ -6991,7 +7024,8 @@ class GmshBackend(MeshingBackend):
                             int(len(arc_curve_tags)),
                             _hash_int_sequence(arc_curve_tags),
                         )
-                    except Exception:
+                    except Exception as e:
+                        logger.warning("gmsh mesh.embed curves failed for surf=%s: %s", surf, e, exc_info=True)
                         pass  # arc may not intersect this surface; skip
 
         _record_build_event("geo-sync", "post-arc-and-surfaces")
@@ -7080,7 +7114,8 @@ class GmshBackend(MeshingBackend):
             for x, y in ring:
                 try:
                     pt_tags.append(gmsh.model.geo.addPoint(float(x), float(y), 0.0, cst_size))
-                except Exception:
+                except Exception as e:
+                    logger.warning("gmsh addPoint failed for constraint boundary pt: %s", e, exc_info=True)
                     pass
 
             # Interior samples clipped to the polygon footprint.
@@ -7113,7 +7148,8 @@ class GmshBackend(MeshingBackend):
                     if _point_in_polygon(x, y, ring):
                         try:
                             pt_tags.append(gmsh.model.geo.addPoint(float(x), float(y), 0.0, cst_size))
-                        except Exception:
+                        except Exception as e:
+                            logger.warning("gmsh addPoint failed for constraint interior pt: %s", e, exc_info=True)
                             pass
                     x += step
                 y += step
@@ -7684,15 +7720,18 @@ class GmshBackend(MeshingBackend):
                         )
                         if not ok_tf:
                             gmsh.model.mesh.setTransfiniteSurface(surf)
-                    except Exception:
+                    except Exception as e:
+                        logger.warning("gmsh flow-aligned transfinite setup failed for surf=%s: %s", surf, e, exc_info=True)
                         try:
                             gmsh.model.mesh.setTransfiniteSurface(surf)
-                        except Exception:
+                        except Exception as e2:
+                            logger.warning("gmsh fallback setTransfiniteSurface failed for surf=%s: %s", surf, e2, exc_info=True)
                             pass
                 elif (not flow_align_preflight_fallback) and (not flow_aligned_applied):
                     try:
                         gmsh.model.mesh.setTransfiniteSurface(surf)
-                    except Exception:
+                    except Exception as e:
+                        logger.warning("gmsh setTransfiniteSurface failed for surf=%s: %s", surf, e, exc_info=True)
                         pass  # Works best for 4-sided surfaces.
                 gmsh.model.mesh.setRecombine(2, surf)
                 want_recombine = True
@@ -7703,7 +7742,8 @@ class GmshBackend(MeshingBackend):
                 # frontal path.
                 try:
                     gmsh.model.mesh.setAlgorithm(2, surf, quad_algo)
-                except Exception:
+                except Exception as e:
+                    logger.warning("gmsh setAlgorithm(quad_algo) failed for surf=%s: %s", surf, e, exc_info=True)
                     gmsh.option.setNumber("Mesh.Algorithm", float(quad_algo))
             elif ctype in {"quadrilateral", "channel_generator"}:
                 # Unstructured quads via Blossom recombination.
@@ -7740,7 +7780,8 @@ class GmshBackend(MeshingBackend):
                             min_nodes=edge_min_nodes,
                             edge_curve_groups=edge_curve_groups,
                         )
-                    except Exception:
+                    except Exception as e:
+                        logger.warning("gmsh unstructured quad flow-align failed for surf=%s: %s", surf, e, exc_info=True)
                         pass
                 gmsh.model.mesh.setRecombine(2, surf)
                 want_recombine = True
@@ -7751,13 +7792,15 @@ class GmshBackend(MeshingBackend):
                 # cross field".
                 try:
                     gmsh.model.mesh.setAlgorithm(2, surf, quad_algo)
-                except Exception:
+                except Exception as e:
+                    logger.warning("gmsh setAlgorithm(quad_algo) unstructured failed for surf=%s: %s", surf, e, exc_info=True)
                     gmsh.option.setNumber("Mesh.Algorithm", float(quad_algo))
             else:
                 # triangular: frontal Delaunay for quality.
                 try:
                     gmsh.model.mesh.setAlgorithm(2, surf, tri_algo)
-                except Exception:
+                except Exception as e:
+                    logger.warning("gmsh setAlgorithm(tri_algo) failed for surf=%s: %s", surf, e, exc_info=True)
                     gmsh.option.setNumber("Mesh.Algorithm", float(tri_algo))
         _record_phase("configure_per_surface", phase_started_at)
         _mark_build_stage("after-configure-per-surface")
@@ -7824,7 +7867,8 @@ class GmshBackend(MeshingBackend):
         if want_recombine and bool(gmsh_global_recombine):
             try:
                 gmsh.model.mesh.recombine()
-            except Exception:
+            except Exception as e:
+                logger.warning("gmsh recombine failed: %s", e, exc_info=True)
                 pass
         if optimize_iters > 0:
             methods = tuple(str(m).strip() for m in (optimize_methods or ()) if str(m).strip())
@@ -7846,7 +7890,8 @@ class GmshBackend(MeshingBackend):
             dup_before = gmsh.model.mesh.getDuplicateNodes([])
         except TypeError:
             dup_before = gmsh.model.mesh.getDuplicateNodes()
-        except Exception:
+        except Exception as e:
+            logger.warning("gmsh getDuplicateNodes (before) failed: %s", e, exc_info=True)
             dup_before = []
         if dup_before is None:
             dup_before = []
@@ -7862,19 +7907,22 @@ class GmshBackend(MeshingBackend):
                 gmsh.model.mesh.removeDuplicateNodes([])
             except TypeError:
                 gmsh.model.mesh.removeDuplicateNodes()
-            except Exception:
+            except Exception as e:
+                logger.warning("gmsh removeDuplicateNodes failed: %s", e, exc_info=True)
                 pass
             try:
                 gmsh.model.mesh.removeDuplicateElements([])
             except TypeError:
                 gmsh.model.mesh.removeDuplicateElements()
-            except Exception:
+            except Exception as e:
+                logger.warning("gmsh removeDuplicateElements failed: %s", e, exc_info=True)
                 pass
             try:
                 dup_after = gmsh.model.mesh.getDuplicateNodes([])
             except TypeError:
                 dup_after = gmsh.model.mesh.getDuplicateNodes()
-            except Exception:
+            except Exception as e:
+                logger.warning("gmsh getDuplicateNodes (after) failed: %s", e, exc_info=True)
                 dup_after = []
             if dup_after is None:
                 dup_after = []
@@ -8141,7 +8189,8 @@ def conceptual_from_qgis_layers(
                 return False
             try:
                 return float(v) != 0.0
-            except Exception:
+            except Exception as e:
+                logger.warning("_as_bool conversion failed: %s", e, exc_info=True)
                 return bool(default)
 
         arc_fields = set(arcs_layer.fields().names())
@@ -8154,14 +8203,16 @@ def conceptual_from_qgis_layers(
                     line = geom.asPolyline()
                     if line:
                         pts = [(float(p.x()), float(p.y())) for p in line]
-                except Exception:
+                except Exception as e:
+                    logger.warning("arc asPolyline extraction failed: %s", e, exc_info=True)
                     pts = []
                 if not pts:
                     try:
                         multi = geom.asMultiPolyline()
                         if multi and multi[0]:
                             pts = [(float(p.x()), float(p.y())) for p in multi[0]]
-                    except Exception:
+                    except Exception as e:
+                        logger.warning("arc asMultiPolyline extraction failed: %s", e, exc_info=True)
                         pts = []
             a_id = _as_int(ft["arc_id"], auto_id) if "arc_id" in arc_fields else auto_id
             n0 = _as_int(ft["node0"], -1) if "node0" in arc_fields else -1
@@ -8276,14 +8327,16 @@ def conceptual_from_qgis_layers(
                 line = geom.asPolyline()
                 if line:
                     pts = [(float(p.x()), float(p.y())) for p in line]
-            except Exception:
+            except Exception as e:
+                logger.warning("quad_edge asPolyline extraction failed: %s", e, exc_info=True)
                 pts = []
             if not pts:
                 try:
                     multi = geom.asMultiPolyline()
                     if multi and multi[0]:
                         pts = [(float(p.x()), float(p.y())) for p in multi[0]]
-                except Exception:
+                except Exception as e:
+                    logger.warning("quad_edge asMultiPolyline extraction failed: %s", e, exc_info=True)
                     pts = []
             if len(pts) < 2:
                 continue
@@ -8324,7 +8377,8 @@ def _tqmesh_available() -> bool:
     try:
         import importlib.util
         return importlib.util.find_spec("hydra_tqmesh") is not None
-    except Exception:
+    except Exception as e:
+        logger.warning("_tqmesh_available check failed: %s", e, exc_info=True)
         return False
 
 
@@ -8357,7 +8411,8 @@ class TQMeshBackend(MeshingBackend):
                 return max(default, min_value)
             try:
                 return max(float(value), min_value)
-            except Exception:
+            except Exception as e:
+                logger.warning("TQMesh _opt_float conversion failed for %s: %s", name, e, exc_info=True)
                 return max(default, min_value)
 
         def _opt_bool(name: str, default: bool) -> bool:
@@ -8383,12 +8438,14 @@ class TQMeshBackend(MeshingBackend):
                 for part in parts:
                     try:
                         vals.append(float(part))
-                    except Exception:
+                    except Exception as e:
+                        logger.warning("TQMesh _opt_float_tuple item parse failed: %s", e, exc_info=True)
                         continue
                 return tuple(vals) or tuple(float(v) for v in default)
             try:
                 vals = [float(v) for v in value]  # type: ignore[arg-type]
-            except Exception:
+            except Exception as e:
+                logger.warning("TQMesh _opt_float_tuple list conversion failed: %s", e, exc_info=True)
                 return tuple(float(v) for v in default)
             return tuple(vals) or tuple(float(v) for v in default)
 
@@ -8402,12 +8459,14 @@ class TQMeshBackend(MeshingBackend):
                 for part in parts:
                     try:
                         vals.append(int(round(float(part))))
-                    except Exception:
+                    except Exception as e:
+                        logger.warning("TQMesh _opt_int_tuple item parse failed: %s", e, exc_info=True)
                         continue
                 return tuple(vals) or tuple(int(v) for v in default)
             try:
                 vals = [int(round(float(v))) for v in value]  # type: ignore[arg-type]
-            except Exception:
+            except Exception as e:
+                logger.warning("TQMesh _opt_int_tuple list conversion failed: %s", e, exc_info=True)
                 return tuple(int(v) for v in default)
             return tuple(vals) or tuple(int(v) for v in default)
 
@@ -8508,7 +8567,8 @@ class TQMeshBackend(MeshingBackend):
                 return
             try:
                 progress_emit(stage=stage, region_id=region_id, detail=detail, force=force)
-            except Exception:
+            except Exception as e:
+                logger.warning("TQMesh native merge _emit failed: %s", e, exc_info=True)
                 pass
 
         use_structured_quad_region = self._use_structured_quad_region_method()
@@ -8712,6 +8772,7 @@ class TQMeshBackend(MeshingBackend):
                 )
                 break
             except Exception as exc:
+                logger.warning("TQMesh native merge attempt failed for receiver_index=%s: %s", receiver_index, exc, exc_info=True)
                 merge_errors.append(f"receiver_index={receiver_index}: {exc}")
 
         if merged is None:
@@ -8830,7 +8891,8 @@ class TQMeshBackend(MeshingBackend):
                         spec.loader.exec_module(fresh)
                         if hasattr(fresh, "generate_merged_triangular_meshes"):
                             _tq = fresh
-            except Exception:
+            except Exception as e:
+                logger.warning("TQMesh stale module refresh failed: %s", e, exc_info=True)
                 pass
 
         if not model.regions:
@@ -8894,7 +8956,8 @@ class TQMeshBackend(MeshingBackend):
             try:
                 _write_json_atomic(progress_path, payload)
                 progress_last_emit = now
-            except Exception:
+            except Exception as e:
+                logger.warning("TQMesh progress emit write failed: %s", e, exc_info=True)
                 pass
 
         t_start = time.perf_counter()
@@ -10039,7 +10102,8 @@ def _hybrid_cpp_available() -> bool:
     try:
         import importlib.util
         return importlib.util.find_spec("hydra_hybridmesh") is not None
-    except Exception:
+    except Exception as e:
+        logger.warning("_hybrid_cpp_available check failed: %s", e, exc_info=True)
         return False
 
 
@@ -10060,6 +10124,7 @@ class HybridCppBackend(MeshingBackend):
         try:
             import hydra_hybridmesh as _hm
         except Exception as exc:
+            logger.warning("hydra_hybridmesh direct import failed: %s", exc, exc_info=True)
             # Fallback: load the freshly-built extension from local build/.
             try:
                 import importlib.util

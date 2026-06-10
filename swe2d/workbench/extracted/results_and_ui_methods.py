@@ -154,7 +154,8 @@ def _refresh_layer_combos(self):
                             self.structures_layer_combo.addItem(lyr.name(), lyr.id())
                 elif isinstance(lyr, QgsRasterLayer):
                     self.terrain_layer_combo.addItem(lyr.name(), lyr.id())
-            except Exception:
+            except Exception as e:
+                self._log(f"[ERROR] refresh layer combos failed: {e}")
                 continue
 
         hydro_layer_map = {}
@@ -287,9 +288,11 @@ def _refresh_velocity_vectors_overlay(self, t_s: float):
                         try:
                             cid = int(f["cell_id"])
                             cell_to_fid[cid] = int(f.id())
-                        except Exception:
+                        except Exception as e:
+                            self._log(f"[ERROR] cell centroid fid lookup failed: {e}")
                             continue
-            except Exception:
+            except Exception as e:
+                self._log(f"[ERROR] reading existing cell features failed: {e}")
                 pass
 
         _tf0 = time.perf_counter()
@@ -320,7 +323,8 @@ def _refresh_velocity_vectors_overlay(self, t_s: float):
                         f"(run_id={run_id}, table={table_name}, no usable face rows detected; "
                         f"cell_rows={int(support.get('cell_rows', 0))})."
                     )
-            except Exception:
+            except Exception as e:
+                self._log(f"[ERROR] velocity source support query failed: {e}")
                 pass
             self._velocity_overlay_source_mode_logged[source_key] = True
 
@@ -431,7 +435,8 @@ def _refresh_velocity_vectors_overlay(self, t_s: float):
                     try:
                         cid = int(f["cell_id"])
                         cell_to_fid[cid] = int(f.id())
-                    except Exception:
+                    except Exception as e:
+                        self._log(f"[ERROR] cell fid lookup for added features failed: {e}")
                         continue
 
         stale_cells = [cid for cid in list(cell_to_fid.keys()) if cid not in seen_cells]
@@ -451,7 +456,8 @@ def _refresh_velocity_vectors_overlay(self, t_s: float):
     if iface is not None and hasattr(iface, "mapCanvas"):
         try:
             iface.mapCanvas().refresh()
-        except Exception:
+        except Exception as e:
+            self._log(f"[ERROR] velocity map canvas refresh failed: {e}")
             pass
 
     self._velocity_overlay_frame_counter += 1
@@ -502,15 +508,18 @@ def _refresh_streamline_traces_overlay(self, t_s: float):
     step_scale = 0.85
     try:
         seed_count = max(4, int(panel.streamline_seed_count()))
-    except Exception:
+    except Exception as e:
+        self._log(f"[ERROR] streamline seed count read failed: {e}")
         pass
     try:
         max_steps = max(4, int(panel.streamline_max_steps()))
-    except Exception:
+    except Exception as e:
+        self._log(f"[ERROR] streamline max steps read failed: {e}")
         pass
     try:
         step_scale = max(0.05, float(panel.streamline_step_scale()))
-    except Exception:
+    except Exception as e:
+        self._log(f"[ERROR] streamline step scale read failed: {e}")
         pass
 
     seed_stride = max(1, int(panel.velocity_density_stride()))
@@ -534,7 +543,8 @@ def _refresh_streamline_traces_overlay(self, t_s: float):
         if existing_ids:
             try:
                 dp.deleteFeatures(existing_ids)
-            except Exception:
+            except Exception as e:
+                self._log(f"[ERROR] streamline delete features failed: {e}")
                 pass
 
         _tf0 = time.perf_counter()
@@ -585,7 +595,8 @@ def _refresh_streamline_traces_overlay(self, t_s: float):
             for xy in pts:
                 try:
                     qpts.append(QgsPointXY(float(xy[0]), float(xy[1])))
-                except Exception:
+                except Exception as e:
+                    self._log(f"[ERROR] streamline point XY parse failed: {e}")
                     continue
             if len(qpts) < 2:
                 continue
@@ -606,11 +617,13 @@ def _refresh_streamline_traces_overlay(self, t_s: float):
         if feats:
             try:
                 dp.addFeatures(feats)
-            except Exception:
+            except Exception as e:
+                self._log(f"[ERROR] streamline add features failed: {e}")
                 pass
             try:
                 lyr.updateExtents()
-            except Exception:
+            except Exception as e:
+                self._log(f"[ERROR] streamline layer update extents failed: {e}")
                 pass
             total_traces += int(len(feats))
 
@@ -621,7 +634,8 @@ def _refresh_streamline_traces_overlay(self, t_s: float):
     if iface is not None and hasattr(iface, "mapCanvas"):
         try:
             iface.mapCanvas().refresh()
-        except Exception:
+        except Exception as e:
+            self._log(f"[ERROR] streamline map canvas refresh failed: {e}")
             pass
 
     self._streamline_overlay_frame_counter += 1
@@ -923,7 +937,8 @@ def _bind_map_tab_results_controls(self, map_tab_page: QtWidgets.QWidget, map_re
     ):
         try:
             sig_obj.disconnect(cb)
-        except Exception:
+        except Exception as e:
+            self._log(f"[ERROR] signal disconnect failed: {e}")
             pass
         sig_obj.connect(cb)
 
@@ -980,7 +995,8 @@ def _bind_right_pane_controls(self, right_pane: QtWidgets.QWidget) -> None:
         self.view_mode_combo.blockSignals(False)
     try:
         self.view_mode_combo.currentIndexChanged.disconnect(self._refresh_plot)
-    except Exception:
+    except Exception as e:
+        self._log(f"[ERROR] view mode combo disconnect failed: {e}")
         pass
     self.view_mode_combo.currentIndexChanged.connect(self._refresh_plot)
 
@@ -1012,7 +1028,8 @@ def _bind_right_pane_controls(self, right_pane: QtWidgets.QWidget) -> None:
     ):
         try:
             btn.clicked.disconnect(cb)
-        except Exception:
+        except Exception as e:
+            self._log(f"[ERROR] button signal disconnect failed: {e}")
             pass
         btn.clicked.connect(cb)
 
@@ -1048,7 +1065,8 @@ def _bind_right_pane_controls(self, right_pane: QtWidgets.QWidget) -> None:
         self._canvas.setContextMenuPolicy(QtCore.Qt.ContextMenuPolicy.CustomContextMenu)
         try:
             self._canvas.customContextMenuRequested.disconnect()
-        except Exception:
+        except Exception as e:
+            self._log(f"[ERROR] canvas context menu disconnect failed: {e}")
             pass
         self._canvas.customContextMenuRequested.connect(
             lambda pos: self._show_panel_detach_menu("mesh", self._canvas.mapToGlobal(pos))
@@ -1071,7 +1089,8 @@ def _bind_right_pane_controls(self, right_pane: QtWidgets.QWidget) -> None:
     self.log_view.setContextMenuPolicy(QtCore.Qt.ContextMenuPolicy.CustomContextMenu)
     try:
         self.log_view.customContextMenuRequested.disconnect()
-    except Exception:
+    except Exception as e:
+        self._log(f"[ERROR] log view context menu disconnect failed: {e}")
         pass
     self.log_view.customContextMenuRequested.connect(
         lambda pos: self._show_panel_detach_menu("log", self.log_view.mapToGlobal(pos))
@@ -1173,11 +1192,13 @@ def _build_line_sampling_map(self) -> List[Dict[str, object]]:
     total_profile_points = 0
     try:
         cx_all, cy_all = self._mesh_cell_centroids()
-    except Exception:
+    except Exception as e:
+        self._log(f"[ERROR] mesh cell centroids read failed: {e}")
         cx_all, cy_all = np.empty(0, dtype=np.float64), np.empty(0, dtype=np.float64)
     try:
         area_all = self._mesh_cell_areas()
-    except Exception:
+    except Exception as e:
+        self._log(f"[ERROR] mesh cell areas read failed: {e}")
         area_all = np.empty(0, dtype=np.float64)
     for ft in line_layer.getFeatures():
         geom = ft.geometry()
@@ -1186,7 +1207,8 @@ def _build_line_sampling_map(self) -> List[Dict[str, object]]:
         try:
             if enabled_field is not None and int(ft[enabled_field]) <= 0:
                 continue
-        except Exception:
+        except Exception as e:
+            self._log(f"[ERROR] enabled field check failed: {e}")
             pass
 
         line_len = float(geom.length())
@@ -1212,12 +1234,14 @@ def _build_line_sampling_map(self) -> List[Dict[str, object]]:
             ty = dy / mag
             nx = ty
             ny = -tx
-        except Exception:
+        except Exception as e:
+            self._log(f"[ERROR] profile geometry parse failed: {e}")
             continue
 
         try:
             line_id = int(ft[id_field]) if id_field is not None else int(ft.id())
-        except Exception:
+        except Exception as e:
+            self._log(f"[ERROR] line ID parse failed: {e}")
             line_id = int(ft.id())
         line_name = str(ft[name_field]) if name_field is not None and ft[name_field] not in (None, "") else ""
 
@@ -1235,7 +1259,8 @@ def _build_line_sampling_map(self) -> List[Dict[str, object]]:
                 continue
             try:
                 inter = cell_geom.intersection(geom)
-            except Exception:
+            except Exception as e:
+                self._log(f"[ERROR] cell geometry intersection failed: {e}")
                 continue
             if inter is None or inter.isEmpty():
                 continue
@@ -1248,14 +1273,16 @@ def _build_line_sampling_map(self) -> List[Dict[str, object]]:
             seg_keys: set = set()
             try:
                 parts = inter.asMultiPolyline()
-            except Exception:
+            except Exception as e:
+                self._log(f"[ERROR] multi polyline parse failed: {e}")
                 parts = []
             if not parts:
                 try:
                     poly = inter.asPolyline()
                     if poly:
                         parts = [poly]
-                except Exception:
+                except Exception as e:
+                    self._log(f"[ERROR] polyline parse failed: {e}")
                     parts = []
             for seg in parts:
                 if seg is None or len(seg) < 2:
@@ -1277,7 +1304,8 @@ def _build_line_sampling_map(self) -> List[Dict[str, object]]:
                         if s1 < s0:
                             dx = -dx
                             dy = -dy
-                    except Exception:
+                    except Exception as e:
+                        self._log(f"[ERROR] segment orientation calc failed: {e}")
                         if (dx * tx + dy * ty) < 0.0:
                             dx = -dx
                             dy = -dy
@@ -1317,7 +1345,8 @@ def _build_line_sampling_map(self) -> List[Dict[str, object]]:
                     s_loc = float(geom.lineLocatePoint(cgeom))
                     if orient_sign < 0.0:
                         s_loc = float(line_len) - s_loc
-            except Exception:
+            except Exception as e:
+                self._log(f"[ERROR] intersection centroid computation failed: {e}")
                 s_loc = float("nan")
 
             nearest_face = -1
@@ -1359,7 +1388,8 @@ def _build_line_sampling_map(self) -> List[Dict[str, object]]:
                     py = y0 + t * ey
                     try:
                         dist = float(geom.distance(QgsGeometry.fromPointXY(QgsPointXY(px, py))))
-                    except Exception:
+                    except Exception as e:
+                        self._log(f"[ERROR] geometry distance calc failed: {e}")
                         dist = math.hypot(cx_i - px, cy_i - py)
                     el = math.sqrt(el2)
                     nx_e = ey / el
@@ -1483,7 +1513,8 @@ def _build_line_sampling_map(self) -> List[Dict[str, object]]:
                             pt = geom.interpolate(float(s_raw)).asPoint()
                             px = float(pt.x())
                             py = float(pt.y())
-                        except Exception:
+                        except Exception as e:
+                            self._log(f"[ERROR] profile station interpolation failed: {e}")
                             continue
                         d2 = (cx_local - px) * (cx_local - px) + (cy_local - py) * (cy_local - py)
                         if d2.size <= k_nei:
@@ -1501,7 +1532,8 @@ def _build_line_sampling_map(self) -> List[Dict[str, object]]:
                         profile_cell_w[jj, :n_eff] = w_nei
 
                     total_profile_points += int(n_profile)
-            except Exception:
+            except Exception as e:
+                self._log(f"[ERROR] profile cell weight computation failed: {e}")
                 profile_station_m = np.empty(0, dtype=np.float64)
                 profile_cell_idx = np.empty((0, 0), dtype=np.int32)
                 profile_cell_w = np.empty((0, 0), dtype=np.float64)

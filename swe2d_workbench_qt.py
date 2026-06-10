@@ -16,6 +16,7 @@ import copy
 import csv
 import datetime
 import json
+import logging
 import math
 import multiprocessing
 import os
@@ -1118,7 +1119,8 @@ class SWE2DModelGeoPackageExplorerDialog(QtWidgets.QDialog):
         self.preview_btn = QtWidgets.QPushButton("Preview Table")
         self.rename_btn = QtWidgets.QPushButton("Rename Table")
         self.delete_btn = QtWidgets.QPushButton("Delete Table")
-        for btn in (self.refresh_btn, self.open_btn, self.preview_btn, self.rename_btn, self.delete_btn):
+        self.delete_run_btn = QtWidgets.QPushButton("Delete by Run ID")
+        for btn in (self.refresh_btn, self.open_btn, self.preview_btn, self.rename_btn, self.delete_btn, self.delete_run_btn):
             row.addWidget(btn)
         row.addStretch(1)
         root.addLayout(row)
@@ -1133,6 +1135,7 @@ class SWE2DModelGeoPackageExplorerDialog(QtWidgets.QDialog):
         self.preview_btn.clicked.connect(self.preview_selected)
         self.rename_btn.clicked.connect(self.rename_selected)
         self.delete_btn.clicked.connect(self.delete_selected)
+        self.delete_run_btn.clicked.connect(self._delete_by_run_id)
         self.table.itemSelectionChanged.connect(self._sync_button_state)
         self.table.itemDoubleClicked.connect(lambda _item: self.open_selected())
 
@@ -2425,6 +2428,21 @@ class SWE2DDetachedPanelDialog(QtWidgets.QDialog):
         super().closeEvent(event)
 
 
+class _RuntimeLogHandler(logging.Handler):
+    """Routes Python logging messages (WARNING+) to the workbench GUI runtime log."""
+
+    def __init__(self, log_fn):
+        super().__init__(level=logging.WARNING)
+        self._log_fn = log_fn
+
+    def emit(self, record: logging.LogRecord) -> None:
+        msg = self.format(record)
+        try:
+            self._log_fn(msg)
+        except Exception:
+            pass
+
+
 class SWE2DWorkbenchDialog(QtWidgets.QDialog):
     def __init__(self, parent=None, iface=None):
         super().__init__(parent)
@@ -2439,6 +2457,8 @@ class SWE2DWorkbenchDialog(QtWidgets.QDialog):
             concurrent_futures_module=concurrent.futures,
             try_import_matplotlib_qt=_try_import_matplotlib_qt,
         )
+
+        self._wire_runtime_log_handler()
 
         self._build_ui()
         bootstrap_startup_run_components(
@@ -2518,7 +2538,8 @@ class SWE2DWorkbenchDialog(QtWidgets.QDialog):
                     if iface_obj is not None:
                         self._iface = iface_obj
                         return iface_obj
-                except Exception:
+                except Exception as e:
+                    self._log(f"[ERROR] resolve qgis iface failed: {e}")
                     pass
             if hasattr(parent, "iface"):
                 try:
@@ -2526,7 +2547,8 @@ class SWE2DWorkbenchDialog(QtWidgets.QDialog):
                     if iface_obj is not None:
                         self._iface = iface_obj
                         return iface_obj
-                except Exception:
+                except Exception as e:
+                    self._log(f"[ERROR] resolve qgis iface failed: {e}")
                     pass
 
         try:
@@ -2536,7 +2558,8 @@ class SWE2DWorkbenchDialog(QtWidgets.QDialog):
             if iface_obj is not None:
                 self._iface = iface_obj
                 return iface_obj
-        except Exception:
+        except Exception as e:
+            self._log(f"[ERROR] resolve qgis iface failed: {e}")
             pass
         return None
 
@@ -2546,7 +2569,8 @@ class SWE2DWorkbenchDialog(QtWidgets.QDialog):
             return None
         try:
             return iface_obj.mapCanvas()
-        except Exception:
+        except Exception as e:
+            self._log(f"[ERROR] resolve map canvas failed: {e}")
             return None
 
     def _forms_file_path(self, file_name: str) -> str:
@@ -2558,7 +2582,8 @@ class SWE2DWorkbenchDialog(QtWidgets.QDialog):
         if _qgis_uic is not None and os.path.exists(ui_path):
             try:
                 mesh_tab_page = _qgis_uic.loadUi(ui_path)
-            except Exception:
+            except Exception as e:
+                self._log(f"[ERROR] build mesh tab page failed: {e}")
                 mesh_tab_page = None
         if mesh_tab_page is None:
             mesh_tab_page = self._build_mesh_tab_page_fallback()
@@ -2671,7 +2696,8 @@ class SWE2DWorkbenchDialog(QtWidgets.QDialog):
         if _qgis_uic is not None and os.path.exists(ui_path):
             try:
                 boundary_tab_page = _qgis_uic.loadUi(ui_path)
-            except Exception:
+            except Exception as e:
+                self._log(f"[ERROR] build boundary tab page failed: {e}")
                 boundary_tab_page = None
         if boundary_tab_page is None:
             boundary_tab_page = self._build_boundary_tab_page_fallback()
@@ -2777,7 +2803,8 @@ class SWE2DWorkbenchDialog(QtWidgets.QDialog):
             edit_btn = _find_or_create_button(f"{side}_bc_editor_btn", "Edit...")
             try:
                 edit_btn.clicked.disconnect()
-            except Exception:
+            except Exception as e:
+                self._log(f"[ERROR] ensure widget failed: {e}")
                 pass
             edit_btn.clicked.connect(lambda _checked=False, s=side: self._open_hydrograph_editor(s))
 
@@ -2823,7 +2850,8 @@ class SWE2DWorkbenchDialog(QtWidgets.QDialog):
         if _qgis_uic is not None and os.path.exists(ui_path):
             try:
                 map_tab_page = _qgis_uic.loadUi(ui_path)
-            except Exception:
+            except Exception as e:
+                self._log(f"[ERROR] ensure widget failed: {e}")
                 map_tab_page = None
         if map_tab_page is None:
             map_tab_page = self._build_map_tab_page_fallback()
@@ -2947,19 +2975,22 @@ class SWE2DWorkbenchDialog(QtWidgets.QDialog):
 
         try:
             self.autopop_group_btn.clicked.disconnect(self._autopopulate_layer_combos_from_group)
-        except Exception:
+        except Exception as e:
+            self._log(f"[ERROR] ensure labeled widget failed: {e}")
             pass
         self.autopop_group_btn.clicked.connect(self._autopopulate_layer_combos_from_group)
 
         try:
             self.refresh_layers_btn.clicked.disconnect(self._refresh_layer_combos)
-        except Exception:
+        except Exception as e:
+            self._log(f"[ERROR] ensure labeled widget failed: {e}")
             pass
         self.refresh_layers_btn.clicked.connect(self._refresh_layer_combos)
 
         try:
             self.create_model_gpkg_btn.clicked.disconnect(self._create_2d_model_geopackage)
-        except Exception:
+        except Exception as e:
+            self._log(f"[ERROR] ensure labeled widget failed: {e}")
             pass
         self.create_model_gpkg_btn.clicked.connect(self._create_2d_model_geopackage)
 
@@ -3036,7 +3067,8 @@ class SWE2DWorkbenchDialog(QtWidgets.QDialog):
         ):
             try:
                 btn.clicked.disconnect(cb)
-            except Exception:
+            except Exception as e:
+                self._log(f"[ERROR] find or create button failed: {e}")
                 pass
             btn.clicked.connect(cb)
 
@@ -3092,7 +3124,8 @@ class SWE2DWorkbenchDialog(QtWidgets.QDialog):
         ):
             try:
                 btn.clicked.disconnect(cb)
-            except Exception:
+            except Exception as e:
+                self._log(f"[ERROR] find or create button failed: {e}")
                 pass
             btn.clicked.connect(cb)
 
@@ -3102,7 +3135,8 @@ class SWE2DWorkbenchDialog(QtWidgets.QDialog):
         if _qgis_uic is not None and os.path.exists(ui_path):
             try:
                 topology_tab_page = _qgis_uic.loadUi(ui_path)
-            except Exception:
+            except Exception as e:
+                self._log(f"[ERROR] find or create button failed: {e}")
                 topology_tab_page = None
         if topology_tab_page is None:
             topology_tab_page = self._build_topology_tab_page_fallback()
@@ -3132,7 +3166,8 @@ class SWE2DWorkbenchDialog(QtWidgets.QDialog):
         if _qgis_uic is not None and os.path.exists(ui_path):
             try:
                 model_tab_page = _qgis_uic.loadUi(ui_path)
-            except Exception:
+            except Exception as e:
+                self._log(f"[ERROR] build model tab page failed: {e}")
                 model_tab_page = None
         if model_tab_page is None:
             model_tab_page = self._build_model_tab_page_fallback()
@@ -3179,7 +3214,8 @@ class SWE2DWorkbenchDialog(QtWidgets.QDialog):
         if _qgis_uic is not None and os.path.exists(ui_path):
             try:
                 patch_page = _qgis_uic.loadUi(ui_path)
-            except Exception:
+            except Exception as e:
+                self._log(f"[ERROR] build 3d patch tab page failed: {e}")
                 patch_page = None
         if patch_page is None:
             patch_page = QtWidgets.QWidget()
@@ -3300,7 +3336,8 @@ class SWE2DWorkbenchDialog(QtWidgets.QDialog):
         ):
             try:
                 btn.clicked.disconnect(cb)
-            except Exception:
+            except Exception as e:
+                self._log(f"[ERROR] ensure failed: {e}")
                 pass
             btn.clicked.connect(cb)
 
@@ -3314,7 +3351,8 @@ class SWE2DWorkbenchDialog(QtWidgets.QDialog):
         if _qgis_uic is not None and os.path.exists(ui_path):
             try:
                 run_tab_page = _qgis_uic.loadUi(ui_path)
-            except Exception:
+            except Exception as e:
+                self._log(f"[ERROR] build run tab page failed: {e}")
                 run_tab_page = None
         if run_tab_page is None:
             run_tab_page = self._build_run_tab_page_fallback()
@@ -3382,7 +3420,8 @@ class SWE2DWorkbenchDialog(QtWidgets.QDialog):
         if _qgis_uic is not None and os.path.exists(ui_path):
             try:
                 right_pane = _qgis_uic.loadUi(ui_path)
-            except Exception:
+            except Exception as e:
+                self._log(f"[ERROR] build right pane failed: {e}")
                 right_pane = None
         if right_pane is None:
             right_pane = self._build_right_pane_fallback()
@@ -3452,7 +3491,8 @@ class SWE2DWorkbenchDialog(QtWidgets.QDialog):
         if _qgis_uic is not None and os.path.exists(ui_path):
             try:
                 shell = _qgis_uic.loadUi(ui_path)
-            except Exception:
+            except Exception as e:
+                self._log(f"[ERROR] build workbench shell failed: {e}")
                 shell = None
         if shell is None:
             shell = self._build_workbench_shell_fallback()
@@ -3666,11 +3706,13 @@ class SWE2DWorkbenchDialog(QtWidgets.QDialog):
 
         try:
             buttons.rejected.disconnect(self.reject)
-        except Exception:
+        except Exception as e:
+            self._log(f"[ERROR] build ui failed: {e}")
             pass
         try:
             buttons.accepted.disconnect(self.accept)
-        except Exception:
+        except Exception as e:
+            self._log(f"[ERROR] build ui failed: {e}")
             pass
         buttons.rejected.connect(self.reject)
         buttons.accepted.connect(self.accept)
@@ -3696,19 +3738,22 @@ class SWE2DWorkbenchDialog(QtWidgets.QDialog):
         for layout in parent_widget.findChildren(QtWidgets.QLayout):
             try:
                 layout.setContentsMargins(4, 4, 4, 4)
-            except Exception:
+            except Exception as e:
+                self._log(f"[ERROR] make left controls compact failed: {e}")
                 pass
             try:
                 if hasattr(layout, "setSpacing"):
                     layout.setSpacing(4)
-            except Exception:
+            except Exception as e:
+                self._log(f"[ERROR] make left controls compact failed: {e}")
                 pass
             if isinstance(layout, QtWidgets.QFormLayout):
                 try:
                     layout.setFieldGrowthPolicy(QtWidgets.QFormLayout.FieldGrowthPolicy.AllNonFixedFieldsGrow)
                     layout.setHorizontalSpacing(6)
                     layout.setVerticalSpacing(4)
-                except Exception:
+                except Exception as e:
+                    self._log(f"[ERROR] make left controls compact failed: {e}")
                     pass
 
     def _register_detachable_tab_widget(self, tab_widget: QtWidgets.QTabWidget) -> None:
@@ -3752,7 +3797,8 @@ class SWE2DWorkbenchDialog(QtWidgets.QDialog):
             try:
                 if page.parent() is not None:
                     page.setParent(None)
-            except Exception:
+            except Exception as e:
+                self._log(f"[ERROR] reattach failed: {e}")
                 pass
             target_index = max(0, min(insert_index, tab_widget.count()))
             tab_widget.insertTab(target_index, page, icon, title)
@@ -3772,7 +3818,8 @@ class SWE2DWorkbenchDialog(QtWidgets.QDialog):
             try:
                 if dialog in self._detached_panel_dialogs:
                     self._detached_panel_dialogs.remove(dialog)
-            except Exception:
+            except Exception as e:
+                self._log(f"[ERROR] cleanup failed: {e}")
                 pass
 
         dlg.finished.connect(_cleanup)
@@ -3802,7 +3849,8 @@ class SWE2DWorkbenchDialog(QtWidgets.QDialog):
             try:
                 self.log_view.appendHtml(
                     f'<span style="color:red;font-weight:bold;">{msg_txt}</span>')
-            except Exception:
+            except Exception as e:
+                self._log(f"[ERROR] log failed: {e}")
                 self.log_view.appendPlainText(msg_txt)
         else:
             self.log_view.appendPlainText(msg_txt)
@@ -3810,7 +3858,8 @@ class SWE2DWorkbenchDialog(QtWidgets.QDialog):
             try:
                 if dlg is not None:
                     dlg.append_text(msg_txt)
-            except Exception:
+            except Exception as e:
+                self._log(f"[ERROR] log failed: {e}")
                 pass
         # Avoid pumping the Qt event loop on every log line; the run loop
         # already performs throttled processEvents calls for UI responsiveness.
@@ -3866,7 +3915,8 @@ class SWE2DWorkbenchDialog(QtWidgets.QDialog):
             try:
                 if dialog in self._runtime_log_detached_dialogs:
                     self._runtime_log_detached_dialogs.remove(dialog)
-            except Exception:
+            except Exception as e:
+                self._log(f"[ERROR] cleanup failed: {e}")
                 pass
             if self._runtime_log_detached_dialog is dialog:
                 self._runtime_log_detached_dialog = None
@@ -3883,7 +3933,8 @@ class SWE2DWorkbenchDialog(QtWidgets.QDialog):
             try:
                 if dialog in self._mesh_view_detached_dialogs:
                     self._mesh_view_detached_dialogs.remove(dialog)
-            except Exception:
+            except Exception as e:
+                self._log(f"[ERROR] cleanup failed: {e}")
                 pass
             if self._mesh_view_detached_dialog is dialog:
                 self._mesh_view_detached_dialog = None
@@ -3901,6 +3952,17 @@ class SWE2DWorkbenchDialog(QtWidgets.QDialog):
                 self._log(ln)
             self._log("--- traceback end ---")
 
+    def _wire_runtime_log_handler(self) -> None:
+        """Wire Python logging WARNING+ from swe2d subpackages to the GUI runtime log."""
+        _handler = _RuntimeLogHandler(self._log)
+        _handler.setFormatter(logging.Formatter("%(levelname)s|%(name)s: %(message)s"))
+        for logger_name in [
+            "swe2d.mesh.meshing",
+            "swe2d.boundary_and_forcing.boundary_qgis_adapter",
+            "swe2d.boundary_and_forcing.spatial_forcing_qgis_adapter",
+        ]:
+            logging.getLogger(logger_name).addHandler(_handler)
+
     def _refresh_layer_group_combo(self):
         if not _HAVE_QGIS_CORE or QgsProject is None or not hasattr(self, "layer_group_combo"):
             return
@@ -3909,7 +3971,8 @@ class SWE2DWorkbenchDialog(QtWidgets.QDialog):
         self.layer_group_combo.addItem("(no group)", None)
         try:
             root = QgsProject.instance().layerTreeRoot()
-        except Exception:
+        except Exception as e:
+            self._log(f"[ERROR] refresh layer group combo failed: {e}")
             root = None
         if root is None:
             return
@@ -3918,13 +3981,15 @@ class SWE2DWorkbenchDialog(QtWidgets.QDialog):
             out = []
             try:
                 children = list(node.children())
-            except Exception:
+            except Exception as e:
+                self._log(f"[ERROR] walk failed: {e}")
                 children = []
             for ch in children:
                 if hasattr(ch, "children"):
                     try:
                         nm = str(ch.name() or "")
-                    except Exception:
+                    except Exception as e:
+                        self._log(f"[ERROR] walk failed: {e}")
                         nm = ""
                     if not nm:
                         continue
@@ -3950,7 +4015,8 @@ class SWE2DWorkbenchDialog(QtWidgets.QDialog):
             return ids
         try:
             root = QgsProject.instance().layerTreeRoot()
-        except Exception:
+        except Exception as e:
+            self._log(f"[ERROR] walk failed: {e}")
             return ids
 
         parts = [p for p in target.split("/") if p]
@@ -3962,7 +4028,8 @@ class SWE2DWorkbenchDialog(QtWidgets.QDialog):
                     if hasattr(ch, "children") and str(ch.name() or "") == part:
                         nxt = ch
                         break
-            except Exception:
+            except Exception as e:
+                self._log(f"[ERROR] walk failed: {e}")
                 nxt = None
             if nxt is None:
                 return ids
@@ -3971,7 +4038,8 @@ class SWE2DWorkbenchDialog(QtWidgets.QDialog):
         def _collect(n):
             try:
                 children = list(n.children())
-            except Exception:
+            except Exception as e:
+                self._log(f"[ERROR] collect failed: {e}")
                 children = []
             for ch in children:
                 if hasattr(ch, "children"):
@@ -3981,7 +4049,8 @@ class SWE2DWorkbenchDialog(QtWidgets.QDialog):
                         lyr = ch.layer()
                         if lyr is not None:
                             ids.add(str(lyr.id()))
-                    except Exception:
+                    except Exception as e:
+                        self._log(f"[ERROR] collect failed: {e}")
                         pass
 
         _collect(node)
@@ -4052,20 +4121,24 @@ class SWE2DWorkbenchDialog(QtWidgets.QDialog):
             try:
                 if dlg is not None:
                     dlg.close()
-            except Exception:
+            except Exception as e:
+                self._log(f"[ERROR] norm failed: {e}")
                 pass
         try:
             self._destroy_high_perf_canvas_overlay_item()
-        except Exception:
+        except Exception as e:
+            self._log(f"[ERROR] norm failed: {e}")
             pass
         try:
             self._topology_mesh_thread_pool.shutdown(wait=False, cancel_futures=True)
-        except Exception:
+        except Exception as e:
+            self._log(f"[ERROR] norm failed: {e}")
             pass
         try:
             if self._topology_mesh_process_pool is not None:
                 self._topology_mesh_process_pool.shutdown(wait=False, cancel_futures=True)
-        except Exception:
+        except Exception as e:
+            self._log(f"[ERROR] norm failed: {e}")
             pass
         super().closeEvent(event)
 
@@ -4082,11 +4155,13 @@ class SWE2DWorkbenchDialog(QtWidgets.QDialog):
     def _set_topology_mesh_busy(self, busy: bool, status_msg: Optional[str] = None):
         try:
             self.topo_generate_btn.setEnabled(not busy)
-        except Exception:
+        except Exception as e:
+            self._log(f"[ERROR] set topology mesh busy failed: {e}")
             pass
         try:
             self.topo_terminate_btn.setEnabled(bool(busy))
-        except Exception:
+        except Exception as e:
+            self._log(f"[ERROR] set topology mesh busy failed: {e}")
             pass
         if status_msg is not None:
             self.topo_status_lbl.setText(status_msg)
@@ -4098,7 +4173,8 @@ class SWE2DWorkbenchDialog(QtWidgets.QDialog):
             self.progress_bar.setValue(0)
             try:
                 QtWidgets.QApplication.restoreOverrideCursor()
-            except Exception:
+            except Exception as e:
+                self._log(f"[ERROR] set topology mesh busy failed: {e}")
                 pass
 
     def _format_elapsed(self, started_at: Optional[float]) -> str:
@@ -4121,7 +4197,8 @@ class SWE2DWorkbenchDialog(QtWidgets.QDialog):
     def _opt_float(self, value: object, default: float) -> float:
         try:
             return float(value)
-        except Exception:
+        except Exception as e:
+            self._log(f"[ERROR] opt float failed: {e}")
             return float(default)
 
     def _effective_topology_timeout_sec(self, backend_name: str, mesh_options: Optional[Dict[str, object]]) -> float:
@@ -4161,13 +4238,15 @@ class SWE2DWorkbenchDialog(QtWidgets.QDialog):
 
         try:
             fut.cancel()
-        except Exception:
+        except Exception as e:
+            self._log(f"[ERROR] terminate topology mesh run failed: {e}")
             pass
 
         if backend_name in {"gmsh", "tqmesh"} and self._topology_mesh_process_pool is not None:
             try:
                 self._topology_mesh_process_pool.shutdown(wait=False, cancel_futures=True)
-            except Exception:
+            except Exception as e:
+                self._log(f"[ERROR] terminate topology mesh run failed: {e}")
                 pass
             self._topology_mesh_process_pool = None
 
@@ -4185,7 +4264,8 @@ class SWE2DWorkbenchDialog(QtWidgets.QDialog):
                 os.remove(cp_path)
             except FileNotFoundError:
                 pass
-            except Exception:
+            except Exception as e:
+                self._log(f"[ERROR] terminate topology mesh run failed: {e}")
                 pass
         self._topology_mesh_checkpoint_path = ""
         progress_path = str(getattr(self, "_topology_mesh_progress_path", "") or "").strip()
@@ -4194,7 +4274,8 @@ class SWE2DWorkbenchDialog(QtWidgets.QDialog):
                 os.remove(progress_path)
             except FileNotFoundError:
                 pass
-            except Exception:
+            except Exception as e:
+                self._log(f"[ERROR] terminate topology mesh run failed: {e}")
                 pass
         self._topology_mesh_progress_path = ""
         self._topology_mesh_progress_last_seq = -1
@@ -4238,19 +4319,22 @@ class SWE2DWorkbenchDialog(QtWidgets.QDialog):
             self._topology_mesh_options.setdefault("gmsh_progress_emit_interval_s", 0.75)
             try:
                 os.makedirs(cp_dir, exist_ok=True)
-            except Exception:
+            except Exception as e:
+                self._log(f"[ERROR] start topology mesh async failed: {e}")
                 pass
             try:
                 os.remove(self._topology_mesh_checkpoint_path)
             except FileNotFoundError:
                 pass
-            except Exception:
+            except Exception as e:
+                self._log(f"[ERROR] start topology mesh async failed: {e}")
                 pass
             try:
                 os.remove(self._topology_mesh_progress_path)
             except FileNotFoundError:
                 pass
-            except Exception:
+            except Exception as e:
+                self._log(f"[ERROR] start topology mesh async failed: {e}")
                 pass
         elif backend_name == "tqmesh":
             cp_dir = os.path.join("/tmp", "qgis-live-bridge")
@@ -4260,13 +4344,15 @@ class SWE2DWorkbenchDialog(QtWidgets.QDialog):
             self._topology_mesh_options.setdefault("tqmesh_progress_emit_interval_s", 0.75)
             try:
                 os.makedirs(cp_dir, exist_ok=True)
-            except Exception:
+            except Exception as e:
+                self._log(f"[ERROR] start topology mesh async failed: {e}")
                 pass
             try:
                 os.remove(self._topology_mesh_progress_path)
             except FileNotFoundError:
                 pass
-            except Exception:
+            except Exception as e:
+                self._log(f"[ERROR] start topology mesh async failed: {e}")
                 pass
         if run_mode == "full":
             self._topology_mesh_auto_fallback_used = False
@@ -4341,7 +4427,8 @@ class SWE2DWorkbenchDialog(QtWidgets.QDialog):
             return
         try:
             layer.setEditorWidgetSetup(idx, QgsEditorWidgetSetup("ValueMap", {"map": mapping}))
-        except Exception:
+        except Exception as e:
+            self._log(f"[ERROR] set value map editor failed: {e}")
             pass
 
     def _set_expression_constraint(self, layer, field_name: str, expression: str):
@@ -4350,7 +4437,8 @@ class SWE2DWorkbenchDialog(QtWidgets.QDialog):
             return
         try:
             layer.setConstraintExpression(idx, expression, "")
-        except Exception:
+        except Exception as e:
+            self._log(f"[ERROR] set expression constraint failed: {e}")
             pass
         if QgsFieldConstraints is None:
             return
@@ -4360,7 +4448,8 @@ class SWE2DWorkbenchDialog(QtWidgets.QDialog):
                 QgsFieldConstraints.ConstraintExpression,
                 QgsFieldConstraints.ConstraintStrengthHard,
             )
-        except Exception:
+        except Exception as e:
+            self._log(f"[ERROR] set expression constraint failed: {e}")
             pass
 
     def _configure_swe2d_layer_editors(self, layer):
@@ -4375,7 +4464,8 @@ class SWE2DWorkbenchDialog(QtWidgets.QDialog):
             if crs is None or not crs.isValid() or QgsUnitTypes is None:
                 return None
             return crs.mapUnits()
-        except Exception:
+        except Exception as e:
+            self._log(f"[ERROR] detect map unit failed: {e}")
             return None
 
     def _update_unit_system_from_crs(self):
@@ -4413,7 +4503,8 @@ class SWE2DWorkbenchDialog(QtWidgets.QDialog):
                     unit_name = str(QgsUnitTypes.toString(unit)) if hasattr(QgsUnitTypes, "toString") else "m"
                     sys_name = "SI (fallback)"
                     scale = 1.0
-            except Exception:
+            except Exception as e:
+                self._log(f"[ERROR] update unit system from crs failed: {e}")
                 pass
 
         _u.configure(scale)
@@ -4458,7 +4549,8 @@ class SWE2DWorkbenchDialog(QtWidgets.QDialog):
             return []
         try:
             return list(QgsProject.instance().mapLayers().values())
-        except Exception:
+        except Exception as e:
+            self._log(f"[ERROR] iter project layers failed: {e}")
             return []
 
     def _combo_layer(self, combo: QtWidgets.QComboBox, expected_kind: str):
@@ -4476,7 +4568,8 @@ class SWE2DWorkbenchDialog(QtWidgets.QDialog):
                     return lyr
                 if expected_kind == "raster" and isinstance(lyr, QgsRasterLayer):
                     return lyr
-            except Exception:
+            except Exception as e:
+                self._log(f"[ERROR] combo layer failed: {e}")
                 continue
         return None
 
@@ -4489,7 +4582,8 @@ class SWE2DWorkbenchDialog(QtWidgets.QDialog):
                 _g.setdefault("QgsProject", QgsProject)
                 _g.setdefault("QgsVectorLayer", QgsVectorLayer)
                 _g.setdefault("QgsRasterLayer", QgsRasterLayer)
-        except Exception:
+        except Exception as e:
+            self._log(f"[ERROR] refresh layer combos failed: {e}")
             pass
         return _logic(self)
 
@@ -4651,7 +4745,8 @@ class SWE2DWorkbenchDialog(QtWidgets.QDialog):
             reg_layer = self._combo_layer(self.topo_regions_combo, "vector")
             if reg_layer is not None and hasattr(reg_layer, "source"):
                 candidates.append(str(reg_layer.source() or ""))
-        except Exception:
+        except Exception as e:
+            self._log(f"[ERROR] infer workspace root for meshing failed: {e}")
             pass
 
         try:
@@ -4659,7 +4754,8 @@ class SWE2DWorkbenchDialog(QtWidgets.QDialog):
                 proj_path = str(QgsProject.instance().fileName() or "").strip()
                 if proj_path:
                     candidates.append(proj_path)
-        except Exception:
+        except Exception as e:
+            self._log(f"[ERROR] infer workspace root for meshing failed: {e}")
             pass
 
         for raw in candidates:
@@ -4756,7 +4852,8 @@ class SWE2DWorkbenchDialog(QtWidgets.QDialog):
             proj_crs = QgsProject.instance().crs()
             if proj_crs is not None and proj_crs.isValid():
                 crs_auth = proj_crs.authid() or crs_auth
-        except Exception:
+        except Exception as e:
+            self._log(f"[ERROR] create topology template layers failed: {e}")
             pass
 
         nodes = QgsVectorLayer(
@@ -4901,7 +4998,8 @@ class SWE2DWorkbenchDialog(QtWidgets.QDialog):
             crs = QgsProject.instance().crs()
             if crs is not None and crs.isValid():
                 crs_auth = crs.authid() or crs_auth
-        except Exception:
+        except Exception as e:
+            self._log(f"[ERROR] create lumped hydrology geopackage failed: {e}")
             pass
 
         subbasins = QgsVectorLayer(
@@ -5073,7 +5171,8 @@ class SWE2DWorkbenchDialog(QtWidgets.QDialog):
             proj_crs = QgsProject.instance().crs()
             if proj_crs is not None and proj_crs.isValid():
                 crs_auth = proj_crs.authid() or crs_auth
-        except Exception:
+        except Exception as e:
+            self._log(f"[ERROR] export mesh to layers failed: {e}")
             pass
 
         nodes_layer = QgsVectorLayer(
@@ -5164,7 +5263,8 @@ class SWE2DWorkbenchDialog(QtWidgets.QDialog):
             _g = getattr(_logic, "__globals__", None)
             if isinstance(_g, dict):
                 _g["_HAVE_QGIS_CORE"] = _HAVE_QGIS_CORE
-        except Exception:
+        except Exception as e:
+            self._log(f"[ERROR] import mesh from layers failed: {e}")
             pass
         return _logic(self)
 
@@ -5259,7 +5359,8 @@ class SWE2DWorkbenchDialog(QtWidgets.QDialog):
             try:
                 nid = int(ft["node_id"])
                 z = float(ft["bed_z"])
-            except Exception:
+            except Exception as e:
+                self._log(f"[ERROR] pull node z from layer failed: {e}")
                 continue
             if 0 <= nid < node_z.shape[0]:
                 node_z[nid] = z
@@ -5327,14 +5428,16 @@ class SWE2DWorkbenchDialog(QtWidgets.QDialog):
             for sm in self._line_sampling_map_cache:
                 try:
                     lid = int(sm.get("line_id", -1))
-                except Exception:
+                except Exception as e:
+                    self._log(f"[ERROR] build line sampling map failed: {e}")
                     continue
                 seg = np.asarray(sm.get("flux_face_segments", np.empty((0, 4))), dtype=np.float64)
                 if seg.ndim != 2 or seg.shape[1] != 4 or seg.size <= 0:
                     continue
                 by_line[lid] = seg
             self._line_flux_face_segments_by_line = by_line
-        except Exception:
+        except Exception as e:
+            self._log(f"[ERROR] build line sampling map failed: {e}")
             self._line_sampling_map_cache = []
             self._line_flux_face_segments_by_line = {}
         return smap
@@ -5541,7 +5644,8 @@ class SWE2DWorkbenchDialog(QtWidgets.QDialog):
                     gpkg = src.split("|", 1)[0]
                     if gpkg.lower().endswith(".gpkg") and os.path.exists(gpkg):
                         return gpkg
-                except Exception:
+                except Exception as e:
+                    self._log(f"[ERROR] current line results storage path failed: {e}")
                     pass
         import tempfile
         return os.path.join(tempfile.gettempdir(), "swe2d_line_results.gpkg")
@@ -5712,7 +5816,8 @@ class SWE2DWorkbenchDialog(QtWidgets.QDialog):
         if item is not None:
             try:
                 item.clear()
-            except Exception:
+            except Exception as e:
+                self._log(f"[ERROR] reset runtime snapshot overlay cache failed: {e}")
                 pass
         if reason:
             self._log(f"[HighPerf Overlay] Cleared snapshot/overlay cache: {reason}")
@@ -5755,13 +5860,15 @@ class SWE2DWorkbenchDialog(QtWidgets.QDialog):
             if item is not None:
                 try:
                     item.clear()
-                except Exception:
+                except Exception as e:
+                    self._log(f"[ERROR] on high perf canvas overlay toggled failed: {e}")
                     pass
             iface = self._resolve_qgis_iface()
             if iface is not None and hasattr(iface, "mapCanvas"):
                 try:
                     iface.mapCanvas().refresh()
-                except Exception:
+                except Exception as e:
+                    self._log(f"[ERROR] on high perf canvas overlay toggled failed: {e}")
                     pass
             return
         self._sync_high_perf_overlay_data()
@@ -5802,7 +5909,8 @@ class SWE2DWorkbenchDialog(QtWidgets.QDialog):
             if item is not None:
                 try:
                     item.clear()
-                except Exception:
+                except Exception as e:
+                    self._log(f"[ERROR] refresh high perf canvas overlay failed: {e}")
                     pass
             return
 
@@ -5818,7 +5926,8 @@ class SWE2DWorkbenchDialog(QtWidgets.QDialog):
             )
             try:
                 item.clear()
-            except Exception:
+            except Exception as e:
+                self._log(f"[ERROR] refresh high perf canvas overlay failed: {e}")
                 pass
             return
 
@@ -5828,7 +5937,8 @@ class SWE2DWorkbenchDialog(QtWidgets.QDialog):
         elif self._results_panel is not None:
             try:
                 t_use = float(self._results_panel.current_time_sec())
-            except Exception:
+            except Exception as e:
+                self._log(f"[ERROR] refresh high perf canvas overlay failed: {e}")
                 t_use = None
         if t_use is None:
             t_use = float(self._snapshot_timesteps[-1][0])
@@ -5885,7 +5995,8 @@ class SWE2DWorkbenchDialog(QtWidgets.QDialog):
                         float(ex.yMinimum()),
                         float(ex.yMaximum()),
                     )
-                except Exception:
+                except Exception as e:
+                    self._log(f"[ERROR] refresh high perf canvas overlay failed: {e}")
                     visible_extent_world = None
 
             render_extent_world = visible_extent_world if (visible_only and visible_extent_world is not None) else None
@@ -5925,7 +6036,8 @@ class SWE2DWorkbenchDialog(QtWidgets.QDialog):
             if not bool(frame.get("ok", False)):
                 try:
                     item.clear()
-                except Exception:
+                except Exception as e:
+                    self._log(f"[ERROR] refresh high perf canvas overlay failed: {e}")
                     pass
                 return
 
@@ -5934,7 +6046,8 @@ class SWE2DWorkbenchDialog(QtWidgets.QDialog):
             if image is None:
                 try:
                     item.clear()
-                except Exception:
+                except Exception as e:
+                    self._log(f"[ERROR] refresh high perf canvas overlay failed: {e}")
                     pass
                 return
             item.set_frame(image, extent, opacity=opacity)
@@ -5950,13 +6063,15 @@ class SWE2DWorkbenchDialog(QtWidgets.QDialog):
                         else f"Water Surface ({self._length_unit_name})")
                     ),
                 )
-            except Exception:
+            except Exception as e:
+                self._log(f"[ERROR] refresh high perf canvas overlay failed: {e}")
                 pass
             try:
                 face_seg = np.asarray(getattr(self, "_line_viewer_face_segments_world", np.empty((0, 4))), dtype=np.float64)
                 if hasattr(item, "set_face_segments"):
                     item.set_face_segments(face_seg)
-            except Exception:
+            except Exception as e:
+                self._log(f"[ERROR] refresh high perf canvas overlay failed: {e}")
                 pass
             try:
                 hover_pt = getattr(self, "_line_viewer_hover_point_world", None)
@@ -5966,13 +6081,15 @@ class SWE2DWorkbenchDialog(QtWidgets.QDialog):
                     hover_label = f"Sta {float(hover_station):.2f} {self._length_unit_name}"
                 if hasattr(item, "set_station_indicator"):
                     item.set_station_indicator(hover_pt, hover_label)
-            except Exception:
+            except Exception as e:
+                self._log(f"[ERROR] refresh high perf canvas overlay failed: {e}")
                 pass
             iface = self._resolve_qgis_iface()
             if iface is not None and hasattr(iface, "mapCanvas"):
                 try:
                     iface.mapCanvas().refresh()
-                except Exception:
+                except Exception as e:
+                    self._log(f"[ERROR] refresh high perf canvas overlay failed: {e}")
                     pass
         except Exception as exc:
             self._log(f"[HighPerf Overlay] refresh failed: {exc}")
@@ -6028,7 +6145,8 @@ class SWE2DWorkbenchDialog(QtWidgets.QDialog):
         if self._results_panel is not None:
             try:
                 t_use = float(self._results_panel.current_time_sec())
-            except Exception:
+            except Exception as e:
+                self._log(f"[ERROR] export high perf overlay to geotiff failed: {e}")
                 t_use = None
         if t_use is None:
             t_use = float(self._snapshot_timesteps[-1][0])
@@ -6122,7 +6240,8 @@ class SWE2DWorkbenchDialog(QtWidgets.QDialog):
                 proj_crs = QgsProject.instance().crs()
                 if proj_crs is not None and proj_crs.isValid():
                     crs_auth = proj_crs.authid() or crs_auth
-            except Exception:
+            except Exception as e:
+                self._log(f"[ERROR] export high perf overlay to geotiff failed: {e}")
                 pass
 
         if gdal is not None:
@@ -6184,7 +6303,8 @@ class SWE2DWorkbenchDialog(QtWidgets.QDialog):
                 self._line_viewer_face_segments_world = np.empty((0, 4), dtype=np.float64)
             else:
                 self._line_viewer_face_segments_world = np.asarray(seg_map.get(lid, np.empty((0, 4))), dtype=np.float64)
-        except Exception:
+        except Exception as e:
+            self._log(f"[ERROR] on line viewer selection changed failed: {e}")
             self._line_viewer_face_segments_world = np.empty((0, 4), dtype=np.float64)
         self._refresh_high_perf_canvas_overlay(None)
 
@@ -6202,7 +6322,8 @@ class SWE2DWorkbenchDialog(QtWidgets.QDialog):
             try:
                 if int(ft[id_field]) != int(line_id):
                     continue
-            except Exception:
+            except Exception as e:
+                self._log(f"[ERROR] sample line world point at station failed: {e}")
                 continue
             geom = ft.geometry()
             if geom is None or geom.isEmpty():
@@ -6216,7 +6337,8 @@ class SWE2DWorkbenchDialog(QtWidgets.QDialog):
                 start_key = (float(p0.x()), float(p0.y()))
                 end_key = (float(p1.x()), float(p1.y()))
                 orient_sign = 1.0 if end_key >= start_key else -1.0
-            except Exception:
+            except Exception as e:
+                self._log(f"[ERROR] sample line world point at station failed: {e}")
                 orient_sign = 1.0
             s = float(station_m)
             s = max(0.0, min(float(line_len), s))
@@ -6224,7 +6346,8 @@ class SWE2DWorkbenchDialog(QtWidgets.QDialog):
             try:
                 p = geom.interpolate(float(raw_s)).asPoint()
                 return (float(p.x()), float(p.y()))
-            except Exception:
+            except Exception as e:
+                self._log(f"[ERROR] sample line world point at station failed: {e}")
                 return None
         return None
 
@@ -6245,7 +6368,8 @@ class SWE2DWorkbenchDialog(QtWidgets.QDialog):
                 return
             self._line_viewer_hover_station_m = float(s)
             self._line_viewer_hover_point_world = (float(pt[0]), float(pt[1]))
-        except Exception:
+        except Exception as e:
+            self._log(f"[ERROR] on line viewer hover station failed: {e}")
             self._line_viewer_hover_station_m = None
             self._line_viewer_hover_point_world = None
         self._refresh_high_perf_canvas_overlay(None)
@@ -6280,13 +6404,15 @@ class SWE2DWorkbenchDialog(QtWidgets.QDialog):
 
         try:
             self._sample_line_draw_tool.line_finished.disconnect(self._on_sample_line_drawn)
-        except Exception:
+        except Exception as e:
+            self._log(f"[ERROR] activate sample line draw tool failed: {e}")
             pass
         self._sample_line_draw_tool.line_finished.connect(self._on_sample_line_drawn)
 
         try:
             self._sample_line_prev_map_tool = canvas.mapTool()
-        except Exception:
+        except Exception as e:
+            self._log(f"[ERROR] activate sample line draw tool failed: {e}")
             self._sample_line_prev_map_tool = None
 
         canvas.setMapTool(self._sample_line_draw_tool)
@@ -6302,7 +6428,8 @@ class SWE2DWorkbenchDialog(QtWidgets.QDialog):
         for ft in layer.getFeatures():
             try:
                 next_id = max(next_id, int(ft["line_id"]) + 1)
-            except Exception:
+            except Exception as e:
+                self._log(f"[ERROR] next sample line id failed: {e}")
                 continue
         return next_id
 
@@ -6345,7 +6472,8 @@ class SWE2DWorkbenchDialog(QtWidgets.QDialog):
             if iface is not None and hasattr(iface, "mapCanvas"):
                 try:
                     iface.mapCanvas().refresh()
-                except Exception:
+                except Exception as e:
+                    self._log(f"[ERROR] on sample line drawn failed: {e}")
                     pass
             self._log(f"Sample line added: id={line_id}, length={float(geom.length()):.3f}")
             self._resample_latest_results_for_line(int(line_id))
@@ -6356,7 +6484,8 @@ class SWE2DWorkbenchDialog(QtWidgets.QDialog):
         if canvas is not None and self._sample_line_prev_map_tool is not None:
             try:
                 canvas.setMapTool(self._sample_line_prev_map_tool)
-            except Exception:
+            except Exception as e:
+                self._log(f"[ERROR] on sample line drawn failed: {e}")
                 pass
         self._sample_line_prev_map_tool = None
 
@@ -6376,7 +6505,8 @@ class SWE2DWorkbenchDialog(QtWidgets.QDialog):
                 if int(sm.get("line_id", -1)) == int(line_id):
                     line_sample = sm
                     break
-            except Exception:
+            except Exception as e:
+                self._log(f"[ERROR] resample latest results for line failed: {e}")
                 continue
         if line_sample is None:
             self._log(f"Sample line refresh skipped: no intersecting cells for line {line_id}.")
@@ -6415,7 +6545,8 @@ class SWE2DWorkbenchDialog(QtWidgets.QDialog):
         if rows:
             try:
                 t_latest = max(float(r.get("t_s", 0.0)) for r in rows)
-            except Exception:
+            except Exception as e:
+                self._log(f"[ERROR] resample latest results for line failed: {e}")
                 t_latest = 0.0
 
         new_rows, new_profile_rows = self._sample_line_metrics(
@@ -6452,7 +6583,8 @@ class SWE2DWorkbenchDialog(QtWidgets.QDialog):
         if panel is not None:
             try:
                 panel.set_gpkg_path(db_path)
-            except Exception:
+            except Exception as e:
+                self._log(f"[ERROR] resample latest results for line failed: {e}")
                 pass
 
     def _show_results_panel(self):
@@ -6487,7 +6619,8 @@ class SWE2DWorkbenchDialog(QtWidgets.QDialog):
             lyr = QgsProject.instance().mapLayer(lid)
             if lyr is not None and lyr.isValid():
                 return lyr
-        except Exception:
+        except Exception as e:
+            self._log(f"[ERROR] results mesh layer failed: {e}")
             pass
         return None
 
@@ -6498,7 +6631,8 @@ class SWE2DWorkbenchDialog(QtWidgets.QDialog):
         try:
             if self._model_gpkg_path:
                 stem = os.path.splitext(os.path.basename(self._model_gpkg_path))[0] or stem
-        except Exception:
+        except Exception as e:
+            self._log(f"[ERROR] results mesh temp nc path failed: {e}")
             pass
         return os.path.join(tempfile.gettempdir(), f"{stem}_results_panel.nc")
 
@@ -6535,11 +6669,13 @@ class SWE2DWorkbenchDialog(QtWidgets.QDialog):
                 src = str(existing.source() or "")
                 if str(out_path) in src or src == str(out_path):
                     return True
-            except Exception:
+            except Exception as e:
+                self._log(f"[ERROR] ensure results mesh layer mode failed: {e}")
                 pass
             try:
                 QgsProject.instance().removeMapLayer(existing.id())
-            except Exception:
+            except Exception as e:
+                self._log(f"[ERROR] ensure results mesh layer mode failed: {e}")
                 pass
 
         try:
@@ -6650,7 +6786,8 @@ class SWE2DWorkbenchDialog(QtWidgets.QDialog):
         out: List[str] = []
         try:
             conn = sqlite3.connect(gpkg_path)
-        except Exception:
+        except Exception as e:
+            self._log(f"[ERROR] list velocity candidate tables failed: {e}")
             return out
         try:
             cur = conn.cursor()
@@ -6666,14 +6803,16 @@ class SWE2DWorkbenchDialog(QtWidgets.QDialog):
                 try:
                     cur.execute(f'PRAGMA table_info("{table_name}")')
                     cols = {str(r[1]).lower() for r in cur.fetchall()}
-                except Exception:
+                except Exception as e:
+                    self._log(f"[ERROR] list velocity candidate tables failed: {e}")
                     continue
                 if required_cols.issubset(cols):
                     out.append(table_name)
         finally:
             try:
                 conn.close()
-            except Exception:
+            except Exception as e:
+                self._log(f"[ERROR] list velocity candidate tables failed: {e}")
                 pass
         return out
 
@@ -6686,7 +6825,8 @@ class SWE2DWorkbenchDialog(QtWidgets.QDialog):
         out: List[str] = []
         try:
             conn = sqlite3.connect(gpkg_path)
-        except Exception:
+        except Exception as e:
+            self._log(f"[ERROR] run ids for velocity table failed: {e}")
             return out
         try:
             cur = conn.cursor()
@@ -6695,12 +6835,14 @@ class SWE2DWorkbenchDialog(QtWidgets.QDialog):
                 f'SELECT DISTINCT run_id FROM "{q_table}" WHERE run_id IS NOT NULL ORDER BY run_id'
             )
             out = [str(r[0]).strip() for r in cur.fetchall() if str(r[0]).strip()]
-        except Exception:
+        except Exception as e:
+            self._log(f"[ERROR] run ids for velocity table failed: {e}")
             out = []
         finally:
             try:
                 conn.close()
-            except Exception:
+            except Exception as e:
+                self._log(f"[ERROR] run ids for velocity table failed: {e}")
                 pass
         return out
 
@@ -6727,7 +6869,8 @@ class SWE2DWorkbenchDialog(QtWidgets.QDialog):
 
         try:
             conn = sqlite3.connect(gpkg_path)
-        except Exception:
+        except Exception as e:
+            self._log(f"[ERROR] quote ident failed: {e}")
             return out
         try:
             cur = conn.cursor()
@@ -6738,7 +6881,8 @@ class SWE2DWorkbenchDialog(QtWidgets.QDialog):
                 )
                 row = cur.fetchone()
                 out["cell_rows"] = int(row[0]) if row and row[0] is not None else 0
-            except Exception:
+            except Exception as e:
+                self._log(f"[ERROR] quote ident failed: {e}")
                 out["cell_rows"] = 0
 
             for face_table in ("swe2d_face_flux_results", "swe2d_face_results", "swe2d_flux_faces"):
@@ -6759,12 +6903,14 @@ class SWE2DWorkbenchDialog(QtWidgets.QDialog):
                         out["face_table"] = face_table
                         out["face_rows"] = n_face
                         break
-                except Exception:
+                except Exception as e:
+                    self._log(f"[ERROR] quote ident failed: {e}")
                     continue
         finally:
             try:
                 conn.close()
-            except Exception:
+            except Exception as e:
+                self._log(f"[ERROR] quote ident failed: {e}")
                 pass
         return out
 
@@ -6812,7 +6958,8 @@ class SWE2DWorkbenchDialog(QtWidgets.QDialog):
         run_ids: List[str] = []
         try:
             run_ids = self._run_ids_for_velocity_table(gpkg_path, table_name)
-        except Exception:
+        except Exception as e:
+            self._log(f"[ERROR] quote ident failed: {e}")
             run_ids = []
 
         if not run_ids:
@@ -6881,7 +7028,8 @@ class SWE2DWorkbenchDialog(QtWidgets.QDialog):
             if panel is not None and hasattr(panel, "set_velocity_overlay_enabled"):
                 try:
                     panel.set_velocity_overlay_enabled(True)
-                except Exception:
+                except Exception as e:
+                    self._log(f"[ERROR] on results panel velocity overlay add requested failed: {e}")
                     pass
 
             t_s = panel.current_time_sec() if panel is not None else 0.0
@@ -6947,7 +7095,8 @@ class SWE2DWorkbenchDialog(QtWidgets.QDialog):
             proj_crs = QgsProject.instance().crs()
             if proj_crs is not None and proj_crs.isValid():
                 crs_auth = proj_crs.authid() or crs_auth
-        except Exception:
+        except Exception as e:
+            self._log(f"[ERROR] velocity vectors layer for source failed: {e}")
             pass
 
         run_id = str(source.get("run_id", "run"))
@@ -6985,7 +7134,8 @@ class SWE2DWorkbenchDialog(QtWidgets.QDialog):
                     dp.deleteFeatures(ids)
                 self._velocity_overlay_feature_ids[source_key] = {}
                 lyr.triggerRepaint()
-            except Exception:
+            except Exception as e:
+                self._log(f"[ERROR] clear velocity vectors layers failed: {e}")
                 continue
 
     def _streamline_traces_layer_for_source(self, source: Dict[str, str]):
@@ -7004,7 +7154,8 @@ class SWE2DWorkbenchDialog(QtWidgets.QDialog):
             proj_crs = QgsProject.instance().crs()
             if proj_crs is not None and proj_crs.isValid():
                 crs_auth = proj_crs.authid() or crs_auth
-        except Exception:
+        except Exception as e:
+            self._log(f"[ERROR] streamline traces layer for source failed: {e}")
             pass
 
         run_id = str(source.get("run_id", "run"))
@@ -7039,7 +7190,8 @@ class SWE2DWorkbenchDialog(QtWidgets.QDialog):
                 if ids:
                     dp.deleteFeatures(ids)
                 lyr.triggerRepaint()
-            except Exception:
+            except Exception as e:
+                self._log(f"[ERROR] clear streamline traces layers failed: {e}")
                 continue
 
     def _mesh_cell_centers_for_gpkg(
@@ -7076,7 +7228,8 @@ class SWE2DWorkbenchDialog(QtWidgets.QDialog):
             return
         try:
             self._build_line_sampling_map()
-        except Exception:
+        except Exception as e:
+            self._log(f"[ERROR] open line results viewer failed: {e}")
             pass
         dlg = SWE2DLineResultsViewerDialog(
             ts_records=rows,
@@ -7155,7 +7308,8 @@ class SWE2DWorkbenchDialog(QtWidgets.QDialog):
                             "value": float(drainage_mod.state.link_flow.get(link_id, 0.0)),
                         }
                     )
-            except Exception:
+            except Exception as e:
+                self._log(f"[ERROR] sample coupling object metrics failed: {e}")
                 pass
 
         structures_mod = getattr(coupling_controller, "structures", None)
@@ -7240,7 +7394,8 @@ class SWE2DWorkbenchDialog(QtWidgets.QDialog):
                                 "value": float(metric_value),
                             }
                         )
-            except Exception:
+            except Exception as e:
+                self._log(f"[ERROR] cfs to model failed: {e}")
                 pass
 
         return rows
@@ -7620,12 +7775,14 @@ class SWE2DWorkbenchDialog(QtWidgets.QDialog):
             try:
                 if "enabled" in fields and int(ft["enabled"]) <= 0:
                     continue
-            except Exception:
+            except Exception as e:
+                self._log(f"[ERROR] build hydraulic structure config failed: {e}")
                 pass
             try:
                 p0 = geom.interpolate(0.0).asPoint()
                 p1 = geom.interpolate(max(0.0, float(geom.length()) - 1.0e-9)).asPoint()
-            except Exception:
+            except Exception as e:
+                self._log(f"[ERROR] build hydraulic structure config failed: {e}")
                 continue
             raw_type = ft["structure_type"] if "structure_type" in fields else 2
             if isinstance(raw_type, str):
@@ -7633,7 +7790,8 @@ class SWE2DWorkbenchDialog(QtWidgets.QDialog):
             else:
                 try:
                     structure_type = StructureType(int(raw_type))
-                except Exception:
+                except Exception as e:
+                    self._log(f"[ERROR] build hydraulic structure config failed: {e}")
                     structure_type = StructureType.CULVERT
             metadata = {}
             for key in (
@@ -7682,7 +7840,8 @@ class SWE2DWorkbenchDialog(QtWidgets.QDialog):
                     else:
                         try:
                             metadata[key] = float(ft[key])
-                        except Exception:
+                        except Exception as e:
+                            self._log(f"[ERROR] build hydraulic structure config failed: {e}")
                             pass
             metadata["axis_x0"] = float(p0.x())
             metadata["axis_y0"] = float(p0.y())
@@ -7750,7 +7909,8 @@ class SWE2DWorkbenchDialog(QtWidgets.QDialog):
             return ""
         try:
             return str(lyr.name() or "")
-        except Exception:
+        except Exception as e:
+            self._log(f"[ERROR] combo current layer name failed: {e}")
             return ""
 
     def _set_combo_by_layer_name(self, combo, layer_name: str) -> bool:
@@ -7875,7 +8035,8 @@ class SWE2DWorkbenchDialog(QtWidgets.QDialog):
         for _attr_name, combo in self._project_layer_binding_specs():
             try:
                 combo.currentIndexChanged.connect(self._persist_project_layer_bindings)
-            except Exception:
+            except Exception as e:
+                self._log(f"[ERROR] connect project layer state signals failed: {e}")
                 pass
 
     def _connect_project_workbench_state_signals(self) -> None:
@@ -7908,7 +8069,8 @@ class SWE2DWorkbenchDialog(QtWidgets.QDialog):
                 if signal is not None:
                     signal.connect(self._restore_project_layer_bindings)
                     signal.connect(self._restore_project_workbench_state)
-            except Exception:
+            except Exception as e:
+                self._log(f"[ERROR] connect project save state signals failed: {e}")
                 pass
 
     def _persist_project_workbench_state(self, *_args: object) -> None:
@@ -7981,7 +8143,8 @@ class SWE2DWorkbenchDialog(QtWidgets.QDialog):
                 if isinstance(widget, persistable_classes):
                     widget_attrs.append(attr_name)
                     known_attrs.add(attr_name)
-        except Exception:
+        except Exception as e:
+            self._log(f"[ERROR] persist project workbench state failed: {e}")
             pass
 
         payload = collect_workbench_widget_state(
@@ -8120,7 +8283,8 @@ class SWE2DWorkbenchDialog(QtWidgets.QDialog):
                     row = cur.fetchone()
                     if row and row[0] not in (None, ""):
                         schema_version = int(str(row[0]))
-                except Exception:
+                except Exception as e:
+                    self._log(f"[ERROR] restore model layer bindings failed: {e}")
                     schema_version = 0
                 try:
                     cur.execute(
@@ -8131,7 +8295,8 @@ class SWE2DWorkbenchDialog(QtWidgets.QDialog):
                         parsed = json.loads(str(row[0]))
                         if isinstance(parsed, list):
                             explicit_roles = {str(v) for v in parsed if str(v).strip()}
-                except Exception:
+                except Exception as e:
+                    self._log(f"[ERROR] restore model layer bindings failed: {e}")
                     explicit_roles = None
             cur.execute(
                 "SELECT name FROM sqlite_master WHERE type='table' AND name='swe2d_layer_bindings'"
@@ -8206,13 +8371,15 @@ class SWE2DWorkbenchDialog(QtWidgets.QDialog):
                 continue
             try:
                 n = float(ft[n_field])
-            except Exception:
+            except Exception as e:
+                self._log(f"[ERROR] preview spatial manning failed: {e}")
                 continue
             pr = 0
             if prio_field is not None:
                 try:
                     pr = int(ft[prio_field])
-                except Exception:
+                except Exception as e:
+                    self._log(f"[ERROR] preview spatial manning failed: {e}")
                     pr = 0
             features.append((pr, g, n))
 
@@ -8405,7 +8572,8 @@ class SWE2DWorkbenchDialog(QtWidgets.QDialog):
                         if hasattr(self, "_selected_mesh_results_table_name"):
                             try:
                                 mesh_table_name = str(self._selected_mesh_results_table_name() or "swe2d_mesh_results")
-                            except Exception:
+                            except Exception as e:
+                                self._log(f"[ERROR] on snapshot failed: {e}")
                                 mesh_table_name = "swe2d_mesh_results"
                         self._persist_mesh_results_to_geopackage(
                             gpkg_results_path,
@@ -8656,7 +8824,8 @@ class SWE2DWorkbenchDialog(QtWidgets.QDialog):
         if hasattr(self, "inflow_progressive_chk") and self.inflow_progressive_chk is not None:
             try:
                 progressive = bool(self.inflow_progressive_chk.isChecked())
-            except Exception:
+            except Exception as e:
+                self._log(f"[ERROR] distribute total flow to unit q failed: {e}")
                 progressive = True
 
         if edge_groups is None:
@@ -8666,7 +8835,8 @@ class SWE2DWorkbenchDialog(QtWidgets.QDialog):
                 try:
                     edge_groups = self._collect_bc_layer_edge_groups(edge_n0, edge_n1)
                     self._cached_edge_groups = edge_groups
-                except Exception:
+                except Exception as e:
+                    self._log(f"[ERROR] distribute total flow to unit q failed: {e}")
                     edge_groups = None
 
         # Cache mesh-constant BC geometry after first call.
@@ -8826,7 +8996,8 @@ class SWE2DWorkbenchDialog(QtWidgets.QDialog):
         if _HAVE_QGIS_CORE and QgsProject is not None:
             try:
                 project_file_path = str(QgsProject.instance().fileName() or "").strip()
-            except Exception:
+            except Exception as e:
+                self._log(f"[ERROR] resolve obj model path failed: {e}")
                 project_file_path = ""
         return _resolve_obj_model_path_runtime_logic(
             raw_path=raw_path,
@@ -8948,23 +9119,28 @@ class SWE2DWorkbenchDialog(QtWidgets.QDialog):
         if self._view_adapter is not None:
             try:
                 run_duration_text = self._view_adapter.run_duration_text()
-            except Exception:
+            except Exception as e:
+                self._log(f"[ERROR] build run request failed: {e}")
                 run_duration_text = ""
             try:
                 output_interval_text = self._view_adapter.output_interval_text()
-            except Exception:
+            except Exception as e:
+                self._log(f"[ERROR] build run request failed: {e}")
                 output_interval_text = ""
             try:
                 line_output_interval_text = self._view_adapter.line_output_interval_text()
-            except Exception:
+            except Exception as e:
+                self._log(f"[ERROR] build run request failed: {e}")
                 line_output_interval_text = ""
             try:
                 adaptive_dt_enabled = self._view_adapter.adaptive_dt_enabled()
-            except Exception:
+            except Exception as e:
+                self._log(f"[ERROR] build run request failed: {e}")
                 adaptive_dt_enabled = False
             try:
                 requested_dt = self._view_adapter.requested_dt()
-            except Exception:
+            except Exception as e:
+                self._log(f"[ERROR] build run request failed: {e}")
                 requested_dt = 0.0
         else:
             run_duration_text = str(self.run_time_edit.text()) if hasattr(self, "run_time_edit") else ""
@@ -8981,7 +9157,8 @@ class SWE2DWorkbenchDialog(QtWidgets.QDialog):
                 adaptive_dt_enabled=adaptive_dt_enabled,
                 requested_dt=requested_dt,
             )
-        except Exception:
+        except Exception as e:
+            self._log(f"[ERROR] build run request failed: {e}")
             return None
 
     def _execute_run_request(self, request):
@@ -9039,7 +9216,8 @@ class SWE2DWorkbenchDialog(QtWidgets.QDialog):
             try:
                 if dlg is not None:
                     dlg.refresh_view()
-            except Exception:
+            except Exception as e:
+                self._log(f"[ERROR] refresh plot failed: {e}")
                 pass
 
 
@@ -9091,7 +9269,8 @@ class SWE2DWorkbenchStudioDialog(SWE2DWorkbenchDialog):
                     project_key = file_name
                 else:
                     project_key = str(proj.homePath() or "").strip() or project_key
-            except Exception:
+            except Exception as e:
+                self._log(f"[ERROR] studio project scope key failed: {e}")
                 pass
         safe = "".join(ch if (ch.isalnum() or ch in ("_", "-", ".")) else "_" for ch in project_key)
         if not safe:
@@ -9110,7 +9289,8 @@ class SWE2DWorkbenchStudioDialog(SWE2DWorkbenchDialog):
         settings = QtCore.QSettings()
         try:
             state_raw = settings.value(state_key, "")
-        except Exception:
+        except Exception as e:
+            self._log(f"[ERROR] restore studio layout state failed: {e}")
             state_raw = ""
 
         restored = False
@@ -9118,7 +9298,8 @@ class SWE2DWorkbenchStudioDialog(SWE2DWorkbenchDialog):
             try:
                 state_bytes = QtCore.QByteArray.fromBase64(str(state_raw).encode("ascii"))
                 restored = bool(self._studio_main_window.restoreState(state_bytes))
-            except Exception:
+            except Exception as e:
+                self._log(f"[ERROR] restore studio layout state failed: {e}")
                 pass
 
         # Safety: always keep the core panes visible so Studio cannot reopen blank.
@@ -9126,17 +9307,20 @@ class SWE2DWorkbenchStudioDialog(SWE2DWorkbenchDialog):
             center = self._studio_main_window.centralWidget()
             if center is not None:
                 center.show()
-        except Exception:
+        except Exception as e:
+            self._log(f"[ERROR] restore studio layout state failed: {e}")
             pass
         try:
             if self._studio_left_dock is not None and not self._studio_left_dock.isVisible():
                 self._studio_left_dock.show()
-        except Exception:
+        except Exception as e:
+            self._log(f"[ERROR] restore studio layout state failed: {e}")
             pass
         try:
             if self._studio_inspector_dock is not None and not self._studio_inspector_dock.isVisible():
                 self._studio_inspector_dock.show()
-        except Exception:
+        except Exception as e:
+            self._log(f"[ERROR] restore studio layout state failed: {e}")
             pass
 
         if state_raw and not restored:
@@ -9151,7 +9335,8 @@ class SWE2DWorkbenchStudioDialog(SWE2DWorkbenchDialog):
             state_b64 = bytes(self._studio_main_window.saveState().toBase64()).decode("ascii")
             settings.setValue(state_key, state_b64)
             settings.sync()
-        except Exception:
+        except Exception as e:
+            self._log(f"[ERROR] save studio layout state failed: {e}")
             pass
 
     def _studio_mount_widget(self, host: QtWidgets.QWidget, widget: QtWidgets.QWidget) -> None:
@@ -9211,16 +9396,19 @@ class SWE2DWorkbenchStudioDialog(SWE2DWorkbenchDialog):
         try:
             if hasattr(widget, "text") and callable(widget.text):
                 parts.append(str(widget.text() or ""))
-        except Exception:
+        except Exception as e:
+            self._log(f"[ERROR] studio widget text blob failed: {e}")
             pass
         try:
             if hasattr(widget, "title") and callable(widget.title):
                 parts.append(str(widget.title() or ""))
-        except Exception:
+        except Exception as e:
+            self._log(f"[ERROR] studio widget text blob failed: {e}")
             pass
         try:
             parts.append(str(widget.toolTip() or ""))
-        except Exception:
+        except Exception as e:
+            self._log(f"[ERROR] studio widget text blob failed: {e}")
             pass
         return " ".join(parts).lower()
 
@@ -9241,7 +9429,8 @@ class SWE2DWorkbenchStudioDialog(SWE2DWorkbenchDialog):
             visible = all(self._studio_feature_flags.get(feature, True) for feature in matched)
             try:
                 widget.setVisible(visible)
-            except Exception:
+            except Exception as e:
+                self._log(f"[ERROR] studio apply feature filters failed: {e}")
                 pass
         # Sync tab page visibility: hide/show tabs whose page or content matches
         # a feature flag, so the tab bar entry disappears when the feature is off.
@@ -9260,7 +9449,8 @@ class SWE2DWorkbenchStudioDialog(SWE2DWorkbenchDialog):
             visible = all(self._studio_feature_flags.get(feature, True) for feature in matched)
             try:
                 tabs.setTabVisible(i, visible)
-            except Exception:
+            except Exception as e:
+                self._log(f"[ERROR] studio apply feature filters failed: {e}")
                 pass
 
     def _studio_sync_view_mode(self, idx: int) -> None:
@@ -9270,7 +9460,8 @@ class SWE2DWorkbenchStudioDialog(SWE2DWorkbenchDialog):
             return
         try:
             self.view_mode_combo.setCurrentIndex(idx)
-        except Exception:
+        except Exception as e:
+            self._log(f"[ERROR] studio sync view mode failed: {e}")
             pass
 
     def _studio_apply_visual_profile(self, profile: str) -> None:
@@ -9304,7 +9495,8 @@ class SWE2DWorkbenchStudioDialog(SWE2DWorkbenchDialog):
                 proj = QgsProject.instance()
                 project_name = str(proj.baseName() or "").strip() or "(unnamed project)"
                 project_home = str(proj.homePath() or "").strip()
-            except Exception:
+            except Exception as e:
+                self._log(f"[ERROR] studio update status failed: {e}")
                 pass
         mode_txt = str(getattr(self, "_swe2d_workbench_host_mode", "window") or "window")
         detail = f"Project: {project_name}"
@@ -9317,7 +9509,8 @@ class SWE2DWorkbenchStudioDialog(SWE2DWorkbenchDialog):
         # Diagnostic: log that _build_ui was entered
         try:
             self._log("[Studio] _build_ui entered")
-        except Exception:
+        except Exception as e:
+            self._log(f"[ERROR] build ui failed: {e}")
             pass
         root = self.layout()
         if not isinstance(root, QtWidgets.QVBoxLayout):
@@ -9356,7 +9549,8 @@ class SWE2DWorkbenchStudioDialog(SWE2DWorkbenchDialog):
         act_3d_patch.setChecked(False)
         try:
             self._log("[Studio] 3D Patch toolbar action created")
-        except Exception:
+        except Exception as e:
+            self._log(f"[ERROR] build ui failed: {e}")
             pass
         toolbar.addSeparator()
         act_refresh = toolbar.addAction("Refresh Layers")
@@ -9462,7 +9656,8 @@ class SWE2DWorkbenchStudioDialog(SWE2DWorkbenchDialog):
         if hasattr(self, "view_mode_combo") and self.view_mode_combo is not None:
             try:
                 self._studio_view_mode_combo.setCurrentIndex(max(0, int(self.view_mode_combo.currentIndex())))
-            except Exception:
+            except Exception as e:
+                self._log(f"[ERROR] build ui failed: {e}")
                 pass
 
         act_mesh.triggered.connect(lambda: self._studio_select_tab("mesh"))
@@ -9478,7 +9673,8 @@ class SWE2DWorkbenchStudioDialog(SWE2DWorkbenchDialog):
         def _toggle_3d_patch(checked: bool) -> None:
             try:
                 self._log(f"[Studio] 3D Patch toggled: {checked}")
-            except Exception:
+            except Exception as e:
+                self._log(f"[ERROR] toggle 3d patch failed: {e}")
                 pass
             dock = getattr(self, _SWE2D_3D_PATCH_DOCK_ATTR, None)
             if checked and dock is None:
@@ -9580,19 +9776,22 @@ def _resolve_workbench_iface(parent, iface):
         if hasattr(parent, "_get_qgis_iface") and callable(getattr(parent, "_get_qgis_iface")):
             try:
                 iface = parent._get_qgis_iface()
-            except Exception:
+            except Exception as e:
+                self._log(f"[ERROR] closeEvent failed: {e}")
                 iface = None
         if iface is None and hasattr(parent, "iface"):
             try:
                 iface = getattr(parent, "iface")
-            except Exception:
+            except Exception as e:
+                self._log(f"[ERROR] closeEvent failed: {e}")
                 iface = None
     if iface is None:
         try:
             import qgis.utils as _qutils
 
             iface = getattr(_qutils, "iface", None)
-        except Exception:
+        except Exception as e:
+            self._log(f"[ERROR] closeEvent failed: {e}")
             iface = None
     return iface
 
@@ -9602,7 +9801,8 @@ def _close_dialog_windows(window_store: List[QtWidgets.QDialog]) -> None:
         dlg = window_store.pop()
         try:
             dlg.close()
-        except Exception:
+        except Exception as e:
+            self._log(f"[ERROR] closeEvent failed: {e}")
             pass
 
 
@@ -9623,18 +9823,22 @@ def _remove_workbench_dock_instance(dock, iface_obj):
         if widget is not None:
             try:
                 widget.close()
-            except Exception:
+            except Exception as e:
+                self._log(f"[ERROR] closeEvent failed: {e}")
                 pass
-    except Exception:
+    except Exception as e:
+        self._log(f"[ERROR] closeEvent failed: {e}")
         pass
     try:
         if iface_obj is not None and hasattr(iface_obj, "removeDockWidget"):
             iface_obj.removeDockWidget(dock)
-    except Exception:
+    except Exception as e:
+        self._log(f"[ERROR] closeEvent failed: {e}")
         pass
     try:
         dock.deleteLater()
-    except Exception:
+    except Exception as e:
+        self._log(f"[ERROR] closeEvent failed: {e}")
         pass
     return None
 
@@ -9742,7 +9946,8 @@ def _prepare_studio_host_logic_globals(_logic) -> None:
         if _g.get("_SWE2D_STUDIO_HOST_MENU") is None and _SWE2D_STUDIO_HOST_MENU is not None:
             _g["_SWE2D_STUDIO_HOST_MENU"] = _SWE2D_STUDIO_HOST_MENU
         _g["_remove_workbench_dock_instance"] = _remove_workbench_dock_instance
-    except Exception:
+    except Exception as e:
+        self._log(f"[ERROR] closeEvent failed: {e}")
         pass
 
 
@@ -9764,7 +9969,8 @@ def launch_swe2d_workbench_studio(parent=None, iface=None, host_mode: str = "doc
         if iface is not None and hasattr(iface, "mainWindow"):
             try:
                 host_window = iface.mainWindow()
-            except Exception:
+            except Exception as e:
+                self._log(f"[ERROR] closeEvent failed: {e}")
                 host_window = None
         if host_window is None:
             host_window = parent
@@ -9777,12 +9983,14 @@ def launch_swe2d_workbench_studio(parent=None, iface=None, host_mode: str = "doc
             # showEvent restore path may not run. Restore explicitly here.
             dlg._restore_project_workbench_state()
             dlg._workbench_state_restored_on_show = True
-        except Exception:
+        except Exception as e:
+            self._log(f"[ERROR] closeEvent failed: {e}")
             pass
         dlg.setWindowFlags(QtCore.Qt.Widget)
         try:
             dlg.hide()
-        except Exception:
+        except Exception as e:
+            self._log(f"[ERROR] closeEvent failed: {e}")
             pass
 
         component_docks = _build_studio_component_docks(iface, host_window, dlg)
@@ -9792,7 +10000,8 @@ def launch_swe2d_workbench_studio(parent=None, iface=None, host_mode: str = "doc
         _install_studio_host_controls(iface, dlg, host_window, component_docks=component_docks)
         try:
             dlg._studio_update_status()
-        except Exception:
+        except Exception as e:
+            self._log(f"[ERROR] closeEvent failed: {e}")
             pass
 
         _SWE2D_WORKBENCH_STUDIO_DOCK = component_docks.get("view")
@@ -9809,7 +10018,8 @@ def launch_swe2d_workbench_studio(parent=None, iface=None, host_mode: str = "doc
                 existing.raise_()
                 existing.activateWindow()
                 return existing
-        except Exception:
+        except Exception as e:
+            self._log(f"[ERROR] closeEvent failed: {e}")
             pass
 
     dlg = SWE2DWorkbenchStudioDialog(parent, iface=iface)

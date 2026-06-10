@@ -30,12 +30,12 @@ def _remove_workbench_studio_dock(iface_obj) -> None:
     if _SWE2D_STUDIO_HOST_DIALOG is not None:
         try:
             _SWE2D_STUDIO_HOST_DIALOG.close()
-        except Exception:
-            pass
+        except Exception as e:
+            self._log(f"[ERROR] studio dialog close failed: {e}")
         try:
             _SWE2D_STUDIO_HOST_DIALOG.deleteLater()
-        except Exception:
-            pass
+        except Exception as e:
+            self._log(f"[ERROR] studio dialog deleteLater failed: {e}")
         _SWE2D_STUDIO_HOST_DIALOG = None
 
     _clear_studio_host_controls(iface_obj)
@@ -49,30 +49,33 @@ def _attach_host_dock_widget(iface_obj, host_window, dock: QtWidgets.QDockWidget
         if iface_obj is not None and hasattr(iface_obj, "addDockWidget"):
             iface_obj.addDockWidget(area, dock)
             attached = True
-    except Exception:
+    except Exception as e:
+        self._log(f"[ERROR] iface addDockWidget failed: {e}")
         attached = False
     if not attached:
         try:
             if host_window is not None and hasattr(host_window, "addDockWidget"):
                 host_window.addDockWidget(area, dock)
                 attached = True
-        except Exception:
+        except Exception as e:
+            self._log(f"[ERROR] host_window addDockWidget failed: {e}")
             attached = False
     if not attached:
         try:
             dock.show()
-        except Exception:
+        except Exception as e:
+            self._log(f"[ERROR] dock show fallback failed: {e}")
             pass
         return False
     try:
         dock.setFloating(False)
-    except Exception:
-        pass
+    except Exception as e:
+        self._log(f"[ERROR] dock setFloating failed: {e}")
     try:
         dock.show()
         dock.raise_()
-    except Exception:
-        pass
+    except Exception as e:
+        self._log(f"[ERROR] dock show/raise failed: {e}")
     return True
 
 
@@ -82,7 +85,8 @@ def _studio_take_dock_widget(studio_dock, fallback_text: str) -> QtWidgets.QWidg
     widget = None
     try:
         widget = studio_dock.widget() if studio_dock is not None else None
-    except Exception:
+    except Exception as e:
+        self._log(f"[ERROR] studio_dock.widget() failed: {e}")
         widget = None
 
     if widget is None:
@@ -98,12 +102,12 @@ def _studio_take_dock_widget(studio_dock, fallback_text: str) -> QtWidgets.QWidg
     try:
         if studio_dock is not None:
             studio_dock.setWidget(QtWidgets.QWidget())
-    except Exception:
-        pass
+    except Exception as e:
+        self._log(f"[ERROR] studio_dock setWidget failed: {e}")
     try:
         widget.setParent(None)
-    except Exception:
-        pass
+    except Exception as e:
+        self._log(f"[ERROR] widget setParent failed: {e}")
     return widget
 
 
@@ -128,7 +132,8 @@ def _build_studio_component_docks(iface_obj, host_window, dlg) -> Dict[str, QtWi
         try:
             if split.count() > 0:
                 view_widget = split.widget(0)
-        except Exception:
+        except Exception as e:
+            self._log(f"[ERROR] split widget retrieval failed: {e}")
             view_widget = None
 
     if view_widget is None:
@@ -136,7 +141,8 @@ def _build_studio_component_docks(iface_obj, host_window, dlg) -> Dict[str, QtWi
             mw = getattr(dlg, "_studio_main_window", None)
             if mw is not None:
                 view_widget = mw.centralWidget()
-        except Exception:
+        except Exception as e:
+            self._log(f"[ERROR] main_window centralWidget failed: {e}")
             view_widget = None
 
     if view_widget is None:
@@ -157,8 +163,8 @@ def _build_studio_component_docks(iface_obj, host_window, dlg) -> Dict[str, QtWi
     for w in (view_widget, log_widget):
         try:
             w.setParent(None)
-        except Exception:
-            pass
+        except Exception as e:
+            self._log(f"[ERROR] widget setParent during dock build failed: {e}")
 
     def _mkdock(title: str, obj_name: str, widget: QtWidgets.QWidget) -> QtWidgets.QDockWidget:
         dock = QtWidgets.QDockWidget(title, host_window)
@@ -200,8 +206,8 @@ def _build_studio_component_docks(iface_obj, host_window, dlg) -> Dict[str, QtWi
     try:
         if host_window is not None and hasattr(host_window, "tabifyDockWidget"):
             host_window.tabifyDockWidget(component_docks["view"], component_docks["inspector"])
-    except Exception:
-        pass
+    except Exception as e:
+        self._log(f"[ERROR] tabifyDockWidget failed: {e}")
 
     return component_docks
 
@@ -213,7 +219,8 @@ def _studio_host_main_window(iface_obj, fallback_parent=None):
     if iface_obj is not None and hasattr(iface_obj, "mainWindow"):
         try:
             host_window = iface_obj.mainWindow()
-        except Exception:
+        except Exception as e:
+            self._log(f"[ERROR] mainWindow() retrieval failed: {e}")
             host_window = None
     if host_window is None:
         host_window = fallback_parent
@@ -231,12 +238,12 @@ def _clear_studio_host_controls(iface_obj, fallback_parent=None) -> None:
         try:
             if iface_obj is not None and hasattr(iface_obj, "mainWindow") and host_window is not None:
                 host_window.removeToolBar(_SWE2D_STUDIO_HOST_TOOLBAR)
-        except Exception:
-            pass
+        except Exception as e:
+            self._log(f"[ERROR] toolbar removal failed: {e}")
         try:
             _SWE2D_STUDIO_HOST_TOOLBAR.deleteLater()
-        except Exception:
-            pass
+        except Exception as e:
+            self._log(f"[ERROR] toolbar deleteLater failed: {e}")
         _SWE2D_STUDIO_HOST_TOOLBAR = None
 
     if _SWE2D_STUDIO_HOST_MENU is not None:
@@ -245,12 +252,12 @@ def _clear_studio_host_controls(iface_obj, fallback_parent=None) -> None:
             parent = act.parentWidget()
             if parent is not None:
                 parent.removeAction(act)
-        except Exception:
-            pass
+        except Exception as e:
+            self._log(f"[ERROR] menu cleanup failed: {e}")
         try:
             _SWE2D_STUDIO_HOST_MENU.deleteLater()
-        except Exception:
-            pass
+        except Exception as e:
+            self._log(f"[ERROR] menu deleteLater failed: {e}")
         _SWE2D_STUDIO_HOST_MENU = None
 
 
@@ -278,19 +285,20 @@ def _install_studio_host_controls(
         try:
             dock.show()
             dock.raise_()
-        except Exception:
-            pass
+        except Exception as e:
+            self._log(f"[ERROR] focus dock show/raise failed: {e}")
 
     def _close_studio_panels() -> None:
         try:
             _remove_workbench_studio_dock(iface_obj)
-        except Exception:
-            pass
+        except Exception as e:
+            self._log(f"[ERROR] close studio panels failed: {e}")
 
     menu_bar = None
     try:
         menu_bar = host_window.menuBar()
-    except Exception:
+    except Exception as e:
+        self._log(f"[ERROR] menuBar retrieval failed: {e}")
         menu_bar = None
 
     if menu_bar is not None:
@@ -403,8 +411,8 @@ def _install_studio_host_controls(
     try:
         source_idx = int(getattr(dlg, "view_mode_combo", host_view_combo).currentIndex())
         host_view_combo.setCurrentIndex(max(0, min(source_idx, host_view_combo.count() - 1)))
-    except Exception:
-        pass
+    except Exception as e:
+        self._log(f"[ERROR] host view combo init failed: {e}")
     host_view_combo.currentIndexChanged.connect(
         lambda idx: dlg.view_mode_combo.setCurrentIndex(idx)
         if hasattr(dlg, "view_mode_combo") and dlg.view_mode_combo is not None
@@ -425,11 +433,12 @@ def _install_studio_host_controls(
     try:
         host_window.addToolBar(QtCore.Qt.TopToolBarArea, toolbar)
         _SWE2D_STUDIO_HOST_TOOLBAR = toolbar
-    except Exception:
+    except Exception as e:
+        self._log(f"[ERROR] host addToolBar failed: {e}")
         try:
             toolbar.deleteLater()
-        except Exception:
-            pass
+        except Exception as e2:
+            self._log(f"[ERROR] toolbar deleteLater after addToolBar failure: {e2}")
 
 
 
@@ -444,8 +453,8 @@ def enforce_studio_shell_visible(dlg: "SWE2DWorkbenchStudioDialog") -> None:
             if mw.isWindow():
                 mw.setWindowFlags(QtCore.Qt.Widget)
                 mw.setParent(dlg)
-        except Exception:
-            pass
+        except Exception as e:
+            self._log(f"[ERROR] studio shell setWindowFlags/setParent failed: {e}")
         center = mw.centralWidget()
         if center is None:
             fallback = QtWidgets.QWidget()
@@ -462,13 +471,13 @@ def enforce_studio_shell_visible(dlg: "SWE2DWorkbenchStudioDialog") -> None:
             center = fallback
         try:
             center.show()
-        except Exception:
-            pass
+        except Exception as e:
+            self._log(f"[ERROR] center widget show failed: {e}")
         left_dock = getattr(dlg, "_studio_left_dock", None)
         if left_dock is not None and not left_dock.isVisible():
             left_dock.show()
         inspector_dock = getattr(dlg, "_studio_inspector_dock", None)
         if inspector_dock is not None and not inspector_dock.isVisible():
             inspector_dock.show()
-    except Exception:
-        pass
+    except Exception as e:
+        self._log(f"[ERROR] enforce_studio_shell_visible failed: {e}")

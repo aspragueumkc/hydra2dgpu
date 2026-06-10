@@ -1,8 +1,11 @@
 from __future__ import annotations
 
+import logging
 from typing import Callable, Dict, List, Optional, Tuple
 
 import numpy as np
+
+logger = logging.getLogger(__name__)
 
 
 def build_spatial_manning_array_qgis(
@@ -47,13 +50,15 @@ def build_spatial_manning_array_qgis(
             continue
         try:
             n = float(ft[n_field])
-        except Exception:
+        except Exception as e:
+            log_fn(f"[ERROR] Manning n field parse failed: {e}")
             continue
         pr = 0
         if prio_field is not None:
             try:
                 pr = int(ft[prio_field])
-            except Exception:
+            except Exception as e:
+                log_fn(f"[ERROR] Manning priority field parse failed: {e}")
                 pr = 0
         features.append((pr, g, n))
 
@@ -116,13 +121,15 @@ def build_spatial_cn_array_qgis(
             continue
         try:
             cn = float(ft[cn_field])
-        except Exception:
+        except Exception as e:
+            log_fn(f"[ERROR] CN field parse failed: {e}")
             continue
         pr = 0
         if prio_field is not None:
             try:
                 pr = int(ft[prio_field])
-            except Exception:
+            except Exception as e:
+                log_fn(f"[ERROR] CN priority field parse failed: {e}")
                 pr = 0
         features.append((pr, g, float(np.clip(cn, 1.0, 100.0))))
 
@@ -254,7 +261,8 @@ def build_thiessen_rain_cn_forcing_qgis(
     for ft in hyetograph_layer.getFeatures():
         try:
             hy_id = str(ft[hy_id_field] or "").strip()
-        except Exception:
+        except Exception as e:
+            log_fn(f"[ERROR] Hyetograph ID field parse failed: {e}")
             hy_id = ""
         if not hy_id:
             continue
@@ -296,7 +304,8 @@ def build_thiessen_rain_cn_forcing_qgis(
             continue
         try:
             pt = geom.asPoint()
-        except Exception:
+        except Exception as e:
+            log_fn(f"[ERROR] Gauge geometry asPoint failed: {e}")
             continue
         gauge_id = str(ft[gid_field] or "").strip()
         hy_id = str(ft[hyid_field] or "").strip()
@@ -326,7 +335,8 @@ def build_thiessen_rain_cn_forcing_qgis(
                 continue
             try:
                 wkb_type = int(geom.wkbType())
-            except Exception:
+            except Exception as e:
+                log_fn(f"[ERROR] WKB type parse failed: {e}")
                 wkb_type = -1
             if qgs_wkb_types.geometryType(wkb_type) == qgs_wkb_types.GeometryType.PolygonGeometry:
                 for i in range(cell_x.shape[0]):

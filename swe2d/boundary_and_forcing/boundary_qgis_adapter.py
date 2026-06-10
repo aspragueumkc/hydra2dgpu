@@ -1,9 +1,12 @@
 from __future__ import annotations
 
+import logging
 import math
 from typing import Callable, Dict, Iterable, Optional, Tuple
 
 import numpy as np
+
+logger = logging.getLogger(__name__)
 
 
 def _edge_midpoint_distance_to_feature(
@@ -55,7 +58,8 @@ def _edge_matches_feature(
             # Intersection-only can include endpoint touches at corners; require
             # the midpoint to still be reasonably close before accepting.
             return bool(dist <= max(1.0e-9, 0.25 * edge_len))
-    except Exception:
+    except Exception as e:
+        logger.warning("_edge_matches_feature: %s", e, exc_info=True)
         pass
 
     return False
@@ -77,7 +81,8 @@ def _edge_intersects_feature(
             qgs_pointxy_cls(x1, y1),
         ])
         return bool(edge_geom.intersects(feature_geom))
-    except Exception:
+    except Exception as e:
+        logger.warning("_edge_intersects_feature: %s", e, exc_info=True)
         return False
 
 
@@ -131,19 +136,22 @@ def apply_bc_layer_overrides_qgis(
             continue
         try:
             t = int(ft[type_field])
-        except Exception:
+        except Exception as e:
+            log_fn(f"[ERROR] BC type field parse failed: {e}")
             continue
         v = 0.0
         if val_field is not None:
             try:
                 v = float(ft[val_field])
-            except Exception:
+            except Exception as e:
+                log_fn(f"[ERROR] BC value field parse failed: {e}")
                 v = 0.0
         pr = 0
         if prio_field is not None:
             try:
                 pr = int(ft[prio_field])
-            except Exception:
+            except Exception as e:
+                log_fn(f"[ERROR] BC priority field parse failed: {e}")
                 pr = 0
         features.append((pr, geom, t, v))
 
@@ -322,7 +330,8 @@ def collect_bc_layer_hydrographs_qgis(
                 if lyr.id() == layer_ref or str(lyr.name()) == layer_ref:
                     target_layer = lyr
                     break
-            except Exception:
+            except Exception as e:
+                logger.warning("_resolve_layer_hydrograph layer matching failed: %s", e)
                 continue
         if target_layer is None:
             return None
@@ -333,10 +342,11 @@ def collect_bc_layer_hydrographs_qgis(
         geom = ft.geometry()
         if geom is None or geom.isEmpty():
             continue
-        try:
-            t = int(ft[type_field])
-        except Exception:
-            continue
+            try:
+                t = int(ft[type_field])
+            except Exception as e:
+                log_fn(f"[ERROR] Hydrograph BC type field parse failed: {e}")
+                continue
         if t not in (int(ts_flow_code), int(ts_stage_code)):
             continue
 
@@ -356,7 +366,8 @@ def collect_bc_layer_hydrographs_qgis(
                 if prio_field is not None:
                     try:
                         pr = int(ft[prio_field])
-                    except Exception:
+                    except Exception as e:
+                        log_fn(f"[ERROR] Hydrograph priority field parse failed: {e}")
                         pr = 0
                 features.append((pr, geom, t, hg_layer))
                 continue
@@ -369,14 +380,16 @@ def collect_bc_layer_hydrographs_qgis(
                     if prio_field is not None:
                         try:
                             pr = int(ft[prio_field])
-                        except Exception:
+                        except Exception as e:
+                            log_fn(f"[ERROR] Hydrograph priority field parse (canonical): {e}")
                             pr = 0
                     features.append((pr, geom, t, hg_layer))
             continue
 
         try:
             hg = parse_hydrograph_text_fn(raw_h)
-        except Exception:
+        except Exception as e:
+            log_fn(f"[ERROR] Hydrograph text parse failed: {e}")
             hg = None
         if hg is None:
             # If parsing failed, treat hydrograph field as a layer reference token.
@@ -388,7 +401,8 @@ def collect_bc_layer_hydrographs_qgis(
                 if prio_field is not None:
                     try:
                         pr = int(ft[prio_field])
-                    except Exception:
+                    except Exception as e:
+                        log_fn(f"[ERROR] Hydrograph priority field parse (layer ref): {e}")
                         pr = 0
                 features.append((pr, geom, t, hg_layer))
             continue
@@ -397,7 +411,8 @@ def collect_bc_layer_hydrographs_qgis(
         if prio_field is not None:
             try:
                 pr = int(ft[prio_field])
-            except Exception:
+            except Exception as e:
+                log_fn(f"[ERROR] Hydrograph priority field parse (text): {e}")
                 pr = 0
         features.append((pr, geom, t, hg))
 
@@ -516,11 +531,13 @@ def collect_bc_layer_edge_groups_qgis(
         if prio_field is not None:
             try:
                 pr = int(ft[prio_field])
-            except Exception:
+            except Exception as e:
+                logger.warning("BC edge group priority field parse failed: %s", e)
                 pr = 0
         try:
             nm = f"feature_{int(ft.id())}"
-        except Exception:
+        except Exception as e:
+            logger.warning("BC edge group feature ID parse failed: %s", e)
             nm = "feature"
         features.append((pr, geom, nm))
 
