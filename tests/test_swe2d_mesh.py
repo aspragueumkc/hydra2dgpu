@@ -8,9 +8,6 @@ import sys
 import os
 import numpy as np
 
-# Allow importing from parent directory when run standalone
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
-
 
 def _load_module():
     try:

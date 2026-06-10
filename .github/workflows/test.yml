@@ -1,0 +1,101 @@
+name: Test Suite
+
+on:
+  push:
+    branches: [ "main", "master" ]
+  pull_request:
+    branches: [ "main", "master" ]
+  workflow_dispatch:  # allow manual trigger
+
+jobs:
+  # ── Mocked unit tests (fast, no QGIS needed) ──────────────────────────
+  mock-tests:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ["3.10", "3.12"]
+
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Set up Python ${{ matrix.python-version }}
+      uses: actions/setup-python@v5
+      with:
+        python-version: ${{ matrix.python-version }}
+
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install numpy gmsh>=4.12
+        # pdoc for optional doc build verification
+        pip install pdoc>=14.0
+
+    - name: Mock GUI tests (no QGIS)
+      run: |
+        PYTHONPATH="$PWD:$PWD/build:$PWD/tests" \
+          python3 -m unittest -v \
+          tests.test_workbench_gui \
+          tests.test_swe2d_results_queries \
+          tests.test_swe2d_velocity_layer \
+          tests.test_bridge_stacked_mesh \
+          tests.test_bridge_stacked_runtime \
+          tests.test_workbench_imports
+
+    - name: Python style audit
+      run: |
+        python3 tools/python_style_audit.py swe2d/ || echo "Style audit warnings (non-fatal)"
+
+    - name: Verify pdoc builds without errors
+      run: |
+        cd docs && pdoc ../swe2d --skip-errors --docformat numpy --output-dir /tmp/pdoc-check
+
+  # ── Build + unit tests (requires hydra_swe2d native module) ───────────
+  build-and-cpu-tests:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Install system deps
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y cmake g++ python3-dev
+
+    - name: Set up Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: "3.12"
+
+    - name: Install Python deps
+      run: |
+        pip install numpy gmsh>=4.12
+
+    - name: Build native module (CPU only)
+      run: |
+        mkdir -p build && cd build
+        cmake .. -DBACKWATER_USE_CUDA=OFF -DCMAKE_BUILD_TYPE=Release
+        make -j$(nproc)
+
+    - name: Run CPU tests
+      run: |
+        PYTHONPATH="$PWD:$PWD/build:$PWD/tests" \
+          python3 -m unittest -v \
+          tests.test_swe2d_dambreak \
+          tests.test_swe2d_lakerest \
+          tests.test_swe2d_mesh \
+          tests.test_swe2d_nonorth_vs_orth_channel
+
+  # ── Optional: headless QGIS smoke test (QGIS must be available) ──────
+  qgis-smoke-test:
+    runs-on: ubuntu-latest
+    if: false  # disabled by default — enable when QGIS CI runner is set up
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Install QGIS + Xvfb
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y qgis python3-qgis xvfb
+
+    - name: Run headless QGIS smoke test
+      run: |
+        bash tests/run_headless_qgis_tests.sh --qgis

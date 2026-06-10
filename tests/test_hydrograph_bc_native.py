@@ -26,12 +26,6 @@ from typing import Dict, Tuple
 
 import numpy as np
 
-_HERE = os.path.dirname(os.path.abspath(__file__))
-_PLUGIN = os.path.dirname(_HERE)
-for _p in (_HERE, _PLUGIN):
-    if _p not in sys.path:
-        sys.path.insert(0, _p)
-
 try:
     from swe2d.runtime.backend import SWE2DBackend, swe2d_available
     _HAVE_SOLVER = swe2d_available()

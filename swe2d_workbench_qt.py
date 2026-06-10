@@ -9945,22 +9945,18 @@ def _remove_workbench_dock_instance(dock, iface_obj):
             try:
                 widget.close()
             except Exception as e:
-                self._log(f"[ERROR] closeEvent failed: {e}")
-                pass
+                logging.warning("[dock cleanup] widget.close() failed: %s", e)
     except Exception as e:
-        self._log(f"[ERROR] closeEvent failed: {e}")
-        pass
+        logging.warning("[dock cleanup] dock.widget() failed: %s", e)
     try:
         if iface_obj is not None and hasattr(iface_obj, "removeDockWidget"):
             iface_obj.removeDockWidget(dock)
     except Exception as e:
-        self._log(f"[ERROR] closeEvent failed: {e}")
-        pass
+        logging.warning("[dock cleanup] removeDockWidget failed: %s", e)
     try:
         dock.deleteLater()
     except Exception as e:
-        self._log(f"[ERROR] closeEvent failed: {e}")
-        pass
+        logging.warning("[dock cleanup] deleteLater failed: %s", e)
     return None
 
 

@@ -5,14 +5,6 @@ from contextlib import contextmanager
 
 import numpy as np
 
-ROOT = os.path.dirname(os.path.dirname(__file__))
-if ROOT not in sys.path:
-    sys.path.insert(0, ROOT)
-
-BUILD = os.path.join(ROOT, "build")
-if BUILD not in sys.path:
-    sys.path.insert(0, BUILD)
-
 from swe2d.mesh.meshing import generate_face_centric_mesh  # noqa: E402
 from tools.gmsh_topology_mesher import load_conceptual_model  # noqa: E402
 

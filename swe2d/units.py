@@ -42,11 +42,15 @@ _manning: float = SI_MANNING_FACTOR    # Manning multiplier in model units
 
 def configure(length_scale_si_to_model: float) -> None:
     """
-    Call once at startup with the CRS-derived length scale.
-    
-    Args:
-        length_scale_si_to_model: How many SI meters per model unit.
-            1.0 for metric CRS (m), 0.3048 for US-foot CRS (ft).
+    Configure CRS-derived unit conversion from the project length scale.
+
+    Must be called once at startup before any other swe2d code runs.
+
+    Parameters
+    ----------
+    length_scale_si_to_model : float
+        How many SI meters per model unit.
+        1.0 for metric CRS (m), 0.3048 for US-foot CRS (ft).
     """
     global _si_m_per_model, _model_per_si_m, _si_m2_per_model_area, _si_m3_per_model_volume
     global _model_to_ft, _gravity, _manning

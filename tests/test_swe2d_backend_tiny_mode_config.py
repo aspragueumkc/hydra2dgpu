@@ -4,9 +4,6 @@ import sys
 
 import numpy as np
 
-# Ensure workspace root is importable when running this file directly.
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-
 import swe2d.runtime.backend as backend_mod
 from swe2d.extensions.extension_models import SolverModelOptions
 

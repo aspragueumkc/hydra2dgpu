@@ -25,6 +25,12 @@ env/
 *.swp
 *.swo
 
+# Agent configuration (local overrides only; shared rules in .opencode/rules/ are tracked separately)
+.opencode/opencode.json
+
+# Generated C++/CUDA API docs (Doxygen output)
+docs/cpp/api/
+
 # OS
 .DS_Store
 Thumbs.db

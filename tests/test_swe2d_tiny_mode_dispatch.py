@@ -4,9 +4,6 @@ import unittest
 
 import numpy as np
 
-# Ensure workspace root is importable when running this file directly.
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-
 from swe2d.extensions.extension_models import TemporalScheme
 from swe2d.runtime.backend import SWE2DBackend
 

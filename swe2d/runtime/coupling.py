@@ -558,7 +558,6 @@ class SWE2DCouplingController:
             self._structure_non_bridge_mask = np.zeros(0, dtype=bool)
             self._structure_bridge_indices = np.zeros(0, dtype=np.int32)
             self._enabled_bridge_indices = np.zeros(0, dtype=np.int32)
-        self._last_native_structure_flows = None
         # Influence-width redistribution data (computed by _build_redistribution_data)
         self._redist_offsets: Optional[np.ndarray] = None
         self._redist_cell_idx: Optional[np.ndarray] = None
@@ -1409,7 +1408,7 @@ class SWE2DCouplingController:
         }
         return self._gpu_drainage_static_args
 
-    def _bridge_structure_arrays(self, cell_wse: np.ndarray) -> Optional[Dict[str, np.ndarray]]:
+    def _bridge_structure_arrays(self, bridge_flow_values: np.ndarray) -> Optional[Dict[str, np.ndarray]]:
         if self.structures is None:
             return None
         bridge_indices = self._enabled_bridge_indices
@@ -1417,13 +1416,12 @@ class SWE2DCouplingController:
             return None
 
         sts = self._structures_cfg
-        flows = np.asarray(self.structures.structure_flows(cell_wse), dtype=np.float64)
         return {
             "indices": np.asarray(bridge_indices, dtype=np.int32),
             "structure_id": np.asarray([str(sts[i].structure_id) for i in bridge_indices], dtype=object),
             "upstream_cell": np.ascontiguousarray([int(sts[i].upstream_cell) for i in bridge_indices], dtype=np.int32),
             "downstream_cell": np.ascontiguousarray([int(sts[i].downstream_cell) for i in bridge_indices], dtype=np.int32),
-            "flow": np.ascontiguousarray(flows[bridge_indices], dtype=np.float64),
+            "flow": np.ascontiguousarray(bridge_flow_values[bridge_indices], dtype=np.float64),
             "loss_k_upstream": np.ascontiguousarray([
                 float(sts[i].metadata.get("inlet_loss_k", sts[i].metadata.get("coeff", 0.5)))
                 for i in bridge_indices
@@ -1438,109 +1436,7 @@ class SWE2DCouplingController:
             ], dtype=np.float64),
         }
 
-    def _native_structure_flows(
-        self,
-        native_mod,
-        cell_wse: np.ndarray,
-        *,
-        use_cuda: bool = True,
-    ) -> Optional[np.ndarray]:
-        ssoa = self._structures_soa
-        if ssoa is None:
-            return None
-        fn_name = "swe2d_gpu_compute_structure_flows" if use_cuda else "swe2d_cpu_compute_structure_flows"
-        if not hasattr(native_mod, fn_name):
-            return None
-        compute_fn = getattr(native_mod, fn_name, None)
-        if compute_fn is None:
-            return None
-        # Pass model units directly.  Kernel is unit-agnostic for weir/orifice/
-        # bridge/pump; only the HDS-5 culvert path converts to ft internally.
-        args = (
-            np.asarray(cell_wse, dtype=np.float64),
-            np.asarray(self.cell_bed, dtype=np.float64),
-            np.asarray(ssoa.structure_type, dtype=np.int32),
-            np.asarray(ssoa.upstream_cell, dtype=np.int32),
-            np.asarray(ssoa.downstream_cell, dtype=np.int32),
-            np.asarray(ssoa.crest_elev, dtype=np.float64),
-            np.asarray(ssoa.width, dtype=np.float64),
-            np.asarray(ssoa.height, dtype=np.float64),
-            np.asarray(ssoa.diameter, dtype=np.float64),
-            np.asarray(ssoa.length, dtype=np.float64),
-            np.asarray(ssoa.roughness_n, dtype=np.float64),
-            np.asarray(ssoa.coeff, dtype=np.float64),
-            np.asarray(ssoa.cd, dtype=np.float64),
-            np.asarray(ssoa.opening, dtype=np.float64),
-            np.asarray(ssoa.q_pump, dtype=np.float64),
-            np.asarray(ssoa.max_flow, dtype=np.float64),
-            np.asarray(ssoa.culvert_code, dtype=np.int32),
-            np.asarray(ssoa.culvert_shape, dtype=np.int32),
-            np.asarray(ssoa.culvert_rise, dtype=np.float64),
-            np.asarray(ssoa.culvert_span, dtype=np.float64),
-            np.asarray(ssoa.culvert_area, dtype=np.float64),
-            np.asarray(ssoa.culvert_barrels, dtype=np.float64),
-            np.asarray(ssoa.culvert_slope, dtype=np.float64),
-            np.asarray(ssoa.inlet_invert_elev, dtype=np.float64),
-            np.asarray(ssoa.outlet_invert_elev, dtype=np.float64),
-            np.asarray(ssoa.entrance_loss_k, dtype=np.float64),
-            np.asarray(ssoa.exit_loss_k, dtype=np.float64),
-            np.asarray(ssoa.embankment_enabled, dtype=np.int32),
-            np.asarray(ssoa.embankment_crest_elev, dtype=np.float64),
-            np.asarray(ssoa.embankment_overflow_width, dtype=np.float64),
-            np.asarray(ssoa.embankment_weir_coeff, dtype=np.float64),
-            self._gravity,
-            self._model_to_ft,
-        )
-        try:
-            return np.asarray(compute_fn(*args), dtype=np.float64)
-        except Exception:
-            return None
-
-    def _structure_source_rate_from_flows(self, structure_flows: np.ndarray, native_mod=None) -> np.ndarray:
-        flows = np.ascontiguousarray(structure_flows, dtype=np.float64).ravel()
-        if flows.size == 0:
-            return np.zeros(self.n_cells, dtype=np.float64)
-
-        if self._structures_soa is not None and self._structures_soa.upstream_cell.size == flows.size:
-            up = np.asarray(self._structures_soa.upstream_cell, dtype=np.int32)
-            dn = np.asarray(self._structures_soa.downstream_cell, dtype=np.int32)
-        else:
-            up = np.asarray([int(st.upstream_cell) for st in self._structures_cfg], dtype=np.int32)
-            dn = np.asarray([int(st.downstream_cell) for st in self._structures_cfg], dtype=np.int32)
-
-        enabled = np.asarray([bool(getattr(st, "enabled", True)) for st in self._structures_cfg], dtype=bool)
-        if enabled.size == flows.size:
-            active = enabled
-        else:
-            active = np.ones(flows.size, dtype=bool)
-
-        valid = (
-            active
-            & np.isfinite(flows)
-            & (up >= 0)
-            & (dn >= 0)
-            & (up < self.n_cells)
-            & (dn < self.n_cells)
-        )
-        if not np.any(valid):
-            return np.zeros(self.n_cells, dtype=np.float64)
-
-        src = np.zeros(self.n_cells, dtype=np.float64)
-        upv = up[valid]
-        dnv = dn[valid]
-        qv = flows[valid]
-        # Kernel returns model-unit flow (L³/T) for all structure types.
-        # Divide by model-unit cell_area (L²) → model-unit depth rate (L/T).
-        np.add.at(src, upv, -qv / np.maximum(self.cell_area[upv], 1.0e-12))
-        np.add.at(src, dnv, qv / np.maximum(self.cell_area[dnv], 1.0e-12))
-
-        # Apply influence-width redistribution (replaces single-cell injection
-        # with multi-cell distribution for structures that have corridor data).
-        if self._redist_offsets is not None and self._redist_offsets.size > 1:
-            # Convert flows from model units to SI for redistribution kernel
-            qv_si = qv * _u.si_m3_per_model_volume()
-            src = self._apply_redistribution(src, qv_si, up, dn, native_mod=native_mod)
-        return src
+    
 
     @property
     def n_cells(self) -> int:
@@ -1769,36 +1665,20 @@ class SWE2DCouplingController:
                         }
                         component_sums["drainage_native_iterative"] = 0.0
             else:
-                has_pipe_end_routing = bool(getattr(self.drainage.cfg, "pipe_ends", []))
-                if not has_pipe_end_routing:
-                    drainage_step_diag = self.drainage.solve_network_step(float(dt_s))
-                else:
-                    drainage_step_diag = {}
-                q_cell = np.asarray(
-                    self.drainage.apply_surface_exchange(
-                        float(dt_s),
-                        cell_wse,
-                        cell_area_m2=self.cell_area,
-                        cell_depth_m=hh,
-                    ),
-                    dtype=np.float64,
-                )
-                if has_pipe_end_routing:
-                    drainage_step_diag = dict(getattr(self.drainage, "_last_network_diag", {}))
+                # No GPU drainage backend available — network is empty/disabled,
+                # or the native module lacks the CUDA binding.  Produce zero
+                # exchange so the solver continues without drainage sources.
+                q_cell = np.zeros(self.n_cells, dtype=np.float64)
                 drainage_diag = {
-                    "max_node_depth": float(drainage_step_diag.get("max_node_depth", 0.0)),
-                    "max_link_flow": float(drainage_step_diag.get("max_link_flow", 0.0)),
-                    "limiter_events": float(drainage_step_diag.get("limiter_events", 0.0)),
-                    "limiter_volume_m3": float(drainage_step_diag.get("limiter_volume_m3", 0.0)),
-                    "substeps_used": 1.0,
+                    "max_node_depth": 0.0,
+                    "max_link_flow": 0.0,
+                    "limiter_events": 0.0,
+                    "limiter_volume_m3": 0.0,
+                    "substeps_used": 0.0,
+                    "inactive_fastpath": 1.0,
                 }
                 component_sums["drainage_native_iterative"] = 0.0
 
-            if q_cell is None:
-                raise RuntimeError(
-                    "GPU drainage did not produce q_cell (None). "
-                    "Check drainage_gpu_method and native CUDA drainage bindings."
-                )
             nz = np.nonzero(np.abs(q_cell) > 0.0)[0]
             if nz.size > 0:
                 inlet_cell = nz.astype(np.int32, copy=False)
@@ -1821,12 +1701,8 @@ class SWE2DCouplingController:
         bridge_total = None
         bridge_helper_used = False
         if self.structures is not None:
-            bridge_plan_map = {
-                str(plan.structure_id): plan for plan in getattr(self, "bridge_stacked_plans", []) or []
-            }
             sts = self._structures_cfg
             ssoa = self._structures_soa
-            bridge_mask = self._structure_bridge_mask
             non_bridge_mask = self._structure_non_bridge_mask
             use_persistent = (
                 self._persistent_coupling_preloaded
@@ -1869,7 +1745,7 @@ class SWE2DCouplingController:
                     bridge_mask = self._structure_bridge_indices
                     if bridge_mask is not None and bridge_mask.size > 0:
                         bridge_q = bridge_flows[bridge_mask.astype(np.int32)]
-                        bridge_arrays = self._bridge_structure_arrays(cell_wse)
+                        bridge_arrays = self._bridge_structure_arrays(bridge_flows)
                         if bridge_arrays is not None and len(bridge_q) > 0:
                             bridge_helper_used = True
                             bridge_total = np.zeros(self.n_cells, dtype=np.float64)
@@ -1951,67 +1827,8 @@ class SWE2DCouplingController:
                     # No redistribution: GPU has correct sources.  Signal
                     # to caller by returning None so the host skips upload.
                     total = None
-                # Signal that persistent path handled non-bridge structures
-                # so the fallback path below is skipped.
+                # Signal that persistent path handled structures.
                 flows = None
-                non_bridge_handled = True
-
-            # The persistent path handles non-bridge structures on-device.
-            # Bridges still use the CUDA helper below when applicable.
-            if flows is not None and flows.size == len(sts) and flows.size > 0:
-                use_bridge_cuda = self.bridge_cuda_coupling and hasattr(native_mod, "swe2d_gpu_compute_bridge_coupling_sources")
-                if use_bridge_cuda:
-                    if ssoa is not None:
-                        struct_up = np.asarray(ssoa.upstream_cell[non_bridge_mask], dtype=np.int32)
-                        struct_dn = np.asarray(ssoa.downstream_cell[non_bridge_mask], dtype=np.int32)
-                    else:
-                        struct_up = np.asarray([int(st.upstream_cell) for st in sts if st.structure_type != StructureType.BRIDGE], dtype=np.int32)
-                        struct_dn = np.asarray([int(st.downstream_cell) for st in sts if st.structure_type != StructureType.BRIDGE], dtype=np.int32)
-                    struct_q = flows[non_bridge_mask]
-                    bridge_arrays = self._bridge_structure_arrays(cell_wse)
-                    if bridge_arrays is not None:
-                        bridge_helper_used = True
-                        bridge_total = np.zeros(self.n_cells, dtype=np.float64)
-                        for i in range(int(bridge_arrays["indices"].size)):
-                            src = np.asarray(
-                                native_mod.swe2d_gpu_compute_bridge_coupling_sources(
-                                    np.asarray(self.cell_area, dtype=np.float64),
-                                    np.asarray([int(bridge_arrays["upstream_cell"][i])], dtype=np.int32),
-                                    np.asarray([int(bridge_arrays["downstream_cell"][i])], dtype=np.int32),
-                                    np.asarray([float(bridge_arrays["flow"][i])], dtype=np.float64),
-                                    np.asarray([float(bridge_arrays["loss_k_upstream"][i])], dtype=np.float64),
-                                    np.asarray([float(bridge_arrays["loss_k_downstream"][i])], dtype=np.float64),
-                                    float(bridge_arrays["width_m"][i]),
-                                    float(dt_s),
-                                ),
-                                dtype=np.float64,
-                            )
-                            if src.size != self.n_cells:
-                                raise ValueError("bridge source-rate array size mismatch")
-                            bridge_id = str(bridge_arrays["structure_id"][i])
-                            bridge_plan = bridge_plan_map.get(bridge_id)
-                            if bridge_plan is not None:
-                                if self.bridge_stacked_coupling_mode == "legacy_scalar":
-                                    src = apply_bridge_stacked_source_weight(src, bridge_plan)
-                                else:
-                                    src = apply_bridge_stacked_phase3_source_weight(
-                                        src,
-                                        bridge_plan,
-                                        self.cell_area,
-                                    )
-                            bridge_total += src
-                else:
-                    if ssoa is not None:
-                        struct_up = np.asarray(ssoa.upstream_cell, dtype=np.int32)
-                        struct_dn = np.asarray(ssoa.downstream_cell, dtype=np.int32)
-                    else:
-                        struct_up = np.asarray([int(st.upstream_cell) for st in sts], dtype=np.int32)
-                        struct_dn = np.asarray([int(st.downstream_cell) for st in sts], dtype=np.int32)
-                    struct_q = flows
-            # Skip the Python culvert solver re-compute when the persistent
-            # GPU path already computed everything on-device.
-            if flows is not None:
-                structure_diag = self.structures.compute_structure_fluxes(float(dt_s), cell_wse)
 
         if flows is not None:
             total = np.asarray(

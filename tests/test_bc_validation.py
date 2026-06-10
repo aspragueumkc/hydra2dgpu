@@ -45,15 +45,6 @@ from typing import Dict, List, Tuple
 import numpy as np
 
 # ---------------------------------------------------------------------------
-# Path setup – allow importing plugin modules from any cwd
-# ---------------------------------------------------------------------------
-_HERE = os.path.dirname(os.path.abspath(__file__))
-_PLUGIN = os.path.dirname(_HERE)
-for _p in (_HERE, _PLUGIN):
-    if _p not in sys.path:
-        sys.path.insert(0, _p)
-
-# ---------------------------------------------------------------------------
 # Optional deps
 # ---------------------------------------------------------------------------
 try:

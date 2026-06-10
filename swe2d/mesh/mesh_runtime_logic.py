@@ -6,6 +6,23 @@ import numpy as np
 
 
 def mesh_cell_centroids(mesh_data: Dict[str, np.ndarray]) -> Tuple[np.ndarray, np.ndarray]:
+    """
+    Compute cell centroids from mesh topology.
+
+    Parameters
+    ----------
+    mesh_data : dict
+        Mesh data dict with ``node_x``, ``node_y``, and either
+        ``cell_face_offsets`` / ``cell_face_nodes`` (polygon CSR)
+        or ``cell_nodes`` (triangle fan).
+
+    Returns
+    -------
+    cx : np.ndarray
+        Centroid X coordinates, shape (N_cells,).
+    cy : np.ndarray
+        Centroid Y coordinates, shape (N_cells,).
+    """
     node_x = mesh_data["node_x"]
     node_y = mesh_data["node_y"]
 
@@ -29,6 +46,21 @@ def mesh_cell_centroids(mesh_data: Dict[str, np.ndarray]) -> Tuple[np.ndarray, n
 
 
 def mesh_cell_areas(mesh_data: Dict[str, np.ndarray]) -> np.ndarray:
+    """
+    Compute cell areas from mesh topology.
+
+    Parameters
+    ----------
+    mesh_data : dict
+        Mesh data dict with ``node_x``, ``node_y``, and either
+        ``cell_face_offsets`` / ``cell_face_nodes`` (polygon CSR)
+        or ``cell_nodes`` (triangle fan).
+
+    Returns
+    -------
+    np.ndarray
+        Area per cell, shape (N_cells,).
+    """
     node_x = mesh_data["node_x"]
     node_y = mesh_data["node_y"]
 
@@ -58,6 +90,21 @@ def mesh_cell_areas(mesh_data: Dict[str, np.ndarray]) -> np.ndarray:
 
 
 def mesh_cell_min_bed(mesh_data: Dict[str, np.ndarray]) -> np.ndarray:
+    """
+    Compute minimum node bed elevation per cell.
+
+    Parameters
+    ----------
+    mesh_data : dict
+        Mesh data dict with ``node_z``, and either
+        ``cell_face_offsets`` / ``cell_face_nodes`` (polygon CSR)
+        or ``cell_nodes`` (triangle fan).
+
+    Returns
+    -------
+    np.ndarray
+        Minimum bed elevation per cell, shape (N_cells,).
+    """
     node_z = mesh_data["node_z"]
     if "cell_face_offsets" in mesh_data and "cell_face_nodes" in mesh_data:
         offs = mesh_data["cell_face_offsets"].astype(np.int32)
@@ -75,7 +122,21 @@ def mesh_cell_min_bed(mesh_data: Dict[str, np.ndarray]) -> np.ndarray:
 
 
 def mesh_cell_solver_bed(mesh_data: Dict[str, np.ndarray]) -> np.ndarray:
-    """Cell bed elevation consistent with solver cell_zb (mean vertex bed)."""
+    """
+    Compute cell bed elevation consistent with the solver (mean vertex bed).
+
+    Parameters
+    ----------
+    mesh_data : dict
+        Mesh data dict with ``node_z``, and either
+        ``cell_face_offsets`` / ``cell_face_nodes`` (polygon CSR)
+        or ``cell_nodes`` (triangle fan).
+
+    Returns
+    -------
+    np.ndarray
+        Mean bed elevation per cell, shape (N_cells,).
+    """
     node_z = mesh_data["node_z"]
     if "cell_face_offsets" in mesh_data and "cell_face_nodes" in mesh_data:
         offs = mesh_data["cell_face_offsets"].astype(np.int32)
@@ -99,6 +160,26 @@ def inflow_adjacent_cells(
     bc_tp: np.ndarray,
     inflow_types: Sequence[int] = (2, 6, 102),
 ) -> np.ndarray:
+    """
+    Find cells adjacent to inflow-type boundary edges.
+
+    Parameters
+    ----------
+    mesh_data : dict
+        Mesh data dict.
+    bc_n0, bc_n1 : np.ndarray
+        Boundary edge node indices.
+    bc_tp : np.ndarray
+        Per-edge BC type codes.
+    inflow_types : sequence of int
+        BC type codes considered inflow. Default (2, 6, 102)
+        covers Inflow Q, Normal Depth, and Timeseries Flow.
+
+    Returns
+    -------
+    np.ndarray
+        Cell indices adjacent to inflow boundaries, shape (M,).
+    """
     inflow_mask = np.isin(bc_tp.astype(np.int32), list(inflow_types))
     if not np.any(inflow_mask):
         return np.empty(0, dtype=np.int32)
@@ -138,6 +219,25 @@ def inflow_adjacent_cells(
 
 
 def boundary_buffer_cells(mesh_data: Optional[Dict[str, np.ndarray]], n_rings: int) -> np.ndarray:
+    """
+    Find cells within *n_rings* layers of the domain boundary.
+
+    Uses edge-ownership to identify boundary-adjacent cells (edges
+    belonging to exactly one cell), then walks outward *n_rings*
+    layers via the cell neighbour graph.
+
+    Parameters
+    ----------
+    mesh_data : dict or None
+        Mesh data dict. Returns empty if None.
+    n_rings : int
+        Number of cell layers to include.
+
+    Returns
+    -------
+    np.ndarray
+        Sorted cell indices in the buffer zone, shape (M,).
+    """
     if mesh_data is None or int(n_rings) <= 0:
         return np.empty(0, dtype=np.int32)
 
@@ -205,6 +305,40 @@ def initial_state(
     bc_tp: Optional[np.ndarray] = None,
     log_fn: Optional[Callable[[str], None]] = None,
 ) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """
+    Build initial depth and momentum arrays for a solver start.
+
+    Supports ``uniform_depth``, ``uniform_wse``, and ``dry`` modes.
+    In ``dry`` mode with inflow boundaries, the inflow-adjacent cells
+    are primed with a small positive depth to enable boundary-driven
+    wetting.
+
+    Parameters
+    ----------
+    mesh_data : dict
+        Mesh data dict.
+    mode : str
+        ``"uniform_depth"``, ``"uniform_wse"``, or ``"dry"``.
+    initial_depth : float
+        Uniform depth applied in ``uniform_depth`` mode.
+    initial_wse : float
+        Uniform WSE applied in ``uniform_wse`` mode.
+    h_min : float
+        Wet/dry threshold depth.
+    bc_n0, bc_n1, bc_tp : np.ndarray, optional
+        Boundary edge data required for ``dry`` mode.
+    log_fn : callable, optional
+        Log sink for status messages during dry-start priming.
+
+    Returns
+    -------
+    h0 : np.ndarray
+        Initial water depth per cell, shape (N_cells,).
+    hu0 : np.ndarray
+        Initial X-momentum per cell, shape (N_cells,).
+    hv0 : np.ndarray
+        Initial Y-momentum per cell, shape (N_cells,).
+    """
     cell_x, _ = mesh_cell_centroids(mesh_data)
     h0 = np.zeros_like(cell_x, dtype=np.float64)
 

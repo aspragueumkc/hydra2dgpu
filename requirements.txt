@@ -12,5 +12,8 @@ netCDF4>=1.6       # UGRID NetCDF export
 # Optional: visualization
 matplotlib>=3.7    # In-plugin plotting
 
+# Documentation
+pdoc>=14.0         # Auto-generated API reference docs
+
 # Note: QGIS, PyQt5, and osgeo (GDAL) are provided by the QGIS installation
 # and should NOT be installed via pip.

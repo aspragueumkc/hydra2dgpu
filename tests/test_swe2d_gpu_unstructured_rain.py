@@ -12,8 +12,6 @@ import unittest
 
 import numpy as np
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
-
 from swe2d.runtime.backend import SWE2DBackend, swe2d_available
 from tests.test_swe2d_unstructured import _make_gmsh_triangle_mesh
 

@@ -10,7 +10,7 @@ import sys
 import unittest
 import numpy as np
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+
 
 from tests.test_swe2d_unstructured import (  # reuse mesh + analytic helpers
     _make_gmsh_triangle_mesh,

@@ -7,14 +7,6 @@ import warnings
 from unittest import mock
 import numpy as np
 
-here = os.path.dirname(os.path.dirname(__file__))
-if here not in sys.path:
-    sys.path.insert(0, here)
-
-build_dir = os.path.join(here, "build")
-if build_dir not in sys.path:
-    sys.path.insert(0, build_dir)
-
 from swe2d.mesh.meshing import (
     ConceptualArc,
     ConceptualModel,

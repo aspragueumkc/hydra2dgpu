@@ -14,7 +14,7 @@ import unittest
 
 import numpy as np
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+
 
 from tests.test_swe2d_compound_channel import compound_conveyance, solve_stage
 

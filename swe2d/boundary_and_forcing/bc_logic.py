@@ -9,6 +9,22 @@ EdgeHydrographMap = Optional[Dict[int, Tuple[int, Hydrograph]]]
 
 
 def interp_hydrograph(hg: Hydrograph, t_sec: float) -> float:
+    """
+    Interpolate a hydrograph at a given time.
+
+    Parameters
+    ----------
+    hg : Hydrograph
+        Tuple of (times, values) arrays.
+    t_sec : float
+        Query time in seconds.
+
+    Returns
+    -------
+    float
+        Interpolated value at *t_sec*, clamped to the
+        hydrograph time range.
+    """
     t, v = hg
     if t.size == 1:
         return float(v[0])
@@ -25,11 +41,31 @@ def _bc_side_classification(
     node_x: np.ndarray,
     node_y: np.ndarray,
 ) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
-    """Precompute side classification and edge geometry invariants.
+    """
+    Precompute side classification and edge geometry invariants.
 
-    Returns (side_idx, edge_len, edge_z, mx, my, side_names_as_list).
     All returned arrays depend only on (edge_n0, edge_n1, node_x, node_y)
     and are mesh-constant — safe to cache for the lifetime of a run.
+
+    Parameters
+    ----------
+    edge_n0, edge_n1 : np.ndarray
+        Boundary edge node indices.
+    node_x, node_y : np.ndarray
+        Node coordinates.
+
+    Returns
+    -------
+    side_idx : np.ndarray
+        Side index per edge (0=left, 1=right, 2=bottom, 3=top).
+    edge_len : np.ndarray
+        Edge length.
+    edge_z : np.ndarray
+        Mean bed elevation per edge.
+    mx, my : np.ndarray
+        Edge midpoint coordinates.
+    side_names : np.ndarray
+        Side name per edge.
     """
     xmin = float(np.min(node_x))
     xmax = float(np.max(node_x))
@@ -62,12 +98,43 @@ def distribute_total_flow_to_unit_q(
     _edge_len: Optional[np.ndarray] = None,
     _edge_z: Optional[np.ndarray] = None,
 ) -> np.ndarray:
-    """Convert total discharge Q inputs into unit discharge q [L^2/T].
+    """
+    Convert total discharge Q inputs into unit discharge q [L^2/T].
 
-    Parameters prefixed with ``_`` are optional pre-computed geometry
-    invariants (side classification, edge length, edge mid-elevation).
-    When provided, the per-call min/max/argmin/length computation is
-    skipped, saving ~0.2-0.3 ms per call for large boundary edge counts.
+    Distributes total-flow boundary values across active edges within
+    each side/group, weighted by edge length.  Supports progressive
+    (time-ramped) distribution and optional pre-computed geometry invariants.
+
+    Parameters
+    ----------
+    edge_n0, edge_n1 : np.ndarray
+        Boundary edge node indices.
+    bc_type_step : np.ndarray
+        Per-edge BC type at current step.
+    bc_val_step : np.ndarray
+        Per-edge BC value at current step (total Q).
+    bc_type_template : np.ndarray
+        Static BC type template.
+    side_hydrographs : dict
+        Hydrograph per side name: ``{"left": (t, v), ...}``.
+    node_x, node_y, node_z : np.ndarray
+        Node coordinates and bed elevation.
+    progressive : bool
+        If True, distribute only a fraction of total Q proportional
+        to elapsed fraction of peak hydrograph value.
+    ts_flow_code : int
+        BC code for timeseries flow (typically 102).
+    edge_hydrographs : EdgeHydrographMap, optional
+        Per-edge hydrograph overrides.
+    edge_groups : dict, optional
+        Per-edge group labels for grouped distribution.
+    _side_idx, _edge_len, _edge_z : np.ndarray, optional
+        Pre-computed geometry invariants for performance.
+
+    Returns
+    -------
+    np.ndarray
+        Per-edge unit discharge q [L^2/T], shape (E,).
     """
     if edge_n0.size == 0:
         return bc_val_step
@@ -200,8 +267,8 @@ def normalize_inflow_to_uniform_velocity(
     edge_len: np.ndarray,
     eps: float = 1.0e-12,
 ) -> np.ndarray:
-    """Reweight unit discharge *q* per edge so that *u = q/h* is uniform across
-    all active inflow (type 2) boundary edges.
+    """
+    Reweight unit discharge *q* so that *u = q/h* is uniform across inflow edges.
 
     Parameters
     ----------
@@ -219,7 +286,7 @@ def normalize_inflow_to_uniform_velocity(
     Returns
     -------
     np.ndarray
-        Updated bc_val_step with uniform-velocity-normalized q values.
+        Updated *bc_val_step* with uniform-velocity-normalized q values.
     """
     out = bc_val_step.astype(np.float64, copy=True)
     flow_idx = np.where(bc_type_step.astype(np.int32) == 2)[0]
@@ -266,11 +333,42 @@ def apply_timeseries_bc_values(
     *,
     _side_idx: Optional[np.ndarray] = None,
 ) -> Tuple[np.ndarray, np.ndarray]:
-    """Apply timeseries BC values at time *t_sec* to boundary edges.
+    """
+    Apply timeseries BC values at time *t_sec* to boundary edges.
 
     Parameters prefixed with ``_`` are optional pre-computed geometry
     invariants (side classification).  When provided, the per-call
     min/max/argmin computation is skipped.
+
+    Parameters
+    ----------
+    edge_n0, edge_n1 : np.ndarray
+        Boundary edge node indices.
+    bc_type : np.ndarray
+        Per-edge BC type codes.
+    bc_val : np.ndarray
+        Per-edge BC values.
+    side_hydrographs : dict
+        Hydrograph per side name.
+    node_x, node_y : np.ndarray
+        Node coordinates.
+    t_sec : float
+        Current simulation time [s].
+    ts_flow_code : int
+        BC code for timeseries flow (typically 102).
+    ts_stage_code : int
+        BC code for timeseries stage (typically 103).
+    edge_hydrographs : EdgeHydrographMap, optional
+        Per-edge hydrograph overrides.
+    _side_idx : np.ndarray, optional
+        Pre-computed side index per edge.
+
+    Returns
+    -------
+    out_type : np.ndarray
+        Updated per-edge BC type codes.
+    out_val : np.ndarray
+        Updated per-edge BC values.
     """
     if edge_n0.size == 0:
         return bc_type, bc_val
