@@ -98,8 +98,7 @@ jobs:
         uses: Jimver/cuda-toolkit@v0.2.35
         with:
           cuda: '12.4.0'
-          method: network
-          sub-packages: '["nvcc", "cudart"]'
+          method: local
 
       - name: Setup MSVC
         uses: ilammy/msvc-dev-cmd@v1.13.0
