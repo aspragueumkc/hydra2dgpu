@@ -142,7 +142,10 @@ def apply_bc_layer_overrides_qgis(
         v = 0.0
         if val_field is not None:
             try:
-                v = float(ft[val_field])
+                raw_val = ft[val_field]
+                # QGIS QVariant may not support float() directly in all PyQt
+                # versions; str() forces a Python-native conversion path.
+                v = float(str(raw_val))
             except Exception as e:
                 log_fn(f"[ERROR] BC value field parse failed: {e}")
                 v = 0.0
@@ -342,11 +345,11 @@ def collect_bc_layer_hydrographs_qgis(
         geom = ft.geometry()
         if geom is None or geom.isEmpty():
             continue
-            try:
-                t = int(ft[type_field])
-            except Exception as e:
-                log_fn(f"[ERROR] Hydrograph BC type field parse failed: {e}")
-                continue
+        try:
+            t = int(ft[type_field])
+        except Exception as e:
+            log_fn(f"[ERROR] Hydrograph BC type field parse failed: {e}")
+            continue
         if t not in (int(ts_flow_code), int(ts_stage_code)):
             continue
 

@@ -3206,7 +3206,7 @@ class SWE2DWorkbenchDialog(QtWidgets.QDialog):
             btn.clicked.connect(cb)
 
     def _bind_map_tab_results_controls(self, map_tab_page: QtWidgets.QWidget, map_results_layout: QtWidgets.QGridLayout) -> None:
-        from swe2d.workbench.monolith_methods import _bind_map_tab_results_controls as _logic
+        from swe2d.workbench.extracted.results_and_ui_methods import _bind_map_tab_results_controls as _logic
         return _logic(self, map_tab_page, map_results_layout)
 
     def _bind_map_tab_tools_controls(self, map_tab_page: QtWidgets.QWidget, map_tools_layout: QtWidgets.QGridLayout) -> None:
@@ -3361,22 +3361,22 @@ class SWE2DWorkbenchDialog(QtWidgets.QDialog):
         return patch_page
 
     def _bind_model_tab_core_controls(self, model_tab_page: QtWidgets.QWidget, param_form: QtWidgets.QFormLayout) -> None:
-        from swe2d.workbench.monolith_methods import _bind_model_tab_core_controls as _logic
+        from swe2d.workbench.extracted.model_and_run_methods import _bind_model_tab_core_controls as _logic
         return _logic(self, model_tab_page, param_form)
 
     def _bind_model_tab_hydrology_controls(self, model_tab_page: QtWidgets.QWidget, param_form: QtWidgets.QFormLayout) -> None:
-        from swe2d.workbench.monolith_methods import _bind_model_tab_hydrology_controls as _logic
+        from swe2d.workbench.extracted.model_and_run_methods import _bind_model_tab_hydrology_controls as _logic
         return _logic(self, model_tab_page, param_form)
 
     def _bind_model_tab_solver_controls(self, model_tab_page: QtWidgets.QWidget, param_form: QtWidgets.QFormLayout) -> None:
-        from swe2d.workbench.monolith_methods import _bind_model_tab_solver_controls as _logic
+        from swe2d.workbench.extracted.model_and_run_methods import _bind_model_tab_solver_controls as _logic
         return _logic(self, model_tab_page, param_form)
 
     def _bind_model_tab_3d_subgrid_drainage_controls(
         self, model_tab_page: QtWidgets.QWidget, param_form: QtWidgets.QFormLayout,
         solver_form: Optional[QtWidgets.QFormLayout] = None,
     ) -> None:
-        from swe2d.workbench.monolith_methods import _bind_model_tab_subgrid_drainage_controls as _logic
+        from swe2d.workbench.extracted.model_and_run_methods import _bind_model_tab_subgrid_drainage_controls as _logic
         return _logic(self, model_tab_page, param_form, solver_form)
 
     def _build_topology_tab_page_fallback(self) -> QtWidgets.QWidget:
@@ -3475,7 +3475,7 @@ class SWE2DWorkbenchDialog(QtWidgets.QDialog):
             btn.clicked.connect(cb)
 
     def _bind_topology_tab_dynamic_controls(self, topology_tab_page: QtWidgets.QWidget, topo_layout: QtWidgets.QGridLayout) -> None:
-        from swe2d.workbench.monolith_methods import _bind_topology_tab_dynamic_controls as _logic
+        from swe2d.workbench.extracted.topology_and_io_methods import _bind_topology_tab_dynamic_controls as _logic
         return _logic(self, topology_tab_page, topo_layout)
 
     def _build_run_tab_page(self) -> QtWidgets.QWidget:
@@ -3544,7 +3544,7 @@ class SWE2DWorkbenchDialog(QtWidgets.QDialog):
         return root
 
     def _bind_run_tab_controls(self, run_tab_page: QtWidgets.QWidget) -> None:
-        from swe2d.workbench.monolith_methods import _bind_run_tab_controls as _logic
+        from swe2d.workbench.extracted.model_and_run_methods import _bind_run_tab_controls as _logic
         return _logic(self, run_tab_page)
 
     def _build_right_pane(self) -> QtWidgets.QWidget:
@@ -3606,7 +3606,7 @@ class SWE2DWorkbenchDialog(QtWidgets.QDialog):
         return right
 
     def _bind_right_pane_controls(self, right_pane: QtWidgets.QWidget) -> None:
-        from swe2d.workbench.monolith_methods import _bind_right_pane_controls as _logic
+        from swe2d.workbench.extracted.results_and_ui_methods import _bind_right_pane_controls as _logic
         return _logic(self, right_pane)
 
     def _build_workbench_shell(
@@ -3976,23 +3976,28 @@ class SWE2DWorkbenchDialog(QtWidgets.QDialog):
     def _log(self, msg: str):
         msg_txt = str(msg)
         self._runtime_log_lines.append(msg_txt)
-        # Render [ERROR] messages in red using appendHtml.
         # Render [ERROR] messages in red using appendHtml if available.
+        # NOTE: the except handlers must NOT call self._log() — that would
+        # recurse infinitely when log_view doesn't exist yet (early _build_ui).
         if msg_txt.startswith("[ERROR]"):
             try:
                 self.log_view.appendHtml(
                     f'<span style="color:red;font-weight:bold;">{msg_txt}</span>')
-            except Exception as e:
-                self._log(f"[ERROR] log failed: {e}")
-                self.log_view.appendPlainText(msg_txt)
+            except Exception:
+                try:
+                    self.log_view.appendPlainText(msg_txt)
+                except Exception:
+                    pass
         else:
-            self.log_view.appendPlainText(msg_txt)
+            try:
+                self.log_view.appendPlainText(msg_txt)
+            except Exception:
+                pass
         for dlg in list(getattr(self, "_runtime_log_detached_dialogs", [])):
             try:
                 if dlg is not None:
                     dlg.append_text(msg_txt)
-            except Exception as e:
-                self._log(f"[ERROR] log failed: {e}")
+            except Exception:
                 pass
         # Avoid pumping the Qt event loop on every log line; the run loop
         # already performs throttled processEvents calls for UI responsiveness.
@@ -4549,7 +4554,7 @@ class SWE2DWorkbenchDialog(QtWidgets.QDialog):
         self._topology_mesh_timer.start()
 
     def _poll_topology_mesh_future(self):
-        from swe2d.workbench.monolith_methods import _poll_topology_mesh_future as _logic
+        from swe2d.workbench.extracted.topology_and_io_methods import _poll_topology_mesh_future as _logic
         return _logic(self)
 
     def _set_value_map_editor(self, layer, field_name: str, mapping: dict):
@@ -4586,7 +4591,7 @@ class SWE2DWorkbenchDialog(QtWidgets.QDialog):
             pass
 
     def _configure_swe2d_layer_editors(self, layer):
-        from swe2d.workbench.monolith_methods import _configure_swe2d_layer_editors as _logic
+        from swe2d.workbench.extracted.topology_and_io_methods import _configure_swe2d_layer_editors as _logic
         return _logic(self, layer)
 
     def _detect_map_unit(self):
@@ -4707,7 +4712,7 @@ class SWE2DWorkbenchDialog(QtWidgets.QDialog):
         return None
 
     def _refresh_layer_combos(self):
-        from swe2d.workbench.monolith_methods import _refresh_layer_combos as _logic
+        from swe2d.workbench.extracted.results_and_ui_methods import _refresh_layer_combos as _logic
         try:
             _g = getattr(_logic, "__globals__", None)
             if isinstance(_g, dict):
@@ -4972,7 +4977,7 @@ class SWE2DWorkbenchDialog(QtWidgets.QDialog):
             self._update_topology_control_summary()
 
     def _update_topology_control_summary(self):
-        from swe2d.workbench.monolith_methods import _update_topology_control_summary as _logic
+        from swe2d.workbench.extracted.topology_and_io_methods import _update_topology_control_summary as _logic
         return _logic(self)
 
     def _create_topology_template_layers(self):
@@ -5103,11 +5108,11 @@ class SWE2DWorkbenchDialog(QtWidgets.QDialog):
             raise RuntimeError(f"Failed writing layer '{layer_name}' to {path}: {msg}")
 
     def _create_2d_model_geopackage(self):
-        from swe2d.workbench.monolith_methods import _create_2d_model_geopackage as _logic
+        from swe2d.workbench.extracted.topology_and_io_methods import _create_2d_model_geopackage as _logic
         return _logic(self)
 
     def _migrate_2d_model_geopackage(self):
-        from swe2d.workbench.monolith_methods import _migrate_2d_model_geopackage as _logic
+        from swe2d.workbench.extracted.topology_and_io_methods import _migrate_2d_model_geopackage as _logic
         return _logic(self)
 
     def _create_lumped_hydrology_geopackage(self):
@@ -5391,7 +5396,7 @@ class SWE2DWorkbenchDialog(QtWidgets.QDialog):
         self._log("Mesh exported to SWE2D_Mesh_Nodes / SWE2D_Mesh_Cells layers.")
 
     def _import_mesh_from_layers(self):
-        from swe2d.workbench.monolith_methods import _import_mesh_from_layers as _logic
+        from swe2d.workbench.extracted.topology_and_io_methods import _import_mesh_from_layers as _logic
         try:
             _g = getattr(_logic, "__globals__", None)
             if isinstance(_g, dict):
@@ -5553,7 +5558,7 @@ class SWE2DWorkbenchDialog(QtWidgets.QDialog):
         return out
 
     def _build_line_sampling_map(self) -> List[Dict[str, object]]:
-        from swe2d.workbench.monolith_methods import _build_line_sampling_map as _logic
+        from swe2d.workbench.extracted.results_and_ui_methods import _build_line_sampling_map as _logic
         smap = _logic(self)
         try:
             self._line_sampling_map_cache = list(smap or [])
@@ -5792,7 +5797,7 @@ class SWE2DWorkbenchDialog(QtWidgets.QDialog):
         line_interval_s: float,
         profile_rows: Optional[List[Dict[str, object]]] = None,
     ) -> None:
-        from swe2d.workbench.monolith_methods import _persist_line_results_to_geopackage as _logic
+        from swe2d.workbench.extracted.topology_and_io_methods import _persist_line_results_to_geopackage as _logic
         return _logic(self, gpkg_path, run_id, rows, mesh_interval_s, line_interval_s, profile_rows)
 
     def _load_line_results_from_geopackage(
@@ -7333,15 +7338,15 @@ class SWE2DWorkbenchDialog(QtWidgets.QDialog):
         run_id: str = "",
         table_name: str = "swe2d_mesh_results",
     ) -> Tuple[Dict[int, Tuple[float, float]], float]:
-        from swe2d.workbench.monolith_methods import _mesh_cell_centers_for_gpkg as _logic
+        from swe2d.workbench.extracted.topology_and_io_methods import _mesh_cell_centers_for_gpkg as _logic
         return _logic(self, gpkg_path, run_id, table_name)
 
     def _refresh_velocity_vectors_overlay(self, t_s: float):
-        from swe2d.workbench.monolith_methods import _refresh_velocity_vectors_overlay as _logic
+        from swe2d.workbench.extracted.results_and_ui_methods import _refresh_velocity_vectors_overlay as _logic
         return _logic(self, t_s)
 
     def _refresh_streamline_traces_overlay(self, t_s: float):
-        from swe2d.workbench.monolith_methods import _refresh_streamline_traces_overlay as _logic
+        from swe2d.workbench.extracted.results_and_ui_methods import _refresh_streamline_traces_overlay as _logic
         return _logic(self, t_s)
 
     def _open_line_results_viewer(self):
@@ -7847,7 +7852,7 @@ class SWE2DWorkbenchDialog(QtWidgets.QDialog):
         return int(np.argmin(dx * dx + dy * dy))
 
     def _build_pipe_network_config(self):
-        from swe2d.workbench.monolith_methods import _build_pipe_network_config as _logic
+        from swe2d.workbench.extracted.topology_and_io_methods import _build_pipe_network_config as _logic
         return _logic(self)
 
     def _build_hydraulic_structure_config(self):
@@ -8173,7 +8178,7 @@ class SWE2DWorkbenchDialog(QtWidgets.QDialog):
                 pass
 
     def _connect_project_workbench_state_signals(self) -> None:
-        from swe2d.workbench.monolith_methods import _connect_project_workbench_state_signals as _logic
+        from swe2d.workbench.extracted.model_and_run_methods import _connect_project_workbench_state_signals as _logic
         return _logic(self)
 
     def _connect_project_save_state_signals(self) -> None:
@@ -8473,7 +8478,7 @@ class SWE2DWorkbenchDialog(QtWidgets.QDialog):
         return warnings
 
     def _preview_coupling_configuration(self):
-        from swe2d.workbench.monolith_methods import _preview_coupling_configuration as _logic
+        from swe2d.workbench.extracted.model_and_run_methods import _preview_coupling_configuration as _logic
         return _logic(self)
 
     def _preview_spatial_manning(self) -> Tuple[Optional[np.ndarray], int, int, str]:
@@ -8633,7 +8638,7 @@ class SWE2DWorkbenchDialog(QtWidgets.QDialog):
     # ------------------------------------------------------------------
 
     def _write_hecras_hdf5(self, path: str, timesteps=None):
-        from swe2d.workbench.monolith_methods import _write_hecras_hdf5 as _logic
+        from swe2d.workbench.extracted.topology_and_io_methods import _write_hecras_hdf5 as _logic
         return _logic(self, path, timesteps)
 
     def _normalize_hecras_hdf_path(self, path: str) -> str:
@@ -8649,7 +8654,7 @@ class SWE2DWorkbenchDialog(QtWidgets.QDialog):
     # UGRID NetCDF export
     # ------------------------------------------------------------------
     def _write_ugrid_nc(self, path: str, timesteps=None):
-        from swe2d.workbench.monolith_methods import _write_ugrid_nc as _logic
+        from swe2d.workbench.extracted.topology_and_io_methods import _write_ugrid_nc as _logic
         return _logic(self, path, timesteps)
 
     def _export_mesh_to_hdf5(self):
@@ -9330,7 +9335,7 @@ class SWE2DWorkbenchDialog(QtWidgets.QDialog):
         self._run_orchestrator.run(request)
 
     def _on_run(self, request=None):
-        from swe2d.workbench.monolith_methods import _on_run as _logic
+        from swe2d.workbench.extracted.model_and_run_methods import _on_run as _logic
         return _logic(self, request)
 
     def _refresh_plot(self):
