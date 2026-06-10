@@ -57,6 +57,7 @@ jobs:
           # Include full plugin tree except build artifacts and dev files
           rsync -av --progress \
             --exclude='build/' \
+            --exclude='dist/' \
             --exclude='.git/' \
             --exclude='__pycache__/' \
             --exclude='*.pyc' \
@@ -155,7 +156,7 @@ jobs:
         run: |
           # Copy plugin tree (exclude dev/build dirs)
           $excludes = @(
-            'build', '.git', '__pycache__', 'tests', 'tools',
+            'build', 'dist', '.git', '__pycache__', 'tests', 'tools',
             'docs', 'reference', 'typings', 'cpp',
             'report_output', 'AGENTS.md', 'GPU_AUDIT_REPORT.md',
             'MOMENTUM_CAP_FIX.md', 'docs\PUBLIC_BRANCH_PLAN.md',
