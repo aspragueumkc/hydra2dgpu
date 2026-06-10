@@ -1336,6 +1336,139 @@ class SWE2DModelGeoPackageExplorerDialog(QtWidgets.QDialog):
         finally:
             conn.close()
 
+    def _delete_by_run_id(self):
+        """Delete all result tables associated with a selected run ID."""
+        if not self._gpkg_path or not os.path.exists(self._gpkg_path):
+            QtWidgets.QMessageBox.warning(self, "Delete by Run ID", "No GeoPackage path set.")
+            return
+
+        conn = sqlite3.connect(self._gpkg_path)
+        try:
+            cur = conn.cursor()
+            cur.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='swe2d_run_logs'")
+            has_run_logs = cur.fetchone() is not None
+
+            run_ids = []
+            if has_run_logs:
+                cur.execute("SELECT DISTINCT run_id FROM swe2d_run_logs ORDER BY run_id")
+                run_ids = [str(r[0]) for r in cur.fetchall() if r and r[0] is not None]
+
+            if not run_ids:
+                QtWidgets.QMessageBox.information(
+                    self, "Delete by Run ID",
+                    "No run IDs found. The GeoPackage has no swe2d_run_logs table or it is empty."
+                )
+                return
+
+            # Build simple dialog with a combo box
+            dlg = QtWidgets.QDialog(self)
+            dlg.setWindowTitle("Delete Results by Run ID")
+            dlg.resize(500, 320)
+            layout = QtWidgets.QVBoxLayout(dlg)
+
+            layout.addWidget(QtWidgets.QLabel("Select the run ID to delete:"))
+
+            combo = QtWidgets.QComboBox()
+            combo.addItems(run_ids)
+            combo.setCurrentIndex(-1)
+            layout.addWidget(combo)
+
+            info_label = QtWidgets.QLabel("")
+            info_label.setWordWrap(True)
+            layout.addWidget(info_label)
+
+            def _on_run_id_changed(idx):
+                if idx < 0:
+                    info_label.setText("")
+                    return
+                rid = str(combo.itemText(idx))
+                cur.execute("SELECT name FROM sqlite_master WHERE type='table' ORDER BY name")
+                all_tables = [str(r[0]) for r in cur.fetchall() if r and r[0] is not None]
+                matching = [t for t in all_tables if t.endswith("_" + rid) and not t.startswith("gpkg_") and not t.startswith("sqlite_") and not t.startswith("rtree_")]
+                if rid in matching:
+                    matching.remove(rid)
+                if matching:
+                    info_label.setText("Tables to delete:\n  " + "\n  ".join(matching))
+                else:
+                    info_label.setText("No result tables found for this run ID (only run_log entry will be removed).")
+
+            combo.currentIndexChanged.connect(_on_run_id_changed)
+
+            btn_box = QtWidgets.QDialogButtonBox(
+                QtWidgets.QDialogButtonBox.StandardButton.Ok | QtWidgets.QDialogButtonBox.StandardButton.Cancel
+            )
+            btn_box.accepted.connect(dlg.accept)
+            btn_box.rejected.connect(dlg.reject)
+            layout.addWidget(btn_box)
+
+            if dlg.exec() != QtWidgets.QDialog.DialogCode.Accepted:
+                return
+
+            rid = str(combo.currentText()).strip()
+            if not rid:
+                return
+
+            ans = QtWidgets.QMessageBox.question(
+                self,
+                "Confirm Delete",
+                f"Permanently delete all result tables for run ID '{rid}'?\n\nThis cannot be undone.",
+                QtWidgets.QMessageBox.StandardButton.Yes | QtWidgets.QMessageBox.StandardButton.No,
+                QtWidgets.QMessageBox.StandardButton.No,
+            )
+            if ans != QtWidgets.QMessageBox.StandardButton.Yes:
+                return
+
+            cur.execute("SELECT name FROM sqlite_master WHERE type='table' ORDER BY name")
+            all_tables = [str(r[0]) for r in cur.fetchall() if r and r[0] is not None]
+            matching = [t for t in all_tables if t.endswith("_" + rid) and not t.startswith("gpkg_") and not t.startswith("sqlite_") and not t.startswith("rtree_")]
+
+            deleted = []
+            for tbl in matching:
+                try:
+                    cur.execute(f"DROP TABLE IF EXISTS {_quote_sqlite_ident(tbl)}")
+                    for meta_tbl in ("gpkg_contents", "gpkg_geometry_columns", "gpkg_extensions"):
+                        cur.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name=?", (meta_tbl,))
+                        if cur.fetchone() is None:
+                            continue
+                        try:
+                            cur.execute(
+                                f"DELETE FROM {_quote_sqlite_ident(meta_tbl)} WHERE table_name=?",
+                                 (tbl,),
+                            )
+                        except Exception:
+                            pass
+                    cur.execute("SELECT name FROM sqlite_master WHERE type='table' AND name LIKE ?", (f"rtree_{tbl}_%",))
+                    for row in cur.fetchall():
+                        rt = str(row[0]) if row and row[0] is not None else ""
+                        if rt:
+                            try:
+                                cur.execute(f"DROP TABLE IF EXISTS {_quote_sqlite_ident(rt)}")
+                            except Exception:
+                                pass
+                    deleted.append(tbl)
+                except Exception as exc:
+                    self._log(f"[ERROR] Failed to drop table '{tbl}': {exc}")
+
+            if has_run_logs:
+                try:
+                    cur.execute("DELETE FROM swe2d_run_logs WHERE run_id=?", (rid,))
+                    if cur.rowcount > 0:
+                        deleted.append("swe2d_run_logs (entry removed)")
+                except Exception as exc:
+                    self._log(f"[ERROR] Failed to delete run log entry for '{rid}': {exc}")
+
+            conn.commit()
+            self._log(f"GeoPackage explorer deleted run ID '{rid}': {len(deleted)} table(s) removed")
+            QtWidgets.QMessageBox.information(
+                self, "Delete Complete",
+                f"Deleted {len(deleted)} table(s) for run ID '{rid}'.\n\n" + "\n".join(deleted)
+            )
+            self.refresh_tables()
+        except Exception as exc:
+            QtWidgets.QMessageBox.warning(self, "Delete by Run ID", f"Failed to delete by run ID:\n{exc}")
+        finally:
+            conn.close()
+
 
 class SWE2DLineResultsViewerDialog(QtWidgets.QDialog):
     """Viewer for sampled SWE2D line results stored in GeoPackage/SQLite."""
