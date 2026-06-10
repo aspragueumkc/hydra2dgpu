@@ -40,6 +40,23 @@ tests/artifacts/
 temp_archive/
 forms/*.bak
 qgis_testing_project/
+swe2d_results_panel.py.sprint0_bak
+
+# Generated example projects
+example_project/
+
+# QGIS type stubs (not needed for distribution)
+typings/
+
+# QGIS symbology database
+symbology-style.db
+
+# Internal dev documents never intended for public
+AGENTS.md
+coupling_diag.log
+
+# Copilot / AI configuration (private)
+.github/chatmodes/
 
 # Secrets and credentials — never commit these
 .env
