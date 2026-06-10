@@ -131,7 +131,8 @@ jobs:
           mkdir build
           cd build
           cmake .. `
-            -G Ninja `
+            -G "Visual Studio 17 2022" `
+            -A x64 `
             -DCMAKE_BUILD_TYPE=${{ env.BUILD_TYPE }} `
             -DBACKWATER_USE_CUDA=ON `
             -DCUDAToolkit_ROOT=$env:CUDA_PATH `
@@ -141,8 +142,7 @@ jobs:
       - name: Build
         shell: pwsh
         run: |
-          cd build
-          cmake --build . --config ${{ env.BUILD_TYPE }}
+          cmake --build build --config ${{ env.BUILD_TYPE }}
 
       - name: Collect binaries
         shell: pwsh

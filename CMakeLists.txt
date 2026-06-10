@@ -21,13 +21,10 @@ endif()
 # so -Xcompiler=-FdFoo,-FS becomes two args and nvcc sees -FS as an input
 # file → "single input file required" fatal error.
 #
-# Fix: force /Z7 (embed debug info in .obj) so no PDB file is generated,
-# which prevents both /Fd and /FS from being added.
-if(MSVC)
-  string(REPLACE "/Zi" "/Z7" CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS}")
-  string(REPLACE "/FS" "" CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS}")
-  string(REPLACE "/Zi" "/Z7" CMAKE_C_FLAGS "${CMAKE_C_FLAGS}")
-  string(REPLACE "/FS" "" CMAKE_C_FLAGS "${CMAKE_C_FLAGS}")
+# Fix: force /Z7 (embedded debug info) so no PDB file is generated.
+if(MSVC AND POLICY CMP0141)
+  cmake_policy(SET CMP0141 NEW)
+  set(CMAKE_MSVC_DEBUG_INFORMATION_FORMAT "Embedded" CACHE STRING "" FORCE)
 endif()
 
 include(FetchContent)
