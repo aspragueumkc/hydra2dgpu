@@ -7890,8 +7890,8 @@ __device__ double swe2d_culvert_table_lookup_cuda(
     int32_t n_tw_global)
 {
     const size_t hdr_off = static_cast<size_t>(ci) * 6;
-    int32_t n_hw = fmax(2, static_cast<int32_t>(d_table_header[hdr_off + 0]));
-    int32_t n_tw = fmax(2, static_cast<int32_t>(d_table_header[hdr_off + 1]));
+    int32_t n_hw = max(2, static_cast<int32_t>(d_table_header[hdr_off + 0]));
+    int32_t n_tw = max(2, static_cast<int32_t>(d_table_header[hdr_off + 1]));
     double hw_min = d_table_header[hdr_off + 2];
     double hw_max = d_table_header[hdr_off + 3];
     double tw_min = d_table_header[hdr_off + 4];
@@ -7909,10 +7909,10 @@ __device__ double swe2d_culvert_table_lookup_cuda(
 
     int32_t hi0 = static_cast<int32_t>(hw_frac);
     int32_t ti0 = static_cast<int32_t>(tw_frac);
-    int32_t hi1 = fmin(hi0 + 1, n_hw - 1);
-    int32_t ti1 = fmin(ti0 + 1, n_tw - 1);
-    hi0 = fmax(0, fmin(hi0, n_hw - 1));
-    ti0 = fmax(0, fmin(ti0, n_tw - 1));
+    int32_t hi1 = min(hi0 + 1, n_hw - 1);
+    int32_t ti1 = min(ti0 + 1, n_tw - 1);
+    hi0 = max(0, min(hi0, n_hw - 1));
+    ti0 = max(0, min(ti0, n_tw - 1));
 
     double hw_w1 = (hw - hw_min) / fmax(1.0e-12, hw_max - hw_min) - static_cast<double>(hi0) / fmax(1.0, static_cast<double>(n_hw - 1));
     hw_w1 = fmin(1.0, fmax(0.0, hw_w1 * static_cast<double>(n_hw - 1)));
