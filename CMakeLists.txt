@@ -129,9 +129,15 @@ function(_configure_swe2d_module target_name py_module_name)
 
   # Host compiler: optimize for the build machine's CPU and enable fast math
   if(CMAKE_BUILD_TYPE MATCHES "Release|RelWithDebInfo|MinSizeRel")
-    target_compile_options(${target_name} PRIVATE
-      $<$<COMPILE_LANGUAGE:CXX>:-O3 -mtune=native -march=native -ffast-math>
-    )
+    if(MSVC)
+      target_compile_options(${target_name} PRIVATE
+        $<$<COMPILE_LANGUAGE:CXX>:/O2 /fp:fast>
+      )
+    else()
+      target_compile_options(${target_name} PRIVATE
+        $<$<COMPILE_LANGUAGE:CXX>:-O3 -mtune=native -march=native -ffast-math>
+      )
+    endif()
   endif()
 
   # GPU-only: no OpenMP
@@ -140,6 +146,18 @@ function(_configure_swe2d_module target_name py_module_name)
     target_compile_options(${target_name} PRIVATE /W4)
     # Ensure M_PI and other math constants are available on MSVC
     target_compile_definitions(${target_name} PRIVATE _USE_MATH_DEFINES)
+    # Suppress secure CRT warnings (getenv etc.)
+    target_compile_definitions(${target_name} PRIVATE _CRT_SECURE_NO_WARNINGS)
+    if(SWE2D_CUDA_FOUND)
+      # Strip /Fd and /FS from CXX flags — nvcc's -Xcompiler splits on commas
+      # and these MSVC PDB flags cause "single input file required" fatal error
+      string(REPLACE "/Fd" "" CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS}")
+      string(REPLACE "/FS" "" CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS}")
+      string(REPLACE "/Fd" "" CMAKE_CXX_FLAGS_RELWITHDEBINFO "${CMAKE_CXX_FLAGS_RELWITHDEBINFO}")
+      string(REPLACE "/FS" "" CMAKE_CXX_FLAGS_RELWITHDEBINFO "${CMAKE_CXX_FLAGS_RELWITHDEBINFO}")
+      string(REPLACE "/Fd" "" CMAKE_CXX_FLAGS_RELEASE "${CMAKE_CXX_FLAGS_RELEASE}")
+      string(REPLACE "/FS" "" CMAKE_CXX_FLAGS_RELEASE "${CMAKE_CXX_FLAGS_RELEASE}")
+    endif()
   else()
     target_compile_options(${target_name} PRIVATE -Wall -Wextra -Wpedantic)
   endif()
