@@ -98,7 +98,8 @@ jobs:
         uses: Jimver/cuda-toolkit@v0.2.35
         with:
           cuda: '12.4.0'
-          method: local
+          method: network
+          sub-packages: '["nvcc", "cudart"]'
 
       - name: Setup MSVC
         uses: ilammy/msvc-dev-cmd@v1.13.0
@@ -112,9 +113,6 @@ jobs:
 
       - name: Install numpy
         run: pip install numpy
-
-      - name: Install Ninja
-        run: choco install ninja -y
 
       - name: Find Python paths
         id: py
