@@ -151,9 +151,10 @@ function(_configure_swe2d_module target_name py_module_name)
   # GPU-only: no OpenMP
 
   if(MSVC)
-    target_compile_options(${target_name} PRIVATE /W4)
     target_compile_definitions(${target_name} PRIVATE _USE_MATH_DEFINES)
     target_compile_definitions(${target_name} PRIVATE _CRT_SECURE_NO_WARNINGS)
+    # Only apply /W4 to CXX, not CUDA — nvcc doesn't understand MSVC flags
+    target_compile_options(${target_name} PRIVATE $<$<COMPILE_LANGUAGE:CXX>:/W4>)
   else()
     target_compile_options(${target_name} PRIVATE -Wall -Wextra -Wpedantic)
   endif()
