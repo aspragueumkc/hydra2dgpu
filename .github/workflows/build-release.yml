@@ -59,6 +59,9 @@ jobs:
             --exclude='build/' \
             --exclude='dist/' \
             --exclude='.git/' \
+            --exclude='.github/' \
+            --exclude='.opencode/' \
+            --exclude='.copilot/' \
             --exclude='__pycache__/' \
             --exclude='*.pyc' \
             --exclude='tests/' \
@@ -74,14 +77,16 @@ jobs:
             --exclude='docs/PUBLIC_BRANCH_PLAN.md' \
             --exclude='2d_example/' \
             --exclude='example_project/' \
-            ./ dist/plugin/
+            --exclude='cuda_keyring*' \
+            --exclude='cuda_download*/' \
+            ./ dist/hydra2dgpu/
 
           # Place prebuilt libs into the plugin tree
-          cp dist/lib/*.so dist/plugin/
+          cp dist/lib/*.so dist/hydra2dgpu/
 
           # Create the release ZIP
           cd dist
-          zip -r ../hydra2gpu-linux-x86_64.zip plugin/
+          zip -r ../hydra2gpu-linux-x86_64.zip hydra2dgpu/
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
@@ -154,24 +159,36 @@ jobs:
       - name: Package
         shell: pwsh
         run: |
-          # Copy plugin tree (exclude dev/build dirs)
-          $excludes = @(
-            'build', 'dist', '.git', '__pycache__', 'tests', 'tools',
-            'docs', 'reference', 'typings', 'cpp',
-            'report_output', 'AGENTS.md', 'GPU_AUDIT_REPORT.md',
-            'MOMENTUM_CAP_FIX.md', 'docs\PUBLIC_BRANCH_PLAN.md',
-            '2d_example', 'example_project'
-          )
-          Get-ChildItem -Directory -Exclude $excludes |
-            ForEach-Object { Copy-Item $_.FullName dist\plugin\ -Recurse -Force -ErrorAction SilentlyContinue }
-          Get-ChildItem -File -Exclude '*.pyc','*.pyo' |
-            ForEach-Object { Copy-Item $_.FullName dist\plugin\ -Force -ErrorAction SilentlyContinue }
+          # Copy full plugin tree, then strip dev/build artifacts
+          Copy-Item . dist\hydra2dgpu\ -Recurse -Force -ErrorAction SilentlyContinue
 
-          # Place prebuilt libs into the plugin tree
-          Copy-Item dist\lib\*.pyd dist\plugin\
+          # Remove dev/build directories
+          $remove = @(
+            'build', 'dist', '.git', '.github', '.opencode', '.copilot',
+            '__pycache__', 'tests', 'tools', 'docs', 'reference', 'typings',
+            'cpp', 'report_output', '2d_example', 'example_project',
+            'cuda_download', 'cuda_download_*'
+          )
+          $remove | ForEach-Object {
+            $p = Join-Path dist\hydra2dgpu $_
+            if (Test-Path $p) { Remove-Item $p -Recurse -Force -ErrorAction SilentlyContinue }
+          }
+
+          # Remove individual unwanted files
+          Get-ChildItem dist\hydra2dgpu -Recurse -Filter '*.pyc' | Remove-Item -Force
+          Get-ChildItem dist\hydra2dgpu -Recurse -Filter '*.pyo' | Remove-Item -Force
+          Get-ChildItem dist\hydra2dgpu -Recurse -Filter 'cuda_keyring*' | Remove-Item -Force
+          Get-ChildItem dist\hydra2dgpu -Recurse -Filter 'cuda_installer*' | Remove-Item -Force
+          Get-ChildItem dist\hydra2dgpu -Recurse -Filter 'AGENTS.md' | Remove-Item -Force
+          Get-ChildItem dist\hydra2dgpu -Recurse -Filter 'GPU_AUDIT_REPORT.md' | Remove-Item -Force
+          Get-ChildItem dist\hydra2dgpu -Recurse -Filter 'MOMENTUM_CAP_FIX.md' | Remove-Item -Force
+          Get-ChildItem dist\hydra2dgpu -Recurse -Filter '*PUBLIC_BRANCH_PLAN*' | Remove-Item -Force
+
+          # Place prebuilt libs into the plugin root
+          Copy-Item dist\lib\*.pyd dist\hydra2dgpu\ -Force
 
           # Create the release ZIP
-          Compress-Archive -Path dist\plugin -DestinationPath hydra2gpu-windows-x86_64.zip
+          Compress-Archive -Path dist\hydra2dgpu -DestinationPath hydra2gpu-windows-x86_64.zip
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
