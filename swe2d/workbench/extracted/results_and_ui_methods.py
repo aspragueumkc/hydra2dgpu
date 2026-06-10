@@ -935,11 +935,7 @@ def _bind_map_tab_results_controls(self, map_tab_page: QtWidgets.QWidget, map_re
         (self.high_perf_canvas_overlay_streamline_steps_spin.valueChanged, self._on_high_perf_canvas_overlay_style_changed),
         (self.high_perf_overlay_export_geotiff_btn.clicked, self._export_high_perf_overlay_to_geotiff),
     ):
-        try:
-            sig_obj.disconnect(cb)
-        except Exception as e:
-            self._log(f"[ERROR] signal disconnect failed: {e}")
-            pass
+        safe_disconnect(sig_obj, cb)
         sig_obj.connect(cb)
 
     self._on_high_perf_canvas_overlay_style_changed()
@@ -1026,11 +1022,7 @@ def _bind_right_pane_controls(self, right_pane: QtWidgets.QWidget) -> None:
         (self.detach_mesh_view_btn, self._open_detached_mesh_view),
         (self.detach_runtime_log_btn, self._open_detached_runtime_log),
     ):
-        try:
-            btn.clicked.disconnect(cb)
-        except Exception as e:
-            self._log(f"[ERROR] button signal disconnect failed: {e}")
-            pass
+        safe_disconnect(btn.clicked, cb)
         btn.clicked.connect(cb)
 
     self._right_vertical_split = right_pane.findChild(QtWidgets.QSplitter, "right_vertical_split")
@@ -1063,11 +1055,7 @@ def _bind_right_pane_controls(self, right_pane: QtWidgets.QWidget) -> None:
         self._fig = self._Figure(figsize=(6.4, 4.2), tight_layout=True)
         self._canvas = self._FigureCanvas(self._fig)
         self._canvas.setContextMenuPolicy(QtCore.Qt.ContextMenuPolicy.CustomContextMenu)
-        try:
-            self._canvas.customContextMenuRequested.disconnect()
-        except Exception as e:
-            self._log(f"[ERROR] canvas context menu disconnect failed: {e}")
-            pass
+        safe_disconnect(self._canvas.customContextMenuRequested)
         self._canvas.customContextMenuRequested.connect(
             lambda pos: self._show_panel_detach_menu("mesh", self._canvas.mapToGlobal(pos))
         )
@@ -1087,11 +1075,7 @@ def _bind_right_pane_controls(self, right_pane: QtWidgets.QWidget) -> None:
         self._right_vertical_split.addWidget(self.log_view)
     self.log_view.setReadOnly(True)
     self.log_view.setContextMenuPolicy(QtCore.Qt.ContextMenuPolicy.CustomContextMenu)
-    try:
-        self.log_view.customContextMenuRequested.disconnect()
-    except Exception as e:
-        self._log(f"[ERROR] log view context menu disconnect failed: {e}")
-        pass
+    safe_disconnect(self.log_view.customContextMenuRequested)
     self.log_view.customContextMenuRequested.connect(
         lambda pos: self._show_panel_detach_menu("log", self.log_view.mapToGlobal(pos))
     )
@@ -1271,19 +1255,17 @@ def _build_line_sampling_map(self) -> List[Dict[str, object]]:
             wx = 0.0
             wy = 0.0
             seg_keys: set = set()
-            try:
+            parts = []
+            gtype = inter.wkbType()
+            if QgsWkbTypes.isMultiType(gtype):
                 parts = inter.asMultiPolyline()
-            except Exception as e:
-                self._log(f"[ERROR] multi polyline parse failed: {e}")
-                parts = []
-            if not parts:
-                try:
-                    poly = inter.asPolyline()
-                    if poly:
-                        parts = [poly]
-                except Exception as e:
-                    self._log(f"[ERROR] polyline parse failed: {e}")
-                    parts = []
+            elif QgsWkbTypes.flatType(gtype) in (
+                QgsWkbTypes.LineString, QgsWkbTypes.LineString25D,
+                QgsWkbTypes.LineStringZ,
+            ):
+                poly = inter.asPolyline()
+                if poly:
+                    parts = [poly]
             for seg in parts:
                 if seg is None or len(seg) < 2:
                     continue

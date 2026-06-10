@@ -1009,6 +1009,17 @@ def _quote_sqlite_ident(name: str) -> str:
     return '"' + str(name).replace('"', '""') + '"'
 
 
+def safe_disconnect(signal_obj, slot=None):
+    """Disconnect a Qt signal without raising if it was never connected."""
+    try:
+        if slot is not None:
+            signal_obj.disconnect(slot)
+        else:
+            signal_obj.disconnect()
+    except (TypeError, RuntimeError):
+        pass
+
+
 class SWE2DSQLiteTablePreviewDialog(QtWidgets.QDialog):
     """Simple SQLite/GeoPackage table preview dialog."""
 
@@ -2934,11 +2945,7 @@ class SWE2DWorkbenchDialog(QtWidgets.QDialog):
             ts_edit.setPlaceholderText("e.g. 0:00,10; 0:30,25; 1:00,40")
 
             edit_btn = _find_or_create_button(f"{side}_bc_editor_btn", "Edit...")
-            try:
-                edit_btn.clicked.disconnect()
-            except Exception as e:
-                self._log(f"[ERROR] ensure widget failed: {e}")
-                pass
+            safe_disconnect(edit_btn.clicked)
             edit_btn.clicked.connect(lambda _checked=False, s=side: self._open_hydrograph_editor(s))
 
             _ensure_widget(cb, row, 1)
@@ -2984,7 +2991,7 @@ class SWE2DWorkbenchDialog(QtWidgets.QDialog):
             try:
                 map_tab_page = _qgis_uic.loadUi(ui_path)
             except Exception as e:
-                self._log(f"[ERROR] ensure widget failed: {e}")
+                self._log(f"[ERROR] map tab UI load failed: {e}")
                 map_tab_page = None
         if map_tab_page is None:
             map_tab_page = self._build_map_tab_page_fallback()
@@ -3106,25 +3113,13 @@ class SWE2DWorkbenchDialog(QtWidgets.QDialog):
         if self.layer_group_combo.count() == 0:
             self.layer_group_combo.addItem("(no group)", None)
 
-        try:
-            self.autopop_group_btn.clicked.disconnect(self._autopopulate_layer_combos_from_group)
-        except Exception as e:
-            self._log(f"[ERROR] ensure labeled widget failed: {e}")
-            pass
+        safe_disconnect(self.autopop_group_btn.clicked, self._autopopulate_layer_combos_from_group)
         self.autopop_group_btn.clicked.connect(self._autopopulate_layer_combos_from_group)
 
-        try:
-            self.refresh_layers_btn.clicked.disconnect(self._refresh_layer_combos)
-        except Exception as e:
-            self._log(f"[ERROR] ensure labeled widget failed: {e}")
-            pass
+        safe_disconnect(self.refresh_layers_btn.clicked, self._refresh_layer_combos)
         self.refresh_layers_btn.clicked.connect(self._refresh_layer_combos)
 
-        try:
-            self.create_model_gpkg_btn.clicked.disconnect(self._create_2d_model_geopackage)
-        except Exception as e:
-            self._log(f"[ERROR] ensure labeled widget failed: {e}")
-            pass
+        safe_disconnect(self.create_model_gpkg_btn.clicked, self._create_2d_model_geopackage)
         self.create_model_gpkg_btn.clicked.connect(self._create_2d_model_geopackage)
 
     def _bind_map_tab_action_controls(self, map_tab_page: QtWidgets.QWidget, map_actions_layout: QtWidgets.QGridLayout) -> None:
@@ -3198,11 +3193,7 @@ class SWE2DWorkbenchDialog(QtWidgets.QDialog):
             (self.terrain_to_nodes_btn, self._assign_node_z_from_terrain),
             (self.pull_node_z_btn, self._pull_node_z_from_layer),
         ):
-            try:
-                btn.clicked.disconnect(cb)
-            except Exception as e:
-                self._log(f"[ERROR] find or create button failed: {e}")
-                pass
+            safe_disconnect(btn.clicked, cb)
             btn.clicked.connect(cb)
 
     def _bind_map_tab_results_controls(self, map_tab_page: QtWidgets.QWidget, map_results_layout: QtWidgets.QGridLayout) -> None:
@@ -3255,11 +3246,7 @@ class SWE2DWorkbenchDialog(QtWidgets.QDialog):
             (self.open_coupling_results_viewer_btn, self._open_coupling_results_viewer),
             (self.open_run_log_viewer_btn, self._open_run_log_viewer),
         ):
-            try:
-                btn.clicked.disconnect(cb)
-            except Exception as e:
-                self._log(f"[ERROR] find or create button failed: {e}")
-                pass
+            safe_disconnect(btn.clicked, cb)
             btn.clicked.connect(cb)
 
     def _build_topology_tab_page(self) -> Tuple[QtWidgets.QWidget, QtWidgets.QGridLayout]:
@@ -3269,7 +3256,7 @@ class SWE2DWorkbenchDialog(QtWidgets.QDialog):
             try:
                 topology_tab_page = _qgis_uic.loadUi(ui_path)
             except Exception as e:
-                self._log(f"[ERROR] find or create button failed: {e}")
+                self._log(f"[ERROR] topology tab UI load failed: {e}")
                 topology_tab_page = None
         if topology_tab_page is None:
             topology_tab_page = self._build_topology_tab_page_fallback()
@@ -3467,11 +3454,7 @@ class SWE2DWorkbenchDialog(QtWidgets.QDialog):
             (self.topo_generate_btn, self._generate_mesh_from_topology_layers),
             (self.topo_terminate_btn, self._on_terminate_topology_mesh),
         ):
-            try:
-                btn.clicked.disconnect(cb)
-            except Exception as e:
-                self._log(f"[ERROR] ensure failed: {e}")
-                pass
+            safe_disconnect(btn.clicked, cb)
             btn.clicked.connect(cb)
 
     def _bind_topology_tab_dynamic_controls(self, topology_tab_page: QtWidgets.QWidget, topo_layout: QtWidgets.QGridLayout) -> None:

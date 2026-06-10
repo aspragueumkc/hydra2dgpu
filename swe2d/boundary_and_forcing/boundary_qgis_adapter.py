@@ -135,7 +135,10 @@ def apply_bc_layer_overrides_qgis(
         if geom is None or geom.isEmpty():
             continue
         try:
-            t = int(ft[type_field])
+            raw_t = ft[type_field]
+            if raw_t is None or (isinstance(raw_t, str) and raw_t.strip().upper() == 'NULL'):
+                continue
+            t = int(raw_t)
         except Exception as e:
             log_fn(f"[ERROR] BC type field parse failed: {e}")
             continue
@@ -143,16 +146,21 @@ def apply_bc_layer_overrides_qgis(
         if val_field is not None:
             try:
                 raw_val = ft[val_field]
-                # QGIS QVariant may not support float() directly in all PyQt
-                # versions; str() forces a Python-native conversion path.
-                v = float(str(raw_val))
+                if raw_val is None or (isinstance(raw_val, str) and raw_val.strip().upper() == 'NULL'):
+                    v = 0.0
+                else:
+                    v = float(str(raw_val))
             except Exception as e:
                 log_fn(f"[ERROR] BC value field parse failed: {e}")
                 v = 0.0
         pr = 0
         if prio_field is not None:
             try:
-                pr = int(ft[prio_field])
+                raw_pr = ft[prio_field]
+                if raw_pr is None or (isinstance(raw_pr, str) and raw_pr.strip().upper() == 'NULL'):
+                    pr = 0
+                else:
+                    pr = int(raw_pr)
             except Exception as e:
                 log_fn(f"[ERROR] BC priority field parse failed: {e}")
                 pr = 0

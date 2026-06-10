@@ -144,10 +144,7 @@ def _bind_topology_tab_dynamic_controls(self, topology_tab_page: QtWidgets.QWidg
             form.addRow(label, widget)
 
     def _reconnect(signal: object, callback: Callable[[], None]) -> None:
-        try:
-            signal.disconnect(callback)
-        except Exception as e:
-            self._log(f"[ERROR] signal disconnect: {e}")
+        safe_disconnect(signal, callback)
         signal.connect(callback)
 
     self.topo_nodes_combo = _find_or_create_combo("topo_nodes_combo", 0)
