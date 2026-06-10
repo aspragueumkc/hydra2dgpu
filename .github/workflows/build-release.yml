@@ -113,6 +113,9 @@ jobs:
       - name: Install numpy
         run: pip install numpy
 
+      - name: Install Ninja
+        run: choco install ninja -y
+
       - name: Find Python paths
         id: py
         shell: pwsh
@@ -128,7 +131,7 @@ jobs:
           mkdir build
           cd build
           cmake .. `
-            -G "NMake Makefiles" `
+            -G Ninja `
             -DCMAKE_BUILD_TYPE=${{ env.BUILD_TYPE }} `
             -DBACKWATER_USE_CUDA=ON `
             -DCUDAToolkit_ROOT=$env:CUDA_PATH `
