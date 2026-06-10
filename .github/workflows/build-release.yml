@@ -71,6 +71,8 @@ jobs:
             --exclude='GPU_AUDIT_REPORT.md' \
             --exclude='MOMENTUM_CAP_FIX.md' \
             --exclude='docs/PUBLIC_BRANCH_PLAN.md' \
+            --exclude='2d_example/' \
+            --exclude='example_project/' \
             ./ dist/plugin/
 
           # Place prebuilt libs into the plugin tree
@@ -156,9 +158,13 @@ jobs:
             'build', '.git', '__pycache__', 'tests', 'tools',
             'docs', 'reference', 'typings', 'cpp',
             'report_output', 'AGENTS.md', 'GPU_AUDIT_REPORT.md',
-            'MOMENTUM_CAP_FIX.md', 'docs\PUBLIC_BRANCH_PLAN.md'
+            'MOMENTUM_CAP_FIX.md', 'docs\PUBLIC_BRANCH_PLAN.md',
+            '2d_example', 'example_project'
           )
-          robocopy . dist\plugin /E /XD $excludes /XF *.pyc | Out-Null
+          Get-ChildItem -Directory -Exclude $excludes |
+            ForEach-Object { Copy-Item $_.FullName dist\plugin\ -Recurse -Force -ErrorAction SilentlyContinue }
+          Get-ChildItem -File -Exclude '*.pyc','*.pyo' |
+            ForEach-Object { Copy-Item $_.FullName dist\plugin\ -Force -ErrorAction SilentlyContinue }
 
           # Place prebuilt libs into the plugin tree
           Copy-Item dist\lib\*.pyd dist\plugin\
