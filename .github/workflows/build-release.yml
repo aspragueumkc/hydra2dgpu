@@ -26,9 +26,9 @@ jobs:
           fetch-depth: 0          # full history for version stamping
 
       - name: Install CUDA toolkit
-        uses: Jimver/cuda-toolkit@v0.2.19
+        uses: Jimver/cuda-toolkit@v0.2.35
         with:
-          cuda: '12.4'
+          cuda: '12.4.0'
           method: network
           sub-packages: '["nvcc", "cudart"]'
 
@@ -95,9 +95,9 @@ jobs:
           fetch-depth: 0
 
       - name: Install CUDA toolkit
-        uses: Jimver/cuda-toolkit@v0.2.19
+        uses: Jimver/cuda-toolkit@v0.2.35
         with:
-          cuda: '12.4'
+          cuda: '12.4.0'
           method: network
           sub-packages: '["nvcc", "cudart"]'
 
