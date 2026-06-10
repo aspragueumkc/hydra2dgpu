@@ -10,10 +10,40 @@ import sys as _sys
 # hydra_swe2d can be imported from anywhere inside the plugin.
 _plugin_dir = _os.path.dirname(_os.path.abspath(__file__))
 _build_dir = _os.path.join(_plugin_dir, "build")
-if _build_dir not in _sys.path:
-    _sys.path.insert(0, _build_dir)
-if _plugin_dir not in _sys.path:
-    _sys.path.insert(0, _plugin_dir)
+_release_lib = _os.path.join(_plugin_dir, "lib")
+for _d in (_build_dir, _release_lib, _plugin_dir):
+    if _d not in _sys.path:
+        _sys.path.insert(0, _d)
+
+# ── Lightweight dependency check (logs warnings, never blocks loading) ────
+def _check_optional_deps():
+    """Warn about missing optional dependencies at plugin load time."""
+    import logging
+    _log = logging.getLogger("hydra")
+    _missing = []
+    for _mod, _feat in (
+        ("gmsh", "unstructured mesh generation"),
+        ("h5py", "HEC-RAS HDF5 export"),
+        ("netCDF4", "UGRID NetCDF export"),
+        ("matplotlib", "in-plugin plotting"),
+    ):
+        try:
+            __import__(_mod)
+        except ImportError:
+            _missing.append((_mod, _feat))
+    if _missing:
+        _names = ", ".join(m for m, _ in _missing)
+        _log.info(
+            "[HYDRA] Optional packages not installed: %s. "
+            "Some features will be unavailable. "
+            "Install with: pip install -r requirements.txt",
+            _names,
+        )
+
+try:
+    _check_optional_deps()
+except Exception:
+    pass  # never block plugin load
 
 
 def classFactory(iface):

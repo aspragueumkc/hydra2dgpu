@@ -42,6 +42,37 @@ make -j$(nproc)
 
 Then symlink or install the plugin root into your QGIS plugins directory and restart QGIS.
 
+### Python Dependencies
+
+After installing the plugin, install Python dependencies into your QGIS Python environment:
+
+```bash
+# Check which packages are installed
+python tools/check_deps.py
+
+# Install required + optional packages
+pip install -r requirements.txt
+```
+
+| Package | Required | Purpose |
+|---------|----------|---------|
+| `numpy` | ✅ | Array operations, mesh data |
+| `gmsh` | ✅ | Unstructured mesh generation (Gmsh backend) |
+| `h5py` | ❌ | HEC-RAS HDF5 result export |
+| `netCDF4` | ❌ | UGRID NetCDF result export |
+| `matplotlib` | ❌ | In-plugin plotting |
+
+> **Note**: `QGIS`, `PyQt5`, and `osgeo` (GDAL) are provided by QGIS itself — do **not** install these via pip.
+
+### Pre-compiled Binaries
+
+If you don't want to build from source, download the pre-compiled binary for your platform from [GitHub Releases](https://github.com/aspragueumkc/hydra2dgpu/releases):
+
+1. Download `hydra2gpu-linux-x86_64.zip` or `hydra2gpu-windows-x86_64.zip`
+2. Extract the `plugin/` folder into your QGIS plugins directory
+3. Restart QGIS
+4. Run `pip install -r requirements.txt` in your QGIS Python environment
+
 ## Documentation
 
 **[User Guide](docs/USER_GUIDE.md)** — Full documentation including installation, model setup, solver configuration, hydraulic theory, and API reference.
