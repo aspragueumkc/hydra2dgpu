@@ -159,30 +159,25 @@ jobs:
       - name: Package
         shell: pwsh
         run: |
-          # Copy full plugin tree, then strip dev/build artifacts
-          Copy-Item . dist\hydra2dgpu\ -Recurse -Force -ErrorAction SilentlyContinue
+          # Create staging directory
+          New-Item -ItemType Directory -Force -Path dist\hydra2dgpu | Out-Null
 
-          # Remove dev/build directories
-          $remove = @(
-            'build', 'dist', '.git', '.github', '.opencode', '.copilot',
-            '__pycache__', 'tests', 'tools', 'docs', 'reference', 'typings',
-            'cpp', 'report_output', '2d_example', 'example_project',
-            'cuda_download', 'cuda_download_*'
-          )
-          $remove | ForEach-Object {
-            $p = Join-Path dist\hydra2dgpu $_
-            if (Test-Path $p) { Remove-Item $p -Recurse -Force -ErrorAction SilentlyContinue }
-          }
+          # Copy top-level items, skipping large dev/build directories
+          Get-ChildItem -Path . -Exclude @('build','dist','.git','.github','.opencode','.copilot',
+            '__pycache__','tests','tools','docs','reference','typings','cpp','report_output',
+            '2d_example','example_project','cuda_download','cuda_download_*') |
+            ForEach-Object {
+              if ($_.PSIsContainer) {
+                Copy-Item $_.FullName dist\hydra2dgpu\ -Recurse -Force -ErrorAction SilentlyContinue
+              } else {
+                Copy-Item $_.FullName dist\hydra2dgpu\ -Force -ErrorAction SilentlyContinue
+              }
+            }
 
-          # Remove individual unwanted files
-          Get-ChildItem dist\hydra2dgpu -Recurse -Filter '*.pyc' | Remove-Item -Force
-          Get-ChildItem dist\hydra2dgpu -Recurse -Filter '*.pyo' | Remove-Item -Force
-          Get-ChildItem dist\hydra2dgpu -Recurse -Filter 'cuda_keyring*' | Remove-Item -Force
-          Get-ChildItem dist\hydra2dgpu -Recurse -Filter 'cuda_installer*' | Remove-Item -Force
-          Get-ChildItem dist\hydra2dgpu -Recurse -Filter 'AGENTS.md' | Remove-Item -Force
-          Get-ChildItem dist\hydra2dgpu -Recurse -Filter 'GPU_AUDIT_REPORT.md' | Remove-Item -Force
-          Get-ChildItem dist\hydra2dgpu -Recurse -Filter 'MOMENTUM_CAP_FIX.md' | Remove-Item -Force
-          Get-ChildItem dist\hydra2dgpu -Recurse -Filter '*PUBLIC_BRANCH_PLAN*' | Remove-Item -Force
+          # Remove unwanted file patterns from the staged tree
+          Get-ChildItem dist\hydra2dgpu -Recurse -Include @('*.pyc','*.pyo','cuda_keyring*',
+            'cuda_installer*','AGENTS.md','GPU_AUDIT_REPORT.md','MOMENTUM_CAP_FIX.md',
+            '*PUBLIC_BRANCH_PLAN*') -Force | Remove-Item -Force -ErrorAction SilentlyContinue
 
           # Place prebuilt libs into the plugin root
           Copy-Item dist\lib\*.pyd dist\hydra2dgpu\ -Force
