@@ -138,6 +138,8 @@ function(_configure_swe2d_module target_name py_module_name)
 
   if(MSVC)
     target_compile_options(${target_name} PRIVATE /W4)
+    # Ensure M_PI and other math constants are available on MSVC
+    target_compile_definitions(${target_name} PRIVATE _USE_MATH_DEFINES)
   else()
     target_compile_options(${target_name} PRIVATE -Wall -Wextra -Wpedantic)
   endif()
