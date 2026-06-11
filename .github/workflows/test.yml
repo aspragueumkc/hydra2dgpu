@@ -41,6 +41,11 @@ jobs:
           tests.test_bridge_stacked_runtime \
           tests.test_workbench_imports
 
+    - name: Python security audit (Bandit)
+      run: |
+        pip install bandit>=1.7
+        python3 -m bandit -r swe2d/ --quiet || echo "Bandit findings (non-fatal, review recommended)"
+
     - name: Python style audit
       run: |
         python3 tools/python_style_audit.py swe2d/ || echo "Style audit warnings (non-fatal)"
@@ -48,6 +53,16 @@ jobs:
     - name: Verify pdoc builds without errors
       run: |
         cd docs && pdoc ../swe2d --skip-errors --docformat numpy --output-dir /tmp/pdoc-check
+
+    - name: C++ host-code static analysis (Cppcheck)
+      run: |
+        sudo apt-get install -y cppcheck
+        cppcheck --enable=warning,performance,information \
+          --suppress=cstyleCast \
+          --suppress=unmatchedSuppression \
+          --error-exitcode=0 \
+          --quiet \
+          cpp/src/ || echo "Cppcheck warnings (non-fatal)"
 
   # ── Build + unit tests (requires hydra_swe2d native module) ───────────
   build-and-cpu-tests:
