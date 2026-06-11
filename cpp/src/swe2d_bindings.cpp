@@ -2380,6 +2380,18 @@ PYBIND11_MODULE(HYDRA_SWE2D_PY_MODULE_NAME, m) {
         py::arg("coupling_relaxation") = 0.5,
         "Headless CUDA helper: advance drainage network with native substep/implicit loops in one call.");
 
+    m.def("swe2d_solver_get_device_capsule",
+        [](const std::shared_ptr<PySolver>& ps) -> py::object {
+            if (!ps || !ps->solver) throw std::invalid_argument("null solver handle");
+            if (!ps->solver->dev) throw std::runtime_error("GPU not initialized");
+            void* dev_ptr = ps->solver->dev;
+            return py::capsule(dev_ptr, "SWE2DDeviceState*",
+                [](void*) { /* no-op: solver owns device lifetime */ });
+        },
+        py::arg("solver"),
+        "Return a PyCapsule wrapping the solver's SWE2DDeviceState*.\n"
+        "Pass the result to swe2d_gpu_enable_kernel_graphs / _destroy.");
+
     m.def("swe2d_gpu_enable_kernel_graphs",
         [](py::object dev_capsule, bool enable) {
             auto dev = static_cast<SWE2DDeviceState*>(PyCapsule_GetPointer(dev_capsule.ptr(), "SWE2DDeviceState*"));

@@ -382,13 +382,15 @@ class TestGPUFullSolverStructures(unittest.TestCase):
 
     # ── Kernel graphs ──────────────────────────────────────────────
     def test_kernel_graphs_enable_disable(self):
-        """Enable and disable CUDA kernel graph caching.
+        """Enable and disable CUDA kernel graph caching."""
+        mod = self.mod
+        try:
+            capsule = mod.swe2d_solver_get_device_capsule(self.solver)
+        except Exception as e:
+            self.skipTest(f"get device capsule failed: {e}")
 
-        NOTE: swe2d_gpu_enable_kernel_graphs requires a SWE2DDeviceState*
-        capsule, not a solver handle.  We can't construct one from Python,
-        but we can verify the function exists and skip gracefully.
-        """
-        self.skipTest("kernel graphs require a device capsule, not a solver handle")
+        mod.swe2d_gpu_enable_kernel_graphs(capsule, True)
+        mod.swe2d_gpu_destroy_kernel_graphs(capsule)
 
     # ── Culvert face flux ──────────────────────────────────────────
     def test_culvert_face_flux_full_path(self):
