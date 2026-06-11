@@ -117,6 +117,11 @@ def _load_swe2d_module():
         if os.path.isdir(_candidate) and _candidate not in sys.path:
             sys.path.insert(0, _candidate)
 
+    # Also ensure the plugin root itself is on sys.path (for release ZIP layout
+    # where binaries sit alongside __init__.py)
+    if _plugin_root not in sys.path:
+        sys.path.insert(0, _plugin_root)
+
     try:
         mod = importlib.import_module("hydra_swe2d")
         _swe2d_mod = mod
