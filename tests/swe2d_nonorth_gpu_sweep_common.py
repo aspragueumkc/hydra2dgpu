@@ -7,7 +7,7 @@ from typing import Dict, List
 
 import numpy as np
 
-from test_swe2d_nonorth_vs_orth_channel import (
+from tests._swe2d_test_helpers import (
     _channel_bc_edges,
     _load_module,
     _make_tri_channel_mesh,

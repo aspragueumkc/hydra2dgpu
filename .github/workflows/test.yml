@@ -69,20 +69,24 @@ jobs:
       run: |
         pip install numpy gmsh>=4.12
 
-    - name: Build native module (CPU only)
+    - name: Install CUDA toolkit
+      uses: Jimver/cuda-toolkit@v0.2.35
+      with:
+        cuda: '12.4.0'
+        method: network
+
+    - name: Build native module (CUDA, tests skip gracefully without GPU)
       run: |
         mkdir -p build && cd build
-        cmake .. -DBACKWATER_USE_CUDA=OFF -DCMAKE_BUILD_TYPE=Release
+        cmake .. -DBACKWATER_USE_CUDA=ON -DCMAKE_BUILD_TYPE=Release
         make -j$(nproc)
 
-    - name: Run CPU tests
+    - name: Run mesh and import tests (no GPU required)
       run: |
         PYTHONPATH="$PWD:$PWD/build:$PWD/tests" \
           python3 -m unittest -v \
-          tests.test_swe2d_dambreak \
-          tests.test_swe2d_lakerest \
           tests.test_swe2d_mesh \
-          tests.test_swe2d_nonorth_vs_orth_channel
+          tests.test_workbench_imports
 
   # ── Optional: headless QGIS smoke test (QGIS must be available) ──────
   qgis-smoke-test:

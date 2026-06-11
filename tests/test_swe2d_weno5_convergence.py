@@ -27,7 +27,7 @@ import numpy as np
 
 
 
-from tests.test_swe2d_unstructured import (
+from tests._swe2d_test_helpers import (
     _make_gmsh_triangle_mesh,
     _build_mesh,
 )

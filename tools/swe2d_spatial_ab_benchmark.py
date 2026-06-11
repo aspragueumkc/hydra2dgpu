@@ -24,8 +24,8 @@ import numpy as np
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-from tests.test_swe2d_dambreak import _make_rect_mesh, stoker_dam_break
-from tests.test_swe2d_unstructured import _build_mesh, _make_gmsh_triangle_mesh
+from tests._swe2d_test_helpers import _make_rect_mesh, stoker_dam_break
+from tests._swe2d_test_helpers import _build_mesh, _make_gmsh_triangle_mesh
 
 
 def _load_module():
