@@ -5223,17 +5223,23 @@ void swe2d_gpu_step_persistent_chunk(
 
     CUDA_CHECK(cudaMemsetAsync(dev->d_lambda_max, 0, sizeof(double), dev->d_stream));
     const int cfl_grid = (n_edges + BLOCK - 1) / BLOCK;
-    swe2d_cfl_kernel<<<cfl_grid, BLOCK, BLOCK * static_cast<int>(sizeof(double)), dev->d_stream>>>(
-        n_edges,
-        dev->d_edge_c0, dev->d_edge_c1,
-        dev->d_edge_nx, dev->d_edge_ny, dev->d_edge_len,
-        dev->d_h, dev->d_hu, dev->d_hv,
-        dev->d_cell_area,
-        g, h_min,
-        cfl_lambda_cap,
-        dev->d_lambda_max,
-        dev->d_degen_mask, dev->degen_mode);
-    CUDA_CHECK(cudaGetLastError());
+    if (cfl_grid > 0) {
+        swe2d_ensure_cfl_block_workspace(dev, cfl_grid);
+        swe2d_cfl_kernel<<<cfl_grid, BLOCK, BLOCK * static_cast<int>(sizeof(double)), dev->d_stream>>>(
+            n_edges,
+            dev->d_edge_c0, dev->d_edge_c1,
+            dev->d_edge_nx, dev->d_edge_ny, dev->d_edge_len,
+            dev->d_h, dev->d_hu, dev->d_hv,
+            dev->d_cell_area,
+            g, h_min,
+            cfl_lambda_cap,
+            dev->d_cfl_block_max,
+            dev->d_degen_mask, dev->degen_mode);
+        CUDA_CHECK(cudaGetLastError());
+        swe2d_cfl_reduce_blocks_kernel<<<1, BLOCK, BLOCK * static_cast<int>(sizeof(double)), dev->d_stream>>>(
+            cfl_grid, dev->d_cfl_block_max, dev->d_lambda_max);
+        CUDA_CHECK(cudaGetLastError());
+    }
 
     CUDA_CHECK(cudaMemsetAsync(dev->d_max_wse_elev_error, 0, sizeof(double), dev->d_stream));
     pack_diag_kernel<<<1, 1, 0, dev->d_stream>>>(dev->d_lambda_max, dev->d_max_wse_elev_error, dev->d_n_wet, dev->d_diag_packed);
@@ -5403,17 +5409,23 @@ void swe2d_gpu_step_rk2(
 
     CUDA_CHECK(cudaMemsetAsync(dev->d_lambda_max, 0, sizeof(double), dev->d_stream));
     const int edge_grid = (dev->n_edges + BLOCK - 1) / BLOCK;
-    swe2d_cfl_kernel<<<edge_grid, BLOCK, BLOCK * static_cast<int>(sizeof(double)), dev->d_stream>>>(
-        dev->n_edges,
-        dev->d_edge_c0, dev->d_edge_c1,
-        dev->d_edge_nx, dev->d_edge_ny, dev->d_edge_len,
-        dev->d_h, dev->d_hu, dev->d_hv,
-        dev->d_cell_area,
-        g, h_min,
-        cfl_lambda_cap,
-        dev->d_lambda_max,
-        dev->d_degen_mask, dev->degen_mode);
-    CUDA_CHECK(cudaGetLastError());
+    if (edge_grid > 0) {
+        swe2d_ensure_cfl_block_workspace(dev, edge_grid);
+        swe2d_cfl_kernel<<<edge_grid, BLOCK, BLOCK * static_cast<int>(sizeof(double)), dev->d_stream>>>(
+            dev->n_edges,
+            dev->d_edge_c0, dev->d_edge_c1,
+            dev->d_edge_nx, dev->d_edge_ny, dev->d_edge_len,
+            dev->d_h, dev->d_hu, dev->d_hv,
+            dev->d_cell_area,
+            g, h_min,
+            cfl_lambda_cap,
+            dev->d_cfl_block_max,
+            dev->d_degen_mask, dev->degen_mode);
+        CUDA_CHECK(cudaGetLastError());
+        swe2d_cfl_reduce_blocks_kernel<<<1, BLOCK, BLOCK * static_cast<int>(sizeof(double)), dev->d_stream>>>(
+            edge_grid, dev->d_cfl_block_max, dev->d_lambda_max);
+        CUDA_CHECK(cudaGetLastError());
+    }
     // Pack diagnostic scalars for single-transfer readback.
     pack_diag_kernel<<<1, 1, 0, dev->d_stream>>>(dev->d_lambda_max, dev->d_max_wse_elev_error, dev->d_n_wet, dev->d_diag_packed);
     CUDA_CHECK(cudaGetLastError());
@@ -5593,17 +5605,23 @@ void swe2d_gpu_step_rk2_persistent_chunk(
 
     CUDA_CHECK(cudaMemsetAsync(dev->d_lambda_max, 0, sizeof(double), dev->d_stream));
     const int edge_grid = (dev->n_edges + BLOCK - 1) / BLOCK;
-    swe2d_cfl_kernel<<<edge_grid, BLOCK, BLOCK * static_cast<int>(sizeof(double)), dev->d_stream>>>(
-        dev->n_edges,
-        dev->d_edge_c0, dev->d_edge_c1,
-        dev->d_edge_nx, dev->d_edge_ny, dev->d_edge_len,
-        dev->d_h, dev->d_hu, dev->d_hv,
-        dev->d_cell_area,
-        g, h_min,
-        cfl_lambda_cap,
-        dev->d_lambda_max,
-        dev->d_degen_mask, dev->degen_mode);
-    CUDA_CHECK(cudaGetLastError());
+    if (edge_grid > 0) {
+        swe2d_ensure_cfl_block_workspace(dev, edge_grid);
+        swe2d_cfl_kernel<<<edge_grid, BLOCK, BLOCK * static_cast<int>(sizeof(double)), dev->d_stream>>>(
+            dev->n_edges,
+            dev->d_edge_c0, dev->d_edge_c1,
+            dev->d_edge_nx, dev->d_edge_ny, dev->d_edge_len,
+            dev->d_h, dev->d_hu, dev->d_hv,
+            dev->d_cell_area,
+            g, h_min,
+            cfl_lambda_cap,
+            dev->d_cfl_block_max,
+            dev->d_degen_mask, dev->degen_mode);
+        CUDA_CHECK(cudaGetLastError());
+        swe2d_cfl_reduce_blocks_kernel<<<1, BLOCK, BLOCK * static_cast<int>(sizeof(double)), dev->d_stream>>>(
+            edge_grid, dev->d_cfl_block_max, dev->d_lambda_max);
+        CUDA_CHECK(cudaGetLastError());
+    }
     pack_diag_kernel<<<1, 1, 0, dev->d_stream>>>(dev->d_lambda_max, dev->d_max_wse_elev_error, dev->d_n_wet, dev->d_diag_packed);
     CUDA_CHECK(cudaGetLastError());
 
@@ -6144,17 +6162,23 @@ void swe2d_gpu_step_rk5_graph(
 
     CUDA_CHECK(cudaMemsetAsync(dev->d_lambda_max, 0, sizeof(double), dev->d_stream));
     const int edge_grid = (n_edges + BLOCK - 1) / BLOCK;
-    swe2d_cfl_kernel<<<edge_grid, BLOCK, BLOCK * static_cast<int>(sizeof(double)), dev->d_stream>>>(
-        n_edges,
-        dev->d_edge_c0, dev->d_edge_c1,
-        dev->d_edge_nx, dev->d_edge_ny, dev->d_edge_len,
-        dev->d_h, dev->d_hu, dev->d_hv,
-        dev->d_cell_area,
-        g, h_min,
-        cfl_lambda_cap,
-        dev->d_lambda_max,
-        dev->d_degen_mask, dev->degen_mode);
-    CUDA_CHECK(cudaGetLastError());
+    if (edge_grid > 0) {
+        swe2d_ensure_cfl_block_workspace(dev, edge_grid);
+        swe2d_cfl_kernel<<<edge_grid, BLOCK, BLOCK * static_cast<int>(sizeof(double)), dev->d_stream>>>(
+            n_edges,
+            dev->d_edge_c0, dev->d_edge_c1,
+            dev->d_edge_nx, dev->d_edge_ny, dev->d_edge_len,
+            dev->d_h, dev->d_hu, dev->d_hv,
+            dev->d_cell_area,
+            g, h_min,
+            cfl_lambda_cap,
+            dev->d_cfl_block_max,
+            dev->d_degen_mask, dev->degen_mode);
+        CUDA_CHECK(cudaGetLastError());
+        swe2d_cfl_reduce_blocks_kernel<<<1, BLOCK, BLOCK * static_cast<int>(sizeof(double)), dev->d_stream>>>(
+            edge_grid, dev->d_cfl_block_max, dev->d_lambda_max);
+        CUDA_CHECK(cudaGetLastError());
+    }
 
     pack_diag_kernel<<<1, 1, 0, dev->d_stream>>>(dev->d_lambda_max, dev->d_max_wse_elev_error, dev->d_n_wet, dev->d_diag_packed);
     CUDA_CHECK(cudaGetLastError());
