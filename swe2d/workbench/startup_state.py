@@ -58,6 +58,16 @@ def initialize_workbench_startup_state(
     dialog._topology_mesh_started_at = None
     dialog._topology_mesh_poll_count = 0
     dialog._topology_mesh_active_timeout_sec = 0.0
+
+    # Drain startup messages collected by __init__.py (e.g. multiprocessing
+    # guard diagnostics) into the runtime log so the user can see them.
+    try:
+        from hydra2dgpu import _startup_messages as _msgs
+        for _tag, _msg in _msgs:
+            dialog._runtime_log_lines.append(_msg)
+        _msgs.clear()
+    except Exception:
+        pass
     dialog._topology_mesh_checkpoint_path = ""
     dialog._topology_mesh_progress_path = ""
     dialog._topology_mesh_progress_last_seq = -1

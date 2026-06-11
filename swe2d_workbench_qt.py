@@ -3959,13 +3959,23 @@ class SWE2DWorkbenchDialog(QtWidgets.QDialog):
     def _log(self, msg: str):
         msg_txt = str(msg)
         self._runtime_log_lines.append(msg_txt)
-        # Render [ERROR] messages in red using appendHtml if available.
+        # Render [ERROR] messages in red bold using appendHtml.
+        # Render [WARNING] messages in orange regular-weight using appendHtml.
         # NOTE: the except handlers must NOT call self._log() — that would
         # recurse infinitely when log_view doesn't exist yet (early _build_ui).
         if msg_txt.startswith("[ERROR]"):
             try:
                 self.log_view.appendHtml(
                     f'<span style="color:red;font-weight:bold;">{msg_txt}</span>')
+            except Exception:
+                try:
+                    self.log_view.appendPlainText(msg_txt)
+                except Exception:
+                    pass
+        elif msg_txt.startswith("[WARNING]"):
+            try:
+                self.log_view.appendHtml(
+                    f'<span style="color:#FF8C00;font-weight:normal;">{msg_txt}</span>')
             except Exception:
                 try:
                     self.log_view.appendPlainText(msg_txt)
