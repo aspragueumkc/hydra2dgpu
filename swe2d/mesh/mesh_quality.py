@@ -24,7 +24,7 @@ def _mesh_quality_stats(
     vy: np.ndarray,
     tris: np.ndarray,
     quads: np.ndarray,
-    bbox_area: float,
+    bbox_area: float = 0.0,
 ) -> dict:
     n_tri = tris.shape[0] if tris.size > 0 else 0
     n_quad = quads.shape[0] if quads.size > 0 else 0
@@ -38,6 +38,7 @@ def _mesh_quality_stats(
             "min_area": 0.0,
             "min_area_rel_bbox": 0.0,
             "coverage": 0.0,
+            "bbox_area": float(bbox_area),
         }
     min_angles: List[float] = []
     aspect_ratios: List[float] = []
@@ -88,6 +89,7 @@ def _mesh_quality_stats(
         "min_area": float(min_area) if min_area != float("inf") else 0.0,
         "min_area_rel_bbox": float(min_area / max(bbox_area, 1.0e-30)) if min_area != float("inf") else 0.0,
         "coverage": float(min(total_mesh_area / max(bbox_area, 1.0e-30), 1.0)),
+        "bbox_area": float(bbox_area),
     }
 
 

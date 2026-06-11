@@ -20,6 +20,19 @@ from swe2d.mesh.mesh_quality import (
     _face_mesh_quality_stats, _gmsh_quality_passes,
     _gmsh_quality_score, _polygon_area_xy,
 )
+from swe2d.mesh.meshing import (
+    _as_float, _env_bool, _env_float, _env_csv_floats, _env_csv_strings,
+    _enforce_quad_interface_conformance, _gmsh_cpp_prebuild_enabled,
+    _gmsh_flow_aligned_curve_counts, _gmsh_flow_align_region_preflight,
+    _gmsh_interface_coincidence_report,
+    _harmonize_transfinite_shared_quad_interfaces,
+    _insert_focus_points_on_ring_segments, _interp_polyline_fraction,
+    _load_hydra_meshing_native, _mixed_transfinite_tri_near_unshared_report,
+    _point_in_polygon, _polyline_distance_and_s, _polyline_length,
+    _polyline_overlap_fractions_open, _quad_controls_for_region,
+    _region_exclusion_zones, _repair_mesh_result, _require_nonempty_mesh,
+    _write_json_atomic, _write_mesh_checkpoint_npz,
+)
 logger = logging.getLogger(__name__)
 
 
