@@ -122,6 +122,47 @@ def _load_swe2d_module():
     if _plugin_root not in sys.path:
         sys.path.insert(0, _plugin_root)
 
+    # ── Windows: add plugin root to DLL search path ──────────────────────
+    # This lets Python find cudart64_12.dll bundled alongside the .pyd files
+    # without requiring a system-wide CUDA installation or manual PATH juggling.
+    # Also check QSettings for a user-specified custom CUDA DLL path.
+    if sys.platform == "win32":
+        _custom_dll_dir = None
+        try:
+            from qgis.PyQt.QtCore import QSettings
+            _s = QSettings("HYDRA2DGPU", "HYDRA2DGPU")
+            _custom = _s.value("cuda_dll_path", "")
+            if _custom and os.path.isdir(_custom):
+                _custom_dll_dir = _custom
+            elif _custom and os.path.isfile(_custom):
+                _custom_dll_dir = os.path.dirname(_custom)
+        except Exception:
+            pass
+
+        _dll_dirs_to_add = []
+        if _custom_dll_dir:
+            _dll_dirs_to_add.append(_custom_dll_dir)
+        else:
+            # Default: plugin root where cudart64_*.dll is bundled
+            _dll_dirs_to_add.append(_plugin_root)
+            # Fallback: lib/ dir (source-build layout)
+            _lib_dir = os.path.join(_plugin_root, "lib")
+            if os.path.isdir(_lib_dir):
+                _dll_dirs_to_add.append(_lib_dir)
+
+        for _d in _dll_dirs_to_add:
+            if os.path.isdir(_d):
+                if hasattr(os, "add_dll_directory"):
+                    try:
+                        os.add_dll_directory(_d)
+                    except (OSError, FileNotFoundError):
+                        pass
+                else:
+                    # Fallback for older Python: prepend to PATH
+                    _old_path = os.environ.get("PATH", "")
+                    if _d not in _old_path:
+                        os.environ["PATH"] = _d + os.pathsep + _old_path
+
     try:
         mod = importlib.import_module("hydra_swe2d")
         _swe2d_mod = mod

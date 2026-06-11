@@ -40,8 +40,37 @@ def _check_optional_deps():
             _names,
         )
 
+
+def _check_required_deps():
+    """Warn about missing *required* packages at plugin load time.
+    Returns True if all required deps are present, False otherwise.
+    """
+    import logging
+    _log = logging.getLogger("hydra")
+    _missing = []
+    for _mod in ("numpy", "gmsh"):
+        try:
+            __import__(_mod)
+        except ImportError:
+            _missing.append(_mod)
+    if _missing:
+        _names = ", ".join(_missing)
+        _log.warning(
+            "[HYDRA] REQUIRED packages missing: %s. "
+            "The plugin will not function correctly without them. "
+            "Open HYDRA2DGPU → Settings → Check & Install Dependencies, "
+            "or run from QGIS Python Console:\n"
+            "  import sys\n"
+            "  subprocess.check_call([sys.executable, '-m', 'pip', 'install', '-r', '%s'])",
+            _names,
+            _os.path.join(_plugin_dir, "requirements.txt"),
+        )
+        return False
+    return True
+
 try:
     _check_optional_deps()
+    _check_required_deps()
 except Exception:
     pass  # never block plugin load
 

@@ -155,6 +155,8 @@ jobs:
           New-Item -ItemType Directory -Force -Path dist/lib
           Get-ChildItem -Path build -Recurse -Filter "*.pyd" |
             Copy-Item -Destination dist/lib/
+          # Bundle CUDA runtime DLL so the .pyd can load without a system-wide CUDA install
+          Copy-Item "$env:CUDA_PATH\bin\cudart64_*.dll" dist\lib\
 
       - name: Package
         shell: pwsh
@@ -179,8 +181,9 @@ jobs:
             'cuda_installer*','AGENTS.md','GPU_AUDIT_REPORT.md','MOMENTUM_CAP_FIX.md',
             '*PUBLIC_BRANCH_PLAN*') -Force | Remove-Item -Force -ErrorAction SilentlyContinue
 
-          # Place prebuilt libs into the plugin root
+          # Place prebuilt libs and CUDA runtime DLL into the plugin root
           Copy-Item dist\lib\*.pyd dist\hydra2dgpu\ -Force
+          Copy-Item dist\lib\cudart64_*.dll dist\hydra2dgpu\ -Force
 
           # Create the release ZIP
           Compress-Archive -Path dist\hydra2dgpu -DestinationPath hydra2gpu-windows-x86_64.zip

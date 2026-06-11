@@ -5,10 +5,14 @@ check_deps.py — Verify and install HYDRA2DGPU Python dependencies.
 Run this after installing the plugin to ensure all required packages
 are available in your QGIS Python environment.
 
-Usage:
-    python check_deps.py              # Check only (report missing packages)
-    python check_deps.py --install    # Install missing packages via pip
-    python check_deps.py --all        # Install all optional packages too
+Usage (standalone):
+    python check_deps.py                   # Check only (report missing packages)
+    python check_deps.py --install         # Install missing required packages
+    python check_deps.py --all             # Install all packages (required + optional)
+
+Usage (from inside QGIS Python console):
+    exec(open('path/to/check_deps.py').read())
+    check_all(install=True)                # returns (missing_required, missing_optional)
 """
 
 from __future__ import annotations
@@ -18,7 +22,7 @@ import importlib
 import subprocess
 import sys
 from dataclasses import dataclass, field
-from typing import List, Optional
+from typing import List, Optional, Tuple
 
 # ── Package registry ──────────────────────────────────────────────────────
 # (import_name, pip_name, required, description)
@@ -85,7 +89,12 @@ def _check_package(pkg: Package) -> None:
 
 
 def _install_package(pkg: Package) -> bool:
-    """Install a package via pip. Returns True on success."""
+    """Install a package via pip. Returns True on success.
+
+    Uses sys.executable to run pip, which inside QGIS automatically uses
+    the QGIS-bundled Python interpreter — no need to hunt down the right
+    Python path manually.
+    """
     cmd = [sys.executable, "-m", "pip", "install", pkg.pip_name]
     try:
         result = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
@@ -94,12 +103,26 @@ def _install_package(pkg: Package) -> bool:
         return False
 
 
-def check_all(install: bool = False, install_optional: bool = False) -> int:
-    """Check all dependencies. Returns number of missing required packages."""
-    print("=" * 60)
-    print("  HYDRA2DGPU Dependency Check")
-    print("=" * 60)
-    print()
+def check_all(
+    install: bool = False,
+    install_optional: bool = False,
+    quiet: bool = False,
+) -> Tuple[int, int]:
+    """Check all dependencies.
+
+    Args:
+        install: Install missing required packages.
+        install_optional: Also install missing optional packages.
+        quiet: Suppress console output (for use from inside QGIS).
+
+    Returns:
+        (missing_required_count, missing_optional_count)
+    """
+    if not quiet:
+        print("=" * 60)
+        print("  HYDRA2DGPU Dependency Check")
+        print("=" * 60)
+        print()
 
     missing_required = 0
     missing_optional = 0
@@ -116,10 +139,12 @@ def check_all(install: bool = False, install_optional: bool = False) -> int:
             status = "⚠️  not installed (optional)"
             missing_optional += 1
 
-        label = "required" if pkg.required else "optional"
-        print(f"  {pkg.import_name:<15} {status:<25} [{label}] {pkg.description}")
+        if not quiet:
+            label = "required" if pkg.required else "optional"
+            print(f"  {pkg.import_name:<15} {status:<25} [{label}] {pkg.description}")
 
-    print()
+    if not quiet:
+        print()
 
     # Install missing packages if requested
     if install or install_optional:
@@ -130,45 +155,50 @@ def check_all(install: bool = False, install_optional: bool = False) -> int:
             if pkg.required or (install_optional and not pkg.required):
                 to_install.append(pkg)
 
-        if to_install:
+        if to_install and not quiet:
             print("Installing missing packages...")
-            for pkg in to_install:
+        for pkg in to_install:
+            if not quiet:
                 print(f"  pip install {pkg.pip_name} ... ", end="", flush=True)
-                if _install_package(pkg):
+            ok = _install_package(pkg)
+            if ok:
+                if not quiet:
                     print("✅")
-                else:
+            else:
+                if not quiet:
                     print("❌ failed")
-                    if pkg.required:
-                        missing_required += 1
+                if pkg.required:
+                    missing_required += 1
+        if not quiet:
             print()
 
     # Summary
-    print("-" * 60)
-    if missing_required == 0:
-        print("✅ All required dependencies are installed.")
-    else:
-        print(f"❌ {missing_required} required package(s) missing.")
-        print("   Run: pip install -r requirements.txt")
-
-    if missing_optional > 0:
-        print(f"⚠️  {missing_optional} optional package(s) not installed.")
-        print("   Run: pip install -r requirements.txt   (for full functionality)")
-
-    # CUDA check
-    print()
-    try:
-        import hydra_swe2d
-        if hydra_swe2d.swe2d_gpu_available():
-            print("✅ CUDA GPU solver available.")
+    if not quiet:
+        print("-" * 60)
+        if missing_required == 0:
+            print("✅ All required dependencies are installed.")
         else:
-            print("⚠️  Native module loaded but no CUDA GPU detected.")
-    except ImportError:
-        print("⚠️  Native CUDA module (hydra_swe2d) not found.")
-        print("   Download pre-compiled binary from:")
-        print("   https://github.com/aspragueumkc/hydra2dgpu/releases")
+            print(f"❌ {missing_required} required package(s) missing.")
+            print("   Run: pip install -r requirements.txt")
+        if missing_optional > 0:
+            print(f"⚠️  {missing_optional} optional package(s) not installed.")
+            print("   Run: pip install -r requirements.txt  (for full functionality)")
 
-    print("-" * 60)
-    return missing_required
+        # CUDA check
+        print()
+        try:
+            import hydra_swe2d
+            if hasattr(hydra_swe2d, "swe2d_gpu_available") and hydra_swe2d.swe2d_gpu_available():
+                print("✅ CUDA GPU solver available.")
+            else:
+                print("⚠️  Native module loaded but no CUDA GPU detected.")
+        except ImportError:
+            print("⚠️  Native CUDA module (hydra_swe2d) not found.")
+            print("   Download pre-compiled binary from:")
+            print("   https://github.com/aspragueumkc/hydra2dgpu/releases")
+        print("-" * 60)
+
+    return missing_required, missing_optional
 
 
 def main() -> None:
@@ -183,11 +213,11 @@ def main() -> None:
     )
     args = parser.parse_args()
 
-    missing = check_all(
+    missing_req, missing_opt = check_all(
         install=args.install,
         install_optional=args.all,
     )
-    sys.exit(1 if missing > 0 else 0)
+    sys.exit(1 if missing_req > 0 else 0)
 
 
 if __name__ == "__main__":

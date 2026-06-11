@@ -3,10 +3,28 @@
 Opens the 2D SWE GPU workbench dialog directly (no 1D/lumped hydrology dock).
 """
 import os
+import subprocess
 import sys
 from qgis.PyQt import QtCore
-from qgis.PyQt.QtWidgets import QAction, QApplication, QMainWindow, QMenu
-from qgis.PyQt.QtCore import Qt
+from qgis.PyQt.QtWidgets import (
+    QAction,
+    QApplication,
+    QDialog,
+    QDialogButtonBox,
+    QFileDialog,
+    QFormLayout,
+    QHBoxLayout,
+    QLabel,
+    QLineEdit,
+    QMainWindow,
+    QMenu,
+    QMessageBox,
+    QProgressBar,
+    QPushButton,
+    QTextEdit,
+    QVBoxLayout,
+)
+from qgis.PyQt.QtCore import Qt, QSettings
 from qgis.core import Qgis
 
 
@@ -226,6 +244,7 @@ class HydraQgisPlugin:
 
         action_specs = [
             ('HYDRA2DMenuOpenPanelAction', 'Open HYDRA2DGPU Panel', lambda: self.run()),
+            ('HYDRA2DMenuSettingsAction', 'Settings...', lambda: self.open_settings()),
         ]
 
         existing = {a.objectName(): a for a in menu.actions() if a is not None}
@@ -241,6 +260,11 @@ class HydraQgisPlugin:
             action.triggered.connect(callback)
             menu.addAction(action)
             self.main_menu_actions.append(action)
+
+    def open_settings(self):
+        """Open the HYDRA2DGPU Settings dialog."""
+        dlg = HYDRASettingsDialog(self.iface.mainWindow())
+        dlg.exec_()
 
     def _remove_main_menu_bar_menu(self):
         menu = self.main_menu
@@ -261,3 +285,120 @@ class HydraQgisPlugin:
                 pass
         self.main_menu = None
         self._owns_main_menu = False
+
+
+class HYDRASettingsDialog(QDialog):
+    """Settings dialog for HYDRA2DGPU — CUDA DLL path and dependency management."""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("HYDRA2DGPU Settings")
+        self.setMinimumWidth(520)
+        self._settings = QSettings("HYDRA2DGPU", "HYDRA2DGPU")
+
+        layout = QVBoxLayout(self)
+
+        # ── CUDA DLL Path section ────────────────────────────────────────
+        layout.addWidget(QLabel("<b>CUDA Runtime DLL</b>"))
+        layout.addWidget(QLabel(
+            "Path to the folder containing cudart64_*.dll. "
+            "Leave empty to use the bundled DLL in the plugin directory."
+        ))
+
+        path_layout = QHBoxLayout()
+        self._cuda_path_edit = QLineEdit()
+        self._cuda_path_edit.setPlaceholderText("(use bundled DLL)")
+        self._cuda_path_edit.setText(self._settings.value("cuda_dll_path", ""))
+        path_layout.addWidget(self._cuda_path_edit)
+
+        browse_btn = QPushButton("Browse...")
+        browse_btn.clicked.connect(self._browse_cuda_dll)
+        path_layout.addWidget(browse_btn)
+
+        reset_btn = QPushButton("Reset to Default")
+        reset_btn.clicked.connect(self._reset_cuda_path)
+        path_layout.addWidget(reset_btn)
+
+        layout.addLayout(path_layout)
+
+        # ── Dependencies section ─────────────────────────────────────────
+        layout.addSpacing(16)
+        layout.addWidget(QLabel("<b>Python Dependencies</b>"))
+        layout.addWidget(QLabel(
+            "Check for missing required packages (numpy, gmsh) and install them "
+            "into the QGIS Python environment."
+        ))
+
+        deps_btn = QPushButton("Check & Install Dependencies")
+        deps_btn.clicked.connect(self._check_and_install_deps)
+        layout.addWidget(deps_btn)
+
+        self._deps_output = QTextEdit()
+        self._deps_output.setReadOnly(True)
+        self._deps_output.setMaximumHeight(150)
+        self._deps_output.setPlaceholderText("Dependency check results will appear here...")
+        layout.addWidget(self._deps_output)
+
+        # ── Bottom buttons ───────────────────────────────────────────────
+        layout.addSpacing(16)
+        button_box = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        button_box.accepted.connect(self._on_accept)
+        button_box.rejected.connect(self.reject)
+        layout.addWidget(button_box)
+
+    def _browse_cuda_dll(self):
+        """Open a file dialog to pick a CUDA DLL file or directory."""
+        path, _ = QFileDialog.getOpenFileName(
+            self, "Select CUDA Runtime DLL", "",
+            "CUDA DLL (cudart64_*.dll);;All files (*)"
+        )
+        if path:
+            self._cuda_path_edit.setText(os.path.dirname(path))
+
+    def _reset_cuda_path(self):
+        """Clear the custom CUDA DLL path (revert to bundled default)."""
+        self._cuda_path_edit.setText("")
+
+    def _on_accept(self):
+        """Save settings and close."""
+        self._settings.setValue("cuda_dll_path", self._cuda_path_edit.text().strip())
+        self._settings.sync()
+        self.accept()
+
+    def _check_and_install_deps(self):
+        """Run the dependency checker/installer inside the QGIS Python interpreter."""
+        self._deps_output.clear()
+        self._deps_output.append("Checking dependencies...\n")
+
+        # Locate check_deps.py relative to this plugin
+        plugin_dir = os.path.dirname(os.path.abspath(__file__))
+        check_deps_path = os.path.join(plugin_dir, "tools", "check_deps.py")
+
+        if not os.path.isfile(check_deps_path):
+            self._deps_output.append("ERROR: tools/check_deps.py not found in plugin directory.")
+            return
+
+        # Run inside QGIS's Python: sys.executable is guaranteed to be QGIS's Python
+        self._deps_output.append(f"Python: {sys.executable}")
+        self._deps_output.append(f"Script: {check_deps_path}\n")
+
+        try:
+            result = subprocess.run(
+                [sys.executable, check_deps_path, "--install", "--all"],
+                capture_output=True, text=True, timeout=180,
+            )
+            self._deps_output.append(result.stdout)
+            if result.stderr:
+                self._deps_output.append(f"\n[stderr]\n{result.stderr}")
+            if result.returncode == 0:
+                self._deps_output.append("\n✅ All dependencies installed successfully.")
+            else:
+                self._deps_output.append(f"\n❌ Some dependencies failed (exit code {result.returncode}).")
+        except subprocess.TimeoutExpired:
+            self._deps_output.append("\n❌ Timed out waiting for pip install.")
+        except Exception as exc:
+            self._deps_output.append(f"\n❌ Error: {exc}")
+
+        # Scroll to top
+        self._deps_output.moveCursor(QtCore.QTextCursor.Start)
+        self._deps_output.ensureCursorVisible()
