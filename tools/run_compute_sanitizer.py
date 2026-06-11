@@ -46,6 +46,7 @@ GPU_TESTS = [
     ("structures", "tests.test_swe2d_gpu_structures"),
     ("drainage_network", "tests.test_swe2d_gpu_drainage_network"),
     ("coupling_kernel", "tests.test_swe2d_gpu_coupling_kernel"),
+    ("full_solver_structures", "tests.test_swe2d_gpu_full_solver_structures"),
 ]
 ]
 
