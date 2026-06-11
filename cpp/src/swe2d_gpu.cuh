@@ -1609,6 +1609,7 @@ bool swe2d_gpu_build_culvert_tables(
     const double* culvert_slope,
     const double* entrance_loss_k,
     const double* exit_loss_k,
+    double model_to_ft,
     int32_t n_hw,
     int32_t n_tw,
     std::vector<double>& table_data_out,

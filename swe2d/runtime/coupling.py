@@ -941,6 +941,7 @@ class SWE2DCouplingController:
                     np.asarray(ssoa.culvert_slope, dtype=np.float64),
                     np.asarray(ssoa.entrance_loss_k, dtype=np.float64),
                     np.asarray(ssoa.exit_loss_k, dtype=np.float64),
+                    self._model_to_ft,
                     int(self._culvert_table_n_hw),
                     int(self._culvert_table_n_tw),
                 )

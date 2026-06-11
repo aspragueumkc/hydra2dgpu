@@ -2434,9 +2434,13 @@ __global__ void swe2d_apply_enquiry_wse_kernel(
     if (i >= n_culvert_faces) return;
 
     // ── Upstream side: use enquiry cell WSE + velocity head ──────────
+    // Only apply when the donor face cell itself has water; otherwise the
+    // enquiry cell may reflect boundary inflow that hasn't reached the face
+    // yet, creating a non-physical driving head that injects mass at the
+    // outlet while removing nothing from the dry inlet (mass non-conservation).
     const int32_t fc_up = d_donor_cell[i];
     const int32_t enq_up = d_enquiry_up_cell[i];
-    if (enq_up >= 0 && enq_up != fc_up) {
+    if (enq_up >= 0 && enq_up != fc_up && d_cell_h[fc_up] > h_min) {
         double wse = d_cell_wse[enq_up];
         const double h_enq = d_cell_h[enq_up];
         if (h_enq > h_min) {
@@ -2450,7 +2454,7 @@ __global__ void swe2d_apply_enquiry_wse_kernel(
     // ── Downstream side: use enquiry cell WSE + velocity head ────────
     const int32_t fc_dn = d_receiver_cell[i];
     const int32_t enq_dn = d_enquiry_dn_cell[i];
-    if (enq_dn >= 0 && enq_dn != fc_dn) {
+    if (enq_dn >= 0 && enq_dn != fc_dn && d_cell_h[fc_dn] > h_min) {
         double wse = d_cell_wse[enq_dn];
         const double h_enq = d_cell_h[enq_dn];
         if (h_enq > h_min) {
@@ -2712,6 +2716,7 @@ __device__ __forceinline__ double swe2d_culvert_get_transition_flow_cuda(int cod
 
 __device__ __forceinline__ double swe2d_culvert_inlet_controlled_flow_cfs_cuda(const swe2d_culvert_xsect_cuda& xsect, double slope, double h_ft)
 {
+    if (h_ft <= 0.0) return 0.0;
     const int code = max(1, min(57, xsect.code));
     swe2d_culvert_state_cuda c;
     c.y_full = xsect.y_full_ft;
@@ -7648,6 +7653,7 @@ __global__ void swe2d_culvert_build_table_kernel(
     int32_t n_culverts,
     int32_t n_hw,
     int32_t n_tw,
+    double model_to_ft,
     const int32_t* __restrict__ culvert_code,
     const int32_t* __restrict__ culvert_shape,
     const double* __restrict__ culvert_rise,
@@ -7672,9 +7678,13 @@ __global__ void swe2d_culvert_build_table_kernel(
 
     if (ci >= n_culverts) return;
 
-    // Build cross-section from culvert params
-    const double rise = fmax(0.0, culvert_rise[ci]);
-    const double span = fmax(0.0, (culvert_span[ci] > 0.0) ? culvert_span[ci] : fmax(rise, culvert_diameter[ci]));
+    // Build cross-section from culvert params — convert model units to feet for HDS-5
+    const double to_ft = fmax(1.0e-6, model_to_ft);
+    const double rise_m = fmax(0.0, culvert_rise[ci]);
+    const double diam_m = fmax(0.0, culvert_diameter[ci]);
+    const double rise = rise_m * to_ft;
+    const double span_or_diam = fmax(rise_m, diam_m);
+    const double span = fmax(0.0, (culvert_span[ci] > 0.0) ? culvert_span[ci] : span_or_diam) * to_ft;
     const int code = max(1, min(57, static_cast<int>(culvert_code[ci])));
 
     swe2d_culvert_xsect_cuda xsect{};
@@ -7686,7 +7696,7 @@ __global__ void swe2d_culvert_build_table_kernel(
         xsect.a_full_ft2 = xsect.width_ft * xsect.y_full_ft;
         xsect.radius_ft = 0.0;
     } else {
-        const double dia_ft = fmax(1.0e-6, fmax(culvert_diameter[ci], rise));
+        const double dia_ft = fmax(1.0e-6, fmax(diam_m * to_ft, rise));
         xsect.radius_ft = 0.5 * dia_ft;
         xsect.y_full_ft = dia_ft;
         xsect.a_full_ft2 = M_PI * xsect.radius_ft * xsect.radius_ft;
@@ -7694,18 +7704,20 @@ __global__ void swe2d_culvert_build_table_kernel(
     }
 
     const double y_full_ft = xsect.y_full_ft;
-    const double hw_ft = fmax(0.0, (static_cast<double>(hi) / fmax(1.0, static_cast<double>(n_hw - 1))) * y_full_ft * 2.0);
-    const double tw_ft = fmax(0.0, (static_cast<double>(ti) / fmax(1.0, static_cast<double>(n_tw - 1))) * y_full_ft);
+    const double hw_ft_base = y_full_ft * 2.0;
+    const double tw_ft_base = y_full_ft;
+    const double hw_ft = fmax(0.0, (static_cast<double>(hi) / fmax(1.0, static_cast<double>(n_hw - 1))) * hw_ft_base);
+    const double tw_ft = fmax(0.0, (static_cast<double>(ti) / fmax(1.0, static_cast<double>(n_tw - 1))) * tw_ft_base);
 
     double slope = fmax(1.0e-6, culvert_slope[ci]);
-    double len_ft = fmax(0.1, culvert_length[ci]);
+    double len_ft = fmax(0.1, culvert_length[ci] * to_ft);
 
     // Inlet control for hint
     const double q_inlet = fmax(0.0, swe2d_culvert_inlet_controlled_flow_cfs_cuda(xsect, slope, hw_ft));
 
     double orifice_cap = 0.0;
-    if (culvert_diameter[ci] > 0.0) {
-        const double a_orif = bw2d_circular_area(culvert_diameter[ci]);
+    if (diam_m > 0.0) {
+        const double a_orif = bw2d_circular_area(diam_m * to_ft);
         const double dh_orif = fmax(0.0, hw_ft - tw_ft);
         if (a_orif > 0.0 && dh_orif > 1.0e-12) {
             orifice_cap = a_orif * sqrt(2.0 * USC_GRAVITY * dh_orif);  // CFS
@@ -7728,15 +7740,15 @@ __global__ void swe2d_culvert_build_table_kernel(
     d_table_data[static_cast<size_t>(ci) * static_cast<size_t>(n_hw) * static_cast<size_t>(n_tw)
                   + static_cast<size_t>(hi) * static_cast<size_t>(n_tw) + static_cast<size_t>(ti)] = q;
 
-    // Thread 0 of each culvert writes the header
+    // Thread 0 of each culvert writes the header (bounds in feet)
     if (hi == 0 && ti == 0) {
         size_t off = static_cast<size_t>(ci) * 6;
         d_table_header[off + 0] = static_cast<double>(n_hw);
         d_table_header[off + 1] = static_cast<double>(n_tw);
-        d_table_header[off + 2] = 0.0;                   // hw_min (always 0)
-        d_table_header[off + 3] = y_full_ft * 2.0;       // hw_max
-        d_table_header[off + 4] = 0.0;                   // tw_min
-        d_table_header[off + 5] = y_full_ft;             // tw_max
+        d_table_header[off + 2] = 0.0;                   // hw_min (feet)
+        d_table_header[off + 3] = hw_ft_base;            // hw_max (feet)
+        d_table_header[off + 4] = 0.0;                   // tw_min (feet)
+        d_table_header[off + 5] = tw_ft_base;            // tw_max (feet)
     }
 }
 
@@ -7752,6 +7764,7 @@ bool swe2d_gpu_build_culvert_tables(
     const double* culvert_slope,
     const double* entrance_loss_k,
     const double* exit_loss_k,
+    double model_to_ft,
     int32_t n_hw,
     int32_t n_tw,
     std::vector<double>& table_data_out,
@@ -7799,7 +7812,7 @@ bool swe2d_gpu_build_culvert_tables(
                               static_cast<size_t>(n_culverts) * 6 * sizeof(double)));
 
         swe2d_culvert_build_table_kernel<<<total_cells, BLOCK>>>(
-            n_culverts, n_hw_use, n_tw_use,
+            n_culverts, n_hw_use, n_tw_use, model_to_ft,
             d_code, d_shape, d_rise, d_span, d_diam,
             d_len, d_n, d_slope, d_ent_k, d_exit_k,
             d_table_data, d_table_header);
@@ -7889,6 +7902,9 @@ __device__ double swe2d_culvert_table_lookup_cuda(
     int32_t n_hw_global,
     int32_t n_tw_global)
 {
+    // Zero or negative headwater → zero flow (matches secant solver guard)
+    if (hw_ft <= 0.0) return 0.0;
+
     const size_t hdr_off = static_cast<size_t>(ci) * 6;
     int32_t n_hw = max(2, static_cast<int32_t>(d_table_header[hdr_off + 0]));
     int32_t n_tw = max(2, static_cast<int32_t>(d_table_header[hdr_off + 1]));

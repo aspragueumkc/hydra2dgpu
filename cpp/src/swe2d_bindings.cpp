@@ -1577,6 +1577,7 @@ PYBIND11_MODULE(HYDRA_SWE2D_PY_MODULE_NAME, m) {
            py::array_t<double, py::array::c_style | py::array::forcecast> culvert_slope,
            py::array_t<double, py::array::c_style | py::array::forcecast> entrance_loss_k,
            py::array_t<double, py::array::c_style | py::array::forcecast> exit_loss_k,
+           double model_to_ft,
            int32_t n_hw, int32_t n_tw)
            -> std::tuple<py::array_t<double>, py::array_t<double>>
         {
@@ -1594,6 +1595,7 @@ PYBIND11_MODULE(HYDRA_SWE2D_PY_MODULE_NAME, m) {
                 n > 0 ? culvert_slope.data() : nullptr,
                 n > 0 ? entrance_loss_k.data() : nullptr,
                 n > 0 ? exit_loss_k.data() : nullptr,
+                model_to_ft,
                 n_hw, n_tw,
                 table_data, table_header);
             if (!ok) {
@@ -1615,6 +1617,7 @@ PYBIND11_MODULE(HYDRA_SWE2D_PY_MODULE_NAME, m) {
         py::arg("culvert_slope"),
         py::arg("entrance_loss_k"),
         py::arg("exit_loss_k"),
+        py::arg("model_to_ft"),
         py::arg("n_hw") = 32,
         py::arg("n_tw") = 16,
         "Build pre-computed culvert Q(hw,tw) lookup tables on GPU, returning (table_data, table_header).");
