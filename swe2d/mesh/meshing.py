@@ -6501,6 +6501,82 @@ def _as_bool_opt(value: object, default: bool = False) -> bool:
     return bool(default)
 
 
+def _normalize_conceptual_model_to_local_origin(model: ConceptualModel) -> Tuple[float, float]:
+    """Translate conceptual geometry to a local origin for numeric robustness."""
+    xs: List[float] = []
+    ys: List[float] = []
+
+    for node in model.nodes:
+        xs.append(float(node.x))
+        ys.append(float(node.y))
+
+    for arc in model.arcs:
+        if arc.points_xy:
+            for x, y in arc.points_xy:
+                xs.append(float(x))
+                ys.append(float(y))
+
+    for region in model.regions:
+        for x, y in region.ring_xy:
+            xs.append(float(x))
+            ys.append(float(y))
+        if region.hole_rings:
+            for hole in region.hole_rings:
+                for x, y in hole:
+                    xs.append(float(x))
+                    ys.append(float(y))
+
+    for c in model.constraints:
+        for x, y in c.ring_xy:
+            xs.append(float(x))
+            ys.append(float(y))
+
+    for q in model.quad_edges:
+        for x, y in q.points_xy:
+            xs.append(float(x))
+            ys.append(float(y))
+
+    if not xs:
+        return 0.0, 0.0
+
+    x0 = float(min(xs))
+    y0 = float(min(ys))
+    if abs(x0) <= 0.0 and abs(y0) <= 0.0:
+        return 0.0, 0.0
+
+    for node in model.nodes:
+        node.x = float(node.x) - x0
+        node.y = float(node.y) - y0
+
+    for arc in model.arcs:
+        if arc.points_xy:
+            arc.points_xy = [(float(x) - x0, float(y) - y0) for x, y in arc.points_xy]
+
+    for region in model.regions:
+        region.ring_xy = [(float(x) - x0, float(y) - y0) for x, y in region.ring_xy]
+        if region.hole_rings:
+            region.hole_rings = [
+                [(float(x) - x0, float(y) - y0) for x, y in hole]
+                for hole in region.hole_rings
+            ]
+
+    for c in model.constraints:
+        c.ring_xy = [(float(x) - x0, float(y) - y0) for x, y in c.ring_xy]
+
+    for q in model.quad_edges:
+        q.points_xy = [(float(x) - x0, float(y) - y0) for x, y in q.points_xy]
+
+    return x0, y0
+
+
+def _restore_mesh_coordinates(mesh: MeshResult, x_shift: float, y_shift: float) -> MeshResult:
+    if x_shift == 0.0 and y_shift == 0.0:
+        return mesh
+    mesh.node_x = np.asarray(mesh.node_x, dtype=np.float64) + float(x_shift)
+    mesh.node_y = np.asarray(mesh.node_y, dtype=np.float64) + float(y_shift)
+    return mesh
+
+
 def _apply_optional_post_optimization(
     mesh: MeshResult,
     model: ConceptualModel,
