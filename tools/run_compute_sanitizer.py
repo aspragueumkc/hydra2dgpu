@@ -43,6 +43,10 @@ GPU_TESTS = [
     ("unstructured", "tests.test_swe2d_gpu_unstructured"),
     ("unstructured_rain", "tests.test_swe2d_gpu_unstructured_rain"),
     ("weno5_convergence", "tests.test_swe2d_weno5_convergence"),
+    ("structures", "tests.test_swe2d_gpu_structures"),
+    ("drainage_network", "tests.test_swe2d_gpu_drainage_network"),
+    ("coupling_kernel", "tests.test_swe2d_gpu_coupling_kernel"),
+]
 ]
 
 SANITIZER_TOOLS = ["memcheck", "racecheck", "initcheck", "synccheck"]
