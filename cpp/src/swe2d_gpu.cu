@@ -2320,17 +2320,13 @@ __global__ __launch_bounds__(256, 4) void swe2d_culvert_face_flux_kernel(
     const double alpha = depth_safety[i];
     const double A_donor = fmax(donor_cell_area[i], 1.0e-12);
 
-    // ── Handle dry donor: allow culvert to wet downstream even when
-    //    upstream cell is dry (embankment wetting front).  The culvert
-    //    has already computed Q_c based on available head; we pass it
-    //    through as-is with zero momentum.
-    if (h_donor <= h_min) {
-        // Dry donor: apply full culvert discharge to receiver only
-        // (no donor removal since there's nothing to remove).
-        atomicAdd(&ext_flux_h[receiver], Q_c);
-        // No momentum flux from a dry donor
-        return;
-    }
+    // ── Handle dry donor ──────────────────────────────────────────────
+    // When the upstream face cell is dry (h <= h_min) there is no water
+    // to supply, regardless of what Q_c says.  Q_c > 0 with a dry donor
+    // can occur when the enquiry-cell WSE correction assigned a fictitious
+    // head to the face cell — injecting Q_c at the receiver without
+    // removing it from the donor would break mass conservation.
+    if (h_donor <= h_min) return;
 
     const double inv_h = 1.0 / fmax(h_donor, h_min);
     const double u_donor = hu_donor * inv_h;

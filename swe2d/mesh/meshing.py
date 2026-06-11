@@ -310,6 +310,15 @@ _HYDRA_MESHING_NATIVE_MODULE = None
 _HYDRA_MESHING_NATIVE_LOAD_ATTEMPTED = False
 
 
+def _gmsh_available() -> bool:
+    try:
+        import importlib.util
+        return importlib.util.find_spec("gmsh") is not None
+    except Exception as e:
+        logger.warning("_gmsh_available check failed: %s", e, exc_info=True)
+        return False
+
+
 def _gmsh_cpp_prebuild_enabled() -> bool:
     return _env_bool("BACKWATER_GMSH_CPP_PREBUILD", True)
 

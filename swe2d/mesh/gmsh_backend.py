@@ -20,19 +20,15 @@ from swe2d.mesh.mesh_quality import (
     _face_mesh_quality_stats, _gmsh_quality_passes,
     _gmsh_quality_score, _polygon_area_xy,
 )
-from swe2d.mesh.meshing import (
-    _as_float, _env_bool, _env_float, _env_csv_floats, _env_csv_strings,
-    _enforce_quad_interface_conformance, _gmsh_cpp_prebuild_enabled,
-    _gmsh_flow_aligned_curve_counts, _gmsh_flow_align_region_preflight,
-    _gmsh_interface_coincidence_report,
-    _harmonize_transfinite_shared_quad_interfaces,
-    _insert_focus_points_on_ring_segments, _interp_polyline_fraction,
-    _load_hydra_meshing_native, _mixed_transfinite_tri_near_unshared_report,
-    _point_in_polygon, _polyline_distance_and_s, _polyline_length,
-    _polyline_overlap_fractions_open, _quad_controls_for_region,
-    _region_exclusion_zones, _repair_mesh_result, _require_nonempty_mesh,
-    _write_json_atomic, _write_mesh_checkpoint_npz,
-)
+_MESHING_HELPERS = None
+
+def _mh():
+    """Lazy-import meshing helpers, avoids circular import with meshing.__getattr__."""
+    global _MESHING_HELPERS
+    if _MESHING_HELPERS is None:
+        import swe2d.mesh.meshing as _mod
+        _MESHING_HELPERS = _mod
+    return _MESHING_HELPERS
 logger = logging.getLogger(__name__)
 
 
@@ -158,52 +154,52 @@ class GmshBackend(MeshingBackend):
     def _gmsh_quality_config(self) -> _GmshQualityConfig:
         enabled = self._opt_bool(
             "gmsh_quality_enable",
-            _env_bool("BACKWATER_GMSH_QUALITY_ENABLE", False),
+            _mh()._env_bool("BACKWATER_GMSH_QUALITY_ENABLE", False),
         )
         strict = self._opt_bool(
             "gmsh_quality_strict",
             self._opt_bool(
                 "tqmesh_quality_strict",
-                _env_bool("BACKWATER_GMSH_QUALITY_STRICT", False),
+                _mh()._env_bool("BACKWATER_GMSH_QUALITY_STRICT", False),
             ),
         )
         min_angle_deg = self._opt_float(
             "gmsh_min_angle_deg",
             self._opt_float(
                 "tqmesh_min_angle_deg",
-                _env_float("BACKWATER_GMSH_MIN_ANGLE_DEG", 18.0),
+                _mh()._env_float("BACKWATER_GMSH_MIN_ANGLE_DEG", 18.0),
             ),
         )
         max_aspect_ratio = self._opt_float(
             "gmsh_max_aspect_ratio",
             self._opt_float(
                 "tqmesh_max_aspect_ratio",
-                _env_float("BACKWATER_GMSH_MAX_ASPECT_RATIO", 12.0),
+                _mh()._env_float("BACKWATER_GMSH_MAX_ASPECT_RATIO", 12.0),
             ),
         )
         min_area_rel_bbox = self._opt_float(
             "gmsh_min_area_rel_bbox",
             self._opt_float(
                 "tqmesh_min_area_rel_bbox",
-                _env_float("BACKWATER_GMSH_MIN_AREA_REL_BBOX", 1.0e-11),
+                _mh()._env_float("BACKWATER_GMSH_MIN_AREA_REL_BBOX", 1.0e-11),
             ),
         )
         max_non_orth_deg = self._opt_float(
             "gmsh_max_non_orth_deg",
-            _env_float("BACKWATER_GMSH_MAX_NON_ORTH_DEG", 82.0),
+            _mh()._env_float("BACKWATER_GMSH_MAX_NON_ORTH_DEG", 82.0),
         )
         max_iterations = max(
             1,
             self._opt_int(
                 "gmsh_quality_max_iterations",
-                int(round(_env_float("BACKWATER_GMSH_QUALITY_MAX_ITERATIONS", 2.0))),
+                int(round(_mh()._env_float("BACKWATER_GMSH_QUALITY_MAX_ITERATIONS", 2.0))),
             ),
         )
         time_limit_s = max(
             1.0,
             self._opt_float(
                 "gmsh_quality_time_limit_s",
-                _env_float("BACKWATER_GMSH_QUALITY_TIME_LIMIT_S", 55.0),
+                _mh()._env_float("BACKWATER_GMSH_QUALITY_TIME_LIMIT_S", 55.0),
             ),
         )
         size_scales = tuple(
@@ -224,38 +220,38 @@ class GmshBackend(MeshingBackend):
             max(0, int(round(v)))
             for v in self._opt_float_tuple(
                 "gmsh_quality_recombine_topology_passes",
-                _env_csv_floats("BACKWATER_GMSH_QUALITY_RECOMBINE_TOPOLOGY_PASSES", (5.0, 12.0, 20.0)),
+                _mh()._env_csv_floats("BACKWATER_GMSH_QUALITY_RECOMBINE_TOPOLOGY_PASSES", (5.0, 12.0, 20.0)),
             )
         )
         recombine_min_quality = tuple(
             max(0.0, float(v))
             for v in self._opt_float_tuple(
                 "gmsh_quality_recombine_minimum_quality",
-                _env_csv_floats("BACKWATER_GMSH_QUALITY_RECOMBINE_MIN_QUALITY", (0.01, 0.03, 0.06)),
+                _mh()._env_csv_floats("BACKWATER_GMSH_QUALITY_RECOMBINE_MIN_QUALITY", (0.01, 0.03, 0.06)),
             )
         )
         random_factors = tuple(
             max(0.0, float(v))
             for v in self._opt_float_tuple(
                 "gmsh_quality_random_factors",
-                _env_csv_floats("BACKWATER_GMSH_QUALITY_RANDOM_FACTORS", (1.0e-9, 1.0e-7, 1.0e-6)),
+                _mh()._env_csv_floats("BACKWATER_GMSH_QUALITY_RANDOM_FACTORS", (1.0e-9, 1.0e-7, 1.0e-6)),
             )
         )
         optimize_methods = tuple(
             str(v)
             for v in self._opt_str_tuple(
                 "gmsh_quality_optimize_methods",
-                _env_csv_strings("BACKWATER_GMSH_QUALITY_OPTIMIZE_METHODS", ("Laplace2D", "Relocate2D")),
+                _mh()._env_csv_strings("BACKWATER_GMSH_QUALITY_OPTIMIZE_METHODS", ("Laplace2D", "Relocate2D")),
             )
             if str(v).strip()
         )
         algorithm_switch_on_failure = self._opt_bool(
             "gmsh_algorithm_switch_on_failure",
-            _env_bool("BACKWATER_GMSH_ALGO_SWITCH_ON_FAILURE", False),
+            _mh()._env_bool("BACKWATER_GMSH_ALGO_SWITCH_ON_FAILURE", False),
         )
         recombine_node_repositioning = self._opt_bool(
             "gmsh_quality_recombine_node_repositioning",
-            _env_bool("BACKWATER_GMSH_RECOMBINE_NODE_REPOSITIONING", True),
+            _mh()._env_bool("BACKWATER_GMSH_RECOMBINE_NODE_REPOSITIONING", True),
         )
         if not size_scales:
             size_scales = (1.0,)
@@ -316,7 +312,7 @@ class GmshBackend(MeshingBackend):
         quality_cfg = self._gmsh_quality_config()
         checkpoint_path = str(self._options.get("gmsh_quality_checkpoint_path", "") or "").strip()
         progress_path = str(self._options.get("gmsh_progress_path", "") or "").strip()
-        progress_emit_interval_s = _as_float(
+        progress_emit_interval_s = _mh()._as_float(
             self._options.get("gmsh_progress_emit_interval_s"),
             0.75,
         )
@@ -361,7 +357,7 @@ class GmshBackend(MeshingBackend):
             if clipped:
                 payload["detail"] = clipped
             try:
-                _write_json_atomic(progress_path, payload)
+                _mh()._write_json_atomic(progress_path, payload)
                 progress_last_emit = now
             except Exception as e:
                 logger.warning("gmsh progress emit write failed: %s", e, exc_info=True)
@@ -417,12 +413,12 @@ class GmshBackend(MeshingBackend):
             if not quality_cfg.enabled:
                 flow_align_requested = self._opt_bool(
                     "gmsh_quad_full_region_flow_align",
-                    _env_bool("BACKWATER_GMSH_QUAD_FULL_REGION_FLOW_ALIGN", False),
+                    _mh()._env_bool("BACKWATER_GMSH_QUAD_FULL_REGION_FLOW_ALIGN", False),
                 )
                 gmsh.model.add("swe2d")
                 _emit_progress("build-start", detail="single-pass mode", force=True)
                 try:
-                    mesh = _require_nonempty_mesh(
+                    mesh = _mh()._require_nonempty_mesh(
                         self._build(
                             gmsh,
                             model,
@@ -471,7 +467,7 @@ class GmshBackend(MeshingBackend):
                             force=True,
                         )
                         try:
-                            fallback_mesh = _require_nonempty_mesh(
+                            fallback_mesh = _mh()._require_nonempty_mesh(
                                 self._build(
                                     gmsh,
                                     model,
@@ -649,7 +645,7 @@ class GmshBackend(MeshingBackend):
 
                 attempt_start_t = time.perf_counter()
                 try:
-                    mesh = _require_nonempty_mesh(
+                    mesh = _mh()._require_nonempty_mesh(
                         self._build(
                             gmsh,
                             model,
@@ -686,7 +682,7 @@ class GmshBackend(MeshingBackend):
                     }
                     if checkpoint_path:
                         try:
-                            _write_mesh_checkpoint_npz(checkpoint_path, mesh, attempt_summary)
+                            _mh()._write_mesh_checkpoint_npz(checkpoint_path, mesh, attempt_summary)
                         except Exception as cp_exc:
                             warnings.warn(
                                 f"Gmsh quality checkpoint write failed (attempt {attempts + 1}): {cp_exc}",
@@ -769,7 +765,7 @@ class GmshBackend(MeshingBackend):
                     _emit_progress("fallback-start", detail="building best-effort baseline candidate", force=True)
                     gmsh.clear()
                     gmsh.model.add("swe2d_best_effort_fallback")
-                    fallback_mesh = _require_nonempty_mesh(
+                    fallback_mesh = _mh()._require_nonempty_mesh(
                         self._build(
                             gmsh,
                             model,
@@ -803,7 +799,7 @@ class GmshBackend(MeshingBackend):
                     fallback_mesh.quality_summary = fallback_summary
                     if checkpoint_path:
                         try:
-                            _write_mesh_checkpoint_npz(
+                            _mh()._write_mesh_checkpoint_npz(
                                 checkpoint_path,
                                 fallback_mesh,
                                 fallback_mesh.quality_summary,
@@ -948,7 +944,7 @@ class GmshBackend(MeshingBackend):
                 round(
                     self._opt_float(
                         "gmsh_num_threads",
-                        _env_float("BACKWATER_GMSH_NUM_THREADS", 1.0),
+                        _mh()._env_float("BACKWATER_GMSH_NUM_THREADS", 1.0),
                     )
                 )
             ),
@@ -959,65 +955,65 @@ class GmshBackend(MeshingBackend):
                 round(
                     self._opt_float(
                         "gmsh_max_num_threads_2d",
-                        _env_float("BACKWATER_GMSH_MAX_NUM_THREADS_2D", 0.0),
+                        _mh()._env_float("BACKWATER_GMSH_MAX_NUM_THREADS_2D", 0.0),
                     )
                 )
             ),
         )
         gmsh_global_recombine = self._opt_bool(
             "gmsh_global_recombine",
-            _env_bool("BACKWATER_GMSH_GLOBAL_RECOMBINE", False),
+            _mh()._env_bool("BACKWATER_GMSH_GLOBAL_RECOMBINE", False),
         )
         gmsh_quad_full_region_flow_align = self._opt_bool(
             "gmsh_quad_full_region_flow_align",
-            _env_bool("BACKWATER_GMSH_QUAD_FULL_REGION_FLOW_ALIGN", False),
+            _mh()._env_bool("BACKWATER_GMSH_QUAD_FULL_REGION_FLOW_ALIGN", False),
         )
         gmsh_interface_transition_enable = self._opt_bool(
             "gmsh_interface_transition_enable",
-            _env_bool("BACKWATER_GMSH_INTERFACE_TRANSITION_ENABLE", True),
+            _mh()._env_bool("BACKWATER_GMSH_INTERFACE_TRANSITION_ENABLE", True),
         )
         gmsh_interface_transition_dist_factor = max(
             0.25,
             self._opt_float(
                 "gmsh_interface_transition_dist_factor",
-                _env_float("BACKWATER_GMSH_INTERFACE_TRANSITION_DIST_FACTOR", 2.5),
+                _mh()._env_float("BACKWATER_GMSH_INTERFACE_TRANSITION_DIST_FACTOR", 2.5),
             ),
         )
         gmsh_interface_transition_min_ratio = max(
             1.0,
             self._opt_float(
                 "gmsh_interface_transition_min_ratio",
-                _env_float("BACKWATER_GMSH_INTERFACE_TRANSITION_MIN_RATIO", 1.25),
+                _mh()._env_float("BACKWATER_GMSH_INTERFACE_TRANSITION_MIN_RATIO", 1.25),
             ),
         )
         gmsh_transfinite_shared_interface_harmonize = self._opt_bool(
             "gmsh_transfinite_shared_interface_harmonize",
-            _env_bool("BACKWATER_GMSH_TRANSFINITE_SHARED_INTERFACE_HARMONIZE", False),
+            _mh()._env_bool("BACKWATER_GMSH_TRANSFINITE_SHARED_INTERFACE_HARMONIZE", False),
         )
         gmsh_interface_conformance = self._opt_bool(
             "gmsh_interface_conformance",
-            _env_bool("BACKWATER_GMSH_INTERFACE_CONFORMANCE", False),
+            _mh()._env_bool("BACKWATER_GMSH_INTERFACE_CONFORMANCE", False),
         )
         gmsh_transverse_interface_centroid_merge = self._opt_bool(
             "gmsh_transverse_interface_centroid_merge",
-            _env_bool("BACKWATER_GMSH_TRANSVERSE_INTERFACE_CENTROID_MERGE", False),
+            _mh()._env_bool("BACKWATER_GMSH_TRANSVERSE_INTERFACE_CENTROID_MERGE", False),
         )
         gmsh_interface_snap_tol = max(
             1.0e-9,
             self._opt_float(
                 "gmsh_interface_snap_tol",
-                _env_float("BACKWATER_GMSH_INTERFACE_SNAP_TOL", 1.0),
+                _mh()._env_float("BACKWATER_GMSH_INTERFACE_SNAP_TOL", 1.0),
             ),
         )
         gmsh_interface_reject_near_unshared = self._opt_bool(
             "gmsh_interface_reject_near_unshared",
-            _env_bool("BACKWATER_GMSH_INTERFACE_REJECT_NEAR_UNSHARED", True),
+            _mh()._env_bool("BACKWATER_GMSH_INTERFACE_REJECT_NEAR_UNSHARED", True),
         )
         gmsh_interface_reject_tol = max(
             1.0e-9,
             self._opt_float(
                 "gmsh_interface_reject_tol",
-                _env_float("BACKWATER_GMSH_INTERFACE_REJECT_TOL", 1.0e-3),
+                _mh()._env_float("BACKWATER_GMSH_INTERFACE_REJECT_TOL", 1.0e-3),
             ),
         )
         if gmsh_transverse_interface_centroid_merge:
@@ -1029,7 +1025,7 @@ class GmshBackend(MeshingBackend):
                 1.0,
                 self._opt_float(
                     "gmsh_transfinite_opposite_subset_start",
-                    _env_float("BACKWATER_GMSH_TRANSFINITE_OPPOSITE_SUBSET_START", 0.30),
+                    _mh()._env_float("BACKWATER_GMSH_TRANSFINITE_OPPOSITE_SUBSET_START", 0.30),
                 ),
             ),
         )
@@ -1039,7 +1035,7 @@ class GmshBackend(MeshingBackend):
                 1.0,
                 self._opt_float(
                     "gmsh_transfinite_opposite_subset_end",
-                    _env_float("BACKWATER_GMSH_TRANSFINITE_OPPOSITE_SUBSET_END", 0.70),
+                    _mh()._env_float("BACKWATER_GMSH_TRANSFINITE_OPPOSITE_SUBSET_END", 0.70),
                 ),
             ),
         )
@@ -1047,16 +1043,16 @@ class GmshBackend(MeshingBackend):
             0.05,
             self._opt_float(
                 "gmsh_transfinite_opposite_subset_density_scale",
-                _env_float("BACKWATER_GMSH_TRANSFINITE_OPPOSITE_SUBSET_DENSITY_SCALE", 0.50),
+                _mh()._env_float("BACKWATER_GMSH_TRANSFINITE_OPPOSITE_SUBSET_DENSITY_SCALE", 0.50),
             ),
         )
         gmsh_transfinite_interface_debug = self._opt_bool(
             "gmsh_transfinite_interface_debug",
-            _env_bool("BACKWATER_GMSH_TRANSFINITE_INTERFACE_DEBUG", False),
+            _mh()._env_bool("BACKWATER_GMSH_TRANSFINITE_INTERFACE_DEBUG", False),
         )
         gmsh_transfinite_subset_containment_enable = self._opt_bool(
             "gmsh_transfinite_subset_containment_enable",
-            _env_bool("BACKWATER_GMSH_TRANSFINITE_SUBSET_CONTAINMENT_ENABLE", True),
+            _mh()._env_bool("BACKWATER_GMSH_TRANSFINITE_SUBSET_CONTAINMENT_ENABLE", True),
         )
         gmsh_transfinite_subset_containment_high_overlap = max(
             0.50,
@@ -1064,7 +1060,7 @@ class GmshBackend(MeshingBackend):
                 1.0,
                 self._opt_float(
                     "gmsh_transfinite_subset_containment_high_overlap",
-                    _env_float("BACKWATER_GMSH_TRANSFINITE_SUBSET_CONTAINMENT_HIGH_OVERLAP", 0.95),
+                    _mh()._env_float("BACKWATER_GMSH_TRANSFINITE_SUBSET_CONTAINMENT_HIGH_OVERLAP", 0.95),
                 ),
             ),
         )
@@ -1074,7 +1070,7 @@ class GmshBackend(MeshingBackend):
                 gmsh_transfinite_subset_containment_high_overlap,
                 self._opt_float(
                     "gmsh_transfinite_subset_containment_min_overlap",
-                    _env_float("BACKWATER_GMSH_TRANSFINITE_SUBSET_CONTAINMENT_MIN_OVERLAP", 0.02),
+                    _mh()._env_float("BACKWATER_GMSH_TRANSFINITE_SUBSET_CONTAINMENT_MIN_OVERLAP", 0.02),
                 ),
             ),
         )
@@ -1082,7 +1078,7 @@ class GmshBackend(MeshingBackend):
             1.0e-6,
             self._opt_float(
                 "gmsh_transfinite_subset_containment_max_length_ratio",
-                _env_float("BACKWATER_GMSH_TRANSFINITE_SUBSET_CONTAINMENT_MAX_LENGTH_RATIO", 0.35),
+                _mh()._env_float("BACKWATER_GMSH_TRANSFINITE_SUBSET_CONTAINMENT_MAX_LENGTH_RATIO", 0.35),
             ),
         )
         arc_soft_size_factor = min(1.0, max(0.05, self._opt_float("gmsh_arc_soft_size_factor", 0.5)))
@@ -1494,7 +1490,7 @@ class GmshBackend(MeshingBackend):
                     chain_xy.append((float(xy[0]), float(xy[1])))
                 if len(chain_xy) < 2:
                     continue
-                chain_len = max(_polyline_length(chain_xy), 1.0e-12)
+                chain_len = max(_mh()._polyline_length(chain_xy), 1.0e-12)
                 target_xy = pt_xy_by_tag.get(int(target))
 
                 prev_pos = 0.0
@@ -1513,7 +1509,7 @@ class GmshBackend(MeshingBackend):
                         pos = float(ci)
                         proj_err = 0.0
                     else:
-                        proj_err, s_pos = _polyline_distance_and_s(chain_xy, float(p_xy[0]), float(p_xy[1]))
+                        proj_err, s_pos = _mh()._polyline_distance_and_s(chain_xy, float(p_xy[0]), float(p_xy[1]))
                         if (not np.isfinite(float(proj_err))) or float(proj_err) > match_tol:
                             ok = False
                             break
@@ -1695,7 +1691,7 @@ class GmshBackend(MeshingBackend):
             ctype_local = str(region.default_cell_type).strip().lower()
             if ctype_local not in {"quadrilateral", "cartesian", "channel_generator"}:
                 continue
-            quad_setup_local = _quad_controls_for_region(model, region)
+            quad_setup_local = _mh()._quad_controls_for_region(model, region)
             if quad_setup_local is None:
                 continue
             region_quad_setups[int(region.region_id)] = quad_setup_local
@@ -1729,7 +1725,7 @@ class GmshBackend(MeshingBackend):
         }
         transfinite_harmonize_debug: Dict[str, object] = {}
         if gmsh_transfinite_shared_interface_harmonize and region_quad_setups:
-            transfinite_edge_min_nodes, transfinite_harmonize_stats = _harmonize_transfinite_shared_quad_interfaces(
+            transfinite_edge_min_nodes, transfinite_harmonize_stats = _mh()._harmonize_transfinite_shared_quad_interfaces(
                 region_quad_setups=region_quad_setups,
                 region_cell_types=region_cell_types,
                 gmsh_quad_full_region_flow_align=bool(gmsh_quad_full_region_flow_align),
@@ -1779,7 +1775,7 @@ class GmshBackend(MeshingBackend):
                 if edge_tf.target_size is not None and float(edge_tf.target_size) > 0.0:
                     size_ref_tf = float(edge_tf.target_size)
                 else:
-                    size_ref_tf = max(_polyline_length(pts_tf) / max(1, len(pts_tf) - 1), 1.0e-6)
+                    size_ref_tf = max(_mh()._polyline_length(pts_tf) / max(1, len(pts_tf) - 1), 1.0e-6)
                 tx = [float(p[0]) for p in pts_tf]
                 ty = [float(p[1]) for p in pts_tf]
                 chain_bbox = (float(min(tx)), float(min(ty)), float(max(tx)), float(max(ty)))
@@ -1832,7 +1828,7 @@ class GmshBackend(MeshingBackend):
                         ring_open.append((float(ring_open[0][0]), float(ring_open[0][1])))
 
                     nontrans_overlap_pair_count += 1
-                    overlap_tf_nt, overlap_nt_tf = _polyline_overlap_fractions_open(
+                    overlap_tf_nt, overlap_nt_tf = _mh()._polyline_overlap_fractions_open(
                         chain_tf,
                         ring_open,
                         sample_step=float(sample_step),
@@ -1841,7 +1837,7 @@ class GmshBackend(MeshingBackend):
                     if max(float(overlap_tf_nt), float(overlap_nt_tf)) < 0.01:
                         continue
 
-                    ring_split = _insert_focus_points_on_ring_segments(
+                    ring_split = _mh()._insert_focus_points_on_ring_segments(
                         ring=ring_nt,
                         focus_points=chain_tf,
                         max_dist=float(near_tol),
@@ -1849,13 +1845,13 @@ class GmshBackend(MeshingBackend):
                     if len(ring_split) < 3:
                         continue
 
-                    chain_len = _polyline_length(chain_tf)
+                    chain_len = _mh()._polyline_length(chain_tf)
                     if chain_len <= 1.0e-12:
                         continue
 
                     ring_proj: List[Tuple[float, float]] = []
                     moved_any = False
-                    native = _load_hydra_meshing_native()
+                    native = _mh()._load_hydra_meshing_native()
                     if native is not None and hasattr(native, "project_ring_to_chain"):
                         try:
                             proj_out = native.project_ring_to_chain(
@@ -1891,10 +1887,10 @@ class GmshBackend(MeshingBackend):
                                 nontrans_point_bbox_reject_count += 1
                                 ring_proj.append((float(px), float(py)))
                                 continue
-                            d_loc, s_loc = _polyline_distance_and_s(chain_tf, float(px), float(py))
+                            d_loc, s_loc = _mh()._polyline_distance_and_s(chain_tf, float(px), float(py))
                             if np.isfinite(float(d_loc)) and float(d_loc) <= float(near_tol):
                                 frac_loc = max(0.0, min(1.0, float(s_loc) / float(chain_len)))
-                                qx, qy = _interp_polyline_fraction(chain_tf, frac_loc)
+                                qx, qy = _mh()._interp_polyline_fraction(chain_tf, frac_loc)
                                 ring_proj.append((float(qx), float(qy)))
                                 if float(np.hypot(float(qx) - float(px), float(qy) - float(py))) > 1.0e-10:
                                     moved_any = True
@@ -1945,7 +1941,7 @@ class GmshBackend(MeshingBackend):
         interface_coincidence_report: List[Dict[str, object]] = []
         interface_coincidence_suspects: List[Dict[str, object]] = []
         try:
-            interface_coincidence_report = _gmsh_interface_coincidence_report(
+            interface_coincidence_report = _mh()._gmsh_interface_coincidence_report(
                 model,
                 region_quad_setups=region_quad_setups,
             )
@@ -2123,7 +2119,7 @@ class GmshBackend(MeshingBackend):
                 _hash_int_sequence(lines),
             )
             hole_loops: List[int] = []
-            exclusion_zones = _region_exclusion_zones(model, region, ring)
+            exclusion_zones = _mh()._region_exclusion_zones(model, region, ring)
             if exclusion_zones:
                 outer_area = _polygon_area_xy(
                     np.asarray([p[0] for p in ring], dtype=np.float64),
@@ -2417,7 +2413,7 @@ class GmshBackend(MeshingBackend):
             while y < ymax - 0.5 * step:
                 x = xmin + 0.5 * step
                 while x < xmax - 0.5 * step:
-                    if _point_in_polygon(x, y, ring):
+                    if _mh()._point_in_polygon(x, y, ring):
                         try:
                             pt_tags.append(gmsh.model.geo.addPoint(float(x), float(y), 0.0, cst_size))
                         except Exception as e:
@@ -2627,7 +2623,7 @@ class GmshBackend(MeshingBackend):
             if edge_controls is None:
                 return False, "missing edge controls"
             edge_ids_local = [int(getattr(edge, "edge_id", -1)) for edge in list(edge_controls)]
-            counts = list(counts_override) if counts_override is not None else _gmsh_flow_aligned_curve_counts(
+            counts = list(counts_override) if counts_override is not None else _mh()._gmsh_flow_aligned_curve_counts(
                 edge_controls,
                 fallback_size=fallback_size,
                 min_nodes=min_nodes,
@@ -2770,7 +2766,7 @@ class GmshBackend(MeshingBackend):
                 if any(int(v) > 0 for v in min_nodes_local):
                     min_nodes_local_use = [int(v) for v in min_nodes_local]
 
-                counts_local = _gmsh_flow_aligned_curve_counts(
+                counts_local = _mh()._gmsh_flow_aligned_curve_counts(
                     edge_controls_local,
                     fallback_size=float(sz),
                     min_nodes=min_nodes_local_use,
@@ -2892,7 +2888,7 @@ class GmshBackend(MeshingBackend):
             flow_aligned_applied = False
             flow_align_preflight_fallback = False
             if gmsh_quad_full_region_flow_align and ctype in {"cartesian", "quadrilateral", "channel_generator"}:
-                diag = _gmsh_flow_align_region_preflight(
+                diag = _mh()._gmsh_flow_align_region_preflight(
                     region_id=int(rid),
                     cell_type=str(ctype),
                     curve_tags=lines,
@@ -2966,7 +2962,7 @@ class GmshBackend(MeshingBackend):
                 ):
                     try:
                         edge_geom_len = []
-                        edge_geom_len = [_polyline_length(edge.points_xy) for edge in quad_controls]
+                        edge_geom_len = [_mh()._polyline_length(edge.points_xy) for edge in quad_controls]
                         counts = []
                         for i in range(4):
                             tlen = max(float(region.edge_lengths[i]), tol)
@@ -3031,7 +3027,7 @@ class GmshBackend(MeshingBackend):
                 ):
                     try:
                         edge_geom_len = []
-                        edge_geom_len = [_polyline_length(edge.points_xy) for edge in quad_controls]
+                        edge_geom_len = [_mh()._polyline_length(edge.points_xy) for edge in quad_controls]
                         counts = []
                         for i in range(4):
                             tlen = max(float(region.edge_lengths[i]), tol)
@@ -3294,7 +3290,7 @@ class GmshBackend(MeshingBackend):
             target_size=np.asarray(all_size, dtype=np.float64),
         )
         if bool(gmsh_interface_conformance):
-            out = _enforce_quad_interface_conformance(
+            out = _mh()._enforce_quad_interface_conformance(
                 out,
                 model,
                 snap_tol=float(gmsh_interface_snap_tol),
@@ -3302,7 +3298,7 @@ class GmshBackend(MeshingBackend):
             )
         out.quality_summary = dict(out.quality_summary or {})
         if bool(gmsh_interface_reject_near_unshared):
-            near_unshared_report = _mixed_transfinite_tri_near_unshared_report(
+            near_unshared_report = _mh()._mixed_transfinite_tri_near_unshared_report(
                 out,
                 tol=float(gmsh_interface_reject_tol),
             )
@@ -3335,9 +3331,9 @@ class GmshBackend(MeshingBackend):
             "arc_count": int(len(model.arcs)),
             "face_count": int(max(0, len(all_face_offsets) - 1)),
         }
-        meshing_native = _load_hydra_meshing_native()
+        meshing_native = _mh()._load_hydra_meshing_native()
         out.quality_summary["gmsh_cpp_prebuild_native"] = {
-            "enabled": bool(_gmsh_cpp_prebuild_enabled()),
+            "enabled": bool(_mh()._gmsh_cpp_prebuild_enabled()),
             "module_loaded": bool(meshing_native is not None),
             "has_interface_overlap_metrics_closed": bool(
                 meshing_native is not None and hasattr(meshing_native, "interface_overlap_metrics_closed")
@@ -3399,7 +3395,7 @@ class GmshBackend(MeshingBackend):
                     "pairs": list(interface_coincidence_report),
                 }
             self._last_flow_align_diagnostics = list(flow_align_diagnostics)
-        return _repair_mesh_result(out)
+        return _mh()._repair_mesh_result(out)
 
 
 
