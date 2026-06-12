@@ -422,9 +422,9 @@ def _bind_topology_tab_dynamic_controls(self, topology_tab_page: QtWidgets.QWidg
         gmsh_form.addRow("Ignore edges shorter than:", self.topo_gmsh_tolerance_edge_length_spin)
 
     self.topo_gmsh_mesh_size_from_points_chk = _find_or_create_check(
-        "topo_gmsh_mesh_size_from_points_chk", "Allow point-driven size refinement"
+        "topo_gmsh_mesh_size_from_points_chk", "Use region target_size for mesh sizing"
     )
-    self.topo_gmsh_mesh_size_from_points_chk.setChecked(False)
+    self.topo_gmsh_mesh_size_from_points_chk.setChecked(True)
     if self.topo_gmsh_mesh_size_from_points_chk.parent() is None:
         gmsh_form.addRow(self.topo_gmsh_mesh_size_from_points_chk)
 

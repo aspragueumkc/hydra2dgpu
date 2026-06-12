@@ -33,11 +33,18 @@ logger = logging.getLogger(__name__)
 
 
 def _gmsh_available() -> bool:
+    """Check if gmsh Python package AND its native DLL are loadable.
+
+    ``importlib.util.find_spec`` alone is insufficient — it returns True
+    even when the gmsh native C++ library (.pyd/.so) cannot be found or
+    loaded.  We actually try a minimal import to verify the full stack.
+    """
     try:
-        import importlib.util
-        return importlib.util.find_spec("gmsh") is not None
+        import gmsh as _gmsh_check
+        _ = _gmsh_check.__version__
+        return True
     except Exception as e:
-        logger.warning("_gmsh_available check failed: %s", e, exc_info=True)
+        logger.warning("_gmsh_available: gmsh native library check failed: %s", e, exc_info=True)
         return False
 
 
@@ -297,6 +304,34 @@ class GmshBackend(MeshingBackend):
         )
 
     def generate(self, model: ConceptualModel) -> MeshResult:
+        # ── Gmsh native DLL bootstrap (Windows) ──────────────────────
+        # The gmsh pip wheel installs the DLL in Python's ``Lib`` directory,
+        # which may not be on the spawned subprocess PATH.  We find the
+        # gmsh package location and prepend candidate DLL directories.
+        _gmsh_dll_dirs: List[str] = []
+        try:
+            import importlib.util as _importlib_util
+            _gmsh_spec = _importlib_util.find_spec("gmsh")
+            if _gmsh_spec is not None and _gmsh_spec.origin:
+                _gmsh_pkg_dir = os.path.dirname(os.path.abspath(_gmsh_spec.origin))
+                if os.path.isdir(_gmsh_pkg_dir):
+                    _gmsh_dll_dirs.append(_gmsh_pkg_dir)
+                _gmsh_parent = os.path.dirname(_gmsh_pkg_dir)
+                for _cand in [
+                    os.path.join(_gmsh_parent, "Lib"),
+                    os.path.join(_gmsh_parent, "lib"),
+                    os.path.join(_gmsh_parent, "bin"),
+                    os.path.join(_gmsh_parent, "Library", "bin"),
+                ]:
+                    _norm = os.path.normpath(_cand)
+                    if os.path.isdir(_norm) and _norm not in _gmsh_dll_dirs:
+                        _gmsh_dll_dirs.append(_norm)
+        except Exception:
+            pass
+        for _d in _gmsh_dll_dirs:
+            if _d not in os.environ.get("PATH", "").split(os.pathsep):
+                os.environ["PATH"] = _d + os.pathsep + os.environ.get("PATH", "")
+
         import gmsh
 
         if not model.regions:
@@ -937,7 +972,7 @@ class GmshBackend(MeshingBackend):
             arc_mode = "hard_embed"
         mesh_size_min = max(0.0, self._opt_float("gmsh_mesh_size_min", 0.0))
         tolerance_edge_length = max(0.0, self._opt_float("gmsh_tolerance_edge_length", 0.0))
-        mesh_size_from_points = self._opt_bool("gmsh_mesh_size_from_points", False)
+        mesh_size_from_points = self._opt_bool("gmsh_mesh_size_from_points", True)
         gmsh_num_threads = max(
             0,
             int(
@@ -3210,9 +3245,15 @@ class GmshBackend(MeshingBackend):
 
         # ---- 7. Extract nodes ------------------------------------------
         phase_started_at = time.perf_counter()
-        node_tags, node_coords, _ = gmsh.model.mesh.getNodes()
-        # node_coords: flat [x0,y0,z0, x1,y1,z1, ...]
-        node_coords = np.array(node_coords, dtype=np.float64).reshape(-1, 3)
+        node_tags, node_coords_flat, _ = gmsh.model.mesh.getNodes()
+        if node_tags is None or node_coords_flat is None:
+            raise RuntimeError(
+                "Gmsh getNodes() returned None.  The gmsh native library "
+                "appears to be in a broken or uninitialised state.  "
+                "Try: pip install gmsh --upgrade --user --force-reinstall"
+            )
+        # node_coords_flat: flat [x0,y0,z0, x1,y1,z1, ...]
+        node_coords = np.array(node_coords_flat, dtype=np.float64).reshape(-1, 3)
         tag_to_idx = {int(t): i for i, t in enumerate(node_tags)}
         node_x = node_coords[:, 0].copy()
         node_y = node_coords[:, 1].copy()
@@ -3231,6 +3272,12 @@ class GmshBackend(MeshingBackend):
         # Gmsh element type codes: 2 = 3-node triangle, 3 = 4-node quad
         for surf, (rid, ctype, sz) in zip(surface_tags, surface_meta):
             elem_types, elem_tags, elem_node_tags = gmsh.model.mesh.getElements(2, surf)
+            if elem_types is None or elem_tags is None or elem_node_tags is None:
+                raise RuntimeError(
+                    "Gmsh getElements(2, ...) returned None.  The gmsh native library "
+                    "appears to be in a broken or uninitialised state.  "
+                    "Try: pip install gmsh --upgrade --user --force-reinstall"
+                )
             for etype, _, enodes in zip(elem_types, elem_tags, elem_node_tags):
                 enodes = np.array(enodes, dtype=np.int64)
                 if etype == 2:  # triangle

@@ -527,6 +527,10 @@ class SWE2DCouplingController:
         self._culvert_table_uploaded = False
         self._culvert_solver_mode_applied = False
         self._persistent_coupling_preloaded = False
+        # Set to True by apply_native_device_sources after it writes combined
+        # sources to d_external_source_mps.  _compute_source_rates_cuda checks
+        # this and short-circuits to avoid re-running GPU work.
+        self._coupling_applied_this_timestep = False
         self._drainage_soa = pack_pipe_network_soa(self.drainage.cfg, self.n_cells) if self.drainage is not None else None
         self._structures_soa = pack_structures_soa(self.structures.cfg, self.n_cells, model_to_ft=1.0) if self.structures is not None else None
         self._structures_cfg = tuple(self.structures.cfg.structures) if self.structures is not None else tuple()
@@ -1100,27 +1104,23 @@ class SWE2DCouplingController:
         n_structures = int(self._structure_count) if self.structures is not None else 0
         if hasattr(native_mod, "swe2d_gpu_set_coupling_dt"):
             native_mod.swe2d_gpu_set_coupling_dt(float(dt_s))
-        try:
-            # cell_wse_host=None → GPU computes WSE from device h+zb
-            # host_structure_flows=None → GPU computes flows on-device
-            # inlet_cell/inlet_flow → drainage contribution (can be empty)
-            native_mod.swe2d_gpu_compute_coupling_full_on_device(
-                None,
-                n_structures,
-                inlet_cell,
-                inlet_flow,
-                None,
-            )
-            # ── Diagnostic: check face-flux application ──
-            # (disabled — the D2H readbacks added ~2× latency per step)
-        except Exception:
-            return False
 
-        # Full device sync + error reset.  Must use cudaStreamSynchronize on the
-        # solver's stream (device sync alone may leave a thread-local error state).
-        # This ensures the solver/graph capture on the next step sees a clean stream.
-        if hasattr(native_mod, "swe2d_gpu_device_sync"):
-            native_mod.swe2d_gpu_device_sync()
+
+        # cell_wse_host=None → GPU computes WSE from device h+zb
+        # host_structure_flows=None → GPU computes flows on-device
+        # inlet_cell/inlet_flow → drainage contribution (can be empty)
+        native_mod.swe2d_gpu_compute_coupling_full_on_device(
+            None,
+            n_structures,
+            inlet_cell,
+            inlet_flow,
+            None,
+        )
+
+        # (No device sync here — compute_coupling_full_on_device already has a
+        # cudaStreamSynchronize on the solver stream which is sufficient to clear
+        # any pending stream errors before the next graph capture.  Full
+        # cudaDeviceSynchronize is expensive and unnecessary.)
 
         # ── When drainage is active, reset the persistent coupling flag ────
         # _ensure_persistent_coupling_preloaded above set the flag to True
@@ -1129,6 +1129,9 @@ class SWE2DCouplingController:
         # the persistent path (which can't handle drainage + redistribution).
         if self.drainage is not None:
             self._persistent_coupling_preloaded = False
+
+        # Mark coupling as applied so _compute_source_rates_cuda can skip.
+        self._coupling_applied_this_timestep = True
 
         # ── Invalidate the cached CUDA graph because dev->use_culvert_face_flux
         # changed from the pre-coupling state (false) to the post-coupling state
@@ -1466,6 +1469,18 @@ class SWE2DCouplingController:
         return self._compute_source_rates_cuda(mod, t_s, dt_s, hh)
 
     def _compute_source_rates_cuda(self, native_mod, t_s: float, dt_s: float, hh: np.ndarray) -> np.ndarray:
+        # When apply_native_device_sources already wrote combined sources to
+        # d_external_source_mps, skip all GPU work and return None immediately.
+        if self._coupling_applied_this_timestep:
+            self._coupling_applied_this_timestep = False
+            self.last_diag = SWE2DCouplingDiagnostics(
+                time_s=float(t_s) + float(dt_s), dt_s=float(dt_s),
+                drainage_max_node_depth=0.0, drainage_max_link_flow=0.0,
+                structure_total_flow=0.0, source_sum=0.0,
+                source_min=0.0, source_max=0.0, component_sums={},
+            )
+            return None
+
         cell_wse = hh + self.cell_bed
         drainage_diag: Dict[str, float] = {}
         structure_diag: Dict[str, float] = {}
@@ -1709,7 +1724,7 @@ class SWE2DCouplingController:
                 self._persistent_coupling_preloaded
                 and hasattr(native_mod, "swe2d_gpu_compute_coupling_full_on_device")
             )
-            # [COUPLING_CSR] diagnostic removed for performance
+
             if use_persistent:
                 # Persistent device path: structure params preloaded on GPU.
                 # All work is done on-device — WSE computed from device h+zb,
@@ -1776,59 +1791,14 @@ class SWE2DCouplingController:
                                         )
                                 bridge_total += src
                 # On-device sources are already in d_external_source_mps.
-                # Skip the readback for the common case (no redistribution):
-                # the solver step consumes directly from device memory.
-                # Return None so apply_external_sources knows the GPU buffer
-                # is already populated and skips its upload.
-                if (self._redist_offsets is not None
-                    and self._redist_offsets.size > 1
-                    and non_bridge_mask is not None
-                    and np.any(non_bridge_mask)):
-                    # Redistribution active: read back only the
-                    # per-structure flow values (tiny: n_struct doubles)
-                    # from the persistent GPU buffer, skipping the
-                    # expensive _native_structure_flows re-upload.
-                    nb_n = int(self._n_non_bridge_structures)
-                    if nb_n > 0 and hasattr(native_mod, "swe2d_gpu_readback_structure_flows"):
-                        nb_flows = np.asarray(
-                            native_mod.swe2d_gpu_readback_structure_flows(nb_n),
-                            dtype=np.float64,
-                        )
-                    else:
-                        nb_flows = None
-
-                    # ── On-device redistribution path ─────────────────
-                    # The redistribution kernel runs directly on
-                    # dev->d_external_source_mps using the persistent
-                    # device buffer for structure flows.  No D2H readback
-                    # or H2D re-upload of the source array — the solver
-                    # step consumes it directly from device memory.
-                    # This eliminates THREE 90 KB PCIe transfers per step.
-                    if nb_flows is not None and nb_flows.size > 0:
-                        if not hasattr(native_mod, "swe2d_gpu_redistribute_structure_sources_persistent"):
-                            raise RuntimeError(
-                                "GPU on-device redistribution function "
-                                "swe2d_gpu_redistribute_structure_sources_persistent "
-                                "is unavailable — no CPU fallback."
-                            )
-                        nb_up = np.asarray(ssoa.upstream_cell[non_bridge_mask], dtype=np.int32)
-                        nb_dn = np.asarray(ssoa.downstream_cell[non_bridge_mask], dtype=np.int32)
-                        native_mod.swe2d_gpu_redistribute_structure_sources_persistent(
-                            np.asarray(self._redist_offsets, dtype=np.int32, order='C'),
-                            np.asarray(self._redist_cell_idx, dtype=np.int32, order='C'),
-                            np.asarray(self._redist_weights, dtype=np.float64, order='C'),
-                            np.asarray(nb_flows, dtype=np.float64, order='C'),
-                            nb_up,
-                            nb_dn,
-                            int(self.n_cells),
-                            float(_u.si_m_per_model()),
-                        )
-                    total = None  # GPU sources are current
-                else:
-                    # No redistribution: GPU has correct sources.  Signal
-                    # to caller by returning None so the host skips upload.
-                    total = None
+                # Skip redistribution: compute_coupling_full_on_device already
+                # wrote combined (structures + drainage + face-flux) sources
+                # directly to device memory.  No host readback or redistribution
+                # is needed — the solver step consumes from the same buffer.
+                # Return None so the backend knows the GPU buffer is current.
+                total = None
                 # Signal that persistent path handled structures.
+                flows = None
                 flows = None
 
         if flows is not None:

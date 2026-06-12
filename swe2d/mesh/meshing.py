@@ -272,7 +272,13 @@ def _weld_mesh_nodes(
 
 def _as_float(v, default: float) -> float:
     try:
-        return float(v)
+        if v is None:
+            return float(default)
+        if isinstance(v, float):
+            return v
+        if isinstance(v, int):
+            return float(v)
+        return float(str(v))
     except Exception as e:
         logger.warning("_as_float conversion failed: %s", e, exc_info=True)
         return float(default)
@@ -280,7 +286,13 @@ def _as_float(v, default: float) -> float:
 
 def _as_int(v, default: int) -> int:
     try:
-        return int(v)
+        if v is None:
+            return int(default)
+        if isinstance(v, int):
+            return v
+        if isinstance(v, float):
+            return int(v)
+        return int(str(v))
     except Exception as e:
         logger.warning("_as_int conversion failed: %s", e, exc_info=True)
         return int(default)
@@ -311,11 +323,18 @@ _HYDRA_MESHING_NATIVE_LOAD_ATTEMPTED = False
 
 
 def _gmsh_available() -> bool:
+    """Check if gmsh Python package AND its native DLL are loadable.
+
+    ``importlib.util.find_spec`` alone is insufficient — it returns True
+    even when the gmsh native C++ library (.pyd/.so) cannot be found or
+    loaded.  We actually try a minimal import to verify the full stack.
+    """
     try:
-        import importlib.util
-        return importlib.util.find_spec("gmsh") is not None
+        import gmsh as _gmsh_check
+        _ = _gmsh_check.__version__
+        return True
     except Exception as e:
-        logger.warning("_gmsh_available check failed: %s", e, exc_info=True)
+        logger.warning("_gmsh_available: gmsh native library check failed: %s", e, exc_info=True)
         return False
 
 
@@ -523,24 +542,26 @@ def _iter_qgis_polygon_parts(
         return ring
 
     try:
-        multi = geom.asMultiPolygon()
-        if multi:
-            for poly in multi:
-                if not poly or not poly[0]:
-                    continue
-                outer = _ring_xy(poly[0])
-                if len(outer) < 3:
-                    continue
-                holes: List[List[Tuple[float, float]]] = []
-                for inner in poly[1:]:
-                    hring = _ring_xy(inner)
-                    if len(hring) >= 3:
-                        holes.append(hring)
-                parts.append((outer, holes))
-            if parts:
-                return parts
+        is_multi = bool(getattr(geom, "isMultipart", lambda: True)())
+        if is_multi:
+            multi = geom.asMultiPolygon()
+            if multi:
+                for poly in multi:
+                    if not poly or not poly[0]:
+                        continue
+                    outer = _ring_xy(poly[0])
+                    if len(outer) < 3:
+                        continue
+                    holes: List[List[Tuple[float, float]]] = []
+                    for inner in poly[1:]:
+                        hring = _ring_xy(inner)
+                        if len(hring) >= 3:
+                            holes.append(hring)
+                    parts.append((outer, holes))
+                if parts:
+                    return parts
     except Exception as e:
-        logger.warning("_iter_qgis_polygon_parts geom.asMultiPolygon failed: %s", e, exc_info=True)
+        logger.debug("_iter_qgis_polygon_parts geom.asMultiPolygon failed: %s", e, exc_info=True)
         pass
 
     try:

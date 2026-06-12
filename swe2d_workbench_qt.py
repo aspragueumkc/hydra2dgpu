@@ -12,6 +12,10 @@ This module provides a focused GUI for:
 from __future__ import annotations
 
 import concurrent.futures
+try:
+    from concurrent.futures.process import BrokenProcessPool
+except ImportError:
+    BrokenProcessPool = None  # Python <3.12 fallback; never raised
 import copy
 import csv
 import datetime
@@ -4512,12 +4516,36 @@ class SWE2DWorkbenchDialog(QtWidgets.QDialog):
         else:
             executor = self._topology_mesh_thread_pool
 
-        self._topology_mesh_future = executor.submit(
-            _run_topology_mesh_job,
-            conceptual,
-            backend_name,
-            self._topology_mesh_options,
-        )
+        try:
+            self._topology_mesh_future = executor.submit(
+                _run_topology_mesh_job,
+                conceptual,
+                backend_name,
+                self._topology_mesh_options,
+            )
+        except Exception as _pool_submit_err:
+            if BrokenProcessPool is not None and isinstance(_pool_submit_err, BrokenProcessPool):
+                try:
+                    executor.shutdown(wait=False, cancel_futures=True)
+                except Exception:
+                    pass
+                self._topology_mesh_process_pool = None
+                try:
+                    mp_ctx = multiprocessing.get_context("spawn")
+                    self._topology_mesh_process_pool = concurrent.futures.ProcessPoolExecutor(
+                        max_workers=1, mp_context=mp_ctx,
+                    )
+                except Exception as exc:
+                    self._topology_mesh_process_pool = concurrent.futures.ProcessPoolExecutor(max_workers=1)
+                executor = self._topology_mesh_process_pool
+                self._topology_mesh_future = executor.submit(
+                    _run_topology_mesh_job,
+                    conceptual,
+                    backend_name,
+                    self._topology_mesh_options,
+                )
+            else:
+                raise
         status_msg = f"Meshing in progress with backend '{backend_name}'..."
         if run_mode == "fallback-no-constraints":
             status_msg = (
