@@ -10,6 +10,7 @@ __pycache__/
 
 # CMake / build outputs
 build/
+build_asan/
 lib/
 dist/
 *.egg-info/
@@ -47,6 +48,9 @@ example_project/
 
 # QGIS type stubs (not needed for distribution)
 typings/
+
+#memcheck report output
+report_output/
 
 # QGIS symbology database
 symbology-style.db
