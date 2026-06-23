@@ -107,6 +107,8 @@ cmake .. -DCMAKE_BUILD_TYPE=Release
 make -j$(nproc)
 ```
 
+> **Mixed precision (experimental):** Add `-DSWE2D_STATE_FP32=ON` to the cmake command to store solver state arrays as `float` instead of `double`. This reduces GPU memory traffic by ~35% with a small accuracy trade-off in very shallow flows. Only recommended for GPU-bound simulations on memory-constrained cards. The precompiled binaries use full `double` precision.
+
 The build produces:
 - `hydra_swe2d.cpython-312-x86_64-linux-gnu.so` — GPU solver module
 - `hydra_native.so` — 1D backwater solver module

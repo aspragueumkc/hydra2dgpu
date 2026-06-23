@@ -898,6 +898,7 @@ void swe2d_gpu_restore_state_from_backup(SWE2DDeviceState* dev);
     @param source_rate_mps_out Output per-cell source rates [n_cells] (m/s)
     @host */
 void swe2d_gpu_compute_coupling_sources(
+    SWE2DDeviceState* dev,   // nullable: enables persistent workspace + async stream
     int32_t n_cells,
     const double* cell_area_m2,
     int32_t n_inlets,
@@ -924,6 +925,7 @@ void swe2d_gpu_compute_coupling_sources(
     @param source_rate_mps_out Output per-cell source rates [n_cells] (m/s)
     @host */
 void swe2d_gpu_compute_bridge_coupling_sources(
+    SWE2DDeviceState* dev,   // nullable: enables persistent workspace + async stream
     int32_t n_cells,
     const double* cell_area_m2,
     int32_t n_bridges,
@@ -950,7 +952,9 @@ void swe2d_gpu_compute_bridge_coupling_sources(
     @param n_cells Number of cells
     @param source_rate_mps_inout Per-cell source rates in/out [n_cells] (m/s)
     @host */
+/// Redistribute structure flow sources across multiple cells using precomputed weights. @host
 void swe2d_gpu_redistribute_structure_sources(
+    SWE2DDeviceState* dev,   // nullable: uses host path
     int32_t n_structures,
     const double* structure_flow_cms,
     const int32_t* orig_up_cell,

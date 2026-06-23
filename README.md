@@ -40,6 +40,8 @@ cmake .. -DCMAKE_BUILD_TYPE=Release
 make -j$(nproc)
 ```
 
+> **Mixed precision (experimental):** Add `-DSWE2D_STATE_FP32=ON` to the cmake command for ~35% less GPU memory traffic. Precompiled binaries use full `double` precision.
+
 Then symlink or install the plugin root into your QGIS plugins directory and restart QGIS.
 
 ### Python Dependencies

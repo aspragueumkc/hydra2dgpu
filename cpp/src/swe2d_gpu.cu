@@ -6837,17 +6837,23 @@ void swe2d_gpu_preload_coupling_cell_area(SWE2DDeviceState* dev, int32_t n_cells
     CUDA_CHECK(cudaStreamSynchronize(dev->d_stream));
 }
 
-/// GPU kernel: compute WSE = h + zb for coupling.
-/**
- * 1 thread per cell.  Writes d_cell_wse[c] = d_h[c] + d_cell_zb[c].
- *
- * @global
- * @param n_cells Number of cells
- * @param d_h Cell depths (nullable)
- * @param d_cell_zb Bed elevations (nullable)
- * @param d_cell_wse Output: WSE
- */
+/// Forward declarations for coupling kernels defined later in this file.
 __global__ void swe2d_coupling_wse_from_state_kernel(
+    int32_t n_cells, const State* d_h, const double* d_cell_zb, double* d_cell_wse);
+
+/// GPU kernel: compute WSE = h + zb.  1 thread per cell. @global
+__global__ void swe2d_coupling_wse_from_state_kernel(
+    int32_t n_cells,
+    const State* __restrict__ d_h,
+    const double* __restrict__ d_cell_zb,
+    double* __restrict__ d_cell_wse)
+{
+    int32_t c = blockIdx.x * blockDim.x + threadIdx.x;
+    if (c >= n_cells) return;
+    const double h = d_h ? static_cast<double>(d_h[c]) : 0.0;
+    const double zb = d_cell_zb ? d_cell_zb[c] : 0.0;
+    d_cell_wse[c] = h + zb;
+}
 
 void swe2d_gpu_compute_coupling_full_on_device(
     SWE2DDeviceState* dev, int32_t n_cells, int32_t n_structures, const double* cell_wse_host,
