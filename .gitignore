@@ -32,3 +32,4 @@ Thumbs.db
 # Temp / misc
 report_output/
 temp_error_log.txt
+tests/results/*.log
