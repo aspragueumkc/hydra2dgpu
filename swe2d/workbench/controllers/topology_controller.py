@@ -886,6 +886,35 @@ class TopologyController:
             combined_options = dict(mesh_options)
             combined_options["run_mode"] = run_mode
             combined_options["default_cell_type"] = default_cell_type
+
+            view._topology_mesh_checkpoint_path = ""
+            view._topology_mesh_progress_path = ""
+            if backend_name == "gmsh":
+                cp_dir = os.path.join("/tmp", "qgis-live-bridge")
+                cp_name = f"topology_mesh_checkpoint_{os.getpid()}_{int(time.time() * 1000)}.npz"
+                view._topology_mesh_checkpoint_path = os.path.join(cp_dir, cp_name)
+                combined_options["gmsh_quality_checkpoint_path"] = view._topology_mesh_checkpoint_path
+                progress_name = f"topology_gmsh_progress_{os.getpid()}_{int(time.time() * 1000)}.json"
+                view._topology_mesh_progress_path = os.path.join(cp_dir, progress_name)
+                combined_options["gmsh_progress_path"] = view._topology_mesh_progress_path
+                combined_options.setdefault("gmsh_progress_emit_interval_s", 0.75)
+                try:
+                    os.makedirs(cp_dir, exist_ok=True)
+                except OSError as e:
+                    view._log(f"[ERROR] start topology mesh async failed: {e}")
+                try:
+                    os.remove(view._topology_mesh_checkpoint_path)
+                except FileNotFoundError:
+                    pass
+                except OSError as e:
+                    view._log(f"[ERROR] start topology mesh async failed: {e}")
+                try:
+                    os.remove(view._topology_mesh_progress_path)
+                except FileNotFoundError:
+                    pass
+                except OSError as e:
+                    view._log(f"[ERROR] start topology mesh async failed: {e}")
+
             payload = {
                 "conceptual": conceptual,
                 "backend_name": backend_name,
@@ -916,12 +945,13 @@ class TopologyController:
                 _pythonpath = _existing + os.pathsep + _pythonpath
             env["PYTHONPATH"] = _pythonpath
             env.setdefault("DISPLAY", os.environ.get("DISPLAY", ":0"))
-            view._topology_mesh_subprocess = subprocess.Popen(
-                [_sys.executable, worker, in_path, out_path],
-                env=env,
-                stdout=subprocess.DEVNULL,
-                stderr=open(err_path, "wb"),
-            )
+            with open(err_path, "wb") as err_file:
+                view._topology_mesh_subprocess = subprocess.Popen(
+                    [_sys.executable, worker, in_path, out_path],
+                    env=env,
+                    stdout=subprocess.DEVNULL,
+                    stderr=err_file,
+                )
 
             view._set_topology_mesh_busy(True, f"Topology meshing with '{backend_name}'...")
             self._ensure_timer()
