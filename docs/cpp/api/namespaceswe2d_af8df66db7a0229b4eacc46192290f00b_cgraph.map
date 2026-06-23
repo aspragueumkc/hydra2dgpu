@@ -1,0 +1,13 @@
+<map id="swe2d::edge_flux" name="swe2d::edge_flux">
+<area shape="rect" id="Node000001" title=" " alt="" coords="5,35,129,60"/>
+<area shape="rect" id="Node000002" href="$namespaceswe2d.html#acad122c9dc1bc49cb6cda2b4fcbca6a0" title=" " alt="" coords="185,5,301,31"/>
+<area shape="poly" id="edge1_Node000001_Node000002" title=" " alt="" coords="129,34,171,27,172,33,130,40"/>
+<area shape="rect" id="Node000004" href="$namespaceswe2d.html#a9e10b46cd0b09de4392285d9a94d7017" title=" " alt="" coords="177,55,309,95"/>
+<area shape="poly" id="edge3_Node000001_Node000004" title=" " alt="" coords="130,55,164,60,164,65,129,60"/>
+<area shape="rect" id="Node000003" href="$namespaceswe2d.html#afd6e6388a68b477999d03e1f00e4f428" title="Wave speed (celerity) = sqrt(g*h). Zero for dry cells." alt="" coords="357,5,468,31"/>
+<area shape="poly" id="edge2_Node000002_Node000003" title=" " alt="" coords="302,15,343,15,343,21,302,21"/>
+<area shape="rect" id="Node000005" href="$namespaceswe2d.html#a41e00eb84faf7429882be734b3e15372" title="Compute x&#45;velocity from momentum and depth. Zero below h_min." alt="" coords="363,59,462,84"/>
+<area shape="poly" id="edge4_Node000004_Node000005" title=" " alt="" coords="310,71,349,70,349,75,310,76"/>
+<area shape="rect" id="Node000006" href="$namespaceswe2d.html#a86f84c42afcc080d4fb91e7d29ddce9a" title="Compute y&#45;velocity from momentum and depth." alt="" coords="363,108,462,133"/>
+<area shape="poly" id="edge5_Node000004_Node000006" title=" " alt="" coords="310,90,352,102,351,107,309,96"/>
+</map>

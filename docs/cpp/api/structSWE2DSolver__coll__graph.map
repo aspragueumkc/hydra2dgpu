@@ -1,0 +1,7 @@
+<map id="SWE2DSolver" name="SWE2DSolver">
+<area shape="rect" id="Node000001" title=" " alt="" coords="77,93,183,119"/>
+<area shape="rect" id="Node000002" href="$structSWE2DMesh.html" title=" " alt="" coords="5,5,108,31"/>
+<area shape="poly" id="edge1_Node000001_Node000002" title=" " alt="" coords="77,39,122,91,118,95,73,43"/>
+<area shape="rect" id="Node000003" href="$structSWE2DSolverConfig.html" title=" " alt="" coords="132,5,277,31"/>
+<area shape="poly" id="edge2_Node000001_Node000003" title=" " alt="" coords="188,43,142,95,138,91,184,39"/>
+</map>

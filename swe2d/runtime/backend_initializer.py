@@ -1,0 +1,153 @@
+#!/usr/bin/env python3
+"""Backend initialization seam for SWE2D workbench.
+
+Phase 6 goal: extract native backend build/initialize setup from `_on_run`
+into a focused helper module.
+"""
+
+from __future__ import annotations
+
+from typing import Any, Callable, Optional
+
+import numpy as np
+
+import logging
+logger = logging.getLogger(__name__)
+
+
+class SWE2DBackendInitializer:
+    """Build and initialize native backend from prepared run inputs/options."""
+
+    def __init__(
+        self,
+        apply_timeseries_bc_values_callback: Callable[..., Any],
+        distribute_total_flow_to_unit_q_callback: Callable[..., np.ndarray],
+    ):
+        self._apply_timeseries_bc_values = apply_timeseries_bc_values_callback
+        self._distribute_total_flow_to_unit_q = distribute_total_flow_to_unit_q_callback
+
+    def build_and_initialize(
+        self,
+        *,
+        backend_cls: Any,
+        dynamic_bc: bool,
+        node_x: np.ndarray,
+        node_y: np.ndarray,
+        node_z: np.ndarray,
+        cell_nodes: np.ndarray,
+        face_offsets: Optional[np.ndarray],
+        face_nodes: Optional[np.ndarray],
+        bc_n0: np.ndarray,
+        bc_n1: np.ndarray,
+        bc_tp: np.ndarray,
+        bc_vl: np.ndarray,
+        side_hydrographs: dict,
+        edge_hydrographs: dict,
+        h0: np.ndarray,
+        hu0: np.ndarray,
+        hv0: np.ndarray,
+        n_mann_cell: Optional[np.ndarray],
+        dt_fixed: float,
+        dt_max: float,
+        dt_initial: float = 0.0,
+        reconstruction_mode: int,
+        temporal_scheme: Any,
+        gravity: float,
+        k_mann: float,
+        n_mann: float,
+        cfl: float,
+        h_min: float,
+        max_inv_area: float,
+        cfl_lambda_cap: float,
+        momentum_cap_min_speed: float,
+        momentum_cap_celerity_mult: float,
+        depth_cap: float,
+        max_rel_depth_increase: float,
+        shallow_damping_depth: float,
+        extreme_rain_mode: bool,
+        source_cfl_beta: float,
+        source_max_substeps: int,
+        source_rate_cap: float,
+        source_depth_step_cap: float,
+        source_true_subcycling: bool,
+        source_imex_split: bool,
+        enable_shallow_front_recon_fallback: bool,
+        gpu_diag_sync_interval_steps: int,
+        tiny_mode: int,
+        tiny_wet_cell_threshold: int,
+        degen_mode: int,
+        front_flux_damping: float,
+        active_set_hysteresis: bool,
+    ) -> Any:
+        """Build and initialize."""
+        b = backend_cls(use_gpu=True)
+
+        bc_tp_init = bc_tp.copy()
+        bc_vl_init = bc_vl.copy()
+        if dynamic_bc:
+            bc_tp_init, bc_vl_init = self._apply_timeseries_bc_values(
+                bc_n0, bc_n1, bc_tp_init, bc_vl_init, side_hydrographs, 0.0, edge_hydrographs
+            )
+        bc_vl_init = self._distribute_total_flow_to_unit_q(
+            bc_n0,
+            bc_n1,
+            bc_tp_init,
+            bc_vl_init,
+            bc_tp,
+            side_hydrographs,
+            edge_hydrographs,
+        )
+
+        if face_offsets is not None and face_nodes is not None:
+            b.build_mesh(
+                node_x,
+                node_y,
+                node_z,
+                face_nodes,
+                bc_n0,
+                bc_n1,
+                bc_tp_init,
+                bc_vl_init,
+                face_offsets,
+            )
+        else:
+            b.build_mesh(node_x, node_y, node_z, cell_nodes, bc_n0, bc_n1, bc_tp_init, bc_vl_init)
+
+        b.initialize(
+            h0,
+            hu0,
+            hv0,
+            g=float(gravity),
+            k_mann=float(k_mann),
+            n_mann=float(n_mann),
+            n_mann_cell=n_mann_cell,
+            cfl=float(cfl),
+            h_min=float(h_min),
+            dt_fixed=dt_fixed,
+            dt_max=dt_max,
+            dt_initial=dt_initial,
+            max_inv_area=float(max_inv_area),
+            cfl_lambda_cap=float(cfl_lambda_cap),
+            momentum_cap_min_speed=float(momentum_cap_min_speed),
+            momentum_cap_celerity_mult=float(momentum_cap_celerity_mult),
+            depth_cap=float(depth_cap),
+            max_rel_depth_increase=float(max_rel_depth_increase),
+            shallow_damping_depth=float(shallow_damping_depth),
+            extreme_rain_mode=bool(extreme_rain_mode),
+            source_cfl_beta=float(source_cfl_beta),
+            source_max_substeps=int(source_max_substeps),
+            source_rate_cap=float(source_rate_cap),
+            source_depth_step_cap=float(source_depth_step_cap),
+            source_true_subcycling=bool(source_true_subcycling),
+            source_imex_split=bool(source_imex_split),
+            enable_shallow_front_recon_fallback=bool(enable_shallow_front_recon_fallback),
+            gpu_diag_sync_interval_steps=int(gpu_diag_sync_interval_steps),
+            tiny_mode=int(tiny_mode),
+            tiny_wet_cell_threshold=int(tiny_wet_cell_threshold),
+            spatial_discretization=reconstruction_mode,
+            temporal_scheme=temporal_scheme,
+            degen_mode=int(degen_mode),
+            front_flux_damping=float(front_flux_damping),
+            active_set_hysteresis=bool(active_set_hysteresis),
+        )
+        return b

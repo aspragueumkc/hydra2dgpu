@@ -1,0 +1,5 @@
+<map id="swe2d_gpu_available" name="swe2d_gpu_available">
+<area shape="rect" id="Node000001" title="Returns true only when CUDA was compiled in AND a CUDA device is present." alt="" coords="204,5,351,31"/>
+<area shape="rect" id="Node000002" href="$swe2d__bindings_8cpp.html#ac1d3292f7f222393959bc9ccf986bfa1" title=" " alt="" coords="5,5,156,31"/>
+<area shape="poly" id="edge1_Node000001_Node000002" title=" " alt="" coords="190,21,156,21,156,15,190,15"/>
+</map>

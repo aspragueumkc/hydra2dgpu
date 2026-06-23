@@ -1,0 +1,10 @@
+<map id="polygon_centroid_area" name="polygon_centroid_area">
+<area shape="rect" id="Node000001" title=" " alt="" coords="597,5,749,31"/>
+<area shape="rect" id="Node000002" href="$swe2d__mesh_8cpp.html#acd2d6e1962cb715f6424a5d3bf6c94fd" title=" " alt="" coords="385,5,549,31"/>
+<area shape="poly" id="edge1_Node000001_Node000002" title=" " alt="" coords="583,21,550,21,550,15,583,15"/>
+<area shape="rect" id="Node000003" href="$swe2d__bindings_8cpp.html#ac1d3292f7f222393959bc9ccf986bfa1" title=" " alt="" coords="5,5,156,31"/>
+<area shape="poly" id="edge2_Node000002_Node000003" title=" " alt="" coords="372,21,156,21,156,15,372,15"/>
+<area shape="rect" id="Node000004" href="$swe2d__mesh_8cpp.html#a2c732f581725169d58ea6193fdd69e89" title="Legacy triangle builder — builds 3&#45;vertex offsets and delegates to swe2d_build_mesh_poly." alt="" coords="204,31,337,56"/>
+<area shape="poly" id="edge3_Node000002_Node000004" title=" " alt="" coords="372,33,338,37,337,32,371,28"/>
+<area shape="poly" id="edge4_Node000004_Node000003" title=" " alt="" coords="190,35,156,31,156,25,191,30"/>
+</map>

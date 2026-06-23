@@ -1,0 +1,282 @@
+"""Dock management, host controls, and launch functions for SWE2D Studio."""
+
+from __future__ import annotations
+
+import logging
+from typing import Dict, List, Optional
+
+from qgis.PyQt import QtCore, QtWidgets
+
+
+logger_wb = logging.getLogger(__name__)
+
+_SWE2D_WORKBENCH_STUDIO_WINDOWS: List[QtWidgets.QDialog] = []
+_studio_active_dialog: Optional["SWE2DWorkbenchStudioDialog"] = None
+_SWE2D_STUDIO_HOST_TOOLBAR: Optional[QtWidgets.QToolBar] = None
+_SWE2D_STUDIO_HOST_MENU: Optional[QtWidgets.QMenu] = None
+
+
+def _normalize_workbench_host_mode(host_mode: object) -> str:
+    """Normalize host mode to 'dock' or 'window'."""
+    mode_txt = str(host_mode or "window").strip().lower()
+    return "dock" if mode_txt in {"dock", "docked", "panel"} else "window"
+
+
+def _resolve_workbench_iface(parent, iface):
+    """Resolve the QGIS interface object from parent or qgis.utils."""
+    if iface is None and parent is not None:
+        if hasattr(parent, "_get_qgis_iface") and callable(getattr(parent, "_get_qgis_iface")):
+            try:
+                iface = parent._get_qgis_iface()
+            except Exception as e:
+                logger_wb.warning("[ERROR] resolve iface failed: %s", e)
+                iface = None
+        if iface is None and hasattr(parent, "iface"):
+            try:
+                iface = getattr(parent, "iface")
+            except Exception as e:
+                logger_wb.warning("[ERROR] resolve iface failed: %s", e)
+                iface = None
+    if iface is None:
+        try:
+            import qgis.utils as _qutils
+
+            iface = getattr(_qutils, "iface", None)
+        except Exception as e:
+            logger_wb.warning("[ERROR] resolve iface failed: %s", e)
+            iface = None
+    return iface
+
+
+def _close_dialog_windows(window_store: List[QtWidgets.QDialog]) -> None:
+    """Close all dialogs in the given window store list."""
+    while window_store:
+        dlg = window_store.pop()
+        try:
+            dlg.close()
+        except Exception as e:
+            logger_wb.warning("[ERROR] close dialog failed: %s", e)
+
+
+def _close_workbench_studio_windows() -> None:
+    """Close all workbench studio window instances."""
+    _close_dialog_windows(_SWE2D_WORKBENCH_STUDIO_WINDOWS)
+
+
+def _remove_workbench_dock_instance(dock, iface_obj):
+    """Remove a single dock widget from QGIS and clean up."""
+    if dock is None:
+        return None
+    try:
+        widget = dock.widget()
+        if widget is not None:
+            try:
+                widget.blockSignals(True)
+            except (RuntimeError, AttributeError):
+                logger_wb.exception("[ERROR] widget.blockSignals failed during dock removal")
+            try:
+                widget.close()
+            except (RuntimeError, AttributeError):
+                logger_wb.exception("[ERROR] widget.close() failed during dock removal")
+    except (RuntimeError, AttributeError):
+        logger_wb.exception("[ERROR] dock.widget() failed during dock removal")
+    try:
+        if iface_obj is not None and hasattr(iface_obj, "removeDockWidget"):
+            iface_obj.removeDockWidget(dock)
+    except (RuntimeError, AttributeError):
+        logger_wb.exception("[ERROR] removeDockWidget failed during dock removal")
+    try:
+        dock.deleteLater()
+    except (RuntimeError, AttributeError):
+        logger_wb.exception("[ERROR] deleteLater failed during dock removal")
+    return None
+
+
+def _remove_workbench_studio_dock(iface_obj, dlg=None) -> None:
+    """Remove all Studio docks from the QGIS host window and clean up."""
+    seen = set()
+    if dlg is not None:
+        for name, comp in list(dlg._state.studio_components.items()):
+            dock = comp.dock
+            if dock is None:
+                continue
+            key = id(dock)
+            if key in seen:
+                continue
+            seen.add(key)
+            _remove_workbench_dock_instance(dock, iface_obj)
+
+    if dlg is not None:
+        try:
+            dlg.blockSignals(True)
+        except (RuntimeError, AttributeError):
+            logger_wb.exception("[ERROR] studio dialog blockSignals failed")
+        try:
+            dlg.close()
+        except (RuntimeError, AttributeError):
+            logger_wb.exception("[ERROR] studio dialog close failed")
+        try:
+            dlg.deleteLater()
+        except (RuntimeError, AttributeError):
+            logger_wb.exception("[ERROR] studio dialog deleteLater failed")
+    _clear_studio_host_controls(iface_obj)
+
+
+def _studio_host_main_window(iface_obj, fallback_parent=None):
+    """Get the QGIS main window, falling back to fallback_parent."""
+    host_window = None
+    if iface_obj is not None and hasattr(iface_obj, "mainWindow"):
+        try:
+            host_window = iface_obj.mainWindow()
+        except Exception as e:
+            logger_wb.warning("[ERROR] mainWindow() retrieval failed: %s", e)
+            host_window = None
+    if host_window is None:
+        host_window = fallback_parent
+    return host_window
+
+
+def _clear_studio_host_controls(iface_obj, fallback_parent=None) -> None:
+    """Remove the Studio toolbar and menu from the QGIS host window."""
+    global _SWE2D_STUDIO_HOST_TOOLBAR, _SWE2D_STUDIO_HOST_MENU
+    host_window = _studio_host_main_window(iface_obj, fallback_parent)
+    if _SWE2D_STUDIO_HOST_TOOLBAR is not None:
+        try:
+            if iface_obj is not None and hasattr(iface_obj, "mainWindow") and host_window is not None:
+                host_window.removeToolBar(_SWE2D_STUDIO_HOST_TOOLBAR)
+        except Exception as e:
+            logger_wb.warning("[ERROR] toolbar removal failed: %s", e)
+        try:
+            _SWE2D_STUDIO_HOST_TOOLBAR.deleteLater()
+        except Exception as e:
+            logger_wb.warning("[ERROR] toolbar deleteLater failed: %s", e)
+        _SWE2D_STUDIO_HOST_TOOLBAR = None
+    if _SWE2D_STUDIO_HOST_MENU is not None:
+        try:
+            act = _SWE2D_STUDIO_HOST_MENU.menuAction()
+            parent = act.parentWidget()
+            if parent is not None:
+                parent.removeAction(act)
+        except Exception as e:
+            logger_wb.warning("[ERROR] menu cleanup failed: %s", e)
+        try:
+            _SWE2D_STUDIO_HOST_MENU.deleteLater()
+        except Exception as e:
+            logger_wb.warning("[ERROR] menu deleteLater failed: %s", e)
+        _SWE2D_STUDIO_HOST_MENU = None
+
+
+def _install_studio_host_controls(
+    iface_obj,
+    dlg,
+    fallback_parent=None,
+    component_docks: Optional[Dict[str, QtWidgets.QDockWidget]] = None,
+) -> None:
+    """Install the HYDRA2D menu and view-mode combo into the QGIS host window."""
+    global _SWE2D_STUDIO_HOST_TOOLBAR, _SWE2D_STUDIO_HOST_MENU
+    host_window = _studio_host_main_window(iface_obj, fallback_parent)
+    if host_window is None:
+        return
+    _clear_studio_host_controls(iface_obj, fallback_parent)
+    component_docks = dict(component_docks or {})
+
+    host_view_combo = QtWidgets.QComboBox(host_window)
+    host_view_combo.addItems(["Mesh", "Depth", "Velocity magnitude",
+                               "Time-Series", "Profile", "Structures", "Network"])
+    try:
+        source_idx = int(getattr(dlg, "view_mode_combo", host_view_combo).currentIndex())
+        host_view_combo.setCurrentIndex(max(0, min(source_idx, host_view_combo.count() - 1)))
+    except Exception as e:
+        logger_wb.warning("[ERROR] host view combo init failed: %s", e)
+    host_view_combo.currentIndexChanged.connect(
+        lambda idx: dlg.view_mode_combo.setCurrentIndex(idx)
+        if hasattr(dlg, "view_mode_combo") and dlg.view_mode_combo is not None
+        else None
+    )
+    try:
+        menu_bar = host_window.menuBar()
+        if menu_bar is not None:
+            menu_bar.setCornerWidget(host_view_combo, QtCore.Qt.TopRightCorner)
+    except Exception as e:
+        logger_wb.warning("[ERROR] view combo to menuBar corner failed: %s", e)
+
+
+def launch_swe2d_workbench_studio(parent=None, iface=None, host_mode: str = "dock"):
+    """Launch the SWE2D workbench Studio dialog (docked or windowed mode)."""
+    from swe2d.workbench.studio_dialog import SWE2DWorkbenchStudioDialog
+
+    global _studio_active_dialog
+
+    iface = _resolve_workbench_iface(parent, iface)
+
+    mode = "dock"
+
+    if mode == "dock":
+        _close_workbench_studio_windows()
+        # Clean up previous instance before creating a new one
+        if _studio_active_dialog is not None:
+            _remove_workbench_studio_dock(iface, dlg=_studio_active_dialog)
+            _studio_active_dialog = None
+
+        host_window = None
+        if iface is not None and hasattr(iface, "mainWindow"):
+            try:
+                host_window = iface.mainWindow()
+            except Exception as e:
+                logger_wb.warning("[launch] mainWindow failed: %s", e)
+                host_window = None
+        if host_window is None:
+            host_window = parent
+
+        dlg = SWE2DWorkbenchStudioDialog(parent=None, iface=iface)
+        dlg._swe2d_workbench_host_mode = mode
+        try:
+            dlg._restore_project_workbench_state()
+            dlg._workbench_state_restored_on_show = True
+        except Exception as e:
+            logger_wb.warning("[launch] restore state failed: %s", e)
+
+        component_docks = {
+            name: comp.dock
+            for name, comp in dlg._state.studio_components.items()
+            if comp.dock is not None
+        }
+        _install_studio_host_controls(iface, dlg, host_window, component_docks=component_docks)
+        try:
+            dlg._studio_update_status()
+        except Exception as e:
+            logger_wb.warning("[launch] update status failed: %s", e)
+            pass
+
+        _studio_active_dialog = dlg
+        return dlg
+
+    _remove_workbench_studio_dock(iface)
+
+    for existing in list(_SWE2D_WORKBENCH_STUDIO_WINDOWS):
+        try:
+            if existing.isVisible():
+                existing.show()
+                existing.raise_()
+                existing.activateWindow()
+                return existing
+        except Exception as e:
+            logger_wb.warning("[launch] existing window failed: %s", e)
+
+    dlg = SWE2DWorkbenchStudioDialog(parent, iface=iface)
+    _install_studio_host_controls(iface, dlg, parent)
+
+    def _cleanup():
+        """Remove dialog from window store and clear host controls."""
+        try:
+            _SWE2D_WORKBENCH_STUDIO_WINDOWS.remove(dlg)
+        except ValueError:
+            logger_wb.warning("Unexpected ValueError silently caught — review this handler", exc_info=True)
+        _clear_studio_host_controls(iface, parent)
+
+    _SWE2D_WORKBENCH_STUDIO_WINDOWS.append(dlg)
+    dlg.finished.connect(_cleanup)
+    dlg.show()
+    dlg.raise_()
+    dlg.activateWindow()
+    return dlg

@@ -1,0 +1,5 @@
+<map id="swe2d::hllc_flux" name="swe2d::hllc_flux">
+<area shape="rect" id="Node000001" title=" " alt="" coords="5,5,121,31"/>
+<area shape="rect" id="Node000002" href="$namespaceswe2d.html#afd6e6388a68b477999d03e1f00e4f428" title="Wave speed (celerity) = sqrt(g*h). Zero for dry cells." alt="" coords="169,5,280,31"/>
+<area shape="poly" id="edge1_Node000001_Node000002" title=" " alt="" coords="122,15,155,15,155,21,122,21"/>
+</map>
