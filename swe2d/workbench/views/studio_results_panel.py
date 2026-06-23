@@ -177,61 +177,6 @@ def on_results_profile_options_changed(dialog) -> None:
     dialog._studio_viewer.refresh()
 
 
-def persist_snapshot_to_gpkg(dialog, gpkg_path: str, run_id: str) -> None:
-    """Persist snapshot timesteps to a GeoPackage."""
-    if not gpkg_path or not dialog._snapshot_timesteps:
-        return
-    try:
-        from swe2d.workbench.services.gpkg_persistence_service import (
-            build_mesh_rows_from_snapshots,
-            persist_mesh_results_to_geopackage,
-        )
-        mesh_rows = build_mesh_rows_from_snapshots(dialog._snapshot_timesteps)
-        if mesh_rows:
-            persist_mesh_results_to_geopackage(
-                gpkg_path=gpkg_path, run_id=run_id, mesh_rows=mesh_rows,
-                interval_s=0.0, log_fn=dialog._log,
-            )
-    except Exception as e:
-        dialog._log(f"[WARNING] Snapshot GeoPackage persistence skipped: {e}")
-
-
-def persist_mesh_results_to_geopackage(dialog, gpkg_path: str, run_id: str, mesh_rows, interval_s: float, table_name: str = "swe2d_mesh_results") -> None:
-    """Persist mesh result rows to a GeoPackage table."""
-    if not gpkg_path or not mesh_rows:
-        return
-    try:
-        from swe2d.workbench.services.gpkg_persistence_service import persist_mesh_results_to_geopackage
-        persist_mesh_results_to_geopackage(
-            gpkg_path=gpkg_path, run_id=run_id, mesh_rows=mesh_rows,
-            interval_s=interval_s, table_name=table_name, log_fn=dialog._log,
-        )
-    except Exception as e:
-        dialog._log(f"[WARNING] Mesh results GeoPackage persistence skipped: {e}")
-
-
-def persist_run_log_to_geopackage(dialog, gpkg_path, run_id, start_wallclock, end_wallclock, duration_s, log_text, metadata=None):
-    """Persist a run log entry to a GeoPackage."""
-    if not gpkg_path or not run_id:
-        return
-    try:
-        from swe2d.results.run_log_storage import persist_run_log_to_geopackage as _persist
-        _persist(
-            gpkg_path=gpkg_path, run_id=run_id,
-            start_wallclock=start_wallclock, end_wallclock=end_wallclock,
-            duration_s=duration_s, log_text=log_text,
-            metadata=metadata or {},
-        )
-    except Exception as e:
-        dialog._log(f"[WARNING] Run log persistence skipped: {e}")
-
-
-def build_mesh_snapshot_rows(dialog):
-    """Build mesh snapshot rows from stored timesteps."""
-    from swe2d.workbench.services.non_gui_runtime_service import build_mesh_snapshot_rows
-    return build_mesh_snapshot_rows(dialog._snapshot_timesteps)
-
-
 def on_results_panel_timestep_changed(dialog, t_s: float, frame_idx: int = 0) -> None:
     """Handle animation timestep change — sync temporal dock, overlay, and viewer."""
     temporal = getattr(dialog, "_temporal_dock", None)

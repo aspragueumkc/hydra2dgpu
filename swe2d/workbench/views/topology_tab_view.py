@@ -36,8 +36,7 @@ class TopologyTabView(QtWidgets.QWidget):
     - Placeholder widget holders: topo_gmsh_controls_widget,
       topo_quality_controls_widget
     - Status label: topo_controls_summary_lbl
-    - Action buttons: topo_validate_btn, topo_edit_regions_btn,
-      topo_edit_quad_edges_btn, topo_generate_btn, topo_terminate_btn
+    - Action buttons: topo_generate_btn, topo_terminate_btn
     """
 
     def __init__(self, parent=None):
@@ -131,23 +130,6 @@ class TopologyTabView(QtWidgets.QWidget):
         self.topo_controls_summary_lbl.setObjectName("topo_controls_summary_lbl")
         self.topo_controls_summary_lbl.setWordWrap(True)
         ctrl_layout.addWidget(self.topo_controls_summary_lbl)
-
-        self.topo_validate_btn = QtWidgets.QPushButton("Validate & Summarize")
-        self.topo_validate_btn.setObjectName("topo_validate_btn")
-        self.topo_validate_btn.setEnabled(True)
-        ctrl_layout.addWidget(self.topo_validate_btn)
-
-        self.topo_edit_regions_btn = QtWidgets.QPushButton("Edit Region Attributes")
-        self.topo_edit_regions_btn.setObjectName("topo_edit_regions_btn")
-        self.topo_edit_regions_btn.setEnabled(True)
-        ctrl_layout.addWidget(self.topo_edit_regions_btn)
-
-        self.topo_edit_quad_edges_btn = QtWidgets.QPushButton(
-            "Edit Quad/Transition Edges"
-        )
-        self.topo_edit_quad_edges_btn.setObjectName("topo_edit_quad_edges_btn")
-        self.topo_edit_quad_edges_btn.setEnabled(True)
-        ctrl_layout.addWidget(self.topo_edit_quad_edges_btn)
 
         self.topo_generate_btn = QtWidgets.QPushButton("Generate Mesh")
         self.topo_generate_btn.setObjectName("topo_generate_btn")
@@ -419,7 +401,6 @@ class TopologyTabView(QtWidgets.QWidget):
             "gmsh-full-align={gmsh_full_align}; "
             "arc-mode={arc_mode}, soft-size={arc_soft_size:.3g}, soft-dist={arc_soft_dist:.3g}, "
             "iface-transition={iface_transition}, iface-dist={iface_dist:.3g}, iface-ratio>={iface_ratio:.3g}, "
-            "threads={gmsh_threads}, max2d={gmsh_max2d_threads}, "
             "min-cell={mesh_size_min:.6g}, edge-tol={edge_tol:.6g}, "
             "point-refine={point_refine}; Gmsh loop={gmsh_loop}, attempts={attempts}, budget={budget:.1f}s; "
             ""
@@ -445,12 +426,10 @@ class TopologyTabView(QtWidgets.QWidget):
             iface_transition="on" if _safe_checked("topo_gmsh_interface_transition_enable_chk", False) else "off",
             iface_dist=_safe_spin_value("topo_gmsh_interface_transition_dist_factor_spin", 2.5),
             iface_ratio=_safe_spin_value("topo_gmsh_interface_transition_min_ratio_spin", 1.25),
-            gmsh_threads=int(round(_safe_spin_value("topo_gmsh_num_threads_spin", 1.0))),
-            gmsh_max2d_threads=int(round(_safe_spin_value("topo_gmsh_max_num_threads_2d_spin", 0.0))),
+            gmsh_loop="on" if _safe_checked("topo_gmsh_quality_enable_chk", False) else "off",
             mesh_size_min=_safe_spin_value("topo_gmsh_mesh_size_min_spin", 0.0),
             edge_tol=_safe_spin_value("topo_gmsh_tolerance_edge_length_spin", 0.0),
             point_refine="on" if _safe_checked("topo_gmsh_mesh_size_from_points_chk", False) else "off",
-            gmsh_loop="on" if _safe_checked("topo_gmsh_quality_enable_chk", False) else "off",
             attempts=int(round(_safe_spin_value("topo_gmsh_quality_max_iters_spin", 0.0))),
             budget=_safe_spin_value("topo_gmsh_quality_time_limit_spin", 0.0),
         )
@@ -742,26 +721,6 @@ def _build_topology_tab_controls(
     topo_gmsh_verbosity_spin.setValue(2)
     gmsh_form.addRow("Verbosity:", topo_gmsh_verbosity_spin)
     widgets["topo_gmsh_verbosity_spin"] = topo_gmsh_verbosity_spin
-
-    topo_gmsh_num_threads_spin = QtWidgets.QSpinBox()
-    topo_gmsh_num_threads_spin.setObjectName("topo_gmsh_num_threads_spin")
-    topo_gmsh_num_threads_spin.setRange(0, 256)
-    topo_gmsh_num_threads_spin.setValue(1)
-    topo_gmsh_num_threads_spin.setToolTip(
-        "General.NumThreads. Set 0 to use Gmsh default/auto behavior."
-    )
-    gmsh_form.addRow("Num threads:", topo_gmsh_num_threads_spin)
-    widgets["topo_gmsh_num_threads_spin"] = topo_gmsh_num_threads_spin
-
-    topo_gmsh_max_num_threads_2d_spin = QtWidgets.QSpinBox()
-    topo_gmsh_max_num_threads_2d_spin.setObjectName("topo_gmsh_max_num_threads_2d_spin")
-    topo_gmsh_max_num_threads_2d_spin.setRange(0, 256)
-    topo_gmsh_max_num_threads_2d_spin.setValue(0)
-    topo_gmsh_max_num_threads_2d_spin.setToolTip(
-        "Mesh.MaxNumThreads2D cap. Set 0 to keep Gmsh default/auto behavior."
-    )
-    gmsh_form.addRow("Max 2D threads:", topo_gmsh_max_num_threads_2d_spin)
-    widgets["topo_gmsh_max_num_threads_2d_spin"] = topo_gmsh_max_num_threads_2d_spin
 
     topo_gmsh_optimize_netgen_chk = QtWidgets.QCheckBox("Enable Netgen optimize")
     topo_gmsh_optimize_netgen_chk.setObjectName("topo_gmsh_optimize_netgen_chk")
@@ -1137,9 +1096,8 @@ def _wire_topology_tab_controls(
     for spin_name in ("topo_gmsh_arc_soft_size_factor_spin", "topo_gmsh_arc_soft_dist_factor_spin",
                        "topo_gmsh_interface_transition_dist_factor_spin",
                        "topo_gmsh_interface_transition_min_ratio_spin",
-                       "topo_gmsh_mesh_size_min_spin", "topo_gmsh_tolerance_edge_length_spin",
-                       "topo_gmsh_num_threads_spin", "topo_gmsh_max_num_threads_2d_spin",
-                       "topo_gmsh_quality_max_iters_spin", "topo_gmsh_quality_time_limit_spin"):
+                        "topo_gmsh_mesh_size_min_spin", "topo_gmsh_tolerance_edge_length_spin",
+                        "topo_gmsh_quality_max_iters_spin", "topo_gmsh_quality_time_limit_spin"):
         w = widgets.get(spin_name)
         if w is not None and _alive(w) and hasattr(w, "valueChanged"):
             _w(w.valueChanged, update_summary_fn)

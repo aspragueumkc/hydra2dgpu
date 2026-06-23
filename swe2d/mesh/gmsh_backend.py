@@ -171,31 +171,19 @@ class GmshBackend(MeshingBackend):
         )
         strict = self._opt_bool(
             "gmsh_quality_strict",
-            self._opt_bool(
-                "tqmesh_quality_strict",
-                _mh()._env_bool("BACKWATER_GMSH_QUALITY_STRICT", False),
-            ),
+            _mh()._env_bool("BACKWATER_GMSH_QUALITY_STRICT", False),
         )
         min_angle_deg = self._opt_float(
             "gmsh_min_angle_deg",
-            self._opt_float(
-                "tqmesh_min_angle_deg",
-                _mh()._env_float("BACKWATER_GMSH_MIN_ANGLE_DEG", 18.0),
-            ),
+            _mh()._env_float("BACKWATER_GMSH_MIN_ANGLE_DEG", 18.0),
         )
         max_aspect_ratio = self._opt_float(
             "gmsh_max_aspect_ratio",
-            self._opt_float(
-                "tqmesh_max_aspect_ratio",
-                _mh()._env_float("BACKWATER_GMSH_MAX_ASPECT_RATIO", 12.0),
-            ),
+            _mh()._env_float("BACKWATER_GMSH_MAX_ASPECT_RATIO", 12.0),
         )
         min_area_rel_bbox = self._opt_float(
             "gmsh_min_area_rel_bbox",
-            self._opt_float(
-                "tqmesh_min_area_rel_bbox",
-                _mh()._env_float("BACKWATER_GMSH_MIN_AREA_REL_BBOX", 1.0e-11),
-            ),
+            _mh()._env_float("BACKWATER_GMSH_MIN_AREA_REL_BBOX", 1.0e-11),
         )
         max_non_orth_deg = self._opt_float(
             "gmsh_max_non_orth_deg",
@@ -219,14 +207,14 @@ class GmshBackend(MeshingBackend):
             max(1.0e-3, float(v))
             for v in self._opt_float_tuple(
                 "gmsh_quality_size_scales",
-                self._opt_float_tuple("tqmesh_size_scales", (1.0, 0.9, 0.8, 0.7)),
+                (1.0, 0.9, 0.8, 0.7),
             )
         )
         smooth_increments = tuple(
             max(0, int(round(v)))
             for v in self._opt_float_tuple(
                 "gmsh_quality_smooth_increments",
-                self._opt_float_tuple("tqmesh_smooth_increments", (0.0, 3.0, 6.0)),
+                (0.0, 3.0, 6.0),
             )
         )
         recombine_topology_passes = tuple(
@@ -344,8 +332,8 @@ class GmshBackend(MeshingBackend):
                     _norm = os.path.normpath(_cand)
                     if os.path.isdir(_norm) and _norm not in _gmsh_dll_dirs:
                         _gmsh_dll_dirs.append(_norm)
-        except Exception:
-            self._log(f"[WARNING] Unexpected error silently caught")
+        except Exception as _exc:
+            self._log(f"[WARNING] Gmsh DLL discovery failed: {_exc}")
         for _d in _gmsh_dll_dirs:
             if _d not in os.environ.get("PATH", "").split(os.pathsep):
                 os.environ["PATH"] = _d + os.pathsep + os.environ.get("PATH", "")

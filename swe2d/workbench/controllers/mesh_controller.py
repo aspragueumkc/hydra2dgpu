@@ -301,49 +301,48 @@ class MeshController:
 
 
     # ── HEC-RAS HDF5 mesh export ─────────────────────────────────────
-    def export_mesh_to_hdf5(self) -> None:
-        """Export in-memory mesh geometry to HEC-RAS HDF5 format."""
-        from swe2d.workbench.services.hecras_export_service import write_hecras_hdf5
+    def export_mesh_to_ugrid(self) -> None:
+        """Export in-memory mesh geometry to UGRID NetCDF."""
+        from swe2d.workbench.services.ugrid_export_service import write_ugrid_nc
 
         view = self._view
         mesh = getattr(view, "_mesh_data", None)
         if mesh is None:
-            view._log("[ERROR] No mesh loaded for HDF5 export.")
+            view._log("[ERROR] No mesh loaded for UGRID export.")
             return
 
         from qgis.PyQt import QtWidgets
         out_path, _ = QtWidgets.QFileDialog.getSaveFileName(
-            view, "Export Mesh to HEC-RAS HDF5", "", "HDF5 (*.h5);;All (*.*)"
+            view, "Export Mesh to UGRID NetCDF", "", "NetCDF (*.nc);;All (*.*)"
         )
         if not out_path:
             return
 
         try:
             from qgis.core import QgsProject
-            projection_wkt = "LOCAL_CS[\"Unknown\"]"
+            crs_wkt = "LOCAL_CS[\"Unknown\"]"
             try:
                 crs = QgsProject.instance().crs()
                 if crs is not None and crs.isValid():
-                    projection_wkt = crs.toWkt()
+                    crs_wkt = crs.toWkt()
             except Exception:
                 pass
 
-            write_hecras_hdf5(
+            write_ugrid_nc(
                 path=out_path,
                 mesh_data=mesh,
-                projection_wkt=projection_wkt,
+                crs_wkt=crs_wkt,
                 log_fn=view._log,
-                result_data=getattr(view, "_result_data", None),
                 gravity=getattr(view, "_gravity", 9.81),
                 h_min=getattr(view, "_h_min", 0.01),
                 n_mann=getattr(view, "_n_mann_default", 0.03),
                 is_us_customary=bool(getattr(view, "_is_us_customary", False)),
                 length_unit_name=getattr(view, "_length_unit_name", "m"),
             )
-            view._log(f"Mesh exported to HEC-RAS HDF5: {out_path}")
+            view._log(f"Mesh exported to UGRID NetCDF: {out_path}")
         except Exception as e:
-            QtWidgets.QMessageBox.critical(view, "HDF5 Export Error", str(e))
-            view._log(f"[ERROR] HDF5 mesh export: {e}")
+            QtWidgets.QMessageBox.critical(view, "UGRID Export Error", str(e))
+            view._log(f"[ERROR] UGRID mesh export: {e}")
 
     # ── HEC-RAS HDF5 results export ──────────────────────────────────
 
@@ -573,8 +572,7 @@ class MeshController:
             )
             view._result_data = None
             view._log(f"Assigned node z from terrain raster: {lyr.name()}")
-            if hasattr(view, "_refresh_plot"):
-                view._refresh_plot()
+            view._refresh_plot()
         except Exception as e:
             view._log(f"[ERROR] Terrain assignment failed: {e}")
 
@@ -652,9 +650,7 @@ class MeshController:
 
             for name, lyr in layers.items():
                 QgsProject.instance().addMapLayer(lyr)
-                cfg_fn = getattr(view, "_configure_swe2d_layer_editors", None)
-                if cfg_fn is not None:
-                    cfg_fn(lyr)
+                view._configure_swe2d_layer_editors(lyr)
 
             getattr(self._view, "_workbench_controller").refresh_layer_combos()
             view._model_gpkg_path = str(gpkg_path)

@@ -88,9 +88,7 @@ class TopologyController:
                 if lyr is not None and lyr.isValid():
                     QgsProject.instance().addMapLayer(lyr)
                     if isinstance(lyr, QgsVectorLayer):
-                        cfg_fn = getattr(view, "_configure_swe2d_layer_editors", None)
-                        if cfg_fn is not None:
-                            cfg_fn(lyr)
+                        view._configure_swe2d_layer_editors(lyr)
 
             self.refresh_layer_combos()
             topo = view._topology_tab_view
@@ -267,7 +265,7 @@ class TopologyController:
         return True, mesh_data, result_data
 
 
-    def poll_tqmesh_progress(
+    def poll_mesh_progress(
         self,
         topology_mesh_backend,
         topology_mesh_progress_path,
@@ -275,14 +273,13 @@ class TopologyController:
         topology_mesh_progress_last_sig,
         topology_mesh_progress,
     ):
-        """Poll progress file for a topology mesh operation (gmsh/tqmesh).
+        """Poll progress file for a topology mesh operation.
 
         Returns ``(progress_path, last_seq, last_sig, progress_dict)``.
-        Formerly ``_poll_tqmesh_progress`` in extracted module.
         """
         log_fn = self._view._log
         backend_name = str(topology_mesh_backend or "").strip().lower()
-        if backend_name not in {"tqmesh", "gmsh"}:
+        if backend_name not in {"gmsh"}:
             return (topology_mesh_progress_path, topology_mesh_progress_last_seq,
                     topology_mesh_progress_last_sig, topology_mesh_progress)
 
@@ -413,7 +410,7 @@ class TopologyController:
             topology_mesh_started_at = None
             topology_mesh_poll_count = 0
 
-            if backend_name in {"gmsh", "tqmesh"} and topology_mesh_process_pool is not None:
+            if backend_name in {"gmsh"} and topology_mesh_process_pool is not None:
                 try:
                     topology_mesh_process_pool.shutdown(wait=False, cancel_futures=True)
                 except Exception as e:
@@ -474,7 +471,7 @@ class TopologyController:
         if not fut.done():
             topology_mesh_poll_count += 1
             (topology_mesh_progress_path, topology_mesh_progress_last_seq,
-             topology_mesh_progress_last_sig, topology_mesh_progress) = self.poll_tqmesh_progress(
+             topology_mesh_progress_last_sig, topology_mesh_progress) = self.poll_mesh_progress(
                 topology_mesh_backend=topology_mesh_backend,
                 topology_mesh_progress_path=topology_mesh_progress_path,
                 topology_mesh_progress_last_seq=topology_mesh_progress_last_seq,
@@ -740,8 +737,7 @@ class TopologyController:
             dlg = SWE2DModelGeoPackageExplorerDialog(
                 gpkg_path=db_path,
                 open_run_log_viewer=view._open_run_log_viewer,
-                open_line_results_viewer=getattr(view, "_open_line_results_viewer", None),
-                open_coupling_results_viewer=getattr(view, "_open_coupling_results_viewer", None),
+                open_line_results_viewer=view._open_line_results_viewer,
                 logger=view._log,
                 parent=view,
             )
@@ -800,9 +796,9 @@ class TopologyController:
         backend_name = str(view.get_topo_combo_data("topo_backend_combo") or "gmsh")
 
         try:
-            mesh_options = view._build_topology_meshing_options() if hasattr(view, "_build_topology_meshing_options") else {}
+            mesh_options = view._build_topology_meshing_options()
             if backend_name == "gmsh":
-                workspace_root = view._infer_workspace_root_for_meshing() if hasattr(view, "_infer_workspace_root_for_meshing") else ""
+                workspace_root = view._infer_workspace_root_for_meshing()
                 if workspace_root:
                     mesh_options["workspace_module_root"] = workspace_root
                     view._log(f"mesh> module-path workspace-root={workspace_root}")
@@ -985,6 +981,14 @@ class TopologyController:
         out_path = getattr(view, "_topology_mesh_out_path", None)
         if ret != 0 or out_path is None or not os.path.exists(out_path):
             view._log(f"mesh> fail returncode={ret}")
+            err_path = getattr(view, "_topology_mesh_err_path", None)
+            if err_path and os.path.exists(err_path):
+                try:
+                    with open(err_path, "r", errors="replace") as ef:
+                        for ln in ef.read().splitlines():
+                            view._log(f"  stderr> {ln}")
+                except Exception:
+                    pass
             view._set_topology_mesh_busy(False)
             view.update_topo_status(f"Gmsh failed (code {ret})")
             self._cleanup_mesh_tempfiles(view)
@@ -994,6 +998,14 @@ class TopologyController:
                 result = pickle.load(f)
         except Exception as exc:
             view._log(f"mesh> fail result-read: {exc}")
+            err_path = getattr(view, "_topology_mesh_err_path", None)
+            if err_path and os.path.exists(err_path):
+                try:
+                    with open(err_path, "r", errors="replace") as ef:
+                        for ln in ef.read().splitlines():
+                            view._log(f"  stderr> {ln}")
+                except Exception:
+                    pass
             view._set_topology_mesh_busy(False)
             self._cleanup_mesh_tempfiles(view)
             return

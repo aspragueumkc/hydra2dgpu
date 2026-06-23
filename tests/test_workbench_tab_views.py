@@ -161,8 +161,7 @@ class TestTopologyTabView(unittest.TestCase):
             "topo_backend_combo", "topo_default_size_spin",
             "topo_default_cell_type_combo",
             "topo_controls_summary_lbl",
-            "topo_validate_btn", "topo_edit_regions_btn",
-            "topo_edit_quad_edges_btn", "topo_generate_btn",
+            "topo_generate_btn",
             "topo_terminate_btn",
         ):
             with self.subTest(attr=attr):
@@ -196,52 +195,6 @@ class TestTopologyTabView(unittest.TestCase):
         self.assertIsNone(result)
 
 
-# ═══════════════════════════════════════════════════════════════════════════
-# ResultsView tests
-# ═══════════════════════════════════════════════════════════════════════════
-
-class TestStudioResultsView(unittest.TestCase):
-    """StudioResultsView — Results/Inspector view fixture.
-
-    NOTE: StudioResultsView is NOT a QWidget subclass — it owns widgets
-    internally via _build_ui(). This is a recognized divergence from the
-    tab-view pattern and should be migrated to QWidget in a future phase.
-    """
-
-    @classmethod
-    def setUpClass(cls):
-        _ensure_app()
-
-    def test_import_and_instantiate(self):
-        from unittest.mock import MagicMock
-        from swe2d.workbench.views.results_view import StudioResultsView
-        view = StudioResultsView(data=MagicMock())
-        self.assertIsNotNone(view)
-
-    def test_has_expected_controls(self):
-        from unittest.mock import MagicMock
-        from swe2d.workbench.views.results_view import StudioResultsView
-        view = StudioResultsView(data=MagicMock())
-        for attr in (
-            "_gpkg_lbl", "_refresh_btn", "_add_btn",
-            "_run_list", "_remove_runs_btn", "_show_all_btn", "_hide_all_btn",
-            "_line_combo",
-        ):
-            with self.subTest(attr=attr):
-                self.assertTrue(
-                    hasattr(view, attr),
-                    f"StudioResultsView missing widget: {attr}",
-                )
-
-    def test_not_yet_qwidget_subclass(self):
-        """StudioResultsView is not a QWidget yet — tracked for migration."""
-        from unittest.mock import MagicMock
-        from swe2d.workbench.views.results_view import StudioResultsView
-        from qgis.PyQt import QtWidgets
-        view = StudioResultsView(data=MagicMock())
-        # It wraps its widgets in self._root which IS a QWidget
-        self.assertTrue(hasattr(view, "_root"))
-        self.assertIsInstance(view._root, QtWidgets.QWidget)
 
 
 if __name__ == "__main__":

@@ -561,13 +561,6 @@ class OverlayController:
 
         gpkg = ""
         view._results_data = SWE2DResultsData(gpkg_path=gpkg)
-        rv = getattr(view, "_results_view", None)
-        if rv is not None:
-            rv.set_data(view._results_data)
-
-    def get_velocity_vector_builder(self) -> None:
-        """Stub — velocity builder was removed. Returns None."""
-        return None
 
     # ── End inlined results_bridge methods ────────────────────────────
 

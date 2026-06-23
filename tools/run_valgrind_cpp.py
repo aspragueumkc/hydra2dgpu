@@ -148,17 +148,6 @@ assert isinstance(proj, dict), f"expected dict, got {type(proj)}"
 print("meshing_native_ring OK")
 """,
     ),
-    (
-        "hybridmesh_import",
-        "hydra_hybridmesh",
-        """
-import hydra_hybridmesh as m
-# Just importing and checking the module docstring
-doc = m.__doc__
-assert doc is not None
-print("hybridmesh_import OK")
-""",
-    ),
 ]
 
 

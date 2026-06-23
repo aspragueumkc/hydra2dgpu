@@ -81,9 +81,9 @@ class WorkbenchController:
         """Delegate to the mesh controller."""
         self._mesh.export_mesh_to_layers()
 
-    def export_mesh_to_hdf5(self) -> None:
+    def export_mesh_to_ugrid(self) -> None:
         """Delegate to the mesh controller."""
-        self._mesh.export_mesh_to_hdf5()
+        self._mesh.export_mesh_to_ugrid()
 
     def export_results_to_hdf5(self) -> None:
         """Delegate to the mesh controller."""

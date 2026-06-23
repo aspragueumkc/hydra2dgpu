@@ -82,7 +82,6 @@ class ResultsToolbox(QtWidgets.QWidget):
     ts_var_changed = pyqtSignal(str)
     prof_var_changed = pyqtSignal(str)
     profile_options_changed = pyqtSignal()
-    line_save_toggled = pyqtSignal(str, bool)  # key, checked
     # Coupling page signals
     coupling_metric_changed = pyqtSignal(str)
     coupling_element_changed = pyqtSignal(str)
@@ -329,26 +328,18 @@ class ResultsToolbox(QtWidgets.QWidget):
 
         self.save_mesh_chk = QtWidgets.QCheckBox("Save mesh results to GPKG")
         self.save_mesh_chk.setChecked(True)
-        self.save_mesh_chk.toggled.connect(
-            lambda v: self.line_save_toggled.emit("save_mesh", bool(v)))
         layout.addRow(self.save_mesh_chk)
 
         self.save_line_chk = QtWidgets.QCheckBox("Save line results to GPKG")
         self.save_line_chk.setChecked(True)
-        self.save_line_chk.toggled.connect(
-            lambda v: self.line_save_toggled.emit("save_line", bool(v)))
         layout.addRow(self.save_line_chk)
 
         self.save_coupling_chk = QtWidgets.QCheckBox("Save coupling results to GPKG")
         self.save_coupling_chk.setChecked(True)
-        self.save_coupling_chk.toggled.connect(
-            lambda v: self.line_save_toggled.emit("save_coupling", bool(v)))
         layout.addRow(self.save_coupling_chk)
 
         self.save_log_chk = QtWidgets.QCheckBox("Save run log to GPKG")
         self.save_log_chk.setChecked(True)
-        self.save_log_chk.toggled.connect(
-            lambda v: self.line_save_toggled.emit("save_log", bool(v)))
         layout.addRow(self.save_log_chk)
 
         toolbox.addItem(page, "Line / Structure / Drainage")

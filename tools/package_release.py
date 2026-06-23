@@ -63,7 +63,6 @@ EXCLUDE_FILES = {
 # Native module basenames (without extension)
 NATIVE_MODULES = [
     "hydra_swe2d",
-    "hydra_hybridmesh",
     "hydra_meshing_native",
     "hydra_overlay",
 ]

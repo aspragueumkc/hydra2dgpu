@@ -6,7 +6,7 @@ instance. This file exposes that function.
 import os as _os
 import sys as _sys
 
-# Add the compiled C++ extension directory so hydra_tqmesh and
+# Add the compiled C++ extension directory so hydra_swe2d can be imported
 # hydra_swe2d can be imported from anywhere inside the plugin.
 _plugin_dir = _os.path.dirname(_os.path.abspath(__file__))
 PLUGIN_ROOT = _plugin_dir

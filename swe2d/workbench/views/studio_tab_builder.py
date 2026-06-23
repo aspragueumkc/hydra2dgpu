@@ -101,9 +101,11 @@ def wire_map_tab_action_signals(dialog) -> None:
     handlers = {
         "load_model_gpkg_btn": (v.load_model_gpkg_btn, dialog._load_2d_model_geopackage),
         "export_mesh_layers_btn": (v.export_mesh_layers_btn, dialog._export_mesh_to_layers),
+        "export_mesh_ugrid_btn": (v.export_mesh_ugrid_btn, dialog._export_mesh_to_ugrid),
         "import_mesh_layers_btn": (v.import_mesh_layers_btn, dialog._workbench_controller.import_mesh_from_layers),
         "terrain_to_nodes_btn": (v.terrain_to_nodes_btn, dialog._assign_node_z_from_terrain),
         "pull_node_z_btn": (v.pull_node_z_btn, dialog._pull_node_z_from_layer),
+        "export_results_ugrid_btn": (v.export_results_ugrid_btn, dialog._export_results_to_ugrid),
     }
     for attr, (btn, cb) in handlers.items():
         safe_disconnect(btn.clicked, cb)
@@ -142,9 +144,6 @@ def wire_topology_tab_static_signals(dialog) -> None:
     from swe2d.workbench.signal_helpers import safe_disconnect
     v = dialog._topology_tab_view
     handlers = {
-        "topo_validate_btn": (v.topo_validate_btn, dialog._update_topology_control_summary),
-        "topo_edit_regions_btn": (v.topo_edit_regions_btn, dialog._open_topology_region_table),
-        "topo_edit_quad_edges_btn": (v.topo_edit_quad_edges_btn, dialog._open_topology_quad_edge_table),
         "topo_export_template_btn": (v.topo_export_template_btn, dialog._create_topology_template_layers),
         "topo_generate_btn": (v.topo_generate_btn, dialog._generate_mesh_from_topology_layers),
         "topo_terminate_btn": (v.topo_terminate_btn, dialog._on_terminate_topology_mesh),

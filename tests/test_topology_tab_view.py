@@ -89,24 +89,6 @@ class TestTopologyTabView(unittest.TestCase):
         self.assertIsInstance(view.topo_controls_summary_lbl, QLabel)
         self.assertTrue(view.topo_controls_summary_lbl.wordWrap())
 
-    def test_view_has_validate_btn(self):
-        from swe2d.workbench.views.topology_tab_view import TopologyTabView
-        view = TopologyTabView()
-        self.assertIsInstance(view.topo_validate_btn, QPushButton)
-        self.assertTrue(view.topo_validate_btn.isEnabled())
-
-    def test_view_has_edit_regions_btn(self):
-        from swe2d.workbench.views.topology_tab_view import TopologyTabView
-        view = TopologyTabView()
-        self.assertIsInstance(view.topo_edit_regions_btn, QPushButton)
-        self.assertTrue(view.topo_edit_regions_btn.isEnabled())
-
-    def test_view_has_edit_quad_edges_btn(self):
-        from swe2d.workbench.views.topology_tab_view import TopologyTabView
-        view = TopologyTabView()
-        self.assertIsInstance(view.topo_edit_quad_edges_btn, QPushButton)
-        self.assertTrue(view.topo_edit_quad_edges_btn.isEnabled())
-
     def test_view_has_generate_btn(self):
         from swe2d.workbench.views.topology_tab_view import TopologyTabView
         view = TopologyTabView()
@@ -136,9 +118,6 @@ class TestTopologyTabView(unittest.TestCase):
             (view.topo_gmsh_controls_widget, "topo_gmsh_controls_widget"),
             (view.topo_quality_controls_widget, "topo_quality_controls_widget"),
             (view.topo_controls_summary_lbl, "topo_controls_summary_lbl"),
-            (view.topo_validate_btn, "topo_validate_btn"),
-            (view.topo_edit_regions_btn, "topo_edit_regions_btn"),
-            (view.topo_edit_quad_edges_btn, "topo_edit_quad_edges_btn"),
             (view.topo_generate_btn, "topo_generate_btn"),
             (view.topo_terminate_btn, "topo_terminate_btn"),
         ]

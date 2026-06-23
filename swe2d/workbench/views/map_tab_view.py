@@ -246,9 +246,11 @@ class MapTabView(QtWidgets.QWidget):
         btn_specs = [
             ("load_model_gpkg_btn", "Load 2D Model GeoPackage"),
             ("export_mesh_layers_btn", "Export Mesh To Map Layers"),
+            ("export_mesh_ugrid_btn", "Export Mesh To UGRID"),
             ("import_mesh_layers_btn", "Load Mesh From Selected Layers"),
             ("terrain_to_nodes_btn", "Assign Node Z From Terrain"),
             ("pull_node_z_btn", "Pull Node Z From Nodes Layer"),
+            ("export_results_ugrid_btn", "Export Results to UGRID"),
         ]
         widgets = {}
         for attr, text in btn_specs:
@@ -277,13 +279,21 @@ class MapTabView(QtWidgets.QWidget):
         self.pull_node_z_btn.setToolTip(
             "Legacy workflow: read bed_z values from the selected nodes layer into in-memory mesh node_z."
         )
+        self.export_results_ugrid_btn.setToolTip(
+            "Export simulation results to UGRID NetCDF format for external visualization."
+        )
+        self.export_mesh_ugrid_btn.setToolTip(
+            "Export the current in-memory mesh geometry to UGRID NetCDF format."
+        )
 
         layout_slots = [
             (0, "load_model_gpkg_btn", 1, 2),
             (1, "export_mesh_layers_btn", 1, 2),
-            (2, "import_mesh_layers_btn", 1, 2),
-            (3, "terrain_to_nodes_btn", 1, 2),
-            (4, "pull_node_z_btn", 1, 2),
+            (2, "export_mesh_ugrid_btn", 1, 2),
+            (3, "import_mesh_layers_btn", 1, 2),
+            (4, "terrain_to_nodes_btn", 1, 2),
+            (5, "pull_node_z_btn", 1, 2),
+            (6, "export_results_ugrid_btn", 1, 2),
         ]
         col = 0
         for row, attr, rspan, cspan in layout_slots:

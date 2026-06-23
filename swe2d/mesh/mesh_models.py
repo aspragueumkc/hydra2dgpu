@@ -83,16 +83,6 @@ _CELL_TYPES = {"triangular", "quadrilateral", "cartesian", "channel_generator", 
 
 
 @dataclass
-class _TQMeshQualityConfig:
-    min_angle_deg: float
-    max_aspect_ratio: float
-    min_area_rel_bbox: float
-    strict: bool
-    size_scales: Tuple[float, ...]
-    smooth_increments: Tuple[int, ...]
-
-
-@dataclass
 class _GmshQualityConfig:
     enabled: bool
     strict: bool
@@ -141,5 +131,4 @@ __all__ = [
     "QuadEdgeControl",
     "_CELL_TYPES",
     "_GmshQualityConfig",
-    "_TQMeshQualityConfig",
 ]

@@ -44,7 +44,6 @@ class SWE2DModelGeoPackageExplorerDialog(QtWidgets.QDialog):
         gpkg_path: str,
         open_run_log_viewer: Callable[[], None],
         open_line_results_viewer: Callable[[], None],
-        open_coupling_results_viewer: Callable[[], None],
         logger: Callable[[str], None],
         parent=None,
     ):
@@ -54,7 +53,6 @@ class SWE2DModelGeoPackageExplorerDialog(QtWidgets.QDialog):
         self._gpkg_path = str(gpkg_path or "")
         self._open_run_log_viewer = open_run_log_viewer
         self._open_line_results_viewer = open_line_results_viewer
-        self._open_coupling_results_viewer = open_coupling_results_viewer
         self._log = logger if callable(logger) else (lambda _msg: None)
 
         root = QtWidgets.QVBoxLayout(self)
@@ -184,12 +182,6 @@ class SWE2DModelGeoPackageExplorerDialog(QtWidgets.QDialog):
             return
         if kind == "line_results":
             self._open_line_results_viewer()
-            return
-        if kind == "coupling_results":
-            if self._open_coupling_results_viewer is not None:
-                self._open_coupling_results_viewer()
-            else:
-                self._open_preview(name, title=f"Coupling Results - {name}")
             return
         if kind == "mesh_results":
             self._open_preview(name, title=f"Mesh Results Viewer - {name}")

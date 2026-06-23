@@ -444,6 +444,102 @@ class SWE2DWorkbenchStudioDialog(QtWidgets.QDialog):
         from swe2d.workbench.views.studio_tab_builder import wire_topology_tab_static_signals as _fn
         _fn(self)
 
+    def _configure_swe2d_layer_editors(self, layer) -> None:
+        from swe2d.workbench.views.topology_tab_view import _configure_swe2d_layer_editors as _fn
+        _fn(self._log, self._set_value_map_editor, self._set_expression_constraint, layer)
+
+    def _set_value_map_editor(self, layer, field_name: str, value_map: dict) -> None:
+        try:
+            idx = layer.fields().indexOf(field_name)
+            if idx >= 0:
+                setup = QgsEditorWidgetSetup('ValueMap', {'map': value_map})
+                layer.setEditorWidgetSetup(idx, setup)
+        except Exception as e:
+            self._log(f"[ERROR] set value map {field_name}: {e}")
+
+    def _set_expression_constraint(self, layer, field_name: str, expression: str) -> None:
+        try:
+            idx = layer.fields().indexOf(field_name)
+            if idx >= 0:
+                layer.setConstraintExpression(idx, expression)
+        except Exception as e:
+            self._log(f"[ERROR] set constraint {field_name}: {e}")
+
+    def _write_memory_layer_to_gpkg(self, lyr, gpkg_path: str, layer_name: str, *, create_file: bool = False) -> None:
+        from swe2d.workbench.services.lumped_hydrology_service import write_memory_layer_to_gpkg as _fn
+        _fn(lyr, gpkg_path, layer_name, create_file=create_file)
+
+    def _open_line_results_viewer(self) -> None:
+        self._log("_open_line_results_viewer: not yet wired to QGIS GeoPackage loading")
+
+    def _build_topology_meshing_options(self) -> dict:
+        v = self._topology_tab_view
+        opts = {}
+
+        def _r(name, default=None):
+            w = getattr(v, name, None) or v._topo_widgets.get(name)
+            if w is None:
+                return default
+            m = getattr(w, "currentData", None)
+            if m is not None:
+                d = m()
+                return default if d is None else d
+            m = getattr(w, "isChecked", None)
+            if m is not None:
+                return bool(m())
+            m = getattr(w, "value", None)
+            if m is not None:
+                return m()
+            m = getattr(w, "text", None)
+            if m is not None:
+                return str(m()).strip() or default
+            return default
+
+        opts["gmsh_tri_algorithm"] = _r("topo_gmsh_tri_algo_combo", 6)
+        opts["gmsh_quad_algorithm"] = _r("topo_gmsh_quad_algo_combo", 6)
+        opts["gmsh_recombination_algorithm"] = _r("topo_gmsh_recombine_algo_combo", 1)
+        opts["gmsh_global_recombine"] = _r("topo_gmsh_global_recombine_chk", False)
+        opts["gmsh_quad_full_region_flow_align"] = _r("topo_gmsh_quad_full_region_flow_align_chk", True)
+        opts["gmsh_smoothing"] = _r("topo_gmsh_smoothing_spin", 0)
+        opts["gmsh_optimize_iters"] = _r("topo_gmsh_optimize_iters_spin", 0)
+        opts["gmsh_verbosity"] = _r("topo_gmsh_verbosity_spin", 2)
+        opts["gmsh_optimize_netgen"] = _r("topo_gmsh_optimize_netgen_chk", False)
+        opts["gmsh_quality_enable"] = _r("topo_gmsh_quality_enable_chk", False)
+        opts["gmsh_quality_strict"] = _r("topo_quality_strict_chk", False)
+        opts["gmsh_min_angle_deg"] = _r("topo_quality_min_angle_spin", 5.0)
+        opts["gmsh_max_aspect_ratio"] = _r("topo_quality_max_aspect_spin", 20.0)
+        opts["gmsh_max_non_orth_deg"] = _r("topo_quality_max_non_orth_spin", 82.0)
+        opts["gmsh_min_area_rel_bbox"] = _r("topo_quality_min_area_edit", "1e-14")
+        opts["gmsh_quality_max_iterations"] = _r("topo_gmsh_quality_max_iters_spin", 2)
+        opts["gmsh_quality_time_limit_s"] = _r("topo_gmsh_quality_time_limit_spin", 55.0)
+        opts["gmsh_quality_size_scales"] = _r("topo_quality_size_scales_edit", "1.0,0.9,0.8,0.7")
+        opts["gmsh_quality_smooth_increments"] = _r("topo_quality_smooth_increments_edit", "0,2,4,6")
+        opts["gmsh_quality_recombine_topology_passes"] = _r("topo_gmsh_quality_recombine_topology_passes_edit", "5,12,20")
+        opts["gmsh_quality_recombine_minimum_quality"] = _r("topo_gmsh_quality_recombine_min_quality_edit", "0.01,0.03,0.06")
+        opts["gmsh_quality_random_factors"] = _r("topo_gmsh_quality_random_factors_edit", "1e-9,1e-7,1e-6")
+        opts["gmsh_quality_optimize_methods"] = _r("topo_gmsh_quality_optimize_methods_edit", "Laplace2D,Relocate2D")
+        opts["gmsh_algorithm_switch_on_failure"] = _r("topo_gmsh_algo_switch_on_failure_chk", False)
+        opts["gmsh_quality_recombine_node_repositioning"] = _r("topo_gmsh_recombine_node_repositioning_chk", True)
+        opts["gmsh_mesh_size_min"] = _r("topo_gmsh_mesh_size_min_spin", 0.0)
+        opts["gmsh_tolerance_edge_length"] = _r("topo_gmsh_tolerance_edge_length_spin", 0.0)
+        opts["gmsh_mesh_size_from_points"] = _r("topo_gmsh_mesh_size_from_points_chk", True)
+        opts["gmsh_arc_mode_override"] = _r("topo_gmsh_arc_mode_combo", "hard_embed")
+        opts["gmsh_arc_soft_size_factor"] = _r("topo_gmsh_arc_soft_size_factor_spin", 0.5)
+        opts["gmsh_arc_soft_dist_factor"] = _r("topo_gmsh_arc_soft_dist_factor_spin", 2.0)
+        opts["gmsh_interface_transition_enable"] = _r("topo_gmsh_interface_transition_enable_chk", True)
+        opts["gmsh_interface_transition_dist_factor"] = _r("topo_gmsh_interface_transition_dist_factor_spin", 2.5)
+        opts["gmsh_interface_transition_min_ratio"] = _r("topo_gmsh_interface_transition_min_ratio_spin", 1.25)
+        opts["gmsh_interface_conformance"] = _r("topo_gmsh_interface_conformance_chk", False)
+        opts["gmsh_transverse_interface_centroid_merge"] = _r("topo_gmsh_transverse_interface_centroid_merge_chk", False)
+        opts["gmsh_interface_snap_tol"] = _r("topo_gmsh_interface_snap_tol_spin", 1.0)
+        opts["gmsh_interface_reject_near_unshared"] = _r("topo_gmsh_interface_reject_near_unshared_chk", True)
+        opts["gmsh_interface_reject_tol"] = _r("topo_gmsh_interface_reject_tol_spin", 1e-3)
+        return opts
+
+    def _infer_workspace_root_for_meshing(self) -> str:
+        """ponytail: returns empty, add workspace resolution when needed."""
+        return ""
+
     def _build_model_tab_page(self):
         """Build the model tab page via studio_tab_builder."""
         from swe2d.workbench.views.studio_tab_builder import build_model_tab_page as _fn
@@ -518,21 +614,17 @@ class SWE2DWorkbenchStudioDialog(QtWidgets.QDialog):
         """Export mesh to QGIS vector layers."""
         self._workbench_controller.export_mesh_to_layers()
 
-    def _export_mesh_to_hdf5(self) -> None:
-        """Export mesh to HEC-RAS HDF5 format."""
-        self._workbench_controller.export_mesh_to_hdf5()
-
-    def _export_results_to_hdf5(self) -> None:
-        """Export simulation results to HEC-RAS HDF5 format."""
-        self._workbench_controller.export_results_to_hdf5()
-
-    def _export_results_to_ugrid(self) -> None:
-        """Export simulation results to UGRID NetCDF format."""
-        self._workbench_controller.export_results_to_ugrid()
+    def _export_mesh_to_ugrid(self) -> None:
+        """Export mesh to UGRID NetCDF."""
+        self._workbench_controller.export_mesh_to_ugrid()
 
     def _assign_node_z_from_terrain(self) -> None:
         """Assign node z-values from terrain raster."""
         self._workbench_controller.assign_node_z_from_terrain()
+
+    def _export_results_to_ugrid(self) -> None:
+        """Export simulation results to UGRID NetCDF format."""
+        self._workbench_controller.export_results_to_ugrid()
 
     def _pull_node_z_from_layer(self) -> None:
         """Pull node z-values from a vector layer."""
@@ -1566,8 +1658,7 @@ class SWE2DWorkbenchStudioDialog(QtWidgets.QDialog):
                 "topo_gmsh_global_recombine_chk",
                 "topo_gmsh_quad_full_region_flow_align_chk",
                 "topo_gmsh_smoothing_spin", "topo_gmsh_optimize_iters_spin",
-                "topo_gmsh_verbosity_spin", "topo_gmsh_num_threads_spin",
-                "topo_gmsh_max_num_threads_2d_spin",
+                "topo_gmsh_verbosity_spin",
                 "topo_gmsh_optimize_netgen_chk",
                 "topo_gmsh_arc_mode_combo",
             ],

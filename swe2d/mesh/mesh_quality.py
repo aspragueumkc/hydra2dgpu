@@ -7,7 +7,6 @@ import numpy as np
 from swe2d.mesh.mesh_models import (
     MeshResult,
     _GmshQualityConfig,
-    _TQMeshQualityConfig,
 )
 
 
@@ -149,31 +148,6 @@ def _face_rings(tris: np.ndarray, quads: np.ndarray):
         yield quad[:4]
 
 
-def _quality_passes(stats: dict, cfg: _TQMeshQualityConfig) -> bool:
-    """quality passes"""
-    if stats["n_tri"] + stats["n_quad"] == 0:
-        return False
-    if stats.get("min_angle_deg", 90.0) < cfg.min_angle_deg:
-        return False
-    if stats.get("max_aspect_ratio", 0.0) > cfg.max_aspect_ratio:
-        return False
-    if stats.get("min_area_rel_bbox", 1.0) < cfg.min_area_rel_bbox:
-        return False
-    return True
-
-
-def _quality_score(stats: dict, cfg: _TQMeshQualityConfig) -> float:
-    """quality score"""
-    score = 0.0
-    if stats.get("min_angle_deg", 90.0) >= cfg.min_angle_deg:
-        score += 1.0
-    if stats.get("max_aspect_ratio", 0.0) <= cfg.max_aspect_ratio:
-        score += 1.0
-    if stats.get("min_area_rel_bbox", 1.0) >= cfg.min_area_rel_bbox:
-        score += 1.0
-    return score
-
-
 def _face_mesh_quality_stats(
     mesh: MeshResult,
     cfg: _GmshQualityConfig,
@@ -294,6 +268,4 @@ __all__ = [
     "_gmsh_quality_score",
     "_mesh_quality_stats",
     "_polygon_area_xy",
-    "_quality_passes",
-    "_quality_score",
 ]

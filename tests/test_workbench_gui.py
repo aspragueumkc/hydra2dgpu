@@ -565,20 +565,6 @@ class TestStudioResultsControlsTab(unittest.TestCase):
             _qgis_qt.QApplication = cls._saved_qapp
         cls._saved_qapp = None
 
-    def test_results_view_exists_on_dialog(self):
-        """After dialog build, _results_view (StudioResultsView) exists."""
-        from swe2d.workbench.studio_dialog import SWE2DWorkbenchStudioDialog
-        from swe2d.workbench.views.results_view import StudioResultsView
-        iface = MagicMock()
-        dlg = SWE2DWorkbenchStudioDialog(iface=iface)
-        try:
-            rv = getattr(dlg, '_results_view', None)
-            if rv is not None:
-                self.assertIsInstance(rv, StudioResultsView,
-                    "_results_view should be a StudioResultsView instance")
-        finally:
-            dlg.close()
-
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # Legacy panel cleanup tests (Phase 5 / Task 25)
@@ -623,30 +609,6 @@ class TestLegacyPanelCleanup(unittest.TestCase):
         finally:
             dlg.close()
 
-    def test_controls_tab_self_contained(self):
-        """Results view has content widgets (owned by StudioResultsView)."""
-        from swe2d.workbench.studio_dialog import SWE2DWorkbenchStudioDialog
-        dlg = SWE2DWorkbenchStudioDialog(iface=MagicMock())
-        try:
-            rv = getattr(dlg, '_results_view', None)
-            self.assertIsNotNone(rv, "Results view must exist")
-            # Verify key widgets are present on the view
-            self.assertTrue(hasattr(rv, '_run_list'), "View must own _run_list")
-            self.assertTrue(hasattr(rv, '_line_combo'), "View must own _line_combo")
-        finally:
-            dlg.close()
-
-    def test_studio_run_list_exists(self):
-        """The run list widget should exist on the StudioResultsView."""
-        from swe2d.workbench.studio_dialog import SWE2DWorkbenchStudioDialog
-        dlg = SWE2DWorkbenchStudioDialog(iface=MagicMock())
-        try:
-            rv = getattr(dlg, '_results_view', None)
-            self.assertIsNotNone(rv, "Results view should exist on dialog")
-            rl = getattr(rv, '_run_list', None)
-            self.assertIsNotNone(rl, "Run list widget should exist on results view")
-        finally:
-            dlg.close()
 
 
 # ═══════════════════════════════════════════════════════════════════════════════

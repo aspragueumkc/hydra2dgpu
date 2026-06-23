@@ -161,17 +161,6 @@ endfunction()
 # GPU-only SWE2D module.
 _configure_swe2d_module(hydra_swe2d hydra_swe2d)
 
-# ── Custom hybrid topology mesher (C++ backend) ────────────────────────────
-pybind11_add_module(hydra_hybridmesh
-    cpp/src/hybrid_mesh_bindings.cpp
-)
-
-if(MSVC)
-  target_compile_options(hydra_hybridmesh PRIVATE /W1)
-else()
-  target_compile_options(hydra_hybridmesh PRIVATE -w)
-endif()
-
 # ── Meshing prebuild native kernels ────────────────────────────────────────
 pybind11_add_module(hydra_meshing_native
     cpp/src/meshing_native_bindings.cpp

@@ -56,7 +56,7 @@ from swe2d.mesh.meshing import (  # noqa: E402
     ConceptualRegion,
     QuadEdgeControl,
     _mesh_quality_stats,
-    generate_face_centric_mesh,
+    _run_topology_mesh_job,
 )
 
 
@@ -422,7 +422,7 @@ def _log(msg: str) -> None:
 def _constraint_probe_worker(result_q: mp.Queue, model: ConceptualModel, backend_name: str) -> None:
     t0 = time.perf_counter()
     try:
-        mesh = generate_face_centric_mesh(model, backend=backend_name)
+        mesh = _run_topology_mesh_job(model, backend_name=backend_name)
         result_q.put(
             {
                 "status": "ok",
@@ -596,7 +596,7 @@ def main() -> int:
 
     _log("mesh> gmsh-start backend=gmsh")
     t1 = time.perf_counter()
-    mesh = generate_face_centric_mesh(model, backend="gmsh")
+    mesh = _run_topology_mesh_job(model, backend_name="gmsh")
     gmsh_elapsed = time.perf_counter() - t1
 
     tris, quads = _extract_tri_quad_faces(mesh)

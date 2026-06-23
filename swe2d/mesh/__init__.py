@@ -10,9 +10,7 @@ from swe2d.mesh.meshing import (
     MeshingBackend,
     QuadEdgeControl,
     StructuredFaceCentricBackend,
-    TQMeshBackend,
     conceptual_from_qgis_layers,
-    generate_face_centric_mesh,
 )
 from swe2d.mesh.meshing import GmshBackend
 from swe2d.mesh.bridge_stacked_mesh import (
@@ -48,13 +46,11 @@ __all__ = [
     "MeshingBackend",
     "QuadEdgeControl",
     "StructuredFaceCentricBackend",
-    "TQMeshBackend",
     "boundary_buffer_cells",
     "bridge_specs_from_structure_config",
     "build_bridge_stacked_plan",
     "collect_boundary_arrays",
     "conceptual_from_qgis_layers",
-    "generate_face_centric_mesh",
     "inflow_adjacent_cells",
     "initial_state",
     "mesh_boundary_edges",

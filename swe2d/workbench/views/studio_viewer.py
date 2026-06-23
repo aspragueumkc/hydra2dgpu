@@ -63,12 +63,6 @@ class SWE2DStudioViewer(QtWidgets.QWidget):
     def _register_default_renderers(self) -> None:
         """Renderers are dispatched by swe2d.plotting.viewer_plots — no per-widget registration needed."""
 
-    def set_renderer(self, tab: str, fn: Callable) -> None:
-        """Set a custom render function for a specific tab."""
-        w = self._plot_widgets.get(tab)
-        if w is not None:
-            w.set_render_fn(fn)
-
     def set_mesh_data(self, mesh: Optional[Dict[str, Any]]) -> None:
         """Set mesh data on all plot widgets."""
         self._mesh_data = mesh
@@ -97,11 +91,6 @@ class SWE2DStudioViewer(QtWidgets.QWidget):
         current = self.current_widget
         if current is not None and hasattr(current, "refresh"):
             current.refresh()
-
-    def refresh_all(self) -> None:
-        """Refresh all plot widgets."""
-        for w in self._plot_widgets.values():
-            w.refresh()
 
     @property
     def tab_widget(self) -> QtWidgets.QTabWidget:
