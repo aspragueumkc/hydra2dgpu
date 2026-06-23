@@ -88,13 +88,13 @@ jobs:
 
           # Create the release ZIP
           cd dist
-          zip -r ../hydra2gpu-linux-x86_64.zip hydra2dgpu/
+          zip -r ../hydra2dgpu-linux-x86_64.zip hydra2dgpu/
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: hydra2gpu-linux-x86_64
-          path: hydra2gpu-linux-x86_64.zip
+          name: hydra2dgpu-linux-x86_64
+          path: hydra2dgpu-linux-x86_64.zip
 
   # ── Windows x86_64 + CUDA ─────────────────────────────────────────────
   build-windows:
@@ -187,13 +187,13 @@ jobs:
           Copy-Item dist\lib\cudart64_*.dll dist\hydra2dgpu\ -Force
 
           # Create the release ZIP
-          Compress-Archive -Path dist\hydra2dgpu -DestinationPath hydra2gpu-windows-x86_64.zip
+          Compress-Archive -Path dist\hydra2dgpu -DestinationPath hydra2dgpu-windows-x86_64.zip
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: hydra2gpu-windows-x86_64
-          path: hydra2gpu-windows-x86_64.zip
+          name: hydra2dgpu-windows-x86_64
+          path: hydra2dgpu-windows-x86_64.zip
 
   # ── Create GitHub Release ──────────────────────────────────────────────
   release:
@@ -209,7 +209,7 @@ jobs:
       - name: Create Release
         uses: softprops/action-gh-release@v2
         with:
-          files: hydra2gpu-*.zip
+          files: hydra2dgpu-*.zip
           generate_release_notes: true
           draft: false
           prerelease: false
