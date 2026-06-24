@@ -79,6 +79,7 @@ class SWE2DRuntimeStepExecutor:
             bc_ms += (time.perf_counter() - _t_bc0) * 1000.0
 
         rain_src = 0.0
+        coupled_source_rate = None
         dt_used = float(dt_cfg)
 
         if stage_coupled_imex_enabled:
