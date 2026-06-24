@@ -2699,13 +2699,6 @@ class SWE2DWorkbenchStudioDialog(QtWidgets.QDialog):
         """Open the batch simulation dialog for parameter sweeps."""
         from swe2d.workbench.dialogs.batch_simulation_dialog import BatchSimulationDialog
 
-        gpkg = str(self._model_gpkg_path_edit.text()) if hasattr(self, "_model_gpkg_path_edit") else ""
-        if not gpkg:
-            gpkg = str(getattr(self, "_model_gpkg_path", ""))
-        if not gpkg:
-            QtWidgets.QMessageBox.warning(self, "Batch", "No project GeoPackage path set.")
-            return
-
         base_params = {
             "mesh": "",
             "params": {
@@ -2718,8 +2711,6 @@ class SWE2DWorkbenchStudioDialog(QtWidgets.QDialog):
         dlg = BatchSimulationDialog(
             parent=self,
             base_params=base_params,
-            mesh_gpkg=gpkg,
-            results_gpkg=gpkg,
         )
         dlg.exec()
 

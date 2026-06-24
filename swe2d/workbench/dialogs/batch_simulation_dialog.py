@@ -43,6 +43,17 @@ class BatchSimulationDialog(QtWidgets.QDialog):
     def _build_ui(self):
         layout = QtWidgets.QVBoxLayout(self)
 
+        # GPKG selection
+        gpkg_layout = QtWidgets.QHBoxLayout()
+        gpkg_layout.addWidget(QtWidgets.QLabel("GeoPackage:"))
+        self._gpkg_path_edit = QtWidgets.QLineEdit(self._mesh_gpkg)
+        self._gpkg_path_edit.setPlaceholderText("Select or enter path to GeoPackage...")
+        gpkg_layout.addWidget(self._gpkg_path_edit)
+        self._gpkg_browse_btn = QtWidgets.QPushButton("Browse...")
+        self._gpkg_browse_btn.clicked.connect(self._browse_gpkg)
+        gpkg_layout.addWidget(self._gpkg_browse_btn)
+        layout.addLayout(gpkg_layout)
+
         # Toolbar
         toolbar = QtWidgets.QHBoxLayout()
         self._add_row_btn = QtWidgets.QPushButton("Add Row")
@@ -163,6 +174,15 @@ class BatchSimulationDialog(QtWidgets.QDialog):
         except Exception as exc:
             QtWidgets.QMessageBox.critical(self, "Import Error", str(exc))
 
+    def _browse_gpkg(self):
+        path, _ = QtWidgets.QFileDialog.getOpenFileName(
+            self, "Select GeoPackage", "", "GeoPackage (*.gpkg *.gpkgx);;All Files (*)")
+        if path:
+            self._gpkg_path_edit.setText(path)
+
+    def _gpkg_path(self) -> str:
+        return str(self._gpkg_path_edit.text()).strip()
+
     def _run_batch(self):
         if self._running:
             return
@@ -170,8 +190,9 @@ class BatchSimulationDialog(QtWidgets.QDialog):
         if not param_sets:
             QtWidgets.QMessageBox.information(self, "Batch Run", "No parameter sets defined.")
             return
-        if not self._mesh_gpkg or not os.path.isfile(self._mesh_gpkg):
-            QtWidgets.QMessageBox.warning(self, "Batch Run", "Mesh GPKG not found.")
+        gpkg = self._gpkg_path()
+        if not gpkg or not os.path.isfile(gpkg):
+            QtWidgets.QMessageBox.warning(self, "Batch Run", "GeoPackage not found. Select a valid file.")
             return
 
         self._running = True
@@ -194,11 +215,12 @@ class BatchSimulationDialog(QtWidgets.QDialog):
             self._next_idx += 1
             ps = self._param_sets[idx]
             params_json = json.dumps(ps)
+            gpkg = self._gpkg_path()
+            results = self._results_gpkg or os.path.splitext(gpkg)[0] + "_batch_results.gpkg"
             cmd = [
                 sys.executable, "-m", "swe2d.cli", "run",
-                self._mesh_gpkg, params_json,
-                "--results",
-                self._results_gpkg or os.path.splitext(self._mesh_gpkg)[0] + "_batch_results.gpkg",
+                gpkg, params_json,
+                "--results", results,
             ]
             proc = subprocess.Popen(
                 cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,

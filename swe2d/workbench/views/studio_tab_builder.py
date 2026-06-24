@@ -104,7 +104,6 @@ def wire_map_tab_action_signals(dialog) -> None:
         "export_mesh_ugrid_btn": (v.export_mesh_ugrid_btn, dialog._export_mesh_to_ugrid),
         "save_mesh_gpkg_btn": (v.save_mesh_gpkg_btn, dialog._save_mesh_to_gpkg),
         "import_mesh_layers_btn": (v.import_mesh_layers_btn, dialog._workbench_controller.import_mesh_from_layers),
-        "mesh_gpkg_load_combo": (v.mesh_gpkg_load_combo, None),
         "load_mesh_gpkg_btn": (v.load_mesh_gpkg_btn, dialog._load_mesh_from_gpkg),
         "terrain_to_nodes_btn": (v.terrain_to_nodes_btn, dialog._assign_node_z_from_terrain),
         "pull_node_z_btn": (v.pull_node_z_btn, dialog._pull_node_z_from_layer),

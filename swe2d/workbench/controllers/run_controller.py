@@ -860,6 +860,19 @@ class RunController:
 
             save_mesh_results = bool(wp["save_mesh_results_to_gpkg_chk"])
             save_max_only = bool(wp.get("save_max_only_chk", False))
+            # Ensure mesh geometry is in the results GPKG so overlay can load it
+            _results_gpkg = str(wp.get("results_gpkg_path_edit", "") or "")
+            if _results_gpkg and (save_mesh_results or save_max_only):
+                try:
+                    _mesh_data = backend.export_mesh_data()
+                    from swe2d.workbench.services.gpkg_persistence_service import (
+                        persist_mesh_to_geopackage,
+                    )
+                    persist_mesh_to_geopackage(
+                        _results_gpkg, f"mesh_{run_id}", _mesh_data, log_fn=log_fn,
+                    )
+                except Exception:
+                    pass
             max_results = backend.get_max_tracking() if (save_mesh_results or save_max_only) else None
             if save_max_only and max_results is not None:
                 from swe2d.workbench.services.gpkg_persistence_service import (

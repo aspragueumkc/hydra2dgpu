@@ -414,9 +414,9 @@ void swe2d_get_max_tracking(const SWE2DSolver* s, double* h_max_out, double* hu_
     }
 #endif
     // No CPU path: max tracking is GPU-only.
-    if (h_max_out && s->dev && s->dev->d_max_h) std::memset(h_max_out, 0, static_cast<size_t>(s->n_cells) * sizeof(double));
-    if (hu_max_out && s->dev && s->dev->d_max_hu) std::memset(hu_max_out, 0, static_cast<size_t>(s->n_cells) * sizeof(double));
-    if (hv_max_out && s->dev && s->dev->d_max_hv) std::memset(hv_max_out, 0, static_cast<size_t>(s->n_cells) * sizeof(double));
+    if (h_max_out && s->dev && s->dev->d_max_h) std::memset(h_max_out, 0, static_cast<size_t>(s->mesh->n_cells) * sizeof(double));
+    if (hu_max_out && s->dev && s->dev->d_max_hu) std::memset(hu_max_out, 0, static_cast<size_t>(s->mesh->n_cells) * sizeof(double));
+    if (hv_max_out && s->dev && s->dev->d_max_hv) std::memset(hv_max_out, 0, static_cast<size_t>(s->mesh->n_cells) * sizeof(double));
 }
 
 /** Overwrite solver state from caller-supplied arrays.
