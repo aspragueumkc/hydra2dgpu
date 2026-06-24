@@ -55,7 +55,7 @@ def apply_external_sources(
     momentum_cap_min_speed: float = 50.0,
     momentum_cap_celerity_mult: float = 20.0,
 ) -> None:
-    """Apply external sources via GPU-native injection (no CPU fallback)."""
+    """Apply external sources via GPU-native injection."""
     if dt_step <= 0.0:
         backend.set_external_sources_native(None)
         return

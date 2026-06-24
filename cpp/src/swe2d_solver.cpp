@@ -135,73 +135,9 @@ void build_solver_rain_cn_source(SWE2DSolver* s, double t0, double t1)
 // Must be called with pre-zeroed gx/gy vectors.
 // Boundary edges (c1 < 0) contribute a face value equal to c0 (zero-gradient).
 // ─────────────────────────────────────────────────────────────────────────────
-/** Green-Gauss gradient computation on CPU.
-    Computes gradient of quantity q over the mesh using the divergence theorem.
-    Boundary edges contribute a face value equal to c0 (zero-gradient).
-    Must be called with pre-zeroed gx/gy vectors. */
-void compute_gg_gradient_cpu(
-    const SWE2DMesh& mesh,
-    const std::vector<double>& q,
-    std::vector<double>& gx,
-    std::vector<double>& gy)
-{
-    const int32_t n_cells = mesh.n_cells;
-    const int32_t n_edges = mesh.n_edges;
-    gx.assign(static_cast<size_t>(n_cells), 0.0);
-    gy.assign(static_cast<size_t>(n_cells), 0.0);
-
-    for (int32_t e = 0; e < n_edges; ++e) {
-        const int32_t c0 = mesh.edge_c0[e];
-        const int32_t c1 = mesh.edge_c1[e];
-        const double  nx  = mesh.edge_nx[e];
-        const double  ny  = mesh.edge_ny[e];
-        const double  len = mesh.edge_len[e];
-
-        // Skip degenerate cells
-        if (mesh.cell_inv_area[c0] > 1.0e6) continue;
-
-        const double q0 = q[static_cast<size_t>(c0)];
-        const double q1 = (c1 >= 0 && mesh.cell_inv_area[c1] <= 1.0e6)
-                          ? q[static_cast<size_t>(c1)] : q0;
-        const double qf = 0.5 * (q0 + q1);
-
-        const double ia0 = mesh.cell_inv_area[c0];
-        gx[static_cast<size_t>(c0)] += qf * nx * len * ia0;
-        gy[static_cast<size_t>(c0)] += qf * ny * len * ia0;
-
-        if (c1 >= 0 && mesh.cell_inv_area[c1] <= 1.0e6) {
-            const double ia1 = mesh.cell_inv_area[c1];
-            gx[static_cast<size_t>(c1)] -= qf * nx * len * ia1;
-            gy[static_cast<size_t>(c1)] -= qf * ny * len * ia1;
-        }
-    }
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
-// TVD phi limiter — identical formulas to swe2d_flux_kernel (GPU).
-// scheme: 1=Superbee, 2=MinMod, 3=MC, 4=VanLeer
-// ─────────────────────────────────────────────────────────────────────────────
-/** TVD slope limiter for MUSCL reconstruction on CPU.
-    @param r Slope ratio (adjacent gradient / cell gradient)
-    @param scheme Limiter type: 1=Superbee, 2=MinMod, 3=MC, 4=VanLeer
-    @returns Limited slope ratio phi(r) */
-inline double phi_tvd_cpu(double r, int scheme)
-{
-    switch (scheme) {
-        case 1:  // Superbee (most aggressive)
-            return std::fmax(0.0, std::fmax(std::fmin(2.0 * r, 1.0),
-                                            std::fmin(r, 2.0)));
-        case 2:  // MinMod (most conservative)
-            return std::fmax(0.0, std::fmin(r, 1.0));
-        case 3:  // MC (monotonized central)
-            return std::fmax(0.0, std::fmin(std::fmin(2.0 * r, 0.5 * (1.0 + r)),
-                                            2.0));
-        case 4:  // Van Leer (smooth)
-            return (r + std::fabs(r)) / (1.0 + std::fabs(r));
-        default:
-            return 0.0;
-    }
-}
+#if 0
+// Dead CPU solver functions removed — GPU-only build
+#endif
 
 #ifdef HYDRA_HAS_CUDA
 /** Synchronise GPU device state back to host arrays. */
@@ -229,74 +165,6 @@ bool swe2d_env_enabled(const char* name) {
 
 #ifdef HYDRA_HAS_CUDA
 
-
-/** Summarise solver state into a diagnostics struct after a step.
-    @param s Solver handle @param dt Actual timestep taken
-    @param gpu_active Whether GPU was used @param max_depth_residual Max depth change
-    @returns Populated SWE2DStepDiag */
-SWE2DStepDiag summarize_state(const SWE2DSolver* s, double dt, bool gpu_active, double max_depth_residual) {
-    const SWE2DMesh& mesh = *s->mesh;
-    const double h_min = s->cfg.h_min;
-
-    SWE2DStepDiag diag;
-    diag.dt = dt;
-    diag.gpu_active = gpu_active;
-    diag.max_depth = 0.0;
-    diag.min_depth = std::numeric_limits<double>::max();
-    diag.wet_cells = 0;
-    diag.mass_total = 0.0;
-    diag.max_depth_residual = max_depth_residual;
-    diag.max_wse_elev_error = max_depth_residual;
-
-    for (int32_t c = 0; c < mesh.n_cells; ++c) {
-        const double h = s->h[c];
-        if (h > h_min) {
-            diag.wet_cells += 1;
-            if (h > diag.max_depth) diag.max_depth = h;
-            if (h < diag.min_depth) diag.min_depth = h;
-        }
-        diag.mass_total += h * mesh.cell_area[c];
-    }
-
-    if (diag.min_depth == std::numeric_limits<double>::max()) {
-        diag.min_depth = 0.0;
-    }
-
-    diag.max_courant = dt * compute_lambda_max(s);
-    return diag;
-}
-
-/** Debug dump of flux accumulator summary to stderr.
-    Prints sums, max absolute values, and first few cell values. */
-void dump_flux_summary(const char* tag,
-                       const std::vector<double>& dh,
-                       const std::vector<double>& dhu,
-                       const std::vector<double>& dhv)
-{
-    if (dh.empty()) return;
-    double s_h = 0.0, s_hu = 0.0, s_hv = 0.0;
-    double m_h = 0.0, m_hu = 0.0, m_hv = 0.0;
-    for (size_t i = 0; i < dh.size(); ++i) {
-        const double ah = std::abs(dh[i]);
-        const double au = std::abs(dhu[i]);
-        const double av = std::abs(dhv[i]);
-        s_h += dh[i];
-        s_hu += dhu[i];
-        s_hv += dhv[i];
-        if (ah > m_h) m_h = ah;
-        if (au > m_hu) m_hu = au;
-        if (av > m_hv) m_hv = av;
-    }
-    std::fprintf(stderr,
-                 "[SWE2D_DEBUG] %s flux summary: sum(dh)=%.9e sum(dhu)=%.9e sum(dhv)=%.9e max|dh|=%.9e max|dhu|=%.9e max|dhv|=%.9e\n",
-                 tag, s_h, s_hu, s_hv, m_h, m_hu, m_hv);
-    const size_t n_show = std::min<size_t>(dh.size(), 8);
-    for (size_t i = 0; i < n_show; ++i) {
-        std::fprintf(stderr,
-                     "[SWE2D_DEBUG] %s flux cell[%zu]: dh=%.9e dhu=%.9e dhv=%.9e\n",
-                     tag, i, dh[i], dhu[i], dhv[i]);
-    }
-}
 
 } // namespace
 #endif
@@ -437,56 +305,7 @@ void swe2d_set_state(SWE2DSolver* s, const double* h_in, const double* hu_in, co
 #endif
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-/// Compute maximum CFL characteristic speed over all edges (CPU pass).
-/// @param s Solver handle @returns max lambda (s^{-1})
-namespace {
-static double compute_lambda_max(const SWE2DSolver* s) {
-    const SWE2DMesh& mesh = *s->mesh;
-    const double g        = s->cfg.g;
-    const double h_min    = s->cfg.h_min;
-
-    double lambda_max = 0.0;
-
-    for (int32_t e = 0; e < mesh.n_edges; ++e) {
-        int32_t c0 = mesh.edge_c0[e];
-        int32_t c1 = mesh.edge_c1[e];
-
-        double hL  = s->h[c0],  huL = s->hu[c0], hvL = s->hv[c0];
-        double aL  = mesh.cell_area[c0];
-        double hR, huR, hvR, aR;
-
-        if (c1 >= 0) {
-            hR  = s->h[c1]; huR = s->hu[c1]; hvR = s->hv[c1];
-            aR  = mesh.cell_area[c1];
-        } else {
-            // Boundary: use ghost with WALL (conservative estimate)
-            hR = hL; huR = huL; hvR = hvL;
-            aR = aL;
-        }
-
-        double lam = swe2d::edge_cfl_lambda(
-            hL, huL, hvL, hR, huR, hvR,
-            mesh.edge_nx[e], mesh.edge_ny[e], mesh.edge_len[e],
-            aL, aR, g, h_min);
-
-        if (lam > lambda_max) lambda_max = lam;
-    }
-
-    return lambda_max;
-}
-} // namespace
-
-/** Compute CFL-constrained timestep for CPU path.
-    @param s Solver handle @returns dt (s) */
-static double compute_cfl_dt(const SWE2DSolver* s) {
-    const double cfl = s->cfg.cfl;
-    double lambda_max = compute_lambda_max(s);
-
-    if (lambda_max <= 0.0) return s->cfg.dt_max;
-    double dt = cfl / lambda_max;
-    return std::min(dt, s->cfg.dt_max);
-}
+// Dead CPU CFL functions removed — GPU-only build
 
 
 
