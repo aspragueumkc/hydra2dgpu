@@ -19,7 +19,7 @@ import logging
 import os
 import sys
 import importlib
-from typing import Callable, List, Optional, Tuple
+from typing import Callable, Dict, List, Optional, Tuple
 
 import numpy as np
 
@@ -246,6 +246,15 @@ class SWE2DBackend:
         )
         self._h_min = 1.0e-6
         self._cell_area = np.empty(0, dtype=np.float64)
+        self._mesh_node_x = np.empty(0, dtype=np.float64)
+        self._mesh_node_y = np.empty(0, dtype=np.float64)
+        self._mesh_node_z = np.empty(0, dtype=np.float64)
+        self._mesh_cell_nodes = np.empty(0, dtype=np.int32)
+        self._mesh_face_offsets = None
+        self._bc_n0 = np.empty(0, dtype=np.int32)
+        self._bc_n1 = np.empty(0, dtype=np.int32)
+        self._bc_tp = np.empty(0, dtype=np.int32)
+        self._bc_vl = np.empty(0, dtype=np.float64)
         self._tiny_mode = 1
         self._tiny_persistent_chunk_substeps = 8
 
@@ -293,6 +302,7 @@ class SWE2DBackend:
 
         cell_nodes_flat = np.ascontiguousarray(cell_nodes, dtype=np.int32).ravel()
         self._cell_area = np.empty(0, dtype=np.float64)
+        self._cell_zb = np.empty(0, dtype=np.float64)
 
         # Empty BC arrays if not provided
         bc_n0  = np.empty(0, dtype=np.int32)
@@ -313,6 +323,7 @@ class SWE2DBackend:
             if int(face_offsets[-1]) != int(cell_nodes_flat.size):
                 raise ValueError("cell_face_offsets[-1] must equal len(cell_nodes)")
             self._cell_area = np.zeros(face_offsets.size - 1, dtype=np.float64)
+            self._cell_zb = np.zeros(face_offsets.size - 1, dtype=np.float64)
             for i in range(face_offsets.size - 1):
                 s = int(face_offsets[i])
                 e = int(face_offsets[i + 1])
@@ -322,6 +333,7 @@ class SWE2DBackend:
                 xx = node_x[ids]
                 yy = node_y[ids]
                 self._cell_area[i] = 0.5 * abs(float(np.dot(xx, np.roll(yy, -1)) - np.dot(yy, np.roll(xx, -1))))
+                self._cell_zb[i] = float(np.min(node_z[ids]))
             self._mesh_h = self._mod.swe2d_build_mesh_poly(
                 node_x,
                 node_y,
@@ -342,6 +354,7 @@ class SWE2DBackend:
             x2 = node_x[tris[:, 2]]
             y2 = node_y[tris[:, 2]]
             self._cell_area = 0.5 * np.abs((x1 - x0) * (y2 - y0) - (x2 - x0) * (y1 - y0))
+            self._cell_zb = np.min(node_z[cell_nodes_flat.reshape((-1, 3))], axis=1)
             self._mesh_h = self._mod.swe2d_build_mesh(
                 node_x, node_y, node_z, cell_nodes_flat,
                 bc_n0, bc_n1, bc_tp, bc_vl)
@@ -364,6 +377,18 @@ class SWE2DBackend:
             # will be unavailable in that case.
             self._boundary_edge_index_by_nodes = {}
             self._boundary_edge_cells = None
+
+        self._mesh_node_x = np.asarray(node_x, dtype=np.float64)
+        self._mesh_node_y = np.asarray(node_y, dtype=np.float64)
+        self._mesh_node_z = np.asarray(node_z, dtype=np.float64)
+        self._mesh_cell_nodes = np.asarray(cell_nodes_flat, dtype=np.int32)
+        self._mesh_face_offsets = None
+        if cell_face_offsets is not None:
+            self._mesh_face_offsets = np.asarray(face_offsets, dtype=np.int32)
+        self._bc_n0 = bc_n0
+        self._bc_n1 = bc_n1
+        self._bc_tp = bc_tp
+        self._bc_vl = bc_vl
 
     def boundary_edge_cells(self) -> Optional[np.ndarray]:
         """Return interior cell index for each boundary edge, or None."""
@@ -987,6 +1012,26 @@ class SWE2DBackend:
             return False
         return bool(self._last_diag.get("gpu_active", False))
 
+    def get_max_tracking(self) -> Optional[Dict[str, np.ndarray]]:
+        """Return per-cell max (h, hu, hv) across the whole simulation.
+
+        Returns None if the native module doesn't support max tracking.
+        """
+        if not hasattr(self._mod, "swe2d_get_max_tracking"):
+            return None
+        h_max, hu_max, hv_max = self._mod.swe2d_get_max_tracking(self._solver_h)
+        h_safe = np.maximum(h_max, self._h_min)
+        return {
+            "max_h": np.asarray(h_max, dtype=np.float64),
+            "max_hu": np.asarray(hu_max, dtype=np.float64),
+            "max_hv": np.asarray(hv_max, dtype=np.float64),
+            "max_wse": np.asarray(h_max, dtype=np.float64) + np.asarray(self._cell_zb, dtype=np.float64),
+            "max_vel": np.sqrt(
+                np.asarray(hu_max, dtype=np.float64)**2
+                + np.asarray(hv_max, dtype=np.float64)**2
+            ) / h_safe,
+        }
+
     @property
     def n_cells(self) -> int:
         """Number of cells in the mesh."""
@@ -995,6 +1040,23 @@ class SWE2DBackend:
     def cell_areas(self) -> np.ndarray:
         """Return cached per-cell planform areas [L^2] from the input mesh."""
         return self._cell_area.copy()
+
+    def export_mesh_data(self) -> Dict[str, np.ndarray]:
+        """Return copy of all mesh arrays for serialization (host memory)."""
+        out: Dict[str, np.ndarray] = {
+            "node_x": self._mesh_node_x.copy(),
+            "node_y": self._mesh_node_y.copy(),
+            "node_z": self._mesh_node_z.copy(),
+            "cell_nodes": self._mesh_cell_nodes.copy(),
+        }
+        if self._mesh_face_offsets is not None:
+            out["cell_face_offsets"] = self._mesh_face_offsets.copy()
+        if self._bc_n0.size > 0:
+            out["bc_edge_node0"] = self._bc_n0.copy()
+            out["bc_edge_node1"] = self._bc_n1.copy()
+            out["bc_edge_type"] = self._bc_tp.copy()
+            out["bc_edge_val"] = self._bc_vl.copy()
+        return out
 
     # ── Cleanup ───────────────────────────────────────────────────────────────
 
