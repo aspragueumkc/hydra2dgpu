@@ -681,16 +681,17 @@ class SWE2DWorkbenchStudioDialog(QtWidgets.QDialog):
         combo.clear()
         if not gpkg or not os.path.isfile(gpkg):
             return
+        import sqlite3
+        conn = sqlite3.connect(gpkg)
         try:
-            import sqlite3
-            conn = sqlite3.connect(gpkg)
             cur = conn.cursor()
             cur.execute("SELECT mesh_name FROM swe2d_mesh ORDER BY mesh_name")
             for (name,) in cur.fetchall():
                 combo.addItem(str(name))
-            conn.close()
         except Exception:
             pass
+        finally:
+            conn.close()
 
     def _assign_node_z_from_terrain(self) -> None:
         """Assign node z-values from terrain raster."""
