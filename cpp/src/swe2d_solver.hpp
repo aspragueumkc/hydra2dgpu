@@ -357,7 +357,4 @@ int32_t swe2d_run_to_time(
 /// Returns true only when CUDA was compiled in AND a CUDA device is present.
 bool swe2d_gpu_available();
 
-// ─────────────────────────────────────────────────────────────────────────────
-/// CPU solver step (always available, used as fallback)
-/// @param s Solver handle @param dt Timestep @returns Step diagnostics
-SWE2DStepDiag swe2d_step_cpu(SWE2DSolver* s, double dt);
+

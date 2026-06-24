@@ -218,7 +218,7 @@ class SWE2DBackend:
         6. destroy()        — free native resources (or let GC handle it).
     """
 
-    def __init__(self, use_gpu: bool = True):
+    def __init__(self):
         mod = _load_swe2d_module()
         if mod is None:
             raise RuntimeError(
@@ -227,7 +227,6 @@ class SWE2DBackend:
                 "from https://github.com/aspragueumkc/hydra2dgpu/releases"
             )
         self._mod = mod
-        self._use_gpu = True
         self._mesh_h   = None   # PyMesh handle
         self._solver_h = None   # PySolver handle
         self._n_cells  = 0
@@ -683,7 +682,6 @@ class SWE2DBackend:
         native_opts: Dict[str, object] = {
             "temporal_order": int(temporal_scheme),
             "spatial_scheme": int(spatial_discretization),
-            "godunov_mode": int(GodunovSolverMode.CURRENT_GPU_STEP),
             "turbulence_model": int(turbulence_model),
             "bed_friction_model": int(bed_friction_model),
             "enable_rain_module": False,
@@ -727,17 +725,11 @@ class SWE2DBackend:
             tiny_persistent_chunk_substeps=int(tiny_persistent_chunk_substeps),
             tiny_active_compaction_stride_steps=int(tiny_active_compaction_stride_steps),
             tiny_enable_active_compaction=bool(tiny_enable_active_compaction),
-            use_gpu=self._use_gpu, n_threads=n_threads,
+            use_gpu=True, n_threads=n_threads,
             temporal_order=int(native_opts["temporal_order"]),
             spatial_scheme=int(native_opts["spatial_scheme"]),
-            godunov_mode=int(native_opts["godunov_mode"]),
             turbulence_model=int(native_opts["turbulence_model"]),
             bed_friction_model=int(native_opts["bed_friction_model"]),
-            equation_set=0,
-            coupling_mode=0,
-            three_d_solver_model=0,
-            enforce_gpu_only_advanced_modes=True,
-            three_d_single_phase_free_surface=True,
             enable_rain_module=bool(native_opts["enable_rain_module"]),
             enable_pipe_network_module=bool(native_opts["enable_pipe_network_module"]),
             enable_hydraulic_structures=bool(native_opts["enable_hydraulic_structures"]),
@@ -915,8 +907,9 @@ class SWE2DBackend:
                     if callable(apply_native_device_sources):
                         try:
                             native_device_applied = bool(apply_native_device_sources(t, dt))
-                        except Exception:
-                            native_device_applied = False
+                        except Exception as _e:
+                            logger.error("[BACKEND] apply_native_device_sources failed: %s", _e)
+                            raise
                 if native_device_applied:
                     src = None
                 else:

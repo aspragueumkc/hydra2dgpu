@@ -280,7 +280,6 @@ class RunController:
                     cell_bed=mesh_cell_min_bed_fn(),
                     drainage=drainage_mod,
                     structures=structures_mod,
-                    drainage_solver_backend=drainage_solver_backend_mode,
                     drainage_gpu_method=drainage_gpu_method_mode,
                     culvert_solver_mode=culvert_solver_mode,
                     bridge_cuda_coupling=bool(run_options.bridge_cuda_coupling),

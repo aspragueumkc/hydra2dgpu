@@ -1,5 +1,5 @@
 // swe2d_numerics.cpp
-// CPU unit tests and standalone implementations for swe2d_numerics.hpp.
+// unit tests and standalone implementations for swe2d_numerics.hpp.
 // The header provides all inline logic; this file exists to satisfy the
 // CMake source list and can house non-inline helpers if needed in future.
 

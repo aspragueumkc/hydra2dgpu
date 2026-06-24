@@ -6,8 +6,8 @@
 //   2. swe2d_update_kernel — parallel over cells, applies fluxes + friction
 //   3. swe2d_cfl_kernel    — parallel over cells, block-reduce to find max lambda
 //
-// CUDA hot-path numerics are implemented locally in this translation unit to
-// keep GPU optimization decoupled from the CPU fallback implementation.
+// CUDA hot-path numerics are implemented locally in this translation unit 
+
 
 #include "swe2d_gpu.cuh"
 #include "swe2d_units.cuh"
@@ -8366,7 +8366,6 @@ void swe2d_gpu_drainage_step(
     double dynamic_flow_relaxation,
     double* node_depth_out,
     double* link_flow_out,
-    double* q_cell_out,
     double* max_node_depth_out,
     double* max_link_flow_out,
     double* limiter_event_count_out,
@@ -8378,7 +8377,7 @@ void swe2d_gpu_drainage_step(
         !outfall_cell || !outfall_node || !outfall_invert_elev || !outfall_diameter || !outfall_coefficient || !outfall_max_flow || !outfall_zero_storage ||
         !pipe_end_cell || !pipe_end_node || !pipe_end_invert_elev || !pipe_end_diameter || !pipe_end_area ||
         !pipe_end_inlet_loss_k || !pipe_end_outlet_loss_k ||
-        !node_depth_in || !link_flow_in || !node_depth_out || !link_flow_out || !q_cell_out ||
+        !node_depth_in || !link_flow_in || !node_depth_out || !link_flow_out ||
         n_cells < 0 || n_nodes < 0 || n_links < 0 || n_inlets < 0 || n_outfalls < 0 || n_pipe_ends < 0) {
         throw std::invalid_argument("swe2d_gpu_drainage_step: invalid arguments");
     }
@@ -8687,7 +8686,7 @@ void swe2d_gpu_drainage_step(
 
         CUDA_CHECK(cudaMemcpy(node_depth_out, d_node_depth, static_cast<size_t>(n_nodes) * sizeof(double), cudaMemcpyDeviceToHost));
         CUDA_CHECK(cudaMemcpy(link_flow_out, d_l_q, static_cast<size_t>(n_links) * sizeof(double), cudaMemcpyDeviceToHost));
-        CUDA_CHECK(cudaMemcpy(q_cell_out, d_q_cell, static_cast<size_t>(n_cells) * sizeof(double), cudaMemcpyDeviceToHost));
+        // q_cell stays device-resident in d_q_cell — no D2H readback
 
         if (max_node_depth_out) {
             const auto it = std::max_element(node_depth_out, node_depth_out + static_cast<size_t>(n_nodes));

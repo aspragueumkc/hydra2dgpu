@@ -244,7 +244,11 @@ struct SWE2DDeviceState {
         double*  d_cell_area = nullptr;
         double*  d_source = nullptr;
         int32_t  inlet_capacity = 0;  // drainage inlet structure SoA capacity
-        double*  d_drainage_q = nullptr;  // ponytail: device-resident q_cell for coupling
+        double*  d_drainage_q = nullptr;  // device-resident q_cell for coupling
+        double*  d_node_depth = nullptr;  // device-resident node depths
+        double*  d_link_flow = nullptr;   // device-resident link flows
+        int32_t  node_capacity = 0;
+        int32_t  link_capacity = 0;
         int32_t  structure_capacity = 0;
         int32_t* d_struct_up = nullptr;
         int32_t* d_struct_dn = nullptr;
@@ -1214,7 +1218,6 @@ void swe2d_gpu_drainage_step(
     double dynamic_flow_relaxation,
     double* node_depth_out,
     double* link_flow_out,
-    double* q_cell_out,
     double* max_node_depth_out,
     double* max_link_flow_out,
     double* limiter_event_count_out,

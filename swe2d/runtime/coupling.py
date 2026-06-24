@@ -467,7 +467,6 @@ class SWE2DCouplingController:
         cell_bed: Optional[Sequence[float]] = None,
         drainage: Optional[SWE2DUrbanDrainageModule] = None,
         structures: Optional[SWE2DStructureModule] = None,
-        drainage_solver_backend: str = "gpu",
         drainage_gpu_method: str = "step",
         culvert_solver_mode: int = 0,
         bridge_cuda_coupling: bool = False,
@@ -504,10 +503,7 @@ class SWE2DCouplingController:
             raise ValueError("cell_area and cell_bed must have the same length")
         self.drainage = drainage
         self.structures = structures
-        self.drainage_solver_backend = str(drainage_solver_backend or "gpu").strip().lower()
-        self.coupling_loop = "cuda"  # GPU-only: always CUDA
-        if self.drainage_solver_backend not in {"gpu"}:
-            raise ValueError("drainage_solver_backend must be 'gpu' (GPU-only)")
+        self.coupling_loop = "cuda"  # GPU-only
         self.drainage_gpu_method = str(drainage_gpu_method or "step").strip().lower()
         if self.drainage_gpu_method not in {"step", "iterative"}:
             raise ValueError("drainage_gpu_method must be 'step' or 'iterative'")
@@ -944,12 +940,7 @@ class SWE2DCouplingController:
             self._native_cuda_mod_checked = True
             self._native_cuda_mod_cache = None
             return None
-        try:
-            if not bool(mod.swe2d_gpu_available()):
-                self._native_cuda_mod_checked = True
-                self._native_cuda_mod_cache = None
-                return None
-        except Exception:
+        if not bool(mod.swe2d_gpu_available()):
             self._native_cuda_mod_checked = True
             self._native_cuda_mod_cache = None
             return None
@@ -1047,11 +1038,8 @@ class SWE2DCouplingController:
                     native_mod.swe2d_gpu_ensure_drainage_q_buf(self.n_cells)
                     self._drainage_q_ensured = True
             # GPU drainage step — same call as _compute_source_rates_cuda.
-            if (
-                self.drainage_solver_backend == "gpu"
-                and self._drainage_soa is not None
-                and hasattr(native_mod, "swe2d_gpu_drainage_step")
-            ):
+            if (self._drainage_soa is not None
+                and hasattr(native_mod, "swe2d_gpu_drainage_step")):
                 self._ensure_gpu_drainage_state()
                 dsoa = self._drainage_soa
                 solver_mode = DrainageSolverMode(int(dsoa.solver_mode))
@@ -1063,7 +1051,7 @@ class SWE2DCouplingController:
                 g = float(getattr(self.drainage.cfg, "gravity", _u.gravity()))
                 head_deadband = float(getattr(self.drainage.cfg, "head_deadband_m", 1.0e-3))
                 dynamic_relax = float(getattr(self.drainage.cfg, "dynamic_flow_relaxation", 1.0))
-                nd_out, lf_out, q_cell_step, _diag = (
+                nd_out, lf_out, _diag = (
                     native_mod.swe2d_gpu_drainage_step(
                         None,  # cell_wse=None → compute on-device from h+zb
                         static_args["cell_area"],
@@ -1109,7 +1097,6 @@ class SWE2DCouplingController:
                 self._gpu_node_depth = np.asarray(nd_out, dtype=np.float64)
                 self._gpu_link_flow = np.asarray(lf_out, dtype=np.float64)
                 self._sync_gpu_state_back_to_drainage()
-                q_cell = np.asarray(q_cell_step, dtype=np.float64)
             else:
                 return False  # no GPU drainage backend available
 
@@ -1529,11 +1516,8 @@ class SWE2DCouplingController:
 
         if self.drainage is not None:
             q_cell = None
-            if (
-                self.drainage_solver_backend == "gpu"
-                and self._drainage_soa is not None
-                and hasattr(native_mod, "swe2d_gpu_drainage_step")
-            ):
+            if (self._drainage_soa is not None
+                and hasattr(native_mod, "swe2d_gpu_drainage_step")):
                 self._ensure_gpu_drainage_state()
                 dsoa = self._drainage_soa
                 solver_mode = DrainageSolverMode(int(dsoa.solver_mode))
