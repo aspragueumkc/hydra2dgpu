@@ -6,20 +6,28 @@ etc.) so the existing runtime pipeline works unchanged.
 """
 from __future__ import annotations
 
+import json
 import logging
 import sqlite3
 from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
 
-
-logger = logging.getLogger(__name__)
-
 from swe2d.boundary_and_forcing.rainfall_hydrology import (
     Hyetograph,
     ThiessenRainCNForcing,
     build_hyetograph,
 )
+from swe2d.extensions.extension_models import (
+    DrainageSolverMode,
+    HydraulicStructure,
+    HydraulicStructureConfig,
+    PipeNetworkConfig,
+)
+from swe2d.extensions.structures import StructureType
+
+
+logger = logging.getLogger(__name__)
 
 
 def query_mesh_from_gpkg(gpkg_path: str, mesh_name: str) -> Optional[Dict[str, np.ndarray]]:
@@ -129,6 +137,175 @@ def query_cn_grid(
     return cn, ia_ratio
 
 
+def build_drainage_config_from_json(
+    drainage_data: Optional[Dict[str, Any]],
+    n_cells: int,
+) -> Optional[PipeNetworkConfig]:
+    """Build PipeNetworkConfig from a JSON object.
+
+    Expected format:
+    {
+        "gravity": 9.81,
+        "head_deadband_m": 0.001,
+        "dynamic_flow_relaxation": 1.0,
+        "solver_mode": 0,
+        "coupling_substeps": 1,
+        "nodes": [
+            {"id": "n1", "type": "inlet", "invert": 8.0, "y_max": 10.0, "area": 10.0,
+             "surcharge_depth": 1.0, "initial_depth": 0.0}
+        ],
+        "links": [
+            {"from": "n1", "to": "n2", "length": 100.0, "diameter": 1.0,
+             "roughness": 0.013, "max_flow": -1.0}
+        ],
+        "inlets": [
+            {"node_id": "n1", "inlet_cell": 100, "flow_rate": 0.5}
+        ],
+        "outfalls": [
+            {"node_id": "n2", "invert": 3.0}
+        ]
+    }
+    """
+    if not drainage_data:
+        return None
+
+    from swe2d.extensions.extension_models import (
+        DrainageNode,
+        DrainageLink,
+        InletExchange,
+        InletType,
+        NodeInletAssignment,
+        OutfallExchange,
+    )
+
+    data = drainage_data
+    nodes_raw = data.get("nodes", [])
+    links_raw = data.get("links", [])
+    if not nodes_raw or not links_raw:
+        return None
+
+    nodes: List[DrainageNode] = []
+    for i, n in enumerate(nodes_raw):
+        nid = str(n["id"])
+        ntype = str(n.get("type", "junction")).lower()
+        nodes.append(DrainageNode(
+            node_id=nid,
+            x=float(n.get("x", 0.0)),
+            y=float(n.get("y", 0.0)),
+            node_type=ntype,
+            invert_elev=float(n.get("invert", 0.0)),
+            max_depth=float(n.get("y_max", 10.0)),
+            crest_elev=n.get("crest_elev"),
+            rim_elev=n.get("rim_elev"),
+        ))
+
+    links: List[DrainageLink] = []
+    for l in links_raw:
+        links.append(DrainageLink(
+            link_id=str(l.get("id", f"link_{len(links)}")),
+            from_node_id=str(l["from"]),
+            to_node_id=str(l["to"]),
+            length=float(l.get("length", 100.0)),
+            diameter=float(l.get("diameter", 1.0)),
+            roughness_n=float(l.get("roughness", 0.013)),
+            max_flow=float(l.get("max_flow", -1.0)),
+        ))
+
+    inlets_raw = data.get("inlets", [])
+    inlets: List[InletExchange] = [
+        InletExchange(
+            node_id=str(i.get("node_id", "")),
+            inlet_cell=int(i.get("inlet_cell", 0)),
+            flow_rate=float(i.get("flow_rate", 0.0)),
+        ) for i in inlets_raw
+    ]
+
+    inlet_assignments: List[NodeInletAssignment] = []
+    for i_idx, inv in enumerate(inlets_raw):
+        inlet_assignments.append(NodeInletAssignment(
+            inlet_index=i_idx,
+            inlet_type=InletType(int(inv.get("inlet_type", 0))),
+        ))
+
+    outfalls_raw = data.get("outfalls", [])
+    outfalls: List[OutfallExchange] = [
+        OutfallExchange(
+            node_id=str(o.get("node_id", "")),
+            outfall_invert_elev=float(o.get("invert", 0.0)),
+        ) for o in outfalls_raw
+    ]
+
+    return PipeNetworkConfig(
+        nodes=nodes,
+        links=links,
+        inlets=inlets,
+        inlet_types=[InletType.DEFAULT] * len(inlets_raw) if inlets_raw else [],
+        node_inlets=inlet_assignments,
+        outfalls=outfalls,
+        pipe_ends=[],
+        gravity=float(data.get("gravity", 9.81)),
+        head_deadband_m=float(data.get("head_deadband_m", 1.0e-3)),
+        dynamic_flow_relaxation=float(data.get("dynamic_flow_relaxation", 1.0)),
+        solver_mode=DrainageSolverMode(int(data.get("solver_mode", 0))),
+        coupling_substeps=int(data.get("coupling_substeps", 1)),
+    )
+
+
+def build_structures_config_from_json(
+    structures_data: Optional[List[Dict[str, Any]]],
+    n_cells: int,
+) -> Optional[HydraulicStructureConfig]:
+    """Build HydraulicStructureConfig from a JSON array.
+
+    Each entry:
+    {
+        "id": "s1",
+        "type": "culvert",
+        "upstream_cell": 100,
+        "downstream_cell": 101,
+        "crest_elev": 5.0,
+        "metadata": {"diameter": 1.0, "length": 20.0, ...}
+    }
+    """
+    if not structures_data:
+        return None
+
+    type_map = {
+        "weir": StructureType.WEIR,
+        "culvert": StructureType.CULVERT,
+        "gate": StructureType.GATE,
+        "bridge": StructureType.BRIDGE,
+        "pump": StructureType.PUMP,
+    }
+
+    structs = []
+    for s in structures_data:
+        stype = type_map.get(str(s.get("type", "")).lower(), StructureType.CULVERT)
+        meta = dict(s.get("metadata", {}) or {})
+        # Lift top-level keys into metadata for the coupling controller
+        for k in ("diameter", "length", "width", "height", "roughness_n",
+                   "coefficient", "cd", "opening", "max_flow",
+                   "culvert_code", "culvert_shape", "culvert_rise", "culvert_span",
+                   "culvert_area", "culvert_barrels", "culvert_slope",
+                   "inlet_invert_elev", "outlet_invert_elev",
+                   "entrance_loss_k", "exit_loss_k",
+                   "embankment_enabled", "embankment_crest_elev",
+                   "embankment_overflow_width", "embankment_weir_coeff",
+                   "q_pump"):
+            if k in s:
+                meta[k] = s[k]
+        structs.append(HydraulicStructure(
+            structure_id=str(s.get("id", f"s_{len(structs)}")),
+            structure_type=stype,
+            upstream_cell=int(s.get("upstream_cell", 0)),
+            downstream_cell=int(s.get("downstream_cell", 0)),
+            crest_elev=float(s.get("crest_elev", 0.0)),
+            metadata=meta,
+        ))
+
+    return HydraulicStructureConfig(structures=structs)
+
+
 def build_forced_thiessen_from_gpkg(
     conn: sqlite3.Connection,
     n_cells: int,
@@ -223,9 +400,7 @@ def build_forced_thiessen_from_gpkg(
 def _compute_cell_centroids(
     node_x: np.ndarray, node_y: np.ndarray, cell_nodes: np.ndarray
 ) -> np.ndarray:
-    """Compute cell centroids from mesh topology.
-    Simple average of cell vertex coordinates.
-    """
+    """Compute cell centroids from mesh topology."""
     tris = cell_nodes.reshape((-1, 3))
     cx = np.mean(node_x[tris], axis=1)
     cy = np.mean(node_y[tris], axis=1)

@@ -154,6 +154,30 @@ def execute_run(
         except Exception as _e:
             logger.warning("Failed to configure native rain-CN forcing: %s", _e)
 
+    # ── Coupling controller (drainage + structures) ──────────────────
+    from swe2d.cli.gpkg_adapter import (
+        build_drainage_config_from_json,
+        build_structures_config_from_json,
+    )
+    drainage_cfg = build_drainage_config_from_json(p.get("drainage"), ncells)
+    structures_cfg = build_structures_config_from_json(p.get("structures"), ncells)
+    coupling_controller = None
+    if drainage_cfg is not None or structures_cfg is not None:
+        from swe2d.runtime.coupling import SWE2DCouplingController
+        from swe2d.extensions.drainage_network import SWE2DUrbanDrainageModule
+        from swe2d.extensions.structures import SWE2DStructureModule
+        cell_area = backend.cell_areas()
+        cell_zb = getattr(backend, "_cell_zb", np.zeros(ncells, dtype=np.float64))
+        drainage_mod = SWE2DUrbanDrainageModule(drainage_cfg) if drainage_cfg is not None else None
+        structures_mod = SWE2DStructureModule(structures_cfg) if structures_cfg is not None else None
+        coupling_controller = SWE2DCouplingController(
+            cell_area=cell_area,
+            cell_bed=cell_zb,
+            drainage=drainage_mod,
+            structures=structures_mod,
+            log_callback=lambda msg: logger.info("[COUPLING] %s", msg),
+        )
+
     # Run simulation
     t_end = float(rp.get("duration_s", 3600.0))
     output_interval = float(rp.get("output_interval_s", t_end))
@@ -166,6 +190,11 @@ def execute_run(
         while t < t_end:
             if cancel_check and cancel_check():
                 break
+            if coupling_controller is not None:
+                try:
+                    coupling_controller.apply_native_device_sources(t, float(rp.get("dt_request", 0.2)))
+                except Exception as _e:
+                    logger.warning("Coupling step failed: %s", _e)
             diag = backend.step(rp.get("dt_request", -1.0))
             dt = float(diag.get("dt", 0.0))
             t += dt

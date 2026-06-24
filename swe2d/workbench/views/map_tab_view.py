@@ -288,7 +288,7 @@ class MapTabView(QtWidgets.QWidget):
             "Export the current in-memory mesh geometry to UGRID NetCDF format."
         )
         self.save_mesh_gpkg_btn.setToolTip(
-            "Save current mesh to the project GeoPackage."
+            "Save current mesh to a GeoPackage file."
         )
         self.load_mesh_gpkg_btn.setToolTip(
             "Open a GeoPackage and load a mesh from it."
