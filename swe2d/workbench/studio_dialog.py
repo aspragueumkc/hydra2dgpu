@@ -2325,13 +2325,16 @@ class SWE2DWorkbenchStudioDialog(QtWidgets.QDialog):
         """Apply external source terms (rain, cell sources) to the backend."""
         from swe2d.boundary_and_forcing.runtime_source_logic import apply_external_sources as _logic
         mtab = self._model_tab_view
+        _cell_areas = None
+        if cell_source_model is not None:
+            _cell_areas = backend.cell_areas()
         _logic(
             backend=backend,
             dt_step=dt_step,
             rain_rate_model=rain_rate_model,
             cell_source_model=cell_source_model,
             coupled_source_rate=coupled_source_rate,
-            mesh_cell_areas=self._mesh_cell_areas(),
+            mesh_cell_areas=_cell_areas,
             max_source_rate=float(mtab.max_source_rate_spin.value()),
             h_min=float(mtab.h_min_spin.value()),
             max_rel_depth_increase=float(mtab.max_rel_depth_increase_spin.value()),

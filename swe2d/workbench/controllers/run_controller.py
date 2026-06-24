@@ -609,22 +609,34 @@ class RunController:
                 except Exception as exc:
                     log_fn(f"Native BC hydrograph forcing unavailable: {exc}")
 
-            if thiessen_forcing is not None and hasattr(backend, "set_rain_cn_forcing_native"):
+            if hasattr(backend, "set_rain_cn_forcing_native"):
                 try:
-                    native_rain_res = run_setup_configurator.configure_native_rain_cn_forcing(
-                        backend=backend,
-                        thiessen_forcing=thiessen_forcing,
-                        mm_to_model_depth=float(rain_mm_to_model_depth_fn()),
-                    )
+                    if thiessen_forcing is not None:
+                        native_rain_res = run_setup_configurator.configure_native_rain_cn_forcing(
+                            backend=backend,
+                            thiessen_forcing=thiessen_forcing,
+                            mm_to_model_depth=float(rain_mm_to_model_depth_fn()),
+                        )
+                        infil_label = str(native_rain_res.get('infiltration_method', 'scs_cn'))
+                    elif float(np.asarray(rain_rate_model, dtype=np.float64)) > 0.0:
+                        native_rain_res = run_setup_configurator.configure_constant_rain_rate_native(
+                            backend=backend,
+                            rate_model_mps=float(np.asarray(rain_rate_model, dtype=np.float64)),
+                            mm_to_model_depth=float(rain_mm_to_model_depth_fn()),
+                        )
+                        infil_label = "constant_rate"
+                    else:
+                        native_rain_res = {"configured": False}
+                        infil_label = "none"
                     if bool(native_rain_res.get("configured", False)):
                         native_rain_cn_forcing = True
                         log_fn(
-                            "Native preprocessed rainfall-excess forcing configured for GPU timestep evaluation "
-                            f"(infiltration={str(native_rain_res.get('infiltration_method', 'scs_cn'))}, "
+                            "Native rainfall forcing configured for GPU timestep evaluation "
+                            f"(infiltration={infil_label}, "
                             f"groups={int(native_rain_res.get('groups', 0))})."
                         )
                 except Exception as exc:
-                    log_fn(f"[WARNING] Native rain+CN forcing unavailable, falling back to Python rain source: {exc}")
+                    log_fn(f"[WARNING] Native rain forcing unavailable: {exc}")
 
             native_source_injection_mode = hasattr(backend, "set_external_sources_native")
             if native_source_injection_mode:

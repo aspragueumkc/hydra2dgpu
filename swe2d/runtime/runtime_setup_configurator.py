@@ -54,6 +54,42 @@ class SWE2DRunSetupConfigurator:
             "groups": 0,
         }
 
+    def configure_constant_rain_rate_native(
+        self,
+        *,
+        backend: Any,
+        rate_model_mps: float,
+        mm_to_model_depth: float,
+    ) -> Dict[str, Any]:
+        """Upload a constant rain rate via the native rain-CN API.
+
+        Builds a single-gauge linear hyetograph so the GPU kernel reads
+        the same rate every step.  No per-step H2D transfers.
+        """
+        n_cells = int(backend.n_cells)
+        if n_cells <= 0 or float(rate_model_mps) <= 0.0:
+            return {"configured": False, "infiltration_method": None, "groups": 0}
+        cell_gage_idx = np.zeros(n_cells, dtype=np.int32)
+        gage_offsets = np.array([0, 2], dtype=np.int32)
+        rate_mm_s = float(rate_model_mps) / float(mm_to_model_depth)
+        hg_time_s = np.array([0.0, 1.0e9], dtype=np.float64)
+        hg_cum_mm = np.array([0.0, rate_mm_s * 1.0e9], dtype=np.float64)
+        cn = np.full(n_cells, 100.0, dtype=np.float64)
+        backend.set_rain_cn_forcing_native(
+            cell_gage_idx=cell_gage_idx,
+            gage_offsets=gage_offsets,
+            hg_time_s=hg_time_s,
+            hg_cum_mm=hg_cum_mm,
+            cn=cn,
+            ia_ratio=0.0,
+            mm_to_model_depth=float(mm_to_model_depth),
+        )
+        return {
+            "configured": True,
+            "infiltration_method": "constant_rate",
+            "groups": 1,
+        }
+
     def configure_native_source_injection(self, *, backend: Any) -> Dict[str, Any]:
         """configure native source injection."""
         native_source_injection_mode = hasattr(backend, "set_external_sources_native")

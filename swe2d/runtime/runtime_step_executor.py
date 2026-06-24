@@ -55,6 +55,7 @@ class SWE2DRuntimeStepExecutor:
         source_ms = 0.0
         state_ms = 0.0
         bc_ms = 0.0
+        gpu_ms = 0.0
 
         if dynamic_bc and not native_bc_forcing:
             _t_bc0 = time.perf_counter()
@@ -253,6 +254,9 @@ class SWE2DRuntimeStepExecutor:
                         hv_c,
                     )
                     coupling_ms += (time.perf_counter() - _t_cpl2) * 1000.0
+            _t_gpu_sync = time.perf_counter()
+            backend.sync_device()
+            gpu_ms += (time.perf_counter() - _t_gpu_sync) * 1000.0
             rain_src = rain_source_for_window_callback(
                 t_accum,
                 t_accum + dt_source_guess,
@@ -297,4 +301,5 @@ class SWE2DRuntimeStepExecutor:
             "source_ms": source_ms,
             "state_ms": state_ms,
             "bc_ms": bc_ms,
+            "gpu_ms": gpu_ms,
         }

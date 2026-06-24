@@ -975,6 +975,12 @@ class SWE2DBackend:
 
     # ── Diagnostics ───────────────────────────────────────────────────────────
 
+    def sync_device(self) -> None:
+        """Full CUDA device sync + error clear.  Use before Python timers that
+        need to separate GPU execution time from Python overhead."""
+        if hasattr(self._mod, "swe2d_gpu_device_sync"):
+            self._mod.swe2d_gpu_device_sync()
+
     def gpu_active(self) -> bool:
         """True if the last completed step ran on the GPU."""
         if self._last_diag is None:

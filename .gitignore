@@ -34,3 +34,4 @@ report_output/
 temp_error_log.txt
 tests/results/*.log
 docs/superpowers/
+reference/

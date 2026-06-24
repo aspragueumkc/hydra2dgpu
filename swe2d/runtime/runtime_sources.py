@@ -65,22 +65,10 @@ class SWE2DRuntimeSourceManager:
         self.boundary_flux_step_rows_model: List[Dict[str, float]] = []
 
     def rain_source_for_window(self, t0_s: float, t1_s: float, accumulate: bool, mutate_state: bool) -> Any:
-        """rain source for window."""
-        rain_src_local = self._rain_rate_model
-        if self._thiessen_forcing is not None and not self._native_rain_cn_forcing:
-            rain_src_si_local, rain_diag_local = self._thiessen_forcing.step_net_rainfall_mps(
-                t0_s,
-                t1_s,
-                mutate_state=mutate_state,
-            )
-            rain_src_local = self._rain_rate_si_to_model(rain_src_si_local)
-            if accumulate:
-                self._rain_stats_acc["rain_mm"] += float(rain_diag_local.get("rain_mm_mean", 0.0))
-                self._rain_stats_acc["excess_mm"] += float(rain_diag_local.get("excess_mm_mean", 0.0))
-                self._rain_stats_acc["samples"] += 1
-        elif self._native_rain_cn_forcing:
-            rain_src_local = 0.0
-        return rain_src_local
+        """rain source for window — all rainfall is GPU-native, Python returns 0."""
+        if self._native_rain_cn_forcing:
+            return 0.0
+        return self._rain_rate_model
 
     def cell_source_model_at_time(self, t_s: float) -> Optional[np.ndarray]:
         """Return per-cell source model at time."""

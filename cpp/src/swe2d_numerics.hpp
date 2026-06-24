@@ -154,7 +154,7 @@ SWE2D_HOSTDEV inline HLLCFlux hllc_flux(
     double SL = std::min(unL - cL, u_roe - c_roe);
     double SR = std::max(unR + cR, u_roe + c_roe);
 
-    // Super-sonic: pure upwind
+    // Supercritical Fr>1: pure upwind
     if (SL >= 0.0) {
         // Left state flux
         flux.fh  = hL * unL;

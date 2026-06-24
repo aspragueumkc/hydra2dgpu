@@ -5,6 +5,7 @@ instance. This file exposes that function.
 """
 import os as _os
 import sys as _sys
+import importlib as _importlib
 
 # Add the compiled C++ extension directory so hydra_swe2d can be imported
 # hydra_swe2d can be imported from anywhere inside the plugin.
@@ -123,6 +124,38 @@ try:
     _check_required_deps()
 except Exception:
     pass  # never block plugin load
+
+
+# ── Eager internal import check ──────────────────────────────────────────
+_ALL_MODULES = [
+    "hydra_plugin",
+    "swe2d",
+    "swe2d.boundary_and_forcing",
+    "swe2d.extensions",
+    "swe2d.mesh",
+    "swe2d.plotting",
+    "swe2d.results",
+    "swe2d.runtime",
+    "swe2d.workbench",
+    "swe2d.workbench.controllers",
+    "swe2d.workbench.services",
+    "swe2d.workbench.views",
+]
+
+def _import_all():
+    _errors = []
+    for _mod in _ALL_MODULES:
+        try:
+            _importlib.import_module(_mod)
+        except ImportError as _e:
+            _errors.append(f"  {_mod}: {_e}")
+    if _errors:
+        raise ImportError(
+            f"[HYDRA] Plugin imports failed ({len(_errors)}/{len(_ALL_MODULES)}):\n"
+            + "\n".join(_errors)
+        )
+
+_import_all()
 
 
 def classFactory(iface):
