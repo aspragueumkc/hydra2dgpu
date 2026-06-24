@@ -1061,16 +1061,17 @@ class SWE2DBackend:
 
     # ── Cleanup ───────────────────────────────────────────────────────────────
 
+    def __del__(self):
+        try:
+            if getattr(self, "_solver_h", None) is not None:
+                self._mod.swe2d_destroy(self._solver_h)
+        except Exception:
+            pass
+
     def destroy(self) -> None:
         """Explicitly free native solver resources."""
         if self._solver_h is not None:
             self._mod.swe2d_destroy(self._solver_h)
             self._solver_h = None
 
-    def __del__(self):
-        """del."""
-        try:
-            self.destroy()
-        except Exception:
-            if hasattr(self, "_log"):
-                self._log(f"[WARNING] Unexpected error silently caught")
+
