@@ -169,6 +169,12 @@ struct SWE2DDeviceState {
     // of 24 bytes transfers all three values when sync_diagnostics is true.
     double*  d_diag_packed = nullptr;
 
+    // Max-tracking arrays: per-cell maximum values across entire simulation.
+    // Written in the update kernel after every step, read back at sim end.
+    double*  d_max_h  = nullptr;   // [n_cells]
+    double*  d_max_hu = nullptr;   // [n_cells]
+    double*  d_max_hv = nullptr;   // [n_cells]
+
     // Wet/dry active-set mask (updated at the start of every step).
     // d_active[c] = 1 if cell c is wet (h>h_min), adjacent to a wet cell,
     // or at a forced-inflow BC edge.  Used to skip gradient and update work
@@ -769,6 +775,12 @@ void swe2d_gpu_get_state(
     @param n_cells Number of cells
     @host */
 void swe2d_gpu_readback_h(double* host_buf, int32_t n_cells);
+
+void swe2d_gpu_readback_max_tracking(
+    SWE2DDeviceState* dev,
+    double* h_max_out,
+    double* hu_max_out,
+    double* hv_max_out);
 
 /** Upload host state arrays into the current device solver state.
     @param dev Device state pointer

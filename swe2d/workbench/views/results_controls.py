@@ -338,6 +338,10 @@ class ResultsToolbox(QtWidgets.QWidget):
         self.save_coupling_chk.setChecked(True)
         layout.addRow(self.save_coupling_chk)
 
+        self.save_max_only_chk = QtWidgets.QCheckBox("Save max results only (skip interval snapshots)")
+        self.save_max_only_chk.setChecked(False)
+        layout.addRow(self.save_max_only_chk)
+
         self.save_log_chk = QtWidgets.QCheckBox("Save run log to GPKG")
         self.save_log_chk.setChecked(True)
         layout.addRow(self.save_log_chk)

@@ -2044,7 +2044,10 @@ __global__ __launch_bounds__(256, 4) void swe2d_update_kernel(
     const double* __restrict__  external_source_mps,
     const double* __restrict__  ext_struct_flux_h,   // nullable: face-based culvert mass flux
     const double* __restrict__  ext_struct_flux_hu,  // nullable: face-based culvert x-mom flux
-    const double* __restrict__  ext_struct_flux_hv)  // nullable: face-based culvert y-mom flux
+    const double* __restrict__  ext_struct_flux_hv,  // nullable: face-based culvert y-mom flux
+    double* __restrict__  d_max_h,    // nullable: per-cell max depth tracking
+    double* __restrict__  d_max_hu,   // nullable: per-cell max x-momentum tracking
+    double* __restrict__  d_max_hv)   // nullable: per-cell max y-momentum tracking
 {
     int32_t c = blockIdx.x * blockDim.x + threadIdx.x;
     if (c >= n_cells) return;
@@ -2213,6 +2216,12 @@ __global__ __launch_bounds__(256, 4) void swe2d_update_kernel(
     cell_h[c]  = static_cast<State>(h_new);
     cell_hu[c] = static_cast<State>(hu_new);
     cell_hv[c] = static_cast<State>(hv_new);
+
+    if (d_max_h) {
+        if (h_new > d_max_h[c])  d_max_h[c]  = h_new;
+        if (hu_new > d_max_hu[c]) d_max_hu[c] = hu_new;
+        if (hv_new > d_max_hv[c]) d_max_hv[c] = hv_new;
+    }
 
     if (d_max_wse_elev_error) {
         const double wse_err = fabs(h_new - h_old);
@@ -4613,6 +4622,13 @@ SWE2DDeviceState* swe2d_gpu_init(
     CUDA_CHECK(cudaMemset(dev->d_n_wet,     0, sizeof(int32_t)));
     CUDA_CHECK(cudaMemset(dev->d_was_active, 0, sz_cells * sizeof(int32_t)));
     CUDA_CHECK(cudaMemset(dev->d_n_active_edges, 0, sizeof(int32_t)));
+    // Max-tracking arrays
+    alloc_d(reinterpret_cast<void**>(&dev->d_max_h),  sz_cells * sizeof(double));
+    alloc_d(reinterpret_cast<void**>(&dev->d_max_hu), sz_cells * sizeof(double));
+    alloc_d(reinterpret_cast<void**>(&dev->d_max_hv), sz_cells * sizeof(double));
+    CUDA_CHECK(cudaMemset(dev->d_max_h,  0, sz_cells * sizeof(double)));
+    CUDA_CHECK(cudaMemset(dev->d_max_hu, 0, sz_cells * sizeof(double)));
+    CUDA_CHECK(cudaMemset(dev->d_max_hv, 0, sz_cells * sizeof(double)));
     // Build bc_forced host-side: mark cells at forced-inflow BC edges (types 2, 3, 6)
     // so that even initially-dry inflow cells are included in the active set.
     {
@@ -5042,7 +5058,8 @@ void swe2d_gpu_step(
                     dev->d_external_source_mps,
                     dev->use_culvert_face_flux ? dev->d_ext_struct_flux_h  : nullptr,
                     dev->use_culvert_face_flux ? dev->d_ext_struct_flux_hu : nullptr,
-                    dev->use_culvert_face_flux ? dev->d_ext_struct_flux_hv : nullptr);
+                    dev->use_culvert_face_flux ? dev->d_ext_struct_flux_hv : nullptr,
+                    dev->d_max_h, dev->d_max_hu, dev->d_max_hv);
                 // cfl + cfl_reduce (two-level)
                 CUDA_CHECK(cudaMemsetAsync(dev->d_lambda_max, 0, sizeof(double), dev->d_stream));
                 {
@@ -5280,7 +5297,8 @@ void swe2d_gpu_step(
             dev->d_external_source_mps,
             dev->use_culvert_face_flux ? dev->d_ext_struct_flux_h  : nullptr,
             dev->use_culvert_face_flux ? dev->d_ext_struct_flux_hu : nullptr,
-            dev->use_culvert_face_flux ? dev->d_ext_struct_flux_hv : nullptr);
+            dev->use_culvert_face_flux ? dev->d_ext_struct_flux_hv : nullptr,
+            dev->d_max_h, dev->d_max_hu, dev->d_max_hv);
         CUDA_CHECK(cudaGetLastError());
     }
 
@@ -5390,7 +5408,10 @@ __global__ __launch_bounds__(256, 4) void swe2d_persistent_chunk_kernel_first_or
     const double* __restrict__ d_inv_area_repaired,
     int degen_mode,
     const int32_t* __restrict__ active_edge_ids,
-    double front_flux_damping)
+    double front_flux_damping,
+    double* __restrict__ d_max_h,
+    double* __restrict__ d_max_hu,
+    double* __restrict__ d_max_hv)
 {
     cg::grid_group grid = cg::this_grid();
     const int32_t tid = static_cast<int32_t>(blockIdx.x * blockDim.x + threadIdx.x);
@@ -5618,6 +5639,11 @@ __global__ __launch_bounds__(256, 4) void swe2d_persistent_chunk_kernel_first_or
                 cell_h[c] = static_cast<State>(h_new);
                 cell_hu[c] = static_cast<State>(hu_new);
                 cell_hv[c] = static_cast<State>(hv_new);
+                if (d_max_h) {
+                    if (h_new > d_max_h[c])  d_max_h[c]  = h_new;
+                    if (hu_new > d_max_hu[c]) d_max_hu[c] = hu_new;
+                    if (hv_new > d_max_hv[c]) d_max_hv[c] = hv_new;
+                }
             }
         }
 
@@ -5893,6 +5919,9 @@ void swe2d_gpu_step_persistent_chunk(
         &dev->degen_mode,
         &d_flux_edge_ids,
         &front_flux_damping,
+        &dev->d_max_h,
+        &dev->d_max_hu,
+        &dev->d_max_hv,
     };
 
     cudaError_t coop_err = cudaLaunchCooperativeKernel(
@@ -6385,6 +6414,22 @@ void swe2d_gpu_get_state(
         CUDA_CHECK(cudaMemcpy(tmp.data(), dev->d_hv, n * sizeof(State), cudaMemcpyDeviceToHost));
         for (size_t i = 0; i < n; ++i) hv_out[i] = static_cast<double>(tmp[i]);
     }
+}
+
+void swe2d_gpu_readback_max_tracking(
+    SWE2DDeviceState* dev,
+    double* h_max_out,
+    double* hu_max_out,
+    double* hv_max_out)
+{
+    if (!dev) return;
+    size_t n = static_cast<size_t>(dev->n_cells);
+    if (h_max_out && dev->d_max_h)
+        CUDA_CHECK(cudaMemcpy(h_max_out, dev->d_max_h, n * sizeof(double), cudaMemcpyDeviceToHost));
+    if (hu_max_out && dev->d_max_hu)
+        CUDA_CHECK(cudaMemcpy(hu_max_out, dev->d_max_hu, n * sizeof(double), cudaMemcpyDeviceToHost));
+    if (hv_max_out && dev->d_max_hv)
+        CUDA_CHECK(cudaMemcpy(hv_max_out, dev->d_max_hv, n * sizeof(double), cudaMemcpyDeviceToHost));
 }
 
 void swe2d_gpu_readback_h(double* host_buf, int32_t n_cells)
@@ -8813,6 +8858,9 @@ void swe2d_gpu_destroy(SWE2DDeviceState* dev) {
     safe_free(dev->d_max_wse_elev_error);
     safe_free(dev->d_diag_packed);
     safe_free(dev->d_cfl_block_max);
+    safe_free(dev->d_max_h);
+    safe_free(dev->d_max_hu);
+    safe_free(dev->d_max_hv);
     safe_free(dev->d_active);
     safe_free(dev->d_n_wet);
     safe_free(dev->d_bc_forced);

@@ -320,6 +320,7 @@ void swe2d_solver_set_external_sources(
 
 /** Copy current state out to caller-supplied arrays (length mesh.n_cells each). */
 void swe2d_get_state(const SWE2DSolver* s, double* h_out, double* hu_out, double* hv_out);
+void swe2d_get_max_tracking(const SWE2DSolver* s, double* h_max_out, double* hu_max_out, double* hv_max_out);
 
 /** Overwrite current state from caller-supplied arrays (length mesh.n_cells each). */
 void swe2d_set_state(SWE2DSolver* s, const double* h_in, const double* hu_in, const double* hv_in);

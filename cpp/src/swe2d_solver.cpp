@@ -405,6 +405,20 @@ void swe2d_get_state(const SWE2DSolver* s, double* h_out, double* hu_out, double
     if (hv_out) std::copy(s->hv.begin(), s->hv.end(), hv_out);
 }
 
+void swe2d_get_max_tracking(const SWE2DSolver* s, double* h_max_out, double* hu_max_out, double* hv_max_out) {
+    if (!s) return;
+#ifdef HYDRA_HAS_CUDA
+    if (s->dev) {
+        swe2d_gpu_readback_max_tracking(s->dev, h_max_out, hu_max_out, hv_max_out);
+        return;
+    }
+#endif
+    // No CPU path: max tracking is GPU-only.
+    if (h_max_out && s->dev && s->dev->d_max_h) std::memset(h_max_out, 0, static_cast<size_t>(s->n_cells) * sizeof(double));
+    if (hu_max_out && s->dev && s->dev->d_max_hu) std::memset(hu_max_out, 0, static_cast<size_t>(s->n_cells) * sizeof(double));
+    if (hv_max_out && s->dev && s->dev->d_max_hv) std::memset(hv_max_out, 0, static_cast<size_t>(s->n_cells) * sizeof(double));
+}
+
 /** Overwrite solver state from caller-supplied arrays.
     Also syncs to GPU device if CUDA is active. */
 void swe2d_set_state(SWE2DSolver* s, const double* h_in, const double* hu_in, const double* hv_in) {

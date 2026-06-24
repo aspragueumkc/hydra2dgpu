@@ -3228,6 +3228,23 @@ PYBIND11_MODULE(HYDRA_SWE2D_PY_MODULE_NAME, m) {
         py::arg("solver"), py::arg("h_in"), py::arg("hu_in"), py::arg("hv_in"),
         "Overwrite current (h, hu, hv) solver state arrays.");
 
+    // ── Get max tracking ───────────────────────────────────────────
+    m.def("swe2d_get_max_tracking",
+        [](const std::shared_ptr<PySolver>& ps)
+            -> std::tuple<py::array_t<double>, py::array_t<double>, py::array_t<double>>
+        {
+            if (!ps || !ps->solver) throw std::invalid_argument("null solver handle");
+            int32_t nc = ps->solver->mesh->n_cells;
+            auto h_out  = py::array_t<double>(nc);
+            auto hu_out = py::array_t<double>(nc);
+            auto hv_out = py::array_t<double>(nc);
+            swe2d_get_max_tracking(ps->solver,
+                h_out.mutable_data(), hu_out.mutable_data(), hv_out.mutable_data());
+            return {h_out, hu_out, hv_out};
+        },
+        py::arg("solver"),
+        "Return per-cell max (h, hu, hv) across entire simulation.");
+
     // ── Destroy ───────────────────────────────────────────────────────────────
     m.def("swe2d_destroy",
         [](std::shared_ptr<PySolver>& ps) {

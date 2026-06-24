@@ -246,6 +246,7 @@ class SWE2DBackend:
         )
         self._h_min = 1.0e-6
         self._cell_area = np.empty(0, dtype=np.float64)
+        self._cell_zb = np.empty(0, dtype=np.float64)
         self._mesh_node_x = np.empty(0, dtype=np.float64)
         self._mesh_node_y = np.empty(0, dtype=np.float64)
         self._mesh_node_z = np.empty(0, dtype=np.float64)
@@ -1017,6 +1018,8 @@ class SWE2DBackend:
 
         Returns None if the native module doesn't support max tracking.
         """
+        if self._solver_h is None:
+            raise RuntimeError("initialize() must be called before get_max_tracking().")
         if not hasattr(self._mod, "swe2d_get_max_tracking"):
             return None
         h_max, hu_max, hv_max = self._mod.swe2d_get_max_tracking(self._solver_h)
