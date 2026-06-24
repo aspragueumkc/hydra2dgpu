@@ -1021,6 +1021,11 @@ class SWE2DBackend:
         if self._solver_h is None:
             raise RuntimeError("initialize() must be called before get_max_tracking().")
         if not hasattr(self._mod, "swe2d_get_max_tracking"):
+            logger.warning(
+                "[BACKEND] get_max_tracking unavailable: "
+                "swe2d_get_max_tracking not in native module. "
+                "Rebuild hydra_swe2d with the latest max-tracking kernels."
+            )
             return None
         h_max, hu_max, hv_max = self._mod.swe2d_get_max_tracking(self._solver_h)
         h_safe = np.maximum(h_max, self._h_min)

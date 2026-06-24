@@ -430,10 +430,18 @@ def persist_mesh_to_geopackage(
     log_fn: Optional[Callable[[str], None]] = None,
 ) -> None:
     """Save mesh arrays to swe2d_mesh table as compressed BLOBs."""
-    if not gpkg_path or not mesh_data:
+    if not gpkg_path:
+        if log_fn:
+            log_fn("[GPKG] persist_mesh_to_geopackage: no gpkg_path specified")
+        return
+    if not mesh_data:
+        if log_fn:
+            log_fn("[GPKG] persist_mesh_to_geopackage: no mesh_data provided")
         return
     node_x = mesh_data.get("node_x")
     if node_x is None or node_x.size == 0:
+        if log_fn:
+            log_fn("[GPKG] persist_mesh_to_geopackage: node_x is empty or None")
         return
     nnodes = int(node_x.size)
     cell_nodes_arr = mesh_data.get("cell_nodes", np.empty(0))
