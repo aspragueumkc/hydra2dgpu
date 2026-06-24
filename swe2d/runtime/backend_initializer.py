@@ -80,7 +80,7 @@ class SWE2DBackendInitializer:
         active_set_hysteresis: bool,
     ) -> Any:
         """Build and initialize."""
-        b = backend_cls(use_gpu=True)
+        b = backend_cls()
 
         bc_tp_init = bc_tp.copy()
         bc_vl_init = bc_vl.copy()

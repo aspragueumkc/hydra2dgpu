@@ -1072,4 +1072,5 @@ class SWE2DBackend:
         try:
             self.destroy()
         except Exception:
-            self._log(f"[WARNING] Unexpected error silently caught")
+            if hasattr(self, "_log"):
+                self._log(f"[WARNING] Unexpected error silently caught")
