@@ -1,6 +1,7 @@
 """Batch runner: execute multiple simulations via subprocess isolation."""
 from __future__ import annotations
 
+import copy
 import json
 import os
 import subprocess
@@ -24,7 +25,7 @@ def _expand_sweep(params: Dict[str, Any]) -> List[Dict[str, Any]]:
     id_template = str(params.get("id_template", "").strip() or "")
 
     for combo in itertools.product(*values):
-        p = dict(params)
+        p = copy.deepcopy(params)
         combo_dict = dict(zip(keys, combo))
         for k, v in combo_dict.items():
             parts = k.split(".")
