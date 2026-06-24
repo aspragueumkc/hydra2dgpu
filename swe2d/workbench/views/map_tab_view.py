@@ -252,6 +252,7 @@ class MapTabView(QtWidgets.QWidget):
             ("terrain_to_nodes_btn", "Assign Node Z From Terrain"),
             ("pull_node_z_btn", "Pull Node Z From Nodes Layer"),
             ("export_results_ugrid_btn", "Export Results to UGRID"),
+            ("load_mesh_gpkg_btn", "Load Mesh from GPKG..."),
         ]
         widgets = {}
         for attr, text in btn_specs:
@@ -289,16 +290,8 @@ class MapTabView(QtWidgets.QWidget):
         self.save_mesh_gpkg_btn.setToolTip(
             "Save current mesh to the project GeoPackage."
         )
-        self.mesh_gpkg_load_combo = QtWidgets.QComboBox()
-        self.mesh_gpkg_load_combo.setObjectName("mesh_gpkg_load_combo")
-        self.mesh_gpkg_load_combo.setMinimumWidth(200)
-        self.mesh_gpkg_load_combo.setToolTip(
-            "Select a mesh name stored in the project GeoPackage to load."
-        )
-        self.load_mesh_gpkg_btn = QtWidgets.QPushButton("Load Mesh from GPKG")
-        self.load_mesh_gpkg_btn.setObjectName("load_mesh_gpkg_btn")
         self.load_mesh_gpkg_btn.setToolTip(
-            "Load the selected mesh from the project GeoPackage into the backend."
+            "Open a GeoPackage and load a mesh from it."
         )
 
         layout_slots = [
@@ -310,6 +303,7 @@ class MapTabView(QtWidgets.QWidget):
             (5, "terrain_to_nodes_btn", 1, 2),
             (6, "pull_node_z_btn", 1, 2),
             (7, "export_results_ugrid_btn", 1, 2),
+            (8, "load_mesh_gpkg_btn", 1, 2),
         ]
         col = 0
         for row, attr, rspan, cspan in layout_slots:
@@ -317,10 +311,6 @@ class MapTabView(QtWidgets.QWidget):
             if actions_layout.indexOf(w) < 0:
                 actions_layout.addWidget(w, row, col, rspan, cspan)
             col = (col + cspan) % 2
-
-        # Load Mesh from GPKG row
-        actions_layout.addWidget(self.mesh_gpkg_load_combo, 8, 0)
-        actions_layout.addWidget(self.load_mesh_gpkg_btn, 8, 1)
 
         # Boundary condition controls
         sep = QtWidgets.QLabel("<b>Boundary Conditions</b>")

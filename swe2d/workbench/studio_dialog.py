@@ -644,23 +644,44 @@ class SWE2DWorkbenchStudioDialog(QtWidgets.QDialog):
             QtWidgets.QMessageBox.critical(self, "Save Mesh Error", str(exc))
 
     def _load_mesh_from_gpkg(self) -> None:
-        """Load mesh from GeoPackage and initialize backend."""
+        """Open file dialog to select GPKG, then load a mesh from it."""
         from qgis.PyQt import QtWidgets
-        self._refresh_mesh_gpkg_combo()
-        gpkg = str(self._model_gpkg_path_edit.text()) if hasattr(self, "_model_gpkg_path_edit") else ""
-        if not gpkg:
-            gpkg = str(getattr(self, "_model_gpkg_path", ""))
-        if not gpkg:
-            QtWidgets.QMessageBox.warning(self, "Load Mesh", "No project GeoPackage path set.")
+        path, _ = QtWidgets.QFileDialog.getOpenFileName(
+            self, "Select GeoPackage with Mesh", "",
+            "GeoPackage (*.gpkg);;All Files (*)",
+        )
+        if not path or not os.path.isfile(path):
             return
-        name = self._map_tab_view.mesh_gpkg_load_combo.currentText()
-        if not name:
-            QtWidgets.QMessageBox.warning(self, "Load Mesh", "No mesh selected.")
+        import sqlite3
+        mesh_names = []
+        try:
+            conn = sqlite3.connect(path)
+            try:
+                cur = conn.cursor()
+                cur.execute("SELECT mesh_name FROM swe2d_mesh ORDER BY created_utc DESC")
+                mesh_names = [str(r[0]) for r in cur.fetchall()]
+            finally:
+                conn.close()
+        except Exception:
+            pass
+        if not mesh_names:
+            QtWidgets.QMessageBox.warning(
+                self, "Load Mesh",
+                f"No meshes found in {os.path.basename(path)}.",
+            )
             return
+        name = mesh_names[0]
+        if len(mesh_names) > 1:
+            from qgis.PyQt.QtWidgets import QInputDialog
+            name, ok = QInputDialog.getItem(
+                self, "Select Mesh", "Mesh:", mesh_names, 0, False,
+            )
+            if not ok or not name:
+                return
         from swe2d.workbench.services.gpkg_persistence_service import (
             load_mesh_from_geopackage,
         )
-        mesh_data = load_mesh_from_geopackage(gpkg, name)
+        mesh_data = load_mesh_from_geopackage(path, name)
         if mesh_data is None:
             QtWidgets.QMessageBox.warning(self, "Load Mesh", f"Mesh '{name}' not found.")
             return
@@ -668,30 +689,9 @@ class SWE2DWorkbenchStudioDialog(QtWidgets.QDialog):
             self._backend = SWE2DBackend()
             self._backend.build_mesh(**mesh_data)
             self._mesh_data = mesh_data
-            self._log(f"Mesh '{name}' loaded ({mesh_data['node_x'].size} nodes)")
+            self._log(f"Mesh '{name}' loaded from {os.path.basename(path)} ({mesh_data['node_x'].size} nodes)")
         except Exception as exc:
             QtWidgets.QMessageBox.critical(self, "Load Mesh Error", str(exc))
-
-    def _refresh_mesh_gpkg_combo(self):
-        """Populate the mesh GPKG load combo from the project GPKG."""
-        gpkg = str(self._model_gpkg_path_edit.text()) if hasattr(self, "_model_gpkg_path_edit") else ""
-        if not gpkg:
-            gpkg = str(getattr(self, "_model_gpkg_path", ""))
-        combo = self._map_tab_view.mesh_gpkg_load_combo
-        combo.clear()
-        if not gpkg or not os.path.isfile(gpkg):
-            return
-        import sqlite3
-        conn = sqlite3.connect(gpkg)
-        try:
-            cur = conn.cursor()
-            cur.execute("SELECT mesh_name FROM swe2d_mesh ORDER BY mesh_name")
-            for (name,) in cur.fetchall():
-                combo.addItem(str(name))
-        except Exception:
-            pass
-        finally:
-            conn.close()
 
     def _assign_node_z_from_terrain(self) -> None:
         """Assign node z-values from terrain raster."""
