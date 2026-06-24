@@ -7,10 +7,14 @@ Usage:
 from __future__ import annotations
 
 import json
+import logging
 import os
 import sqlite3
 import time
 from typing import Any, Callable, Dict, Optional
+
+
+logger = logging.getLogger(__name__)
 
 import numpy as np
 
@@ -133,8 +137,8 @@ def execute_run(
     if bc_n0.size > 0:
         try:
             backend.set_boundary_conditions(bc_n0, bc_n1, bc_tp, bc_vl)
-        except Exception:
-            pass
+        except Exception as _e:
+            logger.warning("Failed to set boundary conditions: %s", _e)
 
     # Configure native rain if Thiessen forcing is present
     if thiessen_forcing is not None:
@@ -147,8 +151,8 @@ def execute_run(
                 thiessen_forcing=thiessen_forcing,
                 mm_to_model_depth=mm_to_model,
             )
-        except Exception:
-            pass
+        except Exception as _e:
+            logger.warning("Failed to configure native rain-CN forcing: %s", _e)
 
     # Run simulation
     t_end = float(rp.get("duration_s", 3600.0))

@@ -6,10 +6,14 @@ etc.) so the existing runtime pipeline works unchanged.
 """
 from __future__ import annotations
 
+import logging
 import sqlite3
 from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
+
+
+logger = logging.getLogger(__name__)
 
 from swe2d.boundary_and_forcing.rainfall_hydrology import (
     Hyetograph,
@@ -112,13 +116,15 @@ def query_cn_grid(
     try:
         cur.execute(f"SELECT \"{cn_field}\" FROM \"{cn_table}\" ORDER BY rowid")
         cn = np.array([float(r[0]) for r in cur.fetchall()], dtype=np.float64)
-    except Exception:
+    except Exception as _e:
+        logger.warning("query_cn_grid: could not read CN from table '%s': %s", cn_table, _e)
         cn = np.empty(0, dtype=np.float64)
     try:
         cur.execute(f"SELECT \"{ia_ratio_field}\" FROM \"{cn_table}\" LIMIT 1")
         row = cur.fetchone()
         ia_ratio = float(row[0]) if row else 0.2
-    except Exception:
+    except Exception as _e:
+        logger.warning("query_cn_grid: could not read ia_ratio from table '%s': %s", cn_table, _e)
         ia_ratio = 0.2
     return cn, ia_ratio
 
