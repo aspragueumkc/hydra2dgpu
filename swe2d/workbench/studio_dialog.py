@@ -621,8 +621,8 @@ class SWE2DWorkbenchStudioDialog(QtWidgets.QDialog):
     def _save_mesh_to_gpkg(self) -> None:
         """Save current mesh to a GeoPackage."""
         from qgis.PyQt import QtWidgets
-        backend = getattr(self, "_backend", None)
-        if backend is None:
+        mesh_data = getattr(self, "_mesh_data", None)
+        if mesh_data is None or mesh_data.get("node_x") is None:
             QtWidgets.QMessageBox.warning(self, "Save Mesh", "No mesh loaded.")
             return
         name, ok = QtWidgets.QInputDialog.getText(self, "Save Mesh", "Mesh name:")
@@ -635,7 +635,6 @@ class SWE2DWorkbenchStudioDialog(QtWidgets.QDialog):
         if not path:
             return
         try:
-            mesh_data = backend.export_mesh_data()
             from swe2d.workbench.services.gpkg_persistence_service import persist_mesh_to_geopackage
             persist_mesh_to_geopackage(path, name, mesh_data, log_fn=self._log)
             QtWidgets.QMessageBox.information(
