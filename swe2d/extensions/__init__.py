@@ -33,7 +33,6 @@ from swe2d.extensions.extension_models import (
     compute_orifice_flow,
     compute_pipe_manning_capacity_full,
     compute_weir_flow,
-    convert_cell_flows_to_depth_rates,
     equivalent_circular_diameter_from_area,
 )
 from swe2d.extensions.drainage_network import SWE2DUrbanDrainageModule
@@ -74,6 +73,5 @@ __all__ = [
     "compute_orifice_flow",
     "compute_pipe_manning_capacity_full",
     "compute_weir_flow",
-    "convert_cell_flows_to_depth_rates",
     "equivalent_circular_diameter_from_area",
 ]

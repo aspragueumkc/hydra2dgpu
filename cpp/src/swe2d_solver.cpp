@@ -183,12 +183,7 @@ SWE2DStepDiag swe2d_step(SWE2DSolver* s, double dt_request) {
     const bool use_rk2 = (s->cfg.temporal_order >= 2);
 
     const int32_t tiny_requested_raw = std::max(kTinyModeOff, std::min(kTinyModePersistent, s->cfg.tiny_mode));
-    bool tiny_path_eligible = true;
-#ifdef HYDRA_HAS_CUDA
-    tiny_path_eligible = tiny_path_eligible && (s->dev != nullptr);
-#else
-    tiny_path_eligible = false;
-#endif
+    bool tiny_path_eligible = (s->dev != nullptr);
     const int32_t active_cells_est =
         (s->last_wet_cells > 0) ? std::min(s->last_wet_cells, s->mesh->n_cells) : s->mesh->n_cells;
     int32_t active_edges_est = s->mesh->n_edges;

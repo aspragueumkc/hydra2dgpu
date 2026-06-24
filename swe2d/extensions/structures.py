@@ -10,7 +10,6 @@ from swe2d.extensions.extension_models import (
     HydraulicStructureConfig,
     HydraulicStructureEngine,
     StructureType,
-    convert_cell_flows_to_depth_rates,
     compute_orifice_flow,
     compute_weir_flow,
 )
@@ -208,89 +207,7 @@ class SWE2DStructureModule(HydraulicStructureEngine):
             "culvert_embankment_total_flow": float(embankment_total),
         }
 
-    def structure_flows(self, cell_wse: Sequence[float]) -> List[float]:
-        """Return signed flow for each configured structure (upstream -> downstream positive)."""
-        return [float(d.get("flow", 0.0)) for d in self.structure_details(cell_wse)]
 
-    def compute_cell_source_terms(self, dt: float, cell_wse: Sequence[float]) -> List[float]:
-        """
-        compute cell source terms.
-
-        Parameters
-        ----------
-        dt : float
-            Description of dt.
-        cell_wse : Sequence[float]
-            Description of cell_wse.
-
-        Returns
-        -------
-        List[float]
-        """
-        _ = dt
-        net = [0.0] * len(cell_wse)
-        for st in self.cfg.structures:
-            q = self._structure_flow(st, cell_wse)
-            if q == 0.0:
-                continue
-            iu = int(st.upstream_cell)
-            idn = int(st.downstream_cell)
-            if 0 <= iu < len(net):
-                net[iu] -= q
-            if 0 <= idn < len(net):
-                net[idn] += q
-        return net
-
-    def compute_cell_source_rate(
-        self,
-        dt: float,
-        cell_wse: Sequence[float],
-        cell_area: Sequence[float],
-    ) -> List[float]:
-        """
-        compute cell source rate.
-
-        Parameters
-        ----------
-        dt : float
-            Description of dt.
-        cell_wse : Sequence[float]
-            Description of cell_wse.
-        cell_area : Sequence[float]
-            Description of cell_area.
-
-        Returns
-        -------
-        List[float]
-        """
-        net = self.compute_cell_source_terms(dt=dt, cell_wse=cell_wse)
-        return convert_cell_flows_to_depth_rates(net, cell_area)
-
-    def compute_flux_adjustments(self, dt: float, cell_wse: Sequence[float]) -> Dict[str, float]:
-        """
-        compute flux adjustments.
-
-        Parameters
-        ----------
-        dt : float
-            Description of dt.
-        cell_wse : Sequence[float]
-            Description of cell_wse.
-
-        Returns
-        -------
-        Dict[str, float]
-        """
-        fluxes = self.compute_structure_fluxes(dt=dt, cell_wse=cell_wse)
-        if not cell_wse:
-            fluxes["net_source"] = 0.0
-            return fluxes
-
-        net = self.compute_cell_source_terms(dt=dt, cell_wse=cell_wse)
-
-        fluxes["net_source"] = float(sum(net))
-        fluxes["max_abs_cell_source"] = float(max((abs(v) for v in net), default=0.0))
-        return fluxes
 
 
 __all__ = [
