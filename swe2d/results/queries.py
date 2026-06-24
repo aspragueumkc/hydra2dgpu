@@ -271,6 +271,17 @@ def discover_line_result_runs(gpkg_path: str) -> List[Dict]:
                 if rid:
                     _upsert_run(rid, mesh_table, "", False)
 
+        # Max-results discovery: register runs stored in swe2d_mesh_max_results.
+        max_runs_tables = _find_all_prefixed_or_default_tables(conn, "swe2d_mesh_max_results_runs")
+        for runs_table in max_runs_tables:
+            cur = conn.execute(
+                f"SELECT run_id FROM \"{runs_table}\" ORDER BY rowid DESC"
+            )
+            for row in cur.fetchall():
+                rid = str(row[0] or "").strip()
+                if rid:
+                    _upsert_run(rid, "swe2d_mesh_max_results", "", False)
+
         return results
     except Exception:
         return []

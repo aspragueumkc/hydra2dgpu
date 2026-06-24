@@ -9,7 +9,7 @@ from __future__ import annotations
 import hashlib
 import logging
 import os
-from typing import Any
+from typing import Any, Dict, Optional
 
 import numpy as np
 
@@ -54,6 +54,7 @@ class OverlayController:
 
     def __init__(self, view: OverlayView):
         self._view = view
+        self._cached_mesh_data: Optional[Dict[str, np.ndarray]] = None
 
     # ── Inlined bridge methods (converted from `dialog` → `self._view`) ──
 
@@ -66,35 +67,37 @@ class OverlayController:
         """
         view = self._view
         if not view._snapshot_timesteps:
-            # No in-memory snapshots — try building geometry from mesh data or GPKG
+            # No in-memory snapshots — build geometry from mesh data or GPKG
             mesh = getattr(view, "_mesh_data", None) or {}
             if mesh.get("node_x") is None or mesh.get("cell_nodes") is None:
-                # ponytail: load mesh from the same GPKG as the results
-                gpkg = str(getattr(view, "_results_gpkg_path", "") or "")
-                if not gpkg or not os.path.isfile(gpkg):
-                    gpkg = str(getattr(view, "_model_gpkg_path", "") or "")
-                if gpkg and os.path.isfile(gpkg):
-                    try:
-                        from swe2d.workbench.services.gpkg_persistence_service import (
-                            load_mesh_from_geopackage,
-                        )
-                        import sqlite3
-                        conn = sqlite3.connect(gpkg)
+                mesh = self._cached_mesh_data or {}
+                if mesh.get("node_x") is None:
+                    # ponytail: load mesh from the same GPKG as the results
+                    _data = getattr(view, "_results_data", None)
+                    gpkg = str(getattr(_data, "gpkg_path", "") or "")
+                    if gpkg and os.path.isfile(gpkg):
                         try:
-                            cur = conn.cursor()
-                            cur.execute(
-                                "SELECT mesh_name FROM swe2d_mesh "
-                                "ORDER BY created_utc DESC LIMIT 1"
+                            from swe2d.workbench.services.gpkg_persistence_service import (
+                                load_mesh_from_geopackage,
                             )
-                            row = cur.fetchone()
-                            if row:
-                                loaded = load_mesh_from_geopackage(gpkg, str(row[0]))
-                                if loaded and loaded.get("node_x") is not None:
-                                    mesh = loaded
-                        finally:
-                            conn.close()
-                    except Exception:
-                        pass
+                            import sqlite3
+                            conn = sqlite3.connect(gpkg)
+                            try:
+                                cur = conn.cursor()
+                                cur.execute(
+                                    "SELECT mesh_name FROM swe2d_mesh "
+                                    "ORDER BY created_utc DESC LIMIT 1"
+                                )
+                                row = cur.fetchone()
+                                if row:
+                                    loaded = load_mesh_from_geopackage(gpkg, str(row[0]))
+                                    if loaded and loaded.get("node_x") is not None:
+                                        self._cached_mesh_data = loaded
+                                        mesh = loaded
+                            finally:
+                                conn.close()
+                        except Exception:
+                            pass
             if mesh.get("node_x") is not None and mesh.get("cell_nodes") is not None:
                 try:
                     cx, cy = view._mesh_cell_centroids()
