@@ -24,6 +24,7 @@ import logging
 import os
 import sqlite3
 from typing import Callable, Dict, List, Optional
+import zlib
 
 logger = logging.getLogger(__name__)
 
@@ -410,9 +411,6 @@ def _try_extract_boundary_face_flux_totals(conn: sqlite3.Connection, run_id: str
     }
 
 
-import zlib
-
-
 def _compress_array(arr: np.ndarray) -> bytes:
     return zlib.compress(arr.tobytes())
 
@@ -436,7 +434,12 @@ def persist_mesh_to_geopackage(
     if node_x is None or node_x.size == 0:
         return
     nnodes = int(node_x.size)
-    ncells = int(mesh_data.get("cell_nodes", np.empty(0)).size)
+    cell_nodes_arr = mesh_data.get("cell_nodes", np.empty(0))
+    fo = mesh_data.get("cell_face_offsets")
+    if fo is not None and fo.size > 0:
+        ncells = int(fo.size) - 1
+    else:
+        ncells = int(cell_nodes_arr.size // 3) if cell_nodes_arr.size > 0 else 0
     import hashlib
     h = hashlib.sha256()
     for key in ("node_x", "node_y", "node_z", "cell_nodes"):
@@ -477,9 +480,9 @@ def persist_mesh_to_geopackage(
                 ?,?,?,?,
                 ?)
         """, (
-            mesh_name, datetime.datetime.utcnow().isoformat(),
+            mesh_name, datetime.datetime.now(datetime.timezone.utc).isoformat(),
             nnodes, ncells,
-            str(crs_wkt or ""), h.hexdigest() if h else "",
+            str(crs_wkt or ""), h.hexdigest(),
             _b("node_x"), _b("node_y"), _b("node_z"), _b("cell_nodes"),
             _b("cell_face_offsets"),
             _b("bc_edge_node0"), _b("bc_edge_node1"), _b("bc_edge_type"), _b("bc_edge_val"),
@@ -512,12 +515,15 @@ def load_mesh_from_geopackage(
         def _ld(data, dtype):
             if data is None:
                 return np.empty(0, dtype=dtype)
-            return _decompress_array(data, dtype, (-1,))
+            try:
+                return _decompress_array(data, dtype, (-1,))
+            except (zlib.error, ValueError):
+                return np.empty(0, dtype=dtype)
         out = {
             "node_x": _ld(row[0], np.float64),
             "node_y": _ld(row[1], np.float64),
             "node_z": _ld(row[2], np.float64),
-            "cell_nodes": _ld(row[3], np.int32).ravel(),
+            "cell_nodes": _ld(row[3], np.int32),
         }
         fo = _ld(row[4], np.int32) if row[4] else None
         if fo is not None and fo.size > 0:
@@ -604,7 +610,7 @@ def persist_mesh_max_results_to_geopackage(
         cur.execute(
             "INSERT OR REPLACE INTO swe2d_mesh_max_results_runs(run_id, created_utc, row_count) "
             "VALUES(?,?,?)",
-            (run_id, datetime.utcnow().isoformat(), n),
+            (run_id, datetime.datetime.now(datetime.timezone.utc).isoformat(), n),
         )
         conn.commit()
         if log_fn:
