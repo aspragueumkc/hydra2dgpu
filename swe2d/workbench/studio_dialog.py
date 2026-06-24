@@ -643,6 +643,55 @@ class SWE2DWorkbenchStudioDialog(QtWidgets.QDialog):
         except Exception as exc:
             QtWidgets.QMessageBox.critical(self, "Save Mesh Error", str(exc))
 
+    def _load_mesh_from_gpkg(self) -> None:
+        """Load mesh from GeoPackage and initialize backend."""
+        from qgis.PyQt import QtWidgets
+        self._refresh_mesh_gpkg_combo()
+        gpkg = str(self._model_gpkg_path_edit.text()) if hasattr(self, "_model_gpkg_path_edit") else ""
+        if not gpkg:
+            gpkg = str(getattr(self, "_model_gpkg_path", ""))
+        if not gpkg:
+            QtWidgets.QMessageBox.warning(self, "Load Mesh", "No project GeoPackage path set.")
+            return
+        name = self._map_tab_view.mesh_gpkg_load_combo.currentText()
+        if not name:
+            QtWidgets.QMessageBox.warning(self, "Load Mesh", "No mesh selected.")
+            return
+        from swe2d.workbench.services.gpkg_persistence_service import (
+            load_mesh_from_geopackage,
+        )
+        mesh_data = load_mesh_from_geopackage(gpkg, name)
+        if mesh_data is None:
+            QtWidgets.QMessageBox.warning(self, "Load Mesh", f"Mesh '{name}' not found.")
+            return
+        try:
+            self._backend = SWE2DBackend()
+            self._backend.build_mesh(**mesh_data)
+            self._mesh_data = mesh_data
+            self._log(f"Mesh '{name}' loaded ({mesh_data['node_x'].size} nodes)")
+        except Exception as exc:
+            QtWidgets.QMessageBox.critical(self, "Load Mesh Error", str(exc))
+
+    def _refresh_mesh_gpkg_combo(self):
+        """Populate the mesh GPKG load combo from the project GPKG."""
+        gpkg = str(self._model_gpkg_path_edit.text()) if hasattr(self, "_model_gpkg_path_edit") else ""
+        if not gpkg:
+            gpkg = str(getattr(self, "_model_gpkg_path", ""))
+        combo = self._map_tab_view.mesh_gpkg_load_combo
+        combo.clear()
+        if not gpkg or not os.path.isfile(gpkg):
+            return
+        try:
+            import sqlite3
+            conn = sqlite3.connect(gpkg)
+            cur = conn.cursor()
+            cur.execute("SELECT mesh_name FROM swe2d_mesh ORDER BY mesh_name")
+            for (name,) in cur.fetchall():
+                combo.addItem(str(name))
+            conn.close()
+        except Exception:
+            pass
+
     def _assign_node_z_from_terrain(self) -> None:
         """Assign node z-values from terrain raster."""
         self._workbench_controller.assign_node_z_from_terrain()

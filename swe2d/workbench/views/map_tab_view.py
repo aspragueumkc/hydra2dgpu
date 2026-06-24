@@ -289,6 +289,17 @@ class MapTabView(QtWidgets.QWidget):
         self.save_mesh_gpkg_btn.setToolTip(
             "Save current mesh to the project GeoPackage."
         )
+        self.mesh_gpkg_load_combo = QtWidgets.QComboBox()
+        self.mesh_gpkg_load_combo.setObjectName("mesh_gpkg_load_combo")
+        self.mesh_gpkg_load_combo.setMinimumWidth(200)
+        self.mesh_gpkg_load_combo.setToolTip(
+            "Select a mesh name stored in the project GeoPackage to load."
+        )
+        self.load_mesh_gpkg_btn = QtWidgets.QPushButton("Load Mesh from GPKG")
+        self.load_mesh_gpkg_btn.setObjectName("load_mesh_gpkg_btn")
+        self.load_mesh_gpkg_btn.setToolTip(
+            "Load the selected mesh from the project GeoPackage into the backend."
+        )
 
         layout_slots = [
             (0, "load_model_gpkg_btn", 1, 2),
@@ -307,9 +318,13 @@ class MapTabView(QtWidgets.QWidget):
                 actions_layout.addWidget(w, row, col, rspan, cspan)
             col = (col + cspan) % 2
 
+        # Load Mesh from GPKG row
+        actions_layout.addWidget(self.mesh_gpkg_load_combo, 8, 0)
+        actions_layout.addWidget(self.load_mesh_gpkg_btn, 8, 1)
+
         # Boundary condition controls
         sep = QtWidgets.QLabel("<b>Boundary Conditions</b>")
-        actions_layout.addWidget(sep, 9, 0, 1, 2)
+        actions_layout.addWidget(sep, 10, 0, 1, 2)
 
         self.default_bc_type_combo = QtWidgets.QComboBox()
         self.default_bc_type_combo.setObjectName("default_bc_type_combo")
@@ -322,8 +337,8 @@ class MapTabView(QtWidgets.QWidget):
         for label, code in _BC_OPTIONS:
             self.default_bc_type_combo.addItem(label, code)
         self.default_bc_type_combo.setCurrentIndex(2)
-        actions_layout.addWidget(QtWidgets.QLabel("Default BC type:"), 10, 0)
-        actions_layout.addWidget(self.default_bc_type_combo, 10, 1)
+        actions_layout.addWidget(QtWidgets.QLabel("Default BC type:"), 11, 0)
+        actions_layout.addWidget(self.default_bc_type_combo, 11, 1)
 
         self.inflow_progressive_chk = QtWidgets.QCheckBox("Inflow progressive")
         self.inflow_progressive_chk.setObjectName("inflow_progressive_chk")
@@ -332,7 +347,7 @@ class MapTabView(QtWidgets.QWidget):
             "to avoid numerical shock from a sudden full-discharge boundary."
         )
         self.inflow_progressive_chk.setChecked(False)
-        actions_layout.addWidget(self.inflow_progressive_chk, 11, 0, 1, 2)
+        actions_layout.addWidget(self.inflow_progressive_chk, 12, 0, 1, 2)
 
         self.uniform_inflow_velocity_chk = QtWidgets.QCheckBox("Uniform inflow velocity")
         self.uniform_inflow_velocity_chk.setObjectName("uniform_inflow_velocity_chk")
@@ -341,9 +356,9 @@ class MapTabView(QtWidgets.QWidget):
             "Leave unchecked for a more realistic parabolic (shear) velocity distribution."
         )
         self.uniform_inflow_velocity_chk.setChecked(False)
-        actions_layout.addWidget(self.uniform_inflow_velocity_chk, 12, 0, 1, 2)
+        actions_layout.addWidget(self.uniform_inflow_velocity_chk, 13, 0, 1, 2)
 
-        actions_layout.setRowStretch(13, 1)
+        actions_layout.setRowStretch(14, 1)
 
         toolbox.addItem(page, "Mesh Setup")
 
