@@ -26,6 +26,8 @@ import sqlite3
 from typing import Callable, Dict, List, Optional
 import zlib
 
+import numpy as np
+
 logger = logging.getLogger(__name__)
 
 __all__ = [
