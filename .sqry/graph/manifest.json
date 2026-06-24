@@ -1,0 +1,60 @@
+{
+  "schema_version": 1,
+  "snapshot_format_version": 2,
+  "built_at": "2026-06-24T02:55:32.980879548+00:00",
+  "root_path": ".",
+  "node_count": 132463,
+  "edge_count": 164061,
+  "raw_edge_count": 233110,
+  "snapshot_sha256": "cab6fabffde22f40fdb77a4aea5784c0d5c57a3658462353c2cdbde96eed193b",
+  "build_provenance": {
+    "sqry_version": "21.0.1",
+    "build_timestamp": "2026-06-24T02:55:32.980879548+00:00",
+    "build_command": "cli:index"
+  },
+  "file_count": {
+    "javascript": 140,
+    "html": 61,
+    "typescript": 2,
+    "cpp": 132,
+    "c": 87,
+    "css": 10,
+    "python": 367,
+    "shell": 4
+  },
+  "last_indexed_commit": "539815891310050ce9f75bf5b5138efc6a96f460",
+  "plugin_selection": {
+    "active_plugin_ids": [
+      "c",
+      "cpp",
+      "csharp",
+      "css",
+      "dart",
+      "elixir",
+      "go",
+      "groovy",
+      "haskell",
+      "html",
+      "java",
+      "javascript",
+      "kotlin",
+      "lua",
+      "perl",
+      "php",
+      "python",
+      "r",
+      "ruby",
+      "rust",
+      "scala",
+      "shell",
+      "sql",
+      "svelte",
+      "swift",
+      "typescript",
+      "vue",
+      "zig",
+      "plsql"
+    ],
+    "high_cost_mode": "fast_path_default"
+  }
+}
