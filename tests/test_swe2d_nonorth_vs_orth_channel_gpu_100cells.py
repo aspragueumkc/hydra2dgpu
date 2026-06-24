@@ -3,7 +3,7 @@ from __future__ import annotations
 import math
 import unittest
 
-from swe2d_nonorth_gpu_sweep_common import run_gpu_nonorth_vs_orth_sweep
+from tests.swe2d_nonorth_gpu_sweep_common import run_gpu_nonorth_vs_orth_sweep
 from tests._swe2d_test_helpers import _load_module
 
 

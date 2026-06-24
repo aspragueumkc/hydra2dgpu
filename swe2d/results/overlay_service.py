@@ -13,6 +13,36 @@ import numpy as np
 
 
 # ---------------------------------------------------------------------------
+# Field computations
+# ---------------------------------------------------------------------------
+
+def compute_velocity_magnitude(
+    hu: np.ndarray, hv: np.ndarray, h: np.ndarray
+) -> np.ndarray:
+    """Compute velocity magnitude from discharge and depth arrays."""
+    h_safe = np.maximum(np.abs(h), 1e-12)
+    u = np.divide(hu, h_safe, out=np.zeros_like(hu), where=h_safe > 0)
+    v = np.divide(hv, h_safe, out=np.zeros_like(hv), where=h_safe > 0)
+    return np.sqrt(u * u + v * v)
+
+
+def compute_wse(h: np.ndarray, bed: np.ndarray) -> np.ndarray:
+    """Compute water surface elevation: bed + depth."""
+    return bed + h
+
+
+def compute_froude(
+    hu: np.ndarray, hv: np.ndarray, h: np.ndarray, g: float = 9.81, h_min: float = 0.001
+) -> np.ndarray:
+    """Compute Froude number from discharge and depth arrays."""
+    h_safe = np.maximum(np.abs(h), h_min)
+    u = np.divide(hu, h_safe, out=np.zeros_like(hu), where=h_safe > 0)
+    v = np.divide(hv, h_safe, out=np.zeros_like(hv), where=h_safe > 0)
+    speed = np.sqrt(u * u + v * v)
+    return speed / np.sqrt(g * h_safe)
+
+
+# ---------------------------------------------------------------------------
 # Coupling time-series data prep
 # ---------------------------------------------------------------------------
 

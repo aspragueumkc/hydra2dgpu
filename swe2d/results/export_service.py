@@ -6,6 +6,17 @@ from typing import Any, List, Union
 import numpy as np
 
 
+def export_timeseries_to_csv(
+    path: Union[str, "csv._writer"], data: np.ndarray, labels: List[str]
+) -> None:
+    """Write 2-D numpy array as CSV with header row."""
+    if isinstance(path, str):
+        with open(path, "w", newline="") as f:
+            _write_csv(f, labels, data.tolist())
+    else:
+        _write_csv(path, labels, data.tolist())
+
+
 def export_table_to_csv(
     path: Union[str, "csv._writer"], headers: List[str], rows: List[List[Any]]
 ) -> None:
