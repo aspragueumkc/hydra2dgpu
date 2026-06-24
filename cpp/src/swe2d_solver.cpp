@@ -22,8 +22,6 @@
 
 namespace {
 
-static double compute_lambda_max(const SWE2DSolver* s);
-
 /// Clamp a double value to [lo, hi].
 inline double clamp_double(double v, double lo, double hi) {
     return std::max(lo, std::min(v, hi));
@@ -128,29 +126,6 @@ void build_solver_rain_cn_source(SWE2DSolver* s, double t0, double t1)
         s->rain_excess_cum_mm[static_cast<size_t>(c)] = pe;
         s->source_terms[static_cast<size_t>(c)] += (de * s->rain_mm_to_model_depth) / (t1 - t0);
     }
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
-// Green-Gauss gradient — identical algorithm to swe2d_gradient_kernel (GPU).
-// Must be called with pre-zeroed gx/gy vectors.
-// Boundary edges (c1 < 0) contribute a face value equal to c0 (zero-gradient).
-// ─────────────────────────────────────────────────────────────────────────────
-#if 0
-// Dead CPU solver functions removed — GPU-only build
-#endif
-
-#ifdef HYDRA_HAS_CUDA
-/** Synchronise GPU device state back to host arrays. */
-void sync_gpu_state_to_host(SWE2DSolver* s) {
-    if (!s || !s->dev) return;
-    swe2d_gpu_get_state(s->dev, s->h.data(), s->hu.data(), s->hv.data());
-}
-#endif
-
-/// Check if a debug environment variable is set (non-zero value).
-bool swe2d_debug_enabled(const char* name) {
-    const char* v = std::getenv(name);
-    return (v && v[0] && v[0] != '0');
 }
 
 /// Check if an environment variable is enabled (non-zero, non-false, non-no).
