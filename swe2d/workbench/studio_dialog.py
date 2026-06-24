@@ -618,6 +618,31 @@ class SWE2DWorkbenchStudioDialog(QtWidgets.QDialog):
         """Export mesh to UGRID NetCDF."""
         self._workbench_controller.export_mesh_to_ugrid()
 
+    def _save_mesh_to_gpkg(self) -> None:
+        """Save current mesh to project GeoPackage."""
+        from qgis.PyQt import QtWidgets
+        name, ok = QtWidgets.QInputDialog.getText(self, "Save Mesh", "Mesh name:")
+        if not ok or not name.strip():
+            return
+        name = str(name).strip()
+        backend = getattr(self, "_backend", None)
+        if backend is None:
+            QtWidgets.QMessageBox.warning(self, "Save Mesh", "No mesh loaded.")
+            return
+        try:
+            mesh_data = backend.export_mesh_data()
+            from swe2d.workbench.services.gpkg_persistence_service import persist_mesh_to_geopackage
+            gpkg = str(self._model_gpkg_path_edit.text()) if hasattr(self, "_model_gpkg_path_edit") else ""
+            if not gpkg:
+                gpkg = str(getattr(self, "_model_gpkg_path", ""))
+            if not gpkg:
+                QtWidgets.QMessageBox.warning(self, "Save Mesh", "No project GeoPackage path set.")
+                return
+            persist_mesh_to_geopackage(gpkg, name, mesh_data, log_fn=self._log)
+            QtWidgets.QMessageBox.information(self, "Save Mesh", f"Mesh '{name}' saved to GeoPackage.")
+        except Exception as exc:
+            QtWidgets.QMessageBox.critical(self, "Save Mesh Error", str(exc))
+
     def _assign_node_z_from_terrain(self) -> None:
         """Assign node z-values from terrain raster."""
         self._workbench_controller.assign_node_z_from_terrain()
@@ -2824,9 +2849,10 @@ class SWE2DWorkbenchStudioDialog(QtWidgets.QDialog):
             "swe2d_perf_mode_chk": bool(mtab.swe2d_perf_mode_chk.isChecked()),
             "culvert_face_flux_chk": bool(mtab.culvert_face_flux_chk.isChecked()),
             "enable_cuda_graphs_chk": bool(mtab.enable_cuda_graphs_chk.isChecked()),
-            "save_mesh_results_to_gpkg_chk": bool(rtb.save_mesh_chk.isChecked()),
-            "save_line_results_to_gpkg_chk": bool(rtb.save_line_chk.isChecked()),
-            "save_coupling_results_to_gpkg_chk": bool(rtb.save_coupling_chk.isChecked()),
+            "save_mesh_results_to_gpkg_chk": bool(rtb.save_mesh_chk.isChecked()) and not bool(rtb.save_max_only_chk.isChecked()),
+            "save_line_results_to_gpkg_chk": bool(rtb.save_line_chk.isChecked()) and not bool(rtb.save_max_only_chk.isChecked()),
+            "save_coupling_results_to_gpkg_chk": bool(rtb.save_coupling_chk.isChecked()) and not bool(rtb.save_max_only_chk.isChecked()),
+            "save_max_only_chk": bool(rtb.save_max_only_chk.isChecked()),
             "save_run_log_to_gpkg_chk": bool(rtb.save_log_chk.isChecked()),
             "degen_mode": 0,
             "front_flux_damping_spin": float(mtab.front_flux_damping_spin.value()),

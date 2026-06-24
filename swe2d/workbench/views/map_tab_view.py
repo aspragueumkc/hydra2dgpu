@@ -247,6 +247,7 @@ class MapTabView(QtWidgets.QWidget):
             ("load_model_gpkg_btn", "Load 2D Model GeoPackage"),
             ("export_mesh_layers_btn", "Export Mesh To Map Layers"),
             ("export_mesh_ugrid_btn", "Export Mesh To UGRID"),
+            ("save_mesh_gpkg_btn", "Save Mesh to GPKG"),
             ("import_mesh_layers_btn", "Load Mesh From Selected Layers"),
             ("terrain_to_nodes_btn", "Assign Node Z From Terrain"),
             ("pull_node_z_btn", "Pull Node Z From Nodes Layer"),
@@ -285,15 +286,19 @@ class MapTabView(QtWidgets.QWidget):
         self.export_mesh_ugrid_btn.setToolTip(
             "Export the current in-memory mesh geometry to UGRID NetCDF format."
         )
+        self.save_mesh_gpkg_btn.setToolTip(
+            "Save current mesh to the project GeoPackage."
+        )
 
         layout_slots = [
             (0, "load_model_gpkg_btn", 1, 2),
             (1, "export_mesh_layers_btn", 1, 2),
             (2, "export_mesh_ugrid_btn", 1, 2),
-            (3, "import_mesh_layers_btn", 1, 2),
-            (4, "terrain_to_nodes_btn", 1, 2),
-            (5, "pull_node_z_btn", 1, 2),
-            (6, "export_results_ugrid_btn", 1, 2),
+            (3, "save_mesh_gpkg_btn", 1, 2),
+            (4, "import_mesh_layers_btn", 1, 2),
+            (5, "terrain_to_nodes_btn", 1, 2),
+            (6, "pull_node_z_btn", 1, 2),
+            (7, "export_results_ugrid_btn", 1, 2),
         ]
         col = 0
         for row, attr, rspan, cspan in layout_slots:
