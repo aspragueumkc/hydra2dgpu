@@ -285,7 +285,7 @@ void swe2d_set_state(SWE2DSolver* s, const double* h_in, const double* hu_in, co
 
 
 // ─────────────────────────────────────────────────────────────────────────────
-/** Main timestep dispatch (GPU preferred, CPU fallback).
+/** Main timestep dispatch (GPU-only).
     Handles dt_initial override, dt_fixed, CFL-adaptive dt, RK2 temporal
     scheme, tiny-N mode selection, and persistent chunking. @param s Solver handle
     @param dt_request Desired timestep (s); <=0 for CFL-controlled
