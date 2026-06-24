@@ -79,7 +79,7 @@ class TestSWE2DBackendTinyModeConfig(unittest.TestCase):
         backend_mod._swe2d_mod = fake
         backend_mod._swe2d_load_error = None
 
-        b = backend_mod.SWE2DBackend(use_gpu=True)
+        b = backend_mod.SWE2DBackend()
         self._build_minimal_mesh(b)
         b.initialize(np.array([0.1], dtype=np.float64))
 
@@ -98,7 +98,7 @@ class TestSWE2DBackendTinyModeConfig(unittest.TestCase):
         backend_mod._swe2d_mod = fake
         backend_mod._swe2d_load_error = None
 
-        b = backend_mod.SWE2DBackend(use_gpu=True)
+        b = backend_mod.SWE2DBackend()
         self._build_minimal_mesh(b)
         b.initialize(np.array([0.1], dtype=np.float64))
 
@@ -109,7 +109,7 @@ class TestSWE2DBackendTinyModeConfig(unittest.TestCase):
         backend_mod._swe2d_mod = fake
         backend_mod._swe2d_load_error = None
 
-        b = backend_mod.SWE2DBackend(use_gpu=True)
+        b = backend_mod.SWE2DBackend()
         self._build_minimal_mesh(b)
         b.initialize(
             np.array([0.1], dtype=np.float64),
@@ -125,7 +125,7 @@ class TestSWE2DBackendTinyModeConfig(unittest.TestCase):
         backend_mod._swe2d_mod = fake
         backend_mod._swe2d_load_error = None
 
-        b = backend_mod.SWE2DBackend(use_gpu=True)
+        b = backend_mod.SWE2DBackend()
         self._build_minimal_mesh(b)
         b.initialize(
             np.array([0.1], dtype=np.float64),

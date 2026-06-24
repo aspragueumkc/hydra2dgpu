@@ -214,10 +214,8 @@ class TestGPUFullSolverStructures(unittest.TestCase):
         self.mod.swe2d_gpu_preload_coupling_cell_area(cell_area)
 
         # Compute on-device
-        inlet_cell = np.empty(0, dtype=np.int32)
-        inlet_flow = np.empty(0, dtype=np.float64)
         self.mod.swe2d_gpu_compute_coupling_full_on_device(
-            None, 1, inlet_cell, inlet_flow, None,
+            None, 1, None,
         )
 
         # Readback structure flows
@@ -281,10 +279,7 @@ class TestGPUFullSolverStructures(unittest.TestCase):
 
         # Compute to populate device
         self.mod.swe2d_gpu_compute_coupling_full_on_device(
-            None, 1,
-            np.empty(0, dtype=np.int32),
-            np.empty(0, dtype=np.float64),
-            None,
+            None, 1, None,
         )
 
         # Redistribute
@@ -508,7 +503,7 @@ class TestGPUFullSolverStructures(unittest.TestCase):
         _ei = np.empty(0, dtype=np.int32)
         _ed = np.empty(0, dtype=np.float64)
 
-        nd_out, lf_out, q_cell, diag = mod.swe2d_gpu_drainage_step(
+        nd_out, lf_out, diag = mod.swe2d_gpu_drainage_step(
             cell_wse, cell_area, node_invert, node_max_depth,
             node_surface_area, link_from, link_to, link_length,
             link_roughness, link_diameter, link_max_flow,
@@ -522,7 +517,6 @@ class TestGPUFullSolverStructures(unittest.TestCase):
 
         self.assertTrue(np.all(np.isfinite(nd_out)))
         self.assertTrue(np.all(np.isfinite(lf_out)))
-        self.assertTrue(np.all(np.isfinite(q_cell)))
 
     # ── Device sync ───────────────────────────────────────────────
     def test_device_sync(self):

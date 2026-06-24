@@ -140,7 +140,7 @@ class TestGPUDrainageStepComputeSanitizer(unittest.TestCase):
         """swe2d_gpu_drainage_step with a simple pipe network (EGL mode)."""
         a = self._simple_network_arrays()
 
-        nd_out, lf_out, q_cell, diag = _MOD.swe2d_gpu_drainage_step(
+        nd_out, lf_out, diag = _MOD.swe2d_gpu_drainage_step(
             a["cell_wse"],
             a["cell_area"],
             a["node_invert"],
@@ -184,7 +184,6 @@ class TestGPUDrainageStepComputeSanitizer(unittest.TestCase):
 
         self.assertEqual(nd_out.shape, (2,))
         self.assertEqual(lf_out.shape, (1,))
-        self.assertEqual(q_cell.shape, (2,))
         # Node depths updated (may increase or decrease depending on
         # solver mode, inlet exchange direction, and pipe routing).
         self.assertTrue(np.all(np.isfinite(nd_out)),
@@ -198,7 +197,7 @@ class TestGPUDrainageStepComputeSanitizer(unittest.TestCase):
         # Higher head difference to get measurable flow
         a["node_depth"] = np.array([2.0, 0.2], dtype=np.float64)
 
-        nd_out, lf_out, q_cell, diag = _MOD.swe2d_gpu_drainage_step(
+        nd_out, lf_out, diag = _MOD.swe2d_gpu_drainage_step(
             a["cell_wse"],
             a["cell_area"],
             a["node_invert"],
@@ -307,7 +306,7 @@ class TestGPUDrainageStepComputeSanitizer(unittest.TestCase):
         a["link_flow"] = np.zeros(1, dtype=np.float64)
         a["cell_wse"] = a["cell_bed"].copy()
 
-        nd_out, lf_out, q_cell, diag = _MOD.swe2d_gpu_drainage_step(
+        nd_out, lf_out, diag = _MOD.swe2d_gpu_drainage_step(
             a["cell_wse"],
             a["cell_area"],
             a["node_invert"],
@@ -350,8 +349,6 @@ class TestGPUDrainageStepComputeSanitizer(unittest.TestCase):
                         "Node depths should be finite even in dry state")
         self.assertTrue(np.all(np.isfinite(lf_out)),
                         "Link flows should be finite in dry state")
-        self.assertTrue(np.all(np.isfinite(q_cell)),
-                        "Cell exchange should be finite in dry state")
 
     # ── Outfall exchange ────────────────────────────────────────────────
     def test_drainage_outfall_step(self):
@@ -403,7 +400,7 @@ class TestGPUDrainageStepComputeSanitizer(unittest.TestCase):
         peik = np.empty(0, dtype=np.float64)
         peok = np.empty(0, dtype=np.float64)
 
-        nd_out, lf_out, q_cell, diag = _MOD.swe2d_gpu_drainage_step(
+        nd_out, lf_out, diag = _MOD.swe2d_gpu_drainage_step(
             cell_wse, cell_area, node_invert, node_max_depth,
             node_surface_area, lf, lt, ll, lr, ld, lmf,
             ic, ind, icr, iw, ico, imc,
@@ -415,7 +412,6 @@ class TestGPUDrainageStepComputeSanitizer(unittest.TestCase):
 
         self.assertEqual(nd_out.shape, (1,))
         self.assertEqual(lf_out.shape, (0,))
-        self.assertEqual(q_cell.shape, (1,))
 
 
 class TestGPUCulvertFaceFluxComputeSanitizer(unittest.TestCase):

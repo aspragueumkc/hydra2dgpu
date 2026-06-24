@@ -1641,7 +1641,7 @@ class SWE2DCouplingController:
                         }
                         component_sums["drainage_native_iterative"] = 1.0
                     else:
-                        nd_out, lf_out, q_cell_step, diag = (
+                        nd_out, lf_out, diag = (
                             native_mod.swe2d_gpu_drainage_step(
                                 cell_wse,
                                 static_args["cell_area"],
@@ -1687,7 +1687,14 @@ class SWE2DCouplingController:
                         self._gpu_node_depth = np.asarray(nd_out, dtype=np.float64)
                         self._gpu_link_flow = np.asarray(lf_out, dtype=np.float64)
                         self._sync_gpu_state_back_to_drainage()
-                        q_cell = np.asarray(q_cell_step, dtype=np.float64)
+                        # ponytail: q_cell_out removed from C++; reconstruct for diag
+                        node_delta = np.asarray(nd_out, dtype=np.float64) - np.asarray(node_depth_state, dtype=np.float64)
+                        q_cell = np.zeros(self.n_cells, dtype=np.float64)
+                        if dsoa is not None and dsoa.inlet_cell.size > 0:
+                            for ci, ni in zip(dsoa.inlet_cell, dsoa.inlet_node):
+                                ci, ni = int(ci), int(ni)
+                                if 0 <= ci < self.n_cells and 0 <= ni < len(node_delta):
+                                    q_cell[ci] -= node_delta[ni] * float(dsoa.node_surface_area[ni]) / (max(float(self.cell_area[ci]), 1e-12) * max(float(dt_s), 1e-12))
                         drainage_diag = {
                             "max_node_depth": float(diag.get("max_node_depth", 0.0)),
                             "max_link_flow": float(diag.get("max_link_flow", 0.0)),
