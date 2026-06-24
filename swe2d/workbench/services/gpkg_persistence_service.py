@@ -30,7 +30,9 @@ logger = logging.getLogger(__name__)
 __all__ = [
     "build_mesh_rows_from_snapshots",
     "load_coupling_results_from_geopackage",
+    "load_mesh_from_geopackage",
     "persist_mesh_results_to_geopackage",
+    "persist_mesh_to_geopackage",
     "persist_conservation_forensics_to_geopackage",
     "persist_line_results_to_geopackage",
     "collect_run_log_metadata",
@@ -406,6 +408,209 @@ def _try_extract_boundary_face_flux_totals(conn: sqlite3.Connection, run_id: str
         "table": "",
         "status": "table_not_found",
     }
+
+
+import zlib
+
+
+def _compress_array(arr: np.ndarray) -> bytes:
+    return zlib.compress(arr.tobytes())
+
+
+def _decompress_array(data: bytes, dtype: np.dtype, shape: tuple) -> np.ndarray:
+    return np.frombuffer(zlib.decompress(data), dtype=dtype).reshape(shape)
+
+
+def persist_mesh_to_geopackage(
+    gpkg_path: str,
+    mesh_name: str,
+    mesh_data: Dict[str, np.ndarray],
+    crs_wkt: str = "",
+    description: str = "",
+    log_fn: Optional[Callable[[str], None]] = None,
+) -> None:
+    """Save mesh arrays to swe2d_mesh table as compressed BLOBs."""
+    if not gpkg_path or not mesh_data:
+        return
+    node_x = mesh_data.get("node_x")
+    if node_x is None or node_x.size == 0:
+        return
+    nnodes = int(node_x.size)
+    ncells = int(mesh_data.get("cell_nodes", np.empty(0)).size)
+    import hashlib
+    h = hashlib.sha256()
+    for key in ("node_x", "node_y", "node_z", "cell_nodes"):
+        arr = mesh_data.get(key)
+        if arr is not None:
+            h.update(arr.tobytes())
+    conn = sqlite3.connect(gpkg_path)
+    try:
+        cur = conn.cursor()
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS swe2d_mesh (
+                mesh_name TEXT PRIMARY KEY,
+                created_utc TEXT,
+                nnodes INTEGER,
+                ncells INTEGER,
+                crs_wkt TEXT,
+                hash TEXT,
+                node_x BLOB, node_y BLOB, node_z BLOB,
+                cell_nodes BLOB,
+                face_offsets BLOB,
+                bc_n0 BLOB, bc_n1 BLOB, bc_type BLOB, bc_val BLOB,
+                description TEXT
+            )
+        """)
+        def _b(key):
+            a = mesh_data.get(key)
+            return _compress_array(a) if a is not None and a.size > 0 else None
+        cur.execute("DELETE FROM swe2d_mesh WHERE mesh_name = ?", (mesh_name,))
+        cur.execute("""
+            INSERT INTO swe2d_mesh(mesh_name, created_utc, nnodes, ncells, crs_wkt, hash,
+                node_x, node_y, node_z, cell_nodes,
+                face_offsets,
+                bc_n0, bc_n1, bc_type, bc_val,
+                description)
+            VALUES(?,?,?,?,?,?,
+                ?,?,?,?,
+                ?,
+                ?,?,?,?,
+                ?)
+        """, (
+            mesh_name, datetime.datetime.utcnow().isoformat(),
+            nnodes, ncells,
+            str(crs_wkt or ""), h.hexdigest() if h else "",
+            _b("node_x"), _b("node_y"), _b("node_z"), _b("cell_nodes"),
+            _b("cell_face_offsets"),
+            _b("bc_edge_node0"), _b("bc_edge_node1"), _b("bc_edge_type"), _b("bc_edge_val"),
+            str(description or ""),
+        ))
+        conn.commit()
+        if log_fn:
+            log_fn(f"Mesh '{mesh_name}' saved to {gpkg_path} ({nnodes} nodes, {ncells} cells)")
+    finally:
+        conn.close()
+
+
+def load_mesh_from_geopackage(
+    gpkg_path: str,
+    mesh_name: str,
+) -> Optional[Dict[str, np.ndarray]]:
+    """Load mesh arrays from swe2d_mesh table. Returns None if not found."""
+    if not gpkg_path:
+        return None
+    conn = sqlite3.connect(gpkg_path)
+    try:
+        cur = conn.cursor()
+        cur.execute("SELECT node_x, node_y, node_z, cell_nodes, "
+                     "face_offsets, "
+                     "bc_n0, bc_n1, bc_type, bc_val "
+                     "FROM swe2d_mesh WHERE mesh_name = ?", (mesh_name,))
+        row = cur.fetchone()
+        if row is None:
+            return None
+        def _ld(data, dtype):
+            if data is None:
+                return np.empty(0, dtype=dtype)
+            return _decompress_array(data, dtype, (-1,))
+        out = {
+            "node_x": _ld(row[0], np.float64),
+            "node_y": _ld(row[1], np.float64),
+            "node_z": _ld(row[2], np.float64),
+            "cell_nodes": _ld(row[3], np.int32).ravel(),
+        }
+        fo = _ld(row[4], np.int32) if row[4] else None
+        if fo is not None and fo.size > 0:
+            out["cell_face_offsets"] = fo
+        bc_n0 = _ld(row[5], np.int32)
+        bc_n1 = _ld(row[6], np.int32)
+        bc_tp = _ld(row[7], np.int32)
+        bc_vl = _ld(row[8], np.float64)
+        if bc_n0.size > 0:
+            out["bc_edge_node0"] = bc_n0
+            out["bc_edge_node1"] = bc_n1
+            out["bc_edge_type"] = bc_tp
+            out["bc_edge_val"] = bc_vl
+        return out
+    finally:
+        conn.close()
+
+
+def persist_mesh_max_results_to_geopackage(
+    gpkg_path: str,
+    run_id: str,
+    max_results: Dict[str, np.ndarray],
+    log_fn: Optional[Callable[[str], None]] = None,
+) -> None:
+    """Persist per-cell max results to GeoPackage (one row per cell, no t_s)."""
+    if not gpkg_path or not max_results:
+        return
+    n = min(v.size for v in max_results.values())
+    if n <= 0:
+        return
+
+    conn = sqlite3.connect(gpkg_path)
+    try:
+        cur = conn.cursor()
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS swe2d_mesh_max_results_runs (
+                run_id TEXT PRIMARY KEY,
+                created_utc TEXT,
+                row_count INTEGER
+            )
+        """)
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS swe2d_mesh_max_results (
+                run_id TEXT,
+                cell_id INTEGER,
+                max_h REAL,
+                max_hu REAL,
+                max_hv REAL,
+                max_wse REAL,
+                max_vel REAL,
+                PRIMARY KEY (run_id, cell_id)
+            )
+        """)
+        cur.execute(
+            "CREATE INDEX IF NOT EXISTS idx_swe2d_mesh_max_results_run "
+            "ON swe2d_mesh_max_results(run_id)"
+        )
+
+        h_arr = np.asarray(max_results["max_h"], dtype=np.float64).ravel()
+        hu_arr = np.asarray(max_results["max_hu"], dtype=np.float64).ravel()
+        hv_arr = np.asarray(max_results["max_hv"], dtype=np.float64).ravel()
+        wse_arr = np.asarray(max_results["max_wse"], dtype=np.float64).ravel()
+        vel_arr = np.asarray(max_results["max_vel"], dtype=np.float64).ravel()
+
+        def _quote_ident(name: str) -> str:
+            return '"' + str(name).replace('"', '""') + '"'
+
+        q_table = _quote_ident("swe2d_mesh_max_results")
+        cur.execute(f"DELETE FROM {q_table} WHERE run_id = ?", (run_id,))
+        rows = []
+        for ci in range(n):
+            rows.append((
+                run_id, ci,
+                float(h_arr[ci]) if ci < h_arr.size else 0.0,
+                float(hu_arr[ci]) if ci < hu_arr.size else 0.0,
+                float(hv_arr[ci]) if ci < hv_arr.size else 0.0,
+                float(wse_arr[ci]) if ci < wse_arr.size else 0.0,
+                float(vel_arr[ci]) if ci < vel_arr.size else 0.0,
+            ))
+        cur.executemany(
+            f"INSERT INTO {q_table}(run_id, cell_id, max_h, max_hu, max_hv, max_wse, max_vel) "
+            f"VALUES(?,?,?,?,?,?,?)", rows
+        )
+        cur.execute(
+            "INSERT OR REPLACE INTO swe2d_mesh_max_results_runs(run_id, created_utc, row_count) "
+            "VALUES(?,?,?)",
+            (run_id, datetime.utcnow().isoformat(), n),
+        )
+        conn.commit()
+        if log_fn:
+            log_fn(f"Max results saved to GeoPackage: {n} cells")
+    finally:
+        conn.close()
 
 
 def persist_conservation_forensics_to_geopackage(
