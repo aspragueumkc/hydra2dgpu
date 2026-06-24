@@ -2695,6 +2695,34 @@ class SWE2DWorkbenchStudioDialog(QtWidgets.QDialog):
 
     # ── View Protocol Methods (called by Service Layer, never widgets directly) ──
 
+    def _open_batch_simulation_dialog(self) -> None:
+        """Open the batch simulation dialog for parameter sweeps."""
+        from swe2d.workbench.dialogs.batch_simulation_dialog import BatchSimulationDialog
+
+        gpkg = str(self._model_gpkg_path_edit.text()) if hasattr(self, "_model_gpkg_path_edit") else ""
+        if not gpkg:
+            gpkg = str(getattr(self, "_model_gpkg_path", ""))
+        if not gpkg:
+            QtWidgets.QMessageBox.warning(self, "Batch", "No project GeoPackage path set.")
+            return
+
+        base_params = {
+            "mesh": "",
+            "params": {
+                "rain_rate_mmhr": 0.0,
+                "n_mann": 0.035,
+                "duration_s": 3600.0,
+            },
+        }
+
+        dlg = BatchSimulationDialog(
+            parent=self,
+            base_params=base_params,
+            mesh_gpkg=gpkg,
+            results_gpkg=gpkg,
+        )
+        dlg.exec()
+
     def set_run_button_enabled(self, enabled: bool) -> None:
         """Enable or disable the Run button."""
         if hasattr(self, "_model_tab_view") and hasattr(self._model_tab_view, "run_btn"):

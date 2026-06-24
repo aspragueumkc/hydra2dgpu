@@ -180,6 +180,7 @@ def wire_run_tab_signals(dialog) -> None:
     v = dialog._model_tab_view
     handlers = [
         (v.run_btn, dialog._controller.on_run),
+        (v.batch_sim_btn, dialog._open_batch_simulation_dialog),
         (v.cancel_btn, dialog._controller.on_cancel),
         (v.preview_overrides_btn, dialog._controller.on_preview_overrides),
         (v.preview_coupling_btn, dialog._controller.on_preview_coupling),

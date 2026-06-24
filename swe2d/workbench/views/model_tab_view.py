@@ -153,6 +153,8 @@ class ModelTabView(QtWidgets.QWidget):
         for attr, text, tip in [
             ("run_btn", "Run 2D Model",
              "Start the 2D shallow water simulation with current settings."),
+            ("batch_sim_btn", "Batch Simulation...",
+             "Open batch simulation dialog for parameter sweeps."),
             ("cancel_btn", "Cancel",
              "Request cancellation of the running simulation. "
              "The solver will stop at the next safe checkpoint."),
