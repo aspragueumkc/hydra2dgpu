@@ -1,6 +1,6 @@
 // swe2d_solver.cpp
 // GPU solver implementation for the 2D SWE on an unstructured mesh.
-// GPU/CUDA only — 
+// GPU/CUDA only
 
 #include "swe2d_solver.hpp"
 #include "swe2d_numerics.hpp"
@@ -20,114 +20,6 @@
 #include <utility>
 #include <mutex>
 
-namespace {
-
-/// Clamp a double value to [lo, hi].
-inline double clamp_double(double v, double lo, double hi) {
-    return std::max(lo, std::min(v, hi));
-}
-
-/** Interpolate a clamped timeseries on the host.
-    Linear interpolation between (t[i], v[i]) points, clamped to range.
-    @param t Timestamps @param v Values @param start Start index in series
-    @param end End index (exclusive) @param x Query time @returns Interpolated value */
-inline double interp_series_clamped_host(
-    const std::vector<double>& t,
-    const std::vector<double>& v,
-    int32_t start,
-    int32_t end,
-    double x)
-{
-    const int32_t n = end - start;
-    if (n <= 0) return 0.0;
-    if (n == 1) return v[static_cast<size_t>(start)];
-    if (x <= t[static_cast<size_t>(start)]) return v[static_cast<size_t>(start)];
-    if (x >= t[static_cast<size_t>(end - 1)]) return v[static_cast<size_t>(end - 1)];
-
-    auto t0 = t.begin() + start;
-    auto t1 = t.begin() + end;
-    auto it = std::upper_bound(t0, t1, x);
-    int32_t i1 = static_cast<int32_t>(it - t.begin());
-    int32_t i0 = i1 - 1;
-    const double tx0 = t[static_cast<size_t>(i0)];
-    const double tx1 = t[static_cast<size_t>(i1)];
-    const double y0 = v[static_cast<size_t>(i0)];
-    const double y1 = v[static_cast<size_t>(i1)];
-    const double a = (x - tx0) / std::max(tx1 - tx0, 1.0e-12);
-    return y0 + a * (y1 - y0);
-}
-
-/** Evaluate and apply boundary hydrographs at time t_now.
-    Interpolates each hydrograph timeseries and updates the mesh edge_bc and edge_bc_val. */
-void apply_solver_boundary_hydrographs(SWE2DSolver* s, double t_now)
-{
-    if (!s || !s->hydrographs_enabled) return;
-    SWE2DMesh& mesh = const_cast<SWE2DMesh&>(*s->mesh);
-    const int32_t n = static_cast<int32_t>(s->hg_edge_index.size());
-    for (int32_t i = 0; i < n; ++i) {
-        const int32_t e = s->hg_edge_index[static_cast<size_t>(i)];
-        if (e < 0 || e >= mesh.n_edges) continue;
-        const int32_t off0 = s->hg_offsets[static_cast<size_t>(i)];
-        const int32_t off1 = s->hg_offsets[static_cast<size_t>(i + 1)];
-        const double val = interp_series_clamped_host(s->hg_time_s, s->hg_value, off0, off1, t_now);
-        mesh.edge_bc[e] = static_cast<BCType>(s->hg_bc_type[static_cast<size_t>(i)]);
-        mesh.edge_bc_val[e] = val;
-    }
-}
-
-/** Build rain+CN source terms for all cells over the interval [t0, t1].
-    Accumulates externally-coupled sources, then applies SCS-CN runoff
-    computation for each cell with active rain gage data. */
-void build_solver_rain_cn_source(SWE2DSolver* s, double t0, double t1)
-{
-    if (!s) return;
-    const int32_t n_cells = s->mesh->n_cells;
-    if (static_cast<int32_t>(s->source_terms.size()) != n_cells) {
-        s->source_terms.assign(static_cast<size_t>(n_cells), 0.0);
-    }
-
-    // Seed with externally-coupled source terms (if configured), then add
-    // native rain/CN forcing on top.
-    if (s->external_sources_enabled &&
-        static_cast<int32_t>(s->external_source_terms.size()) == n_cells) {
-        std::copy(
-            s->external_source_terms.begin(),
-            s->external_source_terms.end(),
-            s->source_terms.begin());
-    } else {
-        std::fill(s->source_terms.begin(), s->source_terms.end(), 0.0);
-    }
-
-    if (!s->rain_cn_enabled || t1 <= t0) return;
-
-    for (int32_t c = 0; c < n_cells; ++c) {
-        const int32_t gidx = s->rain_cell_gage[static_cast<size_t>(c)];
-        if (gidx < 0) continue;
-        const int32_t off0 = s->rain_gage_offsets[static_cast<size_t>(gidx)];
-        const int32_t off1 = s->rain_gage_offsets[static_cast<size_t>(gidx + 1)];
-        if (off1 <= off0) continue;
-
-        const double r0 = interp_series_clamped_host(s->rain_hg_time_s, s->rain_hg_cum_mm, off0, off1, t0);
-        const double r1 = interp_series_clamped_host(s->rain_hg_time_s, s->rain_hg_cum_mm, off0, off1, t1);
-        const double dr = std::max(0.0, r1 - r0);
-        const double p = s->rain_cum_mm[static_cast<size_t>(c)] + dr;
-
-        const double cn = std::min(100.0, std::max(1.0, s->rain_cn[static_cast<size_t>(c)]));
-        const double s_mm = std::max((25400.0 / cn) - 254.0, 0.0);
-        const double ia = s->rain_ia_ratio * s_mm;
-        double pe = 0.0;
-        if (p > ia) {
-            const double num = (p - ia) * (p - ia);
-            const double den = std::max(p + (1.0 - s->rain_ia_ratio) * s_mm, 1.0e-12);
-            pe = num / den;
-        }
-        const double de = std::max(0.0, pe - s->rain_excess_cum_mm[static_cast<size_t>(c)]);
-        s->rain_cum_mm[static_cast<size_t>(c)] = p;
-        s->rain_excess_cum_mm[static_cast<size_t>(c)] = pe;
-        s->source_terms[static_cast<size_t>(c)] += (de * s->rain_mm_to_model_depth) / (t1 - t0);
-    }
-}
-
 /// Check if an environment variable is enabled (non-zero, non-false, non-no).
 bool swe2d_env_enabled(const char* name) {
     const char* v = std::getenv(name);
@@ -135,14 +27,6 @@ bool swe2d_env_enabled(const char* name) {
     const char c0 = static_cast<char>(std::tolower(static_cast<unsigned char>(v[0])));
     return !(c0 == '0' || c0 == 'f' || c0 == 'n');
 }
-
-
-
-#ifdef HYDRA_HAS_CUDA
-
-
-} // namespace
-#endif
 
 
 
@@ -252,10 +136,7 @@ void swe2d_get_max_tracking(const SWE2DSolver* s, double* h_max_out, double* hu_
         return;
     }
 #endif
-    // No CPU path: max tracking is GPU-only.
-    if (h_max_out && s->dev && s->dev->d_max_h) std::memset(h_max_out, 0, static_cast<size_t>(s->mesh->n_cells) * sizeof(double));
-    if (hu_max_out && s->dev && s->dev->d_max_hu) std::memset(hu_max_out, 0, static_cast<size_t>(s->mesh->n_cells) * sizeof(double));
-    if (hv_max_out && s->dev && s->dev->d_max_hv) std::memset(hv_max_out, 0, static_cast<size_t>(s->mesh->n_cells) * sizeof(double));
+    throw std::runtime_error("swe2d_get_max_tracking requires a GPU device");
 }
 
 /** Overwrite solver state from caller-supplied arrays.
@@ -280,7 +161,7 @@ void swe2d_set_state(SWE2DSolver* s, const double* h_in, const double* hu_in, co
 #endif
 }
 
-// Dead CPU CFL functions removed — GPU-only build
+
 
 
 
