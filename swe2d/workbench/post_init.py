@@ -30,7 +30,6 @@ def run_workbench_post_bootstrap_setup(
 
     # Sprint 0: dockable results panel (created lazily on first show).
     dialog._results_panel = None
-    dialog._results_data = None
     dialog._high_perf_canvas_overlay_item = None
     dialog._high_perf_canvas_overlay_enabled = False
     dialog._high_perf_overlay_cell_x = np.empty(0, dtype=np.float64)
