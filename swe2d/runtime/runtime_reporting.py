@@ -49,10 +49,7 @@ class SWE2DRuntimeReporter:
         last_process_events_wall: float,
         h_min: float,
         length_unit_name: str,
-        snapshot_timesteps: list,
-        line_snapshot_rows: list,
-        line_snapshot_profile_rows: list,
-        coupling_snapshot_rows: list,
+        results_data: Any,
         sample_line_metrics_callback: Callable[..., Any],
         sample_coupling_object_metrics_callback: Callable[..., Any],
         process_events_callback: Callable[[], None],
@@ -85,7 +82,7 @@ class SWE2DRuntimeReporter:
             state_ms += (time.perf_counter() - _t_state3) * 1000.0
 
         if need_mesh_snap and h_s is not None and hu_s is not None and hv_s is not None:
-            snapshot_timesteps.append((t_accum, h_s.copy(), hu_s.copy(), hv_s.copy()))
+            results_data.append_live_snapshot(t_accum, h_s.copy(), hu_s.copy(), hv_s.copy())
             next_snap_t += float(output_interval_s)
 
         if need_line_snap and cell_solver_z is not None and h_s is not None and hu_s is not None and hv_s is not None:
@@ -98,15 +95,18 @@ class SWE2DRuntimeReporter:
                 cell_solver_z,
             )
             if rows:
-                line_snapshot_rows.extend(rows)
+                for r in rows:
+                    results_data.append_line_snapshot(r)
             if profile_rows:
-                line_snapshot_profile_rows.extend(profile_rows)
+                for r in profile_rows:
+                    results_data.append_line_profile_snapshot(r)
             next_line_snap_t += float(line_output_interval_s)
 
         if need_coupling_snap and h_s is not None:
             c_rows = sample_coupling_object_metrics_callback(coupling_controller, t_accum, h_s)
             if c_rows:
-                coupling_snapshot_rows.extend(c_rows)
+                for r in c_rows:
+                    results_data.append_coupling_snapshot(r)
             next_coupling_snap_t += float(line_output_interval_s)
 
         _now_wall = time.perf_counter()

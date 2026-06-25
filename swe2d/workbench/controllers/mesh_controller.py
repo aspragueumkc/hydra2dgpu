@@ -354,7 +354,8 @@ class MeshController:
 
         view = self._view
         mesh = getattr(view, "_mesh_data", None)
-        timesteps = getattr(view, "_snapshot_timesteps", None)
+        rd = getattr(view, "_results_data", None)
+        timesteps = rd.get_live_snapshot_timesteps()
         if mesh is None or not timesteps:
             from qgis.PyQt import QtWidgets
             QtWidgets.QMessageBox.warning(
@@ -408,7 +409,8 @@ class MeshController:
 
         view = self._view
         mesh = getattr(view, "_mesh_data", None)
-        timesteps = getattr(view, "_snapshot_timesteps", None)
+        rd = getattr(view, "_results_data", None)
+        timesteps = rd.get_live_snapshot_timesteps()
 
         from qgis.PyQt import QtWidgets
         if mesh is None or not timesteps:

@@ -325,7 +325,9 @@ class RunController:
                 line_output_interval_edit,
             )
             line_output_interval_s = max(1.0, _line_oi_hr * 3600.0)
-            view._snapshot_timesteps = []
+            results_data = getattr(view, "_results_data", None)
+            if results_data is not None:
+                results_data.clear_live_snapshots()
             # Initialise results panel + temporal dock so the user can
             # scrub through snapshots as they accumulate during the run.
             try:
@@ -337,9 +339,6 @@ class RunController:
             # blocks rendering (the guard has been removed anyway, but this
             # prevents stale fingerprint data from a future re-introduction).
             view._snapshot_mesh_fingerprint = ""
-            view._line_snapshot_rows = []
-            view._line_snapshot_profile_rows = []
-            view._coupling_snapshot_rows = []
             run_span_s = max(float(run_duration_s), 1.0e-9)
             _next_snap_t = min(output_interval_s, run_span_s)
             _next_line_snap_t = min(line_output_interval_s, run_span_s)
@@ -823,22 +822,24 @@ class RunController:
                 "last_mass_total": np.array(float(last_diag.get("mass_total", -1.0) if last_diag else -1.0)),
             }
 
-            # Sync live snapshot timesteps into the results data so the
-            # temporal dock slider and overlay reflect the current state
-            # *before* finalization (which persists to GPKG).
+            # Sync live snapshot timesteps into the temporal dock slider
+            # and overlay so they reflect the current state *before*
+            # finalization (which persists to GPKG).
             results_data = getattr(view, "_results_data", None)
             if results_data is not None and hasattr(results_data, "set_live_snapshot_timesteps"):
                 try:
+                    live_ts = results_data.get_live_snapshot_timesteps()
                     results_data.set_live_snapshot_timesteps(
-                        view._snapshot_timesteps, t_sec=float(t_accum),
+                        live_ts, t_sec=float(t_accum),
                     )
                 except Exception as exc:
                     log_fn(f"[LiveSync] set_live_snapshot_timesteps failed: {exc}")
             try:
                 view._sync_high_perf_overlay_data()
-                if view._snapshot_timesteps:
+                live_ts = results_data.get_live_snapshot_timesteps() if results_data else []
+                if live_ts:
                     view._update_high_perf_overlay_time(
-                        float(view._snapshot_timesteps[-1][0])
+                        float(live_ts[-1][0])
                     )
             except Exception as exc:
                 log_fn(f"[LiveSync] overlay update failed: {exc}")
@@ -1030,9 +1031,13 @@ class RunController:
         import tempfile
 
         view = self._view
-        if view._mesh_data is None and not view._snapshot_timesteps:
+        results_data = getattr(view, "_results_data", None)
+        _snapshots = results_data.get_live_snapshot_timesteps() if results_data else []
+        if view._mesh_data is None and not _snapshots:
             view._log("No snapshot data available — run the model with an output interval set first.")
             return
+
+        _coupling_rows = results_data.get_live_coupling_snapshot_rows() if results_data else []
 
         gpkg_results_path = view._current_line_results_storage_path()
         if gpkg_results_path:
@@ -1045,7 +1050,7 @@ class RunController:
             snap_run_id = ""
 
         # HDF5 export (mesh only, optional — fails gracefully)
-        if view._mesh_data is not None and view._snapshot_timesteps:
+        if view._mesh_data is not None and _snapshots:
             try:
                 wp = view.collect_run_widget_params()
                 snap_path = os.path.join(tempfile.gettempdir(), "swe2d_snapshot.hdf")
@@ -1059,7 +1064,7 @@ class RunController:
                     gravity=float(view._gravity),
                     h_min=float(wp["h_min_spin"]),
                     n_mann=float(wp["n_mann_spin"]),
-                    timesteps=view._snapshot_timesteps,
+                    timesteps=_snapshots,
                     log_fn=view._log,
                     result_data=view._result_data,
                 )
@@ -1070,15 +1075,14 @@ class RunController:
         # GPKG persistence (mesh + coupling) — always attempt regardless of mesh data
         try:
             if gpkg_results_path:
-                if view._snapshot_timesteps:
+                if _snapshots:
                     view._persist_snapshot_to_gpkg(gpkg_results_path, snap_run_id, accumulate=True)
-                coupling_rows = getattr(view, "_coupling_snapshot_rows", None)
-                if coupling_rows:
+                if _coupling_rows:
                     view._persist_coupling_results_to_geopackage(
-                        gpkg_results_path, snap_run_id, coupling_rows,
+                        gpkg_results_path, snap_run_id, _coupling_rows,
                         interval_s=0.0, accumulate=True,
                     )
-                if view._snapshot_timesteps or coupling_rows:
+                if _snapshots or _coupling_rows:
                     view._auto_load_results_panel(gpkg_results_path, snap_run_id)
                 # Auto-load the snapshot result into the results panel
                 view._auto_load_results_panel(gpkg_results_path, snap_run_id)

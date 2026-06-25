@@ -1695,7 +1695,7 @@ __global__ void swe2d_rk_multi_stage_build_kernel(
  * @param shallow_damping_depth Shallow depth for damping
  * @param enable_shallow_front_recon_fallback Fall back to first-order at fronts
  */
-__global__ __launch_bounds__(256, 4) void swe2d_flux_kernel(
+__global__ __launch_bounds__(256, 2) void swe2d_flux_kernel(
     int32_t                     n_edges,
     const int32_t* __restrict__ edge_c0,
     const int32_t* __restrict__ edge_c1,
@@ -1832,11 +1832,12 @@ __global__ __launch_bounds__(256, 4) void swe2d_flux_kernel(
                 // Slope ratio at c0: GG gradient projected onto c0→c1 / pair jump
                 const double s0 = gx0 * dcx + gy0 * dcy;
                 const double sign_dq = (dq >= 0.0) ? 1.0 : -1.0;
-                const double r0 = s0 / (dq + sign_dq * EPS);
+                const double inv_denom = 1.0 / (dq + sign_dq * EPS);
+                const double r0 = s0 * inv_denom;
 
                 // Slope ratio at c1 (looking back toward c0)
                 const double s1 = -(gx1 * dcx + gy1 * dcy);
-                const double r1 = s1 / (-dq + (-sign_dq) * EPS);
+                const double r1 = -s1 * inv_denom;
 
                 double phi0, phi1;
                 if (spatial_scheme == scheme_fast) {
@@ -1886,9 +1887,10 @@ __global__ __launch_bounds__(256, 4) void swe2d_flux_kernel(
                 // monotonicity reference (robust candidate).
                 const double sign_dq = (dq >= 0.0) ? 1.0 : -1.0;
                 const double s0_pair = gx0 * dcx + gy0 * dcy;
-                const double r0 = s0_pair / (dq + sign_dq * EPS);
+                const double inv_denom = 1.0 / (dq + sign_dq * EPS);
+                const double r0 = s0_pair * inv_denom;
                 const double s1_pair = -(gx1 * dcx + gy1 * dcy);
-                const double r1 = s1_pair / (-dq + (-sign_dq) * EPS);
+                const double r1 = -s1_pair * inv_denom;
                 const double phi0 = (r0 + fabs(r0)) / (1.0 + fabs(r0));
                 const double phi1 = (r1 + fabs(r1)) / (1.0 + fabs(r1));
 

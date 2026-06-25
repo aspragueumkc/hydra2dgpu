@@ -100,7 +100,7 @@ class ResultsToolbox(QtWidgets.QWidget):
         """Bind the data layer and rebuild run list / coupling combos."""
         self._data = data
         self._rebuild_run_list()
-        records = list(getattr(data, "_coupling_records", []) or [])
+        records = data.get_coupling_records()
         if records:
             self.populate_coupling_combos(records)
 

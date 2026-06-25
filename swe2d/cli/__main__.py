@@ -16,12 +16,14 @@ def main():
     run_parser.add_argument("params", help="Path to JSON params file, or JSON string")
     run_parser.add_argument("--results", "-r", default="", help="Results GeoPackage path")
     run_parser.add_argument("--progress", action="store_true", help="Print progress per step")
+    run_parser.add_argument("--status-file-path", default="", help="Periodic JSON status file path (for optional QGIS progress monitoring)")
+    run_parser.add_argument("--status-interval", type=float, default=5.0, help="Status file write interval in seconds (default 5.0)")
 
     batch_parser = sub.add_parser("batch", help="Run batch of simulations")
     batch_parser.add_argument("batch_json", help="Path to batch JSON file")
     batch_parser.add_argument("mesh_gpkg", help="Path to mesh GeoPackage")
     batch_parser.add_argument("--results", "-r", default="", help="Results GeoPackage path")
-    batch_parser.add_argument("--max-workers", "-w", type=int, default=0, help="Max concurrent workers")
+    batch_parser.add_argument("--max-workers", "-w", type=int, default=0, help="Max concurrent workers (0=auto)")
 
     args = parser.parse_args()
 
@@ -32,6 +34,8 @@ def main():
             params,
             results_gpkg=args.results or "",
             progress_callback=_make_progress(args.progress),
+            status_file_path=args.status_file_path or None,
+            status_interval_s=float(args.status_interval),
         )
         print(f"Run complete: {results['h'].size} cells, {len(results['diags'])} steps")
         if "max_results" in results:

@@ -90,7 +90,6 @@ class OverlayView(Protocol):
     _high_perf_canvas_overlay_enabled: bool
     _high_perf_overlay_cell_x: Any
     _high_perf_overlay_cell_y: Any
-    _snapshot_timesteps: Any
 
     def _log(self, msg: str) -> None:
         """Log a message through the view's logging mechanism."""

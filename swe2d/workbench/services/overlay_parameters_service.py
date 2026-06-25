@@ -152,7 +152,8 @@ def collect_overlay_parameters(view: Any, t_use: float) -> Dict[str, Any]:
             courant_cell_size = 0.0
 
     courant_dt = 0.0
-    ts_array = getattr(view, "_snapshot_timesteps", []) or []
+    data = getattr(view, "_results_data", None)
+    ts_array = data.get_live_snapshot_timesteps()
     try:
         if len(ts_array) >= 2:
             courant_dt = abs(float(ts_array[-1][0]) - float(ts_array[-2][0]))
@@ -181,7 +182,7 @@ def collect_overlay_parameters(view: Any, t_use: float) -> Dict[str, Any]:
         "node_y": data.overlay_node_y if data is not None else None,
         "cell_nodes": data.overlay_cell_nodes if data is not None else None,
         "tri_to_cell": data.overlay_tri_to_cell if data is not None else None,
-        "timesteps": getattr(view, "_snapshot_timesteps", []),
+        "timesteps": data.get_live_snapshot_timesteps(),
         "current_time_s": float(t_use),
         "field_key": field_key,
         "wse_render_mode": wse_render_mode,

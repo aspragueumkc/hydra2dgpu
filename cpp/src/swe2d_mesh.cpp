@@ -6,6 +6,7 @@
 #include <algorithm>
 #include <cassert>
 #include <climits>
+#include <cstddef>
 #include <deque>
 #include <cstdint>
 #include <cmath>
@@ -280,18 +281,15 @@ SWE2DMesh swe2d_build_mesh_poly(
         }
     }
 
+    // Renumber cells via Reverse Cuthill-McKee for GPU cache locality.
+    // Must run before edge reorder so edges sort by the new cell indices.
+    swe2d_renumber_cells_for_gpu(mesh);
+
     // Reorder edges by (c0, c1) for GPU memory coalescing.
     swe2d_reorder_edges_for_gpu(mesh);
 
-    // Renumber cells via BFS for GPU cache locality.
-    // Disabled by default: GMSH already applies RCMK ordering during mesh
-    // generation, and plain BFS adds ~35% MUSCL cost vs GMSH ordering.
-    // Enable for imported meshes with random cell ordering.
-    // swe2d_renumber_cells_for_gpu(mesh);
-
     // Build the 2-ring cell stencil (CSR) used by the least-squares gradient
-    // (spatial scheme 6 / FV_WENO5).  Neighbour cell indices are invariant under
-    // the edge reordering above, so this may run before or after the reorder.
+    // (spatial scheme 6 / FV_WENO5).
     swe2d_build_cell_ring2(mesh);
 
     return mesh;
@@ -396,22 +394,24 @@ void swe2d_reorder_edges_for_gpu(SWE2DMesh& mesh) {
 // ─────────────────────────────────────────────────────────────────────────────
 // Reverse Cuthill-McKee cell renumbering for GPU cache locality
 // ─────────────────────────────────────────────────────────────────────────────
-/** Renumber cells via BFS so connected cells have nearby indices.
+/** Renumber cells using Reverse Cuthill-McKee so connected cells have nearby
+    indices.  Uses minimum-degree root, degree-sorted BFS levels, and final
+    reversal to minimise adjacency bandwidth.
     Edge c0/c1 entries are remapped through the permutation.
     The permutation is stored in mesh.cell_perm for later use by the solver. */
 void swe2d_renumber_cells_for_gpu(SWE2DMesh& mesh) {
     const int32_t n_cells = mesh.n_cells;
     if (n_cells <= 1) return;
 
-    // Build CSR adjacency from edges.
+    // Build CSR adjacency from edges and compute cell degrees.
+    std::vector<int32_t> degree(static_cast<size_t>(n_cells), 0);
     std::vector<int32_t> adj_offsets(static_cast<size_t>(n_cells) + 1, 0);
     for (int32_t e = 0; e < mesh.n_edges; ++e) {
         int32_t c0 = mesh.edge_c0[static_cast<size_t>(e)];
         int32_t c1 = mesh.edge_c1[static_cast<size_t>(e)];
-        if (c0 >= 0 && c0 < n_cells) adj_offsets[static_cast<size_t>(c0)]++;
-        if (c1 >= 0 && c1 < n_cells) adj_offsets[static_cast<size_t>(c1)]++;
+        if (c0 >= 0 && c0 < n_cells) { adj_offsets[static_cast<size_t>(c0)]++; degree[static_cast<size_t>(c0)]++; }
+        if (c1 >= 0 && c1 < n_cells) { adj_offsets[static_cast<size_t>(c1)]++; degree[static_cast<size_t>(c1)]++; }
     }
-    // Standard CSR: offsets[0]=0, offsets[c]=sum(deg(0..c-1)).
     int32_t running = 0;
     for (int32_t c = 0; c < n_cells; ++c) {
         int32_t deg = adj_offsets[static_cast<size_t>(c)];
@@ -421,7 +421,6 @@ void swe2d_renumber_cells_for_gpu(SWE2DMesh& mesh) {
     adj_offsets[static_cast<size_t>(n_cells)] = running;
     int32_t total_adj = running;
 
-    // Fill adjacency IDs.
     std::vector<int32_t> adj_ids(static_cast<size_t>(total_adj));
     std::vector<int32_t> adj_pos(adj_offsets.begin(), adj_offsets.begin() + n_cells);
     for (int32_t e = 0; e < mesh.n_edges; ++e) {
@@ -437,36 +436,66 @@ void swe2d_renumber_cells_for_gpu(SWE2DMesh& mesh) {
         }
     }
 
-    // BFS from cell 0.
+    // Find minimum-degree root (pseudo-peripheral proxy).
+    int32_t root = 0;
+    {
+        int32_t min_deg = degree[0];
+        for (int32_t c = 1; c < n_cells; ++c) {
+            int32_t d = degree[static_cast<size_t>(c)];
+            if (d < min_deg) { min_deg = d; root = c; }
+        }
+    }
+
+    // RCMK: BFS from root, sort each level by degree ascending.
     std::vector<int32_t> perm(static_cast<size_t>(n_cells));
     std::vector<char> visited(static_cast<size_t>(n_cells), 0);
     size_t perm_idx = 0;
 
     std::deque<int32_t> queue;
-    queue.push_back(0);
-    visited[0] = 1;
+    queue.push_back(root);
+    visited[static_cast<size_t>(root)] = 1;
 
+    std::vector<int32_t> level_scratch;
     while (!queue.empty()) {
-        int32_t cur = queue.front();
-        queue.pop_front();
-        perm[perm_idx++] = cur;
+        size_t level_size = queue.size();
+        level_scratch.clear();
+        level_scratch.reserve(level_size);
 
-        size_t s = static_cast<size_t>(adj_offsets[static_cast<size_t>(cur)]);
-        size_t e_bfs = static_cast<size_t>(adj_offsets[static_cast<size_t>(cur + 1)]);
-        for (size_t i = s; i < e_bfs; ++i) {
-            int32_t n = adj_ids[i];
-            if (n >= 0 && n < n_cells && !visited[static_cast<size_t>(n)]) {
-                visited[static_cast<size_t>(n)] = 1;
-                queue.push_back(n);
+        for (size_t i = 0; i < level_size; ++i) {
+            int32_t cur = queue.front();
+            queue.pop_front();
+            level_scratch.push_back(cur);
+
+            size_t s = static_cast<size_t>(adj_offsets[static_cast<size_t>(cur)]);
+            size_t e_bfs = static_cast<size_t>(adj_offsets[static_cast<size_t>(cur + 1)]);
+            for (size_t j = s; j < e_bfs; ++j) {
+                int32_t n = adj_ids[j];
+                if (n >= 0 && n < n_cells && !visited[static_cast<size_t>(n)]) {
+                    visited[static_cast<size_t>(n)] = 1;
+                    queue.push_back(n);
+                }
             }
         }
+
+        // Sort by degree ascending (Cuthill-McKee ordering).
+        std::sort(level_scratch.begin(), level_scratch.end(),
+            [&](int32_t a, int32_t b) {
+                return degree[static_cast<size_t>(a)] < degree[static_cast<size_t>(b)];
+            });
+
+        for (int32_t node : level_scratch)
+            perm[perm_idx++] = node;
     }
 
-    // Handle disconnected components (islands).
+    // Handle disconnected components (islands) — place after main component.
+    size_t main_component_end = perm_idx;
     for (int32_t c = 0; c < n_cells; ++c) {
         if (!visited[static_cast<size_t>(c)])
             perm[perm_idx++] = c;
     }
+
+    // Reverse main component ordering (the "Reverse" in RCMK).
+    std::reverse(perm.begin(), perm.begin() + static_cast<std::ptrdiff_t>(main_component_end));
 
     // Build inverse permutation.
     std::vector<int32_t> inv_perm(static_cast<size_t>(n_cells));
@@ -488,8 +517,6 @@ void swe2d_renumber_cells_for_gpu(SWE2DMesh& mesh) {
     perm_cell_dbl(mesh.cell_inv_area);
 
     // Permute cell-edge CSR arrays to match the new cell order.
-    // Each cell keeps the same count of incident edges, so offsets
-    // follow the same prefix-sum pattern.
     {
         std::vector<int32_t> new_edge_ids;
         new_edge_ids.reserve(mesh.cell_edge_ids.size());
@@ -507,7 +534,7 @@ void swe2d_renumber_cells_for_gpu(SWE2DMesh& mesh) {
         mesh.cell_edge_offsets = std::move(new_offsets);
     }
 
-    // Same for cell_face_nodes (used by mesh exporters / overlays).
+    // Permute cell_face_nodes to match the new cell order.
     {
         std::vector<int32_t> new_face_nodes;
         new_face_nodes.reserve(mesh.cell_face_nodes.size());

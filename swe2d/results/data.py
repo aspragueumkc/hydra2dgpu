@@ -56,6 +56,9 @@ class SWE2DResultsData:
         # Animation (needs QTimer — acceptable Qt dependency)
         self._anim = ResultsAnimationController(fps=self._anim_fps)
 
+        # Data source flag: "none", "live", "gpkg"
+        self._data_source: str = "none"
+
         # Struct coupling data (populated on run discovery)
         self._coupling_records: list = []
         self._coupling_run_id: str = ""
@@ -69,6 +72,12 @@ class SWE2DResultsData:
         self.overlay_node_y: Optional[np.ndarray] = None
         self.overlay_cell_nodes: Optional[np.ndarray] = None
         self.overlay_tri_to_cell: Optional[np.ndarray] = None
+
+        # In-memory snapshots during a live run
+        self._live_snapshot_timesteps: list = []
+        self._live_line_snapshot_rows: list = []
+        self._live_line_profile_rows: list = []
+        self._live_coupling_snapshot_rows: list = []
 
         # Display state for TS/Profile/Structure/Network renderers (plain data)
         self.ts_var_key: str = "flow_cms"
@@ -111,6 +120,36 @@ class SWE2DResultsData:
         self._anim.set_timesteps(self._all_timesteps)
         if t_sec > 0.0:
             self._set_frame(self._t_sec_to_frame_idx(float(t_sec)))
+
+    def clear_live_snapshots(self) -> None:
+        self._live_snapshot_timesteps = []
+        self._live_line_snapshot_rows = []
+        self._live_line_profile_rows = []
+        self._live_coupling_snapshot_rows = []
+
+    def append_live_snapshot(self, t_s: float, h: np.ndarray, hu: np.ndarray, hv: np.ndarray) -> None:
+        self._live_snapshot_timesteps.append((t_s, h, hu, hv))
+
+    def append_line_snapshot(self, row: dict) -> None:
+        self._live_line_snapshot_rows.append(row)
+
+    def append_line_profile_snapshot(self, row: dict) -> None:
+        self._live_line_profile_rows.append(row)
+
+    def append_coupling_snapshot(self, row: dict) -> None:
+        self._live_coupling_snapshot_rows.append(row)
+
+    def get_live_snapshot_timesteps(self) -> list:
+        return self._live_snapshot_timesteps
+
+    def get_live_line_snapshot_rows(self) -> list:
+        return self._live_line_snapshot_rows
+
+    def get_live_line_profile_rows(self) -> list:
+        return self._live_line_profile_rows
+
+    def get_live_coupling_snapshot_rows(self) -> list:
+        return self._live_coupling_snapshot_rows
 
     def get_run_records(self) -> List[RunRecord]:
         """Return run records."""
@@ -347,6 +386,14 @@ class SWE2DResultsData:
         from swe2d.results.queries import load_timeseries as _load_ts
         return _load_ts(run_record.gpkg_path, run_record.run_id, line_id)
 
+    def get_coupling_records(self) -> list:
+        """Return coupling records for the active run."""
+        return list(self._coupling_records)
+
+    def get_coupling_run_id(self) -> str:
+        """Return the run ID for the current coupling data."""
+        return self._coupling_run_id
+
     def load_coupling_for_first_enabled_run(self) -> list:
         """Load coupling for first enabled run."""
         return list(self._coupling_records)
@@ -361,6 +408,22 @@ class SWE2DResultsData:
             if rec.enabled:
                 return str(rec.run_id)
         return ""
+
+    @property
+    def data_source(self) -> str:
+        return self._data_source
+
+    def set_data_source(self, source: str) -> None:
+        self._data_source = source
+
+    def get_snapshot_at_time(self, t_sec: float) -> Optional[Tuple[np.ndarray, np.ndarray, np.ndarray]]:
+        if self._data_source == "live":
+            snapshots = self._live_snapshot_timesteps
+            if not snapshots:
+                return None
+            best = min(snapshots, key=lambda s: abs(s[0] - t_sec))
+            return (best[1], best[2], best[3])
+        return None
 
     def enabled_overlay_targets(self) -> List[Tuple[str, str]]:
         """Return enabled overlay targets."""

@@ -2,6 +2,7 @@
 import json
 import os
 import tempfile
+import time
 import numpy as np
 
 from swe2d.workbench.services.gpkg_persistence_service import (
@@ -65,3 +66,58 @@ def test_mesh_persist_and_load_round_trip():
     finally:
         if os.path.exists(gpkg):
             os.unlink(gpkg)
+
+
+def test_mps_ensure_fallback_no_daemon():
+    """_ensure_mps returns False gracefully when daemon is unavailable.
+
+    This is the normal case on most systems (no MPS daemon running).
+    The function must NOT raise; it logs a message and returns False.
+    """
+    from swe2d.cli.batch_runner import _ensure_mps, _stop_mps_if_we_started
+    # Should return False since MPS is likely not available in CI/dev
+    result = _ensure_mps()
+    assert isinstance(result, bool)
+    # Should not raise even if we didn't start it
+    _stop_mps_if_we_started(False)
+    _stop_mps_if_we_started(True)  # gracefully fails if we didn't start
+
+
+def test_status_file_written_during_run():
+    """_atomic_write_json creates a valid JSON status file."""
+    from swe2d.cli.headless_runner import _atomic_write_json
+
+    with tempfile.NamedTemporaryFile(suffix=".json", delete=False) as f:
+        path = f.name
+    try:
+        payload = {"step": 42, "t": 10.5, "status": "running",
+                    "wet_cells": 5000, "elapsed_s": 2.3}
+        _atomic_write_json(path, payload)
+        with open(path) as f:
+            loaded = json.load(f)
+        assert loaded["step"] == 42
+        assert loaded["status"] == "running"
+        assert loaded["wet_cells"] == 5000
+    finally:
+        if os.path.exists(path):
+            os.unlink(path)
+
+
+def test_status_file_types():
+    """Status file payload has correct types."""
+    from swe2d.cli.headless_runner import _atomic_write_json
+
+    with tempfile.NamedTemporaryFile(suffix=".json", delete=False) as f:
+        path = f.name
+    try:
+        payload = {"step": 0, "t": 0.0, "dt": 0.05, "wet_cells": -1,
+                    "elapsed_s": 0.0, "status": "running"}
+        _atomic_write_json(path, payload)
+        with open(path) as f:
+            loaded = json.load(f)
+        assert isinstance(loaded["step"], int)
+        assert isinstance(loaded["t"], (int, float))
+        assert isinstance(loaded["status"], str)
+    finally:
+        if os.path.exists(path):
+            os.unlink(path)

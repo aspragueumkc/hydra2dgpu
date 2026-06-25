@@ -104,7 +104,7 @@ class TestOverlayControllerLoadMeshSnapshot(unittest.TestCase):
             ctrl = OverlayController(view=mock_view)
             result = ctrl.load_mesh_snapshot_for_overlay(t_s=1.0)
             self.assertTrue(result)
-            self.assertEqual(mock_view._overlay_data_from_gpkg, True)
+            mock_data.set_data_source.assert_called_with("gpkg")
             self.assertEqual(mock_view._overlay_last_loaded_t_s, 1.0)
 
     def test_returns_false_when_snapshot_none(self):
@@ -390,7 +390,6 @@ class TestControllerOnHighPerfCanvasOverlayToggled(unittest.TestCase):
         import numpy as np
         mock_view = MagicMock()
         mock_view._snapshot_timesteps = [(1.0, None, None, None)]
-        mock_view._overlay_data_from_gpkg = False
         mock_data = MagicMock()
         mock_data.current_time_sec = 1.0
         mock_data.overlay_cell_x = np.array([1.0, 2.0])

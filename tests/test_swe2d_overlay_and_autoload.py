@@ -159,7 +159,6 @@ def _build_mock_dialog() -> Any:
     dlg._length_unit_name = "m"
     dlg._mannings_n = 0.035
     dlg._overlay_no_data_warned = False
-    dlg._overlay_data_from_gpkg = False
     dlg._overlay_last_loaded_t_s = None
     dlg._model_gpkg_path = ""
     dlg._log = MagicMock()

@@ -8,7 +8,7 @@ import numpy as np
 from tests.mocks.qgis_env import install_qgis_mocks
 install_qgis_mocks()
 
-from swe2d.results.overlay_service import prepare_coupling_timeseries
+from swe2d.workbench.dialogs.coupling_results_dialog import prepare_coupling_timeseries
 
 
 class TestPrepareCouplingTimeseries(unittest.TestCase):

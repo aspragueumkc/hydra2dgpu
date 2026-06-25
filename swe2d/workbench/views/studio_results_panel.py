@@ -12,9 +12,7 @@ def _reload_coupling_combos(dialog) -> None:
     if toolbox is None or not hasattr(toolbox, "populate_coupling_combos"):
         return
     data = getattr(toolbox, "_data", None)
-    if data is None:
-        return
-    cart_records = list(getattr(data, "_coupling_records", []) or [])
+    cart_records = data.get_coupling_records()
     if cart_records:
         toolbox.populate_coupling_combos(cart_records)
 
@@ -34,7 +32,7 @@ def on_results_refresh(dialog) -> None:
     if data is not None:
         dialog._results_toolbox._rebuild_run_list()
         data._rebuild_timestep_union()
-        data._load_coupling_for_first_enabled_run()
+        data.load_coupling_for_first_enabled_run()
         _reload_coupling_combos(dialog)
         line_id = dialog._results_toolbox.line_combo.currentData()
         if isinstance(line_id, (list, tuple)):
@@ -93,12 +91,7 @@ def on_results_add(dialog) -> None:
     if not selected:
         return
 
-    # Replace selected_run_keys with new selection
-    old_keys = set(data._selected_run_keys)
-    for k in old_keys:
-        if any(k.startswith(f"{r.gpkg_path}::") for r in all_candidates):
-            data._selected_run_keys.discard(k)
-    data._selected_run_keys.update(selected)
+    data.add_manual_selected_keys(selected)
 
     data.discover_runs()
     data._rebuild_timestep_union()
@@ -187,8 +180,9 @@ def on_results_panel_timestep_changed(dialog, t_s: float, frame_idx: int = 0) ->
         if data is not None and hasattr(data, "frame_count"):
             temporal._time_slider.setRange(0, max(0, data.frame_count - 1))
     if bool(getattr(dialog, "_high_perf_canvas_overlay_enabled", False)):
-        n_ts = len(dialog._snapshot_timesteps)
-        is_live_data = bool(n_ts >= 2 or (n_ts == 1 and not getattr(dialog, "_overlay_data_from_gpkg", False)))
+        _snapshots = getattr(getattr(dialog, "_results_data", None), "get_live_snapshot_timesteps", lambda: [])()
+        n_ts = len(_snapshots)
+        is_live_data = bool(n_ts >= 2 or (n_ts == 1 and getattr(getattr(dialog, "_results_data", None), "data_source", "none") != "gpkg"))
         if is_live_data:
             dialog._update_high_perf_overlay_time(float(t_s))
         else:

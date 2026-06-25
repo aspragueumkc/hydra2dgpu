@@ -5,6 +5,7 @@ import json
 import os
 import subprocess
 import sys
+import tempfile
 from typing import Any, Dict, List, Optional
 
 from qgis.PyQt import QtCore, QtWidgets
@@ -18,7 +19,11 @@ _COUNT_COLS = 4
 
 
 class BatchSimulationDialog(QtWidgets.QDialog):
-    """Batch simulation dialog with parameter grid and execution monitoring."""
+    """Batch simulation dialog with parameter grid and execution monitoring.
+
+    Each subprocess gets a unique status file for progress monitoring.
+    A "Check Batch Status" button reads all status files on demand.
+    """
 
     def __init__(self, parent=None, base_params: Optional[Dict[str, Any]] = None,
                  mesh_gpkg: str = "", results_gpkg: str = ""):
@@ -31,6 +36,7 @@ class BatchSimulationDialog(QtWidgets.QDialog):
         self._results_gpkg = str(results_gpkg)
         self._param_sets: List[Dict[str, Any]] = []
         self._processes: List[Optional[subprocess.Popen]] = []
+        self._status_files: List[str] = []
         self._next_idx = 0
         self._active = 0
         self._completed = 0
@@ -100,6 +106,10 @@ class BatchSimulationDialog(QtWidgets.QDialog):
         self._cancel_btn.setEnabled(False)
         controls.addWidget(self._run_btn)
         controls.addWidget(self._cancel_btn)
+        self._status_btn = QtWidgets.QPushButton("Check Batch Status")
+        self._status_btn.setEnabled(True)
+        self._status_btn.clicked.connect(self._check_batch_status)
+        controls.addWidget(self._status_btn)
         layout.addLayout(controls)
 
     def _add_row(self):
@@ -198,17 +208,22 @@ class BatchSimulationDialog(QtWidgets.QDialog):
         self._running = True
         self._run_btn.setEnabled(False)
         self._cancel_btn.setEnabled(True)
+        self._status_btn.setEnabled(True)
         self._param_sets = param_sets
         self._processes = [None] * len(param_sets)
+        self._status_files = [""] * len(param_sets)
         self._next_idx = 0
         self._active = 0
         self._completed = 0
         self._failed = 0
 
-        self._start_next_batch()
+        # Create status file dir
+        status_dir = tempfile.mkdtemp(prefix="hydra_batch_status_")
+
+        self._start_next_batch(status_dir)
         QtCore.QTimer.singleShot(500, self._tick_run)
 
-    def _start_next_batch(self):
+    def _start_next_batch(self, status_dir: str = ""):
         max_workers = self._max_workers_spin.value()
         while self._active < max_workers and self._next_idx < len(self._param_sets):
             idx = self._next_idx
@@ -222,6 +237,12 @@ class BatchSimulationDialog(QtWidgets.QDialog):
                 gpkg, params_json,
                 "--results", results,
             ]
+            # Each sim gets its own status file for optional UI polling
+            status_file = ""
+            if status_dir:
+                status_file = os.path.join(status_dir, f"sim_{idx}.json")
+                cmd += ["--status-file-path", status_file, "--status-interval", "2.0"]
+            self._status_files[idx] = status_file
             proc = subprocess.Popen(
                 cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
             )
@@ -230,6 +251,41 @@ class BatchSimulationDialog(QtWidgets.QDialog):
             item = self._table.item(idx, _COL_STATUS)
             if item:
                 item.setText("running")
+
+    def _check_batch_status(self):
+        """Read status files for all running simulations and log to parent."""
+        parent_log = getattr(self.parent(), "_log", None)
+        if not parent_log:
+            return
+        total = len(self._param_sets)
+        running_count = 0
+        for i, sf in enumerate(self._status_files):
+            if not sf or not os.path.exists(sf):
+                continue
+            try:
+                with open(sf) as f:
+                    status = json.load(f)
+            except Exception:
+                continue
+            s = status.get("status", "")
+            sid = str(self._param_sets[i].get("id", f"sim_{i}"))
+            if s == "running":
+                running_count += 1
+                t = status.get("t", 0.0)
+                step = status.get("step", 0)
+                wet = status.get("wet_cells", -1)
+                parent_log(f"batch> {sid} step={step} t={t:.1f}s wet={wet}")
+            elif s == "done":
+                parent_log(f"batch> {sid} done")
+            elif s == "error":
+                err = status.get("error", "unknown")
+                parent_log(f"batch> {sid} error: {err}")
+        if running_count == 0 and not self._running:
+            parent_log(f"batch> all simulations complete ({self._completed}/{total})")
+        elif running_count > 0:
+            parent_log(f"batch> {running_count}/{total} simulations still running")
+        else:
+            parent_log(f"batch> no running simulations ({self._completed + self._failed}/{total})")
 
     def _tick_run(self):
         if not self._running:

@@ -35,14 +35,41 @@ def _parse_params(param_source: str) -> Dict[str, Any]:
     return json.loads(s)
 
 
+def _atomic_write_json(path: str, payload: dict) -> None:
+    """Atomically write a JSON dict to a file (write-then-rename)."""
+    import tempfile
+    fd, tmp = tempfile.mkstemp(suffix=".json", dir=os.path.dirname(path) or None)
+    try:
+        with os.fdopen(fd, "w") as f:
+            json.dump(payload, f)
+        os.replace(tmp, path)
+    except Exception:
+        try:
+            os.unlink(tmp)
+        except Exception:
+            pass
+
+
 def execute_run(
     mesh_gpkg: str,
     params: Dict[str, Any],
     results_gpkg: Optional[str] = None,
     progress_callback: Optional[Callable[[float, Dict[str, Any]], None]] = None,
     cancel_check: Optional[Callable[[], bool]] = None,
+    status_file_path: Optional[str] = None,
+    status_interval_s: float = 5.0,
 ) -> Dict[str, Any]:
     """Run a simulation from GPKG-stored mesh + JSON params.
+
+    If ``status_file_path`` is set, a JSON status file is written every
+    ``status_interval_s`` seconds during the simulation loop.  This allows
+    a separate process (e.g. the QGIS UI) to check progress without polling
+    subprocess stdout/stderr or parsing the results GPKG.
+
+    The status file contains:
+        {"step": int, "t": float, "dt": float, "wet_cells": int,
+         "elapsed_s": float, "status": "running"|"done"|"error",
+         "error": str|null}
 
     Returns dict with keys: h, hu, hv, max_results (optional), diags.
     """
@@ -183,12 +210,43 @@ def execute_run(
     output_interval = float(rp.get("output_interval_s", t_end))
     save_max_only = bool(rp.get("save_max_only", True))
 
+    # Status file writer (on-demand, no continuous polling)
+    _t0 = time.time()
+    _status_last_write = [0.0]
+    _status_step = [0]
+
+    def _write_status(stage: str, t: float = 0.0, dt: float = 0.0,
+                      wet: int = -1, err: Optional[str] = None):
+        if not status_file_path:
+            return
+        now = time.time()
+        if stage == "running" and (now - _status_last_write[0]) < status_interval_s:
+            return
+        _status_last_write[0] = now
+        payload = {
+            "step": _status_step[0],
+            "t": float(t),
+            "dt": float(dt),
+            "wet_cells": int(wet) if wet >= 0 else -1,
+            "elapsed_s": float(time.time() - _t0),
+            "status": str(stage),
+        }
+        if err:
+            payload["error"] = str(err)
+        try:
+            _atomic_write_json(status_file_path, payload)
+        except Exception:
+            pass
+
     if save_max_only:
         diags: list = []
         t = 0.0
         step = 0
+        _status_step[0] = 0
+        _write_status("running", t=t)
         while t < t_end:
             if cancel_check and cancel_check():
+                _write_status("cancelled", t=t)
                 break
             if coupling_controller is not None:
                 try:
@@ -199,9 +257,11 @@ def execute_run(
             dt = float(diag.get("dt", 0.0))
             t += dt
             step += 1
+            _status_step[0] = step
             diags.append(diag)
             if progress_callback:
                 progress_callback(t, diag)
+            _write_status("running", t=t, dt=dt, wet=diag.get("wet_cells", -1))
         max_results = backend.get_max_tracking()
         h, hu, hv = backend.get_state()
     else:
@@ -213,6 +273,8 @@ def execute_run(
         )
         max_results = None
         h, hu, hv = backend.get_state()
+
+    _write_status("done")
 
     out: Dict[str, Any] = {
         "h": h,

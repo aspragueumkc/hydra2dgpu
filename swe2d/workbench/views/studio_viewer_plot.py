@@ -123,7 +123,7 @@ class PlotViewWidget(QtWidgets.QWidget):
         data = self._result_data
         if data is None:
             return
-        recs = list(getattr(data, "_coupling_records", []) or [])
+        recs = data.get_coupling_records()
         seen: set = set()
         comp_filter = "structure" if self._mode == "Structure" else ("drainage_node", "drainage_link")
         for r in recs:
@@ -198,7 +198,7 @@ class PlotViewWidget(QtWidgets.QWidget):
 
         mode = self._mode
         if mode in ("Structure", "Network"):
-            recs = list(getattr(data, "_coupling_records", []) or [])
+            recs = data.get_coupling_records()
             if recs:
                 records = recs[:5000]
                 cols = sorted({k for r in records for k in r.keys()})

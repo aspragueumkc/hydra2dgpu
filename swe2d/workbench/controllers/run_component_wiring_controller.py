@@ -66,6 +66,8 @@ def wire_startup_run_components(dialog: Any, ns: Dict[str, Any]) -> None:
         distribute_total_flow_to_unit_q_callback=dialog._distribute_total_flow_to_unit_q,
     )
 
-    dialog._run_finalizer = SWE2DRunFinalizer(dialog)
+    from swe2d.workbench.controllers.finalization_adapter import FinalizationAdapter
+
+    dialog._run_finalizer = SWE2DRunFinalizer(FinalizationAdapter(dialog))
 
     dialog._run_lifecycle = SWE2DRunLifecycle(dialog)

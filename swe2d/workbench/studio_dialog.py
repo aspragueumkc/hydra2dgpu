@@ -1217,14 +1217,15 @@ class SWE2DWorkbenchStudioDialog(QtWidgets.QDialog):
 
     def _persist_snapshot_to_gpkg(self, gpkg_path: str, run_id: str, accumulate: bool = False) -> None:
         """Persist snapshot timesteps to a GeoPackage."""
-        if not gpkg_path or not self._snapshot_timesteps:
+        _snapshots = self._results_data.get_live_snapshot_timesteps()
+        if not gpkg_path or not _snapshots:
             return
         try:
             from swe2d.workbench.services.gpkg_persistence_service import (
                 build_mesh_rows_from_snapshots,
                 persist_mesh_results_to_geopackage,
             )
-            mesh_rows = build_mesh_rows_from_snapshots(self._snapshot_timesteps)
+            mesh_rows = build_mesh_rows_from_snapshots(_snapshots)
             if mesh_rows:
                 persist_mesh_results_to_geopackage(
                     gpkg_path=gpkg_path, run_id=run_id, mesh_rows=mesh_rows,
@@ -1269,7 +1270,8 @@ class SWE2DWorkbenchStudioDialog(QtWidgets.QDialog):
     def _build_mesh_snapshot_rows(self):
         """Build mesh snapshot rows for GPKG persistence (delegates to service)."""
         from swe2d.workbench.services.non_gui_runtime_service import build_mesh_snapshot_rows
-        return build_mesh_snapshot_rows(self._snapshot_timesteps)
+        _snapshots = self._results_data.get_live_snapshot_timesteps()
+        return build_mesh_snapshot_rows(_snapshots)
 
     def _persist_coupling_results_to_geopackage(
         self, gpkg_path: str, run_id: str, rows: List[Dict[str, object]], interval_s: float,

@@ -491,7 +491,7 @@ def render_structures_on_figure(
 
     fig.clear()
     ax = fig.add_subplot(111)
-    records = list(getattr(result_data, "_coupling_records", []) or [])
+    records = result_data.get_coupling_records()
     if not records:
         ax.text(0.5, 0.5, "No structure records", ha="center", va="center",
                 transform=ax.transAxes, color="gray")
@@ -556,7 +556,7 @@ def render_network_on_figure(
 
     fig.clear()
     ax = fig.add_subplot(111)
-    records = list(getattr(result_data, "_coupling_records", []) or [])
+    records = result_data.get_coupling_records()
 
     # ── Filter records to closest coupling timestamp ──
     t_target = float(getattr(result_data, "current_time_sec", 0.0))

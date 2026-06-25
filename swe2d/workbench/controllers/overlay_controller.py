@@ -61,6 +61,10 @@ class OverlayController:
         """Return the SWE2DResultsData instance from the view."""
         return getattr(self._view, "_results_data", None)
 
+    def _get_snapshot_timesteps(self) -> list:
+        """Return snapshot timesteps from results data."""
+        return self._data.get_live_snapshot_timesteps()
+
     # ── Inlined bridge methods (converted from `dialog` → `self._view`) ──
 
     def sync_high_perf_overlay_data(self) -> None:
@@ -71,7 +75,8 @@ class OverlayController:
         so the overlay can still render GPKG snapshots.
         """
         view = self._view
-        if not view._snapshot_timesteps:
+        _snapshots = self._data.get_live_snapshot_timesteps() if self._data is not None else []
+        if not _snapshots:
             # No in-memory snapshots — build geometry from mesh data or GPKG
             mesh = getattr(view, "_mesh_data", None) or {}
             if mesh.get("node_x") is None or mesh.get("cell_nodes") is None:
@@ -262,8 +267,9 @@ class OverlayController:
                 return float(data.current_time_sec)
             except Exception as exc:
                 view._log(f"[ERROR] resolve_overlay_time — current_time_sec failed: {exc}")
-        if view._snapshot_timesteps:
-            return float(view._snapshot_timesteps[-1][0])
+        _snapshots = self._get_snapshot_timesteps()
+        if _snapshots:
+            return float(_snapshots[-1][0])
         return None
 
     def apply_overlay_frame(self, frame: dict) -> None:
@@ -299,7 +305,7 @@ class OverlayController:
         view = self._view
         if not bool(getattr(view, "_high_perf_canvas_overlay_enabled", False)):
             return
-        if self._data is None or self._data.overlay_cell_x is None or self._data.overlay_cell_x.size <= 0 or not view._snapshot_timesteps:
+        if self._data is None or self._data.overlay_cell_x is None or self._data.overlay_cell_x.size <= 0 or not self._get_snapshot_timesteps():
             return
         t_use = self.resolve_overlay_time(t_s)
         if t_use is None:
@@ -328,13 +334,12 @@ class OverlayController:
         )
 
         view = self._view
-        view._snapshot_timesteps = []
+        if self._data is not None:
+            self._data.clear_live_snapshots()
         view._snapshot_mesh_fingerprint = ""
-        view._overlay_data_from_gpkg = False
+        if self._data is not None:
+            self._data.set_data_source("none")
         view._overlay_last_loaded_t_s = None
-        view._line_snapshot_rows = []
-        view._line_snapshot_profile_rows = []
-        view._coupling_snapshot_rows = []
         empty = create_empty_overlay_arrays()
         self._data.overlay_cell_x = empty["cell_x"]
         self._data.overlay_cell_y = empty["cell_y"]
@@ -392,7 +397,7 @@ class OverlayController:
             except Exception:
                 t_s = 0.0
 
-        if not view._snapshot_timesteps or getattr(view, "_overlay_data_from_gpkg", False):
+        if not self._get_snapshot_timesteps() or (self._data is not None and self._data.data_source == "gpkg"):
             self.load_mesh_snapshot_for_overlay(t_s)
             self.sync_high_perf_overlay_data()
             self.refresh_high_perf_canvas_overlay(t_s)
@@ -406,7 +411,7 @@ class OverlayController:
         view = self._view
         view.sync_overlay_widget_states()
         if bool(getattr(view, "_high_perf_canvas_overlay_enabled", False)):
-            if not view._snapshot_timesteps and (self._data is None or self._data.overlay_cell_x is None or self._data.overlay_cell_x.size <= 0):
+            if not self._get_snapshot_timesteps() and (self._data is None or self._data.overlay_cell_x is None or self._data.overlay_cell_x.size <= 0):
                 return
             self.refresh_high_perf_canvas_overlay(None)
 
@@ -418,7 +423,8 @@ class OverlayController:
         or when GDAL is missing.
         """
         view = self._view
-        if self._data is None or self._data.overlay_cell_x is None or self._data.overlay_cell_x.size <= 0 or not view._snapshot_timesteps:
+        _geotiff_snapshots = self._get_snapshot_timesteps()
+        if self._data is None or self._data.overlay_cell_x is None or self._data.overlay_cell_x.size <= 0 or not _geotiff_snapshots:
             view.show_warning_message(
                 "Export GeoTIFF",
                 "No high-perf overlay data is available. "
@@ -454,8 +460,8 @@ class OverlayController:
             except Exception as e:
                 view._log(f"[ERROR] export high perf overlay to geotiff failed: {e}")
                 t_use = None
-        if t_use is None:
-            t_use = float(view._snapshot_timesteps[-1][0])
+        if t_use is None and _geotiff_snapshots:
+            t_use = float(_geotiff_snapshots[-1][0])
 
         pixel_size, ok = view.show_get_double(
             "Export GeoTIFF",
@@ -497,7 +503,7 @@ class OverlayController:
                 node_y=self._data.overlay_node_y,
                 cell_nodes=self._data.overlay_cell_nodes,
                 tri_to_cell=self._data.overlay_tri_to_cell,
-                timesteps=view._snapshot_timesteps,
+                timesteps=_geotiff_snapshots,
                 current_time_s=float(t_use),
                 field_key=field_key,
                 wse_render_mode=wse_render_mode,
@@ -642,15 +648,15 @@ class OverlayController:
         hu = snapshot["hu"]
         hv = snapshot["hv"]
         nearest_ts = snapshot["t_s"]
-        view._snapshot_timesteps = [
-            (
-                float(nearest_ts),
-                np.asarray(h, dtype=np.float64).copy(),
-                np.asarray(hu, dtype=np.float64).copy(),
-                np.asarray(hv, dtype=np.float64).copy(),
-            )
-        ]
-        view._overlay_data_from_gpkg = True
+        self._data.clear_live_snapshots()
+        self._data.append_live_snapshot(
+            float(nearest_ts),
+            np.asarray(h, dtype=np.float64).copy(),
+            np.asarray(hu, dtype=np.float64).copy(),
+            np.asarray(hv, dtype=np.float64).copy(),
+        )
+        if data is not None:
+            data.set_data_source("gpkg")
         view._overlay_last_loaded_t_s = nearest_ts
         self.update_high_perf_overlay_time(float(nearest_ts))
         view._log(
