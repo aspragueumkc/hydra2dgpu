@@ -405,6 +405,13 @@ class GmshBackend(MeshingBackend):
             except Exception as e:
                 logger.warning("gmsh progress emit write failed: %s", e, exc_info=True)
                 pass
+            # Forward to stderr so the parent process (tailing the stderr temp
+            # file via _poll_topology_mesh) can display progress in the UI log.
+            parts = [f"progress={stage}"]
+            if clipped:
+                parts.append(f"detail={clipped}")
+            parts.append(f"elapsed={float(max(0.0, now - t_start)):.2f}s")
+            print("  gmsh> " + " ".join(parts), file=sys.stderr, flush=True)
 
         _emit_progress(
             "start",
@@ -418,8 +425,14 @@ class GmshBackend(MeshingBackend):
         gmsh_logger_started = False
         gmsh_logger_emitted: set = set()
 
-        def _emit_gmsh_logger_warnings() -> None:
-            """emit gmsh logger warnings"""
+        def _emit_gmsh_logger_messages() -> None:
+            """Forward new Gmsh logger messages to stderr.
+
+            Called periodically from GmshBackend.generate() after gmsh is
+            initialized.  Writes each new message to stderr so the parent
+            process (which tails the stderr temp file) can display them
+            in the UI log via _poll_topology_mesh.
+            """
             if not gmsh_logger_started:
                 return
             try:
@@ -431,16 +444,10 @@ class GmshBackend(MeshingBackend):
                 msg = str(raw).strip()
                 if not msg:
                     continue
-                low = msg.lower()
-                if ("warning" not in low) and ("error" not in low):
-                    continue
                 if msg in gmsh_logger_emitted:
                     continue
                 gmsh_logger_emitted.add(msg)
-                warnings.warn(
-                    f"Gmsh logger: {msg}",
-                    RuntimeWarning,
-                )
+                print(f"  gmsh> {msg}", file=sys.stderr, flush=True)
 
         # `interruptible=False` avoids installing a SIGINT handler, which lets
         # the Python API run from the QGIS bridge worker thread.
@@ -476,13 +483,13 @@ class GmshBackend(MeshingBackend):
                         ),
                         "Gmsh",
                     )
-                    _emit_gmsh_logger_warnings()
+                    _emit_gmsh_logger_messages()
                     n_nodes = int(np.asarray(mesh.node_x).size)
                     n_faces = max(0, int(np.asarray(mesh.cell_face_offsets).size) - 1)
                     _emit_progress("done", detail=f"nodes={n_nodes} faces={n_faces}", force=True)
                     return mesh
                 except Exception as exc:
-                    _emit_gmsh_logger_warnings()
+                    _emit_gmsh_logger_messages()
                     if not flow_align_requested:
                         _emit_progress("fail", detail=f"single-pass build failed: {exc}", force=True)
                         raise
@@ -525,7 +532,7 @@ class GmshBackend(MeshingBackend):
                                 ),
                                 "Gmsh",
                             )
-                            _emit_gmsh_logger_warnings()
+                            _emit_gmsh_logger_messages()
                             n_nodes = int(np.asarray(fallback_mesh.node_x).size)
                             n_faces = max(0, int(np.asarray(fallback_mesh.cell_face_offsets).size) - 1)
                             _emit_progress(
@@ -537,7 +544,7 @@ class GmshBackend(MeshingBackend):
                                 force=True,
                             )
                         except Exception as fallback_exc:
-                            _emit_gmsh_logger_warnings()
+                            _emit_gmsh_logger_messages()
                             diag_txt = "none"
                             if diagnostics:
                                 parts = []
@@ -709,7 +716,7 @@ class GmshBackend(MeshingBackend):
                         ),
                         "Gmsh",
                     )
-                    _emit_gmsh_logger_warnings()
+                    _emit_gmsh_logger_messages()
                     stats = _face_mesh_quality_stats(mesh, quality_cfg)
                     score = _gmsh_quality_score(stats, quality_cfg)
 
@@ -758,7 +765,7 @@ class GmshBackend(MeshingBackend):
                             mesh.quality_summary = summary
                             return mesh
                 except Exception as exc:
-                    _emit_gmsh_logger_warnings()
+                    _emit_gmsh_logger_messages()
                     err_msg = (
                         f"Gmsh quality attempt {attempts + 1} failed for tri={tri_try}, quad={quad_try}, "
                         f"recomb={recomb_try}, topo={int(recomb_topology_try)}, minq={float(recomb_min_quality_try):.3f}, "
@@ -829,7 +836,7 @@ class GmshBackend(MeshingBackend):
                         ),
                         "Gmsh",
                     )
-                    _emit_gmsh_logger_warnings()
+                    _emit_gmsh_logger_messages()
                     fallback_stats = _face_mesh_quality_stats(fallback_mesh, quality_cfg)
                     fallback_summary = dict(fallback_mesh.quality_summary or {})
                     fallback_summary.update({
@@ -939,7 +946,7 @@ class GmshBackend(MeshingBackend):
             )
             return best_mesh
         finally:
-            _emit_gmsh_logger_warnings()
+            _emit_gmsh_logger_messages()
             if gmsh_logger_started:
                 try:
                     gmsh.logger.stop()

@@ -515,6 +515,11 @@ def load_mesh_from_geopackage(
     conn = sqlite3.connect(gpkg_path)
     try:
         cur = conn.cursor()
+        cur.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name='swe2d_mesh'"
+        )
+        if cur.fetchone() is None:
+            return None
         cur.execute("SELECT node_x, node_y, node_z, cell_nodes, "
                      "face_offsets, "
                      "bc_n0, bc_n1, bc_type, bc_val "

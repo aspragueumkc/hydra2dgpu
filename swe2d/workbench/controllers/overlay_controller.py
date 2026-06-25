@@ -109,8 +109,8 @@ class OverlayController:
                                         mesh = loaded
                             finally:
                                 conn.close()
-                        except Exception:
-                            pass
+                        except Exception as exc:
+                            logger.warning("Failed to load mesh from GPKG for overlay: %s", exc)
             if mesh.get("node_x") is not None and mesh.get("cell_nodes") is not None:
                 try:
                     cx, cy = view._mesh_cell_centroids()

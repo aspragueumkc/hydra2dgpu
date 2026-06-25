@@ -662,8 +662,12 @@ class SWE2DWorkbenchStudioDialog(QtWidgets.QDialog):
                 mesh_names = [str(r[0]) for r in cur.fetchall()]
             finally:
                 conn.close()
-        except Exception:
-            pass
+        except Exception as exc:
+            QtWidgets.QMessageBox.warning(
+                self, "Load Mesh Error",
+                f"Could not read {os.path.basename(path)}: {exc}",
+            )
+            return
         if not mesh_names:
             QtWidgets.QMessageBox.warning(
                 self, "Load Mesh",
