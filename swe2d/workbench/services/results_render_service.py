@@ -442,6 +442,7 @@ def render_profile_on_figure(
         load_profile_from_live,
         load_structure_flows_at_time,
     )
+    from swe2d.results.structure_service import load_line_geometry
     is_live = result_data.data_source == "live"
 
     fig.clear()
