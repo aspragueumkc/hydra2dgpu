@@ -21,9 +21,12 @@ from __future__ import annotations
 import logging
 import sqlite3
 from dataclasses import dataclass, field
-from typing import Dict, List, Optional, Tuple
+from typing import TYPE_CHECKING, Dict, List, Optional, Tuple
 
 import numpy as np
+
+if TYPE_CHECKING:
+    from swe2d.results.data import SWE2DResultsData
 
 try:
     from qgis.core import QgsVectorLayer
@@ -345,6 +348,67 @@ def load_timesteps(gpkg_path: str, run_id: str, line_id: int) -> np.ndarray:
         return np.empty(0, dtype=np.float64)
     finally:
         conn.close()
+
+
+def load_timeseries_from_live(
+    data: "SWE2DResultsData", run_id: str, line_id: int
+) -> Dict[str, np.ndarray]:
+    """Load time-series from in-memory snapshots during a live run.
+
+    Returns the same dict shape as load_timeseries():
+        ``t_s``, ``depth_m``, ``velocity_ms``, ``wse_m``, ``bed_m``, ``flow_cms``
+    Each value is a 1-D float64 numpy array, sorted by *t_s*.
+
+    Returns an empty dict if no matching data is found.
+    """
+    rows = data.get_live_line_snapshot_rows()
+    if not rows or line_id < 0:
+        return {}
+    matched = [r for r in rows if int(r.get("line_id", -1)) == line_id
+               and str(r.get("run_id", "")) == str(run_id)]
+    if not matched:
+        return {}
+    matched.sort(key=lambda r: float(r.get("t_s", 0.0)))
+    out: Dict[str, list] = {}
+    keys = ["t_s", "depth_m", "velocity_ms", "wse_m", "bed_m", "flow_cms"]
+    for k in keys:
+        out[k] = []
+    for r in matched:
+        for k in keys:
+            out[k].append(float(r.get(k, 0.0)))
+    return {k: np.array(v, dtype=np.float64) for k, v in out.items()}
+
+
+def load_profile_from_live(
+    data: "SWE2DResultsData", run_id: str, line_id: int, t_sec: float
+) -> Dict[str, np.ndarray]:
+    """Load profile from in-memory snapshots during a live run.
+
+    Returns the same dict shape as load_profile():
+        ``dist_m``, ``wse_m``, ``bed_m``, ``depth_m``
+
+    Returns an empty dict if no matching data is found.
+    """
+    rows = data.get_live_line_profile_rows()
+    if not rows or line_id < 0:
+        return {}
+    matched = [r for r in rows if int(r.get("line_id", -1)) == line_id
+               and str(r.get("run_id", "")) == str(run_id)]
+    if not matched:
+        return {}
+    best = min(matched, key=lambda r: abs(float(r.get("t_s", 0.0)) - t_sec))
+    raw = best.get("data", "")
+    try:
+        arr = np.frombuffer(raw.encode("latin1") if isinstance(raw, str) else raw,
+                            dtype=np.float64).reshape(-1, 4)
+        return {
+            "dist_m": arr[:, 0],
+            "wse_m":  arr[:, 1],
+            "bed_m":  arr[:, 2],
+            "depth_m": arr[:, 3],
+        }
+    except Exception:
+        return {}
 
 
 def load_timeseries(gpkg_path: str, run_id: str, line_id: int) -> Dict[str, np.ndarray]:

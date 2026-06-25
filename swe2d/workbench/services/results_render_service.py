@@ -399,6 +399,8 @@ def render_timeseries_on_figure(
         fig.text(0.5, 0.5, "No result data", ha="center", va="center", color="gray")
         return
     from swe2d.results.queries import load_timeseries as _load_ts
+    from swe2d.results.queries import load_timeseries_from_live as _load_ts_live
+    is_live = result_data.data_source == "live"
 
     fig.clear()
     ax = fig.add_subplot(111)
@@ -411,8 +413,10 @@ def render_timeseries_on_figure(
         var_key=var_key,
         var_label=var_label,
         current_time_sec=result_data.current_time_sec,
-        load_timeseries_fn=lambda rec, lid, vk: _load_ts(
-            rec.gpkg_path, rec.run_id, lid,
+        load_timeseries_fn=lambda rec, lid, vk: (
+            _load_ts_live(result_data, str(rec.run_id), int(lid))
+            if is_live else
+            _load_ts(str(rec.gpkg_path), str(rec.run_id), int(lid))
         ),
         length_unit=length_unit,
     )
@@ -435,8 +439,10 @@ def render_profile_on_figure(
     from swe2d.results.queries import (
         find_nearest_timestep,
         load_profile,
+        load_profile_from_live,
         load_structure_flows_at_time,
     )
+    is_live = result_data.data_source == "live"
 
     fig.clear()
     ax = fig.add_subplot(111)
@@ -461,7 +467,11 @@ def render_profile_on_figure(
         find_nearest_timestep_fn=lambda gpkg, rid, lid, t: find_nearest_timestep(
             gpkg, rid, lid, t,
         ),
-        load_profile_fn=lambda gpkg, rid, lid, t: load_profile(gpkg, rid, lid, t),
+        load_profile_fn=lambda gpkg, rid, lid, t: (
+            load_profile_from_live(result_data, str(rid), int(lid), float(t))
+            if is_live else
+            load_profile(gpkg, rid, lid, t)
+        ),
         load_structure_flows_fn=lambda gpkg, rid, t, t_tol: load_structure_flows_at_time(
             gpkg, rid, t, t_tol,
         ),
