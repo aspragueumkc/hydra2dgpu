@@ -639,6 +639,9 @@ class OverlayController:
         hu = snapshot["hu"]
         hv = snapshot["hv"]
         nearest_ts = snapshot["t_s"]
+        # Seed in-memory snapshot from GPKG so the overlay renderer has data.
+        # data_source stays "gpkg" so that scrubbing to a different time
+        # triggers a new GPKG load rather than reading stale in-memory data.
         self._data.clear_live_snapshots()
         self._data.append_live_snapshot(
             float(nearest_ts),
@@ -646,8 +649,7 @@ class OverlayController:
             np.asarray(hu, dtype=np.float64).copy(),
             np.asarray(hv, dtype=np.float64).copy(),
         )
-        if data is not None:
-            data.set_data_source("gpkg")
+        self._data.set_data_source("gpkg")
         view._overlay_last_loaded_t_s = nearest_ts
         self.update_high_perf_overlay_time(float(nearest_ts))
         view._log(

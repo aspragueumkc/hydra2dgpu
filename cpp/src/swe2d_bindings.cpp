@@ -2340,6 +2340,24 @@ PYBIND11_MODULE(HYDRA_SWE2D_PY_MODULE_NAME, m) {
         py::arg("mesh"),
         "Return dict with n_nodes, n_cells, n_edges.");
 
+    // ── Cell permutation (RCMK renumbering) ──────────────────────────────────
+    m.def("swe2d_get_cell_perm",
+        [](const std::shared_ptr<PyMesh>& pm) -> py::array_t<int32_t>
+        {
+            if (!pm) throw std::invalid_argument("null mesh handle");
+            const auto& perm = pm->mesh.cell_perm;
+            if (perm.empty()) {
+                // No renumbering performed — return empty array.
+                return py::array_t<int32_t>(0);
+            }
+            py::array_t<int32_t> arr(static_cast<py::ssize_t>(perm.size()));
+            std::copy(perm.begin(), perm.end(), arr.mutable_data());
+            return arr;
+        },
+        py::arg("mesh"),
+        "Return cell_perm array where cell_perm[c_new] = c_old.  "
+        "Empty if no renumbering was applied.");
+
     // ── Boundary edges + runtime BC updates ─────────────────────────────────
     m.def("swe2d_boundary_edges",
         [](const std::shared_ptr<PyMesh>& pm)

@@ -2714,9 +2714,20 @@ class SWE2DWorkbenchStudioDialog(QtWidgets.QDialog):
             },
         }
 
+        # Auto-populate mesh GPKG path from the current model if available
+        gpkg = getattr(self, "_model_gpkg_path", "")
+        if not gpkg or not os.path.isfile(gpkg):
+            # Fall back to results GPKG path on the Model → Run/Output page
+            mtv = getattr(self, "_model_tab_view", None)
+            if mtv:
+                pe = getattr(mtv, "results_gpkg_path_edit", None)
+                if pe:
+                    gpkg = str(pe.text() or "").strip()
+
         dlg = BatchSimulationDialog(
             parent=self,
             base_params=base_params,
+            mesh_gpkg=gpkg,
         )
         dlg.exec()
 

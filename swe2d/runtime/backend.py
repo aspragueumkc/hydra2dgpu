@@ -257,6 +257,8 @@ class SWE2DBackend:
         self._bc_vl = np.empty(0, dtype=np.float64)
         self._tiny_mode = 1
         self._tiny_persistent_chunk_substeps = 8
+        self._cell_perm = np.empty(0, dtype=np.int32)
+        self._inv_cell_perm = np.empty(0, dtype=np.int32)
 
         # Last step diagnostics
         self._last_diag: Optional[dict] = None
@@ -361,6 +363,19 @@ class SWE2DBackend:
 
         info = self._mod.swe2d_mesh_info(self._mesh_h)
         self._n_cells = info["n_cells"]
+
+        # Expose cell permutation (RCMK renumbering applied in C++ build_mesh).
+        # cell_perm[c_new] = c_old. Empty if no renumbering.
+        # Used in get_state() / get_max_tracking() to un-permute results.
+        perm_arr = self._mod.swe2d_get_cell_perm(self._mesh_h)
+        if perm_arr.size == self._n_cells:
+            self._cell_perm = np.asarray(perm_arr, dtype=np.int32).ravel()
+            # Inverse: inv_perm[c_old] = c_new
+            self._inv_cell_perm = np.zeros(self._n_cells, dtype=np.int32)
+            self._inv_cell_perm[self._cell_perm] = np.arange(self._n_cells, dtype=np.int32)
+        else:
+            self._cell_perm = np.empty(0, dtype=np.int32)
+            self._inv_cell_perm = np.empty(0, dtype=np.int32)
 
         self._boundary_edge_index_by_nodes = {}
         self._boundary_edge_cells: Optional[np.ndarray] = None
@@ -958,10 +973,17 @@ class SWE2DBackend:
     def get_state(self) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
         """
         Return current (h, hu, hv) numpy arrays, each shape (M,) float64.
+
+        Results are un-permuted back to original (pre-RCMK) cell order.
         """
         if self._solver_h is None:
             raise RuntimeError("initialize() must be called before get_state().")
-        return self._mod.swe2d_get_state(self._solver_h)
+        h, hu, hv = self._mod.swe2d_get_state(self._solver_h)
+        if self._inv_cell_perm.size > 0:
+            h = h[self._inv_cell_perm]
+            hu = hu[self._inv_cell_perm]
+            hv = hv[self._inv_cell_perm]
+        return (h, hu, hv)
 
     def set_state(self, h: np.ndarray, hu: np.ndarray, hv: np.ndarray) -> None:
         """Overwrite current (h, hu, hv) state arrays."""
@@ -1021,16 +1043,20 @@ class SWE2DBackend:
             )
             return None
         h_max, hu_max, hv_max = self._mod.swe2d_get_max_tracking(self._solver_h)
+        h_max = np.asarray(h_max, dtype=np.float64)
+        hu_max = np.asarray(hu_max, dtype=np.float64)
+        hv_max = np.asarray(hv_max, dtype=np.float64)
+        if self._inv_cell_perm.size > 0:
+            h_max = h_max[self._inv_cell_perm]
+            hu_max = hu_max[self._inv_cell_perm]
+            hv_max = hv_max[self._inv_cell_perm]
         h_safe = np.maximum(h_max, self._h_min)
         return {
-            "max_h": np.asarray(h_max, dtype=np.float64),
-            "max_hu": np.asarray(hu_max, dtype=np.float64),
-            "max_hv": np.asarray(hv_max, dtype=np.float64),
-            "max_wse": np.asarray(h_max, dtype=np.float64) + np.asarray(self._cell_zb, dtype=np.float64),
-            "max_vel": np.sqrt(
-                np.asarray(hu_max, dtype=np.float64)**2
-                + np.asarray(hv_max, dtype=np.float64)**2
-            ) / h_safe,
+            "max_h": h_max,
+            "max_hu": hu_max,
+            "max_hv": hv_max,
+            "max_wse": h_max + np.asarray(self._cell_zb, dtype=np.float64),
+            "max_vel": np.sqrt(hu_max**2 + hv_max**2) / h_safe,
         }
 
     @property

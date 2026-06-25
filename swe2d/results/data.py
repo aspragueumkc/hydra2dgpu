@@ -129,6 +129,7 @@ class SWE2DResultsData:
 
     def append_live_snapshot(self, t_s: float, h: np.ndarray, hu: np.ndarray, hv: np.ndarray) -> None:
         self._live_snapshot_timesteps.append((t_s, h, hu, hv))
+        self._data_source = "live"
 
     def append_line_snapshot(self, row: dict) -> None:
         self._live_line_snapshot_rows.append(row)

@@ -1082,8 +1082,6 @@ class RunController:
                         gpkg_results_path, snap_run_id, _coupling_rows,
                         interval_s=0.0, accumulate=True,
                     )
-                if _snapshots or _coupling_rows:
-                    view._auto_load_results_panel(gpkg_results_path, snap_run_id)
                 # Auto-load the snapshot result into the results panel
                 view._auto_load_results_panel(gpkg_results_path, snap_run_id)
         except Exception as exc:

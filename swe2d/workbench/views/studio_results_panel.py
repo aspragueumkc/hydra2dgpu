@@ -182,8 +182,8 @@ def on_results_panel_timestep_changed(dialog, t_s: float, frame_idx: int = 0) ->
     if bool(getattr(dialog, "_high_perf_canvas_overlay_enabled", False)):
         _snapshots = getattr(getattr(dialog, "_results_data", None), "get_live_snapshot_timesteps", lambda: [])()
         n_ts = len(_snapshots)
-        is_live_data = bool(n_ts >= 2 or (n_ts == 1 and getattr(getattr(dialog, "_results_data", None), "data_source", "none") != "gpkg"))
-        if is_live_data:
+        data_source = getattr(getattr(dialog, "_results_data", None), "data_source", "none")
+        if n_ts > 0 and data_source != "gpkg":
             dialog._update_high_perf_overlay_time(float(t_s))
         else:
             last_ts = getattr(dialog, "_overlay_last_loaded_t_s", None)
