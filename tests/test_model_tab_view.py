@@ -203,6 +203,17 @@ class TestModelTabView(unittest.TestCase):
         self.assertIsInstance(view.temporal_order_combo, QComboBox)
         self.assertEqual(view.temporal_order_combo.objectName(), "temporal_order_combo")
 
+    def test_view_has_degen_mode_combo(self):
+        view = self._make_view()
+        self.assertIsInstance(view.degen_mode_combo, QComboBox)
+        self.assertEqual(view.degen_mode_combo.objectName(), "degen_mode_combo")
+        # Verify all four options are present
+        for expected_data in (0, 1, 2, 3):
+            self.assertIsNotNone(
+                view.degen_mode_combo.findData(expected_data),
+                f"Missing degen_mode option with data={expected_data}",
+            )
+
     def test_view_has_max_rel_depth_increase_spin(self):
         view = self._make_view()
         self.assertIsInstance(view.max_rel_depth_increase_spin, QDoubleSpinBox)

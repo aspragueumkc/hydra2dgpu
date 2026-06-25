@@ -882,6 +882,7 @@ class TopologyController:
             view._topology_mesh_options = mesh_options
             view._topology_mesh_started_at = _time_mod.perf_counter()
             view._topology_mesh_poll_count = 0
+            view._topology_mesh_progress_last_seq = -1
 
             combined_options = dict(mesh_options)
             combined_options["run_mode"] = run_mode
@@ -988,6 +989,7 @@ class TopologyController:
             return
         ret = proc.poll()
         if ret is None:
+            # --- Stderr tail: read Gmsh logger output forwarded by the worker ---
             err_path = getattr(view, "_topology_mesh_err_path", None)
             if err_path and os.path.exists(err_path):
                 try:
@@ -1001,6 +1003,8 @@ class TopologyController:
                                 view._log(f"  gmsh> {ln}")
                 except Exception:
                     pass
+            # --- Progress JSON poll (written by GmshBackend._emit_progress) ---
+            self._poll_topology_mesh_progress(view)
             return
         timer = getattr(view, "_topology_mesh_timer", None)
         if timer is not None:
@@ -1043,6 +1047,48 @@ class TopologyController:
         if not result.get("ok"):
             err = result.get("error", "unknown")
             tb = result.get("traceback", "")
+
+    def _poll_topology_mesh_progress(self, view) -> None:
+        """Poll the Gmsh progress JSON file (written by GmshBackend._emit_progress)."""
+        progress_path = getattr(view, "_topology_mesh_progress_path", None)
+        if not progress_path or not os.path.exists(progress_path):
+            return
+        try:
+            import json as _json
+            with open(progress_path, "r", encoding="utf-8") as fh:
+                payload = _json.load(fh)
+        except Exception:
+            return
+        if not isinstance(payload, dict):
+            return
+        try:
+            seq = int(payload.get("seq", -1))
+        except Exception:
+            seq = -1
+        last_seq = getattr(view, "_topology_mesh_progress_last_seq", -1)
+        if seq >= 0 and seq == last_seq:
+            return
+        view._topology_mesh_progress_last_seq = seq
+        stage = str(payload.get("stage", "")).strip() or "update"
+        detail = str(payload.get("detail", "")).strip()
+        region_id = payload.get("region_id", None)
+        attempt = payload.get("attempt", None)
+        elapsed_s = payload.get("elapsed_s", None)
+        parts = [f"stage={stage}"]
+        if region_id is not None:
+            parts.append(f"region={region_id}")
+        if attempt is not None:
+            parts.append(f"attempt={attempt}")
+        if elapsed_s is not None:
+            try:
+                parts.append(f"elapsed={float(elapsed_s):.2f}s")
+            except Exception:
+                pass
+        if detail:
+            parts.append(detail)
+        view._log("mesh> gmsh-progress " + " ".join(parts))
+
+    def _cleanup_mesh_tempfiles(self, view) -> None:
             view._log(f"mesh> fail error={err}")
             if tb:
                 for ln in tb.rstrip().splitlines():

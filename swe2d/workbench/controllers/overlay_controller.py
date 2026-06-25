@@ -342,6 +342,7 @@ class OverlayController:
         self._data.overlay_node_x = empty["node_x"]
         self._data.overlay_node_y = empty["node_y"]
         self._data.overlay_cell_nodes = empty["cell_nodes"]
+        self._data.overlay_tri_to_cell = empty["tri_to_cell"]
 
         item = view._state.high_perf_canvas_overlay_item
         if item is not None:

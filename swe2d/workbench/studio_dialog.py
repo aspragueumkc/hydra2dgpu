@@ -2923,7 +2923,7 @@ class SWE2DWorkbenchStudioDialog(QtWidgets.QDialog):
             "save_coupling_results_to_gpkg_chk": bool(rtb.save_coupling_chk.isChecked()) and not bool(rtb.save_max_only_chk.isChecked()),
             "save_max_only_chk": bool(rtb.save_max_only_chk.isChecked()),
             "save_run_log_to_gpkg_chk": bool(rtb.save_log_chk.isChecked()),
-            "degen_mode": 0,
+            "degen_mode": int(mtab.degen_mode_combo.currentData()),
             "front_flux_damping_spin": float(mtab.front_flux_damping_spin.value()),
             "active_set_hysteresis_chk": bool(mtab.active_set_hysteresis_chk.isChecked()),
             "drainage_gpu_method": str(mtab.drainage_gpu_method_combo.currentData()),

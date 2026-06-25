@@ -496,6 +496,22 @@ class ModelTabView(QtWidgets.QWidget):
             self.temporal_order_combo.addItem(text, data)
         param_form.addRow("Temporal discretization:", self.temporal_order_combo)
 
+        self.degen_mode_combo = QtWidgets.QComboBox()
+        self.degen_mode_combo.setObjectName("degen_mode_combo")
+        self.degen_mode_combo.setToolTip(
+            "Mode for handling degenerate cells (area ≤ 0 or invalid topology). "
+            "Off (0): treat normally, may cause instability. "
+            "Skip (1): permanently exclude degenerate cells (fastest). "
+            "Repair (2): replace inv_area with neighbor-average (most robust). "
+            "Merge (3): redirect degenerate cell flux to owner cell."
+        )
+        param_form.addRow("Degenerate cell mode:", self.degen_mode_combo)
+        self.degen_mode_combo.addItem("Off (0)", 0)
+        self.degen_mode_combo.addItem("Skip (1)", 1)
+        self.degen_mode_combo.addItem("Repair (2)", 2)
+        self.degen_mode_combo.addItem("Merge (3)", 3)
+        self.degen_mode_combo.setCurrentIndex(self.degen_mode_combo.findData(0))
+
     def _build_rain_form_widgets(self, param_form: QtWidgets.QFormLayout) -> None:
         """Populate the Rain / Hydrology page with rainfall and infiltration controls."""
         self.max_rel_depth_increase_spin = QtWidgets.QDoubleSpinBox()
