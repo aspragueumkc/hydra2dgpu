@@ -1220,23 +1220,8 @@ class SWE2DWorkbenchStudioDialog(QtWidgets.QDialog):
         return os.path.join(tempfile.gettempdir(), "swe2d_line_results.gpkg")
 
     def _persist_snapshot_to_gpkg(self, gpkg_path: str, run_id: str, accumulate: bool = False) -> None:
-        """Persist snapshot timesteps to a GeoPackage."""
-        _snapshots = self._results_data.get_live_snapshot_timesteps()
-        if not gpkg_path or not _snapshots:
-            return
-        try:
-            from swe2d.workbench.services.gpkg_persistence_service import (
-                build_mesh_rows_from_snapshots,
-                persist_mesh_results_to_geopackage,
-            )
-            mesh_rows = build_mesh_rows_from_snapshots(_snapshots)
-            if mesh_rows:
-                persist_mesh_results_to_geopackage(
-                    gpkg_path=gpkg_path, run_id=run_id, mesh_rows=mesh_rows,
-                    interval_s=0.0, log_fn=self._log, accumulate=accumulate,
-                )
-        except Exception as e:
-            self._log(f"[WARNING] Snapshot GeoPackage persistence skipped: {e}")
+        """[DEPRECATED] Snapshot persistence now deferred to run_finalizer.py."""
+        logger_wb.warning("_persist_snapshot_to_gpkg called but snapshots are in-memory only until finalization")
 
     def _persist_mesh_results_to_geopackage(self, gpkg_path: str, run_id: str, mesh_rows, interval_s: float, table_name: str = "swe2d_mesh_results") -> None:
         """Persist mesh results rows to a GeoPackage."""

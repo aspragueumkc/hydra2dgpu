@@ -1072,20 +1072,12 @@ class RunController:
                 QtWidgets.QMessageBox.critical(view, "Snapshot", f"HDF5 write failed:\n{exc}")
                 return
 
-        # GPKG persistence (mesh + coupling) — always attempt regardless of mesh data
+        # Auto-load the snapshot result into the results panel (GPKG persistence deferred to run_finalizer.py)
         try:
             if gpkg_results_path:
-                if _snapshots:
-                    view._persist_snapshot_to_gpkg(gpkg_results_path, snap_run_id, accumulate=True)
-                if _coupling_rows:
-                    view._persist_coupling_results_to_geopackage(
-                        gpkg_results_path, snap_run_id, _coupling_rows,
-                        interval_s=0.0, accumulate=True,
-                    )
-                # Auto-load the snapshot result into the results panel
                 view._auto_load_results_panel(gpkg_results_path, snap_run_id)
         except Exception as exc:
-            QtWidgets.QMessageBox.critical(view, "Snapshot", f"Snapshot failed:\n{exc}")
+            QtWidgets.QMessageBox.critical(view, "Snapshot", f"Snapshot auto-load failed:\n{exc}")
     def on_preview_overrides(self) -> None:
         """Compute and display a summary of BC and Manning overrides.
 
