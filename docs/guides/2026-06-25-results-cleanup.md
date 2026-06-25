@@ -430,3 +430,60 @@ git commit -m "refactor: unify results state in SWE2DResultsData, fix MVP violat
 - Clean up studio_results_panel.py to use centralized data
 - Multi-run plotting preserved"
 ```
+
+---
+
+### Task 9: GPKG schema migration (spec/contract only — do not implement)
+
+The results cleanup did not change the GPKG schema, but a formal migration mechanism is needed so future schema changes are applied cleanly when old GPKGs are loaded. Currently, code that reads from GPKG silently returns empty results if table names or columns don't match.
+
+**Files:**
+- Modify (spec only): `swe2d/workbench/services/gpkg_persistence_service.py`
+- New (spec only): `swe2d/workbench/services/gpkg_migration_service.py`
+
+- [ ] **Step 1: Design the migration contract**
+
+The migration system must:
+
+1. **Version schema**: Store a `schema_version` in the GPKG metadata (a new `swe2d_meta` table with `key`/`value` columns, or reuse an existing mechanism). Current schema is version 1.
+
+2. **Detect stale schemas**: On GPKG load (`load_mesh_from_geopackage`, `list_runs_in_gpkg`, etc.), check `schema_version`. If missing (old GPKG), treat as version 0 and run all migrations up to current.
+
+3. **Apply versioned migrations**: Each migration is a function `migrate_vN_to_vNp1(conn)` that runs DDL (ALTER TABLE, CREATE TABLE, etc.). Separate from the read path so migration logic doesn't pollute query code.
+
+4. **Fail loudly**: If a migration fails (bad data, corrupt GPKG), raise an exception with a clear message. Do NOT silently return empty results.
+
+**Design:**
+```python
+# swe2d/results/gpkg_migration_service.py (spec only — not to be implemented)
+
+MIGRATIONS: dict[int, Callable] = {}
+
+def run_migrations(gpkg_path: str) -> None:
+    """Run all pending migrations, updating schema_version on success."""
+
+def get_schema_version(gpkg_path: str) -> int:
+    """Read schema_version from GPKG metadata. Returns 0 if not found."""
+
+def set_schema_version(gpkg_path: str, version: int) -> None:
+    """Write schema_version to GPKG metadata."""
+
+@register_migration(1, 2)
+def _migrate_v1_to_v2(conn: sqlite3.Connection) -> None:
+    """Example: add a new column for a future feature."""
+    conn.execute("ALTER TABLE swe2d_mesh_results ADD COLUMN new_field REAL")
+```
+
+- [ ] **Step 2: Update read path to run migrations before reading**
+
+In each GPKG read function (`load_mesh_snapshot`, `load_timeseries`, etc.), call `run_migrations(gpkg_path)` before reading. This ensures the schema is always up-to-date before any query runs.
+
+- [ ] **Step 3: Document the migration lifecycle**
+
+Migrations are:
+- **Appended only** — never modify or remove existing migrations
+- **Idempotent** — safe to run multiple times (use `IF NOT EXISTS` / `IF EXISTS`)
+- **Tested** — each migration has a test that creates a vN GPKG and verifies it reaches vN+1
+- **Backward compatible** — don't remove columns, only add optional ones
+
+This task is design-only. No code should be written until the migration requirement is formally approved.

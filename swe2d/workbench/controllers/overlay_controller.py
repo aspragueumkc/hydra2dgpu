@@ -75,7 +75,7 @@ class OverlayController:
         so the overlay can still render GPKG snapshots.
         """
         view = self._view
-        _snapshots = self._data.get_live_snapshot_timesteps() if self._data is not None else []
+        _snapshots = self._data.get_live_snapshot_timesteps()
         if not _snapshots:
             # No in-memory snapshots — build geometry from mesh data or GPKG
             mesh = getattr(view, "_mesh_data", None) or {}
@@ -229,8 +229,7 @@ class OverlayController:
             return
         try:
             canvas = view._resolve_map_canvas()
-            if canvas is not None and hasattr(canvas, "scene"):
-                canvas.scene().removeItem(item)
+            canvas.scene().removeItem(item)
         except Exception:
             logger.warning("Unexpected error silently caught", exc_info=True)
 
@@ -241,8 +240,6 @@ class OverlayController:
         if item is not None:
             return item
         canvas = view._resolve_map_canvas()
-        if canvas is None:
-            return None
         try:
             from swe2d.results.high_perf_viewer import SWE2DHighPerfCanvasOverlayItem
 
@@ -293,10 +290,8 @@ class OverlayController:
         item.set_frame(qimage, extent, opacity)
         try:
             canvas = view._resolve_map_canvas()
-            if canvas is not None:
-                canvas.refresh()
-                if hasattr(canvas, "viewport") and canvas.viewport() is not None:
-                    canvas.viewport().update()
+            canvas.refresh()
+            canvas.viewport().update()
         except Exception as exc:
             view._log(f"[ERROR] overlay canvas refresh failed: {exc}")
 
@@ -334,11 +329,11 @@ class OverlayController:
         )
 
         view = self._view
-        if self._data is not None:
-            self._data.clear_live_snapshots()
+        if self._data is None:
+            return
+        self._data.clear_live_snapshots()
         view._snapshot_mesh_fingerprint = ""
-        if self._data is not None:
-            self._data.set_data_source("none")
+        self._data.set_data_source("none")
         view._overlay_last_loaded_t_s = None
         empty = create_empty_overlay_arrays()
         self._data.overlay_cell_x = empty["cell_x"]
@@ -374,19 +369,12 @@ class OverlayController:
             if item is not None:
                 try:
                     canvas = item._canvas()
-                    if canvas is not None and hasattr(canvas, "scene"):
-                        canvas.scene().removeItem(item)
+                    canvas.scene().removeItem(item)
                 except Exception:
                     pass
                 view._state.high_perf_canvas_overlay_item = None
             iface = view._resolve_qgis_iface()
-            if iface is not None and hasattr(iface, "mapCanvas"):
-                try:
-                    iface.mapCanvas().refresh()
-                except Exception as e:
-                    view._log(
-                        f"[ERROR] on high perf canvas overlay toggled failed: {e}"
-                    )
+            iface.mapCanvas().refresh()
             return
 
         data = getattr(view, "_results_data", None)
