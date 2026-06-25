@@ -5,8 +5,9 @@ plain dict consumed by ``swe2d.results.high_perf_viewer.render_unstructured_snap
 
 The View is expected to expose the dialog's widget attributes
 (combos, checkboxes, spinboxes) and the runtime state used by the
-high-perf overlay (``_high_perf_overlay_cell_x``, ``_snapshot_timesteps``,
+high-perf overlay (``_snapshot_timesteps``,
 ``_gravity``, ``_mannings_n``, ``_length_unit_name``, ``_resolve_map_canvas``).
+Overlay geometry arrays are read from ``view._results_data`` (SWE2DResultsData).
 The service reads via ``getattr`` with sensible rendering defaults so
 that a partial view (e.g. a test double) still produces a usable dict.
 
@@ -77,7 +78,7 @@ def collect_overlay_parameters(view: Any, t_use: float) -> Dict[str, Any]:
 
     def _w(name: str) -> Any:
         """w."""
-        return getattr(tb, name)
+        return getattr(tb, name, None)
     field_key = str(_safe_current_data(_w("field_combo"), "depth") or "depth")
     wse_render_mode = str(_safe_current_data(_w("wse_render_combo"), "cell") or "cell")
     cmap_key = str(_safe_current_data(_w("cmap_combo"), "turbo") or "turbo")
@@ -137,8 +138,9 @@ def collect_overlay_parameters(view: Any, t_use: float) -> Dict[str, Any]:
     )
 
     courant_cell_size = 0.0
-    cx = getattr(view, "_high_perf_overlay_cell_x", None)
-    cy = getattr(view, "_high_perf_overlay_cell_y", None)
+    data = getattr(view, "_results_data", None)
+    cx = data.overlay_cell_x if data is not None else None
+    cy = data.overlay_cell_y if data is not None else None
     if cx is not None and cy is not None and cx.size > 0 and cy.size > 0:
         try:
             bbox_area = (float(cx.max()) - float(cx.min())) * (
@@ -172,13 +174,13 @@ def collect_overlay_parameters(view: Any, t_use: float) -> Dict[str, Any]:
     )
 
     return {
-        "cell_x": getattr(view, "_high_perf_overlay_cell_x", None),
-        "cell_y": getattr(view, "_high_perf_overlay_cell_y", None),
-        "cell_bed": getattr(view, "_high_perf_overlay_cell_bed", None),
-        "node_x": getattr(view, "_high_perf_overlay_node_x", None),
-        "node_y": getattr(view, "_high_perf_overlay_node_y", None),
-        "cell_nodes": getattr(view, "_high_perf_overlay_cell_nodes", None),
-        "tri_to_cell": getattr(view, "_high_perf_overlay_tri_to_cell", None),
+        "cell_x": data.overlay_cell_x if data is not None else None,
+        "cell_y": data.overlay_cell_y if data is not None else None,
+        "cell_bed": data.overlay_cell_bed if data is not None else None,
+        "node_x": data.overlay_node_x if data is not None else None,
+        "node_y": data.overlay_node_y if data is not None else None,
+        "cell_nodes": data.overlay_cell_nodes if data is not None else None,
+        "tri_to_cell": data.overlay_tri_to_cell if data is not None else None,
         "timesteps": getattr(view, "_snapshot_timesteps", []),
         "current_time_s": float(t_use),
         "field_key": field_key,

@@ -45,7 +45,7 @@ class TestOverlayControllerLoadMeshSnapshot(unittest.TestCase):
     def test_returns_false_when_no_panel(self):
         from swe2d.workbench.controllers.overlay_controller import OverlayController
         mock_view = MagicMock()
-        mock_view._results_panel = None
+        mock_view._results_data = None
         ctrl = OverlayController(view=mock_view)
         result = ctrl.load_mesh_snapshot_for_overlay(t_s=1.0)
         self.assertFalse(result)
@@ -53,9 +53,9 @@ class TestOverlayControllerLoadMeshSnapshot(unittest.TestCase):
     def test_returns_false_when_no_gpkg(self):
         from swe2d.workbench.controllers.overlay_controller import OverlayController
         mock_view = MagicMock()
-        mock_panel = MagicMock()
-        mock_panel._gpkg_path = ""
-        mock_view._results_panel = mock_panel
+        mock_data = MagicMock()
+        mock_data.gpkg_path = ""
+        mock_view._results_data = mock_data
         ctrl = OverlayController(view=mock_view)
         result = ctrl.load_mesh_snapshot_for_overlay(t_s=1.0)
         self.assertFalse(result)
@@ -64,10 +64,10 @@ class TestOverlayControllerLoadMeshSnapshot(unittest.TestCase):
         from swe2d.workbench.controllers.overlay_controller import OverlayController
         from unittest.mock import patch
         mock_view = MagicMock()
-        mock_panel = MagicMock()
-        mock_panel._gpkg_path = "/tmp/test.gpkg"
-        mock_panel.enabled_overlay_targets.return_value = []
-        mock_view._results_panel = mock_panel
+        mock_data = MagicMock()
+        mock_data.gpkg_path = "/tmp/test.gpkg"
+        mock_data.enabled_overlay_targets.return_value = []
+        mock_view._results_data = mock_data
         ctrl = OverlayController(view=mock_view)
         with patch('os.path.exists', return_value=True):
             result = ctrl.load_mesh_snapshot_for_overlay(t_s=1.0)
@@ -79,11 +79,17 @@ class TestOverlayControllerLoadMeshSnapshot(unittest.TestCase):
         from unittest.mock import patch
 
         mock_view = MagicMock()
-        mock_panel = MagicMock()
-        mock_panel._gpkg_path = "/tmp/test.gpkg"
-        mock_panel.enabled_overlay_targets.return_value = [(None, "run1")]
-        mock_view._results_panel = mock_panel
-        mock_view._high_perf_overlay_cell_x = np.array([1.0, 2.0])
+        mock_data = MagicMock()
+        mock_data.gpkg_path = "/tmp/test.gpkg"
+        mock_data.enabled_overlay_targets.return_value = [(None, "run1")]
+        mock_data.overlay_cell_x = np.array([1.0, 2.0])
+        mock_data.overlay_cell_y = np.array([0.0, 1.0])
+        mock_data.overlay_cell_bed = np.array([0.0, 0.0])
+        mock_data.overlay_node_x = np.array([0.0, 1.0, 0.0])
+        mock_data.overlay_node_y = np.array([0.0, 0.0, 1.0])
+        mock_data.overlay_cell_nodes = np.array([0, 1, 2], dtype=np.int32)
+        mock_data.overlay_tri_to_cell = np.array([0, 1], dtype=np.int32)
+        mock_view._results_data = mock_data
         mock_view._mesh_data = None
 
         snapshot = {
@@ -107,11 +113,17 @@ class TestOverlayControllerLoadMeshSnapshot(unittest.TestCase):
         from unittest.mock import patch
 
         mock_view = MagicMock()
-        mock_panel = MagicMock()
-        mock_panel._gpkg_path = "/tmp/test.gpkg"
-        mock_panel.enabled_overlay_targets.return_value = [(None, "run1")]
-        mock_view._results_panel = mock_panel
-        mock_view._high_perf_overlay_cell_x = np.array([1.0, 2.0])
+        mock_data = MagicMock()
+        mock_data.gpkg_path = "/tmp/test.gpkg"
+        mock_data.enabled_overlay_targets.return_value = [(None, "run1")]
+        mock_data.overlay_cell_x = np.array([1.0, 2.0])
+        mock_data.overlay_cell_y = np.array([0.0, 1.0])
+        mock_data.overlay_cell_bed = np.array([0.0, 0.0])
+        mock_data.overlay_node_x = np.array([0.0, 1.0, 0.0])
+        mock_data.overlay_node_y = np.array([0.0, 0.0, 1.0])
+        mock_data.overlay_cell_nodes = np.array([0, 1, 2], dtype=np.int32)
+        mock_data.overlay_tri_to_cell = np.array([0, 1], dtype=np.int32)
+        mock_view._results_data = mock_data
         mock_view._mesh_data = None
 
         with patch('os.path.exists', return_value=True), \
@@ -379,7 +391,10 @@ class TestControllerOnHighPerfCanvasOverlayToggled(unittest.TestCase):
         mock_view = MagicMock()
         mock_view._snapshot_timesteps = [(1.0, None, None, None)]
         mock_view._overlay_data_from_gpkg = False
-        mock_view._results_panel.current_time_sec.return_value = 1.0
+        mock_data = MagicMock()
+        mock_data.current_time_sec = 1.0
+        mock_data.overlay_cell_x = np.array([1.0, 2.0])
+        mock_view._results_data = mock_data
         ctrl = OverlayController(view=mock_view)
         ctrl.on_high_perf_canvas_overlay_toggled(True)
         self.assertTrue(mock_view._high_perf_canvas_overlay_enabled)
@@ -411,7 +426,9 @@ class TestControllerOnHighPerfCanvasOverlayStyleChanged(unittest.TestCase):
         mock_view = MagicMock()
         mock_view._high_perf_canvas_overlay_enabled = False
         mock_view._snapshot_timesteps = []
-        mock_view._high_perf_overlay_cell_x = type("a", (), {"size": 0})()
+        mock_data = MagicMock()
+        mock_data.overlay_cell_x = type("a", (), {"size": 0})()
+        mock_view._results_data = mock_data
         ctrl = OverlayController(view=mock_view)
         ctrl.on_high_perf_canvas_overlay_style_changed()
         mock_view.sync_overlay_widget_states.assert_called_once()
@@ -443,7 +460,9 @@ class TestControllerExportHighPerfOverlayToGeotiff(unittest.TestCase):
         from unittest.mock import patch
 
         mock_view = MagicMock()
-        mock_view._high_perf_overlay_cell_x = np.array([], dtype=np.float64)
+        mock_data = MagicMock()
+        mock_data.overlay_cell_x = np.array([], dtype=np.float64)
+        mock_view._results_data = mock_data
         mock_view._snapshot_timesteps = []
         with patch.object(QtWidgets.QMessageBox, "warning") as mock_warn:
             ctrl = OverlayController(view=mock_view)

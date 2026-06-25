@@ -61,6 +61,15 @@ class SWE2DResultsData:
         self._coupling_run_id: str = ""
         self._coupling_gpkg_path: str = ""
 
+        # Overlay geometry arrays (populated by overlay controller)
+        self.overlay_cell_x: Optional[np.ndarray] = None
+        self.overlay_cell_y: Optional[np.ndarray] = None
+        self.overlay_cell_bed: Optional[np.ndarray] = None
+        self.overlay_node_x: Optional[np.ndarray] = None
+        self.overlay_node_y: Optional[np.ndarray] = None
+        self.overlay_cell_nodes: Optional[np.ndarray] = None
+        self.overlay_tri_to_cell: Optional[np.ndarray] = None
+
         # Display state for TS/Profile/Structure/Network renderers (plain data)
         self.ts_var_key: str = "flow_cms"
         self.prof_var_key: str = "wse_bed"

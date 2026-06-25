@@ -56,6 +56,11 @@ class OverlayController:
         self._view = view
         self._cached_mesh_data: Optional[Dict[str, np.ndarray]] = None
 
+    @property
+    def _data(self):
+        """Return the SWE2DResultsData instance from the view."""
+        return getattr(self._view, "_results_data", None)
+
     # ── Inlined bridge methods (converted from `dialog` → `self._view`) ──
 
     def sync_high_perf_overlay_data(self) -> None:
@@ -102,13 +107,13 @@ class OverlayController:
                 try:
                     cx, cy = view._mesh_cell_centroids()
                     bed = view._mesh_cell_solver_bed()
-                    view._high_perf_overlay_cell_x = np.asarray(cx, dtype=np.float64)
-                    view._high_perf_overlay_cell_y = np.asarray(cy, dtype=np.float64)
-                    view._high_perf_overlay_cell_bed = np.asarray(bed, dtype=np.float64)
-                    view._high_perf_overlay_node_x = np.asarray(
+                    self._data.overlay_cell_x = np.asarray(cx, dtype=np.float64)
+                    self._data.overlay_cell_y = np.asarray(cy, dtype=np.float64)
+                    self._data.overlay_cell_bed = np.asarray(bed, dtype=np.float64)
+                    self._data.overlay_node_x = np.asarray(
                         mesh.get("node_x", np.empty(0)), dtype=np.float64
                     ).ravel()
-                    view._high_perf_overlay_node_y = np.asarray(
+                    self._data.overlay_node_y = np.asarray(
                         mesh.get("node_y", np.empty(0)), dtype=np.float64
                     ).ravel()
                     raw_cell_nodes = np.asarray(
@@ -127,36 +132,36 @@ class OverlayController:
                                 tri_list.append([int(ns[0]), int(ns[k]), int(ns[k + 1])])
                                 tc_list.append(ci)
                         if tri_list:
-                            view._high_perf_overlay_cell_nodes = np.asarray(
+                            self._data.overlay_cell_nodes = np.asarray(
                                 tri_list, dtype=np.int32
                             ).ravel()
-                            view._high_perf_overlay_tri_to_cell = np.asarray(
+                            self._data.overlay_tri_to_cell = np.asarray(
                                 tc_list, dtype=np.int32
                             )
                         else:
-                            view._high_perf_overlay_cell_nodes = raw_cell_nodes
-                            view._high_perf_overlay_tri_to_cell = np.empty(0, dtype=np.int32)
+                            self._data.overlay_cell_nodes = raw_cell_nodes
+                            self._data.overlay_tri_to_cell = np.empty(0, dtype=np.int32)
                     else:
-                        view._high_perf_overlay_cell_nodes = raw_cell_nodes
-                        view._high_perf_overlay_tri_to_cell = np.empty(0, dtype=np.int32)
+                        self._data.overlay_cell_nodes = raw_cell_nodes
+                        self._data.overlay_tri_to_cell = np.empty(0, dtype=np.int32)
                 except Exception as exc:
                     view._log(f"[HighPerf Overlay] Mesh-based geometry sync failed: {exc}")
-                    view._high_perf_overlay_cell_x = np.empty(0, dtype=np.float64)
-                    view._high_perf_overlay_cell_y = np.empty(0, dtype=np.float64)
-                    view._high_perf_overlay_cell_bed = np.empty(0, dtype=np.float64)
-                    view._high_perf_overlay_node_x = np.empty(0, dtype=np.float64)
-                    view._high_perf_overlay_node_y = np.empty(0, dtype=np.float64)
-                    view._high_perf_overlay_cell_nodes = np.empty(0, dtype=np.int32)
-                    view._high_perf_overlay_tri_to_cell = np.empty(0, dtype=np.int32)
+                    self._data.overlay_cell_x = np.empty(0, dtype=np.float64)
+                    self._data.overlay_cell_y = np.empty(0, dtype=np.float64)
+                    self._data.overlay_cell_bed = np.empty(0, dtype=np.float64)
+                    self._data.overlay_node_x = np.empty(0, dtype=np.float64)
+                    self._data.overlay_node_y = np.empty(0, dtype=np.float64)
+                    self._data.overlay_cell_nodes = np.empty(0, dtype=np.int32)
+                    self._data.overlay_tri_to_cell = np.empty(0, dtype=np.int32)
 
             else:
-                view._high_perf_overlay_cell_x = np.empty(0, dtype=np.float64)
-                view._high_perf_overlay_cell_y = np.empty(0, dtype=np.float64)
-                view._high_perf_overlay_cell_bed = np.empty(0, dtype=np.float64)
-                view._high_perf_overlay_node_x = np.empty(0, dtype=np.float64)
-                view._high_perf_overlay_node_y = np.empty(0, dtype=np.float64)
-                view._high_perf_overlay_cell_nodes = np.empty(0, dtype=np.int32)
-                view._high_perf_overlay_tri_to_cell = np.empty(0, dtype=np.int32)
+                self._data.overlay_cell_x = np.empty(0, dtype=np.float64)
+                self._data.overlay_cell_y = np.empty(0, dtype=np.float64)
+                self._data.overlay_cell_bed = np.empty(0, dtype=np.float64)
+                self._data.overlay_node_x = np.empty(0, dtype=np.float64)
+                self._data.overlay_node_y = np.empty(0, dtype=np.float64)
+                self._data.overlay_cell_nodes = np.empty(0, dtype=np.int32)
+                self._data.overlay_tri_to_cell = np.empty(0, dtype=np.int32)
 
             self.refresh_high_perf_canvas_overlay(None)
             return
@@ -164,14 +169,14 @@ class OverlayController:
         try:
             cx, cy = view._mesh_cell_centroids()
             bed = view._mesh_cell_solver_bed()
-            view._high_perf_overlay_cell_x = np.asarray(cx, dtype=np.float64)
-            view._high_perf_overlay_cell_y = np.asarray(cy, dtype=np.float64)
-            view._high_perf_overlay_cell_bed = np.asarray(bed, dtype=np.float64)
+            self._data.overlay_cell_x = np.asarray(cx, dtype=np.float64)
+            self._data.overlay_cell_y = np.asarray(cy, dtype=np.float64)
+            self._data.overlay_cell_bed = np.asarray(bed, dtype=np.float64)
             mesh = getattr(view, "_mesh_data", {}) or {}
-            view._high_perf_overlay_node_x = np.asarray(
+            self._data.overlay_node_x = np.asarray(
                 mesh.get("node_x", np.empty(0)), dtype=np.float64
             ).ravel()
-            view._high_perf_overlay_node_y = np.asarray(
+            self._data.overlay_node_y = np.asarray(
                 mesh.get("node_y", np.empty(0)), dtype=np.float64
             ).ravel()
             raw_cell_nodes = np.asarray(
@@ -190,16 +195,16 @@ class OverlayController:
                         tri_list.append([int(ns[0]), int(ns[k]), int(ns[k + 1])])
                         tc_list.append(ci)
                 if tri_list:
-                    view._high_perf_overlay_cell_nodes = np.asarray(
+                    self._data.overlay_cell_nodes = np.asarray(
                         tri_list, dtype=np.int32
                     ).ravel()
-                    view._high_perf_overlay_tri_to_cell = np.asarray(tc_list, dtype=np.int32)
+                    self._data.overlay_tri_to_cell = np.asarray(tc_list, dtype=np.int32)
                 else:
-                    view._high_perf_overlay_cell_nodes = raw_cell_nodes
-                    view._high_perf_overlay_tri_to_cell = np.empty(0, dtype=np.int32)
+                    self._data.overlay_cell_nodes = raw_cell_nodes
+                    self._data.overlay_tri_to_cell = np.empty(0, dtype=np.int32)
             else:
-                view._high_perf_overlay_cell_nodes = raw_cell_nodes
-                view._high_perf_overlay_tri_to_cell = np.empty(0, dtype=np.int32)
+                self._data.overlay_cell_nodes = raw_cell_nodes
+                self._data.overlay_tri_to_cell = np.empty(0, dtype=np.int32)
         except Exception as exc:
             view._log(f"[HighPerf Overlay] Data sync failed: {exc}")
 
@@ -294,7 +299,7 @@ class OverlayController:
         view = self._view
         if not bool(getattr(view, "_high_perf_canvas_overlay_enabled", False)):
             return
-        if view._high_perf_overlay_cell_x.size <= 0 or not view._snapshot_timesteps:
+        if self._data is None or self._data.overlay_cell_x is None or self._data.overlay_cell_x.size <= 0 or not view._snapshot_timesteps:
             return
         t_use = self.resolve_overlay_time(t_s)
         if t_use is None:
@@ -331,12 +336,12 @@ class OverlayController:
         view._line_snapshot_profile_rows = []
         view._coupling_snapshot_rows = []
         empty = create_empty_overlay_arrays()
-        view._high_perf_overlay_cell_x = empty["cell_x"]
-        view._high_perf_overlay_cell_y = empty["cell_y"]
-        view._high_perf_overlay_cell_bed = empty["cell_bed"]
-        view._high_perf_overlay_node_x = empty["node_x"]
-        view._high_perf_overlay_node_y = empty["node_y"]
-        view._high_perf_overlay_cell_nodes = empty["cell_nodes"]
+        self._data.overlay_cell_x = empty["cell_x"]
+        self._data.overlay_cell_y = empty["cell_y"]
+        self._data.overlay_cell_bed = empty["cell_bed"]
+        self._data.overlay_node_x = empty["node_x"]
+        self._data.overlay_node_y = empty["node_y"]
+        self._data.overlay_cell_nodes = empty["cell_nodes"]
 
         item = view._state.high_perf_canvas_overlay_item
         if item is not None:
@@ -400,7 +405,7 @@ class OverlayController:
         view = self._view
         view.sync_overlay_widget_states()
         if bool(getattr(view, "_high_perf_canvas_overlay_enabled", False)):
-            if not view._snapshot_timesteps and view._high_perf_overlay_cell_x.size <= 0:
+            if not view._snapshot_timesteps and (self._data is None or self._data.overlay_cell_x is None or self._data.overlay_cell_x.size <= 0):
                 return
             self.refresh_high_perf_canvas_overlay(None)
 
@@ -412,7 +417,7 @@ class OverlayController:
         or when GDAL is missing.
         """
         view = self._view
-        if view._high_perf_overlay_cell_x.size <= 0 or not view._snapshot_timesteps:
+        if self._data is None or self._data.overlay_cell_x is None or self._data.overlay_cell_x.size <= 0 or not view._snapshot_timesteps:
             view.show_warning_message(
                 "Export GeoTIFF",
                 "No high-perf overlay data is available. "
@@ -462,8 +467,8 @@ class OverlayController:
             return
         pixel_size = max(1.0e-6, abs(pixel_size))
 
-        cx = view._high_perf_overlay_cell_x
-        cy = view._high_perf_overlay_cell_y
+        cx = self._data.overlay_cell_x
+        cy = self._data.overlay_cell_y
         x_min = float(np.nanmin(cx))
         x_max = float(np.nanmax(cx))
         y_min = float(np.nanmin(cy))
@@ -486,11 +491,11 @@ class OverlayController:
             frame = render_unstructured_snapshot_image(
                 cell_x=cx,
                 cell_y=cy,
-                cell_bed=view._high_perf_overlay_cell_bed,
-                node_x=view._high_perf_overlay_node_x,
-                node_y=view._high_perf_overlay_node_y,
-                cell_nodes=view._high_perf_overlay_cell_nodes,
-                tri_to_cell=getattr(view, "_high_perf_overlay_tri_to_cell", None),
+                cell_bed=self._data.overlay_cell_bed,
+                node_x=self._data.overlay_node_x,
+                node_y=self._data.overlay_node_y,
+                cell_nodes=self._data.overlay_cell_nodes,
+                tri_to_cell=self._data.overlay_tri_to_cell,
                 timesteps=view._snapshot_timesteps,
                 current_time_s=float(t_use),
                 field_key=field_key,
@@ -615,14 +620,14 @@ class OverlayController:
             return False
         run_id = run_ids[0][1]
 
-        if view._high_perf_overlay_cell_x.size <= 0:
+        if self._data.overlay_cell_x is None or self._data.overlay_cell_x.size <= 0:
             if getattr(view, "_mesh_data", None) is None:
                 view._log(
                     "[HighPerf Overlay] No mesh loaded — cannot render overlay for GPKG results."
                 )
                 return False
             self.sync_high_perf_overlay_data()
-        if view._high_perf_overlay_cell_x.size <= 0:
+        if self._data.overlay_cell_x is None or self._data.overlay_cell_x.size <= 0:
             return False
 
         from swe2d.workbench.services import gpkg_service

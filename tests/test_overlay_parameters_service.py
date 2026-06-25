@@ -14,36 +14,46 @@ def _build_mock_view() -> MagicMock:
     """Build a MagicMock with the widget/runtime attrs the service reads."""
     import numpy as np
     view = MagicMock()
-    view._high_perf_overlay_cell_x = np.array([0.0, 1.0])
-    view._high_perf_overlay_cell_y = np.array([0.0, 1.0])
-    view._high_perf_overlay_cell_bed = np.array([0.0, 0.0])
-    view._high_perf_overlay_node_x = np.array([0.0, 1.0])
-    view._high_perf_overlay_node_y = np.array([0.0, 1.0])
-    view._high_perf_overlay_cell_nodes = np.array([[0, 1]])
-    view._high_perf_overlay_tri_to_cell = np.array([0])
+
+    # Overlay geometry arrays now live on _results_data
+    data = MagicMock()
+    data.overlay_cell_x = np.array([0.0, 1.0])
+    data.overlay_cell_y = np.array([0.0, 1.0])
+    data.overlay_cell_bed = np.array([0.0, 0.0])
+    data.overlay_node_x = np.array([0.0, 1.0])
+    data.overlay_node_y = np.array([0.0, 1.0])
+    data.overlay_cell_nodes = np.array([[0, 1]])
+    data.overlay_tri_to_cell = np.array([0])
+    view._results_data = data
+
     view._snapshot_timesteps = [
         (0.0, np.array([1.0, 1.0]), np.array([0.0, 0.0]), np.array([0.0, 0.0]))
     ]
     view._gravity = 9.81
     view._mannings_n = 0.035
     view._length_unit_name = "m"
-    view.high_perf_canvas_overlay_field_combo.currentData.return_value = "depth"
-    view.high_perf_canvas_overlay_wse_render_combo.currentData.return_value = "cell"
-    view.high_perf_canvas_overlay_cmap_combo.currentData.return_value = "turbo"
-    view.high_perf_canvas_overlay_visible_only_chk.isChecked.return_value = False
-    view.high_perf_canvas_overlay_lock_canvas_chk.isChecked.return_value = False
-    view.high_perf_canvas_overlay_auto_contrast_chk.isChecked.return_value = True
-    view.high_perf_canvas_overlay_res_combo.currentData.return_value = (1280, 720)
-    view.high_perf_canvas_overlay_opacity_spin.value.return_value = 1.0
-    view.high_perf_canvas_overlay_arrows_chk.isChecked.return_value = False
-    view.high_perf_canvas_overlay_arrow_density_spin.value.return_value = 28.0
-    view.high_perf_canvas_overlay_arrow_length_spin.value.return_value = 1.0
-    view.high_perf_canvas_overlay_arrow_head_length_spin.value.return_value = 1.0
-    view.high_perf_canvas_overlay_arrow_head_width_spin.value.return_value = 1.0
-    view.high_perf_canvas_overlay_streamlines_chk.isChecked.return_value = False
-    view.high_perf_canvas_overlay_streamline_backend_combo.currentData.return_value = "auto"
-    view.high_perf_canvas_overlay_streamline_seed_spin.value.return_value = 48.0
-    view.high_perf_canvas_overlay_streamline_steps_spin.value.return_value = 24.0
+
+    # Overlay widgets live on _results_toolbox
+    tb = MagicMock()
+    tb.field_combo.currentData.return_value = "depth"
+    tb.wse_render_combo.currentData.return_value = "cell"
+    tb.cmap_combo.currentData.return_value = "turbo"
+    tb.visible_only_chk.isChecked.return_value = False
+    tb.lock_canvas_chk.isChecked.return_value = False
+    tb.auto_contrast_chk.isChecked.return_value = True
+    tb.res_combo.currentData.return_value = (1280, 720)
+    tb.opacity_spin.value.return_value = 1.0
+    tb.arrows_chk.isChecked.return_value = False
+    tb.arrow_density_spin.value.return_value = 28.0
+    tb.arrow_length_spin.value.return_value = 1.0
+    tb.arrow_head_length_spin.value.return_value = 1.0
+    tb.arrow_head_width_spin.value.return_value = 1.0
+    tb.streamlines_chk.isChecked.return_value = False
+    tb.streamline_backend_combo.currentData.return_value = "auto"
+    tb.streamline_seed_spin.value.return_value = 48.0
+    tb.streamline_steps_spin.value.return_value = 24.0
+    view._results_toolbox = tb
+
     view._resolve_map_canvas.return_value = None
     return view
 
@@ -92,7 +102,16 @@ class TestOverlayParametersService(unittest.TestCase):
     def test_collect_handles_missing_widgets(self):
         """A view with no widgets returns defaults (no exception)."""
         from swe2d.workbench.services.overlay_parameters_service import collect_overlay_parameters
-        view = MagicMock(spec=[])  # no attributes
+        view = MagicMock()
+        view._results_data = None
+        view._resolve_map_canvas.return_value = None
+        view._snapshot_timesteps = []
+        view._length_unit_name = "m"
+        view._gravity = 9.81
+        view._mannings_n = 0.035
+        # toolbox with missing widgets — _safe helpers return defaults
+        tb = MagicMock(spec=[])
+        view._results_toolbox = tb
         result = collect_overlay_parameters(view, t_use=0.0)
         self.assertEqual(result["field_key"], "depth")
         self.assertEqual(result["current_time_s"], 0.0)
@@ -107,7 +126,7 @@ class TestOverlayParametersService(unittest.TestCase):
     def test_collect_legend_label_for_depth(self):
         from swe2d.workbench.services.overlay_parameters_service import collect_overlay_parameters
         view = _build_mock_view()
-        view.high_perf_canvas_overlay_field_combo.currentData.return_value = "depth"
+        view._results_toolbox.field_combo.currentData.return_value = "depth"
         view._length_unit_name = "ft"
         result = collect_overlay_parameters(view, t_use=1.0)
         self.assertEqual(result["legend_label"], "Depth (ft)")
