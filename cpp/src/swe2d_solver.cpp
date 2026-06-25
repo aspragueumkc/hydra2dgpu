@@ -74,10 +74,6 @@ SWE2DSolver* swe2d_create(
         }
     }
 
-    s->dh.assign(n, 0.0);
-    s->dhu.assign(n, 0.0);
-    s->dhv.assign(n, 0.0);
-    s->source_terms.assign(n, 0.0);
     s->external_source_terms.assign(n, 0.0);
 
     // Initialise GPU state if requested and available
@@ -504,7 +500,6 @@ void swe2d_solver_set_rain_cn_forcing(
     s->rain_cn.assign(cn, cn + n_cells);
     s->rain_cum_mm.assign(static_cast<size_t>(n_cells), 0.0);
     s->rain_excess_cum_mm.assign(static_cast<size_t>(n_cells), 0.0);
-    s->source_terms.assign(static_cast<size_t>(n_cells), 0.0);
     s->rain_cn_enabled = true;
 #ifdef HYDRA_HAS_CUDA
     if (s->dev) {

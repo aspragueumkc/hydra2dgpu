@@ -193,11 +193,7 @@ struct SWE2DSolver {
     std::vector<double> hv;   // [n_cells] y-momentum (m²/s)
     std::vector<double> n_mann_cell; // [n_cells] per-cell Manning n
 
-    // ── Flux accumulators (host, reused each step) ───────────────────────────
-    std::vector<double> dh;   // [n_cells] accumulated depth flux / area
-    std::vector<double> dhu;  // [n_cells]
-    std::vector<double> dhv;  // [n_cells]
-    std::vector<double> source_terms; // [n_cells] additive depth source [m/s]
+    // ── External coupling source terms (set by Python, applied on GPU) ───────
     std::vector<double> external_source_terms; // [n_cells] externally-coupled depth source [m/s]
 
     // ── Config ───────────────────────────────────────────────────────────────

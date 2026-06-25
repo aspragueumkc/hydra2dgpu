@@ -283,6 +283,12 @@ SWE2DMesh swe2d_build_mesh_poly(
     // Reorder edges by (c0, c1) for GPU memory coalescing.
     swe2d_reorder_edges_for_gpu(mesh);
 
+    // Renumber cells via BFS for GPU cache locality.
+    // Disabled by default: GMSH already applies RCMK ordering during mesh
+    // generation, and plain BFS adds ~35% MUSCL cost vs GMSH ordering.
+    // Enable for imported meshes with random cell ordering.
+    // swe2d_renumber_cells_for_gpu(mesh);
+
     // Build the 2-ring cell stencil (CSR) used by the least-squares gradient
     // (spatial scheme 6 / FV_WENO5).  Neighbour cell indices are invariant under
     // the edge reordering above, so this may run before or after the reorder.
@@ -397,7 +403,6 @@ void swe2d_renumber_cells_for_gpu(SWE2DMesh& mesh) {
     const int32_t n_cells = mesh.n_cells;
     if (n_cells <= 1) return;
 
-    // Simple linear BFS (no degree sorting) to isolate any memory bug.
     // Build CSR adjacency from edges.
     std::vector<int32_t> adj_offsets(static_cast<size_t>(n_cells) + 1, 0);
     for (int32_t e = 0; e < mesh.n_edges; ++e) {
@@ -406,36 +411,33 @@ void swe2d_renumber_cells_for_gpu(SWE2DMesh& mesh) {
         if (c0 >= 0 && c0 < n_cells) adj_offsets[static_cast<size_t>(c0)]++;
         if (c1 >= 0 && c1 < n_cells) adj_offsets[static_cast<size_t>(c1)]++;
     }
-
-    // Validate: adj_offsets[n_cells] should be 0 (no cell n_cells).
-    assert(adj_offsets[static_cast<size_t>(n_cells)] == 0);
-
-    // Prefix sum — builds CSR pointers.
-    for (int32_t c = 1; c <= n_cells; ++c)
-        adj_offsets[static_cast<size_t>(c)] += adj_offsets[static_cast<size_t>(c - 1)];
-
-    int32_t total_adj = adj_offsets[static_cast<size_t>(n_cells)];
-    assert(total_adj > 0);  // must have at least one edge
+    // Standard CSR: offsets[0]=0, offsets[c]=sum(deg(0..c-1)).
+    int32_t running = 0;
+    for (int32_t c = 0; c < n_cells; ++c) {
+        int32_t deg = adj_offsets[static_cast<size_t>(c)];
+        adj_offsets[static_cast<size_t>(c)] = running;
+        running += deg;
+    }
+    adj_offsets[static_cast<size_t>(n_cells)] = running;
+    int32_t total_adj = running;
 
     // Fill adjacency IDs.
     std::vector<int32_t> adj_ids(static_cast<size_t>(total_adj));
-    std::vector<int32_t> adj_pos(adj_offsets.begin(), adj_offsets.end() - 1);  // exclude sentinel
+    std::vector<int32_t> adj_pos(adj_offsets.begin(), adj_offsets.begin() + n_cells);
     for (int32_t e = 0; e < mesh.n_edges; ++e) {
         int32_t c0 = mesh.edge_c0[static_cast<size_t>(e)];
         int32_t c1 = mesh.edge_c1[static_cast<size_t>(e)];
         if (c0 >= 0 && c0 < n_cells) {
             size_t p = static_cast<size_t>(adj_pos[static_cast<size_t>(c0)]++);
-            assert(p < static_cast<size_t>(total_adj));
             adj_ids[p] = c1 >= 0 ? c1 : -1;
         }
         if (c1 >= 0 && c1 < n_cells) {
             size_t p = static_cast<size_t>(adj_pos[static_cast<size_t>(c1)]++);
-            assert(p < static_cast<size_t>(total_adj));
             adj_ids[p] = c0;
         }
     }
 
-    // BFS from cell 0 using deque (eliminates O(n) erase from front).
+    // BFS from cell 0.
     std::vector<int32_t> perm(static_cast<size_t>(n_cells));
     std::vector<char> visited(static_cast<size_t>(n_cells), 0);
     size_t perm_idx = 0;
@@ -450,8 +452,8 @@ void swe2d_renumber_cells_for_gpu(SWE2DMesh& mesh) {
         perm[perm_idx++] = cur;
 
         size_t s = static_cast<size_t>(adj_offsets[static_cast<size_t>(cur)]);
-        size_t e = static_cast<size_t>(adj_offsets[static_cast<size_t>(cur + 1)]);
-        for (size_t i = s; i < e; ++i) {
+        size_t e_bfs = static_cast<size_t>(adj_offsets[static_cast<size_t>(cur + 1)]);
+        for (size_t i = s; i < e_bfs; ++i) {
             int32_t n = adj_ids[i];
             if (n >= 0 && n < n_cells && !visited[static_cast<size_t>(n)]) {
                 visited[static_cast<size_t>(n)] = 1;
@@ -465,7 +467,6 @@ void swe2d_renumber_cells_for_gpu(SWE2DMesh& mesh) {
         if (!visited[static_cast<size_t>(c)])
             perm[perm_idx++] = c;
     }
-    assert(perm_idx == static_cast<size_t>(n_cells));
 
     // Build inverse permutation.
     std::vector<int32_t> inv_perm(static_cast<size_t>(n_cells));
@@ -486,14 +487,54 @@ void swe2d_renumber_cells_for_gpu(SWE2DMesh& mesh) {
     perm_cell_dbl(mesh.cell_zb);
     perm_cell_dbl(mesh.cell_inv_area);
 
+    // Permute cell-edge CSR arrays to match the new cell order.
+    // Each cell keeps the same count of incident edges, so offsets
+    // follow the same prefix-sum pattern.
+    {
+        std::vector<int32_t> new_edge_ids;
+        new_edge_ids.reserve(mesh.cell_edge_ids.size());
+        std::vector<int32_t> new_offsets(static_cast<size_t>(n_cells) + 1);
+        new_offsets[0] = 0;
+        for (int32_t c = 0; c < n_cells; ++c) {
+            int32_t old_c = perm[static_cast<size_t>(c)];
+            int32_t s = mesh.cell_edge_offsets[static_cast<size_t>(old_c)];
+            int32_t e = mesh.cell_edge_offsets[static_cast<size_t>(old_c) + 1];
+            for (int32_t k = s; k < e; ++k)
+                new_edge_ids.push_back(mesh.cell_edge_ids[static_cast<size_t>(k)]);
+            new_offsets[static_cast<size_t>(c) + 1] = static_cast<int32_t>(new_edge_ids.size());
+        }
+        mesh.cell_edge_ids = std::move(new_edge_ids);
+        mesh.cell_edge_offsets = std::move(new_offsets);
+    }
+
+    // Same for cell_face_nodes (used by mesh exporters / overlays).
+    {
+        std::vector<int32_t> new_face_nodes;
+        new_face_nodes.reserve(mesh.cell_face_nodes.size());
+        std::vector<int32_t> new_face_offsets(static_cast<size_t>(n_cells) + 1);
+        new_face_offsets[0] = 0;
+        for (int32_t c = 0; c < n_cells; ++c) {
+            int32_t old_c = perm[static_cast<size_t>(c)];
+            int32_t s = mesh.cell_face_offsets[static_cast<size_t>(old_c)];
+            int32_t e = mesh.cell_face_offsets[static_cast<size_t>(old_c) + 1];
+            for (int32_t k = s; k < e; ++k)
+                new_face_nodes.push_back(mesh.cell_face_nodes[static_cast<size_t>(k)]);
+            new_face_offsets[static_cast<size_t>(c) + 1] = static_cast<int32_t>(new_face_nodes.size());
+        }
+        mesh.cell_face_nodes = std::move(new_face_nodes);
+        mesh.cell_face_offsets = std::move(new_face_offsets);
+    }
+
     // Remap edge c0/c1.
     for (int32_t e = 0; e < mesh.n_edges; ++e) {
-        if (mesh.edge_c0[static_cast<size_t>(e)] >= 0)
-            mesh.edge_c0[static_cast<size_t>(e)] =
-                inv_perm[static_cast<size_t>(mesh.edge_c0[static_cast<size_t>(e)])];
-        if (mesh.edge_c1[static_cast<size_t>(e)] >= 0)
-            mesh.edge_c1[static_cast<size_t>(e)] =
-                inv_perm[static_cast<size_t>(mesh.edge_c1[static_cast<size_t>(e)])];
+        int32_t old_c0 = mesh.edge_c0[static_cast<size_t>(e)];
+        if (old_c0 >= 0) {
+            mesh.edge_c0[static_cast<size_t>(e)] = inv_perm[static_cast<size_t>(old_c0)];
+        }
+        int32_t old_c1 = mesh.edge_c1[static_cast<size_t>(e)];
+        if (old_c1 >= 0) {
+            mesh.edge_c1[static_cast<size_t>(e)] = inv_perm[static_cast<size_t>(old_c1)];
+        }
     }
 
     mesh.cell_perm = std::move(perm);
@@ -521,18 +562,26 @@ void swe2d_build_cell_ring2(SWE2DMesh& mesh) {
         return -1;
     };
 
-    std::vector<int32_t> ring2;  // scratch, reused per cell
+    // Reusable scratch for per-cell neighbor collection.
+    std::vector<int32_t> ring2;
     ring2.reserve(32);
+    // Epoch-based visited flag avoids O(n) clear per cell.
+    std::vector<int32_t> visited_seq(static_cast<size_t>(n_cells), 0);
+    uint32_t epoch = 0;
 
     for (int32_t c0 = 0; c0 < n_cells; ++c0) {
         ring2.clear();
+        ++epoch;
         const int32_t es = mesh.cell_edge_offsets[static_cast<size_t>(c0)];
         const int32_t ee = mesh.cell_edge_offsets[static_cast<size_t>(c0) + 1];
         for (int32_t k = es; k < ee; ++k) {
             const int32_t e1 = mesh.cell_edge_ids[static_cast<size_t>(k)];
             const int32_t peer = edge_peer(e1, c0);
             if (peer < 0) continue;
-            ring2.push_back(peer);  // 1-hop
+            if (visited_seq[static_cast<size_t>(peer)] != static_cast<int32_t>(epoch)) {
+                visited_seq[static_cast<size_t>(peer)] = static_cast<int32_t>(epoch);
+                ring2.push_back(peer);
+            }
 
             // 2-hop: face-neighbours of the 1-hop peer.
             const int32_t ps = mesh.cell_edge_offsets[static_cast<size_t>(peer)];
@@ -541,14 +590,15 @@ void swe2d_build_cell_ring2(SWE2DMesh& mesh) {
                 const int32_t e2 = mesh.cell_edge_ids[static_cast<size_t>(k2)];
                 const int32_t peer2 = edge_peer(e2, peer);
                 if (peer2 >= 0 && peer2 != c0) {
-                    ring2.push_back(peer2);
+                    if (visited_seq[static_cast<size_t>(peer2)] != static_cast<int32_t>(epoch)) {
+                        visited_seq[static_cast<size_t>(peer2)] = static_cast<int32_t>(epoch);
+                        ring2.push_back(peer2);
+                    }
                 }
             }
         }
 
-        // Deduplicate (and sort for deterministic ordering).
-        std::sort(ring2.begin(), ring2.end());
-        ring2.erase(std::unique(ring2.begin(), ring2.end()), ring2.end());
+        // ring2 is now deduplicated and emitted in deterministic edge-traversal order.
 
         const double cx0 = mesh.cell_cx[static_cast<size_t>(c0)];
         const double cy0 = mesh.cell_cy[static_cast<size_t>(c0)];
