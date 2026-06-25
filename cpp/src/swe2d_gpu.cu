@@ -2041,9 +2041,10 @@ __global__ __launch_bounds__(256, 4) void swe2d_flux_kernel(
 /** GPU kernel: state update — one thread per active cell. */
 __global__ __launch_bounds__(256, 4) void swe2d_update_kernel(
     int32_t                     n_cells,
-    const int32_t* __restrict__ cell_edge_offsets,
-    const int32_t* __restrict__ cell_edge_ids,
-    const int32_t* __restrict__ edge_c0,
+    const int32_t* __restrict__ cell_owned_offsets,
+    const int32_t* __restrict__ cell_owned_ids,
+    const int32_t* __restrict__ cell_peer_offsets,
+    const int32_t* __restrict__ cell_peer_ids,
     const int32_t* __restrict__ edge_c1,
     State*                      cell_h,
     State*                      cell_hu,
@@ -2120,15 +2121,21 @@ __global__ __launch_bounds__(256, 4) void swe2d_update_kernel(
     double fh = 0.0;
     double fhu = 0.0;
     double fhv = 0.0;
-    const int32_t s = cell_edge_offsets[c];
-    const int32_t e = cell_edge_offsets[c + 1];
-    for (int32_t k = s; k < e; ++k) {
-        const int32_t edge = cell_edge_ids[k];
-        if (edge_c0[edge] == c) {
+    {
+        const int32_t os = cell_owned_offsets[c];
+        const int32_t oe = cell_owned_offsets[c + 1];
+        for (int32_t k = os; k < oe; ++k) {
+            const int32_t edge = cell_owned_ids[k];
             fh  += flux_h[edge];
             fhu += flux_hu[edge];
             fhv += flux_hv[edge];
-        } else {
+        }
+    }
+    {
+        const int32_t ps = cell_peer_offsets[c];
+        const int32_t pe = cell_peer_offsets[c + 1];
+        for (int32_t k = ps; k < pe; ++k) {
+            const int32_t edge = cell_peer_ids[k];
             fh  -= flux_h[edge];
             fhu += flux_hu_r ? flux_hu_r[edge] : -flux_hu[edge];
             fhv += flux_hv_r ? flux_hv_r[edge] : -flux_hv[edge];
@@ -4538,6 +4545,58 @@ SWE2DDeviceState* swe2d_gpu_init(
     copy_h2d_i(dev->d_cell_edge_offsets, mesh.cell_edge_offsets.data(), sz_cells + 1);
     copy_h2d_i(dev->d_cell_edge_ids, mesh.cell_edge_ids.data(), mesh.cell_edge_ids.size());
 
+    // Build owned/peer split CSR from cell_edge_offsets + edge_c0.
+    // This removes the edge_c0[edge] == c branch from the update kernel.
+    {
+        const int32_t n_cells_i = mesh.n_cells;
+        std::vector<int32_t> owned_offs(static_cast<size_t>(n_cells_i) + 1, 0);
+        std::vector<int32_t> peer_offs(static_cast<size_t>(n_cells_i) + 1, 0);
+        for (int32_t c = 0; c < n_cells_i; ++c) {
+            const int32_t s = mesh.cell_edge_offsets[static_cast<size_t>(c)];
+            const int32_t e = mesh.cell_edge_offsets[static_cast<size_t>(c + 1)];
+            for (int32_t k = s; k < e; ++k) {
+                const int32_t edge = mesh.cell_edge_ids[static_cast<size_t>(k)];
+                if (mesh.edge_c0[static_cast<size_t>(edge)] == c)
+                    owned_offs[static_cast<size_t>(c + 1)]++;
+                else
+                    peer_offs[static_cast<size_t>(c + 1)]++;
+            }
+        }
+        for (int32_t c = 1; c <= n_cells_i; ++c) {
+            owned_offs[static_cast<size_t>(c)] += owned_offs[static_cast<size_t>(c - 1)];
+            peer_offs[static_cast<size_t>(c)]  += peer_offs[static_cast<size_t>(c - 1)];
+        }
+        const int32_t n_owned = owned_offs[static_cast<size_t>(n_cells_i)];
+        const int32_t n_peer  = peer_offs[static_cast<size_t>(n_cells_i)];
+        std::vector<int32_t> owned_ids(static_cast<size_t>(n_owned));
+        std::vector<int32_t> peer_ids(static_cast<size_t>(n_peer));
+        std::vector<int32_t> owned_pos = owned_offs;
+        std::vector<int32_t> peer_pos  = peer_offs;
+        for (int32_t c = 0; c < n_cells_i; ++c) {
+            const int32_t s = mesh.cell_edge_offsets[static_cast<size_t>(c)];
+            const int32_t e = mesh.cell_edge_offsets[static_cast<size_t>(c + 1)];
+            for (int32_t k = s; k < e; ++k) {
+                const int32_t edge = mesh.cell_edge_ids[static_cast<size_t>(k)];
+                size_t pos;
+                if (mesh.edge_c0[static_cast<size_t>(edge)] == c) {
+                    pos = static_cast<size_t>(owned_pos[static_cast<size_t>(c)]++);
+                    owned_ids[pos] = edge;
+                } else {
+                    pos = static_cast<size_t>(peer_pos[static_cast<size_t>(c)]++);
+                    peer_ids[pos] = edge;
+                }
+            }
+        }
+        alloc_d(reinterpret_cast<void**>(&dev->d_cell_owned_offsets), static_cast<size_t>(n_cells_i + 1) * sizeof(int32_t));
+        alloc_d(reinterpret_cast<void**>(&dev->d_cell_peer_offsets),  static_cast<size_t>(n_cells_i + 1) * sizeof(int32_t));
+        alloc_d(reinterpret_cast<void**>(&dev->d_cell_owned_ids),     static_cast<size_t>(n_owned) * sizeof(int32_t));
+        alloc_d(reinterpret_cast<void**>(&dev->d_cell_peer_ids),      static_cast<size_t>(n_peer)  * sizeof(int32_t));
+        copy_h2d_i(dev->d_cell_owned_offsets, owned_offs.data(), static_cast<size_t>(n_cells_i) + 1);
+        copy_h2d_i(dev->d_cell_peer_offsets,  peer_offs.data(),  static_cast<size_t>(n_cells_i) + 1);
+        copy_h2d_i(dev->d_cell_owned_ids,     owned_ids.data(),  static_cast<size_t>(n_owned));
+        copy_h2d_i(dev->d_cell_peer_ids,      peer_ids.data(),   static_cast<size_t>(n_peer));
+    }
+
     // 2-ring cell stencil CSR for the least-squares gradient (scheme 6).
     {
         const size_t n_ring2 = mesh.cell_ring2_ids.size();
@@ -5065,8 +5124,9 @@ void swe2d_gpu_step(
                 int grid_update = (n_cells + BLOCK - 1) / BLOCK;
                 swe2d_update_kernel<<<grid_update, BLOCK, 0, dev->d_stream>>>(
                     n_cells,
-                    dev->d_cell_edge_offsets, dev->d_cell_edge_ids,
-                    dev->d_edge_c0, dev->d_edge_c1,
+                    dev->d_cell_owned_offsets, dev->d_cell_owned_ids,
+                    dev->d_cell_peer_offsets, dev->d_cell_peer_ids,
+                    dev->d_edge_c1,
                     dev->d_h, dev->d_hu, dev->d_hv,
                     dev->d_flux_h, dev->d_flux_hu, dev->d_flux_hv,
                     dev->d_flux_hu_r, dev->d_flux_hv_r,
@@ -5305,8 +5365,9 @@ void swe2d_gpu_step(
         int grid = (n_cells + BLOCK - 1) / BLOCK;
         swe2d_update_kernel<<<grid, BLOCK, 0, dev->d_stream>>>(
             n_cells,
-            dev->d_cell_edge_offsets, dev->d_cell_edge_ids,
-            dev->d_edge_c0, dev->d_edge_c1,
+            dev->d_cell_owned_offsets, dev->d_cell_owned_ids,
+            dev->d_cell_peer_offsets, dev->d_cell_peer_ids,
+            dev->d_edge_c1,
             dev->d_h, dev->d_hu, dev->d_hv,
             dev->d_flux_h, dev->d_flux_hu, dev->d_flux_hv,
             dev->d_flux_hu_r, dev->d_flux_hv_r,
@@ -5422,8 +5483,10 @@ __global__ __launch_bounds__(256, 4) void swe2d_persistent_chunk_kernel_first_or
     const double*  __restrict__ edge_len,
     const int32_t* __restrict__ edge_bc,
     const double*  __restrict__ edge_bc_val,
-    const int32_t* __restrict__ cell_edge_offsets,
-    const int32_t* __restrict__ cell_edge_ids,
+    const int32_t* __restrict__ cell_owned_offsets,
+    const int32_t* __restrict__ cell_owned_ids,
+    const int32_t* __restrict__ cell_peer_offsets,
+    const int32_t* __restrict__ cell_peer_ids,
     const double*  __restrict__ cell_inv_area,
     const double*  __restrict__ cell_n_mann,
     const double*  __restrict__ cell_zb,
@@ -5602,15 +5665,21 @@ __global__ __launch_bounds__(256, 4) void swe2d_persistent_chunk_kernel_first_or
                 double fh = 0.0;
                 double fhu = 0.0;
                 double fhv = 0.0;
-                const int32_t s = cell_edge_offsets[c];
-                const int32_t e = cell_edge_offsets[c + 1];
-                for (int32_t k = s; k < e; ++k) {
-                    const int32_t edge = cell_edge_ids[k];
-                    if (edge_c0[edge] == c) {
+                {
+                    const int32_t os = cell_owned_offsets[c];
+                    const int32_t oe = cell_owned_offsets[c + 1];
+                    for (int32_t k = os; k < oe; ++k) {
+                        const int32_t edge = cell_owned_ids[k];
                         fh += flux_h[edge];
                         fhu += flux_hu[edge];
                         fhv += flux_hv[edge];
-                    } else {
+                    }
+                }
+                {
+                    const int32_t ps = cell_peer_offsets[c];
+                    const int32_t pe = cell_peer_offsets[c + 1];
+                    for (int32_t k = ps; k < pe; ++k) {
+                        const int32_t edge = cell_peer_ids[k];
                         fh -= flux_h[edge];
                         fhu += flux_hu_r[edge];
                         fhv += flux_hv_r[edge];
@@ -5932,8 +6001,10 @@ void swe2d_gpu_step_persistent_chunk(
         &dev->d_edge_len,
         &dev->d_edge_bc,
         &dev->d_edge_bc_val,
-        &dev->d_cell_edge_offsets,
-        &dev->d_cell_edge_ids,
+        &dev->d_cell_owned_offsets,
+        &dev->d_cell_owned_ids,
+        &dev->d_cell_peer_offsets,
+        &dev->d_cell_peer_ids,
         &dev->d_cell_inv_area,
         &dev->d_n_mann_cell,
         &dev->d_cell_zb,
@@ -8860,6 +8931,10 @@ void swe2d_gpu_destroy(SWE2DDeviceState* dev) {
     safe_free(dev->d_edge_bc_val);
     safe_free(dev->d_cell_edge_offsets);
     safe_free(dev->d_cell_edge_ids);
+    safe_free(dev->d_cell_owned_offsets);
+    safe_free(dev->d_cell_peer_offsets);
+    safe_free(dev->d_cell_owned_ids);
+    safe_free(dev->d_cell_peer_ids);
     safe_free(dev->d_cell_ring2_offsets);
     safe_free(dev->d_cell_ring2_ids);
     safe_free(dev->d_cell_ring2_dcx);

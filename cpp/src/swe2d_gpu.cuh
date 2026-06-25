@@ -71,6 +71,13 @@ struct SWE2DDeviceState {
     int32_t* d_cell_edge_offsets = nullptr;  // [n_cells + 1]
     int32_t* d_cell_edge_ids     = nullptr;   // [sum(n_verts_cell)]
 
+    // Owned/peer split CSR for atomics-free update kernel — removes
+    // edge_c0[edge] == c branch from the hot loop.
+    int32_t* d_cell_owned_offsets = nullptr;   // [n_cells+1] CSR offsets for owned edges
+    int32_t* d_cell_peer_offsets  = nullptr;   // [n_cells+1] CSR offsets for peer edges
+    int32_t* d_cell_owned_ids     = nullptr;   // [sum(n_owned)] edge indices where c0==c
+    int32_t* d_cell_peer_ids      = nullptr;   // [sum(n_peer)]  edge indices where c1==c
+
     // 2-ring cell stencil (CSR), used by the least-squares gradient (scheme 6).
     int32_t* d_cell_ring2_offsets   = nullptr;  // [n_cells + 1]
     int32_t* d_cell_ring2_ids       = nullptr;  // [sum(ring2_counts)]
