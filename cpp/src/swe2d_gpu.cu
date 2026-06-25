@@ -1005,9 +1005,7 @@ __global__ __launch_bounds__(256, 4) void swe2d_gradient_gather_kernel(
     const double*  __restrict__ edge_hx,  const double*  __restrict__ edge_hy,
     const double*  __restrict__ edge_hux, const double*  __restrict__ edge_huy,
     const double*  __restrict__ edge_hvx, const double*  __restrict__ edge_hvy,
-    double*                     grad_hx,  double* grad_hy,
-    double*                     grad_hux, double* grad_huy,
-    double*                     grad_hvx, double* grad_hvy,
+    Grad*                       d_grad,
     const int32_t* __restrict__ d_active)
 {
     int32_t c = blockIdx.x * blockDim.x + threadIdx.x;
@@ -1025,9 +1023,9 @@ __global__ __launch_bounds__(256, 4) void swe2d_gradient_gather_kernel(
         gux += edge_hux[edge]; guy += edge_huy[edge];
         gvx += edge_hvx[edge]; gvy += edge_hvy[edge];
     }
-    grad_hx[c]  = gx;  grad_hy[c]  = gy;
-    grad_hux[c] = gux; grad_huy[c] = guy;
-    grad_hvx[c] = gvx; grad_hvy[c] = gvy;
+    d_grad[c].hx  = gx;  d_grad[c].hy  = gy;
+    d_grad[c].hux = gux; d_grad[c].huy = guy;
+    d_grad[c].hvx = gvx; d_grad[c].hvy = gvy;
 }
 
 /// GPU kernel: least-squares (2-ring) gradient — spatial scheme 6 (FV_WENO5).
@@ -1068,9 +1066,7 @@ __global__ __launch_bounds__(256, 4) void swe2d_lsq_gradient_kernel(
     const State*   __restrict__ cell_hu,
     const State*   __restrict__ cell_hv,
     const int32_t* __restrict__ d_active,
-    double*                     grad_hx,  double* grad_hy,
-    double*                     grad_hux, double* grad_huy,
-    double*                     grad_hvx, double* grad_hvy)
+    Grad*                       d_grad)
 {
     int32_t c = blockIdx.x * blockDim.x + threadIdx.x;
     if (c >= n_cells) return;
@@ -1117,12 +1113,12 @@ __global__ __launch_bounds__(256, 4) void swe2d_lsq_gradient_kernel(
     if (fabs(det) <= 1.0e-30) return;
     const double inv_det = 1.0 / det;
 
-    grad_hx[c]  = inv_det * (a22 * b1_eta - a12 * b2_eta);
-    grad_hy[c]  = inv_det * (a11 * b2_eta - a12 * b1_eta);
-    grad_hux[c] = inv_det * (a22 * b1_hu  - a12 * b2_hu);
-    grad_huy[c] = inv_det * (a11 * b2_hu  - a12 * b1_hu);
-    grad_hvx[c] = inv_det * (a22 * b1_hv  - a12 * b2_hv);
-    grad_hvy[c] = inv_det * (a11 * b2_hv  - a12 * b1_hv);
+    d_grad[c].hx  = inv_det * (a22 * b1_eta - a12 * b2_eta);
+    d_grad[c].hy  = inv_det * (a11 * b2_eta - a12 * b1_eta);
+    d_grad[c].hux = inv_det * (a22 * b1_hu  - a12 * b2_hu);
+    d_grad[c].huy = inv_det * (a11 * b2_hu  - a12 * b1_hu);
+    d_grad[c].hvx = inv_det * (a22 * b1_hv  - a12 * b2_hv);
+    d_grad[c].hvy = inv_det * (a11 * b2_hv  - a12 * b1_hv);
 }
 
 /// Host function: launch gather kernel to sum edge-scratch → cell gradients.
@@ -1137,9 +1133,7 @@ static inline void swe2d_maybe_launch_gradient_gather(
         dev->d_grad_edge_hx,  dev->d_grad_edge_hy,
         dev->d_grad_edge_hux, dev->d_grad_edge_huy,
         dev->d_grad_edge_hvx, dev->d_grad_edge_hvy,
-        dev->d_grad_hx,  dev->d_grad_hy,
-        dev->d_grad_hux, dev->d_grad_huy,
-        dev->d_grad_hvx, dev->d_grad_hvy,
+        dev->d_grad,
         dev->d_active);
 }
 
@@ -1170,9 +1164,7 @@ static inline void swe2d_maybe_launch_lsq_gradient(
         dev->d_cell_ring2_dcx, dev->d_cell_ring2_dcy, dev->d_cell_ring2_inv_dist2,
         cell_h, dev->d_cell_zb, cell_hu, cell_hv,
         dev->d_active,
-        dev->d_grad_hx,  dev->d_grad_hy,
-        dev->d_grad_hux, dev->d_grad_huy,
-        dev->d_grad_hvx, dev->d_grad_hvy);
+        dev->d_grad);
 }
 
 /// Device helper: clamped linear interpolation in a monotonic series.
@@ -1723,9 +1715,7 @@ __global__ __launch_bounds__(256, 4) void swe2d_flux_kernel(
     // Cell centroids and gradients (used for MC and Van Leer limiters)
     const double*  __restrict__ cell_cx,
     const double*  __restrict__ cell_cy,
-    const double*  __restrict__ grad_hx,  const double* __restrict__ grad_hy,
-    const double*  __restrict__ grad_hux, const double* __restrict__ grad_huy,
-    const double*  __restrict__ grad_hvx, const double* __restrict__ grad_hvy,
+    const Grad*    __restrict__ d_grad,
     double*                     flux_h,    // [n_cells] accumulator
     double*                     flux_hu,
     double*                     flux_hv,
@@ -1820,7 +1810,7 @@ __global__ __launch_bounds__(256, 4) void swe2d_flux_kernel(
         const double recon_fallback_depth = fmax(h_min, 0.5 * shallow_damping_depth);
         const bool shallow_pair = (hL < recon_fallback_depth) || (hR < recon_fallback_depth);
         const bool disable_higher_order = enable_shallow_front_recon_fallback && shallow_pair;
-        if (!disable_higher_order && spatial_scheme >= scheme_fast && cell_cx != nullptr && grad_hx != nullptr) {
+        if (!disable_higher_order && spatial_scheme >= scheme_fast && cell_cx != nullptr && d_grad != nullptr) {
             const double fx = edge_mx[e];
             const double fy = edge_my[e];
             const double dcx = cell_cx[c1] - cell_cx[c0];
@@ -1951,13 +1941,13 @@ __global__ __launch_bounds__(256, 4) void swe2d_flux_kernel(
             const double etaL = hL + zbL;
             const double etaR = hR + zbR;
             if (spatial_scheme == scheme_weno5) {
-                weno5_reconstruct(etaL, etaR, grad_hx[c0], grad_hy[c0], grad_hx[c1], grad_hy[c1], etaL_rec, etaR_rec);
-                weno5_reconstruct(huL, huR, grad_hux[c0], grad_huy[c0], grad_hux[c1], grad_huy[c1], huL_rec, huR_rec);
-                weno5_reconstruct(hvL, hvR, grad_hvx[c0], grad_hvy[c0], grad_hvx[c1], grad_hvy[c1], hvL_rec, hvR_rec);
+                weno5_reconstruct(etaL, etaR, d_grad[c0].hx, d_grad[c0].hy, d_grad[c1].hx, d_grad[c1].hy, etaL_rec, etaR_rec);
+                weno5_reconstruct(huL, huR, d_grad[c0].hux, d_grad[c0].huy, d_grad[c1].hux, d_grad[c1].huy, huL_rec, huR_rec);
+                weno5_reconstruct(hvL, hvR, d_grad[c0].hvx, d_grad[c0].hvy, d_grad[c1].hvx, d_grad[c1].hvy, hvL_rec, hvR_rec);
             } else {
-                tvd_reconstruct(etaL, etaR, grad_hx[c0], grad_hy[c0], grad_hx[c1], grad_hy[c1], etaL_rec, etaR_rec);
-                tvd_reconstruct(huL, huR, grad_hux[c0], grad_huy[c0], grad_hux[c1], grad_huy[c1], huL_rec, huR_rec);
-                tvd_reconstruct(hvL, hvR, grad_hvx[c0], grad_hvy[c0], grad_hvx[c1], grad_hvy[c1], hvL_rec, hvR_rec);
+                tvd_reconstruct(etaL, etaR, d_grad[c0].hx, d_grad[c0].hy, d_grad[c1].hx, d_grad[c1].hy, etaL_rec, etaR_rec);
+                tvd_reconstruct(huL, huR, d_grad[c0].hux, d_grad[c0].huy, d_grad[c1].hux, d_grad[c1].huy, huL_rec, huR_rec);
+                tvd_reconstruct(hvL, hvR, d_grad[c0].hvx, d_grad[c0].hvy, d_grad[c1].hvx, d_grad[c1].hvy, hvL_rec, hvR_rec);
             }
 
             hL  = fmax(0.0, etaL_rec - zbL);
@@ -4583,18 +4573,8 @@ SWE2DDeviceState* swe2d_gpu_init(
     copy_h2d_d(dev->d_cell_cy, mesh.cell_cy.data(), sz_cells);
 
     // Gradient arrays (zeroed; filled by swe2d_gradient_kernel each step for MC/VL)
-    alloc_d(reinterpret_cast<void**>(&dev->d_grad_hx),  sz_cells * sizeof(double));
-    alloc_d(reinterpret_cast<void**>(&dev->d_grad_hy),  sz_cells * sizeof(double));
-    alloc_d(reinterpret_cast<void**>(&dev->d_grad_hux), sz_cells * sizeof(double));
-    alloc_d(reinterpret_cast<void**>(&dev->d_grad_huy), sz_cells * sizeof(double));
-    alloc_d(reinterpret_cast<void**>(&dev->d_grad_hvx), sz_cells * sizeof(double));
-    alloc_d(reinterpret_cast<void**>(&dev->d_grad_hvy), sz_cells * sizeof(double));
-    CUDA_CHECK(cudaMemset(dev->d_grad_hx,  0, sz_cells * sizeof(double)));
-    CUDA_CHECK(cudaMemset(dev->d_grad_hy,  0, sz_cells * sizeof(double)));
-    CUDA_CHECK(cudaMemset(dev->d_grad_hux, 0, sz_cells * sizeof(double)));
-    CUDA_CHECK(cudaMemset(dev->d_grad_huy, 0, sz_cells * sizeof(double)));
-    CUDA_CHECK(cudaMemset(dev->d_grad_hvx, 0, sz_cells * sizeof(double)));
-    CUDA_CHECK(cudaMemset(dev->d_grad_hvy, 0, sz_cells * sizeof(double)));
+    alloc_d(reinterpret_cast<void**>(&dev->d_grad), sz_cells * sizeof(Grad));
+    CUDA_CHECK(cudaMemset(dev->d_grad, 0, sz_cells * sizeof(Grad)));
 
     // State (stored as State = float or double)
     alloc_d(reinterpret_cast<void**>(&dev->d_h),  sz_cells * sizeof(State));
@@ -5027,14 +5007,9 @@ void swe2d_gpu_step(
                 }
                 // gradient pre-pass (atomics-free: edge-scratch + gather)
                 if (need_gradients) {
-                    const size_t sz_c = static_cast<size_t>(n_cells) * sizeof(double);
+                    const size_t sz_g = static_cast<size_t>(n_cells) * sizeof(Grad);
                     const size_t sz_e = static_cast<size_t>(n_edges) * sizeof(double);
-                    CUDA_CHECK(cudaMemsetAsync(dev->d_grad_hx,  0, sz_c, dev->d_stream));
-                    CUDA_CHECK(cudaMemsetAsync(dev->d_grad_hy,  0, sz_c, dev->d_stream));
-                    CUDA_CHECK(cudaMemsetAsync(dev->d_grad_hux, 0, sz_c, dev->d_stream));
-                    CUDA_CHECK(cudaMemsetAsync(dev->d_grad_huy, 0, sz_c, dev->d_stream));
-                    CUDA_CHECK(cudaMemsetAsync(dev->d_grad_hvx, 0, sz_c, dev->d_stream));
-                    CUDA_CHECK(cudaMemsetAsync(dev->d_grad_hvy, 0, sz_c, dev->d_stream));
+                    CUDA_CHECK(cudaMemsetAsync(dev->d_grad, 0, sz_g, dev->d_stream));
                     CUDA_CHECK(cudaMemsetAsync(dev->d_grad_edge_hx,  0, sz_e, dev->d_stream));
                     CUDA_CHECK(cudaMemsetAsync(dev->d_grad_edge_hy,  0, sz_e, dev->d_stream));
                     CUDA_CHECK(cudaMemsetAsync(dev->d_grad_edge_hux, 0, sz_e, dev->d_stream));
@@ -5073,9 +5048,7 @@ void swe2d_gpu_step(
                     dev->d_cell_zb,
                     dev->d_cell_inv_area,
                     dev->d_cell_cx, dev->d_cell_cy,
-                    dev->d_grad_hx,  dev->d_grad_hy,
-                    dev->d_grad_hux, dev->d_grad_huy,
-                    dev->d_grad_hvx, dev->d_grad_hvy,
+                    dev->d_grad,
                     dev->d_flux_h, dev->d_flux_hu, dev->d_flux_hv,
                     dev->d_flux_hu_r, dev->d_flux_hv_r,
                     nullptr, nullptr, nullptr,
@@ -5215,14 +5188,9 @@ void swe2d_gpu_step(
     // The progressive kernel runs after graph replay to convert Q→q.
 
     if (need_gradients) {
-        const size_t sz_c = static_cast<size_t>(n_cells) * sizeof(double);
+        const size_t sz_g = static_cast<size_t>(n_cells) * sizeof(Grad);
         const size_t sz_e = static_cast<size_t>(n_edges) * sizeof(double);
-        CUDA_CHECK(cudaMemsetAsync(dev->d_grad_hx,  0, sz_c, dev->d_stream));
-        CUDA_CHECK(cudaMemsetAsync(dev->d_grad_hy,  0, sz_c, dev->d_stream));
-        CUDA_CHECK(cudaMemsetAsync(dev->d_grad_hux, 0, sz_c, dev->d_stream));
-        CUDA_CHECK(cudaMemsetAsync(dev->d_grad_huy, 0, sz_c, dev->d_stream));
-        CUDA_CHECK(cudaMemsetAsync(dev->d_grad_hvx, 0, sz_c, dev->d_stream));
-        CUDA_CHECK(cudaMemsetAsync(dev->d_grad_hvy, 0, sz_c, dev->d_stream));
+        CUDA_CHECK(cudaMemsetAsync(dev->d_grad, 0, sz_g, dev->d_stream));
         CUDA_CHECK(cudaMemsetAsync(dev->d_grad_edge_hx,  0, sz_e, dev->d_stream));
         CUDA_CHECK(cudaMemsetAsync(dev->d_grad_edge_hy,  0, sz_e, dev->d_stream));
         CUDA_CHECK(cudaMemsetAsync(dev->d_grad_edge_hux, 0, sz_e, dev->d_stream));
@@ -5274,9 +5242,7 @@ void swe2d_gpu_step(
             dev->d_cell_zb,
             dev->d_cell_inv_area,
             dev->d_cell_cx, dev->d_cell_cy,
-            dev->d_grad_hx,  dev->d_grad_hy,
-            dev->d_grad_hux, dev->d_grad_huy,
-            dev->d_grad_hvx, dev->d_grad_hvy,
+            dev->d_grad,
             dev->d_flux_h, dev->d_flux_hu, dev->d_flux_hv,
             dev->d_flux_hu_r, dev->d_flux_hv_r,
             d_dbg_fh, d_dbg_fhu, d_dbg_fhv,
@@ -8911,9 +8877,7 @@ void swe2d_gpu_destroy(SWE2DDeviceState* dev) {
     safe_free(dev->d_cell_inv_area);
     safe_free(dev->d_n_mann_cell);
     safe_free(dev->d_cell_cx);    safe_free(dev->d_cell_cy);
-    safe_free(dev->d_grad_hx);    safe_free(dev->d_grad_hy);
-    safe_free(dev->d_grad_hux);   safe_free(dev->d_grad_huy);
-    safe_free(dev->d_grad_hvx);   safe_free(dev->d_grad_hvy);
+    safe_free(dev->d_grad);
     safe_free(dev->d_grad_edge_hx);  safe_free(dev->d_grad_edge_hy);
     safe_free(dev->d_grad_edge_hux); safe_free(dev->d_grad_edge_huy);
     safe_free(dev->d_grad_edge_hvx); safe_free(dev->d_grad_edge_hvy);

@@ -45,6 +45,10 @@ struct KernelGraphCache {
 // ─────────────────────────────────────────────────────────────────────────────
 // Device memory pool for one solver instance
 // ─────────────────────────────────────────────────────────────────────────────
+
+/// Per-cell gradient AoS struct (hx, hy, hux, huy, hvx, hvy).
+struct Grad { double hx, hy, hux, huy, hvx, hvy; };
+
 struct SWE2DDeviceState {
     // Mesh topology (static after init, transferred once)
     int32_t* d_edge_c0     = nullptr;
@@ -112,10 +116,7 @@ struct SWE2DDeviceState {
     double*  d_cell_cx = nullptr;
     double*  d_cell_cy = nullptr;
 
-    // Per-cell gradient arrays (Green-Gauss, for MC and Van Leer limiters)
-    double*  d_grad_hx  = nullptr;   double*  d_grad_hy  = nullptr;
-    double*  d_grad_hux = nullptr;   double*  d_grad_huy = nullptr;
-    double*  d_grad_hvx = nullptr;   double*  d_grad_hvy = nullptr;
+    Grad*  d_grad = nullptr;
 
     // Per-edge gradient scratch (atomics-free path).  Written by gradient
     // kernel, consumed by gradient-gather kernel.  Same layout as flux arrays.
@@ -551,9 +552,7 @@ void swe2d_gpu_set_friction_config(
 void swe2d_gpu_gather_gradients(
     SWE2DDeviceState* dev,
     int32_t n_cells,
-    double* grad_hx, double* grad_hy,
-    double* grad_hux, double* grad_huy,
-    double* grad_hvx, double* grad_hvy);
+    Grad* d_grad);
 
 void swe2d_gpu_step(
     SWE2DDeviceState* dev,
