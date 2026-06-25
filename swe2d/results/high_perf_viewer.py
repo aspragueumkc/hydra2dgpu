@@ -668,11 +668,7 @@ def render_unstructured_snapshot_image(
 
     if tri_node_x.size > 0 and tri_node_y.size > 0 and tri_nodes.size >= 3:
         if tri_mismatch_reason:
-            out["message"] = (
-                "Tri-fill disabled: "
-                + str(tri_mismatch_reason)
-                + "; using centroid accumulation instead."
-            )
+            out["message"] = "Tri-fill disabled: " + str(tri_mismatch_reason)
             tri_raster_used = False
         elif tri_n > 0 and vals_cell.size > 0:
             tri_valid = int(tri_n)
@@ -701,23 +697,12 @@ def render_unstructured_snapshot_image(
                 tri_raster_used = True
 
     if not tri_raster_used:
-        acc = _hydra_overlay.rasterize_unstructured_accum(
-            x.astype(np.float64, copy=False),
-            y.astype(np.float64, copy=False),
-            vals.astype(np.float64, copy=False),
-            None,
-            None,
-            int(w),
-            int(h_img),
-            float(x_min),
-            float(x_max),
-            float(y_min),
-            float(y_max),
+        out["message"] = (
+            "No triangle mesh data available for rasterization. "
+            "The caller must provide node_x, node_y, and cell_nodes arrays."
         )
-        sum_vals = np.asarray(acc["sum_scalar"], dtype=np.float64).reshape(-1)
-        cnt_vals = np.asarray(acc["count"], dtype=np.float64).reshape(-1)
-        out["backend"] = "hydra_overlay"
-
+        out["render_ms"] = (time.perf_counter() - t0) * 1000.0
+        return out
     grid = np.full(wh, np.nan, dtype=np.float64)
     has_data = cnt_vals > 0.0
     grid[has_data] = sum_vals[has_data] / cnt_vals[has_data]
@@ -834,31 +819,15 @@ def render_unstructured_snapshot_image(
                 sum_u = np.asarray(acc_uv_tri["sum_u"], dtype=np.float64).reshape(-1)
                 sum_v = np.asarray(acc_uv_tri["sum_v"], dtype=np.float64).reshape(-1)
 
-        if sum_u is None:
-            acc_uv = _hydra_overlay.rasterize_unstructured_accum(
-                x.astype(np.float64, copy=False),
-                y.astype(np.float64, copy=False),
-                vals.astype(np.float64, copy=False),
-                u_cell.astype(np.float64, copy=False),
-                v_cell.astype(np.float64, copy=False),
-                int(w),
-                int(h_img),
-                float(x_min),
-                float(x_max),
-                float(y_min),
-                float(y_max),
-            )
-            sum_u = np.asarray(acc_uv["sum_u"], dtype=np.float64).reshape(-1)
-            sum_v = np.asarray(acc_uv["sum_v"], dtype=np.float64).reshape(-1)
-
-        u_grid = np.full((h_img, w), np.nan, dtype=np.float64)
-        v_grid = np.full((h_img, w), np.nan, dtype=np.float64)
-        has_data_2d = has_data.reshape((h_img, w))
-        u_grid[has_data_2d] = (sum_u[has_data] / cnt_vals[has_data])
-        v_grid[has_data_2d] = (sum_v[has_data] / cnt_vals[has_data])
-        km = mask_known.astype(np.uint8, copy=False)
-        u_grid = np.asarray(_hydra_overlay.nearest_fill(u_grid, km), dtype=np.float64)
-        v_grid = np.asarray(_hydra_overlay.nearest_fill(v_grid, km), dtype=np.float64)
+        if sum_u is not None and sum_v is not None:
+            u_grid = np.full((h_img, w), np.nan, dtype=np.float64)
+            v_grid = np.full((h_img, w), np.nan, dtype=np.float64)
+            has_data_2d = has_data.reshape((h_img, w))
+            u_grid[has_data_2d] = (sum_u[has_data] / cnt_vals[has_data])
+            v_grid[has_data_2d] = (sum_v[has_data] / cnt_vals[has_data])
+            km = mask_known.astype(np.uint8, copy=False)
+            u_grid = np.asarray(_hydra_overlay.nearest_fill(u_grid, km), dtype=np.float64)
+            v_grid = np.asarray(_hydra_overlay.nearest_fill(v_grid, km), dtype=np.float64)
         speed_grid = np.sqrt(np.maximum(0.0, u_grid * u_grid + v_grid * v_grid))
         speed_grid[~shell_mask] = np.nan
 
