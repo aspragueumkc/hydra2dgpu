@@ -66,6 +66,10 @@ struct SWE2DMesh {
     // For each cell c, inverse area is stored for the update step.
     std::vector<double>  cell_inv_area; // [n_cells] 1/area (m⁻²)
 
+    // ── Cell renumbering permutation (reverse Cuthill-McKee BFS) ──────────
+    // cell_perm[c_new] = c_old.  Empty if not applied.
+    std::vector<int32_t> cell_perm;
+
     // ── 2-ring cell stencil (CSR) — used by least-squares gradient (scheme 6) ─
     // For each cell, the set of unique neighbour cells reachable via 1 or 2
     // interior-edge traversals (excluding self).  Precomputed Δx/Δy to each
@@ -118,6 +122,12 @@ SWE2DMesh swe2d_build_mesh_poly(
     const double*  bc_edge_val,
     int32_t        n_bc_edges
 );
+
+/** Renumber cells via reverse Cuthill-McKee BFS for GPU cache locality.
+    Cells connected by edges get nearby indices. Edge c0/c1 entries are
+    remapped through the permutation.  Stores the permutation in mesh.cell_perm.
+    Safe to call on any mesh.  No-op for empty meshes. */
+void swe2d_renumber_cells_for_gpu(SWE2DMesh& mesh);
 
 /** Reorder edges by (c0, c1) for GPU memory coalescing.
     Edges sharing the same c0 cell become contiguous for warp-coherent

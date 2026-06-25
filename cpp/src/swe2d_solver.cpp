@@ -58,6 +58,22 @@ SWE2DSolver* swe2d_create(
     if (hv0) std::copy(hv0, hv0 + n, s->hv.begin());
     if (n_mann_cell) std::copy(n_mann_cell, n_mann_cell + n, s->n_mann_cell.begin());
 
+    // Apply cell renumbering permutation to solver state arrays.
+    const auto& perm = mesh.cell_perm;
+    if (perm.size() == static_cast<size_t>(n)) {
+        std::vector<double> h_tmp(s->h);
+        std::vector<double> hu_tmp(s->hu);
+        std::vector<double> hv_tmp(s->hv);
+        std::vector<double> n_tmp(s->n_mann_cell);
+        for (int32_t c = 0; c < n; ++c) {
+            size_t src = static_cast<size_t>(perm[static_cast<size_t>(c)]);
+            s->h[static_cast<size_t>(c)] = h_tmp[src];
+            s->hu[static_cast<size_t>(c)] = hu_tmp[src];
+            s->hv[static_cast<size_t>(c)] = hv_tmp[src];
+            s->n_mann_cell[static_cast<size_t>(c)] = n_tmp[src];
+        }
+    }
+
     s->dh.assign(n, 0.0);
     s->dhu.assign(n, 0.0);
     s->dhv.assign(n, 0.0);
