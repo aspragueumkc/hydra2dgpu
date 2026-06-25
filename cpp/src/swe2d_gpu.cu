@@ -1850,15 +1850,19 @@ __global__ __launch_bounds__(256, 4) void swe2d_flux_kernel(
 
                 double phi0, phi1;
                 if (spatial_scheme == scheme_fast) {
+                    // Superbee: most aggressive TVD, sharpest fronts
                     phi0 = fmax(0.0, fmax(fmin(2.0 * r0, 1.0), fmin(r0, 2.0)));
                     phi1 = fmax(0.0, fmax(fmin(2.0 * r1, 1.0), fmin(r1, 2.0)));
                 } else if (spatial_scheme == scheme_robust) {
+                    // MinMod: most conservative TVD, most stable
                     phi0 = fmax(0.0, fmin(r0, 1.0));
                     phi1 = fmax(0.0, fmin(r1, 1.0));
                 } else if (spatial_scheme == scheme_mc) {
+                    // MC (monotonized central): balanced
                     phi0 = fmax(0.0, fmin(fmin(2.0 * r0, 0.5 * (1.0 + r0)), 2.0));
                     phi1 = fmax(0.0, fmin(fmin(2.0 * r1, 0.5 * (1.0 + r1)), 2.0));
                 } else {
+                    // Van Leer: smooth, phi → 2 as r → ∞
                     phi0 = (r0 + fabs(r0)) / (1.0 + fabs(r0));
                     phi1 = (r1 + fabs(r1)) / (1.0 + fabs(r1));
                 }
