@@ -96,7 +96,6 @@ class RunController:
         length_unit_name = view._length_unit_name
         internal_flow_source_cms_at_time_fn = view._internal_flow_source_cms_at_time
         last_run_request = view._last_run_request
-        auto_load_results_panel_fn = view._auto_load_results_panel
 
         # Widget references — resolved through view protocol
         wp = view.collect_run_widget_params()
@@ -860,19 +859,6 @@ class RunController:
 
             save_mesh_results = bool(wp["save_mesh_results_to_gpkg_chk"])
             save_max_only = bool(wp.get("save_max_only_chk", False))
-            # Ensure mesh geometry is in the results GPKG so overlay can load it
-            _results_gpkg = str(wp.get("results_gpkg_path_edit", "") or "")
-            if _results_gpkg and (save_mesh_results or save_max_only):
-                try:
-                    _mesh_data = backend.export_mesh_data()
-                    from swe2d.workbench.services.gpkg_persistence_service import (
-                        persist_mesh_to_geopackage,
-                    )
-                    persist_mesh_to_geopackage(
-                        _results_gpkg, f"mesh_{run_id}", _mesh_data, log_fn=log_fn,
-                    )
-                except Exception:
-                    pass
             max_results = backend.get_max_tracking() if (save_mesh_results or save_max_only) else None
             if save_max_only and max_results is not None:
                 from swe2d.workbench.services.gpkg_persistence_service import (
@@ -912,12 +898,7 @@ class RunController:
                 h_min=wp["h_min_spin"],
             )
 
-            # Auto-load results into panel so user can scrub immediately
-            try:
-                auto_load_results_panel_fn()
-            except Exception as e:
-                log_fn(f"[ERROR] auto load results panel after run failed: {e}")
-            return _result_data
+                return _result_data
         except Exception as exc:
             run_lifecycle.handle_run_failure(
                 exc,
@@ -1072,12 +1053,6 @@ class RunController:
                 QtWidgets.QMessageBox.critical(view, "Snapshot", f"HDF5 write failed:\n{exc}")
                 return
 
-        # Auto-load the snapshot result into the results panel (GPKG persistence deferred to run_finalizer.py)
-        try:
-            if gpkg_results_path:
-                view._auto_load_results_panel(gpkg_results_path, snap_run_id)
-        except Exception as exc:
-            QtWidgets.QMessageBox.critical(view, "Snapshot", f"Snapshot auto-load failed:\n{exc}")
     def on_preview_overrides(self) -> None:
         """Compute and display a summary of BC and Manning overrides.
 
