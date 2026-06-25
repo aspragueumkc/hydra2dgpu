@@ -270,9 +270,6 @@ SWE2DMesh swe2d_build_mesh_poly(
         }
     }
 
-    // Renumber cells for GPU cache locality (reverse Cuthill-McKee BFS).
-    swe2d_renumber_cells_for_gpu(mesh);
-
     // Reorder edges by (c0, c1) for GPU memory coalescing.
     swe2d_reorder_edges_for_gpu(mesh);
 
