@@ -55,6 +55,9 @@ class OverlayController:
     def __init__(self, view: OverlayView):
         self._view = view
         self._cached_mesh_data: Optional[Dict[str, np.ndarray]] = None
+        from swe2d.results.data import SWE2DResultsData as _SWE2DRes
+        if not hasattr(view, "_results_data") or view._results_data is None:
+            view._results_data = _SWE2DRes()
 
     @property
     def _data(self):
