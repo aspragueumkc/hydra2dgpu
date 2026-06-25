@@ -4,6 +4,7 @@
 #include "swe2d_mesh.hpp"
 
 #include <algorithm>
+#include <cassert>
 #include <climits>
 #include <cstdint>
 #include <cmath>
@@ -387,7 +388,8 @@ void swe2d_renumber_cells_for_gpu(SWE2DMesh& mesh) {
     const int32_t n_cells = mesh.n_cells;
     if (n_cells <= 1) return;
 
-    // 1. Build CSR cell adjacency from edges.
+    // Simple linear BFS (no degree sorting) to isolate any memory bug.
+    // Build CSR adjacency from edges.
     std::vector<int32_t> adj_offsets(static_cast<size_t>(n_cells) + 1, 0);
     for (int32_t e = 0; e < mesh.n_edges; ++e) {
         int32_t c0 = mesh.edge_c0[static_cast<size_t>(e)];
@@ -395,68 +397,59 @@ void swe2d_renumber_cells_for_gpu(SWE2DMesh& mesh) {
         if (c0 >= 0 && c0 < n_cells) adj_offsets[static_cast<size_t>(c0)]++;
         if (c1 >= 0 && c1 < n_cells) adj_offsets[static_cast<size_t>(c1)]++;
     }
+
+    // Validate: adj_offsets[n_cells] should be 0 (no cell n_cells).
+    assert(adj_offsets[static_cast<size_t>(n_cells)] == 0);
+
+    // Prefix sum — builds CSR pointers.
     for (int32_t c = 1; c <= n_cells; ++c)
         adj_offsets[static_cast<size_t>(c)] += adj_offsets[static_cast<size_t>(c - 1)];
+
     int32_t total_adj = adj_offsets[static_cast<size_t>(n_cells)];
+    assert(total_adj > 0);  // must have at least one edge
+
+    // Fill adjacency IDs.
     std::vector<int32_t> adj_ids(static_cast<size_t>(total_adj));
-    std::vector<int32_t> adj_pos = adj_offsets;
+    std::vector<int32_t> adj_pos(adj_offsets.begin(), adj_offsets.end() - 1);  // exclude sentinel
     for (int32_t e = 0; e < mesh.n_edges; ++e) {
         int32_t c0 = mesh.edge_c0[static_cast<size_t>(e)];
         int32_t c1 = mesh.edge_c1[static_cast<size_t>(e)];
-        size_t p;
         if (c0 >= 0 && c0 < n_cells) {
-            p = static_cast<size_t>(adj_pos[static_cast<size_t>(c0)]++);
+            size_t p = static_cast<size_t>(adj_pos[static_cast<size_t>(c0)]++);
+            assert(p < static_cast<size_t>(total_adj));
             adj_ids[p] = c1 >= 0 ? c1 : -1;
         }
         if (c1 >= 0 && c1 < n_cells) {
-            p = static_cast<size_t>(adj_pos[static_cast<size_t>(c1)]++);
+            size_t p = static_cast<size_t>(adj_pos[static_cast<size_t>(c1)]++);
+            assert(p < static_cast<size_t>(total_adj));
             adj_ids[p] = c0;
         }
     }
 
-    // 2. Degree-sorted BFS (Cuthill-McKee).  Start from lowest-degree cell.
-    std::vector<int32_t> degree(static_cast<size_t>(n_cells));
-    for (int32_t c = 0; c < n_cells; ++c)
-        degree[static_cast<size_t>(c)] = adj_offsets[static_cast<size_t>(c + 1)]
-                                        - adj_offsets[static_cast<size_t>(c)];
-
-    std::vector<bool> visited(static_cast<size_t>(n_cells), false);
+    // BFS from cell 0.
     std::vector<int32_t> perm(static_cast<size_t>(n_cells));
+    std::vector<bool> visited(static_cast<size_t>(n_cells), false);
     size_t perm_idx = 0;
 
-    // Find starting cell (lowest degree among cells with neighbours).
-    int32_t start = 0;
-    int32_t min_deg = INT32_MAX;
-    for (int32_t c = 0; c < n_cells; ++c) {
-        int32_t d = degree[static_cast<size_t>(c)];
-        if (d > 0 && d < min_deg) { min_deg = d; start = c; }
-    }
-    if (min_deg == INT32_MAX) return;  // no edges at all
-
     std::vector<int32_t> queue;
-    queue.push_back(start);
-    visited[static_cast<size_t>(start)] = true;
+    queue.push_back(0);
+    visited[0] = true;
 
     while (!queue.empty()) {
         int32_t cur = queue.front();
         queue.erase(queue.begin());
+        assert(perm_idx < static_cast<size_t>(n_cells));
         perm[perm_idx++] = cur;
 
-        // Collect unvisited neighbours, sorted by degree (Cuthill-McKee ordering).
         size_t s = static_cast<size_t>(adj_offsets[static_cast<size_t>(cur)]);
         size_t e = static_cast<size_t>(adj_offsets[static_cast<size_t>(cur + 1)]);
-        std::vector<int32_t> nb;
         for (size_t i = s; i < e; ++i) {
             int32_t n = adj_ids[i];
-            if (n >= 0 && !visited[static_cast<size_t>(n)]) {
+            if (n >= 0 && n < n_cells && !visited[static_cast<size_t>(n)]) {
                 visited[static_cast<size_t>(n)] = true;
-                nb.push_back(n);
+                queue.push_back(n);
             }
         }
-        std::sort(nb.begin(), nb.end(), [&](int32_t a, int32_t b) {
-            return degree[static_cast<size_t>(a)] < degree[static_cast<size_t>(b)];
-        });
-        queue.insert(queue.end(), nb.begin(), nb.end());
     }
 
     // Handle disconnected components (islands).
@@ -464,22 +457,14 @@ void swe2d_renumber_cells_for_gpu(SWE2DMesh& mesh) {
         if (!visited[static_cast<size_t>(c)])
             perm[perm_idx++] = c;
     }
+    assert(perm_idx == static_cast<size_t>(n_cells));
 
-    // 3. Reverse the order (Reverse Cuthill-McKee).
-    std::reverse(perm.begin(), perm.end());
-
-    // 4. Build inverse permutation: inv_perm[old_id] = new_id.
+    // Build inverse permutation.
     std::vector<int32_t> inv_perm(static_cast<size_t>(n_cells));
     for (int32_t i = 0; i < n_cells; ++i)
         inv_perm[static_cast<size_t>(perm[static_cast<size_t>(i)])] = i;
 
-    // 5. Apply inverse permutation to all cell-indexed arrays.
-    auto perm_cell_i32 = [&](std::vector<int32_t>& arr) {
-        if (arr.size() != static_cast<size_t>(n_cells)) return;
-        std::vector<int32_t> tmp(arr);
-        for (int32_t c = 0; c < n_cells; ++c)
-            arr[static_cast<size_t>(c)] = tmp[static_cast<size_t>(perm[static_cast<size_t>(c)])];
-    };
+    // Apply permutation to cell-indexed arrays.
     auto perm_cell_dbl = [&](std::vector<double>& arr) {
         if (arr.size() != static_cast<size_t>(n_cells)) return;
         std::vector<double> tmp(arr);
@@ -492,19 +477,17 @@ void swe2d_renumber_cells_for_gpu(SWE2DMesh& mesh) {
     perm_cell_dbl(mesh.cell_area);
     perm_cell_dbl(mesh.cell_zb);
     perm_cell_dbl(mesh.cell_inv_area);
-    // cell_face_offsets, cell_edge_offsets are CSR arrays — must stay increasing.
-    // cell_face_nodes, cell_edge_ids are indexed by the offsets — not permuted.
 
-    // 6. Remap edge c0/c1 through the inverse permutation.
+    // Remap edge c0/c1.
     for (int32_t e = 0; e < mesh.n_edges; ++e) {
-        size_t ei = static_cast<size_t>(e);
-        if (mesh.edge_c0[ei] >= 0)
-            mesh.edge_c0[ei] = inv_perm[static_cast<size_t>(mesh.edge_c0[ei])];
-        if (mesh.edge_c1[ei] >= 0)
-            mesh.edge_c1[ei] = inv_perm[static_cast<size_t>(mesh.edge_c1[ei])];
+        if (mesh.edge_c0[static_cast<size_t>(e)] >= 0)
+            mesh.edge_c0[static_cast<size_t>(e)] =
+                inv_perm[static_cast<size_t>(mesh.edge_c0[static_cast<size_t>(e)])];
+        if (mesh.edge_c1[static_cast<size_t>(e)] >= 0)
+            mesh.edge_c1[static_cast<size_t>(e)] =
+                inv_perm[static_cast<size_t>(mesh.edge_c1[static_cast<size_t>(e)])];
     }
 
-    // 7. Store permutation (solver needs it to reorder h0/hu/hv).
     mesh.cell_perm = std::move(perm);
 }
 
