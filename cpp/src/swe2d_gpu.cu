@@ -928,9 +928,9 @@ __global__ __launch_bounds__(256, 4) void swe2d_gradient_kernel(
     const State*   __restrict__ cell_hv,
     const double*  __restrict__ cell_inv_area,
     double                      max_inv_area,
-    double*                     grad_hx,  double* grad_hy,
-    double*                     grad_hux, double* grad_huy,
-    double*                     grad_hvx, double* grad_hvy,
+    double*                     edge_hx,  double* edge_hy,
+    double*                     edge_hux, double* edge_huy,
+    double*                     edge_hvx, double* edge_hvy,
     const int32_t* __restrict__ d_active,
     const int32_t* __restrict__ d_degen_mask,
     int                         degen_mode)
@@ -941,7 +941,6 @@ __global__ __launch_bounds__(256, 4) void swe2d_gradient_kernel(
     const int32_t c0 = edge_c0[e];
     const int32_t c1 = edge_c1[e];
 
-    // Skip boundary edges and edges where both cells are inactive/degenerate.
     const bool c0_active = (!d_active || d_active[c0]) && (!d_degen_mask || !d_degen_mask[c0] || degen_mode == 2);
     const bool c1_valid  = (c1 >= 0);
     const bool c1_active = c1_valid && (!d_active || d_active[c1]) && (!d_degen_mask || !d_degen_mask[c1] || degen_mode == 2);
@@ -973,31 +972,62 @@ __global__ __launch_bounds__(256, 4) void swe2d_gradient_kernel(
     const double qhu = 0.5 * (hu_c0 + hu_c1);
     const double qhv = 0.5 * (hv_c0 + hv_c1);
 
-    // Contribute to c0 (outward normal = +nx, +ny from c0's perspective).
+    // Write per-edge contributions to edge-scratch arrays (no atomics).
     if (c0_active) {
         const double ia0 = fmin(fmax(cell_inv_area[c0], 1.0 / fmax(max_inv_area, 1.0)), fmax(max_inv_area, 1.0));
         const double w = len * ia0;
-        // Using atomicAdd for double: not natively supported on all archs.
-        // We use atomicCAS-based double atomicAdd (implemented below).
-        atomicAddDouble(&grad_hx[c0],  qh  * nx * w);
-        atomicAddDouble(&grad_hy[c0],  qh  * ny * w);
-        atomicAddDouble(&grad_hux[c0], qhu * nx * w);
-        atomicAddDouble(&grad_huy[c0], qhu * ny * w);
-        atomicAddDouble(&grad_hvx[c0], qhv * nx * w);
-        atomicAddDouble(&grad_hvy[c0], qhv * ny * w);
+        edge_hx[e]  = qh  * nx * w;
+        edge_hy[e]  = qh  * ny * w;
+        edge_hux[e] = qhu * nx * w;
+        edge_huy[e] = qhu * ny * w;
+        edge_hvx[e] = qhv * nx * w;
+        edge_hvy[e] = qhv * ny * w;
     }
-
-    // Contribute to c1 (outward normal = -nx, -ny from c1's perspective).
     if (c1_active) {
         const double ia1 = fmin(fmax(cell_inv_area[c1], 1.0 / fmax(max_inv_area, 1.0)), fmax(max_inv_area, 1.0));
         const double w = len * ia1;
-        atomicAddDouble(&grad_hx[c1],  qh  * -nx * w);
-        atomicAddDouble(&grad_hy[c1],  qh  * -ny * w);
-        atomicAddDouble(&grad_hux[c1], qhu * -nx * w);
-        atomicAddDouble(&grad_huy[c1], qhu * -ny * w);
-        atomicAddDouble(&grad_hvx[c1], qhv * -nx * w);
-        atomicAddDouble(&grad_hvy[c1], qhv * -ny * w);
+        // Fold c1 contribution into same edge slot (negate normal).
+        edge_hx[e]  += qh  * -nx * w;
+        edge_hy[e]  += qh  * -ny * w;
+        edge_hux[e] += qhu * -nx * w;
+        edge_huy[e] += qhu * -ny * w;
+        edge_hvx[e] += qhv * -nx * w;
+        edge_hvy[e] += qhv * -ny * w;
     }
+}
+
+/** Cell-parallel gather kernel: sum per-edge gradient contributions into per-cell arrays.
+ *  Reads from edge-scratch arrays, writes to cell gradient arrays.  No atomics. */
+__global__ __launch_bounds__(256, 4) void swe2d_gradient_gather_kernel(
+    int32_t                     n_cells,
+    const int32_t* __restrict__ cell_edge_offsets,
+    const int32_t* __restrict__ cell_edge_ids,
+    const double*  __restrict__ edge_hx,  const double*  __restrict__ edge_hy,
+    const double*  __restrict__ edge_hux, const double*  __restrict__ edge_huy,
+    const double*  __restrict__ edge_hvx, const double*  __restrict__ edge_hvy,
+    double*                     grad_hx,  double* grad_hy,
+    double*                     grad_hux, double* grad_huy,
+    double*                     grad_hvx, double* grad_hvy,
+    const int32_t* __restrict__ d_active)
+{
+    int32_t c = blockIdx.x * blockDim.x + threadIdx.x;
+    if (c >= n_cells) return;
+    if (d_active && !d_active[c]) return;
+
+    double gx = 0.0, gy = 0.0;
+    double gux = 0.0, guy = 0.0;
+    double gvx = 0.0, gvy = 0.0;
+    int32_t s = cell_edge_offsets[c];
+    int32_t e = cell_edge_offsets[c + 1];
+    for (int32_t k = s; k < e; ++k) {
+        int32_t edge = cell_edge_ids[k];
+        gx  += edge_hx[edge];  gy  += edge_hy[edge];
+        gux += edge_hux[edge]; guy += edge_huy[edge];
+        gvx += edge_hvx[edge]; gvy += edge_hvy[edge];
+    }
+    grad_hx[c]  = gx;  grad_hy[c]  = gy;
+    grad_hux[c] = gux; grad_huy[c] = guy;
+    grad_hvx[c] = gvx; grad_hvy[c] = gvy;
 }
 
 /// GPU kernel: least-squares (2-ring) gradient — spatial scheme 6 (FV_WENO5).
@@ -1093,6 +1123,24 @@ __global__ __launch_bounds__(256, 4) void swe2d_lsq_gradient_kernel(
     grad_huy[c] = inv_det * (a11 * b2_hu  - a12 * b1_hu);
     grad_hvx[c] = inv_det * (a22 * b1_hv  - a12 * b2_hv);
     grad_hvy[c] = inv_det * (a11 * b2_hv  - a12 * b1_hv);
+}
+
+/// Host function: launch gather kernel to sum edge-scratch → cell gradients.
+static inline void swe2d_maybe_launch_gradient_gather(
+    SWE2DDeviceState* dev, int32_t n_cells, int block)
+{
+    if (dev->d_grad_edge_hx == nullptr) return;  // edge scratch not allocated
+    const int grid = (n_cells + block - 1) / block;
+    swe2d_gradient_gather_kernel<<<grid, block, 0, dev->d_stream>>>(
+        n_cells,
+        dev->d_cell_edge_offsets, dev->d_cell_edge_ids,
+        dev->d_grad_edge_hx,  dev->d_grad_edge_hy,
+        dev->d_grad_edge_hux, dev->d_grad_edge_huy,
+        dev->d_grad_edge_hvx, dev->d_grad_edge_hvy,
+        dev->d_grad_hx,  dev->d_grad_hy,
+        dev->d_grad_hux, dev->d_grad_huy,
+        dev->d_grad_hvx, dev->d_grad_hvy,
+        dev->d_active);
 }
 
 /// Device helper: host-launch helper for LSQ gradient kernel (scheme 6).
@@ -4601,6 +4649,14 @@ SWE2DDeviceState* swe2d_gpu_init(
     alloc_d(reinterpret_cast<void**>(&dev->d_flux_hu_r), sz_edges * sizeof(double));
     alloc_d(reinterpret_cast<void**>(&dev->d_flux_hv_r), sz_edges * sizeof(double));
 
+    // Gradient edge-scratch arrays (atomics-free Green-Gauss)
+    alloc_d(reinterpret_cast<void**>(&dev->d_grad_edge_hx),  sz_edges * sizeof(double));
+    alloc_d(reinterpret_cast<void**>(&dev->d_grad_edge_hy),  sz_edges * sizeof(double));
+    alloc_d(reinterpret_cast<void**>(&dev->d_grad_edge_hux), sz_edges * sizeof(double));
+    alloc_d(reinterpret_cast<void**>(&dev->d_grad_edge_huy), sz_edges * sizeof(double));
+    alloc_d(reinterpret_cast<void**>(&dev->d_grad_edge_hvx), sz_edges * sizeof(double));
+    alloc_d(reinterpret_cast<void**>(&dev->d_grad_edge_hvy), sz_edges * sizeof(double));
+
     // CFL workspace
     alloc_d(reinterpret_cast<void**>(&dev->d_lambda_max), sizeof(double));
     alloc_d(reinterpret_cast<void**>(&dev->d_max_wse_elev_error), sizeof(double));
@@ -4973,15 +5029,22 @@ void swe2d_gpu_step(
                             dev->d_h, dev->d_hu, dev->d_hv);
                     }
                 }
-                // gradient pre-pass
+                // gradient pre-pass (atomics-free: edge-scratch + gather)
                 if (need_gradients) {
                     const size_t sz_c = static_cast<size_t>(n_cells) * sizeof(double);
+                    const size_t sz_e = static_cast<size_t>(n_edges) * sizeof(double);
                     CUDA_CHECK(cudaMemsetAsync(dev->d_grad_hx,  0, sz_c, dev->d_stream));
                     CUDA_CHECK(cudaMemsetAsync(dev->d_grad_hy,  0, sz_c, dev->d_stream));
                     CUDA_CHECK(cudaMemsetAsync(dev->d_grad_hux, 0, sz_c, dev->d_stream));
                     CUDA_CHECK(cudaMemsetAsync(dev->d_grad_huy, 0, sz_c, dev->d_stream));
                     CUDA_CHECK(cudaMemsetAsync(dev->d_grad_hvx, 0, sz_c, dev->d_stream));
                     CUDA_CHECK(cudaMemsetAsync(dev->d_grad_hvy, 0, sz_c, dev->d_stream));
+                    CUDA_CHECK(cudaMemsetAsync(dev->d_grad_edge_hx,  0, sz_e, dev->d_stream));
+                    CUDA_CHECK(cudaMemsetAsync(dev->d_grad_edge_hy,  0, sz_e, dev->d_stream));
+                    CUDA_CHECK(cudaMemsetAsync(dev->d_grad_edge_hux, 0, sz_e, dev->d_stream));
+                    CUDA_CHECK(cudaMemsetAsync(dev->d_grad_edge_huy, 0, sz_e, dev->d_stream));
+                    CUDA_CHECK(cudaMemsetAsync(dev->d_grad_edge_hvx, 0, sz_e, dev->d_stream));
+                    CUDA_CHECK(cudaMemsetAsync(dev->d_grad_edge_hvy, 0, sz_e, dev->d_stream));
                     int g_grid = (n_edges + BLOCK - 1) / BLOCK;
                     swe2d_gradient_kernel<<<g_grid, BLOCK, 0, dev->d_stream>>>(
                         n_edges,
@@ -4990,12 +5053,14 @@ void swe2d_gpu_step(
                         dev->d_h, dev->d_cell_zb, dev->d_hu, dev->d_hv,
                         dev->d_cell_inv_area,
                         max_inv_area,
-                        dev->d_grad_hx,  dev->d_grad_hy,
-                        dev->d_grad_hux, dev->d_grad_huy,
-                        dev->d_grad_hvx, dev->d_grad_hvy,
+                        dev->d_grad_edge_hx,  dev->d_grad_edge_hy,
+                        dev->d_grad_edge_hux, dev->d_grad_edge_huy,
+                        dev->d_grad_edge_hvx, dev->d_grad_edge_hvy,
                         dev->d_active,
                         dev->d_degen_mask,
                         dev->degen_mode);
+                    // Gather per-edge contributions into per-cell gradients
+                    swe2d_maybe_launch_gradient_gather(dev, n_cells, BLOCK);
                     swe2d_maybe_launch_lsq_gradient(dev, spatial_scheme, n_cells, BLOCK,
                                                     dev->d_h, dev->d_hu, dev->d_hv);
                 }
@@ -5155,23 +5220,31 @@ void swe2d_gpu_step(
 
     if (need_gradients) {
         const size_t sz_c = static_cast<size_t>(n_cells) * sizeof(double);
+        const size_t sz_e = static_cast<size_t>(n_edges) * sizeof(double);
         CUDA_CHECK(cudaMemsetAsync(dev->d_grad_hx,  0, sz_c, dev->d_stream));
         CUDA_CHECK(cudaMemsetAsync(dev->d_grad_hy,  0, sz_c, dev->d_stream));
         CUDA_CHECK(cudaMemsetAsync(dev->d_grad_hux, 0, sz_c, dev->d_stream));
         CUDA_CHECK(cudaMemsetAsync(dev->d_grad_huy, 0, sz_c, dev->d_stream));
         CUDA_CHECK(cudaMemsetAsync(dev->d_grad_hvx, 0, sz_c, dev->d_stream));
         CUDA_CHECK(cudaMemsetAsync(dev->d_grad_hvy, 0, sz_c, dev->d_stream));
+        CUDA_CHECK(cudaMemsetAsync(dev->d_grad_edge_hx,  0, sz_e, dev->d_stream));
+        CUDA_CHECK(cudaMemsetAsync(dev->d_grad_edge_hy,  0, sz_e, dev->d_stream));
+        CUDA_CHECK(cudaMemsetAsync(dev->d_grad_edge_hux, 0, sz_e, dev->d_stream));
+        CUDA_CHECK(cudaMemsetAsync(dev->d_grad_edge_huy, 0, sz_e, dev->d_stream));
+        CUDA_CHECK(cudaMemsetAsync(dev->d_grad_edge_hvx, 0, sz_e, dev->d_stream));
+        CUDA_CHECK(cudaMemsetAsync(dev->d_grad_edge_hvy, 0, sz_e, dev->d_stream));
         int g_grid = (n_edges + BLOCK - 1) / BLOCK;
         swe2d_gradient_kernel<<<g_grid, BLOCK, 0, dev->d_stream>>>(
             n_edges, dev->d_edge_c0, dev->d_edge_c1,
             dev->d_edge_nx, dev->d_edge_ny, dev->d_edge_len,
             dev->d_h, dev->d_cell_zb, dev->d_hu, dev->d_hv,
             dev->d_cell_inv_area, max_inv_area,
-            dev->d_grad_hx, dev->d_grad_hy,
-            dev->d_grad_hux, dev->d_grad_huy,
-            dev->d_grad_hvx, dev->d_grad_hvy,
+            dev->d_grad_edge_hx, dev->d_grad_edge_hy,
+            dev->d_grad_edge_hux, dev->d_grad_edge_huy,
+            dev->d_grad_edge_hvx, dev->d_grad_edge_hvy,
             dev->d_active, dev->d_degen_mask, dev->degen_mode);
         CUDA_CHECK(cudaGetLastError());
+        swe2d_maybe_launch_gradient_gather(dev, n_cells, BLOCK);
         swe2d_maybe_launch_lsq_gradient(dev, spatial_scheme, n_cells, BLOCK,
                                         dev->d_h, dev->d_hu, dev->d_hv);
     }
@@ -8845,6 +8918,9 @@ void swe2d_gpu_destroy(SWE2DDeviceState* dev) {
     safe_free(dev->d_grad_hx);    safe_free(dev->d_grad_hy);
     safe_free(dev->d_grad_hux);   safe_free(dev->d_grad_huy);
     safe_free(dev->d_grad_hvx);   safe_free(dev->d_grad_hvy);
+    safe_free(dev->d_grad_edge_hx);  safe_free(dev->d_grad_edge_hy);
+    safe_free(dev->d_grad_edge_hux); safe_free(dev->d_grad_edge_huy);
+    safe_free(dev->d_grad_edge_hvx); safe_free(dev->d_grad_edge_hvy);
     safe_free(dev->d_h);          safe_free(dev->d_hu);
     safe_free(dev->d_hv);
     safe_free(dev->d_h0);         safe_free(dev->d_hu0);

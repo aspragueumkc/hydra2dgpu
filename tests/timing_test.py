@@ -75,6 +75,7 @@ class TimingTest(unittest.TestCase):
             h0=np.full(ncells, 0.05, dtype=np.float64),
             n_mann=0.035, h_min=1e-4, cfl=0.45, dt_max=0.5,
             gpu_diag_sync_interval_steps=1,
+            spatial_discretization=1,
         )
 
         from swe2d.runtime.runtime_setup_configurator import SWE2DRunSetupConfigurator
@@ -137,6 +138,7 @@ class TimingTest(unittest.TestCase):
             h0=np.full(ncells, 0.05, dtype=np.float64),
             n_mann=0.035, h_min=1e-4, cfl=0.45, dt_max=0.5,
             gpu_diag_sync_interval_steps=1,
+            spatial_discretization=1,
         )
 
         from swe2d.runtime.runtime_setup_configurator import SWE2DRunSetupConfigurator
@@ -208,6 +210,7 @@ class TimingTest(unittest.TestCase):
             h0=np.full(ncells, 0.05, dtype=np.float64),
             n_mann=0.035, h_min=1e-4, cfl=0.45, dt_max=0.5,
             gpu_diag_sync_interval_steps=1,
+            spatial_discretization=1,
         )
 
         # Constant-rate native rain (~2 in/hr)

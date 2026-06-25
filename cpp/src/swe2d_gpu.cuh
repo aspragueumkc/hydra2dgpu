@@ -117,6 +117,12 @@ struct SWE2DDeviceState {
     double*  d_grad_hux = nullptr;   double*  d_grad_huy = nullptr;
     double*  d_grad_hvx = nullptr;   double*  d_grad_hvy = nullptr;
 
+    // Per-edge gradient scratch (atomics-free path).  Written by gradient
+    // kernel, consumed by gradient-gather kernel.  Same layout as flux arrays.
+    double*  d_grad_edge_hx  = nullptr;   double*  d_grad_edge_hy  = nullptr;
+    double*  d_grad_edge_hux = nullptr;   double*  d_grad_edge_huy = nullptr;
+    double*  d_grad_edge_hvx = nullptr;   double*  d_grad_edge_hvy = nullptr;
+
     // Conserved state (updated each step) — stored as State (float or double)
     State*  d_h  = nullptr;
     State*  d_hu = nullptr;
@@ -538,6 +544,17 @@ void swe2d_gpu_set_friction_config(
     @param front_flux_damping Damping factor for front fluxes (default 0.5)
     @param active_set_hysteresis Enable active-set hysteresis (default true)
     @host */
+/** GPU kernel: gather per-edge gradient contributions into per-cell arrays.
+ *  Cell-parallel.  Sums the edge-scratch contributions for incident edges
+ *  of each active cell.  No atomics — each edge contribution is written
+ *  to a unique edge slot by swe2d_gradient_kernel_edge. */
+void swe2d_gpu_gather_gradients(
+    SWE2DDeviceState* dev,
+    int32_t n_cells,
+    double* grad_hx, double* grad_hy,
+    double* grad_hux, double* grad_huy,
+    double* grad_hvx, double* grad_hvy);
+
 void swe2d_gpu_step(
     SWE2DDeviceState* dev,
     double t_now,
