@@ -1825,6 +1825,10 @@ __global__ __launch_bounds__(256, 4) void swe2d_flux_kernel(
             const double fy = edge_my[e];
             const double dcx = cell_cx[c1] - cell_cx[c0];
             const double dcy = cell_cy[c1] - cell_cy[c0];
+            const double dxL = fx - cell_cx[c0];
+            const double dyL = fy - cell_cy[c0];
+            const double dxR = fx - cell_cx[c1];
+            const double dyR = fy - cell_cy[c1];
             constexpr double EPS = 1.0e-30;
 
             // Helper lambda: compute TVD limiter phi(r), extrapolate each cell state
@@ -1846,27 +1850,19 @@ __global__ __launch_bounds__(256, 4) void swe2d_flux_kernel(
 
                 double phi0, phi1;
                 if (spatial_scheme == scheme_fast) {
-                    // Superbee: most liberal TVD limiter (sharpest)
                     phi0 = fmax(0.0, fmax(fmin(2.0 * r0, 1.0), fmin(r0, 2.0)));
                     phi1 = fmax(0.0, fmax(fmin(2.0 * r1, 1.0), fmin(r1, 2.0)));
                 } else if (spatial_scheme == scheme_robust) {
-                    // MinMod: most conservative TVD limiter (most stable)
                     phi0 = fmax(0.0, fmin(r0, 1.0));
                     phi1 = fmax(0.0, fmin(r1, 1.0));
                 } else if (spatial_scheme == scheme_mc) {
-                    // MC (monotonized central): balanced
                     phi0 = fmax(0.0, fmin(fmin(2.0 * r0, 0.5 * (1.0 + r0)), 2.0));
                     phi1 = fmax(0.0, fmin(fmin(2.0 * r1, 0.5 * (1.0 + r1)), 2.0));
                 } else {
-                    // Van Leer: smooth, phi → 2 as r → ∞
                     phi0 = (r0 + fabs(r0)) / (1.0 + fabs(r0));
                     phi1 = (r1 + fabs(r1)) / (1.0 + fabs(r1));
                 }
 
-                const double dxL = fx - cell_cx[c0];
-                const double dyL = fy - cell_cy[c0];
-                const double dxR = fx - cell_cx[c1];
-                const double dyR = fy - cell_cy[c1];
                 const double rawL = q0 + phi0 * (gx0 * dxL + gy0 * dyL);
                 const double rawR = q1 + phi1 * (gx1 * dxR + gy1 * dyR);
                 const double qmin = fmin(q0, q1);
@@ -1885,12 +1881,8 @@ __global__ __launch_bounds__(256, 4) void swe2d_flux_kernel(
             auto weno5_reconstruct = [&](double q0, double q1,
                                          double gx0, double gy0,
                                          double gx1, double gy1,
-                                         double& qL_out, double& qR_out) {
+                                          double& qL_out, double& qR_out) {
                 const double dq = q1 - q0;
-                const double dxL = fx - cell_cx[c0];
-                const double dyL = fy - cell_cy[c0];
-                const double dxR = fx - cell_cx[c1];
-                const double dyR = fy - cell_cy[c1];
 
                 // LSQ-extrapolated face slope projections (high-order candidate).
                 const double sL = gx0 * dxL + gy0 * dyL;
