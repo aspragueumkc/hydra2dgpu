@@ -33,7 +33,7 @@ from swe2d.workbench.services.text_parser_service import (
     parse_hydrograph_text as _parse_hydrograph_text_logic,
     parse_time_hours,
 )
-from swe2d.workbench.services import mesh_computation_service as _mesh_svc
+from swe2d.services import mesh_computation_service as _mesh_svc
 from swe2d.workbench.services import widget_persistence_service as _wp_svc
 
 from swe2d.workbench.bridges.project_settings_bridge import (
