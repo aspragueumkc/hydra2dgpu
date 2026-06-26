@@ -47,9 +47,9 @@
   <defaults>
   </defaults>
   <constraintExpressions>
-      <constraint exp=""line_id" IS NULL OR "line_id" &gt;= 0" field="line_id" desc=""/>
-      <constraint exp=""enabled" IS NULL OR "enabled" IN (0,1)" field="enabled" desc=""/>
-      <constraint exp=""priority" IS NULL OR "priority" &gt;= 0" field="priority" desc=""/>
+      <constraint exp="&quot;line_id&quot; IS NULL OR &quot;line_id&quot; &gt;= 0" field="line_id" desc=""/>
+      <constraint exp="&quot;enabled&quot; IS NULL OR &quot;enabled&quot; IN (0,1)" field="enabled" desc=""/>
+      <constraint exp="&quot;priority&quot; IS NULL OR &quot;priority&quot; &gt;= 0" field="priority" desc=""/>
   </constraintExpressions>
   <editform></editform>
   <editforminit></editforminit>

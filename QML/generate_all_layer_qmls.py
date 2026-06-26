@@ -15,11 +15,12 @@ files that can be committed to version control and customised per build.
 """
 from __future__ import annotations
 
+import functools
 import os
 import xml.sax.saxutils as saxutils
 
 QML_DIR = os.path.dirname(os.path.abspath(__file__))
-V = saxutils.escape
+V = functools.partial(saxutils.escape, entities={'"': '&quot;'})
 
 
 # ── Helper: QML value type inference ──────────────────────────────────────

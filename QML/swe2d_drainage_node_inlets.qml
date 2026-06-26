@@ -53,9 +53,9 @@
   <defaults>
   </defaults>
   <constraintExpressions>
-      <constraint exp="length(trim("node_id")) &gt; 0" field="node_id" desc=""/>
-      <constraint exp="length(trim("inlet_type_id")) &gt; 0" field="inlet_type_id" desc=""/>
-      <constraint exp=""inlet_count" IS NULL OR "inlet_count" &gt; 0" field="inlet_count" desc=""/>
+      <constraint exp="length(trim(&quot;node_id&quot;)) &gt; 0" field="node_id" desc=""/>
+      <constraint exp="length(trim(&quot;inlet_type_id&quot;)) &gt; 0" field="inlet_type_id" desc=""/>
+      <constraint exp="&quot;inlet_count&quot; IS NULL OR &quot;inlet_count&quot; &gt; 0" field="inlet_count" desc=""/>
   </constraintExpressions>
   <editform></editform>
   <editforminit></editforminit>

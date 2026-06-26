@@ -37,8 +37,8 @@
     <default expression="0.035" field="n_mann" applyOnUpdate="0"/>
   </defaults>
   <constraintExpressions>
-      <constraint exp=""n_mann" &gt;= 0" field="n_mann" desc=""/>
-      <constraint exp=""priority" &gt;= 0" field="priority" desc=""/>
+      <constraint exp="&quot;n_mann&quot; &gt;= 0" field="n_mann" desc=""/>
+      <constraint exp="&quot;priority&quot; &gt;= 0" field="priority" desc=""/>
   </constraintExpressions>
   <editform></editform>
   <editforminit></editforminit>

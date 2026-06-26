@@ -67,12 +67,12 @@
   <defaults>
   </defaults>
   <constraintExpressions>
-      <constraint exp=""region_id" &gt;= 0" field="region_id" desc=""/>
-      <constraint exp=""edge_id" IN (1,2,3,4)" field="edge_id" desc=""/>
-      <constraint exp=""target_size" IS NULL OR "target_size" &gt; 0" field="target_size" desc=""/>
-      <constraint exp=""n_layers" &gt;= 0" field="n_layers" desc=""/>
-      <constraint exp=""first_height" IS NULL OR "first_height" &gt; 0" field="first_height" desc=""/>
-      <constraint exp=""growth_rate" IS NULL OR "growth_rate" &gt; 0" field="growth_rate" desc=""/>
+      <constraint exp="&quot;region_id&quot; &gt;= 0" field="region_id" desc=""/>
+      <constraint exp="&quot;edge_id&quot; IN (1,2,3,4)" field="edge_id" desc=""/>
+      <constraint exp="&quot;target_size&quot; IS NULL OR &quot;target_size&quot; &gt; 0" field="target_size" desc=""/>
+      <constraint exp="&quot;n_layers&quot; &gt;= 0" field="n_layers" desc=""/>
+      <constraint exp="&quot;first_height&quot; IS NULL OR &quot;first_height&quot; &gt; 0" field="first_height" desc=""/>
+      <constraint exp="&quot;growth_rate&quot; IS NULL OR &quot;growth_rate&quot; &gt; 0" field="growth_rate" desc=""/>
   </constraintExpressions>
   <editform></editform>
   <editforminit></editforminit>

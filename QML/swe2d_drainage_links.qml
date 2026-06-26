@@ -262,17 +262,17 @@
   <defaults>
   </defaults>
   <constraintExpressions>
-      <constraint exp="length(trim("link_id")) &gt; 0" field="link_id" desc=""/>
-      <constraint exp="length(trim("from_node")) &gt; 0" field="from_node" desc=""/>
-      <constraint exp="length(trim("to_node")) &gt; 0" field="to_node" desc=""/>
-      <constraint exp=""link_type" IN ('conduit','lateral_simple','pump','weir','orifice','culvert')" field="link_type" desc=""/>
-      <constraint exp=""link_shape" IS NULL OR "link_shape" IN ('circular','box','pipe_arch','custom')" field="link_shape" desc=""/>
-      <constraint exp=""length" IS NULL OR "length" &gt; 0" field="length" desc=""/>
-      <constraint exp=""roughness_n" IS NULL OR "roughness_n" &gt; 0" field="roughness_n" desc=""/>
-      <constraint exp=""diameter" IS NULL OR "diameter" &gt; 0" field="diameter" desc=""/>
-      <constraint exp=""span" IS NULL OR "span" &gt; 0" field="span" desc=""/>
-      <constraint exp=""rise" IS NULL OR "rise" &gt; 0" field="rise" desc=""/>
-      <constraint exp=""area_m2" IS NULL OR "area_m2" &gt; 0" field="area_m2" desc=""/>
+      <constraint exp="length(trim(&quot;link_id&quot;)) &gt; 0" field="link_id" desc=""/>
+      <constraint exp="length(trim(&quot;from_node&quot;)) &gt; 0" field="from_node" desc=""/>
+      <constraint exp="length(trim(&quot;to_node&quot;)) &gt; 0" field="to_node" desc=""/>
+      <constraint exp="&quot;link_type&quot; IN ('conduit','lateral_simple','pump','weir','orifice','culvert')" field="link_type" desc=""/>
+      <constraint exp="&quot;link_shape&quot; IS NULL OR &quot;link_shape&quot; IN ('circular','box','pipe_arch','custom')" field="link_shape" desc=""/>
+      <constraint exp="&quot;length&quot; IS NULL OR &quot;length&quot; &gt; 0" field="length" desc=""/>
+      <constraint exp="&quot;roughness_n&quot; IS NULL OR &quot;roughness_n&quot; &gt; 0" field="roughness_n" desc=""/>
+      <constraint exp="&quot;diameter&quot; IS NULL OR &quot;diameter&quot; &gt; 0" field="diameter" desc=""/>
+      <constraint exp="&quot;span&quot; IS NULL OR &quot;span&quot; &gt; 0" field="span" desc=""/>
+      <constraint exp="&quot;rise&quot; IS NULL OR &quot;rise&quot; &gt; 0" field="rise" desc=""/>
+      <constraint exp="&quot;area_m2&quot; IS NULL OR &quot;area_m2&quot; &gt; 0" field="area_m2" desc=""/>
   </constraintExpressions>
   <editform></editform>
   <editforminit></editforminit>

@@ -78,10 +78,10 @@
   <defaults>
   </defaults>
   <constraintExpressions>
-      <constraint exp=""use_global_arc_ctrl" IS NULL OR "use_global_arc_ctrl" IN (0,1)" field="use_global_arc_ctrl" desc=""/>
-      <constraint exp=""arc_mode_override" IS NULL OR "arc_mode_override" IN ('hard_embed','soft_size_hint','disabled')" field="arc_mode_override" desc=""/>
-      <constraint exp=""arc_soft_size_override" IS NULL OR "arc_soft_size_override" &gt; 0" field="arc_soft_size_override" desc=""/>
-      <constraint exp=""arc_soft_dist_override" IS NULL OR "arc_soft_dist_override" &gt; 0" field="arc_soft_dist_override" desc=""/>
+      <constraint exp="&quot;use_global_arc_ctrl&quot; IS NULL OR &quot;use_global_arc_ctrl&quot; IN (0,1)" field="use_global_arc_ctrl" desc=""/>
+      <constraint exp="&quot;arc_mode_override&quot; IS NULL OR &quot;arc_mode_override&quot; IN ('hard_embed','soft_size_hint','disabled')" field="arc_mode_override" desc=""/>
+      <constraint exp="&quot;arc_soft_size_override&quot; IS NULL OR &quot;arc_soft_size_override&quot; &gt; 0" field="arc_soft_size_override" desc=""/>
+      <constraint exp="&quot;arc_soft_dist_override&quot; IS NULL OR &quot;arc_soft_dist_override&quot; &gt; 0" field="arc_soft_dist_override" desc=""/>
   </constraintExpressions>
   <editform></editform>
   <editforminit></editforminit>

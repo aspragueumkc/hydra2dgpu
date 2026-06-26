@@ -79,12 +79,12 @@
   <defaults>
   </defaults>
   <constraintExpressions>
-      <constraint exp="length(trim("inlet_type_id")) &gt; 0" field="inlet_type_id" desc=""/>
-      <constraint exp=""weir_length" IS NULL OR "weir_length" &gt; 0" field="weir_length" desc=""/>
-      <constraint exp=""orifice_area" IS NULL OR "orifice_area" &gt; 0" field="orifice_area" desc=""/>
-      <constraint exp=""coeff_weir" IS NULL OR "coeff_weir" &gt; 0" field="coeff_weir" desc=""/>
-      <constraint exp=""coeff_orifice" IS NULL OR "coeff_orifice" &gt; 0" field="coeff_orifice" desc=""/>
-      <constraint exp=""max_capture" IS NULL OR "max_capture" &gt; 0" field="max_capture" desc=""/>
+      <constraint exp="length(trim(&quot;inlet_type_id&quot;)) &gt; 0" field="inlet_type_id" desc=""/>
+      <constraint exp="&quot;weir_length&quot; IS NULL OR &quot;weir_length&quot; &gt; 0" field="weir_length" desc=""/>
+      <constraint exp="&quot;orifice_area&quot; IS NULL OR &quot;orifice_area&quot; &gt; 0" field="orifice_area" desc=""/>
+      <constraint exp="&quot;coeff_weir&quot; IS NULL OR &quot;coeff_weir&quot; &gt; 0" field="coeff_weir" desc=""/>
+      <constraint exp="&quot;coeff_orifice&quot; IS NULL OR &quot;coeff_orifice&quot; &gt; 0" field="coeff_orifice" desc=""/>
+      <constraint exp="&quot;max_capture&quot; IS NULL OR &quot;max_capture&quot; &gt; 0" field="max_capture" desc=""/>
   </constraintExpressions>
   <editform></editform>
   <editforminit></editforminit>

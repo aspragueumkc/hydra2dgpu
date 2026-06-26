@@ -76,12 +76,12 @@
   <defaults>
   </defaults>
   <constraintExpressions>
-      <constraint exp=""cell_type" IN ('triangular','quadrilateral','cartesian','channel_generator','empty')" field="cell_type" desc=""/>
-      <constraint exp=""target_size" &gt; 0" field="target_size" desc=""/>
-      <constraint exp=""edge_len_1" IS NULL OR "edge_len_1" &gt; 0" field="edge_len_1" desc=""/>
-      <constraint exp=""edge_len_2" IS NULL OR "edge_len_2" &gt; 0" field="edge_len_2" desc=""/>
-      <constraint exp=""edge_len_3" IS NULL OR "edge_len_3" &gt; 0" field="edge_len_3" desc=""/>
-      <constraint exp=""edge_len_4" IS NULL OR "edge_len_4" &gt; 0" field="edge_len_4" desc=""/>
+      <constraint exp="&quot;cell_type&quot; IN ('triangular','quadrilateral','cartesian','channel_generator','empty')" field="cell_type" desc=""/>
+      <constraint exp="&quot;target_size&quot; &gt; 0" field="target_size" desc=""/>
+      <constraint exp="&quot;edge_len_1&quot; IS NULL OR &quot;edge_len_1&quot; &gt; 0" field="edge_len_1" desc=""/>
+      <constraint exp="&quot;edge_len_2&quot; IS NULL OR &quot;edge_len_2&quot; &gt; 0" field="edge_len_2" desc=""/>
+      <constraint exp="&quot;edge_len_3&quot; IS NULL OR &quot;edge_len_3&quot; &gt; 0" field="edge_len_3" desc=""/>
+      <constraint exp="&quot;edge_len_4&quot; IS NULL OR &quot;edge_len_4&quot; &gt; 0" field="edge_len_4" desc=""/>
   </constraintExpressions>
   <editform></editform>
   <editforminit></editforminit>

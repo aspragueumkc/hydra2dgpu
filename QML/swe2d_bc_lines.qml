@@ -71,8 +71,8 @@
   <defaults>
   </defaults>
   <constraintExpressions>
-      <constraint exp=""bc_type" IN (1,2,3,4,5,6,7,102,103)" field="bc_type" desc=""/>
-      <constraint exp=""priority" &gt;= 0" field="priority" desc=""/>
+      <constraint exp="&quot;bc_type&quot; IN (1,2,3,4,5,6,7,102,103)" field="bc_type" desc=""/>
+      <constraint exp="&quot;priority&quot; &gt;= 0" field="priority" desc=""/>
   </constraintExpressions>
   <editform></editform>
   <editforminit></editforminit>

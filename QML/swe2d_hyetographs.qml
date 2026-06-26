@@ -68,11 +68,11 @@
   <defaults>
   </defaults>
   <constraintExpressions>
-      <constraint exp="length(trim("hyetograph_id")) &gt; 0" field="hyetograph_id" desc=""/>
-      <constraint exp="length(trim("Time")) &gt; 0" field="Time" desc=""/>
-      <constraint exp=""Value" &gt;= 0" field="Value" desc=""/>
-      <constraint exp=""value_type" IS NULL OR "value_type" IN ('intensity','incremental','cumulative')" field="value_type" desc=""/>
-      <constraint exp=""units" IS NULL OR "units" IN ('mm/hr','in/hr','mm','in')" field="units" desc=""/>
+      <constraint exp="length(trim(&quot;hyetograph_id&quot;)) &gt; 0" field="hyetograph_id" desc=""/>
+      <constraint exp="length(trim(&quot;Time&quot;)) &gt; 0" field="Time" desc=""/>
+      <constraint exp="&quot;Value&quot; &gt;= 0" field="Value" desc=""/>
+      <constraint exp="&quot;value_type&quot; IS NULL OR &quot;value_type&quot; IN ('intensity','incremental','cumulative')" field="value_type" desc=""/>
+      <constraint exp="&quot;units&quot; IS NULL OR &quot;units&quot; IN ('mm/hr','in/hr','mm','in')" field="units" desc=""/>
   </constraintExpressions>
   <editform></editform>
   <editforminit></editforminit>

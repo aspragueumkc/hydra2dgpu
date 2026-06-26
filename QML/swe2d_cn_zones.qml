@@ -37,8 +37,8 @@
   <defaults>
   </defaults>
   <constraintExpressions>
-      <constraint exp=""cn" &gt;= 1 AND "cn" &lt;= 100" field="cn" desc=""/>
-      <constraint exp=""priority" &gt;= 0" field="priority" desc=""/>
+      <constraint exp="&quot;cn&quot; &gt;= 1 AND &quot;cn&quot; &lt;= 100" field="cn" desc=""/>
+      <constraint exp="&quot;priority&quot; &gt;= 0" field="priority" desc=""/>
   </constraintExpressions>
   <editform></editform>
   <editforminit></editforminit>

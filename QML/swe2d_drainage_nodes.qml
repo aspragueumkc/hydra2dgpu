@@ -95,14 +95,14 @@
   <defaults>
   </defaults>
   <constraintExpressions>
-      <constraint exp="length(trim("node_id")) &gt; 0" field="node_id" desc=""/>
-      <constraint exp=""node_type" IN ('junction','outfall','storage','inlet','pipe_end')" field="node_type" desc=""/>
-      <constraint exp=""max_depth" IS NULL OR "max_depth" &gt; 0" field="max_depth" desc=""/>
-      <constraint exp=""rim_elev" IS NULL OR "rim_elev" &gt;= "invert_elev"" field="rim_elev" desc=""/>
-      <constraint exp=""crest_elev" IS NULL OR "crest_elev" &gt;= "invert_elev"" field="crest_elev" desc=""/>
-      <constraint exp=""surface_area" IS NULL OR "surface_area" &gt; 0" field="surface_area" desc=""/>
-      <constraint exp=""outfall_area" IS NULL OR "outfall_area" &gt; 0" field="outfall_area" desc=""/>
-      <constraint exp=""zero_storage" IS NULL OR "zero_storage" IN (0,1)" field="zero_storage" desc=""/>
+      <constraint exp="length(trim(&quot;node_id&quot;)) &gt; 0" field="node_id" desc=""/>
+      <constraint exp="&quot;node_type&quot; IN ('junction','outfall','storage','inlet','pipe_end')" field="node_type" desc=""/>
+      <constraint exp="&quot;max_depth&quot; IS NULL OR &quot;max_depth&quot; &gt; 0" field="max_depth" desc=""/>
+      <constraint exp="&quot;rim_elev&quot; IS NULL OR &quot;rim_elev&quot; &gt;= &quot;invert_elev&quot;" field="rim_elev" desc=""/>
+      <constraint exp="&quot;crest_elev&quot; IS NULL OR &quot;crest_elev&quot; &gt;= &quot;invert_elev&quot;" field="crest_elev" desc=""/>
+      <constraint exp="&quot;surface_area&quot; IS NULL OR &quot;surface_area&quot; &gt; 0" field="surface_area" desc=""/>
+      <constraint exp="&quot;outfall_area&quot; IS NULL OR &quot;outfall_area&quot; &gt; 0" field="outfall_area" desc=""/>
+      <constraint exp="&quot;zero_storage&quot; IS NULL OR &quot;zero_storage&quot; IN (0,1)" field="zero_storage" desc=""/>
   </constraintExpressions>
   <editform></editform>
   <editforminit></editforminit>

@@ -420,9 +420,9 @@
     <default expression="1" field="culvert_barrels" applyOnUpdate="0"/>
   </defaults>
   <constraintExpressions>
-      <constraint exp="length(trim("structure_id")) &gt; 0" field="structure_id" desc=""/>
-      <constraint exp=""structure_type" IN (1,2,3,4,5)" field="structure_type" desc=""/>
-      <constraint exp=""enabled" IS NULL OR "enabled" IN (0,1)" field="enabled" desc=""/>
+      <constraint exp="length(trim(&quot;structure_id&quot;)) &gt; 0" field="structure_id" desc=""/>
+      <constraint exp="&quot;structure_type&quot; IN (1,2,3,4,5)" field="structure_type" desc=""/>
+      <constraint exp="&quot;enabled&quot; IS NULL OR &quot;enabled&quot; IN (0,1)" field="enabled" desc=""/>
   </constraintExpressions>
   <editform></editform>
   <editforminit></editforminit>

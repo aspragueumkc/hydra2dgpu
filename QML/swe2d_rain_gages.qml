@@ -57,9 +57,9 @@
   <defaults>
   </defaults>
   <constraintExpressions>
-      <constraint exp="length(trim("gage_id")) &gt; 0" field="gage_id" desc=""/>
-      <constraint exp="length(trim("hyetograph_id")) &gt; 0" field="hyetograph_id" desc=""/>
-      <constraint exp=""units" IS NULL OR "units" IN ('mm/hr','in/hr','mm','in')" field="units" desc=""/>
+      <constraint exp="length(trim(&quot;gage_id&quot;)) &gt; 0" field="gage_id" desc=""/>
+      <constraint exp="length(trim(&quot;hyetograph_id&quot;)) &gt; 0" field="hyetograph_id" desc=""/>
+      <constraint exp="&quot;units&quot; IS NULL OR &quot;units&quot; IN ('mm/hr','in/hr','mm','in')" field="units" desc=""/>
   </constraintExpressions>
   <editform></editform>
   <editforminit></editforminit>
