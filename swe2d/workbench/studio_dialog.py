@@ -625,26 +625,40 @@ class SWE2DWorkbenchStudioDialog(QtWidgets.QDialog):
         self._mesh_controller.export_mesh_to_ugrid()
 
     def _save_mesh_to_gpkg(self) -> None:
-        """Save current mesh to a GeoPackage."""
+        """Save current mesh to a GeoPackage.
+
+        Flow: select an existing GPKG → enter mesh name → save.
+        This mirrors the "add entry to an existing database" pattern
+        used by the add-results dialog.
+        """
         from qgis.PyQt import QtWidgets
         mesh_data = getattr(self, "_mesh_data", None)
         if mesh_data is None or mesh_data.get("node_x") is None:
             QtWidgets.QMessageBox.warning(self, "Save Mesh", "No mesh loaded.")
             return
-        name, ok = QtWidgets.QInputDialog.getText(self, "Save Mesh", "Mesh name:")
-        if not ok or not name.strip():
-            return
-        name = str(name).strip()
-        path, _ = QtWidgets.QFileDialog.getSaveFileName(
-            self, "Save Mesh to GeoPackage", "", "GeoPackage (*.gpkg);;All Files (*)",
+
+        path, _ = QtWidgets.QFileDialog.getOpenFileName(
+            self, "Select GeoPackage to save mesh into",
+            getattr(self, "_model_gpkg_path", ""),
+            "GeoPackage (*.gpkg);;All Files (*)",
         )
         if not path:
             return
+
+        name, ok = QtWidgets.QInputDialog.getText(
+            self, "Save Mesh", "Mesh entry name:",
+            text="",
+        )
+        if not ok or not name.strip():
+            return
+        name = str(name).strip()
+
         try:
             from swe2d.services.gpkg_persistence_service import persist_mesh_to_geopackage
             persist_mesh_to_geopackage(path, name, mesh_data, log_fn=self._log)
             QtWidgets.QMessageBox.information(
-                self, "Save Mesh", f"Mesh '{name}' saved to {os.path.basename(path)}.",
+                self, "Save Mesh",
+                f"Mesh '{name}' saved to {os.path.basename(path)}.",
             )
         except Exception as exc:
             QtWidgets.QMessageBox.critical(self, "Save Mesh Error", str(exc))

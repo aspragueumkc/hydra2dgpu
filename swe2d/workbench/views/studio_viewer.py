@@ -10,6 +10,7 @@ from typing import Any, Callable, Dict, Optional
 from qgis.PyQt import QtWidgets
 
 from swe2d.workbench.views.studio_viewer_plot import PlotViewWidget
+from swe2d.workbench.views.studio_viewer_pg import PGTimeSeriesWidget, _HAVE_PG
 
 _TAB_MODES = ["Mesh", "Time Series", "Profile", "Structure", "Network"]
 
@@ -40,7 +41,10 @@ class SWE2DStudioViewer(QtWidgets.QWidget):
         self._tabs.currentChanged.connect(self._on_tab_changed)
 
         for mode in _TAB_MODES:
-            widget = PlotViewWidget(mode=mode)
+            if mode == "Time Series" and _HAVE_PG:
+                widget = PGTimeSeriesWidget()
+            else:
+                widget = PlotViewWidget(mode=mode)
             self._plot_widgets[mode] = widget
             self._tabs.addTab(widget, mode)
 

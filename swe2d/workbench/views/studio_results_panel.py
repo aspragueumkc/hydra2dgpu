@@ -158,6 +158,13 @@ def on_results_ts_var_changed(dialog, var_key: str) -> None:
     data = dialog._results_toolbox._data
     if data is not None and var_key:
         data.ts_var_key = var_key
+    # Sync the pyqtgraph time-series widget's combo so it matches the
+    # toolbox selection (otherwise its refresh reads the stale combo value).
+    viewer = getattr(dialog, "_studio_viewer", None)
+    if viewer is not None:
+        ts_widget = viewer.plot_widgets.get("Time Series")
+        if ts_widget is not None and hasattr(ts_widget, "selected_metric"):
+            ts_widget.selected_metric = var_key
     dialog._studio_viewer.refresh()
 
 
