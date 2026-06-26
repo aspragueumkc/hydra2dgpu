@@ -1490,8 +1490,9 @@ def update_run_snapshot_tag(
                     f'UPDATE "{runs_table}" SET snapshot = ? WHERE run_id = ?',
                     (1 if is_snapshot else 0, run_id),
                 )
-            except Exception:
-                pass
+            except Exception as _e:
+
+                logger.warning(f"[ERROR] Exception in gpkg_persistence_service.py: {_e}")
         conn.commit()
     finally:
         conn.close()

@@ -45,7 +45,7 @@ class TemporalDockWidget(QtWidgets.QWidget):
         self._play_btn.setToolTip("Play / Pause animation")
         self._play_btn.clicked.connect(self._on_play_pause)
 
-        self._step_fwd_btn = QtWidgets.QPushButton("\u25b6|")
+        self._step_fwd_btn = QtWidgets.QPushButton("\u25b6")
         self._step_fwd_btn.setFixedSize(28, 22)
         self._step_fwd_btn.setToolTip("Step forward one frame")
         self._step_fwd_btn.clicked.connect(self._on_step_fwd)

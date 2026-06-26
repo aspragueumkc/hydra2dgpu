@@ -18,26 +18,6 @@ from qgis.PyQt.QtCore import pyqtSignal
 
 from swe2d.results.data import SWE2DResultsData
 
-_TS_VARIABLES: List[Tuple[str, str]] = [
-    ("Flow (m\u00b3/s)", "flow_cms"), ("WSE (m)", "wse_m"),
-    ("Velocity (m/s)", "velocity_ms"), ("Depth (m)", "depth_m"),
-]
-
-_PROF_VARIABLES: List[Tuple[str, str]] = [
-    ("WSE + Bed", "wse_bed"), ("Depth (m)", "depth_m"),
-    ("Velocity (m/s)", "velocity_ms"), ("EGLError (m)", "egl_m"),
-]
-
-_PROFILE_FILL_OPTIONS: List[Tuple[str, str]] = [
-    ("None", "none"), ("Depth (m)", "depth_m"),
-    ("Velocity (m/s)", "velocity_ms"), ("Froude number", "froude"),
-]
-
-_PROFILE_CMAP_OPTIONS: List[Tuple[str, str]] = [
-    ("Viridis", "viridis"), ("Plasma", "plasma"), ("Inferno", "inferno"),
-    ("Magma", "magma"), ("Cividis", "cividis"), ("Jet", "jet"), ("Turbo", "turbo"),
-]
-
 
 class _SwatchDelegate(QtWidgets.QStyledItemDelegate):
     _SW, _GAP = 12, 3
@@ -77,14 +57,6 @@ class ResultsToolbox(QtWidgets.QWidget):
     run_remove_requested = pyqtSignal()
     run_show_all = pyqtSignal()
     run_hide_all = pyqtSignal()
-    # Line / profile signals
-    line_selected = pyqtSignal(int)
-    ts_var_changed = pyqtSignal(str)
-    prof_var_changed = pyqtSignal(str)
-    profile_options_changed = pyqtSignal()
-    # Coupling page signals
-    coupling_metric_changed = pyqtSignal(str)
-    coupling_element_changed = pyqtSignal(str)
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -97,47 +69,16 @@ class ResultsToolbox(QtWidgets.QWidget):
     # ------------------------------------------------------------------
 
     def set_data(self, data: SWE2DResultsData) -> None:
-        """Bind the data layer and rebuild run list / coupling combos."""
+        """Bind the data layer and rebuild run list."""
         self._data = data
         self._rebuild_run_list()
-        records = data.get_coupling_records()
-        if records:
-            self.populate_coupling_combos(records)
-
-    def populate_coupling_combos(self, records: list) -> None:
-        """Populate coupling metric and element combos from records."""
-        metrics = sorted({str(r.get("metric", "") or "") for r in records})
-        self.coupling_metric_combo.blockSignals(True)
-        self.coupling_metric_combo.clear()
-        for m in metrics:
-            self.coupling_metric_combo.addItem(m, m)
-        if self.coupling_metric_combo.count() > 0:
-            self.coupling_metric_combo.setCurrentIndex(0)
-        self.coupling_metric_combo.blockSignals(False)
-
-        elements = sorted({str(r.get("object_id", "") or "") for r in records})
-        self.coupling_element_combo.blockSignals(True)
-        self.coupling_element_combo.clear()
-        for e in elements:
-            lbl = str(e)
-            # try to find a matching object_name
-            for r in records:
-                if str(r.get("object_id", "") or "") == e:
-                    oname = str(r.get("object_name", "") or "")
-                    if oname:
-                        lbl = f"{e} ({oname})"
-                        break
-            self.coupling_element_combo.addItem(lbl, e)
-        if self.coupling_element_combo.count() > 0:
-            self.coupling_element_combo.setCurrentIndex(0)
-        self.coupling_element_combo.blockSignals(False)
 
     # ------------------------------------------------------------------
     # UI
     # ------------------------------------------------------------------
 
     def _build_ui(self) -> None:
-        """Build the 4-page toolbox (Overlay, Line, Runs, Coupling)."""
+        """Build the 3-page toolbox (Overlay, Output, Runs)."""
         layout = QtWidgets.QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(0)
@@ -145,9 +86,8 @@ class ResultsToolbox(QtWidgets.QWidget):
         self._toolbox = QtWidgets.QToolBox()
         self._toolbox.setObjectName("results_toolbox")
         self._build_overlay_page(self._toolbox)
-        self._build_line_page(self._toolbox)
+        self._build_output_page(self._toolbox)
         self._build_runs_page(self._toolbox)
-        self._build_coupling_page(self._toolbox)
         self._toolbox.setCurrentIndex(0)
         layout.addWidget(self._toolbox, 1)
 
@@ -272,54 +212,15 @@ class ResultsToolbox(QtWidgets.QWidget):
         self.streamline_backend_combo.setCurrentIndex(0)
 
     # ------------------------------------------------------------------
-    # Page 2: Line / Structure / Drainage
+    # Page 2: Output configuration (save toggles)
     # ------------------------------------------------------------------
 
-    def _build_line_page(self, toolbox: QtWidgets.QToolBox) -> None:
-        """Build the Line / Structure / Drainage page with profile and save controls."""
+    def _build_output_page(self, toolbox: QtWidgets.QToolBox) -> None:
+        """Build the Output page with save-to-GPKG checkboxes."""
         page = QtWidgets.QWidget()
-        page.setObjectName("results_line_page")
+        page.setObjectName("results_output_page")
         layout = QtWidgets.QFormLayout(page)
         layout.setContentsMargins(6, 6, 6, 6)
-
-        self.line_combo = QtWidgets.QComboBox()
-        self.line_combo.setMinimumWidth(100)
-        self.line_combo.currentIndexChanged.connect(
-            lambda: self.line_selected.emit(self.line_combo.currentData() or -1))
-        layout.addRow("Line:", self.line_combo)
-
-        self.ts_var_combo = QtWidgets.QComboBox()
-        for label, key in _TS_VARIABLES:
-            self.ts_var_combo.addItem(label, key)
-        self.ts_var_combo.currentIndexChanged.connect(
-            lambda: self.ts_var_changed.emit(self.ts_var_combo.currentData() or ""))
-        layout.addRow("TS var:", self.ts_var_combo)
-
-        self.prof_var_combo = QtWidgets.QComboBox()
-        for label, key in _PROF_VARIABLES:
-            self.prof_var_combo.addItem(label, key)
-        self.prof_var_combo.currentIndexChanged.connect(
-            lambda: self.prof_var_changed.emit(self.prof_var_combo.currentData() or ""))
-        layout.addRow("Prof:", self.prof_var_combo)
-
-        self.prof_fill_combo = QtWidgets.QComboBox()
-        for label, key in _PROFILE_FILL_OPTIONS:
-            self.prof_fill_combo.addItem(label, key)
-        layout.addRow("Fill by:", self.prof_fill_combo)
-
-        self.prof_cmap_combo = QtWidgets.QComboBox()
-        for label, key in _PROFILE_CMAP_OPTIONS:
-            self.prof_cmap_combo.addItem(label, key)
-        self.prof_cmap_combo.currentIndexChanged.connect(
-            self.profile_options_changed.emit)
-        self.prof_fill_combo.currentIndexChanged.connect(
-            self.profile_options_changed.emit)
-        layout.addRow("Colormap:", self.prof_cmap_combo)
-
-        self.show_structures_chk = QtWidgets.QCheckBox("Overlay structures")
-        self.show_structures_chk.setChecked(True)
-        self.show_structures_chk.toggled.connect(self.profile_options_changed.emit)
-        layout.addRow(self.show_structures_chk)
 
         self.extended_outputs_chk = QtWidgets.QCheckBox(
             "Include extended outputs (momentum, qmag, wet mask, Fr, Manning)")
@@ -346,7 +247,7 @@ class ResultsToolbox(QtWidgets.QWidget):
         self.save_log_chk.setChecked(True)
         layout.addRow(self.save_log_chk)
 
-        toolbox.addItem(page, "Line / Structure / Drainage")
+        toolbox.addItem(page, "Output")
 
     # ------------------------------------------------------------------
     # Page 3: Runs
@@ -409,31 +310,6 @@ class ResultsToolbox(QtWidgets.QWidget):
         toolbox.addItem(page, "Runs")
 
     # ------------------------------------------------------------------
-    # Page 4: Coupling
-    # ------------------------------------------------------------------
-
-    def _build_coupling_page(self, toolbox: QtWidgets.QToolBox) -> None:
-        """Build the Coupling page with metric and element filter combos."""
-        page = QtWidgets.QWidget()
-        page.setObjectName("results_coupling_page")
-        layout = QtWidgets.QFormLayout(page)
-        layout.setContentsMargins(6, 6, 6, 6)
-
-        self.coupling_metric_combo = QtWidgets.QComboBox()
-        self.coupling_metric_combo.currentIndexChanged.connect(
-            lambda: self.coupling_metric_changed.emit(
-                self.coupling_metric_combo.currentData() or ""))
-        layout.addRow("Metric:", self.coupling_metric_combo)
-
-        self.coupling_element_combo = QtWidgets.QComboBox()
-        self.coupling_element_combo.currentIndexChanged.connect(
-            lambda: self.coupling_element_changed.emit(
-                self.coupling_element_combo.currentData() or ""))
-        layout.addRow("Element:", self.coupling_element_combo)
-
-        toolbox.addItem(page, "Coupling")
-
-    # ------------------------------------------------------------------
     # Run list management
     # ------------------------------------------------------------------
 
@@ -455,7 +331,6 @@ class ResultsToolbox(QtWidgets.QWidget):
         self.run_list.blockSignals(False)
         self.run_list.itemChanged.connect(self._on_run_item_changed)
         self._update_run_count()
-        self.refresh_line_list()
 
     def _on_run_item_changed(self, item: QtWidgets.QListWidgetItem) -> None:
         """Handle a run checkbox change — toggle visibility in data layer."""
@@ -476,28 +351,6 @@ class ResultsToolbox(QtWidgets.QWidget):
         self.run_count_lbl.setText(f"{enabled} / {total} runs enabled")
         if self._data.gpkg_path:
             self.gpkg_lbl.setText(f"GPKG: {self._data.gpkg_path}")
-
-    # ------------------------------------------------------------------
-    # Populate line combo from data
-    # ------------------------------------------------------------------
-
-    def refresh_line_list(self) -> None:
-        """Rebuild the line combo from data layer line IDs."""
-        if self._data is None:
-            return
-        line_ids = self._data.get_line_ids()
-        current = self.line_combo.currentData()
-        self.line_combo.blockSignals(True)
-        self.line_combo.clear()
-        found = False
-        for lid in line_ids:
-            self.line_combo.addItem(f"Line {lid}", lid)
-            if lid == current:
-                self.line_combo.setCurrentIndex(self.line_combo.count() - 1)
-                found = True
-        if not found and self.line_combo.count() > 0:
-            self.line_combo.setCurrentIndex(0)
-        self.line_combo.blockSignals(False)
 
     @property
     def toolbox(self) -> QtWidgets.QToolBox:

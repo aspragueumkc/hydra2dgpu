@@ -191,18 +191,6 @@ class WorkbenchDialogBuilder:
             dlg._on_results_show_all)
         dlg._results_toolbox.run_hide_all.connect(
             dlg._on_results_hide_all)
-        dlg._results_toolbox.line_selected.connect(
-            dlg._on_results_line_selected)
-        dlg._results_toolbox.ts_var_changed.connect(
-            dlg._on_results_ts_var_changed)
-        dlg._results_toolbox.prof_var_changed.connect(
-            dlg._on_results_prof_var_changed)
-        dlg._results_toolbox.profile_options_changed.connect(
-            dlg._on_results_profile_options_changed)
-        dlg._results_toolbox.coupling_metric_changed.connect(
-            dlg._on_coupling_metric_changed)
-        dlg._results_toolbox.coupling_element_changed.connect(
-            dlg._on_coupling_element_changed)
         self._build_component(
             name="results",
             title="HYDRA2D Results",
@@ -533,8 +521,9 @@ class WorkbenchDialogBuilder:
                 mw = dlg.iface.mainWindow()
                 if mw is not None:
                     w = mw.findChild(wtype, name)
-            except Exception:
-                pass
+            except Exception as _e:
+
+                logger.warning(f"[ERROR] Exception in workbench_dialog_builder.py: {_e}")
         return w
 
     def _validate_widget_bindings(self) -> None:

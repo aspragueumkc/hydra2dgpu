@@ -19,8 +19,15 @@ try:
     _NavigationToolbar = None
     try:
         from matplotlib.backends.backend_qt5agg import NavigationToolbar2QT as _NavigationToolbar
-    except ImportError:
-        pass
+    except ImportError as _e:
+
+        try:
+
+            dialog._log(f"[ERROR] ImportError in studio_viewer_plot.py: {_e}")
+
+        except Exception:
+
+            pass
 except ImportError:
     _HAVE_MPL = False
     Figure = FigureCanvas = None  # type: ignore
@@ -49,7 +56,11 @@ class PlotViewWidget(QtWidgets.QWidget):
         self.show_table_toggle: Optional[QtWidgets.QCheckBox] = None
         self._table_widget: Optional[QtWidgets.QTableWidget] = None
         self._selected_element_id: str = ""
+        self._selected_prof_var: str = "wse_bed"
         self._metric_combo: Optional[QtWidgets.QComboBox] = None
+        self._line_combo: Optional[QtWidgets.QComboBox] = None  # Profile tab
+        self._prof_var_combo: Optional[QtWidgets.QComboBox] = None  # Profile tab
+        self._net_element_combo: Optional[QtWidgets.QComboBox] = None  # Network tab
         self._build_ui()
 
     # ------------------------------------------------------------------
@@ -57,7 +68,7 @@ class PlotViewWidget(QtWidgets.QWidget):
     # ------------------------------------------------------------------
 
     def _build_ui(self) -> None:
-        """Build the plot widget with matplotlib canvas, toolbar, data table, and metric combo."""
+        """Build the plot widget with matplotlib canvas, toolbar, data table, and mode-specific selectors."""
         root = QtWidgets.QVBoxLayout(self)
         root.setContentsMargins(0, 0, 0, 0)
         root.setSpacing(0)
@@ -94,50 +105,187 @@ class PlotViewWidget(QtWidgets.QWidget):
             splitter.addWidget(self._canvas)
         splitter.addWidget(self._table_widget)
 
-        self._metric_combo = QtWidgets.QComboBox()
-
+        # Top bar — mode-specific selectors
         top_bar = QtWidgets.QHBoxLayout()
-        top_bar.addStretch(1)
-        top_bar.addWidget(self._metric_combo)
 
-        # Show data table toggle
+        if self._mode == "Profile":
+            self._line_combo = QtWidgets.QComboBox()
+            self._line_combo.currentIndexChanged.connect(self._on_line_changed)
+            top_bar.addWidget(QtWidgets.QLabel("Line:"))
+            top_bar.addWidget(self._line_combo)
+            top_bar.addSpacing(8)
+
+            self._prof_var_combo = QtWidgets.QComboBox()
+            self._prof_var_combo.addItem("WSE + Bed", "wse_bed")
+            self._prof_var_combo.addItem("Depth", "depth_m")
+            self._prof_var_combo.addItem("Velocity", "velocity_ms")
+            self._prof_var_combo.addItem("EGL Error", "egl_m")
+            self._prof_var_combo.currentIndexChanged.connect(self._on_prof_var_changed)
+            top_bar.addWidget(QtWidgets.QLabel("Var:"))
+            top_bar.addWidget(self._prof_var_combo)
+
+        elif self._mode == "Network":
+            self._net_element_combo = QtWidgets.QComboBox()
+            self._net_element_combo.setMinimumWidth(150)
+            self._net_element_combo.currentIndexChanged.connect(self._on_net_element_changed)
+            top_bar.addWidget(QtWidgets.QLabel("Link:"))
+            top_bar.addWidget(self._net_element_combo)
+
+            # Metric combo for coupling variables
+            self._metric_combo = QtWidgets.QComboBox()
+            self._metric_combo.currentIndexChanged.connect(self._on_metric_changed)
+            top_bar.addWidget(QtWidgets.QLabel("Metric:"))
+            top_bar.addWidget(self._metric_combo)
+
+        else:
+            # Mesh / Time Series — minimal (Time Series has its own pyqtgraph widget)
+            top_bar.addStretch(1)
+
+        top_bar.addStretch(1)
         self.show_table_toggle = QtWidgets.QCheckBox("Show data table")
         self.show_table_toggle.setChecked(False)
         self.show_table_toggle.toggled.connect(self._on_table_toggle)
-
         top_bar.addWidget(self.show_table_toggle)
 
         root.addLayout(top_bar)
         root.addWidget(splitter, 1)
 
-        self._on_mode_changed()
+    # ------------------------------------------------------------------
+    # Mode-specific slot handlers
+    # ------------------------------------------------------------------
 
-    def _on_mode_changed(self) -> None:
-        """Handle mode change — repopulate the metric combo."""
-        self._populate_metric_combo()
+    def _on_line_changed(self) -> None:
+        """Profile line selector changed — update data line ID and refresh."""
+        if self._line_combo is None:
+            return
+        lid = self._line_combo.currentData()
+        if lid is not None and self._result_data is not None:
+            self._result_data.set_line_id(int(lid))
+        self.refresh()
+
+    def _on_prof_var_changed(self) -> None:
+        """Profile variable changed — update selected var and refresh."""
+        if self._prof_var_combo is None:
+            return
+        self._selected_prof_var = str(self._prof_var_combo.currentData() or "wse_bed")
+        self.refresh()
+
+    def _on_net_element_changed(self) -> None:
+        """Network element selector changed — update selected element ID and refresh."""
+        if self._net_element_combo is None:
+            return
+        self._selected_element_id = str(self._net_element_combo.currentData() or "")
+        self.refresh()
+
+    def _on_metric_changed(self) -> None:
+        """Metric combo changed (Network mode) — refresh."""
+        self.refresh()
+
+    @property
+    def selected_metric(self) -> str:
+        """The currently selected metric for the plot."""
+        if self._mode == "Profile" and self._prof_var_combo is not None:
+            return str(self._prof_var_combo.currentData() or "wse_bed")
+        if self._metric_combo is not None:
+            return str(self._metric_combo.currentData() or "flow")
+        return "flow"
+
+    @selected_metric.setter
+    def selected_metric(self, metric: str) -> None:
+        """Set the selected metric by data value."""
+        if self._mode == "Profile" and self._prof_var_combo is not None:
+            idx = self._prof_var_combo.findData(metric)
+            if idx >= 0:
+                self._prof_var_combo.setCurrentIndex(idx)
+        elif self._metric_combo is not None and metric:
+            idx = self._metric_combo.findData(metric)
+            if idx >= 0:
+                self._metric_combo.setCurrentIndex(idx)
+
+    @property
+    def selected_element_id(self) -> str:
+        """The currently selected element ID for coupling data."""
+        if self._mode == "Network" and self._net_element_combo is not None:
+            return str(self._net_element_combo.currentData() or "")
+        return self._selected_element_id
+
+    @selected_element_id.setter
+    def selected_element_id(self, element_id: str) -> None:
+        """Set the selected element ID."""
+        self._selected_element_id = str(element_id) if element_id else ""
+        if self._mode == "Network" and self._net_element_combo is not None and element_id:
+            idx = self._net_element_combo.findData(self._selected_element_id)
+            if idx >= 0:
+                self._net_element_combo.setCurrentIndex(idx)
+
+    def _on_table_toggle(self, visible: bool) -> None:
+        """Show or hide the data table on toggle."""
+        if self._table_widget is not None:
+            self._table_widget.setVisible(visible)
+            if visible:
+                self._populate_table()
+
+    def _populate_line_combo(self) -> None:
+        """Populate the line combo from result data line IDs (Profile mode)."""
+        if self._line_combo is None or self._result_data is None:
+            return
+        line_ids = self._result_data.get_line_ids()
+        current = self._line_combo.currentData()
+        self._line_combo.blockSignals(True)
+        self._line_combo.clear()
+        for lid in line_ids:
+            self._line_combo.addItem(f"Line {lid}", lid)
+        if current is not None:
+            idx = self._line_combo.findData(current)
+            if idx >= 0:
+                self._line_combo.setCurrentIndex(idx)
+        self._line_combo.blockSignals(False)
+
+    def _populate_net_element_combo(self) -> None:
+        """Populate the network element combo from coupling records (Network mode)."""
+        if self._net_element_combo is None or self._result_data is None:
+            return
+        recs = self._result_data.get_coupling_records()
+        current = self._net_element_combo.currentData()
+        self._net_element_combo.blockSignals(True)
+        self._net_element_combo.clear()
+        seen = set()
+        for r in recs:
+            comp = str(r.get("component", "") or "")
+            if comp not in ("drainage_node", "drainage_link"):
+                continue
+            oid = str(r.get("object_id", "") or "")
+            if not oid or oid in seen:
+                continue
+            seen.add(oid)
+            oname = str(r.get("object_name", "") or "")
+            lbl = f"{oname} ({oid})" if oname else oid
+            self._net_element_combo.addItem(lbl, oid)
+        if current is not None:
+            idx = self._net_element_combo.findData(current)
+            if idx >= 0:
+                self._net_element_combo.setCurrentIndex(idx)
+        self._net_element_combo.blockSignals(False)
 
     def _populate_metric_combo(self) -> None:
-        """Populate the metric combo from coupling records for Structure/Network mode."""
-        if self._metric_combo is None or self._mode not in ("Structure", "Network"):
+        """Populate the metric combo from coupling records (Network mode)."""
+        if self._metric_combo is None or self._mode != "Network":
             return
         data = self._result_data
         if data is None:
             return
         recs = data.get_coupling_records()
         seen: set = set()
-        comp_filter = "structure" if self._mode == "Structure" else ("drainage_node", "drainage_link")
         for r in recs:
             comp = str(r.get("component", "") or "")
-            if self._mode == "Network" and comp not in comp_filter:
-                continue
-            if self._mode == "Structure" and comp != "structure":
+            if comp not in ("drainage_node", "drainage_link"):
                 continue
             m = str(r.get("metric", "") or "")
             if m and m not in seen:
                 seen.add(m)
         metrics = sorted(seen) or ["flow"]
-        self._metric_combo.blockSignals(True)
         current = self._metric_combo.currentData()
+        self._metric_combo.blockSignals(True)
         self._metric_combo.clear()
         for m in metrics:
             self._metric_combo.addItem(m, m)
@@ -146,42 +294,8 @@ class PlotViewWidget(QtWidgets.QWidget):
             if idx >= 0:
                 self._metric_combo.setCurrentIndex(idx)
         elif self._metric_combo.count() > 0:
-            # ponytail: pre-select first metric so the plot shows data, not "No records"
             self._metric_combo.setCurrentIndex(0)
         self._metric_combo.blockSignals(False)
-
-    @property
-    def selected_metric(self) -> str:
-        """The currently selected metric from the metric combo."""
-        if self._metric_combo is None:
-            return "flow"
-        return str(self._metric_combo.currentData() or "flow")
-
-    @selected_metric.setter
-    def selected_metric(self, metric: str) -> None:
-        """Set the selected metric by data value."""
-        if self._metric_combo is None or not metric:
-            return
-        idx = self._metric_combo.findData(metric)
-        if idx >= 0:
-            self._metric_combo.setCurrentIndex(idx)
-
-    @property
-    def selected_element_id(self) -> str:
-        """The currently selected element ID for coupling data."""
-        return self._selected_element_id
-
-    @selected_element_id.setter
-    def selected_element_id(self, element_id: str) -> None:
-        """Set the selected element ID."""
-        self._selected_element_id = str(element_id) if element_id else ""
-
-    def _on_table_toggle(self, visible: bool) -> None:
-        """Show or hide the data table on toggle."""
-        if self._table_widget is not None:
-            self._table_widget.setVisible(visible)
-            if visible:
-                self._populate_table()
 
     def _populate_table(self) -> None:
         """Fill the data table from coupling records or GPKG results."""
@@ -230,8 +344,15 @@ class PlotViewWidget(QtWidgets.QWidget):
                             records.append(dict(zip(info, r)))
                         cols = info
                         break
-                except Exception:
-                    pass
+                except Exception as _e:
+
+                    try:
+
+                        dialog._log(f"[ERROR] Exception in studio_viewer_plot.py: {_e}")
+
+                    except Exception:
+
+                        pass
             if not records:
                 return
 
@@ -286,7 +407,11 @@ class PlotViewWidget(QtWidgets.QWidget):
             self._result_data = result_data
             if self._table_widget is not None and self._table_widget.isVisible():
                 self._populate_table()
-            self._populate_metric_combo()
+            if self._mode == "Profile":
+                self._populate_line_combo()
+            elif self._mode == "Network":
+                self._populate_net_element_combo()
+                self._populate_metric_combo()
         self._h_min = float(h_min)
 
     def refresh(self) -> None:

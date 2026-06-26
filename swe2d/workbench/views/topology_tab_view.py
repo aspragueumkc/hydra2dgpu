@@ -224,8 +224,15 @@ class TopologyTabView(QtWidgets.QWidget):
         if lbl is not None:
             try:
                 lbl.setText(str(text))
-            except Exception:
-                pass
+            except Exception as _e:
+
+                try:
+
+                    self._log(f"[ERROR] Exception in topology_tab_view.py: {_e}")
+
+                except Exception:
+
+                    pass
 
     def update_topo_controls_summary(self, text: str) -> None:
         """Set the controls summary label text."""
@@ -233,8 +240,15 @@ class TopologyTabView(QtWidgets.QWidget):
         if lbl is not None:
             try:
                 lbl.setText(str(text))
-            except Exception:
-                pass
+            except Exception as _e:
+
+                try:
+
+                    self._log(f"[ERROR] Exception in topology_tab_view.py: {_e}")
+
+                except Exception:
+
+                    pass
 
     def _find_widget(self, attr: str):
         """Locate a widget by attribute name, checking direct attrs then _topo_widgets dict."""
@@ -268,8 +282,15 @@ class TopologyTabView(QtWidgets.QWidget):
         if w is not None:
             try:
                 w.setVisible(bool(visible))
-            except Exception:
-                pass
+            except Exception as _e:
+
+                try:
+
+                    self._log(f"[ERROR] Exception in topology_tab_view.py: {_e}")
+
+                except Exception:
+
+                    pass
 
     def get_topo_combo_data(self, attr: str):
         """Return currentData() of a topology combo by attribute name."""
@@ -287,8 +308,15 @@ class TopologyTabView(QtWidgets.QWidget):
         if w is not None:
             try:
                 w.setText(str(text))
-            except RuntimeError:
-                pass
+            except RuntimeError as _e:
+
+                try:
+
+                    self._log(f"[ERROR] RuntimeError in topology_tab_view.py: {_e}")
+
+                except Exception:
+
+                    pass
 
     def update_control_summary(self) -> None:
         """Update the topology control summary label from current state.
@@ -1274,8 +1302,15 @@ def _wire_topology_tab_controls(
             pass
         try:
             sig.connect(handler)
-        except RuntimeError:
-            pass
+        except RuntimeError as _e:
+
+            try:
+
+                self._log(f"[ERROR] RuntimeError in topology_tab_view.py: {_e}")
+
+            except Exception:
+
+                pass
 
     # Connect backend/region/constraint/quad-edges combos
     for combo_key in ("topo_backend_combo", "topo_regions_combo",

@@ -159,8 +159,9 @@ def update_vline(ax: Any, canvas: Any, vline: Any, current_time_sec: float):
             vline.set_xdata([t_hr, t_hr])
             canvas.draw_idle()
             return vline
-        except Exception:
-            pass
+        except Exception as _e:
+
+            logger.warning(f"[ERROR] Exception in results_render_service.py: {_e}")
     vline = ax.axvline(x=t_hr, color="0.5", linewidth=0.9,
                        linestyle="--", zorder=5)
     canvas.draw_idle()
@@ -195,8 +196,9 @@ def render_profile(
     if prof_fill_cbar is not None:
         try:
             prof_fill_cbar.remove()
-        except Exception:
-            pass
+        except Exception as _e:
+
+            logger.warning(f"[ERROR] Exception in results_render_service.py: {_e}")
         prof_fill_cbar = None
 
     ax.cla()

@@ -14,6 +14,9 @@ that a partial view (e.g. a test double) still produces a usable dict.
 Zero Qt imports in this module — Qt is accessed only through the view.
 """
 from __future__ import annotations
+import logging
+
+logger = logging.getLogger(__name__)
 
 from typing import Any, Dict, Optional
 
@@ -110,8 +113,9 @@ def collect_overlay_parameters(view: Any, t_use: float) -> Dict[str, Any]:
     opacity = _safe_value(_w("opacity_spin"), 1.0)
     try:
         view._overlay_opacity = opacity
-    except Exception:
-        pass
+    except Exception as _e:
+
+        logger.warning(f"[ERROR] Exception in overlay_parameters_service.py: {_e}")
 
     show_velocity_arrows = _safe_is_checked(_w("arrows_chk"), False)
     arrow_stride_px = int(round(_safe_value(_w("arrow_density_spin"), 28.0)))

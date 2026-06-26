@@ -8,17 +8,6 @@ import os
 from qgis.PyQt import QtCore, QtWidgets
 
 
-def _reload_coupling_combos(dialog) -> None:
-    """Re-populate toolbox coupling combos after discover_runs loads _coupling_records."""
-    toolbox = getattr(dialog, "_results_toolbox", None)
-    if toolbox is None or not hasattr(toolbox, "populate_coupling_combos"):
-        return
-    data = getattr(toolbox, "_data", None)
-    cart_records = data.get_coupling_records()
-    if cart_records:
-        toolbox.populate_coupling_combos(cart_records)
-
-
 def on_run_selection_changed(dialog) -> None:
     """Update run count label and refresh overlay when run selection changes."""
     dialog._results_toolbox._update_run_count()
@@ -26,7 +15,7 @@ def on_run_selection_changed(dialog) -> None:
 
 
 def on_results_refresh(dialog) -> None:
-    """Re-scan GPKG for runs and rebuild the run list and coupling combos."""
+    """Re-scan GPKG for runs and rebuild the run list."""
     data = getattr(dialog._results_toolbox, "_data", None)
     if data is None:
         show_results_panel(dialog)
@@ -35,12 +24,13 @@ def on_results_refresh(dialog) -> None:
         dialog._results_toolbox._rebuild_run_list()
         data._rebuild_timestep_union()
         data.load_coupling_for_first_enabled_run()
-        _reload_coupling_combos(dialog)
-        line_id = dialog._results_toolbox.line_combo.currentData()
-        if isinstance(line_id, (list, tuple)):
-            line_id = int(line_id[0])
-        if line_id is not None and int(line_id) >= 0:
-            on_results_line_selected(dialog, int(line_id))
+    viewer = getattr(dialog, "_studio_viewer", None)
+    if viewer is not None:
+        # Notify all viewer widgets of updated data
+        for w in viewer.plot_widgets.values():
+            if hasattr(w, "set_data"):
+                w.set_data(result_data=data)
+        viewer.refresh()
 
 
 def on_results_add(dialog) -> None:
@@ -105,13 +95,13 @@ def on_results_add(dialog) -> None:
 
     data.discover_runs()
     data._rebuild_timestep_union()
-    _reload_coupling_combos(dialog)
     dialog._results_toolbox._rebuild_run_list()
-    line_id = dialog._results_toolbox.line_combo.currentData()
-    if isinstance(line_id, (list, tuple)):
-        line_id = int(line_id[0])
-    if line_id is not None and int(line_id) >= 0:
-        on_results_line_selected(dialog, int(line_id))
+    viewer = getattr(dialog, "_studio_viewer", None)
+    if viewer is not None:
+        for w in viewer.plot_widgets.values():
+            if hasattr(w, "set_data"):
+                w.set_data(result_data=data)
+        viewer.refresh()
 
 
 def on_results_remove(dialog) -> None:
@@ -229,6 +219,7 @@ def show_results_panel(dialog):
     gpkg = current_line_results_storage_path(dialog)
     if gpkg and gpkg != data.gpkg_path:
         data.set_gpkg_path(gpkg)
+    temporal = getattr(dialog, "_temporal_dock", None)
     if not getattr(dialog, "_results_anim_wired", False):
         dialog._results_anim_wired = True
         anim = getattr(data, "_anim", None)
@@ -236,23 +227,24 @@ def show_results_panel(dialog):
         if anim is not None:
             safe_disconnect(anim.current_timestep_changed, dialog._on_results_panel_timestep_changed)
             anim.current_timestep_changed.connect(dialog._on_results_panel_timestep_changed)
-            safe_disconnect(anim.play_state_changed, dialog._on_results_play_state_changed)
-            anim.play_state_changed.connect(dialog._on_results_play_state_changed)
+            if temporal is not None:
+                anim.play_state_changed.connect(temporal.on_play_state_changed)
     toolbox = getattr(dialog, "_results_toolbox", None)
     if toolbox is not None:
         toolbox.set_data(data)
-        line_id = toolbox.line_combo.currentData()
-        if isinstance(line_id, (list, tuple)):
-            line_id = int(line_id[0])
-        if line_id is not None and int(line_id) >= 0:
-            on_results_line_selected(dialog, int(line_id))
-    temporal = getattr(dialog, "_temporal_dock", None)
     if temporal is not None:
         temporal.set_data(data)
     try:
         dialog._refresh_plot()
-    except Exception:
-        pass
+    except Exception as _e:
+
+        try:
+
+            dialog._log(f"[ERROR] Exception in studio_results_panel.py: {_e}")
+
+        except Exception:
+
+            pass
 
 
 def on_coupling_metric_changed(dialog, metric: str) -> None:
@@ -322,7 +314,6 @@ def auto_load_results_panel(dialog, gpkg_path: str = "", snapshot_run_id: str = 
     if not records:
         dialog._log("[Auto-Load] No run records found in GPKG — hiding panel.")
         return
-    _reload_coupling_combos(dialog)
     if snapshot_run_id:
         # Prefer the snapshot run — enable only it, disable others
         found = False

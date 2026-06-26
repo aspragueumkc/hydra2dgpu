@@ -1091,8 +1091,9 @@ class SWE2DBackend:
         try:
             if getattr(self, "_solver_h", None) is not None:
                 self._mod.swe2d_destroy(self._solver_h)
-        except Exception:
-            pass
+        except Exception as _e:
+
+            logger.warning(f"[ERROR] Exception in backend.py: {_e}")
 
     def destroy(self) -> None:
         """Explicitly free native solver resources."""

@@ -8,6 +8,9 @@ Features:
   - Each subprocess gets a unique status file for progress monitoring
 """
 from __future__ import annotations
+import logging
+
+logger = logging.getLogger(__name__)
 
 import json
 import os
@@ -497,8 +500,9 @@ class BatchSimulationDialog(QtWidgets.QDialog):
                     if row:
                         mesh_name = str(row[0])
                     conn.close()
-                except Exception:
-                    pass
+                except Exception as _e:
+
+                    logger.warning(f"[ERROR] Exception in batch_simulation_dialog.py: {_e}")
 
         entry = {
             "id": "current_setup",
@@ -599,8 +603,9 @@ class BatchSimulationDialog(QtWidgets.QDialog):
                     mr = cur2.fetchone()
                     if mr:
                         metadata["mesh_name"] = str(mr[0])
-                except Exception:
-                    pass
+                except Exception as _e:
+
+                    logger.warning(f"[ERROR] Exception in batch_simulation_dialog.py: {_e}")
                 runs.append((run_id, metadata))
             conn.close()
         except Exception as exc:

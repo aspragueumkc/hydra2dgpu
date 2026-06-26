@@ -849,8 +849,15 @@ class TopologyController:
         if timer is not None:
             try:
                 timer.stop()
-            except Exception:
-                pass
+            except Exception as _e:
+
+                try:
+
+                    view._log(f"[ERROR] Exception in topology_controller.py: {_e}")
+
+                except Exception:
+
+                    pass
         proc = getattr(view, "_topology_mesh_subprocess", None)
         if proc is not None and proc.poll() is None:
             proc.kill()
@@ -981,8 +988,15 @@ class TopologyController:
             view._topology_mesh_timer = QtCore.QTimer(view)
         try:
             view._topology_mesh_timer.timeout.disconnect()
-        except Exception:
-            pass
+        except Exception as _e:
+
+            try:
+
+                view._log(f"[ERROR] Exception in topology_controller.py: {_e}")
+
+            except Exception:
+
+                pass
         view._topology_mesh_timer.timeout.connect(lambda: self._poll_topology_mesh())
 
 
@@ -995,8 +1009,15 @@ class TopologyController:
             if timer is not None:
                 try:
                     timer.stop()
-                except Exception:
-                    pass
+                except Exception as _e:
+
+                    try:
+
+                        view._log(f"[ERROR] Exception in topology_controller.py: {_e}")
+
+                    except Exception:
+
+                        pass
             return
         ret = proc.poll()
         if ret is None:
@@ -1012,8 +1033,15 @@ class TopologyController:
                         if tail:
                             for ln in tail.splitlines()[-3:]:
                                 view._log(f"  gmsh> {ln}")
-                except Exception:
-                    pass
+                except Exception as _e:
+
+                    try:
+
+                        view._log(f"[ERROR] Exception in topology_controller.py: {_e}")
+
+                    except Exception:
+
+                        pass
             # --- Progress JSON poll (written by GmshBackend._emit_progress) ---
             self._poll_topology_mesh_progress(view)
             return
@@ -1021,8 +1049,15 @@ class TopologyController:
         if timer is not None:
             try:
                 timer.stop()
-            except Exception:
-                pass
+            except Exception as _e:
+
+                try:
+
+                    view._log(f"[ERROR] Exception in topology_controller.py: {_e}")
+
+                except Exception:
+
+                    pass
         out_path = getattr(view, "_topology_mesh_out_path", None)
         if ret != 0 or out_path is None or not os.path.exists(out_path):
             view._log(f"mesh> fail returncode={ret}")
@@ -1032,8 +1067,15 @@ class TopologyController:
                     with open(err_path, "r", errors="replace") as ef:
                         for ln in ef.read().splitlines():
                             view._log(f"  stderr> {ln}")
-                except Exception:
-                    pass
+                except Exception as _e:
+
+                    try:
+
+                        view._log(f"[ERROR] Exception in topology_controller.py: {_e}")
+
+                    except Exception:
+
+                        pass
             view._set_topology_mesh_busy(False)
             view.update_topo_status(f"Gmsh failed (code {ret})")
             self._cleanup_mesh_tempfiles(view)
@@ -1049,8 +1091,15 @@ class TopologyController:
                     with open(err_path, "r", errors="replace") as ef:
                         for ln in ef.read().splitlines():
                             view._log(f"  stderr> {ln}")
-                except Exception:
-                    pass
+                except Exception as _e:
+
+                    try:
+
+                        view._log(f"[ERROR] Exception in topology_controller.py: {_e}")
+
+                    except Exception:
+
+                        pass
             view._set_topology_mesh_busy(False)
             self._cleanup_mesh_tempfiles(view)
             return
@@ -1091,12 +1140,26 @@ class TopologyController:
         if mtv is not None:
             try:
                 mtv.set_mesh_info_text(f"Nodes: {n_nodes}, Faces: {n_faces}")
-            except Exception:
-                pass
+            except Exception as _e:
+
+                try:
+
+                    view._log(f"[ERROR] Exception in topology_controller.py: {_e}")
+
+                except Exception:
+
+                    pass
         try:
             view._refresh_plot()
-        except Exception:
-            pass
+        except Exception as _e:
+
+            try:
+
+                view._log(f"[ERROR] Exception in topology_controller.py: {_e}")
+
+            except Exception:
+
+                pass
         view._set_topology_mesh_busy(False)
         view._topology_mesh_subprocess = None
         view._topology_mesh_started_at = None
@@ -1135,8 +1198,15 @@ class TopologyController:
         if elapsed_s is not None:
             try:
                 parts.append(f"elapsed={float(elapsed_s):.2f}s")
-            except Exception:
-                pass
+            except Exception as _e:
+
+                try:
+
+                    view._log(f"[ERROR] Exception in topology_controller.py: {_e}")
+
+                except Exception:
+
+                    pass
         if detail:
             parts.append(detail)
         view._log("mesh> gmsh-progress " + " ".join(parts))
@@ -1148,7 +1218,14 @@ class TopologyController:
             if p is not None and os.path.exists(p):
                 try:
                     os.unlink(p)
-                except Exception:
-                    pass
+                except Exception as _e:
+
+                    try:
+
+                        view._log(f"[ERROR] Exception in topology_controller.py: {_e}")
+
+                    except Exception:
+
+                        pass
             setattr(view, attr, None)
 

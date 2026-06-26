@@ -314,8 +314,9 @@ class SWE2DRunFinalizer:
             try:
                 update_run_snapshot_tag(gpkg_results_path, run_id, is_snapshot=False,
                                         table_name_fn=self._view.results_table_name)
-            except Exception:
-                pass
+            except Exception as _e:
+
+                logger.warning(f"[ERROR] Exception in run_finalizer.py: {_e}")
 
         if thiessen_forcing is not None and rain_stats_acc["samples"] > 0:
             avg_r = rain_stats_acc["rain_mm"] / rain_stats_acc["samples"]

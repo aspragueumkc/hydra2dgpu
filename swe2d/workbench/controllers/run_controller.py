@@ -331,8 +331,8 @@ class RunController:
             # scrub through snapshots as they accumulate during the run.
             try:
                 view._show_results_panel()
-            except Exception:
-                pass
+            except Exception as exc:
+                view._log(f"[ERROR] Failed to initialise results panel: {exc}")
             # Leave view._snapshot_mesh_fingerprint as empty string so the old
             # fingerprint guard in _refresh_high_perf_canvas_overlay never
             # blocks rendering (the guard has been removed anyway, but this

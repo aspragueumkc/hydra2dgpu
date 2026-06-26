@@ -221,8 +221,15 @@ class MeshController:
                 crs = QgsProject.instance().crs()
                 if crs is not None and crs.isValid():
                     crs_wkt = crs.toWkt()
-            except Exception:
-                pass
+            except Exception as _e:
+
+                try:
+
+                    view._log(f"[ERROR] Exception in mesh_controller.py: {_e}")
+
+                except Exception:
+
+                    pass
 
             write_ugrid_nc(
                 path=out_path,
@@ -273,8 +280,15 @@ class MeshController:
                 crs = QgsProject.instance().crs()
                 if crs is not None and crs.isValid():
                     projection_wkt = crs.toWkt()
-            except Exception:
-                pass
+            except Exception as _e:
+
+                try:
+
+                    view._log(f"[ERROR] Exception in mesh_controller.py: {_e}")
+
+                except Exception:
+
+                    pass
 
             write_hecras_hdf5(
                 path=out_path,
@@ -360,8 +374,15 @@ class MeshController:
             crs = QgsProject.instance().crs()
             if crs is not None and crs.isValid():
                 crs_auth = crs.authid() or crs_auth
-        except Exception:
-            pass
+        except Exception as _e:
+
+            try:
+
+                view._log(f"[ERROR] Exception in mesh_controller.py: {_e}")
+
+            except Exception:
+
+                pass
 
         try:
             write_lumped_hydrology_geopackage(out_path, crs_auth=crs_auth)

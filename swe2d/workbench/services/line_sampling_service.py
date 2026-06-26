@@ -17,6 +17,9 @@ NO SILENT FALLBACKS:
 """
 
 from __future__ import annotations
+import logging
+
+logger = logging.getLogger(__name__)
 
 import math
 from typing import Callable, Dict, List, Optional, Tuple
@@ -274,8 +277,9 @@ def build_line_sampling_map(
         try:
             if enabled_field is not None and int(ft[enabled_field]) <= 0:
                 continue
-        except Exception:
-            pass
+        except Exception as _e:
+
+            logger.warning(f"[ERROR] Exception in line_sampling_service.py: {_e}")
 
         line_len = float(geom.length())
         if line_len <= 0.0:

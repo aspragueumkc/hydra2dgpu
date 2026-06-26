@@ -118,8 +118,15 @@ def persist_project_workbench_state(
     for attr_name, widget in iter_widgets_fn():
         try:
             widget.interpretText()
-        except Exception:
-            pass
+        except Exception as _e:
+
+            try:
+
+                self._log(f"[ERROR] Exception in widget_persistence_service.py: {_e}")
+
+            except Exception:
+
+                pass
         val = None
         qt_mod = _qt_widgets_module(widget)
         if qt_mod is not None:

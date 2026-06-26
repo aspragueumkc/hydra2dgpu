@@ -46,8 +46,9 @@ def _atomic_write_json(path: str, payload: dict) -> None:
     except Exception:
         try:
             os.unlink(tmp)
-        except Exception:
-            pass
+        except Exception as _e:
+
+            logger.warning(f"[ERROR] Exception in headless_runner.py: {_e}")
 
 
 def execute_run(
@@ -209,8 +210,9 @@ def execute_run(
         if _inv_perm is not None and _inv_perm.size > 0 and coupling_controller is not None:
             try:
                 coupling_controller._inv_cell_perm = _inv_perm.copy()
-            except Exception:
-                pass
+            except Exception as _e:
+
+                logger.warning(f"[ERROR] Exception in headless_runner.py: {_e}")
 
     # Run simulation
     t_end = float(rp.get("duration_s", 3600.0))
@@ -242,8 +244,9 @@ def execute_run(
             payload["error"] = str(err)
         try:
             _atomic_write_json(status_file_path, payload)
-        except Exception:
-            pass
+        except Exception as _e:
+
+            logger.warning(f"[ERROR] Exception in headless_runner.py: {_e}")
 
     if save_max_only:
         diags: list = []

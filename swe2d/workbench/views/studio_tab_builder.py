@@ -222,20 +222,23 @@ def make_left_controls_compact(dialog, parent_widget):
     for layout in parent_widget.findChildren(QtWidgets.QLayout):
         try:
             layout.setContentsMargins(4, 4, 4, 4)
-        except Exception:
-            pass
+        except Exception as _e:
+
+            logger.warning(f"[ERROR] Exception in studio_tab_builder.py: {_e}")
         try:
             if hasattr(layout, "setSpacing"):
                 layout.setSpacing(4)
-        except Exception:
-            pass
+        except Exception as _e:
+
+            logger.warning(f"[ERROR] Exception in studio_tab_builder.py: {_e}")
         if isinstance(layout, QtWidgets.QFormLayout):
             try:
                 layout.setFieldGrowthPolicy(QtWidgets.QFormLayout.FieldGrowthPolicy.AllNonFixedFieldsGrow)
                 layout.setHorizontalSpacing(6)
                 layout.setVerticalSpacing(4)
-            except Exception:
-                pass
+            except Exception as _e:
+
+                logger.warning(f"[ERROR] Exception in studio_tab_builder.py: {_e}")
 
 
 def register_detachable_tab_widget(dialog, tab_widget):

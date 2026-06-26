@@ -8,6 +8,9 @@ the map canvas extent.
 """
 
 from __future__ import annotations
+import logging
+
+logger = logging.getLogger(__name__)
 
 import os
 import sys
@@ -523,8 +526,9 @@ def render_unstructured_snapshot_image(
             if np.isfinite(ry_min) and np.isfinite(ry_max) and (ry_max - ry_min) > 1.0e-12:
                 y_min = ry_min
                 y_max = ry_max
-        except Exception:
-            pass
+        except Exception as _e:
+
+            logger.warning(f"[ERROR] Exception in high_perf_viewer.py: {_e}")
     out["extent"] = (x_min, x_max, y_min, y_max)
 
     ts_list = list(timesteps or [])
@@ -944,8 +948,9 @@ if True:  # ponytail: always define block; Qt imported inside functions that nee
                     c = getter()
                     if c is not None:
                         return c
-            except Exception:
-                pass
+            except Exception as _e:
+
+                logger.warning(f"[ERROR] Exception in high_perf_viewer.py: {_e}")
             for attr_name in ("mMapCanvas", "mapCanvas", "_mapCanvas"):
                 c = getattr(self, attr_name, None)
                 if c is not None:
@@ -1047,8 +1052,9 @@ if True:  # ponytail: always define block; Qt imported inside functions that nee
                             QtCore.QPointF(float(p0.x()), float(p0.y())),
                             QtCore.QPointF(float(p1.x()), float(p1.y())),
                         )
-                except Exception:
-                    pass
+                except Exception as _e:
+
+                    logger.warning(f"[ERROR] Exception in high_perf_viewer.py: {_e}")
 
             # Station marker synced from line-profile hover.
             if self._station_point is not None:
@@ -1067,8 +1073,9 @@ if True:  # ponytail: always define block; Qt imported inside functions that nee
                     if self._station_label:
                         painter.setPen(QtGui.QPen(QtGui.QColor(255, 255, 255, 235)))
                         painter.drawText(QtCore.QPointF(sx + 8.0, sy - 8.0), self._station_label)
-                except Exception:
-                    pass
+                except Exception as _e:
+
+                    logger.warning(f"[ERROR] Exception in high_perf_viewer.py: {_e}")
 
             if self._legend_enabled:
                 cmap = _COLOR_LUTS.get(self._legend_cmap_key, _COLOR_LUTS.get("turbo"))

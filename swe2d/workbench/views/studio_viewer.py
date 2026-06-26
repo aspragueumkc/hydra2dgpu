@@ -1,7 +1,9 @@
 """SWE2DStudioViewer — plot tab panel for the "HYDRA2D View" dock.
 
-Owns a QTabWidget with 5 tabs, each a PlotViewWidget that can optionally
-show a coupling data table below the plot when the user toggles it.
+Owns a QTabWidget with tabs:
+  Mesh — pyqtgraph mesh wireframe / depth / velocity viewer
+  Time Series — pyqtgraph line/structure/drainage time-series (unified)
+  Profile — pyqtgraph longitudinal profile viewer
 """
 from __future__ import annotations
 
@@ -9,14 +11,22 @@ from typing import Any, Callable, Dict, Optional
 
 from qgis.PyQt import QtWidgets
 
-from swe2d.workbench.views.studio_viewer_plot import PlotViewWidget
 from swe2d.workbench.views.studio_viewer_pg import PGTimeSeriesWidget, _HAVE_PG
+from swe2d.workbench.views.studio_viewer_mesh_pg import PGMeshWidget
 
-_TAB_MODES = ["Mesh", "Time Series", "Profile", "Structure", "Network"]
+_TAB_MODES = ["Mesh", "Time Series", "Profile", "Network"]
+
+# Import profile widget if available
+try:
+    from swe2d.workbench.views.studio_viewer_profile_pg import PGProfileWidget
+    _HAVE_PROFILE_PG = True
+except ImportError:
+    PGProfileWidget = None
+    _HAVE_PROFILE_PG = False
 
 
 class SWE2DStudioViewer(QtWidgets.QWidget):
-    """The entire HYDRA2D View panel — one widget, one dock, 5 plot tabs."""
+    """The entire HYDRA2D View panel — one widget, one dock, plot tabs."""
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -25,13 +35,12 @@ class SWE2DStudioViewer(QtWidgets.QWidget):
         self._h_min: float = 1.0e-6
 
         self._tabs: QtWidgets.QTabWidget = None
-        self._plot_widgets: Dict[str, PlotViewWidget] = {}
+        self._plot_widgets: Dict[str, Any] = {}
 
         self._build_ui()
-        self._register_default_renderers()
 
     def _build_ui(self) -> None:
-        """Build the tab widget with 5 plot mode tabs."""
+        """Build the tab widget with plot tabs."""
         layout = QtWidgets.QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(0)
@@ -42,8 +51,12 @@ class SWE2DStudioViewer(QtWidgets.QWidget):
 
         for mode in _TAB_MODES:
             if mode == "Time Series" and _HAVE_PG:
-                widget = PGTimeSeriesWidget()
+                widget: Any = PGTimeSeriesWidget()
+            elif mode == "Profile" and _HAVE_PROFILE_PG:
+                widget = PGProfileWidget()
             else:
+                # Use matplotlib PlotViewWidget for Mesh, Network
+                from swe2d.workbench.views.studio_viewer_plot import PlotViewWidget
                 widget = PlotViewWidget(mode=mode)
             self._plot_widgets[mode] = widget
             self._tabs.addTab(widget, mode)
@@ -51,21 +64,19 @@ class SWE2DStudioViewer(QtWidgets.QWidget):
         layout.addWidget(self._tabs, 1)
 
     def _on_tab_changed(self, idx: int) -> None:
-        """Handle tab change — load coupling data for Structure/Network tabs and refresh."""
+        """Handle tab change — load coupling data for Network tab, then refresh."""
         widget = self._tabs.widget(idx)
         if widget is None:
             return
         mode = getattr(widget, "_mode", "")
-        if mode in ("Structure", "Network") and self._result_data is not None:
+        # Network tab needs coupling records loaded from the result data
+        if mode == "Network" and self._result_data is not None:
             for rec in getattr(self._result_data, "_run_records", []):
                 if rec.enabled and hasattr(rec, 'run_id'):
                     self._result_data.load_coupling_records(rec.run_id)
                     break
-            widget._populate_metric_combo()
-        widget.refresh()
-
-    def _register_default_renderers(self) -> None:
-        """Renderers are dispatched by swe2d.plotting.viewer_plots — no per-widget registration needed."""
+        if hasattr(widget, "refresh"):
+            widget.refresh()
 
     def set_mesh_data(self, mesh: Optional[Dict[str, Any]]) -> None:
         """Set mesh data on all plot widgets."""

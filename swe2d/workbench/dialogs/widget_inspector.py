@@ -65,8 +65,9 @@ def _probe():
         for ln in r.stdout.strip().splitlines()[:1]:
             _append_line(lines, ln)
             found_def = True
-    except Exception:
-        pass
+    except Exception as _e:
+
+        logger.warning(f"[ERROR] Exception in widget_inspector.py: {_e}")
     try:
         r = subprocess.run(["grep", "-rln", "-F", f"{cls_name}("] + dirs,
                            capture_output=True, text=True, timeout=5)
@@ -81,8 +82,9 @@ def _probe():
                 rel = os.path.relpath(fn, _PROJECT_ROOT)
                 _append_line(lines, f"  {rel}")
                 shown += 1
-    except Exception:
-        pass
+    except Exception as _e:
+
+        logger.warning(f"[ERROR] Exception in widget_inspector.py: {_e}")
     if not found_def and not src_files:
         _append_line(lines, "  (not found in project source)")
     cur = w.parent()

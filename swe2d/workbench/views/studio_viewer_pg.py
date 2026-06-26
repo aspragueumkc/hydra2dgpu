@@ -77,10 +77,21 @@ _TIME_UNIT = "hr"
 
 
 class PGTimeSeriesWidget(QtWidgets.QWidget):
-    """pyqtgraph-based time-series plot for the HYDRA2D View dock.
+    """pyqtgraph-based time-series plot for lines, structures, and drainage.
 
-    Protocol matches PlotViewWidget: set_data(), refresh(), selected_metric.
+    Unified viewer for all time-series data.  The user selects an element
+    type (Line, Structure, Drainage Node, Drainage Link) and an element ID,
+    then plots the variable for all enabled runs.
+
+    Protocol: set_data(), refresh(), selected_metric, selected_element_id.
     """
+
+    _ELEMENT_TYPES = [
+        ("Line", "line"),
+        ("Structure", "structure"),
+        ("Drainage Node", "drainage_node"),
+        ("Drainage Link", "drainage_link"),
+    ]
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -91,15 +102,18 @@ class PGTimeSeriesWidget(QtWidgets.QWidget):
         self._selected_element_id: str = ""
         self._selected_metric: str = "flow_cms"
 
-        # Cached plot data — (x_hr, y) per run key, so we don't re-load on refresh
+        # Cached plot data
         self._plot_cache: Dict[str, Tuple[np.ndarray, np.ndarray]] = {}
 
         self._plot_widget: Optional[pg.PlotWidget] = None
         self._plot_items: List[pg.PlotDataItem] = []
         self._vline: Optional[pg.InfiniteLine] = None
         self._hover_label: Optional[pg.TextItem] = None
-        self._hover_crosshair: Tuple[pg.InfiniteLine, pg.InfiniteLine] | None = None
+        self._hover_vline: Optional[pg.InfiniteLine] = None
+        self._hover_hline: Optional[pg.InfiniteLine] = None
         self._metric_combo: Optional[QtWidgets.QComboBox] = None
+        self._element_type_combo: Optional[QtWidgets.QComboBox] = None
+        self._element_id_combo: Optional[QtWidgets.QComboBox] = None
         self._table_widget: Optional[QtWidgets.QTableWidget] = None
         self.show_table_toggle: Optional[QtWidgets.QCheckBox] = None
 
@@ -110,37 +124,50 @@ class PGTimeSeriesWidget(QtWidgets.QWidget):
     # ------------------------------------------------------------------
 
     def _build_ui(self) -> None:
-        """Build the widget: combo bar, pyqtgraph plot, data table."""
+        """Build: element type/id, variable combo, pyqtgraph plot, data table."""
         root = QtWidgets.QVBoxLayout(self)
         root.setContentsMargins(0, 0, 0, 0)
         root.setSpacing(0)
 
         if not _HAVE_PG:
-            label = QtWidgets.QLabel(
-                "pyqtgraph not available.\n"
-                "Install: conda install pyqtgraph  or  pip install pyqtgraph"
-            )
+            label = QtWidgets.QLabel("pyqtgraph not available.\nInstall: conda install pyqtgraph")
             label.setWordWrap(True)
             root.addWidget(label)
             return
 
-        # Top bar: variable combo + table toggle + save/customize buttons
+        # ── Top bar: element type, element ID, variable, toggles ──
         top_bar = QtWidgets.QHBoxLayout()
-        top_bar.addStretch(1)
+
+        lbl_etype = QtWidgets.QLabel("Type:")
+        self._element_type_combo = QtWidgets.QComboBox()
+        for label, key in self._ELEMENT_TYPES:
+            self._element_type_combo.addItem(label, key)
+        self._element_type_combo.currentIndexChanged.connect(self._on_element_type_changed)
+        top_bar.addWidget(lbl_etype)
+        top_bar.addWidget(self._element_type_combo)
+        top_bar.addSpacing(8)
+
+        lbl_eid = QtWidgets.QLabel("Element:")
+        self._element_id_combo = QtWidgets.QComboBox()
+        self._element_id_combo.currentIndexChanged.connect(self._on_element_id_changed)
+        top_bar.addWidget(lbl_eid)
+        top_bar.addWidget(self._element_id_combo)
+        top_bar.addSpacing(12)
+
         lbl = QtWidgets.QLabel("Variable:")
         self._metric_combo = QtWidgets.QComboBox()
         self._repopulate_combo_items()
         self._metric_combo.currentIndexChanged.connect(self._on_metric_changed)
         top_bar.addWidget(lbl)
         top_bar.addWidget(self._metric_combo)
-        top_bar.addSpacing(12)
+        top_bar.addStretch(1)
 
         self.show_table_toggle = QtWidgets.QCheckBox("Show data table")
         self.show_table_toggle.setChecked(False)
         self.show_table_toggle.toggled.connect(self._on_table_toggle)
         top_bar.addWidget(self.show_table_toggle)
 
-        # Save button with dropdown menu
+        # Save button
         self._save_btn = QtWidgets.QPushButton("💾 Save")
         self._save_btn.setFixedHeight(24)
         self._save_menu = QtWidgets.QMenu(self._save_btn)
@@ -152,7 +179,7 @@ class PGTimeSeriesWidget(QtWidgets.QWidget):
         self._save_btn.setMenu(self._save_menu)
         top_bar.addWidget(self._save_btn)
 
-        # Settings button with dropdown menu (customization toggles)
+        # Settings button
         self._settings_btn = QtWidgets.QPushButton("⚙")
         self._settings_btn.setFixedSize(24, 24)
         self._settings_btn.setToolTip("Plot settings")
@@ -174,23 +201,21 @@ class PGTimeSeriesWidget(QtWidgets.QWidget):
 
         root.addLayout(top_bar)
 
-        # pyqtgraph plot
+        # ── pyqtgraph plot ──
         self._plot_widget = pg.PlotWidget()
         self._plot_widget.setMinimumHeight(200)
         self._plot_widget.setBackground("white")
         self._plot_widget.showGrid(x=True, y=True, alpha=0.3)
         self._plot_widget.setLabel("bottom", f"Time ({_TIME_UNIT})")
-        self._plot_widget.setLabel("left", "Flow (m³/s)")
+        self._plot_widget.setLabel("left", "Value")
         self._plot_widget.setMouseEnabled(x=True, y=True)
-        self._plot_widget.setMenuEnabled(False)  # cleaner UX
+        self._plot_widget.setMenuEnabled(False)
 
-        # Hover text item (hidden until mouse moves)
         self._hover_label = pg.TextItem("", anchor=(0, 1), color=(0, 0, 0))
         self._hover_label.setZValue(100)
         self._hover_label.setVisible(False)
         self._plot_widget.addItem(self._hover_label)
 
-        # Crosshair lines (hidden)
         self._hover_vline = pg.InfiniteLine(angle=90, movable=False, pen=pg.mkPen(color=(128, 128, 128), width=0.8, style=QtCore.Qt.PenStyle.DashLine))
         self._hover_vline.setVisible(False)
         self._hover_hline = pg.InfiniteLine(angle=0, movable=False, pen=pg.mkPen(color=(128, 128, 128), width=0.8, style=QtCore.Qt.PenStyle.DashLine))
@@ -198,19 +223,15 @@ class PGTimeSeriesWidget(QtWidgets.QWidget):
         self._plot_widget.addItem(self._hover_vline)
         self._plot_widget.addItem(self._hover_hline)
 
-        # Mouse hover proxy
         proxy = pg.SignalProxy(
             self._plot_widget.scene().sigMouseMoved,
             rateLimit=30,
             slot=self._on_mouse_moved,
         )
-
-        # Legend
         self._plot_widget.addLegend()
-
         root.addWidget(self._plot_widget, 1)
 
-        # Data table (hidden by default)
+        # ── Data table ──
         self._table_widget = QtWidgets.QTableWidget()
         self._table_widget.setEditTriggers(QtWidgets.QAbstractItemView.EditTrigger.NoEditTriggers)
         self._table_widget.setSelectionBehavior(QtWidgets.QAbstractItemView.SelectionBehavior.SelectRows)
@@ -218,6 +239,46 @@ class PGTimeSeriesWidget(QtWidgets.QWidget):
         self._table_widget.horizontalHeader().setStretchLastSection(True)
         self._table_widget.setVisible(False)
         root.addWidget(self._table_widget)
+
+    # ------------------------------------------------------------------
+    # Public protocol
+    # ------------------------------------------------------------------
+
+    @property
+    def mode(self) -> str:
+        return self._mode
+
+    @property
+    def canvas(self):
+        return self._plot_widget
+
+    @property
+    def fig(self):
+        return None
+
+    @property
+    def selected_metric(self) -> str:
+        return self._selected_metric
+
+    @selected_metric.setter
+    def selected_metric(self, metric: str) -> None:
+        self._selected_metric = str(metric) if metric else "flow_cms"
+        if self._metric_combo is not None:
+            idx = self._metric_combo.findData(self._selected_metric)
+            if idx >= 0:
+                self._metric_combo.setCurrentIndex(idx)
+
+    @property
+    def selected_element_id(self) -> str:
+        return self._selected_element_id
+
+    @selected_element_id.setter
+    def selected_element_id(self, element_id: str) -> None:
+        self._selected_element_id = str(element_id) if element_id else ""
+        if self._element_id_combo is not None and element_id:
+            idx = self._element_id_combo.findData(self._selected_element_id)
+            if idx >= 0:
+                self._element_id_combo.setCurrentIndex(idx)
 
     # ------------------------------------------------------------------
     # Slots
@@ -240,6 +301,16 @@ class PGTimeSeriesWidget(QtWidgets.QWidget):
         if idx >= 0:
             self._metric_combo.setCurrentIndex(idx)
         self._metric_combo.blockSignals(False)
+
+    def _on_element_type_changed(self) -> None:
+        """Re-populate element ID combo and refresh."""
+        self._populate_element_id_combo()
+        self.refresh()
+
+    def _on_element_id_changed(self) -> None:
+        """Update selected element ID and refresh."""
+        self._selected_element_id = str(self._element_id_combo.currentData() or "")
+        self.refresh()
 
     def _on_metric_changed(self) -> None:
         """Re-plot when the metric combo changes."""
@@ -293,6 +364,107 @@ class PGTimeSeriesWidget(QtWidgets.QWidget):
             self._hover_label.setPos(mx, my)
         else:
             self._hover_label.setVisible(False)
+
+    # ------------------------------------------------------------------
+    # Element combo population
+    # ------------------------------------------------------------------
+
+    def _populate_element_id_combo(self) -> None:
+        """Populate element ID combo based on selected element type."""
+        if self._element_id_combo is None:
+            return
+        etype = str(self._element_type_combo.currentData() or "line")
+        prev_data = self._element_id_combo.currentData()
+        self._element_id_combo.blockSignals(True)
+        self._element_id_combo.clear()
+
+        data = self._result_data
+        if etype == "line":
+            if data is not None:
+                line_ids = data.get_line_ids()
+                for lid in line_ids:
+                    self._element_id_combo.addItem(f"Line {lid}", lid)
+        else:
+            if data is not None:
+                coupling = data.get_coupling_records()
+                seen = set()
+                for rec in coupling:
+                    if str(rec.get("component", "") or "") != etype:
+                        continue
+                    oid = str(rec.get("object_id", "") or "")
+                    if not oid or oid in seen:
+                        continue
+                    seen.add(oid)
+                    oname = str(rec.get("object_name", "") or "")
+                    lbl = f"{oname} ({oid})" if oname else oid
+                    self._element_id_combo.addItem(lbl, oid)
+
+        if prev_data is not None:
+            idx = self._element_id_combo.findData(prev_data)
+            if idx >= 0:
+                self._element_id_combo.setCurrentIndex(idx)
+        self._element_id_combo.blockSignals(False)
+        self._selected_element_id = str(self._element_id_combo.currentData() or "")
+
+    # ------------------------------------------------------------------
+    # Data loading by element type
+    # ------------------------------------------------------------------
+
+    def _load_timeseries_for_type(
+        self, run_rec, element_id, var_key: str, etype: str
+    ) -> dict:
+        """Load time-series data for a line (GPKG), or coupling records for structure/drainage.
+
+        For lines: delegates to load_timeseries / load_timeseries_from_live.
+        For coupling types: filters the in-memory coupling records by
+        component, object_id, and metric.
+        """
+        from swe2d.results.queries import load_timeseries as _load_ts
+        from swe2d.results.queries import load_timeseries_from_live as _load_ts_live
+        import numpy as np
+
+        is_live = getattr(self._result_data, "data_source", "") == "live"
+        data = self._result_data
+
+        if etype == "line":
+            try:
+                lid = int(element_id)
+            except (TypeError, ValueError):
+                return {}
+            raw = (
+                _load_ts_live(data, str(run_rec.run_id), lid)
+                if is_live else
+                _load_ts(str(run_rec.gpkg_path), str(run_rec.run_id), lid)
+            )
+            return raw if raw else {}
+
+        # Coupling-based types
+        eid = self._selected_element_id
+        if not eid:
+            return {}
+
+        # Ensure coupling records are loaded for this run
+        if data._coupling_run_id != str(run_rec.run_id):
+            data.load_coupling_records(str(run_rec.run_id))
+
+        records = data.get_coupling_records()
+        if not records:
+            return {}
+
+        # Filter by component, object_id, and metric
+        filtered = [
+            r for r in records
+            if str(r.get("component", "") or "") == etype
+            and str(r.get("object_id", "") or "") == eid
+            and str(r.get("metric", "") or "") == var_key
+        ]
+        if not filtered:
+            return {}
+
+        filtered.sort(key=lambda r: float(r.get("t_s", 0.0)))
+        t_vals = np.array([float(r["t_s"]) for r in filtered], dtype=np.float64)
+        v_vals = np.array([float(r["value"]) for r in filtered], dtype=np.float64)
+        return {"t_s": t_vals, var_key: v_vals}
 
     # ------------------------------------------------------------------
     # Save / Export
@@ -453,6 +625,7 @@ class PGTimeSeriesWidget(QtWidgets.QWidget):
         if result_data is not None:
             self._result_data = result_data
             self._repopulate_combo_items()
+            self._populate_element_id_combo()
             self._populate_metric_combo()
         self._h_min = float(h_min)
 
@@ -460,65 +633,50 @@ class PGTimeSeriesWidget(QtWidgets.QWidget):
         """No-op — pyqtgraph handles rendering directly."""
 
     def refresh(self) -> None:
-        """Re-plot the time series with current data and metric."""
+        """Re-plot the time series with current element type, ID, and metric."""
         if not _HAVE_PG or self._result_data is None or self._plot_widget is None:
             return
 
-        from swe2d.results.queries import load_timeseries as _load_ts
-        from swe2d.results.queries import load_timeseries_from_live as _load_ts_live
-
         data = self._result_data
-        line_id = getattr(data, "_line_id", -1)
+        etype = str(self._element_type_combo.currentData() or "line")
+        element_id = self._selected_element_id
         var_key = self._selected_metric
-        is_live = getattr(data, "data_source", "") == "live"
         run_records = data.get_enabled_run_records()
 
-        if line_id < 0 or not run_records:
+        if not run_records:
             self._plot_widget.clear()
-            self._plot_widget.plot([0], [0], pen=None, symbol=None)  # force axes
+            self._plot_widget.plot([0], [0], pen=None)
             text = pg.TextItem("No data", anchor=(0.5, 0.5), color=(128, 128, 128))
             self._plot_widget.addItem(text)
             return
 
-        # Update axis label
         lu = getattr(data, "_length_unit", "")
         ylabel = _label_for_var(var_key, lu)
         self._plot_widget.setLabel("left", ylabel)
 
-        # Clear old items (keep legend items by clearing and re-adding)
         self._plot_widget.clear()
         self._plot_items = []
         self._hover_vline.setVisible(False)
         self._hover_hline.setVisible(False)
         self._hover_label.setVisible(False)
-
-        # Re-add hover / crosshair items (cleared by .clear())
         self._plot_widget.addItem(self._hover_label)
         self._plot_widget.addItem(self._hover_vline)
         self._plot_widget.addItem(self._hover_hline)
 
         plotted = 0
         for rec in run_records:
-            raw = (
-                _load_ts_live(data, str(rec.run_id), int(line_id))
-                if is_live else
-                _load_ts(str(rec.gpkg_path), str(rec.run_id), int(line_id))
-            )
+            eid = int(element_id) if etype == "line" and element_id else element_id
+            raw = self._load_timeseries_for_type(rec, eid, var_key, etype)
             if not raw or var_key not in raw:
                 continue
             t_hr = raw["t_s"] / 3600.0
             vals = raw[var_key]
             color = _c2q(rec.color)
             pen = pg.mkPen(color=color, width=1.6)
-            item = self._plot_widget.plot(
-                t_hr, vals,
-                pen=pen,
-                name=rec.display_label(),
-            )
+            item = self._plot_widget.plot(t_hr, vals, pen=pen, name=rec.display_label())
             self._plot_items.append(item)
             plotted += 1
 
-        # Vertical line at current time
         t_hr_now = getattr(data, "current_time_sec", 0.0) / 3600.0
         self._vline = pg.InfiniteLine(
             pos=t_hr_now, angle=90,
@@ -531,10 +689,8 @@ class PGTimeSeriesWidget(QtWidgets.QWidget):
             text = pg.TextItem("No data", anchor=(0.5, 0.5), color=(128, 128, 128))
             self._plot_widget.addItem(text)
 
-        # Re-enable auto-range after data update
         self._plot_widget.plotItem.autoRange()
 
-        # Re-populate table if visible
         if self._table_widget is not None and self._table_widget.isVisible():
             self._populate_table()
 
@@ -554,24 +710,18 @@ class PGTimeSeriesWidget(QtWidgets.QWidget):
 
         records = []
         cols = []
-        line_id = getattr(data, "_line_id", -1)
         var_key = self._selected_metric
-        from swe2d.results.queries import load_timeseries as _load_ts
-        from swe2d.results.queries import load_timeseries_from_live as _load_ts_live
-        is_live = getattr(data, "data_source", "") == "live"
+        etype = str(self._element_type_combo.currentData() or "line")
+        element_id = self._selected_element_id
 
         for rec in data.get_enabled_run_records():
-            raw = (
-                _load_ts_live(data, str(rec.run_id), int(line_id))
-                if is_live else
-                _load_ts(str(rec.gpkg_path), str(rec.run_id), int(line_id))
-            )
+            eid = int(element_id) if etype == "line" and element_id else element_id
+            raw = self._load_timeseries_for_type(rec, eid, var_key, etype)
             if raw and var_key in raw:
                 cols = sorted(raw.keys())
                 n = min(len(raw["t_s"]), 5000)
                 for i in range(n):
-                    row = {k: raw[k][i] for k in cols}
-                    records.append(row)
+                    records.append({k: raw[k][i] for k in cols})
                 break
 
         if not records or not cols:
@@ -588,10 +738,7 @@ class PGTimeSeriesWidget(QtWidgets.QWidget):
                     display = val
                 else:
                     display = "" if val is None else f"{val:.6g}"
-                self._table_widget.setItem(
-                    i, j,
-                    QtWidgets.QTableWidgetItem(display),
-                )
+                self._table_widget.setItem(i, j, QtWidgets.QTableWidgetItem(display))
 
     # ------------------------------------------------------------------
     # Metric combo helpers

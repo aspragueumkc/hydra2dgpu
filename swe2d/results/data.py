@@ -296,8 +296,9 @@ class SWE2DResultsData:
                 continue
             try:
                 ids.update(lid for lid, _ in load_line_ids(rec.gpkg_path, rec.run_id))
-            except Exception:
-                pass
+            except Exception as _e:
+
+                logger.warning(f"[ERROR] Exception in data.py: {_e}")
         return sorted(ids)
 
     @property

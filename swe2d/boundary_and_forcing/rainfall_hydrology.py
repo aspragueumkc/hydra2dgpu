@@ -6,6 +6,9 @@ plugin UI code without introducing backend coupling.
 """
 
 from __future__ import annotations
+import logging
+
+logger = logging.getLogger(__name__)
 
 from dataclasses import dataclass
 from typing import Dict, Iterable, List, Optional, Sequence, Tuple
@@ -45,8 +48,9 @@ def _parse_time_to_seconds(value) -> Optional[float]:
 
     try:
         return float(text) * 3600.0
-    except Exception:
-        pass
+    except Exception as _e:
+
+        logger.warning(f"[ERROR] Exception in rainfall_hydrology.py: {_e}")
 
     parts = text.split(":")
     if len(parts) not in (2, 3):

@@ -373,8 +373,9 @@ class OverlayController:
                 try:
                     canvas = item._canvas()
                     canvas.scene().removeItem(item)
-                except Exception:
-                    pass
+                except Exception as _e:
+
+                    logger.warning(f"[ERROR] Exception in overlay_controller.py: {_e}")
                 view._state.high_perf_canvas_overlay_item = None
             iface = view._resolve_qgis_iface()
             iface.mapCanvas().refresh()

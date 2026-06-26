@@ -97,14 +97,16 @@ def load_line_geometry(
             try:
                 if "line_id" in fields and int(ft["line_id"]) == int(line_id):
                     match = True
-            except Exception:
-                pass
+            except Exception as _e:
+
+                logger.warning(f"[ERROR] Exception in structure_service.py: {_e}")
             if not match and line_name and "name" in fields:
                 try:
                     if str(ft["name"] or "") == line_name:
                         match = True
-                except Exception:
-                    pass
+                except Exception as _e:
+
+                    logger.warning(f"[ERROR] Exception in structure_service.py: {_e}")
             if not match:
                 continue
 
@@ -335,14 +337,16 @@ def _load_profile_line_geom(gpkg_path: str, line_id: int, line_name: str):
             try:
                 if "line_id" in fields and int(ft["line_id"]) == int(line_id):
                     match = True
-            except Exception:
-                pass
+            except Exception as _e:
+
+                logger.warning(f"[ERROR] Exception in structure_service.py: {_e}")
             if not match and line_name and "name" in fields:
                 try:
                     if str(ft["name"] or "") == line_name:
                         match = True
-                except Exception:
-                    pass
+                except Exception as _e:
+
+                    logger.warning(f"[ERROR] Exception in structure_service.py: {_e}")
             if not match:
                 continue
             geom = ft.geometry()
@@ -458,8 +462,9 @@ def load_structure_overlay_data(
                 inter = geom.intersection(line_geom)
                 if inter is not None and not inter.isEmpty():
                     station_m = float(line_geom.lineLocatePoint(inter.centroid()))
-            except Exception:
-                pass
+            except Exception as _e:
+
+                logger.warning(f"[ERROR] Exception in structure_service.py: {_e}")
 
             if not np.isfinite(station_m):
                 try:
@@ -468,8 +473,9 @@ def load_structure_overlay_data(
                         nearest = line_geom.nearestPoint(centroid)
                         if nearest is not None and not nearest.isEmpty():
                             station_m = float(line_geom.lineLocatePoint(nearest))
-                except Exception:
-                    pass
+                except Exception as _e:
+
+                    logger.warning(f"[ERROR] Exception in structure_service.py: {_e}")
 
             crest = float("nan")
             if "crest_elev" in fields and ft["crest_elev"] not in (None, ""):

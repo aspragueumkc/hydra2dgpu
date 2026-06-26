@@ -1,4 +1,7 @@
 from __future__ import annotations
+import logging
+
+logger = logging.getLogger(__name__)
 
 from typing import Callable, List, Optional, Tuple
 
@@ -153,8 +156,9 @@ def hydrograph_from_layer(
             try:
                 if int(ft[bct_field]) != int(bc_type):
                     continue
-            except Exception:
-                pass
+            except Exception as _e:
+
+                logger.warning(f"[ERROR] Exception in hydrograph_logic.py: {_e}")
         try:
             th = parse_time_hours_fn(str(ft[t_field]).strip())
             vv = float(ft[v_field])

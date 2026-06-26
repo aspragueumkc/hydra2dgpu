@@ -121,8 +121,15 @@ def update_unit_system_from_crs(
             crs = project.crs()
             if crs is not None and crs.isValid():
                 crs_desc = f"{crs.authid()} {crs.description()}".strip()
-        except Exception:
-            pass
+        except Exception as _e:
+
+            try:
+
+                self._log(f"[ERROR] Exception in unit_conversion_service.py: {_e}")
+
+            except Exception:
+
+                pass
     if have_qgis_core and unit is not None:
         try:
             from qgis.core import QgsUnitTypes  # local import

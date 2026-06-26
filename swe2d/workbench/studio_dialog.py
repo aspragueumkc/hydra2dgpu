@@ -145,8 +145,15 @@ class _RuntimeLogHandler(logging.Handler):
         msg = self.format(record)
         try:
             self._log_fn(msg)
-        except Exception:
-            pass
+        except Exception as _e:
+
+            try:
+
+                self._log(f"[ERROR] Exception in studio_dialog.py: {_e}")
+
+            except Exception:
+
+                pass
 
 
 _SWE2D_WORKBENCH_STUDIO_DOCK = None
@@ -225,8 +232,15 @@ class SWE2DWorkbenchStudioDialog(QtWidgets.QDialog):
             except Exception:
                 try:
                     self.log_view.appendPlainText(msg_txt)
-                except Exception:
-                    pass
+                except Exception as _e:
+
+                    try:
+
+                        self._log(f"[ERROR] Exception in studio_dialog.py: {_e}")
+
+                    except Exception:
+
+                        pass
         elif msg_txt.startswith("[WARNING]"):
             try:
                 self.log_view.appendHtml(
@@ -234,8 +248,15 @@ class SWE2DWorkbenchStudioDialog(QtWidgets.QDialog):
             except Exception:
                 try:
                     self.log_view.appendPlainText(msg_txt)
-                except Exception:
-                    pass
+                except Exception as _e:
+
+                    try:
+
+                        self._log(f"[ERROR] Exception in studio_dialog.py: {_e}")
+
+                    except Exception:
+
+                        pass
         elif "They go UP" in msg_txt:
             try:
                 spans = []
@@ -253,19 +274,40 @@ class SWE2DWorkbenchStudioDialog(QtWidgets.QDialog):
             except Exception:
                 try:
                     self.log_view.appendPlainText(msg_txt)
-                except Exception:
-                    pass
+                except Exception as _e:
+
+                    try:
+
+                        self._log(f"[ERROR] Exception in studio_dialog.py: {_e}")
+
+                    except Exception:
+
+                        pass
         else:
             try:
                 self.log_view.appendPlainText(msg_txt)
-            except Exception:
-                pass
+            except Exception as _e:
+
+                try:
+
+                    self._log(f"[ERROR] Exception in studio_dialog.py: {_e}")
+
+                except Exception:
+
+                    pass
         for dlg in list(self._state.runtime_log_detached_dialogs):
             try:
                 if dlg is not None:
                     dlg.append_text(msg_txt)
-            except Exception:
-                pass
+            except Exception as _e:
+
+                try:
+
+                    self._log(f"[ERROR] Exception in studio_dialog.py: {_e}")
+
+                except Exception:
+
+                    pass
         now = time.perf_counter()
         last = float(getattr(self, "_last_log_process_events_wall", 0.0) or 0.0)
         if (now - last) >= 0.10:
@@ -835,12 +877,26 @@ class SWE2DWorkbenchStudioDialog(QtWidgets.QDialog):
         topo = self._topology_tab_view
         try:
             topo.topo_generate_btn.setEnabled(not busy)
-        except Exception:
-            pass
+        except Exception as _e:
+
+            try:
+
+                self._log(f"[ERROR] Exception in studio_dialog.py: {_e}")
+
+            except Exception:
+
+                pass
         try:
             topo.topo_terminate_btn.setEnabled(bool(busy))
-        except Exception:
-            pass
+        except Exception as _e:
+
+            try:
+
+                self._log(f"[ERROR] Exception in studio_dialog.py: {_e}")
+
+            except Exception:
+
+                pass
         if status_msg:
             topo.topo_status_lbl.setText(status_msg)
         if busy:
@@ -853,8 +909,15 @@ class SWE2DWorkbenchStudioDialog(QtWidgets.QDialog):
             topo.progress_bar.setValue(0)
             try:
                 QtWidgets.QApplication.restoreOverrideCursor()
-            except Exception:
-                pass
+            except Exception as _e:
+
+                try:
+
+                    self._log(f"[ERROR] Exception in studio_dialog.py: {_e}")
+
+                except Exception:
+
+                    pass
 
     def _load_2d_model_geopackage(self, path_override=None) -> None:
         """Load a 2D model GeoPackage into the workbench."""
@@ -905,8 +968,15 @@ class SWE2DWorkbenchStudioDialog(QtWidgets.QDialog):
             safe_disconnect(signal, self._persist_project_workbench_state)
             try:
                 signal.connect(self._persist_project_workbench_state)
-            except Exception:
-                pass
+            except Exception as _e:
+
+                try:
+
+                    self._log(f"[ERROR] Exception in studio_dialog.py: {_e}")
+
+                except Exception:
+
+                    pass
 
     def _connect_project_save_state_signals(self) -> None:
         """Connect project save/close events to persist workbench state."""
@@ -1075,8 +1145,15 @@ class SWE2DWorkbenchStudioDialog(QtWidgets.QDialog):
         if iface is not None and hasattr(iface, "mapCanvas"):
             try:
                 iface.mapCanvas().refresh()
-            except Exception:
-                pass
+            except Exception as _e:
+
+                try:
+
+                    self._log(f"[ERROR] Exception in studio_dialog.py: {_e}")
+
+                except Exception:
+
+                    pass
 
     def _update_high_perf_overlay_time(self, t_s: float):
         """Update the high-performance overlay time."""
@@ -2371,8 +2448,15 @@ class SWE2DWorkbenchStudioDialog(QtWidgets.QDialog):
         for w in (mtab.gpu_diag_sync_interval_spin,):
             try:
                 w.interpretText()
-            except Exception:
-                pass
+            except Exception as _e:
+
+                try:
+
+                    self._log(f"[ERROR] Exception in studio_dialog.py: {_e}")
+
+                except Exception:
+
+                    pass
         return {
             "gravity": float(self._gravity),
             "k_mann": float(self._k_mann),
