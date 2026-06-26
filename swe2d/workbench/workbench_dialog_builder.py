@@ -30,7 +30,7 @@ from swe2d.workbench.controllers.layer_controller import LayerController
 from swe2d.workbench.controllers.mesh_controller import MeshController
 from swe2d.workbench.controllers.overlay_controller import OverlayController
 from swe2d.workbench.controllers.topology_controller import TopologyController
-from swe2d.workbench.controllers.workbench_controller import WorkbenchController
+
 from swe2d.mesh.gmsh_backend import _gmsh_available
 from swe2d.runtime.backend import (
     SpatialDiscretization,
@@ -70,14 +70,6 @@ class WorkbenchDialogBuilder:
         dlg._mesh_controller = MeshController(view=dlg)
         dlg._overlay_controller = OverlayController(view=dlg)
         dlg._topology_controller = TopologyController(view=dlg)
-        dlg._workbench_controller = WorkbenchController(
-            view=dlg,
-            run_controller=dlg._controller,
-            mesh_controller=dlg._mesh_controller,
-            overlay_controller=dlg._overlay_controller,
-            topology_controller=dlg._topology_controller,
-            layer_controller=dlg._layer_controller,
-        )
         initialize_workbench_startup_state(
             dlg,
             qtcore_module=_QtCore,

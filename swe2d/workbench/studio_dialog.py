@@ -567,11 +567,11 @@ class SWE2DWorkbenchStudioDialog(QtWidgets.QDialog):
 
     def _refresh_topology_status(self) -> None:
         """Refresh topology status display (delegates to controller)."""
-        self._workbench_controller._refresh_topology_status()
+        self._topology_controller._refresh_topology_status()
 
     def _populate_gmsh_quality_controls(self) -> None:
         """Populate gmsh quality controls (delegates to controller)."""
-        self._workbench_controller._populate_gmsh_quality_controls()
+        self._topology_controller._populate_gmsh_quality_controls()
 
     # ── TopologyMeshView protocol methods ─────────────────────────────
 
@@ -614,15 +614,15 @@ class SWE2DWorkbenchStudioDialog(QtWidgets.QDialog):
 
     def _create_lumped_hydrology_geopackage(self) -> None:
         """Create a lumped hydrology GeoPackage."""
-        self._workbench_controller.create_lumped_hydrology_geopackage()
+        self._mesh_controller.create_lumped_hydrology_geopackage()
 
     def _export_mesh_to_layers(self) -> None:
         """Export mesh to QGIS vector layers."""
-        self._workbench_controller.export_mesh_to_layers()
+        self._mesh_controller.export_mesh_to_layers()
 
     def _export_mesh_to_ugrid(self) -> None:
         """Export mesh to UGRID NetCDF."""
-        self._workbench_controller.export_mesh_to_ugrid()
+        self._mesh_controller.export_mesh_to_ugrid()
 
     def _save_mesh_to_gpkg(self) -> None:
         """Save current mesh to a GeoPackage."""
@@ -705,23 +705,23 @@ class SWE2DWorkbenchStudioDialog(QtWidgets.QDialog):
 
     def _assign_node_z_from_terrain(self) -> None:
         """Assign node z-values from terrain raster."""
-        self._workbench_controller.assign_node_z_from_terrain()
+        self._mesh_controller.assign_node_z_from_terrain()
 
     def _export_results_to_ugrid(self) -> None:
         """Export simulation results to UGRID NetCDF format."""
-        self._workbench_controller.export_results_to_ugrid()
+        self._mesh_controller.export_results_to_ugrid()
 
     def _pull_node_z_from_layer(self) -> None:
         """Pull node z-values from a vector layer."""
-        self._workbench_controller.pull_node_z_from_layer()
+        self._mesh_controller.pull_node_z_from_layer()
 
     def _open_model_gpkg_explorer(self) -> None:
         """Open model GeoPackage explorer dialog."""
-        self._workbench_controller.open_model_gpkg_explorer()
+        self._topology_controller.open_model_gpkg_explorer()
 
     def _open_run_log_viewer(self) -> None:
         """Open the run log viewer dialog."""
-        self._workbench_controller.open_run_log_viewer()
+        self._mesh_controller.open_run_log_viewer()
 
     def _open_topology_region_table(self) -> None:
         """Open topology region attribute table dialog."""
@@ -794,21 +794,21 @@ class SWE2DWorkbenchStudioDialog(QtWidgets.QDialog):
 
     def _create_topology_template_layers(self) -> None:
         """Create topology template layers in the QGIS project."""
-        self._workbench_controller.create_topology_template_layers()
+        self._topology_controller.create_topology_template_layers()
 
     def _generate_mesh_from_topology_layers(self) -> None:
         """Generate mesh from topology layer data."""
-        self._workbench_controller.generate_mesh_from_topology_layers()
+        self._topology_controller.generate_mesh_from_topology_layers()
 
     def _on_terminate_topology_mesh(self) -> None:
         """Terminate running topology-to-mesh generation."""
-        self._workbench_controller.on_terminate_topology_mesh()
+        self._topology_controller.on_terminate_topology_mesh()
 
     def _start_topology_mesh_async(self, conceptual=None, backend=None,
                                     default_cell_type=None, mesh_options=None,
                                     run_mode="full") -> None:
         """Start async topology-to-mesh generation."""
-        self._workbench_controller.start_topology_mesh_async(
+        self._topology_controller.start_topology_mesh_async(
             conceptual=conceptual, backend_name=backend or "gmsh",
             default_cell_type=default_cell_type or "Triangle",
             mesh_options=mesh_options, run_mode=run_mode,
@@ -844,7 +844,7 @@ class SWE2DWorkbenchStudioDialog(QtWidgets.QDialog):
 
     def _load_2d_model_geopackage(self, path_override=None) -> None:
         """Load a 2D model GeoPackage into the workbench."""
-        self._workbench_controller.load_2d_model_geopackage(path_override=path_override)
+        self._mesh_controller.load_2d_model_geopackage(path_override=path_override)
 
     def _iter_all_persistable_widgets(self):
         """Yield (attr_name, widget) pairs across all tab views and toolbox."""
@@ -1025,7 +1025,7 @@ class SWE2DWorkbenchStudioDialog(QtWidgets.QDialog):
 
     def _poll_topology_mesh_future(self):
         """Poll the topology mesh generation future and update state."""
-        state = self._workbench_controller.poll_topology_mesh_future(self._topology_mesh_state)
+        state = self._topology_controller.poll_topology_mesh_future(self._topology_mesh_state)
         if state is not None:
             self._topology_mesh_state = state
         return state
@@ -1835,13 +1835,12 @@ class SWE2DWorkbenchStudioDialog(QtWidgets.QDialog):
         # -- Results dock: 3-page toolbox (Overlay, Line/Drainage, Runs)
         self._results_toolbox = ResultsToolbox()
         # Wire toolbox signals → controller
-        ctrl = self._workbench_controller
         self._results_toolbox.overlay_toggled.connect(
-            ctrl.on_high_perf_canvas_overlay_toggled)
+            self._overlay_controller.on_high_perf_canvas_overlay_toggled)
         self._results_toolbox.overlay_style_changed.connect(
-            ctrl.on_high_perf_canvas_overlay_style_changed)
+            self._overlay_controller.on_high_perf_canvas_overlay_style_changed)
         self._results_toolbox.overlay_export_geotiff.connect(
-            ctrl.export_high_perf_overlay_to_geotiff)
+            self._overlay_controller.export_high_perf_overlay_to_geotiff)
         # Run list signals
         self._results_toolbox.run_selection_changed.connect(
             self._on_run_selection_changed)
@@ -1918,7 +1917,7 @@ class SWE2DWorkbenchStudioDialog(QtWidgets.QDialog):
 
         self._studio_apply_visual_profile("Default")
         self._studio_apply_feature_filters()
-        self._workbench_controller.refresh_layer_combos()
+        self._layer_controller.refresh_layer_combos()
 
         # ── Widget binding validation ─────────────────────────────────
         self._validate_widget_bindings()

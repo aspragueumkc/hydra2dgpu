@@ -11,19 +11,19 @@ from qgis.PyQt import QtCore, QtGui, QtWidgets
 
 def build_map_tab(dialog) -> QtWidgets.QWidget:
     """Build the Map tab page and wrap it in a scroll area."""
-    page, data_layout, actions_layout, tools_layout = dialog._build_map_tab_page()
+    page, data_layout, actions_layout, tools_layout = build_map_tab_page(dialog)
     return wrap_left_tab_page(dialog, page)
 
 
 def build_topology_tab(dialog) -> QtWidgets.QWidget:
     """Build the Topology tab page and wrap it in a scroll area."""
-    page = dialog._build_topology_tab_page()
+    page = build_topology_tab_page(dialog)
     return wrap_left_tab_page(dialog, page)
 
 
 def build_model_tab(dialog) -> QtWidgets.QWidget:
     """Build the Model tab page and wrap it in a scroll area."""
-    page, solver_form, rain_form, drain_form, run_page = dialog._build_model_tab_page()
+    page, solver_form, rain_form, drain_form, run_page = build_model_tab_page(dialog)
     return wrap_left_tab_page(dialog, page)
 
 
@@ -86,12 +86,12 @@ def wire_map_tab_data_signals(dialog) -> None:
     """Wire the Map tab Data page button signals to the controller."""
     from swe2d.workbench.signal_helpers import safe_disconnect
     v = dialog._map_tab_view
-    safe_disconnect(v.autopop_group_btn.clicked, dialog._workbench_controller.autopopulate_layer_combos_from_group)
-    v.autopop_group_btn.clicked.connect(dialog._workbench_controller.autopopulate_layer_combos_from_group)
-    safe_disconnect(v.refresh_layers_btn.clicked, dialog._workbench_controller.refresh_layer_combos)
-    v.refresh_layers_btn.clicked.connect(dialog._workbench_controller.refresh_layer_combos)
-    safe_disconnect(v.create_model_gpkg_btn.clicked, dialog._workbench_controller.create_2d_model_geopackage)
-    v.create_model_gpkg_btn.clicked.connect(dialog._workbench_controller.create_2d_model_geopackage)
+    safe_disconnect(v.autopop_group_btn.clicked, dialog._layer_controller.autopopulate_layer_combos_from_group)
+    v.autopop_group_btn.clicked.connect(dialog._layer_controller.autopopulate_layer_combos_from_group)
+    safe_disconnect(v.refresh_layers_btn.clicked, dialog._layer_controller.refresh_layer_combos)
+    v.refresh_layers_btn.clicked.connect(dialog._layer_controller.refresh_layer_combos)
+    safe_disconnect(v.create_model_gpkg_btn.clicked, dialog._mesh_controller.create_2d_model_geopackage)
+    v.create_model_gpkg_btn.clicked.connect(dialog._mesh_controller.create_2d_model_geopackage)
 
 
 def wire_map_tab_action_signals(dialog) -> None:
@@ -99,15 +99,15 @@ def wire_map_tab_action_signals(dialog) -> None:
     from swe2d.workbench.signal_helpers import safe_disconnect
     v = dialog._map_tab_view
     handlers = {
-        "load_model_gpkg_btn": (v.load_model_gpkg_btn, dialog._load_2d_model_geopackage),
-        "export_mesh_layers_btn": (v.export_mesh_layers_btn, dialog._export_mesh_to_layers),
-        "export_mesh_ugrid_btn": (v.export_mesh_ugrid_btn, dialog._export_mesh_to_ugrid),
+        "load_model_gpkg_btn": (v.load_model_gpkg_btn, dialog._mesh_controller.load_2d_model_geopackage),
+        "export_mesh_layers_btn": (v.export_mesh_layers_btn, dialog._mesh_controller.export_mesh_to_layers),
+        "export_mesh_ugrid_btn": (v.export_mesh_ugrid_btn, dialog._mesh_controller.export_mesh_to_ugrid),
         "save_mesh_gpkg_btn": (v.save_mesh_gpkg_btn, dialog._save_mesh_to_gpkg),
-        "import_mesh_layers_btn": (v.import_mesh_layers_btn, dialog._workbench_controller.import_mesh_from_layers),
+        "import_mesh_layers_btn": (v.import_mesh_layers_btn, dialog._mesh_controller.import_mesh_from_layers),
         "load_mesh_gpkg_btn": (v.load_mesh_gpkg_btn, dialog._load_mesh_from_gpkg),
-        "terrain_to_nodes_btn": (v.terrain_to_nodes_btn, dialog._assign_node_z_from_terrain),
-        "pull_node_z_btn": (v.pull_node_z_btn, dialog._pull_node_z_from_layer),
-        "export_results_ugrid_btn": (v.export_results_ugrid_btn, dialog._export_results_to_ugrid),
+        "terrain_to_nodes_btn": (v.terrain_to_nodes_btn, dialog._mesh_controller.assign_node_z_from_terrain),
+        "pull_node_z_btn": (v.pull_node_z_btn, dialog._mesh_controller.pull_node_z_from_layer),
+        "export_results_ugrid_btn": (v.export_results_ugrid_btn, dialog._mesh_controller.export_results_to_ugrid),
     }
     for attr, (btn, cb) in handlers.items():
         safe_disconnect(btn.clicked, cb)
@@ -119,8 +119,8 @@ def wire_map_tab_tools_signals(dialog) -> None:
     from swe2d.workbench.signal_helpers import safe_disconnect
     v = dialog._map_tab_view
     handlers = {
-        "open_model_gpkg_explorer_btn": (v.open_model_gpkg_explorer_btn, dialog._open_model_gpkg_explorer),
-        "open_run_log_viewer_btn": (v.open_run_log_viewer_btn, dialog._open_run_log_viewer),
+        "open_model_gpkg_explorer_btn": (v.open_model_gpkg_explorer_btn, dialog._topology_controller.open_model_gpkg_explorer),
+        "open_run_log_viewer_btn": (v.open_run_log_viewer_btn, dialog._mesh_controller.open_run_log_viewer),
     }
     for attr, (btn, cb) in handlers.items():
         safe_disconnect(btn.clicked, cb)
@@ -146,9 +146,9 @@ def wire_topology_tab_static_signals(dialog) -> None:
     from swe2d.workbench.signal_helpers import safe_disconnect
     v = dialog._topology_tab_view
     handlers = {
-        "topo_export_template_btn": (v.topo_export_template_btn, dialog._create_topology_template_layers),
-        "topo_generate_btn": (v.topo_generate_btn, dialog._generate_mesh_from_topology_layers),
-        "topo_terminate_btn": (v.topo_terminate_btn, dialog._on_terminate_topology_mesh),
+        "topo_export_template_btn": (v.topo_export_template_btn, dialog._topology_controller.create_topology_template_layers),
+        "topo_generate_btn": (v.topo_generate_btn, dialog._topology_controller.generate_mesh_from_topology_layers),
+        "topo_terminate_btn": (v.topo_terminate_btn, dialog._topology_controller.on_terminate_topology_mesh),
     }
     for attr, (btn, cb) in handlers.items():
         safe_disconnect(btn.clicked, cb)

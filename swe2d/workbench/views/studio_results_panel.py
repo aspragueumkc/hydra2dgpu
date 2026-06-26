@@ -188,7 +188,7 @@ def on_results_panel_timestep_changed(dialog, t_s: float, frame_idx: int = 0) ->
         else:
             last_ts = getattr(dialog, "_overlay_last_loaded_t_s", None)
             if last_ts is None or abs(float(last_ts) - float(t_s)) > 1.0e-3:
-                dialog._workbench_controller.load_mesh_snapshot_for_overlay(t_s)
+                dialog._overlay_controller.load_mesh_snapshot_for_overlay(t_s)
             dialog._update_high_perf_overlay_time(float(t_s))
     viewer = getattr(dialog, "_studio_viewer", None)
     if viewer is not None:

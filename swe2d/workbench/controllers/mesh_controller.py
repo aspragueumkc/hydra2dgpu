@@ -554,7 +554,7 @@ class MeshController:
                 QgsProject.instance().addMapLayer(lyr)
                 _apply_style(lyr, gpkg_path)
 
-            getattr(self._view, "_workbench_controller").refresh_layer_combos()
+            self._view._layer_controller.refresh_layer_combos()
             view._model_gpkg_path = str(gpkg_path)
             view._log(
                 f"Loaded 2D model GeoPackage: {gpkg_path} "
