@@ -911,7 +911,7 @@ class RunController:
                 h_min=wp["h_min_spin"],
             )
 
-                return _result_data
+            return _result_data
         except Exception as exc:
             run_lifecycle.handle_run_failure(
                 exc,
