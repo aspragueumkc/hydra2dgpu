@@ -204,6 +204,13 @@ def execute_run(
             structures=structures_mod,
             log_callback=lambda msg: logger.info("[COUPLING] %s", msg),
         )
+        # Sync RCMK inverse permutation from backend to coupling controller.
+        _inv_perm = getattr(backend, "_inv_cell_perm", None)
+        if _inv_perm is not None and _inv_perm.size > 0 and coupling_controller is not None:
+            try:
+                coupling_controller._inv_cell_perm = _inv_perm.copy()
+            except Exception:
+                pass
 
     # Run simulation
     t_end = float(rp.get("duration_s", 3600.0))

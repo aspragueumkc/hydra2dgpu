@@ -24,6 +24,13 @@ from swe2d.workbench.services.constants_service import (
 )
 
 
+def _set_default_value(layer, field_name: str, value) -> None:
+    from qgis.core import QgsDefaultValue
+    field_idx = layer.fields().lookupField(field_name)
+    if field_idx >= 0:
+        layer.setDefaultValueDefinition(field_idx, QgsDefaultValue(repr(value)))
+
+
 class TopologyTabView(QtWidgets.QWidget):
     """View for the Topo Mesh tab.
 
@@ -1284,6 +1291,25 @@ def _configure_swe2d_layer_editors(
         set_expression_constraint_fn(layer, "embankment_overflow_width", '"embankment_overflow_width" IS NULL OR "embankment_overflow_width" >= 0')
         set_expression_constraint_fn(layer, "embankment_weir_coeff", '"embankment_weir_coeff" IS NULL OR "embankment_weir_coeff" > 0')
 
+        # Register Python form init for conditional field visibility
+        cfg = layer.editFormConfig()
+        form_py = os.path.join(
+            os.path.dirname(os.path.dirname(os.path.dirname(__file__))),
+            "workbench", "forms", "swe2d_structures_form.py"
+        )
+        if os.path.exists(form_py):
+            cfg.setInitCodePath(form_py)
+            cfg.setInitFunction("form_open")
+
+        _set_default_value(layer, "structure_type", 1)
+        _set_default_value(layer, "crest_elev", 0.0)
+        _set_default_value(layer, "enabled", 1)
+        _set_default_value(layer, "roughness_n", 0.035)
+        _set_default_value(layer, "length", 30.0)
+        _set_default_value(layer, "entrance_loss_k", 0.5)
+        _set_default_value(layer, "exit_loss_k", 1.0)
+        _set_default_value(layer, "culvert_barrels", 1)
+
         for field_name, alias in (
             ("culvert_shape", "Culvert Shape"),
             ("culvert_code", "FHWA Culvert Code"),
@@ -1303,14 +1329,4 @@ def _configure_swe2d_layer_editors(
         ):
             _set_alias(field_name, alias)
 
-        try:
-            from qgis.core import QgsEditFormConfig
-            cfg = layer.editFormConfig()
-            form_path = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), "forms", "swe2d_structures_culvert_form.ui")
-            if os.path.exists(form_path) and hasattr(cfg, "setUiForm"):
-                cfg.setUiForm(form_path)
-                if hasattr(QgsEditFormConfig, "UiFileLayout") and hasattr(cfg, "setLayout"):
-                    cfg.setLayout(QgsEditFormConfig.UiFileLayout)
-                layer.setEditFormConfig(cfg)
-        except Exception as e:
-            log_fn(f"[ERROR] culvert form config: {e}")
+

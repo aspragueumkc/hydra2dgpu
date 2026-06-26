@@ -525,6 +525,19 @@ class RunController:
                 else:
                     raise
 
+            # Sync RCMK inverse permutation from backend to coupling controller.
+            # The backend stores _inv_cell_perm after build_mesh (rebuilt above
+            # via _build_and_initialize_backend).  Without this sync, structure
+            # cell indices would be in original order while solver state is in
+            # RCMK-renumbered order on the GPU.
+            if coupling_controller is not None:
+                _inv_perm = getattr(backend, "_inv_cell_perm", None)
+                if _inv_perm is not None and _inv_perm.size > 0:
+                    try:
+                        coupling_controller._inv_cell_perm = np.asarray(_inv_perm, dtype=np.int32).copy()
+                    except Exception as sync_exc:
+                        log_fn(f"[WARNING] Failed to sync inv_cell_perm to coupling controller: {sync_exc}")
+
             last_diag = None
             t_accum = 0.0
             i = 0

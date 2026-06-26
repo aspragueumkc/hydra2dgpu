@@ -328,7 +328,7 @@ def pack_pipe_network_soa(cfg: Optional[PipeNetworkConfig], n_cells: int) -> Opt
     )
 
 
-def pack_structures_soa(cfg: Optional[HydraulicStructureConfig], n_cells: int, model_to_ft: float = 1.0) -> Optional[SWE2DStructuresSoA]:
+def pack_structures_soa(cfg: Optional[HydraulicStructureConfig], n_cells: int, model_to_ft: float = 1.0, cell_bed: Optional[np.ndarray] = None, log_fn: Optional[Callable[[str], None]] = None) -> Optional[SWE2DStructuresSoA]:
     """Pack hydraulic structure metadata into SoA arrays for GPU/CPU computation.
 
     Input metadata and output SoA arrays are in MODEL UNITS (meters for SI,
@@ -403,8 +403,26 @@ def pack_structures_soa(cfg: Optional[HydraulicStructureConfig], n_cells: int, m
         culvert_area[i] = _meta_float(st.metadata, "culvert_area_m2", _meta_float(st.metadata, "area_m2", 0.0))  # L²
         culvert_barrels[i] = _meta_float(st.metadata, "culvert_barrels", 1.0)
         culvert_slope[i] = _meta_float(st.metadata, "culvert_slope", 0.0)
-        inlet_invert_elev[i] = _meta_float(st.metadata, "inlet_invert_elev", st.crest_elev)
-        outlet_invert_elev[i] = _meta_float(st.metadata, "outlet_invert_elev", inlet_invert_elev[i])
+        raw_inlet = st.metadata.get("inlet_invert_elev")
+        raw_outlet = st.metadata.get("outlet_invert_elev")
+        if raw_inlet is not None:
+            inlet_invert_elev[i] = float(raw_inlet)
+        elif cell_bed is not None and 0 <= st.upstream_cell < len(cell_bed):
+            inlet_invert_elev[i] = float(cell_bed[st.upstream_cell])
+            if log_fn:
+                log_fn(f"inlet_invert_elev not set for structure {st.structure_id} — defaulting to bed elevation {cell_bed[st.upstream_cell]:.3f}")
+        else:
+            inlet_invert_elev[i] = st.crest_elev
+            if log_fn:
+                log_fn(f"inlet_invert_elev not set for structure {st.structure_id} — defaulting to crest elevation {st.crest_elev:.3f}")
+        if raw_outlet is not None:
+            outlet_invert_elev[i] = float(raw_outlet)
+        elif cell_bed is not None and 0 <= st.downstream_cell < len(cell_bed):
+            outlet_invert_elev[i] = float(cell_bed[st.downstream_cell])
+            if log_fn:
+                log_fn(f"outlet_invert_elev not set for structure {st.structure_id} — defaulting to bed elevation {cell_bed[st.downstream_cell]:.3f}")
+        else:
+            outlet_invert_elev[i] = inlet_invert_elev[i]
         entrance_loss_k[i] = _meta_float(st.metadata, "entrance_loss_k", _meta_float(st.metadata, "inlet_loss_k", 0.5))
         exit_loss_k[i] = _meta_float(st.metadata, "exit_loss_k", _meta_float(st.metadata, "outlet_loss_k", 1.0))
         embankment_enabled[i] = int(_meta_float(st.metadata, "embankment_enabled", 0.0))
@@ -449,12 +467,14 @@ def pack_coupling_soa(
     n_cells: int,
     pipe_network: Optional[PipeNetworkConfig] = None,
     hydraulic_structures: Optional[HydraulicStructureConfig] = None,
+    cell_bed: Optional[np.ndarray] = None,
+    log_fn: Optional[Callable[[str], None]] = None,
 ) -> SWE2DCouplingSoA:
     """Pack coupling soa."""
     return SWE2DCouplingSoA(
         n_cells=int(n_cells),
         drainage=pack_pipe_network_soa(pipe_network, n_cells),
-        structures=pack_structures_soa(hydraulic_structures, n_cells),
+        structures=pack_structures_soa(hydraulic_structures, n_cells, cell_bed=cell_bed, log_fn=log_fn),
     )
 
 
@@ -475,6 +495,7 @@ class SWE2DCouplingController:
         culvert_face_flux_mode: str = "face_flux",
         use_redistribution: bool = True,
         log_callback: Optional[Callable[[str], None]] = None,
+        inv_cell_perm: Optional[np.ndarray] = None,
 ):
         """Coupling controller for SWE2D surface/drainage/structure exchange.
 
@@ -541,7 +562,7 @@ class SWE2DCouplingController:
         self._coupling_applied_this_timestep = False
         self._use_redistribution = bool(use_redistribution)
         self._drainage_soa = pack_pipe_network_soa(self.drainage.cfg, self.n_cells) if self.drainage is not None else None
-        self._structures_soa = pack_structures_soa(self.structures.cfg, self.n_cells, model_to_ft=1.0) if self.structures is not None else None
+        self._structures_soa = pack_structures_soa(self.structures.cfg, self.n_cells, model_to_ft=1.0, cell_bed=self.cell_bed, log_fn=self._log) if self.structures is not None else None
         self._structures_cfg = tuple(self.structures.cfg.structures) if self.structures is not None else tuple()
         self._structure_count = len(self._structures_cfg)
         self._last_structure_flows: Optional[np.ndarray] = None  # ponytail: per-element flows
@@ -848,18 +869,18 @@ class SWE2DCouplingController:
             face_nx=np.ascontiguousarray(ff.face_nx, dtype=np.float64),
             face_ny=np.ascontiguousarray(ff.face_ny, dtype=np.float64),
             face_width=np.ascontiguousarray(ff.face_width, dtype=np.float64),
-            donor_cell=np.ascontiguousarray(ff.donor_cell, dtype=np.int32),
-            receiver_cell=np.ascontiguousarray(ff.receiver_cell, dtype=np.int32),
+            donor_cell=self._remap_cells_for_gpu(np.asarray(ff.donor_cell, dtype=np.int32)),
+            receiver_cell=self._remap_cells_for_gpu(np.asarray(ff.receiver_cell, dtype=np.int32)),
             invert_elev=np.ascontiguousarray(ff.invert_elev, dtype=np.float64),
             depth_safety=np.ascontiguousarray(ff.depth_safety_factor, dtype=np.float64),
             donor_cell_area=np.ascontiguousarray(ff.donor_cell_area, dtype=np.float64),
             use_face_flux=True,
         )
         if self._enquiry_up_cell is not None and self._enquiry_dn_cell is not None:
-            upload_kwargs["enquiry_up_cell"] = np.ascontiguousarray(
-                self._enquiry_up_cell, dtype=np.int32)
-            upload_kwargs["enquiry_dn_cell"] = np.ascontiguousarray(
-                self._enquiry_dn_cell, dtype=np.int32)
+            upload_kwargs["enquiry_up_cell"] = self._remap_cells_for_gpu(
+                np.asarray(self._enquiry_up_cell, dtype=np.int32))
+            upload_kwargs["enquiry_dn_cell"] = self._remap_cells_for_gpu(
+                np.asarray(self._enquiry_dn_cell, dtype=np.int32))
         try:
             native_mod.swe2d_gpu_upload_culvert_face_flux_params(**upload_kwargs)
             self._culvert_face_flux_preloaded = True
@@ -1002,27 +1023,39 @@ class SWE2DCouplingController:
     def apply_native_device_sources(self, t_s: float, dt_s: float) -> bool:
         """Attempt full on-device source update without host state fetch.
 
-        Returns True when external sources were written on device and the
-        caller can skip get_state()/Python callback source array handling.
+        Returns True when external sources were written on device.
 
         When redistribution is active and the persistent on-device function
         is available, redistribution is also applied on-device (eliminating
         all D2H/H2D transfers of the source array).
+
+        Raises RuntimeError if the GPU path is required but unavailable
+        (no Python fallback — all coupling must go through the GPU path).
         """
         _ = (t_s, dt_s)
         if self.structures is None and self.drainage is None:
             return False
         if self._has_enabled_bridge_structures:
-            return False
+            raise RuntimeError(
+                "GPU coupling path does not support bridge structures. "
+                "Disable bridge structures or rebuild with bridge GPU support."
+            )
 
         native_mod = self._native_cuda_module()
         if native_mod is None:
-            return False
+            raise RuntimeError(
+                "CUDA module not available for GPU coupling path. "
+                "The Python coupling fallback has been removed — "
+                "ensure the native hydra_swe2d module is built and importable."
+            )
 
         # Need compute_coupling_full_on_device for the final on-device write.
         # Without it we cannot return True (no way to get sources to device).
         if not hasattr(native_mod, "swe2d_gpu_compute_coupling_full_on_device"):
-            return False
+            raise RuntimeError(
+                "swe2d_gpu_compute_coupling_full_on_device not found in native module. "
+                "Rebuild hydra_swe2d with the persistent GPU coupling path enabled."
+            )
 
         self._ensure_native_culvert_solver_mode(native_mod)
 
@@ -1310,8 +1343,8 @@ class SWE2DCouplingController:
             try:
                 native_mod.swe2d_gpu_preload_structure_params(
                     np.asarray(ssoa.structure_type, dtype=np.int32),
-                    np.asarray(ssoa.upstream_cell, dtype=np.int32),
-                    np.asarray(ssoa.downstream_cell, dtype=np.int32),
+                    self._remap_cells_for_gpu(np.asarray(ssoa.upstream_cell, dtype=np.int32)),
+                    self._remap_cells_for_gpu(np.asarray(ssoa.downstream_cell, dtype=np.int32)),
                     np.asarray(ssoa.crest_elev, dtype=np.float64),
                     np.asarray(ssoa.width, dtype=np.float64),
                     np.asarray(ssoa.height, dtype=np.float64),
@@ -1361,6 +1394,22 @@ class SWE2DCouplingController:
             )
         self._persistent_coupling_preloaded = True
 
+    def _remap_cells_for_gpu(self, cells: np.ndarray) -> np.ndarray:
+        """Remap cell indices from original (pre-RCMK) to solver (RCMK) order.
+
+        The C++ mesh builder applies RCMK renumbering to solver arrays
+        (d_h, d_cell_zb, d_cell_area) but structure cell indices come from
+        Python (original order).  This function remaps them so the GPU
+        coupling kernel reads the correct cells.
+        """
+        if self._inv_cell_perm is None or self._inv_cell_perm.size == 0:
+            return cells
+        out = cells.copy()
+        valid = (cells >= 0) & (cells < self._inv_cell_perm.size)
+        if np.any(valid):
+            out[valid] = self._inv_cell_perm[cells[valid]]
+        return out
+
     def _ensure_gpu_drainage_state(self) -> None:
         """ensure gpu drainage state."""
         if self.drainage is None:
@@ -1405,20 +1454,20 @@ class SWE2DCouplingController:
             "link_roughness_n": np.ascontiguousarray(dsoa.link_roughness_n, dtype=np.float64),
             "link_diameter": np.ascontiguousarray(dsoa.link_diameter, dtype=np.float64),
             "link_max_flow": np.ascontiguousarray(dsoa.link_max_flow, dtype=np.float64),
-            "inlet_cell": np.ascontiguousarray(dsoa.inlet_cell, dtype=np.int32),
+            "inlet_cell": np.ascontiguousarray(self._remap_cells_for_gpu(np.asarray(dsoa.inlet_cell, dtype=np.int32)), dtype=np.int32),
             "inlet_node": np.ascontiguousarray(dsoa.inlet_node, dtype=np.int32),
             "inlet_crest_elev": np.ascontiguousarray(dsoa.inlet_crest_elev, dtype=np.float64),
             "inlet_width": np.ascontiguousarray(dsoa.inlet_width, dtype=np.float64),
             "inlet_coefficient": np.ascontiguousarray(dsoa.inlet_coefficient, dtype=np.float64),
             "inlet_max_capture": np.ascontiguousarray(dsoa.inlet_max_capture, dtype=np.float64),
-            "outfall_cell": np.ascontiguousarray(dsoa.outfall_cell, dtype=np.int32),
+            "outfall_cell": np.ascontiguousarray(self._remap_cells_for_gpu(np.asarray(dsoa.outfall_cell, dtype=np.int32)), dtype=np.int32),
             "outfall_node": np.ascontiguousarray(dsoa.outfall_node, dtype=np.int32),
             "outfall_invert_elev": np.ascontiguousarray(dsoa.outfall_invert_elev, dtype=np.float64),
             "outfall_diameter": np.ascontiguousarray(dsoa.outfall_diameter, dtype=np.float64),
             "outfall_coefficient": np.ascontiguousarray(dsoa.outfall_coefficient, dtype=np.float64),
             "outfall_max_flow": np.ascontiguousarray(dsoa.outfall_max_flow, dtype=np.float64),
             "outfall_zero_storage": np.ascontiguousarray(dsoa.outfall_zero_storage, dtype=np.int32),
-            "pipe_end_cell": np.ascontiguousarray(dsoa.pipe_end_cell, dtype=np.int32),
+            "pipe_end_cell": np.ascontiguousarray(self._remap_cells_for_gpu(np.asarray(dsoa.pipe_end_cell, dtype=np.int32)), dtype=np.int32),
             "pipe_end_node": np.ascontiguousarray(dsoa.pipe_end_node, dtype=np.int32),
             "pipe_end_invert_elev": np.ascontiguousarray(dsoa.pipe_end_invert_elev, dtype=np.float64),
             "pipe_end_diameter": np.ascontiguousarray(dsoa.pipe_end_diameter, dtype=np.float64),
