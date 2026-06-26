@@ -1,5 +1,5 @@
 <!DOCTYPE qgis PUBLIC 'http://mrcc.com/qgis.dtd' 'SYSTEM'>
-<qgis version="3.44.0" styleCategories="AllStyleCategories" editorLayout="tablayout">
+<qgis version="3.44.0" editorLayout="tablayout">
   <fieldConfiguration>
     <field name="structure_id">
       <editWidget type="TextEdit">
@@ -22,16 +22,6 @@
               <Option value="4" name="Bridge" type="int"/>
               <Option value="5" name="Pump" type="int"/>
             </Option>
-          </Option>
-        </config>
-      </editWidget>
-    </field>
-    <field name="crest_elev">
-      <editWidget type="TextEdit">
-        <config>
-          <Option type="Map">
-            <Option value="0" name="IsMultiline" type="int"/>
-            <Option value="0" name="UseHtml" type="int"/>
           </Option>
         </config>
       </editWidget>
@@ -128,7 +118,7 @@
     <default field="culvert_barrels" applyOnUpdate="0" expression="1"/>
   </defaults>
   <editorlayout>tablayout</editorlayout>
-  <editforminit>"""QGIS attribute form init script for structures layer.
+  <editforminit><![CDATA["""QGIS attribute form init script for structures layer.
 Installed on the layer via setInitCodePath / setInitFunction.
 Groups fields by structure type using visibility expressions so only
 relevant fields appear for the selected structure type.
@@ -247,7 +237,7 @@ def form_open(dialog, layer, feature):
         container = QgsAttributeEditorContainer(type_name, None)
         for fname in sorted(field_set):
             field_idx = layer.fields().lookupField(fname)
-            if field_idx &lt; 0:
+            if field_idx < 0:
                 continue
             editor = QgsAttributeEditorField(fname, field_idx, container)
             container.addChildElement(editor)
@@ -268,14 +258,13 @@ def _init_culvert_code_combo(dialog, layer):
     """Set up the culvert_code field with a value map."""
     from qgis.core import QgsEditorWidgetSetup
     field_idx = layer.fields().lookupField("culvert_code")
-    if field_idx &lt; 0:
+    if field_idx < 0:
         return
     config = {"map": {}}
     for code, desc in _CULVERT_CODE_MAP.items():
         config["map"][desc] = code
     setup = QgsEditorWidgetSetup("ValueMap", config)
     layer.setEditorWidgetSetup(field_idx, setup)
-</editforminit>
-  <editforminitinitcode>form_open</editforminitinitcode>
-  <editforminitcodesource>1</editforminitcodesource>
+]]></editforminit>
+  <editforminitinitcode source="0">form_open</editforminitinitcode>
 </qgis>

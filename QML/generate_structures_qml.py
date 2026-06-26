@@ -85,7 +85,7 @@ CULVERT_CODE_MAP_XML = "\n".join(
 )
 
 qml = f"""<!DOCTYPE qgis PUBLIC 'http://mrcc.com/qgis.dtd' 'SYSTEM'>
-<qgis version="3.44.0" styleCategories="AllStyleCategories" editorLayout="tablayout">
+<qgis version="3.44.0" editorLayout="tablayout">
   <fieldConfiguration>
     <field name="structure_id">
       <editWidget type="TextEdit">
@@ -108,16 +108,6 @@ qml = f"""<!DOCTYPE qgis PUBLIC 'http://mrcc.com/qgis.dtd' 'SYSTEM'>
               <Option value="4" name="Bridge" type="int"/>
               <Option value="5" name="Pump" type="int"/>
             </Option>
-          </Option>
-        </config>
-      </editWidget>
-    </field>
-    <field name="crest_elev">
-      <editWidget type="TextEdit">
-        <config>
-          <Option type="Map">
-            <Option value="0" name="IsMultiline" type="int"/>
-            <Option value="0" name="UseHtml" type="int"/>
           </Option>
         </config>
       </editWidget>
@@ -157,9 +147,8 @@ qml = f"""<!DOCTYPE qgis PUBLIC 'http://mrcc.com/qgis.dtd' 'SYSTEM'>
     <default field="culvert_barrels" applyOnUpdate="0" expression="1"/>
   </defaults>
   <editorlayout>tablayout</editorlayout>
-  <editforminit>{saxutils.escape(INIT_CODE)}</editforminit>
-  <editforminitinitcode>form_open</editforminitinitcode>
-  <editforminitcodesource>1</editforminitcodesource>
+  <editforminit><![CDATA[{INIT_CODE}]]></editforminit>
+  <editforminitinitcode source="0">form_open</editforminitinitcode>
 </qgis>"""
 
 with open(OUTPUT_QML, "w") as f:
