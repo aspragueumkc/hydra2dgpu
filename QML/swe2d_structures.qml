@@ -78,19 +78,204 @@
       </editWidget>
     </field>
     <field configurationFlags="NoFlag" name="culvert_shape">
-      <editWidget type="TextEdit">
+      <editWidget type="ValueMap">
           <config>
-            <Option/>
+            <Option type="Map">
+              <Option name="map" type="List">
+              <Option type="Map">
+                <Option value="circular" name="Circular" type="string"/>
+              </Option>
+              <Option type="Map">
+                <Option value="box" name="Box" type="string"/>
+              </Option>
+              <Option type="Map">
+                <Option value="rectangular" name="Rectangular" type="string"/>
+              </Option>
+              </Option>
+            </Option>
           </config>
       </editWidget>
     </field>
     <field configurationFlags="NoFlag" name="culvert_code">
-      <editWidget type="Range">
+      <editWidget type="ValueMap">
           <config>
             <Option type="Map">
-              <Option value="0" name="Min" type="int"/>
-              <Option value="57" name="Max" type="int"/>
-              <Option value="1" name="Step" type="int"/>
+              <Option name="map" type="List">
+              <Option type="Map">
+                <Option value="0" name="— Select culvert code —" type="int"/>
+              </Option>
+              <Option type="Map">
+                <Option value="1" name="Circular concrete, square edge w/ headwall" type="int"/>
+              </Option>
+              <Option type="Map">
+                <Option value="2" name="Circular concrete, groove end w/ headwall" type="int"/>
+              </Option>
+              <Option type="Map">
+                <Option value="3" name="Circular concrete, groove end projecting" type="int"/>
+              </Option>
+              <Option type="Map">
+                <Option value="4" name="Circular concrete, mitred to slope" type="int"/>
+              </Option>
+              <Option type="Map">
+                <Option value="5" name="Circular concrete, beveled ring" type="int"/>
+              </Option>
+              <Option type="Map">
+                <Option value="6" name="Circular concrete, beveled ring (smoother)" type="int"/>
+              </Option>
+              <Option type="Map">
+                <Option value="7" name="Circular CMP, projecting" type="int"/>
+              </Option>
+              <Option type="Map">
+                <Option value="8" name="Circular CMP, projecting (different edge)" type="int"/>
+              </Option>
+              <Option type="Map">
+                <Option value="9" name="Circular CMP, mitered to slope" type="int"/>
+              </Option>
+              <Option type="Map">
+                <Option value="10" name="Circular CMP, mitered to slope (alt)" type="int"/>
+              </Option>
+              <Option type="Map">
+                <Option value="11" name="Circular CMP, beveled end (thin wall)" type="int"/>
+              </Option>
+              <Option type="Map">
+                <Option value="12" name="Circular CMP, groove end in headwall" type="int"/>
+              </Option>
+              <Option type="Map">
+                <Option value="13" name="Circular CMP, groove end in headwall (alt)" type="int"/>
+              </Option>
+              <Option type="Map">
+                <Option value="14" name="Circular CMP, headwall (square edge)" type="int"/>
+              </Option>
+              <Option type="Map">
+                <Option value="15" name="Circular CMP, headwall (groove end)" type="int"/>
+              </Option>
+              <Option type="Map">
+                <Option value="16" name="Circular CMP, headwall (thin wall projecting)" type="int"/>
+              </Option>
+              <Option type="Map">
+                <Option value="17" name="Rectangular box, 30-75deg wingwall flares" type="int"/>
+              </Option>
+              <Option type="Map">
+                <Option value="18" name="Rectangular box, 90deg headwall w/ chamfers" type="int"/>
+              </Option>
+              <Option type="Map">
+                <Option value="19" name="Rectangular box, 0deg wingwall flares" type="int"/>
+              </Option>
+              <Option type="Map">
+                <Option value="20" name="Rectangular box, 45deg wingwall flares" type="int"/>
+              </Option>
+              <Option type="Map">
+                <Option value="21" name="Rectangular box, 18-33deg wingwall flares" type="int"/>
+              </Option>
+              <Option type="Map">
+                <Option value="22" name="Rectangular box, 0deg wingwall flares (thick)" type="int"/>
+              </Option>
+              <Option type="Map">
+                <Option value="23" name="Rectangular box, 30deg wingwall flares (thick)" type="int"/>
+              </Option>
+              <Option type="Map">
+                <Option value="24" name="Rectangular box, 45deg wingwall flares (thick)" type="int"/>
+              </Option>
+              <Option type="Map">
+                <Option value="25" name="Rectangular box, 0deg wingwall flares (thick alt)" type="int"/>
+              </Option>
+              <Option type="Map">
+                <Option value="26" name="Rectangular box, beveled edge (1:1)" type="int"/>
+              </Option>
+              <Option type="Map">
+                <Option value="27" name="Circular concrete, square edge w/ headwall (form-1 alt)" type="int"/>
+              </Option>
+              <Option type="Map">
+                <Option value="28" name="Circular concrete, groove end w/ headwall (form-1 alt)" type="int"/>
+              </Option>
+              <Option type="Map">
+                <Option value="29" name="Circular concrete, groove end projecting (form-1 alt)" type="int"/>
+              </Option>
+              <Option type="Map">
+                <Option value="30" name="Circular CMP, projecting (form-1 alt)" type="int"/>
+              </Option>
+              <Option type="Map">
+                <Option value="31" name="Circular CMP, mitered to slope (form-1 alt)" type="int"/>
+              </Option>
+              <Option type="Map">
+                <Option value="32" name="Circular CMP, beveled end thin wall (form-1 alt)" type="int"/>
+              </Option>
+              <Option type="Map">
+                <Option value="33" name="Circular CMP, groove end in headwall (form-1 alt)" type="int"/>
+              </Option>
+              <Option type="Map">
+                <Option value="34" name="Circular CMP, headwall square edge (form-1 alt)" type="int"/>
+              </Option>
+              <Option type="Map">
+                <Option value="35" name="Circular CMP, headwall groove end (form-1 alt)" type="int"/>
+              </Option>
+              <Option type="Map">
+                <Option value="36" name="Circular CMP, beveled ring (form-1 alt)" type="int"/>
+              </Option>
+              <Option type="Map">
+                <Option value="37" name="Circular CMP, beveled ring thick (form-1 alt)" type="int"/>
+              </Option>
+              <Option type="Map">
+                <Option value="38" name="Circular concrete, beveled ring (form-1 alt)" type="int"/>
+              </Option>
+              <Option type="Map">
+                <Option value="39" name="Circular pipe, beveled ring (thin wall)" type="int"/>
+              </Option>
+              <Option type="Map">
+                <Option value="40" name="Circular pipe, beveled ring (thick wall)" type="int"/>
+              </Option>
+              <Option type="Map">
+                <Option value="41" name="Circular pipe, 45deg beveled ring" type="int"/>
+              </Option>
+              <Option type="Map">
+                <Option value="42" name="Circular pipe, 33.7deg beveled ring" type="int"/>
+              </Option>
+              <Option type="Map">
+                <Option value="43" name="Circular pipe, 45deg bevel (offset)" type="int"/>
+              </Option>
+              <Option type="Map">
+                <Option value="44" name="Circular pipe, 33.7deg bevel (offset)" type="int"/>
+              </Option>
+              <Option type="Map">
+                <Option value="45" name="Circular CMP, prefab end section (safety)" type="int"/>
+              </Option>
+              <Option type="Map">
+                <Option value="46" name="Circular CMP, prefab end section (alt)" type="int"/>
+              </Option>
+              <Option type="Map">
+                <Option value="47" name="Arch CMP, 2-3-1 fill (soffit thickness 0.0625)" type="int"/>
+              </Option>
+              <Option type="Map">
+                <Option value="48" name="Arch CMP, 2-3-1 fill (soffit varying)" type="int"/>
+              </Option>
+              <Option type="Map">
+                <Option value="49" name="Arch CMP, 2-3-1 fill projecting (soffit varying)" type="int"/>
+              </Option>
+              <Option type="Map">
+                <Option value="50" name="Arch CMP, 2-2-1 fill (soffit thickness 0.0625)" type="int"/>
+              </Option>
+              <Option type="Map">
+                <Option value="51" name="Pipe arch CMP, 0.75x0.75 fill (soffit thickness 0.0625)" type="int"/>
+              </Option>
+              <Option type="Map">
+                <Option value="52" name="Pipe arch CMP, 0.75x0.75 fill projecting" type="int"/>
+              </Option>
+              <Option type="Map">
+                <Option value="53" name="Pipe arch CMP, 0.75x0.75 fill (soffit varying)" type="int"/>
+              </Option>
+              <Option type="Map">
+                <Option value="54" name="Horizontal ellipse, concrete (form-2)" type="int"/>
+              </Option>
+              <Option type="Map">
+                <Option value="55" name="Horizontal ellipse, corrugated metal (form-2)" type="int"/>
+              </Option>
+              <Option type="Map">
+                <Option value="56" name="Arch CMP, 2-3-1 fill premium (form-2)" type="int"/>
+              </Option>
+              <Option type="Map">
+                <Option value="57" name="Horizontal ellipse, special shape (form-2)" type="int"/>
+              </Option>
+              </Option>
             </Option>
           </config>
       </editWidget>
