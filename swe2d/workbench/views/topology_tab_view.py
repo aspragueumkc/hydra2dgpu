@@ -1301,6 +1301,47 @@ def _configure_swe2d_layer_editors(
             cfg.setInitCodePath(form_py)
             cfg.setInitFunction("form_open")
 
+        # Build tab layout with type-based visibility (safe at config time)
+        cfg.setLayout(cfg.TabLayout)
+        from qgis.core import (
+            QgsAttributeEditorField, QgsAttributeEditorContainer,
+            QgsOptionalExpression, QgsExpression,
+        )
+        _STRUCTURE_TYPE_TABS = [
+            (1, "Weir", {"width", "embankment_enabled", "embankment_crest_elev",
+                         "embankment_overflow_width", "embankment_weir_coeff"}),
+            (2, "Culvert", {
+                "culvert_shape", "culvert_code", "culvert_rise", "culvert_span",
+                "culvert_area_m2", "culvert_barrels", "culvert_slope",
+                "diameter", "length", "roughness_n",
+                "inlet_invert_elev", "outlet_invert_elev",
+                "entrance_loss_k", "exit_loss_k",
+                "embankment_enabled", "embankment_crest_elev",
+                "embankment_overflow_width", "embankment_weir_coeff",
+            }),
+            (3, "Gate", {"width", "height", "opening"}),
+            (4, "Bridge", {
+                "width", "length", "deck_soffit_elev", "deck_top_elev",
+                "model_top_elev", "under_layers", "over_layers",
+                "inlet_loss_k", "outlet_loss_k",
+                "pier_count", "pier_width", "face_flux_depth_safety",
+            }),
+            (5, "Pump", {"q_pump", "max_flow", "min_head_diff", "max_head_diff"}),
+        ]
+        for type_val, type_name, field_set in _STRUCTURE_TYPE_TABS:
+            container = QgsAttributeEditorContainer(type_name)
+            for fname in sorted(field_set):
+                field_idx = layer.fields().lookupField(fname)
+                if field_idx < 0:
+                    continue
+                editor = QgsAttributeEditorField(fname, field_idx, container)
+                container.addChildElement(editor)
+            cfg.addTab(container)
+            expr = QgsOptionalExpression(QgsExpression(
+                '"structure_type" = {}'.format(type_val)))
+            container.setVisibilityExpression(expr)
+        layer.setEditFormConfig(cfg)
+
         _set_default_value(layer, "structure_type", 1)
         _set_default_value(layer, "crest_elev", 0.0)
         _set_default_value(layer, "enabled", 1)

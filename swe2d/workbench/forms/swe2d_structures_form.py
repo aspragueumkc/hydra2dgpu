@@ -103,28 +103,6 @@ _TYPE_FIELDS = {
 
 def form_open(dialog, layer, feature):
     """Called by QGIS when opening a feature's attribute form."""
-    cfg = layer.editFormConfig()
-    cfg.setLayout(QgsEditFormConfig.TabLayout)
-    cfg.clearTabs()
-
-    for type_val, type_name, field_set in [
-        (CULVERT, "Culvert", _TYPE_FIELDS[CULVERT]),
-        (BRIDGE, "Bridge", _TYPE_FIELDS[BRIDGE]),
-        (WEIR, "Weir", _TYPE_FIELDS[WEIR]),
-        (GATE, "Gate", _TYPE_FIELDS[GATE]),
-        (PUMP, "Pump", _TYPE_FIELDS[PUMP]),
-    ]:
-        container = QgsAttributeEditorContainer(type_name, None)
-        for fname in sorted(field_set):
-            field_idx = layer.fields().lookupField(fname)
-            if field_idx < 0:
-                continue
-            editor = QgsAttributeEditorField(fname, field_idx, container)
-            container.addChildElement(editor)
-        _set_visibility(container, '"structure_type" = {}'.format(type_val))
-        cfg.addTab(container)
-
-    layer.setEditFormConfig(cfg)
     _init_culvert_code_combo(dialog, layer)
 
 
