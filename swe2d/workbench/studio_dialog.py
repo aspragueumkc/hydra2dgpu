@@ -443,7 +443,7 @@ class SWE2DWorkbenchStudioDialog(QtWidgets.QDialog):
         _fn(self)
 
     def _write_memory_layer_to_gpkg(self, lyr, gpkg_path: str, layer_name: str, *, create_file: bool = False) -> None:
-        from swe2d.workbench.services.lumped_hydrology_service import write_memory_layer_to_gpkg as _fn
+        from swe2d.services.lumped_hydrology_service import write_memory_layer_to_gpkg as _fn
         _fn(lyr, gpkg_path, layer_name, create_file=create_file)
 
     def _open_line_results_viewer(self) -> None:
@@ -641,7 +641,7 @@ class SWE2DWorkbenchStudioDialog(QtWidgets.QDialog):
         if not path:
             return
         try:
-            from swe2d.workbench.services.gpkg_persistence_service import persist_mesh_to_geopackage
+            from swe2d.services.gpkg_persistence_service import persist_mesh_to_geopackage
             persist_mesh_to_geopackage(path, name, mesh_data, log_fn=self._log)
             QtWidgets.QMessageBox.information(
                 self, "Save Mesh", f"Mesh '{name}' saved to {os.path.basename(path)}.",
@@ -688,7 +688,7 @@ class SWE2DWorkbenchStudioDialog(QtWidgets.QDialog):
             )
             if not ok or not name:
                 return
-        from swe2d.workbench.services.gpkg_persistence_service import (
+        from swe2d.services.gpkg_persistence_service import (
             load_mesh_from_geopackage,
         )
         mesh_data = load_mesh_from_geopackage(path, name)
@@ -1204,7 +1204,7 @@ class SWE2DWorkbenchStudioDialog(QtWidgets.QDialog):
         if not gpkg_path or not mesh_rows:
             return
         try:
-            from swe2d.workbench.services.gpkg_persistence_service import persist_mesh_results_to_geopackage
+            from swe2d.services.gpkg_persistence_service import persist_mesh_results_to_geopackage
             persist_mesh_results_to_geopackage(
                 gpkg_path=gpkg_path, run_id=run_id, mesh_rows=mesh_rows,
                 interval_s=interval_s, table_name=table_name, log_fn=self._log,
@@ -1243,7 +1243,7 @@ class SWE2DWorkbenchStudioDialog(QtWidgets.QDialog):
         accumulate: bool = False,
     ) -> None:
         """Persist coupling results to the GeoPackage."""
-        from swe2d.workbench.services.gpkg_persistence_service import (
+        from swe2d.services.gpkg_persistence_service import (
             persist_coupling_results_to_geopackage as _persist_coupling,
         )
         _persist_coupling(
@@ -1270,7 +1270,7 @@ class SWE2DWorkbenchStudioDialog(QtWidgets.QDialog):
 
     def _write_ugrid_nc(self, path, timesteps=None):
         """Export simulation results to UGRID NetCDF format."""
-        from swe2d.workbench.services.ugrid_export_service import write_ugrid_nc
+        from swe2d.services.ugrid_export_service import write_ugrid_nc
         return write_ugrid_nc(self, path, timesteps)
 
     def _on_results_panel_timestep_changed(self, t_s: float, frame_idx: int = 0):

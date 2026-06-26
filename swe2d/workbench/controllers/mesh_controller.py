@@ -61,7 +61,7 @@ class MeshController:
         in ``extracted/topology_and_io_methods.py``) is inlined here.
         Reads all widget/state from ``self._view``.
         """
-        from swe2d.workbench.services.mesh_extraction_service import (
+        from swe2d.services.mesh_extraction_service import (
             extract_mesh_from_layer_data,
         )
 
@@ -199,7 +199,7 @@ class MeshController:
     # ── HEC-RAS HDF5 mesh export ─────────────────────────────────────
     def export_mesh_to_ugrid(self) -> None:
         """Export in-memory mesh geometry to UGRID NetCDF."""
-        from swe2d.workbench.services.ugrid_export_service import write_ugrid_nc
+        from swe2d.services.ugrid_export_service import write_ugrid_nc
 
         view = self._view
         mesh = getattr(view, "_mesh_data", None)
@@ -301,7 +301,7 @@ class MeshController:
     # ── UGRID NetCDF results export ──────────────────────────────────
     def export_results_to_ugrid(self) -> None:
         """Export simulation results to UGRID NetCDF format."""
-        from swe2d.workbench.services.ugrid_export_service import write_ugrid_nc
+        from swe2d.services.ugrid_export_service import write_ugrid_nc
 
         view = self._view
         mesh = getattr(view, "_mesh_data", None)
@@ -343,7 +343,7 @@ class MeshController:
         """Open a file dialog and create a lumped hydrology GeoPackage."""
         from qgis.PyQt import QtWidgets
         from qgis.core import QgsProject
-        from swe2d.workbench.services.lumped_hydrology_service import write_lumped_hydrology_geopackage
+        from swe2d.services.lumped_hydrology_service import write_lumped_hydrology_geopackage
 
         view = self._view
         out_path, _ = QtWidgets.QFileDialog.getSaveFileName(
@@ -380,7 +380,7 @@ class MeshController:
     def export_mesh_to_layers(self) -> None:
         """Export in-memory mesh nodes and cells as QGIS map layers."""
         from qgis.core import QgsProject
-        from swe2d.workbench.services.mesh_export_service import (
+        from swe2d.services.mesh_export_service import (
             build_nodes_vector_layer,
             build_cells_polygon_layer,
         )
@@ -431,7 +431,7 @@ class MeshController:
     def assign_node_z_from_terrain(self) -> None:
         """Sample terrain raster at mesh node positions and assign node_z."""
         from qgis.PyQt import QtWidgets
-        from swe2d.workbench.services.terrain_assignment_service import sample_raster_at_nodes
+        from swe2d.services.terrain_assignment_service import sample_raster_at_nodes
 
         view = self._view
         mesh = getattr(view, "_mesh_data", None)
@@ -481,7 +481,7 @@ class MeshController:
     def pull_node_z_from_layer(self) -> None:
         """Pull bed_z from nodes vector layer into in-memory node_z."""
         from qgis.PyQt import QtWidgets
-        from swe2d.workbench.services.terrain_assignment_service import (
+        from swe2d.services.terrain_assignment_service import (
             assign_node_z_from_layer_features,
         )
 

@@ -4,7 +4,7 @@ import unittest
 from unittest.mock import MagicMock
 import numpy as np
 
-from swe2d.workbench.services.results_render_service import render_structures_on_figure
+from swe2d.services.results_render_service import render_structures_on_figure
 
 
 class TestRenderStructuresOnFigure(unittest.TestCase):
@@ -261,7 +261,7 @@ class TestRenderProfileOnFigure(unittest.TestCase):
             ]
 
         # Execute
-        from swe2d.workbench.services.results_render_service import render_profile_on_figure
+        from swe2d.services.results_render_service import render_profile_on_figure
 
         render_profile_on_figure(
             fig=fig,
@@ -319,7 +319,7 @@ class TestRenderProfileOnFigure(unittest.TestCase):
         selected_elements = None
 
         # Execute
-        from swe2d.workbench.services.results_render_service import render_profile_on_figure
+        from swe2d.services.results_render_service import render_profile_on_figure
 
         render_profile_on_figure(
             fig=fig,
@@ -353,7 +353,7 @@ class TestRenderProfileOnFigure(unittest.TestCase):
         selected_elements = {}
 
         # Execute
-        from swe2d.workbench.services.results_render_service import render_profile_on_figure
+        from swe2d.services.results_render_service import render_profile_on_figure
 
         render_profile_on_figure(
             fig=fig,
@@ -392,7 +392,7 @@ class TestRenderProfileOnFigure(unittest.TestCase):
         }
 
         # Execute
-        from swe2d.workbench.services.results_render_service import render_profile_on_figure
+        from swe2d.services.results_render_service import render_profile_on_figure
 
         render_profile_on_figure(
             fig=fig,
@@ -433,7 +433,7 @@ class TestRenderProfileOnFigure(unittest.TestCase):
         }
 
         # Execute
-        from swe2d.workbench.services.results_render_service import render_profile_on_figure
+        from swe2d.services.results_render_service import render_profile_on_figure
 
         render_profile_on_figure(
             fig=fig,

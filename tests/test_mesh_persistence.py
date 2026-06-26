@@ -2,7 +2,7 @@
 import os
 import tempfile
 import numpy as np
-from swe2d.workbench.services.gpkg_persistence_service import (
+from swe2d.services.gpkg_persistence_service import (
     persist_mesh_to_geopackage,
     load_mesh_from_geopackage,
 )

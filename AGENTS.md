@@ -130,9 +130,19 @@ Predictable, intuitive behavior reduces confusion, minimizes mistakes, and makes
 
 ### MVP Architecture — Mandatory
 
-This project uses **Model-View-Presenter** architecture. See `.commandcode/rules/MVP_ARCHITECTURE.md` for the full spec.
+This project uses **Model-View-Presenter** architecture. See `.opencode/rules/MVP_ARCHITECTURE.md` for the full spec, and `.agents/mvp-architecture.md` for the agent skill.
 
-**The iron rule**: Code in `swe2d/runtime/` and `swe2d/*service*.py` MUST NOT import Qt, touch widgets, or reference `run_btn`, `cancel_btn`, or any UI element. If a service component needs to update UI state (e.g., enabling a button), it calls a View protocol method. If you're tempted to write `self._ui.run_btn.setEnabled(True)` in a runtime module, STOP — that is an architecture violation. Route through the Controller + View protocol instead.
+**The iron rules**:
+
+1. **Service layer (`swe2d/services/`, `swe2d/runtime/`, `swe2d/boundary_and_forcing/`, `swe2d/mesh/`, `swe2d/results/`, `swe2d/extensions/`)** MUST NOT import PyQt5, touch widgets, or reference any UI element. If a service component needs to update UI state, it calls a View protocol method.
+
+2. **GUI-only services (`swe2d/workbench/services/`)** MAY import `qgis.core` but MUST NOT import `PyQt5.QtWidgets`.
+
+3. **CLI (`swe2d/cli/`)** MUST NOT import from `swe2d/workbench/`. It imports only from shared services and runtime.
+
+4. **Controllers (`swe2d/workbench/controllers/`)** MUST NOT reach through the View to access Qt widgets directly. They use protocol methods.
+
+If you're tempted to write `self._ui.run_btn.setEnabled(True)` in a runtime module, STOP — that is an architecture violation. Route through the Controller + View protocol instead.
 
 ### Validation Priority
 

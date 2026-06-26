@@ -99,7 +99,7 @@ def collect_boundary_arrays(
             np.empty(0, dtype=np.float64),
         )
 
-    from swe2d.workbench.services.mesh_computation_service import default_bc_for_edges as _compute_default_bc
+    from swe2d.services.mesh_computation_service import default_bc_for_edges as _compute_default_bc
 
     edge_n0, edge_n1 = mesh_boundary_edges_fn()
     if edge_n0.size == 0:

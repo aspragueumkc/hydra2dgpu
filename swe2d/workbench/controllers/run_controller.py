@@ -874,7 +874,7 @@ class RunController:
             save_max_only = bool(wp.get("save_max_only_chk", False))
             max_results = backend.get_max_tracking() if (save_mesh_results or save_max_only) else None
             if save_max_only and max_results is not None:
-                from swe2d.workbench.services.gpkg_persistence_service import (
+                from swe2d.services.gpkg_persistence_service import (
                     persist_mesh_max_results_to_geopackage,
                 )
                 persist_mesh_max_results_to_geopackage(

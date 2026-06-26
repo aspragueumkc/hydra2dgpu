@@ -63,7 +63,7 @@ class TestRenderNetworkWithSelection(unittest.TestCase):
         """Verify EPASWMM-style profile renders with a selected link."""
         fig = Figure()
 
-        from swe2d.workbench.services.results_render_service import (
+        from swe2d.services.results_render_service import (
             render_network_on_figure,
         )
 
@@ -120,7 +120,7 @@ class TestRenderNetworkWithSelection(unittest.TestCase):
         """Verify profile renders for the first link when no selection given."""
         fig = Figure()
 
-        from swe2d.workbench.services.results_render_service import (
+        from swe2d.services.results_render_service import (
             render_network_on_figure,
         )
 
@@ -159,7 +159,7 @@ class TestRenderNetworkWithSelection(unittest.TestCase):
         """Verify empty selection shows 'No link data' error text."""
         fig = Figure()
 
-        from swe2d.workbench.services.results_render_service import (
+        from swe2d.services.results_render_service import (
             render_network_on_figure,
         )
 

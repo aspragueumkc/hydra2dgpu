@@ -15,8 +15,8 @@ from typing import Any, Dict, Optional
 
 import numpy as np
 
-from swe2d.workbench.services.mesh_render_service import plot_mesh_view_on_figure
-from swe2d.workbench.services.results_render_service import (
+from swe2d.services.mesh_render_service import plot_mesh_view_on_figure
+from swe2d.services.results_render_service import (
     render_timeseries_on_figure,
     render_profile_on_figure,
     render_structures_on_figure,

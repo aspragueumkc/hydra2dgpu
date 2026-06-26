@@ -16,7 +16,7 @@ from typing import Any, Dict, List, Protocol
 
 import numpy as np
 
-from swe2d.workbench.services.gpkg_persistence_service import persist_line_results_to_geopackage, update_run_snapshot_tag
+from swe2d.services.gpkg_persistence_service import persist_line_results_to_geopackage, update_run_snapshot_tag
 
 
 class RunFinalizationView(Protocol):

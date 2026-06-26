@@ -218,7 +218,7 @@ def show_results_panel(dialog):
             "Check the plugin log for '[Results]' details."
         )
         return
-    from swe2d.workbench.services.gpkg_persistence_service import current_line_results_storage_path
+    from swe2d.services.gpkg_persistence_service import current_line_results_storage_path
     gpkg = current_line_results_storage_path(dialog)
     if gpkg and gpkg != data.gpkg_path:
         data.set_gpkg_path(gpkg)
@@ -286,7 +286,7 @@ def on_coupling_element_changed(dialog, element_id: str) -> None:
 def auto_load_results_panel(dialog, gpkg_path: str = "", snapshot_run_id: str = ""):
     """Auto-load results panel with the most recent run from a GeoPackage."""
     if not gpkg_path:
-        from swe2d.workbench.services.gpkg_persistence_service import current_line_results_storage_path
+        from swe2d.services.gpkg_persistence_service import current_line_results_storage_path
         gpkg_path = current_line_results_storage_path(dialog)
     if not gpkg_path:
         dialog._log("[Auto-Load] No GeoPackage path to load results into panel.")

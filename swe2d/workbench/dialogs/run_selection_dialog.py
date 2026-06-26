@@ -28,7 +28,7 @@ class RunSelectionDialog(QtWidgets.QDialog):
 
         for rec in run_records:
             item = QtWidgets.QListWidgetItem(rec.display_label())
-            item.setCheckState(Qt.Checked)
+            item.setCheckState(Qt.Unchecked)
             item.setData(Qt.UserRole, rec.key)
             item.setToolTip(f"Run: {rec.run_id}\nGPKG: {rec.gpkg_path}")
             self._list.addItem(item)

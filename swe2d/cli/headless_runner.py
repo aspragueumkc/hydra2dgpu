@@ -316,7 +316,7 @@ def _persist_results(
     try:
         cur = conn.cursor()
         if max_results is not None:
-            from swe2d.workbench.services.gpkg_persistence_service import (
+            from swe2d.services.gpkg_persistence_service import (
                 persist_mesh_max_results_to_geopackage,
             )
             persist_mesh_max_results_to_geopackage(gpkg_path, run_id, max_results)

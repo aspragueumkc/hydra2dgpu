@@ -32,7 +32,7 @@ logger = logging.getLogger(__name__)
 
 def query_mesh_from_gpkg(gpkg_path: str, mesh_name: str) -> Optional[Dict[str, np.ndarray]]:
     """Load mesh arrays from swe2d_mesh table (delegates to persistence service)."""
-    from swe2d.workbench.services.gpkg_persistence_service import load_mesh_from_geopackage
+    from swe2d.services.gpkg_persistence_service import load_mesh_from_geopackage
     return load_mesh_from_geopackage(gpkg_path, mesh_name)
 
 

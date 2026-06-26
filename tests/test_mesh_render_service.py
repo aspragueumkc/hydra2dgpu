@@ -61,7 +61,7 @@ class TestServiceExists(unittest.TestCase):
         self.assertIsNotNone(mesh_render_service)
 
     def test_render_function_exists(self):
-        from swe2d.workbench.services.mesh_render_service import render_workbench_mesh_view
+        from swe2d.services.mesh_render_service import render_workbench_mesh_view
         self.assertIsNotNone(render_workbench_mesh_view)
         self.assertTrue(callable(render_workbench_mesh_view))
 
@@ -96,7 +96,7 @@ class TestServiceExists(unittest.TestCase):
 
 class TestSignature(unittest.TestCase):
     def test_signature_takes_plain_dicts(self):
-        from swe2d.workbench.services.mesh_render_service import render_workbench_mesh_view
+        from swe2d.services.mesh_render_service import render_workbench_mesh_view
         sig = inspect.signature(render_workbench_mesh_view)
         params = sig.parameters
         self.assertIn("mesh_data", params)
@@ -106,7 +106,7 @@ class TestSignature(unittest.TestCase):
 
     def test_signature_is_typed(self):
         """All public parameters must carry type annotations (PEP 484)."""
-        from swe2d.workbench.services.mesh_render_service import render_workbench_mesh_view
+        from swe2d.services.mesh_render_service import render_workbench_mesh_view
         sig = inspect.signature(render_workbench_mesh_view)
         for name in ("mesh_data", "result_data", "mode", "h_min"):
             p = sig.parameters[name]
@@ -118,20 +118,20 @@ class TestSignature(unittest.TestCase):
 
 class TestReturnValue(unittest.TestCase):
     def test_returns_numpy_array(self):
-        from swe2d.workbench.services.mesh_render_service import render_workbench_mesh_view
+        from swe2d.services.mesh_render_service import render_workbench_mesh_view
         mesh = _make_simple_mesh_data()
         img = render_workbench_mesh_view(mesh, None, mode="mesh")
         self.assertIsInstance(img, np.ndarray)
 
     def test_returns_uint8(self):
-        from swe2d.workbench.services.mesh_render_service import render_workbench_mesh_view
+        from swe2d.services.mesh_render_service import render_workbench_mesh_view
         mesh = _make_simple_mesh_data()
         img = render_workbench_mesh_view(mesh, None, mode="mesh")
         self.assertEqual(img.dtype, np.uint8)
 
     def test_returns_3d_rgb_image(self):
         """Image must be shape (H, W, 3) for RGB."""
-        from swe2d.workbench.services.mesh_render_service import render_workbench_mesh_view
+        from swe2d.services.mesh_render_service import render_workbench_mesh_view
         mesh = _make_simple_mesh_data()
         img = render_workbench_mesh_view(mesh, None, mode="mesh")
         self.assertEqual(img.ndim, 3)
@@ -141,7 +141,7 @@ class TestReturnValue(unittest.TestCase):
 
     def test_image_is_non_trivially_colored(self):
         """A rendered image must have some non-background pixels."""
-        from swe2d.workbench.services.mesh_render_service import render_workbench_mesh_view
+        from swe2d.services.mesh_render_service import render_workbench_mesh_view
         mesh = _make_simple_mesh_data()
         img = render_workbench_mesh_view(mesh, None, mode="mesh")
         self.assertGreater(int(img.size), 0)
@@ -154,7 +154,7 @@ class TestReturnValue(unittest.TestCase):
 
 class TestMeshMode(unittest.TestCase):
     def test_mesh_mode_renders(self):
-        from swe2d.workbench.services.mesh_render_service import render_workbench_mesh_view
+        from swe2d.services.mesh_render_service import render_workbench_mesh_view
         mesh = _make_simple_mesh_data()
         img = render_workbench_mesh_view(mesh, None, mode="mesh")
         self.assertIsInstance(img, np.ndarray)
@@ -163,7 +163,7 @@ class TestMeshMode(unittest.TestCase):
 
     def test_mesh_mode_with_result_data_still_renders_mesh(self):
         """When mode='mesh', result_data should be ignored and the mesh drawn."""
-        from swe2d.workbench.services.mesh_render_service import render_workbench_mesh_view
+        from swe2d.services.mesh_render_service import render_workbench_mesh_view
         mesh = _make_simple_mesh_data()
         result = _make_simple_result_data(n_cells=2)
         img = render_workbench_mesh_view(mesh, result, mode="mesh")
@@ -172,7 +172,7 @@ class TestMeshMode(unittest.TestCase):
 
     def test_face_offsets_mesh_renders(self):
         """Mesh with cell_face_offsets + cell_face_nodes must render too."""
-        from swe2d.workbench.services.mesh_render_service import render_workbench_mesh_view
+        from swe2d.services.mesh_render_service import render_workbench_mesh_view
         mesh = _make_face_offsets_mesh_data()
         img = render_workbench_mesh_view(mesh, None, mode="mesh")
         self.assertIsInstance(img, np.ndarray)
@@ -181,7 +181,7 @@ class TestMeshMode(unittest.TestCase):
 
 class TestDepthMode(unittest.TestCase):
     def test_depth_mode_renders(self):
-        from swe2d.workbench.services.mesh_render_service import render_workbench_mesh_view
+        from swe2d.services.mesh_render_service import render_workbench_mesh_view
         mesh = _make_simple_mesh_data()
         result = _make_simple_result_data(n_cells=2)
         img = render_workbench_mesh_view(mesh, result, mode="depth")
@@ -192,7 +192,7 @@ class TestDepthMode(unittest.TestCase):
 
 class TestVelocityMode(unittest.TestCase):
     def test_velocity_mode_renders(self):
-        from swe2d.workbench.services.mesh_render_service import render_workbench_mesh_view
+        from swe2d.services.mesh_render_service import render_workbench_mesh_view
         mesh = _make_simple_mesh_data()
         result = _make_simple_result_data(n_cells=2)
         img = render_workbench_mesh_view(mesh, result, mode="velocity")
@@ -202,7 +202,7 @@ class TestVelocityMode(unittest.TestCase):
 
     def test_velocity_mode_h_min_threshold(self):
         """When h <= h_min, velocity must be zero. We test by setting very high h_min."""
-        from swe2d.workbench.services.mesh_render_service import render_workbench_mesh_view
+        from swe2d.services.mesh_render_service import render_workbench_mesh_view
         mesh = _make_simple_mesh_data()
         result = _make_simple_result_data(n_cells=2)
         img_high_threshold = render_workbench_mesh_view(
@@ -222,7 +222,7 @@ class TestVelocityMode(unittest.TestCase):
 class TestNoneMeshData(unittest.TestCase):
     def test_none_mesh_renders_placeholder(self):
         """When mesh_data is None, the service must return an image (placeholder)."""
-        from swe2d.workbench.services.mesh_render_service import render_workbench_mesh_view
+        from swe2d.services.mesh_render_service import render_workbench_mesh_view
         img = render_workbench_mesh_view(None, None, mode="mesh")
         self.assertIsInstance(img, np.ndarray)
         self.assertEqual(img.dtype, np.uint8)
@@ -232,7 +232,7 @@ class TestNoneMeshData(unittest.TestCase):
 class TestInvalidMeshData(unittest.TestCase):
     def test_missing_cell_nodes_renders_placeholder(self):
         """When mesh_data lacks both face_offsets and cell_nodes, the service must not crash."""
-        from swe2d.workbench.services.mesh_render_service import render_workbench_mesh_view
+        from swe2d.services.mesh_render_service import render_workbench_mesh_view
         mesh = {
             "node_x": np.array([0.0, 1.0, 0.5], dtype=np.float64),
             "node_y": np.array([0.0, 0.0, 1.0], dtype=np.float64),
@@ -245,7 +245,7 @@ class TestInvalidMeshData(unittest.TestCase):
 
 class TestHMinIsFloat(unittest.TestCase):
     def test_h_min_is_optional_with_default(self):
-        from swe2d.workbench.services.mesh_render_service import render_workbench_mesh_view
+        from swe2d.services.mesh_render_service import render_workbench_mesh_view
         sig = inspect.signature(render_workbench_mesh_view)
         p = sig.parameters["h_min"]
         self.assertIsNot(p.default, inspect.Parameter.empty)

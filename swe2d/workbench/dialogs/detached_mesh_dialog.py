@@ -18,7 +18,7 @@ import numpy as np
 
 from qgis.PyQt import QtCore, QtGui, QtWidgets
 
-from swe2d.workbench.services.mesh_render_service import render_workbench_mesh_view
+from swe2d.services.mesh_render_service import render_workbench_mesh_view
 
 logger_wb = logging.getLogger(__name__)
 

@@ -13,7 +13,7 @@ import numpy as np
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-from swe2d.workbench.services.gpkg_persistence_service import (
+from swe2d.services.gpkg_persistence_service import (
     persist_mesh_results_to_geopackage,
     persist_coupling_results_to_geopackage,
     update_run_snapshot_tag,

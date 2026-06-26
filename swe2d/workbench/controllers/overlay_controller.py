@@ -90,7 +90,7 @@ class OverlayController:
                     gpkg = str(getattr(_data, "gpkg_path", "") or "")
                     if gpkg and os.path.isfile(gpkg):
                         try:
-                            from swe2d.workbench.services.gpkg_persistence_service import (
+                            from swe2d.services.gpkg_persistence_service import (
                                 load_mesh_from_geopackage,
                             )
                             import sqlite3
