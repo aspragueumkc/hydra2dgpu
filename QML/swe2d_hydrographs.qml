@@ -1,58 +1,73 @@
 <!DOCTYPE qgis PUBLIC 'http://mrcc.com/qgis.dtd' 'SYSTEM'>
-<qgis version="3.44.0" editorLayout="tablayout">
+<qgis version="3.34.4" styleCategories="Fields|Forms|AttributeTable">
   <fieldConfiguration>
-    <field name="hydrograph_id">
+    <field configurationFlags="NoFlag" name="hydrograph_id">
       <editWidget type="TextEdit">
-          <config><Option type="Map">
-            <Option value="0" name="IsMultiline" type="int"/>
-            <Option value="0" name="UseHtml" type="int"/>
-          </Option></config>
+          <config>
+            <Option/>
+          </config>
       </editWidget>
     </field>
-    <field name="bc_type">
+    <field configurationFlags="NoFlag" name="bc_type">
       <editWidget type="Range">
-          <config><Option type="Map">
-            <Option value="1" name="Min" type="double"/>
-            <Option value="103" name="Max" type="double"/>
-            <Option value="1" name="Step" type="double"/>
-          </Option></config>
+          <config>
+            <Option type="Map">
+              <Option value="1" name="Min" type="int"/>
+              <Option value="103" name="Max" type="int"/>
+              <Option value="1" name="Step" type="int"/>
+            </Option>
+          </config>
       </editWidget>
     </field>
-    <field name="Time">
+    <field configurationFlags="NoFlag" name="Time">
       <editWidget type="TextEdit">
-          <config><Option type="Map">
-            <Option value="0" name="IsMultiline" type="int"/>
-            <Option value="0" name="UseHtml" type="int"/>
-          </Option></config>
+          <config>
+            <Option/>
+          </config>
       </editWidget>
     </field>
-    <field name="Value">
+    <field configurationFlags="NoFlag" name="Value">
       <editWidget type="TextEdit">
-          <config><Option type="Map">
-            <Option value="0" name="IsMultiline" type="int"/>
-            <Option value="0" name="UseHtml" type="int"/>
-          </Option></config>
+          <config>
+            <Option/>
+          </config>
       </editWidget>
     </field>
-    <field name="description">
+    <field configurationFlags="NoFlag" name="description">
       <editWidget type="TextEdit">
-          <config><Option type="Map">
-            <Option value="0" name="IsMultiline" type="int"/>
-            <Option value="0" name="UseHtml" type="int"/>
-          </Option></config>
+          <config>
+            <Option/>
+          </config>
       </editWidget>
     </field>
   </fieldConfiguration>
   <aliases>
-    <alias index="0" name="Hydrograph ID"/>
-    <alias index="1" name="BC Type"/>
-    <alias index="2" name="Time"/>
-    <alias index="3" name="Value"/>
-    <alias index="4" name="Description"/>
+    <alias index="0" field="" name=""/>
+    <alias index="1" field="" name=""/>
+    <alias index="2" field="" name=""/>
+    <alias index="3" field="" name=""/>
+    <alias index="4" field="" name=""/>
   </aliases>
   <defaults>
+    <default expression="" field="hydrograph_id" applyOnUpdate="0"/>
+    <default expression="" field="bc_type" applyOnUpdate="0"/>
+    <default expression="" field="Time" applyOnUpdate="0"/>
+    <default expression="" field="Value" applyOnUpdate="0"/>
+    <default expression="" field="description" applyOnUpdate="0"/>
   </defaults>
+  <constraints>
+    <constraint notnull_strength="0" exp_strength="0" constraints="0" field="hydrograph_id" unique_strength="0"/>
+    <constraint notnull_strength="0" exp_strength="0" constraints="0" field="bc_type" unique_strength="0"/>
+    <constraint notnull_strength="0" exp_strength="0" constraints="0" field="Time" unique_strength="0"/>
+    <constraint notnull_strength="0" exp_strength="0" constraints="0" field="Value" unique_strength="0"/>
+    <constraint notnull_strength="0" exp_strength="0" constraints="0" field="description" unique_strength="0"/>
+  </constraints>
   <constraintExpressions>
+    <constraint exp="" field="hydrograph_id" desc=""/>
+    <constraint exp="" field="bc_type" desc=""/>
+    <constraint exp="" field="Time" desc=""/>
+    <constraint exp="" field="Value" desc=""/>
+    <constraint exp="" field="description" desc=""/>
   </constraintExpressions>
   <editform></editform>
   <editforminit></editforminit>

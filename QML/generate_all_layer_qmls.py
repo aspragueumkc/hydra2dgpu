@@ -4,10 +4,9 @@ Usage:  python QML/generate_all_layer_qmls.py
 
 Output: 18 .qml files in QML/  — one per model layer.
 
-Each QML encodes editor widget setup (ValueMap, constraints, aliases,
-defaults) so QGIS auto-applies them when the layer is loaded from a
-GeoPackage that has the style stored in ``layer_styles``, or when
-``loadNamedStyle()`` is called on an in-memory template layer.
+Each QML matches the exact XML format produced by
+``QgsVectorLayer.saveNamedStyle()`` for editor widget config
+(ValueMap, Range, constraints, aliases, defaults).
 
 Adding default symbology (fill colours, line styles, markers) to these
 QMLs is just a matter of editing the generated XML — they are standalone
@@ -20,13 +19,13 @@ import os
 import xml.sax.saxutils as saxutils
 
 QML_DIR = os.path.dirname(os.path.abspath(__file__))
-V = functools.partial(saxutils.escape, entities={'"': '&quot;'})
 
+# Escape for XML attribute values — must handle &, <, >, and "
+_V_ESCAPE = functools.partial(saxutils.escape, entities={'"': '&quot;'})
 
-# ── Helper: QML value type inference ──────────────────────────────────────
 
 def _qtype(value) -> str:
-    """Return the QML `type` attribute for a Python value."""
+    """Return the QGIS QML ``type`` attribute for a Python value."""
     if isinstance(value, bool):
         return "bool"
     if isinstance(value, int):
@@ -36,150 +35,198 @@ def _qtype(value) -> str:
     return "string"
 
 
-# ── Helper: ValueMap XML ──────────────────────────────────────────────────
+# ── Widget config builders ────────────────────────────────────────────────
+# These produce <config> blocks in the EXACT format QGIS itself writes.
 
-def _value_map_xml(items: list) -> str:
-    """Build a ValueMap <config> block from (label, value) pairs."""
+
+def _value_map_config(items: list) -> str:
+    """ValueMap config — QGIS wraps each entry in ``<Option type="Map">``."""
     entries = "\n".join(
-        f'            <Option value="{V(str(val))}" name="{V(label)}" type="{_qtype(val)}"/>'
+        '              <Option type="Map">\n'
+        '                <Option value="{}" name="{}" type="{}"/>\n'
+        '              </Option>'.format(
+            _V_ESCAPE(str(val)), _V_ESCAPE(label), _qtype(val),
+        )
         for label, val in items
     )
-    return f"""          <config><Option type="Map">
-            <Option name="map" type="List">
-{entries}
-            </Option>
-          </Option></config>"""
+    return (
+        '          <config>\n'
+        '            <Option type="Map">\n'
+        '              <Option name="map" type="List">\n'
+        f'{entries}\n'
+        '              </Option>\n'
+        '            </Option>\n'
+        '          </config>'
+    )
 
 
-# ── Helper: Range widget XML ──────────────────────────────────────────────
-
-def _range_xml(min_v: float, max_v: float, step: float) -> str:
-    return f"""          <config><Option type="Map">
-            <Option value="{min_v}" name="Min" type="double"/>
-            <Option value="{max_v}" name="Max" type="double"/>
-            <Option value="{step}" name="Step" type="double"/>
-          </Option></config>"""
-
-
-# ── Helper: default TextEdit XML ──────────────────────────────────────────
-
-_TEXT_EDIT_XML = """          <config><Option type="Map">
-            <Option value="0" name="IsMultiline" type="int"/>
-            <Option value="0" name="UseHtml" type="int"/>
-          </Option></config>"""
+def _range_config(min_v, max_v, step) -> str:
+    """Range widget config in QGIS canonical format."""
+    return (
+        '          <config>\n'
+        '            <Option type="Map">\n'
+        f'              <Option value="{min_v}" name="Min" type="int"/>\n'
+        f'              <Option value="{max_v}" name="Max" type="int"/>\n'
+        f'              <Option value="{step}" name="Step" type="int"/>\n'
+        '            </Option>\n'
+        '          </config>'
+    )
 
 
-# ── Helper: Checkbox XML ──────────────────────────────────────────────────
-
-_CHECKBOX_XML = """          <config><Option type="Map">
-            <Option value="1" name="CheckedState" type="QString"/>
-            <Option value="0" name="UncheckedState" type="QString"/>
-          </Option></config>"""
-
-
-# ── Helper: field editor widget XML ───────────────────────────────────────
-
-def _field_xml(name: str, widget_type: str = "TextEdit",
-               widget_config: str | None = None) -> str:
-    """Generate the <field> block for one field."""
-    cfg = widget_config if widget_config is not None else _TEXT_EDIT_XML
-    return f"""    <field name="{V(name)}">
-      <editWidget type="{widget_type}">
-{cfg}
-      </editWidget>
-    </field>"""
+_PLAIN_CONFIG = (
+    '          <config>\n'
+    '            <Option/>\n'
+    '          </config>'
+)
 
 
-def _constraint_xml(field: str, expr: str) -> str:
-    return f"""      <constraint exp="{V(expr)}" field="{V(field)}" desc=""/>"""
+_TEXT_EDIT_CONFIG = (
+    '          <config>\n'
+    '            <Option type="Map">\n'
+    '              <Option value="0" name="IsMultiline" type="int"/>\n'
+    '              <Option value="0" name="UseHtml" type="int"/>\n'
+    '            </Option>\n'
+    '          </config>'
+)
 
 
-def _alias_xml(index: int, alias: str) -> str:
-    return f"""    <alias index="{index}" name="{V(alias)}"/>"""
+# ── Building blocks ────────────────────────────────────────────────────────
 
 
-def _default_xml(field: str, expr: str, apply_on_update: str = "0") -> str:
-    return f"""    <default expression="{V(expr)}" field="{V(field)}" applyOnUpdate="{apply_on_update}"/>"""
+def _field_block(name: str, widget_type: str = "",
+                 config: str | None = None) -> str:
+    """``<field configurationFlags="NoFlag" name="...">`` block."""
+    cfg = config if config is not None else _PLAIN_CONFIG
+    return (
+        f'    <field configurationFlags="NoFlag" name="{_V_ESCAPE(name)}">\n'
+        f'      <editWidget type="{widget_type}">\n'
+        f'{cfg}\n'
+        '      </editWidget>\n'
+        '    </field>'
+    )
 
 
-# ── Layer config: (geom_type, [(field_name, widget_type, widget_config_or_None)], constraints, aliases, defaults)
-# geom_type: "Point" | "LineString" | "Polygon" | None (table)
+def _constraint_entry(field: str, has_expr: bool) -> str:
+    """Entry inside ``<constraints>`` block."""
+    bits = "4" if has_expr else "0"
+    es = "1" if has_expr else "0"
+    return (
+        f'    <constraint notnull_strength="0" exp_strength="{es}" '
+        f'constraints="{bits}" field="{_V_ESCAPE(field)}" unique_strength="0"/>'
+    )
 
-QGIS_VERSION = "3.44.0"
+
+def _constraint_expr(field: str, expr: str) -> str:
+    """Entry inside ``<constraintExpressions>`` block."""
+    return (
+        f'    <constraint exp="{_V_ESCAPE(expr)}" field="{_V_ESCAPE(field)}" desc=""/>'
+    )
 
 
-def _build_qml(geom_type: str | None,
-               fields: list,
-               constraints: list | None = None,
-               aliases: list | None = None,
-               defaults: list | None = None) -> str:
-    """Assemble a complete QML document string.
+def _alias_entry(index: int, alias: str) -> str:
+    return f'    <alias index="{index}" field="" name="{_V_ESCAPE(alias)}"/>'
+
+
+def _default_entry(field: str, expr: str, apply_on_update: str = "0") -> str:
+    return (
+        f'    <default expression="{_V_ESCAPE(expr)}" '
+        f'field="{_V_ESCAPE(field)}" applyOnUpdate="{apply_on_update}"/>'
+    )
+
+
+QGIS_VERSION = "3.34.4"
+
+
+def build_qml(geom_type: str | None,
+              fields: list,
+              constraint_exprs: list | None = None,
+              aliases: list | None = None,
+              defaults: list | None = None) -> str:
+    """Assemble a QML document matching ``QgsVectorLayer.saveNamedStyle()``.
 
     Parameters
     ----------
     geom_type:
-        ``"Point"``, ``"LineString"``, ``"Polygon"``, or ``None`` for table.
+        ``"Point"``, ``"LineString"``, ``"Polygon"``, or ``None`` (table).
     fields:
-        List of ``(field_name, widget_type, widget_config_or_None)`` tuples.
-        Pass ``None`` for widget_config to get a plain TextEdit.
-    constraints:
-        List of ``(field_name, expression)`` tuples, or ``None``.
+        List of ``(name, widget_type, widget_config_or_None)``.
+        Pass ``None`` for config to get a plain TextEdit.
+    constraint_exprs:
+        ``[(field, expression), ...]`` — only fields WITH constraints.
+        All other fields get an empty entry automatically.
     aliases:
-        List of ``(field_name, alias)`` tuples, or ``None``.
+        ``[(index, alias), ...]`` — only fields WITH non-empty aliases.
     defaults:
-        List of ``(field_name, expression, apply_on_update)`` tuples, or ``None``.
+        ``[(field, expression, applyOnUpdate), ...]`` — only fields WITH defaults.
     """
-    field_xmls = "\n".join(_field_xml(n, w, c) for n, w, c in fields)
-    constraint_xmls = ""
-    if constraints:
-        constraint_xmls = "\n" + "\n".join(
-            _constraint_xml(f, e) for f, e in constraints
-        )
-    alias_xmls = ""
-    if aliases:
-        alias_xmls = "\n" + "\n".join(
-            _alias_xml(i, a) for i, a in aliases
-        )
-    default_xmls = ""
-    if defaults:
-        default_xmls = "\n" + "\n".join(
-            _default_xml(f, e, u) for f, e, u in defaults
-        )
+    field_names = [f[0] for f in fields]
+    n_fields = len(field_names)
 
-    # Build field name list for <editable/> and <labelOnTop/>
-    editable_xml = "\n".join(
-        f"    <field name=\"{V(n)}\"/>"
-        for n, _, _ in fields
+    # Build maps
+    constraint_map = dict(constraint_exprs or [])
+    alias_map = dict(aliases or [])
+    default_map = {d[0]: (d[1], d[2]) for d in (defaults or [])}
+
+    # Sections
+    field_xml = "\n".join(_field_block(n, w, c) for n, w, c in fields)
+
+    constraint_entries = "\n".join(
+        _constraint_entry(n, n in constraint_map) for n in field_names
     )
 
-    return f"""<!DOCTYPE qgis PUBLIC 'http://mrcc.com/qgis.dtd' 'SYSTEM'>
-<qgis version="{QGIS_VERSION}" editorLayout="tablayout">
-  <fieldConfiguration>
-{field_xmls}
-  </fieldConfiguration>
-  <aliases>{alias_xmls}
-  </aliases>
-  <defaults>{default_xmls}
-  </defaults>
-  <constraintExpressions>{constraint_xmls}
-  </constraintExpressions>
-  <editform></editform>
-  <editforminit></editforminit>
-  <editforminitcodesource>0</editforminitcodesource>
-  <editforminitfilepath></editforminitfilepath>
-  <editforminitcode><![CDATA[]]></editforminitcode>
-  <featformsuppress>0</featformsuppress>
-  <editorlayout>tablayout</editorlayout>
-  <editable>
-{editable_xml}
-  </editable>
-  <labelOnTop>
-  </labelOnTop>
-  <reuseLastValue>
-  </reuseLastValue>
-  <dataDefinedFieldProperties/>
-  <widgets/>
-</qgis>"""
+    expr_entries = "\n".join(
+        _constraint_expr(n, constraint_map.get(n, "")) for n in field_names
+    )
+
+    alias_entries = "\n".join(
+        _alias_entry(i, alias_map.get(n, "")) for i, n in enumerate(field_names)
+    )
+
+    default_entries = "\n".join(
+        _default_entry(n, *default_map.get(n, ("", "0"))) for n in field_names
+    )
+
+    editable_entries = "\n".join(
+        f'    <field name="{_V_ESCAPE(n)}"/>' for n in field_names
+    )
+
+    return (
+        '<!DOCTYPE qgis PUBLIC \'http://mrcc.com/qgis.dtd\' \'SYSTEM\'>\n'
+        f'<qgis version="{QGIS_VERSION}"'
+        ' styleCategories="Fields|Forms|AttributeTable">\n'
+        '  <fieldConfiguration>\n'
+        f'{field_xml}\n'
+        '  </fieldConfiguration>\n'
+        '  <aliases>\n'
+        f'{alias_entries}\n'
+        '  </aliases>\n'
+        '  <defaults>\n'
+        f'{default_entries}\n'
+        '  </defaults>\n'
+        '  <constraints>\n'
+        f'{constraint_entries}\n'
+        '  </constraints>\n'
+        '  <constraintExpressions>\n'
+        f'{expr_entries}\n'
+        '  </constraintExpressions>\n'
+        '  <editform></editform>\n'
+        '  <editforminit></editforminit>\n'
+        '  <editforminitcodesource>0</editforminitcodesource>\n'
+        '  <editforminitfilepath></editforminitfilepath>\n'
+        '  <editforminitcode><![CDATA[]]></editforminitcode>\n'
+        '  <featformsuppress>0</featformsuppress>\n'
+        '  <editorlayout>tablayout</editorlayout>\n'
+        '  <editable>\n'
+        f'{editable_entries}\n'
+        '  </editable>\n'
+        '  <labelOnTop>\n'
+        '  </labelOnTop>\n'
+        '  <reuseLastValue>\n'
+        '  </reuseLastValue>\n'
+        '  <dataDefinedFieldProperties/>\n'
+        '  <widgets/>\n'
+        '</qgis>\n'
+    )
 
 
 # ── Value map definitions ─────────────────────────────────────────────────
@@ -264,21 +311,21 @@ LAYERS = []
 
 # 1. swe2d_topo_nodes
 LAYERS.append(("swe2d_topo_nodes", "Point", [
-    ("node_id", "Range", _range_xml(0, 2147483647, 1)),
+    ("node_id", "Range", _range_config(0, 2147483647, 1)),
 ], None, [
     (0, "Node ID"),
 ], None))
 
 # 2. swe2d_topo_arcs
 LAYERS.append(("swe2d_topo_arcs", "LineString", [
-    ("arc_id", "Range", _range_xml(0, 2147483647, 1)),
-    ("node0", "Range", _range_xml(0, 2147483647, 1)),
-    ("node1", "Range", _range_xml(0, 2147483647, 1)),
-    ("use_global_arc_ctrl", "ValueMap", _value_map_xml([
+    ("arc_id", "Range", _range_config(0, 2147483647, 1)),
+    ("node0", "Range", _range_config(0, 2147483647, 1)),
+    ("node1", "Range", _range_config(0, 2147483647, 1)),
+    ("use_global_arc_ctrl", "ValueMap", _value_map_config([
         ("Use global control", 1),
         ("Per-arc override", 0),
     ])),
-    ("arc_mode_override", "ValueMap", _value_map_xml(ARC_MODE_ITEMS)),
+    ("arc_mode_override", "ValueMap", _value_map_config(ARC_MODE_ITEMS)),
     ("arc_soft_size_override", "TextEdit", None),
     ("arc_soft_dist_override", "TextEdit", None),
 ], [
@@ -298,9 +345,9 @@ LAYERS.append(("swe2d_topo_arcs", "LineString", [
 
 # 3. swe2d_topo_regions
 LAYERS.append(("swe2d_topo_regions", "Polygon", [
-    ("region_id", "Range", _range_xml(1, 2147483647, 1)),
+    ("region_id", "Range", _range_config(1, 2147483647, 1)),
     ("target_size", "TextEdit", None),
-    ("cell_type", "ValueMap", _value_map_xml(CELL_TYPE_ITEMS)),
+    ("cell_type", "ValueMap", _value_map_config(CELL_TYPE_ITEMS)),
     ("edge_len_1", "TextEdit", None),
     ("edge_len_2", "TextEdit", None),
     ("edge_len_3", "TextEdit", None),
@@ -324,9 +371,9 @@ LAYERS.append(("swe2d_topo_regions", "Polygon", [
 
 # 4. swe2d_topo_constraints
 LAYERS.append(("swe2d_topo_constraints", "Polygon", [
-    ("constraint_id", "Range", _range_xml(1, 2147483647, 1)),
+    ("constraint_id", "Range", _range_config(1, 2147483647, 1)),
     ("target_size", "TextEdit", None),
-    ("cell_type", "ValueMap", _value_map_xml(CELL_TYPE_ITEMS)),
+    ("cell_type", "ValueMap", _value_map_config(CELL_TYPE_ITEMS)),
     ("edge_len_1", "TextEdit", None),
     ("edge_len_2", "TextEdit", None),
     ("edge_len_3", "TextEdit", None),
@@ -350,15 +397,15 @@ LAYERS.append(("swe2d_topo_constraints", "Polygon", [
 
 # 5. swe2d_topo_quad_edges
 LAYERS.append(("swe2d_topo_quad_edges", "LineString", [
-    ("region_id", "Range", _range_xml(1, 2147483647, 1)),
-    ("edge_id", "ValueMap", _value_map_xml([
+    ("region_id", "Range", _range_config(1, 2147483647, 1)),
+    ("edge_id", "ValueMap", _value_map_config([
         ("Edge 1 (left)", 1),
         ("Edge 2 (right)", 2),
         ("Edge 3 (bottom)", 3),
         ("Edge 4 (top)", 4),
     ])),
     ("target_size", "TextEdit", None),
-    ("n_layers", "Range", _range_xml(0, 1000, 1)),
+    ("n_layers", "Range", _range_config(0, 1000, 1)),
     ("first_height", "TextEdit", None),
     ("growth_rate", "TextEdit", None),
 ], [
@@ -379,9 +426,9 @@ LAYERS.append(("swe2d_topo_quad_edges", "LineString", [
 
 # 6. swe2d_manning_zones
 LAYERS.append(("swe2d_manning_zones", "Polygon", [
-    ("zone_id", "Range", _range_xml(1, 2147483647, 1)),
+    ("zone_id", "Range", _range_config(1, 2147483647, 1)),
     ("n_mann", "TextEdit", None),
-    ("priority", "Range", _range_xml(0, 100, 1)),
+    ("priority", "Range", _range_config(0, 100, 1)),
 ], [
     ("n_mann", '"n_mann" >= 0'),
     ("priority", '"priority" >= 0'),
@@ -395,9 +442,9 @@ LAYERS.append(("swe2d_manning_zones", "Polygon", [
 
 # 7. swe2d_bc_lines
 LAYERS.append(("swe2d_bc_lines", "LineString", [
-    ("bc_type", "ValueMap", _value_map_xml(BC_TYPE_ITEMS)),
+    ("bc_type", "ValueMap", _value_map_config(BC_TYPE_ITEMS)),
     ("bc_value", "TextEdit", None),
-    ("priority", "Range", _range_xml(0, 100, 1)),
+    ("priority", "Range", _range_config(0, 100, 1)),
     ("hydrograph", "TextEdit", None),
     ("hydrograph_id", "TextEdit", None),
     ("hydrograph_layer", "TextEdit", None),
@@ -415,13 +462,13 @@ LAYERS.append(("swe2d_bc_lines", "LineString", [
 
 # 8. swe2d_sample_lines
 LAYERS.append(("swe2d_sample_lines", "LineString", [
-    ("line_id", "Range", _range_xml(1, 2147483647, 1)),
+    ("line_id", "Range", _range_config(1, 2147483647, 1)),
     ("name", "TextEdit", None),
-    ("enabled", "ValueMap", _value_map_xml([
+    ("enabled", "ValueMap", _value_map_config([
         ("Yes", 1),
         ("No", 0),
     ])),
-    ("priority", "Range", _range_xml(0, 100, 1)),
+    ("priority", "Range", _range_config(0, 100, 1)),
 ], [
     ("line_id", '"line_id" IS NULL OR "line_id" >= 0'),
     ("enabled", '"enabled" IS NULL OR "enabled" IN (0,1)'),
@@ -438,8 +485,8 @@ LAYERS.append(("swe2d_rain_gages", "Point", [
     ("gage_id", "TextEdit", None),
     ("name", "TextEdit", None),
     ("hyetograph_id", "TextEdit", None),
-    ("units", "ValueMap", _value_map_xml(RAIN_GAGE_UNITS_ITEMS)),
-    ("priority", "Range", _range_xml(0, 100, 1)),
+    ("units", "ValueMap", _value_map_config(RAIN_GAGE_UNITS_ITEMS)),
+    ("priority", "Range", _range_config(0, 100, 1)),
 ], [
     ("gage_id", 'length(trim("gage_id")) > 0'),
     ("hyetograph_id", 'length(trim("hyetograph_id")) > 0'),
@@ -454,9 +501,9 @@ LAYERS.append(("swe2d_rain_gages", "Point", [
 
 # 10. swe2d_storm_areas
 LAYERS.append(("swe2d_storm_areas", "Polygon", [
-    ("storm_id", "Range", _range_xml(1, 2147483647, 1)),
+    ("storm_id", "Range", _range_config(1, 2147483647, 1)),
     ("name", "TextEdit", None),
-    ("priority", "Range", _range_xml(0, 100, 1)),
+    ("priority", "Range", _range_config(0, 100, 1)),
 ], None, [
     (0, "Storm ID"),
     (1, "Name"),
@@ -465,9 +512,9 @@ LAYERS.append(("swe2d_storm_areas", "Polygon", [
 
 # 11. swe2d_cn_zones
 LAYERS.append(("swe2d_cn_zones", "Polygon", [
-    ("zone_id", "Range", _range_xml(1, 2147483647, 1)),
-    ("cn", "Range", _range_xml(1, 100, 1)),
-    ("priority", "Range", _range_xml(0, 100, 1)),
+    ("zone_id", "Range", _range_config(1, 2147483647, 1)),
+    ("cn", "Range", _range_config(1, 100, 1)),
+    ("priority", "Range", _range_config(0, 100, 1)),
 ], [
     ("cn", '"cn" >= 1 AND "cn" <= 100'),
     ("priority", '"priority" >= 0'),
@@ -482,8 +529,8 @@ LAYERS.append(("swe2d_hyetographs", None, [
     ("hyetograph_id", "TextEdit", None),
     ("Time", "TextEdit", None),
     ("Value", "TextEdit", None),
-    ("value_type", "ValueMap", _value_map_xml(HYETOGRAPH_VALUE_TYPE_ITEMS)),
-    ("units", "ValueMap", _value_map_xml(RAIN_GAGE_UNITS_ITEMS)),
+    ("value_type", "ValueMap", _value_map_config(HYETOGRAPH_VALUE_TYPE_ITEMS)),
+    ("units", "ValueMap", _value_map_config(RAIN_GAGE_UNITS_ITEMS)),
     ("description", "TextEdit", None),
 ], [
     ("hyetograph_id", 'length(trim("hyetograph_id")) > 0'),
@@ -503,7 +550,7 @@ LAYERS.append(("swe2d_hyetographs", None, [
 # 13. swe2d_hydrographs (table)
 LAYERS.append(("swe2d_hydrographs", None, [
     ("hydrograph_id", "TextEdit", None),
-    ("bc_type", "Range", _range_xml(1, 103, 1)),
+    ("bc_type", "Range", _range_config(1, 103, 1)),
     ("Time", "TextEdit", None),
     ("Value", "TextEdit", None),
     ("description", "TextEdit", None),
@@ -522,10 +569,10 @@ LAYERS.append(("swe2d_drainage_nodes", "Point", [
     ("max_depth", "TextEdit", None),
     ("rim_elev", "TextEdit", None),
     ("crest_elev", "TextEdit", None),
-    ("node_type", "ValueMap", _value_map_xml(DRAIN_NODE_TYPE_ITEMS)),
+    ("node_type", "ValueMap", _value_map_config(DRAIN_NODE_TYPE_ITEMS)),
     ("surface_area", "TextEdit", None),
     ("outfall_area", "TextEdit", None),
-    ("zero_storage", "ValueMap", _value_map_xml([
+    ("zero_storage", "ValueMap", _value_map_config([
         ("No", 0),
         ("Yes", 1),
     ])),
@@ -555,8 +602,8 @@ LAYERS.append(("swe2d_drainage_links", "LineString", [
     ("link_id", "TextEdit", None),
     ("from_node", "TextEdit", None),
     ("to_node", "TextEdit", None),
-    ("link_type", "ValueMap", _value_map_xml(DRAIN_LINK_TYPE_ITEMS)),
-    ("link_shape", "ValueMap", _value_map_xml(DRAIN_LINK_SHAPE_ITEMS)),
+    ("link_type", "ValueMap", _value_map_config(DRAIN_LINK_TYPE_ITEMS)),
+    ("link_shape", "ValueMap", _value_map_config(DRAIN_LINK_SHAPE_ITEMS)),
     ("length", "TextEdit", None),
     ("roughness_n", "TextEdit", None),
     ("diameter", "TextEdit", None),
@@ -567,11 +614,11 @@ LAYERS.append(("swe2d_drainage_links", "LineString", [
     ("max_flow", "TextEdit", None),
     ("cd", "TextEdit", None),
     ("culvert_shape", "TextEdit", None),
-    ("culvert_code", "Range", _range_xml(0, 57, 1)),
+    ("culvert_code", "Range", _range_config(0, 57, 1)),
     ("culvert_rise", "TextEdit", None),
     ("culvert_span", "TextEdit", None),
     ("culvert_area_m2", "TextEdit", None),
-    ("culvert_barrels", "Range", _range_xml(1, 10, 1)),
+    ("culvert_barrels", "Range", _range_config(1, 10, 1)),
     ("culvert_slope", "TextEdit", None),
     ("inlet_invert_elev", "TextEdit", None),
     ("outlet_invert_elev", "TextEdit", None),
@@ -653,7 +700,7 @@ LAYERS.append(("swe2d_drainage_inlets", None, [
 LAYERS.append(("swe2d_drainage_node_inlets", None, [
     ("node_id", "TextEdit", None),
     ("inlet_type_id", "TextEdit", None),
-    ("inlet_count", "Range", _range_xml(0, 1000, 1)),
+    ("inlet_count", "Range", _range_config(0, 1000, 1)),
     ("crest_offset", "TextEdit", None),
     ("description", "TextEdit", None),
 ], [
@@ -671,9 +718,9 @@ LAYERS.append(("swe2d_drainage_node_inlets", None, [
 # 18. swe2d_structures
 LAYERS.append(("swe2d_structures", "LineString", [
     ("structure_id", "TextEdit", None),
-    ("structure_type", "ValueMap", _value_map_xml(STRUCTURE_TYPE_ITEMS)),
+    ("structure_type", "ValueMap", _value_map_config(STRUCTURE_TYPE_ITEMS)),
     ("crest_elev", "TextEdit", None),
-    ("enabled", "ValueMap", _value_map_xml([
+    ("enabled", "ValueMap", _value_map_config([
         ("Yes", 1),
         ("No", 0),
     ])),
@@ -681,17 +728,17 @@ LAYERS.append(("swe2d_structures", "LineString", [
     ("height", "TextEdit", None),
     ("diameter", "TextEdit", None),
     ("culvert_shape", "TextEdit", None),
-    ("culvert_code", "Range", _range_xml(0, 57, 1)),
+    ("culvert_code", "Range", _range_config(0, 57, 1)),
     ("culvert_rise", "TextEdit", None),
     ("culvert_span", "TextEdit", None),
     ("culvert_area_m2", "TextEdit", None),
-    ("culvert_barrels", "Range", _range_xml(1, 10, 1)),
+    ("culvert_barrels", "Range", _range_config(1, 10, 1)),
     ("culvert_slope", "TextEdit", None),
     ("inlet_invert_elev", "TextEdit", None),
     ("outlet_invert_elev", "TextEdit", None),
     ("entrance_loss_k", "TextEdit", None),
     ("exit_loss_k", "TextEdit", None),
-    ("embankment_enabled", "ValueMap", _value_map_xml([
+    ("embankment_enabled", "ValueMap", _value_map_config([
         ("No", 0),
         ("Yes", 1),
     ])),
@@ -707,11 +754,11 @@ LAYERS.append(("swe2d_structures", "LineString", [
     ("max_flow", "TextEdit", None),
     ("inlet_loss_k", "TextEdit", None),
     ("outlet_loss_k", "TextEdit", None),
-    ("stacked_enabled", "ValueMap", _value_map_xml([
+    ("stacked_enabled", "ValueMap", _value_map_config([
         ("No", 0),
         ("Yes", 1),
     ])),
-    ("use_redistribution", "ValueMap", _value_map_xml([
+    ("use_redistribution", "ValueMap", _value_map_config([
         ("No", 0),
         ("Yes", 1),
     ])),
@@ -721,9 +768,9 @@ LAYERS.append(("swe2d_structures", "LineString", [
     ("deck_soffit_elev", "TextEdit", None),
     ("deck_top_elev", "TextEdit", None),
     ("model_top_elev", "TextEdit", None),
-    ("under_layers", "Range", _range_xml(0, 10, 1)),
-    ("over_layers", "Range", _range_xml(0, 10, 1)),
-    ("pier_count", "Range", _range_xml(0, 20, 1)),
+    ("under_layers", "Range", _range_config(0, 10, 1)),
+    ("over_layers", "Range", _range_config(0, 10, 1)),
+    ("pier_count", "Range", _range_config(0, 20, 1)),
     ("pier_width", "TextEdit", None),
 ], [
     ("structure_id", 'length(trim("structure_id")) > 0'),
@@ -791,7 +838,7 @@ def main():
     """Generate QML files for all 18 layers."""
     os.makedirs(QML_DIR, exist_ok=True)
     for name, geom_type, fields, constraints, aliases, defaults in LAYERS:
-        qml = _build_qml(geom_type, fields, constraints, aliases, defaults)
+        qml = build_qml(geom_type, fields, constraints, aliases, defaults)
         path = os.path.join(QML_DIR, f"{name}.qml")
         with open(path, "w") as f:
             f.write(qml)

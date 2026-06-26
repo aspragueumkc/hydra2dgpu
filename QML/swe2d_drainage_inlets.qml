@@ -1,90 +1,102 @@
 <!DOCTYPE qgis PUBLIC 'http://mrcc.com/qgis.dtd' 'SYSTEM'>
-<qgis version="3.44.0" editorLayout="tablayout">
+<qgis version="3.34.4" styleCategories="Fields|Forms|AttributeTable">
   <fieldConfiguration>
-    <field name="inlet_type_id">
+    <field configurationFlags="NoFlag" name="inlet_type_id">
       <editWidget type="TextEdit">
-          <config><Option type="Map">
-            <Option value="0" name="IsMultiline" type="int"/>
-            <Option value="0" name="UseHtml" type="int"/>
-          </Option></config>
+          <config>
+            <Option/>
+          </config>
       </editWidget>
     </field>
-    <field name="name">
+    <field configurationFlags="NoFlag" name="name">
       <editWidget type="TextEdit">
-          <config><Option type="Map">
-            <Option value="0" name="IsMultiline" type="int"/>
-            <Option value="0" name="UseHtml" type="int"/>
-          </Option></config>
+          <config>
+            <Option/>
+          </config>
       </editWidget>
     </field>
-    <field name="weir_length">
+    <field configurationFlags="NoFlag" name="weir_length">
       <editWidget type="TextEdit">
-          <config><Option type="Map">
-            <Option value="0" name="IsMultiline" type="int"/>
-            <Option value="0" name="UseHtml" type="int"/>
-          </Option></config>
+          <config>
+            <Option/>
+          </config>
       </editWidget>
     </field>
-    <field name="orifice_area">
+    <field configurationFlags="NoFlag" name="orifice_area">
       <editWidget type="TextEdit">
-          <config><Option type="Map">
-            <Option value="0" name="IsMultiline" type="int"/>
-            <Option value="0" name="UseHtml" type="int"/>
-          </Option></config>
+          <config>
+            <Option/>
+          </config>
       </editWidget>
     </field>
-    <field name="coeff_weir">
+    <field configurationFlags="NoFlag" name="coeff_weir">
       <editWidget type="TextEdit">
-          <config><Option type="Map">
-            <Option value="0" name="IsMultiline" type="int"/>
-            <Option value="0" name="UseHtml" type="int"/>
-          </Option></config>
+          <config>
+            <Option/>
+          </config>
       </editWidget>
     </field>
-    <field name="coeff_orifice">
+    <field configurationFlags="NoFlag" name="coeff_orifice">
       <editWidget type="TextEdit">
-          <config><Option type="Map">
-            <Option value="0" name="IsMultiline" type="int"/>
-            <Option value="0" name="UseHtml" type="int"/>
-          </Option></config>
+          <config>
+            <Option/>
+          </config>
       </editWidget>
     </field>
-    <field name="max_capture">
+    <field configurationFlags="NoFlag" name="max_capture">
       <editWidget type="TextEdit">
-          <config><Option type="Map">
-            <Option value="0" name="IsMultiline" type="int"/>
-            <Option value="0" name="UseHtml" type="int"/>
-          </Option></config>
+          <config>
+            <Option/>
+          </config>
       </editWidget>
     </field>
-    <field name="description">
+    <field configurationFlags="NoFlag" name="description">
       <editWidget type="TextEdit">
-          <config><Option type="Map">
-            <Option value="0" name="IsMultiline" type="int"/>
-            <Option value="0" name="UseHtml" type="int"/>
-          </Option></config>
+          <config>
+            <Option/>
+          </config>
       </editWidget>
     </field>
   </fieldConfiguration>
   <aliases>
-    <alias index="0" name="Inlet Type ID"/>
-    <alias index="1" name="Name"/>
-    <alias index="2" name="Weir Length"/>
-    <alias index="3" name="Orifice Area"/>
-    <alias index="4" name="Weir Coefficient"/>
-    <alias index="5" name="Orifice Coefficient"/>
-    <alias index="6" name="Max Capture"/>
-    <alias index="7" name="Description"/>
+    <alias index="0" field="" name=""/>
+    <alias index="1" field="" name=""/>
+    <alias index="2" field="" name=""/>
+    <alias index="3" field="" name=""/>
+    <alias index="4" field="" name=""/>
+    <alias index="5" field="" name=""/>
+    <alias index="6" field="" name=""/>
+    <alias index="7" field="" name=""/>
   </aliases>
   <defaults>
+    <default expression="" field="inlet_type_id" applyOnUpdate="0"/>
+    <default expression="" field="name" applyOnUpdate="0"/>
+    <default expression="" field="weir_length" applyOnUpdate="0"/>
+    <default expression="" field="orifice_area" applyOnUpdate="0"/>
+    <default expression="" field="coeff_weir" applyOnUpdate="0"/>
+    <default expression="" field="coeff_orifice" applyOnUpdate="0"/>
+    <default expression="" field="max_capture" applyOnUpdate="0"/>
+    <default expression="" field="description" applyOnUpdate="0"/>
   </defaults>
+  <constraints>
+    <constraint notnull_strength="0" exp_strength="1" constraints="4" field="inlet_type_id" unique_strength="0"/>
+    <constraint notnull_strength="0" exp_strength="0" constraints="0" field="name" unique_strength="0"/>
+    <constraint notnull_strength="0" exp_strength="1" constraints="4" field="weir_length" unique_strength="0"/>
+    <constraint notnull_strength="0" exp_strength="1" constraints="4" field="orifice_area" unique_strength="0"/>
+    <constraint notnull_strength="0" exp_strength="1" constraints="4" field="coeff_weir" unique_strength="0"/>
+    <constraint notnull_strength="0" exp_strength="1" constraints="4" field="coeff_orifice" unique_strength="0"/>
+    <constraint notnull_strength="0" exp_strength="1" constraints="4" field="max_capture" unique_strength="0"/>
+    <constraint notnull_strength="0" exp_strength="0" constraints="0" field="description" unique_strength="0"/>
+  </constraints>
   <constraintExpressions>
-      <constraint exp="length(trim(&quot;inlet_type_id&quot;)) &gt; 0" field="inlet_type_id" desc=""/>
-      <constraint exp="&quot;weir_length&quot; IS NULL OR &quot;weir_length&quot; &gt; 0" field="weir_length" desc=""/>
-      <constraint exp="&quot;orifice_area&quot; IS NULL OR &quot;orifice_area&quot; &gt; 0" field="orifice_area" desc=""/>
-      <constraint exp="&quot;coeff_weir&quot; IS NULL OR &quot;coeff_weir&quot; &gt; 0" field="coeff_weir" desc=""/>
-      <constraint exp="&quot;coeff_orifice&quot; IS NULL OR &quot;coeff_orifice&quot; &gt; 0" field="coeff_orifice" desc=""/>
-      <constraint exp="&quot;max_capture&quot; IS NULL OR &quot;max_capture&quot; &gt; 0" field="max_capture" desc=""/>
+    <constraint exp="length(trim(&quot;inlet_type_id&quot;)) &gt; 0" field="inlet_type_id" desc=""/>
+    <constraint exp="" field="name" desc=""/>
+    <constraint exp="&quot;weir_length&quot; IS NULL OR &quot;weir_length&quot; &gt; 0" field="weir_length" desc=""/>
+    <constraint exp="&quot;orifice_area&quot; IS NULL OR &quot;orifice_area&quot; &gt; 0" field="orifice_area" desc=""/>
+    <constraint exp="&quot;coeff_weir&quot; IS NULL OR &quot;coeff_weir&quot; &gt; 0" field="coeff_weir" desc=""/>
+    <constraint exp="&quot;coeff_orifice&quot; IS NULL OR &quot;coeff_orifice&quot; &gt; 0" field="coeff_orifice" desc=""/>
+    <constraint exp="&quot;max_capture&quot; IS NULL OR &quot;max_capture&quot; &gt; 0" field="max_capture" desc=""/>
+    <constraint exp="" field="description" desc=""/>
   </constraintExpressions>
   <editform></editform>
   <editforminit></editforminit>

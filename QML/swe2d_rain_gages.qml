@@ -1,65 +1,88 @@
 <!DOCTYPE qgis PUBLIC 'http://mrcc.com/qgis.dtd' 'SYSTEM'>
-<qgis version="3.44.0" editorLayout="tablayout">
+<qgis version="3.34.4" styleCategories="Fields|Forms|AttributeTable">
   <fieldConfiguration>
-    <field name="gage_id">
+    <field configurationFlags="NoFlag" name="gage_id">
       <editWidget type="TextEdit">
-          <config><Option type="Map">
-            <Option value="0" name="IsMultiline" type="int"/>
-            <Option value="0" name="UseHtml" type="int"/>
-          </Option></config>
+          <config>
+            <Option/>
+          </config>
       </editWidget>
     </field>
-    <field name="name">
+    <field configurationFlags="NoFlag" name="name">
       <editWidget type="TextEdit">
-          <config><Option type="Map">
-            <Option value="0" name="IsMultiline" type="int"/>
-            <Option value="0" name="UseHtml" type="int"/>
-          </Option></config>
+          <config>
+            <Option/>
+          </config>
       </editWidget>
     </field>
-    <field name="hyetograph_id">
+    <field configurationFlags="NoFlag" name="hyetograph_id">
       <editWidget type="TextEdit">
-          <config><Option type="Map">
-            <Option value="0" name="IsMultiline" type="int"/>
-            <Option value="0" name="UseHtml" type="int"/>
-          </Option></config>
+          <config>
+            <Option/>
+          </config>
       </editWidget>
     </field>
-    <field name="units">
+    <field configurationFlags="NoFlag" name="units">
       <editWidget type="ValueMap">
-          <config><Option type="Map">
-            <Option name="map" type="List">
-            <Option value="mm/hr" name="mm/hr" type="string"/>
-            <Option value="in/hr" name="in/hr" type="string"/>
-            <Option value="mm" name="mm" type="string"/>
-            <Option value="in" name="in" type="string"/>
+          <config>
+            <Option type="Map">
+              <Option name="map" type="List">
+              <Option type="Map">
+                <Option value="mm/hr" name="mm/hr" type="string"/>
+              </Option>
+              <Option type="Map">
+                <Option value="in/hr" name="in/hr" type="string"/>
+              </Option>
+              <Option type="Map">
+                <Option value="mm" name="mm" type="string"/>
+              </Option>
+              <Option type="Map">
+                <Option value="in" name="in" type="string"/>
+              </Option>
+              </Option>
             </Option>
-          </Option></config>
+          </config>
       </editWidget>
     </field>
-    <field name="priority">
+    <field configurationFlags="NoFlag" name="priority">
       <editWidget type="Range">
-          <config><Option type="Map">
-            <Option value="0" name="Min" type="double"/>
-            <Option value="100" name="Max" type="double"/>
-            <Option value="1" name="Step" type="double"/>
-          </Option></config>
+          <config>
+            <Option type="Map">
+              <Option value="0" name="Min" type="int"/>
+              <Option value="100" name="Max" type="int"/>
+              <Option value="1" name="Step" type="int"/>
+            </Option>
+          </config>
       </editWidget>
     </field>
   </fieldConfiguration>
   <aliases>
-    <alias index="0" name="Gage ID"/>
-    <alias index="1" name="Name"/>
-    <alias index="2" name="Hyetograph ID"/>
-    <alias index="3" name="Units"/>
-    <alias index="4" name="Priority"/>
+    <alias index="0" field="" name=""/>
+    <alias index="1" field="" name=""/>
+    <alias index="2" field="" name=""/>
+    <alias index="3" field="" name=""/>
+    <alias index="4" field="" name=""/>
   </aliases>
   <defaults>
+    <default expression="" field="gage_id" applyOnUpdate="0"/>
+    <default expression="" field="name" applyOnUpdate="0"/>
+    <default expression="" field="hyetograph_id" applyOnUpdate="0"/>
+    <default expression="" field="units" applyOnUpdate="0"/>
+    <default expression="" field="priority" applyOnUpdate="0"/>
   </defaults>
+  <constraints>
+    <constraint notnull_strength="0" exp_strength="1" constraints="4" field="gage_id" unique_strength="0"/>
+    <constraint notnull_strength="0" exp_strength="0" constraints="0" field="name" unique_strength="0"/>
+    <constraint notnull_strength="0" exp_strength="1" constraints="4" field="hyetograph_id" unique_strength="0"/>
+    <constraint notnull_strength="0" exp_strength="1" constraints="4" field="units" unique_strength="0"/>
+    <constraint notnull_strength="0" exp_strength="0" constraints="0" field="priority" unique_strength="0"/>
+  </constraints>
   <constraintExpressions>
-      <constraint exp="length(trim(&quot;gage_id&quot;)) &gt; 0" field="gage_id" desc=""/>
-      <constraint exp="length(trim(&quot;hyetograph_id&quot;)) &gt; 0" field="hyetograph_id" desc=""/>
-      <constraint exp="&quot;units&quot; IS NULL OR &quot;units&quot; IN ('mm/hr','in/hr','mm','in')" field="units" desc=""/>
+    <constraint exp="length(trim(&quot;gage_id&quot;)) &gt; 0" field="gage_id" desc=""/>
+    <constraint exp="" field="name" desc=""/>
+    <constraint exp="length(trim(&quot;hyetograph_id&quot;)) &gt; 0" field="hyetograph_id" desc=""/>
+    <constraint exp="&quot;units&quot; IS NULL OR &quot;units&quot; IN ('mm/hr','in/hr','mm','in')" field="units" desc=""/>
+    <constraint exp="" field="priority" desc=""/>
   </constraintExpressions>
   <editform></editform>
   <editforminit></editforminit>
