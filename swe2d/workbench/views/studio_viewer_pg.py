@@ -124,15 +124,12 @@ class PGTimeSeriesWidget(QtWidgets.QWidget):
             root.addWidget(label)
             return
 
-        # Top bar: variable combo + table toggle
+        # Top bar: variable combo + table toggle + save/customize buttons
         top_bar = QtWidgets.QHBoxLayout()
         top_bar.addStretch(1)
         lbl = QtWidgets.QLabel("Variable:")
         self._metric_combo = QtWidgets.QComboBox()
-        self._metric_combo.addItem("Flow (m³/s)", "flow_cms")
-        self._metric_combo.addItem("Depth (m)", "depth_m")
-        self._metric_combo.addItem("WSE (m)", "wse_m")
-        self._metric_combo.addItem("Velocity (m/s)", "velocity_ms")
+        self._repopulate_combo_items()
         self._metric_combo.currentIndexChanged.connect(self._on_metric_changed)
         top_bar.addWidget(lbl)
         top_bar.addWidget(self._metric_combo)
@@ -142,6 +139,39 @@ class PGTimeSeriesWidget(QtWidgets.QWidget):
         self.show_table_toggle.setChecked(False)
         self.show_table_toggle.toggled.connect(self._on_table_toggle)
         top_bar.addWidget(self.show_table_toggle)
+
+        # Save button with dropdown menu
+        self._save_btn = QtWidgets.QPushButton("💾 Save")
+        self._save_btn.setFixedHeight(24)
+        self._save_menu = QtWidgets.QMenu(self._save_btn)
+        self._save_menu.addAction("Save plot as PNG", self._save_plot_png)
+        self._save_menu.addAction("Save plot as SVG", self._save_plot_svg)
+        self._save_menu.addAction("Save plot as PDF / Print", self._save_plot_pdf)
+        self._save_menu.addSeparator()
+        self._save_menu.addAction("Save data as CSV", self._save_data_csv)
+        self._save_btn.setMenu(self._save_menu)
+        top_bar.addWidget(self._save_btn)
+
+        # Settings button with dropdown menu (customization toggles)
+        self._settings_btn = QtWidgets.QPushButton("⚙")
+        self._settings_btn.setFixedSize(24, 24)
+        self._settings_btn.setToolTip("Plot settings")
+        self._settings_menu = QtWidgets.QMenu(self._settings_btn)
+        self._settings_act_grid = self._settings_menu.addAction("Show grid")
+        self._settings_act_grid.setCheckable(True)
+        self._settings_act_grid.setChecked(True)
+        self._settings_act_grid.toggled.connect(self._on_toggle_grid)
+        self._settings_act_legend = self._settings_menu.addAction("Show legend")
+        self._settings_act_legend.setCheckable(True)
+        self._settings_act_legend.setChecked(True)
+        self._settings_act_legend.toggled.connect(self._on_toggle_legend)
+        self._settings_act_crosshair = self._settings_menu.addAction("Show crosshair")
+        self._settings_act_crosshair.setCheckable(True)
+        self._settings_act_crosshair.setChecked(True)
+        self._settings_act_crosshair.toggled.connect(self._on_toggle_crosshair)
+        self._settings_btn.setMenu(self._settings_menu)
+        top_bar.addWidget(self._settings_btn)
+
         root.addLayout(top_bar)
 
         # pyqtgraph plot
@@ -161,9 +191,9 @@ class PGTimeSeriesWidget(QtWidgets.QWidget):
         self._plot_widget.addItem(self._hover_label)
 
         # Crosshair lines (hidden)
-        self._hover_vline = pg.InfiniteLine(angle=90, movable=False, pen=pg.mkPen("0.5", width=0.8, style=QtCore.Qt.PenStyle.DashLine))
+        self._hover_vline = pg.InfiniteLine(angle=90, movable=False, pen=pg.mkPen(color=(128, 128, 128), width=0.8, style=QtCore.Qt.PenStyle.DashLine))
         self._hover_vline.setVisible(False)
-        self._hover_hline = pg.InfiniteLine(angle=0, movable=False, pen=pg.mkPen("0.5", width=0.8, style=QtCore.Qt.PenStyle.DashLine))
+        self._hover_hline = pg.InfiniteLine(angle=0, movable=False, pen=pg.mkPen(color=(128, 128, 128), width=0.8, style=QtCore.Qt.PenStyle.DashLine))
         self._hover_hline.setVisible(False)
         self._plot_widget.addItem(self._hover_vline)
         self._plot_widget.addItem(self._hover_hline)
@@ -192,6 +222,24 @@ class PGTimeSeriesWidget(QtWidgets.QWidget):
     # ------------------------------------------------------------------
     # Slots
     # ------------------------------------------------------------------
+
+    def _repopulate_combo_items(self) -> None:
+        """Populate/populate the variable combo with unit-agnostic labels.
+
+        Uses _label_for_var which dynamically resolves the unit system
+        (SI or USC) from swe2d.units — no hardcoded units in the UI.
+        """
+        if self._metric_combo is None:
+            return
+        prev_data = self._metric_combo.currentData()
+        self._metric_combo.blockSignals(True)
+        self._metric_combo.clear()
+        for key in ("flow_cms", "depth_m", "wse_m", "velocity_ms"):
+            self._metric_combo.addItem(_label_for_var(key), key)
+        idx = self._metric_combo.findData(prev_data)
+        if idx >= 0:
+            self._metric_combo.setCurrentIndex(idx)
+        self._metric_combo.blockSignals(False)
 
     def _on_metric_changed(self) -> None:
         """Re-plot when the metric combo changes."""
@@ -247,6 +295,115 @@ class PGTimeSeriesWidget(QtWidgets.QWidget):
             self._hover_label.setVisible(False)
 
     # ------------------------------------------------------------------
+    # Save / Export
+    # ------------------------------------------------------------------
+
+    def _save_plot_png(self) -> None:
+        """Save the current plot as a PNG image via file dialog."""
+        if self._plot_widget is None:
+            return
+        path, _ = QtWidgets.QFileDialog.getSaveFileName(
+            self, "Save Plot as PNG", "", "PNG Image (*.png)",
+        )
+        if not path:
+            return
+        try:
+            from pyqtgraph.exporters import ImageExporter
+            exporter = ImageExporter(self._plot_widget.plotItem)
+            exporter.export(path)
+        except Exception as exc:
+            QtWidgets.QMessageBox.warning(self, "Export Error", str(exc))
+
+    def _save_plot_svg(self) -> None:
+        """Save the current plot as an SVG vector graphic."""
+        if self._plot_widget is None:
+            return
+        path, _ = QtWidgets.QFileDialog.getSaveFileName(
+            self, "Save Plot as SVG", "", "SVG Image (*.svg)",
+        )
+        if not path:
+            return
+        try:
+            from pyqtgraph.exporters import SVGExporter
+            exporter = SVGExporter(self._plot_widget.plotItem)
+            exporter.export(path)
+        except Exception as exc:
+            QtWidgets.QMessageBox.warning(self, "Export Error", str(exc))
+
+    def _save_plot_pdf(self) -> None:
+        """Save the current plot as PDF or send to a printer."""
+        if self._plot_widget is None:
+            return
+        try:
+            from pyqtgraph.exporters import PrintExporter
+            exporter = PrintExporter(self._plot_widget.plotItem)
+            exporter.export()  # shows native print dialog — user can pick PDF or physical printer
+        except Exception as exc:
+            QtWidgets.QMessageBox.warning(self, "Export Error", str(exc))
+
+    def _save_data_csv(self) -> None:
+        """Save the currently plotted time-series data as CSV."""
+        if not self._plot_items:
+            QtWidgets.QMessageBox.information(
+                self, "No Data", "No plot data to export."
+            )
+            return
+        path, _ = QtWidgets.QFileDialog.getSaveFileName(
+            self, "Save Data as CSV", "", "CSV File (*.csv)",
+        )
+        if not path:
+            return
+        try:
+            import csv
+            with open(path, "w", newline="") as f:
+                writer = csv.writer(f)
+                # Header: time, name1, name2, ...
+                names = [item.name() or f"Series_{i}" for i, item in enumerate(self._plot_items)]
+                writer.writerow([f"Time ({_TIME_UNIT})"] + names)
+                # Collect all x data (time) — use the first series as reference
+                x_data = None
+                y_series = []
+                for item in self._plot_items:
+                    if item.xData is not None and item.yData is not None:
+                        if x_data is None:
+                            x_data = item.xData
+                        y_series.append(item.yData)
+                    else:
+                        y_series.append(np.array([]))
+                if x_data is None:
+                    return
+                for i in range(len(x_data)):
+                    row = [f"{x_data[i]:.6g}"]
+                    for ys in y_series:
+                        row.append(f"{ys[i]:.6g}" if i < len(ys) else "")
+                    writer.writerow(row)
+        except Exception as exc:
+            QtWidgets.QMessageBox.warning(self, "Export Error", str(exc))
+
+    # ------------------------------------------------------------------
+    # Customization toggles
+    # ------------------------------------------------------------------
+
+    def _on_toggle_grid(self, enabled: bool) -> None:
+        """Toggle grid visibility."""
+        if self._plot_widget is not None:
+            self._plot_widget.showGrid(x=enabled, y=enabled, alpha=0.3)
+
+    def _on_toggle_legend(self, enabled: bool) -> None:
+        """Toggle legend visibility."""
+        if self._plot_widget is not None:
+            legend = self._plot_widget.plotItem.legend
+            if legend is not None:
+                legend.setVisible(enabled)
+
+    def _on_toggle_crosshair(self, enabled: bool) -> None:
+        """Toggle crosshair visibility."""
+        self._hover_vline.setVisible(enabled)
+        self._hover_hline.setVisible(enabled)
+        if not enabled:
+            self._hover_label.setVisible(False)
+
+    # ------------------------------------------------------------------
     # Public protocol
     # ------------------------------------------------------------------
 
@@ -295,6 +452,7 @@ class PGTimeSeriesWidget(QtWidgets.QWidget):
             self._mesh_data = mesh_data
         if result_data is not None:
             self._result_data = result_data
+            self._repopulate_combo_items()
             self._populate_metric_combo()
         self._h_min = float(h_min)
 
@@ -364,7 +522,7 @@ class PGTimeSeriesWidget(QtWidgets.QWidget):
         t_hr_now = getattr(data, "current_time_sec", 0.0) / 3600.0
         self._vline = pg.InfiniteLine(
             pos=t_hr_now, angle=90,
-            pen=pg.mkPen("0.5", width=0.9, style=QtCore.Qt.PenStyle.DashLine),
+            pen=pg.mkPen(color=(128, 128, 128), width=0.9, style=QtCore.Qt.PenStyle.DashLine),
         )
         self._vline.setZValue(50)
         self._plot_widget.addItem(self._vline)
@@ -409,11 +567,11 @@ class PGTimeSeriesWidget(QtWidgets.QWidget):
                 _load_ts(str(rec.gpkg_path), str(rec.run_id), int(line_id))
             )
             if raw and var_key in raw:
-                n = len(raw["t_s"])
-                for i in range(min(n, 5000)):
-                    row = {"t_s": raw["t_s"][i], var_key: raw[var_key][i]}
-                    records.append(row)
                 cols = sorted(raw.keys())
+                n = min(len(raw["t_s"]), 5000)
+                for i in range(n):
+                    row = {k: raw[k][i] for k in cols}
+                    records.append(row)
                 break
 
         if not records or not cols:
@@ -426,9 +584,13 @@ class PGTimeSeriesWidget(QtWidgets.QWidget):
         for i, r in enumerate(records[:n]):
             for j, c in enumerate(cols):
                 val = r.get(c, "")
+                if isinstance(val, str):
+                    display = val
+                else:
+                    display = "" if val is None else f"{val:.6g}"
                 self._table_widget.setItem(
                     i, j,
-                    QtWidgets.QTableWidgetItem("" if val is None else f"{val:.6g}"),
+                    QtWidgets.QTableWidgetItem(display),
                 )
 
     # ------------------------------------------------------------------
