@@ -134,6 +134,22 @@ def _default_entry(field: str, expr: str, apply_on_update: str = "0") -> str:
     )
 
 
+def _tab_container(name: str, type_val: int, fields: list[str]) -> str:
+    """Build an ``<attributeEditorContainer>`` with visibility on structure_type."""
+    field_entries = "\n".join(
+        f'      <attributeEditorField index="-1" name="{_V_ESCAPE(f)}"/>'
+        for f in fields
+    )
+    return (
+        f'    <attributeEditorContainer name="{_V_ESCAPE(name)}"'
+        f' visibilityExpressionEnabled="1"'
+        f' visibilityExpression="&quot;structure_type&quot; = {type_val}"'
+        f' groupBox="0">\n'
+        f'{field_entries}\n'
+        '    </attributeEditorContainer>'
+    )
+
+
 QGIS_VERSION = "3.34.4"
 
 
@@ -141,7 +157,8 @@ def build_qml(geom_type: str | None,
               fields: list,
               constraint_exprs: list | None = None,
               aliases: list | None = None,
-              defaults: list | None = None) -> str:
+               defaults: list | None = None,
+               editor_tabs: list | None = None) -> str:
     """Assemble a QML document matching ``QgsVectorLayer.saveNamedStyle()``.
 
     Parameters
@@ -158,6 +175,10 @@ def build_qml(geom_type: str | None,
         ``[(index, alias), ...]`` — only fields WITH non-empty aliases.
     defaults:
         ``[(field, expression, applyOnUpdate), ...]`` — only fields WITH defaults.
+    editor_tabs:
+        ``[(tab_name, type_value, [field_names]), ...]`` — conditional tab
+        containers keyed on ``"structure_type" = type_value``.
+        Only relevant for the structures layer.
     """
     field_names = [f[0] for f in fields]
     n_fields = len(field_names)
@@ -195,6 +216,15 @@ def build_qml(geom_type: str | None,
         f'    <field name="{_V_ESCAPE(n)}"/>' for n in field_names
     )
 
+    # Optional attribute-editor tabs (conditional on structure_type)
+    tab_xml = ""
+    if editor_tabs:
+        tabs = "\n".join(
+            _tab_container(name, type_val, tab_fields)
+            for name, type_val, tab_fields in editor_tabs
+        )
+        tab_xml = f'  <attributeEditorForm>\n{tabs}\n  </attributeEditorForm>\n'
+
     return (
         '<!DOCTYPE qgis PUBLIC \'http://mrcc.com/qgis.dtd\' \'SYSTEM\'>\n'
         f'<qgis version="{QGIS_VERSION}"'
@@ -230,9 +260,9 @@ def build_qml(geom_type: str | None,
         '  </reuseLastValue>\n'
         '  <dataDefinedFieldProperties/>\n'
         '  <widgets/>\n'
+        f'{tab_xml}'
         '</qgis>\n'
     )
-
 
 # ── Value map definitions ─────────────────────────────────────────────────
 
@@ -373,6 +403,62 @@ CULVERT_CODE_ITEMS = [
     (55, "Horizontal ellipse, corrugated metal (form-2)"),
     (56, "Arch CMP, 2-3-1 fill premium (form-2)"),
     (57, "Horizontal ellipse, special shape (form-2)"),
+]
+
+
+# ── Structure type tab definitions ────────────────────────────────────────
+# Each entry: (tab_name, structure_type_value, [field_names])
+
+STRUCTURE_TABS = [
+    ("Weir", 1, [
+        "width",
+        "embankment_enabled",
+        "embankment_crest_elev",
+        "embankment_overflow_width",
+        "embankment_weir_coeff",
+    ]),
+    ("Culvert", 2, [
+        "culvert_shape",
+        "culvert_code",
+        "culvert_rise",
+        "culvert_span",
+        "culvert_area_m2",
+        "culvert_barrels",
+        "culvert_slope",
+        "diameter",
+        "length",
+        "roughness_n",
+        "inlet_invert_elev",
+        "outlet_invert_elev",
+        "entrance_loss_k",
+        "exit_loss_k",
+        "embankment_enabled",
+        "embankment_crest_elev",
+        "embankment_overflow_width",
+        "embankment_weir_coeff",
+    ]),
+    ("Gate", 3, [
+        "width",
+        "height",
+        "opening",
+    ]),
+    ("Bridge", 4, [
+        "width",
+        "length",
+        "deck_soffit_elev",
+        "deck_top_elev",
+        "model_top_elev",
+        "under_layers",
+        "over_layers",
+        "inlet_loss_k",
+        "outlet_loss_k",
+        "pier_count",
+        "pier_width",
+    ]),
+    ("Pump", 5, [
+        "q_pump",
+        "max_flow",
+    ]),
 ]
 
 
@@ -902,16 +988,17 @@ LAYERS.append(("swe2d_structures", "LineString", [
     ("entrance_loss_k", "0.5", "0"),
     ("exit_loss_k", "1.0", "0"),
     ("culvert_barrels", "1", "0"),
-]))
-
+], STRUCTURE_TABS))
 
 # ── Main ──────────────────────────────────────────────────────────────────
 
 def main():
     """Generate QML files for all 18 layers."""
     os.makedirs(QML_DIR, exist_ok=True)
-    for name, geom_type, fields, constraints, aliases, defaults in LAYERS:
-        qml = build_qml(geom_type, fields, constraints, aliases, defaults)
+    for entry in LAYERS:
+        name, geom_type, fields, constraints, aliases, defaults = entry[:6]
+        editor_tabs = entry[6] if len(entry) > 6 else None
+        qml = build_qml(geom_type, fields, constraints, aliases, defaults, editor_tabs)
         path = os.path.join(QML_DIR, f"{name}.qml")
         with open(path, "w") as f:
             f.write(qml)

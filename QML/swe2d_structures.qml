@@ -800,4 +800,55 @@
   </reuseLastValue>
   <dataDefinedFieldProperties/>
   <widgets/>
+  <attributeEditorForm>
+    <attributeEditorContainer name="Weir" visibilityExpressionEnabled="1" visibilityExpression="&quot;structure_type&quot; = 1" groupBox="0">
+      <attributeEditorField index="-1" name="width"/>
+      <attributeEditorField index="-1" name="embankment_enabled"/>
+      <attributeEditorField index="-1" name="embankment_crest_elev"/>
+      <attributeEditorField index="-1" name="embankment_overflow_width"/>
+      <attributeEditorField index="-1" name="embankment_weir_coeff"/>
+    </attributeEditorContainer>
+    <attributeEditorContainer name="Culvert" visibilityExpressionEnabled="1" visibilityExpression="&quot;structure_type&quot; = 2" groupBox="0">
+      <attributeEditorField index="-1" name="culvert_shape"/>
+      <attributeEditorField index="-1" name="culvert_code"/>
+      <attributeEditorField index="-1" name="culvert_rise"/>
+      <attributeEditorField index="-1" name="culvert_span"/>
+      <attributeEditorField index="-1" name="culvert_area_m2"/>
+      <attributeEditorField index="-1" name="culvert_barrels"/>
+      <attributeEditorField index="-1" name="culvert_slope"/>
+      <attributeEditorField index="-1" name="diameter"/>
+      <attributeEditorField index="-1" name="length"/>
+      <attributeEditorField index="-1" name="roughness_n"/>
+      <attributeEditorField index="-1" name="inlet_invert_elev"/>
+      <attributeEditorField index="-1" name="outlet_invert_elev"/>
+      <attributeEditorField index="-1" name="entrance_loss_k"/>
+      <attributeEditorField index="-1" name="exit_loss_k"/>
+      <attributeEditorField index="-1" name="embankment_enabled"/>
+      <attributeEditorField index="-1" name="embankment_crest_elev"/>
+      <attributeEditorField index="-1" name="embankment_overflow_width"/>
+      <attributeEditorField index="-1" name="embankment_weir_coeff"/>
+    </attributeEditorContainer>
+    <attributeEditorContainer name="Gate" visibilityExpressionEnabled="1" visibilityExpression="&quot;structure_type&quot; = 3" groupBox="0">
+      <attributeEditorField index="-1" name="width"/>
+      <attributeEditorField index="-1" name="height"/>
+      <attributeEditorField index="-1" name="opening"/>
+    </attributeEditorContainer>
+    <attributeEditorContainer name="Bridge" visibilityExpressionEnabled="1" visibilityExpression="&quot;structure_type&quot; = 4" groupBox="0">
+      <attributeEditorField index="-1" name="width"/>
+      <attributeEditorField index="-1" name="length"/>
+      <attributeEditorField index="-1" name="deck_soffit_elev"/>
+      <attributeEditorField index="-1" name="deck_top_elev"/>
+      <attributeEditorField index="-1" name="model_top_elev"/>
+      <attributeEditorField index="-1" name="under_layers"/>
+      <attributeEditorField index="-1" name="over_layers"/>
+      <attributeEditorField index="-1" name="inlet_loss_k"/>
+      <attributeEditorField index="-1" name="outlet_loss_k"/>
+      <attributeEditorField index="-1" name="pier_count"/>
+      <attributeEditorField index="-1" name="pier_width"/>
+    </attributeEditorContainer>
+    <attributeEditorContainer name="Pump" visibilityExpressionEnabled="1" visibilityExpression="&quot;structure_type&quot; = 5" groupBox="0">
+      <attributeEditorField index="-1" name="q_pump"/>
+      <attributeEditorField index="-1" name="max_flow"/>
+    </attributeEditorContainer>
+  </attributeEditorForm>
 </qgis>
