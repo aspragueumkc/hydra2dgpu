@@ -71,17 +71,43 @@ class TestTopologyTabView(unittest.TestCase):
         view = TopologyTabView()
         self.assertIsInstance(view.topo_default_cell_type_combo, QComboBox)
 
-    def test_view_has_gmsh_controls_widget(self):
+    def test_view_has_algorithm_page(self):
         from swe2d.workbench.views.topology_tab_view import TopologyTabView
         view = TopologyTabView()
-        self.assertIsInstance(view.topo_gmsh_controls_widget, QWidget)
-        self.assertFalse(view.topo_gmsh_controls_widget.isVisible())
+        page = view.findChild(QWidget, "topo_algo_page")
+        self.assertIsInstance(page, QWidget)
+        self.assertTrue(view._toolbox.isItemEnabled(view._algo_idx))
 
-    def test_view_has_quality_controls_widget(self):
+    def test_view_has_arcs_page(self):
         from swe2d.workbench.views.topology_tab_view import TopologyTabView
         view = TopologyTabView()
-        self.assertIsInstance(view.topo_quality_controls_widget, QWidget)
-        self.assertFalse(view.topo_quality_controls_widget.isVisible())
+        page = view.findChild(QWidget, "topo_arcs_page")
+        self.assertIsInstance(page, QWidget)
+
+    def test_view_has_sizing_page(self):
+        from swe2d.workbench.views.topology_tab_view import TopologyTabView
+        view = TopologyTabView()
+        page = view.findChild(QWidget, "topo_sizing_page")
+        self.assertIsInstance(page, QWidget)
+
+    def test_view_has_threading_page(self):
+        from swe2d.workbench.views.topology_tab_view import TopologyTabView
+        view = TopologyTabView()
+        page = view.findChild(QWidget, "topo_threading_page")
+        self.assertIsInstance(page, QWidget)
+
+    def test_view_has_transfinite_page(self):
+        from swe2d.workbench.views.topology_tab_view import TopologyTabView
+        view = TopologyTabView()
+        page = view.findChild(QWidget, "topo_transfinite_page")
+        self.assertIsInstance(page, QWidget)
+
+    def test_view_has_quality_page(self):
+        from swe2d.workbench.views.topology_tab_view import TopologyTabView
+        view = TopologyTabView()
+        page = view.findChild(QWidget, "topo_quality_page")
+        self.assertIsInstance(page, QWidget)
+        self.assertTrue(view._toolbox.isItemEnabled(view._quality_idx))
 
     def test_view_has_controls_summary_lbl(self):
         from swe2d.workbench.views.topology_tab_view import TopologyTabView
@@ -115,8 +141,12 @@ class TestTopologyTabView(unittest.TestCase):
             (view.topo_backend_combo, "topo_backend_combo"),
             (view.topo_default_size_spin, "topo_default_size_spin"),
             (view.topo_default_cell_type_combo, "topo_default_cell_type_combo"),
-            (view.topo_gmsh_controls_widget, "topo_gmsh_controls_widget"),
-            (view.topo_quality_controls_widget, "topo_quality_controls_widget"),
+            (view.findChild(QWidget, "topo_algo_page"), "topo_algo_page"),
+            (view.findChild(QWidget, "topo_arcs_page"), "topo_arcs_page"),
+            (view.findChild(QWidget, "topo_sizing_page"), "topo_sizing_page"),
+            (view.findChild(QWidget, "topo_threading_page"), "topo_threading_page"),
+            (view.findChild(QWidget, "topo_transfinite_page"), "topo_transfinite_page"),
+            (view.findChild(QWidget, "topo_quality_page"), "topo_quality_page"),
             (view.topo_controls_summary_lbl, "topo_controls_summary_lbl"),
             (view.topo_generate_btn, "topo_generate_btn"),
             (view.topo_terminate_btn, "topo_terminate_btn"),

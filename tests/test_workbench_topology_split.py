@@ -59,8 +59,6 @@ class TestBuildTopologyTabControls(_WithRealQApp, unittest.TestCase):
         """Return set of object names from widgets in dict."""
         names = set()
         for key, val in d.items():
-            if key in ("gmsh_form", "quality_form"):
-                continue
             if hasattr(val, 'objectName'):
                 try:
                     names.add(val.objectName())
@@ -251,8 +249,6 @@ class TestWireTopologyTabControls(_WithRealQApp, unittest.TestCase):
 
         _wire_topology_tab_controls(
             widgets=widgets,
-            gmsh_form=None,
-            quality_form=None,
             update_summary_fn=update_summary,
         )
         self.assertTrue(True, "Signal wiring completed without error")
@@ -270,8 +266,6 @@ class TestWireTopologyTabControls(_WithRealQApp, unittest.TestCase):
 
         _wire_topology_tab_controls(
             widgets=widgets,
-            gmsh_form=None,
-            quality_form=None,
             update_summary_fn=update_summary,
         )
         self.assertTrue(
@@ -286,8 +280,6 @@ class TestWireTopologyTabControls(_WithRealQApp, unittest.TestCase):
         )
         _wire_topology_tab_controls(
             widgets={},
-            gmsh_form=None,
-            quality_form=None,
             update_summary_fn=lambda: None,
         )
         self.assertTrue(True, "Empty wiring completed without error")

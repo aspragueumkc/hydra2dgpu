@@ -23,28 +23,10 @@ from __future__ import annotations
 import os
 import sqlite3
 
-# The authoritative list of model layer names — must match model_gpkg_loader_service.
-# Maps layer_name -> geometry_column (empty string for non-spatial tables).
-_MODEL_LAYER_GEOM_COLUMNS: dict[str, str] = {
-    "swe2d_topo_nodes": "geom",
-    "swe2d_topo_arcs": "geom",
-    "swe2d_topo_regions": "geom",
-    "swe2d_topo_constraints": "geom",
-    "swe2d_topo_quad_edges": "geom",
-    "swe2d_manning_zones": "geom",
-    "swe2d_bc_lines": "geom",
-    "swe2d_sample_lines": "geom",
-    "swe2d_rain_gages": "geom",
-    "swe2d_storm_areas": "geom",
-    "swe2d_cn_zones": "geom",
-    "swe2d_hyetographs": "",
-    "swe2d_hydrographs": "",
-    "swe2d_drainage_nodes": "geom",
-    "swe2d_drainage_links": "geom",
-    "swe2d_drainage_inlets": "",
-    "swe2d_drainage_node_inlets": "",
-    "swe2d_structures": "geom",
-}
+from swe2d.workbench.services.schema_definitions import (
+    get_layer_names,
+    get_geom_column,
+)
 
 
 def _ensure_layer_styles_table(conn: sqlite3.Connection) -> None:
@@ -78,12 +60,14 @@ def write_qml_styles_to_gpkg(gpkg_path: str, qml_dir: str) -> None:
     conn = sqlite3.connect(gpkg_path)
     try:
         _ensure_layer_styles_table(conn)
-        for layer_name, geom_col in _MODEL_LAYER_GEOM_COLUMNS.items():
+        for layer_name in get_layer_names():
             qml_path = os.path.join(qml_dir, f"{layer_name}.qml")
             if not os.path.exists(qml_path):
                 continue
             with open(qml_path, "r", encoding="utf-8") as f:
                 style_qml = f.read()
+
+            geom_col = get_geom_column(layer_name)
 
             # Remove any existing style entry for this layer to avoid duplicates
             conn.execute(

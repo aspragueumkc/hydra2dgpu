@@ -500,7 +500,7 @@ class SWE2DWorkbenchStudioDialog(QtWidgets.QDialog):
         opts["gmsh_mesh_size_min"] = _r("topo_gmsh_mesh_size_min_spin", 0.0)
         opts["gmsh_tolerance_edge_length"] = _r("topo_gmsh_tolerance_edge_length_spin", 0.0)
         opts["gmsh_mesh_size_from_points"] = _r("topo_gmsh_mesh_size_from_points_chk", True)
-        opts["gmsh_arc_mode_override"] = _r("topo_gmsh_arc_mode_combo", "hard_embed")
+        opts["gmsh_arc_mode"] = _r("topo_gmsh_arc_mode_combo", "hard_embed")
         opts["gmsh_arc_soft_size_factor"] = _r("topo_gmsh_arc_soft_size_factor_spin", 0.5)
         opts["gmsh_arc_soft_dist_factor"] = _r("topo_gmsh_arc_soft_dist_factor_spin", 2.0)
         opts["gmsh_interface_transition_enable"] = _r("topo_gmsh_interface_transition_enable_chk", True)
@@ -511,6 +511,35 @@ class SWE2DWorkbenchStudioDialog(QtWidgets.QDialog):
         opts["gmsh_interface_snap_tol"] = _r("topo_gmsh_interface_snap_tol_spin", 1.0)
         opts["gmsh_interface_reject_near_unshared"] = _r("topo_gmsh_interface_reject_near_unshared_chk", True)
         opts["gmsh_interface_reject_tol"] = _r("topo_gmsh_interface_reject_tol_spin", 1e-3)
+        opts["gmsh_num_threads"] = _r("topo_gmsh_num_threads_spin", 1)
+        opts["gmsh_max_num_threads_2d"] = _r("topo_gmsh_max_num_threads_2d_spin", 0)
+        opts["gmsh_transfinite_shared_interface_harmonize"] = _r(
+            "topo_gmsh_transfinite_shared_interface_harmonize_chk", False
+        )
+        opts["gmsh_transfinite_opposite_subset_start"] = _r(
+            "topo_gmsh_transfinite_opposite_subset_start_spin", 0.30
+        )
+        opts["gmsh_transfinite_opposite_subset_end"] = _r(
+            "topo_gmsh_transfinite_opposite_subset_end_spin", 0.70
+        )
+        opts["gmsh_transfinite_opposite_subset_density_scale"] = _r(
+            "topo_gmsh_transfinite_opposite_subset_density_scale_spin", 0.50
+        )
+        opts["gmsh_transfinite_interface_debug"] = _r(
+            "topo_gmsh_transfinite_interface_debug_chk", False
+        )
+        opts["gmsh_transfinite_subset_containment_enable"] = _r(
+            "topo_gmsh_transfinite_subset_containment_enable_chk", True
+        )
+        opts["gmsh_transfinite_subset_containment_high_overlap"] = _r(
+            "topo_gmsh_transfinite_subset_containment_high_overlap_spin", 0.95
+        )
+        opts["gmsh_transfinite_subset_containment_min_overlap"] = _r(
+            "topo_gmsh_transfinite_subset_containment_min_overlap_spin", 0.02
+        )
+        opts["gmsh_transfinite_subset_containment_max_length_ratio"] = _r(
+            "topo_gmsh_transfinite_subset_containment_max_length_ratio_spin", 0.35
+        )
         return opts
 
     def _infer_workspace_root_for_meshing(self) -> str:

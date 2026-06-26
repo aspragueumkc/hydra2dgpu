@@ -13,15 +13,22 @@ class TopologyTabView(QtWidgets.QWidget):
     """View for the Topo Mesh tab.
 
     Creates and owns:
-    - Layer Setup page combos: topo_nodes_combo, topo_arcs_combo,
-      topo_regions_combo, topo_constraints_combo, topo_quad_edges_combo
-    - Layer Setup button: topo_export_template_btn
-    - Controls page combos/spin: topo_backend_combo, topo_default_size_spin,
-      topo_default_cell_type_combo
-    - Placeholder widget holders: topo_gmsh_controls_widget,
-      topo_quality_controls_widget
-    - Status label: topo_controls_summary_lbl
-    - Action buttons: topo_generate_btn, topo_terminate_btn
+    - Layer Setup page: topo_nodes_combo, topo_arcs_combo,
+      topo_regions_combo, topo_constraints_combo, topo_quad_edges_combo,
+      topo_export_template_btn
+    - General page: topo_backend_combo, topo_default_size_spin,
+      topo_default_cell_type_combo, topo_generate_btn, topo_terminate_btn
+    - Algorithm page (gmsh): tri/quad/recombine algos, smoothing,
+      optimize, verbosity, netgen, global_recombine, flow_align,
+      algo_switch_on_failure, recombine_node_repositioning
+    - Arcs & Interfaces page (gmsh): arc mode, soft size/dist,
+      interface transition, conformance, snap tol, reject controls
+    - Sizing page (gmsh): mesh_size_min, tolerance_edge_length,
+      mesh_size_from_points
+    - Threading page (gmsh): num_threads, max_num_threads_2d
+    - Transfinite page (gmsh): harmonize, subset containment, debug
+    - Quality page (gmsh): thresholds, retry ladder, loop controls
+    - Summary label: topo_controls_summary_lbl
     """
 
     def __init__(self, parent=None):
@@ -38,11 +45,11 @@ class TopologyTabView(QtWidgets.QWidget):
         root_layout.setContentsMargins(0, 0, 0, 0)
         root_layout.setSpacing(0)
 
-        toolbox = QtWidgets.QToolBox()
-        toolbox.setSizePolicy(
+        self._toolbox = QtWidgets.QToolBox()
+        self._toolbox.setSizePolicy(
             QtWidgets.QSizePolicy.Preferred, QtWidgets.QSizePolicy.Expanding
         )
-        root_layout.addWidget(toolbox)
+        root_layout.addWidget(self._toolbox)
 
         layer_page = QtWidgets.QWidget()
         layer_page.setObjectName("topo_layer_page")
@@ -76,14 +83,13 @@ class TopologyTabView(QtWidgets.QWidget):
         self.topo_export_template_btn.setObjectName("topo_export_template_btn")
         layer_form.addRow(self.topo_export_template_btn)
 
-        toolbox.addItem(layer_page, "Layer Setup")
+        self._toolbox.addItem(layer_page, "Layer Setup")
 
-        ctrl_page = QtWidgets.QWidget()
-        ctrl_page.setObjectName("topo_ctrl_page")
-        ctrl_layout = QtWidgets.QVBoxLayout(ctrl_page)
-        ctrl_layout.setContentsMargins(0, 0, 0, 0)
-        ctrl_form = QtWidgets.QFormLayout()
-        ctrl_layout.addLayout(ctrl_form)
+        # -- General page (always visible) --
+        general_page = QtWidgets.QWidget()
+        general_page.setObjectName("topo_general_page")
+        general_form = QtWidgets.QFormLayout(general_page)
+        general_form.setContentsMargins(4, 4, 4, 4)
 
         self.topo_backend_combo = QtWidgets.QComboBox()
         self.topo_backend_combo.setObjectName("topo_backend_combo")
@@ -97,49 +103,88 @@ class TopologyTabView(QtWidgets.QWidget):
             (self.topo_default_size_spin, "Default target size:"),
             (self.topo_default_cell_type_combo, "Default cell type:"),
         ]:
-            ctrl_form.addRow(QtWidgets.QLabel(label), widget)
-
-        self.topo_gmsh_controls_widget = QtWidgets.QWidget()
-        self.topo_gmsh_controls_widget.setObjectName("topo_gmsh_controls_widget")
-        self.topo_gmsh_controls_widget.setVisible(False)
-        ctrl_layout.addWidget(self.topo_gmsh_controls_widget)
-
-        self.topo_quality_controls_widget = QtWidgets.QWidget()
-        self.topo_quality_controls_widget.setObjectName("topo_quality_controls_widget")
-        self.topo_quality_controls_widget.setVisible(False)
-        ctrl_layout.addWidget(self.topo_quality_controls_widget)
-
-        self.topo_controls_summary_lbl = QtWidgets.QLabel(
-            "Topology-layer controls: use multiple region polygons for multiple blocks."
-        )
-        self.topo_controls_summary_lbl.setObjectName("topo_controls_summary_lbl")
-        self.topo_controls_summary_lbl.setWordWrap(True)
-        ctrl_layout.addWidget(self.topo_controls_summary_lbl)
+            general_form.addRow(QtWidgets.QLabel(label), widget)
 
         self.topo_generate_btn = QtWidgets.QPushButton("Generate Mesh")
         self.topo_generate_btn.setObjectName("topo_generate_btn")
         self.topo_generate_btn.setEnabled(True)
-        ctrl_layout.addWidget(self.topo_generate_btn)
+        general_form.addRow(self.topo_generate_btn)
 
         self.topo_terminate_btn = QtWidgets.QPushButton("Terminate")
         self.topo_terminate_btn.setObjectName("topo_terminate_btn")
         self.topo_terminate_btn.setEnabled(False)
-        ctrl_layout.addWidget(self.topo_terminate_btn)
+        general_form.addRow(self.topo_terminate_btn)
 
         self.topo_status_lbl = QtWidgets.QLabel(
             "Select regions layer and generate face-centric mesh"
         )
         self.topo_status_lbl.setObjectName("topo_status_lbl")
         self.topo_status_lbl.setWordWrap(True)
-        ctrl_layout.addWidget(self.topo_status_lbl)
+        general_form.addRow(self.topo_status_lbl)
 
         self.progress_bar = QtWidgets.QProgressBar()
         self.progress_bar.setObjectName("progress_bar")
         self.progress_bar.setRange(0, 0)
         self.progress_bar.setVisible(False)
-        ctrl_layout.addWidget(self.progress_bar)
+        general_form.addRow(self.progress_bar)
 
-        toolbox.addItem(ctrl_page, "Controls")
+        self._general_idx = self._toolbox.addItem(general_page, "General")
+
+        # -- Algorithm page (gmsh only) --
+        algo_page = QtWidgets.QWidget()
+        algo_page.setObjectName("topo_algo_page")
+        self.topo_algo_form = QtWidgets.QFormLayout(algo_page)
+        self.topo_algo_form.setContentsMargins(4, 4, 4, 4)
+        self._algo_idx = self._toolbox.addItem(algo_page, "Algorithm")
+        self._toolbox.setItemEnabled(self._algo_idx, False)
+
+        # -- Arcs & Interfaces page (gmsh only) --
+        arcs_page = QtWidgets.QWidget()
+        arcs_page.setObjectName("topo_arcs_page")
+        self.topo_arcs_form = QtWidgets.QFormLayout(arcs_page)
+        self.topo_arcs_form.setContentsMargins(4, 4, 4, 4)
+        self._arcs_idx = self._toolbox.addItem(arcs_page, "Arcs && Interfaces")
+        self._toolbox.setItemEnabled(self._arcs_idx, False)
+
+        # -- Sizing page (gmsh only) --
+        sizing_page = QtWidgets.QWidget()
+        sizing_page.setObjectName("topo_sizing_page")
+        self.topo_sizing_form = QtWidgets.QFormLayout(sizing_page)
+        self.topo_sizing_form.setContentsMargins(4, 4, 4, 4)
+        self._sizing_idx = self._toolbox.addItem(sizing_page, "Sizing")
+        self._toolbox.setItemEnabled(self._sizing_idx, False)
+
+        # -- Threading page (gmsh only) --
+        threading_page = QtWidgets.QWidget()
+        threading_page.setObjectName("topo_threading_page")
+        self.topo_threading_form = QtWidgets.QFormLayout(threading_page)
+        self.topo_threading_form.setContentsMargins(4, 4, 4, 4)
+        self._threading_idx = self._toolbox.addItem(threading_page, "Threading")
+        self._toolbox.setItemEnabled(self._threading_idx, False)
+
+        # -- Transfinite page (gmsh only) --
+        transfinite_page = QtWidgets.QWidget()
+        transfinite_page.setObjectName("topo_transfinite_page")
+        self.topo_transfinite_form = QtWidgets.QFormLayout(transfinite_page)
+        self.topo_transfinite_form.setContentsMargins(4, 4, 4, 4)
+        self._transfinite_idx = self._toolbox.addItem(transfinite_page, "Transfinite")
+        self._toolbox.setItemEnabled(self._transfinite_idx, False)
+
+        # -- Quality page (gmsh only) --
+        quality_page = QtWidgets.QWidget()
+        quality_page.setObjectName("topo_quality_page")
+        self.topo_quality_form = QtWidgets.QFormLayout(quality_page)
+        self.topo_quality_form.setContentsMargins(4, 4, 4, 4)
+        self._quality_idx = self._toolbox.addItem(quality_page, "Quality")
+        self._toolbox.setItemEnabled(self._quality_idx, False)
+
+        # Summary label outside toolbox
+        self.topo_controls_summary_lbl = QtWidgets.QLabel(
+            "Topology-layer controls: use multiple region polygons for multiple blocks."
+        )
+        self.topo_controls_summary_lbl.setObjectName("topo_controls_summary_lbl")
+        self.topo_controls_summary_lbl.setWordWrap(True)
+        root_layout.addWidget(self.topo_controls_summary_lbl)
 
         self._populate_gmsh_quality_controls()
 
@@ -169,11 +214,7 @@ class TopologyTabView(QtWidgets.QWidget):
             for k, w in widgets.items():
                 if isinstance(w, QtWidgets.QWidget) and not hasattr(self, k):
                     setattr(self, k, w)
-            gmsh_form = widgets.get("gmsh_form")
-            quality_form = widgets.get("quality_form")
-            _wire_topology_tab_controls(
-                widgets, gmsh_form, quality_form, self.update_control_summary
-            )
+            _wire_topology_tab_controls(widgets, self.update_control_summary)
         except Exception as exc:
             self._log(f"[ERROR] Failed to populate gmsh/quality controls: {exc}")
 
@@ -328,38 +369,15 @@ class TopologyTabView(QtWidgets.QWidget):
         quad_edges_layer = combo_layer_fn(self.topo_quad_edges_combo, "vector") if _alive(self.topo_quad_edges_combo) else None
 
         is_gmsh = backend_name == "gmsh"
-        if _alive(self.topo_gmsh_controls_widget):
-            self.topo_gmsh_controls_widget.setVisible(is_gmsh)
-        if _alive(self.topo_quality_controls_widget):
-            self.topo_quality_controls_widget.setVisible(is_gmsh)
-
-        gmsh_quality_only = [
-            self._find_widget("topo_gmsh_quality_enable_chk"),
-            self._find_widget("topo_gmsh_quality_max_iters_spin"),
-            self._find_widget("topo_gmsh_quality_time_limit_spin"),
-            self._find_widget("topo_gmsh_quality_recombine_topology_passes_edit"),
-            self._find_widget("topo_gmsh_quality_recombine_min_quality_edit"),
-            self._find_widget("topo_gmsh_quality_random_factors_edit"),
-            self._find_widget("topo_gmsh_quality_optimize_methods_edit"),
-            self._find_widget("topo_gmsh_algo_switch_on_failure_chk"),
-            self._find_widget("topo_gmsh_recombine_node_repositioning_chk"),
-            self._find_widget("topo_gmsh_global_recombine_chk"),
-        ]
-        generic_quality_widgets = [
-            self._find_widget("topo_quality_min_angle_spin"),
-            self._find_widget("topo_quality_max_aspect_spin"),
-            self._find_widget("topo_quality_max_non_orth_spin"),
-            self._find_widget("topo_quality_min_area_edit"),
-            self._find_widget("topo_quality_size_scales_edit"),
-            self._find_widget("topo_quality_smooth_increments_edit"),
-            self._find_widget("topo_quality_strict_chk"),
-        ]
-        for widget in gmsh_quality_only:
-            if _alive(widget):
-                widget.setVisible(is_gmsh)
-        for widget in generic_quality_widgets:
-            if _alive(widget):
-                widget.setVisible(is_gmsh)
+        # Toggle gmsh-specific toolbox pages
+        for idx in (getattr(self, "_algo_idx", None),
+                     getattr(self, "_arcs_idx", None),
+                     getattr(self, "_sizing_idx", None),
+                     getattr(self, "_threading_idx", None),
+                     getattr(self, "_transfinite_idx", None),
+                     getattr(self, "_quality_idx", None)):
+            if idx is not None:
+                self._toolbox.setItemEnabled(idx, is_gmsh)
 
         if backend_name == "gmsh":
             backend_hint = (
@@ -386,8 +404,14 @@ class TopologyTabView(QtWidgets.QWidget):
             "gmsh-full-align={gmsh_full_align}; "
             "arc-mode={arc_mode}, soft-size={arc_soft_size:.3g}, soft-dist={arc_soft_dist:.3g}, "
             "iface-transition={iface_transition}, iface-dist={iface_dist:.3g}, iface-ratio>={iface_ratio:.3g}, "
+            "iface-conformance={iface_conformance}, centroid-merge={centroid_merge}, "
+            "snap-tol={snap_tol:.6g}, reject-near={reject_near}, reject-tol={reject_tol:.6g}; "
             "min-cell={mesh_size_min:.6g}, edge-tol={edge_tol:.6g}, "
             "point-refine={point_refine}; Gmsh loop={gmsh_loop}, attempts={attempts}, budget={budget:.1f}s; "
+            "threads={num_threads}, max-2d-threads={max_2d_threads}; "
+            "transfinite-harmonize={trans_harm}, opp-start={opp_start:.3g}, opp-end={opp_end:.3g}, "
+            "opp-density={opp_density:.3g}, subset-contain={subset_contain}, "
+            "high-overlap={high_overlap:.3g}, min-overlap={min_overlap:.3g}, max-len-ratio={max_len_ratio:.3g}; "
             ""
         ).format(
             min_angle=_safe_spin_value("topo_quality_min_angle_spin", 0.0),
@@ -411,12 +435,27 @@ class TopologyTabView(QtWidgets.QWidget):
             iface_transition="on" if _safe_checked("topo_gmsh_interface_transition_enable_chk", False) else "off",
             iface_dist=_safe_spin_value("topo_gmsh_interface_transition_dist_factor_spin", 2.5),
             iface_ratio=_safe_spin_value("topo_gmsh_interface_transition_min_ratio_spin", 1.25),
+            iface_conformance="on" if _safe_checked("topo_gmsh_interface_conformance_chk", False) else "off",
+            centroid_merge="on" if _safe_checked("topo_gmsh_transverse_interface_centroid_merge_chk", False) else "off",
+            snap_tol=_safe_spin_value("topo_gmsh_interface_snap_tol_spin", 1.0),
+            reject_near="on" if _safe_checked("topo_gmsh_interface_reject_near_unshared_chk", False) else "off",
+            reject_tol=_safe_spin_value("topo_gmsh_interface_reject_tol_spin", 1e-3),
             gmsh_loop="on" if _safe_checked("topo_gmsh_quality_enable_chk", False) else "off",
             mesh_size_min=_safe_spin_value("topo_gmsh_mesh_size_min_spin", 0.0),
             edge_tol=_safe_spin_value("topo_gmsh_tolerance_edge_length_spin", 0.0),
             point_refine="on" if _safe_checked("topo_gmsh_mesh_size_from_points_chk", False) else "off",
             attempts=int(round(_safe_spin_value("topo_gmsh_quality_max_iters_spin", 0.0))),
             budget=_safe_spin_value("topo_gmsh_quality_time_limit_spin", 0.0),
+            num_threads=int(round(_safe_spin_value("topo_gmsh_num_threads_spin", 1))),
+            max_2d_threads=int(round(_safe_spin_value("topo_gmsh_max_num_threads_2d_spin", 0))),
+            trans_harm="on" if _safe_checked("topo_gmsh_transfinite_shared_interface_harmonize_chk", False) else "off",
+            opp_start=_safe_spin_value("topo_gmsh_transfinite_opposite_subset_start_spin", 0.30),
+            opp_end=_safe_spin_value("topo_gmsh_transfinite_opposite_subset_end_spin", 0.70),
+            opp_density=_safe_spin_value("topo_gmsh_transfinite_opposite_subset_density_scale_spin", 0.50),
+            subset_contain="on" if _safe_checked("topo_gmsh_transfinite_subset_containment_enable_chk", False) else "off",
+            high_overlap=_safe_spin_value("topo_gmsh_transfinite_subset_containment_high_overlap_spin", 0.95),
+            min_overlap=_safe_spin_value("topo_gmsh_transfinite_subset_containment_min_overlap_spin", 0.02),
+            max_len_ratio=_safe_spin_value("topo_gmsh_transfinite_subset_containment_max_length_ratio_spin", 0.35),
         )
 
         details = []
@@ -597,32 +636,31 @@ def _build_topology_tab_controls(
     topo_default_size_spin.setDecimals(3)
     topo_default_size_spin.setValue(20.0)
 
-    # -- Gmsh controls form (finds existing widget or creates fallback) --
-    gmsh_form_top = _find("topo_gmsh_controls_widget", QtWidgets.QWidget)
-    if gmsh_form_top is None:
-        gmsh_form_top = QtWidgets.QWidget()
-        gmsh_form_top.setObjectName("topo_gmsh_controls_widget")
-    gmsh_form = gmsh_form_top.layout()
-    if not isinstance(gmsh_form, QtWidgets.QFormLayout):
-        gmsh_form = QtWidgets.QFormLayout(gmsh_form_top)
-    gmsh_form.setContentsMargins(0, 0, 0, 0)
-    widgets["gmsh_form"] = gmsh_form
+    # -- Find per-page forms for organized tabbed layout --
+    def _find_form(page_name):
+        page = _find(page_name, QtWidgets.QWidget)
+        if page is None:
+            page = QtWidgets.QWidget()
+            page.setObjectName(page_name)
+        form = page.layout()
+        if not isinstance(form, QtWidgets.QFormLayout):
+            form = QtWidgets.QFormLayout(page)
+        form.setContentsMargins(4, 4, 4, 4)
+        # Keep page alive by storing in widgets dict (prevents PyQt GC)
+        widgets[page_name] = page
+        return form
 
-    # -- Quality controls form --
-    quality_form_top = _find("topo_quality_controls_widget", QtWidgets.QWidget)
-    if quality_form_top is None:
-        quality_form_top = QtWidgets.QWidget()
-        quality_form_top.setObjectName("topo_quality_controls_widget")
-    quality_form = quality_form_top.layout()
-    if not isinstance(quality_form, QtWidgets.QFormLayout):
-        quality_form = QtWidgets.QFormLayout(quality_form_top)
-    quality_form.setContentsMargins(0, 0, 0, 0)
-    widgets["quality_form"] = quality_form
+    algo_form = _find_form("topo_algo_page")
+    arcs_form = _find_form("topo_arcs_page")
+    sizing_form = _find_form("topo_sizing_page")
+    threading_form = _find_form("topo_threading_page")
+    transfinite_form = _find_form("topo_transfinite_page")
+    quality_form = _find_form("topo_quality_page")
 
     # -- Gmsh algorithm combos --
     topo_gmsh_tri_algo_combo = QtWidgets.QComboBox()
     topo_gmsh_tri_algo_combo.setObjectName("topo_gmsh_tri_algo_combo")
-    gmsh_form.addRow("Triangle algorithm:", topo_gmsh_tri_algo_combo)
+    algo_form.addRow("Triangle algorithm:", topo_gmsh_tri_algo_combo)
     _set_combo_items(
         topo_gmsh_tri_algo_combo,
         [
@@ -635,7 +673,7 @@ def _build_topology_tab_controls(
 
     topo_gmsh_quad_algo_combo = QtWidgets.QComboBox()
     topo_gmsh_quad_algo_combo.setObjectName("topo_gmsh_quad_algo_combo")
-    gmsh_form.addRow("Quadrilateral algorithm:", topo_gmsh_quad_algo_combo)
+    algo_form.addRow("Quadrilateral algorithm:", topo_gmsh_quad_algo_combo)
     _set_combo_items(
         topo_gmsh_quad_algo_combo,
         [
@@ -649,7 +687,7 @@ def _build_topology_tab_controls(
 
     topo_gmsh_recombine_algo_combo = QtWidgets.QComboBox()
     topo_gmsh_recombine_algo_combo.setObjectName("topo_gmsh_recombine_algo_combo")
-    gmsh_form.addRow("Recombine algorithm:", topo_gmsh_recombine_algo_combo)
+    algo_form.addRow("Recombine algorithm:", topo_gmsh_recombine_algo_combo)
     _set_combo_items(
         topo_gmsh_recombine_algo_combo,
         [
@@ -670,7 +708,7 @@ def _build_topology_tab_controls(
         "If enabled, runs gmsh.model.mesh.recombine() globally after mesh generation. "
         "Default is off to avoid recombining non-quad-targeted regions."
     )
-    gmsh_form.addRow(topo_gmsh_global_recombine_chk)
+    algo_form.addRow(topo_gmsh_global_recombine_chk)
     widgets["topo_gmsh_global_recombine_chk"] = topo_gmsh_global_recombine_chk
 
     topo_gmsh_quad_full_region_flow_align_chk = QtWidgets.QCheckBox("Gmsh full-region flow-aligned quads")
@@ -683,35 +721,35 @@ def _build_topology_tab_controls(
         "apply TransfiniteCurve + TransfiniteSurface + Recombine so edge-aligned spacing "
         "propagates across the full region."
     )
-    gmsh_form.addRow(topo_gmsh_quad_full_region_flow_align_chk)
+    algo_form.addRow(topo_gmsh_quad_full_region_flow_align_chk)
     widgets["topo_gmsh_quad_full_region_flow_align_chk"] = topo_gmsh_quad_full_region_flow_align_chk
 
     topo_gmsh_smoothing_spin = QtWidgets.QSpinBox()
     topo_gmsh_smoothing_spin.setObjectName("topo_gmsh_smoothing_spin")
     topo_gmsh_smoothing_spin.setRange(0, 100)
     topo_gmsh_smoothing_spin.setValue(0)
-    gmsh_form.addRow("Smoothing passes:", topo_gmsh_smoothing_spin)
+    algo_form.addRow("Smoothing passes:", topo_gmsh_smoothing_spin)
     widgets["topo_gmsh_smoothing_spin"] = topo_gmsh_smoothing_spin
 
     topo_gmsh_optimize_iters_spin = QtWidgets.QSpinBox()
     topo_gmsh_optimize_iters_spin.setObjectName("topo_gmsh_optimize_iters_spin")
     topo_gmsh_optimize_iters_spin.setRange(0, 100)
     topo_gmsh_optimize_iters_spin.setValue(0)
-    gmsh_form.addRow("Optimize iterations:", topo_gmsh_optimize_iters_spin)
+    algo_form.addRow("Optimize iterations:", topo_gmsh_optimize_iters_spin)
     widgets["topo_gmsh_optimize_iters_spin"] = topo_gmsh_optimize_iters_spin
 
     topo_gmsh_verbosity_spin = QtWidgets.QSpinBox()
     topo_gmsh_verbosity_spin.setObjectName("topo_gmsh_verbosity_spin")
     topo_gmsh_verbosity_spin.setRange(0, 10)
     topo_gmsh_verbosity_spin.setValue(2)
-    gmsh_form.addRow("Verbosity:", topo_gmsh_verbosity_spin)
+    algo_form.addRow("Verbosity:", topo_gmsh_verbosity_spin)
     widgets["topo_gmsh_verbosity_spin"] = topo_gmsh_verbosity_spin
 
     topo_gmsh_optimize_netgen_chk = QtWidgets.QCheckBox("Enable Netgen optimize")
     topo_gmsh_optimize_netgen_chk.setObjectName("topo_gmsh_optimize_netgen_chk")
     if not str(topo_gmsh_optimize_netgen_chk.text() or "").strip():
         topo_gmsh_optimize_netgen_chk.setText("Enable Netgen optimize")
-    gmsh_form.addRow(topo_gmsh_optimize_netgen_chk)
+    algo_form.addRow(topo_gmsh_optimize_netgen_chk)
     widgets["topo_gmsh_optimize_netgen_chk"] = topo_gmsh_optimize_netgen_chk
 
     topo_gmsh_arc_mode_combo = QtWidgets.QComboBox()
@@ -726,6 +764,7 @@ def _build_topology_tab_controls(
         default_data="hard_embed",
     )
     widgets["topo_gmsh_arc_mode_combo"] = topo_gmsh_arc_mode_combo
+    arcs_form.addRow("Arc mode:", topo_gmsh_arc_mode_combo)
 
     topo_gmsh_arc_soft_size_factor_spin = QtWidgets.QDoubleSpinBox()
     topo_gmsh_arc_soft_size_factor_spin.setObjectName("topo_gmsh_arc_soft_size_factor_spin")
@@ -737,6 +776,7 @@ def _build_topology_tab_controls(
         "Soft arc mode target-size factor near arcs. Lower values force finer cells along arc corridors."
     )
     widgets["topo_gmsh_arc_soft_size_factor_spin"] = topo_gmsh_arc_soft_size_factor_spin
+    arcs_form.addRow("Arc soft size factor:", topo_gmsh_arc_soft_size_factor_spin)
 
     topo_gmsh_arc_soft_dist_factor_spin = QtWidgets.QDoubleSpinBox()
     topo_gmsh_arc_soft_dist_factor_spin.setObjectName("topo_gmsh_arc_soft_dist_factor_spin")
@@ -748,6 +788,7 @@ def _build_topology_tab_controls(
         "Soft arc mode influence distance factor. Higher values widen arc-driven refinement corridors."
     )
     widgets["topo_gmsh_arc_soft_dist_factor_spin"] = topo_gmsh_arc_soft_dist_factor_spin
+    arcs_form.addRow("Arc soft dist factor:", topo_gmsh_arc_soft_dist_factor_spin)
 
     topo_gmsh_interface_transition_enable_chk = QtWidgets.QCheckBox("Enable interface transition grading")
     topo_gmsh_interface_transition_enable_chk.setObjectName("topo_gmsh_interface_transition_enable_chk")
@@ -758,6 +799,7 @@ def _build_topology_tab_controls(
         "Apply Distance/Threshold grading near shared interfaces on non-transfinite regions only."
     )
     widgets["topo_gmsh_interface_transition_enable_chk"] = topo_gmsh_interface_transition_enable_chk
+    arcs_form.addRow(topo_gmsh_interface_transition_enable_chk)
 
     topo_gmsh_interface_transition_dist_factor_spin = QtWidgets.QDoubleSpinBox()
     topo_gmsh_interface_transition_dist_factor_spin.setObjectName("topo_gmsh_interface_transition_dist_factor_spin")
@@ -769,6 +811,7 @@ def _build_topology_tab_controls(
         "Distance multiplier for interface grading influence width. Higher values widen the transition band."
     )
     widgets["topo_gmsh_interface_transition_dist_factor_spin"] = topo_gmsh_interface_transition_dist_factor_spin
+    arcs_form.addRow("Interface transition dist factor:", topo_gmsh_interface_transition_dist_factor_spin)
 
     topo_gmsh_interface_transition_min_ratio_spin = QtWidgets.QDoubleSpinBox()
     topo_gmsh_interface_transition_min_ratio_spin.setObjectName("topo_gmsh_interface_transition_min_ratio_spin")
@@ -780,6 +823,7 @@ def _build_topology_tab_controls(
         "Only apply interface grading when adjacent region target sizes differ by at least this ratio."
     )
     widgets["topo_gmsh_interface_transition_min_ratio_spin"] = topo_gmsh_interface_transition_min_ratio_spin
+    arcs_form.addRow("Interface transition min ratio:", topo_gmsh_interface_transition_min_ratio_spin)
 
     topo_gmsh_interface_conformance_chk = QtWidgets.QCheckBox("Enable transverse interface conformance post-process")
     topo_gmsh_interface_conformance_chk.setObjectName("topo_gmsh_interface_conformance_chk")
@@ -790,6 +834,7 @@ def _build_topology_tab_controls(
         "Snap and weld mixed-interface nodes after Gmsh extraction to enforce shared boundary topology."
     )
     widgets["topo_gmsh_interface_conformance_chk"] = topo_gmsh_interface_conformance_chk
+    arcs_form.addRow(topo_gmsh_interface_conformance_chk)
 
     topo_gmsh_transverse_interface_centroid_merge_chk = QtWidgets.QCheckBox("Use centroid merge for matched transverse interface nodes")
     topo_gmsh_transverse_interface_centroid_merge_chk.setObjectName("topo_gmsh_transverse_interface_centroid_merge_chk")
@@ -800,6 +845,7 @@ def _build_topology_tab_controls(
         "Move matched interface-node groups to their centroid before welding instead of one-sided snapping."
     )
     widgets["topo_gmsh_transverse_interface_centroid_merge_chk"] = topo_gmsh_transverse_interface_centroid_merge_chk
+    arcs_form.addRow(topo_gmsh_transverse_interface_centroid_merge_chk)
 
     topo_gmsh_interface_snap_tol_spin = QtWidgets.QDoubleSpinBox()
     topo_gmsh_interface_snap_tol_spin.setObjectName("topo_gmsh_interface_snap_tol_spin")
@@ -810,6 +856,7 @@ def _build_topology_tab_controls(
         "Distance tolerance used by transverse interface conformance snapping."
     )
     widgets["topo_gmsh_interface_snap_tol_spin"] = topo_gmsh_interface_snap_tol_spin
+    arcs_form.addRow("Interface snap tolerance:", topo_gmsh_interface_snap_tol_spin)
 
     topo_gmsh_interface_reject_near_unshared_chk = QtWidgets.QCheckBox("Reject mixed interfaces with near-coincident unshared nodes")
     topo_gmsh_interface_reject_near_unshared_chk.setObjectName("topo_gmsh_interface_reject_near_unshared_chk")
@@ -820,6 +867,7 @@ def _build_topology_tab_controls(
         "Fail meshing when a transfinite/tri interface shows hanging-node style near-miss pairs."
     )
     widgets["topo_gmsh_interface_reject_near_unshared_chk"] = topo_gmsh_interface_reject_near_unshared_chk
+    arcs_form.addRow(topo_gmsh_interface_reject_near_unshared_chk)
 
     topo_gmsh_interface_reject_tol_spin = QtWidgets.QDoubleSpinBox()
     topo_gmsh_interface_reject_tol_spin.setObjectName("topo_gmsh_interface_reject_tol_spin")
@@ -830,13 +878,14 @@ def _build_topology_tab_controls(
         "Tolerance for detecting near-coincident unshared interface nodes (hanging-node signature)."
     )
     widgets["topo_gmsh_interface_reject_tol_spin"] = topo_gmsh_interface_reject_tol_spin
+    arcs_form.addRow("Interface reject tolerance:", topo_gmsh_interface_reject_tol_spin)
 
     topo_gmsh_mesh_size_min_spin = QtWidgets.QDoubleSpinBox()
     topo_gmsh_mesh_size_min_spin.setObjectName("topo_gmsh_mesh_size_min_spin")
     topo_gmsh_mesh_size_min_spin.setRange(0.0, 1.0e6)
     topo_gmsh_mesh_size_min_spin.setDecimals(6)
     topo_gmsh_mesh_size_min_spin.setValue(0.0)
-    gmsh_form.addRow("Global min cell size:", topo_gmsh_mesh_size_min_spin)
+    sizing_form.addRow("Global min cell size:", topo_gmsh_mesh_size_min_spin)
     widgets["topo_gmsh_mesh_size_min_spin"] = topo_gmsh_mesh_size_min_spin
 
     topo_gmsh_tolerance_edge_length_spin = QtWidgets.QDoubleSpinBox()
@@ -844,7 +893,7 @@ def _build_topology_tab_controls(
     topo_gmsh_tolerance_edge_length_spin.setRange(0.0, 1.0e6)
     topo_gmsh_tolerance_edge_length_spin.setDecimals(6)
     topo_gmsh_tolerance_edge_length_spin.setValue(0.0)
-    gmsh_form.addRow("Ignore edges shorter than:", topo_gmsh_tolerance_edge_length_spin)
+    sizing_form.addRow("Ignore edges shorter than:", topo_gmsh_tolerance_edge_length_spin)
     widgets["topo_gmsh_tolerance_edge_length_spin"] = topo_gmsh_tolerance_edge_length_spin
 
     topo_gmsh_mesh_size_from_points_chk = QtWidgets.QCheckBox("Use region target_size for mesh sizing")
@@ -852,7 +901,7 @@ def _build_topology_tab_controls(
     if not str(topo_gmsh_mesh_size_from_points_chk.text() or "").strip():
         topo_gmsh_mesh_size_from_points_chk.setText("Use region target_size for mesh sizing")
     topo_gmsh_mesh_size_from_points_chk.setChecked(True)
-    gmsh_form.addRow(topo_gmsh_mesh_size_from_points_chk)
+    sizing_form.addRow(topo_gmsh_mesh_size_from_points_chk)
     widgets["topo_gmsh_mesh_size_from_points_chk"] = topo_gmsh_mesh_size_from_points_chk
 
     topo_gmsh_quality_enable_chk = QtWidgets.QCheckBox("Enable Gmsh iterative quality loop")
@@ -979,6 +1028,8 @@ def _build_topology_tab_controls(
         "Enable node repositioning during quad recombination (Mesh.RecombineNodeRepositioning)."
     )
     widgets["topo_gmsh_recombine_node_repositioning_chk"] = topo_gmsh_recombine_node_repositioning_chk
+    algo_form.addRow(topo_gmsh_algo_switch_on_failure_chk)
+    algo_form.addRow(topo_gmsh_recombine_node_repositioning_chk)
 
     topo_quality_strict_chk = QtWidgets.QCheckBox("Strict quality acceptance")
     topo_quality_strict_chk.setObjectName("topo_quality_strict_chk")
@@ -996,23 +1047,211 @@ def _build_topology_tab_controls(
     quality_form.addRow("Recombine min quality:", topo_gmsh_quality_recombine_min_quality_edit)
     quality_form.addRow("Random factors:", topo_gmsh_quality_random_factors_edit)
     quality_form.addRow("Optimize methods:", topo_gmsh_quality_optimize_methods_edit)
-    quality_form.addRow(topo_gmsh_algo_switch_on_failure_chk)
-    quality_form.addRow(topo_gmsh_recombine_node_repositioning_chk)
     quality_form.addRow(topo_gmsh_quality_enable_chk)
     quality_form.addRow("Max iterations:", topo_gmsh_quality_max_iters_spin)
     quality_form.addRow("Time limit (s):", topo_gmsh_quality_time_limit_spin)
 
-    widgets["gmsh_form"] = gmsh_form
-    widgets["quality_form"] = quality_form
-    widgets["gmsh_form_top"] = gmsh_form_top
-    widgets["quality_form_top"] = quality_form_top
+    # ── Threading controls ──
+    topo_gmsh_num_threads_spin = QtWidgets.QSpinBox()
+    topo_gmsh_num_threads_spin.setObjectName("topo_gmsh_num_threads_spin")
+    topo_gmsh_num_threads_spin.setRange(1, 64)
+    topo_gmsh_num_threads_spin.setValue(1)
+    topo_gmsh_num_threads_spin.setToolTip(
+        "Number of threads for Gmsh. Higher values speed up meshing on multi-core CPUs. "
+        "Respects BACKWATER_GMSH_NUM_THREADS env var as default."
+    )
+    threading_form.addRow("Num threads:", topo_gmsh_num_threads_spin)
+    widgets["topo_gmsh_num_threads_spin"] = topo_gmsh_num_threads_spin
+
+    topo_gmsh_max_num_threads_2d_spin = QtWidgets.QSpinBox()
+    topo_gmsh_max_num_threads_2d_spin.setObjectName("topo_gmsh_max_num_threads_2d_spin")
+    topo_gmsh_max_num_threads_2d_spin.setRange(0, 64)
+    topo_gmsh_max_num_threads_2d_spin.setValue(0)
+    topo_gmsh_max_num_threads_2d_spin.setSpecialValueText("Auto")
+    topo_gmsh_max_num_threads_2d_spin.setToolTip(
+        "Max threads for 2D meshing (0 = auto). "
+        "Respects BACKWATER_GMSH_MAX_NUM_THREADS_2D env var as default."
+    )
+    threading_form.addRow("Max 2D threads:", topo_gmsh_max_num_threads_2d_spin)
+    widgets["topo_gmsh_max_num_threads_2d_spin"] = topo_gmsh_max_num_threads_2d_spin
+
+    # ── Transfinite harmonization controls ──
+    topo_gmsh_transfinite_shared_interface_harmonize_chk = QtWidgets.QCheckBox(
+        "Enable transfinite shared interface harmonization"
+    )
+    topo_gmsh_transfinite_shared_interface_harmonize_chk.setObjectName(
+        "topo_gmsh_transfinite_shared_interface_harmonize_chk"
+    )
+    if not str(topo_gmsh_transfinite_shared_interface_harmonize_chk.text() or "").strip():
+        topo_gmsh_transfinite_shared_interface_harmonize_chk.setText(
+            "Enable transfinite shared interface harmonization"
+        )
+    topo_gmsh_transfinite_shared_interface_harmonize_chk.setChecked(False)
+    topo_gmsh_transfinite_shared_interface_harmonize_chk.setToolTip(
+        "Harmonize shared interfaces of transfinite regions so opposite-edge "
+        "subsets are matched. Helps avoid hanging-node conflicts at shared boundaries."
+    )
+    transfinite_form.addRow(topo_gmsh_transfinite_shared_interface_harmonize_chk)
+    widgets["topo_gmsh_transfinite_shared_interface_harmonize_chk"] = (
+        topo_gmsh_transfinite_shared_interface_harmonize_chk
+    )
+
+    topo_gmsh_transfinite_opposite_subset_start_spin = QtWidgets.QDoubleSpinBox()
+    topo_gmsh_transfinite_opposite_subset_start_spin.setObjectName(
+        "topo_gmsh_transfinite_opposite_subset_start_spin"
+    )
+    topo_gmsh_transfinite_opposite_subset_start_spin.setRange(0.0, 1.0)
+    topo_gmsh_transfinite_opposite_subset_start_spin.setDecimals(4)
+    topo_gmsh_transfinite_opposite_subset_start_spin.setSingleStep(0.05)
+    topo_gmsh_transfinite_opposite_subset_start_spin.setValue(0.30)
+    topo_gmsh_transfinite_opposite_subset_start_spin.setToolTip(
+        "Opposite-edge subset start fraction for transfinite interface matching. "
+        "Respects BACKWATER_GMSH_TRANSFINITE_OPPOSITE_SUBSET_START env var."
+    )
+    transfinite_form.addRow("Opposite subset start:", topo_gmsh_transfinite_opposite_subset_start_spin)
+    widgets["topo_gmsh_transfinite_opposite_subset_start_spin"] = (
+        topo_gmsh_transfinite_opposite_subset_start_spin
+    )
+
+    topo_gmsh_transfinite_opposite_subset_end_spin = QtWidgets.QDoubleSpinBox()
+    topo_gmsh_transfinite_opposite_subset_end_spin.setObjectName(
+        "topo_gmsh_transfinite_opposite_subset_end_spin"
+    )
+    topo_gmsh_transfinite_opposite_subset_end_spin.setRange(0.0, 1.0)
+    topo_gmsh_transfinite_opposite_subset_end_spin.setDecimals(4)
+    topo_gmsh_transfinite_opposite_subset_end_spin.setSingleStep(0.05)
+    topo_gmsh_transfinite_opposite_subset_end_spin.setValue(0.70)
+    topo_gmsh_transfinite_opposite_subset_end_spin.setToolTip(
+        "Opposite-edge subset end fraction for transfinite interface matching. "
+        "Respects BACKWATER_GMSH_TRANSFINITE_OPPOSITE_SUBSET_END env var."
+    )
+    transfinite_form.addRow("Opposite subset end:", topo_gmsh_transfinite_opposite_subset_end_spin)
+    widgets["topo_gmsh_transfinite_opposite_subset_end_spin"] = (
+        topo_gmsh_transfinite_opposite_subset_end_spin
+    )
+
+    topo_gmsh_transfinite_opposite_subset_density_scale_spin = QtWidgets.QDoubleSpinBox()
+    topo_gmsh_transfinite_opposite_subset_density_scale_spin.setObjectName(
+        "topo_gmsh_transfinite_opposite_subset_density_scale_spin"
+    )
+    topo_gmsh_transfinite_opposite_subset_density_scale_spin.setRange(0.05, 5.0)
+    topo_gmsh_transfinite_opposite_subset_density_scale_spin.setDecimals(4)
+    topo_gmsh_transfinite_opposite_subset_density_scale_spin.setSingleStep(0.05)
+    topo_gmsh_transfinite_opposite_subset_density_scale_spin.setValue(0.50)
+    topo_gmsh_transfinite_opposite_subset_density_scale_spin.setToolTip(
+        "Density scale for opposite-edge subsets. Lower values coarsen subset spacing. "
+        "Respects BACKWATER_GMSH_TRANSFINITE_OPPOSITE_SUBSET_DENSITY_SCALE env var."
+    )
+    transfinite_form.addRow("Opposite density scale:", topo_gmsh_transfinite_opposite_subset_density_scale_spin)
+    widgets["topo_gmsh_transfinite_opposite_subset_density_scale_spin"] = (
+        topo_gmsh_transfinite_opposite_subset_density_scale_spin
+    )
+
+    topo_gmsh_transfinite_interface_debug_chk = QtWidgets.QCheckBox(
+        "Enable transfinite interface debug logging"
+    )
+    topo_gmsh_transfinite_interface_debug_chk.setObjectName(
+        "topo_gmsh_transfinite_interface_debug_chk"
+    )
+    if not str(topo_gmsh_transfinite_interface_debug_chk.text() or "").strip():
+        topo_gmsh_transfinite_interface_debug_chk.setText(
+            "Enable transfinite interface debug logging"
+        )
+    topo_gmsh_transfinite_interface_debug_chk.setChecked(False)
+    topo_gmsh_transfinite_interface_debug_chk.setToolTip(
+        "Enable verbose debug logging for transfinite interface handling. "
+        "Respects BACKWATER_GMSH_TRANSFINITE_INTERFACE_DEBUG env var."
+    )
+    transfinite_form.addRow(topo_gmsh_transfinite_interface_debug_chk)
+    widgets["topo_gmsh_transfinite_interface_debug_chk"] = (
+        topo_gmsh_transfinite_interface_debug_chk
+    )
+
+    topo_gmsh_transfinite_subset_containment_enable_chk = QtWidgets.QCheckBox(
+        "Enable subset containment detection"
+    )
+    topo_gmsh_transfinite_subset_containment_enable_chk.setObjectName(
+        "topo_gmsh_transfinite_subset_containment_enable_chk"
+    )
+    if not str(topo_gmsh_transfinite_subset_containment_enable_chk.text() or "").strip():
+        topo_gmsh_transfinite_subset_containment_enable_chk.setText(
+            "Enable subset containment detection"
+        )
+    topo_gmsh_transfinite_subset_containment_enable_chk.setChecked(True)
+    topo_gmsh_transfinite_subset_containment_enable_chk.setToolTip(
+        "Enable logical detection of subset containment for shared interface matching. "
+        "Respects BACKWATER_GMSH_TRANSFINITE_SUBSET_CONTAINMENT_ENABLE env var."
+    )
+    transfinite_form.addRow(topo_gmsh_transfinite_subset_containment_enable_chk)
+    widgets["topo_gmsh_transfinite_subset_containment_enable_chk"] = (
+        topo_gmsh_transfinite_subset_containment_enable_chk
+    )
+
+    topo_gmsh_transfinite_subset_containment_high_overlap_spin = QtWidgets.QDoubleSpinBox()
+    topo_gmsh_transfinite_subset_containment_high_overlap_spin.setObjectName(
+        "topo_gmsh_transfinite_subset_containment_high_overlap_spin"
+    )
+    topo_gmsh_transfinite_subset_containment_high_overlap_spin.setRange(0.50, 1.0)
+    topo_gmsh_transfinite_subset_containment_high_overlap_spin.setDecimals(4)
+    topo_gmsh_transfinite_subset_containment_high_overlap_spin.setSingleStep(0.01)
+    topo_gmsh_transfinite_subset_containment_high_overlap_spin.setValue(0.95)
+    topo_gmsh_transfinite_subset_containment_high_overlap_spin.setToolTip(
+        "Threshold above which a subset is considered 'high overlap'. "
+        "Respects BACKWATER_GMSH_TRANSFINITE_SUBSET_CONTAINMENT_HIGH_OVERLAP env var."
+    )
+    transfinite_form.addRow(
+        "Subset containment high overlap:",
+        topo_gmsh_transfinite_subset_containment_high_overlap_spin,
+    )
+    widgets["topo_gmsh_transfinite_subset_containment_high_overlap_spin"] = (
+        topo_gmsh_transfinite_subset_containment_high_overlap_spin
+    )
+
+    topo_gmsh_transfinite_subset_containment_min_overlap_spin = QtWidgets.QDoubleSpinBox()
+    topo_gmsh_transfinite_subset_containment_min_overlap_spin.setObjectName(
+        "topo_gmsh_transfinite_subset_containment_min_overlap_spin"
+    )
+    topo_gmsh_transfinite_subset_containment_min_overlap_spin.setRange(0.0, 1.0)
+    topo_gmsh_transfinite_subset_containment_min_overlap_spin.setDecimals(4)
+    topo_gmsh_transfinite_subset_containment_min_overlap_spin.setSingleStep(0.01)
+    topo_gmsh_transfinite_subset_containment_min_overlap_spin.setValue(0.02)
+    topo_gmsh_transfinite_subset_containment_min_overlap_spin.setToolTip(
+        "Minimum overlap fraction needed for containment to apply. "
+        "Respects BACKWATER_GMSH_TRANSFINITE_SUBSET_CONTAINMENT_MIN_OVERLAP env var."
+    )
+    transfinite_form.addRow(
+        "Subset containment min overlap:",
+        topo_gmsh_transfinite_subset_containment_min_overlap_spin,
+    )
+    widgets["topo_gmsh_transfinite_subset_containment_min_overlap_spin"] = (
+        topo_gmsh_transfinite_subset_containment_min_overlap_spin
+    )
+
+    topo_gmsh_transfinite_subset_containment_max_length_ratio_spin = QtWidgets.QDoubleSpinBox()
+    topo_gmsh_transfinite_subset_containment_max_length_ratio_spin.setObjectName(
+        "topo_gmsh_transfinite_subset_containment_max_length_ratio_spin"
+    )
+    topo_gmsh_transfinite_subset_containment_max_length_ratio_spin.setRange(1.0e-6, 10.0)
+    topo_gmsh_transfinite_subset_containment_max_length_ratio_spin.setDecimals(6)
+    topo_gmsh_transfinite_subset_containment_max_length_ratio_spin.setSingleStep(0.05)
+    topo_gmsh_transfinite_subset_containment_max_length_ratio_spin.setValue(0.35)
+    topo_gmsh_transfinite_subset_containment_max_length_ratio_spin.setToolTip(
+        "Max edge-length ratio for containment checks. "
+        "Respects BACKWATER_GMSH_TRANSFINITE_SUBSET_CONTAINMENT_MAX_LENGTH_RATIO env var."
+    )
+    transfinite_form.addRow(
+        "Subset containment max length ratio:",
+        topo_gmsh_transfinite_subset_containment_max_length_ratio_spin,
+    )
+    widgets["topo_gmsh_transfinite_subset_containment_max_length_ratio_spin"] = (
+        topo_gmsh_transfinite_subset_containment_max_length_ratio_spin
+    )
+
     return widgets
 
 
 def _wire_topology_tab_controls(
     widgets,
-    gmsh_form,
-    quality_form,
     update_summary_fn,
 ) -> None:
     """Controller: connect topology tab widget signals."""
@@ -1045,13 +1284,14 @@ def _wire_topology_tab_controls(
         if w is not None and _alive(w) and hasattr(w, "currentIndexChanged"):
             _w(w.currentIndexChanged, update_summary_fn)
 
-    # Connect quality widgets
+    # Connect quality spin widgets
     for qw_name in ("topo_quality_min_angle_spin", "topo_quality_max_aspect_spin",
                      "topo_quality_max_non_orth_spin"):
         w = widgets.get(qw_name)
         if w is not None and _alive(w) and hasattr(w, "valueChanged"):
             _w(w.valueChanged, update_summary_fn)
 
+    # Connect quality line edits
     for qw_name in ("topo_quality_min_area_edit", "topo_quality_size_scales_edit",
                      "topo_quality_smooth_increments_edit",
                      "topo_gmsh_quality_recombine_topology_passes_edit",
@@ -1062,27 +1302,63 @@ def _wire_topology_tab_controls(
         if w is not None and _alive(w) and hasattr(w, "textChanged"):
             _w(w.textChanged, update_summary_fn)
 
-    for chk_name in ("topo_quality_strict_chk", "topo_gmsh_quad_full_region_flow_align_chk",
-                      "topo_gmsh_algo_switch_on_failure_chk",
-                      "topo_gmsh_recombine_node_repositioning_chk",
-                      "topo_gmsh_global_recombine_chk",
-                      "topo_gmsh_interface_transition_enable_chk",
-                      "topo_gmsh_mesh_size_from_points_chk",
-                      "topo_gmsh_quality_enable_chk"):
+    # Connect checkboxes
+    for chk_name in (
+        "topo_quality_strict_chk",
+        "topo_gmsh_quad_full_region_flow_align_chk",
+        "topo_gmsh_algo_switch_on_failure_chk",
+        "topo_gmsh_recombine_node_repositioning_chk",
+        "topo_gmsh_global_recombine_chk",
+        "topo_gmsh_interface_transition_enable_chk",
+        "topo_gmsh_mesh_size_from_points_chk",
+        "topo_gmsh_quality_enable_chk",
+        "topo_gmsh_interface_conformance_chk",
+        "topo_gmsh_transverse_interface_centroid_merge_chk",
+        "topo_gmsh_interface_reject_near_unshared_chk",
+        "topo_gmsh_optimize_netgen_chk",
+        "topo_gmsh_transfinite_shared_interface_harmonize_chk",
+        "topo_gmsh_transfinite_interface_debug_chk",
+        "topo_gmsh_transfinite_subset_containment_enable_chk",
+    ):
         w = widgets.get(chk_name)
         if w is not None and _alive(w) and hasattr(w, "toggled"):
             _w(w.toggled, update_summary_fn)
 
-    for combo_name in ("topo_gmsh_arc_mode_combo",):
+    # Connect combos
+    for combo_name in (
+        "topo_gmsh_arc_mode_combo",
+        "topo_gmsh_tri_algo_combo",
+        "topo_gmsh_quad_algo_combo",
+        "topo_gmsh_recombine_algo_combo",
+    ):
         w = widgets.get(combo_name)
         if w is not None and _alive(w) and hasattr(w, "currentIndexChanged"):
             _w(w.currentIndexChanged, update_summary_fn)
 
-    for spin_name in ("topo_gmsh_arc_soft_size_factor_spin", "topo_gmsh_arc_soft_dist_factor_spin",
-                       "topo_gmsh_interface_transition_dist_factor_spin",
-                       "topo_gmsh_interface_transition_min_ratio_spin",
-                        "topo_gmsh_mesh_size_min_spin", "topo_gmsh_tolerance_edge_length_spin",
-                        "topo_gmsh_quality_max_iters_spin", "topo_gmsh_quality_time_limit_spin"):
+    # Connect spin boxes
+    for spin_name in (
+        "topo_gmsh_arc_soft_size_factor_spin",
+        "topo_gmsh_arc_soft_dist_factor_spin",
+        "topo_gmsh_interface_transition_dist_factor_spin",
+        "topo_gmsh_interface_transition_min_ratio_spin",
+        "topo_gmsh_mesh_size_min_spin",
+        "topo_gmsh_tolerance_edge_length_spin",
+        "topo_gmsh_quality_max_iters_spin",
+        "topo_gmsh_quality_time_limit_spin",
+        "topo_gmsh_interface_snap_tol_spin",
+        "topo_gmsh_interface_reject_tol_spin",
+        "topo_gmsh_smoothing_spin",
+        "topo_gmsh_optimize_iters_spin",
+        "topo_gmsh_verbosity_spin",
+        "topo_gmsh_num_threads_spin",
+        "topo_gmsh_max_num_threads_2d_spin",
+        "topo_gmsh_transfinite_opposite_subset_start_spin",
+        "topo_gmsh_transfinite_opposite_subset_end_spin",
+        "topo_gmsh_transfinite_opposite_subset_density_scale_spin",
+        "topo_gmsh_transfinite_subset_containment_high_overlap_spin",
+        "topo_gmsh_transfinite_subset_containment_min_overlap_spin",
+        "topo_gmsh_transfinite_subset_containment_max_length_ratio_spin",
+    ):
         w = widgets.get(spin_name)
         if w is not None and _alive(w) and hasattr(w, "valueChanged"):
             _w(w.valueChanged, update_summary_fn)

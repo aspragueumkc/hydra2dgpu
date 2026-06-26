@@ -132,7 +132,7 @@ class MeshController:
         Reads all widget/state from ``self._view``.
         """
         from qgis.PyQt import QtWidgets
-        from qgis.core import QgsProject, QgsVectorLayer
+        from qgis.core import QgsProject
 
         view = self._view
         try:
@@ -163,128 +163,14 @@ class MeshController:
         except Exception as e:
             view._log(f"[ERROR] CRS auth for GPKG export: {e}")
 
-        nodes = QgsVectorLayer(
-            f"Point?crs={crs_auth}&field=node_id:integer",
-            "swe2d_topo_nodes", "memory",
-        )
-        arcs = QgsVectorLayer(
-            f"LineString?crs={crs_auth}&field=arc_id:integer&field=node0:integer&field=node1:integer"
-            "&field=use_global_arc_ctrl:integer&field=arc_mode_override:string(24)"
-            "&field=arc_soft_size_override:double&field=arc_soft_dist_override:double",
-            "swe2d_topo_arcs", "memory",
-        )
-        regions = QgsVectorLayer(
-            f"Polygon?crs={crs_auth}&field=region_id:integer&field=target_size:double"
-            "&field=cell_type:string(32)&field=edge_len_1:double&field=edge_len_2:double"
-            "&field=edge_len_3:double&field=edge_len_4:double",
-            "swe2d_topo_regions", "memory",
-        )
-        constraints = QgsVectorLayer(
-            f"Polygon?crs={crs_auth}&field=constraint_id:integer&field=target_size:double"
-            "&field=cell_type:string(32)&field=edge_len_1:double&field=edge_len_2:double"
-            "&field=edge_len_3:double&field=edge_len_4:double",
-            "swe2d_topo_constraints", "memory",
-        )
-        quad_edges = QgsVectorLayer(
-            f"LineString?crs={crs_auth}&field=region_id:integer&field=edge_id:integer"
-            "&field=target_size:double&field=n_layers:integer&field=first_height:double"
-            "&field=growth_rate:double",
-            "swe2d_topo_quad_edges", "memory",
-        )
-        manning = QgsVectorLayer(
-            f"Polygon?crs={crs_auth}&field=zone_id:integer&field=n_mann:double&field=priority:integer",
-            "swe2d_manning_zones", "memory",
-        )
-        bc_lines = QgsVectorLayer(
-            f"LineString?crs={crs_auth}&field=bc_type:integer&field=bc_value:double"
-            "&field=priority:integer&field=hydrograph:string(1024)"
-            "&field=hydrograph_id:string(64)&field=hydrograph_layer:string(128)",
-            "swe2d_bc_lines", "memory",
-        )
-        sample_lines = QgsVectorLayer(
-            f"LineString?crs={crs_auth}&field=line_id:integer&field=name:string(128)"
-            "&field=enabled:integer&field=priority:integer",
-            "swe2d_sample_lines", "memory",
-        )
-        rain_gages = QgsVectorLayer(
-            f"Point?crs={crs_auth}&field=gage_id:string(64)&field=name:string(128)"
-            "&field=hyetograph_id:string(64)&field=units:string(32)&field=priority:integer",
-            "swe2d_rain_gages", "memory",
-        )
-        storm_areas = QgsVectorLayer(
-            f"Polygon?crs={crs_auth}&field=storm_id:integer&field=name:string(128)"
-            "&field=priority:integer",
-            "swe2d_storm_areas", "memory",
-        )
-        cn_zones = QgsVectorLayer(
-            f"Polygon?crs={crs_auth}&field=zone_id:integer&field=cn:double&field=priority:integer",
-            "swe2d_cn_zones", "memory",
-        )
-        hyetographs = QgsVectorLayer(
-            "None?field=hyetograph_id:string(64)&field=Time:string(32)&field=Value:double"
-            "&field=value_type:string(24)&field=units:string(24)&field=description:string(256)",
-            "swe2d_hyetographs", "memory",
-        )
-        hydro = QgsVectorLayer(
-            "None?field=hydrograph_id:string(64)&field=bc_type:integer&field=Time:string(32)"
-            "&field=Value:double&field=description:string(256)",
-            "swe2d_hydrographs", "memory",
-        )
-        drainage_nodes = QgsVectorLayer(
-            f"Point?crs={crs_auth}&field=node_id:string(64)&field=invert_elev:double"
-            "&field=max_depth:double&field=rim_elev:double&field=crest_elev:double"
-            "&field=node_type:string(32)&field=surface_area:double"
-            "&field=outfall_area:double&field=zero_storage:integer",
-            "swe2d_drainage_nodes", "memory",
-        )
-        drainage_links = QgsVectorLayer(
-            f"LineString?crs={crs_auth}&field=link_id:string(64)&field=from_node:string(64)"
-            "&field=to_node:string(64)&field=link_type:string(32)&field=link_shape:string(32)"
-            "&field=length:double&field=roughness_n:double&field=diameter:double"
-            "&field=span:double&field=rise:double&field=area_m2:double"
-            "&field=equiv_diameter_m:double&field=max_flow:double&field=cd:double",
-            "swe2d_drainage_links", "memory",
-        )
-        drainage_inlets = QgsVectorLayer(
-            "None?field=inlet_type_id:string(64)&field=name:string(128)"
-            "&field=weir_length:double&field=orifice_area:double"
-            "&field=coeff_weir:double&field=coeff_orifice:double"
-            "&field=max_capture:double&field=description:string(256)",
-            "swe2d_drainage_inlets", "memory",
-        )
-        drainage_node_inlets = QgsVectorLayer(
-            "None?field=node_id:string(64)&field=inlet_type_id:string(64)"
-            "&field=inlet_count:double&field=crest_offset:double&field=description:string(256)",
-            "swe2d_drainage_node_inlets", "memory",
-        )
-        structures = QgsVectorLayer(
-            f"LineString?crs={crs_auth}&field=structure_id:string(64)"
-            "&field=structure_type:integer&field=crest_elev:double&field=enabled:integer"
-            "&field=width:double&field=height:double&field=diameter:double"
-            "&field=culvert_shape:string(32)&field=culvert_code:integer"
-            "&field=culvert_rise:double&field=culvert_span:double"
-            "&field=culvert_area_m2:double&field=culvert_barrels:integer"
-            "&field=culvert_slope:double&field=inlet_invert_elev:double"
-            "&field=outlet_invert_elev:double&field=entrance_loss_k:double"
-            "&field=exit_loss_k:double&field=embankment_enabled:integer"
-            "&field=embankment_crest_elev:double&field=embankment_overflow_width:double"
-            "&field=embankment_weir_coeff:double&field=length:double&field=roughness_n:double"
-            "&field=coeff:double&field=cd:double&field=opening:double&field=q_pump:double"
-            "&field=max_flow:double&field=inlet_loss_k:double&field=outlet_loss_k:double"
-            "&field=stacked_enabled:integer&field=use_redistribution:integer&field=influence_width:double"
-            "&field=upstream_buffer:double&field=downstream_buffer:double"
-            "&field=deck_soffit_elev:double&field=deck_top_elev:double"
-            "&field=model_top_elev:double&field=under_layers:integer&field=over_layers:integer"
-            "&field=pier_count:integer&field=pier_width:double",
-            "swe2d_structures", "memory",
+        from swe2d.workbench.services.schema_definitions import (
+            create_memory_layer,
+            get_layer_names,
         )
 
         model_layers = [
-            nodes, arcs, regions, constraints, quad_edges,
-            manning, bc_lines, sample_lines, rain_gages, storm_areas,
-            cn_zones, hyetographs, hydro,
-            drainage_nodes, drainage_links, drainage_inlets, drainage_node_inlets,
-            structures,
+            create_memory_layer(key, crs_auth)
+            for key in get_layer_names()
         ]
 
         for i, lyr in enumerate(model_layers):
