@@ -123,8 +123,8 @@ def _constraint_expr(field: str, expr: str) -> str:
     )
 
 
-def _alias_entry(index: int, alias: str) -> str:
-    return f'    <alias index="{index}" field="" name="{_V_ESCAPE(alias)}"/>'
+def _alias_entry(field_name: str, index: int, alias: str) -> str:
+    return f'    <alias index="{index}" field="{_V_ESCAPE(field_name)}" name="{_V_ESCAPE(alias)}"/>'
 
 
 def _default_entry(field: str, expr: str, apply_on_update: str = "0") -> str:
@@ -164,7 +164,12 @@ def build_qml(geom_type: str | None,
 
     # Build maps
     constraint_map = dict(constraint_exprs or [])
-    alias_map = dict(aliases or [])
+    # aliases arrive as [(index, alias), ...]; convert to {field_name: alias}
+    alias_map = {}
+    if aliases:
+        for idx, alias in aliases:
+            if 0 <= idx < len(field_names):
+                alias_map[field_names[idx]] = alias
     default_map = {d[0]: (d[1], d[2]) for d in (defaults or [])}
 
     # Sections
@@ -179,7 +184,7 @@ def build_qml(geom_type: str | None,
     )
 
     alias_entries = "\n".join(
-        _alias_entry(i, alias_map.get(n, "")) for i, n in enumerate(field_names)
+        _alias_entry(n, i, alias_map.get(n, "")) for i, n in enumerate(field_names)
     )
 
     default_entries = "\n".join(

@@ -236,33 +236,33 @@
     </field>
   </fieldConfiguration>
   <aliases>
-    <alias index="0" field="" name=""/>
-    <alias index="1" field="" name=""/>
-    <alias index="2" field="" name=""/>
-    <alias index="3" field="" name=""/>
-    <alias index="4" field="" name=""/>
-    <alias index="5" field="" name=""/>
-    <alias index="6" field="" name=""/>
-    <alias index="7" field="" name=""/>
-    <alias index="8" field="" name=""/>
-    <alias index="9" field="" name=""/>
-    <alias index="10" field="" name=""/>
-    <alias index="11" field="" name=""/>
-    <alias index="12" field="" name=""/>
-    <alias index="13" field="" name=""/>
-    <alias index="14" field="" name=""/>
-    <alias index="15" field="" name=""/>
-    <alias index="16" field="" name=""/>
-    <alias index="17" field="" name=""/>
-    <alias index="18" field="" name=""/>
-    <alias index="19" field="" name=""/>
-    <alias index="20" field="" name=""/>
-    <alias index="21" field="" name=""/>
-    <alias index="22" field="" name=""/>
-    <alias index="23" field="" name=""/>
-    <alias index="24" field="" name=""/>
-    <alias index="25" field="" name=""/>
-    <alias index="26" field="" name=""/>
+    <alias index="0" field="link_id" name="Link ID"/>
+    <alias index="1" field="from_node" name="From Node"/>
+    <alias index="2" field="to_node" name="To Node"/>
+    <alias index="3" field="link_type" name="Link Type"/>
+    <alias index="4" field="link_shape" name="Link Shape"/>
+    <alias index="5" field="length" name="Length"/>
+    <alias index="6" field="roughness_n" name="Roughness n"/>
+    <alias index="7" field="diameter" name="Diameter"/>
+    <alias index="8" field="span" name="Span"/>
+    <alias index="9" field="rise" name="Rise"/>
+    <alias index="10" field="area_m2" name="Area (m²)"/>
+    <alias index="11" field="equiv_diameter_m" name="Equivalent Diameter"/>
+    <alias index="12" field="max_flow" name="Max Flow"/>
+    <alias index="13" field="cd" name="Discharge Coefficient"/>
+    <alias index="14" field="culvert_shape" name="Culvert Shape"/>
+    <alias index="15" field="culvert_code" name="Culvert Code"/>
+    <alias index="16" field="culvert_rise" name="Culvert Rise"/>
+    <alias index="17" field="culvert_span" name="Culvert Span"/>
+    <alias index="18" field="culvert_area_m2" name="Culvert Area"/>
+    <alias index="19" field="culvert_barrels" name="Culvert Barrels"/>
+    <alias index="20" field="culvert_slope" name="Culvert Slope"/>
+    <alias index="21" field="inlet_invert_elev" name="Inlet Invert Elev."/>
+    <alias index="22" field="outlet_invert_elev" name="Outlet Invert Elev."/>
+    <alias index="23" field="entrance_loss_k" name="Entrance Loss K"/>
+    <alias index="24" field="exit_loss_k" name="Exit Loss K"/>
+    <alias index="25" field="inlet_loss_k" name="Inlet Loss K"/>
+    <alias index="26" field="outlet_loss_k" name="Outlet Loss K"/>
   </aliases>
   <defaults>
     <default expression="" field="link_id" applyOnUpdate="0"/>

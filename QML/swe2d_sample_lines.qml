@@ -48,10 +48,10 @@
     </field>
   </fieldConfiguration>
   <aliases>
-    <alias index="0" field="" name=""/>
-    <alias index="1" field="" name=""/>
-    <alias index="2" field="" name=""/>
-    <alias index="3" field="" name=""/>
+    <alias index="0" field="line_id" name="Line ID"/>
+    <alias index="1" field="name" name="Name"/>
+    <alias index="2" field="enabled" name="Enabled"/>
+    <alias index="3" field="priority" name="Priority"/>
   </aliases>
   <defaults>
     <default expression="" field="line_id" applyOnUpdate="0"/>

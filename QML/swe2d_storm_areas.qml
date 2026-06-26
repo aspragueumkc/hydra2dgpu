@@ -32,9 +32,9 @@
     </field>
   </fieldConfiguration>
   <aliases>
-    <alias index="0" field="" name=""/>
-    <alias index="1" field="" name=""/>
-    <alias index="2" field="" name=""/>
+    <alias index="0" field="storm_id" name="Storm ID"/>
+    <alias index="1" field="name" name="Name"/>
+    <alias index="2" field="priority" name="Priority"/>
   </aliases>
   <defaults>
     <default expression="" field="storm_id" applyOnUpdate="0"/>

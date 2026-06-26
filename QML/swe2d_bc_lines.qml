@@ -79,12 +79,12 @@
     </field>
   </fieldConfiguration>
   <aliases>
-    <alias index="0" field="" name=""/>
-    <alias index="1" field="" name=""/>
-    <alias index="2" field="" name=""/>
-    <alias index="3" field="" name=""/>
-    <alias index="4" field="" name=""/>
-    <alias index="5" field="" name=""/>
+    <alias index="0" field="bc_type" name="BC Type"/>
+    <alias index="1" field="bc_value" name="BC Value"/>
+    <alias index="2" field="priority" name="Priority"/>
+    <alias index="3" field="hydrograph" name="Hydrograph"/>
+    <alias index="4" field="hydrograph_id" name="Hydrograph ID"/>
+    <alias index="5" field="hydrograph_layer" name="Hydrograph Layer"/>
   </aliases>
   <defaults>
     <default expression="" field="bc_type" applyOnUpdate="0"/>

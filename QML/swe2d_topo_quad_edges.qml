@@ -68,12 +68,12 @@
     </field>
   </fieldConfiguration>
   <aliases>
-    <alias index="0" field="" name=""/>
-    <alias index="1" field="" name=""/>
-    <alias index="2" field="" name=""/>
-    <alias index="3" field="" name=""/>
-    <alias index="4" field="" name=""/>
-    <alias index="5" field="" name=""/>
+    <alias index="0" field="region_id" name="Region ID"/>
+    <alias index="1" field="edge_id" name="Edge ID"/>
+    <alias index="2" field="target_size" name="Target Size"/>
+    <alias index="3" field="n_layers" name="Number of Layers"/>
+    <alias index="4" field="first_height" name="First Cell Height"/>
+    <alias index="5" field="growth_rate" name="Growth Rate"/>
   </aliases>
   <defaults>
     <default expression="" field="region_id" applyOnUpdate="0"/>

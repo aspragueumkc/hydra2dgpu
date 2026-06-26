@@ -85,13 +85,13 @@
     </field>
   </fieldConfiguration>
   <aliases>
-    <alias index="0" field="" name=""/>
-    <alias index="1" field="" name=""/>
-    <alias index="2" field="" name=""/>
-    <alias index="3" field="" name=""/>
-    <alias index="4" field="" name=""/>
-    <alias index="5" field="" name=""/>
-    <alias index="6" field="" name=""/>
+    <alias index="0" field="arc_id" name="Arc ID"/>
+    <alias index="1" field="node0" name="From Node"/>
+    <alias index="2" field="node1" name="To Node"/>
+    <alias index="3" field="use_global_arc_ctrl" name="Use Global Arc Ctrl"/>
+    <alias index="4" field="arc_mode_override" name="Arc Mode Override"/>
+    <alias index="5" field="arc_soft_size_override" name="Arc Soft Size Override"/>
+    <alias index="6" field="arc_soft_dist_override" name="Arc Soft Dist Override"/>
   </aliases>
   <defaults>
     <default expression="" field="arc_id" applyOnUpdate="0"/>

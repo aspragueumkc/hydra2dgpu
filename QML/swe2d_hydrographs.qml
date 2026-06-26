@@ -42,11 +42,11 @@
     </field>
   </fieldConfiguration>
   <aliases>
-    <alias index="0" field="" name=""/>
-    <alias index="1" field="" name=""/>
-    <alias index="2" field="" name=""/>
-    <alias index="3" field="" name=""/>
-    <alias index="4" field="" name=""/>
+    <alias index="0" field="hydrograph_id" name="Hydrograph ID"/>
+    <alias index="1" field="bc_type" name="BC Type"/>
+    <alias index="2" field="Time" name="Time"/>
+    <alias index="3" field="Value" name="Value"/>
+    <alias index="4" field="description" name="Description"/>
   </aliases>
   <defaults>
     <default expression="" field="hydrograph_id" applyOnUpdate="0"/>

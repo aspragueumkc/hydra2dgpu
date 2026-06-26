@@ -72,12 +72,12 @@
     </field>
   </fieldConfiguration>
   <aliases>
-    <alias index="0" field="" name=""/>
-    <alias index="1" field="" name=""/>
-    <alias index="2" field="" name=""/>
-    <alias index="3" field="" name=""/>
-    <alias index="4" field="" name=""/>
-    <alias index="5" field="" name=""/>
+    <alias index="0" field="hyetograph_id" name="Hyetograph ID"/>
+    <alias index="1" field="Time" name="Time"/>
+    <alias index="2" field="Value" name="Value"/>
+    <alias index="3" field="value_type" name="Value Type"/>
+    <alias index="4" field="units" name="Units"/>
+    <alias index="5" field="description" name="Description"/>
   </aliases>
   <defaults>
     <default expression="" field="hyetograph_id" applyOnUpdate="0"/>

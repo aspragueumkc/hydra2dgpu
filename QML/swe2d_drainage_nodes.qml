@@ -93,15 +93,15 @@
     </field>
   </fieldConfiguration>
   <aliases>
-    <alias index="0" field="" name=""/>
-    <alias index="1" field="" name=""/>
-    <alias index="2" field="" name=""/>
-    <alias index="3" field="" name=""/>
-    <alias index="4" field="" name=""/>
-    <alias index="5" field="" name=""/>
-    <alias index="6" field="" name=""/>
-    <alias index="7" field="" name=""/>
-    <alias index="8" field="" name=""/>
+    <alias index="0" field="node_id" name="Node ID"/>
+    <alias index="1" field="invert_elev" name="Invert Elevation"/>
+    <alias index="2" field="max_depth" name="Max Depth"/>
+    <alias index="3" field="rim_elev" name="Rim Elevation"/>
+    <alias index="4" field="crest_elev" name="Crest Elevation"/>
+    <alias index="5" field="node_type" name="Node Type"/>
+    <alias index="6" field="surface_area" name="Surface Area"/>
+    <alias index="7" field="outfall_area" name="Outfall Area"/>
+    <alias index="8" field="zero_storage" name="Zero Storage"/>
   </aliases>
   <defaults>
     <default expression="" field="node_id" applyOnUpdate="0"/>

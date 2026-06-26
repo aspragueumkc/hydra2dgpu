@@ -74,13 +74,13 @@
     </field>
   </fieldConfiguration>
   <aliases>
-    <alias index="0" field="" name=""/>
-    <alias index="1" field="" name=""/>
-    <alias index="2" field="" name=""/>
-    <alias index="3" field="" name=""/>
-    <alias index="4" field="" name=""/>
-    <alias index="5" field="" name=""/>
-    <alias index="6" field="" name=""/>
+    <alias index="0" field="region_id" name="Region ID"/>
+    <alias index="1" field="target_size" name="Target Size"/>
+    <alias index="2" field="cell_type" name="Cell Type"/>
+    <alias index="3" field="edge_len_1" name="Edge Length 1"/>
+    <alias index="4" field="edge_len_2" name="Edge Length 2"/>
+    <alias index="5" field="edge_len_3" name="Edge Length 3"/>
+    <alias index="6" field="edge_len_4" name="Edge Length 4"/>
   </aliases>
   <defaults>
     <default expression="" field="region_id" applyOnUpdate="0"/>

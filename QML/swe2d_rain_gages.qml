@@ -57,11 +57,11 @@
     </field>
   </fieldConfiguration>
   <aliases>
-    <alias index="0" field="" name=""/>
-    <alias index="1" field="" name=""/>
-    <alias index="2" field="" name=""/>
-    <alias index="3" field="" name=""/>
-    <alias index="4" field="" name=""/>
+    <alias index="0" field="gage_id" name="Gage ID"/>
+    <alias index="1" field="name" name="Name"/>
+    <alias index="2" field="hyetograph_id" name="Hyetograph ID"/>
+    <alias index="3" field="units" name="Units"/>
+    <alias index="4" field="priority" name="Priority"/>
   </aliases>
   <defaults>
     <default expression="" field="gage_id" applyOnUpdate="0"/>

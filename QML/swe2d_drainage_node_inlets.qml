@@ -42,11 +42,11 @@
     </field>
   </fieldConfiguration>
   <aliases>
-    <alias index="0" field="" name=""/>
-    <alias index="1" field="" name=""/>
-    <alias index="2" field="" name=""/>
-    <alias index="3" field="" name=""/>
-    <alias index="4" field="" name=""/>
+    <alias index="0" field="node_id" name="Node ID"/>
+    <alias index="1" field="inlet_type_id" name="Inlet Type ID"/>
+    <alias index="2" field="inlet_count" name="Inlet Count"/>
+    <alias index="3" field="crest_offset" name="Crest Offset"/>
+    <alias index="4" field="description" name="Description"/>
   </aliases>
   <defaults>
     <default expression="" field="node_id" applyOnUpdate="0"/>

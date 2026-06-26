@@ -59,14 +59,14 @@
     </field>
   </fieldConfiguration>
   <aliases>
-    <alias index="0" field="" name=""/>
-    <alias index="1" field="" name=""/>
-    <alias index="2" field="" name=""/>
-    <alias index="3" field="" name=""/>
-    <alias index="4" field="" name=""/>
-    <alias index="5" field="" name=""/>
-    <alias index="6" field="" name=""/>
-    <alias index="7" field="" name=""/>
+    <alias index="0" field="inlet_type_id" name="Inlet Type ID"/>
+    <alias index="1" field="name" name="Name"/>
+    <alias index="2" field="weir_length" name="Weir Length"/>
+    <alias index="3" field="orifice_area" name="Orifice Area"/>
+    <alias index="4" field="coeff_weir" name="Weir Coefficient"/>
+    <alias index="5" field="coeff_orifice" name="Orifice Coefficient"/>
+    <alias index="6" field="max_capture" name="Max Capture"/>
+    <alias index="7" field="description" name="Description"/>
   </aliases>
   <defaults>
     <default expression="" field="inlet_type_id" applyOnUpdate="0"/>

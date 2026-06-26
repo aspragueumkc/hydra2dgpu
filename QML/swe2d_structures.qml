@@ -378,49 +378,49 @@
     </field>
   </fieldConfiguration>
   <aliases>
-    <alias index="0" field="" name=""/>
-    <alias index="1" field="" name=""/>
-    <alias index="2" field="" name=""/>
-    <alias index="3" field="" name=""/>
-    <alias index="4" field="" name=""/>
-    <alias index="5" field="" name=""/>
-    <alias index="6" field="" name=""/>
-    <alias index="7" field="" name=""/>
-    <alias index="8" field="" name=""/>
-    <alias index="9" field="" name=""/>
-    <alias index="10" field="" name=""/>
-    <alias index="11" field="" name=""/>
-    <alias index="12" field="" name=""/>
-    <alias index="13" field="" name=""/>
-    <alias index="14" field="" name=""/>
-    <alias index="15" field="" name=""/>
-    <alias index="16" field="" name=""/>
-    <alias index="17" field="" name=""/>
-    <alias index="18" field="" name=""/>
-    <alias index="19" field="" name=""/>
-    <alias index="20" field="" name=""/>
-    <alias index="21" field="" name=""/>
-    <alias index="22" field="" name=""/>
-    <alias index="23" field="" name=""/>
-    <alias index="24" field="" name=""/>
-    <alias index="25" field="" name=""/>
-    <alias index="26" field="" name=""/>
-    <alias index="27" field="" name=""/>
-    <alias index="28" field="" name=""/>
-    <alias index="29" field="" name=""/>
-    <alias index="30" field="" name=""/>
-    <alias index="31" field="" name=""/>
-    <alias index="32" field="" name=""/>
-    <alias index="33" field="" name=""/>
-    <alias index="34" field="" name=""/>
-    <alias index="35" field="" name=""/>
-    <alias index="36" field="" name=""/>
-    <alias index="37" field="" name=""/>
-    <alias index="38" field="" name=""/>
-    <alias index="39" field="" name=""/>
-    <alias index="40" field="" name=""/>
-    <alias index="41" field="" name=""/>
-    <alias index="42" field="" name=""/>
+    <alias index="0" field="structure_id" name="Structure ID"/>
+    <alias index="1" field="structure_type" name="Structure Type"/>
+    <alias index="2" field="crest_elev" name="Crest Elevation"/>
+    <alias index="3" field="enabled" name="Enabled"/>
+    <alias index="4" field="width" name="Width"/>
+    <alias index="5" field="height" name="Height"/>
+    <alias index="6" field="diameter" name="Diameter"/>
+    <alias index="7" field="culvert_shape" name="Culvert Shape"/>
+    <alias index="8" field="culvert_code" name="Culvert Code"/>
+    <alias index="9" field="culvert_rise" name="Culvert Rise"/>
+    <alias index="10" field="culvert_span" name="Culvert Span"/>
+    <alias index="11" field="culvert_area_m2" name="Culvert Area"/>
+    <alias index="12" field="culvert_barrels" name="Barrels"/>
+    <alias index="13" field="culvert_slope" name="Culvert Slope"/>
+    <alias index="14" field="inlet_invert_elev" name="Inlet Invert Elev."/>
+    <alias index="15" field="outlet_invert_elev" name="Outlet Invert Elev."/>
+    <alias index="16" field="entrance_loss_k" name="Entrance Loss K"/>
+    <alias index="17" field="exit_loss_k" name="Exit Loss K"/>
+    <alias index="18" field="embankment_enabled" name="Embankment Enabled"/>
+    <alias index="19" field="embankment_crest_elev" name="Embankment Crest Elev."/>
+    <alias index="20" field="embankment_overflow_width" name="Overflow Width"/>
+    <alias index="21" field="embankment_weir_coeff" name="Weir Coefficient"/>
+    <alias index="22" field="length" name="Length"/>
+    <alias index="23" field="roughness_n" name="Roughness n"/>
+    <alias index="24" field="coeff" name="Coefficient"/>
+    <alias index="25" field="cd" name="Discharge Coeff."/>
+    <alias index="26" field="opening" name="Opening"/>
+    <alias index="27" field="q_pump" name="Pump Flow"/>
+    <alias index="28" field="max_flow" name="Max Flow"/>
+    <alias index="29" field="inlet_loss_k" name="Inlet Loss K"/>
+    <alias index="30" field="outlet_loss_k" name="Outlet Loss K"/>
+    <alias index="31" field="stacked_enabled" name="Stacked Enabled"/>
+    <alias index="32" field="use_redistribution" name="Use Redistribution"/>
+    <alias index="33" field="influence_width" name="Influence Width"/>
+    <alias index="34" field="upstream_buffer" name="Upstream Buffer"/>
+    <alias index="35" field="downstream_buffer" name="Downstream Buffer"/>
+    <alias index="36" field="deck_soffit_elev" name="Deck Soffit Elev."/>
+    <alias index="37" field="deck_top_elev" name="Deck Top Elev."/>
+    <alias index="38" field="model_top_elev" name="Model Top Elev."/>
+    <alias index="39" field="under_layers" name="Under Layers"/>
+    <alias index="40" field="over_layers" name="Over Layers"/>
+    <alias index="41" field="pier_count" name="Pier Count"/>
+    <alias index="42" field="pier_width" name="Pier Width"/>
   </aliases>
   <defaults>
     <default expression="" field="structure_id" applyOnUpdate="0"/>

@@ -14,7 +14,7 @@
     </field>
   </fieldConfiguration>
   <aliases>
-    <alias index="0" field="" name=""/>
+    <alias index="0" field="node_id" name="Node ID"/>
   </aliases>
   <defaults>
     <default expression="" field="node_id" applyOnUpdate="0"/>

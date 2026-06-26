@@ -36,3 +36,4 @@ tests/results/*.log
 docs/superpowers/
 reference/
 build_debug/
+symbology-style.db

@@ -36,9 +36,9 @@
     </field>
   </fieldConfiguration>
   <aliases>
-    <alias index="0" field="" name=""/>
-    <alias index="1" field="" name=""/>
-    <alias index="2" field="" name=""/>
+    <alias index="0" field="zone_id" name="Zone ID"/>
+    <alias index="1" field="cn" name="Curve Number"/>
+    <alias index="2" field="priority" name="Priority"/>
   </aliases>
   <defaults>
     <default expression="" field="zone_id" applyOnUpdate="0"/>
