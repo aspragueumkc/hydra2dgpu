@@ -283,7 +283,11 @@ def on_coupling_element_changed(dialog, element_id: str) -> None:
 
 
 def auto_load_results_panel(dialog, gpkg_path: str = "", snapshot_run_id: str = ""):
-    """Auto-load results panel with the most recent run from a GeoPackage."""
+    """Auto-load results panel with the most recent run from a GeoPackage.
+
+    Only adds the most recent (or named) run — never scans in all runs.
+    Does NOT switch data_source — caller is responsible for that.
+    """
     if not gpkg_path:
         from swe2d.services.gpkg_persistence_service import current_line_results_storage_path
         gpkg_path = current_line_results_storage_path(dialog)
@@ -299,36 +303,51 @@ def auto_load_results_panel(dialog, gpkg_path: str = "", snapshot_run_id: str = 
         return
     if gpkg_path != data.gpkg_path:
         data.set_gpkg_path(gpkg_path)
-    # Auto-select the most recent run from the GPKG when nothing selected yet
-    if not data._selected_run_keys:
-        from swe2d.results.run_service import collect_runs_from_gpkg
-        candidates = collect_runs_from_gpkg(gpkg_path)
-        if candidates:
-            data._selected_run_keys.add(candidates[0].key)
+
+    # Find the single target run (most recent, or the named snapshot)
+    from swe2d.results.run_service import collect_runs_from_gpkg
+    candidates = collect_runs_from_gpkg(gpkg_path)
+    if not candidates:
+        dialog._log("[Auto-Load] No SWE2D runs found in GPKG.")
+        return
+
+    target_key = None
+    if snapshot_run_id:
+        for c in candidates:
+            if c.run_id == snapshot_run_id:
+                target_key = c.key
+                break
+    if target_key is None:
+        target_key = candidates[0].key  # most recent
+
+    data._selected_run_keys.add(target_key)
+
     try:
         data.discover_runs()
     except Exception as e:
         dialog._log(f"[Auto-Load] discover_runs failed: {e}")
         return
+
     records = data.get_run_records()
     if not records:
-        dialog._log("[Auto-Load] No run records found in GPKG — hiding panel.")
+        dialog._log("[Auto-Load] No run records found after discover_runs.")
         return
+
     if snapshot_run_id:
-        # Prefer the snapshot run — enable only it, disable others
-        found = False
         for rec in records:
             rec.enabled = (rec.run_id == snapshot_run_id)
-            if rec.run_id == snapshot_run_id:
-                found = True
-        if not found:
-            dialog._log(f"[Auto-Load] Snapshot run {snapshot_run_id} not found — enabling first run")
-            records[0].enabled = True
-        data._rebuild_timestep_union()
-        dialog._results_toolbox._rebuild_run_list()
     else:
         data.keep_only_most_recent_run()
-        dialog._results_toolbox._rebuild_run_list()
+
+    data._rebuild_timestep_union()
+    dialog._results_toolbox._rebuild_run_list()
+
+    viewer = getattr(dialog, "_studio_viewer", None)
+    if viewer is not None:
+        for w in viewer.plot_widgets.values():
+            if hasattr(w, "set_data"):
+                w.set_data(result_data=data)
+
     try:
         if bool(getattr(dialog, "_high_perf_canvas_overlay_enabled", False)):
             t_s = float(data.current_time_sec)

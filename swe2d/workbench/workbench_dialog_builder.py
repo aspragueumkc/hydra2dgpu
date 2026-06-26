@@ -191,6 +191,8 @@ class WorkbenchDialogBuilder:
             dlg._on_results_show_all)
         dlg._results_toolbox.run_hide_all.connect(
             dlg._on_results_hide_all)
+        dlg._results_toolbox.profile_options_changed.connect(
+            dlg._on_results_profile_options_changed)
         self._build_component(
             name="results",
             title="HYDRA2D Results",

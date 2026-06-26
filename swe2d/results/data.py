@@ -288,17 +288,27 @@ class SWE2DResultsData:
         self._rebuild_timestep_union()
 
     def get_line_ids(self) -> List[int]:
-        """Return sorted unique line IDs from enabled runs."""
+        """Return sorted unique line IDs from enabled runs or live snapshots."""
         from swe2d.results.queries import load_line_ids
         ids: Set[int] = set()
         for rec in self._run_records:
             if not rec.enabled:
                 continue
             try:
-                ids.update(lid for lid, _ in load_line_ids(rec.gpkg_path, rec.run_id))
-            except Exception as _e:
-
-                logger.warning(f"[ERROR] Exception in data.py: {_e}")
+                loaded = load_line_ids(rec.gpkg_path, rec.run_id)
+                if loaded:
+                    ids.update(lid for lid, _ in loaded)
+            except Exception:
+                pass
+        # Fallback for live runs (no GPKG yet) — extract line IDs from live snapshots
+        if not ids and self._live_line_snapshot_rows:
+            for row in self._live_line_snapshot_rows:
+                try:
+                    lid = int(row.get("line_id", -1))
+                    if lid >= 0:
+                        ids.add(lid)
+                except (TypeError, ValueError):
+                    pass
         return sorted(ids)
 
     @property
@@ -516,7 +526,14 @@ class SWE2DResultsData:
     # ------------------------------------------------------------------
 
     def _rebuild_timestep_union(self) -> None:
-        """rebuild timestep union."""
+        """Rebuild the union of all timesteps from GPKG run records.
+
+        Skips if the data source is ``"live"`` (in-memory run in progress)
+        to avoid overwriting the in-memory timestep slider with empty GPKG
+        data during a live simulation.
+        """
+        if getattr(self, "_data_source", "none") == "live":
+            return
         from swe2d.results.timestep_service import (
             compute_timestep_union,
             load_timesteps,

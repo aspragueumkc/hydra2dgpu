@@ -333,6 +333,21 @@ class RunController:
                 view._show_results_panel()
             except Exception as exc:
                 view._log(f"[ERROR] Failed to initialise results panel: {exc}")
+            # Seed a synthetic RunRecord so plot widgets have data to iterate
+            # during live runs — overlay works because it reads _live_snapshot
+            # directly, but plot widgets iterate get_enabled_run_records().
+            data = getattr(view, "_results_data", None)
+            if data is not None and not data.get_run_records():
+                from swe2d.results.run_service import RunRecord, next_color
+                rec = RunRecord(
+                    run_id=str(run_id),
+                    gpkg_path="",
+                    color=next_color(0),
+                    enabled=True,
+                    label=f"Live: {run_id}",
+                )
+                data._run_records = [rec]
+                view._results_toolbox._rebuild_run_list()
             # Leave view._snapshot_mesh_fingerprint as empty string so the old
             # fingerprint guard in _refresh_high_perf_canvas_overlay never
             # blocks rendering (the guard has been removed anyway, but this
@@ -345,6 +360,11 @@ class RunController:
             sample_map = build_line_sampling_map_fn()
             cell_solver_z = mesh_cell_solver_bed_fn() if sample_map else None
             run_id = datetime.datetime.now().astimezone().strftime("swe2d_%Y%m%dT%H%M%S%z")
+            # Re-seed the synthetic RunRecord with the real run_id now that we have it
+            data = getattr(view, "_results_data", None)
+            if data is not None and data._run_records and data._run_records[0].run_id == "":
+                data._run_records[0].run_id = str(run_id)
+                data._run_records[0].label = f"Live: {run_id}"
             run_wallclock_start = datetime.datetime.now().replace(microsecond=0).isoformat(sep=" ")
 
             dynamic_bc = bool(np.any((bc_tp == _BC_TS_FLOW) | (bc_tp == _BC_TS_STAGE)) or edge_hydrographs)

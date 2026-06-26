@@ -194,6 +194,8 @@ def persist_mesh_results_to_geopackage(
     mesh_rows: List[Dict[str, object]],
     interval_s: float,
     table_name: str = "swe2d_mesh_results",
+    mesh_name: str = "",
+    mesh_hash: str = "",
     log_fn: Optional[Callable[[str], None]] = None,
     results_table_name_fn: Optional[Callable[[str], str]] = None,
     velocity_data_support_fn: Optional[Callable] = None,
@@ -213,6 +215,11 @@ def persist_mesh_results_to_geopackage(
         Snapshot interval in seconds.
     table_name : str, optional
         Base table name (default "swe2d_mesh_results").
+    mesh_name : str, optional
+        Name of the mesh that produced these results.
+    mesh_hash : str, optional
+        SHA-256 hash of the mesh geometry, used to associate
+        results with a specific mesh on GPKG reload.
     log_fn : callable, optional
         Logging callback.
     results_table_name_fn : callable, optional
@@ -247,7 +254,9 @@ def persist_mesh_results_to_geopackage(
                 created_utc TEXT,
                 interval_s REAL,
                 row_count INTEGER,
-                snapshot INTEGER DEFAULT 0
+                snapshot INTEGER DEFAULT 0,
+                mesh_name TEXT DEFAULT '',
+                mesh_hash TEXT DEFAULT ''
             )
             """
         )
@@ -273,14 +282,16 @@ def persist_mesh_results_to_geopackage(
         cur.execute(
             f"""
             INSERT OR REPLACE INTO {q_runs}
-            (run_id, created_utc, interval_s, row_count)
-            VALUES (?, ?, ?, ?)
+            (run_id, created_utc, interval_s, row_count, mesh_name, mesh_hash)
+            VALUES (?, ?, ?, ?, ?, ?)
             """,
             (
                 str(run_id),
                 datetime.datetime.now().astimezone().replace(microsecond=0).isoformat(),
                 float(interval_s),
                 int(len(mesh_rows)),
+                str(mesh_name or ""),
+                str(mesh_hash or ""),
             ),
         )
         cur.executemany(
@@ -450,12 +461,24 @@ def persist_mesh_to_geopackage(
         ncells = int(fo.size) - 1
     else:
         ncells = int(cell_nodes_arr.size // 3) if cell_nodes_arr.size > 0 else 0
+
+    # When cell_face_offsets exists, the backend expects cell_nodes to be
+    # the flat array of all face vertex indices (= cell_face_nodes), not
+    # the triangulated version.  Use cell_face_nodes if available.
+    stored_cell_nodes = mesh_data.get("cell_face_nodes")
+    if stored_cell_nodes is not None and stored_cell_nodes.size > 0 and fo is not None and fo.size > 0:
+        pass  # use cell_face_nodes
+    else:
+        stored_cell_nodes = cell_nodes_arr
+
     import hashlib
     h = hashlib.sha256()
-    for key in ("node_x", "node_y", "node_z", "cell_nodes"):
+    for key in ("node_x", "node_y", "node_z",):
         arr = mesh_data.get(key)
         if arr is not None:
             h.update(arr.tobytes())
+    if stored_cell_nodes is not None and stored_cell_nodes.size > 0:
+        h.update(stored_cell_nodes.tobytes())
     conn = sqlite3.connect(gpkg_path)
     try:
         cur = conn.cursor()
@@ -493,7 +516,8 @@ def persist_mesh_to_geopackage(
             mesh_name, datetime.datetime.now(datetime.timezone.utc).isoformat(),
             nnodes, ncells,
             str(crs_wkt or ""), h.hexdigest(),
-            _b("node_x"), _b("node_y"), _b("node_z"), _b("cell_nodes"),
+            _b("node_x"), _b("node_y"), _b("node_z"),
+            _compress_array(stored_cell_nodes) if stored_cell_nodes is not None and stored_cell_nodes.size > 0 else None,
             _b("cell_face_offsets"),
             _b("bc_edge_node0"), _b("bc_edge_node1"), _b("bc_edge_type"), _b("bc_edge_val"),
             str(description or ""),
@@ -503,6 +527,26 @@ def persist_mesh_to_geopackage(
             log_fn(f"Mesh '{mesh_name}' saved to {gpkg_path} ({nnodes} nodes, {ncells} cells)")
     finally:
         conn.close()
+
+
+def compute_mesh_hash(mesh_data: dict) -> str:
+    """Compute a deterministic SHA-256 hash from mesh geometry.
+
+    Uses the same keys as ``persist_mesh_to_geopackage()`` so the hash
+    is guaranteed to match between mesh persistence and results linking.
+    """
+    import hashlib
+    stored_cell_nodes = mesh_data.get("cell_face_nodes")
+    if stored_cell_nodes is None or stored_cell_nodes.size == 0:
+        stored_cell_nodes = mesh_data.get("cell_nodes", np.empty(0))
+    h = hashlib.sha256()
+    for key in ("node_x", "node_y", "node_z"):
+        arr = mesh_data.get(key)
+        if arr is not None:
+            h.update(arr.tobytes())
+    if stored_cell_nodes is not None and stored_cell_nodes.size > 0:
+        h.update(stored_cell_nodes.tobytes())
+    return h.hexdigest()
 
 
 def load_mesh_from_geopackage(

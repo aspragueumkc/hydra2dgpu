@@ -97,20 +97,62 @@ class OverlayController:
                             conn = sqlite3.connect(gpkg)
                             try:
                                 cur = conn.cursor()
-                                cur.execute(
-                                    "SELECT mesh_name FROM swe2d_mesh "
-                                    "ORDER BY created_utc DESC LIMIT 1"
-                                )
-                                row = cur.fetchone()
-                                if row:
-                                    loaded = load_mesh_from_geopackage(gpkg, str(row[0]))
-                                    if loaded and loaded.get("node_x") is not None:
-                                        self._cached_mesh_data = loaded
-                                        mesh = loaded
+                                # Look up the runs table for the selected
+                                # overlay targets to find the mesh_hash
+                                # and mesh_name associated with this run.
+                                targets = self._data.enabled_overlay_targets()
+                                run_hash = ""
+                                run_mesh = ""
+                                for tgt_gpkg, tgt_run in targets:
+                                    if tgt_gpkg == gpkg:
+                                        cur.execute(
+                                            "SELECT mesh_hash, mesh_name "
+                                            "FROM swe2d_mesh_results_runs "
+                                            "WHERE run_id = ? "
+                                            "AND mesh_hash != '' "
+                                            "LIMIT 1",
+                                            (tgt_run,),
+                                        )
+                                        row = cur.fetchone()
+                                        if row:
+                                            run_hash = str(row[0] or "")
+                                            run_mesh = str(row[1] or "") if len(row) > 1 else ""
+                                            break
+                                # Load mesh by hash (exact match) or fall
+                                # back to most recent mesh.
+                                loaded = None
+                                if run_hash:
+                                    cur.execute(
+                                        "SELECT mesh_name FROM swe2d_mesh "
+                                        "WHERE hash = ? LIMIT 1",
+                                        (run_hash,),
+                                    )
+                                    row = cur.fetchone()
+                                    if row:
+                                        loaded = load_mesh_from_geopackage(
+                                            gpkg, str(row[0]),
+                                        )
+                                if loaded is None:
+                                    # Fallback: most recent mesh
+                                    cur.execute(
+                                        "SELECT mesh_name FROM swe2d_mesh "
+                                        "ORDER BY created_utc DESC LIMIT 1"
+                                    )
+                                    row = cur.fetchone()
+                                    if row:
+                                        loaded = load_mesh_from_geopackage(
+                                            gpkg, str(row[0]),
+                                        )
+                                if loaded and loaded.get("node_x") is not None:
+                                    self._cached_mesh_data = loaded
+                                    mesh = loaded
                             finally:
                                 conn.close()
                         except Exception as exc:
-                            logger.warning("Failed to load mesh from GPKG for overlay: %s", exc)
+                            logger.warning(
+                                "Failed to load mesh from GPKG for overlay: %s",
+                                exc,
+                            )
             if mesh.get("node_x") is not None and mesh.get("cell_nodes") is not None:
                 try:
                     cx, cy = view._mesh_cell_centroids()

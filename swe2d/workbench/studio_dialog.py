@@ -1291,14 +1291,22 @@ class SWE2DWorkbenchStudioDialog(QtWidgets.QDialog):
         logger_wb.warning("_persist_snapshot_to_gpkg called but snapshots are in-memory only until finalization")
 
     def _persist_mesh_results_to_geopackage(self, gpkg_path: str, run_id: str, mesh_rows, interval_s: float, table_name: str = "swe2d_mesh_results") -> None:
-        """Persist mesh results rows to a GeoPackage."""
+        """Persist mesh results rows to a GeoPackage, linking to the current mesh."""
         if not gpkg_path or not mesh_rows:
             return
         try:
-            from swe2d.services.gpkg_persistence_service import persist_mesh_results_to_geopackage
+            from swe2d.services.gpkg_persistence_service import (
+                persist_mesh_results_to_geopackage,
+                compute_mesh_hash,
+            )
+            mesh_data = getattr(self, "_mesh_data", None)
+            mesh_hash = compute_mesh_hash(mesh_data) if mesh_data else ""
+            mesh_name = str(getattr(mesh_data, "get", lambda k: "")("mesh_name", "") or "")
             persist_mesh_results_to_geopackage(
                 gpkg_path=gpkg_path, run_id=run_id, mesh_rows=mesh_rows,
-                interval_s=interval_s, table_name=table_name, log_fn=self._log,
+                interval_s=interval_s, table_name=table_name,
+                mesh_name=mesh_name, mesh_hash=mesh_hash,
+                log_fn=self._log,
             )
         except Exception as e:
             self._log(f"[WARNING] Mesh results GeoPackage persistence skipped: {e}")

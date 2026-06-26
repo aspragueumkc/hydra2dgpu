@@ -458,7 +458,10 @@ def _ensure_swe2d_mesh_tables(cur: sqlite3.Cursor) -> None:
             run_id TEXT PRIMARY KEY,
             created_utc TEXT,
             interval_s REAL,
-            row_count INTEGER
+            row_count INTEGER,
+            snapshot INTEGER DEFAULT 0,
+            mesh_name TEXT DEFAULT '',
+            mesh_hash TEXT DEFAULT ''
         )"""
     )
     cur.execute(
