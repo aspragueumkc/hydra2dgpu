@@ -286,11 +286,21 @@ class MeshController:
             drainage_nodes, drainage_links, drainage_inlets, drainage_node_inlets,
             structures,
         ]
-        for lyr in model_layers:
-            view._configure_swe2d_layer_editors(lyr)
 
         for i, lyr in enumerate(model_layers):
             view._write_memory_layer_to_gpkg(lyr, out_path, lyr.name(), create_file=(i == 0))
+
+        # Store QML editor-widget styles in GPKG layer_styles table
+        import os as _os
+        from swe2d.workbench.services.gpkg_layer_styles_service import (
+            write_qml_styles_to_gpkg as _write_styles,
+        )
+        _qml_dir = _os.path.join(
+            _os.path.dirname(_os.path.dirname(_os.path.dirname(__file__))),
+            "QML",
+        )
+        if _os.path.isdir(_qml_dir):
+            _write_styles(out_path, _qml_dir)
 
         view._log(f"Created 2D model GeoPackage: {out_path}")
         view.set_layer_status_text("2D model GeoPackage created.")
@@ -650,9 +660,13 @@ class MeshController:
                 )
                 return
 
+            import os as _os
+            from swe2d.workbench.services.gpkg_layer_styles_service import (
+                apply_qml_style_from_gpkg as _apply_style,
+            )
             for name, lyr in layers.items():
                 QgsProject.instance().addMapLayer(lyr)
-                view._configure_swe2d_layer_editors(lyr)
+                _apply_style(lyr, gpkg_path)
 
             getattr(self._view, "_workbench_controller").refresh_layer_combos()
             view._model_gpkg_path = str(gpkg_path)

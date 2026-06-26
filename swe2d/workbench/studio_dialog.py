@@ -58,8 +58,6 @@ logger_wb = logging.getLogger(__name__)
 
 try:
     from qgis.core import (
-        QgsEditorWidgetSetup,
-        QgsFieldConstraints,
         QgsFeature,
         QgsField,
         QgsGeometry,
@@ -443,27 +441,6 @@ class SWE2DWorkbenchStudioDialog(QtWidgets.QDialog):
         """Wire topology tab static signals via studio_tab_builder."""
         from swe2d.workbench.views.studio_tab_builder import wire_topology_tab_static_signals as _fn
         _fn(self)
-
-    def _configure_swe2d_layer_editors(self, layer) -> None:
-        from swe2d.workbench.views.topology_tab_view import _configure_swe2d_layer_editors as _fn
-        _fn(self._log, self._set_value_map_editor, self._set_expression_constraint, layer)
-
-    def _set_value_map_editor(self, layer, field_name: str, value_map: dict) -> None:
-        try:
-            idx = layer.fields().indexOf(field_name)
-            if idx >= 0:
-                setup = QgsEditorWidgetSetup('ValueMap', {'map': value_map})
-                layer.setEditorWidgetSetup(idx, setup)
-        except Exception as e:
-            self._log(f"[ERROR] set value map {field_name}: {e}")
-
-    def _set_expression_constraint(self, layer, field_name: str, expression: str) -> None:
-        try:
-            idx = layer.fields().indexOf(field_name)
-            if idx >= 0:
-                layer.setConstraintExpression(idx, expression)
-        except Exception as e:
-            self._log(f"[ERROR] set constraint {field_name}: {e}")
 
     def _write_memory_layer_to_gpkg(self, lyr, gpkg_path: str, layer_name: str, *, create_file: bool = False) -> None:
         from swe2d.workbench.services.lumped_hydrology_service import write_memory_layer_to_gpkg as _fn
@@ -969,36 +946,6 @@ class SWE2DWorkbenchStudioDialog(QtWidgets.QDialog):
         """Expand toolbox pages via studio_tab_builder."""
         from swe2d.workbench.views.studio_tab_builder import expand_toolbox_pages as _fn
         _fn(self, toolbox)
-
-    def _make_left_controls_compact(self, parent_widget):
-        """Set compact margins and spacing on all layouts in a parent widget."""
-        for layout in parent_widget.findChildren(QtWidgets.QLayout):
-            try:
-                layout.setContentsMargins(4, 4, 4, 4)
-            except Exception:
-                pass
-            try:
-                if hasattr(layout, "setSpacing"):
-                    layout.setSpacing(4)
-            except Exception:
-                pass
-            if isinstance(layout, QtWidgets.QFormLayout):
-                try:
-                    layout.setFieldGrowthPolicy(QtWidgets.QFormLayout.FieldGrowthPolicy.AllNonFixedFieldsGrow)
-                    layout.setHorizontalSpacing(6)
-                    layout.setVerticalSpacing(4)
-                except Exception:
-                    pass
-
-    def _register_detachable_tab_widget(self, tab_widget):
-        """Enable tab detaching via context menu on a tab widget."""
-        if tab_widget is None:
-            return
-        tab_widget.tabBar().setMovable(True)
-        tab_widget.tabBar().setContextMenuPolicy(QtCore.Qt.ContextMenuPolicy.CustomContextMenu)
-        tab_widget.tabBar().customContextMenuRequested.connect(
-            lambda pos, tw=tab_widget: self._show_tab_detach_menu(tw, pos)
-        )
 
     def _show_tab_detach_menu(self, tab_widget, pos):
         """Show the tab detach context menu at a given position."""

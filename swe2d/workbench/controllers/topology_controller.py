@@ -83,12 +83,23 @@ class TopologyController:
             crs_auth = "EPSG:4326"
 
         try:
+            import os as _os
+
+            _qml_dir = _os.path.join(
+                _os.path.dirname(_os.path.dirname(_os.path.dirname(__file__))),
+                "QML",
+            )
             layer_list = create_topology_template_layers(crs_auth=crs_auth)
             for name, lyr in layer_list:
                 if lyr is not None and lyr.isValid():
                     QgsProject.instance().addMapLayer(lyr)
                     if isinstance(lyr, QgsVectorLayer):
-                        view._configure_swe2d_layer_editors(lyr)
+                        # Load editor-widget config from QML (ValueMaps, constraints, etc.)
+                        _qml_path = _os.path.join(
+                            _qml_dir, f"{lyr.name().lower()}.qml"
+                        )
+                        if _os.path.exists(_qml_path):
+                            lyr.loadNamedStyle(_qml_path)
 
             self.refresh_layer_combos()
             topo = view._topology_tab_view

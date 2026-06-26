@@ -98,7 +98,35 @@
         </Option></config>
       </editWidget>
     </field>
+    <field name="culvert_shape">
+      <editWidget type="ValueMap">
+        <config><Option type="Map">
+          <Option name="map" type="List">
+            <Option value="circular" name="Circular" type="string"/>
+            <Option value="box" name="Box" type="string"/>
+            <Option value="rectangular" name="Rectangular" type="string"/>
+          </Option>
+        </Option></config>
+      </editWidget>
+    </field>
   </fieldConfiguration>
+  <aliases>
+    <alias field="culvert_shape" index="-1" name="Culvert Shape"/>
+    <alias field="culvert_code" index="-1" name="FHWA Culvert Code"/>
+    <alias field="culvert_rise" index="-1" name="Culvert Rise"/>
+    <alias field="culvert_span" index="-1" name="Culvert Span"/>
+    <alias field="culvert_area_m2" index="-1" name="Override Area"/>
+    <alias field="culvert_barrels" index="-1" name="Barrel Count"/>
+    <alias field="culvert_slope" index="-1" name="Culvert Slope"/>
+    <alias field="inlet_invert_elev" index="-1" name="Inlet Invert Elev."/>
+    <alias field="outlet_invert_elev" index="-1" name="Outlet Invert Elev."/>
+    <alias field="entrance_loss_k" index="-1" name="Entrance Loss K"/>
+    <alias field="exit_loss_k" index="-1" name="Exit Loss K"/>
+    <alias field="embankment_enabled" index="-1" name="Enable Embankment Overflow"/>
+    <alias field="embankment_crest_elev" index="-1" name="Embankment Crest Elev."/>
+    <alias field="embankment_overflow_width" index="-1" name="Overflow Width"/>
+    <alias field="embankment_weir_coeff" index="-1" name="Weir Coefficient"/>
+  </aliases>
   <defaults>
     <default field="structure_type" applyOnUpdate="0" expression="1"/>
     <default field="crest_elev" applyOnUpdate="0" expression="0.0"/>
@@ -109,6 +137,23 @@
     <default field="exit_loss_k" applyOnUpdate="0" expression="1.0"/>
     <default field="culvert_barrels" applyOnUpdate="0" expression="1"/>
   </defaults>
+  <constraints>
+    <constraint field="structure_id" exp_strength="0" constraints="3" desc="" expression="length(trim("structure_id")) &gt; 0"/>
+    <constraint field="structure_type" exp_strength="0" constraints="3" desc="" expression=""structure_type" IN (1,2,3,4,5)"/>
+    <constraint field="enabled" exp_strength="0" constraints="3" desc="" expression=""enabled" IS NULL OR "enabled" IN (0,1)"/>
+    <constraint field="culvert_code" exp_strength="0" constraints="3" desc="" expression=""culvert_code" IS NULL OR "culvert_code" &gt;= 1"/>
+    <constraint field="culvert_rise" exp_strength="0" constraints="3" desc="" expression=""culvert_rise" IS NULL OR "culvert_rise" &gt; 0"/>
+    <constraint field="culvert_span" exp_strength="0" constraints="3" desc="" expression=""culvert_span" IS NULL OR "culvert_span" &gt; 0"/>
+    <constraint field="culvert_area_m2" exp_strength="0" constraints="3" desc="" expression=""culvert_area_m2" IS NULL OR "culvert_area_m2" &gt; 0"/>
+    <constraint field="culvert_barrels" exp_strength="0" constraints="3" desc="" expression=""culvert_barrels" IS NULL OR "culvert_barrels" &gt;= 1"/>
+    <constraint field="length" exp_strength="0" constraints="3" desc="" expression=""length" IS NULL OR "length" &gt; 0"/>
+    <constraint field="roughness_n" exp_strength="0" constraints="3" desc="" expression=""roughness_n" IS NULL OR "roughness_n" &gt; 0"/>
+    <constraint field="entrance_loss_k" exp_strength="0" constraints="3" desc="" expression=""entrance_loss_k" IS NULL OR "entrance_loss_k" &gt;= 0"/>
+    <constraint field="exit_loss_k" exp_strength="0" constraints="3" desc="" expression=""exit_loss_k" IS NULL OR "exit_loss_k" &gt;= 0"/>
+    <constraint field="embankment_enabled" exp_strength="0" constraints="3" desc="" expression=""embankment_enabled" IS NULL OR "embankment_enabled" IN (0,1)"/>
+    <constraint field="embankment_overflow_width" exp_strength="0" constraints="3" desc="" expression=""embankment_overflow_width" IS NULL OR "embankment_overflow_width" &gt;= 0"/>
+    <constraint field="embankment_weir_coeff" exp_strength="0" constraints="3" desc="" expression=""embankment_weir_coeff" IS NULL OR "embankment_weir_coeff" &gt; 0"/>
+  </constraints>
   <editorlayout>tablayout</editorlayout>
   <attributeEditorForm>
     <attributeEditorContainer name="Weir" visibilityExpressionEnabled="1" visibilityExpression="&quot;structure_type&quot; = 1" groupBox="0">
