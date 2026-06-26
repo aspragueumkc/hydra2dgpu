@@ -3,6 +3,8 @@
 Extracted from SWE2DWorkbenchStudioDialog. Each function takes the dialog
 as the first parameter — this module is stateless.
 """
+import os
+
 from qgis.PyQt import QtCore, QtWidgets
 
 
@@ -45,7 +47,6 @@ def on_results_add(dialog) -> None:
     """Open file dialog to add results GeoPackages and select runs to load."""
     from swe2d.results.run_service import collect_runs_from_gpkg
     from swe2d.workbench.dialogs.run_selection_dialog import RunSelectionDialog
-    import os
 
     paths, _ = QtWidgets.QFileDialog.getOpenFileNames(
         dialog, "Add GeoPackage Results", "",
@@ -91,7 +92,16 @@ def on_results_add(dialog) -> None:
     if not selected:
         return
 
-    data.add_manual_selected_keys(selected)
+    # Replace selected_run_keys per GPKG: remove old keys for the same GPKGs,
+    # then add the new user selection. This ensures the dialog is the sole
+    # controller of which runs appear — old runs from the same GPKG that the
+    # user un-checked are removed, and runs from other GPKGs are preserved.
+    gpkg_paths_in_this_batch = {r.gpkg_path for r in all_candidates}
+    old_keys = set(data._selected_run_keys)
+    for k in old_keys:
+        if any(k.startswith(f"{p}::") for p in gpkg_paths_in_this_batch):
+            data._selected_run_keys.discard(k)
+    data._selected_run_keys.update(selected)
 
     data.discover_runs()
     data._rebuild_timestep_union()
