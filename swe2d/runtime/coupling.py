@@ -1825,6 +1825,9 @@ class SWE2DCouplingController:
                         native_mod.swe2d_gpu_readback_structure_flows(len(sts)),
                         dtype=np.float64,
                     )
+                    # Store ALL structure flows (including non-bridge/culvert)
+                    # so the snapshot callback reads non-zero values.
+                    self._last_structure_flows = bridge_flows.copy()
                     bridge_mask = self._structure_bridge_indices
                     if bridge_mask is not None and bridge_mask.size > 0:
                         bridge_q = bridge_flows[bridge_mask.astype(np.int32)]
@@ -1857,6 +1860,23 @@ class SWE2DCouplingController:
                                             src, bridge_plan, self.cell_area,
                                         )
                                 bridge_total += src
+                # ── Non-bridge (culvert/weir/orifice) flow readback ──────
+                # The on-device kernel computed ALL structure flows.  When
+                # bridges exist they were read back above.  For culvert-only
+                # configurations (no bridges) read back here so the snapshot
+                # callback sees non-zero flow values.
+                if (not self._has_bridge_structures
+                        and self._n_non_bridge_structures > 0
+                        and hasattr(native_mod, "swe2d_gpu_readback_structure_flows")):
+                    try:
+                        _nb_all = np.asarray(
+                            native_mod.swe2d_gpu_readback_structure_flows(int(len(sts))),
+                            dtype=np.float64,
+                        )
+                        self._last_structure_flows = _nb_all.copy()
+                    except Exception:
+                        pass
+
                 # On-device sources are already in d_external_source_mps.
                 # Skip redistribution: compute_coupling_full_on_device already
                 # wrote combined (structures + drainage + face-flux) sources
