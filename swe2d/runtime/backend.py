@@ -1120,14 +1120,20 @@ def build_mesh(
 ) -> None:
     """Build mesh, handling polygon meshes via face_offsets/face_nodes.
 
-    When *both* ``cell_face_offsets`` and ``cell_face_nodes`` are
-    provided they are passed as polygon args; otherwise ``cell_nodes``
-    is used alone (no offsets).  Remaining ``**kwargs`` are forwarded
-    to ``SWE2DBackend.build_mesh`` (e.g. ``bc_edge_node0``, ...).
+    * When ``cell_face_offsets`` is present → polygon path.  The face
+      node array is ``cell_face_nodes`` if provided, otherwise
+      ``cell_nodes`` (GPKG reload stores flat face nodes in the
+      ``cell_nodes`` column when offsets exist).
+    * When ``cell_face_offsets`` is absent → ``cell_nodes`` is used as
+      triangulated triplets (no offsets).
+
+    Remaining ``**kwargs`` are forwarded to ``SWE2DBackend.build_mesh``
+    (e.g. ``bc_edge_node0``, ...).
     """
-    if cell_face_offsets is not None and cell_face_nodes is not None:
+    if cell_face_offsets is not None:
+        face_nodes = cell_face_nodes if cell_face_nodes is not None else cell_nodes
         backend.build_mesh(
-            node_x, node_y, node_z, cell_face_nodes,
+            node_x, node_y, node_z, face_nodes,
             cell_face_offsets=cell_face_offsets,
             **kwargs,
         )
