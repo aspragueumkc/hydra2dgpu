@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from typing import Any, Dict, Optional
 
-from qgis.PyQt import QtWidgets
+from qgis.PyQt import QtCore, QtWidgets
 
 from swe2d.workbench.views.studio_viewer_pg import PGTimeSeriesWidget, _HAVE_PG
 from swe2d.workbench.views.studio_viewer_profile_pg import PGProfileWidget
@@ -52,6 +52,14 @@ class SWE2DStudioViewer(QtWidgets.QWidget):
                 widget = PlotViewWidget(mode=mode)
             self._plot_widgets[mode] = widget
             self._tabs.addTab(widget, mode)
+
+        # Allow the viewer panel to shrink horizontally — Qt often enforces
+        # large minimum widths based on widget sizeHints (pyqtgraph plots,
+        # combo boxes, labels, etc.).  Setting minimumWidth(0) on the tab
+        # widget and all children removes those constraints.
+        self._tabs.setMinimumWidth(0)
+        for child in self._tabs.findChildren(QtWidgets.QWidget):
+            child.setMinimumWidth(0)
 
         layout.addWidget(self._tabs, 1)
 
