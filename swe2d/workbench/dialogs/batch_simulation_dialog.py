@@ -513,11 +513,65 @@ class BatchSimulationDialog(QtWidgets.QDialog):
 
                     logger.warning(f"[ERROR] Exception in batch_simulation_dialog.py: {_e}")
 
+        # ── Capture top-level keys the headless runner needs ──────────
+        # Read layer combo values from the parent dialog's view widgets.
+        # The combo's currentText() is the QGIS layer name, which
+        # corresponds to the GPKG table name for layer-sourced tables.
+        mtab = getattr(parent, "_model_tab_view", None)
+        vtab = getattr(parent, "_map_tab_view", None)
+
+        bc_lines = ""
+        hyetograph_cfg = None
+        rain_cn_cfg = None
+        infiltration_method = ""
+        drainage_cfg = None
+        structures_cfg = None
+
+        if vtab is not None:
+            bc_name = str(getattr(vtab, "bc_lines_layer_combo", None).currentText() or "").strip()
+            if bc_name and bc_name != "(none)":
+                bc_lines = bc_name
+
+            hg_name = str(getattr(vtab, "hyetograph_layer_combo", None).currentText() or "").strip()
+            rg_name = str(getattr(vtab, "rain_gage_layer_combo", None).currentText() or "").strip()
+            if hg_name and hg_name != "(none)" and rg_name and rg_name != "(none)":
+                hyetograph_cfg = {"table": hg_name, "gauge_layer": rg_name}
+
+            cn_name = str(getattr(vtab, "cn_layer_combo", None).currentText() or "").strip()
+            if cn_name and cn_name != "(none)":
+                rain_cn_cfg = {"table": cn_name, "cn_field": "cn"}
+
+            dn_name = str(getattr(vtab, "drain_nodes_layer_combo", None).currentText() or "").strip()
+            dl_name = str(getattr(vtab, "drain_links_layer_combo", None).currentText() or "").strip()
+            if dn_name and dn_name != "(none)" and dl_name and dl_name != "(none)":
+                drainage_cfg = {"nodes_layer": dn_name, "links_layer": dl_name}
+
+            st_name = str(getattr(vtab, "structures_layer_combo", None).currentText() or "").strip()
+            if st_name and st_name != "(none)":
+                structures_cfg = {"layer": st_name}
+
+        if mtab is not None:
+            im = str(getattr(mtab, "infiltration_method_combo", None).currentData() or "none")
+            if im and im != "none":
+                infiltration_method = str(im)
+
         entry = {
             "id": "current_setup",
             "mesh": mesh_name,
             "params": run_params,
         }
+        if bc_lines:
+            entry["bc_lines"] = bc_lines
+        if hyetograph_cfg is not None:
+            entry["hyetograph"] = hyetograph_cfg
+        if rain_cn_cfg is not None:
+            entry["rain_cn"] = rain_cn_cfg
+        if infiltration_method:
+            entry["infiltration_method"] = infiltration_method
+        if drainage_cfg is not None:
+            entry["drainage"] = drainage_cfg
+        if structures_cfg is not None:
+            entry["structures"] = structures_cfg
 
         self._add_row_from_entry(entry)
 
