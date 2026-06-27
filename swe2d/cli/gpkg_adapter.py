@@ -24,7 +24,7 @@ from swe2d.extensions.extension_models import (
     HydraulicStructureConfig,
     PipeNetworkConfig,
 )
-from swe2d.extensions.structures import StructureType
+from swe2d.extensions.extension_models import StructureType
 
 
 logger = logging.getLogger(__name__)
