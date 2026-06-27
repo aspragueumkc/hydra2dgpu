@@ -513,24 +513,38 @@ class BatchSimulationDialog(QtWidgets.QDialog):
 
                     logger.warning(f"[ERROR] Exception in batch_simulation_dialog.py: {_e}")
 
-        # ── Helper: resolve GPKG table name from QGIS layer ID ────────────
-        def _get_table_name_from_combo(combo):
-            """Return GPKG table name from combo's stored layer ID, or ''."""
+        # ── Helper: resolve GPKG table name + GPKG path from QGIS layer ──
+        def _get_layer_info(combo):
+            """Return (table_name, gpkg_path) from combo's stored layer ID.
+
+            gpkg_path is '' if the layer doesn't come from a GeoPackage.
+            """
             if combo is None:
-                return ""
+                return ("", "")
             lid = combo.currentData()
             if not lid:
-                return ""
+                return ("", "")
             from qgis.core import QgsProject
             layer = QgsProject.instance().mapLayer(lid)
             if layer is None:
-                return ""
+                return ("", "")
             src = str(layer.source())
             # GPKG source: "/path/to/file.gpkg|layername=table_name"
             if "|layername=" in src:
-                return src.split("|layername=", 1)[1].strip()
-            # Fallback: use the display name
-            return str(layer.name()).strip()
+                gpkg_path, _, table = src.partition("|layername=")
+                return (table.strip(), gpkg_path.strip())
+            return (str(layer.name()).strip(), "")
+
+        mesh_gpkg = self._gpkg_path()
+
+        def _apply_gpkg(table: str, src_gpkg: str) -> str | dict:
+            """Return plain string when src_gpkg matches mesh_gpkg, else
+            a dict so the headless runner knows where to find the table."""
+            if not table:
+                return ""
+            if src_gpkg and src_gpkg != mesh_gpkg:
+                return {"table": table, "gpkg": src_gpkg}
+            return table
 
         # ── Capture top-level keys the headless runner needs ──────────
         mtab = getattr(parent, "_model_tab_view", None)
@@ -544,31 +558,39 @@ class BatchSimulationDialog(QtWidgets.QDialog):
         structures_cfg = None
 
         if vtab is not None:
-            bc_tbl = _get_table_name_from_combo(
+            bc_tbl, bc_gpkg = _get_layer_info(
                 getattr(vtab, "bc_lines_layer_combo", None))
-            if bc_tbl:
-                bc_lines = bc_tbl
+            bc_lines = _apply_gpkg(bc_tbl, bc_gpkg)
 
-            hg_tbl = _get_table_name_from_combo(
+            hg_tbl, hg_gpkg = _get_layer_info(
                 getattr(vtab, "hyetograph_layer_combo", None))
-            rg_tbl = _get_table_name_from_combo(
+            rg_tbl, rg_gpkg = _get_layer_info(
                 getattr(vtab, "rain_gage_layer_combo", None))
             if hg_tbl and rg_tbl:
-                hyetograph_cfg = {"table": hg_tbl, "gauge_layer": rg_tbl}
+                hyetograph_cfg = {
+                    "table": hg_tbl,
+                    "gauge_layer": rg_tbl,
+                }
+                # If either source comes from a different GPKG, record it
+                src_gpkg = hg_gpkg or rg_gpkg
+                if src_gpkg and src_gpkg != mesh_gpkg:
+                    hyetograph_cfg["gpkg"] = src_gpkg
 
-            cn_tbl = _get_table_name_from_combo(
+            cn_tbl, cn_gpkg = _get_layer_info(
                 getattr(vtab, "cn_layer_combo", None))
             if cn_tbl:
                 rain_cn_cfg = {"table": cn_tbl, "cn_field": "cn"}
+                if cn_gpkg and cn_gpkg != mesh_gpkg:
+                    rain_cn_cfg["gpkg"] = cn_gpkg
 
-            dn_tbl = _get_table_name_from_combo(
+            dn_tbl, dn_gpkg = _get_layer_info(
                 getattr(vtab, "drain_nodes_layer_combo", None))
-            dl_tbl = _get_table_name_from_combo(
+            dl_tbl, dl_gpkg = _get_layer_info(
                 getattr(vtab, "drain_links_layer_combo", None))
             if dn_tbl and dl_tbl:
                 drainage_cfg = {"nodes_layer": dn_tbl, "links_layer": dl_tbl}
 
-            st_tbl = _get_table_name_from_combo(
+            st_tbl, st_gpkg = _get_layer_info(
                 getattr(vtab, "structures_layer_combo", None))
             if st_tbl:
                 structures_cfg = {"layer": st_tbl}

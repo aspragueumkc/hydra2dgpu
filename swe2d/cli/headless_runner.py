@@ -92,31 +92,58 @@ def execute_run(
     nnodes = int(mesh_data["node_x"].size)
     ncells = int(backend.n_cells)
 
-    # Read BC arrays from GPKG tables
-    conn = sqlite3.connect(mesh_gpkg)
-    try:
-        bc_table = p.get("bc_lines", "")
-        bc = {}
-        if bc_table:
-            bc = query_bc_arrays(conn, bc_table)
-        bc_n0 = bc.get("bc_edge_node0", np.empty(0, dtype=np.int32))
-        bc_n1 = bc.get("bc_edge_node1", np.empty(0, dtype=np.int32))
-        bc_tp = bc.get("bc_edge_type", np.empty(0, dtype=np.int32))
-        bc_vl = bc.get("bc_edge_val", np.empty(0, dtype=np.float64))
+    # ── Resolve GPKG connection for each data source ─────────────────
+    # Each key can be a plain string (table name in mesh_gpkg) or a dict
+    # with "table" and optional "gpkg" fields for multi-GPKG support.
+    def _resolve_bc_lines(bc_val):
+        """Return (table_name, conn_or_None) for the bc_lines key."""
+        if not bc_val:
+            return ("", None)
+        if isinstance(bc_val, dict):
+            tbl = bc_val.get("table", "")
+            gpkg = bc_val.get("gpkg", mesh_gpkg)
+            return tbl, sqlite3.connect(gpkg)
+        return str(bc_val), sqlite3.connect(mesh_gpkg)
 
-        # Build Thiessen forcing from GPKG (if configured)
-        thiessen_forcing = None
-        hyetograph_cfg = p.get("hyetograph")
-        if hyetograph_cfg is not None and isinstance(hyetograph_cfg, dict):
-            htable = hyetograph_cfg.get("table", "")
-            gtable = hyetograph_cfg.get("gauge_layer", "")
-            cntable = p.get("rain_cn")
-            cn_table = None
-            if isinstance(cntable, dict):
-                cn_table = cntable.get("table")
-            if htable and gtable:
+    def _resolve_conn(cfg, default_gpkg=mesh_gpkg):
+        """Open a connection for an optional ``gpkg`` key inside *cfg*,
+        or *default_gpkg* if absent. Returns None if *cfg* is falsy."""
+        if not cfg:
+            return None
+        if isinstance(cfg, dict):
+            gpkg = cfg.get("gpkg", default_gpkg)
+            return sqlite3.connect(gpkg)
+        return sqlite3.connect(default_gpkg)
+
+    # Read BC arrays
+    bc: Dict[str, np.ndarray] = {}
+    bc_table, bc_conn = _resolve_bc_lines(p.get("bc_lines", ""))
+    if bc_conn is not None:
+        try:
+            if bc_table:
+                bc = query_bc_arrays(bc_conn, bc_table)
+        finally:
+            bc_conn.close()
+    bc_n0 = bc.get("bc_edge_node0", np.empty(0, dtype=np.int32))
+    bc_n1 = bc.get("bc_edge_node1", np.empty(0, dtype=np.int32))
+    bc_tp = bc.get("bc_edge_type", np.empty(0, dtype=np.int32))
+    bc_vl = bc.get("bc_edge_val", np.empty(0, dtype=np.float64))
+
+    # Build Thiessen forcing from GPKG (if configured)
+    thiessen_forcing = None
+    hyetograph_cfg = p.get("hyetograph")
+    if hyetograph_cfg is not None and isinstance(hyetograph_cfg, dict):
+        htable = hyetograph_cfg.get("table", "")
+        gtable = hyetograph_cfg.get("gauge_layer", "")
+        cntable = p.get("rain_cn")
+        cn_table = None
+        if isinstance(cntable, dict):
+            cn_table = cntable.get("table")
+        if htable and gtable:
+            th_conn = _resolve_conn(hyetograph_cfg)
+            try:
                 thiessen_forcing = build_forced_thiessen_from_gpkg(
-                    conn, ncells,
+                    th_conn, ncells,
                     mesh_data["node_x"], mesh_data["node_y"],
                     mesh_data["cell_nodes"],
                     hyetograph_table=htable,
@@ -125,8 +152,8 @@ def execute_run(
                     cn_field=cntable.get("cn_field", "cn") if isinstance(cntable, dict) else "cn",
                     infiltration_method=p.get("infiltration_method", "scs_cn"),
                 )
-    finally:
-        conn.close()
+            finally:
+                th_conn.close()
 
     # Build run options
     rp = p.get("params", {})
