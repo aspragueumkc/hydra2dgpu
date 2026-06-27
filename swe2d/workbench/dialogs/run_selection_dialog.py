@@ -37,8 +37,10 @@ class RunSelectionDialog(QtWidgets.QDialog):
 
         btn_row = QtWidgets.QHBoxLayout()
         select_all_btn = QtWidgets.QPushButton("Select All")
+        select_all_btn.setToolTip("Check all runs in the list.")
         select_all_btn.clicked.connect(self._select_all)
         clear_all_btn = QtWidgets.QPushButton("Clear All")
+        clear_all_btn.setToolTip("Uncheck all runs in the list.")
         clear_all_btn.clicked.connect(self._clear_all)
         btn_row.addWidget(select_all_btn)
         btn_row.addWidget(clear_all_btn)

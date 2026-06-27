@@ -32,6 +32,7 @@ class SWE2DRunLogViewerDialog(QtWidgets.QDialog):
         row = QtWidgets.QHBoxLayout()
         row.addWidget(QtWidgets.QLabel("Run:"))
         self.run_combo = QtWidgets.QComboBox()
+        self.run_combo.setToolTip("Select a run to view its log and metadata.")
         row.addWidget(self.run_combo)
         row.addStretch(1)
         root.addLayout(row)
@@ -51,6 +52,7 @@ class SWE2DRunLogViewerDialog(QtWidgets.QDialog):
                 "Apply Inputs To UI",
                 QtWidgets.QDialogButtonBox.ButtonRole.ActionRole,
             )
+            self._apply_btn.setToolTip("Restore the workbench UI settings from this run's saved metadata.")
             self._apply_btn.clicked.connect(self._apply_selected_run_settings)
         buttons.rejected.connect(self.reject)
         buttons.accepted.connect(self.accept)

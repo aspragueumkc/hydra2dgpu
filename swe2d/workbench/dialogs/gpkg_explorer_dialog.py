@@ -72,11 +72,17 @@ class SWE2DModelGeoPackageExplorerDialog(QtWidgets.QDialog):
 
         row = QtWidgets.QHBoxLayout()
         self.refresh_btn = QtWidgets.QPushButton("Refresh")
+        self.refresh_btn.setToolTip("Reload the table listing from the GeoPackage.")
         self.open_btn = QtWidgets.QPushButton("Open Viewer")
+        self.open_btn.setToolTip("Open the appropriate viewer for the selected table.")
         self.preview_btn = QtWidgets.QPushButton("Preview Table")
+        self.preview_btn.setToolTip("Preview the selected table contents.")
         self.rename_btn = QtWidgets.QPushButton("Rename Table")
+        self.rename_btn.setToolTip("Rename the selected model table (swe2d_* tables only).")
         self.delete_btn = QtWidgets.QPushButton("Delete Table")
+        self.delete_btn.setToolTip("Permanently delete the selected table from the GeoPackage.")
         self.delete_run_btn = QtWidgets.QPushButton("Delete by Run ID")
+        self.delete_run_btn.setToolTip("Delete all result tables associated with a specific run ID.")
         for btn in (self.refresh_btn, self.open_btn, self.preview_btn, self.rename_btn, self.delete_btn, self.delete_run_btn):
             row.addWidget(btn)
         row.addStretch(1)

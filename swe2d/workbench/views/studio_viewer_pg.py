@@ -149,6 +149,7 @@ class PGTimeSeriesWidget(QtWidgets.QWidget):
 
         top_bar.addWidget(QtWidgets.QLabel("Type:"))
         self._element_type_combo = _make_combo(120)
+        self._element_type_combo.setToolTip("Element type for time-series data: Line, Mesh Cell, Structure, or Drainage.")
         for label, key in self._ELEMENT_TYPES:
             self._element_type_combo.addItem(label, key)
         self._element_type_combo.currentIndexChanged.connect(self._on_element_type_changed)
@@ -157,12 +158,14 @@ class PGTimeSeriesWidget(QtWidgets.QWidget):
 
         top_bar.addWidget(QtWidgets.QLabel("Elem:"))
         self._element_id_combo = _make_combo(140)
+        self._element_id_combo.setToolTip("Select the specific element ID to plot.")
         self._element_id_combo.currentIndexChanged.connect(self._on_element_id_changed)
         top_bar.addWidget(self._element_id_combo)
         top_bar.addSpacing(4)
 
         top_bar.addWidget(QtWidgets.QLabel("Var:"))
         self._metric_combo = _make_combo(120)
+        self._metric_combo.setToolTip("Variable to plot: flow, depth, WSE, velocity.")
         self._repopulate_combo_items()
         self._metric_combo.currentIndexChanged.connect(self._on_metric_changed)
         top_bar.addWidget(self._metric_combo)
@@ -171,6 +174,7 @@ class PGTimeSeriesWidget(QtWidgets.QWidget):
 
         self.show_table_toggle = QtWidgets.QCheckBox("Table")
         self.show_table_toggle.setChecked(False)
+        self.show_table_toggle.setToolTip("Show/hide the time-series data table below the plot.")
         self.show_table_toggle.toggled.connect(self._on_table_toggle)
         top_bar.addWidget(self.show_table_toggle)
 

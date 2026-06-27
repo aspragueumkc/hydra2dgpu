@@ -422,14 +422,20 @@ class HYDRASettingsDialog(QDialog):
         path_layout = QHBoxLayout()
         self._cuda_path_edit = QLineEdit()
         self._cuda_path_edit.setPlaceholderText("(use bundled DLL)")
+        self._cuda_path_edit.setToolTip(
+            "Path to the CUDA runtime DLL folder. "
+            "Leave empty to use the bundled DLL in the plugin directory."
+        )
         self._cuda_path_edit.setText(self._settings.value("cuda_dll_path", ""))
         path_layout.addWidget(self._cuda_path_edit)
 
         browse_btn = QPushButton("Browse...")
+        browse_btn.setToolTip("Open a file dialog to select a CUDA DLL.")
         browse_btn.clicked.connect(self._browse_cuda_dll)
         path_layout.addWidget(browse_btn)
 
         reset_btn = QPushButton("Reset to Default")
+        reset_btn.setToolTip("Clear the custom CUDA DLL path (revert to bundled default).")
         reset_btn.clicked.connect(self._reset_cuda_path)
         path_layout.addWidget(reset_btn)
 
@@ -444,6 +450,7 @@ class HYDRASettingsDialog(QDialog):
         ))
 
         deps_btn = QPushButton("Check & Install Dependencies")
+        deps_btn.setToolTip("Check for missing Python packages and install them into the QGIS environment.")
         deps_btn.clicked.connect(self._check_and_install_deps)
         layout.addWidget(deps_btn)
 

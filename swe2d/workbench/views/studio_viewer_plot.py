@@ -107,6 +107,7 @@ class PlotViewWidget(QtWidgets.QWidget):
         top_bar.addStretch(1)
         self.show_table_toggle = QtWidgets.QCheckBox("Show data table")
         self.show_table_toggle.setChecked(False)
+        self.show_table_toggle.setToolTip("Show/hide the data table below the plot.")
         self.show_table_toggle.toggled.connect(self._on_table_toggle)
         top_bar.addWidget(self.show_table_toggle)
 

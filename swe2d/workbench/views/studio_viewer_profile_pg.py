@@ -257,6 +257,7 @@ class PGProfileWidget(QtWidgets.QWidget):
         # Element type selector
         top_bar.addWidget(QtWidgets.QLabel("Type:"))
         self._etype_combo = _make_combo(120)
+        self._etype_combo.setToolTip("Element type for profile data: Line, Structure, or Drainage.")
         for label, key in _ELEMENT_TYPES:
             self._etype_combo.addItem(label, key)
         self._etype_combo.currentIndexChanged.connect(self._on_etype_changed)
@@ -266,6 +267,7 @@ class PGProfileWidget(QtWidgets.QWidget):
         # Element ID selector (lines or coupling objects)
         top_bar.addWidget(QtWidgets.QLabel("Elem:"))
         self._element_id_combo = _make_combo(140)
+        self._element_id_combo.setToolTip("Select the specific element ID to profile.")
         self._element_id_combo.currentIndexChanged.connect(self._on_element_id_changed)
         top_bar.addWidget(self._element_id_combo)
         top_bar.addSpacing(4)
@@ -273,6 +275,7 @@ class PGProfileWidget(QtWidgets.QWidget):
         # Variable / Metric selector
         top_bar.addWidget(QtWidgets.QLabel("Var:"))
         self._var_combo = _make_combo(120)
+        self._var_combo.setToolTip("Profile variable: WSE+Bed, Depth, Velocity, or EGL Error.")
         self._var_combo.currentIndexChanged.connect(self._on_var_changed)
         top_bar.addWidget(self._var_combo)
         top_bar.addSpacing(4)
@@ -280,6 +283,7 @@ class PGProfileWidget(QtWidgets.QWidget):
         # Fill selector (profile only)
         top_bar.addWidget(QtWidgets.QLabel("Fill:"))
         self._fill_combo = _make_combo(100)
+        self._fill_combo.setToolTip("Variable for color-filled profile shading: Depth, Velocity, or Flow.")
         for label, key in _FILL_ITEMS:
             self._fill_combo.addItem(label, key)
         self._fill_combo.currentIndexChanged.connect(self._on_fill_changed)
@@ -289,6 +293,7 @@ class PGProfileWidget(QtWidgets.QWidget):
         # Colormap selector (profile only)
         top_bar.addWidget(QtWidgets.QLabel("Cmap:"))
         self._cmap_combo = _make_combo(100)
+        self._cmap_combo.setToolTip("Colormap used for profile fill shading.")
         for label, key in _CMAP_ITEMS:
             self._cmap_combo.addItem(label, key)
         self._cmap_combo.currentIndexChanged.connect(self._on_cmap_changed)
@@ -300,12 +305,14 @@ class PGProfileWidget(QtWidgets.QWidget):
         # Show structures toggle
         self._show_struct_chk = QtWidgets.QCheckBox("Struct")
         self._show_struct_chk.setChecked(True)
+        self._show_struct_chk.setToolTip("Show structure annotations (flow labels) on the profile.")
         self._show_struct_chk.toggled.connect(self._on_show_struct_changed)
         top_bar.addWidget(self._show_struct_chk)
 
         # Data table toggle
         self.show_table_toggle = QtWidgets.QCheckBox("Table")
         self.show_table_toggle.setChecked(False)
+        self.show_table_toggle.setToolTip("Show/hide the profile data table below the plot.")
         self.show_table_toggle.toggled.connect(self._on_table_toggle)
         top_bar.addWidget(self.show_table_toggle)
 

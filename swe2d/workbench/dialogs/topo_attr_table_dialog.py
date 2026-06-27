@@ -38,8 +38,11 @@ class TopologyAttributeTableDialog(QtWidgets.QDialog):
 
         row_btns = QtWidgets.QHBoxLayout()
         self.refresh_btn = QtWidgets.QPushButton("Reload From Layer")
+        self.refresh_btn.setToolTip("Reload all features from the topology layer into the table.")
         self.add_row_btn = QtWidgets.QPushButton("Add Row")
+        self.add_row_btn.setToolTip("Insert a new blank row for a new topology feature.")
         self.remove_row_btn = QtWidgets.QPushButton("Remove Selected")
+        self.remove_row_btn.setToolTip("Remove the selected rows (deletes features on save).")
         self.refresh_btn.clicked.connect(self._load_rows)
         self.add_row_btn.clicked.connect(self._add_blank_row)
         self.remove_row_btn.clicked.connect(self._remove_selected_rows)

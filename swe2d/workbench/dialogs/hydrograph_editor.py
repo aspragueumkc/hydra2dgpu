@@ -30,9 +30,13 @@ class HydrographEditorDialog(QtWidgets.QDialog):
 
         row_btns = QtWidgets.QHBoxLayout()
         self.add_row_btn = QtWidgets.QPushButton("Add Row")
+        self.add_row_btn.setToolTip("Add a new time-value row to the hydrograph table.")
         self.remove_row_btn = QtWidgets.QPushButton("Remove Selected")
+        self.remove_row_btn.setToolTip("Remove the selected rows from the table.")
         self.load_csv_btn = QtWidgets.QPushButton("Load CSV")
+        self.load_csv_btn.setToolTip("Load hydrograph time-value pairs from a CSV file.")
         self.save_csv_btn = QtWidgets.QPushButton("Save CSV")
+        self.save_csv_btn.setToolTip("Save the hydrograph table to a CSV file.")
         self.add_row_btn.clicked.connect(self._add_row)
         self.remove_row_btn.clicked.connect(self._remove_selected_rows)
         self.load_csv_btn.clicked.connect(self._load_csv)

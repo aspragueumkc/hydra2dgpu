@@ -54,6 +54,7 @@ class TemporalDockWidget(QtWidgets.QWidget):
         self._time_slider.setRange(0, 0)
         self._time_slider.setValue(0)
         self._time_slider.setTracking(True)
+        self._time_slider.setToolTip("Drag to navigate through simulation time steps.")
         self._time_slider.valueChanged.connect(self._on_slider_changed)
 
         self._time_lbl = QtWidgets.QLabel(f"T = 0.000 {_TIME_UNIT}")
