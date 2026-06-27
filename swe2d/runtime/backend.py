@@ -1103,37 +1103,38 @@ class SWE2DBackend:
 
 
 # ── Shared mesh-build helper (CLI + workbench) ──────────────────────────
-# Extracted from SWE2DBackendInitializer.build_and_initialize so both the
-# headless runner and the QGIS workbench use the same polygon-mesh logic.
+# Single code path for the face_offsets/face_nodes polygon-mesh logic so
+# both the headless runner and the QGIS workbench call the same method.
 
 
-def build_mesh_from_mesh_data(
+def build_mesh(
     backend: SWE2DBackend,
-    mesh_data: dict,
+    *,
+    node_x: np.ndarray,
+    node_y: np.ndarray,
+    node_z: np.ndarray,
+    cell_nodes: np.ndarray,
+    cell_face_offsets: Optional[np.ndarray] = None,
+    cell_face_nodes: Optional[np.ndarray] = None,
+    **kwargs,
 ) -> None:
-    """Build mesh from a ``mesh_data`` dict, handling polygon meshes correctly.
+    """Build mesh, handling polygon meshes via face_offsets/face_nodes.
 
-    Mirrors the ``face_offsets``/``face_nodes`` logic in
-    ``SWE2DBackendInitializer.build_and_initialize``: when both
-    ``cell_face_offsets`` and ``cell_face_nodes`` are present in
-    *mesh_data*, they are passed as polygon args; otherwise ``cell_nodes``
-    is used alone (no offsets).
-
-    The function **removes** consumed keys (``cell_nodes``,
-    ``cell_face_offsets``, ``cell_face_nodes``) from *mesh_data* so the
-    remaining dict can be safely unpacked as additional kwargs.
+    When *both* ``cell_face_offsets`` and ``cell_face_nodes`` are
+    provided they are passed as polygon args; otherwise ``cell_nodes``
+    is used alone (no offsets).  Remaining ``**kwargs`` are forwarded
+    to ``SWE2DBackend.build_mesh`` (e.g. ``bc_edge_node0``, ...).
     """
-    cell_nodes = mesh_data.pop("cell_nodes")
-    face_offsets = mesh_data.pop("cell_face_offsets", None)
-    face_nodes = mesh_data.pop("cell_face_nodes", None)
-
-    if face_offsets is not None and face_nodes is not None:
+    if cell_face_offsets is not None and cell_face_nodes is not None:
         backend.build_mesh(
-            **mesh_data,
-            cell_nodes=face_nodes,
-            cell_face_offsets=face_offsets,
+            node_x, node_y, node_z, cell_face_nodes,
+            cell_face_offsets=cell_face_offsets,
+            **kwargs,
         )
     else:
-        backend.build_mesh(**mesh_data, cell_nodes=cell_nodes)
+        backend.build_mesh(
+            node_x, node_y, node_z, cell_nodes,
+            **kwargs,
+        )
 
 

@@ -18,7 +18,7 @@ logger = logging.getLogger(__name__)
 
 import numpy as np
 
-from swe2d.runtime.backend import SWE2DBackend, build_mesh_from_mesh_data
+from swe2d.runtime.backend import SWE2DBackend, build_mesh as shared_build_mesh
 from swe2d.cli.gpkg_adapter import (
     build_forced_thiessen_from_gpkg,
     query_bc_arrays,
@@ -88,7 +88,19 @@ def execute_run(
 
     # Build backend — shared helper handles polygon mesh logic
     backend = SWE2DBackend()
-    build_mesh_from_mesh_data(backend, mesh_data)
+    shared_build_mesh(
+        backend,
+        node_x=mesh_data["node_x"],
+        node_y=mesh_data["node_y"],
+        node_z=mesh_data["node_z"],
+        cell_nodes=mesh_data["cell_nodes"],
+        cell_face_offsets=mesh_data.get("cell_face_offsets"),
+        cell_face_nodes=mesh_data.get("cell_face_nodes"),
+        bc_edge_node0=mesh_data.get("bc_edge_node0"),
+        bc_edge_node1=mesh_data.get("bc_edge_node1"),
+        bc_edge_type=mesh_data.get("bc_edge_type"),
+        bc_edge_val=mesh_data.get("bc_edge_val"),
+    )
     nnodes = int(mesh_data["node_x"].size)
     ncells = int(backend.n_cells)
 
