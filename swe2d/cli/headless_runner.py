@@ -95,6 +95,7 @@ def execute_run(
         node_z=mesh_data["node_z"],
         cell_nodes=mesh_data["cell_nodes"],
         cell_face_offsets=mesh_data.get("cell_face_offsets"),
+        cell_face_nodes=mesh_data.get("cell_face_nodes"),
         bc_edge_node0=mesh_data.get("bc_edge_node0"),
         bc_edge_node1=mesh_data.get("bc_edge_node1"),
         bc_edge_type=mesh_data.get("bc_edge_type"),
