@@ -365,6 +365,32 @@ struct SWE2DDeviceState {
         }
     } redist_ws{};
 
+    // ── Face-flux redistribution workspace ───────────────────────────
+    // Caches device buffers for the on-device face-flux redistribution
+    // kernel (swe2d_redistribute_face_flux_kernel), eliminating PCIe
+    // transfers and the Python host loop that was the performance bottleneck.
+    struct FaceFluxRedistWorkspace {
+        int32_t  n_face_capacity = 0;
+        int32_t  dist_cell_capacity = 0;
+        uint64_t data_hash = 0;
+        int32_t* d_struct_idx  = nullptr;  // [n_faces]
+        int32_t* d_donor_cell  = nullptr;  // [n_faces]
+        int32_t* d_receiver_cell = nullptr; // [n_faces]
+        int32_t* d_offsets     = nullptr;  // [n_structures + 1] (shared with redist_ws)
+        int32_t* d_cell_idx    = nullptr;  // [total_dist_cells]
+        double*  d_weights     = nullptr;  // [total_dist_cells]
+
+        void destroy() {
+            if (d_struct_idx) { cudaFree(d_struct_idx); d_struct_idx = nullptr; }
+            if (d_donor_cell) { cudaFree(d_donor_cell); d_donor_cell = nullptr; }
+            if (d_receiver_cell) { cudaFree(d_receiver_cell); d_receiver_cell = nullptr; }
+            // d_offsets/cell_idx/weights are owned by redist_ws — do not free here
+            n_face_capacity = 0;
+            dist_cell_capacity = 0;
+            data_hash = 0;
+        }
+    } face_flux_redist_ws{};
+
     // ── Persistent drainage step workspace ────────────────────────────
     // Caches device buffers for swe2d_gpu_drainage_step so the per-step
     // call avoids ~30 cudaMalloc + cudaFree + sync cudaMemcpy operations.
@@ -1188,6 +1214,18 @@ void swe2d_gpu_readback_ext_struct_flux(
 
 /// Upload host mass flux to device d_ext_struct_flux_h (for redistribution). @host
 void swe2d_gpu_upload_ext_struct_flux_h(const double* host_h, int32_t n_cells);
+/// On-device face-flux redistribution (no PCIe readback). Operates on
+/// d_ext_struct_flux_h in place using pre-loaded redistribution geometry. @host
+void swe2d_gpu_redistribute_face_flux(
+    SWE2DDeviceState* dev,
+    int32_t n_faces,
+    const int32_t* struct_idx,
+    const int32_t* donor_cell,
+    const int32_t* receiver_cell,
+    const int32_t* dist_offsets,
+    const int32_t* dist_cell_idx,
+    const double*  dist_weights,
+    int32_t n_cells);
 /// Set the coupling time step (used by face-flux depth limiter). @host
 void swe2d_gpu_set_coupling_dt(double dt);
 

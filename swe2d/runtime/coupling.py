@@ -1214,71 +1214,26 @@ class SWE2DCouplingController:
         # inlet/outlet cells.  The redistribution reverses the single-cell
         # injection in d_ext_struct_flux_h and distributes Q across a
         # wider set of cells, then re-uploads to device.
+        # ── Face-flux redistribution (GPU-only, no PCIe transfers) ─────
+        # The GPU kernel operates directly on d_ext_struct_flux_h with zero
+        # host readback.  Static geometry (face SOA + redistribution arrays)
+        # is uploaded once via content-hash tracking in the C++ wrapper.
         if (self.culvert_face_flux_mode == "face_flux"
             and self._redist_offsets is not None
             and self._redist_offsets.size > 1
             and self._face_flux_soa is not None
             and self._face_flux_soa.structure_index.size > 0
-            and hasattr(native_mod, "swe2d_gpu_readback_ext_struct_flux")
-            and hasattr(native_mod, "swe2d_gpu_upload_ext_struct_flux_h")):
-            try:
-                _flux_tuple = native_mod.swe2d_gpu_readback_ext_struct_flux(
-                    int(self.n_cells))
-                _ext_h = np.asarray(_flux_tuple[0], dtype=np.float64)
-                ff = self._face_flux_soa
-                offsets = self._redist_offsets
-                redist_idx = self._redist_cell_idx
-                redist_w = self._redist_weights
-                areas = np.maximum(self.cell_area, 1.0e-12)
-                modified = False
-                for j in range(int(ff.structure_index.size)):
-                    cu = int(ff.donor_cell[j])
-                    cd = int(ff.receiver_cell[j])
-                    # Build Q from the receiver cell's mass flux (positive means
-                    # water arriving).  If both cells have zero flux, skip.
-                    q_recv = float(_ext_h[cd]) if 0 <= cd < _ext_h.size else 0.0
-                    q_don = float(_ext_h[cu]) if 0 <= cu < _ext_h.size else 0.0
-                    if abs(q_recv) < 1.0e-12 and abs(q_don) < 1.0e-12:
-                        continue
-                    # Use the receiver-side flux as Q (positive = water arriving)
-                    Q = q_recv
-                    if abs(Q) < 1.0e-12:
-                        # Fallback: use donor-side magnitude
-                        Q = -q_don
-                    if abs(Q) < 1.0e-12:
-                        continue
-                    si = int(ff.structure_index[j])
-                    start = int(offsets[si])
-                    end = int(offsets[si + 1])
-                    count = end - start
-                    if count <= 0:
-                        continue
-                    # Reverse single-cell injection in ext_struct_flux_h
-                    if 0 <= cu < _ext_h.size:
-                        _ext_h[cu] = 0.0
-                    if 0 <= cd < _ext_h.size:
-                        _ext_h[cd] = 0.0
-                    # Redistribute Q across corridor cells as a mass flux
-                    # (L³/T) — no area division since ext_struct_flux_h is
-                    # a mass flux, not a depth rate.
-                    wsum = float(np.sum(redist_w[start:end]))
-                    if wsum <= 0.0:
-                        continue
-                    norm_w = redist_w[start:end] / wsum
-                    dist_cells = redist_idx[start:end]
-                    valid = (dist_cells >= 0) & (dist_cells < _ext_h.size)
-                    if not np.any(valid):
-                        continue
-                    _ext_h[dist_cells[valid]] += norm_w[valid] * Q
-                    modified = True
-                if modified:
-                    native_mod.swe2d_gpu_upload_ext_struct_flux_h(
-                        np.ascontiguousarray(_ext_h, dtype=np.float64))
-            except Exception as exc:
-                raise RuntimeError(
-                    "GPU face-flux redistribution failed — no CPU fallback. "
-                    f"Error: {exc}"
-                )
+            and hasattr(native_mod, "swe2d_gpu_redistribute_face_flux")):
+            ff = self._face_flux_soa
+            native_mod.swe2d_gpu_redistribute_face_flux(
+                np.asarray(ff.structure_index, dtype=np.int32),
+                np.asarray(ff.donor_cell, dtype=np.int32),
+                np.asarray(ff.receiver_cell, dtype=np.int32),
+                np.asarray(self._redist_offsets, dtype=np.int32),
+                np.asarray(self._redist_cell_idx, dtype=np.int32),
+                np.asarray(self._redist_weights, dtype=np.float64),
+                int(self.n_cells),
+            )
 
         # ── On-device redistribution ────────────────────────────────────
         # When the model has redistribution geometry and the persistent

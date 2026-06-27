@@ -1611,6 +1611,44 @@ PYBIND11_MODULE(HYDRA_SWE2D_PY_MODULE_NAME, m) {
         "directly on d_external_source_mps with no host readback.  Call after "
         "swe2d_gpu_compute_coupling_full_on_device then return None from Python "
         "to keep GPU sources current.");
+
+    m.def("swe2d_gpu_redistribute_face_flux",
+        [](py::array_t<int32_t, py::array::c_style | py::array::forcecast> struct_idx,
+           py::array_t<int32_t, py::array::c_style | py::array::forcecast> donor_cell,
+           py::array_t<int32_t, py::array::c_style | py::array::forcecast> receiver_cell,
+           py::array_t<int32_t, py::array::c_style | py::array::forcecast> dist_offsets,
+           py::array_t<int32_t, py::array::c_style | py::array::forcecast> dist_cell_idx,
+           py::array_t<double, py::array::c_style | py::array::forcecast> dist_weights,
+           int32_t n_cells) -> void
+        {
+            const int32_t n_faces = static_cast<int32_t>(struct_idx.size());
+
+            extern SWE2DDeviceState* s_coupling_dev;
+            if (!s_coupling_dev) {
+                pybind11::set_error(PyExc_RuntimeError, "s_coupling_dev is null");
+                return;
+            }
+            swe2d_gpu_redistribute_face_flux(
+                s_coupling_dev,
+                n_faces,
+                struct_idx.data(),
+                donor_cell.data(),
+                receiver_cell.data(),
+                dist_offsets.data(),
+                dist_cell_idx.data(),
+                dist_weights.data(),
+                n_cells);
+        },
+        py::arg("struct_idx"),
+        py::arg("donor_cell"),
+        py::arg("receiver_cell"),
+        py::arg("dist_offsets"),
+        py::arg("dist_cell_idx"),
+        py::arg("dist_weights"),
+        py::arg("n_cells"),
+        "CUDA helper (device-only): redistribute face-flux culvert mass "
+        "directly on d_ext_struct_flux_h with no host readback.  Eliminates "
+        "the PCIe transfers and Python loop that were the face-flux bottleneck.");
 #endif
 
     m.def("swe2d_gpu_drainage_step",

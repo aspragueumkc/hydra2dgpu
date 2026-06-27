@@ -498,3 +498,224 @@ void swe2d_gpu_redistribute_structure_sources_persistent(
     // No sync needed — the solver step uses the same stream and will
     // see the updated sources when it launches its kernels.
 }
+
+// ═══════════════════════════════════════════════════════════════════════════
+//  Face-flux redistribution — on-device, no PCIe transfers
+// ═══════════════════════════════════════════════════════════════════════════
+
+/**
+ * On-device face-flux redistribution kernel.
+ *
+ * For each face-flux entry with redistribution data, reads the mass flux
+ * from the receiver cell of d_ext_struct_flux_h, reverses the single-cell
+ * injection, and redistributes Q across the pre-computed corridor cells.
+ *
+ * Operates directly on d_ext_struct_flux_h — no host readback or upload.
+ * This eliminates the two full-grid PCIe transfers and the Python host
+ * loop that were the performance bottleneck of the old face-flux path.
+ */
+__global__ __launch_bounds__(256, 4) void swe2d_redistribute_face_flux_kernel(
+    int32_t     n_faces,
+    const int32_t* __restrict__ struct_idx,
+    const int32_t* __restrict__ donor_cell,
+    const int32_t* __restrict__ receiver_cell,
+    const int32_t* __restrict__ dist_offsets,
+    const int32_t* __restrict__ dist_cell_idx,
+    const double*  __restrict__ dist_weights,
+    int32_t     n_cells,
+    double* __restrict__ ext_struct_flux_h)
+{
+    int32_t i = blockIdx.x * blockDim.x + threadIdx.x;
+    if (i >= n_faces) return;
+
+    const int32_t si = struct_idx[i];
+    const int32_t start = dist_offsets[si];
+    const int32_t end   = dist_offsets[si + 1];
+    const int32_t count = end - start;
+    if (count <= 0) return;
+
+    const int32_t cu = donor_cell[i];
+    const int32_t cd = receiver_cell[i];
+
+    // Read Q from receiver-cell mass flux (positive = water arriving).
+    // Fallback: use negated donor-cell value when receiver is zero.
+    double Q = 0.0;
+    if (cd >= 0 && cd < n_cells) {
+        Q = ext_struct_flux_h[cd];
+    }
+    if (fabs(Q) < 1.0e-12 && cu >= 0 && cu < n_cells) {
+        Q = -ext_struct_flux_h[cu];
+    }
+    if (fabs(Q) < 1.0e-12) return;
+
+    // Reverse single-cell injection by zeroing the donor/receiver cells.
+    // Use atomicAdd with the negated value since another face might share
+    // the same cell (rare but possible with adjacent culverts).
+    if (cu >= 0 && cu < n_cells) {
+        atomicAdd(&ext_struct_flux_h[cu], -Q);
+    }
+    if (cd >= 0 && cd < n_cells) {
+        if (cd != cu) {
+            atomicAdd(&ext_struct_flux_h[cd], -Q);
+        }
+    }
+
+    // Normalize redistribution weights
+    double wsum = 0.0;
+    for (int32_t j = start; j < end; j++) wsum += dist_weights[j];
+    if (wsum <= 0.0) return;
+    const double inv_wsum = 1.0 / wsum;
+
+    // Distribute Q across corridor cells
+    for (int32_t j = start; j < end; j++) {
+        const int32_t c = dist_cell_idx[j];
+        if (c < 0 || c >= n_cells) continue;
+        atomicAdd(&ext_struct_flux_h[c], (dist_weights[j] * inv_wsum) * Q);
+    }
+}
+
+/** Compute content hash of face-flux redistribution geometry. */
+static uint64_t hash_face_flux_redist_data(
+    int32_t n_faces,
+    const int32_t* struct_idx,
+    const int32_t* donor_cell,
+    const int32_t* receiver_cell,
+    const int32_t* dist_offsets,
+    const int32_t* dist_cell_idx,
+    const double*  dist_weights,
+    int32_t n_structures,
+    int32_t total_dist_cells)
+{
+    uint64_t h = 1469598103934665603ULL;
+    auto mix = [](uint64_t h, uint64_t v) { return h ^ (v + 0x9e3779b97f4a7c15ULL + (h << 6) + (h >> 2)); };
+    for (int32_t i = 0; i < n_faces; ++i) {
+        uint64_t v = 0; std::memcpy(&v, &struct_idx[i], sizeof(int32_t));    h = mix(h, v);
+        std::memcpy(&v, &donor_cell[i], sizeof(int32_t));    h = mix(h, v);
+        std::memcpy(&v, &receiver_cell[i], sizeof(int32_t)); h = mix(h, v);
+    }
+    for (int32_t i = 0; i < n_structures + 1; ++i) {
+        uint64_t v = 0; std::memcpy(&v, &dist_offsets[i], sizeof(int32_t)); h = mix(h, v);
+    }
+    for (int32_t i = 0; i < total_dist_cells; ++i) {
+        uint64_t v = 0; std::memcpy(&v, &dist_cell_idx[i], sizeof(int32_t)); h = mix(h, v);
+        uint64_t w = 0; std::memcpy(&w, &dist_weights[i], sizeof(double));   h = mix(h, w);
+    }
+    return h;
+}
+
+/** Ensure face-flux redistribution device buffers have capacity. */
+static void ensure_face_flux_redist_buffers(
+    SWE2DDeviceState* dev,
+    int32_t n_faces,
+    int32_t total_dist_cells)
+{
+    auto& ws = dev->face_flux_redist_ws;
+    if (ws.n_face_capacity < n_faces) {
+        if (ws.d_struct_idx)   cudaFree(ws.d_struct_idx);
+        if (ws.d_donor_cell)   cudaFree(ws.d_donor_cell);
+        if (ws.d_receiver_cell) cudaFree(ws.d_receiver_cell);
+        ws.d_struct_idx = nullptr; ws.d_donor_cell = nullptr; ws.d_receiver_cell = nullptr;
+        CUDA_CHECK(cudaMalloc(&ws.d_struct_idx,   static_cast<size_t>(n_faces) * sizeof(int32_t)));
+        CUDA_CHECK(cudaMalloc(&ws.d_donor_cell,   static_cast<size_t>(n_faces) * sizeof(int32_t)));
+        CUDA_CHECK(cudaMalloc(&ws.d_receiver_cell, static_cast<size_t>(n_faces) * sizeof(int32_t)));
+        ws.n_face_capacity = n_faces;
+        ws.data_hash = 0;
+    }
+    if (total_dist_cells > 0 && ws.dist_cell_capacity < total_dist_cells) {
+        // These are shared with redist_ws — just update capacity tracking.
+        // The actual allocation is owned by redist_ws.
+        ws.dist_cell_capacity = total_dist_cells;
+        ws.data_hash = 0;
+    }
+}
+
+/**
+ * On-device face-flux redistribution — no host readback.
+ *
+ * Operates directly on dev->d_ext_struct_flux_h in place.  Static
+ * geometry (face SOA + redistribution arrays) is uploaded once and
+ * tracked by content hash.  The kernel is launched once per coupling
+ * step with n_faces threads — no PCIe transfers, no Python loop.
+ *
+ * Must be called AFTER swe2d_gpu_compute_coupling_full_on_device (which
+ * populates d_ext_struct_flux_h) and BEFORE the solver step that reads it.
+ */
+void swe2d_gpu_redistribute_face_flux(
+    SWE2DDeviceState* dev,
+    int32_t n_faces,
+    const int32_t* struct_idx,
+    const int32_t* donor_cell,
+    const int32_t* receiver_cell,
+    const int32_t* dist_offsets,
+    const int32_t* dist_cell_idx,
+    const double*  dist_weights,
+    int32_t n_cells)
+{
+    if (!dev) return;
+    if (n_faces <= 0 || n_cells <= 0) return;
+    if (!dev->d_ext_struct_flux_h) return;
+    (void)cudaGetLastError();
+
+    constexpr int BLOCK = 256;
+    cudaStream_t stream = dev->d_stream;
+
+    // Count total redistribution cells across all structures
+    int32_t n_structures = 0;
+    int32_t total_dist_cells = 0;
+    // Find max structure index to know number of structures
+    for (int32_t i = 0; i < n_faces; i++) {
+        if (struct_idx[i] + 1 > n_structures) n_structures = struct_idx[i] + 1;
+    }
+    for (int32_t i = 0; i < n_structures; i++) {
+        int32_t s = dist_offsets[i];
+        int32_t e = dist_offsets[i + 1];
+        total_dist_cells += (e - s > 0) ? (e - s) : 0;
+    }
+
+    // Ensure persistent buffers
+    ensure_face_flux_redist_buffers(dev, n_faces, total_dist_cells);
+    ensure_redist_buffers(dev, n_structures, total_dist_cells, n_cells);
+    auto& ws = dev->face_flux_redist_ws;
+
+    // Upload static geometry when hash changed
+    const uint64_t new_hash = hash_face_flux_redist_data(
+        n_faces, struct_idx, donor_cell, receiver_cell,
+        dist_offsets, dist_cell_idx, dist_weights,
+        n_structures, total_dist_cells);
+    const bool data_changed = (new_hash != ws.data_hash);
+
+    auto upload = [stream](void* d, const void* h, size_t bytes) {
+        CUDA_CHECK(cudaMemcpyAsync(d, h, bytes, cudaMemcpyHostToDevice, stream));
+    };
+
+    if (data_changed) {
+        upload(ws.d_struct_idx, struct_idx, static_cast<size_t>(n_faces) * sizeof(int32_t));
+        upload(ws.d_donor_cell, donor_cell, static_cast<size_t>(n_faces) * sizeof(int32_t));
+        upload(ws.d_receiver_cell, receiver_cell, static_cast<size_t>(n_faces) * sizeof(int32_t));
+        // Redistribution geometry (offsets/cell_idx/weights) uses the
+        // shared redist_ws buffers; upload there if needed.
+        auto& rws = dev->redist_ws;
+        if (rws.data_hash == 0 || rws.data_hash != new_hash) {
+            upload(rws.d_offsets, dist_offsets, static_cast<size_t>(n_structures + 1) * sizeof(int32_t));
+            if (total_dist_cells > 0) {
+                upload(rws.d_cell_idx, dist_cell_idx, static_cast<size_t>(total_dist_cells) * sizeof(int32_t));
+                upload(rws.d_weights,  dist_weights,  static_cast<size_t>(total_dist_cells) * sizeof(double));
+            }
+        }
+        ws.data_hash = new_hash;
+    }
+
+    // ── Launch kernel ─────────────────────────────────────────────
+    const int grid = (n_faces + BLOCK - 1) / BLOCK;
+    auto& rws = dev->redist_ws;
+    swe2d_redistribute_face_flux_kernel<<<grid, BLOCK, 0, stream>>>(
+        n_faces,
+        ws.d_struct_idx, ws.d_donor_cell, ws.d_receiver_cell,
+        rws.d_offsets, rws.d_cell_idx, rws.d_weights,
+        n_cells,
+        dev->d_ext_struct_flux_h);
+    CUDA_CHECK(cudaGetLastError());
+
+    // No sync needed — the solver consumes d_ext_struct_flux_h on the
+    // same stream during the update kernel.
+}
