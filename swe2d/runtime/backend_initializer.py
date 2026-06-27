@@ -14,6 +14,8 @@ import numpy as np
 import logging
 logger = logging.getLogger(__name__)
 
+from swe2d.runtime.backend import build_mesh_from_mesh_data
+
 
 class SWE2DBackendInitializer:
     """Build and initialize native backend from prepared run inputs/options."""
@@ -98,20 +100,18 @@ class SWE2DBackendInitializer:
             edge_hydrographs,
         )
 
-        if face_offsets is not None and face_nodes is not None:
-            b.build_mesh(
-                node_x,
-                node_y,
-                node_z,
-                face_nodes,
-                bc_n0,
-                bc_n1,
-                bc_tp_init,
-                bc_vl_init,
-                face_offsets,
-            )
-        else:
-            b.build_mesh(node_x, node_y, node_z, cell_nodes, bc_n0, bc_n1, bc_tp_init, bc_vl_init)
+        # Use shared helper (same logic as CLI headless runner)
+        _md = {
+            "node_x": node_x, "node_y": node_y, "node_z": node_z,
+            "cell_nodes": cell_nodes,
+            "bc_edge_node0": bc_n0, "bc_edge_node1": bc_n1,
+            "bc_edge_type": bc_tp_init, "bc_edge_val": bc_vl_init,
+        }
+        if face_offsets is not None:
+            _md["cell_face_offsets"] = face_offsets
+        if face_nodes is not None:
+            _md["cell_face_nodes"] = face_nodes
+        build_mesh_from_mesh_data(b, _md)
 
         b.initialize(
             h0,

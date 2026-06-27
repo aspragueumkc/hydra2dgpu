@@ -1102,3 +1102,38 @@ class SWE2DBackend:
             self._solver_h = None
 
 
+# ── Shared mesh-build helper (CLI + workbench) ──────────────────────────
+# Extracted from SWE2DBackendInitializer.build_and_initialize so both the
+# headless runner and the QGIS workbench use the same polygon-mesh logic.
+
+
+def build_mesh_from_mesh_data(
+    backend: SWE2DBackend,
+    mesh_data: dict,
+) -> None:
+    """Build mesh from a ``mesh_data`` dict, handling polygon meshes correctly.
+
+    Mirrors the ``face_offsets``/``face_nodes`` logic in
+    ``SWE2DBackendInitializer.build_and_initialize``: when both
+    ``cell_face_offsets`` and ``cell_face_nodes`` are present in
+    *mesh_data*, they are passed as polygon args; otherwise ``cell_nodes``
+    is used alone (no offsets).
+
+    The function **removes** consumed keys (``cell_nodes``,
+    ``cell_face_offsets``, ``cell_face_nodes``) from *mesh_data* so the
+    remaining dict can be safely unpacked as additional kwargs.
+    """
+    cell_nodes = mesh_data.pop("cell_nodes")
+    face_offsets = mesh_data.pop("cell_face_offsets", None)
+    face_nodes = mesh_data.pop("cell_face_nodes", None)
+
+    if face_offsets is not None and face_nodes is not None:
+        backend.build_mesh(
+            **mesh_data,
+            cell_nodes=face_nodes,
+            cell_face_offsets=face_offsets,
+        )
+    else:
+        backend.build_mesh(**mesh_data, cell_nodes=cell_nodes)
+
+

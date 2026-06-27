@@ -18,7 +18,7 @@ logger = logging.getLogger(__name__)
 
 import numpy as np
 
-from swe2d.runtime.backend import SWE2DBackend
+from swe2d.runtime.backend import SWE2DBackend, build_mesh_from_mesh_data
 from swe2d.cli.gpkg_adapter import (
     build_forced_thiessen_from_gpkg,
     query_bc_arrays,
@@ -86,9 +86,9 @@ def execute_run(
     if mesh_data is None:
         raise ValueError(f"Mesh '{mesh_name}' not found in {mesh_gpkg}")
 
-    # Build backend
+    # Build backend — shared helper handles polygon mesh logic
     backend = SWE2DBackend()
-    backend.build_mesh(**mesh_data)
+    build_mesh_from_mesh_data(backend, mesh_data)
     nnodes = int(mesh_data["node_x"].size)
     ncells = int(backend.n_cells)
 
