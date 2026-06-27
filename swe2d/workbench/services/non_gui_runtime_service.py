@@ -283,17 +283,6 @@ def _sample_coupling_object_metrics(cc, t_s: float, _h_s) -> list:
                     struct_mod = _SM(cfg)
             except Exception:
                 struct_mod = None
-        _struct_details_cache = None
-        if struct_mod is not None and hasattr(struct_mod, "structure_details"):
-            try:
-                if _h_s is not None and hasattr(cc, "cell_bed") and cc.cell_bed is not None:
-                    hh = np.ascontiguousarray(_h_s, dtype=np.float64).ravel()
-                    cb = np.asarray(cc.cell_bed, dtype=np.float64).ravel()
-                    if hh.size == cb.size:
-                        cell_wse = hh + cb
-                        _struct_details_cache = list(struct_mod.structure_details(cell_wse))
-            except Exception:
-                _struct_details_cache = None
         try:
             from swe2d.runtime.backend import load_swe2d_native_module
             _nm = load_swe2d_native_module()

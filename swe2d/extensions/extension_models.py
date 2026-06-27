@@ -610,21 +610,4 @@ class HydraulicStructureEngine:
     def __init__(self, cfg: HydraulicStructureConfig):
         self.cfg = cfg
 
-    def compute_structure_fluxes(self, dt: float, cell_wse: Sequence[float]) -> Dict[str, float]:
-        # TODO: route to per-structure equations and control logic.
-        """
-        compute structure fluxes.
-
-        Parameters
-        ----------
-        dt : float
-            Description of dt.
-        cell_wse : Sequence[float]
-            Description of cell_wse.
-
-        Returns
-        -------
-        Dict[str, float]
-        """
-        _ = (dt, cell_wse)
-        return {}
+    # compute_structure_fluxes removed — all hydraulic calcs run on-device
