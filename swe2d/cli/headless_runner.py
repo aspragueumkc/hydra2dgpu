@@ -93,31 +93,20 @@ def execute_run(
     ncells = int(backend.n_cells)
 
     # ── Resolve GPKG connection for each data source ─────────────────
-    # Each key can be a plain string (table name in mesh_gpkg) or a dict
-    # with "table" and optional "gpkg" fields for multi-GPKG support.
-    def _resolve_bc_lines(bc_val):
-        """Return (table_name, conn_or_None) for the bc_lines key."""
-        if not bc_val:
+    # Each data-source key is a dict with "table" + optional "gpkg".
+    # If "gpkg" is omitted the table lives in mesh_gpkg.
+    def _open_cfg(cfg, default_gpkg=mesh_gpkg):
+        """Open a connection for *cfg* (dict with optional "gpkg" key).
+        Returns (table_name, conn_or_None)."""
+        if not cfg or not isinstance(cfg, dict):
             return ("", None)
-        if isinstance(bc_val, dict):
-            tbl = bc_val.get("table", "")
-            gpkg = bc_val.get("gpkg", mesh_gpkg)
-            return tbl, sqlite3.connect(gpkg)
-        return str(bc_val), sqlite3.connect(mesh_gpkg)
-
-    def _resolve_conn(cfg, default_gpkg=mesh_gpkg):
-        """Open a connection for an optional ``gpkg`` key inside *cfg*,
-        or *default_gpkg* if absent. Returns None if *cfg* is falsy."""
-        if not cfg:
-            return None
-        if isinstance(cfg, dict):
-            gpkg = cfg.get("gpkg", default_gpkg)
-            return sqlite3.connect(gpkg)
-        return sqlite3.connect(default_gpkg)
+        tbl = cfg.get("table", "")
+        gpkg = cfg.get("gpkg", default_gpkg)
+        return tbl, sqlite3.connect(gpkg)
 
     # Read BC arrays
     bc: Dict[str, np.ndarray] = {}
-    bc_table, bc_conn = _resolve_bc_lines(p.get("bc_lines", ""))
+    bc_table, bc_conn = _open_cfg(p.get("bc_lines"))
     if bc_conn is not None:
         try:
             if bc_table:
@@ -140,7 +129,7 @@ def execute_run(
         if isinstance(cntable, dict):
             cn_table = cntable.get("table")
         if htable and gtable:
-            th_conn = _resolve_conn(hyetograph_cfg)
+            th_conn = _open_cfg(hyetograph_cfg)[1]
             try:
                 thiessen_forcing = build_forced_thiessen_from_gpkg(
                     th_conn, ncells,

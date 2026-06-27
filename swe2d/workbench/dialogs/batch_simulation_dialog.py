@@ -537,20 +537,18 @@ class BatchSimulationDialog(QtWidgets.QDialog):
 
         mesh_gpkg = self._gpkg_path()
 
-        def _apply_gpkg(table: str, src_gpkg: str) -> str | dict:
-            """Return plain string when src_gpkg matches mesh_gpkg, else
-            a dict so the headless runner knows where to find the table."""
-            if not table:
-                return ""
-            if src_gpkg and src_gpkg != mesh_gpkg:
-                return {"table": table, "gpkg": src_gpkg}
-            return table
+        def _dict_with_gpkg(table: str, gpkg_path: str, **extra) -> dict:
+            """Build a data-source dict with optional gpkg key."""
+            d = {"table": table, **extra}
+            if gpkg_path and gpkg_path != mesh_gpkg:
+                d["gpkg"] = gpkg_path
+            return d
 
         # ── Capture top-level keys the headless runner needs ──────────
         mtab = getattr(parent, "_model_tab_view", None)
         vtab = getattr(parent, "_map_tab_view", None)
 
-        bc_lines = ""
+        bc_lines = None
         hyetograph_cfg = None
         rain_cn_cfg = None
         infiltration_method = ""
@@ -560,37 +558,33 @@ class BatchSimulationDialog(QtWidgets.QDialog):
         if vtab is not None:
             bc_tbl, bc_gpkg = _get_layer_info(
                 getattr(vtab, "bc_lines_layer_combo", None))
-            bc_lines = _apply_gpkg(bc_tbl, bc_gpkg)
+            if bc_tbl:
+                bc_lines = _dict_with_gpkg(bc_tbl, bc_gpkg)
 
             hg_tbl, hg_gpkg = _get_layer_info(
                 getattr(vtab, "hyetograph_layer_combo", None))
             rg_tbl, rg_gpkg = _get_layer_info(
                 getattr(vtab, "rain_gage_layer_combo", None))
             if hg_tbl and rg_tbl:
-                hyetograph_cfg = {
-                    "table": hg_tbl,
-                    "gauge_layer": rg_tbl,
-                }
-                # If either source comes from a different GPKG, record it
                 src_gpkg = hg_gpkg or rg_gpkg
-                if src_gpkg and src_gpkg != mesh_gpkg:
-                    hyetograph_cfg["gpkg"] = src_gpkg
+                hyetograph_cfg = _dict_with_gpkg(
+                    hg_tbl, src_gpkg,
+                    gauge_layer=rg_tbl,
+                )
 
             cn_tbl, cn_gpkg = _get_layer_info(
                 getattr(vtab, "cn_layer_combo", None))
             if cn_tbl:
-                rain_cn_cfg = {"table": cn_tbl, "cn_field": "cn"}
-                if cn_gpkg and cn_gpkg != mesh_gpkg:
-                    rain_cn_cfg["gpkg"] = cn_gpkg
+                rain_cn_cfg = _dict_with_gpkg(cn_tbl, cn_gpkg, cn_field="cn")
 
-            dn_tbl, dn_gpkg = _get_layer_info(
+            dn_tbl, _ = _get_layer_info(
                 getattr(vtab, "drain_nodes_layer_combo", None))
-            dl_tbl, dl_gpkg = _get_layer_info(
+            dl_tbl, _ = _get_layer_info(
                 getattr(vtab, "drain_links_layer_combo", None))
             if dn_tbl and dl_tbl:
                 drainage_cfg = {"nodes_layer": dn_tbl, "links_layer": dl_tbl}
 
-            st_tbl, st_gpkg = _get_layer_info(
+            st_tbl, _ = _get_layer_info(
                 getattr(vtab, "structures_layer_combo", None))
             if st_tbl:
                 structures_cfg = {"layer": st_tbl}
