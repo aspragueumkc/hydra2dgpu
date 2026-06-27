@@ -268,7 +268,7 @@ def _sample_coupling_object_metrics(cc, t_s: float, _h_s) -> list:
     # Structures (with culvert-specific diagnostics)
     if hasattr(cc, "_structures_cfg") and cc._structures_cfg:
         nb_flows = getattr(cc, "_last_structure_flows", None)
-        from swe2d.extensions.structures import StructureType as _StructType
+        from swe2d.extensions.extension_models import StructureType as _StructType
 
         # Culvert diagnostics: read from GPU kernel buffer.
         # ponytail: kernel computes values, Python reads them back — no re-computation.
