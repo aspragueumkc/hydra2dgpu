@@ -1122,9 +1122,13 @@ def build_mesh(
 
     When *both* ``cell_face_offsets`` and ``cell_face_nodes`` are
     provided they are passed as polygon args; otherwise ``cell_nodes``
-    is used alone (no offsets).  ``load_mesh_from_geopackage`` always
-    restores ``cell_face_nodes`` when offsets exist, so the reloaded
-    dict matches the in-memory shape exactly.
+    is used alone (no offsets).
+
+    ``load_mesh_from_geopackage`` restores ``cell_face_nodes`` when
+    offsets exist AND ``offsets[-1] == len(cell_nodes)`` (i.e. the
+    stored ``cell_nodes`` column actually contains flat face nodes).
+    If the GPKG is inconsistent (triangulated cell_nodes with orphan
+    offsets), the alias is omitted and the triangle path is used.
 
     Remaining ``**kwargs`` are forwarded to ``SWE2DBackend.build_mesh``
     (e.g. ``bc_edge_node0``, ...).

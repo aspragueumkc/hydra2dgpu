@@ -587,10 +587,12 @@ def load_mesh_from_geopackage(
         fo = _ld(row[4], np.int32) if row[4] else None
         if fo is not None and fo.size > 0:
             out["cell_face_offsets"] = fo
-            # The cell_nodes column stores flat face nodes when offsets
-            # exist (see persist path).  Restore cell_face_nodes so the
-            # reloaded dict has the same shape as the in-memory original.
-            out["cell_face_nodes"] = out["cell_nodes"]
+            # The cell_nodes column stores flat face nodes when saved
+            # from mesh_data that had cell_face_nodes (see persist path).
+            # Verify before aliasing — if inconsistent, cell_nodes is
+            # triangulated and offsets belong to a lost face array.
+            if int(fo[-1]) == int(out["cell_nodes"].size):
+                out["cell_face_nodes"] = out["cell_nodes"]
         bc_n0 = _ld(row[5], np.int32)
         bc_n1 = _ld(row[6], np.int32)
         bc_tp = _ld(row[7], np.int32)
