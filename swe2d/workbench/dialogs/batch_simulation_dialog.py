@@ -945,8 +945,18 @@ class BatchSimulationDialog(QtWidgets.QDialog):
                 if status_item:
                     status_item.setText("failed")
                 stderr = proc.stderr.read() if proc.stderr else ""
+                stdout = proc.stdout.read() if proc.stdout else ""
                 if progress_item:
                     progress_item.setText(stderr.strip()[:100])
+                # Log full stderr so the user can diagnose the failure
+                parent_log = getattr(self.parent(), "_log", None)
+                if parent_log:
+                    sid = str(self._param_sets[i].get("id", f"sim_{i}"))
+                    for line in stderr.strip().split("\n"):
+                        parent_log(f"batch> [{sid} ERROR] {line}")
+                    for line in stdout.strip().split("\n"):
+                        if line.strip():
+                            parent_log(f"batch> [{sid} stdout] {line}")
             self._processes[i] = None
 
         self._start_next_batch()

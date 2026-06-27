@@ -7,6 +7,24 @@ import os
 from swe2d.cli.headless_runner import execute_run
 
 
+def _write_error_status(status_file_path: str, exc: Exception) -> None:
+    """Write a fatal-error status payload so the batch dialog sees it."""
+    if not status_file_path:
+        return
+    import traceback
+    try:
+        with open(status_file_path, "w") as f:
+            json.dump({
+                "status": "error",
+                "error": f"{type(exc).__name__}: {exc}\n{traceback.format_exc()}",
+                "step": 0,
+                "t": 0.0,
+                "elapsed_s": 0.0,
+            }, f)
+    except Exception:
+        pass
+
+
 def main():
     parser = argparse.ArgumentParser(description="HYDRA2DGPU headless runner")
     sub = parser.add_subparsers(dest="command")
@@ -29,18 +47,23 @@ def main():
 
     if args.command == "run":
         params = _load_params(args.params)
-        results = execute_run(
-            args.mesh_gpkg,
-            params,
-            results_gpkg=args.results or "",
-            progress_callback=_make_progress(args.progress),
-            status_file_path=args.status_file_path or None,
-            status_interval_s=float(args.status_interval),
-        )
-        print(f"Run complete: {results['h'].size} cells, {len(results['diags'])} steps")
-        if "max_results" in results:
-            h_max = results['max_results']['max_h']
-            print(f"Max tracking: h_max range [{h_max.min():.6f}, {h_max.max():.6f}]")
+        try:
+            results = execute_run(
+                args.mesh_gpkg,
+                params,
+                results_gpkg=args.results or "",
+                progress_callback=_make_progress(args.progress),
+                status_file_path=args.status_file_path or None,
+                status_interval_s=float(args.status_interval),
+            )
+            print(f"Run complete: {results['h'].size} cells, {len(results['diags'])} steps")
+            if "max_results" in results:
+                h_max = results['max_results']['max_h']
+                print(f"Max tracking: h_max range [{h_max.min():.6f}, {h_max.max():.6f}]")
+        except Exception as exc:
+            _write_error_status(args.status_file_path, exc)
+            print(f"FATAL: {exc}", file=sys.stderr)
+            sys.exit(1)
 
     elif args.command == "batch":
         from swe2d.cli.batch_runner import run_batch
