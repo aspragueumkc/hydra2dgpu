@@ -102,8 +102,10 @@ class SWE2DResultsData:
             return
         self._gpkg_path = new
         self._selected_run_keys.clear()
-        self._run_records = []
         self._all_timesteps = np.empty(0, dtype=np.float64)
+        # Don't clear _run_records — live runs inject a synthetic RunRecord
+        # that must survive.  Only the selected-run-keys and timesteps are
+        # reset so the subsequent user-initiated add/discover flow is clean.
 
     def set_live_snapshot_timesteps(
         self, snapshot_timesteps: list, t_sec: float = 0.0
