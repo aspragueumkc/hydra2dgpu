@@ -91,6 +91,12 @@ def collect_overlay_parameters(view: Any, t_use: float) -> Dict[str, Any]:
     auto_contrast = _safe_is_checked(_w("auto_contrast_chk"), True)
     if visible_only:
         auto_contrast = False
+    h_min_display = _safe_value(_w("min_depth_spin"), 1.0e-6)
+    color_min = _safe_value(_w("color_min_spin"), None)
+    color_max = _safe_value(_w("color_max_spin"), None)
+    if auto_contrast:
+        color_min = None
+        color_max = None
 
     canvas_resolver = getattr(view, "_resolve_map_canvas", None)
     canvas = canvas_resolver() if callable(canvas_resolver) else None
@@ -193,6 +199,9 @@ def collect_overlay_parameters(view: Any, t_use: float) -> Dict[str, Any]:
         "cmap_key": cmap_key,
         "resolution": res,
         "auto_contrast": auto_contrast,
+        "h_min_display": h_min_display,
+        "vmin_manual": color_min,
+        "vmax_manual": color_max,
         "show_velocity_arrows": show_velocity_arrows,
         "arrow_stride_px": arrow_stride_px,
         "arrow_length_scale": arrow_length_scale,

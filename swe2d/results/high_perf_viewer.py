@@ -446,6 +446,9 @@ def render_unstructured_snapshot_image(
     cmap_key: str = "turbo",
     resolution: Tuple[int, int] = (960, 540),
     auto_contrast: bool = True,
+    h_min_display: float = 1.0e-6,
+    vmin_manual: Optional[float] = None,
+    vmax_manual: Optional[float] = None,
     show_velocity_arrows: bool = False,
     arrow_stride_px: int = 28,
     arrow_scale_px: float = 14.0,
@@ -566,7 +569,7 @@ def render_unstructured_snapshot_image(
     h = h_arr[:n]
     hu = hu_arr[:n]
     hv = hv_arr[:n]
-    wet_all = h > 1.0e-6
+    wet_all = h > float(h_min_display)
 
     mode = str(field_key or "depth").lower()
     if mode == "speed":
@@ -763,6 +766,9 @@ def render_unstructured_snapshot_image(
     if bool(auto_contrast):
         vmin = float(np.percentile(v, 2.0))
         vmax = float(np.percentile(v, 98.0))
+    elif vmin_manual is not None and vmax_manual is not None:
+        vmin = float(vmin_manual)
+        vmax = float(vmax_manual)
     else:
         vmin = float(np.nanmin(v))
         vmax = float(np.nanmax(v))

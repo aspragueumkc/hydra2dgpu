@@ -108,6 +108,13 @@ class ResultsToolbox(QtWidgets.QWidget):
 
         self.opacity_spin = self._add_spin(layout, "Opacity:", 2, 0.05, 1.0, 0.05, 0.65)
         self.auto_contrast_chk = self._add_chk(layout, "Auto contrast", True)
+        self.auto_contrast_chk.toggled.connect(self._on_auto_contrast_toggled)
+        self.min_depth_spin = self._add_spin(
+            layout, "Min depth threshold:", 6, 0.0, 100.0, 0.01, 1.0e-6)
+        self.color_min_spin = self._add_spin(
+            layout, "Color min:", 6, -1e12, 1e12, 0.01, 0.0)
+        self.color_max_spin = self._add_spin(
+            layout, "Color max:", 6, -1e12, 1e12, 0.01, 1.0)
         self.lock_canvas_chk = self._add_chk(layout, "Lock canvas extent", True)
         self.visible_only_chk = self._add_chk(layout, "Visible cells only", True)
         self.arrows_chk = self._add_chk(layout, "Show velocity arrows", True)
@@ -170,6 +177,12 @@ class ResultsToolbox(QtWidgets.QWidget):
         spin.valueChanged.connect(self.overlay_style_changed.emit)
         layout.addRow(label, spin)
         return spin
+
+    def _on_auto_contrast_toggled(self, checked: bool) -> None:
+        """Enable/disable manual color min/max spinboxes when auto-contrast toggles."""
+        for s in (getattr(self, "color_min_spin", None), getattr(self, "color_max_spin", None)):
+            if s is not None:
+                s.setEnabled(not bool(checked))
 
     def _populate_overlay_combos(self) -> None:
         """Fill field, colormap, WSE render, resolution, and streamline combos with defaults."""
