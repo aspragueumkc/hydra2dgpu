@@ -48,20 +48,20 @@ def _parse_time_to_seconds(value) -> Optional[float]:
 
     try:
         return float(text) * 3600.0
-    except Exception as _e:
-
-        logger.warning(f"[ERROR] Exception in rainfall_hydrology.py: {_e}")
-
-    parts = text.split(":")
-    if len(parts) not in (2, 3):
-        return None
-    try:
-        hh = float(parts[0])
-        mm = float(parts[1])
-        ss = float(parts[2]) if len(parts) == 3 else 0.0
-        return hh * 3600.0 + mm * 60.0 + ss
     except Exception:
-        return None
+        pass
+
+    # MM:SS or HH:MM:SS clock format
+    parts = text.split(":")
+    if len(parts) in (2, 3):
+        try:
+            hh = float(parts[0])
+            mm = float(parts[1])
+            ss = float(parts[2]) if len(parts) == 3 else 0.0
+            return hh * 3600.0 + mm * 60.0 + ss
+        except Exception:
+            return None
+    return None
 
 
 def _convert_depth_to_mm(value: float, units: str) -> float:

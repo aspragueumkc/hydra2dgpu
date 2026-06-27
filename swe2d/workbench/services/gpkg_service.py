@@ -464,6 +464,14 @@ def _ensure_swe2d_mesh_tables(cur: sqlite3.Cursor) -> None:
             mesh_hash TEXT DEFAULT ''
         )"""
     )
+    # Migrate existing tables that predate mesh_name / mesh_hash columns
+    for _col in ("mesh_name", "mesh_hash"):
+        try:
+            cur.execute(
+                f"ALTER TABLE {_q('swe2d_mesh_results_runs')} ADD COLUMN {_q(_col)} TEXT DEFAULT ''"
+            )
+        except Exception:
+            pass  # column already exists
     cur.execute(
         f"""CREATE TABLE IF NOT EXISTS {_q("swe2d_mesh_results")} (
             run_id TEXT,

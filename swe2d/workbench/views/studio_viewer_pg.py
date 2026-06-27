@@ -88,6 +88,7 @@ class PGTimeSeriesWidget(QtWidgets.QWidget):
 
     _ELEMENT_TYPES = [
         ("Line", "line"),
+        ("Mesh Cell", "mesh_cell"),
         ("Structure", "structure"),
         ("Drainage Node", "drainage_node"),
         ("Drainage Link", "drainage_link"),
@@ -384,6 +385,17 @@ class PGTimeSeriesWidget(QtWidgets.QWidget):
                 line_ids = data.get_line_ids()
                 for lid in line_ids:
                     self._element_id_combo.addItem(f"Line {lid}", lid)
+        elif etype == "mesh_cell":
+            # Populate with cell indices from live snapshots or mesh data
+            n_cells = 0
+            if data is not None:
+                snaps = getattr(data, "_live_snapshot_timesteps", [])
+                if snaps:
+                    n_cells = int(getattr(snaps[0][1], "size", 0))
+            if n_cells == 0 and self._mesh_data is not None:
+                n_cells = int(getattr(self._mesh_data.get("cell_nodes"), "size", 0)) // 3
+            for ci in range(n_cells):
+                self._element_id_combo.addItem(f"Cell {ci}", ci)
         else:
             if data is not None:
                 coupling = data.get_coupling_records()

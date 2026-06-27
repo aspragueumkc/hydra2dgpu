@@ -399,8 +399,16 @@ class SWE2DResultsData:
         return _load_ts(run_record.gpkg_path, run_record.run_id, line_id)
 
     def get_coupling_records(self) -> list:
-        """Return coupling records for the active run."""
-        return list(self._coupling_records)
+        """Return coupling records for the active run.
+
+        Falls back to in-memory coupling snapshots during live runs
+        when no GPKG coupling data has been loaded.
+        """
+        if self._coupling_records:
+            return list(self._coupling_records)
+        if self._data_source == "live" and self._live_coupling_snapshot_rows:
+            return list(self._live_coupling_snapshot_rows)
+        return []
 
     def get_coupling_run_id(self) -> str:
         """Return the run ID for the current coupling data."""
@@ -602,16 +610,22 @@ class SWE2DResultsData:
             self._coupling_records = []
 
     def load_coupling_records(self, run_id_or_key: str) -> None:
-        """Load coupling records."""
+        """Load coupling records from GPKG, falling back to live snapshots."""
         gpkg = ""
         for rec in self._run_records:
             if rec.run_id == run_id_or_key or rec.key == run_id_or_key:
                 gpkg = rec.gpkg_path
                 break
         if not gpkg:
-            self._coupling_records = []
-            self._coupling_run_id = ""
-            self._coupling_gpkg_path = ""
+            # Live run — use in-memory coupling snapshots if available
+            if self._live_coupling_snapshot_rows:
+                self._coupling_records = list(self._live_coupling_snapshot_rows)
+                self._coupling_run_id = run_id_or_key
+                self._coupling_gpkg_path = ""
+            else:
+                self._coupling_records = []
+                self._coupling_run_id = ""
+                self._coupling_gpkg_path = ""
             return
         try:
             from swe2d.results.timestep_service import load_coupling_for_run

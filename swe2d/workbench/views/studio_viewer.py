@@ -1,28 +1,20 @@
 """SWE2DStudioViewer — plot tab panel for the "HYDRA2D View" dock.
 
 Owns a QTabWidget with tabs:
-  Mesh — pyqtgraph mesh wireframe / depth / velocity viewer
+  Mesh — pyqtgraph mesh wireframe viewer
   Time Series — pyqtgraph line/structure/drainage time-series (unified)
   Profile — pyqtgraph longitudinal profile viewer
 """
 from __future__ import annotations
 
-from typing import Any, Callable, Dict, Optional
+from typing import Any, Dict, Optional
 
 from qgis.PyQt import QtWidgets
 
 from swe2d.workbench.views.studio_viewer_pg import PGTimeSeriesWidget, _HAVE_PG
-from swe2d.workbench.views.studio_viewer_mesh_pg import PGMeshWidget
+from swe2d.workbench.views.studio_viewer_profile_pg import PGProfileWidget
 
-_TAB_MODES = ["Mesh", "Time Series", "Profile", "Network"]
-
-# Import profile widget if available
-try:
-    from swe2d.workbench.views.studio_viewer_profile_pg import PGProfileWidget
-    _HAVE_PROFILE_PG = True
-except ImportError:
-    PGProfileWidget = None
-    _HAVE_PROFILE_PG = False
+_TAB_MODES = ["Mesh", "Time Series", "Profile"]
 
 
 class SWE2DStudioViewer(QtWidgets.QWidget):
@@ -52,10 +44,10 @@ class SWE2DStudioViewer(QtWidgets.QWidget):
         for mode in _TAB_MODES:
             if mode == "Time Series" and _HAVE_PG:
                 widget: Any = PGTimeSeriesWidget()
-            elif mode == "Profile" and _HAVE_PROFILE_PG:
+            elif mode == "Profile":
                 widget = PGProfileWidget()
             else:
-                # Use matplotlib PlotViewWidget for Mesh, Network
+                # Use matplotlib PlotViewWidget for Mesh
                 from swe2d.workbench.views.studio_viewer_plot import PlotViewWidget
                 widget = PlotViewWidget(mode=mode)
             self._plot_widgets[mode] = widget
@@ -64,17 +56,10 @@ class SWE2DStudioViewer(QtWidgets.QWidget):
         layout.addWidget(self._tabs, 1)
 
     def _on_tab_changed(self, idx: int) -> None:
-        """Handle tab change — load coupling data for Network tab, then refresh."""
+        """Handle tab change — refresh the newly selected widget."""
         widget = self._tabs.widget(idx)
         if widget is None:
             return
-        mode = getattr(widget, "_mode", "")
-        # Network tab needs coupling records loaded from the result data
-        if mode == "Network" and self._result_data is not None:
-            for rec in getattr(self._result_data, "_run_records", []):
-                if rec.enabled and hasattr(rec, 'run_id'):
-                    self._result_data.load_coupling_records(rec.run_id)
-                    break
         if hasattr(widget, "refresh"):
             widget.refresh()
 
@@ -98,14 +83,17 @@ class SWE2DStudioViewer(QtWidgets.QWidget):
 
     @property
     def current_widget(self):
-        """Return the currently visible PlotViewWidget tab."""
+        """Return the currently visible plot tab."""
         return self._tabs.currentWidget()
 
     def refresh(self) -> None:
-        """Refresh the currently visible plot widget."""
-        current = self.current_widget
-        if current is not None and hasattr(current, "refresh"):
-            current.refresh()
+        """Refresh all plot widgets."""
+        for w in self._plot_widgets.values():
+            if hasattr(w, "refresh"):
+                try:
+                    w.refresh()
+                except Exception:
+                    pass
 
     @property
     def tab_widget(self) -> QtWidgets.QTabWidget:
@@ -113,6 +101,6 @@ class SWE2DStudioViewer(QtWidgets.QWidget):
         return self._tabs
 
     @property
-    def plot_widgets(self) -> Dict[str, PlotViewWidget]:
+    def plot_widgets(self) -> Dict[str, Any]:
         """All plot widgets keyed by mode name."""
         return self._plot_widgets

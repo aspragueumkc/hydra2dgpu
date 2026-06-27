@@ -736,14 +736,12 @@ class SWE2DWorkbenchStudioDialog(QtWidgets.QDialog):
                 f"No meshes found in {os.path.basename(path)}.",
             )
             return
-        name = mesh_names[0]
-        if len(mesh_names) > 1:
-            from qgis.PyQt.QtWidgets import QInputDialog
-            name, ok = QInputDialog.getItem(
-                self, "Select Mesh", "Mesh:", mesh_names, 0, False,
-            )
-            if not ok or not name:
-                return
+        from qgis.PyQt.QtWidgets import QInputDialog
+        name, ok = QInputDialog.getItem(
+            self, "Select Mesh", "Mesh:", mesh_names, 0, False,
+        )
+        if not ok or not name:
+            return
         from swe2d.services.gpkg_persistence_service import (
             load_mesh_from_geopackage,
         )
@@ -752,8 +750,6 @@ class SWE2DWorkbenchStudioDialog(QtWidgets.QDialog):
             QtWidgets.QMessageBox.warning(self, "Load Mesh", f"Mesh '{name}' not found.")
             return
         try:
-            self._backend = SWE2DBackend()
-            self._backend.build_mesh(**mesh_data)
             self._mesh_data = mesh_data
             self._log(f"Mesh '{name}' loaded from {os.path.basename(path)} ({mesh_data['node_x'].size} nodes)")
         except Exception as exc:
@@ -1356,6 +1352,26 @@ class SWE2DWorkbenchStudioDialog(QtWidgets.QDialog):
         )
         self._coupling_results_latest_run_id = str(run_id)
         self._coupling_results_latest_db_path = str(gpkg_path)
+
+    def _persist_conservation_forensics_to_geopackage(
+        self, gpkg_path: str, run_id: str,
+        storage_rows, boundary_rows, conservation_summary, *,
+        source_step_rows,
+    ) -> None:
+        """Persist conservation forensics data to GeoPackage."""
+        from swe2d.services.gpkg_persistence_service import (
+            persist_conservation_forensics_to_geopackage as _persist_cf,
+        )
+        _persist_cf(
+            gpkg_path=gpkg_path,
+            run_id=run_id,
+            storage_rows=storage_rows,
+            boundary_rows=boundary_rows,
+            conservation_summary=conservation_summary,
+            results_table_name_fn=self._results_table_name,
+            log_fn=self._log,
+            source_step_rows=source_step_rows,
+        )
 
     def _show_results_panel(self):
         """Show the results panel via studio_results_panel."""

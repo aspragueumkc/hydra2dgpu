@@ -14,8 +14,8 @@ class FinalizationAdapter:
     def refresh_plot(self) -> None:
         self._dialog._refresh_plot()
 
-    def results_table_name(self) -> str:
-        return self._dialog._results_table_name()
+    def results_table_name(self, base_name: str) -> str:
+        return self._dialog._results_table_name(base_name)
 
     def results_data(self):
         return getattr(self._dialog, "_results_data", None)

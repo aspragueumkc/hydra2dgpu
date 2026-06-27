@@ -124,7 +124,11 @@ def render_mesh_view_to_axes(
     mode: str,
     h_min: float,
 ) -> None:
-    """Render the workbench mesh view onto an existing matplotlib axes."""
+    """Render the workbench mesh wireframe onto an existing matplotlib axes.
+
+    Colored depth/velocity rendering is handled by the high-perf canvas
+    overlay — this function only draws the mesh wireframe.
+    """
     if mesh_data is None:
         ax.text(
             0.5, 0.5, "No mesh loaded",
@@ -132,11 +136,10 @@ def render_mesh_view_to_axes(
         )
         return
 
-    figure = getattr(ax, "figure", None)
     node_x = mesh_data["node_x"]
     node_y = mesh_data["node_y"]
 
-    tri, tri_to_cell = _build_triangulation(mesh_data, node_x, node_y)
+    tri, _tri_to_cell = _build_triangulation(mesh_data, node_x, node_y)
 
     if tri is None:
         ax.text(
@@ -145,25 +148,8 @@ def render_mesh_view_to_axes(
         )
         return
 
-    if mode == "mesh" or result_data is None:
-        ax.triplot(tri, color="black", linewidth=0.3)
-        ax.set_title("Generated mesh")
-        return
-
-    vals_cell = _compute_cell_values(result_data, mode, h_min)
-
-    if tri_to_cell is not None and len(tri_to_cell) != len(vals_cell):
-        vals_tri = vals_cell[tri_to_cell]
-    else:
-        vals_tri = vals_cell
-
-    cmap = "viridis" if mode == "depth" else "plasma"
-    label = "Depth" if mode == "depth" else "Velocity magnitude"
-    title = "Final depth" if mode == "depth" else "Final velocity magnitude"
-    tpc = ax.tripcolor(tri, facecolors=vals_tri, cmap=cmap, edgecolors="none")
-    if figure is not None:
-        figure.colorbar(tpc, ax=ax, label=label)
-    ax.set_title(title)
+    ax.triplot(tri, color="black", linewidth=0.3)
+    ax.set_title("Generated mesh")
 
 
 def _build_triangulation(
@@ -208,21 +194,4 @@ def _build_triangulation(
         return None, None
 
 
-def _compute_cell_values(
-    result_data: ResultData,
-    mode: str,
-    h_min: float,
-) -> np.ndarray:
-    """Compute per-cell values for the requested rendering mode."""
-    if mode == "depth":
-        return np.asarray(result_data["h"], dtype=np.float64)
 
-    h_raw = np.asarray(result_data["h"], dtype=np.float64)
-    h_safe = np.maximum(h_raw, 1.0e-12)
-    hu = np.asarray(result_data["hu"], dtype=np.float64)
-    hv = np.asarray(result_data["hv"], dtype=np.float64)
-    return np.where(
-        h_raw > h_min,
-        np.sqrt((hu / h_safe) ** 2 + (hv / h_safe) ** 2),
-        0.0,
-    )

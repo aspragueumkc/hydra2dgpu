@@ -1,12 +1,7 @@
-"""Viewer plotting service — matplotlib rendering for all 5 plot modes.
+"""Viewer plotting service — matplotlib mesh wireframe rendering.
 
-Each function accepts a matplotlib Figure and data, modifies the Figure
-in place, and returns it. No Qt imports. Callable from CLI to render
-directly to file::
-
-    fig = Figure(figsize=(6.4, 4.2))
-    render_viewer_figure(fig, mesh_data, None, "Mesh", 1e-6)
-    fig.savefig("mesh.png")
+Only the Mesh tab uses this path (pyqtgraph handles Time Series and Profile).
+Colored depth/velocity rendering is handled by the high-perf canvas overlay.
 """
 
 from __future__ import annotations
@@ -16,54 +11,24 @@ from typing import Any, Dict, Optional
 import numpy as np
 
 from swe2d.services.mesh_render_service import plot_mesh_view_on_figure
-from swe2d.services.results_render_service import (
-    render_timeseries_on_figure,
-    render_profile_on_figure,
-    render_structures_on_figure,
-    render_network_on_figure,
-)
 
 
 def render_viewer_figure(
     fig: Any,
     mesh_data: Optional[Dict[str, np.ndarray]],
-    result_data: Any,
-    mode: str,
-    h_min: float,
-    selected_element_id: str = "",
-    selected_metric: str = "flow",
-    length_unit: str = "",
+    result_data: Any = None,
+    mode: str = "Mesh",
+    h_min: float = 1.0e-6,
+    **kwargs,
 ) -> Any:
-    """Render a figure for the given viewer tab mode.
+    """Render a mesh wireframe figure for the Mesh tab.
 
-    Dispatches to the appropriate internal renderer based on *mode*.
     Returns the (modified) figure.
     """
-    dispatch = {
-        "Mesh": plot_mesh_view_on_figure,
-        "Time Series": render_timeseries_on_figure,
-        "Profile": render_profile_on_figure,
-        "Structure": render_structures_on_figure,
-        "Network": render_network_on_figure,
-    }
-    renderer = dispatch.get(mode)
-    if renderer is None:
-        fig.clear()
-        fig.text(0.5, 0.5, f"Unknown mode: {mode}", ha="center", va="center", color="gray")
-        return fig
-
-    # ponytail: plot_mesh_view_on_figure doesn't accept extra kwargs; others do
-    if mode == "Mesh":
-        renderer(fig=fig, mesh_data=mesh_data, result_data=result_data, mode="mesh", h_min=h_min)
-    else:
-        renderer(
-            fig=fig,
-            mesh_data=mesh_data,
-            result_data=result_data,
-            mode=mode,
-            h_min=h_min,
-            selected_element_id=selected_element_id,
-            selected_metric=selected_metric,
-            length_unit=length_unit,
-        )
+    plot_mesh_view_on_figure(
+        fig=fig, mesh_data=mesh_data,
+        result_data=None,
+        mode="mesh",
+        h_min=h_min,
+    )
     return fig

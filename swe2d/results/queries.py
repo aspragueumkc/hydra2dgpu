@@ -364,8 +364,7 @@ def load_timeseries_from_live(
     rows = data.get_live_line_snapshot_rows()
     if not rows or line_id < 0:
         return {}
-    matched = [r for r in rows if int(r.get("line_id", -1)) == line_id
-               and str(r.get("run_id", "")) == str(run_id)]
+    matched = [r for r in rows if int(r.get("line_id", -1)) == line_id]
     if not matched:
         return {}
     matched.sort(key=lambda r: float(r.get("t_s", 0.0)))
@@ -384,6 +383,11 @@ def load_profile_from_live(
 ) -> Dict[str, np.ndarray]:
     """Load profile from in-memory snapshots during a live run.
 
+    Handles station-per-row format where each row stores a single
+    station along the profile line with ``station_m``, ``wse_m``,
+    ``bed_m``, ``depth_m`` keys (the format produced by
+    :meth:`_sample_line_metrics`).
+
     Returns the same dict shape as load_profile():
         ``dist_m``, ``wse_m``, ``bed_m``, ``depth_m``
 
@@ -392,23 +396,27 @@ def load_profile_from_live(
     rows = data.get_live_line_profile_rows()
     if not rows or line_id < 0:
         return {}
-    matched = [r for r in rows if int(r.get("line_id", -1)) == line_id
-               and str(r.get("run_id", "")) == str(run_id)]
+    # Filter by line_id (live profile rows don't store run_id)
+    matched = [r for r in rows if int(r.get("line_id", -1)) == line_id]
     if not matched:
         return {}
-    best = min(matched, key=lambda r: abs(float(r.get("t_s", 0.0)) - t_sec))
-    raw = best.get("data", "")
-    try:
-        arr = np.frombuffer(raw.encode("latin1") if isinstance(raw, str) else raw,
-                            dtype=np.float64).reshape(-1, 4)
-        return {
-            "dist_m": arr[:, 0],
-            "wse_m":  arr[:, 1],
-            "bed_m":  arr[:, 2],
-            "depth_m": arr[:, 3],
-        }
-    except Exception:
+    # Group by t_s and pick the timestep closest to t_sec
+    from collections import defaultdict
+    by_ts: dict = defaultdict(list)
+    for r in matched:
+        ts = float(r.get("t_s", 0.0))
+        by_ts[ts].append(r)
+    if not by_ts:
         return {}
+    best_ts = min(by_ts.keys(), key=lambda ts: abs(ts - t_sec))
+    stations = by_ts[best_ts]
+    # Sort by station_m and extract profile arrays
+    stations.sort(key=lambda r: float(r.get("station_m", 0.0)))
+    dist = np.array([float(r.get("station_m", 0.0)) for r in stations], dtype=np.float64)
+    wse  = np.array([float(r.get("wse_m", float("nan"))) for r in stations], dtype=np.float64)
+    bed  = np.array([float(r.get("bed_m", float("nan"))) for r in stations], dtype=np.float64)
+    depth = np.array([float(r.get("depth_m", float("nan"))) for r in stations], dtype=np.float64)
+    return {"dist_m": dist, "wse_m": wse, "bed_m": bed, "depth_m": depth}
 
 
 def load_timeseries(gpkg_path: str, run_id: str, line_id: int) -> Dict[str, np.ndarray]:

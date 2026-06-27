@@ -1032,18 +1032,13 @@ class RunController:
 
     # ── Snapshot orchestration ─────────────────────────────────────────
     def on_snapshot(self) -> None:
-        """Write captured 2D mesh timesteps to a temporary HEC-RAS HDF file.
+        """Sync in-memory snapshots into the temporal dock, overlay, and plots.
 
-        Behaviour matches the legacy ``_on_snapshot``:
-        - Aborts (with a log line) when no mesh or no timesteps exist.
-        - Writes a snapshot HDF to the system temp directory.
-        - Persists the snapshot rows to the active results GeoPackage.
-        - Refreshes the high-perf overlay so the new timesteps render.
+        Called when the user clicks Take Snapshot during a live run.
+        The accumulated snapshots in ``_live_snapshot_timesteps`` are
+        synced to the temporal dock slider, high-perf overlay, and all
+        plot widgets so the results are immediately viewable.
         """
-        from qgis.PyQt import QtWidgets  # local import keeps test runs lean
-        import datetime
-        import tempfile
-
         view = self._view
         results_data = getattr(view, "_results_data", None)
         _snapshots = results_data.get_live_snapshot_timesteps() if results_data else []
@@ -1051,40 +1046,31 @@ class RunController:
             view._log("No snapshot data available — run the model with an output interval set first.")
             return
 
-        _coupling_rows = results_data.get_live_coupling_snapshot_rows() if results_data else []
-
-        gpkg_results_path = view._current_line_results_storage_path()
-        if gpkg_results_path:
-            if not getattr(view, "_snapshot_run_id", None):
-                view._snapshot_run_id = datetime.datetime.now().astimezone().strftime(
-                    "swe2d_snapshot_%Y%m%dT%H%M%S%z"
-                )
-            snap_run_id = str(view._snapshot_run_id)
-        else:
-            snap_run_id = ""
-
-        # HDF5 export (mesh only, optional — fails gracefully)
-        if view._mesh_data is not None and _snapshots:
+        # Sync live snapshot timesteps into the temporal dock slider,
+        # overlay, and plots so the new snapshots are visible immediately.
+        if results_data is not None:
             try:
-                wp = view.collect_run_widget_params()
-                snap_path = os.path.join(tempfile.gettempdir(), "swe2d_snapshot.hdf")
-                from swe2d.workbench.services.hecras_export_service import write_hecras_hdf5
-                write_hecras_hdf5(
-                    path=snap_path,
-                    mesh_data=view._mesh_data,
-                    length_unit_name=view._length_unit_name,
-                    is_us_customary=view._is_us_customary_units(),
-                    include_extra=bool(wp["extended_outputs_chk"]),
-                    gravity=float(view._gravity),
-                    h_min=float(wp["h_min_spin"]),
-                    n_mann=float(wp["n_mann_spin"]),
-                    timesteps=_snapshots,
-                    log_fn=view._log,
-                    result_data=view._result_data,
-                )
-            except Exception as exc:
-                QtWidgets.QMessageBox.critical(view, "Snapshot", f"HDF5 write failed:\n{exc}")
-                return
+                live_ts = results_data.get_live_snapshot_timesteps()
+                results_data.set_live_snapshot_timesteps(live_ts)
+            except Exception:
+                pass
+            try:
+                temporal = getattr(view, "_temporal_dock", None)
+                if temporal is not None:
+                    temporal.set_data(results_data)
+            except Exception:
+                pass
+            try:
+                view._sync_high_perf_overlay_data()
+                live_ts = results_data.get_live_snapshot_timesteps()
+                if live_ts:
+                    view._update_high_perf_overlay_time(float(live_ts[-1][0]))
+            except Exception:
+                pass
+            try:
+                view._refresh_plot()
+            except Exception:
+                pass
 
     def on_preview_overrides(self) -> None:
         """Compute and display a summary of BC and Manning overrides.
