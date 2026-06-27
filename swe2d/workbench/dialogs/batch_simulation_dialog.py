@@ -859,7 +859,13 @@ class BatchSimulationDialog(QtWidgets.QDialog):
 
         status_dir = tempfile.mkdtemp(prefix="hydra_batch_status_")
         self._start_next_batch(status_dir)
-        QtCore.QTimer.singleShot(500, self._tick_run)
+        self._poll_tick()
+
+    def _poll_tick(self):
+        """Repeating poller — calls _tick_run and reschedules itself."""
+        self._tick_run()
+        if self._running:
+            QtCore.QTimer.singleShot(500, self._poll_tick)
 
     def _start_next_batch(self, status_dir: str = ""):
         max_workers = self._max_workers_spin.value()

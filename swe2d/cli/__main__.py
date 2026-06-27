@@ -46,7 +46,13 @@ def main():
     args = parser.parse_args()
 
     if args.command == "run":
-        params = _load_params(args.params)
+        try:
+            params = _load_params(args.params)
+        except Exception as exc:
+            import traceback
+            _write_error_status(args.status_file_path, exc)
+            traceback.print_exc()
+            sys.exit(1)
         try:
             results = execute_run(
                 args.mesh_gpkg,
@@ -61,8 +67,9 @@ def main():
                 h_max = results['max_results']['max_h']
                 print(f"Max tracking: h_max range [{h_max.min():.6f}, {h_max.max():.6f}]")
         except Exception as exc:
+            import traceback
             _write_error_status(args.status_file_path, exc)
-            print(f"FATAL: {exc}", file=sys.stderr)
+            traceback.print_exc()
             sys.exit(1)
 
     elif args.command == "batch":
