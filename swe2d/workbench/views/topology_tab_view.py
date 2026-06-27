@@ -77,10 +77,32 @@ class TopologyTabView(QtWidgets.QWidget):
         ]:
             layer_form.addRow(QtWidgets.QLabel(lbl_text), combo)
 
+        self.topo_nodes_combo.setToolTip(
+            "Point layer containing mesh node coordinates for the topology."
+        )
+        self.topo_arcs_combo.setToolTip(
+            "Line layer defining topological arcs between nodes."
+        )
+        self.topo_regions_combo.setToolTip(
+            "Polygon layer defining mesh regions. "
+            "Each region can have a cell_type and target_size for mesh generation."
+        )
+        self.topo_constraints_combo.setToolTip(
+            "Optional polygon layer for mesh refinement constraints. Use '(none)' to disable."
+        )
+        self.topo_quad_edges_combo.setToolTip(
+            "Optional layer for quad-edge transition controls "
+            "used in structured mesh regions."
+        )
+
         self.topo_export_template_btn = QtWidgets.QPushButton(
             "Create Topology Template Layers"
         )
         self.topo_export_template_btn.setObjectName("topo_export_template_btn")
+        self.topo_export_template_btn.setToolTip(
+            "Create empty point/line/polygon template layers for topology "
+            "node, arc, and region input."
+        )
         layer_form.addRow(self.topo_export_template_btn)
 
         self._toolbox.addItem(layer_page, "Layer Setup")
@@ -93,10 +115,21 @@ class TopologyTabView(QtWidgets.QWidget):
 
         self.topo_backend_combo = QtWidgets.QComboBox()
         self.topo_backend_combo.setObjectName("topo_backend_combo")
+        self.topo_backend_combo.setToolTip(
+            "Meshing engine: Gmsh (recommended) or built-in structured fallback."
+        )
         self.topo_default_size_spin = QtWidgets.QDoubleSpinBox()
         self.topo_default_size_spin.setObjectName("topo_default_size_spin")
+        self.topo_default_size_spin.setToolTip(
+            "Default target element size in model units. "
+            "Overridden by per-region target_size if set."
+        )
         self.topo_default_cell_type_combo = QtWidgets.QComboBox()
         self.topo_default_cell_type_combo.setObjectName("topo_default_cell_type_combo")
+        self.topo_default_cell_type_combo.setToolTip(
+            "Default cell type for all regions: triangular, quadrilateral, "
+            "cartesian, or empty (void)."
+        )
 
         for widget, label in [
             (self.topo_backend_combo, "Meshing backend:"),
@@ -107,11 +140,17 @@ class TopologyTabView(QtWidgets.QWidget):
 
         self.topo_generate_btn = QtWidgets.QPushButton("Generate Mesh")
         self.topo_generate_btn.setObjectName("topo_generate_btn")
+        self.topo_generate_btn.setToolTip(
+            "Start mesh generation with the configured topology and parameters."
+        )
         self.topo_generate_btn.setEnabled(True)
         general_form.addRow(self.topo_generate_btn)
 
         self.topo_terminate_btn = QtWidgets.QPushButton("Terminate")
         self.topo_terminate_btn.setObjectName("topo_terminate_btn")
+        self.topo_terminate_btn.setToolTip(
+            "Request cancellation of an in-progress mesh generation."
+        )
         self.topo_terminate_btn.setEnabled(False)
         general_form.addRow(self.topo_terminate_btn)
 
@@ -124,6 +163,7 @@ class TopologyTabView(QtWidgets.QWidget):
 
         self.progress_bar = QtWidgets.QProgressBar()
         self.progress_bar.setObjectName("progress_bar")
+        self.progress_bar.setToolTip("Mesh generation progress indicator.")
         self.progress_bar.setRange(0, 0)
         self.progress_bar.setVisible(False)
         general_form.addRow(self.progress_bar)
@@ -688,6 +728,10 @@ def _build_topology_tab_controls(
     # -- Gmsh algorithm combos --
     topo_gmsh_tri_algo_combo = QtWidgets.QComboBox()
     topo_gmsh_tri_algo_combo.setObjectName("topo_gmsh_tri_algo_combo")
+    topo_gmsh_tri_algo_combo.setToolTip(
+        "Gmsh 2D triangle meshing algorithm. "
+        "Frontal-Delaunay produces higher quality; Delaunay is faster."
+    )
     algo_form.addRow("Triangle algorithm:", topo_gmsh_tri_algo_combo)
     _set_combo_items(
         topo_gmsh_tri_algo_combo,
@@ -701,6 +745,10 @@ def _build_topology_tab_controls(
 
     topo_gmsh_quad_algo_combo = QtWidgets.QComboBox()
     topo_gmsh_quad_algo_combo.setObjectName("topo_gmsh_quad_algo_combo")
+    topo_gmsh_quad_algo_combo.setToolTip(
+        "Gmsh quadrilateral meshing algorithm. "
+        "Frontal+Blossom is recommended for quality quads."
+    )
     algo_form.addRow("Quadrilateral algorithm:", topo_gmsh_quad_algo_combo)
     _set_combo_items(
         topo_gmsh_quad_algo_combo,
@@ -715,6 +763,10 @@ def _build_topology_tab_controls(
 
     topo_gmsh_recombine_algo_combo = QtWidgets.QComboBox()
     topo_gmsh_recombine_algo_combo.setObjectName("topo_gmsh_recombine_algo_combo")
+    topo_gmsh_recombine_algo_combo.setToolTip(
+        "Algorithm for recombining triangles into quads. "
+        "Blossom is highest quality; Simple is fastest."
+    )
     algo_form.addRow("Recombine algorithm:", topo_gmsh_recombine_algo_combo)
     _set_combo_items(
         topo_gmsh_recombine_algo_combo,
@@ -754,6 +806,10 @@ def _build_topology_tab_controls(
 
     topo_gmsh_smoothing_spin = QtWidgets.QSpinBox()
     topo_gmsh_smoothing_spin.setObjectName("topo_gmsh_smoothing_spin")
+    topo_gmsh_smoothing_spin.setToolTip(
+        "Number of Gmsh smoothing passes applied after mesh generation. "
+        "0 = no smoothing. Higher values improve element shape quality."
+    )
     topo_gmsh_smoothing_spin.setRange(0, 100)
     topo_gmsh_smoothing_spin.setValue(0)
     algo_form.addRow("Smoothing passes:", topo_gmsh_smoothing_spin)
@@ -761,6 +817,10 @@ def _build_topology_tab_controls(
 
     topo_gmsh_optimize_iters_spin = QtWidgets.QSpinBox()
     topo_gmsh_optimize_iters_spin.setObjectName("topo_gmsh_optimize_iters_spin")
+    topo_gmsh_optimize_iters_spin.setToolTip(
+        "Number of Gmsh optimization iterations. "
+        "Higher values improve mesh quality at the cost of runtime."
+    )
     topo_gmsh_optimize_iters_spin.setRange(0, 100)
     topo_gmsh_optimize_iters_spin.setValue(0)
     algo_form.addRow("Optimize iterations:", topo_gmsh_optimize_iters_spin)
@@ -768,6 +828,10 @@ def _build_topology_tab_controls(
 
     topo_gmsh_verbosity_spin = QtWidgets.QSpinBox()
     topo_gmsh_verbosity_spin.setObjectName("topo_gmsh_verbosity_spin")
+    topo_gmsh_verbosity_spin.setToolTip(
+        "Gmsh log verbosity level (0=silent, 10=most verbose). "
+        "Default: 2 shows warnings and errors."
+    )
     topo_gmsh_verbosity_spin.setRange(0, 10)
     topo_gmsh_verbosity_spin.setValue(2)
     algo_form.addRow("Verbosity:", topo_gmsh_verbosity_spin)
@@ -775,6 +839,10 @@ def _build_topology_tab_controls(
 
     topo_gmsh_optimize_netgen_chk = QtWidgets.QCheckBox("Enable Netgen optimize")
     topo_gmsh_optimize_netgen_chk.setObjectName("topo_gmsh_optimize_netgen_chk")
+    topo_gmsh_optimize_netgen_chk.setToolTip(
+        "Run Netgen optimizer after Gmsh mesh generation. "
+        "Can improve element quality for some mesh topologies."
+    )
     if not str(topo_gmsh_optimize_netgen_chk.text() or "").strip():
         topo_gmsh_optimize_netgen_chk.setText("Enable Netgen optimize")
     algo_form.addRow(topo_gmsh_optimize_netgen_chk)
@@ -782,6 +850,11 @@ def _build_topology_tab_controls(
 
     topo_gmsh_arc_mode_combo = QtWidgets.QComboBox()
     topo_gmsh_arc_mode_combo.setObjectName("topo_gmsh_arc_mode_combo")
+    topo_gmsh_arc_mode_combo.setToolTip(
+        "How topology arcs influence the mesh. "
+        "'Hard embed' forces nodes on arcs; 'Soft size hint' refines near arcs; "
+        "'Disabled' ignores arcs."
+    )
     _set_combo_items(
         topo_gmsh_arc_mode_combo,
         [
@@ -910,6 +983,10 @@ def _build_topology_tab_controls(
 
     topo_gmsh_mesh_size_min_spin = QtWidgets.QDoubleSpinBox()
     topo_gmsh_mesh_size_min_spin.setObjectName("topo_gmsh_mesh_size_min_spin")
+    topo_gmsh_mesh_size_min_spin.setToolTip(
+        "Global minimum mesh element size. "
+        "Prevents Gmsh from creating elements smaller than this value."
+    )
     topo_gmsh_mesh_size_min_spin.setRange(0.0, 1.0e6)
     topo_gmsh_mesh_size_min_spin.setDecimals(6)
     topo_gmsh_mesh_size_min_spin.setValue(0.0)
@@ -918,6 +995,10 @@ def _build_topology_tab_controls(
 
     topo_gmsh_tolerance_edge_length_spin = QtWidgets.QDoubleSpinBox()
     topo_gmsh_tolerance_edge_length_spin.setObjectName("topo_gmsh_tolerance_edge_length_spin")
+    topo_gmsh_tolerance_edge_length_spin.setToolTip(
+        "Edges shorter than this value are ignored during mesh generation. "
+        "Useful for cleaning up tiny geometry artifacts."
+    )
     topo_gmsh_tolerance_edge_length_spin.setRange(0.0, 1.0e6)
     topo_gmsh_tolerance_edge_length_spin.setDecimals(6)
     topo_gmsh_tolerance_edge_length_spin.setValue(0.0)
@@ -926,6 +1007,10 @@ def _build_topology_tab_controls(
 
     topo_gmsh_mesh_size_from_points_chk = QtWidgets.QCheckBox("Use region target_size for mesh sizing")
     topo_gmsh_mesh_size_from_points_chk.setObjectName("topo_gmsh_mesh_size_from_points_chk")
+    topo_gmsh_mesh_size_from_points_chk.setToolTip(
+        "When checked, per-region target_size values are passed to Gmsh "
+        "for spatially varying element sizing."
+    )
     if not str(topo_gmsh_mesh_size_from_points_chk.text() or "").strip():
         topo_gmsh_mesh_size_from_points_chk.setText("Use region target_size for mesh sizing")
     topo_gmsh_mesh_size_from_points_chk.setChecked(True)
@@ -934,6 +1019,10 @@ def _build_topology_tab_controls(
 
     topo_gmsh_quality_enable_chk = QtWidgets.QCheckBox("Enable Gmsh iterative quality loop")
     topo_gmsh_quality_enable_chk.setObjectName("topo_gmsh_quality_enable_chk")
+    topo_gmsh_quality_enable_chk.setToolTip(
+        "Enable iterative quality improvement loop. "
+        "Re-meshes with adjusted parameters when quality thresholds are not met."
+    )
     if not str(topo_gmsh_quality_enable_chk.text() or "").strip():
         topo_gmsh_quality_enable_chk.setText("Enable Gmsh iterative quality loop")
     topo_gmsh_quality_enable_chk.setChecked(False)
@@ -941,12 +1030,18 @@ def _build_topology_tab_controls(
 
     topo_gmsh_quality_max_iters_spin = QtWidgets.QSpinBox()
     topo_gmsh_quality_max_iters_spin.setObjectName("topo_gmsh_quality_max_iters_spin")
+    topo_gmsh_quality_max_iters_spin.setToolTip(
+        "Maximum quality improvement iterations before giving up."
+    )
     topo_gmsh_quality_max_iters_spin.setRange(1, 50)
     topo_gmsh_quality_max_iters_spin.setValue(2)
     widgets["topo_gmsh_quality_max_iters_spin"] = topo_gmsh_quality_max_iters_spin
 
     topo_gmsh_quality_time_limit_spin = QtWidgets.QDoubleSpinBox()
     topo_gmsh_quality_time_limit_spin.setObjectName("topo_gmsh_quality_time_limit_spin")
+    topo_gmsh_quality_time_limit_spin.setToolTip(
+        "Time budget in seconds for the quality improvement loop."
+    )
     topo_gmsh_quality_time_limit_spin.setRange(1.0, 3600.0)
     topo_gmsh_quality_time_limit_spin.setDecimals(1)
     topo_gmsh_quality_time_limit_spin.setValue(55.0)
@@ -954,6 +1049,10 @@ def _build_topology_tab_controls(
 
     topo_quality_min_angle_spin = QtWidgets.QDoubleSpinBox()
     topo_quality_min_angle_spin.setObjectName("topo_quality_min_angle_spin")
+    topo_quality_min_angle_spin.setToolTip(
+        "Minimum acceptable cell angle in degrees. "
+        "Elements with smaller angles fail the quality check."
+    )
     topo_quality_min_angle_spin.setRange(0.0, 89.0)
     topo_quality_min_angle_spin.setDecimals(1)
     topo_quality_min_angle_spin.setValue(5.0)
@@ -961,6 +1060,10 @@ def _build_topology_tab_controls(
 
     topo_quality_max_aspect_spin = QtWidgets.QDoubleSpinBox()
     topo_quality_max_aspect_spin.setObjectName("topo_quality_max_aspect_spin")
+    topo_quality_max_aspect_spin.setToolTip(
+        "Maximum acceptable cell aspect ratio. "
+        "Higher values allow more stretched elements."
+    )
     topo_quality_max_aspect_spin.setRange(1.0, 1.0e4)
     topo_quality_max_aspect_spin.setDecimals(2)
     topo_quality_max_aspect_spin.setValue(20.0)
@@ -968,6 +1071,10 @@ def _build_topology_tab_controls(
 
     topo_quality_max_non_orth_spin = QtWidgets.QDoubleSpinBox()
     topo_quality_max_non_orth_spin.setObjectName("topo_quality_max_non_orth_spin")
+    topo_quality_max_non_orth_spin.setToolTip(
+        "Maximum acceptable non-orthogonality angle in degrees. "
+        "Higher values allow more non-orthogonal cells."
+    )
     topo_quality_max_non_orth_spin.setRange(1.0, 89.9)
     topo_quality_max_non_orth_spin.setDecimals(1)
     topo_quality_max_non_orth_spin.setValue(82.0)
@@ -975,6 +1082,10 @@ def _build_topology_tab_controls(
 
     topo_quality_min_area_edit = QtWidgets.QLineEdit("1e-14")
     topo_quality_min_area_edit.setObjectName("topo_quality_min_area_edit")
+    topo_quality_min_area_edit.setToolTip(
+        "Minimum cell area relative to bounding box that passes quality check. "
+        "Zero-area or degenerate cells are rejected."
+    )
     if not str(topo_quality_min_area_edit.text() or "").strip():
         topo_quality_min_area_edit.setText("1e-14")
     widgets["topo_quality_min_area_edit"] = topo_quality_min_area_edit
@@ -1061,6 +1172,10 @@ def _build_topology_tab_controls(
 
     topo_quality_strict_chk = QtWidgets.QCheckBox("Strict quality acceptance")
     topo_quality_strict_chk.setObjectName("topo_quality_strict_chk")
+    topo_quality_strict_chk.setToolTip(
+        "When checked, ALL quality thresholds must be met for mesh acceptance. "
+        "When unchecked, a best-effort approach is used."
+    )
     if not str(topo_quality_strict_chk.text() or "").strip():
         topo_quality_strict_chk.setText("Strict quality acceptance")
     widgets["topo_quality_strict_chk"] = topo_quality_strict_chk

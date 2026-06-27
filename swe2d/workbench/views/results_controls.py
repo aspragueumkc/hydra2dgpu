@@ -102,50 +102,75 @@ class ResultsToolbox(QtWidgets.QWidget):
         layout.setContentsMargins(6, 6, 6, 6)
 
         self.field_combo = self._add_combo(layout, "Field:")
+        self.field_combo.setToolTip("Result field to render on the map canvas: Depth, Velocity, WSE, etc.")
         self.wse_render_combo = self._add_combo(layout, "WSE render:")
+        self.wse_render_combo.setToolTip("Water surface elevation rendering mode: raw cell-centered or smoothed nodal.")
         self.cmap_combo = self._add_combo(layout, "Colormap:")
+        self.cmap_combo.setToolTip("Color map used to render the selected field.")
         self.res_combo = self._add_combo(layout, "Resolution:")
+        self.res_combo.setToolTip("Render resolution for the high-performance overlay canvas.")
 
         self.opacity_spin = self._add_spin(layout, "Opacity:", 2, 0.05, 1.0, 0.05, 0.65)
+        self.opacity_spin.setToolTip("Overlay opacity: 0.05 (faint) to 1.0 (fully opaque).")
         self.auto_contrast_chk = self._add_chk(layout, "Auto contrast", True)
+        self.auto_contrast_chk.setToolTip("Automatically adjust color range to data min/max. Uncheck to set custom range.")
         self.auto_contrast_chk.toggled.connect(self._on_auto_contrast_toggled)
         self.min_depth_spin = self._add_spin(
             layout, "Min depth threshold:", 6, 0.0, 100.0, 0.01, 1.0e-6)
+        self.min_depth_spin.setToolTip("Cells with depth below this threshold are treated as dry in the overlay.")
         self.color_min_spin = self._add_spin(
             layout, "Color min:", 6, -1e12, 1e12, 0.01, 0.0)
+        self.color_min_spin.setToolTip("Minimum value for the color scale (manual mode). Only active when auto contrast is off.")
         self.color_max_spin = self._add_spin(
             layout, "Color max:", 6, -1e12, 1e12, 0.01, 1.0)
+        self.color_max_spin.setToolTip("Maximum value for the color scale (manual mode). Only active when auto contrast is off.")
         self.lock_canvas_chk = self._add_chk(layout, "Lock canvas extent", True)
+        self.lock_canvas_chk.setToolTip("Lock the map canvas extent to the overlay's bounding box.")
         self.visible_only_chk = self._add_chk(layout, "Visible cells only", True)
+        self.visible_only_chk.setToolTip("Only render cells within the current map viewport for performance.")
         self.arrows_chk = self._add_chk(layout, "Show velocity arrows", True)
+        self.arrows_chk.setToolTip("Display velocity direction arrows on the overlay.")
 
         self.arrow_density_spin = self._add_spin(
             layout, "Arrow spacing (px):", 0, 8, 80, 2, 28)
+        self.arrow_density_spin.setToolTip("Spacing between velocity arrows in pixels. Lower = denser arrows.")
         self.arrow_length_spin = self._add_spin(
             layout, "Arrow length scale:", 2, 0.2, 3.0, 0.1, 1.0)
+        self.arrow_length_spin.setToolTip("Velocity arrow length multiplier.")
         self.arrow_head_length_spin = self._add_spin(
             layout, "Arrow head length:", 2, 0.2, 3.0, 0.1, 1.0)
+        self.arrow_head_length_spin.setToolTip("Velocity arrow head length.")
         self.arrow_head_width_spin = self._add_spin(
             layout, "Arrow head width:", 2, 0.2, 3.0, 0.1, 1.0)
+        self.arrow_head_width_spin.setToolTip("Velocity arrow head width.")
 
         self.streamlines_chk = self._add_chk(layout, "Show streamlines", False)
+        self.streamlines_chk.setToolTip("Display flow streamlines on the overlay.")
         self.streamline_backend_combo = self._add_combo(
             layout, "Streamline backend:")
+        self.streamline_backend_combo.setToolTip("Streamline computation engine: Auto, CUDA (GPU), or CPU.")
         self.streamline_seed_spin = self._add_spin(
             layout, "Streamline seeds:", 0, 8, 256, 8, 48)
+        self.streamline_seed_spin.setToolTip("Number of streamline seed points for flow tracing.")
         self.streamline_steps_spin = self._add_spin(
             layout, "Streamline steps:", 0, 4, 120, 2, 24)
+        self.streamline_steps_spin.setToolTip("Maximum integration steps per streamline.")
 
         self.overlay_enabled_chk = QtWidgets.QCheckBox(
             "Enable high-performance overlay")
+        self.overlay_enabled_chk.setToolTip(
+            "Toggle the GPU-accelerated high-performance overlay on/off."
+        )
         self.overlay_enabled_chk.toggled.connect(self.overlay_toggled.emit)
         layout.addRow(self.overlay_enabled_chk)
 
         self.export_btn = QtWidgets.QPushButton("Export Overlay to GeoTIFF...")
+        self.export_btn.setToolTip("Export the current overlay view as a GeoTIFF raster.")
         self.export_btn.clicked.connect(self.overlay_export_geotiff.emit)
         layout.addRow(self.export_btn)
 
         self.export_res_spin = QtWidgets.QDoubleSpinBox()
+        self.export_res_spin.setToolTip("Output pixel size in map units for GeoTIFF export.")
         self.export_res_spin.setValue(10.0)
         layout.addRow("GeoTIFF pixel size (map units):", self.export_res_spin)
 
@@ -236,26 +261,46 @@ class ResultsToolbox(QtWidgets.QWidget):
 
         self.extended_outputs_chk = QtWidgets.QCheckBox(
             "Include extended outputs (momentum, qmag, wet mask, Fr, Manning)")
+        self.extended_outputs_chk.setToolTip(
+            "Include additional output fields beyond depth and velocity. "
+            "Increases result file size."
+        )
         self.extended_outputs_chk.setChecked(True)
         layout.addRow(self.extended_outputs_chk)
 
         self.save_mesh_chk = QtWidgets.QCheckBox("Save mesh results to GPKG")
+        self.save_mesh_chk.setToolTip(
+            "Save 2D mesh simulation results (depth, velocity, WSE) to the GeoPackage."
+        )
         self.save_mesh_chk.setChecked(True)
         layout.addRow(self.save_mesh_chk)
 
         self.save_line_chk = QtWidgets.QCheckBox("Save line results to GPKG")
+        self.save_line_chk.setToolTip(
+            "Save sample line (cross-section) results to the GeoPackage."
+        )
         self.save_line_chk.setChecked(True)
         layout.addRow(self.save_line_chk)
 
         self.save_coupling_chk = QtWidgets.QCheckBox("Save coupling results to GPKG")
+        self.save_coupling_chk.setToolTip(
+            "Save drainage/structure coupling time series results to the GeoPackage."
+        )
         self.save_coupling_chk.setChecked(True)
         layout.addRow(self.save_coupling_chk)
 
         self.save_max_only_chk = QtWidgets.QCheckBox("Save max results only (skip interval snapshots)")
+        self.save_max_only_chk.setToolTip(
+            "Only save maximum-value results per cell. "
+            "Skips interval snapshots to reduce file size."
+        )
         self.save_max_only_chk.setChecked(False)
         layout.addRow(self.save_max_only_chk)
 
         self.save_log_chk = QtWidgets.QCheckBox("Save run log to GPKG")
+        self.save_log_chk.setToolTip(
+            "Save the solver run log (diagnostics, timesteps, errors) to the GeoPackage."
+        )
         self.save_log_chk.setChecked(True)
         layout.addRow(self.save_log_chk)
 
@@ -277,6 +322,7 @@ class ResultsToolbox(QtWidgets.QWidget):
         self.gpkg_lbl = QtWidgets.QLabel()
         self.gpkg_lbl.setStyleSheet("color: gray; font-size: 9px;")
         self.gpkg_lbl.setMaximumWidth(320)
+        self.gpkg_lbl.setToolTip("Currently loaded GeoPackage path.")
         self.refresh_btn = QtWidgets.QPushButton("\u21ba")
         self.refresh_btn.setFixedSize(22, 22)
         self.refresh_btn.setToolTip("Re-scan GPKG for new runs")
@@ -303,12 +349,15 @@ class ResultsToolbox(QtWidgets.QWidget):
         btn_row.setSpacing(2)
         self.remove_btn = QtWidgets.QPushButton("\u2212 Remove")
         self.remove_btn.setFixedHeight(20)
+        self.remove_btn.setToolTip("Remove selected runs from the list.")
         self.remove_btn.clicked.connect(self.run_remove_requested.emit)
         self.show_all_btn = QtWidgets.QPushButton("\u2713 All")
         self.show_all_btn.setFixedHeight(20)
+        self.show_all_btn.setToolTip("Show (enable) all runs in the overlay.")
         self.show_all_btn.clicked.connect(self.run_show_all.emit)
         self.hide_all_btn = QtWidgets.QPushButton("\u25a1 None")
         self.hide_all_btn.setFixedHeight(20)
+        self.hide_all_btn.setToolTip("Hide (disable) all runs in the overlay.")
         self.hide_all_btn.clicked.connect(self.run_hide_all.emit)
         btn_row.addWidget(self.remove_btn, 2)
         btn_row.addWidget(self.show_all_btn, 1)
