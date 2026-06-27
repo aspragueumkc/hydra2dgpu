@@ -223,42 +223,27 @@ class SWE2DWorkbenchStudioDialog(QtWidgets.QDialog):
 
     def _log(self, msg: str):
         """Append a message to the runtime log view."""
+        import logging
         msg_txt = str(msg)
         self._runtime_log_lines.append(msg_txt)
-        if msg_txt.startswith("[ERROR]"):
-            try:
-                self.log_view.appendHtml(
-                    f'<span style="color:red;font-weight:bold;">{msg_txt}</span>')
-            except Exception:
+        lv = getattr(self, "log_view", None)
+        if lv is None:
+            logging.getLogger(__name__).info(msg_txt)
+            return
+        try:
+            if msg_txt.startswith("[ERROR]"):
                 try:
-                    self.log_view.appendPlainText(msg_txt)
-                except Exception as _e:
-
-                    try:
-
-                        self._log(f"[ERROR] Exception in studio_dialog.py: {_e}")
-
-                    except Exception:
-
-                        pass
-        elif msg_txt.startswith("[WARNING]"):
-            try:
-                self.log_view.appendHtml(
-                    f'<span style="color:#FF8C00;font-weight:normal;">{msg_txt}</span>')
-            except Exception:
+                    lv.appendHtml(
+                        f'<span style="color:red;font-weight:bold;">{msg_txt}</span>')
+                except Exception:
+                    lv.appendPlainText(msg_txt)
+            elif msg_txt.startswith("[WARNING]"):
                 try:
-                    self.log_view.appendPlainText(msg_txt)
-                except Exception as _e:
-
-                    try:
-
-                        self._log(f"[ERROR] Exception in studio_dialog.py: {_e}")
-
-                    except Exception:
-
-                        pass
-        elif "They go UP" in msg_txt:
-            try:
+                    lv.appendHtml(
+                        f'<span style="color:#FF8C00;font-weight:normal;">{msg_txt}</span>')
+                except Exception:
+                    lv.appendPlainText(msg_txt)
+            elif "They go UP" in msg_txt:
                 spans = []
                 ci = 0
                 for ch in msg_txt:
@@ -267,34 +252,14 @@ class SWE2DWorkbenchStudioDialog(QtWidgets.QDialog):
                     else:
                         color = self._UP_RAINBOW[ci % len(self._UP_RAINBOW)]
                         spans.append(
-                            f'<span style="color:{color};font-weight:bold;">{ch}</span>'
-                        )
+                            f'<span style="color:{color};font-weight:bold;">{ch}</span>')
                         ci += 1
-                self.log_view.appendHtml("".join(spans))
-            except Exception:
-                try:
-                    self.log_view.appendPlainText(msg_txt)
-                except Exception as _e:
-
-                    try:
-
-                        self._log(f"[ERROR] Exception in studio_dialog.py: {_e}")
-
-                    except Exception:
-
-                        pass
-        else:
-            try:
-                self.log_view.appendPlainText(msg_txt)
-            except Exception as _e:
-
-                try:
-
-                    self._log(f"[ERROR] Exception in studio_dialog.py: {_e}")
-
-                except Exception:
-
-                    pass
+                lv.appendHtml("".join(spans))
+            else:
+                lv.appendPlainText(msg_txt)
+        except Exception:
+            # Absolute fallback — never recurse back into _log
+            logging.getLogger(__name__).warning("_log fallback: %s", msg_txt)
         for dlg in list(self._state.runtime_log_detached_dialogs):
             try:
                 if dlg is not None:
@@ -1220,10 +1185,7 @@ class SWE2DWorkbenchStudioDialog(QtWidgets.QDialog):
         from swe2d.workbench.views.studio_results_panel import on_results_prof_var_changed as _fn
         _fn(self, var_key)
 
-    def _on_results_profile_options_changed(self):
-        """Handle profile display options change."""
-        from swe2d.workbench.views.studio_results_panel import on_results_profile_options_changed as _fn
-        _fn(self)
+
 
     def _on_coupling_metric_changed(self, metric: str) -> None:
         """Handle coupling metric change in results panel."""

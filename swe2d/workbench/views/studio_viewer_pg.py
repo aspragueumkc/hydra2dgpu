@@ -138,39 +138,46 @@ class PGTimeSeriesWidget(QtWidgets.QWidget):
 
         # ── Top bar: element type, element ID, variable, toggles ──
         top_bar = QtWidgets.QHBoxLayout()
+        top_bar.setSpacing(4)
 
-        lbl_etype = QtWidgets.QLabel("Type:")
-        self._element_type_combo = QtWidgets.QComboBox()
+        def _make_combo(max_w: int = 120) -> QtWidgets.QComboBox:
+            c = QtWidgets.QComboBox()
+            c.setSizePolicy(QtWidgets.QSizePolicy.Policy.Preferred, QtWidgets.QSizePolicy.Policy.Fixed)
+            c.setMinimumWidth(60)
+            c.setMaximumWidth(max_w)
+            return c
+
+        top_bar.addWidget(QtWidgets.QLabel("Type:"))
+        self._element_type_combo = _make_combo(120)
         for label, key in self._ELEMENT_TYPES:
             self._element_type_combo.addItem(label, key)
         self._element_type_combo.currentIndexChanged.connect(self._on_element_type_changed)
-        top_bar.addWidget(lbl_etype)
         top_bar.addWidget(self._element_type_combo)
-        top_bar.addSpacing(8)
+        top_bar.addSpacing(4)
 
-        lbl_eid = QtWidgets.QLabel("Element:")
-        self._element_id_combo = QtWidgets.QComboBox()
+        top_bar.addWidget(QtWidgets.QLabel("Elem:"))
+        self._element_id_combo = _make_combo(140)
         self._element_id_combo.currentIndexChanged.connect(self._on_element_id_changed)
-        top_bar.addWidget(lbl_eid)
         top_bar.addWidget(self._element_id_combo)
-        top_bar.addSpacing(12)
+        top_bar.addSpacing(4)
 
-        lbl = QtWidgets.QLabel("Variable:")
-        self._metric_combo = QtWidgets.QComboBox()
+        top_bar.addWidget(QtWidgets.QLabel("Var:"))
+        self._metric_combo = _make_combo(120)
         self._repopulate_combo_items()
         self._metric_combo.currentIndexChanged.connect(self._on_metric_changed)
-        top_bar.addWidget(lbl)
         top_bar.addWidget(self._metric_combo)
+
         top_bar.addStretch(1)
 
-        self.show_table_toggle = QtWidgets.QCheckBox("Show data table")
+        self.show_table_toggle = QtWidgets.QCheckBox("Table")
         self.show_table_toggle.setChecked(False)
         self.show_table_toggle.toggled.connect(self._on_table_toggle)
         top_bar.addWidget(self.show_table_toggle)
 
         # Save button
-        self._save_btn = QtWidgets.QPushButton("💾 Save")
-        self._save_btn.setFixedHeight(24)
+        self._save_btn = QtWidgets.QPushButton("💾")
+        self._save_btn.setFixedSize(24, 24)
+        self._save_btn.setToolTip("Save plot / data")
         self._save_menu = QtWidgets.QMenu(self._save_btn)
         self._save_menu.addAction("Save plot as PNG", self._save_plot_png)
         self._save_menu.addAction("Save plot as SVG", self._save_plot_svg)
@@ -304,8 +311,9 @@ class PGTimeSeriesWidget(QtWidgets.QWidget):
         self._metric_combo.blockSignals(False)
 
     def _on_element_type_changed(self) -> None:
-        """Re-populate element ID combo and refresh."""
+        """Re-populate element ID combo and metric combo, then refresh."""
         self._populate_element_id_combo()
+        self._repopulate_metric_for_etype()
         self.refresh()
 
     def _on_element_id_changed(self) -> None:
@@ -398,6 +406,14 @@ class PGTimeSeriesWidget(QtWidgets.QWidget):
                 self._element_id_combo.addItem(f"Cell {ci}", ci)
         else:
             if data is not None:
+                # Ensure coupling records are loaded before querying
+                first_enabled = None
+                for rec in getattr(data, "_run_records", []):
+                    if rec.enabled:
+                        first_enabled = rec
+                        break
+                if first_enabled is not None and data._coupling_run_id != str(first_enabled.run_id):
+                    data.load_coupling_records(str(first_enabled.run_id))
                 coupling = data.get_coupling_records()
                 seen = set()
                 for rec in coupling:
@@ -639,6 +655,15 @@ class PGTimeSeriesWidget(QtWidgets.QWidget):
             self._repopulate_combo_items()
             self._populate_element_id_combo()
             self._populate_metric_combo()
+            # Pre-load coupling records so structure/drainage element IDs
+            # are available in the dropdown immediately.
+            first_enabled = None
+            for rec in getattr(result_data, "_run_records", []):
+                if rec.enabled:
+                    first_enabled = rec
+                    break
+            if first_enabled is not None and getattr(result_data, "_coupling_run_id", "") != str(first_enabled.run_id):
+                result_data.load_coupling_records(str(first_enabled.run_id))
         self._h_min = float(h_min)
 
     def set_render_fn(self, fn) -> None:
@@ -757,6 +782,49 @@ class PGTimeSeriesWidget(QtWidgets.QWidget):
     # ------------------------------------------------------------------
 
     def _populate_metric_combo(self) -> None:
-        """Populate metric combo from data coupling records (Structure/Network mode)."""
-        # Time Series has a fixed set of variables — no dynamic population needed
-        pass
+        """Populate metric combo from data coupling records."""
+        self._repopulate_metric_for_etype()
+
+    def _repopulate_metric_for_etype(self) -> None:
+        """Populate the metric combo based on the selected element type.
+
+        Line → TS metrics (flow_cms, depth_m, wse_m, velocity_ms).
+        Coupling types → metrics from the coupling records (flow, depth, invert, etc.).
+        """
+        if self._metric_combo is None:
+            return
+        etype = str(self._element_type_combo.currentData() or "line")
+        prev_data = self._metric_combo.currentData()
+
+        self._metric_combo.blockSignals(True)
+        self._metric_combo.clear()
+
+        if etype == "line":
+            # Standard TS metrics (unit-aware labels)
+            for key in ("flow_cms", "depth_m", "wse_m", "velocity_ms"):
+                self._metric_combo.addItem(_label_for_var(key), key)
+        else:
+            # Coupling-based types — collect unique metric values from records
+            data = self._result_data
+            coupling = data.get_coupling_records() if data is not None else []
+            seen: set = set()
+            for rec in coupling:
+                comp = str(rec.get("component", "") or "")
+                if comp != etype:
+                    continue
+                m = str(rec.get("metric", "") or "")
+                if m and m not in seen:
+                    seen.add(m)
+            metrics = sorted(seen) or ["flow"]
+            for m in metrics:
+                self._metric_combo.addItem(m, m)
+
+        # Restore previous selection if still valid
+        idx = self._metric_combo.findData(prev_data)
+        if idx >= 0:
+            self._metric_combo.setCurrentIndex(idx)
+        self._metric_combo.blockSignals(False)
+
+        # Sync _selected_metric to the combo's actual current value
+        # (the combo may have been repopulated with different items)
+        self._selected_metric = str(self._metric_combo.currentData() or "flow_cms")

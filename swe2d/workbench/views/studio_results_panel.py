@@ -24,6 +24,10 @@ def on_results_refresh(dialog) -> None:
         dialog._results_toolbox._rebuild_run_list()
         data._rebuild_timestep_union()
         data.load_coupling_for_first_enabled_run()
+    # Sync temporal dock slider range with updated timesteps
+    temporal = getattr(dialog, "_temporal_dock", None)
+    if temporal is not None:
+        temporal.set_data(data)
     viewer = getattr(dialog, "_studio_viewer", None)
     if viewer is not None:
         # Notify all viewer widgets of updated data
@@ -96,6 +100,9 @@ def on_results_add(dialog) -> None:
     data.discover_runs()
     data._rebuild_timestep_union()
     dialog._results_toolbox._rebuild_run_list()
+    temporal = getattr(dialog, "_temporal_dock", None)
+    if temporal is not None:
+        temporal.set_data(data)
     viewer = getattr(dialog, "_studio_viewer", None)
     if viewer is not None:
         for w in viewer.plot_widgets.values():
@@ -166,15 +173,7 @@ def on_results_prof_var_changed(dialog, var_key: str) -> None:
     dialog._studio_viewer.refresh()
 
 
-def on_results_profile_options_changed(dialog) -> None:
-    """Sync profile options from toolbox to data layer and refresh the viewer."""
-    data = dialog._results_toolbox._data
-    tb = dialog._results_toolbox
-    if data is not None:
-        data.prof_fill_key = str(tb.prof_fill_combo.currentData() or "none")
-        data.prof_cmap = str(tb.prof_cmap_combo.currentData() or "viridis")
-        data.prof_show_structures = bool(tb.show_structures_chk.isChecked())
-    dialog._studio_viewer.refresh()
+
 
 
 def on_results_panel_timestep_changed(dialog, t_s: float, frame_idx: int = 0) -> None:
@@ -341,6 +340,10 @@ def auto_load_results_panel(dialog, gpkg_path: str = "", snapshot_run_id: str = 
 
     data._rebuild_timestep_union()
     dialog._results_toolbox._rebuild_run_list()
+
+    temporal = getattr(dialog, "_temporal_dock", None)
+    if temporal is not None:
+        temporal.set_data(data)
 
     viewer = getattr(dialog, "_studio_viewer", None)
     if viewer is not None:

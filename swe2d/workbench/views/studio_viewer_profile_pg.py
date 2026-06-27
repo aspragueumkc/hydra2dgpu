@@ -73,30 +73,74 @@ def _c2q_alpha(rgb: Tuple[int, int, int], alpha: int) -> QtGui.QColor:
     return c
 
 
-# ── Matplotlib colormap name -> brush generator ──────────────────────
+# ── Pure-numpy colormap LUTs (no matplotlib dependency) ──────────────
 
-def _cmap_brush(cmap_name: str, t: float) -> QtGui.QColor:
-    """Return a QColor for a normalized position *t* in *cmap_name*.
+def _build_lut(stops):
+    """Build a 256×3 uint8 LUT from (pos, (R,G,B)) stops via linear interpolation."""
+    x = np.asarray([float(s[0]) for s in stops], dtype=np.float64)
+    r = np.asarray([float(s[1][0]) for s in stops], dtype=np.float64)
+    g = np.asarray([float(s[1][1]) for s in stops], dtype=np.float64)
+    b = np.asarray([float(s[1][2]) for s in stops], dtype=np.float64)
+    xi = np.linspace(0.0, 1.0, 256, dtype=np.float64)
+    lut = np.zeros((256, 3), dtype=np.uint8)
+    lut[:, 0] = np.clip(np.interp(xi, x, r), 0.0, 255.0).astype(np.uint8)
+    lut[:, 1] = np.clip(np.interp(xi, x, g), 0.0, 255.0).astype(np.uint8)
+    lut[:, 2] = np.clip(np.interp(xi, x, b), 0.0, 255.0).astype(np.uint8)
+    return lut
 
-    Uses a simple turbo-like fallback if matplotlib is unavailable.
+
+# Colormap name → (256,3) uint8 LUT
+_color_luts = {
+    "viridis": _build_lut([
+        (0.00, (68, 1, 84)),
+        (0.25, (59, 82, 139)),
+        (0.50, (33, 145, 140)),
+        (0.75, (94, 201, 98)),
+        (1.00, (253, 231, 37)),
+    ]),
+    "turbo": _build_lut([
+        (0.00, (48, 18, 59)),
+        (0.20, (50, 100, 220)),
+        (0.40, (41, 187, 236)),
+        (0.60, (124, 234, 87)),
+        (0.80, (250, 205, 32)),
+        (1.00, (180, 4, 38)),
+    ]),
+    "plasma": _build_lut([
+        (0.00, (13, 8, 135)),
+        (0.25, (126, 3, 167)),
+        (0.50, (203, 71, 119)),
+        (0.75, (248, 149, 64)),
+        (1.00, (240, 249, 33)),
+    ]),
+    "inferno": _build_lut([
+        (0.00, (0, 0, 4)),
+        (0.25, (87, 15, 109)),
+        (0.50, (187, 55, 84)),
+        (0.75, (249, 142, 8)),
+        (1.00, (252, 255, 164)),
+    ]),
+    "coolwarm": _build_lut([
+        (0.00, (59, 76, 192)),
+        (0.25, (101, 143, 222)),
+        (0.50, (220, 220, 220)),
+        (0.75, (222, 143, 101)),
+        (1.00, (192, 76, 59)),
+    ]),
+}
+
+
+def _cmap_color(cmap_name: str, t: float) -> Tuple[int, int, int]:
+    """Return (R, G, B) for normalized position *t* in *cmap_name*.
+
+    Pure numpy — no matplotlib dependency.  Falls back to grayscale.
     """
-    try:
-        from matplotlib import cm as mpl_cm, colors as mpl_colors
-        cmap = mpl_cm.get_cmap(cmap_name)
-        r, g, b, _ = cmap(float(t))
-        return QtGui.QColor(int(r * 255), int(g * 255), int(b * 255))
-    except Exception:
-        # Turbo-like fallback
-        t = float(np.clip(t, 0.0, 1.0))
-        if t < 0.25:
-            r, g, b = 48 + int(t * 8), 18 + int(t * 328), 59 + int(t * 644)
-        elif t < 0.5:
-            r, g, b = 50 + int((t - 0.25) * -36), 100 + int((t - 0.25) * 348), 220 + int((t - 0.25) * 64)
-        elif t < 0.75:
-            r, g, b = 41 + int((t - 0.5) * 332), 187 + int((t - 0.5) * 192), 236 + int((t - 0.5) * -596)
-        else:
-            r, g, b = 124 + int((t - 0.75) * 504), 234 + int((t - 0.75) * -116), 87 + int((t - 0.75) * -98)
-        return QtGui.QColor(max(0, min(255, r)), max(0, min(255, g)), max(0, min(255, b)))
+    lut = _color_luts.get(str(cmap_name).strip().lower())
+    if lut is None:
+        g = int(round(np.clip(t, 0.0, 1.0) * 255))
+        return (g, g, g)
+    idx = int(np.clip(round(t * 255.0), 0, 255))
+    return (int(lut[idx, 0]), int(lut[idx, 1]), int(lut[idx, 2]))
 
 
 # ── The widget ───────────────────────────────────────────────────────
@@ -114,7 +158,7 @@ _FILL_ITEMS = [
     ("None", "none"),
     ("Depth", "depth_m"),
     ("Velocity", "velocity_ms"),
-    ("Flow", "flow_cms"),
+    ("Flow", "flow_qn"),
 ]
 
 _CMAP_ITEMS = [
@@ -126,8 +170,19 @@ _CMAP_ITEMS = [
 ]
 
 
+_ELEMENT_TYPES = [
+    ("Line", "line"),
+    ("Structure", "structure"),
+    ("Drainage Node", "drainage_node"),
+    ("Drainage Link", "drainage_link"),
+]
+
+
 class PGProfileWidget(QtWidgets.QWidget):
-    """pyqtgraph-based longitudinal profile plot for sample-line cross-sections.
+    """pyqtgraph-based plot widget supporting both profile and time-series views.
+
+    Profile mode (element type = Line): cross-section station vs elevation.
+    Time-series mode (element type = Structure/Drainage): coupling results.
 
     Protocol: set_data(), refresh(), mode, selected_metric, selected_element_id.
     """
@@ -141,6 +196,7 @@ class PGProfileWidget(QtWidgets.QWidget):
 
         # UI state
         self._line_id: int = -1
+        self._selected_element_id: str = ""
         self._prof_var_key: str = "wse_bed"
         self._prof_fill_key: str = "none"
         self._prof_cmap: str = "viridis"
@@ -155,9 +211,11 @@ class PGProfileWidget(QtWidgets.QWidget):
         self._hover_label: Optional[pg.TextItem] = None
         self._hover_vline: Optional[pg.InfiniteLine] = None
         self._hover_hline: Optional[pg.InfiniteLine] = None
+        self._vline: Optional[pg.InfiniteLine] = None
 
         # Combos
-        self._line_combo: Optional[QtWidgets.QComboBox] = None
+        self._etype_combo: Optional[QtWidgets.QComboBox] = None
+        self._element_id_combo: Optional[QtWidgets.QComboBox] = None
         self._var_combo: Optional[QtWidgets.QComboBox] = None
         self._fill_combo: Optional[QtWidgets.QComboBox] = None
         self._cmap_combo: Optional[QtWidgets.QComboBox] = None
@@ -172,7 +230,7 @@ class PGProfileWidget(QtWidgets.QWidget):
     # ------------------------------------------------------------------
 
     def _build_ui(self) -> None:
-        """Build: line selector, variable/fill/cmap combos, pyqtgraph plot, data table."""
+        """Build: element type, element ID, var/fill/cmap combos, plot, table."""
         root = QtWidgets.QVBoxLayout(self)
         root.setContentsMargins(0, 0, 0, 0)
         root.setSpacing(0)
@@ -187,56 +245,74 @@ class PGProfileWidget(QtWidgets.QWidget):
 
         # ── Top bar ──
         top_bar = QtWidgets.QHBoxLayout()
+        top_bar.setSpacing(4)
 
-        # Line selector
-        top_bar.addWidget(QtWidgets.QLabel("Line:"))
-        self._line_combo = QtWidgets.QComboBox()
-        self._line_combo.currentIndexChanged.connect(self._on_line_changed)
-        top_bar.addWidget(self._line_combo)
-        top_bar.addSpacing(8)
+        def _make_combo(max_w: int = 100) -> QtWidgets.QComboBox:
+            c = QtWidgets.QComboBox()
+            c.setSizePolicy(QtWidgets.QSizePolicy.Policy.Preferred, QtWidgets.QSizePolicy.Policy.Fixed)
+            c.setMinimumWidth(60)
+            c.setMaximumWidth(max_w)
+            return c
 
-        # Variable selector
+        # Element type selector
+        top_bar.addWidget(QtWidgets.QLabel("Type:"))
+        self._etype_combo = _make_combo(120)
+        for label, key in _ELEMENT_TYPES:
+            self._etype_combo.addItem(label, key)
+        self._etype_combo.currentIndexChanged.connect(self._on_etype_changed)
+        top_bar.addWidget(self._etype_combo)
+        top_bar.addSpacing(4)
+
+        # Element ID selector (lines or coupling objects)
+        top_bar.addWidget(QtWidgets.QLabel("Elem:"))
+        self._element_id_combo = _make_combo(140)
+        self._element_id_combo.currentIndexChanged.connect(self._on_element_id_changed)
+        top_bar.addWidget(self._element_id_combo)
+        top_bar.addSpacing(4)
+
+        # Variable / Metric selector
         top_bar.addWidget(QtWidgets.QLabel("Var:"))
-        self._var_combo = QtWidgets.QComboBox()
-        for label, key in _PROFILE_VAR_ITEMS:
-            self._var_combo.addItem(label, key)
+        self._var_combo = _make_combo(120)
         self._var_combo.currentIndexChanged.connect(self._on_var_changed)
         top_bar.addWidget(self._var_combo)
-        top_bar.addSpacing(8)
+        top_bar.addSpacing(4)
 
-        # Fill selector
+        # Fill selector (profile only)
         top_bar.addWidget(QtWidgets.QLabel("Fill:"))
-        self._fill_combo = QtWidgets.QComboBox()
+        self._fill_combo = _make_combo(100)
         for label, key in _FILL_ITEMS:
             self._fill_combo.addItem(label, key)
         self._fill_combo.currentIndexChanged.connect(self._on_fill_changed)
         top_bar.addWidget(self._fill_combo)
-        top_bar.addSpacing(8)
+        top_bar.addSpacing(4)
 
-        # Colormap selector
+        # Colormap selector (profile only)
         top_bar.addWidget(QtWidgets.QLabel("Cmap:"))
-        self._cmap_combo = QtWidgets.QComboBox()
+        self._cmap_combo = _make_combo(100)
         for label, key in _CMAP_ITEMS:
             self._cmap_combo.addItem(label, key)
         self._cmap_combo.currentIndexChanged.connect(self._on_cmap_changed)
         top_bar.addWidget(self._cmap_combo)
+
+        # Stretch pushes right-side controls to the edge
         top_bar.addStretch(1)
 
         # Show structures toggle
-        self._show_struct_chk = QtWidgets.QCheckBox("Structures")
+        self._show_struct_chk = QtWidgets.QCheckBox("Struct")
         self._show_struct_chk.setChecked(True)
         self._show_struct_chk.toggled.connect(self._on_show_struct_changed)
         top_bar.addWidget(self._show_struct_chk)
 
         # Data table toggle
-        self.show_table_toggle = QtWidgets.QCheckBox("Show data table")
+        self.show_table_toggle = QtWidgets.QCheckBox("Table")
         self.show_table_toggle.setChecked(False)
         self.show_table_toggle.toggled.connect(self._on_table_toggle)
         top_bar.addWidget(self.show_table_toggle)
 
         # Save button
-        save_btn = QtWidgets.QPushButton("💾 Save")
-        save_btn.setFixedHeight(24)
+        save_btn = QtWidgets.QPushButton("💾")
+        save_btn.setFixedSize(24, 24)
+        save_btn.setToolTip("Save plot / data")
         save_menu = QtWidgets.QMenu(save_btn)
         save_menu.addAction("Save plot as PNG", self._save_plot_png)
         save_menu.addAction("Save plot as SVG", self._save_plot_svg)
@@ -330,15 +406,15 @@ class PGProfileWidget(QtWidgets.QWidget):
 
     @property
     def selected_element_id(self) -> str:
-        return str(self._line_id)
+        return self._selected_element_id
 
     @selected_element_id.setter
     def selected_element_id(self, element_id: str) -> None:
-        self._line_id = int(element_id) if element_id else -1
-        if self._line_combo is not None and element_id:
-            idx = self._line_combo.findData(self._line_id)
+        self._selected_element_id = str(element_id) if element_id else ""
+        if self._element_id_combo is not None and element_id:
+            idx = self._element_id_combo.findData(self._selected_element_id)
             if idx >= 0:
-                self._line_combo.setCurrentIndex(idx)
+                self._element_id_combo.setCurrentIndex(idx)
 
     def set_data(
         self,
@@ -351,55 +427,33 @@ class PGProfileWidget(QtWidgets.QWidget):
             self._mesh_data = mesh_data
         if result_data is not None:
             self._result_data = result_data
-            self._populate_line_combo()
+            self._populate_etype()
+            # Pre-load coupling records
+            first_enabled = None
+            for rec in getattr(result_data, "_run_records", []):
+                if rec.enabled:
+                    first_enabled = rec
+                    break
+            if first_enabled is not None and getattr(result_data, "_coupling_run_id", "") != str(first_enabled.run_id):
+                result_data.load_coupling_records(str(first_enabled.run_id))
         self._h_min = float(h_min)
 
     def set_render_fn(self, fn) -> None:
         """No-op — pyqtgraph handles rendering directly."""
 
     def refresh(self) -> None:
-        """Re-render the profile with current line, variable, and display options."""
+        """Re-render: profile for lines, time-series for coupling types."""
         if not _HAVE_PG or self._result_data is None or self._plot_widget is None:
             return
 
         data = self._result_data
-
-        # Sync display options from result_data (set by toolbox controls)
-        self._prof_fill_key = str(
-            getattr(data, "prof_fill_key", self._prof_fill_key) or "none"
-        )
-        self._prof_cmap = str(
-            getattr(data, "prof_cmap", self._prof_cmap) or "viridis"
-        )
-        self._prof_show_structures = bool(
-            getattr(data, "prof_show_structures", self._prof_show_structures)
-        )
-        # Sync variable from result_data if set externally
-        ext_var = getattr(data, "prof_var_key", None)
-        if ext_var and ext_var != self._prof_var_key:
-            self._prof_var_key = str(ext_var)
-            if self._var_combo is not None:
-                idx = self._var_combo.findData(self._prof_var_key)
-                if idx >= 0:
-                    self._var_combo.setCurrentIndex(idx)
-
-        line_id = self._line_id
+        etype = str(self._etype_combo.currentData() or "line")
         t_sec = float(getattr(data, "current_time_sec", 0.0))
         run_records = data.get_enabled_run_records()
         var_key = self._prof_var_key
-        fill_key = self._prof_fill_key
-        cmap_name = self._prof_cmap
-        show_structures = self._prof_show_structures
-        use_fill_cmap = fill_key != "none"
 
-        from swe2d.results.queries import (
-            find_nearest_timestep,
-            load_profile,
-            load_profile_from_live,
-            load_structure_flows_at_time,
-        )
-        from swe2d import units as _u
-
+        from swe2d.results.queries import load_timeseries as _load_ts
+        from swe2d.results.queries import load_timeseries_from_live as _load_ts_live
         is_live = getattr(data, "data_source", "") == "live"
 
         # Clear the plot
@@ -408,6 +462,7 @@ class PGProfileWidget(QtWidgets.QWidget):
         self._fill_items = []
         self._structure_items = []
         self._structure_labels = []
+        self._vline = None
         self._hover_vline.setVisible(False)
         self._hover_hline.setVisible(False)
         self._hover_label.setVisible(False)
@@ -415,217 +470,239 @@ class PGProfileWidget(QtWidgets.QWidget):
         self._plot_widget.addItem(self._hover_vline)
         self._plot_widget.addItem(self._hover_hline)
 
-        if not run_records or line_id < 0:
+        if not run_records:
             text = pg.TextItem("No data", anchor=(0.5, 0.5), color=(128, 128, 128))
             self._plot_widget.addItem(text)
             return
 
-        # Set axis labels
-        lu = getattr(data, "_length_unit", "")
-        len_label = _unit_labels(lu)["len"]
-        self._plot_widget.setLabel("bottom", f"Station ({len_label})")
-        if var_key == "wse_bed":
-            self._plot_widget.setLabel("left", f"Elevation ({len_label})")
-        else:
-            self._plot_widget.setLabel("left", _label_for_var(var_key, lu))
-
         plotted = 0
-        bed_drawn = False
-        structure_rows: List[Dict[str, Any]] = []
-        fill_segments_data: List[Tuple[float, float, float, float, float]] = []
-        # Each: (station_i, station_j, bed_i, wse_i, fill_val_mid)
 
-        for rec in run_records:
-            t = find_nearest_timestep(
-                rec.gpkg_path, rec.run_id, line_id, t_sec
+        if etype == "line":
+            # ── Profile rendering (station vs elevation) ──
+            line_id = self._line_id
+            fill_key = self._prof_fill_key
+            cmap_name = self._prof_cmap
+            show_structures = self._prof_show_structures
+            use_fill_cmap = fill_key != "none"
+
+            from swe2d.results.queries import (
+                find_nearest_timestep, load_profile, load_profile_from_live,
+                load_structure_flows_at_time,
             )
-            prof_data = (
-                load_profile_from_live(data, str(rec.run_id), int(line_id), float(t))
-                if is_live else
-                load_profile(rec.gpkg_path, rec.run_id, line_id, t)
-            )
-            if not prof_data:
-                continue
+            from swe2d import units as _u
 
-            color = _c2q(rec.color)
-            run_color_t = rec.color  # keep as (R,G,B) tuple
-
-            # Normalise station key (live uses "dist_m", GPKG uses "station_m")
-            station = prof_data.get("station_m", prof_data.get("dist_m", np.empty(0)))
-            if station.size == 0:
-                continue
-
+            lu = getattr(data, "_length_unit", "")
+            len_label = _unit_labels(lu)["len"]
+            self._plot_widget.setLabel("bottom", f"Station ({len_label})")
             if var_key == "wse_bed":
-                wse = prof_data.get("wse_m", np.full_like(station, np.nan))
-                bed = prof_data.get("bed_m", np.full_like(station, np.nan))
-                depth = prof_data.get("depth_m", np.full_like(station, np.nan))
-                wet_arr = prof_data.get("wet", np.ones_like(station))
+                self._plot_widget.setLabel("left", f"Elevation ({len_label})")
+            else:
+                self._plot_widget.setLabel("left", _label_for_var(var_key, lu))
 
-                ok = np.isfinite(wse) & np.isfinite(bed)
-                if not np.any(ok):
+            if line_id < 0:
+                text = pg.TextItem("No data", anchor=(0.5, 0.5), color=(128, 128, 128))
+                self._plot_widget.addItem(text)
+                return
+
+            bed_drawn = False
+            structure_rows: List[Dict[str, Any]] = []
+            for rec in run_records:
+                t = find_nearest_timestep(rec.gpkg_path, rec.run_id, line_id, t_sec)
+                prof_data = (
+                    load_profile_from_live(data, str(rec.run_id), int(line_id), float(t))
+                    if is_live else
+                    load_profile(rec.gpkg_path, rec.run_id, line_id, t)
+                )
+                if not prof_data:
+                    continue
+                color = _c2q(rec.color)
+                run_color_t = rec.color
+                station = prof_data.get("station_m", prof_data.get("dist_m", np.empty(0)))
+                if station.size == 0:
                     continue
 
-                x_ok = station[ok]
-                wse_ok = wse[ok]
-                bed_ok = bed[ok]
-                depth_ok = depth[ok]
-                wet_ok = wet_arr[ok]
-                wet_mask = np.where(
-                    np.isfinite(wet_ok), wet_ok > 0.5, depth_ok > 1e-9
-                )
-                wse_phys = np.maximum(wse_ok, bed_ok)
+                if var_key == "wse_bed":
+                    wse = prof_data.get("wse_m", np.full_like(station, np.nan))
+                    bed = prof_data.get("bed_m", np.full_like(station, np.nan))
+                    depth = prof_data.get("depth_m", np.full_like(station, np.nan))
+                    wet_arr = prof_data.get("wet", np.ones_like(station))
+                    ok = np.isfinite(wse) & np.isfinite(bed)
+                    if not np.any(ok):
+                        continue
+                    x_ok = station[ok]
+                    wse_ok = wse[ok]
+                    bed_ok = bed[ok]
+                    depth_ok = depth[ok]
+                    wet_ok = wet_arr[ok]
+                    wet_mask = np.where(np.isfinite(wet_ok), wet_ok > 0.5, depth_ok > 1e-9)
+                    wse_phys = np.maximum(wse_ok, bed_ok)
+                    fill_mask = np.isfinite(wse_ok) & np.isfinite(bed_ok)
+                    wse_fill = wse_ok
+                    wse_plot_vals = wse_ok
 
-                # "raw" render mode (always — no wet-mask clipping like matplotlib had)
-                fill_mask = np.isfinite(wse_ok) & np.isfinite(bed_ok)
-                wse_fill = wse_ok
-                wse_plot_vals = wse_ok
+                    if not bed_drawn and x_ok.size:
+                        bed_min = float(np.min(bed_ok)) - 0.05 * max(float(np.ptp(bed_ok)), 0.1)
+                        bed_fill_x = np.concatenate([x_ok, x_ok[::-1]])
+                        bed_fill_y = np.concatenate([np.full_like(bed_ok, bed_min), bed_ok[::-1]])
+                        bed_fill_item = pg.PlotDataItem(bed_fill_x, bed_fill_y, fillLevel=bed_min,
+                            brush=pg.mkBrush(QtGui.QColor(139, 115, 85, 128)), pen=None)
+                        self._plot_widget.addItem(bed_fill_item)
+                        self._plot_items.append(bed_fill_item)
+                        bed_line = pg.PlotDataItem(x_ok, bed_ok, pen=pg.mkPen(color=QtGui.QColor(92, 64, 51), width=0.9))
+                        self._plot_widget.addItem(bed_line)
+                        self._plot_items.append(bed_line)
+                        bed_drawn = True
 
-                # ── Bed fill (below bed) ──
-                if not bed_drawn and x_ok.size:
-                    bed_min = float(np.min(bed_ok)) - 0.05 * max(
-                        float(np.ptp(bed_ok)), 0.1
-                    )
-                    # Draw bed as a filled polygon to bed_min
-                    bed_fill_x = np.concatenate([x_ok, x_ok[::-1]])
-                    bed_fill_y = np.concatenate(
-                        [np.full_like(bed_ok, bed_min), bed_ok[::-1]]
-                    )
-                    bed_fill_item = pg.PlotDataItem(
-                        bed_fill_x, bed_fill_y,
-                        fillLevel=bed_min,
-                        brush=pg.mkBrush(QtGui.QColor(139, 115, 85, 128)),
-                        pen=None,
-                    )
-                    self._plot_widget.addItem(bed_fill_item)
-                    self._plot_items.append(bed_fill_item)
-
-                    # Bed line
-                    bed_line = pg.PlotDataItem(
-                        x_ok, bed_ok,
-                        pen=pg.mkPen(color=QtGui.QColor(92, 64, 51), width=0.9),
-                    )
-                    self._plot_widget.addItem(bed_line)
-                    self._plot_items.append(bed_line)
-                    bed_drawn = True
-
-                # ── WSE-bed fill ──
-                if use_fill_cmap:
-                    # Collect fill metric for colormap shading
-                    fill_metric = np.asarray(
-                        prof_data.get(fill_key, np.full_like(station, np.nan)),
-                        dtype=np.float64,
-                    )
-                    fill_ok = fill_metric[ok]
-                    for i in range(len(x_ok) - 1):
-                        if not (fill_mask[i] and fill_mask[i + 1]):
-                            continue
-                        if not (np.isfinite(fill_ok[i]) and np.isfinite(fill_ok[i + 1])):
-                            continue
-                        vmid = 0.5 * (float(fill_ok[i]) + float(fill_ok[i + 1]))
-                        fill_segments_data.append(
-                            (float(x_ok[i]), float(x_ok[i + 1]),
-                             float(bed_ok[i]), float(wse_fill[i]), vmid)
-                        )
-                else:
-                    # Single-color fill between bed and WSE
                     fill_curve_bed = pg.PlotDataItem(x_ok, bed_ok)
                     fill_curve_wse = pg.PlotDataItem(x_ok, wse_fill)
-                    fill_item = pg.FillBetweenItem(
-                        curve1=fill_curve_bed,
-                        curve2=fill_curve_wse,
-                        brush=pg.mkBrush(
-                            run_color_t[0], run_color_t[1], run_color_t[2], 46
-                        ),
-                    )
+                    fill_item = pg.FillBetweenItem(curve1=fill_curve_bed, curve2=fill_curve_wse,
+                        brush=pg.mkBrush(run_color_t[0], run_color_t[1], run_color_t[2], 46))
                     self._plot_widget.addItem(fill_item)
                     self._fill_items.append(fill_item)
 
-                # WSE line
-                wse_plot_vals_plot = np.where(fill_mask, wse_plot_vals, np.nan)
-                wse_line = pg.PlotDataItem(
-                    x_ok, wse_plot_vals_plot,
-                    pen=pg.mkPen(color=color, width=1.5),
-                    name=f"{rec.display_label()} WSE",
-                )
-                self._plot_widget.addItem(wse_line)
-                self._plot_items.append(wse_line)
-                plotted += 1
-
-            else:
-                # Non-wse_bed modes: depth_m, velocity_ms, egl_m
-                if var_key == "egl_m":
-                    wse_arr = prof_data.get("wse_m")
-                    vel_arr = prof_data.get("velocity_ms")
-                    if wse_arr is None or vel_arr is None:
-                        continue
-                    y = np.asarray(wse_arr, dtype=np.float64) + (
-                        np.asarray(vel_arr, dtype=np.float64) ** 2.0
-                    ) / (2.0 * _u.gravity())
-                else:
-                    if var_key not in prof_data:
-                        continue
-                    y = np.asarray(prof_data[var_key], dtype=np.float64)
-                ok = np.isfinite(station) & np.isfinite(y)
-                if not np.any(ok):
-                    continue
-                line_item = pg.PlotDataItem(
-                    station[ok], y[ok],
-                    pen=pg.mkPen(color=color, width=1.5),
-                    name=rec.display_label(),
-                )
-                self._plot_widget.addItem(line_item)
-                self._plot_items.append(line_item)
-                plotted += 1
-
-            # ── Structure annotations ──
-            if show_structures:
-                try:
-                    rows = load_structure_flows_at_time(
-                        rec.gpkg_path, rec.run_id, t, t_tol=1.0
-                    )
-                    if rows:
-                        placed_ids = {
-                            str(r.get("object_id", "")) for r in structure_rows
-                        }
-                        for rr in rows:
-                            sid = str(rr.get("object_id", ""))
-                            if sid in placed_ids:
+                    if use_fill_cmap:
+                        fill_metric = np.asarray(prof_data.get(fill_key, np.full_like(station, np.nan)), dtype=np.float64)
+                        fill_ok = fill_metric[ok]
+                        seg_vals, seg_list = [], []
+                        for i in range(len(x_ok) - 1):
+                            if not (fill_mask[i] and fill_mask[i + 1]) or not (np.isfinite(fill_ok[i]) and np.isfinite(fill_ok[i + 1])):
                                 continue
-                            structure_rows.append({
-                                "run_label": rec.display_label(),
-                                "object_id": sid,
-                                "flow": float(rr.get("value", 0.0)),
-                                "station": float("nan"),
-                                "elev": float("nan"),
-                                "placement": "unplaced",
-                            })
-                except Exception:
-                    pass
+                            vmid = 0.5 * (float(fill_ok[i]) + float(fill_ok[i + 1]))
+                            seg_list.append(i)
+                            seg_vals.append(vmid)
+                        if seg_vals:
+                            sv = np.asarray(seg_vals, dtype=np.float64)
+                            sv_min, sv_max = float(np.nanmin(sv)), float(np.nanmax(sv))
+                            if sv_max <= sv_min:
+                                sv_max = sv_min + 1.0
+                            for idx, i in enumerate(seg_list):
+                                vmid = seg_vals[idx]
+                                t_norm = (vmid - sv_min) / (sv_max - sv_min)
+                                rgb = _cmap_color(cmap_name, float(np.clip(t_norm, 0.0, 1.0)))
+                                seg_bed = pg.PlotDataItem([float(x_ok[i]), float(x_ok[i + 1])], [float(bed_ok[i]), float(bed_ok[i + 1])])
+                                seg_wse = pg.PlotDataItem([float(x_ok[i]), float(x_ok[i + 1])], [float(wse_fill[i]), float(wse_fill[i + 1])])
+                                seg_fill = pg.FillBetweenItem(curve1=seg_bed, curve2=seg_wse, brush=pg.mkBrush(QtGui.QColor(*rgb)))
+                                self._plot_widget.addItem(seg_fill)
+                                self._fill_items.append(seg_fill)
 
-        # ── Colormap fill segments ──
-        if use_fill_cmap and fill_segments_data:
-            vals_arr = np.asarray([f[4] for f in fill_segments_data], dtype=np.float64)
-            finite = np.isfinite(vals_arr)
-            if np.any(finite):
-                vmin = float(np.nanmin(vals_arr[finite]))
-                vmax = float(np.nanmax(vals_arr[finite]))
-                if vmax <= vmin:
-                    vmax = vmin + 1.0
-                for seg in fill_segments_data:
-                    x0_s, x1_s, bed_s, wse_s, vmid = seg
-                    t_norm = (vmid - vmin) / (vmax - vmin) if vmax > vmin else 0.5
-                    seg_color = _cmap_brush(cmap_name, float(np.clip(t_norm, 0.0, 1.0)))
-                    seg_bed = pg.PlotDataItem([x0_s, x1_s], [bed_s, bed_s])
-                    seg_wse = pg.PlotDataItem([x0_s, x1_s], [wse_s, wse_s])
-                    seg_fill = pg.FillBetweenItem(
-                        curve1=seg_bed, curve2=seg_wse,
-                        brush=pg.mkBrush(seg_color),
-                    )
-                    self._plot_widget.addItem(seg_fill)
-                    self._fill_items.append(seg_fill)
+                    wse_plot_vals_plot = np.where(fill_mask, wse_plot_vals, np.nan)
+                    wse_line = pg.PlotDataItem(x_ok, wse_plot_vals_plot, pen=pg.mkPen(color=color, width=1.5), name=f"{rec.display_label()} WSE")
+                    self._plot_widget.addItem(wse_line)
+                    self._plot_items.append(wse_line)
+                    plotted += 1
+                else:
+                    if var_key == "egl_m":
+                        wse_arr = prof_data.get("wse_m")
+                        vel_arr = prof_data.get("velocity_ms")
+                        if wse_arr is None or vel_arr is None:
+                            continue
+                        y = np.asarray(wse_arr, dtype=np.float64) + (np.asarray(vel_arr, dtype=np.float64) ** 2.0) / (2.0 * _u.gravity())
+                    else:
+                        if var_key not in prof_data:
+                            continue
+                        y = np.asarray(prof_data[var_key], dtype=np.float64)
+                    ok = np.isfinite(station) & np.isfinite(y)
+                    if not np.any(ok):
+                        continue
+                    line_item = pg.PlotDataItem(station[ok], y[ok], pen=pg.mkPen(color=color, width=1.5), name=rec.display_label())
+                    self._plot_widget.addItem(line_item)
+                    self._plot_items.append(line_item)
+                    plotted += 1
 
-        # ── Structure annotations on plot ──
-        if plotted and show_structures and structure_rows:
+                if show_structures:
+                    try:
+                        rows = load_structure_flows_at_time(rec.gpkg_path, rec.run_id, t, t_tol=1.0)
+                        if rows:
+                            placed_ids = {str(r.get("object_id", "")) for r in structure_rows}
+                            for rr in rows:
+                                sid = str(rr.get("object_id", ""))
+                                if sid in placed_ids:
+                                    continue
+                                structure_rows.append({"run_label": rec.display_label(), "object_id": sid,
+                                    "flow": float(rr.get("value", 0.0)), "station": float("nan"),
+                                    "elev": float("nan"), "placement": "unplaced"})
+                    except Exception:
+                        pass
+
+            if plotted and show_structures and structure_rows:
+                view_range = self._plot_widget.viewRange()
+                x0_v, x1_v = view_range[0]
+                y0_v, y1_v = view_range[1]
+                y_span = max(y1_v - y0_v, 1.0e-6)
+                for i, row in enumerate(structure_rows):
+                    xs = float(row.get("station", float("nan")))
+                    q_val = float(row.get("flow", 0.0))
+                    sid = str(row.get("object_id", ""))
+                    if not np.isfinite(xs):
+                        continue
+                    vline = pg.InfiniteLine(pos=xs, angle=90, pen=pg.mkPen(color=(89, 89, 89), width=0.9, style=QtCore.Qt.PenStyle.DotLine))
+                    vline.setZValue(2)
+                    self._plot_widget.addItem(vline)
+                    self._structure_items.append(vline)
+                    y_text = y1_v - 0.02 * y_span - 0.035 * y_span * (i % 3)
+                    label = pg.TextItem(f"{sid} {q_val:.2f}", anchor=(0.5, 1.0), color=(89, 89, 89))
+                    label.setPos(xs, y_text)
+                    label.setZValue(6)
+                    self._plot_widget.addItem(label)
+                    self._structure_labels.append(label)
+
+            t_hr = t_sec / 3600.0
+            if not plotted:
+                text = pg.TextItem("No data", anchor=(0.5, 0.5), color=(128, 128, 128))
+                self._plot_widget.addItem(text)
+            self._plot_widget.plotItem.autoRange()
+
+        else:
+            # ── Time-series rendering for coupling types ──
+            eid = self._selected_element_id
+            if not eid:
+                text = pg.TextItem("No data", anchor=(0.5, 0.5), color=(128, 128, 128))
+                self._plot_widget.addItem(text)
+                self._plot_widget.plotItem.autoRange()
+                return
+
+            lu = getattr(data, "_length_unit", "")
+            self._plot_widget.setLabel("bottom", f"Time ({_TIME_UNIT})")
+            self._plot_widget.setLabel("left", str(var_key))
+
+            for rec in run_records:
+                # Load coupling data for this run
+                if data._coupling_run_id != str(rec.run_id):
+                    data.load_coupling_records(str(rec.run_id))
+                coupling = data.get_coupling_records()
+                if not coupling:
+                    continue
+                filtered = [
+                    r for r in coupling
+                    if str(r.get("component", "") or "") == etype
+                    and str(r.get("object_id", "") or "") == eid
+                    and str(r.get("metric", "") or "") == var_key
+                ]
+                if not filtered:
+                    continue
+                filtered.sort(key=lambda r: float(r.get("t_s", 0.0)))
+                t_vals = np.array([float(r["t_s"]) for r in filtered], dtype=np.float64)
+                v_vals = np.array([float(r["value"]) for r in filtered], dtype=np.float64)
+                t_hr = t_vals / 3600.0
+                color = _c2q(rec.color)
+                pen = pg.mkPen(color=color, width=1.6)
+                item = self._plot_widget.plot(t_hr, v_vals, pen=pen, name=rec.display_label())
+                self._plot_items.append(item)
+                plotted += 1
+
+            t_hr_now = t_sec / 3600.0
+            self._vline = pg.InfiniteLine(pos=t_hr_now, angle=90,
+                pen=pg.mkPen(color=(128, 128, 128), width=0.9, style=QtCore.Qt.PenStyle.DashLine))
+            self._vline.setZValue(50)
+            self._plot_widget.addItem(self._vline)
+
+            if not plotted:
+                text = pg.TextItem("No data", anchor=(0.5, 0.5), color=(128, 128, 128))
+                self._plot_widget.addItem(text)
+            self._plot_widget.plotItem.autoRange()
+
+        if self._table_widget is not None and self._table_widget.isVisible():
+            self._populate_table()
             # Get current view range
             view_range = self._plot_widget.viewRange()
             x0_v, x1_v = view_range[0]
@@ -678,21 +755,27 @@ class PGProfileWidget(QtWidgets.QWidget):
     # Slots
     # ------------------------------------------------------------------
 
-    def _on_line_changed(self) -> None:
-        """Line selector changed — update line ID and refresh."""
-        if self._line_combo is None:
-            return
-        lid = self._line_combo.currentData()
-        if lid is not None:
-            self._line_id = int(lid)
-            # Sync to result_data so external code can read it
-            data = self._result_data
-            if data is not None and hasattr(data, "set_line_id"):
-                data.set_line_id(self._line_id)
+    def _on_etype_changed(self) -> None:
+        """Element type changed — repopulate element ID combo and var combo."""
+        self._populate_element_id_combo()
+        self._repopulate_var_combo()
+        self._show_profile_controls()
+        self.refresh()
+
+    def _on_element_id_changed(self) -> None:
+        """Element ID changed — update selected element ID and refresh."""
+        self._selected_element_id = str(self._element_id_combo.currentData() or "")
+        data = self._result_data
+        etype = str(self._etype_combo.currentData() or "line")
+        if etype == "line" and self._selected_element_id:
+            try:
+                data.set_line_id(int(self._selected_element_id))
+            except (ValueError, TypeError):
+                pass
         self.refresh()
 
     def _on_var_changed(self) -> None:
-        """Variable combo changed — update var key and refresh."""
+        """Variable/metric combo changed — update var key and refresh."""
         if self._var_combo is None:
             return
         self._prof_var_key = str(self._var_combo.currentData() or "wse_bed")
@@ -766,88 +849,186 @@ class PGProfileWidget(QtWidgets.QWidget):
     # Combo population
     # ------------------------------------------------------------------
 
-    def _populate_line_combo(self) -> None:
-        """Populate the line combo from result data line IDs."""
-        if self._line_combo is None or self._result_data is None:
+    def _populate_etype(self) -> None:
+        """Called on set_data — populate element ID combo for current etype."""
+        self._populate_element_id_combo()
+        self._repopulate_var_combo()
+        self._show_profile_controls()
+
+    def _populate_element_id_combo(self) -> None:
+        """Populate element ID combo based on selected element type."""
+        if self._element_id_combo is None or self._result_data is None:
             return
-        line_ids = self._result_data.get_line_ids()
-        current = self._line_combo.currentData()
-        self._line_combo.blockSignals(True)
-        self._line_combo.clear()
-        for lid in line_ids:
-            self._line_combo.addItem(f"Line {lid}", lid)
-        if current is not None:
-            idx = self._line_combo.findData(current)
+        etype = str(self._etype_combo.currentData() or "line")
+        prev_data = self._element_id_combo.currentData()
+        self._element_id_combo.blockSignals(True)
+        self._element_id_combo.clear()
+
+        data = self._result_data
+        if etype == "line":
+            line_ids = data.get_line_ids()
+            for lid in line_ids:
+                self._element_id_combo.addItem(f"Line {lid}", lid)
+        else:
+            # Coupling-based types
+            first_enabled = None
+            for rec in getattr(data, "_run_records", []):
+                if rec.enabled:
+                    first_enabled = rec
+                    break
+            if first_enabled is not None and getattr(data, "_coupling_run_id", "") != str(first_enabled.run_id):
+                data.load_coupling_records(str(first_enabled.run_id))
+            coupling = data.get_coupling_records()
+            seen = set()
+            for rec in coupling:
+                if str(rec.get("component", "") or "") != etype:
+                    continue
+                oid = str(rec.get("object_id", "") or "")
+                if not oid or oid in seen:
+                    continue
+                seen.add(oid)
+                oname = str(rec.get("object_name", "") or "")
+                lbl = f"{oname} ({oid})" if oname else oid
+                self._element_id_combo.addItem(lbl, oid)
+
+        if prev_data is not None:
+            idx = self._element_id_combo.findData(prev_data)
             if idx >= 0:
-                self._line_combo.setCurrentIndex(idx)
-        # Set initial line_id from first item if nothing selected
-        if self._line_id < 0 and self._line_combo.count() > 0:
-            self._line_id = int(self._line_combo.itemData(0))
+                self._element_id_combo.setCurrentIndex(idx)
+        self._element_id_combo.blockSignals(False)
+        self._selected_element_id = str(self._element_id_combo.currentData() or "")
+        # Sync line_id for line mode
+        if etype == "line" and self._selected_element_id:
+            try:
+                self._line_id = int(self._selected_element_id)
+            except (ValueError, TypeError):
+                pass
+
+    def _repopulate_var_combo(self) -> None:
+        """Populate var/metric combo based on element type."""
+        if self._var_combo is None:
+            return
+        etype = str(self._etype_combo.currentData() or "line")
+        prev_data = self._var_combo.currentData()
+        self._var_combo.blockSignals(True)
+        self._var_combo.clear()
+
+        if etype == "line":
+            for label, key in _PROFILE_VAR_ITEMS:
+                self._var_combo.addItem(label, key)
+        else:
+            # Coupling types — collect unique metrics from coupling records
             data = self._result_data
-            if data is not None and hasattr(data, "set_line_id"):
-                data.set_line_id(self._line_id)
-        self._line_combo.blockSignals(False)
+            coupling = data.get_coupling_records() if data is not None else []
+            seen: set = set()
+            for rec in coupling:
+                comp = str(rec.get("component", "") or "")
+                if comp != etype:
+                    continue
+                m = str(rec.get("metric", "") or "")
+                if m and m not in seen:
+                    seen.add(m)
+            metrics = sorted(seen) or ["flow"]
+            for m in metrics:
+                self._var_combo.addItem(m, m)
+
+        idx = self._var_combo.findData(prev_data)
+        if idx >= 0:
+            self._var_combo.setCurrentIndex(idx)
+        self._var_combo.blockSignals(False)
+        self._prof_var_key = str(self._var_combo.currentData() or "wse_bed")
+
+    def _show_profile_controls(self) -> None:
+        """Show/hide profile-specific controls based on element type."""
+        etype = str(self._etype_combo.currentData() or "line")
+        is_profile = etype == "line"
+        if self._fill_combo is not None:
+            self._fill_combo.setVisible(is_profile)
+        if self._cmap_combo is not None:
+            self._cmap_combo.setVisible(is_profile)
+        if self._show_struct_chk is not None:
+            self._show_struct_chk.setVisible(is_profile)
+        # Update axis labels for time-series mode
+        if self._plot_widget is not None:
+            if is_profile:
+                self._plot_widget.setLabel("bottom", "Station (m)")
+                self._plot_widget.setLabel("left", "Elevation (m)")
+            else:
+                self._plot_widget.setLabel("bottom", f"Time ({_TIME_UNIT})")
+                self._plot_widget.setLabel("left", "Value")
 
     # ------------------------------------------------------------------
     # Data table
     # ------------------------------------------------------------------
 
     def _populate_table(self) -> None:
-        """Fill the data table from profile data."""
+        """Fill the data table from current plot data."""
         if self._table_widget is None or self._result_data is None:
             return
         data = self._result_data
+        etype = str(self._etype_combo.currentData() or "line")
         self._table_widget.setRowCount(0)
         self._table_widget.setColumnCount(0)
 
-        line_id = self._line_id
-        t_sec = float(getattr(data, "current_time_sec", 0.0))
-        run_records = data.get_enabled_run_records()
+        if etype == "line":
+            line_id = self._line_id
+            t_sec = float(getattr(data, "current_time_sec", 0.0))
+            run_records = data.get_enabled_run_records()
 
-        from swe2d.results.queries import (
-            find_nearest_timestep,
-            load_profile,
-            load_profile_from_live,
-        )
-        is_live = getattr(data, "data_source", "") == "live"
+            from swe2d.results.queries import find_nearest_timestep, load_profile, load_profile_from_live
+            is_live = getattr(data, "data_source", "") == "live"
 
-        records: List[Dict[str, Any]] = []
-        for rec in run_records:
-            if line_id < 0:
-                continue
-            t = find_nearest_timestep(rec.gpkg_path, rec.run_id, line_id, t_sec)
-            prof_data = (
-                load_profile_from_live(data, str(rec.run_id), int(line_id), float(t))
-                if is_live else
-                load_profile(rec.gpkg_path, rec.run_id, line_id, t)
-            )
-            if not prof_data:
-                continue
-            station = prof_data.get("station_m", prof_data.get("dist_m", np.empty(0)))
-            n = int(station.size)
-            for i in range(n):
-                row: Dict[str, Any] = {"run": rec.display_label()}
-                for k, v in prof_data.items():
-                    if isinstance(v, np.ndarray) and i < v.size:
-                        row[k] = float(v[i])
-                records.append(row)
-
-        if not records:
-            return
-
-        cols = ["run"] + [k for k in records[0].keys() if k != "run"]
-        self._table_widget.setColumnCount(len(cols))
-        self._table_widget.setHorizontalHeaderLabels(cols)
-        n = min(len(records), 5000)
-        self._table_widget.setRowCount(n)
-        for i, r in enumerate(records[:n]):
-            for j, c in enumerate(cols):
-                val = r.get(c, "")
-                self._table_widget.setItem(
-                    i, j, QtWidgets.QTableWidgetItem(
-                        "" if val is None else f"{val:.4g}" if isinstance(val, float) else str(val)
-                    )
+            records: List[Dict[str, Any]] = []
+            for rec in run_records:
+                if line_id < 0:
+                    continue
+                t = find_nearest_timestep(rec.gpkg_path, rec.run_id, line_id, t_sec)
+                prof_data = (
+                    load_profile_from_live(data, str(rec.run_id), int(line_id), float(t))
+                    if is_live else
+                    load_profile(rec.gpkg_path, rec.run_id, line_id, t)
                 )
+                if not prof_data:
+                    continue
+                station = prof_data.get("station_m", prof_data.get("dist_m", np.empty(0)))
+                n = int(station.size)
+                for i in range(n):
+                    row: Dict[str, Any] = {"run": rec.display_label()}
+                    for k, v in prof_data.items():
+                        if isinstance(v, np.ndarray) and i < v.size:
+                            row[k] = float(v[i])
+                    records.append(row)
+            if not records:
+                return
+            cols = ["run"] + [k for k in records[0].keys() if k != "run"]
+            self._table_widget.setColumnCount(len(cols))
+            self._table_widget.setHorizontalHeaderLabels(cols)
+            n = min(len(records), 5000)
+            self._table_widget.setRowCount(n)
+            for i, r in enumerate(records[:n]):
+                for j, c in enumerate(cols):
+                    val = r.get(c, "")
+                    self._table_widget.setItem(
+                        i, j, QtWidgets.QTableWidgetItem(
+                            "" if val is None else f"{val:.4g}" if isinstance(val, float) else str(val)
+                        )
+                    )
+        else:
+            # Coupling data table
+            records = data.get_coupling_records()
+            if not records:
+                return
+            cols = ["t_s", "component", "metric", "object_id", "object_name", "value"]
+            self._table_widget.setColumnCount(len(cols))
+            self._table_widget.setHorizontalHeaderLabels(cols)
+            n = min(len(records), 5000)
+            self._table_widget.setRowCount(n)
+            for i, r in enumerate(records[:n]):
+                for j, c in enumerate(cols):
+                    val = r.get(c, "")
+                    self._table_widget.setItem(
+                        i, j, QtWidgets.QTableWidgetItem("" if val is None else f"{val:.6g}" if isinstance(val, float) else str(val))
+                    )
 
     # ------------------------------------------------------------------
     # Save / Export
@@ -908,7 +1089,9 @@ class PGProfileWidget(QtWidgets.QWidget):
             with open(path, "w", newline="") as f:
                 writer = csv.writer(f)
                 names = [item.name() or f"Series_{i}" for i, item in enumerate(self._plot_items)]
-                writer.writerow(["Station (m)"] + names)
+                etype = str(self._etype_combo.currentData() or "line")
+                xlbl = "Station (m)" if etype == "line" else f"Time ({_TIME_UNIT})"
+                writer.writerow([xlbl] + names)
                 x_data = None
                 y_series = []
                 for item in self._plot_items:

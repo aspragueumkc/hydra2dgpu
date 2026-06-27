@@ -57,9 +57,6 @@ class ResultsToolbox(QtWidgets.QWidget):
     run_remove_requested = pyqtSignal()
     run_show_all = pyqtSignal()
     run_hide_all = pyqtSignal()
-    # Profile / line display signals
-    profile_options_changed = pyqtSignal()
-
     def __init__(self, parent=None):
         super().__init__(parent)
         self._data: Optional[SWE2DResultsData] = None
@@ -248,40 +245,6 @@ class ResultsToolbox(QtWidgets.QWidget):
         self.save_log_chk = QtWidgets.QCheckBox("Save run log to GPKG")
         self.save_log_chk.setChecked(True)
         layout.addRow(self.save_log_chk)
-
-        # --- Profile display options ---
-        layout.addRow(QtWidgets.QLabel("<b>Profile display</b>"))
-
-        self.prof_fill_combo = QtWidgets.QComboBox()
-        for label, key in [
-            ("None", "none"),
-            ("Depth (m)", "depth_m"),
-            ("Velocity (m/s)", "velocity_ms"),
-            ("Flow (cms)", "flow_cms"),
-        ]:
-            self.prof_fill_combo.addItem(label, key)
-        self.prof_fill_combo.currentIndexChanged.connect(
-            self.profile_options_changed.emit)
-        layout.addRow("Fill:", self.prof_fill_combo)
-
-        self.prof_cmap_combo = QtWidgets.QComboBox()
-        for label, key in [
-            ("Viridis", "viridis"),
-            ("Turbo", "turbo"),
-            ("Plasma", "plasma"),
-            ("Inferno", "inferno"),
-            ("Coolwarm", "coolwarm"),
-        ]:
-            self.prof_cmap_combo.addItem(label, key)
-        self.prof_cmap_combo.currentIndexChanged.connect(
-            self.profile_options_changed.emit)
-        layout.addRow("Colormap:", self.prof_cmap_combo)
-
-        self.show_structures_chk = QtWidgets.QCheckBox("Show structures")
-        self.show_structures_chk.setChecked(True)
-        self.show_structures_chk.toggled.connect(
-            self.profile_options_changed.emit)
-        layout.addRow(self.show_structures_chk)
 
         toolbox.addItem(page, "Output")
 

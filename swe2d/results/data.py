@@ -96,12 +96,14 @@ class SWE2DResultsData:
         return self._gpkg_path
 
     def set_gpkg_path(self, gpkg_path: str) -> None:
-        """Set gpkg path."""
+        """Set gpkg path.  Does NOT auto-discover runs — use add_results_files or the Add Results dialog."""
         new = str(gpkg_path or "")
         if new == self._gpkg_path:
             return
         self._gpkg_path = new
-        self.discover_runs()
+        self._selected_run_keys.clear()
+        self._run_records = []
+        self._all_timesteps = np.empty(0, dtype=np.float64)
 
     def set_live_snapshot_timesteps(
         self, snapshot_timesteps: list, t_sec: float = 0.0
@@ -539,6 +541,10 @@ class SWE2DResultsData:
         Skips if the data source is ``"live"`` (in-memory run in progress)
         to avoid overwriting the in-memory timestep slider with empty GPKG
         data during a live simulation.
+
+        Queries load_timesteps (which returns ALL timesteps for a run
+        across every line, regardless of _line_id), so no line filter is
+        needed here.
         """
         if getattr(self, "_data_source", "none") == "live":
             return
@@ -546,10 +552,6 @@ class SWE2DResultsData:
             compute_timestep_union,
             load_timesteps,
         )
-        if self._line_id < 0:
-            self._all_timesteps = np.empty(0, dtype=np.float64)
-            self._anim.set_timesteps(self._all_timesteps)
-            return
 
         ts_sets: List[np.ndarray] = []
         for rec in self._run_records:
