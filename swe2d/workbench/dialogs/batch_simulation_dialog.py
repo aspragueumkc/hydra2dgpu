@@ -513,10 +513,26 @@ class BatchSimulationDialog(QtWidgets.QDialog):
 
                     logger.warning(f"[ERROR] Exception in batch_simulation_dialog.py: {_e}")
 
+        # ── Helper: resolve GPKG table name from QGIS layer ID ────────────
+        def _get_table_name_from_combo(combo):
+            """Return GPKG table name from combo's stored layer ID, or ''."""
+            if combo is None:
+                return ""
+            lid = combo.currentData()
+            if not lid:
+                return ""
+            from qgis.core import QgsProject
+            layer = QgsProject.instance().mapLayer(lid)
+            if layer is None:
+                return ""
+            src = str(layer.source())
+            # GPKG source: "/path/to/file.gpkg|layername=table_name"
+            if "|layername=" in src:
+                return src.split("|layername=", 1)[1].strip()
+            # Fallback: use the display name
+            return str(layer.name()).strip()
+
         # ── Capture top-level keys the headless runner needs ──────────
-        # Read layer combo values from the parent dialog's view widgets.
-        # The combo's currentText() is the QGIS layer name, which
-        # corresponds to the GPKG table name for layer-sourced tables.
         mtab = getattr(parent, "_model_tab_view", None)
         vtab = getattr(parent, "_map_tab_view", None)
 
@@ -528,27 +544,34 @@ class BatchSimulationDialog(QtWidgets.QDialog):
         structures_cfg = None
 
         if vtab is not None:
-            bc_name = str(getattr(vtab, "bc_lines_layer_combo", None).currentText() or "").strip()
-            if bc_name and bc_name != "(none)":
-                bc_lines = bc_name
+            bc_tbl = _get_table_name_from_combo(
+                getattr(vtab, "bc_lines_layer_combo", None))
+            if bc_tbl:
+                bc_lines = bc_tbl
 
-            hg_name = str(getattr(vtab, "hyetograph_layer_combo", None).currentText() or "").strip()
-            rg_name = str(getattr(vtab, "rain_gage_layer_combo", None).currentText() or "").strip()
-            if hg_name and hg_name != "(none)" and rg_name and rg_name != "(none)":
-                hyetograph_cfg = {"table": hg_name, "gauge_layer": rg_name}
+            hg_tbl = _get_table_name_from_combo(
+                getattr(vtab, "hyetograph_layer_combo", None))
+            rg_tbl = _get_table_name_from_combo(
+                getattr(vtab, "rain_gage_layer_combo", None))
+            if hg_tbl and rg_tbl:
+                hyetograph_cfg = {"table": hg_tbl, "gauge_layer": rg_tbl}
 
-            cn_name = str(getattr(vtab, "cn_layer_combo", None).currentText() or "").strip()
-            if cn_name and cn_name != "(none)":
-                rain_cn_cfg = {"table": cn_name, "cn_field": "cn"}
+            cn_tbl = _get_table_name_from_combo(
+                getattr(vtab, "cn_layer_combo", None))
+            if cn_tbl:
+                rain_cn_cfg = {"table": cn_tbl, "cn_field": "cn"}
 
-            dn_name = str(getattr(vtab, "drain_nodes_layer_combo", None).currentText() or "").strip()
-            dl_name = str(getattr(vtab, "drain_links_layer_combo", None).currentText() or "").strip()
-            if dn_name and dn_name != "(none)" and dl_name and dl_name != "(none)":
-                drainage_cfg = {"nodes_layer": dn_name, "links_layer": dl_name}
+            dn_tbl = _get_table_name_from_combo(
+                getattr(vtab, "drain_nodes_layer_combo", None))
+            dl_tbl = _get_table_name_from_combo(
+                getattr(vtab, "drain_links_layer_combo", None))
+            if dn_tbl and dl_tbl:
+                drainage_cfg = {"nodes_layer": dn_tbl, "links_layer": dl_tbl}
 
-            st_name = str(getattr(vtab, "structures_layer_combo", None).currentText() or "").strip()
-            if st_name and st_name != "(none)":
-                structures_cfg = {"layer": st_name}
+            st_tbl = _get_table_name_from_combo(
+                getattr(vtab, "structures_layer_combo", None))
+            if st_tbl:
+                structures_cfg = {"layer": st_tbl}
 
         if mtab is not None:
             im = str(getattr(mtab, "infiltration_method_combo", None).currentData() or "none")
