@@ -886,8 +886,11 @@ class BatchSimulationDialog(QtWidgets.QDialog):
                 status_file = os.path.join(status_dir, f"sim_{idx}.json")
                 cmd += ["--status-file-path", status_file, "--status-interval", "2.0"]
             self._status_files[idx] = status_file
+            # Don't capture stderr — let it flow to the QGIS terminal so
+            # the user sees the full traceback live.  stdout is still
+            # captured (used for progress-table display on failure).
             proc = subprocess.Popen(
-                cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+                cmd, stdout=subprocess.PIPE, stderr=None, text=True,
             )
             self._processes[idx] = proc
             self._active += 1
