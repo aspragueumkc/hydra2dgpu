@@ -9,6 +9,7 @@
 #include <cstddef>
 #include <deque>
 #include <cstdint>
+#include <cstring>
 #include <cmath>
 #include <numeric>
 #include <sstream>
@@ -732,4 +733,183 @@ std::string swe2d_validate_mesh(const SWE2DMesh& mesh) {
     }
 
     return err.str();
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Mesh BLOB serialization (raw binary, no zlib)
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Helper: append a vector's element count (uint64) and raw bytes to a buffer.
+template<typename T>
+static void serialize_vector(std::vector<uint8_t>& buf, const std::vector<T>& vec) {
+    uint64_t count = static_cast<uint64_t>(vec.size());
+    const uint8_t* count_ptr = reinterpret_cast<const uint8_t*>(&count);
+    buf.insert(buf.end(), count_ptr, count_ptr + sizeof(count));
+    if (!vec.empty()) {
+        const uint8_t* data_ptr = reinterpret_cast<const uint8_t*>(vec.data());
+        buf.insert(buf.end(), data_ptr, data_ptr + vec.size() * sizeof(T));
+    }
+}
+
+/// Helper: read a uint64 count and then read `count` elements of type T from the buffer.
+/// Advances `pos` past the consumed bytes. Throws on overflow.
+template<typename T>
+static std::vector<T> deserialize_vector(const uint8_t* data, size_t size, size_t& pos) {
+    if (pos + sizeof(uint64_t) > size) {
+        throw std::runtime_error("swe2d_deserialize_mesh: truncated count prefix");
+    }
+    uint64_t count;
+    std::memcpy(&count, data + pos, sizeof(uint64_t));
+    pos += sizeof(uint64_t);
+    const size_t elem_bytes = count * sizeof(T);
+    if (elem_bytes > size - pos) {
+        throw std::runtime_error("swe2d_deserialize_mesh: truncated vector data");
+    }
+    std::vector<T> vec(static_cast<size_t>(count));
+    if (count > 0) {
+        std::memcpy(vec.data(), data + pos, elem_bytes);
+        pos += elem_bytes;
+    }
+    return vec;
+}
+
+std::vector<uint8_t> swe2d_serialize_mesh(const SWE2DMesh& mesh) {
+    std::vector<uint8_t> buf;
+    buf.reserve(256);
+
+    // Scalars: n_nodes, n_cells, n_edges (each int32)
+    auto append_i32 = [&](int32_t v) {
+        auto p = reinterpret_cast<const uint8_t*>(&v);
+        buf.insert(buf.end(), p, p + sizeof(int32_t));
+    };
+    append_i32(mesh.n_nodes);
+    append_i32(mesh.n_cells);
+    append_i32(mesh.n_edges);
+
+    // All vectors in a fixed order (matching the deserialization order).
+    serialize_vector(buf, mesh.node_x);
+    serialize_vector(buf, mesh.node_y);
+    serialize_vector(buf, mesh.node_z);
+
+    serialize_vector(buf, mesh.cell_face_offsets);
+    serialize_vector(buf, mesh.cell_face_nodes);
+    serialize_vector(buf, mesh.cell_edge_offsets);
+    serialize_vector(buf, mesh.cell_edge_ids);
+
+    serialize_vector(buf, mesh.cell_cx);
+    serialize_vector(buf, mesh.cell_cy);
+    serialize_vector(buf, mesh.cell_area);
+    serialize_vector(buf, mesh.cell_zb);
+    serialize_vector(buf, mesh.cell_inv_area);
+
+    serialize_vector(buf, mesh.edge_c0);
+    serialize_vector(buf, mesh.edge_c1);
+    serialize_vector(buf, mesh.edge_n0);
+    serialize_vector(buf, mesh.edge_n1);
+    serialize_vector(buf, mesh.edge_nx);
+    serialize_vector(buf, mesh.edge_ny);
+    serialize_vector(buf, mesh.edge_len);
+
+    // edge_bc is stored as int32 (BCType enum underlying type)
+    {
+        uint64_t count = static_cast<uint64_t>(mesh.edge_bc.size());
+        auto p = reinterpret_cast<const uint8_t*>(&count);
+        buf.insert(buf.end(), p, p + sizeof(uint64_t));
+        for (auto bc : mesh.edge_bc) {
+            int32_t v = static_cast<int32_t>(bc);
+            auto vp = reinterpret_cast<const uint8_t*>(&v);
+            buf.insert(buf.end(), vp, vp + sizeof(int32_t));
+        }
+    }
+
+    serialize_vector(buf, mesh.edge_bc_val);
+
+    serialize_vector(buf, mesh.cell_perm);
+
+    serialize_vector(buf, mesh.cell_ring2_offsets);
+    serialize_vector(buf, mesh.cell_ring2_ids);
+    serialize_vector(buf, mesh.cell_ring2_dcx);
+    serialize_vector(buf, mesh.cell_ring2_dcy);
+    serialize_vector(buf, mesh.cell_ring2_inv_dist2);
+
+    return buf;
+}
+
+SWE2DMesh swe2d_deserialize_mesh(const uint8_t* data, size_t size) {
+    size_t pos = 0;
+    SWE2DMesh mesh;
+
+    // Read scalars.
+    auto read_i32 = [&]() -> int32_t {
+        if (pos + sizeof(int32_t) > size) {
+            throw std::runtime_error("swe2d_deserialize_mesh: truncated scalar");
+        }
+        int32_t v;
+        std::memcpy(&v, data + pos, sizeof(int32_t));
+        pos += sizeof(int32_t);
+        return v;
+    };
+
+    mesh.n_nodes = read_i32();
+    mesh.n_cells = read_i32();
+    mesh.n_edges = read_i32();
+
+    // Read vectors in the same order they were written.
+    mesh.node_x            = deserialize_vector<double>(data, size, pos);
+    mesh.node_y            = deserialize_vector<double>(data, size, pos);
+    mesh.node_z            = deserialize_vector<double>(data, size, pos);
+
+    mesh.cell_face_offsets = deserialize_vector<int32_t>(data, size, pos);
+    mesh.cell_face_nodes   = deserialize_vector<int32_t>(data, size, pos);
+    mesh.cell_edge_offsets = deserialize_vector<int32_t>(data, size, pos);
+    mesh.cell_edge_ids     = deserialize_vector<int32_t>(data, size, pos);
+
+    mesh.cell_cx           = deserialize_vector<double>(data, size, pos);
+    mesh.cell_cy           = deserialize_vector<double>(data, size, pos);
+    mesh.cell_area         = deserialize_vector<double>(data, size, pos);
+    mesh.cell_zb           = deserialize_vector<double>(data, size, pos);
+    mesh.cell_inv_area     = deserialize_vector<double>(data, size, pos);
+
+    mesh.edge_c0           = deserialize_vector<int32_t>(data, size, pos);
+    mesh.edge_c1           = deserialize_vector<int32_t>(data, size, pos);
+    mesh.edge_n0           = deserialize_vector<int32_t>(data, size, pos);
+    mesh.edge_n1           = deserialize_vector<int32_t>(data, size, pos);
+    mesh.edge_nx           = deserialize_vector<double>(data, size, pos);
+    mesh.edge_ny           = deserialize_vector<double>(data, size, pos);
+    mesh.edge_len          = deserialize_vector<double>(data, size, pos);
+
+    // edge_bc: stored as int32 values (BCType underlying type)
+    {
+        if (pos + sizeof(uint64_t) > size) {
+            throw std::runtime_error("swe2d_deserialize_mesh: truncated edge_bc count");
+        }
+        uint64_t bc_count;
+        std::memcpy(&bc_count, data + pos, sizeof(uint64_t));
+        pos += sizeof(uint64_t);
+        if (bc_count > 0) {
+            const size_t bc_bytes = static_cast<size_t>(bc_count) * sizeof(int32_t);
+            if (bc_bytes > size - pos) {
+                throw std::runtime_error("swe2d_deserialize_mesh: truncated edge_bc data");
+            }
+            mesh.edge_bc.resize(static_cast<size_t>(bc_count));
+            for (uint64_t i = 0; i < bc_count; ++i) {
+                int32_t v;
+                std::memcpy(&v, data + pos + i * sizeof(int32_t), sizeof(int32_t));
+                mesh.edge_bc[static_cast<size_t>(i)] = static_cast<BCType>(v);
+            }
+            pos += bc_bytes;
+        }
+    }
+
+    mesh.edge_bc_val       = deserialize_vector<double>(data, size, pos);
+
+    mesh.cell_perm         = deserialize_vector<int32_t>(data, size, pos);
+
+    mesh.cell_ring2_offsets = deserialize_vector<int32_t>(data, size, pos);
+    mesh.cell_ring2_ids    = deserialize_vector<int32_t>(data, size, pos);
+    mesh.cell_ring2_dcx    = deserialize_vector<double>(data, size, pos);
+    mesh.cell_ring2_dcy    = deserialize_vector<double>(data, size, pos);
+    mesh.cell_ring2_inv_dist2 = deserialize_vector<double>(data, size, pos);
+
+    return mesh;
 }

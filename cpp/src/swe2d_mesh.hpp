@@ -6,6 +6,7 @@
 // Coordinate system: standard (x east, y north). All distances in metres.
 // Cell orientation: counter-clockwise (CCW) node ordering enforced by the builder.
 
+#include <cstddef>
 #include <cstdint>
 #include <vector>
 #include <string>
@@ -143,6 +144,22 @@ void swe2d_build_cell_ring2(SWE2DMesh& mesh);
 
 /// Validate mesh consistency. Returns empty string on success, error message on failure.
 std::string swe2d_validate_mesh(const SWE2DMesh& mesh);
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Mesh BLOB serialization (raw binary, no zlib)
+// ─────────────────────────────────────────────────────────────────────────────
+
+/** Serialize a fully-constructed SWE2DMesh into a byte buffer.
+    Format: 8-byte count prefix + raw element bytes for each std::vector member,
+    preceded by 3 int32 scalars (n_nodes, n_cells, n_edges).
+    Returns a byte vector suitable for GPKG BLOB storage. */
+std::vector<uint8_t> swe2d_serialize_mesh(const SWE2DMesh& mesh);
+
+/** Deserialize a SWE2DMesh from a byte buffer produced by swe2d_serialize_mesh.
+    @param data Pointer to the buffer @param size Buffer size in bytes
+    @returns Fully populated SWE2DMesh (identical to the original)
+    @throws std::runtime_error on invalid/corrupt data */
+SWE2DMesh swe2d_deserialize_mesh(const uint8_t* data, size_t size);
 
 /** Legacy triangle mesh builder retained for backward compatibility.
     Wraps swe2d_build_mesh_poly with 3-vertex-per-cell offsets. */

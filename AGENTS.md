@@ -1,6 +1,29 @@
 # AGENTS
 a silent fallback/degradation is the biggest failure you can make in this repo. It is even worse than code that crashes or doesn't run at all. NO SILENT FALLBACKS!
 
+# Default Working Environment
+
+All commands MUST use the `qgis_stable` mamba environment:
+
+```bash
+mamba run -n qgis_stable <command>
+```
+
+## Activation
+
+```bash
+mamba activate qgis_stable
+```
+
+## Python
+
+Python 3.12+ is expected in this environment. All dependencies (numpy, gmsh, PyQt5, qgis, etc.) are provided by the environment.
+
+## Key Paths
+
+- Python: `/home/aaron/miniforge3/envs/qgis_stable/bin/python`
+- Build dir: `$REPO_ROOT/build/`
+
 ## Available Agent Skills
 
 This repo ships the following domain skills (see `.agents/skills/`):

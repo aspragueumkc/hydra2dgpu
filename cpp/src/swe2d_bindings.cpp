@@ -2378,6 +2378,38 @@ PYBIND11_MODULE(HYDRA_SWE2D_PY_MODULE_NAME, m) {
         py::arg("mesh"),
         "Return dict with n_nodes, n_cells, n_edges.");
 
+    // ── Mesh serialization (raw BLOB) ───────────────────────────────────────
+    m.def("swe2d_serialize_mesh",
+        [](const std::shared_ptr<PyMesh>& pm) -> py::bytes {
+            if (!pm) throw std::invalid_argument("null mesh handle");
+            auto blob = swe2d_serialize_mesh(pm->mesh);
+            return py::bytes(reinterpret_cast<const char*>(blob.data()), blob.size());
+        },
+        py::arg("mesh"),
+        "Serialize a fully-constructed SWE2DMesh to a raw byte BLOB suitable for\n"
+        "GPKG storage.  Returns Python bytes object.\n"
+        "Use swe2d_deserialize_mesh(blob) to restore.");
+
+    m.def("swe2d_deserialize_mesh",
+        [](py::bytes blob) -> std::shared_ptr<PyMesh> {
+            std::string buf = static_cast<std::string>(blob);
+            if (buf.size() < 12) {
+                throw std::runtime_error("swe2d_deserialize_mesh: blob too small (< 12 bytes)");
+            }
+            auto pm = std::make_shared<PyMesh>();
+            pm->mesh = swe2d_deserialize_mesh(
+                reinterpret_cast<const uint8_t*>(buf.data()), buf.size());
+
+            std::string err = swe2d_validate_mesh(pm->mesh);
+            if (!err.empty()) {
+                throw std::runtime_error("Deserialized mesh validation failed: " + err);
+            }
+            return pm;
+        },
+        py::arg("blob"),
+        "Deserialize a SWE2DMesh from a raw byte BLOB produced by swe2d_serialize_mesh.\n"
+        "Returns a fully-constructed PyMesh handle (identical to the original).");
+
     // ── Cell permutation (RCMK renumbering) ──────────────────────────────────
     m.def("swe2d_get_cell_perm",
         [](const std::shared_ptr<PyMesh>& pm) -> py::array_t<int32_t>
@@ -3061,6 +3093,95 @@ PYBIND11_MODULE(HYDRA_SWE2D_PY_MODULE_NAME, m) {
             return "<SWE2DMeshHandle nodes=" + std::to_string(pm.mesh.n_nodes)
                  + " cells=" + std::to_string(pm.mesh.n_cells)
                  + " edges=" + std::to_string(pm.mesh.n_edges) + ">";
+        })
+        // ── Python accessor properties for post-hoc line resampling ─────
+        .def_property_readonly("node_x", [](const PyMesh& pm) {
+            return py::array_t<double>(
+                static_cast<py::ssize_t>(pm.mesh.node_x.size()),
+                pm.mesh.node_x.data(),
+                py::cast(pm));
+        })
+        .def_property_readonly("node_y", [](const PyMesh& pm) {
+            return py::array_t<double>(
+                static_cast<py::ssize_t>(pm.mesh.node_y.size()),
+                pm.mesh.node_y.data(),
+                py::cast(pm));
+        })
+        .def_property_readonly("node_z", [](const PyMesh& pm) {
+            return py::array_t<double>(
+                static_cast<py::ssize_t>(pm.mesh.node_z.size()),
+                pm.mesh.node_z.data(),
+                py::cast(pm));
+        })
+        .def_property_readonly("cell_face_offsets", [](const PyMesh& pm) -> py::object {
+            if (pm.mesh.cell_face_offsets.empty()) return py::none();
+            return py::array_t<int32_t>(
+                static_cast<py::ssize_t>(pm.mesh.cell_face_offsets.size()),
+                pm.mesh.cell_face_offsets.data(),
+                py::cast(pm));
+        })
+        .def_property_readonly("cell_face_nodes", [](const PyMesh& pm) -> py::object {
+            if (pm.mesh.cell_face_nodes.empty()) return py::none();
+            return py::array_t<int32_t>(
+                static_cast<py::ssize_t>(pm.mesh.cell_face_nodes.size()),
+                pm.mesh.cell_face_nodes.data(),
+                py::cast(pm));
+        })
+        .def_property_readonly("cell_nodes", [](const PyMesh& pm) -> py::object {
+            // For triangular meshes (3 vertices per cell), return (M*3,) array.
+            // For polygon meshes, return None (use cell_face_offsets + cell_face_nodes).
+            const auto& offs = pm.mesh.cell_face_offsets;
+            if (offs.empty() || pm.mesh.n_cells <= 0) return py::none();
+            // Check if all cells have exactly 3 vertices (triangular mesh).
+            bool all_tri = true;
+            for (int32_t c = 0; c < pm.mesh.n_cells; ++c) {
+                if (offs[static_cast<size_t>(c) + 1] - offs[static_cast<size_t>(c)] != 3) {
+                    all_tri = false;
+                    break;
+                }
+            }
+            if (!all_tri) return py::none();
+            return py::array_t<int32_t>(
+                static_cast<py::ssize_t>(pm.mesh.cell_face_nodes.size()),
+                pm.mesh.cell_face_nodes.data(),
+                py::cast(pm));
+        })
+        .def_property_readonly("cell_zb", [](const PyMesh& pm) {
+            return py::array_t<double>(
+                static_cast<py::ssize_t>(pm.mesh.cell_zb.size()),
+                pm.mesh.cell_zb.data(),
+                py::cast(pm));
+        })
+        .def_property_readonly("cell_cx", [](const PyMesh& pm) {
+            return py::array_t<double>(
+                static_cast<py::ssize_t>(pm.mesh.cell_cx.size()),
+                pm.mesh.cell_cx.data(),
+                py::cast(pm));
+        })
+        .def_property_readonly("cell_cy", [](const PyMesh& pm) {
+            return py::array_t<double>(
+                static_cast<py::ssize_t>(pm.mesh.cell_cy.size()),
+                pm.mesh.cell_cy.data(),
+                py::cast(pm));
+        })
+        .def_property_readonly("cell_area", [](const PyMesh& pm) {
+            return py::array_t<double>(
+                static_cast<py::ssize_t>(pm.mesh.cell_area.size()),
+                pm.mesh.cell_area.data(),
+                py::cast(pm));
+        })
+        .def_property_readonly("cell_inv_area", [](const PyMesh& pm) {
+            return py::array_t<double>(
+                static_cast<py::ssize_t>(pm.mesh.cell_inv_area.size()),
+                pm.mesh.cell_inv_area.data(),
+                py::cast(pm));
+        })
+        .def_property_readonly("cell_perm", [](const PyMesh& pm) -> py::object {
+            if (pm.mesh.cell_perm.empty()) return py::none();
+            return py::array_t<int32_t>(
+                static_cast<py::ssize_t>(pm.mesh.cell_perm.size()),
+                pm.mesh.cell_perm.data(),
+                py::cast(pm));
         });
 
     py::class_<PySolver, std::shared_ptr<PySolver>>(m, "SWE2DSolverHandle")
