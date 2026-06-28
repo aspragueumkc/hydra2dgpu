@@ -445,17 +445,10 @@ class PGTimeSeriesWidget(QtWidgets.QWidget):
     def _load_timeseries_for_type(
         self, run_rec, element_id, var_key: str, etype: str
     ) -> dict:
-        """Load time-series data for a line (GPKG), or coupling records for structure/drainage.
-
-        For lines: delegates to load_timeseries / load_timeseries_from_live.
-        For coupling types: filters the in-memory coupling records by
-        component, object_id, and metric.
-        """
-        from swe2d.results.queries import load_timeseries as _load_ts
-        from swe2d.results.queries import load_timeseries_from_live as _load_ts_live
+        """Load time-series data for a line (baked), or coupling records for structure/drainage."""
+        from swe2d.services.gpkg_persistence_service import load_baked_line_timeseries
         import numpy as np
 
-        is_live = getattr(self._result_data, "data_source", "") == "live"
         data = self._result_data
 
         if etype == "line":
@@ -463,11 +456,12 @@ class PGTimeSeriesWidget(QtWidgets.QWidget):
                 lid = int(element_id)
             except (TypeError, ValueError):
                 return {}
-            raw = (
-                _load_ts_live(data, str(run_rec.run_id), lid)
-                if is_live else
-                _load_ts(str(run_rec.gpkg_path), str(run_rec.run_id), lid)
-            )
+            raw = load_baked_line_timeseries(
+                data, str(run_rec.run_id), lid
+            ) if getattr(data, "_live_times", None) is not None and data._live_times.size > 0 else \
+                load_baked_line_timeseries(
+                    str(run_rec.gpkg_path), str(run_rec.run_id), lid
+                )
             return raw if raw else {}
 
         # Coupling-based types

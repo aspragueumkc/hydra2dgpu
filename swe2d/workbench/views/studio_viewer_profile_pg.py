@@ -459,9 +459,8 @@ class PGProfileWidget(QtWidgets.QWidget):
         run_records = data.get_enabled_run_records()
         var_key = self._prof_var_key
 
-        from swe2d.results.queries import load_timeseries as _load_ts
-        from swe2d.results.queries import load_timeseries_from_live as _load_ts_live
-        is_live = getattr(data, "data_source", "") == "live"
+        from swe2d.services.gpkg_persistence_service import load_baked_line_profile, load_baked_line_timeseries
+        from swe2d import units as _u
 
         # Clear the plot
         self._plot_widget.clear()
@@ -514,11 +513,11 @@ class PGProfileWidget(QtWidgets.QWidget):
             bed_drawn = False
             structure_rows: List[Dict[str, Any]] = []
             for rec in run_records:
-                t = find_nearest_timestep(rec.gpkg_path, rec.run_id, line_id, t_sec)
-                prof_data = (
-                    load_profile_from_live(data, str(rec.run_id), int(line_id), float(t))
-                    if is_live else
-                    load_profile(rec.gpkg_path, rec.run_id, line_id, t)
+                # Baked path: single function for live and GPKG
+                prof_data = load_baked_line_profile(
+                    data if getattr(data, "_live_times", None) is not None and data._live_times.size > 0
+                    else rec.gpkg_path,
+                    str(rec.run_id), int(line_id), float(t_sec),
                 )
                 if not prof_data:
                     continue
@@ -982,18 +981,16 @@ class PGProfileWidget(QtWidgets.QWidget):
             t_sec = float(getattr(data, "current_time_sec", 0.0))
             run_records = data.get_enabled_run_records()
 
-            from swe2d.results.queries import find_nearest_timestep, load_profile, load_profile_from_live
-            is_live = getattr(data, "data_source", "") == "live"
+            from swe2d.services.gpkg_persistence_service import load_baked_line_profile
 
             records: List[Dict[str, Any]] = []
             for rec in run_records:
                 if line_id < 0:
                     continue
-                t = find_nearest_timestep(rec.gpkg_path, rec.run_id, line_id, t_sec)
-                prof_data = (
-                    load_profile_from_live(data, str(rec.run_id), int(line_id), float(t))
-                    if is_live else
-                    load_profile(rec.gpkg_path, rec.run_id, line_id, t)
+                prof_data = load_baked_line_profile(
+                    data if getattr(data, "_live_times", None) is not None and data._live_times.size > 0
+                    else rec.gpkg_path,
+                    str(rec.run_id), int(line_id), float(t_sec),
                 )
                 if not prof_data:
                     continue

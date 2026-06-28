@@ -56,8 +56,14 @@ class SWE2DResultsData:
         # Animation (needs QTimer — acceptable Qt dependency)
         self._anim = ResultsAnimationController(fps=self._anim_fps)
 
-        # Data source flag: "none", "live", "gpkg"
+        # Data source flag: "none", "live", "gpkg" (remains for backward compat)
         self._data_source: str = "none"
+
+        # Baked live snapshot storage (numpy arrays, same shape as GPKG BLOBs)
+        self._live_times: np.ndarray = np.empty(0, dtype=np.float64)
+        self._live_h: np.ndarray = np.empty((0, 0), dtype=np.float64)
+        self._live_hu: np.ndarray = np.empty((0, 0), dtype=np.float64)
+        self._live_hv: np.ndarray = np.empty((0, 0), dtype=np.float64)
 
         # Struct coupling data (populated on run discovery)
         self._coupling_records: list = []
@@ -73,7 +79,7 @@ class SWE2DResultsData:
         self.overlay_cell_nodes: Optional[np.ndarray] = None
         self.overlay_tri_to_cell: Optional[np.ndarray] = None
 
-        # In-memory snapshots during a live run
+        # In-memory snapshots during a live run (kept for backward compat)
         self._live_snapshot_timesteps: list = []
         # Line timeseries: {line_id: {t_s: [], depth_m: [], vel: [], ...}}
         self._live_line_ts: Dict[int, Dict[str, list]] = {}
@@ -120,9 +126,22 @@ class SWE2DResultsData:
         """
         if not snapshot_timesteps:
             self._all_timesteps = np.empty(0, dtype=np.float64)
+            self._live_times = np.empty(0, dtype=np.float64)
             self._anim.set_timesteps(self._all_timesteps)
             return
+        # Populate numpy arrays (same shape as baked BLOBs)
+        n_steps = len(snapshot_timesteps)
+        n_cells = int(np.asarray(snapshot_timesteps[0][1]).size) if n_steps > 0 else 0
         t_arr = np.array([float(s[0]) for s in snapshot_timesteps], dtype=np.float64)
+        self._live_times = t_arr.copy()
+        if n_cells > 0:
+            self._live_h = np.zeros((n_steps, n_cells), dtype=np.float64)
+            self._live_hu = np.zeros((n_steps, n_cells), dtype=np.float64)
+            self._live_hv = np.zeros((n_steps, n_cells), dtype=np.float64)
+            for i, (_, h, hu, hv) in enumerate(snapshot_timesteps):
+                self._live_h[i] = np.asarray(h, dtype=np.float64).ravel()
+                self._live_hu[i] = np.asarray(hu, dtype=np.float64).ravel()
+                self._live_hv[i] = np.asarray(hv, dtype=np.float64).ravel()
         self._all_timesteps = t_arr
         self._anim.set_timesteps(self._all_timesteps)
         if t_sec > 0.0:
@@ -130,6 +149,10 @@ class SWE2DResultsData:
 
     def clear_live_snapshots(self) -> None:
         self._live_snapshot_timesteps = []
+        self._live_times = np.empty(0, dtype=np.float64)
+        self._live_h = np.empty((0, 0), dtype=np.float64)
+        self._live_hu = np.empty((0, 0), dtype=np.float64)
+        self._live_hv = np.empty((0, 0), dtype=np.float64)
         self._live_line_ts.clear()
         self._live_line_profile.clear()
         self._live_coupling.clear()
@@ -358,26 +381,25 @@ class SWE2DResultsData:
 
     def get_line_ids(self) -> List[int]:
         """Return sorted unique line IDs from enabled runs or live snapshots."""
-        from swe2d.results.queries import load_line_ids
         ids: Set[int] = set()
         for rec in self._run_records:
             if not rec.enabled:
                 continue
             try:
-                loaded = load_line_ids(rec.gpkg_path, rec.run_id)
-                if loaded:
-                    ids.update(lid for lid, _ in loaded)
+                from swe2d.services.gpkg_persistence_service import load_baked_line_timeseries
+                raw = load_baked_line_timeseries(rec.gpkg_path, rec.run_id, -1)
+                # Probe for line IDs via baked table
+                conn = __import__('sqlite3').connect(rec.gpkg_path)
+                try:
+                    rows = conn.execute(
+                        "SELECT DISTINCT line_id FROM swe2d_baked_line_ts WHERE run_id=?",
+                        (rec.run_id,),
+                    ).fetchall()
+                    ids.update(int(r[0]) for r in rows)
+                finally:
+                    conn.close()
             except Exception:
                 pass
-        # Fallback for live runs (no GPKG yet) — extract line IDs from live snapshots
-        if not ids and self._live_line_snapshot_rows:
-            for row in self._live_line_snapshot_rows:
-                try:
-                    lid = int(row.get("line_id", -1))
-                    if lid >= 0:
-                        ids.add(lid)
-                except (TypeError, ValueError):
-                    pass
         return sorted(ids)
 
     @property
@@ -463,9 +485,9 @@ class SWE2DResultsData:
     # ------------------------------------------------------------------
 
     def load_timeseries(self, run_record: RunRecord, line_id: int, var_key: str) -> dict:
-        """Load timeseries data for a run/line/variable."""
-        from swe2d.results.queries import load_timeseries as _load_ts
-        return _load_ts(run_record.gpkg_path, run_record.run_id, line_id)
+        """Load timeseries data for a run/line/variable (baked-aware)."""
+        from swe2d.services.gpkg_persistence_service import load_baked_line_timeseries
+        return load_baked_line_timeseries(run_record.gpkg_path, run_record.run_id, line_id)
 
     def get_coupling_records(self) -> list:
         """Return coupling records for the active run.
@@ -500,17 +522,21 @@ class SWE2DResultsData:
 
     @property
     def data_source(self) -> str:
+        if self._live_times.size > 0:
+            return "live"
         return self._data_source
 
     def set_data_source(self, source: str) -> None:
         self._data_source = source
 
     def get_snapshot_at_time(self, t_sec: float) -> Optional[Tuple[np.ndarray, np.ndarray, np.ndarray]]:
-        if self._data_source == "live":
-            snapshots = self._live_snapshot_timesteps
-            if not snapshots:
-                return None
-            best = min(snapshots, key=lambda s: abs(s[0] - t_sec))
+        # Try baked live arrays first
+        if self._live_times.size > 0 and self._live_h.size > 0:
+            i = int(np.argmin(np.abs(self._live_times - t_sec)))
+            return (self._live_h[i], self._live_hu[i], self._live_hv[i])
+        # Fall back to old list-of-tuples for backward compat
+        if self._live_snapshot_timesteps:
+            best = min(self._live_snapshot_timesteps, key=lambda s: abs(s[0] - t_sec))
             return (best[1], best[2], best[3])
         return None
 
@@ -603,33 +629,23 @@ class SWE2DResultsData:
     # ------------------------------------------------------------------
 
     def _rebuild_timestep_union(self) -> None:
-        """Rebuild the union of all timesteps from GPKG run records.
+        """Rebuild the union of all timesteps from baked results BLOBs.
 
-        Skips if the data source is ``"live"`` (in-memory run in progress)
-        to avoid overwriting the in-memory timestep slider with empty GPKG
-        data during a live simulation.
-
-        Queries load_timesteps (which returns ALL timesteps for a run
-        across every line, regardless of _line_id), so no line filter is
-        needed here.
+        Uses load_baked_timesteps for efficient np.frombuffer reads.
+        No longer skips live data — baked arrays handle both paths.
         """
-        if getattr(self, "_data_source", "none") == "live":
-            return
-        from swe2d.results.timestep_service import (
-            compute_timestep_union,
-            load_timesteps,
-        )
+        from swe2d.services.gpkg_persistence_service import load_baked_timesteps
 
         ts_sets: List[np.ndarray] = []
         for rec in self._run_records:
             if not rec.enabled:
                 continue
-            ts = load_timesteps(rec.gpkg_path, rec.run_id)
+            ts = load_baked_timesteps(rec.gpkg_path, rec.run_id)
             if ts.size:
                 ts_sets.append(ts)
 
         self._all_timesteps = (
-            compute_timestep_union(ts_sets) if ts_sets
+            np.unique(np.concatenate(ts_sets)) if ts_sets
             else np.empty(0, dtype=np.float64)
         )
         self._anim_frame_idx = 0
@@ -658,7 +674,7 @@ class SWE2DResultsData:
             ])
 
     def _load_coupling_for_first_enabled_run(self) -> None:
-        """load coupling for first enabled run."""
+        """load coupling for first enabled run (baked)."""
         first = None
         for rec in self._run_records:
             if rec.enabled:
@@ -670,8 +686,25 @@ class SWE2DResultsData:
             self._coupling_gpkg_path = ""
             return
         try:
-            from swe2d.results.timestep_service import load_coupling_for_run
-            self._coupling_records = load_coupling_for_run(first.gpkg_path, first.run_id)
+            from swe2d.services.gpkg_persistence_service import load_baked_coupling_timeseries
+            # Load all coupling records for this run via baked table
+            conn = __import__('sqlite3').connect(first.gpkg_path)
+            try:
+                rows = conn.execute(
+                    "SELECT component, object_id, object_name, metric, n_timesteps "
+                    "FROM swe2d_baked_coupling WHERE run_id=?",
+                    (first.run_id,),
+                ).fetchall()
+                records = []
+                for comp, oid, oname, metric, n_ts in rows:
+                    records.append({
+                        "component": comp, "object_id": oid,
+                        "object_name": oname, "metric": metric,
+                        "n_timesteps": n_ts,
+                    })
+                self._coupling_records = records
+            finally:
+                conn.close()
             self._coupling_run_id = first.run_id
             self._coupling_gpkg_path = first.gpkg_path
         except Exception as exc:
@@ -679,7 +712,7 @@ class SWE2DResultsData:
             self._coupling_records = []
 
     def load_coupling_records(self, run_id_or_key: str) -> None:
-        """Load coupling records from GPKG, falling back to live snapshots."""
+        """Load coupling records from GPKG baked table, falling back to live."""
         gpkg = ""
         for rec in self._run_records:
             if rec.run_id == run_id_or_key or rec.key == run_id_or_key:

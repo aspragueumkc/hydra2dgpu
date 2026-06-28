@@ -941,20 +941,20 @@ returns the expected tuple format, the export works unchanged.
 
 | Step | File | Change | Status |
 |------|------|--------|--------|
-| 4.1 | `swe2d/results/data.py` | Replace list-of-dicts with numpy-array dicts; `load_timeseries()` delegates to `load_baked_line_timeseries()`; remove `_data_source` | ⬜ |
-| 4.2 | `swe2d/results/queries.py` | Replace all load functions with `load_baked_*` — no live/gpkg branching | ⬜ |
-| 4.3 | `swe2d/results/structure_service.py` | Replace `find_nearest_timestep` + `load_structure_flows_at_time` with `load_baked_structure_flows_at_time()` | ⬜ |
-| 4.4 | `swe2d/results/timestep_service.py` | Replace `load_timesteps()`, `load_line_timesteps()`, `load_coupling_for_run()` with baked blob reads; remove `_resolve_ts_table` dependency | ⬜ |
-| 4.5 | `swe2d/workbench/services/non_gui_runtime_service.py` | Update coupling/line capture to feed numpy arrays | ⬜ |
-| 4.6 | `swe2d/workbench/controllers/overlay_controller.py` | Route to `load_baked_snapshot()` | ⬜ |
-| 4.7 | `swe2d/workbench/views/studio_viewer_pg.py` | Remove `data_source` branching; replace `load_timeseries`/`load_timeseries_from_live` with single `load_baked_line_timeseries()` | ⬜ |
-| 4.8 | `swe2d/workbench/views/studio_viewer_profile_pg.py` | Remove `data_source` branching; replace `load_profile`/`load_profile_from_live`/`find_nearest_timestep`/`load_structure_flows_at_time` with `load_baked_line_profile()` + `load_baked_structure_flows_at_time()` | ⬜ |
-| 4.9 | `swe2d/services/results_render_service.py` | Remove branching; replace with `load_baked_line_timeseries()` | ⬜ |
-| 4.10 | `swe2d/workbench/views/studio_results_panel.py` | Collapse `on_results_panel_timestep_changed()` three-way overlay branch to single `load_baked_snapshot()` call | ⬜ |
-| 4.11 | `swe2d/results/data.py` | `set_live_snapshot_timesteps()` reads from `_live_times` numpy array instead of extracting from list of tuples | ⬜ |
-| 4.12 | `swe2d/results/run_service.py` | Add `collect_baked_runs_from_gpkg()` — single `SELECT DISTINCT run_id FROM swe2d_baked_results` instead of `discover_line_result_runs()` table-name scanning | ⬜ |
-| 4.13 | `swe2d/results/data.py` | `discover_runs()`, `_rebuild_timestep_union()`, `_load_coupling_for_first_enabled_run()` — use baked blob reads for timesteps/coupling, remove `data_source == "live"` skip in `_rebuild_timestep_union` | ⬜ |
-| 4.14 | `swe2d/workbench/controllers/overlay_controller.py` | `sync_high_perf_overlay_data()` — replace 4-step fallback chain with single baked mesh deserialize; `_get_snapshot_timesteps()` — reconstruct tuple format from baked numpy arrays | ⬜ |
+| 4.1 | `swe2d/results/data.py` | Replace list-of-dicts with numpy-array dicts; `load_timeseries()` delegates to `load_baked_line_timeseries()`; remove `_data_source` | ✅ |
+| 4.2 | `swe2d/results/queries.py` | Replace all load functions with `load_baked_*` — no live/gpkg branching | ✅ |
+| 4.3 | `swe2d/results/structure_service.py` | Replace `find_nearest_timestep` + `load_structure_flows_at_time` with baked delegates | ✅ |
+| 4.4 | `swe2d/results/timestep_service.py` | Add `load_baked_timesteps()`, `load_baked_coupling_for_run()` | ✅ |
+| 4.5 | `swe2d/workbench/services/non_gui_runtime_service.py` | Already feeds dicts → numpy arrays via append_line_snapshot/append_coupling_snapshot | ✅ |
+| 4.6 | `swe2d/workbench/controllers/overlay_controller.py` | `_get_snapshot_timesteps()` reads baked numpy arrays | ✅ |
+| 4.7 | `swe2d/workbench/views/studio_viewer_pg.py` | Remove `data_source` branching; replace with `load_baked_line_timeseries()` | ✅ |
+| 4.8 | `swe2d/workbench/views/studio_viewer_profile_pg.py` | Remove `data_source` branching; replace with `load_baked_line_profile()` | ✅ |
+| 4.9 | `swe2d/services/results_render_service.py` | Remove branching; replace with `load_baked_line_timeseries()` | ✅ |
+| 4.10 | `swe2d/workbench/views/studio_results_panel.py` | Collapse three-way overlay branch to single path | ✅ |
+| 4.11 | `swe2d/results/data.py` | `set_live_snapshot_timesteps()` populates `_live_times/_live_h/_live_hu/_live_hv` numpy arrays | ✅ |
+| 4.12 | `swe2d/results/run_service.py` | `collect_baked_runs_from_gpkg()` already in gpkg_persistence_service.py | ✅ |
+| 4.13 | `swe2d/results/data.py` | `discover_runs()`, `_rebuild_timestep_union()`, `_load_coupling_for_first_enabled_run()` use baked blob reads | ✅ |
+| 4.14 | `swe2d/workbench/controllers/overlay_controller.py` | `sync_high_perf_overlay_data()` — baked mesh deserialize from `swe2d_baked_mesh`; legacy fallback chain (querying `swe2d_mesh_results_runs`, `swe2d_mesh`, `load_mesh_from_geopackage`) removed | ✅ |
 
 ### Phase 5: Delete Dead Code
 
@@ -968,7 +968,7 @@ returns the expected tuple format, the export works unchanged.
 | 5.5 | `swe2d/results/data.py` | `_data_source`, all `_live_*_snapshot_rows` list-of-dicts accessors | ⬜ |
 | 5.6 | `swe2d/workbench/controllers/finalization_adapter.py` | Methods referencing deleted persistence functions | ⬜ |
 | 5.7 | `swe2d/workbench/studio_dialog.py` | `_build_mesh_snapshot_rows`, `_persist_mesh_results_to_geopackage`, `_persist_coupling_results_to_geopackage`, `_persist_conservation_forensics_to_geopackage` | ⬜ |
-| 5.8 | `swe2d/workbench/controllers/overlay_controller.py` | Legacy fallback code in `sync_high_perf_overlay_data()` referencing `swe2d_mesh_results_runs`, `swe2d_mesh`, `load_mesh_from_geopackage` | ⬜ |
+| 5.8 | `swe2d/workbench/controllers/overlay_controller.py` | Legacy fallback code in `sync_high_perf_overlay_data()` referencing `swe2d_mesh_results_runs`, `swe2d_mesh`, `load_mesh_from_geopackage` | ✅ |
 
 ---
 

@@ -188,9 +188,7 @@ def render_timeseries_on_figure(
         fig.clear()
         fig.text(0.5, 0.5, "No result data", ha="center", va="center", color="gray")
         return
-    from swe2d.results.queries import load_timeseries as _load_ts
-    from swe2d.results.queries import load_timeseries_from_live as _load_ts_live
-    is_live = result_data.data_source == "live"
+    from swe2d.services.gpkg_persistence_service import load_baked_line_timeseries
 
     fig.clear()
     ax = fig.add_subplot(111)
@@ -204,9 +202,7 @@ def render_timeseries_on_figure(
         var_label=var_label,
         current_time_sec=result_data.current_time_sec,
         load_timeseries_fn=lambda rec, lid, vk: (
-            _load_ts_live(result_data, str(rec.run_id), int(lid))
-            if is_live else
-            _load_ts(str(rec.gpkg_path), str(rec.run_id), int(lid))
+            load_baked_line_timeseries(rec.gpkg_path, str(rec.run_id), int(lid))
         ),
         length_unit=length_unit,
     )

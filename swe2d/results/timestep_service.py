@@ -159,3 +159,38 @@ def load_coupling_for_run(gpkg_path: str, run_id: str) -> List[Dict]:
         return []
     finally:
         conn.close()
+
+
+# ---------------------------------------------------------------------------
+# Baked-aware wrappers
+# ---------------------------------------------------------------------------
+
+def load_baked_timesteps(gpkg_path: str, run_id: str) -> np.ndarray:
+    """Load timesteps from baked_results BLOB (delegates to persistence service)."""
+    from swe2d.services.gpkg_persistence_service import load_baked_timesteps as _baked
+    return _baked(gpkg_path, run_id)
+
+
+def load_baked_coupling_for_run(gpkg_path: str, run_id: str) -> List[Dict]:
+    """Load coupling records from baked_coupling table."""
+    import sqlite3
+    try:
+        conn = sqlite3.connect(f"file:{gpkg_path}?mode=ro", uri=True)
+        rows = conn.execute(
+            "SELECT component, object_id, object_name, metric, n_timesteps "
+            "FROM swe2d_baked_coupling WHERE run_id=?",
+            (run_id,),
+        ).fetchall()
+        return [
+            {"component": r[0], "object_id": r[1],
+             "object_name": r[2], "metric": r[3],
+             "n_timesteps": r[4]}
+            for r in rows
+        ]
+    except Exception:
+        return []
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass

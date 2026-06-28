@@ -65,8 +65,23 @@ class OverlayController:
         return getattr(self._view, "_results_data", None)
 
     def _get_snapshot_timesteps(self) -> list:
-        """Return snapshot timesteps from results data."""
-        return self._data.get_live_snapshot_timesteps()
+        """Return snapshot timesteps from results data (baked-aware).
+
+        Reconstructs the tuple format from baked numpy arrays for
+        compatibility with existing callers.
+        """
+        d = self._data
+        if d is None:
+            return []
+        # Try baked live arrays first
+        if hasattr(d, '_live_times') and d._live_times is not None and d._live_times.size > 0:
+            n = d._live_times.size
+            if hasattr(d, '_live_h') and d._live_h is not None and d._live_h.size > 0:
+                return [(float(d._live_times[i]),
+                         d._live_h[i], d._live_hu[i], d._live_hv[i])
+                        for i in range(n)]
+        # Fall back to old list-of-tuples
+        return d.get_live_snapshot_timesteps()
 
     # ── Inlined bridge methods (converted from `dialog` → `self._view`) ──
 
@@ -80,139 +95,65 @@ class OverlayController:
         view = self._view
         _snapshots = self._data.get_live_snapshot_timesteps()
         if not _snapshots:
-            # No in-memory snapshots — build geometry from mesh data or GPKG
-            mesh = getattr(view, "_mesh_data", None) or {}
-            if mesh.get("node_x") is None or mesh.get("cell_nodes") is None:
-                mesh = self._cached_mesh_data or {}
-                if mesh.get("node_x") is None:
-                    # ponytail: load mesh from the same GPKG as the results
-                    _data = getattr(view, "_results_data", None)
-                    gpkg = str(getattr(_data, "gpkg_path", "") or "")
-                    if gpkg and os.path.isfile(gpkg):
-                        try:
-                            from swe2d.services.gpkg_persistence_service import (
-                                load_mesh_from_geopackage,
-                            )
-                            import sqlite3
-                            conn = sqlite3.connect(gpkg)
-                            try:
-                                cur = conn.cursor()
-                                # Look up the runs table for the selected
-                                # overlay targets to find the mesh_hash
-                                # and mesh_name associated with this run.
-                                targets = self._data.enabled_overlay_targets()
-                                run_hash = ""
-                                run_mesh = ""
-                                for tgt_gpkg, tgt_run in targets:
-                                    if tgt_gpkg == gpkg:
-                                        cur.execute(
-                                            "SELECT mesh_hash, mesh_name "
-                                            "FROM swe2d_mesh_results_runs "
-                                            "WHERE run_id = ? "
-                                            "AND mesh_hash != '' "
-                                            "LIMIT 1",
-                                            (tgt_run,),
-                                        )
-                                        row = cur.fetchone()
-                                        if row:
-                                            run_hash = str(row[0] or "")
-                                            run_mesh = str(row[1] or "") if len(row) > 1 else ""
-                                            break
-                                # Load mesh by hash (exact match) or fall
-                                # back to most recent mesh.
-                                loaded = None
-                                if run_hash:
-                                    cur.execute(
-                                        "SELECT mesh_name FROM swe2d_mesh "
-                                        "WHERE hash = ? LIMIT 1",
-                                        (run_hash,),
-                                    )
-                                    row = cur.fetchone()
-                                    if row:
-                                        loaded = load_mesh_from_geopackage(
-                                            gpkg, str(row[0]),
-                                        )
-                                if loaded is None:
-                                    # Fallback: most recent mesh
-                                    cur.execute(
-                                        "SELECT mesh_name FROM swe2d_mesh "
-                                        "ORDER BY created_utc DESC LIMIT 1"
-                                    )
-                                    row = cur.fetchone()
-                                    if row:
-                                        loaded = load_mesh_from_geopackage(
-                                            gpkg, str(row[0]),
-                                        )
-                                if loaded and loaded.get("node_x") is not None:
-                                    self._cached_mesh_data = loaded
-                                    mesh = loaded
-                            finally:
-                                conn.close()
-                        except Exception as exc:
-                            logger.warning(
-                                "Failed to load mesh from GPKG for overlay: %s",
-                                exc,
-                            )
-            if mesh.get("node_x") is not None and mesh.get("cell_nodes") is not None:
+            # Try baked mesh load first (skip old GPKG fallback chain if possible)
+            _data = getattr(view, "_results_data", None)
+            gpkg = str(getattr(_data, "gpkg_path", "") or "")
+            if gpkg and os.path.isfile(gpkg) and hasattr(self._data, 'overlay_cell_x') and self._data.overlay_cell_x is None:
                 try:
-                    cx, cy = view._mesh_cell_centroids()
-                    bed = view._mesh_cell_solver_bed()
-                    self._data.overlay_cell_x = np.asarray(cx, dtype=np.float64)
-                    self._data.overlay_cell_y = np.asarray(cy, dtype=np.float64)
-                    self._data.overlay_cell_bed = np.asarray(bed, dtype=np.float64)
-                    self._data.overlay_node_x = np.asarray(
-                        mesh.get("node_x", np.empty(0)), dtype=np.float64
-                    ).ravel()
-                    self._data.overlay_node_y = np.asarray(
-                        mesh.get("node_y", np.empty(0)), dtype=np.float64
-                    ).ravel()
-                    raw_cell_nodes = np.asarray(
-                        mesh.get("cell_nodes", np.empty(0)), dtype=np.int32
-                    ).ravel()
-                    if "cell_face_offsets" in mesh and "cell_face_nodes" in mesh:
-                        offs = np.asarray(mesh["cell_face_offsets"], dtype=np.int32).ravel()
-                        faces = np.asarray(mesh["cell_face_nodes"], dtype=np.int32).ravel()
-                        tri_list: list[list[int]] = []
-                        tc_list: list[int] = []
-                        for ci in range(int(offs.size) - 1):
-                            s = int(offs[ci])
-                            e = int(offs[ci + 1])
-                            ns = faces[s:e]
-                            for k in range(1, int(ns.size) - 1):
-                                tri_list.append([int(ns[0]), int(ns[k]), int(ns[k + 1])])
-                                tc_list.append(ci)
-                        if tri_list:
-                            self._data.overlay_cell_nodes = np.asarray(
-                                tri_list, dtype=np.int32
-                            ).ravel()
-                            self._data.overlay_tri_to_cell = np.asarray(
-                                tc_list, dtype=np.int32
-                            )
-                        else:
-                            self._data.overlay_cell_nodes = raw_cell_nodes
-                            self._data.overlay_tri_to_cell = np.empty(0, dtype=np.int32)
-                    else:
-                        self._data.overlay_cell_nodes = raw_cell_nodes
-                        self._data.overlay_tri_to_cell = np.empty(0, dtype=np.int32)
-                except Exception as exc:
-                    view._log(f"[HighPerf Overlay] Mesh-based geometry sync failed: {exc}")
-                    self._data.overlay_cell_x = np.empty(0, dtype=np.float64)
-                    self._data.overlay_cell_y = np.empty(0, dtype=np.float64)
-                    self._data.overlay_cell_bed = np.empty(0, dtype=np.float64)
-                    self._data.overlay_node_x = np.empty(0, dtype=np.float64)
-                    self._data.overlay_node_y = np.empty(0, dtype=np.float64)
-                    self._data.overlay_cell_nodes = np.empty(0, dtype=np.int32)
-                    self._data.overlay_tri_to_cell = np.empty(0, dtype=np.int32)
-
-            else:
-                self._data.overlay_cell_x = np.empty(0, dtype=np.float64)
-                self._data.overlay_cell_y = np.empty(0, dtype=np.float64)
-                self._data.overlay_cell_bed = np.empty(0, dtype=np.float64)
-                self._data.overlay_node_x = np.empty(0, dtype=np.float64)
-                self._data.overlay_node_y = np.empty(0, dtype=np.float64)
-                self._data.overlay_cell_nodes = np.empty(0, dtype=np.int32)
-                self._data.overlay_tri_to_cell = np.empty(0, dtype=np.int32)
-
+                    import sqlite3
+                    conn = sqlite3.connect(gpkg)
+                    try:
+                        targets = self._data.enabled_overlay_targets()
+                        target_run = targets[0][1] if targets else ""
+                        if target_run:
+                            row = conn.execute(
+                                "SELECT mesh_name, baked_blob FROM swe2d_baked_mesh "
+                                "WHERE mesh_name = (SELECT mesh_name FROM swe2d_baked_results "
+                                "                   WHERE run_id = ? LIMIT 1)",
+                                (target_run,),
+                            ).fetchone()
+                            if row:
+                                from hydra_swe2d import swe2d_deserialize_mesh
+                                pm = swe2d_deserialize_mesh(row[1])
+                                self._data.overlay_cell_x = np.asarray(pm.cell_cx, dtype=np.float64)
+                                self._data.overlay_cell_y = np.asarray(pm.cell_cy, dtype=np.float64)
+                                self._data.overlay_cell_bed = np.asarray(pm.cell_zb, dtype=np.float64)
+                                self._data.overlay_node_x = np.asarray(pm.node_x, dtype=np.float64)
+                                self._data.overlay_node_y = np.asarray(pm.node_y, dtype=np.float64)
+                                # Triangulate poly mesh for overlay
+                                cfn = pm.cell_face_nodes
+                                cfo = pm.cell_face_offsets
+                                if cfn is not None and cfo is not None:
+                                    cfn_arr = np.asarray(cfn, dtype=np.int32).ravel()
+                                    cfo_arr = np.asarray(cfo, dtype=np.int32).ravel()
+                                    tri_list = []
+                                    tc_list = []
+                                    for ci in range(int(cfo_arr.size) - 1):
+                                        s = int(cfo_arr[ci])
+                                        e = int(cfo_arr[ci + 1])
+                                        ring = cfn_arr[s:e]
+                                        for k in range(1, int(ring.size) - 1):
+                                            tri_list.append([int(ring[0]), int(ring[k]), int(ring[k + 1])])
+                                            tc_list.append(ci)
+                                    if tri_list:
+                                        self._data.overlay_cell_nodes = np.asarray(tri_list, dtype=np.int32).ravel()
+                                        self._data.overlay_tri_to_cell = np.asarray(tc_list, dtype=np.int32)
+                                self._cached_mesh_data = {"node_x": pm.node_x, "node_y": pm.node_y,
+                                                          "cell_nodes": pm.cell_nodes}
+                                conn.close()
+                                return
+                    finally:
+                        conn.close()
+                except Exception:
+                    pass
+            # Baked mesh not available — clear overlay
+            self._data.overlay_cell_x = np.empty(0, dtype=np.float64)
+            self._data.overlay_cell_y = np.empty(0, dtype=np.float64)
+            self._data.overlay_cell_bed = np.empty(0, dtype=np.float64)
+            self._data.overlay_node_x = np.empty(0, dtype=np.float64)
+            self._data.overlay_node_y = np.empty(0, dtype=np.float64)
+            self._data.overlay_cell_nodes = np.empty(0, dtype=np.int32)
+            self._data.overlay_tri_to_cell = np.empty(0, dtype=np.int32)
             self.refresh_high_perf_canvas_overlay(None)
             return
 
