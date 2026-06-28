@@ -891,18 +891,7 @@ class RunController:
                 log_fn(f"[LiveSync] _refresh_plot failed: {exc}")
 
             save_mesh_results = bool(wp["save_mesh_results_to_gpkg_chk"])
-            save_max_only = bool(wp.get("save_max_only_chk", False))
-            max_results = backend.get_max_tracking() if (save_mesh_results or save_max_only) else None
-            if save_max_only and max_results is not None:
-                from swe2d.services.gpkg_persistence_service import (
-                    persist_mesh_max_results_to_geopackage,
-                )
-                persist_mesh_max_results_to_geopackage(
-                    wp.get("results_gpkg_path_edit", ""),
-                    run_id,
-                    max_results,
-                    log_fn=log_fn,
-                )
+            max_results = backend.get_max_tracking() if save_mesh_results else None
             run_finalizer.finalize_and_persist(
                 h=h,
                 hu=hu,
@@ -929,6 +918,7 @@ class RunController:
                 save_mesh_results=save_mesh_results,
                 save_run_log=wp["save_run_log_to_gpkg_chk"],
                 h_min=wp["h_min_spin"],
+                max_tracking=max_results,
             )
 
             return _result_data

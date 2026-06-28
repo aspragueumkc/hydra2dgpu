@@ -1182,10 +1182,9 @@ def build_mesh(
     provided they are passed as polygon args; otherwise ``cell_nodes``
     is used alone (no offsets).
 
-    ``load_mesh_from_geopackage`` restores ``cell_face_nodes`` when
-    offsets exist AND ``offsets[-1] == len(cell_nodes)`` (i.e. the
-    stored ``cell_nodes`` column actually contains flat face nodes).
-    If the GPKG is inconsistent (triangulated cell_nodes with orphan
+    ``load_baked_mesh`` restores ``cell_face_nodes`` from the serialized
+    C++ mesh BLOB when offsets exist AND ``offsets[-1] == len(face_nodes)``.
+    If the BLOB is inconsistent (triangulated cell_nodes with orphan
     offsets), the alias is omitted and the triangle path is used.
 
     Remaining ``**kwargs`` are forwarded to ``SWE2DBackend.build_mesh``

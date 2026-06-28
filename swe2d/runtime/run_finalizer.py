@@ -83,6 +83,7 @@ class SWE2DRunFinalizer:
         save_run_log: bool = False,
         h_min: float = 1.0e-4,
         mesh_name: str = "",
+        max_tracking: Optional[Dict[str, np.ndarray]] = None,
     ) -> None:
         """finalize and persist."""
         h_end_model = np.asarray(h, dtype=np.float64).ravel()
@@ -167,7 +168,7 @@ class SWE2DRunFinalizer:
                     persist_baked_results(
                         gpkg_results_path, run_id, mesh_name,
                         snapshot_timesteps,
-                        max_tracking=None,
+                        max_tracking=max_tracking,
                         log_fn=self._view.log_message,
                     )
                     self._view.log_message(

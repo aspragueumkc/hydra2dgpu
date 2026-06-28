@@ -340,16 +340,17 @@ def _persist_results(
     hv: np.ndarray,
     max_results: Optional[Dict[str, np.ndarray]] = None,
 ) -> None:
-    """Write final results to a results GPKG."""
-    import sqlite3
+    """Write final results to a results GPKG using baked BLOB format."""
+    from swe2d.services.gpkg_persistence_service import persist_baked_results
 
-    conn = sqlite3.connect(gpkg_path)
-    try:
-        cur = conn.cursor()
-        if max_results is not None:
-            from swe2d.services.gpkg_persistence_service import (
-                persist_mesh_max_results_to_geopackage,
-            )
-            persist_mesh_max_results_to_geopackage(gpkg_path, run_id, max_results)
-    finally:
-        conn.close()
+    terminal_snapshot = (
+        0.0,
+        np.asarray(h, dtype=np.float64).copy(),
+        np.asarray(hu, dtype=np.float64).copy(),
+        np.asarray(hv, dtype=np.float64).copy(),
+    )
+    persist_baked_results(
+        gpkg_path, run_id, "",
+        [terminal_snapshot],
+        max_tracking=max_results,
+    )
