@@ -12,7 +12,6 @@ from typing import Any, Dict, List
 import numpy as np
 
 from swe2d.results.db_utils import open_ro, table_exists
-from swe2d.results.queries import _find_prefixed_or_default_table
 
 logger = logging.getLogger(__name__)
 
@@ -36,41 +35,6 @@ def _line_layer_uri(gpkg_path: str, layer_name: str) -> str:
 
 # ---------------------------------------------------------------------------
 # Public API
-# ---------------------------------------------------------------------------
-
-
-def load_structure_records(
-    gpkg_path: str, run_id: str,
-) -> List[Dict[str, Any]]:
-    """Load all coupling structure records for *run_id* from *gpkg_path*.
-
-    Returns a list of dicts with keys:
-        ``t_s``, ``component``, ``metric``, ``object_id``, ``object_name``, ``value``
-
-    Returns an empty list on any error.
-    """
-    if not gpkg_path or not run_id:
-        return []
-    conn = open_ro(gpkg_path)
-    if conn is None:
-        return []
-    try:
-        ct = _find_prefixed_or_default_table(conn, "swe2d_coupling_results")
-        if not ct:
-            return []
-        cur = conn.execute(
-            f'SELECT t_s, component, metric, object_id, object_name, value '
-            f'FROM "{ct}" WHERE run_id = ? ORDER BY t_s',
-            (str(run_id),),
-        )
-        cols = ["t_s", "component", "metric", "object_id", "object_name", "value"]
-        return [dict(zip(cols, row)) for row in cur.fetchall()]
-    except Exception as exc:
-        logger.debug("[STRUCT] Failed to load structure records: %s", exc)
-        return []
-    finally:
-        conn.close()
-
 
 def load_line_geometry(
     gpkg_path: str, line_id: int, line_name: str,

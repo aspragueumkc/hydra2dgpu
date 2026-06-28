@@ -748,7 +748,6 @@ class SWE2DWorkbenchStudioDialog(QtWidgets.QDialog):
             self._mesh_data = mesh_data
             self._log(f"Mesh '{name}' loaded from {os.path.basename(path)} ({mesh_data['node_x'].size} nodes)")
         except Exception as exc:
-        except Exception as exc:
             QtWidgets.QMessageBox.critical(self, "Load Mesh Error", str(exc))
 
     def _assign_node_z_from_terrain(self) -> None:

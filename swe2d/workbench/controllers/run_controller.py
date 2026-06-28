@@ -526,6 +526,14 @@ class RunController:
                     degen_mode=wp["degen_mode"],
                     front_flux_damping=wp["front_flux_damping_spin"],
                     active_set_hysteresis=wp["active_set_hysteresis_chk"],
+                    # Baked mesh persistence — prefer results GPKG, fall back to model GPKG
+                    gpkg_path=(
+                        view.get_line_results_storage_path()
+                        or model_gpkg_path
+                        or ""
+                    ),
+                    mesh_name=str(mesh_data.get("mesh_name", "") or ""),
+                    mesh_crs_wkt=str(mesh_data.get("crs_wkt", "") or ""),
                 )
 
             try:

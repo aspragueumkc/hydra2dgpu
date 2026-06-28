@@ -382,15 +382,25 @@ class SWE2DResultsData:
     def get_line_ids(self) -> List[int]:
         """Return sorted unique line IDs from enabled runs or live snapshots."""
         ids: Set[int] = set()
+
+        # Live data path — keys of _live_line_ts
+        for lid in self._live_line_ts:
+            ids.add(lid)
+
+        # GPKG baked table path — query each enabled run
         for rec in self._run_records:
             if not rec.enabled:
                 continue
             try:
-                from swe2d.services.gpkg_persistence_service import load_baked_line_timeseries
-                raw = load_baked_line_timeseries(rec.gpkg_path, rec.run_id, -1)
-                # Probe for line IDs via baked table
                 conn = __import__('sqlite3').connect(rec.gpkg_path)
                 try:
+                    # Check if table exists first to avoid OperationalError
+                    cur = conn.execute(
+                        "SELECT name FROM sqlite_master "
+                        "WHERE type='table' AND name='swe2d_baked_line_ts'"
+                    )
+                    if cur.fetchone() is None:
+                        continue
                     rows = conn.execute(
                         "SELECT DISTINCT line_id FROM swe2d_baked_line_ts WHERE run_id=?",
                         (rec.run_id,),
@@ -497,8 +507,10 @@ class SWE2DResultsData:
         """
         if self._coupling_records:
             return list(self._coupling_records)
-        if self._data_source == "live" and self._live_coupling_snapshot_rows:
-            return list(self._live_coupling_snapshot_rows)
+        if self._data_source == "live":
+            live_rows = self.get_live_coupling_snapshot_rows()
+            if live_rows:
+                return live_rows
         return []
 
     def get_coupling_run_id(self) -> str:
@@ -674,7 +686,7 @@ class SWE2DResultsData:
             ])
 
     def _load_coupling_for_first_enabled_run(self) -> None:
-        """load coupling for first enabled run (baked)."""
+        """load coupling for first enabled run (baked — expand BLOBs into per-row format)."""
         first = None
         for rec in self._run_records:
             if rec.enabled:
@@ -690,18 +702,28 @@ class SWE2DResultsData:
             # Load all coupling records for this run via baked table
             conn = __import__('sqlite3').connect(first.gpkg_path)
             try:
-                rows = conn.execute(
-                    "SELECT component, object_id, object_name, metric, n_timesteps "
+                meta_rows = conn.execute(
+                    "SELECT component, object_id, object_name, metric "
                     "FROM swe2d_baked_coupling WHERE run_id=?",
                     (first.run_id,),
                 ).fetchall()
                 records = []
-                for comp, oid, oname, metric, n_ts in rows:
-                    records.append({
-                        "component": comp, "object_id": oid,
-                        "object_name": oname, "metric": metric,
-                        "n_timesteps": n_ts,
-                    })
+                for comp, oid, oname, metric in meta_rows:
+                    times, values = load_baked_coupling_timeseries(
+                        first.gpkg_path, first.run_id,
+                        str(comp), str(oid), str(metric),
+                    )
+                    if times is None or times.size == 0:
+                        continue
+                    for i in range(times.size):
+                        records.append({
+                            "t_s": float(times[i]),
+                            "value": float(values[i]),
+                            "component": str(comp),
+                            "object_id": str(oid),
+                            "object_name": str(oname),
+                            "metric": str(metric),
+                        })
                 self._coupling_records = records
             finally:
                 conn.close()
@@ -720,8 +742,9 @@ class SWE2DResultsData:
                 break
         if not gpkg:
             # Live run — use in-memory coupling snapshots if available
-            if self._live_coupling_snapshot_rows:
-                self._coupling_records = list(self._live_coupling_snapshot_rows)
+            live_rows = self.get_live_coupling_snapshot_rows()
+            if live_rows:
+                self._coupling_records = live_rows
                 self._coupling_run_id = run_id_or_key
                 self._coupling_gpkg_path = ""
             else:
@@ -730,10 +753,26 @@ class SWE2DResultsData:
                 self._coupling_gpkg_path = ""
             return
         try:
-            from swe2d.results.timestep_service import load_coupling_for_run
-            self._coupling_records = load_coupling_for_run(gpkg, run_id_or_key)
-            self._coupling_run_id = run_id_or_key
-            self._coupling_gpkg_path = gpkg
+            import sqlite3
+            conn = sqlite3.connect(gpkg)
+            try:
+                rows = conn.execute(
+                    "SELECT component, object_id, object_name, metric, n_timesteps "
+                    "FROM swe2d_baked_coupling WHERE run_id=?",
+                    (run_id_or_key,),
+                ).fetchall()
+                self._coupling_records = [
+                    {
+                        "component": comp, "object_id": oid,
+                        "object_name": oname, "metric": metric,
+                        "n_timesteps": n_ts,
+                    }
+                    for comp, oid, oname, metric, n_ts in rows
+                ]
+                self._coupling_run_id = run_id_or_key
+                self._coupling_gpkg_path = gpkg
+            finally:
+                conn.close()
         except Exception as exc:
             logger.warning("[STRUCT] Failed to load coupling data: %s", exc)
             self._coupling_records = []

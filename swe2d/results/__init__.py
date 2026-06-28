@@ -12,7 +12,6 @@ from swe2d.results.queries import (
     load_profile,
     load_structure_flows_at_time,
     load_timeseries,
-    load_timesteps,
 )
 __all__ = [
     "ResultsAnimationController",
@@ -24,7 +23,6 @@ __all__ = [
     "load_profile",
     "load_structure_flows_at_time",
     "load_timeseries",
-    "load_timesteps",
     "open_ro",
     "render_unstructured_snapshot_image",
     "table_columns",

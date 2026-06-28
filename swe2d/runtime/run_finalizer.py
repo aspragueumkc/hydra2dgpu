@@ -204,6 +204,56 @@ class SWE2DRunFinalizer:
             except Exception as exc:
                 self._view.log_message(f"Baked line TS persistence warning: {exc}")
 
+            # ── Baked line profiles ──
+            _t0 = time.perf_counter()
+            try:
+                if save_line_results and _line_profile_rows:
+                    from collections import defaultdict
+                    prof_lines: Dict[int, Dict[str, list]] = defaultdict(lambda: defaultdict(list))
+                    prof_times_set: Dict[int, set] = defaultdict(set)
+                    for r in _line_profile_rows:
+                        lid = int(r.get("line_id", 0))
+                        prof_lines[lid]["t_s"].append(float(r.get("t_s", 0.0)))
+                        prof_lines[lid]["station_m"].append(float(r.get("station_m", 0.0)))
+                        prof_lines[lid]["depth_m"].append(float(r.get("depth_m", 0.0)))
+                        prof_lines[lid]["velocity_ms"].append(float(r.get("velocity_ms", 0.0)))
+                        prof_lines[lid]["wse_m"].append(float(r.get("wse_m", 0.0)))
+                        prof_lines[lid]["bed_m"].append(float(r.get("bed_m", 0.0)))
+                        prof_lines[lid]["flow_qn"].append(float(r.get("flow_qn", 0.0)))
+                        prof_lines[lid]["fr"].append(float(r.get("fr", 0.0)))
+                        prof_lines[lid]["wet"].append(int(r.get("wet", 0)))
+                        if "line_name" not in prof_lines[lid]:
+                            prof_lines[lid]["line_name"] = str(r.get("line_name", f"line_{lid}"))
+                    for lid, pd in prof_lines.items():
+                        times_arr = np.array(pd["t_s"], dtype=np.float64)
+                        station_arr = np.array(pd["station_m"], dtype=np.float64)
+                        # Build 2-D arrays — assume fixed station count per timestep
+                        unique_ts = np.unique(times_arr)
+                        n_ts = len(unique_ts)
+                        n_sta = len(station_arr) // n_ts if n_ts > 0 else 0
+                        if n_sta <= 0:
+                            continue
+                        persist_baked_line_profile(
+                            gpkg_results_path, run_id, lid,
+                            pd.get("line_name", f"line_{lid}"),
+                            station_arr[:n_sta],
+                            unique_ts,
+                            np.array(pd["depth_m"], dtype=np.float64).reshape(n_ts, n_sta),
+                            np.array(pd["velocity_ms"], dtype=np.float64).reshape(n_ts, n_sta),
+                            np.array(pd["wse_m"], dtype=np.float64).reshape(n_ts, n_sta),
+                            np.array(pd["bed_m"], dtype=np.float64).reshape(n_ts, n_sta),
+                            np.array(pd["flow_qn"], dtype=np.float64).reshape(n_ts, n_sta),
+                            np.array(pd["fr"], dtype=np.float64).reshape(n_ts, n_sta),
+                            np.array(pd["wet"], dtype=np.int32).reshape(n_ts, n_sta),
+                            log_fn=self._view.log_message,
+                        )
+                    self._view.log_message(
+                        f"  baked line profiles saved to {gpkg_results_path} "
+                        f"in {(time.perf_counter() - _t0) * 1000:.0f} ms"
+                    )
+            except Exception as exc:
+                self._view.log_message(f"Baked line profile persistence warning: {exc}")
+
             _t0 = time.perf_counter()
             try:
                 if save_coupling_results and _results_data is not None:

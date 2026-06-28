@@ -344,6 +344,11 @@ def load_baked_snapshot(
         return None
     conn = sqlite3.connect(source)
     try:
+        cur = conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name='swe2d_baked_results'"
+        )
+        if cur.fetchone() is None:
+            return None
         row = conn.execute(
             "SELECT n_timesteps, n_cells, times_blob, h_blob, hu_blob, hv_blob "
             "FROM swe2d_baked_results WHERE run_id=?",
@@ -391,6 +396,11 @@ def compute_max_tracking(
         return {"max_h": np.empty(0), "max_hu": np.empty(0), "max_hv": np.empty(0)}
     conn = sqlite3.connect(source)
     try:
+        cur = conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name='swe2d_baked_results'"
+        )
+        if cur.fetchone() is None:
+            return {"max_h": np.empty(0), "max_hu": np.empty(0), "max_hv": np.empty(0)}
         row = conn.execute(
             "SELECT n_timesteps, n_cells, times_blob, h_blob, hu_blob, hv_blob, "
             "max_h_blob, max_hu_blob, max_hv_blob "
@@ -514,6 +524,11 @@ def load_baked_coupling_timeseries(
         return None, None
     conn = sqlite3.connect(gpkg_path)
     try:
+        cur = conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name='swe2d_baked_coupling'"
+        )
+        if cur.fetchone() is None:
+            return None, None
         row = conn.execute(
             "SELECT times_blob, values_blob FROM swe2d_baked_coupling "
             "WHERE run_id=? AND component=? AND object_id=? AND metric=?",
@@ -722,6 +737,11 @@ def load_baked_line_timeseries(
         return {}
     conn = sqlite3.connect(source)
     try:
+        cur = conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name='swe2d_baked_line_ts'"
+        )
+        if cur.fetchone() is None:
+            return {}
         row = conn.execute(
             "SELECT n_timesteps, times_blob, depth_blob, vel_blob, "
             "wse_blob, bed_blob, flow_blob "
@@ -780,6 +800,12 @@ def load_baked_line_profile(
         return {}
     conn = sqlite3.connect(source)
     try:
+        # Gracefully return empty if table doesn't exist (no legacy fallback)
+        cur = conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name='swe2d_baked_line_profiles'"
+        )
+        if cur.fetchone() is None:
+            return {}
         row = conn.execute(
             "SELECT n_stations, n_timesteps, station_blob, times_blob, "
             "wse_blob, bed_blob, depth_blob "
@@ -825,6 +851,11 @@ def load_baked_timesteps(
         return np.empty(0, dtype=np.float64)
     conn = sqlite3.connect(source)
     try:
+        cur = conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name='swe2d_baked_results'"
+        )
+        if cur.fetchone() is None:
+            return np.empty(0, dtype=np.float64)
         row = conn.execute(
             "SELECT times_blob FROM swe2d_baked_results WHERE run_id=?",
             (run_id,),
@@ -854,6 +885,12 @@ def collect_baked_runs_from_gpkg(
         return []
     conn = sqlite3.connect(gpkg_path)
     try:
+        # Check if baked table exists — this GPKG may use old per-row tables
+        cur = conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name='swe2d_baked_results'"
+        )
+        if cur.fetchone() is None:
+            return []
         results = []
         for row in conn.execute(
             "SELECT run_id, mesh_name, n_cells, n_timesteps, created_utc "

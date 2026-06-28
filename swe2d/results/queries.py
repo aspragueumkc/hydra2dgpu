@@ -76,7 +76,8 @@ def _table_exists(conn: sqlite3.Connection, name: str) -> bool:
 def discover_line_result_runs(gpkg_path: str) -> List[Dict]:
     """Return metadata for every discoverable run in a GPKG from baked tables.
 
-    Delegates to collect_baked_runs_from_gpkg.
+    Delegates to collect_baked_runs_from_gpkg. Returns [] if the GPKG
+    does not contain baked result tables (clean-sheet — no legacy fallback).
     """
     from swe2d.services.gpkg_persistence_service import collect_baked_runs_from_gpkg
     raw = collect_baked_runs_from_gpkg(gpkg_path)
