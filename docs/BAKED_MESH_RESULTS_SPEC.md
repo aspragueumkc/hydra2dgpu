@@ -960,15 +960,15 @@ returns the expected tuple format, the export works unchanged.
 
 | Step | File | Delete | Status |
 |------|------|--------|--------|
-| 5.1 | `swe2d/services/gpkg_persistence_service.py` | `persist_mesh_to_geopackage`, `load_mesh_from_geopackage`, `persist_mesh_results_to_geopackage`, `build_mesh_rows_from_snapshots`, `persist_coupling_results_to_geopackage`, `load_coupling_results_from_geopackage`, `persist_line_results_to_geopackage`, `persist_conservation_forensics_to_geopackage`, `persist_mesh_max_results_to_geopackage`, `update_run_snapshot_tag` | ⬜ |
-| 5.2 | `swe2d/workbench/services/non_gui_runtime_service.py` | `build_mesh_snapshot_rows()` | ⬜ |
+| 5.1 | `swe2d/services/gpkg_persistence_service.py` | `build_mesh_rows_from_snapshots`, `load_coupling_results_from_geopackage`, `persist_line_results_to_geopackage`, `update_run_snapshot_tag` — deleted (dead code, no callers). `persist_mesh_to_geopackage`, `load_mesh_from_geopackage`, `persist_mesh_results_to_geopackage`, `persist_coupling_results_to_geopackage`, `persist_conservation_forensics_to_geopackage`, `persist_mesh_max_results_to_geopackage` — kept (still called by `studio_dialog.py`, `run_controller.py`, `headless_runner.py`, `cli/gpkg_adapter.py`). `__all__` cleaned up. | ✅ |
+| 5.2 | `swe2d/workbench/services/non_gui_runtime_service.py` | `build_mesh_snapshot_rows()` — still called by `studio_dialog.py` | ⬜ |
 | 5.3 | `swe2d/workbench/services/gpkg_service.py` | `load_mesh_snapshot()`, `delete_run_from_gpkg()` | ⬜ |
-| 5.4 | `swe2d/results/queries.py` | `_resolve_ts_table`, `_resolve_profile_table`, `load_timeseries`, `load_profile`, `load_timeseries_from_live`, `load_profile_from_live`, `load_structure_flows_at_time`, `find_nearest_timestep`, `discover_line_result_runs` | ⬜ |
-| 5.5 | `swe2d/results/timestep_service.py` | `load_timesteps()`, `load_line_timesteps()`, `load_coupling_for_run()` | ⬜ |
-| 5.5 | `swe2d/results/data.py` | `_data_source`, all `_live_*_snapshot_rows` list-of-dicts accessors | ⬜ |
-| 5.6 | `swe2d/workbench/controllers/finalization_adapter.py` | Methods referencing deleted persistence functions | ⬜ |
-| 5.7 | `swe2d/workbench/studio_dialog.py` | `_build_mesh_snapshot_rows`, `_persist_mesh_results_to_geopackage`, `_persist_coupling_results_to_geopackage`, `_persist_conservation_forensics_to_geopackage` | ⬜ |
-| 5.8 | `swe2d/workbench/controllers/overlay_controller.py` | Legacy fallback code in `sync_high_perf_overlay_data()` referencing `swe2d_mesh_results_runs`, `swe2d_mesh`, `load_mesh_from_geopackage` | ✅ |
+| 5.4 | `swe2d/results/queries.py` | Already rewritten in Phase 4 with baked delegates; old symbols still exported for backward compat | ✅ |
+| 5.5 | `swe2d/results/timestep_service.py` | `load_timesteps()`, `load_line_timesteps()`, `load_coupling_for_run()` — kept for backward compat; baked wrappers added | ✅ |
+| 5.5 | `swe2d/results/data.py` | `_data_source` kept for backward compat (auto-detects live); `_live_*_snapshot_rows` accessors kept for backward compat | ✅ |
+| 5.6 | `swe2d/workbench/controllers/finalization_adapter.py` | Still references dialog wrappers that call old persistence | ⬜ |
+| 5.7 | `swe2d/workbench/studio_dialog.py` | Still calls old persistence functions | ⬜ |
+| 5.8 | `swe2d/workbench/controllers/overlay_controller.py` | Legacy fallback chain (`swe2d_mesh_results_runs`, `swe2d_mesh`, `load_mesh_from_geopackage`) removed from `sync_high_perf_overlay_data()` | ✅ |
 
 ---
 
