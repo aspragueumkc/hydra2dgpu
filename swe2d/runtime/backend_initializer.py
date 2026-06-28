@@ -15,6 +15,7 @@ import logging
 logger = logging.getLogger(__name__)
 
 from swe2d.runtime.backend import build_mesh as shared_build_mesh
+from swe2d.services.gpkg_persistence_service import persist_baked_mesh
 
 
 class SWE2DBackendInitializer:
@@ -80,6 +81,10 @@ class SWE2DBackendInitializer:
         degen_mode: int,
         front_flux_damping: float,
         active_set_hysteresis: bool,
+        # Baked mesh persistence
+        gpkg_path: str = "",
+        mesh_name: str = "",
+        mesh_crs_wkt: str = "",
     ) -> Any:
         """Build and initialize."""
         b = backend_cls()
@@ -110,6 +115,21 @@ class SWE2DBackendInitializer:
             bc_edge_node0=bc_n0, bc_edge_node1=bc_n1,
             bc_edge_type=bc_tp_init, bc_edge_val=bc_vl_init,
         )
+
+        # Persist baked mesh blob if a GPKG path was provided
+        if gpkg_path and mesh_name and b._mesh_h is not None:
+            try:
+                baked_blob = b._mod.swe2d_serialize_mesh(b._mesh_h)
+                info = b._mod.swe2d_mesh_info(b._mesh_h)
+                persist_baked_mesh(
+                    gpkg_path, mesh_name, baked_blob,
+                    n_nodes=info["n_nodes"],
+                    n_cells=info["n_cells"],
+                    n_edges=info["n_edges"],
+                    crs_wkt=mesh_crs_wkt,
+                )
+            except Exception as exc:
+                logger.warning("Failed to persist baked mesh: %s", exc)
 
         b.initialize(
             h0,

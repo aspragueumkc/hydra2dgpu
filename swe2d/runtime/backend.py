@@ -405,6 +405,64 @@ class SWE2DBackend:
         self._bc_tp = bc_tp
         self._bc_vl = bc_vl
 
+    def build_mesh_from_baked(
+        self,
+        baked_blob: bytes,
+    ) -> None:
+        """Build the mesh from a serialized baked BLOB (skip C++ builder).
+
+        This is the headless-runner path: load a previously serialized mesh
+        without re-running swe2d_build_mesh_poly, avoiding RCMK permutation
+        differences and edge reordering variance.
+
+        Parameters
+        ----------
+        baked_blob : bytes
+            Serialized mesh blob from swe2d_serialize_mesh().
+        """
+        self._mesh_h = self._mod.swe2d_deserialize_mesh(baked_blob)
+        info = self._mod.swe2d_mesh_info(self._mesh_h)
+        self._n_cells = info["n_cells"]
+
+        # Restore cell permutation
+        perm_arr = self._mod.swe2d_get_cell_perm(self._mesh_h)
+        if perm_arr.size == self._n_cells:
+            self._cell_perm = np.asarray(perm_arr, dtype=np.int32).ravel()
+            self._inv_cell_perm = np.zeros(self._n_cells, dtype=np.int32)
+            self._inv_cell_perm[self._cell_perm] = np.arange(self._n_cells, dtype=np.int32)
+        else:
+            self._cell_perm = np.empty(0, dtype=np.int32)
+            self._inv_cell_perm = np.empty(0, dtype=np.int32)
+
+        # Restore mesh geometry arrays from accessor properties
+        pm = self._mesh_h
+        self._mesh_node_x = np.asarray(pm.node_x, dtype=np.float64)
+        self._mesh_node_y = np.asarray(pm.node_y, dtype=np.float64)
+        self._mesh_node_z = np.asarray(pm.node_z, dtype=np.float64)
+        self._cell_zb = np.asarray(pm.cell_zb, dtype=np.float64)
+        self._cell_area = np.asarray(pm.cell_area, dtype=np.float64)
+
+        # Restore cell topology
+        cfn = pm.cell_face_nodes
+        self._mesh_cell_nodes = np.asarray(cfn, dtype=np.int32) if cfn is not None else np.empty(0, dtype=np.int32)
+        cfo = pm.cell_face_offsets
+        self._mesh_face_offsets = np.asarray(cfo, dtype=np.int32) if cfo is not None else None
+
+        # Restore boundary edge index
+        self._boundary_edge_index_by_nodes = {}
+        self._boundary_edge_cells = None
+        try:
+            edge_idx, n0, n1, _, _, cell0 = self._mod.swe2d_boundary_edges(self._mesh_h)
+            self._boundary_edge_cells = np.asarray(cell0, dtype=np.int32)
+            for i in range(edge_idx.size):
+                a = int(n0[i])
+                b = int(n1[i])
+                key = (a, b) if a < b else (b, a)
+                self._boundary_edge_index_by_nodes[key] = int(edge_idx[i])
+        except Exception:
+            self._boundary_edge_index_by_nodes = {}
+            self._boundary_edge_cells = None
+
     def boundary_edge_cells(self) -> Optional[np.ndarray]:
         """Return interior cell index for each boundary edge, or None."""
         return self._boundary_edge_cells

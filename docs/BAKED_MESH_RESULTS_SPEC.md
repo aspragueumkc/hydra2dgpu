@@ -925,9 +925,17 @@ returns the expected tuple format, the export works unchanged.
 
 | Step | File | Change | Status |
 |------|------|--------|--------|
-| 3.1 | `swe2d/runtime/backend.py` | Add `build_mesh_from_baked()` method | ⬜ |
-| 3.2 | `swe2d/runtime/backend_initializer.py` | Insert `persist_baked_mesh()` call after `build_mesh()` | ⬜ |
-| 3.3 | `swe2d/runtime/run_finalizer.py` | Swap persistence calls to baked versions | ⬜ |
+| 3.1 | `swe2d/runtime/backend.py` | Add `build_mesh_from_baked()` method | ✅ |
+| 3.2 | `swe2d/runtime/backend_initializer.py` | Insert `persist_baked_mesh()` call after `build_mesh()` | ✅ |
+| 3.3 | `swe2d/runtime/run_finalizer.py` | Swap persistence calls to baked versions | ✅ |
+
+**Phase 3 implementation notes:**
+- The `use_baked` flag was removed entirely — baked persistence is the only path, no backward compat branching.
+- The legacy `else` branch (conservation forensics, per-row line/coupling/mesh persistence) was deleted.
+- Coupling persistence reads from `SWE2DResultsData._live_coupling` dict (accumulated numpy arrays per component/object/metric key) with a single `persist_baked_coupling()` call per key.
+- Line TS persistence reads from `SWE2DResultsData._live_line_ts` dict (accumulated numpy arrays per line) with a single `persist_baked_line_ts()` call per line.
+- The `update_run_snapshot_tag` call (referencing old `_runs` tables) was removed.
+- Dead `storage_rows`/`boundary_rows`/`conservation_summary` blocks (only used by deleted conservation forensics path) were removed.
 
 ### Phase 4: Live Data Model & Viewer
 

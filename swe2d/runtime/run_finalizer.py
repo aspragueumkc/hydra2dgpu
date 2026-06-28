@@ -16,7 +16,11 @@ from typing import Any, Dict, List, Protocol
 
 import numpy as np
 
-from swe2d.services.gpkg_persistence_service import persist_line_results_to_geopackage, update_run_snapshot_tag
+from swe2d.services.gpkg_persistence_service import (
+    persist_baked_results,
+    persist_baked_line_ts,
+    persist_baked_coupling,
+)
 
 
 class RunFinalizationView(Protocol):
@@ -86,6 +90,7 @@ class SWE2DRunFinalizer:
         save_mesh_results: bool = False,
         save_run_log: bool = False,
         h_min: float = 1.0e-4,
+        mesh_name: str = "",
     ) -> None:
         """finalize and persist."""
         h_end_model = np.asarray(h, dtype=np.float64).ravel()
@@ -126,13 +131,6 @@ class SWE2DRunFinalizer:
                     f"avg_q={avg_q_model:.6f} {self._flow_unit_label()}"
                 )
 
-        storage_rows: List[Dict[str, float]] = [
-            {
-                "t_s": 0.0,
-                "storage_model": float(storage_start_model),
-                "storage_delta_model": 0.0,
-            }
-        ]
         _results_data = self._view.results_data()
         snapshot_timesteps = list(_results_data.get_live_snapshot_timesteps()) if _results_data else []
         terminal_t_s = max(0.0, float(final_sim_time_s))
@@ -166,117 +164,76 @@ class SWE2DRunFinalizer:
                 if _results_data is not None:
                     _results_data.append_live_snapshot(*terminal_snapshot)
                 snapshot_timesteps.append(terminal_snapshot)
-        if snapshot_timesteps:
-            for snap in snapshot_timesteps:
-                try:
-                    t_s, h_snap, _, _ = snap
-                    hh = np.asarray(h_snap, dtype=np.float64).ravel()
-                    n_snap = min(int(n_area), int(hh.size), int(area_model.size))
-                    if n_snap <= 0:
-                        continue
-                    storage_t_model = float(np.sum(hh[:n_snap] * area_model[:n_snap]))
-                    if not math.isfinite(storage_t_model):
-                        continue
-                    storage_rows.append(
-                        {
-                            "t_s": float(t_s),
-                            "storage_model": storage_t_model,
-                            "storage_delta_model": float(storage_t_model - float(storage_start_model)),
-                        }
-                    )
-                except Exception:
-                    continue
-
-        boundary_rows: List[Dict[str, float]] = []
-        for row in list(boundary_flux_step_rows_model or []):
-            try:
-                boundary_rows.append(
-                    {
-                        "t_s": float(row.get("t_s", 0.0)),
-                        "group_name": str(row.get("group", "") or ""),
-                        "q_effective_model": float(row.get("q_model", 0.0)),
-                        "vol_effective_model": float(row.get("vol_model", 0.0)),
-                    }
-                )
-            except Exception:
-                continue
-
-        conservation_summary = {
-            "run_duration_s": float(run_duration_s),
-            "source_rain_model": float(source_budget_model.get("rain", 0.0)),
-            "source_cell_model": float(source_budget_model.get("cell", 0.0)),
-            "source_coupling_model": float(source_budget_model.get("coupling", 0.0)),
-            "source_total_model": float(source_total_model),
-            "storage_start_model": float(storage_start_model),
-            "storage_end_model": float(storage_end_model),
-            "storage_delta_model": float(storage_delta_model),
-            "implied_net_boundary_out_model": float(implied_boundary_out_model),
-            "avg_implied_boundary_q_model": float(avg_implied_boundary_q_model),
-            "boundary_group_volume_sum_model": float(sum(float(v) for v in boundary_flux_budget_model.values())),
-        }
 
         gpkg_results_path = self._view.get_line_results_storage_path()
 
         _t0 = time.perf_counter()
         if gpkg_results_path:
+            # ── Baked persistence (GPKG BLOB format, only path) ──────────
             try:
-                self._view.persist_conservation_forensics(
-                    gpkg_results_path,
-                    run_id,
-                    storage_rows,
-                    boundary_rows,
-                    conservation_summary,
-                    source_step_rows=list(source_step_rows_model or []),
-                )
-                self._view.log_message(f"  conservation persisted to {gpkg_results_path} in {(time.perf_counter() - _t0) * 1000:.0f} ms")
+                if save_mesh_results and snapshot_timesteps:
+                    persist_baked_results(
+                        gpkg_results_path, run_id, mesh_name,
+                        snapshot_timesteps,
+                        max_tracking=None,
+                        log_fn=self._view.log_message,
+                    )
+                    self._view.log_message(
+                        f"  baked mesh results saved to {gpkg_results_path} "
+                        f"in {(time.perf_counter() - _t0) * 1000:.0f} ms"
+                    )
             except Exception as exc:
-                self._view.log_message(f"Conservation forensic persistence warning: {exc}")
+                self._view.log_message(f"Baked mesh results persistence warning: {exc}")
 
-        _line_rows = _results_data.get_live_line_snapshot_rows() if _results_data else []
-        _line_profile_rows = _results_data.get_live_line_profile_rows() if _results_data else []
-        _coupling_rows = _results_data.get_live_coupling_snapshot_rows() if _results_data else []
+            _t0 = time.perf_counter()
+            try:
+                if save_line_results and _results_data is not None:
+                    for lid, ld in _results_data._live_line_ts.items():
+                        line_name = ld.get("line_name", f"line_{lid}")
+                        times_arr = np.array(ld.get("t_s", []), dtype=np.float64)
+                        if times_arr.size == 0:
+                            continue
+                        persist_baked_line_ts(
+                            gpkg_results_path, run_id, lid, line_name, times_arr,
+                            np.array(ld.get("depth_m", []), dtype=np.float64),
+                            np.array(ld.get("velocity_ms", []), dtype=np.float64),
+                            np.array(ld.get("wse_m", []), dtype=np.float64),
+                            np.array(ld.get("bed_m", []), dtype=np.float64),
+                            np.array(ld.get("flow_cms", []), dtype=np.float64),
+                            np.array(ld.get("wet_frac", []), dtype=np.float64),
+                            np.array(ld.get("fr", []), dtype=np.float64),
+                            log_fn=self._view.log_message,
+                        )
+                    self._view.log_message(
+                        f"  baked line TS saved to {gpkg_results_path} "
+                        f"in {(time.perf_counter() - _t0) * 1000:.0f} ms"
+                    )
+            except Exception as exc:
+                self._view.log_message(f"Baked line TS persistence warning: {exc}")
 
-        _t0 = time.perf_counter()
-        if gpkg_results_path and save_line_results and _line_rows:
-            persist_line_results_to_geopackage(
-                gpkg_path=gpkg_results_path,
-                run_id=run_id,
-                rows=_line_rows,
-                mesh_interval_s=output_interval_s,
-                line_interval_s=line_output_interval_s,
-                profile_rows=_line_profile_rows,
-                log_fn=self._view.log_message,
-                results_table_name_fn=self._view.results_table_name,
-            )
-            self._view.log_message(f"  line results saved to {gpkg_results_path} in {(time.perf_counter() - _t0) * 1000:.0f} ms")
-
-        _t0 = time.perf_counter()
-        if gpkg_results_path and save_coupling_results and _coupling_rows:
-            self._view.persist_coupling_results(
-                gpkg_results_path,
-                run_id,
-                _coupling_rows,
-                interval_s=line_output_interval_s,
-            )
-            self._view.log_message(f"  coupling results saved to {gpkg_results_path} in {(time.perf_counter() - _t0) * 1000:.0f} ms")
-
-        _t0 = time.perf_counter()
-        if gpkg_results_path and save_mesh_results and snapshot_timesteps:
-            mesh_rows = self._view.build_mesh_snapshot_rows()
-            if mesh_rows:
-                mesh_table_name = "swe2d_mesh_results"
-                try:
-                    mesh_table_name = self._view.selected_mesh_results_table_name() or "swe2d_mesh_results"
-                except Exception:
-                    mesh_table_name = "swe2d_mesh_results"
-                self._view.persist_mesh_results(
-                    gpkg_results_path,
-                    run_id,
-                    mesh_rows,
-                    interval_s=output_interval_s,
-                    table_name=mesh_table_name,
-                )
-                self._view.log_message(f"  mesh results saved to {gpkg_results_path} in {(time.perf_counter() - _t0) * 1000:.0f} ms")
+            _t0 = time.perf_counter()
+            try:
+                if save_coupling_results and _results_data is not None:
+                    for key, cd in _results_data._live_coupling.items():
+                        component, object_id, metric = key
+                        times_arr = np.array(cd.get("t_s", []), dtype=np.float64)
+                        if times_arr.size == 0:
+                            continue
+                        persist_baked_coupling(
+                            gpkg_results_path, run_id,
+                            component, object_id,
+                            cd.get("object_name", object_id),
+                            metric,
+                            times_arr,
+                            np.array(cd.get("values", []), dtype=np.float64),
+                            log_fn=self._view.log_message,
+                        )
+                    self._view.log_message(
+                        f"  baked coupling saved to {gpkg_results_path} "
+                        f"in {(time.perf_counter() - _t0) * 1000:.0f} ms"
+                    )
+            except Exception as exc:
+                self._view.log_message(f"Baked coupling persistence warning: {exc}")
 
         _t0 = time.perf_counter()
         try:
@@ -309,14 +266,6 @@ class SWE2DRunFinalizer:
                 metadata=run_log_metadata,
             )
             self._view.log_message(f"  run log saved to {gpkg_results_path} in {(time.perf_counter() - _t0) * 1000:.0f} ms")
-
-        if gpkg_results_path:
-            try:
-                update_run_snapshot_tag(gpkg_results_path, run_id, is_snapshot=False,
-                                        table_name_fn=self._view.results_table_name)
-            except Exception as _e:
-
-                logger.warning(f"[ERROR] Exception in run_finalizer.py: {_e}")
 
         if thiessen_forcing is not None and rain_stats_acc["samples"] > 0:
             avg_r = rain_stats_acc["rain_mm"] / rain_stats_acc["samples"]

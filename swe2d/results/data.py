@@ -75,9 +75,12 @@ class SWE2DResultsData:
 
         # In-memory snapshots during a live run
         self._live_snapshot_timesteps: list = []
-        self._live_line_snapshot_rows: list = []
-        self._live_line_profile_rows: list = []
-        self._live_coupling_snapshot_rows: list = []
+        # Line timeseries: {line_id: {t_s: [], depth_m: [], vel: [], ...}}
+        self._live_line_ts: Dict[int, Dict[str, list]] = {}
+        # Line profiles: {line_id: {t_s: [], station_m: [], depth_m: [], ...}}
+        self._live_line_profile: Dict[int, Dict[str, list]] = {}
+        # Coupling: {(component, object_id, metric): {object_name, t_s: [], values: []}}
+        self._live_coupling: Dict[Tuple[str, str, str], Dict] = {}
 
         # Display state for TS/Profile/Structure/Network renderers (plain data)
         self.ts_var_key: str = "flow_cms"
@@ -127,34 +130,96 @@ class SWE2DResultsData:
 
     def clear_live_snapshots(self) -> None:
         self._live_snapshot_timesteps = []
-        self._live_line_snapshot_rows = []
-        self._live_line_profile_rows = []
-        self._live_coupling_snapshot_rows = []
+        self._live_line_ts.clear()
+        self._live_line_profile.clear()
+        self._live_coupling.clear()
 
     def append_live_snapshot(self, t_s: float, h: np.ndarray, hu: np.ndarray, hv: np.ndarray) -> None:
         self._live_snapshot_timesteps.append((t_s, h, hu, hv))
         self._data_source = "live"
 
     def append_line_snapshot(self, row: dict) -> None:
-        self._live_line_snapshot_rows.append(row)
+        """Append a line timeseries row, accumulating into _live_line_ts."""
+        lid = int(row.get("line_id", -1))
+        if lid < 0:
+            return
+        d = self._live_line_ts.setdefault(lid, {})
+        for key in ("t_s", "depth_m", "velocity_ms", "wse_m", "bed_m",
+                     "flow_cms", "wet_frac", "fr"):
+            d.setdefault(key, []).append(float(row.get(key, 0.0)))
+        if "line_name" not in d:
+            d["line_name"] = str(row.get("line_name", f"line_{lid}"))
 
     def append_line_profile_snapshot(self, row: dict) -> None:
-        self._live_line_profile_rows.append(row)
+        """Append a line profile row, accumulating into _live_line_profile."""
+        lid = int(row.get("line_id", -1))
+        if lid < 0:
+            return
+        d = self._live_line_profile.setdefault(lid, {})
+        for key in ("t_s", "station_m", "depth_m", "velocity_ms",
+                     "wse_m", "bed_m", "flow_qn", "fr", "wet"):
+            d.setdefault(key, []).append(float(row.get(key, 0.0)))
+        if "line_name" not in d:
+            d["line_name"] = str(row.get("line_name", f"line_{lid}"))
 
     def append_coupling_snapshot(self, row: dict) -> None:
-        self._live_coupling_snapshot_rows.append(row)
+        """Append a coupling row, accumulating into _live_coupling."""
+        key = (str(row.get("component", "")),
+               str(row.get("object_id", "")),
+               str(row.get("metric", "")))
+        if not key[0] or not key[1] or not key[2]:
+            return
+        d = self._live_coupling.setdefault(key, {"object_name": "", "t_s": [], "values": []})
+        d["object_name"] = str(row.get("object_name", ""))
+        d["t_s"].append(float(row.get("t_s", 0.0)))
+        d["values"].append(float(row.get("value", 0.0)))
 
     def get_live_snapshot_timesteps(self) -> list:
         return self._live_snapshot_timesteps
 
     def get_live_line_snapshot_rows(self) -> list:
-        return self._live_line_snapshot_rows
+        """Backward-compat: reconstruct list-of-dicts from _live_line_ts."""
+        out = []
+        for lid, d in self._live_line_ts.items():
+            n = len(d.get("t_s", []))
+            for i in range(n):
+                row = {"line_id": lid, "line_name": d.get("line_name", "")}
+                for key in ("t_s", "depth_m", "velocity_ms", "wse_m",
+                             "bed_m", "flow_cms", "wet_frac", "fr"):
+                    arr = d.get(key, [])
+                    row[key] = float(arr[i]) if i < len(arr) else 0.0
+                out.append(row)
+        return out
 
     def get_live_line_profile_rows(self) -> list:
-        return self._live_line_profile_rows
+        """Backward-compat: reconstruct list-of-dicts from _live_line_profile."""
+        out = []
+        for lid, d in self._live_line_profile.items():
+            n = len(d.get("t_s", []))
+            for i in range(n):
+                row = {"line_id": lid, "line_name": d.get("line_name", "")}
+                for key in ("t_s", "station_m", "depth_m", "velocity_ms",
+                             "wse_m", "bed_m", "flow_qn", "fr", "wet"):
+                    arr = d.get(key, [])
+                    row[key] = float(arr[i]) if i < len(arr) else 0.0
+                out.append(row)
+        return out
 
     def get_live_coupling_snapshot_rows(self) -> list:
-        return self._live_coupling_snapshot_rows
+        """Backward-compat: reconstruct list-of-dicts from _live_coupling."""
+        out = []
+        for (component, object_id, metric), d in self._live_coupling.items():
+            n = len(d.get("t_s", []))
+            for i in range(n):
+                out.append({
+                    "component": component,
+                    "object_id": object_id,
+                    "metric": metric,
+                    "object_name": d.get("object_name", ""),
+                    "t_s": float(d["t_s"][i]) if i < len(d["t_s"]) else 0.0,
+                    "value": float(d["values"][i]) if i < len(d["values"]) else 0.0,
+                })
+        return out
 
     def get_run_records(self) -> List[RunRecord]:
         """Return run records."""
