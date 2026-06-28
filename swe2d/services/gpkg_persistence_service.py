@@ -42,6 +42,20 @@ __all__ = [
     "current_line_results_storage_path",
     "persist_coupling_results_to_geopackage",
     "update_run_snapshot_tag",
+    # Baked mesh & results persistence
+    "persist_baked_mesh",
+    "load_baked_mesh",
+    "persist_baked_results",
+    "load_baked_snapshot",
+    "compute_max_tracking",
+    "persist_baked_coupling",
+    "load_baked_coupling_timeseries",
+    "persist_baked_line_ts",
+    "persist_baked_line_profile",
+    "load_baked_line_timeseries",
+    "load_baked_line_profile",
+    "load_baked_timesteps",
+    "collect_baked_runs_from_gpkg",
 ]
 
 

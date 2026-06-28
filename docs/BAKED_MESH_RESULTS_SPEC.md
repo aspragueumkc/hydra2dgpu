@@ -914,12 +914,12 @@ returns the expected tuple format, the export works unchanged.
 
 | Step | File | Change | Status |
 |------|------|--------|--------|
-| 2.1 | `swe2d/services/gpkg_persistence_service.py` | Add `persist_baked_mesh()`, `load_baked_mesh()` | ⬜ |
-| 2.2 | same | Add `persist_baked_results()`, `load_baked_snapshot()`, `compute_max_tracking()` | ⬜ |
-| 2.3 | same | Add `persist_baked_coupling()`, `load_baked_coupling_timeseries()` | ⬜ |
-| 2.4 | same | Add `persist_baked_line_ts()`, `persist_baked_line_profile()` | ⬜ |
-| 2.5 | same | Add `load_baked_line_timeseries()`, `load_baked_line_profile()` | ⬜ |
-| 2.6 | same | Update `__all__` | ⬜ |
+| 2.1 | `swe2d/services/gpkg_persistence_service.py` | Add `persist_baked_mesh()`, `load_baked_mesh()` | ✅ |
+| 2.2 | same | Add `persist_baked_results()`, `load_baked_snapshot()`, `compute_max_tracking()` | ✅ |
+| 2.3 | same | Add `persist_baked_coupling()`, `load_baked_coupling_timeseries()` | ✅ |
+| 2.4 | same | Add `persist_baked_line_ts()`, `persist_baked_line_profile()` | ✅ |
+| 2.5 | same | Add `load_baked_line_timeseries()`, `load_baked_line_profile()` | ✅ |
+| 2.6 | same | Update `__all__` | ✅ |
 
 ### Phase 3: Backend Integration
 
