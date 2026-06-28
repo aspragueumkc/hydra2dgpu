@@ -24,17 +24,6 @@ class SWE2DStructureModule(HydraulicStructureEngine):
 
 
 
-# Re-export types that moved to extension_models.py during the dead-code
-# cleanup, so existing import statements still work.
-from swe2d.extensions.extension_models import (  # noqa: F401
-    HydraulicStructure,
-    HydraulicStructureConfig,
-    StructureType,
-)
-
 __all__ = [
-    "HydraulicStructure",
-    "HydraulicStructureConfig",
-    "StructureType",
     "SWE2DStructureModule",
 ]
