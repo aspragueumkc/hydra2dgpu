@@ -31,9 +31,26 @@ logger = logging.getLogger(__name__)
 
 
 def query_mesh_from_gpkg(gpkg_path: str, mesh_name: str) -> Optional[Dict[str, np.ndarray]]:
-    """Load mesh arrays from swe2d_mesh table (delegates to persistence service)."""
-    from swe2d.services.gpkg_persistence_service import load_mesh_from_geopackage
-    return load_mesh_from_geopackage(gpkg_path, mesh_name)
+    """Load mesh arrays from baked BLOB. Returns None if not found."""
+    try:
+        from swe2d.services.gpkg_persistence_service import load_baked_mesh
+        blob = load_baked_mesh(gpkg_path, mesh_name)
+        if blob is None:
+            return None
+        from hydra_swe2d import swe2d_deserialize_mesh
+        pm = swe2d_deserialize_mesh(blob)
+        out = {
+            "node_x": np.asarray(pm.node_x, dtype=np.float64),
+            "node_y": np.asarray(pm.node_y, dtype=np.float64),
+            "node_z": np.asarray(pm.node_z, dtype=np.float64),
+            "cell_nodes": np.asarray(pm.cell_face_nodes, dtype=np.int32) if pm.cell_face_nodes is not None else np.empty(0, dtype=np.int32),
+        }
+        cfo = pm.cell_face_offsets
+        if cfo is not None:
+            out["cell_face_offsets"] = np.asarray(cfo, dtype=np.int32)
+        return out
+    except Exception:
+        return None
 
 
 def query_bc_arrays(conn: sqlite3.Connection, bc_table: str) -> Dict[str, np.ndarray]:

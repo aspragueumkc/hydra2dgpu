@@ -1,8 +1,7 @@
-"""Test that GPKG persistence actually writes data when called.
+"""Test that baked GPKG persistence actually writes and reads data.
 
-Exercises persist_mesh_results_to_geopackage and
-persist_coupling_results_to_geopackage directly with and without the
-accumulate flag.  No QGIS environment needed — pure SQLite verify.
+Exercises the baked BLOB persistence functions directly.
+No QGIS environment needed — pure SQLite verify.
 """
 import os
 import sys
@@ -14,170 +13,178 @@ import numpy as np
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 from swe2d.services.gpkg_persistence_service import (
-    persist_mesh_results_to_geopackage,
-    persist_coupling_results_to_geopackage,
-    update_run_snapshot_tag,
+    persist_baked_mesh,
+    load_baked_mesh,
+    persist_baked_results,
+    load_baked_snapshot,
+    compute_max_tracking,
+    persist_baked_coupling,
+    load_baked_coupling_timeseries,
+    persist_baked_line_ts,
+    persist_baked_line_profile,
+    load_baked_line_timeseries,
+    load_baked_line_profile,
+    load_baked_timesteps,
+    collect_baked_runs_from_gpkg,
 )
 
 
-class TestGpkgPersistence(unittest.TestCase):
+class TestBakedGpkgPersistence(unittest.TestCase):
 
     def setUp(self):
         self.tmp = tempfile.NamedTemporaryFile(suffix=".gpkg", delete=False)
         self.gpkg_path = self.tmp.name
         self.tmp.close()
+        self.mesh_name = "test_mesh"
+        self.run_id = "test_run_001"
 
     def tearDown(self):
         if os.path.exists(self.gpkg_path):
             os.unlink(self.gpkg_path)
 
-    def _make_mesh_rows(self, n_ts=2, n_cells=3):
-        rows = []
-        for t in range(n_ts):
-            for c in range(n_cells):
-                rows.append({
-                    "t_s": float(t),
-                    "cell_id": c,
-                    "h": 1.0 + float(t) * 0.1,
-                    "hu": 0.0,
-                    "hv": 0.0,
-                })
-        return rows
+    def _make_baked_blob(self) -> bytes:
+        """Produce a minimal but valid serialized mesh BLOB.
 
-    def _make_coupling_rows(self, n_ts=2):
-        rows = []
-        for t in range(n_ts):
-            rows.append({"t_s": float(t), "component": "structure",
-                         "metric": "flow", "object_id": "s1",
-                         "object_name": "culvert_1", "value": float(t) * 10.0})
-            rows.append({"t_s": float(t), "component": "structure",
-                         "metric": "flow", "object_id": "s2",
-                         "object_name": "weir_1", "value": float(t) * 5.0})
-        return rows
+        Format: uint64 n_vectors, then for each vector: uint64 len + raw bytes.
+        Vectors in order: node_x, node_y, node_z, cell_face_offsets,
+        cell_face_nodes, cell_area, cell_zb, cell_cx, cell_cy, cell_inv_area,
+        cell_perm, edge_c0, edge_c1, edge_n0, edge_n1, edge_nx, edge_ny,
+        edge_len, edge_bc.
+        """
+        import struct
+        n_nodes, n_cells, n_edges = 4, 1, 4
+        data = struct.pack("<Q", 19)  # 19 vectors
+        arrays = [
+            np.array([0.0, 10.0, 10.0, 0.0], dtype=np.float64),  # node_x
+            np.array([0.0, 0.0, 10.0, 10.0], dtype=np.float64),  # node_y
+            np.array([0.0, 0.0, 0.0, 0.0], dtype=np.float64),    # node_z
+            np.array([0, 4], dtype=np.int64),                      # cell_face_offsets
+            np.array([0, 1, 2, 0, 2, 3], dtype=np.int64),         # cell_face_nodes
+            np.array([100.0], dtype=np.float64),                   # cell_area
+            np.array([0.0], dtype=np.float64),                     # cell_zb
+            np.array([5.0], dtype=np.float64),                     # cell_cx
+            np.array([5.0], dtype=np.float64),                     # cell_cy
+            np.array([0.01], dtype=np.float64),                    # cell_inv_area
+            np.array([0], dtype=np.int64),                         # cell_perm
+            np.array([0, 1, 2], dtype=np.int64),                   # edge_c0
+            np.array([-1, 1, 2], dtype=np.int64),                  # edge_c1
+            np.array([0, 1, 2], dtype=np.int64),                   # edge_n0
+            np.array([1, 2, 3], dtype=np.int64),                   # edge_n1
+            np.array([0.0, 10.0, 0.0], dtype=np.float64),         # edge_nx
+            np.array([-1.0, 0.0, 1.0], dtype=np.float64),         # edge_ny
+            np.array([10.0, 10.0, 10.0], dtype=np.float64),       # edge_len
+            np.array([0, 1, 1], dtype=np.int32),                   # edge_bc (BCType enum)
+        ]
+        for arr in arrays:
+            raw = np.ascontiguousarray(arr).tobytes()
+            data += struct.pack("<Q", len(raw)) + raw
+        return data
 
     def _log(self, msg):
         pass
 
-    def _table_name(self, base):
-        return base
+    # ── Baked mesh ──────────────────────────────────────────────────────
 
-    def test_mesh_results_persisted(self):
-        """Verify mesh rows end up in GPKG after persist."""
-        rows = self._make_mesh_rows(n_ts=2, n_cells=3)
-        persist_mesh_results_to_geopackage(
-            self.gpkg_path, "run_001", rows, interval_s=60.0,
-            log_fn=self._log, results_table_name_fn=self._table_name,
-        )
-        # Read back
-        import sqlite3
-        conn = sqlite3.connect(self.gpkg_path)
-        cur = conn.execute('SELECT COUNT(*) FROM "swe2d_mesh_results" WHERE run_id = ?', ("run_001",))
-        count = cur.fetchone()[0]
-        conn.close()
-        self.assertEqual(count, 6, f"Expected 6 mesh rows (2 timesteps × 3 cells), got {count}")
+    def test_baked_mesh_persist_and_load(self):
+        blob = self._make_baked_blob()
+        persist_baked_mesh(self.gpkg_path, self.mesh_name, blob,
+                           n_nodes=4, n_cells=1, log_fn=self._log)
+        loaded = load_baked_mesh(self.gpkg_path, self.mesh_name)
+        self.assertIsNotNone(loaded)
+        self.assertEqual(loaded["blob"], blob)
+        self.assertEqual(loaded["n_nodes"], 4)
+        self.assertEqual(loaded["n_cells"], 1)
 
-    def test_mesh_accumulate_appends_not_replaces(self):
-        """With accumulate=True, second call adds rows without deleting first batch."""
-        rows_1 = self._make_mesh_rows(n_ts=1, n_cells=3)  # t=0 only
-        # Make a second batch at t=1 (all rows)
-        rows_2 = []
-        for c in range(3):
-            rows_2.append({"t_s": 1.0, "cell_id": c, "h": 1.1, "hu": 0.0, "hv": 0.0})
+    def test_baked_mesh_not_found(self):
+        loaded = load_baked_mesh(self.gpkg_path, "nonexistent")
+        self.assertIsNone(loaded)
 
-        persist_mesh_results_to_geopackage(
-            self.gpkg_path, "run_002", rows_1, interval_s=60.0,
-            log_fn=self._log, results_table_name_fn=self._table_name,
-            accumulate=False,
-        )
-        persist_mesh_results_to_geopackage(
-            self.gpkg_path, "run_002", rows_2, interval_s=60.0,
-            log_fn=self._log, results_table_name_fn=self._table_name,
-            accumulate=True,
-        )
-        import sqlite3
-        conn = sqlite3.connect(self.gpkg_path)
-        cur = conn.execute('SELECT COUNT(*) FROM "swe2d_mesh_results" WHERE run_id = ?', ("run_002",))
-        count = cur.fetchone()[0]
-        conn.close()
-        self.assertEqual(count, 6, f"Expected 6 rows (t=0 + t=1), got {count}")
+    # ── Baked results ───────────────────────────────────────────────────
 
-    def test_mesh_no_accumulate_replaces(self):
-        """With accumulate=False, second call replaces all rows."""
-        rows_1 = self._make_mesh_rows(n_ts=1, n_cells=3)
-        rows_2 = self._make_mesh_rows(n_ts=2, n_cells=3)
+    def _make_snapshot(self, n_cells=3):
+        return (
+            np.array([0.0, 10.0], dtype=np.float64),         # t_s
+            np.array([[1.0], [2.0]], dtype=np.float64),       # h  (n_ts x n_cells)
+            np.array([[0.1], [0.2]], dtype=np.float64),       # hu
+            np.array([[0.0], [0.0]], dtype=np.float64),       # hv
+        )
 
-        persist_mesh_results_to_geopackage(
-            self.gpkg_path, "run_003", rows_1, interval_s=60.0,
-            log_fn=self._log, results_table_name_fn=self._table_name,
-            accumulate=False,
-        )
-        persist_mesh_results_to_geopackage(
-            self.gpkg_path, "run_003", rows_2, interval_s=60.0,
-            log_fn=self._log, results_table_name_fn=self._table_name,
-            accumulate=False,
-        )
-        import sqlite3
-        conn = sqlite3.connect(self.gpkg_path)
-        cur = conn.execute('SELECT COUNT(*) FROM "swe2d_mesh_results" WHERE run_id = ?', ("run_003",))
-        count = cur.fetchone()[0]
-        conn.close()
-        self.assertEqual(count, 6, f"Expected 6 rows (replaced), got {count}")
+    def test_baked_results_persist_and_load(self):
+        t_s, h, hu, hv = self._make_snapshot()
+        persist_baked_results(self.gpkg_path, self.run_id, t_s, h, hu, hv,
+                              interval_s=10.0, log_fn=self._log)
+        loaded = load_baked_snapshot(self.gpkg_path, self.run_id, 10.0)
+        self.assertIsNotNone(loaded)
+        np.testing.assert_array_almost_equal(loaded["h"][0], h[0])
 
-    def test_coupling_results_persisted(self):
-        """Verify coupling rows end up in GPKG after persist."""
-        rows = self._make_coupling_rows(n_ts=2)
-        persist_coupling_results_to_geopackage(
-            self.gpkg_path, "run_010", rows, interval_s=60.0,
-            results_table_name_fn=self._table_name, log_fn=self._log,
-        )
-        import sqlite3
-        conn = sqlite3.connect(self.gpkg_path)
-        cur = conn.execute('SELECT COUNT(*) FROM "swe2d_coupling_results" WHERE run_id = ?', ("run_010",))
-        count = cur.fetchone()[0]
-        conn.close()
-        self.assertEqual(count, 4, f"Expected 4 coupling rows (2 ts × 2 structures), got {count}")
+    # ── Baked coupling ──────────────────────────────────────────────────
 
-    def test_coupling_accumulate_appends(self):
-        """With accumulate=True, coupling rows accumulate."""
-        rows_1 = self._make_coupling_rows(n_ts=1)  # t=0
-        rows_2 = self._make_coupling_rows(n_ts=1)  # t=0
-        rows_2[0]["t_s"] = 1.0  # shift to t=1
-        rows_2[1]["t_s"] = 1.0
+    def test_baked_coupling_persist_and_load(self):
+        t_s = np.array([0.0, 10.0], dtype=np.float64)
+        comp = np.array(["structure", "structure"], dtype=object)
+        oid = np.array(["s1", "s2"], dtype=object)
+        oname = np.array(["culvert", "weir"], dtype=object)
+        metric = np.array(["flow", "flow"], dtype=object)
+        vals = np.array([0.0, 5.0], dtype=np.float64)
+        persist_baked_coupling(self.gpkg_path, self.run_id,
+                               t_s, comp, oid, oname, metric, vals,
+                               interval_s=10.0, log_fn=self._log)
+        loaded = load_baked_coupling_timeseries(self.gpkg_path, self.run_id)
+        self.assertIsNotNone(loaded)
+        self.assertIn("times", loaded)
+        self.assertEqual(len(loaded["times"]), 2)
 
-        persist_coupling_results_to_geopackage(
-            self.gpkg_path, "run_011", rows_1, interval_s=60.0,
-            results_table_name_fn=self._table_name, log_fn=self._log,
-            accumulate=False,
-        )
-        persist_coupling_results_to_geopackage(
-            self.gpkg_path, "run_011", rows_2, interval_s=60.0,
-            results_table_name_fn=self._table_name, log_fn=self._log,
-            accumulate=True,
-        )
-        import sqlite3
-        conn = sqlite3.connect(self.gpkg_path)
-        cur = conn.execute('SELECT COUNT(*) FROM "swe2d_coupling_results" WHERE run_id = ?', ("run_011",))
-        count = cur.fetchone()[0]
-        conn.close()
-        self.assertEqual(count, 4, f"Expected 4 coupling rows (accumulated), got {count}")
+    # ── Baked line timeseries ───────────────────────────────────────────
 
-    def test_update_snapshot_tag(self):
-        """Verify update_run_snapshot_tag sets snapshot column."""
-        rows = self._make_mesh_rows(n_ts=1, n_cells=1)
-        persist_mesh_results_to_geopackage(
-            self.gpkg_path, "run_020", rows, interval_s=60.0,
-            log_fn=self._log, results_table_name_fn=self._table_name,
-        )
-        update_run_snapshot_tag(self.gpkg_path, "run_020", is_snapshot=True,
-                                table_name_fn=self._table_name)
-        import sqlite3
-        conn = sqlite3.connect(self.gpkg_path)
-        cur = conn.execute(
-            'SELECT snapshot FROM "swe2d_mesh_results_runs" WHERE run_id = ?',
-            ("run_020",))
-        row = cur.fetchone()
-        conn.close()
-        self.assertIsNotNone(row, "run_020 should exist in runs table")
+    def test_baked_line_ts_persist_and_load(self):
+        line_id = "line_1"
+        t_s = np.array([0.0, 10.0], dtype=np.float64)
+        # n_timesteps x n_vertices
+        h = np.array([[0.5, 0.6], [0.7, 0.8]], dtype=np.float64)
+        hu = np.zeros_like(h)
+        hv = np.zeros_like(h)
+        chk = np.array([0, 10], dtype=np.float64)
+        persist_baked_line_ts(self.gpkg_path, self.run_id, line_id,
+                              t_s, h, hu, hv, chk, log_fn=self._log)
+        loaded = load_baked_line_timeseries(self.gpkg_path, self.run_id, line_id)
+        self.assertIsNotNone(loaded)
+        self.assertIn("times", loaded)
+        np.testing.assert_array_almost_equal(loaded["times"], t_s)
+
+    # ── Baked line profile ──────────────────────────────────────────────
+
+    def test_baked_line_profile_persist_and_load(self):
+        line_id = "profile_1"
+        t_s = np.array([5.0], dtype=np.float64)
+        h = np.array([[0.5, 0.6, 0.7]], dtype=np.float64)
+        hu = np.zeros_like(h)
+        hv = np.zeros_like(h)
+        chk = np.array([5.0], dtype=np.float64)
+        vertices = np.array([[0.0, 0.0], [5.0, 0.0], [10.0, 0.0]], dtype=np.float64)
+        persist_baked_line_profile(self.gpkg_path, self.run_id, line_id,
+                                   t_s, h, hu, hv, chk, vertices, log_fn=self._log)
+        loaded = load_baked_line_profile(self.gpkg_path, self.run_id, line_id)
+        self.assertIsNotNone(loaded)
+        self.assertIn("h", loaded)
+        self.assertEqual(loaded["h"].shape, (1, 3))
+
+    # ── Utility functions ───────────────────────────────────────────────
+
+    def test_load_baked_timesteps(self):
+        t_s, h, hu, hv = self._make_snapshot()
+        persist_baked_results(self.gpkg_path, self.run_id, t_s, h, hu, hv,
+                              interval_s=10.0, log_fn=self._log)
+        timesteps = load_baked_timesteps(self.gpkg_path, self.run_id)
+        self.assertIsNotNone(timesteps)
+        np.testing.assert_array_almost_equal(timesteps, t_s)
+
+    def test_collect_baked_runs_from_gpkg(self):
+        t_s, h, hu, hv = self._make_snapshot()
+        persist_baked_results(self.gpkg_path, self.run_id, t_s, h, hu, hv,
+                              interval_s=10.0, log_fn=self._log)
+        runs = collect_baked_runs_from_gpkg(self.gpkg_path)
+        self.assertGreater(len(runs), 0)
+        self.assertTrue(any(r["run_id"] == self.run_id for r in runs))
         self.assertEqual(row[0], 1, f"Expected snapshot=1, got {row[0]}")
 
         # Now clear it

@@ -632,12 +632,7 @@ class SWE2DWorkbenchStudioDialog(QtWidgets.QDialog):
         self._mesh_controller.export_mesh_to_ugrid()
 
     def _save_mesh_to_gpkg(self) -> None:
-        """Save current mesh to a GeoPackage.
-
-        Flow: select an existing GPKG → enter mesh name → save.
-        This mirrors the "add entry to an existing database" pattern
-        used by the add-results dialog.
-        """
+        """Save current mesh to a GeoPackage as a baked BLOB."""
         from qgis.PyQt import QtWidgets
         mesh_data = getattr(self, "_mesh_data", None)
         if mesh_data is None or mesh_data.get("node_x") is None:
@@ -661,8 +656,29 @@ class SWE2DWorkbenchStudioDialog(QtWidgets.QDialog):
         name = str(name).strip()
 
         try:
-            from swe2d.services.gpkg_persistence_service import persist_mesh_to_geopackage
-            persist_mesh_to_geopackage(path, name, mesh_data, log_fn=self._log)
+            from swe2d.services.gpkg_persistence_service import persist_baked_mesh
+            from hydra_swe2d import (
+                swe2d_build_mesh_poly, swe2d_serialize_mesh, swe2d_mesh_info,
+            )
+            import numpy as np
+            nx = np.asarray(mesh_data["node_x"], dtype=np.float64)
+            ny = np.asarray(mesh_data["node_y"], dtype=np.float64)
+            nz = np.asarray(mesh_data["node_z"], dtype=np.float64)
+            bc_n0 = np.asarray(mesh_data.get("bc_edge_node0", np.empty(0)), dtype=np.int32)
+            bc_n1 = np.asarray(mesh_data.get("bc_edge_node1", np.empty(0)), dtype=np.int32)
+            bc_tp = np.asarray(mesh_data.get("bc_edge_type", np.empty(0)), dtype=np.int32)
+            bc_vl = np.asarray(mesh_data.get("bc_edge_val", np.empty(0)), dtype=np.float64)
+            cfn = mesh_data.get("cell_face_nodes") or mesh_data.get("cell_nodes")
+            cfo = mesh_data.get("cell_face_offsets")
+            if cfn is not None and cfo is not None:
+                pm = swe2d_build_mesh_poly(nx, ny, nz, np.asarray(cfo, dtype=np.int32),
+                    np.asarray(cfn, dtype=np.int32), bc_n0, bc_n1, bc_tp, bc_vl)
+            else:
+                cn = np.asarray(mesh_data["cell_nodes"], dtype=np.int32)
+                pm = swe2d_build_mesh(nx, ny, nz, cn, bc_n0, bc_n1, bc_tp, bc_vl)
+            blob = swe2d_serialize_mesh(pm)
+            info = swe2d_mesh_info(pm)
+            persist_baked_mesh(path, name, blob, info["n_nodes"], info["n_cells"], info["n_edges"])
             QtWidgets.QMessageBox.information(
                 self, "Save Mesh",
                 f"Mesh '{name}' saved to {os.path.basename(path)}.",
@@ -671,7 +687,7 @@ class SWE2DWorkbenchStudioDialog(QtWidgets.QDialog):
             QtWidgets.QMessageBox.critical(self, "Save Mesh Error", str(exc))
 
     def _load_mesh_from_gpkg(self) -> None:
-        """Open file dialog to select GPKG, then load a mesh from it."""
+        """Open file dialog to select GPKG, then load a baked mesh from it."""
         from qgis.PyQt import QtWidgets
         path, _ = QtWidgets.QFileDialog.getOpenFileName(
             self, "Select GeoPackage with Mesh", "",
@@ -685,7 +701,7 @@ class SWE2DWorkbenchStudioDialog(QtWidgets.QDialog):
             conn = sqlite3.connect(path)
             try:
                 cur = conn.cursor()
-                cur.execute("SELECT mesh_name FROM swe2d_mesh ORDER BY created_utc DESC")
+                cur.execute("SELECT mesh_name FROM swe2d_baked_mesh ORDER BY created_utc DESC")
                 mesh_names = [str(r[0]) for r in cur.fetchall()]
             finally:
                 conn.close()
@@ -698,25 +714,40 @@ class SWE2DWorkbenchStudioDialog(QtWidgets.QDialog):
         if not mesh_names:
             QtWidgets.QMessageBox.warning(
                 self, "Load Mesh",
-                f"No meshes found in {os.path.basename(path)}.",
+                f"No baked meshes found in {os.path.basename(path)}.",
             )
-            return
         from qgis.PyQt.QtWidgets import QInputDialog
         name, ok = QInputDialog.getItem(
             self, "Select Mesh", "Mesh:", mesh_names, 0, False,
         )
         if not ok or not name:
             return
-        from swe2d.services.gpkg_persistence_service import (
-            load_mesh_from_geopackage,
-        )
-        mesh_data = load_mesh_from_geopackage(path, name)
-        if mesh_data is None:
-            QtWidgets.QMessageBox.warning(self, "Load Mesh", f"Mesh '{name}' not found.")
-            return
         try:
+            from hydra_swe2d import swe2d_deserialize_mesh
+            from swe2d.services.gpkg_persistence_service import load_baked_mesh
+            blob = load_baked_mesh(path, name)
+            if blob is None:
+                QtWidgets.QMessageBox.warning(self, "Load Mesh", f"Mesh '{name}' not found.")
+                return
+            pm = swe2d_deserialize_mesh(blob)
+            mesh_data = {
+                "node_x": np.asarray(pm.node_x, dtype=np.float64),
+                "node_y": np.asarray(pm.node_y, dtype=np.float64),
+                "node_z": np.asarray(pm.node_z, dtype=np.float64),
+                "cell_nodes": np.asarray(pm.cell_face_nodes, dtype=np.int32) if pm.cell_face_nodes is not None else np.empty(0, dtype=np.int32),
+            }
+            cfo = pm.cell_face_offsets
+            if cfo is not None:
+                mesh_data["cell_face_offsets"] = np.asarray(cfo, dtype=np.int32)
+            cfn = pm.cell_face_nodes
+            if cfn is not None:
+                mesh_data["cell_face_nodes"] = np.asarray(cfn, dtype=np.int32)
+            if mesh_data is None or mesh_data.get("node_x") is None:
+                QtWidgets.QMessageBox.warning(self, "Load Mesh", f"Mesh '{name}' not found.")
+                return
             self._mesh_data = mesh_data
             self._log(f"Mesh '{name}' loaded from {os.path.basename(path)} ({mesh_data['node_x'].size} nodes)")
+        except Exception as exc:
         except Exception as exc:
             QtWidgets.QMessageBox.critical(self, "Load Mesh Error", str(exc))
 
@@ -1248,27 +1279,6 @@ class SWE2DWorkbenchStudioDialog(QtWidgets.QDialog):
         """[DEPRECATED] Snapshot persistence now deferred to run_finalizer.py."""
         logger_wb.warning("_persist_snapshot_to_gpkg called but snapshots are in-memory only until finalization")
 
-    def _persist_mesh_results_to_geopackage(self, gpkg_path: str, run_id: str, mesh_rows, interval_s: float, table_name: str = "swe2d_mesh_results") -> None:
-        """Persist mesh results rows to a GeoPackage, linking to the current mesh."""
-        if not gpkg_path or not mesh_rows:
-            return
-        try:
-            from swe2d.services.gpkg_persistence_service import (
-                persist_mesh_results_to_geopackage,
-                compute_mesh_hash,
-            )
-            mesh_data = getattr(self, "_mesh_data", None)
-            mesh_hash = compute_mesh_hash(mesh_data) if mesh_data else ""
-            mesh_name = str(getattr(mesh_data, "get", lambda k: "")("mesh_name", "") or "")
-            persist_mesh_results_to_geopackage(
-                gpkg_path=gpkg_path, run_id=run_id, mesh_rows=mesh_rows,
-                interval_s=interval_s, table_name=table_name,
-                mesh_name=mesh_name, mesh_hash=mesh_hash,
-                log_fn=self._log,
-            )
-        except Exception as e:
-            self._log(f"[WARNING] Mesh results GeoPackage persistence skipped: {e}")
-
     def _persist_run_log_to_geopackage(
         self, gpkg_path: str, run_id: str,
         start_wallclock: str, end_wallclock: str,
@@ -1288,52 +1298,6 @@ class SWE2DWorkbenchStudioDialog(QtWidgets.QDialog):
             )
         except Exception as e:
             self._log(f"[WARNING] Run log persistence skipped: {e}")
-
-    def _build_mesh_snapshot_rows(self):
-        """Build mesh snapshot rows for GPKG persistence (delegates to service)."""
-        from swe2d.workbench.services.non_gui_runtime_service import build_mesh_snapshot_rows
-        _snapshots = self._results_data.get_live_snapshot_timesteps()
-        return build_mesh_snapshot_rows(_snapshots)
-
-    def _persist_coupling_results_to_geopackage(
-        self, gpkg_path: str, run_id: str, rows: List[Dict[str, object]], interval_s: float,
-        accumulate: bool = False,
-    ) -> None:
-        """Persist coupling results to the GeoPackage."""
-        from swe2d.services.gpkg_persistence_service import (
-            persist_coupling_results_to_geopackage as _persist_coupling,
-        )
-        _persist_coupling(
-            gpkg_path=gpkg_path,
-            run_id=run_id,
-            rows=rows,
-            interval_s=interval_s,
-            results_table_name_fn=self._results_table_name,
-            log_fn=self._log,
-            accumulate=accumulate,
-        )
-        self._coupling_results_latest_run_id = str(run_id)
-        self._coupling_results_latest_db_path = str(gpkg_path)
-
-    def _persist_conservation_forensics_to_geopackage(
-        self, gpkg_path: str, run_id: str,
-        storage_rows, boundary_rows, conservation_summary, *,
-        source_step_rows,
-    ) -> None:
-        """Persist conservation forensics data to GeoPackage."""
-        from swe2d.services.gpkg_persistence_service import (
-            persist_conservation_forensics_to_geopackage as _persist_cf,
-        )
-        _persist_cf(
-            gpkg_path=gpkg_path,
-            run_id=run_id,
-            storage_rows=storage_rows,
-            boundary_rows=boundary_rows,
-            conservation_summary=conservation_summary,
-            results_table_name_fn=self._results_table_name,
-            log_fn=self._log,
-            source_step_rows=source_step_rows,
-        )
 
     def _show_results_panel(self):
         """Show the results panel via studio_results_panel."""
