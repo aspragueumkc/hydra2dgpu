@@ -370,61 +370,17 @@ class WorkbenchDialogBuilder:
         dlg._settings_tree.setAnimated(True)
 
         _groups = {
-            "Solver": ["temporal_order_combo", "spatial_scheme_combo", "equation_set_combo",
-                       "bed_friction_model_combo", "turbulence_model_combo"],
-            "Time Stepping": ["cfl_spin", "dt_max_spin", "dt_fixed_spin", "dt_initial_spin"],
-            "Physics": ["h_min_spin", "n_mann_spin", "k_mann_spin",
+            "Solver": ["temporal_order_combo", "reconstruction_combo"],
+            "Time Stepping": ["cfl_spin", "dt_spin", "initial_dt_spin"],
+            "Physics": ["h_min_spin", "n_mann_spin",
                         "shallow_damping_depth_spin", "max_rel_depth_increase_spin"],
             "Stability": ["momentum_cap_min_speed_spin", "momentum_cap_celerity_mult_spin",
                           "depth_cap_spin", "source_cfl_beta_spin"],
             "Mesh": ["max_inv_area_spin"],
         }
-        for group, keys in _groups.items():
-            grp_item = QtWidgets.QTreeWidgetItem([group, ""])
-            grp_item.setExpanded(True)
-            for key in keys:
-                w = self._resolve_widget_attr(key)
-                if w is not None:
-                    try:
-                        _ = w.objectName()
-                    except RuntimeError:
-                        w = None
-                if w is not None:
-                    try:
-                        val = w.value() if hasattr(w, "value") else w.currentText()
-                        lbl = w.toolTip() or key
-                    except Exception:
-                        val = "\u2014"
-                        lbl = key
-                    grp_item.addChild(QtWidgets.QTreeWidgetItem(
-                        [str(lbl).replace("&", ""), str(val)]))
-                else:
-                    grp_item.addChild(QtWidgets.QTreeWidgetItem([key, "\u2014"]))
-            dlg._settings_tree.addTopLevelItem(grp_item)
-
-        run_item = QtWidgets.QTreeWidgetItem(["Runtime", ""])
-        run_item.setExpanded(True)
-        for key in ("output_interval_edit", "run_duration_edit",
-                     "line_output_interval_edit", "n_thread_spin",
-                     "source_max_substeps_spin", "gpu_diag_sync_interval_spin"):
-            w = self._resolve_widget_attr(key)
-            if w is not None:
-                try:
-                    _ = w.objectName()
-                except RuntimeError:
-                    w = None
-            if w is not None:
-                try:
-                    val = w.value() if hasattr(w, "value") else str(w.text() or "")
-                    lbl = w.toolTip() or key
-                except Exception:
-                    val = "\u2014"
-                    lbl = key
-                run_item.addChild(QtWidgets.QTreeWidgetItem(
-                    [str(lbl).replace("&", ""), str(val)]))
-            else:
-                run_item.addChild(QtWidgets.QTreeWidgetItem([key, "\u2014"]))
-        dlg._settings_tree.addTopLevelItem(run_item)
+        _runtime_keys = ("output_interval_edit", "run_time_edit",
+                         "line_output_interval_edit",
+                         "source_max_substeps_spin", "gpu_diag_sync_interval_spin")
 
         model_layout.addWidget(dlg._settings_tree)
         inspector_tabs.addTab(model_page, "Model Settings")
@@ -442,10 +398,6 @@ class WorkbenchDialogBuilder:
             "Topology Layers": [
                 "topo_nodes_combo", "topo_arcs_combo", "topo_regions_combo",
                 "topo_constraints_combo", "topo_quad_edges_combo",
-            ],
-            "Mesh Generation": [
-                "nx_spin", "ny_spin", "lx_spin", "ly_spin",
-                "bed_amp_spin", "mesh_layout_combo", "mesh_info_lbl",
             ],
             "Topo Controls": [
                 "topo_backend_combo", "topo_default_size_spin",
@@ -470,29 +422,6 @@ class WorkbenchDialogBuilder:
                 "topo_gmsh_recombine_node_repositioning_chk",
             ],
         }
-        for group, keys in _mesh_groups.items():
-            grp_item = QtWidgets.QTreeWidgetItem([group, ""])
-            grp_item.setExpanded(True)
-            for key in keys:
-                w = self._resolve_widget_attr(key)
-                if w is not None:
-                    try:
-                        _ = w.objectName()
-                    except RuntimeError:
-                        w = None
-                if w is not None:
-                    try:
-                        val = w.value() if hasattr(w, "value") else w.currentText() if hasattr(w, "currentText") else str(w.text() or "")
-                        val = str(val)
-                        lbl = w.toolTip() or key
-                    except Exception:
-                        val = "\u2014"
-                        lbl = key
-                    grp_item.addChild(QtWidgets.QTreeWidgetItem(
-                        [str(lbl).replace("&", ""), val]))
-                else:
-                    grp_item.addChild(QtWidgets.QTreeWidgetItem([key, "\u2014"]))
-            dlg._mesh_settings_tree.addTopLevelItem(grp_item)
 
         mesh_layout.addWidget(dlg._mesh_settings_tree)
         inspector_tabs.addTab(mesh_page, "Mesh Settings")
@@ -501,6 +430,64 @@ class WorkbenchDialogBuilder:
         inspector_tabs.addTab(DocHubWidget(parent=dlg), "Help")
 
         dock.setWidget(inspector_tabs)
+
+        # Refresh both settings trees from live widget values when a tab is selected
+        def _populate_tree(tree, groups):
+            tree.clear()
+            for group, keys in groups.items():
+                grp_item = QtWidgets.QTreeWidgetItem([group, ""])
+                grp_item.setExpanded(True)
+                for key in keys:
+                    w = self._resolve_widget_attr(key)
+                    if w is not None:
+                        try:
+                            _ = w.objectName()
+                        except RuntimeError:
+                            w = None
+                    if w is not None:
+                        try:
+                            val = w.value() if hasattr(w, "value") else w.currentText() if hasattr(w, "currentText") else str(w.text() or "")
+                            val = str(val)
+                            lbl = w.toolTip() or key
+                        except Exception:
+                            val = "\u2014"
+                            lbl = key
+                        grp_item.addChild(QtWidgets.QTreeWidgetItem(
+                            [str(lbl).replace("&", ""), val]))
+                    else:
+                        grp_item.addChild(QtWidgets.QTreeWidgetItem([key, "\u2014"]))
+                tree.addTopLevelItem(grp_item)
+
+        def _refresh_inspector():
+            _populate_tree(dlg._settings_tree, _groups)
+            # Runtime group is stored separately; re-add it after the groups dict
+            run_item = QtWidgets.QTreeWidgetItem(["Runtime", ""])
+            run_item.setExpanded(True)
+            for key in _runtime_keys:
+                w = self._resolve_widget_attr(key)
+                if w is not None:
+                    try:
+                        _ = w.objectName()
+                    except RuntimeError:
+                        w = None
+                if w is not None:
+                    try:
+                        val = w.value() if hasattr(w, "value") else str(w.text() or "")
+                        lbl = w.toolTip() or key
+                    except Exception:
+                        val = "\u2014"
+                        lbl = key
+                    run_item.addChild(QtWidgets.QTreeWidgetItem(
+                        [str(lbl).replace("&", ""), str(val)]))
+                else:
+                    run_item.addChild(QtWidgets.QTreeWidgetItem([key, "\u2014"]))
+            dlg._settings_tree.addTopLevelItem(run_item)
+            _populate_tree(dlg._mesh_settings_tree, _mesh_groups)
+
+        inspector_tabs.currentChanged.connect(lambda idx: _refresh_inspector())
+
+        # Initial population
+        _refresh_inspector()
 
     def _populate_log_dock(self, dock):
         """Populate the log dock widget with a read-only text view."""

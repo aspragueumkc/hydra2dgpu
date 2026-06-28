@@ -20,7 +20,6 @@ import numpy as np
 
 logger = logging.getLogger(__name__)
 
-from swe2d.workbench.services import gpkg_service
 
 if TYPE_CHECKING:
     from swe2d.workbench.studio_dialog import SWE2DWorkbenchStudioDialog
@@ -528,7 +527,7 @@ class RunController:
                     active_set_hysteresis=wp["active_set_hysteresis_chk"],
                     # Baked mesh persistence — prefer results GPKG, fall back to model GPKG
                     gpkg_path=(
-                        view.get_line_results_storage_path()
+                        view._current_line_results_storage_path()
                         or model_gpkg_path
                         or ""
                     ),

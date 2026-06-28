@@ -124,6 +124,11 @@ class ResultsToolbox(QtWidgets.QWidget):
         self.color_max_spin = self._add_spin(
             layout, "Color max:", 6, -1e12, 1e12, 0.01, 1.0)
         self.color_max_spin.setToolTip("Maximum value for the color scale (manual mode). Only active when auto contrast is off.")
+        self.color_reset_btn = QtWidgets.QPushButton("↺ Reset")
+        self.color_reset_btn.setToolTip("Reset color min/max to the actual data range.")
+        self.color_reset_btn.setFixedWidth(70)
+        self.color_reset_btn.clicked.connect(self._on_color_reset)
+        layout.addRow("", self.color_reset_btn)
         self.lock_canvas_chk = self._add_chk(layout, "Lock canvas extent", True)
         self.lock_canvas_chk.setToolTip("Lock the map canvas extent to the overlay's bounding box.")
         self.visible_only_chk = self._add_chk(layout, "Visible cells only", True)
@@ -208,6 +213,19 @@ class ResultsToolbox(QtWidgets.QWidget):
         for s in (getattr(self, "color_min_spin", None), getattr(self, "color_max_spin", None)):
             if s is not None:
                 s.setEnabled(not bool(checked))
+
+    def _on_color_reset(self) -> None:
+        """Reset color min/max to the actual data range from the last overlay render."""
+        data = getattr(self, "_data", None)
+        if data is None:
+            return
+        vmin = getattr(data, "_overlay_computed_vmin", None)
+        vmax = getattr(data, "_overlay_computed_vmax", None)
+        if vmin is not None and vmax is not None:
+            self.color_min_spin.setValue(float(vmin))
+            self.color_max_spin.setValue(float(vmax))
+            # Also uncheck auto contrast so the manual values take effect
+            self.auto_contrast_chk.setChecked(False)
 
     def _populate_overlay_combos(self) -> None:
         """Fill field, colormap, WSE render, resolution, and streamline combos with defaults."""

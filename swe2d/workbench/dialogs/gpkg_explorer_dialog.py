@@ -119,9 +119,12 @@ class SWE2DModelGeoPackageExplorerDialog(QtWidgets.QDialog):
             return "run_log"
         if t.startswith("swe2d_line_results") or "_swe2d_line_results" in t:
             return "line_results"
-        if t.startswith("swe2d_coupling_results") or "_swe2d_coupling_results" in t:
+        if t.startswith("swe2d_coupling_results") or "_swe2d_coupling_results" in t \
+           or t == "swe2d_baked_coupling":
             return "coupling_results"
-        if t.startswith("swe2d_mesh_results") or t.endswith("_swe2d_mesh_results") or t in ("swe2d_face_flux_results", "swe2d_face_results", "swe2d_flux_faces"):
+        if t.startswith("swe2d_mesh_results") or t.endswith("_swe2d_mesh_results") \
+           or t in ("swe2d_face_flux_results", "swe2d_face_results", "swe2d_flux_faces") \
+           or t in ("swe2d_baked_results", "swe2d_baked_mesh"):
             return "mesh_results"
         if (
             t.startswith("swe2d_conservation")

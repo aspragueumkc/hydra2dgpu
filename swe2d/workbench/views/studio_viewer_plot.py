@@ -164,7 +164,7 @@ class PlotViewWidget(QtWidgets.QWidget):
             if not gpkg or not run_id:
                 continue
             try:
-                from swe2d.workbench.services.gpkg_service import get_table_contents, get_table_info
+                from swe2d.results.db_utils import get_table_contents, get_table_info
                 tbl = "swe2d_line_results_ts"
                 info = get_table_info(gpkg, tbl)
                 if info and "run_id" in info:

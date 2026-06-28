@@ -503,7 +503,7 @@ class BatchSimulationDialog(QtWidgets.QDialog):
                     conn = sqlite3.connect(gpkg)
                     cur = conn.cursor()
                     cur.execute(
-                        "SELECT mesh_name FROM swe2d_mesh ORDER BY created_utc DESC LIMIT 1"
+                        "SELECT mesh_name FROM swe2d_baked_mesh ORDER BY created_utc DESC LIMIT 1"
                     )
                     row = cur.fetchone()
                     if row:
@@ -677,7 +677,7 @@ class BatchSimulationDialog(QtWidgets.QDialog):
         try:
             conn = sqlite3.connect(gpkg_path)
             cur = conn.cursor()
-            for table in ("swe2d_run_logs", "swe2d_mesh_results_runs"):
+            for table in ("swe2d_run_logs", "swe2d_baked_results"):
                 cur.execute(
                     "SELECT name FROM sqlite_master WHERE type='table' AND name=?",
                     (table,),
@@ -686,29 +686,33 @@ class BatchSimulationDialog(QtWidgets.QDialog):
                     break
             else:
                 return runs
-            cur.execute(f"SELECT run_id, created_utc, params FROM \"{table}\" ORDER BY created_utc DESC")
-            for row in cur.fetchall():
-                run_id = str(row[0])
-                created = str(row[1] or "")
-                params_raw = str(row[2] or "{}")
-                metadata = {
-                    "created_utc": created,
-                    "params": params_raw,
-                }
-                # Also try to get mesh_name from swe2d_mesh if possible
-                try:
-                    cur2 = conn.cursor()
-                    cur2.execute(
-                        "SELECT mesh_name FROM swe2d_mesh_results_runs "
-                        "WHERE run_id=? LIMIT 1", (run_id,)
-                    )
-                    mr = cur2.fetchone()
-                    if mr:
-                        metadata["mesh_name"] = str(mr[0])
-                except Exception as _e:
-
-                    logger.warning(f"[ERROR] Exception in batch_simulation_dialog.py: {_e}")
-                runs.append((run_id, metadata))
+            if table == "swe2d_baked_results":
+                cur.execute(
+                    "SELECT run_id, created_utc, mesh_name FROM swe2d_baked_results "
+                    "ORDER BY created_utc DESC"
+                )
+                for row in cur.fetchall():
+                    run_id = str(row[0])
+                    created = str(row[1] or "")
+                    metadata = {
+                        "created_utc": created,
+                        "params": "{}",
+                        "mesh_name": str(row[2] or ""),
+                    }
+                    runs.append((run_id, metadata))
+            else:
+                cur.execute(
+                    f"SELECT run_id, created_utc, params FROM \"{table}\" ORDER BY created_utc DESC"
+                )
+                for row in cur.fetchall():
+                    run_id = str(row[0])
+                    created = str(row[1] or "")
+                    params_raw = str(row[2] or "{}")
+                    metadata = {
+                        "created_utc": created,
+                        "params": params_raw,
+                    }
+                    runs.append((run_id, metadata))
             conn.close()
         except Exception as exc:
             QtWidgets.QMessageBox.warning(
@@ -762,7 +766,7 @@ class BatchSimulationDialog(QtWidgets.QDialog):
             conn = sqlite3.connect(gpkg)
             cur = conn.cursor()
             cur.execute(
-                "SELECT DISTINCT mesh_name FROM swe2d_mesh "
+                "SELECT DISTINCT mesh_name FROM swe2d_baked_mesh "
                 "WHERE mesh_name IS NOT NULL AND mesh_name != '' "
                 "ORDER BY created_utc DESC"
             )

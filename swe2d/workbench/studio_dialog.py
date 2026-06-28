@@ -658,7 +658,7 @@ class SWE2DWorkbenchStudioDialog(QtWidgets.QDialog):
         try:
             from swe2d.services.gpkg_persistence_service import persist_baked_mesh
             from hydra_swe2d import (
-                swe2d_build_mesh_poly, swe2d_serialize_mesh, swe2d_mesh_info,
+                swe2d_build_mesh, swe2d_build_mesh_poly, swe2d_serialize_mesh, swe2d_mesh_info,
             )
             import numpy as np
             nx = np.asarray(mesh_data["node_x"], dtype=np.float64)
@@ -668,7 +668,9 @@ class SWE2DWorkbenchStudioDialog(QtWidgets.QDialog):
             bc_n1 = np.asarray(mesh_data.get("bc_edge_node1", np.empty(0)), dtype=np.int32)
             bc_tp = np.asarray(mesh_data.get("bc_edge_type", np.empty(0)), dtype=np.int32)
             bc_vl = np.asarray(mesh_data.get("bc_edge_val", np.empty(0)), dtype=np.float64)
-            cfn = mesh_data.get("cell_face_nodes") or mesh_data.get("cell_nodes")
+            cfn = mesh_data.get("cell_face_nodes")
+            if cfn is None:
+                cfn = mesh_data.get("cell_nodes")
             cfo = mesh_data.get("cell_face_offsets")
             if cfn is not None and cfo is not None:
                 pm = swe2d_build_mesh_poly(nx, ny, nz, np.asarray(cfo, dtype=np.int32),
@@ -1005,7 +1007,7 @@ class SWE2DWorkbenchStudioDialog(QtWidgets.QDialog):
 
     def _results_table_name(self, base_name: str) -> str:
         """Build a qualified results table name with optional prefix."""
-        base = str(base_name or "").strip() or "swe2d_mesh_results"
+        base = str(base_name or "").strip() or "swe2d_baked_results"
         prefix = str(self._selected_results_table_prefix() or "").strip("_")
         if not prefix:
             return base

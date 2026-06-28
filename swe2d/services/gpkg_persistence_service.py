@@ -726,7 +726,14 @@ def load_baked_line_timeseries(
     if not isinstance(source, str):
         d = source
         if hasattr(d, '_live_line_ts') and line_id in d._live_line_ts:
-            return dict(d._live_line_ts[line_id])
+            raw = d._live_line_ts[line_id]
+            # Convert Python lists to numpy arrays for viewer compatibility
+            result = {"line_name": raw.get("line_name", "")}
+            for k in ("t_s", "depth_m", "velocity_ms", "wse_m", "bed_m",
+                       "flow_cms", "wet_frac", "fr"):
+                v = raw.get(k, [])
+                result[k] = np.asarray(v, dtype=np.float64)
+            return result
         if hasattr(d, 'get_line_ts_arrays'):
             result = d.get_line_ts_arrays(run_id, line_id)
             if result:
@@ -794,6 +801,29 @@ def load_baked_line_profile(
             result = d.get_line_profile_arrays(run_id, line_id, t_sec)
             if result:
                 return dict(result)
+        # Fallback: convert _live_line_profile lists to arrays
+        if hasattr(d, '_live_line_profile') and line_id in d._live_line_profile:
+            raw = d._live_line_profile[line_id]
+            times = np.asarray(raw.get("t_s", []), dtype=np.float64)
+            if times.size == 0:
+                return {}
+            i = int(np.argmin(np.abs(times - t_sec)))
+            n_sta = len(raw.get("station_m", []))
+            # Assumes fixed station count per timestep — find the grouping
+            unique_ts = np.unique(times)
+            ts_idx = {float(t): idx for idx, t in enumerate(unique_ts)}
+            mask = np.abs(times - t_sec) < 1.0  # within 1 second
+            idxs = np.where(mask)[0]
+            if len(idxs) == 0:
+                return {}
+            start, end = int(idxs[0]), int(idxs[-1]) + 1
+            stations = np.asarray(raw.get("station_m", [])[start:end], dtype=np.float64)
+            return {
+                "station_m": stations,
+                "wse_m": np.asarray(raw.get("wse_m", []), dtype=np.float64)[start:end],
+                "bed_m": np.asarray(raw.get("bed_m", []), dtype=np.float64)[start:end],
+                "depth_m": np.asarray(raw.get("depth_m", []), dtype=np.float64)[start:end],
+            }
         return {}
     # GPKG path
     if not source or not os.path.exists(source):
@@ -917,4 +947,20 @@ def collect_baked_runs_from_gpkg(
         return results
     finally:
         conn.close()
+
+
+def load_baked_mesh_snapshot(
+    gpkg_path: str,
+    run_id: str,
+    t_s: float,
+) -> Optional[Dict]:
+    """Load mesh snapshot data from baked results BLOBs.
+
+    Near-zero-copy: uses np.frombuffer on the stored BLOBs
+    instead of iterating per-row SQL results.
+
+    Returns dict with ``h``, ``hu``, ``hv`` (np.ndarrays),
+    ``t_s`` (float), ``cell_count`` (int), or None if not found.
+    """
+    return load_baked_snapshot(gpkg_path, run_id, t_s)
 

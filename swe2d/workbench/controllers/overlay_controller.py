@@ -304,6 +304,9 @@ class OverlayController:
                     f"[HighPerf Overlay] empty frame: {frame.get('message', 'unknown')}"
                 )
                 return
+            # Store computed color range for reset-to-default feature
+            self._data._overlay_computed_vmin = frame.get("computed_vmin", None)
+            self._data._overlay_computed_vmax = frame.get("computed_vmax", None)
             self.apply_overlay_frame(frame)
         except Exception as exc:
             view._log(f"[HighPerf Overlay] refresh failed: {exc}")
@@ -612,9 +615,10 @@ class OverlayController:
         if self._data.overlay_cell_x is None or self._data.overlay_cell_x.size <= 0:
             return False
 
-        from swe2d.workbench.services import gpkg_service
+        
 
-        snapshot = gpkg_service.load_mesh_snapshot(gpkg, run_id, t_s)
+        from swe2d.services.gpkg_persistence_service import load_baked_mesh_snapshot
+        snapshot = load_baked_mesh_snapshot(gpkg, run_id, t_s)
         if snapshot is None:
             view._log("[HighPerf Overlay] No mesh snapshot found in GeoPackage.")
             return False

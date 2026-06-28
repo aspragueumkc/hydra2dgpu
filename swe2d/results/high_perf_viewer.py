@@ -775,6 +775,10 @@ def render_unstructured_snapshot_image(
     if not np.isfinite(vmin) or not np.isfinite(vmax) or vmax <= vmin:
         vmax = vmin + 1.0
 
+    # Store computed color range for reset-to-default feature
+    out["computed_vmin"] = vmin
+    out["computed_vmax"] = vmax
+
     norm = np.zeros_like(grid, dtype=np.float64)
     norm[finite] = np.clip((grid[finite] - vmin) / (vmax - vmin), 0.0, 1.0)
     idx_img = np.clip((norm * 255.0).astype(np.int32), 0, 255)

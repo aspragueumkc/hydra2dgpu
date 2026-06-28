@@ -7,7 +7,7 @@ import os
 
 from qgis.PyQt import QtWidgets
 
-from swe2d.workbench.services.gpkg_service import get_table_contents, get_table_info
+from swe2d.results.db_utils import get_table_contents, get_table_info
 
 
 class SWE2DSQLiteTablePreviewDialog(QtWidgets.QDialog):
