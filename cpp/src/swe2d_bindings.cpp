@@ -3182,6 +3182,35 @@ PYBIND11_MODULE(HYDRA_SWE2D_PY_MODULE_NAME, m) {
                 static_cast<py::ssize_t>(pm.mesh.cell_perm.size()),
                 pm.mesh.cell_perm.data(),
                 py::cast(pm));
+        })
+        // BC edge arrays — needed by workbench for boundary condition overrides
+        .def_property_readonly("edge_bc", [](const PyMesh& pm) -> py::object {
+            if (pm.mesh.edge_bc.empty()) return py::none();
+            return py::array_t<int32_t>(
+                static_cast<py::ssize_t>(pm.mesh.edge_bc.size()),
+                reinterpret_cast<const int32_t*>(pm.mesh.edge_bc.data()),
+                py::cast(pm));
+        })
+        .def_property_readonly("edge_bc_val", [](const PyMesh& pm) -> py::object {
+            if (pm.mesh.edge_bc_val.empty()) return py::none();
+            return py::array_t<double>(
+                static_cast<py::ssize_t>(pm.mesh.edge_bc_val.size()),
+                pm.mesh.edge_bc_val.data(),
+                py::cast(pm));
+        })
+        .def_property_readonly("edge_n0", [](const PyMesh& pm) -> py::object {
+            if (pm.mesh.edge_n0.empty()) return py::none();
+            return py::array_t<int32_t>(
+                static_cast<py::ssize_t>(pm.mesh.edge_n0.size()),
+                pm.mesh.edge_n0.data(),
+                py::cast(pm));
+        })
+        .def_property_readonly("edge_n1", [](const PyMesh& pm) -> py::object {
+            if (pm.mesh.edge_n1.empty()) return py::none();
+            return py::array_t<int32_t>(
+                static_cast<py::ssize_t>(pm.mesh.edge_n1.size()),
+                pm.mesh.edge_n1.data(),
+                py::cast(pm));
         });
 
     py::class_<PySolver, std::shared_ptr<PySolver>>(m, "SWE2DSolverHandle")

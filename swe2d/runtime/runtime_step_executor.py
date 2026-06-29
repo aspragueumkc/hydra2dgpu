@@ -140,8 +140,12 @@ class SWE2DRuntimeStepExecutor:
                 backend.average_coupling_sources()
             coupling_ms += (time.perf_counter() - _t_cpl1) * 1000.0
 
-            # GPU-only: restore from device backup (D2D)
-            backend.restore_state_from_backup()
+            # Only restore from device backup when coupling source injection
+            # actually modified the state.  When _native_pred_applied is False
+            # no coupling sources were applied, and restore_state_from_backup
+            # would overwrite the solver's step result with the pre-step state.
+            if _native_pred_applied or _native_corr_applied:
+                backend.restore_state_from_backup()
             if dynamic_bc and not native_bc_forcing:
                 _t_bc1 = time.perf_counter()
                 bc_tp_step, bc_vl_step = apply_timeseries_bc_values_callback(
