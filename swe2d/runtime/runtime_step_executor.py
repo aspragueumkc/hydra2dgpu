@@ -93,15 +93,12 @@ class SWE2DRuntimeStepExecutor:
             _t_cpl0 = time.perf_counter()
             _native_pred_applied = False
             if coupling_controller is not None:
-                try:
-                    _native_pred_applied = bool(
-                        coupling_controller.apply_native_device_sources(
-                            t_accum, dt_stage_guess
-                        )
+                # GPU-only path — no CPU fallback. Fail loudly if unavailable.
+                _native_pred_applied = bool(
+                    coupling_controller.apply_native_device_sources(
+                        t_accum, dt_stage_guess
                     )
-                except Exception:
-                    logger.warning("Silent fallback in Exception handler", exc_info=True)
-                    _native_pred_applied = False
+                )
             if _native_pred_applied:
                 # Save coupling source to predictor buffer (GPU D2D copy)
                 backend.save_coupling_pred()
@@ -114,21 +111,12 @@ class SWE2DRuntimeStepExecutor:
                 mutate_state=False,
             )
             _t_src0 = time.perf_counter()
-            h0_c, hu0_c, hv0_c = None, None, None
-            if not _native_pred_applied:
-                # Fallback: Python source evaluation (D2H + H2D)
-                h0_c, hu0_c, hv0_c = backend.get_state()
-                state_ms += (time.perf_counter() - _t_src0) * 1000.0
-                coupled_source_rate_0 = coupling_controller.compute_source_rates(
-                    t_accum, dt_stage_guess, h0_c, hu0_c, hv0_c,
-                )
-                coupling_ms += (time.perf_counter() - _t_src0) * 1000.0
             apply_external_sources_callback(
                 backend,
                 dt_stage_guess,
                 rain_src_pred,
                 cell_source_model_0,
-                coupled_source_rate_0 if not _native_pred_applied else None,
+                coupled_source_rate=None,
             )
             source_ms += (time.perf_counter() - _t_src0) * 1000.0
             if apply_3d_patch_face_bc_callback is not None:
@@ -141,26 +129,19 @@ class SWE2DRuntimeStepExecutor:
             _t_cpl1 = time.perf_counter()
             _native_corr_applied = False
             if coupling_controller is not None:
-                try:
-                    _native_corr_applied = bool(
-                        coupling_controller.apply_native_device_sources(
-                            t_accum + dt_used, dt_used
-                        )
+                # GPU-only path — no CPU fallback
+                _native_corr_applied = bool(
+                    coupling_controller.apply_native_device_sources(
+                        t_accum + dt_used, dt_used
                     )
-                except Exception:
-                    logger.warning("Silent fallback in Exception handler", exc_info=True)
-                    _native_corr_applied = False
+                )
             if _native_corr_applied:
                 # Average predictor and corrector on GPU
                 backend.average_coupling_sources()
             coupling_ms += (time.perf_counter() - _t_cpl1) * 1000.0
 
-            if not _native_pred_applied:
-                # Fallback: restore state from host backup (H2D)
-                backend.set_state(h0_c, hu0_c, hv0_c)
-            else:
-                # GPU-only: restore from device backup (D2D)
-                backend.restore_state_from_backup()
+            # GPU-only: restore from device backup (D2D)
+            backend.restore_state_from_backup()
             if dynamic_bc and not native_bc_forcing:
                 _t_bc1 = time.perf_counter()
                 bc_tp_step, bc_vl_step = apply_timeseries_bc_values_callback(
@@ -231,30 +212,14 @@ class SWE2DRuntimeStepExecutor:
                 # device-resident state, computes structure flows, and injects
                 # source rates directly into d_external_source_mps.  No D2H
                 # state readback, no Python structure evaluation, no H2D upload.
-                try:
-                    _native_device_applied = bool(
-                        coupling_controller.apply_native_device_sources(
-                            t_accum, dt_source_guess
-                        )
+                # GPU-only path — no CPU fallback. Fail loudly if unavailable.
+                _native_device_applied = bool(
+                    coupling_controller.apply_native_device_sources(
+                        t_accum, dt_source_guess
                     )
-                except Exception:
-                    logger.warning("Silent fallback in Exception handler", exc_info=True)
-                    _native_device_applied = False
+                )
                 if _native_device_applied:
                     coupled_source_rate = None  # sources already on GPU
-                else:
-                    _t_state2 = time.perf_counter()
-                    h_c, hu_c, hv_c = backend.get_state()
-                    state_ms += (time.perf_counter() - _t_state2) * 1000.0
-                    _t_cpl2 = time.perf_counter()
-                    coupled_source_rate = coupling_controller.compute_source_rates(
-                        t_accum,
-                        dt_source_guess,
-                        h_c,
-                        hu_c,
-                        hv_c,
-                    )
-                    coupling_ms += (time.perf_counter() - _t_cpl2) * 1000.0
             _t_gpu_sync = time.perf_counter()
             backend.sync_device()
             gpu_ms += (time.perf_counter() - _t_gpu_sync) * 1000.0
