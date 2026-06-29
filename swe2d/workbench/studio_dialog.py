@@ -1949,7 +1949,34 @@ class SWE2DWorkbenchStudioDialog(QtWidgets.QDialog):
             _ny = np.asarray(self._mesh_data.get("node_y", np.empty(0)), dtype=np.float64).ravel()
             _nc = np.asarray(self._mesh_data.get("cell_nodes", np.empty((0, 3), dtype=np.int32)))
             node_coords = np.column_stack([_nx, _ny]) if _nx.size > 0 and _ny.size > 0 else np.empty((0, 2), dtype=np.float64)
-            cell_nodes = _nc.reshape((-1, 3)).astype(np.int32) if _nc.size > 0 else np.empty((0, 3), dtype=np.int32)
+            # Handle polygon meshes — triangulate if cell_face_offsets is available
+            _fo = self._mesh_data.get("cell_face_offsets")
+            _fn = self._mesh_data.get("cell_face_nodes")
+            if _fo is not None and _fn is not None:
+                # Polygon mesh: triangulate via centroid-vertex fan
+                _fo_arr = np.asarray(_fo, dtype=np.int32).ravel()
+                _fn_arr = np.asarray(_fn, dtype=np.int32).ravel()
+                n_cells = _fo_arr.size - 1
+                total_tris = sum(int(_fo_arr[i+1] - _fo_arr[i]) for i in range(n_cells))
+                cell_nodes = np.empty((total_tris, 3), dtype=np.int32)
+                idx = 0
+                nx_ext = np.concatenate([_nx, np.zeros(n_cells)])
+                ny_ext = np.concatenate([_ny, np.zeros(n_cells)])
+                for c in range(n_cells):
+                    s, e = int(_fo_arr[c]), int(_fo_arr[c+1])
+                    cx = float(np.mean(_nx[_fn_arr[s:e]]))
+                    cy = float(np.mean(_ny[_fn_arr[s:e]]))
+                    nx_ext[len(_nx) + c] = cx
+                    ny_ext[len(_ny) + c] = cy
+                    for i in range(s, e):
+                        na, nb = int(_fn_arr[i]), int(_fn_arr[(i+1-s)%(e-s)+s])
+                        cell_nodes[idx] = [na, nb, len(_nx) + c]
+                        idx += 1
+                node_coords = np.column_stack([nx_ext, ny_ext])
+            elif _nc.size > 0:
+                cell_nodes = _nc.reshape((-1, 3)).astype(np.int32)
+            else:
+                cell_nodes = np.empty((0, 3), dtype=np.int32)
         else:
             node_coords = np.empty((0, 2), dtype=np.float64)
             cell_nodes = np.empty((0, 3), dtype=np.int32)

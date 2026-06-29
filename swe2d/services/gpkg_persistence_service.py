@@ -167,6 +167,8 @@ def persist_baked_mesh(
         return
     conn = sqlite3.connect(gpkg_path)
     try:
+        # Ensure OGC GPKG metadata tables exist (required by GDAL/QGIS)
+        _ensure_ogc_gpkg_tables(conn, crs_wkt=crs_wkt)
         conn.execute("""
             CREATE TABLE IF NOT EXISTS swe2d_baked_mesh (
                 mesh_name TEXT PRIMARY KEY,
@@ -221,12 +223,70 @@ def load_baked_mesh(
         conn.close()
 
 
+def _ensure_ogc_gpkg_tables(conn: sqlite3.Connection, crs_wkt: str = "") -> None:
+    """Create the OGC GeoPackage metadata tables if they don't exist.
+
+    Required for any valid .gpkg file that may be opened by GDAL/QGIS.
+    """
+    cur = conn.cursor()
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS spatial_ref_sys (
+            srs_id INTEGER PRIMARY KEY,
+            srs_name TEXT,
+            srs_type TEXT,
+            organization TEXT,
+            organization_coordsys_id INTEGER,
+            definition TEXT,
+            description TEXT)
+    """)
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS gpkg_contents (
+            table_name TEXT NOT NULL PRIMARY KEY,
+            data_type TEXT NOT NULL,
+            identifier TEXT,
+            description TEXT DEFAULT '',
+            last_change DATETIME NOT NULL,
+            min_x DOUBLE, min_y DOUBLE,
+            max_x DOUBLE, max_y DOUBLE,
+            srs_id INTEGER)
+    """)
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS gpkg_geometry_columns (
+            table_name TEXT NOT NULL,
+            column_name TEXT NOT NULL,
+            geometry_type_name TEXT NOT NULL,
+            srs_id INTEGER NOT NULL,
+            z TINYINT NOT NULL,
+            m TINYINT NOT NULL,
+            CONSTRAINT pk_geom_cols PRIMARY KEY (table_name, column_name))
+    """)
+
+    # Insert default SRS from the mesh CRS if not present
+    if crs_wkt and not cur.execute("SELECT 1 FROM spatial_ref_sys WHERE srs_id=4326").fetchone():
+        cur.execute(
+            "INSERT INTO spatial_ref_sys(srs_id, srs_name, srs_type, organization, "
+            "organization_coordsys_id, definition, description) "
+            "VALUES(4326,'Model CRS','geodetic','EPSG',4326,?,?)",
+            (str(crs_wkt), "Model CRS"),
+        )
+    for tbl in ("spatial_ref_sys", "gpkg_contents", "gpkg_geometry_columns"):
+        if not cur.execute(
+            "SELECT 1 FROM gpkg_contents WHERE table_name=?", (tbl,)
+        ).fetchone():
+            cur.execute(
+                "INSERT INTO gpkg_contents(table_name, data_type, identifier, "
+                "last_change, srs_id) VALUES(?, 'attributes', ?, ?, 4326)",
+                (tbl, tbl, datetime.datetime.now(datetime.timezone.utc).isoformat()),
+            )
+
+
 def persist_baked_results(
     gpkg_path: str,
     run_id: str,
     mesh_name: str,
     snapshot_timesteps: List,
     max_tracking: Optional[Dict[str, np.ndarray]] = None,
+    crs_wkt: str = "",
     log_fn: Optional[Callable[[str], None]] = None,
 ) -> None:
     """Save baked mesh results (all timesteps + optional GPU max tracking) as BLOBs.
@@ -243,6 +303,8 @@ def persist_baked_results(
         Each element is a tuple of (float time, ndarray h, ndarray hu, ndarray hv).
     max_tracking : dict, optional
         Optional dict with keys "max_h", "max_hu", "max_hv" — GPU per-step maxima.
+    crs_wkt : str
+        CRS Well-Known-Text string (passed to OGC GPKG metadata).
     log_fn : callable, optional
         Logging callback.
     """
@@ -250,6 +312,13 @@ def persist_baked_results(
         return
     n_steps = len(snapshot_timesteps)
     n_cells = int(np.asarray(snapshot_timesteps[0][1]).size)
+
+    conn = sqlite3.connect(gpkg_path)
+    try:
+        # Ensure OGC GPKG metadata tables exist (required by GDAL/QGIS)
+        _ensure_ogc_gpkg_tables(conn, crs_wkt=crs_wkt)
+    finally:
+        conn.close()
 
     times = np.array([float(t) for t, _, _, _ in snapshot_timesteps], dtype=np.float64)
     h_all = np.empty(n_steps * n_cells, dtype=np.float64)
@@ -927,14 +996,20 @@ def collect_baked_runs_from_gpkg(
             "FROM swe2d_baked_results ORDER BY created_utc DESC"
         ).fetchall():
             run_id = str(row[0])
-            has_lines = conn.execute(
-                "SELECT 1 FROM swe2d_baked_line_ts WHERE run_id=? LIMIT 1",
-                (run_id,),
-            ).fetchone() is not None
-            has_coupling = conn.execute(
-                "SELECT 1 FROM swe2d_baked_coupling WHERE run_id=? LIMIT 1",
-                (run_id,),
-            ).fetchone() is not None
+            try:
+                has_lines = conn.execute(
+                    "SELECT 1 FROM swe2d_baked_line_ts WHERE run_id=? LIMIT 1",
+                    (run_id,),
+                ).fetchone() is not None
+            except Exception:
+                has_lines = False
+            try:
+                has_coupling = conn.execute(
+                    "SELECT 1 FROM swe2d_baked_coupling WHERE run_id=? LIMIT 1",
+                    (run_id,),
+                ).fetchone() is not None
+            except Exception:
+                has_coupling = False
             results.append({
                 "run_id": run_id,
                 "mesh_name": str(row[1] or ""),

@@ -45,9 +45,22 @@ def query_mesh_from_gpkg(gpkg_path: str, mesh_name: str) -> Optional[Dict[str, n
             "node_z": np.asarray(pm.node_z, dtype=np.float64),
             "cell_nodes": np.asarray(pm.cell_face_nodes, dtype=np.int32) if pm.cell_face_nodes is not None else np.empty(0, dtype=np.int32),
         }
+        # Also read CRS from the baked mesh table
+        try:
+            import sqlite3
+            _c = sqlite3.connect(gpkg_path)
+            _r = _c.execute(
+                "SELECT crs_wkt FROM swe2d_baked_mesh WHERE mesh_name=?", (mesh_name,)
+            ).fetchone()
+            if _r:
+                out["crs_wkt"] = str(_r[0] or "")
+            _c.close()
+        except Exception:
+            pass
         cfo = pm.cell_face_offsets
         if cfo is not None:
             out["cell_face_offsets"] = np.asarray(cfo, dtype=np.int32)
+            out["cell_face_nodes"] = np.asarray(pm.cell_face_nodes, dtype=np.int32) if pm.cell_face_nodes is not None else np.empty(0, dtype=np.int32)
         return out
     except Exception:
         return None
@@ -56,21 +69,307 @@ def query_mesh_from_gpkg(gpkg_path: str, mesh_name: str) -> Optional[Dict[str, n
 def query_bc_arrays(conn: sqlite3.Connection, bc_table: str) -> Dict[str, np.ndarray]:
     """Read boundary condition edge arrays from a BC lines layer table.
 
-    Expects table with columns: node0 INTEGER, node1 INTEGER, bc_type INTEGER, bc_val REAL.
+    Probes PRAGMA table_info to discover column names. Handles both
+    pre-split edge tables (``node0``/``node1`` columns) and geometry-based
+    tables (``geom``/``wkb_geometry`` with multi-vertex LINESTRINGs).
+
     Returns dict with keys: bc_edge_node0, bc_edge_node1, bc_edge_type, bc_edge_val.
+    Empty arrays if no valid data found.
     """
     cur = conn.cursor()
-    cur.execute(f"SELECT node0, node1, bc_type, bc_val FROM \"{bc_table}\" ORDER BY rowid")
+    cur.execute(f"PRAGMA table_info(\"{bc_table}\")")
+    cols = [str(r[1]) for r in cur.fetchall()]
+    if not cols:
+        return {}
+    col_lower = [c.lower() for c in cols]
+
+    # Map common attribute column names
+    col_map = {}
+    for c, cl in zip(cols, col_lower):
+        if cl in ("node0", "node_0", "start_node", "from_node"):
+            col_map["node0"] = c
+        elif cl in ("node1", "node_1", "end_node", "to_node"):
+            col_map["node1"] = c
+        elif cl in ("bc_type", "bc", "bctype", "boundary_type"):
+            col_map["bc_type"] = c
+        elif cl in ("bc_val", "bcvalue", "bc_value", "value", "val"):
+            col_map["bc_val"] = c
+
+    # Determine if this is a pre-split edge table or a geometry table
+    has_node_cols = "node0" in col_map and "node1" in col_map
+    has_geom = any(cl in ("geom", "wkb_geometry", "geometry", "shape") for cl in col_lower)
+    has_wkt = "wkt" in col_lower
+
+    bc_col = col_map.get("bc_type", "")
+    val_col = col_map.get("bc_val", "")
+
+    # If it has geometry but no node columns, extract vertex pairs from linestrings
+    if not has_node_cols and (has_geom or has_wkt):
+        return _extract_bc_edges_from_geometry(conn, bc_table, cols, bc_col, val_col)
+
+    if not has_node_cols:
+        return {}
+
+    # Pre-split edge table: one row per mesh edge
+
+    cur.execute(
+        f"SELECT \"{col_map['node0']}\", \"{col_map['node1']}\", "
+        f"\"{bc_col}\", \"{val_col}\" "
+        f"FROM \"{bc_table}\" ORDER BY rowid"
+    )
     rows = cur.fetchall()
     if not rows:
         return {}
     out = {
         "bc_edge_node0": np.array([r[0] for r in rows], dtype=np.int32),
         "bc_edge_node1": np.array([r[1] for r in rows], dtype=np.int32),
-        "bc_edge_type": np.array([r[2] for r in rows], dtype=np.int32),
-        "bc_edge_val": np.array([r[3] for r in rows], dtype=np.float64),
+        "bc_edge_type": np.array([r[2] for r in rows], dtype=np.int32) if bc_col else np.full(len(rows), 1, dtype=np.int32),
+        "bc_edge_val": np.array([r[3] for r in rows], dtype=np.float64) if val_col else np.zeros(len(rows), dtype=np.float64),
     }
     return out
+
+
+def _extract_bc_edges_from_geometry(
+    conn: sqlite3.Connection,
+    table: str,
+    cols: list,
+    bc_col: str,
+    val_col: str,
+) -> Dict[str, np.ndarray]:
+    """Extract individual edge pairs from multi-vertex BC linestrings.
+
+    Each consecutive vertex pair in a LINESTRING becomes one (node0, node1)
+    boundary edge specification.
+    """
+    cur = conn.cursor()
+
+    # Find the geometry column
+    geom_col = "geom"
+    for c in cols:
+        if c.lower() in ("wkb_geometry", "geometry", "shape"):
+            geom_col = c
+            break
+
+    # Build query — try to extract WKT or raw vertex coordinates
+    has_wkt = "wkt" in [c.lower() for c in cols]
+
+    all_n0, all_n1, all_type, all_val = [], [], [], []
+    if has_wkt:
+        cur.execute(f"SELECT \"wkt\", \"{bc_col}\", \"{val_col}\" FROM \"{table}\" ORDER BY rowid")
+        for wkt, bt, bv in cur.fetchall():
+            vertices = _parse_wkt_linestring(str(wkt or ""))
+            for i in range(len(vertices) - 1):
+                all_n0.append(vertices[i])
+                all_n1.append(vertices[i + 1])
+                all_type.append(int(bt) if bt is not None else 1)
+                all_val.append(float(bv) if bv is not None else 0.0)
+    else:
+        # Try to read from the geometry column — check if it's WKB or plain text
+        try:
+            cur.execute(f"SELECT \"{geom_col}\", \"{bc_col}\", \"{val_col}\" FROM \"{table}\" ORDER BY rowid")
+            for geom, bt, bv in cur.fetchall():
+                raw = str(geom or "")
+                if raw.startswith("LINESTRING") or raw.startswith("LineString"):
+                    vertices = _parse_wkt_linestring(raw)
+                else:
+                    # Try WKB hex — skip for now
+                    continue
+                for i in range(len(vertices) - 1):
+                    all_n0.append(vertices[i])
+                    all_n1.append(vertices[i + 1])
+                    all_type.append(int(bt) if bt is not None else 1)
+                    all_val.append(float(bv) if bv is not None else 0.0)
+        except Exception:
+            # Fallback: try column-by-column vertex pattern (node0_x, node0_y, node1_x, node1_y)
+            pass
+
+    if not all_n0:
+        return {}
+
+    return {
+        "bc_edge_node0": np.array(all_n0, dtype=np.int32),
+        "bc_edge_node1": np.array(all_n1, dtype=np.int32),
+        "bc_edge_type": np.array(all_type, dtype=np.int32),
+        "bc_edge_val": np.array(all_val, dtype=np.float64),
+    }
+
+
+def _parse_wkt_linestring(wkt: str) -> List[int]:
+    """Parse a WKT LINESTRING(x1 y1, x2 y2, ...) and return node indices.
+    Note: this returns raw vertex indices only if the table has pre-computed
+    node_id columns. Otherwise it returns integers 0,1,2,... as placeholders
+    — the caller must map coordinates to mesh nodes separately.
+    """
+    wkt = wkt.strip()
+    if "(" not in wkt:
+        return []
+    coords_str = wkt.split("(")[-1].split(")")[0]
+    pairs = coords_str.split(",")
+    coords = []
+    for p in pairs:
+        parts = p.strip().split()
+        if len(parts) >= 2:
+            coords.append((float(parts[0]), float(parts[1])))
+    return list(range(len(coords)))
+
+
+def apply_bc_overrides_from_gpkg(
+    conn: sqlite3.Connection,
+    bc_table: str,
+    edge_n0: np.ndarray,
+    edge_n1: np.ndarray,
+    bc_type_in: np.ndarray,
+    bc_val_in: np.ndarray,
+    node_x: Optional[np.ndarray] = None,
+    node_y: Optional[np.ndarray] = None,
+) -> Tuple[np.ndarray, np.ndarray]:
+    """Apply boundary condition overrides from a GPKG BC lines table.
+
+    Reads BC features from *bc_table*, splits multi-vertex LINESTRINGs
+    into individual edge segments, matches each segment to a mesh boundary
+    edge by comparing (min_node, max_node) keys (when pre-computed node
+    columns exist) or by coordinate proximity (when geometry + node coords
+    are provided).
+
+    Parameters
+    ----------
+    conn : sqlite3.Connection
+        Open connection to the BC GPKG.
+    bc_table : str
+        Table name containing BC features.
+    edge_n0, edge_n1 : ndarray
+        Mesh boundary edge node indices.
+    bc_type_in, bc_val_in : ndarray
+        Default BC types and values per edge.
+    node_x, node_y : ndarray, optional
+        Mesh node coordinates for coordinate-based matching.
+
+    Returns
+    -------
+    Tuple[ndarray, ndarray]
+        Updated (bc_type, bc_val) arrays.
+    """
+    bc_type_out = bc_type_in.copy()
+    bc_val_out = bc_val_in.copy()
+
+    # Probe table columns
+    cur = conn.cursor()
+    cur.execute(f"PRAGMA table_info(\"{bc_table}\")")
+    cols = [str(r[1]) for r in cur.fetchall()]
+    col_lower = [c.lower() for c in cols]
+    if not cols:
+        return bc_type_out, bc_val_out
+
+    # Build column map
+    col_map = {}
+    for c, cl in zip(cols, col_lower):
+        if cl in ("node0", "node_0", "start_node", "from_node"):
+            col_map["node0"] = c
+        elif cl in ("node1", "node_1", "end_node", "to_node"):
+            col_map["node1"] = c
+        elif cl in ("bc_type", "bc", "bctype", "boundary_type"):
+            col_map["bc_type"] = c
+        elif cl in ("bc_val", "bcvalue", "bc_value", "value", "val"):
+            col_map["bc_val"] = c
+
+    has_node_cols = "node0" in col_map and "node1" in col_map
+    bc_col = col_map.get("bc_type", "")
+    val_col = col_map.get("bc_val", "")
+
+    # Build mesh edge lookup: (min_node, max_node) -> edge_index
+    edge_n0_arr = np.asarray(edge_n0, dtype=np.int32).ravel()
+    edge_n1_arr = np.asarray(edge_n1, dtype=np.int32).ravel()
+    edge_key_to_idx: Dict[Tuple[int, int], int] = {}
+    for i in range(edge_n0_arr.size):
+        a, b = int(edge_n0_arr[i]), int(edge_n1_arr[i])
+        key = (a, b) if a < b else (b, a)
+        edge_key_to_idx[key] = i
+
+    # Also build node coordinate lookup for coordinate matching
+    node_x_arr = np.asarray(node_x, dtype=np.float64) if node_x is not None else None
+    node_y_arr = np.asarray(node_y, dtype=np.float64) if node_y is not None else None
+
+    def _find_nearest_node(x: float, y: float, tol: float = 0.1) -> int:
+        """Find the nearest mesh node to (x, y) within tolerance."""
+        if node_x_arr is None or node_y_arr is None:
+            return -1
+        dist = np.sqrt((node_x_arr - x) ** 2 + (node_y_arr - y) ** 2)
+        idx = int(np.argmin(dist))
+        return idx if dist[idx] <= tol else -1
+
+    # Read features
+    if has_node_cols:
+        # Pre-split edge table: each row is one mesh edge with node0/node1
+        n_col = col_map["node0"]
+        n2_col = col_map["node1"]
+        bt_col = bc_col or ""
+        bv_col = val_col or ""
+        query_cols = f"\"{n_col}\", \"{n2_col}\""
+        if bt_col:
+            query_cols += f", \"{bt_col}\""
+        if bv_col:
+            query_cols += f", \"{bv_col}\""
+        cur.execute(f"SELECT {query_cols} FROM \"{bc_table}\" ORDER BY rowid")
+        for row in cur.fetchall():
+            n0, n1 = int(row[0]), int(row[1])
+            key = (n0, n1) if n0 < n1 else (n1, n0)
+            idx = edge_key_to_idx.get(key)
+            if idx is not None:
+                if bt_col and row[2] is not None:
+                    bc_type_out[idx] = int(row[2])
+                if bv_col and row[3] is not None:
+                    bc_val_out[idx] = float(row[3])
+    else:
+        # Geometry table: read LINESTRINGs, split into vertex pairs
+        geom_col = "geom"
+        for c in cols:
+            if c.lower() in ("wkb_geometry", "geometry", "shape"):
+                geom_col = c
+                break
+        bt_col = bc_col or ""
+        bv_col = val_col or ""
+        query_cols = f"\"{geom_col}\""
+        if bt_col:
+            query_cols += f", \"{bt_col}\""
+        if bv_col:
+            query_cols += f", \"{bv_col}\""
+        cur.execute(f"SELECT {query_cols} FROM \"{bc_table}\" ORDER BY rowid")
+        for row in cur.fetchall():
+            raw = str(row[0] or "")
+            if not raw.startswith("LINESTRING") and not raw.startswith("LineString"):
+                continue
+            vertices = _parse_linestring_coords(raw)
+            if len(vertices) < 2:
+                continue
+            feat_type = int(row[1]) if bt_col and row[1] is not None else 1
+            feat_val = float(row[2]) if bv_col and row[2] is not None else 0.0
+            for i in range(len(vertices) - 1):
+                n0 = _find_nearest_node(vertices[i][0], vertices[i][1])
+                n1 = _find_nearest_node(vertices[i + 1][0], vertices[i + 1][1])
+                if n0 < 0 or n1 < 0:
+                    continue
+                key = (n0, n1) if n0 < n1 else (n1, n0)
+                idx = edge_key_to_idx.get(key)
+                if idx is not None:
+                    bc_type_out[idx] = feat_type
+                    bc_val_out[idx] = feat_val
+
+    return bc_type_out, bc_val_out
+
+
+def _parse_linestring_coords(wkt: str) -> List[Tuple[float, float]]:
+    """Parse LINESTRING(x1 y1, x2 y2, ...) into list of (x, y) tuples."""
+    wkt = wkt.strip()
+    if "(" not in wkt:
+        return []
+    coords_str = wkt.split("(")[-1].split(")")[0]
+    result = []
+    for p in coords_str.split(","):
+        parts = p.strip().split()
+        if len(parts) >= 2:
+            result.append((float(parts[0]), float(parts[1])))
+    return result
+
 
 
 def query_hyetograph_rows(
@@ -113,21 +412,40 @@ def query_hyetograph_rows(
 def query_gauge_layer(
     conn: sqlite3.Connection,
     gauge_table: str,
-    gauge_id_field: str = "gage_id",
-    hyetograph_id_field: str = "hyetograph_id",
-    x_field: str = "x",
-    y_field: str = "y",
 ) -> List[Dict[str, Any]]:
-    """Read gauge positions from a rain gage layer table."""
+    """Read gauge positions from a rain gage layer table.
+
+    Expected schema (from schema_definitions.py):
+        gage_id TEXT, hyetograph_id TEXT, geom POINT
+    """
     cur = conn.cursor()
     cur.execute(
-        f"SELECT \"{gauge_id_field}\", \"{hyetograph_id_field}\", "
-        f"\"{x_field}\", \"{y_field}\" FROM \"{gauge_table}\" ORDER BY rowid"
+        'SELECT "gage_id", "hyetograph_id", "geom" '
+        f'FROM "{gauge_table}" ORDER BY rowid'
     )
-    return [
-        {"gauge_id": str(r[0]), "hyetograph_id": str(r[1]), "x": float(r[2]), "y": float(r[3])}
-        for r in cur.fetchall()
-    ]
+    result = []
+    for r in cur.fetchall():
+        raw = str(r[2] or "")
+        # Parse POINT(x y) from WKT
+        x_val, y_val = None, None
+        if "point" in raw.lower() and "(" in raw:
+            inside = raw.split("(")[-1].split(")")[0]
+            parts = inside.strip().split()
+            if len(parts) >= 2:
+                try:
+                    x_val = float(parts[0])
+                    y_val = float(parts[1])
+                except (TypeError, ValueError):
+                    pass
+        if x_val is None:
+            continue
+        result.append({
+            "gauge_id": str(r[0]),
+            "hyetograph_id": str(r[1] or r[0]),
+            "x": x_val,
+            "y": y_val,
+        })
+    return result
 
 
 def query_cn_grid(
@@ -336,9 +654,6 @@ def build_forced_thiessen_from_gpkg(
     cn_field: str = "cn",
     ia_ratio_field: str = "ia_ratio",
     hyetograph_id_field: str = "hyetograph_id",
-    gauge_id_field: str = "gage_id",
-    x_field: str = "x",
-    y_field: str = "y",
     time_field: str = "Time",
     value_field: str = "Value",
     value_type_field: str = "value_type",
@@ -350,11 +665,7 @@ def build_forced_thiessen_from_gpkg(
     Mirrors swe2d/boundary_and_forcing/spatial_forcing_qgis_adapter.py
     but reads from raw GPKG tables instead of QGIS vector layers.
     """
-    gauge_rows = query_gauge_layer(
-        conn, gauge_table, gauge_id_field=gauge_id_field,
-        hyetograph_id_field=hyetograph_id_field,
-        x_field=x_field, y_field=y_field,
-    )
+    gauge_rows = query_gauge_layer(conn, gauge_table)
     if not gauge_rows:
         return None
 

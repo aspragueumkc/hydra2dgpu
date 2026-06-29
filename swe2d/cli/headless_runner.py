@@ -117,12 +117,15 @@ def execute_run(
         return tbl, sqlite3.connect(gpkg)
 
     # Read BC arrays
+    # Read BC arrays — query_bc_arrays handles both pre-split edge tables
+    # and geometry-based tables (splitting multi-vertex LINESTRINGs)
+    from swe2d.cli.gpkg_adapter import query_bc_arrays as _query_bc
     bc: Dict[str, np.ndarray] = {}
     bc_table, bc_conn = _open_cfg(p.get("bc_lines"))
     if bc_conn is not None:
         try:
             if bc_table:
-                bc = query_bc_arrays(bc_conn, bc_table)
+                bc = _query_bc(bc_conn, bc_table)
         finally:
             bc_conn.close()
     bc_n0 = bc.get("bc_edge_node0", np.empty(0, dtype=np.int32))
@@ -158,23 +161,7 @@ def execute_run(
 
     # Build run options
     rp = p.get("params", {})
-    from swe2d.runtime.run_options_builder import RunOptionsBuilder
-
-    builder = RunOptionsBuilder(
-        length_unit_si_to_model_fn=lambda v: v,
-        flow_si_to_model_fn=lambda v: v,
-        rain_rate_si_to_model_fn=lambda v: v,
-        internal_flow_source_cms_at_time_fn=lambda f, t: None,
-        build_thiessen_rain_cn_forcing_callback=lambda: thiessen_forcing,
-    )
-    run_options = builder.build(
-        dt=float(rp.get("dt_cfg", 0.2)),
-        rain_rate_mmhr=float(rp.get("rain_rate_mmhr", 0.0)),
-        n_mann=float(rp.get("n_mann", 0.035)),
-        h_min=float(rp.get("h_min", 1e-4)),
-        dt_max=float(rp.get("dt_max", 0.2)),
-        cfl=float(rp.get("cfl", 0.45)),
-    )
+    thiessen_kwargs = {"thiessen_forcing": thiessen_forcing} if thiessen_forcing else {}
 
     # Initialize solver
     from swe2d.runtime.backend import BCType
@@ -282,6 +269,8 @@ def execute_run(
         step = 0
         _status_step[0] = 0
         _write_status("running", t=t)
+        snapshot_timesteps: list = []
+        next_snap_t = output_interval
         while t < t_end:
             if cancel_check and cancel_check():
                 _write_status("cancelled", t=t)
@@ -296,6 +285,11 @@ def execute_run(
             t += dt
             step += 1
             _status_step[0] = step
+            # Accumulate snapshots at output interval
+            if t >= next_snap_t - 1.0e-9:
+                h_snap, hu_snap, hv_snap = backend.get_state()
+                snapshot_timesteps.append((t, h_snap, hu_snap, hv_snap))
+                next_snap_t += output_interval
             diags.append(diag)
             if progress_callback:
                 progress_callback(t, diag)
@@ -323,34 +317,33 @@ def execute_run(
     if max_results is not None:
         out["max_results"] = max_results
 
-    # Persist to results GPKG if provided
+    # Persist to results GPKG if provided — use same functions as workbench
     if results_gpkg:
-        _persist_results(results_gpkg, p.get("id", "run"), ncells, h, hu, hv, max_results)
+        from swe2d.services.gpkg_persistence_service import (
+            persist_baked_results, persist_baked_mesh,
+        )
+        snapshot_timesteps = locals().get("snapshot_timesteps", [])
+        if not snapshot_timesteps:
+            h, hu, hv = backend.get_state()
+            snapshot_timesteps = [(0.0, h, hu, hv)]
+
+        # Copy baked mesh BLOB so results GPKG is self-contained
+        try:
+            blob = _load_mesh_blob(mesh_gpkg, mesh_name)
+            if blob:
+                persist_baked_mesh(results_gpkg, mesh_name, blob)
+        except Exception as exc:
+            logger.warning("Failed to persist baked mesh: %s", exc)
+
+        # Persist all accumulated snapshots
+        persist_baked_results(
+            results_gpkg, p.get("id", "run"), mesh_name,
+            snapshot_timesteps,
+            max_tracking=max_results,
+            crs_wkt=mesh_data.get("crs_wkt", ""),
+        )
 
     backend.destroy()
     return out
 
 
-def _persist_results(
-    gpkg_path: str,
-    run_id: str,
-    n_cells: int,
-    h: np.ndarray,
-    hu: np.ndarray,
-    hv: np.ndarray,
-    max_results: Optional[Dict[str, np.ndarray]] = None,
-) -> None:
-    """Write final results to a results GPKG using baked BLOB format."""
-    from swe2d.services.gpkg_persistence_service import persist_baked_results
-
-    terminal_snapshot = (
-        0.0,
-        np.asarray(h, dtype=np.float64).copy(),
-        np.asarray(hu, dtype=np.float64).copy(),
-        np.asarray(hv, dtype=np.float64).copy(),
-    )
-    persist_baked_results(
-        gpkg_path, run_id, "",
-        [terminal_snapshot],
-        max_tracking=max_results,
-    )
