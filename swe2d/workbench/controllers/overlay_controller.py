@@ -98,7 +98,7 @@ class OverlayController:
             # Try baked mesh load first (skip old GPKG fallback chain if possible)
             _data = getattr(view, "_results_data", None)
             gpkg = str(getattr(_data, "gpkg_path", "") or "")
-            if gpkg and os.path.isfile(gpkg) and hasattr(self._data, 'overlay_cell_x') and self._data.overlay_cell_x is None:
+            if gpkg and os.path.isfile(gpkg) and hasattr(self._data, 'overlay_cell_x') and (self._data.overlay_cell_x is None or self._data.overlay_cell_x.size <= 0):
                 try:
                     import sqlite3
                     conn = sqlite3.connect(gpkg)
@@ -106,12 +106,24 @@ class OverlayController:
                         targets = self._data.enabled_overlay_targets()
                         target_run = targets[0][1] if targets else ""
                         if target_run:
+                            # First try matching by mesh_name. If the results
+                            # table has an empty mesh_name (common in early
+                            # baked-migration runs), fall back to n_cells.
                             row = conn.execute(
                                 "SELECT mesh_name, baked_blob FROM swe2d_baked_mesh "
                                 "WHERE mesh_name = (SELECT mesh_name FROM swe2d_baked_results "
                                 "                   WHERE run_id = ? LIMIT 1)",
                                 (target_run,),
                             ).fetchone()
+                            if row is None or not row[0]:
+                                # Fallback: match by cell count
+                                row = conn.execute(
+                                    "SELECT m.mesh_name, m.baked_blob "
+                                    "FROM swe2d_baked_mesh m "
+                                    "JOIN swe2d_baked_results r ON r.n_cells = m.n_cells "
+                                    "WHERE r.run_id = ? LIMIT 1",
+                                    (target_run,),
+                                ).fetchone()
                             if row:
                                 from hydra_swe2d import swe2d_deserialize_mesh
                                 pm = swe2d_deserialize_mesh(row[1])
@@ -309,6 +321,21 @@ class OverlayController:
             # Store computed color range for reset-to-default feature
             self._data._overlay_computed_vmin = frame.get("computed_vmin", None)
             self._data._overlay_computed_vmax = frame.get("computed_vmax", None)
+            # Push computed vmin/vmax back to the spin boxes so they show
+            # the actual data range instead of the widget defaults (0/1).
+            if self._data._overlay_computed_vmin is not None:
+                tb = getattr(view, "_results_toolbox", None)
+                if tb is not None:
+                    cs_min = getattr(tb, "color_min_spin", None)
+                    cs_max = getattr(tb, "color_max_spin", None)
+                    if cs_min is not None:
+                        cs_min.blockSignals(True)
+                        cs_min.setValue(float(self._data._overlay_computed_vmin))
+                        cs_min.blockSignals(False)
+                    if cs_max is not None:
+                        cs_max.blockSignals(True)
+                        cs_max.setValue(float(self._data._overlay_computed_vmax))
+                        cs_max.blockSignals(False)
             self.apply_overlay_frame(frame)
         except Exception as exc:
             view._log(f"[HighPerf Overlay] refresh failed: {exc}")

@@ -736,6 +736,7 @@ class SWE2DWorkbenchStudioDialog(QtWidgets.QDialog):
             # order.  Results from load_baked_snapshot are also RCMK — no
             # permutation needed between mesh and results.
             mesh_data = {
+                "mesh_name": str(name),
                 "node_x": np.asarray(pm.node_x, dtype=np.float64),
                 "node_y": np.asarray(pm.node_y, dtype=np.float64),
                 "node_z": np.asarray(pm.node_z, dtype=np.float64),
