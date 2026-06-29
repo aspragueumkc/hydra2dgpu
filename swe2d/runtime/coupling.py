@@ -510,6 +510,7 @@ class SWE2DCouplingController:
         self.cell_area = np.ascontiguousarray(cell_area, dtype=np.float64).ravel()
         self.cell_bed = np.ascontiguousarray(cell_bed, dtype=np.float64).ravel()
         self._log_callback: Optional[Callable[[str], None]] = None
+        self._inv_cell_perm: Optional[np.ndarray] = inv_cell_perm
         # Optional cell centroid coordinates for influence-width redistribution.
         self._cell_cx: Optional[np.ndarray] = None
         self._cell_cy: Optional[np.ndarray] = None

@@ -16,6 +16,14 @@ import numpy as np
 class SWE2DRuntimeReporter:
     """Handles per-step diagnostics, snapshot capture, and runtime logging."""
 
+    def __init__(self) -> None:
+        self._snapshot_requested = False
+        self._snapshot_ready = False
+
+    def request_snapshot_readback(self) -> None:
+        """Set flag — next process_step will read accumulated device snapshots to host."""
+        self._snapshot_requested = True
+
     def process_step(
         self,
         *,
@@ -76,14 +84,21 @@ class SWE2DRuntimeReporter:
         need_coupling_snap = (coupling_controller is not None) and (t_accum >= float(next_coupling_snap_t))
 
         h_s = hu_s = hv_s = None
-        if need_mesh_snap or need_line_snap or need_coupling_snap:
+        # Mesh snapshots: store on-device at every output interval.
+        # No D2H readback — device ring buffer accumulates snapshot history.
+        # Bulk readback happens only on explicit request (snapshot button / finalize).
+        if need_mesh_snap:
+            _t_state3 = time.perf_counter()
+            backend.store_snapshot(t_accum)
+            state_ms += (time.perf_counter() - _t_state3) * 1000.0
+            next_snap_t += float(output_interval_s)
+
+        # Line and coupling snapshots still need host-side h/hu/hv for metric computation.
+        # These are small diagnostic rows — the overhead is acceptable.
+        if (need_line_snap or need_coupling_snap) and h_s is None:
             _t_state3 = time.perf_counter()
             h_s, hu_s, hv_s = backend.get_state()
             state_ms += (time.perf_counter() - _t_state3) * 1000.0
-
-        if need_mesh_snap and h_s is not None and hu_s is not None and hv_s is not None:
-            results_data.append_live_snapshot(t_accum, h_s.copy(), hu_s.copy(), hv_s.copy())
-            next_snap_t += float(output_interval_s)
 
         if need_line_snap and cell_solver_z is not None and h_s is not None and hu_s is not None and hv_s is not None:
             rows, profile_rows = sample_line_metrics_callback(
@@ -108,6 +123,35 @@ class SWE2DRuntimeReporter:
                 for r in c_rows:
                     results_data.append_coupling_snapshot(r)
             next_coupling_snap_t += float(line_output_interval_s)
+
+        # ── On-demand snapshot readback ──────────────────────────────────
+        # When request_snapshot_readback() was called (from UI button press),
+        # read all accumulated device snapshots to host and populate results_data.
+        # This runs on the solver thread — safe for device access.
+        if self._snapshot_requested:
+            self._snapshot_requested = False
+            try:
+                snap_data = backend.read_snapshots()
+                if snap_data and "t_s" in snap_data:
+                    ts = np.asarray(snap_data["t_s"], dtype=np.float64)
+                    h_arr  = np.asarray(snap_data["h"],  dtype=np.float64)
+                    hu_arr = np.asarray(snap_data["hu"], dtype=np.float64)
+                    hv_arr = np.asarray(snap_data["hv"], dtype=np.float64)
+                    n_snaps = int(ts.shape[0])
+                    n_cells_snap = int(h_arr.shape[1]) if h_arr.ndim >= 2 else 0
+                    timesteps = []
+                    for si in range(n_snaps):
+                        timesteps.append((
+                            float(ts[si]),
+                            np.ascontiguousarray(h_arr[si, :]),
+                            np.ascontiguousarray(hu_arr[si, :]),
+                            np.ascontiguousarray(hv_arr[si, :]),
+                        ))
+                    if timesteps and results_data is not None:
+                        results_data.set_live_snapshot_timesteps(timesteps)
+                        self._snapshot_ready = True
+            except Exception:
+                logger.warning("Snapshot readback failed", exc_info=True)
 
         _now_wall = time.perf_counter()
         if _now_wall - float(last_process_events_wall) >= float(process_events_interval_s):

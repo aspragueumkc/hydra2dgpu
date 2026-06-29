@@ -639,6 +639,130 @@ class SWE2DBackend:
             raise ValueError("source_rate_mps length must equal n_cells")
         self._mod.swe2d_gpu_accumulate_external_source(self._solver_h, src)
 
+    # ── Snapshot ring buffer ─────────────────────────────────────────────────
+    # Device ring buffer: snapshots stay on GPU during the run.
+    # Auto-dump to host when device free memory drops below a safety margin
+    # (to prevent OOM crashes).  Bulk readback on explicit request.
+    # The memory margin is 4× the per-snapshot size plus a 256 MB buffer.
+
+    _snap_auto_dump_margin_mult = 4       # dump when free_mem < 4 * snap_size + margin_bytes
+    _snap_auto_dump_margin_bytes = 256 * 1024 * 1024  # 256 MB headroom
+    _snap_host_buffer: Optional[Dict[str, list]] = None  # auto-dumped host data
+
+    def _snap_per_snapshot_bytes(self) -> int:
+        """Size of one snapshot on device (3 × n_cells × 8 bytes + 8 bytes for time)."""
+        nc = int(getattr(self, "_n_cells", 0))
+        return (3 * nc + 1) * 8 if nc > 0 else 0
+
+    def _snap_should_auto_dump(self) -> bool:
+        """Check actual GPU free memory — dump if below safety margin."""
+        if not hasattr(self._mod, "swe2d_gpu_device_memory_info"):
+            return False
+        try:
+            info = self._mod.swe2d_gpu_device_memory_info()
+            free_bytes = int(info.get("free_bytes", 0))
+            if free_bytes <= 0:
+                return False
+            snap_sz = self._snap_per_snapshot_bytes()
+            if snap_sz <= 0:
+                return False
+            threshold = self._snap_auto_dump_margin_mult * snap_sz + self._snap_auto_dump_margin_bytes
+            return free_bytes < threshold
+        except Exception:
+            return False
+
+    def store_snapshot(self, t_s: float) -> None:
+        """Copy current h/hu/hv to the next snapshot slot on the device ring buffer.
+
+        No D2H transfer during normal operation — device-only D2D copy on the
+        compute stream.  When GPU free memory drops below the safety margin,
+        an automatic bulk D2H readback + reset is triggered to prevent OOM.
+        Call at each output interval instead of get_state().
+        """
+        if self._solver_h is None:
+            raise RuntimeError("initialize() must be called before store_snapshot().")
+        if not hasattr(self._mod, "swe2d_gpu_store_snapshot"):
+            raise RuntimeError("swe2d_gpu_store_snapshot not available in native module.")
+        # Auto-dump: check actual GPU memory pressure, not snapshot count.
+        if self._snap_should_auto_dump():
+            self._auto_dump_snapshots()
+        self._mod.swe2d_gpu_store_snapshot(self._solver_h, float(t_s))
+
+    def _auto_dump_snapshots(self) -> None:
+        """Drain device snapshots to host buffer to prevent OOM."""
+        raw = self._mod.swe2d_gpu_read_snapshots(self._solver_h)
+        if not raw or "t_s" not in raw:
+            return
+        ts = np.asarray(raw["t_s"], dtype=np.float64)
+        h_arr  = np.asarray(raw["h"],  dtype=np.float64)
+        hu_arr = np.asarray(raw["hu"], dtype=np.float64)
+        hv_arr = np.asarray(raw["hv"], dtype=np.float64)
+        if self._snap_host_buffer is None:
+            self._snap_host_buffer = {"t_s": [], "h": [], "hu": [], "hv": []}
+        buf = self._snap_host_buffer
+        for si in range(ts.shape[0]):
+            buf["t_s"].append(float(ts[si]))
+            buf["h"].append(np.ascontiguousarray(h_arr[si, :]))
+            buf["hu"].append(np.ascontiguousarray(hu_arr[si, :]))
+            buf["hv"].append(np.ascontiguousarray(hv_arr[si, :]))
+
+    def read_snapshots(self) -> Optional[Dict[str, np.ndarray]]:
+        """Read all accumulated snapshots from device + host to host.
+
+        Returns a dict with keys 't_s' (shape [N]), 'h'/'hu'/'hv'
+        (shape [N, n_cells]) or None if no snapshots accumulated.
+        Resets both device and host buffers.
+        Call when "take snapshot" button is pressed or run finalizes.
+        """
+        if self._solver_h is None:
+            return None
+        if not hasattr(self._mod, "swe2d_gpu_read_snapshots"):
+            return None
+        # Read device-side snapshots
+        raw = self._mod.swe2d_gpu_read_snapshots(self._solver_h)
+        dev_ts = np.asarray(raw["t_s"], dtype=np.float64) if raw and "t_s" in raw else np.empty(0, dtype=np.float64)
+        dev_h  = np.asarray(raw["h"],  dtype=np.float64)  if raw and "h" in raw  else np.empty((0, 0), dtype=np.float64)
+        dev_hu = np.asarray(raw["hu"], dtype=np.float64)  if raw and "hu" in raw else np.empty((0, 0), dtype=np.float64)
+        dev_hv = np.asarray(raw["hv"], dtype=np.float64)  if raw and "hv" in raw else np.empty((0, 0), dtype=np.float64)
+        # Merge with host buffer
+        hb = self._snap_host_buffer
+        self._snap_host_buffer = None  # consume
+        if hb is None and dev_ts.size == 0:
+            return None
+        n_dev = int(dev_ts.shape[0])
+        n_host = len(hb["t_s"]) if hb else 0
+        n_total = n_dev + n_host
+        if n_total == 0:
+            return None
+        n_cells = int(dev_h.shape[1]) if dev_h.ndim >= 2 and dev_h.shape[1] > 0 else \
+                  (hb["h"][0].shape[0] if hb and hb["h"] else 0)
+        out_ts  = np.empty(n_total, dtype=np.float64)
+        out_h   = np.empty((n_total, n_cells), dtype=np.float64)
+        out_hu  = np.empty((n_total, n_cells), dtype=np.float64)
+        out_hv  = np.empty((n_total, n_cells), dtype=np.float64)
+        idx = 0
+        if hb:
+            for si in range(n_host):
+                out_ts[idx]  = float(hb["t_s"][si])
+                out_h[idx]   = np.asarray(hb["h"][si],  dtype=np.float64)
+                out_hu[idx]  = np.asarray(hb["hu"][si], dtype=np.float64)
+                out_hv[idx]  = np.asarray(hb["hv"][si], dtype=np.float64)
+                idx += 1
+        if n_dev > 0:
+            out_ts[idx:]  = dev_ts[:]
+            out_h[idx:]   = dev_h[:]
+            out_hu[idx:]  = dev_hu[:]
+            out_hv[idx:]  = dev_hv[:]
+        return {"t_s": out_ts, "h": out_h, "hu": out_hu, "hv": out_hv}
+
+    def free_snapshot_buf(self) -> None:
+        """Free the device snapshot ring buffer and host buffer."""
+        if self._solver_h is None:
+            return
+        if hasattr(self._mod, "swe2d_gpu_free_snapshot_buf"):
+            self._mod.swe2d_gpu_free_snapshot_buf(self._solver_h)
+        self._snap_host_buffer = None
+
     # ── Solver init ──────────────────────────────────────────────────────────
 
     def initialize(

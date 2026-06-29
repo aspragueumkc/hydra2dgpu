@@ -14,6 +14,7 @@
 #include <pybind11/pybind11.h>
 #include <pybind11/numpy.h>
 #include <pybind11/stl.h>
+#include <cuda_runtime_api.h>
 
 #include "swe2d_mesh.hpp"
 #include "swe2d_solver.hpp"
@@ -1104,6 +1105,91 @@ PYBIND11_MODULE(HYDRA_SWE2D_PY_MODULE_NAME, m) {
     m.def("swe2d_gpu_set_coupling_device_global",
         [](uintptr_t dev_ptr) { swe2d_gpu_set_coupling_device_global(reinterpret_cast<SWE2DDeviceState*>(dev_ptr)); },
         py::arg("dev_ptr"), "Set global device pointer for persistent coupling.");
+
+    // ── Snapshot ring buffer bindings ──
+    m.def("swe2d_gpu_store_snapshot",
+        [](std::shared_ptr<PySolver>& ps, double t_s) {
+            if (!ps || !ps->solver || !ps->solver->dev) return;
+            swe2d_gpu_store_snapshot(ps->solver->dev, t_s);
+        },
+        py::arg("solver"), py::arg("t_s"),
+        "Copy current h/hu/hv to the next snapshot slot on the device ring buffer.");
+
+    m.def("swe2d_gpu_read_snapshots",
+        [](std::shared_ptr<PySolver>& ps) -> py::dict {
+            if (!ps || !ps->solver || !ps->solver->dev) return py::dict();
+            SWE2DDeviceState* dev = ps->solver->dev;
+            double *h_ts = nullptr, *h_h = nullptr, *h_hu = nullptr, *h_hv = nullptr;
+            int32_t count = 0, n_cells = 0;
+            swe2d_gpu_read_snapshots(dev, &h_ts, &h_h, &h_hu, &h_hv, &count, &n_cells);
+            if (count <= 0 || n_cells <= 0) return py::dict();
+            // Wrap pinned host memory as numpy arrays (no copy).
+            auto capsule = py::capsule(h_ts, [](void* p) { cudaFreeHost(p); });
+            auto cap_h  = py::capsule(h_h,  [](void* p) { cudaFreeHost(p); });
+            auto cap_hu = py::capsule(h_hu, [](void* p) { cudaFreeHost(p); });
+            auto cap_hv = py::capsule(h_hv, [](void* p) { cudaFreeHost(p); });
+            py::dict d;
+            d["t_s"] = py::array_t<double>({count}, {sizeof(double)}, h_ts, capsule);
+            d["h"]   = py::array_t<double>({count, n_cells}, {static_cast<long>(n_cells) * sizeof(double), sizeof(double)}, h_h, cap_h);
+            d["hu"]  = py::array_t<double>({count, n_cells}, {static_cast<long>(n_cells) * sizeof(double), sizeof(double)}, h_hu, cap_hu);
+            d["hv"]  = py::array_t<double>({count, n_cells}, {static_cast<long>(n_cells) * sizeof(double), sizeof(double)}, h_hv, cap_hv);
+            // Reset the ring buffer after readback
+            swe2d_gpu_free_snapshot_buf(dev);
+            return d;
+        },
+        py::arg("solver"),
+        "Read all accumulated snapshots as {t_s, h, hu, hv} dict. Resets buffer.");
+
+    m.def("swe2d_gpu_free_snapshot_buf",
+        [](std::shared_ptr<PySolver>& ps) {
+            if (!ps || !ps->solver || !ps->solver->dev) return;
+            swe2d_gpu_free_snapshot_buf(ps->solver->dev);
+        },
+        py::arg("solver"),
+        "Free the snapshot ring buffer on device.");
+
+    m.def("swe2d_gpu_snapshot_count",
+        [](std::shared_ptr<PySolver>& ps) -> int {
+            if (!ps || !ps->solver || !ps->solver->dev) return 0;
+            return ps->solver->dev->snap_count;
+        },
+        py::arg("solver"),
+        "Return number of snapshots currently in the device ring buffer.");
+
+    m.def("swe2d_gpu_device_memory_info",
+        []() -> py::dict {
+            size_t free_bytes = 0, total_bytes = 0;
+            cudaError_t err = cudaMemGetInfo(&free_bytes, &total_bytes);
+            py::dict d;
+            d["free_bytes"] = static_cast<uint64_t>(free_bytes);
+            d["total_bytes"] = static_cast<uint64_t>(total_bytes);
+            d["err"] = static_cast<int>(err);
+            return d;
+        },
+        "Return {free_bytes, total_bytes, err} dict from cudaMemGetInfo.");
+
+    // ── Test helpers (memory pressure simulation) ──
+    // Returns opaque uintptr; caller must pass it back to free.
+    m.def("swe2d_gpu_test_alloc",
+        [](uint64_t bytes) -> uintptr_t {
+            if (bytes == 0) return 0;
+            void* ptr = nullptr;
+            cudaError_t err = cudaMalloc(&ptr, static_cast<size_t>(bytes));
+            if (err != cudaSuccess) {
+                throw std::runtime_error(std::string("cudaMalloc failed: ") + cudaGetErrorString(err));
+            }
+            return reinterpret_cast<uintptr_t>(ptr);
+        },
+        py::arg("bytes"),
+        "Allocate a device buffer of the given size (bytes) for memory-pressure testing. "
+        "Returns an opaque uintptr; pass it to swe2d_gpu_test_free to release.");
+
+    m.def("swe2d_gpu_test_free",
+        [](uintptr_t ptr) {
+            if (ptr) cudaFree(reinterpret_cast<void*>(ptr));
+        },
+        py::arg("ptr"),
+        "Free a device buffer allocated by swe2d_gpu_test_alloc.");
 
     m.def("swe2d_gpu_preload_structure_params",
         [](py::array_t<int32_t, py::array::c_style|py::array::forcecast> structure_type,

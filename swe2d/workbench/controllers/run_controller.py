@@ -782,6 +782,7 @@ class RunController:
                 raise RuntimeError("SWE2DRuntimeReporter seam is unavailable.")
             runtime_step_executor = SWE2DRuntimeStepExecutor()
             runtime_reporter = SWE2DRuntimeReporter()
+            self._active_reporter = runtime_reporter
 
             log_fn("The numbers they go UP! They go UP UP UP!!!") # FVM Loop start meme
 
@@ -840,7 +841,30 @@ class RunController:
             _next_coupling_snap_t = float(loop_result.get("next_coupling_snap_t", _next_coupling_snap_t))
             _last_process_events_wall = float(loop_result.get("last_process_events_wall", _last_process_events_wall))
             timing_samples = int(loop_result.get("timing_samples", timing_samples))
+            # Read back any accumulated device snapshots to host before final get_state.
+            snap_data = backend.read_snapshots()
+            if snap_data and "t_s" in snap_data:
+                try:
+                    ts_arr = np.asarray(snap_data["t_s"], dtype=np.float64)
+                    h_arr  = np.asarray(snap_data["h"],  dtype=np.float64)
+                    hu_arr = np.asarray(snap_data["hu"], dtype=np.float64)
+                    hv_arr = np.asarray(snap_data["hv"], dtype=np.float64)
+                    n_snaps = int(ts_arr.shape[0])
+                    timesteps = []
+                    for si in range(n_snaps):
+                        timesteps.append((
+                            float(ts_arr[si]),
+                            np.ascontiguousarray(h_arr[si, :]),
+                            np.ascontiguousarray(hu_arr[si, :]),
+                            np.ascontiguousarray(hv_arr[si, :]),
+                        ))
+                    rd = getattr(view, "_results_data", None)
+                    if timesteps and rd is not None:
+                        rd.set_live_snapshot_timesteps(timesteps)
+                except Exception as exc:
+                    log_fn(f"[SnapReadback] Device snapshot readback failed: {exc}")
             h, hu, hv = backend.get_state()
+            self._active_reporter = None
             sim_time_diff = float(t_accum) - float(run_duration_s)
             log_fn(
                 "Runtime simulated-time check: "
@@ -1029,15 +1053,25 @@ class RunController:
 
     # ── Snapshot orchestration ─────────────────────────────────────────
     def on_snapshot(self) -> None:
-        """Sync in-memory snapshots into the temporal dock, overlay, and plots.
+        """Read accumulated device snapshots to host and sync to UI widgets.
 
         Called when the user clicks Take Snapshot during a live run.
-        The accumulated snapshots in ``_live_snapshot_timesteps`` are
-        synced to the temporal dock slider, high-perf overlay, and all
-        plot widgets so the results are immediately viewable.
+        Triggers a D2H readback of the device snapshot ring buffer on the
+        next solver step, then syncs to the temporal dock slider, high-perf
+        overlay, and all plot widgets so the results are immediately viewable.
         """
         view = self._view
         results_data = getattr(view, "_results_data", None)
+
+        # Request device-side readback via the active runtime reporter.
+        # The actual D2H transfer happens on the solver thread in process_step.
+        reporter = getattr(self, "_active_reporter", None)
+        if reporter is not None and hasattr(reporter, "request_snapshot_readback"):
+            reporter.request_snapshot_readback()
+            view._log("Snapshot readback requested — will sync when available.")
+            return
+
+        # Fallback: if no active run, check results_data for already-loaded snapshots.
         _snapshots = results_data.get_live_snapshot_timesteps() if results_data else []
         if view._mesh_data is None and not _snapshots:
             view._log("No snapshot data available — run the model with an output interval set first.")
@@ -1046,11 +1080,6 @@ class RunController:
         # Sync live snapshot timesteps into the temporal dock slider,
         # overlay, and plots so the new snapshots are visible immediately.
         if results_data is not None:
-            try:
-                live_ts = results_data.get_live_snapshot_timesteps()
-                results_data.set_live_snapshot_timesteps(live_ts)
-            except Exception:
-                pass
             try:
                 temporal = getattr(view, "_temporal_dock", None)
                 if temporal is not None:

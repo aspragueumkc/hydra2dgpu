@@ -8955,6 +8955,91 @@ void swe2d_gpu_destroy_kernel_graphs(SWE2DDeviceState* dev) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// Snapshot ring buffer
+// ─────────────────────────────────────────────────────────────────────────────
+
+void swe2d_gpu_ensure_snapshot_buf(SWE2DDeviceState* dev, int32_t min_cap) {
+    if (!dev || dev->n_cells <= 0) return;
+    if (dev->snap_capacity >= min_cap) return;
+    int32_t new_cap = (dev->snap_capacity > 0) ? dev->snap_capacity : 64;
+    while (new_cap < min_cap) new_cap *= 2;
+    const size_t sz = static_cast<size_t>(new_cap) * static_cast<size_t>(dev->n_cells) * sizeof(double);
+    double *new_h = nullptr, *new_hu = nullptr, *new_hv = nullptr;
+    double *new_ts = nullptr;
+    CUDA_CHECK(cudaMalloc(&new_h,  sz));
+    CUDA_CHECK(cudaMalloc(&new_hu, sz));
+    CUDA_CHECK(cudaMalloc(&new_hv, sz));
+    CUDA_CHECK(cudaMalloc(&new_ts, static_cast<size_t>(new_cap) * sizeof(double)));
+    // Copy existing snapshots to new buffer
+    if (dev->snap_count > 0 && dev->d_snap_h) {
+        const size_t old_sz = static_cast<size_t>(dev->snap_count) * static_cast<size_t>(dev->n_cells) * sizeof(double);
+        CUDA_CHECK(cudaMemcpy(new_h,  dev->d_snap_h,  old_sz, cudaMemcpyDeviceToDevice));
+        CUDA_CHECK(cudaMemcpy(new_hu, dev->d_snap_hu, old_sz, cudaMemcpyDeviceToDevice));
+        CUDA_CHECK(cudaMemcpy(new_hv, dev->d_snap_hv, old_sz, cudaMemcpyDeviceToDevice));
+        CUDA_CHECK(cudaMemcpy(new_ts, dev->d_snap_times, static_cast<size_t>(dev->snap_count) * sizeof(double), cudaMemcpyDeviceToDevice));
+    }
+    if (dev->d_snap_h)  { cudaFree(dev->d_snap_h);  dev->d_snap_h  = nullptr; }
+    if (dev->d_snap_hu) { cudaFree(dev->d_snap_hu); dev->d_snap_hu = nullptr; }
+    if (dev->d_snap_hv) { cudaFree(dev->d_snap_hv); dev->d_snap_hv = nullptr; }
+    if (dev->d_snap_times) { cudaFree(dev->d_snap_times); dev->d_snap_times = nullptr; }
+    dev->d_snap_h   = new_h;
+    dev->d_snap_hu  = new_hu;
+    dev->d_snap_hv  = new_hv;
+    dev->d_snap_times = new_ts;
+    dev->snap_capacity = new_cap;
+}
+
+void swe2d_gpu_store_snapshot(SWE2DDeviceState* dev, double t_s) {
+    if (!dev || dev->n_cells <= 0) return;
+    // Grow ring buffer geometrically — start at 64, 2× each time.
+    if (dev->snap_count >= dev->snap_capacity) {
+        swe2d_gpu_ensure_snapshot_buf(dev, dev->snap_capacity > 0 ? dev->snap_capacity * 2 : 64);
+    }
+    const int32_t slot = dev->snap_count;
+    const size_t offset = static_cast<size_t>(slot) * static_cast<size_t>(dev->n_cells);
+    const size_t sz_cells = static_cast<size_t>(dev->n_cells) * sizeof(double);
+    CUDA_CHECK(cudaMemcpyAsync(dev->d_snap_h  + offset, dev->d_h,  sz_cells, cudaMemcpyDeviceToDevice, dev->d_stream));
+    CUDA_CHECK(cudaMemcpyAsync(dev->d_snap_hu + offset, dev->d_hu, sz_cells, cudaMemcpyDeviceToDevice, dev->d_stream));
+    CUDA_CHECK(cudaMemcpyAsync(dev->d_snap_hv + offset, dev->d_hv, sz_cells, cudaMemcpyDeviceToDevice, dev->d_stream));
+    CUDA_CHECK(cudaMemcpyAsync(dev->d_snap_times + slot, &t_s, sizeof(double), cudaMemcpyHostToDevice, dev->d_stream));
+    dev->snap_count = slot + 1;
+}
+
+void swe2d_gpu_read_snapshots(SWE2DDeviceState* dev,
+                               double** out_t_s, double** out_h, double** out_hu, double** out_hv,
+                               int32_t* out_count, int32_t* out_n_cells) {
+    *out_t_s = nullptr; *out_h = nullptr; *out_hu = nullptr; *out_hv = nullptr;
+    *out_count = 0; *out_n_cells = 0;
+    if (!dev || dev->snap_count <= 0 || dev->n_cells <= 0) return;
+    const int32_t n = dev->snap_count;
+    const int32_t nc = dev->n_cells;
+    const size_t sz_total = static_cast<size_t>(n) * static_cast<size_t>(nc) * sizeof(double);
+    double *h_ts = nullptr, *h_h = nullptr, *h_hu = nullptr, *h_hv = nullptr;
+    CUDA_CHECK(cudaMallocHost(&h_ts, static_cast<size_t>(n) * sizeof(double)));
+    CUDA_CHECK(cudaMallocHost(&h_h,  sz_total));
+    CUDA_CHECK(cudaMallocHost(&h_hu, sz_total));
+    CUDA_CHECK(cudaMallocHost(&h_hv, sz_total));
+    CUDA_CHECK(cudaMemcpy(h_ts, dev->d_snap_times, static_cast<size_t>(n) * sizeof(double), cudaMemcpyDeviceToHost));
+    CUDA_CHECK(cudaMemcpy(h_h,  dev->d_snap_h,     sz_total, cudaMemcpyDeviceToHost));
+    CUDA_CHECK(cudaMemcpy(h_hu, dev->d_snap_hu,    sz_total, cudaMemcpyDeviceToHost));
+    CUDA_CHECK(cudaMemcpy(h_hv, dev->d_snap_hv,    sz_total, cudaMemcpyDeviceToHost));
+    CUDA_CHECK(cudaDeviceSynchronize());
+    *out_t_s = h_ts; *out_h = h_h; *out_hu = h_hu; *out_hv = h_hv;
+    *out_count = n; *out_n_cells = nc;
+}
+
+void swe2d_gpu_free_snapshot_buf(SWE2DDeviceState* dev) {
+    if (!dev) return;
+    auto sf = [](void* p) { if (p) cudaFree(p); };
+    sf(dev->d_snap_h);   dev->d_snap_h   = nullptr;
+    sf(dev->d_snap_hu);  dev->d_snap_hu  = nullptr;
+    sf(dev->d_snap_hv);  dev->d_snap_hv  = nullptr;
+    sf(dev->d_snap_times); dev->d_snap_times = nullptr;
+    dev->snap_capacity = 0;
+    dev->snap_count = 0;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // swe2d_gpu_destroy
 // ─────────────────────────────────────────────────────────────────────────────
 void swe2d_gpu_destroy(SWE2DDeviceState* dev) {
@@ -9032,6 +9117,7 @@ void swe2d_gpu_destroy(SWE2DDeviceState* dev) {
     safe_free(dev->d_stage_edge_bc);
     safe_free(dev->d_stage_edge_bc_val);
     safe_free(dev->d_external_source_mps);
+    swe2d_gpu_free_snapshot_buf(dev);
     // Coupling workspace cleanup
     {
         auto& ws = dev->coupling_ws;

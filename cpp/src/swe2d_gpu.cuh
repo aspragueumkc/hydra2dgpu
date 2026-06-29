@@ -189,6 +189,16 @@ struct SWE2DDeviceState {
     double*  d_max_hu = nullptr;   // [n_cells]
     double*  d_max_hv = nullptr;   // [n_cells]
 
+    // Snapshot ring buffer: device-resident history of (h,hu,hv) snapshots.
+    // Written at each output interval via D2D copy — no D2H until requested.
+    // Allocated on first store, grows geometrically.
+    double*  d_snap_h     = nullptr;   // [snap_capacity * n_cells]
+    double*  d_snap_hu    = nullptr;   // [snap_capacity * n_cells]
+    double*  d_snap_hv    = nullptr;   // [snap_capacity * n_cells]
+    double*  d_snap_times = nullptr;   // [snap_capacity]
+    int32_t  snap_capacity = 0;
+    int32_t  snap_count    = 0;
+
     // Wet/dry active-set mask (updated at the start of every step).
     // d_active[c] = 1 if cell c is wet (h>h_min), adjacent to a wet cell,
     // or at a forced-inflow BC edge.  Used to skip gradient and update work
@@ -1125,6 +1135,19 @@ void swe2d_gpu_compute_structure_and_coupling_sources(
     const int32_t* inlet_cell,
     const double* inlet_flow_cms,
     double* source_rate_mps_out);
+
+// ── Snapshot ring buffer ──
+/// Allocate or grow the device snapshot ring buffer to hold at least `min_cap` snapshots. @host
+void swe2d_gpu_ensure_snapshot_buf(SWE2DDeviceState* dev, int32_t min_cap);
+/// Copy current h/hu/hv into the next snapshot slot. @host
+void swe2d_gpu_store_snapshot(SWE2DDeviceState* dev, double t_s);
+/// Read all accumulated snapshots back to host.  Returns {t_s, h, hu, hv} arrays. @host
+/// h shape (snap_count, n_cells), t_s shape (snap_count,).  Caller must free via cudaFreeHost.
+void swe2d_gpu_read_snapshots(SWE2DDeviceState* dev,
+                               double** out_t_s, double** out_h, double** out_hu, double** out_hv,
+                               int32_t* out_count, int32_t* out_n_cells);
+/// Free snapshot ring buffer. @host
+void swe2d_gpu_free_snapshot_buf(SWE2DDeviceState* dev);
 
 // ── Persistent GPU coupling path ──
 /// Set the global coupling device pointer for persistent GPU coupling. @host

@@ -161,6 +161,15 @@ class SWE2DResultsData:
         self._live_snapshot_timesteps.append((t_s, h, hu, hv))
         self._data_source = "live"
 
+    def set_live_snapshot_timesteps(self, timesteps: list) -> None:
+        """Bulk-replace the live snapshot list from device readback.
+
+        ``timesteps`` is a list of ``(t_s, h, hu, hv)`` tuples as returned
+        by :meth:`SWE2DBackend.read_snapshots`.
+        """
+        self._live_snapshot_timesteps = list(timesteps)
+        self._data_source = "live"
+
     def append_line_snapshot(self, row: dict) -> None:
         """Append a line timeseries row, accumulating into _live_line_ts."""
         lid = int(row.get("line_id", -1))
