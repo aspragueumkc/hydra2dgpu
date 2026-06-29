@@ -106,23 +106,12 @@ class OverlayController:
                         targets = self._data.enabled_overlay_targets()
                         target_run = targets[0][1] if targets else ""
                         if target_run:
-                            # First try matching by mesh_name. If the results
-                            # table has an empty mesh_name (common in early
-                            # baked-migration runs), fall back to n_cells.
                             row = conn.execute(
                                 "SELECT mesh_name, baked_blob FROM swe2d_baked_mesh "
                                 "WHERE mesh_name = (SELECT mesh_name FROM swe2d_baked_results "
                                 "                   WHERE run_id = ? LIMIT 1)",
                                 (target_run,),
                             ).fetchone()
-                            if row is None or not row[0]:
-                                # Fallback: match by cell count
-                                row = conn.execute(
-                                    "SELECT m.mesh_name, m.baked_blob "
-                                    "FROM swe2d_baked_mesh m "
-                                    "JOIN swe2d_baked_results r ON r.n_cells = m.n_cells "
-                                    "WHERE r.run_id = ? LIMIT 1",
-                                    (target_run,),
                                 ).fetchone()
                             if row:
                                 from hydra_swe2d import swe2d_deserialize_mesh

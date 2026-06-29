@@ -74,6 +74,13 @@ class RunController:
         # ── Resolve all view references (same as old _build_run_kwargs) ──
         log_fn = view._log
         mesh_data = view._mesh_data
+        # Ensure mesh_data always has a mesh_name — used for baked mesh
+        # persistence (swe2d_baked_mesh) and to link results to their mesh
+        # (swe2d_baked_results.mesh_name). Generate one if none was provided.
+        if mesh_data is not None and not mesh_data.get("mesh_name"):
+            _gpkg = view._current_line_results_storage_path() or view._model_gpkg_path or ""
+            _stem = os.path.splitext(os.path.basename(_gpkg))[0] if _gpkg else "mesh"
+            mesh_data["mesh_name"] = f"{_stem}_{datetime.datetime.now(datetime.timezone.utc).strftime('%Y%m%d_%H%M%S')}"
         # Required seam components — AttributeError if missing (fail fast)
         run_data_builder = view._run_data_builder
         run_options_builder = view._run_options_builder

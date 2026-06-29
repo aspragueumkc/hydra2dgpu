@@ -117,12 +117,16 @@ class SWE2DBackendInitializer:
         )
 
         # Persist baked mesh blob if a GPKG path was provided
-        if gpkg_path and mesh_name and b._mesh_h is not None:
+        if gpkg_path and b._mesh_h is not None:
             try:
+                _mesh_name = str(mesh_name or "").strip()
+                if not _mesh_name:
+                    import datetime as _dt
+                    _mesh_name = f"mesh_{_dt.datetime.now(_dt.timezone.utc).strftime('%Y%m%d_%H%M%S')}"
                 baked_blob = b._mod.swe2d_serialize_mesh(b._mesh_h)
                 info = b._mod.swe2d_mesh_info(b._mesh_h)
                 persist_baked_mesh(
-                    gpkg_path, mesh_name, baked_blob,
+                    gpkg_path, _mesh_name, baked_blob,
                     n_nodes=info["n_nodes"],
                     n_cells=info["n_cells"],
                     n_edges=info["n_edges"],
