@@ -1193,6 +1193,22 @@ PYBIND11_MODULE(HYDRA_SWE2D_PY_MODULE_NAME, m) {
         },
         "Allocate the persistent d_drainage_q buffer in the coupling workspace.");
 
+    m.def("swe2d_gpu_accumulate_external_source",
+        [](std::shared_ptr<PySolver>& ps,
+           py::array_t<double, py::array::c_style | py::array::forcecast> src)
+        {
+            if (!ps || !ps->solver || !ps->solver->dev) return;
+            const int32_t nc = static_cast<int32_t>(src.size());
+            if (nc != ps->solver->mesh->n_cells) {
+                throw std::invalid_argument("source array length must match n_cells");
+            }
+            swe2d_gpu_accumulate_external_source(
+                ps->solver->dev, src.data(), nc);
+        },
+        py::arg("solver"), py::arg("src"),
+        "Accumulate host-provided source rates into d_external_source_mps on-device.\n"
+        "No D2H readback — uploads to persistent staging buffer and adds via kernel.");
+
     m.def("swe2d_gpu_readback_coupling_sources",
         [](int32_t n_cells) -> py::array_t<double> {
             auto result = py::array_t<double>(n_cells);

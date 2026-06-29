@@ -250,15 +250,9 @@ class SWE2DRuntimeStepExecutor:
                 )
             elif rain_src is not None and np.any(np.asarray(rain_src, dtype=np.float64) > 0.0):
                 # Native device coupling path: d_external_source_mps already has
-                # structure/drainage sources on-device.  Read back, merge rain,
-                # and re-upload so rain is not silently dropped.
-                _existing = backend._mod.swe2d_gpu_readback_coupling_sources(backend._n_cells)
-                _combined = np.asarray(_existing, dtype=np.float64)
-                _rain = np.asarray(rain_src, dtype=np.float64)
-                _n = min(_combined.size, _rain.size)
-                if _n > 0:
-                    _combined[:_n] += _rain[:_n]
-                backend.set_external_sources_native(_combined)
+                # structure/drainage sources on-device.  Accumulate rain directly
+                # on the GPU via a device kernel — no D2H readback.
+                backend.accumulate_external_sources_native(rain_src)
                 accumulate_source_volume_model_callback(
                     dt_source_guess,
                     rain_src,

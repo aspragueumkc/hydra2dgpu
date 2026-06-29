@@ -623,6 +623,22 @@ class SWE2DBackend:
             raise ValueError("source_rate_mps length must equal n_cells")
         self._mod.swe2d_solver_set_external_sources(self._solver_h, src)
 
+    def accumulate_external_sources_native(self, source_rate_mps: np.ndarray) -> None:
+        """Accumulate per-cell depth source rates into the on-device source buffer.
+
+        Unlike set_external_sources_native which overwrites, this ADDS the given
+        rates to whatever is already in d_external_source_mps on the GPU.
+        Uses a H2D upload + GPU kernel — no D2H readback.
+        """
+        if self._solver_h is None:
+            raise RuntimeError("initialize() must be called before accumulate_external_sources_native().")
+        if not self._supports_solver_external_sources:
+            raise RuntimeError("Native external source API not supported by current module.")
+        src = np.ascontiguousarray(source_rate_mps, dtype=np.float64).ravel()
+        if src.size != self._n_cells:
+            raise ValueError("source_rate_mps length must equal n_cells")
+        self._mod.swe2d_gpu_accumulate_external_source(self._solver_h, src)
+
     # ── Solver init ──────────────────────────────────────────────────────────
 
     def initialize(

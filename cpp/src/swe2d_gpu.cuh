@@ -1153,6 +1153,15 @@ void swe2d_gpu_compute_coupling_full_on_device(
     const double* host_structure_flows = nullptr);
 /// Ensure drainage Q buffer is allocated in device workspace. @host
 void swe2d_gpu_ensure_drainage_q_buf(SWE2DDeviceState* dev, int32_t n_cells);
+
+/** Accumulate host-provided source rates into d_external_source_mps on-device.
+ *  Uploads host_src to a persistent staging buffer, then adds element-by-element
+ *  to d_external_source_mps via a GPU kernel.  No D2H readback.
+ */
+void swe2d_gpu_accumulate_external_source(
+    SWE2DDeviceState* dev,
+    const double* host_src,
+    int32_t n_cells);
 /// Read back coupling sources from device to host. @host
 void swe2d_gpu_readback_coupling_sources(double* host_buf, int32_t n_cells);
 /// Read back structure flows from device to host. @host

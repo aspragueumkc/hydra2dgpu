@@ -2573,6 +2573,44 @@ __global__ __launch_bounds__(256, 4) void swe2d_fold_drainage_q_kernel(
     atomicAdd(&d_external_source_mps[c], q);
 }
 
+/** GPU kernel: accumulate host-provided source rates into d_external_source_mps.
+ * 1 thread per cell.  Adds rain_src_host[c] to d_external_source_mps[c].
+ * Uploads the host array to a pinned staging buffer first, then adds.
+ * @global */
+__global__ __launch_bounds__(256, 4) void swe2d_accumulate_external_source_kernel(
+    int32_t n_cells,
+    const double* __restrict__ d_addend,
+    double* __restrict__ d_external_source_mps)
+{
+    int32_t c = blockIdx.x * blockDim.x + threadIdx.x;
+    if (c >= n_cells) return;
+    double v = d_addend[c];
+    if (!isfinite(v) || v == 0.0) return;
+    atomicAdd(&d_external_source_mps[c], v);
+}
+
+void swe2d_gpu_accumulate_external_source(
+    SWE2DDeviceState* dev,
+    const double* host_src,
+    int32_t n_cells)
+{
+    if (!dev || !dev->d_external_source_mps || !host_src || n_cells <= 0) return;
+    auto& cpl_ws = dev->coupling_ws;
+    constexpr int BLOCK = 256;
+    const int grid = (n_cells + BLOCK - 1) / BLOCK;
+    // Use a persistent staging buffer allocated alongside d_drainage_q.
+    if (!cpl_ws.d_drainage_q) {
+        swe2d_gpu_ensure_drainage_q_buf(dev, n_cells);
+    }
+    if (!cpl_ws.d_drainage_q) return;
+    CUDA_CHECK(cudaMemcpy(cpl_ws.d_drainage_q, host_src,
+                          static_cast<size_t>(n_cells) * sizeof(double),
+                          cudaMemcpyHostToDevice));
+    swe2d_accumulate_external_source_kernel<<<grid, BLOCK, 0, dev->d_stream>>>(
+        n_cells, cpl_ws.d_drainage_q, dev->d_external_source_mps);
+    CUDA_CHECK(cudaGetLastError());
+}
+
 /** GPU kernel: fold structure (culvert/weir) source/sink into cell source rates.
  * 1 thread per structure.  Adds ±Q/A to source_rate for up/downstream cells.
  * @global */
