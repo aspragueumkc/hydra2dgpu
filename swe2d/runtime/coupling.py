@@ -1065,15 +1065,6 @@ class SWE2DCouplingController:
         # all D2H readback of h.
         d_drainage_q = False  # ponytail: set True for device-resident coupling
         if self.drainage is not None:
-            # Fast-path: skip GPU drainage step when no water is in the system.
-            # Mirrors the check in _compute_source_rates_cuda (lines 1557-1562).
-            self._ensure_gpu_drainage_state()
-            node_depth_state = np.asarray(self._gpu_node_depth, dtype=np.float64)
-            link_flow_state = np.asarray(self._gpu_link_flow, dtype=np.float64)
-            node_active = bool(np.any(node_depth_state > 1.0e-3))
-            link_active = bool(np.any(np.abs(link_flow_state) > 1.0e-10))
-            if self.structures is None and not node_active and not link_active:
-                return False
             # Ensure persisted device buffer for q_cell
             if not getattr(self, "_drainage_q_ensured", False):
                 if hasattr(native_mod, "swe2d_gpu_ensure_drainage_q_buf"):
