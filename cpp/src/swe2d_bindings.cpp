@@ -1133,12 +1133,13 @@ PYBIND11_MODULE(HYDRA_SWE2D_PY_MODULE_NAME, m) {
             d["h"]   = py::array_t<double>({count, n_cells}, {static_cast<long>(n_cells) * sizeof(double), sizeof(double)}, h_h, cap_h);
             d["hu"]  = py::array_t<double>({count, n_cells}, {static_cast<long>(n_cells) * sizeof(double), sizeof(double)}, h_hu, cap_hu);
             d["hv"]  = py::array_t<double>({count, n_cells}, {static_cast<long>(n_cells) * sizeof(double), sizeof(double)}, h_hv, cap_hv);
-            // Reset the ring buffer after readback
-            swe2d_gpu_free_snapshot_buf(dev);
+            // NOTE: device ring buffer is NOT freed here — fetch is non-destructive.
+            // Call swe2d_gpu_free_snapshot_buf explicitly when reset is needed
+            // (e.g. before starting a new simulation).
             return d;
         },
         py::arg("solver"),
-        "Read all accumulated snapshots as {t_s, h, hu, hv} dict. Resets buffer.");
+        "Read all accumulated snapshots as {t_s, h, hu, hv} dict. Does NOT reset buffer.");
 
     m.def("swe2d_gpu_free_snapshot_buf",
         [](std::shared_ptr<PySolver>& ps) {

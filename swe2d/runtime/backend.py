@@ -716,8 +716,10 @@ class SWE2DBackend:
 
         Returns a dict with keys 't_s' (shape [N]), 'h'/'hu'/'hv'
         (shape [N, n_cells]) or None if no snapshots accumulated.
-        Resets both device and host buffers.
-        Call when "take snapshot" button is pressed or run finalizes.
+        Consumes the host auto-dump buffer but leaves the device ring
+        buffer intact — subsequent calls return device data again.
+        Call free_snapshot_buf() explicitly when a hard reset is needed
+        (e.g. before starting a new simulation).
         """
         if self._solver_h is None:
             return None

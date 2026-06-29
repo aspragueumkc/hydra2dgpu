@@ -89,8 +89,8 @@ class OverlayController:
         """Refresh cached cell-center and bed arrays used by the canvas overlay.
 
         When snapshots exist, geometry is derived from them. When snapshots are
-        empty (e.g., GPKG-loaded results), geometry is built from _mesh_data
-        so the overlay can still render GPKG snapshots.
+        empty (e.g., GPKG-loaded results), geometry is loaded from the baked
+        mesh BLOB stored in swe2d_baked_mesh. No fallback to in-memory mesh.
         """
         view = self._view
         _snapshots = self._data.get_live_snapshot_timesteps()
@@ -144,8 +144,10 @@ class OverlayController:
                                 return
                     finally:
                         conn.close()
-                except Exception:
-                    pass
+                except Exception as exc:
+                    view._log(
+                        f"[HighPerf Overlay] Baked mesh load from GPKG failed: {exc}"
+                    )
             # Baked mesh not available — clear overlay
             self._data.overlay_cell_x = np.empty(0, dtype=np.float64)
             self._data.overlay_cell_y = np.empty(0, dtype=np.float64)
@@ -603,14 +605,17 @@ class OverlayController:
             return False
         run_id = run_ids[0][1]
 
+        # Load overlay mesh geometry from the baked mesh BLOB in GPKG only.
+        # No fallback to in-memory _mesh_data — if the GPKG is missing
+        # a swe2d_baked_mesh entry this fails loudly.
         if self._data.overlay_cell_x is None or self._data.overlay_cell_x.size <= 0:
-            if getattr(view, "_mesh_data", None) is None:
-                view._log(
-                    "[HighPerf Overlay] No mesh loaded — cannot render overlay for GPKG results."
-                )
-                return False
             self.sync_high_perf_overlay_data()
         if self._data.overlay_cell_x is None or self._data.overlay_cell_x.size <= 0:
+            view._log(
+                "[HighPerf Overlay] No mesh geometry available — "
+                "cannot render overlay for GPKG results. "
+                "The GPKG may be missing a swe2d_baked_mesh entry."
+            )
             return False
 
         

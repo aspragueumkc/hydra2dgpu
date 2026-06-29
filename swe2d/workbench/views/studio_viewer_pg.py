@@ -136,9 +136,12 @@ class PGTimeSeriesWidget(QtWidgets.QWidget):
             root.addWidget(label)
             return
 
-        # ── Top bar: element type, element ID, variable, toggles ──
-        top_bar = QtWidgets.QHBoxLayout()
-        top_bar.setSpacing(4)
+        # ── Top bar: element type, element ID, variable (row 1) ──
+        top_bar = QtWidgets.QVBoxLayout()
+        top_bar.setSpacing(2)
+
+        row1 = QtWidgets.QHBoxLayout()
+        row1.setSpacing(4)
 
         def _make_combo(max_w: int = 120) -> QtWidgets.QComboBox:
             c = QtWidgets.QComboBox()
@@ -147,36 +150,43 @@ class PGTimeSeriesWidget(QtWidgets.QWidget):
             c.setMaximumWidth(max_w)
             return c
 
-        top_bar.addWidget(QtWidgets.QLabel("Type:"))
+        row1.addWidget(QtWidgets.QLabel("Type:"))
         self._element_type_combo = _make_combo(120)
         self._element_type_combo.setToolTip("Element type for time-series data: Line, Mesh Cell, Structure, or Drainage.")
         for label, key in self._ELEMENT_TYPES:
             self._element_type_combo.addItem(label, key)
         self._element_type_combo.currentIndexChanged.connect(self._on_element_type_changed)
-        top_bar.addWidget(self._element_type_combo)
-        top_bar.addSpacing(4)
+        row1.addWidget(self._element_type_combo)
+        row1.addSpacing(4)
 
-        top_bar.addWidget(QtWidgets.QLabel("Elem:"))
+        row1.addWidget(QtWidgets.QLabel("Elem:"))
         self._element_id_combo = _make_combo(140)
         self._element_id_combo.setToolTip("Select the specific element ID to plot.")
         self._element_id_combo.currentIndexChanged.connect(self._on_element_id_changed)
-        top_bar.addWidget(self._element_id_combo)
-        top_bar.addSpacing(4)
+        row1.addWidget(self._element_id_combo)
+        row1.addSpacing(4)
 
-        top_bar.addWidget(QtWidgets.QLabel("Var:"))
+        row1.addWidget(QtWidgets.QLabel("Var:"))
         self._metric_combo = _make_combo(120)
         self._metric_combo.setToolTip("Variable to plot: flow, depth, WSE, velocity.")
         self._repopulate_combo_items()
         self._metric_combo.currentIndexChanged.connect(self._on_metric_changed)
-        top_bar.addWidget(self._metric_combo)
+        row1.addWidget(self._metric_combo)
 
-        top_bar.addStretch(1)
+        row1.addStretch(1)
+        top_bar.addLayout(row1)
+
+        # ── Row 2: toggles, save, settings ──
+        row2 = QtWidgets.QHBoxLayout()
+        row2.setSpacing(4)
 
         self.show_table_toggle = QtWidgets.QCheckBox("Table")
         self.show_table_toggle.setChecked(False)
         self.show_table_toggle.setToolTip("Show/hide the time-series data table below the plot.")
         self.show_table_toggle.toggled.connect(self._on_table_toggle)
-        top_bar.addWidget(self.show_table_toggle)
+        row2.addWidget(self.show_table_toggle)
+
+        row2.addStretch(1)
 
         # Save button
         self._save_btn = QtWidgets.QPushButton("💾")
@@ -189,7 +199,7 @@ class PGTimeSeriesWidget(QtWidgets.QWidget):
         self._save_menu.addSeparator()
         self._save_menu.addAction("Save data as CSV", self._save_data_csv)
         self._save_btn.setMenu(self._save_menu)
-        top_bar.addWidget(self._save_btn)
+        row2.addWidget(self._save_btn)
 
         # Settings button
         self._settings_btn = QtWidgets.QPushButton("⚙")
@@ -209,8 +219,9 @@ class PGTimeSeriesWidget(QtWidgets.QWidget):
         self._settings_act_crosshair.setChecked(True)
         self._settings_act_crosshair.toggled.connect(self._on_toggle_crosshair)
         self._settings_btn.setMenu(self._settings_menu)
-        top_bar.addWidget(self._settings_btn)
+        row2.addWidget(self._settings_btn)
 
+        top_bar.addLayout(row2)
         root.addLayout(top_bar)
 
         # ── pyqtgraph plot ──

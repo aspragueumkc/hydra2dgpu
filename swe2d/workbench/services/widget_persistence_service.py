@@ -50,6 +50,9 @@ def iter_all_persistable_widgets(
                 continue
             if not isinstance(widget, persistable_types):
                 continue
+            # Skip widgets marked as non-persistable (e.g. transient display controls)
+            if getattr(widget, "_no_persist", False):
+                continue
             wid = id(widget)
             if wid in seen:
                 continue

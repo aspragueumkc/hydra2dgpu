@@ -226,6 +226,10 @@ def show_results_panel(dialog):
     toolbox = getattr(dialog, "_results_toolbox", None)
     if toolbox is not None:
         toolbox.set_data(data)
+        if hasattr(toolbox, "set_overlay_refresh_callback"):
+            toolbox.set_overlay_refresh_callback(
+                lambda: dialog._overlay_controller.refresh_high_perf_canvas_overlay(None)
+            )
     if temporal is not None:
         temporal.set_data(data)
     try:

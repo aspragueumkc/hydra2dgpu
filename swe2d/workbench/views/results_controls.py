@@ -11,7 +11,7 @@ Emits pyqtSignals for controller wiring (does NOT reach through dialog).
 """
 from __future__ import annotations
 
-from typing import Any, List, Optional, Tuple
+from typing import Any, Callable, List, Optional, Tuple
 
 from qgis.PyQt import QtCore, QtGui, QtWidgets
 from qgis.PyQt.QtCore import pyqtSignal
@@ -61,6 +61,7 @@ class ResultsToolbox(QtWidgets.QWidget):
         super().__init__(parent)
         self._data: Optional[SWE2DResultsData] = None
         self._toolbox: Optional[QtWidgets.QToolBox] = None
+        self._overlay_refresh_callback: Optional[Callable[[], None]] = None
         self._build_ui()
 
     # ------------------------------------------------------------------
@@ -71,6 +72,10 @@ class ResultsToolbox(QtWidgets.QWidget):
         """Bind the data layer and rebuild run list."""
         self._data = data
         self._rebuild_run_list()
+
+    def set_overlay_refresh_callback(self, callback: Optional[Callable[[], None]]) -> None:
+        """Set a callback invoked when overlay display parameters change."""
+        self._overlay_refresh_callback = callback
 
     # ------------------------------------------------------------------
     # UI
@@ -120,9 +125,11 @@ class ResultsToolbox(QtWidgets.QWidget):
         self.min_depth_spin.setToolTip("Cells with depth below this threshold are treated as dry in the overlay.")
         self.color_min_spin = self._add_spin(
             layout, "Color min:", 6, -1e12, 1e12, 0.01, 0.0)
+        self.color_min_spin._no_persist = True
         self.color_min_spin.setToolTip("Minimum value for the color scale (manual mode). Only active when auto contrast is off.")
         self.color_max_spin = self._add_spin(
             layout, "Color max:", 6, -1e12, 1e12, 0.01, 1.0)
+        self.color_max_spin._no_persist = True
         self.color_max_spin.setToolTip("Maximum value for the color scale (manual mode). Only active when auto contrast is off.")
         self.color_reset_btn = QtWidgets.QPushButton("↺ Reset")
         self.color_reset_btn.setToolTip("Reset color min/max to the actual data range.")
@@ -209,23 +216,19 @@ class ResultsToolbox(QtWidgets.QWidget):
         return spin
 
     def _on_auto_contrast_toggled(self, checked: bool) -> None:
-        """Enable/disable manual color min/max spinboxes when auto-contrast toggles."""
+        """Enable/disable manual color min/max spinboxes and trigger overlay refresh."""
         for s in (getattr(self, "color_min_spin", None), getattr(self, "color_max_spin", None)):
             if s is not None:
                 s.setEnabled(not bool(checked))
+        if self._overlay_refresh_callback is not None:
+            try:
+                self._overlay_refresh_callback()
+            except Exception:
+                pass
 
     def _on_color_reset(self) -> None:
-        """Reset color min/max to the actual data range from the last overlay render."""
-        data = getattr(self, "_data", None)
-        if data is None:
-            return
-        vmin = getattr(data, "_overlay_computed_vmin", None)
-        vmax = getattr(data, "_overlay_computed_vmax", None)
-        if vmin is not None and vmax is not None:
-            self.color_min_spin.setValue(float(vmin))
-            self.color_max_spin.setValue(float(vmax))
-            # Also uncheck auto contrast so the manual values take effect
-            self.auto_contrast_chk.setChecked(False)
+        """Reset color min/max to auto-contrast based on actual data range."""
+        self.auto_contrast_chk.setChecked(True)
 
     def _on_field_changed(self, index: int) -> None:
         """Reset color auto-contrast when user switches the rendered field."""

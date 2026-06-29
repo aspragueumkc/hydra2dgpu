@@ -243,9 +243,12 @@ class PGProfileWidget(QtWidgets.QWidget):
             root.addWidget(label)
             return
 
-        # ── Top bar ──
-        top_bar = QtWidgets.QHBoxLayout()
-        top_bar.setSpacing(4)
+        # ── Top bar (row 1: selectors, row 2: toggles) ──
+        top_bar = QtWidgets.QVBoxLayout()
+        top_bar.setSpacing(2)
+
+        row1 = QtWidgets.QHBoxLayout()
+        row1.setSpacing(4)
 
         def _make_combo(max_w: int = 100) -> QtWidgets.QComboBox:
             c = QtWidgets.QComboBox()
@@ -255,66 +258,72 @@ class PGProfileWidget(QtWidgets.QWidget):
             return c
 
         # Element type selector
-        top_bar.addWidget(QtWidgets.QLabel("Type:"))
+        row1.addWidget(QtWidgets.QLabel("Type:"))
         self._etype_combo = _make_combo(120)
         self._etype_combo.setToolTip("Element type for profile data: Line, Structure, or Drainage.")
         for label, key in _ELEMENT_TYPES:
             self._etype_combo.addItem(label, key)
         self._etype_combo.currentIndexChanged.connect(self._on_etype_changed)
-        top_bar.addWidget(self._etype_combo)
-        top_bar.addSpacing(4)
+        row1.addWidget(self._etype_combo)
+        row1.addSpacing(4)
 
         # Element ID selector (lines or coupling objects)
-        top_bar.addWidget(QtWidgets.QLabel("Elem:"))
+        row1.addWidget(QtWidgets.QLabel("Elem:"))
         self._element_id_combo = _make_combo(140)
         self._element_id_combo.setToolTip("Select the specific element ID to profile.")
         self._element_id_combo.currentIndexChanged.connect(self._on_element_id_changed)
-        top_bar.addWidget(self._element_id_combo)
-        top_bar.addSpacing(4)
+        row1.addWidget(self._element_id_combo)
+        row1.addSpacing(4)
 
         # Variable / Metric selector
-        top_bar.addWidget(QtWidgets.QLabel("Var:"))
+        row1.addWidget(QtWidgets.QLabel("Var:"))
         self._var_combo = _make_combo(120)
         self._var_combo.setToolTip("Profile variable: WSE+Bed, Depth, Velocity, or EGL Error.")
         self._var_combo.currentIndexChanged.connect(self._on_var_changed)
-        top_bar.addWidget(self._var_combo)
-        top_bar.addSpacing(4)
+        row1.addWidget(self._var_combo)
+        row1.addStretch(1)
+        top_bar.addLayout(row1)
 
-        # Fill selector (profile only)
-        top_bar.addWidget(QtWidgets.QLabel("Fill:"))
-        self._fill_combo = _make_combo(100)
-        self._fill_combo.setToolTip("Variable for color-filled profile shading: Depth, Velocity, or Flow.")
-        for label, key in _FILL_ITEMS:
-            self._fill_combo.addItem(label, key)
-        self._fill_combo.currentIndexChanged.connect(self._on_fill_changed)
-        top_bar.addWidget(self._fill_combo)
-        top_bar.addSpacing(4)
-
-        # Colormap selector (profile only)
-        top_bar.addWidget(QtWidgets.QLabel("Cmap:"))
-        self._cmap_combo = _make_combo(100)
-        self._cmap_combo.setToolTip("Colormap used for profile fill shading.")
-        for label, key in _CMAP_ITEMS:
-            self._cmap_combo.addItem(label, key)
-        self._cmap_combo.currentIndexChanged.connect(self._on_cmap_changed)
-        top_bar.addWidget(self._cmap_combo)
-
-        # Stretch pushes right-side controls to the edge
-        top_bar.addStretch(1)
+        # ── Row 2: toggles ──
+        row2 = QtWidgets.QHBoxLayout()
+        row2.setSpacing(4)
 
         # Show structures toggle
         self._show_struct_chk = QtWidgets.QCheckBox("Struct")
         self._show_struct_chk.setChecked(True)
         self._show_struct_chk.setToolTip("Show structure annotations (flow labels) on the profile.")
         self._show_struct_chk.toggled.connect(self._on_show_struct_changed)
-        top_bar.addWidget(self._show_struct_chk)
+        row2.addWidget(self._show_struct_chk)
 
         # Data table toggle
         self.show_table_toggle = QtWidgets.QCheckBox("Table")
         self.show_table_toggle.setChecked(False)
         self.show_table_toggle.setToolTip("Show/hide the profile data table below the plot.")
         self.show_table_toggle.toggled.connect(self._on_table_toggle)
-        top_bar.addWidget(self.show_table_toggle)
+        row2.addWidget(self.show_table_toggle)
+        row2.addSpacing(8)
+
+        # Fill selector (profile only)
+        row2.addWidget(QtWidgets.QLabel("Fill:"))
+        self._fill_combo = _make_combo(100)
+        self._fill_combo.setToolTip("Variable for color-filled profile shading: Depth, Velocity, or Flow.")
+        for label, key in _FILL_ITEMS:
+            self._fill_combo.addItem(label, key)
+        self._fill_combo.currentIndexChanged.connect(self._on_fill_changed)
+        row2.addWidget(self._fill_combo)
+        row2.addSpacing(4)
+
+        # Colormap selector (profile only)
+        row2.addWidget(QtWidgets.QLabel("Cmap:"))
+        self._cmap_combo = _make_combo(100)
+        self._cmap_combo.setToolTip("Colormap used for profile fill shading.")
+        for label, key in _CMAP_ITEMS:
+            self._cmap_combo.addItem(label, key)
+        self._cmap_combo.currentIndexChanged.connect(self._on_cmap_changed)
+        row2.addWidget(self._cmap_combo)
+        row2.addSpacing(8)
+
+        row2.addStretch(1)
 
         # Save button
         save_btn = QtWidgets.QPushButton("💾")
@@ -327,8 +336,9 @@ class PGProfileWidget(QtWidgets.QWidget):
         save_menu.addSeparator()
         save_menu.addAction("Save data as CSV", self._save_data_csv)
         save_btn.setMenu(save_menu)
-        top_bar.addWidget(save_btn)
+        row2.addWidget(save_btn)
 
+        top_bar.addLayout(row2)
         root.addLayout(top_bar)
 
         # ── pyqtgraph plot ──
