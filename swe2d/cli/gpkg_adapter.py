@@ -9,6 +9,7 @@ from __future__ import annotations
 import json
 import logging
 import sqlite3
+import struct
 from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
@@ -66,122 +67,94 @@ def query_mesh_from_gpkg(gpkg_path: str, mesh_name: str) -> Optional[Dict[str, n
         return None
 
 
-def query_bc_arrays(conn: sqlite3.Connection, bc_table: str) -> Dict[str, np.ndarray]:
-    """Read boundary condition edge arrays from a BC lines layer table.
+def query_bc_arrays(
+    conn: sqlite3.Connection,
+    bc_table: str,
+    node_x: Optional[np.ndarray] = None,
+    node_y: Optional[np.ndarray] = None,
+) -> Dict[str, np.ndarray]:
+    """Read boundary condition edge arrays from a BC table.
 
-    Probes PRAGMA table_info to discover column names. Handles both
-    pre-split edge tables (``node0``/``node1`` columns) and geometry-based
-    tables (``geom``/``wkb_geometry`` with multi-vertex LINESTRINGs).
+    First tries pre-split edge table format (columns: node0, node1, bc_type, bc_val).
+    Falls back to geometry-based tables (LineString features), parsing WKB or WKT
+    and snapping vertices to the nearest mesh node when *node_x*/*node_y* are given.
 
-    Returns dict with keys: bc_edge_node0, bc_edge_node1, bc_edge_type, bc_edge_val.
-    Empty arrays if no valid data found.
+    Returns dict with keys: bc_edge_node0, bc_edge_node1,
+    bc_edge_type, bc_edge_val.  Empty dict if nothing found.
     """
     cur = conn.cursor()
     cur.execute(f"PRAGMA table_info(\"{bc_table}\")")
-    cols = [str(r[1]) for r in cur.fetchall()]
-    if not cols:
-        return {}
-    col_lower = [c.lower() for c in cols]
+    col_info = [(str(r[1]), str(r[2]).lower()) for r in cur.fetchall()]
+    col_names = {c for c, _ in col_info}
+    col_names_lower = {c.lower() for c, _ in col_info}
 
-    # Map common attribute column names
-    col_map = {}
-    for c, cl in zip(cols, col_lower):
-        if cl in ("node0", "node_0", "start_node", "from_node"):
-            col_map["node0"] = c
-        elif cl in ("node1", "node_1", "end_node", "to_node"):
-            col_map["node1"] = c
-        elif cl in ("bc_type", "bc", "bctype", "boundary_type"):
-            col_map["bc_type"] = c
-        elif cl in ("bc_val", "bcvalue", "bc_value", "value", "val"):
-            col_map["bc_val"] = c
+    # ── Path 1: Pre-split edge table ──────────────────────────────────
+    if {"node0", "node1", "bc_type", "bc_val"}.issubset(col_names_lower):
+        cur.execute(
+            f"SELECT node0, node1, bc_type, bc_val FROM \"{bc_table}\" ORDER BY rowid"
+        )
+        rows = cur.fetchall()
+        if rows:
+            return {
+                "bc_edge_node0": np.array([r[0] for r in rows], dtype=np.int32),
+                "bc_edge_node1": np.array([r[1] for r in rows], dtype=np.int32),
+                "bc_edge_type": np.array([r[2] for r in rows], dtype=np.int32),
+                "bc_edge_val": np.array([r[3] for r in rows], dtype=np.float64),
+            }
 
-    # Determine if this is a pre-split edge table or a geometry table
-    has_node_cols = "node0" in col_map and "node1" in col_map
-    has_geom = any(cl in ("geom", "wkb_geometry", "geometry", "shape") for cl in col_lower)
-    has_wkt = "wkt" in col_lower
-
-    bc_col = col_map.get("bc_type", "")
-    val_col = col_map.get("bc_val", "")
-
-    # If it has geometry but no node columns, extract vertex pairs from linestrings
-    if not has_node_cols and (has_geom or has_wkt):
-        return _extract_bc_edges_from_geometry(conn, bc_table, cols, bc_col, val_col)
-
-    if not has_node_cols:
+    # ── Path 2: Geometry-based table (LineString features) ────────────
+    # Requires node_x/node_y for vertex-to-node snapping
+    if node_x is None or node_y is None:
         return {}
 
-    # Pre-split edge table: one row per mesh edge
-
-    cur.execute(
-        f"SELECT \"{col_map['node0']}\", \"{col_map['node1']}\", "
-        f"\"{bc_col}\", \"{val_col}\" "
-        f"FROM \"{bc_table}\" ORDER BY rowid"
-    )
-    rows = cur.fetchall()
-    if not rows:
+    has_geom = any(cl in ("geom", "wkb_geometry", "geometry", "shape") for cl in col_names_lower)
+    if not has_geom:
         return {}
-    out = {
-        "bc_edge_node0": np.array([r[0] for r in rows], dtype=np.int32),
-        "bc_edge_node1": np.array([r[1] for r in rows], dtype=np.int32),
-        "bc_edge_type": np.array([r[2] for r in rows], dtype=np.int32) if bc_col else np.full(len(rows), 1, dtype=np.int32),
-        "bc_edge_val": np.array([r[3] for r in rows], dtype=np.float64) if val_col else np.zeros(len(rows), dtype=np.float64),
-    }
-    return out
+    geom_col = next(c for c, cl in col_info if cl in ("geom", "wkb_geometry", "geometry", "shape"))
 
+    # Build kd-tree for nearest-node lookups
+    from scipy.spatial import KDTree
+    tree = KDTree(np.column_stack([np.asarray(node_x, dtype=np.float64),
+                                    np.asarray(node_y, dtype=np.float64)]))
 
-def _extract_bc_edges_from_geometry(
-    conn: sqlite3.Connection,
-    table: str,
-    cols: list,
-    bc_col: str,
-    val_col: str,
-) -> Dict[str, np.ndarray]:
-    """Extract individual edge pairs from multi-vertex BC linestrings.
+    # Find bc_type / bc_val columns
+    bc_col = next((c for c, cl in col_info if cl in ("bc_type", "bc", "bctype", "boundary_type")), "")
+    val_col = next((c for c, cl in col_info if cl in ("bc_val", "bcvalue", "bc_value", "value", "val")), "")
 
-    Each consecutive vertex pair in a LINESTRING becomes one (node0, node1)
-    boundary edge specification.
-    """
-    cur = conn.cursor()
+    q_cols = f"\"{geom_col}\""
+    if bc_col:
+        q_cols += f", \"{bc_col}\""
+    if val_col:
+        q_cols += f", \"{val_col}\""
 
-    # Find the geometry column
-    geom_col = "geom"
-    for c in cols:
-        if c.lower() in ("wkb_geometry", "geometry", "shape"):
-            geom_col = c
-            break
-
-    # Build query — try to extract WKT or raw vertex coordinates
-    has_wkt = "wkt" in [c.lower() for c in cols]
+    cur.execute(f"SELECT {q_cols} FROM \"{bc_table}\" ORDER BY rowid")
 
     all_n0, all_n1, all_type, all_val = [], [], [], []
-    if has_wkt:
-        cur.execute(f"SELECT \"wkt\", \"{bc_col}\", \"{val_col}\" FROM \"{table}\" ORDER BY rowid")
-        for wkt, bt, bv in cur.fetchall():
-            vertices = _parse_wkt_linestring(str(wkt or ""))
-            for i in range(len(vertices) - 1):
-                all_n0.append(vertices[i])
-                all_n1.append(vertices[i + 1])
-                all_type.append(int(bt) if bt is not None else 1)
-                all_val.append(float(bv) if bv is not None else 0.0)
-    else:
-        # Try to read from the geometry column — check if it's WKB or plain text
-        try:
-            cur.execute(f"SELECT \"{geom_col}\", \"{bc_col}\", \"{val_col}\" FROM \"{table}\" ORDER BY rowid")
-            for geom, bt, bv in cur.fetchall():
-                raw = str(geom or "")
-                if raw.startswith("LINESTRING") or raw.startswith("LineString"):
-                    vertices = _parse_wkt_linestring(raw)
-                else:
-                    # Try WKB hex — skip for now
-                    continue
-                for i in range(len(vertices) - 1):
-                    all_n0.append(vertices[i])
-                    all_n1.append(vertices[i + 1])
-                    all_type.append(int(bt) if bt is not None else 1)
-                    all_val.append(float(bv) if bv is not None else 0.0)
-        except Exception:
-            # Fallback: try column-by-column vertex pattern (node0_x, node0_y, node1_x, node1_y)
-            pass
+    for row in cur.fetchall():
+        geom_raw = row[0]
+        bt = int(row[1]) if bc_col and len(row) > 1 and row[1] is not None else 1
+        bv = float(row[2]) if val_col and len(row) > 2 and row[2] is not None else 0.0
+
+        coords = _parse_wkb_linestring(geom_raw)
+        if not coords:
+            coords = _parse_wkt_linestring_coords(str(geom_raw or ""))
+        if len(coords) < 2:
+            continue
+
+        # Snap each vertex to nearest mesh node
+        node_ids = [int(tree.query([x, y])[1]) for x, y in coords]
+        for i in range(len(node_ids) - 1):
+            all_n0.append(node_ids[i])
+            all_n1.append(node_ids[i + 1])
+            all_type.append(bt)
+            all_val.append(bv)
+
+        # Close ring if start==end (LINESTRING that forms a loop)
+        if len(node_ids) > 2 and node_ids[0] == node_ids[-1]:
+            all_n0.append(node_ids[-2])
+            all_n1.append(node_ids[-1])
+            all_type.append(bt)
+            all_val.append(bv)
 
     if not all_n0:
         return {}
@@ -194,12 +167,55 @@ def _extract_bc_edges_from_geometry(
     }
 
 
-def _parse_wkt_linestring(wkt: str) -> List[int]:
-    """Parse a WKT LINESTRING(x1 y1, x2 y2, ...) and return node indices.
-    Note: this returns raw vertex indices only if the table has pre-computed
-    node_id columns. Otherwise it returns integers 0,1,2,... as placeholders
-    — the caller must map coordinates to mesh nodes separately.
+def _parse_wkb_linestring(data) -> List[Tuple[float, float]]:
+    """Parse a WKB LINESTRING from GPKG Extended WKB format.
+
+    GPKG stores geometry as: 4-byte srs_id + standard WKB.
+    Standard WKB LINESTRING: byte_order(1) + type(4) + n_points(4) + [x(8), y(8)] * n
+    Returns list of (x, y) tuples, or empty list on any error.
     """
+    if data is None:
+        return []
+    raw = bytes(data)
+    if len(raw) < 9:
+        return []
+
+    # Skip 4-byte GPKG srs_id prefix
+    wkb = raw[4:]
+    if len(wkb) < 9:
+        return []
+
+    # Byte order
+    bo = wkb[0]
+    little = (bo == 1)
+    # Geometry type
+    gtype = int.from_bytes(wkb[1:5], byteorder='little' if little else 'big')
+    if gtype != 2:  # 2 = LINESTRING
+        return []
+
+    if len(wkb) < 9:
+        return []
+
+    n_pts = int.from_bytes(wkb[5:9], byteorder='little' if little else 'big')
+    n_pts = min(n_pts, 100000)  # sanity cap
+
+    expected_len = 9 + n_pts * 16  # 8 bytes each for x and y
+    if len(wkb) < expected_len:
+        return []
+
+    coords = []
+    off = 9
+    for _ in range(n_pts):
+        x = struct.unpack_from('<d' if little else '>d', wkb, off)[0]
+        y = struct.unpack_from('<d' if little else '>d', wkb, off + 8)[0]
+        coords.append((x, y))
+        off += 16
+
+    return coords
+
+
+def _parse_wkt_linestring_coords(wkt: str) -> List[Tuple[float, float]]:
+    """Parse a WKT LINESTRING(x1 y1, x2 y2, ...) and return (x, y) vertex list."""
     wkt = wkt.strip()
     if "(" not in wkt:
         return []
@@ -210,7 +226,7 @@ def _parse_wkt_linestring(wkt: str) -> List[int]:
         parts = p.strip().split()
         if len(parts) >= 2:
             coords.append((float(parts[0]), float(parts[1])))
-    return list(range(len(coords)))
+    return coords
 
 
 def apply_bc_overrides_from_gpkg(

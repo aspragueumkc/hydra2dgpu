@@ -116,16 +116,18 @@ def execute_run(
         gpkg = cfg.get("gpkg", default_gpkg)
         return tbl, sqlite3.connect(gpkg)
 
-    # Read BC arrays
-    # Read BC arrays — query_bc_arrays handles both pre-split edge tables
-    # and geometry-based tables (splitting multi-vertex LINESTRINGs)
+    # Read BC arrays — handles both pre-split edge tables and geometry-based tables
     from swe2d.cli.gpkg_adapter import query_bc_arrays as _query_bc
     bc: Dict[str, np.ndarray] = {}
     bc_table, bc_conn = _open_cfg(p.get("bc_lines"))
     if bc_conn is not None:
         try:
             if bc_table:
-                bc = _query_bc(bc_conn, bc_table)
+                bc = _query_bc(
+                    bc_conn, bc_table,
+                    node_x=mesh_data.get("node_x"),
+                    node_y=mesh_data.get("node_y"),
+                )
         finally:
             bc_conn.close()
     bc_n0 = bc.get("bc_edge_node0", np.empty(0, dtype=np.int32))
@@ -329,9 +331,10 @@ def execute_run(
 
         # Copy baked mesh BLOB so results GPKG is self-contained
         try:
-            blob = _load_mesh_blob(mesh_gpkg, mesh_name)
-            if blob:
-                persist_baked_mesh(results_gpkg, mesh_name, blob)
+            from swe2d.services.gpkg_persistence_service import load_baked_mesh
+            baked = load_baked_mesh(mesh_gpkg, mesh_name)
+            if baked:
+                persist_baked_mesh(results_gpkg, mesh_name, baked["blob"])
         except Exception as exc:
             logger.warning("Failed to persist baked mesh: %s", exc)
 

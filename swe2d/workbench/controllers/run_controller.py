@@ -1093,13 +1093,18 @@ class RunController:
             )
             return
 
-        bc_type_preview, bc_val_preview, _, _ = view._collect_boundary_arrays()
+        _, _, bc_type_preview, bc_val_preview = view._collect_boundary_arrays()
         bc_type_preview = bc_type_preview.copy()
         bc_val_preview = bc_val_preview.copy()
         edge_hydrographs = view._collect_bc_layer_hydrographs(edge_n0, edge_n1)
 
-        static_mask = (bc_type_preview != bc_type_default) | (
-            ~np.isclose(bc_val_preview, bc_val_default)
+        # Compute default BC values for comparison
+        from swe2d.services.mesh_computation_service import default_bc_for_edges as _compute_default_bc
+        bc_type_default_arr, bc_val_default_arr = _compute_default_bc(
+            view._mesh_data, edge_n0, edge_n1
+        )
+        static_mask = (bc_type_preview != bc_type_default_arr) | (
+            ~np.isclose(bc_val_preview, bc_val_default_arr)
         )
         static_count = int(np.count_nonzero(static_mask))
         static_type_counts: Dict[str, int] = {}
