@@ -116,36 +116,7 @@ class SWE2DResultsData:
         # that must survive.  Only the selected-run-keys and timesteps are
         # reset so the subsequent user-initiated add/discover flow is clean.
 
-    def set_live_snapshot_timesteps(
-        self, snapshot_timesteps: list, t_sec: float = 0.0
-    ) -> None:
-        """Feed in-memory snapshot timesteps for live-run temporal control.
 
-        Called during a run so the temporal dock slider reflects the
-        accumulating snapshots before they are persisted to GPKG.
-        """
-        if not snapshot_timesteps:
-            self._all_timesteps = np.empty(0, dtype=np.float64)
-            self._live_times = np.empty(0, dtype=np.float64)
-            self._anim.set_timesteps(self._all_timesteps)
-            return
-        # Populate numpy arrays (same shape as baked BLOBs)
-        n_steps = len(snapshot_timesteps)
-        n_cells = int(np.asarray(snapshot_timesteps[0][1]).size) if n_steps > 0 else 0
-        t_arr = np.array([float(s[0]) for s in snapshot_timesteps], dtype=np.float64)
-        self._live_times = t_arr.copy()
-        if n_cells > 0:
-            self._live_h = np.zeros((n_steps, n_cells), dtype=np.float64)
-            self._live_hu = np.zeros((n_steps, n_cells), dtype=np.float64)
-            self._live_hv = np.zeros((n_steps, n_cells), dtype=np.float64)
-            for i, (_, h, hu, hv) in enumerate(snapshot_timesteps):
-                self._live_h[i] = np.asarray(h, dtype=np.float64).ravel()
-                self._live_hu[i] = np.asarray(hu, dtype=np.float64).ravel()
-                self._live_hv[i] = np.asarray(hv, dtype=np.float64).ravel()
-        self._all_timesteps = t_arr
-        self._anim.set_timesteps(self._all_timesteps)
-        if t_sec > 0.0:
-            self._set_frame(self._t_sec_to_frame_idx(float(t_sec)))
 
     def clear_live_snapshots(self) -> None:
         self._live_snapshot_timesteps = []
@@ -161,13 +132,17 @@ class SWE2DResultsData:
         self._live_snapshot_timesteps.append((t_s, h, hu, hv))
         self._data_source = "live"
 
-    def set_live_snapshot_timesteps(self, timesteps: list) -> None:
+    def set_live_snapshot_timesteps(
+        self, timesteps: list, t_sec: float = 0.0
+    ) -> None:
         """Bulk-replace the live snapshot list from device readback.
 
         ``timesteps`` is a list of ``(t_s, h, hu, hv)`` tuples as returned
         by :meth:`SWE2DBackend.read_snapshots`.  Also updates the animation
         timeline and the ``_live_times/_live_h/_live_hu/_live_hv`` arrays
         so the temporal dock slider and overlay can read the data.
+
+        If *t_sec* > 0, seeks the animation to that time after populating.
         """
         self._live_snapshot_timesteps = list(timesteps)
         self._data_source = "live"
@@ -197,6 +172,8 @@ class SWE2DResultsData:
             self._live_anim_count = 0
             if hasattr(self, "_anim") and self._anim is not None:
                 self._anim.set_timesteps(self._all_timesteps)
+        if t_sec > 0.0 and hasattr(self, "_t_sec_to_frame_idx"):
+            self._set_frame(self._t_sec_to_frame_idx(float(t_sec)))
 
     def append_line_snapshot(self, row: dict) -> None:
         """Append a line timeseries row, accumulating into _live_line_ts."""

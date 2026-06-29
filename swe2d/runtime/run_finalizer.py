@@ -209,6 +209,7 @@ class SWE2DRunFinalizer:
             # ── Baked line profiles ──
             _t0 = time.perf_counter()
             try:
+                _line_profile_rows = _results_data.get_live_line_profile_rows() if _results_data is not None else []
                 if save_line_results and _line_profile_rows:
                     from collections import defaultdict
                     prof_lines: Dict[int, Dict[str, list]] = defaultdict(lambda: defaultdict(list))
