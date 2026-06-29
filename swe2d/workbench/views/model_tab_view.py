@@ -208,7 +208,7 @@ class ModelTabView(QtWidgets.QWidget):
             ("preview_coupling_btn", "Preview Drainage/Structure Coupling",
              "Preview the 1D-2D coupling configuration for drainage "
              "and hydraulic structures before running."),
-            ("snapshot_btn", "Take Snapshot",
+            ("snapshot_btn", "Fetch Device Results",
              "Save the current model state snapshot during a running simulation. "
              "Useful for debugging transient behavior."),
         ]:
@@ -246,12 +246,20 @@ class ModelTabView(QtWidgets.QWidget):
         )
         self.select_results_gpkg_btn.clicked.connect(self._on_select_results_gpkg)
         load_row.addWidget(self.select_results_gpkg_btn)
-        self.load_run_settings_btn = QtWidgets.QPushButton("Load Inputs From Results...")
+        self.load_run_settings_btn = QtWidgets.QPushButton("Load Model Config from GPKG...")
         self.load_run_settings_btn.setObjectName("load_run_settings_btn")
         self.load_run_settings_btn.setToolTip(
-            "Open a results GeoPackage and apply its widget settings to this dialog."
+            "Open a GeoPackage and restore a saved simulation configuration "
+            "(all widget values, solver params, and layer references)."
         )
         load_row.addWidget(self.load_run_settings_btn)
+        self.save_settings_btn = QtWidgets.QPushButton("Save Config to GPKG...")
+        self.save_settings_btn.setObjectName("save_settings_btn")
+        self.save_settings_btn.setToolTip(
+            "Save the current widget configuration to the active GeoPackage "
+            "so it can be restored later via Load Config."
+        )
+        load_row.addWidget(self.save_settings_btn)
         load_row.addStretch(1)
         run_page_layout.addLayout(load_row)
 

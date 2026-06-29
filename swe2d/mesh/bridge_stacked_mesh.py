@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+"""Bridge-stacked mesh geometry spec and plan generation for bridge structures."""
+
 from dataclasses import dataclass
 from typing import Dict, List, Optional, Sequence, Tuple
 
@@ -11,6 +13,7 @@ from swe2d.mesh.mesh_runtime_logic import mesh_cell_centroids
 
 @dataclass(frozen=True)
 class BridgeStackedGeometrySpec:
+    """Geometry specification for a bridge structure's stacked mesh corridor."""
     structure_id: str
     p0_xy: Tuple[float, float]
     p1_xy: Tuple[float, float]
@@ -28,6 +31,7 @@ class BridgeStackedGeometrySpec:
 
 @dataclass(frozen=True)
 class BridgeStackedPlan:
+    """Computed layer plan for bridge stacked coupling (cell indices, elevations, roles)."""
     structure_id: str
     selected_cells: np.ndarray
     streamwise_m: np.ndarray
@@ -40,7 +44,7 @@ class BridgeStackedPlan:
 
 
 def _layer_interfaces(spec: BridgeStackedGeometrySpec) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
-    """layer interfaces"""
+    """Compute under-deck and over-deck layer interfaces from a geometry spec."""
     soffit = float(spec.deck_soffit_elev_m)
     deck_top = max(soffit + 1.0e-9, float(spec.deck_top_elev_m))
     model_top = max(deck_top + 1.0e-9, float(spec.model_top_elev_m))

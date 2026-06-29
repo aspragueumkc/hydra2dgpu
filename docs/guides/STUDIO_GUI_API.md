@@ -49,7 +49,6 @@ from swe2d.workbench.workbench_api import (
     WorkbenchControllerProtocol,
     MeshSnapshotLoader,
     OverlayParametersCollector,
-    OverlayViewInterface,  # backwards-compatible alias for OverlayView
 )
 ```
 
@@ -135,7 +134,6 @@ The default implementation is `swe2d.workbench.overlay_parameters_service.collec
 | Dialog | `swe2d/workbench/studio_main.py` | `SWE2DWorkbenchStudioDialog` |
 | Builder | `swe2d/workbench/workbench_dialog_builder.py` | `WorkbenchDialogBuilder` |
 | Controller | `swe2d/workbench/workbench_controller.py` | `WorkbenchController` |
-| Legacy adapter | `swe2d/workbench/legacy_methods_adapter.py` | `LegacyMethodsAdapter` |
 | Mesh tab view | `swe2d/workbench/views/mesh_tab_view.py` | `MeshTabView` |
 | Map tab view | `swe2d/workbench/views/map_tab_view.py` | `MapTabView` |
 | Topology tab view | `swe2d/workbench/views/topology_tab_view.py` | `TopologyTabView` |

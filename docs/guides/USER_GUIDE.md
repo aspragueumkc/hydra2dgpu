@@ -434,6 +434,15 @@ The **Parameters** tab is the third step in the workflow. It contains five pages
 | **Tiny mode** | Handling strategy for wet/dry cells near h_min. | `Off (0)`, `Auto (1)`, `Fused (2)`, `Persistent (3)` | Persistent (3) | Stability near wet/dry fronts |
 | **Tiny active/wet threshold** | Max wet cells before tiny-mode optimization engages. | 1–10,000,000 | 2000 | Small-scale simulations |
 | **CUDA graph replay** | Enable CUDA graph capture/replay for kernel launches. Reduces overhead. | Checkbox | Off | Stable kernel topology with small dt |
+
+> **CUDA Graphs — Quick Guide:** Graph replay captures a sequence of GPU
+> kernels and replays them as a single unit, reducing CPU launch overhead.
+> Gives 10–20% speedup for small, fixed timesteps. **Disable** when using:
+> - RK4 or higher temporal schemes (graph-incompatible staging)
+> - Adaptive timestepping (kernel arguments change each step)
+> - Structures coupling with face-flux mode (kernel topology changes)
+> If you see "CUDA graph replay failed" in the log, disable graphs — the
+> solver automatically falls back to non-graph execution.
 | **SWE2D perf mode** | High-performance mode with aggressive optimizations (kernel fusion, reduced sync). | Checkbox | Off | Maximum GPU throughput |
 | **Internal flow layer** | Polygon layer defining internal source/sink flow regions. | Layer combo | (none) | Internal source/sink flows |
 | **Internal flow field** | Field name in the internal flow layer containing discharge values. Positive = source, negative = sink. | Text | q_cms | Internal flow configuration |
@@ -542,6 +551,11 @@ The **Parameters** tab is the third step in the workflow. It contains five pages
 | **Culvert coupling mode** | Face-based flux coupling distributes culvert discharge across the 2D cell face. | Checkbox | Off | Better spatial resolution for culverts |
 | **Enable redistribution override** | Read per-structure redistribution parameters from GeoPackage. | Checkbox | On | Per-structure redistribution control |
 | **Bridge stacked coupling mode** | Spatial redistribution method for bridge stacked coupling. | `Phase 3 spatial`, `Legacy scalar weighting` | Phase 3 | Bridge structures |
+
+> **⚠ Bridge Stacked Coupling — Not Production Ready.** The bridge stacked
+> mesh feature is experimental and does not produce correct results. Do not
+> use bridge structures in production simulations. Use standard culvert or
+> weir structures instead.
 | **Drainage equation set** | Governing equations for 1D drainage network flow. | `EGL (0)`, `Diffusion wave (1)`, `Dynamic Saint-Venant (2)` | EGL | Drainage coupling |
 | **Drainage GPU method** | GPU execution strategy for drainage coupling. | `Per-step (step)`, `Native iterative (iterative)` | step | Drainage coupling |
 | **Drainage substeps** | Number of drainage substeps per SWE2D timestep. | 1–256 | 1 | Stiff drainage systems |
@@ -745,7 +759,77 @@ Open the **Model GeoPackage Explorer** from the Layers tab → Utilities page to
 
 ---
 
-## 10. References
+## 10. Layer Styles (QML)
+
+SWE2D automatically applies styled layer definitions (QML) to every
+GeoPackage layer when it is loaded. The styles configure editor widgets,
+field aliases, constraints, and default values — not visual symbology.
+
+### How Styles Are Applied
+
+1. When a **new model GPKG is created**, all QML files from the `QML/`
+   directory are embedded into the GPKG's `layer_styles` table.
+2. When a **model GPKG is loaded**, each layer gets its QML style applied
+   from the embedded `layer_styles` table.
+3. For **topology template layers** (created fresh, not from GPKG), QML
+   is loaded directly from the `QML/` directory on disk.
+
+### Customizing Styles
+
+You can customize layer styles in two ways:
+
+#### Option 1: Save to the GeoPackage (recommended)
+
+1. In QGIS, right-click the layer → **Properties → Symbology**
+2. Make your changes (colors, labels, rendering order, etc.)
+3. Click **Apply**, then **OK**
+4. Right-click the layer → **Properties → Styles → Save Style**
+5. Choose **In GeoPackage (database)** and select the `default` style
+6. Click **Save**
+
+The style is now embedded in the GPKG and will be applied every time the
+layer is loaded from this GPKG.
+
+#### Option 2: Save as a QML file
+
+1. In QGIS, right-click the layer → **Properties → Styles → Save Style**
+2. Choose **In QML file**
+3. Save to the `QML/` directory inside your HYDRA plugin installation:
+   ```
+   <plugin_dir>/QML/<layer_name>.qml
+   ```
+4. The plugin will use your modified QML the next time a GPKG is created
+   or a topology template layer is loaded.
+
+> **Note:** QML files in the `QML/` directory are the source of truth for
+> new GPKG creation. If you save a custom style only to the GPKG (Option 1),
+> it will not carry over to new GPKGs. For permanent style changes, use
+> Option 2.
+
+### Available QML Files
+
+| File | Layer |
+|------|-------|
+| `swe2d_bc_lines.qml` | Boundary condition lines |
+| `swe2d_cn_zones.qml` | CN zones |
+| `swe2d_drainage_inlets.qml` | Drainage inlets |
+| `swe2d_drainage_links.qml` | Drainage links |
+| `swe2d_drainage_node_inlets.qml` | Drainage node-inlets |
+| `swe2d_drainage_nodes.qml` | Drainage nodes |
+| `swe2d_hydrographs.qml` | Hydrographs |
+| `swe2d_hyetographs.qml` | Hyetographs |
+| `swe2d_manning_zones.qml` | Manning's n zones |
+| `swe2d_rain_gages.qml` | Rain gages |
+| `swe2d_sample_lines.qml` | Sample lines |
+| `swe2d_storm_areas.qml` | Storm areas |
+| `swe2d_structures.qml` | Structures |
+| `swe2d_topo_arcs.qml` | Topology arcs |
+| `swe2d_topo_constraints.qml` | Topology constraints |
+| `swe2d_topo_nodes.qml` | Topology nodes |
+| `swe2d_topo_quad_edges.qml` | Topology quad edges |
+| `swe2d_topo_regions.qml` | Topology regions |
+
+## 11. References
 
 - Toro, E. F. *Riemann Solvers and Numerical Methods for Fluid Dynamics*. Springer.
 - FHWA. *Hydraulic Design of Highway Culverts* (HDS-5). FHWA-HIF-05-012.
@@ -754,6 +838,10 @@ Open the **Model GeoPackage Explorer** from the Layers tab → Utilities page to
 - HYDRA GPU Architecture: [docs/SWE2D_GPU_ARCHITECTURE_REPORT.md](SWE2D_GPU_ARCHITECTURE_REPORT.md)
 - Godunov FVM Implementation: [docs/GODUNOV_2D_GPU_IMPLEMENTATION_GUIDE.md](GODUNOV_2D_GPU_IMPLEMENTATION_GUIDE.md)
 - Gmsh Meshing Guide: [docs/guides/GMSH_MESHING_GUIDE.md](GMSH_MESHING_GUIDE.md)
+- Results Path Guide: [docs/guides/RESULTS_PATH_GUIDE.md](RESULTS_PATH_GUIDE.md)
+- GeoPackage Explorer Guide: [docs/guides/GPKG_EXPLORER_GUIDE.md](GPKG_EXPLORER_GUIDE.md)
+- Drainage Solver Mode Guide: [docs/guides/DRAINAGE_SOLVER_MODE_GUIDE.md](DRAINAGE_SOLVER_MODE_GUIDE.md)
+- Rainfall CN Guide: [docs/guides/RAINFALL_CN_GUIDE.md](RAINFALL_CN_GUIDE.md)
 
 ---
 

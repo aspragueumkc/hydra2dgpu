@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+"""QGIS adapter for extracting boundary-condition data from GeoPackage layers."""
+
 import logging
 import math
 from typing import Callable, Dict, Iterable, Optional, Tuple

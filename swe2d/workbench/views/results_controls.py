@@ -227,6 +227,11 @@ class ResultsToolbox(QtWidgets.QWidget):
             # Also uncheck auto contrast so the manual values take effect
             self.auto_contrast_chk.setChecked(False)
 
+    def _on_field_changed(self, index: int) -> None:
+        """Reset color auto-contrast when user switches the rendered field."""
+        _ = index
+        self.auto_contrast_chk.setChecked(True)
+
     def _populate_overlay_combos(self) -> None:
         """Fill field, colormap, WSE render, resolution, and streamline combos with defaults."""
         for combo, items in [
@@ -250,6 +255,9 @@ class ResultsToolbox(QtWidgets.QWidget):
         self.wse_render_combo.addItem("Raw (cell-centered)", "cell")
         self.wse_render_combo.addItem("Smoothed (nodal eta)", "nodal")
         self.wse_render_combo.setCurrentIndex(0)
+
+        # When user changes the field, reset color override to auto-range
+        self.field_combo.currentIndexChanged.connect(self._on_field_changed)
 
         self.res_combo.clear()
         for label, key in [

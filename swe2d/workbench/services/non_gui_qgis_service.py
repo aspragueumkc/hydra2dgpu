@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+"""QGIS service helpers accessible without a visible dialog (headless/batch)."""
+
 from typing import Optional
 
 import numpy as np

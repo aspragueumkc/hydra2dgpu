@@ -366,6 +366,30 @@ class RunController:
                 data._run_records[0].label = f"Live: {run_id}"
             run_wallclock_start = datetime.datetime.now().replace(microsecond=0).isoformat(sep=" ")
 
+            # Save simulation configuration to GPKG
+            try:
+                _cfg_path = str(view._current_line_results_storage_path() or "")
+                if _cfg_path:
+                    _cfg_mesh_name = str(getattr(view, "_mesh_data", {}).get("mesh_name", "") or "")
+                    from swe2d.workbench.bridges.project_settings_bridge import collect_workbench_widget_state
+                    from qgis.PyQt import QtWidgets as _QtWidgets
+                    _cfg_widgets = collect_workbench_widget_state(
+                        ui=view,
+                        widget_attrs=list(view.collect_run_widget_params().keys()),
+                        qtwidgets_module=_QtWidgets,
+                    )
+                    from swe2d.services.gpkg_persistence_service import persist_simulation_config
+                    persist_simulation_config(
+                        gpkg_path=_cfg_path,
+                        config_id=str(run_id),
+                        mesh_name=_cfg_mesh_name,
+                        run_duration_s=float(run_duration_s),
+                        widget_state=_cfg_widgets,
+                        log_fn=log_fn,
+                    )
+            except Exception:
+                logger.warning("Failed to save simulation config", exc_info=True)
+
             dynamic_bc = bool(np.any((bc_tp == _BC_TS_FLOW) | (bc_tp == _BC_TS_STAGE)) or edge_hydrographs)
             if dynamic_bc:
                 log_fn("Timeseries BC mode active (flow/stage hydrographs).")
@@ -551,6 +575,44 @@ class RunController:
                     log_fn("CUDA graph replay fallback at solver init succeeded.")
                 else:
                     raise
+
+            # Reorder _mesh_data.cell_nodes to RCMK (solver) order so that
+            # all downstream consumers (overlay, viewer, GPKG persistence) use
+            # the same cell ordering as the solver and the baked BLOBs.
+            # Results are never computed before this point, so there is no
+            # risk of misaligning already-generated data.
+            cp = getattr(backend, "_cell_perm", None)
+            if cp is not None and cp.size > 0 and mesh_data is not None:
+                cn = mesh_data.get("cell_nodes")
+                if cn is not None and cn.size > 0:
+                    n_cells_mesh = cn.size // 3 if cn.ndim == 1 else cn.shape[0]
+                    if n_cells_mesh == cp.size:
+                        if cn.ndim == 1:
+                            reshaped = cn.reshape(-1, 3)
+                            mesh_data["cell_nodes"] = reshaped[cp].ravel()
+                        else:
+                            mesh_data["cell_nodes"] = cn[cp]
+                        # Also reorder cell_face_offsets/nodes if present
+                        cfo = mesh_data.get("cell_face_offsets")
+                        cfn = mesh_data.get("cell_face_nodes")
+                        if cfo is not None and cfn is not None:
+                            old_offsets = cfo.copy()
+                            new_offsets = np.zeros_like(cfo)
+                            new_offsets[0] = old_offsets[0]
+                            for ci in range(n_cells_mesh):
+                                orig_ci = int(cp[ci])
+                                s = int(old_offsets[orig_ci])
+                                e = int(old_offsets[orig_ci + 1])
+                                new_offsets[ci + 1] = new_offsets[ci] + (e - s)
+                            cfn_new = np.empty(int(new_offsets[-1]), dtype=np.int32)
+                            for ci in range(n_cells_mesh):
+                                orig_ci = int(cp[ci])
+                                s = int(old_offsets[orig_ci])
+                                e = int(old_offsets[orig_ci + 1])
+                                ds = int(new_offsets[ci])
+                                cfn_new[ds:ds + (e - s)] = cfn[s:e]
+                            mesh_data["cell_face_offsets"] = new_offsets
+                            mesh_data["cell_face_nodes"] = cfn_new
 
             # Sync RCMK inverse permutation from backend to coupling controller.
             # The backend stores _inv_cell_perm after build_mesh (rebuilt above
@@ -783,6 +845,24 @@ class RunController:
             runtime_step_executor = SWE2DRuntimeStepExecutor()
             runtime_reporter = SWE2DRuntimeReporter()
             self._active_reporter = runtime_reporter
+            # Wire post-readback UI sync: when device snapshots arrive on the solver
+            # thread, sync them to the temporal dock, overlay, and plots.
+            def _on_snapshot_readback() -> None:
+                """Called by reporter after device snapshots are read to host."""
+                try:
+                    rd = getattr(view, "_results_data", None)
+                    if rd is not None:
+                        temporal = getattr(view, "_temporal_dock", None)
+                        if temporal is not None:
+                            temporal.set_data(rd)
+                        view._sync_high_perf_overlay_data()
+                        live_ts = rd.get_live_snapshot_timesteps()
+                        if live_ts:
+                            view._update_high_perf_overlay_time(float(live_ts[-1][0]))
+                        view._refresh_plot()
+                except Exception:
+                    logger.warning("Snapshot readback UI sync failed", exc_info=True)
+            runtime_reporter.set_post_readback_callback(_on_snapshot_readback)
 
             log_fn("The numbers they go UP! They go UP UP UP!!!") # FVM Loop start meme
 
@@ -864,6 +944,13 @@ class RunController:
                 except Exception as exc:
                     log_fn(f"[SnapReadback] Device snapshot readback failed: {exc}")
             h, hu, hv = backend.get_state()
+            # get_state() returns original order. Convert to RCMK to match
+            # device snapshot ordering (baked BLOB spec: everything in solver order).
+            if hasattr(backend, "_cell_perm") and backend._cell_perm is not None and backend._cell_perm.size > 0:
+                cp = backend._cell_perm
+                h  = h[cp]
+                hu = hu[cp]
+                hv = hv[cp]
             self._active_reporter = None
             sim_time_diff = float(t_accum) - float(run_duration_s)
             log_fn(
@@ -1053,32 +1140,28 @@ class RunController:
 
     # ── Snapshot orchestration ─────────────────────────────────────────
     def on_snapshot(self) -> None:
-        """Read accumulated device snapshots to host and sync to UI widgets.
+        """Fetch accumulated device results to host and sync to UI.
 
-        Called when the user clicks Take Snapshot during a live run.
+        Called when the user clicks "Fetch Device Results" during a live run.
         Triggers a D2H readback of the device snapshot ring buffer on the
-        next solver step, then syncs to the temporal dock slider, high-perf
-        overlay, and all plot widgets so the results are immediately viewable.
+        next solver step.  The reporter's post-readback callback computes
+        line/coupling metrics from the read-back data and syncs to the
+        temporal dock slider, high-perf overlay, and plots.
         """
         view = self._view
-        results_data = getattr(view, "_results_data", None)
 
-        # Request device-side readback via the active runtime reporter.
-        # The actual D2H transfer happens on the solver thread in process_step.
         reporter = getattr(self, "_active_reporter", None)
         if reporter is not None and hasattr(reporter, "request_snapshot_readback"):
             reporter.request_snapshot_readback()
-            view._log("Snapshot readback requested — will sync when available.")
+            view._log("Device fetch requested.")
             return
 
-        # Fallback: if no active run, check results_data for already-loaded snapshots.
+        # No active run — show existing snapshots if any.
+        results_data = getattr(view, "_results_data", None)
         _snapshots = results_data.get_live_snapshot_timesteps() if results_data else []
         if view._mesh_data is None and not _snapshots:
-            view._log("No snapshot data available — run the model with an output interval set first.")
+            view._log("No results data available — run the model with an output interval set first.")
             return
-
-        # Sync live snapshot timesteps into the temporal dock slider,
-        # overlay, and plots so the new snapshots are visible immediately.
         if results_data is not None:
             try:
                 temporal = getattr(view, "_temporal_dock", None)
@@ -1179,35 +1262,140 @@ class RunController:
         QtWidgets.QMessageBox.information(view, "Preview Overrides", summary)
 
     # ── Load run settings from results GeoPackage ─────────────────────
-    def on_load_run_settings_from_results(self) -> None:
-        """Open the run-log viewer for the active results GeoPackage.
+    def on_load_simulation_config(self) -> None:
+        """Open a config picker dialog and restore widget state from a saved config.
 
-        Aborts (with log) when the GeoPackage is missing or contains no
-        saved run logs.
+        Reads ``swe2d_simulation_configs`` from the active results GeoPackage,
+        shows a picker dialog, then applies the selected config's widget state.
         """
         view = self._view
         db_path = str(view._current_line_results_storage_path() or "")
         if not db_path or not os.path.exists(db_path):
             view._log(
-                "Load run inputs skipped: results GeoPackage not found."
+                "Load config skipped: results GeoPackage not found."
             )
             return
-        records = view._load_run_logs_from_geopackage(db_path)
-        if not records:
-            view._log(
-                "Load run inputs skipped: no saved run logs found in selected GeoPackage."
-            )
-            return
-        from swe2d.workbench.dialogs.run_log_viewer_dialog import SWE2DRunLogViewerDialog
 
-        dlg = SWE2DRunLogViewerDialog(
-            records=records,
-            run_id=view._run_log_latest_run_id,
+        from swe2d.services.gpkg_persistence_service import load_simulation_configs
+        configs = load_simulation_configs(db_path, log_fn=view._log)
+        if not configs:
+            view._log(
+                "Load config skipped: no saved simulation configs found "
+                "in the selected GeoPackage."
+            )
+            return
+
+        from swe2d.workbench.dialogs.simulation_config_dialog import SWE2DSimulationConfigDialog
+        dlg = SWE2DSimulationConfigDialog(
+            configs=configs,
             db_path=db_path,
             parent=view,
-            apply_run_settings_callback=view._apply_run_log_metadata_to_ui,
+            apply_callback=view._apply_run_log_metadata_to_ui,
         )
-        dlg.exec()
+        from qgis.PyQt import QtWidgets
+        result = dlg.exec()
+        if result != QtWidgets.QDialog.Accepted:
+            return
+        # After applying widget state, load the associated mesh if available
+        selected = getattr(dlg, "_selected_config", None)
+        if selected is None:
+            return
+        mesh_name = str(selected.get("mesh_name", "") or "")
+        if not mesh_name:
+            return
+        try:
+            from hydra_swe2d import swe2d_deserialize_mesh
+            from swe2d.services.gpkg_persistence_service import load_baked_mesh
+            blob = load_baked_mesh(db_path, mesh_name)
+            if blob is None:
+                view._log(f"Config references mesh '{mesh_name}' but mesh BLOB not found in GPKG.")
+                return
+            pm = swe2d_deserialize_mesh(blob)
+            # Per baked BLOB spec: mesh stays in RCMK order.
+            mesh_data = {
+                "node_x": np.asarray(pm.node_x, dtype=np.float64),
+                "node_y": np.asarray(pm.node_y, dtype=np.float64),
+                "node_z": np.asarray(pm.node_z, dtype=np.float64),
+                "cell_nodes": np.asarray(pm.cell_face_nodes, dtype=np.int32) if pm.cell_face_nodes is not None else np.empty(0, dtype=np.int32),
+            }
+            cfo = pm.cell_face_offsets
+            if cfo is not None:
+                mesh_data["cell_face_offsets"] = np.asarray(cfo, dtype=np.int32)
+            cfn = pm.cell_face_nodes
+            if cfn is not None:
+                mesh_data["cell_face_nodes"] = np.asarray(cfn, dtype=np.int32)
+            if mesh_data.get("node_x") is not None:
+                view._mesh_data = mesh_data
+                view._reset_runtime_snapshot_overlay_cache("mesh loaded from config")
+                view._result_data = None
+                try:
+                    _viewer = getattr(view, "_studio_viewer", None)
+                    if _viewer is not None:
+                        _viewer.tab_widget.setCurrentWidget(
+                            _viewer.plot_widgets.get("Mesh"))
+                except RuntimeError:
+                    pass
+                try:
+                    view._refresh_plot()
+                except RuntimeError:
+                    pass
+                view._log(f"Mesh '{mesh_name}' loaded from config ({mesh_data['node_x'].size} nodes)")
+        except Exception as exc:
+            view._log(f"[ERROR] Failed to load mesh from config: {exc}")
+
+    def on_save_simulation_config(self) -> None:
+        """Save the current widget configuration to the active GeoPackage.
+
+        Prompts for a descriptive name; uses timestamp as fallback.
+        """
+        view = self._view
+        db_path = str(view._current_line_results_storage_path() or "")
+        if not db_path or not os.path.exists(os.path.dirname(os.path.abspath(db_path))):
+            view._log(
+                "Save config skipped: no valid GeoPackage path configured. "
+                "Set a results GPKG path first."
+            )
+            return
+
+        from qgis.PyQt import QtWidgets as _QtWidgets
+
+        # Prompt for a config name
+        name, ok = _QtWidgets.QInputDialog.getText(
+            view, "Save Config", "Configuration name:",
+            text="",
+        )
+        if not ok:
+            return
+        config_name = str(name).strip()
+        if not config_name:
+            config_name = datetime.datetime.now().astimezone().strftime("swe2d_%Y%m%dT%H%M%S%z")
+
+        from swe2d.workbench.bridges.project_settings_bridge import collect_workbench_widget_state
+        from swe2d.services.gpkg_persistence_service import persist_simulation_config
+
+        mesh_name = str(getattr(view, "_mesh_data", {}).get("mesh_name", "") or "")
+        widget_attrs = list(view.collect_run_widget_params().keys())
+        widget_state = collect_workbench_widget_state(
+            ui=view,
+            widget_attrs=widget_attrs,
+            qtwidgets_module=_QtWidgets,
+        )
+
+        # Get run duration from the UI spin box
+        try:
+            run_dur = float(view._model_tab_view.run_duration_spin.value() * 3600.0)
+        except Exception:
+            run_dur = 0.0
+
+        persist_simulation_config(
+            gpkg_path=db_path,
+            config_id=config_name,
+            mesh_name=mesh_name,
+            run_duration_s=run_dur,
+            widget_state=widget_state,
+            log_fn=view._log,
+        )
+        view._log(f"Configuration saved as '{config_name}'.")
 
     def on_preview_coupling(self) -> None:
         """Compute and display a coupling configuration preview.

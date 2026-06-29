@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+"""Runtime internal-flow source-term computation at a given simulation time."""
+
 from typing import Callable, Dict, Optional, Tuple
 
 import numpy as np
@@ -10,22 +12,7 @@ def internal_flow_source_cms_at_time(
     t_sec: float,
     interp_hydrograph: Callable[[Tuple[np.ndarray, np.ndarray], float], float],
 ) -> Optional[np.ndarray]:
-    """
-    internal flow source cms at time.
-
-    Parameters
-    ----------
-    forcing : Optional[Dict[str, object]]
-        Description of forcing.
-    t_sec : float
-        Description of t_sec.
-    interp_hydrograph : Callable[[Tuple[np.ndarray, np.ndarray], float], float]
-        Description of interp_hydrograph.
-
-    Returns
-    -------
-    Optional[np.ndarray]
-    """
+    """Return per-cell internal flow source rates [m³/s] at simulation time *t_sec*."""
     if forcing is None:
         return None
     base_q = forcing.get("base_q_cms")

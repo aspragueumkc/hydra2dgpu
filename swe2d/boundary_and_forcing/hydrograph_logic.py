@@ -1,6 +1,8 @@
 from __future__ import annotations
 import logging
 
+"""Hydrograph text parsing and time-series construction from GeoPackage features."""
+
 logger = logging.getLogger(__name__)
 
 from typing import Callable, List, Optional, Tuple
@@ -9,18 +11,7 @@ import numpy as np
 
 
 def parse_time_hours(token: str) -> float:
-    """
-    parse time hours.
-
-    Parameters
-    ----------
-    token : str
-        Description of token.
-
-    Returns
-    -------
-    float
-    """
+    """Parse a time token (decimal hours or HH:MM:SS) to hours as a float."""
     t = str(token).strip()
     if not t:
         raise ValueError("empty time token")

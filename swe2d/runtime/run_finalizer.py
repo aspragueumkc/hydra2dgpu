@@ -24,6 +24,8 @@ from swe2d.services.gpkg_persistence_service import (
 
 
 class RunFinalizationView(Protocol):
+    """View protocol for run finalization — implemented by FinalizationAdapter."""
+
     def log_message(self, msg: str) -> None: ...
     def get_line_results_storage_path(self) -> str: ...
     def sync_overlay_data(self) -> None: ...
@@ -85,7 +87,7 @@ class SWE2DRunFinalizer:
         mesh_name: str = "",
         max_tracking: Optional[Dict[str, np.ndarray]] = None,
     ) -> None:
-        """finalize and persist."""
+        """Compute mass-balance summary, persist results to GeoPackage, and refresh UI."""
         h_end_model = np.asarray(h, dtype=np.float64).ravel()
         n_store_end = min(int(n_area), int(h_end_model.size))
         storage_end_model = float(np.sum(h_end_model[:n_store_end] * area_model[:n_store_end])) if n_store_end > 0 else 0.0

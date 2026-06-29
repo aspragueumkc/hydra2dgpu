@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+"""QGIS adapter for building internal-flow forcing from QGIS polygon/line layers."""
+
 from typing import Callable, Dict, Iterable, Optional, Tuple
 
 import numpy as np

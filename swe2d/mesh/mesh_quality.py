@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+"""Mesh quality metrics: aspect ratio, non-orthogonality, skewness, and minimum angle."""
+
 from typing import Dict, List, Optional, Sequence, Tuple
 
 import numpy as np

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+"""Mesh data models for the conceptual-to-mesh generation pipeline."""
+
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -8,6 +10,7 @@ import numpy as np
 
 @dataclass
 class ConceptualNode:
+    """A 2D point in the conceptual mesh topology."""
     node_id: int
     x: float
     y: float
@@ -15,6 +18,7 @@ class ConceptualNode:
 
 @dataclass
 class ConceptualArc:
+    """A polyline arc connecting two ConceptualNodes, bounding a region."""
     arc_id: int
     node0: int = -1
     node1: int = -1
@@ -29,6 +33,7 @@ class ConceptualArc:
 
 @dataclass
 class ConceptualRegion:
+    """A closed polygon region with mesh sizing and cell-type parameters."""
     region_id: int
     ring_xy: List[Tuple[float, float]]
     default_size: float
@@ -39,6 +44,7 @@ class ConceptualRegion:
 
 @dataclass
 class CellConstraint:
+    """A refinement constraint polygon enforcing a target cell size and type."""
     constraint_id: int
     ring_xy: List[Tuple[float, float]]
     target_size: float
@@ -47,6 +53,7 @@ class CellConstraint:
 
 @dataclass
 class QuadEdgeControl:
+    """Edge-aligned quad-layer control for structured quadrilateral regions."""
     region_id: int
     edge_id: int
     points_xy: List[Tuple[float, float]]
@@ -58,6 +65,7 @@ class QuadEdgeControl:
 
 @dataclass
 class ConceptualModel:
+    """Complete conceptual mesh model: nodes, arcs, regions, constraints, and quad-edge controls."""
     nodes: List[ConceptualNode]
     arcs: List[ConceptualArc]
     regions: List[ConceptualRegion]
@@ -67,6 +75,7 @@ class ConceptualModel:
 
 @dataclass
 class MeshResult:
+    """Output of a mesh generation backend: nodes, cells, and quality metrics."""
     node_x: np.ndarray
     node_y: np.ndarray
     node_z: np.ndarray
@@ -84,6 +93,7 @@ _CELL_TYPES = {"triangular", "quadrilateral", "cartesian", "channel_generator", 
 
 @dataclass
 class _GmshQualityConfig:
+    """Gmsh-specific quality thresholds and iterative retry parameters."""
     enabled: bool
     strict: bool
     min_angle_deg: float
@@ -103,21 +113,11 @@ class _GmshQualityConfig:
 
 
 class MeshingBackend:
+    """Abstract base class for mesh generation backends."""
     name = "base"
 
     def generate(self, model: "ConceptualModel") -> "MeshResult":
-        """
-        generate.
-
-        Parameters
-        ----------
-        model : 'ConceptualModel'
-            Description of model.
-
-        Returns
-        -------
-        'MeshResult'
-        """
+        """Generate a mesh from a conceptual model. Subclasses must override."""
         raise NotImplementedError()
 
 

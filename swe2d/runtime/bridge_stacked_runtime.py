@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+"""Bridge-stacked coupling runtime: source-weight scaling and phase3 redistribution."""
+
 from typing import Callable, Dict, List, Optional
 
 import numpy as np

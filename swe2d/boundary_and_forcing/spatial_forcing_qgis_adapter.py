@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+"""QGIS adapter for spatially-distributed forcing (Manning, CN, rain gages)."""
+
 import logging
 from typing import Callable, Dict, List, Optional, Tuple
 

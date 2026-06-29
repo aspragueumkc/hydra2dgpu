@@ -19,6 +19,7 @@ from swe2d.results.queries import discover_line_result_runs
 
 @dataclasses.dataclass
 class RunRecord:
+    """Metadata for a single simulation run loaded from a results GeoPackage."""
     run_id: str
     gpkg_path: str
     color: Tuple[int, int, int]
@@ -27,12 +28,12 @@ class RunRecord:
     has_profile: bool = False
 
     def display_label(self) -> str:
-        """display label."""
+        """Return the user-facing label (falls back to run_id if empty)."""
         return self.label or self.run_id
 
     @property
     def key(self) -> str:
-        """key."""
+        """Unique composite key: gpkg_path::run_id."""
         return f"{self.gpkg_path}::{self.run_id}"
 
 

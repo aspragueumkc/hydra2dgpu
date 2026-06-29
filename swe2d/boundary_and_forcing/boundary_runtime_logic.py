@@ -1,23 +1,14 @@
 from __future__ import annotations
 
+"""Runtime boundary-edge extraction and BC array collection from mesh data."""
+
 from typing import Callable, Dict, Optional, Tuple
 
 import numpy as np
 
 
 def mesh_boundary_edges(mesh_data: Optional[Dict[str, np.ndarray]]) -> Tuple[np.ndarray, np.ndarray]:
-    """
-    mesh boundary edges.
-
-    Parameters
-    ----------
-    mesh_data : Optional[Dict[str, np.ndarray]]
-        Description of mesh_data.
-
-    Returns
-    -------
-    Tuple[np.ndarray, np.ndarray]
-    """
+    """Return (node_i, node_j) arrays identifying mesh boundary edges."""
     if mesh_data is None:
         return np.empty(0, dtype=np.int32), np.empty(0, dtype=np.int32)
 

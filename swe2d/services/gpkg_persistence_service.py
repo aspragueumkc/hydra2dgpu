@@ -13,6 +13,7 @@ NO SILENT FALLBACKS:
 from __future__ import annotations
 
 import datetime
+import json
 import logging
 import os
 import sqlite3
@@ -278,6 +279,128 @@ def _ensure_ogc_gpkg_tables(conn: sqlite3.Connection, crs_wkt: str = "") -> None
                 "last_change, srs_id) VALUES(?, 'attributes', ?, ?, 4326)",
                 (tbl, tbl, datetime.datetime.now(datetime.timezone.utc).isoformat()),
             )
+
+    # ── Simulation configs table ─────────────────────────────────────────
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS swe2d_simulation_configs (
+            config_id       TEXT PRIMARY KEY,
+            mesh_name       TEXT,
+            created_utc     TEXT NOT NULL,
+            run_duration_s  REAL DEFAULT 0.0,
+            description     TEXT DEFAULT '',
+            widget_state    TEXT NOT NULL)
+    """)
+
+
+def persist_simulation_config(
+    gpkg_path: str,
+    config_id: str,
+    mesh_name: str,
+    run_duration_s: float,
+    widget_state: Dict[str, object],
+    description: str = "",
+    log_fn: Optional[Callable[[str], None]] = None,
+) -> None:
+    """Save a simulation configuration to the GeoPackage.
+
+    Parameters
+    ----------
+    gpkg_path : str
+        Path to the GeoPackage file.
+    config_id : str
+        Unique config identifier (e.g. f"{mesh_name}_{timestamp}").
+    mesh_name : str
+        Name of the associated mesh.
+    run_duration_s : float
+        Simulation run duration in seconds.
+    widget_state : dict
+        Dict of widget parameter values (from collect_run_widget_params()).
+    description : str, optional
+        Human-readable description.
+    log_fn : callable, optional
+        Logging callback.
+    """
+    _log = log_fn or (lambda _: None)
+    try:
+        conn = sqlite3.connect(gpkg_path)
+        _ensure_ogc_gpkg_tables(conn)
+        cur = conn.cursor()
+        cur.execute(
+            "INSERT OR REPLACE INTO swe2d_simulation_configs "
+            "(config_id, mesh_name, created_utc, run_duration_s, description, widget_state) "
+            "VALUES (?, ?, ?, ?, ?, ?)",
+            (
+                str(config_id),
+                str(mesh_name or ""),
+                datetime.datetime.now(datetime.timezone.utc).isoformat(),
+                float(run_duration_s),
+                str(description),
+                json.dumps(widget_state, default=str),
+            ),
+        )
+        conn.commit()
+        conn.close()
+        _log(f"Simulation config '{config_id}' saved to {gpkg_path}")
+    except Exception as exc:
+        _log(f"[WARNING] Failed to persist simulation config: {exc}")
+
+
+def load_simulation_configs(
+    gpkg_path: str,
+    mesh_name: Optional[str] = None,
+    log_fn: Optional[Callable[[str], None]] = None,
+) -> List[Dict[str, object]]:
+    """Load simulation configurations from a GeoPackage.
+
+    Parameters
+    ----------
+    gpkg_path : str
+        Path to the GeoPackage file.
+    mesh_name : str, optional
+        If given, filter to configs for this mesh only.
+    log_fn : callable, optional
+        Logging callback.
+
+    Returns
+    -------
+    list of dict
+        Each dict has keys: config_id, mesh_name, created_utc, run_duration_s,
+        description, widget_state (parsed from JSON).
+    """
+    _log = log_fn or (lambda _: None)
+    results: List[Dict[str, object]] = []
+    try:
+        conn = sqlite3.connect(gpkg_path)
+        cur = conn.cursor()
+        if mesh_name:
+            cur.execute(
+                "SELECT config_id, mesh_name, created_utc, run_duration_s, description, widget_state "
+                "FROM swe2d_simulation_configs WHERE mesh_name=? ORDER BY created_utc DESC",
+                (mesh_name,),
+            )
+        else:
+            cur.execute(
+                "SELECT config_id, mesh_name, created_utc, run_duration_s, description, widget_state "
+                "FROM swe2d_simulation_configs ORDER BY created_utc DESC"
+            )
+        for row in cur.fetchall():
+            ws = {}
+            try:
+                ws = json.loads(str(row[5] or "{}"))
+            except Exception:
+                pass
+            results.append({
+                "config_id": str(row[0]),
+                "mesh_name": str(row[1]),
+                "created_utc": str(row[2]),
+                "run_duration_s": float(row[3]) if row[3] else 0.0,
+                "description": str(row[4]),
+                "widget_state": ws,
+            })
+        conn.close()
+    except Exception as exc:
+        _log(f"[WARNING] Failed to load simulation configs: {exc}")
+    return results
 
 
 def persist_baked_results(

@@ -131,7 +131,6 @@ si_m3_per_model_volume() -> float                      # SI m³ per model volume
 gravity() -> float                                     # Model units (9.81 or 32.17)
 model_to_ft() -> float                                 # For HDS-5 culverts
 manning_factor() -> float                              # 1.0 (SI) or 1.486 (USC)
-compute_length_factor() -> float                       # Deprecated
 ```
 
 **No tests exist** — this is a critical gap (see §6).
@@ -1097,10 +1096,6 @@ The tab order follows registration order.
 | Manual ``_mkdock`` + ``_attach_host_dock_widget`` per dock | Handled by ``_build_component()`` |
 | Manual ``tabifyDockWidget`` per dock | Handled by ``tab_with`` parameter |
 | ``self._left_tabs.addTab(self._wrap_left_tab_page(...), "Label")`` | ``self._register_left_tab("Label", builder)`` |
-
-**Backward compatibility:** The old ``_studio_docks`` dict is still updated
-by ``_register_component()``, so existing extraction code continues to work
-until fully migrated.
 
 ### 8.8 Architecture Diagram
 

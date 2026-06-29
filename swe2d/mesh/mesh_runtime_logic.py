@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+"""Runtime mesh helpers: cell centroids, areas, bed elevations, and initial state."""
+
 from typing import Callable, Dict, List, Optional, Sequence, Tuple
 
 import numpy as np

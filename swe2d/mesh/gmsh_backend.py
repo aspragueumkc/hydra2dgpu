@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+"""Gmsh-based mesh generation backend: topology-first meshing with iterative quality loop."""
+
 import copy
 import hashlib
 import json

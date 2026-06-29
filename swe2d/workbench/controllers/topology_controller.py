@@ -40,6 +40,8 @@ def _opt_bool(widget, attr: str, default: bool) -> bool:
 
 
 class TopologyController:
+    """MVP controller for topology-layer management and mesh generation."""
+
     def __init__(self, view: TopologyMeshView):
         self._view = view
 

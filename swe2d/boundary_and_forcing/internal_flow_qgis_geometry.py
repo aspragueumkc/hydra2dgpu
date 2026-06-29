@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+"""QGIS geometry-to-cell-index mapping for internal flow forcing polygons."""
+
 from typing import Optional, Tuple
 
 import numpy as np
@@ -14,28 +16,7 @@ def internal_flow_geom_to_indices_weights_qgis(
     qgs_geometry_cls,
     qgs_pointxy_cls,
 ) -> Optional[Tuple[np.ndarray, np.ndarray]]:
-    """
-    internal flow geom to indices weights qgis.
-
-    Parameters
-    ----------
-    geom
-        Description of geom.
-    cx : np.ndarray
-        Description of cx.
-    cy : np.ndarray
-        Description of cy.
-    qgs_wkb_types
-        Description of qgs_wkb_types.
-    qgs_geometry_cls
-        Description of qgs_geometry_cls.
-    qgs_pointxy_cls
-        Description of qgs_pointxy_cls.
-
-    Returns
-    -------
-    Optional[Tuple[np.ndarray, np.ndarray]]
-    """
+    """Map a QGIS geometry to cell-centroid indices and area weights for internal flow."""
     try:
         wkb_type = int(geom.wkbType())
     except Exception:

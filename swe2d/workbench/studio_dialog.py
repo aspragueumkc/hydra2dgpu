@@ -732,6 +732,9 @@ class SWE2DWorkbenchStudioDialog(QtWidgets.QDialog):
                 QtWidgets.QMessageBox.warning(self, "Load Mesh", f"Mesh '{name}' not found.")
                 return
             pm = swe2d_deserialize_mesh(blob)
+            # Per baked BLOB spec (§5.12): mesh geometry stays in solver (RCMK)
+            # order.  Results from load_baked_snapshot are also RCMK — no
+            # permutation needed between mesh and results.
             mesh_data = {
                 "node_x": np.asarray(pm.node_x, dtype=np.float64),
                 "node_y": np.asarray(pm.node_y, dtype=np.float64),
@@ -748,6 +751,19 @@ class SWE2DWorkbenchStudioDialog(QtWidgets.QDialog):
                 QtWidgets.QMessageBox.warning(self, "Load Mesh", f"Mesh '{name}' not found.")
                 return
             self._mesh_data = mesh_data
+            self._reset_runtime_snapshot_overlay_cache("mesh loaded from GPKG")
+            self._result_data = None
+            try:
+                viewer = getattr(self, "_studio_viewer", None)
+                if viewer is not None:
+                    viewer.tab_widget.setCurrentWidget(
+                        viewer.plot_widgets.get("Mesh"))
+            except RuntimeError:
+                pass
+            try:
+                self._refresh_plot()
+            except RuntimeError:
+                pass
             self._log(f"Mesh '{name}' loaded from {os.path.basename(path)} ({mesh_data['node_x'].size} nodes)")
         except Exception as exc:
             QtWidgets.QMessageBox.critical(self, "Load Mesh Error", str(exc))

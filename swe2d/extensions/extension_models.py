@@ -15,6 +15,7 @@ from typing import Dict, List, Optional, Sequence, Tuple
 
 
 class SpatialDiscretization(IntEnum):
+    """Spatial reconstruction scheme for the finite-volume Godunov solver."""
     FV_FIRST_ORDER    = 0
     FV_MUSCL_FAST     = 1
     FV_MUSCL_MINMOD   = 2
@@ -27,6 +28,7 @@ class SpatialDiscretization(IntEnum):
 
 
 class TemporalScheme(IntEnum):
+    """Time-integration method for the solver."""
     EULER_1ST = 1
     SSP_RK2 = 2
     SSP_RK3 = 3
@@ -35,6 +37,7 @@ class TemporalScheme(IntEnum):
 
 
 class TurbulenceModel(IntEnum):
+    """Sub-grid turbulence closure model."""
     NONE = 0
     SMAGORINSKY = 1
     K_EPSILON = 2
@@ -42,6 +45,7 @@ class TurbulenceModel(IntEnum):
 
 
 class BedFrictionModel(IntEnum):
+    """Bed roughness friction formulation."""
     MANNING = 0
     CHEZY = 1
     DARCY_WEISBACH = 2
@@ -49,10 +53,12 @@ class BedFrictionModel(IntEnum):
 
 
 class GodunovSolverMode(IntEnum):
+    """Godunov solver operating mode (GPU-only)."""
     CURRENT_GPU_STEP = 0
 
 
 class SWE2DEquationSet(IntEnum):
+    """Shallow-water equation set variant."""
     HYDROSTATIC_2D = 0
 
 
@@ -75,6 +81,7 @@ class DrainageSolverMode(IntEnum):
 
 @dataclass
 class RainFieldConfig:
+    """Configuration for the rainfall source module."""
     enabled: bool = False
     default_mm_per_hr: float = 0.0
     raster_path: Optional[str] = None
@@ -86,6 +93,7 @@ class RainFieldConfig:
 
 @dataclass
 class RainSourceTermState:
+    """Transient rainfall source-term state (cell-wise rates)."""
     timestep_s: float = 0.0
     cell_rain_rate_m_per_s: Optional[Sequence[float]] = None
     cell_excess_rain_m_per_s: Optional[Sequence[float]] = None
@@ -93,6 +101,7 @@ class RainSourceTermState:
 
 @dataclass
 class DrainageNode:
+    """A node in the 1D drainage pipe network."""
     node_id: str
     x: float
     y: float
@@ -116,6 +125,7 @@ class DrainageNode:
 
 @dataclass
 class DrainageLink:
+    """A link (conduit/pipe/pump/weir/orifice/culvert) connecting two drainage nodes."""
     link_id: str
     from_node_id: str
     to_node_id: str
@@ -140,6 +150,7 @@ class DrainageLink:
 
 @dataclass
 class InletExchange:
+    """2D-surface-to-1D-network inlet exchange coupling object."""
     inlet_id: str
     cell_id: int
     node_id: str
@@ -162,6 +173,7 @@ class InletExchange:
 
 @dataclass
 class InletType:
+    """Reusable inlet geometry template (grate, curb-opening, etc.)."""
     inlet_type_id: str
     name: str = ""
     length: float = 1.0
@@ -174,6 +186,7 @@ class InletType:
 
 @dataclass
 class NodeInletAssignment:
+    """Assigns an InletType template to a specific drainage node."""
     node_id: str
     inlet_type_id: str
     multiplier: float = 1.0
@@ -235,6 +248,7 @@ class PipeEndExchange:
 
 @dataclass
 class PipeNetworkConfig:
+    """Top-level configuration for the 1D drainage pipe network."""
     enabled: bool = False
     nodes: List[DrainageNode] = field(default_factory=list)
     links: List[DrainageLink] = field(default_factory=list)
@@ -296,6 +310,7 @@ class CouplingDiagnostics:
 
 
 class StructureType(IntEnum):
+    """Hydraulic structure type identifier."""
     WEIR = 1
     CULVERT = 2
     GATE = 3
@@ -305,6 +320,7 @@ class StructureType(IntEnum):
 
 @dataclass
 class HydraulicStructure:
+    """A hydraulic structure (weir/culvert/gate/bridge/pump) connecting two 2D cells."""
     structure_id: str
     structure_type: StructureType
     upstream_cell: int
@@ -316,6 +332,7 @@ class HydraulicStructure:
 
 @dataclass
 class HydraulicStructureConfig:
+    """Top-level configuration for hydraulic structures coupling."""
     enabled: bool = False
     structures: List[HydraulicStructure] = field(default_factory=list)
     control_interval_s: float = 1.0
@@ -324,35 +341,13 @@ class HydraulicStructureConfig:
 
 
 def circular_area_from_diameter(diameter_m: float) -> float:
-    """
-    circular area from diameter.
-
-    Parameters
-    ----------
-    diameter_m : float
-        Description of diameter_m.
-
-    Returns
-    -------
-    float
-    """
+    """Return cross-sectional area of a circle from its diameter."""
     d = max(0.0, float(diameter_m))
     return 0.25 * math.pi * d * d
 
 
 def equivalent_circular_diameter_from_area(area_m2: float) -> float:
-    """
-    equivalent circular diameter from area.
-
-    Parameters
-    ----------
-    area_m2 : float
-        Description of area_m2.
-
-    Returns
-    -------
-    float
-    """
+    """Return the diameter of a circle with the given cross-sectional area."""
     a = max(0.0, float(area_m2))
     if a <= 0.0:
         return 0.0
@@ -360,18 +355,7 @@ def equivalent_circular_diameter_from_area(area_m2: float) -> float:
 
 
 def circular_wet_perimeter_full(diameter_m: float) -> float:
-    """
-    circular wet perimeter full.
-
-    Parameters
-    ----------
-    diameter_m : float
-        Description of diameter_m.
-
-    Returns
-    -------
-    float
-    """
+    """Return the wetted perimeter of a full-flowing circular pipe."""
     d = max(0.0, float(diameter_m))
     return math.pi * d
 
@@ -485,6 +469,7 @@ def convert_cell_flows_to_depth_rates(
 
 @dataclass
 class SolverModelOptions:
+    """Aggregate solver model-selection options passed to the native backend."""
     temporal_scheme: TemporalScheme = TemporalScheme.SSP_RK2
     spatial_discretization: SpatialDiscretization = SpatialDiscretization.FV_FIRST_ORDER
     godunov_mode: GodunovSolverMode = GodunovSolverMode.CURRENT_GPU_STEP
@@ -525,13 +510,7 @@ class DrainageCouplingEngine:
         self._outfall_exchange_nodes: set = set()
 
     def initialize(self) -> None:
-        """
-        initialize.
-
-        Returns
-        -------
-        None
-        """
+        """Build node/link indices and initialise transient state."""
         self._node_index = {n.node_id: i for i, n in enumerate(self.cfg.nodes)}
         self._node_area = {
             n.node_id: max(
@@ -557,21 +536,7 @@ class DrainageCouplingEngine:
         return None
 
     def exchange_step(self, dt: float, cell_wse: Sequence[float]) -> Tuple[List[float], List[float]]:
-        # TODO: return (surface_sink_cms_per_cell, surcharge_source_cms_per_cell).
-        """
-        exchange step.
-
-        Parameters
-        ----------
-        dt : float
-            Description of dt.
-        cell_wse : Sequence[float]
-            Description of cell_wse.
-
-        Returns
-        -------
-        Tuple[List[float], List[float]]
-        """
+        """Run one coupling exchange step (skeleton — returns empty arrays)."""
         _ = (dt, cell_wse)
         return [], []
 
@@ -583,21 +548,7 @@ class RainfallSourceEngine:
         self.cfg = cfg
 
     def sample_cell_rain(self, t_seconds: float, n_cells: int) -> List[float]:
-        # TODO: support gauge interpolation, raster time slices, and IDF events.
-        """
-        sample cell rain.
-
-        Parameters
-        ----------
-        t_seconds : float
-            Description of t_seconds.
-        n_cells : int
-            Description of n_cells.
-
-        Returns
-        -------
-        List[float]
-        """
+        """Return per-cell rain rates [m/s] at the given time (skeleton)."""
         _ = t_seconds
         if n_cells <= 0:
             return []

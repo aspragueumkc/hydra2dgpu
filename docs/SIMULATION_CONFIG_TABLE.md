@@ -1,82 +1,61 @@
-# Simulation Configuration Table — Idea Sketch
+# Simulation Configuration Table
 
 **Date:** 2026-06-29
-**Status:** Idea, not implemented
+**Status:** Implemented
 **Motivation:** Avoid re-configuring all UI widgets (BC layers, hyetographs, solver knobs) every time a mesh is loaded. Persist the full run configuration in the GPKG so a mesh + all its inputs can be restored with one click.
 
-## Proposed Table: `swe2d_simulation_configs`
+## Table: `swe2d_simulation_configs`
 
 ```sql
 CREATE TABLE IF NOT EXISTS swe2d_simulation_configs (
     config_id       TEXT PRIMARY KEY,
-    mesh_name       TEXT REFERENCES swe2d_baked_mesh(mesh_name),
+    mesh_name       TEXT,
     created_utc     TEXT NOT NULL,
+    run_duration_s  REAL DEFAULT 0.0,
     description     TEXT DEFAULT '',
-
-    -- Solver parameters
-    h_min           REAL DEFAULT 1e-4,
-    cfl             REAL DEFAULT 0.45,
-    dt_max          REAL DEFAULT 0.2,
-    dt_initial      REAL DEFAULT 0.0,
-    gravity         REAL DEFAULT 32.174,
-    spatial_scheme  INTEGER DEFAULT 1,
-    temporal_scheme INTEGER DEFAULT 2,
-    reconstruction  INTEGER DEFAULT 1,
-    depth_cap       REAL DEFAULT 0.0,
-    momentum_cap_min_speed    REAL DEFAULT 1.0,
-    momentum_cap_celerity_mult REAL DEFAULT 10.0,
-    max_rel_depth_increase    REAL DEFAULT 2.0,
-    shallow_damping_depth     REAL DEFAULT 0.0,
-    source_rate_cap           REAL DEFAULT 0.0,
-    source_depth_step_cap     REAL DEFAULT 0.0,
-    extreme_rain_mode         INTEGER DEFAULT 0,
-    source_imex_split         INTEGER DEFAULT 0,
-    front_flux_damping        REAL DEFAULT 0.0,
-    active_set_hysteresis     INTEGER DEFAULT 0,
-    n_mann         REAL DEFAULT 0.035,
-    k_mann         REAL DEFAULT 1.0,
-    gpu_diag_sync_interval    INTEGER DEFAULT 100,
-
-    -- Boundary conditions
-    default_bc_type INTEGER DEFAULT 0,
-
-    -- Rainfall
-    hyetograph_gpkg   TEXT,
-    hyetograph_table  TEXT,
-    rain_gauge_layer  TEXT,
-    cn_table          TEXT,
-    cn_field          TEXT DEFAULT 'cn',
-    infiltration_method TEXT DEFAULT 'scs_cn',
-
-    -- BC layers (JSON: list of {table, gpkg, type_field, val_field})
-    bc_layers_json TEXT,
-
-    -- Drainage / structures (GPKG paths containing the feature tables)
-    drainage_gpkg     TEXT,
-    structures_gpkg   TEXT,
-
-    -- Results output
-    output_interval_s       REAL DEFAULT 120.0,
-    line_output_interval_s  REAL DEFAULT 120.0,
-    run_duration_s          REAL DEFAULT 10800.0,
-
-    -- Flags
-    save_mesh_results       INTEGER DEFAULT 1,
-    save_line_results       INTEGER DEFAULT 0,
-    save_coupling_results   INTEGER DEFAULT 0,
-    save_run_log            INTEGER DEFAULT 1
-);
+    widget_state    TEXT NOT NULL)   -- JSON blob from collect_workbench_widget_state()
 ```
 
-## How It Would Work
+The `widget_state` column stores the full output of `collect_workbench_widget_state()` as JSON. This dict has the structure:
+```json
+{
+  "version": 1,
+  "widgets": {
+    "cfl_spin": {"type": "QDoubleSpinBox", "value": 0.45},
+    "h_min_spin": {"type": "QDoubleSpinBox", "value": 0.0001},
+    ...
+  }
+}
+```
 
-**Save:** When the user clicks "Run", snapshot the current widget state into a config row. Associate it with the mesh name and any GPKG paths used for inputs.
+This format is produced by `collect_workbench_widget_state()` in `project_settings_bridge.py` and consumed by `restore_workbench_widget_state()`. The individual-column approach was abandoned in favor of the JSON blob because:
+- Widget parameters change frequently (adds/removes)
+- The typed-widget restore infrastructure already existed
+- No schema migration needed when new widgets appear
 
-**Restore:** A "Load Config" button reads the config row, loads the mesh from `swe2d_baked_mesh`, then programmatically sets every widget (combo boxes, spin boxes, checkboxes) from the stored values. BC layers/hyetographs are referenced by GPKG path + table name so the QGIS layer combo can be re-populated.
+## How It Works
 
-**Relationship to existing data:**
-- `swe2d_baked_mesh` already stores the mesh BLOB
-- BC feature tables (`swe2d_bc_lines`, etc.) already exist in the GPKG
-- Hyetograph tables (`swe2d_hyetographs`, `swe2d_rain_gages`) already exist
+**Save:** When the user clicks "Run", the controller calls `collect_workbench_widget_state(ui, widget_attrs, ...)` with all attribute names from `collect_run_widget_params()`, then calls `persist_simulation_config()` to write to the GPKG.
+
+**Restore:** The "Load Model Config from GPKG..." button opens `SWE2DSimulationConfigDialog`, which lists saved configs. Selecting one and clicking "Apply" calls `_apply_run_log_metadata_to_ui()` which delegates to `restore_workbench_widget_state()`.
+
+## Files Changed
+
+| File | Change |
+|------|--------|
+| `swe2d/services/gpkg_persistence_service.py` | Added `persist_simulation_config()`, `load_simulation_configs()`, table DDL in `_ensure_ogc_gpkg_tables()` |
+| `swe2d/workbench/views/model_tab_view.py` | Button text changed to "Load Model Config from GPKG..." |
+| `swe2d/workbench/views/studio_tab_builder.py` | Wiring changed to `on_load_simulation_config` |
+| `swe2d/workbench/controllers/run_controller.py` | Added `on_load_simulation_config()` handler; config saved at run start |
+| `swe2d/workbench/dialogs/simulation_config_dialog.py` | New config picker dialog |
+
+## Relationship to existing data
+
+- `swe2d_baked_mesh` stores the mesh BLOB — referenced by `mesh_name`
+- BC feature tables (`swe2d_bc_lines`, etc.) are referenced by GPKG path (stored in combo widgets)
+- Hyetograph tables (`swe2d_hyetographs`, `swe2d_rain_gages`) are referenced by GPKG path + table name in combo widgets
+- Drainage/structures feature tables are referenced similarly in combo widgets
+
+The widget state captures the *current selection* of all combo boxes, spin boxes, and checkboxes. When restored, it sets those widgets — if the referenced GPKG/layer is available, the combo will find it; if not, the combo will show an empty/default state.
 - Drainage/structures feature tables already exist
 - The config table just points to all of them + stores scalar params

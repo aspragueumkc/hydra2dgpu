@@ -36,6 +36,7 @@ def _meta_float(meta: dict, key: str, default: float) -> float:
 
 @dataclass
 class SWE2DCouplingDiagnostics:
+    """Diagnostics snapshot from one coupling exchange step (model units)."""
     time_s: float = 0.0
     dt_s: float = 0.0
     drainage_max_node_depth: float = 0.0
@@ -48,42 +49,43 @@ class SWE2DCouplingDiagnostics:
 
     @property
     def drainage_max_node_depth_m(self) -> float:
-        """drainage max node depth m."""
+        """Maximum drainage node depth in model units."""
         return self.drainage_max_node_depth
 
     @property
     def drainage_max_link_flow_cms(self) -> float:
-        """drainage max link flow cms."""
+        """Maximum drainage link flow rate in model units."""
         return self.drainage_max_link_flow
 
     @property
     def structure_total_flow_cms(self) -> float:
-        """structure total flow cms."""
+        """Total flow through all structures in model units."""
         return self.structure_total_flow
 
     @property
     def source_sum_mps(self) -> float:
-        """source sum mps."""
+        """Sum of per-cell source rates in model-length/s."""
         return self.source_sum
 
     @property
     def source_min_mps(self) -> float:
-        """source min mps."""
+        """Minimum per-cell source rate."""
         return self.source_min
 
     @property
     def source_max_mps(self) -> float:
-        """source max mps."""
+        """Maximum per-cell source rate."""
         return self.source_max
 
     @property
     def component_sums_mps(self) -> Dict[str, float]:
-        """component sums mps."""
+        """Per-component source sums keyed by component name."""
         return self.component_sums
 
 
 @dataclass
 class SWE2DDrainageSoA:
+    """Structure-of-arrays layout for the 1D drainage network (GPU upload)."""
     node_x: np.ndarray
     node_y: np.ndarray
     node_invert_elev: np.ndarray
@@ -121,6 +123,7 @@ class SWE2DDrainageSoA:
 
 @dataclass
 class SWE2DStructuresSoA:
+    """Structure-of-arrays layout for hydraulic structure parameters (GPU upload)."""
     structure_type: np.ndarray
     upstream_cell: np.ndarray
     downstream_cell: np.ndarray
@@ -178,13 +181,14 @@ class SWE2DCulvertFaceFluxSoA:
 
 @dataclass
 class SWE2DCouplingSoA:
+    """Container for optional drainage and structures SoA data."""
     n_cells: int
     drainage: Optional[SWE2DDrainageSoA] = None
     structures: Optional[SWE2DStructuresSoA] = None
 
 
 def pack_pipe_network_soa(cfg: Optional[PipeNetworkConfig], n_cells: int) -> Optional[SWE2DDrainageSoA]:
-    """Pack pipe network soa."""
+    """Pack a PipeNetworkConfig into flat SoA arrays for GPU consumption."""
     if cfg is None or not cfg.enabled:
         return None
     if not cfg.nodes:
@@ -470,7 +474,7 @@ def pack_coupling_soa(
     cell_bed: Optional[np.ndarray] = None,
     log_fn: Optional[Callable[[str], None]] = None,
 ) -> SWE2DCouplingSoA:
-    """Pack coupling soa."""
+    """Pack both drainage and structures into a single SWE2DCouplingSoA."""
     return SWE2DCouplingSoA(
         n_cells=int(n_cells),
         drainage=pack_pipe_network_soa(pipe_network, n_cells),
@@ -950,7 +954,7 @@ class SWE2DCouplingController:
             )
 
     def _native_cuda_module(self):
-        """native cuda module."""
+        """Load and cache the native CUDA module (returns None if unavailable)."""
         if self._native_cuda_mod_checked:
             return self._native_cuda_mod_cache
         mod = load_swe2d_native_module()
@@ -971,7 +975,7 @@ class SWE2DCouplingController:
         return mod
 
     def _ensure_native_culvert_solver_mode(self, native_mod) -> None:
-        """ensure native culvert solver mode."""
+        """Upload culvert lookup tables and set the GPU culvert solver mode."""
         if self._culvert_solver_mode_applied and self._culvert_solver_mode_applied == self.culvert_solver_mode:
             return
         if not hasattr(native_mod, "swe2d_gpu_set_culvert_solver_mode"):
@@ -1295,7 +1299,7 @@ class SWE2DCouplingController:
         return True
 
     def _ensure_persistent_coupling_preloaded(self, native_mod) -> None:
-        """ensure persistent coupling preloaded."""
+        """Upload structure and cell-area parameters to GPU for the persistent coupling path."""
         if self._persistent_coupling_preloaded:
             return
         if not hasattr(native_mod, "swe2d_gpu_preload_structure_params"):
@@ -1376,7 +1380,7 @@ class SWE2DCouplingController:
         return out
 
     def _ensure_gpu_drainage_state(self) -> None:
-        """ensure gpu drainage state."""
+        """Initialise GPU-resident drainage node-depth and link-flow arrays from Python state."""
         if self.drainage is None:
             return
         cfg = self.drainage.cfg
@@ -1392,7 +1396,7 @@ class SWE2DCouplingController:
             )
 
     def _sync_gpu_state_back_to_drainage(self) -> None:
-        """sync gpu state back to drainage."""
+        """Copy GPU-resident drainage state back to the Python DrainageCouplingEngine."""
         if self.drainage is None or self._gpu_node_depth is None or self._gpu_link_flow is None:
             return
         for i, node in enumerate(self.drainage.cfg.nodes):
@@ -1401,7 +1405,7 @@ class SWE2DCouplingController:
             self.drainage.state.link_flow[link.link_id] = float(self._gpu_link_flow[i])
 
     def _ensure_gpu_drainage_static_args(self) -> Optional[Dict[str, np.ndarray]]:
-        """ensure gpu drainage static args."""
+        """Build and cache the static (geometry) argument dict for GPU drainage calls."""
         if self._drainage_soa is None:
             return None
         if self._gpu_drainage_static_args is not None:
@@ -1443,7 +1447,7 @@ class SWE2DCouplingController:
         return self._gpu_drainage_static_args
 
     def _bridge_structure_arrays(self, bridge_flow_values: np.ndarray) -> Optional[Dict[str, np.ndarray]]:
-        """bridge structure arrays."""
+        """Extract enabled bridge structures into a dict of arrays for stacked coupling."""
         if self.structures is None:
             return None
         bridge_indices = self._enabled_bridge_indices
@@ -1475,11 +1479,11 @@ class SWE2DCouplingController:
 
     @property
     def n_cells(self) -> int:
-        """n cells."""
+        """Number of 2D mesh cells in the domain."""
         return int(self.cell_area.size)
 
     def source_rate_callback(self) -> Callable[[float, float, np.ndarray, np.ndarray, np.ndarray], np.ndarray]:
-        """source rate callback."""
+        """Return the callable expected by the solver backend for source-rate computation."""
         return self.compute_source_rates
 
     def compute_source_rates(
@@ -1503,9 +1507,7 @@ class SWE2DCouplingController:
         return self._compute_source_rates_cuda(mod, t_s, dt_s, hh)
 
     def _compute_source_rates_cuda(self, native_mod, t_s: float, dt_s: float, hh: np.ndarray) -> np.ndarray:
-        # When apply_native_device_sources already wrote combined sources to
-        # d_external_source_mps, skip all GPU work and return None immediately.
-        """compute source rates cuda."""
+        """GPU-path source-rate computation: drainage step + structure coupling + redistribution."""
         if self._coupling_applied_this_timestep:
             self._coupling_applied_this_timestep = False
             self.last_diag = SWE2DCouplingDiagnostics(

@@ -375,12 +375,10 @@ class OverlayController:
             except Exception:
                 t_s = 0.0
 
-        if not self._get_snapshot_timesteps() or (self._data is not None and self._data.data_source == "gpkg"):
+        # Single code path: load_baked_snapshot handles both live and GPKG
+        # data transparently.  No data_source branching.
+        if not self._get_snapshot_timesteps():
             self.load_mesh_snapshot_for_overlay(t_s)
-            self.sync_high_perf_overlay_data()
-            self.refresh_high_perf_canvas_overlay(t_s)
-            return
-
         self.sync_high_perf_overlay_data()
         self.refresh_high_perf_canvas_overlay(t_s)
 

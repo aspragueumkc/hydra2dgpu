@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+"""Pipe-network service: node/link geometry, topology validation, and SWMM import."""
+
 import math
 from typing import Callable, Dict, List, Optional
 

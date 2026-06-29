@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+"""Runtime service for headless/batch simulation execution without GUI."""
+
 import logging
 import os
 import time

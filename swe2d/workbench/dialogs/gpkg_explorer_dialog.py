@@ -117,22 +117,12 @@ class SWE2DModelGeoPackageExplorerDialog(QtWidgets.QDialog):
         t = str(name or "").strip().lower()
         if t == "swe2d_run_logs" or t.endswith("_swe2d_run_logs"):
             return "run_log"
-        if t.startswith("swe2d_line_results") or "_swe2d_line_results" in t:
+        if t.startswith("swe2d_baked_line"):
             return "line_results"
-        if t.startswith("swe2d_coupling_results") or "_swe2d_coupling_results" in t \
-           or t == "swe2d_baked_coupling":
+        if t == "swe2d_baked_coupling":
             return "coupling_results"
-        if t.startswith("swe2d_mesh_results") or t.endswith("_swe2d_mesh_results") \
-           or t in ("swe2d_face_flux_results", "swe2d_face_results", "swe2d_flux_faces") \
-           or t in ("swe2d_baked_results", "swe2d_baked_mesh"):
+        if t in ("swe2d_baked_results", "swe2d_baked_mesh"):
             return "mesh_results"
-        if (
-            t.startswith("swe2d_conservation")
-            or t.startswith("swe2d_boundary_flux_forensics")
-            or t.startswith("swe2d_source_budget_forensics")
-            or "_swe2d_conservation" in t
-            or "_swe2d_boundary_flux_forensics" in t
-            or "_swe2d_source_budget_forensics" in t
         ):
             return "conservation"
         if t.startswith("gpkg_") or t.startswith("sqlite_") or t.startswith("rtree_"):

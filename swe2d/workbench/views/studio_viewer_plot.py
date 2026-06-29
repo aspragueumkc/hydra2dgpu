@@ -165,7 +165,7 @@ class PlotViewWidget(QtWidgets.QWidget):
                 continue
             try:
                 from swe2d.results.db_utils import get_table_contents, get_table_info
-                tbl = "swe2d_line_results_ts"
+                tbl = "swe2d_baked_line_ts"
                 info = get_table_info(gpkg, tbl)
                 if info and "run_id" in info:
                     rows = get_table_contents(gpkg, tbl, limit=200)

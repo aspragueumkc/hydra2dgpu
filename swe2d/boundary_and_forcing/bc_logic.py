@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+"""Boundary-condition interpolation and hydrograph-to-edge mapping logic."""
+
 from typing import Dict, Optional, Tuple
 
 import numpy as np

@@ -165,10 +165,38 @@ class SWE2DResultsData:
         """Bulk-replace the live snapshot list from device readback.
 
         ``timesteps`` is a list of ``(t_s, h, hu, hv)`` tuples as returned
-        by :meth:`SWE2DBackend.read_snapshots`.
+        by :meth:`SWE2DBackend.read_snapshots`.  Also updates the animation
+        timeline and the ``_live_times/_live_h/_live_hu/_live_hv`` arrays
+        so the temporal dock slider and overlay can read the data.
         """
         self._live_snapshot_timesteps = list(timesteps)
         self._data_source = "live"
+        if timesteps:
+            n = len(timesteps)
+            t_arr = np.array([float(t[0]) for t in timesteps], dtype=np.float64)
+            n_cells = np.asarray(timesteps[0][1]).size if n > 0 else 0
+            h_arr  = np.column_stack([np.asarray(t[1], dtype=np.float64) for t in timesteps]) if n > 0 else np.empty((n_cells, 0), dtype=np.float64)
+            hu_arr = np.column_stack([np.asarray(t[2], dtype=np.float64) for t in timesteps]) if n > 0 else np.empty((n_cells, 0), dtype=np.float64)
+            hv_arr = np.column_stack([np.asarray(t[3], dtype=np.float64) for t in timesteps]) if n > 0 else np.empty((n_cells, 0), dtype=np.float64)
+            self._live_times = t_arr
+            self._live_h = h_arr
+            self._live_hu = hu_arr
+            self._live_hv = hv_arr
+            self._all_timesteps = t_arr
+            # Cast to float explicitly, using float(t) for each element
+            float_times = [float(t) for t in t_arr]
+            self._live_anim_count = len(float_times)
+            if hasattr(self, "_anim") and self._anim is not None:
+                self._anim.set_timesteps(t_arr)
+        else:
+            self._live_times = np.empty(0, dtype=np.float64)
+            self._live_h = np.empty((0, 0), dtype=np.float64)
+            self._live_hu = np.empty((0, 0), dtype=np.float64)
+            self._live_hv = np.empty((0, 0), dtype=np.float64)
+            self._all_timesteps = np.empty(0, dtype=np.float64)
+            self._live_anim_count = 0
+            if hasattr(self, "_anim") and self._anim is not None:
+                self._anim.set_timesteps(self._all_timesteps)
 
     def append_line_snapshot(self, row: dict) -> None:
         """Append a line timeseries row, accumulating into _live_line_ts."""

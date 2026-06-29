@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+"""Service for loading and validating pipe-network configuration from GeoPackage layers."""
+
 from typing import Callable, Optional
 
 import numpy as np

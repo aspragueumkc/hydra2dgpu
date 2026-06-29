@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+"""Run-log persistence: write and read run logs to/from GeoPackage/SQLite."""
+
 import datetime
 import json
 import os

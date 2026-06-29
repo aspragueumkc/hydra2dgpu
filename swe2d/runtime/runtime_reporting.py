@@ -19,10 +19,15 @@ class SWE2DRuntimeReporter:
     def __init__(self) -> None:
         self._snapshot_requested = False
         self._snapshot_ready = False
+        self._post_readback_callback: Optional[Callable[[], None]] = None
 
     def request_snapshot_readback(self) -> None:
         """Set flag — next process_step will read accumulated device snapshots to host."""
         self._snapshot_requested = True
+
+    def set_post_readback_callback(self, callback: Optional[Callable[[], None]]) -> None:
+        """Set a callback invoked after a snapshot readback populates results_data."""
+        self._post_readback_callback = callback
 
     def process_step(
         self,
@@ -93,35 +98,14 @@ class SWE2DRuntimeReporter:
             state_ms += (time.perf_counter() - _t_state3) * 1000.0
             next_snap_t += float(output_interval_s)
 
-        # Line and coupling snapshots still need host-side h/hu/hv for metric computation.
-        # These are small diagnostic rows — the overhead is acceptable.
-        if (need_line_snap or need_coupling_snap) and h_s is None:
-            _t_state3 = time.perf_counter()
-            h_s, hu_s, hv_s = backend.get_state()
-            state_ms += (time.perf_counter() - _t_state3) * 1000.0
-
-        if need_line_snap and cell_solver_z is not None and h_s is not None and hu_s is not None and hv_s is not None:
-            rows, profile_rows = sample_line_metrics_callback(
-                sample_map,
-                t_accum,
-                h_s,
-                hu_s,
-                hv_s,
-                cell_solver_z,
-            )
-            if rows:
-                for r in rows:
-                    results_data.append_line_snapshot(r)
-            if profile_rows:
-                for r in profile_rows:
-                    results_data.append_line_profile_snapshot(r)
+        # Line and coupling snapshots: metric computation is deferred to
+        # readback time (finalize or snapshot request).  During the run,
+        # only the mesh state is accumulated on-device in the ring buffer.
+        # When snapshots are read back, line/coupling metrics can be
+        # computed from the read-back h/hu/hv arrays.
+        if need_line_snap:
             next_line_snap_t += float(line_output_interval_s)
-
-        if need_coupling_snap and h_s is not None:
-            c_rows = sample_coupling_object_metrics_callback(coupling_controller, t_accum, h_s)
-            if c_rows:
-                for r in c_rows:
-                    results_data.append_coupling_snapshot(r)
+        if need_coupling_snap:
             next_coupling_snap_t += float(line_output_interval_s)
 
         # ── On-demand snapshot readback ──────────────────────────────────
@@ -150,6 +134,12 @@ class SWE2DRuntimeReporter:
                     if timesteps and results_data is not None:
                         results_data.set_live_snapshot_timesteps(timesteps)
                         self._snapshot_ready = True
+                        # Notify the UI that fresh snapshot data is available
+                        if self._post_readback_callback is not None:
+                            try:
+                                self._post_readback_callback()
+                            except Exception:
+                                logger.warning("Post-readback callback failed", exc_info=True)
             except Exception:
                 logger.warning("Snapshot readback failed", exc_info=True)
 
@@ -183,27 +173,8 @@ class SWE2DRuntimeReporter:
             wse_res_txt = f"{max_wse_res:.6e}" if np.isfinite(max_wse_res) and max_wse_res >= 0.0 else "n/a"
             rain_diag_txt = ""
             rain_arr_diag = np.asarray(rain_src, dtype=np.float64)
-            if (not perf_mode) and np.any(rain_arr_diag > 0.0):
-                _t_state4 = time.perf_counter()
-                h_d, hu_d, hv_d = backend.get_state()
-                state_ms += (time.perf_counter() - _t_state4) * 1000.0
-                h_d = np.asarray(h_d, dtype=np.float64)
-                hu_d = np.asarray(hu_d, dtype=np.float64)
-                hv_d = np.asarray(hv_d, dtype=np.float64)
-                wet_mask = h_d > float(h_min)
-                if np.any(wet_mask):
-                    inv_h = 1.0 / np.maximum(h_d[wet_mask], 1.0e-12)
-                    speed = np.sqrt((hu_d[wet_mask] * inv_h) ** 2 + (hv_d[wet_mask] * inv_h) ** 2)
-                    umax = float(np.max(speed)) if speed.size else 0.0
-                    hmin_wet = float(np.min(h_d[wet_mask]))
-                    hmax = float(np.max(h_d)) if h_d.size else 0.0
-                    rain_diag_txt = (
-                        f" rain:umax={umax:.3e} {length_unit_name}/s"
-                        f" hminWet={hmin_wet:.3e} {length_unit_name}"
-                        f" hmax={hmax:.3e} {length_unit_name}"
-                    )
-                else:
-                    rain_diag_txt = " rain:all-dry"
+            if np.any(rain_arr_diag > 0.0):
+                rain_diag_txt = " rain:active"
             log_callback(
                 (
                     f"step={i} t={t_accum / 3600.0:.3f} hr / {run_duration_s / 3600.0:.3f} hr "

@@ -190,8 +190,12 @@ def wire_run_tab_signals(dialog) -> None:
         btn.clicked.connect(cb)
     load_btn = getattr(v, "load_run_settings_btn", None)
     if load_btn is not None:
-        safe_disconnect(load_btn.clicked, dialog._controller.on_load_run_settings_from_results)
-        load_btn.clicked.connect(dialog._controller.on_load_run_settings_from_results)
+        safe_disconnect(load_btn.clicked, dialog._controller.on_load_simulation_config)
+        load_btn.clicked.connect(dialog._controller.on_load_simulation_config)
+    save_btn = getattr(v, "save_settings_btn", None)
+    if save_btn is not None:
+        safe_disconnect(save_btn.clicked, dialog._controller.on_save_simulation_config)
+        save_btn.clicked.connect(dialog._controller.on_save_simulation_config)
 
 
 # ── Tab lifecycle ────────────────────────────────────────────────────────────

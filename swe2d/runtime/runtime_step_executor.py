@@ -224,9 +224,8 @@ class SWE2DRuntimeStepExecutor:
                 )
                 if _native_device_applied:
                     coupled_source_rate = None  # sources already on GPU
-            _t_gpu_sync = time.perf_counter()
-            backend.sync_device()
-            gpu_ms += (time.perf_counter() - _t_gpu_sync) * 1000.0
+            # GPU-native coupling path — all operations use the same CUDA
+            # stream (dev->d_stream), so ordering is implicit.  No sync needed.
             rain_src = rain_source_for_window_callback(
                 t_accum,
                 t_accum + dt_source_guess,

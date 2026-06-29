@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+"""Internal-flow forcing logic: field resolution, hydrograph lookup, and cell-weight assembly."""
+
 from typing import Callable, Dict, Iterable, List, Optional, Tuple
 
 import numpy as np
@@ -10,20 +12,7 @@ DynamicTerm = Tuple[np.ndarray, np.ndarray, Hydrograph]
 
 
 def resolve_internal_flow_field_name(requested_field: str, fields: set) -> Optional[str]:
-    """
-    resolve internal flow field name.
-
-    Parameters
-    ----------
-    requested_field : str
-        Description of requested_field.
-    fields : set
-        Description of fields.
-
-    Returns
-    -------
-    Optional[str]
-    """
+    """Resolve the best-matching flow field name from available attribute fields."""
     field_name = str(requested_field or "q_cms").strip() or "q_cms"
     if field_name in fields:
         return field_name
@@ -34,20 +23,7 @@ def resolve_internal_flow_field_name(requested_field: str, fields: set) -> Optio
 
 
 def first_matching_field(fields: set, candidates: Iterable[str]) -> Optional[str]:
-    """
-    first matching field.
-
-    Parameters
-    ----------
-    fields : set
-        Description of fields.
-    candidates : Iterable[str]
-        Description of candidates.
-
-    Returns
-    -------
-    Optional[str]
-    """
+    """Return the first candidate field name that exists in *fields*, or None."""
     for cand in candidates:
         if cand in fields:
             return cand

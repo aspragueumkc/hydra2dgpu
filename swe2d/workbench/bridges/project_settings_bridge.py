@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+"""Project-settings bridge: persist and restore layer-selector state across sessions."""
+
 import json
 import logging
 from typing import Dict, Optional, Sequence

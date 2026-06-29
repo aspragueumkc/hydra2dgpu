@@ -78,6 +78,7 @@ def _platform_tag() -> str:
 # BCType constants (mirrored from native module; imported after module load)
 # ─────────────────────────────────────────────────────────────────────────────
 class BCType:
+    """Boundary-condition type constants (mirrored from the native C++ module)."""
     INTERIOR = 0
     WALL     = 1
     INFLOW_Q = 2
@@ -689,7 +690,11 @@ class SWE2DBackend:
         self._mod.swe2d_gpu_store_snapshot(self._solver_h, float(t_s))
 
     def _auto_dump_snapshots(self) -> None:
-        """Drain device snapshots to host buffer to prevent OOM."""
+        """Drain device snapshots to host buffer to prevent OOM.
+
+        Stores data in solver (RCMK) order.  The permutation to original
+        (pre-RCMK) order is applied once in :meth:`read_snapshots`.
+        """
         raw = self._mod.swe2d_gpu_read_snapshots(self._solver_h)
         if not raw or "t_s" not in raw:
             return
@@ -753,6 +758,9 @@ class SWE2DBackend:
             out_h[idx:]   = dev_h[:]
             out_hu[idx:]  = dev_hu[:]
             out_hv[idx:]  = dev_hv[:]
+        # Per the baked BLOB spec (§5.12): data stays in solver (RCMK) order.
+        # Mesh geometry from swe2d_deserialize_mesh and results from
+        # this function share the same ordering — no permutation needed.
         return {"t_s": out_ts, "h": out_h, "hu": out_hu, "hv": out_hv}
 
     def free_snapshot_buf(self) -> None:
