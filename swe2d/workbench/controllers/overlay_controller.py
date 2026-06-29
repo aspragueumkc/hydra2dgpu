@@ -112,7 +112,6 @@ class OverlayController:
                                 "                   WHERE run_id = ? LIMIT 1)",
                                 (target_run,),
                             ).fetchone()
-                                ).fetchone()
                             if row:
                                 from hydra_swe2d import swe2d_deserialize_mesh
                                 pm = swe2d_deserialize_mesh(row[1])
