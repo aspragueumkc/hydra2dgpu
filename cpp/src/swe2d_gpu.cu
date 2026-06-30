@@ -4709,6 +4709,20 @@ SWE2DDeviceState* swe2d_gpu_init(
     CUDA_CHECK(cudaMemset(dev->d_cell_source_mps, 0, sz_cells * sizeof(double)));
     CUDA_CHECK(cudaMemset(dev->d_stage_cell_source_mps, 0, static_cast<size_t>(SWE2D_GRAPH_STAGE_SLOTS) * sz_cells * sizeof(double)));
 
+    // k-slope buffers for graph-safe RK4/RK5 (temporal_order 4/5)
+    alloc_d(reinterpret_cast<void**>(&dev->d_k4_h),  sz_cells * sizeof(double));
+    alloc_d(reinterpret_cast<void**>(&dev->d_k4_hu), sz_cells * sizeof(double));
+    alloc_d(reinterpret_cast<void**>(&dev->d_k4_hv), sz_cells * sizeof(double));
+    alloc_d(reinterpret_cast<void**>(&dev->d_k6_h),  sz_cells * sizeof(double));
+    alloc_d(reinterpret_cast<void**>(&dev->d_k6_hu), sz_cells * sizeof(double));
+    alloc_d(reinterpret_cast<void**>(&dev->d_k6_hv), sz_cells * sizeof(double));
+    CUDA_CHECK(cudaMemset(dev->d_k4_h,  0, sz_cells * sizeof(double)));
+    CUDA_CHECK(cudaMemset(dev->d_k4_hu, 0, sz_cells * sizeof(double)));
+    CUDA_CHECK(cudaMemset(dev->d_k4_hv, 0, sz_cells * sizeof(double)));
+    CUDA_CHECK(cudaMemset(dev->d_k6_h,  0, sz_cells * sizeof(double)));
+    CUDA_CHECK(cudaMemset(dev->d_k6_hu, 0, sz_cells * sizeof(double)));
+    CUDA_CHECK(cudaMemset(dev->d_k6_hv, 0, sz_cells * sizeof(double)));
+
     // External coupling source buffer — allocated once, reused every step.
     alloc_d(reinterpret_cast<void**>(&dev->d_external_source_mps), sz_cells * sizeof(double));
     CUDA_CHECK(cudaMemset(dev->d_external_source_mps, 0, sz_cells * sizeof(double)));
@@ -4905,7 +4919,10 @@ void swe2d_gpu_step(
     int32_t n_edges = dev->n_edges;
     int32_t n_cells = dev->n_cells;
     const int32_t graph_integrator =
-        (dev->kernel_graph_cache.time_integrator == 2 || dev->kernel_graph_cache.time_integrator == 4)
+        (dev->kernel_graph_cache.time_integrator == 2 ||
+         dev->kernel_graph_cache.time_integrator == 3 ||
+         dev->kernel_graph_cache.time_integrator == 4 ||
+         dev->kernel_graph_cache.time_integrator == 5)
             ? dev->kernel_graph_cache.time_integrator
             : 1;
 
@@ -9136,6 +9153,8 @@ void swe2d_gpu_destroy(SWE2DDeviceState* dev) {
     safe_free(dev->d_stage_cell_source_mps);
     safe_free(dev->d_stage_edge_bc);
     safe_free(dev->d_stage_edge_bc_val);
+    safe_free(dev->d_k4_h);  safe_free(dev->d_k4_hu); safe_free(dev->d_k4_hv);
+    safe_free(dev->d_k6_h);  safe_free(dev->d_k6_hu); safe_free(dev->d_k6_hv);
     safe_free(dev->d_external_source_mps);
     swe2d_gpu_free_snapshot_buf(dev);
     // Coupling workspace cleanup
