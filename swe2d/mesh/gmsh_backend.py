@@ -2448,6 +2448,7 @@ class GmshBackend(MeshingBackend):
 
         constraint_point_lists: List[List[int]] = []
         constraint_target_sizes: List[float] = []
+        constraint_steps: List[float] = []
         for cst in model.constraints:
             if len(cst.ring_xy) < 3 or str(cst.cell_type).strip().lower() == "empty":
                 continue
@@ -2508,6 +2509,7 @@ class GmshBackend(MeshingBackend):
             if dedup_tags:
                 constraint_point_lists.append(dedup_tags)
                 constraint_target_sizes.append(cst_size)
+                constraint_steps.append(step)
 
         gmsh.model.geo.synchronize()
 
@@ -2515,7 +2517,7 @@ class GmshBackend(MeshingBackend):
         if constraint_point_lists or arc_soft_groups or interface_transition_specs:
             all_fields: List[int] = list(base_surface_fields)
             max_region_size = max(max(float(sz), 1.0e-9) for (_, _, sz) in surface_meta)
-            for pt_list, cst_size in zip(constraint_point_lists, constraint_target_sizes):
+            for pt_list, cst_size, cst_step in zip(constraint_point_lists, constraint_target_sizes, constraint_steps):
                 f_dist = gmsh.model.mesh.field.add("Distance")
                 gmsh.model.mesh.field.setNumbers(f_dist, "PointsList", [int(t) for t in pt_list])
 
@@ -2523,7 +2525,7 @@ class GmshBackend(MeshingBackend):
                 gmsh.model.mesh.field.setNumber(f_thresh, "InField", float(f_dist))
                 gmsh.model.mesh.field.setNumber(f_thresh, "SizeMin", float(cst_size))
                 gmsh.model.mesh.field.setNumber(f_thresh, "SizeMax", float(max_region_size))
-                gmsh.model.mesh.field.setNumber(f_thresh, "DistMin", 0.0)
+                gmsh.model.mesh.field.setNumber(f_thresh, "DistMin", float(0.5 * cst_step))
                 gmsh.model.mesh.field.setNumber(f_thresh, "DistMax", float(1.5 * cst_size))
                 gmsh.model.mesh.field.setNumber(f_thresh, "StopAtDistMax", 1.0)
 
