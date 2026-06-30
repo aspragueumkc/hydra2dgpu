@@ -50,7 +50,13 @@ endif()
 
 # ── 2D SWE hybrid GPU/CPU solver ─────────────────────────────────────────────
 option(BACKWATER_USE_CUDA "Enable CUDA GPU path for 2D SWE solver" ON)
-option(SWE2D_STATE_FP32 "Store state arrays as float (mixed precision) for ~35% less GPU memory traffic" OFF)
+
+# Mixed-precision strategy:
+#   The codebase stores state arrays as `double` (FP64) throughout. Selective FP32
+#   is applied inside `swe2d_flux_kernel` only where it is numerically safe
+#   (see reference/MIXED_PRECISION_GPU_PLAN.md). A previous `SWE2D_STATE_FP32`
+#   option that switched the global `State` typedef to `float` was removed: it
+#   bypassed the conservation guarantees and broke the higher-order RK schemes.
 
 set(SWE2D_CPU_SOURCES
     cpp/src/swe2d_mesh.cpp
@@ -108,9 +114,6 @@ function(_configure_swe2d_module target_name py_module_name)
 
   target_include_directories(${target_name} PRIVATE cpp/src)
   target_compile_definitions(${target_name} PRIVATE HYDRA_SWE2D_PY_MODULE_NAME=${py_module_name})
-  if(SWE2D_STATE_FP32)
-    target_compile_definitions(${target_name} PRIVATE SWE2D_STATE_FP32=1)
-  endif()
 
   if(SWE2D_CUDA_FOUND)
     target_link_libraries(${target_name} PRIVATE CUDA::cudart)

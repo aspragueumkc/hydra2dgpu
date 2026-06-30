@@ -6,7 +6,11 @@
 #include "swe2d_mesh.hpp"
 #include "swe2d_solver.hpp"   // SWE2DStepDiag
 #include "swe2d_units.cuh"
-#include "swe2d_precision.h"   // State type alias (float or double)
+
+// State storage precision. The codebase assumes State == double (FP64); FP32 state
+// breaks conservation and is not supported. Selective FP32 inside `swe2d_flux_kernel`
+// is the chosen mixed-precision strategy (see reference/MIXED_PRECISION_GPU_PLAN.md).
+using State = double;
 
 #include <cuda_runtime.h>
 #include <cstdint>
