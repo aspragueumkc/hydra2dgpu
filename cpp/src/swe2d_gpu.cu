@@ -2361,6 +2361,63 @@ __global__ __launch_bounds__(256, 4) void swe2d_rk3_combine_kernel(
     }
 }
 
+/** GPU kernel: RK4 combine — one thread per cell.
+ *  Textbook RK4 (4th-order): k1=h1-h0, k2=h2-h0, k3=h3-h0, k4=h4-h2.
+ *  Final: h_new = h0 + (k1 + 2*k2 + 2*k3 + k4)/6.
+ *  k1 in d_k4_h/hu/hv; k2 in d_k6_h/hu/hv; k3=h3-h0 inline; k4=h4-h2 inline.
+ *  @global */
+__global__ __launch_bounds__(256, 4) void swe2d_rk4_combine_kernel(
+    int32_t n_cells,
+    State* cell_h,
+    State* cell_hu,
+    State* cell_hv,
+    const double* h0,
+    const double* hu0,
+    const double* hv0,
+    const double* k1_h,
+    const double* k1_hu,
+    const double* k1_hv,
+    const double* k2_h,
+    const double* k2_hu,
+    const double* k2_hv,
+    const double* h2,
+    const double* hu2,
+    const double* hv2,
+    double* d_max_wse_elev_error,
+    double h_min)
+{
+    int32_t c = blockIdx.x * blockDim.x + threadIdx.x;
+    if (c >= n_cells) return;
+
+    const double k3_h  = static_cast<double>(cell_h[c]) - h0[c];
+    const double k3_hu = static_cast<double>(cell_hu[c]) - hu0[c];
+    const double k3_hv = static_cast<double>(cell_hv[c]) - hv0[c];
+
+    const double k4_h  = static_cast<double>(cell_h[c]) - h2[c];
+    const double k4_hu = static_cast<double>(cell_hu[c]) - hu2[c];
+    const double k4_hv = static_cast<double>(cell_hv[c]) - hv2[c];
+
+    const double h_new = h0[c] + (k1_h[c] + 2.0*k2_h[c] + 2.0*k3_h + k4_h) / 6.0;
+    const double hu_new = hu0[c] + (k1_hu[c] + 2.0*k2_hu[c] + 2.0*k3_hu + k4_hu) / 6.0;
+    const double hv_new = hv0[c] + (k1_hv[c] + 2.0*k2_hv[c] + 2.0*k3_hv + k4_hv) / 6.0;
+
+    const double h_final = (h_new < 0.0) ? 0.0 : h_new;
+    cell_h[c] = static_cast<State>(h_final);
+
+    if (h_final < h_min) {
+        cell_hu[c] = static_cast<State>(0.0);
+        cell_hv[c] = static_cast<State>(0.0);
+    } else {
+        cell_hu[c] = static_cast<State>(hu_new);
+        cell_hv[c] = static_cast<State>(hv_new);
+    }
+
+    if (d_max_wse_elev_error) {
+        const double depth_res = fabs(h_final - h0[c]);
+        atomicMaxDouble(d_max_wse_elev_error, depth_res);
+    }
+}
+
 /** GPU kernel: RK5(4) graph combine — one thread per cell.
  * Accumulates RK5 weighted sum of stages (k1, k3, k4, k6) onto base
  * state, applies friction, momentum capping, and shallow damping.
@@ -6758,10 +6815,218 @@ void swe2d_gpu_step_rk3(
     dev->kernel_graph_cache.time_integrator = prev_graph_integrator;
 }
 
+__global__ __launch_bounds__(256, 4) void swe2d_rk4_stage3_prep_kernel(
+    int32_t n_cells,
+    double dt,
+    const double* k2_h,
+    const double* k2_hu,
+    const double* k2_hv,
+    double* h,
+    double* hu,
+    double* hv)
+{
+    int32_t c = blockIdx.x * blockDim.x + threadIdx.x;
+    if (c >= n_cells) return;
+    h[c]  += dt * k2_h[c];
+    hu[c] += dt * k2_hu[c];
+    hv[c] += dt * k2_hv[c];
+}
 
-// ─────────────────────────────────────────────────────────────────────────────
-// swe2d_gpu_step_rk4 — removed (dead code)
-// ─────────────────────────────────────────────────────────────────────────────
+void swe2d_gpu_step_rk4(
+    SWE2DDeviceState* dev,
+    double t_now,
+    double dt,
+    double g,
+    double h_min,
+    int spatial_scheme,
+    double cfl_factor,
+    double max_inv_area,
+    double cfl_lambda_cap,
+    double momentum_cap_min_speed,
+    double momentum_cap_celerity_mult,
+    double depth_cap,
+    double max_rel_depth_increase,
+    double shallow_damping_depth,
+    bool extreme_rain_mode,
+    double source_cfl_beta,
+    int source_max_substeps,
+    double source_rate_cap,
+    double source_depth_step_cap,
+    bool source_true_subcycling,
+    bool source_imex_split,
+    bool enable_shallow_front_recon_fallback,
+    bool sync_diagnostics,
+    SWE2DStepDiag* diag,
+    double front_flux_damping,
+    bool active_set_hysteresis)
+{
+    constexpr int BLOCK = 256;
+    const int32_t n_cells = dev->n_cells;
+    const size_t sz = static_cast<size_t>(n_cells) * sizeof(double);
+    const uint64_t graph_launches_before = dev->graph_replay_count;
+    const int32_t prev_graph_integrator = dev->kernel_graph_cache.time_integrator;
+    dev->kernel_graph_cache.time_integrator = 4;
+    const int grid_cells = (n_cells + BLOCK - 1) / BLOCK;
+
+    swe2d_state_to_double_kernel<<<grid_cells, BLOCK, 0, dev->d_stream>>>(
+        n_cells, dev->d_h, dev->d_h0);
+    swe2d_state_to_double_kernel<<<grid_cells, BLOCK, 0, dev->d_stream>>>(
+        n_cells, dev->d_hu, dev->d_hu0);
+    swe2d_state_to_double_kernel<<<grid_cells, BLOCK, 0, dev->d_stream>>>(
+        n_cells, dev->d_hv, dev->d_hv0);
+
+    SWE2DStepDiag tmp_diag;
+
+    // Stage 1: k1 = f(t, h0); h1 = h0 + dt*k1
+    swe2d_gpu_step(dev, t_now, dt, g, h_min, spatial_scheme, cfl_factor,
+                   max_inv_area, cfl_lambda_cap,
+                   momentum_cap_min_speed, momentum_cap_celerity_mult,
+                   depth_cap, max_rel_depth_increase, shallow_damping_depth,
+                   extreme_rain_mode, source_cfl_beta, source_max_substeps,
+                   source_rate_cap, source_depth_step_cap, source_true_subcycling, source_imex_split,
+                   enable_shallow_front_recon_fallback,
+                   false, &tmp_diag,
+                   front_flux_damping, active_set_hysteresis);
+    // k1 = h1 - h0 -> d_k4; d_h1 = h1
+    swe2d_state_to_double_kernel<<<grid_cells, BLOCK, 0, dev->d_stream>>>(
+        n_cells, dev->d_h, dev->d_k4_h);
+    swe2d_state_to_double_kernel<<<grid_cells, BLOCK, 0, dev->d_stream>>>(
+        n_cells, dev->d_hu, dev->d_k4_hu);
+    swe2d_state_to_double_kernel<<<grid_cells, BLOCK, 0, dev->d_stream>>>(
+        n_cells, dev->d_hv, dev->d_k4_hv);
+    CUDA_CHECK(cudaMemcpyAsync(dev->d_h1, dev->d_h, sz, cudaMemcpyDeviceToDevice, dev->d_stream));
+
+    // Stage 2: restore to h0; k2 = f(t+dt/2, h1); h2 = h0 + dt/2*k2
+    CUDA_CHECK(cudaMemcpyAsync(dev->d_h, dev->d_h0, sz, cudaMemcpyDeviceToDevice, dev->d_stream));
+    CUDA_CHECK(cudaMemcpyAsync(dev->d_hu, dev->d_hu0, sz, cudaMemcpyDeviceToDevice, dev->d_stream));
+    CUDA_CHECK(cudaMemcpyAsync(dev->d_hv, dev->d_hv0, sz, cudaMemcpyDeviceToDevice, dev->d_stream));
+    swe2d_gpu_step(dev, t_now + dt * 0.5, dt * 0.5, g, h_min, spatial_scheme, cfl_factor,
+                   max_inv_area, cfl_lambda_cap,
+                   momentum_cap_min_speed, momentum_cap_celerity_mult,
+                   depth_cap, max_rel_depth_increase, shallow_damping_depth,
+                   extreme_rain_mode, source_cfl_beta, source_max_substeps,
+                   source_rate_cap, source_depth_step_cap, source_true_subcycling, source_imex_split,
+                   enable_shallow_front_recon_fallback,
+                   false, &tmp_diag,
+                   front_flux_damping, active_set_hysteresis);
+    // k2 = h2 - h0 -> d_k6; d_h2 = h2; d_hu1 = hu2; d_hv1 = hv2
+    swe2d_state_to_double_kernel<<<grid_cells, BLOCK, 0, dev->d_stream>>>(
+        n_cells, dev->d_h, dev->d_k6_h);
+    swe2d_state_to_double_kernel<<<grid_cells, BLOCK, 0, dev->d_stream>>>(
+        n_cells, dev->d_hu, dev->d_k6_hu);
+    swe2d_state_to_double_kernel<<<grid_cells, BLOCK, 0, dev->d_stream>>>(
+        n_cells, dev->d_hv, dev->d_k6_hv);
+    CUDA_CHECK(cudaMemcpyAsync(dev->d_h2, dev->d_h, sz, cudaMemcpyDeviceToDevice, dev->d_stream));
+    CUDA_CHECK(cudaMemcpyAsync(dev->d_hu1, dev->d_hu, sz, cudaMemcpyDeviceToDevice, dev->d_stream));
+    CUDA_CHECK(cudaMemcpyAsync(dev->d_hv1, dev->d_hv, sz, cudaMemcpyDeviceToDevice, dev->d_stream));
+
+    // Stage 3: restore to h0; set h = h0 + dt*k2; k3 = f(t+dt/2, h0+dt*k2); h3 = (h0+dt*k2) + dt/2*k3
+    CUDA_CHECK(cudaMemcpyAsync(dev->d_h, dev->d_h0, sz, cudaMemcpyDeviceToDevice, dev->d_stream));
+    CUDA_CHECK(cudaMemcpyAsync(dev->d_hu, dev->d_hu0, sz, cudaMemcpyDeviceToDevice, dev->d_stream));
+    CUDA_CHECK(cudaMemcpyAsync(dev->d_hv, dev->d_hv0, sz, cudaMemcpyDeviceToDevice, dev->d_stream));
+    // h += dt*k2: h = h0 + dt*k2 (Stage 3 starting point)
+    {
+        const int n = n_cells;
+        const double dt_val = dt;
+        const double* __restrict__ k2_d = dev->d_k6_h;
+        const double* __restrict__ k2u_d = dev->d_k6_hu;
+        const double* __restrict__ k2v_d = dev->d_k6_hv;
+        double* __restrict__ h_d = dev->d_h;
+        double* __restrict__ hu_d = dev->d_hu;
+        double* __restrict__ hv_d = dev->d_hv;
+        swe2d_rk4_stage3_prep_kernel<<<(n + BLOCK - 1) / BLOCK, BLOCK, 0, dev->d_stream>>>(
+            n, dt_val, k2_d, k2u_d, k2v_d, h_d, hu_d, hv_d);
+    }
+    // GPU step: sources at t+dt/2, h advances by dt/2 -> h3 = h0+dt*k2+dt/2*k3
+    swe2d_gpu_step(dev, t_now + dt * 0.5, dt * 0.5, g, h_min, spatial_scheme, cfl_factor,
+                   max_inv_area, cfl_lambda_cap,
+                   momentum_cap_min_speed, momentum_cap_celerity_mult,
+                   depth_cap, max_rel_depth_increase, shallow_damping_depth,
+                   extreme_rain_mode, source_cfl_beta, source_max_substeps,
+                   source_rate_cap, source_depth_step_cap, source_true_subcycling, source_imex_split,
+                   enable_shallow_front_recon_fallback,
+                   false, &tmp_diag,
+                   front_flux_damping, active_set_hysteresis);
+    // d_h is h3 = h0 + dt*k2 + dt/2*k3
+
+    // Stage 4: restore to h2 (h from d_h2, hu from d_hu1, hv from d_hv1); k4 = f(t+dt, h3); h4 = h2 + dt*k4
+    CUDA_CHECK(cudaMemcpyAsync(dev->d_h, dev->d_h2, sz, cudaMemcpyDeviceToDevice, dev->d_stream));
+    CUDA_CHECK(cudaMemcpyAsync(dev->d_hu, dev->d_hu1, sz, cudaMemcpyDeviceToDevice, dev->d_stream));
+    CUDA_CHECK(cudaMemcpyAsync(dev->d_hv, dev->d_hv1, sz, cudaMemcpyDeviceToDevice, dev->d_stream));
+    swe2d_gpu_step(dev, t_now + dt, dt, g, h_min, spatial_scheme, cfl_factor,
+                   max_inv_area, cfl_lambda_cap,
+                   momentum_cap_min_speed, momentum_cap_celerity_mult,
+                   depth_cap, max_rel_depth_increase, shallow_damping_depth,
+                   extreme_rain_mode, source_cfl_beta, source_max_substeps,
+                   source_rate_cap, source_depth_step_cap, source_true_subcycling, source_imex_split,
+                   enable_shallow_front_recon_fallback,
+                   false, &tmp_diag,
+                   front_flux_damping, active_set_hysteresis);
+    // d_h is h4 = h2 + dt*k4
+
+    // Combine: h_new = h0 + (k1 + 2*k2 + 2*k3 + k4)/6; k4 = h4-h2 (d_h - d_h2)
+    CUDA_CHECK(cudaMemsetAsync(dev->d_max_wse_elev_error, 0, sizeof(double), dev->d_stream));
+    const int grid = (n_cells + BLOCK - 1) / BLOCK;
+    swe2d_rk4_combine_kernel<<<grid, BLOCK, 0, dev->d_stream>>>(
+        n_cells,
+        dev->d_h, dev->d_hu, dev->d_hv,
+        dev->d_h0, dev->d_hu0, dev->d_hv0,
+        dev->d_k4_h, dev->d_k4_hu, dev->d_k4_hv,
+        dev->d_k6_h, dev->d_k6_hu, dev->d_k6_hv,
+        dev->d_h2, dev->d_hu1, dev->d_hv1,
+        dev->d_max_wse_elev_error,
+        h_min);
+    CUDA_CHECK(cudaGetLastError());
+
+    CUDA_CHECK(cudaMemsetAsync(dev->d_lambda_max, 0, sizeof(double), dev->d_stream));
+    const int edge_grid = (dev->n_edges + BLOCK - 1) / BLOCK;
+    if (edge_grid > 0) {
+        swe2d_ensure_cfl_block_workspace(dev, edge_grid);
+        swe2d_cfl_kernel<<<edge_grid, BLOCK, BLOCK * static_cast<int>(sizeof(double)), dev->d_stream>>>(
+            dev->n_edges,
+            dev->d_edge_c0, dev->d_edge_c1,
+            dev->d_edge_nx, dev->d_edge_ny, dev->d_edge_len,
+            dev->d_h, dev->d_hu, dev->d_hv,
+            dev->d_cell_area,
+            g, h_min,
+            cfl_lambda_cap,
+            dev->d_cfl_block_max,
+            dev->d_degen_mask, dev->degen_mode);
+        CUDA_CHECK(cudaGetLastError());
+        swe2d_cfl_reduce_blocks_kernel<<<1, BLOCK, BLOCK * static_cast<int>(sizeof(double)), dev->d_stream>>>(
+            edge_grid, dev->d_cfl_block_max, dev->d_lambda_max);
+        CUDA_CHECK(cudaGetLastError());
+    }
+    pack_diag_kernel<<<1, 1, 0, dev->d_stream>>>(dev->d_lambda_max, dev->d_max_wse_elev_error, dev->d_n_wet, dev->d_diag_packed);
+    CUDA_CHECK(cudaGetLastError());
+
+    if (diag) {
+        diag->dt = dt;
+        diag->gpu_active = true;
+        diag->wet_cells = -1;
+        diag->max_depth = -1.0;
+        diag->min_depth = -1.0;
+        diag->mass_total = -1.0;
+        diag->max_courant = -1.0;
+        diag->max_depth_residual = -1.0;
+        diag->max_wse_elev_error = -1.0;
+        const uint64_t graph_launches_after = dev->graph_replay_count;
+        diag->gpu_graph_launches_step = static_cast<int32_t>(graph_launches_after - graph_launches_before);
+        diag->gpu_graph_launches_total = static_cast<int64_t>(graph_launches_after);
+
+        if (sync_diagnostics) {
+            CUDA_CHECK(cudaStreamSynchronize(dev->d_stream));
+            double packed[3] = {0.0, 0.0, -1.0};
+            CUDA_CHECK(cudaMemcpy(packed, dev->d_diag_packed, 3 * sizeof(double), cudaMemcpyDeviceToHost));
+            diag->max_courant        = dt * packed[0];
+            diag->max_depth_residual = packed[1];
+            diag->max_wse_elev_error = packed[1];
+            diag->wet_cells          = static_cast<int32_t>(packed[2]);
+        }
+    }
+
+    dev->kernel_graph_cache.time_integrator = prev_graph_integrator;
+}
 
 // ── Forward declarations for coupling kernels defined later in this file ──
 __global__ void swe2d_coupling_wse_from_state_kernel(

@@ -837,6 +837,38 @@ void swe2d_gpu_step_rk3(
     double front_flux_damping    = 0.5,
     bool   active_set_hysteresis = true);
 
+/** Four-stage textbook RK4 (graph-safe).
+    k1=h1-h0 (d_k4), k2=h2-h0 (d_k6), k3=h3-h0, k4=h4-h2.
+    Stage 2 momentum saved to d_hu1/d_hv1; Stage 4 restore uses those.
+    @host */
+void swe2d_gpu_step_rk4(
+    SWE2DDeviceState* dev,
+    double t_now,
+    double dt,
+    double g,
+    double h_min,
+    int spatial_scheme,
+    double cfl_factor,
+    double max_inv_area,
+    double cfl_lambda_cap,
+    double momentum_cap_min_speed,
+    double momentum_cap_celerity_mult,
+    double depth_cap,
+    double max_rel_depth_increase,
+    double shallow_damping_depth,
+    bool extreme_rain_mode,
+    double source_cfl_beta,
+    int source_max_substeps,
+    double source_rate_cap,
+    double source_depth_step_cap,
+    bool source_true_subcycling,
+    bool source_imex_split,
+    bool enable_shallow_front_recon_fallback,
+    bool sync_diagnostics,
+    SWE2DStepDiag* diag,
+    double front_flux_damping    = 0.5,
+    bool   active_set_hysteresis = true);
+
 /** Compute a CFL-limited dt from current device state without host-state sync.
     @param dev Device state pointer
     @param g Gravitational acceleration
