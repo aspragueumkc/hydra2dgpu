@@ -2780,11 +2780,12 @@ PYBIND11_MODULE(HYDRA_SWE2D_PY_MODULE_NAME, m) {
                   int tiny_active_compaction_stride_steps,
                   bool tiny_enable_active_compaction,
               bool use_gpu, int n_threads,
-              int temporal_order,
-              int spatial_scheme,
-               int turbulence_model,
-               int bed_friction_model,
-               int equation_set,
+               int temporal_order,
+               int spatial_scheme,
+                int turbulence_model,
+                int bed_friction_model,
+                int equation_set,
+                int godunov_mode,
               bool enable_rain_module,
               bool enable_pipe_network_module,
               bool enable_hydraulic_structures,
@@ -2868,6 +2869,7 @@ PYBIND11_MODULE(HYDRA_SWE2D_PY_MODULE_NAME, m) {
             cfg.turbulence_model = turbulence_model;
             cfg.bed_friction_model = bed_friction_model;
             cfg.equation_set = equation_set;
+            cfg.godunov_mode = godunov_mode;
             cfg.enable_rain_module = enable_rain_module;
             cfg.enable_pipe_network_module = enable_pipe_network_module;
             cfg.enable_hydraulic_structures = enable_hydraulic_structures;
@@ -2931,6 +2933,7 @@ PYBIND11_MODULE(HYDRA_SWE2D_PY_MODULE_NAME, m) {
         py::arg("turbulence_model") = 0,
         py::arg("bed_friction_model") = 0,
         py::arg("equation_set") = 0,
+        py::arg("godunov_mode")  = 0,
         py::arg("enable_rain_module") = false,
         py::arg("enable_pipe_network_module") = false,
         py::arg("enable_hydraulic_structures") = false,

@@ -52,6 +52,9 @@ struct SWE2DSolverConfig {
     int     turbulence_model = static_cast<int>(SWE2DTurbulenceModel::NONE);
     int     bed_friction_model = static_cast<int>(SWE2DBedFrictionModel::MANNING);
     int     equation_set = static_cast<int>(SWE2DEquationSet::HYDROSTATIC_2D);
+    // godunov_mode: 0 = CURRENT_GPU_STEP (default), 1 = ROLLOUT (planned future).
+    // Stored on config for forward-compat; no C++ kernel path currently branches on it.
+    int     godunov_mode = 0;
     bool    enable_rain_module = false;
     bool    enable_pipe_network_module = false;
     bool    enable_hydraulic_structures = false;
