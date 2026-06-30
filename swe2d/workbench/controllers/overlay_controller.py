@@ -88,14 +88,18 @@ class OverlayController:
     def sync_high_perf_overlay_data(self) -> None:
         """Refresh cached cell-center and bed arrays used by the canvas overlay.
 
-        When snapshots exist, geometry is derived from them. When snapshots are
-        empty (e.g., GPKG-loaded results), geometry is loaded from the baked
-        mesh BLOB stored in swe2d_baked_mesh. No fallback to in-memory mesh.
+        Two mutually exclusive paths:
+        1. Live run (snapshots exist) — reads mesh geometry from in-memory
+           ``_mesh_data`` / ``_mesh_cell_centroids()``.  This is the ONLY
+           correct source during a live simulation.  Fails loudly if missing.
+        2. GPKG results (no snapshots) — loads baked mesh BLOB from
+           ``swe2d_baked_mesh`` in the results GPKG.  Fails loudly if
+           the baked mesh entry is missing.  No fallback to in-memory mesh.
         """
         view = self._view
         _snapshots = self._data.get_live_snapshot_timesteps()
         if not _snapshots:
-            # Try baked mesh load first (skip old GPKG fallback chain if possible)
+            # ── Path 2: GPKG results — baked mesh from GPKG only ──
             _data = getattr(view, "_results_data", None)
             gpkg = str(getattr(_data, "gpkg_path", "") or "")
             if gpkg and os.path.isfile(gpkg) and hasattr(self._data, 'overlay_cell_x') and (self._data.overlay_cell_x is None or self._data.overlay_cell_x.size <= 0):
@@ -159,47 +163,53 @@ class OverlayController:
             self.refresh_high_perf_canvas_overlay(None)
             return
 
-        try:
-            cx, cy = view._mesh_cell_centroids()
-            bed = view._mesh_cell_solver_bed()
-            self._data.overlay_cell_x = np.asarray(cx, dtype=np.float64)
-            self._data.overlay_cell_y = np.asarray(cy, dtype=np.float64)
-            self._data.overlay_cell_bed = np.asarray(bed, dtype=np.float64)
-            mesh = getattr(view, "_mesh_data", {}) or {}
-            self._data.overlay_node_x = np.asarray(
-                mesh.get("node_x", np.empty(0)), dtype=np.float64
-            ).ravel()
-            self._data.overlay_node_y = np.asarray(
-                mesh.get("node_y", np.empty(0)), dtype=np.float64
-            ).ravel()
-            raw_cell_nodes = np.asarray(
-                mesh.get("cell_nodes", np.empty(0)), dtype=np.int32
-            ).ravel()
-            if "cell_face_offsets" in mesh and "cell_face_nodes" in mesh:
-                offs = np.asarray(mesh["cell_face_offsets"], dtype=np.int32).ravel()
-                faces = np.asarray(mesh["cell_face_nodes"], dtype=np.int32).ravel()
-                tri_list = []
-                tc_list = []
-                for ci in range(int(offs.size) - 1):
-                    s = int(offs[ci])
-                    e = int(offs[ci + 1])
-                    ns = faces[s:e]
-                    for k in range(1, int(ns.size) - 1):
-                        tri_list.append([int(ns[0]), int(ns[k]), int(ns[k + 1])])
-                        tc_list.append(ci)
-                if tri_list:
-                    self._data.overlay_cell_nodes = np.asarray(
-                        tri_list, dtype=np.int32
-                    ).ravel()
-                    self._data.overlay_tri_to_cell = np.asarray(tc_list, dtype=np.int32)
-                else:
-                    self._data.overlay_cell_nodes = raw_cell_nodes
-                    self._data.overlay_tri_to_cell = np.empty(0, dtype=np.int32)
+        # ── Path 1: Live run — in-memory mesh only, fail loudly ──
+        cx, cy = view._mesh_cell_centroids()
+        if cx is None or cy is None or cx.size <= 0:
+            raise RuntimeError(
+                "Live overlay requires mesh centroids — no mesh loaded?"
+            )
+        bed = view._mesh_cell_solver_bed()
+        self._data.overlay_cell_x = np.asarray(cx, dtype=np.float64)
+        self._data.overlay_cell_y = np.asarray(cy, dtype=np.float64)
+        self._data.overlay_cell_bed = np.asarray(bed, dtype=np.float64)
+        mesh = getattr(view, "_mesh_data", {}) or {}
+        self._data.overlay_node_x = np.asarray(
+            mesh.get("node_x", np.empty(0)), dtype=np.float64
+        ).ravel()
+        self._data.overlay_node_y = np.asarray(
+            mesh.get("node_y", np.empty(0)), dtype=np.float64
+        ).ravel()
+        raw_cell_nodes = np.asarray(
+            mesh.get("cell_nodes", np.empty(0)), dtype=np.int32
+        ).ravel()
+        if raw_cell_nodes.size <= 0:
+            raise RuntimeError(
+                "Live overlay requires mesh cell_nodes — no mesh loaded?"
+            )
+        if "cell_face_offsets" in mesh and "cell_face_nodes" in mesh:
+            offs = np.asarray(mesh["cell_face_offsets"], dtype=np.int32).ravel()
+            faces = np.asarray(mesh["cell_face_nodes"], dtype=np.int32).ravel()
+            tri_list = []
+            tc_list = []
+            for ci in range(int(offs.size) - 1):
+                s = int(offs[ci])
+                e = int(offs[ci + 1])
+                ns = faces[s:e]
+                for k in range(1, int(ns.size) - 1):
+                    tri_list.append([int(ns[0]), int(ns[k]), int(ns[k + 1])])
+                    tc_list.append(ci)
+            if tri_list:
+                self._data.overlay_cell_nodes = np.asarray(
+                    tri_list, dtype=np.int32
+                ).ravel()
+                self._data.overlay_tri_to_cell = np.asarray(tc_list, dtype=np.int32)
             else:
                 self._data.overlay_cell_nodes = raw_cell_nodes
                 self._data.overlay_tri_to_cell = np.empty(0, dtype=np.int32)
-        except Exception as exc:
-            view._log(f"[HighPerf Overlay] Data sync failed: {exc}")
+        else:
+            self._data.overlay_cell_nodes = raw_cell_nodes
+            self._data.overlay_tri_to_cell = np.empty(0, dtype=np.int32)
 
         self.refresh_high_perf_canvas_overlay(None)
 
