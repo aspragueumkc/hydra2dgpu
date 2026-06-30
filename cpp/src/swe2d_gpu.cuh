@@ -232,6 +232,8 @@ struct SWE2DDeviceState {
     double*  d_rain_cn            = nullptr; // [n_cells]
     double*  d_rain_cum_mm        = nullptr; // [n_cells]
     double*  d_rain_excess_cum_mm = nullptr; // [n_cells]
+    double*  d_rain_cn_scratch_h  = nullptr; // [n_cells] dedicated CN save/restore scratch
+    double*  d_rain_cn_scratch_ex  = nullptr; // [n_cells] dedicated CN save/restore scratch
     double*  d_cell_source_mps    = nullptr; // [n_cells]
     double*  d_external_source_mps = nullptr; // [n_cells]
     // Predictor-corrector source buffer: stores coupling source from predictor step
@@ -1173,7 +1175,11 @@ void swe2d_gpu_preload_coupling_cell_area(SWE2DDeviceState* dev, int32_t n_cells
 /// Compute coupling sources entirely on-device (no host readback). @host
 void swe2d_gpu_compute_coupling_full_on_device(
     SWE2DDeviceState* dev, int32_t n_cells, int32_t n_structures, const double* cell_wse_host,
-    const double* host_structure_flows = nullptr);
+    const double* host_structure_flows = nullptr,
+    bool graph_safe = false);
+void swe2d_recompute_coupling_for_stage(SWE2DDeviceState* dev, int32_t n_cells,
+                                         int32_t n_structures, const double* cell_wse_host,
+                                         const double* host_structure_flows, double dt_stage);
 /// Ensure drainage Q buffer is allocated in device workspace. @host
 void swe2d_gpu_ensure_drainage_q_buf(SWE2DDeviceState* dev, int32_t n_cells);
 

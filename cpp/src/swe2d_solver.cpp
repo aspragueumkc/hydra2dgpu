@@ -196,8 +196,6 @@ SWE2DStepDiag swe2d_step(SWE2DSolver* s, double dt_request) {
     constexpr int32_t kTinyModeFused = 2;
     constexpr int32_t kTinyModePersistent = 3;
 
-    const bool use_rk2 = (s->cfg.temporal_order >= 2);
-
     const int32_t tiny_requested_raw = std::max(kTinyModeOff, std::min(kTinyModePersistent, s->cfg.tiny_mode));
     bool tiny_path_eligible = (s->dev != nullptr);
     const int32_t active_cells_est =
@@ -298,60 +296,89 @@ SWE2DStepDiag swe2d_step(SWE2DSolver* s, double dt_request) {
         }
 
         SWE2DStepDiag diag;
-        if (use_tiny_persistent_chunking) {
-            swe2d_gpu_step_rk2_persistent_chunk(
-                s->dev,
-                t_now,
-                dt,
-                tiny_chunk_substeps,
-                s->cfg.g,
-                s->cfg.h_min,
-                s->cfg.spatial_scheme,
-                s->cfg.cfl,
-                s->cfg.max_inv_area,
-                s->cfg.cfl_lambda_cap,
-                s->cfg.momentum_cap_min_speed,
-                s->cfg.momentum_cap_celerity_mult,
-                s->cfg.depth_cap,
-                s->cfg.max_rel_depth_increase,
-                s->cfg.shallow_damping_depth,
-                s->cfg.extreme_rain_mode,
-                s->cfg.source_cfl_beta,
-                s->cfg.source_max_substeps,
-                s->cfg.source_rate_cap,
-                s->cfg.source_depth_step_cap,
-                s->cfg.source_true_subcycling,
-                s->cfg.source_imex_split,
-                s->cfg.enable_shallow_front_recon_fallback,
-                use_tiny_active_edge_compaction,
-                sync_diag_this_step,
-                &diag,
-                s->cfg.front_flux_damping,
-                s->cfg.active_set_hysteresis);
+        if (s->cfg.temporal_order == 1) {
+            swe2d_gpu_step(s->dev, t_now, dt,
+                            s->cfg.g, s->cfg.h_min,
+                            s->cfg.spatial_scheme,
+                            s->cfg.cfl,
+                            s->cfg.max_inv_area,
+                            s->cfg.cfl_lambda_cap,
+                            s->cfg.momentum_cap_min_speed,
+                            s->cfg.momentum_cap_celerity_mult,
+                            s->cfg.depth_cap,
+                            s->cfg.max_rel_depth_increase,
+                            s->cfg.shallow_damping_depth,
+                            s->cfg.extreme_rain_mode,
+                            s->cfg.source_cfl_beta,
+                            s->cfg.source_max_substeps,
+                            s->cfg.source_rate_cap,
+                            s->cfg.source_depth_step_cap,
+                            s->cfg.source_true_subcycling,
+                            s->cfg.source_imex_split,
+                            s->cfg.enable_shallow_front_recon_fallback,
+                            sync_diag_this_step,
+                            &diag,
+                            s->cfg.front_flux_damping,
+                            s->cfg.active_set_hysteresis);
+        } else if (s->cfg.temporal_order == 2) {
+            if (use_tiny_persistent_chunking) {
+                swe2d_gpu_step_rk2_persistent_chunk(
+                    s->dev,
+                    t_now,
+                    dt,
+                    tiny_chunk_substeps,
+                    s->cfg.g,
+                    s->cfg.h_min,
+                    s->cfg.spatial_scheme,
+                    s->cfg.cfl,
+                    s->cfg.max_inv_area,
+                    s->cfg.cfl_lambda_cap,
+                    s->cfg.momentum_cap_min_speed,
+                    s->cfg.momentum_cap_celerity_mult,
+                    s->cfg.depth_cap,
+                    s->cfg.max_rel_depth_increase,
+                    s->cfg.shallow_damping_depth,
+                    s->cfg.extreme_rain_mode,
+                    s->cfg.source_cfl_beta,
+                    s->cfg.source_max_substeps,
+                    s->cfg.source_rate_cap,
+                    s->cfg.source_depth_step_cap,
+                    s->cfg.source_true_subcycling,
+                    s->cfg.source_imex_split,
+                    s->cfg.enable_shallow_front_recon_fallback,
+                    use_tiny_active_edge_compaction,
+                    sync_diag_this_step,
+                    &diag,
+                    s->cfg.front_flux_damping,
+                    s->cfg.active_set_hysteresis);
+            } else {
+                swe2d_gpu_step_rk2(s->dev, t_now, dt,
+                                   s->cfg.g, s->cfg.h_min,
+                                   s->cfg.spatial_scheme,
+                                   s->cfg.cfl,
+                                   s->cfg.max_inv_area,
+                                   s->cfg.cfl_lambda_cap,
+                                   s->cfg.momentum_cap_min_speed,
+                                   s->cfg.momentum_cap_celerity_mult,
+                                   s->cfg.depth_cap,
+                                   s->cfg.max_rel_depth_increase,
+                                   s->cfg.shallow_damping_depth,
+                                   s->cfg.extreme_rain_mode,
+                                   s->cfg.source_cfl_beta,
+                                   s->cfg.source_max_substeps,
+                                   s->cfg.source_rate_cap,
+                                   s->cfg.source_depth_step_cap,
+                                   s->cfg.source_true_subcycling,
+                                   s->cfg.source_imex_split,
+                                   s->cfg.enable_shallow_front_recon_fallback,
+                                   sync_diag_this_step,
+                                   &diag,
+                                   s->cfg.front_flux_damping,
+                                   s->cfg.active_set_hysteresis);
+            }
         } else {
-            swe2d_gpu_step_rk2(s->dev, t_now, dt,
-                               s->cfg.g, s->cfg.h_min,
-                               s->cfg.spatial_scheme,
-                               s->cfg.cfl,
-                               s->cfg.max_inv_area,
-                               s->cfg.cfl_lambda_cap,
-                               s->cfg.momentum_cap_min_speed,
-                               s->cfg.momentum_cap_celerity_mult,
-                               s->cfg.depth_cap,
-                               s->cfg.max_rel_depth_increase,
-                               s->cfg.shallow_damping_depth,
-                               s->cfg.extreme_rain_mode,
-                               s->cfg.source_cfl_beta,
-                               s->cfg.source_max_substeps,
-                               s->cfg.source_rate_cap,
-                               s->cfg.source_depth_step_cap,
-                               s->cfg.source_true_subcycling,
-                               s->cfg.source_imex_split,
-                               s->cfg.enable_shallow_front_recon_fallback,
-                               sync_diag_this_step,
-                               &diag,
-                               s->cfg.front_flux_damping,
-                               s->cfg.active_set_hysteresis);
+            throw std::invalid_argument(
+                "swe2d_step: temporal_order must be 1 or 2; higher-order schemes (RK3-RK5) are not yet implemented");
         }
         diag.gpu_active = true;
         finalize_diag(diag);

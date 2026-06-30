@@ -6241,12 +6241,12 @@ void swe2d_gpu_step_rk2(
     const bool has_rain_cn_state = (
         dev->d_rain_cum_mm &&
         dev->d_rain_excess_cum_mm &&
-        dev->d_h1 &&
-        dev->d_h2
+        dev->d_rain_cn_scratch_h &&
+        dev->d_rain_cn_scratch_ex
     );
     if (has_rain_cn_state) {
-        CUDA_CHECK(cudaMemcpyAsync(dev->d_h1, dev->d_rain_cum_mm, sz, cudaMemcpyDeviceToDevice, dev->d_stream));
-        CUDA_CHECK(cudaMemcpyAsync(dev->d_h2, dev->d_rain_excess_cum_mm, sz, cudaMemcpyDeviceToDevice, dev->d_stream));
+        CUDA_CHECK(cudaMemcpyAsync(dev->d_rain_cn_scratch_h, dev->d_rain_cum_mm, sz, cudaMemcpyDeviceToDevice, dev->d_stream));
+        CUDA_CHECK(cudaMemcpyAsync(dev->d_rain_cn_scratch_ex, dev->d_rain_excess_cum_mm, sz, cudaMemcpyDeviceToDevice, dev->d_stream));
     }
 
     swe2d_gpu_step(dev, t_now + dt, dt, g, h_min, spatial_scheme, cfl_factor,
@@ -6271,8 +6271,8 @@ void swe2d_gpu_step_rk2(
     CUDA_CHECK(cudaGetLastError());
 
     if (has_rain_cn_state) {
-        CUDA_CHECK(cudaMemcpyAsync(dev->d_rain_cum_mm, dev->d_h1, sz, cudaMemcpyDeviceToDevice, dev->d_stream));
-        CUDA_CHECK(cudaMemcpyAsync(dev->d_rain_excess_cum_mm, dev->d_h2, sz, cudaMemcpyDeviceToDevice, dev->d_stream));
+        CUDA_CHECK(cudaMemcpyAsync(dev->d_rain_cum_mm, dev->d_rain_cn_scratch_h, sz, cudaMemcpyDeviceToDevice, dev->d_stream));
+        CUDA_CHECK(cudaMemcpyAsync(dev->d_rain_excess_cum_mm, dev->d_rain_cn_scratch_ex, sz, cudaMemcpyDeviceToDevice, dev->d_stream));
     }
 
     CUDA_CHECK(cudaMemsetAsync(dev->d_lambda_max, 0, sizeof(double), dev->d_stream));
@@ -6422,12 +6422,12 @@ void swe2d_gpu_step_rk2_persistent_chunk(
     const bool has_rain_cn_state = (
         dev->d_rain_cum_mm &&
         dev->d_rain_excess_cum_mm &&
-        dev->d_h1 &&
-        dev->d_h2
+        dev->d_rain_cn_scratch_h &&
+        dev->d_rain_cn_scratch_ex
     );
     if (has_rain_cn_state) {
-        CUDA_CHECK(cudaMemcpyAsync(dev->d_h1, dev->d_rain_cum_mm, sz, cudaMemcpyDeviceToDevice, dev->d_stream));
-        CUDA_CHECK(cudaMemcpyAsync(dev->d_h2, dev->d_rain_excess_cum_mm, sz, cudaMemcpyDeviceToDevice, dev->d_stream));
+        CUDA_CHECK(cudaMemcpyAsync(dev->d_rain_cn_scratch_h, dev->d_rain_cum_mm, sz, cudaMemcpyDeviceToDevice, dev->d_stream));
+        CUDA_CHECK(cudaMemcpyAsync(dev->d_rain_cn_scratch_ex, dev->d_rain_excess_cum_mm, sz, cudaMemcpyDeviceToDevice, dev->d_stream));
     }
 
     swe2d_gpu_step_persistent_chunk(
@@ -6471,8 +6471,8 @@ void swe2d_gpu_step_rk2_persistent_chunk(
     CUDA_CHECK(cudaGetLastError());
 
     if (has_rain_cn_state) {
-        CUDA_CHECK(cudaMemcpyAsync(dev->d_rain_cum_mm, dev->d_h1, sz, cudaMemcpyDeviceToDevice, dev->d_stream));
-        CUDA_CHECK(cudaMemcpyAsync(dev->d_rain_excess_cum_mm, dev->d_h2, sz, cudaMemcpyDeviceToDevice, dev->d_stream));
+        CUDA_CHECK(cudaMemcpyAsync(dev->d_rain_cum_mm, dev->d_rain_cn_scratch_h, sz, cudaMemcpyDeviceToDevice, dev->d_stream));
+        CUDA_CHECK(cudaMemcpyAsync(dev->d_rain_excess_cum_mm, dev->d_rain_cn_scratch_ex, sz, cudaMemcpyDeviceToDevice, dev->d_stream));
     }
 
     CUDA_CHECK(cudaMemsetAsync(dev->d_lambda_max, 0, sizeof(double), dev->d_stream));
@@ -6751,6 +6751,8 @@ void swe2d_gpu_set_rain_cn_forcing(
     if (dev->d_rain_cn) CUDA_CHECK(cudaFree(dev->d_rain_cn));
     if (dev->d_rain_cum_mm) CUDA_CHECK(cudaFree(dev->d_rain_cum_mm));
     if (dev->d_rain_excess_cum_mm) CUDA_CHECK(cudaFree(dev->d_rain_excess_cum_mm));
+    if (dev->d_rain_cn_scratch_h) CUDA_CHECK(cudaFree(dev->d_rain_cn_scratch_h));
+    if (dev->d_rain_cn_scratch_ex) CUDA_CHECK(cudaFree(dev->d_rain_cn_scratch_ex));
     dev->d_cell_gage_idx = nullptr;
     dev->d_rain_hg_offsets = nullptr;
     dev->d_rain_hg_time_s = nullptr;
@@ -6758,6 +6760,8 @@ void swe2d_gpu_set_rain_cn_forcing(
     dev->d_rain_cn = nullptr;
     dev->d_rain_cum_mm = nullptr;
     dev->d_rain_excess_cum_mm = nullptr;
+    dev->d_rain_cn_scratch_h = nullptr;
+    dev->d_rain_cn_scratch_ex = nullptr;
     dev->n_rain_gages = 0;
     dev->n_rain_samples = 0;
     dev->rain_ia_ratio = ia_ratio;
@@ -6778,6 +6782,8 @@ void swe2d_gpu_set_rain_cn_forcing(
     CUDA_CHECK(cudaMalloc(reinterpret_cast<void**>(&dev->d_rain_cn), static_cast<size_t>(n_cells) * sizeof(double)));
     CUDA_CHECK(cudaMalloc(reinterpret_cast<void**>(&dev->d_rain_cum_mm), static_cast<size_t>(n_cells) * sizeof(double)));
     CUDA_CHECK(cudaMalloc(reinterpret_cast<void**>(&dev->d_rain_excess_cum_mm), static_cast<size_t>(n_cells) * sizeof(double)));
+    CUDA_CHECK(cudaMalloc(reinterpret_cast<void**>(&dev->d_rain_cn_scratch_h), static_cast<size_t>(n_cells) * sizeof(double)));
+    CUDA_CHECK(cudaMalloc(reinterpret_cast<void**>(&dev->d_rain_cn_scratch_ex), static_cast<size_t>(n_cells) * sizeof(double)));
     CUDA_CHECK(cudaMemcpy(dev->d_cell_gage_idx, cell_gage_idx, static_cast<size_t>(n_cells) * sizeof(int32_t), cudaMemcpyHostToDevice));
     CUDA_CHECK(cudaMemcpy(dev->d_rain_hg_offsets, gage_offsets, static_cast<size_t>(n_gages + 1) * sizeof(int32_t), cudaMemcpyHostToDevice));
     CUDA_CHECK(cudaMemcpy(dev->d_rain_hg_time_s, hg_time_s, static_cast<size_t>(n_samples) * sizeof(double), cudaMemcpyHostToDevice));
@@ -6785,6 +6791,8 @@ void swe2d_gpu_set_rain_cn_forcing(
     CUDA_CHECK(cudaMemcpy(dev->d_rain_cn, cn, static_cast<size_t>(n_cells) * sizeof(double), cudaMemcpyHostToDevice));
     CUDA_CHECK(cudaMemset(dev->d_rain_cum_mm, 0, static_cast<size_t>(n_cells) * sizeof(double)));
     CUDA_CHECK(cudaMemset(dev->d_rain_excess_cum_mm, 0, static_cast<size_t>(n_cells) * sizeof(double)));
+    CUDA_CHECK(cudaMemset(dev->d_rain_cn_scratch_h, 0, static_cast<size_t>(n_cells) * sizeof(double)));
+    CUDA_CHECK(cudaMemset(dev->d_rain_cn_scratch_ex, 0, static_cast<size_t>(n_cells) * sizeof(double)));
     CUDA_CHECK(cudaMemset(dev->d_cell_source_mps, 0, static_cast<size_t>(n_cells) * sizeof(double)));
     dev->n_rain_gages = n_gages;
     dev->n_rain_samples = n_samples;
@@ -7048,8 +7056,9 @@ __global__ void swe2d_coupling_wse_from_state_kernel(
 
 void swe2d_gpu_compute_coupling_full_on_device(
     SWE2DDeviceState* dev, int32_t n_cells, int32_t n_structures, const double* cell_wse_host,
-    const double* host_structure_flows)  // if non-null, override computed structure flows
-{
+    const double* host_structure_flows,
+    bool graph_safe)
+{ // if non-null, override computed structure flows
     if (!dev) dev = s_coupling_dev;
     if (!dev) throw std::runtime_error("compute_coupling_full_on_device: no GPU device state");
     if (n_cells <= 0) n_cells = dev->n_cells;
@@ -7276,7 +7285,18 @@ void swe2d_gpu_compute_coupling_full_on_device(
     // code (apply_native_device_sources) and the solver's graph capture/replay
     // uses the same stream; without this sync, pending async work causes
     // cudaStreamBeginCapture to fail on the next solver step.
-    CUDA_CHECK(cudaStreamSynchronize(stream));
+    if (!graph_safe) {
+        CUDA_CHECK(cudaStreamSynchronize(stream));
+    }
+}
+
+void swe2d_recompute_coupling_for_stage(SWE2DDeviceState* dev, int32_t n_cells,
+                                          int32_t n_structures, const double* cell_wse_host,
+                                          const double* host_structure_flows, double dt_stage) {
+    swe2d_gpu_set_coupling_dt(dt_stage);
+    swe2d_gpu_compute_coupling_full_on_device(dev, n_cells, n_structures,
+                                                cell_wse_host, host_structure_flows,
+                                                true); // graph_safe=true: no sync
 }
 
 void swe2d_gpu_readback_coupling_sources(double* host_buf, int32_t n_cells)
