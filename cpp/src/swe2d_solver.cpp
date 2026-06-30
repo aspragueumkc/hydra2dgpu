@@ -43,9 +43,9 @@ SWE2DSolver* swe2d_create(
     if (h0 == nullptr) {
         throw std::invalid_argument("swe2d_create: h0 must not be null");
     }
-    if (cfg.temporal_order != 1 && cfg.temporal_order != 2 && cfg.temporal_order != 3 && cfg.temporal_order != 4) {
+    if (cfg.temporal_order != 1 && cfg.temporal_order != 2 && cfg.temporal_order != 3 && cfg.temporal_order != 4 && cfg.temporal_order != 5) {
         throw std::invalid_argument(
-            "swe2d_create: temporal_order must be 1, 2, 3, or 4");
+            "swe2d_create: temporal_order must be 1, 2, 3, 4, or 5");
     }
 
     auto* s = new SWE2DSolver();
@@ -424,9 +424,33 @@ SWE2DStepDiag swe2d_step(SWE2DSolver* s, double dt_request) {
                                 &diag,
                                 s->cfg.front_flux_damping,
                                 s->cfg.active_set_hysteresis);
+        } else if (s->cfg.temporal_order == 5) {
+            swe2d_gpu_step_rk5(s->dev, t_now, dt,
+                                s->cfg.g, s->cfg.h_min,
+                                s->cfg.spatial_scheme,
+                                s->cfg.cfl,
+                                s->cfg.max_inv_area,
+                                s->cfg.cfl_lambda_cap,
+                                s->cfg.momentum_cap_min_speed,
+                                s->cfg.momentum_cap_celerity_mult,
+                                s->cfg.depth_cap,
+                                s->cfg.max_rel_depth_increase,
+                                s->cfg.shallow_damping_depth,
+                                s->cfg.extreme_rain_mode,
+                                s->cfg.source_cfl_beta,
+                                s->cfg.source_max_substeps,
+                                s->cfg.source_rate_cap,
+                                s->cfg.source_depth_step_cap,
+                                s->cfg.source_true_subcycling,
+                                s->cfg.source_imex_split,
+                                s->cfg.enable_shallow_front_recon_fallback,
+                                sync_diag_this_step,
+                                &diag,
+                                s->cfg.front_flux_damping,
+                                s->cfg.active_set_hysteresis);
         } else {
             throw std::invalid_argument(
-                "swe2d_step: temporal_order must be 1, 2, 3, or 4");
+                "swe2d_step: temporal_order must be 1, 2, 3, 4, or 5");
         }
         diag.gpu_active = true;
         finalize_diag(diag);
