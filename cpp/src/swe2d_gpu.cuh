@@ -805,6 +805,38 @@ void swe2d_gpu_step_rk2_persistent_chunk(
     double front_flux_damping    = 0.5,
     bool   active_set_hysteresis = true);
 
+/** Three-stage SSP Shu-Osher RK3 (graph-safe).
+    Uses d_k4_h/hu/hv and d_k6_h/hu/hv as slope scratch buffers.
+    Rain CN save/restore uses dedicated d_rain_cn_scratch_h/ex.
+    @host */
+void swe2d_gpu_step_rk3(
+    SWE2DDeviceState* dev,
+    double t_now,
+    double dt,
+    double g,
+    double h_min,
+    int spatial_scheme,
+    double cfl_factor,
+    double max_inv_area,
+    double cfl_lambda_cap,
+    double momentum_cap_min_speed,
+    double momentum_cap_celerity_mult,
+    double depth_cap,
+    double max_rel_depth_increase,
+    double shallow_damping_depth,
+    bool extreme_rain_mode,
+    double source_cfl_beta,
+    int source_max_substeps,
+    double source_rate_cap,
+    double source_depth_step_cap,
+    bool source_true_subcycling,
+    bool source_imex_split,
+    bool enable_shallow_front_recon_fallback,
+    bool sync_diagnostics,
+    SWE2DStepDiag* diag,
+    double front_flux_damping    = 0.5,
+    bool   active_set_hysteresis = true);
+
 /** Compute a CFL-limited dt from current device state without host-state sync.
     @param dev Device state pointer
     @param g Gravitational acceleration
