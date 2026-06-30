@@ -867,7 +867,7 @@ class RunController:
             def _on_snapshot_readback() -> None:
                 """Called by reporter after device snapshots are read to host.
 
-                Syncs UI and persists fetched snapshots to GPKG.
+                D2H copy + UI sync only.  GPKG persistence happens at finalize.
                 """
                 try:
                     rd = getattr(view, "_results_data", None)
@@ -880,36 +880,6 @@ class RunController:
                         if live_ts:
                             view._update_high_perf_overlay_time(float(live_ts[-1][0]))
                         view._refresh_plot()
-
-                        # Persist fetched snapshots to GPKG
-                        try:
-                            gpkg = view._current_line_results_storage_path()
-                            _mn = str(mesh_data.get("mesh_name", "") or "")
-                            _save_mesh = bool(
-                                wp.get("save_mesh_results_to_gpkg_chk", False)
-                            )
-                            if gpkg and _mn and run_id and _save_mesh:
-                                from swe2d.services.gpkg_persistence_service import (
-                                    persist_baked_results,
-                                )
-                                snapshots = rd.get_live_snapshot_timesteps()
-                                if snapshots:
-                                    # backend is in closure scope (assigned
-                                    # at line ~382)
-                                    max_tracking = backend.get_max_tracking()
-                                    persist_baked_results(
-                                        gpkg, run_id, _mn, snapshots,
-                                        max_tracking=max_tracking,
-                                        log_fn=log_fn,
-                                    )
-                                    log_fn(
-                                        f"Fetched snapshots persisted to {gpkg} "
-                                        f"({len(snapshots)} timesteps)"
-                                    )
-                        except Exception as persist_exc:
-                            log_fn(
-                                f"Snapshot persist warning: {persist_exc}"
-                            )
                 except Exception:
                     logger.warning("Snapshot readback UI sync failed", exc_info=True)
             runtime_reporter.set_post_readback_callback(_on_snapshot_readback)
@@ -1077,6 +1047,10 @@ class RunController:
                 save_run_log=wp["save_run_log_to_gpkg_chk"],
                 h_min=wp["h_min_spin"],
                 max_tracking=max_results,
+                coupling_controller=coupling_controller,
+                sample_map=sample_map,
+                cell_solver_z=cell_solver_z,
+                sample_line_metrics_callback=view._sample_line_metrics,
             )
 
             return _result_data

@@ -86,6 +86,10 @@ class SWE2DRunFinalizer:
         h_min: float = 1.0e-4,
         mesh_name: str = "",
         max_tracking: Optional[Dict[str, np.ndarray]] = None,
+        coupling_controller: Any = None,
+        sample_map: Any = None,
+        cell_solver_z: Any = None,
+        sample_line_metrics_callback: Any = None,
     ) -> None:
         """Compute mass-balance summary, persist results to GeoPackage, and refresh UI."""
         h_end_model = np.asarray(h, dtype=np.float64).ravel()
@@ -182,80 +186,91 @@ class SWE2DRunFinalizer:
 
             _t0 = time.perf_counter()
             try:
-                if save_line_results and _results_data is not None:
-                    for lid, ld in _results_data._live_line_ts.items():
-                        line_name = ld.get("line_name", f"line_{lid}")
-                        times_arr = np.array(ld.get("t_s", []), dtype=np.float64)
+                if save_line_results and snapshot_timesteps and sample_line_metrics_callback is not None:
+                    from collections import defaultdict
+                    ts_by_line: Dict[int, Dict[str, list]] = defaultdict(lambda: defaultdict(list))
+                    prof_by_line: Dict[int, Dict[str, list]] = defaultdict(lambda: defaultdict(list))
+                    for snap_t, h_snap, hu_snap, hv_snap in snapshot_timesteps:
+                        h_arr = np.asarray(h_snap, dtype=np.float64)
+                        hu_arr = np.asarray(hu_snap, dtype=np.float64)
+                        hv_arr = np.asarray(hv_snap, dtype=np.float64)
+                        cell_bed = np.asarray(cell_solver_z, dtype=np.float64) if cell_solver_z is not None else np.zeros_like(h_arr)
+                        ts_rows, prof_rows = sample_line_metrics_callback(
+                            sample_map, snap_t, h_arr, hu_arr, hv_arr, cell_bed,
+                        )
+                        for row in ts_rows:
+                            lid = int(row.get("line_id", -1))
+                            if lid < 0:
+                                continue
+                            ld = ts_by_line[lid]
+                            if "line_name" not in ld:
+                                ld["line_name"] = str(row.get("line_name", f"line_{lid}"))
+                            ld.setdefault("t_s", []).append(float(snap_t))
+                            for k in ("depth_m", "velocity_ms", "wse_m", "bed_m", "flow_cms", "wet_frac", "fr"):
+                                ld.setdefault(k, []).append(float(row.get(k, 0.0)))
+                        for row in prof_rows:
+                            lid = int(row.get("line_id", -1))
+                            if lid < 0:
+                                continue
+                            pd = prof_by_line[lid]
+                            if "line_name" not in pd:
+                                pd["line_name"] = str(row.get("line_name", f"line_{lid}"))
+                                pd["station_m"] = np.asarray(row["station_m"], dtype=np.float64)
+                            for k in ("depth_m", "velocity_ms", "wse_m", "bed_m", "flow_qn", "fr"):
+                                v = row.get(k)
+                                pd.setdefault(k, []).append(np.asarray(v, dtype=np.float64) if v is not None else np.array([]))
+                            pd.setdefault("wet", []).append(np.asarray(row.get("wet", []), dtype=np.int32))
+                    for lid, ld in ts_by_line.items():
+                        times_arr = np.array(ld["t_s"], dtype=np.float64)
                         if times_arr.size == 0:
                             continue
                         persist_baked_line_ts(
-                            gpkg_results_path, run_id, lid, line_name, times_arr,
-                            np.array(ld.get("depth_m", []), dtype=np.float64),
-                            np.array(ld.get("velocity_ms", []), dtype=np.float64),
-                            np.array(ld.get("wse_m", []), dtype=np.float64),
-                            np.array(ld.get("bed_m", []), dtype=np.float64),
-                            np.array(ld.get("flow_cms", []), dtype=np.float64),
-                            np.array(ld.get("wet_frac", []), dtype=np.float64),
-                            np.array(ld.get("fr", []), dtype=np.float64),
+                            gpkg_results_path, run_id, lid, ld["line_name"], times_arr,
+                            np.array(ld["depth_m"], dtype=np.float64),
+                            np.array(ld["velocity_ms"], dtype=np.float64),
+                            np.array(ld["wse_m"], dtype=np.float64),
+                            np.array(ld["bed_m"], dtype=np.float64),
+                            np.array(ld["flow_cms"], dtype=np.float64),
+                            np.array(ld["wet_frac"], dtype=np.float64),
+                            np.array(ld["fr"], dtype=np.float64),
                             log_fn=self._view.log_message,
                         )
-                    self._view.log_message(
-                        f"  baked line TS saved to {gpkg_results_path} "
-                        f"in {(time.perf_counter() - _t0) * 1000:.0f} ms"
-                    )
-            except Exception as exc:
-                self._view.log_message(f"Baked line TS persistence warning: {exc}")
-
-            # ── Baked line profiles ──
-            _t0 = time.perf_counter()
-            try:
-                _line_profile_rows = _results_data.get_live_line_profile_rows() if _results_data is not None else []
-                if save_line_results and _line_profile_rows:
-                    from collections import defaultdict
-                    prof_lines: Dict[int, Dict[str, list]] = defaultdict(lambda: defaultdict(list))
-                    prof_times_set: Dict[int, set] = defaultdict(set)
-                    for r in _line_profile_rows:
-                        lid = int(r.get("line_id", 0))
-                        prof_lines[lid]["t_s"].append(float(r.get("t_s", 0.0)))
-                        prof_lines[lid]["station_m"].append(float(r.get("station_m", 0.0)))
-                        prof_lines[lid]["depth_m"].append(float(r.get("depth_m", 0.0)))
-                        prof_lines[lid]["velocity_ms"].append(float(r.get("velocity_ms", 0.0)))
-                        prof_lines[lid]["wse_m"].append(float(r.get("wse_m", 0.0)))
-                        prof_lines[lid]["bed_m"].append(float(r.get("bed_m", 0.0)))
-                        prof_lines[lid]["flow_qn"].append(float(r.get("flow_qn", 0.0)))
-                        prof_lines[lid]["fr"].append(float(r.get("fr", 0.0)))
-                        prof_lines[lid]["wet"].append(int(r.get("wet", 0)))
-                        if "line_name" not in prof_lines[lid]:
-                            prof_lines[lid]["line_name"] = str(r.get("line_name", f"line_{lid}"))
-                    for lid, pd in prof_lines.items():
-                        times_arr = np.array(pd["t_s"], dtype=np.float64)
-                        station_arr = np.array(pd["station_m"], dtype=np.float64)
-                        # Build 2-D arrays — assume fixed station count per timestep
-                        unique_ts = np.unique(times_arr)
-                        n_ts = len(unique_ts)
-                        n_sta = len(station_arr) // n_ts if n_ts > 0 else 0
-                        if n_sta <= 0:
+                    for lid, pd in prof_by_line.items():
+                        sm_list = pd.get("station_m", [])
+                        if not sm_list:
                             continue
+                        station_arr = np.asarray(sm_list, dtype=np.float64)
+                        n_sta = station_arr.size
+                        n_ts = len(pd.get("depth_m", []))
+                        if n_ts == 0 or n_sta == 0:
+                            continue
+                        depth_flat = np.array(pd["depth_m"], dtype=np.float64)
+                        vel_flat = np.array(pd["velocity_ms"], dtype=np.float64)
+                        wse_flat = np.array(pd["wse_m"], dtype=np.float64)
+                        bed_flat = np.array(pd["bed_m"], dtype=np.float64)
+                        qn_flat = np.array(pd["flow_qn"], dtype=np.float64)
+                        fr_flat = np.array(pd["fr"], dtype=np.float64)
+                        wet_flat = np.array(pd["wet"], dtype=np.int32)
+                        times_arr = np.array([float(s[0]) for s in snapshot_timesteps], dtype=np.float64)[:n_ts]
                         persist_baked_line_profile(
-                            gpkg_results_path, run_id, lid,
-                            pd.get("line_name", f"line_{lid}"),
-                            station_arr[:n_sta],
-                            unique_ts,
-                            np.array(pd["depth_m"], dtype=np.float64).reshape(n_ts, n_sta),
-                            np.array(pd["velocity_ms"], dtype=np.float64).reshape(n_ts, n_sta),
-                            np.array(pd["wse_m"], dtype=np.float64).reshape(n_ts, n_sta),
-                            np.array(pd["bed_m"], dtype=np.float64).reshape(n_ts, n_sta),
-                            np.array(pd["flow_qn"], dtype=np.float64).reshape(n_ts, n_sta),
-                            np.array(pd["fr"], dtype=np.float64).reshape(n_ts, n_sta),
-                            np.array(pd["wet"], dtype=np.int32).reshape(n_ts, n_sta),
+                            gpkg_results_path, run_id, lid, pd["line_name"],
+                            station_arr,
+                            times_arr,
+                            depth_flat.reshape(n_ts, n_sta),
+                            vel_flat.reshape(n_ts, n_sta),
+                            wse_flat.reshape(n_ts, n_sta),
+                            bed_flat.reshape(n_ts, n_sta),
+                            qn_flat.reshape(n_ts, n_sta),
+                            fr_flat.reshape(n_ts, n_sta),
+                            wet_flat.reshape(n_ts, n_sta),
                             log_fn=self._view.log_message,
                         )
                     self._view.log_message(
-                        f"  baked line profiles saved to {gpkg_results_path} "
+                        f"  baked line TS+profiles saved to {gpkg_results_path} "
                         f"in {(time.perf_counter() - _t0) * 1000:.0f} ms"
                     )
             except Exception as exc:
-                self._view.log_message(f"Baked line profile persistence warning: {exc}")
+                self._view.log_message(f"Baked line persistence warning: {exc}")
 
             _t0 = time.perf_counter()
             try:
