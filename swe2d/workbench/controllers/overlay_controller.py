@@ -635,8 +635,8 @@ class OverlayController:
 
         
 
-        from swe2d.services.gpkg_persistence_service import load_baked_mesh_snapshot
-        snapshot = load_baked_mesh_snapshot(gpkg, run_id, t_s)
+        from swe2d.services.gpkg_persistence_service import load_baked_snapshot
+        snapshot = load_baked_snapshot(gpkg, run_id, t_s)
         if snapshot is None:
             view._log("[HighPerf Overlay] No mesh snapshot found in GeoPackage.")
             return False

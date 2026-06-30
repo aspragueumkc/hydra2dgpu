@@ -980,7 +980,7 @@ class RunController:
                         ))
                     rd = getattr(view, "_results_data", None)
                     if timesteps and rd is not None:
-                        rd.set_live_snapshot_timesteps(timesteps)
+                        rd.set_live_snapshot_timesteps(timesteps, t_sec=float(t_accum))
                 except Exception as exc:
                     log_fn(f"[SnapReadback] Device snapshot readback failed: {exc}")
             h, hu, hv = backend.get_state()
@@ -1012,18 +1012,7 @@ class RunController:
                 "last_mass_total": np.array(float(last_diag.get("mass_total", -1.0) if last_diag else -1.0)),
             }
 
-            # Sync live snapshot timesteps into the temporal dock slider
-            # and overlay so they reflect the current state *before*
-            # finalization (which persists to GPKG).
-            results_data = getattr(view, "_results_data", None)
-            if results_data is not None and hasattr(results_data, "set_live_snapshot_timesteps"):
-                try:
-                    live_ts = results_data.get_live_snapshot_timesteps()
-                    results_data.set_live_snapshot_timesteps(
-                        live_ts, t_sec=float(t_accum),
-                    )
-                except Exception as exc:
-                    log_fn(f"[LiveSync] set_live_snapshot_timesteps failed: {exc}")
+            # Sync overlay and plot now that device snapshots are on host.
             try:
                 view._sync_high_perf_overlay_data()
                 live_ts = results_data.get_live_snapshot_timesteps() if results_data else []

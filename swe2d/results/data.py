@@ -150,9 +150,9 @@ class SWE2DResultsData:
             n = len(timesteps)
             t_arr = np.array([float(t[0]) for t in timesteps], dtype=np.float64)
             n_cells = np.asarray(timesteps[0][1]).size if n > 0 else 0
-            h_arr  = np.column_stack([np.asarray(t[1], dtype=np.float64) for t in timesteps]) if n > 0 else np.empty((n_cells, 0), dtype=np.float64)
-            hu_arr = np.column_stack([np.asarray(t[2], dtype=np.float64) for t in timesteps]) if n > 0 else np.empty((n_cells, 0), dtype=np.float64)
-            hv_arr = np.column_stack([np.asarray(t[3], dtype=np.float64) for t in timesteps]) if n > 0 else np.empty((n_cells, 0), dtype=np.float64)
+            h_arr  = np.array([np.asarray(t[1], dtype=np.float64) for t in timesteps]) if n > 0 else np.empty((0, n_cells), dtype=np.float64)
+            hu_arr = np.array([np.asarray(t[2], dtype=np.float64) for t in timesteps]) if n > 0 else np.empty((0, n_cells), dtype=np.float64)
+            hv_arr = np.array([np.asarray(t[3], dtype=np.float64) for t in timesteps]) if n > 0 else np.empty((0, n_cells), dtype=np.float64)
             self._live_times = t_arr
             self._live_h = h_arr
             self._live_hu = hu_arr

@@ -1147,18 +1147,3 @@ def collect_baked_runs_from_gpkg(
         conn.close()
 
 
-def load_baked_mesh_snapshot(
-    gpkg_path: str,
-    run_id: str,
-    t_s: float,
-) -> Optional[Dict]:
-    """Load mesh snapshot data from baked results BLOBs.
-
-    Near-zero-copy: uses np.frombuffer on the stored BLOBs
-    instead of iterating per-row SQL results.
-
-    Returns dict with ``h``, ``hu``, ``hv`` (np.ndarrays),
-    ``t_s`` (float), ``cell_count`` (int), or None if not found.
-    """
-    return load_baked_snapshot(gpkg_path, run_id, t_s)
-
