@@ -2525,8 +2525,10 @@ class GmshBackend(MeshingBackend):
                 gmsh.model.mesh.field.setNumber(f_thresh, "InField", float(f_dist))
                 gmsh.model.mesh.field.setNumber(f_thresh, "SizeMin", float(cst_size))
                 gmsh.model.mesh.field.setNumber(f_thresh, "SizeMax", float(max_region_size))
-                gmsh.model.mesh.field.setNumber(f_thresh, "DistMin", float(0.5 * cst_step))
-                gmsh.model.mesh.field.setNumber(f_thresh, "DistMax", float(1.5 * cst_size))
+                dist_min = min(0.5 * cst_step, 1.49 * cst_size)
+                dist_max = max(1.5 * cst_size, dist_min + cst_size)
+                gmsh.model.mesh.field.setNumber(f_thresh, "DistMin", float(dist_min))
+                gmsh.model.mesh.field.setNumber(f_thresh, "DistMax", float(dist_max))
                 gmsh.model.mesh.field.setNumber(f_thresh, "StopAtDistMax", 1.0)
 
                 f_restrict = gmsh.model.mesh.field.add("Restrict")
