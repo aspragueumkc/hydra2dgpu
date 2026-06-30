@@ -32,6 +32,7 @@ class TemporalScheme(IntEnum):
     EULER_1ST = 1
     SSP_RK2 = 2
     SSP_RK3 = 3
+    CLASSIC_RK4 = 4
     GRAPH_SAFE_RK4 = 5      # True RK4 stage path with graph-safe staged forcing
     GRAPH_SAFE_RK5 = 6      # Cash-Karp RK5 stage path with graph-safe staged forcing
 

@@ -497,6 +497,7 @@ class ModelTabView(QtWidgets.QWidget):
         for text, data in [
             ("Euler (RK1, 1st-order)", 1),
             ("RK2 (Heun, 2nd-order, default)", 2),
+            ("RK3 (SSP Shu-Osher, 3rd-order)", 3),
             ("RK4 (classic, 4th-order)", 4),
             ("Graph-safe RK4 (true staged)", 5),
             ("Graph-safe RK5 (Cash-Karp)", 6),

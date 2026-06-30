@@ -43,6 +43,10 @@ SWE2DSolver* swe2d_create(
     if (h0 == nullptr) {
         throw std::invalid_argument("swe2d_create: h0 must not be null");
     }
+    if (cfg.temporal_order != 1 && cfg.temporal_order != 2) {
+        throw std::invalid_argument(
+            "swe2d_create: temporal_order must be 1 or 2 until higher-order phases land");
+    }
 
     auto* s = new SWE2DSolver();
     s->mesh = &mesh;

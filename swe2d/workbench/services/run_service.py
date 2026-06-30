@@ -141,7 +141,7 @@ _REQUIRED_KEYS = {
 }
 
 _VALID_SPATIAL_SCHEMES = {0, 1, 2, 3, 4, 5, 6}
-_VALID_TEMPORAL_SCHEMES = {0, 1, 2, 3, 4}
+_VALID_TEMPORAL_SCHEMES = {1, 2, 3, 4, 5, 6}
 
 
 def validate_run_configuration(params: Dict[str, Any]) -> List[str]:
