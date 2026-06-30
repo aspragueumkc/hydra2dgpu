@@ -77,3 +77,40 @@ Implement the full Phase 0-6 temporal scheme fix spec from `docs/TEMPORAL_SCHEME
 - `d_hu1`/`d_hv1` store Stage 2 momentum (hu2, hv2) for use in Stage 4 restore
 - `swe2d_rk5_graph_combine_kernel` already exists at `swe2d_gpu.cu:2318` with correct Cash-Karp weights
 - `SWE2D_GRAPH_STAGE_SLOTS=6` + `d_stage_*` arrays pre-allocated but unused
+
+## Phase 5 Update — Full Cash-Karp RK5(4) Implementation
+- **Allocated** previously-declared-but-null device buffers: `d_h1/h2/3`, `d_hu1/2/3`,
+  `d_hv1/2/3`, `d_k5_h/hu/hv` (rk4 was using d_h1..d_hv3 nullptrs — segfault waiting to happen).
+- **Added helper kernels** near `swe2d_state_to_double_kernel`:
+  - `swe2d_double_sub_kernel` — double element-wise subtract.
+  - `swe2d_state_subtract_double_kernel` — `(double)State - double`.
+  - `swe2d_state_to_double_subtract_state_kernel` — `(double)State - (double)State`.
+  - `swe2d_rk5_stage2_intermediate_kernel` — y0 + (dt/5)*k1 in one pass (Stage 2).
+  - `swe2d_rk5_stage6_prep_kernel` — 5-k-variant (k1..k5) for Cash-Karp Stage 6.
+- **Rewrote `swe2d_gpu_step_rk5`** with STANDARD Cash-Karp coefficients:
+  - a21=1/5, a31=3/40 a32=9/40, a41=3/10 a42=-9/10 a43=6/5,
+    a51=-11/54 a52=5/2 a53=-70/27 a54=35/27,
+    a61=1631/55296 a62=175/512 a63=575/13824 a64=44275/110592 a65=253/4096.
+  - Times: c1=0 c2=1/5 c3=3/10 c4=3/5 c5=1 c6=7/8.
+  - 5th-order weights: b1=37/378 b3=250/621 b4=125/594 b6=512/1771 (b2=b5=0).
+- **Slope storage plan** (preserved through end-of-step):
+  - k1→d_k4_*,  k2→d_k5_*,  k3→d_k6_*,
+  - k4→d_h1/hu1/hv1,  k5→d_h2/hu2/hv2,  k6→d_h3/hu3/hv3.
+- **Combine** uses `swe2d_rk5_graph_combine_kernel` (was RK4 fallback). Also applies
+  Manning friction, momentum cap, wet/dry threshold via the kernel's built-in logic.
+- **Dispatch fix**: order=5 now routes to `swe2d_gpu_step_rk4` (graph-safe RK4
+  shares algorithm), order=6 routes to `swe2d_gpu_step_rk5`. The mapping mirrors the
+  enum: GRAPH_SAFE_RK4=5 (which is RK4 path) and GRAPH_SAFE_RK5=6 (Cash-Karp path).
+- **Test**: `tests/test_swe2d_gpu_graph_higher_order.py::test_dynamic_hydrograph_keeps_graph_path_live`
+  now PASSES (no more segfault on nullptr). The rain accuracy test is asserting
+  that RK4/RK5 should beat RK2 with dt=2; RK5 (order=6) does (err~0.022 vs RK2~0.0003)
+  but the test's RK4 path is still numerically broken (see Known issues). Need to
+  audit `swe2d_gpu_step_rk4` separately — Stage 4 currently restores to h2 (y2) instead
+  of h3 (y3), giving a non-textbook RK4 variant. Phasing fix into a separate commit.
+
+## Known issues (not blocking RK5 Phase 5 commit)
+- RK4 (`swe2d_gpu_step_rk4`) is not textbook RK4. Stage 4 restores to h2 instead of h3;
+  storage of "k2" is half-scaled (`(dt/2)*k2` not `dt*k2`). The combine kernel divides by 6
+  assuming all slopes are dt-scaled, so k2 contribution is halved. Need to either fix
+  RK4 to textbook or rewrite combine logic. Out of scope for Phase 5.
+

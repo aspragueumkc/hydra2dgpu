@@ -43,9 +43,9 @@ SWE2DSolver* swe2d_create(
     if (h0 == nullptr) {
         throw std::invalid_argument("swe2d_create: h0 must not be null");
     }
-    if (cfg.temporal_order != 1 && cfg.temporal_order != 2 && cfg.temporal_order != 3 && cfg.temporal_order != 4 && cfg.temporal_order != 5) {
+    if (cfg.temporal_order < 1 || cfg.temporal_order > 6) {
         throw std::invalid_argument(
-            "swe2d_create: temporal_order must be 1, 2, 3, 4, or 5");
+            "swe2d_create: temporal_order must be in {1, 2, 3, 4, 5, 6}");
     }
 
     auto* s = new SWE2DSolver();
@@ -400,7 +400,8 @@ SWE2DStepDiag swe2d_step(SWE2DSolver* s, double dt_request) {
                                 &diag,
                                 s->cfg.front_flux_damping,
                                 s->cfg.active_set_hysteresis);
-        } else if (s->cfg.temporal_order == 4) {
+        } else if (s->cfg.temporal_order == 4 || s->cfg.temporal_order == 5) {
+            // order=4 -> classic RK4, order=5 -> graph-safe RK4 (same algorithm).
             swe2d_gpu_step_rk4(s->dev, t_now, dt,
                                 s->cfg.g, s->cfg.h_min,
                                 s->cfg.spatial_scheme,
@@ -424,7 +425,8 @@ SWE2DStepDiag swe2d_step(SWE2DSolver* s, double dt_request) {
                                 &diag,
                                 s->cfg.front_flux_damping,
                                 s->cfg.active_set_hysteresis);
-        } else if (s->cfg.temporal_order == 5) {
+        } else if (s->cfg.temporal_order == 6) {
+            // order=6 -> graph-safe Cash-Karp RK5(4).
             swe2d_gpu_step_rk5(s->dev, t_now, dt,
                                 s->cfg.g, s->cfg.h_min,
                                 s->cfg.spatial_scheme,
@@ -450,7 +452,7 @@ SWE2DStepDiag swe2d_step(SWE2DSolver* s, double dt_request) {
                                 s->cfg.active_set_hysteresis);
         } else {
             throw std::invalid_argument(
-                "swe2d_step: temporal_order must be 1, 2, 3, 4, or 5");
+                "swe2d_step: temporal_order must be in {1, 2, 3, 4, 5, 6}");
         }
         diag.gpu_active = true;
         finalize_diag(diag);

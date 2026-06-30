@@ -1379,6 +1379,77 @@ __global__ void swe2d_state_to_double_kernel(int32_t n, const State* __restrict_
     dst[i] = static_cast<double>(src[i]);
 }
 
+/** GPU kernel: result[i] = a[i] - b[i], element-wise double subtraction.
+ * 1 thread per cell.
+ * @global */
+__global__ __launch_bounds__(256, 4) void swe2d_double_sub_kernel(
+    int32_t n,
+    const double* __restrict__ a,
+    const double* __restrict__ b,
+    double* __restrict__ c)
+{
+    int32_t i = blockIdx.x * blockDim.x + threadIdx.x;
+    if (i >= n) return;
+    c[i] = a[i] - b[i];
+}
+
+/** GPU kernel: result[i] = (double)state[i] - d[i], where state is State and d is double.
+ * Used to compute k_i = h_i - y_i when y_i is already a double and h_i is a State.
+ * 1 thread per cell.
+ * @global */
+__global__ __launch_bounds__(256, 4) void swe2d_state_subtract_double_kernel(
+    int32_t n,
+    const State* __restrict__ state,
+    const double* __restrict__ d,
+    double* __restrict__ result)
+{
+    int32_t i = blockIdx.x * blockDim.x + threadIdx.x;
+    if (i >= n) return;
+    result[i] = static_cast<double>(state[i]) - d[i];
+}
+
+/** GPU kernel: compute y0 + dt*(a1*k1 + a2*k2) into d_h (used in Stage 2).
+ * Tighter than swe2d_rk5_stage34_prep_kernel when a3 = 0 (we save kernel arg overhead).
+ * @global */
+__global__ __launch_bounds__(256, 4) void swe2d_rk5_stage2_intermediate_kernel(
+    int32_t n,
+    double dt,
+    const double* __restrict__ y0_h,
+    const double* __restrict__ y0_hu,
+    const double* __restrict__ y0_hv,
+    const double* __restrict__ k1_h,
+    const double* __restrict__ k1_hu,
+    const double* __restrict__ k1_hv,
+    State* __restrict__ h,
+    State* __restrict__ hu,
+    State* __restrict__ hv)
+{
+    int32_t c = blockIdx.x * blockDim.x + threadIdx.x;
+    if (c >= n) return;
+    h[c]  = static_cast<State>(y0_h[c]  + dt * (1.0 / 5.0)  * k1_h[c]);
+    hu[c] = static_cast<State>(y0_hu[c] + dt * (1.0 / 5.0)  * k1_hu[c]);
+    hv[c] = static_cast<State>(y0_hv[c] + dt * (1.0 / 5.0)  * k1_hv[c]);
+}
+
+/** GPU kernel: result[i] = a[i] - b[i], where both a and b are State. Result is double.
+ * Used to compute k_i = h_i - y_i when y_i is stored as State.
+ * 1 thread per cell.
+ * @global */
+__global__ __launch_bounds__(256, 4) void swe2d_state_to_double_subtract_state_kernel(
+    int32_t n,
+    const State* __restrict__ a,
+    const State* __restrict__ b,
+    double* __restrict__ c)
+{
+    int32_t i = blockIdx.x * blockDim.x + threadIdx.x;
+    if (i >= n) return;
+    c[i] = static_cast<double>(a[i]) - static_cast<double>(b[i]);
+}
+
+/** GPU kernel: result[i] = (double)state[i].
+ * Already have state_to_double_kernel; alias here for clarity in stage code.
+ * (No new kernel - just documentation.) */
+
 /** GPU kernel: double-to-State conversion (e.g. d_h0 -> d_h restore).
  * 1 thread per cell.
  * @global */
@@ -4816,19 +4887,36 @@ SWE2DDeviceState* swe2d_gpu_init(
     CUDA_CHECK(cudaMemset(dev->d_cell_source_mps, 0, sz_cells * sizeof(double)));
     CUDA_CHECK(cudaMemset(dev->d_stage_cell_source_mps, 0, static_cast<size_t>(SWE2D_GRAPH_STAGE_SLOTS) * sz_cells * sizeof(double)));
 
-    // k-slope buffers for graph-safe RK4/RK5 (temporal_order 4/5)
+    // k-slope buffers for graph-safe RK4/RK5/RK6 (temporal_order 4/5/6)
     alloc_d(reinterpret_cast<void**>(&dev->d_k4_h),  sz_cells * sizeof(double));
     alloc_d(reinterpret_cast<void**>(&dev->d_k4_hu), sz_cells * sizeof(double));
     alloc_d(reinterpret_cast<void**>(&dev->d_k4_hv), sz_cells * sizeof(double));
+    alloc_d(reinterpret_cast<void**>(&dev->d_k5_h),  sz_cells * sizeof(double));
+    alloc_d(reinterpret_cast<void**>(&dev->d_k5_hu), sz_cells * sizeof(double));
+    alloc_d(reinterpret_cast<void**>(&dev->d_k5_hv), sz_cells * sizeof(double));
     alloc_d(reinterpret_cast<void**>(&dev->d_k6_h),  sz_cells * sizeof(double));
     alloc_d(reinterpret_cast<void**>(&dev->d_k6_hu), sz_cells * sizeof(double));
     alloc_d(reinterpret_cast<void**>(&dev->d_k6_hv), sz_cells * sizeof(double));
     CUDA_CHECK(cudaMemset(dev->d_k4_h,  0, sz_cells * sizeof(double)));
     CUDA_CHECK(cudaMemset(dev->d_k4_hu, 0, sz_cells * sizeof(double)));
     CUDA_CHECK(cudaMemset(dev->d_k4_hv, 0, sz_cells * sizeof(double)));
+    CUDA_CHECK(cudaMemset(dev->d_k5_h,  0, sz_cells * sizeof(double)));
+    CUDA_CHECK(cudaMemset(dev->d_k5_hu, 0, sz_cells * sizeof(double)));
+    CUDA_CHECK(cudaMemset(dev->d_k5_hv, 0, sz_cells * sizeof(double)));
     CUDA_CHECK(cudaMemset(dev->d_k6_h,  0, sz_cells * sizeof(double)));
     CUDA_CHECK(cudaMemset(dev->d_k6_hu, 0, sz_cells * sizeof(double)));
     CUDA_CHECK(cudaMemset(dev->d_k6_hv, 0, sz_cells * sizeof(double)));
+
+    // Intermediate state buffers (y_i momenta) for higher-order schemes
+    alloc_d(reinterpret_cast<void**>(&dev->d_h1),  sz_cells * sizeof(double));
+    alloc_d(reinterpret_cast<void**>(&dev->d_hu1), sz_cells * sizeof(double));
+    alloc_d(reinterpret_cast<void**>(&dev->d_hv1), sz_cells * sizeof(double));
+    alloc_d(reinterpret_cast<void**>(&dev->d_h2),  sz_cells * sizeof(double));
+    alloc_d(reinterpret_cast<void**>(&dev->d_hu2), sz_cells * sizeof(double));
+    alloc_d(reinterpret_cast<void**>(&dev->d_hv2), sz_cells * sizeof(double));
+    alloc_d(reinterpret_cast<void**>(&dev->d_h3),  sz_cells * sizeof(double));
+    alloc_d(reinterpret_cast<void**>(&dev->d_hu3), sz_cells * sizeof(double));
+    alloc_d(reinterpret_cast<void**>(&dev->d_hv3), sz_cells * sizeof(double));
 
     // External coupling source buffer — allocated once, reused every step.
     alloc_d(reinterpret_cast<void**>(&dev->d_external_source_mps), sz_cells * sizeof(double));
@@ -6848,6 +6936,24 @@ __global__ __launch_bounds__(256, 4) void swe2d_rk5_stage56_prep_kernel(
     hv[c] += dt * (a1 * k1_hv[c] + a2 * k2_hv[c] + a3 * k3_hv[c] + a4 * k4_hv[c]);
 }
 
+__global__ __launch_bounds__(256, 4) void swe2d_rk5_stage6_prep_kernel(
+    int32_t n_cells,
+    double dt,
+    const double* k1_h,  const double* k1_hu,  const double* k1_hv,
+    const double* k2_h,  const double* k2_hu,  const double* k2_hv,
+    const double* k3_h,  const double* k3_hu,  const double* k3_hv,
+    const double* k4_h,  const double* k4_hu,  const double* k4_hv,
+    const double* k5_h,  const double* k5_hu,  const double* k5_hv,
+    double a1, double a2, double a3, double a4, double a5,
+    double* h, double* hu, double* hv)
+{
+    int32_t c = blockIdx.x * blockDim.x + threadIdx.x;
+    if (c >= n_cells) return;
+    h[c]  += dt * (a1 * k1_h[c]  + a2 * k2_h[c]  + a3 * k3_h[c]  + a4 * k4_h[c]  + a5 * k5_h[c]);
+    hu[c] += dt * (a1 * k1_hu[c] + a2 * k2_hu[c] + a3 * k3_hu[c] + a4 * k4_hu[c] + a5 * k5_hu[c]);
+    hv[c] += dt * (a1 * k1_hv[c] + a2 * k2_hv[c] + a3 * k3_hv[c] + a4 * k4_hv[c] + a5 * k5_hv[c]);
+}
+
 void swe2d_gpu_step_rk5(
     SWE2DDeviceState* dev,
     double t_now,
@@ -6876,6 +6982,34 @@ void swe2d_gpu_step_rk5(
     double front_flux_damping,
     bool active_set_hysteresis)
 {
+    // Cash-Karp RK5(4) embedded (graph-safe).
+    //
+    // Coefficients (standard Cash-Karp, Numerical Recipes / Wikipedia):
+    //   c1=0  c2=1/5     c3=3/10     c4=3/5     c5=1     c6=7/8
+    //   a21=1/5
+    //   a31=3/40        a32=9/40
+    //   a41=3/10        a42=-9/10     a43=6/5
+    //   a51=-11/54      a52=5/2       a53=-70/27   a54=35/27
+    //   a61=1631/55296  a62=175/512   a63=575/13824 a64=44275/110592 a65=253/4096
+    //
+    // 5th-order combine weights: b1=37/378 b3=250/621 b4=125/594 b6=512/1771
+    // (b2 = b5 = 0; k2 and k5 used only by intermediate stages, NOT in combine.)
+    //
+    // Slope storage plan (each preserved until combine reads it):
+    //   k1 -> d_k4_h/hu/hv
+    //   k2 -> d_k5_h/hu/hv
+    //   k3 -> d_k6_h/hu/hv
+    //   k4 -> d_h1/hu1/hv1
+    //   k5 -> d_h2/hu2/hv2
+    //   k6 -> d_h3/hu3/hv3
+    //
+    // y_i intermediate-state scratch (saved BEFORE Stage i GPU step, then reused):
+    //   Stage 2: y2 (State) -> d_h1/hu1/hv1, then later overwritten by k4 after Stage 4.
+    //   Stage 3: y3 (State) -> d_h2/hu2/hv2, then later overwritten by k5 after Stage 5.
+    //   Stage 4: y4 (State) -> d_h3/hu3/hv3, then later overwritten by k6 after Stage 6.
+    //   Stage 5: y5 (State) -> d_h3/hu3/hv3 (re-using the buffer since y4 not needed).
+    //   Stage 6: y6 (State) -> d_h3/hu3/hv3 (re-using the buffer since y5 not needed).
+
     constexpr int BLOCK = 256;
     const int32_t n_cells = dev->n_cells;
     const size_t sz = static_cast<size_t>(n_cells) * sizeof(double);
@@ -6884,6 +7018,7 @@ void swe2d_gpu_step_rk5(
     dev->kernel_graph_cache.time_integrator = 5;
     const int grid_cells = (n_cells + BLOCK - 1) / BLOCK;
 
+    // Save base state y0 to d_h0/hu0/hv0 (double-precision).
     swe2d_state_to_double_kernel<<<grid_cells, BLOCK, 0, dev->d_stream>>>(
         n_cells, dev->d_h, dev->d_h0);
     swe2d_state_to_double_kernel<<<grid_cells, BLOCK, 0, dev->d_stream>>>(
@@ -6893,7 +7028,10 @@ void swe2d_gpu_step_rk5(
 
     SWE2DStepDiag tmp_diag;
 
-    // Stage 1: k1 = f(t, y0); y1 = y0 + dt*k1
+    // ========================================================================
+    // Stage 1: k1 = f(t, y0); h1 = y0 + dt*k1.
+    // Compute k1 = (double)h1 - y0 via state_subtract_double_kernel.
+    // ========================================================================
     swe2d_gpu_step(dev, t_now, dt, g, h_min, spatial_scheme, cfl_factor,
                    max_inv_area, cfl_lambda_cap,
                    momentum_cap_min_speed, momentum_cap_celerity_mult,
@@ -6903,34 +7041,29 @@ void swe2d_gpu_step_rk5(
                    enable_shallow_front_recon_fallback,
                    false, &tmp_diag,
                    front_flux_damping, active_set_hysteresis);
-    // k1 = h1 - h0 -> d_k4
-    swe2d_state_to_double_kernel<<<grid_cells, BLOCK, 0, dev->d_stream>>>(
-        n_cells, dev->d_h, dev->d_k4_h);
-    swe2d_state_to_double_kernel<<<grid_cells, BLOCK, 0, dev->d_stream>>>(
-        n_cells, dev->d_hu, dev->d_k4_hu);
-    swe2d_state_to_double_kernel<<<grid_cells, BLOCK, 0, dev->d_stream>>>(
-        n_cells, dev->d_hv, dev->d_k4_hv);
-    // d_h1 = h1 (back up stage 1 result)
-    CUDA_CHECK(cudaMemcpyAsync(dev->d_h1, dev->d_h, sz, cudaMemcpyDeviceToDevice, dev->d_stream));
+    swe2d_state_subtract_double_kernel<<<grid_cells, BLOCK, 0, dev->d_stream>>>(
+        n_cells, dev->d_h,  dev->d_h0,  dev->d_k4_h);
+    swe2d_state_subtract_double_kernel<<<grid_cells, BLOCK, 0, dev->d_stream>>>(
+        n_cells, dev->d_hu, dev->d_hu0, dev->d_k4_hu);
+    swe2d_state_subtract_double_kernel<<<grid_cells, BLOCK, 0, dev->d_stream>>>(
+        n_cells, dev->d_hv, dev->d_hv0, dev->d_k4_hv);
 
-    // Stage 2: restore y0; y2 = y0 + dt*(1/5)*k1; k2 = f(t+dt/5, y2); y2 += dt*k2
-    CUDA_CHECK(cudaMemcpyAsync(dev->d_h, dev->d_h0, sz, cudaMemcpyDeviceToDevice, dev->d_stream));
-    CUDA_CHECK(cudaMemcpyAsync(dev->d_hu, dev->d_hu0, sz, cudaMemcpyDeviceToDevice, dev->d_stream));
-    CUDA_CHECK(cudaMemcpyAsync(dev->d_hv, dev->d_hv0, sz, cudaMemcpyDeviceToDevice, dev->d_stream));
-    {
-        const int n = n_cells;
-        const double dt_val = dt;
-        const double a1 = 1.0 / 5.0;
-        const double* __restrict__ k1h = dev->d_k4_h;
-        const double* __restrict__ k1hu = dev->d_k4_hu;
-        const double* __restrict__ k1hv = dev->d_k4_hv;
-        double* __restrict__ h_d = dev->d_h;
-        double* __restrict__ hu_d = dev->d_hu;
-        double* __restrict__ hv_d = dev->d_hv;
-        swe2d_rk5_stage34_prep_kernel<<<(n + BLOCK - 1) / BLOCK, BLOCK, 0, dev->d_stream>>>(
-            n, dt_val, k1h, k1hu, k1hv, k1h, k1hu, k1hv, k1h, k1hu, k1hv,
-            a1, 0.0, 0.0, h_d, hu_d, hv_d);
-    }
+    // ========================================================================
+    // Stage 2: y2 = y0 + (dt/5)*k1. Save y2 as State, then k2 = f(t+c2*dt, y2).
+    // y2 scratch -> d_h1/hu1/hv1 (State). k2 -> d_k5_h/hu/hv.
+    // ========================================================================
+    swe2d_rk5_stage2_intermediate_kernel<<<grid_cells, BLOCK, 0, dev->d_stream>>>(
+        n_cells, dt,
+        dev->d_h0, dev->d_hu0, dev->d_hv0,
+        dev->d_k4_h, dev->d_k4_hu, dev->d_k4_hv,
+        dev->d_h, dev->d_hu, dev->d_hv);
+    // Save y2 (State) to d_h1/hu1/hv1 (as double) BEFORE the GPU step overwrites d_h.
+    swe2d_state_to_double_kernel<<<grid_cells, BLOCK, 0, dev->d_stream>>>(
+        n_cells, dev->d_h, dev->d_h1);
+    swe2d_state_to_double_kernel<<<grid_cells, BLOCK, 0, dev->d_stream>>>(
+        n_cells, dev->d_hu, dev->d_hu1);
+    swe2d_state_to_double_kernel<<<grid_cells, BLOCK, 0, dev->d_stream>>>(
+        n_cells, dev->d_hv, dev->d_hv1);
     swe2d_gpu_step(dev, t_now + dt * (1.0 / 5.0), dt, g, h_min, spatial_scheme, cfl_factor,
                    max_inv_area, cfl_lambda_cap,
                    momentum_cap_min_speed, momentum_cap_celerity_mult,
@@ -6940,40 +7073,46 @@ void swe2d_gpu_step_rk5(
                    enable_shallow_front_recon_fallback,
                    false, &tmp_diag,
                    front_flux_damping, active_set_hysteresis);
-    // k2 = h - y2 -> d_k6; d_h2 = h (back up y2+dt*k2, used for Stage 3 intermediate)
-    swe2d_state_to_double_kernel<<<grid_cells, BLOCK, 0, dev->d_stream>>>(
-        n_cells, dev->d_h, dev->d_k6_h);
-    swe2d_state_to_double_kernel<<<grid_cells, BLOCK, 0, dev->d_stream>>>(
-        n_cells, dev->d_hu, dev->d_k6_hu);
-    swe2d_state_to_double_kernel<<<grid_cells, BLOCK, 0, dev->d_stream>>>(
-        n_cells, dev->d_hv, dev->d_k6_hv);
-    CUDA_CHECK(cudaMemcpyAsync(dev->d_h2, dev->d_h, sz, cudaMemcpyDeviceToDevice, dev->d_stream));
-    // d_hu1/d_hv1 = y2 momentum (for Stage 3 restore)
-    CUDA_CHECK(cudaMemcpyAsync(dev->d_hu1, dev->d_hu, sz, cudaMemcpyDeviceToDevice, dev->d_stream));
-    CUDA_CHECK(cudaMemcpyAsync(dev->d_hv1, dev->d_hv, sz, cudaMemcpyDeviceToDevice, dev->d_stream));
+    // Now d_h = h2 (State). k2 = (double)h2 - y2.
+    swe2d_state_subtract_double_kernel<<<grid_cells, BLOCK, 0, dev->d_stream>>>(
+        n_cells, dev->d_h,  dev->d_h1,  dev->d_k5_h);
+    swe2d_state_subtract_double_kernel<<<grid_cells, BLOCK, 0, dev->d_stream>>>(
+        n_cells, dev->d_hu, dev->d_hu1, dev->d_k5_hu);
+    swe2d_state_subtract_double_kernel<<<grid_cells, BLOCK, 0, dev->d_stream>>>(
+        n_cells, dev->d_hv, dev->d_hv1, dev->d_k5_hv);
 
-    // Stage 3: restore y0; y3 = y0 + dt*(3/10*k1 + 3/5*k2); k3 = f(t+3*dt/10, y3)
-    CUDA_CHECK(cudaMemcpyAsync(dev->d_h, dev->d_h0, sz, cudaMemcpyDeviceToDevice, dev->d_stream));
+    // ========================================================================
+    // Stage 3: y3 = y0 + dt*(a31*k1 + a32*k2); a31=3/40, a32=9/40.
+    // Restore y0 to d_h. Apply prep kernel. Save y3 as State. Stage 3 GPU step.
+    // y3 scratch -> d_h2/hu2/hv2 (State). k3 -> d_k6_h/hu/hv.
+    // ========================================================================
+    CUDA_CHECK(cudaMemcpyAsync(dev->d_h,  dev->d_h0,  sz, cudaMemcpyDeviceToDevice, dev->d_stream));
     CUDA_CHECK(cudaMemcpyAsync(dev->d_hu, dev->d_hu0, sz, cudaMemcpyDeviceToDevice, dev->d_stream));
     CUDA_CHECK(cudaMemcpyAsync(dev->d_hv, dev->d_hv0, sz, cudaMemcpyDeviceToDevice, dev->d_stream));
     {
         const int n = n_cells;
         const double dt_val = dt;
-        const double a1 = 3.0 / 10.0;
-        const double a2 = 3.0 / 5.0;
-        const double* __restrict__ k1h = dev->d_k4_h;
+        const double a1 = 3.0 / 40.0;
+        const double a2 = 9.0 / 40.0;
+        const double* __restrict__ k1h  = dev->d_k4_h;
         const double* __restrict__ k1hu = dev->d_k4_hu;
         const double* __restrict__ k1hv = dev->d_k4_hv;
-        const double* __restrict__ k2h = dev->d_k6_h;
-        const double* __restrict__ k2hu = dev->d_k6_hu;
-        const double* __restrict__ k2hv = dev->d_k6_hv;
-        double* __restrict__ h_d = dev->d_h;
+        const double* __restrict__ k2h  = dev->d_k5_h;
+        const double* __restrict__ k2hu = dev->d_k5_hu;
+        const double* __restrict__ k2hv = dev->d_k5_hv;
+        double* __restrict__ h_d  = dev->d_h;
         double* __restrict__ hu_d = dev->d_hu;
         double* __restrict__ hv_d = dev->d_hv;
         swe2d_rk5_stage34_prep_kernel<<<(n + BLOCK - 1) / BLOCK, BLOCK, 0, dev->d_stream>>>(
             n, dt_val, k1h, k1hu, k1hv, k2h, k2hu, k2hv, k2h, k2hu, k2hv,
             a1, a2, 0.0, h_d, hu_d, hv_d);
     }
+    swe2d_state_to_double_kernel<<<grid_cells, BLOCK, 0, dev->d_stream>>>(
+        n_cells, dev->d_h, dev->d_h2);
+    swe2d_state_to_double_kernel<<<grid_cells, BLOCK, 0, dev->d_stream>>>(
+        n_cells, dev->d_hu, dev->d_hu2);
+    swe2d_state_to_double_kernel<<<grid_cells, BLOCK, 0, dev->d_stream>>>(
+        n_cells, dev->d_hv, dev->d_hv2);
     swe2d_gpu_step(dev, t_now + dt * (3.0 / 10.0), dt, g, h_min, spatial_scheme, cfl_factor,
                    max_inv_area, cfl_lambda_cap,
                    momentum_cap_min_speed, momentum_cap_celerity_mult,
@@ -6983,43 +7122,50 @@ void swe2d_gpu_step_rk5(
                    enable_shallow_front_recon_fallback,
                    false, &tmp_diag,
                    front_flux_damping, active_set_hysteresis);
-    // k3 = h - y3 -> d_k6 (overwrites k2); save y3 momentum to d_hu1/d_hv1; save h3 to d_h2
-    swe2d_state_to_double_kernel<<<grid_cells, BLOCK, 0, dev->d_stream>>>(
-        n_cells, dev->d_h, dev->d_k6_h);
-    swe2d_state_to_double_kernel<<<grid_cells, BLOCK, 0, dev->d_stream>>>(
-        n_cells, dev->d_hu, dev->d_k6_hu);
-    swe2d_state_to_double_kernel<<<grid_cells, BLOCK, 0, dev->d_stream>>>(
-        n_cells, dev->d_hv, dev->d_k6_hv);
-    CUDA_CHECK(cudaMemcpyAsync(dev->d_h2, dev->d_h, sz, cudaMemcpyDeviceToDevice, dev->d_stream));
-    CUDA_CHECK(cudaMemcpyAsync(dev->d_hu1, dev->d_hu, sz, cudaMemcpyDeviceToDevice, dev->d_stream));
-    CUDA_CHECK(cudaMemcpyAsync(dev->d_hv1, dev->d_hv, sz, cudaMemcpyDeviceToDevice, dev->d_stream));
+    // k3 = h3 - y3.
+    swe2d_state_subtract_double_kernel<<<grid_cells, BLOCK, 0, dev->d_stream>>>(
+        n_cells, dev->d_h,  dev->d_h2,  dev->d_k6_h);
+    swe2d_state_subtract_double_kernel<<<grid_cells, BLOCK, 0, dev->d_stream>>>(
+        n_cells, dev->d_hu, dev->d_hu2, dev->d_k6_hu);
+    swe2d_state_subtract_double_kernel<<<grid_cells, BLOCK, 0, dev->d_stream>>>(
+        n_cells, dev->d_hv, dev->d_hv2, dev->d_k6_hv);
 
-    // Stage 4: restore y0; y4 = y0 + dt*(3/5*k1 - 9/10*k2 + 6/5*k3); k4 = f(t+3*dt/5, y4)
-    CUDA_CHECK(cudaMemcpyAsync(dev->d_h, dev->d_h0, sz, cudaMemcpyDeviceToDevice, dev->d_stream));
+    // ========================================================================
+    // Stage 4: y4 = y0 + dt*(a41*k1 + a42*k2 + a43*k3); a41=3/10, a42=-9/10, a43=6/5.
+    // y4 scratch -> d_h3/hu3/hv3 (State). k4 -> d_h1/hu1/hv1 (overwriting stale y2).
+    // ========================================================================
+    CUDA_CHECK(cudaMemcpyAsync(dev->d_h,  dev->d_h0,  sz, cudaMemcpyDeviceToDevice, dev->d_stream));
     CUDA_CHECK(cudaMemcpyAsync(dev->d_hu, dev->d_hu0, sz, cudaMemcpyDeviceToDevice, dev->d_stream));
     CUDA_CHECK(cudaMemcpyAsync(dev->d_hv, dev->d_hv0, sz, cudaMemcpyDeviceToDevice, dev->d_stream));
     {
         const int n = n_cells;
         const double dt_val = dt;
-        const double a1 =  3.0 / 5.0;
+        const double a1 =  3.0 / 10.0;
         const double a2 = -9.0 / 10.0;
         const double a3 =  6.0 / 5.0;
-        const double* __restrict__ k1h = dev->d_k4_h;
+        const double* __restrict__ k1h  = dev->d_k4_h;
         const double* __restrict__ k1hu = dev->d_k4_hu;
         const double* __restrict__ k1hv = dev->d_k4_hv;
-        const double* __restrict__ k2h = dev->d_k6_h;
-        const double* __restrict__ k2hu = dev->d_k6_hu;
-        const double* __restrict__ k2hv = dev->d_k6_hv;
-        const double* __restrict__ k3h = dev->d_k6_h;
+        const double* __restrict__ k2h  = dev->d_k5_h;
+        const double* __restrict__ k2hu = dev->d_k5_hu;
+        const double* __restrict__ k2hv = dev->d_k5_hv;
+        const double* __restrict__ k3h  = dev->d_k6_h;
         const double* __restrict__ k3hu = dev->d_k6_hu;
         const double* __restrict__ k3hv = dev->d_k6_hv;
-        double* __restrict__ h_d = dev->d_h;
+        double* __restrict__ h_d  = dev->d_h;
         double* __restrict__ hu_d = dev->d_hu;
         double* __restrict__ hv_d = dev->d_hv;
         swe2d_rk5_stage34_prep_kernel<<<(n + BLOCK - 1) / BLOCK, BLOCK, 0, dev->d_stream>>>(
             n, dt_val, k1h, k1hu, k1hv, k2h, k2hu, k2hv, k3h, k3hu, k3hv,
             a1, a2, a3, h_d, hu_d, hv_d);
     }
+    // Save y4 (State) to d_h3/hu3/hv3.
+    swe2d_state_to_double_kernel<<<grid_cells, BLOCK, 0, dev->d_stream>>>(
+        n_cells, dev->d_h, dev->d_h3);
+    swe2d_state_to_double_kernel<<<grid_cells, BLOCK, 0, dev->d_stream>>>(
+        n_cells, dev->d_hu, dev->d_hu3);
+    swe2d_state_to_double_kernel<<<grid_cells, BLOCK, 0, dev->d_stream>>>(
+        n_cells, dev->d_hv, dev->d_hv3);
     swe2d_gpu_step(dev, t_now + dt * (3.0 / 5.0), dt, g, h_min, spatial_scheme, cfl_factor,
                    max_inv_area, cfl_lambda_cap,
                    momentum_cap_min_speed, momentum_cap_celerity_mult,
@@ -7029,47 +7175,56 @@ void swe2d_gpu_step_rk5(
                    enable_shallow_front_recon_fallback,
                    false, &tmp_diag,
                    front_flux_damping, active_set_hysteresis);
-    // k4 = h - y4 -> d_h1; d_h2 = h4; d_hu1/d_hv1 = y3 momentum (still valid from Stage 3 save)
-    swe2d_state_to_double_kernel<<<grid_cells, BLOCK, 0, dev->d_stream>>>(
-        n_cells, dev->d_h, dev->d_h1);
-    swe2d_state_to_double_kernel<<<grid_cells, BLOCK, 0, dev->d_stream>>>(
-        n_cells, dev->d_hu, dev->d_hu1);
-    swe2d_state_to_double_kernel<<<grid_cells, BLOCK, 0, dev->d_stream>>>(
-        n_cells, dev->d_hv, dev->d_hv1);
-    CUDA_CHECK(cudaMemcpyAsync(dev->d_h2, dev->d_h, sz, cudaMemcpyDeviceToDevice, dev->d_stream));
-    CUDA_CHECK(cudaMemcpyAsync(dev->d_hu1, dev->d_hu, sz, cudaMemcpyDeviceToDevice, dev->d_stream));
-    CUDA_CHECK(cudaMemcpyAsync(dev->d_hv1, dev->d_hv, sz, cudaMemcpyDeviceToDevice, dev->d_stream));
+    // k4 = h4 - y4 -> d_h1/hu1/hv1.
+    swe2d_state_subtract_double_kernel<<<grid_cells, BLOCK, 0, dev->d_stream>>>(
+        n_cells, dev->d_h,  dev->d_h3,  dev->d_h1);
+    swe2d_state_subtract_double_kernel<<<grid_cells, BLOCK, 0, dev->d_stream>>>(
+        n_cells, dev->d_hu, dev->d_hu3, dev->d_hu1);
+    swe2d_state_subtract_double_kernel<<<grid_cells, BLOCK, 0, dev->d_stream>>>(
+        n_cells, dev->d_hv, dev->d_hv3, dev->d_hv1);
 
-    // Stage 5: restore y0; y5 = y0 + dt*(-11/5*k1 + 70/5*k2 - 35/5*k3 + 35/5*k4); k5 = f(t+dt, y5)
-    CUDA_CHECK(cudaMemcpyAsync(dev->d_h, dev->d_h0, sz, cudaMemcpyDeviceToDevice, dev->d_stream));
+    // ========================================================================
+    // Stage 5: y5 = y0 + dt*(a51*k1 + a52*k2 + a53*k3 + a54*k4);
+    //   a51=-11/54, a52=5/2, a53=-70/27, a54=35/27.
+    // y5 scratch -> d_h3/hu3/hv3 (re-using slot since y4 not needed post Stage 5).
+    // k5 -> d_h2/hu2/hv2 (overwriting stale y3).
+    // ========================================================================
+    CUDA_CHECK(cudaMemcpyAsync(dev->d_h,  dev->d_h0,  sz, cudaMemcpyDeviceToDevice, dev->d_stream));
     CUDA_CHECK(cudaMemcpyAsync(dev->d_hu, dev->d_hu0, sz, cudaMemcpyDeviceToDevice, dev->d_stream));
     CUDA_CHECK(cudaMemcpyAsync(dev->d_hv, dev->d_hv0, sz, cudaMemcpyDeviceToDevice, dev->d_stream));
     {
         const int n = n_cells;
         const double dt_val = dt;
-        const double a1 = -11.0 / 5.0;
-        const double a2 =  70.0 / 5.0;
-        const double a3 = -35.0 / 5.0;
-        const double a4 =  35.0 / 5.0;
-        const double* __restrict__ k1h = dev->d_k4_h;
+        const double a1 = -11.0 / 54.0;
+        const double a2 =    5.0 /  2.0;
+        const double a3 = -70.0 / 27.0;
+        const double a4 =  35.0 / 27.0;
+        const double* __restrict__ k1h  = dev->d_k4_h;
         const double* __restrict__ k1hu = dev->d_k4_hu;
         const double* __restrict__ k1hv = dev->d_k4_hv;
-        const double* __restrict__ k2h = dev->d_k6_h;
-        const double* __restrict__ k2hu = dev->d_k6_hu;
-        const double* __restrict__ k2hv = dev->d_k6_hv;
-        const double* __restrict__ k3h = dev->d_k6_h;
+        const double* __restrict__ k2h  = dev->d_k5_h;
+        const double* __restrict__ k2hu = dev->d_k5_hu;
+        const double* __restrict__ k2hv = dev->d_k5_hv;
+        const double* __restrict__ k3h  = dev->d_k6_h;
         const double* __restrict__ k3hu = dev->d_k6_hu;
         const double* __restrict__ k3hv = dev->d_k6_hv;
-        const double* __restrict__ k4h = dev->d_h1;
+        const double* __restrict__ k4h  = dev->d_h1;
         const double* __restrict__ k4hu = dev->d_hu1;
         const double* __restrict__ k4hv = dev->d_hv1;
-        double* __restrict__ h_d = dev->d_h;
+        double* __restrict__ h_d  = dev->d_h;
         double* __restrict__ hu_d = dev->d_hu;
         double* __restrict__ hv_d = dev->d_hv;
         swe2d_rk5_stage56_prep_kernel<<<(n + BLOCK - 1) / BLOCK, BLOCK, 0, dev->d_stream>>>(
             n, dt_val, k1h, k1hu, k1hv, k2h, k2hu, k2hv, k3h, k3hu, k3hv, k4h, k4hu, k4hv,
             a1, a2, a3, a4, h_d, hu_d, hv_d);
     }
+    // Save y5 (State) to d_h3/hu3/hv3.
+    swe2d_state_to_double_kernel<<<grid_cells, BLOCK, 0, dev->d_stream>>>(
+        n_cells, dev->d_h, dev->d_h3);
+    swe2d_state_to_double_kernel<<<grid_cells, BLOCK, 0, dev->d_stream>>>(
+        n_cells, dev->d_hu, dev->d_hu3);
+    swe2d_state_to_double_kernel<<<grid_cells, BLOCK, 0, dev->d_stream>>>(
+        n_cells, dev->d_hv, dev->d_hv3);
     swe2d_gpu_step(dev, t_now + dt, dt, g, h_min, spatial_scheme, cfl_factor,
                    max_inv_area, cfl_lambda_cap,
                    momentum_cap_min_speed, momentum_cap_celerity_mult,
@@ -7079,47 +7234,68 @@ void swe2d_gpu_step_rk5(
                    enable_shallow_front_recon_fallback,
                    false, &tmp_diag,
                    front_flux_damping, active_set_hysteresis);
-    // k5 = h - y5 -> d_k6 (overwrites k3); d_hu1/d_hv1 = y5 momentum
-    swe2d_state_to_double_kernel<<<grid_cells, BLOCK, 0, dev->d_stream>>>(
-        n_cells, dev->d_h, dev->d_k6_h);
-    swe2d_state_to_double_kernel<<<grid_cells, BLOCK, 0, dev->d_stream>>>(
-        n_cells, dev->d_hu, dev->d_k6_hu);
-    swe2d_state_to_double_kernel<<<grid_cells, BLOCK, 0, dev->d_stream>>>(
-        n_cells, dev->d_hv, dev->d_k6_hv);
-    CUDA_CHECK(cudaMemcpyAsync(dev->d_hu1, dev->d_hu, sz, cudaMemcpyDeviceToDevice, dev->d_stream));
-    CUDA_CHECK(cudaMemcpyAsync(dev->d_hv1, dev->d_hv, sz, cudaMemcpyDeviceToDevice, dev->d_stream));
+    // k5 = h5 - y5 -> d_h2/hu2/hv2.
+    swe2d_state_subtract_double_kernel<<<grid_cells, BLOCK, 0, dev->d_stream>>>(
+        n_cells, dev->d_h,  dev->d_h3,  dev->d_h2);
+    swe2d_state_subtract_double_kernel<<<grid_cells, BLOCK, 0, dev->d_stream>>>(
+        n_cells, dev->d_hu, dev->d_hu3, dev->d_hu2);
+    swe2d_state_subtract_double_kernel<<<grid_cells, BLOCK, 0, dev->d_stream>>>(
+        n_cells, dev->d_hv, dev->d_hv3, dev->d_hv2);
 
-    // Stage 6: restore y0; y6 = y0 + dt*(1/5*k1 - 12/5*k2 + 8/5*k3 + 6/5*k4); k6 = f(t+7*dt/10, y6)
-    CUDA_CHECK(cudaMemcpyAsync(dev->d_h, dev->d_h0, sz, cudaMemcpyDeviceToDevice, dev->d_stream));
+    // ========================================================================
+    // Stage 6: y6 = y0 + dt*(a61*k1 + a62*k2 + a63*k3 + a64*k4 + a65*k5);
+    //   a61=1631/55296, a62=175/512, a63=575/13824, a64=44275/110592, a65=253/4096.
+    // y6 scratch -> d_h3/hu3/hv3 (re-using slot since y5 not needed post Stage 6).
+    // k6 -> d_h3/hu3/hv3 (overwrites y6 scratch; this is the last operation).
+    // ========================================================================
+    CUDA_CHECK(cudaMemcpyAsync(dev->d_h,  dev->d_h0,  sz, cudaMemcpyDeviceToDevice, dev->d_stream));
     CUDA_CHECK(cudaMemcpyAsync(dev->d_hu, dev->d_hu0, sz, cudaMemcpyDeviceToDevice, dev->d_stream));
     CUDA_CHECK(cudaMemcpyAsync(dev->d_hv, dev->d_hv0, sz, cudaMemcpyDeviceToDevice, dev->d_stream));
     {
         const int n = n_cells;
         const double dt_val = dt;
-        const double a1 =  1.0 / 5.0;
-        const double a2 = -12.0 / 5.0;
-        const double a3 =  8.0 / 5.0;
-        const double a4 =  6.0 / 5.0;
-        const double* __restrict__ k1h = dev->d_k4_h;
+        const double a1 =     1631.0 / 55296.0;
+        const double a2 =      175.0 /   512.0;
+        const double a3 =      575.0 / 13824.0;
+        const double a4 =    44275.0 /110592.0;
+        const double a5 =      253.0 /  4096.0;
+        const double* __restrict__ k1h  = dev->d_k4_h;
         const double* __restrict__ k1hu = dev->d_k4_hu;
         const double* __restrict__ k1hv = dev->d_k4_hv;
-        const double* __restrict__ k2h = dev->d_k6_h;
-        const double* __restrict__ k2hu = dev->d_k6_hu;
-        const double* __restrict__ k2hv = dev->d_k6_hv;
-        const double* __restrict__ k3h = dev->d_k6_h;
+        const double* __restrict__ k2h  = dev->d_k5_h;
+        const double* __restrict__ k2hu = dev->d_k5_hu;
+        const double* __restrict__ k2hv = dev->d_k5_hv;
+        const double* __restrict__ k3h  = dev->d_k6_h;
         const double* __restrict__ k3hu = dev->d_k6_hu;
         const double* __restrict__ k3hv = dev->d_k6_hv;
-        const double* __restrict__ k4h = dev->d_h1;
+        const double* __restrict__ k4h  = dev->d_h1;
         const double* __restrict__ k4hu = dev->d_hu1;
         const double* __restrict__ k4hv = dev->d_hv1;
-        double* __restrict__ h_d = dev->d_h;
+        const double* __restrict__ k5h  = dev->d_h2;
+        const double* __restrict__ k5hu = dev->d_hu2;
+        const double* __restrict__ k5hv = dev->d_hv2;
+        double* __restrict__ h_d  = dev->d_h;
         double* __restrict__ hu_d = dev->d_hu;
         double* __restrict__ hv_d = dev->d_hv;
-        swe2d_rk5_stage56_prep_kernel<<<(n + BLOCK - 1) / BLOCK, BLOCK, 0, dev->d_stream>>>(
-            n, dt_val, k1h, k1hu, k1hv, k2h, k2hu, k2hv, k3h, k3hu, k3hv, k4h, k4hu, k4hv,
-            a1, a2, a3, a4, h_d, hu_d, hv_d);
+        swe2d_rk5_stage6_prep_kernel<<<(n + BLOCK - 1) / BLOCK, BLOCK, 0, dev->d_stream>>>(
+            n, dt_val,
+            k1h, k1hu, k1hv,
+            k2h, k2hu, k2hv,
+            k3h, k3hu, k3hv,
+            k4h, k4hu, k4hv,
+            k5h, k5hu, k5hv,
+            a1, a2, a3, a4, a5, h_d, hu_d, hv_d);
     }
-    swe2d_gpu_step(dev, t_now + dt * (7.0 / 10.0), dt, g, h_min, spatial_scheme, cfl_factor,
+    // Save y6 (State) to d_h3/hu3/hv3 (overwrites stale k5 was already done by Stage 5
+    // saving to d_h2; d_h3 still has whatever was last written there, which is unused,
+    // so this is safe).
+    swe2d_state_to_double_kernel<<<grid_cells, BLOCK, 0, dev->d_stream>>>(
+        n_cells, dev->d_h, dev->d_h3);
+    swe2d_state_to_double_kernel<<<grid_cells, BLOCK, 0, dev->d_stream>>>(
+        n_cells, dev->d_hu, dev->d_hu3);
+    swe2d_state_to_double_kernel<<<grid_cells, BLOCK, 0, dev->d_stream>>>(
+        n_cells, dev->d_hv, dev->d_hv3);
+    swe2d_gpu_step(dev, t_now + dt * (7.0 / 8.0), dt, g, h_min, spatial_scheme, cfl_factor,
                    max_inv_area, cfl_lambda_cap,
                    momentum_cap_min_speed, momentum_cap_celerity_mult,
                    depth_cap, max_rel_depth_increase, shallow_damping_depth,
@@ -7128,23 +7304,37 @@ void swe2d_gpu_step_rk5(
                    enable_shallow_front_recon_fallback,
                    false, &tmp_diag,
                    front_flux_damping, active_set_hysteresis);
-    // k6 = h - y6 -> d_k6 (overwrites k5)
+    // k6 = h6 - y6 -> d_h3/hu3/hv3 (overwrites y6).
+    swe2d_state_subtract_double_kernel<<<grid_cells, BLOCK, 0, dev->d_stream>>>(
+        n_cells, dev->d_h,  dev->d_h3,  dev->d_h3);
+    swe2d_state_subtract_double_kernel<<<grid_cells, BLOCK, 0, dev->d_stream>>>(
+        n_cells, dev->d_hu, dev->d_hu3, dev->d_hu3);
+    swe2d_state_subtract_double_kernel<<<grid_cells, BLOCK, 0, dev->d_stream>>>(
+        n_cells, dev->d_hv, dev->d_hv3, dev->d_hv3);
 
-    // TODO: replace with proper Cash-Karp RK5(4) combine using swe2d_rk5_graph_combine_kernel
-    // For now, fall back to RK4 combine
+    // ========================================================================
+    // Combine: y_new = y0 + dt*(b1*k1 + b3*k3 + b4*k4 + b6*k6)
+    //   b1 = 37/378, b3 = 250/621, b4 = 125/594, b6 = 512/1771 (5th-order)
+    // k1 -> d_k4_*,  k3 -> d_k6_*,  k4 -> d_h1/hu1/hv1,  k6 -> d_h3/hu3/hv3
+    // Combine kernel also applies friction, momentum cap, wet/dry threshold.
+    // ========================================================================
     CUDA_CHECK(cudaMemsetAsync(dev->d_max_wse_elev_error, 0, sizeof(double), dev->d_stream));
     const int grid = (n_cells + BLOCK - 1) / BLOCK;
-    swe2d_rk4_combine_kernel<<<grid, BLOCK, 0, dev->d_stream>>>(
+    swe2d_rk5_graph_combine_kernel<<<grid, BLOCK, 0, dev->d_stream>>>(
         n_cells,
         dev->d_h, dev->d_hu, dev->d_hv,
         dev->d_h0, dev->d_hu0, dev->d_hv0,
         dev->d_k4_h, dev->d_k4_hu, dev->d_k4_hv,
         dev->d_k6_h, dev->d_k6_hu, dev->d_k6_hv,
-        dev->d_h2, dev->d_hu1, dev->d_hv1,
+        dev->d_h1, dev->d_hu1, dev->d_hv1,
+        dev->d_h3, dev->d_hu3, dev->d_hv3,
         dev->d_max_wse_elev_error,
-        h_min);
+        dev->d_n_mann_cell,
+        g, h_min, shallow_damping_depth, dt,
+        momentum_cap_min_speed, momentum_cap_celerity_mult);
     CUDA_CHECK(cudaGetLastError());
 
+    // CFL + diagnostics
     CUDA_CHECK(cudaMemsetAsync(dev->d_lambda_max, 0, sizeof(double), dev->d_stream));
     const int edge_grid = (dev->n_edges + BLOCK - 1) / BLOCK;
     if (edge_grid > 0) {
@@ -10015,7 +10205,11 @@ void swe2d_gpu_destroy(SWE2DDeviceState* dev) {
     safe_free(dev->d_stage_edge_bc);
     safe_free(dev->d_stage_edge_bc_val);
     safe_free(dev->d_k4_h);  safe_free(dev->d_k4_hu); safe_free(dev->d_k4_hv);
+    safe_free(dev->d_k5_h);  safe_free(dev->d_k5_hu); safe_free(dev->d_k5_hv);
     safe_free(dev->d_k6_h);  safe_free(dev->d_k6_hu); safe_free(dev->d_k6_hv);
+    safe_free(dev->d_h1);   safe_free(dev->d_hu1);  safe_free(dev->d_hv1);
+    safe_free(dev->d_h2);   safe_free(dev->d_hu2);  safe_free(dev->d_hv2);
+    safe_free(dev->d_h3);   safe_free(dev->d_hu3);  safe_free(dev->d_hv3);
     safe_free(dev->d_external_source_mps);
     swe2d_gpu_free_snapshot_buf(dev);
     // Coupling workspace cleanup
