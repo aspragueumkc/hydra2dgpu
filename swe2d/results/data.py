@@ -81,12 +81,14 @@ class SWE2DResultsData:
 
         # In-memory snapshots during a live run (kept for backward compat)
         self._live_snapshot_timesteps: list = []
-        # Line timeseries: {line_id: {t_s: [], depth_m: [], vel: [], ...}}
-        self._live_line_ts: Dict[int, Dict[str, list]] = {}
-        # Line profiles: {line_id: {t_s: [], station_m: [], depth_m: [], ...}}
-        self._live_line_profile: Dict[int, Dict[str, list]] = {}
-        # Coupling: {(component, object_id, metric): {object_name, t_s: [], values: []}}
-        self._live_coupling: Dict[Tuple[str, str, str], Dict] = {}
+        # Line timeseries: {line_id: {t_s: np.ndarray (n_snaps,), depth_m: np.ndarray (n_snaps,), ...}}
+        self._live_line_ts: Dict[int, Dict[str, np.ndarray]] = {}
+        # Line profiles: {line_id: {n_stations: int, depth_m: np.ndarray (n_snaps, n_sta), ...}}
+        self._live_line_profile: Dict[int, Dict[str, object]] = {}
+        # Coupling: {(component, object_id, metric): {object_name: str, t_s: np.ndarray, values: np.ndarray}}
+        self._live_coupling: Dict[Tuple[str, str, str], Dict[str, object]] = {}
+        # Indices tracking next write position for live accumulation
+        self._coupling_snap_idx: int = 0
 
         # Display state for TS/Profile/Structure/Network renderers (plain data)
         self.ts_var_key: str = "flow_cms"
@@ -127,6 +129,35 @@ class SWE2DResultsData:
         self._live_line_ts.clear()
         self._live_line_profile.clear()
         self._live_coupling.clear()
+        self._coupling_snap_idx = 0
+
+    def preallocate_output_schedule(
+        self,
+        n_line_snaps: int,
+        coupling_keys: List[Tuple[str, str, str]],
+        coupling_object_names: Dict[Tuple[str, str, str], str],
+    ) -> None:
+        """Pre-allocate numpy arrays for line TS and coupling accumulation.
+
+        Called once before the run starts, after the coupling controller is
+        built, so the object counts are known.
+
+        Parameters
+        ----------
+        n_line_snaps : int
+            Total number of line/coupling output snapshots:
+            ``ceil(run_duration_s / line_output_interval_s)``.
+        coupling_keys : list of (component, object_id, metric) tuples.
+        coupling_object_names : dict mapping key → object_name string.
+        """
+        self._coupling_snap_idx = 0
+        self._live_coupling.clear()
+        for key in coupling_keys:
+            self._live_coupling[key] = {
+                "object_name": coupling_object_names.get(key, key[1]),
+                "t_s": np.zeros(n_line_snaps, dtype=np.float64),
+                "values": np.zeros(n_line_snaps, dtype=np.float64),
+            }
 
     def append_live_snapshot(self, t_s: float, h: np.ndarray, hu: np.ndarray, hv: np.ndarray) -> None:
         self._live_snapshot_timesteps.append((t_s, h, hu, hv))
@@ -175,86 +206,137 @@ class SWE2DResultsData:
         if t_sec > 0.0 and hasattr(self, "_t_sec_to_frame_idx"):
             self._set_frame(self._t_sec_to_frame_idx(float(t_sec)))
 
-    def append_line_snapshot(self, row: dict) -> None:
-        """Append a line timeseries row, accumulating into _live_line_ts."""
-        lid = int(row.get("line_id", -1))
-        if lid < 0:
-            return
-        d = self._live_line_ts.setdefault(lid, {})
-        for key in ("t_s", "depth_m", "velocity_ms", "wse_m", "bed_m",
-                     "flow_cms", "wet_frac", "fr"):
-            d.setdefault(key, []).append(float(row.get(key, 0.0)))
-        if "line_name" not in d:
-            d["line_name"] = str(row.get("line_name", f"line_{lid}"))
+    def append_line_snapshot(self, row: dict, snap_idx: int) -> None:
+        """Write a line timeseries row into pre-allocated _live_line_ts at snap_idx.
 
-    def append_line_profile_snapshot(self, row: dict) -> None:
-        """Append a line profile row, accumulating into _live_line_profile."""
+        snap_idx is the output-snapshot index (0-based), not the simulation timestep.
+        """
         lid = int(row.get("line_id", -1))
         if lid < 0:
             return
-        d = self._live_line_profile.setdefault(lid, {})
-        for key in ("t_s", "station_m", "depth_m", "velocity_ms",
-                     "wse_m", "bed_m", "flow_qn", "fr", "wet"):
-            d.setdefault(key, []).append(float(row.get(key, 0.0)))
-        if "line_name" not in d:
-            d["line_name"] = str(row.get("line_name", f"line_{lid}"))
+        if lid not in self._live_line_ts:
+            self._live_line_ts[lid] = {"line_name": str(row.get("line_name", f"line_{lid}"))}
+        d = self._live_line_ts[lid]
+        for key in ("depth_m", "velocity_ms", "wse_m", "bed_m", "flow_cms", "wet_frac", "fr"):
+            arr = d.get(key)
+            if arr is not None and snap_idx < arr.size:
+                arr[snap_idx] = float(row.get(key, 0.0))
+
+    def append_line_profile_snapshot(self, row: dict, snap_idx: int) -> None:
+        """Write a line profile row into pre-allocated _live_line_profile at snap_idx.
+
+        snap_idx is the output-snapshot index (0-based).
+        The per-line n_stations must already be set via preallocate_line_profile_nstations().
+        """
+        lid = int(row.get("line_id", -1))
+        if lid < 0:
+            return
+        d = self._live_line_profile.get(lid)
+        if d is None:
+            return
+        n_sta = int(d.get("n_stations", 0))
+        if n_sta <= 0:
+            return
+        for key in ("depth_m", "velocity_ms", "wse_m", "bed_m", "flow_qn", "fr"):
+            arr = d.get(key)
+            if arr is not None and snap_idx < arr.shape[0]:
+                val = row.get(key, 0.0)
+                if isinstance(val, np.ndarray) and val.size == n_sta:
+                    arr[snap_idx, :] = val
+                elif np.isscalar(val):
+                    arr[snap_idx, :] = float(val)
+        wet_arr = d.get("wet")
+        if wet_arr is not None and snap_idx < wet_arr.shape[0]:
+            wet_val = row.get("wet", 0)
+            if isinstance(wet_val, np.ndarray) and wet_val.size == n_sta:
+                wet_arr[snap_idx, :] = wet_val
+            else:
+                wet_arr[snap_idx, :] = int(wet_val)
 
     def append_coupling_snapshot(self, row: dict) -> None:
-        """Append a coupling row, accumulating into _live_coupling."""
+        """Write a coupling row into pre-allocated _live_coupling at _coupling_snap_idx.
+
+        Increments _coupling_snap_idx after each write.
+        """
         key = (str(row.get("component", "")),
                str(row.get("object_id", "")),
                str(row.get("metric", "")))
         if not key[0] or not key[1] or not key[2]:
             return
-        d = self._live_coupling.setdefault(key, {"object_name": "", "t_s": [], "values": []})
-        d["object_name"] = str(row.get("object_name", ""))
-        d["t_s"].append(float(row.get("t_s", 0.0)))
-        d["values"].append(float(row.get("value", 0.0)))
+        d = self._live_coupling.get(key)
+        if d is None:
+            return
+        idx = self._coupling_snap_idx
+        t_s_arr = d["t_s"]
+        values_arr = d["values"]
+        if idx < t_s_arr.size:
+            t_s_arr[idx] = float(row.get("t_s", 0.0))
+            values_arr[idx] = float(row.get("value", 0.0))
+        self._coupling_snap_idx += 1
 
     def get_live_snapshot_timesteps(self) -> list:
         return self._live_snapshot_timesteps
 
     def get_live_line_snapshot_rows(self) -> list:
-        """Backward-compat: reconstruct list-of-dicts from _live_line_ts."""
+        """Reconstruct list-of-dicts from _live_line_ts numpy storage."""
         out = []
         for lid, d in self._live_line_ts.items():
-            n = len(d.get("t_s", []))
+            t_s = d.get("t_s")
+            if t_s is None:
+                continue
+            n = t_s.size
+            line_name = d.get("line_name", f"line_{lid}")
             for i in range(n):
-                row = {"line_id": lid, "line_name": d.get("line_name", "")}
-                for key in ("t_s", "depth_m", "velocity_ms", "wse_m",
-                             "bed_m", "flow_cms", "wet_frac", "fr"):
-                    arr = d.get(key, [])
-                    row[key] = float(arr[i]) if i < len(arr) else 0.0
+                row = {"line_id": lid, "line_name": line_name, "t_s": float(t_s[i])}
+                for key in ("depth_m", "velocity_ms", "wse_m", "bed_m", "flow_cms", "wet_frac", "fr"):
+                    arr = d.get(key)
+                    row[key] = float(arr[i]) if arr is not None and i < arr.size else 0.0
                 out.append(row)
         return out
 
     def get_live_line_profile_rows(self) -> list:
-        """Backward-compat: reconstruct list-of-dicts from _live_line_profile."""
+        """Reconstruct list-of-dicts from _live_line_profile numpy storage."""
         out = []
         for lid, d in self._live_line_profile.items():
-            n = len(d.get("t_s", []))
-            for i in range(n):
-                row = {"line_id": lid, "line_name": d.get("line_name", "")}
-                for key in ("t_s", "station_m", "depth_m", "velocity_ms",
-                             "wse_m", "bed_m", "flow_qn", "fr", "wet"):
-                    arr = d.get(key, [])
-                    row[key] = float(arr[i]) if i < len(arr) else 0.0
+            depth_m = d.get("depth_m")
+            if depth_m is None:
+                continue
+            n_snaps = depth_m.shape[0]
+            n_sta = depth_m.shape[1] if depth_m.ndim > 1 else 0
+            station_m = d.get("station_m")
+            station_arr = np.asarray(station_m) if station_m is not None else np.arange(n_sta)
+            line_name = d.get("line_name", f"line_{lid}")
+            for i in range(n_snaps):
+                row = {"line_id": lid, "line_name": line_name}
+                for key in ("depth_m", "velocity_ms", "wse_m", "bed_m", "flow_qn", "fr"):
+                    arr = d.get(key)
+                    if arr is not None and arr.ndim == 2 and i < arr.shape[0]:
+                        row[key] = arr[i]
+                    else:
+                        row[key] = np.array([])
+                wet = d.get("wet")
+                row["wet"] = wet[i] if wet is not None and wet.ndim == 2 and i < wet.shape[0] else np.array([], dtype=np.int32)
+                row["station_m"] = station_arr
                 out.append(row)
         return out
 
     def get_live_coupling_snapshot_rows(self) -> list:
-        """Backward-compat: reconstruct list-of-dicts from _live_coupling."""
+        """Reconstruct list-of-dicts from _live_coupling numpy storage."""
         out = []
         for (component, object_id, metric), d in self._live_coupling.items():
-            n = len(d.get("t_s", []))
+            t_s = d.get("t_s")
+            values = d.get("values")
+            if t_s is None or values is None:
+                continue
+            n = min(t_s.size, values.size, self._coupling_snap_idx)
             for i in range(n):
                 out.append({
                     "component": component,
                     "object_id": object_id,
                     "metric": metric,
                     "object_name": d.get("object_name", ""),
-                    "t_s": float(d["t_s"][i]) if i < len(d["t_s"]) else 0.0,
-                    "value": float(d["values"][i]) if i < len(d["values"]) else 0.0,
+                    "t_s": float(t_s[i]),
+                    "value": float(values[i]),
                 })
         return out
 

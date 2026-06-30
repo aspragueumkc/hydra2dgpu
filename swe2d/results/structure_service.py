@@ -404,7 +404,7 @@ def load_structure_overlay_data(
 
         # Load structure flows at this timestep
         from swe2d.results.queries import load_structure_flows_at_time
-        struct_flows = load_structure_flows_at_time(gpkg_path, rid, t, t_tol=1.0)
+        struct_flows = load_structure_flows_at_time(gpkg_path, rid, t)
 
         flow_by_id = {
             str(r.get("object_id", "")): float(r.get("value", 0.0))

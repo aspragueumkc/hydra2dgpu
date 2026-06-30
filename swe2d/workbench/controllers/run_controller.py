@@ -333,6 +333,16 @@ class RunController:
             results_data = getattr(view, "_results_data", None)
             if results_data is not None:
                 results_data.clear_live_snapshots()
+            # Pre-allocate coupling numpy storage if coupling controller is present
+            if coupling_controller is not None and results_data is not None:
+                import math as _math
+                from swe2d.workbench.services.non_gui_runtime_service import (
+                    build_coupling_keys as _build_coupling_keys,
+                )
+                n_snaps = max(1, _math.ceil(run_duration_s / max(float(line_output_interval_s), 1.0)))
+                coupling_keys, coupling_object_names = _build_coupling_keys(coupling_controller)
+                if coupling_keys:
+                    results_data.preallocate_output_schedule(n_snaps, coupling_keys, coupling_object_names)
             # Initialise results panel + temporal dock so the user can
             # scrub through snapshots as they accumulate during the run.
             try:

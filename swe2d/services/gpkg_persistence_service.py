@@ -919,12 +919,15 @@ def load_baked_line_timeseries(
         d = source
         if hasattr(d, '_live_line_ts') and line_id in d._live_line_ts:
             raw = d._live_line_ts[line_id]
-            # Convert Python lists to numpy arrays for viewer compatibility
+            # t_s comes from _live_times (mesh snapshot timesteps); other fields
+            # are stored as numpy arrays matching GPKG blob layout.
             result = {"line_name": raw.get("line_name", "")}
-            for k in ("t_s", "depth_m", "velocity_ms", "wse_m", "bed_m",
+            times = getattr(d, '_live_times', None)
+            result["t_s"] = np.asarray(times, dtype=np.float64) if times is not None else np.empty(0, dtype=np.float64)
+            for k in ("depth_m", "velocity_ms", "wse_m", "bed_m",
                        "flow_cms", "wet_frac", "fr"):
-                v = raw.get(k, [])
-                result[k] = np.asarray(v, dtype=np.float64)
+                v = raw.get(k)
+                result[k] = np.asarray(v, dtype=np.float64) if v is not None else np.empty(0, dtype=np.float64)
             return result
         if hasattr(d, 'get_line_ts_arrays'):
             result = d.get_line_ts_arrays(run_id, line_id)

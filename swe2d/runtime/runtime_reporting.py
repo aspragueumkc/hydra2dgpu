@@ -107,6 +107,10 @@ class SWE2DRuntimeReporter:
             next_line_snap_t += float(line_output_interval_s)
         if need_coupling_snap:
             next_coupling_snap_t += float(line_output_interval_s)
+            if results_data is not None and coupling_controller is not None:
+                rows = sample_coupling_object_metrics_callback(coupling_controller, t_accum, None)
+                for row in rows:
+                    results_data.append_coupling_snapshot(row)
 
         # ── On-demand snapshot readback ──────────────────────────────────
         # When request_snapshot_readback() was called (from UI button press),

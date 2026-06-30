@@ -44,51 +44,6 @@ def _env_int(name: str, default: int) -> int:
         return int(default)
 
 
-def build_mesh_snapshot_rows(snapshot_timesteps: Sequence[Tuple[object, object, object, object]]) -> List[Dict[str, object]]:
-    """Build mesh snapshot rows."""
-    rows: List[Dict[str, object]] = []
-    if not snapshot_timesteps:
-        return rows
-
-    # Pre-validate and extract flat arrays per snapshot
-    snap_arrays: List[Tuple[float, np.ndarray, np.ndarray, np.ndarray, int]] = []
-    total_rows = 0
-    for snap in snapshot_timesteps:
-        try:
-            t_s, h, hu, hv = snap
-            hh = np.asarray(h, dtype=np.float64).ravel()
-            huu = np.asarray(hu, dtype=np.float64).ravel()
-            hvv = np.asarray(hv, dtype=np.float64).ravel()
-            n = min(hh.size, huu.size, hvv.size)
-            if n == 0:
-                continue
-            snap_arrays.append((float(t_s), hh, huu, hvv, n))
-            total_rows += n
-        except Exception:
-            logger.warning("Snapshot row extraction failed", exc_info=True)
-            continue
-
-    if not snap_arrays:
-        return rows
-
-    # Pre-allocate then fill via vectorized slicing
-    rows = [{} for _ in range(total_rows)]
-    offset = 0
-    for t_s, hh, huu, hvv, n in snap_arrays:
-        ts_val = float(t_s)
-        for ci in range(n):
-            rows[offset + ci] = {
-                "t_s": ts_val,
-                "cell_id": int(ci),
-                "h": float(hh[ci]),
-                "hu": float(huu[ci]),
-                "hv": float(hvv[ci]),
-            }
-        offset += n
-
-    return rows
-
-
 def parse_obj_scale_value(raw_value: object) -> Tuple[float, float, float]:
     """parse obj scale value."""
     if raw_value is None:
@@ -351,6 +306,54 @@ def _sample_coupling_object_metrics(cc, t_s: float, _h_s) -> list:
                         "value": mval,
                     })
     return rows
+
+
+def build_coupling_keys(cc) -> Tuple[List[Tuple[str, str, str]], Dict[Tuple[str, str, str], str]]:
+    """Return the fixed (component, object_id, metric) keys and object names for the coupling controller.
+
+    Returns
+    -------
+    keys : list of (component, object_id, metric) tuples
+    object_names : dict mapping key → object_name string
+    """
+    keys: List[Tuple[str, str, str]] = []
+    object_names: Dict[Tuple[str, str, str], str] = {}
+    if cc is None:
+        return keys, object_names
+    cfg = getattr(getattr(cc, "drainage", None), "cfg", None)
+    if cfg is not None:
+        for node in getattr(cfg, "nodes", []):
+            node_id = str(getattr(node, "node_id", ""))
+            keys.append(("drainage_node", node_id, "depth"))
+            keys.append(("drainage_node", node_id, "invert"))
+            object_names[("drainage_node", node_id, "depth")] = node_id
+            object_names[("drainage_node", node_id, "invert")] = node_id
+        for link in getattr(cfg, "links", []):
+            link_id = str(getattr(link, "link_id", ""))
+            from_id = getattr(link, "from_node_id", "")
+            to_id = getattr(link, "to_node_id", "")
+            name = f"{from_id} -> {to_id}"
+            keys.append(("drainage_link", link_id, "flow"))
+            keys.append(("drainage_link", link_id, "length"))
+            object_names[("drainage_link", link_id, "flow")] = name
+            object_names[("drainage_link", link_id, "length")] = name
+    if hasattr(cc, "_structures_cfg") and cc._structures_cfg:
+        from swe2d.extensions.extension_models import StructureType as _StructType
+        for st in cc._structures_cfg:
+            sid = str(getattr(st, "structure_id", ""))
+            sname = str(getattr(st, "name", sid))
+            keys.append(("structure", sid, "flow"))
+            object_names[("structure", sid, "flow")] = sname
+            if getattr(st, "structure_type", None) == _StructType.CULVERT:
+                for mname, _ in [
+                    ("inlet_control_flow", 1), ("outlet_control_flow", 2),
+                    ("orifice_cap", 3), ("manning_cap", 4),
+                    ("embankment_flow", 5), ("available_head_up", 6),
+                    ("tailwater_depth", 7),
+                ]:
+                    keys.append(("structure", sid, mname))
+                    object_names[("structure", sid, mname)] = sname
+    return keys, object_names
 
 
 def execute_run_timestep_loop(

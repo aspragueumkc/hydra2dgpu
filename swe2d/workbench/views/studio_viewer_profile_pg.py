@@ -627,7 +627,7 @@ class PGProfileWidget(QtWidgets.QWidget):
 
                 if show_structures:
                     try:
-                        rows = load_structure_flows_at_time(rec.gpkg_path, rec.run_id, t, t_tol=1.0)
+                        rows = load_structure_flows_at_time(rec.gpkg_path, rec.run_id, t)
                         if rows:
                             placed_ids = {str(r.get("object_id", "")) for r in structure_rows}
                             for rr in rows:
