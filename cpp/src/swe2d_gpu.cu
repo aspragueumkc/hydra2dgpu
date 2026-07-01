@@ -10303,6 +10303,175 @@ void swe2d_gpu_free_snapshot_buf(SWE2DDeviceState* dev) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// swe2d_build_pipe1d_mesh
+// ─────────────────────────────────────────────────────────────────────────────
+void swe2d_build_pipe1d_mesh(
+    int32_t               n_links,
+    const int32_t*        link_from_node,
+    const int32_t*        link_to_node,
+    const double*         link_length,
+    const double*         link_diameter,
+    const double*         link_roughness_n,
+    const double*         link_inlet_loss_k,
+    const double*         link_outlet_loss_k,
+    const double*         node_invert_elev,
+    const double*         node_surface_area,
+    const double*         node_max_depth,
+    const double*         link_invert_in,
+    const double*         link_invert_out,
+    int32_t               max_cell_length,
+    SWE2DDeviceState::Pipe1DDeviceState* dev)
+{
+    auto alloc_d = [](void** ptr, size_t bytes) {
+        CUDA_CHECK(cudaMalloc(ptr, bytes));
+    };
+    auto copy_h2d_i = [](int32_t* dst, const int32_t* src, size_t n) {
+        CUDA_CHECK(cudaMemcpy(dst, src, n * sizeof(int32_t), cudaMemcpyHostToDevice));
+    };
+    auto copy_h2d_d = [](double* dst, const double* src, size_t n) {
+        CUDA_CHECK(cudaMemcpy(dst, src, n * sizeof(double), cudaMemcpyHostToDevice));
+    };
+
+    // Count sub-cells per link and find max node index
+    std::vector<int32_t> sub_cells_per_link(n_links);
+    int32_t max_node_idx = -1;
+    int32_t total_pipe_cells = 0;
+    for (int32_t i = 0; i < n_links; ++i) {
+        const double L = link_length[i];
+        int32_t n_sub = 1;
+        if (max_cell_length > 0 && L > 0.0) {
+            n_sub = static_cast<int32_t>(std::ceil(L / static_cast<double>(max_cell_length)));
+            if (n_sub < 1) n_sub = 1;
+        }
+        sub_cells_per_link[i] = n_sub;
+        total_pipe_cells += n_sub;
+        if (link_from_node[i] > max_node_idx) max_node_idx = link_from_node[i];
+        if (link_to_node[i] > max_node_idx) max_node_idx = link_to_node[i];
+    }
+    const int32_t n_nodes = max_node_idx + 1;
+    dev->n_pipe_cells = total_pipe_cells;
+    dev->n_nodes = n_nodes;
+
+    // Geometry per sub-cell
+    std::vector<double> cell_length(total_pipe_cells);
+    std::vector<double> cell_area(total_pipe_cells);
+    std::vector<double> cell_perim(total_pipe_cells);
+    std::vector<double> cell_invert(total_pipe_cells);
+    std::vector<double> cell_n(total_pipe_cells);
+    std::vector<double> cell_k_loss(total_pipe_cells);
+    std::vector<int32_t> cell_from_node(total_pipe_cells);
+    std::vector<int32_t> cell_to_node(total_pipe_cells);
+
+    int32_t cell_idx = 0;
+    for (int32_t i = 0; i < n_links; ++i) {
+        const double L = static_cast<double>(link_length[i]);
+        const double D = static_cast<double>(link_diameter[i]);
+        const double n_val = static_cast<double>(link_roughness_n[i]);
+        const double k_in = static_cast<double>(link_inlet_loss_k[i]);
+        const double k_out = static_cast<double>(link_outlet_loss_k[i]);
+        const double inv_in = static_cast<double>(link_invert_in[i]);
+        const double inv_out = static_cast<double>(link_invert_out[i]);
+        const int32_t n_sub = sub_cells_per_link[i];
+        const double sub_len = L / static_cast<double>(n_sub);
+        const double A = M_PI * D * D / 4.0;
+        const double P = M_PI * D;
+
+        for (int32_t s = 0; s < n_sub; ++s) {
+            const double frac = (static_cast<double>(s) + 0.5) / static_cast<double>(n_sub);
+            cell_length[cell_idx] = sub_len;
+            cell_area[cell_idx] = A;
+            cell_perim[cell_idx] = P;
+            cell_invert[cell_idx] = inv_in + frac * (inv_out - inv_in);
+            cell_n[cell_idx] = n_val;
+            cell_k_loss[cell_idx] = k_in + k_out;
+            cell_from_node[cell_idx] = link_from_node[i];
+            cell_to_node[cell_idx] = link_to_node[i];
+            ++cell_idx;
+        }
+    }
+
+    // CSR peer topology: each pipe cell has 2 peers (from_node, to_node)
+    std::vector<int32_t> peer_offsets(static_cast<size_t>(total_pipe_cells) + 1, 0);
+    for (int32_t c = 0; c < total_pipe_cells; ++c) {
+        peer_offsets[static_cast<size_t>(c + 1)] = 2; // each cell has exactly 2 peers
+    }
+    for (int32_t c = 1; c <= total_pipe_cells; ++c) {
+        peer_offsets[static_cast<size_t>(c)] += peer_offsets[static_cast<size_t>(c - 1)];
+    }
+    const int32_t n_peers = peer_offsets[static_cast<size_t>(total_pipe_cells)];
+    std::vector<int32_t> peer_ids(static_cast<size_t>(n_peers));
+    std::vector<int32_t> peer_pos = peer_offsets;
+    for (int32_t c = 0; c < total_pipe_cells; ++c) {
+        const int32_t fn = cell_from_node[static_cast<size_t>(c)];
+        const int32_t tn = cell_to_node[static_cast<size_t>(c)];
+        peer_ids[static_cast<size_t>(peer_pos[static_cast<size_t>(c)]++)] = fn;
+        peer_ids[static_cast<size_t>(peer_pos[static_cast<size_t>(c)]++)] = tn;
+    }
+
+    // CSR owned topology: owned links are the subdivision-of-link edges
+    // For pipe cells, "owned" edges = the internal faces between sub-cells of same link.
+    // Each sub-cell (except first) has one owned edge (its left face).
+    // Each sub-cell (except last) has one owned edge (its right face).
+    // But simpler: treat all sub-cell faces as owned by the sub-cell itself for 1D network.
+    // Actually: for 1D, each pipe cell owns its "from" neighbor relationship.
+    // Simpler CSR: d_owned_offsets[i] = i+1 (each cell owns exactly 1 edge)
+    // d_owned_ids[i] = i (cell i owns edge to cell i-1, or cell 0 owns nothing)
+    // Let's use: each cell has exactly 1 owned entry (its "from" face in the link)
+    std::vector<int32_t> owned_offsets(static_cast<size_t>(total_pipe_cells) + 1, 0);
+    for (int32_t c = 0; c < total_pipe_cells; ++c) {
+        owned_offsets[static_cast<size_t>(c + 1)] = 1;
+    }
+    for (int32_t c = 1; c <= total_pipe_cells; ++c) {
+        owned_offsets[static_cast<size_t>(c)] += owned_offsets[static_cast<size_t>(c - 1)];
+    }
+    const int32_t n_owned = owned_offsets[static_cast<size_t>(total_pipe_cells)];
+    std::vector<int32_t> owned_ids(static_cast<size_t>(n_owned));
+    for (int32_t c = 0; c < total_pipe_cells; ++c) {
+        owned_ids[static_cast<size_t>(c)] = c;
+    }
+
+    // Allocate device buffers
+    alloc_d(reinterpret_cast<void**>(&dev->d_owned_offsets), static_cast<size_t>(total_pipe_cells + 1) * sizeof(int32_t));
+    alloc_d(reinterpret_cast<void**>(&dev->d_owned_ids), static_cast<size_t>(n_owned) * sizeof(int32_t));
+    alloc_d(reinterpret_cast<void**>(&dev->d_peer_offsets), static_cast<size_t>(total_pipe_cells + 1) * sizeof(int32_t));
+    alloc_d(reinterpret_cast<void**>(&dev->d_peer_ids), static_cast<size_t>(n_peers) * sizeof(int32_t));
+    alloc_d(reinterpret_cast<void**>(&dev->d_cell_length), static_cast<size_t>(total_pipe_cells) * sizeof(double));
+    alloc_d(reinterpret_cast<void**>(&dev->d_cell_area), static_cast<size_t>(total_pipe_cells) * sizeof(double));
+    alloc_d(reinterpret_cast<void**>(&dev->d_cell_perim), static_cast<size_t>(total_pipe_cells) * sizeof(double));
+    alloc_d(reinterpret_cast<void**>(&dev->d_cell_invert), static_cast<size_t>(total_pipe_cells) * sizeof(double));
+    alloc_d(reinterpret_cast<void**>(&dev->d_cell_n), static_cast<size_t>(total_pipe_cells) * sizeof(double));
+    alloc_d(reinterpret_cast<void**>(&dev->d_cell_k_loss), static_cast<size_t>(total_pipe_cells) * sizeof(double));
+    alloc_d(reinterpret_cast<void**>(&dev->d_node_depth), static_cast<size_t>(n_nodes) * sizeof(double));
+    alloc_d(reinterpret_cast<void**>(&dev->d_node_net_q), static_cast<size_t>(n_nodes) * sizeof(double));
+    alloc_d(reinterpret_cast<void**>(&dev->d_A), static_cast<size_t>(total_pipe_cells) * sizeof(double));
+    alloc_d(reinterpret_cast<void**>(&dev->d_Q), static_cast<size_t>(total_pipe_cells) * sizeof(double));
+    alloc_d(reinterpret_cast<void**>(&dev->d_A_prev), static_cast<size_t>(total_pipe_cells) * sizeof(double));
+    alloc_d(reinterpret_cast<void**>(&dev->d_Q_iter), static_cast<size_t>(total_pipe_cells) * sizeof(double));
+
+    // Copy data to device
+    copy_h2d_i(dev->d_owned_offsets, owned_offsets.data(), static_cast<size_t>(total_pipe_cells) + 1);
+    copy_h2d_i(dev->d_owned_ids, owned_ids.data(), static_cast<size_t>(n_owned));
+    copy_h2d_i(dev->d_peer_offsets, peer_offsets.data(), static_cast<size_t>(total_pipe_cells) + 1);
+    copy_h2d_i(dev->d_peer_ids, peer_ids.data(), static_cast<size_t>(n_peers));
+    copy_h2d_d(dev->d_cell_length, cell_length.data(), static_cast<size_t>(total_pipe_cells));
+    copy_h2d_d(dev->d_cell_area, cell_area.data(), static_cast<size_t>(total_pipe_cells));
+    copy_h2d_d(dev->d_cell_perim, cell_perim.data(), static_cast<size_t>(total_pipe_cells));
+    copy_h2d_d(dev->d_cell_invert, cell_invert.data(), static_cast<size_t>(total_pipe_cells));
+    copy_h2d_d(dev->d_cell_n, cell_n.data(), static_cast<size_t>(total_pipe_cells));
+    copy_h2d_d(dev->d_cell_k_loss, cell_k_loss.data(), static_cast<size_t>(total_pipe_cells));
+
+    // Initialize node state
+    CUDA_CHECK(cudaMemset(dev->d_node_depth, 0, static_cast<size_t>(n_nodes) * sizeof(double)));
+    CUDA_CHECK(cudaMemset(dev->d_node_net_q, 0, static_cast<size_t>(n_nodes) * sizeof(double)));
+
+    // Initialize pipe cell state: d_A = full area, d_Q = 0
+    CUDA_CHECK(cudaMemcpy(dev->d_A, cell_area.data(), static_cast<size_t>(total_pipe_cells) * sizeof(double), cudaMemcpyHostToDevice));
+    CUDA_CHECK(cudaMemset(dev->d_Q, 0, static_cast<size_t>(total_pipe_cells) * sizeof(double)));
+    CUDA_CHECK(cudaMemcpy(dev->d_A_prev, cell_area.data(), static_cast<size_t>(total_pipe_cells) * sizeof(double), cudaMemcpyHostToDevice));
+    CUDA_CHECK(cudaMemset(dev->d_Q_iter, 0, static_cast<size_t>(total_pipe_cells) * sizeof(double)));
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // swe2d_gpu_destroy
 // ─────────────────────────────────────────────────────────────────────────────
 void swe2d_gpu_destroy(SWE2DDeviceState* dev) {
@@ -10422,6 +10591,8 @@ void swe2d_gpu_destroy(SWE2DDeviceState* dev) {
     dev->redist_ws.destroy();
     // Culvert face-flux workspace cleanup
     dev->culvert_ff_ws.destroy();
+    // 1D pipe network cleanup
+    dev->pipe1d.destroy();
     if (dev->d_ext_struct_flux_h)  { cudaFree(dev->d_ext_struct_flux_h);  dev->d_ext_struct_flux_h  = nullptr; }
     if (dev->d_ext_struct_flux_hu) { cudaFree(dev->d_ext_struct_flux_hu); dev->d_ext_struct_flux_hu = nullptr; }
     if (dev->d_ext_struct_flux_hv) { cudaFree(dev->d_ext_struct_flux_hv); dev->d_ext_struct_flux_hv = nullptr; }

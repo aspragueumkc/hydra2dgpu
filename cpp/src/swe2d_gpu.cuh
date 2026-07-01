@@ -515,6 +515,45 @@ struct SWE2DDeviceState {
     // Toggle: when true, swe2d_update_kernel reads d_ext_struct_flux_* instead
     // of applying external_source_mps for culvert mass transfers.
     bool     use_culvert_face_flux = false;
+
+    // ── 1D pipe network device state ─────────────────────────────────────────
+    struct Pipe1DDeviceState {
+        int32_t*  d_owned_offsets;  // [n_pipe_cells + 1]
+        int32_t*  d_owned_ids;      // [n_owned_faces]
+        int32_t*  d_peer_offsets;   // [n_pipe_cells + 1]
+        int32_t*  d_peer_ids;       // [n_peers]  peer = DrainageNode index
+
+        double*   d_cell_length;    // [n_pipe_cells]
+        double*   d_cell_area;      // [n_pipe_cells]
+        double*   d_cell_perim;     // [n_pipe_cells]
+        double*   d_cell_invert;    // [n_pipe_cells]
+        double*   d_cell_n;        // [n_pipe_cells]
+        double*   d_cell_k_loss;   // [n_pipe_cells]
+
+        double*   d_node_depth;     // [n_nodes]
+        double*   d_node_net_q;     // [n_nodes]
+
+        double*   d_A;              // [n_pipe_cells]
+        double*   d_Q;              // [n_pipe_cells]
+        double*   d_A_prev;         // [n_pipe_cells]
+        double*   d_Q_iter;         // [n_pipe_cells]
+
+        int32_t   n_pipe_cells = 0;
+        int32_t   n_nodes = 0;
+
+        void destroy() {
+            #define _P_FREE(p) do { if (p) { cudaFree(p); p = nullptr; } } while(0)
+            _P_FREE(d_owned_offsets); _P_FREE(d_owned_ids);
+            _P_FREE(d_peer_offsets); _P_FREE(d_peer_ids);
+            _P_FREE(d_cell_length); _P_FREE(d_cell_area);
+            _P_FREE(d_cell_perim); _P_FREE(d_cell_invert);
+            _P_FREE(d_cell_n); _P_FREE(d_cell_k_loss);
+            _P_FREE(d_node_depth); _P_FREE(d_node_net_q);
+            _P_FREE(d_A); _P_FREE(d_Q); _P_FREE(d_A_prev); _P_FREE(d_Q_iter);
+            n_pipe_cells = 0; n_nodes = 0;
+            #undef _P_FREE
+        }
+    } pipe1d{};
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1411,6 +1450,40 @@ void swe2d_gpu_drainage_step(
     double* max_link_flow_out,
     double* limiter_event_count_out,
     double* limiter_volume_m3_out);
+
+/** Build 1D pipe network CSR topology and allocate device buffers.
+    @param n_links Number of links
+    @param link_from_node From node index [n_links]
+    @param link_to_node To node index [n_links]
+    @param link_length Geometric length [n_links]
+    @param link_diameter Pipe diameter [n_links]
+    @param link_roughness_n Manning's n [n_links]
+    @param link_inlet_loss_k Inlet minor loss K [n_links]
+    @param link_outlet_loss_k Outlet minor loss K [n_links]
+    @param node_invert_elev Node invert elevation [n_nodes]
+    @param node_surface_area Node surface area [n_nodes]
+    @param node_max_depth Node max depth [n_nodes]
+    @param link_invert_in Inlet invert [n_links]
+    @param link_invert_out Outlet invert [n_links]
+    @param max_cell_length Max sub-cell length (0=no subdivision)
+    @param dev Output pipe1d state
+    @host */
+void swe2d_build_pipe1d_mesh(
+    int32_t               n_links,
+    const int32_t*        link_from_node,
+    const int32_t*        link_to_node,
+    const double*         link_length,
+    const double*         link_diameter,
+    const double*         link_roughness_n,
+    const double*         link_inlet_loss_k,
+    const double*         link_outlet_loss_k,
+    const double*         node_invert_elev,
+    const double*         node_surface_area,
+    const double*         node_max_depth,
+    const double*         link_invert_in,
+    const double*         link_invert_out,
+    int32_t               max_cell_length,
+    SWE2DDeviceState::Pipe1DDeviceState* dev);
 
 /** Enable graph capture on next step, use replayed graphs on subsequent steps.
     @param dev Device state pointer
