@@ -10408,26 +10408,46 @@ void swe2d_build_pipe1d_mesh(
         peer_ids[static_cast<size_t>(peer_pos[static_cast<size_t>(c)]++)] = tn;
     }
 
-    // CSR owned topology: owned links are the subdivision-of-link edges
-    // For pipe cells, "owned" edges = the internal faces between sub-cells of same link.
-    // Each sub-cell (except first) has one owned edge (its left face).
-    // Each sub-cell (except last) has one owned edge (its right face).
-    // But simpler: treat all sub-cell faces as owned by the sub-cell itself for 1D network.
-    // Actually: for 1D, each pipe cell owns its "from" neighbor relationship.
-    // Simpler CSR: d_owned_offsets[i] = i+1 (each cell owns exactly 1 edge)
-    // d_owned_ids[i] = i (cell i owns edge to cell i-1, or cell 0 owns nothing)
-    // Let's use: each cell has exactly 1 owned entry (its "from" face in the link)
+    // CSR owned topology: each pipe cell owns exactly 2 interfaces (inlet, outlet)
+    // Interface indices: cell i has inlet at 2*i, outlet at 2*i+1
     std::vector<int32_t> owned_offsets(static_cast<size_t>(total_pipe_cells) + 1, 0);
     for (int32_t c = 0; c < total_pipe_cells; ++c) {
-        owned_offsets[static_cast<size_t>(c + 1)] = 1;
+        owned_offsets[static_cast<size_t>(c + 1)] = 2;
     }
     for (int32_t c = 1; c <= total_pipe_cells; ++c) {
         owned_offsets[static_cast<size_t>(c)] += owned_offsets[static_cast<size_t>(c - 1)];
     }
     const int32_t n_owned = owned_offsets[static_cast<size_t>(total_pipe_cells)];
     std::vector<int32_t> owned_ids(static_cast<size_t>(n_owned));
+    std::vector<int32_t> neighbor_cell(static_cast<size_t>(n_owned));
+    std::vector<double> interface_dir(static_cast<size_t>(n_owned));
+
+    // Build neighbor lookup: for each cell, find inlet_neighbor and outlet_neighbor
+    // outlet_neighbor: a cell whose from_node == this cell's to_node
+    // inlet_neighbor:  a cell whose to_node   == this cell's from_node
+    std::vector<int32_t> inlet_neighbor(total_pipe_cells, -1);
+    std::vector<int32_t> outlet_neighbor(total_pipe_cells, -1);
+    for (int32_t i = 0; i < total_pipe_cells; ++i) {
+        const int32_t my_from = cell_from_node[static_cast<size_t>(i)];
+        const int32_t my_to   = cell_to_node[static_cast<size_t>(i)];
+        for (int32_t j = 0; j < total_pipe_cells; ++j) {
+            if (i == j) continue;
+            if (cell_from_node[static_cast<size_t>(j)] == my_to) {
+                outlet_neighbor[i] = j;
+            }
+            if (cell_to_node[static_cast<size_t>(j)] == my_from) {
+                inlet_neighbor[i] = j;
+            }
+        }
+    }
+
     for (int32_t c = 0; c < total_pipe_cells; ++c) {
-        owned_ids[static_cast<size_t>(c)] = c;
+        owned_ids[static_cast<size_t>(2 * c)]     = 2 * c;     // inlet interface
+        owned_ids[static_cast<size_t>(2 * c + 1)] = 2 * c + 1; // outlet interface
+        neighbor_cell[static_cast<size_t>(2 * c)]     = inlet_neighbor[c];
+        neighbor_cell[static_cast<size_t>(2 * c + 1)] = outlet_neighbor[c];
+        interface_dir[static_cast<size_t>(2 * c)]     = -1.0;  // inlet
+        interface_dir[static_cast<size_t>(2 * c + 1)] = +1.0;  // outlet
     }
 
     // Allocate device buffers
@@ -10435,6 +10455,8 @@ void swe2d_build_pipe1d_mesh(
     alloc_d(reinterpret_cast<void**>(&dev->d_owned_ids), static_cast<size_t>(n_owned) * sizeof(int32_t));
     alloc_d(reinterpret_cast<void**>(&dev->d_peer_offsets), static_cast<size_t>(total_pipe_cells + 1) * sizeof(int32_t));
     alloc_d(reinterpret_cast<void**>(&dev->d_peer_ids), static_cast<size_t>(n_peers) * sizeof(int32_t));
+    alloc_d(reinterpret_cast<void**>(&dev->d_cell_neighbor_cell), static_cast<size_t>(n_owned) * sizeof(int32_t));
+    alloc_d(reinterpret_cast<void**>(&dev->d_cell_interface_dir), static_cast<size_t>(n_owned) * sizeof(double));
     alloc_d(reinterpret_cast<void**>(&dev->d_cell_length), static_cast<size_t>(total_pipe_cells) * sizeof(double));
     alloc_d(reinterpret_cast<void**>(&dev->d_cell_area), static_cast<size_t>(total_pipe_cells) * sizeof(double));
     alloc_d(reinterpret_cast<void**>(&dev->d_cell_perim), static_cast<size_t>(total_pipe_cells) * sizeof(double));
@@ -10453,6 +10475,8 @@ void swe2d_build_pipe1d_mesh(
     copy_h2d_i(dev->d_owned_ids, owned_ids.data(), static_cast<size_t>(n_owned));
     copy_h2d_i(dev->d_peer_offsets, peer_offsets.data(), static_cast<size_t>(total_pipe_cells) + 1);
     copy_h2d_i(dev->d_peer_ids, peer_ids.data(), static_cast<size_t>(n_peers));
+    copy_h2d_i(dev->d_cell_neighbor_cell, neighbor_cell.data(), static_cast<size_t>(n_owned));
+    copy_h2d_d(dev->d_cell_interface_dir, interface_dir.data(), static_cast<size_t>(n_owned));
     copy_h2d_d(dev->d_cell_length, cell_length.data(), static_cast<size_t>(total_pipe_cells));
     copy_h2d_d(dev->d_cell_area, cell_area.data(), static_cast<size_t>(total_pipe_cells));
     copy_h2d_d(dev->d_cell_perim, cell_perim.data(), static_cast<size_t>(total_pipe_cells));

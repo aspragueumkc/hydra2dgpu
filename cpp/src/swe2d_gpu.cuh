@@ -523,6 +523,9 @@ struct SWE2DDeviceState {
         int32_t*  d_peer_offsets;   // [n_pipe_cells + 1]
         int32_t*  d_peer_ids;       // [n_peers]  peer = DrainageNode index
 
+        int32_t*  d_cell_neighbor_cell;  // [2 * n_pipe_cells] neighbor cell per interface, -1 if boundary
+        double*   d_cell_interface_dir;  // [2 * n_pipe_cells] -1.0=inlet, +1.0=outlet
+
         double*   d_cell_length;    // [n_pipe_cells]
         double*   d_cell_area;      // [n_pipe_cells]
         double*   d_cell_perim;     // [n_pipe_cells]
@@ -545,6 +548,7 @@ struct SWE2DDeviceState {
             #define _P_FREE(p) do { if (p) { cudaFree(p); p = nullptr; } } while(0)
             _P_FREE(d_owned_offsets); _P_FREE(d_owned_ids);
             _P_FREE(d_peer_offsets); _P_FREE(d_peer_ids);
+            _P_FREE(d_cell_neighbor_cell); _P_FREE(d_cell_interface_dir);
             _P_FREE(d_cell_length); _P_FREE(d_cell_area);
             _P_FREE(d_cell_perim); _P_FREE(d_cell_invert);
             _P_FREE(d_cell_n); _P_FREE(d_cell_k_loss);
