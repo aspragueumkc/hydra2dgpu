@@ -122,6 +122,7 @@ class SWE2DDrainageSoA:
     link_exit_loss_k: np.ndarray
     link_invert_in: np.ndarray
     link_invert_out: np.ndarray
+    max_cell_length: float = 0.0
     solver_mode: int = int(DrainageSolverMode.EGL)
     pipe_solver_mode: str = "diffusion_wave"
 
@@ -314,6 +315,8 @@ def pack_pipe_network_soa(cfg: Optional[PipeNetworkConfig], n_cells: int) -> Opt
         pipe_end_inlet_loss_k[i] = 0.5 if kin is None else float(kin)
         pipe_end_outlet_loss_k[i] = 1.0 if kout is None else float(kout)
 
+    max_cell_length = max(0.0, max(lk.max_cell_length for lk in cfg.links))
+
     return SWE2DDrainageSoA(
         node_x=node_x,
         node_y=node_y,
@@ -351,6 +354,7 @@ def pack_pipe_network_soa(cfg: Optional[PipeNetworkConfig], n_cells: int) -> Opt
         link_exit_loss_k=link_exit_loss_k,
         link_invert_in=link_invert_in,
         link_invert_out=link_invert_out,
+        max_cell_length=max_cell_length,
         solver_mode=int(getattr(cfg, "solver_mode", DrainageSolverMode.EGL)),
         pipe_solver_mode=str(getattr(cfg, "pipe_solver_mode", "diffusion_wave")),
     )
@@ -1130,7 +1134,7 @@ class SWE2DCouplingController:
                         static_args["node_max_depth"],
                         np.asarray(dsoa.link_invert_in, dtype=np.float64),
                         np.asarray(dsoa.link_invert_out, dtype=np.float64),
-                        0,  # max_cell_length from DrainageLink (placeholder)
+                        float(dsoa.max_cell_length),
                         dev_ptr,
                     )
                     self._pipe1d_mesh_built = True

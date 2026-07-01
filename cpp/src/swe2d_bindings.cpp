@@ -932,6 +932,9 @@ PYBIND11_MODULE(HYDRA_SWE2D_PY_MODULE_NAME, m) {
           "Allocate device-side culvert diagnostics buffer if not already present.");
     m.def("swe2d_gpu_readback_culvert_diagnostics", &readback_culvert_diagnostics,
           "Read back [n_structures][8] culvert diagnostic array (D2H). Returns empty if not allocated.");
+    m.def("swe2d_get_coupling_dev_ptr", []() -> uintptr_t {
+        return reinterpret_cast<uintptr_t>(s_coupling_dev);
+    }, "Return the global coupling device pointer as uintptr.");
 #else
     m.def("swe2d_gpu_device_sync", []() {
     }, "No-op: device sync not available without CUDA.");
