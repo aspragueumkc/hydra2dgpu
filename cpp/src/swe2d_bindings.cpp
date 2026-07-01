@@ -2296,6 +2296,57 @@ PYBIND11_MODULE(HYDRA_SWE2D_PY_MODULE_NAME, m) {
         py::arg("coupling_relaxation") = 0.5,
         "Headless CUDA helper: advance drainage network with native substep/implicit loops in one call.");
 
+    // ── 1D pipe network ────────────────────────────────────────────────────────
+    m.def("swe2d_build_pipe1d_mesh",
+        [](int32_t n_links,
+           py::array_t<int32_t, py::array::c_style|py::array::forcecast> link_from_node,
+           py::array_t<int32_t, py::array::c_style|py::array::forcecast> link_to_node,
+           py::array_t<double, py::array::c_style|py::array::forcecast> link_length,
+           py::array_t<double, py::array::c_style|py::array::forcecast> link_diameter,
+           py::array_t<double, py::array::c_style|py::array::forcecast> link_roughness_n,
+           py::array_t<double, py::array::c_style|py::array::forcecast> link_inlet_loss_k,
+           py::array_t<double, py::array::c_style|py::array::forcecast> link_outlet_loss_k,
+           py::array_t<double, py::array::c_style|py::array::forcecast> node_invert_elev,
+           py::array_t<double, py::array::c_style|py::array::forcecast> node_surface_area,
+           py::array_t<double, py::array::c_style|py::array::forcecast> node_max_depth,
+           py::array_t<double, py::array::c_style|py::array::forcecast> link_invert_in,
+           py::array_t<double, py::array::c_style|py::array::forcecast> link_invert_out,
+           int32_t max_cell_length,
+           uintptr_t dev_ptr) -> void
+        {
+            auto* dev = reinterpret_cast<SWE2DDeviceState*>(dev_ptr);
+            swe2d_build_pipe1d_mesh(n_links,
+                link_from_node.data(), link_to_node.data(),
+                link_length.data(), link_diameter.data(), link_roughness_n.data(),
+                link_inlet_loss_k.data(), link_outlet_loss_k.data(),
+                node_invert_elev.data(), node_surface_area.data(), node_max_depth.data(),
+                link_invert_in.data(), link_invert_out.data(),
+                max_cell_length, &dev->pipe1d);
+        },
+        "Build 1D pipe network CSR topology and allocate device buffers in pipe1d state.");
+
+    m.def("swe2d_pipe1d_step",
+        [](uintptr_t dev_ptr,
+           double dt,
+           std::string solver_mode,
+           int32_t coupling_substeps,
+           int32_t implicit_iters,
+           double relaxation,
+           double gravity) -> void
+        {
+            auto* dev = reinterpret_cast<SWE2DDeviceState*>(dev_ptr);
+            swe2d_pipe1d_step(dev, dt, solver_mode.c_str(), coupling_substeps,
+                              implicit_iters, relaxation, gravity);
+        },
+        py::arg("dev_ptr"),
+        py::arg("dt"),
+        py::arg("solver_mode"),
+        py::arg("coupling_substeps"),
+        py::arg("implicit_iters"),
+        py::arg("relaxation"),
+        py::arg("gravity"),
+        "Advance 1D pipe network one coupling step using GPU kernels.");
+
     m.def("swe2d_solver_get_device_capsule",
         [](const std::shared_ptr<PySolver>& ps) -> py::object {
             if (!ps || !ps->solver) throw std::invalid_argument("null solver handle");

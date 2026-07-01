@@ -1606,6 +1606,25 @@ void swe2d_pipe1d_fully_dynamic_kernel_host(
     double                dt,
     double                g);
 
+/** Host wrapper: advance 1D pipe network one coupling step.
+    Orchestrates flux kernel + update kernel (diffusion or fully dynamic) in sequence.
+    @param dev Device state pointer (with pipe1d state initialized)
+    @param dt Coupling timestep for this substep
+    @param solver_mode "diffusion_wave" or "fully_dynamic"
+    @param coupling_substeps Number of substeps within this coupling step
+    @param implicit_iters Number of Picard iterations per substep (for fully_dynamic)
+    @param relaxation Relaxation factor for Picard iteration (0-1)
+    @param g Gravitational acceleration
+    @host */
+void swe2d_pipe1d_step(
+    SWE2DDeviceState* dev,
+    double            dt,
+    const char*       solver_mode,
+    int32_t           coupling_substeps,
+    int32_t           implicit_iters,
+    double            relaxation,
+    double            g);
+
 /** Enable graph capture on next step, use replayed graphs on subsequent steps.
     @param dev Device state pointer
     @param enable True to enable kernel graph capture/replay

@@ -10815,6 +10815,79 @@ void swe2d_pipe1d_fully_dynamic_kernel_host(
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// swe2d_pipe1d_step
+// ─────────────────────────────────────────────────────────────────────────────
+void swe2d_pipe1d_step(
+    SWE2DDeviceState* dev,
+    double            dt,
+    const char*       solver_mode,
+    int32_t           coupling_substeps,
+    int32_t           implicit_iters,
+    double            relaxation,
+    double            g)
+{
+    if (!dev || !dev->pipe1d.d_A) return;
+
+    auto& p = dev->pipe1d;
+    const int32_t n_cells = p.n_pipe_cells;
+
+    double* d_flux_Q = nullptr;
+    CUDA_CHECK(cudaMalloc(&d_flux_Q, static_cast<size_t>(n_cells) * sizeof(double)));
+
+    const double local_dt = dt / static_cast<double>(coupling_substeps);
+
+    for (int32_t sub = 0; sub < coupling_substeps; ++sub) {
+        swe2d_pipe1d_flux_kernel_host(
+            n_cells,
+            p.d_owned_offsets, p.d_owned_ids,
+            p.d_cell_neighbor_cell, p.d_cell_interface_dir,
+            p.d_cell_from_node, p.d_cell_to_node,
+            p.d_cell_invert, p.d_cell_perim,
+            p.d_A, p.d_Q,
+            nullptr, p.d_node_depth,
+            p.d_cell_length,
+            d_flux_Q, g);
+
+        if (std::strcmp(solver_mode, "fully_dynamic") == 0) {
+            swe2d_pipe1d_fully_dynamic_kernel_host(
+                n_cells,
+                implicit_iters,
+                relaxation,
+                p.d_owned_offsets, p.d_owned_ids,
+                p.d_cell_neighbor_cell, p.d_cell_interface_dir,
+                p.d_cell_from_node, p.d_cell_to_node,
+                p.d_cell_length, p.d_cell_area,
+                p.d_cell_perim, p.d_cell_n, p.d_cell_k_loss,
+                nullptr, p.d_node_depth,
+                p.d_A, p.d_Q,
+                p.d_A, p.d_Q,
+                local_dt, g);
+        } else {
+            double* d_A_new = nullptr;
+            double* d_Q_new = nullptr;
+            CUDA_CHECK(cudaMalloc(&d_A_new, static_cast<size_t>(n_cells) * sizeof(double)));
+            CUDA_CHECK(cudaMalloc(&d_Q_new, static_cast<size_t>(n_cells) * sizeof(double)));
+
+            swe2d_pipe1d_diffusion_wave_kernel_host(
+                n_cells,
+                p.d_cell_length, p.d_cell_area,
+                p.d_cell_perim, p.d_cell_n, p.d_cell_k_loss,
+                p.d_A, p.d_Q, d_flux_Q,
+                local_dt, g,
+                d_A_new, d_Q_new);
+
+            CUDA_CHECK(cudaMemcpy(p.d_A, d_A_new, static_cast<size_t>(n_cells) * sizeof(double), cudaMemcpyDeviceToDevice));
+            CUDA_CHECK(cudaMemcpy(p.d_Q, d_Q_new, static_cast<size_t>(n_cells) * sizeof(double), cudaMemcpyDeviceToDevice));
+
+            cudaFree(d_A_new);
+            cudaFree(d_Q_new);
+        }
+    }
+
+    cudaFree(d_flux_Q);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // swe2d_gpu_destroy
 // ─────────────────────────────────────────────────────────────────────────────
 void swe2d_gpu_destroy(SWE2DDeviceState* dev) {
