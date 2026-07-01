@@ -227,6 +227,7 @@ LAYER_SCHEMAS: dict[str, dict] = {
             ("exit_loss_k", _DBL),
             ("inlet_loss_k", _DBL),
             ("outlet_loss_k", _DBL),
+            ("max_cell_length", _DBL),
         ],
     },
     "swe2d_drainage_inlets": {
