@@ -1506,6 +1506,7 @@ void swe2d_build_pipe1d_mesh(
     @param cell_Q Current discharge [n_cells]
     @param node_invert Node invert elevation [n_nodes]
     @param node_depth Node depth [n_nodes]
+    @param cell_length Cell length [n_cells]
     @param flux_Q_out Net flux OUT of each cell [n_cells]
     @param g Gravitational acceleration
     @host */
@@ -1523,6 +1524,7 @@ void swe2d_pipe1d_flux_kernel_host(
     const double*         cell_Q,
     const double*         node_invert,
     const double*         node_depth,
+    const double*         cell_length,
     double*               flux_Q_out,
     double                g);
 

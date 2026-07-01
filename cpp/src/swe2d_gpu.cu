@@ -10517,6 +10517,7 @@ __global__ __launch_bounds__(256, 1) void swe2d_pipe1d_flux_kernel(
     const double*  __restrict__ cell_Q,
     const double*  __restrict__ node_invert,
     const double*  __restrict__ node_depth,
+    const double*  __restrict__ cell_length,
     double*                     flux_Q_out,
     double                      g)
 {
@@ -10570,7 +10571,7 @@ __global__ __launch_bounds__(256, 1) void swe2d_pipe1d_flux_kernel(
             F = cell_Q[c] * dir;
         } else {
             // HLLE flux
-            const double c_wave = sqrt(g * fabs(H_c - H_n) / fmax(1e-6, 1.0));
+            const double c_wave = sqrt(g * fabs(H_c - H_n) / fmax(1e-12, cell_length[c]));
             F = 0.5 * (cell_Q[c] + Q_n - c_wave * (A_n - cell_A[c]));
         }
 
@@ -10617,8 +10618,8 @@ __global__ __launch_bounds__(256, 1) void swe2d_pipe1d_diffusion_wave_kernel(
 
     // Friction source: -g * n² * |Q| * Q / (A * R^(4/3))
     const double source_fric = -g * n * n * absQ * Q / (A * R43 + 1e-12);
-    // Minor loss source: -g * K * |Q| * Q / (2 * A * L)
-    const double source_minor = -g * k_loss * absQ * Q / (2.0 * A * L + 1e-12);
+    // Minor loss source: -g * K * |Q| * Q / (2 * A² * L)
+    const double source_minor = -g * k_loss * absQ * Q / (2.0 * A * A * L + 1e-12);
 
     const double S_Q = source_fric + source_minor;
     double Q_new = Q + dt * S_Q;
@@ -10743,6 +10744,7 @@ void swe2d_pipe1d_flux_kernel_host(
     const double*         cell_Q,
     const double*         node_invert,
     const double*         node_depth,
+    const double*         cell_length,
     double*               flux_Q_out,
     double                g)
 {
@@ -10750,7 +10752,7 @@ void swe2d_pipe1d_flux_kernel_host(
     swe2d_pipe1d_flux_kernel<<<n_blocks, BLOCK>>>(
         n_cells, owned_offsets, owned_ids, neighbor_cell, interface_dir,
         cell_from_node, cell_to_node, cell_invert, cell_perim,
-        cell_A, cell_Q, node_invert, node_depth, flux_Q_out, g);
+        cell_A, cell_Q, node_invert, node_depth, cell_length, flux_Q_out, g);
     CUDA_CHECK(cudaGetLastError());
 }
 
