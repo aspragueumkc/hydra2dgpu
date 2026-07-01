@@ -1507,6 +1507,14 @@ class SWE2DCouplingController:
                 return None
         except Exception:
             pass
+        cb = getattr(self, 'source_rate_callback', None)
+        if cb is not None:
+            try:
+                raw = cb(t_s, dt_s, h, hu, hv)
+                if raw is not None:
+                    return np.ascontiguousarray(raw, dtype=np.float64)
+            except Exception:
+                pass
         return np.zeros(self.n_cells, dtype=np.float64)
 
 __all__ = [
