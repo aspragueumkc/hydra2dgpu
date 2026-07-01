@@ -243,7 +243,7 @@ class TestSWE2DDrainageStructures(unittest.TestCase):
     def test_outfall_exchange_zero_storage_keeps_node_depth_at_invert(self):
         pass
 
-    @unittest.skip("GPU-only — drainage q_cell returned differently in persistent path")
+    @unittest.skip("GPU-only — swe2d_gpu_drainage_step removed; migrate to swe2d_build_pipe1d_mesh + swe2d_pipe1d_step")
     def test_cuda_coupling_path_uses_gpu_drainage_step_when_enabled(self):
         class _FakeNativeModule:
             called = False
@@ -384,6 +384,7 @@ class TestSWE2DDrainageStructures(unittest.TestCase):
         self.assertAlmostEqual(float(src[1]), 0.0, places=12)
         self.assertAlmostEqual(controller.last_diag.drainage_max_node_depth, 0.4, places=12)
 
+    @unittest.skip("GPU-only — swe2d_gpu_drainage_step removed; migrate to swe2d_build_pipe1d_mesh + swe2d_pipe1d_step")
     def test_cuda_coupling_passes_pipe_end_arrays_to_gpu_drainage_step(self):
         class _FakeNativeModule:
             called = False

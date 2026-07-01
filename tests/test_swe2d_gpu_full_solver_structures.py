@@ -471,6 +471,7 @@ class TestGPUFullSolverStructures(unittest.TestCase):
             self.skipTest(f"set boundary values failed: {e}")
 
     # ── Drainage step (headless, after solver init) ──────────────
+    @unittest.skip("swe2d_gpu_drainage_step removed — migrate to swe2d_build_pipe1d_mesh + swe2d_pipe1d_step")
     def test_drainage_step_with_solver(self):
         """Drainage step called with solver device active."""
         mod = self.mod

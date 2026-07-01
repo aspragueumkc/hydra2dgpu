@@ -1,17 +1,13 @@
 """
 GPU compute-sanitizer test: 1D drainage network CUDA paths.
 
-Exercises these module-level functions that are NOT covered by the
-core solver tests:
-  - swe2d_gpu_drainage_step
-  - swe2d_gpu_drainage_step_iterative
-  - swe2d_gpu_upload_culvert_face_flux_params
-  - swe2d_gpu_apply_culvert_face_flux
-  - swe2d_gpu_fold_culvert_mass_to_source
-  - swe2d_gpu_alloc_ext_struct_flux
+DEPRECATED: swe2d_gpu_drainage_step and swe2d_gpu_drainage_step_iterative
+have been removed. The new API uses:
+  - swe2d_build_pipe1d_mesh (one-time mesh build)
+  - swe2d_pipe1d_step (per-step update)
+  - swe2d_get_coupling_dev_ptr
 
-Run with compute-sanitizer:
-  compute-sanitizer --tool=memcheck python -m pytest tests/test_swe2d_gpu_drainage_network.py -v
+Tests below are skipped until migrated to the new API.
 """
 
 from __future__ import annotations
@@ -40,7 +36,7 @@ class TestGPUDrainageStepComputeSanitizer(unittest.TestCase):
         if _MOD is None:
             raise unittest.SkipTest("hydra_swe2d not available")
         if not hasattr(_MOD, "swe2d_gpu_drainage_step"):
-            raise unittest.SkipTest("GPU drainage functions not compiled")
+            raise unittest.SkipTest("swe2d_gpu_drainage_step removed — migrate to swe2d_build_pipe1d_mesh + swe2d_pipe1d_step")
         if not bool(_MOD.swe2d_gpu_available()):
             raise unittest.SkipTest("CUDA GPU not available")
 
