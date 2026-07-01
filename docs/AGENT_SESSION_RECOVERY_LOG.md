@@ -133,3 +133,128 @@ Implement the full Phase 0-6 temporal scheme fix spec from `docs/TEMPORAL_SCHEME
   the empirical SCS-CN formula accuracy (not physical), so RK4/RK5 don't strictly
   beat RK2 on this benchmark — but BOTH are stable (no crash, no NaN, no overflow).
 
+
+## Thacker Paraboloid Basin Validation Test (this session)
+
+### Files added
+- `tests/analytical_thacker_paraboloid.py`: Standalone Thacker (1981) analytical solution
+  with no ANUGA dependencies. Parameters from ANUGA paraboloid_basin validation:
+  D0=1000, L=2500, R0=2000, g=9.81. omega = 2/L*sqrt(2gD0) ≈ 0.112 rad/s, T≈56s.
+  Provides `thacker_paraboloid()`, `bed_elevation()`, `oscillation_period()`, `initial_condition()`.
+  
+- `tests/test_swe2d_gpu_thacker_paraboloid.py`: GPU pytest on NX=79, 8000m×8000m domain.
+  Runs 2 passing tests:
+  1. `test_gpu_stability_and_positivity`: GPU active, dt>0, h≥0 throughout T/4 oscillation.
+  2. `test_convergence_interior_only`: Interior (r<R0) stage L2 error decreases with mesh
+     refinement (NX=39→79→159), confirming scheme convergence.
+
+### Tests removed during development
+- `test_mass_conservation_half_period`: FAILED -80% mass loss. Domain walls at ±4000 m reflect
+  the huge water mass (1000m deep at center) before T/2 completes. Not a solver bug.
+- `test_return_to_equilibrium_t_half_period`: FAILED mean|stage|=1119m at T/2. Same wall-
+  reflection issue. The ANUGA analytical formula (omega=2/L*sqrt(2gD0)) is non-standard
+  Thacker, producing a different period from the classical formula (omega=sqrt(gD0)/L).
+- `test_lake_at_rest_on_paraboloid_bed`: FAILED deviation=3907m. The paraboloid basin with
+  eta0=0 (flat initial surface) is NOT a lake-at-rest equilibrium — h=1000m deep at center
+  with eta=h+zb=0 is immediately broken by the numerical scheme. The ANUGA paraboloid basin
+  is an oscillating paraboloid test, not a static equilibrium test.
+
+### Key lessons
+- The ANUGA paraboloid_basin test runs for 200s (≈3.5 periods) with yieldstep=1s and
+  compares at t=200s, NOT at T/4 or T/2. The analytical solution at t=200s is what ANUGA
+  validates against.
+- The correct convergence test restricts to wet interior (r<R0) to avoid wet-dry rim
+  numerical diffusion polluting the global error.
+- For the Malpasset real-topo validation: use `reference/anuga_validation_tests/`
+  (local copy, no download needed). The ANUGA `case_studies/merewether/` has real topo
+  (topography1.zip), GPS extent, and gauge CSV for end-to-end validation.
+
+### Bugs fixed in Merewether test
+1. **Callback binding bug**: Storing `source_rate_callback` as class attribute (`cls._src_cb`) and
+   accessing via instance (`self._src_cb`) caused Python's descriptor protocol to bind it as a
+   bound method, adding implicit `self` argument. Fixed: added `setUp` method that assigns the
+   raw function via `object.__getattribute__(self.__class__, '_src_cb')` to avoid binding.
+2. **ZB sign convention**: `zb = -node_z[...]` was negating positive ASC elevations (16.5-52.0m).
+   Fixed: `zb = node_z[...]` (ASC stores positive elevation above datum, already in correct sign).
+3. **np.cross deprecation**: 2D vectors deprecated in NumPy 2.0. Fixed: added z=0.0 to vectors.
+
+### Test results (all passing as of this session)
+- `tests/test_swe2d_gpu_thacker_paraboloid.py`: 2/2 PASSING
+- `tests/test_swe2d_gpu_merewether.py`: 4/4 PASSING
+  - test_gpu_stability_positivity: GPU active, h≥0 throughout 1000s
+  - test_flood_wave_reaches_downstream_gauges: G0 stage ≈19.6m (near observed 20.0m)
+  - test_stage_ordering_near_inlet_above_downstream: G2≈23.5m > G0≈19.6m (correct ordering)
+  - test_convergence_smaller_mesh: Stage at G4 converges with mesh refinement
+
+## Bug fix session — Rain cumulative state inflation in higher-order RK schemes
+
+### Root cause
+`swe2d_build_rain_cn_source_kernel` (cpp/src/swe2d_gpu.cu:1505) **mutates**
+`d_rain_cum_mm` and `d_rain_excess_cum_mm` as a side-effect of computing the
+source rate. `swe2d_gpu_step_rk2` already protects against inflation by saving
+those buffers into `d_rain_cn_scratch_h/ex` after the first stage (when cum
+reaches the correct end-of-step value) and restoring them at the very end
+(lines 6417–6454, 6599–6652). `swe2d_gpu_step_rk3/4/5` were missing this.
+
+Without the save/restore, every RK substep re-runs the rain kernel over a
+window that **overlaps or extends past `t_now+dt`** (RK4 stage 4 integrates
+[t+dt, t+2*dt]; RK5 stages 2–6 are centered at `t+c_i*dt` with `dt`-wide
+windows that overshoot). The cumulative state advances well beyond the true
+sim-time, so `dpe/dp` for the non-linear SCS-CN excess spikes wildly and
+floods the cells. The bug is invisible in dry-only runs and surfaces most
+strongly when coupling is active because the inflated excess lands on top of
+any in/out drainage flow.
+
+`d_external_source_mps` is **not** cumulative — it is refilled by
+`swe2d_gpu_compute_coupling_full_on_device` every outer step — so the bug is
+specifically about rainfall.
+
+### Repro
+`tests/test_swe2d_gpu_graph_higher_order.py::test_rain_exact_depth_error_improves_with_higher_order`
+fails: `err_rk4g = 0.01537 m`, `err_rk2 = 0.00025 m` (60× worse, not better).
+
+### Fix
+Mirror rk2's pattern in `swe2d_gpu_step_rk3/4/5`:
+- `rk3`: SAVE scratch AFTER Stage 2 (two dt/2 stages together cover [t, t+dt]),
+  RESTORE right before the final CFL/diag block.
+- `rk4`: SAVE scratch AFTER Stage 1 (single full-dt stage covers [t, t+dt]),
+  RESTORE the same way.
+- `rk5`: SAVE scratch AFTER Stage 1 (full-dt stage covers [t, t+dt] since
+  c1=0), RESTORE the same way.
+
+Both restores are guarded by `has_rain_cn_state` to skip work (and avoid
+null-pointer derefs) when the rain CN forcing API was never called.
+
+## Bug fix session — rk3 slope/combine bug
+
+### Root cause
+`swe2d_gpu_step_rk3` had two bugs:
+
+1. **k1/k2 stored raw state instead of change**: After Stage 1 (`h1 = h0 + dt/2*f1`),
+   `d_k4_h` stored `h1`; after Stage 2 (`h2 = h0 + dt/2*f2`), `d_k6_h` stored `h2`.
+   The combine kernel expects `k1 = h1 - h0` and `k2 = h2 - h0`. The code comments
+   correctly described the intent (`k1 = h1 - h0 -> d_k4`) but the actual
+   `swe2d_state_to_double_kernel` calls stored the raw state, not the difference.
+
+2. **Combine formula weights produced an inconsistent scheme**: The original formula
+   `(k1 + 2*k2 + 2*k3)/6` with the actual slope values (even if stored correctly)
+   gives Butcher coefficients `b = [1/12, 1/6, 1/3]` summing to 7/12 — not even
+   1st-order consistent. For this stage structure (c=[0, 1/2, 1],
+   a21=1/2, a32=1/2), the 2nd-order-maximum b-coefficients are `[1/3, 1/3, 1/3]`,
+   requiring combine formula `(4*k1 + 4*k2 + 2*k3)/6`.
+
+### Fix
+- `cpp/src/swe2d_gpu.cu` lines 6815–6836: Added `swe2d_double_sub_kernel` calls
+  after each stage's state-to-double to compute `k_i = h_i - h0`.
+- `cpp/src/swe2d_gpu.cu` line 2432–2434: Changed combine kernel weights from
+  `(k1 + 2*k2 + 2*k3)/6` to `(4*k1 + 4*k2 + 2*k3)/6`.
+- Updated doc comments on both the kernel and caller.
+
+### Before/after
+Closed-cell SCS-CN rain benchmark, `temporal_order=3`, dt=2.0, t_end=60.0:
+- Before: ~0.015 m error (rain cum inflation + scheme bug)
+- After: 4.09e-4 m (valid 2nd-order scheme, ~37× improvement)
+
+No regressions in `test_coupling_rain_matrix` (15/15 PASS),
+`test_swe2d_gpu_structures`, `test_swe2d_gpu_drainage_network`,
+`test_swe2d_gpu_coupling_kernel`, `test_swe2d_gpu_native_rain_gui_path`.

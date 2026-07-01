@@ -2401,9 +2401,10 @@ __global__ __launch_bounds__(256, 4) void swe2d_rk2_combine_kernel(
 }
 
 /** GPU kernel: RK3 combine — one thread per cell.
- *  Textbook RK3 (3rd-order): k1=h1-h0, k2=h2-h0, k3=h3-h0.
- *  Final: h_new = h0 + (k1 + 2*k2 + 2*k3)/6.
- *  k1 stored in d_k4_h/hu/hv; k2 in d_k6_h/hu/hv; k3 = h-h0 computed inline.
+ *  k1=h1-h0 (d_k4), k2=h2-h0 (d_k6), k3=h3-h0 (computed inline).
+ *  Stage structure: h1 = h0 + dt/2*f1, h2 = h0 + dt/2*f2, h3 = h0 + dt*f3.
+ *  For 2nd-order consistency (b1=b2=b3=1/3):
+ *    h_new = h0 + (4*k1 + 4*k2 + 2*k3)/6
  *  @global */
 __global__ __launch_bounds__(256, 4) void swe2d_rk3_combine_kernel(
     int32_t n_cells,
@@ -2429,9 +2430,9 @@ __global__ __launch_bounds__(256, 4) void swe2d_rk3_combine_kernel(
     const double k3_hu = static_cast<double>(cell_hu[c]) - hu0[c];
     const double k3_hv = static_cast<double>(cell_hv[c]) - hv0[c];
 
-    const double h_new = h0[c] + (k1_h[c] + 2.0*k2_h[c] + 2.0*k3_h) / 6.0;
-    const double hu_new = hu0[c] + (k1_hu[c] + 2.0*k2_hu[c] + 2.0*k3_hu) / 6.0;
-    const double hv_new = hv0[c] + (k1_hv[c] + 2.0*k2_hv[c] + 2.0*k3_hv) / 6.0;
+    const double h_new = h0[c] + (4.0*k1_h[c] + 4.0*k2_h[c] + 2.0*k3_h) / 6.0;
+    const double hu_new = hu0[c] + (4.0*k1_hu[c] + 4.0*k2_hu[c] + 2.0*k3_hu) / 6.0;
+    const double hv_new = hv0[c] + (4.0*k1_hv[c] + 4.0*k2_hv[c] + 2.0*k3_hv) / 6.0;
 
     const double h_final = (h_new < 0.0) ? 0.0 : h_new;
     cell_h[c] = static_cast<State>(h_final);
@@ -4938,10 +4939,6 @@ SWE2DDeviceState* swe2d_gpu_init(
     alloc_d(reinterpret_cast<void**>(&dev->d_external_source_mps), sz_cells * sizeof(double));
     CUDA_CHECK(cudaMemset(dev->d_external_source_mps, 0, sz_cells * sizeof(double)));
 
-    // Predictor-corrector source buffer — stores coupling source from predictor step.
-    alloc_d(reinterpret_cast<void**>(&dev->d_coupling_pred_source), sz_cells * sizeof(double));
-    CUDA_CHECK(cudaMemset(dev->d_coupling_pred_source, 0, sz_cells * sizeof(double)));
-
     // Edge flux buffers (consumed by the cell-centric update kernel).
     alloc_d(reinterpret_cast<void**>(&dev->d_flux_h),    sz_edges * sizeof(double));
     alloc_d(reinterpret_cast<void**>(&dev->d_flux_hu),   sz_edges * sizeof(double));
@@ -6816,6 +6813,12 @@ void swe2d_gpu_step_rk3(
         n_cells, dev->d_hu, dev->d_k4_hu);
     swe2d_state_to_double_kernel<<<grid_cells, BLOCK, 0, dev->d_stream>>>(
         n_cells, dev->d_hv, dev->d_k4_hv);
+    swe2d_double_sub_kernel<<<grid_cells, BLOCK, 0, dev->d_stream>>>(
+        n_cells, dev->d_k4_h, dev->d_h0, dev->d_k4_h);
+    swe2d_double_sub_kernel<<<grid_cells, BLOCK, 0, dev->d_stream>>>(
+        n_cells, dev->d_k4_hu, dev->d_hu0, dev->d_k4_hu);
+    swe2d_double_sub_kernel<<<grid_cells, BLOCK, 0, dev->d_stream>>>(
+        n_cells, dev->d_k4_hv, dev->d_hv0, dev->d_k4_hv);
     CUDA_CHECK(cudaMemcpyAsync(dev->d_h1, dev->d_h, sz, cudaMemcpyDeviceToDevice, dev->d_stream));
 
     // Stage 2: restore to h0; k2 = f(t+dt/2, h1); h2 = h0 + dt/2*k2
@@ -6838,7 +6841,28 @@ void swe2d_gpu_step_rk3(
         n_cells, dev->d_hu, dev->d_k6_hu);
     swe2d_state_to_double_kernel<<<grid_cells, BLOCK, 0, dev->d_stream>>>(
         n_cells, dev->d_hv, dev->d_k6_hv);
+    swe2d_double_sub_kernel<<<grid_cells, BLOCK, 0, dev->d_stream>>>(
+        n_cells, dev->d_k6_h, dev->d_h0, dev->d_k6_h);
+    swe2d_double_sub_kernel<<<grid_cells, BLOCK, 0, dev->d_stream>>>(
+        n_cells, dev->d_k6_hu, dev->d_hu0, dev->d_k6_hu);
+    swe2d_double_sub_kernel<<<grid_cells, BLOCK, 0, dev->d_stream>>>(
+        n_cells, dev->d_k6_hv, dev->d_hv0, dev->d_k6_hv);
     CUDA_CHECK(cudaMemcpyAsync(dev->d_h2, dev->d_h, sz, cudaMemcpyDeviceToDevice, dev->d_stream));
+
+    // ── Rain CN save: after Stage 2 the cumulative state equals total rainfall
+    // through t_now+dt (the two dt/2 stages together cover [t_now, t_now+dt]).
+    // Stage 3 will overshoot it; restore at end of step to keep sim-time and
+    // cum aligned.  Mirrors swe2d_gpu_step_rk2 pattern (swe2d_gpu.cu:6417). ──
+    const bool has_rain_cn_state_rk3 = (
+        dev->d_rain_cum_mm &&
+        dev->d_rain_excess_cum_mm &&
+        dev->d_rain_cn_scratch_h &&
+        dev->d_rain_cn_scratch_ex
+    );
+    if (has_rain_cn_state_rk3) {
+        CUDA_CHECK(cudaMemcpyAsync(dev->d_rain_cn_scratch_h, dev->d_rain_cum_mm, sz, cudaMemcpyDeviceToDevice, dev->d_stream));
+        CUDA_CHECK(cudaMemcpyAsync(dev->d_rain_cn_scratch_ex, dev->d_rain_excess_cum_mm, sz, cudaMemcpyDeviceToDevice, dev->d_stream));
+    }
 
     // Stage 3: restore to h0; k3 = f(t+dt, h2); h = h0 + dt*k3
     CUDA_CHECK(cudaMemcpyAsync(dev->d_h, dev->d_h0, sz, cudaMemcpyDeviceToDevice, dev->d_stream));
@@ -6854,8 +6878,9 @@ void swe2d_gpu_step_rk3(
                    false, &tmp_diag,
                    front_flux_damping, active_set_hysteresis);
 
-    // Combine: h^{n+1} = h0 + dt/6*(k1 + 2*k2 + 2*k3 + k3)
-    // k1=d_k4, k2=d_k6, k3=h-h0 (computed in kernel)
+    // Combine: h^{n+1} = h0 + (4*k1 + 4*k2 + 2*k3)/6
+    // k1=h1-h0 (d_k4), k2=h2-h0 (d_k6), k3=h-h0 (computed in kernel)
+    // b = [1/3,1/3,1/3]; 2nd-order for this scheme's stage structure.
     CUDA_CHECK(cudaMemsetAsync(dev->d_max_wse_elev_error, 0, sizeof(double), dev->d_stream));
     const int grid = (n_cells + BLOCK - 1) / BLOCK;
     swe2d_rk3_combine_kernel<<<grid, BLOCK, 0, dev->d_stream>>>(
@@ -6867,6 +6892,12 @@ void swe2d_gpu_step_rk3(
         dev->d_max_wse_elev_error,
         h_min);
     CUDA_CHECK(cudaGetLastError());
+
+    // Restore rain cumulative state to end-of-step value (Stage 3 overshoots).
+    if (has_rain_cn_state_rk3) {
+        CUDA_CHECK(cudaMemcpyAsync(dev->d_rain_cum_mm, dev->d_rain_cn_scratch_h, sz, cudaMemcpyDeviceToDevice, dev->d_stream));
+        CUDA_CHECK(cudaMemcpyAsync(dev->d_rain_excess_cum_mm, dev->d_rain_cn_scratch_ex, sz, cudaMemcpyDeviceToDevice, dev->d_stream));
+    }
 
     // CFL and diagnostics
     CUDA_CHECK(cudaMemsetAsync(dev->d_lambda_max, 0, sizeof(double), dev->d_stream));
@@ -7063,6 +7094,21 @@ void swe2d_gpu_step_rk5(
         n_cells, dev->d_hu, dev->d_hu0, dev->d_k4_hu);
     swe2d_state_subtract_double_kernel<<<grid_cells, BLOCK, 0, dev->d_stream>>>(
         n_cells, dev->d_hv, dev->d_hv0, dev->d_k4_hv);
+
+    // ── Rain CN save: Stage 1 (c1=0) covers [t_now, t_now+dt], so cum now
+    // equals the cumulative rainfall through end-of-step.  Stages 2-6 all
+    // overshoot by extending into [t_now, t_now+2*dt]; restore at end.
+    // Mirrors swe2d_gpu_step_rk2 pattern (swe2d_gpu.cu:6417). ──
+    const bool has_rain_cn_state_rk5 = (
+        dev->d_rain_cum_mm &&
+        dev->d_rain_excess_cum_mm &&
+        dev->d_rain_cn_scratch_h &&
+        dev->d_rain_cn_scratch_ex
+    );
+    if (has_rain_cn_state_rk5) {
+        CUDA_CHECK(cudaMemcpyAsync(dev->d_rain_cn_scratch_h, dev->d_rain_cum_mm, sz, cudaMemcpyDeviceToDevice, dev->d_stream));
+        CUDA_CHECK(cudaMemcpyAsync(dev->d_rain_cn_scratch_ex, dev->d_rain_excess_cum_mm, sz, cudaMemcpyDeviceToDevice, dev->d_stream));
+    }
 
     // ========================================================================
     // Stage 2: y2 = y0 + (dt/5)*k1. Save y2 as State, then k2 = f(t+c2*dt, y2).
@@ -7350,6 +7396,13 @@ void swe2d_gpu_step_rk5(
         momentum_cap_min_speed, momentum_cap_celerity_mult);
     CUDA_CHECK(cudaGetLastError());
 
+    // Restore rain cumulative state — Stages 2-6 overshot into [t, t+2*dt];
+    // cum is now correctly aligned with the post-step simulation time.
+    if (has_rain_cn_state_rk5) {
+        CUDA_CHECK(cudaMemcpyAsync(dev->d_rain_cum_mm, dev->d_rain_cn_scratch_h, sz, cudaMemcpyDeviceToDevice, dev->d_stream));
+        CUDA_CHECK(cudaMemcpyAsync(dev->d_rain_excess_cum_mm, dev->d_rain_cn_scratch_ex, sz, cudaMemcpyDeviceToDevice, dev->d_stream));
+    }
+
     // CFL + diagnostics
     CUDA_CHECK(cudaMemsetAsync(dev->d_lambda_max, 0, sizeof(double), dev->d_stream));
     const int edge_grid = (dev->n_edges + BLOCK - 1) / BLOCK;
@@ -7514,6 +7567,22 @@ void swe2d_gpu_step_rk4(
     swe2d_double_scale_inplace_kernel<<<grid_cells, BLOCK, 0, dev->d_stream>>>(
         n_cells, inv_dt, dev->d_k4_hv);
 
+    // ── Rain CN save: Stage 1 covers [t_now, t_now+dt] in one full-dt step, so
+    // d_rain_cum_mm now holds the cumulative rainfall through end-of-step.
+    // Stages 2-4 will overshoot; restore at the end (see combine block below).
+    // Mirrors swe2d_gpu_step_rk2 pattern (swe2d_gpu.cu:6417). ──
+    const bool has_rain_cn_state_rk4 = (
+        dev->d_rain_cum_mm &&
+        dev->d_rain_excess_cum_mm &&
+        dev->d_rain_cn_scratch_h &&
+        dev->d_rain_cn_scratch_ex
+    );
+    const size_t sz_rk4 = static_cast<size_t>(n_cells) * sizeof(double);
+    if (has_rain_cn_state_rk4) {
+        CUDA_CHECK(cudaMemcpyAsync(dev->d_rain_cn_scratch_h, dev->d_rain_cum_mm, sz_rk4, cudaMemcpyDeviceToDevice, dev->d_stream));
+        CUDA_CHECK(cudaMemcpyAsync(dev->d_rain_cn_scratch_ex, dev->d_rain_excess_cum_mm, sz_rk4, cudaMemcpyDeviceToDevice, dev->d_stream));
+    }
+
     // ========================================================================
     // Stage 2: y2_state = y0 + (dt/2)*k1. Step at t+dt/2 dt/2 -> h2.
     //   k2 = 2*(h2 - y2_state)/dt -> d_k5
@@ -7677,6 +7746,13 @@ void swe2d_gpu_step_rk4(
         dev->d_max_wse_elev_error,
         h_min);
     CUDA_CHECK(cudaGetLastError());
+
+    // Restore rain cumulative state — Stages 2-4 overshot; cum is now
+    // correctly aligned with the post-step simulation time.
+    if (has_rain_cn_state_rk4) {
+        CUDA_CHECK(cudaMemcpyAsync(dev->d_rain_cum_mm, dev->d_rain_cn_scratch_h, sz_rk4, cudaMemcpyDeviceToDevice, dev->d_stream));
+        CUDA_CHECK(cudaMemcpyAsync(dev->d_rain_excess_cum_mm, dev->d_rain_cn_scratch_ex, sz_rk4, cudaMemcpyDeviceToDevice, dev->d_stream));
+    }
 
     // CFL + diagnostics
     CUDA_CHECK(cudaMemsetAsync(dev->d_lambda_max, 0, sizeof(double), dev->d_stream));
