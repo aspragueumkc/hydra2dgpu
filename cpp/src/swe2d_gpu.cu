@@ -10457,6 +10457,8 @@ void swe2d_build_pipe1d_mesh(
     alloc_d(reinterpret_cast<void**>(&dev->d_peer_ids), static_cast<size_t>(n_peers) * sizeof(int32_t));
     alloc_d(reinterpret_cast<void**>(&dev->d_cell_neighbor_cell), static_cast<size_t>(n_owned) * sizeof(int32_t));
     alloc_d(reinterpret_cast<void**>(&dev->d_cell_interface_dir), static_cast<size_t>(n_owned) * sizeof(double));
+    alloc_d(reinterpret_cast<void**>(&dev->d_cell_from_node), static_cast<size_t>(total_pipe_cells) * sizeof(int32_t));
+    alloc_d(reinterpret_cast<void**>(&dev->d_cell_to_node), static_cast<size_t>(total_pipe_cells) * sizeof(int32_t));
     alloc_d(reinterpret_cast<void**>(&dev->d_cell_length), static_cast<size_t>(total_pipe_cells) * sizeof(double));
     alloc_d(reinterpret_cast<void**>(&dev->d_cell_area), static_cast<size_t>(total_pipe_cells) * sizeof(double));
     alloc_d(reinterpret_cast<void**>(&dev->d_cell_perim), static_cast<size_t>(total_pipe_cells) * sizeof(double));
@@ -10477,6 +10479,8 @@ void swe2d_build_pipe1d_mesh(
     copy_h2d_i(dev->d_peer_ids, peer_ids.data(), static_cast<size_t>(n_peers));
     copy_h2d_i(dev->d_cell_neighbor_cell, neighbor_cell.data(), static_cast<size_t>(n_owned));
     copy_h2d_d(dev->d_cell_interface_dir, interface_dir.data(), static_cast<size_t>(n_owned));
+    copy_h2d_i(dev->d_cell_from_node, cell_from_node.data(), static_cast<size_t>(total_pipe_cells));
+    copy_h2d_i(dev->d_cell_to_node, cell_to_node.data(), static_cast<size_t>(total_pipe_cells));
     copy_h2d_d(dev->d_cell_length, cell_length.data(), static_cast<size_t>(total_pipe_cells));
     copy_h2d_d(dev->d_cell_area, cell_area.data(), static_cast<size_t>(total_pipe_cells));
     copy_h2d_d(dev->d_cell_perim, cell_perim.data(), static_cast<size_t>(total_pipe_cells));
@@ -10493,6 +10497,319 @@ void swe2d_build_pipe1d_mesh(
     CUDA_CHECK(cudaMemset(dev->d_Q, 0, static_cast<size_t>(total_pipe_cells) * sizeof(double)));
     CUDA_CHECK(cudaMemcpy(dev->d_A_prev, cell_area.data(), static_cast<size_t>(total_pipe_cells) * sizeof(double), cudaMemcpyHostToDevice));
     CUDA_CHECK(cudaMemset(dev->d_Q_iter, 0, static_cast<size_t>(total_pipe_cells) * sizeof(double)));
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// swe2d_pipe1d_flux_kernel
+// One thread per pipe cell. Accumulates discharge at each owned face interface.
+// ─────────────────────────────────────────────────────────────────────────────
+__global__ __launch_bounds__(256, 1) void swe2d_pipe1d_flux_kernel(
+    int32_t                     n_cells,
+    const int32_t* __restrict__ owned_offsets,
+    const int32_t* __restrict__ owned_ids,
+    const int32_t* __restrict__ neighbor_cell,
+    const double*  __restrict__ interface_dir,
+    const int32_t* __restrict__ cell_from_node,
+    const int32_t* __restrict__ cell_to_node,
+    const double*  __restrict__ cell_invert,
+    const double*  __restrict__ cell_perim,
+    const double*  __restrict__ cell_A,
+    const double*  __restrict__ cell_Q,
+    const double*  __restrict__ node_invert,
+    const double*  __restrict__ node_depth,
+    double*                     flux_Q_out,
+    double                      g)
+{
+    int32_t c = blockIdx.x * blockDim.x + threadIdx.x;
+    if (c >= n_cells) return;
+
+    double total_flux = 0.0;
+    const int32_t start = owned_offsets[c];
+    const int32_t end   = owned_offsets[c + 1];
+
+    for (int32_t idx = start; idx < end; ++idx) {
+        const int32_t k = owned_ids[idx];
+        const double  dir = interface_dir[k];
+        const int32_t nbr = neighbor_cell[k];
+
+        // Head at this cell center
+        const double H_c = cell_invert[c] + cell_A[c] / fmax(1e-10, cell_perim[c]);
+
+        double H_n, A_n, Q_n;
+        if (nbr >= 0) {
+            // Interior neighbor: head at shared node
+            const int32_t from_n = cell_from_node[nbr];
+            const int32_t to_n   = cell_to_node[nbr];
+            if (dir > 0.0) {
+                // Outlet of c (to_node[c]), neighbor shares this node via its from_node
+                const int32_t shared_node = cell_to_node[c]; // == from_n
+                H_n = node_invert[shared_node] + node_depth[shared_node];
+            } else {
+                // Inlet of c (from_node[c]), neighbor shares this node via its to_node
+                const int32_t shared_node = cell_from_node[c]; // == to_n
+                H_n = node_invert[shared_node] + node_depth[shared_node];
+            }
+            A_n = cell_A[nbr];
+            Q_n = cell_Q[nbr];
+        } else {
+            // Boundary: use node head directly
+            if (dir > 0.0) {
+                const int32_t shared_node = cell_to_node[c];
+                H_n = node_invert[shared_node] + node_depth[shared_node];
+            } else {
+                const int32_t shared_node = cell_from_node[c];
+                H_n = node_invert[shared_node] + node_depth[shared_node];
+            }
+            A_n = cell_A[c];
+            Q_n = cell_Q[c];
+        }
+
+        double F;
+        if (nbr < 0) {
+            // Boundary: upwind flux
+            F = cell_Q[c] * dir;
+        } else {
+            // HLLE flux
+            const double c_wave = sqrt(g * fabs(H_c - H_n) / fmax(1e-6, 1.0));
+            F = 0.5 * (cell_Q[c] + Q_n - c_wave * (A_n - cell_A[c]));
+        }
+
+        // Accumulate: outlet (+), inlet (-)
+        total_flux += dir * F;
+    }
+    flux_Q_out[c] = total_flux;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// swe2d_pipe1d_diffusion_wave_kernel
+// One thread per pipe cell. Explicit update using Manning's friction only.
+// ─────────────────────────────────────────────────────────────────────────────
+__global__ __launch_bounds__(256, 1) void swe2d_pipe1d_diffusion_wave_kernel(
+    int32_t                     n_cells,
+    const double*  __restrict__ cell_length,
+    const double*  __restrict__ cell_area_full,
+    const double*  __restrict__ cell_perim,
+    const double*  __restrict__ cell_n,
+    const double*  __restrict__ cell_k_loss,
+    const double*  __restrict__ cell_A,
+    const double*  __restrict__ cell_Q,
+    const double*  __restrict__ flux_Q,
+    double                      dt,
+    double                      g,
+    double*                     cell_A_new,
+    double*                     cell_Q_new)
+{
+    int32_t i = blockIdx.x * blockDim.x + threadIdx.x;
+    if (i >= n_cells) return;
+
+    const double A_full = cell_area_full[i];
+    const double A = cell_A[i];
+    const double Q = cell_Q[i];
+    const double L = cell_length[i];
+    const double P = cell_perim[i];
+    const double n = cell_n[i];
+    const double k_loss = cell_k_loss[i];
+    const double absQ = fabs(Q);
+
+    // Hydraulic radius (current area / constant perimeter)
+    const double R = A / fmax(1e-6, P);
+    const double R43 = pow(R, 4.0 / 3.0);
+
+    // Friction source: -g * n² * |Q| * Q / (A * R^(4/3))
+    const double source_fric = -g * n * n * absQ * Q / (A * R43 + 1e-12);
+    // Minor loss source: -g * K * |Q| * Q / (2 * A * L)
+    const double source_minor = -g * k_loss * absQ * Q / (2.0 * A * L + 1e-12);
+
+    const double S_Q = source_fric + source_minor;
+    double Q_new = Q + dt * S_Q;
+
+    // Clamp Q to reasonable bounds
+    const double Q_cap = 1e6;
+    Q_new = fmax(-Q_cap, fmin(Q_cap, Q_new));
+
+    // Area update from continuity: dA/dt = -flux_Q/L
+    double A_new = A - dt * flux_Q[i] / L;
+    // Clamp area: non-negative, cannot exceed full pipe area
+    A_new = fmax(0.0, fmin(A_full, A_new));
+
+    cell_A_new[i] = A_new;
+    cell_Q_new[i] = Q_new;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// swe2d_pipe1d_fully_dynamic_kernel
+// Semi-implicit solver with pressure gradient term g*A*∂H/∂x. Picard iteration.
+// One thread per pipe cell.
+// ─────────────────────────────────────────────────────────────────────────────
+__global__ __launch_bounds__(256, 1) void swe2d_pipe1d_fully_dynamic_kernel(
+    int32_t                     n_cells,
+    int32_t                     n_iters,
+    double                      relaxation,
+    const int32_t* __restrict__ owned_offsets,
+    const int32_t* __restrict__ owned_ids,
+    const int32_t* __restrict__ neighbor_cell,
+    const double*  __restrict__ interface_dir,
+    const int32_t* __restrict__ cell_from_node,
+    const int32_t* __restrict__ cell_to_node,
+    const double*  __restrict__ cell_length,
+    const double*  __restrict__ cell_area_full,
+    const double*  __restrict__ cell_perim,
+    const double*  __restrict__ cell_n,
+    const double*  __restrict__ cell_k_loss,
+    const double*  __restrict__ node_invert,
+    const double*  __restrict__ node_depth,
+    const double*  __restrict__ cell_A_prev,
+    const double*  __restrict__ cell_Q_prev,
+    double*                     cell_A_iter,
+    double*                     cell_Q_iter,
+    double                      dt,
+    double                      g)
+{
+    int32_t c = blockIdx.x * blockDim.x + threadIdx.x;
+    if (c >= n_cells) return;
+
+    double A = cell_A_iter[c];
+    double Q = cell_Q_iter[c];
+    const double L = cell_length[c];
+    const double P = cell_perim[c];
+    const double n = cell_n[c];
+    const double k_loss = cell_k_loss[c];
+    const double A_full = cell_area_full[c];
+
+    // Piezometric head gradient across this cell: dH/dx = (H_to - H_from) / L
+    const int32_t fn = cell_from_node[c];
+    const int32_t tn = cell_to_node[c];
+    const double H_from = node_invert[fn] + node_depth[fn];
+    const double H_to   = node_invert[tn] + node_depth[tn];
+    const double dHdx = (H_to - H_from) / fmax(1e-6, L);
+
+    // Hydraulic radius for current area
+    const double R = A / fmax(1e-6, P);
+    const double R43 = pow(R, 4.0 / 3.0);
+    const double absQ = fabs(Q);
+
+    // Pressure gradient term: -g * A * dH/dx
+    const double pressure_grad = -g * A * dHdx;
+
+    // Friction source
+    const double source_fric = -g * n * n * absQ * Q / (A * R43 + 1e-12);
+    // Minor loss source
+    const double source_minor = -g * k_loss * absQ * Q / (2.0 * A * L + 1e-12);
+
+    double Q_new = Q + dt * (pressure_grad + source_fric + source_minor);
+
+    // Clamp Q
+    const double Q_cap = 1e6;
+    Q_new = fmax(-Q_cap, fmin(Q_cap, Q_new));
+
+    // Relaxation with previous step (or previous iteration)
+    if (relaxation > 0.0 && relaxation < 1.0) {
+        Q_new = (1.0 - relaxation) * cell_Q_prev[c] + relaxation * Q_new;
+    }
+
+    // Area update from continuity: dA/dt = -flux_Q/L
+    // For fully dynamic, we use the current Q for the flux
+    // Net flux = Q_out - Q_in (Q_out = Q for this cell, Q_in from inlet neighbor)
+    double Q_in = 0.0;
+    const int32_t inlet_iface = 2 * c; // inlet interface index
+    const int32_t inlet_nbr = neighbor_cell[inlet_iface];
+    if (inlet_nbr >= 0) {
+        Q_in = cell_Q_iter[inlet_nbr];
+    }
+    const double Q_net = Q - Q_in;
+    double A_new = A - dt * Q_net / L;
+    A_new = fmax(0.0, fmin(A_full, A_new));
+
+    cell_A_iter[c] = A_new;
+    cell_Q_iter[c] = Q_new;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Host wrappers for pipe1d kernels
+// ─────────────────────────────────────────────────────────────────────────────
+#define BLOCK 256
+
+void swe2d_pipe1d_flux_kernel_host(
+    int32_t               n_cells,
+    const int32_t*        owned_offsets,
+    const int32_t*        owned_ids,
+    const int32_t*        neighbor_cell,
+    const double*         interface_dir,
+    const int32_t*        cell_from_node,
+    const int32_t*        cell_to_node,
+    const double*         cell_invert,
+    const double*         cell_perim,
+    const double*         cell_A,
+    const double*         cell_Q,
+    const double*         node_invert,
+    const double*         node_depth,
+    double*               flux_Q_out,
+    double                g)
+{
+    const int32_t n_blocks = (n_cells + BLOCK - 1) / BLOCK;
+    swe2d_pipe1d_flux_kernel<<<n_blocks, BLOCK>>>(
+        n_cells, owned_offsets, owned_ids, neighbor_cell, interface_dir,
+        cell_from_node, cell_to_node, cell_invert, cell_perim,
+        cell_A, cell_Q, node_invert, node_depth, flux_Q_out, g);
+    CUDA_CHECK(cudaGetLastError());
+}
+
+void swe2d_pipe1d_diffusion_wave_kernel_host(
+    int32_t               n_cells,
+    const double*         cell_length,
+    const double*         cell_area_full,
+    const double*         cell_perim,
+    const double*         cell_n,
+    const double*         cell_k_loss,
+    const double*         cell_A,
+    const double*         cell_Q,
+    const double*         flux_Q,
+    double                dt,
+    double                g,
+    double*               cell_A_new,
+    double*               cell_Q_new)
+{
+    const int32_t n_blocks = (n_cells + BLOCK - 1) / BLOCK;
+    swe2d_pipe1d_diffusion_wave_kernel<<<n_blocks, BLOCK>>>(
+        n_cells, cell_length, cell_area_full, cell_perim, cell_n, cell_k_loss,
+        cell_A, cell_Q, flux_Q, dt, g, cell_A_new, cell_Q_new);
+    CUDA_CHECK(cudaGetLastError());
+}
+
+void swe2d_pipe1d_fully_dynamic_kernel_host(
+    int32_t               n_cells,
+    int32_t               n_iters,
+    double                relaxation,
+    const int32_t*        owned_offsets,
+    const int32_t*        owned_ids,
+    const int32_t*        neighbor_cell,
+    const double*         interface_dir,
+    const int32_t*        cell_from_node,
+    const int32_t*        cell_to_node,
+    const double*         cell_length,
+    const double*         cell_area_full,
+    const double*         cell_perim,
+    const double*         cell_n,
+    const double*         cell_k_loss,
+    const double*         node_invert,
+    const double*         node_depth,
+    const double*         cell_A_prev,
+    const double*         cell_Q_prev,
+    double*               cell_A_iter,
+    double*               cell_Q_iter,
+    double                dt,
+    double                g)
+{
+    const int32_t n_blocks = (n_cells + BLOCK - 1) / BLOCK;
+    for (int32_t iter = 0; iter < n_iters; ++iter) {
+        swe2d_pipe1d_fully_dynamic_kernel<<<n_blocks, BLOCK>>>(
+            n_cells, n_iters, relaxation, owned_offsets, owned_ids,
+            neighbor_cell, interface_dir, cell_from_node, cell_to_node,
+            cell_length, cell_area_full, cell_perim, cell_n, cell_k_loss,
+            node_invert, node_depth, cell_A_prev, cell_Q_prev,
+            cell_A_iter, cell_Q_iter, dt, g);
+        CUDA_CHECK(cudaGetLastError());
+    }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

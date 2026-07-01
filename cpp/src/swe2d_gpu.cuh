@@ -525,6 +525,8 @@ struct SWE2DDeviceState {
 
         int32_t*  d_cell_neighbor_cell;  // [2 * n_pipe_cells] neighbor cell per interface, -1 if boundary
         double*   d_cell_interface_dir;  // [2 * n_pipe_cells] -1.0=inlet, +1.0=outlet
+        int32_t*  d_cell_from_node;  // [n_pipe_cells] from-node index per pipe cell
+        int32_t*  d_cell_to_node;    // [n_pipe_cells] to-node index per pipe cell
 
         double*   d_cell_length;    // [n_pipe_cells]
         double*   d_cell_area;      // [n_pipe_cells]
@@ -549,6 +551,7 @@ struct SWE2DDeviceState {
             _P_FREE(d_owned_offsets); _P_FREE(d_owned_ids);
             _P_FREE(d_peer_offsets); _P_FREE(d_peer_ids);
             _P_FREE(d_cell_neighbor_cell); _P_FREE(d_cell_interface_dir);
+            _P_FREE(d_cell_from_node); _P_FREE(d_cell_to_node);
             _P_FREE(d_cell_length); _P_FREE(d_cell_area);
             _P_FREE(d_cell_perim); _P_FREE(d_cell_invert);
             _P_FREE(d_cell_n); _P_FREE(d_cell_k_loss);
@@ -1488,6 +1491,118 @@ void swe2d_build_pipe1d_mesh(
     const double*         link_invert_out,
     int32_t               max_cell_length,
     SWE2DDeviceState::Pipe1DDeviceState* dev);
+
+/** GPU kernel: compute HLLE flux for 1D pipe network.
+    @param n_cells Number of pipe cells
+    @param owned_offsets CSR offsets [n_cells+1]
+    @param owned_ids Interface IDs [n_owned_faces]
+    @param neighbor_cell Neighbor cell per interface [2*n_cells], -1 if boundary
+    @param interface_dir Interface direction [2*n_cells]: -1=inlet, +1=outlet
+    @param cell_from_node From-node per cell [n_cells]
+    @param cell_to_node To-node per cell [n_cells]
+    @param cell_invert Cell midpoint invert [n_cells]
+    @param cell_perim Pipe perimeter [n_cells]
+    @param cell_A Current area [n_cells]
+    @param cell_Q Current discharge [n_cells]
+    @param node_invert Node invert elevation [n_nodes]
+    @param node_depth Node depth [n_nodes]
+    @param flux_Q_out Net flux OUT of each cell [n_cells]
+    @param g Gravitational acceleration
+    @host */
+void swe2d_pipe1d_flux_kernel_host(
+    int32_t               n_cells,
+    const int32_t*        owned_offsets,
+    const int32_t*        owned_ids,
+    const int32_t*        neighbor_cell,
+    const double*         interface_dir,
+    const int32_t*        cell_from_node,
+    const int32_t*        cell_to_node,
+    const double*         cell_invert,
+    const double*         cell_perim,
+    const double*         cell_A,
+    const double*         cell_Q,
+    const double*         node_invert,
+    const double*         node_depth,
+    double*               flux_Q_out,
+    double                g);
+
+/** GPU kernel: explicit diffusion-wave update for 1D pipe network.
+    @param n_cells Number of pipe cells
+    @param cell_length Cell length [n_cells]
+    @param cell_area_full Full pipe cross-section area [n_cells]
+    @param cell_perim Pipe perimeter [n_cells]
+    @param cell_n Manning's n [n_cells]
+    @param cell_k_loss Minor loss K coefficient [n_cells]
+    @param cell_A Current area [n_cells]
+    @param cell_Q Current discharge [n_cells]
+    @param flux_Q Net flux OUT of cell [n_cells]
+    @param dt Time step
+    @param g Gravitational acceleration
+    @param cell_A_new Updated area [n_cells]
+    @param cell_Q_new Updated discharge [n_cells]
+    @host */
+void swe2d_pipe1d_diffusion_wave_kernel_host(
+    int32_t               n_cells,
+    const double*         cell_length,
+    const double*         cell_area_full,
+    const double*         cell_perim,
+    const double*         cell_n,
+    const double*         cell_k_loss,
+    const double*         cell_A,
+    const double*         cell_Q,
+    const double*         flux_Q,
+    double                dt,
+    double                g,
+    double*               cell_A_new,
+    double*               cell_Q_new);
+
+/** GPU kernel: semi-implicit fully-dynamic update for 1D pipe network.
+    @param n_cells Number of pipe cells
+    @param n_iters Number of Picard iterations
+    @param relaxation Relaxation factor (0-1)
+    @param owned_offsets CSR offsets [n_cells+1]
+    @param owned_ids Interface IDs [n_owned_faces]
+    @param neighbor_cell Neighbor cell per interface [2*n_cells]
+    @param interface_dir Interface direction [2*n_cells]
+    @param cell_from_node From-node per cell [n_cells]
+    @param cell_to_node To-node per cell [n_cells]
+    @param cell_length Cell length [n_cells]
+    @param cell_area_full Full pipe cross-section area [n_cells]
+    @param cell_perim Pipe perimeter [n_cells]
+    @param cell_n Manning's n [n_cells]
+    @param cell_k_loss Minor loss K [n_cells]
+    @param node_invert Node invert elevation [n_nodes]
+    @param node_depth Node depth [n_nodes]
+    @param cell_A_prev Area from previous coupling step [n_cells]
+    @param cell_Q_prev Discharge from previous step [n_cells]
+    @param cell_A_iter Area iteration buffer [n_cells]
+    @param cell_Q_iter Discharge iteration buffer [n_cells]
+    @param dt Time step
+    @param g Gravitational acceleration
+    @host */
+void swe2d_pipe1d_fully_dynamic_kernel_host(
+    int32_t               n_cells,
+    int32_t               n_iters,
+    double                relaxation,
+    const int32_t*        owned_offsets,
+    const int32_t*        owned_ids,
+    const int32_t*        neighbor_cell,
+    const double*         interface_dir,
+    const int32_t*        cell_from_node,
+    const int32_t*        cell_to_node,
+    const double*         cell_length,
+    const double*         cell_area_full,
+    const double*         cell_perim,
+    const double*         cell_n,
+    const double*         cell_k_loss,
+    const double*         node_invert,
+    const double*         node_depth,
+    const double*         cell_A_prev,
+    const double*         cell_Q_prev,
+    double*               cell_A_iter,
+    double*               cell_Q_iter,
+    double                dt,
+    double                g);
 
 /** Enable graph capture on next step, use replayed graphs on subsequent steps.
     @param dev Device state pointer
