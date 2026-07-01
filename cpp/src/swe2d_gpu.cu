@@ -10695,7 +10695,7 @@ __global__ __launch_bounds__(256, 1) void swe2d_pipe1d_fully_dynamic_kernel(
     // Friction source
     const double source_fric = -g * n * n * absQ * Q / (A * R43 + 1e-12);
     // Minor loss source
-    const double source_minor = -g * k_loss * absQ * Q / (2.0 * A * L + 1e-12);
+    const double source_minor = -g * k_loss * absQ * Q / (2.0 * A * A * L + 1e-12);
 
     double Q_new = Q + dt * (pressure_grad + source_fric + source_minor);
 
