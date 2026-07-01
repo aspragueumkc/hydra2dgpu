@@ -248,6 +248,12 @@ struct SWE2DDeviceState {
     double   rain_ia_ratio = 0.2;
     double   rain_mm_to_model_depth = 1.0e-3;
 
+    // Rainfall update interval: re-evaluate SCS-CN rate every N seconds.
+    // Applied as a constant source rate between updates.
+    double   rain_update_interval_s = 60.0;   // default 60 s
+    double   last_rain_update_time = -1.0;   // scalar last update tick (host-owned)
+    double*  d_rain_excess_at_last_update_mm = nullptr;  // [n_cells] snapshot at last update
+
     // Persistent CUDA stream — all per-step kernel launches and async memsets
     // go on this stream.  Allows CPU-side work (BC updates, Python callbacks)
     // to overlap with GPU execution between steps.
@@ -1073,6 +1079,7 @@ void swe2d_gpu_set_progressive_bc_data(
     @param n_samples Number of total samples
     @param ia_ratio Initial abstraction ratio (default 0.2)
     @param mm_to_model_depth Conversion factor mm to model depth units
+    @param rain_update_interval_s SCS-CN re-evaluation interval in seconds (default 60.0)
     @host */
 void swe2d_gpu_set_rain_cn_forcing(
     SWE2DDeviceState* dev,
@@ -1085,7 +1092,8 @@ void swe2d_gpu_set_rain_cn_forcing(
     int32_t n_gages,
     int32_t n_samples,
     double ia_ratio,
-    double mm_to_model_depth);
+    double mm_to_model_depth,
+    double rain_update_interval_s);
 
 /** Upload per-cell external source terms [m/s] used by the GPU step update.
     Passing nullptr clears external sources on the device.

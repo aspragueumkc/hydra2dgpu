@@ -576,6 +576,7 @@ class SWE2DBackend:
         cn: np.ndarray,
         ia_ratio: float = 0.2,
         mm_to_model_depth: float = 1.0e-3,
+        rain_update_interval_s: float = 60.0,
     ) -> None:
         """Set rain cn forcing native."""
         if self._solver_h is None:
@@ -602,6 +603,7 @@ class SWE2DBackend:
             cna,
             float(ia_ratio),
             float(mm_to_model_depth),
+            float(rain_update_interval_s),
         )
 
     def set_external_sources_native(self, source_rate_mps: Optional[np.ndarray]) -> None:

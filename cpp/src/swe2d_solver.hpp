@@ -308,7 +308,8 @@ void swe2d_solver_set_rain_cn_forcing(
     int32_t n_gages,
     int32_t n_samples,
     double ia_ratio,
-    double mm_to_model_depth = 1.0e-3);
+    double mm_to_model_depth,
+    double rain_update_interval_s);
 
 /** Configure per-cell externally-coupled depth source terms [m/s].
     Passing nullptr or n_cells <= 0 clears external sources. */

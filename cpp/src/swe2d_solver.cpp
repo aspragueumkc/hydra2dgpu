@@ -564,7 +564,8 @@ void swe2d_solver_set_rain_cn_forcing(
     int32_t n_gages,
     int32_t n_samples,
     double ia_ratio,
-    double mm_to_model_depth)
+    double mm_to_model_depth,
+    double rain_update_interval_s)
 {
     if (!s) return;
     s->rain_cell_gage.clear();
@@ -592,7 +593,8 @@ void swe2d_solver_set_rain_cn_forcing(
                 0,
                 0,
                    s->rain_ia_ratio,
-                s->rain_mm_to_model_depth);
+                s->rain_mm_to_model_depth,
+                0.0);
         }
 #endif
         return;
@@ -618,7 +620,8 @@ void swe2d_solver_set_rain_cn_forcing(
                                       n_gages,
                                       n_samples,
                                       ia_ratio,
-                                      s->rain_mm_to_model_depth);
+                                      s->rain_mm_to_model_depth,
+                                      rain_update_interval_s);
     }
 #endif
 }

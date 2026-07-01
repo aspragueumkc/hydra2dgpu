@@ -2227,7 +2227,8 @@ PYBIND11_MODULE(HYDRA_SWE2D_PY_MODULE_NAME, m) {
            py::array_t<double, py::array::c_style | py::array::forcecast> hg_cum_mm,
            py::array_t<double, py::array::c_style | py::array::forcecast> cn,
            double ia_ratio,
-           double mm_to_model_depth) {
+           double mm_to_model_depth,
+           double rain_update_interval_s) {
             if (!ps || !ps->solver) throw std::invalid_argument("null solver handle");
             if (cell_gage_idx.size() != cn.size()) {
                 throw std::invalid_argument("cell_gage_idx and cn must have same length");
@@ -2248,9 +2249,10 @@ PYBIND11_MODULE(HYDRA_SWE2D_PY_MODULE_NAME, m) {
                                              static_cast<int32_t>(gage_offsets.size() - 1),
                                              static_cast<int32_t>(hg_time_s.size()),
                                              ia_ratio,
-                                             mm_to_model_depth);
+                                             mm_to_model_depth,
+                                             rain_update_interval_s);
         },
-        py::arg("solver"), py::arg("cell_gage_idx"), py::arg("gage_offsets"), py::arg("hg_time_s"), py::arg("hg_cum_mm"), py::arg("cn"), py::arg("ia_ratio") = 0.2, py::arg("mm_to_model_depth") = 1.0e-3,
+        py::arg("solver"), py::arg("cell_gage_idx"), py::arg("gage_offsets"), py::arg("hg_time_s"), py::arg("hg_cum_mm"), py::arg("cn"), py::arg("ia_ratio") = 0.2, py::arg("mm_to_model_depth") = 1.0e-3, py::arg("rain_update_interval_s") = 60.0,
         "Register per-cell rain/CN forcing data on the solver.");
 
     m.def("swe2d_solver_set_external_sources",
