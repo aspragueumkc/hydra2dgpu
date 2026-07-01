@@ -1,199 +1,261 @@
-# Rainfall Source Term Re-evaluation Optimization
+# Rainfall Source Term Re-evaluation Optimization — Revised
 
 ## Goal
-Optimize the rainfall excess calculation by performing it only once per minute. The calculated average excess rate for that minute will then be applied as a constant source term across all timesteps within that minute, simplifying Runge-Kutta (RK) integration and avoiding complex per-substep state management for cumulative rainfall.
+Re-evaluate the SCS-CN rainfall source term at a configurable interval (default 60s)
+instead of every solver step. Apply the resulting excess rate as a constant
+source during the interval. Eliminates the per-step state mutation that causes
+RK4/RK5 save/restore complexity and reduces per-step compute.
+
+## Decisions (closing prior gaps)
+- **Interval**: scalar `rain_update_interval_seconds`, default 60.0, configurable
+  via `swe2d_solver_set_rain_cn_forcing` (added `rain_update_interval_s` arg).
+- **Rate computation**: average over the **last completed interval**
+  `[t_prev_update, t_now]`. No instantaneous rate, no `prev_excess` buffer per
+  cell — we store the **previous cumulative excess** at the same time we
+  capture the rate, then on the next update: `rate = (cum_excess_new -
+  cum_excess_prev) / dt_interval`. Continuity guaranteed: cumulative state
+  is continuous; rate just steps.
+- **Per-cell vs scalar update time**: scalar `last_rain_update_time`. All cells
+  update together because they share a simulation clock. Per-cell buffer
+  would only matter if cells had divergent clocks — they don't.
+- **Mass conservation**: `cum_rain_mm[c]` and `cum_excess_cum_mm[c]` advance
+  by SCS-CN formula at the update tick. Across the interval the rate is
+  constant, so `h += dt * rate * dt = cum_excess_interval * mm_to_model_depth`
+  recovers the exact interval excess. Total over many intervals = sum of
+  excess = final `cum_excess_cum_mm` ✓.
+- **Source location**: write to existing `d_cell_source_mps` once per interval.
+  Keep one buffer, one interface; no need for a new `d_current_rain_source_rate_mps`
+  buffer. The SWE update kernel reads `cell_source_mps` as today.
+- **No-rain case (`n_rain_samples == 0`)**: skip the update kernel entirely
+  and zero `d_cell_source_mps` once at the top of the step (or rely on the
+  existing guard at line 5160).
+- **Graph cache**: graphs capture `d_cell_source_mps` reads at capture time
+  pointer — same as today. Update kernel runs OUTSIDE the graph, once per
+  interval. When the interval boundary crosses, we force graph invalidation
+  by bumping `cache.config_signature` (or skipping capture for that step).
+  Simpler: don't capture the per-step build kernel inside the graph at all —
+  move it outside, the same place the new update kernel will sit.
+- **Span across whole simulation**: handle partial final interval by clamping
+  `dt_interval = min(t_now - last_update, rain_update_interval_s)`.
 
 ## Principles
-- **KISS (Keep It Simple, Stupid):** Simplify the integration of rainfall into the RK scheme.
-- **YAGNI (You Aren't Gonna Need It):** Avoid unnecessary higher-order integration for a term that has inherent empirical limitations and negligible higher-order physical effects in a depth-averaged model.
-- **Separation of Concerns:** Clearly separate the infrequent update of the rainfall excess rate from its application in the high-frequency RK substeps.
+- **KISS**: One buffer. One kernel. One launch per interval.
+- **YAGNI**: Skip per-cell update tracking, instantaneous rate, per-stage
+  complex save/restore.
+- **Separation**: Update is a deterministic tick separate from solver step.
 
-## Plan
+## Affected files
+- `cpp/src/swe2d_gpu.cuh` — add `rain_update_interval_s`, drop nothing
+- `cpp/src/swe2d_gpu.cu` — add kernel, add runtime launch hook, remove build
+  kernel calls from solver step, drop save/restore from RK functions
+- `cpp/src/swe2d_solver.cpp` — add `rain_update_interval_s` arg to
+  `swe2d_solver_set_rain_cn_forcing`
+- `bindings/hydra_swe2d.*` — expose the new arg (Python binding)
+- `swe2d/runtime/backend.py` — pass through `rain_update_interval_s` from
+  project settings
+- `swe2d/workbench/services/run_service.py` — read interval from config
+- `tests/test_swe2d_gpu_graph_higher_order.py` — adjust assertions (RK2 still
+  best on SCS-CN; all schemes < 0.01)
+- `tests/test_swe2d_gpu_native_rain_gui_path.py` — verify GUI path still works
+- New: `tests/test_rain_mass_conservation.py` — verify total volume matches
+  `cum_excess_cum_mm` at t=end across minute boundaries and partial final
+  intervals
 
-### 1. Steps
+## Phase 0 — Data structures
 
-```json
-[
-  {
-    "action": "Introduce new device buffers for minute-based rainfall state tracking.",
-    "type": "refactor",
-    "phase": "0_init",
-    "agent": "cpp-pro",
-    "model": "claude-3-5-sonnet"
-  },
-  {
-    "action": "Modify SWE2DDeviceState struct in `swe2d_gpu.cuh` to include new buffers.",
-    "type": "refactor",
-    "phase": "0_init",
-    "agent": "cpp-pro",
-    "model": "claude-3-5-sonnet"
-  },
-  {
-    "action": "Update `swe2d_gpu_alloc_rainfall` and deallocation to manage the new buffers.",
-    "type": "refactor",
-    "phase": "0_init",
-    "agent": "cpp-pro",
-    "model": "claude-3-5-sonnet"
-  },
-  {
-    "action": "Update `swe2d_create` and `swe2d_destroy` in `swe2d_solver.cpp` to initialize/free the new buffers.",
-    "type": "refactor",
-    "phase": "0_init",
-    "agent": "cpp-pro",
-    "model": "claude-3-5-sonnet"
-  },
-  {
-    "action": "Create a new GPU kernel to update the minute-based rainfall source rate.",
-    "type": "cuda",
-    "phase": "1_kernel_dev",
-    "agent": "cpp-pro",
-    "model": "claude-3-5-sonnet"
-  },
-  {
-    "action": "Implement the logic within `swe2d_update_rain_source_rate_kernel`.",
-    "type": "cuda",
-    "phase": "1_kernel_dev",
-    "agent": "cpp-pro",
-    "model": "claude-3-5-sonnet"
-  },
-  {
-    "action": "Modify `swe2d_gpu_step` and all `swe2d_gpu_step_rkX` functions to call the new update kernel.",
-    "type": "cuda",
-    "phase": "2_integration",
-    "agent": "cpp-pro",
-    "model": "claude-3-5-sonnet"
-  },
-  {
-    "action": "Replace per-substep `swe2d_build_rain_cn_source_kernel` calls with the new constant rate.",
-    "type": "cuda",
-    "phase": "2_integration",
-    "agent": "cpp-pro",
-    "model": "claude-3-5-sonnet"
-  },
-  {
-    "action": "Remove the previous 'save/restore' logic for cumulative rain state from RK step functions.",
-    "type": "refactor",
-    "phase": "2_integration",
-    "agent": "cpp-pro",
-    "model": "claude-3-5-sonnet"
-  },
-  {
-    "action": "Update relevant unit and integration tests to reflect new rainfall behavior.",
-    "type": "test",
-    "phase": "3_validation",
-    "agent": "test-automator",
-    "model": "claude-3-5-sonnet"
-  },
-  {
-    "action": "Perform full regression tests to ensure no unintended side effects.",
-    "type": "test",
-    "phase": "3_validation",
-    "agent": "test-automator",
-    "model": "claude-3-5-sonnet"
-  }
-]
+### SWE2DDeviceState additions (`swe2d_gpu.cuh`)
+```cpp
+// Rainfall update timing
+double  rain_update_interval_s = 60.0;  // re-evaluate rate every N seconds
+double  last_rain_update_time  = -1.0;  // scalar last update tick (host-owned)
+
+// Cumulative excess at last update tick (so we can compute average rate)
+double* d_rain_excess_at_last_update_mm = nullptr;  // [n_cells]
 ```
 
-### 2. Pre-computed Agent and Model Assignments (from `auto_agent_selector`)
+`d_rain_cum_mm` and `d_rain_excess_cum_mm` stay as today — they are the
+**current** cumulative state. `d_rain_excess_at_last_update_mm` is just a
+snapshot captured at the same tick as `last_rain_update_time`.
 
-(Assignments are included in the `steps` JSON above.)
+### Allocation (`swe2d_gpu.cu` `swe2d_gpu_alloc_rainfall`)
+```cpp
+alloc_d(reinterpret_cast<void**>(&dev->d_rain_excess_at_last_update_mm),
+        static_cast<size_t>(n_cells) * sizeof(double));
+CUDA_CHECK(cudaMemset(dev->d_rain_excess_at_last_update_mm, 0,
+                     static_cast<size_t>(n_cells) * sizeof(double)));
+```
 
-### 3. Machine-Readable JSON Block for Plugin Hook
+### Deallocation (cudaFree + nullptr + safe_free in destroy)
 
-```json
-{
-  "plugin_hook": "post_plan_generated",
-  "plan_details": {
-    "title": "Rainfall Source Term Re-evaluation Optimization",
-    "phases": [
-      "0_init: Setup new state buffers",
-      "1_kernel_dev: Develop minute-based update kernel",
-      "2_integration: Integrate into RK steps",
-      "3_validation: Test and validate changes"
-    ],
-    "affected_files": [
-      "cpp/src/swe2d_gpu.cuh",
-      "cpp/src/swe2d_gpu.cu",
-      "cpp/src/swe2d_solver.cpp",
-      "tests/*.py"
-    ]
-  }
+### Public setter (`swe2d_solver.cpp`)
+```cpp
+void swe2d_solver_set_rain_cn_forcing(
+    SWE2DDeviceState* dev,
+    /* existing args */,
+    double rain_update_interval_s = 60.0);  // ADDED: optional with default
+```
+
+## Phase 1 — New update kernel
+
+### `swe2d_update_rain_source_rate_kernel`
+```cpp
+__global__ void swe2d_update_rain_source_rate_kernel(
+    int32_t n_cells,
+    const int32_t* __restrict__ cell_gage_idx,
+    const int32_t* __restrict__ hg_offsets,
+    const double*  __restrict__ hg_time_s,
+    const double*  __restrict__ hg_cum_mm,
+    const double*  __restrict__ cn,
+    double t_prev_update,           // tick of previous update
+    double t_now,                   // current simulation time
+    double ia_ratio,
+    double mm_to_model_depth,
+    double* __restrict__ cum_rain_mm,
+    double* __restrict__ cum_excess_mm,
+    const double* __restrict__ prev_cum_excess_mm,    // snapshot at t_prev_update
+    double* __restrict__ cell_source_mps,             // output: average rate for [t_prev, t_now]
+    int32_t* __restrict__ needs_update_flag,         // output: 1 if update happened
+    double* __restrict__ new_last_update_time);      // output: t_now if updated
+```
+
+### Kernel logic (per cell)
+1. Read `t_prev_update`. If `t_prev_update < 0` (first call), treat as `t_prev_update = t_now` (no-op pass-through, rate = 0).
+2. **Skip guard** — check `needs_update_flag[0]` (block 0 only writes, all blocks read with __sync); simplified below using one-flag-per-cell:
+   - Each cell decides for itself: `if (t_now - last_update >= interval || t_prev_update < 0)`. Since `last_update_time` is scalar and shared, do it host-side; here we always run when called.
+3. If `t_now == t_prev_update`: rate = 0, return.
+4. Read `t0 = hg_cum_mm(t_prev_update)`, `t1 = hg_cum_mm(t_now)` from the cell's gage hydrograph via `interp_series_clamped_cuda`.
+5. `dr = max(0, r1 - r0)` — rainfall increment in mm over the interval.
+6. `p_new = cum_rain_mm[c] + dr`.
+7. Compute new excess `pe` from SCS-CN with `ia = ia_ratio * S`, `S = (25400/cn) - 254`.
+8. `dt_interval = max(t_now - t_prev_update, 1e-9)`.
+9. `rate_mm_per_s = (max(0, pe - prev_cum_excess_mm[c])) / dt_interval`.
+10. `cell_source_mps[c] = rate_mm_per_s * mm_to_model_depth`.
+11. Write back: `cum_rain_mm[c] = p_new`, `cum_excess_mm[c] = pe`.
+12. No per-cell update flag needed because kernel is only launched at the
+    right times; the host decides when to launch.
+
+### Host-side launch decision (in `swe2d_gpu_step`)
+```cpp
+const double dt_int = dev->rain_update_interval_s;
+if (dev->last_rain_update_time < 0.0) {
+    // First call ever: capture snapshot, don't update yet
+    CUDA_CHECK(cudaMemcpyAsync(dev->d_rain_excess_at_last_update_mm,
+                             dev->d_rain_excess_cum_mm,
+                             sz_d, cudaMemcpyDeviceToDevice, dev->d_stream));
+    dev->last_rain_update_time = current_t_now;
+    return;
+}
+if (current_t_now - dev->last_rain_update_time >= dt_int ||
+    is_final_step /* passed in by caller */) {
+    double t_prev = dev->last_rain_update_time;
+    // Snapshot PREVIOUS excess BEFORE the update kernel overwrites it.
+    // We just write the snapshot of cum_excess BEFORE kernel runs — but the
+    // kernel reads the snapshot to compute the rate, so it's already captured.
+    swe2d_update_rain_source_rate_kernel<<<...>>>(
+        /* ... */, t_prev, current_t_now, /* ... */);
+    dev->last_rain_update_time = current_t_now;
 }
 ```
 
-### 4. Superpowers Workflow
+**Snapshot capture**: the snapshot of `prev_cum_excess` is captured AT the end
+of the previous kernel run. Two ways:
+- **Option A (chosen)**: at the END of each update, copy `cum_excess` to
+  `prev_cum_excess` so it represents the cumulative AT last update tick.
+- **Option B**: snapshot before update; overwrite after.
 
--   **`FVM / CFD Solver Patterns`**: Essential for understanding the existing time integration schemes, GPU kernel structures, and how source terms are applied within the solver. This skill will guide the modification of RK step functions and the overall approach to integrating the new rainfall logic.
--   **`GPU Test Diagnostics`**: Crucial for diagnosing any numerical instabilities, correctness issues, or performance regressions that may arise during the integration and validation phases. This includes interpreting CUDA error messages, analyzing kernel output, and debugging parallel execution.
--   **`Python-Pro`**: For coordinating the overall development process, handling file operations (like saving this plan), and potentially assisting with test harness modifications if needed.
--   **`Cpp-Pro`**: Directly responsible for all C++ and CUDA kernel development, including modifying existing structs, writing new kernels, and updating solver dispatch logic.
--   **`Test-Automator`**: Dedicated to updating, creating, and running the necessary tests to ensure the changes are correct and do not introduce regressions.
+Option A is cleaner: invariant is "`prev_cum_excess` = state AT
+`last_rain_update_time`". Achieved by copying after each successful update.
 
-## Detailed Implementation Notes
+```cpp
+// After update kernel completes:
+CUDA_CHECK(cudaMemcpyAsync(dev->d_rain_excess_at_last_update_mm,
+                         dev->d_rain_excess_cum_mm,
+                         sz_d, cudaMemcpyDeviceToDevice, dev->d_stream));
+// Now cum_excess and prev_cum_excess are equal — at t_now.
+```
 
-### Phase 0: Initial Setup and State Management
+## Phase 2 — Integration
 
--   **`SWE2DDeviceState` (`swe2d_gpu.cuh`)**:
-    Add members for:
-    -   `d_last_rain_update_time`: `double*` (stores last simulation time when rain rate was updated, per cell).
-    -   `d_current_rain_source_rate_mps`: `double*` (stores the constant excess rainfall rate in m/s, per cell, for the current minute interval).
+### `swe2d_gpu_step` (line ~5158)
+1. Remove the per-step `swe2d_build_rain_cn_source_kernel` call at line 5160.
+2. Add the new update kernel call (with interval check) at the same position.
+3. The `cell_source_mps` it writes is then read by the update kernel inside
+   the captured graph as today.
 
--   **`swe2d_gpu_alloc_rainfall` (`swe2d_gpu.cu`)**:
-    -   Allocate device memory for `d_last_rain_update_time` and `d_current_rain_source_rate_mps`.
-    -   Initialize `d_last_rain_update_time` to `-1.0` (or `t_start`) to trigger an immediate update.
-    -   Initialize `d_current_rain_source_rate_mps` to `0.0`.
+### `swe2d_gpu_step_rk*` functions
+- Drop ALL save/restore and per-stage build-kernel blocks.
+- The cumulative state mutation in `swe2d_build_rain_cn_source_kernel`
+  is no longer called per stage. The single per-interval update kernel is
+  called once per outer step from `swe2d_gpu_step` (called by every
+  `swe2d_gpu_step_rk*` through Stage 1).
+- RK functions need NO rain CN handling anymore.
 
--   **Deallocation and `swe2d_destroy` (`swe2d_gpu.cu`, `swe2d_solver.cpp`)**:
-    -   Free the newly allocated device buffers.
+### Graph cache
+- The captured graph today calls `swe2d_build_rain_cn_source_kernel` once.
+  After this refactor, it doesn't. Source comes from outside the graph.
+- Means: `d_cell_source_mps` is just a number that the update SWE kernel
+  reads; the pointer is captured at capture time and content varies. That
+  works fine (CUDA graphs capture pointers, not values).
+- Graph invalidation NOT needed because we don't change the kernel graph
+  contents based on rain.
 
-### Phase 1: Minute-Based Rainfall Re-evaluation Kernel
+### Final partial interval
+- Solver driver knows `t_end`. When `current_t_now + dt_remaining <= t_end`
+  for the LAST step, the outer step code can pass `is_final_step = true`
+  to force one final update of `swe2d_gpu_step`. Or simpler: just let the
+  next compare-cum-excess check trip when `t_now >= t_end`.
 
--   **New Kernel Definition (`swe2d_gpu.cu`)**:
-    ```cpp
-    __global__ void swe2d_update_rain_source_rate_kernel(
-        double t_now,
-        double dt, // The current dt for the full step
-        double* d_rain_cum_mm,
-        double* d_rain_excess_cum_mm,
-        const double* d_rain_input_mms, // Raw rainfall input rate (mm/s)
-        const double* d_cn_params_s,    // S parameter for SCS-CN
-        double* d_last_rain_update_time,
-        double* d_current_rain_source_rate_mps,
-        int n_cells,
-        double minute_interval_seconds // 60.0
-    );
-    ```
+## Phase 3 — Tests and validation
 
--   **Kernel Logic**:
-    For each cell:
-    1.  Read `t_now`, `d_last_rain_update_time[c]`.
-    2.  Check `if (t_now >= d_last_rain_update_time[c] + minute_interval_seconds)`:
-        a.  If `d_last_rain_update_time[c] < 0.0` (initial run), set `d_last_rain_update_time[c] = t_now`.
-        b.  Calculate `time_since_last_update = t_now - d_last_rain_update_time[c]`.
-        c.  Calculate total rainfall `P_increment_mm = d_rain_input_mms[c] * time_since_last_update`.
-        d.  Update `d_rain_cum_mm[c] += P_increment_mm`.
-        e.  Compute new `d_rain_excess_cum_mm[c]` based on updated `d_rain_cum_mm[c]` and `d_cn_params_s[c]` using the SCS-CN formula. This is where the core SCS-CN calculation will now reside *only* in this kernel.
-        f.  Calculate the *average excess rate* over `time_since_last_update`:
-            `excess_rate_mms = (d_rain_excess_cum_mm[c] - previous_d_rain_excess_cum_mm_before_update) / time_since_last_update` (Need to store previous excess for this. Alternatively, calculate the *total excess for the minute* and divide by 60s). A simpler way might be to compute the *instantaneous* excess rainfall rate based on the *new `d_rain_cum_mm`* and `d_cn_params_s[c]`, then convert this to `m/s`. Let's assume for now `d_current_rain_source_rate_mps` stores the *instantaneous* excess rate calculated at `t_now` after updating cumulative state.
-            `d_current_rain_source_rate_mps[c] = calculated_excess_rate_mms * 1e-3;`
-        g.  Update `d_last_rain_update_time[c] = t_now`.
-    3.  If no update needed, `d_current_rain_source_rate_mps[c]` retains its previous value.
+### Update existing
+- `tests/test_swe2d_gpu_graph_higher_order.py`:
+  - Drop `err_rk4g < err_rk2` and `err_rk5g < err_rk4g` assertions
+    (already done — they don't hold).
+  - Keep `assertLess(..., 0.01)` for all schemes.
+  - Run with default `rain_update_interval_s = 60.0`. Expect similar err.
+- `tests/test_swe2d_gpu_native_rain_gui_path.py`:
+  - Verify GUI-driven rainfall setup still produces same depth as before
+    (within tolerance of integration scheme change).
 
-### Phase 2: Integration into RK Steps
+### New tests
+- `tests/test_rain_mass_conservation.py`:
+  - Total water depth in cells at t=end = `(cum_excess_cum_mm * mm_to_model_depth)`
+    summed over cells, accounting for any runoff.
+  - Test across minute boundaries (60s, 120s, 180s).
+  - Test with partial final interval (t_end = 90.5s).
+- `tests/test_rain_smoothness.py`:
+  - Two simulations with rain update at 1s vs 60s should differ by < tolerance
+    for a constant-intensity storm.
+  - For a storm that turns on at t=30s, the rate at t=60s boundary should
+    jump but be small.
 
--   **`swe2d_gpu_step_rkX` functions (`swe2d_gpu.cu`)**:
-    1.  At the very beginning of the overall `dt` loop (before any RK substep begins), launch `swe2d_update_rain_source_rate_kernel`.
-    2.  Within each RK substep (e.g., `swe2d_rkX_stageY_kernel` or similar combined kernels), instead of calling `swe2d_build_rain_cn_source_kernel` or performing dynamic SCS-CN calculations:
-        -   Simply add `d_current_rain_source_rate_mps[c]` to the `dh/dt` term.
-        -   Ensure this addition happens consistently across all substeps.
-    3.  **Crucially, remove** the "save/restore" logic for `d_rain_cum_mm` and `d_rain_excess_cum_mm` from all RK step functions, as these buffers are now only managed by the minute-based update kernel.
+### Mass conservation explicit test
+- Pick a simple mesh (2-cell closed). Constant rain 10 mm/s for 100s.
+  - At t=60s, the kernel updates: rate = (P(60) - P(0)) / 60 = 10 mm/s = 0.01 m/s.
+  - 60s of SWE update at 0.01 m/s adds 0.6m of water ✓.
+  - At t=100s, after second update: rate is same, 40s more adds 0.4m. Total = 1m ✓.
 
-### Phase 3: Testing and Validation
+## Edge cases checklist (must handle)
 
--   **Update Existing Tests**:
-    -   `tests/test_swe2d_gpu_graph_higher_order.py::test_rain_exact_depth_error_improves_with_higher_order` will need its assertions adjusted. The error profile will change as rainfall is now integrated as a first-order source. The goal is stability and correct volume, not necessarily lower error than RK2 (which it previously struggled to achieve accurately).
-    -   Ensure other tests involving rainfall (e.g., `test_swe2d_gpu_native_rain_gui_path`) still pass and produce reasonable results.
--   **Focus on Mass Conservation**: Verify that total water volume from rainfall is correctly conserved over longer simulation periods with the new update frequency.
--   **Stability Checks**: Run simulations with various rainfall patterns to ensure the new approach does not introduce instabilities or NaNs.
+- [ ] First-ever call: `last_rain_update_time = -1`, snap `prev_cum_excess = cum_excess`, set `last_update = t_now`. Don't write `source_mps` (or write 0). Next call uses interval.
+- [ ] Final partial interval: pass `is_final_step = true` to force one more update.
+- [ ] Cell with `gidx < 0` (no gage): set `cell_source_mps[c] = 0`, don't touch cum state.
+- [ ] Cell with empty gage offsets (no samples for that gage): set `cell_source_mps[c] = 0`.
+- [ ] Hydrograph extrapolation: use `interp_series_clamped_cuda` — clamp at boundaries (no negative accumulation).
+- [ ] `n_rain_samples == 0`: skip update kernel entirely, leave `cell_source_mps` at whatever default.
+- [ ] Multiple calls per outer step from RK: only ONE update per outer step at the START.
 
-This plan aims to meet your requirements for simplifying the rainfall integration while still allowing for reasonable temporal variation in rainfall excess.
+## Out of scope
+- Changing the Python `swe2d_solver_set_rain_cn_forcing` semantics visible to
+  callers (same `time_s`, `cum_mm` arrays; just adds optional `rain_update_interval_s`).
+- Changing the SCS-CN formula itself (still the empirical chunk above).
+- Non-uniform rainfall across cells (already supported via `cell_gage_idx`).
+
+## Estimated effort
+- Phase 0: 30 min (struct + alloc/dealloc + setter)
+- Phase 1: 1 hr (new kernel + launch glue)
+- Phase 2: 1 hr (delete per-stage build calls from 4 RK functions + integration)
+- Phase 3: 1 hr (update existing test, write 2 new tests, manual validation)
+- Total: **3-4 hours**
+</content>
+</content>
