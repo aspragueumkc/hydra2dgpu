@@ -78,7 +78,7 @@ def _drainage_module():
                               crest_elev=0.5, width=1.0,
                               coefficient=0.62, max_capture=1.0)],
         outfalls=[], pipe_ends=[],
-        solver_mode=DrainageSolverMode.EGL,
+        pipe_solver_mode="diffusion_wave",
     ))
     mod.initialize()
     # Drainage node starts with water so it will actively drain cells

@@ -1113,6 +1113,7 @@ class SWE2DCouplingController:
                 link_flow_state = np.asarray(self._gpu_link_flow, dtype=np.float64)
                 g = float(getattr(self.drainage.cfg, "gravity", _u.gravity()))
                 nl = int(len(dsoa.link_from))
+                nn = int(len(dsoa.node_invert_elev))
                 dev_ptr = 0
                 if hasattr(native_mod, "swe2d_get_coupling_dev_ptr"):
                     dev_ptr = int(native_mod.swe2d_get_coupling_dev_ptr())
@@ -1131,10 +1132,16 @@ class SWE2DCouplingController:
                         static_args["node_max_depth"],
                         np.asarray(dsoa.link_invert_in, dtype=np.float64),
                         np.asarray(dsoa.link_invert_out, dtype=np.float64),
-                        float(dsoa.max_cell_length),
+                        int(dsoa.max_cell_length),
                         dev_ptr,
                     )
                     self._pipe1d_mesh_built = True
+                # Upload current node depths to device before pipe step
+                if hasattr(native_mod, "swe2d_pipe1d_upload_node_depth"):
+                    native_mod.swe2d_pipe1d_upload_node_depth(
+                        dev_ptr,
+                        np.asarray(self._gpu_node_depth, dtype=np.float64),
+                    )
                 cfg = self.drainage.cfg
                 native_mod.swe2d_pipe1d_step(
                     dev_ptr,
@@ -1145,6 +1152,11 @@ class SWE2DCouplingController:
                     float(getattr(cfg, "implicit_coupling_relaxation", 0.5)),
                     float(g),
                 )
+                # Readback updated node depths from device (mass-balance updated them)
+                if hasattr(native_mod, "swe2d_pipe1d_readback_node_state"):
+                    rb = native_mod.swe2d_pipe1d_readback_node_state(dev_ptr, nn, nl)
+                    self._gpu_node_depth = np.asarray(rb["node_depth"], dtype=np.float64)
+                    self._gpu_link_flow = np.asarray(rb["cell_Q"], dtype=np.float64)
                 self._sync_gpu_state_back_to_drainage()
             else:
                 return False

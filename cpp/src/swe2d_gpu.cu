@@ -9857,8 +9857,10 @@ void swe2d_build_pipe1d_mesh(
     alloc_d(reinterpret_cast<void**>(&dev->d_cell_invert), static_cast<size_t>(total_pipe_cells) * sizeof(double));
     alloc_d(reinterpret_cast<void**>(&dev->d_cell_n), static_cast<size_t>(total_pipe_cells) * sizeof(double));
     alloc_d(reinterpret_cast<void**>(&dev->d_cell_k_loss), static_cast<size_t>(total_pipe_cells) * sizeof(double));
+    alloc_d(reinterpret_cast<void**>(&dev->d_node_invert), static_cast<size_t>(n_nodes) * sizeof(double));
     alloc_d(reinterpret_cast<void**>(&dev->d_node_depth), static_cast<size_t>(n_nodes) * sizeof(double));
     alloc_d(reinterpret_cast<void**>(&dev->d_node_net_q), static_cast<size_t>(n_nodes) * sizeof(double));
+    alloc_d(reinterpret_cast<void**>(&dev->d_node_surface_area), static_cast<size_t>(n_nodes) * sizeof(double));
     alloc_d(reinterpret_cast<void**>(&dev->d_A), static_cast<size_t>(total_pipe_cells) * sizeof(double));
     alloc_d(reinterpret_cast<void**>(&dev->d_Q), static_cast<size_t>(total_pipe_cells) * sizeof(double));
     alloc_d(reinterpret_cast<void**>(&dev->d_A_prev), static_cast<size_t>(total_pipe_cells) * sizeof(double));
@@ -9880,7 +9882,13 @@ void swe2d_build_pipe1d_mesh(
     copy_h2d_d(dev->d_cell_n, cell_n.data(), static_cast<size_t>(total_pipe_cells));
     copy_h2d_d(dev->d_cell_k_loss, cell_k_loss.data(), static_cast<size_t>(total_pipe_cells));
 
-    // Initialize node state
+    // Upload node invert elevations
+    copy_h2d_d(dev->d_node_invert, node_invert_elev, static_cast<size_t>(n_nodes));
+
+    // Upload node surface areas (used by mass-balance kernel)
+    copy_h2d_d(dev->d_node_surface_area, node_surface_area, static_cast<size_t>(n_nodes));
+
+    // Initialize node depth to zero (caller uploads actual depths before each step)
     CUDA_CHECK(cudaMemset(dev->d_node_depth, 0, static_cast<size_t>(n_nodes) * sizeof(double)));
     CUDA_CHECK(cudaMemset(dev->d_node_net_q, 0, static_cast<size_t>(n_nodes) * sizeof(double)));
 
@@ -9959,8 +9967,12 @@ __global__ __launch_bounds__(256, 1) void swe2d_pipe1d_flux_kernel(
 
         double F;
         if (nbr < 0) {
-            // Boundary: upwind flux
-            F = cell_Q[c] * dir;
+            // Boundary: use head-difference flux instead of Q_cell * dir.
+            // This drives flow from the pipe cell when the node head differs,
+            // enabling flow development from zero initial Q.
+            const double dH = H_c - H_n;
+            const double c_face = sqrt(fmax(0.0, g * fabs(dH))) / fmax(1e-12, cell_length[c]);
+            F = dH * c_face;
         } else {
             // HLLE flux
             const double c_wave = sqrt(g * fabs(H_c - H_n) / fmax(1e-12, cell_length[c]));
@@ -10207,6 +10219,128 @@ void swe2d_pipe1d_fully_dynamic_kernel_host(
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// Node mass-balance kernels: update d_node_depth from pipe flows
+// ─────────────────────────────────────────────────────────────────────────────
+
+/** Accumulate net pipe flux into each node. 1 thread per cell.
+ *  Q > 0 means flow from from_node to to_node. */
+__global__ __launch_bounds__(256, 4) void swe2d_pipe1d_accumulate_node_flux_kernel(
+    int32_t                     n_cells,
+    const int32_t* __restrict__ cell_from_node,
+    const int32_t* __restrict__ cell_to_node,
+    const double*  __restrict__ cell_Q,
+    double*                     node_net_q)
+{
+    int32_t c = blockIdx.x * blockDim.x + threadIdx.x;
+    if (c >= n_cells) return;
+
+    const double Q = cell_Q[c];
+    const int32_t fn = cell_from_node[c];
+    const int32_t tn = cell_to_node[c];
+
+    // Q > 0: flow leaves from_node, arrives at to_node
+    if (fn >= 0) atomicAdd(&node_net_q[fn], -Q);
+    if (tn >= 0) atomicAdd(&node_net_q[tn],  Q);
+}
+
+/** Update node depth from accumulated net flux. 1 thread per node. */
+__global__ __launch_bounds__(256, 4) void swe2d_pipe1d_update_node_depth_kernel(
+    int32_t           n_nodes,
+    const double* __restrict__ node_net_q,
+    const double* __restrict__ node_surface_area,
+    double*                     node_depth,
+    double                     dt)
+{
+    int32_t n = blockIdx.x * blockDim.x + threadIdx.x;
+    if (n >= n_nodes) return;
+
+    const double area = fmax(1.0, node_surface_area[n]);
+    const double dh = dt * node_net_q[n] / area;
+    double d = node_depth[n] + dh;
+    d = fmax(0.0, d);
+    node_depth[n] = d;
+}
+
+// ── Host wrappers ───────────────────────────────────────────────────────────
+
+static void swe2d_pipe1d_node_mass_balance_host(
+    SWE2DDeviceState* dev, double dt)
+{
+    if (!dev) return;
+    auto& p = dev->pipe1d;
+    const int32_t n_cells = p.n_pipe_cells;
+    const int32_t n_nodes = p.n_nodes;
+    if (n_cells <= 0 || n_nodes <= 0) return;
+    cudaStream_t stream = dev->d_stream;
+
+    // Zero net flux accumulator
+    CUDA_CHECK(cudaMemsetAsync(p.d_node_net_q, 0,
+        static_cast<size_t>(n_nodes) * sizeof(double), stream));
+
+    // Accumulate: each cell atomicAdds its Q to from/to nodes
+    {
+        const int32_t grid = (n_cells + BLOCK - 1) / BLOCK;
+        swe2d_pipe1d_accumulate_node_flux_kernel<<<grid, BLOCK, 0, stream>>>(
+            n_cells, p.d_cell_from_node, p.d_cell_to_node,
+            p.d_Q, p.d_node_net_q);
+        CUDA_CHECK(cudaGetLastError());
+    }
+
+    // Update node depth
+    {
+        const int32_t grid = (n_nodes + BLOCK - 1) / BLOCK;
+        swe2d_pipe1d_update_node_depth_kernel<<<grid, BLOCK, 0, stream>>>(
+            n_nodes, p.d_node_net_q, p.d_node_surface_area,
+            p.d_node_depth, dt);
+        CUDA_CHECK(cudaGetLastError());
+    }
+}
+
+// ── Upload node depths from host to device (called before each step) ────────
+
+void swe2d_pipe1d_upload_node_depth(
+    SWE2DDeviceState* dev,
+    const double*     host_node_depth,
+    int32_t           n_nodes)
+{
+    if (!dev || !host_node_depth || n_nodes <= 0) return;
+    auto& p = dev->pipe1d;
+    if (n_nodes != p.n_nodes) return;
+    CUDA_CHECK(cudaMemcpy(p.d_node_depth, host_node_depth,
+        static_cast<size_t>(n_nodes) * sizeof(double),
+        cudaMemcpyHostToDevice));
+}
+
+// ── Readback node state for diagnostics/tests ───────────────────────────────
+
+void swe2d_pipe1d_readback_node_state(
+    SWE2DDeviceState* dev,
+    double*           host_node_depth,
+    double*           host_cell_A,
+    double*           host_cell_Q,
+    int32_t           n_nodes,
+    int32_t           n_cells)
+{
+    if (!dev) return;
+    auto& p = dev->pipe1d;
+    if (host_node_depth && n_nodes > 0 && n_nodes == p.n_nodes) {
+        CUDA_CHECK(cudaMemcpy(host_node_depth, p.d_node_depth,
+            static_cast<size_t>(n_nodes) * sizeof(double),
+            cudaMemcpyDeviceToHost));
+    }
+    if (host_cell_A && n_cells > 0 && n_cells == p.n_pipe_cells) {
+        CUDA_CHECK(cudaMemcpy(host_cell_A, p.d_A,
+            static_cast<size_t>(n_cells) * sizeof(double),
+            cudaMemcpyDeviceToHost));
+    }
+    if (host_cell_Q && n_cells > 0 && n_cells == p.n_pipe_cells) {
+        CUDA_CHECK(cudaMemcpy(host_cell_Q, p.d_Q,
+            static_cast<size_t>(n_cells) * sizeof(double),
+            cudaMemcpyDeviceToHost));
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // swe2d_pipe1d_step
 // ─────────────────────────────────────────────────────────────────────────────
 void swe2d_pipe1d_step(
@@ -10226,9 +10360,18 @@ void swe2d_pipe1d_step(
     double* d_flux_Q = nullptr;
     CUDA_CHECK(cudaMalloc(&d_flux_Q, static_cast<size_t>(n_cells) * sizeof(double)));
 
+    double* d_A_new = nullptr;
+    double* d_Q_new = nullptr;
+    CUDA_CHECK(cudaMalloc(&d_A_new, static_cast<size_t>(n_cells) * sizeof(double)));
+    CUDA_CHECK(cudaMalloc(&d_Q_new, static_cast<size_t>(n_cells) * sizeof(double)));
+
     const double local_dt = dt / static_cast<double>(coupling_substeps);
 
     for (int32_t sub = 0; sub < coupling_substeps; ++sub) {
+        // d_A_new/d_Q_new are freshly allocated each substep — initialize from current state
+        CUDA_CHECK(cudaMemcpy(d_A_new, p.d_A, static_cast<size_t>(n_cells) * sizeof(double), cudaMemcpyDeviceToDevice));
+        CUDA_CHECK(cudaMemcpy(d_Q_new, p.d_Q, static_cast<size_t>(n_cells) * sizeof(double), cudaMemcpyDeviceToDevice));
+
         swe2d_pipe1d_flux_kernel_host(
             n_cells,
             p.d_owned_offsets, p.d_owned_ids,
@@ -10236,7 +10379,7 @@ void swe2d_pipe1d_step(
             p.d_cell_from_node, p.d_cell_to_node,
             p.d_cell_invert, p.d_cell_perim,
             p.d_A, p.d_Q,
-            nullptr, p.d_node_depth,
+            p.d_node_invert, p.d_node_depth,
             p.d_cell_length,
             d_flux_Q, g);
 
@@ -10250,16 +10393,11 @@ void swe2d_pipe1d_step(
                 p.d_cell_from_node, p.d_cell_to_node,
                 p.d_cell_length, p.d_cell_area,
                 p.d_cell_perim, p.d_cell_n, p.d_cell_k_loss,
-                nullptr, p.d_node_depth,
+                p.d_node_invert, p.d_node_depth,
                 p.d_A, p.d_Q,
-                p.d_A, p.d_Q,
+                d_A_new, d_Q_new,
                 local_dt, g);
         } else {
-            double* d_A_new = nullptr;
-            double* d_Q_new = nullptr;
-            CUDA_CHECK(cudaMalloc(&d_A_new, static_cast<size_t>(n_cells) * sizeof(double)));
-            CUDA_CHECK(cudaMalloc(&d_Q_new, static_cast<size_t>(n_cells) * sizeof(double)));
-
             swe2d_pipe1d_diffusion_wave_kernel_host(
                 n_cells,
                 p.d_cell_length, p.d_cell_area,
@@ -10267,16 +10405,18 @@ void swe2d_pipe1d_step(
                 p.d_A, p.d_Q, d_flux_Q,
                 local_dt, g,
                 d_A_new, d_Q_new);
-
-            CUDA_CHECK(cudaMemcpy(p.d_A, d_A_new, static_cast<size_t>(n_cells) * sizeof(double), cudaMemcpyDeviceToDevice));
-            CUDA_CHECK(cudaMemcpy(p.d_Q, d_Q_new, static_cast<size_t>(n_cells) * sizeof(double), cudaMemcpyDeviceToDevice));
-
-            cudaFree(d_A_new);
-            cudaFree(d_Q_new);
         }
+
+        CUDA_CHECK(cudaMemcpy(p.d_A, d_A_new, static_cast<size_t>(n_cells) * sizeof(double), cudaMemcpyDeviceToDevice));
+        CUDA_CHECK(cudaMemcpy(p.d_Q, d_Q_new, static_cast<size_t>(n_cells) * sizeof(double), cudaMemcpyDeviceToDevice));
     }
 
+    // Update node depths from pipe flows (mass balance on device)
+    swe2d_pipe1d_node_mass_balance_host(dev, dt);
+
     cudaFree(d_flux_Q);
+    cudaFree(d_A_new);
+    cudaFree(d_Q_new);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

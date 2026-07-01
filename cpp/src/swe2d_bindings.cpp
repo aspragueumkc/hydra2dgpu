@@ -1808,6 +1808,43 @@ PYBIND11_MODULE(HYDRA_SWE2D_PY_MODULE_NAME, m) {
         py::arg("gravity"),
         "Advance 1D pipe network one coupling step using GPU kernels.");
 
+    m.def("swe2d_pipe1d_upload_node_depth",
+        [](uintptr_t dev_ptr,
+           py::array_t<double, py::array::c_style|py::array::forcecast> node_depth) -> void
+        {
+            auto* dev = reinterpret_cast<SWE2DDeviceState*>(dev_ptr);
+            auto info = node_depth.request();
+            swe2d_pipe1d_upload_node_depth(dev, static_cast<const double*>(info.ptr),
+                                           static_cast<int32_t>(info.shape[0]));
+        },
+        py::arg("dev_ptr"),
+        py::arg("node_depth"),
+        "Upload node depths from host to device before each pipe step.");
+
+    m.def("swe2d_pipe1d_readback_node_state",
+        [](uintptr_t dev_ptr, int32_t n_nodes, int32_t n_cells) -> py::dict
+        {
+            auto* dev = reinterpret_cast<SWE2DDeviceState*>(dev_ptr);
+            py::array_t<double> node_depth_arr(n_nodes);
+            py::array_t<double> cell_A_arr(n_cells);
+            py::array_t<double> cell_Q_arr(n_cells);
+            swe2d_pipe1d_readback_node_state(
+                dev,
+                node_depth_arr.mutable_data(),
+                cell_A_arr.mutable_data(),
+                cell_Q_arr.mutable_data(),
+                n_nodes, n_cells);
+            py::dict d;
+            d["node_depth"] = node_depth_arr;
+            d["cell_A"] = cell_A_arr;
+            d["cell_Q"] = cell_Q_arr;
+            return d;
+        },
+        py::arg("dev_ptr"),
+        py::arg("n_nodes"),
+        py::arg("n_cells"),
+        "Readback pipe1d node depths, cell areas, and cell flows for diagnostics/tests.");
+
     m.def("swe2d_solver_get_device_capsule",
         [](const std::shared_ptr<PySolver>& ps) -> py::object {
             if (!ps || !ps->solver) throw std::invalid_argument("null solver handle");

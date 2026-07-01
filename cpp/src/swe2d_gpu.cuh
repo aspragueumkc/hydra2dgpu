@@ -535,8 +535,10 @@ struct SWE2DDeviceState {
         double*   d_cell_n;        // [n_pipe_cells]
         double*   d_cell_k_loss;   // [n_pipe_cells]
 
+        double*   d_node_invert;    // [n_nodes] invert elevation at each node
         double*   d_node_depth;     // [n_nodes]
         double*   d_node_net_q;     // [n_nodes]
+        double*   d_node_surface_area; // [n_nodes]
 
         double*   d_A;              // [n_pipe_cells]
         double*   d_Q;              // [n_pipe_cells]
@@ -555,7 +557,7 @@ struct SWE2DDeviceState {
             _P_FREE(d_cell_length); _P_FREE(d_cell_area);
             _P_FREE(d_cell_perim); _P_FREE(d_cell_invert);
             _P_FREE(d_cell_n); _P_FREE(d_cell_k_loss);
-            _P_FREE(d_node_depth); _P_FREE(d_node_net_q);
+            _P_FREE(d_node_invert); _P_FREE(d_node_depth); _P_FREE(d_node_net_q); _P_FREE(d_node_surface_area);
             _P_FREE(d_A); _P_FREE(d_Q); _P_FREE(d_A_prev); _P_FREE(d_Q_iter);
             n_pipe_cells = 0; n_nodes = 0;
             #undef _P_FREE
@@ -1569,6 +1571,32 @@ void swe2d_pipe1d_step(
     int32_t           implicit_iters,
     double            relaxation,
     double            g);
+
+/** Upload node depths from host to device (called before each pipe step).
+    @param dev Device state pointer
+    @param host_node_depth Host array of node depths [n_nodes]
+    @param n_nodes Number of nodes
+    @host */
+void swe2d_pipe1d_upload_node_depth(
+    SWE2DDeviceState* dev,
+    const double*     host_node_depth,
+    int32_t           n_nodes);
+
+/** Readback pipe1d node/cell state for diagnostics and tests.
+    @param dev Device state pointer
+    @param host_node_depth Output host buffer for node depths [n_nodes] (may be nullptr)
+    @param host_cell_A Output host buffer for cell areas [n_cells] (may be nullptr)
+    @param host_cell_Q Output host buffer for cell flows [n_cells] (may be nullptr)
+    @param n_nodes Expected number of nodes
+    @param n_cells Expected number of pipe cells
+    @host */
+void swe2d_pipe1d_readback_node_state(
+    SWE2DDeviceState* dev,
+    double*           host_node_depth,
+    double*           host_cell_A,
+    double*           host_cell_Q,
+    int32_t           n_nodes,
+    int32_t           n_cells);
 
 /** Enable graph capture on next step, use replayed graphs on subsequent steps.
     @param dev Device state pointer

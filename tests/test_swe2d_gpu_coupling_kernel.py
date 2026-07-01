@@ -46,7 +46,7 @@ class TestSWE2DGPUCouplingKernel(unittest.TestCase):
             links=[],
             inlets=[InletExchange('I0',0,'N0',crest_elev=0.5,width=1.0,coefficient=0.62,max_capture=1.0)],
             outfalls=[], pipe_ends=[],
-            solver_mode=DrainageSolverMode.EGL,
+            pipe_solver_mode="diffusion_wave",
         ))
         drain_mod.initialize()
         drain_mod.state.node_depth['N0'] = 2.0
