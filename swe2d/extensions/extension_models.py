@@ -146,6 +146,7 @@ class DrainageLink:
     exit_loss_k: float = 1.0                   # Kx (FHWA exit loss)
     barrel_count: int = 1                      # number of barrels
     cd: float = 0.75                           # orifice discharge coefficient
+    max_cell_length: float = 0.0              # max cell length for 1D mesh refinement
     metadata: Dict[str, float] = field(default_factory=dict)
 
 
@@ -262,8 +263,7 @@ class PipeNetworkConfig:
     target_cuda_port: bool = False
     gravity: float = 9.81
     swmm_input_path: Optional[str] = None
-    # 1D solver equation set (see DrainageSolverMode)
-    solver_mode: DrainageSolverMode = DrainageSolverMode.EGL
+    pipe_solver_mode: str = "diffusion_wave"  # "diffusion_wave" | "fully_dynamic"
     # Number of 1D network sub-steps taken per 2D coupling call.  Values > 1
     # allow the 1D solver to run at a finer dt than the 2D timestep, improving
     # stability for stiff networks without requiring GPU sub-stepping.
