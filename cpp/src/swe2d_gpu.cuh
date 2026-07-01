@@ -405,7 +405,7 @@ struct SWE2DDeviceState {
     } face_flux_redist_ws{};
 
     // ── Persistent drainage step workspace ────────────────────────────
-    // Caches device buffers for swe2d_gpu_drainage_step so the per-step
+    // Caches device buffers for the pipe1d drainage step so the per-step
     // call avoids ~30 cudaMalloc + cudaFree + sync cudaMemcpy operations.
     // Static geometry (node/link/pipe end topology) is uploaded once;
     // only runtime state (node_depth, link_flow) changes per step.
@@ -1402,61 +1402,6 @@ void swe2d_gpu_redistribute_face_flux(
     int32_t n_cells);
 /// Set the coupling time step (used by face-flux depth limiter). @host
 void swe2d_gpu_set_coupling_dt(double dt);
-
-/** Advance 1D drainage state by one step on GPU and return per-cell surface source flows [m3/s].
-    solver_mode: 0=EGL, 1=DIFFUSION, 2=DYNAMIC. @host */
-void swe2d_gpu_drainage_step(
-    int32_t n_cells,
-    int32_t n_nodes,
-    int32_t n_links,
-    int32_t n_inlets,
-    int32_t n_outfalls,
-    int32_t n_pipe_ends,
-    const double* cell_wse,
-    const double* cell_area,
-    const double* node_invert_elev,
-    const double* node_max_depth,
-    const double* node_surface_area,
-    const int32_t* link_from,
-    const int32_t* link_to,
-    const double* link_length,
-    const double* link_roughness_n,
-    const double* link_diameter,
-    const double* link_max_flow,
-    const int32_t* inlet_cell,
-    const int32_t* inlet_node,
-    const double* inlet_crest_elev,
-    const double* inlet_width,
-    const double* inlet_coefficient,
-    const double* inlet_max_capture,
-    const int32_t* outfall_cell,
-    const int32_t* outfall_node,
-    const double* outfall_invert_elev,
-    const double* outfall_diameter,
-    const double* outfall_coefficient,
-    const double* outfall_max_flow,
-    const int32_t* outfall_zero_storage,
-    const int32_t* pipe_end_cell,
-    const int32_t* pipe_end_node,
-    const double* pipe_end_invert_elev,
-    const double* pipe_end_diameter,
-    const double* pipe_end_area,
-    const double* pipe_end_inlet_loss_k,
-    const double* pipe_end_outlet_loss_k,
-    const double* cell_depth,
-    const double* node_depth_in,
-    const double* link_flow_in,
-    double dt_s,
-    double gravity,
-    int32_t solver_mode,
-    double head_deadband_m,
-    double dynamic_flow_relaxation,
-    double* node_depth_out,
-    double* link_flow_out,
-    double* max_node_depth_out,
-    double* max_link_flow_out,
-    double* limiter_event_count_out,
-    double* limiter_volume_m3_out);
 
 /** Build 1D pipe network CSR topology and allocate device buffers.
     @param n_links Number of links
