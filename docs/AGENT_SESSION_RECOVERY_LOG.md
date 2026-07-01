@@ -258,3 +258,53 @@ Closed-cell SCS-CN rain benchmark, `temporal_order=3`, dt=2.0, t_end=60.0:
 No regressions in `test_coupling_rain_matrix` (15/15 PASS),
 `test_swe2d_gpu_structures`, `test_swe2d_gpu_drainage_network`,
 `test_swe2d_gpu_coupling_kernel`, `test_swe2d_gpu_native_rain_gui_path`.
+
+---
+
+## Session: merewether-gpu-validation (June 30 2026)
+
+## Goal
+Implement GPU validation tests: Thacker analytical basin (done) and Merewether real-topo case.
+
+## What's Done
+
+### Merewether GPU validation
+- `tests/test_swe2d_gpu_merewether.py` created and passing (4 tests)
+- `tests/build_anuga_merewether_mesh.py` created with post-hoc house cell removal (avoids OCC boolean-cut native solver bug)
+- Post-hoc house removal: 13,834 house cells removed from 242,174 total → 228,340 cells
+- Road Manning n via 10m buffer of centerline polyline → 38,313 road cells (16.8%)
+- Bug fixes: ZB sign convention, np.cross deprecation (z=0.0), callback binding (object.__getattribute__), build_mesh BC signature
+
+### Gauge Results (1m/2m mesh + buildings + roads, t=1000s):
+| Gauge | Observed | TUFLOW | Hydra2D filtered | diff |
+|-------|----------|--------|------------------|------|
+| G0 | 20.00 | 20.08 | 19.60 | -0.40 |
+| G1 | 18.40 | 18.36 | 18.07 | -0.33 |
+| G2 | 23.50 | 23.56 | 23.58 | +0.08 |
+| G3 | 23.10 | 23.11 | 23.06 | -0.04 |
+| G4 | 23.00 | 22.77 | 22.58 | -0.42 |
+
+G2/G3 excellent (±0.08m). G0/G1/G4 underpredict — inlet BC calibration likely needed.
+
+### ANUGA mesh attempt (FAILED)
+- ANUGA installed in qgis_stable: `pip install anuga` (v3.3.7)
+- ANUGA mesh generated: `reference/anuga_validation_tests/case_studies/merewether/merewether_anuga.msh` (673K cells, NetCDF format)
+- Conversion to Hydra2D FAILED: C++ kernel rejects ANUGA mesh cells as "non-positive area" due to Steiner point sliver triangles (area ~5.6e-11 m²) even after filtering
+- Root cause: ANUGA mesh has 673K triangles but 80% have area < 1e-4 m² due to Steiner points enforcing breaklines. C++ shoelace rejects these even at 1e-10 threshold.
+- Workaround: Use our plain rect mesh (228K cells, filtered) which works correctly
+
+### New files created:
+- `tests/build_anuga_merewether_mesh.py` — ANUGA-matching mesh builder
+- `tests/test_swe2d_gpu_merewether.py` — Merewether GPU tests
+- `tests/merewether_1m2m_mesh.msh` — gmsh mesh file
+- `tests/merewether_mesh_comparison.png` — mesh comparison plot (plain vs filtered)
+- `tests/plot_mesh_comparison.py` — mesh comparison visualization script
+- `tests/analytical_thacker_paraboloid.py` — Thacker analytical solution
+- `tests/test_swe2d_gpu_thacker_paraboloid.py` — Thacker GPU tests
+- `merewether_anuga.msh` — ANUGA native mesh (not usable by Hydra2D)
+
+## Next Steps
+1. Fix road polygon buffer to properly close polygon for `contains_points` check
+2. Generate ANUGA-comparable mesh using gmsh with breaklines (not OCC boolean cut)
+3. Run full Merewether simulation with finer mesh and compare to ANUGA reference results
+4. Investigate inlet BC calibration for G0/G1/G4 underprediction

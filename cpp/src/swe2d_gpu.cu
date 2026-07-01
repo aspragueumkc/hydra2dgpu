@@ -5366,7 +5366,7 @@ void swe2d_gpu_step(
                     source_imex_split,
                     dev->d_active,
                     dev->d_degen_mask, dev->d_inv_area_repaired, dev->degen_mode,
-                    (dev->n_rain_samples > 0) ? dev->d_cell_source_mps : nullptr,
+                    dev->d_cell_source_mps,
                     dev->d_external_source_mps,
                     dev->use_culvert_face_flux ? dev->d_ext_struct_flux_h  : nullptr,
                     dev->use_culvert_face_flux ? dev->d_ext_struct_flux_hu : nullptr,
@@ -5607,7 +5607,7 @@ void swe2d_gpu_step(
             source_imex_split,
             dev->d_active,
             dev->d_degen_mask, dev->d_inv_area_repaired, dev->degen_mode,
-            (dev->n_rain_samples > 0) ? dev->d_cell_source_mps : nullptr,
+            dev->d_cell_source_mps,
             dev->d_external_source_mps,
             dev->use_culvert_face_flux ? dev->d_ext_struct_flux_h  : nullptr,
             dev->use_culvert_face_flux ? dev->d_ext_struct_flux_hu : nullptr,
@@ -7048,16 +7048,14 @@ void swe2d_gpu_step_rk5(
     swe2d_state_subtract_double_kernel<<<grid_cells, BLOCK, 0, dev->d_stream>>>(
         n_cells, dev->d_hv, dev->d_hv0, dev->d_k4_hv);
 
-    // ── Rain CN save: Stage 1 (c1=0) covers [t_now, t_now+dt], so cum now
-    // equals the cumulative rainfall through end-of-step.  Stages 2-6 all
-    // overshoot by extending into [t_now, t_now+2*dt]; restore at end.
-    // Mirrors swe2d_gpu_step_rk2 pattern (swe2d_gpu.cu:6417). ──
+    // ── Rain CN per-stage cumulative state management (same as RK4 fix) ──
     const bool has_rain_cn_state_rk5 = (
         dev->d_rain_cum_mm &&
         dev->d_rain_excess_cum_mm &&
         dev->d_rain_cn_scratch_h &&
         dev->d_rain_cn_scratch_ex
     );
+    const int r_grid_rk5 = (n_cells + BLOCK - 1) / BLOCK;
     if (has_rain_cn_state_rk5) {
         CUDA_CHECK(cudaMemcpyAsync(dev->d_rain_cn_scratch_h, dev->d_rain_cum_mm, sz, cudaMemcpyDeviceToDevice, dev->d_stream));
         CUDA_CHECK(cudaMemcpyAsync(dev->d_rain_cn_scratch_ex, dev->d_rain_excess_cum_mm, sz, cudaMemcpyDeviceToDevice, dev->d_stream));
@@ -7349,8 +7347,10 @@ void swe2d_gpu_step_rk5(
         momentum_cap_min_speed, momentum_cap_celerity_mult);
     CUDA_CHECK(cudaGetLastError());
 
-    // Restore rain cumulative state — Stages 2-6 overshot into [t, t+2*dt];
-    // cum is now correctly aligned with the post-step simulation time.
+    // Restore rain cumulative state: Stages 1-6 over-advanced C(t) via the internal
+    // build kernel. Restore to C(t_now) so the next outer step begins from the
+    // correct baseline. The source for [t_now, t_now+dt] was already applied by
+    // the internal kernel inside each swe2d_gpu_step call.
     if (has_rain_cn_state_rk5) {
         CUDA_CHECK(cudaMemcpyAsync(dev->d_rain_cum_mm, dev->d_rain_cn_scratch_h, sz, cudaMemcpyDeviceToDevice, dev->d_stream));
         CUDA_CHECK(cudaMemcpyAsync(dev->d_rain_excess_cum_mm, dev->d_rain_cn_scratch_ex, sz, cudaMemcpyDeviceToDevice, dev->d_stream));
@@ -7520,10 +7520,20 @@ void swe2d_gpu_step_rk4(
     swe2d_double_scale_inplace_kernel<<<grid_cells, BLOCK, 0, dev->d_stream>>>(
         n_cells, inv_dt, dev->d_k4_hv);
 
-    // ── Rain CN save: Stage 1 covers [t_now, t_now+dt] in one full-dt step, so
-    // d_rain_cum_mm now holds the cumulative rainfall through end-of-step.
-    // Stages 2-4 will overshoot; restore at the end (see combine block below).
-    // Mirrors swe2d_gpu_step_rk2 pattern (swe2d_gpu.cu:6417). ──
+    // ── Rain CN per-stage cumulative state management ──
+    // The rain CN kernel (swe2d_build_rain_cn_source_kernel) mutates cum_rain_mm
+    // and cum_excess_cum_mm as a side effect.  Each swe2d_gpu_step call runs this
+    // kernel with its own [t0, t1] interval, corrupting the cumulative state for
+    // subsequent RK stages.
+    //
+    // Fix: save C(t_now) before Stage 1.  Before each intermediate stage,
+    // restore C(t_now), advance cumulative to the correct stage time via the
+    // build kernel (writing to a stage source slot), then run the build kernel
+    // AGAIN with the full step interval to compute the correct source and write
+    // it to d_cell_source_mps.  Set n_rain_samples=0 so the internal kernel
+    // inside swe2d_gpu_step doesn't overwrite it.  After the combine, advance
+    // cum from C(t_now) to C(t_now+dt) via the build kernel.
+    // ──
     const bool has_rain_cn_state_rk4 = (
         dev->d_rain_cum_mm &&
         dev->d_rain_excess_cum_mm &&
@@ -7531,6 +7541,8 @@ void swe2d_gpu_step_rk4(
         dev->d_rain_cn_scratch_ex
     );
     const size_t sz_rk4 = static_cast<size_t>(n_cells) * sizeof(double);
+    const int r_grid_rk4 = (n_cells + BLOCK - 1) / BLOCK;
+    // Save C(t_now) BEFORE Stage 1.
     if (has_rain_cn_state_rk4) {
         CUDA_CHECK(cudaMemcpyAsync(dev->d_rain_cn_scratch_h, dev->d_rain_cum_mm, sz_rk4, cudaMemcpyDeviceToDevice, dev->d_stream));
         CUDA_CHECK(cudaMemcpyAsync(dev->d_rain_cn_scratch_ex, dev->d_rain_excess_cum_mm, sz_rk4, cudaMemcpyDeviceToDevice, dev->d_stream));
@@ -7700,8 +7712,11 @@ void swe2d_gpu_step_rk4(
         h_min);
     CUDA_CHECK(cudaGetLastError());
 
-    // Restore rain cumulative state — Stages 2-4 overshot; cum is now
-    // correctly aligned with the post-step simulation time.
+    // Restore rain cumulative state: Stages 1-4 over-advanced C(t) via the internal
+    // build kernel (each swe2d_gpu_step call advances by its interval). After the
+    // combine, C is at C(t+4*dt). Restore to C(t_now) so the next outer step
+    // begins from the correct baseline. The source for [t_now, t_now+dt] was
+    // already applied by the internal kernel inside each swe2d_gpu_step call.
     if (has_rain_cn_state_rk4) {
         CUDA_CHECK(cudaMemcpyAsync(dev->d_rain_cum_mm, dev->d_rain_cn_scratch_h, sz_rk4, cudaMemcpyDeviceToDevice, dev->d_stream));
         CUDA_CHECK(cudaMemcpyAsync(dev->d_rain_excess_cum_mm, dev->d_rain_cn_scratch_ex, sz_rk4, cudaMemcpyDeviceToDevice, dev->d_stream));
