@@ -36,7 +36,6 @@ class ModelTabView(QtWidgets.QWidget):
         max_source_rate_spin, extreme_rain_mode_chk,
         source_cfl_beta_spin, source_max_substeps_spin,
         source_true_subcycling_chk, source_imex_split_chk,
-        source_stage_coupled_imex_rk2_chk,
         rain_rate_spin, cn_default_spin, ia_ratio_spin,
         use_spatial_rain_cn_chk, infiltration_method_combo,
         storm_area_layer_combo, rain_boundary_buffer_rings_spin
@@ -489,10 +488,12 @@ class ModelTabView(QtWidgets.QWidget):
         self.temporal_order_combo.setObjectName("temporal_order_combo")
         self.temporal_order_combo.setToolTip(
             "Temporal integration (ODE solver) order. "
-            "Euler RK1 (1): first-order, most robust but lowest accuracy. "
-            "RK2 Heun (2): second-order, good balance (default). "
-            "RK4 (4): classic 4th-order Runge-Kutta. "
-            "Graph-safe RK4/RK5 (5/6): staged versions compatible with CUDA graph replay."
+            "Euler (1): CFL 0.4-0.5 (stable up to 1.0). "
+            "SSP-RK2 (2): CFL 0.5-0.8 (default). "
+            "SSP-RK3 (3): CFL 0.5-0.8 (Shu-Osher). "
+            "Classic RK4 (4): CFL 1.0-1.5 with sources/structures. "
+            "Graph-safe RK4 (5): same as classic RK4. "
+            "Graph-safe RK5 (6): CFL 0.5-1.0 (Cash-Karp embedded)."
         )
         for text, data in [
             ("Euler (RK1, 1st-order)", 1),
@@ -504,6 +505,16 @@ class ModelTabView(QtWidgets.QWidget):
         ]:
             self.temporal_order_combo.addItem(text, data)
         param_form.addRow("Temporal discretization:", self.temporal_order_combo)
+
+        def _on_temporal_order_changed(idx: int) -> None:
+            order = self.temporal_order_combo.itemData(idx)
+            tiny_idx = self.tiny_mode_combo.findData(3)
+            if tiny_idx >= 0:
+                item = self.tiny_mode_combo.model().item(tiny_idx)
+                if item is not None:
+                    item.setEnabled(order is not None and int(order) < 3)
+        self.temporal_order_combo.currentIndexChanged.connect(_on_temporal_order_changed)
+        _on_temporal_order_changed(self.temporal_order_combo.currentIndex())
 
         self.degen_mode_combo = QtWidgets.QComboBox()
         self.degen_mode_combo.setObjectName("degen_mode_combo")
@@ -611,21 +622,6 @@ class ModelTabView(QtWidgets.QWidget):
         )
         param_form.addRow("IMEX source split:", self.source_imex_split_chk)
         self.source_imex_split_chk.setChecked(False)
-
-        self.source_stage_coupled_imex_rk2_chk = QtWidgets.QCheckBox("Enable")
-        self.source_stage_coupled_imex_rk2_chk.setObjectName(
-            "source_stage_coupled_imex_rk2_chk"
-        )
-        self.source_stage_coupled_imex_rk2_chk.setToolTip(
-            "Stage-coupled IMEX-RK2 integration for sources. "
-            "Ties source evaluation to intermediate RK stages for tighter "
-            "coupling with the hydrodynamic solver."
-        )
-        param_form.addRow(
-            "Stage-coupled IMEX-RK2 sources:",
-            self.source_stage_coupled_imex_rk2_chk,
-        )
-        self.source_stage_coupled_imex_rk2_chk.setChecked(False)
 
         self.rain_rate_spin = QtWidgets.QDoubleSpinBox()
         self.rain_rate_spin.setObjectName("rain_rate_spin")

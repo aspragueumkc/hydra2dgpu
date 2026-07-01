@@ -1478,53 +1478,6 @@ __global__ void swe2d_double_to_state_kernel(int32_t n, const double* __restrict
     dst[i] = static_cast<State>(src[i]);
 }
 
-/** GPU kernel: average predictor and corrector sources: src_corr = 0.5*(src_pred + src_corr).
- * 1 thread per cell.  Used by IMEX predictor-corrector coupling.
- * @global */
-__global__ void swe2d_average_sources_kernel(
-    int32_t n,
-    const double* __restrict__ src_pred,
-    double* __restrict__ src_corr)
-{
-    int32_t i = blockIdx.x * blockDim.x + threadIdx.x;
-    if (i >= n) return;
-    src_corr[i] = 0.5 * (src_pred[i] + src_corr[i]);
-}
-
-void swe2d_gpu_save_coupling_pred(SWE2DDeviceState* dev)
-{
-    if (!dev || !dev->d_external_source_mps || !dev->d_coupling_pred_source) return;
-    constexpr int BLOCK = 256;
-    const int grid = (dev->n_cells + BLOCK - 1) / BLOCK;
-    swe2d_copy_kernel<<<grid, BLOCK, 0, dev->d_stream>>>(
-        dev->n_cells, dev->d_external_source_mps, dev->d_coupling_pred_source);
-    CUDA_CHECK(cudaGetLastError());
-}
-
-void swe2d_gpu_average_coupling_sources(SWE2DDeviceState* dev)
-{
-    if (!dev || !dev->d_external_source_mps || !dev->d_coupling_pred_source) return;
-    constexpr int BLOCK = 256;
-    const int grid = (dev->n_cells + BLOCK - 1) / BLOCK;
-    // After corrector step, d_external_source_mps has the corrector result.
-    // Average: ext = 0.5 * (pred + corr)
-    swe2d_average_sources_kernel<<<grid, BLOCK, 0, dev->d_stream>>>(
-        dev->n_cells, dev->d_coupling_pred_source, dev->d_external_source_mps);
-    CUDA_CHECK(cudaGetLastError());
-}
-
-void swe2d_gpu_restore_state_from_backup(SWE2DDeviceState* dev)
-{
-    if (!dev) return;
-    constexpr int BLOCK = 256;
-    const int grid = (dev->n_cells + BLOCK - 1) / BLOCK;
-    // Restore d_h0 → d_h, d_hu0 → d_hu, d_hv0 → d_hv (GPU D2D copy with double→State conversion)
-    if (dev->d_h0)  swe2d_double_to_state_kernel<<<grid, BLOCK, 0, dev->d_stream>>>(dev->n_cells, dev->d_h0, dev->d_h);
-    if (dev->d_hu0) swe2d_double_to_state_kernel<<<grid, BLOCK, 0, dev->d_stream>>>(dev->n_cells, dev->d_hu0, dev->d_hu);
-    if (dev->d_hv0) swe2d_double_to_state_kernel<<<grid, BLOCK, 0, dev->d_stream>>>(dev->n_cells, dev->d_hv0, dev->d_hv);
-    CUDA_CHECK(cudaGetLastError());
-}
-
 /** GPU kernel: apply boundary updates to edge BC arrays.
  * 1 thread per update entry.  Writes upd_type/val into edge_bc/val
  * at the specified edge index.

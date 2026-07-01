@@ -127,7 +127,6 @@ class RunController:
         line_output_interval_edit = wp["line_output_interval_edit"]
         tiny_mode_combo = wp["tiny_mode_combo"]
         tiny_wet_cell_threshold_spin = wp["tiny_wet_cell_threshold_spin"]
-        source_stage_coupled_imex_rk2_chk = wp["source_stage_coupled_imex_rk2_chk"]
         inflow_progressive_chk = wp["inflow_progressive_chk"]
 
         # ── Imports that pull in Qt / swe2d_workbench_qt ────────────
@@ -444,7 +443,6 @@ class RunController:
                 f"src_max_substeps={int(source_max_substeps_spin)}, "
                 f"true_subcycling={bool(source_true_subcycling_chk)}, "
                 f"imex_split={bool(source_imex_split_chk)}, "
-                f"stage_coupled_imex_rk2={bool(source_stage_coupled_imex_rk2_chk)}, "
                 f"shallow_damp_h={float(shallow_damping_depth_spin):.6e}, "
                 f"depth_cap={float(depth_cap_spin):.3f}, "
                 f"mom_cap_min={float(momentum_cap_min_speed_spin):.3f}, "
@@ -832,29 +830,6 @@ class RunController:
             _rain_source_for_window = runtime_source_manager.rain_source_for_window
             _cell_source_model_at_time = runtime_source_manager.cell_source_model_at_time
 
-            stage_coupled_imex_requested = bool(
-                source_stage_coupled_imex_rk2_chk is not None
-                and source_stage_coupled_imex_rk2_chk
-            )
-            stage_coupled_imex_enabled = False
-            stage_res = run_setup_configurator.resolve_stage_coupled_imex(
-                requested=stage_coupled_imex_requested,
-                coupling_controller=coupling_controller,
-                temporal_scheme=temporal_scheme,
-                required_temporal_scheme=TemporalScheme.SSP_RK2,
-                native_source_injection_mode=native_source_injection_mode,
-            )
-            stage_coupled_imex_enabled = bool(stage_res.get("enabled", False))
-            stage_reasons = list(stage_res.get("reasons", []))
-            if stage_coupled_imex_requested:
-                if stage_reasons:
-                    log_fn(
-                        "Stage-coupled IMEX-RK2 requested but disabled: "
-                        + "; ".join(stage_reasons)
-                    )
-                else:
-                    log_fn("Stage-coupled IMEX-RK2 enabled for external coupling sources.")
-
             if SWE2DRuntimeStepExecutor is None:
                 raise RuntimeError("SWE2DRuntimeStepExecutor seam is unavailable.")
             if SWE2DRuntimeReporter is None:
@@ -899,7 +874,6 @@ class RunController:
                 last_valid_wse_res=last_valid_wse_res,
                 dt_cfg=dt_cfg,
                 dt_request=dt_request,
-                stage_coupled_imex_enabled=stage_coupled_imex_enabled,
                 coupling_controller=coupling_controller,
                 dynamic_bc=dynamic_bc,
                 native_bc_forcing=native_bc_forcing,

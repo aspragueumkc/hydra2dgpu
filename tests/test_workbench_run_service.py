@@ -93,7 +93,6 @@ class TestCollectRunParameters(unittest.TestCase):
             source_max_substeps=16,
             source_true_subcycling=False,
             source_imex_split=False,
-            source_stage_coupled_imex_rk2=False,
             tiny_mode=0,
             tiny_wet_cell_threshold=200,
             inflow_progressive=True,

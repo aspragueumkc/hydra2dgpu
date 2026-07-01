@@ -2722,31 +2722,6 @@ PYBIND11_MODULE(HYDRA_SWE2D_PY_MODULE_NAME, m) {
         py::arg("solver"), py::arg("external_source") = py::none(),
         "Set per-cell external depth source rates [m/s] on solver (None clears).");
 
-    // ── Predictor-corrector GPU helpers ──────────────────────────────────
-    m.def("swe2d_solver_save_coupling_pred",
-        [](const std::shared_ptr<PySolver>& ps) {
-            if (!ps || !ps->solver) throw std::invalid_argument("null solver handle");
-            if (!ps->solver->dev) throw std::runtime_error("GPU not initialized");
-            swe2d_gpu_save_coupling_pred(ps->solver->dev);
-        },
-        "Save current coupling source to predictor buffer (GPU D2D copy).");
-
-    m.def("swe2d_solver_average_coupling_sources",
-        [](const std::shared_ptr<PySolver>& ps) {
-            if (!ps || !ps->solver) throw std::invalid_argument("null solver handle");
-            if (!ps->solver->dev) throw std::runtime_error("GPU not initialized");
-            swe2d_gpu_average_coupling_sources(ps->solver->dev);
-        },
-        "Average predictor and corrector coupling sources on GPU: ext = 0.5*(pred + ext).");
-
-    m.def("swe2d_solver_restore_state_from_backup",
-        [](const std::shared_ptr<PySolver>& ps) {
-            if (!ps || !ps->solver) throw std::invalid_argument("null solver handle");
-            if (!ps->solver->dev) throw std::runtime_error("GPU not initialized");
-            swe2d_gpu_restore_state_from_backup(ps->solver->dev);
-        },
-        "Restore state from backup (d_h0/d_hu0/d_hv0 → d_h/d_hu/d_hv) on GPU.");
-
     // ── Solver creation ───────────────────────────────────────────────────────
     m.def("swe2d_create_solver",
         [](std::shared_ptr<PyMesh> pm,

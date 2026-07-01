@@ -136,13 +136,6 @@ class SWE2DRunOptionsBuilder:
         coupling_loop_mode = "cuda"
         drainage_solver_backend_mode = "gpu"
         drainage_gpu_method_mode = drainage_gpu_method
-        if (
-            cuda_graphs_enabled
-            and int(temporal_order_value) >= 4
-            and str(coupling_loop_mode).strip().lower() == "cuda"
-            and str(drainage_solver_backend_mode).strip().lower() == "gpu"
-        ):
-            cuda_graphs_enabled = False
         os.environ["BACKWATER_ENABLE_CUDA_GRAPHS"] = "1" if cuda_graphs_enabled else "0"
 
         model_options = None

@@ -1204,24 +1204,6 @@ class SWE2DBackend:
             raise ValueError("h/hu/hv lengths must all equal n_cells")
         self._mod.swe2d_set_state(self._solver_h, h_arr, hu_arr, hv_arr)
 
-    def save_coupling_pred(self) -> None:
-        """Save current external source buffer to predictor buffer (GPU D2D copy)."""
-        if self._solver_h is None:
-            raise RuntimeError("initialize() must be called before save_coupling_pred().")
-        self._mod.swe2d_solver_save_coupling_pred(self._solver_h)
-
-    def average_coupling_sources(self) -> None:
-        """Average predictor and corrector coupling sources: ext = 0.5*(pred + ext)."""
-        if self._solver_h is None:
-            raise RuntimeError("initialize() must be called before average_coupling_sources().")
-        self._mod.swe2d_solver_average_coupling_sources(self._solver_h)
-
-    def restore_state_from_backup(self) -> None:
-        """Restore state from backup arrays (d_h0/d_hu0/d_hv0 → d_h/d_hu/d_hv) on GPU."""
-        if self._solver_h is None:
-            raise RuntimeError("initialize() must be called before restore_state_from_backup().")
-        self._mod.swe2d_solver_restore_state_from_backup(self._solver_h)
-
     # ── Diagnostics ───────────────────────────────────────────────────────────
 
     def sync_device(self) -> None:

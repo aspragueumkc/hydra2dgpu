@@ -240,9 +240,6 @@ struct SWE2DDeviceState {
     double*  d_rain_cn_scratch_ex  = nullptr; // [n_cells] dedicated CN save/restore scratch
     double*  d_cell_source_mps    = nullptr; // [n_cells]
     double*  d_external_source_mps = nullptr; // [n_cells]
-    // Predictor-corrector source buffer: stores coupling source from predictor step
-    // so it can be averaged with the corrector step result on device.
-    double*  d_coupling_pred_source = nullptr; // [n_cells]
     // Per-stage rain/source snapshots used by graph-safe higher-order schemes.
     // Layout is contiguous by stage: slot*n_cells + cell.
     double*  d_stage_cell_source_mps = nullptr;
@@ -1052,13 +1049,6 @@ void swe2d_gpu_set_external_sources(
     SWE2DDeviceState* dev,
     const double* source_mps,
     int32_t n_cells);
-
-/** Save current coupling source to a temporary buffer (predictor step). @param dev Device state pointer @host */
-void swe2d_gpu_save_coupling_pred(SWE2DDeviceState* dev);
-/** Average predictor source with current source: ext = 0.5*(pred + ext). @param dev Device state pointer @host */
-void swe2d_gpu_average_coupling_sources(SWE2DDeviceState* dev);
-/** Restore state from backup arrays (d_h0/etc -> d_h/etc). @param dev Device state pointer @host */
-void swe2d_gpu_restore_state_from_backup(SWE2DDeviceState* dev);
 
 /** Compute per-cell depth-rate sources [m/s] from drainage/structure transfer arrays.
     When dev is non-null, uses persistent device buffers and async stream.

@@ -29,7 +29,6 @@ class SWE2DRuntimeStepExecutor:
         last_diag: Optional[Dict[str, Any]],
         dt_cfg: float,
         dt_request: float,
-        stage_coupled_imex_enabled: bool,
         coupling_controller: Any,
         dynamic_bc: bool,
         native_bc_forcing: bool,
@@ -82,195 +81,69 @@ class SWE2DRuntimeStepExecutor:
         coupled_source_rate = None
         dt_used = float(dt_cfg)
 
-        if stage_coupled_imex_enabled:
-            # ── GPU-only predictor-corrector path ──────────────────────────
-            # Step 1: Evaluate coupling at current state (reads d_h directly).
-            if dt_request <= 0.0:
-                dt_stage_guess = float(last_diag.get("dt", dt_cfg)) if isinstance(last_diag, dict) else dt_cfg
-            else:
-                dt_stage_guess = float(dt_request)
-            cell_source_model_0 = cell_source_model_at_time_callback(t_accum)
-            _t_cpl0 = time.perf_counter()
-            _native_pred_applied = False
-            if coupling_controller is not None:
-                # GPU-only path — no CPU fallback. Fail loudly if unavailable.
-                _native_pred_applied = bool(
-                    coupling_controller.apply_native_device_sources(
-                        t_accum, dt_stage_guess
-                    )
-                )
-            if _native_pred_applied:
-                # Save coupling source to predictor buffer (GPU D2D copy)
-                backend.save_coupling_pred()
-            coupling_ms += (time.perf_counter() - _t_cpl0) * 1000.0
-
-            rain_src_pred = rain_source_for_window_callback(
-                t_accum,
-                t_accum + dt_stage_guess,
-                accumulate=False,
-                mutate_state=False,
-            )
-            _t_src0 = time.perf_counter()
-            apply_external_sources_callback(
-                backend,
-                dt_stage_guess,
-                rain_src_pred,
-                cell_source_model_0,
-                coupled_source_rate=None,
-            )
-            source_ms += (time.perf_counter() - _t_src0) * 1000.0
-            if apply_3d_patch_face_bc_callback is not None:
-                apply_3d_patch_face_bc_callback(backend)
-            _t_step0 = time.perf_counter()
-            _diag_predict = backend.step(dt_request)
-            step_ms += (time.perf_counter() - _t_step0) * 1000.0
-            dt_used = float(_diag_predict.get("dt", dt_cfg))
-            # ── Corrector: evaluate coupling at updated state ───────────
-            _t_cpl1 = time.perf_counter()
-            _native_corr_applied = False
-            if coupling_controller is not None:
-                # GPU-only path — no CPU fallback
-                _native_corr_applied = bool(
-                    coupling_controller.apply_native_device_sources(
-                        t_accum + dt_used, dt_used
-                    )
-                )
-            if _native_corr_applied:
-                # Average predictor and corrector on GPU
-                backend.average_coupling_sources()
-            coupling_ms += (time.perf_counter() - _t_cpl1) * 1000.0
-
-            # Only restore from device backup when coupling source injection
-            # actually modified the state.  When _native_pred_applied is False
-            # no coupling sources were applied, and restore_state_from_backup
-            # would overwrite the solver's step result with the pre-step state.
-            if _native_pred_applied or _native_corr_applied:
-                backend.restore_state_from_backup()
-            if dynamic_bc and not native_bc_forcing:
-                _t_bc1 = time.perf_counter()
-                bc_tp_step, bc_vl_step = apply_timeseries_bc_values_callback(
-                    bc_n0, bc_n1, bc_tp, bc_vl, side_hydrographs, t_accum, edge_hydrographs
-                )
-                bc_vl_step = distribute_total_flow_to_unit_q_callback(
-                    bc_n0,
-                    bc_n1,
-                    bc_tp_step,
-                    bc_vl_step,
-                    bc_tp,
-                    side_hydrographs,
-                    edge_hydrographs,
-                )
-                if uniform_inflow_velocity_normalize_callback is not None:
-                    bc_vl_step = uniform_inflow_velocity_normalize_callback(
-                        bc_vl_step, bc_tp_step, backend,
-                    )
-                backend.set_boundary_conditions(bc_n0, bc_n1, bc_tp_step, bc_vl_step)
-                bc_ms += (time.perf_counter() - _t_bc1) * 1000.0
-            rain_src = rain_source_for_window_callback(
-                t_accum,
-                t_accum + dt_used,
-                accumulate=True,
-                mutate_state=True,
-            )
-            cell_source_model_1 = cell_source_model_at_time_callback(t_accum + dt_used)
-            if cell_source_model_0 is None:
-                cell_source_model_stage = cell_source_model_1
-            elif cell_source_model_1 is None:
-                cell_source_model_stage = cell_source_model_0
-            else:
-                cell_source_model_stage = 0.5 * (
-                    np.asarray(cell_source_model_0, dtype=np.float64)
-                    + np.asarray(cell_source_model_1, dtype=np.float64)
-                )
-            _t_src1 = time.perf_counter()
-            accumulate_source_volume_model_callback(
-                dt_used,
-                rain_src,
-                cell_source_model_stage,
-                coupled_source_rate,
-            )
-            apply_external_sources_callback(
-                backend,
-                dt_used,
-                rain_src,
-                cell_source_model_stage,
-                coupled_source_rate,
-            )
-            source_ms += (time.perf_counter() - _t_src1) * 1000.0
-            if apply_3d_patch_face_bc_callback is not None:
-                apply_3d_patch_face_bc_callback(backend)
-            _t_step1 = time.perf_counter()
-            last_diag = backend.step(dt_used)
-            step_ms += (time.perf_counter() - _t_step1) * 1000.0
+        if dt_request <= 0.0:
+            dt_source_guess = float(last_diag.get("dt", dt_cfg)) if isinstance(last_diag, dict) else dt_cfg
         else:
-            if dt_request <= 0.0:
-                dt_source_guess = float(last_diag.get("dt", dt_cfg)) if isinstance(last_diag, dict) else dt_cfg
-            else:
-                dt_source_guess = float(dt_request)
-            cell_source_model_step = cell_source_model_at_time_callback(t_accum)
-            coupled_source_rate = None
-            _native_device_applied = False
-            if coupling_controller is not None:
-                # Attempt the fully on-device coupling path.  When successful,
-                # swe2d_gpu_compute_coupling_full_on_device() reads h/zb from
-                # device-resident state, computes structure flows, and injects
-                # source rates directly into d_external_source_mps.  No D2H
-                # state readback, no Python structure evaluation, no H2D upload.
-                # GPU-only path — no CPU fallback. Fail loudly if unavailable.
-                _native_device_applied = bool(
-                    coupling_controller.apply_native_device_sources(
-                        t_accum, dt_source_guess
-                    )
+            dt_source_guess = float(dt_request)
+        cell_source_model_step = cell_source_model_at_time_callback(t_accum)
+        coupled_source_rate = None
+        _native_device_applied = False
+        if coupling_controller is not None:
+            # GPU-only path — no CPU fallback. Fail loudly if unavailable.
+            _native_device_applied = bool(
+                coupling_controller.apply_native_device_sources(
+                    t_accum, dt_source_guess
                 )
-                if _native_device_applied:
-                    coupled_source_rate = None  # sources already on GPU
-            # GPU-native coupling path — all operations use the same CUDA
-            # stream (dev->d_stream), so ordering is implicit.  No sync needed.
-            rain_src = rain_source_for_window_callback(
-                t_accum,
-                t_accum + dt_source_guess,
-                accumulate=True,
-                mutate_state=True,
             )
-            _t_src2 = time.perf_counter()
-            if not _native_device_applied:
-                accumulate_source_volume_model_callback(
-                    dt_source_guess,
-                    rain_src,
-                    cell_source_model_step,
-                    coupled_source_rate,
-                )
-                apply_external_sources_callback(
-                    backend,
-                    dt_source_guess,
-                    rain_src,
-                    cell_source_model_step,
-                    coupled_source_rate,
-                )
-            elif rain_src is not None and np.any(np.asarray(rain_src, dtype=np.float64) > 0.0):
-                # Native device coupling path: d_external_source_mps already has
-                # structure/drainage sources on-device.  Accumulate rain directly
-                # on the GPU via a device kernel — no D2H readback.
-                backend.accumulate_external_sources_native(rain_src)
-                accumulate_source_volume_model_callback(
-                    dt_source_guess,
-                    rain_src,
-                    cell_source_model_step,
-                    None,
-                )
-            # When _native_device_applied is True, d_external_source_mps is
-            # already populated on-device and the solver step will consume it
-            # directly.  Rain is assumed to be zero or natively handled when
-            # the native device coupling path is active; if non-zero rain
-            # needs to be combined with on-device sources, a GPU accumulation
-            # kernel or a D2H-readback + merge + H2D-upload path is required.
-            source_ms += (time.perf_counter() - _t_src2) * 1000.0
-            if apply_3d_patch_face_bc_callback is not None:
-                apply_3d_patch_face_bc_callback(backend)
-            _t_step2 = time.perf_counter()
-            last_diag = backend.step(dt_request)
-            step_ms += (time.perf_counter() - _t_step2) * 1000.0
-            dt_used = float(last_diag.get("dt", dt_cfg))
+            if _native_device_applied:
+                coupled_source_rate = None  # sources already on GPU
+        # GPU-native coupling path — all operations use the same CUDA
+        # stream (dev->d_stream), so ordering is implicit.  No sync needed.
+        rain_src = rain_source_for_window_callback(
+            t_accum,
+            t_accum + dt_source_guess,
+            accumulate=True,
+            mutate_state=True,
+        )
+        _t_src2 = time.perf_counter()
+        if not _native_device_applied:
+            accumulate_source_volume_model_callback(
+                dt_source_guess,
+                rain_src,
+                cell_source_model_step,
+                coupled_source_rate,
+            )
+            apply_external_sources_callback(
+                backend,
+                dt_source_guess,
+                rain_src,
+                cell_source_model_step,
+                coupled_source_rate,
+            )
+        elif rain_src is not None and np.any(np.asarray(rain_src, dtype=np.float64) > 0.0):
+            # Native device coupling path: d_external_source_mps already has
+            # structure/drainage sources on-device.  Accumulate rain directly
+            # on the GPU via a device kernel — no D2H readback.
+            backend.accumulate_external_sources_native(rain_src)
+            accumulate_source_volume_model_callback(
+                dt_source_guess,
+                rain_src,
+                cell_source_model_step,
+                None,
+            )
+        # When _native_device_applied is True, d_external_source_mps is
+        # already populated on-device and the solver step will consume it
+        # directly.  Rain is assumed to be zero or natively handled when
+        # the native device coupling path is active; if non-zero rain
+        # needs to be combined with on-device sources, a GPU accumulation
+        # kernel or a D2H-readback + merge + H2D-upload path is required.
+        source_ms += (time.perf_counter() - _t_src2) * 1000.0
+        if apply_3d_patch_face_bc_callback is not None:
+            apply_3d_patch_face_bc_callback(backend)
+        _t_step2 = time.perf_counter()
+        last_diag = backend.step(dt_request)
+        step_ms += (time.perf_counter() - _t_step2) * 1000.0
+        dt_used = float(last_diag.get("dt", dt_cfg))
 
         return {
             "last_diag": last_diag,

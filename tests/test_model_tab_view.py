@@ -254,11 +254,6 @@ class TestModelTabView(unittest.TestCase):
         self.assertIsInstance(view.source_imex_split_chk, QCheckBox)
         self.assertEqual(view.source_imex_split_chk.objectName(), "source_imex_split_chk")
 
-    def test_view_has_source_stage_coupled_imex_rk2_chk(self):
-        view = self._make_view()
-        self.assertIsInstance(view.source_stage_coupled_imex_rk2_chk, QCheckBox)
-        self.assertEqual(view.source_stage_coupled_imex_rk2_chk.objectName(), "source_stage_coupled_imex_rk2_chk")
-
     def test_view_has_shallow_damping_depth_spin(self):
         view = self._make_view()
         self.assertIsInstance(view.shallow_damping_depth_spin, QDoubleSpinBox)

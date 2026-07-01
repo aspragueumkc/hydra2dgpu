@@ -1026,7 +1026,10 @@ class SWE2DCouplingController:
 
 
     def apply_native_device_sources(self, t_s: float, dt_s: float) -> bool:
-        """Attempt full on-device source update without host state fetch.
+        """DEPRECATED (Phase 6): C++ handles source freshness internally.
+        Retained for non-GPU test host readback only.
+
+        Attempt full on-device source update without host state fetch.
 
         Returns True when external sources were written on device.
 

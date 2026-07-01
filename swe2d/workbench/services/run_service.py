@@ -32,7 +32,6 @@ def collect_run_parameters(
     source_max_substeps: Optional[int] = None,
     source_true_subcycling: Optional[bool] = None,
     source_imex_split: Optional[bool] = None,
-    source_stage_coupled_imex_rk2: Optional[bool] = None,
     tiny_mode: Optional[int] = None,
     tiny_wet_cell_threshold: Optional[int] = None,
     inflow_progressive: Optional[bool] = None,
@@ -81,8 +80,6 @@ def collect_run_parameters(
         params["source_true_subcycling"] = bool(source_true_subcycling)
     if source_imex_split is not None:
         params["source_imex_split"] = bool(source_imex_split)
-    if source_stage_coupled_imex_rk2 is not None:
-        params["source_stage_coupled_imex_rk2"] = bool(source_stage_coupled_imex_rk2)
     if tiny_mode is not None:
         params["tiny_mode"] = int(tiny_mode)
     if tiny_wet_cell_threshold is not None:

@@ -105,30 +105,4 @@ class SWE2DRunSetupConfigurator:
             "configured": True,
         }
 
-    def resolve_stage_coupled_imex(
-        self,
-        *,
-        requested: bool,
-        coupling_controller: Any,
-        temporal_scheme: Any,
-        required_temporal_scheme: Any,
-        native_source_injection_mode: bool,
-    ) -> Dict[str, Any]:
-        """resolve stage coupled imex."""
-        stage_coupled_imex_enabled = False
-        stage_reasons: List[str] = []
 
-        if requested:
-            if coupling_controller is None:
-                stage_reasons.append("no coupling sources configured")
-            if temporal_scheme != required_temporal_scheme:
-                stage_reasons.append("temporal scheme is not RK2")
-            if not native_source_injection_mode:
-                stage_reasons.append("native source injection unavailable")
-            if not stage_reasons:
-                stage_coupled_imex_enabled = True
-
-        return {
-            "enabled": stage_coupled_imex_enabled,
-            "reasons": stage_reasons,
-        }

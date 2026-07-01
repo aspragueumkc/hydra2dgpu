@@ -2485,7 +2485,6 @@ class SWE2DWorkbenchStudioDialog(QtWidgets.QDialog):
             "line_output_interval_edit": str(mtab.line_output_interval_edit.text()),
             "tiny_mode_combo": int(mtab.tiny_mode_combo.currentData()),
             "tiny_wet_cell_threshold_spin": int(mtab.tiny_wet_cell_threshold_spin.value()),
-            "source_stage_coupled_imex_rk2_chk": bool(mtab.source_stage_coupled_imex_rk2_chk.isChecked()),
             "inflow_progressive_chk": bool(self._map_tab_view.inflow_progressive_chk.isChecked()),
             "use_redistribution_chk": bool(mtab.use_redistribution_chk.isChecked()),
             "gpu_diag_sync_interval_raw": int(mtab.gpu_diag_sync_interval_spin.value()),
