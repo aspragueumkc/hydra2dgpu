@@ -21,6 +21,7 @@ class SWE2DRunSetupConfigurator:
         backend: Any,
         thiessen_forcing: Any,
         mm_to_model_depth: float,
+        rain_update_interval_s: float = 60.0,
     ) -> Dict[str, Any]:
         """configure native rain cn forcing."""
         payload = thiessen_forcing.build_native_preprocessed_payload()
@@ -40,6 +41,7 @@ class SWE2DRunSetupConfigurator:
                 cn=cn_arr,
                 ia_ratio=ia_ratio,
                 mm_to_model_depth=float(mm_to_model_depth),
+                rain_update_interval_s=float(rain_update_interval_s),
             )
             infil_method_native = str(getattr(thiessen_forcing, "infiltration_method", "scs_cn") or "scs_cn").lower().strip()
             return {

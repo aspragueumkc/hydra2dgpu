@@ -860,6 +860,8 @@ def build_pipe_network_config(
     implicit_iters = int(config.get("implicit_iters", 3))
     implicit_relax = float(config.get("implicit_relax", 0.8))
 
+    pipe_solver_mode = "diffusion_wave" if solver_mode != 2 else "fully_dynamic"
+
     _log(
         f"Drainage coupling configured: nodes={len(nodes)}, links={len(links)}, "
         f"inlets={len(inlets)}, inlet_types={len(inlet_types)}, node_inlets={len(node_inlets)}, "
@@ -877,7 +879,7 @@ def build_pipe_network_config(
         outfalls=outfalls,
         pipe_ends=pipe_ends,
         gravity=gravity,
-        solver_mode=solver_mode,
+        pipe_solver_mode=pipe_solver_mode,
         coupling_substeps=coupling_substeps,
         max_coupling_substeps=max_coupling_substeps,
         head_deadband_m=head_deadband,

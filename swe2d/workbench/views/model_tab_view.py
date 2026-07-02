@@ -687,6 +687,18 @@ class ModelTabView(QtWidgets.QWidget):
             self.infiltration_method_combo.findData("scs_cn")
         )
 
+        self.rain_update_interval_spin = QtWidgets.QSpinBox()
+        self.rain_update_interval_spin.setObjectName("rain_update_interval_spin")
+        self.rain_update_interval_spin.setToolTip(
+            "Interval in seconds for re-evaluating the SCS-CN runoff rate. "
+            "Default 60s. Lower values=more responsive but more compute. "
+            "Set to 0 to re-evaluate every step (old behavior)."
+        )
+        param_form.addRow("Rain rate update interval (s):", self.rain_update_interval_spin)
+        self.rain_update_interval_spin.setRange(0, 3600)
+        self.rain_update_interval_spin.setSingleStep(10)
+        self.rain_update_interval_spin.setValue(60)
+
         self.storm_area_layer_combo = QtWidgets.QComboBox()
         self.storm_area_layer_combo.setObjectName("storm_area_layer_combo")
         self.storm_area_layer_combo.setToolTip(

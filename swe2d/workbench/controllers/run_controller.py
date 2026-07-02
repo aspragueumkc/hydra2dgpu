@@ -730,6 +730,7 @@ class RunController:
                             backend=backend,
                             thiessen_forcing=thiessen_forcing,
                             mm_to_model_depth=float(rain_mm_to_model_depth_fn()),
+                            rain_update_interval_s=float(view._model_tab_view.rain_update_interval_spin.value()),
                         )
                         infil_label = str(native_rain_res.get('infiltration_method', 'scs_cn'))
                     elif float(np.asarray(rain_rate_model, dtype=np.float64)) > 0.0:
