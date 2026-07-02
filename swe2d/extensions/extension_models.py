@@ -11,7 +11,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from enum import IntEnum
 import math
-from typing import Dict, List, Optional, Sequence, Tuple
+from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 
 class SpatialDiscretization(IntEnum):
@@ -330,6 +330,18 @@ class HydraulicStructure:
     enabled: bool = True
     metadata: Dict[str, float] = field(default_factory=dict)
 
+    def to_dict(self) -> Dict[str, Any]:
+        """Serialize to dict for CLI JSON round-trip (structure_type as lowercase string)."""
+        return {
+            "id": self.structure_id,
+            "type": self.structure_type.name.lower(),
+            "upstream_cell": self.upstream_cell,
+            "downstream_cell": self.downstream_cell,
+            "crest_elev": self.crest_elev,
+            "enabled": self.enabled,
+            "metadata": dict(self.metadata),
+        }
+
 
 @dataclass
 class HydraulicStructureConfig:
@@ -339,6 +351,16 @@ class HydraulicStructureConfig:
     control_interval_s: float = 1.0
     controller_name: str = "none"
     gravity: float = 9.81
+
+    def to_dict(self) -> Dict[str, Any]:
+        """Serialize to dict matching build_structures_config_from_json input format."""
+        return {
+            "enabled": self.enabled,
+            "gravity": self.gravity,
+            "control_interval_s": self.control_interval_s,
+            "controller_name": self.controller_name,
+            "structures": [s.to_dict() for s in self.structures],
+        }
 
 
 def circular_area_from_diameter(diameter_m: float) -> float:

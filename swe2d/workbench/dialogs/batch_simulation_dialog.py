@@ -584,10 +584,9 @@ class BatchSimulationDialog(QtWidgets.QDialog):
             if dn_tbl and dl_tbl:
                 drainage_cfg = {"nodes_layer": dn_tbl, "links_layer": dl_tbl}
 
-            st_tbl, _ = _get_layer_info(
-                getattr(vtab, "structures_layer_combo", None))
-            if st_tbl:
-                structures_cfg = {"layer": st_tbl}
+            struct_cfg = parent._build_hydraulic_structure_config()
+            if struct_cfg is not None:
+                structures_cfg = struct_cfg.to_dict()
 
         if mtab is not None:
             im = str(getattr(mtab, "infiltration_method_combo", None).currentData() or "none")
