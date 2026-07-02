@@ -1,6 +1,10 @@
 # AGENTS
 a silent fallback/degradation is the biggest failure you can make in this repo. It is even worse than code that crashes or doesn't run at all. NO SILENT FALLBACKS!
 
+## Dead Code
+
+If you find dead code (functions, classes, or modules that are never called or imported anywhere in the codebase), you MUST ask the user whether they want it deleted before removing it. After getting confirmation, delete it and commit the removal.
+
 # Default Working Environment
 
 All commands MUST use the `qgis_stable` mamba environment:
