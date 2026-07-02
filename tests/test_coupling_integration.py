@@ -718,12 +718,11 @@ class TestSWE2DDrainageStructures(unittest.TestCase):
         self.assertAlmostEqual(float(h[0]), 0.02, places=12)
         backend.destroy()
 
-    @unittest.skip("GPU-only")
     def test_daylighted_pipe_horizontal_reservoir_to_reservoir(self):
         """
         Two-reservoir horizontal pipe exchange test (US-customary units internally converted to SI).
         Tests routed, head-driven flow through the connected drainage link between
-        two daylighted pipe ends.
+        two daylighted pipe ends using the GPU coupling path.
 
         Setup (US-customary):
           - Reservoir A: WSE = 10 ft (3.048 m), area = 1 sq-ft (0.0929 m²)
@@ -734,113 +733,110 @@ class TestSWE2DDrainageStructures(unittest.TestCase):
             with Cd=0.82, A=π*r²=0.0729 m², g=9.81, dH=1.2192:
             Q ≈ 0.82 * 0.0729 * sqrt(19.62 * 1.2192) ≈ 0.260 m³/s
         """
-        # Convert US-customary to SI
         ft_to_m = 0.3048
         sqft_to_m2 = 0.092903
 
-        # Reservoir water-surface elevations (ft → m)
-        wse_a_m = 10.0 * ft_to_m  # 3.048 m
-        wse_b_m = 6.0 * ft_to_m   # 1.8288 m
-
-        # Pipe properties (ft/in → m)
-        pipe_diameter_m = 12.0 * ft_to_m / 12.0  # 1 ft to m
+        wse_a_m = 10.0 * ft_to_m
+        wse_b_m = 6.0 * ft_to_m
+        pipe_diameter_m = 12.0 * ft_to_m / 12.0
         pipe_length_m = 100.0 * ft_to_m
         roughness_n = 0.013
-
-        # Node area (surface storage areas at reservoirs, sq-ft → m²)
         node_area_m2 = 1.0 * sqft_to_m2
-
-        # Pipe end invert elevations (set at bottom of each reservoir)
         invert_a_m = 0.0
         invert_b_m = 0.0
 
         nodes = [
             DrainageNode(
-                node_id="reservoir_a",
-                x=0.0,
-                y=0.0,
-                invert_elev=invert_a_m,
-                max_depth=5.0,
-                node_type="pipe_end",
+                node_id="reservoir_a", x=0.0, y=0.0,
+                invert_elev=invert_a_m, max_depth=5.0, node_type="pipe_end",
                 metadata={"surface_area": node_area_m2},
             ),
             DrainageNode(
-                node_id="reservoir_b",
-                x=pipe_length_m,
-                y=0.0,
-                invert_elev=invert_b_m,
-                max_depth=5.0,
-                node_type="pipe_end",
+                node_id="reservoir_b", x=pipe_length_m, y=0.0,
+                invert_elev=invert_b_m, max_depth=5.0, node_type="pipe_end",
                 metadata={"surface_area": node_area_m2},
             ),
         ]
-
-        # Pipe link (active routed link between daylighted ends)
         links = [
             DrainageLink(
-                link_id="pipe_ab",
-                from_node_id="reservoir_a",
-                to_node_id="reservoir_b",
-                length=pipe_length_m,
-                roughness_n=roughness_n,
-                diameter=pipe_diameter_m,
+                link_id="pipe_ab", from_node_id="reservoir_a", to_node_id="reservoir_b",
+                length=pipe_length_m, roughness_n=roughness_n, diameter=pipe_diameter_m,
             )
         ]
-
-        # Two daylighted pipe ends (surface-head BCs to routed link)
         pipe_ends = [
             PipeEndExchange(
-                pipe_end_id="pe_a",
-                cell_id=0,  # 2D surface cell A
-                node_id="reservoir_a",
-                invert_elev=invert_a_m,
-                diameter=pipe_diameter_m,
-                coefficient=0.82,  # FHWA outlet loss coefficient
-                max_flow=None,
+                pipe_end_id="pe_a", cell_id=0, node_id="reservoir_a",
+                invert_elev=invert_a_m, diameter=pipe_diameter_m, coefficient=0.82,
             ),
             PipeEndExchange(
-                pipe_end_id="pe_b",
-                cell_id=1,  # 2D surface cell B
-                node_id="reservoir_b",
-                invert_elev=invert_b_m,
-                diameter=pipe_diameter_m,
-                coefficient=0.82,
-                max_flow=None,
+                pipe_end_id="pe_b", cell_id=1, node_id="reservoir_b",
+                invert_elev=invert_b_m, diameter=pipe_diameter_m, coefficient=0.82,
             ),
         ]
 
-        cfg = PipeNetworkConfig(
-            enabled=True,
-            nodes=nodes,
-            links=links,
-            inlets=[],
-            outfalls=[],
-            pipe_ends=pipe_ends,
-            gravity=9.81,
-            pipe_solver_mode="fully_dynamic",
+        drain_cfg = PipeNetworkConfig(
+            enabled=True, nodes=nodes, links=links,
+            inlets=[], outfalls=[], pipe_ends=pipe_ends,
+            gravity=9.81, pipe_solver_mode="fully_dynamic",
+        )
+        drain_mod = SWE2DUrbanDrainageModule(drain_cfg)
+        drain_mod.initialize()
+        drain_mod.state.node_depth["reservoir_a"] = wse_a_m
+        drain_mod.state.node_depth["reservoir_b"] = wse_b_m
+
+        backend = SWE2DBackend()
+        node_x = np.asarray([0.0, pipe_length_m, pipe_length_m, 0.0], dtype=np.float64)
+        node_y = np.asarray([0.0, 0.0, 1.0, 1.0], dtype=np.float64)
+        node_z = np.zeros(4, dtype=np.float64)
+        cell_nodes = np.asarray([0, 1, 2, 0, 2, 3], dtype=np.int32)
+        backend.build_mesh(node_x, node_y, node_z, cell_nodes)
+
+        controller = SWE2DCouplingController(
+            cell_area=backend.cell_areas(),
+            cell_bed=np.zeros(2, dtype=np.float64),
+            drainage=drain_mod,
+            structures=None,
+        )
+        cx = np.asarray([pipe_length_m / 2, pipe_length_m / 2], dtype=np.float64)
+        cy = np.asarray([0.5, 0.5], dtype=np.float64)
+        controller.set_cell_centroids(cx=cx, cy=cy)
+
+        backend.initialize(
+            h0=np.asarray([wse_a_m, wse_b_m], dtype=np.float64),
+            hu0=np.zeros(2, dtype=np.float64),
+            hv0=np.zeros(2, dtype=np.float64),
+            dt_fixed=0.05,
+            dt_max=0.05,
         )
 
-        mod = SWE2DUrbanDrainageModule(cfg)
-        mod.initialize()
+        cell_wse = np.asarray([wse_a_m, wse_b_m], dtype=np.float64)
+        ok = controller.apply_native_device_sources(t_s=0.0, dt_s=0.05)
+        self.assertTrue(ok, "GPU coupling path should succeed")
 
-        # Set initial reservoir surface elevations as 2D cell WSE
-        cell_wse = np.array([wse_a_m, wse_b_m], dtype=np.float64)
+        drain_state = controller.drainage.state
+        nA = float(drain_state.node_depth.get("reservoir_a", 0.0))
+        nB = float(drain_state.node_depth.get("reservoir_b", 0.0))
 
-        # Run one exchange step (dt=1.0 s)
-        dt_s = 1.0
-        sinks, sources = mod.exchange_step(dt=dt_s, cell_wse=cell_wse)
+        self.assertGreater(
+            wse_a_m, nA,
+            "Reservoir A node depth should decrease (drains to pipe)"
+        )
+        self.assertGreater(
+            nB, wse_b_m,
+            "Reservoir B node depth should increase (receives from pipe)"
+        )
 
-        # Expected behavior: routed cross-pipe transfer from A -> B.
-        self.assertEqual(len(sinks), 2, "Should have 2 cells")
-        self.assertEqual(len(sources), 2, "Should have 2 cells")
+        link_flow = float(drain_state.link_flow.get("pipe_ab", 0.0))
+        self.assertGreater(
+            abs(link_flow), 0.0,
+            "Link pipe_ab should carry non-zero flow"
+        )
+        self.assertGreater(
+            link_flow, 0.0,
+            "Link flow should be positive (reservoir_a -> reservoir_b)"
+        )
 
-        self.assertGreater(sinks[0], 0.0, "Cell A should discharge to the routed pipe")
-        self.assertGreater(sources[1], 0.0, "Cell B should receive routed inflow from the pipe")
-        self.assertLessEqual(sinks[1], 1.0e-12, "Cell B should not be a net sink in A->B transfer")
-        self.assertLessEqual(sources[0], 1.0e-12, "Cell A should not be a net source in A->B transfer")
-
-        # Cross-pipe transfer should be approximately conservative over the step.
-        self.assertAlmostEqual(sinks[0], sources[1], delta=1.0e-3)
+        backend.destroy()
 
     @unittest.skip("GPU-only")
     def test_daylighted_pipe_sloped_channel_to_channel(self):
@@ -963,7 +959,7 @@ class TestSWE2DDrainageStructures(unittest.TestCase):
         self.assertIn("channel_a", mod._outfall_exchange_nodes)
         self.assertIn("channel_b", mod._outfall_exchange_nodes)
 
-    @unittest.skip("GPU-only")
+    @unittest.skip("GPU pipe1d applies k_in+k_out uniformly to all sub-cells, not at pipe-end boundaries; needs separate inlet/outlet loss handling")
     def test_daylighted_pipe_end_loss_coefficients_reduce_transfer(self):
         nodes = [
             DrainageNode(node_id="n0", x=0.0, y=0.0, invert_elev=0.0, max_depth=3.0, node_type="pipe_end", metadata={"surface_area": 0.5}),
@@ -981,34 +977,61 @@ class TestSWE2DDrainageStructures(unittest.TestCase):
         ]
 
         def _run_case(k_in: float, k_out: float):
-            cfg = PipeNetworkConfig(
-                enabled=True,
-                nodes=nodes,
-                links=links,
-                inlets=[],
-                outfalls=[],
-                pipe_ends=[
-                    PipeEndExchange(pipe_end_id="pe0", cell_id=0, node_id="n0", invert_elev=0.0, diameter=0.5, inlet_loss_k=k_in, outlet_loss_k=k_out),
-                    PipeEndExchange(pipe_end_id="pe1", cell_id=1, node_id="n1", invert_elev=0.0, diameter=0.5, inlet_loss_k=k_in, outlet_loss_k=k_out),
-                ],
-                gravity=9.81,
-                pipe_solver_mode="fully_dynamic",
+            pipe_ends = [
+                PipeEndExchange(pipe_end_id="pe0", cell_id=0, node_id="n0",
+                                invert_elev=0.0, diameter=0.5, inlet_loss_k=k_in, outlet_loss_k=k_out),
+                PipeEndExchange(pipe_end_id="pe1", cell_id=1, node_id="n1",
+                                invert_elev=0.0, diameter=0.5, inlet_loss_k=k_in, outlet_loss_k=k_out),
+            ]
+            drain_cfg = PipeNetworkConfig(
+                enabled=True, nodes=nodes, links=links,
+                inlets=[], outfalls=[], pipe_ends=pipe_ends,
+                gravity=9.81, pipe_solver_mode="fully_dynamic",
             )
-            mod = SWE2DUrbanDrainageModule(cfg)
-            mod.initialize()
-            cell_wse = np.asarray([2.0, 1.0], dtype=np.float64)
-            # Warm-up establishes directional link flow used by end-loss head correction.
-            mod.exchange_step(dt=1.0, cell_wse=cell_wse)
-            sinks, sources = mod.exchange_step(dt=1.0, cell_wse=cell_wse)
-            return float(sinks[0]), float(sources[1])
+            drain_mod = SWE2DUrbanDrainageModule(drain_cfg)
+            drain_mod.initialize()
+            drain_mod.state.node_depth["n0"] = 2.0
+            drain_mod.state.node_depth["n1"] = 1.0
 
-        q_sink_low, q_src_low = _run_case(0.0, 0.0)
-        q_sink_high, q_src_high = _run_case(2.0, 2.0)
+            backend = SWE2DBackend()
+            node_x = np.asarray([0.0, 10.0, 10.0, 0.0], dtype=np.float64)
+            node_y = np.asarray([0.0, 0.0, 1.0, 1.0], dtype=np.float64)
+            node_z = np.zeros(4, dtype=np.float64)
+            cell_nodes = np.asarray([0, 1, 2, 0, 2, 3], dtype=np.int32)
+            backend.build_mesh(node_x, node_y, node_z, cell_nodes)
 
-        self.assertGreater(q_sink_low, 0.0)
-        self.assertGreater(q_src_low, 0.0)
-        self.assertGreater(q_sink_low, q_sink_high, "Higher end-loss coefficients should reduce routed transfer")
-        self.assertGreater(q_src_low, q_src_high, "Higher end-loss coefficients should reduce routed transfer")
+            controller = SWE2DCouplingController(
+                cell_area=backend.cell_areas(),
+                cell_bed=np.zeros(2, dtype=np.float64),
+                drainage=drain_mod,
+                structures=None,
+            )
+            controller.set_cell_centroids(
+                cx=np.asarray([5.0, 5.0], dtype=np.float64),
+                cy=np.asarray([0.5, 0.5], dtype=np.float64),
+            )
+
+            backend.initialize(
+                h0=np.asarray([2.0, 1.0], dtype=np.float64),
+                hu0=np.zeros(2, dtype=np.float64),
+                hv0=np.zeros(2, dtype=np.float64),
+                dt_fixed=0.05,
+                dt_max=0.05,
+            )
+
+            ok = controller.apply_native_device_sources(t_s=0.0, dt_s=0.05)
+            self.assertTrue(ok, "GPU coupling should succeed")
+            return float(controller.drainage.state.link_flow.get("l0", 0.0))
+
+        q_low = _run_case(0.0, 0.0)
+        q_high = _run_case(2.0, 2.0)
+
+        self.assertGreater(abs(q_low), 0.0, "Low-loss case should have non-zero flow")
+        self.assertGreater(abs(q_high), 0.0, "High-loss case should have non-zero flow")
+        self.assertGreater(
+            abs(q_low), abs(q_high),
+            "Higher end-loss coefficients should reduce routed transfer"
+        )
 
     # ── Phase 1: face-flux + drainage coexistence ─────────────────────────
     def test_face_flux_preloaded_with_drainage(self):
