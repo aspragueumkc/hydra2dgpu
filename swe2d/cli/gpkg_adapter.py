@@ -28,6 +28,30 @@ from swe2d.extensions.extension_models import (
 from swe2d.extensions.extension_models import StructureType
 
 
+_qgis_app = None
+
+
+def _ensure_qgis_app():
+    """Lazily create a headless Qgis application."""
+    global _qgis_app
+    if _qgis_app is None:
+        try:
+            from qgis.core import (
+               Qgis,
+                QCoreApplication,
+                QgsApplication,
+            )
+            argv = []
+            _qgis_app = QgsApplication(argv, False, "")
+            if not Qgis.QGIS_VERSION.startswith("0"):
+                _qgis_app.initQgis()
+            else:
+                _qgis_app = None
+        except Exception:
+            _qgis_app = None
+    return _qgis_app
+
+
 logger = logging.getLogger(__name__)
 
 
@@ -48,7 +72,6 @@ def query_mesh_from_gpkg(gpkg_path: str, mesh_name: str) -> Optional[Dict[str, n
         }
         # Also read CRS from the baked mesh table
         try:
-            import sqlite3
             _c = sqlite3.connect(gpkg_path)
             _r = _c.execute(
                 "SELECT crs_wkt FROM swe2d_baked_mesh WHERE mesh_name=?", (mesh_name,)
@@ -65,6 +88,75 @@ def query_mesh_from_gpkg(gpkg_path: str, mesh_name: str) -> Optional[Dict[str, n
         return out
     except Exception:
         return None
+
+
+def query_sample_lines_from_qgis(
+    gpkg_path: str,
+    table_name: str,
+) -> List[Dict[str, Any]]:
+    """Read sample-line features from a GPKG vector layer using qgis.core.
+
+    Returns a list of dicts, each with keys:
+        line_id  — feature ID (int)
+        line_name — feature name field or empty string
+        line_xy  — (M, 2) float64 ndarray of vertex coordinates
+    """
+    app = _ensure_qgis_app()
+    if app is None:
+        logger.warning("QGIS not available, cannot read sample lines from GPKG")
+        return []
+
+    try:
+        from qgis.core import NULL, QgsVectorLayer
+
+    except ImportError:
+        logger.warning("qgis.core not available, cannot read sample lines")
+        return []
+
+    uri = f"{gpkg_path}|layername={table_name}"
+    vlayer = QgsVectorLayer(uri, table_name, "ogr")
+    if not vlayer.isValid():
+        logger.warning(f"Invalid sample-lines layer: {table_name} in {gpkg_path}")
+        return []
+
+    lines: List[Dict[str, Any]] = []
+    name_field = _find_name_field(vlayer)
+
+    for feat in vlayer.getFeatures():
+        geom = feat.geometry()
+        if geom is None or geom.isNull():
+            continue
+        pts = geom.constGet()
+        if pts is None:
+            continue
+        n = pts.size()
+        xy = np.empty((n, 2), dtype=np.float64)
+        for i in range(n):
+            p = pts.pointN(i)
+            xy[i, 0] = p.x()
+            xy[i, 1] = p.y()
+        lid = feat.id()
+        lname = ""
+        if name_field >= 0:
+            val = feat.attribute(name_field)
+            if val is not None and val != NULL and val != "":
+                lname = str(val)
+        lines.append({"line_id": lid, "line_name": lname, "line_xy": xy})
+
+    return lines
+
+
+def _find_name_field(vlayer) -> int:
+    """Return the index of the best name/id field in a vector layer, or -1."""
+    try:
+        fi = vlayer.fields()
+        for i in range(fi.count()):
+            n = fi.at(i).name().lower()
+            if n in ("name", "id", "line_name", "label", "title"):
+                return i
+    except Exception:
+        pass
+    return -1
 
 
 def query_bc_arrays(
@@ -353,10 +445,13 @@ def apply_bc_overrides_from_gpkg(
             query_cols += f", \"{bv_col}\""
         cur.execute(f"SELECT {query_cols} FROM \"{bc_table}\" ORDER BY rowid")
         for row in cur.fetchall():
-            raw = str(row[0] or "")
-            if not raw.startswith("LINESTRING") and not raw.startswith("LineString"):
-                continue
-            vertices = _parse_linestring_coords(raw)
+            raw = row[0]
+            # Try WKB first (GPKG stores geometry as binary WKB in BLOB columns)
+            vertices = _parse_wkb_linestring(raw)
+            # Fall back to WKT if WKB parsing returned empty
+            if not vertices:
+                raw_str = str(raw or "")
+                vertices = _parse_linestring_coords(raw_str)
             if len(vertices) < 2:
                 continue
             feat_type = int(row[1]) if bt_col and row[1] is not None else 1
@@ -734,6 +829,7 @@ def build_forced_thiessen_from_gpkg(
     mesh_node_y: np.ndarray,
     cell_nodes: np.ndarray,
     *,
+    cell_face_offsets: Optional[np.ndarray] = None,
     hyetograph_table: str,
     gauge_table: str,
     cn_table: Optional[str] = None,
@@ -783,7 +879,7 @@ def build_forced_thiessen_from_gpkg(
     gx = np.array([g["x"] for g in gauges], dtype=np.float64)
     gy = np.array([g["y"] for g in gauges], dtype=np.float64)
 
-    cell_centroids = _compute_cell_centroids(mesh_node_x, mesh_node_y, cell_nodes)
+    cell_centroids = _compute_cell_centroids(mesh_node_x, mesh_node_y, cell_nodes, cell_face_offsets)
     n_cells_actual = min(cell_centroids.shape[0], n_cells)
     cx = cell_centroids[:n_cells_actual, 0]
     cy = cell_centroids[:n_cells_actual, 1]
@@ -812,13 +908,40 @@ def build_forced_thiessen_from_gpkg(
 
 
 def _compute_cell_centroids(
-    node_x: np.ndarray, node_y: np.ndarray, cell_nodes: np.ndarray
+    node_x: np.ndarray, node_y: np.ndarray, cell_nodes: np.ndarray,
+    cell_face_offsets: Optional[np.ndarray] = None
 ) -> np.ndarray:
-    """Compute cell centroids from mesh topology."""
-    tris = cell_nodes.reshape((-1, 3))
-    cx = np.mean(node_x[tris], axis=1)
-    cy = np.mean(node_y[tris], axis=1)
-    return np.column_stack((cx, cy))
+    """Compute cell centroids from mesh topology.
+
+    Handles both uniform (all triangles/quads) and mixed meshes.
+    For uniform triangle meshes, cell_face_offsets is not needed.
+    For mixed meshes, cell_face_offsets defines start indices for each cell.
+    """
+    if cell_face_offsets is not None and len(cell_face_offsets) > 0:
+        # Mixed mesh: use offsets to extract variable-length node lists
+        n_cells = len(cell_face_offsets)
+        centroids = np.empty((n_cells, 2), dtype=np.float64)
+        for i in range(n_cells):
+            start = cell_face_offsets[i]
+            end = cell_face_offsets[i + 1] if i + 1 < len(cell_face_offsets) else len(cell_nodes)
+            nodes_i = cell_nodes[start:end]
+            if len(nodes_i) > 0:
+                centroids[i, 0] = np.mean(node_x[nodes_i])
+                centroids[i, 1] = np.mean(node_y[nodes_i])
+            else:
+                centroids[i, 0] = 0.0
+                centroids[i, 1] = 0.0
+        return centroids
+    else:
+        # Uniform mesh: assume all cells have same node count (3 for triangles)
+        # Infer nodes per cell from total size
+        n_cells = len(cell_nodes) // 3  # fallback to triangles
+        if len(cell_nodes) % 4 == 0:
+            n_cells = len(cell_nodes) // 4  # quads
+        cell_nodes_2d = cell_nodes.reshape((-1, n_cells))
+        cx = np.mean(node_x[cell_nodes_2d], axis=1)
+        cy = np.mean(node_y[cell_nodes_2d], axis=1)
+        return np.column_stack((cx, cy))
 
 
 def read_drainage_config_from_gpkg(
@@ -829,6 +952,7 @@ def read_drainage_config_from_gpkg(
     mesh_node_y: np.ndarray,
     cell_nodes: np.ndarray,
     *,
+    cell_face_offsets: Optional[np.ndarray] = None,
     inlets_table: Optional[str] = None,
     node_inlets_table: Optional[str] = None,
 ) -> Optional[Dict[str, Any]]:
@@ -838,9 +962,7 @@ def read_drainage_config_from_gpkg(
     Requires mesh topology so node->cell nearest-neighbor can be computed.
     """
     nodes_cur = conn.execute(f'PRAGMA table_info("{nodes_table}")').fetchall()
-    node_cols = {r[1] for r in nodes_cur}
     links_cur = conn.execute(f'PRAGMA table_info("{links_table}")').fetchall()
-    link_cols = {r[1] for r in links_cur}
 
     node_x_map: Dict[str, float] = {}
     node_y_map: Dict[str, float] = {}
@@ -878,7 +1000,7 @@ def read_drainage_config_from_gpkg(
     if not nodes_raw or not links_raw:
         return None
 
-    cell_centroids = _compute_cell_centroids(mesh_node_x, mesh_node_y, cell_nodes)
+    cell_centroids = _compute_cell_centroids(mesh_node_x, mesh_node_y, cell_nodes, cell_face_offsets)
     n_cells_actual = min(cell_centroids.shape[0], len(nodes_raw) * 10 + 1)
     ccx = cell_centroids[:n_cells_actual, 0]
     ccy = cell_centroids[:n_cells_actual, 1]
