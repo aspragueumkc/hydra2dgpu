@@ -641,8 +641,6 @@ class SWE2DCouplingController:
         self._n_non_bridge_structures = int(np.sum(self._structure_non_bridge_mask))
         self._native_cuda_mod_cache = None
         self._native_cuda_mod_checked = False
-        self._gpu_node_depth: Optional[np.ndarray] = None
-        self._gpu_link_flow: Optional[np.ndarray] = None
         self._gpu_drainage_static_args: Optional[Dict[str, np.ndarray]] = None
         self._pipe1d_mesh_built: bool = False
         self.last_diag = SWE2DCouplingDiagnostics()
@@ -1103,26 +1101,15 @@ class SWE2DCouplingController:
         self._ensure_native_culvert_solver_mode(native_mod)
 
         # ── Drainage: compute q_cell on-device via swe2d_pipe1d_step ──
+        # All state lives on GPU. No H2D upload, no D2H readback in hot path.
         if self.drainage is not None:
-            # Fast-path: skip GPU drainage step when no water is in the system.
-            self._ensure_gpu_drainage_state()
-            node_depth_state = np.asarray(self._gpu_node_depth, dtype=np.float64)
-            link_flow_state = np.asarray(self._gpu_link_flow, dtype=np.float64)
-            node_active = bool(np.any(node_depth_state > 1.0e-3))
-            link_active = bool(np.any(np.abs(link_flow_state) > 1.0e-10))
-            if self.structures is None and not node_active and not link_active:
-                return False
             if self._drainage_soa is not None and hasattr(native_mod, "swe2d_pipe1d_step"):
                 dsoa = self._drainage_soa
                 static_args = self._ensure_gpu_drainage_static_args()
                 if static_args is None:
                     return False
-                self._ensure_gpu_drainage_state()
-                node_depth_state = np.asarray(self._gpu_node_depth, dtype=np.float64)
-                link_flow_state = np.asarray(self._gpu_link_flow, dtype=np.float64)
                 g = float(getattr(self.drainage.cfg, "gravity", _u.gravity()))
                 nl = int(len(dsoa.link_from))
-                nn = int(len(dsoa.node_invert_elev))
                 dev_ptr = 0
                 if hasattr(native_mod, "swe2d_get_coupling_dev_ptr"):
                     dev_ptr = int(native_mod.swe2d_get_coupling_dev_ptr())
@@ -1145,12 +1132,6 @@ class SWE2DCouplingController:
                         dev_ptr,
                     )
                     self._pipe1d_mesh_built = True
-                # Upload current node depths to device before pipe step
-                if hasattr(native_mod, "swe2d_pipe1d_upload_node_depth"):
-                    native_mod.swe2d_pipe1d_upload_node_depth(
-                        dev_ptr,
-                        np.asarray(self._gpu_node_depth, dtype=np.float64),
-                    )
                 cfg = self.drainage.cfg
                 native_mod.swe2d_pipe1d_step(
                     dev_ptr,
@@ -1161,12 +1142,6 @@ class SWE2DCouplingController:
                     float(getattr(cfg, "implicit_coupling_relaxation", 0.5)),
                     float(g),
                 )
-                # Readback updated node depths from device (mass-balance updated them)
-                if hasattr(native_mod, "swe2d_pipe1d_readback_node_state"):
-                    rb = native_mod.swe2d_pipe1d_readback_node_state(dev_ptr, nn, nl)
-                    self._gpu_node_depth = np.asarray(rb["node_depth"], dtype=np.float64)
-                    self._gpu_link_flow = np.asarray(rb["cell_Q"], dtype=np.float64)
-                self._sync_gpu_state_back_to_drainage()
             else:
                 return False
 
@@ -1401,31 +1376,6 @@ class SWE2DCouplingController:
             out[valid] = self._inv_cell_perm[cells[valid]]
         return out
 
-    def _ensure_gpu_drainage_state(self) -> None:
-        """Initialise GPU-resident drainage node-depth and link-flow arrays from Python state."""
-        if self.drainage is None:
-            return
-        cfg = self.drainage.cfg
-        if self._gpu_node_depth is None or self._gpu_node_depth.size != len(cfg.nodes):
-            self._gpu_node_depth = np.asarray(
-                [float(self.drainage.state.node_depth.get(n.node_id, 0.0)) for n in cfg.nodes],
-                dtype=np.float64,
-            )
-        if self._gpu_link_flow is None or self._gpu_link_flow.size != len(cfg.links):
-            self._gpu_link_flow = np.asarray(
-                [float(self.drainage.state.link_flow.get(l.link_id, 0.0)) for l in cfg.links],
-                dtype=np.float64,
-            )
-
-    def _sync_gpu_state_back_to_drainage(self) -> None:
-        """Copy GPU-resident drainage state back to the Python DrainageCouplingEngine."""
-        if self.drainage is None or self._gpu_node_depth is None or self._gpu_link_flow is None:
-            return
-        for i, node in enumerate(self.drainage.cfg.nodes):
-            self.drainage.state.node_depth[node.node_id] = float(self._gpu_node_depth[i])
-        for i, link in enumerate(self.drainage.cfg.links):
-            self.drainage.state.link_flow[link.link_id] = float(self._gpu_link_flow[i])
-
     def _ensure_gpu_drainage_static_args(self) -> Optional[Dict[str, np.ndarray]]:
         """Build and cache the static (geometry) argument dict for GPU drainage calls."""
         if self._drainage_soa is None:
@@ -1504,39 +1454,11 @@ class SWE2DCouplingController:
         """Number of 2D mesh cells in the domain."""
         return int(self.cell_area.size)
 
-    def source_rate_callback(self) -> Callable[[float, float, np.ndarray, np.ndarray, np.ndarray], np.ndarray]:
-        """Return the callable expected by the solver backend for source-rate computation."""
-        return self.compute_source_rates
-
-    def compute_source_rates(
-        self,
-        t_s: float,
-        dt_s: float,
-        h: np.ndarray,
-        hu: np.ndarray,
-        hv: np.ndarray,
-    ) -> np.ndarray:
-        """DEPRECATED (Phase 6): Use apply_native_device_sources for GPU path.
-        Retained for non-GPU test host readback only.
-        """
-        _ = (hu, hv)
-        hh = np.ascontiguousarray(h, dtype=np.float64).ravel()
-        if hh.size != self.n_cells:
-            raise ValueError("state size does not match coupling cell arrays")
-        try:
-            if self.apply_native_device_sources(t_s, dt_s):
-                return None
-        except Exception:
-            pass
-        cb = getattr(self, 'source_rate_callback', None)
-        if cb is not None:
-            try:
-                raw = cb(t_s, dt_s, h, hu, hv)
-                if raw is not None:
-                    return np.ascontiguousarray(raw, dtype=np.float64)
-            except Exception:
-                pass
-        return np.zeros(self.n_cells, dtype=np.float64)
+    def source_rate_callback(self):
+        raise RuntimeError(
+            "compute_source_rates / source_rate_callback removed. "
+            "Use apply_native_device_sources(t_s, dt_s) directly."
+        )
 
 __all__ = [
     "SWE2DCouplingDiagnostics",

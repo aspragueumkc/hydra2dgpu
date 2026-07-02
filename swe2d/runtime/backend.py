@@ -1104,19 +1104,15 @@ class SWE2DBackend:
             
             return diags
 
-        # Fallback: Python loop (when source_rate_callback is used or native API unavailable)
-        emulate_native_lag = False
-        pending_source_arr: Optional[np.ndarray] = None
-
-        if use_native_source_injection and source_rate_callback is not None:
-            if not self._supports_solver_external_sources:
-                # Compatibility fallback for extensions built without native
-                # external-source API support.
-                use_native_source_injection = False
-                emulate_native_lag = True
-            # Start from zero external source on solver.
-            if use_native_source_injection:
-                self.set_external_sources_native(None)
+        # GPU-only orchestration loop (coupling applied on device per step)
+        coupling_controller = None
+        if source_rate_callback is not None:
+            coupling_controller = getattr(source_rate_callback, "__self__", None)
+            if not hasattr(coupling_controller, "apply_native_device_sources"):
+                raise RuntimeError(
+                    "source_rate_callback.__self__ must have apply_native_device_sources. "
+                    "CPU fallback removed — all coupling goes through GPU."
+                )
 
         t = 0.0
         while t < t_end:
@@ -1124,57 +1120,12 @@ class SWE2DBackend:
                 break
             diag = self.step(dt_request)
             dt = float(diag["dt"])
-            if source_rate_callback is not None and dt > 0.0:
-                native_device_applied = False
-                if use_native_source_injection:
-                    owner = getattr(source_rate_callback, "__self__", None)
-                    apply_native_device_sources = getattr(owner, "apply_native_device_sources", None)
-                    if callable(apply_native_device_sources):
-                        try:
-                            native_device_applied = bool(apply_native_device_sources(t, dt))
-                        except Exception as _e:
-                            logger.error("[BACKEND] apply_native_device_sources failed: %s", _e)
-                            raise
-                if native_device_applied:
-                    src = None
-                else:
-                    h, hu, hv = self.get_state()
-                    src = source_rate_callback(t, dt, h, hu, hv)
-                if use_native_source_injection:
-                    if not native_device_applied and src is not None:
-                        self.set_external_sources_native(src)
-                elif emulate_native_lag:
-                    if src is not None:
-                        src_arr = np.ascontiguousarray(src, dtype=np.float64).ravel()
-                        if src_arr.size != self._n_cells:
-                            raise ValueError("source_rate_callback must return an array with length n_cells")
-                    else:
-                        src_arr = None
-
-                    if pending_source_arr is not None:
-                        h = np.maximum(0.0, h + dt * pending_source_arr)
-                        dry = h < self._h_min
-                        hu = np.where(dry, 0.0, hu)
-                        hv = np.where(dry, 0.0, hv)
-                        self.set_state(h, hu, hv)
-                    pending_source_arr = src_arr
-                elif src is not None:
-                    src_arr = np.ascontiguousarray(src, dtype=np.float64).ravel()
-                    if src_arr.size != self._n_cells:
-                        raise ValueError("source_rate_callback must return an array with length n_cells")
-                    h = np.maximum(0.0, h + dt * src_arr)
-                    dry = h < self._h_min
-                    hu = np.where(dry, 0.0, hu)
-                    hv = np.where(dry, 0.0, hv)
-                    self.set_state(h, hu, hv)
+            if coupling_controller is not None and dt > 0.0:
+                coupling_controller.apply_native_device_sources(t, dt)
             t += dt
             diags.append(diag)
             if progress_callback:
                 progress_callback(t, diag)
-
-        if use_native_source_injection and source_rate_callback is not None:
-            # Prevent stale external sources from affecting future runs.
-            self.set_external_sources_native(None)
 
         return diags
 
