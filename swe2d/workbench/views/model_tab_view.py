@@ -489,9 +489,10 @@ class ModelTabView(QtWidgets.QWidget):
         self.temporal_order_combo.setToolTip(
             "Temporal integration (ODE solver) order. "
             "Euler (1): CFL 0.4-0.5 (stable up to 1.0). "
-            "SSP-RK2 (2): CFL 0.5-0.8 (default). "
-            "SSP-RK3 (3): CFL 0.5-0.8 (Shu-Osher). "
-            "Classic RK4 (4): CFL 1.0-1.5 with sources/structures. "
+            "SSP-RK2 (2): CFL 0.5-0.8 (default, SSP-stable). "
+            "SSP-RK3 (3): CFL 0.5-0.8 (Shu-Osher, SSP-stable). "
+            "Classic RK4 (4): NOT SSP — CFL 0.3-0.5 with Superbee/limiters, "
+            "up to 0.8 with first-order. Use SSP-RK2/RK3 for higher CFL. "
             "Graph-safe RK4 (5): same as classic RK4. "
             "Graph-safe RK5 (6): CFL 0.5-1.0 (Cash-Karp embedded)."
         )
