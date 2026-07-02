@@ -605,7 +605,7 @@ def build_drainage_config_from_json(
 
 
 def build_structures_config_from_json(
-    structures_data: Optional[List[Dict[str, Any]]],
+    structures_data: Optional[Any],
     n_cells: int,
 ) -> Optional[HydraulicStructureConfig]:
     """Build HydraulicStructureConfig from a JSON array.
@@ -622,6 +622,12 @@ def build_structures_config_from_json(
     """
     if not structures_data:
         return None
+    if not isinstance(structures_data, list):
+        raise TypeError(
+            f"build_structures_config_from_json: expected a list of structure dicts, "
+            f"got {type(structures_data).__name__}. Check that the 'structures' key "
+            f"in your params JSON contains an array, not a bare string."
+        )
 
     type_map = {
         "weir": StructureType.WEIR,
