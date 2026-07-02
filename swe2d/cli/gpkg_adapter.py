@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import sqlite3
 import struct
 from typing import Any, Dict, List, Optional, Tuple
@@ -26,30 +27,6 @@ from swe2d.extensions.extension_models import (
     PipeNetworkConfig,
 )
 from swe2d.extensions.extension_models import StructureType
-
-
-_qgis_app = None
-
-
-def _ensure_qgis_app():
-    """Lazily create a headless Qgis application."""
-    global _qgis_app
-    if _qgis_app is None:
-        try:
-            from qgis.core import (
-               Qgis,
-                QCoreApplication,
-                QgsApplication,
-            )
-            argv = []
-            _qgis_app = QgsApplication(argv, False, "")
-            if not Qgis.QGIS_VERSION.startswith("0"):
-                _qgis_app.initQgis()
-            else:
-                _qgis_app = None
-        except Exception:
-            _qgis_app = None
-    return _qgis_app
 
 
 logger = logging.getLogger(__name__)
@@ -94,69 +71,54 @@ def query_sample_lines_from_qgis(
     gpkg_path: str,
     table_name: str,
 ) -> List[Dict[str, Any]]:
-    """Read sample-line features from a GPKG vector layer using qgis.core.
+    """Read sample-line features from a GPKG vector layer via sqlite3 + WKB.
+
+    Pure sqlite3 — no QGIS dependency. Uses the same WKB parsing as BC lines.
 
     Returns a list of dicts, each with keys:
-        line_id  — feature ID (int)
-        line_name — feature name field or empty string
+        line_id  — feature rowid (int)
+        line_name — name field value or empty string
         line_xy  — (M, 2) float64 ndarray of vertex coordinates
     """
-    app = _ensure_qgis_app()
-    if app is None:
-        logger.warning("QGIS not available, cannot read sample lines from GPKG")
+    if not gpkg_path or not os.path.exists(gpkg_path):
         return []
-
+    conn = sqlite3.connect(gpkg_path)
     try:
-        from qgis.core import NULL, QgsVectorLayer
+        geom_col = _find_geom_column(table_name, conn)
+        if not geom_col:
+            logger.warning("No geometry column in sample-lines table '%s'", table_name)
+            return []
 
-    except ImportError:
-        logger.warning("qgis.core not available, cannot read sample lines")
-        return []
+        cols = [str(r[1]) for r in conn.execute(f'PRAGMA table_info("{table_name}")')]
+        name_col = ""
+        for c in cols:
+            if c.lower() in ("name", "line_name", "label", "title"):
+                name_col = c
+                break
 
-    uri = f"{gpkg_path}|layername={table_name}"
-    vlayer = QgsVectorLayer(uri, table_name, "ogr")
-    if not vlayer.isValid():
-        logger.warning(f"Invalid sample-lines layer: {table_name} in {gpkg_path}")
-        return []
+        sel = f'rowid, "{geom_col}"'
+        if name_col:
+            sel += f', "{name_col}"'
+        rows = conn.execute(f'SELECT {sel} FROM "{table_name}" ORDER BY rowid').fetchall()
+    finally:
+        conn.close()
 
     lines: List[Dict[str, Any]] = []
-    name_field = _find_name_field(vlayer)
-
-    for feat in vlayer.getFeatures():
-        geom = feat.geometry()
-        if geom is None or geom.isNull():
+    for row in rows:
+        raw = row[1]
+        coords = _parse_wkb_linestring(raw)
+        if len(coords) < 2:
             continue
-        pts = geom.constGet()
-        if pts is None:
-            continue
-        n = pts.size()
-        xy = np.empty((n, 2), dtype=np.float64)
-        for i in range(n):
-            p = pts.pointN(i)
-            xy[i, 0] = p.x()
-            xy[i, 1] = p.y()
-        lid = feat.id()
+        xy = np.array(coords, dtype=np.float64)
         lname = ""
-        if name_field >= 0:
-            val = feat.attribute(name_field)
-            if val is not None and val != NULL and val != "":
-                lname = str(val)
-        lines.append({"line_id": lid, "line_name": lname, "line_xy": xy})
-
+        if name_col and len(row) > 2 and row[2]:
+            lname = str(row[2])
+        lines.append({
+            "line_id": int(row[0]),
+            "line_name": lname,
+            "line_xy": xy,
+        })
     return lines
-
-
-def _find_name_field(vlayer) -> int:
-    """Return the index of the best name/id field in a vector layer, or -1."""
-    try:
-        fi = vlayer.fields()
-        for i in range(fi.count()):
-            n = fi.at(i).name().lower()
-            if n in ("name", "id", "line_name", "label", "title"):
-                return i
-    except Exception:
-        pass
-    return -1
 
 
 def query_bc_arrays(

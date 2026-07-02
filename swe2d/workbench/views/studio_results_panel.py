@@ -86,15 +86,13 @@ def on_results_add(dialog) -> None:
     if not selected:
         return
 
-    # Replace selected_run_keys per GPKG: remove old keys for the same GPKGs,
-    # then add the new user selection. This ensures the dialog is the sole
-    # controller of which runs appear — old runs from the same GPKG that the
-    # user un-checked are removed, and runs from other GPKGs are preserved.
+    # Replace selected_run_keys per GPKG: remove old keys for GPKGs the user
+    # is explicitly adding in THIS session.  Runs from GPKGs the user is NOT
+    # re-adding are cleared so old selections don't bleed across sessions.
     gpkg_paths_in_this_batch = {r.gpkg_path for r in all_candidates}
     old_keys = set(data._selected_run_keys)
     for k in old_keys:
-        if any(k.startswith(f"{p}::") for p in gpkg_paths_in_this_batch):
-            data._selected_run_keys.discard(k)
+        data._selected_run_keys.discard(k)
     data._selected_run_keys.update(selected)
 
     data.discover_runs()

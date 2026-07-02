@@ -25,6 +25,66 @@ from swe2d.cli.gpkg_adapter import (
     query_sample_lines_from_qgis,
 )
 from swe2d.mesh.mesh_runtime_logic import mesh_cell_centroids
+from swe2d.runtime.run_finalizer import SWE2DRunFinalizer
+
+
+class _HeadlessFinalizationView:
+    """Headless view implementing the RunFinalizationView protocol.
+
+    All GUI-only operations (overlay sync, plot refresh) are no-ops.
+    """
+
+    def __init__(self, results_gpkg: str, mesh_name: str, mesh_data: Dict[str, Any],
+                 length_unit: str, length_scale_si: float):
+        self._results_gpkg = results_gpkg
+        self._mesh_name = mesh_name
+        self._mesh_data = mesh_data
+        self._length_unit = length_unit
+        self._length_scale_si = length_scale_si
+        self._log_lines: List[str] = []
+
+    def log_message(self, msg: str) -> None:
+        logger.info("%s", msg)
+        self._log_lines.append(msg)
+
+    def get_line_results_storage_path(self) -> str:
+        return self._results_gpkg
+
+    def sync_overlay_data(self) -> None:
+        pass
+
+    def refresh_plot(self) -> None:
+        pass
+
+    def results_table_name(self, base: str) -> str:
+        return base
+
+    def length_unit_name(self) -> str:
+        return self._length_unit
+
+    def length_scale_si_to_model(self) -> float:
+        return self._length_scale_si
+
+    def update_overlay_time(self, t: float) -> None:
+        pass
+
+    def runtime_log_lines(self) -> List[str]:
+        return self._log_lines
+
+    def collect_run_log_metadata(self) -> Dict[str, object]:
+        return {}
+
+    def persist_run_log(self, gpkg_path: str, run_id: str,
+                        run_wallclock_start: str, run_wallclock_end: str,
+                        run_duration_wallclock_s: float, run_log_text: str,
+                        *, metadata: Dict[str, object]) -> None:
+        pass
+
+    def is_cancel_requested(self) -> bool:
+        return False
+
+    def results_data(self):
+        return None
 
 
 def _si_m_per_model_from_wkt(wkt: str) -> float:
@@ -387,33 +447,31 @@ def execute_run(
     def _collect_coupling_snapshot(cc, t_s: float) -> None:
         if cc is None:
             return
-        if hasattr(cc, "_gpu_node_depth") and cc._gpu_node_depth is not None:
-            cfg = getattr(getattr(cc, "drainage", None), "cfg", None)
-            if cfg is not None:
-                for i, node in enumerate(getattr(cfg, "nodes", [])):
-                    if i >= len(cc._gpu_node_depth):
-                        continue
+        state = cc.readback_coupling_state()
+        cfg = getattr(getattr(cc, "drainage", None), "cfg", None)
+        if cfg is not None:
+            for i, node in enumerate(getattr(cfg, "nodes", [])):
+                if i < len(state["node_depth"]):
                     key = ("drainage_node", str(getattr(node, "node_id", str(i))), "depth")
                     coupling_snapshots.setdefault(key, {"times": [], "values": []})["times"].append(t_s)
-                    coupling_snapshots[key]["values"].append(float(cc._gpu_node_depth[i]))
-        if hasattr(cc, "_gpu_link_flow") and cc._gpu_link_flow is not None:
-            cfg = getattr(getattr(cc, "drainage", None), "cfg", None)
-            if cfg is not None:
-                for i, link in enumerate(getattr(cfg, "links", [])):
-                    if i >= len(cc._gpu_link_flow):
-                        continue
+                    coupling_snapshots[key]["values"].append(float(state["node_depth"][i]))
+            for i, link in enumerate(getattr(cfg, "links", [])):
+                if i < len(state["link_flow"]):
                     key = ("drainage_link", str(getattr(link, "link_id", str(i))), "flow")
                     coupling_snapshots.setdefault(key, {"times": [], "values": []})["times"].append(t_s)
-                    coupling_snapshots[key]["values"].append(float(cc._gpu_link_flow[i]))
-        nb_flows = getattr(cc, "_last_structure_flows", None)
+                    coupling_snapshots[key]["values"].append(float(state["link_flow"][i]))
         structures_cfg_local = getattr(cc, "_structures_cfg", ())
-        if nb_flows is not None and structures_cfg_local:
-            for i, st in enumerate(structures_cfg_local):
-                sid = str(getattr(st, "structure_id", str(i)))
-                if i < len(nb_flows):
-                    key = ("structure", sid, "flow")
-                    coupling_snapshots.setdefault(key, {"times": [], "values": []})["times"].append(t_s)
-                    coupling_snapshots[key]["values"].append(float(nb_flows[i]))
+        nb_mask = getattr(cc, "_structure_non_bridge_mask", None)
+        for i, st in enumerate(structures_cfg_local):
+            if nb_mask is not None and not nb_mask[i]:
+                continue
+            idx = i if nb_mask is None else int(np.flatnonzero(nb_mask[:i+1])[-1]) if np.any(nb_mask[:i+1]) else -1
+            if idx < 0 or idx >= len(state["struct_flow"]):
+                continue
+            sid = str(getattr(st, "structure_id", str(i)))
+            key = ("structure", sid, "flow")
+            coupling_snapshots.setdefault(key, {"times": [], "values": []})["times"].append(t_s)
+            coupling_snapshots[key]["values"].append(float(state["struct_flow"][idx]))
 
     _status_step[0] = 0
     dt_request = float(rp.get("dt_request", rp.get("dt_max", 0.2)))
@@ -481,48 +539,35 @@ def execute_run(
     if max_results is not None:
         out["max_results"] = max_results
 
-    # ── Persist to results GPKG ────────────────────────────────────
+    # ── Persist to results GPKG via shared SWE2DRunFinalizer ───────────────
     if results_gpkg:
-        from swe2d.services.gpkg_persistence_service import (
-            load_baked_mesh,
-            persist_baked_coupling,
-            persist_baked_mesh,
-            persist_baked_results,
-        )
-
         run_id = str(p.get("id", "run"))
 
+        from swe2d.services.gpkg_persistence_service import load_baked_mesh, persist_baked_mesh
         try:
-            baked = load_baked_mesh(mesh_gpkg, mesh_name)
-            if baked:
-                persist_baked_mesh(results_gpkg, mesh_name, baked["blob"])
+            baked_blob = load_baked_mesh(mesh_gpkg, mesh_name)
+            if baked_blob:
+                persist_baked_mesh(results_gpkg, mesh_name, baked_blob,
+                                   crs_wkt=mesh_data.get("crs_wkt", ""))
         except Exception as exc:
             logger.warning("Failed to persist baked mesh: %s", exc)
 
-        persist_baked_results(
-            results_gpkg, run_id, mesh_name,
-            snapshot_timesteps,
-            max_tracking=max_results,
-            crs_wkt=mesh_data.get("crs_wkt", ""),
-        )
+        gravity_g = _u.gravity()
+        h_min = float(rp.get("h_min", 1e-4))
+        node_coords = np.stack([mesh_data["node_x"], mesh_data["node_y"]], axis=1)
+        cell_nodes = mesh_data["cell_nodes"]
+        cell_bed = getattr(backend, "_cell_zb", np.zeros(ncells, dtype=np.float64))
 
-        # ── Sample line results ─────────────────────────────────────────
+        precomputed_line_results: Dict[int, Dict[str, Any]] = {}
         if sample_map_list and snapshot_timesteps:
             from swe2d.workbench.services.mesh_service import (
                 sample_line_aggregate_ts_row,
                 sample_line_metrics,
             )
-            gravity_g = _u.gravity()
-            h_min = float(rp.get("h_min", 1e-4))
-            node_coords = np.stack([mesh_data["node_x"], mesh_data["node_y"]], axis=1)
-            cell_nodes = mesh_data["cell_nodes"]
-            cell_bed = getattr(backend, "_cell_zb", np.zeros(ncells, dtype=np.float64))
-
             for sm in sample_map_list:
                 line_id = int(sm.get("line_id", 0))
                 line_name = str(sm.get("line_name", ""))
                 n_snaps = len(snapshot_timesteps)
-
                 ts_times = np.empty(n_snaps, dtype=np.float64)
                 depth_ts = np.empty(n_snaps, dtype=np.float64)
                 vel_ts = np.empty(n_snaps, dtype=np.float64)
@@ -531,10 +576,8 @@ def execute_run(
                 flow_ts = np.empty(n_snaps, dtype=np.float64)
                 wet_ts = np.empty(n_snaps, dtype=np.float64)
                 froude_ts = np.empty(n_snaps, dtype=np.float64)
-
                 station_arr = np.asarray(sm.get("profile_station_m", np.array([0.0])), dtype=np.float64)
                 n_stations = max(1, station_arr.size)
-
                 depth_prof = np.empty((n_snaps, n_stations), dtype=np.float64)
                 vel_prof = np.empty((n_snaps, n_stations), dtype=np.float64)
                 wse_prof = np.empty((n_snaps, n_stations), dtype=np.float64)
@@ -542,7 +585,6 @@ def execute_run(
                 flow_prof = np.empty((n_snaps, n_stations), dtype=np.float64)
                 fr_prof = np.empty((n_snaps, n_stations), dtype=np.float64)
                 wet_prof = np.zeros((n_snaps, n_stations), dtype=np.int32)
-
                 for snap_i, (snap_t, h_s, hu_s, hv_s) in enumerate(snapshot_timesteps):
                     row = sample_line_aggregate_ts_row(
                         sm, h_s, hu_s, hv_s, cell_bed, h_min, gravity_g, snap_t,
@@ -556,7 +598,6 @@ def execute_run(
                         flow_ts[snap_i] = float(row.get("flow_cms", 0.0))
                         wet_ts[snap_i] = float(row.get("wet_frac", 0.0))
                         froude_ts[snap_i] = float(row.get("fr", 0.0))
-
                     m = sample_line_metrics(
                         h_s, hu_s, hv_s, cell_bed,
                         node_coords, cell_nodes,
@@ -579,40 +620,64 @@ def execute_run(
                         flow_prof[snap_i, :max_s] = q[:max_s]
                         fr_prof[snap_i, :max_s] = f[:max_s]
                         wet_prof[snap_i, :max_s] = wt[:max_s]
+                precomputed_line_results[line_id] = {
+                    "line_name": line_name,
+                    "t_s": list(ts_times),
+                    "ts_depth_m": list(depth_ts),
+                    "ts_velocity_ms": list(vel_ts),
+                    "ts_wse_m": list(wse_ts),
+                    "ts_bed_m": list(bed_ts),
+                    "ts_flow_cms": list(flow_ts),
+                    "ts_wet_frac": list(wet_ts),
+                    "ts_fr": list(froude_ts),
+                    "station_m": station_arr,
+                    "prof_depth_m": [np.ascontiguousarray(depth_prof[i, :]) for i in range(n_snaps)],
+                    "prof_velocity_ms": [np.ascontiguousarray(vel_prof[i, :]) for i in range(n_snaps)],
+                    "prof_wse_m": [np.ascontiguousarray(wse_prof[i, :]) for i in range(n_snaps)],
+                    "prof_bed_m": [np.ascontiguousarray(bed_prof[i, :]) for i in range(n_snaps)],
+                    "prof_flow_qn": [np.ascontiguousarray(flow_prof[i, :]) for i in range(n_snaps)],
+                    "prof_fr": [np.ascontiguousarray(fr_prof[i, :]) for i in range(n_snaps)],
+                    "prof_wet": [np.ascontiguousarray(wet_prof[i, :]) for i in range(n_snaps)],
+                }
 
-                try:
-                    from swe2d.services.gpkg_persistence_service import (
-                        persist_baked_line_profile,
-                        persist_baked_line_ts,
-                    )
-                    persist_baked_line_ts(
-                        results_gpkg, run_id, line_id, line_name,
-                        ts_times, depth_ts, vel_ts, wse_ts, bed_ts,
-                        flow_ts, wet_ts, froude_ts,
-                        log_fn=lambda m: logger.info("[LINE] %s", m),
-                    )
-                    persist_baked_line_profile(
-                        results_gpkg, run_id, line_id, line_name,
-                        station_arr, ts_times,
-                        depth_prof, vel_prof, wse_prof, bed_prof,
-                        flow_prof, fr_prof, wet_prof,
-                        log_fn=lambda m: logger.info("[LINE] %s", m),
-                    )
-                except Exception as exc:
-                    logger.warning("Failed to persist line results: %s", exc)
-
-        if coupling_snapshots:
-            for (component, object_id, metric), d in coupling_snapshots.items():
-                if d["times"]:
-                    persist_baked_coupling(
-                        results_gpkg, run_id,
-                        component, object_id,
-                        str(object_id),  # object_name
-                        metric,
-                        np.array(d["times"], dtype=np.float64),
-                        np.array(d["values"], dtype=np.float64),
-                        log_fn=lambda m: logger.info("[COUPLING] %s", m),
-                    )
+        length_unit = mesh_data.get("length_unit", "m")
+        length_scale_si = _si_m_per_model_from_wkt(mesh_data.get("crs_wkt", ""))
+        fv = _HeadlessFinalizationView(results_gpkg, mesh_name, mesh_data, length_unit, length_scale_si)
+        finalizer = SWE2DRunFinalizer(fv)
+        finalizer.finalize_and_persist(
+            h=h, hu=hu, hv=hv,
+            final_sim_time_s=float(diags[-1].get("t", 0.0)) if diags else 0.0,
+            n_area=ncells,
+            area_model=getattr(backend, "_cell_area", np.ones(ncells, dtype=np.float64)),
+            storage_start_model=0.0,
+            source_budget_model={"rain": 0.0, "cell": 0.0, "coupling": 0.0},
+            source_step_rows_model=[],
+            run_duration_s=t,
+            boundary_flux_budget_model={},
+            boundary_flux_step_rows_model=[],
+            run_id=run_id,
+            output_interval_s=float(rp.get("output_interval_s", t)),
+            line_output_interval_s=float(rp.get("line_output_interval_s", t)),
+            run_perf_start=0.0,
+            run_wallclock_start="",
+            run_log_start_idx=0,
+            thiessen_forcing=None,
+            rain_stats_acc={"samples": 0, "rain_mm": 0.0, "excess_mm": 0.0},
+            save_line_results=bool(sample_map_list),
+            save_coupling_results=bool(coupling_snapshots),
+            save_mesh_results=True,
+            save_run_log=False,
+            h_min=h_min,
+            mesh_name=mesh_name,
+            max_tracking=max_results,
+            coupling_controller=coupling_controller,
+            sample_map=None,
+            cell_solver_z=cell_bed,
+            sample_line_metrics_callback=None,
+            snapshot_timesteps=snapshot_timesteps,
+            coupling_snapshots=coupling_snapshots,
+            precomputed_line_results=precomputed_line_results if precomputed_line_results else None,
+        )
 
     backend.destroy()
     return out

@@ -1007,6 +1007,68 @@ class SWE2DCouplingController:
         self._native_cuda_mod_cache = mod
         return mod
 
+    def readback_coupling_state(self) -> Dict[str, np.ndarray]:
+        """Read current drainage + structure state from GPU to host.
+
+        Performs a small D2H readback of per-node depths, per-link flows,
+        and per-structure flows.  Intended to be called at output intervals
+        (NOT per-timestep) to accumulate a coupling time history on host.
+
+        Returns a dict with keys:
+            node_depth  — (N_nodes,) float64 or empty
+            link_flow   — (N_links,) float64 or empty
+            struct_flow — (N_struct,) float64 or empty
+        """
+        out: Dict[str, np.ndarray] = {
+            "node_depth": np.empty(0, dtype=np.float64),
+            "link_flow": np.empty(0, dtype=np.float64),
+            "struct_flow": np.empty(0, dtype=np.float64),
+        }
+        native_mod = self._native_cuda_module()
+        if native_mod is None:
+            return out
+
+        if self.drainage is not None and self._drainage_soa is not None:
+            dsoa = self._drainage_soa
+            nn = int(len(dsoa.node_invert_elev))
+            if nn > 0 and hasattr(native_mod, "swe2d_pipe1d_readback_node_state"):
+                dev_ptr = 0
+                if hasattr(native_mod, "swe2d_get_coupling_dev_ptr"):
+                    dev_ptr = int(native_mod.swe2d_get_coupling_dev_ptr())
+                try:
+                    state = native_mod.swe2d_pipe1d_readback_node_state(
+                        dev_ptr, nn, int(self.n_cells))
+                    if state and "node_depth" in state:
+                        out["node_depth"] = np.asarray(state["node_depth"], dtype=np.float64)
+                    if state and "cell_flow" in state:
+                        cell_q = np.asarray(state["cell_flow"], dtype=np.float64)
+                        nl = int(len(dsoa.link_from))
+                        if nl > 0 and cell_q.size >= self.n_cells:
+                            link_q = np.zeros(nl, dtype=np.float64)
+                            for i in range(nl):
+                                f = int(dsoa.link_from[i])
+                                t = int(dsoa.link_to[i])
+                                if 0 <= f < self.n_cells and 0 <= t < self.n_cells:
+                                    link_q[i] = abs(cell_q[f])
+                            out["link_flow"] = link_q
+                except Exception as exc:
+                    self._log(f"[COUPLING] readback failed: {exc}")
+
+        if self._n_non_bridge_structures > 0 and hasattr(native_mod, "swe2d_gpu_readback_structure_flows"):
+            try:
+                nb_n = int(self._n_non_bridge_structures)
+                flows = np.asarray(
+                    native_mod.swe2d_gpu_readback_structure_flows(nb_n),
+                    dtype=np.float64,
+                )
+                if flows.size > 0:
+                    self._last_structure_flows = flows.copy()
+                    out["struct_flow"] = flows
+            except Exception:
+                pass
+
+        return out
+
     def _ensure_native_culvert_solver_mode(self, native_mod) -> None:
         """Upload culvert lookup tables and set the GPU culvert solver mode."""
         if self._culvert_solver_mode_applied and self._culvert_solver_mode_applied == self.culvert_solver_mode:

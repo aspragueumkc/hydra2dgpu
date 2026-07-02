@@ -168,63 +168,62 @@ def boundary_edge_owner_cells(
 
 
 def _sample_coupling_object_metrics(cc, t_s: float, _h_s) -> list:
-    """Return per-element coupling rows from the coupling controller."""
+    """Return per-element coupling rows from the coupling controller.
+
+    Uses ``cc.readback_coupling_state()`` for drainage node depths, link flows,
+    and structure flows — a small D2H readback at output intervals (not per-step).
+    """
     rows = []
     if cc is None:
         return rows
-    # Drainage nodes
-    if hasattr(cc, "_gpu_node_depth") and cc._gpu_node_depth is not None:
-        cfg = getattr(getattr(cc, "drainage", None), "cfg", None)
-        if cfg is not None:
-            for i, node in enumerate(getattr(cfg, "nodes", [])):
-                if i < len(cc._gpu_node_depth):
-                    depth = float(cc._gpu_node_depth[i])
-                    rows.append({
-                        "t_s": t_s,
-                        "component": "drainage_node",
-                        "metric": "depth",
-                        "object_id": str(getattr(node, "node_id", str(i))),
-                        "object_name": str(getattr(node, "node_id", str(i))),
-                        "value": depth,
-                    })
-                    invert = float(getattr(node, "invert_elev", 0.0))
-                    rows.append({
-                        "t_s": t_s,
-                        "component": "drainage_node",
-                        "metric": "invert",
-                        "object_id": str(getattr(node, "node_id", str(i))),
-                        "object_name": str(getattr(node, "node_id", str(i))),
-                        "value": invert,
-                    })
-    # Drainage links
-    if hasattr(cc, "_gpu_link_flow") and cc._gpu_link_flow is not None:
-        cfg = getattr(getattr(cc, "drainage", None), "cfg", None)
-        if cfg is not None:
-            for i, link in enumerate(getattr(cfg, "links", [])):
-                if i < len(cc._gpu_link_flow):
-                    flow = float(cc._gpu_link_flow[i])
-                    from_id = getattr(link, "from_node_id", "")
-                    to_id = getattr(link, "to_node_id", "")
-                    rows.append({
-                        "t_s": t_s,
-                        "component": "drainage_link",
-                        "metric": "flow",
-                        "object_id": str(getattr(link, "link_id", str(i))),
-                        "object_name": f"{from_id} -> {to_id}",
-                        "value": flow,
-                    })
-                    link_len = float(getattr(link, "length", 0.0))
-                    rows.append({
-                        "t_s": t_s,
-                        "component": "drainage_link",
-                        "metric": "length",
-                        "object_id": str(getattr(link, "link_id", str(i))),
-                        "object_name": f"{from_id} -> {to_id}",
-                        "value": link_len,
-                    })
+    state = cc.readback_coupling_state()
+    cfg = getattr(getattr(cc, "drainage", None), "cfg", None)
+    if cfg is not None:
+        for i, node in enumerate(getattr(cfg, "nodes", [])):
+            if i < len(state["node_depth"]):
+                depth = float(state["node_depth"][i])
+                rows.append({
+                    "t_s": t_s,
+                    "component": "drainage_node",
+                    "metric": "depth",
+                    "object_id": str(getattr(node, "node_id", str(i))),
+                    "object_name": str(getattr(node, "node_id", str(i))),
+                    "value": depth,
+                })
+                invert = float(getattr(node, "invert_elev", 0.0))
+                rows.append({
+                    "t_s": t_s,
+                    "component": "drainage_node",
+                    "metric": "invert",
+                    "object_id": str(getattr(node, "node_id", str(i))),
+                    "object_name": str(getattr(node, "node_id", str(i))),
+                    "value": invert,
+                })
+        for i, link in enumerate(getattr(cfg, "links", [])):
+            if i < len(state["link_flow"]):
+                flow = float(state["link_flow"][i])
+                from_id = getattr(link, "from_node_id", "")
+                to_id = getattr(link, "to_node_id", "")
+                rows.append({
+                    "t_s": t_s,
+                    "component": "drainage_link",
+                    "metric": "flow",
+                    "object_id": str(getattr(link, "link_id", str(i))),
+                    "object_name": f"{from_id} -> {to_id}",
+                    "value": flow,
+                })
+                link_len = float(getattr(link, "length", 0.0))
+                rows.append({
+                    "t_s": t_s,
+                    "component": "drainage_link",
+                    "metric": "length",
+                    "object_id": str(getattr(link, "link_id", str(i))),
+                    "object_name": f"{from_id} -> {to_id}",
+                    "value": link_len,
+                })
     # Structures (with culvert-specific diagnostics)
     if hasattr(cc, "_structures_cfg") and cc._structures_cfg:
-        nb_flows = getattr(cc, "_last_structure_flows", None)
+        nb_flows = state["struct_flow"] if state["struct_flow"].size > 0 else getattr(cc, "_last_structure_flows", None)
         from swe2d.extensions.extension_models import StructureType as _StructType
 
         # Culvert diagnostics: read from GPU kernel buffer.

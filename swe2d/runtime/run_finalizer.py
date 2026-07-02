@@ -128,6 +128,9 @@ class SWE2DRunFinalizer:
         sample_map: Any = None,
         cell_solver_z: Any = None,
         sample_line_metrics_callback: Any = None,
+        snapshot_timesteps: Any = None,
+        coupling_snapshots: Any = None,
+        precomputed_line_results: Any = None,
     ) -> None:
         """Compute mass-balance summary, persist results to GeoPackage, and refresh UI."""
         h_end_model = np.asarray(h, dtype=np.float64).ravel()
@@ -169,7 +172,10 @@ class SWE2DRunFinalizer:
                 )
 
         _results_data = self._view.results_data()
-        snapshot_timesteps = list(_results_data.get_live_snapshot_timesteps()) if _results_data else []
+        if snapshot_timesteps is not None:
+            snapshot_timesteps = list(snapshot_timesteps)
+        else:
+            snapshot_timesteps = list(_results_data.get_live_snapshot_timesteps()) if _results_data else []
         terminal_t_s = max(0.0, float(final_sim_time_s))
         if not snapshot_timesteps:
             terminal_snapshot = (
@@ -224,53 +230,76 @@ class SWE2DRunFinalizer:
 
             _t0 = time.perf_counter()
             try:
-                if save_line_results and snapshot_timesteps and sample_line_metrics_callback is not None:
+                if save_line_results and snapshot_timesteps and (sample_line_metrics_callback is not None or precomputed_line_results is not None):
                     from collections import defaultdict
                     ts_by_line: Dict[int, Dict[str, list]] = defaultdict(lambda: defaultdict(list))
                     prof_by_line: Dict[int, Dict[str, list]] = defaultdict(lambda: defaultdict(list))
-                    for snap_t, h_snap, hu_snap, hv_snap in snapshot_timesteps:
-                        h_arr = np.asarray(h_snap, dtype=np.float64)
-                        hu_arr = np.asarray(hu_snap, dtype=np.float64)
-                        hv_arr = np.asarray(hv_snap, dtype=np.float64)
-                        cell_bed = np.asarray(cell_solver_z, dtype=np.float64) if cell_solver_z is not None else np.zeros_like(h_arr)
-                        ts_rows, prof_rows = sample_line_metrics_callback(
-                            sample_map, snap_t, h_arr, hu_arr, hv_arr, cell_bed,
-                        )
-                        for row in ts_rows:
-                            lid = int(row.get("line_id", -1))
-                            if lid < 0:
-                                continue
-                            ld = ts_by_line[lid]
-                            if "line_name" not in ld:
-                                ld["line_name"] = str(row.get("line_name", f"line_{lid}"))
-                            ld.setdefault("t_s", []).append(float(snap_t))
-                            for k in ("depth_m", "velocity_ms", "wse_m", "bed_m", "flow_cms", "wet_frac", "fr"):
-                                ld.setdefault(k, []).append(float(row.get(k, 0.0)))
-                        for row in prof_rows:
-                            lid = int(row.get("line_id", -1))
-                            if lid < 0:
-                                continue
-                            pd = prof_by_line[lid]
-                            if "line_name" not in pd:
-                                pd["line_name"] = str(row.get("line_name", f"line_{lid}"))
-                                pd["station_m"] = np.asarray(row["station_m"], dtype=np.float64)
-                            for k in ("depth_m", "velocity_ms", "wse_m", "bed_m", "flow_qn", "fr"):
-                                v = row.get(k)
-                                pd.setdefault(k, []).append(np.asarray(v, dtype=np.float64) if v is not None else np.array([]))
-                            pd.setdefault("wet", []).append(np.asarray(row.get("wet", []), dtype=np.int32))
+                    if precomputed_line_results is not None:
+                        for lid, ld in precomputed_line_results.items():
+                            if "t_s" in ld:
+                                ts_by_line[lid]["line_name"] = ld.get("line_name", f"line_{lid}")
+                                ts_by_line[lid]["t_s"] = list(ld["t_s"])
+                                for k, pk in (("depth_m", "ts_depth_m"), ("velocity_ms", "ts_velocity_ms"),
+                                              ("wse_m", "ts_wse_m"), ("bed_m", "ts_bed_m"),
+                                              ("flow_cms", "ts_flow_cms"), ("wet_frac", "ts_wet_frac"),
+                                              ("fr", "ts_fr")):
+                                    if pk in ld:
+                                        ts_by_line[lid][k] = list(ld[pk])
+                            if "station_m" in ld:
+                                pd = prof_by_line[lid]
+                                pd["line_name"] = ld.get("line_name", f"line_{lid}")
+                                pd["station_m"] = np.asarray(ld["station_m"], dtype=np.float64)
+                                for k, pk in (("depth_m", "prof_depth_m"), ("velocity_ms", "prof_velocity_ms"),
+                                              ("wse_m", "prof_wse_m"), ("bed_m", "prof_bed_m"),
+                                              ("flow_qn", "prof_flow_qn"), ("fr", "prof_fr"),
+                                              ("wet", "prof_wet")):
+                                    if pk in ld:
+                                        v = ld[pk]
+                                        pd[k] = list(v) if isinstance(v, list) else list(v)
+                    else:
+                        for snap_t, h_snap, hu_snap, hv_snap in snapshot_timesteps:
+                            h_arr = np.asarray(h_snap, dtype=np.float64)
+                            hu_arr = np.asarray(hu_snap, dtype=np.float64)
+                            hv_arr = np.asarray(hv_snap, dtype=np.float64)
+                            cell_bed = np.asarray(cell_solver_z, dtype=np.float64) if cell_solver_z is not None else np.zeros_like(h_arr)
+                            ts_rows, prof_rows = sample_line_metrics_callback(
+                                sample_map, snap_t, h_arr, hu_arr, hv_arr, cell_bed,
+                            )
+                            for row in ts_rows:
+                                lid = int(row.get("line_id", -1))
+                                if lid < 0:
+                                    continue
+                                ld = ts_by_line[lid]
+                                if "line_name" not in ld:
+                                    ld["line_name"] = str(row.get("line_name", f"line_{lid}"))
+                                ld.setdefault("t_s", []).append(float(snap_t))
+                                for k in ("depth_m", "velocity_ms", "wse_m", "bed_m", "flow_cms", "wet_frac", "fr"):
+                                    ld.setdefault(k, []).append(float(row.get(k, 0.0)))
+                            for row in prof_rows:
+                                lid = int(row.get("line_id", -1))
+                                if lid < 0:
+                                    continue
+                                pd = prof_by_line[lid]
+                                if "line_name" not in pd:
+                                    pd["line_name"] = str(row.get("line_name", f"line_{lid}"))
+                                    pd["station_m"] = np.asarray(row["station_m"], dtype=np.float64)
+                                for k in ("depth_m", "velocity_ms", "wse_m", "bed_m", "flow_qn", "fr"):
+                                    v = row.get(k)
+                                    pd.setdefault(k, []).append(np.asarray(v, dtype=np.float64) if v is not None else np.array([]))
+                                pd.setdefault("wet", []).append(np.asarray(row.get("wet", []), dtype=np.int32))
                     for lid, ld in ts_by_line.items():
-                        times_arr = np.array(ld["t_s"], dtype=np.float64)
+                        times_arr = np.array(ld.get("t_s", []), dtype=np.float64)
                         if times_arr.size == 0:
                             continue
                         persist_baked_line_ts(
-                            gpkg_results_path, run_id, lid, ld["line_name"], times_arr,
-                            np.array(ld["depth_m"], dtype=np.float64),
-                            np.array(ld["velocity_ms"], dtype=np.float64),
-                            np.array(ld["wse_m"], dtype=np.float64),
-                            np.array(ld["bed_m"], dtype=np.float64),
-                            np.array(ld["flow_cms"], dtype=np.float64),
-                            np.array(ld["wet_frac"], dtype=np.float64),
-                            np.array(ld["fr"], dtype=np.float64),
+                            gpkg_results_path, run_id, lid, ld.get("line_name", f"line_{lid}"), times_arr,
+                            np.array(ld.get("depth_m", []), dtype=np.float64),
+                            np.array(ld.get("velocity_ms", []), dtype=np.float64),
+                            np.array(ld.get("wse_m", []), dtype=np.float64),
+                            np.array(ld.get("bed_m", []), dtype=np.float64),
+                            np.array(ld.get("flow_cms", []), dtype=np.float64),
+                            np.array(ld.get("wet_frac", []), dtype=np.float64),
+                            np.array(ld.get("fr", []), dtype=np.float64),
                             log_fn=self._view.log_message,
                         )
                     for lid, pd in prof_by_line.items():
@@ -291,7 +320,7 @@ class SWE2DRunFinalizer:
                         wet_flat = np.array(pd["wet"], dtype=np.int32)
                         times_arr = np.array([float(s[0]) for s in snapshot_timesteps], dtype=np.float64)[:n_ts]
                         persist_baked_line_profile(
-                            gpkg_results_path, run_id, lid, pd["line_name"],
+                            gpkg_results_path, run_id, lid, pd.get("line_name", f"line_{lid}"),
                             station_arr,
                             times_arr,
                             depth_flat.reshape(n_ts, n_sta),
@@ -311,11 +340,12 @@ class SWE2DRunFinalizer:
                 self._view.log_message(f"Baked line persistence warning: {exc}")
 
             _t0 = time.perf_counter()
+            _coupling_data = coupling_snapshots if coupling_snapshots is not None else {}
             try:
-                if save_coupling_results and _results_data is not None:
-                    for key, cd in _results_data._live_coupling.items():
+                if save_coupling_results and _coupling_data:
+                    for key, cd in _coupling_data.items():
                         component, object_id, metric = key
-                        times_arr = np.array(cd.get("t_s", []), dtype=np.float64)
+                        times_arr = np.array(cd.get("times", []), dtype=np.float64)
                         if times_arr.size == 0:
                             continue
                         persist_baked_coupling(
