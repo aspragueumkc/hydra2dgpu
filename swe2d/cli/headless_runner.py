@@ -165,17 +165,42 @@ def execute_run(
     rp = p.get("params", {})
     thiessen_kwargs = {"thiessen_forcing": thiessen_forcing} if thiessen_forcing else {}
 
-    # Initialize solver
+    # Initialize solver — read ALL params the UI provides, not just a subset
     from swe2d.runtime.backend import BCType
 
     h0 = np.zeros(ncells, dtype=np.float64)
     backend.initialize(
         h0=h0,
+        gravity=float(rp.get("gravity", 9.81)),
+        k_mann=float(rp.get("k_mann", 1.0)),
         n_mann=float(rp.get("n_mann", 0.035)),
         h_min=float(rp.get("h_min", 1e-4)),
         cfl=float(rp.get("cfl", 0.45)),
         dt_max=float(rp.get("dt_max", 0.2)),
+        dt_initial=float(rp.get("initial_dt", 0.05)),
+        max_inv_area=float(rp.get("max_inv_area", 1e6)),
+        cfl_lambda_cap=float(rp.get("cfl_lambda_cap", 1e6)),
+        momentum_cap_min_speed=float(rp.get("momentum_cap_min_speed", 50.0)),
+        momentum_cap_celerity_mult=float(rp.get("momentum_cap_celerity_mult", 20.0)),
+        depth_cap=float(rp.get("depth_cap", 1e6)),
+        max_rel_depth_increase=float(rp.get("max_rel_depth_increase", 2.0)),
+        shallow_damping_depth=float(rp.get("shallow_damping_depth", 1e-4)),
+        extreme_rain_mode=bool(rp.get("extreme_rain_mode", False)),
+        source_cfl_beta=float(rp.get("source_cfl_beta", 0.25)),
+        source_max_substeps=int(rp.get("source_max_substeps", 16)),
+        source_rate_cap=float(rp.get("source_rate_cap", 0.0)),
+        source_depth_step_cap=float(rp.get("source_depth_step_cap", 0.0)),
+        source_true_subcycling=bool(rp.get("source_true_subcycling", False)),
+        source_imex_split=bool(rp.get("source_imex_split", False)),
         gpu_diag_sync_interval_steps=int(rp.get("gpu_diag_sync_interval_steps", 100)),
+        tiny_mode=int(rp.get("tiny_mode", 0)),
+        tiny_wet_cell_threshold=int(rp.get("tiny_wet_cell_threshold", 2000)),
+        front_flux_damping=float(rp.get("front_flux_damping", 0.5)),
+        active_set_hysteresis=bool(rp.get("active_set_hysteresis", True)),
+        degen_mode=int(rp.get("degen_mode", 0)),
+        spatial_discretization=int(rp.get("spatial_scheme", 0)),
+        temporal_scheme=int(rp.get("temporal_scheme", 2)),
+        enable_shallow_front_recon_fallback=bool(rp.get("enable_shallow_front_recon_fallback", False)),
     )
 
     # Configure boundary conditions if BC arrays were found
