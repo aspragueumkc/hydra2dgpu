@@ -13,6 +13,9 @@
 #include "swe2d_units.cuh"
 
 #include <cuda_runtime.h>
+
+// Uncomment to enable device-side culvert debug printf (SLOW — for dev only)
+// #define CULVERT_DIAG 1
 #include <device_launch_parameters.h>
 #include <cooperative_groups.h>
 
@@ -3653,7 +3656,7 @@ __device__ __forceinline__ void swe2d_direct_step_culvert_upstream_energy_cuda(
     if (y_ds >= y_full - eps) {
         const double sf_full = swe2d_culvert_friction_slope_cuda(xsect, q_cfs, n_value, y_full - eps);
         const double e_full = swe2d_culvert_specific_energy_ft_cuda(xsect, q_cfs, y_full - eps);
-        *e_upstream_ft = e_full + fmax(0.0, sf_full - slope) * length_ft;
+        *e_upstream_ft = e_full + (slope - sf_full) * length_ft;
         *y_upstream_ft = y_full - eps;
         return;
     }
@@ -3665,8 +3668,9 @@ __device__ __forceinline__ void swe2d_direct_step_culvert_upstream_energy_cuda(
     while (distance < length_ft - 1.0e-8) {
         if (y_cur >= y_full - eps) {
             const double sf_full = swe2d_culvert_friction_slope_cuda(xsect, q_cfs, n_value, y_full - eps);
+            const double e_full = swe2d_culvert_specific_energy_ft_cuda(xsect, q_cfs, y_full - eps);
             const double rem = length_ft - distance;
-            *e_upstream_ft = e_cur + fmax(0.0, sf_full - slope) * rem;
+            *e_upstream_ft = e_full + (slope - sf_full) * rem;
             *y_upstream_ft = y_full;
             return;
         }
@@ -3696,9 +3700,19 @@ __device__ __forceinline__ void swe2d_direct_step_culvert_upstream_energy_cuda(
         }
 
         if (!have_step) {
-            const double y_super = swe2d_culvert_supercritical_depth_for_energy_cuda(xsect, q_cfs, e_cur);
-            *e_upstream_ft = swe2d_culvert_specific_energy_ft_cuda(xsect, q_cfs, y_super);
-            *y_upstream_ft = y_super;
+            // Forward stepping from the downstream boundary failed because Sf > S0
+            // (adverse energy gradient: energy decreases downstream, not increases).
+            // For backwater conditions, the upstream energy = E_at_dn +
+            // entrance/exit losses + friction loss over the full pipe length.
+            // This is the same energy the outlet control formula computes.
+            const double sf_cur = swe2d_culvert_friction_slope_cuda(xsect, q_cfs, n_value, y_cur);
+            const double dE_friction = fmax(0.0, slope - sf_cur) * length_ft;
+            const double area_dn = swe2d_culvert_area_ft2_cuda(xsect, y_cur);
+            const double vel_dn = (area_dn > 0.0) ? (q_cfs / area_dn) : 0.0;
+            // Entrance + exit losses use outlet-section velocity head (HDS-5 convention).
+            const double hv_dn = vel_dn * vel_dn / (2.0 * USC_GRAVITY);
+            *e_upstream_ft = e_cur + dE_friction + hv_dn;
+            *y_upstream_ft = y_cur;
             return;
         }
 
@@ -3826,30 +3840,19 @@ __device__ __forceinline__ double swe2d_culvert_outlet_control_flow_cms_cuda(
         return q_hi;
     }
 
-    // Illinois: track which side last moved so we halve the stalling f-value.
-    int side = 0;  // 0 = lo was updated last, 1 = hi was updated last
-    for (int iter = 0; iter < 12; ++iter) {
-        const double denom = f_hi - f_lo;
-        if (fabs(denom) < 1.0e-30) break;
-        double q_mid = (q_lo * f_hi - q_hi * f_lo) / denom;  // secant step
-        // Fall back to bisection if secant steps outside bracket
-        if (q_mid <= q_lo || q_mid >= q_hi) {
-            q_mid = 0.5 * (q_lo + q_hi);
-        }
+    // Bisection (proven for monotonic F; Illinois damping was destabilizing
+    // for functions with a flat spot near zero).
+    for (int iter = 0; iter < 80; ++iter) {
+        if (fabs(q_hi - q_lo) < 1.0e-6) break;
+        const double q_mid = 0.5 * (q_lo + q_hi);
         const double f_mid = required_head_ft(q_mid) - available_head_up;
         if (fabs(f_mid) < 1.0e-8 * available_head_up) {
             return fmax(0.0, q_mid);
         }
-        if (f_lo * f_mid < 0.0) {
-            // Root is between lo and mid
+        if (f_lo * f_mid <= 0.0) {
             q_hi = q_mid; f_hi = f_mid;
-            if (side == 1) f_lo *= 0.5;  // lo was stalling, halve it
-            side = 1;
         } else {
-            // Root is between mid and hi
             q_lo = q_mid; f_lo = f_mid;
-            if (side == 0) f_hi *= 0.5;  // hi was stalling, halve it
-            side = 0;
         }
     }
     return fmax(0.0, 0.5 * (q_lo + q_hi));
@@ -3966,7 +3969,7 @@ __global__ __launch_bounds__(256, 4) void swe2d_compute_structure_flows_kernel(
     const double wu = cell_wse[iu];
     const double wd = cell_wse[id];
     const double crest = crest_elev[i];
-    const double qmax = (isfinite(max_flow[i]) ? fmax(0.0, max_flow[i]) : -1.0);
+    const double qmax = (max_flow[i] >= 0.0 && isfinite(max_flow[i])) ? max_flow[i] : -1.0;
 
     if (structure_type[i] == 1) {
         double q = bw2d_weir_q(wu, wd, crest, width[i], coeff[i]);
