@@ -683,6 +683,13 @@ class SWE2DResultsData:
             return (best[1], best[2], best[3])
         return None
 
+    def first_enabled_record(self) -> Optional["RunRecord"]:
+        """Return the first enabled RunRecord, or None."""
+        for rec in self._run_records:
+            if rec.enabled:
+                return rec
+        return None
+
     def enabled_overlay_targets(self) -> List[Tuple[str, str]]:
         """Return enabled overlay targets."""
         out: List[Tuple[str, str]] = []

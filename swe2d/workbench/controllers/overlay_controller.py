@@ -103,21 +103,22 @@ class OverlayController:
             _data = getattr(view, "_results_data", None)
             if hasattr(self._data, 'overlay_cell_x') and (self._data.overlay_cell_x is None or self._data.overlay_cell_x.size <= 0):
                 try:
-                    import sqlite3
-                    targets = self._data.enabled_overlay_targets()
-                    target_gpkg = targets[0][0] if targets else ""
-                    target_run = targets[0][1] if targets else ""
-                    if not (target_gpkg and target_run and os.path.isfile(target_gpkg)):
-                        raise ValueError(f"No valid GPKG for overlay: gpkg={target_gpkg!r} run={target_run!r}")
-                    with sqlite3.connect(target_gpkg) as conn:
+                    rec = self._data.first_enabled_record()
+                    if not rec:
+                        raise ValueError("No enabled run records")
+                    gpkg = rec.gpkg_path
+                    run_id = rec.run_id
+                    if not (gpkg and run_id and os.path.isfile(gpkg)):
+                        raise ValueError(f"No valid GPKG for overlay: gpkg={gpkg!r} run={run_id!r}")
+                    with sqlite3.connect(gpkg) as conn:
                         row = conn.execute(
                             "SELECT mesh_name, baked_blob FROM swe2d_baked_mesh "
                             "WHERE mesh_name = (SELECT mesh_name FROM swe2d_baked_results "
                             "                   WHERE run_id = ? LIMIT 1)",
-                            (target_run,),
+                            (run_id,),
                         ).fetchone()
                     if not row:
-                        raise ValueError(f"No baked mesh for run_id={target_run!r} in {target_gpkg}")
+                        raise ValueError(f"No baked mesh for run_id={run_id!r} in {gpkg}")
                     from hydra_swe2d import swe2d_deserialize_mesh
                     pm = swe2d_deserialize_mesh(row[1])
                     self._data.overlay_cell_x = np.asarray(pm.cell_cx, dtype=np.float64)
