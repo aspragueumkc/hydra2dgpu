@@ -107,19 +107,21 @@ def query_bc_arrays(
     if node_x is None or node_y is None:
         return {}
 
-    has_geom = any(cl in ("geom", "wkb_geometry", "geometry", "shape") for cl in col_names_lower)
+    has_geom = any(c in ("geom", "wkb_geometry", "geometry", "shape") for c in col_names_lower)
     if not has_geom:
         return {}
-    geom_col = next(c for c, cl in col_info if cl in ("geom", "wkb_geometry", "geometry", "shape"))
+
+    # Find geometry column - check column NAME (first element), not TYPE (second element)
+    geom_col = next(c for c, _ in col_info if c.lower() in ("geom", "wkb_geometry", "geometry", "shape"))
 
     # Build kd-tree for nearest-node lookups
     from scipy.spatial import KDTree
     tree = KDTree(np.column_stack([np.asarray(node_x, dtype=np.float64),
                                     np.asarray(node_y, dtype=np.float64)]))
 
-    # Find bc_type / bc_val columns
-    bc_col = next((c for c, cl in col_info if cl in ("bc_type", "bc", "bctype", "boundary_type")), "")
-    val_col = next((c for c, cl in col_info if cl in ("bc_val", "bcvalue", "bc_value", "value", "val")), "")
+    # Find bc_type / bc_val columns - check column NAME (first element), not type (second)
+    bc_col = next(c for c, _ in col_info if c.lower() in ("bc_type", "bc", "bctype", "boundary_type"))
+    val_col = next(c for c, _ in col_info if c.lower() in ("bc_val", "bcvalue", "bc_value", "value", "val"))
 
     q_cols = f"\"{geom_col}\""
     if bc_col:
