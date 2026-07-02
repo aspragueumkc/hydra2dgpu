@@ -82,7 +82,7 @@
 - Added HEC-22 boundary losses to `accumulate_node_flux_kernel` (affects node depth)
 - But test reads `cell_Q` directly, so step kernel must also have `cell_k_loss`
 - Restored `cell_k_loss` to both step kernels (diffusion_wave and fully_dynamic)
-- Also added `cell_link_k`, `cell_link_area`, `gravity` params to `accumulate_node_flux_kernel`
+- Also added `cell_link_k`, `gravity` params to `accumulate_node_flux_kernel` (uses `cell_A` for actual flow area)
 
 ## Remaining Failures (pre-existing)
 1. `test_face_flux_preloaded_with_drainage`: fake `_FakeNative` module missing `swe2d_gpu_compute_coupling_full_on_device`, so `_culvert_face_flux_preloaded` is never set. Was returning True but not actually preloading face-flux params.
@@ -111,8 +111,8 @@
 
 ## Relevant Files Changed (HEC-22 Boundary Losses)
 - `cpp/src/swe2d_gpu.cu`:
-  - Added `cell_link_k`, `cell_link_area`, `gravity` params to `swe2d_pipe1d_accumulate_node_flux_kernel`
-  - Added HEC-22 loss correction: `Q_eff = Q - k * |Q| * Q / (2 * g * A²)` at boundary cells
+  - Added `cell_link_k`, `gravity` params to `swe2d_pipe1d_accumulate_node_flux_kernel` (uses `cell_A` for actual flow area)
+  - Added HEC-22 loss correction: `Q_eff = Q - k * |Q| * Q / (2 * g * A_actual²)` at boundary cells
   - Updated `swe2d_pipe1d_node_mass_balance_host` to pass new params
   - Restored `cell_k_loss` to both step kernels (diffusion_wave and fully_dynamic)
   - Updated all kernel host wrappers and call sites
