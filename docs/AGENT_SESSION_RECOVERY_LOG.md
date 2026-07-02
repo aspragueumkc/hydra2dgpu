@@ -109,6 +109,14 @@
 - `cpp/src/swe2d_bindings.cpp`: Updated binding with new arg
 - `swe2d/runtime/backend.py`: Updated set_rain_cn_forcing_native
 
+## Fixed: Solver Mode Widget Mapping (Session 5)
+- UI combo passes `solver_mode` (int 0/1/2) but `PipeNetworkConfig` uses `pipe_solver_mode` (string)
+- `build_pipe_network_config` now converts: `pipe_solver_mode = "diffusion_wave" if solver_mode != 2 else "fully_dynamic"`
+
+## Added: Rain Interval UI Widget (Session 5)
+- `rain_update_interval_spin` added to model_tab_view.py (0-3600s, default 60s)
+- Wired through `run_controller.py` → `runtime_setup_configurator.configure_native_rain_cn_forcing` → `backend.set_rain_cn_forcing_native`
+
 ## Relevant Files Changed (HEC-22 Boundary Losses)
 - `cpp/src/swe2d_gpu.cu`:
   - Added `cell_link_k`, `gravity` params to `swe2d_pipe1d_accumulate_node_flux_kernel` (uses `cell_A` for actual flow area)
