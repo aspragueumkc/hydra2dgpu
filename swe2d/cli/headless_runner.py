@@ -171,7 +171,6 @@ def execute_run(
     h0 = np.zeros(ncells, dtype=np.float64)
     backend.initialize(
         h0=h0,
-        gravity=float(rp.get("gravity", 9.81)),
         k_mann=float(rp.get("k_mann", 1.0)),
         n_mann=float(rp.get("n_mann", 0.035)),
         h_min=float(rp.get("h_min", 1e-4)),
