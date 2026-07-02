@@ -121,6 +121,11 @@ class SWE2DResultsData:
 
 
     def clear_live_snapshots(self) -> None:
+        """Clear all in-memory snapshot data and reset to empty state.
+
+        Called at the start of a new run to prepare fresh storage.
+        Clears: mesh snapshots, line timeseries, line profiles, and coupling data.
+        """
         self._live_snapshot_timesteps = []
         self._live_times = np.empty(0, dtype=np.float64)
         self._live_h = np.empty((0, 0), dtype=np.float64)
@@ -160,6 +165,19 @@ class SWE2DResultsData:
             }
 
     def append_live_snapshot(self, t_s: float, h: np.ndarray, hu: np.ndarray, hv: np.ndarray) -> None:
+        """Append a single mesh snapshot to the live snapshot list.
+
+        Parameters
+        ----------
+        t_s : float
+            Simulation time in seconds.
+        h : ndarray
+            Water depth array.
+        hu : ndarray
+            x-momentum array.
+        hv : ndarray
+            y-momentum array.
+        """
         self._live_snapshot_timesteps.append((t_s, h, hu, hv))
         self._data_source = "live"
 
@@ -275,6 +293,7 @@ class SWE2DResultsData:
         self._coupling_snap_idx += 1
 
     def get_live_snapshot_timesteps(self) -> list:
+        """Return the list of live mesh snapshots as (t_s, h, hu, hv) tuples."""
         return self._live_snapshot_timesteps
 
     def get_live_line_snapshot_rows(self) -> list:
@@ -630,14 +649,17 @@ class SWE2DResultsData:
 
     @property
     def data_source(self) -> str:
+        """Return the current data source: 'live', 'gpkg', or 'none'."""
         if self._live_times.size > 0:
             return "live"
         return self._data_source
 
     def set_data_source(self, source: str) -> None:
+        """Set the current data source ('live', 'gpkg', or 'none')."""
         self._data_source = source
 
     def get_snapshot_at_time(self, t_sec: float) -> Optional[Tuple[np.ndarray, np.ndarray, np.ndarray]]:
+        """Load mesh snapshot (h, hu, hv) nearest to the given time."""
         # Try baked live arrays first
         if self._live_times.size > 0 and self._live_h.size > 0:
             i = int(np.argmin(np.abs(self._live_times - t_sec)))

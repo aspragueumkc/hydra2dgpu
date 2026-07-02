@@ -269,22 +269,27 @@ class PGTimeSeriesWidget(QtWidgets.QWidget):
 
     @property
     def mode(self) -> str:
+        """Return the plot mode (e.g., 'Time Series')."""
         return self._mode
 
     @property
     def canvas(self):
+        """Return the pyqtgraph PlotWidget canvas."""
         return self._plot_widget
 
     @property
     def fig(self):
+        """Return None (pyqtgraph uses its own figure internally)."""
         return None
 
     @property
     def selected_metric(self) -> str:
+        """Return the currently selected metric key (e.g., 'flow_cms', 'depth_m')."""
         return self._selected_metric
 
     @selected_metric.setter
     def selected_metric(self, metric: str) -> None:
+        """Set the selected metric and update the UI combo."""
         self._selected_metric = str(metric) if metric else "flow_cms"
         if self._metric_combo is not None:
             idx = self._metric_combo.findData(self._selected_metric)
@@ -293,10 +298,12 @@ class PGTimeSeriesWidget(QtWidgets.QWidget):
 
     @property
     def selected_element_id(self) -> str:
+        """Return the currently selected element ID (line ID, structure ID, etc.)."""
         return self._selected_element_id
 
     @selected_element_id.setter
     def selected_element_id(self, element_id: str) -> None:
+        """Set the selected element ID and update the UI combo."""
         self._selected_element_id = str(element_id) if element_id else ""
         if self._element_id_combo is not None and element_id:
             idx = self._element_id_combo.findData(self._selected_element_id)
@@ -618,24 +625,27 @@ class PGTimeSeriesWidget(QtWidgets.QWidget):
 
     @property
     def mode(self) -> str:
+        """Return the plot mode (e.g., 'Time Series')."""
         return self._mode
 
     @property
     def canvas(self):
-        """Compatibility — return the plot widget."""
+        """Return the pyqtgraph PlotWidget canvas."""
         return self._plot_widget
 
     @property
     def fig(self):
-        """Compatibility — return None (no matplotlib figure)."""
+        """Return None (pyqtgraph uses its own figure internally)."""
         return None
 
     @property
     def selected_metric(self) -> str:
+        """Return the currently selected metric key (e.g., 'flow_cms', 'depth_m')."""
         return self._selected_metric
 
     @selected_metric.setter
     def selected_metric(self, metric: str) -> None:
+        """Set the selected metric and update the UI combo."""
         self._selected_metric = str(metric) if metric else "flow_cms"
         if self._metric_combo is not None:
             idx = self._metric_combo.findData(self._selected_metric)
@@ -644,10 +654,12 @@ class PGTimeSeriesWidget(QtWidgets.QWidget):
 
     @property
     def selected_element_id(self) -> str:
+        """Return the currently selected element ID (line ID, structure ID, etc.)."""
         return self._selected_element_id
 
     @selected_element_id.setter
     def selected_element_id(self, element_id: str) -> None:
+        """Set the selected element ID."""
         self._selected_element_id = str(element_id) if element_id else ""
 
     def set_data(

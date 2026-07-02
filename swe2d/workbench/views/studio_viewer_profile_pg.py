@@ -399,22 +399,27 @@ class PGProfileWidget(QtWidgets.QWidget):
 
     @property
     def mode(self) -> str:
+        """Return the plot mode (e.g., 'Profile')."""
         return self._mode
 
     @property
     def canvas(self):
+        """Return the pyqtgraph PlotWidget canvas."""
         return self._plot_widget
 
     @property
     def fig(self):
+        """Return None (pyqtgraph uses its own figure internally)."""
         return None
 
     @property
     def selected_metric(self) -> str:
+        """Return the currently selected profile variable (e.g., 'wse_bed', 'depth_m')."""
         return self._prof_var_key
 
     @selected_metric.setter
     def selected_metric(self, metric: str) -> None:
+        """Set the selected profile variable and update the UI combo."""
         self._prof_var_key = str(metric) if metric else "wse_bed"
         if self._var_combo is not None:
             idx = self._var_combo.findData(self._prof_var_key)
@@ -423,10 +428,12 @@ class PGProfileWidget(QtWidgets.QWidget):
 
     @property
     def selected_element_id(self) -> str:
+        """Return the currently selected element ID (line ID, etc.)."""
         return self._selected_element_id
 
     @selected_element_id.setter
     def selected_element_id(self, element_id: str) -> None:
+        """Set the selected element ID and update the UI combo."""
         self._selected_element_id = str(element_id) if element_id else ""
         if self._element_id_combo is not None and element_id:
             idx = self._element_id_combo.findData(self._selected_element_id)
