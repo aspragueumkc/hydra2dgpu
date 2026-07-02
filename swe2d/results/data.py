@@ -504,8 +504,8 @@ class SWE2DResultsData:
                     ids.update(int(r[0]) for r in rows)
                 finally:
                     conn.close()
-            except Exception:
-                pass
+            except Exception as e:
+                logger.warning("[RESULTS] Failed to discover line IDs from %s: %s", rec.gpkg_path, e)
         return sorted(ids)
 
     @property

@@ -946,7 +946,7 @@ def load_baked_line_timeseries(
             return {}
         row = conn.execute(
             "SELECT n_timesteps, times_blob, depth_blob, vel_blob, "
-            "wse_blob, bed_blob, flow_blob "
+            "wse_blob, bed_blob, flow_blob, wet_frac_blob, fr_blob "
             "FROM swe2d_baked_line_ts WHERE run_id=? AND line_id=?",
             (run_id, line_id),
         ).fetchone()
@@ -959,6 +959,8 @@ def load_baked_line_timeseries(
             "wse_m": np.frombuffer(row[4], dtype=np.float64),
             "bed_m": np.frombuffer(row[5], dtype=np.float64),
             "flow_cms": np.frombuffer(row[6], dtype=np.float64),
+            "wet_frac": np.frombuffer(row[7], dtype=np.float64) if row[7] else np.empty(0, dtype=np.float64),
+            "fr": np.frombuffer(row[8], dtype=np.float64) if row[8] else np.empty(0, dtype=np.float64),
         }
     finally:
         conn.close()
@@ -1085,7 +1087,9 @@ def load_baked_timesteps(
             "SELECT times_blob FROM swe2d_baked_results WHERE run_id=?",
             (run_id,),
         ).fetchone()
-        return np.frombuffer(row[0], dtype=np.float64) if row else np.empty(0, dtype=np.float64)
+        if not row or row[0] is None:
+            return np.empty(0, dtype=np.float64)
+        return np.frombuffer(row[0], dtype=np.float64)
     finally:
         conn.close()
 

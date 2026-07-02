@@ -173,8 +173,11 @@ class PlotViewWidget(QtWidgets.QWidget):
                         records.append(dict(zip(info, r)))
                     cols = info
                     break
-            except Exception:
-                pass
+            except Exception as e:
+                import logging
+                logging.getLogger(__name__).warning(
+                    f"Failed to load table data from {gpkg}: {e}"
+                )
 
         if not records or not cols:
             return

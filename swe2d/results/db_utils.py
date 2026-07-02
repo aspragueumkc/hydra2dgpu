@@ -61,7 +61,8 @@ def get_table_info(gpkg_path: str, table_name: str) -> list:
             return [str(r[1]) for r in cur.fetchall()]
         finally:
             conn.close()
-    except Exception:
+    except Exception as e:
+        logger.debug("[RESULTS] Failed to get table columns for %s: %s", table_name, e)
         return []
 
 
@@ -80,5 +81,6 @@ def get_table_contents(gpkg_path: str, table_name: str, limit: int = 250) -> lis
             return list(cur.fetchall())
         finally:
             conn.close()
-    except Exception:
+    except Exception as e:
+        logger.debug("[RESULTS] Failed to get table contents for %s: %s", table_name, e)
         return []
