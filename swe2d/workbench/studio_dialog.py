@@ -2481,6 +2481,7 @@ class SWE2DWorkbenchStudioDialog(QtWidgets.QDialog):
             "momentum_cap_celerity_mult_spin": float(mtab.momentum_cap_celerity_mult_spin.value()),
             "max_inv_area_spin": float(mtab.max_inv_area_spin.value()),
             "rain_rate_spin": float(mtab.rain_rate_spin.value()),
+            "run_time_edit": str(mtab.run_time_edit.text()),
             "output_interval_edit": str(mtab.output_interval_edit.text()),
             "line_output_interval_edit": str(mtab.line_output_interval_edit.text()),
             "tiny_mode_combo": int(mtab.tiny_mode_combo.currentData()),

@@ -54,6 +54,8 @@ _WIDGET_TO_CLI_MAP = {
     "gpu_diag_sync_interval_spin": "gpu_diag_sync_interval_steps",
     "tiny_wet_cell_threshold_spin": "tiny_wet_cell_threshold",
     "front_flux_damping_spin": "front_flux_damping",
+    "k_mann_spin": "k_mann",
+    "gravity": "gravity",
 }
 
 _BOOL_WIDGET_TO_CLI_MAP = {
