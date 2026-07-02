@@ -367,23 +367,36 @@ class SWE2DResultsData:
         """Return enabled run records."""
         return [r for r in self._run_records if r.enabled]
 
-    def discover_runs(self) -> List[RunRecord]:
-        """Scan all registered GPKGs, return only user-selected runs."""
+    def discover_runs(self, scan_paths: Optional[List[str]] = None) -> List[RunRecord]:
+        """Scan GPKGs, return only user-selected runs.
+
+        Parameters
+        ----------
+        scan_paths : list, optional
+            Explicit list of GPKG paths to scan. When None (default), scans
+            [self._gpkg_path] + self._manual_gpkg_paths. When a list is provided,
+            only those paths are scanned — use this when the caller wants to
+            restrict scanning to specific GPKGs (e.g. only newly added ones).
+        """
         if not self._selected_run_keys:
             self._run_records = []
             self._load_coupling_for_first_enabled_run()
             return []
 
-        manual_paths = [p for p in self._manual_gpkg_paths if p and _os.path.exists(p)]
-        all_paths = [self._gpkg_path] + manual_paths if self._gpkg_path else manual_paths
+        if scan_paths is None:
+            manual_paths = [p for p in self._manual_gpkg_paths if p and _os.path.exists(p)]
+            scan_paths = ([self._gpkg_path] + manual_paths if self._gpkg_path else manual_paths)
+        else:
+            scan_paths = [p for p in scan_paths if p and _os.path.exists(p)]
+
         all_candidates: List[RunRecord] = []
-        for gpkg in all_paths:
+        for gpkg in scan_paths:
             if not gpkg:
                 continue
             all_candidates.extend(collect_runs_from_gpkg(gpkg))
 
         self._run_records = merge_run_records(
-            all_candidates, self._selected_run_keys, all_paths,
+            all_candidates, self._selected_run_keys, scan_paths,
         )
         self._load_coupling_for_first_enabled_run()
         return list(self._run_records)

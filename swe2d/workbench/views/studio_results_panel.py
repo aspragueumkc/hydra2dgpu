@@ -95,7 +95,14 @@ def on_results_add(dialog) -> None:
         data._selected_run_keys.discard(k)
     data._selected_run_keys.update(selected)
 
-    data.discover_runs()
+    # Clear _run_records so the viewer shows ONLY the runs from this action.
+    # The auto-loaded non-batch runs (from dialog startup) are discarded.
+    data._run_records = []
+
+    # Only scan the GPKGs the user explicitly added in this action —
+    # do NOT also scan _gpkg_path (the model's non-batch GPKG) or other
+    # previously-added manual GPKGs.  Each "Add Results" action is self-contained.
+    data.discover_runs(scan_paths=list(gpkg_paths_in_this_batch))
     data._rebuild_timestep_union()
     dialog._results_toolbox._rebuild_run_list()
     temporal = getattr(dialog, "_temporal_dock", None)
