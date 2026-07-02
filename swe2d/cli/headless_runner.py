@@ -228,8 +228,27 @@ def execute_run(
     from swe2d.cli.gpkg_adapter import (
         build_drainage_config_from_json,
         build_structures_config_from_json,
+        read_drainage_config_from_gpkg,
     )
-    drainage_cfg = build_drainage_config_from_json(p.get("drainage"), ncells)
+    drainage_data = p.get("drainage")
+    if isinstance(drainage_data, dict) and "nodes_layer" in drainage_data:
+        _dgpkg = drainage_data.get("gpkg") or mesh_gpkg
+        _dconn = sqlite3.connect(_dgpkg)
+        try:
+            drainage_inline = read_drainage_config_from_gpkg(
+                _dconn,
+                drainage_data["nodes_layer"],
+                drainage_data["links_layer"],
+                mesh_data["node_x"],
+                mesh_data["node_y"],
+                mesh_data["cell_nodes"],
+                inlets_table=drainage_data.get("inlets_layer"),
+                node_inlets_table=drainage_data.get("node_inlets_layer"),
+            )
+            drainage_data = drainage_inline
+        finally:
+            _dconn.close()
+    drainage_cfg = build_drainage_config_from_json(drainage_data, ncells)
     structures_cfg = build_structures_config_from_json(p.get("structures"), ncells)
     coupling_controller = None
     if drainage_cfg is not None or structures_cfg is not None:

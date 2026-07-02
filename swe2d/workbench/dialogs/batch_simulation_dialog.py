@@ -579,12 +579,15 @@ class BatchSimulationDialog(QtWidgets.QDialog):
             if cn_tbl:
                 rain_cn_cfg = _dict_with_gpkg(cn_tbl, cn_gpkg, cn_field="cn")
 
-            dn_tbl, _ = _get_layer_info(
+            dn_tbl, dn_gpkg = _get_layer_info(
                 getattr(vtab, "drain_nodes_layer_combo", None))
-            dl_tbl, _ = _get_layer_info(
+            dl_tbl, dl_gpkg = _get_layer_info(
                 getattr(vtab, "drain_links_layer_combo", None))
             if dn_tbl and dl_tbl:
                 drainage_cfg = {"nodes_layer": dn_tbl, "links_layer": dl_tbl}
+                _drain_gpkg = dn_gpkg or mesh_gpkg
+                if _drain_gpkg and _drain_gpkg != mesh_gpkg:
+                    drainage_cfg["gpkg"] = _drain_gpkg
 
             struct_cfg = parent._build_hydraulic_structure_config()
             if struct_cfg is not None:

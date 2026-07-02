@@ -567,33 +567,56 @@ def build_drainage_config_from_json(
     inlets_raw = data.get("inlets", [])
     inlets: List[InletExchange] = [
         InletExchange(
+            inlet_id=str(i.get("inlet_id", f"in_{idx}")),
+            cell_id=int(i.get("cell_id", i.get("inlet_cell", 0))),
             node_id=str(i.get("node_id", "")),
-            inlet_cell=int(i.get("inlet_cell", 0)),
-            flow_rate=float(i.get("flow_rate", 0.0)),
-        ) for i in inlets_raw
+            crest_elev=float(i.get("crest_elev", 0.0)),
+            length=float(i.get("length", 1.0)),
+            area=float(i.get("area", 0.0)),
+            coeff_weir=float(i.get("coeff_weir", 1.70)),
+            coeff_orifice=float(i.get("coeff_orifice", 0.62)),
+            max_capture=float(i["max_capture"]) if "max_capture" in i and i["max_capture"] is not None else None,
+        )
+        for idx, i in enumerate(inlets_raw)
     ]
 
-    inlet_assignments: List[NodeInletAssignment] = []
-    for i_idx, inv in enumerate(inlets_raw):
-        inlet_assignments.append(NodeInletAssignment(
-            inlet_index=i_idx,
-            inlet_type=InletType(int(inv.get("inlet_type", 0))),
-        ))
+    inlet_types: List[InletType] = [
+        InletType(inlet_type_id=str(t.get("inlet_type_id", f"it_{idx}")))
+        for idx, t in enumerate(data.get("inlet_types", []))
+    ]
+
+    node_inlets: List[NodeInletAssignment] = [
+        NodeInletAssignment(
+            node_id=str(n.get("node_id", "")),
+            inlet_type_id=str(n.get("inlet_type_id", "")),
+            multiplier=float(n.get("multiplier", 1.0)),
+            crest_offset=float(n.get("crest_offset", 0.0)),
+        )
+        for n in data.get("node_inlets", [])
+    ]
 
     outfalls_raw = data.get("outfalls", [])
     outfalls: List[OutfallExchange] = [
         OutfallExchange(
+            outfall_id=str(o.get("outfall_id", f"out_{idx}")),
+            cell_id=int(o.get("cell_id", 0)),
             node_id=str(o.get("node_id", "")),
-            outfall_invert_elev=float(o.get("invert", 0.0)),
-        ) for o in outfalls_raw
+            invert_elev=float(o.get("invert_elev", o.get("invert", 0.0))),
+            area_m2=float(o.get("area_m2", 0.0)),
+            diameter=float(o.get("diameter", 0.0)),
+            coefficient=float(o.get("coefficient", 0.82)),
+            max_flow=float(o["max_flow"]) if "max_flow" in o and o["max_flow"] is not None else None,
+            zero_storage=bool(o.get("zero_storage", False)),
+        )
+        for idx, o in enumerate(outfalls_raw)
     ]
 
     return PipeNetworkConfig(
         nodes=nodes,
         links=links,
         inlets=inlets,
-        inlet_types=[InletType.DEFAULT] * len(inlets_raw) if inlets_raw else [],
-        node_inlets=inlet_assignments,
+        inlet_types=inlet_types,
+        node_inlets=node_inlets,
         outfalls=outfalls,
         pipe_ends=[],
         gravity=float(data.get("gravity", 9.81)),
@@ -796,3 +819,134 @@ def _compute_cell_centroids(
     cx = np.mean(node_x[tris], axis=1)
     cy = np.mean(node_y[tris], axis=1)
     return np.column_stack((cx, cy))
+
+
+def read_drainage_config_from_gpkg(
+    conn: sqlite3.Connection,
+    nodes_table: str,
+    links_table: str,
+    mesh_node_x: np.ndarray,
+    mesh_node_y: np.ndarray,
+    cell_nodes: np.ndarray,
+    *,
+    inlets_table: Optional[str] = None,
+    node_inlets_table: Optional[str] = None,
+) -> Optional[Dict[str, Any]]:
+    """Read drainage network topology from GPKG tables and compute mesh cell assignments.
+
+    Returns an inline dict suitable for ``build_drainage_config_from_json``.
+    Requires mesh topology so node->cell nearest-neighbor can be computed.
+    """
+    nodes_cur = conn.execute(f'PRAGMA table_info("{nodes_table}")').fetchall()
+    node_cols = {r[1] for r in nodes_cur}
+    links_cur = conn.execute(f'PRAGMA table_info("{links_table}")').fetchall()
+    link_cols = {r[1] for r in links_cur}
+
+    node_x_map: Dict[str, float] = {}
+    node_y_map: Dict[str, float] = {}
+    nodes_raw: List[Dict[str, Any]] = []
+    for row in conn.execute(f'SELECT node_id, x(geom), y(geom), invert_elev, max_depth, rim_elev, crest_elev, node_type FROM "{nodes_table}"'):
+        nid = str(row[0] or "")
+        if not nid:
+            continue
+        node_x_map[nid] = float(row[1] or 0.0)
+        node_y_map[nid] = float(row[2] or 0.0)
+        nodes_raw.append({
+            "id": nid,
+            "x": float(row[1] or 0.0),
+            "y": float(row[2] or 0.0),
+            "invert": float(row[3] or 0.0),
+            "y_max": float(row[4] or 10.0),
+            "rim_elev": float(row[5]) if row[5] is not None else None,
+            "crest_elev": float(row[6]) if row[6] is not None else None,
+            "type": str(row[7] or "junction").lower(),
+        })
+
+    links_raw: List[Dict[str, Any]] = []
+    for row in conn.execute(f'SELECT link_id, from_node, to_node, length, diameter, roughness_n, max_flow, link_type FROM "{links_table}"'):
+        fid = str(row[0] or f"link_{len(links_raw)}")
+        links_raw.append({
+            "id": fid,
+            "from": str(row[1] or ""),
+            "to": str(row[2] or ""),
+            "length": float(row[3] or 100.0),
+            "diameter": float(row[4] or 1.0),
+            "roughness": float(row[5] or 0.013),
+            "max_flow": float(row[6]) if row[6] is not None else -1.0,
+        })
+
+    if not nodes_raw or not links_raw:
+        return None
+
+    cell_centroids = _compute_cell_centroids(mesh_node_x, mesh_node_y, cell_nodes)
+    n_cells_actual = min(cell_centroids.shape[0], len(nodes_raw) * 10 + 1)
+    ccx = cell_centroids[:n_cells_actual, 0]
+    ccy = cell_centroids[:n_cells_actual, 1]
+
+    node_cell: Dict[str, int] = {}
+    for nid, nx in node_x_map.items():
+        ny = node_y_map[nid]
+        dist = np.hypot(ccx - nx, ccy - ny)
+        node_cell[nid] = int(np.argmin(dist))
+
+    outfalls: List[Dict[str, Any]] = []
+    for n in nodes_raw:
+        if n["type"] in ("outfall", "free_outfall"):
+            cid = node_cell.get(n["id"], 0)
+            outfalls.append({
+                "outfall_id": n["id"],
+                "cell_id": cid,
+                "node_id": n["id"],
+                "invert_elev": n["invert"],
+            })
+
+    inlets_raw: List[Dict[str, Any]] = []
+    inlet_types_raw: List[Dict[str, Any]] = []
+    node_inlets_raw: List[Dict[str, Any]] = []
+
+    if inlets_table and node_inlets_table:
+        it_cur = conn.execute(f'PRAGMA table_info("{inlets_table}")').fetchall()
+        it_cols = {r[1] for r in it_cur}
+        for row in conn.execute(f'SELECT inlet_type_id, name, weir_length, orifice_area, coeff_weir, coeff_orifice, max_capture FROM "{inlets_table}"'):
+            itid = str(row[0] or "")
+            if not itid:
+                continue
+            inlet_types_raw.append({
+                "inlet_type_id": itid,
+                "name": str(row[1] or itid),
+                "length": float(row[2] or 1.0),
+                "area": float(row[3] or 0.0),
+                "coeff_weir": float(row[4] or 1.70),
+                "coeff_orifice": float(row[5] or 0.62),
+                "max_capture": float(row[6]) if row[6] is not None else None,
+            })
+
+        ni_cur = conn.execute(f'PRAGMA table_info("{node_inlets_table}")').fetchall()
+        ni_cols = {r[1] for r in ni_cur}
+        for row in conn.execute(f'SELECT node_id, inlet_type_id, inlet_count, crest_offset FROM "{node_inlets_table}"'):
+            nid = str(row[0] or "")
+            itid = str(row[1] or "")
+            if not nid or not itid:
+                continue
+            inlets_raw.append({
+                "inlet_id": f"{nid}:{itid}",
+                "cell_id": node_cell.get(nid, 0),
+                "node_id": nid,
+                "inlet_type_id": itid,
+                "crest_elev": 0.0,
+            })
+            node_inlets_raw.append({
+                "node_id": nid,
+                "inlet_type_id": itid,
+                "multiplier": float(row[2] or 1.0),
+                "crest_offset": float(row[3] or 0.0),
+            })
+
+    return {
+        "nodes": nodes_raw,
+        "links": links_raw,
+        "inlets": inlets_raw,
+        "inlet_types": inlet_types_raw,
+        "node_inlets": node_inlets_raw,
+        "outfalls": outfalls,
+    }
