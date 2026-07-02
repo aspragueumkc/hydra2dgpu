@@ -10224,15 +10224,16 @@ void swe2d_pipe1d_fully_dynamic_kernel_host(
 /** Accumulate net pipe flux into each node. 1 thread per cell.
  *  Q > 0 means flow from from_node to to_node.
  *  HEC-22 entrance/exit losses are applied at boundary cells:
- *    h_loss = k * V^2 / (2g) = k * |Q| * Q / (2 * g * A_pipe^2)
+ *    h_loss = k * V^2 / (2g) = k * |Q| * Q / (2 * g * A_actual^2)
+ *  where A_actual is the current flow area at the boundary cell.
  *  Loss opposes motion (same sign as Q), reducing effective flow at nodes. */
 __global__ __launch_bounds__(256, 4) void swe2d_pipe1d_accumulate_node_flux_kernel(
     int32_t                     n_cells,
     const int32_t* __restrict__ cell_from_node,
     const int32_t* __restrict__ cell_to_node,
     const double*  __restrict__ cell_Q,
+    const double*  __restrict__ cell_A,
     const double*  __restrict__ cell_link_k,
-    const double*  __restrict__ cell_link_area,
     double                      g,
     double*                     node_net_q)
 {
@@ -10244,13 +10245,14 @@ __global__ __launch_bounds__(256, 4) void swe2d_pipe1d_accumulate_node_flux_kern
     const int32_t tn = cell_to_node[c];
 
     // HEC-22 boundary loss at entrance (s==0, k_in) or exit (s==n_sub-1, k_out)
-    // loss_Q = k * |Q| * Q / (2 * g * A_pipe^2), same sign as Q, opposes motion
+    // V = Q / A_actual (actual current flow area), h_loss = k * V^2 / (2g)
+    // loss_Q = k * |Q| * Q / (2 * g * A_actual^2), same sign as Q, opposes motion
     const double k = cell_link_k[c];
-    const double A_pipe = cell_link_area[c];
+    const double A_actual = cell_A[c];
     double Q_eff = Q;
-    if (k > 0.0 && A_pipe > 0.0) {
+    if (k > 0.0 && A_actual > 0.0) {
         const double absQ = fabs(Q);
-        const double loss_Q = k * absQ * Q / (2.0 * g * A_pipe * A_pipe + 1e-12);
+        const double loss_Q = k * absQ * Q / (2.0 * g * A_actual * A_actual + 1e-12);
         Q_eff = Q - loss_Q;
     }
 
@@ -10298,7 +10300,7 @@ static void swe2d_pipe1d_node_mass_balance_host(
         const int32_t grid = (n_cells + BLOCK - 1) / BLOCK;
         swe2d_pipe1d_accumulate_node_flux_kernel<<<grid, BLOCK, 0, stream>>>(
             n_cells, p.d_cell_from_node, p.d_cell_to_node,
-            p.d_Q, p.d_cell_link_k, p.d_cell_link_area,
+            p.d_Q, p.d_A, p.d_cell_link_k,
             g, p.d_node_net_q);
         CUDA_CHECK(cudaGetLastError());
     }
