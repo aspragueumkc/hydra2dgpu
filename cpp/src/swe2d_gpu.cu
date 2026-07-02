@@ -3053,36 +3053,35 @@ __global__ void swe2d_apply_enquiry_wse_kernel(
     const int32_t i = blockIdx.x * blockDim.x + threadIdx.x;
     if (i >= n_culvert_faces) return;
 
-    // ── Upstream side: use enquiry cell WSE + velocity head ──────────
-    // Only apply when the donor face cell itself has water; otherwise the
-    // enquiry cell may reflect boundary inflow that hasn't reached the face
-    // yet, creating a non-physical driving head that injects mass at the
-    // outlet while removing nothing from the dry inlet (mass non-conservation).
+    // ── Upstream side: enquiry cell WSE + approach velocity head ────
+    // Spatial averaging avoids the local drawdown singularity at the face.
+    // Velocity head is computed from the UPSTREAM FACE CELL (not the enquiry
+    // cell) to match HDS-5 Eq 3.6a: total energy = HW + V_u²/(2g) where
+    // V_u is the approach velocity at the upstream section.
     const int32_t fc_up = d_donor_cell[i];
     const int32_t enq_up = d_enquiry_up_cell[i];
     if (enq_up >= 0 && enq_up != fc_up && static_cast<double>(d_cell_h[fc_up]) > h_min) {
-        double wse = d_cell_wse[enq_up];
-        const double h_enq = static_cast<double>(d_cell_h[enq_up]);
-        if (h_enq > h_min) {
-            const double u = static_cast<double>(d_cell_hu[enq_up]) / h_enq;
-            const double v = static_cast<double>(d_cell_hv[enq_up]) / h_enq;
-            wse += 0.5 * (u*u + v*v) / gravity;  // velocity head
+        if (static_cast<double>(d_cell_h[enq_up]) > h_min) {
+            double wse = d_cell_wse[enq_up];
+            // Add approach velocity head from the face cell itself
+            const double h_fc = static_cast<double>(d_cell_h[fc_up]);
+            if (h_fc > h_min) {
+                const double u = static_cast<double>(d_cell_hu[fc_up]) / h_fc;
+                const double v = static_cast<double>(d_cell_hv[fc_up]) / h_fc;
+                wse += 0.5 * (u*u + v*v) / gravity;
+            }
+            d_cell_wse_out[fc_up] = wse;
         }
-        d_cell_wse_out[fc_up] = wse;
     }
 
-    // ── Downstream side: use enquiry cell WSE + velocity head ────────
+    // ── Downstream side: enquiry cell WSE only (no velocity head) ──
+    // Tailwater is static depth — velocity head not included in HDS-5 TW.
     const int32_t fc_dn = d_receiver_cell[i];
     const int32_t enq_dn = d_enquiry_dn_cell[i];
     if (enq_dn >= 0 && enq_dn != fc_dn && static_cast<double>(d_cell_h[fc_dn]) > h_min) {
-        double wse = d_cell_wse[enq_dn];
-        const double h_enq = static_cast<double>(d_cell_h[enq_dn]);
-        if (h_enq > h_min) {
-            const double u = static_cast<double>(d_cell_hu[enq_dn]) / h_enq;
-            const double v = static_cast<double>(d_cell_hv[enq_dn]) / h_enq;
-            wse += 0.5 * (u*u + v*v) / gravity;  // velocity head
+        if (static_cast<double>(d_cell_h[enq_dn]) > h_min) {
+            d_cell_wse_out[fc_dn] = d_cell_wse[enq_dn];
         }
-        d_cell_wse_out[fc_dn] = wse;
     }
 }
 
@@ -4008,7 +4007,7 @@ __global__ __launch_bounds__(256, 4) void swe2d_compute_structure_flows_kernel(
     const double downstream_wse = (sign >= 0.0) ? wd : wu;
     const double upstream_invert = (sign >= 0.0) ? inlet_invert_elev[i] : outlet_invert_elev[i];
     const double downstream_invert = (sign >= 0.0) ? outlet_invert_elev[i] : inlet_invert_elev[i];
-    const double available_head_up_ft = fmax(0.0, (upstream_wse - upstream_invert) * to_ft);
+    double available_head_up_ft = fmax(0.0, (upstream_wse - upstream_invert) * to_ft);
     const double tailwater_depth_ft = fmax(0.0, (downstream_wse - downstream_invert) * to_ft);
     const double len_ft = fmax(0.1, length[i] * to_ft);
 
@@ -8268,8 +8267,9 @@ void swe2d_gpu_compute_coupling_full_on_device(
 
             // ── Apply enquiry-cell WSE correction for total-energy driving head ──
             // Overwrite the WSE at face cells with the total energy (WSE + v²/2g)
-            // sampled at offset enquiry cells.  This avoids the local drawdown
-            // singularity that occurs when sampling directly at the face.
+            // sampled at offset enquiry cells.  Upstream side adds approach
+            // velocity head from the face cell itself (HDS-5 Eq 3.6a).
+            // Downstream side uses static enquiry WSE (no velocity head for TW).
             if (ff.d_enquiry_up_cell && ff.d_enquiry_dn_cell
                 && dev->d_hu && dev->d_hv && dev->d_h) {
                 int grid_enq = (ff.n_culvert_faces + BLOCK - 1) / BLOCK;
