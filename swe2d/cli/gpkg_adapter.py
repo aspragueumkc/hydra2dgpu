@@ -638,7 +638,6 @@ def build_structures_config_from_json(
     Form A — dict with metadata wrapper (recommended):
     {
         "enabled": true,
-        "gravity": 9.81,
         "control_interval_s": 1.0,
         "controller_name": "none",
         "structures": [
@@ -646,6 +645,9 @@ def build_structures_config_from_json(
             ...
         ]
     }
+
+    Note: ``gravity`` is not read from this dict — the coupling controller
+    derives it from the mesh CRS via ``_u.gravity()``.
 
     Form B — bare list of structure entries:
     [
@@ -673,7 +675,6 @@ def build_structures_config_from_json(
             return None
         _from_dict = True
         _enabled = bool(structures_data.get("enabled", True))
-        _gravity = float(structures_data.get("gravity", 9.81))
         _control_interval_s = float(structures_data.get("control_interval_s", 1.0))
         _controller_name = str(structures_data.get("controller_name", "none"))
         structures_data = struct_list
@@ -721,7 +722,6 @@ def build_structures_config_from_json(
     cfg = HydraulicStructureConfig(structures=structs)
     if _from_dict:
         cfg.enabled = _enabled
-        cfg.gravity = _gravity
         cfg.control_interval_s = _control_interval_s
         cfg.controller_name = _controller_name
     return cfg

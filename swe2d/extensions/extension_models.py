@@ -353,10 +353,14 @@ class HydraulicStructureConfig:
     gravity: float = 9.81
 
     def to_dict(self) -> Dict[str, Any]:
-        """Serialize to dict matching build_structures_config_from_json input format."""
+        """Serialize to dict matching build_structures_config_from_json input format.
+
+        Note: ``gravity`` is omitted because the coupling controller derives it
+        from the mesh CRS via ``_u.gravity()``. Serializing it would override
+        the CRS-derived value with whatever was in the config.
+        """
         return {
             "enabled": self.enabled,
-            "gravity": self.gravity,
             "control_interval_s": self.control_interval_s,
             "controller_name": self.controller_name,
             "structures": [s.to_dict() for s in self.structures],
