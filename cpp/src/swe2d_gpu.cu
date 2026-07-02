@@ -9771,7 +9771,7 @@ void swe2d_build_pipe1d_mesh(
             cell_perim[cell_idx] = P;
             cell_invert[cell_idx] = inv_in + frac * (inv_out - inv_in);
             cell_n[cell_idx] = n_val;
-            cell_k_loss[cell_idx] = k_in + k_out;
+            cell_k_loss[cell_idx] = (s == 0) ? k_in : (s == n_sub - 1) ? k_out : 0.0;
             cell_from_node[cell_idx] = link_from_node[i];
             cell_to_node[cell_idx] = link_to_node[i];
             ++cell_idx;

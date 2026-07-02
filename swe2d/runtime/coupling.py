@@ -315,6 +315,15 @@ def pack_pipe_network_soa(cfg: Optional[PipeNetworkConfig], n_cells: int) -> Opt
         pipe_end_inlet_loss_k[i] = 0.5 if kin is None else float(kin)
         pipe_end_outlet_loss_k[i] = 1.0 if kout is None else float(kout)
 
+    for i, lk in enumerate(cfg.links):
+        fn = int(link_from[i])
+        tn = int(link_to[i])
+        for j in range(np_end):
+            if int(pipe_end_node[j]) == fn:
+                link_entrance_loss_k[i] = float(pipe_end_inlet_loss_k[j])
+            if int(pipe_end_node[j]) == tn:
+                link_exit_loss_k[i] = float(pipe_end_outlet_loss_k[j])
+
     max_cell_length = max(0.0, max(lk.max_cell_length for lk in cfg.links))
 
     return SWE2DDrainageSoA(
