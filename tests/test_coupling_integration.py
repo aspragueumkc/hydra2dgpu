@@ -817,7 +817,7 @@ class TestSWE2DDrainageStructures(unittest.TestCase):
             outfalls=[],
             pipe_ends=pipe_ends,
             gravity=9.81,
-            pipe_solver_mode="diffusion_wave",
+            pipe_solver_mode="fully_dynamic",
         )
 
         mod = SWE2DUrbanDrainageModule(cfg)
@@ -937,7 +937,7 @@ class TestSWE2DDrainageStructures(unittest.TestCase):
             outfalls=[],
             pipe_ends=pipe_ends,
             gravity=9.81,
-            pipe_solver_mode="diffusion_wave",
+            pipe_solver_mode="fully_dynamic",
         )
 
         mod = SWE2DUrbanDrainageModule(cfg)
@@ -992,7 +992,7 @@ class TestSWE2DDrainageStructures(unittest.TestCase):
                     PipeEndExchange(pipe_end_id="pe1", cell_id=1, node_id="n1", invert_elev=0.0, diameter=0.5, inlet_loss_k=k_in, outlet_loss_k=k_out),
                 ],
                 gravity=9.81,
-                pipe_solver_mode="diffusion_wave",
+                pipe_solver_mode="fully_dynamic",
             )
             mod = SWE2DUrbanDrainageModule(cfg)
             mod.initialize()
@@ -1038,7 +1038,7 @@ class TestSWE2DDrainageStructures(unittest.TestCase):
                 PipeEndExchange(pipe_end_id="pe1", cell_id=1, node_id="n1",
                                  invert_elev=0.0, diameter=1.0),
             ],
-            pipe_solver_mode="diffusion_wave",
+            pipe_solver_mode="fully_dynamic",
         )
         drain_mod = SWE2DUrbanDrainageModule(drain_cfg)
 
@@ -1274,7 +1274,7 @@ class TestSWE2DDrainageStructures(unittest.TestCase):
                 PipeEndExchange(pipe_end_id="pe_N1", cell_id=2, node_id="N1",
                                  invert_elev=-0.5, diameter=0.5, area_m2=0.19635),
             ],
-            pipe_solver_mode="diffusion_wave",
+            pipe_solver_mode="fully_dynamic",
         )
         drain_mod = SWE2DUrbanDrainageModule(drain_cfg)
         drain_mod.initialize()
