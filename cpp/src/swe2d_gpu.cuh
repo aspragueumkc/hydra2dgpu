@@ -539,7 +539,8 @@ struct SWE2DDeviceState {
         double*   d_cell_perim;     // [n_pipe_cells]
         double*   d_cell_invert;    // [n_pipe_cells]
         double*   d_cell_n;        // [n_pipe_cells]
-        double*   d_cell_k_loss;   // [n_pipe_cells]
+        double*   d_cell_link_k;   // [n_pipe_cells] k at boundary cells only (0 interior)
+        double*   d_cell_link_area; // [n_pipe_cells] full pipe area at boundary cells (0 interior)
 
         double*   d_node_invert;    // [n_nodes] invert elevation at each node
         double*   d_node_depth;     // [n_nodes]
@@ -562,7 +563,7 @@ struct SWE2DDeviceState {
             _P_FREE(d_cell_from_node); _P_FREE(d_cell_to_node);
             _P_FREE(d_cell_length); _P_FREE(d_cell_area);
             _P_FREE(d_cell_perim); _P_FREE(d_cell_invert);
-            _P_FREE(d_cell_n); _P_FREE(d_cell_k_loss);
+            _P_FREE(d_cell_n); _P_FREE(d_cell_link_k); _P_FREE(d_cell_link_area);
             _P_FREE(d_node_invert); _P_FREE(d_node_depth); _P_FREE(d_node_net_q); _P_FREE(d_node_surface_area);
             _P_FREE(d_A); _P_FREE(d_Q); _P_FREE(d_A_prev); _P_FREE(d_Q_iter);
             n_pipe_cells = 0; n_nodes = 0;
@@ -1457,6 +1458,7 @@ void swe2d_build_pipe1d_mesh(
     @param cell_to_node To-node per cell [n_cells]
     @param cell_invert Cell midpoint invert [n_cells]
     @param cell_perim Pipe perimeter [n_cells]
+    @param cell_k_loss Minor loss K at boundary cells [n_cells] (0 interior)
     @param cell_A Current area [n_cells]
     @param cell_Q Current discharge [n_cells]
     @param node_invert Node invert elevation [n_nodes]
@@ -1489,7 +1491,6 @@ void swe2d_pipe1d_flux_kernel_host(
     @param cell_area_full Full pipe cross-section area [n_cells]
     @param cell_perim Pipe perimeter [n_cells]
     @param cell_n Manning's n [n_cells]
-    @param cell_k_loss Minor loss K coefficient [n_cells]
     @param cell_A Current area [n_cells]
     @param cell_Q Current discharge [n_cells]
     @param flux_Q Net flux OUT of cell [n_cells]
@@ -1527,7 +1528,7 @@ void swe2d_pipe1d_diffusion_wave_kernel_host(
     @param cell_area_full Full pipe cross-section area [n_cells]
     @param cell_perim Pipe perimeter [n_cells]
     @param cell_n Manning's n [n_cells]
-    @param cell_k_loss Minor loss K [n_cells]
+    @param cell_k_loss Minor loss K at boundary cells [n_cells] (0 interior)
     @param node_invert Node invert elevation [n_nodes]
     @param node_depth Node depth [n_nodes]
     @param cell_A_prev Area from previous coupling step [n_cells]

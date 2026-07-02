@@ -959,7 +959,6 @@ class TestSWE2DDrainageStructures(unittest.TestCase):
         self.assertIn("channel_a", mod._outfall_exchange_nodes)
         self.assertIn("channel_b", mod._outfall_exchange_nodes)
 
-    @unittest.skip("GPU pipe1d applies k_in+k_out uniformly to all sub-cells, not at pipe-end boundaries; needs separate inlet/outlet loss handling")
     def test_daylighted_pipe_end_loss_coefficients_reduce_transfer(self):
         nodes = [
             DrainageNode(node_id="n0", x=0.0, y=0.0, invert_elev=0.0, max_depth=3.0, node_type="pipe_end", metadata={"surface_area": 0.5}),

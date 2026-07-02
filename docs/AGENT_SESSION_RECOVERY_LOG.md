@@ -57,9 +57,11 @@
 - Renamed `test_swe2d_drainage_structures.py` → `test_coupling_integration.py`
 - Created `tests/test_swe2d_pipe1d.py` (7 tests, all pass)
 
-## Test Results (Session 3 Update)
+## Test Results (Session 4 Update)
 - `tests/test_swe2d_pipe1d.py`: **7 passed** ✅
-- `tests/test_coupling_integration.py`: **15 passed, 3 failed, 15 skipped**
+- `tests/test_coupling_integration.py`: **16 passed, 3 failed, 14 skipped** (test_daylighted_pipe_end_loss_coefficients_reduce_transfer now passes)
+- `tests/test_swe2d_gpu_validation_perf.py`: **2 passed** ✅
+- `tests/test_swe2d_gpu_unstructured.py`: 1 passed, 1 skipped, 1 failed (pre-existing scheme0 accuracy failure)
 
 ## Fixed This Session
 - `test_gpu_persistent_path_with_drainage_and_culverts`: diffusion_wave → fully_dynamic (self-start issue)
@@ -71,6 +73,16 @@
 - `test_daylighted_pipe_end_loss_coefficients_reduce_transfer`: physics bug in pipe1d mesh + SoA packing:
   1. Mesh builder was applying `k_in+k_out` uniformly to ALL sub-cells instead of `k_in` at first cell and `k_out` at last cell
   2. `pack_pipe_network_soa` was using `lk.entrance_loss_k` (DrainageLink defaults 0.5/1.0) instead of `pe.inlet_loss_k`/`pe.outlet_loss_k` from PipeEndExchange
+
+## HEC-22 Boundary Loss Implementation (Session 4)
+- `cell_k_loss` was removed from step kernels in error, breaking the test
+- The mesh builder (`swe2d_build_pipe1d_mesh`) already correctly sets `cell_k_loss = 0` for interior cells
+- `cell_k_loss` is non-zero only at first/last sub-cell of each link (boundary cells)
+- This matches HEC-22: entrance loss at first cell, exit loss at last cell
+- Added HEC-22 boundary losses to `accumulate_node_flux_kernel` (affects node depth)
+- But test reads `cell_Q` directly, so step kernel must also have `cell_k_loss`
+- Restored `cell_k_loss` to both step kernels (diffusion_wave and fully_dynamic)
+- Also added `cell_link_k`, `cell_link_area`, `gravity` params to `accumulate_node_flux_kernel`
 
 ## Remaining Failures (pre-existing)
 1. `test_face_flux_preloaded_with_drainage`: fake `_FakeNative` module missing `swe2d_gpu_compute_coupling_full_on_device`, so `_culvert_face_flux_preloaded` is never set. Was returning True but not actually preloading face-flux params.
@@ -96,3 +108,13 @@
 - `cpp/src/swe2d_solver.hpp`: Updated declaration
 - `cpp/src/swe2d_bindings.cpp`: Updated binding with new arg
 - `swe2d/runtime/backend.py`: Updated set_rain_cn_forcing_native
+
+## Relevant Files Changed (HEC-22 Boundary Losses)
+- `cpp/src/swe2d_gpu.cu`:
+  - Added `cell_link_k`, `cell_link_area`, `gravity` params to `swe2d_pipe1d_accumulate_node_flux_kernel`
+  - Added HEC-22 loss correction: `Q_eff = Q - k * |Q| * Q / (2 * g * A²)` at boundary cells
+  - Updated `swe2d_pipe1d_node_mass_balance_host` to pass new params
+  - Restored `cell_k_loss` to both step kernels (diffusion_wave and fully_dynamic)
+  - Updated all kernel host wrappers and call sites
+- `cpp/src/swe2d_gpu.cuh`: Updated kernel declarations with new params
+- `tests/test_coupling_integration.py`: Removed `@unittest.skip` from `test_daylighted_pipe_end_loss_coefficients_reduce_transfer`

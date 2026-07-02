@@ -9746,7 +9746,8 @@ void swe2d_build_pipe1d_mesh(
     std::vector<double> cell_perim(total_pipe_cells);
     std::vector<double> cell_invert(total_pipe_cells);
     std::vector<double> cell_n(total_pipe_cells);
-    std::vector<double> cell_k_loss(total_pipe_cells);
+    std::vector<double> cell_link_k(total_pipe_cells);     // k at boundary cells, 0 interior
+    std::vector<double> cell_link_area(total_pipe_cells);  // full pipe area at boundary cells, 0 interior
     std::vector<int32_t> cell_from_node(total_pipe_cells);
     std::vector<int32_t> cell_to_node(total_pipe_cells);
 
@@ -9771,7 +9772,8 @@ void swe2d_build_pipe1d_mesh(
             cell_perim[cell_idx] = P;
             cell_invert[cell_idx] = inv_in + frac * (inv_out - inv_in);
             cell_n[cell_idx] = n_val;
-            cell_k_loss[cell_idx] = (s == 0) ? k_in : (s == n_sub - 1) ? k_out : 0.0;
+            cell_link_k[cell_idx] = (s == 0) ? k_in : (s == n_sub - 1) ? k_out : 0.0;
+            cell_link_area[cell_idx] = (s == 0 || s == n_sub - 1) ? A : 0.0;
             cell_from_node[cell_idx] = link_from_node[i];
             cell_to_node[cell_idx] = link_to_node[i];
             ++cell_idx;
@@ -9852,7 +9854,8 @@ void swe2d_build_pipe1d_mesh(
     alloc_d(reinterpret_cast<void**>(&dev->d_cell_perim), static_cast<size_t>(total_pipe_cells) * sizeof(double));
     alloc_d(reinterpret_cast<void**>(&dev->d_cell_invert), static_cast<size_t>(total_pipe_cells) * sizeof(double));
     alloc_d(reinterpret_cast<void**>(&dev->d_cell_n), static_cast<size_t>(total_pipe_cells) * sizeof(double));
-    alloc_d(reinterpret_cast<void**>(&dev->d_cell_k_loss), static_cast<size_t>(total_pipe_cells) * sizeof(double));
+    alloc_d(reinterpret_cast<void**>(&dev->d_cell_link_k), static_cast<size_t>(total_pipe_cells) * sizeof(double));
+    alloc_d(reinterpret_cast<void**>(&dev->d_cell_link_area), static_cast<size_t>(total_pipe_cells) * sizeof(double));
     alloc_d(reinterpret_cast<void**>(&dev->d_node_invert), static_cast<size_t>(n_nodes) * sizeof(double));
     alloc_d(reinterpret_cast<void**>(&dev->d_node_depth), static_cast<size_t>(n_nodes) * sizeof(double));
     alloc_d(reinterpret_cast<void**>(&dev->d_node_net_q), static_cast<size_t>(n_nodes) * sizeof(double));
@@ -9876,7 +9879,8 @@ void swe2d_build_pipe1d_mesh(
     copy_h2d_d(dev->d_cell_perim, cell_perim.data(), static_cast<size_t>(total_pipe_cells));
     copy_h2d_d(dev->d_cell_invert, cell_invert.data(), static_cast<size_t>(total_pipe_cells));
     copy_h2d_d(dev->d_cell_n, cell_n.data(), static_cast<size_t>(total_pipe_cells));
-    copy_h2d_d(dev->d_cell_k_loss, cell_k_loss.data(), static_cast<size_t>(total_pipe_cells));
+    copy_h2d_d(dev->d_cell_link_k, cell_link_k.data(), static_cast<size_t>(total_pipe_cells));
+    copy_h2d_d(dev->d_cell_link_area, cell_link_area.data(), static_cast<size_t>(total_pipe_cells));
 
     // Upload node invert elevations
     copy_h2d_d(dev->d_node_invert, node_invert_elev, static_cast<size_t>(n_nodes));
@@ -10018,7 +10022,7 @@ __global__ __launch_bounds__(256, 1) void swe2d_pipe1d_diffusion_wave_kernel(
 
     // Friction source: -g * n² * |Q| * Q / (A * R^(4/3))
     const double source_fric = -g * n * n * absQ * Q / (A * R43 + 1e-12);
-    // Minor loss source: -g * K * |Q| * Q / (2 * A² * L)
+    // Minor loss source (HEC-22 entrance/exit at boundary cells only; k=0 for interior cells)
     const double source_minor = -g * k_loss * absQ * Q / (2.0 * A * A * L + 1e-12);
 
     const double S_Q = source_fric + source_minor;
@@ -10094,9 +10098,8 @@ __global__ __launch_bounds__(256, 1) void swe2d_pipe1d_fully_dynamic_kernel(
 
     // Friction source
     const double source_fric = -g * n * n * absQ * Q / (A * R43 + 1e-12);
-    // Minor loss source
+    // Minor loss source (HEC-22 entrance/exit at boundary cells only; k=0 for interior)
     const double source_minor = -g * k_loss * absQ * Q / (2.0 * A * A * L + 1e-12);
-
     double Q_new = Q + dt * (pressure_grad + source_fric + source_minor);
 
     // Clamp Q
@@ -10219,12 +10222,18 @@ void swe2d_pipe1d_fully_dynamic_kernel_host(
 // ─────────────────────────────────────────────────────────────────────────────
 
 /** Accumulate net pipe flux into each node. 1 thread per cell.
- *  Q > 0 means flow from from_node to to_node. */
+ *  Q > 0 means flow from from_node to to_node.
+ *  HEC-22 entrance/exit losses are applied at boundary cells:
+ *    h_loss = k * V^2 / (2g) = k * |Q| * Q / (2 * g * A_pipe^2)
+ *  Loss opposes motion (same sign as Q), reducing effective flow at nodes. */
 __global__ __launch_bounds__(256, 4) void swe2d_pipe1d_accumulate_node_flux_kernel(
     int32_t                     n_cells,
     const int32_t* __restrict__ cell_from_node,
     const int32_t* __restrict__ cell_to_node,
     const double*  __restrict__ cell_Q,
+    const double*  __restrict__ cell_link_k,
+    const double*  __restrict__ cell_link_area,
+    double                      g,
     double*                     node_net_q)
 {
     int32_t c = blockIdx.x * blockDim.x + threadIdx.x;
@@ -10234,9 +10243,20 @@ __global__ __launch_bounds__(256, 4) void swe2d_pipe1d_accumulate_node_flux_kern
     const int32_t fn = cell_from_node[c];
     const int32_t tn = cell_to_node[c];
 
+    // HEC-22 boundary loss at entrance (s==0, k_in) or exit (s==n_sub-1, k_out)
+    // loss_Q = k * |Q| * Q / (2 * g * A_pipe^2), same sign as Q, opposes motion
+    const double k = cell_link_k[c];
+    const double A_pipe = cell_link_area[c];
+    double Q_eff = Q;
+    if (k > 0.0 && A_pipe > 0.0) {
+        const double absQ = fabs(Q);
+        const double loss_Q = k * absQ * Q / (2.0 * g * A_pipe * A_pipe + 1e-12);
+        Q_eff = Q - loss_Q;
+    }
+
     // Q > 0: flow leaves from_node, arrives at to_node
-    if (fn >= 0) atomicAdd(&node_net_q[fn], -Q);
-    if (tn >= 0) atomicAdd(&node_net_q[tn],  Q);
+    if (fn >= 0) atomicAdd(&node_net_q[fn], -Q_eff);
+    if (tn >= 0) atomicAdd(&node_net_q[tn],  Q_eff);
 }
 
 /** Update node depth from accumulated net flux. 1 thread per node. */
@@ -10260,7 +10280,7 @@ __global__ __launch_bounds__(256, 4) void swe2d_pipe1d_update_node_depth_kernel(
 // ── Host wrappers ───────────────────────────────────────────────────────────
 
 static void swe2d_pipe1d_node_mass_balance_host(
-    SWE2DDeviceState* dev, double dt)
+    SWE2DDeviceState* dev, double dt, double g)
 {
     if (!dev) return;
     auto& p = dev->pipe1d;
@@ -10278,7 +10298,8 @@ static void swe2d_pipe1d_node_mass_balance_host(
         const int32_t grid = (n_cells + BLOCK - 1) / BLOCK;
         swe2d_pipe1d_accumulate_node_flux_kernel<<<grid, BLOCK, 0, stream>>>(
             n_cells, p.d_cell_from_node, p.d_cell_to_node,
-            p.d_Q, p.d_node_net_q);
+            p.d_Q, p.d_cell_link_k, p.d_cell_link_area,
+            g, p.d_node_net_q);
         CUDA_CHECK(cudaGetLastError());
     }
 
@@ -10388,7 +10409,8 @@ void swe2d_pipe1d_step(
                 p.d_cell_neighbor_cell, p.d_cell_interface_dir,
                 p.d_cell_from_node, p.d_cell_to_node,
                 p.d_cell_length, p.d_cell_area,
-                p.d_cell_perim, p.d_cell_n, p.d_cell_k_loss,
+                p.d_cell_perim, p.d_cell_n,
+                p.d_cell_link_k,
                 p.d_node_invert, p.d_node_depth,
                 p.d_A, p.d_Q,
                 d_A_new, d_Q_new,
@@ -10397,7 +10419,8 @@ void swe2d_pipe1d_step(
             swe2d_pipe1d_diffusion_wave_kernel_host(
                 n_cells,
                 p.d_cell_length, p.d_cell_area,
-                p.d_cell_perim, p.d_cell_n, p.d_cell_k_loss,
+                p.d_cell_perim, p.d_cell_n,
+                p.d_cell_link_k,
                 p.d_A, p.d_Q, d_flux_Q,
                 local_dt, g,
                 d_A_new, d_Q_new);
@@ -10408,7 +10431,7 @@ void swe2d_pipe1d_step(
     }
 
     // Update node depths from pipe flows (mass balance on device)
-    swe2d_pipe1d_node_mass_balance_host(dev, dt);
+    swe2d_pipe1d_node_mass_balance_host(dev, dt, g);
 
     cudaFree(d_flux_Q);
     cudaFree(d_A_new);
