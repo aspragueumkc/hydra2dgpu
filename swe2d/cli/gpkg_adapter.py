@@ -308,6 +308,38 @@ def _parse_wkb_linestring(data) -> List[Tuple[float, float]]:
     return coords
 
 
+def _parse_wkb_point(data) -> List[float]:
+    """Parse a WKB POINT from GPKG Extended WKB format.
+
+    Returns [x, y], or [0.0, 0.0] on error.
+    """
+    if data is None:
+        return [0.0, 0.0]
+    raw = bytes(data)
+    # GPKG prefix: 4-byte srs_id + standard WKB
+    wkb = raw[4:] if len(raw) > 4 else raw
+    if len(wkb) < 21:  # byte_order(1) + type(4) + x(8) + y(8)
+        return [0.0, 0.0]
+    gtype = int.from_bytes(wkb[1:5], byteorder='little' if wkb[0] == 1 else 'big')
+    if gtype != 1:  # 1 = POINT
+        return [0.0, 0.0]
+    x = struct.unpack('<d' if wkb[0] == 1 else '>d', wkb[5:13])[0]
+    y = struct.unpack('<d' if wkb[0] == 1 else '>d', wkb[13:21])[0]
+    return [x, y]
+
+
+def _find_geom_column(table: str, conn: sqlite3.Connection) -> Optional[str]:
+    """Return the name of the first geometry column in *table*, or None."""
+    cur = conn.cursor()
+    cur.execute(f'PRAGMA table_info("{table}")')
+    for row in cur.fetchall():
+        col_type = str(row[2]).upper()
+        if col_type in ("POINT", "LINESTRING", "POLYGON", "MULTIPOINT",
+                        "MULTILINESTRING", "MULTIPOLYGON", "GEOMETRYCOLLECTION"):
+            return str(row[1])
+    return None
+
+
 def _parse_wkt_linestring_coords(wkt: str) -> List[Tuple[float, float]]:
     """Parse a WKT LINESTRING(x1 y1, x2 y2, ...) and return (x, y) vertex list."""
     wkt = wkt.strip()
@@ -717,7 +749,7 @@ def build_drainage_config_from_json(
         gravity=float(data.get("gravity", 9.81)),
         head_deadband_m=float(data.get("head_deadband_m", 1.0e-3)),
         dynamic_flow_relaxation=float(data.get("dynamic_flow_relaxation", 1.0)),
-        solver_mode=DrainageSolverMode(int(data.get("solver_mode", 0))),
+        pipe_solver_mode=str(data.get("pipe_solver_mode", "diffusion_wave")),
         coupling_substeps=int(data.get("coupling_substeps", 1)),
     )
 
@@ -933,12 +965,12 @@ def _compute_cell_centroids(
                 centroids[i, 1] = 0.0
         return centroids
     else:
-        # Uniform mesh: assume all cells have same node count (3 for triangles)
-        # Infer nodes per cell from total size
-        n_cells = len(cell_nodes) // 3  # fallback to triangles
-        if len(cell_nodes) % 4 == 0:
-            n_cells = len(cell_nodes) // 4  # quads
-        cell_nodes_2d = cell_nodes.reshape((-1, n_cells))
+        # Uniform mesh: all cells have same node count
+        total = len(cell_nodes)
+        # Check quads first (more common in structured meshes) then triangles
+        nodes_per_cell = 4 if total % 4 == 0 else 3
+        n_cells = total // nodes_per_cell
+        cell_nodes_2d = cell_nodes.reshape((n_cells, nodes_per_cell))
         cx = np.mean(node_x[cell_nodes_2d], axis=1)
         cy = np.mean(node_y[cell_nodes_2d], axis=1)
         return np.column_stack((cx, cy))
@@ -967,22 +999,45 @@ def read_drainage_config_from_gpkg(
     node_x_map: Dict[str, float] = {}
     node_y_map: Dict[str, float] = {}
     nodes_raw: List[Dict[str, Any]] = []
-    for row in conn.execute(f'SELECT node_id, x(geom), y(geom), invert_elev, max_depth, rim_elev, crest_elev, node_type FROM "{nodes_table}"'):
-        nid = str(row[0] or "")
-        if not nid:
-            continue
-        node_x_map[nid] = float(row[1] or 0.0)
-        node_y_map[nid] = float(row[2] or 0.0)
-        nodes_raw.append({
-            "id": nid,
-            "x": float(row[1] or 0.0),
-            "y": float(row[2] or 0.0),
-            "invert": float(row[3] or 0.0),
-            "y_max": float(row[4] or 10.0),
-            "rim_elev": float(row[5]) if row[5] is not None else None,
-            "crest_elev": float(row[6]) if row[6] is not None else None,
-            "type": str(row[7] or "junction").lower(),
-        })
+    _geom_col = _find_geom_column(nodes_table, conn)
+    if _geom_col:
+        for row in conn.execute(f'SELECT node_id, invert_elev, max_depth, rim_elev, crest_elev, node_type, "{_geom_col}" FROM "{nodes_table}" ORDER BY rowid'):
+            nid = str(row[0] or "")
+            if not nid:
+                continue
+            coords = _parse_wkb_point(row[6])
+            nx, ny = (coords[0], coords[1]) if len(coords) >= 2 else (0.0, 0.0)
+            node_x_map[nid] = nx
+            node_y_map[nid] = ny
+            nodes_raw.append({
+                "id": nid,
+                "x": nx,
+                "y": ny,
+                "invert": float(row[1] or 0.0),
+                "y_max": float(row[2] or 10.0),
+                "rim_elev": float(row[3]) if row[3] is not None else None,
+                "crest_elev": float(row[4]) if row[4] is not None else None,
+                "type": str(row[5] or "junction").lower(),
+            })
+    else:
+        cols = {str(r[1]).lower() for r in nodes_cur}
+        if "x" in cols and "y" in cols:
+            for row in conn.execute(f'SELECT node_id, x, y, invert_elev, max_depth, rim_elev, crest_elev, node_type FROM "{nodes_table}"'):
+                nid = str(row[0] or "")
+                if not nid:
+                    continue
+                node_x_map[nid] = float(row[1] or 0.0)
+                node_y_map[nid] = float(row[2] or 0.0)
+                nodes_raw.append({
+                    "id": nid,
+                    "x": float(row[1] or 0.0),
+                    "y": float(row[2] or 0.0),
+                    "invert": float(row[3] or 0.0),
+                    "y_max": float(row[4] or 10.0),
+                    "rim_elev": float(row[5]) if row[5] is not None else None,
+                    "crest_elev": float(row[6]) if row[6] is not None else None,
+                    "type": str(row[7] or "junction").lower(),
+                })
 
     links_raw: List[Dict[str, Any]] = []
     for row in conn.execute(f'SELECT link_id, from_node, to_node, length, diameter, roughness_n, max_flow, link_type FROM "{links_table}"'):
@@ -1027,8 +1082,7 @@ def read_drainage_config_from_gpkg(
     node_inlets_raw: List[Dict[str, Any]] = []
 
     if inlets_table and node_inlets_table:
-        it_cur = conn.execute(f'PRAGMA table_info("{inlets_table}")').fetchall()
-        it_cols = {r[1] for r in it_cur}
+        conn.execute(f'PRAGMA table_info("{inlets_table}")')
         for row in conn.execute(f'SELECT inlet_type_id, name, weir_length, orifice_area, coeff_weir, coeff_orifice, max_capture FROM "{inlets_table}"'):
             itid = str(row[0] or "")
             if not itid:
@@ -1043,8 +1097,7 @@ def read_drainage_config_from_gpkg(
                 "max_capture": float(row[6]) if row[6] is not None else None,
             })
 
-        ni_cur = conn.execute(f'PRAGMA table_info("{node_inlets_table}")').fetchall()
-        ni_cols = {r[1] for r in ni_cur}
+        conn.execute(f'PRAGMA table_info("{node_inlets_table}")')
         for row in conn.execute(f'SELECT node_id, inlet_type_id, inlet_count, crest_offset FROM "{node_inlets_table}"'):
             nid = str(row[0] or "")
             itid = str(row[1] or "")

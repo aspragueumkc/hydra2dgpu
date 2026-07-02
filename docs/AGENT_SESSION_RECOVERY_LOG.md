@@ -185,3 +185,64 @@ the function start. Both fixed to `(slope - sf_full)`.
 - Static function, defined at line 673, NEVER called anywhere in the codebase
 - Contains the same bugs but is unreachable — left as-is (dead code)
 - The GPU kernel is the only active path
+
+## Session: Thu Jul 02 2026 — CLI JSON Round-Trip: Sample Lines + Full Audit
+
+### Goals
+1. Add sample lines capture to batch dialog snapshot
+2. Add sample lines reading to headless runner (via qgis.core, not shapely)
+3. Audit CLI/GPKG adapter for remaining issues
+
+### Changes Made
+
+**`batch_simulation_dialog.py`**:
+- Added `line_output_interval_edit` parsing → `rp["line_output_interval_s"]` in `_widget_params_to_run_params`
+- Added `sample_lines_layer_combo` capture in `_snapshot_current_setup` (via `_get_layer_info`)
+- Fixed `None.currentData()` crash in `infiltration_method_combo` access (CRITICAL fix)
+- Added `sample_lines_cfg` to snapshot entry dict
+
+**`gpkg_adapter.py`**:
+- Added `_ensure_qgis_app()` lazy QGIS init (accepts both GUI and headless QGSApplication)
+- Added `query_sample_lines_from_qgis()` using `QgsVectorLayer` (qgis.core) to read LineString
+  features from GPKG table, extracting vertices as `(M, 2)` numpy arrays
+- Added `_find_name_field()` helper for name/id field detection
+- Added `QgsVectorLayer`, `NULL` imports from `qgis.core` (not `qgis.PyQt`)
+
+**`headless_runner.py`**:
+- Added `_si_m_per_model_from_wkt()` — parses CRS WKT LENGTHUNIT CS section to derive
+  `si_m_per_model` (e.g. 1.0 for meters, 0.3048 for US survey feet) without needing
+  `qgis.core` at all
+- Configured `swe2d.units` via `configure(si_m_per_model)` before backend init so gravity,
+  manning multiplier, and `model_to_ft` are correct for the mesh's CRS
+- Added `query_sample_lines_from_qgis` import
+- Added sample-line setup block: reads lines from GPKG via QGIS, builds `sample_map_list`
+  using `build_line_sampling_map` from `mesh_service`
+- Moved `t_end`, `output_interval`, `line_output_interval` before sample-line setup
+  (CRITICAL fix: original code had unreachable block — variable referenced before assignment)
+- Added line-snapshot collection in finalization: iterates snapshot_timesteps, calls
+  `sample_line_metrics` and `sample_line_aggregate_ts_row`, persists via
+  `persist_baked_line_ts` and `persist_baked_line_profile`
+- Fixed `logger.warning(f"...")` → `logger.warning("...", ...)` format
+
+### Architecture Decision
+- CLI does NOT need to be QGIS-free — only QGIS iface/GUI is off-limits
+- `qgis.core` (QgsVectorLayer, etc.) is acceptable in headless CLI
+- `shapely` NOT needed — QGIS handles all geometry reading
+- `swe2d.workbench` imports remain in headless runner (architecture violation, documented in
+  `docs/CLI_GPKG_ADAPTER_AUDIT.md` but not fixed)
+
+### Full Audit Saved
+`docs/CLI_GPKG_ADAPTER_AUDIT.md` — 15 issues found, 3 fixed, 12 open.
+
+### Critical Fixes Applied
+1. `line_output_interval` unreachable block (NameError) — moved variable assignment before use
+2. `None.currentData()` crash — added null check on combo attribute
+3. `logger.warning(f"...")` format — changed to lazy-format style
+
+### Open Issues from Audit
+- **HIGH**: `swe2d.workbench` imports in headless code (architecture violation)
+- **HIGH**: Triangle-only centroid reshape in `_compute_cell_centroids` (fails on quads)
+- **HIGH**: WKT prefix check on binary GPKG WKB in `apply_bc_overrides_from_gpkg`
+- **HIGH**: `parent._build_hydraulic_structure_config()` unverified call
+- **MEDIUM**: `_u.configure()` global state mutation (no reset between batch runs)
+- **MEDIUM**: `params.pop` without `deepcopy` in `__main__.py` batch path

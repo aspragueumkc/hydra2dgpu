@@ -69,7 +69,7 @@ def _stop_mps_if_we_started(started: bool) -> None:
 
 def _expand_sweep(params: Dict[str, Any]) -> List[Dict[str, Any]]:
     """Expand sweep keys into individual param sets (Cartesian product)."""
-    sweep = params.pop("sweep", None)
+    sweep = params.get("sweep")
     if not sweep:
         return [params]
 
