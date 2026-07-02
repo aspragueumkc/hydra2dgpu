@@ -972,39 +972,39 @@ __global__ __launch_bounds__(256, 4) void swe2d_gradient_kernel(
     const double qhu = 0.5 * (hu_c0 + hu_c1);
     const double qhv = 0.5 * (hv_c0 + hv_c1);
 
-    // Write per-edge contributions to edge-scratch arrays (no atomics).
+    // Write raw face flux to edge scratch (no inv_area weighting).
+    // The gather kernel applies per-cell sign and divides by cell area.
+    // For constant eta, the raw flux is non-zero but the gather cancels
+    // it correctly (standard Green-Gauss closure).
     if (c0_active) {
-        const double ia0 = fmin(fmax(cell_inv_area[c0], 1.0 / fmax(max_inv_area, 1.0)), fmax(max_inv_area, 1.0));
-        const double w = len * ia0;
-        edge_hx[e]  = qh  * nx * w;
-        edge_hy[e]  = qh  * ny * w;
-        edge_hux[e] = qhu * nx * w;
-        edge_huy[e] = qhu * ny * w;
-        edge_hvx[e] = qhv * nx * w;
-        edge_hvy[e] = qhv * ny * w;
-    }
-    if (c1_active) {
-        const double ia1 = fmin(fmax(cell_inv_area[c1], 1.0 / fmax(max_inv_area, 1.0)), fmax(max_inv_area, 1.0));
-        const double w = len * ia1;
-        // Fold c1 contribution into same edge slot (negate normal).
-        edge_hx[e]  += qh  * -nx * w;
-        edge_hy[e]  += qh  * -ny * w;
-        edge_hux[e] += qhu * -nx * w;
-        edge_huy[e] += qhu * -ny * w;
-        edge_hvx[e] += qhv * -nx * w;
-        edge_hvy[e] += qhv * -ny * w;
+        edge_hx[e]  = qh  * nx * len;
+        edge_hy[e]  = qh  * ny * len;
+        edge_hux[e] = qhu * nx * len;
+        edge_huy[e] = qhu * ny * len;
+        edge_hvx[e] = qhv * nx * len;
+        edge_hvy[e] = qhv * ny * len;
+    } else {
+        edge_hx[e]  = 0.0;  edge_hy[e]  = 0.0;
+        edge_hux[e] = 0.0;  edge_huy[e] = 0.0;
+        edge_hvx[e] = 0.0;  edge_hvy[e] = 0.0;
     }
 }
 
 /** Cell-parallel gather kernel: sum per-edge gradient contributions into per-cell arrays.
- *  Reads from edge-scratch arrays, writes to cell gradient arrays.  No atomics. */
+ *  Reads from edge-scratch arrays, writes to cell gradient arrays.  No atomics.
+ *  Each edge stores the raw face flux (c0 perspective, +nx outward from c0).
+ *  The gather applies the correct sign: +1 if cell is c0, -1 if cell is c1,
+ *  then divides by cell area to produce the standard Green-Gauss gradient. */
 __global__ __launch_bounds__(256, 4) void swe2d_gradient_gather_kernel(
     int32_t                     n_cells,
     const int32_t* __restrict__ cell_edge_offsets,
     const int32_t* __restrict__ cell_edge_ids,
+    const int32_t* __restrict__ edge_c0,
+    const int32_t* __restrict__ edge_c1,
     const double*  __restrict__ edge_hx,  const double*  __restrict__ edge_hy,
     const double*  __restrict__ edge_hux, const double*  __restrict__ edge_huy,
     const double*  __restrict__ edge_hvx, const double*  __restrict__ edge_hvy,
+    const double*  __restrict__ cell_inv_area,
     Grad*                       d_grad,
     const int32_t* __restrict__ d_active)
 {
@@ -1019,13 +1019,16 @@ __global__ __launch_bounds__(256, 4) void swe2d_gradient_gather_kernel(
     int32_t e = cell_edge_offsets[c + 1];
     for (int32_t k = s; k < e; ++k) {
         int32_t edge = cell_edge_ids[k];
-        gx  += edge_hx[edge];  gy  += edge_hy[edge];
-        gux += edge_hux[edge]; guy += edge_huy[edge];
-        gvx += edge_hvx[edge]; gvy += edge_hvy[edge];
+        // Sign: +1 if this cell is c0 (outward normal = +nx), -1 if c1 (outward = -nx).
+        const double sign = (edge_c0[edge] == c) ? 1.0 : -1.0;
+        gx  += sign * edge_hx[edge];   gy  += sign * edge_hy[edge];
+        gux += sign * edge_hux[edge];  guy += sign * edge_huy[edge];
+        gvx += sign * edge_hvx[edge];  gvy += sign * edge_hvy[edge];
     }
-    d_grad[c].hx  = gx;  d_grad[c].hy  = gy;
-    d_grad[c].hux = gux; d_grad[c].huy = guy;
-    d_grad[c].hvx = gvx; d_grad[c].hvy = gvy;
+    const double ia = cell_inv_area[c];
+    d_grad[c].hx  = gx * ia;  d_grad[c].hy  = gy * ia;
+    d_grad[c].hux = gux * ia; d_grad[c].huy = guy * ia;
+    d_grad[c].hvx = gvx * ia; d_grad[c].hvy = gvy * ia;
 }
 
 /// GPU kernel: least-squares (2-ring) gradient — spatial scheme 6 (FV_WENO5).
@@ -1130,9 +1133,11 @@ static inline void swe2d_maybe_launch_gradient_gather(
     swe2d_gradient_gather_kernel<<<grid, block, 0, dev->d_stream>>>(
         n_cells,
         dev->d_cell_edge_offsets, dev->d_cell_edge_ids,
+        dev->d_edge_c0, dev->d_edge_c1,
         dev->d_grad_edge_hx,  dev->d_grad_edge_hy,
         dev->d_grad_edge_hux, dev->d_grad_edge_huy,
         dev->d_grad_edge_hvx, dev->d_grad_edge_hvy,
+        dev->d_cell_inv_area,
         dev->d_grad,
         dev->d_active);
 }

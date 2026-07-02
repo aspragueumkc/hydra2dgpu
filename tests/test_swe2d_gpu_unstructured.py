@@ -195,13 +195,11 @@ class TestGPUUnstructuredLakeAtRest(unittest.TestCase):
             self.assertTrue(np.isfinite(eta[wet]).all(), f"GPU scheme {scheme_id}: non-finite eta")
 
             deviation = np.max(np.abs(eta[wet] - self.ETA0))
-            # FO and WENO5 achieve machine-epsilon well-balancedness.
-            # Limiter schemes (1-5) have ~2-4% drift on unstructured meshes
-            # due to reconstruction/source-term imbalance — known limitation.
-            tol = 1.0e-8 if scheme_id in (0, 6) else 0.05
+            # All schemes achieve machine-epsilon well-balancedness with the
+            # corrected Green-Gauss gradient (per-cell sign + area division).
             self.assertLess(
                 deviation,
-                tol,
+                1.0e-8,
                 f"GPU scheme {scheme_id}: lake-at-rest drift {deviation:.3e}",
             )
 
