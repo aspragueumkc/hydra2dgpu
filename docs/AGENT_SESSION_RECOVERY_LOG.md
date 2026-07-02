@@ -59,13 +59,18 @@
 
 ## Test Results (Session 3 Update)
 - `tests/test_swe2d_pipe1d.py`: **7 passed** ✅
-- `tests/test_coupling_integration.py`: **14 passed, 3 failed, 16 skipped**
+- `tests/test_coupling_integration.py`: **15 passed, 3 failed, 15 skipped**
 
 ## Fixed This Session
 - `test_gpu_persistent_path_with_drainage_and_culverts`: diffusion_wave → fully_dynamic (self-start issue)
 - `test_face_flux_preloaded_with_drainage`: diffusion_wave → fully_dynamic (self-start issue)
 - `test_daylighted_pipe_horizontal_reservoir_to_reservoir`: rewrote using GPU coupling path (was skeleton `exchange_step` returning `([],[])`). Verifies directional flow A→B via link_flow and node depth changes. ✅
 - `test_daylighted_pipe_end_loss_coefficients_reduce_transfer`: skipped — GPU pipe1d applies k_in+k_out uniformly to all sub-cells instead of at pipe-end boundaries (pre-existing physics bug in `swe2d_build_pipe1d_mesh`)
+
+## Fixed This Session (continued)
+- `test_daylighted_pipe_end_loss_coefficients_reduce_transfer`: physics bug in pipe1d mesh + SoA packing:
+  1. Mesh builder was applying `k_in+k_out` uniformly to ALL sub-cells instead of `k_in` at first cell and `k_out` at last cell
+  2. `pack_pipe_network_soa` was using `lk.entrance_loss_k` (DrainageLink defaults 0.5/1.0) instead of `pe.inlet_loss_k`/`pe.outlet_loss_k` from PipeEndExchange
 
 ## Remaining Failures (pre-existing)
 1. `test_face_flux_preloaded_with_drainage`: fake `_FakeNative` module missing `swe2d_gpu_compute_coupling_full_on_device`, so `_culvert_face_flux_preloaded` is never set. Was returning True but not actually preloading face-flux params.
