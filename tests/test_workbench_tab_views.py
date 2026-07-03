@@ -195,6 +195,21 @@ class TestTopologyTabView(unittest.TestCase):
         self.assertIsNone(result)
 
 
+# ═══════════════════════════════════════════════════════════════════════════
+# ResultsToolbox tests
+# ═══════════════════════════════════════════════════════════════════════════
+
+class TestResultsToolbox(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        _ensure_app()
+
+    def test_extended_outputs_tooltip_is_not_truncated(self):
+        from swe2d.workbench.views.results_controls import ResultsToolbox
+        toolbox = ResultsToolbox()
+        tip = toolbox.extended_outputs_chk.toolTip()
+        self.assertNotIn("...", tip)
+        self.assertIn("Froude", tip)
 
 
 if __name__ == "__main__":

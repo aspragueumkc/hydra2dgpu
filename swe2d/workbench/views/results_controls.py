@@ -291,8 +291,8 @@ class ResultsToolbox(QtWidgets.QWidget):
         self.extended_outputs_chk = QtWidgets.QCheckBox(
             "Include extended outputs (momentum, qmag, wet mask, Fr, Manning)")
         self.extended_outputs_chk.setToolTip(
-            "Include additional output fields beyond depth and velocity. "
-            "Increases result file size."
+            "Include extended output fields: momentum components, discharge magnitude, "
+            "wet mask, Froude number, and Manning n. Increases result file size."
         )
         self.extended_outputs_chk.setChecked(True)
         layout.addRow(self.extended_outputs_chk)
