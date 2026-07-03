@@ -133,7 +133,7 @@ def _atomic_write_json(path: str, payload: dict) -> None:
 
 
 def execute_run(
-    mesh_gpkg: str,
+    mesh_gpkg: Optional[str],
     params: Dict[str, Any],
     results_gpkg: Optional[str] = None,
     progress_callback: Optional[Callable[[float, Dict[str, Any]], None]] = None,
@@ -155,6 +155,9 @@ def execute_run(
 
     Returns dict with keys: h, hu, hv, max_results (optional), diags.
     """
+    # Allow mesh_gpkg to come from params so JSON snapshots are self-contained
+    if not mesh_gpkg:
+        mesh_gpkg = str(params.get("mesh_gpkg", ""))
     if not os.path.isfile(mesh_gpkg):
         raise FileNotFoundError(f"Mesh GPKG not found: {mesh_gpkg}")
 

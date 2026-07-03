@@ -623,6 +623,7 @@ class BatchSimulationDialog(QtWidgets.QDialog):
         entry = {
             "id": "current_setup",
             "mesh": mesh_name,
+            "mesh_gpkg": mesh_gpkg,
             "params": run_params,
         }
         if bc_lines:
