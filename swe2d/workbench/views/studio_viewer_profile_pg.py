@@ -21,12 +21,15 @@ and all Qt widgets.  Data loading is delegated to the data layer
 
 from __future__ import annotations
 
+import logging
 from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
 
 from qgis.PyQt import QtCore, QtGui, QtWidgets
 from qgis.PyQt.QtCore import Qt
+
+logger = logging.getLogger(__name__)
 
 try:
     import pyqtgraph as pg
@@ -645,7 +648,7 @@ class PGProfileWidget(QtWidgets.QWidget):
                                     "flow": float(rr.get("value", 0.0)), "station": float("nan"),
                                     "elev": float("nan"), "placement": "unplaced"})
                     except Exception:
-                        pass
+                        logger.warning("Failed to load structure flows for profile annotations", exc_info=True)
 
             if plotted and show_structures and structure_rows:
                 view_range = self._plot_widget.viewRange()

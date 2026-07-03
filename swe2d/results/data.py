@@ -884,18 +884,11 @@ class SWE2DResultsData:
             self._coupling_run_id = ""
             self._coupling_gpkg_path = ""
             return
-        try:
-            self._coupling_records = self._expand_baked_coupling_rows(
-                first.gpkg_path, first.run_id
-            )
-            self._coupling_run_id = first.run_id
-            self._coupling_gpkg_path = first.gpkg_path
-        except Exception as exc:
-            if "no such table" in str(exc):
-                logger.debug("[STRUCT] No coupling table in GPKG (expected when no coupling results)")
-            else:
-                logger.warning("[STRUCT] Failed to load coupling data: %s", exc)
-            self._coupling_records = []
+        self._coupling_records = self._expand_baked_coupling_rows(
+            first.gpkg_path, first.run_id
+        )
+        self._coupling_run_id = first.run_id
+        self._coupling_gpkg_path = first.gpkg_path
 
     def load_coupling_records(self, run_id_or_key: str) -> None:
         """Load coupling records from GPKG baked table, falling back to live."""
@@ -918,13 +911,6 @@ class SWE2DResultsData:
                 self._coupling_run_id = ""
                 self._coupling_gpkg_path = ""
             return
-        try:
-            self._coupling_records = self._expand_baked_coupling_rows(gpkg, run_id)
-            self._coupling_run_id = run_id
-            self._coupling_gpkg_path = gpkg
-        except Exception as exc:
-            if "no such table" in str(exc):
-                logger.debug("[STRUCT] No coupling table in GPKG (expected when no coupling results)")
-            else:
-                logger.warning("[STRUCT] Failed to load coupling data: %s", exc)
-            self._coupling_records = []
+        self._coupling_records = self._expand_baked_coupling_rows(gpkg, run_id)
+        self._coupling_run_id = run_id
+        self._coupling_gpkg_path = gpkg

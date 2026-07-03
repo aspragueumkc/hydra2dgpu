@@ -1134,20 +1134,24 @@ def collect_baked_runs_from_gpkg(
             "FROM swe2d_baked_results ORDER BY created_utc DESC"
         ).fetchall():
             run_id = str(row[0])
-            try:
-                has_lines = conn.execute(
+            has_lines = (
+                conn.execute(
+                    "SELECT 1 FROM sqlite_master WHERE type='table' AND name='swe2d_baked_line_ts'"
+                ).fetchone() is not None
+                and conn.execute(
                     "SELECT 1 FROM swe2d_baked_line_ts WHERE run_id=? LIMIT 1",
                     (run_id,),
                 ).fetchone() is not None
-            except Exception:
-                has_lines = False
-            try:
-                has_coupling = conn.execute(
+            )
+            has_coupling = (
+                conn.execute(
+                    "SELECT 1 FROM sqlite_master WHERE type='table' AND name='swe2d_baked_coupling'"
+                ).fetchone() is not None
+                and conn.execute(
                     "SELECT 1 FROM swe2d_baked_coupling WHERE run_id=? LIMIT 1",
                     (run_id,),
                 ).fetchone() is not None
-            except Exception:
-                has_coupling = False
+            )
             results.append({
                 "run_id": run_id,
                 "mesh_name": str(row[1] or ""),
