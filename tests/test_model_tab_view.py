@@ -420,6 +420,16 @@ class TestModelTabView(unittest.TestCase):
         self.assertEqual(view.n_mann_spin.value(), 0.045)
         view.deleteLater()
 
+    def test_combo_labels_are_human_readable(self):
+        view = self._make_view()
+        tiny_labels = [view.tiny_mode_combo.itemText(i) for i in range(view.tiny_mode_combo.count())]
+        self.assertIn("Persistent", tiny_labels)
+        recon_labels = [view.reconstruction_combo.itemText(i) for i in range(view.reconstruction_combo.count())]
+        self.assertIn("MUSCL + Superbee", recon_labels)
+        bridge_labels = [view.bridge_stacked_coupling_mode_combo.itemText(i)
+                         for i in range(view.bridge_stacked_coupling_mode_combo.count())]
+        self.assertIn("Phase 3 — Spatial", bridge_labels)
+
     def test_view_has_toolbox(self):
         view = self._make_view()
         self.assertIsInstance(view.model_toolbox, QToolBox)

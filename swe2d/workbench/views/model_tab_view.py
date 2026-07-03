@@ -394,10 +394,10 @@ class ModelTabView(QtWidgets.QWidget):
             "Persistent (3): persistent tiny-cell state across steps (default)."
         )
         param_form.addRow("Tiny mode:", self.tiny_mode_combo)
-        self.tiny_mode_combo.addItem("Off (0)", 0)
-        self.tiny_mode_combo.addItem("Auto (1)", 1)
-        self.tiny_mode_combo.addItem("Fused (2)", 2)
-        self.tiny_mode_combo.addItem("Persistent (3)", 3)
+        self.tiny_mode_combo.addItem("Disabled", 0)
+        self.tiny_mode_combo.addItem("Auto-detect", 1)
+        self.tiny_mode_combo.addItem("Fused", 2)
+        self.tiny_mode_combo.addItem("Persistent", 3)
         self.tiny_mode_combo.setCurrentIndex(self.tiny_mode_combo.findData(3))
 
         self.tiny_wet_cell_threshold_spin = QtWidgets.QSpinBox()
@@ -473,13 +473,13 @@ class ModelTabView(QtWidgets.QWidget):
             "WENO (5–6) use weighted stencils for smooth regions with shock capture."
         )
         for text, data in [
-            ("First-order (baseline)", 0),
-            ("MUSCL Fast (high-throughput)", 1),
-            ("MUSCL MinMod (robust)", 2),
-            ("MUSCL MC (less-diffusive TVD)", 3),
-            ("MUSCL Van Leer (smooth TVD)", 4),
-            ("WENO3-like (GPU experimental)", 5),
-            ("WENO5 (GPU, 3rd-order LSQ)", 6),
+            ("1st-order", 0),
+            ("MUSCL + Superbee", 1),
+            ("MUSCL + MinMod", 2),
+            ("MUSCL + MC", 3),
+            ("MUSCL + Van Leer", 4),
+            ("WENO3-like", 5),
+            ("WENO5", 6),
         ]:
             self.reconstruction_combo.addItem(text, data)
         param_form.addRow("Reconstruction:", self.reconstruction_combo)
@@ -497,12 +497,12 @@ class ModelTabView(QtWidgets.QWidget):
             "Graph-safe RK5 (6): CFL 0.5-1.0 (Cash-Karp embedded)."
         )
         for text, data in [
-            ("Euler (RK1, 1st-order)", 1),
-            ("RK2 (Heun, 2nd-order, default)", 2),
-            ("RK3 (SSP Shu-Osher, 3rd-order)", 3),
-            ("RK4 (classic, 4th-order)", 4),
-            ("Graph-safe RK4 (true staged)", 5),
-            ("Graph-safe RK5 (Cash-Karp)", 6),
+            ("RK1 (Euler)", 1),
+            ("RK2 (Heun)", 2),
+            ("RK3 (SSP Shu-Osher)", 3),
+            ("RK4 (classic)", 4),
+            ("RK4 (graph-safe)", 5),
+            ("RK5 (graph-safe)", 6),
         ]:
             self.temporal_order_combo.addItem(text, data)
         param_form.addRow("Temporal discretization:", self.temporal_order_combo)
@@ -896,10 +896,10 @@ class ModelTabView(QtWidgets.QWidget):
             self.bridge_stacked_coupling_mode_combo,
         )
         self.bridge_stacked_coupling_mode_combo.addItem(
-            "Phase 3 spatial redistribution (recommended)", "phase3_spatial"
+            "Phase 3 — Spatial", "phase3_spatial"
         )
         self.bridge_stacked_coupling_mode_combo.addItem(
-            "Legacy scalar weighting (backward-compatible)", "legacy_scalar"
+            "Legacy — Scalar", "legacy_scalar"
         )
         self.bridge_stacked_coupling_mode_combo.setCurrentIndex(0)
 
