@@ -212,5 +212,23 @@ class TestResultsToolbox(unittest.TestCase):
         self.assertIn("Froude", tip)
 
 
+# ═══════════════════════════════════════════════════════════════════════════
+# StudioTabBuilder helper tests
+# ═══════════════════════════════════════════════════════════════════════════
+
+class TestStudioTabBuilderHelpers(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        _ensure_app()
+
+    def test_size_button_sets_minimum_action_size(self):
+        from qgis.PyQt.QtWidgets import QPushButton
+        from swe2d.workbench.views.studio_tab_builder import _size_button
+        btn = QPushButton("Test")
+        _size_button(btn, "action")
+        self.assertGreaterEqual(btn.minimumSize().width(), 80)
+        self.assertGreaterEqual(btn.minimumSize().height(), 28)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

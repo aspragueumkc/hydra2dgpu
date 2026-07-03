@@ -6,7 +6,11 @@ as the first parameter — this module is stateless.
 
 from typing import Any
 
+import logging
+
 from qgis.PyQt import QtCore, QtGui, QtWidgets
+
+logger = logging.getLogger(__name__)
 
 
 def build_map_tab(dialog) -> QtWidgets.QWidget:
@@ -221,6 +225,19 @@ def expand_toolbox_pages(dialog, toolbox):
         )
 
 
+def _size_button(btn: QtWidgets.QPushButton, role: str = "action") -> None:
+    """Apply a canonical size to a button based on its role."""
+    if role == "icon":
+        btn.setFixedSize(24, 24)
+    elif role == "primary":
+        btn.setMinimumSize(100, 32)
+        font = btn.font()
+        font.setBold(True)
+        btn.setFont(font)
+    else:
+        btn.setMinimumSize(80, 28)
+
+
 def make_left_controls_compact(dialog, parent_widget):
     """Reduce margins and spacing for a compact left pane layout."""
     for layout in parent_widget.findChildren(QtWidgets.QLayout):
@@ -243,6 +260,12 @@ def make_left_controls_compact(dialog, parent_widget):
             except Exception as _e:
 
                 logger.warning(f"[ERROR] Exception in studio_tab_builder.py: {_e}")
+
+    for btn in parent_widget.findChildren(QtWidgets.QPushButton):
+        try:
+            _size_button(btn, "action")
+        except Exception as _e:
+            logger.warning(f"[ERROR] Exception in studio_tab_builder.py: {_e}")
 
 
 def register_detachable_tab_widget(dialog, tab_widget):
