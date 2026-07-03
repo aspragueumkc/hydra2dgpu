@@ -27,7 +27,7 @@ def build_topology_tab(dialog) -> QtWidgets.QWidget:
 
 def build_model_tab(dialog) -> QtWidgets.QWidget:
     """Build the Model tab page and wrap it in a scroll area."""
-    page, solver_form, rain_form, drain_form, run_page = build_model_tab_page(dialog)
+    page, _solver_form, _rain_form, _drain_form, _run_page = build_model_tab_page(dialog)
     return wrap_left_tab_page(dialog, page)
 
 
@@ -170,12 +170,11 @@ def build_model_tab_page(dialog):
     solver_form = model_tab_page.findChild(QtWidgets.QFormLayout, "model_solver_form")
     rain_form = model_tab_page.findChild(QtWidgets.QFormLayout, "model_rain_form")
     drain_form = model_tab_page.findChild(QtWidgets.QFormLayout, "model_drain_form")
-    run_page = model_tab_page.findChild(QtWidgets.QWidget, "model_run_page")
     if solver_form is None or rain_form is None or drain_form is None:
         raise RuntimeError("Model tab UI missing one or more form layouts")
     wire_run_tab_signals(dialog)
     wire_run_dock_signals(dialog)
-    return model_tab_page, solver_form, rain_form, drain_form, run_page
+    return model_tab_page, solver_form, rain_form, drain_form, None
 
 
 def wire_run_dock_signals(dialog) -> None:

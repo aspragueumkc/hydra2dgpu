@@ -120,7 +120,7 @@ class TestModelTabView(unittest.TestCase):
         for attr in (
             "model_toolbox",
             "model_solver_page", "model_rain_page",
-            "model_drain_page", "model_run_page",
+            "model_drain_page",
             "n_mann_spin", "cfl_spin", "h_min_spin",
             "run_time_edit", "output_interval_edit",
             "run_btn", "cancel_btn", "snapshot_btn",

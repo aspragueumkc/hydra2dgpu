@@ -69,12 +69,15 @@ class ModelTabView(QtWidgets.QWidget):
         drainage_implicit_iters_spin, drainage_implicit_relax_spin,
         gpu_default_lbl, unit_system_lbl
 
-    Run / Output page (``model_run_page``):
-        run_btn, cancel_btn, progress_bar,
+    The following run/output widgets are now created as orphan attributes so
+    existing binding code keeps working, but they physically live in the
+    dedicated Run dock:
+
+        run_btn, cancel_btn, batch_sim_btn, progress_bar,
         output_interval_edit, line_output_interval_edit,
         preview_overrides_btn, preview_coupling_btn, snapshot_btn,
         results_table_name_edit, results_gpkg_path_edit,
-        select_results_gpkg_btn, load_run_settings_btn
+        select_results_gpkg_btn, load_run_settings_btn, save_settings_btn
     """
 
     def __init__(self, parent=None):
@@ -129,14 +132,12 @@ class ModelTabView(QtWidgets.QWidget):
         )
         self._build_drain_form_widgets(self.model_drain_form)
 
-        self.model_run_page, self.run_layout = self._build_run_page()
-        self._build_run_page_widgets(self.model_run_page, self.run_layout)
+        self._create_run_output_attributes()
 
         self.model_toolbox.addItem(self.model_solver_page, "Solver Parameters")
         self.model_toolbox.addItem(self.model_rain_page, "Rain / Hydrology")
         self.model_toolbox.addItem(self.model_stability_page, "Stability Controls")
         self.model_toolbox.addItem(self.model_drain_page, "Structures & Drainage")
-        self.model_toolbox.addItem(self.model_run_page, "Run / Output")
 
         for i in range(self.model_toolbox.count()):
             page = self.model_toolbox.widget(i)
@@ -158,15 +159,6 @@ class ModelTabView(QtWidgets.QWidget):
         form.setObjectName(form_name)
         page_layout.addLayout(form)
         return page, form
-
-    def _build_run_page(self) -> tuple[QtWidgets.QWidget, QtWidgets.QVBoxLayout]:
-        """Create the Run/Output toolbox page."""
-        run_page = QtWidgets.QWidget()
-        run_page.setObjectName("model_run_page")
-        run_page_layout = QtWidgets.QVBoxLayout(run_page)
-        run_page_layout.setObjectName("run_layout")
-        run_page_layout.setContentsMargins(0, 0, 0, 0)
-        return run_page, run_page_layout
 
     def _start_param_group(
         self,
@@ -222,128 +214,65 @@ class ModelTabView(QtWidgets.QWidget):
         for group, visible in group_visibility.items():
             group.setVisible(visible)
 
-    def _build_run_page_widgets(
-        self, run_page: QtWidgets.QWidget, run_page_layout: QtWidgets.QVBoxLayout
-    ) -> None:
-        """Populate the Run page with output-interval and storage controls.
+    def _create_run_output_attributes(self) -> None:
+        """Create run/output widget attributes that now live in the Run dock.
 
-        The actual Run/Cancel/Snapshot/Batch buttons and progress bar now live
-        in the dedicated Run dock, but the widget attributes are still created
-        here so existing binding code keeps working.
+        The Run/Output toolbox page has been removed, but many controllers and
+        binding functions still reference these attributes directly on the
+        model tab view. Keep them alive as orphan attributes.
         """
-        run_row = QtWidgets.QHBoxLayout()
-        run_row.setObjectName("run_row_layout")
-        for attr, text, tip in [
-            ("run_btn", "Run 2D Model",
-             "Start the 2D shallow water simulation with current settings."),
-            ("batch_sim_btn", "Batch Simulation...",
-             "Open batch simulation dialog for parameter sweeps."),
-            ("cancel_btn", "Cancel",
-             "Request cancellation of the running simulation. "
-             "The solver will stop at the next safe checkpoint."),
-        ]:
-            btn = QtWidgets.QPushButton(text)
-            btn.setObjectName(attr)
-            btn.setToolTip(tip)
-            setattr(self, attr, btn)
-            run_row.addWidget(btn)
-        # Intentionally not added to run_page_layout — these live in the Run dock now.
+        self.run_btn = QtWidgets.QPushButton("Run 2D Model")
+        self.run_btn.setObjectName("run_btn")
+
+        self.batch_sim_btn = QtWidgets.QPushButton("Batch Simulation...")
+        self.batch_sim_btn.setObjectName("batch_sim_btn")
+
+        self.cancel_btn = QtWidgets.QPushButton("Cancel")
+        self.cancel_btn.setObjectName("cancel_btn")
 
         self.progress_bar = QtWidgets.QProgressBar()
         self.progress_bar.setObjectName("progress_bar")
-        self.progress_bar.setToolTip(
-            "Simulation progress indicator. Shows percentage complete "
-            "and current timestep information during model execution."
-        )
         self.progress_bar.setValue(0)
-        # Intentionally not added to run_page_layout.
 
-        snap_row = QtWidgets.QHBoxLayout()
-        snap_row.setObjectName("run_snapshot_row_layout")
         self.output_interval_edit = QtWidgets.QLineEdit("00:30")
         self.output_interval_edit.setObjectName("output_interval_edit")
-        self.output_interval_edit.setToolTip(
-            "Time interval between 2D mesh result output writes. "
-            "Format: decimal hours (e.g. 0.5) or HH:MM (e.g. 00:30). "
-            "Smaller intervals produce larger result files."
-        )
+
         self.line_output_interval_edit = QtWidgets.QLineEdit("00:05")
         self.line_output_interval_edit.setObjectName("line_output_interval_edit")
-        self.line_output_interval_edit.setToolTip(
-            "Time interval between sample-line (cross-section) result outputs. "
-            "Format: decimal hours or HH:MM. Default: 00:05 (5 min)."
-        )
-        snap_row.addWidget(QtWidgets.QLabel("Output interval (hr or HH:MM):"))
-        snap_row.addWidget(self.output_interval_edit)
-        snap_row.addWidget(QtWidgets.QLabel("Line output interval:"))
-        snap_row.addWidget(self.line_output_interval_edit)
-        run_page_layout.addLayout(snap_row)
 
-        debug_row = QtWidgets.QHBoxLayout()
-        debug_row.setObjectName("run_debug_row_layout")
-        for attr, text, tip in [
-            ("preview_overrides_btn", "Preview Overrides",
-             "Display a summary of all current parameter overrides "
-             "before running the simulation."),
-            ("preview_coupling_btn", "Preview Drainage/Structure Coupling",
-             "Preview the 1D-2D coupling configuration for drainage "
-             "and hydraulic structures before running."),
-            ("snapshot_btn", "Fetch Device Results",
-             "Save the current model state snapshot during a running simulation. "
-             "Useful for debugging transient behavior."),
-        ]:
-            btn = QtWidgets.QPushButton(text)
-            btn.setObjectName(attr)
-            btn.setToolTip(tip)
-            setattr(self, attr, btn)
-            debug_row.addWidget(btn)
-        # Intentionally not added to run_page_layout — snapshot lives in the Run dock now.
+        self.preview_overrides_btn = QtWidgets.QPushButton("Preview Overrides")
+        self.preview_overrides_btn.setObjectName("preview_overrides_btn")
 
-        load_row = QtWidgets.QHBoxLayout()
-        load_row.setObjectName("load_results_row_layout")
+        self.preview_coupling_btn = QtWidgets.QPushButton("Preview Drainage/Structure Coupling")
+        self.preview_coupling_btn.setObjectName("preview_coupling_btn")
+
+        self.snapshot_btn = QtWidgets.QPushButton("Fetch Device Results")
+        self.snapshot_btn.setObjectName("snapshot_btn")
+
         self.results_table_name_edit = QtWidgets.QLineEdit()
         self.results_table_name_edit.setObjectName("results_table_name_edit")
-        self.results_table_name_edit.setToolTip(
-            "Optional prefix for GeoPackage result table names. "
-            "Useful when storing multiple model runs in the same GeoPackage."
-        )
-        self.results_table_name_edit.setPlaceholderText("optional table prefix")
-        load_row.addWidget(QtWidgets.QLabel("Table prefix:"))
-        load_row.addWidget(self.results_table_name_edit)
+
         self.results_gpkg_path_edit = QtWidgets.QLineEdit()
         self.results_gpkg_path_edit.setObjectName("results_gpkg_path_edit")
-        self.results_gpkg_path_edit.setToolTip(
-            "Path to the output GeoPackage for storing simulation results. "
-            "Leave empty to use the model GeoPackage."
-        )
-        self.results_gpkg_path_edit.setPlaceholderText("GeoPackage path (optional)")
-        load_row.addWidget(QtWidgets.QLabel("GPKG:"))
-        load_row.addWidget(self.results_gpkg_path_edit)
+
         self.select_results_gpkg_btn = QtWidgets.QPushButton("Browse...")
         self.select_results_gpkg_btn.setObjectName("select_results_gpkg_btn")
-        self.select_results_gpkg_btn.setToolTip(
-            "Browse for an existing GeoPackage to store/load simulation results."
-        )
-        self.select_results_gpkg_btn.clicked.connect(self._on_select_results_gpkg)
-        load_row.addWidget(self.select_results_gpkg_btn)
+
         self.load_run_settings_btn = QtWidgets.QPushButton("Load Model Config from GPKG...")
         self.load_run_settings_btn.setObjectName("load_run_settings_btn")
-        self.load_run_settings_btn.setToolTip(
-            "Open a GeoPackage and restore a saved simulation configuration "
-            "(all widget values, solver params, and layer references)."
-        )
-        load_row.addWidget(self.load_run_settings_btn)
+
         self.save_settings_btn = QtWidgets.QPushButton("Save Config to GPKG...")
         self.save_settings_btn.setObjectName("save_settings_btn")
-        self.save_settings_btn.setToolTip(
-            "Save the current widget configuration to the active GeoPackage "
-            "so it can be restored later via Load Config."
-        )
-        load_row.addWidget(self.save_settings_btn)
-        load_row.addStretch(1)
-        run_page_layout.addLayout(load_row)
 
-        run_page_layout.addStretch(1)
+    def _build_run_page_widgets(
+        self, run_page: QtWidgets.QWidget, run_page_layout: QtWidgets.QVBoxLayout
+    ) -> None:
+        """DEPRECATED: the Run/Output page has been moved to the Run dock.
+
+        Kept as a no-op shim so any external callers that still invoke it do not
+        break. All attributes are created in ``_create_run_output_attributes``.
+        """
+        _ = (run_page, run_page_layout)
 
     def _build_solver_form_widgets(self, param_form: QtWidgets.QFormLayout) -> None:
         """Populate the Solver Parameters page with grouped controls."""

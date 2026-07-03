@@ -65,9 +65,17 @@ class TestModelTabView(unittest.TestCase):
     def test_view_has_run_page(self):
         view = self._make_view()
         page = view.findChild(QWidget, "model_run_page")
-        self.assertIsNotNone(page)
+        self.assertIsNone(page)
 
-    def test_view_has_preview_overrides_btn(self):
+    def test_run_output_widgets_still_exist_as_attributes(self):
+        view = self._make_view()
+        for attr in ("run_btn", "cancel_btn", "batch_sim_btn", "progress_bar",
+                     "output_interval_edit", "line_output_interval_edit",
+                     "preview_overrides_btn", "preview_coupling_btn", "snapshot_btn",
+                     "results_table_name_edit", "results_gpkg_path_edit",
+                     "select_results_gpkg_btn", "load_run_settings_btn", "save_settings_btn"):
+            with self.subTest(attr=attr):
+                self.assertTrue(hasattr(view, attr), f"Missing orphaned attribute: {attr}")
         view = self._make_view()
         self.assertIsInstance(view.preview_overrides_btn, QPushButton)
         self.assertEqual(view.preview_overrides_btn.objectName(), "preview_overrides_btn")
@@ -434,14 +442,14 @@ class TestModelTabView(unittest.TestCase):
         view = self._make_view()
         self.assertIsInstance(view.model_toolbox, QToolBox)
 
-    def test_view_toolbox_has_five_pages(self):
+    def test_view_toolbox_has_four_pages(self):
         view = self._make_view()
-        self.assertEqual(view.model_toolbox.count(), 5)
+        self.assertEqual(view.model_toolbox.count(), 4)
 
     def test_view_pages_have_expanding_size_policy(self):
         view = self._make_view()
         from qgis.PyQt.QtWidgets import QSizePolicy
-        for page_name in ("model_solver_page", "model_rain_page", "model_stability_page", "model_drain_page", "model_run_page"):
+        for page_name in ("model_solver_page", "model_rain_page", "model_stability_page", "model_drain_page"):
             page = view.findChild(QWidget, page_name)
             self.assertIsNotNone(page)
             self.assertEqual(page.sizePolicy().verticalPolicy(), QSizePolicy.Expanding)
@@ -533,13 +541,11 @@ class TestModelTabView(unittest.TestCase):
         self.assertIsInstance(view.batch_sim_btn, QPushButton)
         self.assertIsInstance(view.snapshot_btn, QPushButton)
 
-    def test_run_controls_are_not_added_to_run_page_layout(self):
+    def test_run_controls_are_orphan_attributes(self):
         view = self._make_view()
-        run_page = view.findChild(QWidget, "model_run_page")
-        self.assertIsNotNone(run_page)
-        self.assertIsNone(run_page.findChild(QPushButton, "run_btn"))
-        self.assertIsNone(run_page.findChild(QPushButton, "cancel_btn"))
-        self.assertIsNone(run_page.findChild(QProgressBar, "progress_bar"))
+        self.assertIsNone(view.run_btn.parent())
+        self.assertIsNone(view.cancel_btn.parent())
+        self.assertIsNone(view.progress_bar.parent())
 
 
 if __name__ == "__main__":
