@@ -426,7 +426,7 @@ def sample_line_metrics(
         wet          — (P,) int32, 1 if wet, 0 if dry
         flow_qn      — (P,) float64, normal unit discharge (m²/s)
     """
-    if h.size == 0 or line_xy.shape[0] < 2:
+    if h.size == 0 or (sample_map is None and line_xy.shape[0] < 2):
         return _empty_metrics()
 
     if sample_map is None:

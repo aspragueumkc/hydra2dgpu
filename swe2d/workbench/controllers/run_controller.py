@@ -14,7 +14,7 @@ import datetime
 import logging
 import os
 import time
-from typing import TYPE_CHECKING, Any, Dict, List, Optional
+from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple
 
 import numpy as np
 
@@ -994,6 +994,22 @@ class RunController:
 
             save_mesh_results = bool(wp["save_mesh_results_to_gpkg_chk"])
             max_results = backend.get_max_tracking() if save_mesh_results else None
+            coupling_snapshots: Dict[Tuple[str, str, str], Dict[str, object]] = {}
+            if wp.get("save_coupling_results_to_gpkg_chk") and results_data is not None:
+                snap_idx = int(getattr(results_data, "_coupling_snap_idx", 0))
+                for key, d in getattr(results_data, "_live_coupling", {}).items():
+                    t_s = d.get("t_s")
+                    values = d.get("values")
+                    if t_s is None or values is None:
+                        continue
+                    n = min(int(t_s.size), int(values.size), snap_idx)
+                    if n <= 0:
+                        continue
+                    coupling_snapshots[key] = {
+                        "object_name": d.get("object_name", key[1]),
+                        "times": np.asarray(t_s[:n], dtype=np.float64),
+                        "values": np.asarray(values[:n], dtype=np.float64),
+                    }
             run_finalizer.finalize_and_persist(
                 h=h,
                 hu=hu,
@@ -1026,6 +1042,7 @@ class RunController:
                 sample_map=sample_map,
                 cell_solver_z=cell_solver_z,
                 sample_line_metrics_callback=view._sample_line_metrics,
+                coupling_snapshots=coupling_snapshots,
             )
 
             return _result_data
