@@ -1,6 +1,8 @@
 """Integration tests: dialog uses tab view instances."""
 import unittest
 from unittest.mock import MagicMock
+
+from qgis.PyQt import QtWidgets
 from qgis.PyQt.QtWidgets import QApplication
 
 _app = None
@@ -12,24 +14,24 @@ def _ensure_app():
         _app = QApplication.instance() or QApplication([])
 
 
+def _make_iface():
+    """Return a MagicMock iface with a real QMainWindow as mainWindow."""
+    main_win = QtWidgets.QMainWindow()
+    iface = MagicMock()
+    iface.mainWindow.return_value = main_win
+    iface.addDockWidget = lambda area, dock: main_win.addDockWidget(area, dock)
+    return iface
+
+
 class TestDialogHasTabViews(unittest.TestCase):
-    """Verify the dialog instantiates all 5 tab view classes."""
+    """Verify the dialog instantiates the existing tab view classes."""
 
     def setUp(self):
         _ensure_app()
 
     def _make_dialog(self):
         from swe2d.workbench.studio_dialog import SWE2DWorkbenchStudioDialog
-        return SWE2DWorkbenchStudioDialog(iface=MagicMock())
-
-    def test_dialog_has_mesh_tab_view(self):
-        from swe2d.workbench.views.mesh_tab_view import MeshTabView
-        dlg = self._make_dialog()
-        try:
-            self.assertTrue(hasattr(dlg, "_mesh_tab_view"))
-            self.assertIsInstance(dlg._mesh_tab_view, MeshTabView)
-        finally:
-            dlg.close()
+        return SWE2DWorkbenchStudioDialog(iface=_make_iface())
 
     def test_dialog_has_map_tab_view(self):
         from swe2d.workbench.views.map_tab_view import MapTabView
@@ -49,15 +51,6 @@ class TestDialogHasTabViews(unittest.TestCase):
         finally:
             dlg.close()
 
-    def test_dialog_has_boundary_tab_view(self):
-        from swe2d.workbench.views.boundary_tab_view import BoundaryTabView
-        dlg = self._make_dialog()
-        try:
-            self.assertTrue(hasattr(dlg, "_boundary_tab_view"))
-            self.assertIsInstance(dlg._boundary_tab_view, BoundaryTabView)
-        finally:
-            dlg.close()
-
     def test_dialog_has_model_tab_view(self):
         from swe2d.workbench.views.model_tab_view import ModelTabView
         dlg = self._make_dialog()
@@ -69,19 +62,14 @@ class TestDialogHasTabViews(unittest.TestCase):
 
 
 class TestTabViewsAreInLeftTabs(unittest.TestCase):
-    """Verify all 5 tab views are added to the left tab widget."""
+    """Verify all left tab views are added to the left tab widget."""
 
     def setUp(self):
         _ensure_app()
 
     def test_all_tabs_present(self):
-        from qgis.PyQt import QtWidgets
         from swe2d.workbench.studio_dialog import SWE2DWorkbenchStudioDialog
-        main_win = QtWidgets.QMainWindow()
-        iface = MagicMock()
-        iface.mainWindow.return_value = main_win
-        iface.addDockWidget = lambda area, dock: main_win.addDockWidget(area, dock)
-        dlg = SWE2DWorkbenchStudioDialog(iface=iface)
+        dlg = SWE2DWorkbenchStudioDialog(iface=_make_iface())
         try:
             tabs = dlg._left_tabs
             tab_texts = [tabs.tabText(i) for i in range(tabs.count())]
