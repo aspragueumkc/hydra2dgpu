@@ -61,6 +61,16 @@ class TestWorkbenchDialogBuilder(unittest.TestCase):
         self.assertTrue(callable(builder.configure))
 
 
+def _make_iface():
+    """Return a MagicMock iface with a real QMainWindow as mainWindow."""
+    from qgis.PyQt import QtWidgets
+    main_win = QtWidgets.QMainWindow()
+    iface = MagicMock()
+    iface.mainWindow.return_value = main_win
+    iface.addDockWidget = lambda area, dock: main_win.addDockWidget(area, dock)
+    return iface
+
+
 class TestThinInitPattern(unittest.TestCase):
     """Verify ``__init__`` is a thin bootstrapper that delegates to builder.
 
@@ -86,7 +96,7 @@ class TestThinInitPattern(unittest.TestCase):
             MockBuilder.return_value = mock_instance
 
             from swe2d.workbench.studio_dialog import SWE2DWorkbenchStudioDialog
-            dlg = SWE2DWorkbenchStudioDialog(iface=MagicMock())
+            dlg = SWE2DWorkbenchStudioDialog(iface=_make_iface())
             try:
                 MockBuilder.assert_called_once_with(dlg)
                 mock_instance.configure.assert_called_once()
@@ -96,7 +106,7 @@ class TestThinInitPattern(unittest.TestCase):
     def test_init_sets_window_title(self):
         """The dialog sets its window title before the builder runs."""
         from swe2d.workbench.studio_dialog import SWE2DWorkbenchStudioDialog
-        dlg = SWE2DWorkbenchStudioDialog(iface=MagicMock())
+        dlg = SWE2DWorkbenchStudioDialog(iface=_make_iface())
         try:
             self.assertEqual(dlg.windowTitle(), "2D SWE Workbench (Studio)")
         finally:
@@ -105,7 +115,7 @@ class TestThinInitPattern(unittest.TestCase):
     def test_init_creates_main_window(self):
         """The builder should create the main window during configure()."""
         from swe2d.workbench.studio_dialog import SWE2DWorkbenchStudioDialog
-        dlg = SWE2DWorkbenchStudioDialog(iface=MagicMock())
+        dlg = SWE2DWorkbenchStudioDialog(iface=_make_iface())
         try:
             self.assertIsNotNone(dlg._studio_main_window)
         finally:
@@ -124,6 +134,14 @@ class TestThinInitPattern(unittest.TestCase):
         self.assertNotIn("sqlite3", source)
         self.assertNotIn("numpy", source)
         self.assertNotIn("json.", source)
+
+    def test_keyboard_shortcuts_constant_exists(self):
+        from swe2d.workbench.studio_dialog import SWE2DWorkbenchStudioDialog, KEYBOARD_SHORTCUTS
+        self.assertIsInstance(KEYBOARD_SHORTCUTS, list)
+        self.assertGreaterEqual(len(KEYBOARD_SHORTCUTS), 3)
+        names = [s[0] for s in KEYBOARD_SHORTCUTS]
+        self.assertIn("run", names)
+        self.assertIn("cancel", names)
 
 
 if __name__ == "__main__":
