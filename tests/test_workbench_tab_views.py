@@ -84,6 +84,14 @@ class TestMapTabView(unittest.TestCase):
                     f"MapTabView missing tool widget: {attr}",
                 )
 
+    def test_map_actions_layout_is_form(self):
+        from qgis.PyQt.QtWidgets import QFormLayout
+        from swe2d.workbench.views.map_tab_view import MapTabView
+        view = MapTabView()
+        self.assertIsInstance(
+            view.findChild(QFormLayout, "map_actions_layout"), QFormLayout
+        )
+
     def test_is_qwidget_subclass(self):
         from qgis.PyQt import QtWidgets
         from swe2d.workbench.views.map_tab_view import MapTabView

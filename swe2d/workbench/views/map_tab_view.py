@@ -239,9 +239,9 @@ class MapTabView(QtWidgets.QWidget):
         """Build the Mesh Setup page with mesh I/O and BC controls."""
         page = QtWidgets.QWidget()
         page.setObjectName("map_actions_page")
-        actions_layout = QtWidgets.QGridLayout(page)
+        actions_layout = QtWidgets.QFormLayout(page)
         actions_layout.setObjectName("map_actions_layout")
-        actions_layout.setContentsMargins(0, 0, 0, 0)
+        actions_layout.setContentsMargins(4, 4, 4, 4)
 
         btn_specs = [
             ("load_model_gpkg_btn", "Load 2D Model GeoPackage"),
@@ -254,12 +254,11 @@ class MapTabView(QtWidgets.QWidget):
             ("export_results_ugrid_btn", "Export Results to UGRID"),
             ("load_mesh_gpkg_btn", "Load Mesh from GPKG..."),
         ]
-        widgets = {}
         for attr, text in btn_specs:
             btn = QtWidgets.QPushButton(text)
             btn.setObjectName(attr)
             setattr(self, attr, btn)
-            widgets[attr] = btn
+            actions_layout.addRow(btn)
 
         self.terrain_to_nodes_btn.setText("Assign Mesh Node Z From Terrain")
         self.pull_node_z_btn.setText("Pull Mesh Node Z From Nodes Layer")
@@ -294,27 +293,9 @@ class MapTabView(QtWidgets.QWidget):
             "Open a GeoPackage and load a mesh from it."
         )
 
-        layout_slots = [
-            (0, "load_model_gpkg_btn", 1, 2),
-            (1, "export_mesh_layers_btn", 1, 2),
-            (2, "export_mesh_ugrid_btn", 1, 2),
-            (3, "save_mesh_gpkg_btn", 1, 2),
-            (4, "import_mesh_layers_btn", 1, 2),
-            (5, "terrain_to_nodes_btn", 1, 2),
-            (6, "pull_node_z_btn", 1, 2),
-            (7, "export_results_ugrid_btn", 1, 2),
-            (8, "load_mesh_gpkg_btn", 1, 2),
-        ]
-        col = 0
-        for row, attr, rspan, cspan in layout_slots:
-            w = widgets[attr]
-            if actions_layout.indexOf(w) < 0:
-                actions_layout.addWidget(w, row, col, rspan, cspan)
-            col = (col + cspan) % 2
-
         # Boundary condition controls
         sep = QtWidgets.QLabel("<b>Boundary Conditions</b>")
-        actions_layout.addWidget(sep, 10, 0, 1, 2)
+        actions_layout.addRow(sep)
 
         self.default_bc_type_combo = QtWidgets.QComboBox()
         self.default_bc_type_combo.setObjectName("default_bc_type_combo")
@@ -327,8 +308,7 @@ class MapTabView(QtWidgets.QWidget):
         for label, code in _BC_OPTIONS:
             self.default_bc_type_combo.addItem(label, code)
         self.default_bc_type_combo.setCurrentIndex(2)
-        actions_layout.addWidget(QtWidgets.QLabel("Default BC type:"), 11, 0)
-        actions_layout.addWidget(self.default_bc_type_combo, 11, 1)
+        actions_layout.addRow("Default BC type:", self.default_bc_type_combo)
 
         self.inflow_progressive_chk = QtWidgets.QCheckBox("Inflow progressive")
         self.inflow_progressive_chk.setObjectName("inflow_progressive_chk")
@@ -337,7 +317,7 @@ class MapTabView(QtWidgets.QWidget):
             "to avoid numerical shock from a sudden full-discharge boundary."
         )
         self.inflow_progressive_chk.setChecked(False)
-        actions_layout.addWidget(self.inflow_progressive_chk, 12, 0, 1, 2)
+        actions_layout.addRow(self.inflow_progressive_chk)
 
         self.uniform_inflow_velocity_chk = QtWidgets.QCheckBox("Uniform inflow velocity")
         self.uniform_inflow_velocity_chk.setObjectName("uniform_inflow_velocity_chk")
@@ -346,9 +326,15 @@ class MapTabView(QtWidgets.QWidget):
             "Leave unchecked for a more realistic parabolic (shear) velocity distribution."
         )
         self.uniform_inflow_velocity_chk.setChecked(False)
-        actions_layout.addWidget(self.uniform_inflow_velocity_chk, 13, 0, 1, 2)
+        actions_layout.addRow(self.uniform_inflow_velocity_chk)
 
-        actions_layout.setRowStretch(14, 1)
+        actions_layout.addItem(
+            QtWidgets.QSpacerItem(
+                0, 0,
+                QtWidgets.QSizePolicy.Minimum,
+                QtWidgets.QSizePolicy.Expanding,
+            )
+        )
 
         toolbox.addItem(page, "Mesh Setup")
 
