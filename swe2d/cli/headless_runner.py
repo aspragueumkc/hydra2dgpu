@@ -78,7 +78,16 @@ class _HeadlessFinalizationView:
                         run_wallclock_start: str, run_wallclock_end: str,
                         run_duration_wallclock_s: float, run_log_text: str,
                         *, metadata: Dict[str, object]) -> None:
-        pass
+        from swe2d.results.run_log_storage import persist_run_log_to_geopackage
+        persist_run_log_to_geopackage(
+            gpkg_path=gpkg_path,
+            run_id=run_id,
+            start_wallclock=run_wallclock_start,
+            end_wallclock=run_wallclock_end,
+            duration_s=run_duration_wallclock_s,
+            log_text=run_log_text,
+            metadata=metadata,
+        )
 
     def is_cancel_requested(self) -> bool:
         return False

@@ -7,12 +7,15 @@ Owns a QTabWidget with tabs:
 """
 from __future__ import annotations
 
+import logging
 from typing import Any, Dict, Optional
 
 from qgis.PyQt import QtCore, QtWidgets
 
 from swe2d.workbench.views.studio_viewer_pg import PGTimeSeriesWidget, _HAVE_PG
 from swe2d.workbench.views.studio_viewer_profile_pg import PGProfileWidget
+
+logger = logging.getLogger(__name__)
 
 _TAB_MODES = ["Mesh", "Time Series", "Profile"]
 
@@ -96,12 +99,12 @@ class SWE2DStudioViewer(QtWidgets.QWidget):
 
     def refresh(self) -> None:
         """Refresh all plot widgets."""
-        for w in self._plot_widgets.values():
+        for mode, w in self._plot_widgets.items():
             if hasattr(w, "refresh"):
                 try:
                     w.refresh()
                 except Exception:
-                    pass
+                    logger.exception("Plot widget refresh failed for %s", mode)
 
     @property
     def tab_widget(self) -> QtWidgets.QTabWidget:

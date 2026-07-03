@@ -703,6 +703,7 @@ class PGTimeSeriesWidget(QtWidgets.QWidget):
 
         if not run_records:
             self._plot_widget.clear()
+            self._plot_widget.addLegend()
             self._plot_widget.plot([0], [0], pen=None)
             text = pg.TextItem("No data", anchor=(0.5, 0.5), color=(128, 128, 128))
             self._plot_widget.addItem(text)
@@ -713,6 +714,7 @@ class PGTimeSeriesWidget(QtWidgets.QWidget):
         self._plot_widget.setLabel("left", ylabel)
 
         self._plot_widget.clear()
+        self._plot_widget.addLegend()
         self._plot_items = []
         self._hover_vline.setVisible(False)
         self._hover_hline.setVisible(False)

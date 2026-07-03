@@ -126,11 +126,28 @@ def find_nearest_timestep(gpkg_path: str, run_id: str, line_id: int, t_sec: floa
     return float(times[int(np.argmin(np.abs(times - t_sec)))])
 
 
-def load_structure_flows_at_time(gpkg_path: str, run_id: str, t_sec: float) -> List[Dict]:
-    """Load structure flow values from baked coupling at nearest time."""
+def load_structure_flows_at_time(source, run_id: str, t_sec: float) -> List[Dict]:
+    """Load structure flow values at nearest time.
+
+    Parameters
+    ----------
+    source : str | SWE2DResultsData
+        Either a GPKG path (string) or a live results-data object.  When a
+        live data object is supplied (used during live runs, when the run
+        record carries an empty ``gpkg_path``), structure flows are read
+        from ``_live_coupling`` via :meth:`get_structure_flows_at_time`.
+    run_id : str
+    t_sec : float
+    """
+    # Live-data path — duck-typed like the other load_* delegates.
+    if not isinstance(source, str):
+        if hasattr(source, "get_structure_flows_at_time"):
+            return list(source.get_structure_flows_at_time(run_id, t_sec))
+        return []
+
     from swe2d.services.gpkg_persistence_service import load_baked_coupling_timeseries
     # Probe for structure/metrics from the baked coupling table
-    conn = _conn(gpkg_path)
+    conn = _conn(source)
     if conn is None:
         return []
     try:
@@ -142,7 +159,7 @@ def load_structure_flows_at_time(gpkg_path: str, run_id: str, t_sec: float) -> L
         results = []
         for r in rows:
             times, values = load_baked_coupling_timeseries(
-                gpkg_path, run_id, str(r[0]), str(r[1]), str(r[3]),
+                source, run_id, str(r[0]), str(r[1]), str(r[3]),
             )
             if times is not None and times.size > 0:
                 i = int(np.argmin(np.abs(times - t_sec)))
@@ -156,6 +173,7 @@ def load_structure_flows_at_time(gpkg_path: str, run_id: str, t_sec: float) -> L
                 })
         return results
     except Exception:
+        logger.warning("load_structure_flows_at_time: GPKG read failed", exc_info=True)
         return []
     finally:
         conn.close()

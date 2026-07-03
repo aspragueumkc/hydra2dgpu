@@ -844,20 +844,36 @@ class RunController:
                 """Called by reporter after device snapshots are read to host.
 
                 D2H copy + UI sync only.  GPKG persistence happens at finalize.
+                Each step is in its own try/except so a failure in one
+                (e.g. overlay sync) does not block the others (e.g. plot refresh).
                 """
+                rd = getattr(view, "_results_data", None)
+                if rd is None:
+                    return
+                temporal = getattr(view, "_temporal_dock", None)
+                if temporal is not None:
+                    try:
+                        temporal.set_data(rd)
+                    except Exception as exc:
+                        logger.warning("Snapshot readback: temporal sync failed", exc_info=True)
+                        view._log(f"[SnapReadback] temporal sync failed: {exc}")
                 try:
-                    rd = getattr(view, "_results_data", None)
-                    if rd is not None:
-                        temporal = getattr(view, "_temporal_dock", None)
-                        if temporal is not None:
-                            temporal.set_data(rd)
-                        view._sync_high_perf_overlay_data()
-                        live_ts = rd.get_live_snapshot_timesteps()
-                        if live_ts:
-                            view._update_high_perf_overlay_time(float(live_ts[-1][0]))
-                        view._refresh_plot()
-                except Exception:
-                    logger.warning("Snapshot readback UI sync failed", exc_info=True)
+                    view._sync_high_perf_overlay_data()
+                except Exception as exc:
+                    logger.warning("Snapshot readback: overlay sync failed", exc_info=True)
+                    view._log(f"[SnapReadback] overlay sync failed: {exc}")
+                try:
+                    live_ts = rd.get_live_snapshot_timesteps()
+                    if live_ts:
+                        view._update_high_perf_overlay_time(float(live_ts[-1][0]))
+                except Exception as exc:
+                    logger.warning("Snapshot readback: overlay time update failed", exc_info=True)
+                    view._log(f"[SnapReadback] overlay time update failed: {exc}")
+                try:
+                    view._refresh_plot()
+                except Exception as exc:
+                    logger.warning("Snapshot readback: plot refresh failed", exc_info=True)
+                    view._log(f"[SnapReadback] plot refresh failed: {exc}")
             runtime_reporter.set_post_readback_callback(_on_snapshot_readback)
 
             log_fn("The numbers they go UP! They go UP UP UP!!!") # FVM Loop start meme
@@ -936,6 +952,18 @@ class RunController:
                     rd = getattr(view, "_results_data", None)
                     if timesteps and rd is not None:
                         rd.set_live_snapshot_timesteps(timesteps, t_sec=float(t_accum))
+                        # Populate live line TS + profile arrays from the
+                        # final snapshot set so viewers render immediately,
+                        # before finalize_and_persist writes to GPKG.
+                        if sample_map and view._sample_line_metrics is not None:
+                            try:
+                                rd.populate_live_line_metrics(
+                                    sample_map=sample_map,
+                                    sample_callback=view._sample_line_metrics,
+                                    cell_solver_z=cell_solver_z,
+                                )
+                            except Exception as exc:
+                                log_fn(f"[SnapReadback] live line metrics failed: {exc}")
                 except Exception as exc:
                     log_fn(f"[SnapReadback] Device snapshot readback failed: {exc}")
             h, hu, hv = backend.get_state()
@@ -1173,19 +1201,22 @@ class RunController:
                 temporal = getattr(view, "_temporal_dock", None)
                 if temporal is not None:
                     temporal.set_data(results_data)
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.warning("on_snapshot: temporal dock sync failed", exc_info=True)
+                view._log(f"[Snapshot] temporal dock sync failed: {exc}")
             try:
                 view._sync_high_perf_overlay_data()
                 live_ts = results_data.get_live_snapshot_timesteps()
                 if live_ts:
                     view._update_high_perf_overlay_time(float(live_ts[-1][0]))
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.warning("on_snapshot: overlay sync failed", exc_info=True)
+                view._log(f"[Snapshot] overlay sync failed: {exc}")
             try:
                 view._refresh_plot()
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.warning("on_snapshot: plot refresh failed", exc_info=True)
+                view._log(f"[Snapshot] plot refresh failed: {exc}")
 
     def on_preview_overrides(self) -> None:
         """Compute and display a summary of BC and Manning overrides.

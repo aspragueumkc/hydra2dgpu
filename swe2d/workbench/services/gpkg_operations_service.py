@@ -286,6 +286,27 @@ def delete_run(gpkg_path: str, run_id: str) -> None:
             except sqlite3.Error as exc:
                 logger.error("Failed to delete run log entry for '%s': %s", run_id, exc)
 
+        # Delete baked result rows for this run_id so they don't accumulate as
+        # orphan rows after the run log / per-run tables are removed.
+        for baked_tbl in (
+            "swe2d_baked_results",
+            "swe2d_baked_line_ts",
+            "swe2d_baked_line_profiles",
+            "swe2d_baked_coupling",
+        ):
+            cur.execute(
+                "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?",
+                (baked_tbl,),
+            )
+            if cur.fetchone() is not None:
+                try:
+                    cur.execute(
+                        f"DELETE FROM {_quote_sqlite_ident(baked_tbl)} WHERE run_id=?",
+                        (run_id,),
+                    )
+                except sqlite3.Error as exc:
+                    logger.error("Failed to delete from %s for run '%s': %s", baked_tbl, run_id, exc)
+
         conn.commit()
 
         if deleted_tables:

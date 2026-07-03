@@ -39,6 +39,24 @@ _PERSISTENCE_GROUP = "Backwater2DWorkbench"
 _PERSISTENCE_KEY = "swe2d_results_panel_state"
 
 
+def _stack_per_snapshot(arrs, n_sta: int, dtype) -> np.ndarray:
+    """Stack a list of per-snapshot 1D arrays into a 2D (n_snaps × n_sta) array.
+
+    Each entry in *arrs* is the per-station values for one snapshot.  Rows
+    shorter or longer than *n_sta* are truncated/padded with zeros so the
+    final array is rectangular.
+    """
+    n_ts = len(arrs)
+    out = np.zeros((n_ts, n_sta), dtype=dtype)
+    for i, a in enumerate(arrs):
+        v = np.asarray(a, dtype=dtype).ravel()
+        if v.size >= n_sta:
+            out[i, :] = v[:n_sta]
+        else:
+            out[i, : v.size] = v
+    return out
+
+
 class SWE2DResultsData:
     """Pure data/logic layer for results.  No visible widgets."""
 
@@ -55,6 +73,11 @@ class SWE2DResultsData:
 
         # Animation (needs QTimer — acceptable Qt dependency)
         self._anim = ResultsAnimationController(fps=self._anim_fps)
+        # Keep current_time_sec / _anim_frame_idx in sync whenever the
+        # animation controller changes frame (slider, play, step buttons, or
+        # timer tick).  This slot is connected before any dialog handlers so
+        # plot widgets read the correct time inside signal callbacks.
+        self._anim.current_timestep_changed.connect(self._on_anim_timestep_changed)
 
         # Data source flag: "none", "live", "gpkg" (remains for backward compat)
         self._data_source: str = "none"
@@ -96,6 +119,11 @@ class SWE2DResultsData:
         self.prof_fill_key: str = "none"
         self.prof_cmap: str = "viridis"
         self.prof_show_structures: bool = True
+
+    def _on_anim_timestep_changed(self, t_s: float, frame_idx: int) -> None:
+        """Synchronize data-layer time state with the animation controller."""
+        self._anim_frame_idx = int(frame_idx)
+        self._current_t_sec = float(t_s)
 
     # ------------------------------------------------------------------
     # Public: run management
@@ -207,6 +235,7 @@ class SWE2DResultsData:
             self._live_hu = hu_arr
             self._live_hv = hv_arr
             self._all_timesteps = t_arr
+            self._current_t_sec = float(t_arr[0]) if t_arr.size > 0 else 0.0
             # Cast to float explicitly, using float(t) for each element
             float_times = [float(t) for t in t_arr]
             self._live_anim_count = len(float_times)
@@ -218,11 +247,15 @@ class SWE2DResultsData:
             self._live_hu = np.empty((0, 0), dtype=np.float64)
             self._live_hv = np.empty((0, 0), dtype=np.float64)
             self._all_timesteps = np.empty(0, dtype=np.float64)
+            self._current_t_sec = 0.0
             self._live_anim_count = 0
             if hasattr(self, "_anim") and self._anim is not None:
                 self._anim.set_timesteps(self._all_timesteps)
         if t_sec > 0.0 and hasattr(self, "_t_sec_to_frame_idx"):
             self._set_frame(self._t_sec_to_frame_idx(float(t_sec)))
+        elif self._all_timesteps is not None and self._all_timesteps.size > 0:
+            self._anim_frame_idx = 0
+            self._anim.set_index(0)
 
     def append_line_snapshot(self, row: dict, snap_idx: int) -> None:
         """Write a line timeseries row into pre-allocated _live_line_ts at snap_idx.
@@ -339,6 +372,138 @@ class SWE2DResultsData:
                 out.append(row)
         return out
 
+    def populate_live_line_metrics(
+        self,
+        sample_map,
+        sample_callback,
+        cell_solver_z,
+    ) -> None:
+        """Compute line TS + profile arrays from the current live snapshots.
+
+        Called after :meth:`set_live_snapshot_timesteps` brings device
+        snapshots back to host.  Iterates over each live snapshot, invokes
+        *sample_callback* to obtain per-line TS + profile rows, and stores
+        the results into ``_live_line_ts`` and ``_live_line_profile`` in the
+        shapes the load_* live paths expect (1D per-line arrays for TS;
+        2D (n_snaps × n_stations) arrays for profiles).
+
+        Parameters
+        ----------
+        sample_map : list of dict
+            Per-line sampling maps (cell_idx, station_m, line_id, line_name).
+        sample_callback : callable
+            ``sample_callback(sample_map, t_s, h, hu, hv, cell_bed) -> (ts_rows, prof_rows)``
+            matching the dialog's ``_sample_line_metrics`` signature.
+        cell_solver_z : ndarray or None
+            Per-cell solver bed elevation.
+        """
+        snaps = self._live_snapshot_timesteps
+        if not snaps or not sample_map or sample_callback is None:
+            return
+
+        ts_by_line: Dict[int, Dict[str, list]] = {}
+        prof_by_line: Dict[int, Dict[str, list]] = {}
+
+        for (snap_t, h_s, hu_s, hv_s) in snaps:
+            h_arr = np.asarray(h_s, dtype=np.float64)
+            hu_arr = np.asarray(hu_s, dtype=np.float64)
+            hv_arr = np.asarray(hv_s, dtype=np.float64)
+            cell_bed = (
+                np.asarray(cell_solver_z, dtype=np.float64)
+                if cell_solver_z is not None
+                else np.zeros_like(h_arr)
+            )
+            try:
+                ts_rows, prof_rows = sample_callback(
+                    sample_map, snap_t, h_arr, hu_arr, hv_arr, cell_bed,
+                )
+            except Exception:
+                continue
+            for row in ts_rows:
+                lid = int(row.get("line_id", -1))
+                if lid < 0:
+                    continue
+                d = ts_by_line.setdefault(
+                    lid,
+                    {"line_name": str(row.get("line_name", f"line_{lid}"))},
+                )
+                for key in (
+                    "depth_m", "velocity_ms", "wse_m", "bed_m",
+                    "flow_cms", "wet_frac", "fr",
+                ):
+                    d.setdefault(key, []).append(float(row.get(key, 0.0)))
+            for row in prof_rows:
+                lid = int(row.get("line_id", -1))
+                if lid < 0:
+                    continue
+                d = prof_by_line.setdefault(
+                    lid,
+                    {"line_name": str(row.get("line_name", f"line_{lid}"))},
+                )
+                sta = np.asarray(
+                    row.get("station_m", np.empty(0)), dtype=np.float64
+                )
+                if sta.size > 0 and "station_m" not in d:
+                    d["station_m"] = sta
+                    d["n_stations"] = int(sta.size)
+                for key in (
+                    "depth_m", "velocity_ms", "wse_m", "bed_m",
+                    "flow_qn", "fr",
+                ):
+                    d.setdefault(key, []).append(
+                        np.asarray(row.get(key, np.empty(0)), dtype=np.float64)
+                    )
+                d.setdefault("wet", []).append(
+                    np.asarray(row.get("wet", np.empty(0)), dtype=np.int32)
+                )
+
+        # Promote TS lists → 1D numpy arrays of length n_snaps.
+        self._live_line_ts = {}
+        for lid, d in ts_by_line.items():
+            out = {"line_name": d.get("line_name", f"line_{lid}")}
+            for key in (
+                "depth_m", "velocity_ms", "wse_m", "bed_m",
+                "flow_cms", "wet_frac", "fr",
+            ):
+                out[key] = np.asarray(d.get(key, []), dtype=np.float64)
+            self._live_line_ts[lid] = out
+
+        # Promote profile lists → 2D numpy arrays of shape (n_snaps, n_stations).
+        self._live_line_profile = {}
+        for lid, d in prof_by_line.items():
+            sta = np.asarray(
+                d.get("station_m", np.empty(0)), dtype=np.float64
+            )
+            n_sta = int(sta.size)
+            n_ts_lists = len(d.get("depth_m", []))
+            if n_sta == 0 or n_ts_lists == 0:
+                continue
+            out = {
+                "line_name": d.get("line_name", f"line_{lid}"),
+                "station_m": sta,
+                "n_stations": n_sta,
+            }
+            for key in (
+                "depth_m", "velocity_ms", "wse_m", "bed_m",
+                "flow_qn", "fr",
+            ):
+                arrs = d.get(key, [])
+                if not arrs:
+                    continue
+                try:
+                    out[key] = _stack_per_snapshot(arrs, n_sta, np.float64)
+                except Exception:
+                    out[key] = np.zeros((n_ts_lists, n_sta), dtype=np.float64)
+            wets = d.get("wet", [])
+            if wets:
+                try:
+                    out["wet"] = _stack_per_snapshot(wets, n_sta, np.int32)
+                except Exception:
+                    out["wet"] = np.zeros((n_ts_lists, n_sta), dtype=np.int32)
+            else:
+                out["wet"] = np.zeros((n_ts_lists, n_sta), dtype=np.int32)
+            self._live_line_profile[lid] = out
+
     def get_live_coupling_snapshot_rows(self) -> list:
         """Reconstruct list-of-dicts from _live_coupling numpy storage."""
         out = []
@@ -357,6 +522,36 @@ class SWE2DResultsData:
                     "t_s": float(t_s[i]),
                     "value": float(values[i]),
                 })
+        return out
+
+    def get_structure_flows_at_time(self, run_id: str, t_sec: float) -> list:
+        """Return structure coupling rows at the nearest stored timestep.
+
+        Used by :func:`swe2d.results.queries.load_structure_flows_at_time`
+        when called with a live data source (during live runs).  Mirrors the
+        GPKG path's return shape exactly so the profile viewer can treat both
+        paths uniformly.
+        """
+        out = []
+        for (component, object_id, metric), d in self._live_coupling.items():
+            if component != "structure" or metric != "flow":
+                continue
+            t_s = d.get("t_s")
+            values = d.get("values")
+            if t_s is None or values is None or t_s.size == 0:
+                continue
+            n = min(t_s.size, values.size, self._coupling_snap_idx)
+            if n == 0:
+                continue
+            i = int(np.argmin(np.abs(t_s[:n] - t_sec)))
+            out.append({
+                "component": component,
+                "object_id": object_id,
+                "object_name": d.get("object_name", ""),
+                "metric": metric,
+                "t_s": float(t_s[i]),
+                "value": float(values[i]),
+            })
         return out
 
     def get_run_records(self) -> List[RunRecord]:
@@ -597,21 +792,34 @@ class SWE2DResultsData:
     def step_forward(self) -> None:
         """Step forward."""
         self._anim.pause()
-        self._anim.step_forward()
+        idx = int(self._anim._index) + 1
+        if self._all_timesteps is not None and idx >= self._all_timesteps.size:
+            idx = 0
+        self.set_index(idx)
 
     def step_backward(self) -> None:
         """Step backward."""
         self._anim.pause()
-        self._anim.step_backward()
+        idx = int(self._anim._index) - 1
+        if self._all_timesteps is not None and idx < 0:
+            idx = max(0, self._all_timesteps.size - 1)
+        self.set_index(idx)
 
     def set_index(self, idx: int) -> None:
-        """Set index."""
-        self._anim.set_index(int(idx))
-        self._anim_frame_idx = int(self._anim._index)
+        """Set animation index and update current_time_sec BEFORE emitting.
+
+        The previous implementation called ``self._anim.set_index()`` first,
+        which synchronously emits ``current_timestep_changed``.  Plot widgets
+        connected to that signal read ``data.current_time_sec`` while it still
+        held the previous value.  We now update our own state first.
+        """
+        idx = int(idx)
+        self._anim_frame_idx = idx
         if self._all_timesteps is not None and self._all_timesteps.size > 0:
             self._current_t_sec = float(self._all_timesteps[
-                min(int(self._anim_frame_idx), self._all_timesteps.size - 1)
+                min(idx, self._all_timesteps.size - 1)
             ])
+        self._anim.set_index(idx)
 
     def set_frame_rate(self, fps: float) -> None:
         """Set frame rate."""
@@ -799,9 +1007,9 @@ class SWE2DResultsData:
             else np.empty(0, dtype=np.float64)
         )
         self._anim_frame_idx = 0
-        self._anim.set_timesteps(self._all_timesteps)
         if self._all_timesteps.size:
             self._current_t_sec = float(self._all_timesteps[0])
+        self._anim.set_timesteps(self._all_timesteps)
 
     def _t_sec_to_frame_idx(self, t_sec: float) -> int:
         """t sec to frame idx."""

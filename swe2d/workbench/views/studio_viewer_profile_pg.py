@@ -484,6 +484,7 @@ class PGProfileWidget(QtWidgets.QWidget):
 
         # Clear the plot
         self._plot_widget.clear()
+        self._plot_widget.addLegend()
         self._plot_items = []
         self._fill_items = []
         self._structure_items = []
@@ -637,7 +638,10 @@ class PGProfileWidget(QtWidgets.QWidget):
 
                 if show_structures:
                     try:
-                        rows = load_structure_flows_at_time(rec.gpkg_path, rec.run_id, t_sec)
+                        # Use the live data layer for runs without a persisted
+                        # GPKG yet (live runs carry an empty rec.gpkg_path).
+                        flow_source = rec.gpkg_path or data
+                        rows = load_structure_flows_at_time(flow_source, rec.run_id, t_sec)
                         if rows:
                             placed_ids = {str(r.get("object_id", "")) for r in structure_rows}
                             for rr in rows:
@@ -655,19 +659,30 @@ class PGProfileWidget(QtWidgets.QWidget):
                 x0_v, x1_v = view_range[0]
                 y0_v, y1_v = view_range[1]
                 y_span = max(y1_v - y0_v, 1.0e-6)
+                x_span = max(x1_v - x0_v, 1.0e-6)
+                unplaced_count = 0
                 for i, row in enumerate(structure_rows):
                     xs = float(row.get("station", float("nan")))
                     q_val = float(row.get("flow", 0.0))
                     sid = str(row.get("object_id", ""))
-                    if not np.isfinite(xs):
-                        continue
-                    vline = pg.InfiniteLine(pos=xs, angle=90, pen=pg.mkPen(color=(89, 89, 89), width=0.9, style=QtCore.Qt.PenStyle.DotLine))
-                    vline.setZValue(2)
-                    self._plot_widget.addItem(vline)
-                    self._structure_items.append(vline)
-                    y_text = y1_v - 0.02 * y_span - 0.035 * y_span * (i % 3)
-                    label = pg.TextItem(f"{sid} {q_val:.2f}", anchor=(0.5, 1.0), color=(89, 89, 89))
-                    label.setPos(xs, y_text)
+                    if np.isfinite(xs):
+                        vline = pg.InfiniteLine(pos=xs, angle=90, pen=pg.mkPen(color=(89, 89, 89), width=0.9, style=QtCore.Qt.PenStyle.DotLine))
+                        vline.setZValue(2)
+                        self._plot_widget.addItem(vline)
+                        self._structure_items.append(vline)
+                        y_text = y1_v - 0.02 * y_span - 0.035 * y_span * (i % 3)
+                        anchor = (0.5, 1.0)
+                        label_x = xs
+                    else:
+                        # Unplaced structure: no geometry available (live runs or
+                        # missing line/structure intersection).  Show as a text
+                        # label along the top-right margin so it is still visible.
+                        unplaced_count += 1
+                        anchor = (1.0, 1.0)
+                        label_x = x1_v - 0.02 * x_span
+                        y_text = y1_v - 0.02 * y_span - 0.035 * y_span * ((unplaced_count - 1) % 3)
+                    label = pg.TextItem(f"{sid} {q_val:.2f}", anchor=anchor, color=(89, 89, 89))
+                    label.setPos(label_x, y_text)
                     label.setZValue(6)
                     self._plot_widget.addItem(label)
                     self._structure_labels.append(label)
@@ -732,18 +747,19 @@ class PGProfileWidget(QtWidgets.QWidget):
 
         # ── Time title ──
         t_hr = t_sec / 3600.0
-        # pyqtgraph doesn't have set_title on PlotWidget, use a label
-        title_item = pg.LabelItem(
-            f"t = {t_hr:.3f} {_TIME_UNIT}",
-            color=(0, 0, 0),
-        )
-        # Place at top-left of the plot area
-
-        if not plotted:
-            text = pg.TextItem("No data", anchor=(0.5, 0.5), color=(128, 128, 128))
-            self._plot_widget.addItem(text)
-
         self._plot_widget.plotItem.autoRange()
+        view_range = self._plot_widget.viewRange()
+        if view_range and len(view_range) == 2:
+            x0_v, x1_v = view_range[0]
+            y0_v, y1_v = view_range[1]
+            title_text = pg.TextItem(
+                f"t = {t_hr:.3f} {_TIME_UNIT}",
+                anchor=(0.0, 1.0),
+                color=(0, 0, 0),
+            )
+            title_text.setPos(x0_v, y1_v)
+            title_text.setZValue(10)
+            self._plot_widget.addItem(title_text)
 
         if self._table_widget is not None and self._table_widget.isVisible():
             self._populate_table()
@@ -764,7 +780,13 @@ class PGProfileWidget(QtWidgets.QWidget):
         self._selected_element_id = str(self._element_id_combo.currentData() or "")
         data = self._result_data
         etype = str(self._etype_combo.currentData() or "line")
+        # Keep the internal line_id in sync so refresh() renders the right line.
         if etype == "line" and self._selected_element_id:
+            try:
+                self._line_id = int(self._selected_element_id)
+            except (ValueError, TypeError):
+                pass
+        if data is not None and etype == "line" and self._selected_element_id:
             try:
                 data.set_line_id(int(self._selected_element_id))
             except (ValueError, TypeError):

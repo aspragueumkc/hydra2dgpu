@@ -123,8 +123,6 @@ class SWE2DModelGeoPackageExplorerDialog(QtWidgets.QDialog):
             return "coupling_results"
         if t in ("swe2d_baked_results", "swe2d_baked_mesh"):
             return "mesh_results"
-        ):
-            return "conservation"
         if t.startswith("gpkg_") or t.startswith("sqlite_") or t.startswith("rtree_"):
             return "system"
         return "table"

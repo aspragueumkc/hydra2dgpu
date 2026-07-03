@@ -131,8 +131,23 @@ class SWE2DRunFinalizer:
         snapshot_timesteps: Any = None,
         coupling_snapshots: Any = None,
         precomputed_line_results: Any = None,
-    ) -> None:
-        """Compute mass-balance summary, persist results to GeoPackage, and refresh UI."""
+    ) -> Dict[str, Any]:
+        """Compute mass-balance summary, persist results to GeoPackage, and refresh UI.
+
+        Returns a status dict with keys ``ok`` (bool), ``errors`` (list of
+        persistence failures), and ``warnings`` (list of non-fatal issues).
+        Callers that previously ignored the return value are unaffected.
+        """
+        status: Dict[str, Any] = {"ok": True, "errors": [], "warnings": []}
+
+        def _record_error(msg: str, exc: Exception) -> None:
+            status["ok"] = False
+            status["errors"].append(f"{msg}: {exc}")
+            self._view.log_message(f"[ERROR] {msg}: {exc}")
+
+        def _record_warning(msg: str, exc: Exception) -> None:
+            status["warnings"].append(f"{msg}: {exc}")
+            self._view.log_message(f"[WARNING] {msg}: {exc}")
         h_end_model = np.asarray(h, dtype=np.float64).ravel()
         n_store_end = min(int(n_area), int(h_end_model.size))
         storage_end_model = float(np.sum(h_end_model[:n_store_end] * area_model[:n_store_end])) if n_store_end > 0 else 0.0
@@ -226,7 +241,7 @@ class SWE2DRunFinalizer:
                         f"in {(time.perf_counter() - _t0) * 1000:.0f} ms"
                     )
             except Exception as exc:
-                self._view.log_message(f"Baked mesh results persistence warning: {exc}")
+                _record_error("Baked mesh results persistence failed", exc)
 
             _t0 = time.perf_counter()
             try:
@@ -337,7 +352,7 @@ class SWE2DRunFinalizer:
                         f"in {(time.perf_counter() - _t0) * 1000:.0f} ms"
                     )
             except Exception as exc:
-                self._view.log_message(f"Baked line persistence warning: {exc}")
+                _record_error("Baked line persistence failed", exc)
 
             _t0 = time.perf_counter()
             _coupling_data = coupling_snapshots if coupling_snapshots is not None else {}
@@ -362,7 +377,7 @@ class SWE2DRunFinalizer:
                         f"in {(time.perf_counter() - _t0) * 1000:.0f} ms"
                     )
             except Exception as exc:
-                self._view.log_message(f"Baked coupling persistence warning: {exc}")
+                _record_error("Baked coupling persistence failed", exc)
 
         _t0 = time.perf_counter()
         try:
@@ -370,8 +385,8 @@ class SWE2DRunFinalizer:
             if snapshot_timesteps:
                 self._view.update_overlay_time(float(snapshot_timesteps[-1][0]))
             self._view.log_message(f"  overlay sync + update in {(time.perf_counter() - _t0) * 1000:.0f} ms")
-        except Exception:
-            logger.warning("Unexpected error silently caught", exc_info=True)
+        except Exception as exc:
+            _record_warning("Overlay sync failed", exc)
 
         run_wallclock_end = datetime.datetime.now().replace(microsecond=0).isoformat(sep=" ")
         run_duration_wallclock_s = max(0.0, time.perf_counter() - float(run_perf_start))
@@ -379,22 +394,29 @@ class SWE2DRunFinalizer:
         self._view.log_message(f"Run wallclock duration: {run_duration_wallclock_s:.3f} s")
         if gpkg_results_path and save_run_log and run_id:
             _t0 = time.perf_counter()
-            run_log_text = "\n".join(self._view.runtime_log_lines()[run_log_start_idx:])
+            try:
+                run_log_text = "\n".join(self._view.runtime_log_lines()[run_log_start_idx:])
+            except Exception as exc:
+                run_log_text = ""
+                _record_warning("Could not collect runtime log lines", exc)
             run_log_metadata: Dict[str, object] = {}
             try:
                 run_log_metadata = dict(self._view.collect_run_log_metadata() or {})
             except Exception:
                 run_log_metadata = {}
-            self._view.persist_run_log(
-                gpkg_results_path,
-                run_id,
-                run_wallclock_start,
-                run_wallclock_end,
-                run_duration_wallclock_s,
-                run_log_text,
-                metadata=run_log_metadata,
-            )
-            self._view.log_message(f"  run log saved to {gpkg_results_path} in {(time.perf_counter() - _t0) * 1000:.0f} ms")
+            try:
+                self._view.persist_run_log(
+                    gpkg_results_path,
+                    run_id,
+                    run_wallclock_start,
+                    run_wallclock_end,
+                    run_duration_wallclock_s,
+                    run_log_text,
+                    metadata=run_log_metadata,
+                )
+                self._view.log_message(f"  run log saved to {gpkg_results_path} in {(time.perf_counter() - _t0) * 1000:.0f} ms")
+            except Exception as exc:
+                _record_error("Run log persistence failed", exc)
 
         if thiessen_forcing is not None and rain_stats_acc["samples"] > 0:
             avg_r = rain_stats_acc["rain_mm"] / rain_stats_acc["samples"]
@@ -422,4 +444,6 @@ class SWE2DRunFinalizer:
         try:
             self._view.refresh_plot()
         except Exception as exc:
-            logger.warning("refresh_plot failed during finalization: %s", exc, exc_info=True)
+            _record_warning("refresh_plot failed during finalization", exc)
+
+        return status

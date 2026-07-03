@@ -3,15 +3,37 @@
 Extracted from SWE2DWorkbenchStudioDialog. Each function takes the dialog
 as the first parameter — this module is stateless.
 """
+import logging
 import os
 
 from qgis.PyQt import QtCore, QtWidgets
+
+logger = logging.getLogger(__name__)
+
+
+def _safe_log(dialog, message: str) -> None:
+    """Log a message to the dialog's _log if available, else to the module logger.
+
+    Never raises — used inside error-handling paths where the dialog itself
+    may be torn down.
+    """
+    log_fn = getattr(dialog, "_log", None)
+    if log_fn is not None:
+        try:
+            log_fn(message)
+            return
+        except Exception:
+            logger.warning("_safe_log: dialog._log raised", exc_info=True)
+    logger.warning(message)
 
 
 def on_run_selection_changed(dialog) -> None:
     """Update run count label and refresh overlay when run selection changes."""
     dialog.results_toolbox.update_run_count()
     dialog._overlay_controller.refresh_high_perf_canvas_overlay(None)
+    viewer = getattr(dialog, "_studio_viewer", None)
+    if viewer is not None:
+        viewer.refresh()
 
 
 def on_results_refresh(dialog) -> None:
@@ -129,6 +151,9 @@ def on_results_remove(dialog) -> None:
     if data is not None:
         data.remove_runs(keys)
     dialog.results_toolbox.refresh_run_list()
+    viewer = getattr(dialog, "_studio_viewer", None)
+    if viewer is not None:
+        viewer.refresh()
 
 
 def on_results_show_all(dialog) -> None:
@@ -137,6 +162,9 @@ def on_results_show_all(dialog) -> None:
     if data is not None:
         data.set_all_runs_visible()
     dialog.results_toolbox.refresh_run_list()
+    viewer = getattr(dialog, "_studio_viewer", None)
+    if viewer is not None:
+        viewer.refresh()
 
 
 def on_results_hide_all(dialog) -> None:
@@ -145,6 +173,9 @@ def on_results_hide_all(dialog) -> None:
     if data is not None:
         data.set_all_runs_hidden()
     dialog.results_toolbox.refresh_run_list()
+    viewer = getattr(dialog, "_studio_viewer", None)
+    if viewer is not None:
+        viewer.refresh()
 
 
 def on_results_line_selected(dialog, line_id: int) -> None:
@@ -175,6 +206,13 @@ def on_results_prof_var_changed(dialog, var_key: str) -> None:
     data = dialog.results_toolbox.get_results_data()
     if data is not None and var_key:
         data.prof_var_key = var_key
+    # Sync the pyqtgraph profile widget's combo so it matches the
+    # toolbox selection (otherwise its refresh reads the stale combo value).
+    viewer = getattr(dialog, "_studio_viewer", None)
+    if viewer is not None:
+        prof_widget = viewer.plot_widgets.get("Profile")
+        if prof_widget is not None and hasattr(prof_widget, "selected_metric"):
+            prof_widget.selected_metric = var_key
     dialog._studio_viewer.refresh()
 
 
@@ -186,10 +224,17 @@ def on_results_panel_timestep_changed(dialog, t_s: float, frame_idx: int = 0) ->
     temporal = getattr(dialog, "_temporal_dock", None)
     if temporal is not None:
         temporal.on_timestep_changed(t_s, frame_idx)
-        # Sync slider range — _rebuild_timestep_union may have changed frame_count
+        # Sync slider range — _rebuild_timestep_union may have changed frame_count.
+        # Block signals while changing the range to avoid a spurious valueChanged
+        # emission when the new range is smaller than the current slider value.
         data = dialog.results_toolbox.get_results_data()
         if data is not None and hasattr(data, "frame_count"):
-            temporal._time_slider.setRange(0, max(0, data.frame_count - 1))
+            slider = temporal._time_slider
+            slider.blockSignals(True)
+            try:
+                slider.setRange(0, max(0, data.frame_count - 1))
+            finally:
+                slider.blockSignals(False)
     if bool(getattr(dialog, "_high_perf_canvas_overlay_enabled", False)):
         # Baked path: load_mesh_snapshot_for_overlay handles both live and GPKG transparently
         last_ts = getattr(dialog, "_overlay_last_loaded_t_s", None)
@@ -219,15 +264,20 @@ def show_results_panel(dialog):
     if gpkg and gpkg != data.gpkg_path:
         data.set_gpkg_path(gpkg)
     temporal = getattr(dialog, "_temporal_dock", None)
-    if not getattr(dialog, "_results_anim_wired", False):
-        dialog._results_anim_wired = True
-        anim = getattr(data, "_anim", None)
+    # Wire signals per-animation object, not once per dialog.  If
+    # dialog._results_data is recreated (new SWE2DResultsData), the new
+    # animation controller must be connected or the slider/play buttons stop
+    # updating the overlay and plots.
+    anim = getattr(data, "_anim", None)
+    wired_anim = getattr(dialog, "_results_wired_anim", None)
+    if anim is not None and wired_anim is not anim:
         from swe2d.workbench.signal_helpers import safe_disconnect
-        if anim is not None:
-            safe_disconnect(anim.current_timestep_changed, dialog._on_results_panel_timestep_changed)
-            anim.current_timestep_changed.connect(dialog._on_results_panel_timestep_changed)
-            if temporal is not None:
-                anim.play_state_changed.connect(temporal.on_play_state_changed)
+        safe_disconnect(anim.current_timestep_changed, dialog._on_results_panel_timestep_changed)
+        anim.current_timestep_changed.connect(dialog._on_results_panel_timestep_changed)
+        if temporal is not None:
+            safe_disconnect(anim.play_state_changed, temporal.on_play_state_changed)
+            anim.play_state_changed.connect(temporal.on_play_state_changed)
+        dialog._results_wired_anim = anim
     toolbox = dialog.results_toolbox
     if toolbox is not None:
         toolbox.set_data(data)
@@ -239,15 +289,9 @@ def show_results_panel(dialog):
         temporal.set_data(data)
     try:
         dialog._refresh_plot()
-    except Exception as _e:
-
-        try:
-
-            dialog._log(f"[ERROR] Exception in studio_results_panel.py: {_e}")
-
-        except Exception:
-
-            pass
+    except Exception as exc:
+        logger.warning("show_results_panel: _refresh_plot failed", exc_info=True)
+        _safe_log(dialog, f"[ERROR] show_results_panel: {exc}")
 
 
 def on_coupling_metric_changed(dialog, metric: str) -> None:

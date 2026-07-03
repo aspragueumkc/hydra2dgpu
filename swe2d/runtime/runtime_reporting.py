@@ -7,10 +7,13 @@ Phase 9 goal: extract post-step snapshot/progress/logging reporting from
 
 from __future__ import annotations
 
+import logging
 import time
 from typing import Any, Callable, Dict, Optional
 
 import numpy as np
+
+logger = logging.getLogger(__name__)
 
 
 class SWE2DRuntimeReporter:
@@ -118,6 +121,7 @@ class SWE2DRuntimeReporter:
         # This runs on the solver thread — safe for device access.
         if self._snapshot_requested:
             self._snapshot_requested = False
+            timesteps = []
             try:
                 snap_data = backend.read_snapshots()
                 if snap_data and "t_s" in snap_data:
@@ -126,8 +130,6 @@ class SWE2DRuntimeReporter:
                     hu_arr = np.asarray(snap_data["hu"], dtype=np.float64)
                     hv_arr = np.asarray(snap_data["hv"], dtype=np.float64)
                     n_snaps = int(ts.shape[0])
-                    n_cells_snap = int(h_arr.shape[1]) if h_arr.ndim >= 2 else 0
-                    timesteps = []
                     for si in range(n_snaps):
                         timesteps.append((
                             float(ts[si]),
@@ -135,17 +137,36 @@ class SWE2DRuntimeReporter:
                             np.ascontiguousarray(hu_arr[si, :]),
                             np.ascontiguousarray(hv_arr[si, :]),
                         ))
-                    if timesteps and results_data is not None:
-                        results_data.set_live_snapshot_timesteps(timesteps)
-                        self._snapshot_ready = True
-                        # Notify the UI that fresh snapshot data is available
-                        if self._post_readback_callback is not None:
-                            try:
-                                self._post_readback_callback()
-                            except Exception:
-                                logger.warning("Post-readback callback failed", exc_info=True)
             except Exception:
                 logger.warning("Snapshot readback failed", exc_info=True)
+            if timesteps and results_data is not None:
+                try:
+                    results_data.set_live_snapshot_timesteps(timesteps)
+                except Exception:
+                    logger.warning("set_live_snapshot_timesteps failed", exc_info=True)
+                # Compute line TS + profile from the read-back snapshots so
+                # the line/profile viewers can render during live runs, not
+                # just from GPKG after finalize.  Pre-fix the reporter never
+                # invoked sample_line_metrics_callback, leaving
+                # _live_line_ts / _live_line_profile empty.
+                if sample_map and sample_line_metrics_callback is not None:
+                    try:
+                        results_data.populate_live_line_metrics(
+                            sample_map=sample_map,
+                            sample_callback=sample_line_metrics_callback,
+                            cell_solver_z=cell_solver_z,
+                        )
+                    except Exception:
+                        logger.warning(
+                            "Live line metrics computation failed", exc_info=True
+                        )
+                self._snapshot_ready = True
+                # Notify the UI that fresh snapshot data is available
+                if self._post_readback_callback is not None:
+                    try:
+                        self._post_readback_callback()
+                    except Exception:
+                        logger.warning("Post-readback callback failed", exc_info=True)
 
         _now_wall = time.perf_counter()
         if _now_wall - float(last_process_events_wall) >= float(process_events_interval_s):

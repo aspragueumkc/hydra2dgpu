@@ -610,6 +610,11 @@ def compute_max_tracking(
                 "max_hv": np.frombuffer(row[8], dtype=np.float64),
             }
         # Fallback: snapshot-resolution max
+        logger.warning(
+            "max_h_blob is NULL for run_id=%s; falling back to snapshot max "
+            "(this underestimates true per-step maxima).",
+            run_id,
+        )
         h_all = np.frombuffer(row[3], dtype=np.float64).reshape(n_ts, n_cells)
         hu_all = np.frombuffer(row[4], dtype=np.float64).reshape(n_ts, n_cells)
         hv_all = np.frombuffer(row[5], dtype=np.float64).reshape(n_ts, n_cells)
@@ -952,15 +957,23 @@ def load_baked_line_timeseries(
         ).fetchone()
         if not row:
             return {}
+        # Guard each blob against NULL — return empty arrays rather than
+        # crashing inside np.frombuffer.  wet_frac and fr have always been
+        # nullable; the others are defended defensively in case of partial
+        # writes or corruption.
+        def _f64(idx: int) -> np.ndarray:
+            v = row[idx]
+            return np.frombuffer(v, dtype=np.float64) if v is not None else np.empty(0, dtype=np.float64)
+
         return {
-            "t_s": np.frombuffer(row[1], dtype=np.float64),
-            "depth_m": np.frombuffer(row[2], dtype=np.float64),
-            "velocity_ms": np.frombuffer(row[3], dtype=np.float64),
-            "wse_m": np.frombuffer(row[4], dtype=np.float64),
-            "bed_m": np.frombuffer(row[5], dtype=np.float64),
-            "flow_cms": np.frombuffer(row[6], dtype=np.float64),
-            "wet_frac": np.frombuffer(row[7], dtype=np.float64) if row[7] else np.empty(0, dtype=np.float64),
-            "fr": np.frombuffer(row[8], dtype=np.float64) if row[8] else np.empty(0, dtype=np.float64),
+            "t_s": _f64(1),
+            "depth_m": _f64(2),
+            "velocity_ms": _f64(3),
+            "wse_m": _f64(4),
+            "bed_m": _f64(5),
+            "flow_cms": _f64(6),
+            "wet_frac": _f64(7),
+            "fr": _f64(8),
         }
     finally:
         conn.close()
@@ -994,37 +1007,36 @@ def load_baked_line_profile(
     # Live data path
     if not isinstance(source, str):
         d = source
+        # Structured live storage populated by SWE2DResultsData.populate_live_line_metrics
+        raw = getattr(d, '_live_line_profile', {}).get(line_id)
+        if isinstance(raw, dict):
+            sta = np.asarray(raw.get("station_m", np.empty(0)), dtype=np.float64)
+            if sta.size == 0:
+                return {}
+            snap_times = np.asarray(getattr(d, '_live_times', np.empty(0)), dtype=np.float64)
+            if snap_times.size == 0:
+                return {}
+            i = int(np.argmin(np.abs(snap_times - t_sec)))
+            out = {"station_m": sta}
+            for key in ("wse_m", "bed_m", "depth_m", "velocity_ms", "flow_qn", "fr"):
+                arr = raw.get(key)
+                if arr is None or not hasattr(arr, "ndim"):
+                    out[key] = np.full(sta.size, np.nan, dtype=np.float64)
+                elif arr.ndim == 2 and i < arr.shape[0]:
+                    out[key] = np.asarray(arr[i], dtype=np.float64)
+                else:
+                    out[key] = np.full(sta.size, np.nan, dtype=np.float64)
+            wet = raw.get("wet")
+            if wet is not None and hasattr(wet, "ndim") and wet.ndim == 2 and i < wet.shape[0]:
+                out["wet"] = np.asarray(wet[i], dtype=np.int32)
+            else:
+                out["wet"] = np.zeros(sta.size, dtype=np.int32)
+            return out
+        # Legacy hook for objects exposing get_line_profile_arrays
         if hasattr(d, 'get_line_profile_arrays'):
             result = d.get_line_profile_arrays(run_id, line_id, t_sec)
             if result:
                 return dict(result)
-        # Fallback: convert _live_line_profile lists to arrays
-        if hasattr(d, '_live_line_profile') and line_id in d._live_line_profile:
-            raw = d._live_line_profile[line_id]
-            times = np.asarray(raw.get("t_s", []), dtype=np.float64)
-            if times.size == 0:
-                return {}
-            i = int(np.argmin(np.abs(times - t_sec)))
-            n_sta = len(raw.get("station_m", []))
-            # Assumes fixed station count per timestep — find the grouping
-            unique_ts = np.unique(times)
-            ts_idx = {float(t): idx for idx, t in enumerate(unique_ts)}
-            mask = np.abs(times - t_sec) < 1.0  # within 1 second
-            idxs = np.where(mask)[0]
-            if len(idxs) == 0:
-                return {}
-            start, end = int(idxs[0]), int(idxs[-1]) + 1
-            stations = np.asarray(raw.get("station_m", [])[start:end], dtype=np.float64)
-            return {
-                "station_m": stations,
-                "wse_m": np.asarray(raw.get("wse_m", []), dtype=np.float64)[start:end],
-                "bed_m": np.asarray(raw.get("bed_m", []), dtype=np.float64)[start:end],
-                "depth_m": np.asarray(raw.get("depth_m", []), dtype=np.float64)[start:end],
-                "velocity_ms": np.asarray(raw.get("velocity_ms", []), dtype=np.float64)[start:end],
-                "flow_qn": np.asarray(raw.get("flow_qn", []), dtype=np.float64)[start:end],
-                "fr": np.asarray(raw.get("fr", []), dtype=np.float64)[start:end],
-                "wet": np.asarray(raw.get("wet", []), dtype=np.int32)[start:end],
-            }
         return {}
     # GPKG path
     if not source or not os.path.exists(source):
