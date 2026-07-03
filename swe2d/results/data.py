@@ -163,6 +163,11 @@ class SWE2DResultsData:
         self._live_line_profile.clear()
         self._live_coupling.clear()
         self._coupling_snap_idx = 0
+        # Drop any GPKG-expanded coupling rows cached from a previous run
+        # so viewers don't see stale data until load_coupling_records runs
+        # again for the new run.
+        self._coupling_records = []
+        self._coupling_run_id = ""
 
     def preallocate_output_schedule(
         self,
@@ -304,10 +309,14 @@ class SWE2DResultsData:
             else:
                 wet_arr[snap_idx, :] = int(wet_val)
 
-    def append_coupling_snapshot(self, row: dict) -> None:
-        """Write a coupling row into pre-allocated _live_coupling at _coupling_snap_idx.
+    def append_coupling_snapshot(self, row: dict, snap_idx: int) -> None:
+        """Write a coupling row into pre-allocated _live_coupling at *snap_idx*.
 
-        Increments _coupling_snap_idx after each write.
+        Multiple rows are typically produced per snap (drainage depth+invert,
+        link flow+length, structure flow, culvert 7-metric block).  The caller
+        must pass the same *snap_idx* for every row in a given snap so the
+        per-key arrays are written at the correct time index and no entries
+        are silently dropped.
         """
         key = (str(row.get("component", "")),
                str(row.get("object_id", "")),
@@ -317,13 +326,12 @@ class SWE2DResultsData:
         d = self._live_coupling.get(key)
         if d is None:
             return
-        idx = self._coupling_snap_idx
+        idx = int(snap_idx)
         t_s_arr = d["t_s"]
         values_arr = d["values"]
-        if idx < t_s_arr.size:
+        if 0 <= idx < t_s_arr.size:
             t_s_arr[idx] = float(row.get("t_s", 0.0))
             values_arr[idx] = float(row.get("value", 0.0))
-        self._coupling_snap_idx += 1
 
     def get_live_snapshot_timesteps(self) -> list:
         """Return the list of live mesh snapshots as (t_s, h, hu, hv) tuples."""
@@ -870,9 +878,12 @@ class SWE2DResultsData:
 
     @property
     def data_source(self) -> str:
-        """Return the current data source: 'live', 'gpkg', or 'none'."""
-        if self._live_times.size > 0:
-            return "live"
+        """Return the current data source: 'live', 'gpkg', or 'none'.
+
+        When ``set_data_source`` has been called explicitly, honor that
+        explicit choice even if ``_live_times`` is still populated from a
+        previous run.
+        """
         return self._data_source
 
     def set_data_source(self, source: str) -> None:

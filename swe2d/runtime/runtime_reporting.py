@@ -23,6 +23,9 @@ class SWE2DRuntimeReporter:
         self._snapshot_requested = False
         self._snapshot_ready = False
         self._post_readback_callback: Optional[Callable[[], None]] = None
+        # Tracks the current coupling snap index (NOT the row index).  Must
+        # advance exactly once per coupling snapshot, not once per row.
+        self._coupling_snap_idx: int = 0
 
     def request_snapshot_readback(self) -> None:
         """Set flag — next process_step will read accumulated device snapshots to host."""
@@ -112,8 +115,15 @@ class SWE2DRuntimeReporter:
             next_coupling_snap_t += float(line_output_interval_s)
             if results_data is not None and coupling_controller is not None:
                 rows = sample_coupling_object_metrics_callback(coupling_controller, t_accum, None)
+                snap_idx = self._coupling_snap_idx
                 for row in rows:
-                    results_data.append_coupling_snapshot(row)
+                    results_data.append_coupling_snapshot(row, snap_idx=snap_idx)
+                # Keep the data-layer counter in sync so readers that clamp
+                # to _coupling_snap_idx see the right window of valid entries.
+                results_data._coupling_snap_idx = max(
+                    results_data._coupling_snap_idx, snap_idx + 1
+                )
+                self._coupling_snap_idx += 1
 
         # ── On-demand snapshot readback ──────────────────────────────────
         # When request_snapshot_readback() was called (from UI button press),

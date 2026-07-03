@@ -889,26 +889,25 @@ class PGProfileWidget(QtWidgets.QWidget):
             for lid in line_ids:
                 self._element_id_combo.addItem(f"Line {lid}", lid)
         else:
-            # Coupling-based types
-            first_enabled = None
-            for rec in getattr(data, "_run_records", []):
-                if rec.enabled:
-                    first_enabled = rec
-                    break
-            if first_enabled is not None and getattr(data, "_coupling_run_id", "") != str(first_enabled.run_id):
-                data.load_coupling_records(str(first_enabled.run_id))
-            coupling = data.get_coupling_records()
+            # Coupling-based types — collect elements from ALL enabled runs
+            # so the combo shows every selectable element, not just the first.
+            data = self._result_data
             seen = set()
-            for rec in coupling:
-                if str(rec.get("component", "") or "") != etype:
+            for rec in getattr(data, "_run_records", []):
+                if not rec.enabled:
                     continue
-                oid = str(rec.get("object_id", "") or "")
-                if not oid or oid in seen:
-                    continue
-                seen.add(oid)
-                oname = str(rec.get("object_name", "") or "")
-                lbl = f"{oname} ({oid})" if oname else oid
-                self._element_id_combo.addItem(lbl, oid)
+                if getattr(data, "_coupling_run_id", "") != str(rec.run_id):
+                    data.load_coupling_records(str(rec.run_id))
+                for row in data.get_coupling_records():
+                    if str(row.get("component", "") or "") != etype:
+                        continue
+                    oid = str(row.get("object_id", "") or "")
+                    if not oid or oid in seen:
+                        continue
+                    seen.add(oid)
+                    oname = str(row.get("object_name", "") or "")
+                    lbl = f"{oname} ({oid})" if oname else oid
+                    self._element_id_combo.addItem(lbl, oid)
 
         if prev_data is not None:
             idx = self._element_id_combo.findData(prev_data)
