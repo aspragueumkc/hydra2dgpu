@@ -143,6 +143,38 @@ class TestThinInitPattern(unittest.TestCase):
         self.assertIn("run", names)
         self.assertIn("cancel", names)
 
+    def test_feature_flags_include_new_keys(self):
+        from swe2d.workbench.workbench_view_state import _STUDIO_DEFAULT_FEATURE_FLAGS
+        self.assertIn("hydraulic_structures", _STUDIO_DEFAULT_FEATURE_FLAGS)
+        self.assertIn("bridge_stacked_coupling", _STUDIO_DEFAULT_FEATURE_FLAGS)
+
+    def test_feature_keywords_split_hydraulic_structures(self):
+        from swe2d.workbench.studio_dialog import SWE2DWorkbenchStudioDialog
+        dlg = SWE2DWorkbenchStudioDialog(iface=_make_iface())
+        try:
+            keywords = dlg._studio_feature_keywords()
+            self.assertIn("hydraulic_structures", keywords)
+            self.assertIn("bridge_stacked_coupling", keywords)
+            for word in ("structure", "culvert", "weir", "orifice", "gate", "spillway"):
+                self.assertIn(word, keywords["hydraulic_structures"])
+            for word in ("drain", "node", "link", "inlet", "outfall", "pipe", "network"):
+                self.assertIn(word, keywords["drainage_structures"])
+            self.assertNotIn("structure", keywords["drainage_structures"])
+            self.assertNotIn("culvert", keywords["drainage_structures"])
+        finally:
+            dlg.close()
+
+    def test_inspector_tabs_are_read_only_labelled(self):
+        from qgis.PyQt import QtWidgets
+        from swe2d.workbench.studio_dialog import SWE2DWorkbenchStudioDialog
+        dlg = SWE2DWorkbenchStudioDialog(iface=_make_iface())
+        try:
+            tabs = dlg._state.studio_inspector_dock.findChild(QtWidgets.QTabWidget)
+            texts = [tabs.tabText(i) for i in range(tabs.count())]
+            self.assertTrue(any("read-only" in t for t in texts))
+        finally:
+            dlg.close()
+
     def test_settings_dialog_imports(self):
         from swe2d.workbench.dialogs.workbench_settings_dialog import WorkbenchSettingsDialog
         self.assertIsNotNone(WorkbenchSettingsDialog)

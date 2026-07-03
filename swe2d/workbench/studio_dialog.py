@@ -1488,9 +1488,11 @@ class SWE2DWorkbenchStudioDialog(QtWidgets.QDialog):
             "rainfall": ("rain", "gauge", "hyet", "storm", "runoff", "precip"),
             "drainage_structures": (
                 "drain", "node", "link", "inlet", "outfall", "pipe", "network",
-                "structure", "culvert", "weir", "orifice", "gate", "spillway",
-                "coupling",
             ),
+            "hydraulic_structures": (
+                "structure", "culvert", "weir", "orifice", "gate", "spillway",
+            ),
+            "bridge_stacked_coupling": ("bridge_stacked",),
         }
 
     def _studio_widget_text_blob(self, widget: QtWidgets.QWidget) -> str:

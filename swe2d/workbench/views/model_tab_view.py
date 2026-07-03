@@ -13,7 +13,7 @@ objectName so existing binding code (e.g. ``findChild``) keeps working.
 """
 from __future__ import annotations
 
-from typing import List, Tuple
+from typing import Dict, List, Tuple
 
 from qgis.PyQt import QtWidgets
 
@@ -89,6 +89,20 @@ class ModelTabView(QtWidgets.QWidget):
 
         self._param_groups: List[QtWidgets.QGroupBox] = []
         self._param_rows: List[Tuple[QtWidgets.QGroupBox, QtWidgets.QLabel, QtWidgets.QWidget, bool]] = []
+
+        filter_bar = QtWidgets.QHBoxLayout()
+        self.param_search = QtWidgets.QLineEdit()
+        self.param_search.setObjectName("param_search")
+        self.param_search.setPlaceholderText("Filter parameters…")
+        self.param_search.textChanged.connect(self._filter_model_tab)
+        self.show_advanced_chk = QtWidgets.QCheckBox("Show advanced parameters")
+        self.show_advanced_chk.setObjectName("show_advanced_chk")
+        self.show_advanced_chk.setChecked(False)
+        self.show_advanced_chk.toggled.connect(self._filter_model_tab)
+        filter_bar.addWidget(self.param_search, 1)
+        filter_bar.addWidget(self.show_advanced_chk)
+        root_layout.addLayout(filter_bar)
+
         self.model_toolbox = QtWidgets.QToolBox()
         self.model_toolbox.setSizePolicy(
             QtWidgets.QSizePolicy.Preferred, QtWidgets.QSizePolicy.Expanding
@@ -190,6 +204,23 @@ class ModelTabView(QtWidgets.QWidget):
         if advanced:
             widget.setProperty("advanced", True)
             label.setProperty("advanced", True)
+
+    def _filter_model_tab(self, _value=None) -> None:
+        """Show/hide parameter rows based on search text and advanced toggle."""
+        text = self.param_search.text().lower().strip()
+        show_advanced = self.show_advanced_chk.isChecked()
+        group_visibility: Dict[QtWidgets.QGroupBox, bool] = {}
+        for group, label, widget, advanced in self._param_rows:
+            label_text = label.text().lower()
+            tooltip = (widget.toolTip() or "").lower()
+            obj_name = widget.objectName().lower()
+            matches = (not text) or (text in label_text) or (text in tooltip) or (text in obj_name)
+            visible = matches and (show_advanced or not advanced)
+            label.setVisible(visible)
+            widget.setVisible(visible)
+            group_visibility[group] = group_visibility.get(group, False) or visible
+        for group, visible in group_visibility.items():
+            group.setVisible(visible)
 
     def _build_run_page_widgets(
         self, run_page: QtWidgets.QWidget, run_page_layout: QtWidgets.QVBoxLayout

@@ -38,6 +38,8 @@ from swe2d.workbench.views.studio_component_view import StudioComponent
 _STUDIO_DEFAULT_FEATURE_FLAGS: Dict[str, bool] = {
     "rainfall": True,
     "drainage_structures": True,
+    "hydraulic_structures": True,
+    "bridge_stacked_coupling": False,
 }
 
 

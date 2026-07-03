@@ -1,11 +1,9 @@
-"""Results controls — 4-page toolbox for the "HYDRA2D Results" dock.
+"""Results controls — 2-page toolbox for the "HYDRA2D Results" dock.
 
 Follows the canonical _build_xxx_page(toolbox) pattern (MVP Rule 8).
 Pages:
-  1. Results & Overlay  — high-perf overlay field, cmap, opacity, arrows, etc.
-  2. Line / Drainage    — line combo, profile controls, output save checkboxes
-  3. Runs               — run list, add/refresh/remove, enable/disable
-  4. Coupling           — metric/element filter for drainage/structure time series
+  1. Display  — field, colormap, color range, overlay style, runs
+  2. Storage  — save-to-GPKG checkboxes
 
 Emits pyqtSignals for controller wiring (does NOT reach through dialog).
 """
@@ -43,7 +41,7 @@ class _SwatchDelegate(QtWidgets.QStyledItemDelegate):
 
 
 class ResultsToolbox(QtWidgets.QWidget):
-    """3-page QToolBox for HYDRA2D Results dock.  QWidget subclass for
+    """2-page QToolBox for HYDRA2D Results dock.  QWidget subclass for
     proper Qt parent ownership.  Emits signals for controller wiring."""
 
     # Signals — connected by the dialog to the controller
@@ -82,90 +80,110 @@ class ResultsToolbox(QtWidgets.QWidget):
     # ------------------------------------------------------------------
 
     def _build_ui(self) -> None:
-        """Build the 3-page toolbox (Overlay, Output, Runs)."""
+        """Build the 2-page toolbox (Display, Storage)."""
         layout = QtWidgets.QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(0)
 
         self._toolbox = QtWidgets.QToolBox()
         self._toolbox.setObjectName("results_toolbox")
-        self._build_overlay_page(self._toolbox)
-        self._build_output_page(self._toolbox)
-        self._build_runs_page(self._toolbox)
+        self._build_display_page(self._toolbox)
+        self._build_storage_page(self._toolbox)
         self._toolbox.setCurrentIndex(0)
         layout.addWidget(self._toolbox, 1)
 
     # ------------------------------------------------------------------
-    # Page 1: Results & Overlay
+    # Page 1: Display
     # ------------------------------------------------------------------
 
-    def _build_overlay_page(self, toolbox: QtWidgets.QToolBox) -> None:
-        """Build the Results & Overlay page with field, colormap, and arrow controls."""
+    def _build_display_page(self, toolbox: QtWidgets.QToolBox) -> None:
+        """Build the Display page with field, colormap, color range, overlay style, and runs."""
         page = QtWidgets.QWidget()
-        page.setObjectName("results_overlay_page")
-        layout = QtWidgets.QFormLayout(page)
-        layout.setContentsMargins(6, 6, 6, 6)
+        page.setObjectName("results_display_page")
+        page_layout = QtWidgets.QVBoxLayout(page)
+        page_layout.setContentsMargins(6, 6, 6, 6)
+        page_layout.setSpacing(6)
 
-        self.field_combo = self._add_combo(layout, "Field:")
+        # --- Field & Colormap ---
+        field_group = QtWidgets.QGroupBox("Field & Colormap")
+        field_group.setObjectName("results_field_colormap_group")
+        field_layout = QtWidgets.QFormLayout(field_group)
+
+        self.field_combo = self._add_combo(field_layout, "Field:")
         self.field_combo.setToolTip("Result field to render on the map canvas: Depth, Velocity, WSE, etc.")
-        self.wse_render_combo = self._add_combo(layout, "WSE render:")
+        self.wse_render_combo = self._add_combo(field_layout, "WSE render:")
         self.wse_render_combo.setToolTip("Water surface elevation rendering mode: raw cell-centered or smoothed nodal.")
-        self.cmap_combo = self._add_combo(layout, "Colormap:")
+        self.cmap_combo = self._add_combo(field_layout, "Colormap:")
         self.cmap_combo.setToolTip("Color map used to render the selected field.")
-        self.res_combo = self._add_combo(layout, "Resolution:")
+        self.res_combo = self._add_combo(field_layout, "Resolution:")
         self.res_combo.setToolTip("Render resolution for the high-performance overlay canvas.")
 
-        self.opacity_spin = self._add_spin(layout, "Opacity:", 2, 0.05, 1.0, 0.05, 0.65)
+        page_layout.addWidget(field_group)
+
+        # --- Color Range ---
+        color_group = QtWidgets.QGroupBox("Color Range")
+        color_group.setObjectName("results_color_range_group")
+        color_layout = QtWidgets.QFormLayout(color_group)
+
+        self.opacity_spin = self._add_spin(color_layout, "Opacity:", 2, 0.05, 1.0, 0.05, 0.65)
         self.opacity_spin.setToolTip("Overlay opacity: 0.05 (faint) to 1.0 (fully opaque).")
-        self.auto_contrast_chk = self._add_chk(layout, "Auto contrast", True)
+        self.auto_contrast_chk = self._add_chk(color_layout, "Auto contrast", True)
         self.auto_contrast_chk.setToolTip("Automatically adjust color range to data min/max. Uncheck to set custom range.")
         self.auto_contrast_chk.toggled.connect(self._on_auto_contrast_toggled)
         self.min_depth_spin = self._add_spin(
-            layout, "Min depth threshold:", 6, 0.0, 100.0, 0.01, 1.0e-6)
+            color_layout, "Min depth threshold:", 6, 0.0, 100.0, 0.01, 1.0e-6)
         self.min_depth_spin.setToolTip("Cells with depth below this threshold are treated as dry in the overlay.")
         self.color_min_spin = self._add_spin(
-            layout, "Color min:", 6, -1e12, 1e12, 0.01, 0.0)
+            color_layout, "Color min:", 6, -1e12, 1e12, 0.01, 0.0)
         self.color_min_spin._no_persist = True
         self.color_min_spin.setToolTip("Minimum value for the color scale (manual mode). Only active when auto contrast is off.")
         self.color_max_spin = self._add_spin(
-            layout, "Color max:", 6, -1e12, 1e12, 0.01, 1.0)
+            color_layout, "Color max:", 6, -1e12, 1e12, 0.01, 1.0)
         self.color_max_spin._no_persist = True
         self.color_max_spin.setToolTip("Maximum value for the color scale (manual mode). Only active when auto contrast is off.")
         self.color_reset_btn = QtWidgets.QPushButton("↺ Reset")
         self.color_reset_btn.setToolTip("Reset color min/max to the actual data range.")
         self.color_reset_btn.setFixedWidth(70)
         self.color_reset_btn.clicked.connect(self._on_color_reset)
-        layout.addRow("", self.color_reset_btn)
-        self.lock_canvas_chk = self._add_chk(layout, "Lock canvas extent", True)
+        color_layout.addRow("", self.color_reset_btn)
+
+        page_layout.addWidget(color_group)
+
+        # --- Overlay Style ---
+        style_group = QtWidgets.QGroupBox("Overlay Style")
+        style_group.setObjectName("results_overlay_style_group")
+        style_layout = QtWidgets.QFormLayout(style_group)
+
+        self.lock_canvas_chk = self._add_chk(style_layout, "Lock canvas extent", True)
         self.lock_canvas_chk.setToolTip("Lock the map canvas extent to the overlay's bounding box.")
-        self.visible_only_chk = self._add_chk(layout, "Visible cells only", True)
+        self.visible_only_chk = self._add_chk(style_layout, "Visible cells only", True)
         self.visible_only_chk.setToolTip("Only render cells within the current map viewport for performance.")
-        self.arrows_chk = self._add_chk(layout, "Show velocity arrows", True)
+        self.arrows_chk = self._add_chk(style_layout, "Show velocity arrows", True)
         self.arrows_chk.setToolTip("Display velocity direction arrows on the overlay.")
 
         self.arrow_density_spin = self._add_spin(
-            layout, "Arrow spacing (px):", 0, 8, 80, 2, 28)
+            style_layout, "Arrow spacing (px):", 0, 8, 80, 2, 28)
         self.arrow_density_spin.setToolTip("Spacing between velocity arrows in pixels. Lower = denser arrows.")
         self.arrow_length_spin = self._add_spin(
-            layout, "Arrow length scale:", 2, 0.2, 3.0, 0.1, 1.0)
+            style_layout, "Arrow length scale:", 2, 0.2, 3.0, 0.1, 1.0)
         self.arrow_length_spin.setToolTip("Velocity arrow length multiplier.")
         self.arrow_head_length_spin = self._add_spin(
-            layout, "Arrow head length:", 2, 0.2, 3.0, 0.1, 1.0)
+            style_layout, "Arrow head length:", 2, 0.2, 3.0, 0.1, 1.0)
         self.arrow_head_length_spin.setToolTip("Velocity arrow head length.")
         self.arrow_head_width_spin = self._add_spin(
-            layout, "Arrow head width:", 2, 0.2, 3.0, 0.1, 1.0)
+            style_layout, "Arrow head width:", 2, 0.2, 3.0, 0.1, 1.0)
         self.arrow_head_width_spin.setToolTip("Velocity arrow head width.")
 
-        self.streamlines_chk = self._add_chk(layout, "Show streamlines", False)
+        self.streamlines_chk = self._add_chk(style_layout, "Show streamlines", False)
         self.streamlines_chk.setToolTip("Display flow streamlines on the overlay.")
         self.streamline_backend_combo = self._add_combo(
-            layout, "Streamline backend:")
+            style_layout, "Streamline backend:")
         self.streamline_backend_combo.setToolTip("Streamline computation engine: Auto, CUDA (GPU), or CPU.")
         self.streamline_seed_spin = self._add_spin(
-            layout, "Streamline seeds:", 0, 8, 256, 8, 48)
+            style_layout, "Streamline seeds:", 0, 8, 256, 8, 48)
         self.streamline_seed_spin.setToolTip("Number of streamline seed points for flow tracing.")
         self.streamline_steps_spin = self._add_spin(
-            layout, "Streamline steps:", 0, 4, 120, 2, 24)
+            style_layout, "Streamline steps:", 0, 4, 120, 2, 24)
         self.streamline_steps_spin.setToolTip("Maximum integration steps per streamline.")
 
         self.overlay_enabled_chk = QtWidgets.QCheckBox(
@@ -174,20 +192,49 @@ class ResultsToolbox(QtWidgets.QWidget):
             "Toggle the GPU-accelerated high-performance overlay on/off."
         )
         self.overlay_enabled_chk.toggled.connect(self.overlay_toggled.emit)
-        layout.addRow(self.overlay_enabled_chk)
+        style_layout.addRow(self.overlay_enabled_chk)
 
         self.export_btn = QtWidgets.QPushButton("Export Overlay to GeoTIFF...")
         self.export_btn.setToolTip("Export the current overlay view as a GeoTIFF raster.")
         self.export_btn.clicked.connect(self.overlay_export_geotiff.emit)
-        layout.addRow(self.export_btn)
+        style_layout.addRow(self.export_btn)
 
         self.export_res_spin = QtWidgets.QDoubleSpinBox()
         self.export_res_spin.setToolTip("Output pixel size in map units for GeoTIFF export.")
         self.export_res_spin.setValue(10.0)
-        layout.addRow("GeoTIFF pixel size (map units):", self.export_res_spin)
+        style_layout.addRow("GeoTIFF pixel size (map units):", self.export_res_spin)
+
+        self._wire_checkbox_children(
+            self.arrows_chk,
+            [self.arrow_density_spin, self.arrow_length_spin,
+             self.arrow_head_length_spin, self.arrow_head_width_spin]
+        )
+        self._wire_checkbox_children(
+            self.streamlines_chk,
+            [self.streamline_backend_combo, self.streamline_seed_spin, self.streamline_steps_spin]
+        )
+
+        page_layout.addWidget(style_group)
+
+        # --- Runs ---
+        runs_group = QtWidgets.QGroupBox("Runs")
+        runs_group.setObjectName("results_runs_group")
+        runs_layout = QtWidgets.QVBoxLayout(runs_group)
+        runs_layout.setContentsMargins(6, 6, 6, 6)
+        runs_layout.setSpacing(2)
+        self._build_runs_section(runs_layout)
+        page_layout.addWidget(runs_group, 1)
 
         self._populate_overlay_combos()
-        toolbox.addItem(page, "Results & Overlay")
+        toolbox.addItem(page, "Display")
+
+    def _wire_checkbox_children(self, chk: QtWidgets.QCheckBox, children: List[QtWidgets.QWidget]) -> None:
+        """Enable/disable *children* when *chk* is toggled."""
+        def _update(enabled: bool) -> None:
+            for child in children:
+                child.setEnabled(enabled)
+        chk.toggled.connect(_update)
+        _update(chk.isChecked())
 
     _SIGNAL_SELF = "overlay_style_changed"
 
@@ -278,13 +325,13 @@ class ResultsToolbox(QtWidgets.QWidget):
         self.streamline_backend_combo.setCurrentIndex(0)
 
     # ------------------------------------------------------------------
-    # Page 2: Output configuration (save toggles)
+    # Page 2: Storage
     # ------------------------------------------------------------------
 
-    def _build_output_page(self, toolbox: QtWidgets.QToolBox) -> None:
-        """Build the Output page with save-to-GPKG checkboxes."""
+    def _build_storage_page(self, toolbox: QtWidgets.QToolBox) -> None:
+        """Build the Storage page with save-to-GPKG checkboxes."""
         page = QtWidgets.QWidget()
-        page.setObjectName("results_output_page")
+        page.setObjectName("results_storage_page")
         layout = QtWidgets.QFormLayout(page)
         layout.setContentsMargins(6, 6, 6, 6)
 
@@ -333,20 +380,14 @@ class ResultsToolbox(QtWidgets.QWidget):
         self.save_log_chk.setChecked(True)
         layout.addRow(self.save_log_chk)
 
-        toolbox.addItem(page, "Output")
+        toolbox.addItem(page, "Storage")
 
     # ------------------------------------------------------------------
-    # Page 3: Runs
+    # Runs section
     # ------------------------------------------------------------------
 
-    def _build_runs_page(self, toolbox: QtWidgets.QToolBox) -> None:
-        """Build the Runs page with run list, add/refresh, and enable/disable buttons."""
-        page = QtWidgets.QWidget()
-        page.setObjectName("results_runs_page")
-        layout = QtWidgets.QVBoxLayout(page)
-        layout.setContentsMargins(6, 6, 6, 6)
-        layout.setSpacing(2)
-
+    def _build_runs_section(self, layout: QtWidgets.QVBoxLayout) -> None:
+        """Build the Runs section with run list, add/refresh, and enable/disable buttons."""
         top = QtWidgets.QHBoxLayout()
         self.gpkg_lbl = QtWidgets.QLabel()
         self.gpkg_lbl.setStyleSheet("color: gray; font-size: 9px;")
@@ -396,8 +437,6 @@ class ResultsToolbox(QtWidgets.QWidget):
         self.run_count_lbl = QtWidgets.QLabel("")
         self.run_count_lbl.setStyleSheet("color: gray; font-size: 9px;")
         layout.addWidget(self.run_count_lbl)
-
-        toolbox.addItem(page, "Runs")
 
     # ------------------------------------------------------------------
     # Run list management

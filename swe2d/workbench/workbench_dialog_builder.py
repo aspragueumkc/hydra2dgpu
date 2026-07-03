@@ -395,7 +395,7 @@ class WorkbenchDialogBuilder:
                          "source_max_substeps_spin", "gpu_diag_sync_interval_spin")
 
         model_layout.addWidget(dlg._settings_tree)
-        inspector_tabs.addTab(model_page, "Model Settings")
+        inspector_tabs.addTab(model_page, "\U0001F512 Parameters (read-only)")
 
         mesh_page = QtWidgets.QWidget()
         mesh_layout = QtWidgets.QVBoxLayout(mesh_page)
@@ -436,7 +436,7 @@ class WorkbenchDialogBuilder:
         }
 
         mesh_layout.addWidget(dlg._mesh_settings_tree)
-        inspector_tabs.addTab(mesh_page, "Mesh Settings")
+        inspector_tabs.addTab(mesh_page, "\U0001F512 Mesh Settings (read-only)")
 
         from swe2d.workbench.views.doc_viewer import DocHubWidget
         inspector_tabs.addTab(DocHubWidget(parent=dlg), "Help")
