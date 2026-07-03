@@ -327,10 +327,10 @@ class HydraQgisPlugin:
 
         self.main_menu = menu
 
+        # Top-level menu actions (visible in production).
         action_specs = [
             ('HYDRA2DMenuOpenPanelAction', 'Open HYDRA2DGPU Panel', lambda: self.run()),
             ('HYDRA2DMenuSettingsAction', 'Settings...', lambda: self.open_settings()),
-            ('HYDRA2DMenuInspectorAction', 'Inspect Next Clicked Widget', lambda: self._arm_inspector()),
         ]
 
         existing = {a.objectName(): a for a in menu.actions() if a is not None}
@@ -343,6 +343,19 @@ class HydraQgisPlugin:
                     pass
                 menu.removeAction(stale)
 
+        # Drop the legacy top-level "Inspect Next Clicked Widget" entry
+        # (it has been moved under the DevTools submenu).  We leave the
+        # object name registered so any external QGIS customisation that
+        # references it keeps working — it just gets removed from the
+        # visible top-level menu.
+        legacy_inspector = existing.get('HYDRA2DMenuInspectorAction')
+        if legacy_inspector is not None:
+            try:
+                legacy_inspector.triggered.disconnect()
+            except (TypeError, RuntimeError):
+                pass
+            menu.removeAction(legacy_inspector)
+
         self.main_menu_actions = []
         for object_name, text, callback in action_specs:
             action = QAction(text, self.iface.mainWindow())
@@ -350,6 +363,24 @@ class HydraQgisPlugin:
             action.triggered.connect(callback)
             menu.addAction(action)
             self.main_menu_actions.append(action)
+
+        # DevTools submenu — only registered when the env var is set.
+        # When SWE2D_DEVTOOLS is unset, this is a no-op and the production
+        # menu looks identical to before.
+        try:
+            from swe2d.workbench.devtools.menu import build_devtools_menu
+            plugin_root = os.path.dirname(os.path.abspath(__file__))
+            submenu = build_devtools_menu(
+                parent_menu=menu,
+                main_window=self.iface.mainWindow(),
+                plugin_root=plugin_root,
+            )
+            if submenu is not None:
+                self._devtools_submenu = submenu
+        except Exception as _exc:
+            logging.getLogger(__name__).debug(
+                "[hydra_plugin] devtools menu setup failed: %s", _exc
+            )
 
     def open_settings(self):
         """Open the HYDRA2DGPU Settings dialog."""
