@@ -634,6 +634,39 @@ class SWE2DWorkbenchStudioDialog(QtWidgets.QDialog):
         """Create a lumped hydrology GeoPackage."""
         self._mesh_controller.create_lumped_hydrology_geopackage()
 
+    # ── Protocol-typed view properties ────────────────────────────────
+
+    @property
+    def model_tab(self):
+        """ModelTabView (typed as ModelTabViewProtocol)."""
+        return self._model_tab_view
+
+    @property
+    def results_toolbox(self):
+        """ResultsToolbox (typed as ResultsToolboxProtocol)."""
+        return self._results_toolbox
+
+    @property
+    def run_dock(self):
+        """RunDockWidget (typed as RunDockProtocol)."""
+        return self._run_dock
+
+    def refresh_results_run_list(self) -> None:
+        """Rebuild results run list (controller-safe protocol method)."""
+        tb = getattr(self, "_results_toolbox", None)
+        if tb is not None:
+            tb.refresh_run_list()
+
+    def get_results_data(self):
+        """Return results data layer (controller-safe protocol method)."""
+        tb = getattr(self, "_results_toolbox", None)
+        return tb.get_results_data() if tb is not None else None
+
+    def get_run_list_widget(self):
+        """Return run list widget (controller-safe protocol method)."""
+        tb = getattr(self, "_results_toolbox", None)
+        return tb.get_run_list_widget() if tb is not None else None
+
     def _export_mesh_to_layers(self) -> None:
         """Export mesh to QGIS vector layers."""
         self._mesh_controller.export_mesh_to_layers()

@@ -10,18 +10,18 @@ from qgis.PyQt import QtCore, QtWidgets
 
 def on_run_selection_changed(dialog) -> None:
     """Update run count label and refresh overlay when run selection changes."""
-    dialog._results_toolbox._update_run_count()
+    dialog.results_toolbox.update_run_count()
     dialog._overlay_controller.refresh_high_perf_canvas_overlay(None)
 
 
 def on_results_refresh(dialog) -> None:
     """Re-scan GPKG for runs and rebuild the run list."""
-    data = getattr(dialog._results_toolbox, "_data", None)
+    data = dialog.results_toolbox.get_results_data()
     if data is None:
         show_results_panel(dialog)
-        data = getattr(dialog._results_toolbox, "_data", None)
+        data = dialog.results_toolbox.get_results_data()
     if data is not None:
-        dialog._results_toolbox._rebuild_run_list()
+        dialog.results_toolbox.refresh_run_list()
         data._rebuild_timestep_union()
         data.load_coupling_for_first_enabled_run()
     # Sync temporal dock slider range with updated timesteps
@@ -48,10 +48,10 @@ def on_results_add(dialog) -> None:
     )
     if not paths:
         return
-    data = dialog._results_toolbox._data
+    data = dialog.results_toolbox.get_results_data()
     if data is None:
         show_results_panel(dialog)
-        data = dialog._results_toolbox._data
+        data = dialog.results_toolbox.get_results_data()
     if data is None:
         dialog._log("[ERROR] _on_results_add: no SWE2DResultsData")
         return
@@ -104,7 +104,7 @@ def on_results_add(dialog) -> None:
     # previously-added manual GPKGs.  Each "Add Results" action is self-contained.
     data.discover_runs(scan_paths=list(gpkg_paths_in_this_batch))
     data._rebuild_timestep_union()
-    dialog._results_toolbox._rebuild_run_list()
+    dialog.results_toolbox.refresh_run_list()
     temporal = getattr(dialog, "_temporal_dock", None)
     if temporal is not None:
         temporal.set_data(data)
@@ -118,38 +118,38 @@ def on_results_add(dialog) -> None:
 
 def on_results_remove(dialog) -> None:
     """Remove selected runs from the data layer."""
-    selected = dialog._results_toolbox.run_list.selectedItems()
+    selected = dialog.results_toolbox.get_run_list_widget().selectedItems()
     if not selected:
         return
     keys = {str(it.data(QtCore.Qt.ItemDataRole.UserRole) or "") for it in selected}
     keys.discard("")
     if not keys:
         return
-    data = dialog._results_toolbox._data
+    data = dialog.results_toolbox.get_results_data()
     if data is not None:
         data.remove_runs(keys)
-    dialog._results_toolbox._rebuild_run_list()
+    dialog.results_toolbox.refresh_run_list()
 
 
 def on_results_show_all(dialog) -> None:
     """Enable visibility for all runs."""
-    data = dialog._results_toolbox._data
+    data = dialog.results_toolbox.get_results_data()
     if data is not None:
         data.set_all_runs_visible()
-    dialog._results_toolbox._rebuild_run_list()
+    dialog.results_toolbox.refresh_run_list()
 
 
 def on_results_hide_all(dialog) -> None:
     """Disable visibility for all runs."""
-    data = dialog._results_toolbox._data
+    data = dialog.results_toolbox.get_results_data()
     if data is not None:
         data.set_all_runs_hidden()
-    dialog._results_toolbox._rebuild_run_list()
+    dialog.results_toolbox.refresh_run_list()
 
 
 def on_results_line_selected(dialog, line_id: int) -> None:
     """Set the active line ID and refresh the viewer."""
-    data = dialog._results_toolbox._data
+    data = dialog.results_toolbox.get_results_data()
     if data is not None and line_id >= 0:
         data.set_line_id(line_id)
     dialog._studio_viewer.refresh()
@@ -157,7 +157,7 @@ def on_results_line_selected(dialog, line_id: int) -> None:
 
 def on_results_ts_var_changed(dialog, var_key: str) -> None:
     """Set the time-series variable key and refresh the viewer."""
-    data = dialog._results_toolbox._data
+    data = dialog.results_toolbox.get_results_data()
     if data is not None and var_key:
         data.ts_var_key = var_key
     # Sync the pyqtgraph time-series widget's combo so it matches the
@@ -172,7 +172,7 @@ def on_results_ts_var_changed(dialog, var_key: str) -> None:
 
 def on_results_prof_var_changed(dialog, var_key: str) -> None:
     """Set the profile variable key and refresh the viewer."""
-    data = dialog._results_toolbox._data
+    data = dialog.results_toolbox.get_results_data()
     if data is not None and var_key:
         data.prof_var_key = var_key
     dialog._studio_viewer.refresh()
@@ -187,7 +187,7 @@ def on_results_panel_timestep_changed(dialog, t_s: float, frame_idx: int = 0) ->
     if temporal is not None:
         temporal.on_timestep_changed(t_s, frame_idx)
         # Sync slider range — _rebuild_timestep_union may have changed frame_count
-        data = getattr(dialog._results_toolbox, "_data", None)
+        data = dialog.results_toolbox.get_results_data()
         if data is not None and hasattr(data, "frame_count"):
             temporal._time_slider.setRange(0, max(0, data.frame_count - 1))
     if bool(getattr(dialog, "_high_perf_canvas_overlay_enabled", False)):
@@ -228,7 +228,7 @@ def show_results_panel(dialog):
             anim.current_timestep_changed.connect(dialog._on_results_panel_timestep_changed)
             if temporal is not None:
                 anim.play_state_changed.connect(temporal.on_play_state_changed)
-    toolbox = getattr(dialog, "_results_toolbox", None)
+    toolbox = dialog.results_toolbox
     if toolbox is not None:
         toolbox.set_data(data)
         if hasattr(toolbox, "set_overlay_refresh_callback"):
@@ -260,7 +260,7 @@ def on_coupling_metric_changed(dialog, metric: str) -> None:
     widget = viewer.current_widget
     if widget is None:
         return
-    data = getattr(dialog._results_toolbox, "_data", None)
+    data = dialog.results_toolbox.get_results_data()
     if data is not None:
         for rec in getattr(data, "_run_records", []):
             if rec.enabled and hasattr(rec, 'run_id'):
@@ -343,7 +343,7 @@ def auto_load_results_panel(dialog, gpkg_path: str = "", snapshot_run_id: str = 
         data.keep_only_most_recent_run()
 
     data._rebuild_timestep_union()
-    dialog._results_toolbox._rebuild_run_list()
+    dialog.results_toolbox.refresh_run_list()
 
     temporal = getattr(dialog, "_temporal_dock", None)
     if temporal is not None:

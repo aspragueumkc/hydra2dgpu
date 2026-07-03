@@ -1105,6 +1105,83 @@ class ModelTabView(QtWidgets.QWidget):
         self.unit_system_lbl.setWordWrap(True)
         param_form.addRow(self.unit_system_lbl)
 
+    def get_h_min(self) -> float:
+        """Minimum water depth threshold."""
+        return float(self.h_min_spin.value())
+
+    def get_rain_update_interval_s(self) -> int:
+        """Rain rate update interval in seconds."""
+        return int(self.rain_update_interval_spin.value())
+
+    def get_run_time_hours(self) -> str:
+        """Run duration text (decimal hours or HH:MM)."""
+        return str(self.run_time_edit.text())
+
+    def get_run_time_hours_parsed(self) -> float:
+        """Run duration parsed as decimal hours."""
+        from swe2d.workbench.services.text_parser_service import parse_time_hours
+        return parse_time_hours(self.run_time_edit.text())
+
+    def get_n_mann(self) -> float:
+        """Manning n roughness coefficient."""
+        return float(self.n_mann_spin.value())
+
+    def get_ia_ratio(self) -> float:
+        """SCS initial abstraction ratio."""
+        return float(self.ia_ratio_spin.value())
+
+    def get_infiltration_method(self) -> str:
+        """Selected infiltration method key."""
+        return str(self.infiltration_method_combo.currentData() or "scs_cn")
+
+    def get_rain_boundary_buffer_rings(self) -> int:
+        """Boundary buffer ring count for rain."""
+        return int(self.rain_boundary_buffer_rings_spin.value())
+
+    def get_cn_default(self) -> float:
+        """Default SCS curve number."""
+        return float(self.cn_default_spin.value())
+
+    def get_drainage_solver_mode(self) -> int:
+        """Drainage equation set integer key."""
+        return int(self.drainage_solver_mode_combo.currentData())
+
+    def get_drainage_gpu_method(self) -> str:
+        """Drainage GPU method key."""
+        return str(self.drainage_gpu_method_combo.currentData())
+
+    def get_drainage_coupling_substeps(self) -> int:
+        """Number of drainage substeps per SWE2D step."""
+        return int(self.drainage_coupling_substeps_spin.value())
+
+    def get_drainage_max_coupling_substeps(self) -> int:
+        """Max adaptive substeps for drainage."""
+        return int(self.drainage_max_coupling_substeps_spin.value())
+
+    def get_drainage_head_deadband(self) -> float:
+        """Head deadband below which no drainage flow."""
+        return float(self.drainage_head_deadband_spin.value())
+
+    def get_drainage_dynamic_relaxation(self) -> float:
+        """Relaxation factor for drainage coupling."""
+        return float(self.drainage_dynamic_relaxation_spin.value())
+
+    def get_drainage_adaptive_depth_fraction(self) -> float:
+        """Fraction of cell water depth drainable per step."""
+        return float(self.drainage_adaptive_depth_fraction_spin.value())
+
+    def get_drainage_adaptive_wave_courant(self) -> float:
+        """Courant target for adaptive drainage."""
+        return float(self.drainage_adaptive_wave_courant_spin.value())
+
+    def get_drainage_implicit_iters(self) -> int:
+        """Implicit solver iterations for GPU drainage."""
+        return int(self.drainage_implicit_iters_spin.value())
+
+    def get_drainage_implicit_relax(self) -> float:
+        """Relaxation factor for implicit drainage on GPU."""
+        return float(self.drainage_implicit_relax_spin.value())
+
     def _on_select_results_gpkg(self) -> None:
         """Open a file dialog and populate the results GeoPackage path."""
         from qgis.PyQt.QtWidgets import QFileDialog

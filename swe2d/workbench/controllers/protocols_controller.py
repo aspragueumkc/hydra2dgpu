@@ -12,6 +12,12 @@ from typing import Any, Dict, List, Optional, Protocol, Tuple
 import numpy as np
 from qgis.PyQt.QtCore import QObject
 
+from swe2d.workbench.views.view_protocols import (
+    ModelTabViewProtocol,
+    ResultsToolboxProtocol,
+    RunDockProtocol,
+)
+
 
 class RunView(Protocol):
     """View protocol for the run pipeline controller."""
@@ -21,8 +27,16 @@ class RunView(Protocol):
         """Mesh data from the currently loaded mesh."""
 
     @property
-    def _model_tab_view(self) -> Any:
-        """The model tab view instance."""
+    def model_tab(self) -> ModelTabViewProtocol:
+        """The model tab view (typed protocol)."""
+
+    @property
+    def results_toolbox(self) -> ResultsToolboxProtocol:
+        """The results toolbox (typed protocol)."""
+
+    @property
+    def run_dock(self) -> RunDockProtocol:
+        """The run dock (typed protocol)."""
 
     def _log(self, msg: str) -> None:
         """Log a message through the view's logging mechanism."""

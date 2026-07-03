@@ -362,7 +362,7 @@ class RunController:
                     label=f"Live: {run_id}",
                 )
                 data._run_records = [rec]
-                view._results_toolbox._rebuild_run_list()
+                view.refresh_results_run_list()
             # Leave view._snapshot_mesh_fingerprint as empty string so the old
             # fingerprint guard in _refresh_high_perf_canvas_overlay never
             # blocks rendering (the guard has been removed anyway, but this
@@ -730,7 +730,7 @@ class RunController:
                             backend=backend,
                             thiessen_forcing=thiessen_forcing,
                             mm_to_model_depth=float(rain_mm_to_model_depth_fn()),
-                            rain_update_interval_s=float(view._model_tab_view.rain_update_interval_spin.value()),
+                            rain_update_interval_s=view.model_tab.get_rain_update_interval_s(),
                         )
                         infil_label = str(native_rain_res.get('infiltration_method', 'scs_cn'))
                     elif float(np.asarray(rain_rate_model, dtype=np.float64)) > 0.0:
@@ -1370,9 +1370,9 @@ class RunController:
             qtwidgets_module=_QtWidgets,
         )
 
-        # Get run duration from the UI spin box
+        # Get run duration from the UI
         try:
-            run_dur = float(view._model_tab_view.run_duration_spin.value() * 3600.0)
+            run_dur = view.model_tab.get_run_time_hours_parsed() * 3600.0
         except Exception:
             run_dur = 0.0
 

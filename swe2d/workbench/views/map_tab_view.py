@@ -379,3 +379,15 @@ class MapTabView(QtWidgets.QWidget):
 
         toolbox.addItem(page, "Utilities")
 
+    def is_inflow_progressive(self) -> bool:
+        """Inflow progressive activation checkbox."""
+        return bool(self.inflow_progressive_chk.isChecked())
+
+    def set_layer_status_text(self, text: str) -> None:
+        """Update the status label for the active layer."""
+        self.layer_status_lbl.setText(text)
+
+    def get_inflow_progressive_chk(self):
+        """Inflow progressive checkbox widget."""
+        return self.inflow_progressive_chk
+

@@ -481,6 +481,51 @@ class ResultsToolbox(QtWidgets.QWidget):
         if self._data.gpkg_path:
             self.gpkg_lbl.setText(f"GPKG: {self._data.gpkg_path}")
 
+    def refresh_run_list(self) -> None:
+        """Public alias for _rebuild_run_list."""
+        self._rebuild_run_list()
+
+    def update_run_count(self) -> None:
+        """Public alias for _update_run_count."""
+        self._update_run_count()
+
+    def get_results_data(self):
+        """Return the bound SWE2DResultsData (or None)."""
+        return self._data
+
+    def get_run_list_widget(self) -> QtWidgets.QListWidget:
+        """Return the run list QListWidget."""
+        return self.run_list
+
+    def get_storage_checkboxes(self) -> dict:
+        """Return storage checkboxes by key."""
+        return {
+            "extended_outputs": self.extended_outputs_chk,
+            "save_mesh": self.save_mesh_chk,
+            "save_line": self.save_line_chk,
+            "save_coupling": self.save_coupling_chk,
+            "save_max_only": self.save_max_only_chk,
+            "save_log": self.save_log_chk,
+        }
+
+    def is_extended_outputs(self) -> bool:
+        return bool(self.extended_outputs_chk.isChecked())
+
+    def is_save_mesh(self) -> bool:
+        return bool(self.save_mesh_chk.isChecked())
+
+    def is_save_line(self) -> bool:
+        return bool(self.save_line_chk.isChecked())
+
+    def is_save_coupling(self) -> bool:
+        return bool(self.save_coupling_chk.isChecked())
+
+    def is_save_max_only(self) -> bool:
+        return bool(self.save_max_only_chk.isChecked())
+
+    def is_save_log(self) -> bool:
+        return bool(self.save_log_chk.isChecked())
+
     @property
     def toolbox(self) -> QtWidgets.QToolBox:
         """The internal QToolBox widget."""

@@ -122,3 +122,36 @@ class RunDockWidget(QtWidgets.QWidget):
         preview_row.addWidget(self.load_run_settings_btn)
         preview_row.addWidget(self.save_settings_btn)
         layout.addLayout(preview_row)
+
+    def set_run_button_enabled(self, enabled: bool) -> None:
+        self.run_btn.setEnabled(enabled)
+
+    def set_cancel_button_enabled(self, enabled: bool) -> None:
+        self.cancel_btn.setEnabled(enabled)
+
+    def set_progress_bar_value(self, value: int) -> None:
+        self.progress_bar.setValue(value)
+
+    def get_run_btn(self) -> QtWidgets.QPushButton:
+        return self.run_btn
+
+    def get_cancel_btn(self) -> QtWidgets.QPushButton:
+        return self.cancel_btn
+
+    def get_progress_bar(self) -> QtWidgets.QProgressBar:
+        return self.progress_bar
+
+    def get_results_gpkg_path(self) -> str:
+        return str(self.results_gpkg_path_edit.text())
+
+    def set_results_gpkg_path(self, path: str) -> None:
+        self.results_gpkg_path_edit.setText(path)
+
+    def get_output_interval(self) -> str:
+        return str(self.output_interval_edit.text())
+
+    def get_line_output_interval(self) -> str:
+        return str(self.line_output_interval_edit.text())
+
+    def get_results_table_prefix(self) -> str:
+        return str(self.results_table_name_edit.text())
