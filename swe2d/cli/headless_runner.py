@@ -207,7 +207,8 @@ def execute_run(
         gpkg = cfg.get("gpkg", default_gpkg)
         return tbl, sqlite3.connect(gpkg)
 
-    # Read BC arrays — handles both pre-split edge tables and geometry-based tables
+    # Read BC arrays — prefer baked-mesh BCs; allow bc_lines override only if
+    # the override edges actually exist on the current mesh boundary.
     from swe2d.cli.gpkg_adapter import query_bc_arrays as _query_bc
     bc: Dict[str, np.ndarray] = {}
     bc_table, bc_conn = _open_cfg(p.get("bc_lines"))
@@ -221,10 +222,45 @@ def execute_run(
                 )
         finally:
             bc_conn.close()
-    bc_n0 = bc.get("bc_edge_node0", np.empty(0, dtype=np.int32))
-    bc_n1 = bc.get("bc_edge_node1", np.empty(0, dtype=np.int32))
-    bc_tp = bc.get("bc_edge_type", np.empty(0, dtype=np.int32))
-    bc_vl = bc.get("bc_edge_val", np.empty(0, dtype=np.float64))
+
+    def _bc_arrays_from_dict(d: Dict[str, np.ndarray]):
+        return (
+            d.get("bc_edge_node0", np.empty(0, dtype=np.int32)),
+            d.get("bc_edge_node1", np.empty(0, dtype=np.int32)),
+            d.get("bc_edge_type", np.empty(0, dtype=np.int32)),
+            d.get("bc_edge_val", np.empty(0, dtype=np.float64)),
+        )
+
+    def _valid_bc_arrays(n0, n1, tp, vl):
+        return n0.size > 0 and n0.size == n1.size == tp.size == vl.size
+
+    def _norm_key(a, b):
+        return (a, b) if a < b else (b, a)
+
+    bc_n0, bc_n1, bc_tp, bc_vl = _bc_arrays_from_dict(bc)
+    if _valid_bc_arrays(bc_n0, bc_n1, bc_tp, bc_vl):
+        # Validate override edges against mesh boundary before using them.
+        try:
+            boundary_keys = {
+                _norm_key(int(backend.boundary_edge_node0[i]), int(backend.boundary_edge_node1[i]))
+                for i in range(int(backend.n_boundary_edges))
+            }
+            bad = [
+                (int(bc_n0[i]), int(bc_n1[i]))
+                for i in range(bc_n0.size)
+                if _norm_key(int(bc_n0[i]), int(bc_n1[i])) not in boundary_keys
+            ]
+            if bad:
+                logger.warning(
+                    "[BC] %d/%d bc_lines edges do not exist on mesh boundary; falling back to baked-mesh BCs. Bad examples: %s",
+                    len(bad), bc_n0.size, bad[:5],
+                )
+                bc_n0, bc_n1, bc_tp, bc_vl = _bc_arrays_from_dict(mesh_data)
+        except Exception as _e:
+            logger.warning("[BC] override validation failed: %s; using baked-mesh BCs", _e)
+            bc_n0, bc_n1, bc_tp, bc_vl = _bc_arrays_from_dict(mesh_data)
+    else:
+        bc_n0, bc_n1, bc_tp, bc_vl = _bc_arrays_from_dict(mesh_data)
 
     # Build Thiessen forcing from GPKG (if configured)
     thiessen_forcing = None
@@ -303,6 +339,7 @@ def execute_run(
 
     # Configure native rain if Thiessen forcing is present
     if thiessen_forcing is not None:
+        print(f"[DEBUG] Thiessen forcing present, configuring...", flush=True)
         from swe2d.runtime.runtime_setup_configurator import SWE2DRunSetupConfigurator
         cfg = SWE2DRunSetupConfigurator()
         mm_to_model = 1.0e-3
@@ -312,8 +349,11 @@ def execute_run(
                 thiessen_forcing=thiessen_forcing,
                 mm_to_model_depth=mm_to_model,
             )
+            print(f"[DEBUG] Rain config result: {cfg_res}", flush=True)
         except Exception as _e:
-            logger.warning("Failed to configure native rain-CN forcing: %s", _e)
+            import traceback
+            print(f"[DEBUG] Rain config failed: {_e}", flush=True)
+            traceback.print_exc()
 
     # ── Coupling controller (drainage + structures) ──────────────────
     from swe2d.cli.gpkg_adapter import (
@@ -393,8 +433,15 @@ def execute_run(
                     build_line_sampling_map,
                     sample_line_metrics,
                 )
+                from swe2d.mesh.mesh_runtime_logic import fan_triangulate_cells
                 node_coords = np.stack([mesh_data["node_x"], mesh_data["node_y"]], axis=1)
-                cell_nodes = mesh_data["cell_nodes"]
+                if "cell_face_offsets" in mesh_data and "cell_face_nodes" in mesh_data:
+                    cell_nodes, _tri_to_cell = fan_triangulate_cells(
+                        mesh_data["cell_face_offsets"],
+                        mesh_data["cell_face_nodes"],
+                    )
+                else:
+                    cell_nodes = np.asarray(mesh_data["cell_nodes"], dtype=np.int32).reshape(-1, 3)
                 cell_bed = getattr(backend, "_cell_zb", np.zeros(ncells, dtype=np.float64))
                 for raw in raw_lines:
                     sm = build_line_sampling_map(

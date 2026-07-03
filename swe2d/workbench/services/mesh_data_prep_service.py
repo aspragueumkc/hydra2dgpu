@@ -33,6 +33,8 @@ from typing import Any, Dict, Optional, Tuple
 
 import numpy as np
 
+from swe2d.mesh.mesh_runtime_logic import fan_triangulate_cells
+
 __all__ = [
     "create_empty_overlay_arrays",
     "prepare_overlay_arrays",
@@ -116,7 +118,7 @@ def prepare_overlay_arrays(
     ).ravel()
 
     if "cell_face_offsets" in mesh and "cell_face_nodes" in mesh:
-        triangles, tri_to_cell = _fan_triangulate_polygons(
+        triangles, tri_to_cell = fan_triangulate_cells(
             np.asarray(mesh["cell_face_offsets"], dtype=np.int32).ravel(),
             np.asarray(mesh["cell_face_nodes"], dtype=np.int32).ravel(),
         )
@@ -129,52 +131,6 @@ def prepare_overlay_arrays(
         result["cell_nodes"] = raw_cell_nodes
 
     return result
-
-
-def _fan_triangulate_polygons(
-    cell_face_offsets: np.ndarray,
-    cell_face_nodes: np.ndarray,
-) -> Tuple[np.ndarray, np.ndarray]:
-    """Fan-triangulate polygon cells (CSR-style) into triangles.
-
-    For each cell ``c`` with face nodes ``[v0, v1, v2, ..., vN-1]``,
-    emit triangles ``(v0, v1, v2), (v0, v2, v3), ..., (v0, vN-2, vN-1)``.
-
-    Parameters
-    ----------
-    cell_face_offsets : np.ndarray
-        CSR-style offsets. ``cell_face_offsets[c]`` is the start of cell
-        ``c``'s face in ``cell_face_nodes``; ``cell_face_offsets[c+1]``
-        is the end. Length = ``num_cells + 1``.
-    cell_face_nodes : np.ndarray
-        Flat int32 array of all cell face vertices, concatenated.
-
-    Returns
-    -------
-    tuple ``(triangles, tri_to_cell)``
-        ``triangles`` has shape ``(num_tri, 3)`` int32 vertex indices.
-        ``tri_to_cell`` has shape ``(num_tri,)`` int32 cell indices.
-        Both are empty arrays if the input produced no triangles.
-    """
-    offs = np.asarray(cell_face_offsets, dtype=np.int32).ravel()
-    faces = np.asarray(cell_face_nodes, dtype=np.int32).ravel()
-    tri_list = []
-    tc_list = []
-    for ci in range(int(offs.size) - 1):
-        s = int(offs[ci])
-        e = int(offs[ci + 1])
-        ns = faces[s:e]
-        for k in range(1, int(ns.size) - 1):
-            tri_list.append([int(ns[0]), int(ns[k]), int(ns[k + 1])])
-            tc_list.append(ci)
-    if not tri_list:
-        empty_tri = np.empty((0, 3), dtype=np.int32)
-        empty_tc = np.empty(0, dtype=np.int32)
-        return empty_tri, empty_tc
-    return (
-        np.asarray(tri_list, dtype=np.int32),
-        np.asarray(tc_list, dtype=np.int32),
-    )
 
 
 def overlay_frame_inputs(

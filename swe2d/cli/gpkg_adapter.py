@@ -10,8 +10,9 @@ import json
 import logging
 import os
 import sqlite3
-import struct
 from typing import Any, Dict, List, Optional, Tuple
+
+from osgeo import ogr
 
 import numpy as np
 
@@ -47,6 +48,12 @@ def query_mesh_from_gpkg(gpkg_path: str, mesh_name: str) -> Optional[Dict[str, n
             "node_z": np.asarray(pm.node_z, dtype=np.float64),
             "cell_nodes": np.asarray(pm.cell_face_nodes, dtype=np.int32) if pm.cell_face_nodes is not None else np.empty(0, dtype=np.int32),
         }
+        # Include baked boundary-condition arrays if the mesh was baked with them.
+        if pm.edge_n0 is not None and pm.edge_n1 is not None:
+            out["bc_edge_node0"] = np.asarray(pm.edge_n0, dtype=np.int32)
+            out["bc_edge_node1"] = np.asarray(pm.edge_n1, dtype=np.int32)
+            out["bc_edge_type"] = np.asarray(pm.edge_bc, dtype=np.int32) if pm.edge_bc is not None else np.zeros_like(pm.edge_n0, dtype=np.int32)
+            out["bc_edge_val"] = np.asarray(pm.edge_bc_val, dtype=np.float64) if pm.edge_bc_val is not None else np.zeros_like(pm.edge_n0, dtype=np.float64)
         # Also read CRS from the baked mesh table
         try:
             _c = sqlite3.connect(gpkg_path)
@@ -223,71 +230,52 @@ def query_bc_arrays(
     }
 
 
-def _parse_wkb_linestring(data) -> List[Tuple[float, float]]:
-    """Parse a WKB LINESTRING from GPKG Extended WKB format.
+_GPKG_ENV_SIZES = (0, 32, 48, 64)
 
-    GPKG stores geometry as: 4-byte srs_id + standard WKB.
-    Standard WKB LINESTRING: byte_order(1) + type(4) + n_points(4) + [x(8), y(8)] * n
-    Returns list of (x, y) tuples, or empty list on any error.
+
+def _geom_from_blob(raw: bytes):
+    """Parse standard WKB from a GPKG geometry blob using GDAL/OGR.
+
+    GPKG Binary header (OGC 12-128r12):
+        GP (2) + version (1) + flags (1) + srs_id (4) + optional envelope
+    Flags bits 1-2 encode envelope type:
+        0=none, 1=xy(32B), 2=xyz(48B), 3=xyzm(64B)
     """
+    if len(raw) < 5:
+        return None
+    if raw[:2] == b'GP':
+        flags = raw[3]
+        env_type = (flags >> 1) & 0x3
+        offset = 8 + _GPKG_ENV_SIZES[env_type]
+    elif raw[0] in (0, 1):
+        offset = 0
+    else:
+        offset = 4
+    wkb = raw[offset:]
+    return ogr.CreateGeometryFromWkb(wkb)
+
+
+def _parse_wkb_linestring(data) -> List[Tuple[float, float]]:
+    """Parse a WKB LINESTRING from GPKG geometry blob using GDAL/OGR."""
     if data is None:
         return []
     raw = bytes(data)
-    if len(raw) < 9:
+    geom = _geom_from_blob(raw)
+    if geom is None or geom.GetGeometryType() != ogr.wkbLineString:
         return []
-
-    # Skip 4-byte GPKG srs_id prefix
-    wkb = raw[4:]
-    if len(wkb) < 9:
-        return []
-
-    # Byte order
-    bo = wkb[0]
-    little = (bo == 1)
-    # Geometry type
-    gtype = int.from_bytes(wkb[1:5], byteorder='little' if little else 'big')
-    if gtype != 2:  # 2 = LINESTRING
-        return []
-
-    if len(wkb) < 9:
-        return []
-
-    n_pts = int.from_bytes(wkb[5:9], byteorder='little' if little else 'big')
-    n_pts = min(n_pts, 100000)  # sanity cap
-
-    expected_len = 9 + n_pts * 16  # 8 bytes each for x and y
-    if len(wkb) < expected_len:
-        return []
-
-    coords = []
-    off = 9
-    for _ in range(n_pts):
-        x = struct.unpack_from('<d' if little else '>d', wkb, off)[0]
-        y = struct.unpack_from('<d' if little else '>d', wkb, off + 8)[0]
-        coords.append((x, y))
-        off += 16
-
-    return coords
+    return [(geom.GetX(i), geom.GetY(i)) for i in range(geom.GetPointCount())]
 
 
 def _parse_wkb_point(data) -> List[float]:
-    """Parse a WKB POINT from GPKG Extended WKB format.
-
-    Returns [x, y], or [0.0, 0.0] on error.
-    """
+    """Parse a WKB POINT from GPKG geometry blob using GDAL/OGR."""
     if data is None:
         return [0.0, 0.0]
     raw = bytes(data)
-    # GPKG prefix: 4-byte srs_id + standard WKB
-    wkb = raw[4:] if len(raw) > 4 else raw
-    if len(wkb) < 21:  # byte_order(1) + type(4) + x(8) + y(8)
+    geom = _geom_from_blob(raw)
+    if geom is None or geom.GetGeometryType() not in (ogr.wkbPoint, ogr.wkbPoint25D):
         return [0.0, 0.0]
-    gtype = int.from_bytes(wkb[1:5], byteorder='little' if wkb[0] == 1 else 'big')
-    if gtype != 1:  # 1 = POINT
-        return [0.0, 0.0]
-    x = struct.unpack('<d' if wkb[0] == 1 else '>d', wkb[5:13])[0]
-    y = struct.unpack('<d' if wkb[0] == 1 else '>d', wkb[13:21])[0]
-    return [x, y]
+    pt = geom.GetPoint()
+    return [pt[0], pt[1]]
 
 
 def _find_geom_column(table: str, conn: sqlite3.Connection) -> Optional[str]:
@@ -532,18 +520,8 @@ def query_gauge_layer(
     )
     result = []
     for r in cur.fetchall():
-        raw = str(r[2] or "")
-        # Parse POINT(x y) from WKT
-        x_val, y_val = None, None
-        if "point" in raw.lower() and "(" in raw:
-            inside = raw.split("(")[-1].split(")")[0]
-            parts = inside.strip().split()
-            if len(parts) >= 2:
-                try:
-                    x_val = float(parts[0])
-                    y_val = float(parts[1])
-                except (TypeError, ValueError):
-                    pass
+        xy = _parse_wkb_point(r[2])
+        x_val, y_val = xy[0], xy[1]
         if x_val is None:
             continue
         result.append({

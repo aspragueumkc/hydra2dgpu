@@ -9,6 +9,8 @@ from __future__ import annotations
 
 from typing import Any, Dict, Optional, Tuple
 
+from osgeo import gdal, ogr
+
 
 def edge_lengths(node_x: np.ndarray, node_y: np.ndarray, n0: np.ndarray, n1: np.ndarray) -> np.ndarray:
     """Compute edge lengths between node pairs."""
@@ -109,74 +111,8 @@ def assign_node_z_from_terrain(
 
 
 # ---------------------------------------------------------------------------
-# Line sampling map  (pure-numpy line-to-mesh intersection)
+# Line sampling map  (OGR/GEOS line-to-mesh intersection)
 # ---------------------------------------------------------------------------
-
-
-def _barycentric_coords(
-    pts: np.ndarray,
-    tri_a: np.ndarray,
-    tri_b: np.ndarray,
-    tri_c: np.ndarray,
-) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
-    """Return barycentric (u, v, w) for each point w.r.t. each triangle.
-
-    Parameters
-    ----------
-    pts : (N, 2)
-        Query points.
-    tri_a, tri_b, tri_c : (M, 2)
-        Triangle vertices.
-
-    Returns
-    -------
-    u, v, w : (N, M) ndarray
-        Barycentric coordinates.
-    """
-    v0 = tri_c - tri_a
-    v1 = tri_b - tri_a
-    v2 = pts[:, np.newaxis, :] - tri_a[np.newaxis, :, :]
-
-    dot00 = np.sum(v0 * v0, axis=1)
-    dot01 = np.sum(v0 * v1, axis=1)
-    dot11 = np.sum(v1 * v1, axis=1)
-    denom = dot00 * dot11 - dot01 * dot01
-    denom = np.where(np.abs(denom) < 1e-30, 1e-30, denom)
-    inv_denom = 1.0 / denom
-
-    dot02 = np.sum(v2 * v0[np.newaxis, :, :], axis=2)
-    dot12 = np.sum(v2 * v1[np.newaxis, :, :], axis=2)
-
-    u = (dot11[np.newaxis, :] * dot02 - dot01[np.newaxis, :] * dot12) * inv_denom[np.newaxis, :]
-    v = (dot00[np.newaxis, :] * dot12 - dot01[np.newaxis, :] * dot02) * inv_denom[np.newaxis, :]
-    w = 1.0 - u - v
-    return u, v, w
-
-
-def _points_in_triangles(
-    pts: np.ndarray, tri_verts: np.ndarray,
-) -> np.ndarray:
-    """Return (N,) array of containing triangle index (-1 if none).
-
-    Parameters
-    ----------
-    pts : (N, 2)
-        Query points.
-    tri_verts : (M, 3, 2)
-        Triangle vertex coordinates.
-
-    Returns
-    -------
-    containing : (N,) int32
-        Index of containing triangle, or -1.
-    """
-    if pts.shape[0] == 0 or tri_verts.shape[0] == 0:
-        return np.full(pts.shape[0], -1, dtype=np.int32)
-
-    u, v, w = _barycentric_coords(pts, tri_verts[:, 0], tri_verts[:, 1], tri_verts[:, 2])
-    inside = (u >= 0) & (v >= 0) & (w >= 0)
-    containing = np.where(np.any(inside, axis=1), np.argmax(inside, axis=1), -1).astype(np.int32)
-    return containing
 
 
 def _cumulative_length(polyline: np.ndarray) -> np.ndarray:
@@ -230,6 +166,28 @@ def _line_normal(line_xy: np.ndarray) -> Tuple[float, float, float]:
     return nx, ny, orient_sign
 
 
+def _project_point_onto_line(
+    px: float, py: float, line_xy: np.ndarray,
+) -> float:
+    """Return distance-along-line from start to the nearest projected point."""
+    cum = _cumulative_length(line_xy)
+    best_d = 0.0
+    best_dist2 = float("inf")
+    for i in range(line_xy.shape[0] - 1):
+        x0, y0 = float(line_xy[i, 0]), float(line_xy[i, 1])
+        x1, y1 = float(line_xy[i + 1, 0]), float(line_xy[i + 1, 1])
+        dx, dy = x1 - x0, y1 - y0
+        seg2 = dx * dx + dy * dy
+        if seg2 < 1e-24:
+            continue
+        t = max(0.0, min(1.0, ((px - x0) * dx + (py - y0) * dy) / seg2))
+        d2 = (px - (x0 + t * dx)) ** 2 + (py - (y0 + t * dy)) ** 2
+        if d2 < best_dist2:
+            best_dist2 = d2
+            best_d = float(cum[i]) + t * float(np.sqrt(seg2))
+    return best_d
+
+
 def _cell_centroids(
     node_coords: np.ndarray, cell_nodes: np.ndarray,
 ) -> np.ndarray:
@@ -249,8 +207,8 @@ def build_line_sampling_map(
 ) -> Dict[str, Any]:
     """Build mapping data for sampling mesh solution along a profile line.
 
-    Uses pure-numpy barycentric point-in-triangle tests to determine
-    which cells the line passes through and their relative weights.
+    Uses OGR/GEOS geometry intersection (same algorithm as QGIS) with
+    a numpy bounding-box pre-filter to avoid O(N*M) broadcast.
 
     Parameters
     ----------
@@ -276,54 +234,82 @@ def build_line_sampling_map(
     if line_xy.shape[0] < 2 or cell_nodes.shape[0] == 0:
         return _empty_sample_map()
 
-    # Line geometry
     line_len = float(_cumulative_length(line_xy)[-1])
     if line_len <= 0.0:
         return _empty_sample_map()
 
     nx, ny, orient_sign = _line_normal(line_xy)
-
-    # Build triangle vertex array
-    tri_verts = node_coords[cell_nodes]  # (Nc, 3, 2)
-
-    # Cell centroids
     centroids = _cell_centroids(node_coords, cell_nodes)
 
-    # Compute number of sample points along the line
-    diag = max(np.sqrt(np.sum((node_coords.max(axis=0) - node_coords.min(axis=0)) ** 2)), 1.0)
-    n_samples = max(64, min(4096, int(line_len / max(diag / cell_nodes.shape[0], 1e-12) * 8)))
-
-    # Generate sample points along the line
-    sample_stations = np.linspace(0.0, line_len, n_samples, dtype=np.float64)
-    sample_pts = _interpolate_along_line(line_xy, sample_stations)
-
-    if sample_pts.shape[0] == 0:
+    # ── Numpy bbox pre-filter (vectorized, zero OGR allocation) ──
+    tri_coords = node_coords[cell_nodes]  # (Nc, 3, 2)
+    cell_xmin = tri_coords[:, :, 0].min(axis=1)
+    cell_xmax = tri_coords[:, :, 0].max(axis=1)
+    cell_ymin = tri_coords[:, :, 1].min(axis=1)
+    cell_ymax = tri_coords[:, :, 1].max(axis=1)
+    line_xmin, line_xmax = float(line_xy[:, 0].min()), float(line_xy[:, 0].max())
+    line_ymin, line_ymax = float(line_xy[:, 1].min()), float(line_xy[:, 1].max())
+    mask = (
+        (cell_xmin <= line_xmax) & (cell_xmax >= line_xmin)
+        & (cell_ymin <= line_ymax) & (cell_ymax >= line_ymin)
+    )
+    candidates = np.where(mask)[0]
+    if candidates.size == 0:
         return _empty_sample_map()
 
-    # Find containing cell for each sample point
-    containing = _points_in_triangles(sample_pts, tri_verts)
+    # ── Build OGR line geometry once ──
+    line_geom = ogr.Geometry(ogr.wkbLineString)
+    for i in range(line_xy.shape[0]):
+        line_geom.AddPoint(float(line_xy[i, 0]), float(line_xy[i, 1]))
 
-    # Accumulate weights per cell
-    valid_mask = containing >= 0
-    containing_valid = containing[valid_mask]
-    stations_valid = sample_stations[valid_mask]
+    # ── GEOS intersection for bbox-survivors only ──
+    cell_idx_list = []
+    weight_list = []
+    station_list = []
 
-    if containing_valid.size == 0:
+    gdal.PushErrorHandler("CPLQuietErrorHandler")
+    try:
+        for ci in candidates:
+            ci = int(ci)
+            ring = ogr.Geometry(ogr.wkbLinearRing)
+            for k in range(3):
+                nk = int(cell_nodes[ci, k])
+                ring.AddPoint(float(node_coords[nk, 0]), float(node_coords[nk, 1]))
+            nk0 = int(cell_nodes[ci, 0])
+            ring.AddPoint(float(node_coords[nk0, 0]), float(node_coords[nk0, 1]))
+            poly = ogr.Geometry(ogr.wkbPolygon)
+            poly.AddGeometry(ring)
+
+            inter = poly.Intersection(line_geom)
+            if inter is None:
+                continue
+            seg_len = float(inter.Length())
+            if seg_len <= 0.0:
+                continue
+
+            station = _project_point_onto_line(
+                float(centroids[ci, 0]), float(centroids[ci, 1]), line_xy,
+            )
+            cell_idx_list.append(ci)
+            weight_list.append(seg_len)
+            station_list.append(station)
+    finally:
+        gdal.PopErrorHandler()
+
+    if not cell_idx_list:
         return _empty_sample_map()
 
-    unique_cells, counts = np.unique(containing_valid, return_counts=True)
-    weights = counts.astype(np.float64) / float(counts.sum())
-    # Sort by station
-    cell_stations = np.array([
-        float(np.mean(stations_valid[containing_valid == c]))
-        for c in unique_cells
-    ], dtype=np.float64)
-    order = np.argsort(cell_stations)
-    cell_idx = unique_cells[order].astype(np.int32)
+    cell_idx = np.array(cell_idx_list, dtype=np.int32)
+    weights = np.array(weight_list, dtype=np.float64)
+    weights /= weights.sum()
+    station_m = np.array(station_list, dtype=np.float64)
+
+    order = np.argsort(station_m)
+    cell_idx = cell_idx[order]
     weights = weights[order]
-    station_m = cell_stations[order]
+    station_m = station_m[order]
 
-    # Build profile data (high-fidelity stations)
+    # ── Profile data (IDW on the small filtered set) ──
     k_nei = min(4, int(cell_idx.size))
     n_profile = max(32, min(1600, int(np.ceil(line_len / max(line_len / 256.0, 1e-6)) + 1)))
     profile_station_m = np.linspace(0.0, line_len, n_profile, dtype=np.float64)
