@@ -65,7 +65,32 @@ For each cell within a CN zone:
 
 Cells outside CN zones use CN=100 (impervious, no infiltration).
 
-### 4. Extreme Rain Subcycling
+### 4. Interval-Based Rain Source Updates
+
+Rather than re-evaluating the SCS-CN excess rate at every solver timestep (which is
+expensive for long simulations), the rainfall source is now evaluated at a configurable
+interval and held constant between updates.
+
+**How it works:**
+1. At each coupling step, the solver checks if `t_now - t_last_update >= rain_update_interval_s`
+2. If the interval has elapsed, the kernel computes the average excess rate over `[t_prev, t_now]`
+   by reading the cumulative excess at the last update and computing the incremental excess
+3. The cell source term (`cell_source_mps`) is set to this average rate and held constant
+   until the next interval
+4. The cumulative excess trackers (`cum_rain_mm`, `cum_excess_mm`) are updated
+
+**Why interval updates?**
+- For simulations with 100,000+ timesteps and 60s rain intervals, this reduces rain kernel
+  evaluations by ~99.9% with negligible accuracy loss
+- The average-rate approach is physically appropriate for rainfall which varies slowly compared
+  to the hydrodynamic timestep
+- First call ever: snapshots cumulative excess and sets timer, no rate applied yet (ensures
+  correct initial condition)
+
+**Breaking change:** Default `rain_update_interval_s=60.0`. Simulations needing per-step rain
+application (e.g., short-duration tests) must pass `rain_update_interval_s=0.0`.
+
+### 5. Extreme Rain Subcycling
 
 When rain intensity exceeds a threshold (`source_rate_cap`), the solver
 automatically subcycles the rainfall source term within a single 2D
@@ -73,7 +98,7 @@ timestep. This prevents numerical instability from very large rain rates.
 
 The subcycle count is limited by `source_max_substeps` (default 100).
 
-### 5. Stage-Rate Evaluation
+### 6. Stage-Rate Evaluation
 
 The GPU kernel evaluates the CN excess using a stage-rate formulation
 that provides smooth derivatives for the implicit time integrator. This
@@ -85,6 +110,7 @@ avoids the discontinuity at the `P = Ia` threshold.
 |-----------|---------|-------------|
 | **Rain enabled** | off | Master switch for the rainfall module |
 | **Default rain intensity** | 0 mm/hr | Uniform rain rate when no hyetograph is loaded |
+| **Rain update interval (s)** | 60 | Re-evaluate SCS-CN rate every N seconds (0 = per-step) |
 | **Infiltration enabled** | off | Enable CN-based infiltration |
 | **Infiltration model** | `green_ampt` | Infiltration model (CN is the primary method) |
 | **Source rate cap** | solver default | Max rain rate before subcycling kicks in |

@@ -342,7 +342,7 @@ def execute_run(
         print(f"[DEBUG] Thiessen forcing present, configuring...", flush=True)
         from swe2d.runtime.runtime_setup_configurator import SWE2DRunSetupConfigurator
         cfg = SWE2DRunSetupConfigurator()
-        mm_to_model = 1.0e-3
+        mm_to_model = float(_u.rain_mm_to_model_depth())
         try:
             cfg_res = cfg.configure_native_rain_cn_forcing(
                 backend=backend,

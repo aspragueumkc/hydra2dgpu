@@ -486,6 +486,7 @@ The **Parameters** tab is the third step in the workflow. It contains five pages
 | **IMEX source split** | Split source terms into implicit (stiff) and explicit (non-stiff) components. | Checkbox | Off | Mixed source stiffness |
 | **Stage-coupled IMEX-RK2** | Tie source evaluation to intermediate RK stages. | Checkbox | Off | Tighter source coupling |
 | **Rain rate** | Uniform rainfall rate applied to the entire domain. | 0–2000 mm/hr | 0.0 | Uniform rainfall events |
+| **Rain update interval (s)** | Re-evaluate SCS-CN rate every N seconds. 0 = per-step evaluation. | 0–3600 | 60 | Performance tuning for long simulations |
 | **Default CN** | Default SCS Curve Number. Overridden by CN polygon layer. | 1–100 | 75.0 | SCS infiltration |
 | **SCS Ia/S ratio** | Initial abstraction ratio. Standard SCS value = 0.20. Lower = more runoff. | 0–1.0 | 0.2 | SCS infiltration |
 | **Spatial rainfall** | Use Thiessen polygon interpolation when rain gage + hyetograph layers are configured. | Checkbox | On | Spatially variable rainfall |

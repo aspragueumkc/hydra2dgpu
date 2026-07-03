@@ -24,6 +24,10 @@ minor losses. Analogous to FHWA HEC-22 outlet-control equations.
 - Pressurized flow conditions
 - Design-mode simulations where HEC-22 consistency matters
 
+**HEC-22 boundary losses:** Entrance loss (`k_in`) at the first sub-cell and exit loss
+(`k_out`) at the last sub-cell are applied via `cell_k_loss` in the flux accumulation kernel.
+This matches HEC-22 practice: energy is lost as flow enters and exits the pipe.
+
 **Stability:** Very stable. No CFL constraint on the 1D solve.
 
 **Performance:** Fastest. Single-pass solve per coupling step.
