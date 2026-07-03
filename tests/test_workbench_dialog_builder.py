@@ -143,6 +143,18 @@ class TestThinInitPattern(unittest.TestCase):
         self.assertIn("run", names)
         self.assertIn("cancel", names)
 
+    def test_settings_dialog_imports(self):
+        from swe2d.workbench.dialogs.workbench_settings_dialog import WorkbenchSettingsDialog
+        self.assertIsNotNone(WorkbenchSettingsDialog)
+
+    def test_settings_dialog_returns_flags(self):
+        from swe2d.workbench.dialogs.workbench_settings_dialog import WorkbenchSettingsDialog
+        _ensure_app()
+        dlg = WorkbenchSettingsDialog({"rainfall": True, "drainage_structures": False})
+        flags = dlg.flags()
+        self.assertTrue(flags["rainfall"])
+        self.assertFalse(flags["drainage_structures"])
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
