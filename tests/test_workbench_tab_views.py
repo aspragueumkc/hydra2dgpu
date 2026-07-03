@@ -211,6 +211,22 @@ class TestResultsToolbox(unittest.TestCase):
         self.assertNotIn("...", tip)
         self.assertIn("Froude", tip)
 
+    def test_results_toolbox_has_two_pages(self):
+        from swe2d.workbench.views.results_controls import ResultsToolbox
+        toolbox = ResultsToolbox()
+        self.assertEqual(toolbox.toolbox.count(), 2)
+        texts = [toolbox.toolbox.itemText(i) for i in range(toolbox.toolbox.count())]
+        self.assertIn("Display", texts)
+        self.assertIn("Storage", texts)
+
+    def test_arrow_children_disable_with_checkbox(self):
+        from swe2d.workbench.views.results_controls import ResultsToolbox
+        toolbox = ResultsToolbox()
+        toolbox.arrows_chk.setChecked(True)
+        self.assertTrue(toolbox.arrow_density_spin.isEnabled())
+        toolbox.arrows_chk.setChecked(False)
+        self.assertFalse(toolbox.arrow_density_spin.isEnabled())
+
 
 # ═══════════════════════════════════════════════════════════════════════════
 # StudioTabBuilder helper tests
@@ -290,6 +306,24 @@ class TestStudioHostToolbarMenu(unittest.TestCase):
         self.assertIsNone(studio_host_methods._SWE2D_STUDIO_HOST_MENU)
         self.assertIsNone(host.findChild(QtWidgets.QToolBar, "HydraRunToolbar"))
         self.assertIsNone(host.findChild(QtWidgets.QMenu, "HydraPluginMenu"))
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Doc search tests
+# ═══════════════════════════════════════════════════════════════════════════
+
+class TestDocViewer(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        _ensure_app()
+
+    def test_search_returns_snippets(self):
+        from swe2d.workbench.views.doc_viewer import _search_all_docs
+        results = _search_all_docs("solver")
+        self.assertIsInstance(results, dict)
+        for hits in results.values():
+            for hit in hits:
+                self.assertTrue(len(hit.snippet) > 0)
 
 
 if __name__ == "__main__":

@@ -357,6 +357,8 @@ def _search_all_docs(query: str) -> Dict[str, List[_SearchHit]]:
     results: Dict[str, List[_SearchHit]] = {}
     q = query.lower()
     for entry in AVAILABLE_DOCS:
+        if not entry.filename:
+            continue
         cached = _get_doc(entry.filename)
         hits: List[_SearchHit] = []
         nearest_anchor = ""
