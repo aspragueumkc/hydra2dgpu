@@ -2341,18 +2341,24 @@ class SWE2DWorkbenchStudioDialog(QtWidgets.QDialog):
 
     def set_run_button_enabled(self, enabled: bool) -> None:
         """Enable or disable the Run button."""
-        if hasattr(self, "_model_tab_view") and hasattr(self._model_tab_view, "run_btn"):
-            self._model_tab_view.run_btn.setEnabled(enabled)
+        for widget in (getattr(self._run_dock, "run_btn", None),
+                       getattr(self._model_tab_view, "run_btn", None)):
+            if widget is not None:
+                widget.setEnabled(enabled)
 
     def set_cancel_button_enabled(self, enabled: bool) -> None:
         """Enable or disable the Cancel button."""
-        if hasattr(self, "_model_tab_view") and hasattr(self._model_tab_view, "cancel_btn"):
-            self._model_tab_view.cancel_btn.setEnabled(enabled)
+        for widget in (getattr(self._run_dock, "cancel_btn", None),
+                       getattr(self._model_tab_view, "cancel_btn", None)):
+            if widget is not None:
+                widget.setEnabled(enabled)
 
     def set_run_progress(self, value: int) -> None:
         """Set the run progress bar value."""
-        if hasattr(self, "_model_tab_view") and hasattr(self._model_tab_view, "progress_bar"):
-            self._model_tab_view.progress_bar.setValue(value)
+        for widget in (getattr(self._run_dock, "progress_bar", None),
+                       getattr(self._model_tab_view, "progress_bar", None)):
+            if widget is not None:
+                widget.setValue(value)
 
     def get_uniform_inflow_velocity(self) -> bool:
         """Return whether uniform inflow velocity is enabled (MapView protocol)."""

@@ -187,6 +187,20 @@ class TestThinInitPattern(unittest.TestCase):
         finally:
             dlg.close()
 
+    def test_run_dock_is_created(self):
+        from swe2d.workbench.studio_dialog import SWE2DWorkbenchStudioDialog
+        dlg = SWE2DWorkbenchStudioDialog(iface=_make_iface())
+        try:
+            self.assertTrue(hasattr(dlg, "_run_dock"))
+            self.assertIsNotNone(dlg._run_dock)
+            self.assertTrue(hasattr(dlg._run_dock, "run_btn"))
+            self.assertTrue(hasattr(dlg._run_dock, "cancel_btn"))
+            self.assertTrue(hasattr(dlg._run_dock, "snapshot_btn"))
+            self.assertTrue(hasattr(dlg._run_dock, "batch_btn"))
+            self.assertTrue(hasattr(dlg._run_dock, "progress_bar"))
+        finally:
+            dlg.close()
+
     def test_remember_model_gpkg_tracks_recent_paths(self):
         from swe2d.workbench.studio_dialog import SWE2DWorkbenchStudioDialog
         dlg = SWE2DWorkbenchStudioDialog(iface=_make_iface())

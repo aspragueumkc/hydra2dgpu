@@ -136,6 +136,9 @@ class WorkbenchDialogBuilder:
         from swe2d.workbench.views.studio_viewer import SWE2DStudioViewer
         dlg._studio_viewer = SWE2DStudioViewer()
 
+        from swe2d.workbench.views.run_dock import RunDockWidget
+        dlg._run_dock = RunDockWidget()
+
         if dlg.iface is None:
             root.addWidget(dlg._studio_viewer, stretch=1)
 
@@ -217,6 +220,14 @@ class WorkbenchDialogBuilder:
             title="HYDRA2D Log",
             area=QtCore.Qt.BottomDockWidgetArea,
             populate=self._populate_log_dock,
+            iface=dlg.iface,
+        )
+
+        self._build_component(
+            name="run",
+            title="HYDRA Run",
+            area=QtCore.Qt.BottomDockWidgetArea,
+            populate=lambda dock: dock.setWidget(dlg._run_dock),
             iface=dlg.iface,
         )
 

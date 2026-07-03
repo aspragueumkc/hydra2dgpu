@@ -194,7 +194,12 @@ class ModelTabView(QtWidgets.QWidget):
     def _build_run_page_widgets(
         self, run_page: QtWidgets.QWidget, run_page_layout: QtWidgets.QVBoxLayout
     ) -> None:
-        """Populate the Run page with buttons, progress bar, and I/O controls."""
+        """Populate the Run page with output-interval and storage controls.
+
+        The actual Run/Cancel/Snapshot/Batch buttons and progress bar now live
+        in the dedicated Run dock, but the widget attributes are still created
+        here so existing binding code keeps working.
+        """
         run_row = QtWidgets.QHBoxLayout()
         run_row.setObjectName("run_row_layout")
         for attr, text, tip in [
@@ -211,7 +216,7 @@ class ModelTabView(QtWidgets.QWidget):
             btn.setToolTip(tip)
             setattr(self, attr, btn)
             run_row.addWidget(btn)
-        run_page_layout.addLayout(run_row)
+        # Intentionally not added to run_page_layout — these live in the Run dock now.
 
         self.progress_bar = QtWidgets.QProgressBar()
         self.progress_bar.setObjectName("progress_bar")
@@ -220,7 +225,7 @@ class ModelTabView(QtWidgets.QWidget):
             "and current timestep information during model execution."
         )
         self.progress_bar.setValue(0)
-        run_page_layout.addWidget(self.progress_bar)
+        # Intentionally not added to run_page_layout.
 
         snap_row = QtWidgets.QHBoxLayout()
         snap_row.setObjectName("run_snapshot_row_layout")
@@ -243,9 +248,6 @@ class ModelTabView(QtWidgets.QWidget):
         snap_row.addWidget(self.line_output_interval_edit)
         run_page_layout.addLayout(snap_row)
 
-        debug_sep = QtWidgets.QLabel("<b>Debugging</b>")
-        run_page_layout.addWidget(debug_sep)
-
         debug_row = QtWidgets.QHBoxLayout()
         debug_row.setObjectName("run_debug_row_layout")
         for attr, text, tip in [
@@ -264,7 +266,7 @@ class ModelTabView(QtWidgets.QWidget):
             btn.setToolTip(tip)
             setattr(self, attr, btn)
             debug_row.addWidget(btn)
-        run_page_layout.addLayout(debug_row)
+        # Intentionally not added to run_page_layout — snapshot lives in the Run dock now.
 
         load_row = QtWidgets.QHBoxLayout()
         load_row.setObjectName("load_results_row_layout")

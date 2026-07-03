@@ -478,6 +478,69 @@ class TestModelTabView(unittest.TestCase):
         for expected in ("Culvert / Bridge", "Drainage Network — Equation Set", "Drainage — Substepping", "Drainage — Stability"):
             self.assertIn(expected, titles)
 
+    def test_model_tab_has_search_filter(self):
+        view = self._make_view()
+        self.assertIsInstance(view.param_search, QLineEdit)
+        self.assertEqual(view.param_search.objectName(), "param_search")
+
+    def test_model_tab_has_advanced_toggle(self):
+        view = self._make_view()
+        self.assertIsInstance(view.show_advanced_chk, QCheckBox)
+        self.assertEqual(view.show_advanced_chk.objectName(), "show_advanced_chk")
+        self.assertFalse(view.show_advanced_chk.isChecked())
+
+    def test_filter_hides_non_matching_rows(self):
+        view = self._make_view()
+        view.show()
+        view.show_advanced_chk.setChecked(True)
+        view.param_search.setText("cfl")
+        view._filter_model_tab()
+        visible_groups = [g for g in view._param_groups if g.isVisible()]
+        self.assertGreater(len(visible_groups), 0)
+        for group in visible_groups:
+            title = group.title().lower()
+            row_matches = any(
+                "cfl" in (w.toolTip() or "").lower() or "cfl" in w.objectName().lower()
+                for _g, _l, w, _a in view._param_rows if _g is group
+            )
+            self.assertTrue(
+                "cfl" in title or row_matches,
+                f"Visible group {group.title()} has no CFL match",
+            )
+
+    def test_advanced_toggle_hides_advanced_rows(self):
+        view = self._make_view()
+        view.show()
+        view.param_search.clear()
+        view.show_advanced_chk.setChecked(False)
+        view._filter_model_tab()
+        for _group, label, widget, advanced in view._param_rows:
+            if advanced:
+                self.assertTrue(
+                    widget.isHidden(),
+                    f"Advanced widget {widget.objectName()} should be hidden",
+                )
+                self.assertTrue(
+                    label.isHidden(),
+                    f"Advanced label {label.text()} should be hidden",
+                )
+
+    def test_run_controls_still_exist_as_attributes(self):
+        view = self._make_view()
+        self.assertIsInstance(view.run_btn, QPushButton)
+        self.assertIsInstance(view.cancel_btn, QPushButton)
+        self.assertIsInstance(view.progress_bar, QProgressBar)
+        self.assertIsInstance(view.batch_sim_btn, QPushButton)
+        self.assertIsInstance(view.snapshot_btn, QPushButton)
+
+    def test_run_controls_are_not_added_to_run_page_layout(self):
+        view = self._make_view()
+        run_page = view.findChild(QWidget, "model_run_page")
+        self.assertIsNotNone(run_page)
+        self.assertIsNone(run_page.findChild(QPushButton, "run_btn"))
+        self.assertIsNone(run_page.findChild(QPushButton, "cancel_btn"))
+        self.assertIsNone(run_page.findChild(QProgressBar, "progress_bar"))
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

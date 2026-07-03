@@ -76,7 +76,7 @@ def build_map_tab_page(dialog):
     dialog._map_tab_view = MapTabView()
     map_tab_page = dialog._map_tab_view
     map_data_layout = map_tab_page.findChild(QtWidgets.QGridLayout, "map_data_layout")
-    map_actions_layout = map_tab_page.findChild(QtWidgets.QGridLayout, "map_actions_layout")
+    map_actions_layout = map_tab_page.findChild(QtWidgets.QFormLayout, "map_actions_layout")
     map_tools_layout = map_tab_page.findChild(QtWidgets.QGridLayout, "map_tools_layout")
     if map_data_layout is None or map_actions_layout is None or map_tools_layout is None:
         raise RuntimeError("Map tab UI missing one or more expected group layouts")
@@ -174,7 +174,22 @@ def build_model_tab_page(dialog):
     if solver_form is None or rain_form is None or drain_form is None:
         raise RuntimeError("Model tab UI missing one or more form layouts")
     wire_run_tab_signals(dialog)
+    wire_run_dock_signals(dialog)
     return model_tab_page, solver_form, rain_form, drain_form, run_page
+
+
+def wire_run_dock_signals(dialog) -> None:
+    """Wire the Run dock buttons to the same handlers as the Model tab."""
+    from swe2d.workbench.signal_helpers import safe_disconnect
+    d = dialog._run_dock
+    safe_disconnect(d.run_btn.clicked, dialog._controller.on_run)
+    d.run_btn.clicked.connect(dialog._controller.on_run)
+    safe_disconnect(d.cancel_btn.clicked, dialog._controller.on_cancel)
+    d.cancel_btn.clicked.connect(dialog._controller.on_cancel)
+    safe_disconnect(d.snapshot_btn.clicked, dialog._controller.on_snapshot)
+    d.snapshot_btn.clicked.connect(dialog._controller.on_snapshot)
+    safe_disconnect(d.batch_btn.clicked, dialog._open_batch_simulation_dialog)
+    d.batch_btn.clicked.connect(dialog._open_batch_simulation_dialog)
 
 
 def wire_run_tab_signals(dialog) -> None:
