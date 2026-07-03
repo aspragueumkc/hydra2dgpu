@@ -26,6 +26,7 @@ class RunRecord:
     enabled: bool = True
     label: str = ""
     has_profile: bool = False
+    created_utc: str = ""
 
     def display_label(self) -> str:
         """Return the user-facing label (falls back to run_id if empty)."""
@@ -86,6 +87,7 @@ def collect_runs_from_gpkg(gpkg_path: str) -> List[RunRecord]:
                 color=(0, 0, 0),
                 enabled=True,
                 has_profile=bool(meta.get("has_profile", False)),
+                created_utc=str(meta.get("created_utc", "")),
                 label=f"{gpkg_short}:{rid}{suffix}",
             )
         )

@@ -326,5 +326,73 @@ class TestDocViewer(unittest.TestCase):
                 self.assertTrue(len(hit.snippet) > 0)
 
 
+# ═══════════════════════════════════════════════════════════════════════════
+# Run selection dialog tests
+# ═══════════════════════════════════════════════════════════════════════════
+
+class TestRunSelectionDialog(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        _ensure_app()
+
+    def _fake_records(self):
+        class FakeRecord:
+            __slots__ = (
+                "run_id",
+                "gpkg_path",
+                "color",
+                "enabled",
+                "label",
+                "key",
+                "created_utc",
+            )
+
+            def __init__(self, run_id, gpkg_path, color, enabled, label, key, created_utc):
+                self.run_id = run_id
+                self.gpkg_path = gpkg_path
+                self.color = color
+                self.enabled = enabled
+                self.label = label
+                self.key = key
+                self.created_utc = created_utc
+
+            def display_label(self):
+                return self.label
+
+        return [
+            FakeRecord(
+                "run_a",
+                "/tmp/a.gpkg",
+                (0, 0, 0),
+                True,
+                "run_a",
+                "/tmp/a.gpkg::run_a",
+                "2026-07-01T00:00:00",
+            ),
+            FakeRecord(
+                "run_b",
+                "/tmp/a.gpkg",
+                (0, 0, 0),
+                True,
+                "run_b",
+                "/tmp/a.gpkg::run_b",
+                "2026-07-02T00:00:00",
+            ),
+        ]
+
+    def test_invert_selection_toggles_all(self):
+        from swe2d.workbench.dialogs.run_selection_dialog import RunSelectionDialog
+        dlg = RunSelectionDialog(self._fake_records())
+        dlg._select_all()
+        dlg._invert_selection()
+        self.assertEqual(dlg.selected_keys(), set())
+
+    def test_only_newest_selects_latest(self):
+        from swe2d.workbench.dialogs.run_selection_dialog import RunSelectionDialog
+        dlg = RunSelectionDialog(self._fake_records())
+        dlg._select_only_newest()
+        self.assertEqual(dlg.selected_keys(), {"/tmp/a.gpkg::run_b"})
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

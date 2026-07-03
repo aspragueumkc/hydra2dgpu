@@ -88,6 +88,7 @@ def discover_line_result_runs(gpkg_path: str) -> List[Dict]:
             "table_ts": "swe2d_baked_line_ts",
             "table_profile": "swe2d_baked_line_profiles",
             "has_profile": r.get("has_lines", False),
+            "created_utc": r.get("created_utc", ""),
         })
     return out
 
