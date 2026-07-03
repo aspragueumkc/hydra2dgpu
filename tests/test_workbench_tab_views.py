@@ -230,5 +230,67 @@ class TestStudioTabBuilderHelpers(unittest.TestCase):
         self.assertGreaterEqual(btn.minimumSize().height(), 28)
 
 
+# ═══════════════════════════════════════════════════════════════════════════
+# Studio host toolbar/menu tests
+# ═══════════════════════════════════════════════════════════════════════════
+
+class TestStudioHostToolbarMenu(unittest.TestCase):
+    """Verify global toolbar and Plugins menu installation/cleanup."""
+
+    @classmethod
+    def setUpClass(cls):
+        _ensure_app()
+
+    def _make_mock_dialog(self):
+        """Return a mock dialog with the callbacks toolbar/menu need."""
+        dlg = MagicMock()
+        dlg._controller = MagicMock()
+        dlg._overlay_controller = MagicMock()
+        dlg._mesh_controller = MagicMock()
+        dlg._recent_model_gpkgs = []
+        return dlg
+
+    def test_build_studio_toolbar_creates_hydra_toolbar(self):
+        from qgis.PyQt import QtWidgets
+        from swe2d.workbench.views.studio_host_methods import _build_studio_toolbar
+        host = QtWidgets.QMainWindow()
+        dlg = self._make_mock_dialog()
+        _build_studio_toolbar(None, dlg, host)
+        toolbar = host.findChild(QtWidgets.QToolBar, "HydraRunToolbar")
+        self.assertIsNotNone(toolbar)
+        self.assertGreaterEqual(len(toolbar.actions()), 3)
+
+    def test_build_studio_menu_creates_hydra_menu(self):
+        from qgis.PyQt import QtWidgets
+        from swe2d.workbench.views.studio_host_methods import _build_studio_menu
+        host = QtWidgets.QMainWindow()
+        dlg = self._make_mock_dialog()
+        _build_studio_menu(None, dlg, host)
+        menu = host.findChild(QtWidgets.QMenu, "HydraPluginMenu")
+        self.assertIsNotNone(menu)
+        self.assertGreaterEqual(len(menu.actions()), 3)
+
+    def test_clear_studio_host_controls_removes_toolbar_and_menu(self):
+        from qgis.PyQt import QtWidgets
+        from swe2d.workbench.views import studio_host_methods
+        from swe2d.workbench.views.studio_host_methods import (
+            _build_studio_toolbar,
+            _build_studio_menu,
+            _clear_studio_host_controls,
+        )
+        host = QtWidgets.QMainWindow()
+        dlg = self._make_mock_dialog()
+        _build_studio_toolbar(None, dlg, host)
+        _build_studio_menu(None, dlg, host)
+        self.assertIsNotNone(studio_host_methods._SWE2D_STUDIO_HOST_TOOLBAR)
+        self.assertIsNotNone(studio_host_methods._SWE2D_STUDIO_HOST_MENU)
+        _clear_studio_host_controls(None, host)
+        QtWidgets.QApplication.processEvents()
+        self.assertIsNone(studio_host_methods._SWE2D_STUDIO_HOST_TOOLBAR)
+        self.assertIsNone(studio_host_methods._SWE2D_STUDIO_HOST_MENU)
+        self.assertIsNone(host.findChild(QtWidgets.QToolBar, "HydraRunToolbar"))
+        self.assertIsNone(host.findChild(QtWidgets.QMenu, "HydraPluginMenu"))
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
