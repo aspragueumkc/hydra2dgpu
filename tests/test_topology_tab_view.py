@@ -164,6 +164,21 @@ class TestTopologyTabView(unittest.TestCase):
         self.assertEqual(view.topo_nodes_combo.count(), 1)
         view.deleteLater()
 
+    def test_arcs_page_title_is_plain_text(self):
+        from swe2d.workbench.views.topology_tab_view import TopologyTabView
+        view = TopologyTabView()
+        self.assertEqual(view._toolbox.itemText(view._arcs_idx), "Arcs and Interfaces")
+
+    def test_non_gmsh_pages_are_disabled_and_suffixed(self):
+        from swe2d.workbench.views.topology_tab_view import TopologyTabView
+        view = TopologyTabView()
+        view.topo_backend_combo.setCurrentIndex(view.topo_backend_combo.findData("structured"))
+        view.update_control_summary()
+        for idx in (view._algo_idx, view._arcs_idx, view._sizing_idx,
+                    view._threading_idx, view._transfinite_idx, view._quality_idx):
+            self.assertFalse(view._toolbox.isItemEnabled(idx))
+            self.assertIn("(Gmsh only)", view._toolbox.itemText(idx))
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

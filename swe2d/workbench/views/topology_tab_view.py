@@ -183,7 +183,7 @@ class TopologyTabView(QtWidgets.QWidget):
         arcs_page.setObjectName("topo_arcs_page")
         self.topo_arcs_form = QtWidgets.QFormLayout(arcs_page)
         self.topo_arcs_form.setContentsMargins(4, 4, 4, 4)
-        self._arcs_idx = self._toolbox.addItem(arcs_page, "Arcs && Interfaces")
+        self._arcs_idx = self._toolbox.addItem(arcs_page, "Arcs and Interfaces")
         self._toolbox.setItemEnabled(self._arcs_idx, False)
 
         # -- Sizing page (gmsh only) --
@@ -217,6 +217,19 @@ class TopologyTabView(QtWidgets.QWidget):
         self.topo_quality_form.setContentsMargins(4, 4, 4, 4)
         self._quality_idx = self._toolbox.addItem(quality_page, "Quality")
         self._toolbox.setItemEnabled(self._quality_idx, False)
+
+        self._gmsh_only_indices = (
+            self._algo_idx, self._arcs_idx, self._sizing_idx,
+            self._threading_idx, self._transfinite_idx, self._quality_idx,
+        )
+        self._gmsh_only_base_titles = {
+            self._algo_idx: "Algorithm",
+            self._arcs_idx: "Arcs and Interfaces",
+            self._sizing_idx: "Sizing",
+            self._threading_idx: "Threading",
+            self._transfinite_idx: "Transfinite",
+            self._quality_idx: "Quality",
+        }
 
         # Summary label outside toolbox
         self.topo_controls_summary_lbl = QtWidgets.QLabel(
@@ -438,14 +451,14 @@ class TopologyTabView(QtWidgets.QWidget):
 
         is_gmsh = backend_name == "gmsh"
         # Toggle gmsh-specific toolbox pages
-        for idx in (getattr(self, "_algo_idx", None),
-                     getattr(self, "_arcs_idx", None),
-                     getattr(self, "_sizing_idx", None),
-                     getattr(self, "_threading_idx", None),
-                     getattr(self, "_transfinite_idx", None),
-                     getattr(self, "_quality_idx", None)):
-            if idx is not None:
-                self._toolbox.setItemEnabled(idx, is_gmsh)
+        for idx in self._gmsh_only_indices:
+            base = self._gmsh_only_base_titles.get(idx, "")
+            if is_gmsh:
+                self._toolbox.setItemText(idx, base)
+                self._toolbox.setItemEnabled(idx, True)
+            else:
+                self._toolbox.setItemText(idx, f"{base} (Gmsh only)")
+                self._toolbox.setItemEnabled(idx, False)
 
         if backend_name == "gmsh":
             backend_hint = (
