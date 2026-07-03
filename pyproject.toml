@@ -1,0 +1,18 @@
+[build-system]
+requires = ["setuptools>=64"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "hydra2dgpu"
+version = "0.1.0"
+description = "HYDRA2DGPU — GPU-accelerated 2D hydraulic solver for QGIS"
+requires-python = ">=3.12"
+dependencies = [
+    "numpy",
+]
+
+[project.scripts]
+swe2d-cli = "swe2d.cli.__main__:main"
+
+[tool.setuptools.packages.find]
+include = ["swe2d*"]
