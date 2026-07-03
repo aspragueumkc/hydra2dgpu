@@ -75,12 +75,17 @@ class TestTabViewsAreInLeftTabs(unittest.TestCase):
         _ensure_app()
 
     def test_all_tabs_present(self):
+        from qgis.PyQt import QtWidgets
         from swe2d.workbench.studio_dialog import SWE2DWorkbenchStudioDialog
-        dlg = SWE2DWorkbenchStudioDialog(iface=MagicMock())
+        main_win = QtWidgets.QMainWindow()
+        iface = MagicMock()
+        iface.mainWindow.return_value = main_win
+        iface.addDockWidget = lambda area, dock: main_win.addDockWidget(area, dock)
+        dlg = SWE2DWorkbenchStudioDialog(iface=iface)
         try:
             tabs = dlg._left_tabs
             tab_texts = [tabs.tabText(i) for i in range(tabs.count())]
-            for expected in ["Mesh", "Layers", "Topo Mesh", "Boundary", "Parameters"]:
+            for expected in ["Setup", "Mesh Generation", "Simulation"]:
                 self.assertIn(expected, tab_texts, f"Missing tab: {expected}")
         finally:
             dlg.close()

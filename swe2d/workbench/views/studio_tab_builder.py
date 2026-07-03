@@ -43,9 +43,9 @@ def compose_left_pane(dialog, left_host: QtWidgets.QWidget) -> QtWidgets.QWidget
     dialog._left_tabs = QtWidgets.QTabWidget()
     dialog._left_tabs.setDocumentMode(True)
     left_layout.addWidget(dialog._left_tabs, stretch=1)
-    dialog._left_tabs.addTab(build_map_tab(dialog), "Layers")
-    dialog._left_tabs.addTab(build_topology_tab(dialog), "Mesh")
-    dialog._left_tabs.addTab(build_model_tab(dialog), "Parameters")
+    dialog._left_tabs.addTab(build_map_tab(dialog), "Setup")
+    dialog._left_tabs.addTab(build_topology_tab(dialog), "Mesh Generation")
+    dialog._left_tabs.addTab(build_model_tab(dialog), "Simulation")
     left.setMinimumWidth(0)
     for _cb in left.findChildren(QtWidgets.QComboBox):
         _cb.setMinimumContentsLength(0)
