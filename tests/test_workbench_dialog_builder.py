@@ -155,6 +155,61 @@ class TestThinInitPattern(unittest.TestCase):
         self.assertTrue(flags["rainfall"])
         self.assertFalse(flags["drainage_structures"])
 
+    def test_open_workbench_settings_applies_flags(self):
+        from swe2d.workbench.studio_dialog import SWE2DWorkbenchStudioDialog
+        from qgis.PyQt import QtWidgets
+        dlg = SWE2DWorkbenchStudioDialog(iface=_make_iface())
+        try:
+            with patch("swe2d.workbench.dialogs.workbench_settings_dialog.WorkbenchSettingsDialog") as MockDlg:
+                instance = MockDlg.return_value
+                instance.exec.return_value = QtWidgets.QDialog.DialogCode.Accepted
+                instance.flags.return_value = {"rainfall": False, "drainage_structures": True}
+                dlg._open_workbench_settings()
+                self.assertFalse(dlg._state.studio_feature_flags["rainfall"])
+                self.assertTrue(dlg._state.studio_feature_flags["drainage_structures"])
+        finally:
+            dlg.close()
+
+    def test_open_documentation_hub_focuses_help_tab(self):
+        from swe2d.workbench.studio_dialog import SWE2DWorkbenchStudioDialog
+        from qgis.PyQt import QtWidgets
+        dlg = SWE2DWorkbenchStudioDialog(iface=_make_iface())
+        try:
+            dock = QtWidgets.QDockWidget()
+            tabs = QtWidgets.QTabWidget()
+            tabs.addTab(QtWidgets.QWidget(), "Map")
+            tabs.addTab(QtWidgets.QWidget(), "Help")
+            dock.setWidget(tabs)
+            dlg._state.studio_inspector_dock = dock
+            dlg._open_documentation_hub()
+            self.assertEqual(tabs.tabText(tabs.currentIndex()), "Help")
+            self.assertTrue(dock.isVisible())
+        finally:
+            dlg.close()
+
+    def test_remember_model_gpkg_tracks_recent_paths(self):
+        from swe2d.workbench.studio_dialog import SWE2DWorkbenchStudioDialog
+        dlg = SWE2DWorkbenchStudioDialog(iface=_make_iface())
+        try:
+            dlg._remember_model_gpkg("/tmp/first.gpkg")
+            dlg._remember_model_gpkg("/tmp/second.gpkg")
+            dlg._remember_model_gpkg("/tmp/first.gpkg")
+            self.assertEqual(dlg._recent_model_gpkgs, ["/tmp/first.gpkg", "/tmp/second.gpkg"])
+        finally:
+            dlg.close()
+
+    def test_load_2d_model_geopackage_records_recent_path(self):
+        from swe2d.workbench.studio_dialog import SWE2DWorkbenchStudioDialog
+        dlg = SWE2DWorkbenchStudioDialog(iface=_make_iface())
+        try:
+            dlg._mesh_controller = MagicMock()
+            dlg._model_gpkg_path = "/tmp/model.gpkg"
+            dlg._load_2d_model_geopackage()
+            self.assertIn("/tmp/model.gpkg", dlg._recent_model_gpkgs)
+            dlg._mesh_controller.load_2d_model_geopackage.assert_called_once()
+        finally:
+            dlg.close()
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

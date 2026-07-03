@@ -940,9 +940,46 @@ class SWE2DWorkbenchStudioDialog(QtWidgets.QDialog):
 
                     pass
 
+    def _open_workbench_settings(self) -> None:
+        """Open the workbench feature-flag settings dialog."""
+        from swe2d.workbench.dialogs.workbench_settings_dialog import WorkbenchSettingsDialog
+        dlg = WorkbenchSettingsDialog(self._state.studio_feature_flags, parent=self)
+        if dlg.exec() == QtWidgets.QDialog.DialogCode.Accepted:
+            for key, value in dlg.flags().items():
+                self._studio_set_feature_enabled(key, value)
+
+    def _open_documentation_hub(self) -> None:
+        """Focus the inspector dock on the Help tab."""
+        dock = getattr(self._state, "studio_inspector_dock", None)
+        if dock is None:
+            return
+        tabs = dock.findChild(QtWidgets.QTabWidget)
+        if tabs is not None:
+            for i in range(tabs.count()):
+                if "Help" in tabs.tabText(i):
+                    tabs.setCurrentIndex(i)
+                    break
+        dock.setVisible(True)
+        dock.raise_()
+
+    def _remember_model_gpkg(self, path: str) -> None:
+        """Track recently opened model GeoPackages for the Plugins menu."""
+        if not path:
+            return
+        if not hasattr(self, "_recent_model_gpkgs"):
+            self._recent_model_gpkgs = []
+        p = str(path)
+        if p in self._recent_model_gpkgs:
+            self._recent_model_gpkgs.remove(p)
+        self._recent_model_gpkgs.insert(0, p)
+        self._recent_model_gpkgs = self._recent_model_gpkgs[:5]
+
     def _load_2d_model_geopackage(self, path_override=None) -> None:
-        """Load a 2D model GeoPackage into the workbench."""
+        """Load a model GeoPackage and update recent files."""
         self._mesh_controller.load_2d_model_geopackage(path_override=path_override)
+        path = path_override or getattr(self, "_model_gpkg_path", "")
+        if path:
+            self._remember_model_gpkg(path)
 
     def _iter_all_persistable_widgets(self):
         """Yield (attr_name, widget) pairs across all tab views and toolbox."""
