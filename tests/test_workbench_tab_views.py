@@ -402,5 +402,28 @@ class TestRunSelectionDialog(unittest.TestCase):
         self.assertEqual(dlg.selected_keys(), {"/tmp/a.gpkg::run_b"})
 
 
+# ═══════════════════════════════════════════════════════════════════════════
+# Coupling results dialog tests
+# ═══════════════════════════════════════════════════════════════════════════
+
+class TestCouplingResultsDialog(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        _ensure_app()
+
+    def test_splitter_defaults_favor_plot(self):
+        from qgis.PyQt import QtWidgets
+        from swe2d.workbench.dialogs.coupling_results_dialog import (
+            SWE2DCouplingResultsViewerDialog,
+        )
+
+        dlg = SWE2DCouplingResultsViewerDialog([], "run", "/tmp/x.gpkg")
+        try:
+            sizes = dlg.findChild(QtWidgets.QSplitter).sizes()
+            self.assertGreater(sizes[1], sizes[0])
+        finally:
+            dlg.close()
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

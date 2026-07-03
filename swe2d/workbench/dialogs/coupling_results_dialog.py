@@ -127,7 +127,7 @@ class SWE2DCouplingResultsViewerDialog(QtWidgets.QDialog):
             note.setWordWrap(True)
             plot_layout.addWidget(note)
         split.addWidget(plot_host)
-        split.setSizes([380, 220])
+        split.setSizes([220, 380])
         root.addWidget(split, stretch=1)
 
         buttons = QtWidgets.QDialogButtonBox(QtWidgets.QDialogButtonBox.StandardButton.Close)
