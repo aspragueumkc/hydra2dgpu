@@ -4,6 +4,7 @@ QWidget subclass for the Model tab in the Studio workbench.
 Holds four pages inside a QToolBox:
   - model_solver_page (core + solver controls)
   - model_rain_page (rain / hydrology controls)
+  - model_stability_page (stability controls)
   - model_drain_page (structures & drainage controls)
   - model_run_page (run / output controls)
 
@@ -12,9 +13,17 @@ objectName so existing binding code (e.g. ``findChild``) keeps working.
 """
 from __future__ import annotations
 
+from typing import List, Tuple
+
 from qgis.PyQt import QtWidgets
 
 
+class HintLabel(QtWidgets.QLabel):
+    """Small italic hint text under a parameter group."""
+    def __init__(self, text: str = ""):
+        super().__init__(text)
+        self.setStyleSheet("color: #888; font-style: italic; padding-left: 12px;")
+        self.setWordWrap(True)
 class ModelTabView(QtWidgets.QWidget):
     """View for the Model tab.
 
@@ -78,6 +87,8 @@ class ModelTabView(QtWidgets.QWidget):
         root_layout.setContentsMargins(0, 0, 0, 0)
         root_layout.setSpacing(0)
 
+        self._param_groups: List[QtWidgets.QGroupBox] = []
+        self._param_rows: List[Tuple[QtWidgets.QGroupBox, QtWidgets.QLabel, QtWidgets.QWidget, bool]] = []
         self.model_toolbox = QtWidgets.QToolBox()
         self.model_toolbox.setSizePolicy(
             QtWidgets.QSizePolicy.Preferred, QtWidgets.QSizePolicy.Expanding
@@ -142,6 +153,43 @@ class ModelTabView(QtWidgets.QWidget):
         run_page_layout.setObjectName("run_layout")
         run_page_layout.setContentsMargins(0, 0, 0, 0)
         return run_page, run_page_layout
+
+    def _start_param_group(
+        self,
+        page_layout: QtWidgets.QFormLayout,
+        title: str,
+        checkable: bool = False,
+        advanced: bool = False,
+    ) -> QtWidgets.QFormLayout:
+        """Create a titled, collapsible group box and add it to a page."""
+        group = QtWidgets.QGroupBox(title)
+        group.setObjectName(title.lower().replace(" ", "_").replace("&", "and") + "_group")
+        group.setCheckable(checkable)
+        if checkable:
+            group.setChecked(False)
+        if advanced:
+            group.setProperty("advanced", True)
+        group_layout = QtWidgets.QFormLayout(group)
+        group_layout.setObjectName(group.objectName() + "_layout")
+        page_layout.addRow(group)
+        self._param_groups.append(group)
+        return group_layout
+
+    def _add_param_row(
+        self,
+        group_layout: QtWidgets.QFormLayout,
+        label_text: str,
+        widget: QtWidgets.QWidget,
+        advanced: bool = False,
+    ) -> None:
+        """Add a labeled widget to a group and register it for filtering."""
+        label = QtWidgets.QLabel(label_text)
+        group_layout.addRow(label, widget)
+        group = group_layout.parentWidget()
+        self._param_rows.append((group, label, widget, advanced))
+        if advanced:
+            widget.setProperty("advanced", True)
+            label.setProperty("advanced", True)
 
     def _build_run_page_widgets(
         self, run_page: QtWidgets.QWidget, run_page_layout: QtWidgets.QVBoxLayout
@@ -265,19 +313,9 @@ class ModelTabView(QtWidgets.QWidget):
         run_page_layout.addStretch(1)
 
     def _build_solver_form_widgets(self, param_form: QtWidgets.QFormLayout) -> None:
-        """Populate the Solver Parameters page with numerical controls."""
-        self.n_mann_spin = QtWidgets.QDoubleSpinBox()
-        self.n_mann_spin.setObjectName("n_mann_spin")
-        self.n_mann_spin.setToolTip(
-            "Manning's roughness coefficient n. Typical values: 0.012 (concrete), "
-            "0.020 (gravel), 0.035 (natural stream), 0.050 (floodplain). "
-            "Range: 0.0–1.0."
-        )
-        param_form.addRow("Manning n:", self.n_mann_spin)
-        self.n_mann_spin.setRange(0.0, 1.0)
-        self.n_mann_spin.setDecimals(5)
-        self.n_mann_spin.setValue(0.020)
-
+        """Populate the Solver Parameters page with grouped controls."""
+        # -- Time Stepping --
+        form = self._start_param_group(param_form, "Time Stepping")
         self.cfl_spin = QtWidgets.QDoubleSpinBox()
         self.cfl_spin.setObjectName("cfl_spin")
         self.cfl_spin.setToolTip(
@@ -285,71 +323,10 @@ class ModelTabView(QtWidgets.QWidget):
             "Typical range: 0.1–0.8. Lower values improve stability at the "
             "cost of smaller timesteps. Must be < 1.0 for explicit schemes."
         )
-        param_form.addRow("CFL:", self.cfl_spin)
+        self._add_param_row(form, "CFL:", self.cfl_spin)
         self.cfl_spin.setRange(0.01, 0.99)
         self.cfl_spin.setDecimals(3)
         self.cfl_spin.setValue(0.45)
-
-        self.h_min_spin = QtWidgets.QDoubleSpinBox()
-        self.h_min_spin.setObjectName("h_min_spin")
-        self.h_min_spin.setToolTip(
-            "Minimum water depth threshold (model units). Cells with depth "
-            "below h_min are treated as dry and excluded from momentum computation. "
-            "Typical: 1e-6 (SI) or 1e-5 (USC). Increase for noisy terrain."
-        )
-        param_form.addRow("h_min:", self.h_min_spin)
-        self.h_min_spin.setRange(1.0e-9, 1.0)
-        self.h_min_spin.setDecimals(8)
-        self.h_min_spin.setValue(1.0e-6)
-
-        self.initial_condition_combo = QtWidgets.QComboBox()
-        self.initial_condition_combo.setObjectName("initial_condition_combo")
-        self.initial_condition_combo.setToolTip(
-            "Initial condition for the entire domain. 'Dry start' sets depth=0 "
-            "everywhere. 'Uniform depth' uses a constant depth. 'Uniform WSE' "
-            "sets a constant water surface elevation (depth = WSE - bed)."
-        )
-        param_form.addRow("Initial condition:", self.initial_condition_combo)
-        self.initial_condition_combo.addItem("Dry start", "dry")
-        self.initial_condition_combo.addItem("Uniform depth", "uniform_depth")
-        self.initial_condition_combo.addItem(
-            "Uniform water surface elevation", "uniform_wse"
-        )
-        self.initial_condition_combo.setCurrentIndex(
-            self.initial_condition_combo.findData("dry")
-        )
-
-        self.initial_depth_spin = QtWidgets.QDoubleSpinBox()
-        self.initial_depth_spin.setObjectName("initial_depth_spin")
-        self.initial_depth_spin.setToolTip(
-            "Uniform initial water depth across the domain (model units). "
-            "Only used when 'Initial condition' is 'Uniform depth'. Set to 0 for dry start."
-        )
-        param_form.addRow("Initial depth:", self.initial_depth_spin)
-        self.initial_depth_spin.setRange(0.0, 1.0e6)
-        self.initial_depth_spin.setDecimals(4)
-        self.initial_depth_spin.setValue(0.0)
-
-        self.initial_wse_spin = QtWidgets.QDoubleSpinBox()
-        self.initial_wse_spin.setObjectName("initial_wse_spin")
-        self.initial_wse_spin.setToolTip(
-            "Uniform initial water surface elevation (model units). "
-            "Only used when 'Initial condition' is 'Uniform WSE'. "
-            "Depth is computed as WSE minus bed elevation for each cell."
-        )
-        param_form.addRow("Initial WSE:", self.initial_wse_spin)
-        self.initial_wse_spin.setRange(-1.0e6, 1.0e6)
-        self.initial_wse_spin.setDecimals(4)
-        self.initial_wse_spin.setValue(0.0)
-
-        self.adaptive_cfl_dt_chk = QtWidgets.QCheckBox("Enable variable timestep (CFL)")
-        self.adaptive_cfl_dt_chk.setObjectName("adaptive_cfl_dt_chk")
-        self.adaptive_cfl_dt_chk.setToolTip(
-            "When checked, dt is computed adaptively each step based on the CFL condition "
-            "and current flow velocity. When unchecked, a fixed dt is used."
-        )
-        param_form.addRow("Variable timestep:", self.adaptive_cfl_dt_chk)
-        self.adaptive_cfl_dt_chk.setChecked(False)
 
         self.dt_spin = QtWidgets.QDoubleSpinBox()
         self.dt_spin.setObjectName("dt_spin")
@@ -358,7 +335,7 @@ class ModelTabView(QtWidgets.QWidget):
             "Acts as dt_max (upper bound) when variable timestep is enabled. "
             "Units: seconds or model time. Range: 0.0001–1e6."
         )
-        param_form.addRow("dt (fixed or dt_max):", self.dt_spin)
+        self._add_param_row(form, "dt (max):", self.dt_spin)
         self.dt_spin.setRange(1.0e-4, 1.0e6)
         self.dt_spin.setDecimals(5)
         self.dt_spin.setValue(0.05)
@@ -369,68 +346,47 @@ class ModelTabView(QtWidgets.QWidget):
             "Timestep used for the first step before the adaptive CFL adjusts. "
             "Set to 0 (default) for automatic selection based on mesh size and CFL."
         )
-        param_form.addRow("Initial dt (0 = auto):", self.initial_dt_spin)
+        self._add_param_row(form, "Initial dt:", self.initial_dt_spin)
         self.initial_dt_spin.setRange(0.0, 1.0e6)
         self.initial_dt_spin.setDecimals(5)
         self.initial_dt_spin.setValue(0.0)
 
-        self.gpu_diag_sync_interval_spin = QtWidgets.QSpinBox()
-        self.gpu_diag_sync_interval_spin.setObjectName("gpu_diag_sync_interval_spin")
-        self.gpu_diag_sync_interval_spin.setToolTip(
-            "Number of solver steps between GPU diagnostics synchronization. "
-            "Higher values reduce GPU/CPU sync overhead. Range: 1–1,000,000. "
-            "Default: 10 steps."
+        self.adaptive_cfl_dt_chk = QtWidgets.QCheckBox("Enable variable timestep (CFL)")
+        self.adaptive_cfl_dt_chk.setObjectName("adaptive_cfl_dt_chk")
+        self.adaptive_cfl_dt_chk.setToolTip(
+            "When checked, dt is computed adaptively each step based on the CFL condition "
+            "and current flow velocity. When unchecked, a fixed dt is used."
         )
-        param_form.addRow("GPU diag sync (steps):", self.gpu_diag_sync_interval_spin)
-        self.gpu_diag_sync_interval_spin.setRange(1, 1000000)
-        self.gpu_diag_sync_interval_spin.setValue(10)
+        self._add_param_row(form, "Variable timestep:", self.adaptive_cfl_dt_chk)
+        self.adaptive_cfl_dt_chk.setChecked(False)
 
-        self.tiny_mode_combo = QtWidgets.QComboBox()
-        self.tiny_mode_combo.setObjectName("tiny_mode_combo")
-        self.tiny_mode_combo.setToolTip(
-            "Mode for handling tiny/wet-dry cells. "
-            "Off (0): standard treatment. Auto (1): automatic detection. "
-            "Fused (2): fused kernel for tiny cells. "
-            "Persistent (3): persistent tiny-cell state across steps (default)."
-        )
-        param_form.addRow("Tiny mode:", self.tiny_mode_combo)
-        self.tiny_mode_combo.addItem("Disabled", 0)
-        self.tiny_mode_combo.addItem("Auto-detect", 1)
-        self.tiny_mode_combo.addItem("Fused", 2)
-        self.tiny_mode_combo.addItem("Persistent", 3)
-        self.tiny_mode_combo.setCurrentIndex(self.tiny_mode_combo.findData(3))
+        form.addRow(HintLabel("Adaptive dt uses the CFL condition each step."))
 
-        self.tiny_wet_cell_threshold_spin = QtWidgets.QSpinBox()
-        self.tiny_wet_cell_threshold_spin.setObjectName("tiny_wet_cell_threshold_spin")
-        self.tiny_wet_cell_threshold_spin.setToolTip(
-            "Maximum number of active/wet cells before tiny-mode optimization engages. "
-            "Range: 1–10,000,000. Default: 2000."
+        # -- Physics & Friction --
+        form = self._start_param_group(param_form, "Physics & Friction")
+        self.n_mann_spin = QtWidgets.QDoubleSpinBox()
+        self.n_mann_spin.setObjectName("n_mann_spin")
+        self.n_mann_spin.setToolTip(
+            "Manning's roughness coefficient n. Typical values: 0.012 (concrete), "
+            "0.020 (gravel), 0.035 (natural stream), 0.050 (floodplain). "
+            "Range: 0.0–1.0."
         )
-        param_form.addRow(
-            "Tiny active/wet cell threshold:", self.tiny_wet_cell_threshold_spin
-        )
-        self.tiny_wet_cell_threshold_spin.setRange(1, 10000000)
-        self.tiny_wet_cell_threshold_spin.setValue(2000)
+        self._add_param_row(form, "Manning n:", self.n_mann_spin)
+        self.n_mann_spin.setRange(0.0, 1.0)
+        self.n_mann_spin.setDecimals(5)
+        self.n_mann_spin.setValue(0.020)
 
-        self.enable_cuda_graphs_chk = QtWidgets.QCheckBox("Enable")
-        self.enable_cuda_graphs_chk.setObjectName("enable_cuda_graphs_chk")
-        self.enable_cuda_graphs_chk.setToolTip(
-            "Enable CUDA graph replay for solver kernel launches. "
-            "Reduces kernel launch overhead by capturing and replaying the "
-            "entire kernel graph. Only effective on CUDA 10+ with stable kernel topology."
+        self.h_min_spin = QtWidgets.QDoubleSpinBox()
+        self.h_min_spin.setObjectName("h_min_spin")
+        self.h_min_spin.setToolTip(
+            "Minimum water depth threshold (model units). Cells with depth "
+            "below h_min are treated as dry and excluded from momentum computation. "
+            "Typical: 1e-6 (SI) or 1e-5 (USC). Increase for noisy terrain."
         )
-        param_form.addRow("CUDA graph replay:", self.enable_cuda_graphs_chk)
-        self.enable_cuda_graphs_chk.setChecked(False)
-
-        self.swe2d_perf_mode_chk = QtWidgets.QCheckBox("Enable")
-        self.swe2d_perf_mode_chk.setObjectName("swe2d_perf_mode_chk")
-        self.swe2d_perf_mode_chk.setToolTip(
-            "High-performance mode for the SWE2D solver. Enables aggressive "
-            "optimizations (kernel fusion, reduced synchronization, stream overlap) "
-            "for maximum GPU throughput. May reduce diagnostic granularity."
-        )
-        param_form.addRow("SWE2D perf mode:", self.swe2d_perf_mode_chk)
-        self.swe2d_perf_mode_chk.setChecked(False)
+        self._add_param_row(form, "h_min:", self.h_min_spin)
+        self.h_min_spin.setRange(1.0e-9, 1.0)
+        self.h_min_spin.setDecimals(8)
+        self.h_min_spin.setValue(1.0e-6)
 
         self.internal_flow_layer_combo = QtWidgets.QComboBox()
         self.internal_flow_layer_combo.setObjectName("internal_flow_layer_combo")
@@ -439,7 +395,7 @@ class ModelTabView(QtWidgets.QWidget):
             "Each polygon specifies a flow rate (e.g. q_cms) applied as a source term. "
             "Select '(none)' to disable internal flows."
         )
-        param_form.addRow("Internal flow layer:", self.internal_flow_layer_combo)
+        self._add_param_row(form, "Internal flow layer:", self.internal_flow_layer_combo)
         self.internal_flow_layer_combo.addItem("(none)", None)
 
         self.internal_flow_field_edit = QtWidgets.QLineEdit()
@@ -450,20 +406,10 @@ class ModelTabView(QtWidgets.QWidget):
         )
         self.internal_flow_field_edit.setText("q_cms")
         self.internal_flow_field_edit.setPlaceholderText("field name, e.g. q_cms")
-        param_form.addRow("Internal flow field:", self.internal_flow_field_edit)
+        self._add_param_row(form, "Internal flow field:", self.internal_flow_field_edit)
 
-        self.run_time_edit = QtWidgets.QLineEdit()
-        self.run_time_edit.setObjectName("run_time_edit")
-        self.run_time_edit.setToolTip(
-            "Total simulation duration. Enter as decimal hours (e.g. 1.5) "
-            "or HH:MM format (e.g. 01:30 for 1 hour 30 min)."
-        )
-        self.run_time_edit.setText("1:00")
-        self.run_time_edit.setPlaceholderText(
-            "decimal hours (e.g. 1.5) or HH:MM (e.g. 01:30)"
-        )
-        param_form.addRow("Run duration:", self.run_time_edit)
-
+        # -- Spatial Reconstruction --
+        form = self._start_param_group(param_form, "Spatial Reconstruction")
         self.reconstruction_combo = QtWidgets.QComboBox()
         self.reconstruction_combo.setObjectName("reconstruction_combo")
         self.reconstruction_combo.setToolTip(
@@ -482,8 +428,10 @@ class ModelTabView(QtWidgets.QWidget):
             ("WENO5", 6),
         ]:
             self.reconstruction_combo.addItem(text, data)
-        param_form.addRow("Reconstruction:", self.reconstruction_combo)
+        self._add_param_row(form, "Reconstruction:", self.reconstruction_combo)
 
+        # -- Temporal Integration --
+        form = self._start_param_group(param_form, "Temporal Integration")
         self.temporal_order_combo = QtWidgets.QComboBox()
         self.temporal_order_combo.setObjectName("temporal_order_combo")
         self.temporal_order_combo.setToolTip(
@@ -505,7 +453,7 @@ class ModelTabView(QtWidgets.QWidget):
             ("RK5 (graph-safe)", 6),
         ]:
             self.temporal_order_combo.addItem(text, data)
-        param_form.addRow("Temporal discretization:", self.temporal_order_combo)
+        self._add_param_row(form, "Temporal discretization:", self.temporal_order_combo)
 
         def _on_temporal_order_changed(idx: int) -> None:
             order = self.temporal_order_combo.itemData(idx)
@@ -515,7 +463,90 @@ class ModelTabView(QtWidgets.QWidget):
                 if item is not None:
                     item.setEnabled(order is not None and int(order) < 3)
         self.temporal_order_combo.currentIndexChanged.connect(_on_temporal_order_changed)
-        _on_temporal_order_changed(self.temporal_order_combo.currentIndex())
+
+        # -- Initial Conditions --
+        form = self._start_param_group(param_form, "Initial Conditions", checkable=True)
+        self.initial_condition_combo = QtWidgets.QComboBox()
+        self.initial_condition_combo.setObjectName("initial_condition_combo")
+        self.initial_condition_combo.setToolTip(
+            "Initial condition for the entire domain. 'Dry start' sets depth=0 "
+            "everywhere. 'Uniform depth' uses a constant depth. 'Uniform WSE' "
+            "sets a constant water surface elevation (depth = WSE - bed)."
+        )
+        self._add_param_row(form, "Initial condition:", self.initial_condition_combo)
+        self.initial_condition_combo.addItem("Dry start", "dry")
+        self.initial_condition_combo.addItem("Uniform depth", "uniform_depth")
+        self.initial_condition_combo.addItem(
+            "Uniform water surface elevation", "uniform_wse"
+        )
+        self.initial_condition_combo.setCurrentIndex(
+            self.initial_condition_combo.findData("dry")
+        )
+
+        self.initial_depth_spin = QtWidgets.QDoubleSpinBox()
+        self.initial_depth_spin.setObjectName("initial_depth_spin")
+        self.initial_depth_spin.setToolTip(
+            "Uniform initial water depth across the domain (model units). "
+            "Only used when 'Initial condition' is 'Uniform depth'. Set to 0 for dry start."
+        )
+        self._add_param_row(form, "Initial depth:", self.initial_depth_spin)
+        self.initial_depth_spin.setRange(0.0, 1.0e6)
+        self.initial_depth_spin.setDecimals(4)
+        self.initial_depth_spin.setValue(0.0)
+
+        self.initial_wse_spin = QtWidgets.QDoubleSpinBox()
+        self.initial_wse_spin.setObjectName("initial_wse_spin")
+        self.initial_wse_spin.setToolTip(
+            "Uniform initial water surface elevation (model units). "
+            "Only used when 'Initial condition' is 'Uniform WSE'. "
+            "Depth is computed as WSE minus bed elevation for each cell."
+        )
+        self._add_param_row(form, "Initial WSE:", self.initial_wse_spin)
+        self.initial_wse_spin.setRange(-1.0e6, 1.0e6)
+        self.initial_wse_spin.setDecimals(4)
+        self.initial_wse_spin.setValue(0.0)
+
+        form.addRow(HintLabel("Dry start uses bed elevation only."))
+
+        # -- Numerical Options --
+        form = self._start_param_group(param_form, "Numerical Options", advanced=True)
+        self.gpu_diag_sync_interval_spin = QtWidgets.QSpinBox()
+        self.gpu_diag_sync_interval_spin.setObjectName("gpu_diag_sync_interval_spin")
+        self.gpu_diag_sync_interval_spin.setToolTip(
+            "Number of solver steps between GPU diagnostics synchronization. "
+            "Higher values reduce GPU/CPU sync overhead. Range: 1–1,000,000. "
+            "Default: 10 steps."
+        )
+        self._add_param_row(form, "GPU diag sync (steps):", self.gpu_diag_sync_interval_spin, advanced=True)
+        self.gpu_diag_sync_interval_spin.setRange(1, 1000000)
+        self.gpu_diag_sync_interval_spin.setValue(10)
+
+        self.tiny_mode_combo = QtWidgets.QComboBox()
+        self.tiny_mode_combo.setObjectName("tiny_mode_combo")
+        self.tiny_mode_combo.setToolTip(
+            "Mode for handling tiny/wet-dry cells. "
+            "Off (0): standard treatment. Auto (1): automatic detection. "
+            "Fused (2): fused kernel for tiny cells. "
+            "Persistent (3): persistent tiny-cell state across steps (default)."
+        )
+        self._add_param_row(form, "Tiny mode:", self.tiny_mode_combo)
+        self.tiny_mode_combo.addItem("Disabled", 0)
+        self.tiny_mode_combo.addItem("Auto-detect", 1)
+        self.tiny_mode_combo.addItem("Fused", 2)
+        self.tiny_mode_combo.addItem("Persistent", 3)
+        self.tiny_mode_combo.setCurrentIndex(self.tiny_mode_combo.findData(3))
+
+        self.tiny_wet_cell_threshold_spin = QtWidgets.QSpinBox()
+        self.tiny_wet_cell_threshold_spin.setObjectName("tiny_wet_cell_threshold_spin")
+        self.tiny_wet_cell_threshold_spin.setToolTip(
+            "Maximum number of active/wet cells before tiny-mode optimization engages. "
+            "Range: 1–10,000,000. Default: 2000."
+        )
+        self._add_param_row(
+            form, "Tiny active/wet cell threshold:", self.tiny_wet_cell_threshold_spin
+        )
+        self.tiny_wet_cell_threshold_spin.setRange(1, 10000000)
+        self.tiny_wet_cell_threshold_spin.setValue(2000)
 
         self.degen_mode_combo = QtWidgets.QComboBox()
         self.degen_mode_combo.setObjectName("degen_mode_combo")
@@ -526,23 +557,164 @@ class ModelTabView(QtWidgets.QWidget):
             "Repair (2): replace inv_area with neighbor-average (most robust). "
             "Merge (3): redirect degenerate cell flux to owner cell."
         )
-        param_form.addRow("Degenerate cell mode:", self.degen_mode_combo)
+        self._add_param_row(form, "Degenerate cell mode:", self.degen_mode_combo)
         self.degen_mode_combo.addItem("Off (0)", 0)
         self.degen_mode_combo.addItem("Skip (1)", 1)
         self.degen_mode_combo.addItem("Repair (2)", 2)
         self.degen_mode_combo.addItem("Merge (3)", 3)
         self.degen_mode_combo.setCurrentIndex(self.degen_mode_combo.findData(0))
 
+        # -- Performance --
+        form = self._start_param_group(param_form, "Performance", advanced=True)
+        self.enable_cuda_graphs_chk = QtWidgets.QCheckBox("Enable")
+        self.enable_cuda_graphs_chk.setObjectName("enable_cuda_graphs_chk")
+        self.enable_cuda_graphs_chk.setToolTip(
+            "Enable CUDA graph replay for solver kernel launches. "
+            "Reduces kernel launch overhead by capturing and replaying the "
+            "entire kernel graph. Only effective on CUDA 10+ with stable kernel topology."
+        )
+        self._add_param_row(form, "CUDA graph replay:", self.enable_cuda_graphs_chk, advanced=True)
+        self.enable_cuda_graphs_chk.setChecked(False)
+
+        self.swe2d_perf_mode_chk = QtWidgets.QCheckBox("Enable")
+        self.swe2d_perf_mode_chk.setObjectName("swe2d_perf_mode_chk")
+        self.swe2d_perf_mode_chk.setToolTip(
+            "High-performance mode for the SWE2D solver. Enables aggressive "
+            "optimizations (kernel fusion, reduced synchronization, stream overlap) "
+            "for maximum GPU throughput. May reduce diagnostic granularity."
+        )
+        self._add_param_row(form, "SWE2D perf mode:", self.swe2d_perf_mode_chk, advanced=True)
+        self.swe2d_perf_mode_chk.setChecked(False)
+
+        # -- Run Duration --
+        form = self._start_param_group(param_form, "Run Duration")
+        self.run_time_edit = QtWidgets.QLineEdit()
+        self.run_time_edit.setObjectName("run_time_edit")
+        self.run_time_edit.setToolTip(
+            "Total simulation duration. Enter as decimal hours (e.g. 1.5) "
+            "or HH:MM format (e.g. 01:30 for 1 hour 30 min)."
+        )
+        self.run_time_edit.setText("1:00")
+        self.run_time_edit.setPlaceholderText(
+            "decimal hours (e.g. 1.5) or HH:MM (e.g. 01:30)"
+        )
+        self._add_param_row(form, "Run duration:", self.run_time_edit)
+
+        _on_temporal_order_changed(self.temporal_order_combo.currentIndex())
+
     def _build_rain_form_widgets(self, param_form: QtWidgets.QFormLayout) -> None:
-        """Populate the Rain / Hydrology page with rainfall and infiltration controls."""
+        """Populate the Rain / Hydrology page with grouped rainfall controls."""
+        form = self._start_param_group(param_form, "Rainfall Input")
+        self.rain_rate_spin = QtWidgets.QDoubleSpinBox()
+        self.rain_rate_spin.setObjectName("rain_rate_spin")
+        self.rain_rate_spin.setToolTip(
+            "Uniform rainfall rate in mm/hr applied to the entire domain. "
+            "Range: 0–2000 mm/hr. Use spatial rainfall layers for non-uniform "
+            "rainfall distribution."
+        )
+        self._add_param_row(form, "Rain rate:", self.rain_rate_spin)
+        self.rain_rate_spin.setRange(0.0, 2000.0)
+        self.rain_rate_spin.setDecimals(3)
+        self.rain_rate_spin.setValue(0.0)
+        self.rain_rate_spin.setSuffix(" mm/hr")
+
+        self.use_spatial_rain_cn_chk = QtWidgets.QCheckBox(
+            "Use Thiessen gage rainfall when layers are available"
+        )
+        self.use_spatial_rain_cn_chk.setObjectName("use_spatial_rain_cn_chk")
+        self.use_spatial_rain_cn_chk.setToolTip(
+            "When checked and rain gage + hyetograph layers are configured, "
+            "Thiessen polygon interpolation is applied for spatially variable "
+            "rainfall. Uses CN polygons for spatial infiltration if available."
+        )
+        self._add_param_row(form, "Spatial rainfall:", self.use_spatial_rain_cn_chk)
+        self.use_spatial_rain_cn_chk.setChecked(True)
+
+        self.rain_update_interval_spin = QtWidgets.QSpinBox()
+        self.rain_update_interval_spin.setObjectName("rain_update_interval_spin")
+        self.rain_update_interval_spin.setToolTip(
+            "Interval in seconds for re-evaluating the SCS-CN runoff rate. "
+            "Default 60s. Lower values=more responsive but more compute. "
+            "Set to 0 to re-evaluate every step (old behavior)."
+        )
+        self._add_param_row(form, "Rain rate update interval (s):", self.rain_update_interval_spin)
+        self.rain_update_interval_spin.setRange(0, 3600)
+        self.rain_update_interval_spin.setSingleStep(10)
+        self.rain_update_interval_spin.setValue(60)
+
+        self.storm_area_layer_combo = QtWidgets.QComboBox()
+        self.storm_area_layer_combo.setObjectName("storm_area_layer_combo")
+        self.storm_area_layer_combo.setToolTip(
+            "Optional polygon layer defining the storm area extent. "
+            "Only cells within storm area polygons receive rainfall. "
+            "Select '(none)' to apply rain globally."
+        )
+        self._add_param_row(form, "Storm area layer (optional):", self.storm_area_layer_combo)
+        self.storm_area_layer_combo.addItem("(none)", None)
+
+        self.rain_boundary_buffer_rings_spin = QtWidgets.QSpinBox()
+        self.rain_boundary_buffer_rings_spin.setObjectName(
+            "rain_boundary_buffer_rings_spin"
+        )
+        self.rain_boundary_buffer_rings_spin.setToolTip(
+            "Number of boundary buffer rings to which rainfall is still applied when "
+            "using a storm area layer. Prevents dry boundary artifacts. Range: 0–10."
+        )
+        self._add_param_row(
+            form, "Rain boundary buffer rings:", self.rain_boundary_buffer_rings_spin
+        )
+        self.rain_boundary_buffer_rings_spin.setRange(0, 10)
+        self.rain_boundary_buffer_rings_spin.setValue(1)
+
+        form = self._start_param_group(param_form, "Infiltration")
+        self.infiltration_method_combo = QtWidgets.QComboBox()
+        self.infiltration_method_combo.setObjectName("infiltration_method_combo")
+        self.infiltration_method_combo.setToolTip(
+            "Infiltration model for rainfall-runoff computation. "
+            "'SCS Curve Number' uses the NRCS runoff curve number method. "
+            "'None' skips infiltration entirely."
+        )
+        self._add_param_row(form, "Infiltration method:", self.infiltration_method_combo)
+        self.infiltration_method_combo.addItem("SCS Curve Number", "scs_cn")
+        self.infiltration_method_combo.addItem("None (no infiltration)", "none")
+        self.infiltration_method_combo.setCurrentIndex(
+            self.infiltration_method_combo.findData("scs_cn")
+        )
+
+        self.cn_default_spin = QtWidgets.QDoubleSpinBox()
+        self.cn_default_spin.setObjectName("cn_default_spin")
+        self.cn_default_spin.setToolTip(
+            "Default SCS Curve Number for runoff computation. "
+            "CN values range from 1 (high infiltration) to 100 (impervious). "
+            "Typical: 75 (residential), 85 (urban). Overridden by CN polygon layer if present."
+        )
+        self._add_param_row(form, "Default CN:", self.cn_default_spin)
+        self.cn_default_spin.setRange(1.0, 100.0)
+        self.cn_default_spin.setDecimals(1)
+        self.cn_default_spin.setValue(75.0)
+
+        self.ia_ratio_spin = QtWidgets.QDoubleSpinBox()
+        self.ia_ratio_spin.setObjectName("ia_ratio_spin")
+        self.ia_ratio_spin.setToolTip(
+            "SCS initial abstraction ratio Ia/S. Standard SCS value is 0.20. "
+            "Lower values (e.g. 0.05) reduce initial abstraction and increase runoff. "
+            "Range: 0–1.0."
+        )
+        self._add_param_row(form, "SCS Ia/S ratio:", self.ia_ratio_spin)
+        self.ia_ratio_spin.setRange(0.0, 1.0)
+        self.ia_ratio_spin.setDecimals(3)
+        self.ia_ratio_spin.setSingleStep(0.01)
+        self.ia_ratio_spin.setValue(0.2)
+
+        form = self._start_param_group(param_form, "Source Stability", advanced=True)
         self.max_rel_depth_increase_spin = QtWidgets.QDoubleSpinBox()
         self.max_rel_depth_increase_spin.setObjectName("max_rel_depth_increase_spin")
         self.max_rel_depth_increase_spin.setToolTip(
             "Maximum relative water depth increase per timestep due to source terms. "
             "0 = unlimited. Typical: 2.0 (2x depth per step). Range: 0–1000."
         )
-        param_form.addRow(
-            "Max rel depth increase:", self.max_rel_depth_increase_spin
+        self._add_param_row(
+            form, "Max rel depth increase:", self.max_rel_depth_increase_spin, advanced=True
         )
         self.max_rel_depth_increase_spin.setRange(0.0, 1000.0)
         self.max_rel_depth_increase_spin.setDecimals(3)
@@ -552,9 +724,9 @@ class ModelTabView(QtWidgets.QWidget):
         self.max_source_depth_step_spin.setObjectName("max_source_depth_step_spin")
         self.max_source_depth_step_spin.setToolTip(
             "Maximum absolute water depth change per step from source terms (model units). "
-            "0 = unlimited. Use to prevent numerical blowup from intense rainfall." 
+            "0 = unlimited. Use to prevent numerical blowup from intense rainfall."
         )
-        param_form.addRow("Max source dh/step:", self.max_source_depth_step_spin)
+        self._add_param_row(form, "Max source dh/step:", self.max_source_depth_step_spin, advanced=True)
         self.max_source_depth_step_spin.setRange(0.0, 10.0)
         self.max_source_depth_step_spin.setDecimals(6)
         self.max_source_depth_step_spin.setValue(0.0)
@@ -565,7 +737,7 @@ class ModelTabView(QtWidgets.QWidget):
             "Maximum source rate (rainfall intensity) threshold in model "
             "units. Values above this cap are clamped. 0 = no cap. Range: 0–100."
         )
-        param_form.addRow("Max source rate:", self.max_source_rate_spin)
+        self._add_param_row(form, "Max source rate:", self.max_source_rate_spin, advanced=True)
         self.max_source_rate_spin.setRange(0.0, 100.0)
         self.max_source_rate_spin.setDecimals(6)
         self.max_source_rate_spin.setValue(0.0)
@@ -577,7 +749,7 @@ class ModelTabView(QtWidgets.QWidget):
             "stabilization. Use for high-intensity storms where standard "
             "source treatment may become unstable."
         )
-        param_form.addRow("Extreme rain mode:", self.extreme_rain_mode_chk)
+        self._add_param_row(form, "Extreme rain mode:", self.extreme_rain_mode_chk, advanced=True)
         self.extreme_rain_mode_chk.setChecked(False)
 
         self.source_cfl_beta_spin = QtWidgets.QDoubleSpinBox()
@@ -587,7 +759,7 @@ class ModelTabView(QtWidgets.QWidget):
             "Lower values → smaller source substeps → more stability. "
             "Range: 0.01–2.0. Default: 0.25."
         )
-        param_form.addRow("Source CFL beta:", self.source_cfl_beta_spin)
+        self._add_param_row(form, "Source CFL beta:", self.source_cfl_beta_spin, advanced=True)
         self.source_cfl_beta_spin.setRange(0.01, 2.0)
         self.source_cfl_beta_spin.setDecimals(3)
         self.source_cfl_beta_spin.setSingleStep(0.05)
@@ -600,7 +772,7 @@ class ModelTabView(QtWidgets.QWidget):
             "Higher values allow finer source sub-cycling for stability. "
             "Range: 1–512. Default: 16."
         )
-        param_form.addRow("Source max substeps:", self.source_max_substeps_spin)
+        self._add_param_row(form, "Source max substeps:", self.source_max_substeps_spin, advanced=True)
         self.source_max_substeps_spin.setRange(1, 512)
         self.source_max_substeps_spin.setValue(16)
 
@@ -611,7 +783,7 @@ class ModelTabView(QtWidgets.QWidget):
             "(multiple substeps per hydrodynamic step). When disabled, sources "
             "are integrated with the main timestep."
         )
-        param_form.addRow("True source subcycling:", self.source_true_subcycling_chk)
+        self._add_param_row(form, "True source subcycling:", self.source_true_subcycling_chk, advanced=True)
         self.source_true_subcycling_chk.setChecked(False)
 
         self.source_imex_split_chk = QtWidgets.QCheckBox("Enable")
@@ -621,118 +793,19 @@ class ModelTabView(QtWidgets.QWidget):
             "Stiff source terms (e.g. friction) are treated implicitly, "
             "non-stiff terms (e.g. rainfall) explicitly."
         )
-        param_form.addRow("IMEX source split:", self.source_imex_split_chk)
+        self._add_param_row(form, "IMEX source split:", self.source_imex_split_chk, advanced=True)
         self.source_imex_split_chk.setChecked(False)
 
-        self.rain_rate_spin = QtWidgets.QDoubleSpinBox()
-        self.rain_rate_spin.setObjectName("rain_rate_spin")
-        self.rain_rate_spin.setToolTip(
-            "Uniform rainfall rate in mm/hr applied to the entire domain. "
-            "Range: 0–2000 mm/hr. Use spatial rainfall layers for non-uniform "
-            "rainfall distribution."
-        )
-        param_form.addRow("Rain rate:", self.rain_rate_spin)
-        self.rain_rate_spin.setRange(0.0, 2000.0)
-        self.rain_rate_spin.setDecimals(3)
-        self.rain_rate_spin.setValue(0.0)
-        self.rain_rate_spin.setSuffix(" mm/hr")
-
-        self.cn_default_spin = QtWidgets.QDoubleSpinBox()
-        self.cn_default_spin.setObjectName("cn_default_spin")
-        self.cn_default_spin.setToolTip(
-            "Default SCS Curve Number for runoff computation. "
-            "CN values range from 1 (high infiltration) to 100 (impervious). "
-            "Typical: 75 (residential), 85 (urban). Overridden by CN polygon layer if present."
-        )
-        param_form.addRow("Default CN:", self.cn_default_spin)
-        self.cn_default_spin.setRange(1.0, 100.0)
-        self.cn_default_spin.setDecimals(1)
-        self.cn_default_spin.setValue(75.0)
-
-        self.ia_ratio_spin = QtWidgets.QDoubleSpinBox()
-        self.ia_ratio_spin.setObjectName("ia_ratio_spin")
-        self.ia_ratio_spin.setToolTip(
-            "SCS initial abstraction ratio Ia/S. Standard SCS value is 0.20. "
-            "Lower values (e.g. 0.05) reduce initial abstraction and increase runoff. "
-            "Range: 0–1.0."
-        )
-        param_form.addRow("SCS Ia/S ratio:", self.ia_ratio_spin)
-        self.ia_ratio_spin.setRange(0.0, 1.0)
-        self.ia_ratio_spin.setDecimals(3)
-        self.ia_ratio_spin.setSingleStep(0.01)
-        self.ia_ratio_spin.setValue(0.2)
-
-        self.use_spatial_rain_cn_chk = QtWidgets.QCheckBox(
-            "Use Thiessen gage rainfall when layers are available"
-        )
-        self.use_spatial_rain_cn_chk.setObjectName("use_spatial_rain_cn_chk")
-        self.use_spatial_rain_cn_chk.setToolTip(
-            "When checked and rain gage + hyetograph layers are configured, "
-            "Thiessen polygon interpolation is applied for spatially variable "
-            "rainfall. Uses CN polygons for spatial infiltration if available."
-        )
-        param_form.addRow("Spatial rainfall:", self.use_spatial_rain_cn_chk)
-        self.use_spatial_rain_cn_chk.setChecked(True)
-
-        self.infiltration_method_combo = QtWidgets.QComboBox()
-        self.infiltration_method_combo.setObjectName("infiltration_method_combo")
-        self.infiltration_method_combo.setToolTip(
-            "Infiltration model for rainfall-runoff computation. "
-            "'SCS Curve Number' uses the NRCS runoff curve number method. "
-            "'None' skips infiltration entirely."
-        )
-        param_form.addRow("Infiltration method:", self.infiltration_method_combo)
-        self.infiltration_method_combo.addItem("SCS Curve Number", "scs_cn")
-        self.infiltration_method_combo.addItem("None (no infiltration)", "none")
-        self.infiltration_method_combo.setCurrentIndex(
-            self.infiltration_method_combo.findData("scs_cn")
-        )
-
-        self.rain_update_interval_spin = QtWidgets.QSpinBox()
-        self.rain_update_interval_spin.setObjectName("rain_update_interval_spin")
-        self.rain_update_interval_spin.setToolTip(
-            "Interval in seconds for re-evaluating the SCS-CN runoff rate. "
-            "Default 60s. Lower values=more responsive but more compute. "
-            "Set to 0 to re-evaluate every step (old behavior)."
-        )
-        param_form.addRow("Rain rate update interval (s):", self.rain_update_interval_spin)
-        self.rain_update_interval_spin.setRange(0, 3600)
-        self.rain_update_interval_spin.setSingleStep(10)
-        self.rain_update_interval_spin.setValue(60)
-
-        self.storm_area_layer_combo = QtWidgets.QComboBox()
-        self.storm_area_layer_combo.setObjectName("storm_area_layer_combo")
-        self.storm_area_layer_combo.setToolTip(
-            "Optional polygon layer defining the storm area extent. "
-            "Only cells within storm area polygons receive rainfall. "
-            "Select '(none)' to apply rain globally."
-        )
-        param_form.addRow("Storm area layer (optional):", self.storm_area_layer_combo)
-        self.storm_area_layer_combo.addItem("(none)", None)
-
-        self.rain_boundary_buffer_rings_spin = QtWidgets.QSpinBox()
-        self.rain_boundary_buffer_rings_spin.setObjectName(
-            "rain_boundary_buffer_rings_spin"
-        )
-        self.rain_boundary_buffer_rings_spin.setToolTip(
-            "Number of boundary buffer rings to which rainfall is still applied when "
-            "using a storm area layer. Prevents dry boundary artifacts. Range: 0–10."
-        )
-        param_form.addRow(
-            "Rain boundary buffer rings:", self.rain_boundary_buffer_rings_spin
-        )
-        self.rain_boundary_buffer_rings_spin.setRange(0, 10)
-        self.rain_boundary_buffer_rings_spin.setValue(1)
-
     def _build_stability_form_widgets(self, param_form: QtWidgets.QFormLayout) -> None:
-        """Populate the Stability Controls page with damping and cap parameters."""
+        """Populate the Stability Controls page with grouped damping/cap controls."""
+        form = self._start_param_group(param_form, "Wet/Dry Front")
         self.shallow_damping_depth_spin = QtWidgets.QDoubleSpinBox()
         self.shallow_damping_depth_spin.setObjectName("shallow_damping_depth_spin")
         self.shallow_damping_depth_spin.setToolTip(
             "Depth threshold below which velocity damping is applied to "
             "stabilize wetting/drying fronts. Range: 1e-8–10. Default: 1e-4."
         )
-        param_form.addRow("Shallow damping depth:", self.shallow_damping_depth_spin)
+        self._add_param_row(form, "Shallow damping depth:", self.shallow_damping_depth_spin)
         self.shallow_damping_depth_spin.setRange(1.0e-8, 10.0)
         self.shallow_damping_depth_spin.setDecimals(6)
         self.shallow_damping_depth_spin.setValue(1.0e-4)
@@ -745,8 +818,8 @@ class ModelTabView(QtWidgets.QWidget):
             "When enabled, falls back to first-order reconstruction at "
             "shallow wet/dry fronts to prevent overshoot. Recommended: enabled."
         )
-        param_form.addRow(
-            "Shallow-front recon fallback:", self.shallow_front_recon_fallback_chk
+        self._add_param_row(
+            form, "Shallow-front recon fallback:", self.shallow_front_recon_fallback_chk
         )
         self.shallow_front_recon_fallback_chk.setChecked(True)
 
@@ -757,7 +830,7 @@ class ModelTabView(QtWidgets.QWidget):
             "Higher values = more damping = more stability at front. "
             "Default: 0.5. Increase if front oscillations occur."
         )
-        param_form.addRow("Front flux damping:", self.front_flux_damping_spin)
+        self._add_param_row(form, "Front flux damping:", self.front_flux_damping_spin)
         self.front_flux_damping_spin.setRange(0.0, 1.0)
         self.front_flux_damping_spin.setDecimals(2)
         self.front_flux_damping_spin.setSingleStep(0.05)
@@ -770,9 +843,10 @@ class ModelTabView(QtWidgets.QWidget):
             "Prevents cells from flipping between wet/dry every timestep, "
             "improving stability near the dynamic front. Recommended: enabled."
         )
-        param_form.addRow("Active-set hysteresis:", self.active_set_hysteresis_chk)
+        self._add_param_row(form, "Active-set hysteresis:", self.active_set_hysteresis_chk)
         self.active_set_hysteresis_chk.setChecked(True)
 
+        form = self._start_param_group(param_form, "Capping", advanced=True)
         self.depth_cap_spin = QtWidgets.QDoubleSpinBox()
         self.depth_cap_spin.setObjectName("depth_cap_spin")
         self.depth_cap_spin.setToolTip(
@@ -780,7 +854,7 @@ class ModelTabView(QtWidgets.QWidget):
             "Depths exceeding this cap are clamped. "
             "Range: 0.001–1e7. Default: 1e6 (effectively unlimited)."
         )
-        param_form.addRow("Depth cap:", self.depth_cap_spin)
+        self._add_param_row(form, "Depth cap:", self.depth_cap_spin, advanced=True)
         self.depth_cap_spin.setRange(0.001, 1.0e7)
         self.depth_cap_spin.setDecimals(3)
         self.depth_cap_spin.setValue(1.0e6)
@@ -792,8 +866,8 @@ class ModelTabView(QtWidgets.QWidget):
             "Prevents capping from affecting low-velocity regions. "
             "Range: 0.1–1e4. Default: 50."
         )
-        param_form.addRow(
-            "Momentum cap min speed:", self.momentum_cap_min_speed_spin
+        self._add_param_row(
+            form, "Momentum cap min speed:", self.momentum_cap_min_speed_spin, advanced=True
         )
         self.momentum_cap_min_speed_spin.setRange(0.1, 1.0e4)
         self.momentum_cap_min_speed_spin.setDecimals(3)
@@ -808,13 +882,14 @@ class ModelTabView(QtWidgets.QWidget):
             "Momentum = min(raw, celerity × mult). "
             "Range: 0.1–1000. Default: 20."
         )
-        param_form.addRow(
-            "Momentum cap celerity mult:", self.momentum_cap_celerity_mult_spin
+        self._add_param_row(
+            form, "Momentum cap celerity mult:", self.momentum_cap_celerity_mult_spin, advanced=True
         )
         self.momentum_cap_celerity_mult_spin.setRange(0.1, 1000.0)
         self.momentum_cap_celerity_mult_spin.setDecimals(3)
         self.momentum_cap_celerity_mult_spin.setValue(20.0)
 
+        form = self._start_param_group(param_form, "Solver Safety", advanced=True)
         self.max_inv_area_spin = QtWidgets.QDoubleSpinBox()
         self.max_inv_area_spin.setObjectName("max_inv_area_spin")
         self.max_inv_area_spin.setToolTip(
@@ -822,7 +897,7 @@ class ModelTabView(QtWidgets.QWidget):
             "Large cells with steep water surface gradients may trigger "
             "inverted cell detection. Range: 1–1e12. Default: 1e6."
         )
-        param_form.addRow("Max inv area:", self.max_inv_area_spin)
+        self._add_param_row(form, "Max inv area:", self.max_inv_area_spin, advanced=True)
         self.max_inv_area_spin.setRange(1.0, 1.0e12)
         self.max_inv_area_spin.setDecimals(1)
         self.max_inv_area_spin.setValue(1.0e6)
@@ -834,20 +909,21 @@ class ModelTabView(QtWidgets.QWidget):
             "Caps the celerity term to prevent extremely small timesteps "
             "from anomalously high wave speeds. Range: 1–1e12. Default: 1e6."
         )
-        param_form.addRow("CFL lambda cap:", self.cfl_lambda_cap_spin)
+        self._add_param_row(form, "CFL lambda cap:", self.cfl_lambda_cap_spin, advanced=True)
         self.cfl_lambda_cap_spin.setRange(1.0, 1.0e12)
         self.cfl_lambda_cap_spin.setDecimals(1)
         self.cfl_lambda_cap_spin.setValue(1.0e6)
 
     def _build_drain_form_widgets(self, param_form: QtWidgets.QFormLayout) -> None:
-        """Populate the Structures & Drainage page with coupling controls."""
+        """Populate the Structures & Drainage page with grouped coupling controls."""
+        form = self._start_param_group(param_form, "Culvert / Bridge", advanced=True)
         self.coupling_loop_combo = QtWidgets.QComboBox()
         self.coupling_loop_combo.setObjectName("coupling_loop_combo")
         self.coupling_loop_combo.setToolTip(
             "Select the coupling backend for drainage/structure-2D interaction. "
             "'CUDA coupling loop (GPU)' runs the coupling solver on GPU."
         )
-        param_form.addRow("Coupling loop:", self.coupling_loop_combo)
+        self._add_param_row(form, "Coupling loop:", self.coupling_loop_combo)
         self.coupling_loop_combo.addItem("CUDA coupling loop (GPU)", "cuda")
         self.coupling_loop_combo.setCurrentIndex(0)
 
@@ -858,7 +934,7 @@ class ModelTabView(QtWidgets.QWidget):
             "'Direct solver' uses Newton/secant iteration at each culvert face. "
             "'Precomputed lookup table' uses interpolated discharge from stored tables."
         )
-        param_form.addRow("Culvert solver mode:", self.culvert_solver_mode_combo)
+        self._add_param_row(form, "Culvert solver mode:", self.culvert_solver_mode_combo, advanced=True)
         self.culvert_solver_mode_combo.addItem(
             "Direct culvert outlet solver (Newton/secant)", 0
         )
@@ -874,13 +950,13 @@ class ModelTabView(QtWidgets.QWidget):
             "Distributes culvert discharge across the 2D cell face instead "
             "of the whole cell for better spatial resolution."
         )
-        param_form.addRow("Culvert coupling mode:", self.culvert_face_flux_chk)
+        self._add_param_row(form, "Culvert coupling mode:", self.culvert_face_flux_chk, advanced=True)
 
         self.use_redistribution_chk = QtWidgets.QCheckBox("Enable redistribution override")
         self.use_redistribution_chk.setObjectName("use_redistribution_chk")
         self.use_redistribution_chk.setChecked(True)
         self.use_redistribution_chk.setToolTip("When checked, reads per-structure redistribution parameters from the GeoPackage. Uncheck to skip redistribution entirely.")
-        param_form.addRow(self.use_redistribution_chk)
+        self._add_param_row(form, self.use_redistribution_chk.text(), self.use_redistribution_chk, advanced=True)
 
         self.bridge_stacked_coupling_mode_combo = QtWidgets.QComboBox()
         self.bridge_stacked_coupling_mode_combo.setObjectName(
@@ -891,9 +967,8 @@ class ModelTabView(QtWidgets.QWidget):
             "'Phase 3 spatial redistribution' distributes flow across multiple "
             "cells. 'Legacy scalar weighting' uses a single scalar factor."
         )
-        param_form.addRow(
-            "Bridge stacked coupling mode:",
-            self.bridge_stacked_coupling_mode_combo,
+        self._add_param_row(
+            form, "Bridge stacked coupling mode:", self.bridge_stacked_coupling_mode_combo, advanced=True
         )
         self.bridge_stacked_coupling_mode_combo.addItem(
             "Phase 3 — Spatial", "phase3_spatial"
@@ -903,6 +978,7 @@ class ModelTabView(QtWidgets.QWidget):
         )
         self.bridge_stacked_coupling_mode_combo.setCurrentIndex(0)
 
+        form = self._start_param_group(param_form, "Drainage Network — Equation Set", advanced=True)
         self.drainage_solver_mode_combo = QtWidgets.QComboBox()
         self.drainage_solver_mode_combo.setObjectName("drainage_solver_mode_combo")
         self.drainage_solver_mode_combo.setToolTip(
@@ -911,7 +987,7 @@ class ModelTabView(QtWidgets.QWidget):
             "'Diffusion wave' simplifies to gravity + friction. "
             "'Dynamic Saint-Venant' solves the full 1D momentum equation."
         )
-        param_form.addRow("Drainage equation set:", self.drainage_solver_mode_combo)
+        self._add_param_row(form, "Drainage equation set:", self.drainage_solver_mode_combo, advanced=True)
         self.drainage_solver_mode_combo.addItem("EGL (Bernoulli + minor losses)", 0)
         self.drainage_solver_mode_combo.addItem("Diffusion wave", 1)
         self.drainage_solver_mode_combo.addItem("Dynamic Saint-Venant", 2)
@@ -924,7 +1000,7 @@ class ModelTabView(QtWidgets.QWidget):
             "'Per-step GPU drainage' solves one SWE2D step per drainage substep. "
             "'Native iterative GPU drainage' batches multiple substeps on GPU."
         )
-        param_form.addRow("Drainage GPU method:", self.drainage_gpu_method_combo)
+        self._add_param_row(form, "Drainage GPU method:", self.drainage_gpu_method_combo, advanced=True)
         self.drainage_gpu_method_combo.addItem(
             "Per-step GPU drainage (fast for sparse exchange)", "step"
         )
@@ -933,6 +1009,7 @@ class ModelTabView(QtWidgets.QWidget):
         )
         self.drainage_gpu_method_combo.setCurrentIndex(0)
 
+        form = self._start_param_group(param_form, "Drainage — Substepping", advanced=True)
         self.drainage_coupling_substeps_spin = QtWidgets.QSpinBox()
         self.drainage_coupling_substeps_spin.setObjectName(
             "drainage_coupling_substeps_spin"
@@ -941,7 +1018,7 @@ class ModelTabView(QtWidgets.QWidget):
             "Number of drainage substeps per SWE2D timestep. "
             "Range: 1–256. Default: 1. Increase for stiffer drainage systems."
         )
-        param_form.addRow("Drainage substeps:", self.drainage_coupling_substeps_spin)
+        self._add_param_row(form, "Drainage substeps:", self.drainage_coupling_substeps_spin, advanced=True)
         self.drainage_coupling_substeps_spin.setRange(1, 256)
         self.drainage_coupling_substeps_spin.setValue(1)
 
@@ -953,13 +1030,13 @@ class ModelTabView(QtWidgets.QWidget):
             "Maximum number of adaptive substeps for drainage coupling. "
             "Range: 1–1024. Default: 64."
         )
-        param_form.addRow(
-            "Drainage max adaptive substeps:",
-            self.drainage_max_coupling_substeps_spin,
+        self._add_param_row(
+            form, "Drainage max adaptive substeps:", self.drainage_max_coupling_substeps_spin, advanced=True
         )
         self.drainage_max_coupling_substeps_spin.setRange(1, 1024)
         self.drainage_max_coupling_substeps_spin.setValue(64)
 
+        form = self._start_param_group(param_form, "Drainage — Stability", advanced=True)
         self.drainage_head_deadband_spin = QtWidgets.QDoubleSpinBox()
         self.drainage_head_deadband_spin.setObjectName("drainage_head_deadband_spin")
         self.drainage_head_deadband_spin.setToolTip(
@@ -967,8 +1044,8 @@ class ModelTabView(QtWidgets.QWidget):
             "no drainage flow is computed. Prevents oscillation near zero flow. "
             "Range: 0–10. Default: 0.001."
         )
-        param_form.addRow(
-            "Drainage head deadband:", self.drainage_head_deadband_spin
+        self._add_param_row(
+            form, "Drainage head deadband:", self.drainage_head_deadband_spin, advanced=True
         )
         self.drainage_head_deadband_spin.setRange(0.0, 10.0)
         self.drainage_head_deadband_spin.setDecimals(6)
@@ -983,8 +1060,8 @@ class ModelTabView(QtWidgets.QWidget):
             "1.0 = no relaxation, 0.5 = 50% under-relaxation. "
             "Lower values improve stability for stiff coupling."
         )
-        param_form.addRow(
-            "Drainage dynamic relaxation:", self.drainage_dynamic_relaxation_spin
+        self._add_param_row(
+            form, "Drainage dynamic relaxation:", self.drainage_dynamic_relaxation_spin, advanced=True
         )
         self.drainage_dynamic_relaxation_spin.setRange(0.0, 1.0)
         self.drainage_dynamic_relaxation_spin.setDecimals(3)
@@ -999,9 +1076,8 @@ class ModelTabView(QtWidgets.QWidget):
             "Fraction of cell water depth allowed to be drained per step "
             "when adaptive drainage is active. Range: 0.001–1.0. Default: 0.2."
         )
-        param_form.addRow(
-            "Drainage adaptive depth fraction:",
-            self.drainage_adaptive_depth_fraction_spin,
+        self._add_param_row(
+            form, "Drainage adaptive depth fraction:", self.drainage_adaptive_depth_fraction_spin, advanced=True
         )
         self.drainage_adaptive_depth_fraction_spin.setRange(0.001, 1.0)
         self.drainage_adaptive_depth_fraction_spin.setDecimals(3)
@@ -1016,9 +1092,8 @@ class ModelTabView(QtWidgets.QWidget):
             "Courant number target for adaptive drainage timestep control. "
             "Range: 0.001–10.0. Default: 0.5."
         )
-        param_form.addRow(
-            "Drainage adaptive wave Courant:",
-            self.drainage_adaptive_wave_courant_spin,
+        self._add_param_row(
+            form, "Drainage adaptive wave Courant:", self.drainage_adaptive_wave_courant_spin, advanced=True
         )
         self.drainage_adaptive_wave_courant_spin.setRange(0.001, 10.0)
         self.drainage_adaptive_wave_courant_spin.setDecimals(3)
@@ -1034,8 +1109,8 @@ class ModelTabView(QtWidgets.QWidget):
             "Range: 1–8. Default: 2. More iterations improve convergence "
             "at the cost of performance."
         )
-        param_form.addRow(
-            "Drainage implicit iterations (GPU):", self.drainage_implicit_iters_spin
+        self._add_param_row(
+            form, "Drainage implicit iterations (GPU):", self.drainage_implicit_iters_spin, advanced=True
         )
         self.drainage_implicit_iters_spin.setRange(1, 8)
         self.drainage_implicit_iters_spin.setValue(2)
@@ -1048,8 +1123,8 @@ class ModelTabView(QtWidgets.QWidget):
             "Relaxation factor for implicit drainage solver on GPU (0.1–1.0). "
             "Default: 0.5. Lower values improve stability."
         )
-        param_form.addRow(
-            "Drainage implicit relaxation (GPU):", self.drainage_implicit_relax_spin
+        self._add_param_row(
+            form, "Drainage implicit relaxation (GPU):", self.drainage_implicit_relax_spin, advanced=True
         )
         self.drainage_implicit_relax_spin.setRange(0.1, 1.0)
         self.drainage_implicit_relax_spin.setDecimals(2)

@@ -2,8 +2,8 @@
 import unittest
 from qgis.PyQt.QtWidgets import (
     QApplication, QCheckBox, QComboBox, QDoubleSpinBox, QFormLayout,
-    QHBoxLayout, QLabel, QLineEdit, QProgressBar, QPushButton, QSpinBox,
-    QToolBox, QVBoxLayout, QWidget,
+    QGroupBox, QHBoxLayout, QLabel, QLineEdit, QProgressBar, QPushButton,
+    QSpinBox, QToolBox, QVBoxLayout, QWidget,
 )
 
 
@@ -445,6 +445,38 @@ class TestModelTabView(unittest.TestCase):
             page = view.findChild(QWidget, page_name)
             self.assertIsNotNone(page)
             self.assertEqual(page.sizePolicy().verticalPolicy(), QSizePolicy.Expanding)
+
+    def test_solver_page_has_group_boxes(self):
+        view = self._make_view()
+        page = view.findChild(QWidget, "model_solver_page")
+        groups = page.findChildren(QGroupBox)
+        titles = {g.title() for g in groups}
+        for expected in ("Time Stepping", "Physics & Friction", "Initial Conditions", "Run Duration"):
+            self.assertIn(expected, titles)
+
+    def test_stability_page_has_group_boxes(self):
+        view = self._make_view()
+        page = view.findChild(QWidget, "model_stability_page")
+        groups = page.findChildren(QGroupBox)
+        titles = {g.title() for g in groups}
+        for expected in ("Wet/Dry Front", "Capping", "Solver Safety"):
+            self.assertIn(expected, titles)
+
+    def test_rain_page_has_group_boxes(self):
+        view = self._make_view()
+        page = view.findChild(QWidget, "model_rain_page")
+        groups = page.findChildren(QGroupBox)
+        titles = {g.title() for g in groups}
+        for expected in ("Rainfall Input", "Infiltration", "Source Stability"):
+            self.assertIn(expected, titles)
+
+    def test_drain_page_has_group_boxes(self):
+        view = self._make_view()
+        page = view.findChild(QWidget, "model_drain_page")
+        groups = page.findChildren(QGroupBox)
+        titles = {g.title() for g in groups}
+        for expected in ("Culvert / Bridge", "Drainage Network — Equation Set", "Drainage — Substepping", "Drainage — Stability"):
+            self.assertIn(expected, titles)
 
 
 if __name__ == "__main__":
