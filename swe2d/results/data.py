@@ -823,6 +823,55 @@ class SWE2DResultsData:
                 min(self._anim_frame_idx, self._all_timesteps.size - 1)
             ])
 
+    @staticmethod
+    def _expand_baked_coupling_rows(gpkg_path: str, run_id: str) -> list:
+        """Load baked coupling BLOBs and expand them into per-row records.
+
+        Each returned dict contains ``t_s``, ``value``, ``component``,
+        ``object_id``, ``object_name``, and ``metric``.
+        """
+        from swe2d.services.gpkg_persistence_service import load_baked_coupling_timeseries
+
+        records: list = []
+        conn = __import__('sqlite3').connect(gpkg_path)
+        try:
+            has_coupling_table = conn.execute(
+                "SELECT 1 FROM sqlite_master WHERE type='table' AND name='swe2d_baked_coupling'"
+            ).fetchone()
+            if not has_coupling_table:
+                has_coupling_input = conn.execute(
+                    "SELECT 1 FROM sqlite_master WHERE type='table' AND "
+                    "name IN ('swe2d_drainage_nodes','swe2d_structures')"
+                ).fetchone()
+                if has_coupling_input:
+                    logger.warning(
+                        "[STRUCT] Run has drainage/structure input layers but no "
+                        "swe2d_baked_coupling results table — coupling results were not persisted")
+                return records
+            meta_rows = conn.execute(
+                "SELECT component, object_id, object_name, metric "
+                "FROM swe2d_baked_coupling WHERE run_id=?",
+                (run_id,),
+            ).fetchall()
+            for comp, oid, oname, metric in meta_rows:
+                times, values = load_baked_coupling_timeseries(
+                    gpkg_path, run_id, str(comp), str(oid), str(metric),
+                )
+                if times is None or times.size == 0:
+                    continue
+                for i in range(times.size):
+                    records.append({
+                        "t_s": float(times[i]),
+                        "value": float(values[i]),
+                        "component": str(comp),
+                        "object_id": str(oid),
+                        "object_name": str(oname),
+                        "metric": str(metric),
+                    })
+            return records
+        finally:
+            conn.close()
+
     def _load_coupling_for_first_enabled_run(self) -> None:
         """load coupling for first enabled run (baked — expand BLOBs into per-row format)."""
         first = None
@@ -836,48 +885,9 @@ class SWE2DResultsData:
             self._coupling_gpkg_path = ""
             return
         try:
-            from swe2d.services.gpkg_persistence_service import load_baked_coupling_timeseries
-            conn = __import__('sqlite3').connect(first.gpkg_path)
-            try:
-                has_coupling_table = conn.execute(
-                    "SELECT 1 FROM sqlite_master WHERE type='table' AND name='swe2d_baked_coupling'"
-                ).fetchone()
-                if not has_coupling_table:
-                    has_coupling_input = conn.execute(
-                        "SELECT 1 FROM sqlite_master WHERE type='table' AND "
-                        "name IN ('swe2d_drainage_nodes','swe2d_structures')"
-                    ).fetchone()
-                    if has_coupling_input:
-                        logger.warning(
-                            "[STRUCT] Run has drainage/structure input layers but no "
-                            "swe2d_baked_coupling results table — coupling results were not persisted")
-                    self._coupling_records = []
-                    return
-                meta_rows = conn.execute(
-                    "SELECT component, object_id, object_name, metric "
-                    "FROM swe2d_baked_coupling WHERE run_id=?",
-                    (first.run_id,),
-                ).fetchall()
-                records = []
-                for comp, oid, oname, metric in meta_rows:
-                    times, values = load_baked_coupling_timeseries(
-                        first.gpkg_path, first.run_id,
-                        str(comp), str(oid), str(metric),
-                    )
-                    if times is None or times.size == 0:
-                        continue
-                    for i in range(times.size):
-                        records.append({
-                            "t_s": float(times[i]),
-                            "value": float(values[i]),
-                            "component": str(comp),
-                            "object_id": str(oid),
-                            "object_name": str(oname),
-                            "metric": str(metric),
-                        })
-                self._coupling_records = records
-            finally:
-                conn.close()
+            self._coupling_records = self._expand_baked_coupling_rows(
+                first.gpkg_path, first.run_id
+            )
             self._coupling_run_id = first.run_id
             self._coupling_gpkg_path = first.gpkg_path
         except Exception as exc:
@@ -890,9 +900,11 @@ class SWE2DResultsData:
     def load_coupling_records(self, run_id_or_key: str) -> None:
         """Load coupling records from GPKG baked table, falling back to live."""
         gpkg = ""
+        run_id = ""
         for rec in self._run_records:
             if rec.run_id == run_id_or_key or rec.key == run_id_or_key:
                 gpkg = rec.gpkg_path
+                run_id = rec.run_id
                 break
         if not gpkg:
             # Live run — use in-memory coupling snapshots if available
@@ -907,40 +919,9 @@ class SWE2DResultsData:
                 self._coupling_gpkg_path = ""
             return
         try:
-            import sqlite3
-            conn = sqlite3.connect(gpkg)
-            try:
-                has_coupling_table = conn.execute(
-                    "SELECT 1 FROM sqlite_master WHERE type='table' AND name='swe2d_baked_coupling'"
-                ).fetchone()
-                if not has_coupling_table:
-                    has_coupling_input = conn.execute(
-                        "SELECT 1 FROM sqlite_master WHERE type='table' AND "
-                        "name IN ('swe2d_drainage_nodes','swe2d_structures')"
-                    ).fetchone()
-                    if has_coupling_input:
-                        logger.warning(
-                            "[STRUCT] Run has drainage/structure input layers but no "
-                            "swe2d_baked_coupling results table — coupling results were not persisted")
-                    self._coupling_records = []
-                    return
-                rows = conn.execute(
-                    "SELECT component, object_id, object_name, metric, n_timesteps "
-                    "FROM swe2d_baked_coupling WHERE run_id=?",
-                    (run_id_or_key,),
-                ).fetchall()
-                self._coupling_records = [
-                    {
-                        "component": comp, "object_id": oid,
-                        "object_name": oname, "metric": metric,
-                        "n_timesteps": n_ts,
-                    }
-                    for comp, oid, oname, metric, n_ts in rows
-                ]
-                self._coupling_run_id = run_id_or_key
-                self._coupling_gpkg_path = gpkg
-            finally:
-                conn.close()
+            self._coupling_records = self._expand_baked_coupling_rows(gpkg, run_id)
+            self._coupling_run_id = run_id
+            self._coupling_gpkg_path = gpkg
         except Exception as exc:
             if "no such table" in str(exc):
                 logger.debug("[STRUCT] No coupling table in GPKG (expected when no coupling results)")

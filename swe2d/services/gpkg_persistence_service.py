@@ -989,7 +989,7 @@ def load_baked_line_profile(
     -------
     dict
         Dict with keys ``station_m``, ``wse_m``, ``bed_m``, ``depth_m``,
-        or empty dict if not found.
+        ``velocity_ms``, ``flow_qn``, ``fr``, ``wet``, or empty dict if not found.
     """
     # Live data path
     if not isinstance(source, str):
@@ -1020,6 +1020,10 @@ def load_baked_line_profile(
                 "wse_m": np.asarray(raw.get("wse_m", []), dtype=np.float64)[start:end],
                 "bed_m": np.asarray(raw.get("bed_m", []), dtype=np.float64)[start:end],
                 "depth_m": np.asarray(raw.get("depth_m", []), dtype=np.float64)[start:end],
+                "velocity_ms": np.asarray(raw.get("velocity_ms", []), dtype=np.float64)[start:end],
+                "flow_qn": np.asarray(raw.get("flow_qn", []), dtype=np.float64)[start:end],
+                "fr": np.asarray(raw.get("fr", []), dtype=np.float64)[start:end],
+                "wet": np.asarray(raw.get("wet", []), dtype=np.int32)[start:end],
             }
         return {}
     # GPKG path
@@ -1035,7 +1039,7 @@ def load_baked_line_profile(
             return {}
         row = conn.execute(
             "SELECT n_stations, n_timesteps, station_blob, times_blob, "
-            "wse_blob, bed_blob, depth_blob "
+            "wse_blob, bed_blob, depth_blob, vel_blob, flow_qn_blob, fr_blob, wet_blob "
             "FROM swe2d_baked_line_profiles "
             "WHERE run_id=? AND line_id=?",
             (run_id, line_id),
@@ -1051,6 +1055,10 @@ def load_baked_line_profile(
             "wse_m": np.frombuffer(row[4], dtype=np.float64).reshape(n_ts, n_sta)[i],
             "bed_m": np.frombuffer(row[5], dtype=np.float64).reshape(n_ts, n_sta)[i],
             "depth_m": np.frombuffer(row[6], dtype=np.float64).reshape(n_ts, n_sta)[i],
+            "velocity_ms": np.frombuffer(row[7], dtype=np.float64).reshape(n_ts, n_sta)[i],
+            "flow_qn": np.frombuffer(row[8], dtype=np.float64).reshape(n_ts, n_sta)[i],
+            "fr": np.frombuffer(row[9], dtype=np.float64).reshape(n_ts, n_sta)[i],
+            "wet": np.frombuffer(row[10], dtype=np.int32).reshape(n_ts, n_sta)[i],
         }
     finally:
         conn.close()

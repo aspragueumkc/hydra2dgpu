@@ -634,7 +634,7 @@ class PGProfileWidget(QtWidgets.QWidget):
 
                 if show_structures:
                     try:
-                        rows = load_structure_flows_at_time(rec.gpkg_path, rec.run_id, t)
+                        rows = load_structure_flows_at_time(rec.gpkg_path, rec.run_id, t_sec)
                         if rows:
                             placed_ids = {str(r.get("object_id", "")) for r in structure_rows}
                             for rr in rows:
@@ -726,35 +726,6 @@ class PGProfileWidget(QtWidgets.QWidget):
 
         if self._table_widget is not None and self._table_widget.isVisible():
             self._populate_table()
-            # Get current view range
-            view_range = self._plot_widget.viewRange()
-            x0_v, x1_v = view_range[0]
-            y0_v, y1_v = view_range[1]
-            y_span = max(y1_v - y0_v, 1.0e-6)
-            for i, row in enumerate(structure_rows):
-                xs = float(row.get("station", float("nan")))
-                q_val = float(row.get("flow", 0.0))
-                sid = str(row.get("object_id", ""))
-                if not np.isfinite(xs):
-                    continue
-                vline = pg.InfiniteLine(
-                    pos=xs, angle=90,
-                    pen=pg.mkPen(color=(89, 89, 89), width=0.9,
-                                 style=QtCore.Qt.PenStyle.DotLine),
-                )
-                vline.setZValue(2)
-                self._plot_widget.addItem(vline)
-                self._structure_items.append(vline)
-                y_text = y1_v - 0.02 * y_span - 0.035 * y_span * (i % 3)
-                label = pg.TextItem(
-                    f"{sid} {q_val:.2f}",
-                    anchor=(0.5, 1.0),
-                    color=(89, 89, 89),
-                )
-                label.setPos(xs, y_text)
-                label.setZValue(6)
-                self._plot_widget.addItem(label)
-                self._structure_labels.append(label)
 
         # ── Time title ──
         t_hr = t_sec / 3600.0

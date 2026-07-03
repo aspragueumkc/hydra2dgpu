@@ -324,8 +324,8 @@ class ModelTabView(QtWidgets.QWidget):
         self.internal_flow_field_edit.setPlaceholderText("field name, e.g. q_cms")
         self._add_param_row(form, "Internal flow field:", self.internal_flow_field_edit)
 
-        # -- Spatial Reconstruction --
-        form = self._start_param_group(param_form, "Spatial Reconstruction")
+        # -- Numerics --
+        form = self._start_param_group(param_form, "Numerics")
         self.reconstruction_combo = QtWidgets.QComboBox()
         self.reconstruction_combo.setObjectName("reconstruction_combo")
         self.reconstruction_combo.setToolTip(
@@ -346,8 +346,6 @@ class ModelTabView(QtWidgets.QWidget):
             self.reconstruction_combo.addItem(text, data)
         self._add_param_row(form, "Reconstruction:", self.reconstruction_combo)
 
-        # -- Temporal Integration --
-        form = self._start_param_group(param_form, "Temporal Integration")
         self.temporal_order_combo = QtWidgets.QComboBox()
         self.temporal_order_combo.setObjectName("temporal_order_combo")
         self.temporal_order_combo.setToolTip(
@@ -424,8 +422,28 @@ class ModelTabView(QtWidgets.QWidget):
 
         form.addRow(HintLabel("Dry start uses bed elevation only."))
 
-        # -- Numerical Options --
-        form = self._start_param_group(param_form, "Numerical Options", advanced=True)
+        # -- Performance --
+        form = self._start_param_group(param_form, "Performance", advanced=True)
+        self.enable_cuda_graphs_chk = QtWidgets.QCheckBox("Enable")
+        self.enable_cuda_graphs_chk.setObjectName("enable_cuda_graphs_chk")
+        self.enable_cuda_graphs_chk.setToolTip(
+            "Enable CUDA graph replay for solver kernel launches. "
+            "Reduces kernel launch overhead by capturing and replaying the "
+            "entire kernel graph. Only effective on CUDA 10+ with stable kernel topology."
+        )
+        self._add_param_row(form, "CUDA graph replay:", self.enable_cuda_graphs_chk, advanced=True)
+        self.enable_cuda_graphs_chk.setChecked(False)
+
+        self.swe2d_perf_mode_chk = QtWidgets.QCheckBox("Enable")
+        self.swe2d_perf_mode_chk.setObjectName("swe2d_perf_mode_chk")
+        self.swe2d_perf_mode_chk.setToolTip(
+            "High-performance mode for the SWE2D solver. Enables aggressive "
+            "optimizations (kernel fusion, reduced synchronization, stream overlap) "
+            "for maximum GPU throughput. May reduce diagnostic granularity."
+        )
+        self._add_param_row(form, "SWE2D perf mode:", self.swe2d_perf_mode_chk, advanced=True)
+        self.swe2d_perf_mode_chk.setChecked(False)
+
         self.gpu_diag_sync_interval_spin = QtWidgets.QSpinBox()
         self.gpu_diag_sync_interval_spin.setObjectName("gpu_diag_sync_interval_spin")
         self.gpu_diag_sync_interval_spin.setToolTip(
@@ -463,44 +481,6 @@ class ModelTabView(QtWidgets.QWidget):
         )
         self.tiny_wet_cell_threshold_spin.setRange(1, 10000000)
         self.tiny_wet_cell_threshold_spin.setValue(2000)
-
-        self.degen_mode_combo = QtWidgets.QComboBox()
-        self.degen_mode_combo.setObjectName("degen_mode_combo")
-        self.degen_mode_combo.setToolTip(
-            "Mode for handling degenerate cells (area ≤ 0 or invalid topology). "
-            "Off (0): treat normally, may cause instability. "
-            "Skip (1): permanently exclude degenerate cells (fastest). "
-            "Repair (2): replace inv_area with neighbor-average (most robust). "
-            "Merge (3): redirect degenerate cell flux to owner cell."
-        )
-        self._add_param_row(form, "Degenerate cell mode:", self.degen_mode_combo)
-        self.degen_mode_combo.addItem("Off (0)", 0)
-        self.degen_mode_combo.addItem("Skip (1)", 1)
-        self.degen_mode_combo.addItem("Repair (2)", 2)
-        self.degen_mode_combo.addItem("Merge (3)", 3)
-        self.degen_mode_combo.setCurrentIndex(self.degen_mode_combo.findData(0))
-
-        # -- Performance --
-        form = self._start_param_group(param_form, "Performance", advanced=True)
-        self.enable_cuda_graphs_chk = QtWidgets.QCheckBox("Enable")
-        self.enable_cuda_graphs_chk.setObjectName("enable_cuda_graphs_chk")
-        self.enable_cuda_graphs_chk.setToolTip(
-            "Enable CUDA graph replay for solver kernel launches. "
-            "Reduces kernel launch overhead by capturing and replaying the "
-            "entire kernel graph. Only effective on CUDA 10+ with stable kernel topology."
-        )
-        self._add_param_row(form, "CUDA graph replay:", self.enable_cuda_graphs_chk, advanced=True)
-        self.enable_cuda_graphs_chk.setChecked(False)
-
-        self.swe2d_perf_mode_chk = QtWidgets.QCheckBox("Enable")
-        self.swe2d_perf_mode_chk.setObjectName("swe2d_perf_mode_chk")
-        self.swe2d_perf_mode_chk.setToolTip(
-            "High-performance mode for the SWE2D solver. Enables aggressive "
-            "optimizations (kernel fusion, reduced synchronization, stream overlap) "
-            "for maximum GPU throughput. May reduce diagnostic granularity."
-        )
-        self._add_param_row(form, "SWE2D perf mode:", self.swe2d_perf_mode_chk, advanced=True)
-        self.swe2d_perf_mode_chk.setChecked(False)
 
         # -- Run Duration --
         form = self._start_param_group(param_form, "Run Duration")
@@ -806,6 +786,22 @@ class ModelTabView(QtWidgets.QWidget):
         self.momentum_cap_celerity_mult_spin.setValue(20.0)
 
         form = self._start_param_group(param_form, "Solver Safety", advanced=True)
+        self.degen_mode_combo = QtWidgets.QComboBox()
+        self.degen_mode_combo.setObjectName("degen_mode_combo")
+        self.degen_mode_combo.setToolTip(
+            "Mode for handling degenerate cells (area ≤ 0 or invalid topology). "
+            "Off (0): treat normally, may cause instability. "
+            "Skip (1): permanently exclude degenerate cells (fastest). "
+            "Repair (2): replace inv_area with neighbor-average (most robust). "
+            "Merge (3): redirect degenerate cell flux to owner cell."
+        )
+        self._add_param_row(form, "Degenerate cell mode:", self.degen_mode_combo)
+        self.degen_mode_combo.addItem("Off (0)", 0)
+        self.degen_mode_combo.addItem("Skip (1)", 1)
+        self.degen_mode_combo.addItem("Repair (2)", 2)
+        self.degen_mode_combo.addItem("Merge (3)", 3)
+        self.degen_mode_combo.setCurrentIndex(self.degen_mode_combo.findData(0))
+
         self.max_inv_area_spin = QtWidgets.QDoubleSpinBox()
         self.max_inv_area_spin.setObjectName("max_inv_area_spin")
         self.max_inv_area_spin.setToolTip(
