@@ -544,21 +544,13 @@ def execute_run(
         run_id = str(p.get("id", "run"))
 
         from swe2d.services.gpkg_persistence_service import load_baked_mesh, persist_baked_mesh
-        baked_blob = load_baked_mesh(mesh_gpkg, mesh_name)
-        if not baked_blob:
-            print(f"[PERSIST] FATAL: load_baked_mesh returned None for mesh '{mesh_name}' in {mesh_gpkg}", flush=True)
-        elif baked_blob:
-            print(f"[PERSIST] load_baked_mesh returned {len(baked_blob)} bytes for mesh '{mesh_name}'", flush=True)
-            persist_baked_mesh(results_gpkg, mesh_name, baked_blob,
-                               crs_wkt=mesh_data.get("crs_wkt", ""))
-            # verify
-            conn = sqlite3.connect(results_gpkg)
-            row = conn.execute("SELECT mesh_name, n_nodes FROM swe2d_baked_mesh WHERE mesh_name=?", (mesh_name,)).fetchone()
-            conn.close()
-            if row:
-                print(f"[PERSIST] VERIFIED: swe2d_baked_mesh row={row}", flush=True)
-            else:
-                print(f"[PERSIST] FAIL: swe2d_baked_mesh row NOT FOUND for mesh '{mesh_name}' in {results_gpkg}", flush=True)
+        try:
+            baked_blob = load_baked_mesh(mesh_gpkg, mesh_name)
+            if baked_blob:
+                persist_baked_mesh(results_gpkg, mesh_name, baked_blob,
+                                   crs_wkt=mesh_data.get("crs_wkt", ""))
+        except Exception as exc:
+            print(f"Failed to persist baked mesh: {exc}", flush=True)
 
         gravity_g = _u.gravity()
         h_min = float(rp.get("h_min", 1e-4))
