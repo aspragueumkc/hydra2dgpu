@@ -204,8 +204,8 @@ _CTRL_TIME_UNIT = "hr"
 KEYBOARD_SHORTCUTS = [
     ("run", "Ctrl+R", lambda dlg: dlg._controller.on_run()),
     ("cancel", "Ctrl+.", lambda dlg: dlg._controller.on_cancel()),
-    ("save_config", "Ctrl+S", lambda dlg: dlg._model_tab_view.save_settings_btn.click()
-     if hasattr(dlg, "_model_tab_view") and dlg._model_tab_view is not None else None),
+    ("save_config", "Ctrl+S", lambda dlg: dlg._run_dock.save_settings_btn.click()
+     if hasattr(dlg, "_run_dock") and dlg._run_dock is not None else None),
     ("open_gpkg", "Ctrl+O", lambda dlg: dlg._mesh_controller.load_2d_model_geopackage()),
     ("refresh_results", "F5", lambda dlg: dlg._on_results_refresh()),
 ]
@@ -1021,7 +1021,7 @@ class SWE2DWorkbenchStudioDialog(QtWidgets.QDialog):
             tab_views=[getattr(self, a, None) for a in
                        ("_model_tab_view", "_map_tab_view",
                         "_topology_tab_view", "_mesh_tab_view",
-                        "_boundary_tab_view", "_results_toolbox")],
+                        "_boundary_tab_view", "_results_toolbox", "_run_dock")],
             persistable_types=(
                 QtWidgets.QSpinBox,
                 QtWidgets.QDoubleSpinBox,
@@ -1088,7 +1088,7 @@ class SWE2DWorkbenchStudioDialog(QtWidgets.QDialog):
     def _selected_results_table_prefix(self) -> str:
         """Build the sanitized prefix for results table names from UI."""
         raw = ""
-        tbl_edit = getattr(self._model_tab_view, "results_table_name_edit", None)
+        tbl_edit = getattr(self._run_dock, "results_table_name_edit", None)
         if tbl_edit is not None:
             raw = str(tbl_edit.text() or "").strip()
         if not raw:
@@ -1329,9 +1329,9 @@ class SWE2DWorkbenchStudioDialog(QtWidgets.QDialog):
 
     def _current_line_results_storage_path(self) -> str:
         """Determine the current GeoPackage path for line result storage."""
-        mtv = getattr(self, "_model_tab_view", None)
-        if mtv is not None:
-            path_edit = getattr(mtv, "results_gpkg_path_edit", None)
+        rd = getattr(self, "_run_dock", None)
+        if rd is not None:
+            path_edit = getattr(rd, "results_gpkg_path_edit", None)
             if path_edit is not None:
                 override_raw = str(path_edit.text() or "").strip()
                 if override_raw:
@@ -1340,7 +1340,7 @@ class SWE2DWorkbenchStudioDialog(QtWidgets.QDialog):
                     if os.path.isdir(parent_dir):
                         self._log(
                             f"[ResultsPath] using override: {override} "
-                            f"(from results_gpkg_path_edit on Model→Run/Output)"
+                            f"(from results_gpkg_path_edit on Run dock)"
                         )
                         return override
                     else:
@@ -1351,9 +1351,9 @@ class SWE2DWorkbenchStudioDialog(QtWidgets.QDialog):
                 else:
                     self._log("[ResultsPath] results_gpkg_path_edit is empty")
             else:
-                self._log("[ResultsPath] results_gpkg_path_edit not found on _model_tab_view")
+                self._log("[ResultsPath] results_gpkg_path_edit not found on _run_dock")
         else:
-            self._log("[ResultsPath] _model_tab_view not found")
+            self._log("[ResultsPath] _run_dock not found")
         if self._model_gpkg_path and os.path.exists(self._model_gpkg_path):
             self._log(
                 f"[ResultsPath] falling back to _model_gpkg_path: "
@@ -1461,7 +1461,7 @@ class SWE2DWorkbenchStudioDialog(QtWidgets.QDialog):
         viewer.set_mesh_data(mesh)
         viewer.set_result_data(results)
         try:
-            h_min = float(self._model_tab_view.h_min_spin.value())
+            h_min = self._model_tab_view.get_h_min()
         except Exception:
             h_min = 1.0e-6
         viewer.set_h_min(h_min)
@@ -1667,7 +1667,7 @@ class SWE2DWorkbenchStudioDialog(QtWidgets.QDialog):
 
     def _parse_run_duration_seconds(self) -> float:
         """Parse run duration from UI and return seconds."""
-        hrs = self._parse_time_hours(self._model_tab_view.run_time_edit.text())
+        hrs = self._model_tab_view.get_run_time_hours_parsed()
         if hrs <= 0.0:
             raise ValueError("run duration must be > 0")
         return 3600.0 * hrs
@@ -1750,7 +1750,7 @@ class SWE2DWorkbenchStudioDialog(QtWidgets.QDialog):
             manning_layer_combo=getattr(self._map_tab_view, "manning_layer_combo", None),
             combo_layer_fn=self._combo_layer,
             mesh_cell_centroids_fn=self._mesh_cell_centroids,
-            default_n=float(self._model_tab_view.n_mann_spin.value()),
+            default_n=self._model_tab_view.get_n_mann(),
             qgs_geometry_cls=QgsGeometry,
             qgs_pointxy_cls=QgsPointXY,
             log_fn=self._log,
@@ -1830,9 +1830,9 @@ class SWE2DWorkbenchStudioDialog(QtWidgets.QDialog):
             mesh_cell_centroids_fn=self._mesh_cell_centroids,
             boundary_buffer_cells_fn=self._boundary_buffer_cells,
             build_spatial_cn_array_fn=self._build_spatial_cn_array,
-            ia_ratio=float(self._model_tab_view.ia_ratio_spin.value()),
-            infiltration_method=str(self._model_tab_view.infiltration_method_combo.currentData() or "scs_cn"),
-            rain_boundary_buffer_rings=int(self._model_tab_view.rain_boundary_buffer_rings_spin.value()),
+            ia_ratio=self._model_tab_view.get_ia_ratio(),
+            infiltration_method=self._model_tab_view.get_infiltration_method(),
+            rain_boundary_buffer_rings=self._model_tab_view.get_rain_boundary_buffer_rings(),
             qgs_wkb_types=QgsWkbTypes,
             qgs_geometry_cls=QgsGeometry,
             qgs_pointxy_cls=QgsPointXY,
@@ -1891,15 +1891,15 @@ class SWE2DWorkbenchStudioDialog(QtWidgets.QDialog):
             gravity=self._gravity,
             solver_mode_name=solver_mode_combo.currentText(),
             solver_mode=solver_mode_combo.currentData(),
-            coupling_substeps=int(self._model_tab_view.drainage_coupling_substeps_spin.value()),
-            max_coupling_substeps=int(self._model_tab_view.drainage_max_coupling_substeps_spin.value()),
-            gpu_method=str(self._model_tab_view.drainage_gpu_method_combo.currentData()),
-            head_deadband=float(self._model_tab_view.drainage_head_deadband_spin.value()),
-            dynamic_relaxation=float(self._model_tab_view.drainage_dynamic_relaxation_spin.value()),
-            adaptive_depth_fraction=float(self._model_tab_view.drainage_adaptive_depth_fraction_spin.value()),
-            adaptive_wave_courant=float(self._model_tab_view.drainage_adaptive_wave_courant_spin.value()),
-            implicit_iters=int(self._model_tab_view.drainage_implicit_iters_spin.value()),
-            implicit_relax=float(self._model_tab_view.drainage_implicit_relax_spin.value()),
+            coupling_substeps=self._model_tab_view.get_drainage_coupling_substeps(),
+            max_coupling_substeps=self._model_tab_view.get_drainage_max_coupling_substeps(),
+            gpu_method=self._model_tab_view.get_drainage_gpu_method(),
+            head_deadband=self._model_tab_view.get_drainage_head_deadband(),
+            dynamic_relaxation=self._model_tab_view.get_drainage_dynamic_relaxation(),
+            adaptive_depth_fraction=self._model_tab_view.get_drainage_adaptive_depth_fraction(),
+            adaptive_wave_courant=self._model_tab_view.get_drainage_adaptive_wave_courant(),
+            implicit_iters=self._model_tab_view.get_drainage_implicit_iters(),
+            implicit_relax=self._model_tab_view.get_drainage_implicit_relax(),
             log_fn=self._log,
         )
         self._log(f"[Drainage] _build_pipe_network_config: built config successfully (solver={solver_mode_combo.currentText()})")
@@ -2039,7 +2039,7 @@ class SWE2DWorkbenchStudioDialog(QtWidgets.QDialog):
         from swe2d.workbench.services.mesh_service import sample_line_metrics as _svc
         from swe2d.workbench.services.mesh_service import sample_line_aggregate_ts_row as _agg_svc
         g = float(self._gravity)
-        h_min = float(self._model_tab_view.h_min_spin.value())
+        h_min = self._model_tab_view.get_h_min()
         h = np.asarray(h_s, dtype=np.float64)
         hu = np.asarray(hu_s, dtype=np.float64)
         hv = np.asarray(hv_s, dtype=np.float64)
@@ -2319,7 +2319,7 @@ class SWE2DWorkbenchStudioDialog(QtWidgets.QDialog):
             cn_layer_combo=getattr(self._map_tab_view, "cn_layer_combo", None),
             combo_layer_fn=self._combo_layer,
             mesh_cell_centroids_fn=self._mesh_cell_centroids,
-            default_cn=float(self._model_tab_view.cn_default_spin.value()),
+            default_cn=self._model_tab_view.get_cn_default(),
             qgs_geometry_cls=QgsGeometry, qgs_pointxy_cls=QgsPointXY, log_fn=self._log,
         )
 
@@ -2351,10 +2351,10 @@ class SWE2DWorkbenchStudioDialog(QtWidgets.QDialog):
         # Auto-populate mesh GPKG path from the current model if available
         gpkg = getattr(self, "_model_gpkg_path", "")
         if not gpkg or not os.path.isfile(gpkg):
-            # Fall back to results GPKG path on the Model → Run/Output page
-            mtv = getattr(self, "_model_tab_view", None)
-            if mtv:
-                pe = getattr(mtv, "results_gpkg_path_edit", None)
+            # Fall back to results GPKG path on the Run dock
+            rd = getattr(self, "_run_dock", None)
+            if rd:
+                pe = getattr(rd, "results_gpkg_path_edit", None)
                 if pe:
                     gpkg = str(pe.text() or "").strip()
 
@@ -2376,24 +2376,15 @@ class SWE2DWorkbenchStudioDialog(QtWidgets.QDialog):
 
     def set_run_button_enabled(self, enabled: bool) -> None:
         """Enable or disable the Run button."""
-        for widget in (getattr(self._run_dock, "run_btn", None),
-                       getattr(self._model_tab_view, "run_btn", None)):
-            if widget is not None:
-                widget.setEnabled(enabled)
+        self._run_dock.set_run_button_enabled(enabled)
 
     def set_cancel_button_enabled(self, enabled: bool) -> None:
         """Enable or disable the Cancel button."""
-        for widget in (getattr(self._run_dock, "cancel_btn", None),
-                       getattr(self._model_tab_view, "cancel_btn", None)):
-            if widget is not None:
-                widget.setEnabled(enabled)
+        self._run_dock.set_cancel_button_enabled(enabled)
 
     def set_run_progress(self, value: int) -> None:
         """Set the run progress bar value."""
-        for widget in (getattr(self._run_dock, "progress_bar", None),
-                       getattr(self._model_tab_view, "progress_bar", None)):
-            if widget is not None:
-                widget.setValue(value)
+        self._run_dock.set_progress_bar_value(value)
 
     def get_uniform_inflow_velocity(self) -> bool:
         """Return whether uniform inflow velocity is enabled (MapView protocol)."""
@@ -2464,8 +2455,8 @@ class SWE2DWorkbenchStudioDialog(QtWidgets.QDialog):
 
     def set_results_gpkg_path(self, path: str) -> None:
         """Set the results GeoPackage path in the UI."""
-        mtv = getattr(self, "_model_tab_view", None)
-        edit = getattr(mtv, "results_gpkg_path_edit", None) if mtv is not None else None
+        rd = getattr(self, "_run_dock", None)
+        edit = getattr(rd, "results_gpkg_path_edit", None) if rd is not None else None
         if edit is not None:
             try:
                 edit.setText(str(path))
@@ -2535,73 +2526,13 @@ class SWE2DWorkbenchStudioDialog(QtWidgets.QDialog):
 
     def collect_run_widget_params(self) -> dict:
         """Collect all run parameter values from UI widgets."""
-        mtab = self._model_tab_view
-        rtb = self._results_toolbox
-        # Commit any in-progress editor text before reading values.
-        for w in (mtab.gpu_diag_sync_interval_spin,):
-            try:
-                w.interpretText()
-            except Exception as _e:
-
-                try:
-
-                    self._log(f"[ERROR] Exception in studio_dialog.py: {_e}")
-
-                except Exception:
-
-                    pass
         return {
             "gravity": float(self._gravity),
             "k_mann": float(self._k_mann),
-            "n_mann_spin": float(mtab.n_mann_spin.value()),
-            "cfl_spin": float(mtab.cfl_spin.value()),
-            "h_min_spin": float(mtab.h_min_spin.value()),
-            "dt_spin": float(mtab.dt_spin.value()),
-            "initial_dt_spin": float(mtab.initial_dt_spin.value()),
-            "adaptive_cfl_dt_chk": bool(mtab.adaptive_cfl_dt_chk.isChecked()),
-            "reconstruction_combo": int(mtab.reconstruction_combo.currentData()),
-            "reconstruction_combo_text": str(mtab.reconstruction_combo.currentText()).strip(),
-            "temporal_order_combo": int(mtab.temporal_order_combo.currentData()),
-            "temporal_order_combo_text": str(mtab.temporal_order_combo.currentText()).strip(),
-            "cfl_lambda_cap_spin": float(mtab.cfl_lambda_cap_spin.value()),
-            "gpu_diag_sync_interval_spin": int(mtab.gpu_diag_sync_interval_spin.value()),
-            "max_rel_depth_increase_spin": float(mtab.max_rel_depth_increase_spin.value()),
-            "max_source_depth_step_spin": float(mtab.max_source_depth_step_spin.value()),
-            "max_source_rate_spin": float(mtab.max_source_rate_spin.value()),
-            "extreme_rain_mode_chk": bool(mtab.extreme_rain_mode_chk.isChecked()),
-            "source_cfl_beta_spin": float(mtab.source_cfl_beta_spin.value()),
-            "source_max_substeps_spin": int(mtab.source_max_substeps_spin.value()),
-            "source_true_subcycling_chk": bool(mtab.source_true_subcycling_chk.isChecked()),
-            "source_imex_split_chk": bool(mtab.source_imex_split_chk.isChecked()),
-            "shallow_damping_depth_spin": float(mtab.shallow_damping_depth_spin.value()),
-            "depth_cap_spin": float(mtab.depth_cap_spin.value()),
-            "momentum_cap_min_speed_spin": float(mtab.momentum_cap_min_speed_spin.value()),
-            "momentum_cap_celerity_mult_spin": float(mtab.momentum_cap_celerity_mult_spin.value()),
-            "max_inv_area_spin": float(mtab.max_inv_area_spin.value()),
-            "rain_rate_spin": float(mtab.rain_rate_spin.value()),
-            "run_time_edit": str(mtab.run_time_edit.text()),
-            "output_interval_edit": str(mtab.output_interval_edit.text()),
-            "line_output_interval_edit": str(mtab.line_output_interval_edit.text()),
-            "tiny_mode_combo": int(mtab.tiny_mode_combo.currentData()),
-            "tiny_wet_cell_threshold_spin": int(mtab.tiny_wet_cell_threshold_spin.value()),
+            **self.model_tab.collect_params(),
+            **self.run_dock.collect_params(),
+            **self.results_toolbox.collect_storage_params(),
             "inflow_progressive_chk": bool(self._map_tab_view.inflow_progressive_chk.isChecked()),
-            "use_redistribution_chk": bool(mtab.use_redistribution_chk.isChecked()),
-            "gpu_diag_sync_interval_raw": int(mtab.gpu_diag_sync_interval_spin.value()),
-            "extended_outputs_chk": bool(rtb.extended_outputs_chk.isChecked()),
-            "swe2d_perf_mode_chk": bool(mtab.swe2d_perf_mode_chk.isChecked()),
-            "culvert_face_flux_chk": bool(mtab.culvert_face_flux_chk.isChecked()),
-            "enable_cuda_graphs_chk": bool(mtab.enable_cuda_graphs_chk.isChecked()),
-            "save_mesh_results_to_gpkg_chk": bool(rtb.save_mesh_chk.isChecked()) and not bool(rtb.save_max_only_chk.isChecked()),
-            "save_line_results_to_gpkg_chk": bool(rtb.save_line_chk.isChecked()) and not bool(rtb.save_max_only_chk.isChecked()),
-            "save_coupling_results_to_gpkg_chk": bool(rtb.save_coupling_chk.isChecked()) and not bool(rtb.save_max_only_chk.isChecked()),
-            "save_max_only_chk": bool(rtb.save_max_only_chk.isChecked()),
-            "save_run_log_to_gpkg_chk": bool(rtb.save_log_chk.isChecked()),
-            "degen_mode": int(mtab.degen_mode_combo.currentData()),
-            "front_flux_damping_spin": float(mtab.front_flux_damping_spin.value()),
-            "active_set_hysteresis_chk": bool(mtab.active_set_hysteresis_chk.isChecked()),
-            "drainage_gpu_method": str(mtab.drainage_gpu_method_combo.currentData()),
-            "culvert_solver_mode": int(mtab.culvert_solver_mode_combo.currentData()),
-            "bridge_coupling_mode": str(mtab.bridge_stacked_coupling_mode_combo.currentData()),
         }
 
     def _log_exception(self, context: str, exc: Exception) -> None:

@@ -215,63 +215,17 @@ class ModelTabView(QtWidgets.QWidget):
             group.setVisible(visible)
 
     def _create_run_output_attributes(self) -> None:
-        """Create run/output widget attributes that now live in the Run dock.
+        """No-op — run/output widgets now live in the Run dock.
 
-        The Run/Output toolbox page has been removed, but many controllers and
-        binding functions still reference these attributes directly on the
-        model tab view. Keep them alive as orphan attributes.
+        Kept as an empty shim so any external callers that still invoke
+        it do not break.
         """
-        self.run_btn = QtWidgets.QPushButton("Run 2D Model")
-        self.run_btn.setObjectName("run_btn")
-
-        self.batch_sim_btn = QtWidgets.QPushButton("Batch Simulation...")
-        self.batch_sim_btn.setObjectName("batch_sim_btn")
-
-        self.cancel_btn = QtWidgets.QPushButton("Cancel")
-        self.cancel_btn.setObjectName("cancel_btn")
-
-        self.progress_bar = QtWidgets.QProgressBar()
-        self.progress_bar.setObjectName("progress_bar")
-        self.progress_bar.setValue(0)
-
-        self.output_interval_edit = QtWidgets.QLineEdit("00:30")
-        self.output_interval_edit.setObjectName("output_interval_edit")
-
-        self.line_output_interval_edit = QtWidgets.QLineEdit("00:05")
-        self.line_output_interval_edit.setObjectName("line_output_interval_edit")
-
-        self.preview_overrides_btn = QtWidgets.QPushButton("Preview Overrides")
-        self.preview_overrides_btn.setObjectName("preview_overrides_btn")
-
-        self.preview_coupling_btn = QtWidgets.QPushButton("Preview Drainage/Structure Coupling")
-        self.preview_coupling_btn.setObjectName("preview_coupling_btn")
-
-        self.snapshot_btn = QtWidgets.QPushButton("Fetch Device Results")
-        self.snapshot_btn.setObjectName("snapshot_btn")
-
-        self.results_table_name_edit = QtWidgets.QLineEdit()
-        self.results_table_name_edit.setObjectName("results_table_name_edit")
-
-        self.results_gpkg_path_edit = QtWidgets.QLineEdit()
-        self.results_gpkg_path_edit.setObjectName("results_gpkg_path_edit")
-
-        self.select_results_gpkg_btn = QtWidgets.QPushButton("Browse...")
-        self.select_results_gpkg_btn.setObjectName("select_results_gpkg_btn")
-
-        self.load_run_settings_btn = QtWidgets.QPushButton("Load Model Config from GPKG...")
-        self.load_run_settings_btn.setObjectName("load_run_settings_btn")
-
-        self.save_settings_btn = QtWidgets.QPushButton("Save Config to GPKG...")
-        self.save_settings_btn.setObjectName("save_settings_btn")
+        pass
 
     def _build_run_page_widgets(
         self, run_page: QtWidgets.QWidget, run_page_layout: QtWidgets.QVBoxLayout
     ) -> None:
-        """DEPRECATED: the Run/Output page has been moved to the Run dock.
-
-        Kept as a no-op shim so any external callers that still invoke it do not
-        break. All attributes are created in ``_create_run_output_attributes``.
-        """
+        """No-op — the Run/Output page has been moved to the Run dock."""
         _ = (run_page, run_page_layout)
 
     def _build_solver_form_widgets(self, param_form: QtWidgets.QFormLayout) -> None:
@@ -1181,6 +1135,58 @@ class ModelTabView(QtWidgets.QWidget):
     def get_drainage_implicit_relax(self) -> float:
         """Relaxation factor for implicit drainage on GPU."""
         return float(self.drainage_implicit_relax_spin.value())
+
+    def collect_params(self) -> dict:
+        """Return all model parameter values as a flat dict.
+
+        Co-located with the widgets so widget moves only touch this method.
+        """
+        try:
+            self.gpu_diag_sync_interval_spin.interpretText()
+        except Exception:
+            pass
+        return {
+            "n_mann_spin": float(self.n_mann_spin.value()),
+            "cfl_spin": float(self.cfl_spin.value()),
+            "h_min_spin": float(self.h_min_spin.value()),
+            "dt_spin": float(self.dt_spin.value()),
+            "initial_dt_spin": float(self.initial_dt_spin.value()),
+            "adaptive_cfl_dt_chk": bool(self.adaptive_cfl_dt_chk.isChecked()),
+            "reconstruction_combo": int(self.reconstruction_combo.currentData()),
+            "reconstruction_combo_text": str(self.reconstruction_combo.currentText()).strip(),
+            "temporal_order_combo": int(self.temporal_order_combo.currentData()),
+            "temporal_order_combo_text": str(self.temporal_order_combo.currentText()).strip(),
+            "cfl_lambda_cap_spin": float(self.cfl_lambda_cap_spin.value()),
+            "gpu_diag_sync_interval_spin": int(self.gpu_diag_sync_interval_spin.value()),
+            "max_rel_depth_increase_spin": float(self.max_rel_depth_increase_spin.value()),
+            "max_source_depth_step_spin": float(self.max_source_depth_step_spin.value()),
+            "max_source_rate_spin": float(self.max_source_rate_spin.value()),
+            "extreme_rain_mode_chk": bool(self.extreme_rain_mode_chk.isChecked()),
+            "source_cfl_beta_spin": float(self.source_cfl_beta_spin.value()),
+            "source_max_substeps_spin": int(self.source_max_substeps_spin.value()),
+            "source_true_subcycling_chk": bool(self.source_true_subcycling_chk.isChecked()),
+            "source_imex_split_chk": bool(self.source_imex_split_chk.isChecked()),
+            "shallow_damping_depth_spin": float(self.shallow_damping_depth_spin.value()),
+            "depth_cap_spin": float(self.depth_cap_spin.value()),
+            "momentum_cap_min_speed_spin": float(self.momentum_cap_min_speed_spin.value()),
+            "momentum_cap_celerity_mult_spin": float(self.momentum_cap_celerity_mult_spin.value()),
+            "max_inv_area_spin": float(self.max_inv_area_spin.value()),
+            "rain_rate_spin": float(self.rain_rate_spin.value()),
+            "run_time_edit": str(self.run_time_edit.text()),
+            "tiny_mode_combo": int(self.tiny_mode_combo.currentData()),
+            "tiny_wet_cell_threshold_spin": int(self.tiny_wet_cell_threshold_spin.value()),
+            "use_redistribution_chk": bool(self.use_redistribution_chk.isChecked()),
+            "gpu_diag_sync_interval_raw": int(self.gpu_diag_sync_interval_spin.value()),
+            "swe2d_perf_mode_chk": bool(self.swe2d_perf_mode_chk.isChecked()),
+            "culvert_face_flux_chk": bool(self.culvert_face_flux_chk.isChecked()),
+            "enable_cuda_graphs_chk": bool(self.enable_cuda_graphs_chk.isChecked()),
+            "degen_mode": int(self.degen_mode_combo.currentData()),
+            "front_flux_damping_spin": float(self.front_flux_damping_spin.value()),
+            "active_set_hysteresis_chk": bool(self.active_set_hysteresis_chk.isChecked()),
+            "drainage_gpu_method": str(self.drainage_gpu_method_combo.currentData()),
+            "culvert_solver_mode": int(self.culvert_solver_mode_combo.currentData()),
+            "bridge_coupling_mode": str(self.bridge_stacked_coupling_mode_combo.currentData()),
+        }
 
     def _on_select_results_gpkg(self) -> None:
         """Open a file dialog and populate the results GeoPackage path."""

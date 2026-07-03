@@ -67,7 +67,11 @@ class TestModelTabView(unittest.TestCase):
         page = view.findChild(QWidget, "model_run_page")
         self.assertIsNone(page)
 
-    def test_run_output_widgets_still_exist_as_attributes(self):
+    def test_run_output_widgets_moved_to_run_dock(self):
+        """Orphan run/output widgets were deleted from ModelTabView.
+
+        They now live on RunDockWidget. Verify they are absent here.
+        """
         view = self._make_view()
         for attr in ("run_btn", "cancel_btn", "batch_sim_btn", "progress_bar",
                      "output_interval_edit", "line_output_interval_edit",
@@ -75,46 +79,7 @@ class TestModelTabView(unittest.TestCase):
                      "results_table_name_edit", "results_gpkg_path_edit",
                      "select_results_gpkg_btn", "load_run_settings_btn", "save_settings_btn"):
             with self.subTest(attr=attr):
-                self.assertTrue(hasattr(view, attr), f"Missing orphaned attribute: {attr}")
-        view = self._make_view()
-        self.assertIsInstance(view.preview_overrides_btn, QPushButton)
-        self.assertEqual(view.preview_overrides_btn.objectName(), "preview_overrides_btn")
-
-    def test_view_has_run_btn(self):
-        view = self._make_view()
-        self.assertIsInstance(view.run_btn, QPushButton)
-        self.assertEqual(view.run_btn.objectName(), "run_btn")
-
-    def test_view_has_cancel_btn(self):
-        view = self._make_view()
-        self.assertIsInstance(view.cancel_btn, QPushButton)
-        self.assertEqual(view.cancel_btn.objectName(), "cancel_btn")
-
-    def test_view_has_progress_bar(self):
-        view = self._make_view()
-        self.assertIsInstance(view.progress_bar, QProgressBar)
-        self.assertEqual(view.progress_bar.objectName(), "progress_bar")
-        self.assertEqual(view.progress_bar.value(), 0)
-
-    def test_view_has_output_interval_edit(self):
-        view = self._make_view()
-        self.assertIsInstance(view.output_interval_edit, QLineEdit)
-        self.assertEqual(view.output_interval_edit.objectName(), "output_interval_edit")
-
-    def test_view_has_line_output_interval_edit(self):
-        view = self._make_view()
-        self.assertIsInstance(view.line_output_interval_edit, QLineEdit)
-        self.assertEqual(view.line_output_interval_edit.objectName(), "line_output_interval_edit")
-
-    def test_view_has_snapshot_btn(self):
-        view = self._make_view()
-        self.assertIsInstance(view.snapshot_btn, QPushButton)
-        self.assertEqual(view.snapshot_btn.objectName(), "snapshot_btn")
-
-    def test_view_has_preview_coupling_btn(self):
-        view = self._make_view()
-        self.assertIsInstance(view.preview_coupling_btn, QPushButton)
-        self.assertEqual(view.preview_coupling_btn.objectName(), "preview_coupling_btn")
+                self.assertFalse(hasattr(view, attr), f"Orphan attribute should be deleted: {attr}")
 
     def test_view_has_n_mann_spin(self):
         view = self._make_view()
@@ -533,19 +498,12 @@ class TestModelTabView(unittest.TestCase):
                     f"Advanced label {label.text()} should be hidden",
                 )
 
-    def test_run_controls_still_exist_as_attributes(self):
+    def test_run_controls_deleted_from_model_tab(self):
+        """Run controls moved to RunDockWidget — verify absent from ModelTabView."""
         view = self._make_view()
-        self.assertIsInstance(view.run_btn, QPushButton)
-        self.assertIsInstance(view.cancel_btn, QPushButton)
-        self.assertIsInstance(view.progress_bar, QProgressBar)
-        self.assertIsInstance(view.batch_sim_btn, QPushButton)
-        self.assertIsInstance(view.snapshot_btn, QPushButton)
-
-    def test_run_controls_are_orphan_attributes(self):
-        view = self._make_view()
-        self.assertIsNone(view.run_btn.parent())
-        self.assertIsNone(view.cancel_btn.parent())
-        self.assertIsNone(view.progress_bar.parent())
+        for attr in ("run_btn", "cancel_btn", "progress_bar", "batch_sim_btn", "snapshot_btn"):
+            with self.subTest(attr=attr):
+                self.assertFalse(hasattr(view, attr), f"Orphan attribute should be deleted: {attr}")
 
 
 if __name__ == "__main__":

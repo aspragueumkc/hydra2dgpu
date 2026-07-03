@@ -526,6 +526,17 @@ class ResultsToolbox(QtWidgets.QWidget):
     def is_save_log(self) -> bool:
         return bool(self.save_log_chk.isChecked())
 
+    def collect_storage_params(self) -> dict:
+        """Return storage-checkbox parameter values as a flat dict."""
+        return {
+            "extended_outputs_chk": bool(self.extended_outputs_chk.isChecked()),
+            "save_mesh_results_to_gpkg_chk": bool(self.save_mesh_chk.isChecked()) and not bool(self.save_max_only_chk.isChecked()),
+            "save_line_results_to_gpkg_chk": bool(self.save_line_chk.isChecked()) and not bool(self.save_max_only_chk.isChecked()),
+            "save_coupling_results_to_gpkg_chk": bool(self.save_coupling_chk.isChecked()) and not bool(self.save_max_only_chk.isChecked()),
+            "save_max_only_chk": bool(self.save_max_only_chk.isChecked()),
+            "save_run_log_to_gpkg_chk": bool(self.save_log_chk.isChecked()),
+        }
+
     @property
     def toolbox(self) -> QtWidgets.QToolBox:
         """The internal QToolBox widget."""

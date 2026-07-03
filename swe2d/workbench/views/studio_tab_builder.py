@@ -178,7 +178,7 @@ def build_model_tab_page(dialog):
 
 
 def wire_run_dock_signals(dialog) -> None:
-    """Wire the Run dock buttons to the same handlers as the Model tab."""
+    """Wire the Run dock buttons to controller handlers."""
     from swe2d.workbench.signal_helpers import safe_disconnect
     d = dialog._run_dock
     safe_disconnect(d.run_btn.clicked, dialog._controller.on_run)
@@ -189,31 +189,25 @@ def wire_run_dock_signals(dialog) -> None:
     d.snapshot_btn.clicked.connect(dialog._controller.on_snapshot)
     safe_disconnect(d.batch_btn.clicked, dialog._open_batch_simulation_dialog)
     d.batch_btn.clicked.connect(dialog._open_batch_simulation_dialog)
+    safe_disconnect(d.preview_overrides_btn.clicked, dialog._controller.on_preview_overrides)
+    d.preview_overrides_btn.clicked.connect(dialog._controller.on_preview_overrides)
+    safe_disconnect(d.preview_coupling_btn.clicked, dialog._controller.on_preview_coupling)
+    d.preview_coupling_btn.clicked.connect(dialog._controller.on_preview_coupling)
+    safe_disconnect(d.load_run_settings_btn.clicked, dialog._controller.on_load_simulation_config)
+    d.load_run_settings_btn.clicked.connect(dialog._controller.on_load_simulation_config)
+    safe_disconnect(d.save_settings_btn.clicked, dialog._controller.on_save_simulation_config)
+    d.save_settings_btn.clicked.connect(dialog._controller.on_save_simulation_config)
+    safe_disconnect(d.select_results_gpkg_btn.clicked, dialog._mesh_controller.on_select_results_gpkg)
+    d.select_results_gpkg_btn.clicked.connect(dialog._mesh_controller.on_select_results_gpkg)
 
 
 def wire_run_tab_signals(dialog) -> None:
-    """Wire the Model tab Run page button signals to the controller."""
-    from swe2d.workbench.signal_helpers import safe_disconnect
-    v = dialog._model_tab_view
-    handlers = [
-        (v.run_btn, dialog._controller.on_run),
-        (v.batch_sim_btn, dialog._open_batch_simulation_dialog),
-        (v.cancel_btn, dialog._controller.on_cancel),
-        (v.preview_overrides_btn, dialog._controller.on_preview_overrides),
-        (v.preview_coupling_btn, dialog._controller.on_preview_coupling),
-        (v.snapshot_btn, dialog._controller.on_snapshot),
-    ]
-    for btn, cb in handlers:
-        safe_disconnect(btn.clicked, cb)
-        btn.clicked.connect(cb)
-    load_btn = getattr(v, "load_run_settings_btn", None)
-    if load_btn is not None:
-        safe_disconnect(load_btn.clicked, dialog._controller.on_load_simulation_config)
-        load_btn.clicked.connect(dialog._controller.on_load_simulation_config)
-    save_btn = getattr(v, "save_settings_btn", None)
-    if save_btn is not None:
-        safe_disconnect(save_btn.clicked, dialog._controller.on_save_simulation_config)
-        save_btn.clicked.connect(dialog._controller.on_save_simulation_config)
+    """No-op — run/output widgets now live in the Run dock.
+
+    Kept as an empty shim so callers that still invoke it do not break.
+    Signal wiring is done by wire_run_dock_signals.
+    """
+    pass
 
 
 # ── Tab lifecycle ────────────────────────────────────────────────────────────

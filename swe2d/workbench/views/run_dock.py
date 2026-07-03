@@ -155,3 +155,12 @@ class RunDockWidget(QtWidgets.QWidget):
 
     def get_results_table_prefix(self) -> str:
         return str(self.results_table_name_edit.text())
+
+    def collect_params(self) -> dict:
+        """Return output-config parameter values as a flat dict."""
+        return {
+            "output_interval_edit": str(self.output_interval_edit.text()),
+            "line_output_interval_edit": str(self.line_output_interval_edit.text()),
+            "results_table_name_edit": str(self.results_table_name_edit.text()),
+            "results_gpkg_path_edit": str(self.results_gpkg_path_edit.text()),
+        }
