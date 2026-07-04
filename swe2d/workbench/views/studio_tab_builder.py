@@ -193,7 +193,6 @@ def build_model_tab_page(dialog):
     if solver_form is None or rain_form is None or drain_form is None:
         raise RuntimeError("Model tab UI missing one or more form layouts")
     wire_run_tab_signals(dialog)
-    wire_run_dock_signals(dialog)
     return model_tab_page, solver_form, rain_form, drain_form, None
 
 

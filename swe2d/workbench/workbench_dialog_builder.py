@@ -12,6 +12,7 @@ import logging
 
 from swe2d.workbench.post_init import run_workbench_post_bootstrap_setup
 from swe2d.workbench.controllers.run_component_wiring_controller import wire_startup_run_components
+from swe2d.workbench.views.studio_tab_builder import wire_run_dock_signals
 from swe2d.runtime import (
     SWE2DBackendInitializer,
     SWE2DRunController,
@@ -94,6 +95,7 @@ class WorkbenchDialogBuilder:
             spatial_discretization=SpatialDiscretization,
             solver_model_options=SolverModelOptions,
         )
+        wire_run_dock_signals(dlg)
         run_workbench_post_bootstrap_setup(
             dlg,
             swe2d_gpu_available_fn=swe2d_gpu_available,
