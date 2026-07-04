@@ -305,7 +305,19 @@ def execute_run(
     # Initialize solver — read ALL params the UI provides, not just a subset
     from swe2d.runtime.backend import BCType
 
-    h0 = np.zeros(ncells, dtype=np.float64)
+    # Allow the user to supply an initial depth array via params["params"]["h0"]
+    # (list of length ncells).  Defaults to dry (all zeros) so tests that
+    # rely on dry starts still work.
+    _h0_user = rp.get("h0")
+    if _h0_user is not None:
+        h0 = np.asarray(_h0_user, dtype=np.float64)
+        if h0.size != int(ncells):
+            raise ValueError(
+                f"params.h0 has {h0.size} elements but mesh has "
+                f"{int(ncells)} cells"
+            )
+    else:
+        h0 = np.zeros(ncells, dtype=np.float64)
     backend.initialize(
         h0=h0,
         k_mann=float(rp.get("k_mann", 1.0)),
@@ -392,6 +404,10 @@ def execute_run(
     drainage_cfg = build_drainage_config_from_json(drainage_data, ncells)
     if drainage_cfg is not None:
         drainage_cfg.gravity = _u.gravity()
+        # User supplied a drainage config in params — enable it. Without this,
+        # PipeNetworkConfig defaults to enabled=False and pack_pipe_network_soa
+        # returns None, leaving the coupling controller with no drainage data.
+        drainage_cfg.enabled = True
     structures_cfg = build_structures_config_from_json(p.get("structures"), ncells)
     coupling_controller = None
     if drainage_cfg is not None or structures_cfg is not None:
@@ -531,6 +547,24 @@ def execute_run(
             key = ("structure", sid, "flow")
             coupling_snapshots.setdefault(key, {"times": [], "values": []})["times"].append(t_s)
             coupling_snapshots[key]["values"].append(float(state["struct_flow"][idx]))
+            stype = getattr(st, "structure_type", None)
+            _is_culvert = (stype is not None and int(stype) == 2)
+            if _is_culvert:
+                try:
+                    from swe2d.runtime.backend import load_swe2d_native_module
+                    _nm = load_swe2d_native_module()
+                    if hasattr(_nm, "swe2d_gpu_readback_culvert_diagnostics"):
+                        _nm.swe2d_gpu_device_sync()
+                        _nm.swe2d_gpu_ensure_culvert_diagnostics()
+                        _arr = _nm.swe2d_gpu_readback_culvert_diagnostics()
+                        if _arr is not None and _arr.ndim == 2 and i < _arr.shape[0]:
+                            _r = _arr[i]
+                            for _mname, _col in [("inlet_control_flow",1),("outlet_control_flow",2),("orifice_cap",3),("manning_cap",4),("embankment_flow",5),("available_head_up",6),("tailwater_depth",7)]:
+                                _key = ("structure", sid, _mname)
+                                coupling_snapshots.setdefault(_key, {"times":[],"values":[]})["times"].append(t_s)
+                                coupling_snapshots[_key]["values"].append(float(_r[_col]))
+                except Exception:
+                    pass
 
     _status_step[0] = 0
     dt_request = float(rp.get("dt_request", rp.get("dt_max", 0.2)))

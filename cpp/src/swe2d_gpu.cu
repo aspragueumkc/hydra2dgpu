@@ -2833,6 +2833,7 @@ void swe2d_gpu_accumulate_external_source(
  * @global */
 __global__ __launch_bounds__(256, 4) void swe2d_coupling_structure_source_kernel(
     int32_t n_structures,
+    const int32_t* __restrict__ structure_type,
     const int32_t* __restrict__ structure_up_cell,
     const int32_t* __restrict__ structure_down_cell,
     const double* __restrict__ structure_flow,
@@ -2842,6 +2843,13 @@ __global__ __launch_bounds__(256, 4) void swe2d_coupling_structure_source_kernel
 {
     int32_t i = blockIdx.x * blockDim.x + threadIdx.x;
     if (i >= n_structures) return;
+    // Culverts (type 2) are applied via the face-flux path
+    // (swe2d_culvert_face_flux_kernel + d_ext_struct_flux_h); skip them here
+    // to avoid double-counting.  Other structure types are applied via
+    // d_structure_flow directly.  When structure_type is null (internal
+    // standalone helpers that don't classify types), fall through and
+    // apply every structure via d_structure_flow.
+    if (structure_type && structure_type[i] == 2) return;
     const int32_t cu = structure_up_cell[i];
     const int32_t cd = structure_down_cell[i];
     if (cu < 0 || cu >= n_cells || cd < 0 || cd >= n_cells) return;
@@ -8240,7 +8248,7 @@ void swe2d_gpu_compute_coupling_full_on_device(
                 sf_ws.d_prev_structure_flow,
                 s_culvert_solver_mode, s_culvert_table_header, s_culvert_table_data,
                 s_culvert_table_n_hw, s_culvert_table_n_tw,
-                nullptr);
+                sf_ws.d_culvert_diagnostics);
             CUDA_CHECK(cudaGetLastError());
         }
 
@@ -8325,7 +8333,7 @@ void swe2d_gpu_compute_coupling_full_on_device(
                     sf_ws.d_prev_structure_flow,
                     s_culvert_solver_mode, s_culvert_table_header, s_culvert_table_data,
                     s_culvert_table_n_hw, s_culvert_table_n_tw,
-                    nullptr);
+                    sf_ws.d_culvert_diagnostics);
                 CUDA_CHECK(cudaGetLastError());
             }
 
@@ -8346,19 +8354,16 @@ void swe2d_gpu_compute_coupling_full_on_device(
                     dev->d_ext_struct_flux_h, dev->d_ext_struct_flux_hu, dev->d_ext_struct_flux_hv);
                 CUDA_CHECK(cudaGetLastError());
             }
-            // Mask culvert flows so source kernel skips them
-            {
-                int grid_m = (ff.n_culvert_faces + BLOCK - 1) / BLOCK;
-                swe2d_mask_culvert_source_kernel<<<grid_m, BLOCK, 0, stream>>>(
-                    ff.n_culvert_faces, ff.d_culvert_struct_idx, sf_ws.d_structure_flow);
-                CUDA_CHECK(cudaGetLastError());
-            }
+            // Culvert flows are skipped by swe2d_coupling_structure_source_kernel
+            // itself (it filters out structure_type == 2), so no upstream
+            // mask is needed.  This keeps sf_ws.d_structure_flow intact for
+            // the readback path (swe2d_gpu_readback_structure_flows).
         }
 
         // ── Source kernel: applies non-culvert structures ──────────────
         int grid_src = (n_structures + BLOCK - 1) / BLOCK;
         swe2d_coupling_structure_source_kernel<<<grid_src, BLOCK, 0, stream>>>(
-            n_structures, sf_ws.d_upstream_cell, sf_ws.d_downstream_cell, sf_ws.d_structure_flow, cpl_ws.d_cell_area, n_cells,
+            n_structures, sf_ws.d_structure_type, sf_ws.d_upstream_cell, sf_ws.d_downstream_cell, sf_ws.d_structure_flow, cpl_ws.d_cell_area, n_cells,
             dev->d_external_source_mps);
         CUDA_CHECK(cudaGetLastError());
 
@@ -8647,7 +8652,7 @@ void swe2d_gpu_apply_culvert_face_flux(
             sf.d_prev_structure_flow,
             s_culvert_solver_mode, s_culvert_table_header, s_culvert_table_data,
             s_culvert_table_n_hw, s_culvert_table_n_tw,
-            nullptr);
+            sf.d_culvert_diagnostics);
         CUDA_CHECK(cudaGetLastError());
     }
 
@@ -8680,15 +8685,10 @@ void swe2d_gpu_apply_culvert_face_flux(
         CUDA_CHECK(cudaGetLastError());
     }
 
-    // Mask culvert flows so the source-kernel skips them
-    if (sf.d_structure_flow && ff.n_culvert_faces > 0) {
-        int grid_m = (ff.n_culvert_faces + BLOCK - 1) / BLOCK;
-        swe2d_mask_culvert_source_kernel<<<grid_m, BLOCK, 0, stream>>>(
-            ff.n_culvert_faces,
-            ff.d_culvert_struct_idx,
-            sf.d_structure_flow);
-        CUDA_CHECK(cudaGetLastError());
-    }
+    // Culvert flows are skipped by swe2d_coupling_structure_source_kernel
+    // itself (it filters out structure_type == 2), so no upstream mask
+    // is needed here.  This keeps sf.d_structure_flow intact for the
+    // readback path (swe2d_gpu_readback_structure_flows).
 
     if (swe2d_debug_enabled("BACKWATER_SWE2D_SYNC_COUPLING")) {
         CUDA_CHECK(cudaStreamSynchronize(stream));
@@ -8825,7 +8825,7 @@ void swe2d_gpu_compute_coupling_sources(
             copy_h2d(d_struct_q, structure_flow, static_cast<size_t>(n_structures) * sizeof(double));
             const int grid = (n_structures + BLOCK - 1) / BLOCK;
             swe2d_coupling_structure_source_kernel<<<grid, BLOCK, 0, stream>>>(
-                n_structures, d_struct_up, d_struct_dn, d_struct_q, d_cell_area, n_cells, d_source);
+                n_structures, nullptr, d_struct_up, d_struct_dn, d_struct_q, d_cell_area, n_cells, d_source);
             CUDA_CHECK(cudaGetLastError());
         }
 

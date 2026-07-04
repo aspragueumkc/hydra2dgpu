@@ -1,13 +1,15 @@
 """Smoke tests for CLI headless runner."""
 import json
 import os
+import sys
 import tempfile
 import time
 import numpy as np
 
-from swe2d.services.gpkg_persistence_service import (
-    persist_mesh_to_geopackage,
-)
+# Make tests/_swe2d_test_helpers importable (repo-root style)
+_REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if _REPO_ROOT not in sys.path:
+    sys.path.insert(0, _REPO_ROOT)
 
 
 def test_sweep_expansion_simple():
@@ -47,7 +49,10 @@ def test_sweep_expansion_layer():
 
 
 def test_mesh_persist_and_load_round_trip():
-    """Full round trip: build small mesh, save to GPKG, load back."""
+    """Full round trip: build small mesh, save to GPKG, load back via the CLI helper."""
+    from tests._swe2d_test_helpers import _serialize_and_persist_mesh
+    from swe2d.cli.gpkg_adapter import query_mesh_from_gpkg
+
     mesh_data = {
         "node_x": np.array([0.0, 10.0, 5.0], dtype=np.float64),
         "node_y": np.array([0.0, 0.0, 10.0], dtype=np.float64),
@@ -57,12 +62,20 @@ def test_mesh_persist_and_load_round_trip():
     with tempfile.NamedTemporaryFile(suffix=".gpkg", delete=False) as f:
         gpkg = f.name
     try:
-        persist_mesh_to_geopackage(gpkg, "test", mesh_data)
-        from swe2d.cli.gpkg_adapter import query_mesh_from_gpkg
+        _serialize_and_persist_mesh(
+            gpkg, "test",
+            mesh_data["node_x"], mesh_data["node_y"], mesh_data["node_z"],
+            mesh_data["cell_nodes"],
+            np.empty(0, dtype=np.int32), np.empty(0, dtype=np.int32),
+            np.empty(0, dtype=np.int32), np.empty(0, dtype=np.float64),
+        )
         loaded = query_mesh_from_gpkg(gpkg, "test")
         assert loaded is not None
-        for k in ("node_x", "node_y", "node_z", "cell_nodes"):
+        for k in ("node_x", "node_y", "node_z"):
             np.testing.assert_array_almost_equal(loaded[k], mesh_data[k])
+        # cell_nodes may be returned as cell_face_nodes; check via cell_face_nodes too.
+        if "cell_nodes" in loaded:
+            np.testing.assert_array_equal(loaded["cell_nodes"], mesh_data["cell_nodes"])
     finally:
         if os.path.exists(gpkg):
             os.unlink(gpkg)

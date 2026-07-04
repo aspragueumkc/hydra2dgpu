@@ -49,11 +49,20 @@ def query_mesh_from_gpkg(gpkg_path: str, mesh_name: str) -> Optional[Dict[str, n
             "cell_nodes": np.asarray(pm.cell_face_nodes, dtype=np.int32) if pm.cell_face_nodes is not None else np.empty(0, dtype=np.int32),
         }
         # Include baked boundary-condition arrays if the mesh was baked with them.
+        # Filter out INTERIOR edges (bc_type==0): the C++ BLOB serializes ALL
+        # edges (interior + boundary), but backend.set_boundary_conditions only
+        # accepts boundary edges. Re-applying interior edges fails the lookup
+        # in _boundary_edge_index_by_nodes and aborts the run.
         if pm.edge_n0 is not None and pm.edge_n1 is not None:
-            out["bc_edge_node0"] = np.asarray(pm.edge_n0, dtype=np.int32)
-            out["bc_edge_node1"] = np.asarray(pm.edge_n1, dtype=np.int32)
-            out["bc_edge_type"] = np.asarray(pm.edge_bc, dtype=np.int32) if pm.edge_bc is not None else np.zeros_like(pm.edge_n0, dtype=np.int32)
-            out["bc_edge_val"] = np.asarray(pm.edge_bc_val, dtype=np.float64) if pm.edge_bc_val is not None else np.zeros_like(pm.edge_n0, dtype=np.float64)
+            n0_all = np.asarray(pm.edge_n0, dtype=np.int32)
+            n1_all = np.asarray(pm.edge_n1, dtype=np.int32)
+            bc_all = np.asarray(pm.edge_bc, dtype=np.int32) if pm.edge_bc is not None else np.zeros_like(n0_all, dtype=np.int32)
+            vl_all = np.asarray(pm.edge_bc_val, dtype=np.float64) if pm.edge_bc_val is not None else np.zeros_like(n0_all, dtype=np.float64)
+            boundary_mask = bc_all != 0
+            out["bc_edge_node0"] = n0_all[boundary_mask]
+            out["bc_edge_node1"] = n1_all[boundary_mask]
+            out["bc_edge_type"] = bc_all[boundary_mask]
+            out["bc_edge_val"] = vl_all[boundary_mask]
         # Also read CRS from the baked mesh table
         try:
             _c = sqlite3.connect(gpkg_path)
@@ -787,10 +796,17 @@ def build_structures_config_from_json(
         ))
 
     cfg = HydraulicStructureConfig(structures=structs)
+    # Always enable when the user supplied a non-empty structure list.  Without
+    # this, the bare-list form (Form B) leaves HydraulicStructureConfig.enabled
+    # at its default False, and the runtime silently skips structure coupling.
     if _from_dict:
-        cfg.enabled = _enabled
+        # Dict form: respect the explicit ``enabled`` key (default True).
+        cfg.enabled = _enabled and (len(structs) > 0)
         cfg.control_interval_s = _control_interval_s
         cfg.controller_name = _controller_name
+    else:
+        # Bare-list form: enable whenever structures were supplied.
+        cfg.enabled = len(structs) > 0
     return cfg
 
 

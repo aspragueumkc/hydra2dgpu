@@ -50,6 +50,7 @@ endif()
 
 # ── 2D SWE hybrid GPU/CPU solver ─────────────────────────────────────────────
 option(BACKWATER_USE_CUDA "Enable CUDA GPU path for 2D SWE solver" ON)
+option(CULVERT_DIAG "Enable device-side printf debug in culvert kernel (slow)" OFF)
 
 # Mixed-precision strategy:
 #   The codebase stores state arrays as `double` (FP64) throughout. Selective FP32
@@ -126,6 +127,14 @@ function(_configure_swe2d_module target_name py_module_name)
     target_compile_options(${target_name} PRIVATE
       $<$<COMPILE_LANGUAGE:CUDA>:--expt-relaxed-constexpr --expt-extended-lambda>
     )
+    # Enable CULVERT_DIAG printf in swe2d_compute_structure_flows_kernel.
+    # Set via -DCULVERT_DIAG=ON at cmake-configure time.  Keep off in
+    # production (device printf is slow).
+    if(DEFINED CULVERT_DIAG AND CULVERT_DIAG)
+      target_compile_options(${target_name} PRIVATE
+        $<$<COMPILE_LANGUAGE:CUDA>:-DCULVERT_DIAG=1>
+      )
+    endif()
     # Enable fast math (relaxed IEEE precision) for GPU kernels.
     target_compile_options(${target_name} PRIVATE
       $<$<COMPILE_LANGUAGE:CUDA>:-use_fast_math>

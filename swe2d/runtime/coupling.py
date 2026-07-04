@@ -1040,8 +1040,8 @@ class SWE2DCouplingController:
                         dev_ptr, nn, int(self.n_cells))
                     if state and "node_depth" in state:
                         out["node_depth"] = np.asarray(state["node_depth"], dtype=np.float64)
-                    if state and "cell_flow" in state:
-                        cell_q = np.asarray(state["cell_flow"], dtype=np.float64)
+                    if state and "cell_Q" in state:
+                        cell_q = np.asarray(state["cell_Q"], dtype=np.float64)
                         nl = int(len(dsoa.link_from))
                         if nl > 0 and cell_q.size >= self.n_cells:
                             link_q = np.zeros(nl, dtype=np.float64)

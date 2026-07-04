@@ -321,3 +321,213 @@ FULL_COMBOS = [
     for t in VALID_TEMPORAL_SCHEMES
     for g in GODUNOV_MODES
 ]
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# CLI runner (no GUI mocks — exercises swe2d.cli.headless_runner.execute_run)
+# ─────────────────────────────────────────────────────────────────────────────
+def _serialize_and_persist_mesh(
+    gpkg_path: str,
+    mesh_name: str,
+    node_x: np.ndarray,
+    node_y: np.ndarray,
+    node_z: np.ndarray,
+    cell_nodes: np.ndarray,
+    bc_n0: np.ndarray,
+    bc_n1: np.ndarray,
+    bc_tp: np.ndarray,
+    bc_vl: np.ndarray,
+) -> None:
+    """Build → serialize → persist a mesh into the GPKG.
+
+    ``cell_nodes`` may be either a flat triangulated array (length 3*N)
+    or a flat polygon array with companion ``cell_face_offsets`` of length
+    N+1 supplied alongside via ``cell_nodes`` paired with ``cell_face_offsets``.
+
+    The CLI reads meshes back via query_mesh_from_gpkg → load_baked_mesh →
+    swe2d_deserialize_mesh, so the BLOB must include the BC edges.
+    """
+    from hydra_swe2d import (
+        swe2d_build_mesh, swe2d_build_mesh_poly, swe2d_serialize_mesh, swe2d_mesh_info,
+    )
+    if cell_nodes.ndim == 2 and cell_nodes.shape[1] == 4:
+        # Polygon cells: cell_nodes shape (N, 4) — derive offsets
+        n_cells = cell_nodes.shape[0]
+        cell_face_offsets = np.arange(0, (n_cells + 1) * 4, 4, dtype=np.int32)
+        pm = swe2d_build_mesh_poly(
+            node_x, node_y, node_z,
+            cell_face_offsets,
+            cell_nodes.astype(np.int32).ravel(),
+            bc_n0, bc_n1, bc_tp, bc_vl,
+        )
+    elif cell_nodes.shape[0] % 3 == 0:
+        # Triangulated flat array (3*N entries for N triangles)
+        pm = swe2d_build_mesh(node_x, node_y, node_z, cell_nodes,
+                               bc_n0, bc_n1, bc_tp, bc_vl)
+    else:
+        # Flat polygon (N*4 entries for N quad cells).  Derive offsets
+        # assuming 4 corners per cell.
+        n_cells = cell_nodes.shape[0] // 4
+        cell_face_offsets = np.arange(0, (n_cells + 1) * 4, 4, dtype=np.int32)
+        pm = swe2d_build_mesh_poly(
+            node_x, node_y, node_z,
+            cell_face_offsets,
+            cell_nodes.astype(np.int32),
+            bc_n0, bc_n1, bc_tp, bc_vl,
+        )
+    blob = swe2d_serialize_mesh(pm)
+    info = swe2d_mesh_info(pm)
+    from swe2d.services.gpkg_persistence_service import persist_baked_mesh
+    persist_baked_mesh(
+        gpkg_path, mesh_name, blob,
+        info["n_nodes"], info["n_cells"], info["n_edges"],
+    )
+
+
+def _run_cli_coupling(
+    gpkg_path: str,
+    mesh_name: str,
+    node_x: np.ndarray,
+    node_y: np.ndarray,
+    node_z: np.ndarray,
+    cell_nodes: np.ndarray,
+    bc_n0: np.ndarray,
+    bc_n1: np.ndarray,
+    bc_tp: np.ndarray,
+    bc_vl: np.ndarray,
+    params: dict,
+    duration_s: float,
+    q_in: float,
+    structures_cfg: dict | None = None,
+    h0: np.ndarray | None = None,
+) -> None:
+    """Invoke the headless CLI on a tiny mesh and persist baked results.
+
+    Builds the mesh, bakes it into ``gpkg_path``, then calls
+    ``swe2d.cli.headless_runner.execute_run`` with ``params`` overridden for
+    ``duration_s``, ``q_in``, and the synthetic drainage network.
+
+    Optional ``structures_cfg`` is added to params as ``structures`` so the
+    CLI builds a HydraulicStructureConfig and wires up the structure
+    coupling controller path.
+
+    Optional ``h0`` sets the initial water depth on every cell (the CLI
+    defaults to all-zeros which keeps the 2D solver dry and makes
+    coupling-only assertions noisy).
+
+    No mocks: the run is identical to what `python -m swe2d.cli run` would do.
+    """
+    # Serialize + persist the synthetic mesh (BC edges included)
+    _serialize_and_persist_mesh(
+        gpkg_path, mesh_name,
+        node_x, node_y, node_z, cell_nodes,
+        bc_n0, bc_n1, bc_tp, bc_vl,
+    )
+
+    # Determine cell count for drainage inlets.  Supports both triangulated
+    # (flat int32) and polygon (N, 4) cell_nodes representations.
+    if cell_nodes.ndim == 1:
+        ncells = int(cell_nodes.size // 3)
+    else:
+        ncells = int(cell_nodes.shape[0])
+    nodes_x_mean = float(node_x.mean())
+    nodes_y_mean = float(node_y.mean())
+    inlet_cell = 0
+    outlet_cell = max(ncells - 1, 0)
+
+    drainage_cfg = {
+        "nodes": [
+            {
+                "id": "n_in", "type": "inlet",
+                "invert": 9.5, "y_max": 12.0, "area": 5.0,
+                "surcharge_depth": 1.0, "initial_depth": 0.5,
+                "x": nodes_x_mean - 5.0, "y": nodes_y_mean,
+            },
+            {
+                "id": "n_out", "type": "outfall",
+                "invert": 5.0, "y_max": 12.0, "area": 5.0,
+                "surcharge_depth": 1.0, "initial_depth": 0.0,
+                "x": nodes_x_mean + 5.0, "y": nodes_y_mean,
+            },
+        ],
+        "links": [
+            {
+                "from": "n_in", "to": "n_out",
+                "length": 10.0, "diameter": 1.0,
+                "roughness": 0.013, "max_flow": -1.0,
+            },
+        ],
+        "inlets": [
+            {
+                "node_id": "n_in",
+                "inlet_cell": inlet_cell,
+                "flow_rate": float(q_in),
+            },
+        ],
+        "outfalls": [
+            {
+                "node_id": "n_out",
+                "invert": 5.0,
+            },
+        ],
+    }
+
+    # Override mesh name + run length + add drainage to params.
+    # Output/snap intervals default to t_end (1 sample), so force smaller
+    # intervals to get a meaningful coupling time series.
+    p = dict(params)
+    p["mesh"] = mesh_name
+    p["params"] = dict(p.get("params", {}))
+    p["params"]["duration_s"] = float(duration_s)
+    p["params"]["output_interval_s"] = float(p["params"].get("output_interval_s", 1.0))
+    p["params"]["line_output_interval_s"] = float(p["params"].get("line_output_interval_s", 1.0))
+    p["drainage"] = drainage_cfg
+    if structures_cfg is not None:
+        p["structures"] = structures_cfg
+    if h0 is not None:
+        p["params"]["h0"] = np.asarray(h0, dtype=np.float64).tolist()
+
+    # Force SI units so gravity = 9.81 (default) and 1 cell area ≈ 1 m².
+    # Avoids USC conversion path in this synthetic test.
+    from swe2d import units as _u
+    _u.configure(1.0)
+
+    from swe2d.cli.headless_runner import execute_run
+    execute_run(
+        mesh_gpkg=gpkg_path,
+        params=p,
+        results_gpkg=gpkg_path,
+    )
+
+
+def _read_coupling_rows(gpkg_path: str, run_id: str | None = None) -> dict:
+    """Read swe2d_baked_coupling as {key: (times, values)} decoded from BLOB.
+
+    ``key`` is a (component, object_id, metric) tuple. If ``run_id`` is given,
+    restrict to that run; otherwise return all runs' rows keyed by
+    ``(run_id, component, object_id, metric)``.
+    """
+    import sqlite3
+    conn = sqlite3.connect(gpkg_path)
+    try:
+        if run_id is None:
+            rows = conn.execute(
+                "SELECT run_id, component, object_id, metric, times_blob, values_blob "
+                "FROM swe2d_baked_coupling"
+            ).fetchall()
+        else:
+            rows = conn.execute(
+                "SELECT run_id, component, object_id, metric, times_blob, values_blob "
+                "FROM swe2d_baked_coupling WHERE run_id=?",
+                (run_id,),
+            ).fetchall()
+    finally:
+        conn.close()
+
+    out: dict = {}
+    for rid, comp, oid, metric, tb, vb in rows:
+        out[(rid, comp, oid, metric)] = (
+            np.frombuffer(tb, dtype=np.float64),
+            np.frombuffer(vb, dtype=np.float64),
+        )
+    return out
