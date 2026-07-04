@@ -41,7 +41,7 @@ class MapTabView(QtWidgets.QWidget):
         structures_layer_combo, bc_lines_layer_combo
 
     Actions page ("Mesh Setup") - mesh I/O:
-        load_model_gpkg_btn, export_mesh_layers_btn,
+        export_mesh_layers_btn,
         import_mesh_layers_btn, terrain_to_nodes_btn, pull_node_z_btn
 
     Utilities page ("Utilities") - helpers:
@@ -207,7 +207,6 @@ class MapTabView(QtWidgets.QWidget):
         actions_layout.setContentsMargins(4, 4, 4, 4)
 
         btn_specs = [
-            ("load_model_gpkg_btn", "Load 2D Model GeoPackage"),
             ("export_mesh_layers_btn", "Export Mesh To Map Layers"),
             ("export_mesh_ugrid_btn", "Export Mesh To UGRID"),
             ("save_mesh_gpkg_btn", "Save Mesh to GPKG"),
@@ -225,10 +224,6 @@ class MapTabView(QtWidgets.QWidget):
 
         self.terrain_to_nodes_btn.setText("Assign Mesh Node Z From Terrain")
         self.pull_node_z_btn.setText("Pull Mesh Node Z From Nodes Layer")
-        self.load_model_gpkg_btn.setToolTip(
-            "Load an existing model GeoPackage created with 'Create 2D Model GeoPackage'. "
-            "All layer combos and BC settings will be populated from the package metadata."
-        )
         self.export_mesh_layers_btn.setToolTip(
             "Export the current in-memory mesh (nodes + cells) as QGIS map layers. "
             "Creates point and polygon layers in the project for inspection."

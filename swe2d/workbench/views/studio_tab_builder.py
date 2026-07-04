@@ -126,7 +126,6 @@ def wire_map_tab_action_signals(dialog) -> None:
     from swe2d.workbench.signal_helpers import safe_disconnect
     v = dialog._map_tab_view
     handlers = {
-        "load_model_gpkg_btn": (v.load_model_gpkg_btn, dialog._mesh_controller.load_2d_model_geopackage),
         "export_mesh_layers_btn": (v.export_mesh_layers_btn, dialog._mesh_controller.export_mesh_to_layers),
         "export_mesh_ugrid_btn": (v.export_mesh_ugrid_btn, dialog._mesh_controller.export_mesh_to_ugrid),
         "save_mesh_gpkg_btn": (v.save_mesh_gpkg_btn, dialog._save_mesh_to_gpkg),

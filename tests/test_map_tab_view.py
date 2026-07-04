@@ -98,11 +98,6 @@ class TestMapTabView(unittest.TestCase):
         view = MapTabView()
         self.assertIsInstance(view.structures_layer_combo, QComboBox)
 
-    def test_view_has_load_model_gpkg_btn(self):
-        from swe2d.workbench.views.map_tab_view import MapTabView
-        view = MapTabView()
-        self.assertIsInstance(view.load_model_gpkg_btn, QPushButton)
-
     def test_view_has_export_mesh_layers_btn(self):
         from swe2d.workbench.views.map_tab_view import MapTabView
         view = MapTabView()
@@ -156,7 +151,6 @@ class TestMapTabView(unittest.TestCase):
             ("drain_inlets_layer_combo", "drain_inlets_layer_combo"),
             ("drain_node_inlets_layer_combo", "drain_node_inlets_layer_combo"),
             ("structures_layer_combo", "structures_layer_combo"),
-            ("load_model_gpkg_btn", "load_model_gpkg_btn"),
             ("export_mesh_layers_btn", "export_mesh_layers_btn"),
             ("import_mesh_layers_btn", "import_mesh_layers_btn"),
             ("terrain_to_nodes_btn", "terrain_to_nodes_btn"),

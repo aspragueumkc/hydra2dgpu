@@ -58,7 +58,6 @@ class TestMapTabView(unittest.TestCase):
         from swe2d.workbench.views.map_tab_view import MapTabView
         view = MapTabView()
         for attr in (
-            "load_model_gpkg_btn",
             "export_mesh_layers_btn",
             "import_mesh_layers_btn", "terrain_to_nodes_btn",
             "pull_node_z_btn",
