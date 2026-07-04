@@ -621,13 +621,17 @@ class OverlayController:
         data = getattr(view, "_results_data", None)
         if data is None:
             return False
-        gpkg = getattr(data, "gpkg_path", None)
+        # Resolve the per-run GPKG from the enabled RunRecord — NOT from
+        # data.gpkg_path, which is the "overarching" model GPKG set by
+        # show_results_panel and does not necessarily contain the baked
+        # results the user actually added.  Each run's mesh lives in its
+        # own GPKG and the overlay must read from there.
+        run_targets = data.enabled_overlay_targets()
+        if not run_targets:
+            return False
+        gpkg, run_id = run_targets[0]
         if not gpkg or not os.path.exists(gpkg):
             return False
-        run_ids = data.enabled_overlay_targets()
-        if not run_ids:
-            return False
-        run_id = run_ids[0][1]
 
         # Load overlay mesh geometry from the baked mesh BLOB in GPKG only.
         # No fallback to in-memory _mesh_data — if the GPKG is missing
