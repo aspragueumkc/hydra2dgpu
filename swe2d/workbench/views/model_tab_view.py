@@ -209,20 +209,18 @@ class ModelTabView(QtWidgets.QWidget):
             widget.setObjectName(attr)
             setattr(self, attr, widget)
 
-        # Keep these 5 on the Layers page; others are added to their
-        # respective parameter pages below.
+        # Keep these 3 on the Layers page; sample_lines and bc_lines
+        # are moved to the Output and Boundary Conditions pages respectively.
         for row, label, attr in [
             (0, "Nodes layer:", "nodes_layer_combo"),
             (1, "Cells layer:", "cells_layer_combo"),
             (2, "Terrain raster:", "terrain_layer_combo"),
-            (3, "Sample lines layer:", "sample_lines_layer_combo"),
-            (4, "BC lines layer:", "bc_lines_layer_combo"),
         ]:
             widget = getattr(self, attr)
             if layers_layout.indexOf(widget) < 0:
                 layers_layout.addWidget(QtWidgets.QLabel(label), row, 0)
                 layers_layout.addWidget(widget, row, 1)
-        layers_layout.setRowStretch(5, 1)
+        layers_layout.setRowStretch(3, 1)
 
         # Tooltips
         self.nodes_layer_combo.setToolTip(
@@ -249,11 +247,6 @@ class ModelTabView(QtWidgets.QWidget):
         )
 
         # Drain combos moved to the Drainage page's "Layer Setup" group
-        for attr in ["bc_lines_layer_combo"]:
-            c = getattr(self, attr)
-            if c.count() == 0:
-                c.addItem("(none)", None)
-
     def _build_form_page(
         self, page_name: str, form_name: str
     ) -> tuple[QtWidgets.QWidget, QtWidgets.QFormLayout]:
@@ -415,6 +408,23 @@ class ModelTabView(QtWidgets.QWidget):
         self.save_log_chk.setObjectName("save_log_chk")
         self.save_log_chk.setChecked(True)
         _add_output_checkbox(self.save_log_chk)
+
+        # Sample lines layer — moved from the Layers page
+        self.sample_lines_layer_combo = QtWidgets.QComboBox()
+        self.sample_lines_layer_combo.setObjectName("sample_lines_layer_combo")
+        self.sample_lines_layer_combo.setToolTip(
+            "Line layer for sampling flow results along cross-sections during simulation. "
+            "Results are saved at the line output interval specified in the Run tab."
+        )
+        _label = QtWidgets.QLabel("Sample lines layer:")
+        layout.addRow(_label, self.sample_lines_layer_combo)
+        self._filterable.add(
+            self.sample_lines_layer_combo,
+            label_widget=_label,
+            label_text="Sample lines layer:",
+            tooltip=self.sample_lines_layer_combo.toolTip(),
+            group=None,
+        )
 
         # ── Run Output section ──────────────────────────────────────
         # Moved from RunDockWidget (formerly below the progress bar).
@@ -693,6 +703,17 @@ class ModelTabView(QtWidgets.QWidget):
         )
         self.uniform_inflow_velocity_chk.setChecked(False)
         self._add_param_row(form, "", self.uniform_inflow_velocity_chk)
+
+        # BC lines layer — moved from the Layers page
+        self.bc_lines_layer_combo = QtWidgets.QComboBox()
+        self.bc_lines_layer_combo.setObjectName("bc_lines_layer_combo")
+        self.bc_lines_layer_combo.setToolTip(
+            "Line layer for boundary condition segments. "
+            "Each segment defines a BC type (inflow, stage, normal depth, etc.) "
+            "assigned via the default BC type combo or per-segment attributes."
+        )
+        self.bc_lines_layer_combo.addItem("(none)", None)
+        self._add_param_row(form, "BC lines layer:", self.bc_lines_layer_combo)
 
         # -- Physics & Friction --
         form = self._start_param_group(param_form, "Physics & Friction")
