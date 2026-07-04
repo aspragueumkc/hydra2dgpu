@@ -2320,36 +2320,6 @@ class SWE2DWorkbenchStudioDialog(QtWidgets.QDialog):
 
     # ── View Protocol Methods (called by Service Layer, never widgets directly) ──
 
-    def _open_batch_simulation_dialog(self) -> None:
-        """Open the batch simulation dialog for parameter sweeps."""
-        from swe2d.workbench.dialogs.batch_simulation_dialog import BatchSimulationDialog
-
-        base_params = {
-            "mesh": "",
-            "params": {
-                "rain_rate_mmhr": 0.0,
-                "n_mann": 0.035,
-                "duration_s": 3600.0,
-            },
-        }
-
-        # Auto-populate mesh GPKG path from the current model if available
-        gpkg = getattr(self, "_model_gpkg_path", "")
-        if not gpkg or not os.path.isfile(gpkg):
-            # Fall back to results GPKG path on the Run dock
-            rd = getattr(self, "_run_dock", None)
-            if rd:
-                pe = getattr(rd, "results_gpkg_path_edit", None)
-                if pe:
-                    gpkg = str(pe.text() or "").strip()
-
-        dlg = BatchSimulationDialog(
-            parent=self,
-            base_params=base_params,
-            mesh_gpkg=gpkg,
-        )
-        dlg.exec()
-
     def _install_keyboard_shortcuts(self) -> None:
         """Install global application shortcuts for common workbench actions."""
         from qgis.PyQt.QtGui import QKeySequence

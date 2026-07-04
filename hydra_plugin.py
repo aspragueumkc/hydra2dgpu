@@ -421,13 +421,34 @@ class HydraQgisPlugin:
                 "[hydra_plugin] devtools menu setup failed: %s", _exc
             )
 
-    def _call_workbench(self, method_name: str):
-        """Call a method on the active workbench dialog, if one is open.
+    # Method name → (owner_attr, controller_kind) map for _call_workbench
+    # The owner_attr is the attribute on the dialog holding the controller.
+    _WORKBENCH_METHOD_LOCATIONS = {
+        # MeshController
+        "create_2d_model_geopackage":   ("_mesh_controller", "controller"),
+        "load_2d_model_geopackage":     ("_mesh_controller", "controller"),
+        "export_mesh_to_ugrid":         ("_mesh_controller", "controller"),
+        "export_mesh_to_layers":        ("_mesh_controller", "controller"),
+        "assign_node_z_from_terrain":   ("_mesh_controller", "controller"),
+        "pull_node_z_from_layer":       ("_mesh_controller", "controller"),
+        "export_results_to_ugrid":      ("_mesh_controller", "controller"),
+        "export_results_to_hdf5":       ("_mesh_controller", "controller"),
+        "open_run_log_viewer":          ("_mesh_controller", "controller"),
+        "create_lumped_hydrology_geopackage": ("_mesh_controller", "controller"),
+        # RunController
+        "on_run":                       ("_run_controller", "controller"),
+        "on_cancel":                    ("_run_controller", "controller"),
+        "open_batch_simulation_dialog": ("_run_controller", "controller"),
+        # OverlayController
+        "export_high_perf_overlay_to_geotiff": ("_overlay_controller", "controller"),
+        # TopologyController
+        "open_model_gpkg_explorer":     ("_topology_controller", "controller"),
+        # Dialog (private helpers)
+        "open_documentation_hub":        (None, "dialog"),
+    }
 
-        Tries the following in order:
-        1. Controller methods (run, overlay, mesh, topology controllers)
-        2. Dialog methods with underscore prefix (e.g. _create_2d_model_geopackage)
-        """
+    def _call_workbench(self, method_name: str):
+        """Call a method on the active workbench dialog, if one is open."""
         try:
             from swe2d.workbench.views.studio_host_methods import _studio_active_dialog
             dlg = _studio_active_dialog
@@ -437,26 +458,18 @@ class HydraQgisPlugin:
                 )
                 return
 
-            # 1. Try controller methods
-            controllers = (
-                getattr(dlg, '_run_controller', None),
-                getattr(dlg, '_overlay_controller', None),
-                getattr(dlg, '_mesh_controller', None),
-                getattr(dlg, '_topology_controller', None),
+            owner_attr, kind = self._WORKBENCH_METHOD_LOCATIONS.get(
+                method_name, (None, None)
             )
-            for ctrl in controllers:
-                if ctrl is not None:
-                    method = getattr(ctrl, method_name, None)
-                    if method is not None:
-                        method()
-                        return
-
-            # 2. Try dialog method with _ prefix (e.g. _create_2d_model_geopackage)
-            underscored = f"_{method_name}"
-            method = getattr(dlg, underscored, None)
+            if kind == "controller":
+                controller = getattr(dlg, owner_attr, None)
+                if controller is None:
+                    return
+                method = getattr(controller, method_name, None)
+            else:
+                method = getattr(dlg, method_name, None)
             if method is not None:
                 method()
-                return
 
         except Exception as e:
             logging.getLogger(__name__).warning(

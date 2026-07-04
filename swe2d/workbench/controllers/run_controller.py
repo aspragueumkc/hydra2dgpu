@@ -1172,6 +1172,39 @@ class RunController:
         view._cancel_requested = True
         view._log("Cancellation requested...")
 
+    # ── Batch simulation dialog ──────────────────────────────────────
+    def open_batch_simulation_dialog(self) -> None:
+        """Open the batch simulation dialog for parameter sweeps."""
+        import os as _os
+        from swe2d.workbench.dialogs.batch_simulation_dialog import BatchSimulationDialog
+
+        view = self._view
+
+        base_params = {
+            "mesh": "",
+            "params": {
+                "rain_rate_mmhr": 0.0,
+                "n_mann": 0.035,
+                "duration_s": 3600.0,
+            },
+        }
+
+        # Auto-populate mesh GPKG path from the current model if available
+        gpkg = getattr(view, "_model_gpkg_path", "")
+        if not gpkg or not _os.path.isfile(gpkg):
+            rd = getattr(view, "_run_dock", None)
+            if rd:
+                pe = getattr(rd, "results_gpkg_path_edit", None)
+                if pe:
+                    gpkg = str(pe.text() or "").strip()
+
+        dlg = BatchSimulationDialog(
+            parent=view,
+            base_params=base_params,
+            mesh_gpkg=gpkg,
+        )
+        dlg.exec()
+
     # ── Snapshot orchestration ─────────────────────────────────────────
     def on_snapshot(self) -> None:
         """Fetch accumulated device results to host and sync to UI.
