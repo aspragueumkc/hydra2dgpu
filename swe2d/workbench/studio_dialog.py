@@ -1064,7 +1064,9 @@ class SWE2DWorkbenchStudioDialog(QtWidgets.QDialog):
     def _selected_results_table_prefix(self) -> str:
         """Build the sanitized prefix for results table names from UI."""
         raw = ""
-        tbl_edit = getattr(self._run_dock, "results_table_name_edit", None)
+        # results_table_name_edit moved from RunDockWidget to
+        # ModelTabView's Output page (commit 686e609).
+        tbl_edit = getattr(self._model_tab_view, "results_table_name_edit", None)
         if tbl_edit is not None:
             raw = str(tbl_edit.text() or "").strip()
         if not raw:
@@ -1305,9 +1307,11 @@ class SWE2DWorkbenchStudioDialog(QtWidgets.QDialog):
 
     def _current_line_results_storage_path(self) -> str:
         """Determine the current GeoPackage path for line result storage."""
-        rd = getattr(self, "_run_dock", None)
-        if rd is not None:
-            path_edit = getattr(rd, "results_gpkg_path_edit", None)
+        # results_gpkg_path_edit moved from RunDockWidget to
+        # ModelTabView's Output page (commit 686e609).
+        mt = getattr(self, "_model_tab_view", None)
+        if mt is not None:
+            path_edit = getattr(mt, "results_gpkg_path_edit", None)
             if path_edit is not None:
                 override_raw = str(path_edit.text() or "").strip()
                 if override_raw:
@@ -1316,7 +1320,7 @@ class SWE2DWorkbenchStudioDialog(QtWidgets.QDialog):
                     if os.path.isdir(parent_dir):
                         self._log(
                             f"[ResultsPath] using override: {override} "
-                            f"(from results_gpkg_path_edit on Run dock)"
+                            f"(from results_gpkg_path_edit on Model tab)"
                         )
                         return override
                     else:
@@ -1327,9 +1331,9 @@ class SWE2DWorkbenchStudioDialog(QtWidgets.QDialog):
                 else:
                     self._log("[ResultsPath] results_gpkg_path_edit is empty")
             else:
-                self._log("[ResultsPath] results_gpkg_path_edit not found on _run_dock")
+                self._log("[ResultsPath] results_gpkg_path_edit not found on _model_tab_view")
         else:
-            self._log("[ResultsPath] _run_dock not found")
+            self._log("[ResultsPath] _model_tab_view not found")
         if self._model_gpkg_path and os.path.exists(self._model_gpkg_path):
             self._log(
                 f"[ResultsPath] falling back to _model_gpkg_path: "

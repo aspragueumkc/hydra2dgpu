@@ -372,8 +372,6 @@ class RunController:
             _next_snap_t = min(output_interval_s, run_span_s)
             _next_line_snap_t = min(line_output_interval_s, run_span_s)
             _next_coupling_snap_t = min(line_output_interval_s, run_span_s)
-            sample_map = build_line_sampling_map_fn()
-            cell_solver_z = mesh_cell_solver_bed_fn() if sample_map else None
             run_id = datetime.datetime.now().astimezone().strftime("swe2d_%Y%m%dT%H%M%S%z")
             # Re-seed the synthetic RunRecord with the real run_id now that we have it
             data = getattr(view, "_results_data", None)
@@ -650,6 +648,11 @@ class RunController:
                         coupling_controller._inv_cell_perm = np.asarray(_inv_perm, dtype=np.int32).copy()
                     except Exception as sync_exc:
                         log_fn(f"[WARNING] Failed to sync inv_cell_perm to coupling controller: {sync_exc}")
+
+            # Build line sampling map AFTER RCMK reorder so cell_idx and
+            # cell_solver_z are in solver order, matching h from read_snapshots().
+            sample_map = build_line_sampling_map_fn()
+            cell_solver_z = mesh_cell_solver_bed_fn() if sample_map else None
 
             last_diag = None
             t_accum = 0.0
@@ -1201,9 +1204,12 @@ class RunController:
         # Auto-populate mesh GPKG path from the current model if available
         gpkg = getattr(view, "_model_gpkg_path", "")
         if not gpkg or not _os.path.isfile(gpkg):
-            rd = getattr(view, "_run_dock", None)
-            if rd:
-                pe = getattr(rd, "results_gpkg_path_edit", None)
+            # results_gpkg_path_edit moved from RunDockWidget to
+            # ModelTabView's Output page (commit 686e609). Read it from
+            # there as a fallback.
+            mt = getattr(view, "_model_tab_view", None)
+            if mt:
+                pe = getattr(mt, "results_gpkg_path_edit", None)
                 if pe:
                     gpkg = str(pe.text() or "").strip()
 
