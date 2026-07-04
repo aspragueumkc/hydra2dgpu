@@ -12,8 +12,6 @@ logger_wb = logging.getLogger(__name__)
 
 _SWE2D_WORKBENCH_STUDIO_WINDOWS: List[QtWidgets.QDialog] = []
 _studio_active_dialog: Optional["SWE2DWorkbenchStudioDialog"] = None
-_SWE2D_STUDIO_HOST_TOOLBAR: Optional[QtWidgets.QToolBar] = None
-_SWE2D_STUDIO_HOST_MENU: Optional[QtWidgets.QMenu] = None
 
 
 def _normalize_workbench_host_mode(host_mode: object) -> str:
@@ -137,123 +135,12 @@ def _studio_host_main_window(iface_obj, fallback_parent=None):
 
 
 def _clear_studio_host_controls(iface_obj, fallback_parent=None) -> None:
-    """Remove the Studio toolbar and menu from the QGIS host window."""
-    global _SWE2D_STUDIO_HOST_TOOLBAR, _SWE2D_STUDIO_HOST_MENU
-    host_window = _studio_host_main_window(iface_obj, fallback_parent)
-    if _SWE2D_STUDIO_HOST_TOOLBAR is not None:
-        try:
-            if host_window is not None:
-                host_window.removeToolBar(_SWE2D_STUDIO_HOST_TOOLBAR)
-                _SWE2D_STUDIO_HOST_TOOLBAR.setParent(None)
-        except Exception as e:
-            logger_wb.warning("[ERROR] toolbar removal failed: %s", e)
-        try:
-            _SWE2D_STUDIO_HOST_TOOLBAR.deleteLater()
-        except Exception as e:
-            logger_wb.warning("[ERROR] toolbar deleteLater failed: %s", e)
-        _SWE2D_STUDIO_HOST_TOOLBAR = None
-    if _SWE2D_STUDIO_HOST_MENU is not None:
-        try:
-            act = _SWE2D_STUDIO_HOST_MENU.menuAction()
-            parent = act.parentWidget()
-            if parent is not None:
-                parent.removeAction(act)
-            _SWE2D_STUDIO_HOST_MENU.setParent(None)
-        except Exception as e:
-            logger_wb.warning("[ERROR] menu cleanup failed: %s", e)
-        try:
-            _SWE2D_STUDIO_HOST_MENU.deleteLater()
-        except Exception as e:
-            logger_wb.warning("[ERROR] menu deleteLater failed: %s", e)
-        _SWE2D_STUDIO_HOST_MENU = None
+    """Remove the Studio view-mode combo from the QGIS host window.
 
-
-def _build_studio_toolbar(iface_obj, dlg, host_window):
-    """Create the HYDRA run toolbar in the QGIS main window."""
-    global _SWE2D_STUDIO_HOST_TOOLBAR
-    toolbar = QtWidgets.QToolBar("HYDRA Run", host_window)
-    toolbar.setObjectName("HydraRunToolbar")
-    toolbar.setIconSize(QtCore.QSize(24, 24))
-    actions = [
-        ("media-playback-start", "Run 2D Model", lambda: dlg._controller.on_run(), True),
-        ("media-playback-stop", "Cancel Run", lambda: dlg._controller.on_cancel(), False),
-        ("camera-photo", "Take Snapshot", lambda: dlg._controller.on_snapshot(), True),
-        None,
-        ("applications-utilities", "Batch Simulation…", lambda: dlg._open_batch_simulation_dialog(), True),
-        None,
-        ("folder-open", "Open GeoPackage…", lambda: dlg._mesh_controller.load_2d_model_geopackage(), True),
-        ("document-open", "Open Run Log", lambda: dlg._open_run_log_viewer(), True),
-        ("folder", "GPKG Explorer…", lambda: dlg._open_model_gpkg_explorer(), True),
-        None,
-        ("view-refresh", "Discover Runs", lambda: dlg._on_results_refresh(), False),
-        ("document-save-as", "Export Overlay TIFF…", lambda: dlg._overlay_controller.export_high_perf_overlay_to_geotiff(), False),
-    ]
-    for spec in actions:
-        if spec is None:
-            toolbar.addSeparator()
-            continue
-        icon_name, text, cb, enabled = spec
-        action = QtWidgets.QAction(text, host_window)
-        icon = QtGui.QIcon.fromTheme(icon_name)
-        if not icon.isNull():
-            action.setIcon(icon)
-        action.setEnabled(enabled)
-        action.triggered.connect(cb)
-        toolbar.addAction(action)
-    host_window.addToolBar(QtCore.Qt.TopToolBarArea, toolbar)
-    _SWE2D_STUDIO_HOST_TOOLBAR = toolbar
-
-
-def _build_studio_menu(iface_obj, dlg, host_window):
-    """Add the HYDRA submenu under QGIS Plugins menu."""
-    global _SWE2D_STUDIO_HOST_MENU
-    menu_bar = host_window.menuBar()
-    if menu_bar is None:
-        return
-    plugins_menu = None
-    for action in menu_bar.actions():
-        menu = action.menu()
-        if menu is not None and str(menu.title()).replace("&", "").strip().lower() == "plugins":
-            plugins_menu = menu
-            break
-    if plugins_menu is None:
-        plugins_menu = menu_bar.addMenu("Plugins")
-    hydra_menu = plugins_menu.addMenu("HYDRA")
-    hydra_menu.setObjectName("HydraPluginMenu")
-    _SWE2D_STUDIO_HOST_MENU = hydra_menu
-
-    def add_action(text, cb, shortcut=None):
-        act = QtWidgets.QAction(text, host_window)
-        act.triggered.connect(cb)
-        if shortcut:
-            act.setShortcut(QtGui.QKeySequence(shortcut))
-        hydra_menu.addAction(act)
-        return act
-
-    add_action("Open Workbench", lambda: dlg.show())
-    hydra_menu.addSeparator()
-    recent_menu = hydra_menu.addMenu("Recent Model GeoPackages")
-
-    def _refresh_recent():
-        recent_menu.clear()
-        paths = list(getattr(dlg, "_recent_model_gpkgs", []))[:5]
-        for p in paths:
-            recent_menu.addAction(p, lambda path=p: dlg._mesh_controller.load_2d_model_geopackage(path_override=path))
-        if not paths:
-            no_item = recent_menu.addAction("(no recent files)")
-            no_item.setEnabled(False)
-
-    recent_menu.aboutToShow.connect(_refresh_recent)
-    hydra_menu.addSeparator()
-    add_action("Run Last Simulation", lambda: dlg._controller.on_run(), "Ctrl+R")
-    add_action("Batch Simulation…", lambda: dlg._open_batch_simulation_dialog(), "Ctrl+B")
-    add_action("Open Run Log", lambda: dlg._open_run_log_viewer())
-    add_action("Open GeoPackage Explorer", lambda: dlg._open_model_gpkg_explorer())
-    hydra_menu.addSeparator()
-    add_action("Export Current Results as GeoTIFF…", lambda: dlg._overlay_controller.export_high_perf_overlay_to_geotiff())
-    hydra_menu.addSeparator()
-    add_action("Settings…", lambda: dlg._open_workbench_settings())
-    add_action("Help → Documentation Hub", lambda: dlg._open_documentation_hub())
+    The HYDRA2DGPU toolbar and menu are owned by hydra_plugin.py, not the
+    workbench. The workbench only manages the view-mode combo corner widget.
+    """
+    pass
 
 
 def _install_studio_host_controls(
@@ -289,15 +176,6 @@ def _install_studio_host_controls(
             menu_bar.setCornerWidget(host_view_combo, QtCore.Qt.TopRightCorner)
     except Exception as e:
         logger_wb.warning("[ERROR] view combo to menuBar corner failed: %s", e)
-
-    try:
-        _build_studio_toolbar(iface_obj, dlg, host_window)
-    except Exception as e:
-        logger_wb.warning("[ERROR] toolbar install failed: %s", e)
-    try:
-        _build_studio_menu(iface_obj, dlg, host_window)
-    except Exception as e:
-        logger_wb.warning("[ERROR] menu install failed: %s", e)
 
 
 def launch_swe2d_workbench_studio(parent=None, iface=None, host_mode: str = "dock"):

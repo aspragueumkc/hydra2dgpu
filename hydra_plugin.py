@@ -7,7 +7,8 @@ import subprocess
 import sys
 import traceback
 import logging
-from qgis.PyQt import QtCore
+from qgis.PyQt import QtCore, QtGui
+from qgis.PyQt.QtGui import QKeySequence
 from qgis.PyQt.QtWidgets import (
     QAction,
     QApplication,
@@ -27,6 +28,7 @@ from qgis.PyQt.QtWidgets import (
     QVBoxLayout,
 )
 from qgis.PyQt.QtCore import Qt, QSettings
+
 from qgis.core import Qgis, QgsProject
 
 
@@ -357,16 +359,54 @@ class HydraQgisPlugin:
             menu.removeAction(legacy_inspector)
 
         self.main_menu_actions = []
-        for object_name, text, callback in action_specs:
-            action = QAction(text, self.iface.mainWindow())
-            action.setObjectName(object_name)
-            action.triggered.connect(callback)
-            menu.addAction(action)
-            self.main_menu_actions.append(action)
 
-        # DevTools submenu — only registered when the env var is set.
-        # When SWE2D_DEVTOOLS is unset, this is a no-op and the production
-        # menu looks identical to before.
+        # ── Persistent helper ───────────────────────────────────────────
+        def add_action(object_name, text, callback, shortcut=None):
+            act = QAction(text, self.iface.mainWindow())
+            act.setObjectName(object_name)
+            act.triggered.connect(callback)
+            if shortcut:
+                act.setShortcut(QKeySequence(shortcut))
+            menu.addAction(act)
+            self.main_menu_actions.append(act)
+            return act
+
+        # ── Top-level actions ───────────────────────────────────────────
+        for object_name, text, callback in action_specs:
+            add_action(object_name, text, callback)
+
+        menu.addSeparator()
+
+        # ── Recent Model GeoPackages (dynamically populated on open) ─────
+        self._recent_models_submenu = menu.addMenu("Recent Model GeoPackages")
+        self._recent_models_submenu.aboutToShow.connect(
+            self._refresh_recent_models_submenu
+        )
+        menu.addSeparator()
+
+        # ── Simulation & I/O actions ────────────────────────────────────
+        add_action('HYDRA2DMenuRunLastAction', 'Run Last Simulation',
+                   lambda: self._call_workbench('on_run'), 'Ctrl+R')
+        add_action('HYDRA2DMenuBatchSimAction', 'Batch Simulation…',
+                   lambda: self._call_workbench('open_batch_simulation_dialog'), 'Ctrl+B')
+        add_action('HYDRA2DMenuOpenRunLogAction', 'Open Run Log',
+                   lambda: self._call_workbench('open_run_log_viewer'))
+        add_action('HYDRA2DMenuOpenGpkgExplorerAction', 'Open GeoPackage Explorer',
+                   lambda: self._call_workbench('open_model_gpkg_explorer'))
+        menu.addSeparator()
+
+        # ── Results export ──────────────────────────────────────────────
+        add_action('HYDRA2DMenuExportGeoTIFFAction',
+                   'Export Current Results as GeoTIFF…',
+                   lambda: self._call_workbench('export_high_perf_overlay_to_geotiff'))
+        menu.addSeparator()
+
+        # ── Settings & Help ─────────────────────────────────────────────
+        # Settings is already added via action_specs above.
+        add_action('HYDRA2DMenuHelpAction', 'Help → Documentation Hub',
+                   lambda: self._call_workbench('open_documentation_hub'))
+
+        # ── DevTools submenu — only when SWE2D_DEVTOOLS is set ─────────
         try:
             from swe2d.workbench.devtools.menu import build_devtools_menu
             plugin_root = os.path.dirname(os.path.abspath(__file__))
@@ -382,6 +422,102 @@ class HydraQgisPlugin:
                 "[hydra_plugin] devtools menu setup failed: %s", _exc
             )
 
+    def _call_workbench(self, method_name: str):
+        """Call a method on the active workbench dialog, if one is open."""
+        try:
+            from swe2d.workbench.studio_dialog import _studio_active_dialog
+            dlg = _studio_active_dialog
+            if dlg is None:
+                self.iface.messageBar().pushMessage(
+                    'HYDRA2DGPU', 'Open the workbench panel first.', level=Qgis.Warning
+                )
+                return
+            method = getattr(dlg, method_name, None)
+            if method is None:
+                return
+            method()
+        except Exception as e:
+            logging.getLogger(__name__).warning(
+                "[hydra_plugin] _call_workbench(%r) failed: %s", method_name, e
+            )
+
+    def _refresh_recent_models_submenu(self):
+        """Populate the Recent Model GeoPackages submenu from the workbench state."""
+        submenu = getattr(self, '_recent_models_submenu', None)
+        if submenu is None:
+            return
+        submenu.clear()
+        try:
+            from swe2d.workbench.studio_dialog import _studio_active_dialog
+            dlg = _studio_active_dialog
+            paths = list(getattr(dlg, '_recent_model_gpkgs', []) or [])[:5]
+        except Exception:
+            paths = []
+        if paths:
+            for p in paths:
+                submenu.addAction(
+                    os.path.basename(p),
+                    lambda path=p: self._call_workbench_with_path(
+                        'load_2d_model_geopackage', path
+                    ),
+                )
+        else:
+            no_item = submenu.addAction('(no recent files)')
+            no_item.setEnabled(False)
+
+    def _call_workbench_with_path(self, method_name: str, path: str):
+        """Call a method on the active workbench passing a path argument."""
+        try:
+            from swe2d.workbench.studio_dialog import _studio_active_dialog
+            dlg = _studio_active_dialog
+            if dlg is None:
+                return
+            method = getattr(dlg._mesh_controller, method_name, None)
+            if method is not None:
+                method(path_override=path)
+        except Exception as e:
+            logging.getLogger(__name__).warning(
+                "[hydra_plugin] _call_workbench_with_path(%r, %r) failed: %s",
+                method_name, path, e
+            )
+
+    def _remove_hydra_submenu_items(self):
+        """Remove previously installed HYDRA submenu actions from the main menu."""
+        menu = getattr(self, 'main_menu', None)
+        if menu is None:
+            return
+        for act in list(menu.actions()):
+            obj_name = act.objectName()
+            if obj_name in (
+                'HYDRA2DMenuRunLastAction',
+                'HYDRA2DMenuBatchSimAction',
+                'HYDRA2DMenuOpenRunLogAction',
+                'HYDRA2DMenuOpenGpkgExplorerAction',
+                'HYDRA2DMenuExportGeoTIFFAction',
+                'HYDRA2DMenuHelpAction',
+            ):
+                try:
+                    act.triggered.disconnect()
+                except (TypeError, RuntimeError):
+                    pass
+                menu.removeAction(act)
+                act.deleteLater()
+                try:
+                    self.main_menu_actions.remove(act)
+                except ValueError:
+                    pass
+
+    def _remove_devtools_submenu(self):
+        """Remove the DevTools submenu from the main menu."""
+        submenu = getattr(self, '_devtools_submenu', None)
+        if submenu is None:
+            return
+        menu = getattr(self, 'main_menu', None)
+        if menu is not None:
+            menu.removeAction(submenu.menuAction())
+        submenu.deleteLater()
+        self._devtools_submenu = None
+
     def open_settings(self):
         """Open the HYDRA2DGPU Settings dialog."""
         dlg = HYDRASettingsDialog(self.iface.mainWindow())
@@ -396,6 +532,22 @@ class HydraQgisPlugin:
         menu = self.main_menu
         if menu is None:
             return
+
+        # Clean up the dynamically-populated recent models submenu.
+        recent_submenu = getattr(self, '_recent_models_submenu', None)
+        if recent_submenu is not None:
+            try:
+                recent_submenu.aboutToShow.disconnect(self._refresh_recent_models_submenu)
+            except (TypeError, RuntimeError):
+                pass
+            menu.removeAction(recent_submenu.menuAction())
+            recent_submenu.deleteLater()
+            self._recent_models_submenu = None
+
+        # Clean up the DevTools submenu.
+        self._remove_devtools_submenu()
+
+        # Remove all tracked menu actions.
         for action in list(self.main_menu_actions):
             try:
                 action.triggered.disconnect()
@@ -410,6 +562,7 @@ class HydraQgisPlugin:
             except (RuntimeError, AttributeError):
                 pass
         self.main_menu_actions = []
+
         if self._owns_main_menu:
             try:
                 menu_bar = self._menu_bar()

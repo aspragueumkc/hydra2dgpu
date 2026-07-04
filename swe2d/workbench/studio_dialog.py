@@ -1673,10 +1673,10 @@ class SWE2DWorkbenchStudioDialog(QtWidgets.QDialog):
         return 3600.0 * hrs
 
     def _collect_boundary_arrays(self):
-        """Collect boundary condition arrays from the map view."""
+        """Collect boundary condition arrays from the model tab view."""
         from swe2d.boundary_and_forcing.boundary_runtime_logic import collect_boundary_arrays as _logic
         default_bc_type = 0
-        default_bc_combo = getattr(self._map_tab_view, "default_bc_type_combo", None)
+        default_bc_combo = getattr(self._model_tab_view, "default_bc_type_combo", None)
         if default_bc_combo is not None:
             default_bc_type = int(default_bc_combo.currentData())
         return _logic(
@@ -1973,8 +1973,8 @@ class SWE2DWorkbenchStudioDialog(QtWidgets.QDialog):
         """Distribute total flow BC values to unit discharge per edge."""
         from swe2d.boundary_and_forcing.bc_logic import distribute_total_flow_to_unit_q as _logic
         from swe2d.boundary_and_forcing.bc_logic import _bc_side_classification
-        progressive = bool(getattr(self._map_tab_view, "inflow_progressive_chk", None) is not None
-                          and self._map_tab_view.inflow_progressive_chk.isChecked())
+        progressive = bool(getattr(self._model_tab_view, "inflow_progressive_chk", None) is not None
+                          and self._model_tab_view.inflow_progressive_chk.isChecked())
         if edge_groups is None:
             eg = getattr(self, "_cached_edge_groups", None)
             if eg is not None:
@@ -2532,7 +2532,7 @@ class SWE2DWorkbenchStudioDialog(QtWidgets.QDialog):
             **self.model_tab.collect_params(),
             **self.run_dock.collect_params(),
             **self.results_toolbox.collect_storage_params(),
-            "inflow_progressive_chk": bool(self._map_tab_view.inflow_progressive_chk.isChecked()),
+            "inflow_progressive_chk": bool(self._model_tab_view.inflow_progressive_chk.isChecked()),
         }
 
     def _log_exception(self, context: str, exc: Exception) -> None:

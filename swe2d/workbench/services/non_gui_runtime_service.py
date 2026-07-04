@@ -418,7 +418,7 @@ def execute_run_timestep_loop(
 
     def _make_uniform_velocity_cb() -> Optional[Callable[..., np.ndarray]]:
         """make uniform velocity cb."""
-        if not hasattr(wb, "uniform_inflow_velocity_chk"):
+        if not hasattr(wb._model_tab_view, "uniform_inflow_velocity_chk"):
             return None
         try:
             if not uniform_inflow_velocity:

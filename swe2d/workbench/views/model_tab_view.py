@@ -278,6 +278,40 @@ class ModelTabView(QtWidgets.QWidget):
 
         form.addRow(HintLabel("Adaptive dt uses the CFL condition each step."))
 
+        # -- Boundary Conditions --
+        form = self._start_param_group(param_form, "Boundary Conditions")
+        self.default_bc_type_combo = QtWidgets.QComboBox()
+        self.default_bc_type_combo.setObjectName("default_bc_type_combo")
+        self.default_bc_type_combo.setToolTip(
+            "Default boundary condition type for all BC line segments. "
+            "Per-segment overrides can be set via the BC layer attributes. "
+            "Options: Wall (no flux), Inflow Q (discharge), Stage (WSE), "
+            "Normal Depth, Timeseries Flow/Stage, Open (zero-gradient), or Reflecting."
+        )
+        from swe2d.workbench.views.map_tab_view import _BC_OPTIONS
+        for label, code in _BC_OPTIONS:
+            self.default_bc_type_combo.addItem(label, code)
+        self.default_bc_type_combo.setCurrentIndex(2)
+        self._add_param_row(form, "Default BC type:", self.default_bc_type_combo)
+
+        self.inflow_progressive_chk = QtWidgets.QCheckBox("Inflow progressive")
+        self.inflow_progressive_chk.setObjectName("inflow_progressive_chk")
+        self.inflow_progressive_chk.setToolTip(
+            "When checked, inflow is ramped up gradually at the start of the simulation "
+            "to avoid numerical shock from a sudden full-discharge boundary."
+        )
+        self.inflow_progressive_chk.setChecked(False)
+        self._add_param_row(form, "", self.inflow_progressive_chk)
+
+        self.uniform_inflow_velocity_chk = QtWidgets.QCheckBox("Uniform inflow velocity")
+        self.uniform_inflow_velocity_chk.setObjectName("uniform_inflow_velocity_chk")
+        self.uniform_inflow_velocity_chk.setToolTip(
+            "When checked, inflow boundary cells receive a uniform velocity profile. "
+            "Leave unchecked for a more realistic parabolic (shear) velocity distribution."
+        )
+        self.uniform_inflow_velocity_chk.setChecked(False)
+        self._add_param_row(form, "", self.uniform_inflow_velocity_chk)
+
         # -- Physics & Friction --
         form = self._start_param_group(param_form, "Physics & Friction")
         self.n_mann_spin = QtWidgets.QDoubleSpinBox()
@@ -1131,6 +1165,18 @@ class ModelTabView(QtWidgets.QWidget):
     def get_drainage_implicit_relax(self) -> float:
         """Relaxation factor for implicit drainage on GPU."""
         return float(self.drainage_implicit_relax_spin.value())
+
+    def is_inflow_progressive(self) -> bool:
+        """Inflow progressive activation checkbox."""
+        return bool(self.inflow_progressive_chk.isChecked())
+
+    def get_inflow_progressive_chk(self):
+        """Inflow progressive checkbox widget."""
+        return self.inflow_progressive_chk
+
+    def get_default_bc_type(self) -> int:
+        """Default boundary condition type code."""
+        return int(self.default_bc_type_combo.currentData())
 
     def collect_params(self) -> dict:
         """Return all model parameter values as a flat dict.

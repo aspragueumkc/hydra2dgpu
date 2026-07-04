@@ -424,7 +424,7 @@ class TestModelTabView(unittest.TestCase):
         page = view.findChild(QWidget, "model_solver_page")
         groups = page.findChildren(QGroupBox)
         titles = {g.title() for g in groups}
-        for expected in ("Time Stepping", "Physics & Friction", "Initial Conditions", "Run Duration"):
+        for expected in ("Time Stepping", "Boundary Conditions", "Physics & Friction", "Initial Conditions", "Run Duration"):
             self.assertIn(expected, titles)
 
     def test_stability_page_has_group_boxes(self):
@@ -504,6 +504,47 @@ class TestModelTabView(unittest.TestCase):
         for attr in ("run_btn", "cancel_btn", "progress_bar", "batch_sim_btn", "snapshot_btn"):
             with self.subTest(attr=attr):
                 self.assertFalse(hasattr(view, attr), f"Orphan attribute should be deleted: {attr}")
+
+    def test_view_has_default_bc_type_combo(self):
+        """Boundary conditions group moved from Map tab to Solver Parameters page."""
+        view = self._make_view()
+        self.assertIsInstance(view.default_bc_type_combo, QComboBox)
+        self.assertEqual(view.default_bc_type_combo.objectName(), "default_bc_type_combo")
+        # Verify it has BC options
+        self.assertGreater(view.default_bc_type_combo.count(), 0)
+
+    def test_view_has_inflow_progressive_chk(self):
+        """Boundary conditions group moved from Map tab to Solver Parameters page."""
+        view = self._make_view()
+        self.assertIsInstance(view.inflow_progressive_chk, QCheckBox)
+        self.assertEqual(view.inflow_progressive_chk.objectName(), "inflow_progressive_chk")
+
+    def test_view_has_uniform_inflow_velocity_chk(self):
+        """Boundary conditions group moved from Map tab to Solver Parameters page."""
+        view = self._make_view()
+        self.assertIsInstance(view.uniform_inflow_velocity_chk, QCheckBox)
+        self.assertEqual(view.uniform_inflow_velocity_chk.objectName(), "uniform_inflow_velocity_chk")
+
+    def test_solver_page_boundary_conditions_group_exists(self):
+        """Boundary Conditions group is in Solver Parameters page after Time Stepping."""
+        view = self._make_view()
+        page = view.findChild(QWidget, "model_solver_page")
+        groups = page.findChildren(QGroupBox)
+        titles = {g.title() for g in groups}
+        self.assertIn("Boundary Conditions", titles)
+
+    def test_boundary_conditions_methods(self):
+        """View protocol methods for BC widgets are implemented."""
+        view = self._make_view()
+        # is_inflow_progressive
+        self.assertTrue(callable(view.is_inflow_progressive))
+        self.assertIsInstance(view.is_inflow_progressive(), bool)
+        # get_inflow_progressive_chk
+        self.assertTrue(callable(view.get_inflow_progressive_chk))
+        self.assertIs(view.get_inflow_progressive_chk(), view.inflow_progressive_chk)
+        # get_default_bc_type
+        self.assertTrue(callable(view.get_default_bc_type))
+        self.assertIsInstance(view.get_default_bc_type(), int)
 
 
 if __name__ == "__main__":

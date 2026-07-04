@@ -293,41 +293,6 @@ class MapTabView(QtWidgets.QWidget):
             "Open a GeoPackage and load a mesh from it."
         )
 
-        # Boundary condition controls
-        sep = QtWidgets.QLabel("<b>Boundary Conditions</b>")
-        actions_layout.addRow(sep)
-
-        self.default_bc_type_combo = QtWidgets.QComboBox()
-        self.default_bc_type_combo.setObjectName("default_bc_type_combo")
-        self.default_bc_type_combo.setToolTip(
-            "Default boundary condition type for all BC line segments. "
-            "Per-segment overrides can be set via the BC layer attributes. "
-            "Options: Wall (no flux), Inflow Q (discharge), Stage (WSE), "
-            "Normal Depth, Timeseries Flow/Stage, Open (zero-gradient), or Reflecting."
-        )
-        for label, code in _BC_OPTIONS:
-            self.default_bc_type_combo.addItem(label, code)
-        self.default_bc_type_combo.setCurrentIndex(2)
-        actions_layout.addRow("Default BC type:", self.default_bc_type_combo)
-
-        self.inflow_progressive_chk = QtWidgets.QCheckBox("Inflow progressive")
-        self.inflow_progressive_chk.setObjectName("inflow_progressive_chk")
-        self.inflow_progressive_chk.setToolTip(
-            "When checked, inflow is ramped up gradually at the start of the simulation "
-            "to avoid numerical shock from a sudden full-discharge boundary."
-        )
-        self.inflow_progressive_chk.setChecked(False)
-        actions_layout.addRow(self.inflow_progressive_chk)
-
-        self.uniform_inflow_velocity_chk = QtWidgets.QCheckBox("Uniform inflow velocity")
-        self.uniform_inflow_velocity_chk.setObjectName("uniform_inflow_velocity_chk")
-        self.uniform_inflow_velocity_chk.setToolTip(
-            "When checked, inflow boundary cells receive a uniform velocity profile. "
-            "Leave unchecked for a more realistic parabolic (shear) velocity distribution."
-        )
-        self.uniform_inflow_velocity_chk.setChecked(False)
-        actions_layout.addRow(self.uniform_inflow_velocity_chk)
-
         actions_layout.addItem(
             QtWidgets.QSpacerItem(
                 0, 0,
@@ -379,15 +344,7 @@ class MapTabView(QtWidgets.QWidget):
 
         toolbox.addItem(page, "Utilities")
 
-    def is_inflow_progressive(self) -> bool:
-        """Inflow progressive activation checkbox."""
-        return bool(self.inflow_progressive_chk.isChecked())
-
     def set_layer_status_text(self, text: str) -> None:
         """Update the status label for the active layer."""
         self.layer_status_lbl.setText(text)
-
-    def get_inflow_progressive_chk(self):
-        """Inflow progressive checkbox widget."""
-        return self.inflow_progressive_chk
 

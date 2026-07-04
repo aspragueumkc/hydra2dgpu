@@ -273,46 +273,32 @@ class TestStudioHostToolbarMenu(unittest.TestCase):
         dlg._recent_model_gpkgs = []
         return dlg
 
-    def test_build_studio_toolbar_creates_hydra_toolbar(self):
-        from qgis.PyQt import QtWidgets
-        from swe2d.workbench.views.studio_host_methods import _build_studio_toolbar
-        host = QtWidgets.QMainWindow()
-        dlg = self._make_mock_dialog()
-        _build_studio_toolbar(None, dlg, host)
-        toolbar = host.findChild(QtWidgets.QToolBar, "HydraRunToolbar")
-        self.assertIsNotNone(toolbar)
-        self.assertGreaterEqual(len(toolbar.actions()), 3)
-
-    def test_build_studio_menu_creates_hydra_menu(self):
-        from qgis.PyQt import QtWidgets
-        from swe2d.workbench.views.studio_host_methods import _build_studio_menu
-        host = QtWidgets.QMainWindow()
-        dlg = self._make_mock_dialog()
-        _build_studio_menu(None, dlg, host)
-        menu = host.findChild(QtWidgets.QMenu, "HydraPluginMenu")
-        self.assertIsNotNone(menu)
-        self.assertGreaterEqual(len(menu.actions()), 3)
-
-    def test_clear_studio_host_controls_removes_toolbar_and_menu(self):
-        from qgis.PyQt import QtWidgets
-        from swe2d.workbench.views import studio_host_methods
+    def test_install_studio_host_controls_sets_view_combo_corner_widget(self):
+        """The view-mode combo is placed in the menu bar's top-right corner."""
+        from qgis.PyQt import QtCore, QtWidgets
         from swe2d.workbench.views.studio_host_methods import (
-            _build_studio_toolbar,
-            _build_studio_menu,
+            _install_studio_host_controls,
+        )
+        host = QtWidgets.QMainWindow()
+        host.menuBar()  # ensure menuBar is created
+        dlg = self._make_mock_dialog()
+        dlg.view_mode_combo = QtWidgets.QComboBox()
+        _install_studio_host_controls(None, dlg, host)
+        corner = host.menuBar().cornerWidget()
+        self.assertIsNotNone(corner)
+        self.assertIsInstance(corner, QtWidgets.QComboBox)
+
+    def test_clear_studio_host_controls_is_idempotent_noop(self):
+        """_clear_studio_host_controls is a no-op — toolbar and HYDRA menu
+        are owned by hydra_plugin, not the workbench."""
+        from qgis.PyQt import QtWidgets
+        from swe2d.workbench.views.studio_host_methods import (
             _clear_studio_host_controls,
         )
         host = QtWidgets.QMainWindow()
-        dlg = self._make_mock_dialog()
-        _build_studio_toolbar(None, dlg, host)
-        _build_studio_menu(None, dlg, host)
-        self.assertIsNotNone(studio_host_methods._SWE2D_STUDIO_HOST_TOOLBAR)
-        self.assertIsNotNone(studio_host_methods._SWE2D_STUDIO_HOST_MENU)
+        host.menuBar()
+        # Must not raise.
         _clear_studio_host_controls(None, host)
-        QtWidgets.QApplication.processEvents()
-        self.assertIsNone(studio_host_methods._SWE2D_STUDIO_HOST_TOOLBAR)
-        self.assertIsNone(studio_host_methods._SWE2D_STUDIO_HOST_MENU)
-        self.assertIsNone(host.findChild(QtWidgets.QToolBar, "HydraRunToolbar"))
-        self.assertIsNone(host.findChild(QtWidgets.QMenu, "HydraPluginMenu"))
 
 
 # ═══════════════════════════════════════════════════════════════════════════

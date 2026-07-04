@@ -74,6 +74,15 @@ class ModelTabViewProtocol(Protocol):
     def collect_params(self) -> Dict[str, Any]:
         """Return all model parameter values as a flat dict."""
 
+    def is_inflow_progressive(self) -> bool:
+        """Inflow progressive activation checkbox."""
+
+    def get_inflow_progressive_chk(self) -> Optional[QtWidgets.QCheckBox]:
+        """Inflow progressive checkbox widget."""
+
+    def get_default_bc_type(self) -> int:
+        """Default boundary condition type code."""
+
 
 class ResultsToolboxProtocol(Protocol):
     """Typed access to results toolbox public interface."""
@@ -112,14 +121,8 @@ class ResultsToolboxProtocol(Protocol):
 class MapTabViewProtocol(Protocol):
     """Typed access to Map tab widgets."""
 
-    def is_inflow_progressive(self) -> bool:
-        """Inflow progressive activation checkbox."""
-
     def set_layer_status_text(self, text: str) -> None:
         """Update the status label for the active layer."""
-
-    def get_inflow_progressive_chk(self) -> Optional[QtWidgets.QCheckBox]:
-        """Inflow progressive checkbox widget."""
 
 
 class RunDockProtocol(Protocol):
