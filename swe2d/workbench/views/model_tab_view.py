@@ -13,9 +13,11 @@ objectName so existing binding code (e.g. ``findChild``) keeps working.
 """
 from __future__ import annotations
 
-from typing import Dict, List, Tuple
+from typing import List
 
 from qgis.PyQt import QtWidgets
+
+from swe2d.workbench.views.widget_filter_helper import FilterableRowRegistry
 
 
 class HintLabel(QtWidgets.QLabel):
@@ -91,7 +93,12 @@ class ModelTabView(QtWidgets.QWidget):
         root_layout.setSpacing(0)
 
         self._param_groups: List[QtWidgets.QGroupBox] = []
-        self._param_rows: List[Tuple[QtWidgets.QGroupBox, QtWidgets.QLabel, QtWidgets.QWidget, bool]] = []
+        # Filter registry — every widget that should respond to the
+        # param_search / show_advanced_chk controls is registered via
+        # _add_param_row or directly via _filterable.add(...). This
+        # includes the Output-page widgets registered in
+        # _build_output_page().
+        self._filterable: FilterableRowRegistry = FilterableRowRegistry()
 
         filter_bar = QtWidgets.QHBoxLayout()
         self.param_search = QtWidgets.QLineEdit()
@@ -193,27 +200,25 @@ class ModelTabView(QtWidgets.QWidget):
         label = QtWidgets.QLabel(label_text)
         group_layout.addRow(label, widget)
         group = group_layout.parentWidget()
-        self._param_rows.append((group, label, widget, advanced))
+        # Register via the shared registry so this row participates in
+        # the param_search/show_advanced filter alongside the Output page.
+        self._filterable.add(
+            widget,
+            label_widget=label,
+            label_text=label_text,
+            tooltip=widget.toolTip() or "",
+            group=group if isinstance(group, QtWidgets.QGroupBox) else None,
+            advanced=advanced,
+        )
         if advanced:
-            widget.setProperty("advanced", True)
             label.setProperty("advanced", True)
 
     def _filter_model_tab(self, _value=None) -> None:
         """Show/hide parameter rows based on search text and advanced toggle."""
-        text = self.param_search.text().lower().strip()
-        show_advanced = self.show_advanced_chk.isChecked()
-        group_visibility: Dict[QtWidgets.QGroupBox, bool] = {}
-        for group, label, widget, advanced in self._param_rows:
-            label_text = label.text().lower()
-            tooltip = (widget.toolTip() or "").lower()
-            obj_name = widget.objectName().lower()
-            matches = (not text) or (text in label_text) or (text in tooltip) or (text in obj_name)
-            visible = matches and (show_advanced or not advanced)
-            label.setVisible(visible)
-            widget.setVisible(visible)
-            group_visibility[group] = group_visibility.get(group, False) or visible
-        for group, visible in group_visibility.items():
-            group.setVisible(visible)
+        self._filterable.apply_filter(
+            self.param_search.text(),
+            show_advanced=self.show_advanced_chk.isChecked(),
+        )
 
     def _build_run_page_widgets(
         self, run_page: QtWidgets.QWidget, run_page_layout: QtWidgets.QVBoxLayout
@@ -232,11 +237,31 @@ class ModelTabView(QtWidgets.QWidget):
         ResultsToolbox. Public accessors and ``collect_storage_params``
         mirror the old ResultsToolbox API so existing call sites keep
         working without changes.
+
+        Every checkbox is registered with ``self._filterable`` so the
+        Simulation-tab search box (``param_search``) filters the Output
+        page alongside the other parameter pages. To add a new
+        filterable widget, follow the same registration pattern below.
         """
         self.model_output_page = QtWidgets.QWidget()
         self.model_output_page.setObjectName("model_output_page")
         layout = QtWidgets.QFormLayout(self.model_output_page)
         layout.setContentsMargins(6, 6, 6, 6)
+
+        # Helper to keep the registration boilerplate colocated — every
+        # checkbox goes through this so it's impossible to add a
+        # widget and forget to wire it to the filter.
+        def _add_output_checkbox(chk: QtWidgets.QCheckBox) -> None:
+            layout.addRow(chk)
+            # No companion QLabel — the checkbox is self-describing
+            # (its ``text()`` is the human label).
+            self._filterable.add(
+                chk,
+                label_widget=None,
+                label_text=chk.text() or "",
+                tooltip=chk.toolTip() or "",
+                group=None,  # Output page is flat (no QGroupBox)
+            )
 
         self.extended_outputs_chk = QtWidgets.QCheckBox(
             "Include extended outputs (momentum, qmag, wet mask, Fr, Manning)"
@@ -247,7 +272,7 @@ class ModelTabView(QtWidgets.QWidget):
         )
         self.extended_outputs_chk.setObjectName("extended_outputs_chk")
         self.extended_outputs_chk.setChecked(True)
-        layout.addRow(self.extended_outputs_chk)
+        _add_output_checkbox(self.extended_outputs_chk)
 
         self.save_mesh_chk = QtWidgets.QCheckBox("Save mesh results to GPKG")
         self.save_mesh_chk.setToolTip(
@@ -255,7 +280,7 @@ class ModelTabView(QtWidgets.QWidget):
         )
         self.save_mesh_chk.setObjectName("save_mesh_chk")
         self.save_mesh_chk.setChecked(True)
-        layout.addRow(self.save_mesh_chk)
+        _add_output_checkbox(self.save_mesh_chk)
 
         self.save_line_chk = QtWidgets.QCheckBox("Save line results to GPKG")
         self.save_line_chk.setToolTip(
@@ -263,7 +288,7 @@ class ModelTabView(QtWidgets.QWidget):
         )
         self.save_line_chk.setObjectName("save_line_chk")
         self.save_line_chk.setChecked(True)
-        layout.addRow(self.save_line_chk)
+        _add_output_checkbox(self.save_line_chk)
 
         self.save_coupling_chk = QtWidgets.QCheckBox("Save coupling results to GPKG")
         self.save_coupling_chk.setToolTip(
@@ -271,7 +296,7 @@ class ModelTabView(QtWidgets.QWidget):
         )
         self.save_coupling_chk.setObjectName("save_coupling_chk")
         self.save_coupling_chk.setChecked(True)
-        layout.addRow(self.save_coupling_chk)
+        _add_output_checkbox(self.save_coupling_chk)
 
         self.save_max_only_chk = QtWidgets.QCheckBox(
             "Save max results only (skip interval snapshots)"
@@ -282,7 +307,7 @@ class ModelTabView(QtWidgets.QWidget):
         )
         self.save_max_only_chk.setObjectName("save_max_only_chk")
         self.save_max_only_chk.setChecked(False)
-        layout.addRow(self.save_max_only_chk)
+        _add_output_checkbox(self.save_max_only_chk)
 
         self.save_log_chk = QtWidgets.QCheckBox("Save run log to GPKG")
         self.save_log_chk.setToolTip(
@@ -290,7 +315,7 @@ class ModelTabView(QtWidgets.QWidget):
         )
         self.save_log_chk.setObjectName("save_log_chk")
         self.save_log_chk.setChecked(True)
-        layout.addRow(self.save_log_chk)
+        _add_output_checkbox(self.save_log_chk)
 
     def is_extended_outputs(self) -> bool:
         return bool(self.extended_outputs_chk.isChecked())
