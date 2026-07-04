@@ -105,13 +105,13 @@ def install_workbench_main_menu(dlg, iface) -> Optional[QtWidgets.QMenu]:
     add_action(
         "HYDRA2DMenuRunLastAction",
         "Run Last Simulation",
-        lambda: dlg._run_controller.on_run(),
+        lambda: dlg._controller.on_run(),
         "Ctrl+R",
     )
     add_action(
         "HYDRA2DMenuBatchSimAction",
         "Batch Simulation…",
-        lambda: dlg._run_controller.open_batch_simulation_dialog(),
+        lambda: dlg._controller.open_batch_simulation_dialog(),
         "Ctrl+B",
     )
     add_action(
