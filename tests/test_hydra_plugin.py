@@ -168,6 +168,35 @@ class TestHydraPluginOpenPanelAction(unittest.TestCase):
         plugin._restore_qt_quit_behavior()
         self.assertFalse(plugin._qt_quit_hardened)
 
+    def test_on_project_read_restarts_active_workbench(self):
+        """When a QGIS project is read and the workbench is active, the
+        workbench must be torn down and re-launched so the new project's
+        persisted widget values are discovered from a clean state."""
+        from hydra_plugin import HydraQgisPlugin
+        plugin = HydraQgisPlugin(self._iface)
+
+        with patch("swe2d.workbench.views.studio_host_methods.launch_swe2d_workbench_studio") as mock_launch, \
+             patch("swe2d.workbench.views.studio_host_methods._remove_workbench_studio_dock") as mock_remove, \
+             patch("swe2d.workbench.views.studio_host_methods._studio_active_dialog", new=MagicMock()) as _:
+            plugin._restart_workbench_for_project()
+            mock_remove.assert_called_once()
+            mock_launch.assert_called_once()
+            _, kwargs = mock_launch.call_args
+            self.assertEqual(kwargs.get("host_mode"), "dock")
+
+    def test_on_project_read_noop_when_workbench_inactive(self):
+        """If the workbench is not active, _on_project_read does NOT
+        auto-open it — only an open workbench gets restarted."""
+        from hydra_plugin import HydraQgisPlugin
+        plugin = HydraQgisPlugin(self._iface)
+
+        with patch("swe2d.workbench.views.studio_host_methods.launch_swe2d_workbench_studio") as mock_launch, \
+             patch("swe2d.workbench.views.studio_host_methods._remove_workbench_studio_dock") as mock_remove, \
+             patch("swe2d.workbench.views.studio_host_methods._studio_active_dialog", new=None):
+            plugin._restart_workbench_for_project()
+            mock_remove.assert_not_called()
+            mock_launch.assert_not_called()
+
 
 class TestHydraPluginImports(unittest.TestCase):
     """Verify module-level symbols import correctly."""

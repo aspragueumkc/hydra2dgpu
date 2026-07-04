@@ -273,15 +273,71 @@ class HydraQgisPlugin:
             )
 
     def _on_project_read(self):
-        """Restore workbench state when a QGIS project is loaded."""
+        """Restart the workbench when a QGIS project is loaded.
+
+        Reloading a project means the persisted widget values stored in
+        the new project may differ from what the live workbench dialog
+        currently shows. A full tear-down + re-launch guarantees that
+        ``launch_swe2d_workbench_studio`` calls
+        ``_restore_project_workbench_state()`` on a freshly-built UI,
+        so every persistable widget reads its value from the new project
+        without being shadowed by stale in-memory state.
+
+        Uses ``QTimer.singleShot(0, ...)`` to defer the restart until
+        the current event loop tick finishes — calling
+        ``_remove_workbench_studio_dock`` from inside the readProject
+        signal handler can race with QGIS dock bookkeeping.
+        """
+        from qgis.PyQt.QtCore import QTimer
+        QTimer.singleShot(0, self._restart_workbench_for_project)
+
+    def _restart_workbench_for_project(self):
+        """Tear down and re-launch the workbench dock."""
         try:
-            from swe2d.workbench.views.studio_host_methods import _studio_active_dialog
-            if _studio_active_dialog is not None:
-                _studio_active_dialog._restore_project_workbench_state()
-                _studio_active_dialog._workbench_state_restored_on_show = True
-                _studio_active_dialog._layer_controller.refresh_layer_combos()
+            from swe2d.workbench.views.studio_host_methods import (
+                _studio_active_dialog,
+                _remove_workbench_studio_dock,
+                launch_swe2d_workbench_studio,
+            )
         except Exception as e:
-            logging.getLogger(__name__).warning("Project read handler failed: %s", e)
+            logging.getLogger(__name__).warning(
+                "Project read: studio_host_methods import failed: %s", e
+            )
+            return
+
+        iface = getattr(self, "iface", None)
+
+        # Tear down the existing workbench instance so the relaunch
+        # reads the new project's persisted widget values from a clean
+        # state. If nothing is active, the relaunch path is a no-op
+        # (creates a fresh workbench) — but we still skip that because
+        # the user didn't ask to auto-open the workbench on project load.
+        if _studio_active_dialog is None:
+            return
+
+        try:
+            _remove_workbench_studio_dock(iface, dlg=_studio_active_dialog)
+        except Exception as e:
+            logging.getLogger(__name__).warning(
+                "Project read: workbench dock removal failed: %s", e
+            )
+
+        # launch_swe2d_workbench_studio clears _studio_active_dialog
+        # via _remove_workbench_studio_dock on its own path; mirror that
+        # here so a follow-up launch inside this restart sees a clean slate.
+        import swe2d.workbench.views.studio_host_methods as _shm
+        _shm._studio_active_dialog = None
+
+        try:
+            launch_swe2d_workbench_studio(
+                parent=self.iface.mainWindow() if self.iface is not None else None,
+                iface=iface,
+                host_mode="dock",
+            )
+        except Exception as e:
+            logging.getLogger(__name__).warning(
+                "Project read: workbench relaunch failed: %s", e
+            )
 
     def _menu_bar(self):
         try:
