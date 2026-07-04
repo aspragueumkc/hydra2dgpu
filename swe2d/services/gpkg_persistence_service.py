@@ -922,6 +922,9 @@ def load_baked_line_timeseries(
     # Live data path
     if not isinstance(source, str):
         d = source
+        # Only return live data for the run that owns it.
+        if getattr(d, '_live_run_id', '') != run_id:
+            return {}
         if hasattr(d, '_live_line_ts') and line_id in d._live_line_ts:
             raw = d._live_line_ts[line_id]
             # t_s comes from _live_times (mesh snapshot timesteps); other fields
@@ -1007,6 +1010,10 @@ def load_baked_line_profile(
     # Live data path
     if not isinstance(source, str):
         d = source
+        # Only return live data for the run that owns it.
+        # Other runs fall through to GPKG.
+        if getattr(d, '_live_run_id', '') != run_id:
+            return {}
         # Structured live storage populated by SWE2DResultsData.populate_live_line_metrics
         raw = getattr(d, '_live_line_profile', {}).get(line_id)
         if isinstance(raw, dict):
