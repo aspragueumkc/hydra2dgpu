@@ -49,4 +49,6 @@ class LayerController:
             combo = v.get_topo_combo(attr)
             if combo is not None:
                 v.populate_layer_combo(attr, layers)
+        # Elevation combo accepts raster + PointZ layers only.
+        v.populate_elevation_combo(layers)
 

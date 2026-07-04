@@ -57,6 +57,9 @@ class LayerView(Protocol):
     def populate_layer_combo(self, combo_attr: str, layers: List, layer_type_hint: str = "") -> None:
         """Fill a combo by attribute name with layers, preserving current selection."""
         ...
+    def populate_elevation_combo(self, layers: List) -> None:
+        """Fill the topology elevation combo with raster + PointZ layers."""
+        ...
     def get_combo_current_text(self, combo_attr: str) -> str:
         """Get the current display text of a combo by attribute name."""
         ...
@@ -65,6 +68,9 @@ class LayerView(Protocol):
         ...
     def get_topo_combo(self, attr: str) -> Any:
         """Get a topology tab combo by attribute name, or None."""
+        ...
+    def get_topo_elevation_layer_id(self) -> Optional[str]:
+        """Return the layer ID of the topology elevation source, or None."""
         ...
 
 
@@ -87,6 +93,10 @@ class MeshView(Protocol):
 
     def set_layer_status_text(self, text: str) -> None:
         """Update the status label for the active layer."""
+
+    def get_topo_elevation_layer_id(self) -> Optional[str]:
+        """Return the layer ID of the topology elevation source, or None."""
+        ...
 
     def set_results_gpkg_path(self, path: str) -> None:
         """Set the GeoPackage results file path."""

@@ -89,6 +89,14 @@ class MeshController:
             return
 
         view._mesh_data = extracted
+
+        # Auto-assign node_z from the topology elevation source, if one is
+        # selected. Selecting "(none)" (layer_id=None) skips this.
+        try:
+            self._auto_assign_node_z_from_elevation_source(extracted)
+        except Exception as exc:
+            view._log(f"[WARNING] Auto-assign node_z failed: {exc}")
+
         view._reset_runtime_snapshot_overlay_cache("mesh imported from selected layers")
         n_faces = int(max(0, extracted.get("cell_face_offsets", np.zeros(1)).size - 1))
         n_tris = int(extracted.get("cell_nodes", np.zeros(1)).size // 3)
@@ -119,6 +127,65 @@ class MeshController:
             view._refresh_plot()
         except RuntimeError:
             pass
+
+    # ── Auto-assign node_z from topology elevation source ────────────
+
+    def _auto_assign_node_z_from_elevation_source(self, extracted: dict) -> None:
+        """Populate node_z from the topology elevation source combo.
+
+        Selecting "(none)" (layer_id None) is a no-op. Rasters are
+        sampled via the QGIS raster data provider (GDAL underneath).
+        Vector PointZ layers use QGIS IDW interpolation via
+        ``QgsIDWInterpolator``. Falls back silently if the combo is
+        missing or the layer is unavailable.
+        """
+        view = self._view
+        layer_id = view.get_topo_elevation_layer_id()
+        if not layer_id:
+            return
+
+        from qgis.core import (
+            QgsProject,
+            QgsRasterLayer,
+            QgsVectorLayer,
+        )
+
+        try:
+            layer = QgsProject.instance().mapLayer(layer_id)
+        except Exception:
+            return
+        if layer is None:
+            return
+
+        node_x = np.asarray(extracted.get("node_x", np.zeros(0)),
+                            dtype=np.float64)
+        node_y = np.asarray(extracted.get("node_y", np.zeros(0)),
+                            dtype=np.float64)
+        if node_x.size == 0:
+            return
+
+        if isinstance(layer, QgsRasterLayer):
+            from swe2d.services.qgis_terrain_interpolator import (
+                interpolate_raster_provider,
+            )
+            z = interpolate_raster_provider(node_x, node_y, layer,
+                                              default_z=0.0)
+        elif isinstance(layer, QgsVectorLayer):
+            from swe2d.services.qgis_terrain_interpolator import (
+                interpolate_point_layer_idw,
+            )
+            z = interpolate_point_layer_idw(node_x, node_y, layer)
+            # Replace any NaN hits (outside convex hull) with 0.
+            if np.any(np.isnan(z)):
+                z = np.nan_to_num(z, nan=0.0)
+        else:
+            view._log(f"[WARNING] Unsupported elevation source type: "
+                      f"{type(layer).__name__}")
+            return
+
+        extracted["node_z"] = z.astype(np.float64)
+        view._log(f"Auto-assigned node_z from '{layer.name()}' "
+                  f"({layer.type().name()}, n={node_x.size})")
 
     # ── 2D model GeoPackage creation ──────────────────────────────────
 

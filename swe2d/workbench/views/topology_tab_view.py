@@ -105,6 +105,20 @@ class TopologyTabView(QtWidgets.QWidget):
         )
         layer_form.addRow(self.topo_export_template_btn)
 
+        # ── Elevation source ───────────────────────────────────────────
+        # Auto-assign node_z from a single-band raster or PointZ layer when
+        # mesh is generated. Selecting "(none)" disables auto-assignment.
+        self.topo_elevation_combo = QtWidgets.QComboBox()
+        self.topo_elevation_combo.setObjectName("topo_elevation_combo")
+        self.topo_elevation_combo.setToolTip(
+            "Optional elevation source. If selected, mesh node elevations "
+            "(node_z) are auto-populated when 'Generate Mesh' runs:\n"
+            "  - Single-band raster: sampled at mesh node coordinates.\n"
+            "  - PointZ layer: IDW (inverse-distance-weighted) interpolation "
+            "    using the 4 nearest source points."
+        )
+        layer_form.addRow(QtWidgets.QLabel("Elevation source:"), self.topo_elevation_combo)
+
         self._toolbox.addItem(layer_page, "Layer Setup")
 
         # -- General page (always visible) --

@@ -59,8 +59,7 @@ class TestMapTabView(unittest.TestCase):
         view = MapTabView()
         for attr in (
             "export_mesh_layers_btn",
-            "import_mesh_layers_btn", "terrain_to_nodes_btn",
-            "pull_node_z_btn",
+            "import_mesh_layers_btn",
         ):
             with self.subTest(attr=attr):
                 self.assertTrue(

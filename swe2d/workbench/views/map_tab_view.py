@@ -211,8 +211,6 @@ class MapTabView(QtWidgets.QWidget):
             ("export_mesh_ugrid_btn", "Export Mesh To UGRID"),
             ("save_mesh_gpkg_btn", "Save Mesh to GPKG"),
             ("import_mesh_layers_btn", "Load Mesh From Selected Layers"),
-            ("terrain_to_nodes_btn", "Assign Node Z From Terrain"),
-            ("pull_node_z_btn", "Pull Node Z From Nodes Layer"),
             ("export_results_ugrid_btn", "Export Results to UGRID"),
             ("load_mesh_gpkg_btn", "Load Mesh from GPKG..."),
         ]
@@ -222,21 +220,15 @@ class MapTabView(QtWidgets.QWidget):
             setattr(self, attr, btn)
             actions_layout.addRow(btn)
 
-        self.terrain_to_nodes_btn.setText("Assign Mesh Node Z From Terrain")
-        self.pull_node_z_btn.setText("Pull Mesh Node Z From Nodes Layer")
         self.export_mesh_layers_btn.setToolTip(
             "Export the current in-memory mesh (nodes + cells) as QGIS map layers. "
             "Creates point and polygon layers in the project for inspection."
         )
         self.import_mesh_layers_btn.setToolTip(
             "Build an in-memory mesh from the currently selected nodes and cells map layers. "
-            "Use after editing layer geometry or node elevations externally."
-        )
-        self.terrain_to_nodes_btn.setToolTip(
-            "Sample the selected terrain raster directly at in-memory mesh nodes and update mesh node_z."
-        )
-        self.pull_node_z_btn.setToolTip(
-            "Legacy workflow: read bed_z values from the selected nodes layer into in-memory mesh node_z."
+            "Use after editing layer geometry or node elevations externally. "
+            "If the topology elevation source combo has a layer selected, "
+            "node_z is auto-populated during import."
         )
         self.export_results_ugrid_btn.setToolTip(
             "Export simulation results to UGRID NetCDF format for external visualization."

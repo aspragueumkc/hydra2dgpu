@@ -108,16 +108,6 @@ class TestMapTabView(unittest.TestCase):
         view = MapTabView()
         self.assertIsInstance(view.import_mesh_layers_btn, QPushButton)
 
-    def test_view_has_terrain_to_nodes_btn(self):
-        from swe2d.workbench.views.map_tab_view import MapTabView
-        view = MapTabView()
-        self.assertIsInstance(view.terrain_to_nodes_btn, QPushButton)
-
-    def test_view_has_pull_node_z_btn(self):
-        from swe2d.workbench.views.map_tab_view import MapTabView
-        view = MapTabView()
-        self.assertIsInstance(view.pull_node_z_btn, QPushButton)
-
     def test_view_has_open_model_gpkg_explorer_btn(self):
         from swe2d.workbench.views.map_tab_view import MapTabView
         view = MapTabView()
@@ -153,8 +143,6 @@ class TestMapTabView(unittest.TestCase):
             ("structures_layer_combo", "structures_layer_combo"),
             ("export_mesh_layers_btn", "export_mesh_layers_btn"),
             ("import_mesh_layers_btn", "import_mesh_layers_btn"),
-            ("terrain_to_nodes_btn", "terrain_to_nodes_btn"),
-            ("pull_node_z_btn", "pull_node_z_btn"),
             ("open_model_gpkg_explorer_btn", "open_model_gpkg_explorer_btn"),
             ("open_run_log_viewer_btn", "open_run_log_viewer_btn"),
             ("layer_status_lbl", "layer_status_lbl"),
@@ -170,18 +158,6 @@ class TestMapTabView(unittest.TestCase):
         view.nodes_layer_combo.addItem("Test Layer", "test_id")
         self.assertEqual(view.nodes_layer_combo.count(), 1)
         view.deleteLater()
-
-    def test_terrain_to_nodes_btn_has_long_text(self):
-        """The terrain_to_nodes_btn uses a longer label than the constructor default."""
-        from swe2d.workbench.views.map_tab_view import MapTabView
-        view = MapTabView()
-        self.assertEqual(view.terrain_to_nodes_btn.text(), "Assign Mesh Node Z From Terrain")
-
-    def test_pull_node_z_btn_has_long_text(self):
-        """The pull_node_z_btn uses a longer label than the constructor default."""
-        from swe2d.workbench.views.map_tab_view import MapTabView
-        view = MapTabView()
-        self.assertEqual(view.pull_node_z_btn.text(), "Pull Mesh Node Z From Nodes Layer")
 
     def test_view_has_toolbox(self):
         """The view uses a QToolBox for the three sub-pages."""

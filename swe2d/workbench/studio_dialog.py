@@ -2370,6 +2370,47 @@ class SWE2DWorkbenchStudioDialog(QtWidgets.QDialog):
                 combo.setCurrentIndex(idx)
         combo.blockSignals(False)
 
+    def populate_elevation_combo(self, layers: List) -> None:
+        """Populate the topology elevation combo with raster + PointZ layers.
+
+        Rasters are sampled via the raster data provider (GDAL underneath).
+        Vector layers are accepted only if their geometry type has a Z
+        dimension (e.g. MultiPointZ, LineStringZ, PolygonZ).
+        """
+        from qgis.core import (
+            QgsPoint,
+            QgsWkbTypes,
+            QgsRasterLayer,
+            QgsVectorLayer,
+        )
+        topo = getattr(self, "_topology_tab_view", None)
+        combo = getattr(topo, "topo_elevation_combo", None)
+        if combo is None:
+            return
+        current_id = combo.currentData()
+        combo.blockSignals(True)
+        combo.clear()
+        combo.addItem("(none)", None)
+        for layer in layers:
+            if isinstance(layer, QgsRasterLayer):
+                combo.addItem(str(layer.name()), layer.id())
+                continue
+            if isinstance(layer, QgsVectorLayer):
+                if not layer.isSpatial():
+                    continue
+                # Accept any Z-bearing geometry type for source elevation
+                if layer.wkbType() in (
+                    QgsWkbTypes.PointZ, QgsWkbTypes.MultiPointZ,
+                    QgsWkbTypes.LineStringZ, QgsWkbTypes.MultiLineStringZ,
+                    QgsWkbTypes.PolygonZ, QgsWkbTypes.MultiPolygonZ,
+                ) or layer.geometryType() == QgsWkbTypes.PointGeometry:
+                    combo.addItem(str(layer.name()), layer.id())
+        if current_id is not None:
+            idx = combo.findData(current_id)
+            if idx >= 0:
+                combo.setCurrentIndex(idx)
+        combo.blockSignals(False)
+
     def get_combo_current_text(self, combo_attr: str) -> str:
         """Get the current text of a combo box by attribute name."""
         combo = self._resolve_combo_attr(combo_attr)
@@ -2389,6 +2430,19 @@ class SWE2DWorkbenchStudioDialog(QtWidgets.QDialog):
         if tv is None:
             return None
         return getattr(tv, attr, None)
+
+    def get_topo_elevation_layer_id(self) -> Optional[str]:
+        """Return the layer ID of the selected elevation source, or None."""
+        tv = getattr(self, "_topology_tab_view", None)
+        if tv is None:
+            return None
+        combo = getattr(tv, "topo_elevation_combo", None)
+        if combo is None:
+            return None
+        lid = combo.currentData()
+        if lid is None:
+            return None
+        return str(lid)
 
     def _resolve_combo_attr(self, attr: str) -> Any:
         """Resolve a combo widget by attribute name across all tab views."""
