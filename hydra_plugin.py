@@ -422,7 +422,12 @@ class HydraQgisPlugin:
             )
 
     def _call_workbench(self, method_name: str):
-        """Call a method on the active workbench dialog, if one is open."""
+        """Call a method on the active workbench dialog, if one is open.
+
+        Tries the following in order:
+        1. Controller methods (run, overlay, mesh, topology controllers)
+        2. Dialog methods with underscore prefix (e.g. _create_2d_model_geopackage)
+        """
         try:
             from swe2d.workbench.views.studio_host_methods import _studio_active_dialog
             dlg = _studio_active_dialog
@@ -431,10 +436,28 @@ class HydraQgisPlugin:
                     'HYDRA2DGPU', 'Open the workbench panel first.', level=Qgis.Warning
                 )
                 return
-            method = getattr(dlg, method_name, None)
-            if method is None:
+
+            # 1. Try controller methods
+            controllers = (
+                getattr(dlg, '_run_controller', None),
+                getattr(dlg, '_overlay_controller', None),
+                getattr(dlg, '_mesh_controller', None),
+                getattr(dlg, '_topology_controller', None),
+            )
+            for ctrl in controllers:
+                if ctrl is not None:
+                    method = getattr(ctrl, method_name, None)
+                    if method is not None:
+                        method()
+                        return
+
+            # 2. Try dialog method with _ prefix (e.g. _create_2d_model_geopackage)
+            underscored = f"_{method_name}"
+            method = getattr(dlg, underscored, None)
+            if method is not None:
+                method()
                 return
-            method()
+
         except Exception as e:
             logging.getLogger(__name__).warning(
                 "[hydra_plugin] _call_workbench(%r) failed: %s", method_name, e
