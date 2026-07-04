@@ -119,6 +119,11 @@ class TopologyTabView(QtWidgets.QWidget):
         )
         layer_form.addRow(QtWidgets.QLabel("Elevation source:"), self.topo_elevation_combo)
 
+        # -- Import/Export page (top of toolbox, BEFORE Layer Setup) --
+        # Moved from MapTabView's "Mesh Setup" page. Widgets retain the
+        # same objectNames so existing signal-wiring code keeps working.
+        self._build_import_export_page()
+
         self._toolbox.addItem(layer_page, "Layer Setup")
 
         # -- General page (always visible) --
@@ -254,6 +259,71 @@ class TopologyTabView(QtWidgets.QWidget):
         root_layout.addWidget(self.topo_controls_summary_lbl)
 
         self._populate_gmsh_quality_controls()
+
+    # ------------------------------------------------------------------
+    # Import/Export page (moved from MapTabView's "Mesh Setup" page)
+    # ------------------------------------------------------------------
+
+    def _build_import_export_page(self) -> None:
+        """Build the Import/Export page with mesh I/O buttons.
+
+        Buttons keep the same objectNames they had in MapTabView so
+        signal wiring and tests that reference them by name keep
+        working without changes.
+        """
+        page = QtWidgets.QWidget()
+        page.setObjectName("topo_import_export_page")
+        layout = QtWidgets.QFormLayout(page)
+        layout.setObjectName("topo_import_export_form")
+        layout.setContentsMargins(4, 4, 4, 4)
+
+        btn_specs = [
+            ("export_mesh_layers_btn", "Export Mesh To Map Layers"),
+            ("export_mesh_ugrid_btn", "Export Mesh To UGRID"),
+            ("save_mesh_gpkg_btn", "Save Mesh to GPKG"),
+            ("import_mesh_layers_btn", "Load Mesh From Selected Layers"),
+            ("export_results_ugrid_btn", "Export Results to UGRID"),
+            ("load_mesh_gpkg_btn", "Load Mesh from GPKG..."),
+        ]
+        for attr, text in btn_specs:
+            btn = QtWidgets.QPushButton(text)
+            btn.setObjectName(attr)
+            setattr(self, attr, btn)
+            layout.addRow(btn)
+
+        self.export_mesh_layers_btn.setToolTip(
+            "Export the current in-memory mesh (nodes + cells) as QGIS map layers. "
+            "Creates point and polygon layers in the project for inspection."
+        )
+        self.import_mesh_layers_btn.setToolTip(
+            "Build an in-memory mesh from the currently selected nodes and cells map layers. "
+            "Use after editing layer geometry or node elevations externally. "
+            "If the topology elevation source combo has a layer selected, "
+            "node_z is auto-populated during import."
+        )
+        self.export_results_ugrid_btn.setToolTip(
+            "Export simulation results to UGRID NetCDF format for external visualization."
+        )
+        self.export_mesh_ugrid_btn.setToolTip(
+            "Export the current in-memory mesh geometry to UGRID NetCDF format."
+        )
+        self.save_mesh_gpkg_btn.setToolTip(
+            "Save current mesh to a GeoPackage file."
+        )
+        self.load_mesh_gpkg_btn.setToolTip(
+            "Open a GeoPackage and load a mesh from it."
+        )
+
+        layout.addItem(
+            QtWidgets.QSpacerItem(
+                0, 0,
+                QtWidgets.QSizePolicy.Minimum,
+                QtWidgets.QSizePolicy.Expanding,
+            )
+        )
+
+        # First page (top) — before Layer Setup
+        self._toolbox.insertItem(0, page, "Import/Export")
 
     def set_callbacks(self, log_fn=None, combo_layer_fn=None) -> None:
         """Set external callbacks for logging and layer resolution."""

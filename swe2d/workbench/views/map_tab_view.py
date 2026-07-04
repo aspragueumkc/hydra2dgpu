@@ -40,9 +40,10 @@ class MapTabView(QtWidgets.QWidget):
         drain_inlets_layer_combo, drain_node_inlets_layer_combo,
         structures_layer_combo, bc_lines_layer_combo
 
-    Actions page ("Mesh Setup") - mesh I/O:
-        export_mesh_layers_btn,
-        import_mesh_layers_btn, terrain_to_nodes_btn, pull_node_z_btn
+    Actions page ("Mesh Setup") - mesh I/O: REMOVED. The mesh I/O
+    buttons were moved to the Mesh Generation tab as the
+    "Import/Export" page (top, before Layer Setup). See
+    TopologyTabView._build_import_export_page.
 
     Utilities page ("Utilities") - helpers:
         open_model_gpkg_explorer_btn, open_run_log_viewer_btn,
@@ -57,7 +58,7 @@ class MapTabView(QtWidgets.QWidget):
         self._build_ui()
 
     def _build_ui(self) -> None:
-        """Build the toolbox with Data, Actions, and Utilities pages."""
+        """Build the toolbox with Data and Utilities pages (Mesh Setup moved)."""
         root_layout = QtWidgets.QVBoxLayout(self)
         root_layout.setContentsMargins(0, 0, 0, 0)
         root_layout.setSpacing(0)
@@ -68,7 +69,6 @@ class MapTabView(QtWidgets.QWidget):
         )
 
         self._build_data_page(toolbox)
-        self._build_actions_page(toolbox)
         self._build_tools_page(toolbox)
 
         root_layout.addWidget(toolbox)
@@ -197,61 +197,6 @@ class MapTabView(QtWidgets.QWidget):
                 c.addItem("(none)", None)
 
         toolbox.addItem(page, "Layers")
-
-    def _build_actions_page(self, toolbox: QtWidgets.QToolBox) -> None:
-        """Build the Mesh Setup page with mesh I/O and BC controls."""
-        page = QtWidgets.QWidget()
-        page.setObjectName("map_actions_page")
-        actions_layout = QtWidgets.QFormLayout(page)
-        actions_layout.setObjectName("map_actions_layout")
-        actions_layout.setContentsMargins(4, 4, 4, 4)
-
-        btn_specs = [
-            ("export_mesh_layers_btn", "Export Mesh To Map Layers"),
-            ("export_mesh_ugrid_btn", "Export Mesh To UGRID"),
-            ("save_mesh_gpkg_btn", "Save Mesh to GPKG"),
-            ("import_mesh_layers_btn", "Load Mesh From Selected Layers"),
-            ("export_results_ugrid_btn", "Export Results to UGRID"),
-            ("load_mesh_gpkg_btn", "Load Mesh from GPKG..."),
-        ]
-        for attr, text in btn_specs:
-            btn = QtWidgets.QPushButton(text)
-            btn.setObjectName(attr)
-            setattr(self, attr, btn)
-            actions_layout.addRow(btn)
-
-        self.export_mesh_layers_btn.setToolTip(
-            "Export the current in-memory mesh (nodes + cells) as QGIS map layers. "
-            "Creates point and polygon layers in the project for inspection."
-        )
-        self.import_mesh_layers_btn.setToolTip(
-            "Build an in-memory mesh from the currently selected nodes and cells map layers. "
-            "Use after editing layer geometry or node elevations externally. "
-            "If the topology elevation source combo has a layer selected, "
-            "node_z is auto-populated during import."
-        )
-        self.export_results_ugrid_btn.setToolTip(
-            "Export simulation results to UGRID NetCDF format for external visualization."
-        )
-        self.export_mesh_ugrid_btn.setToolTip(
-            "Export the current in-memory mesh geometry to UGRID NetCDF format."
-        )
-        self.save_mesh_gpkg_btn.setToolTip(
-            "Save current mesh to a GeoPackage file."
-        )
-        self.load_mesh_gpkg_btn.setToolTip(
-            "Open a GeoPackage and load a mesh from it."
-        )
-
-        actions_layout.addItem(
-            QtWidgets.QSpacerItem(
-                0, 0,
-                QtWidgets.QSizePolicy.Minimum,
-                QtWidgets.QSizePolicy.Expanding,
-            )
-        )
-
-        toolbox.addItem(page, "Mesh Setup")
 
     def _build_tools_page(self, toolbox: QtWidgets.QToolBox) -> None:
         """Build the Utilities page with explorer and log viewer buttons."""

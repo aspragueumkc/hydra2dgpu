@@ -54,17 +54,22 @@ class TestMapTabView(unittest.TestCase):
                     f"MapTabView missing widget: {attr}",
                 )
 
-    def test_has_expected_action_widgets(self):
+    def test_has_no_action_widgets(self):
+        """The Mesh Setup page moved to TopologyTabView as Import/Export."""
         from swe2d.workbench.views.map_tab_view import MapTabView
         view = MapTabView()
         for attr in (
             "export_mesh_layers_btn",
             "import_mesh_layers_btn",
+            "export_mesh_ugrid_btn",
+            "save_mesh_gpkg_btn",
+            "load_mesh_gpkg_btn",
+            "export_results_ugrid_btn",
         ):
             with self.subTest(attr=attr):
-                self.assertTrue(
+                self.assertFalse(
                     hasattr(view, attr),
-                    f"MapTabView missing action widget: {attr}",
+                    f"MapTabView should not own {attr} anymore",
                 )
 
     def test_has_expected_tools_widgets(self):
@@ -79,14 +84,6 @@ class TestMapTabView(unittest.TestCase):
                     hasattr(view, attr),
                     f"MapTabView missing tool widget: {attr}",
                 )
-
-    def test_map_actions_layout_is_form(self):
-        from qgis.PyQt.QtWidgets import QFormLayout
-        from swe2d.workbench.views.map_tab_view import MapTabView
-        view = MapTabView()
-        self.assertIsInstance(
-            view.findChild(QFormLayout, "map_actions_layout"), QFormLayout
-        )
 
     def test_is_qwidget_subclass(self):
         from qgis.PyQt import QtWidgets
@@ -152,6 +149,23 @@ class TestModelTabView(unittest.TestCase):
             view.model_toolbox.widget(last_idx), view.model_output_page
         )
 
+    def test_output_page_has_run_output_widgets(self):
+        """The Run Output widgets (moved from below the Run dock progress
+        bar) live on the Model tab's Output page."""
+        from swe2d.workbench.views.model_tab_view import ModelTabView
+        view = ModelTabView()
+        for attr in (
+            "output_interval_edit", "line_output_interval_edit",
+            "preview_overrides_btn", "preview_coupling_btn",
+            "results_table_name_edit", "results_gpkg_path_edit",
+            "select_results_gpkg_btn", "load_run_settings_btn", "save_settings_btn",
+        ):
+            with self.subTest(attr=attr):
+                self.assertTrue(
+                    hasattr(view, attr),
+                    f"ModelTabView missing moved run-output widget: {attr}",
+                )
+
     def test_collect_storage_params_matches_legacy_schema(self):
         """collect_storage_params must produce the legacy key set expected
         by run_controller and batch_simulation_dialog."""
@@ -198,12 +212,25 @@ class TestTopologyTabView(unittest.TestCase):
             "topo_controls_summary_lbl",
             "topo_generate_btn",
             "topo_terminate_btn",
+            # Import/Export page — moved from Map tab
+            "export_mesh_layers_btn", "import_mesh_layers_btn",
+            "export_mesh_ugrid_btn", "save_mesh_gpkg_btn",
+            "load_mesh_gpkg_btn", "export_results_ugrid_btn",
         ):
             with self.subTest(attr=attr):
                 self.assertTrue(
                     hasattr(view, attr),
                     f"TopologyTabView missing widget: {attr}",
                 )
+
+    def test_import_export_page_is_top_of_toolbox(self):
+        """The Import/Export page must be the first (top) page in the
+        topology toolbox, before Layer Setup."""
+        from swe2d.workbench.views.topology_tab_view import TopologyTabView
+        view = TopologyTabView()
+        self.assertEqual(view._toolbox.itemText(0), "Import/Export")
+        # The page that follows must be Layer Setup
+        self.assertEqual(view._toolbox.itemText(1), "Layer Setup")
 
     def test_is_qwidget_subclass(self):
         from qgis.PyQt import QtWidgets

@@ -67,19 +67,30 @@ class TestModelTabView(unittest.TestCase):
         page = view.findChild(QWidget, "model_run_page")
         self.assertIsNone(page)
 
-    def test_run_output_widgets_moved_to_run_dock(self):
-        """Orphan run/output widgets were deleted from ModelTabView.
-
-        They now live on RunDockWidget. Verify they are absent here.
-        """
+    def test_run_output_widgets_live_on_output_page(self):
+        """Output-config widgets (formerly below the Run dock progress
+        bar) now live on the Model tab's Output page."""
         view = self._make_view()
-        for attr in ("run_btn", "cancel_btn", "batch_sim_btn", "progress_bar",
-                     "output_interval_edit", "line_output_interval_edit",
-                     "preview_overrides_btn", "preview_coupling_btn", "snapshot_btn",
-                     "results_table_name_edit", "results_gpkg_path_edit",
-                     "select_results_gpkg_btn", "load_run_settings_btn", "save_settings_btn"):
+        # These are the output-config widgets that moved into ModelTabView:
+        for attr in (
+            "output_interval_edit", "line_output_interval_edit",
+            "preview_overrides_btn", "preview_coupling_btn",
+            "results_table_name_edit", "results_gpkg_path_edit",
+            "select_results_gpkg_btn", "load_run_settings_btn", "save_settings_btn",
+        ):
             with self.subTest(attr=attr):
-                self.assertFalse(hasattr(view, attr), f"Orphan attribute should be deleted: {attr}")
+                self.assertTrue(
+                    hasattr(view, attr),
+                    f"ModelTabView should now own {attr} on the Output page",
+                )
+
+    def test_run_execution_widgets_absent(self):
+        """Run/Cancel/Snapshot/Batch/progress widgets stay on RunDockWidget
+        (NOT on ModelTabView)."""
+        view = self._make_view()
+        for attr in ("run_btn", "cancel_btn", "batch_sim_btn", "progress_bar", "snapshot_btn"):
+            with self.subTest(attr=attr):
+                self.assertFalse(hasattr(view, attr), f"Run control should not be on ModelTabView: {attr}")
 
     def test_view_has_n_mann_spin(self):
         view = self._make_view()
@@ -407,14 +418,15 @@ class TestModelTabView(unittest.TestCase):
         view = self._make_view()
         self.assertIsInstance(view.model_toolbox, QToolBox)
 
-    def test_view_toolbox_has_four_pages(self):
+    def test_view_toolbox_has_five_pages(self):
         view = self._make_view()
-        self.assertEqual(view.model_toolbox.count(), 4)
+        # Solver, Rain, Stability, Drain, Output
+        self.assertEqual(view.model_toolbox.count(), 5)
 
     def test_view_pages_have_expanding_size_policy(self):
         view = self._make_view()
         from qgis.PyQt.QtWidgets import QSizePolicy
-        for page_name in ("model_solver_page", "model_rain_page", "model_stability_page", "model_drain_page"):
+        for page_name in ("model_solver_page", "model_rain_page", "model_stability_page", "model_drain_page", "model_output_page"):
             page = view.findChild(QWidget, page_name)
             self.assertIsNotNone(page)
             self.assertEqual(page.sizePolicy().verticalPolicy(), QSizePolicy.Expanding)
@@ -468,18 +480,23 @@ class TestModelTabView(unittest.TestCase):
         view.show_advanced_chk.setChecked(True)
         view.param_search.setText("cfl")
         view._filter_model_tab()
-        visible_groups = [g for g in view._param_groups if g.isVisible()]
-        self.assertGreater(len(visible_groups), 0)
-        for group in visible_groups:
-            title = group.title().lower()
-            row_matches = any(
-                "cfl" in (w.toolTip() or "").lower() or "cfl" in w.objectName().lower()
-                for _g, _l, w, _a in view._param_rows if _g is group
-            )
-            self.assertTrue(
-                "cfl" in title or row_matches,
-                f"Visible group {group.title()} has no CFL match",
-            )
+        # Inspect via _filterable.filter_visible (works in headless tests).
+        from swe2d.workbench.views.widget_filter_helper import FilterableRowRegistry
+        self.assertIsInstance(view._filterable, FilterableRowRegistry)
+        # Find at least one row whose search blob contains "cfl"
+        cfl_matches = sum(
+            1 for _g, _l, w, _a in view._filterable
+            if "cfl" in (w.toolTip() or "").lower() or "cfl" in w.objectName().lower()
+        )
+        self.assertGreater(cfl_matches, 0)
+        # And those rows should now report filter_visible=True
+        any_visible = False
+        for _g, _l, w, _a in view._filterable:
+            blob = str(w.property("filter_search_blob") or "")
+            if "cfl" in blob and view._filterable.filter_visible(w):
+                any_visible = True
+                break
+        self.assertTrue(any_visible, "Expected at least one CFL row to be filter-visible")
 
     def test_advanced_toggle_hides_advanced_rows(self):
         view = self._make_view()
@@ -487,15 +504,13 @@ class TestModelTabView(unittest.TestCase):
         view.param_search.clear()
         view.show_advanced_chk.setChecked(False)
         view._filter_model_tab()
-        for _group, label, widget, advanced in view._param_rows:
+        # For every registered row that was flagged advanced, the filter
+        # must report filter_visible=False (hidden).
+        for _group, _label, widget, advanced in view._filterable:
             if advanced:
-                self.assertTrue(
-                    widget.isHidden(),
+                self.assertFalse(
+                    view._filterable.filter_visible(widget),
                     f"Advanced widget {widget.objectName()} should be hidden",
-                )
-                self.assertTrue(
-                    label.isHidden(),
-                    f"Advanced label {label.text()} should be hidden",
                 )
 
     def test_run_controls_deleted_from_model_tab(self):

@@ -71,19 +71,27 @@ def compose_left_pane(dialog, left_host: QtWidgets.QWidget) -> QtWidgets.QWidget
 
 
 def build_map_tab_page(dialog):
-    """Build the Map tab page view and wire signal handlers."""
+    """Build the Map tab page view and wire signal handlers.
+
+    The Mesh Setup / actions page was moved to the Topology tab as
+    the "Import/Export" page, so this function no longer requires
+    a ``map_actions_layout`` child.
+    """
     from swe2d.workbench.views.map_tab_view import MapTabView
     dialog._map_tab_view = MapTabView()
     map_tab_page = dialog._map_tab_view
     map_data_layout = map_tab_page.findChild(QtWidgets.QGridLayout, "map_data_layout")
-    map_actions_layout = map_tab_page.findChild(QtWidgets.QFormLayout, "map_actions_layout")
     map_tools_layout = map_tab_page.findChild(QtWidgets.QGridLayout, "map_tools_layout")
-    if map_data_layout is None or map_actions_layout is None or map_tools_layout is None:
+    if map_data_layout is None or map_tools_layout is None:
         raise RuntimeError("Map tab UI missing one or more expected group layouts")
     wire_map_tab_data_signals(dialog)
+    # wire_map_tab_action_signals is a no-op now — mesh I/O buttons
+    # live on the Topology tab and are wired in
+    # wire_topology_tab_static_signals.
     wire_map_tab_action_signals(dialog)
     wire_map_tab_tools_signals(dialog)
-    return map_tab_page, map_data_layout, map_actions_layout, map_tools_layout
+    # Return map_actions_layout=None to keep the existing 4-tuple contract.
+    return map_tab_page, map_data_layout, None, map_tools_layout
 
 
 def wire_map_tab_data_signals(dialog) -> None:
@@ -122,20 +130,12 @@ def wire_map_tab_data_signals(dialog) -> None:
 
 
 def wire_map_tab_action_signals(dialog) -> None:
-    """Wire the Map tab Actions page button signals to the dialog handlers."""
-    from swe2d.workbench.signal_helpers import safe_disconnect
-    v = dialog._map_tab_view
-    handlers = {
-        "export_mesh_layers_btn": (v.export_mesh_layers_btn, dialog._mesh_controller.export_mesh_to_layers),
-        "export_mesh_ugrid_btn": (v.export_mesh_ugrid_btn, dialog._mesh_controller.export_mesh_to_ugrid),
-        "save_mesh_gpkg_btn": (v.save_mesh_gpkg_btn, dialog._save_mesh_to_gpkg),
-        "import_mesh_layers_btn": (v.import_mesh_layers_btn, dialog._mesh_controller.import_mesh_from_layers),
-        "load_mesh_gpkg_btn": (v.load_mesh_gpkg_btn, dialog._load_mesh_from_gpkg),
-        "export_results_ugrid_btn": (v.export_results_ugrid_btn, dialog._mesh_controller.export_results_to_ugrid),
-    }
-    for attr, (btn, cb) in handlers.items():
-        safe_disconnect(btn.clicked, cb)
-        btn.clicked.connect(cb)
+    """No-op — Map tab's Mesh Setup page was moved to the Topology tab
+    as the Import/Export page. The mesh I/O buttons now live on the
+    Topology tab view and are wired in
+    :func:`wire_topology_tab_static_signals`.
+    """
+    return None
 
 
 def wire_map_tab_tools_signals(dialog) -> None:
@@ -166,13 +166,24 @@ def build_topology_tab_page(dialog) -> QtWidgets.QWidget:
 
 
 def wire_topology_tab_static_signals(dialog) -> None:
-    """Wire the Topology tab static button signals to the dialog handlers."""
+    """Wire the Topology tab static button signals to the dialog handlers.
+
+    Includes the mesh I/O buttons that live on the Topology tab's
+    Import/Export page (moved from the Map tab's Mesh Setup page).
+    """
     from swe2d.workbench.signal_helpers import safe_disconnect
     v = dialog._topology_tab_view
     handlers = {
         "topo_export_template_btn": (v.topo_export_template_btn, dialog._topology_controller.create_topology_template_layers),
         "topo_generate_btn": (v.topo_generate_btn, dialog._topology_controller.generate_mesh_from_topology_layers),
         "topo_terminate_btn": (v.topo_terminate_btn, dialog._topology_controller.on_terminate_topology_mesh),
+        # Mesh I/O buttons — moved from Map tab to the Import/Export page
+        "export_mesh_layers_btn": (v.export_mesh_layers_btn, dialog._mesh_controller.export_mesh_to_layers),
+        "export_mesh_ugrid_btn": (v.export_mesh_ugrid_btn, dialog._mesh_controller.export_mesh_to_ugrid),
+        "save_mesh_gpkg_btn": (v.save_mesh_gpkg_btn, dialog._save_mesh_to_gpkg),
+        "import_mesh_layers_btn": (v.import_mesh_layers_btn, dialog._mesh_controller.import_mesh_from_layers),
+        "load_mesh_gpkg_btn": (v.load_mesh_gpkg_btn, dialog._load_mesh_from_gpkg),
+        "export_results_ugrid_btn": (v.export_results_ugrid_btn, dialog._mesh_controller.export_results_to_ugrid),
     }
     for attr, (btn, cb) in handlers.items():
         safe_disconnect(btn.clicked, cb)
@@ -197,7 +208,13 @@ def build_model_tab_page(dialog):
 
 
 def wire_run_dock_signals(dialog) -> None:
-    """Wire the Run dock buttons to controller handlers."""
+    """Wire the Run dock buttons to controller handlers.
+
+    The Run dock only owns execution-surface buttons now (Run / Cancel /
+    Snapshot / Batch). Output-config widgets (Preview / Load / Save /
+    Browse GPKG) moved to the Simulation tab's Output page — see
+    :func:`wire_run_tab_signals`.
+    """
     from swe2d.workbench.signal_helpers import safe_disconnect
     d = dialog._run_dock
     safe_disconnect(d.run_btn.clicked, dialog._controller.on_run)
@@ -208,25 +225,27 @@ def wire_run_dock_signals(dialog) -> None:
     d.snapshot_btn.clicked.connect(dialog._controller.on_snapshot)
     safe_disconnect(d.batch_btn.clicked, dialog._controller.open_batch_simulation_dialog)
     d.batch_btn.clicked.connect(dialog._controller.open_batch_simulation_dialog)
-    safe_disconnect(d.preview_overrides_btn.clicked, dialog._controller.on_preview_overrides)
-    d.preview_overrides_btn.clicked.connect(dialog._controller.on_preview_overrides)
-    safe_disconnect(d.preview_coupling_btn.clicked, dialog._controller.on_preview_coupling)
-    d.preview_coupling_btn.clicked.connect(dialog._controller.on_preview_coupling)
-    safe_disconnect(d.load_run_settings_btn.clicked, dialog._controller.on_load_simulation_config)
-    d.load_run_settings_btn.clicked.connect(dialog._controller.on_load_simulation_config)
-    safe_disconnect(d.save_settings_btn.clicked, dialog._controller.on_save_simulation_config)
-    d.save_settings_btn.clicked.connect(dialog._controller.on_save_simulation_config)
-    safe_disconnect(d.select_results_gpkg_btn.clicked, dialog._mesh_controller.on_select_results_gpkg)
-    d.select_results_gpkg_btn.clicked.connect(dialog._mesh_controller.on_select_results_gpkg)
 
 
 def wire_run_tab_signals(dialog) -> None:
-    """No-op — run/output widgets now live in the Run dock.
+    """Wire the moved output-config buttons on the Simulation tab.
 
-    Kept as an empty shim so callers that still invoke it do not break.
-    Signal wiring is done by wire_run_dock_signals.
+    The output interval / line interval / results GPKG / preview / load /
+    save widgets live on the Model tab view's Output page now (moved
+    from below the Run dock progress bar).
     """
-    pass
+    from swe2d.workbench.signal_helpers import safe_disconnect
+    v = dialog._model_tab_view
+    handlers = {
+        "preview_overrides_btn": (v.preview_overrides_btn, dialog._controller.on_preview_overrides),
+        "preview_coupling_btn": (v.preview_coupling_btn, dialog._controller.on_preview_coupling),
+        "load_run_settings_btn": (v.load_run_settings_btn, dialog._controller.on_load_simulation_config),
+        "save_settings_btn": (v.save_settings_btn, dialog._controller.on_save_simulation_config),
+        "select_results_gpkg_btn": (v.select_results_gpkg_btn, dialog._mesh_controller.on_select_results_gpkg),
+    }
+    for attr, (btn, cb) in handlers.items():
+        safe_disconnect(btn.clicked, cb)
+        btn.clicked.connect(cb)
 
 
 # ── Tab lifecycle ────────────────────────────────────────────────────────────

@@ -140,6 +140,10 @@ class WorkbenchDialogBuilder:
 
         from swe2d.workbench.views.run_dock import RunDockWidget
         dlg._run_dock = RunDockWidget()
+        # Bind the host where the moved output-config widgets live so
+        # legacy ``_run_dock.get_output_interval()`` style calls keep
+        # working transparently. Attached later (after the model tab
+        # view exists) inside _populate_setup_dock.
 
         if dlg.iface is None:
             root.addWidget(dlg._studio_viewer, stretch=1)
@@ -351,6 +355,11 @@ class WorkbenchDialogBuilder:
         dlg = self._dialog
         left_host = QtWidgets.QWidget()
         dlg._compose_left_pane(left_host)
+        # _model_tab_view is now built — bind it as the host for the
+        # moved output-config widgets so legacy RunDockWidget accessors
+        # (get_output_interval, get_results_gpkg_path, ...) keep working.
+        if dlg._run_dock is not None and dlg._model_tab_view is not None:
+            dlg._run_dock.attach_output_widgets_host(dlg._model_tab_view)
         dock.setWidget(left_host)
 
     def _resolve_widget_attr(self, attr: str):

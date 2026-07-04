@@ -98,15 +98,23 @@ class TestMapTabView(unittest.TestCase):
         view = MapTabView()
         self.assertIsInstance(view.structures_layer_combo, QComboBox)
 
-    def test_view_has_export_mesh_layers_btn(self):
+    def test_view_does_not_have_mesh_io_buttons(self):
+        """Mesh I/O buttons were moved to TopologyTabView's Import/Export page."""
         from swe2d.workbench.views.map_tab_view import MapTabView
         view = MapTabView()
-        self.assertIsInstance(view.export_mesh_layers_btn, QPushButton)
-
-    def test_view_has_import_mesh_layers_btn(self):
-        from swe2d.workbench.views.map_tab_view import MapTabView
-        view = MapTabView()
-        self.assertIsInstance(view.import_mesh_layers_btn, QPushButton)
+        for attr in (
+            "export_mesh_layers_btn",
+            "import_mesh_layers_btn",
+            "export_mesh_ugrid_btn",
+            "save_mesh_gpkg_btn",
+            "load_mesh_gpkg_btn",
+            "export_results_ugrid_btn",
+        ):
+            with self.subTest(attr=attr):
+                self.assertFalse(
+                    hasattr(view, attr),
+                    f"MapTabView should no longer own {attr}",
+                )
 
     def test_view_has_open_model_gpkg_explorer_btn(self):
         from swe2d.workbench.views.map_tab_view import MapTabView
@@ -136,8 +144,6 @@ class TestMapTabView(unittest.TestCase):
             ("drain_inlets_layer_combo", "drain_inlets_layer_combo"),
             ("drain_node_inlets_layer_combo", "drain_node_inlets_layer_combo"),
             ("structures_layer_combo", "structures_layer_combo"),
-            ("export_mesh_layers_btn", "export_mesh_layers_btn"),
-            ("import_mesh_layers_btn", "import_mesh_layers_btn"),
             ("open_model_gpkg_explorer_btn", "open_model_gpkg_explorer_btn"),
             ("open_run_log_viewer_btn", "open_run_log_viewer_btn"),
         ]
@@ -154,13 +160,13 @@ class TestMapTabView(unittest.TestCase):
         view.deleteLater()
 
     def test_view_has_toolbox(self):
-        """The view uses a QToolBox for the three sub-pages."""
+        """The view uses a QToolBox with two sub-pages (Mesh Setup moved to Topology tab)."""
         from swe2d.workbench.views.map_tab_view import MapTabView
         from qgis.PyQt.QtWidgets import QToolBox
         view = MapTabView()
         toolboxes = view.findChildren(QToolBox)
         self.assertEqual(len(toolboxes), 1)
-        self.assertEqual(toolboxes[0].count(), 3)
+        self.assertEqual(toolboxes[0].count(), 2)
 
 
 if __name__ == "__main__":

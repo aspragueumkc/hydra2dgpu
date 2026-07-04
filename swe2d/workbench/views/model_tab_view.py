@@ -317,6 +317,142 @@ class ModelTabView(QtWidgets.QWidget):
         self.save_log_chk.setChecked(True)
         _add_output_checkbox(self.save_log_chk)
 
+        # ── Run Output section ──────────────────────────────────────
+        # Moved from RunDockWidget (formerly below the progress bar).
+        # Widgets retain their objectNames so signal wiring and tests
+        # that reference them by name keep working.
+        self._build_run_output_section(layout)
+
+    def _build_run_output_section(self, layout: QtWidgets.QFormLayout) -> None:
+        """Build the Run Output section on the Output page.
+
+        Hosts the moved run-config widgets:
+          output_interval_edit, line_output_interval_edit,
+          results_table_name_edit, results_gpkg_path_edit,
+          select_results_gpkg_btn, preview_overrides_btn,
+          preview_coupling_btn, load_run_settings_btn, save_settings_btn.
+        """
+        # Separator + section header
+        sep = QtWidgets.QFrame()
+        sep.setFrameShape(QtWidgets.QFrame.Shape.HLine)
+        sep.setFrameShadow(QtWidgets.QFrame.Shadow.Sunken)
+        layout.addRow(sep)
+
+        header = QtWidgets.QLabel("Run Output")
+        header.setStyleSheet("font-weight: bold;")
+        layout.addRow(header)
+
+        def _add_row_with_label(widget, label_text: str) -> None:
+            """Add a labeled row to the Output form, registering it
+            with the filter so the Simulation-tab search box picks it up."""
+            label = QtWidgets.QLabel(label_text)
+            layout.addRow(label, widget)
+            self._filterable.add(
+                widget,
+                label_widget=label,
+                label_text=label_text,
+                tooltip=widget.toolTip() or "",
+                group=None,
+            )
+
+        self.output_interval_edit = QtWidgets.QLineEdit("00:30")
+        self.output_interval_edit.setObjectName("output_interval_edit")
+        self.output_interval_edit.setToolTip(
+            "Time interval between 2D mesh result output writes. "
+            "Format: decimal hours (e.g. 0.5) or HH:MM (e.g. 00:30). "
+            "Smaller intervals produce larger result files."
+        )
+        _add_row_with_label(
+            self.output_interval_edit, "Output interval (hr or HH:MM):"
+        )
+
+        self.line_output_interval_edit = QtWidgets.QLineEdit("00:05")
+        self.line_output_interval_edit.setObjectName("line_output_interval_edit")
+        self.line_output_interval_edit.setToolTip(
+            "Time interval between sample-line (cross-section) result outputs. "
+            "Format: decimal hours or HH:MM. Default: 00:05 (5 min)."
+        )
+        _add_row_with_label(
+            self.line_output_interval_edit, "Line output interval:"
+        )
+
+        self.results_table_name_edit = QtWidgets.QLineEdit()
+        self.results_table_name_edit.setObjectName("results_table_name_edit")
+        self.results_table_name_edit.setToolTip(
+            "Optional prefix for GeoPackage result table names. "
+            "Useful when storing multiple model runs in the same GeoPackage."
+        )
+        self.results_table_name_edit.setPlaceholderText("optional table prefix")
+        _add_row_with_label(self.results_table_name_edit, "Table prefix:")
+
+        # Results GPKG row = QLineEdit + Browse button (horizontal layout)
+        gpkg_row_widget = QtWidgets.QWidget()
+        gpkg_row_layout = QtWidgets.QHBoxLayout(gpkg_row_widget)
+        gpkg_row_layout.setContentsMargins(0, 0, 0, 0)
+        self.results_gpkg_path_edit = QtWidgets.QLineEdit()
+        self.results_gpkg_path_edit.setObjectName("results_gpkg_path_edit")
+        self.results_gpkg_path_edit.setToolTip(
+            "Path to the output GeoPackage for storing simulation results. "
+            "Leave empty to use the model GeoPackage."
+        )
+        self.results_gpkg_path_edit.setPlaceholderText("GeoPackage path (optional)")
+        self.select_results_gpkg_btn = QtWidgets.QPushButton("Browse…")
+        self.select_results_gpkg_btn.setObjectName("select_results_gpkg_btn")
+        self.select_results_gpkg_btn.setToolTip(
+            "Browse for an existing GeoPackage to store/load simulation results."
+        )
+        gpkg_row_layout.addWidget(self.results_gpkg_path_edit, 1)
+        gpkg_row_layout.addWidget(self.select_results_gpkg_btn)
+        gpkg_row_widget.setObjectName("results_gpkg_row")
+        _add_row_with_label(gpkg_row_widget, "Results GPKG:")
+
+        # Preview / Load / Save config buttons row
+        preview_row_widget = QtWidgets.QWidget()
+        preview_row_layout = QtWidgets.QHBoxLayout(preview_row_widget)
+        preview_row_layout.setContentsMargins(0, 0, 0, 0)
+        preview_row_layout.setSpacing(4)
+        self.preview_overrides_btn = QtWidgets.QPushButton("Preview Overrides")
+        self.preview_overrides_btn.setObjectName("preview_overrides_btn")
+        self.preview_overrides_btn.setToolTip(
+            "Display a summary of all current parameter overrides "
+            "before running the simulation."
+        )
+        self.preview_coupling_btn = QtWidgets.QPushButton("Preview Coupling")
+        self.preview_coupling_btn.setObjectName("preview_coupling_btn")
+        self.preview_coupling_btn.setToolTip(
+            "Preview the 1D-2D coupling configuration for drainage "
+            "and hydraulic structures before running."
+        )
+        self.load_run_settings_btn = QtWidgets.QPushButton("Load Config from GPKG…")
+        self.load_run_settings_btn.setObjectName("load_run_settings_btn")
+        self.load_run_settings_btn.setToolTip(
+            "Open a GeoPackage and restore a saved simulation configuration "
+            "(all widget values, solver params, and layer references)."
+        )
+        self.save_settings_btn = QtWidgets.QPushButton("Save Config to GPKG…")
+        self.save_settings_btn.setObjectName("save_settings_btn")
+        self.save_settings_btn.setToolTip(
+            "Save the current widget configuration to the active GeoPackage "
+            "so it can be restored later via Load Config."
+        )
+        preview_row_layout.addWidget(self.preview_overrides_btn)
+        preview_row_layout.addWidget(self.preview_coupling_btn)
+        preview_row_layout.addStretch(1)
+        preview_row_layout.addWidget(self.load_run_settings_btn)
+        preview_row_layout.addWidget(self.save_settings_btn)
+        preview_row_widget.setObjectName("run_preview_row")
+        # Register the row container (filter searches by tooltip/objname)
+        self._filterable.add(
+            preview_row_widget,
+            label_widget=None,
+            label_text="Preview / Load / Save config",
+            tooltip=(
+                "Preview parameter overrides / coupling; load or save the "
+                "current simulation configuration to/from a GeoPackage."
+            ),
+            group=None,
+        )
+
     def is_extended_outputs(self) -> bool:
         return bool(self.extended_outputs_chk.isChecked())
 
