@@ -17,7 +17,7 @@ import json
 import logging
 import os
 import sqlite3
-from typing import Callable, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional
 
 import numpy as np
 
@@ -31,9 +31,12 @@ __all__ = [
     "load_baked_snapshot",
     "compute_max_tracking",
     "persist_baked_coupling",
+    "persist_baked_coupling_batch",
     "load_baked_coupling_timeseries",
     "persist_baked_line_ts",
+    "persist_baked_line_ts_batch",
     "persist_baked_line_profile",
+    "persist_baked_line_profile_batch",
     "load_baked_line_timeseries",
     "load_baked_line_profile",
     "load_baked_timesteps",
@@ -168,6 +171,7 @@ def persist_baked_mesh(
         return
     conn = sqlite3.connect(gpkg_path)
     try:
+        _configure_connection(conn)
         # Ensure OGC GPKG metadata tables exist (required by GDAL/QGIS)
         _ensure_ogc_gpkg_tables(conn, crs_wkt=crs_wkt)
         conn.execute("""
@@ -222,6 +226,19 @@ def load_baked_mesh(
         return row[0] if row else None
     finally:
         conn.close()
+
+
+def _configure_connection(conn: sqlite3.Connection) -> None:
+    """Enable WAL mode and reasonable performance pragmas.
+
+    WAL is best-effort; read-only or unsupported filesystems fall back
+    to the default journal mode silently.
+    """
+    try:
+        conn.execute("PRAGMA journal_mode=WAL;")
+        conn.execute("PRAGMA synchronous=NORMAL;")
+    except Exception:
+        pass
 
 
 def _ensure_ogc_gpkg_tables(conn: sqlite3.Connection, crs_wkt: str = "") -> None:
@@ -438,6 +455,7 @@ def persist_baked_results(
 
     conn = sqlite3.connect(gpkg_path)
     try:
+        _configure_connection(conn)
         # Ensure OGC GPKG metadata tables exist (required by GDAL/QGIS)
         _ensure_ogc_gpkg_tables(conn, crs_wkt=crs_wkt)
     finally:
@@ -459,6 +477,7 @@ def persist_baked_results(
 
     conn = sqlite3.connect(gpkg_path)
     try:
+        _configure_connection(conn)
         conn.execute("""
             CREATE TABLE IF NOT EXISTS swe2d_baked_results (
                 run_id TEXT PRIMARY KEY,
@@ -665,6 +684,7 @@ def persist_baked_coupling(
         return
     conn = sqlite3.connect(gpkg_path)
     try:
+        _configure_connection(conn)
         conn.execute("""
             CREATE TABLE IF NOT EXISTS swe2d_baked_coupling (
                 run_id TEXT,
@@ -686,6 +706,67 @@ def persist_baked_coupling(
         conn.commit()
         if log_fn:
             log_fn(f"Baked coupling saved: {component}/{object_id}/{metric} ({len(times)} steps)")
+    finally:
+        conn.close()
+
+
+def persist_baked_coupling_batch(
+    gpkg_path: str,
+    run_id: str,
+    coupling_items: List[Dict[str, Any]],
+    log_fn: Optional[Callable[[str], None]] = None,
+) -> None:
+    """Save many baked coupling timeseries in a single transaction.
+
+    Parameters
+    ----------
+    gpkg_path : str
+        Path to the GeoPackage file.
+    run_id : str
+        Run identifier.
+    coupling_items : list of dict
+        Each dict has keys: component, object_id, object_name, metric,
+        times (1-D ndarray), values (1-D ndarray).
+    log_fn : callable, optional
+        Logging callback.
+    """
+    if not gpkg_path or not coupling_items:
+        return
+    conn = sqlite3.connect(gpkg_path)
+    try:
+        _configure_connection(conn)
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS swe2d_baked_coupling (
+                run_id TEXT,
+                component TEXT,
+                object_id TEXT,
+                object_name TEXT,
+                metric TEXT,
+                n_timesteps INTEGER,
+                times_blob BLOB,
+                values_blob BLOB,
+                PRIMARY KEY (run_id, component, object_id, metric))
+        """)
+        rows = []
+        for item in coupling_items:
+            component = item["component"]
+            object_id = item["object_id"]
+            object_name = item.get("object_name", object_id)
+            metric = item["metric"]
+            times = np.asarray(item["times"], dtype=np.float64)
+            values = np.asarray(item["values"], dtype=np.float64)
+            rows.append((
+                run_id, component, object_id, object_name, metric,
+                len(times), times.tobytes(), values.tobytes(),
+            ))
+            if log_fn:
+                log_fn(f"Baked coupling saved: {component}/{object_id}/{metric} ({len(times)} steps)")
+        conn.executemany(
+            "INSERT OR REPLACE INTO swe2d_baked_coupling "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            rows,
+        )
+        conn.commit()
     finally:
         conn.close()
 
@@ -777,6 +858,7 @@ def persist_baked_line_ts(
         return
     conn = sqlite3.connect(gpkg_path)
     try:
+        _configure_connection(conn)
         conn.execute("""
             CREATE TABLE IF NOT EXISTS swe2d_baked_line_ts (
                 run_id TEXT,
@@ -809,6 +891,75 @@ def persist_baked_line_ts(
         conn.commit()
         if log_fn:
             log_fn(f"Baked line TS saved: line={line_id} ({len(times)} steps)")
+    finally:
+        conn.close()
+
+
+def persist_baked_line_ts_batch(
+    gpkg_path: str,
+    run_id: str,
+    line_items: List[Dict[str, Any]],
+    log_fn: Optional[Callable[[str], None]] = None,
+) -> None:
+    """Save many baked line timeseries in a single transaction.
+
+    Parameters
+    ----------
+    gpkg_path : str
+        Path to the GeoPackage file.
+    run_id : str
+        Run identifier.
+    line_items : list of dict
+        Each dict has keys: line_id, line_name, times, depth_m,
+        velocity_ms, wse_m, bed_m, flow_cms, wet_frac, fr.
+    log_fn : callable, optional
+        Logging callback.
+    """
+    if not gpkg_path or not line_items:
+        return
+    conn = sqlite3.connect(gpkg_path)
+    try:
+        _configure_connection(conn)
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS swe2d_baked_line_ts (
+                run_id TEXT,
+                line_id INTEGER,
+                line_name TEXT,
+                n_timesteps INTEGER,
+                times_blob BLOB,
+                depth_blob BLOB,
+                vel_blob BLOB,
+                wse_blob BLOB,
+                bed_blob BLOB,
+                flow_blob BLOB,
+                wet_frac_blob BLOB,
+                fr_blob BLOB,
+                PRIMARY KEY (run_id, line_id))
+        """)
+        rows = []
+        for item in line_items:
+            line_id = int(item["line_id"])
+            line_name = str(item.get("line_name", f"line_{line_id}"))
+            times = np.asarray(item["times"], dtype=np.float64)
+            rows.append((
+                run_id, line_id, line_name, len(times),
+                times.tobytes(),
+                np.asarray(item.get("depth_m", []), dtype=np.float64).tobytes(),
+                np.asarray(item.get("velocity_ms", []), dtype=np.float64).tobytes(),
+                np.asarray(item.get("wse_m", []), dtype=np.float64).tobytes(),
+                np.asarray(item.get("bed_m", []), dtype=np.float64).tobytes(),
+                np.asarray(item.get("flow_cms", []), dtype=np.float64).tobytes(),
+                np.asarray(item.get("wet_frac", []), dtype=np.float64).tobytes(),
+                np.asarray(item.get("fr", []), dtype=np.float64).tobytes(),
+            ))
+            if log_fn:
+                log_fn(f"Baked line TS saved: line={line_id} ({len(times)} steps)")
+        conn.executemany(
+            "INSERT OR REPLACE INTO swe2d_baked_line_ts "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            rows,
+        )
+        conn.commit()
     finally:
         conn.close()
 
@@ -856,6 +1007,7 @@ def persist_baked_line_profile(
         return
     conn = sqlite3.connect(gpkg_path)
     try:
+        _configure_connection(conn)
         conn.execute("""
             CREATE TABLE IF NOT EXISTS swe2d_baked_line_profiles (
                 run_id TEXT,
@@ -892,7 +1044,82 @@ def persist_baked_line_profile(
         conn.commit()
         if log_fn:
             log_fn(f"Baked line profile saved: line={line_id} "
-                   f"({len(times)} timesteps × {len(station_m)} stations)")
+                   f"({len(times)} timesteps x {len(station_m)} stations)")
+    finally:
+        conn.close()
+
+
+def persist_baked_line_profile_batch(
+    gpkg_path: str,
+    run_id: str,
+    profile_items: List[Dict[str, Any]],
+    log_fn: Optional[Callable[[str], None]] = None,
+) -> None:
+    """Save many baked line profiles in a single transaction.
+
+    Parameters
+    ----------
+    gpkg_path : str
+        Path to the GeoPackage file.
+    run_id : str
+        Run identifier.
+    profile_items : list of dict
+        Each dict has keys: line_id, line_name, station_m, times,
+        depth_m, velocity_ms, wse_m, bed_m, flow_qn, fr, wet.
+    log_fn : callable, optional
+        Logging callback.
+    """
+    if not gpkg_path or not profile_items:
+        return
+    conn = sqlite3.connect(gpkg_path)
+    try:
+        _configure_connection(conn)
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS swe2d_baked_line_profiles (
+                run_id TEXT,
+                line_id INTEGER,
+                line_name TEXT,
+                n_stations INTEGER,
+                n_timesteps INTEGER,
+                station_blob BLOB,
+                times_blob BLOB,
+                depth_blob BLOB,
+                vel_blob BLOB,
+                wse_blob BLOB,
+                bed_blob BLOB,
+                flow_qn_blob BLOB,
+                fr_blob BLOB,
+                wet_blob BLOB,
+                PRIMARY KEY (run_id, line_id))
+        """)
+        rows = []
+        for item in profile_items:
+            line_id = int(item["line_id"])
+            line_name = str(item.get("line_name", f"line_{line_id}"))
+            station_m = np.asarray(item["station_m"], dtype=np.float64)
+            times = np.asarray(item["times"], dtype=np.float64)
+            rows.append((
+                run_id, line_id, line_name,
+                len(station_m), len(times),
+                station_m.tobytes(),
+                times.tobytes(),
+                np.asarray(item["depth_m"], dtype=np.float64).tobytes(),
+                np.asarray(item["velocity_ms"], dtype=np.float64).tobytes(),
+                np.asarray(item["wse_m"], dtype=np.float64).tobytes(),
+                np.asarray(item["bed_m"], dtype=np.float64).tobytes(),
+                np.asarray(item["flow_qn"], dtype=np.float64).tobytes(),
+                np.asarray(item["fr"], dtype=np.float64).tobytes(),
+                np.asarray(item["wet"], dtype=np.int32).tobytes(),
+            ))
+            if log_fn:
+                log_fn(f"Baked line profile saved: line={line_id} "
+                       f"({len(times)} timesteps x {len(station_m)} stations)")
+        conn.executemany(
+            "INSERT OR REPLACE INTO swe2d_baked_line_profiles "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            rows,
+        )
+        conn.commit()
     finally:
         conn.close()
 

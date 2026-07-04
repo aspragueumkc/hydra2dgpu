@@ -18,9 +18,9 @@ import numpy as np
 
 from swe2d.services.gpkg_persistence_service import (
     persist_baked_results,
-    persist_baked_line_ts,
-    persist_baked_line_profile,
-    persist_baked_coupling,
+    persist_baked_line_ts_batch,
+    persist_baked_line_profile_batch,
+    persist_baked_coupling_batch,
 )
 
 
@@ -303,21 +303,29 @@ class SWE2DRunFinalizer:
                                     v = row.get(k)
                                     pd.setdefault(k, []).append(np.asarray(v, dtype=np.float64) if v is not None else np.array([]))
                                 pd.setdefault("wet", []).append(np.asarray(row.get("wet", []), dtype=np.int32))
+                    line_ts_items = []
                     for lid, ld in ts_by_line.items():
                         times_arr = np.array(ld.get("t_s", []), dtype=np.float64)
                         if times_arr.size == 0:
                             continue
-                        persist_baked_line_ts(
-                            gpkg_results_path, run_id, lid, ld.get("line_name", f"line_{lid}"), times_arr,
-                            np.array(ld.get("depth_m", []), dtype=np.float64),
-                            np.array(ld.get("velocity_ms", []), dtype=np.float64),
-                            np.array(ld.get("wse_m", []), dtype=np.float64),
-                            np.array(ld.get("bed_m", []), dtype=np.float64),
-                            np.array(ld.get("flow_cms", []), dtype=np.float64),
-                            np.array(ld.get("wet_frac", []), dtype=np.float64),
-                            np.array(ld.get("fr", []), dtype=np.float64),
+                        line_ts_items.append({
+                            "line_id": lid,
+                            "line_name": ld.get("line_name", f"line_{lid}"),
+                            "times": times_arr,
+                            "depth_m": np.array(ld.get("depth_m", []), dtype=np.float64),
+                            "velocity_ms": np.array(ld.get("velocity_ms", []), dtype=np.float64),
+                            "wse_m": np.array(ld.get("wse_m", []), dtype=np.float64),
+                            "bed_m": np.array(ld.get("bed_m", []), dtype=np.float64),
+                            "flow_cms": np.array(ld.get("flow_cms", []), dtype=np.float64),
+                            "wet_frac": np.array(ld.get("wet_frac", []), dtype=np.float64),
+                            "fr": np.array(ld.get("fr", []), dtype=np.float64),
+                        })
+                    if line_ts_items:
+                        persist_baked_line_ts_batch(
+                            gpkg_results_path, run_id, line_ts_items,
                             log_fn=self._view.log_message,
                         )
+                    profile_items = []
                     for lid, pd in prof_by_line.items():
                         sm_list = pd.get("station_m", [])
                         station_arr = np.asarray(sm_list, dtype=np.float64)
@@ -342,17 +350,22 @@ class SWE2DRunFinalizer:
                             )
                             continue
                         times_arr = np.array([float(s[0]) for s in snapshot_timesteps], dtype=np.float64)[:n_ts]
-                        persist_baked_line_profile(
-                            gpkg_results_path, run_id, lid, pd.get("line_name", f"line_{lid}"),
-                            station_arr,
-                            times_arr,
-                            depth_flat.reshape(n_ts, n_sta),
-                            vel_flat.reshape(n_ts, n_sta),
-                            wse_flat.reshape(n_ts, n_sta),
-                            bed_flat.reshape(n_ts, n_sta),
-                            qn_flat.reshape(n_ts, n_sta),
-                            fr_flat.reshape(n_ts, n_sta),
-                            wet_flat.reshape(n_ts, n_sta),
+                        profile_items.append({
+                            "line_id": lid,
+                            "line_name": pd.get("line_name", f"line_{lid}"),
+                            "station_m": station_arr,
+                            "times": times_arr,
+                            "depth_m": depth_flat.reshape(n_ts, n_sta),
+                            "velocity_ms": vel_flat.reshape(n_ts, n_sta),
+                            "wse_m": wse_flat.reshape(n_ts, n_sta),
+                            "bed_m": bed_flat.reshape(n_ts, n_sta),
+                            "flow_qn": qn_flat.reshape(n_ts, n_sta),
+                            "fr": fr_flat.reshape(n_ts, n_sta),
+                            "wet": wet_flat.reshape(n_ts, n_sta),
+                        })
+                    if profile_items:
+                        persist_baked_line_profile_batch(
+                            gpkg_results_path, run_id, profile_items,
                             log_fn=self._view.log_message,
                         )
                     self._view.log_message(
@@ -366,18 +379,23 @@ class SWE2DRunFinalizer:
             _coupling_data = coupling_snapshots if coupling_snapshots is not None else {}
             try:
                 if save_coupling_results and _coupling_data:
+                    coupling_items = []
                     for key, cd in _coupling_data.items():
                         component, object_id, metric = key
                         times_arr = np.array(cd.get("times", []), dtype=np.float64)
                         if times_arr.size == 0:
                             continue
-                        persist_baked_coupling(
-                            gpkg_results_path, run_id,
-                            component, object_id,
-                            cd.get("object_name", object_id),
-                            metric,
-                            times_arr,
-                            np.array(cd.get("values", []), dtype=np.float64),
+                        coupling_items.append({
+                            "component": component,
+                            "object_id": object_id,
+                            "object_name": cd.get("object_name", object_id),
+                            "metric": metric,
+                            "times": times_arr,
+                            "values": np.array(cd.get("values", []), dtype=np.float64),
+                        })
+                    if coupling_items:
+                        persist_baked_coupling_batch(
+                            gpkg_results_path, run_id, coupling_items,
                             log_fn=self._view.log_message,
                         )
                     self._view.log_message(
