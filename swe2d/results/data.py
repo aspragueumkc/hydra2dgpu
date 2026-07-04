@@ -83,6 +83,7 @@ class SWE2DResultsData:
 
         # Baked live snapshot storage (numpy arrays, same shape as GPKG BLOBs)
         self._live_times: np.ndarray = np.empty(0, dtype=np.float64)
+        self._live_run_id: str = ""
         self._live_h: np.ndarray = np.empty((0, 0), dtype=np.float64)
         self._live_hu: np.ndarray = np.empty((0, 0), dtype=np.float64)
         self._live_hv: np.ndarray = np.empty((0, 0), dtype=np.float64)
@@ -144,6 +145,7 @@ class SWE2DResultsData:
         """
         self._live_snapshot_timesteps = []
         self._live_times = np.empty(0, dtype=np.float64)
+        self._live_run_id = ""
         self._live_h = np.empty((0, 0), dtype=np.float64)
         self._live_hu = np.empty((0, 0), dtype=np.float64)
         self._live_hv = np.empty((0, 0), dtype=np.float64)
