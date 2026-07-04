@@ -534,12 +534,20 @@ class PGProfileWidget(QtWidgets.QWidget):
             bed_drawn = False
             structure_rows: List[Dict[str, Any]] = []
             for rec in run_records:
-                # Baked path: single function for live and GPKG
-                prof_data = load_baked_line_profile(
-                    data if getattr(data, "_live_times", None) is not None and data._live_times.size > 0
-                    else rec.gpkg_path,
-                    str(rec.run_id), int(line_id), float(t_sec),
-                )
+                # Try live data first (for during-run viewing), then fall
+                # back to GPKG (after run finalization).  The OLD matplotlib
+                # code always used rec.gpkg_path — the live ternary added
+                # during the pyqtgraph refactor had no fallback, so profiles
+                # silently disappeared when _live_line_profile was empty.
+                prof_data = {}
+                if getattr(data, "_live_times", None) is not None and data._live_times.size > 0:
+                    prof_data = load_baked_line_profile(
+                        data, str(rec.run_id), int(line_id), float(t_sec),
+                    )
+                if not prof_data:
+                    prof_data = load_baked_line_profile(
+                        rec.gpkg_path, str(rec.run_id), int(line_id), float(t_sec),
+                    )
                 if not prof_data:
                     continue
                 color = _c2q(rec.color)
@@ -999,11 +1007,15 @@ class PGProfileWidget(QtWidgets.QWidget):
             for rec in run_records:
                 if line_id < 0:
                     continue
-                prof_data = load_baked_line_profile(
-                    data if getattr(data, "_live_times", None) is not None and data._live_times.size > 0
-                    else rec.gpkg_path,
-                    str(rec.run_id), int(line_id), float(t_sec),
-                )
+                prof_data = {}
+                if getattr(data, "_live_times", None) is not None and data._live_times.size > 0:
+                    prof_data = load_baked_line_profile(
+                        data, str(rec.run_id), int(line_id), float(t_sec),
+                    )
+                if not prof_data:
+                    prof_data = load_baked_line_profile(
+                        rec.gpkg_path, str(rec.run_id), int(line_id), float(t_sec),
+                    )
                 if not prof_data:
                     continue
                 station = prof_data.get("station_m", prof_data.get("dist_m", np.empty(0)))

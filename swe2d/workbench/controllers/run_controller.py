@@ -380,6 +380,13 @@ class RunController:
             if data is not None and data._run_records and data._run_records[0].run_id == "":
                 data._run_records[0].run_id = str(run_id)
                 data._run_records[0].label = f"Live: {run_id}"
+                _live_gpkg = str(
+                    view._current_line_results_storage_path()
+                    or getattr(view, "_model_gpkg_path", "")
+                    or ""
+                )
+                if _live_gpkg:
+                    data._run_records[0].gpkg_path = _live_gpkg
             run_wallclock_start = datetime.datetime.now().replace(microsecond=0).isoformat(sep=" ")
 
             # Save simulation configuration to GPKG
