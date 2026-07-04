@@ -620,6 +620,8 @@ class SWE2DResultsData:
             self._run_records, run_keys, self._manual_gpkg_paths,
         )
         self._selected_run_keys -= run_keys
+        if self._overlay_selected_key in run_keys:
+            self._overlay_selected_key = ""
         self._rebuild_timestep_union()
 
     def set_all_runs_visible(self) -> None:
@@ -900,6 +902,18 @@ class SWE2DResultsData:
                 return rec
         return None
 
+    def overlay_selected_run(self):
+        """Return the overlay-selected RunRecord, or first enabled if none selected."""
+        if self._overlay_selected_key:
+            for rec in self._run_records:
+                if rec.key == self._overlay_selected_key:
+                    return rec
+        return self.first_enabled_record()
+
+    def set_overlay_selected_key(self, key: str) -> None:
+        """Set which run is selected for map overlay display."""
+        self._overlay_selected_key = str(key or "")
+
     def enabled_overlay_targets(self) -> List[Tuple[str, str]]:
         """Return enabled overlay targets."""
         out: List[Tuple[str, str]] = []
@@ -928,6 +942,7 @@ class SWE2DResultsData:
             "t_sec": self._current_t_sec,
             "frame_idx": int(self._anim_frame_idx),
             "is_playing": bool(self._anim.is_playing),
+            "overlay_selected_key": self._overlay_selected_key,
         }
 
     def restore_data_state(self, state: dict) -> None:
@@ -952,6 +967,8 @@ class SWE2DResultsData:
 
         lid = state.get("line_id", -1)
         self._line_id = int(lid)
+
+        self._overlay_selected_key = str(state.get("overlay_selected_key", "") or "")
 
         t_sec = float(state.get("t_sec", 0.0))
         self._set_frame(self._t_sec_to_frame_idx(t_sec))
