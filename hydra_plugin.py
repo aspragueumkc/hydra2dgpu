@@ -360,10 +360,10 @@ class HydraQgisPlugin:
             return None
 
     def _find_hydra_main_menu(self):
-        menu_bar = self._menu_bar()
-        if menu_bar is None:
+        plugins_menu = self.iface.pluginMenu()
+        if plugins_menu is None:
             return None
-        for action in menu_bar.actions():
+        for action in plugins_menu.actions():
             try:
                 menu = action.menu()
             except Exception:
@@ -383,15 +383,15 @@ class HydraQgisPlugin:
         return None
 
     def _install_main_menu_bar_menu(self):
-        menu_bar = self._menu_bar()
-        if menu_bar is None:
+        plugins_menu = self.iface.pluginMenu()
+        if plugins_menu is None:
             return
 
         menu = self._find_hydra_main_menu()
         if menu is None:
-            menu = QMenu('HYDRA2DGPU', menu_bar)
+            menu = QMenu('HYDRA2DGPU', plugins_menu)
             menu.setObjectName('HYDRA2DGMainMenu')
-            menu_bar.addMenu(menu)
+            plugins_menu.addMenu(menu)
             self._owns_main_menu = True
         else:
             self._owns_main_menu = False
@@ -565,9 +565,9 @@ class HydraQgisPlugin:
 
         if self._owns_main_menu:
             try:
-                menu_bar = self._menu_bar()
-                if menu_bar is not None:
-                    menu_bar.removeAction(menu.menuAction())
+                plugins_menu = self.iface.pluginMenu()
+                if plugins_menu is not None:
+                    plugins_menu.removeAction(menu.menuAction())
             except Exception:
                 pass
             try:
