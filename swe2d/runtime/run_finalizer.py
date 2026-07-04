@@ -446,4 +446,8 @@ class SWE2DRunFinalizer:
         except Exception as exc:
             _record_warning("refresh_plot failed during finalization", exc)
 
+        _rd = getattr(self._view, "_results_data", None)
+        if _rd is not None:
+            _rd.clear_live_snapshots()
+
         return status
