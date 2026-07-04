@@ -6,15 +6,10 @@ three actions:
     - Inspect Next Clicked Widget   (the existing one-shot probe)
     - Show Widget Tree              (open the persistent inspector dock)
     - Enter GUI Edit Mode           (placeholder; full edit-mode ships in sprint 2)
-
-The submenu is built only when at least one DevTools action is enabled.
-In production deployments where the env var is unset, ``build_devtools_menu``
-returns ``None`` so the submenu does not appear.
 """
 
 from __future__ import annotations
 
-import os
 from typing import Callable, List, Optional
 
 from qgis.PyQt.QtCore import QObject
@@ -26,14 +21,14 @@ from swe2d.workbench.devtools.property_editor import PropertyEditorDialog
 from swe2d.workbench.devtools.widget_walker import WidgetNode
 
 
-# Env var that opts the user into DevTools. When unset, no menu entries are
-# registered and the devtools package is never imported by production paths.
-DEVTOOLS_ENV_FLAG = "SWE2D_DEVTOOLS"
-
-
 def devtools_enabled() -> bool:
-    """Return True if the devtools menu should appear this session."""
-    return bool(os.environ.get(DEVTOOLS_ENV_FLAG))
+    """Return True if the devtools menu should appear this session.
+
+    DevTools is always available in the workbench menu.
+    The env-var gate (SWE2D_DEVTOOLS) was removed so the inspector
+    and widget tree are always at your fingertips.
+    """
+    return True
 
 
 # Paths to the view files we will scan for rename targets.
