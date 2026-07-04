@@ -73,7 +73,6 @@ class TestMapTabView(unittest.TestCase):
         for attr in (
             "open_model_gpkg_explorer_btn",
             "open_run_log_viewer_btn",
-            "layer_status_lbl",
         ):
             with self.subTest(attr=attr):
                 self.assertTrue(

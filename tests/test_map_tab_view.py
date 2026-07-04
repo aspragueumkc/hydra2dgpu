@@ -118,11 +118,6 @@ class TestMapTabView(unittest.TestCase):
         view = MapTabView()
         self.assertIsInstance(view.open_run_log_viewer_btn, QPushButton)
 
-    def test_view_has_layer_status_lbl(self):
-        from swe2d.workbench.views.map_tab_view import MapTabView
-        view = MapTabView()
-        self.assertIsInstance(view.layer_status_lbl, QLabel)
-
     def test_widgets_have_object_names(self):
         """Object names are preserved for findChild compatibility."""
         from swe2d.workbench.views.map_tab_view import MapTabView
@@ -145,7 +140,6 @@ class TestMapTabView(unittest.TestCase):
             ("import_mesh_layers_btn", "import_mesh_layers_btn"),
             ("open_model_gpkg_explorer_btn", "open_model_gpkg_explorer_btn"),
             ("open_run_log_viewer_btn", "open_run_log_viewer_btn"),
-            ("layer_status_lbl", "layer_status_lbl"),
         ]
         for attr, expected_name in expected_names:
             widget = getattr(view, attr)
