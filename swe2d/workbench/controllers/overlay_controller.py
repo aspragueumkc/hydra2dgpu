@@ -104,7 +104,7 @@ class OverlayController:
             _data = getattr(view, "_results_data", None)
             if hasattr(self._data, 'overlay_cell_x') and (self._data.overlay_cell_x is None or self._data.overlay_cell_x.size <= 0):
                 try:
-                    rec = self._data.first_enabled_record()
+                    rec = self._data.overlay_selected_run()
                     if not rec:
                         raise ValueError("No enabled run records")
                     gpkg = rec.gpkg_path
@@ -623,10 +623,11 @@ class OverlayController:
         # Resolve the per-run GPKG from the enabled RunRecord — NOT from
         # an overarching data-level path.  Each run's mesh lives in its
         # own GPKG and the overlay must read from there.
-        run_targets = data.enabled_overlay_targets()
-        if not run_targets:
+        rec = data.overlay_selected_run()
+        if rec is None:
             return False
-        gpkg, run_id = run_targets[0]
+        gpkg = str(rec.gpkg_path or "")
+        run_id = str(rec.run_id or "")
         if not gpkg or not os.path.exists(gpkg):
             return False
 
