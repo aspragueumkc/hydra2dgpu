@@ -174,7 +174,6 @@ def wire_topology_tab_static_signals(dialog) -> None:
     from swe2d.workbench.signal_helpers import safe_disconnect
     v = dialog._topology_tab_view
     handlers = {
-        "topo_export_template_btn": (v.topo_export_template_btn, dialog._topology_controller.create_topology_template_layers),
         "topo_generate_btn": (v.topo_generate_btn, dialog._topology_controller.generate_mesh_from_topology_layers),
         "topo_terminate_btn": (v.topo_terminate_btn, dialog._topology_controller.on_terminate_topology_mesh),
         # Mesh I/O buttons — moved from Map tab to the Import/Export page

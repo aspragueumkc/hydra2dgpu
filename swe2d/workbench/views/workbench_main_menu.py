@@ -151,6 +151,11 @@ def install_workbench_main_menu(dlg, iface) -> Optional[QtWidgets.QMenu]:
         "Load 2D Model GeoPackage…",
         lambda: dlg._load_2d_model_geopackage(),
     )
+    add_action(
+        "HYDRA2DMenuCreateTemplateAction",
+        "Create Topology Template Layers…",
+        lambda: dlg._topology_controller.create_topology_template_layers(),
+    )
     menu.addSeparator()
 
     # ── Simulation & I/O actions ────────────────────────────────────

@@ -51,11 +51,6 @@ class TestTopologyTabView(unittest.TestCase):
         view = TopologyTabView()
         self.assertIsInstance(view.topo_quad_edges_combo, QComboBox)
 
-    def test_view_has_export_template_btn(self):
-        from swe2d.workbench.views.topology_tab_view import TopologyTabView
-        view = TopologyTabView()
-        self.assertIsInstance(view.topo_export_template_btn, QPushButton)
-
     def test_view_has_backend_combo(self):
         from swe2d.workbench.views.topology_tab_view import TopologyTabView
         view = TopologyTabView()
@@ -137,7 +132,6 @@ class TestTopologyTabView(unittest.TestCase):
             (view.topo_regions_combo, "topo_regions_combo"),
             (view.topo_constraints_combo, "topo_constraints_combo"),
             (view.topo_quad_edges_combo, "topo_quad_edges_combo"),
-            (view.topo_export_template_btn, "topo_export_template_btn"),
             (view.topo_backend_combo, "topo_backend_combo"),
             (view.topo_default_size_spin, "topo_default_size_spin"),
             (view.topo_default_cell_type_combo, "topo_default_cell_type_combo"),

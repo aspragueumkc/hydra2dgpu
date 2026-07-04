@@ -15,7 +15,7 @@ class TopologyTabView(QtWidgets.QWidget):
     Creates and owns:
     - Layer Setup page: topo_nodes_combo, topo_arcs_combo,
       topo_regions_combo, topo_constraints_combo, topo_quad_edges_combo,
-      topo_export_template_btn
+      topo_elevation_combo
     - General page: topo_backend_combo, topo_default_size_spin,
       topo_default_cell_type_combo, topo_generate_btn, topo_terminate_btn
     - Algorithm page (gmsh): tri/quad/recombine algos, smoothing,
@@ -94,16 +94,6 @@ class TopologyTabView(QtWidgets.QWidget):
             "Optional layer for quad-edge transition controls "
             "used in structured mesh regions."
         )
-
-        self.topo_export_template_btn = QtWidgets.QPushButton(
-            "Create Topology Template Layers"
-        )
-        self.topo_export_template_btn.setObjectName("topo_export_template_btn")
-        self.topo_export_template_btn.setToolTip(
-            "Create empty point/line/polygon template layers for topology "
-            "node, arc, and region input."
-        )
-        layer_form.addRow(self.topo_export_template_btn)
 
         # ── Elevation source ───────────────────────────────────────────
         # Auto-assign node_z from a single-band raster or PointZ layer when
