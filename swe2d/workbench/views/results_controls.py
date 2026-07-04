@@ -414,6 +414,7 @@ class ResultsToolbox(QtWidgets.QWidget):
         self.run_list.setSelectionMode(
             QtWidgets.QAbstractItemView.SelectionMode.ExtendedSelection)
         self.run_list.setItemDelegate(_SwatchDelegate(self.run_list))
+        self.run_list.itemDoubleClicked.connect(self._on_run_double_clicked)
         layout.addWidget(self.run_list, 1)
 
         btn_row = QtWidgets.QHBoxLayout()
@@ -450,13 +451,19 @@ class ResultsToolbox(QtWidgets.QWidget):
         self.run_list.blockSignals(True)
         self.run_list.clear()
         for rec in self._data.get_run_records():
-            item = QtWidgets.QListWidgetItem(rec.display_label())
+            overlay_marker = "\u25cf " if rec.key == self._data._overlay_selected_key else "   "
+            item = QtWidgets.QListWidgetItem(f"{overlay_marker}{rec.display_label()}")
             item.setCheckState(
                 QtCore.Qt.CheckState.Checked if rec.enabled
                 else QtCore.Qt.CheckState.Unchecked)
             item.setData(QtCore.Qt.ItemDataRole.UserRole, rec.key)
             item.setData(QtCore.Qt.ItemDataRole.UserRole + 1, rec.color)
-            item.setToolTip(f"Run: {rec.run_id}\nGPKG: {rec.gpkg_path}")
+            tip = f"Run: {rec.run_id}\nGPKG: {rec.gpkg_path}"
+            if rec.key == self._data._overlay_selected_key:
+                tip += "\n[Overlay active — double-click another run to switch]"
+            else:
+                tip += "\n[Double-click to set as overlay]"
+            item.setToolTip(tip)
             self.run_list.addItem(item)
         self.run_list.blockSignals(False)
         self.run_list.itemChanged.connect(self._on_run_item_changed)
@@ -469,6 +476,17 @@ class ResultsToolbox(QtWidgets.QWidget):
         run_key = str(item.data(QtCore.Qt.ItemDataRole.UserRole) or "")
         enabled = item.checkState() == QtCore.Qt.CheckState.Checked
         self._data.toggle_run(run_key, enabled)
+        self.run_selection_changed.emit()
+
+    def _on_run_double_clicked(self, item: QtWidgets.QListWidgetItem) -> None:
+        """Double-click selects a run for map overlay display."""
+        if self._data is None:
+            return
+        run_key = str(item.data(QtCore.Qt.ItemDataRole.UserRole) or "")
+        if not run_key:
+            return
+        self._data.set_overlay_selected_key(run_key)
+        self._rebuild_run_list()
         self.run_selection_changed.emit()
 
     def _update_run_count(self) -> None:

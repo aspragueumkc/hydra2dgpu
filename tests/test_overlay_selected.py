@@ -35,3 +35,27 @@ class TestOverlaySelected(unittest.TestCase):
             src,
             "load_mesh_snapshot_for_overlay must use overlay_selected_run()",
         )
+
+    def test_run_list_has_overlay_select_handler(self):
+        """ResultsToolbox must wire a double-click handler for overlay selection."""
+        import inspect
+        from swe2d.workbench.views.results_controls import ResultsToolbox
+        src = inspect.getsource(ResultsToolbox)
+        self.assertIn(
+            "_on_run_double_clicked",
+            src,
+            "ResultsToolbox must have a _on_run_double_clicked method "
+            "for selecting the overlay run",
+        )
+
+    def test_rebuild_run_list_shows_overlay_indicator(self):
+        """_rebuild_run_list must mark the overlay-selected run visually."""
+        import inspect
+        from swe2d.workbench.views.results_controls import ResultsToolbox
+        src = inspect.getsource(ResultsToolbox._rebuild_run_list)
+        self.assertIn(
+            "overlay_selected_key",
+            src,
+            "_rebuild_run_list must check overlay_selected_key to mark "
+            "the overlay-active run",
+        )
