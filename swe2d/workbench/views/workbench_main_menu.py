@@ -68,18 +68,18 @@ def _register_with_qgis_shortcut_manager(action: QAction) -> None:
 
 
 def _find_workbench_main_menu(menu_bar: QtWidgets.QMenuBar) -> Optional[QtWidgets.QMenu]:
-    """Return an existing HYDRA2DGPU top-level menu on the menu bar, if any."""
+    """Return the workbench-scoped HYDRA2DGPU menu, if already installed.
+
+    Matches only by objectName (``HYDRA2DBenchMainMenu``), NOT by title, so
+    the plugin-level ``HYDRA2DGMainMenu`` is never accidentally reused or
+    removed.
+    """
     for action in menu_bar.actions():
         menu = action.menu()
         if menu is None:
             continue
         try:
             if menu.objectName() == "HYDRA2DBenchMainMenu":
-                return menu
-        except Exception:
-            pass
-        try:
-            if str(menu.title()).replace("&", "").strip() == "HYDRA2DGPU":
                 return menu
         except Exception:
             pass
