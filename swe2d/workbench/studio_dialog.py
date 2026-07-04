@@ -2464,8 +2464,7 @@ class SWE2DWorkbenchStudioDialog(QtWidgets.QDialog):
 
     def set_results_gpkg_path(self, path: str) -> None:
         """Set the results GeoPackage path in the UI."""
-        rd = getattr(self, "_run_dock", None)
-        edit = getattr(rd, "results_gpkg_path_edit", None) if rd is not None else None
+        edit = getattr(self._model_tab_view, "results_gpkg_path_edit", None)
         if edit is not None:
             try:
                 edit.setText(str(path))
@@ -2535,11 +2534,23 @@ class SWE2DWorkbenchStudioDialog(QtWidgets.QDialog):
 
     def collect_run_widget_params(self) -> dict:
         """Collect all run parameter values from UI widgets."""
+        mt = self._model_tab_view
+        def _text(attr: str) -> str:
+            w = getattr(mt, attr, None)
+            if w is None:
+                return ""
+            try:
+                return str(w.text())
+            except RuntimeError:
+                return ""
         return {
             "gravity": float(self._gravity),
             "k_mann": float(self._k_mann),
             **self.model_tab.collect_params(),
-            **self.run_dock.collect_params(),
+            "output_interval_edit": _text("output_interval_edit"),
+            "line_output_interval_edit": _text("line_output_interval_edit"),
+            "results_table_name_edit": _text("results_table_name_edit"),
+            "results_gpkg_path_edit": _text("results_gpkg_path_edit"),
             **self.model_tab.collect_storage_params(),
             "inflow_progressive_chk": bool(self._model_tab_view.inflow_progressive_chk.isChecked()),
         }

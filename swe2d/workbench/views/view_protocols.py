@@ -133,7 +133,14 @@ class MapTabViewProtocol(Protocol):
 
 
 class RunDockProtocol(Protocol):
-    """Typed access to Run dock widgets."""
+    """Typed access to Run dock widgets (execution surface only).
+
+    Output-config widgets (output_interval, line_output_interval,
+    results_table_name, results_gpkg_path, results_gpkg_browse, preview
+    overrides/coupling, load/save config) live on the Simulation tab's
+    Output page — see ModelTabViewProtocol. Read them from the dialog
+    or from the model tab view directly.
+    """
 
     def set_run_button_enabled(self, enabled: bool) -> None:
         """Enable/disable the Run button."""
@@ -152,18 +159,3 @@ class RunDockProtocol(Protocol):
 
     def get_progress_bar(self) -> Optional[QtWidgets.QProgressBar]:
         """Progress bar widget."""
-
-    def get_results_gpkg_path(self) -> str:
-        """Results GeoPackage path text."""
-
-    def set_results_gpkg_path(self, path: str) -> None:
-        """Set the results GeoPackage path."""
-
-    def get_output_interval(self) -> str:
-        """Output interval text."""
-
-    def get_line_output_interval(self) -> str:
-        """Line output interval text."""
-
-    def get_results_table_prefix(self) -> str:
-        """Results table prefix text."""
