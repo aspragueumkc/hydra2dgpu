@@ -13,12 +13,6 @@ from qgis.PyQt import QtCore, QtGui, QtWidgets
 logger = logging.getLogger(__name__)
 
 
-def build_map_tab(dialog) -> QtWidgets.QWidget:
-    """Build the Map tab page and wrap it in a scroll area."""
-    page, data_layout, actions_layout, tools_layout = build_map_tab_page(dialog)
-    return wrap_left_tab_page(dialog, page)
-
-
 def build_topology_tab(dialog) -> QtWidgets.QWidget:
     """Build the Topology tab page and wrap it in a scroll area."""
     page = build_topology_tab_page(dialog)
@@ -47,7 +41,6 @@ def compose_left_pane(dialog, left_host: QtWidgets.QWidget) -> QtWidgets.QWidget
     dialog._left_tabs = QtWidgets.QTabWidget()
     dialog._left_tabs.setDocumentMode(True)
     left_layout.addWidget(dialog._left_tabs, stretch=1)
-    dialog._left_tabs.addTab(build_map_tab(dialog), "Setup")
     dialog._left_tabs.addTab(build_topology_tab(dialog), "Mesh Generation")
     dialog._left_tabs.addTab(build_model_tab(dialog), "Simulation")
     left.setMinimumWidth(0)
@@ -66,89 +59,6 @@ def compose_left_pane(dialog, left_host: QtWidgets.QWidget) -> QtWidgets.QWidget
     register_detachable_tab_widget(dialog, dialog._left_tabs)
     return left
 
-
-# ── Map tab ──────────────────────────────────────────────────────────────────
-
-
-def build_map_tab_page(dialog):
-    """Build the Map tab page view and wire signal handlers.
-
-    The Mesh Setup / actions page was moved to the Topology tab as
-    the "Import/Export" page, so this function no longer requires
-    a ``map_actions_layout`` child.
-    """
-    from swe2d.workbench.views.map_tab_view import MapTabView
-    dialog._map_tab_view = MapTabView()
-    map_tab_page = dialog._map_tab_view
-    map_data_layout = map_tab_page.findChild(QtWidgets.QGridLayout, "map_data_layout")
-    map_tools_layout = map_tab_page.findChild(QtWidgets.QGridLayout, "map_tools_layout")
-    if map_data_layout is None or map_tools_layout is None:
-        raise RuntimeError("Map tab UI missing one or more expected group layouts")
-    wire_map_tab_data_signals(dialog)
-    # wire_map_tab_action_signals is a no-op now — mesh I/O buttons
-    # live on the Topology tab and are wired in
-    # wire_topology_tab_static_signals.
-    wire_map_tab_action_signals(dialog)
-    wire_map_tab_tools_signals(dialog)
-    # Return map_actions_layout=None to keep the existing 4-tuple contract.
-    return map_tab_page, map_data_layout, None, map_tools_layout
-
-
-def wire_map_tab_data_signals(dialog) -> None:
-    """Wire the Map tab Data page signals to the controller.
-
-    Layer combos auto-refresh on toggle to keep the project layer list current.
-    """
-    from swe2d.workbench.signal_helpers import safe_disconnect
-    v = dialog._map_tab_view
-    lc = dialog._layer_controller
-
-    def _on_combo_changed() -> None:
-        lc.refresh_layer_combos()
-
-    # Wire all layer combos to auto-refresh on activation/toggle
-    for attr in (
-        "nodes_layer_combo",
-        "cells_layer_combo",
-        "terrain_layer_combo",
-        "manning_layer_combo",
-        "cn_layer_combo",
-        "rain_gage_layer_combo",
-        "hyetograph_layer_combo",
-        "sample_lines_layer_combo",
-        "drain_nodes_layer_combo",
-        "drain_links_layer_combo",
-        "drain_inlets_layer_combo",
-        "drain_node_inlets_layer_combo",
-        "structures_layer_combo",
-        "bc_lines_layer_combo",
-    ):
-        combo = getattr(v, attr, None)
-        if combo is not None:
-            safe_disconnect(combo.currentIndexChanged, _on_combo_changed)
-            combo.currentIndexChanged.connect(_on_combo_changed)
-
-
-def wire_map_tab_action_signals(dialog) -> None:
-    """No-op — Map tab's Mesh Setup page was moved to the Topology tab
-    as the Import/Export page. The mesh I/O buttons now live on the
-    Topology tab view and are wired in
-    :func:`wire_topology_tab_static_signals`.
-    """
-    return None
-
-
-def wire_map_tab_tools_signals(dialog) -> None:
-    """Wire the Map tab Utilities page button signals to the dialog handlers."""
-    from swe2d.workbench.signal_helpers import safe_disconnect
-    v = dialog._map_tab_view
-    handlers = {
-        "open_model_gpkg_explorer_btn": (v.open_model_gpkg_explorer_btn, dialog._topology_controller.open_model_gpkg_explorer),
-        "open_run_log_viewer_btn": (v.open_run_log_viewer_btn, dialog._mesh_controller.open_run_log_viewer),
-    }
-    for attr, (btn, cb) in handlers.items():
-        safe_disconnect(btn.clicked, cb)
-        btn.clicked.connect(cb)
 
 
 # ── Topology tab ─────────────────────────────────────────────────────────────
@@ -202,6 +112,7 @@ def build_model_tab_page(dialog):
     drain_form = model_tab_page.findChild(QtWidgets.QFormLayout, "model_drain_form")
     if solver_form is None or rain_form is None or drain_form is None:
         raise RuntimeError("Model tab UI missing one or more form layouts")
+    wire_model_tab_layers_signals(dialog)
     wire_run_tab_signals(dialog)
     return model_tab_page, solver_form, rain_form, drain_form, None
 
@@ -224,6 +135,44 @@ def wire_run_dock_signals(dialog) -> None:
     d.snapshot_btn.clicked.connect(dialog._controller.on_snapshot)
     safe_disconnect(d.batch_btn.clicked, dialog._controller.open_batch_simulation_dialog)
     d.batch_btn.clicked.connect(dialog._controller.open_batch_simulation_dialog)
+
+
+def wire_model_tab_layers_signals(dialog) -> None:
+    """Wire the Simulation tab Layers page combos to auto-refresh.
+
+    The 14 layer combos (nodes, cells, terrain, manning, CN, rain gages,
+    hyetographs, sample lines, drainage nodes/links/inlets, structures,
+    BC lines) now live on the Simulation tab's "Layers" page. They
+    auto-refresh when the user changes the active layer so the project
+    layer list stays current.
+    """
+    from swe2d.workbench.signal_helpers import safe_disconnect
+    v = dialog._model_tab_view
+    lc = dialog._layer_controller
+
+    def _on_combo_changed() -> None:
+        lc.refresh_layer_combos()
+
+    for attr in (
+        "nodes_layer_combo",
+        "cells_layer_combo",
+        "terrain_layer_combo",
+        "manning_layer_combo",
+        "cn_layer_combo",
+        "rain_gage_layer_combo",
+        "hyetograph_layer_combo",
+        "sample_lines_layer_combo",
+        "drain_nodes_layer_combo",
+        "drain_links_layer_combo",
+        "drain_inlets_layer_combo",
+        "drain_node_inlets_layer_combo",
+        "structures_layer_combo",
+        "bc_lines_layer_combo",
+    ):
+        combo = getattr(v, attr, None)
+        if combo is not None:
+            safe_disconnect(combo.currentIndexChanged, _on_combo_changed)
+            combo.currentIndexChanged.connect(_on_combo_changed)
 
 
 def wire_run_tab_signals(dialog) -> None:

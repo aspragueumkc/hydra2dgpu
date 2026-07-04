@@ -355,7 +355,7 @@ class WorkbenchDialogBuilder:
     def _resolve_widget_attr(self, attr: str):
         """Resolve a widget by attribute name across all tab views + results toolbox."""
         dlg = self._dialog
-        for tab_attr in ("_model_tab_view", "_map_tab_view", "_topology_tab_view",
+        for tab_attr in ("_model_tab_view", "_topology_tab_view",
                          "_mesh_tab_view", "_boundary_tab_view", "_results_toolbox"):
             tab = getattr(dlg, tab_attr, None)
             if tab is not None:

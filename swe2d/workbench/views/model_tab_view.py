@@ -29,8 +29,16 @@ class HintLabel(QtWidgets.QLabel):
 class ModelTabView(QtWidgets.QWidget):
     """View for the Model tab.
 
-    Houses five QToolBox pages.  Every widget is created here as a direct
+    Houses six QToolBox pages.  Every widget is created here as a direct
     instance attribute with a stable ``objectName``.
+
+    Layers page (``model_layers_page``):
+        nodes_layer_combo, cells_layer_combo, terrain_layer_combo,
+        manning_layer_combo, cn_layer_combo, rain_gage_layer_combo,
+        hyetograph_layer_combo, sample_lines_layer_combo,
+        drain_nodes_layer_combo, drain_links_layer_combo,
+        drain_inlets_layer_combo, drain_node_inlets_layer_combo,
+        structures_layer_combo, bc_lines_layer_combo
 
     Solver Parameters page (``model_solver_page``):
         n_mann_spin, cfl_spin, h_min_spin,
@@ -119,6 +127,9 @@ class ModelTabView(QtWidgets.QWidget):
         )
         root_layout.addWidget(self.model_toolbox)
 
+        # Layers page — moved from the Setup tab (MapTabView)
+        self._build_layers_page()
+
         self.model_solver_page, self.model_solver_form = self._build_form_page(
             "model_solver_page", "model_solver_form"
         )
@@ -141,6 +152,7 @@ class ModelTabView(QtWidgets.QWidget):
 
         self._build_output_page()
 
+        self.model_toolbox.addItem(self.model_layers_page, "Layers")
         self.model_toolbox.addItem(self.model_solver_page, "Solver Parameters")
         self.model_toolbox.addItem(self.model_rain_page, "Rain / Hydrology")
         self.model_toolbox.addItem(self.model_stability_page, "Stability Controls")
@@ -154,6 +166,139 @@ class ModelTabView(QtWidgets.QWidget):
                     QtWidgets.QSizePolicy.Preferred,
                     QtWidgets.QSizePolicy.Expanding,
                 )
+
+    # ------------------------------------------------------------------
+    # Layers page — moved from MapTabView (Setup tab)
+    # ------------------------------------------------------------------
+
+    def _build_layers_page(self) -> None:
+        """Build the Layers page with all layer-selection combos.
+
+        The 14 combos (nodes, cells, terrain, manning, CN, rain gages,
+        hyetographs, sample lines, drainage nodes/links/inlets, structures,
+        BC lines) were moved here from MapTabView._build_data_page so the
+        Simulation tab is now the single home for layer selection.
+        """
+        self.model_layers_page = QtWidgets.QWidget()
+        self.model_layers_page.setObjectName("model_layers_page")
+        layers_layout = QtWidgets.QGridLayout(self.model_layers_page)
+        layers_layout.setContentsMargins(4, 4, 4, 4)
+
+        # Create all 14 layer combos as instance attributes
+        for attr in (
+            "nodes_layer_combo",
+            "cells_layer_combo",
+            "terrain_layer_combo",
+            "manning_layer_combo",
+            "cn_layer_combo",
+            "rain_gage_layer_combo",
+            "hyetograph_layer_combo",
+            "sample_lines_layer_combo",
+            "drain_nodes_layer_combo",
+            "drain_links_layer_combo",
+            "drain_inlets_layer_combo",
+            "drain_node_inlets_layer_combo",
+            "structures_layer_combo",
+            "bc_lines_layer_combo",
+        ):
+            widget = QtWidgets.QComboBox()
+            widget.setObjectName(attr)
+            setattr(self, attr, widget)
+
+        for row, label, attr in [
+            (0, "Nodes layer:", "nodes_layer_combo"),
+            (1, "Cells layer:", "cells_layer_combo"),
+            (2, "Terrain raster:", "terrain_layer_combo"),
+            (3, "Manning polygons:", "manning_layer_combo"),
+            (4, "CN polygons:", "cn_layer_combo"),
+            (5, "Rain gages (points):", "rain_gage_layer_combo"),
+            (6, "Rain hyetographs (table):", "hyetograph_layer_combo"),
+            (7, "Sample lines layer:", "sample_lines_layer_combo"),
+            (8, "Drainage nodes layer:", "drain_nodes_layer_combo"),
+            (9, "Drainage links layer:", "drain_links_layer_combo"),
+            (10, "Drainage inlet types (table):", "drain_inlets_layer_combo"),
+            (11, "Drainage node-inlets (table):", "drain_node_inlets_layer_combo"),
+            (12, "Hydraulic structures layer:", "structures_layer_combo"),
+            (13, "BC lines layer:", "bc_lines_layer_combo"),
+        ]:
+            widget = getattr(self, attr)
+            if layers_layout.indexOf(widget) < 0:
+                layers_layout.addWidget(QtWidgets.QLabel(label), row, 0)
+                layers_layout.addWidget(widget, row, 1)
+        layers_layout.setRowStretch(14, 1)
+
+        # Tooltips
+        self.nodes_layer_combo.setToolTip(
+            "QGIS point layer containing mesh node coordinates. "
+            "Required for mesh construction. The 'node_id' field must be present."
+        )
+        self.cells_layer_combo.setToolTip(
+            "QGIS polygon/multipolygon layer defining mesh cell geometry. "
+            "Each cell has a 'cell_id' and references 'node_id' values. "
+            "Required for mesh construction."
+        )
+        self.terrain_layer_combo.setToolTip(
+            "Digital elevation model (DEM) raster layer used to assign node bed elevations. "
+            "Select a raster then use 'Assign Node Z From Terrain' on the Mesh tab."
+        )
+        self.manning_layer_combo.setToolTip(
+            "Polygon layer with Manning's n values for spatially varying roughness. "
+            "Field must contain a numeric roughness column. Leave empty for uniform n "
+            "set in the Model tab."
+        )
+        self.cn_layer_combo.setToolTip(
+            "Polygon layer containing SCS Curve Number values for runoff computation. "
+            "Required when infiltration method is SCS Curve Number."
+        )
+        self.rain_gage_layer_combo.setToolTip(
+            "Point layer defining rain gauge locations. Each gauge should have an ID "
+            "matching entries in the hyetograph table layer."
+        )
+        self.hyetograph_layer_combo.setToolTip(
+            "Table layer containing precipitation hyetographs. Columns: time (hours) "
+            "and rainfall intensity (mm/hr or in/hr) for each gauge."
+        )
+        self.sample_lines_layer_combo.setToolTip(
+            "Line layer for sampling flow results along cross-sections during simulation. "
+            "Results are saved at the line output interval specified in the Run tab."
+        )
+        self.drain_nodes_layer_combo.setToolTip(
+            "Point layer for drainage network nodes (manholes, junctions). "
+            "Used for 1D-2D coupled drainage simulations."
+        )
+        self.drain_links_layer_combo.setToolTip(
+            "Line layer for drainage network links (pipes, channels). "
+            "Connects drain nodes for 1D-2D coupled drainage."
+        )
+        self.drain_inlets_layer_combo.setToolTip(
+            "Table layer defining inlet types (grate, curb, combination) "
+            "and their hydraulic capture curves."
+        )
+        self.drain_node_inlets_layer_combo.setToolTip(
+            "Table layer mapping drain nodes to inlet types from the inlet types table. "
+            "Defines which inlets are connected to which nodes."
+        )
+        self.structures_layer_combo.setToolTip(
+            "Line layer for hydraulic structures (weirs, orifices, bridges, culverts, pumps). "
+            "Each structure must have a type field and geometry."
+        )
+        self.bc_lines_layer_combo.setToolTip(
+            "Line layer for boundary condition segments. "
+            "Each segment defines a BC type (inflow, stage, normal depth, etc.) "
+            "assigned via the default BC type combo or per-segment attributes."
+        )
+
+        for attr in [
+            "drain_nodes_layer_combo",
+            "drain_links_layer_combo",
+            "drain_inlets_layer_combo",
+            "drain_node_inlets_layer_combo",
+            "structures_layer_combo",
+            "bc_lines_layer_combo",
+        ]:
+            c = getattr(self, attr)
+            if c.count() == 0:
+                c.addItem("(none)", None)
 
     def _build_form_page(
         self, page_name: str, form_name: str

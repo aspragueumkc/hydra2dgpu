@@ -127,8 +127,8 @@ def current_line_results_storage_path(dialog) -> str:
     if dialog._model_gpkg_path and os.path.exists(dialog._model_gpkg_path):
         dialog._log(f"[ResultsPath] falling back to _model_gpkg_path: {dialog._model_gpkg_path}")
         return dialog._model_gpkg_path
-    if hasattr(dialog, "_map_tab_view") and hasattr(dialog._map_tab_view, "sample_lines_layer_combo"):
-        lyr = dialog._combo_layer(dialog._map_tab_view.sample_lines_layer_combo, "vector")
+    if hasattr(dialog, "_model_tab_view") and hasattr(dialog._model_tab_view, "sample_lines_layer_combo"):
+        lyr = dialog._combo_layer(dialog._model_tab_view.sample_lines_layer_combo, "vector")
         if lyr is not None:
             try:
                 src = str(lyr.dataProvider().dataSourceUri())

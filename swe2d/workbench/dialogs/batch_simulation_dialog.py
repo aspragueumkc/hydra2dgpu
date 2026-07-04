@@ -563,7 +563,6 @@ class BatchSimulationDialog(QtWidgets.QDialog):
 
         # ── Capture top-level keys the headless runner needs ──────────
         mtab = getattr(parent, "_model_tab_view", None)
-        vtab = getattr(parent, "_map_tab_view", None)
 
         bc_lines = None
         hyetograph_cfg = None
@@ -573,16 +572,16 @@ class BatchSimulationDialog(QtWidgets.QDialog):
         structures_cfg = None
         sample_lines_cfg = None
 
-        if vtab is not None:
+        if mtab is not None:
             bc_tbl, bc_gpkg = _get_layer_info(
-                getattr(vtab, "bc_lines_layer_combo", None))
+                getattr(mtab, "bc_lines_layer_combo", None))
             if bc_tbl:
                 bc_lines = _dict_with_gpkg(bc_tbl, bc_gpkg)
 
             hg_tbl, hg_gpkg = _get_layer_info(
-                getattr(vtab, "hyetograph_layer_combo", None))
+                getattr(mtab, "hyetograph_layer_combo", None))
             rg_tbl, rg_gpkg = _get_layer_info(
-                getattr(vtab, "rain_gage_layer_combo", None))
+                getattr(mtab, "rain_gage_layer_combo", None))
             if hg_tbl and rg_tbl:
                 src_gpkg = hg_gpkg or rg_gpkg
                 hyetograph_cfg = _dict_with_gpkg(
@@ -591,14 +590,14 @@ class BatchSimulationDialog(QtWidgets.QDialog):
                 )
 
             cn_tbl, cn_gpkg = _get_layer_info(
-                getattr(vtab, "cn_layer_combo", None))
+                getattr(mtab, "cn_layer_combo", None))
             if cn_tbl:
                 rain_cn_cfg = _dict_with_gpkg(cn_tbl, cn_gpkg, cn_field="cn")
 
             dn_tbl, dn_gpkg = _get_layer_info(
-                getattr(vtab, "drain_nodes_layer_combo", None))
+                getattr(mtab, "drain_nodes_layer_combo", None))
             dl_tbl, dl_gpkg = _get_layer_info(
-                getattr(vtab, "drain_links_layer_combo", None))
+                getattr(mtab, "drain_links_layer_combo", None))
             if dn_tbl and dl_tbl:
                 drainage_cfg = {"nodes_layer": dn_tbl, "links_layer": dl_tbl}
                 _drain_gpkg = dn_gpkg or mesh_gpkg
@@ -610,7 +609,7 @@ class BatchSimulationDialog(QtWidgets.QDialog):
                 structures_cfg = struct_cfg.to_dict()
 
             sl_tbl, sl_gpkg = _get_layer_info(
-                getattr(vtab, "sample_lines_layer_combo", None))
+                getattr(mtab, "sample_lines_layer_combo", None))
             if sl_tbl:
                 sample_lines_cfg = _dict_with_gpkg(sl_tbl, sl_gpkg)
 

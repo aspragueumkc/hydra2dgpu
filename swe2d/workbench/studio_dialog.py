@@ -995,7 +995,7 @@ class SWE2DWorkbenchStudioDialog(QtWidgets.QDialog):
         return _wp_svc.iter_all_persistable_widgets(
             dialog=self,
             tab_views=[getattr(self, a, None) for a in
-                       ("_model_tab_view", "_map_tab_view",
+                       ("_model_tab_view",
                         "_topology_tab_view", "_mesh_tab_view",
                         "_boundary_tab_view", "_results_toolbox", "_run_dock")],
             persistable_types=(
@@ -1340,8 +1340,8 @@ class SWE2DWorkbenchStudioDialog(QtWidgets.QDialog):
                 f"{self._model_gpkg_path}"
             )
             return self._model_gpkg_path
-        if hasattr(self, "_map_tab_view") and hasattr(self._map_tab_view, "sample_lines_layer_combo"):
-            lyr = self._combo_layer(self._map_tab_view.sample_lines_layer_combo, "vector")
+        if hasattr(self, "_model_tab_view") and hasattr(self._model_tab_view, "sample_lines_layer_combo"):
+            lyr = self._combo_layer(self._model_tab_view.sample_lines_layer_combo, "vector")
             if lyr is not None:
                 try:
                     src = str(lyr.dataProvider().dataSourceUri())
@@ -1671,7 +1671,7 @@ class SWE2DWorkbenchStudioDialog(QtWidgets.QDialog):
         return _logic(
             mesh_data=self._mesh_data,
             have_qgis_core=_HAVE_QGIS_CORE,
-            bc_lines_layer_combo=getattr(self._map_tab_view, "bc_lines_layer_combo", None),
+            bc_lines_layer_combo=getattr(self._model_tab_view, "bc_lines_layer_combo", None),
             combo_layer_fn=self._combo_layer,
             iter_project_layers_fn=self._iter_project_layers,
             hydrograph_from_layer_fn=self._hydrograph_from_layer,
@@ -1693,7 +1693,7 @@ class SWE2DWorkbenchStudioDialog(QtWidgets.QDialog):
         return _logic(
             mesh_data=self._mesh_data,
             have_qgis_core=_HAVE_QGIS_CORE,
-            bc_lines_layer_combo=getattr(self._map_tab_view, "bc_lines_layer_combo", None),
+            bc_lines_layer_combo=getattr(self._model_tab_view, "bc_lines_layer_combo", None),
             combo_layer_fn=self._combo_layer,
             edge_n0=edge_n0,
             edge_n1=edge_n1,
@@ -1723,7 +1723,7 @@ class SWE2DWorkbenchStudioDialog(QtWidgets.QDialog):
         return _logic(
             mesh_data=self._mesh_data,
             have_qgis_core=_HAVE_QGIS_CORE,
-            manning_layer_combo=getattr(self._map_tab_view, "manning_layer_combo", None),
+            manning_layer_combo=getattr(self._model_tab_view, "manning_layer_combo", None),
             combo_layer_fn=self._combo_layer,
             mesh_cell_centroids_fn=self._mesh_cell_centroids,
             default_n=self._model_tab_view.get_n_mann(),
@@ -1736,7 +1736,7 @@ class SWE2DWorkbenchStudioDialog(QtWidgets.QDialog):
         """Preview the spatial Manning's n array statistics."""
         mann_arr = self._build_spatial_manning_array()
         name = ""
-        layer = getattr(self._map_tab_view, "manning_layer_combo", None)
+        layer = getattr(self._model_tab_view, "manning_layer_combo", None)
         if layer is not None:
             name = str(layer.currentText() or "")
         if mann_arr is not None and mann_arr.size > 0:
@@ -1799,8 +1799,8 @@ class SWE2DWorkbenchStudioDialog(QtWidgets.QDialog):
             assign_cells_to_nearest_gauge_fn=_assign_cells_to_nearest_gauge,
             inspect_hyetograph_rows_fn=_inspect_hyetograph_rows,
             use_spatial_rain_cn=bool(self._model_tab_view.use_spatial_rain_cn_chk.isChecked()),
-            rain_gage_layer_combo=getattr(self._map_tab_view, "rain_gage_layer_combo", None),
-            hyetograph_layer_combo=getattr(self._map_tab_view, "hyetograph_layer_combo", None),
+            rain_gage_layer_combo=getattr(self._model_tab_view, "rain_gage_layer_combo", None),
+            hyetograph_layer_combo=getattr(self._model_tab_view, "hyetograph_layer_combo", None),
             storm_area_layer_combo=getattr(self._model_tab_view, "storm_area_layer_combo", None),
             combo_layer_fn=self._combo_layer,
             mesh_cell_centroids_fn=self._mesh_cell_centroids,
@@ -1821,7 +1821,6 @@ class SWE2DWorkbenchStudioDialog(QtWidgets.QDialog):
             build_pipe_network_config_from_widgets,
         )
         from swe2d.extensions.extension_models import PipeNetworkConfig
-        map_view = self._map_tab_view
         if self._mesh_data is None:
             self._log("[Drainage] _build_pipe_network_config: mesh_data is None")
             return None
@@ -1831,16 +1830,17 @@ class SWE2DWorkbenchStudioDialog(QtWidgets.QDialog):
         if PipeNetworkConfig is None:
             self._log("[Drainage] _build_pipe_network_config: PipeNetworkConfig import failed")
             return None
-        if map_view is None:
-            self._log("[Drainage] _build_pipe_network_config: map_view is None")
+        mv = self._model_tab_view
+        if mv is None:
+            self._log("[Drainage] _build_pipe_network_config: _model_tab_view is None")
             return None
-        if not hasattr(map_view, "drain_nodes_layer_combo"):
-            self._log("[Drainage] _build_pipe_network_config: drain_nodes_layer_combo missing on map_view")
+        if not hasattr(mv, "drain_nodes_layer_combo"):
+            self._log("[Drainage] _build_pipe_network_config: drain_nodes_layer_combo missing on _model_tab_view")
             return None
-        node_layer = self._combo_layer(map_view.drain_nodes_layer_combo, "vector")
-        link_layer = self._combo_layer(map_view.drain_links_layer_combo, "vector") if hasattr(map_view, "drain_links_layer_combo") else None
-        inlet_layer = self._combo_layer(map_view.drain_inlets_layer_combo, "vector") if hasattr(map_view, "drain_inlets_layer_combo") else None
-        node_inlet_layer = self._combo_layer(map_view.drain_node_inlets_layer_combo, "vector") if hasattr(map_view, "drain_node_inlets_layer_combo") else None
+        node_layer = self._combo_layer(mv.drain_nodes_layer_combo, "vector")
+        link_layer = self._combo_layer(mv.drain_links_layer_combo, "vector") if hasattr(mv, "drain_links_layer_combo") else None
+        inlet_layer = self._combo_layer(mv.drain_inlets_layer_combo, "vector") if hasattr(mv, "drain_inlets_layer_combo") else None
+        node_inlet_layer = self._combo_layer(mv.drain_node_inlets_layer_combo, "vector") if hasattr(mv, "drain_node_inlets_layer_combo") else None
         if node_layer is None:
             self._log("[Drainage] _build_pipe_network_config: no drain_nodes layer selected")
             return None
@@ -1893,9 +1893,9 @@ class SWE2DWorkbenchStudioDialog(QtWidgets.QDialog):
         if HydraulicStructureConfig is None or StructureType is None:
             self._log("[Structures] Structure model imports failed")
             return None
-        structures_layer_combo = getattr(self._map_tab_view, "structures_layer_combo", None)
+        structures_layer_combo = getattr(self._model_tab_view, "structures_layer_combo", None)
         if structures_layer_combo is None:
-            self._log("[Structures] structures_layer_combo not found on map_view")
+            self._log("[Structures] structures_layer_combo not found on _model_tab_view")
             return None
         layer = self._combo_layer(structures_layer_combo, "vector")
         if layer is None:
@@ -2176,7 +2176,7 @@ class SWE2DWorkbenchStudioDialog(QtWidgets.QDialog):
         from swe2d.boundary_and_forcing.boundary_qgis_adapter import apply_bc_layer_overrides_qgis as _logic
         return _logic(
             mesh_data=self._mesh_data, have_qgis_core=_HAVE_QGIS_CORE,
-            bc_lines_layer_combo=getattr(self._map_tab_view, "bc_lines_layer_combo", None),
+            bc_lines_layer_combo=getattr(self._model_tab_view, "bc_lines_layer_combo", None),
             combo_layer_fn=self._combo_layer,
             edge_n0=edge_n0, edge_n1=edge_n1, bc_type=bc_type, bc_val=bc_val,
             qgs_geometry_cls=QgsGeometry, qgs_pointxy_cls=QgsPointXY, log_fn=self._log,
@@ -2242,7 +2242,7 @@ class SWE2DWorkbenchStudioDialog(QtWidgets.QDialog):
     def _build_line_sampling_map(self) -> List[Dict[str, object]]:
         """Build line sampling map from the sample lines layer (delegates to service)."""
         from swe2d.workbench.services.line_sampling_service import build_line_sampling_map
-        sample_lines_combo = getattr(self._map_tab_view, "sample_lines_layer_combo", None)
+        sample_lines_combo = getattr(self._model_tab_view, "sample_lines_layer_combo", None)
         line_layer = self._combo_layer(sample_lines_combo, "vector") if sample_lines_combo is not None else None
         if line_layer is None:
             self._log("[LineSampling] No sample lines layer selected — line results will be empty.")
@@ -2290,7 +2290,7 @@ class SWE2DWorkbenchStudioDialog(QtWidgets.QDialog):
         from swe2d.boundary_and_forcing.spatial_forcing_qgis_adapter import build_spatial_cn_array_qgis as _logic
         return _logic(
             mesh_data=self._mesh_data, have_qgis_core=_HAVE_QGIS_CORE,
-            cn_layer_combo=getattr(self._map_tab_view, "cn_layer_combo", None),
+            cn_layer_combo=getattr(self._model_tab_view, "cn_layer_combo", None),
             combo_layer_fn=self._combo_layer,
             mesh_cell_centroids_fn=self._mesh_cell_centroids,
             default_cn=self._model_tab_view.get_cn_default(),
@@ -2323,7 +2323,7 @@ class SWE2DWorkbenchStudioDialog(QtWidgets.QDialog):
 
     def get_uniform_inflow_velocity(self) -> bool:
         """Return whether uniform inflow velocity is enabled (MapView protocol)."""
-        mtv = getattr(self, "_map_tab_view", None)
+        mtv = getattr(self, "_model_tab_view", None)
         if mtv is None:
             return False
         chk = getattr(mtv, "uniform_inflow_velocity_chk", None)
@@ -2426,7 +2426,7 @@ class SWE2DWorkbenchStudioDialog(QtWidgets.QDialog):
 
     def _resolve_combo_attr(self, attr: str) -> Any:
         """Resolve a combo widget by attribute name across all tab views."""
-        for tab_attr in ("_map_tab_view", "_model_tab_view", "_topology_tab_view"):
+        for tab_attr in ("_model_tab_view", "_topology_tab_view"):
             tab = getattr(self, tab_attr, None)
             if tab is not None:
                 w = getattr(tab, attr, None)
@@ -2435,12 +2435,18 @@ class SWE2DWorkbenchStudioDialog(QtWidgets.QDialog):
         return None
 
     def set_layer_status_text(self, text: str) -> None:
-        """Set the layer status label text."""
-        if hasattr(self, "_map_tab_view"):
-            try:
-                self._map_tab_view.layer_status_lbl.setText(text)
-            except RuntimeError:
-                pass
+        """Set the layer/status bar text.
+
+        Previously this set a ``layer_status_lbl`` on the Map tab's Utilities
+        page. That page is gone, so messages are now shown in the QGIS main
+        window status bar.
+        """
+        try:
+            sb = self.statusBar()
+            if sb is not None:
+                sb.showMessage(text, timeout=4000)
+        except Exception:
+            pass
 
     def set_results_gpkg_path(self, path: str) -> None:
         """Set the results GeoPackage path in the UI."""
