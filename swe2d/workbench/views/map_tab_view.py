@@ -46,7 +46,7 @@ class MapTabView(QtWidgets.QWidget):
 
     Utilities page ("Utilities") - helpers:
         open_model_gpkg_explorer_btn, open_run_log_viewer_btn,
-        layer_status_lbl
+
 
     Results page (overlay controls) — added later by the controller;
         see ``swe2d.workbench.views.results_view`` for the overlay helpers.
@@ -283,10 +283,6 @@ class MapTabView(QtWidgets.QWidget):
             if tip:
                 btn.setToolTip(tip)
 
-        self.layer_status_lbl = QtWidgets.QLabel("No layer-linked mesh yet")
-        self.layer_status_lbl.setObjectName("layer_status_lbl")
-        self.layer_status_lbl.setWordWrap(True)
-
         for attr in [
             "open_model_gpkg_explorer_btn",
             "open_run_log_viewer_btn",
@@ -295,14 +291,9 @@ class MapTabView(QtWidgets.QWidget):
             row = 0 if attr == "open_model_gpkg_explorer_btn" else 1
             if tools_layout.indexOf(w) < 0:
                 tools_layout.addWidget(w, row, 0, 1, 2)
-        if tools_layout.indexOf(self.layer_status_lbl) < 0:
-            tools_layout.addWidget(self.layer_status_lbl, 2, 0, 1, 2)
 
         tools_layout.setRowStretch(3, 1)
 
         toolbox.addItem(page, "Utilities")
 
-    def set_layer_status_text(self, text: str) -> None:
-        """Update the status label for the active layer."""
-        self.layer_status_lbl.setText(text)
 
