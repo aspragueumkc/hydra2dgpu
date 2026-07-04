@@ -293,6 +293,157 @@ class TestTopologyTabView(unittest.TestCase):
 
 
 # ═══════════════════════════════════════════════════════════════════════════
+# Import/Export combo dispatch tests
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+class TestImportExportComboDispatch(unittest.TestCase):
+    """The Import/Export page replaces a 6-button stack with two combos
+    + Run buttons. Selecting an option + clicking Run must fire the
+    matching underlying QPushButton's clicked signal so the existing
+    ``wire_topology_tab_static_signals`` keeps working unchanged."""
+
+    @classmethod
+    def setUpClass(cls):
+        _ensure_app()
+
+    def _make_view(self):
+        from swe2d.workbench.views.topology_tab_view import TopologyTabView
+        return TopologyTabView()
+
+    def test_import_combo_has_both_load_options(self):
+        view = self._make_view()
+        self.assertEqual(view.import_combo.count(), 2)
+        # Each item's userData is the underlying QPushButton.
+        for i in range(view.import_combo.count()):
+            with self.subTest(i=i):
+                data = view.import_combo.itemData(i)
+                self.assertIsNotNone(data, f"import_combo item {i} has no userData")
+                self.assertTrue(
+                    hasattr(data, "click"),
+                    f"import_combo item {i} userData is not a button",
+                )
+
+    def test_export_combo_has_four_export_options(self):
+        view = self._make_view()
+        self.assertEqual(view.export_combo.count(), 4)
+        for i in range(view.export_combo.count()):
+            with self.subTest(i=i):
+                data = view.export_combo.itemData(i)
+                self.assertIsNotNone(data)
+                self.assertTrue(hasattr(data, "click"))
+
+    def test_import_combo_userdata_maps_to_known_buttons(self):
+        view = self._make_view()
+        # Order matches _build_import_export_page: import_mesh_layers_btn, load_mesh_gpkg_btn.
+        self.assertIs(
+            view.import_combo.itemData(0), view.import_mesh_layers_btn,
+        )
+        self.assertIs(
+            view.import_combo.itemData(1), view.load_mesh_gpkg_btn,
+        )
+
+    def test_export_combo_userdata_maps_to_known_buttons(self):
+        view = self._make_view()
+        # Order matches _build_import_export_page.
+        self.assertIs(
+            view.export_combo.itemData(0), view.export_mesh_layers_btn,
+        )
+        self.assertIs(
+            view.export_combo.itemData(1), view.export_mesh_ugrid_btn,
+        )
+        self.assertIs(
+            view.export_combo.itemData(2), view.save_mesh_gpkg_btn,
+        )
+        self.assertIs(
+            view.export_combo.itemData(3), view.export_results_ugrid_btn,
+        )
+
+    def test_run_import_dispatches_to_selected_button(self):
+        view = self._make_view()
+        # Spy on the underlying button click.
+        fired = []
+        view.import_mesh_layers_btn.clicked.connect(
+            lambda *_: fired.append("import_mesh_layers_btn")
+        )
+        # Default combo selection is 0 → import_mesh_layers_btn.
+        view._run_selected_import()
+        self.assertEqual(fired, ["import_mesh_layers_btn"])
+
+    def test_run_export_dispatches_to_selected_button(self):
+        view = self._make_view()
+        fired = []
+        view.export_mesh_ugrid_btn.clicked.connect(
+            lambda *_: fired.append("export_mesh_ugrid_btn")
+        )
+        view.export_combo.setCurrentIndex(1)
+        view._run_selected_export()
+        self.assertEqual(fired, ["export_mesh_ugrid_btn"])
+
+    def test_run_import_button_dispatches_through_combo(self):
+        """Clicking 'Run Import' must fire the QPushButton backing the
+        currently-selected Import combo item. We verify the end-to-end
+        dispatch by attaching a spy to the underlying button's clicked
+        signal and asserting it fires after Run Import is clicked.
+        """
+        view = self._make_view()
+        fired = []
+        view.import_mesh_layers_btn.clicked.connect(
+            lambda *_: fired.append("import_mesh_layers_btn")
+        )
+        view.load_mesh_gpkg_btn.clicked.connect(
+            lambda *_: fired.append("load_mesh_gpkg_btn")
+        )
+        # Default selection is index 0 → import_mesh_layers_btn.
+        view.run_import_btn.click()
+        self.assertEqual(fired, ["import_mesh_layers_btn"])
+        # Switch to index 1 → load_mesh_gpkg_btn.
+        view.import_combo.setCurrentIndex(1)
+        view.run_import_btn.click()
+        self.assertEqual(fired, [
+            "import_mesh_layers_btn", "load_mesh_gpkg_btn",
+        ])
+
+    def test_run_export_button_dispatches_through_combo(self):
+        view = self._make_view()
+        fired = []
+        for attr in (
+            "export_mesh_layers_btn", "export_mesh_ugrid_btn",
+            "save_mesh_gpkg_btn", "export_results_ugrid_btn",
+        ):
+            getattr(view, attr).clicked.connect(
+                lambda *_, a=attr: fired.append(a)
+            )
+        for i, expected in enumerate([
+            "export_mesh_layers_btn", "export_mesh_ugrid_btn",
+            "save_mesh_gpkg_btn", "export_results_ugrid_btn",
+        ]):
+            view.export_combo.setCurrentIndex(i)
+            view.run_export_btn.click()
+            self.assertEqual(fired[-1], expected)
+
+    def test_underlying_mesh_io_buttons_preserved_for_wiring(self):
+        """The 6 original mesh-I/O buttons must still exist as instance
+        attributes (with their objectNames) so the existing wiring in
+        ``wire_topology_tab_static_signals`` (``v.export_mesh_layers_btn``,
+        etc.) keeps working unchanged. The page layout changes; the
+        controller-facing surface does not.
+        """
+        view = self._make_view()
+        for attr, expected_objname in [
+            ("import_mesh_layers_btn", "import_mesh_layers_btn"),
+            ("load_mesh_gpkg_btn", "load_mesh_gpkg_btn"),
+            ("export_mesh_layers_btn", "export_mesh_layers_btn"),
+            ("export_mesh_ugrid_btn", "export_mesh_ugrid_btn"),
+            ("save_mesh_gpkg_btn", "save_mesh_gpkg_btn"),
+            ("export_results_ugrid_btn", "export_results_ugrid_btn"),
+        ]:
+            with self.subTest(attr=attr):
+                btn = getattr(view, attr)
+                self.assertEqual(btn.objectName(), expected_objname)
+
+
+# ═══════════════════════════════════════════════════════════════════════════
 # ResultsToolbox tests
 # ═══════════════════════════════════════════════════════════════════════════
 

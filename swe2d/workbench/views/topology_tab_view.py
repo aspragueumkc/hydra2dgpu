@@ -265,11 +265,25 @@ class TopologyTabView(QtWidgets.QWidget):
     # ------------------------------------------------------------------
 
     def _build_import_export_page(self) -> None:
-        """Build the Import/Export page with mesh I/O buttons.
+        """Build the Import/Export page with two combo boxes + Run buttons.
 
-        Buttons keep the same objectNames they had in MapTabView so
-        signal wiring and tests that reference them by name keep
-        working without changes.
+        Replaces the previous 6-button stack with two QComboBox
+        selectors ("Import" and "Export"), each backed by a single
+        "Run" button. Selecting an action in the combo and clicking
+        Run fires the same ``QPushButton.click()`` slot that the old
+        stacked buttons did, so the existing signal wiring in
+        ``wire_topology_tab_static_signals`` keeps working unchanged.
+
+        The 6 underlying QPushButton objects are still created as
+        instance attributes with their original ``objectName``s — they
+        just aren't laid out in the form. Tests and the existing
+        mesh-I/O wiring (``btn.clicked.connect(cb)``) both find them
+        by name.
+
+        Layout (top to bottom):
+
+            [ Import combo     ] [ Run Import ]
+            [ Export combo     ] [ Run Export ]
         """
         page = QtWidgets.QWidget()
         page.setObjectName("topo_import_export_page")
@@ -277,6 +291,7 @@ class TopologyTabView(QtWidgets.QWidget):
         layout.setObjectName("topo_import_export_form")
         layout.setContentsMargins(4, 4, 4, 4)
 
+        # ── Build the 6 buttons (kept as instance attributes for wiring) ──
         btn_specs = [
             ("export_mesh_layers_btn", "Export Mesh To Map Layers"),
             ("export_mesh_ugrid_btn", "Export Mesh To UGRID"),
@@ -289,8 +304,8 @@ class TopologyTabView(QtWidgets.QWidget):
             btn = QtWidgets.QPushButton(text)
             btn.setObjectName(attr)
             setattr(self, attr, btn)
-            layout.addRow(btn)
 
+        # ── Tooltips (unchanged from the previous stacked-button layout) ──
         self.export_mesh_layers_btn.setToolTip(
             "Export the current in-memory mesh (nodes + cells) as QGIS map layers. "
             "Creates point and polygon layers in the project for inspection."
@@ -314,6 +329,69 @@ class TopologyTabView(QtWidgets.QWidget):
             "Open a GeoPackage and load a mesh from it."
         )
 
+        # ── Import combo + Run Import button ─────────────────────────────
+        # Each item's userData is the corresponding QPushButton. Picking
+        # an item + clicking Run fires that button's clicked signal,
+        # which the existing controller wiring already handles.
+        self.import_combo = QtWidgets.QComboBox()
+        self.import_combo.setObjectName("import_combo")
+        import_options = [
+            ("Load Mesh From Selected Layers", self.import_mesh_layers_btn),
+            ("Load Mesh from GPKG...", self.load_mesh_gpkg_btn),
+        ]
+        for label, btn in import_options:
+            self.import_combo.addItem(label, btn)
+        self.import_combo.setToolTip(
+            "Pick an import action, then click 'Run Import' to execute it."
+        )
+
+        self.run_import_btn = QtWidgets.QPushButton("Run Import")
+        self.run_import_btn.setObjectName("run_import_btn")
+        self.run_import_btn.setToolTip(
+            "Execute the import action selected in the Import combo."
+        )
+        self.run_import_btn.clicked.connect(self._run_selected_import)
+
+        import_row = QtWidgets.QHBoxLayout()
+        import_row.setContentsMargins(0, 0, 0, 0)
+        import_row.addWidget(self.import_combo, 1)
+        import_row.addWidget(self.run_import_btn)
+        import_row_widget = QtWidgets.QWidget()
+        import_row_widget.setObjectName("import_row_widget")
+        import_row_widget.setLayout(import_row)
+        layout.addRow("Import:", import_row_widget)
+
+        # ── Export combo + Run Export button ─────────────────────────────
+        self.export_combo = QtWidgets.QComboBox()
+        self.export_combo.setObjectName("export_combo")
+        export_options = [
+            ("Export Mesh To Map Layers", self.export_mesh_layers_btn),
+            ("Export Mesh To UGRID", self.export_mesh_ugrid_btn),
+            ("Save Mesh to GPKG", self.save_mesh_gpkg_btn),
+            ("Export Results to UGRID", self.export_results_ugrid_btn),
+        ]
+        for label, btn in export_options:
+            self.export_combo.addItem(label, btn)
+        self.export_combo.setToolTip(
+            "Pick an export action, then click 'Run Export' to execute it."
+        )
+
+        self.run_export_btn = QtWidgets.QPushButton("Run Export")
+        self.run_export_btn.setObjectName("run_export_btn")
+        self.run_export_btn.setToolTip(
+            "Execute the export action selected in the Export combo."
+        )
+        self.run_export_btn.clicked.connect(self._run_selected_export)
+
+        export_row = QtWidgets.QHBoxLayout()
+        export_row.setContentsMargins(0, 0, 0, 0)
+        export_row.addWidget(self.export_combo, 1)
+        export_row.addWidget(self.run_export_btn)
+        export_row_widget = QtWidgets.QWidget()
+        export_row_widget.setObjectName("export_row_widget")
+        export_row_widget.setLayout(export_row)
+        layout.addRow("Export:", export_row_widget)
+
         layout.addItem(
             QtWidgets.QSpacerItem(
                 0, 0,
@@ -324,6 +402,30 @@ class TopologyTabView(QtWidgets.QWidget):
 
         # First page (top) — before Layer Setup
         self._toolbox.insertItem(0, page, "Import/Export")
+
+    # ------------------------------------------------------------------
+    # Import/Export combo dispatch
+    # ------------------------------------------------------------------
+
+    def _run_selected_import(self) -> None:
+        """Click the QPushButton backing the currently-selected Import option."""
+        btn = self.import_combo.currentData()
+        if btn is None:
+            return
+        try:
+            btn.click()
+        except RuntimeError:
+            pass
+
+    def _run_selected_export(self) -> None:
+        """Click the QPushButton backing the currently-selected Export option."""
+        btn = self.export_combo.currentData()
+        if btn is None:
+            return
+        try:
+            btn.click()
+        except RuntimeError:
+            pass
 
     def set_callbacks(self, log_fn=None, combo_layer_fn=None) -> None:
         """Set external callbacks for logging and layer resolution."""
