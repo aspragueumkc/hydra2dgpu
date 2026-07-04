@@ -1342,17 +1342,34 @@ class RunController:
 
     # ── Load run settings from results GeoPackage ─────────────────────
     def on_load_simulation_config(self) -> None:
-        """Open a config picker dialog and restore widget state from a saved config.
+        """Open a GeoPackage file picker, then a config picker, then apply.
 
-        Reads ``swe2d_simulation_configs`` from the active results GeoPackage,
-        shows a picker dialog, then applies the selected config's widget state.
+        Two-step flow so the user can browse any .gpkg on disk (not just
+        the currently-active results GPKG):
+          1. ``QFileDialog.getOpenFileName`` — same picker used by the
+             GeoPackage Explorer action so the UX is consistent.
+          2. ``SWE2DSimulationConfigDialog`` — pick which config from
+             ``swe2d_simulation_configs`` to apply.
+
+        Replaces the old behavior that silently required
+        ``_current_line_results_storage_path()`` to already point at a
+        valid GPKG.
         """
+        from qgis.PyQt import QtWidgets
+
         view = self._view
-        db_path = str(view._current_line_results_storage_path() or "")
-        if not db_path or not os.path.exists(db_path):
-            view._log(
-                "Load config skipped: results GeoPackage not found."
-            )
+
+        db_path, _ = QtWidgets.QFileDialog.getOpenFileName(
+            view,
+            "Select GeoPackage to load configuration from",
+            "",
+            "GeoPackage (*.gpkg);;All Files (*)",
+        )
+        db_path = str(db_path or "").strip()
+        if not db_path:
+            return  # user cancelled
+        if not os.path.exists(db_path):
+            view._log(f"Load config skipped: GeoPackage not found: {db_path}")
             return
 
         from swe2d.services.gpkg_persistence_service import load_simulation_configs
@@ -1360,7 +1377,7 @@ class RunController:
         if not configs:
             view._log(
                 "Load config skipped: no saved simulation configs found "
-                "in the selected GeoPackage."
+                f"in the selected GeoPackage ({db_path})."
             )
             return
 
@@ -1371,7 +1388,6 @@ class RunController:
             parent=view,
             apply_callback=view._apply_run_log_metadata_to_ui,
         )
-        from qgis.PyQt import QtWidgets
         result = dlg.exec()
         if result != QtWidgets.QDialog.Accepted:
             return
@@ -1423,20 +1439,42 @@ class RunController:
             view._log(f"[ERROR] Failed to load mesh from config: {exc}")
 
     def on_save_simulation_config(self) -> None:
-        """Save the current widget configuration to the active GeoPackage.
+        """Save the current widget configuration to a user-chosen GeoPackage.
 
-        Prompts for a descriptive name; uses timestamp as fallback.
+        Two-step flow mirroring ``on_load_simulation_config``:
+          1. ``QFileDialog.getSaveFileName`` — user picks an existing
+             .gpkg or types a new path. Matches the GeoPackage Explorer
+             picker so the UX is consistent.
+          2. ``QInputDialog`` — prompt for a descriptive config name
+             (timestamp used if blank).
+
+        Replaces the old behavior that silently required
+        ``_current_line_results_storage_path()`` to point at a writable
+        GPKG.
         """
-        view = self._view
-        db_path = str(view._current_line_results_storage_path() or "")
-        if not db_path or not os.path.exists(os.path.dirname(os.path.abspath(db_path))):
-            view._log(
-                "Save config skipped: no valid GeoPackage path configured. "
-                "Set a results GPKG path first."
-            )
-            return
-
         from qgis.PyQt import QtWidgets as _QtWidgets
+
+        view = self._view
+
+        # Pre-fill the picker with the current results GPKG if one is set,
+        # so the common case is a single click + a config name.
+        start_dir = ""
+        current_db = str(view._current_line_results_storage_path() or "")
+        if current_db and os.path.exists(os.path.dirname(os.path.abspath(current_db))):
+            start_dir = current_db
+
+        db_path, _ = _QtWidgets.QFileDialog.getSaveFileName(
+            view,
+            "Select GeoPackage to save configuration to",
+            start_dir,
+            "GeoPackage (*.gpkg);;All Files (*)",
+        )
+        db_path = str(db_path or "").strip()
+        if not db_path:
+            return  # user cancelled
+        # If the user typed a path without an extension, add .gpkg.
+        if not os.path.splitext(db_path)[1]:
+            db_path = db_path + ".gpkg"
 
         # Prompt for a config name
         name, ok = _QtWidgets.QInputDialog.getText(
@@ -1474,7 +1512,7 @@ class RunController:
             widget_state=widget_state,
             log_fn=view._log,
         )
-        view._log(f"Configuration saved as '{config_name}'.")
+        view._log(f"Configuration saved as '{config_name}' to {db_path}.")
 
     def on_preview_coupling(self) -> None:
         """Compute and display a coupling configuration preview.
