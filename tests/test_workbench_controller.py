@@ -2,7 +2,7 @@
 
 Controller methods are distributed across domain controllers:
 - RunController (run pipeline: on_run, on_cancel, on_snapshot, on_preview_overrides)
-- LayerController (layer combos: refresh_layer_combos, autopopulate_layer_combos_from_group)
+- LayerController (layer combos: refresh_layer_combos)
 - MeshController (mesh operations: import_mesh_from_layers, on_select_results_gpkg)
 - OverlayController (high-perf overlay: load_mesh_snapshot_for_overlay)
 - TopologyController (topology meshing)
@@ -310,52 +310,6 @@ class TestControllerRefreshLayerCombos(unittest.TestCase):
             callable(getattr(LayerController, "refresh_layer_combos", None)),
             "LayerController must have refresh_layer_combos method",
         )
-
-class TestControllerAutopopulateLayerCombos(unittest.TestCase):
-    """autopopulate_layer_combos_from_group lives in LayerController."""
-
-    def setUp(self):
-        _ensure_app()
-
-    def test_method_exists(self):
-        from swe2d.workbench.controllers.layer_controller import LayerController
-        self.assertTrue(
-            callable(
-                getattr(
-                    LayerController,
-                    "autopopulate_layer_combos_from_group",
-                    None,
-                )
-            ),
-            "LayerController must have autopopulate_layer_combos_from_group",
-        )
-
-    def test_skips_when_no_group_selected(self):
-        from swe2d.workbench.controllers.layer_controller import LayerController
-        from unittest.mock import patch, MagicMock as MM
-        mock_view = MagicMock()
-        mock_view.get_combo_current_text.return_value = ""
-        ctrl = LayerController(view=mock_view)
-        with patch("swe2d.workbench.controllers.layer_controller.QgsProject") as mock_qp:
-            ctrl.autopopulate_layer_combos_from_group()
-        mock_view.get_combo_current_text.assert_called_once_with("layer_group_combo")
-
-    def test_skips_when_no_layers_in_group(self):
-        from swe2d.workbench.controllers.layer_controller import LayerController
-        from unittest.mock import patch
-        mock_view = MagicMock()
-        mock_view.get_combo_current_text.return_value = "group/sub"
-        mock_group = MagicMock()
-        mock_group.layerOrder.return_value = []
-        mock_root = MagicMock()
-        mock_root.findGroup.return_value = mock_group
-        ctrl = LayerController(view=mock_view)
-        with patch(
-            "swe2d.workbench.controllers.layer_controller.QgsProject"
-        ) as mock_qp:
-            mock_qp.instance.return_value.layerTreeRoot.return_value = mock_root
-            ctrl.autopopulate_layer_combos_from_group()
-        mock_root.findGroup.assert_called_once_with("group/sub")
 
 
 class TestControllerOnHighPerfCanvasOverlayToggled(unittest.TestCase):

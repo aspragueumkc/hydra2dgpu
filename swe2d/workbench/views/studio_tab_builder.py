@@ -87,13 +87,38 @@ def build_map_tab_page(dialog):
 
 
 def wire_map_tab_data_signals(dialog) -> None:
-    """Wire the Map tab Data page button signals to the controller."""
+    """Wire the Map tab Data page signals to the controller.
+
+    Layer combos auto-refresh on toggle to keep the project layer list current.
+    """
     from swe2d.workbench.signal_helpers import safe_disconnect
     v = dialog._map_tab_view
-    safe_disconnect(v.autopop_group_btn.clicked, dialog._layer_controller.autopopulate_layer_combos_from_group)
-    v.autopop_group_btn.clicked.connect(dialog._layer_controller.autopopulate_layer_combos_from_group)
-    safe_disconnect(v.refresh_layers_btn.clicked, dialog._layer_controller.refresh_layer_combos)
-    v.refresh_layers_btn.clicked.connect(dialog._layer_controller.refresh_layer_combos)
+    lc = dialog._layer_controller
+
+    def _on_combo_changed() -> None:
+        lc.refresh_layer_combos()
+
+    # Wire all layer combos to auto-refresh on activation/toggle
+    for attr in (
+        "nodes_layer_combo",
+        "cells_layer_combo",
+        "terrain_layer_combo",
+        "manning_layer_combo",
+        "cn_layer_combo",
+        "rain_gage_layer_combo",
+        "hyetograph_layer_combo",
+        "sample_lines_layer_combo",
+        "drain_nodes_layer_combo",
+        "drain_links_layer_combo",
+        "drain_inlets_layer_combo",
+        "drain_node_inlets_layer_combo",
+        "structures_layer_combo",
+        "bc_lines_layer_combo",
+    ):
+        combo = getattr(v, attr, None)
+        if combo is not None:
+            safe_disconnect(combo.currentIndexChanged, _on_combo_changed)
+            combo.currentIndexChanged.connect(_on_combo_changed)
 
 
 def wire_map_tab_action_signals(dialog) -> None:

@@ -98,21 +98,6 @@ class TestMapTabView(unittest.TestCase):
         view = MapTabView()
         self.assertIsInstance(view.structures_layer_combo, QComboBox)
 
-    def test_view_has_layer_group_combo(self):
-        from swe2d.workbench.views.map_tab_view import MapTabView
-        view = MapTabView()
-        self.assertIsInstance(view.layer_group_combo, QComboBox)
-
-    def test_view_has_autopop_group_btn(self):
-        from swe2d.workbench.views.map_tab_view import MapTabView
-        view = MapTabView()
-        self.assertIsInstance(view.autopop_group_btn, QPushButton)
-
-    def test_view_has_refresh_layers_btn(self):
-        from swe2d.workbench.views.map_tab_view import MapTabView
-        view = MapTabView()
-        self.assertIsInstance(view.refresh_layers_btn, QPushButton)
-
     def test_view_has_load_model_gpkg_btn(self):
         from swe2d.workbench.views.map_tab_view import MapTabView
         view = MapTabView()
@@ -171,9 +156,6 @@ class TestMapTabView(unittest.TestCase):
             ("drain_inlets_layer_combo", "drain_inlets_layer_combo"),
             ("drain_node_inlets_layer_combo", "drain_node_inlets_layer_combo"),
             ("structures_layer_combo", "structures_layer_combo"),
-            ("layer_group_combo", "layer_group_combo"),
-            ("autopop_group_btn", "autopop_group_btn"),
-            ("refresh_layers_btn", "refresh_layers_btn"),
             ("load_model_gpkg_btn", "load_model_gpkg_btn"),
             ("export_mesh_layers_btn", "export_mesh_layers_btn"),
             ("import_mesh_layers_btn", "import_mesh_layers_btn"),

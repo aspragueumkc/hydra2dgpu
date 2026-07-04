@@ -61,10 +61,6 @@ class TestLayerDelegation(unittest.TestCase):
         from swe2d.workbench.controllers.layer_controller import LayerController
         self.assertTrue(callable(LayerController.refresh_layer_combos))
 
-    def test_layer_controller_has_autopopulate(self):
-        from swe2d.workbench.controllers.layer_controller import LayerController
-        self.assertTrue(callable(LayerController.autopopulate_layer_combos_from_group))
-
 
 class TestTopologyDelegation(unittest.TestCase):
     """Verify topology-related dialog methods delegate to _topology_controller."""

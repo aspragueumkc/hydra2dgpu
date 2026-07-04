@@ -38,8 +38,7 @@ class MapTabView(QtWidgets.QWidget):
         hyetograph_layer_combo, sample_lines_layer_combo,
         drain_nodes_layer_combo, drain_links_layer_combo,
         drain_inlets_layer_combo, drain_node_inlets_layer_combo,
-        structures_layer_combo, bc_lines_layer_combo, layer_group_combo,
-        autopop_group_btn, refresh_layers_btn
+        structures_layer_combo, bc_lines_layer_combo
 
     Actions page ("Mesh Setup") - mesh I/O:
         load_model_gpkg_btn, export_mesh_layers_btn,
@@ -97,16 +96,10 @@ class MapTabView(QtWidgets.QWidget):
             "drain_node_inlets_layer_combo",
             "structures_layer_combo",
             "bc_lines_layer_combo",
-            "layer_group_combo",
         ]:
             widget = QtWidgets.QComboBox()
             widget.setObjectName(attr)
             setattr(self, attr, widget)
-
-        self.autopop_group_btn = QtWidgets.QPushButton("Autopopulate From Group")
-        self.autopop_group_btn.setObjectName("autopop_group_btn")
-        self.refresh_layers_btn = QtWidgets.QPushButton("Refresh Layers")
-        self.refresh_layers_btn.setObjectName("refresh_layers_btn")
 
         for row, label, attr in [
             (0, "Nodes layer:", "nodes_layer_combo"),
@@ -123,18 +116,12 @@ class MapTabView(QtWidgets.QWidget):
             (11, "Drainage node-inlets (table):", "drain_node_inlets_layer_combo"),
             (12, "Hydraulic structures layer:", "structures_layer_combo"),
             (13, "BC lines layer:", "bc_lines_layer_combo"),
-            (14, "Layer group:", "layer_group_combo"),
         ]:
             widget = getattr(self, attr)
             if data_layout.indexOf(widget) < 0:
                 data_layout.addWidget(QtWidgets.QLabel(label), row, 0)
                 data_layout.addWidget(widget, row, 1)
-        if data_layout.indexOf(self.autopop_group_btn) < 0:
-            data_layout.addWidget(self.autopop_group_btn, 15, 0, 1, 2)
-        if data_layout.indexOf(self.refresh_layers_btn) < 0:
-            data_layout.addWidget(self.refresh_layers_btn, 16, 0, 1, 2)
-
-        data_layout.setRowStretch(17, 1)
+        data_layout.setRowStretch(14, 1)
 
         # ── Tooltips for all Data page widgets ──────────────────────
         self.nodes_layer_combo.setToolTip(
@@ -196,18 +183,6 @@ class MapTabView(QtWidgets.QWidget):
             "Each segment defines a BC type (inflow, stage, normal depth, etc.) "
             "assigned via the default BC type combo or per-segment attributes."
         )
-        self.layer_group_combo.setToolTip(
-            "QGIS layer group containing all input layers for this model. "
-            "Use 'Autopopulate From Group' to auto-fill all layer combos from the group."
-        )
-        self.autopop_group_btn.setToolTip(
-            "Walk the selected layer group and auto-populate all layer combos "
-            "by matching layer names against known prefix/keywords."
-        )
-        self.refresh_layers_btn.setToolTip(
-            "Refresh all layer combos to reflect current QGIS project layers. "
-            "Use after adding or renaming layers in the QGIS project."
-        )
 
         for attr in [
             "drain_nodes_layer_combo",
@@ -220,10 +195,8 @@ class MapTabView(QtWidgets.QWidget):
             c = getattr(self, attr)
             if c.count() == 0:
                 c.addItem("(none)", None)
-        if self.layer_group_combo.count() == 0:
-            self.layer_group_combo.addItem("(no group)", None)
 
-        toolbox.addItem(page, "Load Layers")
+        toolbox.addItem(page, "Layers")
 
     def _build_actions_page(self, toolbox: QtWidgets.QToolBox) -> None:
         """Build the Mesh Setup page with mesh I/O and BC controls."""
