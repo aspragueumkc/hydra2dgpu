@@ -388,6 +388,7 @@ class RunController:
                 if _live_gpkg:
                     data._run_records[0].gpkg_path = _live_gpkg
                 data._live_run_id = str(run_id)
+                data._overlay_selected_key = str(data._run_records[0].key)
             run_wallclock_start = datetime.datetime.now().replace(microsecond=0).isoformat(sep=" ")
 
             # Save simulation configuration to GPKG
