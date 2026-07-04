@@ -995,24 +995,9 @@ class SWE2DWorkbenchStudioDialog(QtWidgets.QDialog):
         dock.setVisible(True)
         dock.raise_()
 
-    def _remember_model_gpkg(self, path: str) -> None:
-        """Track recently opened model GeoPackages for the Plugins menu."""
-        if not path:
-            return
-        if not hasattr(self, "_recent_model_gpkgs"):
-            self._recent_model_gpkgs = []
-        p = str(path)
-        if p in self._recent_model_gpkgs:
-            self._recent_model_gpkgs.remove(p)
-        self._recent_model_gpkgs.insert(0, p)
-        self._recent_model_gpkgs = self._recent_model_gpkgs[:5]
-
     def _load_2d_model_geopackage(self, path_override=None) -> None:
         """Load a model GeoPackage and update recent files."""
         self._mesh_controller.load_2d_model_geopackage(path_override=path_override)
-        path = path_override or getattr(self, "_model_gpkg_path", "")
-        if path:
-            self._remember_model_gpkg(path)
 
     def _iter_all_persistable_widgets(self):
         """Yield (attr_name, widget) pairs across all tab views and toolbox."""
