@@ -13,6 +13,7 @@ def test_load_timeseries_from_live_empty():
 
 def _make_data_with_line_ts():
     data = SWE2DResultsData()
+    data._live_run_id = "run_1"
     # Two mesh snapshots at t=0 and t=1
     h0 = np.array([1.0, 2.0], dtype=np.float64)
     h1 = np.array([1.2, 2.2], dtype=np.float64)
@@ -69,6 +70,7 @@ def test_load_profile_from_live_empty():
 
 def test_load_profile_from_live_with_rows():
     data = SWE2DResultsData()
+    data._live_run_id = "run_1"
     h0 = np.array([1.0, 2.0], dtype=np.float64)
     h1 = np.array([1.2, 2.2], dtype=np.float64)
     zeros = np.zeros_like(h0)

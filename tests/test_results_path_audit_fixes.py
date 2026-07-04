@@ -265,6 +265,7 @@ class TestLiveLineProfilePopulation(unittest.TestCase):
         depth = data._live_line_profile[7]["depth_m"]
         self.assertEqual(depth.shape, (2, 2))
         # Load at t=1 should return the second-snapshot values
+        data._live_run_id = "rid"
         from swe2d.services.gpkg_persistence_service import load_baked_line_profile
         out = load_baked_line_profile(data, "rid", 7, 1.0)
         self.assertIn("station_m", out)
@@ -325,6 +326,7 @@ class TestResultsDataLineTsLivePath(unittest.TestCase):
             cell_solver_z=np.array([0.0, 0.0]),
         )
 
+        data._live_run_id = "rid"
         ts = load_baked_line_timeseries(data, "rid", 1)
         # t_s must reflect the snapshot times (0 and 10), not be empty
         np.testing.assert_allclose(np.sort(ts["t_s"]), [0.0, 10.0])
