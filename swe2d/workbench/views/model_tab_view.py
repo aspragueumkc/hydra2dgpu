@@ -441,6 +441,10 @@ class ModelTabView(QtWidgets.QWidget):
         preview_row_layout.addWidget(self.load_run_settings_btn)
         preview_row_layout.addWidget(self.save_settings_btn)
         preview_row_widget.setObjectName("run_preview_row")
+        # Add the row container to the form layout so it has a parent —
+        # otherwise the filter's setVisible(True) call would float it as
+        # a top-level window.
+        layout.addRow(preview_row_widget)
         # Register the row container (filter searches by tooltip/objname)
         self._filterable.add(
             preview_row_widget,

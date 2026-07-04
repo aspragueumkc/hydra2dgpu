@@ -183,6 +183,41 @@ class TestModelTabView(unittest.TestCase):
         ):
             self.assertIn(key, params)
 
+    def test_run_output_buttons_have_parent(self):
+        """The Preview / Load / Save buttons are wrapped in a QWidget row
+        container that must be parented (added to the form layout).
+        Otherwise the filter's setVisible(True) floats them as a
+        top-level window — the orphan-window regression."""
+        from swe2d.workbench.views.model_tab_view import ModelTabView
+        view = ModelTabView()
+        for attr in (
+            "preview_overrides_btn", "preview_coupling_btn",
+            "load_run_settings_btn", "save_settings_btn",
+        ):
+            with self.subTest(attr=attr):
+                btn = getattr(view, attr)
+                self.assertIsNotNone(
+                    btn.parent(),
+                    f"{attr} has no parent — would float as orphan window",
+                )
+                self.assertFalse(
+                    btn.isWindow(),
+                    f"{attr} is a top-level window — orphan regression",
+                )
+
+    def test_save_settings_keyboard_shortcut_targets_controller(self):
+        """Regression: Ctrl+S used to call dlg._run_dock.save_settings_btn
+        .click() but save_settings_btn moved off the run dock. The
+        shortcut must now call the controller method directly."""
+        import inspect
+        from swe2d.workbench import studio_dialog
+        src = inspect.getsource(studio_dialog)
+        self.assertNotIn(
+            "_run_dock.save_settings_btn",
+            src,
+            "Stale keyboard shortcut still references _run_dock.save_settings_btn",
+        )
+
 
 # ═══════════════════════════════════════════════════════════════════════════
 # TopologyTabView tests

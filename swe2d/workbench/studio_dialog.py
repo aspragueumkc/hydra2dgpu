@@ -204,8 +204,7 @@ _CTRL_TIME_UNIT = "hr"
 KEYBOARD_SHORTCUTS = [
     ("run", "Ctrl+R", lambda dlg: dlg._controller.on_run()),
     ("cancel", "Ctrl+.", lambda dlg: dlg._controller.on_cancel()),
-    ("save_config", "Ctrl+S", lambda dlg: dlg._run_dock.save_settings_btn.click()
-     if hasattr(dlg, "_run_dock") and dlg._run_dock is not None else None),
+    ("save_config", "Ctrl+S", lambda dlg: dlg._controller.on_save_simulation_config()),
     ("open_gpkg", "Ctrl+O", lambda dlg: dlg._mesh_controller.load_2d_model_geopackage()),
     ("refresh_results", "F5", lambda dlg: dlg._on_results_refresh()),
 ]
@@ -2090,45 +2089,43 @@ class SWE2DWorkbenchStudioDialog(QtWidgets.QDialog):
             )
             station_arr = np.asarray(result.get("station_m", np.empty(0)), dtype=np.float64)
             if station_arr.size > 0:
-                depth_arr = np.asarray(result.get("depth_m", np.empty(0)), dtype=np.float64)
-                vel_arr = np.asarray(result.get("velocity_ms", np.empty(0)), dtype=np.float64)
-                wse_arr = np.asarray(result.get("wse_m", np.empty(0)), dtype=np.float64)
-                bed_arr = np.asarray(result.get("bed_m", np.empty(0)), dtype=np.float64)
-                qn_arr = np.asarray(result.get("flow_qn", np.empty(0)), dtype=np.float64)
-                wet_arr = np.asarray(result.get("wet", np.empty(0)), dtype=np.int32)
-                fr_arr_p = np.asarray(result.get("froude", np.empty(0)), dtype=np.float64)
-                n_p = min(station_arr.size, depth_arr.size, vel_arr.size, wse_arr.size, bed_arr.size, qn_arr.size, wet_arr.size, fr_arr_p.size)
-                for j in range(n_p):
-                    if not np.isfinite(station_arr[j]):
-                        continue
-                    out_prof.append({
-                        "t_s": float(t_accum), "line_id": int(sm.get("line_id", -1)),
-                        "line_name": str(sm.get("line_name", "") or ""),
-                        "station_m": float(station_arr[j]),
-                        "depth_m": float(depth_arr[j]) if np.isfinite(depth_arr[j]) else float("nan"),
-                        "velocity_ms": float(vel_arr[j]) if np.isfinite(vel_arr[j]) else float("nan"),
-                        "wse_m": float(wse_arr[j]) if np.isfinite(wse_arr[j]) else float("nan"),
-                        "bed_m": float(bed_arr[j]) if np.isfinite(bed_arr[j]) else float("nan"),
-                        "flow_qn": float(qn_arr[j]) if np.isfinite(qn_arr[j]) else float("nan"),
-                        "wet": int(wet_arr[j]),
-                        "fr": float(fr_arr_p[j]) if np.isfinite(fr_arr_p[j]) else float("nan"),
-                    })
+                out_prof.append({
+                    "t_s": float(t_accum),
+                    "line_id": int(sm.get("line_id", -1)),
+                    "line_name": str(sm.get("line_name", "") or ""),
+                    "station_m": station_arr,
+                    "depth_m": np.asarray(result.get("depth_m", np.empty(0)), dtype=np.float64),
+                    "velocity_ms": np.asarray(result.get("velocity_ms", np.empty(0)), dtype=np.float64),
+                    "wse_m": np.asarray(result.get("wse_m", np.empty(0)), dtype=np.float64),
+                    "bed_m": np.asarray(result.get("bed_m", np.empty(0)), dtype=np.float64),
+                    "flow_qn": np.asarray(result.get("flow_qn", np.empty(0)), dtype=np.float64),
+                    "fr": np.asarray(result.get("froude", np.empty(0)), dtype=np.float64),
+                    "wet": np.asarray(result.get("wet", np.empty(0)), dtype=np.int32),
+                })
             else:
                 idx = agg["_idx"]
-                hh = agg["_hh"]; zb = agg["_zb"]; vel = agg["_vel"]
-                qn = agg["_qn"]; wet = agg["_wet"]; fr_arr = agg["_fr_arr"]
+                hh = agg["_hh"]
+                zb = agg["_zb"]
+                vel = agg["_vel"]
+                qn = agg["_qn"]
+                wet = agg["_wet"]
+                fr_arr = agg["_fr_arr"]
                 sta = np.asarray(sm.get("station_m", np.arange(idx.size, dtype=np.float64)), dtype=np.float64)
                 if sta.size != idx.size:
                     sta = np.linspace(0.0, float(idx.size - 1), idx.size, dtype=np.float64)
-                for j in range(idx.size):
-                    out_prof.append({
-                        "t_s": float(t_accum), "line_id": int(sm.get("line_id", -1)),
-                        "line_name": str(sm.get("line_name", "") or ""),
-                        "station_m": float(sta[j]), "depth_m": float(hh[j]),
-                        "velocity_ms": float(vel[j]), "wse_m": float(hh[j] + zb[j]),
-                        "bed_m": float(zb[j]), "flow_qn": float(qn[j]),
-                        "wet": int(bool(wet[j])), "fr": float(fr_arr[j]),
-                    })
+                out_prof.append({
+                    "t_s": float(t_accum),
+                    "line_id": int(sm.get("line_id", -1)),
+                    "line_name": str(sm.get("line_name", "") or ""),
+                    "station_m": sta,
+                    "depth_m": np.asarray(hh, dtype=np.float64),
+                    "velocity_ms": np.asarray(vel, dtype=np.float64),
+                    "wse_m": np.asarray(hh + zb, dtype=np.float64),
+                    "bed_m": np.asarray(zb, dtype=np.float64),
+                    "flow_qn": np.asarray(qn, dtype=np.float64),
+                    "fr": np.asarray(fr_arr, dtype=np.float64),
+                    "wet": np.asarray(wet, dtype=np.int32),
+                })
         return out_ts, out_prof
 
     def _execute_run_request(self, request):
