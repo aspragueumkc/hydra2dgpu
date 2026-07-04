@@ -34,13 +34,10 @@ class ModelTabView(QtWidgets.QWidget):
 
     Layers page (``model_layers_page``):
         nodes_layer_combo, cells_layer_combo, terrain_layer_combo,
-        manning_layer_combo, cn_layer_combo, rain_gage_layer_combo,
-        hyetograph_layer_combo, sample_lines_layer_combo,
-        drain_nodes_layer_combo, drain_links_layer_combo,
-        drain_inlets_layer_combo, drain_node_inlets_layer_combo,
-        structures_layer_combo, bc_lines_layer_combo
+        sample_lines_layer_combo, bc_lines_layer_combo
 
     Solver Parameters page (``model_solver_page``):
+        manning_layer_combo (Physics & Friction group),
         n_mann_spin, cfl_spin, h_min_spin,
         initial_condition_combo, initial_depth_spin, initial_wse_spin,
         adaptive_cfl_dt_chk, dt_spin, initial_dt_spin,
@@ -51,13 +48,16 @@ class ModelTabView(QtWidgets.QWidget):
         run_time_edit, reconstruction_combo, temporal_order_combo
 
     Rain / Hydrology page (``model_rain_page``):
+        rain_gage_layer_combo, hyetograph_layer_combo (Rainfall Input group),
+        rain_rate_spin, use_spatial_rain_cn_chk,
+        rain_update_interval_spin, storm_area_layer_combo,
+        rain_boundary_buffer_rings_spin,
+        infiltration_method_combo, cn_layer_combo (Infiltration group),
+        cn_default_spin, ia_ratio_spin,
         max_rel_depth_increase_spin, max_source_depth_step_spin,
         max_source_rate_spin, extreme_rain_mode_chk,
         source_cfl_beta_spin, source_max_substeps_spin,
-        source_true_subcycling_chk, source_imex_split_chk,
-        rain_rate_spin, cn_default_spin, ia_ratio_spin,
-        use_spatial_rain_cn_chk, infiltration_method_combo,
-        storm_area_layer_combo, rain_boundary_buffer_rings_spin
+        source_true_subcycling_chk, source_imex_split_chk
 
     Stability Controls page (``model_stability_page``):
         shallow_damping_depth_spin, shallow_front_recon_fallback_chk,
@@ -67,6 +67,9 @@ class ModelTabView(QtWidgets.QWidget):
         cfl_lambda_cap_spin
 
     Structures & Drainage page (``model_drain_page``):
+        drain_nodes_layer_combo, drain_links_layer_combo,
+        drain_inlets_layer_combo, drain_node_inlets_layer_combo,
+        structures_layer_combo (Layer Setup group),
         coupling_loop_combo, culvert_solver_mode_combo,
         culvert_face_flux_chk, use_redistribution_chk,
         bridge_stacked_coupling_mode_combo,
@@ -184,7 +187,8 @@ class ModelTabView(QtWidgets.QWidget):
         layers_layout = QtWidgets.QGridLayout(self.model_layers_page)
         layers_layout.setContentsMargins(4, 4, 4, 4)
 
-        # Create all 14 layer combos as instance attributes
+        # Create all 14 layer combos as instance attributes (combos moved to
+        # other pages are still created here so existing controller wiring works)
         for attr in (
             "nodes_layer_combo",
             "cells_layer_combo",
@@ -205,27 +209,20 @@ class ModelTabView(QtWidgets.QWidget):
             widget.setObjectName(attr)
             setattr(self, attr, widget)
 
+        # Keep these 5 on the Layers page; others are added to their
+        # respective parameter pages below.
         for row, label, attr in [
             (0, "Nodes layer:", "nodes_layer_combo"),
             (1, "Cells layer:", "cells_layer_combo"),
             (2, "Terrain raster:", "terrain_layer_combo"),
-            (3, "Manning polygons:", "manning_layer_combo"),
-            (4, "CN polygons:", "cn_layer_combo"),
-            (5, "Rain gages (points):", "rain_gage_layer_combo"),
-            (6, "Rain hyetographs (table):", "hyetograph_layer_combo"),
-            (7, "Sample lines layer:", "sample_lines_layer_combo"),
-            (8, "Drainage nodes layer:", "drain_nodes_layer_combo"),
-            (9, "Drainage links layer:", "drain_links_layer_combo"),
-            (10, "Drainage inlet types (table):", "drain_inlets_layer_combo"),
-            (11, "Drainage node-inlets (table):", "drain_node_inlets_layer_combo"),
-            (12, "Hydraulic structures layer:", "structures_layer_combo"),
-            (13, "BC lines layer:", "bc_lines_layer_combo"),
+            (3, "Sample lines layer:", "sample_lines_layer_combo"),
+            (4, "BC lines layer:", "bc_lines_layer_combo"),
         ]:
             widget = getattr(self, attr)
             if layers_layout.indexOf(widget) < 0:
                 layers_layout.addWidget(QtWidgets.QLabel(label), row, 0)
                 layers_layout.addWidget(widget, row, 1)
-        layers_layout.setRowStretch(14, 1)
+        layers_layout.setRowStretch(5, 1)
 
         # Tooltips
         self.nodes_layer_combo.setToolTip(
@@ -241,46 +238,9 @@ class ModelTabView(QtWidgets.QWidget):
             "Digital elevation model (DEM) raster layer used to assign node bed elevations. "
             "Select a raster then use 'Assign Node Z From Terrain' on the Mesh tab."
         )
-        self.manning_layer_combo.setToolTip(
-            "Polygon layer with Manning's n values for spatially varying roughness. "
-            "Field must contain a numeric roughness column. Leave empty for uniform n "
-            "set in the Model tab."
-        )
-        self.cn_layer_combo.setToolTip(
-            "Polygon layer containing SCS Curve Number values for runoff computation. "
-            "Required when infiltration method is SCS Curve Number."
-        )
-        self.rain_gage_layer_combo.setToolTip(
-            "Point layer defining rain gauge locations. Each gauge should have an ID "
-            "matching entries in the hyetograph table layer."
-        )
-        self.hyetograph_layer_combo.setToolTip(
-            "Table layer containing precipitation hyetographs. Columns: time (hours) "
-            "and rainfall intensity (mm/hr or in/hr) for each gauge."
-        )
         self.sample_lines_layer_combo.setToolTip(
             "Line layer for sampling flow results along cross-sections during simulation. "
             "Results are saved at the line output interval specified in the Run tab."
-        )
-        self.drain_nodes_layer_combo.setToolTip(
-            "Point layer for drainage network nodes (manholes, junctions). "
-            "Used for 1D-2D coupled drainage simulations."
-        )
-        self.drain_links_layer_combo.setToolTip(
-            "Line layer for drainage network links (pipes, channels). "
-            "Connects drain nodes for 1D-2D coupled drainage."
-        )
-        self.drain_inlets_layer_combo.setToolTip(
-            "Table layer defining inlet types (grate, curb, combination) "
-            "and their hydraulic capture curves."
-        )
-        self.drain_node_inlets_layer_combo.setToolTip(
-            "Table layer mapping drain nodes to inlet types from the inlet types table. "
-            "Defines which inlets are connected to which nodes."
-        )
-        self.structures_layer_combo.setToolTip(
-            "Line layer for hydraulic structures (weirs, orifices, bridges, culverts, pumps). "
-            "Each structure must have a type field and geometry."
         )
         self.bc_lines_layer_combo.setToolTip(
             "Line layer for boundary condition segments. "
@@ -288,14 +248,8 @@ class ModelTabView(QtWidgets.QWidget):
             "assigned via the default BC type combo or per-segment attributes."
         )
 
-        for attr in [
-            "drain_nodes_layer_combo",
-            "drain_links_layer_combo",
-            "drain_inlets_layer_combo",
-            "drain_node_inlets_layer_combo",
-            "structures_layer_combo",
-            "bc_lines_layer_combo",
-        ]:
+        # Drain combos moved to the Drainage page's "Layer Setup" group
+        for attr in ["bc_lines_layer_combo"]:
             c = getattr(self, attr)
             if c.count() == 0:
                 c.addItem("(none)", None)
@@ -742,6 +696,13 @@ class ModelTabView(QtWidgets.QWidget):
 
         # -- Physics & Friction --
         form = self._start_param_group(param_form, "Physics & Friction")
+        # Spatial Manning layer — moved from the Layers page
+        self.manning_layer_combo.setToolTip(
+            "Polygon layer with Manning's n values for spatially varying roughness. "
+            "Field must contain a numeric roughness column. Leave empty for uniform n "
+            "set in the Model tab."
+        )
+        self._add_param_row(form, "Manning polygons:", self.manning_layer_combo)
         self.n_mann_spin = QtWidgets.QDoubleSpinBox()
         self.n_mann_spin.setObjectName("n_mann_spin")
         self.n_mann_spin.setToolTip(
@@ -963,6 +924,18 @@ class ModelTabView(QtWidgets.QWidget):
     def _build_rain_form_widgets(self, param_form: QtWidgets.QFormLayout) -> None:
         """Populate the Rain / Hydrology page with grouped rainfall controls."""
         form = self._start_param_group(param_form, "Rainfall Input")
+        # Spatial rainfall layers — moved from the Layers page
+        self.rain_gage_layer_combo.setToolTip(
+            "Point layer defining rain gauge locations. Each gauge should have an ID "
+            "matching entries in the hyetograph table layer."
+        )
+        self._add_param_row(form, "Rain gages (points):", self.rain_gage_layer_combo)
+        self.hyetograph_layer_combo.setToolTip(
+            "Table layer containing precipitation hyetographs. Columns: time (hours) "
+            "and rainfall intensity (mm/hr or in/hr) for each gauge."
+        )
+        self._add_param_row(form, "Rain hyetographs (table):", self.hyetograph_layer_combo)
+
         self.rain_rate_spin = QtWidgets.QDoubleSpinBox()
         self.rain_rate_spin.setObjectName("rain_rate_spin")
         self.rain_rate_spin.setToolTip(
@@ -1038,6 +1011,12 @@ class ModelTabView(QtWidgets.QWidget):
         self.infiltration_method_combo.setCurrentIndex(
             self.infiltration_method_combo.findData("scs_cn")
         )
+        # CN polygons layer — moved from the Layers page
+        self.cn_layer_combo.setToolTip(
+            "Polygon layer containing SCS Curve Number values for runoff computation. "
+            "Required when infiltration method is SCS Curve Number."
+        )
+        self._add_param_row(form, "CN polygons:", self.cn_layer_combo)
 
         self.cn_default_spin = QtWidgets.QDoubleSpinBox()
         self.cn_default_spin.setObjectName("cn_default_spin")
@@ -1290,6 +1269,45 @@ class ModelTabView(QtWidgets.QWidget):
 
     def _build_drain_form_widgets(self, param_form: QtWidgets.QFormLayout) -> None:
         """Populate the Structures & Drainage page with grouped coupling controls."""
+        # -- Layer Setup (drainage + structures layers — moved from Layers page) --
+        form = self._start_param_group(param_form, "Layer Setup")
+        self.drain_nodes_layer_combo.setToolTip(
+            "Point layer for drainage network nodes (manholes, junctions). "
+            "Used for 1D-2D coupled drainage simulations."
+        )
+        self._add_param_row(form, "Drainage nodes layer:", self.drain_nodes_layer_combo)
+        self.drain_links_layer_combo.setToolTip(
+            "Line layer for drainage network links (pipes, channels). "
+            "Connects drain nodes for 1D-2D coupled drainage."
+        )
+        self._add_param_row(form, "Drainage links layer:", self.drain_links_layer_combo)
+        self.drain_inlets_layer_combo.setToolTip(
+            "Table layer defining inlet types (grate, curb, combination) "
+            "and their hydraulic capture curves."
+        )
+        self._add_param_row(form, "Drainage inlet types (table):", self.drain_inlets_layer_combo)
+        self.drain_node_inlets_layer_combo.setToolTip(
+            "Table layer mapping drain nodes to inlet types from the inlet types table. "
+            "Defines which inlets are connected to which nodes."
+        )
+        self._add_param_row(form, "Drainage node-inlets (table):", self.drain_node_inlets_layer_combo)
+        self.structures_layer_combo.setToolTip(
+            "Line layer for hydraulic structures (weirs, orifices, bridges, culverts, pumps). "
+            "Each structure must have a type field and geometry."
+        )
+        self._add_param_row(form, "Hydraulic structures layer:", self.structures_layer_combo)
+        # Add (none) items for all layer combos
+        for attr in [
+            "drain_nodes_layer_combo",
+            "drain_links_layer_combo",
+            "drain_inlets_layer_combo",
+            "drain_node_inlets_layer_combo",
+            "structures_layer_combo",
+        ]:
+            c = getattr(self, attr)
+            if c.count() == 0:
+                c.addItem("(none)", None)
+
         form = self._start_param_group(param_form, "Culvert / Bridge", advanced=True)
         self.coupling_loop_combo = QtWidgets.QComboBox()
         self.coupling_loop_combo.setObjectName("coupling_loop_combo")
