@@ -201,14 +201,6 @@ _CTRL_PROFILE_CMAP_OPTIONS = [
 
 _CTRL_TIME_UNIT = "hr"
 
-KEYBOARD_SHORTCUTS = [
-    ("run", "Ctrl+R", lambda dlg: dlg._controller.on_run()),
-    ("cancel", "Ctrl+.", lambda dlg: dlg._controller.on_cancel()),
-    ("save_config", "Ctrl+S", lambda dlg: dlg._controller.on_save_simulation_config()),
-    ("open_gpkg", "Ctrl+O", lambda dlg: dlg._mesh_controller.load_2d_model_geopackage()),
-    ("refresh_results", "F5", lambda dlg: dlg._on_results_refresh()),
-]
-
 
 class SWE2DWorkbenchStudioDialog(QtWidgets.QDialog):
     """Dock-inspired workspace layout with persistent side inspector.
@@ -2316,15 +2308,6 @@ class SWE2DWorkbenchStudioDialog(QtWidgets.QDialog):
         )
 
     # ── View Protocol Methods (called by Service Layer, never widgets directly) ──
-
-    def _install_keyboard_shortcuts(self) -> None:
-        """Install global application shortcuts for common workbench actions."""
-        from qgis.PyQt.QtGui import QKeySequence
-        from qgis.PyQt.QtWidgets import QShortcut
-        for _name, seq, cb in KEYBOARD_SHORTCUTS:
-            shortcut = QShortcut(QKeySequence(seq), self)
-            shortcut.setContext(QtCore.Qt.ApplicationShortcut)
-            shortcut.activated.connect(lambda _cb=cb: _cb(self))
 
     def set_run_button_enabled(self, enabled: bool) -> None:
         """Enable or disable the Run button."""

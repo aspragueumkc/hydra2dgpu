@@ -253,7 +253,6 @@ class WorkbenchDialogBuilder:
 
         self._studio_apply_visual_profile("Default")
         dlg._studio_apply_feature_filters()
-        dlg._install_keyboard_shortcuts()
         dlg._layer_controller.refresh_layer_combos()
         self._validate_widget_bindings()
 

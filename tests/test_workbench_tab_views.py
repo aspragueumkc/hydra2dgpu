@@ -406,6 +406,150 @@ class TestStudioHostToolbarMenu(unittest.TestCase):
 
 
 # ═══════════════════════════════════════════════════════════════════════════
+# Workbench main menu / QGIS shortcut manager tests
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+class TestWorkbenchMainMenuShortcuts(unittest.TestCase):
+    """Verify the workbench main menu actions are registered with QGIS's
+    shortcut manager under the "HYDRA2DGPU" section, with no default
+    shortcut assigned (user binds their own in Settings → Keyboard
+    Shortcuts)."""
+
+    @classmethod
+    def setUpClass(cls):
+        _ensure_app()
+
+    def _make_mock_dialog(self):
+        dlg = MagicMock()
+        dlg._controller = MagicMock()
+        dlg._overlay_controller = MagicMock()
+        dlg._mesh_controller = MagicMock()
+        dlg._topology_controller = MagicMock()
+        dlg._recent_model_gpkgs = []
+        return dlg
+
+    def _make_iface_with_menu_bar(self):
+        """Build a real QMainWindow + a MagicMock iface whose
+        mainWindow() returns it, so install_workbench_main_menu can
+        resolve a real menu bar."""
+        from qgis.PyQt import QtWidgets
+        host = QtWidgets.QMainWindow()
+        host.menuBar()
+        iface = MagicMock()
+        iface.mainWindow = lambda: host
+        return iface, host
+
+    def test_menu_actions_have_no_default_shortcut(self):
+        """No workbench menu action is hard-coded with a key sequence —
+        all shortcuts come from the user's Settings → Keyboard Shortcuts
+        binding via the QGIS shortcut manager."""
+        from swe2d.workbench.views.workbench_main_menu import (
+            install_workbench_main_menu,
+            remove_workbench_main_menu,
+        )
+        iface, _host = self._make_iface_with_menu_bar()
+        dlg = self._make_mock_dialog()
+        try:
+            menu = install_workbench_main_menu(dlg, iface)
+            self.assertIsNotNone(menu)
+            # Iterate every action on the menu and confirm none has a
+            # hard-coded shortcut (defaultShortcut would have been set
+            # via setShortcut during construction).
+            for action in menu.actions():
+                if action.isSeparator():
+                    continue
+                seq = action.shortcut()
+                self.assertTrue(
+                    seq.isEmpty(),
+                    f"Action {action.objectName()} has a default shortcut "
+                    f"({seq.toString()}) — should be empty so the user "
+                    f"binds it via Settings → Keyboard Shortcuts.",
+                )
+        finally:
+            remove_workbench_main_menu(iface)
+
+    def test_menu_actions_are_registered_with_qgis_shortcut_manager(self):
+        """Every non-separator menu action is registered with
+        QgisGui.shortcutsManager() under the 'HYDRA2DGPU' section.
+
+        Skips gracefully when running under the test-only mock QGIS
+        environment (which doesn't provide qgis.gui.QgsGui). The
+        install path still registers in real QGIS — see the smoke test
+        under mamba run -n qgis_stable.
+        """
+        from swe2d.workbench.views.workbench_main_menu import (
+            install_workbench_main_menu,
+            remove_workbench_main_menu,
+        )
+        iface, _host = self._make_iface_with_menu_bar()
+        dlg = self._make_mock_dialog()
+        try:
+            menu = install_workbench_main_menu(dlg, iface)
+            self.assertIsNotNone(menu)
+            try:
+                from qgis.gui import QgsGui
+            except ImportError:
+                self.skipTest(
+                    "qgis.gui.QgsGui not available in this test environment"
+                )
+            manager = QgsGui.shortcutsManager()
+            registered = set()
+            for action in menu.actions():
+                if action.isSeparator():
+                    continue
+                # actionByName uses the action's objectName — verify it
+                # resolves back to the same action object.
+                found = manager.actionByName(action.objectName())
+                if found is action:
+                    registered.add(action.objectName())
+            # We expect every HYDRA2DMenu* action to be registered.
+            expected = {
+                a.objectName() for a in menu.actions()
+                if not a.isSeparator() and a.objectName().startswith("HYDRA2DMenu")
+            }
+            missing = expected - registered
+            self.assertEqual(
+                missing, set(),
+                f"Actions not registered with QGIS shortcut manager: {missing}",
+            )
+        finally:
+            remove_workbench_main_menu(iface)
+
+    def test_stale_keyboard_shortcuts_module_removed(self):
+        """Regression: the module-level KEYBOARD_SHORTCUTS list and the
+        QShortcut-based _install_keyboard_shortcuts() method were
+        removed in favor of QGIS's shortcut manager. Make sure they
+        don't sneak back in."""
+        import inspect
+        from swe2d.workbench import studio_dialog
+        from swe2d.workbench.views import workbench_main_menu
+
+        # Module-level KEYBOARD_SHORTCUTS attribute must not exist.
+        self.assertFalse(
+            hasattr(studio_dialog, "KEYBOARD_SHORTCUTS"),
+            "studio_dialog.KEYBOARD_SHORTCUTS should be removed — use "
+            "QGIS shortcut manager via workbench_main_menu actions.",
+        )
+        # _install_keyboard_shortcuts method must not exist on the dialog.
+        self.assertFalse(
+            hasattr(studio_dialog.SWE2DWorkbenchStudioDialog, "_install_keyboard_shortcuts"),
+            "_install_keyboard_shortcuts() bypasses QGIS's shortcut "
+            "manager — use workbench_main_menu actions instead.",
+        )
+        # No setShortcut(...) calls remain in workbench_main_menu —
+        # the only shortcut registration path is via
+        # _register_with_qgis_shortcut_manager → registerAction('').
+        src = inspect.getsource(workbench_main_menu)
+        self.assertNotIn(
+            "act.setShortcut(",
+            src,
+            "workbench_main_menu should not call act.setShortcut(...) — "
+            "use the QGIS shortcut manager with defaultShortcut=''.",
+        )
+
+
+# ═══════════════════════════════════════════════════════════════════════════
 # Doc search tests
 # ═══════════════════════════════════════════════════════════════════════════
 

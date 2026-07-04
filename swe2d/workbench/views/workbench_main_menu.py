@@ -3,6 +3,22 @@
 This menu is owned by the workbench dialog (a View layer in MVP) and
 installed/removed alongside the workbench lifecycle. Plugin-level menu
 items (Open Workbench, Settings) stay in hydra_plugin.py.
+
+Keyboard shortcuts are intentionally NOT set on the actions here. Instead,
+each action is registered with QGIS's :class:`QgsShortcutsManager` under
+the section "HYDRA2DGPU" with ``defaultShortcut=''``. This means:
+
+* The action shows up in **Settings → Keyboard Shortcuts** under a
+  dedicated "HYDRA2DGPU" section.
+* The user assigns their own key combo in that dialog — we never
+  force a shortcut that could collide with QGIS built-ins
+  (Ctrl+S = Save Project, Ctrl+R / Ctrl+B / Ctrl+O / F5 / etc.).
+* QGIS's own shortcut conflict detection handles collisions at
+  assignment time.
+
+Previously this code installed ``QShortcut`` instances with
+``ApplicationShortcut`` context, which bypassed QGIS's manager
+entirely. That module-level `KEYBOARD_SHORTCUTS` table was removed.
 """
 from __future__ import annotations
 
@@ -10,14 +26,45 @@ import logging
 from typing import Optional
 
 from qgis.PyQt import QtCore, QtWidgets
-from qgis.PyQt.QtGui import QAction, QKeySequence
+from qgis.PyQt.QtGui import QKeySequence
+from qgis.PyQt.QtWidgets import QAction
 
 logger_wb = logging.getLogger(__name__)
+
+# Section name used when registering actions with QGIS's shortcut manager.
+_QGIS_SHORTCUTS_SECTION = "HYDRA2DGPU"
 
 # Tracks the currently-installed workbench menu so we can remove it on close.
 _workbench_main_menu: Optional[QtWidgets.QMenu] = None
 _workbench_main_menu_actions: list[QAction] = []
 _workbench_main_menu_owned: bool = False
+
+
+def _register_with_qgis_shortcut_manager(action: QAction) -> None:
+    """Register ``action`` with QGIS's :class:`QgsShortcutsManager`.
+
+    The action is added to the "HYDRA2DGPU" section with no default
+    shortcut, so the user can assign a key combo of their choice from
+    **Settings → Keyboard Shortcuts**. Failures (e.g. when running
+    headless or in tests) are logged and swallowed — shortcut
+    registration is best-effort, not load-bearing.
+    """
+    try:
+        from qgis.gui import QgsGui
+        manager = QgsGui.shortcutsManager()
+        # ``defaultShortcut=''`` means "user assigns later". Passing a
+        # real sequence here would risk colliding with QGIS built-ins.
+        manager.registerAction(
+            action,
+            defaultShortcut="",
+            section=_QGIS_SHORTCUTS_SECTION,
+        )
+    except Exception as exc:
+        logger_wb.debug(
+            "[workbench_menu] registerAction(%s) failed: %s",
+            action.objectName(),
+            exc,
+        )
 
 
 def _find_workbench_main_menu(menu_bar: QtWidgets.QMenuBar) -> Optional[QtWidgets.QMenu]:
@@ -78,14 +125,19 @@ def install_workbench_main_menu(dlg, iface) -> Optional[QtWidgets.QMenu]:
     _workbench_main_menu_actions = []
 
     # ── Persistent helper ───────────────────────────────────────────
-    def add_action(object_name, text, callback, shortcut=None):
+    def add_action(object_name, text, callback):
+        """Add an action to the menu and register it with the QGIS
+        shortcut manager (no default shortcut — user assigns via
+        Settings → Keyboard Shortcuts).
+        """
         act = QAction(text, menu)
         act.setObjectName(object_name)
         act.triggered.connect(callback)
-        if shortcut:
-            act.setShortcut(QKeySequence(shortcut))
         menu.addAction(act)
         _workbench_main_menu_actions.append(act)
+        # Register so the user can assign a key combo in QGIS's
+        # Keyboard Shortcuts settings dialog. No default sequence.
+        _register_with_qgis_shortcut_manager(act)
         return act
 
     # ── GeoPackage actions ──────────────────────────────────────────
@@ -106,13 +158,26 @@ def install_workbench_main_menu(dlg, iface) -> Optional[QtWidgets.QMenu]:
         "HYDRA2DMenuRunLastAction",
         "Run Last Simulation",
         lambda: dlg._controller.on_run(),
-        "Ctrl+R",
+    )
+    add_action(
+        "HYDRA2DMenuCancelRunAction",
+        "Cancel Running Simulation",
+        lambda: dlg._controller.on_cancel(),
     )
     add_action(
         "HYDRA2DMenuBatchSimAction",
         "Batch Simulation…",
         lambda: dlg._controller.open_batch_simulation_dialog(),
-        "Ctrl+B",
+    )
+    add_action(
+        "HYDRA2DMenuSaveConfigAction",
+        "Save Simulation Config to GeoPackage…",
+        lambda: dlg._controller.on_save_simulation_config(),
+    )
+    add_action(
+        "HYDRA2DMenuLoadConfigAction",
+        "Load Simulation Config from GeoPackage…",
+        lambda: dlg._controller.on_load_simulation_config(),
     )
     add_action(
         "HYDRA2DMenuOpenRunLogAction",
@@ -123,6 +188,11 @@ def install_workbench_main_menu(dlg, iface) -> Optional[QtWidgets.QMenu]:
         "HYDRA2DMenuOpenGpkgExplorerAction",
         "Open GeoPackage Explorer",
         lambda: dlg._topology_controller.open_model_gpkg_explorer(),
+    )
+    add_action(
+        "HYDRA2DMenuRefreshResultsAction",
+        "Refresh Results",
+        lambda: dlg._on_results_refresh(),
     )
     menu.addSeparator()
 
