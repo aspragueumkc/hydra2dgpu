@@ -116,9 +116,11 @@ class TestModelTabView(unittest.TestCase):
         for attr in (
             "model_toolbox",
             "model_solver_page", "model_rain_page",
-            "model_drain_page",
+            "model_drain_page", "model_output_page",
             "n_mann_spin", "cfl_spin", "h_min_spin",
             "run_time_edit",
+            "extended_outputs_chk", "save_mesh_chk", "save_line_chk",
+            "save_coupling_chk", "save_max_only_chk", "save_log_chk",
         ):
             with self.subTest(attr=attr):
                 self.assertTrue(
@@ -135,7 +137,37 @@ class TestModelTabView(unittest.TestCase):
         from swe2d.workbench.views.model_tab_view import ModelTabView
         view = ModelTabView()
         self.assertIsNotNone(view.model_toolbox)
-        self.assertGreaterEqual(view.model_toolbox.count(), 4)
+        # 4 original pages + 1 Output page (moved from ResultsToolbox)
+        self.assertGreaterEqual(view.model_toolbox.count(), 5)
+
+    def test_output_page_is_bottom(self):
+        """The Output page must be the last (bottom) page in the model toolbox."""
+        from swe2d.workbench.views.model_tab_view import ModelTabView
+        view = ModelTabView()
+        last_idx = view.model_toolbox.count() - 1
+        self.assertEqual(
+            view.model_toolbox.itemText(last_idx), "Output"
+        )
+        self.assertIs(
+            view.model_toolbox.widget(last_idx), view.model_output_page
+        )
+
+    def test_collect_storage_params_matches_legacy_schema(self):
+        """collect_storage_params must produce the legacy key set expected
+        by run_controller and batch_simulation_dialog."""
+        from swe2d.workbench.views.model_tab_view import ModelTabView
+        view = ModelTabView()
+        # Defaults: extended=True, save_mesh=True, save_max_only=False
+        params = view.collect_storage_params()
+        for key in (
+            "extended_outputs_chk",
+            "save_mesh_results_to_gpkg_chk",
+            "save_line_results_to_gpkg_chk",
+            "save_coupling_results_to_gpkg_chk",
+            "save_max_only_chk",
+            "save_run_log_to_gpkg_chk",
+        ):
+            self.assertIn(key, params)
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -208,19 +240,21 @@ class TestResultsToolbox(unittest.TestCase):
         _ensure_app()
 
     def test_extended_outputs_tooltip_is_not_truncated(self):
-        from swe2d.workbench.views.results_controls import ResultsToolbox
-        toolbox = ResultsToolbox()
-        tip = toolbox.extended_outputs_chk.toolTip()
+        # extended_outputs_chk moved to ModelTabView Output page.
+        from swe2d.workbench.views.model_tab_view import ModelTabView
+        view = ModelTabView()
+        tip = view.extended_outputs_chk.toolTip()
         self.assertNotIn("...", tip)
         self.assertIn("Froude", tip)
 
-    def test_results_toolbox_has_two_pages(self):
+    def test_results_toolbox_has_one_page(self):
+        """Storage page was moved to ModelTabView (Output)."""
         from swe2d.workbench.views.results_controls import ResultsToolbox
         toolbox = ResultsToolbox()
-        self.assertEqual(toolbox.toolbox.count(), 2)
+        self.assertEqual(toolbox.toolbox.count(), 1)
         texts = [toolbox.toolbox.itemText(i) for i in range(toolbox.toolbox.count())]
         self.assertIn("Display", texts)
-        self.assertIn("Storage", texts)
+        self.assertNotIn("Storage", texts)
 
     def test_arrow_children_disable_with_checkbox(self):
         from swe2d.workbench.views.results_controls import ResultsToolbox

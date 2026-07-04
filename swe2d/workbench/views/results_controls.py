@@ -1,9 +1,11 @@
-"""Results controls — 2-page toolbox for the "HYDRA2D Results" dock.
+"""Results controls — Display-only toolbox for the "HYDRA2D Results" dock.
 
 Follows the canonical _build_xxx_page(toolbox) pattern (MVP Rule 8).
 Pages:
   1. Display  — field, colormap, color range, overlay style, runs
-  2. Storage  — save-to-GPKG checkboxes
+
+Storage checkboxes were moved to the Model tab of the Model Setup panel
+as the "Output" page (bottom of the model toolbox).
 
 Emits pyqtSignals for controller wiring (does NOT reach through dialog).
 """
@@ -80,7 +82,11 @@ class ResultsToolbox(QtWidgets.QWidget):
     # ------------------------------------------------------------------
 
     def _build_ui(self) -> None:
-        """Build the 2-page toolbox (Display, Storage)."""
+        """Build the 1-page toolbox (Display).
+
+        The Storage page was moved to the Simulation tab of the Model Setup
+        panel as the "Output" page (bottom of the model toolbox).
+        """
         layout = QtWidgets.QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(0)
@@ -88,7 +94,6 @@ class ResultsToolbox(QtWidgets.QWidget):
         self._toolbox = QtWidgets.QToolBox()
         self._toolbox.setObjectName("results_toolbox")
         self._build_display_page(self._toolbox)
-        self._build_storage_page(self._toolbox)
         self._toolbox.setCurrentIndex(0)
         layout.addWidget(self._toolbox, 1)
 
@@ -325,64 +330,6 @@ class ResultsToolbox(QtWidgets.QWidget):
         self.streamline_backend_combo.setCurrentIndex(0)
 
     # ------------------------------------------------------------------
-    # Page 2: Storage
-    # ------------------------------------------------------------------
-
-    def _build_storage_page(self, toolbox: QtWidgets.QToolBox) -> None:
-        """Build the Storage page with save-to-GPKG checkboxes."""
-        page = QtWidgets.QWidget()
-        page.setObjectName("results_storage_page")
-        layout = QtWidgets.QFormLayout(page)
-        layout.setContentsMargins(6, 6, 6, 6)
-
-        self.extended_outputs_chk = QtWidgets.QCheckBox(
-            "Include extended outputs (momentum, qmag, wet mask, Fr, Manning)")
-        self.extended_outputs_chk.setToolTip(
-            "Include extended output fields: momentum components, discharge magnitude, "
-            "wet mask, Froude number, and Manning n. Increases result file size."
-        )
-        self.extended_outputs_chk.setChecked(True)
-        layout.addRow(self.extended_outputs_chk)
-
-        self.save_mesh_chk = QtWidgets.QCheckBox("Save mesh results to GPKG")
-        self.save_mesh_chk.setToolTip(
-            "Save 2D mesh simulation results (depth, velocity, WSE) to the GeoPackage."
-        )
-        self.save_mesh_chk.setChecked(True)
-        layout.addRow(self.save_mesh_chk)
-
-        self.save_line_chk = QtWidgets.QCheckBox("Save line results to GPKG")
-        self.save_line_chk.setToolTip(
-            "Save sample line (cross-section) results to the GeoPackage."
-        )
-        self.save_line_chk.setChecked(True)
-        layout.addRow(self.save_line_chk)
-
-        self.save_coupling_chk = QtWidgets.QCheckBox("Save coupling results to GPKG")
-        self.save_coupling_chk.setToolTip(
-            "Save drainage/structure coupling time series results to the GeoPackage."
-        )
-        self.save_coupling_chk.setChecked(True)
-        layout.addRow(self.save_coupling_chk)
-
-        self.save_max_only_chk = QtWidgets.QCheckBox("Save max results only (skip interval snapshots)")
-        self.save_max_only_chk.setToolTip(
-            "Only save maximum-value results per cell. "
-            "Skips interval snapshots to reduce file size."
-        )
-        self.save_max_only_chk.setChecked(False)
-        layout.addRow(self.save_max_only_chk)
-
-        self.save_log_chk = QtWidgets.QCheckBox("Save run log to GPKG")
-        self.save_log_chk.setToolTip(
-            "Save the solver run log (diagnostics, timesteps, errors) to the GeoPackage."
-        )
-        self.save_log_chk.setChecked(True)
-        layout.addRow(self.save_log_chk)
-
-        toolbox.addItem(page, "Storage")
-
-    # ------------------------------------------------------------------
     # Runs section
     # ------------------------------------------------------------------
 
@@ -513,46 +460,6 @@ class ResultsToolbox(QtWidgets.QWidget):
     def get_run_list_widget(self) -> QtWidgets.QListWidget:
         """Return the run list QListWidget."""
         return self.run_list
-
-    def get_storage_checkboxes(self) -> dict:
-        """Return storage checkboxes by key."""
-        return {
-            "extended_outputs": self.extended_outputs_chk,
-            "save_mesh": self.save_mesh_chk,
-            "save_line": self.save_line_chk,
-            "save_coupling": self.save_coupling_chk,
-            "save_max_only": self.save_max_only_chk,
-            "save_log": self.save_log_chk,
-        }
-
-    def is_extended_outputs(self) -> bool:
-        return bool(self.extended_outputs_chk.isChecked())
-
-    def is_save_mesh(self) -> bool:
-        return bool(self.save_mesh_chk.isChecked())
-
-    def is_save_line(self) -> bool:
-        return bool(self.save_line_chk.isChecked())
-
-    def is_save_coupling(self) -> bool:
-        return bool(self.save_coupling_chk.isChecked())
-
-    def is_save_max_only(self) -> bool:
-        return bool(self.save_max_only_chk.isChecked())
-
-    def is_save_log(self) -> bool:
-        return bool(self.save_log_chk.isChecked())
-
-    def collect_storage_params(self) -> dict:
-        """Return storage-checkbox parameter values as a flat dict."""
-        return {
-            "extended_outputs_chk": bool(self.extended_outputs_chk.isChecked()),
-            "save_mesh_results_to_gpkg_chk": bool(self.save_mesh_chk.isChecked()) and not bool(self.save_max_only_chk.isChecked()),
-            "save_line_results_to_gpkg_chk": bool(self.save_line_chk.isChecked()) and not bool(self.save_max_only_chk.isChecked()),
-            "save_coupling_results_to_gpkg_chk": bool(self.save_coupling_chk.isChecked()) and not bool(self.save_max_only_chk.isChecked()),
-            "save_max_only_chk": bool(self.save_max_only_chk.isChecked()),
-            "save_run_log_to_gpkg_chk": bool(self.save_log_chk.isChecked()),
-        }
 
     @property
     def toolbox(self) -> QtWidgets.QToolBox:

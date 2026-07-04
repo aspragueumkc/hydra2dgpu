@@ -83,22 +83,6 @@ class ModelTabViewProtocol(Protocol):
     def get_default_bc_type(self) -> int:
         """Default boundary condition type code."""
 
-
-class ResultsToolboxProtocol(Protocol):
-    """Typed access to results toolbox public interface."""
-
-    def refresh_run_list(self) -> None:
-        """Rebuild the run list from data layer."""
-
-    def get_results_data(self):
-        """Return the bound SWE2DResultsData (or None)."""
-
-    def get_run_list_widget(self) -> QtWidgets.QListWidget:
-        """Return the run list QListWidget."""
-
-    def get_storage_checkboxes(self) -> Dict[str, QtWidgets.QCheckBox]:
-        """Return storage checkboxes by key."""
-
     def is_extended_outputs(self) -> bool:
         """Extended outputs checkbox is checked."""
 
@@ -116,6 +100,29 @@ class ResultsToolboxProtocol(Protocol):
 
     def is_save_log(self) -> bool:
         """Save run log checkbox is checked."""
+
+    def get_storage_checkboxes(self) -> Dict[str, QtWidgets.QCheckBox]:
+        """Return storage checkboxes by key."""
+
+    def collect_storage_params(self) -> Dict[str, Any]:
+        """Return storage-checkbox parameter values as a flat dict."""
+
+
+class ResultsToolboxProtocol(Protocol):
+    """Typed access to results toolbox public interface (Display-only).
+
+    Storage checkboxes were moved to the Model tab of the Model Setup panel.
+    See ModelTabViewProtocol for the storage accessors.
+    """
+
+    def refresh_run_list(self) -> None:
+        """Rebuild the run list from data layer."""
+
+    def get_results_data(self):
+        """Return the bound SWE2DResultsData (or None)."""
+
+    def get_run_list_widget(self) -> QtWidgets.QListWidget:
+        """Return the run list QListWidget."""
 
 
 class MapTabViewProtocol(Protocol):

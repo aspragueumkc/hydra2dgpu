@@ -132,12 +132,13 @@ class ModelTabView(QtWidgets.QWidget):
         )
         self._build_drain_form_widgets(self.model_drain_form)
 
-        self._create_run_output_attributes()
+        self._build_output_page()
 
         self.model_toolbox.addItem(self.model_solver_page, "Solver Parameters")
         self.model_toolbox.addItem(self.model_rain_page, "Rain / Hydrology")
         self.model_toolbox.addItem(self.model_stability_page, "Stability Controls")
         self.model_toolbox.addItem(self.model_drain_page, "Structures & Drainage")
+        self.model_toolbox.addItem(self.model_output_page, "Output")
 
         for i in range(self.model_toolbox.count()):
             page = self.model_toolbox.widget(i)
@@ -214,19 +215,136 @@ class ModelTabView(QtWidgets.QWidget):
         for group, visible in group_visibility.items():
             group.setVisible(visible)
 
-    def _create_run_output_attributes(self) -> None:
-        """No-op — run/output widgets now live in the Run dock.
-
-        Kept as an empty shim so any external callers that still invoke
-        it do not break.
-        """
-        pass
-
     def _build_run_page_widgets(
         self, run_page: QtWidgets.QWidget, run_page_layout: QtWidgets.QVBoxLayout
     ) -> None:
         """No-op — the Run/Output page has been moved to the Run dock."""
         _ = (run_page, run_page_layout)
+
+    # ------------------------------------------------------------------
+    # Output page (storage checkboxes — moved from ResultsToolbox)
+    # ------------------------------------------------------------------
+
+    def _build_output_page(self) -> None:
+        """Build the Output page with save-to-GPKG checkboxes.
+
+        Owns the storage checkbox widgets that previously lived in the
+        ResultsToolbox. Public accessors and ``collect_storage_params``
+        mirror the old ResultsToolbox API so existing call sites keep
+        working without changes.
+        """
+        self.model_output_page = QtWidgets.QWidget()
+        self.model_output_page.setObjectName("model_output_page")
+        layout = QtWidgets.QFormLayout(self.model_output_page)
+        layout.setContentsMargins(6, 6, 6, 6)
+
+        self.extended_outputs_chk = QtWidgets.QCheckBox(
+            "Include extended outputs (momentum, qmag, wet mask, Fr, Manning)"
+        )
+        self.extended_outputs_chk.setToolTip(
+            "Include extended output fields: momentum components, discharge magnitude, "
+            "wet mask, Froude number, and Manning n. Increases result file size."
+        )
+        self.extended_outputs_chk.setObjectName("extended_outputs_chk")
+        self.extended_outputs_chk.setChecked(True)
+        layout.addRow(self.extended_outputs_chk)
+
+        self.save_mesh_chk = QtWidgets.QCheckBox("Save mesh results to GPKG")
+        self.save_mesh_chk.setToolTip(
+            "Save 2D mesh simulation results (depth, velocity, WSE) to the GeoPackage."
+        )
+        self.save_mesh_chk.setObjectName("save_mesh_chk")
+        self.save_mesh_chk.setChecked(True)
+        layout.addRow(self.save_mesh_chk)
+
+        self.save_line_chk = QtWidgets.QCheckBox("Save line results to GPKG")
+        self.save_line_chk.setToolTip(
+            "Save sample line (cross-section) results to the GeoPackage."
+        )
+        self.save_line_chk.setObjectName("save_line_chk")
+        self.save_line_chk.setChecked(True)
+        layout.addRow(self.save_line_chk)
+
+        self.save_coupling_chk = QtWidgets.QCheckBox("Save coupling results to GPKG")
+        self.save_coupling_chk.setToolTip(
+            "Save drainage/structure coupling time series results to the GeoPackage."
+        )
+        self.save_coupling_chk.setObjectName("save_coupling_chk")
+        self.save_coupling_chk.setChecked(True)
+        layout.addRow(self.save_coupling_chk)
+
+        self.save_max_only_chk = QtWidgets.QCheckBox(
+            "Save max results only (skip interval snapshots)"
+        )
+        self.save_max_only_chk.setToolTip(
+            "Only save maximum-value results per cell. "
+            "Skips interval snapshots to reduce file size."
+        )
+        self.save_max_only_chk.setObjectName("save_max_only_chk")
+        self.save_max_only_chk.setChecked(False)
+        layout.addRow(self.save_max_only_chk)
+
+        self.save_log_chk = QtWidgets.QCheckBox("Save run log to GPKG")
+        self.save_log_chk.setToolTip(
+            "Save the solver run log (diagnostics, timesteps, errors) to the GeoPackage."
+        )
+        self.save_log_chk.setObjectName("save_log_chk")
+        self.save_log_chk.setChecked(True)
+        layout.addRow(self.save_log_chk)
+
+    def is_extended_outputs(self) -> bool:
+        return bool(self.extended_outputs_chk.isChecked())
+
+    def is_save_mesh(self) -> bool:
+        return bool(self.save_mesh_chk.isChecked())
+
+    def is_save_line(self) -> bool:
+        return bool(self.save_line_chk.isChecked())
+
+    def is_save_coupling(self) -> bool:
+        return bool(self.save_coupling_chk.isChecked())
+
+    def is_save_max_only(self) -> bool:
+        return bool(self.save_max_only_chk.isChecked())
+
+    def is_save_log(self) -> bool:
+        return bool(self.save_log_chk.isChecked())
+
+    def get_storage_checkboxes(self) -> dict:
+        """Return storage checkboxes by key."""
+        return {
+            "extended_outputs": self.extended_outputs_chk,
+            "save_mesh": self.save_mesh_chk,
+            "save_line": self.save_line_chk,
+            "save_coupling": self.save_coupling_chk,
+            "save_max_only": self.save_max_only_chk,
+            "save_log": self.save_log_chk,
+        }
+
+    def collect_storage_params(self) -> dict:
+        """Return storage-checkbox parameter values as a flat dict.
+
+        Same schema previously produced by ResultsToolbox.collect_storage_params
+        so downstream controllers (run_controller, batch_simulation_dialog)
+        don't need to change.
+        """
+        return {
+            "extended_outputs_chk": bool(self.extended_outputs_chk.isChecked()),
+            "save_mesh_results_to_gpkg_chk": (
+                bool(self.save_mesh_chk.isChecked())
+                and not bool(self.save_max_only_chk.isChecked())
+            ),
+            "save_line_results_to_gpkg_chk": (
+                bool(self.save_line_chk.isChecked())
+                and not bool(self.save_max_only_chk.isChecked())
+            ),
+            "save_coupling_results_to_gpkg_chk": (
+                bool(self.save_coupling_chk.isChecked())
+                and not bool(self.save_max_only_chk.isChecked())
+            ),
+            "save_max_only_chk": bool(self.save_max_only_chk.isChecked()),
+            "save_run_log_to_gpkg_chk": bool(self.save_log_chk.isChecked()),
+        }
 
     def _build_solver_form_widgets(self, param_form: QtWidgets.QFormLayout) -> None:
         """Populate the Solver Parameters page with grouped controls."""

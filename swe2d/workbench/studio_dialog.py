@@ -2540,7 +2540,7 @@ class SWE2DWorkbenchStudioDialog(QtWidgets.QDialog):
             "k_mann": float(self._k_mann),
             **self.model_tab.collect_params(),
             **self.run_dock.collect_params(),
-            **self.results_toolbox.collect_storage_params(),
+            **self.model_tab.collect_storage_params(),
             "inflow_progressive_chk": bool(self._model_tab_view.inflow_progressive_chk.isChecked()),
         }
 
