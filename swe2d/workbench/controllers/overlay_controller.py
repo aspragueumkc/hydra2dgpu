@@ -603,8 +603,7 @@ class OverlayController:
         view = self._view
         from swe2d.results.data import SWE2DResultsData
 
-        gpkg = ""
-        view._results_data = SWE2DResultsData(gpkg_path=gpkg)
+        view._results_data = SWE2DResultsData()
 
     # ── End inlined results_bridge methods ────────────────────────────
 
@@ -622,9 +621,7 @@ class OverlayController:
         if data is None:
             return False
         # Resolve the per-run GPKG from the enabled RunRecord — NOT from
-        # data.gpkg_path, which is the "overarching" model GPKG set by
-        # show_results_panel and does not necessarily contain the baked
-        # results the user actually added.  Each run's mesh lives in its
+        # an overarching data-level path.  Each run's mesh lives in its
         # own GPKG and the overlay must read from there.
         run_targets = data.enabled_overlay_targets()
         if not run_targets:

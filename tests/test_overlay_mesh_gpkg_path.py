@@ -12,11 +12,7 @@ enabled_overlay_targets() — same source used by sync_high_perf_overlay_data.
 """
 import os
 import sys
-import tempfile
 import unittest
-from unittest.mock import patch
-
-import numpy as np
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
@@ -24,16 +20,13 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 class TestOverlayMeshGpkgPath(unittest.TestCase):
     """load_mesh_snapshot_for_overlay must read from the per-run GPKG."""
 
-    def test_uses_per_run_gpkg_not_data_gpkg_path(self):
+    def test_enabled_overlay_targets_returns_per_run_gpkg(self):
+        """enabled_overlay_targets() must return each run's own GPKG, not an
+        overarching 'data.gpkg_path'."""
         from swe2d.results.data import SWE2DResultsData
         from swe2d.results.run_service import RunRecord
 
         data = SWE2DResultsData()
-        # Simulate a run loaded from a results GPKG that is DIFFERENT from
-        # the model GPKG.  data.gpkg_path is set to the model GPKG (the
-        # "overarching" path set by show_results_panel), but the actual
-        # results live in a separate file.
-        data.set_gpkg_path("/path/to/model.gpkg")
         data._run_records.append(
             RunRecord(
                 run_id="rid",
@@ -43,16 +36,14 @@ class TestOverlayMeshGpkgPath(unittest.TestCase):
             )
         )
 
-        # enabled_overlay_targets() must return the per-run GPKG, not
-        # data.gpkg_path.
         targets = data.enabled_overlay_targets()
         self.assertEqual(targets, [("/path/to/results.gpkg", "rid")])
 
     def test_load_mesh_snapshot_for_overlay_passes_per_run_gpkg(self):
         """Inspect the source code path used by load_mesh_snapshot_for_overlay.
 
-        The method currently reads gpkg from data.gpkg_path.  After the fix
-        it must read from the enabled RunRecord's gpkg_path.
+        The method must read from the enabled RunRecord's gpkg_path, not from
+        an overarching data.gpkg_path (which no longer exists).
         """
         from swe2d.workbench.controllers.overlay_controller import OverlayController
         import inspect

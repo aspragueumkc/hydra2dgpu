@@ -26,7 +26,6 @@ class TestResultsDataImports(unittest.TestCase):
         from swe2d.results.data import SWE2DResultsData
 
         methods = [
-            "set_gpkg_path",
             "discover_runs",
             "get_run_records",
             "enabled_overlay_targets",

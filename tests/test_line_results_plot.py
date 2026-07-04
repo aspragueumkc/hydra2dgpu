@@ -24,7 +24,7 @@ class TestLineResultsPlotSmoke(unittest.TestCase):
             raise unittest.SkipTest(f"Test GPKG not found: {TEST_GPKG}")
         from swe2d.results.data import SWE2DResultsData
 
-        cls.data = SWE2DResultsData(gpkg_path=TEST_GPKG)
+        cls.data = SWE2DResultsData()
         cls.records = cls.data.discover_runs()
         # Filter out snapshot runs
         cls.runs = [r for r in cls.records if r.enabled and not r.run_id.startswith("swe2d_snapshot_")]

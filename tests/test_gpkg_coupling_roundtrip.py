@@ -46,7 +46,7 @@ def test_load_coupling_records_expands_baked_timeseries(
         "Culvert 1", metric, times, values,
     )
 
-    data = SWE2DResultsData(gpkg_path=gpkg_path)
+    data = SWE2DResultsData()
     data._run_records = [
         RunRecord(
             run_id=run_id,
@@ -94,7 +94,7 @@ def test_load_coupling_records_filters_by_run_id(
         np.array([99.0, 99.0], dtype=np.float64),
     )
 
-    data = SWE2DResultsData(gpkg_path=gpkg_path)
+    data = SWE2DResultsData()
     data._run_records = [
         RunRecord(
             run_id=run_id,

@@ -292,8 +292,8 @@ class TestResultsSignalChain(unittest.TestCase):
         """SWE2DResultsPanel has the timestep_changed signal."""
         from swe2d.results.data import SWE2DResultsData
         self.assertTrue(
-            hasattr(SWE2DResultsData, "set_gpkg_path"),
-            "SWE2DResultsData is missing set_gpkg_path method",
+            hasattr(SWE2DResultsData, "set_data_source"),
+            "SWE2DResultsData is missing set_data_source method",
         )
 
     def test_dialog_has_timestep_handler(self):

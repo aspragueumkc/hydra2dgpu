@@ -122,8 +122,8 @@ def on_results_add(dialog) -> None:
     data._run_records = []
 
     # Only scan the GPKGs the user explicitly added in this action —
-    # do NOT also scan _gpkg_path (the model's non-batch GPKG) or other
-    # previously-added manual GPKGs.  Each "Add Results" action is self-contained.
+    # do NOT scan previously-added manual GPKGs.  Each "Add Results"
+    # action is self-contained.
     data.discover_runs(scan_paths=list(gpkg_paths_in_this_batch))
     data._rebuild_timestep_union()
     dialog.results_toolbox.refresh_run_list()
@@ -259,10 +259,6 @@ def show_results_panel(dialog):
             "Check the plugin log for '[Results]' details."
         )
         return
-    from swe2d.services.gpkg_persistence_service import current_line_results_storage_path
-    gpkg = current_line_results_storage_path(dialog)
-    if gpkg and gpkg != data.gpkg_path:
-        data.set_gpkg_path(gpkg)
     temporal = getattr(dialog, "_temporal_dock", None)
     # Wire signals per-animation object, not once per dialog.  If
     # dialog._results_data is recreated (new SWE2DResultsData), the new
@@ -348,8 +344,6 @@ def auto_load_results_panel(dialog, gpkg_path: str = "", snapshot_run_id: str = 
     if data is None:
         dialog._log("[Auto-Load] Results data layer could not be created.")
         return
-    if gpkg_path != data.gpkg_path:
-        data.set_gpkg_path(gpkg_path)
 
     # Find the single target run (most recent, or the named snapshot)
     from swe2d.results.run_service import collect_runs_from_gpkg
@@ -370,7 +364,9 @@ def auto_load_results_panel(dialog, gpkg_path: str = "", snapshot_run_id: str = 
     data._selected_run_keys.add(target_key)
 
     try:
-        data.discover_runs()
+        data.discover_runs(
+            scan_paths=[gpkg_path] if gpkg_path else None,
+        )
     except Exception as e:
         dialog._log(f"[Auto-Load] discover_runs failed: {e}")
         return

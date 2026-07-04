@@ -60,8 +60,7 @@ def _stack_per_snapshot(arrs, n_sta: int, dtype) -> np.ndarray:
 class SWE2DResultsData:
     """Pure data/logic layer for results.  No visible widgets."""
 
-    def __init__(self, gpkg_path: str = "", fps: float = _DEFAULT_FPS):
-        self._gpkg_path: str = str(gpkg_path or "")
+    def __init__(self, fps: float = _DEFAULT_FPS):
         self._run_records: List[RunRecord] = []
         self._manual_gpkg_paths: List[str] = []
         self._selected_run_keys: Set[str] = set()
@@ -125,23 +124,12 @@ class SWE2DResultsData:
         self._anim_frame_idx = int(frame_idx)
         self._current_t_sec = float(t_s)
 
+    
     # ------------------------------------------------------------------
     # Public: run management
     # ------------------------------------------------------------------
 
-    @property
-    def gpkg_path(self) -> str:
-        """gpkg path."""
-        return self._gpkg_path
 
-    def set_gpkg_path(self, gpkg_path: str) -> None:
-        """Set gpkg path.  Does NOT auto-discover runs — use add_results_files or the Add Results dialog."""
-        new = str(gpkg_path or "")
-        if new == self._gpkg_path:
-            return
-        self._gpkg_path = new
-        self._selected_run_keys.clear()
-        self._all_timesteps = np.empty(0, dtype=np.float64)
         # Don't clear _run_records — live runs inject a synthetic RunRecord
         # that must survive.  Only the selected-run-keys and timesteps are
         # reset so the subsequent user-initiated add/discover flow is clean.
@@ -577,9 +565,9 @@ class SWE2DResultsData:
         ----------
         scan_paths : list, optional
             Explicit list of GPKG paths to scan. When None (default), scans
-            [self._gpkg_path] + self._manual_gpkg_paths. When a list is provided,
-            only those paths are scanned — use this when the caller wants to
-            restrict scanning to specific GPKGs (e.g. only newly added ones).
+            self._manual_gpkg_paths. When a list is provided, only those paths
+            are scanned — use this when the caller wants to restrict scanning
+            to specific GPKGs (e.g. only newly added ones).
         """
         if not self._selected_run_keys:
             self._run_records = []
@@ -588,7 +576,7 @@ class SWE2DResultsData:
 
         if scan_paths is None:
             manual_paths = [p for p in self._manual_gpkg_paths if p and _os.path.exists(p)]
-            scan_paths = ([self._gpkg_path] + manual_paths if self._gpkg_path else manual_paths)
+            scan_paths = manual_paths
         else:
             scan_paths = [p for p in scan_paths if p and _os.path.exists(p)]
 
@@ -943,7 +931,7 @@ class SWE2DResultsData:
         """Restore data-only state from dict.  Does NOT touch widgets."""
         self._manual_gpkg_paths = [
             str(p) for p in state.get("manual_gpkg_paths", [])
-            if isinstance(p, str) and p and _os.path.exists(p) and p != self._gpkg_path
+            if isinstance(p, str) and p and _os.path.exists(p)
         ]
         self._selected_run_keys = {
             str(k) for k in state.get("selected_run_keys", [])
