@@ -19,6 +19,7 @@ import numpy as np
 from swe2d.services.gpkg_persistence_service import (
     persist_baked_results,
     persist_baked_line_ts,
+    persist_baked_line_profile,
     persist_baked_coupling,
 )
 
@@ -319,8 +320,6 @@ class SWE2DRunFinalizer:
                         )
                     for lid, pd in prof_by_line.items():
                         sm_list = pd.get("station_m", [])
-                        if not sm_list:
-                            continue
                         station_arr = np.asarray(sm_list, dtype=np.float64)
                         n_sta = station_arr.size
                         n_ts = len(pd.get("depth_m", []))
@@ -333,6 +332,15 @@ class SWE2DRunFinalizer:
                         qn_flat = np.array(pd["flow_qn"], dtype=np.float64)
                         fr_flat = np.array(pd["fr"], dtype=np.float64)
                         wet_flat = np.array(pd["wet"], dtype=np.int32)
+                        # Defend against dimension mismatches before reshape.
+                        expected_flat = n_ts * n_sta
+                        if depth_flat.size != expected_flat:
+                            _record_warning(
+                                f"Line {lid} profile depth array size {depth_flat.size} "
+                                f"does not match {n_ts} timesteps x {n_sta} stations; skipping profile",
+                                ValueError("profile dimension mismatch"),
+                            )
+                            continue
                         times_arr = np.array([float(s[0]) for s in snapshot_timesteps], dtype=np.float64)[:n_ts]
                         persist_baked_line_profile(
                             gpkg_results_path, run_id, lid, pd.get("line_name", f"line_{lid}"),

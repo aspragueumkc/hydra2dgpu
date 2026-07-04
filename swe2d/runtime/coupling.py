@@ -1067,6 +1067,14 @@ class SWE2DCouplingController:
             except Exception:
                 pass
 
+        # Update diagnostic snapshot so runtime log shows current readback values.
+        if out["node_depth"].size > 0:
+            self.last_diag.drainage_max_node_depth = float(np.max(out["node_depth"]))
+        if out["link_flow"].size > 0:
+            self.last_diag.drainage_max_link_flow = float(np.max(np.abs(out["link_flow"])))
+        if out["struct_flow"].size > 0:
+            self.last_diag.structure_total_flow = float(np.sum(np.abs(out["struct_flow"])))
+
         return out
 
     def _ensure_native_culvert_solver_mode(self, native_mod) -> None:
@@ -1347,14 +1355,10 @@ class SWE2DCouplingController:
                             f"Error: {exc}"
                         )
 
-        self.last_diag = SWE2DCouplingDiagnostics(
-            time_s=float(t_s) + float(dt_s),
-            dt_s=float(dt_s),
-            component_sums={
-                "structures_persistent_path": 1.0,
-                "native_device_coupling": 1.0,
-            },
-        )
+        self.last_diag.time_s = float(t_s) + float(dt_s)
+        self.last_diag.dt_s = float(dt_s)
+        self.last_diag.component_sums["structures_persistent_path"] = 1.0
+        self.last_diag.component_sums["native_device_coupling"] = 1.0
         return True
 
     def _ensure_persistent_coupling_preloaded(self, native_mod) -> None:

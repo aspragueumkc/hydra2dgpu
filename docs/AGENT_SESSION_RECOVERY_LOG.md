@@ -186,6 +186,52 @@ the function start. Both fixed to `(slope - sf_full)`.
 - Contains the same bugs but is unreachable — left as-is (dead code)
 - The GPU kernel is the only active path
 
+## Session: Sat Jul 04 2026 — Baked GPKG Missing Profiles + Zero Structure Diagnostics
+
+### Goals
+1. Root-cause why `baked_test.gpkg` has no `swe2d_baked_line_profiles` table despite the log claiming line TS+profiles were saved.
+2. Root-cause why all `component='structure'` coupling values are zero in the same GPKG.
+
+### Root Causes Found
+
+**Missing profile table**
+- `swe2d/runtime/run_finalizer.py` never imported `persist_baked_line_profile` (NameError if the profile path ever ran).
+- `swe2d/workbench/studio_dialog.py::_sample_line_metrics` returned profile rows in *long* format (one dict per station point), but `run_finalizer.py` expected *wide* format (one dict per line/timestep with array fields).
+- The finalizer's empty check `if not sm_list:` treated a 0-d station array with value `0.0` as falsy, so when the first profile station was at 0 m the whole line was silently skipped.
+- In the user's run the first station was at 0 m, `prof_by_line` was populated but skipped, and the unconditional "baked line TS+profiles saved" log made it look like persistence succeeded.
+
+**Zero structure flows / coupling diagnostics**
+- `swe2d/runtime/coupling.py::apply_native_device_sources` replaced `self.last_diag` with a fresh `SWE2DCouplingDiagnostics` object on every timestep, resetting `structure_total_flow`, `drainage_max_*`, and `source_min/max` to zero.
+- `readback_coupling_state()` read the actual GPU values but did not write them back into `last_diag`, so the runtime log always showed zeros even when structures were flowing.
+- The persisted coupling values in the GPKG are read from `readback_coupling_state()`; in this run they were all zero, which may be physically correct (dry run) or may indicate the GPU readback returned zeros. The logging bug made it impossible to tell from the log.
+
+### Fixes Applied
+
+**`swe2d/runtime/run_finalizer.py`**
+- Added missing `persist_baked_line_profile` import.
+- Replaced `if not sm_list:` with an explicit size check and added a dimension-mismatch guard before reshape so bad data fails visibly instead of silently.
+
+**`swe2d/workbench/studio_dialog.py`**
+- Changed `_sample_line_metrics` to return wide-format profile rows: one row per line/timestep with 1-D numpy arrays for `station_m`, `depth_m`, `velocity_ms`, `wse_m`, `bed_m`, `flow_qn`, `fr`, and `wet`.
+- The no-high-fidelity fallback now also returns array fields instead of per-station scalar rows.
+
+**`swe2d/runtime/coupling.py`**
+- `apply_native_device_sources` now updates the existing `last_diag` in place (time, dt, component_sums) instead of replacing it, preserving values from the most recent readback.
+- `readback_coupling_state()` now writes read-back drainage max depth/link flow and structure total flow back into `last_diag` so runtime logs reflect real state.
+
+### Tests Added
+- `tests/test_run_finalizer_profile_aggregation.py`: verifies the finalizer creates `swe2d_baked_line_profiles` for wide-format rows with a station at 0.0.
+- `tests/test_coupling_diagnostics_readback.py`: verifies `readback_coupling_state` updates `last_diag.structure_total_flow` and `last_diag.drainage_max_node_depth`, and that `apply_native_device_sources` preserves existing diagnostics.
+
+### Verification
+- Relevant regression suites: 84 passed, 8 skipped (GPU/hardware not available).
+- `py_compile` passed on all modified Python files.
+- `__pycache__` purged after structural changes.
+
+### Open Questions
+- The user's `baked_test.gpkg` still has no profile table for the existing run (fix only affects future runs).
+- Structure coupling values in `baked_test.gpkg` are still all zero; with the diagnostic fix a re-run will show whether this is a physical dry-run result or a GPU readback issue.
+
 ## Session: Thu Jul 02 2026 — CLI JSON Round-Trip: Sample Lines + Full Audit
 
 ### Goals
