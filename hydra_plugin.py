@@ -272,6 +272,19 @@ class HydraQgisPlugin:
                 "".join(traceback.format_exception(type(exc), exc, exc.__traceback__)),
             )
 
+    def _close_workbench(self):
+        """Close the active workbench studio dock (no-op if already closed).
+
+        This lets users clear the heavy GUI without disabling the plugin.
+        """
+        try:
+            from swe2d.workbench.views.studio_host_methods import close_workbench_studio
+            close_workbench_studio(iface=self.iface)
+        except Exception as exc:
+            logging.getLogger(__name__).warning(
+                "close_workbench_studio failed: %s", exc,
+            )
+
     def _on_project_read(self):
         """Restart the workbench when a QGIS project is loaded.
 
@@ -389,6 +402,7 @@ class HydraQgisPlugin:
         # the workbench itself, see swe2d.workbench.views.workbench_main_menu).
         action_specs = [
             ('HYDRA2DMenuOpenWorkbenchAction', 'Open HYDRA2DGPU Workbench', lambda: self.run()),
+            ('HYDRA2DMenuCloseWorkbenchAction', 'Close Workbench', self._close_workbench),
             ('HYDRA2DMenuSettingsAction', 'Settings...', lambda: self.open_settings()),
         ]
 

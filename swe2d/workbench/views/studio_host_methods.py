@@ -14,6 +14,21 @@ _SWE2D_WORKBENCH_STUDIO_WINDOWS: List[QtWidgets.QDialog] = []
 _studio_active_dialog: Optional["SWE2DWorkbenchStudioDialog"] = None
 
 
+def close_workbench_studio(iface=None) -> None:
+    """Close the active workbench studio dock (no-op if already closed).
+
+    This is a public API callable from outside the workbench module
+    (e.g. from the plugin menu) to close the workbench without
+    disabling the plugin itself.
+    """
+    global _studio_active_dialog
+    if _studio_active_dialog is None:
+        return
+    iface = _resolve_workbench_iface(None, iface)
+    _remove_workbench_studio_dock(iface, dlg=_studio_active_dialog)
+    _studio_active_dialog = None
+
+
 def _normalize_workbench_host_mode(host_mode: object) -> str:
     """Normalize host mode to 'dock' or 'window'."""
     mode_txt = str(host_mode or "window").strip().lower()
