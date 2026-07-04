@@ -243,7 +243,6 @@ class TestTopologyTabView(unittest.TestCase):
             "topo_constraints_combo", "topo_quad_edges_combo",
             "topo_backend_combo", "topo_default_size_spin",
             "topo_default_cell_type_combo",
-            "topo_controls_summary_lbl",
             "topo_generate_btn",
             "topo_terminate_btn",
             # Import/Export page — moved from Map tab

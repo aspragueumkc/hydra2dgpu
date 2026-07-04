@@ -28,7 +28,6 @@ class TopologyTabView(QtWidgets.QWidget):
     - Threading page (gmsh): num_threads, max_num_threads_2d
     - Transfinite page (gmsh): harmonize, subset containment, debug
     - Quality page (gmsh): thresholds, retry ladder, loop controls
-    - Summary label: topo_controls_summary_lbl
     """
 
     def __init__(self, parent=None):
@@ -239,14 +238,6 @@ class TopologyTabView(QtWidgets.QWidget):
             self._transfinite_idx: "Transfinite",
             self._quality_idx: "Quality",
         }
-
-        # Summary label outside toolbox
-        self.topo_controls_summary_lbl = QtWidgets.QLabel(
-            "Topology-layer controls: use multiple region polygons for multiple blocks."
-        )
-        self.topo_controls_summary_lbl.setObjectName("topo_controls_summary_lbl")
-        self.topo_controls_summary_lbl.setWordWrap(True)
-        root_layout.addWidget(self.topo_controls_summary_lbl)
 
         self._populate_gmsh_quality_controls()
 
@@ -463,24 +454,7 @@ class TopologyTabView(QtWidgets.QWidget):
 
                     pass
 
-    def update_topo_controls_summary(self, text: str) -> None:
-        """Set the controls summary label text."""
-        lbl = getattr(self, "topo_controls_summary_lbl", None)
-        if lbl is not None:
-            try:
-                lbl.setText(str(text))
-            except Exception as _e:
-
-                try:
-
-                    self._log(f"[ERROR] Exception in topology_tab_view.py: {_e}")
-
-                except Exception:
-
-                    pass
-
     def _find_widget(self, attr: str):
-        """Locate a widget by attribute name, checking direct attrs then _topo_widgets dict."""
         """Locate a widget by attribute name, checking direct attrs then _topo_widgets dict."""
         w = getattr(self, attr, None)
         if w is not None:
@@ -548,181 +522,17 @@ class TopologyTabView(QtWidgets.QWidget):
                     pass
 
     def update_control_summary(self) -> None:
-        """Update the topology control summary label from current state.
-
-        Reads widget values directly from the tab view's own attributes —
-        no dialog access needed.  Callbacks are used for logging and
-        layer resolution.
-        """
-        from qgis.PyQt import QtWidgets
-
-        log_fn = self._log
-        combo_layer_fn = self._combo_layer
-        if not hasattr(self, "topo_controls_summary_lbl"):
+        """Toggle Gmsh-only page enable state and tab text based on current backend."""
+        backend_combo = getattr(self, "topo_backend_combo", None)
+        if backend_combo is None:
             return
-
-        def _alive(w):
-            """Check if a widget reference is still alive."""
-            if w is None:
-                return False
-            try:
-                import sip
-                return not sip.isdeleted(w)
-            except ImportError:
-                return True
-
-        lbl = self.topo_controls_summary_lbl
-        if not _alive(lbl):
-            return
-
-        def _safe_checked(name: str, default: bool = False) -> bool:
-            """Safely read a checkbox state by widget name."""
-            w = self._find_widget(name)
-            if not _alive(w) or not hasattr(w, "isChecked"):
-                return bool(default)
-            try:
-                return bool(w.isChecked())
-            except Exception as e:
-                log_fn(f"[ERROR] _safe_checked {name}: {e}")
-                return bool(default)
-
-        def _safe_spin_value(name: str, default: float = 0.0) -> float:
-            """Safely read a spin box value by widget name."""
-            w = self._find_widget(name)
-            if not _alive(w) or not hasattr(w, "value"):
-                return float(default)
-            try:
-                return float(w.value())
-            except Exception as e:
-                log_fn(f"[ERROR] _safe_spin_value {name}: {e}")
-                return float(default)
-
-        def _safe_line_text(name: str, default: str = "") -> str:
-            """Safely read a line edit text by widget name."""
-            w = self._find_widget(name)
-            if not _alive(w) or not hasattr(w, "text"):
-                return str(default)
-            try:
-                return str(w.text()).strip()
-            except Exception as e:
-                log_fn(f"[ERROR] _safe_line_text {name}: {e}")
-                return str(default)
-
-        def _safe_combo_data(name: str, default: object = None):
-            """Safely read a combo's currentData by widget name."""
-            w = self._find_widget(name)
-            if not _alive(w) or not hasattr(w, "currentData"):
-                return default
-            try:
-                data = w.currentData()
-                return default if data is None else data
-            except Exception as e:
-                log_fn(f"[ERROR] _safe_combo_data {name}: {e}")
-                return default
-
-        backend_name = str(_safe_combo_data("topo_backend_combo", "gmsh") or "gmsh")
-        regions_layer = combo_layer_fn(self.topo_regions_combo, "vector") if _alive(self.topo_regions_combo) else None
-        constraints_layer = combo_layer_fn(self.topo_constraints_combo, "vector") if _alive(self.topo_constraints_combo) else None
-        quad_edges_layer = combo_layer_fn(self.topo_quad_edges_combo, "vector") if _alive(self.topo_quad_edges_combo) else None
-
-        is_gmsh = backend_name == "gmsh"
-        # Toggle gmsh-specific toolbox pages
-        for idx in self._gmsh_only_indices:
+        is_gmsh = str(backend_combo.currentData() or "") == "gmsh"
+        for idx in getattr(self, "_gmsh_only_indices", []):
             base = self._gmsh_only_base_titles.get(idx, "")
-            if is_gmsh:
-                self._toolbox.setItemText(idx, base)
-                self._toolbox.setItemEnabled(idx, True)
-            else:
-                self._toolbox.setItemText(idx, f"{base} (Gmsh only)")
-                self._toolbox.setItemEnabled(idx, False)
-
-        if backend_name == "gmsh":
-            backend_hint = "Gmsh backend active — see Algorithm, Sizing, and Quality pages for options."
-        else:
-            backend_hint = "Structured fallback active — see Algorithm and Quality pages for options."
-
-        quality_hint = (
-            " Quality: min angle >= {min_angle:.0f}°, strict={strict}, "
-            "optimize={opt_methods}, loop={gmsh_loop}, budget={budget:.0f}s, threads={num_threads}."
-        ).format(
-            min_angle=_safe_spin_value("topo_quality_min_angle_spin", 0.0),
-            strict="on" if _safe_checked("topo_quality_strict_chk", False) else "off",
-            opt_methods=_safe_line_text("topo_gmsh_quality_optimize_methods_edit", "Laplace2D"),
-            gmsh_loop="on" if _safe_checked("topo_gmsh_quality_enable_chk", False) else "off",
-            budget=_safe_spin_value("topo_gmsh_quality_time_limit_spin", 0.0),
-            num_threads=int(round(_safe_spin_value("topo_gmsh_num_threads_spin", 1))),
-        )
-
-        details = []
-        if regions_layer is not None:
-            try:
-                region_fields = set(regions_layer.fields().names())
-                region_count = 0
-                cartesian_count = 0
-                empty_count = 0
-                size_values = set()
-                missing_edge_lengths = 0
-                for ft in regions_layer.getFeatures():
-                    rid = int(ft.attribute("region_id") or 0)
-                    if rid <= 0:
-                        continue
-                    region_count += 1
-                    ct = str(ft.attribute("cell_type") or "").strip().lower()
-                    if ct == "cartesian":
-                        cartesian_count += 1
-                    elif ct in ("", "default"):
-                        empty_count += 1
-                    ts = ft.attribute("target_size")
-                    if ts is not None:
-                        try:
-                            size_values.add(float(ts))
-                        except (TypeError, ValueError):
-                            pass
-                    for fld in ("edge_len_1", "edge_len_2", "edge_len_3", "edge_len_4"):
-                        val = ft.attribute(fld)
-                        if val is None or (isinstance(val, (int, float)) and float(val) <= 0.0):
-                            missing_edge_lengths += 1
-                            break
-                parts = [f"{region_count} regions"]
-                if cartesian_count:
-                    parts.append(f"{cartesian_count} cartesian")
-                if empty_count:
-                    parts.append(f"{empty_count} no cell_type")
-                if size_values:
-                    sizes = sorted(size_values)
-                    label = f"target_size={'/'.join(f'{s:.4g}' for s in sizes[:5])}"
-                    if len(sizes) > 5:
-                        label += f"... ({len(sizes)} unique)"
-                    parts.append(label)
-                if missing_edge_lengths:
-                    parts.append(f"{missing_edge_lengths} missing edge_len")
-                details.append(" | ".join(parts))
-            except Exception as e:
-                log_fn(f"[ERROR] regions layer summary: {e}")
-
-        if constraints_layer is not None:
-            try:
-                c_count = 0
-                for ft in constraints_layer.getFeatures():
-                    c_count += 1
-                details.append(f"{c_count} constraints")
-            except Exception as e:
-                log_fn(f"[ERROR] constraints layer summary: {e}")
-
-        if quad_edges_layer is not None:
-            try:
-                qe_count = 0
-                for ft in quad_edges_layer.getFeatures():
-                    qe_count += 1
-                details.append(f"{qe_count} quad-edge controls")
-            except Exception as e:
-                log_fn(f"[ERROR] quad_edges layer summary: {e}")
-
-        suffix = " | ".join(details)
-        if suffix:
-            lbl.setText(f"{backend_hint}{quality_hint} Current layers: {suffix}.")
-        else:
-            lbl.setText(f"{backend_hint}{quality_hint}")
+            self._toolbox.setItemEnabled(idx, bool(is_gmsh))
+            self._toolbox.setItemText(
+                idx, base if is_gmsh else f"{base} (Gmsh only)"
+            )
 
 
 def _build_topology_tab_controls(

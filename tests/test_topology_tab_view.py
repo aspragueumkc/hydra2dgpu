@@ -104,12 +104,6 @@ class TestTopologyTabView(unittest.TestCase):
         self.assertIsInstance(page, QWidget)
         self.assertTrue(view._toolbox.isItemEnabled(view._quality_idx))
 
-    def test_view_has_controls_summary_lbl(self):
-        from swe2d.workbench.views.topology_tab_view import TopologyTabView
-        view = TopologyTabView()
-        self.assertIsInstance(view.topo_controls_summary_lbl, QLabel)
-        self.assertTrue(view.topo_controls_summary_lbl.wordWrap())
-
     def test_view_has_generate_btn(self):
         from swe2d.workbench.views.topology_tab_view import TopologyTabView
         view = TopologyTabView()
@@ -141,7 +135,6 @@ class TestTopologyTabView(unittest.TestCase):
             (view.findChild(QWidget, "topo_threading_page"), "topo_threading_page"),
             (view.findChild(QWidget, "topo_transfinite_page"), "topo_transfinite_page"),
             (view.findChild(QWidget, "topo_quality_page"), "topo_quality_page"),
-            (view.topo_controls_summary_lbl, "topo_controls_summary_lbl"),
             (view.topo_generate_btn, "topo_generate_btn"),
             (view.topo_terminate_btn, "topo_terminate_btn"),
         ]
