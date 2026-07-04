@@ -233,6 +233,18 @@ class TestResultsToolbox(unittest.TestCase):
         toolbox.arrows_chk.setChecked(False)
         self.assertFalse(toolbox.arrow_density_spin.isEnabled())
 
+    def test_no_overarching_gpkg_label_in_runs_section(self):
+        """The Runs section must not expose a 'Currently loaded GeoPackage path'
+        label — results are loaded from one or more GeoPackages via 'Add
+        Results', not from a single overarching model GPKG path."""
+        from swe2d.workbench.views.results_controls import ResultsToolbox
+        toolbox = ResultsToolbox()
+        self.assertFalse(
+            hasattr(toolbox, "gpkg_lbl"),
+            "ResultsToolbox.gpkg_lbl exposes a single 'current GPKG' concept "
+            "that does not match the multi-GPKG Add Results workflow.",
+        )
+
 
 # ═══════════════════════════════════════════════════════════════════════════
 # StudioTabBuilder helper tests

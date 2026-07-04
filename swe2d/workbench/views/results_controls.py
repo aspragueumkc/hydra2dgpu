@@ -387,12 +387,13 @@ class ResultsToolbox(QtWidgets.QWidget):
     # ------------------------------------------------------------------
 
     def _build_runs_section(self, layout: QtWidgets.QVBoxLayout) -> None:
-        """Build the Runs section with run list, add/refresh, and enable/disable buttons."""
+        """Build the Runs section with run list, add/refresh, and enable/disable buttons.
+
+        There is intentionally no 'currently loaded GeoPackage path' label —
+        the results viewer loads data from one or more GeoPackages via the
+        'Add Results' workflow, not from a single overarching GPKG path.
+        """
         top = QtWidgets.QHBoxLayout()
-        self.gpkg_lbl = QtWidgets.QLabel()
-        self.gpkg_lbl.setStyleSheet("color: gray; font-size: 9px;")
-        self.gpkg_lbl.setMaximumWidth(320)
-        self.gpkg_lbl.setToolTip("Currently loaded GeoPackage path.")
         self.refresh_btn = QtWidgets.QPushButton("\u21ba")
         self.refresh_btn.setFixedSize(22, 22)
         self.refresh_btn.setToolTip("Re-scan GPKG for new runs")
@@ -401,9 +402,9 @@ class ResultsToolbox(QtWidgets.QWidget):
         self.add_btn.setFixedSize(22, 22)
         self.add_btn.setToolTip("Add results from GeoPackages")
         self.add_btn.clicked.connect(self.run_add_requested.emit)
-        top.addWidget(self.gpkg_lbl, 1)
         top.addWidget(self.add_btn)
         top.addWidget(self.refresh_btn)
+        top.addStretch(1)
         layout.addLayout(top)
 
         layout.addWidget(QtWidgets.QLabel("<b>Runs</b>"))
@@ -478,8 +479,6 @@ class ResultsToolbox(QtWidgets.QWidget):
         enabled = len(self._data.get_enabled_run_records())
         total = len(self._data.get_run_records())
         self.run_count_lbl.setText(f"{enabled} / {total} runs enabled")
-        if self._data.gpkg_path:
-            self.gpkg_lbl.setText(f"GPKG: {self._data.gpkg_path}")
 
     def refresh_run_list(self) -> None:
         """Public alias for _rebuild_run_list."""

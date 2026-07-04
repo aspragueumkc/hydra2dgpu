@@ -93,7 +93,6 @@ All widgets in overlay page, output page, and runs page lack tooltips:
 | `save_coupling_chk` | Save coupling results |
 | `save_max_only_chk` | Save max results only |
 | `save_log_chk` | Save run log |
-| `gpkg_lbl` | Current GPKG path |
 | `refresh_btn` | Re-scan GPKG for new runs |
 | `add_btn` | Add results from GeoPackages |
 | `remove_btn` | Remove selected runs |
