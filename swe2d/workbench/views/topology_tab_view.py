@@ -637,82 +637,20 @@ class TopologyTabView(QtWidgets.QWidget):
                 self._toolbox.setItemEnabled(idx, False)
 
         if backend_name == "gmsh":
-            backend_hint = (
-                "Gmsh: use multiple region polygons for multiblock meshes. "
-                "Set region cell_type to 'cartesian' or 'quadrilateral' and populate edge_len_1..4 "
-                "for per-edge structured spacing. Opposite edges are matched automatically. "
-                "Enable full-region flow-aligned quads to drive transfinite spacing from quad-edge controls. "
-                "Region interior rings plus empty regions/constraints are meshed as cutout holes."
-            )
+            backend_hint = "Gmsh backend active — see Algorithm, Sizing, and Quality pages for options."
         else:
-            backend_hint = (
-                "Structured fallback: honors per-region target_size and cell_type, "
-                "supports cutout holes from region interior rings and empty zones, "
-                "but does not apply quad-edge transition layers or exact transfinite edge counts."
-            )
+            backend_hint = "Structured fallback active — see Algorithm and Quality pages for options."
 
         quality_hint = (
-            " Quality UI: min angle >= {min_angle:.1f} deg, max aspect <= {max_aspect:.2f}, "
-            "max non-orth <= {max_non_orth:.1f} deg, min area/bbox >= {min_area}, strict={strict}; "
-            "retry scales={size_scales}, smooth increments={smooth_increments}, "
-            "recombine topology={recombine_topology}, recombine minQ={recombine_minq}, rand={random_factors}, "
-            "optimize methods={opt_methods}, algo-switch={algo_switch}, node-reposition={node_reposition}, "
-            "global-recombine={global_recombine}; "
-            "gmsh-full-align={gmsh_full_align}; "
-            "arc-mode={arc_mode}, soft-size={arc_soft_size:.3g}, soft-dist={arc_soft_dist:.3g}, "
-            "iface-transition={iface_transition}, iface-dist={iface_dist:.3g}, iface-ratio>={iface_ratio:.3g}, "
-            "iface-conformance={iface_conformance}, centroid-merge={centroid_merge}, "
-            "snap-tol={snap_tol:.6g}, reject-near={reject_near}, reject-tol={reject_tol:.6g}; "
-            "min-cell={mesh_size_min:.6g}, edge-tol={edge_tol:.6g}, "
-            "point-refine={point_refine}; Gmsh loop={gmsh_loop}, attempts={attempts}, budget={budget:.1f}s; "
-            "threads={num_threads}, max-2d-threads={max_2d_threads}; "
-            "transfinite-harmonize={trans_harm}, opp-start={opp_start:.3g}, opp-end={opp_end:.3g}, "
-            "opp-density={opp_density:.3g}, subset-contain={subset_contain}, "
-            "high-overlap={high_overlap:.3g}, min-overlap={min_overlap:.3g}, max-len-ratio={max_len_ratio:.3g}; "
-            ""
+            " Quality: min angle >= {min_angle:.0f}°, strict={strict}, "
+            "optimize={opt_methods}, loop={gmsh_loop}, budget={budget:.0f}s, threads={num_threads}."
         ).format(
             min_angle=_safe_spin_value("topo_quality_min_angle_spin", 0.0),
-            max_aspect=_safe_spin_value("topo_quality_max_aspect_spin", 0.0),
-            max_non_orth=_safe_spin_value("topo_quality_max_non_orth_spin", 0.0),
-            min_area=_safe_line_text("topo_quality_min_area_edit", "0"),
             strict="on" if _safe_checked("topo_quality_strict_chk", False) else "off",
-            size_scales=_safe_line_text("topo_quality_size_scales_edit", "1.0"),
-            smooth_increments=_safe_line_text("topo_quality_smooth_increments_edit", "0"),
-            recombine_topology=_safe_line_text("topo_gmsh_quality_recombine_topology_passes_edit", "5"),
-            recombine_minq=_safe_line_text("topo_gmsh_quality_recombine_min_quality_edit", "0.01"),
-            random_factors=_safe_line_text("topo_gmsh_quality_random_factors_edit", "1e-9"),
             opt_methods=_safe_line_text("topo_gmsh_quality_optimize_methods_edit", "Laplace2D"),
-            algo_switch="on" if _safe_checked("topo_gmsh_algo_switch_on_failure_chk", False) else "off",
-            node_reposition="on" if _safe_checked("topo_gmsh_recombine_node_repositioning_chk", False) else "off",
-            global_recombine="on" if _safe_checked("topo_gmsh_global_recombine_chk", False) else "off",
-            gmsh_full_align="on" if _safe_checked("topo_gmsh_quad_full_region_flow_align_chk", False) else "off",
-            arc_mode=str(_safe_combo_data("topo_gmsh_arc_mode_combo", "hard_embed") or "hard_embed"),
-            arc_soft_size=_safe_spin_value("topo_gmsh_arc_soft_size_factor_spin", 0.5),
-            arc_soft_dist=_safe_spin_value("topo_gmsh_arc_soft_dist_factor_spin", 2.0),
-            iface_transition="on" if _safe_checked("topo_gmsh_interface_transition_enable_chk", False) else "off",
-            iface_dist=_safe_spin_value("topo_gmsh_interface_transition_dist_factor_spin", 2.5),
-            iface_ratio=_safe_spin_value("topo_gmsh_interface_transition_min_ratio_spin", 1.25),
-            iface_conformance="on" if _safe_checked("topo_gmsh_interface_conformance_chk", False) else "off",
-            centroid_merge="on" if _safe_checked("topo_gmsh_transverse_interface_centroid_merge_chk", False) else "off",
-            snap_tol=_safe_spin_value("topo_gmsh_interface_snap_tol_spin", 1.0),
-            reject_near="on" if _safe_checked("topo_gmsh_interface_reject_near_unshared_chk", False) else "off",
-            reject_tol=_safe_spin_value("topo_gmsh_interface_reject_tol_spin", 1e-3),
             gmsh_loop="on" if _safe_checked("topo_gmsh_quality_enable_chk", False) else "off",
-            mesh_size_min=_safe_spin_value("topo_gmsh_mesh_size_min_spin", 0.0),
-            edge_tol=_safe_spin_value("topo_gmsh_tolerance_edge_length_spin", 0.0),
-            point_refine="on" if _safe_checked("topo_gmsh_mesh_size_from_points_chk", False) else "off",
-            attempts=int(round(_safe_spin_value("topo_gmsh_quality_max_iters_spin", 0.0))),
             budget=_safe_spin_value("topo_gmsh_quality_time_limit_spin", 0.0),
             num_threads=int(round(_safe_spin_value("topo_gmsh_num_threads_spin", 1))),
-            max_2d_threads=int(round(_safe_spin_value("topo_gmsh_max_num_threads_2d_spin", 0))),
-            trans_harm="on" if _safe_checked("topo_gmsh_transfinite_shared_interface_harmonize_chk", False) else "off",
-            opp_start=_safe_spin_value("topo_gmsh_transfinite_opposite_subset_start_spin", 0.30),
-            opp_end=_safe_spin_value("topo_gmsh_transfinite_opposite_subset_end_spin", 0.70),
-            opp_density=_safe_spin_value("topo_gmsh_transfinite_opposite_subset_density_scale_spin", 0.50),
-            subset_contain="on" if _safe_checked("topo_gmsh_transfinite_subset_containment_enable_chk", False) else "off",
-            high_overlap=_safe_spin_value("topo_gmsh_transfinite_subset_containment_high_overlap_spin", 0.95),
-            min_overlap=_safe_spin_value("topo_gmsh_transfinite_subset_containment_min_overlap_spin", 0.02),
-            max_len_ratio=_safe_spin_value("topo_gmsh_transfinite_subset_containment_max_length_ratio_spin", 0.35),
         )
 
         details = []
