@@ -39,13 +39,11 @@ class MapTabView(QtWidgets.QWidget):
         drain_nodes_layer_combo, drain_links_layer_combo,
         drain_inlets_layer_combo, drain_node_inlets_layer_combo,
         structures_layer_combo, bc_lines_layer_combo, layer_group_combo,
-        autopop_group_btn, refresh_layers_btn, create_model_gpkg_btn
+        autopop_group_btn, refresh_layers_btn
 
-    Actions page ("Mesh Setup") - mesh I/O + BC configuration:
+    Actions page ("Mesh Setup") - mesh I/O:
         load_model_gpkg_btn, export_mesh_layers_btn,
-        import_mesh_layers_btn, terrain_to_nodes_btn, pull_node_z_btn,
-        default_bc_type_combo, inflow_progressive_chk,
-        uniform_inflow_velocity_chk
+        import_mesh_layers_btn, terrain_to_nodes_btn, pull_node_z_btn
 
     Utilities page ("Utilities") - helpers:
         open_model_gpkg_explorer_btn, open_run_log_viewer_btn,
@@ -109,8 +107,6 @@ class MapTabView(QtWidgets.QWidget):
         self.autopop_group_btn.setObjectName("autopop_group_btn")
         self.refresh_layers_btn = QtWidgets.QPushButton("Refresh Layers")
         self.refresh_layers_btn.setObjectName("refresh_layers_btn")
-        self.create_model_gpkg_btn = QtWidgets.QPushButton("Create 2D Model GeoPackage")
-        self.create_model_gpkg_btn.setObjectName("create_model_gpkg_btn")
 
         for row, label, attr in [
             (0, "Nodes layer:", "nodes_layer_combo"),
@@ -137,10 +133,8 @@ class MapTabView(QtWidgets.QWidget):
             data_layout.addWidget(self.autopop_group_btn, 15, 0, 1, 2)
         if data_layout.indexOf(self.refresh_layers_btn) < 0:
             data_layout.addWidget(self.refresh_layers_btn, 16, 0, 1, 2)
-        if data_layout.indexOf(self.create_model_gpkg_btn) < 0:
-            data_layout.addWidget(self.create_model_gpkg_btn, 17, 0, 1, 2)
 
-        data_layout.setRowStretch(18, 1)
+        data_layout.setRowStretch(17, 1)
 
         # ── Tooltips for all Data page widgets ──────────────────────
         self.nodes_layer_combo.setToolTip(
@@ -213,10 +207,6 @@ class MapTabView(QtWidgets.QWidget):
         self.refresh_layers_btn.setToolTip(
             "Refresh all layer combos to reflect current QGIS project layers. "
             "Use after adding or renaming layers in the QGIS project."
-        )
-        self.create_model_gpkg_btn.setToolTip(
-            "Create a new GeoPackage to store model geometry, boundary conditions, "
-            "and simulation results. Must be done once before running a model."
         )
 
         for attr in [

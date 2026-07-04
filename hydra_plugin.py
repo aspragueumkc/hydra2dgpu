@@ -378,6 +378,8 @@ class HydraQgisPlugin:
         menu.addSeparator()
 
         # ── Recent Model GeoPackages (dynamically populated on open) ─────
+        add_action('HYDRA2DMenuCreateGpkgAction', 'Create 2D Model GeoPackage…',
+                   lambda: self._call_workbench('create_2d_model_geopackage'))
         self._recent_models_submenu = menu.addMenu("Recent Model GeoPackages")
         self._recent_models_submenu.aboutToShow.connect(
             self._refresh_recent_models_submenu

@@ -47,7 +47,7 @@ class TestMapTabView(unittest.TestCase):
             "drain_nodes_layer_combo", "drain_links_layer_combo",
             "drain_inlets_layer_combo", "drain_node_inlets_layer_combo",
             "structures_layer_combo", "layer_group_combo",
-            "autopop_group_btn", "refresh_layers_btn", "create_model_gpkg_btn",
+            "autopop_group_btn", "refresh_layers_btn",
         ):
             with self.subTest(attr=attr):
                 self.assertTrue(

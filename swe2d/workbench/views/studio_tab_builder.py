@@ -94,8 +94,6 @@ def wire_map_tab_data_signals(dialog) -> None:
     v.autopop_group_btn.clicked.connect(dialog._layer_controller.autopopulate_layer_combos_from_group)
     safe_disconnect(v.refresh_layers_btn.clicked, dialog._layer_controller.refresh_layer_combos)
     v.refresh_layers_btn.clicked.connect(dialog._layer_controller.refresh_layer_combos)
-    safe_disconnect(v.create_model_gpkg_btn.clicked, dialog._mesh_controller.create_2d_model_geopackage)
-    v.create_model_gpkg_btn.clicked.connect(dialog._mesh_controller.create_2d_model_geopackage)
 
 
 def wire_map_tab_action_signals(dialog) -> None:

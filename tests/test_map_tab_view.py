@@ -113,11 +113,6 @@ class TestMapTabView(unittest.TestCase):
         view = MapTabView()
         self.assertIsInstance(view.refresh_layers_btn, QPushButton)
 
-    def test_view_has_create_model_gpkg_btn(self):
-        from swe2d.workbench.views.map_tab_view import MapTabView
-        view = MapTabView()
-        self.assertIsInstance(view.create_model_gpkg_btn, QPushButton)
-
     def test_view_has_load_model_gpkg_btn(self):
         from swe2d.workbench.views.map_tab_view import MapTabView
         view = MapTabView()
@@ -179,7 +174,6 @@ class TestMapTabView(unittest.TestCase):
             ("layer_group_combo", "layer_group_combo"),
             ("autopop_group_btn", "autopop_group_btn"),
             ("refresh_layers_btn", "refresh_layers_btn"),
-            ("create_model_gpkg_btn", "create_model_gpkg_btn"),
             ("load_model_gpkg_btn", "load_model_gpkg_btn"),
             ("export_mesh_layers_btn", "export_mesh_layers_btn"),
             ("import_mesh_layers_btn", "import_mesh_layers_btn"),
