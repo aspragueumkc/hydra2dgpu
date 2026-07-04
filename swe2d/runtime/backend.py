@@ -712,6 +712,10 @@ class SWE2DBackend:
             buf["h"].append(np.ascontiguousarray(h_arr[si, :]))
             buf["hu"].append(np.ascontiguousarray(hu_arr[si, :]))
             buf["hv"].append(np.ascontiguousarray(hv_arr[si, :]))
+        # Non-destructive read left data on device — clear it now that we
+        # have a host copy, otherwise the ring buffer keeps growing.
+        if hasattr(self._mod, "swe2d_gpu_free_snapshot_buf"):
+            self._mod.swe2d_gpu_free_snapshot_buf(self._solver_h)
 
     def read_snapshots(self) -> Optional[Dict[str, np.ndarray]]:
         """Read all accumulated snapshots from device + host to host.

@@ -219,6 +219,11 @@ def load_baked_mesh(
         return None
     conn = sqlite3.connect(gpkg_path)
     try:
+        cur = conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name='swe2d_baked_mesh'"
+        )
+        if cur.fetchone() is None:
+            return None
         row = conn.execute(
             "SELECT baked_blob FROM swe2d_baked_mesh WHERE mesh_name=?",
             (mesh_name,),
