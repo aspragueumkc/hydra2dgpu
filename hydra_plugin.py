@@ -329,9 +329,10 @@ class HydraQgisPlugin:
 
         self.main_menu = menu
 
-        # Top-level menu actions (visible in production).
+        # Plugin-level top-level actions only (workbench-scoped items live in
+        # the workbench itself, see swe2d.workbench.views.workbench_main_menu).
         action_specs = [
-            ('HYDRA2DMenuOpenPanelAction', 'Open HYDRA2DGPU Panel', lambda: self.run()),
+            ('HYDRA2DMenuOpenWorkbenchAction', 'Open HYDRA2DGPU Workbench', lambda: self.run()),
             ('HYDRA2DMenuSettingsAction', 'Settings...', lambda: self.open_settings()),
         ]
 
@@ -358,6 +359,27 @@ class HydraQgisPlugin:
                 pass
             menu.removeAction(legacy_inspector)
 
+        # Drop any stale actions left over from a previous (older) plugin
+        # install that included workbench-scoped items here.
+        for obj_name in (
+            'HYDRA2DMenuOpenPanelAction',
+            'HYDRA2DMenuCreateGpkgAction',
+            'HYDRA2DMenuLoadGpkgAction',
+            'HYDRA2DMenuRunLastAction',
+            'HYDRA2DMenuBatchSimAction',
+            'HYDRA2DMenuOpenRunLogAction',
+            'HYDRA2DMenuOpenGpkgExplorerAction',
+            'HYDRA2DMenuExportGeoTIFFAction',
+            'HYDRA2DMenuHelpAction',
+        ):
+            stale = existing.get(obj_name)
+            if stale is not None:
+                try:
+                    stale.triggered.disconnect()
+                except (TypeError, RuntimeError):
+                    pass
+                menu.removeAction(stale)
+
         self.main_menu_actions = []
 
         # ── Persistent helper ───────────────────────────────────────────
@@ -375,36 +397,6 @@ class HydraQgisPlugin:
         for object_name, text, callback in action_specs:
             add_action(object_name, text, callback)
 
-        menu.addSeparator()
-
-        add_action('HYDRA2DMenuCreateGpkgAction', 'Create 2D Model GeoPackage…',
-                   lambda: self._call_workbench('create_2d_model_geopackage'))
-        add_action('HYDRA2DMenuLoadGpkgAction', 'Load 2D Model GeoPackage…',
-                   lambda: self._call_workbench('load_2d_model_geopackage'))
-        menu.addSeparator()
-
-        # ── Simulation & I/O actions ────────────────────────────────────
-        add_action('HYDRA2DMenuRunLastAction', 'Run Last Simulation',
-                   lambda: self._call_workbench('on_run'), 'Ctrl+R')
-        add_action('HYDRA2DMenuBatchSimAction', 'Batch Simulation…',
-                   lambda: self._call_workbench('open_batch_simulation_dialog'), 'Ctrl+B')
-        add_action('HYDRA2DMenuOpenRunLogAction', 'Open Run Log',
-                   lambda: self._call_workbench('open_run_log_viewer'))
-        add_action('HYDRA2DMenuOpenGpkgExplorerAction', 'Open GeoPackage Explorer',
-                   lambda: self._call_workbench('open_model_gpkg_explorer'))
-        menu.addSeparator()
-
-        # ── Results export ──────────────────────────────────────────────
-        add_action('HYDRA2DMenuExportGeoTIFFAction',
-                   'Export Current Results as GeoTIFF…',
-                   lambda: self._call_workbench('export_high_perf_overlay_to_geotiff'))
-        menu.addSeparator()
-
-        # ── Settings & Help ─────────────────────────────────────────────
-        # Settings is already added via action_specs above.
-        add_action('HYDRA2DMenuHelpAction', 'Help → Documentation Hub',
-                   lambda: self._call_workbench('open_documentation_hub'))
-
         # ── DevTools submenu — only when SWE2D_DEVTOOLS is set ─────────
         try:
             from swe2d.workbench.devtools.menu import build_devtools_menu
@@ -421,69 +413,23 @@ class HydraQgisPlugin:
                 "[hydra_plugin] devtools menu setup failed: %s", _exc
             )
 
-    # Method name → (owner_attr, controller_kind) map for _call_workbench
-    # The owner_attr is the attribute on the dialog holding the controller.
-    _WORKBENCH_METHOD_LOCATIONS = {
-        # MeshController
-        "create_2d_model_geopackage":   ("_mesh_controller", "controller"),
-        "load_2d_model_geopackage":     ("_mesh_controller", "controller"),
-        "export_mesh_to_ugrid":         ("_mesh_controller", "controller"),
-        "export_mesh_to_layers":        ("_mesh_controller", "controller"),
-        "assign_node_z_from_terrain":   ("_mesh_controller", "controller"),
-        "pull_node_z_from_layer":       ("_mesh_controller", "controller"),
-        "export_results_to_ugrid":      ("_mesh_controller", "controller"),
-        "export_results_to_hdf5":       ("_mesh_controller", "controller"),
-        "open_run_log_viewer":          ("_mesh_controller", "controller"),
-        "create_lumped_hydrology_geopackage": ("_mesh_controller", "controller"),
-        # RunController
-        "on_run":                       ("_run_controller", "controller"),
-        "on_cancel":                    ("_run_controller", "controller"),
-        "open_batch_simulation_dialog": ("_run_controller", "controller"),
-        # OverlayController
-        "export_high_perf_overlay_to_geotiff": ("_overlay_controller", "controller"),
-        # TopologyController
-        "open_model_gpkg_explorer":     ("_topology_controller", "controller"),
-        # Dialog (private helpers)
-        "open_documentation_hub":        (None, "dialog"),
-    }
-
-    def _call_workbench(self, method_name: str):
-        """Call a method on the active workbench dialog, if one is open."""
-        try:
-            from swe2d.workbench.views.studio_host_methods import _studio_active_dialog
-            dlg = _studio_active_dialog
-            if dlg is None:
-                self.iface.messageBar().pushMessage(
-                    'HYDRA2DGPU', 'Open the workbench panel first.', level=Qgis.Warning
-                )
-                return
-
-            owner_attr, kind = self._WORKBENCH_METHOD_LOCATIONS.get(
-                method_name, (None, None)
-            )
-            if kind == "controller":
-                controller = getattr(dlg, owner_attr, None)
-                if controller is None:
-                    return
-                method = getattr(controller, method_name, None)
-            else:
-                method = getattr(dlg, method_name, None)
-            if method is not None:
-                method()
-
-        except Exception as e:
-            logging.getLogger(__name__).warning(
-                "[hydra_plugin] _call_workbench(%r) failed: %s", method_name, e
-            )
-
     def _remove_hydra_submenu_items(self):
-        """Remove previously installed HYDRA submenu actions from the main menu."""
+        """Remove stale workbench-scoped actions left in the plugin menu.
+
+        These used to be installed by an older version of this plugin
+        (`HYDRA2DMenuOpenPanelAction` etc.). The plugin menu now only owns
+        plugin-level items, so any leftover workbench-scoped actions are
+        dropped here to keep the menu tidy on upgrades.
+        """
         menu = getattr(self, 'main_menu', None)
         if menu is None:
             return
         for act in list(menu.actions()):
             obj_name = act.objectName()
             if obj_name in (
+                'HYDRA2DMenuOpenPanelAction',
+                'HYDRA2DMenuCreateGpkgAction',
+                'HYDRA2DMenuLoadGpkgAction',
                 'HYDRA2DMenuRunLastAction',
                 'HYDRA2DMenuBatchSimAction',
                 'HYDRA2DMenuOpenRunLogAction',

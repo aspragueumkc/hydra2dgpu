@@ -119,6 +119,13 @@ def _remove_workbench_studio_dock(iface_obj, dlg=None) -> None:
             logger_wb.exception("[ERROR] studio dialog deleteLater failed")
     _clear_studio_host_controls(iface_obj)
 
+    # Tear down the workbench-scoped main menu (added in install path).
+    try:
+        from swe2d.workbench.views.workbench_main_menu import remove_workbench_main_menu
+        remove_workbench_main_menu(iface_obj)
+    except Exception as e:
+        logger_wb.warning("[studio_host_methods] remove_workbench_main_menu failed: %s", e)
+
 
 def _studio_host_main_window(iface_obj, fallback_parent=None):
     """Get the QGIS main window, falling back to fallback_parent."""
@@ -176,6 +183,13 @@ def _install_studio_host_controls(
             menu_bar.setCornerWidget(host_view_combo, QtCore.Qt.TopRightCorner)
     except Exception as e:
         logger_wb.warning("[ERROR] view combo to menuBar corner failed: %s", e)
+
+    # Install the workbench-scoped HYDRA2DGPU main menu.
+    try:
+        from swe2d.workbench.views.workbench_main_menu import install_workbench_main_menu
+        install_workbench_main_menu(dlg=dlg, iface=iface_obj)
+    except Exception as e:
+        logger_wb.warning("[ERROR] install_workbench_main_menu failed: %s", e)
 
 
 def launch_swe2d_workbench_studio(parent=None, iface=None, host_mode: str = "dock"):
