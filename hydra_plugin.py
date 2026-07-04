@@ -377,15 +377,10 @@ class HydraQgisPlugin:
 
         menu.addSeparator()
 
-        # ── Recent Model GeoPackages (dynamically populated on open) ─────
         add_action('HYDRA2DMenuCreateGpkgAction', 'Create 2D Model GeoPackage…',
                    lambda: self._call_workbench('create_2d_model_geopackage'))
         add_action('HYDRA2DMenuLoadGpkgAction', 'Load 2D Model GeoPackage…',
                    lambda: self._call_workbench('load_2d_model_geopackage'))
-        self._recent_models_submenu = menu.addMenu("Recent Model GeoPackages")
-        self._recent_models_submenu.aboutToShow.connect(
-            self._refresh_recent_models_submenu
-        )
         menu.addSeparator()
 
         # ── Simulation & I/O actions ────────────────────────────────────
@@ -445,46 +440,6 @@ class HydraQgisPlugin:
                 "[hydra_plugin] _call_workbench(%r) failed: %s", method_name, e
             )
 
-    def _refresh_recent_models_submenu(self):
-        """Populate the Recent Model GeoPackages submenu from the workbench state."""
-        submenu = getattr(self, '_recent_models_submenu', None)
-        if submenu is None:
-            return
-        submenu.clear()
-        try:
-            from swe2d.workbench.studio_dialog import _studio_active_dialog
-            dlg = _studio_active_dialog
-            paths = list(getattr(dlg, '_recent_model_gpkgs', []) or [])[:5]
-        except Exception:
-            paths = []
-        if paths:
-            for p in paths:
-                submenu.addAction(
-                    os.path.basename(p),
-                    lambda path=p: self._call_workbench_with_path(
-                        'load_2d_model_geopackage', path
-                    ),
-                )
-        else:
-            no_item = submenu.addAction('(no recent files)')
-            no_item.setEnabled(False)
-
-    def _call_workbench_with_path(self, method_name: str, path: str):
-        """Call a method on the active workbench passing a path argument."""
-        try:
-            from swe2d.workbench.studio_dialog import _studio_active_dialog
-            dlg = _studio_active_dialog
-            if dlg is None:
-                return
-            method = getattr(dlg._mesh_controller, method_name, None)
-            if method is not None:
-                method(path_override=path)
-        except Exception as e:
-            logging.getLogger(__name__).warning(
-                "[hydra_plugin] _call_workbench_with_path(%r, %r) failed: %s",
-                method_name, path, e
-            )
-
     def _remove_hydra_submenu_items(self):
         """Remove previously installed HYDRA submenu actions from the main menu."""
         menu = getattr(self, 'main_menu', None)
@@ -536,17 +491,6 @@ class HydraQgisPlugin:
         menu = self.main_menu
         if menu is None:
             return
-
-        # Clean up the dynamically-populated recent models submenu.
-        recent_submenu = getattr(self, '_recent_models_submenu', None)
-        if recent_submenu is not None:
-            try:
-                recent_submenu.aboutToShow.disconnect(self._refresh_recent_models_submenu)
-            except (TypeError, RuntimeError):
-                pass
-            menu.removeAction(recent_submenu.menuAction())
-            recent_submenu.deleteLater()
-            self._recent_models_submenu = None
 
         # Clean up the DevTools submenu.
         self._remove_devtools_submenu()
