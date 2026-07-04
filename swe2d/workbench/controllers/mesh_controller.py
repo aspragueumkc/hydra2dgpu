@@ -55,30 +55,74 @@ class MeshController:
 
     # ── Mesh import orchestration ──────────────────────────────────────
     def import_mesh_from_layers(self) -> None:
-        """Import mesh from the currently-selected QGIS vector layers.
+        """Show a dialog to select nodes and cells layers, then import mesh."""
+        from qgis.PyQt import QtWidgets
+        from qgis.core import QgsProject, QgsVectorLayer
 
-        The full implementation (formerly in ``_import_mesh_from_layers``
-        in ``extracted/topology_and_io_methods.py``) is inlined here.
-        Reads all widget/state from ``self._view``.
-        """
+        view = self._view
+
+        try:
+            vector_layers = [
+                lyr for lyr in QgsProject.instance().mapLayers().values()
+                if isinstance(lyr, QgsVectorLayer)
+            ]
+        except Exception as exc:
+            view._log(f"[ERROR] Could not read QGIS project layers: {exc}")
+            return
+
+        if not vector_layers:
+            QtWidgets.QMessageBox.warning(
+                view, "No Layers",
+                "No vector layers found in the QGIS project."
+            )
+            return
+
+        dlg = QtWidgets.QDialog(view)
+        dlg.setWindowTitle("Load Mesh From Layers")
+        dlg.setMinimumWidth(400)
+        layout = QtWidgets.QFormLayout(dlg)
+
+        nodes_combo = QtWidgets.QComboBox()
+        cells_combo = QtWidgets.QComboBox()
+        for combo in (nodes_combo, cells_combo):
+            combo.addItem("(none)", None)
+            for lyr in vector_layers:
+                combo.addItem(lyr.name(), lyr.id())
+
+        layout.addRow("Nodes layer:", nodes_combo)
+        layout.addRow("Cells layer:", cells_combo)
+
+        btns = QtWidgets.QDialogButtonBox(
+            QtWidgets.QDialogButtonBox.Ok | QtWidgets.QDialogButtonBox.Cancel
+        )
+        layout.addRow(btns)
+        btns.accepted.connect(dlg.accept)
+        btns.rejected.connect(dlg.reject)
+
+        if dlg.exec_() != QtWidgets.QDialog.Accepted:
+            return
+
+        nodes_lid = nodes_combo.currentData()
+        cells_lid = cells_combo.currentData()
+        if not nodes_lid or not cells_lid:
+            view._log("Select both a nodes layer and a cells layer.")
+            return
+
+        nodes_layer = None
+        cells_layer = None
+        for lyr in vector_layers:
+            if lyr.id() == nodes_lid:
+                nodes_layer = lyr
+            if lyr.id() == cells_lid:
+                cells_layer = lyr
+
+        if nodes_layer is None or cells_layer is None:
+            view._log("Could not resolve selected layers.")
+            return
+
         from swe2d.services.mesh_extraction_service import (
             extract_mesh_from_layer_data,
         )
-
-        view = self._view
-        try:
-            from qgis.core import QgsProject
-            _have_qgis = True
-        except ImportError:
-            _have_qgis = False
-        if not _have_qgis:
-            return
-        nodes_layer = view.get_combo_selected_layer("nodes_layer_combo", "vector")
-        cells_layer = view.get_combo_selected_layer("cells_layer_combo", "vector")
-        if nodes_layer is None or cells_layer is None:
-            view._log("Select both nodes and cells vector layers.")
-            return
-
         extracted = extract_mesh_from_layer_data(
             nodes_layer=nodes_layer,
             cells_layer=cells_layer,
@@ -90,8 +134,6 @@ class MeshController:
 
         view._mesh_data = extracted
 
-        # Auto-assign node_z from the topology elevation source, if one is
-        # selected. Selecting "(none)" (layer_id=None) skips this.
         try:
             self._auto_assign_node_z_from_elevation_source(extracted)
         except Exception as exc:
@@ -106,10 +148,6 @@ class MeshController:
             view.set_layer_status_text(
                 f"Loaded map mesh: nodes={node_x.size}, faces={n_faces}, triangles={n_tris}"
             )
-        except RuntimeError:
-            pass
-        try:
-            view.set_layer_status_text("Mesh loaded from selected map layers.")
         except RuntimeError:
             pass
         view._log(
@@ -128,69 +166,6 @@ class MeshController:
         except RuntimeError:
             pass
 
-    # ── Auto-assign node_z from topology elevation source ────────────
-
-    def _auto_assign_node_z_from_elevation_source(self, extracted: dict) -> None:
-        """Populate node_z from the topology elevation source combo.
-
-        Selecting "(none)" (layer_id None) is a no-op. Rasters are
-        sampled via the QGIS raster data provider (GDAL underneath).
-        Vector PointZ layers use QGIS IDW interpolation via
-        ``QgsIDWInterpolator``. Falls back silently if the combo is
-        missing or the layer is unavailable.
-        """
-        view = self._view
-        layer_id = view.get_topo_elevation_layer_id()
-        if not layer_id:
-            return
-
-        from qgis.core import (
-            QgsProject,
-            QgsRasterLayer,
-            QgsVectorLayer,
-        )
-
-        try:
-            layer = QgsProject.instance().mapLayer(layer_id)
-        except Exception:
-            return
-        if layer is None:
-            return
-
-        node_x = np.asarray(extracted.get("node_x", np.zeros(0)),
-                            dtype=np.float64)
-        node_y = np.asarray(extracted.get("node_y", np.zeros(0)),
-                            dtype=np.float64)
-        if node_x.size == 0:
-            return
-
-        if isinstance(layer, QgsRasterLayer):
-            from swe2d.services.qgis_terrain_interpolator import (
-                interpolate_raster_provider,
-            )
-            z = interpolate_raster_provider(node_x, node_y, layer,
-                                              default_z=0.0)
-        elif isinstance(layer, QgsVectorLayer):
-            from swe2d.services.qgis_terrain_interpolator import (
-                interpolate_point_layer_idw,
-            )
-            z = interpolate_point_layer_idw(node_x, node_y, layer)
-            # Replace any NaN hits (outside convex hull) with 0.
-            if np.any(np.isnan(z)):
-                z = np.nan_to_num(z, nan=0.0)
-        else:
-            view._log(f"[WARNING] Unsupported elevation source type: "
-                      f"{type(layer).__name__}")
-            return
-
-        extracted["node_z"] = z.astype(np.float64)
-        view._log(f"Auto-assigned node_z from '{layer.name()}' "
-                  f"({layer.type().name()}, n={node_x.size})")
-
-    # ── 2D model GeoPackage creation ──────────────────────────────────
-
-
-    # ── 2D model GeoPackage creation ──────────────────────────────────
     def create_2d_model_geopackage(self) -> None:
         """Create a new 2D model GeoPackage.
 

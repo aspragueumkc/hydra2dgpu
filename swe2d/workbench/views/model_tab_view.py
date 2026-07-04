@@ -33,8 +33,7 @@ class ModelTabView(QtWidgets.QWidget):
     instance attribute with a stable ``objectName``.
 
     Layers page (``model_layers_page``):
-        nodes_layer_combo, cells_layer_combo, terrain_layer_combo,
-        sample_lines_layer_combo, bc_lines_layer_combo
+        terrain_layer_combo
 
     Solver Parameters page (``model_solver_page``):
         manning_layer_combo (Physics & Friction group),
@@ -190,8 +189,6 @@ class ModelTabView(QtWidgets.QWidget):
         # Create all 14 layer combos as instance attributes (combos moved to
         # other pages are still created here so existing controller wiring works)
         for attr in (
-            "nodes_layer_combo",
-            "cells_layer_combo",
             "terrain_layer_combo",
             "manning_layer_combo",
             "cn_layer_combo",
@@ -209,29 +206,18 @@ class ModelTabView(QtWidgets.QWidget):
             widget.setObjectName(attr)
             setattr(self, attr, widget)
 
-        # Keep these 3 on the Layers page; sample_lines and bc_lines
-        # are moved to the Output and Boundary Conditions pages respectively.
+        # Only terrain_layer_combo remains on the Layers page.
+        # Nodes/cells selection is done via the 'Load Mesh From Layers' dialog.
         for row, label, attr in [
-            (0, "Nodes layer:", "nodes_layer_combo"),
-            (1, "Cells layer:", "cells_layer_combo"),
-            (2, "Terrain raster:", "terrain_layer_combo"),
+            (0, "Terrain raster:", "terrain_layer_combo"),
         ]:
             widget = getattr(self, attr)
             if layers_layout.indexOf(widget) < 0:
                 layers_layout.addWidget(QtWidgets.QLabel(label), row, 0)
                 layers_layout.addWidget(widget, row, 1)
-        layers_layout.setRowStretch(3, 1)
+        layers_layout.setRowStretch(1, 1)
 
         # Tooltips
-        self.nodes_layer_combo.setToolTip(
-            "QGIS point layer containing mesh node coordinates. "
-            "Required for mesh construction. The 'node_id' field must be present."
-        )
-        self.cells_layer_combo.setToolTip(
-            "QGIS polygon/multipolygon layer defining mesh cell geometry. "
-            "Each cell has a 'cell_id' and references 'node_id' values. "
-            "Required for mesh construction."
-        )
         self.terrain_layer_combo.setToolTip(
             "Digital elevation model (DEM) raster layer used to assign node bed elevations. "
             "Select a raster then use 'Assign Node Z From Terrain' on the Mesh tab."
