@@ -1354,10 +1354,6 @@ class SWE2DWorkbenchStudioDialog(QtWidgets.QDialog):
         import tempfile
         return os.path.join(tempfile.gettempdir(), "swe2d_line_results.gpkg")
 
-    def _persist_snapshot_to_gpkg(self, gpkg_path: str, run_id: str, accumulate: bool = False) -> None:
-        """[DEPRECATED] Snapshot persistence now deferred to run_finalizer.py."""
-        logger_wb.warning("_persist_snapshot_to_gpkg called but snapshots are in-memory only until finalization")
-
     def _persist_run_log_to_geopackage(
         self, gpkg_path: str, run_id: str,
         start_wallclock: str, end_wallclock: str,

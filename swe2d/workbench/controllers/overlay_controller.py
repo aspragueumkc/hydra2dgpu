@@ -669,8 +669,8 @@ class OverlayController:
         self._data.set_data_source("gpkg")
         view._overlay_last_loaded_t_s = nearest_ts
         self.update_high_perf_overlay_time(float(nearest_ts))
-        view._log(
-            f"[HighPerf Overlay] Loaded {h.size} cells from GPKG run {run_id} "
-            f"at t={nearest_ts:.2f}s"
+        logger.info(
+            "[HighPerf Overlay] Loaded %d cells from GPKG run %s at t=%.2fs",
+            h.size, run_id, nearest_ts,
         )
         return True

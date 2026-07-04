@@ -348,21 +348,6 @@ class RunController:
                 view._show_results_panel()
             except Exception as exc:
                 view._log(f"[ERROR] Failed to initialise results panel: {exc}")
-            # Seed a synthetic RunRecord so plot widgets have data to iterate
-            # during live runs — overlay works because it reads _live_snapshot
-            # directly, but plot widgets iterate get_enabled_run_records().
-            data = getattr(view, "_results_data", None)
-            if data is not None and not data.get_run_records():
-                from swe2d.results.run_service import RunRecord, next_color
-                rec = RunRecord(
-                    run_id=str(run_id),
-                    gpkg_path="",
-                    color=next_color(0),
-                    enabled=True,
-                    label=f"Live: {run_id}",
-                )
-                data._run_records = [rec]
-                view.refresh_results_run_list()
             # Leave view._snapshot_mesh_fingerprint as empty string so the old
             # fingerprint guard in _refresh_high_perf_canvas_overlay never
             # blocks rendering (the guard has been removed anyway, but this
@@ -373,20 +358,6 @@ class RunController:
             _next_line_snap_t = min(line_output_interval_s, run_span_s)
             _next_coupling_snap_t = min(line_output_interval_s, run_span_s)
             run_id = datetime.datetime.now().astimezone().strftime("swe2d_%Y%m%dT%H%M%S%z")
-            # Re-seed the synthetic RunRecord with the real run_id now that we have it
-            data = getattr(view, "_results_data", None)
-            if data is not None and data._run_records and data._run_records[0].run_id == "":
-                data._run_records[0].run_id = str(run_id)
-                data._run_records[0].label = f"Live: {run_id}"
-                _live_gpkg = str(
-                    view._current_line_results_storage_path()
-                    or getattr(view, "_model_gpkg_path", "")
-                    or ""
-                )
-                if _live_gpkg:
-                    data._run_records[0].gpkg_path = _live_gpkg
-                data._live_run_id = str(run_id)
-                data._overlay_selected_key = str(data._run_records[0].key)
             run_wallclock_start = datetime.datetime.now().replace(microsecond=0).isoformat(sep=" ")
 
             # Save simulation configuration to GPKG
@@ -862,6 +833,7 @@ class RunController:
                 rd = getattr(view, "_results_data", None)
                 if rd is None:
                     return
+                t0 = time.perf_counter()
                 temporal = getattr(view, "_temporal_dock", None)
                 if temporal is not None:
                     try:
@@ -869,11 +841,13 @@ class RunController:
                     except Exception as exc:
                         logger.warning("Snapshot readback: temporal sync failed", exc_info=True)
                         view._log(f"[SnapReadback] temporal sync failed: {exc}")
+                t1 = time.perf_counter()
                 try:
                     view._sync_high_perf_overlay_data()
                 except Exception as exc:
                     logger.warning("Snapshot readback: overlay sync failed", exc_info=True)
                     view._log(f"[SnapReadback] overlay sync failed: {exc}")
+                t2 = time.perf_counter()
                 try:
                     live_ts = rd.get_live_snapshot_timesteps()
                     if live_ts:
@@ -881,11 +855,43 @@ class RunController:
                 except Exception as exc:
                     logger.warning("Snapshot readback: overlay time update failed", exc_info=True)
                     view._log(f"[SnapReadback] overlay time update failed: {exc}")
+                t3 = time.perf_counter()
+                # Seed the synthetic RunRecord on first snapshot so plot
+                # widgets have get_enabled_run_records() data.  Deferred
+                # from run start so the live entry only appears once there
+                # is actual data to plot.
+                if not rd.get_run_records():
+                    from swe2d.results.run_service import RunRecord, next_color
+                    rec = RunRecord(
+                        run_id=str(run_id),
+                        gpkg_path="",
+                        color=next_color(0),
+                        enabled=True,
+                        label=f"Live: {run_id}",
+                    )
+                    rd._run_records = [rec]
+                    rd._live_run_id = str(run_id)
+                    _live_gpkg = str(
+                        view._current_line_results_storage_path()
+                        or getattr(view, "_model_gpkg_path", "")
+                        or ""
+                    )
+                    if _live_gpkg:
+                        rec.gpkg_path = _live_gpkg
+                    rd._overlay_selected_key = str(rec.key)
+                    view.refresh_results_run_list()
+                t4 = time.perf_counter()
                 try:
                     view._refresh_plot()
                 except Exception as exc:
                     logger.warning("Snapshot readback: plot refresh failed", exc_info=True)
                     view._log(f"[SnapReadback] plot refresh failed: {exc}")
+                t5 = time.perf_counter()
+                logger.info(
+                    "[SnapReadback] temporal=%.3fs overlay=%.3fs time=%.3fs "
+                    "seed=%.3fs plot=%.3fs total=%.3fs",
+                    t1 - t0, t2 - t1, t3 - t2, t4 - t3, t5 - t4, t5 - t0,
+                )
             runtime_reporter.set_post_readback_callback(_on_snapshot_readback)
 
             log_fn("The numbers they go UP! They go UP UP UP!!!") # FVM Loop start meme

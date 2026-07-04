@@ -132,6 +132,8 @@ class SWE2DRuntimeReporter:
         if self._snapshot_requested:
             self._snapshot_requested = False
             timesteps = []
+            t0 = time.perf_counter()
+            n_cells = 0
             try:
                 snap_data = backend.read_snapshots()
                 if snap_data and "t_s" in snap_data:
@@ -140,6 +142,7 @@ class SWE2DRuntimeReporter:
                     hu_arr = np.asarray(snap_data["hu"], dtype=np.float64)
                     hv_arr = np.asarray(snap_data["hv"], dtype=np.float64)
                     n_snaps = int(ts.shape[0])
+                    n_cells = int(h_arr.shape[1]) if h_arr.ndim >= 2 else 0
                     for si in range(n_snaps):
                         timesteps.append((
                             float(ts[si]),
@@ -149,11 +152,13 @@ class SWE2DRuntimeReporter:
                         ))
             except Exception:
                 logger.warning("Snapshot readback failed", exc_info=True)
+            t_read = time.perf_counter()
             if timesteps and results_data is not None:
                 try:
                     results_data.set_live_snapshot_timesteps(timesteps)
                 except Exception:
                     logger.warning("set_live_snapshot_timesteps failed", exc_info=True)
+                t_set = time.perf_counter()
                 # Compute line TS + profile from the read-back snapshots so
                 # the line/profile viewers can render during live runs, not
                 # just from GPKG after finalize.  Pre-fix the reporter never
@@ -170,6 +175,7 @@ class SWE2DRuntimeReporter:
                         logger.warning(
                             "Live line metrics computation failed", exc_info=True
                         )
+                t_metrics = time.perf_counter()
                 self._snapshot_ready = True
                 # Notify the UI that fresh snapshot data is available
                 if self._post_readback_callback is not None:
@@ -177,6 +183,17 @@ class SWE2DRuntimeReporter:
                         self._post_readback_callback()
                     except Exception:
                         logger.warning("Post-readback callback failed", exc_info=True)
+                t_ui = time.perf_counter()
+                logger.info(
+                    "[Snapshot] read=%.3fs set=%.3fs metrics=%.3fs ui=%.3fs "
+                    "snaps=%d cells=%d",
+                    t_read - t0,
+                    t_set - t_read,
+                    t_metrics - t_set,
+                    t_ui - t_metrics,
+                    len(timesteps),
+                    n_cells,
+                )
 
         _now_wall = time.perf_counter()
         if _now_wall - float(last_process_events_wall) >= float(process_events_interval_s):

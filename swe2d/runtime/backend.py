@@ -718,10 +718,10 @@ class SWE2DBackend:
 
         Returns a dict with keys 't_s' (shape [N]), 'h'/'hu'/'hv'
         (shape [N, n_cells]) or None if no snapshots accumulated.
-        Consumes the host auto-dump buffer but leaves the device ring
-        buffer intact — subsequent calls return device data again.
-        Call free_snapshot_buf() explicitly when a hard reset is needed
-        (e.g. before starting a new simulation).
+        Consumes both the host auto-dump buffer and the device ring
+        buffer — subsequent calls only return snapshots written after
+        this read. Call free_snapshot_buf() explicitly when a hard reset
+        is needed (e.g. before starting a new simulation).
         """
         if self._solver_h is None:
             return None
@@ -765,7 +765,9 @@ class SWE2DBackend:
         # Per the baked BLOB spec (§5.12): data stays in solver (RCMK) order.
         # Mesh geometry from swe2d_deserialize_mesh and results from
         # this function share the same ordering — no permutation needed.
-        return {"t_s": out_ts, "h": out_h, "hu": out_hu, "hv": out_hv}
+        result = {"t_s": out_ts, "h": out_h, "hu": out_hu, "hv": out_hv}
+        self.free_snapshot_buf()
+        return result
 
     def free_snapshot_buf(self) -> None:
         """Free the device snapshot ring buffer and host buffer."""
