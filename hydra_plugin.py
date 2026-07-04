@@ -275,7 +275,7 @@ class HydraQgisPlugin:
     def _on_project_read(self):
         """Restore workbench state when a QGIS project is loaded."""
         try:
-            from swe2d.workbench.studio_dialog import _studio_active_dialog
+            from swe2d.workbench.views.studio_host_methods import _studio_active_dialog
             if _studio_active_dialog is not None:
                 _studio_active_dialog._restore_project_workbench_state()
                 _studio_active_dialog._workbench_state_restored_on_show = True
@@ -424,7 +424,7 @@ class HydraQgisPlugin:
     def _call_workbench(self, method_name: str):
         """Call a method on the active workbench dialog, if one is open."""
         try:
-            from swe2d.workbench.studio_dialog import _studio_active_dialog
+            from swe2d.workbench.views.studio_host_methods import _studio_active_dialog
             dlg = _studio_active_dialog
             if dlg is None:
                 self.iface.messageBar().pushMessage(
