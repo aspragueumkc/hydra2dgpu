@@ -72,6 +72,12 @@ class RunController:
         view.set_cancel_button_enabled(True)
         view.set_run_progress(0)
 
+        # Ensure _results_data exists so snapshot_ready signals have a place to land.
+        try:
+            view._show_results_panel()
+        except Exception:
+            pass
+
         worker = SimulationWorker(context)
         worker.log_message.connect(view._log)
         worker.progress_percent.connect(view.set_run_progress)
