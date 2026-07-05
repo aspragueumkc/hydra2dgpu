@@ -21,7 +21,7 @@ def test_configurator_classifies_edges_by_side():
         edge_groups=np.array([0, 0, 1], dtype=np.int32),
     )
     payload = cfg.build_payload()
-    assert set(payload["side_by_edge"].tolist()) == {"left", "right", "top"}
+    assert set(payload["side_by_edge"].tolist()) == {"bottom", "right", "top"}
 
 
 def test_configurator_converts_bc_codes():

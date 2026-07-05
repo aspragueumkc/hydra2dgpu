@@ -33,6 +33,9 @@ from swe2d.boundary_and_forcing.internal_flow_qgis_adapter import (
 from swe2d.boundary_and_forcing.internal_flow_qgis_geometry import (
     internal_flow_geom_to_indices_weights_qgis,
 )
+from swe2d.boundary_and_forcing.native_bc_forcing import (
+    BoundaryHydrographConfigurator,
+)
 from swe2d.runtime.native_bc_forcing import SWE2DNativeBoundaryHydrographConfigurator
 from swe2d.boundary_and_forcing.runtime_source_logic import (
     apply_external_sources,

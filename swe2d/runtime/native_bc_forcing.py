@@ -11,6 +11,10 @@ from typing import Any, Dict, List, Tuple
 
 import numpy as np
 
+from swe2d.boundary_and_forcing.native_bc_forcing import (
+    BoundaryHydrographConfigurator,
+)
+
 
 class SWE2DNativeBoundaryHydrographConfigurator:
     """Build and upload edge hydrograph forcing payloads for native runtime."""
