@@ -16,9 +16,7 @@ import json
 import os
 import sqlite3
 import subprocess
-import sys
 import tempfile
-import time
 from typing import Any, Dict, List, Optional
 
 from qgis.PyQt import QtCore, QtWidgets
@@ -882,140 +880,85 @@ class BatchSimulationDialog(QtWidgets.QDialog):
         self._cancel_btn.setEnabled(True)
         self._status_btn.setEnabled(True)
         self._param_sets = param_sets
-        self._processes = [None] * len(param_sets)
-        self._status_files = [""] * len(param_sets)
-        self._next_idx = 0
-        self._active = 0
         self._completed = 0
         self._failed = 0
+        self._orchestrator = None
 
-        status_dir = tempfile.mkdtemp(prefix="hydra_batch_status_")
-        self._start_next_batch(status_dir)
-        self._poll_tick()
+        from swe2d.cli.batch_runner import BatchOrchestrator
 
-    def _poll_tick(self):
-        """Repeating poller — calls _tick_run and reschedules itself."""
-        self._tick_run()
-        if self._running:
-            QtCore.QTimer.singleShot(500, self._poll_tick)
+        def _on_progress(done: int, total: int) -> None:
+            parent_log = getattr(self.parent(), "_log", None)
+            if parent_log:
+                parent_log(f"batch> {done}/{total} simulations complete")
 
-    def _start_next_batch(self, status_dir: str = ""):
-        max_workers = self._max_workers_spin.value()
-        while self._active < max_workers and self._next_idx < len(self._param_sets):
-            idx = self._next_idx
-            self._next_idx += 1
-            ps = self._param_sets[idx]
-            params_json = json.dumps(ps)
-            gpkg = self._gpkg_path()
-            results = self._results_gpkg or os.path.splitext(gpkg)[0] + "_batch_results.gpkg"
-            cmd = [
-                sys.executable, "-m", "swe2d.cli", "run",
-                gpkg, params_json,
-                "--results", results,
-            ]
-            status_file = ""
-            if status_dir:
-                status_file = os.path.join(status_dir, f"sim_{idx}.json")
-                cmd += ["--status-file-path", status_file, "--status-interval", "2.0"]
-            self._status_files[idx] = status_file
-            # Don't capture stderr — let it flow to the QGIS terminal so
-            # the user sees the full traceback live.  stdout is still
-            # captured (used for progress-table display on failure).
-            proc = subprocess.Popen(
-                cmd, stdout=subprocess.PIPE, stderr=None, text=True,
+        def _on_completed(result: dict) -> None:
+            self._completed += 1
+            idx = next(
+                i for i, ps in enumerate(self._param_sets)
+                if str(ps.get("id", f"sim_{i}")) == result["id"]
             )
-            self._processes[idx] = proc
-            self._active += 1
             item = self._table.item(idx, _COL_STATUS)
             if item:
+                item.setText("completed")
+
+        def _on_failed(result: dict) -> None:
+            self._failed += 1
+            idx = next(
+                i for i, ps in enumerate(self._param_sets)
+                if str(ps.get("id", f"sim_{i}")) == result["id"]
+            )
+            status_item = self._table.item(idx, _COL_STATUS)
+            if status_item:
+                status_item.setText("failed")
+            progress_item = self._table.item(idx, _COL_PROGRESS)
+            if progress_item:
+                progress_item.setText(result.get("stderr", "").strip()[:100])
+            parent_log = getattr(self.parent(), "_log", None)
+            if parent_log:
+                sid = result["id"]
+                for line in result.get("stderr", "").strip().split("\n"):
+                    parent_log(f"batch> [{sid} ERROR] {line}")
+                for line in result.get("stdout", "").strip().split("\n"):
+                    if line.strip():
+                        parent_log(f"batch> [{sid} stdout] {line}")
+
+        self._orchestrator = BatchOrchestrator(
+            param_sets=param_sets,
+            workdir=tempfile.mkdtemp(prefix="hydra_batch_"),
+            mesh_gpkg=gpkg,
+            max_workers=self._max_workers_spin.value(),
+            on_progress=_on_progress,
+            on_completed=_on_completed,
+            on_failed=_on_failed,
+        )
+
+        # Mark all param sets as "running" immediately
+        for i in range(len(param_sets)):
+            item = self._table.item(i, _COL_STATUS)
+            if item:
                 item.setText("running")
+
+        self._orchestrator.run()
+
+        self._running = False
+        self._run_btn.setEnabled(True)
+        self._cancel_btn.setEnabled(False)
+        total = len(param_sets)
+        QtWidgets.QMessageBox.information(
+            self, "Batch Complete",
+            f"Completed: {self._completed}/{total}\nFailed: {self._failed}",
+        )
 
     def _check_batch_status(self):
         parent_log = getattr(self.parent(), "_log", None)
         if not parent_log:
             return
         total = len(self._param_sets)
-        running_count = 0
-        for i, sf in enumerate(self._status_files):
-            if not sf or not os.path.exists(sf):
-                continue
-            try:
-                with open(sf) as f:
-                    status = json.load(f)
-            except Exception:
-                continue
-            s = status.get("status", "")
-            sid = str(self._param_sets[i].get("id", f"sim_{i}"))
-            if s == "running":
-                running_count += 1
-                t = status.get("t", 0.0)
-                step = status.get("step", 0)
-                wet = status.get("wet_cells", -1)
-                parent_log(f"batch> {sid} step={step} t={t:.1f}s wet={wet}")
-            elif s == "done":
-                parent_log(f"batch> {sid} done")
-            elif s == "error":
-                err = status.get("error", "unknown")
-                parent_log(f"batch> {sid} error: {err}")
-        if running_count == 0 and not self._running:
-            parent_log(f"batch> all simulations complete ({self._completed}/{total})")
-        elif running_count > 0:
-            parent_log(f"batch> {running_count}/{total} simulations still running")
-        else:
-            parent_log(f"batch> no running simulations ({self._completed + self._failed}/{total})")
-
-    def _tick_run(self):
-        if not self._running:
-            return
-        newly_done = []
-        for i, proc in enumerate(self._processes):
-            if proc is not None and proc.poll() is not None:
-                newly_done.append(i)
-        for i in newly_done:
-            proc = self._processes[i]
-            rc = proc.returncode
-            self._active -= 1
-            status_item = self._table.item(i, _COL_STATUS)
-            progress_item = self._table.item(i, _COL_PROGRESS)
-            if rc == 0:
-                self._completed += 1
-                if status_item:
-                    status_item.setText("completed")
-            else:
-                self._failed += 1
-                if status_item:
-                    status_item.setText("failed")
-                stderr = proc.stderr.read() if proc.stderr else ""
-                stdout = proc.stdout.read() if proc.stdout else ""
-                if progress_item:
-                    progress_item.setText(stderr.strip()[:100])
-                # Log full stderr so the user can diagnose the failure
-                parent_log = getattr(self.parent(), "_log", None)
-                if parent_log:
-                    sid = str(self._param_sets[i].get("id", f"sim_{i}"))
-                    for line in stderr.strip().split("\n"):
-                        parent_log(f"batch> [{sid} ERROR] {line}")
-                    for line in stdout.strip().split("\n"):
-                        if line.strip():
-                            parent_log(f"batch> [{sid} stdout] {line}")
-            self._processes[i] = None
-
-        self._start_next_batch()
-        done = self._completed + self._failed
-        total = len(self._param_sets)
-        if done >= total:
-            self._running = False
-            self._run_btn.setEnabled(True)
-            self._cancel_btn.setEnabled(False)
-            QtWidgets.QMessageBox.information(
-                self, "Batch Complete",
-                f"Completed: {self._completed}/{total}\nFailed: {self._failed}",
-            )
+        parent_log(f"batch> status: {self._completed + self._failed}/{total} simulations complete")
 
     def _cancel_batch(self):
-        for proc in self._processes:
-            if proc is not None and proc.poll() is None:
-                proc.terminate()
+        if self._orchestrator is not None:
+            self._orchestrator.cancel()
         self._running = False
         self._run_btn.setEnabled(True)
         self._cancel_btn.setEnabled(False)
