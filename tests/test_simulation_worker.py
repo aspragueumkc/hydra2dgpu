@@ -37,3 +37,4 @@ def test_simulation_worker_emits_progress_and_finishes():
         time.sleep(0.01)
     app.processEvents()
     assert "done" in progress
+    assert 100 in progress
