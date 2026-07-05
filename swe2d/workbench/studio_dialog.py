@@ -35,6 +35,9 @@ from swe2d.workbench.services.text_parser_service import (
 )
 from swe2d.services import mesh_computation_service as _mesh_svc
 from swe2d.workbench.services import widget_persistence_service as _wp_svc
+from swe2d.workbench.services.runtime_source_application_service import (
+    _apply_external_sources_logic,
+)
 
 from swe2d.workbench.bridges.project_settings_bridge import (
     WORKBENCH_STATE_KEY,
@@ -2566,37 +2569,3 @@ class SWE2DWorkbenchStudioDialog(QtWidgets.QDialog):
             for ln in tb_txt.rstrip().splitlines():
                 self._log(ln)
             self._log("--- traceback end ---")
-
-
-def _apply_external_sources_logic(
-    backend,
-    dt_step,
-    rain_rate_model,
-    cell_source_model,
-    coupled_source_rate,
-    mesh_cell_areas,
-    max_source_rate,
-    h_min,
-    max_rel_depth_increase,
-    max_source_depth_step,
-    shallow_damping_depth,
-    momentum_cap_min_speed,
-    momentum_cap_celerity_mult,
-):
-    """Apply external source terms without touching Qt widgets."""
-    from swe2d.boundary_and_forcing.runtime_source_logic import apply_external_sources as _logic
-    _logic(
-        backend=backend,
-        dt_step=dt_step,
-        rain_rate_model=rain_rate_model,
-        cell_source_model=cell_source_model,
-        coupled_source_rate=coupled_source_rate,
-        mesh_cell_areas=mesh_cell_areas,
-        max_source_rate=max_source_rate,
-        h_min=h_min,
-        max_rel_depth_increase=max_rel_depth_increase,
-        max_source_depth_step=max_source_depth_step,
-        shallow_damping_depth=shallow_damping_depth,
-        momentum_cap_min_speed=momentum_cap_min_speed,
-        momentum_cap_celerity_mult=momentum_cap_celerity_mult,
-    )
