@@ -218,11 +218,13 @@ class SimulationWorker(QThread):
     def __init__(self, context: RunContext, parent=None):
         super().__init__(parent)
         self._context = context
-        self._snapshot_requested = __import__('threading').Event()
+        self._runtime_reporter: Optional[SWE2DRuntimeReporter] = None
 
     def request_snapshot(self):
         """Request a snapshot readback on the next reporter step."""
-        self._snapshot_requested.set()
+        reporter = self._runtime_reporter
+        if reporter is not None:
+            reporter.request_snapshot_readback()
 
     def request_cancel(self):
         """Signal the worker thread to stop at the next timestep check."""
@@ -546,6 +548,7 @@ class SimulationWorker(QThread):
 
             runtime_step_executor = SWE2DRuntimeStepExecutor()
             runtime_reporter = SWE2DRuntimeReporter()
+            self._runtime_reporter = runtime_reporter
 
             wb = _WorkbenchShim(self, ctx, results_data, mesh_data)
 
