@@ -667,14 +667,14 @@ def persist_baked_coupling_batch(
                 run_id, component, object_id, object_name, metric,
                 len(times), times.tobytes(), values.tobytes(),
             ))
-            if log_fn:
-                log_fn(f"Baked coupling saved: {component}/{object_id}/{metric} ({len(times)} steps)")
         conn.executemany(
             "INSERT OR REPLACE INTO swe2d_baked_coupling "
             "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
             rows,
         )
         conn.commit()
+        if log_fn:
+            log_fn(f"Baked coupling saved: {len(rows)} series ({rows[0][5]} steps each)" if rows else "")
     finally:
         conn.close()
 
