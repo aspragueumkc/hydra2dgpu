@@ -165,9 +165,7 @@ class TestBatchSimulationDialogMeshGpkgPrefill(unittest.TestCase):
             gpkg_path = os.path.join(tmp, "results.gpkg")
             dlg = MagicMock()
             dlg._model_gpkg_path = ""  # model GPKG empty → fall through
-            mt = MagicMock()
-            mt.results_gpkg_path_edit.text.return_value = gpkg_path
-            dlg._model_tab_view = mt
+            dlg.get_results_gpkg_path.return_value = gpkg_path
             dlg._run_dock = MagicMock(spec=[])
 
             mesh_gpkg = self._run_and_capture_mesh_gpkg(dlg)
@@ -175,30 +173,20 @@ class TestBatchSimulationDialogMeshGpkgPrefill(unittest.TestCase):
 
     def test_does_not_consult_run_dock_for_mesh_gpkg(self):
         """Regression: the run_controller used to read
-        ``view._run_dock.results_gpkg_path_edit``. If it still did,
-        a stale widget would be consulted. We plant a talking value
-        on the run dock — if the controller reads it, the test sees
-        it.
+        ``view._run_dock.results_gpkg_path_edit``. Now it reads through
+        the View protocol ``get_results_gpkg_path()``.
         """
         with tempfile.TemporaryDirectory() as tmp:
             dlg = MagicMock()
-            dlg._model_gpkg_path = ""
-            mt = MagicMock()
-            mt.results_gpkg_path_edit.text.return_value = ""
-            dlg._model_tab_view = mt
-            # Talking value: if the controller looks at the run
-            # dock, it picks this up.
+            dlg.get_results_gpkg_path.return_value = ""
             fake = os.path.join(tmp, "run_dock_stale.gpkg")
-            dlg._run_dock = MagicMock()
-            dlg._run_dock.results_gpkg_path_edit = MagicMock()
-            dlg._run_dock.results_gpkg_path_edit.text.return_value = fake
 
             mesh_gpkg = self._run_and_capture_mesh_gpkg(dlg)
             # Must NOT be the fake run-dock path.
             self.assertNotEqual(
                 mesh_gpkg, os.path.abspath(fake),
                 "Controller is reading from _run_dock.results_gpkg_path_edit "
-                "— should read from _model_tab_view.results_gpkg_path_edit.",
+                "— should read through View protocol.",
             )
 
 
