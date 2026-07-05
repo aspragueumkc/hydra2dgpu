@@ -449,11 +449,13 @@ class RunController:
     def on_cancel(self) -> None:
         """Mark the current run as cancelled.
 
-        The view owns the cancel flag; the controller just flips it and
-        logs the request.
+        The view owns the cancel flag; the controller flips it, signals
+        the worker thread via the cancel event, and logs the request.
         """
         view = self._view
         view._cancel_requested = True
+        if self._simulation_worker is not None:
+            self._simulation_worker.request_cancel()
         view._log("Cancellation requested...")
 
     # ── Batch simulation dialog ──────────────────────────────────────

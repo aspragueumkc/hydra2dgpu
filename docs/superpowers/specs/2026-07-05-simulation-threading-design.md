@@ -150,6 +150,10 @@ No QWidget access. All values come from the `ComputeResult` object.
 - Main thread shows a critical message and re-enables controls.
 - No silent fallbacks.
 
+### DRY: shared snapshot UI sync
+
+The existing `_on_snapshot_readback` callback in `run_controller.py` and the new `snapshot_ready` slot both perform the same temporal-dock / overlay / plot updates. Extract a single helper `_sync_snapshot_to_ui(view, snapshot_data)` and call it from both locations to avoid duplication.
+
 ### MVP compliance
 
 - Workers live under `swe2d/workbench/workers/` and may import `PyQt5.QtCore`.

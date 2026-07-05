@@ -224,6 +224,10 @@ class SimulationWorker(QThread):
         """Request a snapshot readback on the next reporter step."""
         self._snapshot_requested.set()
 
+    def request_cancel(self):
+        """Signal the worker thread to stop at the next timestep check."""
+        self._context.cancel_event.set()
+
     def run(self):
         try:
             result = self._execute()

@@ -4,5 +4,6 @@ from swe2d.workbench.workers.simulation_worker import (
     SimulationWorker,
     SnapshotData,
 )
+from swe2d.workbench.workers.persistence_worker import PersistenceWorker
 
-__all__ = ["RunContext", "SimulationWorker", "SnapshotData", "ComputeResult"]
+__all__ = ["RunContext", "SimulationWorker", "SnapshotData", "ComputeResult", "PersistenceWorker"]
