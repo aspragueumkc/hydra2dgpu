@@ -264,7 +264,7 @@ class TestControllerOnRun(unittest.TestCase):
 
 
     def test_on_run_passes_view_as_wb(self):
-        """The controller must hand the view to the _execute_run method."""
+        """The controller must call _build_run_context when starting a run."""
         from swe2d.workbench.controllers.run_controller import RunController
         patch = self._patch
         mock_view = MagicMock()
@@ -272,15 +272,12 @@ class TestControllerOnRun(unittest.TestCase):
         mock_view._log = MagicMock()
         ctrl = RunController(view=mock_view)
         with patch.object(
-            ctrl, "_execute_run"
-        ) as mock_logic:
+            ctrl, "_build_run_context"
+        ) as mock_build, patch(
+            "swe2d.workbench.controllers.run_controller.SimulationWorker"
+        ):
             ctrl.on_run()
-            self.assertIsNotNone(mock_logic.call_args)
-            call_args = mock_logic.call_args.args
-            self.assertIs(
-                call_args[0], mock_view,
-                "Controller must pass view as first arg to _execute_run",
-            )
+            mock_build.assert_called_once()
 
     def test_on_run_aborts_when_mesh_data_none(self):
         from swe2d.workbench.controllers.run_controller import RunController
@@ -290,10 +287,10 @@ class TestControllerOnRun(unittest.TestCase):
         mock_view._log = MagicMock()
         ctrl = RunController(view=mock_view)
         with patch.object(
-            ctrl, "_execute_run"
-        ) as mock_logic:
+            ctrl, "_build_run_context"
+        ) as mock_build:
             ctrl.on_run()
-            mock_logic.assert_not_called()
+            mock_build.assert_not_called()
             log_message = mock_view._log.call_args[0][0]
             self.assertIn("mesh", log_message.lower())
 
