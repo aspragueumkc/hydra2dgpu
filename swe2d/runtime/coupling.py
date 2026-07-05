@@ -1036,20 +1036,34 @@ class SWE2DCouplingController:
                 if hasattr(native_mod, "swe2d_get_coupling_dev_ptr"):
                     dev_ptr = int(native_mod.swe2d_get_coupling_dev_ptr())
                 try:
+                    # Compute pipe-cell layout to match C++ subdivision.
+                    # The C++ readback guard checks n_cells == p.n_pipe_cells;
+                    # passing self.n_cells (2D mesh count) silently skips the
+                    # copy and returns zeros.
+                    nl = int(len(dsoa.link_length))
+                    mcl = int(dsoa.max_cell_length)
+                    sub_cells_per_link = []
+                    for li in range(nl):
+                        L = float(dsoa.link_length[li])
+                        n_sub = 1
+                        if mcl > 0 and L > 0.0:
+                            n_sub = max(1, int(math.ceil(L / mcl)))
+                        sub_cells_per_link.append(n_sub)
+                    n_pipe_cells = int(sum(sub_cells_per_link)) if sub_cells_per_link else int(self.n_cells)
                     state = native_mod.swe2d_pipe1d_readback_node_state(
-                        dev_ptr, nn, int(self.n_cells))
+                        dev_ptr, nn, n_pipe_cells)
                     if state and "node_depth" in state:
                         out["node_depth"] = np.asarray(state["node_depth"], dtype=np.float64)
                     if state and "cell_Q" in state:
                         cell_q = np.asarray(state["cell_Q"], dtype=np.float64)
-                        nl = int(len(dsoa.link_from))
-                        if nl > 0 and cell_q.size >= self.n_cells:
+                        if nl > 0 and cell_q.size >= n_pipe_cells:
                             link_q = np.zeros(nl, dtype=np.float64)
-                            for i in range(nl):
-                                f = int(dsoa.link_from[i])
-                                t = int(dsoa.link_to[i])
-                                if 0 <= f < self.n_cells and 0 <= t < self.n_cells:
-                                    link_q[i] = abs(cell_q[f])
+                            offset = 0
+                            for li in range(nl):
+                                n_sub = sub_cells_per_link[li]
+                                if n_sub > 0 and offset + n_sub <= cell_q.size:
+                                    link_q[li] = float(np.mean(np.abs(cell_q[offset:offset + n_sub])))
+                                offset += n_sub
                             out["link_flow"] = link_q
                 except Exception as exc:
                     self._log(f"[COUPLING] readback failed: {exc}")
@@ -1202,6 +1216,28 @@ class SWE2DCouplingController:
                         dev_ptr,
                     )
                     self._pipe1d_mesh_built = True
+                    # Upload inlet/outfall exchange parameters for
+                    # surface↔drainage exchange kernels.
+                    if hasattr(native_mod, "swe2d_gpu_upload_drainage_exchange_params"):
+                        nn = int(len(static_args["node_invert_elev"]))
+                        ni = int(len(dsoa.inlet_cell))
+                        no = int(len(dsoa.outfall_cell))
+                        native_mod.swe2d_gpu_upload_drainage_exchange_params(
+                            np.asarray(dsoa.inlet_cell, dtype=np.int32),
+                            np.asarray(dsoa.inlet_node, dtype=np.int32),
+                            np.asarray(dsoa.inlet_crest_elev, dtype=np.float64),
+                            np.asarray(dsoa.inlet_width, dtype=np.float64),
+                            np.asarray(dsoa.inlet_coefficient, dtype=np.float64),
+                            np.asarray(dsoa.inlet_max_capture, dtype=np.float64),
+                            np.asarray(dsoa.outfall_cell, dtype=np.int32),
+                            np.asarray(dsoa.outfall_node, dtype=np.int32),
+                            np.asarray(dsoa.outfall_invert_elev, dtype=np.float64),
+                            np.asarray(dsoa.outfall_diameter, dtype=np.float64),
+                            np.asarray(dsoa.outfall_coefficient, dtype=np.float64),
+                            np.asarray(dsoa.outfall_max_flow, dtype=np.float64),
+                            np.asarray(dsoa.outfall_zero_storage, dtype=np.int32),
+                            np.asarray(dsoa.node_max_depth, dtype=np.float64),
+                        )
                 cfg = self.drainage.cfg
                 native_mod.swe2d_pipe1d_step(
                     dev_ptr,

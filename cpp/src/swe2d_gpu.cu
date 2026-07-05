@@ -8387,6 +8387,55 @@ void swe2d_gpu_compute_coupling_full_on_device(
         }
     }
 
+    // ── Drainage exchange: surface ↔ pipe network via inlets/outfalls ──
+    // Launches inlet capture, outfall surcharge/backwater, and node_depth
+    // delta application.  Writes exchange Q into d_drainage_q (for the fold
+    // below) and updates pipe1d.d_node_depth in-place.
+    auto& dw = dev->drain_ws;
+    if (dw.exchange_loaded && dw.d_q_cell) {
+        // Zero delta and exchange Q buffers
+        CUDA_CHECK(cudaMemsetAsync(dw.d_node_delta, 0,
+            static_cast<size_t>(dw.n_nodes) * sizeof(double), stream));
+        CUDA_CHECK(cudaMemsetAsync(cpl_ws.d_drainage_q, 0,
+            static_cast<size_t>(n_cells) * sizeof(double), stream));
+        auto& p = dev->pipe1d;
+        if (p.d_A && p.d_node_depth) {
+            int grid_inlets = (dw.n_inlets + BLOCK - 1) / BLOCK;
+            int grid_outfalls = (dw.n_outfalls + BLOCK - 1) / BLOCK;
+            int grid_nodes = (p.n_nodes + BLOCK - 1) / BLOCK;
+            if (dw.n_inlets > 0 && dw.d_i_cell) {
+                swe2d_drainage_inlet_exchange_kernel<<<grid_inlets, BLOCK, 0, stream>>>(
+                    dw.n_inlets, n_cells,
+                    dw.d_i_cell, dw.d_i_node, dw.d_i_crest, dw.d_i_width,
+                    dw.d_i_cd, dw.d_i_qmax,
+                    sf_ws.d_cell_wse, cpl_ws.d_cell_area, nullptr,
+                    p.d_node_invert, dw.d_node_maxd, p.d_node_depth,
+                    p.d_node_surface_area,
+                    s_coupling_dt, sf_ws.gravity, 0.0,
+                    cpl_ws.d_drainage_q, dw.d_node_delta,
+                    dw.d_limiter_events, dw.d_limiter_volume);
+                CUDA_CHECK(cudaGetLastError());
+            }
+            if (dw.n_outfalls > 0 && dw.d_o_cell) {
+                swe2d_drainage_outfall_exchange_kernel<<<grid_outfalls, BLOCK, 0, stream>>>(
+                    dw.n_outfalls, n_cells,
+                    dw.d_o_cell, dw.d_o_node, dw.d_o_invert, dw.d_o_diameter,
+                    dw.d_o_cd, dw.d_o_qmax, dw.d_o_zero_storage,
+                    sf_ws.d_cell_wse, cpl_ws.d_cell_area, nullptr,
+                    dw.d_node_maxd, p.d_node_depth, p.d_node_surface_area,
+                    s_coupling_dt, sf_ws.gravity, 0.0,
+                    cpl_ws.d_drainage_q, dw.d_node_delta, dw.d_node_qleave,
+                    dw.d_limiter_events, dw.d_limiter_volume);
+                CUDA_CHECK(cudaGetLastError());
+            }
+            if (p.d_node_depth && dw.d_node_delta) {
+                swe2d_drainage_apply_delta_kernel<<<grid_nodes, BLOCK, 0, stream>>>(
+                    p.n_nodes, dw.d_node_maxd, dw.d_node_delta, p.d_node_depth);
+                CUDA_CHECK(cudaGetLastError());
+            }
+        }
+    }
+
     // ── Fold drainage q into external source ──
     if (cpl_ws.d_drainage_q) {
         int grid = (n_cells + BLOCK - 1) / BLOCK;
@@ -9595,6 +9644,54 @@ static bool ensure_drainage_step_workspace(
 
     #undef _DS_ENSURE
     return true;
+}
+
+// ── Drainage exchange parameter upload ──────────────────────────────────
+// Uploads inlet/outfall geometry + node max depth so the three exchange
+// kernels (inlet, outfall, apply_delta) can run during compute_coupling.
+void swe2d_gpu_upload_drainage_exchange_params(
+    SWE2DDeviceState* dev,
+    int32_t n_nodes, int32_t n_inlets, int32_t n_outfalls,
+    const int32_t* inlet_cell, const int32_t* inlet_node,
+    const double* inlet_crest, const double* inlet_width,
+    const double* inlet_cd, const double* inlet_qmax,
+    const int32_t* outfall_cell, const int32_t* outfall_node,
+    const double* outfall_invert, const double* outfall_diameter,
+    const double* outfall_cd, const double* outfall_qmax,
+    const int32_t* outfall_zero_storage,
+    const double* node_max_depth)
+{
+    if (!dev) return;
+    auto& ws = dev->drain_ws;
+    // Allocate workspace (0 for unused capacities)
+    ensure_drainage_step_workspace(dev->n_cells, n_nodes, 0, n_inlets, n_outfalls, 0);
+    auto h2d = [](void* dst, const void* src, size_t bytes) {
+        CUDA_CHECK(cudaMemcpy(dst, src, bytes, cudaMemcpyHostToDevice));
+    };
+    if (n_inlets > 0 && ws.d_i_cell) {
+        h2d(ws.d_i_cell, inlet_cell, n_inlets * sizeof(int32_t));
+        h2d(ws.d_i_node, inlet_node, n_inlets * sizeof(int32_t));
+        h2d(ws.d_i_crest, inlet_crest, n_inlets * sizeof(double));
+        h2d(ws.d_i_width, inlet_width, n_inlets * sizeof(double));
+        h2d(ws.d_i_cd, inlet_cd, n_inlets * sizeof(double));
+        h2d(ws.d_i_qmax, inlet_qmax, n_inlets * sizeof(double));
+    }
+    if (n_outfalls > 0 && ws.d_o_cell) {
+        h2d(ws.d_o_cell, outfall_cell, n_outfalls * sizeof(int32_t));
+        h2d(ws.d_o_node, outfall_node, n_outfalls * sizeof(int32_t));
+        h2d(ws.d_o_invert, outfall_invert, n_outfalls * sizeof(double));
+        h2d(ws.d_o_diameter, outfall_diameter, n_outfalls * sizeof(double));
+        h2d(ws.d_o_cd, outfall_cd, n_outfalls * sizeof(double));
+        h2d(ws.d_o_qmax, outfall_qmax, n_outfalls * sizeof(double));
+        h2d(ws.d_o_zero_storage, outfall_zero_storage, n_outfalls * sizeof(int32_t));
+    }
+    if (n_nodes > 0 && ws.d_node_maxd) {
+        h2d(ws.d_node_maxd, node_max_depth, n_nodes * sizeof(double));
+    }
+    ws.n_inlets = n_inlets;
+    ws.n_outfalls = n_outfalls;
+    ws.n_nodes = n_nodes;
+    ws.exchange_loaded = true;
 }
 
 // Graph management (Suggestion 9)

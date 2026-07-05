@@ -328,6 +328,42 @@ class SWE2DResultsData:
         """Return the list of live mesh snapshots as (t_s, h, hu, hv) tuples."""
         return self._live_snapshot_timesteps
 
+    def build_precomputed_line_results(self) -> dict:
+        """Convert _live_line_ts / _live_line_profile to the dict format
+        expected by ``SWE2DRunFinalizer.finalize_and_persist`` via the
+        ``precomputed_line_results`` argument.
+
+        Avoids the finalizer recomputing line metrics from scratch when
+        ``populate_live_line_metrics`` already produced the same arrays.
+        """
+        if not self._live_line_ts and not self._live_line_profile:
+            return {}
+        times = [float(s[0]) for s in self._live_snapshot_timesteps] if self._live_snapshot_timesteps else (
+            list(self._live_times) if self._live_times.size > 0 else [])
+        out: dict = {}
+        for lid, d in self._live_line_ts.items():
+            entry = {"line_name": d.get("line_name", f"line_{lid}")}
+            if times:
+                entry["t_s"] = list(times)
+            for k in ("depth_m", "velocity_ms", "wse_m", "bed_m", "flow_cms", "wet_frac", "fr"):
+                v = d.get(k)
+                if v is not None:
+                    entry[f"ts_{k}"] = list(np.asarray(v, dtype=np.float64))
+            out[lid] = entry
+        for lid, d in self._live_line_profile.items():
+            entry = out.setdefault(lid, {"line_name": d.get("line_name", f"line_{lid}")})
+            sta = d.get("station_m")
+            if sta is not None:
+                entry["station_m"] = np.asarray(sta, dtype=np.float64)
+            for k in ("depth_m", "velocity_ms", "wse_m", "bed_m", "flow_qn", "fr"):
+                arr = d.get(k)
+                if arr is not None and hasattr(arr, "shape") and arr.ndim == 2:
+                    entry[f"prof_{k}"] = [np.ascontiguousarray(arr[i]) for i in range(arr.shape[0])]
+            wet = d.get("wet")
+            if wet is not None and hasattr(wet, "shape") and wet.ndim == 2:
+                entry["prof_wet"] = [np.ascontiguousarray(wet[i]) for i in range(wet.shape[0])]
+        return out
+
     def get_live_line_snapshot_rows(self) -> list:
         """Reconstruct list-of-dicts from _live_line_ts numpy storage."""
         out = []

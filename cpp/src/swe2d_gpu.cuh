@@ -418,6 +418,8 @@ struct SWE2DDeviceState {
     struct DrainageStepWs {
         int32_t cell_capacity = 0, node_capacity = 0, link_capacity = 0;
         int32_t inlet_capacity = 0, outfall_capacity = 0, pipe_end_capacity = 0;
+        int32_t n_inlets = 0, n_outfalls = 0, n_nodes = 0;
+        bool    exchange_loaded = false;
         double  *d_cell_area = nullptr, *d_cell_wse = nullptr, *d_cell_depth = nullptr;
         double  *d_node_inv = nullptr, *d_node_maxd = nullptr, *d_node_area = nullptr;
         double  *d_node_depth = nullptr, *d_node_net_q = nullptr, *d_node_delta = nullptr;
@@ -455,6 +457,8 @@ struct SWE2DDeviceState {
             #undef _DS_FREE
             cell_capacity = node_capacity = link_capacity = 0;
             inlet_capacity = outfall_capacity = pipe_end_capacity = 0;
+            n_inlets = n_outfalls = n_nodes = 0;
+            exchange_loaded = false;
         }
     } drain_ws{};
 
@@ -1327,6 +1331,18 @@ void swe2d_gpu_compute_coupling_full_on_device(
 void swe2d_recompute_coupling_for_stage(SWE2DDeviceState* dev, int32_t n_cells,
                                          int32_t n_structures, const double* cell_wse_host,
                                          const double* host_structure_flows, double dt_stage);
+/// Upload drainage exchange parameters (inlets, outfalls, node geometry). @host
+void swe2d_gpu_upload_drainage_exchange_params(
+    SWE2DDeviceState* dev,
+    int32_t n_nodes, int32_t n_inlets, int32_t n_outfalls,
+    const int32_t* inlet_cell, const int32_t* inlet_node,
+    const double* inlet_crest, const double* inlet_width,
+    const double* inlet_cd, const double* inlet_qmax,
+    const int32_t* outfall_cell, const int32_t* outfall_node,
+    const double* outfall_invert, const double* outfall_diameter,
+    const double* outfall_cd, const double* outfall_qmax,
+    const int32_t* outfall_zero_storage,
+    const double* node_max_depth);
 /// Ensure drainage Q buffer is allocated in device workspace. @host
 void swe2d_gpu_ensure_drainage_q_buf(SWE2DDeviceState* dev, int32_t n_cells);
 

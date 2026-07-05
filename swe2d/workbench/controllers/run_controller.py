@@ -1027,6 +1027,10 @@ class RunController:
                 cell_solver_z=cell_solver_z,
                 sample_line_metrics_callback=view._sample_line_metrics,
                 coupling_snapshots=coupling_snapshots,
+                precomputed_line_results=(
+                    results_data.build_precomputed_line_results()
+                    if results_data is not None else None
+                ),
             )
 
             return _result_data

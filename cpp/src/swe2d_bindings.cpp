@@ -1073,6 +1073,60 @@ PYBIND11_MODULE(HYDRA_SWE2D_PY_MODULE_NAME, m) {
         },
         "Allocate the persistent d_drainage_q buffer in the coupling workspace.");
 
+    m.def("swe2d_gpu_upload_drainage_exchange_params",
+        [](py::object inlet_cell_obj, py::object inlet_node_obj,
+           py::object inlet_crest_obj, py::object inlet_width_obj,
+           py::object inlet_cd_obj, py::object inlet_qmax_obj,
+           py::object outfall_cell_obj, py::object outfall_node_obj,
+           py::object outfall_invert_obj, py::object outfall_diameter_obj,
+           py::object outfall_cd_obj, py::object outfall_qmax_obj,
+           py::object outfall_zero_storage_obj,
+           py::object node_max_depth_obj) {
+            extern SWE2DDeviceState* s_coupling_dev;
+            auto get_arr_i32 = [](py::object o, py::array_t<int32_t>& out) {
+                if (!o.is_none()) out = o.cast<py::array_t<int32_t, py::array::c_style|py::array::forcecast>>();
+            };
+            auto get_arr_f64 = [](py::object o, py::array_t<double>& out) {
+                if (!o.is_none()) out = o.cast<py::array_t<double, py::array::c_style|py::array::forcecast>>();
+            };
+            py::array_t<double> nmd;
+            py::array_t<int32_t> ic, in_, oc, on_, ozs;
+            py::array_t<double> icr, iw, icd, iq, oi_, od_, ocd, oq;
+            get_arr_f64(node_max_depth_obj, nmd);
+            int32_t n_nodes = static_cast<int32_t>(nmd.size());
+            get_arr_i32(inlet_cell_obj, ic);
+            int32_t n_inlets = static_cast<int32_t>(ic.size());
+            get_arr_i32(inlet_node_obj, in_);
+            get_arr_f64(inlet_crest_obj, icr);
+            get_arr_f64(inlet_width_obj, iw);
+            get_arr_f64(inlet_cd_obj, icd);
+            get_arr_f64(inlet_qmax_obj, iq);
+            get_arr_i32(outfall_cell_obj, oc);
+            int32_t n_outfalls = static_cast<int32_t>(oc.size());
+            get_arr_i32(outfall_node_obj, on_);
+            get_arr_f64(outfall_invert_obj, oi_);
+            get_arr_f64(outfall_diameter_obj, od_);
+            get_arr_f64(outfall_cd_obj, ocd);
+            get_arr_f64(outfall_qmax_obj, oq);
+            get_arr_i32(outfall_zero_storage_obj, ozs);
+            swe2d_gpu_upload_drainage_exchange_params(
+                s_coupling_dev, n_nodes, n_inlets, n_outfalls,
+                ic.data(), in_.data(), icr.data(), iw.data(),
+                icd.data(), iq.data(),
+                oc.data(), on_.data(), oi_.data(), od_.data(),
+                ocd.data(), oq.data(), ozs.data(),
+                nmd.data());
+        },
+        py::arg("inlet_cell")=py::none(), py::arg("inlet_node")=py::none(),
+        py::arg("inlet_crest")=py::none(), py::arg("inlet_width")=py::none(),
+        py::arg("inlet_cd")=py::none(), py::arg("inlet_qmax")=py::none(),
+        py::arg("outfall_cell")=py::none(), py::arg("outfall_node")=py::none(),
+        py::arg("outfall_invert")=py::none(), py::arg("outfall_diameter")=py::none(),
+        py::arg("outfall_cd")=py::none(), py::arg("outfall_qmax")=py::none(),
+        py::arg("outfall_zero_storage")=py::none(),
+        py::arg("node_max_depth")=py::none(),
+        "Upload drainage exchange parameters (inlets, outfalls, node max depth) to GPU.");
+
     m.def("swe2d_gpu_accumulate_external_source",
         [](std::shared_ptr<PySolver>& ps,
            py::array_t<double, py::array::c_style | py::array::forcecast> src)
