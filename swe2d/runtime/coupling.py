@@ -1521,6 +1521,44 @@ class SWE2DCouplingController:
         return int(self.cell_area.size)
 
 
+def prepare_coupling_timeseries(
+    records: Sequence[Dict],
+) -> Dict[str, Dict[str, object]]:
+    """Group coupling records by object_id into sorted time-series arrays.
+
+    Parameters
+    ----------
+    records: sequence of dict
+        Each dict must contain at least ``t_s``, ``value``, ``object_id``,
+        and optionally ``object_name``.
+
+    Returns
+    -------
+    dict
+        Mapping ``object_id -> {"times": ndarray[h], "values": ndarray, "name": str}``.
+    """
+    by_object: Dict[str, List[Tuple[float, float]]] = {}
+    names: Dict[str, str] = {}
+    for rec in records:
+        try:
+            t_s = float(rec.get("t_s", 0.0))
+            value = float(rec.get("value", float("nan")))
+        except (ValueError, TypeError):
+            continue
+        if not np.isfinite(t_s) or not np.isfinite(value):
+            continue
+        oid = str(rec.get("object_id", "") or "")
+        by_object.setdefault(oid, []).append((t_s, value))
+        names[oid] = str(rec.get("object_name", "") or "")
+    result: Dict[str, Dict[str, object]] = {}
+    for oid in by_object:
+        pairs = sorted(by_object[oid], key=lambda x: x[0])
+        times = np.asarray([p[0] / 3600.0 for p in pairs], dtype=np.float64)
+        values = np.asarray([p[1] for p in pairs], dtype=np.float64)
+        result[oid] = {"times": times, "values": values, "name": names.get(oid, "")}
+    return result
+
+
 def build_coupling_controller(
     *,
     pipe_network_cfg,
@@ -1738,4 +1776,5 @@ __all__ = [
     "pack_structures_soa",
     "pack_coupling_soa",
     "build_coupling_controller",
+    "prepare_coupling_timeseries",
 ]

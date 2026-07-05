@@ -771,7 +771,7 @@ class SWE2DWorkbenchStudioDialog(QtWidgets.QDialog):
 
     def _open_run_log_viewer(self) -> None:
         """Open the run log viewer dialog."""
-        self._mesh_controller.open_run_log_viewer()
+        self._controller.open_run_log_viewer()
 
     def _open_topology_region_table(self) -> None:
         """Open topology region attribute table dialog."""

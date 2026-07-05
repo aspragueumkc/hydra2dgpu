@@ -187,7 +187,7 @@ def install_workbench_main_menu(dlg, iface) -> Optional[QtWidgets.QMenu]:
     add_action(
         "HYDRA2DMenuOpenRunLogAction",
         "Open Run Log",
-        lambda: dlg._mesh_controller.open_run_log_viewer(),
+        lambda: dlg._controller.open_run_log_viewer(),
     )
     add_action(
         "HYDRA2DMenuOpenGpkgExplorerAction",

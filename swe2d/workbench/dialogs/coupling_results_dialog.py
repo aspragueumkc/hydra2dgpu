@@ -4,18 +4,15 @@
 from __future__ import annotations
 
 import logging
-from collections import defaultdict
-from typing import Dict, List, Tuple
+from typing import Dict, List
 
 import numpy as np
 from qgis.PyQt import QtCore, QtWidgets
 
+from swe2d.runtime.coupling import prepare_coupling_timeseries
 from swe2d.workbench.dialogs._plot_utils import try_import_matplotlib_qt
 
 logger_wb = logging.getLogger(__name__)
-
-
-from swe2d.runtime.coupling import prepare_coupling_timeseries
 
 
 class SWE2DCouplingResultsViewerDialog(QtWidgets.QDialog):
