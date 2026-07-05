@@ -14,26 +14,13 @@ from swe2d.workbench.dialogs.sqlite_preview_dialog import SWE2DSQLiteTablePrevie
 from swe2d.workbench.services.gpkg_operations_service import (
     drop_table,
     get_table_row_count,
+    list_run_ids_from_tables as _list_run_ids_from_table_names,
     list_tables,
     rename_table,
     delete_run,
 )
 
 logger_wb = logging.getLogger(__name__)
-
-
-def _list_run_ids_from_table_names(
-    tables: list[str],
-) -> list[str]:
-    """Extract unique run IDs from SWE2D result table names."""
-    run_ids: list[str] = []
-    seen: set[str] = set()
-    for t in tables:
-        parts = t.rsplit("_", 1)
-        if len(parts) == 2 and parts[1] and parts[1] not in seen:
-            run_ids.append(parts[1])
-            seen.add(parts[1])
-    return run_ids
 
 
 class SWE2DModelGeoPackageExplorerDialog(QtWidgets.QDialog):

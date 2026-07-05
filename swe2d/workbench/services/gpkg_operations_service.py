@@ -13,6 +13,17 @@ from typing import Any, Dict, List
 
 logger = logging.getLogger(__name__)
 
+__all__ = [
+    "delete_run",
+    "drop_table",
+    "get_table_contents",
+    "get_table_info",
+    "get_table_row_count",
+    "list_run_ids_from_tables",
+    "list_tables",
+    "rename_table",
+]
+
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -32,6 +43,18 @@ def _user_table_names(cur: sqlite3.Cursor) -> List[str]:
         if name and not name.startswith("sqlite_") and not name.startswith("gpkg_") and not name.startswith("rtree_"):
             names.append(name)
     return names
+
+
+def list_run_ids_from_tables(tables: List[str]) -> List[str]:
+    """Extract unique run IDs from SWE2D result table names."""
+    run_ids: List[str] = []
+    seen: set[str] = set()
+    for t in tables:
+        parts = t.rsplit("_", 1)
+        if len(parts) == 2 and parts[1] and parts[1] not in seen:
+            run_ids.append(parts[1])
+            seen.add(parts[1])
+    return run_ids
 
 
 # ---------------------------------------------------------------------------
