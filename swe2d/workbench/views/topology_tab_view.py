@@ -435,6 +435,7 @@ class TopologyTabView(QtWidgets.QWidget):
             for k, w in widgets.items():
                 if isinstance(w, QtWidgets.QWidget) and not hasattr(self, k):
                     setattr(self, k, w)
+            self.update_control_summary()
             return widgets
         except Exception as exc:
             self._log(f"[ERROR] Failed to populate gmsh/quality controls: {exc}")
