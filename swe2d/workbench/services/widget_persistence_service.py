@@ -119,14 +119,14 @@ def persist_project_workbench_state(
 
     widgets_data: Dict[str, Dict[str, Any]] = {}
     for attr_name, widget in iter_widgets_fn():
-        try:
-            widget.interpretText()
-        except Exception as _e:
-            log_fn(f"[ERROR] Exception in widget_persistence_service.py: {_e}")
         val = None
         qt_mod = _qt_widgets_module(widget)
         if qt_mod is not None:
             if isinstance(widget, (qt_mod.QSpinBox, qt_mod.QDoubleSpinBox)):
+                try:
+                    widget.interpretText()
+                except Exception as _e:
+                    log_fn(f"[ERROR] Exception in widget_persistence_service.py: {_e}")
                 val = widget.value()
             elif isinstance(widget, qt_mod.QComboBox):
                 val = widget.currentData()
