@@ -460,18 +460,22 @@ git commit -am "refactor: split Qt-free flow-distribution logic for worker use"
 
 ## Task 4: Extract Qt-free logic from `_sample_line_metrics`
 
-**Files:**
-- Modify: `swe2d/workbench/studio_dialog.py:2043-`
+> ✅ Completed. Spec review and code quality review passed. Quality fixes applied and re-reviewed.
 
-- [ ] **Step 1: Write the failing test**
+**Files:**
+- Create: `swe2d/workbench/services/line_sampling_service.py`
+- Modify: `swe2d/workbench/studio_dialog.py:2043-`
+- Test: `tests/test_sample_line_metrics_logic.py`
+
+- [x] **Step 1: Write the failing test**
 
 ```python
 import numpy as np
 
-def test_sample_line_metrics_logic_exists():
-    from swe2d.workbench.studio_dialog import _sample_line_metrics_logic
+def test_sample_line_metrics_logic_empty_sample_map():
+    from swe2d.workbench.services.line_sampling_service import _sample_line_metrics_logic
     ts, prof = _sample_line_metrics_logic(
-        sample_map={},
+        sample_map=[],
         t_accum=0.0,
         h_s=np.array([1.0]),
         hu_s=np.array([0.0]),
@@ -479,27 +483,73 @@ def test_sample_line_metrics_logic_exists():
         cell_solver_z=np.array([0.0]),
         gravity=9.81,
         h_min=1e-4,
-        mesh_data={"node_x": np.array([0.0, 1.0, 0.0]), "node_y": np.array([0.0, 0.0, 1.0]), "cell_nodes": np.array([[0, 1, 2]], dtype=np.int32)},
+        mesh_data={
+            "node_x": np.array([0.0, 1.0, 0.0]),
+            "node_y": np.array([0.0, 0.0, 1.0]),
+            "cell_nodes": np.array([[0, 1, 2]], dtype=np.int32),
+        },
     )
     assert ts == []
     assert prof == []
 ```
 
-- [ ] **Step 2: Run test to verify it fails**
+- [x] **Step 2: Run test to verify it fails**
 
 Run: `pytest tests/test_sample_line_metrics_logic.py -v`
-Expected: FAIL.
+Expected: FAIL — function not defined.
 
-- [ ] **Step 3: Implement Qt-free logic**
+- [x] **Step 3: Implement Qt-free logic**
 
-Move the implementation body to a module-level `_sample_line_metrics_logic(sample_map, t_accum, h_s, hu_s, hv_s, cell_solver_z, gravity, h_min, mesh_data)` and have `_sample_line_metrics` read `gravity` and `h_min` and delegate.
+Create `swe2d/workbench/services/line_sampling_service.py` and add `_sample_line_metrics_logic(sample_map, t_accum, h_s, hu_s, hv_s, cell_solver_z, gravity, h_min, mesh_data)` with the body extracted from `SWE2DWorkbenchStudioDialog._sample_line_metrics`. It must not access any Qt widgets or `self`.
 
-- [ ] **Step 4: Run test to verify it passes**
+```python
+from typing import Any, Dict, List, Optional, Tuple
+import numpy as np
+
+def _sample_line_metrics_logic(
+    sample_map: List[Dict[str, Any]],
+    t_accum: float,
+    h_s: np.ndarray,
+    hu_s: np.ndarray,
+    hv_s: np.ndarray,
+    cell_solver_z: np.ndarray,
+    gravity: float,
+    h_min: float,
+    mesh_data: Dict[str, Any],
+) -> Tuple[List[Any], List[Any]]:
+    """Sample line metrics (time-series and profile) from solver state (Qt-free)."""
+    if not sample_map:
+        return [], []
+    from swe2d.services.line_sampling_service import sample_line_metrics as _svc
+    from swe2d.services.line_sampling_service import sample_line_aggregate_ts_row as _agg_svc
+    # ... rest of implementation
+```
+
+Change `SWE2DWorkbenchStudioDialog._sample_line_metrics` to read `gravity` and `h_min` and delegate:
+
+```python
+def _sample_line_metrics(self, sample_map, t_accum, h_s, hu_s, hv_s, cell_solver_z):
+    """Sample line metrics from solver state."""
+    from swe2d.workbench.services.line_sampling_service import _sample_line_metrics_logic
+    return _sample_line_metrics_logic(
+        sample_map=sample_map,
+        t_accum=t_accum,
+        h_s=h_s,
+        hu_s=hu_s,
+        hv_s=hv_s,
+        cell_solver_z=cell_solver_z,
+        gravity=float(self._gravity),
+        h_min=self._model_tab_view.get_h_min(),
+        mesh_data=self._mesh_data,
+    )
+```
+
+- [x] **Step 4: Run test to verify it passes**
 
 Run: `pytest tests/test_sample_line_metrics_logic.py -v`
 Expected: PASS.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git commit -am "refactor: split Qt-free line-sampling logic for worker use"
