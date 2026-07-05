@@ -365,13 +365,7 @@ class TopologyController:
                 log_fn(f"[ERROR] checkpoint quality summary log: {e}")
 
         result_data = None
-        try:
-            viewer = getattr(view, "_studio_viewer", None)
-            if viewer is not None:
-                viewer.tab_widget.setCurrentWidget(
-                    viewer.plot_widgets.get("Mesh"))
-        except RuntimeError:
-            pass
+        view.show_mesh_tab()
         view._refresh_plot()
         return True, mesh_data, result_data
 
@@ -479,7 +473,6 @@ class TopologyController:
         reset_cache_fn = view._reset_runtime_snapshot_overlay_cache
         refresh_plot_fn = view._refresh_plot
         start_topology_mesh_async_fn = view._start_topology_mesh_async
-        topo_status_lbl = view.topo_status_lbl
         mtv = getattr(view, "_mesh_tab_view", None)
         mesh_info_lbl = mtv.mesh_info_lbl if mtv is not None else None
         _studio_viewer = getattr(view, "_studio_viewer", None)
@@ -493,7 +486,7 @@ class TopologyController:
 
         fut = state.get("topology_mesh_future")
         if fut is None:
-            topology_mesh_timer.stop()
+            view.stop_timer(topology_mesh_timer)
             set_topology_mesh_busy_fn(False)
             return state
 
@@ -516,7 +509,7 @@ class TopologyController:
         if elapsed > topology_mesh_active_timeout_sec and not fut.done():
             backend_name = topology_mesh_backend or "unknown"
             run_mode = topology_mesh_run_mode
-            topology_mesh_timer.stop()
+            view.stop_timer(topology_mesh_timer)
             fut = None
             topology_mesh_started_at = None
             topology_mesh_poll_count = 0
@@ -594,7 +587,7 @@ class TopologyController:
                 spinner = "|/-\\"[(topology_mesh_poll_count // 8) % 4]
                 if backend_running == "gmsh":
                     try:
-                        status_txt = str(topo_status_lbl.text() or "").strip()
+                        status_txt = view.get_topo_status()
                     except Exception as e:
                         log_fn(f"[ERROR] gmsh status text read: {e}")
                         status_txt = ""
@@ -631,7 +624,7 @@ class TopologyController:
             )
             return state
 
-        topology_mesh_timer.stop()
+        view.stop_timer(topology_mesh_timer)
         backend_name = topology_mesh_backend or "unknown"
         default_cell_type = topology_mesh_default_cell_type or "triangular"
         run_mode = topology_mesh_run_mode
@@ -713,12 +706,7 @@ class TopologyController:
                 except Exception as e:
                     log_fn(f"[ERROR] quality summary log in poll: {e}")
             result_data = None
-            try:
-                if _studio_viewer is not None:
-                    _studio_viewer.tab_widget.setCurrentWidget(
-                        _studio_viewer.plot_widgets.get("Mesh"))
-            except RuntimeError:
-                pass
+            view.show_mesh_tab()
             refresh_plot_fn()
         except NotImplementedError as exc:
             view.update_topo_status(str(exc))
@@ -828,11 +816,10 @@ class TopologyController:
     def open_model_gpkg_explorer(self) -> None:
         """Open file dialog, then launch the model GPKG explorer for the chosen file."""
         import os as _os
-        from qgis.PyQt import QtWidgets
 
         view = self._view
-        db_path, _ = QtWidgets.QFileDialog.getOpenFileName(
-            view, "Select GeoPackage to explore", "",
+        db_path = view.get_open_file_name(
+            "Select GeoPackage to explore", "",
             "GeoPackage (*.gpkg);;All Files (*)",
         )
         db_path = str(db_path or "").strip()
@@ -862,7 +849,6 @@ class TopologyController:
     # ── Generate mesh from topology layers ────────────────────────────
     def generate_mesh_from_topology_layers(self) -> None:
         """Read topology layers from combos, build conceptual model, launch async meshing."""
-        from qgis.PyQt import QtWidgets
         from swe2d.workbench.studio_dialog import _HAVE_QGIS_CORE
 
         view = self._view
@@ -889,8 +875,8 @@ class TopologyController:
             quad_edges_layer = None
 
         if regions_layer is None:
-            QtWidgets.QMessageBox.warning(
-                view, "Topology Meshing",
+            view.show_warning_message(
+                "Topology Meshing",
                 "Select a topology regions polygon layer first."
             )
             topo.view.update_topo_status("Missing required topology regions layer.")
@@ -948,7 +934,7 @@ class TopologyController:
         timer = getattr(view, "_topology_mesh_timer", None)
         if timer is not None:
             try:
-                timer.stop()
+                view.stop_timer(timer)
             except Exception as _e:
 
                 try:
@@ -977,7 +963,6 @@ class TopologyController:
     ) -> None:
         """Start an async topology mesh job via subprocess worker."""
         import time as _time_mod
-        from qgis.PyQt import QtCore
 
         view = self._view
         log_fn = view._log
@@ -1083,21 +1068,10 @@ class TopologyController:
     def _ensure_timer(self):
         """Ensure the topology mesh poll timer exists and is wired to _poll_topology_mesh."""
         view = self._view
-        if not hasattr(view, "_topology_mesh_timer") or view._topology_mesh_timer is None:
-            from qgis.PyQt import QtCore
-            view._topology_mesh_timer = QtCore.QTimer(view)
-        try:
-            view._topology_mesh_timer.timeout.disconnect()
-        except Exception as _e:
-
-            try:
-
-                view._log(f"[ERROR] Exception in topology_controller.py: {_e}")
-
-            except Exception:
-
-                pass
-        view._topology_mesh_timer.timeout.connect(lambda: self._poll_topology_mesh())
+        timer = getattr(view, "_topology_mesh_timer", None)
+        if timer is not None:
+            view.stop_timer(timer)
+        view._topology_mesh_timer = view.create_timer(lambda: self._poll_topology_mesh())
 
 
     def _poll_topology_mesh(self) -> None:
@@ -1108,7 +1082,7 @@ class TopologyController:
             timer = getattr(view, "_topology_mesh_timer", None)
             if timer is not None:
                 try:
-                    timer.stop()
+                    view.stop_timer(timer)
                 except Exception as _e:
 
                     try:
@@ -1148,7 +1122,7 @@ class TopologyController:
         timer = getattr(view, "_topology_mesh_timer", None)
         if timer is not None:
             try:
-                timer.stop()
+                view.stop_timer(timer)
             except Exception as _e:
 
                 try:
