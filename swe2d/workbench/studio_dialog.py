@@ -1233,6 +1233,32 @@ class SWE2DWorkbenchStudioDialog(QtWidgets.QDialog):
             timer.stop()
             timer.deleteLater()
 
+    def _sync_snapshot_to_ui(self, snapshot_data=None):
+        """Sync live snapshot data to temporal dock, overlay, and plots."""
+        rd = getattr(self, "_results_data", None)
+        if rd is None:
+            return
+        temporal = getattr(self, "_temporal_dock", None)
+        if temporal is not None:
+            try:
+                temporal.set_data(rd)
+            except Exception as exc:
+                self._log(f"[SnapSync] temporal sync failed: {exc}")
+        try:
+            self._sync_high_perf_overlay_data()
+        except Exception as exc:
+            self._log(f"[SnapSync] overlay sync failed: {exc}")
+        try:
+            live_ts = rd.get_live_snapshot_timesteps()
+            if live_ts:
+                self._update_high_perf_overlay_time(float(live_ts[-1][0]))
+        except Exception as exc:
+            self._log(f"[SnapSync] overlay time update failed: {exc}")
+        try:
+            self._refresh_plot()
+        except Exception as exc:
+            self._log(f"[SnapSync] plot refresh failed: {exc}")
+
     def set_overlay_color_range(self, vmin, vmax):
         tb = getattr(self, "_results_toolbox", None)
         if tb is None:

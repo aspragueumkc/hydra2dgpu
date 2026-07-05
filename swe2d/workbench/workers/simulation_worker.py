@@ -218,6 +218,11 @@ class SimulationWorker(QThread):
     def __init__(self, context: RunContext, parent=None):
         super().__init__(parent)
         self._context = context
+        self._snapshot_requested = __import__('threading').Event()
+
+    def request_snapshot(self):
+        """Request a snapshot readback on the next reporter step."""
+        self._snapshot_requested.set()
 
     def run(self):
         try:

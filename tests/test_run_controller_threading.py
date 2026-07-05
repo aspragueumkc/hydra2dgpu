@@ -35,3 +35,27 @@ def test_run_controller_skips_when_worker_running():
     ctrl.on_run()
     mock_view._log.assert_called_once()
     assert "already active" in mock_view._log.call_args[0][0]
+
+
+def test_run_controller_snapshot_requests_from_worker():
+    app = QApplication.instance() or QApplication([])
+    from swe2d.workbench.controllers.run_controller import RunController
+    mock_view = MagicMock()
+    ctrl = RunController(view=mock_view)
+    fake_worker = MagicMock()
+    fake_worker.isRunning.return_value = True
+    ctrl._simulation_worker = fake_worker
+    ctrl.on_snapshot()
+    fake_worker.request_snapshot.assert_called_once()
+    mock_view._log.assert_called_once()
+    assert "Device fetch requested" in mock_view._log.call_args[0][0]
+
+
+def test_run_controller_snapshot_syncs_when_no_worker():
+    app = QApplication.instance() or QApplication([])
+    from swe2d.workbench.controllers.run_controller import RunController
+    mock_view = MagicMock()
+    ctrl = RunController(view=mock_view)
+    ctrl._simulation_worker = None
+    ctrl.on_snapshot()
+    mock_view._sync_snapshot_to_ui.assert_called_once()

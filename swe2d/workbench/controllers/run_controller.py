@@ -496,40 +496,16 @@ class RunController:
         temporal dock slider, high-perf overlay, and plots.
         """
         view = self._view
-
-        reporter = getattr(self, "_active_reporter", None)
-        if reporter is not None and hasattr(reporter, "request_snapshot_readback"):
-            reporter.request_snapshot_readback()
+        worker = self._simulation_worker
+        if worker is not None and worker.isRunning():
+            worker.request_snapshot()
             view._log("Device fetch requested.")
             return
 
-        # No active run — show existing snapshots if any.
+        # No active run — refresh UI from existing snapshots.
         results_data = getattr(view, "_results_data", None)
-        _snapshots = results_data.get_live_snapshot_timesteps() if results_data else []
-        if view._mesh_data is None and not _snapshots:
-            view._log("No results data available — run the model with an output interval set first.")
-            return
         if results_data is not None:
-            try:
-                temporal = getattr(view, "_temporal_dock", None)
-                if temporal is not None:
-                    temporal.set_data(results_data)
-            except Exception as exc:
-                logger.warning("on_snapshot: temporal dock sync failed", exc_info=True)
-                view._log(f"[Snapshot] temporal dock sync failed: {exc}")
-            try:
-                view._sync_high_perf_overlay_data()
-                live_ts = results_data.get_live_snapshot_timesteps()
-                if live_ts:
-                    view._update_high_perf_overlay_time(float(live_ts[-1][0]))
-            except Exception as exc:
-                logger.warning("on_snapshot: overlay sync failed", exc_info=True)
-                view._log(f"[Snapshot] overlay sync failed: {exc}")
-            try:
-                view._refresh_plot()
-            except Exception as exc:
-                logger.warning("on_snapshot: plot refresh failed", exc_info=True)
-                view._log(f"[Snapshot] plot refresh failed: {exc}")
+            view._sync_snapshot_to_ui()
 
     def on_preview_overrides(self) -> None:
         """Compute and display a summary of BC and Manning overrides.
