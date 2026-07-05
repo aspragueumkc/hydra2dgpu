@@ -544,8 +544,6 @@ class OverlayController:
         grid_out = np.full((h_img, w), np.nan, dtype=np.float64)
         grid_out[grid_mask] = scalar_grid[grid_mask]
 
-        from osgeo import gdal, osr
-
         crs_auth = "EPSG:4326"
         try:
             from qgis.core import QgsProject
@@ -556,28 +554,21 @@ class OverlayController:
         except Exception as e:
             view._log(f"[ERROR] export high perf overlay to geotiff failed: {e}")
 
-        if gdal is not None:
-            driver = gdal.GetDriverByName("GTiff")
-            ds = driver.Create(out_path, w, h_img, 1, gdal.GDT_Float64)
-            if ds is None:
-                raise RuntimeError("GDAL could not create output dataset.")
-            x_res = (x_max - x_min) / max(1, w)
-            y_res = (y_max - y_min) / max(1, h_img)
-            gt = (x_min, x_res, 0.0, y_max, 0.0, -y_res)
-            ds.SetGeoTransform(gt)
+        from swe2d.services.geotiff_export_service import export_overlay_grid_to_geotiff
 
-            srs = osr.SpatialReference()
-            srs.SetFromUserInput(crs_auth)
-            ds.SetProjection(srs.ExportToWkt())
-
-            band = ds.GetRasterBand(1)
-            band.WriteArray(grid_out)
-            band.SetNoDataValue(np.nan)
-            band.SetDescription(str(field_key))
-            ds.FlushCache()
-            ds = None
-        else:
-            raise RuntimeError("GDAL is not available. Cannot write GeoTIFF.")
+        x_res = (x_max - x_min) / max(1, w)
+        y_res = (y_max - y_min) / max(1, h_img)
+        export_overlay_grid_to_geotiff(
+            arr=grid_out,
+            xmin=x_min,
+            ymax=y_max,
+            dx=x_res,
+            dy=y_res,
+            path=out_path,
+            nodata=np.nan,
+            crs_auth=crs_auth,
+            band_description=str(field_key),
+        )
 
         vmin = float(np.nanmin(grid_out))
         vmax = float(np.nanmax(grid_out))
