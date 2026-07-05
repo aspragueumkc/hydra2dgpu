@@ -411,7 +411,7 @@ class SimulationWorker(QThread):
                     except Exception as sync_exc:
                         log(f"[WARNING] Failed to sync inv_cell_perm to coupling controller: {sync_exc}")
 
-            sample_map = ctx.build_line_sampling_map()
+            sample_map = ctx.sample_map_data
             cell_solver_z = ctx.mesh_cell_solver_bed() if sample_map else None
 
             area_model = np.asarray(ctx.mesh_cell_areas(), dtype=np.float64).ravel()

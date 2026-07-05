@@ -291,6 +291,7 @@ class RunController:
             apply_external_sources=view._apply_external_sources,
             sample_line_metrics=view._sample_line_metrics,
             build_line_sampling_map=view._build_line_sampling_map,
+            sample_map_data=list(view._build_line_sampling_map() or []),
             mesh_cell_areas=mesh_cell_areas_fn,
             mesh_cell_min_bed=view._mesh_cell_min_bed,
             mesh_cell_centroids=view._mesh_cell_centroids,

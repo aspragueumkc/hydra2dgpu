@@ -136,5 +136,9 @@ class RunContext:
     mesh_cell_solver_bed: Callable = field(default=lambda: np.empty(0))
     internal_flow_source_cms_at_time: Callable = field(default=lambda *a, **k: None)
 
+    # Plain-data values captured on the main thread before the worker starts
+    # (so per-step callbacks don't touch Qt widgets from worker thread).
+    sample_map_data: List[Dict[str, object]] = field(default_factory=list)
+
     # Cancel signal
     cancel_event: threading.Event = field(default_factory=threading.Event)
