@@ -116,7 +116,7 @@ class TestModelTabView(unittest.TestCase):
             "model_drain_page", "model_output_page",
             "n_mann_spin", "cfl_spin", "h_min_spin",
             "run_time_edit",
-            "extended_outputs_chk", "save_mesh_chk", "save_line_chk",
+            "save_mesh_chk", "save_line_chk",
             "save_coupling_chk", "save_max_only_chk", "save_log_chk",
         ):
             with self.subTest(attr=attr):
@@ -170,10 +170,9 @@ class TestModelTabView(unittest.TestCase):
         by run_controller and batch_simulation_dialog."""
         from swe2d.workbench.views.model_tab_view import ModelTabView
         view = ModelTabView()
-        # Defaults: extended=True, save_mesh=True, save_max_only=False
+        # Defaults: save_mesh=True, save_max_only=False
         params = view.collect_storage_params()
         for key in (
-            "extended_outputs_chk",
             "save_mesh_results_to_gpkg_chk",
             "save_line_results_to_gpkg_chk",
             "save_coupling_results_to_gpkg_chk",
@@ -446,14 +445,6 @@ class TestResultsToolbox(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         _ensure_app()
-
-    def test_extended_outputs_tooltip_is_not_truncated(self):
-        # extended_outputs_chk moved to ModelTabView Output page.
-        from swe2d.workbench.views.model_tab_view import ModelTabView
-        view = ModelTabView()
-        tip = view.extended_outputs_chk.toolTip()
-        self.assertNotIn("...", tip)
-        self.assertIn("Froude", tip)
 
     def test_results_toolbox_has_one_page(self):
         """Storage page was moved to ModelTabView (Output)."""

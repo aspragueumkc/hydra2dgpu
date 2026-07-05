@@ -86,9 +86,6 @@ class ModelTabViewProtocol(Protocol):
     def get_default_bc_type(self) -> int:
         """Default boundary condition type code."""
 
-    def is_extended_outputs(self) -> bool:
-        """Extended outputs checkbox is checked."""
-
     def is_save_mesh(self) -> bool:
         """Save mesh results checkbox is checked."""
 

@@ -257,17 +257,6 @@ class ModelTabView(QtWidgets.QWidget):
             """Add a self-describing checkbox to the Output Options group."""
             self._add_param_row(form, label_text, chk)
 
-        self.extended_outputs_chk = QtWidgets.QCheckBox(
-            "Include extended outputs (momentum, qmag, wet mask, Fr, Manning)"
-        )
-        self.extended_outputs_chk.setToolTip(
-            "Include extended output fields: momentum components, discharge magnitude, "
-            "wet mask, Froude number, and Manning n. Increases result file size."
-        )
-        self.extended_outputs_chk.setObjectName("extended_outputs_chk")
-        self.extended_outputs_chk.setChecked(True)
-        _add_output_checkbox(self.extended_outputs_chk, "Extended outputs:")
-
         self.save_mesh_chk = QtWidgets.QCheckBox("Save mesh results to GPKG")
         self.save_mesh_chk.setToolTip(
             "Save 2D mesh simulation results (depth, velocity, WSE) to the GeoPackage."
@@ -399,9 +388,6 @@ class ModelTabView(QtWidgets.QWidget):
         )
         self._add_param_row(form, "Save Config:", self.save_settings_btn)
 
-    def is_extended_outputs(self) -> bool:
-        return bool(self.extended_outputs_chk.isChecked())
-
     def is_save_mesh(self) -> bool:
         return bool(self.save_mesh_chk.isChecked())
 
@@ -420,7 +406,6 @@ class ModelTabView(QtWidgets.QWidget):
     def get_storage_checkboxes(self) -> dict:
         """Return storage checkboxes by key."""
         return {
-            "extended_outputs": self.extended_outputs_chk,
             "save_mesh": self.save_mesh_chk,
             "save_line": self.save_line_chk,
             "save_coupling": self.save_coupling_chk,
@@ -436,7 +421,6 @@ class ModelTabView(QtWidgets.QWidget):
         don't need to change.
         """
         return {
-            "extended_outputs_chk": bool(self.extended_outputs_chk.isChecked()),
             "save_mesh_results_to_gpkg_chk": (
                 bool(self.save_mesh_chk.isChecked())
                 and not bool(self.save_max_only_chk.isChecked())

@@ -124,7 +124,6 @@ class TestOutputPageFilterIntegration(unittest.TestCase):
         from swe2d.workbench.views.model_tab_view import ModelTabView
         view = ModelTabView()
         for chk in (
-            view.extended_outputs_chk,
             view.save_mesh_chk,
             view.save_line_chk,
             view.save_coupling_chk,
@@ -142,7 +141,6 @@ class TestOutputPageFilterIntegration(unittest.TestCase):
         view = ModelTabView()
         view.param_search.setText("zzz_no_such_text_zzz")
         for chk in (
-            view.extended_outputs_chk,
             view.save_mesh_chk,
             view.save_line_chk,
             view.save_coupling_chk,
@@ -175,7 +173,6 @@ class TestOutputPageFilterIntegration(unittest.TestCase):
         self.assertFalse(view._filterable.filter_visible(view.save_mesh_chk))
         view.param_search.setText("")
         for chk in (
-            view.extended_outputs_chk,
             view.save_mesh_chk,
             view.save_line_chk,
             view.save_coupling_chk,
