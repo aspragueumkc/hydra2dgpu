@@ -350,65 +350,83 @@ git commit -am "refactor: split Qt-free external-sources logic for worker use"
 
 ## Task 3: Extract Qt-free logic from `_distribute_total_flow_to_unit_q`
 
-**Files:**
-- Modify: `swe2d/workbench/studio_dialog.py:1970-2018`
+> ✅ Completed. Spec review and code quality review passed. Quality fixes applied and re-reviewed.
 
-- [ ] **Step 1: Write the failing test**
+**Files:**
+- Create/Modify: `swe2d/workbench/services/runtime_source_application_service.py`
+- Modify: `swe2d/workbench/studio_dialog.py:1970-2018`
+- Test: `tests/test_distribute_flow_logic.py`
+
+- [x] **Step 1: Write the failing test**
 
 ```python
 import numpy as np
+from unittest.mock import patch
 
-def test_distribute_total_flow_to_unit_q_logic_exists():
-    from swe2d.workbench.studio_dialog import _distribute_total_flow_to_unit_q_logic
-    out = _distribute_total_flow_to_unit_q_logic(
-        edge_n0=np.array([0], dtype=np.int32),
-        edge_n1=np.array([1], dtype=np.int32),
-        bc_type_step=np.array([0], dtype=np.int32),
-        bc_val_step=np.array([0.0]),
-        bc_type_template=np.array([0], dtype=np.int32),
-        side_hydrographs={},
-        node_x=np.array([0.0, 1.0]),
-        node_y=np.array([0.0, 0.0]),
-        node_z=np.array([0.0, 0.0]),
-        progressive=False,
-    )
-    assert out is not None
+def test_distribute_total_flow_to_unit_q_logic_computes_and_forwards():
+    from swe2d.workbench.services.runtime_source_application_service import _distribute_total_flow_to_unit_q_logic
+    with patch("swe2d.workbench.services.runtime_source_application_service.distribute_total_flow_to_unit_q") as mock_logic:
+        mock_logic.return_value = np.array([1.0])
+        result = _distribute_total_flow_to_unit_q_logic(
+            edge_n0=np.array([0], dtype=np.int32),
+            edge_n1=np.array([1], dtype=np.int32),
+            bc_type_step=np.array([0], dtype=np.int32),
+            bc_val_step=np.array([0.0]),
+            bc_type_template=np.array([0], dtype=np.int32),
+            side_hydrographs={},
+            node_x=np.array([0.0, 1.0]),
+            node_y=np.array([0.0, 0.0]),
+            node_z=np.array([0.0, 0.0]),
+            progressive=False,
+        )
+        assert result is mock_logic.return_value
+        mock_logic.assert_called_once()
+        call_kwargs = mock_logic.call_args.kwargs
+        assert call_kwargs["progressive"] is False
+        assert call_kwargs["ts_flow_code"] == 102
+        assert "_side_idx" in call_kwargs
 ```
 
-- [ ] **Step 2: Run test to verify it fails**
+- [x] **Step 2: Run test to verify it fails**
 
 Run: `pytest tests/test_distribute_flow_logic.py -v`
-Expected: FAIL.
+Expected: FAIL — function not defined.
 
-- [ ] **Step 3: Implement Qt-free logic**
+- [x] **Step 3: Implement Qt-free logic**
 
-Create a module-level function `_distribute_total_flow_to_unit_q_logic` and have `_distribute_total_flow_to_unit_q` read `progressive` from the checkbox and delegate.
+Add to `swe2d/workbench/services/runtime_source_application_service.py`:
 
 ```python
+from typing import Dict, Optional, Tuple
+import numpy as np
+
 def _distribute_total_flow_to_unit_q_logic(
-    edge_n0,
-    edge_n1,
-    bc_type_step,
-    bc_val_step,
-    bc_type_template,
-    side_hydrographs,
-    node_x,
-    node_y,
-    node_z,
-    progressive,
-    edge_hydrographs=None,
-    edge_groups=None,
-):
+    edge_n0: np.ndarray,
+    edge_n1: np.ndarray,
+    bc_type_step: np.ndarray,
+    bc_val_step: np.ndarray,
+    bc_type_template: np.ndarray,
+    side_hydrographs: Dict[str, Tuple[np.ndarray, np.ndarray]],
+    node_x: np.ndarray,
+    node_y: np.ndarray,
+    node_z: np.ndarray,
+    progressive: bool,
+    edge_hydrographs: Optional[Dict[int, Tuple[int, Tuple[np.ndarray, np.ndarray]]]] = None,
+    edge_groups: Optional[Dict[int, str]] = None,
+    *,
+    _side_idx: Optional[np.ndarray] = None,
+    _edge_len: Optional[np.ndarray] = None,
+    _edge_z: Optional[np.ndarray] = None,
+) -> np.ndarray:
+    """Distribute total flow BC values to unit discharge per edge (Qt-free)."""
     from swe2d.boundary_and_forcing.bc_logic import distribute_total_flow_to_unit_q as _logic
-    from swe2d.boundary_and_forcing.bc_logic import _bc_side_classification
-    bc_cache = {}
-    if "_side_idx" not in bc_cache or "_edge_len" not in bc_cache or "_edge_z" not in bc_cache:
+    if _side_idx is None or _edge_len is None or _edge_z is None:
+        from swe2d.boundary_and_forcing.bc_logic import _bc_side_classification
         side_idx, edge_len, edge_z, *_ = _bc_side_classification(
             edge_n0, edge_n1, node_x, node_y, node_z,
         )
-        bc_cache["_side_idx"] = side_idx
-        bc_cache["_edge_len"] = edge_len
-        bc_cache["_edge_z"] = edge_z
+    else:
+        side_idx, edge_len, edge_z = _side_idx, _edge_len, _edge_z
     return _logic(
         edge_n0=edge_n0, edge_n1=edge_n1,
         bc_type_step=bc_type_step, bc_val_step=bc_val_step,
@@ -419,17 +437,20 @@ def _distribute_total_flow_to_unit_q_logic(
         ts_flow_code=102,
         edge_hydrographs=edge_hydrographs,
         edge_groups=edge_groups,
+        _side_idx=side_idx,
+        _edge_len=edge_len,
+        _edge_z=edge_z,
     )
 ```
 
-Then `_distribute_total_flow_to_unit_q` captures `progressive` and calls the logic function.
+Change `SWE2DWorkbenchStudioDialog._distribute_total_flow_to_unit_q` to read `progressive` from the checkbox and delegate to `_distribute_total_flow_to_unit_q_logic`, preserving edge-groups resolution.
 
-- [ ] **Step 4: Run test to verify it passes**
+- [x] **Step 4: Run test to verify it passes**
 
 Run: `pytest tests/test_distribute_flow_logic.py -v`
 Expected: PASS.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git commit -am "refactor: split Qt-free flow-distribution logic for worker use"
