@@ -238,37 +238,24 @@ class ModelTabView(QtWidgets.QWidget):
     # ------------------------------------------------------------------
 
     def _build_output_page(self) -> None:
-        """Build the Output page with save-to-GPKG checkboxes.
+        """Build the Output page with save-to-GPKG controls.
 
-        Owns the storage checkbox widgets that previously lived in the
-        ResultsToolbox. Public accessors and ``collect_storage_params``
-        mirror the old ResultsToolbox API so existing call sites keep
-        working without changes.
-
-        Every checkbox is registered with ``self._filterable`` so the
-        Simulation-tab search box (``param_search``) filters the Output
-        page alongside the other parameter pages. To add a new
-        filterable widget, follow the same registration pattern below.
+        Uses the same groupbox-based pattern as the other parameter
+        pages (Solver Parameters, Rain / Hydrology, etc.) — see
+        ``_start_param_group`` and ``_add_param_row`` for details.
         """
-        self.model_output_page = QtWidgets.QWidget()
-        self.model_output_page.setObjectName("model_output_page")
-        layout = QtWidgets.QFormLayout(self.model_output_page)
-        layout.setContentsMargins(6, 6, 6, 6)
+        self.model_output_page, layout = self._build_form_page(
+            "model_output_page", "model_output_form"
+        )
 
-        # Helper to keep the registration boilerplate colocated — every
-        # checkbox goes through this so it's impossible to add a
-        # widget and forget to wire it to the filter.
-        def _add_output_checkbox(chk: QtWidgets.QCheckBox) -> None:
-            layout.addRow(chk)
-            # No companion QLabel — the checkbox is self-describing
-            # (its ``text()`` is the human label).
-            self._filterable.add(
-                chk,
-                label_widget=None,
-                label_text=chk.text() or "",
-                tooltip=chk.toolTip() or "",
-                group=None,  # Output page is flat (no QGroupBox)
-            )
+        # ── Output Options (checkboxes that control what's saved) ─────
+        form = self._start_param_group(layout, "Output Options")
+
+        def _add_output_checkbox(
+            chk: QtWidgets.QCheckBox, label_text: str
+        ) -> None:
+            """Add a self-describing checkbox to the Output Options group."""
+            self._add_param_row(form, label_text, chk)
 
         self.extended_outputs_chk = QtWidgets.QCheckBox(
             "Include extended outputs (momentum, qmag, wet mask, Fr, Manning)"
@@ -279,7 +266,7 @@ class ModelTabView(QtWidgets.QWidget):
         )
         self.extended_outputs_chk.setObjectName("extended_outputs_chk")
         self.extended_outputs_chk.setChecked(True)
-        _add_output_checkbox(self.extended_outputs_chk)
+        _add_output_checkbox(self.extended_outputs_chk, "Extended outputs:")
 
         self.save_mesh_chk = QtWidgets.QCheckBox("Save mesh results to GPKG")
         self.save_mesh_chk.setToolTip(
@@ -287,7 +274,7 @@ class ModelTabView(QtWidgets.QWidget):
         )
         self.save_mesh_chk.setObjectName("save_mesh_chk")
         self.save_mesh_chk.setChecked(True)
-        _add_output_checkbox(self.save_mesh_chk)
+        _add_output_checkbox(self.save_mesh_chk, "Save mesh:")
 
         self.save_line_chk = QtWidgets.QCheckBox("Save line results to GPKG")
         self.save_line_chk.setToolTip(
@@ -295,7 +282,7 @@ class ModelTabView(QtWidgets.QWidget):
         )
         self.save_line_chk.setObjectName("save_line_chk")
         self.save_line_chk.setChecked(True)
-        _add_output_checkbox(self.save_line_chk)
+        _add_output_checkbox(self.save_line_chk, "Save line:")
 
         self.save_coupling_chk = QtWidgets.QCheckBox("Save coupling results to GPKG")
         self.save_coupling_chk.setToolTip(
@@ -303,7 +290,7 @@ class ModelTabView(QtWidgets.QWidget):
         )
         self.save_coupling_chk.setObjectName("save_coupling_chk")
         self.save_coupling_chk.setChecked(True)
-        _add_output_checkbox(self.save_coupling_chk)
+        _add_output_checkbox(self.save_coupling_chk, "Save coupling:")
 
         self.save_max_only_chk = QtWidgets.QCheckBox(
             "Save max results only (skip interval snapshots)"
@@ -314,7 +301,7 @@ class ModelTabView(QtWidgets.QWidget):
         )
         self.save_max_only_chk.setObjectName("save_max_only_chk")
         self.save_max_only_chk.setChecked(False)
-        _add_output_checkbox(self.save_max_only_chk)
+        _add_output_checkbox(self.save_max_only_chk, "Max only:")
 
         self.save_log_chk = QtWidgets.QCheckBox("Save run log to GPKG")
         self.save_log_chk.setToolTip(
@@ -322,62 +309,23 @@ class ModelTabView(QtWidgets.QWidget):
         )
         self.save_log_chk.setObjectName("save_log_chk")
         self.save_log_chk.setChecked(True)
-        _add_output_checkbox(self.save_log_chk)
+        _add_output_checkbox(self.save_log_chk, "Save log:")
 
-        # Sample lines layer — moved from the Layers page
+        # ── Sampling (sample lines layer) ─────────────────────────────
+        form = self._start_param_group(layout, "Sampling")
         self.sample_lines_layer_combo = QtWidgets.QComboBox()
         self.sample_lines_layer_combo.setObjectName("sample_lines_layer_combo")
+        self.sample_lines_layer_combo.addItem("(none)", None)
         self.sample_lines_layer_combo.setToolTip(
             "Line layer for sampling flow results along cross-sections during simulation. "
-            "Results are saved at the line output interval specified in the Run tab."
+            "Results are saved at the line output interval specified below."
         )
-        _label = QtWidgets.QLabel("Sample lines layer:")
-        layout.addRow(_label, self.sample_lines_layer_combo)
-        self._filterable.add(
-            self.sample_lines_layer_combo,
-            label_widget=_label,
-            label_text="Sample lines layer:",
-            tooltip=self.sample_lines_layer_combo.toolTip(),
-            group=None,
+        self._add_param_row(
+            form, "Sample lines layer:", self.sample_lines_layer_combo
         )
 
-        # ── Run Output section ──────────────────────────────────────
-        # Moved from RunDockWidget (formerly below the progress bar).
-        # Widgets retain their objectNames so signal wiring and tests
-        # that reference them by name keep working.
-        self._build_run_output_section(layout)
-
-    def _build_run_output_section(self, layout: QtWidgets.QFormLayout) -> None:
-        """Build the Run Output section on the Output page.
-
-        Hosts the moved run-config widgets:
-          output_interval_edit, line_output_interval_edit,
-          results_table_name_edit, results_gpkg_path_edit,
-          select_results_gpkg_btn, preview_overrides_btn,
-          preview_coupling_btn, load_run_settings_btn, save_settings_btn.
-        """
-        # Separator + section header
-        sep = QtWidgets.QFrame()
-        sep.setFrameShape(QtWidgets.QFrame.Shape.HLine)
-        sep.setFrameShadow(QtWidgets.QFrame.Shadow.Sunken)
-        layout.addRow(sep)
-
-        header = QtWidgets.QLabel("Run Output")
-        header.setStyleSheet("font-weight: bold;")
-        layout.addRow(header)
-
-        def _add_row_with_label(widget, label_text: str) -> None:
-            """Add a labeled row to the Output form, registering it
-            with the filter so the Simulation-tab search box picks it up."""
-            label = QtWidgets.QLabel(label_text)
-            layout.addRow(label, widget)
-            self._filterable.add(
-                widget,
-                label_widget=label,
-                label_text=label_text,
-                tooltip=widget.toolTip() or "",
-                group=None,
-            )
+        # ── Result Storage (intervals + GPKG path + config buttons) ───
+        form = self._start_param_group(layout, "Result Storage")
 
         self.output_interval_edit = QtWidgets.QLineEdit("00:30")
         self.output_interval_edit.setObjectName("output_interval_edit")
@@ -386,8 +334,8 @@ class ModelTabView(QtWidgets.QWidget):
             "Format: decimal hours (e.g. 0.5) or HH:MM (e.g. 00:30). "
             "Smaller intervals produce larger result files."
         )
-        _add_row_with_label(
-            self.output_interval_edit, "Output interval (hr or HH:MM):"
+        self._add_param_row(
+            form, "Output interval (hr or HH:MM):", self.output_interval_edit
         )
 
         self.line_output_interval_edit = QtWidgets.QLineEdit("00:05")
@@ -396,8 +344,8 @@ class ModelTabView(QtWidgets.QWidget):
             "Time interval between sample-line (cross-section) result outputs. "
             "Format: decimal hours or HH:MM. Default: 00:05 (5 min)."
         )
-        _add_row_with_label(
-            self.line_output_interval_edit, "Line output interval:"
+        self._add_param_row(
+            form, "Line output interval:", self.line_output_interval_edit
         )
 
         self.results_table_name_edit = QtWidgets.QLineEdit()
@@ -407,7 +355,9 @@ class ModelTabView(QtWidgets.QWidget):
             "Useful when storing multiple model runs in the same GeoPackage."
         )
         self.results_table_name_edit.setPlaceholderText("optional table prefix")
-        _add_row_with_label(self.results_table_name_edit, "Table prefix:")
+        self._add_param_row(
+            form, "Table prefix:", self.results_table_name_edit
+        )
 
         # Results GPKG row = QLineEdit + Browse button (horizontal layout)
         gpkg_row_widget = QtWidgets.QWidget()
@@ -420,6 +370,8 @@ class ModelTabView(QtWidgets.QWidget):
             "Leave empty to use the model GeoPackage."
         )
         self.results_gpkg_path_edit.setPlaceholderText("GeoPackage path (optional)")
+        gpkg_row_widget.setObjectName("results_gpkg_row")
+        self._add_param_row(form, "Results GPKG:", gpkg_row_widget)
         self.select_results_gpkg_btn = QtWidgets.QPushButton("Browse…")
         self.select_results_gpkg_btn.setObjectName("select_results_gpkg_btn")
         self.select_results_gpkg_btn.setToolTip(
@@ -427,11 +379,12 @@ class ModelTabView(QtWidgets.QWidget):
         )
         gpkg_row_layout.addWidget(self.results_gpkg_path_edit, 1)
         gpkg_row_layout.addWidget(self.select_results_gpkg_btn)
-        gpkg_row_widget.setObjectName("results_gpkg_row")
-        _add_row_with_label(gpkg_row_widget, "Results GPKG:")
 
-        # Preview / Load / Save config buttons row
+        # ── Config (preview / load / save buttons) ────────────────────
+        form = self._start_param_group(layout, "Config")
+
         preview_row_widget = QtWidgets.QWidget()
+        preview_row_widget.setObjectName("run_preview_row")
         preview_row_layout = QtWidgets.QHBoxLayout(preview_row_widget)
         preview_row_layout.setContentsMargins(0, 0, 0, 0)
         preview_row_layout.setSpacing(4)
@@ -464,21 +417,8 @@ class ModelTabView(QtWidgets.QWidget):
         preview_row_layout.addStretch(1)
         preview_row_layout.addWidget(self.load_run_settings_btn)
         preview_row_layout.addWidget(self.save_settings_btn)
-        preview_row_widget.setObjectName("run_preview_row")
-        # Add the row container to the form layout so it has a parent —
-        # otherwise the filter's setVisible(True) call would float it as
-        # a top-level window.
-        layout.addRow(preview_row_widget)
-        # Register the row container (filter searches by tooltip/objname)
-        self._filterable.add(
-            preview_row_widget,
-            label_widget=None,
-            label_text="Preview / Load / Save config",
-            tooltip=(
-                "Preview parameter overrides / coupling; load or save the "
-                "current simulation configuration to/from a GeoPackage."
-            ),
-            group=None,
+        self._add_param_row(
+            form, "Preview / Load / Save:", preview_row_widget
         )
 
     def is_extended_outputs(self) -> bool:
