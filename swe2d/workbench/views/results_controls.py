@@ -1,8 +1,8 @@
-"""Results controls — Display-only toolbox for the "HYDRA2D Results" dock.
+"""Results controls — Overlay-only toolbox for the "HYDRA2D Results" dock.
 
 Follows the canonical _build_xxx_page(toolbox) pattern (MVP Rule 8).
 Pages:
-  1. Display  — field, colormap, color range, overlay style, runs
+  1. Overlay  — field, colormap, color range, overlay style, runs
 
 Storage checkboxes were moved to the Model tab of the Model Setup panel
 as the "Output" page (bottom of the model toolbox).
@@ -82,11 +82,11 @@ class ResultsToolbox(QtWidgets.QWidget):
     # ------------------------------------------------------------------
 
     def _build_ui(self) -> None:
-        """Build the 2-page toolbox (Display + Runs).
+        """Build the 2-page toolbox (Overlay + Runs).
 
         The Storage page was moved to the Simulation tab of the Model Setup
         panel as the "Output" page (bottom of the model toolbox).  The Runs
-        page lives here, separate from Display, so the run list is not
+        page lives here, separate from Overlay, so the run list is not
         fighting for vertical space with overlay controls.
         """
         layout = QtWidgets.QVBoxLayout(self)
@@ -95,19 +95,19 @@ class ResultsToolbox(QtWidgets.QWidget):
 
         self._toolbox = QtWidgets.QToolBox()
         self._toolbox.setObjectName("results_toolbox")
-        self._build_display_page(self._toolbox)
+        self._build_overlay_page(self._toolbox)
         self._build_runs_page(self._toolbox)
         self._toolbox.setCurrentIndex(0)
         layout.addWidget(self._toolbox, 1)
 
     # ------------------------------------------------------------------
-    # Page 1: Display
+    # Page 1: Overlay
     # ------------------------------------------------------------------
 
-    def _build_display_page(self, toolbox: QtWidgets.QToolBox) -> None:
-        """Build the Display page with field, colormap, color range, overlay style, and runs."""
+    def _build_overlay_page(self, toolbox: QtWidgets.QToolBox) -> None:
+        """Build the Overlay page with field, colormap, color range, overlay style, and runs."""
         page = QtWidgets.QWidget()
-        page.setObjectName("results_display_page")
+        page.setObjectName("results_overlay_page")
         page_layout = QtWidgets.QVBoxLayout(page)
         page_layout.setContentsMargins(6, 6, 6, 6)
         page_layout.setSpacing(6)
