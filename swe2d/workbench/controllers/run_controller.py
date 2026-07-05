@@ -35,6 +35,40 @@ if TYPE_CHECKING:
 # because ``on_snapshot`` still calls into the HEC-RAS HDF5 export.
 
 
+def _capture_inflow_progressive(view) -> bool:
+    """Read the inflow-progressive checkbox from the model tab on the main thread."""
+    mtv = getattr(view, "_model_tab_view", None)
+    if mtv is None:
+        return False
+    chk = getattr(mtv, "inflow_progressive_chk", None)
+    if chk is None:
+        return False
+    try:
+        return bool(chk.isChecked())
+    except Exception:
+        return False
+
+
+def _capture_edge_groups(view, run_input) -> Dict[int, str]:
+    """Resolve edge-group labels for BC override flows on the main thread."""
+    bc_n0 = np.asarray(getattr(run_input, "bc_n0", np.empty(0, dtype=np.int32)), dtype=np.int32)
+    bc_n1 = np.asarray(getattr(run_input, "bc_n1", np.empty(0, dtype=np.int32)), dtype=np.int32)
+    if bc_n0.size == 0 or bc_n1.size == 0:
+        return {}
+    cached = getattr(view, "_cached_edge_groups", None)
+    if cached:
+        return dict(cached)
+    collector = getattr(view, "_collect_bc_layer_edge_groups", None)
+    if collector is None:
+        return {}
+    try:
+        groups = collector(bc_n0, bc_n1)
+        return {int(k): str(v) for k, v in dict(groups).items()}
+    except Exception as exc:
+        logger.debug("_capture_edge_groups failed: %s", exc)
+        return {}
+
+
 class RunController:
     """MVP domain controller for the 2D simulation run pipeline."""
     """Mediates between Service Layer and View (SWE2DWorkbenchStudioDialog).
@@ -94,7 +128,6 @@ class RunController:
         view = self._view
         mesh_data = view._mesh_data
         log_fn = view._log
-
         if mesh_data is None:
             log_fn("Run aborted: mesh not available after preflight.")
             return None
@@ -292,6 +325,8 @@ class RunController:
             sample_line_metrics=view._sample_line_metrics,
             build_line_sampling_map=view._build_line_sampling_map,
             sample_map_data=list(view._build_line_sampling_map() or []),
+            inflow_progressive_enabled=_capture_inflow_progressive(view),
+            edge_groups=_capture_edge_groups(view, run_input),
             mesh_cell_areas=mesh_cell_areas_fn,
             mesh_cell_min_bed=view._mesh_cell_min_bed,
             mesh_cell_centroids=view._mesh_cell_centroids,

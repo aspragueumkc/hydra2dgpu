@@ -190,15 +190,127 @@ class _WorkbenchShim:
         results_data: _WorkerResultsData,
         mesh_data: Dict[str, Any],
     ) -> None:
+        from swe2d.workbench.services.runtime_source_application_service import (
+            _apply_external_sources_logic,
+            _distribute_total_flow_to_unit_q_logic,
+        )
+        from swe2d.workbench.services.line_sampling_service import _sample_line_metrics_logic
+
         self._worker = worker
         self._ctx = ctx
         self._results_data = results_data
         self._mesh_data = mesh_data
         self._apply_timeseries_bc_values = ctx.apply_timeseries_bc_values
-        self._distribute_total_flow_to_unit_q = ctx.distribute_total_flow_to_unit_q
-        self._apply_external_sources = ctx.apply_external_sources
+        # Per-step callbacks must not touch Qt widgets.  Bind the pure
+        # *_logic helpers to the values captured on the main thread into
+        # the RunContext, so the runtime loop runs entirely off the GUI
+        # thread without any silent UI cross-thread access.
+        node_x = ctx.node_x
+        node_y = ctx.node_y
+        node_z = ctx.node_z
+        edge_groups = ctx.edge_groups
+        mesh_snapshot = {
+            "node_x": node_x,
+            "node_y": node_y,
+            "node_z": node_z,
+            "cell_nodes": mesh_data.get("cell_nodes", np.empty((0, 3), dtype=np.int32)),
+        }
+        cfo = mesh_data.get("cell_face_offsets")
+        cfn = mesh_data.get("cell_face_nodes")
+        if cfo is not None:
+            mesh_snapshot["cell_face_offsets"] = cfo
+        if cfn is not None:
+            mesh_snapshot["cell_face_nodes"] = cfn
+
+        max_source_rate = float(ctx.source_rate_cap)
+        h_min = float(ctx.h_min)
+        max_rel_depth_increase = float(ctx.max_rel_depth_increase)
+        max_source_depth_step = float(ctx.source_depth_step_cap)
+        shallow_damping_depth = float(ctx.shallow_damping_depth)
+        momentum_cap_min_speed = float(ctx.momentum_cap_min_speed)
+        momentum_cap_celerity_mult = float(ctx.momentum_cap_celerity_mult)
+        progressive = bool(ctx.inflow_progressive_enabled)
+
+        def _apply_external_sources(
+            backend,
+            dt_step,
+            rain_rate_model,
+            cell_source_model=None,
+            coupled_source_rate=None,
+        ):
+            if cell_source_model is not None:
+                _cell_areas = backend.cell_areas()
+            else:
+                _cell_areas = None
+            _apply_external_sources_logic(
+                backend=backend,
+                dt_step=dt_step,
+                rain_rate_model=rain_rate_model,
+                cell_source_model=cell_source_model,
+                coupled_source_rate=coupled_source_rate,
+                mesh_cell_areas=_cell_areas,
+                max_source_rate=max_source_rate,
+                h_min=h_min,
+                max_rel_depth_increase=max_rel_depth_increase,
+                max_source_depth_step=max_source_depth_step,
+                shallow_damping_depth=shallow_damping_depth,
+                momentum_cap_min_speed=momentum_cap_min_speed,
+                momentum_cap_celerity_mult=momentum_cap_celerity_mult,
+            )
+
+        def _distribute_total_flow_to_unit_q(
+            edge_n0,
+            edge_n1,
+            bc_type_step,
+            bc_val_step,
+            bc_type_template,
+            side_hydrographs,
+            edge_hydrographs=None,
+            edge_groups_arg=None,
+        ):
+            eg = edge_groups_arg if edge_groups_arg is not None else edge_groups
+            return _distribute_total_flow_to_unit_q_logic(
+                edge_n0=edge_n0,
+                edge_n1=edge_n1,
+                bc_type_step=bc_type_step,
+                bc_val_step=bc_val_step,
+                bc_type_template=bc_type_template,
+                side_hydrographs=side_hydrographs,
+                node_x=node_x,
+                node_y=node_y,
+                node_z=node_z,
+                progressive=progressive,
+                edge_hydrographs=edge_hydrographs,
+                edge_groups=eg,
+            )
+
+        self._apply_external_sources = _apply_external_sources
+        self._distribute_total_flow_to_unit_q = _distribute_total_flow_to_unit_q
         self._length_unit_name = ctx.length_unit_name
-        self._sample_line_metrics = ctx.sample_line_metrics
+        gravity = float(ctx.gravity)
+        h_min_metric = float(ctx.h_min)
+
+        def _sample_line_metrics(
+            sample_map,
+            t_accum,
+            h_s,
+            hu_s,
+            hv_s,
+            cell_solver_z,
+        ):
+            return _sample_line_metrics_logic(
+                sample_map=sample_map,
+                t_accum=t_accum,
+                h_s=h_s,
+                hu_s=hu_s,
+                hv_s=hv_s,
+                cell_solver_z=cell_solver_z,
+                gravity=gravity,
+                h_min=h_min_metric,
+                mesh_data=mesh_snapshot,
+            )
+
+        self._sample_line_metrics = _sample_line_metrics
         self._log = worker.log_message.emit
 
     @property

@@ -139,6 +139,8 @@ class RunContext:
     # Plain-data values captured on the main thread before the worker starts
     # (so per-step callbacks don't touch Qt widgets from worker thread).
     sample_map_data: List[Dict[str, object]] = field(default_factory=list)
+    inflow_progressive_enabled: bool = False
+    edge_groups: Dict[int, str] = field(default_factory=dict)
 
     # Cancel signal
     cancel_event: threading.Event = field(default_factory=threading.Event)
