@@ -841,11 +841,13 @@ git commit -am "feat: move solver loop into SimulationWorker"
 
 ## Task 7: `PersistenceWorker`
 
+> ✅ Completed. Spec review and code quality review passed.
+
 **Files:**
 - Create: `swe2d/workbench/workers/persistence_worker.py`
 - Test: `tests/test_persistence_worker.py`
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 ```python
 import tempfile
@@ -917,12 +919,12 @@ def test_persistence_worker_finishes_without_error():
     assert finished[0]["ok"] is True
 ```
 
-- [ ] **Step 2: Run test to verify it fails**
+- [x] **Step 2: Run test to verify it fails**
 
 Run: `pytest tests/test_persistence_worker.py -v`
 Expected: FAIL — `PersistenceWorker` not defined.
 
-- [ ] **Step 3: Implement `PersistenceWorker`**
+- [x] **Step 3: Implement `PersistenceWorker`**
 
 ```python
 from __future__ import annotations
@@ -992,12 +994,12 @@ class PersistenceWorker(QThread):
 
 Note: the storage flags and `h_min` above are placeholders. Task 8 will wire the real values from context.
 
-- [ ] **Step 4: Run test to verify it passes**
+- [x] **Step 4: Run test to verify it passes**
 
 Run: `pytest tests/test_persistence_worker.py -v`
 Expected: PASS.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add swe2d/workbench/workers/persistence_worker.py tests/test_persistence_worker.py
@@ -1008,11 +1010,13 @@ git commit -m "feat: add PersistenceWorker for background GeoPackage writes"
 
 ## Task 8: `RunController` orchestration
 
+> ✅ Completed. Spec review and code quality review passed.
+
 **Files:**
 - Modify: `swe2d/workbench/controllers/run_controller.py`
 - Test: `tests/test_run_controller_threading.py`
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 ```python
 import time
@@ -1030,12 +1034,12 @@ def test_run_controller_starts_simulation_worker():
         instance.start.assert_called_once()
 ```
 
-- [ ] **Step 2: Run test to verify it fails**
+- [x] **Step 2: Run test to verify it fails**
 
 Run: `pytest tests/test_run_controller_threading.py -v`
 Expected: FAIL — controller does not import `SimulationWorker` yet.
 
-- [ ] **Step 3: Implement `RunController` worker orchestration**
+- [x] **Step 3: Implement `RunController` worker orchestration**
 
 Replace `RunController.on_run` and `_execute_run` with:
 
@@ -1133,7 +1137,7 @@ class RunController:
         return FinalizationAdapter(view)
 ```
 
-- [ ] **Step 4: Implement `_build_run_context`**
+- [x] **Step 4: Implement `_build_run_context`**
 
 This method captures all widget values and arrays currently read in `_execute_run`. The exact code mirrors lines 74-420 of `run_controller.py`, but stores scalar values in `RunContext` instead of local variables. It should:
 
@@ -1144,12 +1148,12 @@ This method captures all widget values and arrays currently read in `_execute_ru
 5. Capture unit conversion callbacks as values, not Qt calls.
 6. Set `cancel_event = threading.Event()`.
 
-- [ ] **Step 5: Run controller tests**
+- [x] **Step 5: Run controller tests**
 
 Run: `pytest tests/test_workbench_controller.py tests/test_run_controller_threading.py -v`
 Expected: PASS. Some tests asserting `_execute_run` is called may need updating; adjust them to assert `SimulationWorker.start()` is called instead.
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git commit -am "feat: RunController orchestrates SimulationWorker and PersistenceWorker"
@@ -1159,11 +1163,13 @@ git commit -am "feat: RunController orchestrates SimulationWorker and Persistenc
 
 ## Task 9: Wire worker classes into dialog namespace
 
+> ✅ Completed. Spec review and code quality review passed.
+
 **Files:**
 - Modify: `swe2d/workbench/controllers/run_component_wiring_controller.py`
 - Modify: `swe2d/workbench/workbench_dialog_builder.py`
 
-- [ ] **Step 1: Add worker classes to namespace**
+- [x] **Step 1: Add worker classes to namespace**
 
 In `workbench_dialog_builder.py`, include `RunContext`, `SimulationWorker`, and `PersistenceWorker` in the namespace dict passed to wiring.
 
@@ -1179,12 +1185,12 @@ dialog._simulation_worker_cls = SimulationWorker
 dialog._persistence_worker_cls = PersistenceWorker
 ```
 
-- [ ] **Step 2: Run dialog builder tests**
+- [x] **Step 2: Run dialog builder tests**
 
 Run: `pytest tests/test_workbench_dialog_builder.py -v`
 Expected: PASS.
 
-- [ ] **Step 3: Commit**
+- [x] **Step 3: Commit**
 
 ```bash
 git commit -am "feat: wire worker classes into dialog startup"
@@ -1194,12 +1200,14 @@ git commit -am "feat: wire worker classes into dialog startup"
 
 ## Task 10: Snapshot fetch during active run
 
+> ✅ Completed. Spec review and code quality review passed.
+
 **Files:**
 - Modify: `swe2d/workbench/controllers/run_controller.py`
 - Modify: `swe2d/workbench/workers/simulation_worker.py`
 - Modify: `swe2d/workbench/studio_dialog.py` (extract `_sync_snapshot_to_ui`)
 
-- [ ] **Step 1: Extract shared snapshot UI sync helper**
+- [x] **Step 1: Extract shared snapshot UI sync helper**
 
 Move the temporal-dock / overlay / plot update logic from the existing `_on_snapshot_readback` callback into a shared helper so both the old inline callback and the new worker slot use one code path.
 
@@ -1233,7 +1241,7 @@ def _sync_snapshot_to_ui(view, snapshot_data=None):
 
 Replace the duplicate logic in `_on_snapshot_readback` with `self._view._sync_snapshot_to_ui()` and add `_sync_snapshot_to_ui` as a method on `SWE2DWorkbenchStudioDialog` so it is accessible from both the controller and the old callback.
 
-- [ ] **Step 2: Add request-snapshot signal/path to worker**
+- [x] **Step 2: Add request-snapshot signal/path to worker**
 
 Add a `request_snapshot()` method on `SimulationWorker` that sets an internal `threading.Event`. The timestep loop checks this event and, when set, triggers a readback on the next reporter step.
 
@@ -1242,7 +1250,7 @@ def request_snapshot(self):
     self._snapshot_requested.set()
 ```
 
-- [ ] **Step 3: Update `on_snapshot` in `RunController`**
+- [x] **Step 3: Update `on_snapshot` in `RunController`**
 
 ```python
 def on_snapshot(self):
@@ -1257,12 +1265,12 @@ def on_snapshot(self):
         self._view._sync_snapshot_to_ui()
 ```
 
-- [ ] **Step 4: Run snapshot tests**
+- [x] **Step 4: Run snapshot tests**
 
 Run: `pytest tests/test_workbench_controller.py::TestControllerOnSnapshot -v`
 Expected: PASS.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git commit -am "feat: route snapshot fetch through SimulationWorker and share UI sync helper"
@@ -1272,12 +1280,14 @@ git commit -am "feat: route snapshot fetch through SimulationWorker and share UI
 
 ## Task 11: Cancellation safety
 
+> ✅ Completed. Spec review and code quality review passed.
+
 **Files:**
 - Modify: `swe2d/workbench/controllers/run_controller.py`
 - Modify: `swe2d/workbench/workers/simulation_worker.py`
 - Modify: `swe2d/runtime/run_lifecycle.py`
 
-- [ ] **Step 1: Update `on_cancel`**
+- [x] **Step 1: Update `on_cancel`**
 
 ```python
 def on_cancel(self):
@@ -1288,23 +1298,23 @@ def on_cancel(self):
     view._log("Cancellation requested...")
 ```
 
-- [ ] **Step 2: Add `request_cancel` to `SimulationWorker`**
+- [x] **Step 2: Add `request_cancel` to `SimulationWorker`**
 
 ```python
 def request_cancel(self):
     self._context.cancel_event.set()
 ```
 
-- [ ] **Step 3: Make `run_lifecycle.finalize_cleanup` safe when backend is None**
+- [x] **Step 3: Make `run_lifecycle.finalize_cleanup` safe when backend is None**
 
 It already handles `backend is None`; ensure it does not touch UI widgets beyond calling dialog methods. No change likely needed.
 
-- [ ] **Step 4: Run cancel tests**
+- [x] **Step 4: Run cancel tests**
 
 Run: `pytest tests/test_workbench_controller.py::TestControllerOnCancel -v`
 Expected: PASS.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git commit -am "feat: safe cancellation across SimulationWorker thread"
@@ -1314,27 +1324,29 @@ git commit -am "feat: safe cancellation across SimulationWorker thread"
 
 ## Task 12: Final integration and verification
 
-- [ ] **Step 1: Purge Python cache**
+> ✅ Completed. All tests pass.
+
+- [x] **Step 1: Purge Python cache**
 
 Run: `find . -type d -name __pycache__ -exec rm -rf {} +`
 
-- [ ] **Step 2: Run lint/typecheck if available**
+- [x] **Step 2: Run lint/typecheck if available**
 
 Check project scripts:
 - `mamba run -n qgis_stable python -m ruff check swe2d/workbench/workers swe2d/workbench/controllers/run_controller.py` (if ruff configured)
 - `mamba run -n qgis_stable python -m mypy swe2d/workbench/workers` (if mypy configured)
 
-- [ ] **Step 3: Run targeted test suite**
+- [x] **Step 3: Run targeted test suite**
 
 Run: `mamba run -n qgis_stable pytest tests/test_workbench_controller.py tests/test_run_controller_threading.py tests/test_simulation_worker.py tests/test_persistence_worker.py tests/test_run_controller_config_flow.py -v`
 Expected: PASS.
 
-- [ ] **Step 4: Run GPU validation tests**
+- [x] **Step 4: Run GPU validation tests**
 
 Run: `mamba run -n qgis_stable pytest tests/test_swe2d_gpu_validation_perf.py tests/test_swe2d_gpu_unstructured.py -v`
 Expected: PASS.
 
-- [ ] **Step 5: Commit any final fixes**
+- [x] **Step 5: Commit any final fixes**
 
 ```bash
 git commit -am "fix: address threading integration test failures"
