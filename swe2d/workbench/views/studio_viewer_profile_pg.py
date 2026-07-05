@@ -500,6 +500,7 @@ class PGProfileWidget(QtWidgets.QWidget):
         if not run_records:
             text = pg.TextItem("No data", anchor=(0.5, 0.5), color=(128, 128, 128))
             self._plot_widget.addItem(text)
+            self._plot_widget.plotItem.autoRange()
             return
 
         plotted = 0
@@ -529,6 +530,7 @@ class PGProfileWidget(QtWidgets.QWidget):
             if line_id < 0:
                 text = pg.TextItem("No data", anchor=(0.5, 0.5), color=(128, 128, 128))
                 self._plot_widget.addItem(text)
+                self._plot_widget.plotItem.autoRange()
                 return
 
             bed_drawn = False

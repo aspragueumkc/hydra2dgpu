@@ -91,7 +91,6 @@ def update_unit_system_from_crs(
     have_qgis_core: bool,
     project=None,
     log_fn: Callable[[str], None] = lambda _: None,
-    force_failure: bool = False,
 ) -> dict:
     """Detect CRS-based unit system and return the configuration dict.
 
@@ -108,13 +107,6 @@ def update_unit_system_from_crs(
         ``k_mann``      – Manning factor (float)
         ``crs_desc``    – CRS description string (authid + description)
     """
-    if force_failure:
-        try:
-            raise RuntimeError("force_failure=True")
-        except Exception as _e:
-            log_fn(f"[ERROR] Exception in unit_conversion_service.py: {_e}")
-            raise
-
     from swe2d import units as _u
 
     crs_desc = "(no CRS)"

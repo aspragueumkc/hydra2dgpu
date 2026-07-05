@@ -86,7 +86,6 @@ def persist_project_workbench_state(
     iter_widgets_fn: Callable[[], Iterator[Tuple[str, object]]],
     write_project_json_fn: Callable[..., bool],
     log_fn: Callable[[str], None],
-    force_failure: bool = False,
 ) -> bool:
     """Persist widget state to the current QGIS project.
 
@@ -113,12 +112,6 @@ def persist_project_workbench_state(
     bool
         ``True`` when the payload was written successfully.
     """
-    if force_failure:
-        try:
-            raise RuntimeError("force_failure=True")
-        except Exception as _e:
-            log_fn(f"[ERROR] Exception in widget_persistence_service.py: {_e}")
-            raise
     if not have_qgis_core or qgs_project_cls is None:
         return False
     if is_project_workbench_state_persist_blocked(state_obj):
@@ -147,13 +140,17 @@ def persist_project_workbench_state(
             widgets_data[attr_name] = {"type": type(widget).__name__, "value": val}
 
     payload = {"version": 1, "widgets": widgets_data}
-    ok = write_project_json_fn(
-        have_qgis_core=have_qgis_core,
-        qgs_project_cls=qgs_project_cls,
-        key=workbench_state_key,
-        payload=payload,
-        log_callback=log_fn,
-    )
+    try:
+        ok = write_project_json_fn(
+            have_qgis_core=have_qgis_core,
+            qgs_project_cls=qgs_project_cls,
+            key=workbench_state_key,
+            payload=payload,
+            log_callback=log_fn,
+        )
+    except Exception as _e:
+        log_fn(f"[ERROR] Exception in widget_persistence_service.py: {_e}")
+        return False
     if ok:
         log_fn(f"[DEBUG] persist: saved {len(widgets_data)} widgets to project")
     return ok

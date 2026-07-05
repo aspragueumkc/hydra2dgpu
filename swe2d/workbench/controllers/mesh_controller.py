@@ -498,7 +498,7 @@ class MeshController:
         pre-populated combo on the Layers page.
         """
         from qgis.PyQt import QtWidgets
-        from qgis.core import QgsProject, QgsRasterLayer
+        from qgis.core import QgsProject, QGisRasterLayer
         from swe2d.services.terrain_assignment_service import sample_raster_at_nodes
 
         view = self._view
@@ -510,7 +510,7 @@ class MeshController:
         try:
             raster_layers = [
                 lyr for lyr in QgsProject.instance().mapLayers().values()
-                if isinstance(lyr, QgsRasterLayer)
+                if isinstance(lyr, (QgsRasterLayer,))
             ]
         except Exception as exc:
             view._log(f"[ERROR] Could not read QGIS project layers: {exc}")
@@ -568,6 +568,7 @@ class MeshController:
                 view._log("[ERROR] Could not read terrain raster block.")
                 return
 
+            import numpy as np
             data_type_map = {1: np.uint8, 2: np.uint16, 3: np.int16,
                              4: np.uint32, 5: np.int32, 6: np.float32, 7: np.float64}
             dtype = data_type_map.get(block.dataType(), np.float64)
