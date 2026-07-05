@@ -78,12 +78,13 @@ class RunController:
         except Exception:
             pass
 
-        worker = SimulationWorker(context)
+        worker = SimulationWorker(context, parent=view)
         worker.log_message.connect(view._log)
         worker.progress_percent.connect(view.set_run_progress)
         worker.snapshot_ready.connect(self._on_worker_snapshot_ready)
         worker.compute_finished.connect(self._on_worker_compute_finished)
         worker.compute_failed.connect(self._on_worker_compute_failed)
+        worker.finished.connect(self._on_simulation_worker_finished)
         self._simulation_worker = worker
         worker.start()
         return None
@@ -353,13 +354,22 @@ class RunController:
 
         view._log("Compute finished; persisting results...")
         view_adapter = self._finalization_adapter(view)
-        pworker = PersistenceWorker(view_adapter, result)
+        pworker = PersistenceWorker(view_adapter, result, parent=view)
         pworker.log_message.connect(view._log)
         pworker.persist_finished.connect(self._on_worker_persist_finished)
         pworker.persist_failed.connect(self._on_worker_persist_failed)
+        pworker.finished.connect(self._on_persistence_worker_finished)
         self._persistence_worker = pworker
         pworker.start()
         self._simulation_worker = None
+
+    def _on_simulation_worker_finished(self):
+        """Called when SimulationWorker's QThread fully exits (main thread)."""
+        self._simulation_worker = None
+
+    def _on_persistence_worker_finished(self):
+        """Called when PersistenceWorker's QThread fully exits (main thread)."""
+        self._persistence_worker = None
 
     def _on_worker_compute_failed(self, message: str):
         view = self._view

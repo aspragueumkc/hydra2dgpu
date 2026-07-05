@@ -687,8 +687,9 @@ class SimulationWorker(QThread):
 
             precomputed_line_results = results_data.build_precomputed_line_results()
 
+            cancelled = bool(ctx.cancel_event.is_set())
             return ComputeResult(
-                ok=True,
+                ok=not cancelled,
                 h=h,
                 hu=hu,
                 hv=hv,
@@ -714,6 +715,7 @@ class SimulationWorker(QThread):
                 snapshot_timesteps=snapshot_timesteps,
                 coupling_snapshots=coupling_snapshots,
                 precomputed_line_results=precomputed_line_results,
+                cancelled=cancelled,
             )
         finally:
             if backend is not None:
