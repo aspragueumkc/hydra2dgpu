@@ -377,11 +377,9 @@ def execute_run(
             traceback.print_exc()
 
     # ── Coupling controller (drainage + structures) ──────────────────
-    from swe2d.cli.gpkg_adapter import (
-        build_drainage_config_from_json,
-        build_structures_config_from_json,
-        read_drainage_config_from_gpkg,
-    )
+    from swe2d.extensions.drainage_network import build_drainage_config_from_json
+    from swe2d.extensions.structures import build_structures_config_from_json
+    from swe2d.cli.gpkg_adapter import read_drainage_config_from_gpkg
     drainage_data = p.get("drainage")
     if isinstance(drainage_data, dict) and "nodes_layer" in drainage_data:
         _dgpkg = drainage_data.get("gpkg") or mesh_gpkg
