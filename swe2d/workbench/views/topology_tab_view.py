@@ -424,8 +424,11 @@ class TopologyTabView(QtWidgets.QWidget):
             return self._combo_layer_fn(combo, kind)
         return None
 
-    def _populate_gmsh_quality_controls(self) -> None:
-        """Populate gmsh/quality detail widgets inside the placeholder containers."""
+    def _populate_gmsh_quality_controls(self) -> dict:
+        """Populate gmsh/quality detail widgets inside the placeholder containers.
+
+        Returns the widgets dict so the controller can wire signals.
+        """
         from swe2d.mesh.gmsh_backend import _gmsh_available
 
         try:
@@ -434,9 +437,10 @@ class TopologyTabView(QtWidgets.QWidget):
             for k, w in widgets.items():
                 if isinstance(w, QtWidgets.QWidget) and not hasattr(self, k):
                     setattr(self, k, w)
-            _wire_topology_tab_controls(widgets, self.update_control_summary)
+            return widgets
         except Exception as exc:
             self._log(f"[ERROR] Failed to populate gmsh/quality controls: {exc}")
+            return {}
 
     def update_topo_status(self, text: str) -> None:
         """Set the status label text (called by topology controller)."""
@@ -1307,129 +1311,6 @@ def _build_topology_tab_controls(
     )
 
     return widgets
-
-
-def _wire_topology_tab_controls(
-    widgets,
-    update_summary_fn,
-) -> None:
-    """Controller: connect topology tab widget signals."""
-    if not widgets:
-        return
-
-    def _alive(w):
-        """Check if a widget reference is still alive."""
-        try:
-            _ = w.objectName()
-            return True
-        except RuntimeError:
-            return False
-
-    def _w(sig, handler):
-        """Safely disconnect then connect a signal to a handler."""
-        try:
-            sig.disconnect(handler)
-        except (TypeError, RuntimeError):
-            pass
-        try:
-            sig.connect(handler)
-        except RuntimeError as _e:
-
-            try:
-
-                self._log(f"[ERROR] RuntimeError in topology_tab_view.py: {_e}")
-
-            except Exception:
-
-                pass
-
-    # Connect backend/region/constraint/quad-edges combos
-    for combo_key in ("topo_backend_combo", "topo_regions_combo",
-                       "topo_constraints_combo", "topo_quad_edges_combo"):
-        w = widgets.get(combo_key)
-        if w is not None and _alive(w) and hasattr(w, "currentIndexChanged"):
-            _w(w.currentIndexChanged, update_summary_fn)
-
-    # Connect quality spin widgets
-    for qw_name in ("topo_quality_min_angle_spin", "topo_quality_max_aspect_spin",
-                     "topo_quality_max_non_orth_spin"):
-        w = widgets.get(qw_name)
-        if w is not None and _alive(w) and hasattr(w, "valueChanged"):
-            _w(w.valueChanged, update_summary_fn)
-
-    # Connect quality line edits
-    for qw_name in ("topo_quality_min_area_edit", "topo_quality_size_scales_edit",
-                     "topo_quality_smooth_increments_edit",
-                     "topo_gmsh_quality_recombine_topology_passes_edit",
-                     "topo_gmsh_quality_recombine_min_quality_edit",
-                     "topo_gmsh_quality_random_factors_edit",
-                     "topo_gmsh_quality_optimize_methods_edit"):
-        w = widgets.get(qw_name)
-        if w is not None and _alive(w) and hasattr(w, "textChanged"):
-            _w(w.textChanged, update_summary_fn)
-
-    # Connect checkboxes
-    for chk_name in (
-        "topo_quality_strict_chk",
-        "topo_gmsh_quad_full_region_flow_align_chk",
-        "topo_gmsh_algo_switch_on_failure_chk",
-        "topo_gmsh_recombine_node_repositioning_chk",
-        "topo_gmsh_global_recombine_chk",
-        "topo_gmsh_interface_transition_enable_chk",
-        "topo_gmsh_mesh_size_from_points_chk",
-        "topo_gmsh_quality_enable_chk",
-        "topo_gmsh_interface_conformance_chk",
-        "topo_gmsh_transverse_interface_centroid_merge_chk",
-        "topo_gmsh_interface_reject_near_unshared_chk",
-        "topo_gmsh_optimize_netgen_chk",
-        "topo_gmsh_transfinite_shared_interface_harmonize_chk",
-        "topo_gmsh_transfinite_interface_debug_chk",
-        "topo_gmsh_transfinite_subset_containment_enable_chk",
-    ):
-        w = widgets.get(chk_name)
-        if w is not None and _alive(w) and hasattr(w, "toggled"):
-            _w(w.toggled, update_summary_fn)
-
-    # Connect combos
-    for combo_name in (
-        "topo_gmsh_arc_mode_combo",
-        "topo_gmsh_tri_algo_combo",
-        "topo_gmsh_quad_algo_combo",
-        "topo_gmsh_recombine_algo_combo",
-    ):
-        w = widgets.get(combo_name)
-        if w is not None and _alive(w) and hasattr(w, "currentIndexChanged"):
-            _w(w.currentIndexChanged, update_summary_fn)
-
-    # Connect spin boxes
-    for spin_name in (
-        "topo_gmsh_arc_soft_size_factor_spin",
-        "topo_gmsh_arc_soft_dist_factor_spin",
-        "topo_gmsh_interface_transition_dist_factor_spin",
-        "topo_gmsh_interface_transition_min_ratio_spin",
-        "topo_gmsh_mesh_size_min_spin",
-        "topo_gmsh_tolerance_edge_length_spin",
-        "topo_gmsh_quality_max_iters_spin",
-        "topo_gmsh_quality_time_limit_spin",
-        "topo_gmsh_interface_snap_tol_spin",
-        "topo_gmsh_interface_reject_tol_spin",
-        "topo_gmsh_smoothing_spin",
-        "topo_gmsh_optimize_iters_spin",
-        "topo_gmsh_verbosity_spin",
-        "topo_gmsh_num_threads_spin",
-        "topo_gmsh_max_num_threads_2d_spin",
-        "topo_gmsh_transfinite_opposite_subset_start_spin",
-        "topo_gmsh_transfinite_opposite_subset_end_spin",
-        "topo_gmsh_transfinite_opposite_subset_density_scale_spin",
-        "topo_gmsh_transfinite_subset_containment_high_overlap_spin",
-        "topo_gmsh_transfinite_subset_containment_min_overlap_spin",
-        "topo_gmsh_transfinite_subset_containment_max_length_ratio_spin",
-    ):
-        w = widgets.get(spin_name)
-        if w is not None and _alive(w) and hasattr(w, "valueChanged"):
-            _w(w.valueChanged, update_summary_fn)
-
-    update_summary_fn()
 
 
 
