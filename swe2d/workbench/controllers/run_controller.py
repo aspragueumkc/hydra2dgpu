@@ -279,8 +279,6 @@ class RunController:
             length_unit_name=length_unit_name,
             length_scale_si_to_model=float(view._length_scale_si_to_model()),
             rain_mm_to_model_depth=float(view._rain_mm_to_model_depth()),
-            rain_rate_si_to_model=float(view._rain_rate_si_to_model()),
-            flow_si_to_model=float(view._flow_si_to_model()),
             apply_timeseries_bc_values=view._apply_timeseries_bc_values,
             distribute_total_flow_to_unit_q=view._distribute_total_flow_to_unit_q,
             apply_external_sources=view._apply_external_sources,
