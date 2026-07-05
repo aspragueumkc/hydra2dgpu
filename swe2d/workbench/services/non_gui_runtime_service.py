@@ -396,7 +396,7 @@ def execute_run_timestep_loop(
     last_process_events_wall: float,
     process_events_callback: object,
     h_min: float,
-    uniform_inflow_velocity: bool = False,
+    uniform_enabled: bool = False,
     progress_callback: Optional[Callable] = None,
     perf_mode: bool = False,
 ) -> Dict[str, object]:
@@ -416,34 +416,31 @@ def execute_run_timestep_loop(
             logger.warning("Silent fallback in Exception handler", exc_info=True)
             _bc_edge_len = None
 
-    def _make_uniform_velocity_cb() -> Optional[Callable[..., np.ndarray]]:
+    def _make_uniform_velocity_cb(uniform_enabled: bool):
         """make uniform velocity cb."""
-        if not hasattr(wb._model_tab_view, "uniform_inflow_velocity_chk"):
-            return None
-        try:
-            if not uniform_inflow_velocity:
+        def _cb():
+            if not uniform_enabled:
                 return None
-        except Exception:
-            return None
-        if _bc_edge_len is None or backend is None:
-            return None
-        edge_cells = backend.boundary_edge_cells()
-        if edge_cells is None:
-            return None
+            if _bc_edge_len is None or backend is None:
+                return None
+            edge_cells = backend.boundary_edge_cells()
+            if edge_cells is None:
+                return None
 
-        def _normalize(bc_vl_step, bc_tp_step, backend_obj):
-            """normalize."""
-            try:
-                h_arr, _, _ = backend_obj.get_state()
-                edge_h = np.asarray(h_arr, dtype=np.float64)[edge_cells]
-                from swe2d.boundary_and_forcing.bc_logic import normalize_inflow_to_uniform_velocity as _norm
-                return _norm(bc_vl_step, bc_tp_step, edge_h, _bc_edge_len)
-            except Exception:
-                return bc_vl_step
+            def _normalize(bc_vl_step, bc_tp_step, backend_obj):
+                """normalize."""
+                try:
+                    h_arr, _, _ = backend_obj.get_state()
+                    edge_h = np.asarray(h_arr, dtype=np.float64)[edge_cells]
+                    from swe2d.boundary_and_forcing.bc_logic import normalize_inflow_to_uniform_velocity as _norm
+                    return _norm(bc_vl_step, bc_tp_step, edge_h, _bc_edge_len)
+                except Exception:
+                    return bc_vl_step
 
-        return _normalize
+            return _normalize
+        return _cb
 
-    _uniform_velocity_cb = _make_uniform_velocity_cb()
+    _uniform_velocity_cb = _make_uniform_velocity_cb(uniform_enabled)()
 
     while float(t_accum) < float(run_duration_s):
         if bool(getattr(wb, "_cancel_requested", False)):

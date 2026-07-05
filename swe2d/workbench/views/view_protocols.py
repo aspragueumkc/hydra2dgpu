@@ -77,6 +77,9 @@ class ModelTabViewProtocol(Protocol):
     def is_inflow_progressive(self) -> bool:
         """Inflow progressive activation checkbox."""
 
+    def is_uniform_inflow(self) -> bool:
+        """Uniform inflow velocity checkbox is checked."""
+
     def get_inflow_progressive_chk(self) -> Optional[QtWidgets.QCheckBox]:
         """Inflow progressive checkbox widget."""
 

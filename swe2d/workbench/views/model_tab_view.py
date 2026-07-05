@@ -1483,6 +1483,11 @@ class ModelTabView(QtWidgets.QWidget):
         """Inflow progressive activation checkbox."""
         return bool(self.inflow_progressive_chk.isChecked())
 
+    def is_uniform_inflow(self) -> bool:
+        """Uniform inflow velocity checkbox is checked."""
+        chk = getattr(self, "uniform_inflow_velocity_chk", None)
+        return bool(chk.isChecked()) if chk is not None else False
+
     def get_inflow_progressive_chk(self):
         """Inflow progressive checkbox widget."""
         return self.inflow_progressive_chk

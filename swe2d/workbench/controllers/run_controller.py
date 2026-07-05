@@ -867,7 +867,7 @@ class RunController:
                 last_process_events_wall=_last_process_events_wall,
                 process_events_callback=QtWidgets.QApplication.processEvents,
                 h_min=wp["h_min_spin"],
-                uniform_inflow_velocity=view.get_uniform_inflow_velocity(),
+                uniform_enabled=view.model_tab.is_uniform_inflow(),
                 progress_callback=view.set_run_progress,
                 perf_mode=perf_mode,
             )
