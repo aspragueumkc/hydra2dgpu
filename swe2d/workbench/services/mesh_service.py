@@ -105,3 +105,49 @@ def assign_node_z_from_terrain(
         node_z[inside] = raster_data[row[inside], col[inside]].astype(np.float64, copy=False)
 
     return node_z
+
+
+def apply_cell_permutation(
+    mesh_data: dict, cell_perm: np.ndarray
+) -> dict:
+    """Apply an RCMK cell permutation to mesh_data in place and return it.
+
+    Reorders ``cell_nodes`` (1D flat or 2D) and ``cell_face_offsets`` /
+    ``cell_face_nodes`` to match *cell_perm* order.  Mutates *mesh_data*
+    in place and returns it for convenience.
+    """
+    cn = mesh_data.get("cell_nodes")
+    if cn is not None and cn.size > 0:
+        n_cells = cn.size // 3 if cn.ndim == 1 else cn.shape[0]
+    else:
+        n_cells = cell_perm.size
+
+    if cn is not None and cn.size > 0 and n_cells == cell_perm.size:
+        if cn.ndim == 1:
+            reshaped = cn.reshape(-1, 3)
+            mesh_data["cell_nodes"] = reshaped[cell_perm].ravel()
+        else:
+            mesh_data["cell_nodes"] = cn[cell_perm]
+
+    cfo = mesh_data.get("cell_face_offsets")
+    cfn = mesh_data.get("cell_face_nodes")
+    if cfo is not None and cfn is not None and n_cells == cell_perm.size:
+        old_offsets = cfo.copy()
+        new_offsets = np.zeros_like(cfo)
+        new_offsets[0] = old_offsets[0]
+        for ci in range(n_cells):
+            orig_ci = int(cell_perm[ci])
+            s = int(old_offsets[orig_ci])
+            e = int(old_offsets[orig_ci + 1])
+            new_offsets[ci + 1] = new_offsets[ci] + (e - s)
+        cfn_new = np.empty(int(new_offsets[-1]), dtype=np.int32)
+        for ci in range(n_cells):
+            orig_ci = int(cell_perm[ci])
+            s = int(old_offsets[orig_ci])
+            e = int(old_offsets[orig_ci + 1])
+            ds = int(new_offsets[ci])
+            cfn_new[ds:ds + (e - s)] = cfn[s:e]
+        mesh_data["cell_face_offsets"] = new_offsets
+        mesh_data["cell_face_nodes"] = cfn_new
+
+    return mesh_data

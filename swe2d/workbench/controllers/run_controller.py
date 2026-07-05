@@ -18,6 +18,8 @@ from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple
 
 import numpy as np
 
+from swe2d.workbench.services.mesh_service import apply_cell_permutation
+
 logger = logging.getLogger(__name__)
 
 
@@ -574,36 +576,7 @@ class RunController:
             # risk of misaligning already-generated data.
             cp = getattr(backend, "_cell_perm", None)
             if cp is not None and cp.size > 0 and mesh_data is not None:
-                cn = mesh_data.get("cell_nodes")
-                if cn is not None and cn.size > 0:
-                    n_cells_mesh = cn.size // 3 if cn.ndim == 1 else cn.shape[0]
-                    if n_cells_mesh == cp.size:
-                        if cn.ndim == 1:
-                            reshaped = cn.reshape(-1, 3)
-                            mesh_data["cell_nodes"] = reshaped[cp].ravel()
-                        else:
-                            mesh_data["cell_nodes"] = cn[cp]
-                        # Also reorder cell_face_offsets/nodes if present
-                        cfo = mesh_data.get("cell_face_offsets")
-                        cfn = mesh_data.get("cell_face_nodes")
-                        if cfo is not None and cfn is not None:
-                            old_offsets = cfo.copy()
-                            new_offsets = np.zeros_like(cfo)
-                            new_offsets[0] = old_offsets[0]
-                            for ci in range(n_cells_mesh):
-                                orig_ci = int(cp[ci])
-                                s = int(old_offsets[orig_ci])
-                                e = int(old_offsets[orig_ci + 1])
-                                new_offsets[ci + 1] = new_offsets[ci] + (e - s)
-                            cfn_new = np.empty(int(new_offsets[-1]), dtype=np.int32)
-                            for ci in range(n_cells_mesh):
-                                orig_ci = int(cp[ci])
-                                s = int(old_offsets[orig_ci])
-                                e = int(old_offsets[orig_ci + 1])
-                                ds = int(new_offsets[ci])
-                                cfn_new[ds:ds + (e - s)] = cfn[s:e]
-                            mesh_data["cell_face_offsets"] = new_offsets
-                            mesh_data["cell_face_nodes"] = cfn_new
+                apply_cell_permutation(mesh_data, cp)
 
             # Sync RCMK inverse permutation from backend to coupling controller.
             # The backend stores _inv_cell_perm after build_mesh (rebuilt above
