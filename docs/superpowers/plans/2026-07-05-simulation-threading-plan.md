@@ -227,47 +227,50 @@ git commit -m "feat: add RunContext for background simulation execution"
 
 ## Task 2: Extract Qt-free logic from `_apply_external_sources`
 
+> ✅ Completed. Spec review and code quality review passed. Quality fixes applied and re-reviewed.
+
 **Files:**
-- Modify: `swe2d/workbench/studio_dialog.py:2020-2042`
-- Create: helper service `swe2d/workbench/services/runtime_source_application_service.py` (optional) or keep logic in dialog but make it callable with captured values.
+- Create: `swe2d/workbench/services/runtime_source_application_service.py`
+- Modify: `swe2d/workbench/studio_dialog.py` (delegate to new service)
+- Test: `tests/test_external_sources_logic.py`
 
-We choose the dialog-split approach to minimize new files: a pure function `_apply_external_sources_logic` that takes all widget values as arguments, plus a wrapper `_apply_external_sources` that reads widgets and calls the logic.
-
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 ```python
 import numpy as np
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 def test_apply_external_sources_logic_runs_without_qt():
-    from swe2d.workbench.studio_dialog import _apply_external_sources_logic
+    from swe2d.workbench.services.runtime_source_application_service import _apply_external_sources_logic
     backend = MagicMock()
     backend.cell_areas.return_value = np.array([1.0])
-    _apply_external_sources_logic(
-        backend=backend,
-        dt_step=1.0,
-        rain_rate_model=0.0,
-        cell_source_model=None,
-        coupled_source_rate=None,
-        mesh_cell_areas=np.array([1.0]),
-        max_source_rate=1.0,
-        h_min=1e-4,
-        max_rel_depth_increase=0.5,
-        max_source_depth_step=0.1,
-        shallow_damping_depth=0.0,
-        momentum_cap_min_speed=0.0,
-        momentum_cap_celerity_mult=0.0,
-    )
+    with patch("swe2d.workbench.services.runtime_source_application_service.apply_external_sources") as mock_logic:
+        _apply_external_sources_logic(
+            backend=backend,
+            dt_step=1.0,
+            rain_rate_model=0.0,
+            cell_source_model=None,
+            coupled_source_rate=None,
+            mesh_cell_areas=np.array([1.0]),
+            max_source_rate=1.0,
+            h_min=1e-4,
+            max_rel_depth_increase=0.5,
+            max_source_depth_step=0.1,
+            shallow_damping_depth=0.0,
+            momentum_cap_min_speed=0.0,
+            momentum_cap_celerity_mult=0.0,
+        )
+        mock_logic.assert_called_once()
 ```
 
-- [ ] **Step 2: Run test to verify it fails**
+- [x] **Step 2: Run test to verify it fails**
 
 Run: `pytest tests/test_external_sources_logic.py -v`
 Expected: FAIL — function not defined.
 
-- [ ] **Step 3: Implement Qt-free logic**
+- [x] **Step 3: Implement Qt-free logic**
 
-In `swe2d/workbench/studio_dialog.py`, replace the body of `_apply_external_sources` with a call to a new module-level function and add that function:
+Create `swe2d/workbench/services/runtime_source_application_service.py`:
 
 ```python
 def _apply_external_sources_logic(
@@ -304,7 +307,7 @@ def _apply_external_sources_logic(
     )
 ```
 
-Change `_apply_external_sources` to read widgets and delegate:
+Change `SWE2DWorkbenchStudioDialog._apply_external_sources` to read widgets and delegate:
 
 ```python
 def _apply_external_sources(self, backend, dt_step, rain_rate_model, cell_source_model=None, coupled_source_rate=None):
@@ -314,6 +317,7 @@ def _apply_external_sources(self, backend, dt_step, rain_rate_model, cell_source
         _cell_areas = backend.cell_areas()
     else:
         _cell_areas = None
+    from swe2d.workbench.services.runtime_source_application_service import _apply_external_sources_logic
     _apply_external_sources_logic(
         backend=backend,
         dt_step=dt_step,
@@ -331,12 +335,12 @@ def _apply_external_sources(self, backend, dt_step, rain_rate_model, cell_source
     )
 ```
 
-- [ ] **Step 4: Run test to verify it passes**
+- [x] **Step 4: Run test to verify it passes**
 
 Run: `pytest tests/test_external_sources_logic.py -v`
 Expected: PASS.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git commit -am "refactor: split Qt-free external-sources logic for worker use"
