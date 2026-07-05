@@ -1,7 +1,5 @@
-import threading
 import time
 import numpy as np
-from unittest.mock import MagicMock
 from qgis.PyQt.QtWidgets import QApplication
 
 def test_simulation_worker_emits_progress_and_finishes():
