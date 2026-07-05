@@ -552,12 +552,12 @@ class TopologyTabView(QtWidgets.QWidget):
         label_text: str = "",
         advanced: bool = False,
     ) -> None:
-        """Register a self-describing widget (e.g. QCheckBox with its own text).
+        """Add a self-describing widget (QCheckBox / QPushButton) to the form and
+        register it with the filter so the search box and advanced toggle can hide it.
 
-        Use this for QCheckBox / QPushButton rows where the widget already
-        carries a descriptive label — we still register it with the
-        filter so the search box and advanced toggle can hide it.
+        The widget carries its own label text so no companion QLabel is needed.
         """
+        group_layout.addRow(widget)
         group = group_layout.parentWidget()
         text = label_text or str(widget.text() or widget.objectName() or "")
         self._filterable.add(

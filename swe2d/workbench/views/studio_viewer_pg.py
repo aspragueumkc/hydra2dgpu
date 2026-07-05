@@ -16,9 +16,12 @@ and all Qt widgets.  Data loading is delegated to the data layer
 
 from __future__ import annotations
 
+import logging
 from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
+
+logger = logging.getLogger(__name__)
 
 from qgis.PyQt import QtCore, QtGui, QtWidgets
 from qgis.PyQt.QtCore import Qt
@@ -731,6 +734,9 @@ class PGTimeSeriesWidget(QtWidgets.QWidget):
                 continue
             t_hr = raw["t_s"] / 3600.0
             vals = raw[var_key]
+            if t_hr.shape != vals.shape:
+                logger.warning("Shape mismatch for %s.%s: t=%s val=%s — skipping", rec.display_label(), var_key, t_hr.shape, vals.shape)
+                continue
             color = _c2q(rec.color)
             pen = pg.mkPen(color=color, width=1.6)
             item = self._plot_widget.plot(t_hr, vals, pen=pen, name=rec.display_label())
