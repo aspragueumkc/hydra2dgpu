@@ -7,6 +7,10 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 import numpy as np
 
 
+def _noop(*_args, **_kwargs):
+    return None
+
+
 @dataclass(frozen=True)
 class RunContext:
     """Immutable snapshot of everything needed to execute a run off the main thread."""
@@ -119,8 +123,8 @@ class RunContext:
     flow_si_to_model: float = 1.0
 
     # Runtime callbacks that do not touch Qt widgets
-    apply_timeseries_bc_values: Callable = field(default=lambda *a, **k: a[3] if a else None)
-    distribute_total_flow_to_unit_q: Callable = field(default=lambda *a, **k: a[3] if a else None)
+    apply_timeseries_bc_values: Callable = field(default=_noop)
+    distribute_total_flow_to_unit_q: Callable = field(default=_noop)
     apply_external_sources: Callable = field(default=lambda *a, **k: None)
     sample_line_metrics: Callable = field(default=lambda *a, **k: ([], []))
     build_line_sampling_map: Callable = field(default=lambda: None)

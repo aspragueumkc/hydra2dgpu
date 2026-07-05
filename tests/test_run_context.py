@@ -1,4 +1,6 @@
 import numpy as np
+import pytest
+from dataclasses import FrozenInstanceError
 from swe2d.workbench.workers.run_context import RunContext
 
 
@@ -25,3 +27,20 @@ def test_run_context_holds_arrays_and_cancel_event():
     assert ctx.run_id == "r1"
     assert ctx.node_x.size == 2
     assert ctx.cancel_event.is_set() is False
+
+
+def test_run_context_defaults_and_immutability():
+    ctx = RunContext(
+        run_id="r1",
+        run_wallclock_start="2026-01-01 00:00:00",
+        run_log_start_idx=0,
+    )
+    assert ctx.node_x.size == 0
+    assert ctx.node_y.size == 0
+    assert ctx.cell_nodes.shape == (0, 3)
+    assert ctx.apply_timeseries_bc_values() is None
+    assert ctx.apply_timeseries_bc_values(1, 2) is None
+    assert ctx.distribute_total_flow_to_unit_q() is None
+    assert ctx.distribute_total_flow_to_unit_q(1, 2, 3) is None
+    with pytest.raises(FrozenInstanceError):
+        ctx.run_id = "r2"
