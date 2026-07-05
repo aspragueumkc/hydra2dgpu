@@ -351,7 +351,24 @@ class SimulationWorker(QThread):
                     mesh_crs_wkt=mesh_data.get("crs_wkt", "") or "",
                 )
 
-            backend = _build_and_initialize_backend()
+            cuda_graphs_enabled = bool(ctx.cuda_graphs_enabled)
+            os.environ["BACKWATER_ENABLE_CUDA_GRAPHS"] = "1" if cuda_graphs_enabled else "0"
+            try:
+                backend = _build_and_initialize_backend()
+            except Exception as init_exc:
+                err_l = str(init_exc).lower()
+                is_illegal_mem = "illegal memory access" in err_l
+                if cuda_graphs_enabled and is_illegal_mem:
+                    log(
+                        "CUDA solver init failed with illegal memory access while graph replay was enabled; "
+                        "retrying once with CUDA graph replay disabled."
+                    )
+                    cuda_graphs_enabled = False
+                    os.environ["BACKWATER_ENABLE_CUDA_GRAPHS"] = "0"
+                    backend = _build_and_initialize_backend()
+                    log("CUDA graph replay fallback at solver init succeeded.")
+                else:
+                    raise
 
             cp = getattr(backend, "_cell_perm", None)
             if cp is not None and cp.size > 0:
