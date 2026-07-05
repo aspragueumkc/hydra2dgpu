@@ -21,7 +21,6 @@ import threading
 
 from swe2d.workbench.services.mesh_service import apply_cell_permutation
 from swe2d.workbench.workers.simulation_worker import SimulationWorker, SnapshotData, ComputeResult
-from swe2d.workbench.workers.persistence_worker import PersistenceWorker
 from swe2d.workbench.workers.run_context import RunContext
 
 logger = logging.getLogger(__name__)
@@ -80,7 +79,6 @@ class RunController:
     def __init__(self, view: "SWE2DWorkbenchStudioDialog"):
         self._view = view
         self._simulation_worker = None
-        self._persistence_worker = None
         self._current_run_id = ""
 
     def on_run(self, request: Optional[Any] = None) -> Any:
@@ -318,6 +316,7 @@ class RunController:
             save_line_results=bool(wp["save_line_results_to_gpkg_chk"]),
             save_coupling_results=bool(wp["save_coupling_results_to_gpkg_chk"]),
             save_run_log=bool(wp["save_run_log_to_gpkg_chk"]),
+            save_max_only=bool(wp.get("save_max_only_chk", False)),
             length_unit_name=length_unit_name,
             length_scale_si_to_model=float(view._length_scale_si_to_model()),
             rain_mm_to_model_depth=float(view._rain_mm_to_model_depth()),
@@ -429,44 +428,64 @@ class RunController:
 
         view._log("Compute finished; persisting results...")
         view_adapter = self._finalization_adapter(view)
-        pworker = PersistenceWorker(view_adapter, result, parent=view)
-        pworker.log_message.connect(view._log)
-        pworker.persist_finished.connect(self._on_worker_persist_finished)
-        pworker.persist_failed.connect(self._on_worker_persist_failed)
-        pworker.finished.connect(self._on_persistence_worker_finished)
-        self._persistence_worker = pworker
-        pworker.start()
-        self._simulation_worker = None
+        try:
+            from swe2d.runtime.run_finalizer import SWE2DRunFinalizer
+            finalizer = SWE2DRunFinalizer(view_adapter)
+            status = finalizer.finalize_and_persist(
+                h=result.h,
+                hu=result.hu,
+                hv=result.hv,
+                final_sim_time_s=result.final_sim_time_s,
+                n_area=result.n_area,
+                area_model=result.area_model,
+                storage_start_model=result.storage_start_model,
+                source_budget_model=result.source_budget_model,
+                source_step_rows_model=result.source_step_rows_model,
+                run_duration_s=result.run_duration_s,
+                boundary_flux_budget_model=result.boundary_flux_budget_model,
+                boundary_flux_step_rows_model=result.boundary_flux_step_rows_model,
+                run_id=result.run_id,
+                output_interval_s=result.output_interval_s,
+                line_output_interval_s=result.line_output_interval_s,
+                run_perf_start=result.run_perf_start,
+                run_wallclock_start=result.run_wallclock_start,
+                run_log_start_idx=result.run_log_start_idx,
+                thiessen_forcing=result.thiessen_forcing,
+                rain_stats_acc=result.rain_stats_acc,
+                save_line_results=result.save_line_results,
+                save_coupling_results=result.save_coupling_results,
+                save_mesh_results=result.save_mesh_results,
+                save_run_log=result.save_run_log,
+                save_max_only=result.save_max_only,
+                h_min=result.h_min,
+                mesh_name=result.mesh_name,
+                max_tracking=result.max_tracking,
+                snapshot_timesteps=result.snapshot_timesteps,
+                coupling_snapshots=result.coupling_snapshots,
+                precomputed_line_results=result.precomputed_line_results,
+            )
+            for msg in finalizer.drain_log_messages():
+                view._log(msg)
+            view._log("Persistence finished." if status.get("ok") else f"Persistence completed with issues: {status}")
+        except Exception as exc:
+            view.show_critical_message("2D SWE", f"Persistence failed: {exc}")
+        finally:
+            view.set_run_button_enabled(True)
+            view.set_cancel_button_enabled(False)
+            self._current_run_id = ""
+            self._simulation_worker = None
 
     def _on_simulation_worker_finished(self):
         """Called when SimulationWorker's QThread fully exits (main thread)."""
-        if self.sender() is self._simulation_worker:
-            self._simulation_worker = None
-
-    def _on_persistence_worker_finished(self):
-        """Called when PersistenceWorker's QThread fully exits (main thread)."""
-        self._persistence_worker = None
+        self._simulation_worker = None
 
     def _on_worker_compute_failed(self, message: str):
         view = self._view
         view.show_critical_message("2D SWE", f"Run failed: {message}")
         view.set_run_button_enabled(True)
         view.set_cancel_button_enabled(False)
+        self._current_run_id = ""
         self._simulation_worker = None
-
-    def _on_worker_persist_finished(self, status):
-        view = self._view
-        view._log("Persistence finished.")
-        view.set_run_button_enabled(True)
-        view.set_cancel_button_enabled(False)
-        self._persistence_worker = None
-
-    def _on_worker_persist_failed(self, message: str):
-        view = self._view
-        view.show_critical_message("2D SWE", f"Persistence failed: {message}")
-        view.set_run_button_enabled(True)
-        view.set_cancel_button_enabled(False)
-        self._persistence_worker = None
 
     def _finalization_adapter(self, view):
         from swe2d.workbench.controllers.finalization_adapter import FinalizationAdapter

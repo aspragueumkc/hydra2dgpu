@@ -53,7 +53,21 @@ class FinalizationAdapter:
 
     def collect_run_log_metadata(self):
         """Collect run-log metadata (solver options, CRS, etc.) as a dict."""
-        return self._dialog.collect_run_log_metadata()
+        try:
+            return self._dialog.collect_run_log_metadata()
+        except AttributeError:
+            from qgis.PyQt import QtWidgets
+            from swe2d.workbench.bridges.project_settings_bridge import collect_workbench_widget_state
+            try:
+                wp = self._dialog.collect_run_widget_params()
+                widget_state = collect_workbench_widget_state(
+                    ui=self._dialog,
+                    widget_attrs=list(wp.keys()),
+                    qtwidgets_module=QtWidgets,
+                )
+                return {"workbench_widget_state": widget_state}
+            except Exception:
+                return {}
 
     def persist_run_log(self, gpkg_path, run_id, run_wallclock_start,
                         run_wallclock_end, run_duration_wallclock_s,

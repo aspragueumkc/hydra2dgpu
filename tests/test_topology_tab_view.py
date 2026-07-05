@@ -227,24 +227,68 @@ class TestTopologyTabFilter(unittest.TestCase):
         view = self._make_view()
         view._populate_gmsh_quality_controls()
         view.show()
-        # Initially advanced hidden
+        advanced_rows = [(_g, _l, w) for _g, _l, w, _a in view._filterable if _a]
+        # Sanity: at least one advanced widget must be registered for the
+        # toggle to be useful.
+        self.assertGreater(
+            len(advanced_rows), 0,
+            "Topology tab must register advanced widgets for the filter "
+            "toggle to be non-trivial."
+        )
+
+        # With advanced hidden, every advanced row should be invisible.
         view.topo_show_advanced_chk.setChecked(False)
         view._filter_topology_tab()
-        # No advanced rows registered by default in the topology tab,
-        # but at least the registry should be wired (call should not raise).
-        self.assertIsNotNone(view._filterable)
+        for _g, _l, w in advanced_rows:
+            self.assertFalse(
+                view._filterable.filter_visible(w),
+                f"{w.objectName()} should be hidden when advanced toggle is off",
+            )
+
+        # With advanced shown, every advanced row should be visible.
+        view.topo_show_advanced_chk.setChecked(True)
+        view._filter_topology_tab()
+        for _g, _l, w in advanced_rows:
+            self.assertTrue(
+                view._filterable.filter_visible(w),
+                f"{w.objectName()} should be visible when advanced toggle is on",
+            )
+
+    def test_text_search_filters_widgets(self):
+        view = self._make_view()
+        view._populate_gmsh_quality_controls()
+        view.show()
+        view.topo_show_advanced_chk.setChecked(True)
+        view.topo_search.setText("gmsh")
+        view._filter_topology_tab()
+        visible = sum(
+            1 for _g, _l, w, _a in view._filterable
+            if view._filterable.filter_visible(w)
+        )
+        # 'gmsh' appears in many tooltips — at least some rows should remain.
+        self.assertGreater(visible, 0)
+        # And every visible row's search blob should contain "gmsh".
+        for _g, _l, w, _a in view._filterable:
+            if view._filterable.filter_visible(w):
+                blob = str(w.property("filter_search_blob") or "").lower()
+                self.assertIn("gmsh", blob)
 
     def test_filter_with_no_text_shows_everything(self):
         view = self._make_view()
         view._populate_gmsh_quality_controls()
         view.show()
+        # With empty search text AND advanced shown, every row should be visible.
         view.topo_search.setText("")
+        view.topo_show_advanced_chk.setChecked(True)
         view._filter_topology_tab()
         all_visible = all(
             view._filterable.filter_visible(w)
             for _g, _l, w, _a in view._filterable
         )
-        self.assertTrue(all_visible, "Empty filter should show every registered row")
+        self.assertTrue(
+            all_visible,
+            "Empty filter with advanced on should show every registered row",
+        )
 
 
 if __name__ == "__main__":

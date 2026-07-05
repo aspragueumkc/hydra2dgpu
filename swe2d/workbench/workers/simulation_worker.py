@@ -88,6 +88,12 @@ class ComputeResult:
         precomputed_line_results: Any,
         cancelled: bool = False,
         error_message: str = "",
+        save_line_results: bool = False,
+        save_coupling_results: bool = False,
+        save_mesh_results: bool = False,
+        save_run_log: bool = False,
+        save_max_only: bool = False,
+        h_min: float = 1.0e-4,
     ):
         self.ok = ok
         self.h = h
@@ -117,6 +123,12 @@ class ComputeResult:
         self.precomputed_line_results = precomputed_line_results
         self.cancelled = cancelled
         self.error_message = error_message
+        self.save_line_results = save_line_results
+        self.save_coupling_results = save_coupling_results
+        self.save_mesh_results = save_mesh_results
+        self.save_run_log = save_run_log
+        self.save_max_only = save_max_only
+        self.h_min = h_min
 
 
 class _WorkerResultsData:
@@ -126,11 +138,15 @@ class _WorkerResultsData:
         self._live_snapshot_timesteps: List[Tuple[float, np.ndarray, np.ndarray, np.ndarray]] = []
         self._live_coupling: Dict[Tuple[str, str, str], Dict[str, Any]] = {}
         self._coupling_snap_idx: int = 0
+        self._live_line_ts: Dict[int, Dict[str, Any]] = {}
+        self._live_line_profile: Dict[int, Dict[str, Any]] = {}
 
     def clear_live_snapshots(self) -> None:
         self._live_snapshot_timesteps = []
         self._live_coupling = {}
         self._coupling_snap_idx = 0
+        self._live_line_ts = {}
+        self._live_line_profile = {}
 
     def preallocate_output_schedule(
         self,
@@ -174,10 +190,132 @@ class _WorkerResultsData:
         self._live_snapshot_timesteps = list(timesteps)
 
     def populate_live_line_metrics(self, sample_map: Any, sample_callback: Any, cell_solver_z: Any) -> None:
-        pass
+        snaps = self._live_snapshot_timesteps
+        if not snaps or not sample_map or sample_callback is None:
+            return
+
+        ts_by_line: Dict[int, Dict[str, list]] = {}
+        prof_by_line: Dict[int, Dict[str, list]] = {}
+
+        for snap_t, h_s, hu_s, hv_s in snaps:
+            h_arr = np.asarray(h_s, dtype=np.float64)
+            hu_arr = np.asarray(hu_s, dtype=np.float64)
+            hv_arr = np.asarray(hv_s, dtype=np.float64)
+            cell_bed = (
+                np.asarray(cell_solver_z, dtype=np.float64)
+                if cell_solver_z is not None
+                else np.zeros_like(h_arr)
+            )
+            try:
+                ts_rows, prof_rows = sample_callback(
+                    sample_map, snap_t, h_arr, hu_arr, hv_arr, cell_bed,
+                )
+            except Exception:
+                continue
+            for row in ts_rows:
+                lid = int(row.get("line_id", -1))
+                if lid < 0:
+                    continue
+                d = ts_by_line.setdefault(
+                    lid,
+                    {"line_name": str(row.get("line_name", f"line_{lid}"))},
+                )
+                for key in (
+                    "depth_m", "velocity_ms", "wse_m", "bed_m",
+                    "flow_cms", "wet_frac", "fr",
+                ):
+                    d.setdefault(key, []).append(float(row.get(key, 0.0)))
+            for row in prof_rows:
+                lid = int(row.get("line_id", -1))
+                if lid < 0:
+                    continue
+                d = prof_by_line.setdefault(
+                    lid,
+                    {"line_name": str(row.get("line_name", f"line_{lid}"))},
+                )
+                sta = np.asarray(
+                    row.get("station_m", np.empty(0)), dtype=np.float64
+                )
+                if sta.size > 0 and "station_m" not in d:
+                    d["station_m"] = sta
+                    d["n_stations"] = int(sta.size)
+                for key in (
+                    "depth_m", "velocity_ms", "wse_m", "bed_m",
+                    "flow_qn", "fr",
+                ):
+                    d.setdefault(key, []).append(
+                        np.asarray(row.get(key, np.empty(0)), dtype=np.float64)
+                    )
+                d.setdefault("wet", []).append(
+                    np.asarray(row.get("wet", np.empty(0)), dtype=np.int32)
+                )
+
+        self._live_line_ts = {}
+        for lid, d in ts_by_line.items():
+            out = {"line_name": d.get("line_name", f"line_{lid}")}
+            for key in (
+                "depth_m", "velocity_ms", "wse_m", "bed_m",
+                "flow_cms", "wet_frac", "fr",
+            ):
+                out[key] = np.asarray(d.get(key, []), dtype=np.float64)
+            self._live_line_ts[lid] = out
+
+        self._live_line_profile = {}
+        for lid, d in prof_by_line.items():
+            sta = np.asarray(d.get("station_m", np.empty(0)), dtype=np.float64)
+            n_sta = int(sta.size) if sta.size > 0 else 0
+            out = {"line_name": d.get("line_name", f"line_{lid}")}
+            if n_sta > 0:
+                out["station_m"] = sta
+                out["n_stations"] = n_sta
+            for key in (
+                "depth_m", "velocity_ms", "wse_m", "bed_m",
+                "flow_qn", "fr", "wet",
+            ):
+                val = d.get(key, [])
+                if val:
+                    arrs = [np.asarray(v, dtype=np.float64) for v in val]
+                    if not all(a.shape == arrs[0].shape for a in arrs):
+                        try:
+                            stack = np.row_stack(arrs)
+                        except (ValueError, TypeError):
+                            stack = np.asarray(arrs, dtype=np.float64)
+                    else:
+                        stack = np.row_stack(arrs)
+                    out[key] = stack
+            self._live_line_profile[lid] = out
 
     def build_precomputed_line_results(self) -> Dict[Any, Any]:
-        return {}
+        if not self._live_line_ts and not self._live_line_profile:
+            return {}
+        times = (
+            [float(s[0]) for s in self._live_snapshot_timesteps]
+            if self._live_snapshot_timesteps else []
+        )
+        out: dict = {}
+        for lid, d in self._live_line_ts.items():
+            entry = {"line_name": d.get("line_name", f"line_{lid}")}
+            if times:
+                entry["t_s"] = list(times)
+            for k in ("depth_m", "velocity_ms", "wse_m", "bed_m", "flow_cms", "wet_frac", "fr"):
+                v = d.get(k)
+                if v is not None and hasattr(v, "__len__") and len(v) > 0:  # pyright: ignore[reportArgumentType]
+                    entry[f"ts_{k}"] = list(np.asarray(v, dtype=np.float64))
+            out[lid] = entry
+        for lid, d in self._live_line_profile.items():
+            entry = out.setdefault(lid, {"line_name": d.get("line_name", f"line_{lid}")})
+            sta = d.get("station_m")
+            if sta is not None:
+                entry["station_m"] = np.asarray(sta, dtype=np.float64)
+            for k in ("depth_m", "velocity_ms", "wse_m", "bed_m", "flow_qn", "fr", "wet"):
+                v = d.get(k)
+                if v is not None and hasattr(v, "shape") and v.ndim > 0 and v.size > 0:
+                    pk = f"prof_{k}"
+                    if v.ndim == 2:
+                        entry[pk] = np.asarray(v, dtype=np.float64)
+                    else:
+                        entry[pk] = np.asarray(v, dtype=np.float64).reshape(1, -1)
+        return out
 
 
 class _WorkbenchShim:
@@ -831,6 +969,12 @@ class SimulationWorker(QThread):
                 coupling_snapshots=coupling_snapshots,
                 precomputed_line_results=precomputed_line_results,
                 cancelled=cancelled,
+                save_line_results=bool(ctx.save_line_results),
+                save_coupling_results=bool(ctx.save_coupling_results),
+                save_mesh_results=bool(ctx.save_mesh_results),
+                save_run_log=bool(ctx.save_run_log),
+                save_max_only=bool(ctx.save_max_only),
+                h_min=float(ctx.h_min),
             )
         finally:
             if backend is not None:

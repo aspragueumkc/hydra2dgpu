@@ -918,7 +918,7 @@ def _build_topology_tab_controls(
         "If enabled, runs gmsh.model.mesh.recombine() globally after mesh generation. "
         "Default is off to avoid recombining non-quad-targeted regions."
     )
-    _add_self_row(algo_form, topo_gmsh_global_recombine_chk)
+    _add_self_row(algo_form, topo_gmsh_global_recombine_chk, advanced=True)
     widgets["topo_gmsh_global_recombine_chk"] = topo_gmsh_global_recombine_chk
 
     topo_gmsh_quad_full_region_flow_align_chk = QtWidgets.QCheckBox("Gmsh full-region flow-aligned quads")
@@ -931,7 +931,7 @@ def _build_topology_tab_controls(
         "apply TransfiniteCurve + TransfiniteSurface + Recombine so edge-aligned spacing "
         "propagates across the full region."
     )
-    _add_self_row(algo_form, topo_gmsh_quad_full_region_flow_align_chk)
+    _add_self_row(algo_form, topo_gmsh_quad_full_region_flow_align_chk, advanced=True)
     widgets["topo_gmsh_quad_full_region_flow_align_chk"] = topo_gmsh_quad_full_region_flow_align_chk
 
     topo_gmsh_smoothing_spin = QtWidgets.QSpinBox()
@@ -942,7 +942,7 @@ def _build_topology_tab_controls(
     )
     topo_gmsh_smoothing_spin.setRange(0, 100)
     topo_gmsh_smoothing_spin.setValue(0)
-    _add_row(algo_form, 'Smoothing passes:', topo_gmsh_smoothing_spin)
+    _add_row(algo_form, 'Smoothing passes:', topo_gmsh_smoothing_spin, advanced=True)
     widgets["topo_gmsh_smoothing_spin"] = topo_gmsh_smoothing_spin
 
     topo_gmsh_optimize_iters_spin = QtWidgets.QSpinBox()
@@ -953,7 +953,7 @@ def _build_topology_tab_controls(
     )
     topo_gmsh_optimize_iters_spin.setRange(0, 100)
     topo_gmsh_optimize_iters_spin.setValue(0)
-    _add_row(algo_form, 'Optimize iterations:', topo_gmsh_optimize_iters_spin)
+    _add_row(algo_form, 'Optimize iterations:', topo_gmsh_optimize_iters_spin, advanced=True)
     widgets["topo_gmsh_optimize_iters_spin"] = topo_gmsh_optimize_iters_spin
 
     topo_gmsh_verbosity_spin = QtWidgets.QSpinBox()
@@ -964,7 +964,7 @@ def _build_topology_tab_controls(
     )
     topo_gmsh_verbosity_spin.setRange(0, 10)
     topo_gmsh_verbosity_spin.setValue(2)
-    _add_row(algo_form, 'Verbosity:', topo_gmsh_verbosity_spin)
+    _add_row(algo_form, 'Verbosity:', topo_gmsh_verbosity_spin, advanced=True)
     widgets["topo_gmsh_verbosity_spin"] = topo_gmsh_verbosity_spin
 
     topo_gmsh_optimize_netgen_chk = QtWidgets.QCheckBox("Enable Netgen optimize")
@@ -975,7 +975,7 @@ def _build_topology_tab_controls(
     )
     if not str(topo_gmsh_optimize_netgen_chk.text() or "").strip():
         topo_gmsh_optimize_netgen_chk.setText("Enable Netgen optimize")
-    _add_self_row(algo_form, topo_gmsh_optimize_netgen_chk)
+    _add_self_row(algo_form, topo_gmsh_optimize_netgen_chk, advanced=True)
     widgets["topo_gmsh_optimize_netgen_chk"] = topo_gmsh_optimize_netgen_chk
 
     topo_gmsh_arc_mode_combo = QtWidgets.QComboBox()
@@ -1007,7 +1007,7 @@ def _build_topology_tab_controls(
         "Soft arc mode target-size factor near arcs. Lower values force finer cells along arc corridors."
     )
     widgets["topo_gmsh_arc_soft_size_factor_spin"] = topo_gmsh_arc_soft_size_factor_spin
-    _add_row(arcs_form, 'Arc soft size factor:', topo_gmsh_arc_soft_size_factor_spin)
+    _add_row(arcs_form, 'Arc soft size factor:', topo_gmsh_arc_soft_size_factor_spin, advanced=True)
 
     topo_gmsh_arc_soft_dist_factor_spin = QtWidgets.QDoubleSpinBox()
     topo_gmsh_arc_soft_dist_factor_spin.setObjectName("topo_gmsh_arc_soft_dist_factor_spin")
@@ -1019,7 +1019,7 @@ def _build_topology_tab_controls(
         "Soft arc mode influence distance factor. Higher values widen arc-driven refinement corridors."
     )
     widgets["topo_gmsh_arc_soft_dist_factor_spin"] = topo_gmsh_arc_soft_dist_factor_spin
-    _add_row(arcs_form, 'Arc soft dist factor:', topo_gmsh_arc_soft_dist_factor_spin)
+    _add_row(arcs_form, 'Arc soft dist factor:', topo_gmsh_arc_soft_dist_factor_spin, advanced=True)
 
     topo_gmsh_interface_transition_enable_chk = QtWidgets.QCheckBox("Enable interface transition grading")
     topo_gmsh_interface_transition_enable_chk.setObjectName("topo_gmsh_interface_transition_enable_chk")
@@ -1042,7 +1042,7 @@ def _build_topology_tab_controls(
         "Distance multiplier for interface grading influence width. Higher values widen the transition band."
     )
     widgets["topo_gmsh_interface_transition_dist_factor_spin"] = topo_gmsh_interface_transition_dist_factor_spin
-    _add_row(arcs_form, 'Interface transition dist factor:', topo_gmsh_interface_transition_dist_factor_spin)
+    _add_row(arcs_form, 'Interface transition dist factor:', topo_gmsh_interface_transition_dist_factor_spin, advanced=True)
 
     topo_gmsh_interface_transition_min_ratio_spin = QtWidgets.QDoubleSpinBox()
     topo_gmsh_interface_transition_min_ratio_spin.setObjectName("topo_gmsh_interface_transition_min_ratio_spin")
@@ -1054,7 +1054,7 @@ def _build_topology_tab_controls(
         "Only apply interface grading when adjacent region target sizes differ by at least this ratio."
     )
     widgets["topo_gmsh_interface_transition_min_ratio_spin"] = topo_gmsh_interface_transition_min_ratio_spin
-    _add_row(arcs_form, 'Interface transition min ratio:', topo_gmsh_interface_transition_min_ratio_spin)
+    _add_row(arcs_form, 'Interface transition min ratio:', topo_gmsh_interface_transition_min_ratio_spin, advanced=True)
 
     topo_gmsh_interface_conformance_chk = QtWidgets.QCheckBox("Enable transverse interface conformance post-process")
     topo_gmsh_interface_conformance_chk.setObjectName("topo_gmsh_interface_conformance_chk")
@@ -1065,7 +1065,7 @@ def _build_topology_tab_controls(
         "Snap and weld mixed-interface nodes after Gmsh extraction to enforce shared boundary topology."
     )
     widgets["topo_gmsh_interface_conformance_chk"] = topo_gmsh_interface_conformance_chk
-    _add_self_row(arcs_form, topo_gmsh_interface_conformance_chk)
+    _add_self_row(arcs_form, topo_gmsh_interface_conformance_chk, advanced=True)
 
     topo_gmsh_transverse_interface_centroid_merge_chk = QtWidgets.QCheckBox("Use centroid merge for matched transverse interface nodes")
     topo_gmsh_transverse_interface_centroid_merge_chk.setObjectName("topo_gmsh_transverse_interface_centroid_merge_chk")
@@ -1076,7 +1076,7 @@ def _build_topology_tab_controls(
         "Move matched interface-node groups to their centroid before welding instead of one-sided snapping."
     )
     widgets["topo_gmsh_transverse_interface_centroid_merge_chk"] = topo_gmsh_transverse_interface_centroid_merge_chk
-    _add_self_row(arcs_form, topo_gmsh_transverse_interface_centroid_merge_chk)
+    _add_self_row(arcs_form, topo_gmsh_transverse_interface_centroid_merge_chk, advanced=True)
 
     topo_gmsh_interface_snap_tol_spin = QtWidgets.QDoubleSpinBox()
     topo_gmsh_interface_snap_tol_spin.setObjectName("topo_gmsh_interface_snap_tol_spin")
@@ -1087,7 +1087,7 @@ def _build_topology_tab_controls(
         "Distance tolerance used by transverse interface conformance snapping."
     )
     widgets["topo_gmsh_interface_snap_tol_spin"] = topo_gmsh_interface_snap_tol_spin
-    _add_row(arcs_form, 'Interface snap tolerance:', topo_gmsh_interface_snap_tol_spin)
+    _add_row(arcs_form, 'Interface snap tolerance:', topo_gmsh_interface_snap_tol_spin, advanced=True)
 
     topo_gmsh_interface_reject_near_unshared_chk = QtWidgets.QCheckBox("Reject mixed interfaces with near-coincident unshared nodes")
     topo_gmsh_interface_reject_near_unshared_chk.setObjectName("topo_gmsh_interface_reject_near_unshared_chk")
@@ -1098,7 +1098,7 @@ def _build_topology_tab_controls(
         "Fail meshing when a transfinite/tri interface shows hanging-node style near-miss pairs."
     )
     widgets["topo_gmsh_interface_reject_near_unshared_chk"] = topo_gmsh_interface_reject_near_unshared_chk
-    _add_self_row(arcs_form, topo_gmsh_interface_reject_near_unshared_chk)
+    _add_self_row(arcs_form, topo_gmsh_interface_reject_near_unshared_chk, advanced=True)
 
     topo_gmsh_interface_reject_tol_spin = QtWidgets.QDoubleSpinBox()
     topo_gmsh_interface_reject_tol_spin.setObjectName("topo_gmsh_interface_reject_tol_spin")
@@ -1109,7 +1109,7 @@ def _build_topology_tab_controls(
         "Tolerance for detecting near-coincident unshared interface nodes (hanging-node signature)."
     )
     widgets["topo_gmsh_interface_reject_tol_spin"] = topo_gmsh_interface_reject_tol_spin
-    _add_row(arcs_form, 'Interface reject tolerance:', topo_gmsh_interface_reject_tol_spin)
+    _add_row(arcs_form, 'Interface reject tolerance:', topo_gmsh_interface_reject_tol_spin, advanced=True)
 
     topo_gmsh_mesh_size_min_spin = QtWidgets.QDoubleSpinBox()
     topo_gmsh_mesh_size_min_spin.setObjectName("topo_gmsh_mesh_size_min_spin")
@@ -1120,7 +1120,7 @@ def _build_topology_tab_controls(
     topo_gmsh_mesh_size_min_spin.setRange(0.0, 1.0e6)
     topo_gmsh_mesh_size_min_spin.setDecimals(6)
     topo_gmsh_mesh_size_min_spin.setValue(0.0)
-    _add_row(sizing_form, 'Global min cell size:', topo_gmsh_mesh_size_min_spin)
+    _add_row(sizing_form, 'Global min cell size:', topo_gmsh_mesh_size_min_spin, advanced=True)
     widgets["topo_gmsh_mesh_size_min_spin"] = topo_gmsh_mesh_size_min_spin
 
     topo_gmsh_tolerance_edge_length_spin = QtWidgets.QDoubleSpinBox()
@@ -1132,7 +1132,7 @@ def _build_topology_tab_controls(
     topo_gmsh_tolerance_edge_length_spin.setRange(0.0, 1.0e6)
     topo_gmsh_tolerance_edge_length_spin.setDecimals(6)
     topo_gmsh_tolerance_edge_length_spin.setValue(0.0)
-    _add_row(sizing_form, 'Ignore edges shorter than:', topo_gmsh_tolerance_edge_length_spin)
+    _add_row(sizing_form, 'Ignore edges shorter than:', topo_gmsh_tolerance_edge_length_spin, advanced=True)
     widgets["topo_gmsh_tolerance_edge_length_spin"] = topo_gmsh_tolerance_edge_length_spin
 
     topo_gmsh_mesh_size_from_points_chk = QtWidgets.QCheckBox("Use region target_size for mesh sizing")
@@ -1297,8 +1297,8 @@ def _build_topology_tab_controls(
         "Enable node repositioning during quad recombination (Mesh.RecombineNodeRepositioning)."
     )
     widgets["topo_gmsh_recombine_node_repositioning_chk"] = topo_gmsh_recombine_node_repositioning_chk
-    _add_self_row(algo_form, topo_gmsh_algo_switch_on_failure_chk)
-    _add_self_row(algo_form, topo_gmsh_recombine_node_repositioning_chk)
+    _add_self_row(algo_form, topo_gmsh_algo_switch_on_failure_chk, advanced=True)
+    _add_self_row(algo_form, topo_gmsh_recombine_node_repositioning_chk, advanced=True)
 
     topo_quality_strict_chk = QtWidgets.QCheckBox("Strict quality acceptance")
     topo_quality_strict_chk.setObjectName("topo_quality_strict_chk")
@@ -1314,15 +1314,15 @@ def _build_topology_tab_controls(
     _add_row(quality_form, 'Max non-orthogonal (deg):', topo_quality_max_non_orth_spin)
     _add_row(quality_form, 'Min area rel bbox:', topo_quality_min_area_edit)
     _add_self_row(quality_form, topo_quality_strict_chk)
-    _add_row(quality_form, 'Size scales:', topo_quality_size_scales_edit)
-    _add_row(quality_form, 'Smooth increments:', topo_quality_smooth_increments_edit)
-    _add_row(quality_form, 'Recombine passes:', topo_gmsh_quality_recombine_topology_passes_edit)
-    _add_row(quality_form, 'Recombine min quality:', topo_gmsh_quality_recombine_min_quality_edit)
-    _add_row(quality_form, 'Random factors:', topo_gmsh_quality_random_factors_edit)
-    _add_row(quality_form, 'Optimize methods:', topo_gmsh_quality_optimize_methods_edit)
+    _add_row(quality_form, 'Size scales:', topo_quality_size_scales_edit, advanced=True)
+    _add_row(quality_form, 'Smooth increments:', topo_quality_smooth_increments_edit, advanced=True)
+    _add_row(quality_form, 'Recombine passes:', topo_gmsh_quality_recombine_topology_passes_edit, advanced=True)
+    _add_row(quality_form, 'Recombine min quality:', topo_gmsh_quality_recombine_min_quality_edit, advanced=True)
+    _add_row(quality_form, 'Random factors:', topo_gmsh_quality_random_factors_edit, advanced=True)
+    _add_row(quality_form, 'Optimize methods:', topo_gmsh_quality_optimize_methods_edit, advanced=True)
     _add_self_row(quality_form, topo_gmsh_quality_enable_chk)
-    _add_row(quality_form, 'Max iterations:', topo_gmsh_quality_max_iters_spin)
-    _add_row(quality_form, 'Time limit (s):', topo_gmsh_quality_time_limit_spin)
+    _add_row(quality_form, 'Max iterations:', topo_gmsh_quality_max_iters_spin, advanced=True)
+    _add_row(quality_form, 'Time limit (s):', topo_gmsh_quality_time_limit_spin, advanced=True)
 
     # ── Threading controls ──
     topo_gmsh_num_threads_spin = QtWidgets.QSpinBox()
@@ -1333,7 +1333,7 @@ def _build_topology_tab_controls(
         "Number of threads for Gmsh. Higher values speed up meshing on multi-core CPUs. "
         "Respects BACKWATER_GMSH_NUM_THREADS env var as default."
     )
-    _add_row(threading_form, 'Num threads:', topo_gmsh_num_threads_spin)
+    _add_row(threading_form, 'Num threads:', topo_gmsh_num_threads_spin, advanced=True)
     widgets["topo_gmsh_num_threads_spin"] = topo_gmsh_num_threads_spin
 
     topo_gmsh_max_num_threads_2d_spin = QtWidgets.QSpinBox()
@@ -1345,7 +1345,7 @@ def _build_topology_tab_controls(
         "Max threads for 2D meshing (0 = auto). "
         "Respects BACKWATER_GMSH_MAX_NUM_THREADS_2D env var as default."
     )
-    _add_row(threading_form, 'Max 2D threads:', topo_gmsh_max_num_threads_2d_spin)
+    _add_row(threading_form, 'Max 2D threads:', topo_gmsh_max_num_threads_2d_spin, advanced=True)
     widgets["topo_gmsh_max_num_threads_2d_spin"] = topo_gmsh_max_num_threads_2d_spin
 
     # ── Transfinite harmonization controls ──
@@ -1364,7 +1364,7 @@ def _build_topology_tab_controls(
         "Harmonize shared interfaces of transfinite regions so opposite-edge "
         "subsets are matched. Helps avoid hanging-node conflicts at shared boundaries."
     )
-    _add_self_row(transfinite_form, topo_gmsh_transfinite_shared_interface_harmonize_chk)
+    _add_self_row(transfinite_form, topo_gmsh_transfinite_shared_interface_harmonize_chk, advanced=True)
     widgets["topo_gmsh_transfinite_shared_interface_harmonize_chk"] = (
         topo_gmsh_transfinite_shared_interface_harmonize_chk
     )
@@ -1381,7 +1381,7 @@ def _build_topology_tab_controls(
         "Opposite-edge subset start fraction for transfinite interface matching. "
         "Respects BACKWATER_GMSH_TRANSFINITE_OPPOSITE_SUBSET_START env var."
     )
-    _add_row(transfinite_form, 'Opposite subset start:', topo_gmsh_transfinite_opposite_subset_start_spin)
+    _add_row(transfinite_form, 'Opposite subset start:', topo_gmsh_transfinite_opposite_subset_start_spin, advanced=True)
     widgets["topo_gmsh_transfinite_opposite_subset_start_spin"] = (
         topo_gmsh_transfinite_opposite_subset_start_spin
     )
@@ -1398,7 +1398,7 @@ def _build_topology_tab_controls(
         "Opposite-edge subset end fraction for transfinite interface matching. "
         "Respects BACKWATER_GMSH_TRANSFINITE_OPPOSITE_SUBSET_END env var."
     )
-    _add_row(transfinite_form, 'Opposite subset end:', topo_gmsh_transfinite_opposite_subset_end_spin)
+    _add_row(transfinite_form, 'Opposite subset end:', topo_gmsh_transfinite_opposite_subset_end_spin, advanced=True)
     widgets["topo_gmsh_transfinite_opposite_subset_end_spin"] = (
         topo_gmsh_transfinite_opposite_subset_end_spin
     )
@@ -1415,7 +1415,7 @@ def _build_topology_tab_controls(
         "Density scale for opposite-edge subsets. Lower values coarsen subset spacing. "
         "Respects BACKWATER_GMSH_TRANSFINITE_OPPOSITE_SUBSET_DENSITY_SCALE env var."
     )
-    _add_row(transfinite_form, 'Opposite density scale:', topo_gmsh_transfinite_opposite_subset_density_scale_spin)
+    _add_row(transfinite_form, 'Opposite density scale:', topo_gmsh_transfinite_opposite_subset_density_scale_spin, advanced=True)
     widgets["topo_gmsh_transfinite_opposite_subset_density_scale_spin"] = (
         topo_gmsh_transfinite_opposite_subset_density_scale_spin
     )
@@ -1435,7 +1435,7 @@ def _build_topology_tab_controls(
         "Enable verbose debug logging for transfinite interface handling. "
         "Respects BACKWATER_GMSH_TRANSFINITE_INTERFACE_DEBUG env var."
     )
-    _add_self_row(transfinite_form, topo_gmsh_transfinite_interface_debug_chk)
+    _add_self_row(transfinite_form, topo_gmsh_transfinite_interface_debug_chk, advanced=True)
     widgets["topo_gmsh_transfinite_interface_debug_chk"] = (
         topo_gmsh_transfinite_interface_debug_chk
     )
@@ -1476,6 +1476,7 @@ def _build_topology_tab_controls(
         transfinite_form,
         "Subset containment high overlap:",
         topo_gmsh_transfinite_subset_containment_high_overlap_spin,
+        advanced=True,
     )
     widgets["topo_gmsh_transfinite_subset_containment_high_overlap_spin"] = (
         topo_gmsh_transfinite_subset_containment_high_overlap_spin
@@ -1497,6 +1498,7 @@ def _build_topology_tab_controls(
         transfinite_form,
         "Subset containment min overlap:",
         topo_gmsh_transfinite_subset_containment_min_overlap_spin,
+        advanced=True,
     )
     widgets["topo_gmsh_transfinite_subset_containment_min_overlap_spin"] = (
         topo_gmsh_transfinite_subset_containment_min_overlap_spin
@@ -1518,6 +1520,7 @@ def _build_topology_tab_controls(
         transfinite_form,
         "Subset containment max length ratio:",
         topo_gmsh_transfinite_subset_containment_max_length_ratio_spin,
+        advanced=True,
     )
     widgets["topo_gmsh_transfinite_subset_containment_max_length_ratio_spin"] = (
         topo_gmsh_transfinite_subset_containment_max_length_ratio_spin
