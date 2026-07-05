@@ -418,15 +418,15 @@ class TestModelTabView(unittest.TestCase):
         view = self._make_view()
         self.assertIsInstance(view.model_toolbox, QToolBox)
 
-    def test_view_toolbox_has_six_pages(self):
+    def test_view_toolbox_has_five_pages(self):
         view = self._make_view()
-        # Layers, Solver, Rain, Stability, Drain, Output
-        self.assertEqual(view.model_toolbox.count(), 6)
+        # Solver, Rain, Stability, Drain, Output (Layers page removed)
+        self.assertEqual(view.model_toolbox.count(), 5)
 
     def test_view_pages_have_expanding_size_policy(self):
         view = self._make_view()
         from qgis.PyQt.QtWidgets import QSizePolicy
-        for page_name in ("model_layers_page", "model_solver_page", "model_rain_page", "model_stability_page", "model_drain_page", "model_output_page"):
+        for page_name in ("model_solver_page", "model_rain_page", "model_stability_page", "model_drain_page", "model_output_page"):
             page = view.findChild(QWidget, page_name)
             self.assertIsNotNone(page)
             self.assertEqual(page.sizePolicy().verticalPolicy(), QSizePolicy.Expanding)

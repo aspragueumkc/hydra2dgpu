@@ -154,9 +154,6 @@ def wire_model_tab_layers_signals(dialog) -> None:
         lc.refresh_layer_combos()
 
     for attr in (
-        "nodes_layer_combo",
-        "cells_layer_combo",
-        "terrain_layer_combo",
         "manning_layer_combo",
         "cn_layer_combo",
         "rain_gage_layer_combo",

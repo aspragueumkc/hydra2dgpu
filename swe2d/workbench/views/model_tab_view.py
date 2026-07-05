@@ -32,9 +32,6 @@ class ModelTabView(QtWidgets.QWidget):
     Houses six QToolBox pages.  Every widget is created here as a direct
     instance attribute with a stable ``objectName``.
 
-    Layers page (``model_layers_page``):
-        terrain_layer_combo
-
     Solver Parameters page (``model_solver_page``):
         manning_layer_combo (Physics & Friction group),
         n_mann_spin, cfl_spin, h_min_spin,
@@ -129,9 +126,6 @@ class ModelTabView(QtWidgets.QWidget):
         )
         root_layout.addWidget(self.model_toolbox)
 
-        # Layers page — moved from the Setup tab (MapTabView)
-        self._build_layers_page()
-
         self.model_solver_page, self.model_solver_form = self._build_form_page(
             "model_solver_page", "model_solver_form"
         )
@@ -154,7 +148,6 @@ class ModelTabView(QtWidgets.QWidget):
 
         self._build_output_page()
 
-        self.model_toolbox.addItem(self.model_layers_page, "Layers")
         self.model_toolbox.addItem(self.model_solver_page, "Solver Parameters")
         self.model_toolbox.addItem(self.model_rain_page, "Rain / Hydrology")
         self.model_toolbox.addItem(self.model_stability_page, "Stability Controls")
@@ -169,70 +162,6 @@ class ModelTabView(QtWidgets.QWidget):
                     QtWidgets.QSizePolicy.Expanding,
                 )
 
-    # ------------------------------------------------------------------
-    # Layers page — moved from MapTabView (Setup tab)
-    # ------------------------------------------------------------------
-
-    def _build_layers_page(self) -> None:
-        """Build the Layers page with all layer-selection combos.
-
-        The 14 combos (nodes, cells, terrain, manning, CN, rain gages,
-        hyetographs, sample lines, drainage nodes/links/inlets, structures,
-        BC lines) were moved here from MapTabView._build_data_page so the
-        Simulation tab is now the single home for layer selection.
-        """
-        self.model_layers_page = QtWidgets.QWidget()
-        self.model_layers_page.setObjectName("model_layers_page")
-        layers_layout = QtWidgets.QGridLayout(self.model_layers_page)
-        layers_layout.setContentsMargins(4, 4, 4, 4)
-
-        # Create all 14 layer combos as instance attributes (combos moved to
-        # other pages are still created here so existing controller wiring works)
-        for attr in (
-            "terrain_layer_combo",
-            "manning_layer_combo",
-            "cn_layer_combo",
-            "rain_gage_layer_combo",
-            "hyetograph_layer_combo",
-            "sample_lines_layer_combo",
-            "drain_nodes_layer_combo",
-            "drain_links_layer_combo",
-            "drain_inlets_layer_combo",
-            "drain_node_inlets_layer_combo",
-            "structures_layer_combo",
-            "bc_lines_layer_combo",
-        ):
-            widget = QtWidgets.QComboBox()
-            widget.setObjectName(attr)
-            setattr(self, attr, widget)
-
-        # Only terrain_layer_combo remains on the Layers page.
-        # Nodes/cells selection is done via the 'Load Mesh From Layers' dialog.
-        for row, label, attr in [
-            (0, "Terrain raster:", "terrain_layer_combo"),
-        ]:
-            widget = getattr(self, attr)
-            if layers_layout.indexOf(widget) < 0:
-                layers_layout.addWidget(QtWidgets.QLabel(label), row, 0)
-                layers_layout.addWidget(widget, row, 1)
-        layers_layout.setRowStretch(1, 1)
-
-        # Tooltips
-        self.terrain_layer_combo.setToolTip(
-            "Digital elevation model (DEM) raster layer used to assign node bed elevations. "
-            "Select a raster then use 'Assign Node Z From Terrain' on the Mesh tab."
-        )
-        self.sample_lines_layer_combo.setToolTip(
-            "Line layer for sampling flow results along cross-sections during simulation. "
-            "Results are saved at the line output interval specified in the Run tab."
-        )
-        self.bc_lines_layer_combo.setToolTip(
-            "Line layer for boundary condition segments. "
-            "Each segment defines a BC type (inflow, stage, normal depth, etc.) "
-            "assigned via the default BC type combo or per-segment attributes."
-        )
-
-        # Drain combos moved to the Drainage page's "Layer Setup" group
     def _build_form_page(
         self, page_name: str, form_name: str
     ) -> tuple[QtWidgets.QWidget, QtWidgets.QFormLayout]:
@@ -608,6 +537,10 @@ class ModelTabView(QtWidgets.QWidget):
 
     def _build_solver_form_widgets(self, param_form: QtWidgets.QFormLayout) -> None:
         """Populate the Solver Parameters page with grouped controls."""
+        # Spatial Manning layer (relocated from the removed Layers page)
+        self.manning_layer_combo = QtWidgets.QComboBox()
+        self.manning_layer_combo.setObjectName("manning_layer_combo")
+        self.manning_layer_combo.addItem("(none)", None)
         # -- Time Stepping --
         form = self._start_param_group(param_form, "Time Stepping")
         self.cfl_spin = QtWidgets.QDoubleSpinBox()
@@ -930,6 +863,16 @@ class ModelTabView(QtWidgets.QWidget):
 
     def _build_rain_form_widgets(self, param_form: QtWidgets.QFormLayout) -> None:
         """Populate the Rain / Hydrology page with grouped rainfall controls."""
+        # Layer combos (relocated from the removed Layers page)
+        self.rain_gage_layer_combo = QtWidgets.QComboBox()
+        self.rain_gage_layer_combo.setObjectName("rain_gage_layer_combo")
+        self.rain_gage_layer_combo.addItem("(none)", None)
+        self.hyetograph_layer_combo = QtWidgets.QComboBox()
+        self.hyetograph_layer_combo.setObjectName("hyetograph_layer_combo")
+        self.hyetograph_layer_combo.addItem("(none)", None)
+        self.cn_layer_combo = QtWidgets.QComboBox()
+        self.cn_layer_combo.setObjectName("cn_layer_combo")
+        self.cn_layer_combo.addItem("(none)", None)
         form = self._start_param_group(param_form, "Rainfall Input")
         # Spatial rainfall layers — moved from the Layers page
         self.rain_gage_layer_combo.setToolTip(
@@ -1276,7 +1219,17 @@ class ModelTabView(QtWidgets.QWidget):
 
     def _build_drain_form_widgets(self, param_form: QtWidgets.QFormLayout) -> None:
         """Populate the Structures & Drainage page with grouped coupling controls."""
-        # -- Layer Setup (drainage + structures layers — moved from Layers page) --
+        # Layer Setup (drainage + structures layers — relocated from removed Layers page)
+        for attr in [
+            "drain_nodes_layer_combo",
+            "drain_links_layer_combo",
+            "drain_inlets_layer_combo",
+            "drain_node_inlets_layer_combo",
+            "structures_layer_combo",
+        ]:
+            widget = QtWidgets.QComboBox()
+            widget.setObjectName(attr)
+            setattr(self, attr, widget)
         form = self._start_param_group(param_form, "Layer Setup")
         self.drain_nodes_layer_combo.setToolTip(
             "Point layer for drainage network nodes (manholes, junctions). "
@@ -1303,17 +1256,6 @@ class ModelTabView(QtWidgets.QWidget):
             "Each structure must have a type field and geometry."
         )
         self._add_param_row(form, "Hydraulic structures layer:", self.structures_layer_combo)
-        # Add (none) items for all layer combos
-        for attr in [
-            "drain_nodes_layer_combo",
-            "drain_links_layer_combo",
-            "drain_inlets_layer_combo",
-            "drain_node_inlets_layer_combo",
-            "structures_layer_combo",
-        ]:
-            c = getattr(self, attr)
-            if c.count() == 0:
-                c.addItem("(none)", None)
 
         form = self._start_param_group(param_form, "Culvert / Bridge", advanced=True)
         self.coupling_loop_combo = QtWidgets.QComboBox()

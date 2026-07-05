@@ -41,7 +41,7 @@ class TestMapTabView(unittest.TestCase):
         from swe2d.workbench.views.map_tab_view import MapTabView
         view = MapTabView()
         for attr in (
-            "nodes_layer_combo", "cells_layer_combo", "terrain_layer_combo",
+            "nodes_layer_combo", "cells_layer_combo",
             "manning_layer_combo", "cn_layer_combo", "rain_gage_layer_combo",
             "hyetograph_layer_combo", "sample_lines_layer_combo",
             "drain_nodes_layer_combo", "drain_links_layer_combo",

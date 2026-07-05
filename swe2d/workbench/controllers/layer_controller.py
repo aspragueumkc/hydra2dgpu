@@ -25,9 +25,6 @@ class LayerController:
         """Refresh all layer combos from the current QGIS project."""
         v = self._view
         layers = list(QgsProject.instance().mapLayers().values())
-        v.populate_layer_combo("nodes_layer_combo", layers, "point")
-        v.populate_layer_combo("cells_layer_combo", layers, "polygon")
-        v.populate_layer_combo("terrain_layer_combo", layers, "raster")
         v.populate_layer_combo("manning_layer_combo", layers, "polygon")
         v.populate_layer_combo("cn_layer_combo", layers, "polygon")
         v.populate_layer_combo("rain_gage_layer_combo", layers, "point")
