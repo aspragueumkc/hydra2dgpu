@@ -20,13 +20,24 @@ def close_workbench_studio(iface=None) -> None:
     This is a public API callable from outside the workbench module
     (e.g. from the plugin menu) to close the workbench without
     disabling the plugin itself.
+
+    Persists dock layout + window geometry to QSettings *before*
+    tearing the docks down, so the user's panel arrangement is
+    preserved across QGIS sessions.
     """
     global _studio_active_dialog
     if _studio_active_dialog is None:
+        # Still mark was_open=False so we don't auto-relaunch on next startup.
+        _persist_workbench_was_open(False)
         return
     iface = _resolve_workbench_iface(None, iface)
+    try:
+        _capture_and_persist_window_state(iface)
+    except Exception as e:
+        logger_wb.warning("[close] save window state failed: %s", e)
     _remove_workbench_studio_dock(iface, dlg=_studio_active_dialog)
     _studio_active_dialog = None
+    _persist_workbench_was_open(False)
 
 
 def _normalize_workbench_host_mode(host_mode: object) -> str:
@@ -208,7 +219,15 @@ def _install_studio_host_controls(
 
 
 def launch_swe2d_workbench_studio(parent=None, iface=None, host_mode: str = "dock"):
-    """Launch the SWE2D workbench Studio dialog (docked or windowed mode)."""
+    """Launch the SWE2D workbench Studio dialog (docked or windowed mode).
+
+    Records ``was_open=True`` in QSettings so the plugin knows to
+    re-open the workbench on the next QGIS launch (when the user
+    has also enabled open-on-startup).  Per-dock layout restoration
+    happens inside ``WorkbenchDialogBuilder._build_component`` once
+    every dock has been registered with ``iface.mainWindow()`` —
+    see _schedule_restored_dock_layout.
+    """
     from swe2d.workbench.studio_dialog import SWE2DWorkbenchStudioDialog
 
     global _studio_active_dialog
@@ -221,6 +240,11 @@ def launch_swe2d_workbench_studio(parent=None, iface=None, host_mode: str = "doc
         _close_workbench_studio_windows()
         # Clean up previous instance before creating a new one
         if _studio_active_dialog is not None:
+            # Capture layout from the outgoing instance before tearing down.
+            try:
+                _capture_and_persist_window_state(iface)
+            except Exception as e:
+                logger_wb.warning("[launch] save window state failed: %s", e)
             _remove_workbench_studio_dock(iface, dlg=_studio_active_dialog)
             _studio_active_dialog = None
 
@@ -254,7 +278,13 @@ def launch_swe2d_workbench_studio(parent=None, iface=None, host_mode: str = "doc
             logger_wb.warning("[launch] update status failed: %s", e)
             pass
 
+        # Schedule the dock-layout restore on the next tick so every
+        # dock has been registered with iface.mainWindow().
+        if host_window is not None:
+            _schedule_restored_dock_layout(host_window)
+
         _studio_active_dialog = dlg
+        _persist_workbench_was_open(True)
         return dlg
 
     _remove_workbench_studio_dock(iface)
@@ -286,3 +316,77 @@ def launch_swe2d_workbench_studio(parent=None, iface=None, host_mode: str = "doc
     dlg.raise_()
     dlg.activateWindow()
     return dlg
+
+
+# ----------------------------------------------------------------------
+# Workbench session persistence (QMainWindow.saveState / restoreState)
+# ----------------------------------------------------------------------
+
+def _workbench_qsettings():
+    """Return the shared QSettings for HYDRA2DGPU.
+
+    Centralized so all four hook points (launch, close, unload, settings UI)
+    write to the same file.  Returns None if Qt is not yet importable
+    (very early initGui call before ``QApplication`` is up).
+    """
+    try:
+        from qgis.PyQt.QtCore import QSettings
+        return QSettings("HYDRA2DGPU", "HYDRA2DGPU")
+    except Exception as e:  # pragma: no cover — defensive
+        logger_wb.warning("[persistence] QSettings unavailable: %s", e)
+        return None
+
+
+def _capture_and_persist_window_state(iface_obj=None) -> bool:
+    """Save the QGIS main window's dock layout to QSettings.
+
+    Called by ``close_workbench_studio`` (user closed via menu) and
+    from ``hydra_plugin.unload`` (user closed QGIS without closing
+    the workbench first).
+    """
+    from swe2d.workbench import persistence
+
+    s = _workbench_qsettings()
+    if s is None:
+        return False
+    mw = _studio_host_main_window(iface_obj)
+    if mw is None:
+        return False
+    return persistence.save_window_state(s, mw)
+
+
+def _persist_workbench_was_open(value: bool) -> None:
+    """Mark whether the workbench is currently open."""
+    from swe2d.workbench import persistence
+
+    s = _workbench_qsettings()
+    if s is None:
+        return
+    persistence.save_was_open(s, value)
+
+
+def _schedule_restored_dock_layout(host_window) -> None:
+    """Restore the persisted dock layout on a deferred single-shot timer.
+
+    ``QMainWindow.restoreState`` must run *after* every dock it
+    references has been added with a stable ``objectName()``.
+    Since each dock is added in its own ``_build_component`` call,
+    we wait until the next tick of the event loop.
+    """
+    try:
+        QtCore.QTimer.singleShot(0, lambda: _apply_restored_dock_layout(host_window))
+    except Exception as e:
+        logger_wb.warning("[persistence] schedule layout restore failed: %s", e)
+
+
+def _apply_restored_dock_layout(host_window) -> None:
+    """Perform the actual restore using the persistence helper."""
+    from swe2d.workbench import persistence
+
+    s = _workbench_qsettings()
+    if s is None or host_window is None:
+        return
+    try:
+        persistence.restore_window_state(s, host_window)
+    except Exception as e:
+        logger_wb.warning("[persistence] restore_window_state raised: %s", e)

@@ -12,6 +12,7 @@ from qgis.PyQt.QtGui import QKeySequence
 from qgis.PyQt.QtWidgets import (
     QAction,
     QApplication,
+    QCheckBox,
     QDialog,
     QDialogButtonBox,
     QFileDialog,
@@ -122,7 +123,61 @@ class HydraQgisPlugin:
         except Exception as e:
             logging.getLogger(__name__).warning("Project signal connect failed: %s", e)
 
+        # Restore previous workbench session. Defer to next event-loop tick so
+        # QGIS finishes laying out its own panels before we add ours; this
+        # matches how users expect "open windows from last session" to work
+        # in other apps.
+        try:
+            QtCore.QTimer.singleShot(0, self._maybe_restore_workbench_on_startup)
+        except Exception as _pt:
+            logging.getLogger(__name__).warning(
+                "Could not schedule workbench startup restore: %s", _pt
+            )
+
+    def _maybe_restore_workbench_on_startup(self) -> None:
+        """Open the workbench if the user previously left it open with
+        the open-on-startup flag enabled.
+
+        Both conditions must be true:
+        - ``workbench/open_on_startup`` is True (user-facing setting)
+        - ``workbench/was_open`` was True when we last unloaded
+
+        This prevents surprising users who never asked for the workbench
+        to be persistent.
+        """
+        try:
+            from swe2d.workbench import persistence
+            s = QSettings("HYDRA2DGPU", "HYDRA2DGPU")
+            if not persistence.load_open_on_startup(s):
+                return
+            if persistence.was_open(s) is not True:
+                return
+        except Exception as e:
+            logging.getLogger(__name__).debug(
+                "_maybe_restore_workbench_on_startup: settings read failed: %s", e
+            )
+            return
+        try:
+            self.run()
+        except Exception as e:
+            logging.getLogger(__name__).warning(
+                "_maybe_restore_workbench_on_startup: self.run() failed: %s", e
+            )
+
     def unload(self):
+        # Capture dock layout BEFORE tearing down the dialog so the user's
+        # panel arrangement is preserved across QGIS restarts.
+        try:
+            if self._swe2d_dialog is not None and self.iface is not None:
+                mw = self.iface.mainWindow() if hasattr(self.iface, "mainWindow") else None
+                if mw is not None:
+                    from swe2d.workbench import persistence
+                    s = QSettings("HYDRA2DGPU", "HYDRA2DGPU")
+                    persistence.save_window_state(s, mw)
+        except Exception as e:
+            logging.getLogger(__name__).debug(
+                "unload: save_window_state failed: %s", e
+            )
         self._remove_main_menu_bar_menu()
         if self._swe2d_dialog is not None:
             try:
@@ -625,6 +680,35 @@ class HYDRASettingsDialog(QDialog):
 
         layout.addLayout(path_layout)
 
+        # ── Workbench Session section ────────────────────────────────────
+        layout.addSpacing(16)
+        layout.addWidget(QLabel("<b>Workbench Session</b>"))
+        layout.addWidget(QLabel(
+            "The HYDRA2DGPU workbench remembers whether it was open at the last "
+            "QGIS session, plus the position of every dock panel. By default it "
+            "is closed on startup so you do not get surprised."
+        ))
+
+        from swe2d.workbench import persistence as _wb_persist
+        self._open_on_startup_chk = QCheckBox("Open Workbench on QGIS startup")
+        self._open_on_startup_chk.setToolTip(
+            "If checked AND the workbench was open when QGIS last closed, "
+            "the workbench is automatically opened on next QGIS launch."
+        )
+        self._open_on_startup_chk.setChecked(
+            _wb_persist.load_open_on_startup(self._settings)
+        )
+        layout.addWidget(self._open_on_startup_chk)
+
+        reset_layout_btn = QPushButton("Reset Workbench Layout")
+        reset_layout_btn.setToolTip(
+            "Forget the saved dock positions. The next time the workbench "
+            "is opened, Qt's default layout is used. Useful when docks end "
+            "up off-screen."
+        )
+        reset_layout_btn.clicked.connect(self._reset_workbench_layout)
+        layout.addWidget(reset_layout_btn)
+
         # ── Dependencies section ─────────────────────────────────────────
         layout.addSpacing(16)
         layout.addWidget(QLabel("<b>Python Dependencies</b>"))
@@ -682,9 +766,30 @@ class HYDRASettingsDialog(QDialog):
         """Clear the custom CUDA DLL path (revert to bundled default)."""
         self._cuda_path_edit.setText("")
 
+    def _reset_workbench_layout(self):
+        """Forget the saved dock layout + was-open flag.
+
+        Next time the workbench opens, Qt's default layout is used.
+        Useful when the saved layout puts docks off-screen.
+        """
+        from swe2d.workbench import persistence as _wb_persist
+        _wb_persist.clear_window_state(self._settings)
+        QMessageBox.information(
+            self,
+            "Workbench Layout Reset",
+            "Saved workbench dock layout cleared. "
+            "Re-open the workbench (Plugins ▸ HYDRA2DGPU ▸ Open Workbench) "
+            "to use the default arrangement.",
+        )
+
     def _on_accept(self):
         """Save settings and close."""
+        from swe2d.workbench import persistence as _wb_persist
+
         self._settings.setValue("cuda_dll_path", self._cuda_path_edit.text().strip())
+        _wb_persist.save_open_on_startup(
+            self._settings, self._open_on_startup_chk.isChecked()
+        )
         self._settings.sync()
         self.accept()
 
