@@ -82,10 +82,12 @@ class ResultsToolbox(QtWidgets.QWidget):
     # ------------------------------------------------------------------
 
     def _build_ui(self) -> None:
-        """Build the 1-page toolbox (Display).
+        """Build the 2-page toolbox (Display + Runs).
 
         The Storage page was moved to the Simulation tab of the Model Setup
-        panel as the "Output" page (bottom of the model toolbox).
+        panel as the "Output" page (bottom of the model toolbox).  The Runs
+        page lives here, separate from Display, so the run list is not
+        fighting for vertical space with overlay controls.
         """
         layout = QtWidgets.QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
@@ -94,6 +96,7 @@ class ResultsToolbox(QtWidgets.QWidget):
         self._toolbox = QtWidgets.QToolBox()
         self._toolbox.setObjectName("results_toolbox")
         self._build_display_page(self._toolbox)
+        self._build_runs_page(self._toolbox)
         self._toolbox.setCurrentIndex(0)
         layout.addWidget(self._toolbox, 1)
 
@@ -221,7 +224,23 @@ class ResultsToolbox(QtWidgets.QWidget):
 
         page_layout.addWidget(style_group)
 
-        # --- Runs ---
+        page_layout.addStretch(1)
+
+        self._populate_overlay_combos()
+        toolbox.addItem(page, "Display")
+
+    # ------------------------------------------------------------------
+    # Page 2: Runs
+    # ------------------------------------------------------------------
+
+    def _build_runs_page(self, toolbox: QtWidgets.QToolBox) -> None:
+        """Build the Runs page with the run list, add/refresh, and enable/disable buttons."""
+        page = QtWidgets.QWidget()
+        page.setObjectName("results_runs_page")
+        page_layout = QtWidgets.QVBoxLayout(page)
+        page_layout.setContentsMargins(6, 6, 6, 6)
+        page_layout.setSpacing(6)
+
         runs_group = QtWidgets.QGroupBox("Runs")
         runs_group.setObjectName("results_runs_group")
         runs_layout = QtWidgets.QVBoxLayout(runs_group)
@@ -230,8 +249,7 @@ class ResultsToolbox(QtWidgets.QWidget):
         self._build_runs_section(runs_layout)
         page_layout.addWidget(runs_group, 1)
 
-        self._populate_overlay_combos()
-        toolbox.addItem(page, "Display")
+        toolbox.addItem(page, "Runs")
 
     def _wire_checkbox_children(self, chk: QtWidgets.QCheckBox, children: List[QtWidgets.QWidget]) -> None:
         """Enable/disable *children* when *chk* is toggled."""

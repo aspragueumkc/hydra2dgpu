@@ -446,13 +446,15 @@ class TestResultsToolbox(unittest.TestCase):
     def setUpClass(cls):
         _ensure_app()
 
-    def test_results_toolbox_has_one_page(self):
-        """Storage page was moved to ModelTabView (Output)."""
+    def test_results_toolbox_has_display_and_runs_pages(self):
+        """Display page holds overlay controls; Runs page holds the run list.
+        Storage page was moved to ModelTabView (Output)."""
         from swe2d.workbench.views.results_controls import ResultsToolbox
         toolbox = ResultsToolbox()
-        self.assertEqual(toolbox.toolbox.count(), 1)
+        self.assertEqual(toolbox.toolbox.count(), 2)
         texts = [toolbox.toolbox.itemText(i) for i in range(toolbox.toolbox.count())]
         self.assertIn("Display", texts)
+        self.assertIn("Runs", texts)
         self.assertNotIn("Storage", texts)
 
     def test_arrow_children_disable_with_checkbox(self):
