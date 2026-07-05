@@ -151,3 +151,26 @@ def apply_cell_permutation(
         mesh_data["cell_face_nodes"] = cfn_new
 
     return mesh_data
+
+
+def classify_boundary_edges(
+    node_x: np.ndarray, node_y: np.ndarray,
+    bc_n0: np.ndarray, bc_n1: np.ndarray,
+):
+    """Return (edge_lengths, side_index, side_names) for boundary edges.
+
+    side_index: 0=left, 1=right, 2=bottom, 3=top (nearest mesh boundary).
+    """
+    edge_len = edge_lengths(node_x, node_y, bc_n0, bc_n1)
+    xmin, xmax, ymin, ymax = mesh_bounds(node_x, node_y)
+    mx = 0.5 * (node_x[bc_n0] + node_x[bc_n1]) if bc_n0.size else np.empty(0, dtype=np.float64)
+    my = 0.5 * (node_y[bc_n0] + node_y[bc_n1]) if bc_n0.size else np.empty(0, dtype=np.float64)
+    if bc_n0.size:
+        d = np.vstack([
+            np.abs(mx - xmin), np.abs(mx - xmax),
+            np.abs(my - ymin), np.abs(my - ymax),
+        ])
+        side_idx = np.argmin(d, axis=0)
+    else:
+        side_idx = np.empty(0, dtype=np.int32)
+    return edge_len, side_idx, ["left", "right", "bottom", "top"]

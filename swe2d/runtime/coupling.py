@@ -1579,6 +1579,155 @@ def build_coupling_controller(
     return coupling_controller
 
 
+def validate_coupling_configs(
+    *,
+    pipe_cfg,
+    struct_cfg,
+    n_cells: int,
+) -> list[str]:
+    """Return a sanity-report (list of lines) for drainage + structure configs."""
+    lines: list[str] = []
+
+    def _format_id_preview(ids, limit: int = 10) -> str:
+        vals = [str(v) for v in ids if str(v)]
+        if not vals:
+            return "(none)"
+        if len(vals) <= limit:
+            return ", ".join(vals)
+        return ", ".join(vals[:limit]) + f", ... (+{len(vals) - limit} more)"
+
+    if pipe_cfg is not None:
+        lines.append(
+            f"Drainage network: nodes={len(pipe_cfg.nodes)}, "
+            f"links={len(pipe_cfg.links)}, inlets={len(pipe_cfg.inlets)}"
+        )
+
+        node_by_id = {str(n.node_id): n for n in pipe_cfg.nodes}
+        unknown_link_refs: list[str] = []
+        unknown_inlet_refs: list[str] = []
+        zero_capacity_links: list[str] = []
+        near_zero_head_links: list[str] = []
+        t0_probably_zero_links: list[str] = []
+
+        for lk in pipe_cfg.links:
+            lid = str(lk.link_id)
+            n0 = node_by_id.get(str(lk.from_node_id))
+            n1 = node_by_id.get(str(lk.to_node_id))
+            if n0 is None or n1 is None:
+                unknown_link_refs.append(lid)
+                continue
+
+            d = float(lk.diameter) if lk.diameter is not None else 0.0
+            a = float(lk.metadata.get("area_m2", 0.0) or 0.0)
+            eqd = float(lk.metadata.get("equiv_diameter_m", 0.0) or 0.0)
+            has_capacity = (d > 0.0) or (a > 0.0) or (eqd > 0.0)
+            if not has_capacity:
+                zero_capacity_links.append(lid)
+
+            dh0 = float(n0.invert_elev) - float(n1.invert_elev)
+            near_zero_head = abs(dh0) <= 1.0e-4
+            if near_zero_head:
+                near_zero_head_links.append(lid)
+
+            if (not has_capacity) or near_zero_head:
+                t0_probably_zero_links.append(lid)
+
+        for inlet in pipe_cfg.inlets:
+            if str(inlet.node_id) not in node_by_id:
+                unknown_inlet_refs.append(str(inlet.inlet_id))
+
+        lines.append("Coupling sanity report (drainage):")
+        lines.append(
+            f"- unknown link node refs: {len(unknown_link_refs)}"
+        )
+        if unknown_link_refs:
+            lines.append(
+                f"  IDs: {_format_id_preview(unknown_link_refs)}"
+            )
+        lines.append(
+            f"- unknown inlet node refs: {len(unknown_inlet_refs)}"
+        )
+        if unknown_inlet_refs:
+            lines.append(
+                f"  IDs: {_format_id_preview(unknown_inlet_refs)}"
+            )
+        lines.append(
+            f"- links with zero hydraulic capacity fields: "
+            f"{len(zero_capacity_links)}"
+        )
+        if zero_capacity_links:
+            lines.append(
+                f"  IDs: {_format_id_preview(zero_capacity_links)}"
+            )
+        lines.append(
+            f"- links with near-zero initial head gradient "
+            f"(|dh0|<=1e-4): {len(near_zero_head_links)}"
+        )
+        if near_zero_head_links:
+            lines.append(
+                f"  IDs: {_format_id_preview(near_zero_head_links)}"
+            )
+        lines.append(
+            f"- links likely zero-flow at t0 "
+            f"(capacity/head limits): {len(t0_probably_zero_links)}"
+        )
+    else:
+        lines.append("Drainage network: not configured")
+
+    if struct_cfg is not None:
+        lines.append(
+            f"Hydraulic structures: count={len(struct_cfg.structures)}"
+        )
+    else:
+        lines.append("Hydraulic structures: not configured")
+
+    try:
+        from swe2d.runtime.coupling import pack_coupling_soa
+    except ImportError:
+        pack_coupling_soa = None
+
+    if pack_coupling_soa is not None:
+        try:
+            soa = pack_coupling_soa(
+                n_cells=n_cells,
+                pipe_network=pipe_cfg,
+                hydraulic_structures=struct_cfg,
+            )
+            if soa.drainage is not None:
+                dn = soa.drainage
+                invalid_links = int(
+                    np.sum((dn.link_from < 0) | (dn.link_to < 0))
+                )
+                invalid_inlets = int(
+                    np.sum((dn.inlet_cell < 0) | (dn.inlet_node < 0))
+                )
+                lines.append(
+                    "Drainage SoA: "
+                    f"nodes={dn.node_x.size}, "
+                    f"links={dn.link_from.size}, "
+                    f"inlets={dn.inlet_cell.size}, "
+                    f"invalid_links={invalid_links}, "
+                    f"invalid_inlets={invalid_inlets}"
+                )
+            if soa.structures is not None:
+                ss = soa.structures
+                invalid_struct = int(
+                    np.sum(
+                        (ss.upstream_cell < 0)
+                        | (ss.downstream_cell < 0)
+                    )
+                )
+                lines.append(
+                    "Structures SoA: "
+                    f"count={ss.structure_type.size}, "
+                    f"invalid_cell_pairs={invalid_struct}"
+                )
+        except Exception as exc:
+            lines.append(f"SoA packing failed: {exc}")
+
+    return lines
+
+
 __all__ = [
     "SWE2DCouplingDiagnostics",
     "SWE2DCouplingController",
