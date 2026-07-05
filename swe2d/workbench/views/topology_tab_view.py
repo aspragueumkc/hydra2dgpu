@@ -445,14 +445,7 @@ class TopologyTabView(QtWidgets.QWidget):
             try:
                 lbl.setText(str(text))
             except Exception as _e:
-
-                try:
-
-                    self._log(f"[ERROR] Exception in topology_tab_view.py: {_e}")
-
-                except Exception:
-
-                    pass
+                self._log(f"[ERROR] Exception in topology_tab_view.py: {_e}")
 
     def _find_widget(self, attr: str):
         """Locate a widget by attribute name, checking direct attrs then _topo_widgets dict."""
@@ -486,14 +479,7 @@ class TopologyTabView(QtWidgets.QWidget):
             try:
                 w.setVisible(bool(visible))
             except Exception as _e:
-
-                try:
-
-                    self._log(f"[ERROR] Exception in topology_tab_view.py: {_e}")
-
-                except Exception:
-
-                    pass
+                self._log(f"[ERROR] Exception in topology_tab_view.py: {_e}")
 
     def get_topo_combo_data(self, attr: str):
         """Return currentData() of a topology combo by attribute name."""
@@ -512,14 +498,7 @@ class TopologyTabView(QtWidgets.QWidget):
             try:
                 w.setText(str(text))
             except RuntimeError as _e:
-
-                try:
-
-                    self._log(f"[ERROR] RuntimeError in topology_tab_view.py: {_e}")
-
-                except Exception:
-
-                    pass
+                self._log(f"[ERROR] RuntimeError in topology_tab_view.py: {_e}")
 
     def update_control_summary(self) -> None:
         """Toggle Gmsh-only page enable state and tab text based on current backend."""
