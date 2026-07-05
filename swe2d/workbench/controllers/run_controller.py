@@ -365,7 +365,8 @@ class RunController:
 
     def _on_simulation_worker_finished(self):
         """Called when SimulationWorker's QThread fully exits (main thread)."""
-        self._simulation_worker = None
+        if self.sender() is self._simulation_worker:
+            self._simulation_worker = None
 
     def _on_persistence_worker_finished(self):
         """Called when PersistenceWorker's QThread fully exits (main thread)."""
