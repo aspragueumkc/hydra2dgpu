@@ -85,6 +85,7 @@ class SWE2DRunFinalizer:
 
     def __init__(self, view: RunFinalizationView):
         self._view = view
+        self._log_buffer: List[str] = []
 
     def _flow_unit_label(self) -> str:
         """Derive flow unit label from length unit name (no widget access)."""
@@ -94,6 +95,16 @@ class SWE2DRunFinalizer:
         if unit == "m":
             return "cms"
         return f"{unit}3/s"
+
+    def _log(self, msg: str) -> None:
+        """Buffer a log message; the controller drains it via the worker signal."""
+        self._log_buffer.append(str(msg))
+
+    def drain_log_messages(self) -> List[str]:
+        """Return and clear accumulated log messages for the caller to forward."""
+        out = self._log_buffer
+        self._log_buffer = []
+        return out
 
     def finalize_and_persist(
         self,
@@ -140,11 +151,11 @@ class SWE2DRunFinalizer:
         def _record_error(msg: str, exc: Exception) -> None:
             status["ok"] = False
             status["errors"].append(f"{msg}: {exc}")
-            self._view.log_message(f"[ERROR] {msg}: {exc}")
+            self._log(f"[ERROR] {msg}: {exc}")
 
         def _record_warning(msg: str, exc: Exception) -> None:
             status["warnings"].append(f"{msg}: {exc}")
-            self._view.log_message(f"[WARNING] {msg}: {exc}")
+            self._log(f"[WARNING] {msg}: {exc}")
         h_end_model = np.asarray(h, dtype=np.float64).ravel()
         n_store_end = min(int(n_area), int(h_end_model.size))
         storage_end_model = float(np.sum(h_end_model[:n_store_end] * area_model[:n_store_end])) if n_store_end > 0 else 0.0
@@ -159,7 +170,7 @@ class SWE2DRunFinalizer:
 
         vol_unit_label = f"{self._view.length_unit_name()}3"
         vol_to_si = 1.0 / (self._view.length_scale_si_to_model() ** 3)
-        self._view.log_message(
+        self._log(
             "Mass balance (explicit sources/storage): "
             f"source_total={source_total_model:.6f} {vol_unit_label} "
             f"(rain={source_budget_model['rain']:.6f}, cell={source_budget_model['cell']:.6f}, "
@@ -168,17 +179,17 @@ class SWE2DRunFinalizer:
             f"implied_net_boundary_out={implied_boundary_out_model:.6f} {vol_unit_label} "
             f"(avg={avg_implied_boundary_q_model:.6f} {self._flow_unit_label()})"
         )
-        self._view.log_message(
+        self._log(
             "Mass balance (SI reference): "
             f"source_total={source_total_model * vol_to_si:.6f} m3, "
             f"dStorage={storage_delta_model * vol_to_si:.6f} m3, "
             f"implied_net_boundary_out={implied_boundary_out_model * vol_to_si:.6f} m3"
         )
         if boundary_flux_budget_model:
-            self._view.log_message("Boundary flux volume by group (from flow-type BC edges):")
+            self._log("Boundary flux volume by group (from flow-type BC edges):")
             for grp, vol_model in sorted(boundary_flux_budget_model.items(), key=lambda kv: abs(float(kv[1])), reverse=True):
                 avg_q_model = float(vol_model) / max(float(run_duration_s), 1.0e-12)
-                self._view.log_message(
+                self._log(
                     f"  {grp}: volume={float(vol_model):.6f} {vol_unit_label}, "
                     f"avg_q={avg_q_model:.6f} {self._flow_unit_label()}"
                 )
@@ -200,7 +211,7 @@ class SWE2DRunFinalizer:
                 _results_data.clear_live_snapshots()
                 _results_data.append_live_snapshot(*terminal_snapshot)
             snapshot_timesteps = [terminal_snapshot]
-            self._view.log_message(
+            self._log(
                 "Snapshot capture fallback: no interval snapshots recorded; "
                 "stored terminal state snapshot for overlay/results."
             )
@@ -231,9 +242,9 @@ class SWE2DRunFinalizer:
                         gpkg_results_path, run_id, mesh_name,
                         snapshot_timesteps,
                         max_tracking=max_tracking,
-                        log_fn=self._view.log_message,
+                        log_fn=self._log,
                     )
-                    self._view.log_message(
+                    self._log(
                         f"  baked mesh results saved to {gpkg_results_path} "
                         f"in {(time.perf_counter() - _t0) * 1000:.0f} ms"
                     )
@@ -287,7 +298,7 @@ class SWE2DRunFinalizer:
                     if line_ts_items:
                         persist_baked_line_ts_batch(
                             gpkg_results_path, run_id, line_ts_items,
-                            log_fn=self._view.log_message,
+                            log_fn=self._log,
                         )
                     profile_items = []
                     for lid, pd in prof_by_line.items():
@@ -330,9 +341,9 @@ class SWE2DRunFinalizer:
                     if profile_items:
                         persist_baked_line_profile_batch(
                             gpkg_results_path, run_id, profile_items,
-                            log_fn=self._view.log_message,
+                            log_fn=self._log,
                         )
-                    self._view.log_message(
+                    self._log(
                         f"  baked line TS+profiles saved to {gpkg_results_path} "
                         f"in {(time.perf_counter() - _t0) * 1000:.0f} ms"
                     )
@@ -360,9 +371,9 @@ class SWE2DRunFinalizer:
                     if coupling_items:
                         persist_baked_coupling_batch(
                             gpkg_results_path, run_id, coupling_items,
-                            log_fn=self._view.log_message,
+                            log_fn=self._log,
                         )
-                    self._view.log_message(
+                    self._log(
                         f"  baked coupling saved to {gpkg_results_path} "
                         f"in {(time.perf_counter() - _t0) * 1000:.0f} ms"
                     )
@@ -374,14 +385,14 @@ class SWE2DRunFinalizer:
             self._view.sync_overlay_data()
             if snapshot_timesteps:
                 self._view.update_overlay_time(float(snapshot_timesteps[-1][0]))
-            self._view.log_message(f"  overlay sync + update in {(time.perf_counter() - _t0) * 1000:.0f} ms")
+            self._log(f"  overlay sync + update in {(time.perf_counter() - _t0) * 1000:.0f} ms")
         except Exception as exc:
             _record_warning("Overlay sync failed", exc)
 
         run_wallclock_end = datetime.datetime.now().replace(microsecond=0).isoformat(sep=" ")
         run_duration_wallclock_s = max(0.0, time.perf_counter() - float(run_perf_start))
-        self._view.log_message(f"Run wallclock end: {run_wallclock_end}")
-        self._view.log_message(f"Run wallclock duration: {run_duration_wallclock_s:.3f} s")
+        self._log(f"Run wallclock end: {run_wallclock_end}")
+        self._log(f"Run wallclock duration: {run_duration_wallclock_s:.3f} s")
         if gpkg_results_path and save_run_log and run_id:
             _t0 = time.perf_counter()
             try:
@@ -404,24 +415,24 @@ class SWE2DRunFinalizer:
                     run_log_text,
                     metadata=run_log_metadata,
                 )
-                self._view.log_message(f"  run log saved to {gpkg_results_path} in {(time.perf_counter() - _t0) * 1000:.0f} ms")
+                self._log(f"  run log saved to {gpkg_results_path} in {(time.perf_counter() - _t0) * 1000:.0f} ms")
             except Exception as exc:
                 _record_error("Run log persistence failed", exc)
 
         if thiessen_forcing is not None and rain_stats_acc["samples"] > 0:
             avg_r = rain_stats_acc["rain_mm"] / rain_stats_acc["samples"]
             avg_e = rain_stats_acc["excess_mm"] / rain_stats_acc["samples"]
-            self._view.log_message(
+            self._log(
                 "Spatial rain/CN summary: "
                 f"mean rain={avg_r:.3f} mm/step, mean excess={avg_e:.3f} mm/step"
             )
 
-        self._view.log_message("Run complete." if not self._view.is_cancel_requested() else "Run canceled by user.")
+        self._log("Run complete." if not self._view.is_cancel_requested() else "Run canceled by user.")
         h_min = float(h_min)
         wet = h > h_min
         safe_h = np.maximum(h, 1.0e-12)
         vel_mag = np.where(wet, np.sqrt((hu / safe_h) ** 2 + (hv / safe_h) ** 2), 0.0)
-        self._view.log_message(
+        self._log(
             f"Depth range: {float(np.min(h)):.6f} .. {float(np.max(h)):.6f} | "
             f"Velocity mag max (wet cells): {float(np.max(vel_mag)):.6f}"
         )

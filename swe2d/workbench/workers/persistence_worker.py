@@ -56,6 +56,8 @@ class PersistenceWorker(QThread):
                 coupling_snapshots=self._result.coupling_snapshots,
                 precomputed_line_results=self._result.precomputed_line_results,
             )
+            for msg in finalizer.drain_log_messages():
+                self.log_message.emit(msg)
             self.persist_finished.emit(status)
         except Exception as exc:
             self.log_message.emit(f"[ERROR] Persistence worker failed: {exc}")
