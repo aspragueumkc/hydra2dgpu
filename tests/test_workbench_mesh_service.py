@@ -3,9 +3,9 @@
 import unittest
 import numpy as np
 
-from swe2d.workbench.services.mesh_service import (
-    assign_node_z_from_terrain,
-    build_line_sampling_map,
+from swe2d.workbench.services.mesh_service import assign_node_z_from_terrain
+from swe2d.workbench.services.line_sampling_service import (
+    build_line_sampling_map_numpy,
     sample_line_metrics,
 )
 
@@ -106,7 +106,7 @@ class TestBuildLineSamplingMap(unittest.TestCase):
     def test_horizontal_line_through_center(self):
         nc, cn = self._simple_mesh()
         line_xy = np.array([[0.5, 0.5], [1.5, 0.5]], dtype=np.float64)
-        result = build_line_sampling_map(nc, cn, line_xy)
+        result = build_line_sampling_map_numpy(nc, cn, line_xy)
         self.assertIn("cell_idx", result)
         self.assertIn("weights", result)
         self.assertIn("normal_x", result)
@@ -119,13 +119,13 @@ class TestBuildLineSamplingMap(unittest.TestCase):
     def test_line_outside_mesh_returns_default(self):
         nc, cn = self._simple_mesh()
         line_xy = np.array([[10.0, 10.0], [20.0, 20.0]], dtype=np.float64)
-        result = build_line_sampling_map(nc, cn, line_xy)
+        result = build_line_sampling_map_numpy(nc, cn, line_xy)
         self.assertEqual(len(result["cell_idx"]), 0)
 
     def test_normal_points_left_of_line(self):
         nc, cn = self._simple_mesh()
         line_xy = np.array([[0.0, 0.0], [1.0, 0.0]], dtype=np.float64)
-        result = build_line_sampling_map(nc, cn, line_xy)
+        result = build_line_sampling_map_numpy(nc, cn, line_xy)
         # normal convention: nx = dy/mag, ny = -dx/mag
         # for (dx=1, dy=0): nx=0, ny=-1
         self.assertAlmostEqual(result["normal_x"], 0.0, places=10)
@@ -134,7 +134,7 @@ class TestBuildLineSamplingMap(unittest.TestCase):
     def test_weights_sum_to_one(self):
         nc, cn = self._simple_mesh()
         line_xy = np.array([[0.5, 0.25], [1.5, 0.75]], dtype=np.float64)
-        result = build_line_sampling_map(nc, cn, line_xy)
+        result = build_line_sampling_map_numpy(nc, cn, line_xy)
         w = result["weights"]
         if w.size > 0:
             self.assertAlmostEqual(float(np.sum(w)), 1.0, places=5)
@@ -142,7 +142,7 @@ class TestBuildLineSamplingMap(unittest.TestCase):
     def test_profile_arrays_match_stations(self):
         nc, cn = self._simple_mesh()
         line_xy = np.array([[0.25, 0.5], [1.75, 0.5]], dtype=np.float64)
-        result = build_line_sampling_map(nc, cn, line_xy)
+        result = build_line_sampling_map_numpy(nc, cn, line_xy)
         n_sta = len(result["profile_station_m"])
         self.assertEqual(result["profile_cell_idx"].shape[0], n_sta)
         self.assertEqual(result["profile_cell_w"].shape[0], n_sta)
@@ -150,13 +150,13 @@ class TestBuildLineSamplingMap(unittest.TestCase):
     def test_empty_line_returns_default(self):
         nc, cn = self._simple_mesh()
         line_xy = np.empty((0, 2), dtype=np.float64)
-        result = build_line_sampling_map(nc, cn, line_xy)
+        result = build_line_sampling_map_numpy(nc, cn, line_xy)
         self.assertEqual(len(result["cell_idx"]), 0)
 
     def test_single_point_line_returns_default(self):
         nc, cn = self._simple_mesh()
         line_xy = np.array([[0.5, 0.5]], dtype=np.float64)
-        result = build_line_sampling_map(nc, cn, line_xy)
+        result = build_line_sampling_map_numpy(nc, cn, line_xy)
         self.assertEqual(len(result["cell_idx"]), 0)
 
 

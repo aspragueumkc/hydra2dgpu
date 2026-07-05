@@ -18,9 +18,9 @@ _REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if _REPO_ROOT not in sys.path:
     sys.path.insert(0, _REPO_ROOT)
 
-from swe2d.workbench.services.mesh_service import (
+from swe2d.workbench.services.line_sampling_service import (
     sample_line_metrics,
-    build_line_sampling_map,
+    build_line_sampling_map_numpy,
 )
 
 
@@ -64,7 +64,7 @@ def test_rcmk_consistent_order_gives_correct_depth():
 
     # Build sample_map from RCMK mesh (like run_controller.py after fix)
     node_coords = np.column_stack([node_x, node_y])
-    sample_map_rcmk = build_line_sampling_map(node_coords, cell_nodes_rcmk, line_xy)
+    sample_map_rcmk = build_line_sampling_map_numpy(node_coords, cell_nodes_rcmk, line_xy)
     assert sample_map_rcmk is not None
 
     # cell_solver_z from RCMK mesh
@@ -90,7 +90,7 @@ def test_rcmk_consistent_order_gives_correct_depth():
     assert np.any(np.isfinite(result["wse_m"])), "No finite WSE values"
 
     # Now build sample_map from original mesh, use original h and bed
-    sample_map_orig = build_line_sampling_map(node_coords, cell_nodes, line_xy)
+    sample_map_orig = build_line_sampling_map_numpy(node_coords, cell_nodes, line_xy)
     result_orig = sample_line_metrics(
         h=h_orig, hu=np.zeros(4), hv=np.zeros(4), bed=bed_orig,
         node_coords=node_coords, cell_nodes=cell_nodes, line_xy=line_xy,
@@ -119,7 +119,7 @@ def test_mismatched_order_gives_wrong_depth():
     cp = np.array([3, 1, 2, 0], dtype=np.int32)
 
     # sample_map in ORIGINAL order (the bug — built before RCMK reorder)
-    sample_map_orig = build_line_sampling_map(node_coords, cell_nodes, line_xy)
+    sample_map_orig = build_line_sampling_map_numpy(node_coords, cell_nodes, line_xy)
     assert sample_map_orig is not None
 
     # h in RCMK order (from GPU snapshots)

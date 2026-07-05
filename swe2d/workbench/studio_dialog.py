@@ -2012,8 +2012,8 @@ class SWE2DWorkbenchStudioDialog(QtWidgets.QDialog):
         """Sample line metrics (time-series and profile) from solver state."""
         if not sample_map:
             return [], []
-        from swe2d.workbench.services.mesh_service import sample_line_metrics as _svc
-        from swe2d.workbench.services.mesh_service import sample_line_aggregate_ts_row as _agg_svc
+        from swe2d.workbench.services.line_sampling_service import sample_line_metrics as _svc
+        from swe2d.workbench.services.line_sampling_service import sample_line_aggregate_ts_row as _agg_svc
         g = float(self._gravity)
         h_min = self._model_tab_view.get_h_min()
         h = np.asarray(h_s, dtype=np.float64)

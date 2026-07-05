@@ -454,8 +454,8 @@ def execute_run(
             sl_table = sl_cfg["table"]
             raw_lines = query_sample_lines_from_qgis(sl_gpkg, sl_table)
             if raw_lines:
-                from swe2d.workbench.services.mesh_service import (
-                    build_line_sampling_map,
+                from swe2d.workbench.services.line_sampling_service import (
+                    build_line_sampling_map_numpy,
                     sample_line_metrics,
                 )
                 from swe2d.mesh.mesh_runtime_logic import fan_triangulate_cells
@@ -469,7 +469,7 @@ def execute_run(
                     cell_nodes = np.asarray(mesh_data["cell_nodes"], dtype=np.int32).reshape(-1, 3)
                 cell_bed = getattr(backend, "_cell_zb", np.zeros(ncells, dtype=np.float64))
                 for raw in raw_lines:
-                    sm = build_line_sampling_map(
+                    sm = build_line_sampling_map_numpy(
                         node_coords, cell_nodes, raw["line_xy"]
                     )
                     if sm.get("cell_idx", np.array([])).size > 0:
@@ -653,7 +653,7 @@ def execute_run(
 
         precomputed_line_results: Dict[int, Dict[str, Any]] = {}
         if sample_map_list and snapshot_timesteps:
-            from swe2d.workbench.services.mesh_service import (
+            from swe2d.workbench.services.line_sampling_service import (
                 sample_line_aggregate_ts_row,
                 sample_line_metrics,
             )

@@ -492,8 +492,13 @@ class MeshController:
 
     # ── Terrain assignment ────────────────────────────────────────────
     def assign_node_z_from_terrain(self) -> None:
-        """Sample terrain raster at mesh node positions and assign node_z."""
+        """Sample terrain raster at mesh node positions and assign node_z.
+
+        Shows a dialog with a raster-layer picker instead of relying on a
+        pre-populated combo on the Layers page.
+        """
         from qgis.PyQt import QtWidgets
+        from qgis.core import QgsProject, QgsRasterLayer
         from swe2d.services.terrain_assignment_service import sample_raster_at_nodes
 
         view = self._view
@@ -502,37 +507,81 @@ class MeshController:
             view._log("[ERROR] No mesh loaded for terrain assignment.")
             return
 
-        terrain_combo = view.get_combo_widget("terrain_layer_combo")
-        lyr = view._combo_layer(terrain_combo, "raster")
-        if not lyr:
+        try:
+            raster_layers = [
+                lyr for lyr in QgsProject.instance().mapLayers().values()
+                if isinstance(lyr, QgsRasterLayer)
+            ]
+        except Exception as exc:
+            view._log(f"[ERROR] Could not read QGIS project layers: {exc}")
+            return
+
+        if not raster_layers:
             QtWidgets.QMessageBox.warning(
-                view, "Terrain Assignment", "Select a terrain raster layer first."
+                view, "No Raster Layers",
+                "No raster layers found in the QGIS project."
             )
             return
 
+        dlg = QtWidgets.QDialog(view)
+        dlg.setWindowTitle("Assign Node Z From Terrain")
+        dlg.setMinimumWidth(400)
+        layout = QtWidgets.QFormLayout(dlg)
+
+        raster_combo = QtWidgets.QComboBox()
+        raster_combo.addItem("(none)", None)
+        for lyr in raster_layers:
+            raster_combo.addItem(lyr.name(), lyr.id())
+
+        layout.addRow("Terrain raster:", raster_combo)
+
+        btns = QtWidgets.QDialogButtonBox(
+            QtWidgets.QDialogButtonBox.Ok | QtWidgets.QDialogButtonBox.Cancel
+        )
+        layout.addRow(btns)
+        btns.accepted.connect(dlg.accept)
+        btns.rejected.connect(dlg.reject)
+
+        if dlg.exec_() != QtWidgets.QDialog.Accepted:
+            return
+
+        raster_lid = raster_combo.currentData()
+        if not raster_lid:
+            view._log("Select a terrain raster layer.")
+            return
+
+        raster_layer = None
+        for lyr in raster_layers:
+            if lyr.id() == raster_lid:
+                raster_layer = lyr
+                break
+
+        if raster_layer is None:
+            view._log("Could not resolve selected raster layer.")
+            return
+
         try:
-            provider = lyr.dataProvider()
-            extent = lyr.extent()
-            block = provider.block(1, extent, lyr.width(), lyr.height())
+            provider = raster_layer.dataProvider()
+            extent = raster_layer.extent()
+            block = provider.block(1, extent, raster_layer.width(), raster_layer.height())
             if not block.isValid():
                 view._log("[ERROR] Could not read terrain raster block.")
                 return
 
-            import numpy as np
             data_type_map = {1: np.uint8, 2: np.uint16, 3: np.int16,
                              4: np.uint32, 5: np.int32, 6: np.float32, 7: np.float64}
             dtype = data_type_map.get(block.dataType(), np.float64)
             raster_data = np.frombuffer(bytes(block.data()), dtype=dtype)
             raster_data = raster_data.reshape(block.height(), block.width())
             geo_transform = (
-                extent.xMinimum(), lyr.rasterUnitsPerPixelX(), 0.0,
-                extent.yMaximum(), 0.0, -lyr.rasterUnitsPerPixelY(),
+                extent.xMinimum(), raster_layer.rasterUnitsPerPixelX(), 0.0,
+                extent.yMaximum(), 0.0, -raster_layer.rasterUnitsPerPixelY(),
             )
             mesh["node_z"] = sample_raster_at_nodes(
                 mesh["node_x"], mesh["node_y"], raster_data, geo_transform,
             )
             view._result_data = None
-            view._log(f"Assigned node z from terrain raster: {lyr.name()}")
+            view._log(f"Assigned node z from terrain raster: {raster_layer.name()}")
             view._refresh_plot()
         except Exception as e:
             view._log(f"[ERROR] Terrain assignment failed: {e}")
