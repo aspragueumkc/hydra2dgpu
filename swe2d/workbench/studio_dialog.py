@@ -37,8 +37,8 @@ from swe2d.services import mesh_computation_service as _mesh_svc
 from swe2d.workbench.services import widget_persistence_service as _wp_svc
 from swe2d.workbench.services.runtime_source_application_service import (
     _apply_external_sources_logic,
-    _sample_line_metrics_logic,
 )
+from swe2d.workbench.services.line_sampling_service import _sample_line_metrics_logic
 
 from swe2d.workbench.bridges.project_settings_bridge import (
     WORKBENCH_STATE_KEY,
