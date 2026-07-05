@@ -156,7 +156,6 @@ class TestModelTabView(unittest.TestCase):
         view = ModelTabView()
         for attr in (
             "output_interval_edit", "line_output_interval_edit",
-            "preview_overrides_btn", "preview_coupling_btn",
             "results_table_name_edit", "results_gpkg_path_edit",
             "select_results_gpkg_btn", "load_run_settings_btn", "save_settings_btn",
         ):
@@ -184,14 +183,12 @@ class TestModelTabView(unittest.TestCase):
             self.assertIn(key, params)
 
     def test_run_output_buttons_have_parent(self):
-        """The Preview / Load / Save buttons are wrapped in a QWidget row
-        container that must be parented (added to the form layout).
-        Otherwise the filter's setVisible(True) floats them as a
-        top-level window — the orphan-window regression."""
+        """The Load / Save Config buttons must be parented (added to the
+        form layout) so filter's setVisible(True) doesn't float them as
+        a top-level orphan window."""
         from swe2d.workbench.views.model_tab_view import ModelTabView
         view = ModelTabView()
         for attr in (
-            "preview_overrides_btn", "preview_coupling_btn",
             "load_run_settings_btn", "save_settings_btn",
         ):
             with self.subTest(attr=attr):

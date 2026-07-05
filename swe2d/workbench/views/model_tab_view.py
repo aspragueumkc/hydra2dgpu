@@ -84,7 +84,7 @@ class ModelTabView(QtWidgets.QWidget):
 
         run_btn, cancel_btn, batch_sim_btn, progress_bar,
         output_interval_edit, line_output_interval_edit,
-        preview_overrides_btn, preview_coupling_btn, snapshot_btn,
+        snapshot_btn,
         results_table_name_edit, results_gpkg_path_edit,
         select_results_gpkg_btn, load_run_settings_btn, save_settings_btn
     """
@@ -380,24 +380,8 @@ class ModelTabView(QtWidgets.QWidget):
         gpkg_row_layout.addWidget(self.results_gpkg_path_edit, 1)
         gpkg_row_layout.addWidget(self.select_results_gpkg_btn)
 
-        # ── Config (preview / load / save — each on its own row) ──────
+        # ── Config (load / save) ─────────────────────────────────────
         form = self._start_param_group(layout, "Config")
-
-        self.preview_overrides_btn = QtWidgets.QPushButton("Preview Overrides")
-        self.preview_overrides_btn.setObjectName("preview_overrides_btn")
-        self.preview_overrides_btn.setToolTip(
-            "Display a summary of all current parameter overrides "
-            "before running the simulation."
-        )
-        self._add_param_row(form, "Preview Overrides:", self.preview_overrides_btn)
-
-        self.preview_coupling_btn = QtWidgets.QPushButton("Preview Coupling")
-        self.preview_coupling_btn.setObjectName("preview_coupling_btn")
-        self.preview_coupling_btn.setToolTip(
-            "Preview the 1D-2D coupling configuration for drainage "
-            "and hydraulic structures before running."
-        )
-        self._add_param_row(form, "Preview Coupling:", self.preview_coupling_btn)
 
         self.load_run_settings_btn = QtWidgets.QPushButton("Load Config from GPKG…")
         self.load_run_settings_btn.setObjectName("load_run_settings_btn")

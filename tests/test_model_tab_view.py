@@ -74,7 +74,6 @@ class TestModelTabView(unittest.TestCase):
         # These are the output-config widgets that moved into ModelTabView:
         for attr in (
             "output_interval_edit", "line_output_interval_edit",
-            "preview_overrides_btn", "preview_coupling_btn",
             "results_table_name_edit", "results_gpkg_path_edit",
             "select_results_gpkg_btn", "load_run_settings_btn", "save_settings_btn",
         ):

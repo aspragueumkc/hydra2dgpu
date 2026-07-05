@@ -182,8 +182,6 @@ def wire_run_tab_signals(dialog) -> None:
     from swe2d.workbench.signal_helpers import safe_disconnect
     v = dialog._model_tab_view
     handlers = {
-        "preview_overrides_btn": (v.preview_overrides_btn, dialog._controller.on_preview_overrides),
-        "preview_coupling_btn": (v.preview_coupling_btn, dialog._controller.on_preview_coupling),
         "load_run_settings_btn": (v.load_run_settings_btn, dialog._controller.on_load_simulation_config),
         "save_settings_btn": (v.save_settings_btn, dialog._controller.on_save_simulation_config),
         "select_results_gpkg_btn": (v.select_results_gpkg_btn, dialog._mesh_controller.on_select_results_gpkg),
