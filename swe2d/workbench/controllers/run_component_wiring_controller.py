@@ -22,7 +22,7 @@ def wire_startup_run_components(dialog: Any, ns: Dict[str, Any]) -> None:
     SolverModelOptions = ns["SolverModelOptions"]
 
     dialog._run_orchestrator = SWE2DRunOrchestrator(
-        dialog._execute_run_request, dialog._log,
+        dialog._dispatch_run_request, dialog._log,
     )
 
     dialog._run_controller = SWE2DRunController(

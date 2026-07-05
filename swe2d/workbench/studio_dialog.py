@@ -2048,7 +2048,7 @@ class SWE2DWorkbenchStudioDialog(QtWidgets.QDialog):
             mesh_data=self._mesh_data,
         )
 
-    def _execute_run_request(self, request):
+    def _dispatch_run_request(self, request):
         """Execute a run request via the controller."""
         self._last_run_request = request
         self._controller.on_run(request)
