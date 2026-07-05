@@ -897,10 +897,6 @@ def build_line_sampling_map_numpy(
     }
 
 
-# Backward-compatible alias
-build_line_sampling_map = build_line_sampling_map_numpy
-
-
 # ---------------------------------------------------------------------------
 # Sample line metrics (numpy/OGR path, moved from mesh_service.py)
 # ---------------------------------------------------------------------------
