@@ -155,7 +155,10 @@ class SWE2DRuntimeReporter:
             t_read = time.perf_counter()
             if timesteps and results_data is not None:
                 try:
-                    results_data.set_live_snapshot_timesteps(timesteps)
+                    # Merge with existing live snapshots from earlier
+                    # readbacks so data accumulates across multiple fetches.
+                    existing = results_data.get_live_snapshot_timesteps()
+                    results_data.set_live_snapshot_timesteps(existing + timesteps)
                 except Exception:
                     logger.warning("set_live_snapshot_timesteps failed", exc_info=True)
                 t_set = time.perf_counter()

@@ -900,7 +900,14 @@ class RunController:
                         ))
                     rd = getattr(view, "_results_data", None)
                     if timesteps and rd is not None:
-                        rd.set_live_snapshot_timesteps(timesteps, t_sec=float(t_accum))
+                        # Merge with existing live snapshots from earlier
+                        # readbacks. read_snapshots() is destructive — each
+                        # call returns only snapshots stored since the last
+                        # read. Without merging, earlier live readbacks
+                        # (e.g. "Fetch Device Results") would be lost.
+                        existing = rd.get_live_snapshot_timesteps()
+                        rd.set_live_snapshot_timesteps(
+                            existing + timesteps, t_sec=float(t_accum))
                         # Populate live line TS + profile arrays from the
                         # final snapshot set so viewers render immediately,
                         # before finalize_and_persist writes to GPKG.
