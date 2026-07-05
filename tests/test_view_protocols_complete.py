@@ -15,9 +15,9 @@ def test_run_view_has_dialog_methods():
 def test_mesh_view_has_dialog_methods():
     from swe2d.workbench.controllers.protocols_controller import MeshView
     for method in (
-        "show_open_file_name", "show_save_file_name",
+        "get_open_file_name", "get_save_file_name",
         "show_warning_message", "show_information_message",
-        "show_mesh_tab",
+        "show_critical_message", "show_mesh_tab",
     ):
         assert hasattr(MeshView, method), f"MeshView missing {method}"
 

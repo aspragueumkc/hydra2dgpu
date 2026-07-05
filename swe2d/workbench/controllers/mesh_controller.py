@@ -7,6 +7,8 @@ extracted from ``WorkbenchController`` as they are rewritten to use the
 
 from __future__ import annotations
 
+import os
+
 import numpy as np
 
 from swe2d.workbench.controllers.protocols_controller import MeshView
@@ -26,14 +28,11 @@ class MeshController:
         Updates ``results_gpkg_path_edit`` if present and logs the
         selected path. Behaviour matches the legacy method exactly.
         """
-        from qgis.PyQt import QtWidgets
-
         view = self._view
         default_path = str(view._current_line_results_storage_path() or "")
         if not os.path.exists(default_path):
             default_path = str(view._model_gpkg_path or "")
-        gpkg_path, _ = QtWidgets.QFileDialog.getOpenFileName(
-            view,
+        gpkg_path = view.get_open_file_name(
             "Select Existing Results GeoPackage",
             default_path,
             "GeoPackage (*.gpkg)",
@@ -41,8 +40,7 @@ class MeshController:
         if not gpkg_path:
             return
         if not os.path.exists(gpkg_path):
-            QtWidgets.QMessageBox.warning(
-                view,
+            view.show_warning_message(
                 "Results GeoPackage",
                 "Please select an existing GeoPackage file.",
             )
@@ -71,8 +69,8 @@ class MeshController:
             return
 
         if not vector_layers:
-            QtWidgets.QMessageBox.warning(
-                view, "No Layers",
+            view.show_warning_message(
+                "No Layers",
                 "No vector layers found in the QGIS project."
             )
             return
@@ -155,10 +153,7 @@ class MeshController:
         )
         view._result_data = None
         try:
-            viewer = getattr(view, "_studio_viewer", None)
-            if viewer is not None:
-                viewer.tab_widget.setCurrentWidget(
-                    viewer.plot_widgets.get("Mesh"))
+            view.show_mesh_tab()
         except RuntimeError:
             pass
         try:
@@ -173,7 +168,6 @@ class MeshController:
         in ``extracted/topology_and_io_methods.py``) is inlined here.
         Reads all widget/state from ``self._view``.
         """
-        from qgis.PyQt import QtWidgets
         from qgis.core import QgsProject
 
         view = self._view
@@ -186,8 +180,7 @@ class MeshController:
             view._log("QGIS layer API unavailable; cannot create model GeoPackage.")
             return
 
-        out_path, _ = QtWidgets.QFileDialog.getSaveFileName(
-            view,
+        out_path = view.get_save_file_name(
             "Create 2D Model GeoPackage",
             "swe2d_model.gpkg",
             "GeoPackage (*.gpkg)",
@@ -249,9 +242,8 @@ class MeshController:
             view._log("[ERROR] No mesh loaded for UGRID export.")
             return
 
-        from qgis.PyQt import QtWidgets
-        out_path, _ = QtWidgets.QFileDialog.getSaveFileName(
-            view, "Export Mesh to UGRID NetCDF", "", "NetCDF (*.nc);;All (*.*)"
+        out_path = view.get_save_file_name(
+            "Export Mesh to UGRID NetCDF", "", "NetCDF (*.nc);;All (*.*)"
         )
         if not out_path:
             return
@@ -286,7 +278,7 @@ class MeshController:
             )
             view._log(f"Mesh exported to UGRID NetCDF: {out_path}")
         except Exception as e:
-            QtWidgets.QMessageBox.critical(view, "UGRID Export Error", str(e))
+            view.show_critical_message("UGRID Export Error", str(e))
             view._log(f"[ERROR] UGRID mesh export: {e}")
 
     # ── HEC-RAS HDF5 results export ──────────────────────────────────
@@ -302,15 +294,13 @@ class MeshController:
         rd = getattr(view, "_results_data", None)
         timesteps = rd.get_live_snapshot_timesteps()
         if mesh is None or not timesteps:
-            from qgis.PyQt import QtWidgets
-            QtWidgets.QMessageBox.warning(
-                view, "Export HDF5", "No mesh or simulation results available."
+            view.show_warning_message(
+                "Export HDF5", "No mesh or simulation results available."
             )
             return
 
-        from qgis.PyQt import QtWidgets
-        out_path, _ = QtWidgets.QFileDialog.getSaveFileName(
-            view, "Export Results to HEC-RAS HDF5", "", "HDF5 (*.h5);;All (*.*)"
+        out_path = view.get_save_file_name(
+            "Export Results to HEC-RAS HDF5", "", "HDF5 (*.h5);;All (*.*)"
         )
         if not out_path:
             return
@@ -348,7 +338,7 @@ class MeshController:
             )
             view._log(f"Results exported to HEC-RAS HDF5: {out_path}")
         except Exception as e:
-            QtWidgets.QMessageBox.critical(view, "HDF5 Export Error", str(e))
+            view.show_critical_message("HDF5 Export Error", str(e))
             view._log(f"[ERROR] HDF5 results export: {e}")
 
     # ── UGRID NetCDF results export ──────────────────────────────────
@@ -364,15 +354,14 @@ class MeshController:
         rd = getattr(view, "_results_data", None)
         timesteps = rd.get_live_snapshot_timesteps()
 
-        from qgis.PyQt import QtWidgets
         if mesh is None or not timesteps:
-            QtWidgets.QMessageBox.warning(
-                view, "Export UGRID", "No mesh or simulation results available."
+            view.show_warning_message(
+                "Export UGRID", "No mesh or simulation results available."
             )
             return
 
-        out_path, _ = QtWidgets.QFileDialog.getSaveFileName(
-            view, "Export Results to UGRID NetCDF",
+        out_path = view.get_save_file_name(
+            "Export Results to UGRID NetCDF",
             (getattr(view, "_current_line_results_storage_path", lambda: "")() or ""),
             "NetCDF (*.nc);;All (*.*)",
         )
@@ -388,7 +377,7 @@ class MeshController:
                            h_min=getattr(view, "_h_min", 0.01))
             view._log(f"Results exported to UGRID: {out_path}")
         except Exception as e:
-            QtWidgets.QMessageBox.critical(view, "UGRID Export Error", str(e))
+            view.show_critical_message("UGRID Export Error", str(e))
             view._log(f"[ERROR] UGRID export: {e}")
 
     # ── Run log viewer ────────────────────────────────────────────────
@@ -397,13 +386,12 @@ class MeshController:
     # ── Lumped hydrology GeoPackage creation ──────────────────────────
     def create_lumped_hydrology_geopackage(self) -> None:
         """Open a file dialog and create a lumped hydrology GeoPackage."""
-        from qgis.PyQt import QtWidgets
         from qgis.core import QgsProject
         from swe2d.services.lumped_hydrology_service import write_lumped_hydrology_geopackage
 
         view = self._view
-        out_path, _ = QtWidgets.QFileDialog.getSaveFileName(
-            view, "Create Lumped Hydrology GeoPackage",
+        out_path = view.get_save_file_name(
+            "Create Lumped Hydrology GeoPackage",
             "lumped_hydrology_model.gpkg", "GeoPackage (*.gpkg)",
         )
         if not out_path:
@@ -517,8 +505,8 @@ class MeshController:
             return
 
         if not raster_layers:
-            QtWidgets.QMessageBox.warning(
-                view, "No Raster Layers",
+            view.show_warning_message(
+                "No Raster Layers",
                 "No raster layers found in the QGIS project."
             )
             return
@@ -593,7 +581,6 @@ class MeshController:
     # ── Node Z pull from vector layer ─────────────────────────────────
     def pull_node_z_from_layer(self) -> None:
         """Pull bed_z from nodes vector layer into in-memory node_z."""
-        from qgis.PyQt import QtWidgets
         from swe2d.services.terrain_assignment_service import (
             assign_node_z_from_layer_features,
         )
@@ -607,8 +594,8 @@ class MeshController:
         nodes_combo = view.get_combo_widget("nodes_layer_combo")
         lyr = view._combo_layer(nodes_combo, "vector")
         if not lyr:
-            QtWidgets.QMessageBox.warning(
-                view, "Pull Node Z", "Select a nodes layer first."
+            view.show_warning_message(
+                "Pull Node Z", "Select a nodes layer first."
             )
             return
 
@@ -638,14 +625,13 @@ class MeshController:
         If path_override is None, opens a QFileDialog to select the file.
         """
         from qgis.core import QgsProject
-        from qgis.PyQt import QtWidgets
         from swe2d.workbench.services.model_gpkg_loader_service import load_layers_from_gpkg
 
         view = self._view
         gpkg_path = path_override
         if not gpkg_path:
-            gpkg_path, _ = QtWidgets.QFileDialog.getOpenFileName(
-                view, "Load 2D Model GeoPackage", "", "GeoPackage (*.gpkg)",
+            gpkg_path = view.get_open_file_name(
+                "Load 2D Model GeoPackage", "", "GeoPackage (*.gpkg)",
             )
         if not gpkg_path:
             return
@@ -653,8 +639,8 @@ class MeshController:
         try:
             layers = load_layers_from_gpkg(gpkg_path)
             if not layers:
-                QtWidgets.QMessageBox.warning(
-                    view, "Load Model",
+                view.show_warning_message(
+                    "Load Model",
                     "No valid model layers found in GeoPackage.",
                 )
                 return
