@@ -30,11 +30,13 @@
 
 ## Task 1: `RunContext` dataclass
 
+> ✅ Completed. Spec review and code quality review passed. Quality fixes applied and re-reviewed.
+
 **Files:**
 - Create: `swe2d/workbench/workers/run_context.py`
 - Test: `tests/test_run_context.py`
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 ```python
 import numpy as np
@@ -65,12 +67,12 @@ def test_run_context_holds_arrays_and_cancel_event():
     assert ctx.cancel_event.is_set() is False
 ```
 
-- [ ] **Step 2: Run test to verify it fails**
+- [x] **Step 2: Run test to verify it fails**
 
 Run: `pytest tests/test_run_context.py -v`
 Expected: FAIL — `RunContext` not defined.
 
-- [ ] **Step 3: Implement `RunContext`**
+- [x] **Step 3: Implement `RunContext`**
 
 ```python
 from __future__ import annotations
@@ -209,12 +211,12 @@ class RunContext:
     cancel_event: threading.Event = field(default_factory=threading.Event)
 ```
 
-- [ ] **Step 4: Run test to verify it passes**
+- [x] **Step 4: Run test to verify it passes**
 
 Run: `pytest tests/test_run_context.py -v`
 Expected: PASS.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add swe2d/workbench/workers/run_context.py tests/test_run_context.py
@@ -1117,8 +1119,43 @@ git commit -am "feat: wire worker classes into dialog startup"
 **Files:**
 - Modify: `swe2d/workbench/controllers/run_controller.py`
 - Modify: `swe2d/workbench/workers/simulation_worker.py`
+- Modify: `swe2d/workbench/studio_dialog.py` (extract `_sync_snapshot_to_ui`)
 
-- [ ] **Step 1: Add request-snapshot signal/path to worker**
+- [ ] **Step 1: Extract shared snapshot UI sync helper**
+
+Move the temporal-dock / overlay / plot update logic from the existing `_on_snapshot_readback` callback into a shared helper so both the old inline callback and the new worker slot use one code path.
+
+```python
+def _sync_snapshot_to_ui(view, snapshot_data=None):
+    """Sync live snapshot data to temporal dock, overlay, and plots."""
+    rd = getattr(view, "_results_data", None)
+    if rd is None:
+        return
+    temporal = getattr(view, "_temporal_dock", None)
+    if temporal is not None:
+        try:
+            temporal.set_data(rd)
+        except Exception as exc:
+            view._log(f"[SnapSync] temporal sync failed: {exc}")
+    try:
+        view._sync_high_perf_overlay_data()
+    except Exception as exc:
+        view._log(f"[SnapSync] overlay sync failed: {exc}")
+    try:
+        live_ts = rd.get_live_snapshot_timesteps()
+        if live_ts:
+            view._update_high_perf_overlay_time(float(live_ts[-1][0]))
+    except Exception as exc:
+        view._log(f"[SnapSync] overlay time update failed: {exc}")
+    try:
+        view._refresh_plot()
+    except Exception as exc:
+        view._log(f"[SnapSync] plot refresh failed: {exc}")
+```
+
+Replace the duplicate logic in `_on_snapshot_readback` with `self._view._sync_snapshot_to_ui()` and add `_sync_snapshot_to_ui` as a method on `SWE2DWorkbenchStudioDialog` so it is accessible from both the controller and the old callback.
+
+- [ ] **Step 2: Add request-snapshot signal/path to worker**
 
 Add a `request_snapshot()` method on `SimulationWorker` that sets an internal `threading.Event`. The timestep loop checks this event and, when set, triggers a readback on the next reporter step.
 
@@ -1127,7 +1164,7 @@ def request_snapshot(self):
     self._snapshot_requested.set()
 ```
 
-- [ ] **Step 2: Update `on_snapshot` in `RunController`**
+- [ ] **Step 3: Update `on_snapshot` in `RunController`**
 
 ```python
 def on_snapshot(self):
@@ -1136,18 +1173,21 @@ def on_snapshot(self):
         worker.request_snapshot()
         self._view._log("Device fetch requested.")
         return
-    # Existing no-active-run path unchanged.
+    # No active run — refresh UI from existing snapshots.
+    results_data = getattr(self._view, "_results_data", None)
+    if results_data is not None:
+        self._view._sync_snapshot_to_ui()
 ```
 
-- [ ] **Step 3: Run snapshot tests**
+- [ ] **Step 4: Run snapshot tests**
 
 Run: `pytest tests/test_workbench_controller.py::TestControllerOnSnapshot -v`
 Expected: PASS.
 
-- [ ] **Step 4: Commit**
+- [ ] **Step 5: Commit**
 
 ```bash
-git commit -am "feat: route snapshot fetch through SimulationWorker"
+git commit -am "feat: route snapshot fetch through SimulationWorker and share UI sync helper"
 ```
 
 ---
