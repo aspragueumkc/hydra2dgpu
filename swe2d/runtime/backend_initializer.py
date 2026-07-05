@@ -23,8 +23,8 @@ class SWE2DBackendInitializer:
 
     def __init__(
         self,
-        apply_timeseries_bc_values_callback: Callable[..., Any],
-        distribute_total_flow_to_unit_q_callback: Callable[..., np.ndarray],
+        apply_timeseries_bc_values_callback: Optional[Callable[..., Any]] = None,
+        distribute_total_flow_to_unit_q_callback: Optional[Callable[..., np.ndarray]] = None,
     ):
         self._apply_timeseries_bc_values = apply_timeseries_bc_values_callback
         self._distribute_total_flow_to_unit_q = distribute_total_flow_to_unit_q_callback
@@ -91,19 +91,20 @@ class SWE2DBackendInitializer:
 
         bc_tp_init = bc_tp.copy()
         bc_vl_init = bc_vl.copy()
-        if dynamic_bc:
+        if dynamic_bc and self._apply_timeseries_bc_values is not None:
             bc_tp_init, bc_vl_init = self._apply_timeseries_bc_values(
                 bc_n0, bc_n1, bc_tp_init, bc_vl_init, side_hydrographs, 0.0, edge_hydrographs
             )
-        bc_vl_init = self._distribute_total_flow_to_unit_q(
-            bc_n0,
-            bc_n1,
-            bc_tp_init,
-            bc_vl_init,
-            bc_tp,
-            side_hydrographs,
-            edge_hydrographs,
-        )
+        if self._distribute_total_flow_to_unit_q is not None:
+            bc_vl_init = self._distribute_total_flow_to_unit_q(
+                bc_n0,
+                bc_n1,
+                bc_tp_init,
+                bc_vl_init,
+                bc_tp,
+                side_hydrographs,
+                edge_hydrographs,
+            )
 
         # Shared helper (same logic as CLI headless runner)
         shared_build_mesh(

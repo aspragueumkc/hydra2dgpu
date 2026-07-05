@@ -199,7 +199,7 @@ class SWE2DRuntimeReporter:
                 )
 
         _now_wall = time.perf_counter()
-        if _now_wall - float(last_process_events_wall) >= float(process_events_interval_s):
+        if process_events_callback is not None and _now_wall - float(last_process_events_wall) >= float(process_events_interval_s):
             _t_ui0 = time.perf_counter()
             process_events_callback()
             ui_ms += (time.perf_counter() - _t_ui0) * 1000.0

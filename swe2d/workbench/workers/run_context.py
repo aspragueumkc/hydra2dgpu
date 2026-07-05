@@ -75,6 +75,8 @@ class RunContext:
     active_set_hysteresis: bool = False
     use_redistribution: bool = False
     inflow_progressive: bool = False
+    uniform_inflow_enabled: bool = False
+    rain_update_interval_s: float = 60.0
 
     # Mesh / state arrays
     node_x: np.ndarray = field(default_factory=lambda: np.empty(0, dtype=np.float64))

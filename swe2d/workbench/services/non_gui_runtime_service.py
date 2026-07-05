@@ -394,7 +394,7 @@ def execute_run_timestep_loop(
     line_output_interval_s: float,
     process_events_interval_s: float,
     last_process_events_wall: float,
-    process_events_callback: object,
+    process_events_callback: Optional[Callable[[], None]] = None,
     h_min: float,
     uniform_enabled: bool = False,
     progress_callback: Optional[Callable] = None,
