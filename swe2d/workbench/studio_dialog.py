@@ -1157,6 +1157,84 @@ class SWE2DWorkbenchStudioDialog(QtWidgets.QDialog):
         val, ok = QtWidgets.QInputDialog.getDouble(self, str(title), str(label), float(value), float(min_v), float(max_v), 4)
         return float(val), bool(ok)
 
+    def show_critical_message(self, title, message):
+        from qgis.PyQt import QtWidgets
+        QtWidgets.QMessageBox.critical(self, title, message)
+
+    def show_information_message(self, title, message):
+        from qgis.PyQt import QtWidgets
+        QtWidgets.QMessageBox.information(self, title, message)
+
+    def show_question_message(self, title, message):
+        from qgis.PyQt import QtWidgets
+        reply = QtWidgets.QMessageBox.question(
+            self, title, message,
+            QtWidgets.QMessageBox.Yes | QtWidgets.QMessageBox.No,
+        )
+        return reply == QtWidgets.QMessageBox.Yes
+
+    def get_open_file_name(self, title, start_dir, filter_str):
+        from qgis.PyQt import QtWidgets
+        path, _ = QtWidgets.QFileDialog.getOpenFileName(self, title, start_dir, filter_str)
+        return str(path or "")
+
+    def get_save_file_name(self, title, start_dir, filter_str):
+        from qgis.PyQt import QtWidgets
+        path, _ = QtWidgets.QFileDialog.getSaveFileName(self, title, start_dir, filter_str)
+        return str(path or "")
+
+    def get_input_text(self, title, label, text=""):
+        from qgis.PyQt import QtWidgets
+        value, ok = QtWidgets.QInputDialog.getText(self, title, label, text=text)
+        return str(value or ""), bool(ok)
+
+    def get_results_gpkg_path(self):
+        mtv = getattr(self, "_model_tab_view", None)
+        if mtv is not None:
+            pe = getattr(mtv, "results_gpkg_path_edit", None)
+            if pe is not None:
+                return str(pe.text() or "").strip()
+        return str(getattr(self, "_model_gpkg_path", "") or "")
+
+    def get_topo_status(self):
+        tb = getattr(self, "_topology_tab_view", None)
+        if tb is not None:
+            lbl = getattr(tb, "topo_status_lbl", None)
+            if lbl is not None:
+                return str(lbl.text() or "").strip()
+        return ""
+
+    def show_mesh_tab(self):
+        try:
+            viewer = getattr(self, "_studio_viewer", None)
+            if viewer is not None:
+                viewer.tab_widget.setCurrentWidget(viewer.plot_widgets.get("Mesh"))
+        except RuntimeError:
+            pass
+
+    def create_timer(self, on_tick):
+        from qgis.PyQt import QtCore
+        timer = QtCore.QTimer(self)
+        timer.timeout.connect(on_tick)
+        timer.start(250)
+        return timer
+
+    def stop_timer(self, timer):
+        if timer is not None:
+            timer.stop()
+            timer.deleteLater()
+
+    def set_overlay_color_range(self, vmin, vmax):
+        tb = getattr(self, "_results_toolbox", None)
+        if tb is None:
+            return
+        for attr, val in (("color_min_spin", vmin), ("color_max_spin", vmax)):
+            w = getattr(tb, attr, None)
+            if w is not None:
+                w.blockSignals(True)
+                w.setValue(float(val))
+                w.blockSignals(False)
+
     def refresh_map_canvas(self) -> None:
         """Refresh the QGIS map canvas."""
         iface = self._resolve_qgis_iface()

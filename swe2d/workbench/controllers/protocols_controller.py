@@ -47,6 +47,30 @@ class RunView(Protocol):
     def set_cancel_button_enabled(self, enabled: bool) -> None:
         """Enable or disable the cancel button."""
 
+    def show_critical_message(self, title: str, message: str) -> None:
+        """Show a critical-error dialog."""
+
+    def show_information_message(self, title: str, message: str) -> None:
+        """Show an information dialog."""
+
+    def show_warning_message(self, title: str, message: str) -> None:
+        """Show a warning dialog."""
+
+    def get_open_file_name(self, title: str, start_dir: str, filter_str: str) -> str:
+        """Show an open-file dialog and return the selected path (or '')."""
+
+    def get_save_file_name(self, title: str, start_dir: str, filter_str: str) -> str:
+        """Show a save-file dialog and return the selected path (or '')."""
+
+    def get_input_text(self, title: str, label: str, text: str = "") -> Tuple[str, bool]:
+        """Show a text-input dialog; return (value, ok)."""
+
+    def get_results_gpkg_path(self) -> str:
+        """Return the results GeoPackage path from the model tab."""
+
+    def show_mesh_tab(self) -> None:
+        """Switch the studio viewer to the Mesh tab."""
+
 
 class LayerView(Protocol):
     """View protocol for layer combo management."""
@@ -107,6 +131,12 @@ class MeshView(Protocol):
     def get_combo_widget(self, combo_attr: str) -> Any:
         """Get a combo widget by attribute name."""
 
+    def show_open_file_name(self, title: str, start_dir: str, filter_str: str) -> str: ...
+    def show_save_file_name(self, title: str, start_dir: str, filter_str: str) -> str: ...
+    def show_warning_message(self, title: str, message: str) -> None: ...
+    def show_information_message(self, title: str, message: str) -> None: ...
+    def show_mesh_tab(self) -> None: ...
+
 
 class OverlayView(Protocol):
     """View protocol for high-perf canvas overlay."""
@@ -154,6 +184,9 @@ class OverlayView(Protocol):
     def refresh_map_canvas(self) -> None:
         """Force the map canvas to redraw."""
 
+    def set_overlay_color_range(self, vmin: float, vmax: float) -> None:
+        """Set the overlay color-range spin boxes (blocks signals)."""
+
 
 class TopologyMeshView(Protocol):
     """View protocol for topology-based meshing."""
@@ -179,3 +212,12 @@ class TopologyMeshView(Protocol):
     def get_topo_combo_data(self, attr: str) -> Any:
         """Return currentData() of a topology combo by attribute name."""
         ...
+
+    def show_open_file_name(self, title: str, start_dir: str, filter_str: str) -> str: ...
+    def show_warning_message(self, title: str, message: str) -> None: ...
+    def show_information_message(self, title: str, message: str) -> None: ...
+    def show_question_message(self, title: str, message: str) -> bool: ...
+    def get_topo_status(self) -> str: ...
+    def show_mesh_tab(self) -> None: ...
+    def create_timer(self, on_tick: Any) -> Any: ...
+    def stop_timer(self, timer: Any) -> None: ...
