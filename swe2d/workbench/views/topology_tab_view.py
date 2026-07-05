@@ -429,10 +429,8 @@ class TopologyTabView(QtWidgets.QWidget):
 
         Returns the widgets dict so the controller can wire signals.
         """
-        from swe2d.mesh.gmsh_backend import _gmsh_available
-
         try:
-            widgets = _build_topology_tab_controls(self, self, _gmsh_available)
+            widgets = _build_topology_tab_controls(self, self)
             self._topo_widgets = widgets
             for k, w in widgets.items():
                 if isinstance(w, QtWidgets.QWidget) and not hasattr(self, k):
@@ -505,14 +503,18 @@ class TopologyTabView(QtWidgets.QWidget):
                 self._log(f"[ERROR] RuntimeError in topology_tab_view.py: {_e}")
 
     def update_control_summary(self) -> None:
-        """Toggle Gmsh-only page enable state and tab text based on current backend."""
+        """Toggle Gmsh-only page enable state based on current backend.
+
+        Gmsh-only pages are always enabled; they are hidden in the toolbox
+        tab text when the Structured backend is selected.
+        """
         backend_combo = getattr(self, "topo_backend_combo", None)
         if backend_combo is None:
             return
         is_gmsh = str(backend_combo.currentData() or "") == "gmsh"
         for idx in getattr(self, "_gmsh_only_indices", []):
             base = self._gmsh_only_base_titles.get(idx, "")
-            self._toolbox.setItemEnabled(idx, bool(is_gmsh))
+            self._toolbox.setItemEnabled(idx, True)
             self._toolbox.setItemText(
                 idx, base if is_gmsh else f"{base} (Gmsh only)"
             )
@@ -521,7 +523,6 @@ class TopologyTabView(QtWidgets.QWidget):
 def _build_topology_tab_controls(
     parent,
     topology_tab_page,
-    gmsh_available,
 ) -> dict:
     """Pure view: create topology tab widgets, return dict of them.
 
@@ -600,7 +601,7 @@ def _build_topology_tab_controls(
     _set_combo_items(topo_constraints_combo, [("(none)", None)], default_data=None)
     _set_combo_items(topo_quad_edges_combo, [("(none)", None)], default_data=None)
 
-    _gmsh_label = "Gmsh (recommended)" if gmsh_available() else "Gmsh (install: pip install gmsh)"
+    _gmsh_label = "Gmsh (recommended)"
     _set_combo_items(
         topo_backend_combo,
         [

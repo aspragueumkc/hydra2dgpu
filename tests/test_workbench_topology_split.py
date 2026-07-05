@@ -74,7 +74,6 @@ class TestBuildTopologyTabControls(_WithRealQApp, unittest.TestCase):
         result = _build_topology_tab_controls(
             parent=self.parent,
             topology_tab_page=self.parent,
-            gmsh_available=lambda: True,
         )
         self.assertIsInstance(result, dict)
         self.assertGreater(len(result), 0)
@@ -87,7 +86,6 @@ class TestBuildTopologyTabControls(_WithRealQApp, unittest.TestCase):
         result = _build_topology_tab_controls(
             parent=self.parent,
             topology_tab_page=self.parent,
-            gmsh_available=lambda: True,
         )
         widget_names = self._widget_names_in_dict(result)
         expected = {
@@ -128,7 +126,6 @@ class TestBuildTopologyTabControls(_WithRealQApp, unittest.TestCase):
         result = _build_topology_tab_controls(
             parent=self.parent,
             topology_tab_page=self.parent,
-            gmsh_available=lambda: True,
         )
         widget_names = self._widget_names_in_dict(result)
         expected = {
@@ -151,7 +148,6 @@ class TestBuildTopologyTabControls(_WithRealQApp, unittest.TestCase):
         result = _build_topology_tab_controls(
             parent=self.parent,
             topology_tab_page=self.parent,
-            gmsh_available=lambda: True,
         )
         widget_names = self._widget_names_in_dict(result)
         expected = {
@@ -170,7 +166,6 @@ class TestBuildTopologyTabControls(_WithRealQApp, unittest.TestCase):
         result = _build_topology_tab_controls(
             parent=self.parent,
             topology_tab_page=self.parent,
-            gmsh_available=lambda: True,
         )
         type_map = {
             "topo_backend_combo": QComboBox,
@@ -197,20 +192,19 @@ class TestBuildTopologyTabControls(_WithRealQApp, unittest.TestCase):
                 f"Widget '{name}' expected {expected_type.__name__}, got {type(w).__name__}"
             )
 
-    def test_gmsh_unavailable_uses_fallback_label(self):
-        """When gmsh is unavailable, backend combo shows install hint."""
+    def test_backend_combo_shows_gmsh_recommended(self):
+        """Backend combo always shows 'Gmsh (recommended)' — gmsh availability is no longer gating."""
         from swe2d.workbench.views.topology_tab_view import (
             _build_topology_tab_controls,
         )
         result = _build_topology_tab_controls(
             parent=self.parent,
             topology_tab_page=self.parent,
-            gmsh_available=lambda: False,
         )
         backend_combo = result.get("topo_backend_combo")
         self.assertIsNotNone(backend_combo)
         first_text = backend_combo.itemText(0).lower()
-        self.assertIn("install", first_text)
+        self.assertIn("recommended", first_text)
 
 
 class TestWireTopologyTabControls(_WithRealQApp, unittest.TestCase):
@@ -230,15 +224,13 @@ class TestWireTopologyTabControls(_WithRealQApp, unittest.TestCase):
         result = _build_topology_tab_controls(
             parent=self.parent,
             topology_tab_page=self.parent,
-            gmsh_available=lambda: True,
         )
         # Keep reference to parent to prevent GC
         self._parent_ref = self.parent
         return result
 
     def test_wire_does_not_crash(self):
-        """_wire_topology_tab_controls runs without error given proper args."""
-        from swe2d.workbench.views.topology_tab_view import (
+        from swe2d.workbench.controllers.topology_controller import (
             _wire_topology_tab_controls,
         )
         widgets = self._make_toy_widgets()
@@ -255,7 +247,7 @@ class TestWireTopologyTabControls(_WithRealQApp, unittest.TestCase):
 
     def test_update_summary_called_after_wire(self):
         """The update summary function is called at the end of wiring."""
-        from swe2d.workbench.views.topology_tab_view import (
+        from swe2d.workbench.controllers.topology_controller import (
             _wire_topology_tab_controls,
         )
         widgets = self._make_toy_widgets()
@@ -275,7 +267,7 @@ class TestWireTopologyTabControls(_WithRealQApp, unittest.TestCase):
 
     def test_wire_with_empty_widgets_does_not_raise(self):
         """Wiring with empty widget dict should not crash (graceful skip)."""
-        from swe2d.workbench.views.topology_tab_view import (
+        from swe2d.workbench.controllers.topology_controller import (
             _wire_topology_tab_controls,
         )
         _wire_topology_tab_controls(

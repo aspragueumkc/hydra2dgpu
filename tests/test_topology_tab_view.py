@@ -71,6 +71,9 @@ class TestTopologyTabView(unittest.TestCase):
         view = TopologyTabView()
         page = view.findChild(QWidget, "topo_algo_page")
         self.assertIsInstance(page, QWidget)
+        # Pages are always enabled regardless of backend selection;
+        # update_control_summary() must be called to sync state after init.
+        view.update_control_summary()
         self.assertTrue(view._toolbox.isItemEnabled(view._algo_idx))
 
     def test_view_has_arcs_page(self):
@@ -102,6 +105,9 @@ class TestTopologyTabView(unittest.TestCase):
         view = TopologyTabView()
         page = view.findChild(QWidget, "topo_quality_page")
         self.assertIsInstance(page, QWidget)
+        # Pages are always enabled regardless of backend selection;
+        # update_control_summary() must be called to sync state after init.
+        view.update_control_summary()
         self.assertTrue(view._toolbox.isItemEnabled(view._quality_idx))
 
     def test_view_has_generate_btn(self):
@@ -156,14 +162,15 @@ class TestTopologyTabView(unittest.TestCase):
         view = TopologyTabView()
         self.assertEqual(view._toolbox.itemText(view._arcs_idx), "Arcs and Interfaces")
 
-    def test_non_gmsh_pages_are_disabled_and_suffixed(self):
+    def test_gmsh_only_pages_always_enabled_suffixes_when_structured(self):
+        """Gmsh-only pages are always enabled; they get '(Gmsh only)' suffix when structured backend is selected."""
         from swe2d.workbench.views.topology_tab_view import TopologyTabView
         view = TopologyTabView()
         view.topo_backend_combo.setCurrentIndex(view.topo_backend_combo.findData("structured"))
         view.update_control_summary()
         for idx in (view._algo_idx, view._arcs_idx, view._sizing_idx,
                     view._threading_idx, view._transfinite_idx, view._quality_idx):
-            self.assertFalse(view._toolbox.isItemEnabled(idx))
+            self.assertTrue(view._toolbox.isItemEnabled(idx))
             self.assertIn("(Gmsh only)", view._toolbox.itemText(idx))
 
 
