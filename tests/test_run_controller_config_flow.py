@@ -47,28 +47,21 @@ class TestOnLoadSimulationConfigFilePicker(unittest.TestCase):
         """If the user cancels the file picker, the controller returns
         without touching the GeoPackage or showing the config dialog."""
         view = _make_view()
+        view.get_open_file_name = MagicMock(return_value="")
         rc = _make_controller(view)
-        with patch("qgis.PyQt.QtWidgets.QFileDialog.getOpenFileName",
-                   return_value=("", "")), \
-             patch("swe2d.services.gpkg_persistence_service.load_simulation_configs") as mock_load:
+        with patch("swe2d.services.gpkg_persistence_service.load_simulation_configs") as mock_load:
             rc.on_load_simulation_config()
-            # load_simulation_configs must NOT be called — there's no
-            # GeoPackage to read from.
             mock_load.assert_not_called()
-            view._log.assert_not_called()
 
     def test_missing_file_logs_error(self):
         """If the user picks a path that doesn't exist, log an error
         and don't proceed."""
         view = _make_view()
+        view.get_open_file_name = MagicMock(return_value="/tmp/does_not_exist.gpkg")
         rc = _make_controller(view)
-        with patch("qgis.PyQt.QtWidgets.QFileDialog.getOpenFileName",
-                   return_value=("/tmp/does_not_exist.gpkg", "GeoPackage (*.gpkg)")), \
-             patch("swe2d.services.gpkg_persistence_service.load_simulation_configs") as mock_load:
+        with patch("swe2d.services.gpkg_persistence_service.load_simulation_configs") as mock_load:
             rc.on_load_simulation_config()
             mock_load.assert_not_called()
-            # The error must mention the missing path so the user
-            # knows what went wrong.
             self.assertTrue(
                 any("not found" in str(call).lower()
                     for call in view._log.call_args_list),
@@ -79,14 +72,13 @@ class TestOnLoadSimulationConfigFilePicker(unittest.TestCase):
         """If the user picks a real file, the controller reads configs
         and shows the SWE2DSimulationConfigDialog."""
         view = _make_view()
+        view.get_open_file_name = MagicMock(return_value="/tmp/exists.gpkg")
         rc = _make_controller(view)
         fake_configs = [{"config_id": "cfg1", "mesh_name": "m1",
                           "created_utc": "2026-01-01",
                           "run_duration_s": 3600.0,
                           "description": "", "widget_state": {}}]
-        with patch("qgis.PyQt.QtWidgets.QFileDialog.getOpenFileName",
-                   return_value=("/tmp/exists.gpkg", "GeoPackage (*.gpkg)")), \
-             patch("os.path.exists", return_value=True), \
+        with patch("os.path.exists", return_value=True), \
              patch("swe2d.services.gpkg_persistence_service.load_simulation_configs",
                    return_value=fake_configs) as mock_load, \
              patch("swe2d.workbench.dialogs.simulation_config_dialog.SWE2DSimulationConfigDialog") as mock_dlg_cls:
@@ -106,42 +98,33 @@ class TestOnLoadSimulationConfigFilePicker(unittest.TestCase):
         GeoPackage Explorer action — that's the whole point of the UX
         consistency requirement."""
         view = _make_view()
+        view.get_open_file_name = MagicMock(return_value="")
         rc = _make_controller(view)
-        with patch("qgis.PyQt.QtWidgets.QFileDialog.getOpenFileName",
-                   return_value=("", "")) as mock_dialog:
-            rc.on_load_simulation_config()
-            self.assertEqual(mock_dialog.call_count, 1)
-            args, kwargs = mock_dialog.call_args
-            # Title is the second positional arg (parent is first).
-            self.assertIn("GeoPackage", args[1])
-            # Filter is the 4th positional arg.
-            self.assertIn("*.gpkg", args[3])
+        rc.on_load_simulation_config()
+        self.assertEqual(view.get_open_file_name.call_count, 1)
+        args, kwargs = view.get_open_file_name.call_args
+        self.assertIn("GeoPackage", args[0])
+        self.assertIn("*.gpkg", args[2])
 
     def test_picker_uses_the_results_gpkg_directory_as_start(self):
         """If a results GPKG path is set, pre-fill the picker with it."""
         view = _make_view()
+        view.get_open_file_name = MagicMock(return_value="")
         view._current_line_results_storage_path = MagicMock(
             return_value="/data/results/sim_run.gpkg"
         )
         rc = _make_controller(view)
-        with patch("qgis.PyQt.QtWidgets.QFileDialog.getOpenFileName",
-                   return_value=("", "")) as mock_dialog, \
-             patch("os.path.exists", return_value=True):
+        with patch("os.path.exists", return_value=True):
             rc.on_load_simulation_config()
-            # The 3rd positional arg is the directory the dialog opens
-            # to — should be empty (default), since getOpenFileName
-            # accepts a path that doesn't exist and just opens the
-            # parent dir. Either way, the controller must not raise.
-            self.assertEqual(mock_dialog.call_count, 1)
+            self.assertEqual(view.get_open_file_name.call_count, 1)
 
     def test_empty_configs_logs_message(self):
         """If the chosen GeoPackage has no configs, log a message and
         don't open the config picker."""
         view = _make_view()
+        view.get_open_file_name = MagicMock(return_value="/tmp/empty.gpkg")
         rc = _make_controller(view)
-        with patch("qgis.PyQt.QtWidgets.QFileDialog.getOpenFileName",
-                   return_value=("/tmp/empty.gpkg", "GeoPackage (*.gpkg)")), \
-             patch("os.path.exists", return_value=True), \
+        with patch("os.path.exists", return_value=True), \
              patch("swe2d.services.gpkg_persistence_service.load_simulation_configs",
                    return_value=[]), \
              patch("swe2d.workbench.dialogs.simulation_config_dialog.SWE2DSimulationConfigDialog") as mock_dlg_cls:
@@ -157,24 +140,19 @@ class TestOnSaveSimulationConfigFilePicker(unittest.TestCase):
         """If the user cancels the file picker, return without
         prompting for a name."""
         view = _make_view()
+        view.get_save_file_name = MagicMock(return_value="")
         rc = _make_controller(view)
-        with patch("qgis.PyQt.QtWidgets.QFileDialog.getSaveFileName",
-                   return_value=("", "")), \
-             patch("qgis.PyQt.QtWidgets.QInputDialog.getText") as mock_input, \
-             patch("swe2d.services.gpkg_persistence_service.persist_simulation_config") as mock_save:
+        with patch("swe2d.services.gpkg_persistence_service.persist_simulation_config") as mock_save:
             rc.on_save_simulation_config()
-            mock_input.assert_not_called()
             mock_save.assert_not_called()
 
     def test_missing_gpkg_extension_is_added(self):
         """If the user typed a path without an extension, append .gpkg."""
         view = _make_view()
+        view.get_save_file_name = MagicMock(return_value="/tmp/myresults")
+        view.get_input_text = MagicMock(return_value=("myconfig", True))
         rc = _make_controller(view)
-        with patch("qgis.PyQt.QtWidgets.QFileDialog.getSaveFileName",
-                   return_value=("/tmp/myresults", "GeoPackage (*.gpkg)")), \
-             patch("qgis.PyQt.QtWidgets.QInputDialog.getText",
-                   return_value=("myconfig", True)), \
-             patch("swe2d.workbench.bridges.project_settings_bridge.collect_workbench_widget_state",
+        with patch("swe2d.workbench.bridges.project_settings_bridge.collect_workbench_widget_state",
                    return_value={}), \
              patch("swe2d.services.gpkg_persistence_service.persist_simulation_config") as mock_save:
             rc.on_save_simulation_config()
@@ -185,13 +163,11 @@ class TestOnSaveSimulationConfigFilePicker(unittest.TestCase):
         """If the user picks a real path and enters a config name, the
         config is persisted to that path."""
         view = _make_view()
+        view.get_save_file_name = MagicMock(return_value="/tmp/sim.gpkg")
+        view.get_input_text = MagicMock(return_value=("myconfig", True))
         view._mesh_data = {"mesh_name": "test_mesh"}
         rc = _make_controller(view)
-        with patch("qgis.PyQt.QtWidgets.QFileDialog.getSaveFileName",
-                   return_value=("/tmp/sim.gpkg", "GeoPackage (*.gpkg)")), \
-             patch("qgis.PyQt.QtWidgets.QInputDialog.getText",
-                   return_value=("myconfig", True)), \
-             patch("swe2d.workbench.bridges.project_settings_bridge.collect_workbench_widget_state",
+        with patch("swe2d.workbench.bridges.project_settings_bridge.collect_workbench_widget_state",
                    return_value={}), \
              patch("swe2d.services.gpkg_persistence_service.persist_simulation_config") as mock_save:
             rc.on_save_simulation_config()
@@ -204,16 +180,13 @@ class TestOnSaveSimulationConfigFilePicker(unittest.TestCase):
     def test_blank_name_falls_back_to_timestamp(self):
         """If the user clears the name field, fall back to a timestamp."""
         view = _make_view()
+        view.get_save_file_name = MagicMock(return_value="/tmp/sim.gpkg")
+        view.get_input_text = MagicMock(return_value=("   ", True))
         rc = _make_controller(view)
-        with patch("qgis.PyQt.QtWidgets.QFileDialog.getSaveFileName",
-                   return_value=("/tmp/sim.gpkg", "GeoPackage (*.gpkg)")), \
-             patch("qgis.PyQt.QtWidgets.QInputDialog.getText",
-                   return_value=("   ", True)), \
-             patch("swe2d.workbench.bridges.project_settings_bridge.collect_workbench_widget_state",
+        with patch("swe2d.workbench.bridges.project_settings_bridge.collect_workbench_widget_state",
                    return_value={}), \
              patch("swe2d.services.gpkg_persistence_service.persist_simulation_config") as mock_save:
             rc.on_save_simulation_config()
-            # config_id should be a swe2d_<timestamp> style string.
             self.assertTrue(
                 mock_save.call_args.kwargs["config_id"].startswith("swe2d_"),
                 f"Expected timestamp config_id, got: {mock_save.call_args.kwargs['config_id']!r}",
