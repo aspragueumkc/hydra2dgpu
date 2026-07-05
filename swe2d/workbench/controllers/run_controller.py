@@ -81,6 +81,7 @@ class RunController:
         self._view = view
         self._simulation_worker = None
         self._persistence_worker = None
+        self._current_run_id = ""
 
     def on_run(self, request: Optional[Any] = None) -> Any:
         """Start a 2D run on a background worker thread.
@@ -100,6 +101,7 @@ class RunController:
         context = self._build_run_context(request=request)
         if context is None:
             return None
+        self._current_run_id = context.run_id
 
         view._cancel_requested = False
         view.set_run_button_enabled(False)
@@ -355,6 +357,11 @@ class RunController:
             logger.warning("Snapshot readback: merge failed", exc_info=True)
             view._log(f"[SnapReadback] merge failed: {exc}")
         try:
+            self._ensure_live_run_record(rd)
+        except Exception as exc:
+            logger.warning("Snapshot readback: RunRecord seed failed", exc_info=True)
+            view._log(f"[SnapReadback] RunRecord seed failed: {exc}")
+        try:
             temporal = getattr(view, "_temporal_dock", None)
             if temporal is not None:
                 temporal.set_data(rd)
@@ -379,12 +386,44 @@ class RunController:
             logger.warning("Snapshot readback: plot refresh failed", exc_info=True)
             view._log(f"[SnapReadback] plot refresh failed: {exc}")
 
+    def _ensure_live_run_record(self, rd):
+        """Seed a synthetic RunRecord on first snapshot so the runs list,
+        plot viewer, and overlay-selected key all show the live run.
+
+        Without this, the plot viewer has nothing to plot and the runs list
+        stays empty until persistence completes.
+        """
+        from swe2d.results.run_service import RunRecord, next_color
+        if rd.get_run_records():
+            return
+        run_id = str(self._current_run_id or "")
+        if not run_id:
+            return
+        rec = RunRecord(
+            run_id=run_id,
+            gpkg_path="",
+            color=next_color(0),
+            enabled=True,
+            label=f"Live: {run_id}",
+        )
+        rd._run_records = [rec]
+        rd._live_run_id = run_id
+        _live_gpkg = str(
+            getattr(self._view, "_current_line_results_storage_path", lambda: "")()
+            or getattr(self._view, "_model_gpkg_path", "") or ""
+        )
+        if _live_gpkg:
+            rec.gpkg_path = _live_gpkg
+        rd._overlay_selected_key = str(rec.key)
+        self._view.refresh_results_run_list()
+
     def _on_worker_compute_finished(self, result: ComputeResult):
         view = self._view
         if result.cancelled or not result.ok:
             view._log("Run cancelled." if result.cancelled else "Run failed during compute.")
             view.set_run_button_enabled(True)
             view.set_cancel_button_enabled(False)
+            self._current_run_id = ""
             self._simulation_worker = None
             return
 
