@@ -11,9 +11,17 @@ from typing import Any, Dict, List, Optional
 from swe2d.extensions.extension_models import (
     HydraulicStructure,
     HydraulicStructureConfig,
-    HydraulicStructureEngine,
     StructureType,
 )
+
+
+class HydraulicStructureEngine:
+    """Skeleton hydraulic-structure dispatcher for weirs/culverts/gates/pumps."""
+
+    def __init__(self, cfg: HydraulicStructureConfig):
+        self.cfg = cfg
+
+    # compute_structure_fluxes removed — all hydraulic calcs run on-device
 
 
 def build_structures_config_from_json(

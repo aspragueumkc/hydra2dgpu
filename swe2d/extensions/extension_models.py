@@ -415,50 +415,6 @@ class SolverModelOptions:
         }
 
 
-class DrainageCouplingEngine:
-    """Skeleton orchestrator for 2D surface <-> 1D pipe-network exchange."""
+from swe2d.extensions.drainage_network import DrainageCouplingEngine  # noqa: F401
 
-    def __init__(self, cfg: PipeNetworkConfig):
-        self.cfg = cfg
-        self.state = PipeNetworkState()
-        self._node_index: Dict[str, int] = {}
-        self._node_area: Dict[str, float] = {}
-        self._links_from: Dict[str, List[DrainageLink]] = {}
-        self._links_to: Dict[str, List[DrainageLink]] = {}
-        # Set of node_ids that have a corresponding OutfallExchange (2D-coupled).
-        # Populated in initialize(); used to skip pure-1D outfall BC on coupled nodes.
-        self._outfall_exchange_nodes: set = set()
-
-    def initialize(self) -> None:
-        """Build node/link indices and initialise transient state."""
-        self._node_index = {n.node_id: i for i, n in enumerate(self.cfg.nodes)}
-        self._node_area = {
-            n.node_id: max(
-                1.0,
-                float(n.metadata.get("surface_area", n.metadata.get("surface_area_m2", 50.0))),
-            )
-            for n in self.cfg.nodes
-        }
-        self._links_from = {n.node_id: [] for n in self.cfg.nodes}
-        self._links_to = {n.node_id: [] for n in self.cfg.nodes}
-        for lnk in self.cfg.links:
-            if lnk.from_node_id in self._links_from:
-                self._links_from[lnk.from_node_id].append(lnk)
-            if lnk.to_node_id in self._links_to:
-                self._links_to[lnk.to_node_id].append(lnk)
-            self.state.link_flow.setdefault(lnk.link_id, 0.0)
-        for n in self.cfg.nodes:
-            self.state.node_depth.setdefault(n.node_id, 0.0)
-        self._outfall_exchange_nodes = (
-            {o.node_id for o in self.cfg.outfalls}
-            | {p.node_id for p in getattr(self.cfg, "pipe_ends", [])}
-        )
-        return None
-
-class HydraulicStructureEngine:
-    """Skeleton hydraulic-structure dispatcher for weirs/culverts/gates/pumps."""
-
-    def __init__(self, cfg: HydraulicStructureConfig):
-        self.cfg = cfg
-
-    # compute_structure_fluxes removed — all hydraulic calcs run on-device
+from swe2d.extensions.structures import HydraulicStructureEngine  # noqa: F401
