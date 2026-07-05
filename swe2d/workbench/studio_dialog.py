@@ -1982,8 +1982,9 @@ class SWE2DWorkbenchStudioDialog(QtWidgets.QDialog):
         edge_groups: Optional[Dict[int, str]] = None,
     ) -> np.ndarray:
         """Distribute total flow BC values to unit discharge per edge."""
-        from swe2d.boundary_and_forcing.bc_logic import distribute_total_flow_to_unit_q as _logic
-        from swe2d.boundary_and_forcing.bc_logic import _bc_side_classification
+        from swe2d.workbench.services.runtime_source_application_service import (
+            _distribute_total_flow_to_unit_q_logic,
+        )
         progressive = bool(getattr(self._model_tab_view, "inflow_progressive_chk", None) is not None
                           and self._model_tab_view.inflow_progressive_chk.isChecked())
         if edge_groups is None:
@@ -1996,17 +1997,7 @@ class SWE2DWorkbenchStudioDialog(QtWidgets.QDialog):
                     self._cached_edge_groups = edge_groups
                 except Exception as e:
                     self._log(f"[ERROR] distribute total flow to unit q failed: {e}")
-        bc_cache = self.__dict__.setdefault("_bc_geom_cache", {})
-        if "_side_idx" not in bc_cache or "_edge_len" not in bc_cache or "_edge_z" not in bc_cache:
-            side_idx, edge_len, edge_z, *_ = _bc_side_classification(
-                edge_n0, edge_n1,
-                self._mesh_data["node_x"], self._mesh_data["node_y"],
-                self._mesh_data.get("node_z"),
-            )
-            bc_cache["_side_idx"] = side_idx
-            bc_cache["_edge_len"] = edge_len
-            bc_cache["_edge_z"] = edge_z
-        return _logic(
+        return _distribute_total_flow_to_unit_q_logic(
             edge_n0=edge_n0, edge_n1=edge_n1,
             bc_type_step=bc_type_step, bc_val_step=bc_val_step,
             bc_type_template=bc_type_template,
@@ -2015,7 +2006,6 @@ class SWE2DWorkbenchStudioDialog(QtWidgets.QDialog):
             node_y=self._mesh_data["node_y"],
             node_z=self._mesh_data["node_z"],
             progressive=progressive,
-            ts_flow_code=102,
             edge_hydrographs=edge_hydrographs,
             edge_groups=edge_groups,
         )

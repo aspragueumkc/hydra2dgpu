@@ -6,6 +6,11 @@ from typing import Optional
 
 import numpy as np
 
+from swe2d.boundary_and_forcing.bc_logic import (
+    _bc_side_classification,
+    distribute_total_flow_to_unit_q,
+)
+
 
 def _apply_external_sources_logic(
     backend,
@@ -50,4 +55,39 @@ def _apply_external_sources_logic(
         shallow_damping_depth=shallow_damping_depth,
         momentum_cap_min_speed=momentum_cap_min_speed,
         momentum_cap_celerity_mult=momentum_cap_celerity_mult,
+    )
+
+
+def _distribute_total_flow_to_unit_q_logic(
+    edge_n0,
+    edge_n1,
+    bc_type_step,
+    bc_val_step,
+    bc_type_template,
+    side_hydrographs,
+    node_x,
+    node_y,
+    node_z,
+    progressive,
+    edge_hydrographs=None,
+    edge_groups=None,
+):
+    """Distribute total flow BC values to unit discharge per edge without Qt.
+
+    All parameters are forwarded to
+    :func:`swe2d.boundary_and_forcing.bc_logic.distribute_total_flow_to_unit_q`.
+    """
+    side_idx, edge_len, edge_z, *_ = _bc_side_classification(
+        edge_n0, edge_n1, node_x, node_y, node_z,
+    )
+    return distribute_total_flow_to_unit_q(
+        edge_n0=edge_n0, edge_n1=edge_n1,
+        bc_type_step=bc_type_step, bc_val_step=bc_val_step,
+        bc_type_template=bc_type_template,
+        side_hydrographs=side_hydrographs,
+        node_x=node_x, node_y=node_y, node_z=node_z,
+        progressive=progressive,
+        ts_flow_code=102,
+        edge_hydrographs=edge_hydrographs,
+        edge_groups=edge_groups,
     )
