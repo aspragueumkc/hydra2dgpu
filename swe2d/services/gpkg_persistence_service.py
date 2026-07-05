@@ -4,9 +4,6 @@ Consolidates all GeoPackage/SQLite persistence logic previously scattered
 across ``results_persistence_service``, ``studio_results_panel``, and inline
 SQL in the dialog. This service is pure Python — it does not touch Qt.
 
-Functions that need dialog access (e.g. ``current_line_results_storage_path``)
-take the dialog as their first parameter.
-
 """
 from __future__ import annotations
 
@@ -39,64 +36,11 @@ __all__ = [
     "load_baked_line_profile",
     "load_baked_timesteps",
     "collect_baked_runs_from_gpkg",
-    # Utility functions
-    "current_line_results_storage_path",
 ]
 
 
 
 
-
-
-def current_line_results_storage_path(dialog) -> str:
-    """Resolve the current GeoPackage storage path for line results.
-
-    Priority: override edit → model GPKG path → sample lines layer GPKG → tempdir fallback.
-
-    Parameters
-    ----------
-    dialog : SWE2DWorkbenchStudioDialog
-        The studio dialog instance (used for widget reads and logging).
-
-    Returns
-    -------
-    str
-        Absolute path to a GeoPackage file.
-    """
-    import os, tempfile
-    mtv = getattr(dialog, "_model_tab_view", None)
-    if mtv is not None:
-        path_edit = getattr(mtv, "results_gpkg_path_edit", None)
-        if path_edit is not None:
-            override_raw = str(path_edit.text() or "").strip()
-            if override_raw:
-                override = os.path.abspath(os.path.expanduser(override_raw))
-                parent_dir = os.path.dirname(override) or "."
-                if os.path.isdir(parent_dir):
-                    dialog._log(f"[ResultsPath] using override: {override}")
-                    return override
-                else:
-                    dialog._log(f"[ResultsPath] override parent dir missing: {parent_dir!r}, override={override!r}")
-            else:
-                dialog._log("[ResultsPath] results_gpkg_path_edit is empty")
-        else:
-            dialog._log("[ResultsPath] results_gpkg_path_edit not found on _model_tab_view")
-    else:
-        dialog._log("[ResultsPath] _model_tab_view not found")
-    if dialog._model_gpkg_path and os.path.exists(dialog._model_gpkg_path):
-        dialog._log(f"[ResultsPath] falling back to _model_gpkg_path: {dialog._model_gpkg_path}")
-        return dialog._model_gpkg_path
-    if hasattr(dialog, "_model_tab_view") and hasattr(dialog._model_tab_view, "sample_lines_layer_combo"):
-        lyr = dialog._combo_layer(dialog._model_tab_view.sample_lines_layer_combo, "vector")
-        if lyr is not None:
-            try:
-                src = str(lyr.dataProvider().dataSourceUri())
-                gpkg = src.split("|", 1)[0]
-                if gpkg.lower().endswith(".gpkg") and os.path.exists(gpkg):
-                    return gpkg
-            except Exception as e:
-                dialog._log(f"[ERROR] current line results storage path failed: {e}")
-    return os.path.join(tempfile.gettempdir(), "swe2d_line_results.gpkg")
 
 
 def persist_baked_mesh(

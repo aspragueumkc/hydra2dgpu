@@ -332,8 +332,7 @@ def auto_load_results_panel(dialog, gpkg_path: str = "", snapshot_run_id: str = 
     Does NOT switch data_source — caller is responsible for that.
     """
     if not gpkg_path:
-        from swe2d.services.gpkg_persistence_service import current_line_results_storage_path
-        gpkg_path = current_line_results_storage_path(dialog)
+        gpkg_path = dialog._current_line_results_storage_path()
     if not gpkg_path:
         dialog._log("[Auto-Load] No GeoPackage path to load results into panel.")
         return
