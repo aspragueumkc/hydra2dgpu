@@ -12,11 +12,10 @@ import pytest
 @pytest.fixture
 def tiny_mesh():
     return {
-        "node_x": np.array([0.0, 1.0, 1.0, 0.0, 2.0, 2.0], dtype=np.float64),
-        "node_y": np.array([0.0, 0.0, 1.0, 1.0, 0.0, 1.0], dtype=np.float64),
-        "node_z": np.array([0.0, 0.0, 0.0, 0.0, 0.0, 0.0], dtype=np.float64),
-        "cell_face_offsets": np.array([0, 3, 6], dtype=np.int32),
-        "cell_face_nodes": np.array([0, 1, 4, 1, 2, 5], dtype=np.int32),
+        "node_x": np.array([0.0, 1.0, 0.5, 1.5], dtype=np.float64),
+        "node_y": np.array([0.0, 0.0, 1.0, 1.0], dtype=np.float64),
+        "node_z": np.array([0.0, 0.0, 0.0, 0.0], dtype=np.float64),
+        "cell_nodes": np.array([[0, 1, 2], [1, 3, 2]], dtype=np.int32),
     }
 
 
@@ -33,8 +32,10 @@ def test_save_and_load_baked_mesh_roundtrip(tmp_path: pathlib.Path, tiny_mesh):
     loaded = load_baked_mesh(str(gpkg), name)
     np.testing.assert_array_equal(loaded["node_x"], tiny_mesh["node_x"])
     np.testing.assert_array_equal(loaded["node_y"], tiny_mesh["node_y"])
-    np.testing.assert_array_equal(loaded["cell_face_offsets"], tiny_mesh["cell_face_offsets"])
-    np.testing.assert_array_equal(loaded["cell_face_nodes"], tiny_mesh["cell_face_nodes"])
+    loaded_cells = loaded["cell_nodes"].reshape(-1, 3)
+    expected_cells = tiny_mesh["cell_nodes"]
+    assert loaded_cells.shape == expected_cells.shape
+    assert set(map(tuple, loaded_cells.tolist())) == set(map(tuple, expected_cells.tolist()))
 
 
 def test_load_baked_mesh_unknown_name_raises(tmp_path: pathlib.Path, tiny_mesh):
