@@ -559,18 +559,18 @@ git commit -am "refactor: split Qt-free line-sampling logic for worker use"
 
 ## Task 5: `SimulationWorker` skeleton
 
+> ✅ Completed. Spec review and code quality review passed. Minor cleanup applied.
+
 **Files:**
 - Create: `swe2d/workbench/workers/simulation_worker.py`
-- Create: `swe2d/workbench/workers/__init__.py`
+- Modify: `swe2d/workbench/workers/__init__.py`
 - Test: `tests/test_simulation_worker.py`
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 ```python
-import threading
 import time
 import numpy as np
-from unittest.mock import MagicMock
 from qgis.PyQt.QtWidgets import QApplication
 
 def test_simulation_worker_emits_progress_and_finishes():
@@ -581,6 +581,7 @@ def test_simulation_worker_emits_progress_and_finishes():
     ctx = RunContext(
         run_id="r1",
         run_wallclock_start="now",
+        run_log_start_idx=0,
         run_duration_s=0.05,
         output_interval_s=0.1,
         line_output_interval_s=0.1,
@@ -599,19 +600,21 @@ def test_simulation_worker_emits_progress_and_finishes():
     worker.progress_percent.connect(progress.append)
     worker.compute_finished.connect(lambda r: progress.append("done"))
     worker.start()
-    # wait for completion
+    # wait for completion, pump event loop so queued signals are delivered
     deadline = time.perf_counter() + 5.0
     while worker.isRunning() and time.perf_counter() < deadline:
         time.sleep(0.01)
+        app.processEvents()
+    assert 100 in progress
     assert "done" in progress
 ```
 
-- [ ] **Step 2: Run test to verify it fails**
+- [x] **Step 2: Run test to verify it fails**
 
 Run: `pytest tests/test_simulation_worker.py -v`
 Expected: FAIL — `SimulationWorker` not defined.
 
-- [ ] **Step 3: Implement `SimulationWorker` skeleton**
+- [x] **Step 3: Implement `SimulationWorker` skeleton**
 
 ```python
 from __future__ import annotations
@@ -773,12 +776,12 @@ class SimulationWorker(QThread):
         )
 ```
 
-- [ ] **Step 4: Run test to verify it passes**
+- [x] **Step 4: Run test to verify it passes**
 
 Run: `pytest tests/test_simulation_worker.py -v`
 Expected: PASS (skeleton only).
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add swe2d/workbench/workers/__init__.py swe2d/workbench/workers/simulation_worker.py tests/test_simulation_worker.py
