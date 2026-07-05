@@ -1247,6 +1247,14 @@ class SWE2DBackend:
     def destroy(self) -> None:
         """Explicitly free native solver resources."""
         if self._solver_h is not None:
+            # Sync device before destroying to avoid tearing down CUDA
+            # resources while a kernel is still in flight (can crash on
+            # cancel when the solver thread is interrupted mid-step).
+            try:
+                if hasattr(self._mod, "swe2d_gpu_device_sync"):
+                    self._mod.swe2d_gpu_device_sync()
+            except Exception:
+                pass
             self._mod.swe2d_destroy(self._solver_h)
             self._solver_h = None
 
