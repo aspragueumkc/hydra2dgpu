@@ -118,6 +118,29 @@ def test_finalizer_persists_line_profile_with_station_starting_at_zero(tmp_path)
         (3600.0, h.copy(), hu.copy(), hv.copy()),
     ]
 
+    stations = np.array([0.0, 10.0, 20.0], dtype=np.float64)
+    precomputed_line_results = {
+        1: {
+            "line_name": "section_1",
+            "t_s": [0.0, 3600.0],
+            "ts_depth_m": [1.0, 1.0],
+            "ts_velocity_ms": [0.5, 0.5],
+            "ts_wse_m": [11.0, 11.0],
+            "ts_bed_m": [10.0, 10.0],
+            "ts_flow_cms": [2.0, 2.0],
+            "ts_wet_frac": [1.0, 1.0],
+            "ts_fr": [0.1, 0.1],
+            "station_m": stations,
+            "prof_depth_m": [np.full(3, 1.0), np.full(3, 1.0)],
+            "prof_velocity_ms": [np.full(3, 0.5), np.full(3, 0.5)],
+            "prof_wse_m": [np.full(3, 11.0), np.full(3, 11.0)],
+            "prof_bed_m": [np.full(3, 10.0), np.full(3, 10.0)],
+            "prof_flow_qn": [np.full(3, 0.5), np.full(3, 0.5)],
+            "prof_fr": [np.full(3, 0.1), np.full(3, 0.1)],
+            "prof_wet": [np.ones(3, dtype=np.int32), np.ones(3, dtype=np.int32)],
+        }
+    }
+
     status = finalizer.finalize_and_persist(
         h=h,
         hu=hu,
@@ -143,10 +166,8 @@ def test_finalizer_persists_line_profile_with_station_starting_at_zero(tmp_path)
         save_mesh_results=False,
         save_coupling_results=False,
         save_run_log=False,
-        sample_map=[{"line_id": 1, "line_name": "section_1"}],
-        cell_solver_z=np.full(n_cells, 10.0, dtype=np.float64),
-        sample_line_metrics_callback=_wide_format_callback,
         snapshot_timesteps=snapshot_timesteps,
+        precomputed_line_results=precomputed_line_results,
     )
 
     assert status["ok"], f"finalizer failed: {status['errors']}"

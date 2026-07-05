@@ -125,10 +125,6 @@ class SWE2DRunFinalizer:
         h_min: float = 1.0e-4,
         mesh_name: str = "",
         max_tracking: Optional[Dict[str, np.ndarray]] = None,
-        coupling_controller: Any = None,
-        sample_map: Any = None,
-        cell_solver_z: Any = None,
-        sample_line_metrics_callback: Any = None,
         snapshot_timesteps: Any = None,
         coupling_snapshots: Any = None,
         precomputed_line_results: Any = None,
@@ -246,63 +242,31 @@ class SWE2DRunFinalizer:
 
             _t0 = time.perf_counter()
             try:
-                if save_line_results and snapshot_timesteps and (sample_line_metrics_callback is not None or precomputed_line_results is not None):
+                if save_line_results and snapshot_timesteps and precomputed_line_results is not None:
                     from collections import defaultdict
                     ts_by_line: Dict[int, Dict[str, list]] = defaultdict(lambda: defaultdict(list))
                     prof_by_line: Dict[int, Dict[str, list]] = defaultdict(lambda: defaultdict(list))
-                    if precomputed_line_results is not None:
-                        for lid, ld in precomputed_line_results.items():
-                            if "t_s" in ld:
-                                ts_by_line[lid]["line_name"] = ld.get("line_name", f"line_{lid}")
-                                ts_by_line[lid]["t_s"] = list(ld["t_s"])
-                                for k, pk in (("depth_m", "ts_depth_m"), ("velocity_ms", "ts_velocity_ms"),
-                                              ("wse_m", "ts_wse_m"), ("bed_m", "ts_bed_m"),
-                                              ("flow_cms", "ts_flow_cms"), ("wet_frac", "ts_wet_frac"),
-                                              ("fr", "ts_fr")):
-                                    if pk in ld:
-                                        ts_by_line[lid][k] = list(ld[pk])
-                            if "station_m" in ld:
-                                pd = prof_by_line[lid]
-                                pd["line_name"] = ld.get("line_name", f"line_{lid}")
-                                pd["station_m"] = np.asarray(ld["station_m"], dtype=np.float64)
-                                for k, pk in (("depth_m", "prof_depth_m"), ("velocity_ms", "prof_velocity_ms"),
-                                              ("wse_m", "prof_wse_m"), ("bed_m", "prof_bed_m"),
-                                              ("flow_qn", "prof_flow_qn"), ("fr", "prof_fr"),
-                                              ("wet", "prof_wet")):
-                                    if pk in ld:
-                                        v = ld[pk]
-                                        pd[k] = list(v) if isinstance(v, list) else list(v)
-                    else:
-                        for snap_t, h_snap, hu_snap, hv_snap in snapshot_timesteps:
-                            h_arr = np.asarray(h_snap, dtype=np.float64)
-                            hu_arr = np.asarray(hu_snap, dtype=np.float64)
-                            hv_arr = np.asarray(hv_snap, dtype=np.float64)
-                            cell_bed = np.asarray(cell_solver_z, dtype=np.float64) if cell_solver_z is not None else np.zeros_like(h_arr)
-                            ts_rows, prof_rows = sample_line_metrics_callback(
-                                sample_map, snap_t, h_arr, hu_arr, hv_arr, cell_bed,
-                            )
-                            for row in ts_rows:
-                                lid = int(row.get("line_id", -1))
-                                if lid < 0:
-                                    continue
-                                ld = ts_by_line[lid]
-                                if "line_name" not in ld:
-                                    ld["line_name"] = str(row.get("line_name", f"line_{lid}"))
-                                ld.setdefault("t_s", []).append(float(snap_t))
-                                for k in ("depth_m", "velocity_ms", "wse_m", "bed_m", "flow_cms", "wet_frac", "fr"):
-                                    ld.setdefault(k, []).append(float(row.get(k, 0.0)))
-                            for row in prof_rows:
-                                lid = int(row.get("line_id", -1))
-                                if lid < 0:
-                                    continue
-                                pd = prof_by_line[lid]
-                                if "line_name" not in pd:
-                                    pd["line_name"] = str(row.get("line_name", f"line_{lid}"))
-                                    pd["station_m"] = np.asarray(row["station_m"], dtype=np.float64)
-                                for k in ("depth_m", "velocity_ms", "wse_m", "bed_m", "flow_qn", "fr"):
-                                    v = row.get(k)
-                                    pd.setdefault(k, []).append(np.asarray(v, dtype=np.float64) if v is not None else np.array([]))
-                                pd.setdefault("wet", []).append(np.asarray(row.get("wet", []), dtype=np.int32))
+                    for lid, ld in precomputed_line_results.items():
+                        if "t_s" in ld:
+                            ts_by_line[lid]["line_name"] = ld.get("line_name", f"line_{lid}")
+                            ts_by_line[lid]["t_s"] = list(ld["t_s"])
+                            for k, pk in (("depth_m", "ts_depth_m"), ("velocity_ms", "ts_velocity_ms"),
+                                          ("wse_m", "ts_wse_m"), ("bed_m", "ts_bed_m"),
+                                          ("flow_cms", "ts_flow_cms"), ("wet_frac", "ts_wet_frac"),
+                                          ("fr", "ts_fr")):
+                                if pk in ld:
+                                    ts_by_line[lid][k] = list(ld[pk])
+                        if "station_m" in ld:
+                            pd = prof_by_line[lid]
+                            pd["line_name"] = ld.get("line_name", f"line_{lid}")
+                            pd["station_m"] = np.asarray(ld["station_m"], dtype=np.float64)
+                            for k, pk in (("depth_m", "prof_depth_m"), ("velocity_ms", "prof_velocity_ms"),
+                                          ("wse_m", "prof_wse_m"), ("bed_m", "prof_bed_m"),
+                                          ("flow_qn", "prof_flow_qn"), ("fr", "prof_fr"),
+                                          ("wet", "prof_wet")):
+                                if pk in ld:
+                                    v = ld[pk]
+                                    pd[k] = list(v) if isinstance(v, list) else list(v)
                     line_ts_items = []
                     for lid, ld in ts_by_line.items():
                         times_arr = np.array(ld.get("t_s", []), dtype=np.float64)

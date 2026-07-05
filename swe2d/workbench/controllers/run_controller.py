@@ -1022,10 +1022,6 @@ class RunController:
                 save_run_log=wp["save_run_log_to_gpkg_chk"],
                 h_min=wp["h_min_spin"],
                 max_tracking=max_results,
-                coupling_controller=coupling_controller,
-                sample_map=sample_map,
-                cell_solver_z=cell_solver_z,
-                sample_line_metrics_callback=view._sample_line_metrics,
                 coupling_snapshots=coupling_snapshots,
                 precomputed_line_results=(
                     results_data.build_precomputed_line_results()
