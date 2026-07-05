@@ -691,34 +691,11 @@ class SWE2DWorkbenchStudioDialog(QtWidgets.QDialog):
         name = str(name).strip()
 
         try:
-            from swe2d.services.gpkg_persistence_service import persist_baked_mesh
-            from hydra_swe2d import (
-                swe2d_build_mesh, swe2d_build_mesh_poly, swe2d_serialize_mesh, swe2d_mesh_info,
-            )
-            import numpy as np
-            nx = np.asarray(mesh_data["node_x"], dtype=np.float64)
-            ny = np.asarray(mesh_data["node_y"], dtype=np.float64)
-            nz = np.asarray(mesh_data["node_z"], dtype=np.float64)
-            bc_n0 = np.asarray(mesh_data.get("bc_edge_node0", np.empty(0)), dtype=np.int32)
-            bc_n1 = np.asarray(mesh_data.get("bc_edge_node1", np.empty(0)), dtype=np.int32)
-            bc_tp = np.asarray(mesh_data.get("bc_edge_type", np.empty(0)), dtype=np.int32)
-            bc_vl = np.asarray(mesh_data.get("bc_edge_val", np.empty(0)), dtype=np.float64)
-            cfn = mesh_data.get("cell_face_nodes")
-            if cfn is None:
-                cfn = mesh_data.get("cell_nodes")
-            cfo = mesh_data.get("cell_face_offsets")
-            if cfn is not None and cfo is not None:
-                pm = swe2d_build_mesh_poly(nx, ny, nz, np.asarray(cfo, dtype=np.int32),
-                    np.asarray(cfn, dtype=np.int32), bc_n0, bc_n1, bc_tp, bc_vl)
-            else:
-                cn = np.asarray(mesh_data["cell_nodes"], dtype=np.int32)
-                pm = swe2d_build_mesh(nx, ny, nz, cn, bc_n0, bc_n1, bc_tp, bc_vl)
-            blob = swe2d_serialize_mesh(pm)
-            info = swe2d_mesh_info(pm)
-            persist_baked_mesh(path, name, blob, info["n_nodes"], info["n_cells"], info["n_edges"])
+            from swe2d.services.mesh_persistence_service import save_baked_mesh
+            n_cells = save_baked_mesh(mesh_data, path, name)
             QtWidgets.QMessageBox.information(
                 self, "Save Mesh",
-                f"Mesh '{name}' saved to {os.path.basename(path)}.",
+                f"Mesh '{name}' saved to {os.path.basename(path)} ({n_cells} cells).",
             )
         except Exception as exc:
             QtWidgets.QMessageBox.critical(self, "Save Mesh Error", str(exc))
@@ -732,16 +709,9 @@ class SWE2DWorkbenchStudioDialog(QtWidgets.QDialog):
         )
         if not path or not os.path.isfile(path):
             return
-        import sqlite3
-        mesh_names = []
         try:
-            conn = sqlite3.connect(path)
-            try:
-                cur = conn.cursor()
-                cur.execute("SELECT mesh_name FROM swe2d_baked_mesh ORDER BY created_utc DESC")
-                mesh_names = [str(r[0]) for r in cur.fetchall()]
-            finally:
-                conn.close()
+            from swe2d.services.mesh_persistence_service import list_baked_mesh_names
+            mesh_names = list_baked_mesh_names(path)
         except Exception as exc:
             QtWidgets.QMessageBox.warning(
                 self, "Load Mesh Error",
@@ -760,29 +730,8 @@ class SWE2DWorkbenchStudioDialog(QtWidgets.QDialog):
         if not ok or not name:
             return
         try:
-            from hydra_swe2d import swe2d_deserialize_mesh
-            from swe2d.services.gpkg_persistence_service import load_baked_mesh
-            blob = load_baked_mesh(path, name)
-            if blob is None:
-                QtWidgets.QMessageBox.warning(self, "Load Mesh", f"Mesh '{name}' not found.")
-                return
-            pm = swe2d_deserialize_mesh(blob)
-            # Per baked BLOB spec (§5.12): mesh geometry stays in solver (RCMK)
-            # order.  Results from load_baked_snapshot are also RCMK — no
-            # permutation needed between mesh and results.
-            mesh_data = {
-                "mesh_name": str(name),
-                "node_x": np.asarray(pm.node_x, dtype=np.float64),
-                "node_y": np.asarray(pm.node_y, dtype=np.float64),
-                "node_z": np.asarray(pm.node_z, dtype=np.float64),
-                "cell_nodes": np.asarray(pm.cell_face_nodes, dtype=np.int32) if pm.cell_face_nodes is not None else np.empty(0, dtype=np.int32),
-            }
-            cfo = pm.cell_face_offsets
-            if cfo is not None:
-                mesh_data["cell_face_offsets"] = np.asarray(cfo, dtype=np.int32)
-            cfn = pm.cell_face_nodes
-            if cfn is not None:
-                mesh_data["cell_face_nodes"] = np.asarray(cfn, dtype=np.int32)
+            from swe2d.services.mesh_persistence_service import load_baked_mesh
+            mesh_data = load_baked_mesh(path, name)
             if mesh_data is None or mesh_data.get("node_x") is None:
                 QtWidgets.QMessageBox.warning(self, "Load Mesh", f"Mesh '{name}' not found.")
                 return
