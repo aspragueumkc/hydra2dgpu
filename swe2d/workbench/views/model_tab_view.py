@@ -545,6 +545,17 @@ class ModelTabView(QtWidgets.QWidget):
         self.default_bc_type_combo.setCurrentIndex(2)
         self._add_param_row(form, "Default BC type:", self.default_bc_type_combo)
 
+        # BC lines layer — relocated to row 2 of the Boundary Conditions group
+        self.bc_lines_layer_combo = QtWidgets.QComboBox()
+        self.bc_lines_layer_combo.setObjectName("bc_lines_layer_combo")
+        self.bc_lines_layer_combo.setToolTip(
+            "Line layer for boundary condition segments. "
+            "Each segment defines a BC type (inflow, stage, normal depth, etc.) "
+            "assigned via the default BC type combo or per-segment attributes."
+        )
+        self.bc_lines_layer_combo.addItem("(none)", None)
+        self._add_param_row(form, "BC lines layer:", self.bc_lines_layer_combo)
+
         self.inflow_progressive_chk = QtWidgets.QCheckBox("Inflow progressive")
         self.inflow_progressive_chk.setObjectName("inflow_progressive_chk")
         self.inflow_progressive_chk.setToolTip(
@@ -562,17 +573,6 @@ class ModelTabView(QtWidgets.QWidget):
         )
         self.uniform_inflow_velocity_chk.setChecked(False)
         self._add_param_row(form, "", self.uniform_inflow_velocity_chk)
-
-        # BC lines layer — moved from the Layers page
-        self.bc_lines_layer_combo = QtWidgets.QComboBox()
-        self.bc_lines_layer_combo.setObjectName("bc_lines_layer_combo")
-        self.bc_lines_layer_combo.setToolTip(
-            "Line layer for boundary condition segments. "
-            "Each segment defines a BC type (inflow, stage, normal depth, etc.) "
-            "assigned via the default BC type combo or per-segment attributes."
-        )
-        self.bc_lines_layer_combo.addItem("(none)", None)
-        self._add_param_row(form, "BC lines layer:", self.bc_lines_layer_combo)
 
         # -- Physics & Friction --
         form = self._start_param_group(param_form, "Physics & Friction")
