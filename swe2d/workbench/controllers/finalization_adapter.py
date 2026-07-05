@@ -53,7 +53,7 @@ class FinalizationAdapter:
 
     def collect_run_log_metadata(self):
         """Collect run-log metadata (solver options, CRS, etc.) as a dict."""
-        return self._dialog._collect_run_log_metadata()
+        return self._dialog.collect_run_log_metadata()
 
     def persist_run_log(self, gpkg_path, run_id, run_wallclock_start,
                         run_wallclock_end, run_duration_wallclock_s,
