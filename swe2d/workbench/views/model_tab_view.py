@@ -380,46 +380,40 @@ class ModelTabView(QtWidgets.QWidget):
         gpkg_row_layout.addWidget(self.results_gpkg_path_edit, 1)
         gpkg_row_layout.addWidget(self.select_results_gpkg_btn)
 
-        # ── Config (preview / load / save buttons) ────────────────────
+        # ── Config (preview / load / save — each on its own row) ──────
         form = self._start_param_group(layout, "Config")
 
-        preview_row_widget = QtWidgets.QWidget()
-        preview_row_widget.setObjectName("run_preview_row")
-        preview_row_layout = QtWidgets.QHBoxLayout(preview_row_widget)
-        preview_row_layout.setContentsMargins(0, 0, 0, 0)
-        preview_row_layout.setSpacing(4)
         self.preview_overrides_btn = QtWidgets.QPushButton("Preview Overrides")
         self.preview_overrides_btn.setObjectName("preview_overrides_btn")
         self.preview_overrides_btn.setToolTip(
             "Display a summary of all current parameter overrides "
             "before running the simulation."
         )
+        self._add_param_row(form, "Preview Overrides:", self.preview_overrides_btn)
+
         self.preview_coupling_btn = QtWidgets.QPushButton("Preview Coupling")
         self.preview_coupling_btn.setObjectName("preview_coupling_btn")
         self.preview_coupling_btn.setToolTip(
             "Preview the 1D-2D coupling configuration for drainage "
             "and hydraulic structures before running."
         )
+        self._add_param_row(form, "Preview Coupling:", self.preview_coupling_btn)
+
         self.load_run_settings_btn = QtWidgets.QPushButton("Load Config from GPKG…")
         self.load_run_settings_btn.setObjectName("load_run_settings_btn")
         self.load_run_settings_btn.setToolTip(
             "Open a GeoPackage and restore a saved simulation configuration "
             "(all widget values, solver params, and layer references)."
         )
+        self._add_param_row(form, "Load Config:", self.load_run_settings_btn)
+
         self.save_settings_btn = QtWidgets.QPushButton("Save Config to GPKG…")
         self.save_settings_btn.setObjectName("save_settings_btn")
         self.save_settings_btn.setToolTip(
             "Save the current widget configuration to the active GeoPackage "
             "so it can be restored later via Load Config."
         )
-        preview_row_layout.addWidget(self.preview_overrides_btn)
-        preview_row_layout.addWidget(self.preview_coupling_btn)
-        preview_row_layout.addStretch(1)
-        preview_row_layout.addWidget(self.load_run_settings_btn)
-        preview_row_layout.addWidget(self.save_settings_btn)
-        self._add_param_row(
-            form, "Preview / Load / Save:", preview_row_widget
-        )
+        self._add_param_row(form, "Save Config:", self.save_settings_btn)
 
     def is_extended_outputs(self) -> bool:
         return bool(self.extended_outputs_chk.isChecked())
