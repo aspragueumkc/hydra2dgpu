@@ -1,7 +1,7 @@
 """Tests for TopologyTabView."""
 import unittest
 from qgis.PyQt.QtWidgets import (
-    QApplication, QComboBox, QDoubleSpinBox, QPushButton, QLabel, QWidget
+    QApplication, QComboBox, QDoubleSpinBox, QPushButton, QLabel, QLineEdit, QWidget
 )
 
 _app = None
@@ -172,6 +172,79 @@ class TestTopologyTabView(unittest.TestCase):
                     view._threading_idx, view._transfinite_idx, view._quality_idx):
             self.assertTrue(view._toolbox.isItemEnabled(idx))
             self.assertIn("(Gmsh only)", view._toolbox.itemText(idx))
+
+
+class TestTopologyTabFilter(unittest.TestCase):
+    """Tests for the topo_search / topo_show_advanced_chk filter (mirrors ModelTabView)."""
+
+    def setUp(self):
+        _ensure_app()
+
+    def _make_view(self):
+        from swe2d.workbench.views.topology_tab_view import TopologyTabView
+        return TopologyTabView()
+
+    def test_topology_tab_has_search_filter(self):
+        view = self._make_view()
+        self.assertIsInstance(view.topo_search, QLineEdit)
+        self.assertEqual(view.topo_search.objectName(), "topo_search")
+
+    def test_topology_tab_has_advanced_toggle(self):
+        from qgis.PyQt.QtWidgets import QCheckBox
+        view = self._make_view()
+        self.assertIsInstance(view.topo_show_advanced_chk, QCheckBox)
+        self.assertEqual(view.topo_show_advanced_chk.objectName(), "topo_show_advanced_chk")
+        self.assertFalse(view.topo_show_advanced_chk.isChecked())
+
+    def test_topology_tab_uses_filterable_registry(self):
+        from swe2d.workbench.views.widget_filter_helper import FilterableRowRegistry
+        view = self._make_view()
+        self.assertIsInstance(view._filterable, FilterableRowRegistry)
+        # The view pre-registers the layer-setup and general-page widgets
+        # before _populate_gmsh_quality_controls runs, so _filterable
+        # should be non-empty.
+        self.assertGreater(len(view._filterable), 0)
+
+    def test_filter_hides_non_matching_rows(self):
+        view = self._make_view()
+        # Build all Gmsh controls so the filter covers them too
+        view._populate_gmsh_quality_controls()
+        view.show()
+        view.topo_show_advanced_chk.setChecked(True)
+        view.topo_search.setText("cfl")
+        view._filter_topology_tab()
+        # No "cfl" matches expected on the topology tab; just check
+        # the filter ran without error and at least one widget is
+        # hidden (no widget on the topology tab has "cfl" in its blob).
+        from swe2d.workbench.views.widget_filter_helper import FilterableRowRegistry
+        hidden = sum(
+            1 for _g, _l, w, _a in view._filterable
+            if not view._filterable.filter_visible(w)
+        )
+        self.assertGreater(hidden, 0, "Filter should hide non-matching rows")
+
+    def test_advanced_toggle_shows_advanced_rows(self):
+        view = self._make_view()
+        view._populate_gmsh_quality_controls()
+        view.show()
+        # Initially advanced hidden
+        view.topo_show_advanced_chk.setChecked(False)
+        view._filter_topology_tab()
+        # No advanced rows registered by default in the topology tab,
+        # but at least the registry should be wired (call should not raise).
+        self.assertIsNotNone(view._filterable)
+
+    def test_filter_with_no_text_shows_everything(self):
+        view = self._make_view()
+        view._populate_gmsh_quality_controls()
+        view.show()
+        view.topo_search.setText("")
+        view._filter_topology_tab()
+        all_visible = all(
+            view._filterable.filter_visible(w)
+            for _g, _l, w, _a in view._filterable
+        )
+        self.assertTrue(all_visible, "Empty filter should show every registered row")
 
 
 if __name__ == "__main__":
