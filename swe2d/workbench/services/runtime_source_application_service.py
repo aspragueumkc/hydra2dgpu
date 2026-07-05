@@ -90,4 +90,7 @@ def _distribute_total_flow_to_unit_q_logic(
         ts_flow_code=102,
         edge_hydrographs=edge_hydrographs,
         edge_groups=edge_groups,
+        _side_idx=side_idx,
+        _edge_len=edge_len,
+        _edge_z=edge_z,
     )

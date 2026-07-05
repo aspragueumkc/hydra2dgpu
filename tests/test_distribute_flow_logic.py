@@ -1,5 +1,5 @@
 import numpy as np
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
 
 def test_distribute_total_flow_to_unit_q_logic_forwards_args():
@@ -18,3 +18,10 @@ def test_distribute_total_flow_to_unit_q_logic_forwards_args():
             progressive=False,
         )
         mock_logic.assert_called_once()
+        kwargs = mock_logic.call_args.kwargs
+        assert kwargs["progressive"] is False
+        assert kwargs["ts_flow_code"] == 102
+        assert kwargs["edge_groups"] is None
+        assert kwargs["_side_idx"] is not None
+        assert kwargs["_edge_len"] is not None
+        assert kwargs["_edge_z"] is not None
