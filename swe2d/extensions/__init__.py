@@ -20,7 +20,6 @@ from swe2d.extensions.extension_models import (
     PipeNetworkState,
     RainFieldConfig,
     RainSourceTermState,
-    RainfallSourceEngine,
     SWE2DEquationSet,
     SolverModelOptions,
     SpatialDiscretization,
@@ -28,11 +27,7 @@ from swe2d.extensions.extension_models import (
     TemporalScheme,
     TurbulenceModel,
     circular_area_from_diameter,
-    circular_section_from_depth,
     circular_wet_perimeter_full,
-    compute_orifice_flow,
-    compute_pipe_manning_capacity_full,
-    compute_weir_flow,
     equivalent_circular_diameter_from_area,
 )
 from swe2d.extensions.drainage_network import SWE2DUrbanDrainageModule
@@ -58,7 +53,6 @@ __all__ = [
     "PipeNetworkState",
     "RainFieldConfig",
     "RainSourceTermState",
-    "RainfallSourceEngine",
     "SWE2DEquationSet",
     "SWE2DStructureModule",
     "SWE2DUrbanDrainageModule",
@@ -68,10 +62,6 @@ __all__ = [
     "TemporalScheme",
     "TurbulenceModel",
     "circular_area_from_diameter",
-    "circular_section_from_depth",
     "circular_wet_perimeter_full",
-    "compute_orifice_flow",
-    "compute_pipe_manning_capacity_full",
-    "compute_weir_flow",
     "equivalent_circular_diameter_from_area",
 ]

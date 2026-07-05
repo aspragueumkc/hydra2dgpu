@@ -57,8 +57,6 @@ class RunController:
             return None
         return self._execute_run(view, request=request)
 
-    _noop = staticmethod(lambda *a, **k: None)
-
     def _execute_run(self, view: Any, request: Optional[Any] = None) -> Any:
         """Full 2D simulation pipeline — inlined from extracted/_on_run.
 
@@ -1099,85 +1097,6 @@ class RunController:
             )
         finally:
             run_lifecycle.finalize_cleanup(backend)
-
-    # ── Preflight and input collection ─────────────────────────────────
-
-    def _preflight_validate_mesh(self) -> dict:
-        """Validate mesh availability and backend readiness before a run.
-
-        Returns a dict with ``mesh_data``, ``ok``, and ``message`` keys.
-        """
-        view = self._view
-        mesh_data = getattr(view, "_mesh_data", None)
-        if mesh_data is None:
-            return {"mesh_data": None, "ok": False, "message": "Run aborted: no mesh loaded. Import mesh from map layers first."}
-        from swe2d.runtime.backend import swe2d_gpu_available
-        if not swe2d_gpu_available():
-            return {"mesh_data": mesh_data, "ok": False, "message": "Run aborted: GPU backend not available."}
-        return {"mesh_data": mesh_data, "ok": True, "message": ""}
-
-    def _collect_bc_for_edges(self, edge_n0: np.ndarray, edge_n1: np.ndarray) -> dict:
-        """Collect boundary condition arrays for the given boundary edges.
-
-        Returns a dict with ``bc_type``, ``bc_val``, ``edge_hydrographs``,
-        and ``edge_group_overrides`` keys.
-        """
-        view = self._view
-        _, _, bc_type, bc_val = view._collect_boundary_arrays()
-        edge_hydrographs = view._collect_bc_layer_hydrographs(edge_n0, edge_n1)
-        edge_group_overrides = view._collect_bc_layer_edge_groups(edge_n0, edge_n1)
-        return {
-            "bc_type": bc_type,
-            "bc_val": bc_val,
-            "edge_hydrographs": edge_hydrographs,
-            "edge_group_overrides": edge_group_overrides,
-        }
-
-    def _prepare_run_inputs(self) -> dict:
-        """Prepare all inputs needed for a simulation run.
-
-        Collects mesh data, boundary conditions, initial state, and
-        spatially-varying forcing arrays.  Returns a dict that can be
-        unpacked by the run pipeline.
-        """
-        view = self._view
-        mesh_data = getattr(view, "_mesh_data", None)
-        if mesh_data is None:
-            return {}
-        edge_n0, edge_n1 = view._mesh_boundary_edges()
-        bc_result = self._collect_bc_for_edges(edge_n0, edge_n1)
-        bc_tp = bc_result["bc_type"]
-        bc_vl = bc_result["bc_val"]
-        side_hydrographs = view._build_side_hydrographs()
-        edge_hydrographs = bc_result["edge_hydrographs"]
-        edge_group_overrides = bc_result["edge_group_overrides"]
-        initial = view._initial_state(bc_n0=edge_n0, bc_n1=edge_n1, bc_tp=bc_tp)
-        n_mann_cell = view._build_spatial_manning_array()
-        return {
-            "mesh_data": mesh_data,
-            "edge_n0": edge_n0,
-            "edge_n1": edge_n1,
-            "bc_type": bc_tp,
-            "bc_val": bc_vl,
-            "side_hydrographs": side_hydrographs,
-            "edge_hydrographs": edge_hydrographs,
-            "edge_group_overrides": edge_group_overrides,
-            "initial_state": initial,
-            "n_mann_cell": n_mann_cell,
-        }
-
-    def _collect_simulation_settings(self) -> dict:
-        """Collect simulation settings from UI widgets and return a plain dict.
-
-        Includes unit-system information derived from the CRS.
-        """
-        view = self._view
-        wp = view.collect_run_widget_params()
-        wp["unit_system_name"] = getattr(view, "_unit_system", "")
-        wp["length_unit_name"] = getattr(view, "_length_unit_name", "")
-        wp["gravity"] = float(getattr(view, "_gravity", 9.81))
-        wp["k_mann"] = float(getattr(view, "_k_mann", 1.0))
-        return wp
 
     # ── Cancel orchestration ──────────────────────────────────────────
     def on_cancel(self) -> None:

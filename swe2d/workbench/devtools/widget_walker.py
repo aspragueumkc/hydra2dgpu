@@ -162,14 +162,6 @@ def find_node_by_object_name(
     return None
 
 
-def iter_with_parents(
-    nodes: List[WidgetNode],
-) -> Iterator[WidgetNode]:
-    """Yield nodes in tree order, skipping the synthetic root if it is anonymous."""
-    for node in nodes:
-        yield node
-
-
 def build_child_index(nodes: List[WidgetNode]) -> dict:
     """Return ``{parent_id: [child_node, ...]}`` for fast child lookup.
 

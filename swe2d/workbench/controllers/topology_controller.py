@@ -17,28 +17,6 @@ import numpy as np
 from swe2d.workbench.controllers.protocols_controller import TopologyMeshView
 
 
-def _opt_float(widget, attr: str, default: float) -> float:
-    """Safely read a float from a widget attribute (e.g. 'value' or 'text')."""
-    try:
-        val = getattr(widget, attr)
-        if callable(val):
-            val = val()
-        return float(val)
-    except (TypeError, ValueError, AttributeError):
-        return float(default)
-
-
-def _opt_bool(widget, attr: str, default: bool) -> bool:
-    """Safely read a bool from a widget attribute (e.g. 'isChecked')."""
-    try:
-        val = getattr(widget, attr)
-        if callable(val):
-            val = val()
-        return bool(val)
-    except (TypeError, ValueError, AttributeError):
-        return bool(default)
-
-
 class TopologyController:
     """MVP controller for topology-layer management and mesh generation."""
 

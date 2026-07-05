@@ -2074,22 +2074,6 @@ class SWE2DWorkbenchStudioDialog(QtWidgets.QDialog):
         self._last_run_request = request
         self._controller.on_run(request)
 
-    def _preflight_validate_mesh(self) -> dict:
-        """Validate mesh and backend before a run (delegates to controller)."""
-        return self._controller._preflight_validate_mesh()
-
-    def _collect_bc_for_edges(self, edge_n0, edge_n1) -> dict:
-        """Collect boundary conditions for edges (delegates to controller)."""
-        return self._controller._collect_bc_for_edges(edge_n0, edge_n1)
-
-    def _prepare_run_inputs(self) -> dict:
-        """Prepare all run inputs (delegates to controller)."""
-        return self._controller._prepare_run_inputs()
-
-    def _collect_simulation_settings(self) -> dict:
-        """Collect simulation settings from UI (delegates to controller)."""
-        return self._controller._collect_simulation_settings()
-
     def _ensure_mesh_for_run_preflight(self):
         """Log an error if no mesh is loaded (preflight check)."""
         if self._mesh_data is None:

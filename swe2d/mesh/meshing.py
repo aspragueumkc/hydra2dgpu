@@ -331,22 +331,6 @@ _HYDRA_MESHING_NATIVE_MODULE = None
 _HYDRA_MESHING_NATIVE_LOAD_ATTEMPTED = False
 
 
-def _gmsh_available() -> bool:
-    """Check if gmsh Python package AND its native DLL are loadable.
-
-    ``importlib.util.find_spec`` alone is insufficient — it returns True
-    even when the gmsh native C++ library (.pyd/.so) cannot be found or
-    loaded.  We actually try a minimal import to verify the full stack.
-    """
-    try:
-        import gmsh as _gmsh_check
-        _ = _gmsh_check.__version__
-        return True
-    except Exception as e:
-        logger.warning("_gmsh_available: gmsh native library check failed: %s", e, exc_info=True)
-        return False
-
-
 def _gmsh_cpp_prebuild_enabled() -> bool:
     """gmsh cpp prebuild enabled"""
     return _env_bool("BACKWATER_GMSH_CPP_PREBUILD", True)

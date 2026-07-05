@@ -1520,12 +1520,6 @@ class SWE2DCouplingController:
         """Number of 2D mesh cells in the domain."""
         return int(self.cell_area.size)
 
-    def source_rate_callback(self):
-        raise RuntimeError(
-            "compute_source_rates / source_rate_callback removed. "
-            "Use apply_native_device_sources(t_s, dt_s) directly."
-        )
-
 __all__ = [
     "SWE2DCouplingDiagnostics",
     "SWE2DCouplingController",

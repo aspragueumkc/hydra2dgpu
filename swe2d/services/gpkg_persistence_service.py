@@ -7,8 +7,6 @@ SQL in the dialog. This service is pure Python — it does not touch Qt.
 Functions that need dialog access (e.g. ``current_line_results_storage_path``)
 take the dialog as their first parameter.
 
-NO SILENT FALLBACKS:
-    * ``collect_run_log_metadata`` returns an empty dict on any failure.
 """
 from __future__ import annotations
 
@@ -42,51 +40,12 @@ __all__ = [
     "load_baked_timesteps",
     "collect_baked_runs_from_gpkg",
     # Utility functions
-    "collect_run_log_metadata",
     "current_line_results_storage_path",
 ]
 
 
 
 
-
-
-def collect_run_log_metadata(
-    log_fn: Callable[[str], None],
-    current_line_results_storage_path_fn: Optional[Callable[[], str]] = None,
-    workbench_widget_state: Optional[Dict[str, object]] = None,
-) -> Dict[str, object]:
-    """Collect run log metadata from the current workbench state.
-
-    Parameters
-    ----------
-    log_fn : callable
-        Logging callback.
-    current_line_results_storage_path_fn : callable, optional
-        Optional function returning the results storage path.
-    workbench_widget_state : dict, optional
-        Optional dict of workbench widget state.
-
-    Returns
-    -------
-    dict
-        Metadata dict (may be empty on failure).
-    """
-    metadata: Dict[str, object] = {}
-
-    try:
-        if workbench_widget_state is not None:
-            metadata["workbench_widget_state"] = workbench_widget_state
-    except Exception:
-        log_fn(f"[WARNING] Unexpected error silently caught")
-
-    try:
-        if current_line_results_storage_path_fn is not None:
-            metadata["results_gpkg_path"] = str(current_line_results_storage_path_fn() or "")
-    except Exception:
-        logger.warning("Failed to capture results_gpkg_path metadata", exc_info=True)
-
-    return metadata
 
 
 def current_line_results_storage_path(dialog) -> str:
