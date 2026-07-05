@@ -132,7 +132,6 @@ class RunController:
         # ── Imports that pull in Qt / swe2d_workbench_qt ────────────
         from qgis.PyQt import QtWidgets
 
-        from swe2d import units as _u
         from swe2d.workbench.services.constants_service import (
             BC_INFLOW_Q as _BC_INFLOW_Q,
             BC_TS_FLOW as _BC_TS_FLOW,
@@ -141,14 +140,12 @@ class RunController:
         from swe2d.workbench.services.non_gui_runtime_service import execute_run_timestep_loop as _execute_run_timestep_loop_runtime_logic
         from swe2d.runtime.coupling import pack_coupling_soa
         from swe2d.runtime.backend import SWE2DBackend
-        from swe2d.runtime.coupling import SWE2DCouplingController
+        from swe2d.runtime.coupling import build_coupling_controller
         from swe2d.runtime.native_bc_forcing import SWE2DNativeBoundaryHydrographConfigurator
         from swe2d.runtime.runtime_setup_configurator import SWE2DRunSetupConfigurator
         from swe2d.runtime.runtime_reporting import SWE2DRuntimeReporter
         from swe2d.runtime.runtime_sources import SWE2DRuntimeSourceManager
         from swe2d.runtime.runtime_step_executor import SWE2DRuntimeStepExecutor
-        from swe2d.extensions.structures import SWE2DStructureModule
-        from swe2d.extensions.drainage_network import SWE2DUrbanDrainageModule
         from swe2d.extensions.extension_models import TemporalScheme
 
         # ── Begin _on_run body (identical algorithm, direct view reads) ──
@@ -265,45 +262,23 @@ class RunController:
                     pipe_network=pipe_network_cfg,
                     hydraulic_structures=hydraulic_structures_cfg,
                 )
-            coupling_controller = None
-            if SWE2DCouplingController is not None and (pipe_network_cfg is not None or hydraulic_structures_cfg is not None):
-                drainage_mod = SWE2DUrbanDrainageModule(pipe_network_cfg) if pipe_network_cfg is not None and SWE2DUrbanDrainageModule is not None else None
-                if drainage_mod is not None:
-                    drainage_mod.initialize()
-                # Compute model-to-feet factor: for a foot model (length_scale=3.28)
-                # this gives 1.0 (no conversion); for SI (length_scale=1.0) this gives 3.28.
-                # _ls = model units per SI meter (e.g. 3.28 for feet, 1.0 for meters)
-                # Convert to si_m_per_model (e.g. 0.3048 for feet, 1.0 for meters)
-                # which the coupling controller and units.configure() expect.
-                _ls = max(1.0e-6, float(length_scale_si_to_model_fn()))
-                _si_m_per_model = 1.0 / _ls
-                _model_to_ft = _u.USC_FT_PER_SI_M * _si_m_per_model
-                structures_mod = SWE2DStructureModule(hydraulic_structures_cfg, model_to_ft=_model_to_ft) if hydraulic_structures_cfg is not None and SWE2DStructureModule is not None else None
-                coupling_controller = SWE2DCouplingController(
-                    cell_area=mesh_cell_areas_fn(),
-                    cell_bed=mesh_cell_min_bed_fn(),
-                    drainage=drainage_mod,
-                    structures=structures_mod,
-                    drainage_gpu_method=drainage_gpu_method_mode,
-                    culvert_solver_mode=culvert_solver_mode,
-                    bridge_cuda_coupling=bool(run_options.bridge_cuda_coupling),
-                    bridge_stacked_coupling_mode=str(getattr(run_options, "bridge_stacked_coupling_mode", "phase3_spatial")),
-                    length_scale_si_to_model=_si_m_per_model,
-                    culvert_face_flux_mode=str(getattr(run_options, "culvert_face_flux_mode", "off")),
-                    use_redistribution=bool(wp["use_redistribution_chk"]),
-                    log_callback=log_fn,
-                )
+            coupling_controller = build_coupling_controller(
+                pipe_network_cfg=pipe_network_cfg,
+                hydraulic_structures_cfg=hydraulic_structures_cfg,
+                cell_area=mesh_cell_areas_fn(),
+                cell_bed=mesh_cell_min_bed_fn(),
+                length_scale_si_to_model=float(length_scale_si_to_model_fn()),
+                bridge_cuda_coupling=bool(run_options.bridge_cuda_coupling),
+                bridge_stacked_coupling_mode=str(getattr(run_options, "bridge_stacked_coupling_mode", "phase3_spatial")),
+                culvert_face_flux_mode=str(getattr(run_options, "culvert_face_flux_mode", "off")),
+                culvert_solver_mode=culvert_solver_mode,
+                drainage_gpu_method_mode=drainage_gpu_method_mode,
+                use_redistribution=bool(wp["use_redistribution_chk"]),
+                cell_centroids=mesh_cell_centroids_fn(),
+                log_fn=log_fn,
+            )
+            if coupling_controller is not None:
                 setattr(coupling_controller, "bridge_stacked_plans", bridge_stacked_plans)
-                # Provide cell centroids for influence-width redistribution.
-                try:
-                    cx, cy = mesh_cell_centroids_fn()
-                    if hasattr(coupling_controller, "set_cell_centroids"):
-                        coupling_controller.set_cell_centroids(cx, cy)
-                    if hasattr(coupling_controller, "_build_redistribution_data"):
-                        coupling_controller._build_redistribution_data()
-                except Exception:
-                    logger.warning("Unexpected error silently caught", exc_info=True)
-                # GPU-only runtime: all coupling/drainage paths use CUDA.
 
             rain_stats_acc = {"rain_mm": 0.0, "excess_mm": 0.0, "samples": 0}
 

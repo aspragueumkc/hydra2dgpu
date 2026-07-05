@@ -1520,6 +1520,65 @@ class SWE2DCouplingController:
         """Number of 2D mesh cells in the domain."""
         return int(self.cell_area.size)
 
+
+def build_coupling_controller(
+    *,
+    pipe_network_cfg,
+    hydraulic_structures_cfg,
+    cell_area,
+    cell_bed,
+    length_scale_si_to_model: float,
+    bridge_cuda_coupling: bool,
+    bridge_stacked_coupling_mode: str,
+    culvert_face_flux_mode: str,
+    culvert_solver_mode: str,
+    drainage_gpu_method_mode: str,
+    use_redistribution: bool,
+    cell_centroids=None,
+    log_fn=None,
+):
+    """Build a SWE2DCouplingController from drainage + structure configs.
+
+    Returns None when neither config is supplied.
+    """
+    coupling_controller = None
+    if pipe_network_cfg is not None or hydraulic_structures_cfg is not None:
+        drainage_mod = None
+        structures_mod = None
+        if pipe_network_cfg is not None:
+            drainage_mod = SWE2DUrbanDrainageModule(pipe_network_cfg)
+            drainage_mod.initialize()
+        _ls = max(1.0e-6, float(length_scale_si_to_model))
+        _si_m_per_model = 1.0 / _ls
+        _model_to_ft = _u.USC_FT_PER_SI_M * _si_m_per_model
+        if hydraulic_structures_cfg is not None:
+            structures_mod = SWE2DStructureModule(hydraulic_structures_cfg, model_to_ft=_model_to_ft)
+        _cs_mode = int(culvert_solver_mode) if not isinstance(culvert_solver_mode, str) else {"egl": 0, "hgl": 1}.get(culvert_solver_mode.strip().lower(), 0)
+        coupling_controller = SWE2DCouplingController(
+            cell_area=cell_area,
+            cell_bed=cell_bed,
+            drainage=drainage_mod,
+            structures=structures_mod,
+            drainage_gpu_method=drainage_gpu_method_mode,
+            culvert_solver_mode=_cs_mode,
+            bridge_cuda_coupling=bridge_cuda_coupling,
+            bridge_stacked_coupling_mode=bridge_stacked_coupling_mode,
+            length_scale_si_to_model=_si_m_per_model,
+            culvert_face_flux_mode=culvert_face_flux_mode,
+            use_redistribution=use_redistribution,
+            log_callback=log_fn,
+        )
+        if cell_centroids is not None:
+            if hasattr(coupling_controller, "set_cell_centroids"):
+                coupling_controller.set_cell_centroids(cell_centroids[0], cell_centroids[1])
+            if hasattr(coupling_controller, "_build_redistribution_data"):
+                try:
+                    coupling_controller._build_redistribution_data()
+                except Exception:
+                    pass
+    return coupling_controller
+
+
 __all__ = [
     "SWE2DCouplingDiagnostics",
     "SWE2DCouplingController",
@@ -1529,4 +1588,5 @@ __all__ = [
     "pack_pipe_network_soa",
     "pack_structures_soa",
     "pack_coupling_soa",
+    "build_coupling_controller",
 ]
