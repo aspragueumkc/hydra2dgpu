@@ -227,7 +227,7 @@ class ResultsToolbox(QtWidgets.QWidget):
         page_layout.addStretch(1)
 
         self._populate_overlay_combos()
-        toolbox.addItem(page, "Display")
+        toolbox.addItem(page, "Overlay")
 
     # ------------------------------------------------------------------
     # Page 2: Runs

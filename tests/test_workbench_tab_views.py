@@ -453,7 +453,7 @@ class TestResultsToolbox(unittest.TestCase):
         toolbox = ResultsToolbox()
         self.assertEqual(toolbox.toolbox.count(), 2)
         texts = [toolbox.toolbox.itemText(i) for i in range(toolbox.toolbox.count())]
-        self.assertIn("Display", texts)
+        self.assertIn("Overlay", texts)
         self.assertIn("Runs", texts)
         self.assertNotIn("Storage", texts)
 
