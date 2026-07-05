@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
-from typing import Optional
+from typing import Dict, Optional
 
 import numpy as np
 
 from swe2d.boundary_and_forcing.bc_logic import (
+    EdgeHydrographMap,
+    Hydrograph,
     _bc_side_classification,
     distribute_total_flow_to_unit_q,
 )
@@ -59,27 +61,37 @@ def _apply_external_sources_logic(
 
 
 def _distribute_total_flow_to_unit_q_logic(
-    edge_n0,
-    edge_n1,
-    bc_type_step,
-    bc_val_step,
-    bc_type_template,
-    side_hydrographs,
-    node_x,
-    node_y,
-    node_z,
-    progressive,
-    edge_hydrographs=None,
-    edge_groups=None,
-):
+    edge_n0: np.ndarray,
+    edge_n1: np.ndarray,
+    bc_type_step: np.ndarray,
+    bc_val_step: np.ndarray,
+    bc_type_template: np.ndarray,
+    side_hydrographs: Dict[str, Hydrograph],
+    node_x: np.ndarray,
+    node_y: np.ndarray,
+    node_z: np.ndarray,
+    progressive: bool,
+    edge_hydrographs: EdgeHydrographMap = None,
+    edge_groups: Optional[Dict[int, str]] = None,
+    *,
+    _side_idx: Optional[np.ndarray] = None,
+    _edge_len: Optional[np.ndarray] = None,
+    _edge_z: Optional[np.ndarray] = None,
+) -> np.ndarray:
     """Distribute total flow BC values to unit discharge per edge without Qt.
 
     All parameters are forwarded to
     :func:`swe2d.boundary_and_forcing.bc_logic.distribute_total_flow_to_unit_q`.
+    Optional pre-computed geometry invariants (``_side_idx``, ``_edge_len``,
+    ``_edge_z``) are used when all three are supplied; otherwise they are
+    computed from the mesh.
     """
-    side_idx, edge_len, edge_z, *_ = _bc_side_classification(
-        edge_n0, edge_n1, node_x, node_y, node_z,
-    )
+    if _side_idx is None or _edge_len is None or _edge_z is None:
+        side_idx, edge_len, edge_z, *_ = _bc_side_classification(
+            edge_n0, edge_n1, node_x, node_y, node_z,
+        )
+    else:
+        side_idx, edge_len, edge_z = _side_idx, _edge_len, _edge_z
     return distribute_total_flow_to_unit_q(
         edge_n0=edge_n0, edge_n1=edge_n1,
         bc_type_step=bc_type_step, bc_val_step=bc_val_step,
