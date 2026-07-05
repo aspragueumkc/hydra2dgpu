@@ -18,7 +18,7 @@ _REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if _REPO_ROOT not in sys.path:
     sys.path.insert(0, _REPO_ROOT)
 
-from swe2d.workbench.services.line_sampling_service import (
+from swe2d.services.line_sampling_service import (
     sample_line_metrics,
     build_line_sampling_map_numpy,
 )

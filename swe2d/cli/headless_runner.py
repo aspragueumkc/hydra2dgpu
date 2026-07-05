@@ -454,7 +454,7 @@ def execute_run(
             sl_table = sl_cfg["table"]
             raw_lines = query_sample_lines_from_qgis(sl_gpkg, sl_table)
             if raw_lines:
-                from swe2d.workbench.services.line_sampling_service import (
+                from swe2d.services.line_sampling_service import (
                     build_line_sampling_map_numpy,
                     sample_line_metrics,
                 )
@@ -653,7 +653,7 @@ def execute_run(
 
         precomputed_line_results: Dict[int, Dict[str, Any]] = {}
         if sample_map_list and snapshot_timesteps:
-            from swe2d.workbench.services.line_sampling_service import (
+            from swe2d.services.line_sampling_service import (
                 sample_line_aggregate_ts_row,
                 sample_line_metrics,
             )

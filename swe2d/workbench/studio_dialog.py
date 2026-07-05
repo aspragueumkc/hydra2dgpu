@@ -2012,8 +2012,8 @@ class SWE2DWorkbenchStudioDialog(QtWidgets.QDialog):
         """Sample line metrics (time-series and profile) from solver state."""
         if not sample_map:
             return [], []
-        from swe2d.workbench.services.line_sampling_service import sample_line_metrics as _svc
-        from swe2d.workbench.services.line_sampling_service import sample_line_aggregate_ts_row as _agg_svc
+        from swe2d.services.line_sampling_service import sample_line_metrics as _svc
+        from swe2d.services.line_sampling_service import sample_line_aggregate_ts_row as _agg_svc
         g = float(self._gravity)
         h_min = self._model_tab_view.get_h_min()
         h = np.asarray(h_s, dtype=np.float64)
@@ -2241,7 +2241,7 @@ class SWE2DWorkbenchStudioDialog(QtWidgets.QDialog):
 
     def _build_line_sampling_map(self) -> List[Dict[str, object]]:
         """Build line sampling map from the sample lines layer (delegates to service)."""
-        from swe2d.workbench.services.line_sampling_service import build_line_sampling_map
+        from swe2d.services.line_sampling_service import build_line_sampling_map
         sample_lines_combo = getattr(self._model_tab_view, "sample_lines_layer_combo", None)
         line_layer = self._combo_layer(sample_lines_combo, "vector") if sample_lines_combo is not None else None
         if line_layer is None:

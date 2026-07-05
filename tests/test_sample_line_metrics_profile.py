@@ -8,7 +8,7 @@ profile interpolation data.
 
 import numpy as np
 
-from swe2d.workbench.services.line_sampling_service import sample_line_metrics
+from swe2d.services.line_sampling_service import sample_line_metrics
 
 
 def test_sample_line_metrics_uses_prebuilt_profile_map_with_empty_line_xy():

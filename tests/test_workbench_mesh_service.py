@@ -4,7 +4,7 @@ import unittest
 import numpy as np
 
 from swe2d.workbench.services.mesh_service import assign_node_z_from_terrain
-from swe2d.workbench.services.line_sampling_service import (
+from swe2d.services.line_sampling_service import (
     build_line_sampling_map_numpy,
     sample_line_metrics,
 )
