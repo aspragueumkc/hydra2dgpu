@@ -1188,6 +1188,11 @@ class SWE2DWorkbenchStudioDialog(QtWidgets.QDialog):
         value, ok = QtWidgets.QInputDialog.getText(self, title, label, text=text)
         return str(value or ""), bool(ok)
 
+    def get_input_item(self, title, label, items, current=0, editable=False):
+        from qgis.PyQt import QtWidgets
+        value, ok = QtWidgets.QInputDialog.getItem(self, title, label, items, current, editable)
+        return str(value or ""), bool(ok)
+
     def get_results_gpkg_path(self):
         mtv = getattr(self, "_model_tab_view", None)
         if mtv is not None:

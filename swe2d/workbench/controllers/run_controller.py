@@ -1026,7 +1026,7 @@ class RunController:
         except Exception as exc:
             run_lifecycle.handle_run_failure(
                 exc,
-                lambda msg: QtWidgets.QMessageBox.critical(view, "2D SWE", msg),
+                lambda msg: view.show_critical_message("2D SWE", msg),
             )
         finally:
             run_lifecycle.finalize_cleanup(backend)
@@ -1035,11 +1035,10 @@ class RunController:
     def open_run_log_viewer(self) -> None:
         """Open file dialog, select GPKG, pick run, then show the run log viewer."""
         import os as _os
-        from qgis.PyQt import QtCore, QtWidgets
 
         view = self._view
-        db_path, _ = QtWidgets.QFileDialog.getOpenFileName(
-            view, "Select GeoPackage with run logs", "",
+        db_path = view.get_open_file_name(
+            "Select GeoPackage with run logs", "",
             "GeoPackage (*.gpkg);;All Files (*)",
         )
         db_path = str(db_path or "").strip()
@@ -1059,8 +1058,8 @@ class RunController:
             view._log(f"[ERROR] Failed to load run logs: {exc}")
             return
         if not records:
-            QtWidgets.QMessageBox.information(
-                view, "Run Log Viewer",
+            view.show_information_message(
+                "Run Log Viewer",
                 "No run logs found in the selected GeoPackage.",
             )
             return
@@ -1068,8 +1067,8 @@ class RunController:
         # If multiple runs, let user pick one via a simple selection dialog
         if len(records) > 1:
             run_ids = [str(r.get("run_id", "") or "") for r in records]
-            run_id, ok = QtWidgets.QInputDialog.getItem(
-                view, "Select Run", "Choose a run to view logs:",
+            run_id, ok = view.get_input_item(
+                "Select Run", "Choose a run to view logs:",
                 run_ids, 0, False,
             )
             if not ok or not run_id:
@@ -1126,14 +1125,7 @@ class RunController:
         # Auto-populate mesh GPKG path from the current model if available
         gpkg = getattr(view, "_model_gpkg_path", "")
         if not gpkg or not _os.path.isfile(gpkg):
-            # results_gpkg_path_edit moved from RunDockWidget to
-            # ModelTabView's Output page (commit 686e609). Read it from
-            # there as a fallback.
-            mt = getattr(view, "_model_tab_view", None)
-            if mt:
-                pe = getattr(mt, "results_gpkg_path_edit", None)
-                if pe:
-                    gpkg = str(pe.text() or "").strip()
+            gpkg = view.get_results_gpkg_path()
 
         dlg = BatchSimulationDialog(
             parent=view,
@@ -1195,7 +1187,6 @@ class RunController:
         boundary conditions, and presents a summary via QMessageBox.
         Aborts when no boundary edges are present.
         """
-        from qgis.PyQt import QtWidgets
         import numpy as np
 
         view = self._view
@@ -1207,8 +1198,8 @@ class RunController:
         edge_n0, edge_n1 = view._mesh_boundary_edges()
         if edge_n0.size == 0:
             view._log("No boundary edges detected in mesh.")
-            QtWidgets.QMessageBox.information(
-                view, "Preview Overrides", "No boundary edges detected in mesh."
+            view.show_information_message(
+                "Preview Overrides", "No boundary edges detected in mesh."
             )
             return
 
@@ -1266,7 +1257,7 @@ class RunController:
 
         summary = "\n".join(summary_lines)
         view._log("Override preview:\n" + summary.replace("\n", " | "))
-        QtWidgets.QMessageBox.information(view, "Preview Overrides", summary)
+        view.show_information_message("Preview Overrides", summary)
 
     # ── Load run settings from results GeoPackage ─────────────────────
     def on_load_simulation_config(self) -> None:
@@ -1274,7 +1265,7 @@ class RunController:
 
         Two-step flow so the user can browse any .gpkg on disk (not just
         the currently-active results GPKG):
-          1. ``QFileDialog.getOpenFileName`` — same picker used by the
+          1. ``view.get_open_file_name`` — same picker used by the
              GeoPackage Explorer action so the UX is consistent.
           2. ``SWE2DSimulationConfigDialog`` — pick which config from
              ``swe2d_simulation_configs`` to apply.
@@ -1283,12 +1274,9 @@ class RunController:
         ``_current_line_results_storage_path()`` to already point at a
         valid GPKG.
         """
-        from qgis.PyQt import QtWidgets
-
         view = self._view
 
-        db_path, _ = QtWidgets.QFileDialog.getOpenFileName(
-            view,
+        db_path = view.get_open_file_name(
             "Select GeoPackage to load configuration from",
             "",
             "GeoPackage (*.gpkg);;All Files (*)",
@@ -1317,7 +1305,7 @@ class RunController:
             apply_callback=view._apply_run_log_metadata_to_ui,
         )
         result = dlg.exec()
-        if result != QtWidgets.QDialog.Accepted:
+        if not result:
             return
         # After applying widget state, load the associated mesh if available
         selected = getattr(dlg, "_selected_config", None)
@@ -1351,13 +1339,7 @@ class RunController:
                 view._mesh_data = mesh_data
                 view._reset_runtime_snapshot_overlay_cache("mesh loaded from config")
                 view._result_data = None
-                try:
-                    _viewer = getattr(view, "_studio_viewer", None)
-                    if _viewer is not None:
-                        _viewer.tab_widget.setCurrentWidget(
-                            _viewer.plot_widgets.get("Mesh"))
-                except RuntimeError:
-                    pass
+                view.show_mesh_tab()
                 try:
                     view._refresh_plot()
                 except RuntimeError:
@@ -1370,10 +1352,10 @@ class RunController:
         """Save the current widget configuration to a user-chosen GeoPackage.
 
         Two-step flow mirroring ``on_load_simulation_config``:
-          1. ``QFileDialog.getSaveFileName`` — user picks an existing
+          1. ``view.get_save_file_name`` — user picks an existing
              .gpkg or types a new path. Matches the GeoPackage Explorer
              picker so the UX is consistent.
-          2. ``QInputDialog`` — prompt for a descriptive config name
+          2. ``view.get_input_text`` — prompt for a descriptive config name
              (timestamp used if blank).
 
         Replaces the old behavior that silently required
@@ -1391,8 +1373,7 @@ class RunController:
         if current_db and os.path.exists(os.path.dirname(os.path.abspath(current_db))):
             start_dir = current_db
 
-        db_path, _ = _QtWidgets.QFileDialog.getSaveFileName(
-            view,
+        db_path = view.get_save_file_name(
             "Select GeoPackage to save configuration to",
             start_dir,
             "GeoPackage (*.gpkg);;All Files (*)",
@@ -1405,10 +1386,7 @@ class RunController:
             db_path = db_path + ".gpkg"
 
         # Prompt for a config name
-        name, ok = _QtWidgets.QInputDialog.getText(
-            view, "Save Config", "Configuration name:",
-            text="",
-        )
+        name, ok = view.get_input_text("Save Config", "Configuration name:", "")
         if not ok:
             return
         config_name = str(name).strip()
@@ -1449,12 +1427,9 @@ class RunController:
         validates them (unknown refs, zero capacity, near-zero head), and
         shows a summary via QMessageBox.
         """
-        from qgis.PyQt import QtWidgets
-
         view = self._view
         if view._mesh_data is None:
-            QtWidgets.QMessageBox.information(
-                view,
+            view.show_information_message(
                 "Coupling Preview",
                 "Generate or load a mesh first so cell-based coupling "
                 "indices can be resolved.",
@@ -1465,8 +1440,7 @@ class RunController:
         struct_cfg = view._build_hydraulic_structure_config()
 
         if pipe_cfg is None and struct_cfg is None:
-            QtWidgets.QMessageBox.information(
-                view,
+            view.show_information_message(
                 "Coupling Preview",
                 "No valid drainage or structure layers are configured.",
             )
@@ -1478,6 +1452,4 @@ class RunController:
             n_cells=int(view._mesh_cell_areas().shape[0]),
         )
 
-        QtWidgets.QMessageBox.information(
-            view, "Coupling Preview", "\n".join(lines)
-        )
+        view.show_information_message("Coupling Preview", "\n".join(lines))
