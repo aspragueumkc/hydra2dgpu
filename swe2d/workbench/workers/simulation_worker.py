@@ -3,6 +3,7 @@ from __future__ import annotations
 import datetime
 import logging
 import os
+import threading
 import time
 import traceback
 from typing import Any, Dict, List, Optional, Tuple
@@ -271,6 +272,16 @@ class _WorkbenchShim:
         return self._ctx.cancel_event.is_set()
 
 
+class _PermutationResult:
+    """Thread-safe holder for main-thread mesh permutation results."""
+
+    def __init__(self):
+        self.event = threading.Event()
+        self.sample_map: List[Dict[str, Any]] = []
+        self.cell_solver_z: Optional[np.ndarray] = None
+        self.error: str = ""
+
+
 class SimulationWorker(QThread):
     """Background worker that owns the SWE2D backend and runs the timestep loop."""
 
@@ -279,6 +290,7 @@ class SimulationWorker(QThread):
     snapshot_ready = pyqtSignal(object)
     compute_finished = pyqtSignal(object)
     compute_failed = pyqtSignal(str)
+    mesh_permutation_ready = pyqtSignal(object, object)
 
     def __init__(self, context: RunContext, parent=None):
         super().__init__(parent)
@@ -448,7 +460,22 @@ class SimulationWorker(QThread):
 
             cp = getattr(backend, "_cell_perm", None)
             if cp is not None and cp.size > 0:
+                if self.receivers(self.mesh_permutation_ready) > 0:
+                    result_holder = _PermutationResult()
+                    self.mesh_permutation_ready.emit(np.asarray(cp, dtype=np.int32), result_holder)
+                    if not result_holder.event.wait(timeout=60.0):
+                        raise RuntimeError("Timed out waiting for main-thread mesh permutation.")
+                    if result_holder.error:
+                        raise RuntimeError(f"Mesh permutation failed: {result_holder.error}")
+                    sample_map = list(result_holder.sample_map or [])
+                    cell_solver_z = result_holder.cell_solver_z
+                else:
+                    sample_map = list(ctx.sample_map_data or [])
+                    cell_solver_z = None
                 apply_cell_permutation(mesh_data, cp)
+            else:
+                sample_map = list(ctx.sample_map_data or [])
+                cell_solver_z = np.asarray(ctx.cell_solver_bed, dtype=np.float64).ravel() if sample_map else None
 
             coupling_controller = None
             if ctx.pipe_network_cfg is not None or ctx.hydraulic_structures_cfg is not None:
@@ -476,15 +503,16 @@ class SimulationWorker(QThread):
                     except Exception as sync_exc:
                         log(f"[WARNING] Failed to sync inv_cell_perm to coupling controller: {sync_exc}")
 
-            sample_map = ctx.sample_map_data
-            cell_solver_z = ctx.mesh_cell_solver_bed() if sample_map else None
-
-            area_model = np.asarray(ctx.mesh_cell_areas(), dtype=np.float64).ravel()
-            if area_model.size == 0 and ctx.cell_areas.size > 0:
-                area_model = np.asarray(ctx.cell_areas, dtype=np.float64).ravel()
-            n_area = int(area_model.size)
-
-            h0_model = np.asarray(h0, dtype=np.float64).ravel()
+            area_model_pre = np.asarray(ctx.cell_areas, dtype=np.float64).ravel()
+            if area_model_pre.size == 0:
+                area_model_pre = np.asarray(ctx.mesh_cell_areas(), dtype=np.float64).ravel()
+            n_area = int(area_model_pre.size)
+            if cp is not None and cp.size > 0:
+                area_model = area_model_pre[cp]
+                h0_model = np.asarray(h0, dtype=np.float64).ravel()[cp]
+            else:
+                area_model = area_model_pre
+                h0_model = np.asarray(h0, dtype=np.float64).ravel()
             n_store = min(n_area, int(h0_model.size))
             storage_start_model = (
                 float(np.sum(h0_model[:n_store] * area_model[:n_store])) if n_store > 0 else 0.0

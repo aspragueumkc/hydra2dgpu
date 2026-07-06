@@ -5,11 +5,11 @@ import numpy as np
 from qgis.PyQt.QtWidgets import QApplication
 
 
-def _make_mock_backend_class(ctx):
+def _make_mock_backend_class(ctx, cell_perm=None):
     """Return a mock backend class that captures the supplied RunContext."""
 
     class MockBackend:
-        _cell_perm = None
+        _cell_perm = cell_perm
         _mesh_h = None
         instances = []
 
@@ -76,6 +76,7 @@ def _make_context(**overrides):
         hu0=np.array([0.0]),
         hv0=np.array([0.0]),
         cell_areas=np.array([0.5]),
+        cell_solver_bed=np.array([0.0]),
         mesh_cell_areas=lambda: np.array([0.5]),
         mesh_cell_solver_bed=lambda: np.array([0.0]),
     )
@@ -130,3 +131,36 @@ def test_simulation_worker_calls_backend_destroy():
     assert len(finished) == 1
     assert len(MockBackend.instances) == 1
     assert MockBackend.instances[0].destroyed is True
+
+
+def test_simulation_worker_requests_mesh_permutation_from_main_thread():
+    app = QApplication.instance() or QApplication([])
+    from swe2d.workbench.workers.simulation_worker import SimulationWorker
+
+    ctx = _make_context()
+    MockBackend = _make_mock_backend_class(ctx, cell_perm=np.array([0], dtype=np.int32))
+    MockBackend.instances.clear()
+
+    received = {}
+
+    def _on_mesh_permutation_ready(cell_perm, result_holder):
+        received["cell_perm"] = np.asarray(cell_perm, dtype=np.int32).copy()
+        result_holder.sample_map = [{"line_id": "test"}]
+        result_holder.cell_solver_z = np.array([0.0])
+        result_holder.event.set()
+
+    with patch("swe2d.workbench.workers.simulation_worker.SWE2DBackend", new=MockBackend):
+        worker = SimulationWorker(ctx)
+        worker.mesh_permutation_ready.connect(_on_mesh_permutation_ready)
+        finished = []
+        worker.compute_finished.connect(finished.append)
+        worker.start()
+        deadline = time.perf_counter() + 5.0
+        while worker.isRunning() and time.perf_counter() < deadline:
+            app.processEvents()
+            time.sleep(0.01)
+        app.processEvents()
+
+    assert len(finished) == 1
+    assert "cell_perm" in received
+    assert received["cell_perm"].size == 1

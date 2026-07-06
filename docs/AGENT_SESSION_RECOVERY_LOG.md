@@ -1,5 +1,37 @@
 # Agent Session Recovery Log
 
+## Session: Mon Jul 06 2026 — Mesh/Overlay Permutation Threading Fix
+
+### Goal
+Fix live-overlay and line-sampling cell-index mismatch introduced when the simulation loop moved to a background `SimulationWorker`. The worker was permuting only its local mesh copy to RCMK order, while `view._mesh_data`, the overlay, and the pre-captured line sampling map remained in pre-RCMK order.
+
+### Changes
+- `swe2d/workbench/workers/simulation_worker.py`
+  - Added `mesh_permutation_ready` signal and `_PermutationResult` holder.
+  - When the backend reports a non-trivial `_cell_perm`, the worker emits the signal and waits on the main thread to permute the canonical view mesh and rebuild the line-sampling map.
+  - After permutation, the worker applies the same permutation to its local `mesh_data`.
+  - `area_model` and initial-storage calculation now use the permuted cell order.
+  - Moved `SWE2DRuntimeSourceManager` creation after `area_model` is computed in RCMK order.
+- `swe2d/workbench/controllers/run_controller.py`
+  - Connected `mesh_permutation_ready` to new `_on_worker_mesh_permutation_ready` slot.
+  - Slot applies `apply_cell_permutation` to `view._mesh_data` on the main thread, calls `view._build_line_sampling_map()` and `view._mesh_cell_solver_bed()` from the permuted mesh, and releases the worker.
+  - After `finalize_and_persist`, updates the live RunRecord's `gpkg_path` and calls `view._on_results_refresh()` so the plot viewer re-reads coupling data from the now-populated GPKG.
+  - Removed premature `gpkg_path` setting from `_ensure_live_run_record` (during live run) so `load_coupling_records()` uses the live in-memory fallback instead of trying to read a GPKG that has no coupling data yet.
+- `tests/test_simulation_worker.py`
+  - Added `test_simulation_worker_requests_mesh_permutation_from_main_thread` covering the signal/wait path.
+
+### Verification
+- `pytest tests/test_simulation_worker.py tests/test_persistence_worker.py tests/test_run_controller_threading.py -v` → 9 passed
+- Above + `tests/test_swe2d_gpu_validation_perf.py tests/test_swe2d_gpu_unstructured.py` → 15 passed, 1 skipped
+- `mamba run -n qgis_stable python -m py_compile` on modified modules → OK
+- Purged `__pycache__`
+
+### Notes
+- `test_workbench_controller.py` has a pre-existing hang during QApplication setup and was not included in the targeted run.
+- No commit/push performed yet; waiting for explicit go-ahead.
+
+---
+
 ## Session Start: Wed Jul 01 2026
 
 ## Goals

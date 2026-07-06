@@ -116,6 +116,7 @@ class RunController:
         worker.log_message.connect(view._log)
         worker.progress_percent.connect(view.set_run_progress)
         worker.snapshot_ready.connect(self._on_worker_snapshot_ready)
+        worker.mesh_permutation_ready.connect(self._on_worker_mesh_permutation_ready)
         worker.compute_finished.connect(self._on_worker_compute_finished)
         worker.compute_failed.connect(self._on_worker_compute_failed)
         worker.finished.connect(self._on_simulation_worker_finished)
@@ -336,6 +337,28 @@ class RunController:
             cancel_event=cancel_event,
         )
 
+    def _on_worker_mesh_permutation_ready(self, cell_perm, result_holder):
+        """Apply solver cell permutation to the view mesh on the main thread.
+
+        The worker cannot safely touch ``view._mesh_data`` or the sample-lines
+        layer from its thread.  We permute the canonical view mesh here, rebuild
+        the line-sampling map from the permuted geometry, and signal the worker
+        to continue.
+        """
+        view = self._view
+        try:
+            if cell_perm is not None and len(cell_perm) > 0:
+                apply_cell_permutation(view._mesh_data, np.asarray(cell_perm, dtype=np.int32))
+            sample_map = list(view._build_line_sampling_map() or [])
+            cell_solver_z = view._mesh_cell_solver_bed() if sample_map else None
+            result_holder.sample_map = sample_map
+            result_holder.cell_solver_z = cell_solver_z
+        except Exception as exc:
+            logger.exception("Mesh permutation ready handler failed")
+            result_holder.error = str(exc)
+        finally:
+            result_holder.event.set()
+
     def _on_worker_snapshot_ready(self, data: SnapshotData):
         view = self._view
         rd = getattr(view, "_results_data", None)
@@ -407,12 +430,6 @@ class RunController:
         )
         rd._run_records = [rec]
         rd._live_run_id = run_id
-        _live_gpkg = str(
-            getattr(self._view, "_current_line_results_storage_path", lambda: "")()
-            or getattr(self._view, "_model_gpkg_path", "") or ""
-        )
-        if _live_gpkg:
-            rec.gpkg_path = _live_gpkg
         rd._overlay_selected_key = str(rec.key)
         self._view.refresh_results_run_list()
 
@@ -467,6 +484,20 @@ class RunController:
             for msg in finalizer.drain_log_messages():
                 view._log(msg)
             view._log("Persistence finished." if status.get("ok") else f"Persistence completed with issues: {status}")
+            # Update the live RunRecord with the real gpkg path so the
+            # results viewer can read coupling / baked mesh from it.
+            try:
+                results_data = getattr(view, "_results_data", None)
+                if results_data is not None:
+                    gpkg = str(getattr(view, "_current_line_results_storage_path", lambda: "")())
+                    if gpkg:
+                        for rec in results_data.get_run_records():
+                            if rec.run_id == result.run_id:
+                                rec.gpkg_path = gpkg
+                                break
+                view._on_results_refresh()
+            except Exception:
+                pass
         except Exception as exc:
             view.show_critical_message("2D SWE", f"Persistence failed: {exc}")
         finally:
