@@ -403,6 +403,12 @@ class RunController:
             logger.warning("Snapshot readback: overlay time update failed", exc_info=True)
             view._log(f"[SnapReadback] overlay time update failed: {exc}")
         try:
+            if data.coupling_rows:
+                rd._live_coupling_rows = data.coupling_rows
+        except Exception as exc:
+            logger.warning("Snapshot readback: coupling sync failed", exc_info=True)
+            view._log(f"[SnapReadback] coupling sync failed: {exc}")
+        try:
             view._refresh_plot()
         except Exception as exc:
             logger.warning("Snapshot readback: plot refresh failed", exc_info=True)

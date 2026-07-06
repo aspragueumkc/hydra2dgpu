@@ -84,6 +84,8 @@ class SWE2DResultsData:
         self._coupling_records: list = []
         self._coupling_run_id: str = ""
         self._coupling_gpkg_path: str = ""
+        # Live coupling rows emitted from worker via SnapshotData signal
+        self._live_coupling_rows: list = []
 
         # Overlay geometry arrays (populated by overlay controller)
         self.overlay_cell_x: Optional[np.ndarray] = None
@@ -150,6 +152,7 @@ class SWE2DResultsData:
         # again for the new run.
         self._coupling_records = []
         self._coupling_run_id = ""
+        self._live_coupling_rows = []
 
     def preallocate_output_schedule(
         self,
@@ -894,6 +897,8 @@ class SWE2DResultsData:
             live_rows = self.get_live_coupling_snapshot_rows()
             if live_rows:
                 return live_rows
+        if self._live_coupling_rows:
+            return list(self._live_coupling_rows)
         return []
 
     def get_coupling_run_id(self) -> str:
