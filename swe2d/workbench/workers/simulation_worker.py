@@ -815,8 +815,13 @@ class SimulationWorker(QThread):
             if snapshot_timesteps:
                 try:
                     existing = results_data.get_live_snapshot_timesteps()
+                    merged = existing + snapshot_timesteps
                     results_data.set_live_snapshot_timesteps(
-                        existing + snapshot_timesteps, t_sec=float(t_accum))
+                        merged, t_sec=float(t_accum))
+                    # Update snapshot_timesteps to the merged set so
+                    # ComputeResult carries the full list, not just the
+                    # final device read (which may be a subset).
+                    snapshot_timesteps = merged
                     if sample_map and wb._sample_line_metrics is not None:
                         results_data.populate_live_line_metrics(
                             sample_map=sample_map,
