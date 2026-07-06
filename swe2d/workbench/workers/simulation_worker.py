@@ -11,6 +11,7 @@ from typing import Any, Dict, List, Optional, Tuple
 import numpy as np
 from qgis.PyQt.QtCore import QThread, pyqtSignal
 
+from swe2d import units as _u
 from swe2d.runtime.backend import SWE2DBackend
 from swe2d.runtime.backend_initializer import SWE2DBackendInitializer
 from swe2d.runtime.coupling import build_coupling_controller
@@ -459,6 +460,13 @@ class SimulationWorker(QThread):
                     raise
 
             cp = getattr(backend, "_cell_perm", None)
+            # Capture coupling geometry in pre-RCMK order before the
+            # permutation signal mutates view._mesh_data.  The coupling
+            # controller expects original-order arrays — structure cell
+            # indices come from the config in original order.
+            _coupling_cell_area = ctx.mesh_cell_areas()
+            _coupling_cell_bed = ctx.mesh_cell_min_bed()
+            _coupling_cell_centroids = ctx.mesh_cell_centroids()
             if cp is not None and cp.size > 0:
                 if self.receivers(self.mesh_permutation_ready) > 0:
                     result_holder = _PermutationResult()
@@ -482,8 +490,8 @@ class SimulationWorker(QThread):
                 coupling_controller = build_coupling_controller(
                     pipe_network_cfg=ctx.pipe_network_cfg,
                     hydraulic_structures_cfg=ctx.hydraulic_structures_cfg,
-                    cell_area=ctx.mesh_cell_areas(),
-                    cell_bed=ctx.mesh_cell_min_bed(),
+                    cell_area=_coupling_cell_area,
+                    cell_bed=_coupling_cell_bed,
                     length_scale_si_to_model=float(ctx.length_scale_si_to_model),
                     bridge_cuda_coupling=bool(ctx.bridge_cuda_coupling),
                     bridge_stacked_coupling_mode=str(ctx.bridge_stacked_coupling_mode),
@@ -491,7 +499,7 @@ class SimulationWorker(QThread):
                     culvert_solver_mode=ctx.culvert_solver_mode,
                     drainage_gpu_method_mode=ctx.drainage_gpu_method_mode,
                     use_redistribution=bool(ctx.use_redistribution),
-                    cell_centroids=ctx.mesh_cell_centroids(),
+                    cell_centroids=_coupling_cell_centroids,
                     log_fn=log,
                 )
 
@@ -621,9 +629,9 @@ class SimulationWorker(QThread):
                 edge_len_bc=edge_len_bc,
                 edge_group_labels=edge_group_labels,
                 inflow_q_bc_type=int(_BC_INFLOW_Q),
-                rain_rate_si_to_model_callback=lambda rr: float(np.asarray(rr)) * ctx.rain_rate_si_to_model,
+                rain_rate_si_to_model_callback=lambda rr: float(np.asarray(rr)) * _u.rain_si_to_model(1.0),
                 internal_flow_source_cms_at_time_callback=ctx.internal_flow_source_cms_at_time,
-                flow_si_to_model_callback=lambda q: float(np.asarray(q)) * ctx.flow_si_to_model,
+                flow_si_to_model_callback=lambda q: float(np.asarray(q)) * (_u.model_per_si_m() ** 3),
                 enable_source_volume_accounting=(not perf_mode),
                 enable_boundary_flux_accounting=(not perf_mode),
                 record_source_step_rows=(not perf_mode),
