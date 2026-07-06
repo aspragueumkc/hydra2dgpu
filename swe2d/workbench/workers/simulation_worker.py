@@ -155,7 +155,6 @@ class _WorkbenchShim:
         self._ctx = ctx
         self._results_data = results_data
         self._mesh_data = mesh_data
-        self._apply_timeseries_bc_values = ctx.apply_timeseries_bc_values
         # Per-step callbacks must not touch Qt widgets.  Bind the pure
         # *_logic helpers to the values captured on the main thread into
         # the RunContext, so the runtime loop runs entirely off the GUI
@@ -164,6 +163,25 @@ class _WorkbenchShim:
         node_y = ctx.node_y
         node_z = ctx.node_z
         edge_groups = ctx.edge_groups
+
+        from swe2d.boundary_and_forcing.bc_logic import apply_timeseries_bc_values as _apply_timeseries_bc_values_logic
+        from swe2d.boundary_and_forcing.boundary_runtime_logic import classify_boundary_edges as _bc_side_classifier
+        _side_idx = _bc_side_classifier(ctx.bc_n0, ctx.bc_n1, node_x, node_y)
+
+        def _apply_timeseries_bc_values(
+            edge_n0, edge_n1, bc_type, bc_val, side_hydrographs, t_sec, edge_hydrographs=None,
+        ):
+            return _apply_timeseries_bc_values_logic(
+                edge_n0=edge_n0, edge_n1=edge_n1, bc_type=bc_type, bc_val=bc_val,
+                side_hydrographs=side_hydrographs,
+                node_x=node_x, node_y=node_y,
+                t_sec=t_sec,
+                ts_flow_code=1, ts_stage_code=2,
+                edge_hydrographs=edge_hydrographs,
+                _side_idx=_side_idx,
+            )
+
+        self._apply_timeseries_bc_values = _apply_timeseries_bc_values
         mesh_snapshot = {
             "node_x": node_x,
             "node_y": node_y,
@@ -377,11 +395,42 @@ class SimulationWorker(QThread):
                 f"{_stem}_{datetime.datetime.now(datetime.timezone.utc).strftime('%Y%m%d_%H%M%S')}"
             )
 
+        from swe2d.boundary_and_forcing.bc_logic import apply_timeseries_bc_values as _apply_timeseries_bc_values_logic
+        from swe2d.boundary_and_forcing.boundary_runtime_logic import classify_boundary_edges as _bc_side_classifier
+        from swe2d.workbench.services.runtime_source_application_service import _distribute_total_flow_to_unit_q_logic as _distribute_total_flow_to_unit_q_logic_fn
+        _side_idx_init = _bc_side_classifier(bc_n0, bc_n1, node_x, node_y)
+        _edge_groups_init = dict(ctx.edge_groups)
+        _progressive_init = bool(ctx.inflow_progressive_enabled)
+
+        def _apply_bc_init(edge_n0, edge_n1, bc_type, bc_val, side_hydrographs, t_sec, edge_hydrographs=None):
+            return _apply_timeseries_bc_values_logic(
+                edge_n0=edge_n0, edge_n1=edge_n1, bc_type=bc_type, bc_val=bc_val,
+                side_hydrographs=side_hydrographs,
+                node_x=node_x, node_y=node_y,
+                t_sec=t_sec,
+                ts_flow_code=1, ts_stage_code=2,
+                edge_hydrographs=edge_hydrographs,
+                _side_idx=_side_idx_init,
+            )
+
+        def _distribute_bc_init(edge_n0, edge_n1, bc_type_step, bc_val_step, bc_type_template, side_hydrographs, edge_hydrographs=None, edge_groups_arg=None):
+            eg = edge_groups_arg if edge_groups_arg is not None else _edge_groups_init
+            return _distribute_total_flow_to_unit_q_logic_fn(
+                edge_n0=edge_n0, edge_n1=edge_n1,
+                bc_type_step=bc_type_step, bc_val_step=bc_val_step,
+                bc_type_template=bc_type_template,
+                side_hydrographs=side_hydrographs,
+                node_x=node_x, node_y=node_y, node_z=node_z,
+                progressive=_progressive_init,
+                edge_hydrographs=edge_hydrographs,
+                edge_groups=eg,
+            )
+
         backend = None
         try:
             backend_initializer = SWE2DBackendInitializer(
-                apply_timeseries_bc_values_callback=ctx.apply_timeseries_bc_values,
-                distribute_total_flow_to_unit_q_callback=ctx.distribute_total_flow_to_unit_q,
+                apply_timeseries_bc_values_callback=_apply_bc_init,
+                distribute_total_flow_to_unit_q_callback=_distribute_bc_init,
             )
 
             def _build_and_initialize_backend() -> SWE2DBackend:
