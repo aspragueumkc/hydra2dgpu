@@ -106,6 +106,8 @@ class SWE2DResultsData:
         self._live_coupling: Dict[Tuple[str, str, str], Dict[str, object]] = {}
         # Indices tracking next write position for live accumulation
         self._coupling_snap_idx: int = 0
+        # ponytail: incremental line-metrics processing
+        self._line_metrics_snap_count: int = 0
 
         # Display state for TS/Profile/Structure/Network renderers (plain data)
         self.ts_var_key: str = "flow_cms"
@@ -146,6 +148,7 @@ class SWE2DResultsData:
         self._live_line_ts.clear()
         self._live_line_profile.clear()
         self._live_coupling.clear()
+        self._line_metrics_snap_count = 0
         self._coupling_snap_idx = 0
         # Drop any GPKG-expanded coupling rows cached from a previous run
         # so viewers don't see stale data until load_coupling_records runs
@@ -353,10 +356,10 @@ class SWE2DResultsData:
             for k in ("depth_m", "velocity_ms", "wse_m", "bed_m", "flow_qn", "fr"):
                 arr = d.get(k)
                 if arr is not None and hasattr(arr, "shape") and arr.ndim == 2:
-                    entry[f"prof_{k}"] = [np.ascontiguousarray(arr[i]) for i in range(arr.shape[0])]
+                    entry[f"prof_{k}"] = arr
             wet = d.get("wet")
             if wet is not None and hasattr(wet, "shape") and wet.ndim == 2:
-                entry["prof_wet"] = [np.ascontiguousarray(wet[i]) for i in range(wet.shape[0])]
+                entry["prof_wet"] = wet
         return out
 
     def get_live_line_snapshot_rows(self) -> list:
@@ -417,6 +420,9 @@ class SWE2DResultsData:
         shapes the load_* live paths expect (1D per-line arrays for TS;
         2D (n_snaps × n_stations) arrays for profiles).
 
+        Incremental: only processes snapshots beyond
+        ``_line_metrics_snap_count`` and appends to existing arrays.
+
         Parameters
         ----------
         sample_map : list of dict
@@ -431,10 +437,16 @@ class SWE2DResultsData:
         if not snaps or not sample_map or sample_callback is None:
             return
 
+        n_total = len(snaps)
+        start = self._line_metrics_snap_count
+        if start >= n_total:
+            return
+        new_snaps = snaps[start:]
+
         ts_by_line: Dict[int, Dict[str, list]] = {}
         prof_by_line: Dict[int, Dict[str, list]] = {}
 
-        for (snap_t, h_s, hu_s, hv_s) in snaps:
+        for (snap_t, h_s, hu_s, hv_s) in new_snaps:
             h_arr = np.asarray(h_s, dtype=np.float64)
             hu_arr = np.asarray(hu_s, dtype=np.float64)
             hv_arr = np.asarray(hv_s, dtype=np.float64)
@@ -487,28 +499,32 @@ class SWE2DResultsData:
                     np.asarray(row.get("wet", np.empty(0)), dtype=np.int32)
                 )
 
-        # Promote TS lists → 1D numpy arrays of length n_snaps.
-        self._live_line_ts = {}
+        # Promote new TS lists → 1D numpy arrays, append to existing.
         for lid, d in ts_by_line.items():
-            out = {"line_name": d.get("line_name", f"line_{lid}")}
+            new_ts = {"line_name": d.get("line_name", f"line_{lid}")}
             for key in (
                 "depth_m", "velocity_ms", "wse_m", "bed_m",
                 "flow_cms", "wet_frac", "fr",
             ):
-                out[key] = np.asarray(d.get(key, []), dtype=np.float64)
-            self._live_line_ts[lid] = out
+                new_ts[key] = np.asarray(d.get(key, []), dtype=np.float64)
+            existing = self._live_line_ts.get(lid)
+            if existing is not None:
+                for key in new_ts:
+                    if key == "line_name":
+                        continue
+                    old = existing.get(key)
+                    existing[key] = np.concatenate([old, new_ts[key]]) if old is not None and old.size > 0 else new_ts[key]
+            else:
+                self._live_line_ts[lid] = new_ts
 
-        # Promote profile lists → 2D numpy arrays of shape (n_snaps, n_stations).
-        self._live_line_profile = {}
+        # Promote new profile lists → 2D arrays, vstack onto existing.
         for lid, d in prof_by_line.items():
-            sta = np.asarray(
-                d.get("station_m", np.empty(0)), dtype=np.float64
-            )
+            sta = np.asarray(d.get("station_m", np.empty(0)), dtype=np.float64)
             n_sta = int(sta.size)
-            n_ts_lists = len(d.get("depth_m", []))
-            if n_sta == 0 or n_ts_lists == 0:
+            n_new = len(d.get("depth_m", []))
+            if n_sta == 0 or n_new == 0:
                 continue
-            out = {
+            new_prof = {
                 "line_name": d.get("line_name", f"line_{lid}"),
                 "station_m": sta,
                 "n_stations": n_sta,
@@ -521,18 +537,32 @@ class SWE2DResultsData:
                 if not arrs:
                     continue
                 try:
-                    out[key] = _stack_per_snapshot(arrs, n_sta, np.float64)
+                    new_prof[key] = _stack_per_snapshot(arrs, n_sta, np.float64)
                 except Exception:
-                    out[key] = np.zeros((n_ts_lists, n_sta), dtype=np.float64)
+                    new_prof[key] = np.zeros((n_new, n_sta), dtype=np.float64)
             wets = d.get("wet", [])
             if wets:
                 try:
-                    out["wet"] = _stack_per_snapshot(wets, n_sta, np.int32)
+                    new_prof["wet"] = _stack_per_snapshot(wets, n_sta, np.int32)
                 except Exception:
-                    out["wet"] = np.zeros((n_ts_lists, n_sta), dtype=np.int32)
+                    new_prof["wet"] = np.zeros((n_new, n_sta), dtype=np.int32)
             else:
-                out["wet"] = np.zeros((n_ts_lists, n_sta), dtype=np.int32)
-            self._live_line_profile[lid] = out
+                new_prof["wet"] = np.zeros((n_new, n_sta), dtype=np.int32)
+
+            existing = self._live_line_profile.get(lid)
+            if existing is not None:
+                for key in new_prof:
+                    if key in ("line_name", "station_m", "n_stations"):
+                        continue
+                    old = existing.get(key)
+                    if old is not None and old.ndim == 2:
+                        existing[key] = np.vstack([old, new_prof[key]])
+                    else:
+                        existing[key] = new_prof[key]
+            else:
+                self._live_line_profile[lid] = new_prof
+
+        self._line_metrics_snap_count = n_total
 
     def get_live_coupling_snapshot_rows(self) -> list:
         """Reconstruct list-of-dicts from _live_coupling numpy storage."""

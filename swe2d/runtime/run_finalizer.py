@@ -288,8 +288,7 @@ class SWE2DRunFinalizer:
                                           ("flow_qn", "prof_flow_qn"), ("fr", "prof_fr"),
                                           ("wet", "prof_wet")):
                                 if pk in ld:
-                                    v = ld[pk]
-                                    pd[k] = list(v) if isinstance(v, list) else list(v)
+                                    pd[k] = ld[pk]
                     line_ts_items = []
                     for lid, ld in ts_by_line.items():
                         times_arr = np.array(ld.get("t_s", []), dtype=np.float64)
@@ -314,42 +313,25 @@ class SWE2DRunFinalizer:
                         )
                     profile_items = []
                     for lid, pd in prof_by_line.items():
-                        sm_list = pd.get("station_m", [])
-                        station_arr = np.asarray(sm_list, dtype=np.float64)
-                        n_sta = station_arr.size
-                        n_ts = len(pd.get("depth_m", []))
-                        if n_ts == 0 or n_sta == 0:
+                        depth_arr = pd.get("depth_m")
+                        if depth_arr is None or not hasattr(depth_arr, "shape") or depth_arr.ndim != 2:
                             continue
-                        depth_flat = np.array(pd["depth_m"], dtype=np.float64)
-                        vel_flat = np.array(pd["velocity_ms"], dtype=np.float64)
-                        wse_flat = np.array(pd["wse_m"], dtype=np.float64)
-                        bed_flat = np.array(pd["bed_m"], dtype=np.float64)
-                        qn_flat = np.array(pd["flow_qn"], dtype=np.float64)
-                        fr_flat = np.array(pd["fr"], dtype=np.float64)
-                        wet_flat = np.array(pd["wet"], dtype=np.int32)
-                        # Defend against dimension mismatches before reshape.
-                        expected_flat = n_ts * n_sta
-                        if depth_flat.size != expected_flat:
-                            _record_warning(
-                                f"Line {lid} profile depth array size {depth_flat.size} "
-                                f"does not match {n_ts} timesteps x {n_sta} stations; skipping profile",
-                                ValueError("profile dimension mismatch"),
-                            )
+                        n_ts, n_sta = depth_arr.shape
+                        station_arr = np.asarray(pd.get("station_m", np.empty(0)), dtype=np.float64)
+                        if n_sta == 0 or station_arr.size == 0:
                             continue
                         times_arr = np.array([float(s[0]) for s in snapshot_timesteps], dtype=np.float64)[:n_ts]
-                        profile_items.append({
+                        prof_item = {
                             "line_id": lid,
                             "line_name": pd.get("line_name", f"line_{lid}"),
                             "station_m": station_arr,
                             "times": times_arr,
-                            "depth_m": depth_flat.reshape(n_ts, n_sta),
-                            "velocity_ms": vel_flat.reshape(n_ts, n_sta),
-                            "wse_m": wse_flat.reshape(n_ts, n_sta),
-                            "bed_m": bed_flat.reshape(n_ts, n_sta),
-                            "flow_qn": qn_flat.reshape(n_ts, n_sta),
-                            "fr": fr_flat.reshape(n_ts, n_sta),
-                            "wet": wet_flat.reshape(n_ts, n_sta),
-                        })
+                        }
+                        for k in ("depth_m", "velocity_ms", "wse_m", "bed_m", "flow_qn", "fr", "wet"):
+                            arr = pd.get(k)
+                            if arr is not None and hasattr(arr, "shape") and arr.ndim == 2 and arr.shape == (n_ts, n_sta):
+                                prof_item[k] = arr
+                        profile_items.append(prof_item)
                     if profile_items:
                         persist_baked_line_profile_batch(
                             gpkg_results_path, run_id, profile_items,
