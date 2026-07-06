@@ -1,10 +1,11 @@
 """Pure data/logic layer for SWE2D results.
 
-No widgets, no matplotlib, no Qt (except ResultsAnimationController which
-needs QTimer).  Owns run records, animation timing, data queries, and
-state persistence.
+No widgets, no matplotlib, no Qt.  Owns run records, animation timing,
+data queries, and state persistence.
 
-Studio's View calls this module's public API to read/write data.
+The animation controller (ResultsAnimationController, a QObject) is
+lazily created on first access via the ``anim`` property so this module
+can be safely constructed from a worker thread without Qt affinity.
 """
 from __future__ import annotations
 
@@ -15,7 +16,6 @@ from typing import Dict, List, Optional, Set, Tuple
 
 import numpy as np
 
-from swe2d.results.animation import ResultsAnimationController
 from swe2d.results.run_service import (
     RunRecord,
     collect_runs_from_gpkg,
@@ -27,13 +27,6 @@ from swe2d.results.run_service import (
 logger = logging.getLogger(__name__)
 
 _DEFAULT_FPS = 4.0
-
-try:
-    from qgis.core import QgsProject as _QgsProject
-    _HAVE_QGSPROJECT = True
-except ImportError:
-    _QgsProject = None
-    _HAVE_QGSPROJECT = False
 
 _PERSISTENCE_GROUP = "Backwater2DWorkbench"
 _PERSISTENCE_KEY = "swe2d_results_panel_state"
@@ -70,13 +63,11 @@ class SWE2DResultsData:
         self._anim_frame_idx: int = 0
         self._anim_fps: float = float(fps)
 
-        # Animation (needs QTimer — acceptable Qt dependency)
-        self._anim = ResultsAnimationController(fps=self._anim_fps)
-        # Keep current_time_sec / _anim_frame_idx in sync whenever the
-        # animation controller changes frame (slider, play, step buttons, or
-        # timer tick).  This slot is connected before any dialog handlers so
-        # plot widgets read the correct time inside signal callbacks.
-        self._anim.current_timestep_changed.connect(self._on_anim_timestep_changed)
+        # Animation controller is lazily created on first access via the
+        # ``anim`` property so this class can be constructed from a worker
+        # thread without creating a QObject (which would get the wrong
+        # thread affinity).
+        self._anim = None
 
         # Data source flag: "none", "live", "gpkg" (remains for backward compat)
         self._data_source: str = "none"
@@ -251,7 +242,8 @@ class SWE2DResultsData:
             self._set_frame(self._t_sec_to_frame_idx(float(t_sec)))
         elif self._all_timesteps is not None and self._all_timesteps.size > 0:
             self._anim_frame_idx = 0
-            self._anim.set_index(0)
+            if self._anim is not None:
+                self._anim.set_index(0)
 
     def append_line_snapshot(self, row: dict, snap_idx: int) -> None:
         """Write a line timeseries row into pre-allocated _live_line_ts at snap_idx.
@@ -809,37 +801,53 @@ class SWE2DResultsData:
     # ------------------------------------------------------------------
 
     @property
-    def anim(self) -> ResultsAnimationController:
-        """anim."""
+    def anim(self):
+        """Lazily create and return the animation controller (a QObject).
+
+        Created on first access so that construction from a worker thread
+        does not create a QObject with the wrong thread affinity.
+        """
+        if self._anim is None:
+            from swe2d.results.animation import ResultsAnimationController
+            self._anim = ResultsAnimationController(fps=self._anim_fps)
+            self._anim.current_timestep_changed.connect(self._on_anim_timestep_changed)
         return self._anim
 
     @property
     def is_playing(self) -> bool:
         """Whether playing."""
-        return self._anim.is_playing
+        return self._anim is not None and self._anim.is_playing
 
     def play(self) -> None:
         """Start playback."""
-        self._anim.play()
+        if self._anim is not None:
+            self._anim.play()
 
     def pause(self) -> None:
         """Pause playback."""
-        self._anim.pause()
+        if self._anim is not None:
+            self._anim.pause()
 
     def step_forward(self) -> None:
         """Step forward."""
-        self._anim.pause()
-        idx = int(self._anim._index) + 1
+        if self._anim is not None:
+            self._anim.pause()
+            idx = int(self._anim._index) + 1
+        else:
+            idx = self._anim_frame_idx + 1
         if self._all_timesteps is not None and idx >= self._all_timesteps.size:
             idx = 0
         self.set_index(idx)
 
     def step_backward(self) -> None:
         """Step backward."""
-        self._anim.pause()
-        idx = int(self._anim._index) - 1
-        if self._all_timesteps is not None and idx < 0:
-            idx = max(0, self._all_timesteps.size - 1)
+        if self._anim is not None:
+            self._anim.pause()
+            idx = int(self._anim._index) - 1
+        else:
+            idx = max(0, self._anim_frame_idx - 1)
+        if idx < 0:
+            idx = 0
         self.set_index(idx)
 
     def set_index(self, idx: int) -> None:
@@ -856,12 +864,14 @@ class SWE2DResultsData:
             self._current_t_sec = float(self._all_timesteps[
                 min(idx, self._all_timesteps.size - 1)
             ])
-        self._anim.set_index(idx)
+        if self._anim is not None:
+            self._anim.set_index(idx)
 
     def set_frame_rate(self, fps: float) -> None:
         """Set frame rate."""
         self._anim_fps = float(fps)
-        self._anim.set_frame_rate(float(fps))
+        if self._anim is not None:
+            self._anim.set_frame_rate(float(fps))
 
     # ------------------------------------------------------------------
     # Public: data queries
@@ -977,7 +987,7 @@ class SWE2DResultsData:
             "line_id": self._line_id,
             "t_sec": self._current_t_sec,
             "frame_idx": int(self._anim_frame_idx),
-            "is_playing": bool(self._anim.is_playing),
+            "is_playing": bool(self._anim is not None and self._anim.is_playing),
             "overlay_selected_key": self._overlay_selected_key,
         }
 
@@ -1011,11 +1021,13 @@ class SWE2DResultsData:
 
     def save_to_project(self) -> None:
         """Persist data state to QgsProject."""
-        if not _HAVE_QGSPROJECT or _QgsProject is None:
+        try:
+            from qgis.core import QgsProject
+        except ImportError:
             return
         state = self.save_data_state()
         try:
-            _QgsProject.instance().writeEntry(
+            QgsProject.instance().writeEntry(
                 _PERSISTENCE_GROUP, _PERSISTENCE_KEY, json.dumps(state)
             )
         except Exception as exc:
@@ -1023,10 +1035,12 @@ class SWE2DResultsData:
 
     def restore_from_project(self) -> None:
         """Restore data state from QgsProject."""
-        if not _HAVE_QGSPROJECT or _QgsProject is None:
+        try:
+            from qgis.core import QgsProject
+        except ImportError:
             return
         try:
-            raw, _ = _QgsProject.instance().readEntry(
+            raw, _ = QgsProject.instance().readEntry(
                 _PERSISTENCE_GROUP, _PERSISTENCE_KEY, ""
             )
             if not raw:
@@ -1064,7 +1078,8 @@ class SWE2DResultsData:
         self._anim_frame_idx = 0
         if self._all_timesteps.size:
             self._current_t_sec = float(self._all_timesteps[0])
-        self._anim.set_timesteps(self._all_timesteps)
+        if self._anim is not None:
+            self._anim.set_timesteps(self._all_timesteps)
 
     def _t_sec_to_frame_idx(self, t_sec: float) -> int:
         """t sec to frame idx."""
@@ -1079,8 +1094,11 @@ class SWE2DResultsData:
     def _set_frame(self, idx: int) -> None:
         """set frame."""
         idx = int(idx)
-        self._anim.set_index(idx)
-        self._anim_frame_idx = int(self._anim._index)
+        if self._anim is not None:
+            self._anim.set_index(idx)
+            self._anim_frame_idx = int(self._anim._index)
+        else:
+            self._anim_frame_idx = idx
         if self._all_timesteps is not None and self._all_timesteps.size > 0:
             self._current_t_sec = float(self._all_timesteps[
                 min(self._anim_frame_idx, self._all_timesteps.size - 1)
