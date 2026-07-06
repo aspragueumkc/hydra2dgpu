@@ -133,6 +133,7 @@ class SWE2DRunFinalizer:
         save_coupling_results: bool = False,
         save_mesh_results: bool = False,
         save_run_log: bool = False,
+        save_max_only: bool = False,
         h_min: float = 1.0e-4,
         mesh_name: str = "",
         max_tracking: Optional[Dict[str, np.ndarray]] = None,
@@ -230,6 +231,17 @@ class SWE2DRunFinalizer:
                 if _results_data is not None:
                     _results_data.append_live_snapshot(*terminal_snapshot)
                 snapshot_timesteps.append(terminal_snapshot)
+
+        # When save_max_only is active, trim to terminal snapshot only —
+        # max-tracking data is persisted alongside it for analysis, but the
+        # full intermediate timeseries is omitted to save disk space.
+        if save_max_only and snapshot_timesteps:
+            terminal_only = snapshot_timesteps[-1:]
+            self._log(
+                f"save_max_only: trimming {len(snapshot_timesteps)} snapshots "
+                f"to 1 terminal state (max tracking will be persisted separately)"
+            )
+            snapshot_timesteps = terminal_only
 
         gpkg_results_path = self._view.get_line_results_storage_path()
 
