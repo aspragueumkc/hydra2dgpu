@@ -149,7 +149,6 @@ class _WorkbenchShim:
             _apply_external_sources_logic,
             _distribute_total_flow_to_unit_q_logic,
         )
-        from swe2d.workbench.services.line_sampling_service import _sample_line_metrics_logic
 
         self._worker = worker
         self._ctx = ctx
@@ -260,30 +259,6 @@ class _WorkbenchShim:
         self._apply_external_sources = _apply_external_sources
         self._distribute_total_flow_to_unit_q = _distribute_total_flow_to_unit_q
         self._length_unit_name = ctx.length_unit_name
-        gravity = float(ctx.gravity)
-        h_min_metric = float(ctx.h_min)
-
-        def _sample_line_metrics(
-            sample_map,
-            t_accum,
-            h_s,
-            hu_s,
-            hv_s,
-            cell_solver_z,
-        ):
-            return _sample_line_metrics_logic(
-                sample_map=sample_map,
-                t_accum=t_accum,
-                h_s=h_s,
-                hu_s=hu_s,
-                hv_s=hv_s,
-                cell_solver_z=cell_solver_z,
-                gravity=gravity,
-                h_min=h_min_metric,
-                mesh_data=mesh_snapshot,
-            )
-
-        self._sample_line_metrics = _sample_line_metrics
         self._log = worker.log_message.emit
 
     @property
@@ -297,7 +272,6 @@ class _PermutationResult:
     def __init__(self):
         self.event = threading.Event()
         self.sample_map: List[Dict[str, Any]] = []
-        self.cell_solver_z: Optional[np.ndarray] = None
         self.error: str = ""
 
 
@@ -525,14 +499,58 @@ class SimulationWorker(QThread):
                     if result_holder.error:
                         raise RuntimeError(f"Mesh permutation failed: {result_holder.error}")
                     sample_map = list(result_holder.sample_map or [])
-                    cell_solver_z = result_holder.cell_solver_z
                 else:
                     sample_map = list(ctx.sample_map_data or [])
-                    cell_solver_z = None
                 apply_cell_permutation(mesh_data, cp)
             else:
                 sample_map = list(ctx.sample_map_data or [])
-                cell_solver_z = np.asarray(ctx.cell_solver_bed, dtype=np.float64).ravel() if sample_map else None
+
+            # ── GPU line sampling setup ──
+            line_names_by_id: Dict[int, str] = {}
+            if sample_map and backend.has_line_sampling:
+                station_offsets_list = [0]
+                cell_idx_parts: List[np.ndarray] = []
+                weights_parts: List[np.ndarray] = []
+                normal_x_parts: List[np.ndarray] = []
+                normal_y_parts: List[np.ndarray] = []
+                station_m_parts: List[np.ndarray] = []
+                for sm in sample_map:
+                    ci = np.asarray(sm.get("cell_idx", []), dtype=np.int32).ravel()
+                    wt = np.asarray(sm.get("weights", []), dtype=np.float64).ravel()
+                    nx = float(sm.get("normal_x", 0.0))
+                    ny = float(sm.get("normal_y", 1.0))
+                    st = np.asarray(sm.get("station_m", []), dtype=np.float64).ravel()
+                    lid = int(sm.get("line_id", len(station_offsets_list) - 1))
+                    lname = str(sm.get("line_name", f"line_{lid}"))
+                    line_names_by_id[lid] = lname
+                    n = ci.size
+                    station_offsets_list.append(station_offsets_list[-1] + n)
+                    cell_idx_parts.append(ci)
+                    weights_parts.append(wt)
+                    normal_x_parts.append(np.full(n, nx, dtype=np.float64))
+                    normal_y_parts.append(np.full(n, ny, dtype=np.float64))
+                    station_m_parts.append(st)
+                station_offsets = np.array(station_offsets_list, dtype=np.int32)
+                cell_idx_arr = np.concatenate(cell_idx_parts).astype(np.int32) if cell_idx_parts else np.empty(0, dtype=np.int32)
+                weights_arr = np.concatenate(weights_parts).astype(np.float64) if weights_parts else np.empty(0, dtype=np.float64)
+                normal_x_arr = np.concatenate(normal_x_parts).astype(np.float64) if normal_x_parts else np.empty(0, dtype=np.float64)
+                normal_y_arr = np.concatenate(normal_y_parts).astype(np.float64) if normal_y_parts else np.empty(0, dtype=np.float64)
+                station_m_arr = np.concatenate(station_m_parts).astype(np.float64) if station_m_parts else np.empty(0, dtype=np.float64)
+                try:
+                    backend.configure_line_sampling(
+                        station_offsets=station_offsets,
+                        cell_idx=cell_idx_arr,
+                        weights=weights_arr,
+                        normal_x=normal_x_arr,
+                        normal_y=normal_y_arr,
+                        station_m=station_m_arr,
+                        gravity=float(ctx.gravity),
+                        h_min=float(ctx.h_min),
+                        max_snapshots=64,
+                    )
+                    log(f"GPU line sampling configured: {len(sample_map)} lines, {int(station_offsets[-1])} stations.")
+                except Exception as exc:
+                    log(f"[WARNING] GPU line sampling setup failed, falling back to CPU: {exc}")
 
             coupling_controller = None
             if ctx.pipe_network_cfg is not None or ctx.hydraulic_structures_cfg is not None:
@@ -773,7 +791,6 @@ class SimulationWorker(QThread):
                 native_source_injection_mode=native_source_injection_mode,
                 accumulate_boundary_flux_volume_model_callback=runtime_source_manager.accumulate_boundary_flux_volume_model,
                 sample_map=sample_map,
-                cell_solver_z=cell_solver_z,
                 timing_totals_ms=timing_totals_ms,
                 timing_samples=timing_samples,
                 next_snap_t=_next_snap_t,
@@ -788,6 +805,7 @@ class SimulationWorker(QThread):
                 uniform_enabled=ctx.uniform_inflow_enabled,
                 progress_callback=self.progress_percent.emit,
                 perf_mode=perf_mode,
+                line_names_by_id=line_names_by_id,
             )
 
             snap_data = backend.read_snapshots()
@@ -822,14 +840,14 @@ class SimulationWorker(QThread):
                     # ComputeResult carries the full list, not just the
                     # final device read (which may be a subset).
                     snapshot_timesteps = merged
-                    if sample_map and wb._sample_line_metrics is not None:
-                        results_data.populate_live_line_metrics(
-                            sample_map=sample_map,
-                            sample_callback=wb._sample_line_metrics,
-                            cell_solver_z=cell_solver_z,
-                        )
+                    if sample_map and backend.has_line_sampling:
+                        lm = backend.read_line_metrics()
+                        if lm:
+                            results_data.populate_live_line_metrics_from_gpu(
+                                lm, line_names_by_id=line_names_by_id,
+                            )
                 except Exception as exc:
-                    log(f"[SnapReadback] Final line metrics computation failed: {exc}")
+                    log(f"[SnapReadback] Final line metrics readback failed: {exc}")
 
             h, hu, hv = backend.get_state()
             if hasattr(backend, "_cell_perm") and backend._cell_perm is not None and backend._cell_perm.size > 0:

@@ -781,6 +781,68 @@ class SWE2DBackend:
             self._mod.swe2d_gpu_free_snapshot_buf(self._solver_h)
         self._snap_host_buffer = None
 
+    # ── Live line metrics (GPU on-device) ─────────────────────────────────────
+    @property
+    def has_line_sampling(self) -> bool:
+        """True if the native module supports on-device line metrics computation."""
+        return hasattr(self._mod, "swe2d_gpu_configure_line_sampling")
+
+    def configure_line_sampling(
+        self,
+        station_offsets: np.ndarray,
+        cell_idx: np.ndarray,
+        weights: np.ndarray,
+        normal_x: np.ndarray,
+        normal_y: np.ndarray,
+        station_m: np.ndarray,
+        gravity: float,
+        h_min: float,
+        max_snapshots: int = 64,
+    ) -> None:
+        """Upload the line sampling map to the device.
+
+        Call once after the solver is initialized and the sample map is built.
+        """
+        if self._solver_h is None:
+            raise RuntimeError("initialize() must be called before configure_line_sampling().")
+        if not self.has_line_sampling:
+            raise RuntimeError("swe2d_gpu_configure_line_sampling not available in native module.")
+        self._mod.swe2d_gpu_configure_line_sampling(
+            self._solver_h,
+            station_offsets, cell_idx, weights,
+            normal_x, normal_y, station_m,
+            float(gravity), float(h_min), int(max_snapshots),
+        )
+
+    def read_line_metrics(self) -> Optional[Dict[str, np.ndarray]]:
+        """Read all accumulated line metrics from the device ring buffer.
+
+        Returns a dict with keys:
+            t_s      (N,)           timestamps
+            profiles (N, TS, 6)    profile fields per station
+            ts       (N, n_lines, 7) TS fields per line
+            wet      (N, TS)        wet flags
+            n_lines, total_stations  scalars
+            station_m (TS,)         station distances (from device, read-only)
+            station_offsets (L+1,)  per-line station offsets (from device, read-only)
+        or None if no line metrics accumulated or module doesn't support it.
+        """
+        if self._solver_h is None or not hasattr(self._mod, "swe2d_gpu_read_line_metrics"):
+            return None
+        raw = self._mod.swe2d_gpu_read_line_metrics(self._solver_h)
+        if not raw or "profiles" not in raw:
+            return None
+        return {
+            "t_s": np.asarray(raw["t_s"], dtype=np.float64),
+            "profiles": np.asarray(raw["profiles"], dtype=np.float64),
+            "ts": np.asarray(raw["ts"], dtype=np.float64),
+            "wet": np.asarray(raw["wet"], dtype=np.int32),
+            "n_lines": int(raw.get("n_lines", 0)),
+            "total_stations": int(raw.get("total_stations", 0)),
+            "station_m": np.asarray(raw["station_m"], dtype=np.float64),
+            "station_offsets": np.asarray(raw["station_offsets"], dtype=np.int32),
+        }
+
     # ── Solver init ──────────────────────────────────────────────────────────
 
     def initialize(

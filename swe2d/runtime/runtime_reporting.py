@@ -45,7 +45,6 @@ class SWE2DRuntimeReporter:
         last_valid_cmax: float,
         last_valid_wse_res: float,
         sample_map: Any,
-        cell_solver_z: Optional[np.ndarray],
         coupling_controller: Any,
         rain_src: Any,
         state_ms: float,
@@ -69,8 +68,8 @@ class SWE2DRuntimeReporter:
         h_min: float,
         length_unit_name: str,
         results_data: Any,
-        sample_line_metrics_callback: Callable[..., Any],
         sample_coupling_object_metrics_callback: Callable[..., Any],
+        line_names_by_id: Optional[Dict[int, str]] = None,
         process_events_callback: Callable[[], None],
         set_progress_callback: Callable[[int], None],
         log_callback: Callable[[str], None],
@@ -162,21 +161,18 @@ class SWE2DRuntimeReporter:
                 except Exception:
                     logger.warning("set_live_snapshot_timesteps failed", exc_info=True)
                 t_set = time.perf_counter()
-                # Compute line TS + profile from the read-back snapshots so
-                # the line/profile viewers can render during live runs, not
-                # just from GPKG after finalize.  Pre-fix the reporter never
-                # invoked sample_line_metrics_callback, leaving
-                # _live_line_ts / _live_line_profile empty.
-                if sample_map and sample_line_metrics_callback is not None:
+                # GPU line metrics are pre-computed on-device during
+                # store_snapshot.  Read them back and push to the viewer.
+                if sample_map and getattr(backend, "has_line_sampling", False):
                     try:
-                        results_data.populate_live_line_metrics(
-                            sample_map=sample_map,
-                            sample_callback=sample_line_metrics_callback,
-                            cell_solver_z=cell_solver_z,
-                        )
+                        lm = backend.read_line_metrics()
+                        if lm:
+                            results_data.populate_live_line_metrics_from_gpu(
+                                lm, line_names_by_id=line_names_by_id,
+                            )
                     except Exception:
                         logger.warning(
-                            "Live line metrics computation failed", exc_info=True
+                            "GPU line metrics readback failed", exc_info=True
                         )
                 t_metrics = time.perf_counter()
                 self._snapshot_ready = True

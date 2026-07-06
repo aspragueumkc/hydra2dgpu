@@ -203,6 +203,30 @@ struct SWE2DDeviceState {
     int32_t  snap_capacity = 0;
     int32_t  snap_count    = 0;
 
+    // ── Line metrics ring buffer ──────────────────────────────────────
+    // Uploaded once at configure time.
+    int32_t* d_lm_station_offsets = nullptr;  // [n_lines+1] prefix sum of stations
+    int32_t* d_lm_cell_idx = nullptr;          // [total_stations]
+    double*  d_lm_weights = nullptr;           // [total_stations]
+    double*  d_lm_normal_x = nullptr;          // [n_lines]
+    double*  d_lm_normal_y = nullptr;          // [n_lines]
+    double*  d_lm_station_m = nullptr;         // [total_stations] station distances
+    int32_t  lm_n_lines = 0;
+    int32_t  lm_total_stations = 0;
+    double   lm_gravity = 9.81;
+    double   lm_h_min = 1.0e-6;
+
+    // Ring buffer (written by kernel at store_snapshot time).
+    // Profile layout: [snap_count * total_stations * 6] for 6 profile fields.
+    // TS layout:      [snap_count * n_lines * 7] for 7 TS fields.
+    // Wet layout:     [snap_count * total_stations] (int32).
+    double*  d_lm_profile = nullptr;   // [lm_capacity * total_stations * 6]
+    double*  d_lm_ts      = nullptr;   // [lm_capacity * n_lines * 7]
+    int32_t* d_lm_wet     = nullptr;   // [lm_capacity * total_stations]
+    double*  d_lm_times   = nullptr;   // [lm_capacity]
+    int32_t  lm_capacity = 0;
+    int32_t  lm_count    = 0;
+
     // Wet/dry active-set mask (updated at the start of every step).
     // d_active[c] = 1 if cell c is wet (h>h_min), adjacent to a wet cell,
     // or at a forced-inflow BC edge.  Used to skip gradient and update work
@@ -1301,6 +1325,44 @@ void swe2d_gpu_read_snapshots(SWE2DDeviceState* dev,
                                int32_t* out_count, int32_t* out_n_cells);
 /// Free snapshot ring buffer. @host
 void swe2d_gpu_free_snapshot_buf(SWE2DDeviceState* dev);
+
+// ── Line metrics ring buffer ──
+/// Upload line sampling map and allocate ring buffer.  Call once after swe2d_gpu_init.
+/// station_offsets [n_lines+1] prefix sum, cell_idx/weights [total_stations],
+/// normal_x/y [n_lines], station_m [total_stations], gravity/h_min are scalars,
+/// max_snapshots ring buffer capacity (will grow geometrically like mesh snapshots).
+void swe2d_gpu_configure_line_sampling(
+    SWE2DDeviceState* dev,
+    int32_t           n_lines,
+    const int32_t*    station_offsets,
+    const int32_t*    cell_idx,
+    const double*     weights,
+    const double*     normal_x,
+    const double*     normal_y,
+    const double*     station_m,
+    double            gravity,
+    double            h_min,
+    int32_t           max_snapshots = 64);
+
+/// Kernel (called from swe2d_gpu_store_snapshot): compute line metrics for current
+/// solver state and write to the ring buffer at slot snap_count.
+void swe2d_gpu_store_line_metrics(SWE2DDeviceState* dev, double t_s);
+
+/// Read all accumulated line metrics back to host (profile + TS + wet flags).
+/// Returns pinned host memory freed by caller via cudaFreeHost.
+void swe2d_gpu_read_line_metrics(SWE2DDeviceState* dev,
+                                  double** out_times,
+                                  double** out_profile,   // [lm_count * total_stations * 6]
+                                  double** out_ts,        // [lm_count * n_lines * 7]
+                                  int32_t** out_wet,      // [lm_count * total_stations]
+                                  double** out_station_m, // [total_stations]
+                                  int32_t** out_station_offsets, // [n_lines + 1]
+                                  int32_t* out_count,
+                                  int32_t* out_n_lines,
+                                  int32_t* out_total_stations);
+
+/// Free line metrics ring buffer + sample map. @host
+void swe2d_gpu_free_line_metrics(SWE2DDeviceState* dev);
 
 // ── Persistent GPU coupling path ──
 /// Set the global coupling device pointer for persistent GPU coupling. @host

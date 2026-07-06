@@ -384,7 +384,6 @@ def execute_run_timestep_loop(
     native_source_injection_mode: bool,
     accumulate_boundary_flux_volume_model_callback: object,
     sample_map: object,
-    cell_solver_z: object,
     timing_totals_ms: Dict[str, float],
     timing_samples: int,
     next_snap_t: float,
@@ -399,6 +398,7 @@ def execute_run_timestep_loop(
     uniform_enabled: bool = False,
     progress_callback: Optional[Callable] = None,
     perf_mode: bool = False,
+    line_names_by_id: Optional[Dict[int, str]] = None,
 ) -> Dict[str, object]:
 
     # Pre-compute boundary edge lengths for uniform-velocity normalization.
@@ -541,7 +541,6 @@ def execute_run_timestep_loop(
             last_valid_cmax=last_valid_cmax,
             last_valid_wse_res=last_valid_wse_res,
             sample_map=sample_map,
-            cell_solver_z=cell_solver_z,
             coupling_controller=coupling_controller,
             rain_src=rain_src,
             state_ms=state_ms,
@@ -565,12 +564,12 @@ def execute_run_timestep_loop(
             h_min=h_min,
             length_unit_name=wb._length_unit_name,
             results_data=wb._results_data,
-            sample_line_metrics_callback=wb._sample_line_metrics,
             sample_coupling_object_metrics_callback=_sample_coupling_object_metrics,
             process_events_callback=process_events_callback,
             set_progress_callback=progress_callback,
             log_callback=wb._log,
             perf_mode=perf_mode,
+            line_names_by_id=line_names_by_id,
         )
         t_accum = float(report_result["t_accum"])
         last_valid_cmax = float(report_result["last_valid_cmax"])

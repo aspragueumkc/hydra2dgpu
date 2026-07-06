@@ -9759,6 +9759,11 @@ void swe2d_gpu_store_snapshot(SWE2DDeviceState* dev, double t_s) {
     CUDA_CHECK(cudaMemcpyAsync(dev->d_snap_hv + offset, dev->d_hv, sz_cells, cudaMemcpyDeviceToDevice, dev->d_stream));
     CUDA_CHECK(cudaMemcpyAsync(dev->d_snap_times + slot, &t_s, sizeof(double), cudaMemcpyHostToDevice, dev->d_stream));
     dev->snap_count = slot + 1;
+
+    // Store line metrics for this snapshot (if configured).
+    if (dev->lm_n_lines > 0 && dev->lm_total_stations > 0) {
+        swe2d_gpu_store_line_metrics(dev, t_s);
+    }
 }
 
 void swe2d_gpu_read_snapshots(SWE2DDeviceState* dev,
@@ -9793,6 +9798,354 @@ void swe2d_gpu_free_snapshot_buf(SWE2DDeviceState* dev) {
     sf(dev->d_snap_times); dev->d_snap_times = nullptr;
     dev->snap_capacity = 0;
     dev->snap_count = 0;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Line metrics ring buffer
+// ─────────────────────────────────────────────────────────────────────────────
+// Kernel: one thread per station — gather h/hu/hv from solver state,
+// compute derived quantities, write to profile + wet ring buffer.
+__global__ void compute_line_metrics_profile_kernel(
+    const double* __restrict__ h,
+    const double* __restrict__ hu,
+    const double* __restrict__ hv,
+    const double* __restrict__ cell_bed,
+    int32_t   n_cells,
+    int32_t   total_stations,
+    int32_t   n_lines,
+    const int32_t* __restrict__ station_offsets,
+    const int32_t* __restrict__ cell_idx,
+    const double* __restrict__ weights,
+    const double* __restrict__ normal_x,
+    const double* __restrict__ normal_y,
+    double    gravity,
+    double    h_min,
+    int32_t   snap_slot,
+    int32_t   lm_capacity,
+    int32_t   lm_total_stations,
+    double*   profile_buf,
+    int32_t*  wet_buf)
+{
+    int s = blockIdx.x * blockDim.x + threadIdx.x;
+    if (s >= total_stations) return;
+
+    int ci = cell_idx[s];
+    ci = min(max(ci, 0), n_cells - 1);
+    double hh  = h[ci];
+    double huu = hu[ci];
+    double hvv = hv[ci];
+    double zb  = cell_bed[ci];
+    int wet = (hh > h_min) ? 1 : 0;
+    double safe_h = fmax(hh, 1.0e-12);
+    double depth = fmax(hh - zb, 0.0);
+    double vel = wet ? sqrt((huu / safe_h) * (huu / safe_h) + (hvv / safe_h) * (hvv / safe_h)) : 0.0;
+    double wse = hh + zb;
+    double uu = wet ? huu / safe_h : 0.0;
+    double vv = wet ? hvv / safe_h : 0.0;
+
+    // Find which line this station belongs to (binary search on station_offsets).
+    // Since station_offsets is small (n_lines+1 <= ~200), linear scan is fine.
+    int line = 0;
+    for (int li = 0; li < n_lines; ++li) {
+        if (s >= station_offsets[li] && s < station_offsets[li + 1]) {
+            line = li;
+            break;
+        }
+    }
+
+    double nx = normal_x[line];
+    double ny = normal_y[line];
+    double normal_v = uu * nx + vv * ny;
+    double qn = wet ? hh * normal_v : 0.0;
+    double fr = wet ? vel / sqrt(fmax(gravity * hh, 1.0e-12)) : 0.0;
+
+    // Write profile fields (6 doubles per station).
+    int po = snap_slot * lm_total_stations * 6 + s * 6;
+    profile_buf[po + 0] = depth;   // depth_m
+    profile_buf[po + 1] = vel;     // velocity_ms
+    profile_buf[po + 2] = wse;     // wse_m
+    profile_buf[po + 3] = zb;      // bed_m
+    profile_buf[po + 4] = qn;      // flow_qn
+    profile_buf[po + 5] = fr;      // fr
+    wet_buf[snap_slot * lm_total_stations + s] = wet;
+}
+
+// Kernel: one block per line — reduce station profiles to per-line TS aggregates.
+// Reads profile_buf for this snap_slot, weights, and computes weighted averages.
+// Writes 7 TS fields per line: depth_m, velocity_ms, wse_m, bed_m, flow_cms, wet_frac, fr.
+__global__ void compute_line_metrics_ts_kernel(
+    int32_t   n_lines,
+    const int32_t* __restrict__ station_offsets,
+    const double* __restrict__ weights,
+    int32_t   snap_slot,
+    int32_t   lm_capacity,
+    int32_t   lm_total_stations,
+    const double* __restrict__ profile_buf,
+    const int32_t* __restrict__ wet_buf,
+    double*   ts_buf)
+{
+    __shared__ double s_wsum;
+    __shared__ double s_depth_num, s_vel_num, s_wse_num, s_bed_num, s_fr_num;
+    __shared__ double s_qn_sum, s_wet_sum;
+    __shared__ int s_nsta;
+
+    int line = blockIdx.x;
+    if (line >= n_lines) return;
+
+    int start = station_offsets[line];
+    int end   = station_offsets[line + 1];
+    int nsta  = end - start;
+    if (nsta <= 0) { if (threadIdx.x == 0) { double* out = ts_buf + snap_slot * lm_capacity * 7 + line * 7; for (int k = 0; k < 7; ++k) out[k] = 0.0; } return; }
+
+    // First thread: sum weights for this line.
+    // ponytail: serial on first thread, nsta ≤ 200 so trivial.
+    if (threadIdx.x == 0) {
+        double ws = 0.0;
+        for (int i = start; i < end; ++i) ws += weights[i];
+        s_wsum = ws > 0.0 ? ws : 1.0;
+        s_nsta = nsta;
+    }
+    __syncthreads();
+
+    int tid = threadIdx.x;
+    double depth_num = 0.0, vel_num = 0.0, wse_num = 0.0, bed_num = 0.0, fr_num = 0.0;
+    double qn_sum = 0.0, wet_sum = 0.0;
+
+    // Each thread processes a subset of stations in this line.
+    for (int i = start + tid; i < end; i += blockDim.x) {
+        int po = snap_slot * lm_total_stations * 6 + i * 6;
+        int wet = wet_buf[snap_slot * lm_total_stations + i];
+        double w = weights[i];
+        depth_num += profile_buf[po + 0] * w;
+        vel_num   += profile_buf[po + 1] * w;
+        wse_num   += profile_buf[po + 2] * w;
+        bed_num   += profile_buf[po + 3] * w;
+        qn_sum    += profile_buf[po + 4] * w;
+        fr_num    += profile_buf[po + 5] * w;
+        wet_sum   += (double)wet * w;
+    }
+
+    // Warp-level reduction (simple modulo warp size for small nsta).
+    // ponytail: single warp reduction, nsta ≤ 200 so one warp suffices.
+    #pragma unroll
+    for (int off = 16; off > 0; off >>= 1) {
+        depth_num += __shfl_xor_sync(0xFFFFFFFF, depth_num, off);
+        vel_num   += __shfl_xor_sync(0xFFFFFFFF, vel_num,   off);
+        wse_num   += __shfl_xor_sync(0xFFFFFFFF, wse_num,   off);
+        bed_num   += __shfl_xor_sync(0xFFFFFFFF, bed_num,   off);
+        qn_sum    += __shfl_xor_sync(0xFFFFFFFF, qn_sum,    off);
+        fr_num    += __shfl_xor_sync(0xFFFFFFFF, fr_num,    off);
+        wet_sum   += __shfl_xor_sync(0xFFFFFFFF, wet_sum,   off);
+    }
+
+    if (tid == 0) {
+        double inv_wsum = 1.0 / s_wsum;
+        double* out = ts_buf + snap_slot * lm_capacity * 7 + line * 7;
+        out[0] = depth_num * inv_wsum;   // depth_m
+        out[1] = vel_num   * inv_wsum;   // velocity_ms
+        out[2] = wse_num   * inv_wsum;   // wse_m
+        out[3] = bed_num   * inv_wsum;   // bed_m
+        out[4] = qn_sum    * inv_wsum;   // flow_cms (weighted sum of qn)
+        out[5] = wet_sum   * inv_wsum;   // wet_frac
+        out[6] = fr_num    * inv_wsum;   // fr
+    }
+}
+
+static void swe2d_gpu_ensure_line_metrics_buf(SWE2DDeviceState* dev, int32_t min_cap) {
+    if (!dev || dev->lm_total_stations <= 0) return;
+    if (dev->lm_capacity >= min_cap) return;
+    int32_t new_cap = (dev->lm_capacity > 0) ? dev->lm_capacity : 64;
+    while (new_cap < min_cap) new_cap *= 2;
+    const int32_t ts = dev->lm_total_stations;
+    const int32_t nl = dev->lm_n_lines;
+    const size_t sz_prof = static_cast<size_t>(new_cap) * static_cast<size_t>(ts) * 6 * sizeof(double);
+    const size_t sz_ts   = static_cast<size_t>(new_cap) * static_cast<size_t>(nl) * 7 * sizeof(double);
+    const size_t sz_wet  = static_cast<size_t>(new_cap) * static_cast<size_t>(ts) * sizeof(int32_t);
+    const size_t sz_tsv  = static_cast<size_t>(new_cap) * sizeof(double);
+
+    double*  new_prof = nullptr;
+    double*  new_ts   = nullptr;
+    int32_t* new_wet  = nullptr;
+    double*  new_times = nullptr;
+    CUDA_CHECK(cudaMalloc(&new_prof,  sz_prof));
+    CUDA_CHECK(cudaMalloc(&new_ts,    sz_ts));
+    CUDA_CHECK(cudaMalloc(&new_wet,   sz_wet));
+    CUDA_CHECK(cudaMalloc(&new_times, sz_tsv));
+    CUDA_CHECK(cudaMemset(new_prof,  0, sz_prof));
+    CUDA_CHECK(cudaMemset(new_ts,    0, sz_ts));
+    CUDA_CHECK(cudaMemset(new_wet,   0, sz_wet));
+    CUDA_CHECK(cudaMemset(new_times, 0, sz_tsv));
+
+    // Copy existing
+    if (dev->lm_count > 0 && dev->d_lm_profile) {
+        const size_t old_prof = static_cast<size_t>(dev->lm_count) * static_cast<size_t>(ts) * 6 * sizeof(double);
+        const size_t old_ts   = static_cast<size_t>(dev->lm_count) * static_cast<size_t>(nl) * 7 * sizeof(double);
+        const size_t old_wet  = static_cast<size_t>(dev->lm_count) * static_cast<size_t>(ts) * sizeof(int32_t);
+        CUDA_CHECK(cudaMemcpy(new_prof,  dev->d_lm_profile, old_prof, cudaMemcpyDeviceToDevice));
+        CUDA_CHECK(cudaMemcpy(new_ts,    dev->d_lm_ts,      old_ts,   cudaMemcpyDeviceToDevice));
+        CUDA_CHECK(cudaMemcpy(new_wet,   dev->d_lm_wet,     old_wet,  cudaMemcpyDeviceToDevice));
+        CUDA_CHECK(cudaMemcpy(new_times, dev->d_lm_times,   static_cast<size_t>(dev->lm_count) * sizeof(double), cudaMemcpyDeviceToDevice));
+    }
+
+    auto sf = [](void* p) { if (p) cudaFree(p); };
+    sf(dev->d_lm_profile); sf(dev->d_lm_ts); sf(dev->d_lm_wet); sf(dev->d_lm_times);
+    dev->d_lm_profile = new_prof;
+    dev->d_lm_ts      = new_ts;
+    dev->d_lm_wet     = new_wet;
+    dev->d_lm_times   = new_times;
+    dev->lm_capacity  = new_cap;
+}
+
+void swe2d_gpu_configure_line_sampling(
+    SWE2DDeviceState* dev,
+    int32_t           n_lines,
+    const int32_t*    station_offsets,
+    const int32_t*    cell_idx,
+    const double*     weights,
+    const double*     normal_x,
+    const double*     normal_y,
+    const double*     station_m,
+    double            gravity,
+    double            h_min,
+    int32_t           max_snapshots)
+{
+    if (!dev) return;
+    // Free any previous config
+    swe2d_gpu_free_line_metrics(dev);
+
+    int32_t total_stations = station_offsets[n_lines];
+    dev->lm_n_lines = n_lines;
+    dev->lm_total_stations = total_stations;
+    dev->lm_gravity = gravity;
+    dev->lm_h_min = h_min;
+
+    auto alloc = [](auto** p, const void* src, size_t sz) {
+        if (sz == 0) return;
+        CUDA_CHECK(cudaMalloc(p, sz));
+        CUDA_CHECK(cudaMemcpy(*p, src, sz, cudaMemcpyHostToDevice));
+    };
+    alloc(&dev->d_lm_station_offsets, station_offsets, static_cast<size_t>(n_lines + 1) * sizeof(int32_t));
+    alloc(&dev->d_lm_cell_idx,       cell_idx,         static_cast<size_t>(total_stations) * sizeof(int32_t));
+    alloc(&dev->d_lm_weights,        weights,           static_cast<size_t>(total_stations) * sizeof(double));
+    alloc(&dev->d_lm_normal_x,       normal_x,          static_cast<size_t>(n_lines) * sizeof(double));
+    alloc(&dev->d_lm_normal_y,       normal_y,          static_cast<size_t>(n_lines) * sizeof(double));
+    alloc(&dev->d_lm_station_m,      station_m,         static_cast<size_t>(total_stations) * sizeof(double));
+
+    swe2d_gpu_ensure_line_metrics_buf(dev, max_snapshots);
+}
+
+void swe2d_gpu_store_line_metrics(SWE2DDeviceState* dev, double t_s) {
+    if (!dev || dev->lm_n_lines <= 0 || dev->lm_total_stations <= 0) return;
+    // Grow ring buffer if needed (same geometric pattern as mesh snapshots).
+    if (dev->lm_count >= dev->lm_capacity) {
+        swe2d_gpu_ensure_line_metrics_buf(dev, dev->lm_capacity > 0 ? dev->lm_capacity * 2 : 64);
+    }
+    const int32_t slot = dev->lm_count;
+    const int32_t ts = dev->lm_total_stations;
+    const int32_t nl = dev->lm_n_lines;
+
+    // Launch profile kernel: one thread per station.
+    int block = 256;
+    int grid  = (ts + block - 1) / block;
+    if (grid > 0) {
+        compute_line_metrics_profile_kernel<<<grid, block, 0, dev->d_stream>>>(
+            dev->d_h, dev->d_hu, dev->d_hv, dev->d_cell_zb,
+            dev->n_cells, ts, nl,
+            dev->d_lm_station_offsets, dev->d_lm_cell_idx, dev->d_lm_weights,
+            dev->d_lm_normal_x, dev->d_lm_normal_y,
+            dev->lm_gravity, dev->lm_h_min,
+            slot, dev->lm_capacity, dev->lm_total_stations,
+            dev->d_lm_profile, dev->d_lm_wet);
+    }
+
+    // Launch TS reduction kernel: one block per line.
+    if (nl > 0 && grid > 0) {
+        compute_line_metrics_ts_kernel<<<nl, 256, 0, dev->d_stream>>>(
+            nl, dev->d_lm_station_offsets, dev->d_lm_weights,
+            slot, dev->lm_capacity, dev->lm_total_stations,
+            dev->d_lm_profile, dev->d_lm_wet,
+            dev->d_lm_ts);
+    }
+
+    // Write timestamp
+    CUDA_CHECK(cudaMemcpyAsync(dev->d_lm_times + slot, &t_s, sizeof(double), cudaMemcpyHostToDevice, dev->d_stream));
+    dev->lm_count = slot + 1;
+}
+
+void swe2d_gpu_read_line_metrics(SWE2DDeviceState* dev,
+                                  double** out_times,
+                                  double** out_profile,
+                                  double** out_ts,
+                                  int32_t** out_wet,
+                                  double** out_station_m,
+                                  int32_t** out_station_offsets,
+                                  int32_t* out_count,
+                                  int32_t* out_n_lines,
+                                  int32_t* out_total_stations)
+{
+    *out_times = nullptr; *out_profile = nullptr; *out_ts = nullptr; *out_wet = nullptr;
+    *out_station_m = nullptr; *out_station_offsets = nullptr;
+    *out_count = 0; *out_n_lines = 0; *out_total_stations = 0;
+    if (!dev || dev->lm_count <= 0 || dev->lm_total_stations <= 0) return;
+
+    const int32_t n  = dev->lm_count;
+    const int32_t ts = dev->lm_total_stations;
+    const int32_t nl = dev->lm_n_lines;
+    const size_t sz_t     = static_cast<size_t>(n) * sizeof(double);
+    const size_t sz_prof  = static_cast<size_t>(n) * static_cast<size_t>(ts) * 6 * sizeof(double);
+    const size_t sz_ts    = static_cast<size_t>(n) * static_cast<size_t>(nl) * 7 * sizeof(double);
+    const size_t sz_wet   = static_cast<size_t>(n) * static_cast<size_t>(ts) * sizeof(int32_t);
+    const size_t sz_sm    = static_cast<size_t>(ts) * sizeof(double);
+    const size_t sz_so    = static_cast<size_t>(nl + 1) * sizeof(int32_t);
+
+    double*  h_times   = nullptr;
+    double*  h_profile = nullptr;
+    double*  h_ts      = nullptr;
+    int32_t* h_wet     = nullptr;
+    double*  h_station_m       = nullptr;
+    int32_t* h_station_offsets = nullptr;
+    CUDA_CHECK(cudaMallocHost(&h_times,   sz_t));
+    CUDA_CHECK(cudaMallocHost(&h_profile, sz_prof));
+    CUDA_CHECK(cudaMallocHost(&h_ts,      sz_ts));
+    CUDA_CHECK(cudaMallocHost(&h_wet,     sz_wet));
+    CUDA_CHECK(cudaMallocHost(&h_station_m,       sz_sm));
+    CUDA_CHECK(cudaMallocHost(&h_station_offsets, sz_so));
+    CUDA_CHECK(cudaMemcpy(h_times,   dev->d_lm_times,   sz_t,    cudaMemcpyDeviceToHost));
+    CUDA_CHECK(cudaMemcpy(h_profile, dev->d_lm_profile, sz_prof, cudaMemcpyDeviceToHost));
+    CUDA_CHECK(cudaMemcpy(h_ts,      dev->d_lm_ts,      sz_ts,   cudaMemcpyDeviceToHost));
+    CUDA_CHECK(cudaMemcpy(h_wet,     dev->d_lm_wet,     sz_wet,  cudaMemcpyDeviceToHost));
+    CUDA_CHECK(cudaMemcpy(h_station_m,       dev->d_lm_station_m,       sz_sm, cudaMemcpyDeviceToHost));
+    CUDA_CHECK(cudaMemcpy(h_station_offsets, dev->d_lm_station_offsets, sz_so, cudaMemcpyDeviceToHost));
+    CUDA_CHECK(cudaDeviceSynchronize());
+
+    *out_times = h_times;
+    *out_profile = h_profile;
+    *out_ts = h_ts;
+    *out_wet = h_wet;
+    *out_station_m = h_station_m;
+    *out_station_offsets = h_station_offsets;
+    *out_count = n;
+    *out_n_lines = nl;
+    *out_total_stations = ts;
+}
+
+void swe2d_gpu_free_line_metrics(SWE2DDeviceState* dev) {
+    if (!dev) return;
+    auto sf = [](void* p) { if (p) cudaFree(p); };
+    sf(dev->d_lm_station_offsets); dev->d_lm_station_offsets = nullptr;
+    sf(dev->d_lm_cell_idx);        dev->d_lm_cell_idx = nullptr;
+    sf(dev->d_lm_weights);         dev->d_lm_weights = nullptr;
+    sf(dev->d_lm_normal_x);        dev->d_lm_normal_x = nullptr;
+    sf(dev->d_lm_normal_y);        dev->d_lm_normal_y = nullptr;
+    sf(dev->d_lm_station_m);       dev->d_lm_station_m = nullptr;
+    sf(dev->d_lm_profile);         dev->d_lm_profile = nullptr;
+    sf(dev->d_lm_ts);              dev->d_lm_ts = nullptr;
+    sf(dev->d_lm_wet);             dev->d_lm_wet = nullptr;
+    sf(dev->d_lm_times);           dev->d_lm_times = nullptr;
+    dev->lm_n_lines = 0;
+    dev->lm_total_stations = 0;
+    dev->lm_capacity = 0;
+    dev->lm_count = 0;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -10631,6 +10984,7 @@ void swe2d_gpu_destroy(SWE2DDeviceState* dev) {
     safe_free(dev->d_h3);   safe_free(dev->d_hu3);  safe_free(dev->d_hv3);
     safe_free(dev->d_external_source_mps);
     swe2d_gpu_free_snapshot_buf(dev);
+    swe2d_gpu_free_line_metrics(dev);
     // Coupling workspace cleanup
     {
         auto& ws = dev->coupling_ws;

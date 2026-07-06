@@ -950,6 +950,98 @@ PYBIND11_MODULE(HYDRA_SWE2D_PY_MODULE_NAME, m) {
         py::arg("solver"),
         "Return number of snapshots currently in the device ring buffer.");
 
+    // ── Line metrics ring buffer bindings ──
+    m.def("swe2d_gpu_configure_line_sampling",
+        [](std::shared_ptr<PySolver>& ps,
+           py::array_t<int32_t, py::array::c_style | py::array::forcecast> station_offsets,
+           py::array_t<int32_t, py::array::c_style | py::array::forcecast> cell_idx,
+           py::array_t<double,  py::array::c_style | py::array::forcecast> weights,
+           py::array_t<double,  py::array::c_style | py::array::forcecast> normal_x,
+           py::array_t<double,  py::array::c_style | py::array::forcecast> normal_y,
+           py::array_t<double,  py::array::c_style | py::array::forcecast> station_m,
+           double gravity,
+           double h_min,
+           int32_t max_snapshots = 64) {
+            if (!ps || !ps->solver || !ps->solver->dev)
+                throw std::runtime_error("solver not initialized");
+            SWE2DDeviceState* dev = ps->solver->dev;
+            int32_t n_lines = static_cast<int32_t>(station_offsets.size()) - 1;
+            swe2d_gpu_configure_line_sampling(
+                dev, n_lines,
+                station_offsets.data(), cell_idx.data(), weights.data(),
+                normal_x.data(), normal_y.data(), station_m.data(),
+                gravity, h_min, max_snapshots);
+        },
+        py::arg("solver"), py::arg("station_offsets"), py::arg("cell_idx"),
+        py::arg("weights"), py::arg("normal_x"), py::arg("normal_y"),
+        py::arg("station_m"), py::arg("gravity"), py::arg("h_min"),
+        py::arg("max_snapshots") = 64,
+        "Upload line sampling map and allocate ring buffer on device.");
+
+    m.def("swe2d_gpu_read_line_metrics",
+        [](std::shared_ptr<PySolver>& ps) -> py::dict {
+            if (!ps || !ps->solver || !ps->solver->dev) return py::dict();
+            SWE2DDeviceState* dev = ps->solver->dev;
+            double *h_times = nullptr, *h_profile = nullptr, *h_ts = nullptr;
+            int32_t *h_wet = nullptr;
+            double  *h_station_m       = nullptr;
+            int32_t *h_station_offsets = nullptr;
+            int32_t count = 0, n_lines = 0, total_stations = 0;
+            swe2d_gpu_read_line_metrics(dev, &h_times, &h_profile, &h_ts,
+                                         &h_wet, &h_station_m, &h_station_offsets,
+                                         &count, &n_lines, &total_stations);
+            if (count <= 0 || total_stations <= 0) return py::dict();
+            auto cap_times   = py::capsule(h_times,   [](void* p) { cudaFreeHost(p); });
+            auto cap_profile = py::capsule(h_profile, [](void* p) { cudaFreeHost(p); });
+            auto cap_ts      = py::capsule(h_ts,      [](void* p) { cudaFreeHost(p); });
+            auto cap_wet     = py::capsule(h_wet,     [](void* p) { cudaFreeHost(p); });
+            auto cap_sm      = py::capsule(h_station_m,       [](void* p) { cudaFreeHost(p); });
+            auto cap_so      = py::capsule(h_station_offsets, [](void* p) { cudaFreeHost(p); });
+
+            py::dict d;
+            d["t_s"] = py::array_t<double>({count}, {sizeof(double)}, h_times, cap_times);
+            // Profile: [count, total_stations, 6] — stride: (ts*6, 6, 1) in doubles
+            d["profiles"] = py::array_t<double>(
+                {count, static_cast<long>(total_stations), 6},
+                {static_cast<long>(total_stations) * 6 * static_cast<long>(sizeof(double)),
+                 static_cast<long>(6) * static_cast<long>(sizeof(double)),
+                 static_cast<long>(sizeof(double))},
+                h_profile, cap_profile);
+            // TS: [count, n_lines, 7]
+            d["ts"] = py::array_t<double>(
+                {count, static_cast<long>(n_lines), 7},
+                {static_cast<long>(n_lines) * 7 * static_cast<long>(sizeof(double)),
+                 static_cast<long>(7) * static_cast<long>(sizeof(double)),
+                 static_cast<long>(sizeof(double))},
+                h_ts, cap_ts);
+            // Wet: [count, total_stations] int32
+            d["wet"] = py::array_t<int32_t>(
+                {count, static_cast<long>(total_stations)},
+                {static_cast<long>(total_stations) * sizeof(int32_t),
+                 sizeof(int32_t)},
+                h_wet, cap_wet);
+            // Station map arrays (host copies — safe for Python access)
+            d["station_m"] = py::array_t<double>(
+                {total_stations}, {sizeof(double)},
+                h_station_m, cap_sm);
+            d["station_offsets"] = py::array_t<int32_t>(
+                {n_lines + 1}, {sizeof(int32_t)},
+                h_station_offsets, cap_so);
+            d["n_lines"] = n_lines;
+            d["total_stations"] = total_stations;
+            return d;
+        },
+        py::arg("solver"),
+        "Read all accumulated line metrics as {t_s, profiles, ts, wet, n_lines, total_stations, station_m, station_offsets}. Returns pinned memory.");
+
+    m.def("swe2d_gpu_free_line_metrics",
+        [](std::shared_ptr<PySolver>& ps) {
+            if (!ps || !ps->solver || !ps->solver->dev) return;
+            swe2d_gpu_free_line_metrics(ps->solver->dev);
+        },
+        py::arg("solver"),
+        "Free line metrics ring buffer and sample map on device.");
+
     m.def("swe2d_gpu_device_memory_info",
         []() -> py::dict {
             size_t free_bytes = 0, total_bytes = 0;

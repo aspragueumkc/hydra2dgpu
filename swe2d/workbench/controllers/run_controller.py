@@ -303,7 +303,6 @@ class RunController:
             hv0=run_input.hv0,
             n_mann_cell=run_input.n_mann_cell,
             cell_areas=np.asarray(mesh_cell_areas_fn(), dtype=np.float64).ravel(),
-            cell_solver_bed=view._mesh_cell_solver_bed(),
             cell_centroids=view._mesh_cell_centroids(),
             rain_rate_model=run_options.rain_rate_model,
             internal_flow_forcing=run_options.internal_flow_forcing,
@@ -324,7 +323,6 @@ class RunController:
             apply_timeseries_bc_values=view._apply_timeseries_bc_values,
             distribute_total_flow_to_unit_q=view._distribute_total_flow_to_unit_q,
             apply_external_sources=view._apply_external_sources,
-            sample_line_metrics=view._sample_line_metrics,
             build_line_sampling_map=view._build_line_sampling_map,
             sample_map_data=list(view._build_line_sampling_map() or []),
             inflow_progressive_enabled=_capture_inflow_progressive(view),
@@ -332,7 +330,6 @@ class RunController:
             mesh_cell_areas=mesh_cell_areas_fn,
             mesh_cell_min_bed=view._mesh_cell_min_bed,
             mesh_cell_centroids=view._mesh_cell_centroids,
-            mesh_cell_solver_bed=view._mesh_cell_solver_bed,
             internal_flow_source_cms_at_time=view._internal_flow_source_cms_at_time,
             cancel_event=cancel_event,
         )
@@ -350,9 +347,7 @@ class RunController:
             if cell_perm is not None and len(cell_perm) > 0:
                 apply_cell_permutation(view._mesh_data, np.asarray(cell_perm, dtype=np.int32))
             sample_map = list(view._build_line_sampling_map() or [])
-            cell_solver_z = view._mesh_cell_solver_bed() if sample_map else None
             result_holder.sample_map = sample_map
-            result_holder.cell_solver_z = cell_solver_z
         except Exception as exc:
             logger.exception("Mesh permutation ready handler failed")
             result_holder.error = str(exc)

@@ -97,7 +97,6 @@ class RunContext:
     hv0: np.ndarray = field(default_factory=lambda: np.empty(0, dtype=np.float64))
     n_mann_cell: Optional[np.ndarray] = None
     cell_areas: np.ndarray = field(default_factory=lambda: np.empty(0, dtype=np.float64))
-    cell_solver_bed: np.ndarray = field(default_factory=lambda: np.empty(0, dtype=np.float64))
     cell_centroids: np.ndarray = field(default_factory=lambda: np.empty((0, 2), dtype=np.float64))
 
     # Forcing / coupling
@@ -128,12 +127,10 @@ class RunContext:
     apply_timeseries_bc_values: Callable = field(default=_noop)
     distribute_total_flow_to_unit_q: Callable = field(default=_noop)
     apply_external_sources: Callable = field(default=lambda *a, **k: None)
-    sample_line_metrics: Callable = field(default=lambda *a, **k: ([], []))
     build_line_sampling_map: Callable = field(default=lambda: None)
     mesh_cell_areas: Callable = field(default=lambda: np.empty(0))
     mesh_cell_min_bed: Callable = field(default=lambda: np.empty(0))
     mesh_cell_centroids: Callable = field(default=lambda: np.empty((0, 2)))
-    mesh_cell_solver_bed: Callable = field(default=lambda: np.empty(0))
     internal_flow_source_cms_at_time: Callable = field(default=lambda *a, **k: None)
 
     # Plain-data values captured on the main thread before the worker starts

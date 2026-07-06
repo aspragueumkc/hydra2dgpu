@@ -32,24 +32,6 @@ _PERSISTENCE_GROUP = "Backwater2DWorkbench"
 _PERSISTENCE_KEY = "swe2d_results_panel_state"
 
 
-def _stack_per_snapshot(arrs, n_sta: int, dtype) -> np.ndarray:
-    """Stack a list of per-snapshot 1D arrays into a 2D (n_snaps × n_sta) array.
-
-    Each entry in *arrs* is the per-station values for one snapshot.  Rows
-    shorter or longer than *n_sta* are truncated/padded with zeros so the
-    final array is rectangular.
-    """
-    n_ts = len(arrs)
-    out = np.zeros((n_ts, n_sta), dtype=dtype)
-    for i, a in enumerate(arrs):
-        v = np.asarray(a, dtype=dtype).ravel()
-        if v.size >= n_sta:
-            out[i, :] = v[:n_sta]
-        else:
-            out[i, : v.size] = v
-    return out
-
-
 class SWE2DResultsData:
     """Pure data/logic layer for results.  No visible widgets."""
 
@@ -106,9 +88,6 @@ class SWE2DResultsData:
         self._live_coupling: Dict[Tuple[str, str, str], Dict[str, object]] = {}
         # Indices tracking next write position for live accumulation
         self._coupling_snap_idx: int = 0
-        # ponytail: incremental line-metrics processing
-        self._line_metrics_snap_count: int = 0
-
         # Display state for TS/Profile/Structure/Network renderers (plain data)
         self.ts_var_key: str = "flow_cms"
         self.prof_var_key: str = "wse_bed"
@@ -148,7 +127,6 @@ class SWE2DResultsData:
         self._live_line_ts.clear()
         self._live_line_profile.clear()
         self._live_coupling.clear()
-        self._line_metrics_snap_count = 0
         self._coupling_snap_idx = 0
         # Drop any GPKG-expanded coupling rows cached from a previous run
         # so viewers don't see stale data until load_coupling_records runs
@@ -330,9 +308,6 @@ class SWE2DResultsData:
         """Convert _live_line_ts / _live_line_profile to the dict format
         expected by ``SWE2DRunFinalizer.finalize_and_persist`` via the
         ``precomputed_line_results`` argument.
-
-        Avoids the finalizer recomputing line metrics from scratch when
-        ``populate_live_line_metrics`` already produced the same arrays.
         """
         if not self._live_line_ts and not self._live_line_profile:
             return {}
@@ -405,164 +380,72 @@ class SWE2DResultsData:
                 out.append(row)
         return out
 
-    def populate_live_line_metrics(
+    def populate_live_line_metrics_from_gpu(
         self,
-        sample_map,
-        sample_callback,
-        cell_solver_z,
+        lm_data: dict,
+        line_names_by_id: Optional[Dict[int, str]] = None,
     ) -> None:
-        """Compute line TS + profile arrays from the current live snapshots.
+        """Populate _live_line_ts/_live_line_profile from GPU-computed flat arrays.
 
-        Called after :meth:`set_live_snapshot_timesteps` brings device
-        snapshots back to host.  Iterates over each live snapshot, invokes
-        *sample_callback* to obtain per-line TS + profile rows, and stores
-        the results into ``_live_line_ts`` and ``_live_line_profile`` in the
-        shapes the load_* live paths expect (1D per-line arrays for TS;
-        2D (n_snaps × n_stations) arrays for profiles).
-
-        Incremental: only processes snapshots beyond
-        ``_line_metrics_snap_count`` and appends to existing arrays.
-
-        Parameters
-        ----------
-        sample_map : list of dict
-            Per-line sampling maps (cell_idx, station_m, line_id, line_name).
-        sample_callback : callable
-            ``sample_callback(sample_map, t_s, h, hu, hv, cell_bed) -> (ts_rows, prof_rows)``
-            matching the dialog's ``_sample_line_metrics`` signature.
-        cell_solver_z : ndarray or None
-            Per-cell solver bed elevation.
+        Called each time the GPU line metrics ring buffer is read back.
+        Unlike the CPU path, the GPU already computed all station
+        interpolation and per-line TS aggregation — this just slices the
+        flat ``[N, total_stations, 6]`` / ``[N, n_lines, 7]`` arrays into
+        per-line dicts the viewer and GPKG finalizer expect.
         """
-        snaps = self._live_snapshot_timesteps
-        if not snaps or not sample_map or sample_callback is None:
+        t_s = lm_data.get("t_s")
+        profiles = lm_data.get("profiles")
+        ts = lm_data.get("ts")
+        wet = lm_data.get("wet")
+        station_offsets = lm_data.get("station_offsets")
+        station_m = lm_data.get("station_m")
+        if t_s is None or profiles is None or ts is None or station_offsets is None:
+            return
+        total_stations = lm_data.get("total_stations", 0)
+        if total_stations <= 0:
+            return
+        n_lines = int(station_offsets.size) - 1
+        if n_lines <= 0:
             return
 
-        n_total = len(snaps)
-        start = self._line_metrics_snap_count
-        if start >= n_total:
-            return
-        new_snaps = snaps[start:]
-
-        ts_by_line: Dict[int, Dict[str, list]] = {}
-        prof_by_line: Dict[int, Dict[str, list]] = {}
-
-        for (snap_t, h_s, hu_s, hv_s) in new_snaps:
-            h_arr = np.asarray(h_s, dtype=np.float64)
-            hu_arr = np.asarray(hu_s, dtype=np.float64)
-            hv_arr = np.asarray(hv_s, dtype=np.float64)
-            cell_bed = (
-                np.asarray(cell_solver_z, dtype=np.float64)
-                if cell_solver_z is not None
-                else np.zeros_like(h_arr)
-            )
-            try:
-                ts_rows, prof_rows = sample_callback(
-                    sample_map, snap_t, h_arr, hu_arr, hv_arr, cell_bed,
-                )
-            except Exception:
-                continue
-            for row in ts_rows:
-                lid = int(row.get("line_id", -1))
-                if lid < 0:
-                    continue
-                d = ts_by_line.setdefault(
-                    lid,
-                    {"line_name": str(row.get("line_name", f"line_{lid}"))},
-                )
-                for key in (
-                    "depth_m", "velocity_ms", "wse_m", "bed_m",
-                    "flow_cms", "wet_frac", "fr",
-                ):
-                    d.setdefault(key, []).append(float(row.get(key, 0.0)))
-            for row in prof_rows:
-                lid = int(row.get("line_id", -1))
-                if lid < 0:
-                    continue
-                d = prof_by_line.setdefault(
-                    lid,
-                    {"line_name": str(row.get("line_name", f"line_{lid}"))},
-                )
-                sta = np.asarray(
-                    row.get("station_m", np.empty(0)), dtype=np.float64
-                )
-                if sta.size > 0 and "station_m" not in d:
-                    d["station_m"] = sta
-                    d["n_stations"] = int(sta.size)
-                for key in (
-                    "depth_m", "velocity_ms", "wse_m", "bed_m",
-                    "flow_qn", "fr",
-                ):
-                    d.setdefault(key, []).append(
-                        np.asarray(row.get(key, np.empty(0)), dtype=np.float64)
-                    )
-                d.setdefault("wet", []).append(
-                    np.asarray(row.get("wet", np.empty(0)), dtype=np.int32)
-                )
-
-        # Promote new TS lists → 1D numpy arrays, append to existing.
-        for lid, d in ts_by_line.items():
-            new_ts = {"line_name": d.get("line_name", f"line_{lid}")}
-            for key in (
-                "depth_m", "velocity_ms", "wse_m", "bed_m",
-                "flow_cms", "wet_frac", "fr",
-            ):
-                new_ts[key] = np.asarray(d.get(key, []), dtype=np.float64)
-            existing = self._live_line_ts.get(lid)
-            if existing is not None:
-                for key in new_ts:
-                    if key == "line_name":
-                        continue
-                    old = existing.get(key)
-                    existing[key] = np.concatenate([old, new_ts[key]]) if old is not None and old.size > 0 else new_ts[key]
-            else:
-                self._live_line_ts[lid] = new_ts
-
-        # Promote new profile lists → 2D arrays, vstack onto existing.
-        for lid, d in prof_by_line.items():
-            sta = np.asarray(d.get("station_m", np.empty(0)), dtype=np.float64)
-            n_sta = int(sta.size)
-            n_new = len(d.get("depth_m", []))
-            if n_sta == 0 or n_new == 0:
-                continue
-            new_prof = {
-                "line_name": d.get("line_name", f"line_{lid}"),
-                "station_m": sta,
+        # Replace — GPU data is cheap to slice; no incremental cost.
+        new_ts: Dict[int, Dict[str, object]] = {}
+        new_prof: Dict[int, Dict[str, object]] = {}
+        _ts_keys = ("depth_m", "velocity_ms", "wse_m", "bed_m",
+                     "flow_cms", "wet_frac", "fr")
+        _prof_keys = ("depth_m", "velocity_ms", "wse_m", "bed_m",
+                       "flow_qn", "fr")
+        for lid in range(n_lines):
+            nm = (line_names_by_id or {}).get(lid, f"line_{lid}")
+            s = int(station_offsets[lid])
+            e = int(station_offsets[lid + 1])
+            n_sta = e - s
+            ts_line = ts[:, lid, :]
+            t_dict = {"line_name": nm}
+            for idx, key in enumerate(_ts_keys):
+                t_dict[key] = np.ascontiguousarray(ts_line[:, idx])
+            new_ts[lid] = t_dict
+            p_dict: Dict[str, object] = {
+                "line_name": nm,
+                "station_m": np.ascontiguousarray(station_m[s:e]),
                 "n_stations": n_sta,
             }
-            for key in (
-                "depth_m", "velocity_ms", "wse_m", "bed_m",
-                "flow_qn", "fr",
-            ):
-                arrs = d.get(key, [])
-                if not arrs:
-                    continue
-                try:
-                    new_prof[key] = _stack_per_snapshot(arrs, n_sta, np.float64)
-                except Exception:
-                    new_prof[key] = np.zeros((n_new, n_sta), dtype=np.float64)
-            wets = d.get("wet", [])
-            if wets:
-                try:
-                    new_prof["wet"] = _stack_per_snapshot(wets, n_sta, np.int32)
-                except Exception:
-                    new_prof["wet"] = np.zeros((n_new, n_sta), dtype=np.int32)
+            if n_sta > 0:
+                prof_slice = profiles[:, s:e, :]
+                for idx, key in enumerate(_prof_keys):
+                    p_dict[key] = np.ascontiguousarray(prof_slice[:, :, idx])
+                p_dict["wet"] = (
+                    np.ascontiguousarray(wet[:, s:e])
+                    if wet is not None and wet.shape[1] >= total_stations
+                    else np.zeros((ts.shape[0], n_sta), dtype=np.int32)
+                )
             else:
-                new_prof["wet"] = np.zeros((n_new, n_sta), dtype=np.int32)
-
-            existing = self._live_line_profile.get(lid)
-            if existing is not None:
-                for key in new_prof:
-                    if key in ("line_name", "station_m", "n_stations"):
-                        continue
-                    old = existing.get(key)
-                    if old is not None and old.ndim == 2:
-                        existing[key] = np.vstack([old, new_prof[key]])
-                    else:
-                        existing[key] = new_prof[key]
-            else:
-                self._live_line_profile[lid] = new_prof
-
-        self._line_metrics_snap_count = n_total
+                for key in _prof_keys:
+                    p_dict[key] = np.empty((ts.shape[0], 0), dtype=np.float64)
+                p_dict["wet"] = np.empty((ts.shape[0], 0), dtype=np.int32)
+            new_prof[lid] = p_dict
+        self._live_line_ts = new_ts
+        self._live_line_profile = new_prof
 
     def get_live_coupling_snapshot_rows(self) -> list:
         """Reconstruct list-of-dicts from _live_coupling numpy storage."""
