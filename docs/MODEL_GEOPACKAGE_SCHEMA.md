@@ -474,3 +474,13 @@ erDiagram
 - **Field naming**: All field names use `snake_case`. Units are **model units** (SI or USC as defined by the project CRS).
 - **No foreign key enforcement**: SQLite does not enforce FK constraints by default. Cross-table references (e.g. `hydrograph_id` on `swe2d_bc_lines` → `swe2d_hydrographs`) are logical references maintained by application code.
 - **All layers are created empty**: The user populates them through the QGIS digitising workflow or topology editor.
+
+---
+
+## Related Documentation
+
+- **[Documentation Index](INDEX.md)** — All guides by audience
+- **[User Guide](USER_GUIDE.md)** — Creating and populating the model GPKG
+- **[Results GeoPackage Schema](RESULTS_GEOPACKAGE_SCHEMA.md)** — Output table formats
+- **[Developer Guide](DEVELOPER_GUIDE.md)** — `swe2d/units.py`, model layer creation
+- **[GPKG Explorer Guide](GPKG_EXPLORER_GUIDE.md)** — Inspecting tables

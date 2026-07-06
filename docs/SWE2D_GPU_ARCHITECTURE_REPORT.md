@@ -2,7 +2,7 @@
 
 > **Generated**: 2026-06-04  
 > **Scope**: GPU solver core, rainfall/infiltration, hydraulic structures, urban drainage coupling  
-> **Design philosophy**: GPU-only — all computation lives on CUDA device; no CPU fallback paths
+> **Design philosophy**: GPU-first — all production computation runs on CUDA device. A CPU solver (`swe2d_solver.cpp`) is retained for debugging and validation only, not for performance-critical work.
 
 ---
 
@@ -80,7 +80,7 @@ Defined in `cpp/src/swe2d_solver.hpp`:
 | 2 | `FV_MUSCL_MINMOD` | Linear (gradient-based) | Minmod (robust, diffusive) |
 | 3 | `FV_MUSCL_MC` | Linear (gradient-based) | Monotonized-Central |
 | 4 | `FV_MUSCL_VAN_LEER` | Linear (gradient-based) | Van Leer (smooth TVD) |
-| 5 | `FV_WENO3_LIKE` | Nonlinear blend (experimental) | WENO3-like weights |
+| 6 | `FV_WENO5` | Nonlinear blend with 2-ring LSQ gradient | WENO5 weights on 2-ring stencil (~3rd-order) |
 
 Schemes 1–5 require Green-Gauss gradient computation on cell-centered data. The `hydrostatic_reconstruct_cuda_local()` kernel handles both TVD-limited linear reconstruction and WENO blending, then feeds reconstructed left/right states into the HLLC Riemann solver.
 
@@ -562,3 +562,14 @@ sequenceDiagram
 | `AGENTS.md` | GPU validation priority, Godunov rollout handoff, `__pycache__` discipline |
 | `docs/GODUNOV_2D_GPU_IMPLEMENTATION_GUIDE.md` | Godunov FVM rollout implementation guide |
 | `docs/SOLVER_ORDER_AND_STENCIL.md` | Stencil and order-of-accuracy details |
+
+---
+
+## Related Documentation
+
+- **[Documentation Index](INDEX.md)** — All guides by audience
+- **[Developer Guide](DEVELOPER_GUIDE.md)** — Module reference, test suite
+- **[User Guide](USER_GUIDE.md)** — Solver configuration in the UI
+- **[cpp/ARCHITECTURE.md](cpp/ARCHITECTURE.md)** — C++ module layout
+- **[cpp/COUPLING_KERNELS.md](cpp/COUPLING_KERNELS.md)** — Surface ↔ drainage ↔ structures
+- **[Repository Knowledge Graph](../graphify-out/GRAPH_REPORT.md)** — GPU solver module connections

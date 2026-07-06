@@ -78,3 +78,13 @@ Reloads the table listing from the GeoPackage.
   "Preview Table" to check your topology before meshing.
 - **Checking results**: Select a `swe2d_baked_results` table to verify that
   snapshots were persisted correctly.
+
+---
+
+## Related Documentation
+
+- **[Documentation Index](INDEX.md)** — All guides by audience
+- **[User Guide](USER_GUIDE.md)** — Layers tab utilities
+- **[Model GeoPackage Schema](MODEL_GEOPACKAGE_SCHEMA.md)** — Input table definitions
+- **[Results GeoPackage Schema](RESULTS_GEOPACKAGE_SCHEMA.md)** — Output table definitions
+- **[Results Path Guide](RESULTS_PATH_GUIDE.md)** — How results are persisted

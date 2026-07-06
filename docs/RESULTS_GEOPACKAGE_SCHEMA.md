@@ -276,3 +276,13 @@ erDiagram
 | **Units** | `_model`-suffixed columns use the project's native unit system (SI or USC). `_m3`/`_cms` columns are always SI. |
 | **Product keys** | Every result table has a composite primary key that includes `run_id` to guarantee idempotency. |
 | **Idempotent writes** | All persistence uses `INSERT OR REPLACE`, so re-running overwrites cleanly. |
+
+---
+
+## Related Documentation
+
+- **[Documentation Index](INDEX.md)** — All guides by audience
+- **[User Guide](USER_GUIDE.md)** — Reading and exporting results
+- **[Results Path Guide](RESULTS_PATH_GUIDE.md)** — Data flow and persistence
+- **[Model GeoPackage Schema](MODEL_GEOPACKAGE_SCHEMA.md)** — Input table definitions
+- **[GPKG Explorer Guide](GPKG_EXPLORER_GUIDE.md)** — Inspecting result tables

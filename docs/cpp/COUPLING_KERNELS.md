@@ -138,3 +138,13 @@ Bridge coupling uses the stacked plan (under-deck, deck, over-deck layers) compu
 1. Identifies cells in each bridge zone
 2. Applies loss-coefficient-weighted flow attenuation
 3. Distributes sources per the `bridge_stacked_coupling_mode` (legacy_scalar or phase3_spatial)
+
+---
+
+## Related Documentation
+
+- **[Documentation Index](../INDEX.md)** — All guides by audience
+- **[Architecture](ARCHITECTURE.md)** — C++ module layout, build system
+- **[GPU Kernel Strategy](GPU_KERNEL_STRATEGY.md)** — Kernel launch hierarchy
+- **[HDS-5 Culvert](CULVERT_HDS5.md)** — USC unit conversion, culvert face-flux mode
+- **[GPU Architecture Report](../SWE2D_GPU_ARCHITECTURE_REPORT.md)** — `SWE2DCouplingController`

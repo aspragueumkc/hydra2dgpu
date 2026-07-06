@@ -177,3 +177,13 @@ Check that:
 
 If you re-run a simulation and the overlay doesn't update, click "Discover
 Runs" in the results panel to refresh the run list from the GPKG.
+
+---
+
+## Related Documentation
+
+- **[Documentation Index](INDEX.md)** — All guides by audience
+- **[User Guide](USER_GUIDE.md)** — Results panel, timeline, overlays
+- **[Results GeoPackage Schema](RESULTS_GEOPACKAGE_SCHEMA.md)** — All output table formats
+- **[Model GeoPackage Schema](MODEL_GEOPACKAGE_SCHEMA.md)** — Input table definitions
+- **[Repository Knowledge Graph](../graphify-out/wiki/index.md)** — Results module connections

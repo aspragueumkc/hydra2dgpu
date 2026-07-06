@@ -84,3 +84,13 @@ An alternative coupling method where culvert exchange is distributed along a 2D 
 3. Applies q to the edge flux computation directly (like a boundary condition)
 
 This avoids the influence-width redistribution step and provides smoother coupling for wide culverts or embankment crossings.
+
+---
+
+## Related Documentation
+
+- **[Documentation Index](../INDEX.md)** — All guides by audience
+- **[Architecture](ARCHITECTURE.md)** — C++ module layout, unit conventions
+- **[Coupling Kernels](COUPLING_KERNELS.md)** — `SWE2DCulvertFaceFluxSoA` layout
+- **[GPU Architecture Report](../SWE2D_GPU_ARCHITECTURE_REPORT.md)** — Structures section
+- **[Developer Guide](../DEVELOPER_GUIDE.md)** — `SWE2DStructureModule`, `culvert_routine.py`

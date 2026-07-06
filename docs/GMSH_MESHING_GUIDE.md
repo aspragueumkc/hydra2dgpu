@@ -626,3 +626,13 @@ All options that can be passed via the `options` dict to `generate_face_centric_
 | `gmsh_quality_checkpoint_path` | str | `""` | File path for per-attempt `.npz` checkpoints |
 | `gmsh_progress_path` | str | `""` | File path for JSON progress emission |
 | `gmsh_progress_emit_interval_s` | float | 0.75 | Minimum interval between progress updates |
+
+---
+
+## Related Documentation
+
+- **[Documentation Index](INDEX.md)** — All guides by audience
+- **[User Guide](USER_GUIDE.md)** — End-to-end meshing workflow
+- **[Developer Guide](DEVELOPER_GUIDE.md)** — `swe2d/mesh/meshing.py`, backend selection
+- **[Model GeoPackage Schema](MODEL_GEOPACKAGE_SCHEMA.md)** — Topology layer definitions
+- **[Solver Order & Stencil](SOLVER_ORDER_AND_STENCIL.md)** — How mesh quality affects solver accuracy

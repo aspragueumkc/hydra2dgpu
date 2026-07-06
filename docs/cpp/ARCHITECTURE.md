@@ -1,5 +1,13 @@
 # C++ / CUDA Architecture
 
+> **Audience**: C++ engineers working on the GPU solver, mesh kernel, or
+> pybind11 bindings. Also useful for build-system maintainers and anyone
+> debugging native module load failures.
+
+This document describes how the C++/CUDA native modules are organized, how
+they are built (CMake), the unit-convention contract between Python and the
+kernel, and the shape of the mesh and solver-config data structures.
+
 ## Module Layout
 
 ```
@@ -102,3 +110,13 @@ Key enums:
 - `SWE2DTurbulenceModel`: NONE, SMAGORINSKY, K_EPSILON, K_OMEGA_SST
 - `SWE2DBedFrictionModel`: MANNING, CHEZY, DARCY_WEISBACH, NIKURADSE
 - `BCType`: INTERIOR, WALL, INFLOW_Q, STAGE, OPEN, REFLECT, NORMAL_DEPTH, NORMAL_DEPTH_SLOPE
+
+---
+
+## Related Documentation
+
+- **[Documentation Index](../INDEX.md)** — All guides by audience
+- **[GPU Kernel Strategy](GPU_KERNEL_STRATEGY.md)** — Kernel launch hierarchy
+- **[Coupling Kernels](COUPLING_KERNELS.md)** — Surface ↔ drainage ↔ structures
+- **[HDS-5 Culvert](CULVERT_HDS5.md)** — USC unit conversion path
+- **[GPU Architecture Report](../SWE2D_GPU_ARCHITECTURE_REPORT.md)** — High-level solver design

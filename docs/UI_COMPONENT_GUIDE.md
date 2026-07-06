@@ -13,7 +13,7 @@ Two approaches:
 picked up automatically by `_compose_left_pane()`:
 
 ```python
-# In swe2d/workbench/studio_main.py or a separate module:
+# In swe2d/workbench/studio_dialog.py or a separate module:
 from swe2d.workbench.studio_component import register_studio_tab
 
 def _build_my_tab_page(dialog):
@@ -38,7 +38,7 @@ def _build_my_tab_page(self):
 self._register_left_tab("My Tab", self._build_my_tab_page)
 ```
 
-Tabs are iterated in `_compose_left_pane()` at `studio_main.py:424`:
+Tabs are iterated in `_compose_left_pane()`:
 ```python
 for name, builder in get_studio_tab_builders().items():
     self._left_tabs.addTab(builder(self), name)
@@ -67,9 +67,9 @@ self._build_component(
 )
 ```
 
-`_build_component()` (`studio_main.py:1901`) creates the QDockWidget,
+`_build_component()` creates the QDockWidget,
 calls `populate()`, builds a `StudioComponent`, and registers it via
-`_register_component()` (`studio_main.py:1965`).
+`_register_component()`.
 
 ---
 
@@ -99,7 +99,7 @@ action.triggered.connect(lambda: (
 
 ## 4. Cleaning up on dialog close
 
-The `closeEvent` at `studio_main.py:2484` iterates all registered
+The `closeEvent` handler iterates all registered
 components and destroys them:
 
 ```python
@@ -113,7 +113,7 @@ def closeEvent(self, event):
     super().closeEvent(event)
 ```
 
-`_destroy_component()` (`studio_main.py:1993`) calls `safe_teardown()`,
+`_destroy_component()` calls `safe_teardown()`,
 closes the dock, and schedules deletion. You don't need to write
 any additional cleanup for registered components — the framework
 handles it.
@@ -132,9 +132,9 @@ widget.deleteLater()
 
 ## 5. Adding a feature toggle
 
-Three files must be updated together (see `studio_main.py:1815-1819`):
+Three files must be updated together:
 
-### 5a. Register the flag key in `__init__` (`studio_main.py:191`):
+### 5a. Register the flag key in `__init__`:
 
 ```python
 self._studio_feature_flags = {
@@ -142,7 +142,7 @@ self._studio_feature_flags = {
 }
 ```
 
-### 5b. Add keyword entries (`studio_main.py:1827`):
+### 5b. Add keyword entries:
 
 ```python
 def _studio_feature_keywords(self):
@@ -155,8 +155,7 @@ def _studio_feature_keywords(self):
 Widgets whose `objectName`, `text`, `title`, or `toolTip` contain any
 keyword will be hidden when the flag is disabled.
 
-### 5c. Add menu/toolbar toggle in `_install_studio_host_controls()`
-(`studio_main.py:2929`):
+### 5c. Add menu/toolbar toggle in `_install_studio_host_controls()`:
 
 ```python
 my_act = menu.addAction("Enable My Feature")
@@ -173,19 +172,19 @@ my_act.toggled.connect(
 self._studio_set_feature_enabled("my_feature", False)
 ```
 
-This calls `_studio_apply_feature_filters()` (`studio_main.py:1858`)
-which iterates all left-pane widgets and tabs, hides any whose text
-matches disabled feature keywords, and adjusts tab bar visibility.
+This calls `_studio_apply_feature_filters()` which iterates all
+left-pane widgets and tabs, hides any whose text matches disabled
+feature keywords, and adjusts tab bar visibility.
 
 ---
 
 ## Canvas overlay
 
 The high-perf overlay path uses `SWE2DHighPerfCanvasOverlayItem`
-(`swe2d_high_perf_viewer.py:1152`), a `QgsMapCanvasItem` subclass:
+(`swe2d/results/high_perf_viewer.py`), a `QgsMapCanvasItem` subclass:
 
 ```python
-from swe2d_high_perf_viewer import SWE2DHighPerfCanvasOverlayItem
+from swe2d.results.high_perf_viewer import SWE2DHighPerfCanvasOverlayItem
 
 item = SWE2DHighPerfCanvasOverlayItem(canvas)
 item.setImage(image)    # QImage with rendered frame
@@ -195,5 +194,14 @@ item.setVisible(True)
 canvas.refresh()
 ```
 
-Used in the studio dialog at `studio_main.py:1107` for simulation
-frame display.
+Used in the studio dialog for simulation frame display.
+
+---
+
+## Related Documentation
+
+- **[Documentation Index](INDEX.md)** — All guides by audience
+- **[Studio GUI API](STUDIO_GUI_API.md)** — Public protocols and types
+- **[Developer Guide](DEVELOPER_GUIDE.md)** — Architecture, MVP layers
+- **[User Guide](USER_GUIDE.md)** — Studio UI walkthrough
+- **[Repository Knowledge Graph](../graphify-out/wiki/index.md)** — Workbench module connections

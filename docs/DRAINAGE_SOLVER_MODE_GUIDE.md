@@ -97,3 +97,13 @@ this limit, the simulation logs a warning.
 
 5. **Dynamic flow relaxation** (default 1.0) can be reduced (e.g. 0.7) to
    damp oscillatory link flow updates in DYNAMIC mode.
+
+---
+
+## Related Documentation
+
+- **[Documentation Index](INDEX.md)** — All guides by audience
+- **[User Guide](USER_GUIDE.md)** — End-to-end simulation workflow
+- **[GPU Architecture Report](SWE2D_GPU_ARCHITECTURE_REPORT.md)** — Coupling section
+- **[Developer Guide](DEVELOPER_GUIDE.md)** — `SWE2DUrbanDrainageModule`, `DrainageSolverMode` enum
+- **[Repository Knowledge Graph](../graphify-out/wiki/index.md)** — Drainage & Pipes community

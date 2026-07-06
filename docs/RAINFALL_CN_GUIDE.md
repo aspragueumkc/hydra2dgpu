@@ -135,3 +135,13 @@ avoids the discontinuity at the `P = Ia` threshold.
 - Cells outside storm area polygons receive no rain.
 - CN=100 zones are impervious — all rain becomes runoff.
 - Very low rain intensities may not exceed initial abstraction.
+
+---
+
+## Related Documentation
+
+- **[Documentation Index](INDEX.md)** — All guides by audience
+- **[User Guide](USER_GUIDE.md)** — Rainfall setup workflow
+- **[GPU Architecture Report](SWE2D_GPU_ARCHITECTURE_REPORT.md)** — Rainfall kernel details
+- **[Developer Guide](DEVELOPER_GUIDE.md)** — `SWE2DRainfallModule`, `RainFieldConfig`
+- **[Model GeoPackage Schema](MODEL_GEOPACKAGE_SCHEMA.md)** — Hyetograph, rain gage, CN zone tables

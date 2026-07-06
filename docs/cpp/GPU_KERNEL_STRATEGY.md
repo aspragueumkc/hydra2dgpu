@@ -111,3 +111,13 @@ Mesh topology arrays are uploaded once and are read-only after init. State array
 ## Occupancy and Block Sizing
 
 All kernels use 128-256 threads per block, chosen to maximise occupancy across sm_70–sm_90 architectures. The grid size is `ceil(n / block_size)` where `n` is the number of edges, cells, or boundary edges depending on the kernel.
+
+---
+
+## Related Documentation
+
+- **[Documentation Index](../INDEX.md)** — All guides by audience
+- **[Architecture](ARCHITECTURE.md)** — `SWE2DDeviceState`, build system
+- **[Coupling Kernels](COUPLING_KERNELS.md)** — GPU coupling source kernels
+- **[Solver Order & Stencil](../SOLVER_ORDER_AND_STENCIL.md)** — Why 2nd-order is the ceiling
+- **[GPU Architecture Report](../SWE2D_GPU_ARCHITECTURE_REPORT.md)** — `KernelGraphCache`, `SWE2DDeviceState`

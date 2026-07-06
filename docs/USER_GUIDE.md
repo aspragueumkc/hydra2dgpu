@@ -647,6 +647,36 @@ The **HYDRA2D CFD Inspector** (right dock) shows real-time solver parameter snap
 
 Click **Cancel** in the Run / Output page. The solver completes the current timestep, writes a partial snapshot, and exits gracefully.
 
+### 7.5 Running Headless (No QGIS)
+
+The same GPU solver can run from a terminal or a CI/CD pipeline without
+launching QGIS. This is useful for batch sweeps, automated regression
+tests, and running long simulations on a headless GPU server.
+
+```bash
+mamba activate qgis_stable
+python -m swe2d.cli run mesh.gpkg params.json --results out.gpkg --progress
+```
+
+The mesh GPKG must be pre-baked (generated via `tools/gmsh_topology_mesher.py`
+or the Studio UI). The params file is JSON — the same shape the Studio UI
+persists to the project's `workbench_state_json`, minus widget types.
+
+**Batch runs** with concurrent GPU execution (via NVIDIA MPS):
+
+```bash
+python -m swe2d.cli batch batch.json mesh.gpkg --results out.gpkg -w 4
+```
+
+The CLI writes results to a separate GPKG with the same schema as the
+Studio UI's output. Optional `--status-file-path` writes a JSON status
+file every few seconds so a parent process (typically the QGIS batch
+dialog) can show progress without parsing stdout.
+
+See **[CLI Guide](CLI_GUIDE.md)** for the full command reference, params
+JSON schema, status file format, and programmatic API
+(`from swe2d.cli.headless_runner import execute_run`).
+
 ---
 
 ## 8. Results & Postprocessing
@@ -836,16 +866,28 @@ layer is loaded from this GPKG.
 - FHWA. *Hydraulic Design of Highway Culverts* (HDS-5). FHWA-HIF-05-012.
 - Akan, A. O. *Urban Stormwater Hydrology*. Technomic Publishing.
 - QGIS Documentation: https://docs.qgis.org
-- HYDRA GPU Architecture: [docs/SWE2D_GPU_ARCHITECTURE_REPORT.md](SWE2D_GPU_ARCHITECTURE_REPORT.md)
-- Godunov FVM Implementation: [docs/GODUNOV_2D_GPU_IMPLEMENTATION_GUIDE.md](GODUNOV_2D_GPU_IMPLEMENTATION_GUIDE.md)
-- Gmsh Meshing Guide: [docs/guides/GMSH_MESHING_GUIDE.md](GMSH_MESHING_GUIDE.md)
-- Results Path Guide: [docs/guides/RESULTS_PATH_GUIDE.md](RESULTS_PATH_GUIDE.md)
-- GeoPackage Explorer Guide: [docs/guides/GPKG_EXPLORER_GUIDE.md](GPKG_EXPLORER_GUIDE.md)
-- Drainage Solver Mode Guide: [docs/guides/DRAINAGE_SOLVER_MODE_GUIDE.md](DRAINAGE_SOLVER_MODE_GUIDE.md)
-- Rainfall CN Guide: [docs/guides/RAINFALL_CN_GUIDE.md](RAINFALL_CN_GUIDE.md)
+- HYDRA GPU Architecture: [SWE2D_GPU_ARCHITECTURE_REPORT.md](SWE2D_GPU_ARCHITECTURE_REPORT.md)
+- Headless CLI Guide: [CLI_GUIDE.md](CLI_GUIDE.md)
+- Gmsh Meshing Guide: [GMSH_MESHING_GUIDE.md](GMSH_MESHING_GUIDE.md)
+- Results Path Guide: [RESULTS_PATH_GUIDE.md](RESULTS_PATH_GUIDE.md)
+- GeoPackage Explorer Guide: [GPKG_EXPLORER_GUIDE.md](GPKG_EXPLORER_GUIDE.md)
+- Drainage Solver Mode Guide: [DRAINAGE_SOLVER_MODE_GUIDE.md](DRAINAGE_SOLVER_MODE_GUIDE.md)
+- Rainfall CN Guide: [RAINFALL_CN_GUIDE.md](RAINFALL_CN_GUIDE.md)
 
 ---
 
 **[HYDRA2DGPU GitHub](https://github.com/aspragueumkc/qgis-hydra-plugin)** | **[C++ API Reference](dochub://open/C++%20API%20Reference)**
 
 *Document generated from HYDRA repository state on 2026-06-22. For the latest API details, see source code and inline docstrings.*
+
+---
+
+## Related Documentation
+
+- **[Documentation Index](INDEX.md)** — All guides by audience
+- **[CLI Guide](CLI_GUIDE.md)** — Headless runs, batch sweeps, CI/CD
+- **[Developer Guide](DEVELOPER_GUIDE.md)** — Architecture, test suite, contribution workflow
+- **[Model GeoPackage Schema](MODEL_GEOPACKAGE_SCHEMA.md)** — Input GPKG tables
+- **[Results GeoPackage Schema](RESULTS_GEOPACKAGE_SCHEMA.md)** — Output GPKG tables
+- **[Gmsh Meshing Guide](GMSH_MESHING_GUIDE.md)** — Mesh generation workflow
+- **[Repository Knowledge Graph](../graphify-out/GRAPH_REPORT.md)** — Codebase structure

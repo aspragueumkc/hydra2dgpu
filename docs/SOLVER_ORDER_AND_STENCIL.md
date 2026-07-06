@@ -1,5 +1,14 @@
 # SWE2D Solver: Spatial/Temporal Order & Stencil Architecture
 
+> **Audience**: solver developers, applied mathematicians, reviewers of accuracy
+> claims, anyone choosing a spatial scheme for a production simulation.
+
+This document explains how the SWE2D solver achieves its advertised accuracy
+on unstructured meshes — and where the practical accuracy ceiling sits given
+the 1-ring cell-edge stencil and TVD-limiter constraints. It is the
+reference for choosing between `FV_FIRST_ORDER`, `FV_MUSCL_*`, and `FV_WENO5`
+schemes.
+
 ## Spatial Discretization
 
 ### Stencil Definition
@@ -22,7 +31,7 @@ The stencil width is always the **1-ring** — only immediate face neighbors. No
 | `FV_MUSCL_MINMOD` | 2 | Green-Gauss + TVD | **MinMod** | **2nd** | Most conservative TVD, most stable, safest for mixed/hybrid meshes |
 | `FV_MUSCL_MC` | 3 | Green-Gauss + TVD | **MC (monotonized-central)** | **2nd** | Balanced between accuracy and stability |
 | `FV_MUSCL_VAN_LEER` | 4 | Green-Gauss + TVD | **Van Leer** (smooth) | **2nd** | Smooth limiter, graceful degradation on skewed cells — best all-rounder |
-| `FV_WENO3_LIKE` | 5 | WENO3 nonlinear blend | Weighted GG + midpoint | **2nd** | "WENO-like": 2-candidate blend, not true 3-stencil WENO3 |
+| `FV_WENO5` | 6 | WENO5 + LSQ 2-ring gradient | Nonlinear weights + 2-ring stencil | **~3rd** | True 5th-order WENO on unstructured via 2-ring least-squares gradient; GPU-first |
 
 All schemes 1–5 use the **surface-gradient method** (Zhou et al. 2001): reconstruct η = h + zb via ∇η, then convert back to depth. This preserves lake-at-rest to machine precision independent of mesh irregularity.
 
@@ -157,3 +166,13 @@ The composed RK4 (order 4) uses separate D→D memcpy for stage management and c
 - **Flux**: HLLC approximate Riemann solver (positivity-preserving)
 - **Active set**: Wet/dry classification + 1-hop neighbor marking + hysteretic hold
 - **Degenerate cell handling**: Skip (mode 1), repair inv_area (mode 2), merge to neighbor (mode 3)
+
+---
+
+## Related Documentation
+
+- **[Documentation Index](INDEX.md)** — All guides by audience
+- **[GPU Architecture Report](SWE2D_GPU_ARCHITECTURE_REPORT.md)** — Device-side kernel details
+- **[Developer Guide](DEVELOPER_GUIDE.md)** — Spatial scheme enum, runtime module
+- **[cpp/GPU_KERNEL_STRATEGY.md](cpp/GPU_KERNEL_STRATEGY.md)** — Kernel launch hierarchy
+- **[cpp/ARCHITECTURE.md](cpp/ARCHITECTURE.md)** — Mesh structure, solver config

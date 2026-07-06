@@ -33,7 +33,7 @@ The Studio workbench GUI follows a **Model-View-Presenter (MVP)** layered archit
          ▼                          │
 ┌─────────────────────────────────────────────────────────────┐
 │  Service Layer (zero Qt)                                    │
-│  - run_service, gpkg_service, mesh_service, etc.            │
+│  - run_service, gpkg_operations_service, mesh_service, etc. │
 │  - Pure Python business logic                               │
 └─────────────────────────────────────────────────────────────┘
 ```
@@ -114,7 +114,7 @@ def load_mesh_snapshot(
     Returns None if the data is not available."""
 ```
 
-The default implementation is `swe2d.workbench.gpkg_service.load_mesh_snapshot`.
+The default implementation is `swe2d.workbench.services.gpkg_operations_service.load_gpkg_data`.
 
 ### `OverlayParametersCollector`
 
@@ -131,7 +131,7 @@ The default implementation is `swe2d.workbench.overlay_parameters_service.collec
 
 | Component | File | Class |
 |-----------|------|-------|
-| Dialog | `swe2d/workbench/studio_main.py` | `SWE2DWorkbenchStudioDialog` |
+| Dialog | `swe2d/workbench/studio_dialog.py` | `SWE2DWorkbenchStudioDialog` |
 | Builder | `swe2d/workbench/workbench_dialog_builder.py` | `WorkbenchDialogBuilder` |
 | Controller | `swe2d/workbench/workbench_controller.py` | `WorkbenchController` |
 | Mesh tab view | `swe2d/workbench/views/mesh_tab_view.py` | `MeshTabView` |
@@ -140,7 +140,7 @@ The default implementation is `swe2d.workbench.overlay_parameters_service.collec
 | Boundary tab view | `swe2d/workbench/views/boundary_tab_view.py` | `BoundaryTabView` |
 | Model tab view | `swe2d/workbench/views/model_tab_view.py` | `ModelTabView` |
 | Overlay service | `swe2d/workbench/overlay_parameters_service.py` | `collect_overlay_parameters()` |
-| GPKG service | `swe2d/workbench/gpkg_service.py` | `load_mesh_snapshot()` |
+| GPKG service | `swe2d/workbench/services/gpkg_operations_service.py` | `load_gpkg_data()` |
 
 ## Usage Examples
 
@@ -192,3 +192,13 @@ class MyCustomView(QWidget):
 The protocols in `workbench_api` are part of the public API. Adding new methods to a protocol is allowed; removing or renaming methods requires a deprecation cycle.
 
 Services and controllers can have their implementations swapped without affecting consumers that depend on the protocols.
+
+---
+
+## Related Documentation
+
+- **[Documentation Index](INDEX.md)** — All guides by audience
+- **[Developer Guide](DEVELOPER_GUIDE.md)** — Architecture, MVP layers
+- **[UI Component Guide](UI_COMPONENT_GUIDE.md)** — Adding docks, tabs, signals
+- **[User Guide](USER_GUIDE.md)** — Studio UI walkthrough
+- **[Repository Knowledge Graph](../graphify-out/wiki/index.md)** — Workbench module connections
