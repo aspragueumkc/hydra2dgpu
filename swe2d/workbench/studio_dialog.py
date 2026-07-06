@@ -49,12 +49,10 @@ from swe2d.workbench.signal_helpers import connect_lambda, safe_disconnect, safe
 from swe2d.mesh.gmsh_backend import _gmsh_available
 from swe2d.workbench.views.studio_host_methods import (
     launch_swe2d_workbench_studio,
-    _normalize_workbench_host_mode,
     _resolve_workbench_iface,
     _remove_workbench_dock_instance,
     _remove_workbench_studio_dock,
     _studio_host_main_window,
-    _clear_studio_host_controls,
     _install_studio_host_controls,
 )
 

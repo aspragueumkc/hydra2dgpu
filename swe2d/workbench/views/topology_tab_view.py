@@ -413,6 +413,25 @@ class TopologyTabView(QtWidgets.QWidget):
             )
         )
 
+        # Register combos with the filter so the search box works on this page.
+        group = layout.parentWidget()
+        self._filterable.add(
+            self.import_combo,
+            label_widget=None,
+            label_text="Import",
+            tooltip=self.import_combo.toolTip() or "",
+            group=group if isinstance(group, QtWidgets.QGroupBox) else None,
+            advanced=False,
+        )
+        self._filterable.add(
+            self.export_combo,
+            label_widget=None,
+            label_text="Export",
+            tooltip=self.export_combo.toolTip() or "",
+            group=group if isinstance(group, QtWidgets.QGroupBox) else None,
+            advanced=False,
+        )
+
         # First page (top) — before Layer Setup
         self._toolbox.insertItem(0, page, "Import/Export")
 

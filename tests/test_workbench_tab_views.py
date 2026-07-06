@@ -10,7 +10,7 @@ from __future__ import annotations
 import unittest
 from unittest.mock import MagicMock, patch
 
-from qgis.PyQt.QtWidgets import QApplication
+from qgis.PyQt.QtWidgets import QApplication, QMainWindow
 
 _app = None
 
@@ -501,7 +501,7 @@ class TestStudioTabBuilderHelpers(unittest.TestCase):
 # ═══════════════════════════════════════════════════════════════════════════
 
 class TestStudioHostToolbarMenu(unittest.TestCase):
-    """Verify global toolbar and Plugins menu installation/cleanup."""
+    """Verify workbench-scoped host controls installation/cleanup."""
 
     @classmethod
     def setUpClass(cls):
@@ -516,32 +516,17 @@ class TestStudioHostToolbarMenu(unittest.TestCase):
         dlg._recent_model_gpkgs = []
         return dlg
 
-    def test_install_studio_host_controls_sets_view_combo_corner_widget(self):
-        """The view-mode combo is placed in the menu bar's top-right corner."""
-        from qgis.PyQt import QtCore, QtWidgets
+    def test_install_studio_host_controls_does_not_set_corner_widget(self):
+        """The old dead view-mode combo is no longer placed on the QGIS menu bar."""
         from swe2d.workbench.views.studio_host_methods import (
             _install_studio_host_controls,
         )
-        host = QtWidgets.QMainWindow()
-        host.menuBar()  # ensure menuBar is created
+        host = QMainWindow()
+        host.menuBar()
         dlg = self._make_mock_dialog()
-        dlg.view_mode_combo = QtWidgets.QComboBox()
         _install_studio_host_controls(None, dlg, host)
         corner = host.menuBar().cornerWidget()
-        self.assertIsNotNone(corner)
-        self.assertIsInstance(corner, QtWidgets.QComboBox)
-
-    def test_clear_studio_host_controls_is_idempotent_noop(self):
-        """_clear_studio_host_controls is a no-op — toolbar and HYDRA menu
-        are owned by hydra_plugin, not the workbench."""
-        from qgis.PyQt import QtWidgets
-        from swe2d.workbench.views.studio_host_methods import (
-            _clear_studio_host_controls,
-        )
-        host = QtWidgets.QMainWindow()
-        host.menuBar()
-        # Must not raise.
-        _clear_studio_host_controls(None, host)
+        self.assertIsNone(corner)
 
 
 # ═══════════════════════════════════════════════════════════════════════════

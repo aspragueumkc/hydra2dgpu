@@ -315,7 +315,7 @@ class HydraQgisPlugin:
             self._install_close_guard_filter()
         try:
             from swe2d.workbench.studio_dialog import launch_swe2d_workbench_studio
-            launch_swe2d_workbench_studio(parent=self.iface.mainWindow(), iface=self.iface, host_mode="dock")
+            launch_swe2d_workbench_studio(parent=self.iface.mainWindow(), iface=self.iface)
         except Exception as exc:
             import traceback
             self.iface.messageBar().pushMessage(
@@ -400,7 +400,6 @@ class HydraQgisPlugin:
             launch_swe2d_workbench_studio(
                 parent=self.iface.mainWindow() if self.iface is not None else None,
                 iface=iface,
-                host_mode="dock",
             )
         except Exception as e:
             logging.getLogger(__name__).warning(

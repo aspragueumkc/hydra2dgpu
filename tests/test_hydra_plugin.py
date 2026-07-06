@@ -39,7 +39,6 @@ class TestHydraPluginOpenPanelAction(unittest.TestCase):
             plugin.run()
             mock_launch.assert_called_once()
             _args, kwargs = mock_launch.call_args
-            self.assertEqual(kwargs.get("host_mode"), "dock")
             self.assertIs(kwargs.get("iface"), self._iface)
 
     def test_launch_swe2d_workbench_studio_no_crash(self):
@@ -61,7 +60,7 @@ class TestHydraPluginOpenPanelAction(unittest.TestCase):
             mock_dlg_cls.return_value = mock_dlg
             mock_dlg._studio_update_status = MagicMock()
             launch_swe2d_workbench_studio(
-                parent=None, iface=iface, host_mode="dock"
+                parent=None, iface=iface
             )
             mock_build.assert_called_once()
             mock_install.assert_called_once()
@@ -77,7 +76,7 @@ class TestHydraPluginOpenPanelAction(unittest.TestCase):
                    side_effect=ImportError("simulated init failure")):
             with self.assertRaises(ImportError):
                 launch_swe2d_workbench_studio(
-                    parent=None, iface=iface, host_mode="dock"
+                    parent=None, iface=iface
                 )
 
     def test_init_gui_creates_menu(self):
@@ -181,8 +180,6 @@ class TestHydraPluginOpenPanelAction(unittest.TestCase):
             plugin._restart_workbench_for_project()
             mock_remove.assert_called_once()
             mock_launch.assert_called_once()
-            _, kwargs = mock_launch.call_args
-            self.assertEqual(kwargs.get("host_mode"), "dock")
 
     def test_on_project_read_noop_when_workbench_inactive(self):
         """If the workbench is not active, _on_project_read does NOT
