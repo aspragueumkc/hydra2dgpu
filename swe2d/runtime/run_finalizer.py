@@ -17,10 +17,7 @@ from typing import Any, Dict, List, Protocol
 import numpy as np
 
 from swe2d.services.gpkg_persistence_service import (
-    persist_baked_results,
-    persist_baked_line_ts_batch,
-    persist_baked_line_profile_batch,
-    persist_baked_coupling_batch,
+    persist_all_baked_results,
 )
 
 
@@ -247,132 +244,107 @@ class SWE2DRunFinalizer:
 
         _t0 = time.perf_counter()
         if gpkg_results_path:
-            # ── Baked persistence (GPKG BLOB format, only path) ──────────
-            try:
-                if save_mesh_results and snapshot_timesteps:
-                    persist_baked_results(
-                        gpkg_results_path, run_id, mesh_name,
-                        snapshot_timesteps,
-                        max_tracking=max_tracking,
-                        log_fn=self._log,
-                    )
-                    self._log(
-                        f"  baked mesh results saved to {gpkg_results_path} "
-                        f"in {(time.perf_counter() - _t0) * 1000:.0f} ms"
-                    )
-            except Exception as exc:
-                _record_error("Baked mesh results persistence failed", exc)
+            # Build line TS + profile + coupling items from precomputed data.
+            line_ts_items: List[Dict[str, Any]] = []
+            profile_items: List[Dict[str, Any]] = []
+            coupling_items: List[Dict[str, Any]] = []
 
-            _t0 = time.perf_counter()
-            try:
-                if save_line_results and snapshot_timesteps and precomputed_line_results is not None:
-                    from collections import defaultdict
-                    ts_by_line: Dict[int, Dict[str, list]] = defaultdict(lambda: defaultdict(list))
-                    prof_by_line: Dict[int, Dict[str, list]] = defaultdict(lambda: defaultdict(list))
-                    for lid, ld in precomputed_line_results.items():
-                        if "t_s" in ld:
-                            ts_by_line[lid]["line_name"] = ld.get("line_name", f"line_{lid}")
-                            ts_by_line[lid]["t_s"] = list(ld["t_s"])
-                            for k, pk in (("depth_m", "ts_depth_m"), ("velocity_ms", "ts_velocity_ms"),
-                                          ("wse_m", "ts_wse_m"), ("bed_m", "ts_bed_m"),
-                                          ("flow_cms", "ts_flow_cms"), ("wet_frac", "ts_wet_frac"),
-                                          ("fr", "ts_fr")):
-                                if pk in ld:
-                                    ts_by_line[lid][k] = list(ld[pk])
-                        if "station_m" in ld:
-                            pd = prof_by_line[lid]
-                            pd["line_name"] = ld.get("line_name", f"line_{lid}")
-                            pd["station_m"] = np.asarray(ld["station_m"], dtype=np.float64)
-                            for k, pk in (("depth_m", "prof_depth_m"), ("velocity_ms", "prof_velocity_ms"),
-                                          ("wse_m", "prof_wse_m"), ("bed_m", "prof_bed_m"),
-                                          ("flow_qn", "prof_flow_qn"), ("fr", "prof_fr"),
-                                          ("wet", "prof_wet")):
-                                if pk in ld:
-                                    pd[k] = ld[pk]
-                    line_ts_items = []
-                    for lid, ld in ts_by_line.items():
-                        times_arr = np.array(ld.get("t_s", []), dtype=np.float64)
-                        if times_arr.size == 0:
-                            continue
-                        line_ts_items.append({
-                            "line_id": lid,
-                            "line_name": ld.get("line_name", f"line_{lid}"),
-                            "times": times_arr,
-                            "depth_m": np.array(ld.get("depth_m", []), dtype=np.float64),
-                            "velocity_ms": np.array(ld.get("velocity_ms", []), dtype=np.float64),
-                            "wse_m": np.array(ld.get("wse_m", []), dtype=np.float64),
-                            "bed_m": np.array(ld.get("bed_m", []), dtype=np.float64),
-                            "flow_cms": np.array(ld.get("flow_cms", []), dtype=np.float64),
-                            "wet_frac": np.array(ld.get("wet_frac", []), dtype=np.float64),
-                            "fr": np.array(ld.get("fr", []), dtype=np.float64),
-                        })
-                    if line_ts_items:
-                        persist_baked_line_ts_batch(
-                            gpkg_results_path, run_id, line_ts_items,
-                            log_fn=self._log,
-                        )
-                    profile_items = []
-                    for lid, pd in prof_by_line.items():
-                        depth_arr = pd.get("depth_m")
-                        if depth_arr is None or not hasattr(depth_arr, "shape") or depth_arr.ndim != 2:
-                            continue
-                        n_ts, n_sta = depth_arr.shape
-                        station_arr = np.asarray(pd.get("station_m", np.empty(0)), dtype=np.float64)
-                        if n_sta == 0 or station_arr.size == 0:
-                            continue
-                        times_arr = np.array([float(s[0]) for s in snapshot_timesteps], dtype=np.float64)[:n_ts]
-                        prof_item = {
-                            "line_id": lid,
-                            "line_name": pd.get("line_name", f"line_{lid}"),
-                            "station_m": station_arr,
-                            "times": times_arr,
-                        }
-                        for k in ("depth_m", "velocity_ms", "wse_m", "bed_m", "flow_qn", "fr", "wet"):
-                            arr = pd.get(k)
-                            if arr is not None and hasattr(arr, "shape") and arr.ndim == 2 and arr.shape == (n_ts, n_sta):
-                                prof_item[k] = arr
-                        profile_items.append(prof_item)
-                    if profile_items:
-                        persist_baked_line_profile_batch(
-                            gpkg_results_path, run_id, profile_items,
-                            log_fn=self._log,
-                        )
-                    self._log(
-                        f"  baked line TS+profiles saved to {gpkg_results_path} "
-                        f"in {(time.perf_counter() - _t0) * 1000:.0f} ms"
-                    )
-            except Exception as exc:
-                _record_error("Baked line persistence failed", exc)
+            if save_line_results and snapshot_timesteps and precomputed_line_results is not None:
+                from collections import defaultdict
+                ts_by_line: Dict[int, Dict[str, list]] = defaultdict(lambda: defaultdict(list))
+                prof_by_line: Dict[int, Dict[str, list]] = defaultdict(lambda: defaultdict(list))
+                for lid, ld in precomputed_line_results.items():
+                    if "t_s" in ld:
+                        ts_by_line[lid]["line_name"] = ld.get("line_name", f"line_{lid}")
+                        ts_by_line[lid]["t_s"] = list(ld["t_s"])
+                        for k, pk in (("depth_m", "ts_depth_m"), ("velocity_ms", "ts_velocity_ms"),
+                                      ("wse_m", "ts_wse_m"), ("bed_m", "ts_bed_m"),
+                                      ("flow_cms", "ts_flow_cms"), ("wet_frac", "ts_wet_frac"),
+                                      ("fr", "ts_fr")):
+                            if pk in ld:
+                                ts_by_line[lid][k] = list(ld[pk])
+                    if "station_m" in ld:
+                        pd = prof_by_line[lid]
+                        pd["line_name"] = ld.get("line_name", f"line_{lid}")
+                        pd["station_m"] = np.asarray(ld["station_m"], dtype=np.float64)
+                        for k, pk in (("depth_m", "prof_depth_m"), ("velocity_ms", "prof_velocity_ms"),
+                                      ("wse_m", "prof_wse_m"), ("bed_m", "prof_bed_m"),
+                                      ("flow_qn", "prof_flow_qn"), ("fr", "prof_fr"),
+                                      ("wet", "prof_wet")):
+                            if pk in ld:
+                                pd[k] = ld[pk]
+                for lid, ld in ts_by_line.items():
+                    times_arr = np.array(ld.get("t_s", []), dtype=np.float64)
+                    if times_arr.size == 0:
+                        continue
+                    line_ts_items.append({
+                        "line_id": lid,
+                        "line_name": ld.get("line_name", f"line_{lid}"),
+                        "times": times_arr,
+                        "depth_m": np.array(ld.get("depth_m", []), dtype=np.float64),
+                        "velocity_ms": np.array(ld.get("velocity_ms", []), dtype=np.float64),
+                        "wse_m": np.array(ld.get("wse_m", []), dtype=np.float64),
+                        "bed_m": np.array(ld.get("bed_m", []), dtype=np.float64),
+                        "flow_cms": np.array(ld.get("flow_cms", []), dtype=np.float64),
+                        "wet_frac": np.array(ld.get("wet_frac", []), dtype=np.float64),
+                        "fr": np.array(ld.get("fr", []), dtype=np.float64),
+                    })
+                for lid, pd in prof_by_line.items():
+                    depth_arr = pd.get("depth_m")
+                    if depth_arr is None or not hasattr(depth_arr, "shape") or depth_arr.ndim != 2:
+                        continue
+                    n_ts, n_sta = depth_arr.shape
+                    station_arr = np.asarray(pd.get("station_m", np.empty(0)), dtype=np.float64)
+                    if n_sta == 0 or station_arr.size == 0:
+                        continue
+                    times_arr = np.array([float(s[0]) for s in snapshot_timesteps], dtype=np.float64)[:n_ts]
+                    prof_item = {
+                        "line_id": lid,
+                        "line_name": pd.get("line_name", f"line_{lid}"),
+                        "station_m": station_arr,
+                        "times": times_arr,
+                    }
+                    for k in ("depth_m", "velocity_ms", "wse_m", "bed_m", "flow_qn", "fr", "wet"):
+                        arr = pd.get(k)
+                        if arr is not None and hasattr(arr, "shape") and arr.ndim == 2 and arr.shape == (n_ts, n_sta):
+                            prof_item[k] = arr
+                    profile_items.append(prof_item)
 
-            _t0 = time.perf_counter()
             _coupling_data = coupling_snapshots if coupling_snapshots is not None else {}
+            if save_coupling_results and _coupling_data:
+                for key, cd in _coupling_data.items():
+                    component, object_id, metric = key
+                    times_arr = np.array(cd.get("times", []), dtype=np.float64)
+                    if times_arr.size == 0:
+                        continue
+                    coupling_items.append({
+                        "component": component,
+                        "object_id": object_id,
+                        "object_name": cd.get("object_name", object_id),
+                        "metric": metric,
+                        "times": times_arr,
+                        "values": np.array(cd.get("values", []), dtype=np.float64),
+                    })
+
             try:
-                if save_coupling_results and _coupling_data:
-                    coupling_items = []
-                    for key, cd in _coupling_data.items():
-                        component, object_id, metric = key
-                        times_arr = np.array(cd.get("times", []), dtype=np.float64)
-                        if times_arr.size == 0:
-                            continue
-                        coupling_items.append({
-                            "component": component,
-                            "object_id": object_id,
-                            "object_name": cd.get("object_name", object_id),
-                            "metric": metric,
-                            "times": times_arr,
-                            "values": np.array(cd.get("values", []), dtype=np.float64),
-                        })
-                    if coupling_items:
-                        persist_baked_coupling_batch(
-                            gpkg_results_path, run_id, coupling_items,
-                            log_fn=self._log,
-                        )
-                    self._log(
-                        f"  baked coupling saved to {gpkg_results_path} "
-                        f"in {(time.perf_counter() - _t0) * 1000:.0f} ms"
-                    )
+                persist_all_baked_results(
+                    gpkg_path=gpkg_results_path,
+                    run_id=run_id,
+                    mesh_name=mesh_name,
+                    snapshot_timesteps=snapshot_timesteps if save_mesh_results else [],
+                    line_ts_items=line_ts_items or None,
+                    profile_items=profile_items or None,
+                    coupling_items=coupling_items or None,
+                    max_tracking=max_tracking,
+                    crs_wkt="",
+                    log_fn=self._log,
+                )
+                self._log(
+                    f"  all baked results saved to {gpkg_results_path} "
+                    f"in {(time.perf_counter() - _t0) * 1000:.0f} ms"
+                )
             except Exception as exc:
-                _record_error("Baked coupling persistence failed", exc)
+                _record_error("Baked results persistence failed", exc)
 
         _t0 = time.perf_counter()
         try:

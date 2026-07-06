@@ -22,6 +22,7 @@ __all__ = [
     # Baked mesh & results persistence
     "persist_baked_mesh",
     "load_baked_mesh",
+    "persist_all_baked_results",
     "persist_baked_results",
     "load_baked_snapshot",
     "compute_max_tracking",
@@ -328,6 +329,221 @@ def load_simulation_configs(
     return results
 
 
+def persist_all_baked_results(
+    gpkg_path: str,
+    run_id: str,
+    mesh_name: str,
+    snapshot_timesteps: List,
+    line_ts_items: Optional[List[Dict[str, Any]]] = None,
+    profile_items: Optional[List[Dict[str, Any]]] = None,
+    coupling_items: Optional[List[Dict[str, Any]]] = None,
+    max_tracking: Optional[Dict[str, np.ndarray]] = None,
+    crs_wkt: str = "",
+    log_fn: Optional[Callable[[str], None]] = None,
+) -> None:
+    """Save all baked results (mesh, line TS, profiles, coupling) in one
+    connection + one transaction.  Replaces the 4 separate persist_baked_*
+    calls to avoid 4x connection open/close + WAL fsync overhead.
+
+    Parameters
+    ----------
+    gpkg_path : str
+    run_id : str
+    mesh_name : str
+    snapshot_timesteps : list of (t_s, h_arr, hu_arr, hv_arr)
+    line_ts_items : list of dict, optional
+        Each dict: line_id, line_name, times (ndarray), depth_m (ndarray), ...
+    profile_items : list of dict, optional
+        Each dict: line_id, line_name, station_m, times, depth_m (2-D), ...
+    coupling_items : list of dict, optional
+        Each dict: component, object_id, object_name, metric, times, values.
+    max_tracking : dict, optional
+    crs_wkt : str
+    log_fn : callable, optional
+    """
+    if not gpkg_path:
+        return
+
+    conn = sqlite3.connect(gpkg_path)
+    try:
+        _configure_connection(conn)
+        _ensure_ogc_gpkg_tables(conn, crs_wkt=crs_wkt)
+
+        # ── Mesh snapshots ────────────────────────────────────────────────
+        if snapshot_timesteps:
+            n_steps = len(snapshot_timesteps)
+            n_cells = int(np.asarray(snapshot_timesteps[0][1]).size)
+            times = np.array([float(t) for t, _, _, _ in snapshot_timesteps], dtype=np.float64)
+            h_all = np.empty(n_steps * n_cells, dtype=np.float64)
+            hu_all = np.empty(n_steps * n_cells, dtype=np.float64)
+            hv_all = np.empty(n_steps * n_cells, dtype=np.float64)
+            for i, (_, h, hu, hv) in enumerate(snapshot_timesteps):
+                s, e = i * n_cells, (i + 1) * n_cells
+                h_all[s:e]  = np.asarray(h, dtype=np.float64).ravel()
+                hu_all[s:e] = np.asarray(hu, dtype=np.float64).ravel()
+                hv_all[s:e] = np.asarray(hv, dtype=np.float64).ravel()
+
+            max_h = max_tracking.get("max_h") if max_tracking else None
+            max_hu = max_tracking.get("max_hu") if max_tracking else None
+            max_hv = max_tracking.get("max_hv") if max_tracking else None
+
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS swe2d_baked_results (
+                    run_id TEXT PRIMARY KEY,
+                    mesh_name TEXT NOT NULL,
+                    n_cells INTEGER NOT NULL,
+                    n_timesteps INTEGER NOT NULL,
+                    created_utc TEXT NOT NULL,
+                    times_blob BLOB NOT NULL,
+                    h_blob BLOB NOT NULL,
+                    hu_blob BLOB NOT NULL,
+                    hv_blob BLOB NOT NULL,
+                    max_h_blob BLOB,
+                    max_hu_blob BLOB,
+                    max_hv_blob BLOB)
+            """)
+            conn.execute(
+                "INSERT OR REPLACE INTO swe2d_baked_results "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (run_id, mesh_name, n_cells, n_steps,
+                 datetime.datetime.now(datetime.timezone.utc).isoformat(),
+                 times.tobytes(), h_all.tobytes(), hu_all.tobytes(), hv_all.tobytes(),
+                 max_h.tobytes() if max_h is not None else None,
+                 max_hu.tobytes() if max_hu is not None else None,
+                 max_hv.tobytes() if max_hv is not None else None),
+            )
+            if log_fn:
+                log_fn(f"Baked mesh results saved: run={run_id}, {n_steps} timesteps, {n_cells} cells")
+
+        # ── Line timeseries ───────────────────────────────────────────────
+        if line_ts_items:
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS swe2d_baked_line_ts (
+                    run_id TEXT,
+                    line_id INTEGER,
+                    line_name TEXT,
+                    n_timesteps INTEGER,
+                    times_blob BLOB,
+                    depth_blob BLOB,
+                    vel_blob BLOB,
+                    wse_blob BLOB,
+                    bed_blob BLOB,
+                    flow_blob BLOB,
+                    wet_frac_blob BLOB,
+                    fr_blob BLOB,
+                    PRIMARY KEY (run_id, line_id))
+            """)
+            rows = []
+            for item in line_ts_items:
+                line_id = int(item["line_id"])
+                line_name = str(item.get("line_name", f"line_{line_id}"))
+                times = np.asarray(item["times"], dtype=np.float64)
+                rows.append((
+                    run_id, line_id, line_name, len(times),
+                    times.tobytes(),
+                    np.asarray(item.get("depth_m", []), dtype=np.float64).tobytes(),
+                    np.asarray(item.get("velocity_ms", []), dtype=np.float64).tobytes(),
+                    np.asarray(item.get("wse_m", []), dtype=np.float64).tobytes(),
+                    np.asarray(item.get("bed_m", []), dtype=np.float64).tobytes(),
+                    np.asarray(item.get("flow_cms", []), dtype=np.float64).tobytes(),
+                    np.asarray(item.get("wet_frac", []), dtype=np.float64).tobytes(),
+                    np.asarray(item.get("fr", []), dtype=np.float64).tobytes(),
+                ))
+            conn.executemany(
+                "INSERT OR REPLACE INTO swe2d_baked_line_ts "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                rows,
+            )
+            if log_fn:
+                log_fn(f"Baked line TS saved: {len(line_ts_items)} lines, {len(times)} steps")
+
+        # ── Line profiles ─────────────────────────────────────────────────
+        if profile_items:
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS swe2d_baked_line_profiles (
+                    run_id TEXT,
+                    line_id INTEGER,
+                    line_name TEXT,
+                    n_stations INTEGER,
+                    n_timesteps INTEGER,
+                    station_blob BLOB,
+                    times_blob BLOB,
+                    depth_blob BLOB,
+                    vel_blob BLOB,
+                    wse_blob BLOB,
+                    bed_blob BLOB,
+                    flow_qn_blob BLOB,
+                    fr_blob BLOB,
+                    wet_blob BLOB,
+                    PRIMARY KEY (run_id, line_id))
+            """)
+            rows = []
+            for item in profile_items:
+                line_id = int(item["line_id"])
+                line_name = str(item.get("line_name", f"line_{line_id}"))
+                station_m = np.asarray(item["station_m"], dtype=np.float64)
+                times = np.asarray(item["times"], dtype=np.float64)
+                rows.append((
+                    run_id, line_id, line_name,
+                    len(station_m), len(times),
+                    station_m.tobytes(),
+                    times.tobytes(),
+                    np.asarray(item["depth_m"], dtype=np.float64).tobytes(),
+                    np.asarray(item["velocity_ms"], dtype=np.float64).tobytes(),
+                    np.asarray(item["wse_m"], dtype=np.float64).tobytes(),
+                    np.asarray(item["bed_m"], dtype=np.float64).tobytes(),
+                    np.asarray(item["flow_qn"], dtype=np.float64).tobytes(),
+                    np.asarray(item["fr"], dtype=np.float64).tobytes(),
+                    np.asarray(item["wet"], dtype=np.int32).tobytes(),
+                ))
+            conn.executemany(
+                "INSERT OR REPLACE INTO swe2d_baked_line_profiles "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                rows,
+            )
+            if log_fn:
+                log_fn(f"Baked line profiles saved: {len(profile_items)} lines")
+
+        # ── Coupling ──────────────────────────────────────────────────────
+        if coupling_items:
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS swe2d_baked_coupling (
+                    run_id TEXT,
+                    component TEXT,
+                    object_id TEXT,
+                    object_name TEXT,
+                    metric TEXT,
+                    n_timesteps INTEGER,
+                    times_blob BLOB,
+                    values_blob BLOB,
+                    PRIMARY KEY (run_id, component, object_id, metric))
+            """)
+            rows = []
+            for item in coupling_items:
+                times = np.asarray(item["times"], dtype=np.float64)
+                rows.append((
+                    run_id,
+                    str(item["component"]),
+                    str(item["object_id"]),
+                    str(item.get("object_name", item["object_id"])),
+                    str(item["metric"]),
+                    len(times),
+                    times.tobytes(),
+                    np.asarray(item["values"], dtype=np.float64).tobytes(),
+                ))
+            conn.executemany(
+                "INSERT OR REPLACE INTO swe2d_baked_coupling "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                rows,
+            )
+            if log_fn:
+                log_fn(f"Baked coupling saved: {len(coupling_items)} series")
+
+        conn.commit()
+    finally:
+        conn.close()
+
+
 def persist_baked_results(
     gpkg_path: str,
     run_id: str,
@@ -356,66 +572,13 @@ def persist_baked_results(
     log_fn : callable, optional
         Logging callback.
     """
-    if not gpkg_path or not snapshot_timesteps:
-        return
-    n_steps = len(snapshot_timesteps)
-    n_cells = int(np.asarray(snapshot_timesteps[0][1]).size)
-
-    conn = sqlite3.connect(gpkg_path)
-    try:
-        _configure_connection(conn)
-        # Ensure OGC GPKG metadata tables exist (required by GDAL/QGIS)
-        _ensure_ogc_gpkg_tables(conn, crs_wkt=crs_wkt)
-    finally:
-        conn.close()
-
-    times = np.array([float(t) for t, _, _, _ in snapshot_timesteps], dtype=np.float64)
-    h_all = np.empty(n_steps * n_cells, dtype=np.float64)
-    hu_all = np.empty(n_steps * n_cells, dtype=np.float64)
-    hv_all = np.empty(n_steps * n_cells, dtype=np.float64)
-    for i, (_, h, hu, hv) in enumerate(snapshot_timesteps):
-        s, e = i * n_cells, (i + 1) * n_cells
-        h_all[s:e]  = np.asarray(h, dtype=np.float64).ravel()
-        hu_all[s:e] = np.asarray(hu, dtype=np.float64).ravel()
-        hv_all[s:e] = np.asarray(hv, dtype=np.float64).ravel()
-
-    max_h = max_tracking.get("max_h") if max_tracking else None
-    max_hu = max_tracking.get("max_hu") if max_tracking else None
-    max_hv = max_tracking.get("max_hv") if max_tracking else None
-
-    conn = sqlite3.connect(gpkg_path)
-    try:
-        _configure_connection(conn)
-        conn.execute("""
-            CREATE TABLE IF NOT EXISTS swe2d_baked_results (
-                run_id TEXT PRIMARY KEY,
-                mesh_name TEXT NOT NULL,
-                n_cells INTEGER NOT NULL,
-                n_timesteps INTEGER NOT NULL,
-                created_utc TEXT NOT NULL,
-                times_blob BLOB NOT NULL,
-                h_blob BLOB NOT NULL,
-                hu_blob BLOB NOT NULL,
-                hv_blob BLOB NOT NULL,
-                max_h_blob BLOB,
-                max_hu_blob BLOB,
-                max_hv_blob BLOB)
-        """)
-        conn.execute(
-            "INSERT OR REPLACE INTO swe2d_baked_results "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-            (run_id, mesh_name, n_cells, n_steps,
-             datetime.datetime.now(datetime.timezone.utc).isoformat(),
-             times.tobytes(), h_all.tobytes(), hu_all.tobytes(), hv_all.tobytes(),
-             max_h.tobytes() if max_h is not None else None,
-             max_hu.tobytes() if max_hu is not None else None,
-             max_hv.tobytes() if max_hv is not None else None),
-        )
-        conn.commit()
-        if log_fn:
-            log_fn(f"Baked results saved: run={run_id}, {n_steps} timesteps, {n_cells} cells")
-    finally:
-        conn.close()
+    return persist_all_baked_results(
+        gpkg_path=gpkg_path, run_id=run_id, mesh_name=mesh_name,
+        snapshot_timesteps=snapshot_timesteps,
+        max_tracking=max_tracking,
+        crs_wkt=crs_wkt,
+        log_fn=log_fn,
+    )
 
 
 def load_baked_snapshot(
