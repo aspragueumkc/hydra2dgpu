@@ -264,7 +264,7 @@ def show_results_panel(dialog):
     # dialog._results_data is recreated (new SWE2DResultsData), the new
     # animation controller must be connected or the slider/play buttons stop
     # updating the overlay and plots.
-    anim = getattr(data, "_anim", None)
+    anim = getattr(data, "anim", None)
     wired_anim = getattr(dialog, "_results_wired_anim", None)
     if anim is not None and wired_anim is not anim:
         from swe2d.workbench.signal_helpers import safe_disconnect
