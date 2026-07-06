@@ -808,18 +808,21 @@ class SimulationWorker(QThread):
                         ))
                 except Exception as exc:
                     log(f"[SnapReadback] Device snapshot readback failed: {exc}")
-            # Ensure line metrics are computed for finalization/persistence
-            # even when the user never clicked "Fetch Device Results" during
-            # the run.  Also makes live line data available on the main
-            # thread via the SnapshotData signal emitted below.
-            if snapshot_timesteps and sample_map and wb._sample_line_metrics is not None:
+            # Restore pre-threading pattern: merge final device snapshots
+            # with any earlier readbacks (read_snapshots may be destructive),
+            # then compute line TS + profile for the full snapshot set so
+            # the viewer and GPKG persistence both have line data.
+            if snapshot_timesteps:
                 try:
-                    results_data.set_live_snapshot_timesteps(snapshot_timesteps)
-                    results_data.populate_live_line_metrics(
-                        sample_map=sample_map,
-                        sample_callback=wb._sample_line_metrics,
-                        cell_solver_z=cell_solver_z,
-                    )
+                    existing = results_data.get_live_snapshot_timesteps()
+                    results_data.set_live_snapshot_timesteps(
+                        existing + snapshot_timesteps, t_sec=float(t_accum))
+                    if sample_map and wb._sample_line_metrics is not None:
+                        results_data.populate_live_line_metrics(
+                            sample_map=sample_map,
+                            sample_callback=wb._sample_line_metrics,
+                            cell_solver_z=cell_solver_z,
+                        )
                 except Exception as exc:
                     log(f"[SnapReadback] Final line metrics computation failed: {exc}")
 
