@@ -25,6 +25,7 @@ __pycache__/
 .agents/
 .commandcode/
 AGENTS.md
+graphify-out
 # OS
 .DS_Store
 Thumbs.db

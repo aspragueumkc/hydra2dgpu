@@ -365,6 +365,7 @@ class HydraQgisPlugin:
             from swe2d.workbench.views.studio_host_methods import (
                 _studio_active_dialog,
                 _remove_workbench_studio_dock,
+                _capture_and_persist_window_state,
                 launch_swe2d_workbench_studio,
             )
         except Exception as e:
@@ -382,6 +383,15 @@ class HydraQgisPlugin:
         # the user didn't ask to auto-open the workbench on project load.
         if _studio_active_dialog is None:
             return
+
+        # Save current dock layout BEFORE teardown so the user's panel
+        # arrangement survives the project-load restart cycle.
+        try:
+            _capture_and_persist_window_state(iface)
+        except Exception as e:
+            logging.getLogger(__name__).warning(
+                "Project read: save window state before teardown failed: %s", e
+            )
 
         try:
             _remove_workbench_studio_dock(iface, dlg=_studio_active_dialog)

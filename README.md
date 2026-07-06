@@ -79,7 +79,15 @@ If you don't want to build from source, download the pre-compiled binary for you
 
 ## Documentation
 
-**[User Guide](docs/USER_GUIDE.md)** — Full documentation including installation, model setup, solver configuration, hydraulic theory, and API reference.
+**[Documentation Index](docs/INDEX.md)** — All guides organized by audience (users, developers, C++ engineers).
+
+- **[User Guide](docs/USER_GUIDE.md)** — Installation, Studio UI, running your first simulation
+- **[Developer Guide](docs/DEVELOPER_GUIDE.md)** — Architecture, module reference, style guide, test suite
+- **[GPU Architecture Report](docs/SWE2D_GPU_ARCHITECTURE_REPORT.md)** — Deep-dive on the GPU solver
+- **[Model GeoPackage Schema](docs/MODEL_GEOPACKAGE_SCHEMA.md)** — Input GPKG tables
+- **[Results GeoPackage Schema](docs/RESULTS_GEOPACKAGE_SCHEMA.md)** — Output GPKG tables
+
+A pre-built [knowledge graph](graphify-out/GRAPH_REPORT.md) of the codebase is also available.
 
 ## Repository Layout
 
