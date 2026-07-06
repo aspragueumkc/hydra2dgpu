@@ -39,7 +39,6 @@ class PersistenceWorker(QThread):
                 boundary_flux_step_rows_model=self._result.boundary_flux_step_rows_model,
                 run_id=self._result.run_id,
                 output_interval_s=self._result.output_interval_s,
-                line_output_interval_s=self._result.line_output_interval_s,
                 run_perf_start=self._result.run_perf_start,
                 run_wallclock_start=self._result.run_wallclock_start,
                 run_log_start_idx=self._result.run_log_start_idx,

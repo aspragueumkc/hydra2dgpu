@@ -83,7 +83,7 @@ class ModelTabView(QtWidgets.QWidget):
     dedicated Run dock:
 
         run_btn, cancel_btn, batch_sim_btn, progress_bar,
-        output_interval_edit, line_output_interval_edit,
+        output_interval_edit,
         snapshot_btn,
         results_table_name_edit, results_gpkg_path_edit,
         select_results_gpkg_btn, load_run_settings_btn, save_settings_btn
@@ -319,22 +319,12 @@ class ModelTabView(QtWidgets.QWidget):
         self.output_interval_edit = QtWidgets.QLineEdit("00:30")
         self.output_interval_edit.setObjectName("output_interval_edit")
         self.output_interval_edit.setToolTip(
-            "Time interval between 2D mesh result output writes. "
+            "Time interval between all result outputs (mesh, sample lines, and coupling). "
             "Format: decimal hours (e.g. 0.5) or HH:MM (e.g. 00:30). "
             "Smaller intervals produce larger result files."
         )
         self._add_param_row(
             form, "Output interval (hr or HH:MM):", self.output_interval_edit
-        )
-
-        self.line_output_interval_edit = QtWidgets.QLineEdit("00:05")
-        self.line_output_interval_edit.setObjectName("line_output_interval_edit")
-        self.line_output_interval_edit.setToolTip(
-            "Time interval between sample-line (cross-section) result outputs. "
-            "Format: decimal hours or HH:MM. Default: 00:05 (5 min)."
-        )
-        self._add_param_row(
-            form, "Line output interval:", self.line_output_interval_edit
         )
 
         self.results_table_name_edit = QtWidgets.QLineEdit()

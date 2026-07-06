@@ -156,7 +156,6 @@ def test_finalizer_persists_line_profile_with_station_starting_at_zero(tmp_path)
         boundary_flux_step_rows_model=[],
         run_id="run_profile_long_fmt",
         output_interval_s=3600.0,
-        line_output_interval_s=3600.0,
         run_perf_start=0.0,
         run_wallclock_start="",
         run_log_start_idx=0,

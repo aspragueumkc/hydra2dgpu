@@ -28,7 +28,6 @@ def test_persistence_worker_finishes_without_error():
         run_id="r1",
         mesh_name="mesh",
         output_interval_s=1.0,
-        line_output_interval_s=1.0,
         run_perf_start=0.0,
         run_wallclock_start="now",
         run_log_start_idx=0,

@@ -18,7 +18,6 @@ class SWE2DRunRequest:
 
     run_duration_text: str
     output_interval_text: str
-    line_output_interval_text: str
     adaptive_dt_enabled: bool
     requested_dt: float
     created_utc: str
@@ -27,7 +26,6 @@ class SWE2DRunRequest:
     def from_ui_values(
         run_duration_text: str,
         output_interval_text: str,
-        line_output_interval_text: str,
         adaptive_dt_enabled: bool,
         requested_dt: float,
     ) -> "SWE2DRunRequest":
@@ -35,7 +33,6 @@ class SWE2DRunRequest:
         return SWE2DRunRequest(
             run_duration_text=str(run_duration_text or "").strip(),
             output_interval_text=str(output_interval_text or "").strip(),
-            line_output_interval_text=str(line_output_interval_text or "").strip(),
             adaptive_dt_enabled=bool(adaptive_dt_enabled),
             requested_dt=float(requested_dt),
             created_utc=datetime.now(timezone.utc).isoformat(),

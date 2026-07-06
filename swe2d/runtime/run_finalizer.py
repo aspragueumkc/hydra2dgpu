@@ -120,7 +120,6 @@ class SWE2DRunFinalizer:
         boundary_flux_step_rows_model: List[Dict[str, float]],
         run_id: str,
         output_interval_s: float,
-        line_output_interval_s: float,
         run_perf_start: float,
         run_wallclock_start: str,
         run_log_start_idx: int,

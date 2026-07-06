@@ -722,24 +722,22 @@ class SWE2DBackend:
 
         Returns a dict with keys 't_s' (shape [N]), 'h'/'hu'/'hv'
         (shape [N, n_cells]) or None if no snapshots accumulated.
-        Consumes both the host auto-dump buffer and the device ring
-        buffer — subsequent calls only return snapshots written after
-        this read. Call free_snapshot_buf() explicitly when a hard reset
-        is needed (e.g. before starting a new simulation).
+        Non-destructive — device ring buffer and host auto-dump buffer
+        are NOT consumed.  Subsequent reads return the same entries plus
+        any new ones added since.  Call free_snapshot_buf() explicitly
+        when a hard reset is needed (e.g. at destroy / new simulation).
         """
         if self._solver_h is None:
             return None
         if not hasattr(self._mod, "swe2d_gpu_read_snapshots"):
             return None
-        # Read device-side snapshots
         raw = self._mod.swe2d_gpu_read_snapshots(self._solver_h)
         dev_ts = np.asarray(raw["t_s"], dtype=np.float64) if raw and "t_s" in raw else np.empty(0, dtype=np.float64)
         dev_h  = np.asarray(raw["h"],  dtype=np.float64)  if raw and "h" in raw  else np.empty((0, 0), dtype=np.float64)
         dev_hu = np.asarray(raw["hu"], dtype=np.float64)  if raw and "hu" in raw else np.empty((0, 0), dtype=np.float64)
         dev_hv = np.asarray(raw["hv"], dtype=np.float64)  if raw and "hv" in raw else np.empty((0, 0), dtype=np.float64)
-        # Merge with host buffer
+        # Merge with host auto-dump buffer (non-destructive — keep it).
         hb = self._snap_host_buffer
-        self._snap_host_buffer = None  # consume
         if hb is None and dev_ts.size == 0:
             return None
         n_dev = int(dev_ts.shape[0])
@@ -767,10 +765,7 @@ class SWE2DBackend:
             out_hu[idx:]  = dev_hu[:]
             out_hv[idx:]  = dev_hv[:]
         # Per the baked BLOB spec (§5.12): data stays in solver (RCMK) order.
-        # Mesh geometry from swe2d_deserialize_mesh and results from
-        # this function share the same ordering — no permutation needed.
         result = {"t_s": out_ts, "h": out_h, "hu": out_hu, "hv": out_hv}
-        self.free_snapshot_buf()
         return result
 
     def free_snapshot_buf(self) -> None:
@@ -797,7 +792,6 @@ class SWE2DBackend:
         station_m: np.ndarray,
         gravity: float,
         h_min: float,
-        max_snapshots: int = 64,
     ) -> None:
         """Upload the line sampling map to the device.
 
@@ -807,11 +801,14 @@ class SWE2DBackend:
             raise RuntimeError("initialize() must be called before configure_line_sampling().")
         if not self.has_line_sampling:
             raise RuntimeError("swe2d_gpu_configure_line_sampling not available in native module.")
+        import logging as _lg
+        _lg.warning("[LINE_DIAG] configure_line_sampling: n_lines=%d total_stations=%d",
+                     len(station_offsets) - 1, len(station_m))
         self._mod.swe2d_gpu_configure_line_sampling(
             self._solver_h,
             station_offsets, cell_idx, weights,
             normal_x, normal_y, station_m,
-            float(gravity), float(h_min), int(max_snapshots),
+            float(gravity), float(h_min),
         )
 
     def read_line_metrics(self) -> Optional[Dict[str, np.ndarray]]:
@@ -831,7 +828,14 @@ class SWE2DBackend:
             return None
         raw = self._mod.swe2d_gpu_read_line_metrics(self._solver_h)
         if not raw or "profiles" not in raw:
+            import logging as _lg
+            _lg.warning("[LINE_DIAG] read_line_metrics: raw=%s keys=%s", type(raw), list(raw.keys()) if isinstance(raw, dict) else "N/A")
             return None
+        import logging as _lg
+        _lg.warning("[LINE_DIAG] read_line_metrics: count=%d n_lines=%d total_stations=%d t_s_shape=%s",
+                     raw.get("t_s", np.array([])).shape[0] if hasattr(raw.get("t_s", np.array([])), "shape") else 0,
+                     raw.get("n_lines", 0), raw.get("total_stations", 0),
+                     raw.get("t_s", np.array([])).shape if hasattr(raw.get("t_s", np.array([])), "shape") else "?")
         return {
             "t_s": np.asarray(raw["t_s"], dtype=np.float64),
             "profiles": np.asarray(raw["profiles"], dtype=np.float64),

@@ -392,7 +392,6 @@ class WorkbenchDialogBuilder:
             "Mesh": ["max_inv_area_spin"],
         }
         _runtime_keys = ("output_interval_edit", "run_time_edit",
-                         "line_output_interval_edit",
                          "source_max_substeps_spin", "gpu_diag_sync_interval_spin")
 
         model_layout.addWidget(dlg._settings_tree)

@@ -93,8 +93,8 @@ class TestSnapshotRingBuffer(unittest.TestCase):
             self.assertEqual(cnt, i + 1,
                              f"Device count should be {i+1} after store {i}")
 
-    def test_readback_resets_device_buffer(self):
-        """After read_snapshots, the device buffer is reset."""
+    def test_readback_is_non_destructive(self):
+        """After read_snapshots, the device buffer is NOT reset (non-destructive)."""
         for i in range(3):
             self.backend.step(0.25)
             self.backend.store_snapshot(float(i * 0.25))
@@ -103,7 +103,7 @@ class TestSnapshotRingBuffer(unittest.TestCase):
         self.assertIsNotNone(snap)
 
         cnt = self.mod.swe2d_gpu_snapshot_count(self.backend._solver_h)
-        self.assertEqual(cnt, 0, "Device buffer should be empty after readback")
+        self.assertEqual(cnt, 3, "Device buffer should still have 3 snapshots after non-destructive read")
 
     def test_auto_dump_under_memory_pressure(self):
         """Auto-dump triggers when GPU free memory drops below threshold.

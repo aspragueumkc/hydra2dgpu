@@ -2470,7 +2470,6 @@ class SWE2DWorkbenchStudioDialog(QtWidgets.QDialog):
             "k_mann": float(self._k_mann),
             **self.model_tab.collect_params(),
             "output_interval_edit": _text("output_interval_edit"),
-            "line_output_interval_edit": _text("line_output_interval_edit"),
             "results_table_name_edit": _text("results_table_name_edit"),
             "results_gpkg_path_edit": _text("results_gpkg_path_edit"),
             **self.model_tab.collect_storage_params(),

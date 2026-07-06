@@ -136,22 +136,6 @@ def _widget_params_to_run_params(widget_params: dict) -> dict:
                 out_hrs = 0.5
         rp["output_interval_s"] = out_hrs * 3600.0
 
-    # Line output interval (same parsing as mesh output)
-    raw_line = str(widget_params.get("line_output_interval_edit", "") or "").strip()
-    if raw_line:
-        if ":" in raw_line:
-            parts = raw_line.split(":")
-            try:
-                line_hrs = float(parts[0]) + float(parts[1]) / 60.0
-            except (ValueError, IndexError):
-                line_hrs = 0.5
-        else:
-            try:
-                line_hrs = float(raw_line)
-            except ValueError:
-                line_hrs = 0.5
-        rp["line_output_interval_s"] = line_hrs * 3600.0
-
     # Save-max-only (inferred from save_max_only_chk if present)
     smc = widget_params.get("save_max_only_chk")
     if smc is not None:

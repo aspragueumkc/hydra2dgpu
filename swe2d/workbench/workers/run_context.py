@@ -27,7 +27,6 @@ class RunContext:
     # Simulation parameters
     run_duration_s: float = 0.0
     output_interval_s: float = 1.0
-    line_output_interval_s: float = 1.0
     dt_cfg: float = 0.05
     dt_request: float = 0.05
     dt_fixed: float = -1.0

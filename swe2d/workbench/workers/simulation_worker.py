@@ -40,21 +40,23 @@ class SnapshotData:
 
     def __init__(
         self,
-        t_s: float,
-        h: np.ndarray,
-        hu: np.ndarray,
-        hv: np.ndarray,
+        t_s: float = 0.0,
+        h: Optional[np.ndarray] = None,
+        hu: Optional[np.ndarray] = None,
+        hv: Optional[np.ndarray] = None,
+        timesteps: Any = None,
         line_ts: Any = None,
         line_profiles: Any = None,
-        coupling_rows: List[Dict[str, Any]] = None,
+        coupling_data: Any = None,
     ):
+        self.timesteps = timesteps
         self.t_s = t_s
         self.h = h
         self.hu = hu
         self.hv = hv
         self.line_ts = line_ts
         self.line_profiles = line_profiles
-        self.coupling_rows = coupling_rows or []
+        self.coupling_data = coupling_data
 
 
 class ComputeResult:
@@ -79,7 +81,6 @@ class ComputeResult:
         run_id: str,
         mesh_name: str,
         output_interval_s: float,
-        line_output_interval_s: float,
         run_perf_start: float,
         run_wallclock_start: str,
         run_log_start_idx: int,
@@ -114,7 +115,6 @@ class ComputeResult:
         self.run_id = run_id
         self.mesh_name = mesh_name
         self.output_interval_s = output_interval_s
-        self.line_output_interval_s = line_output_interval_s
         self.run_perf_start = run_perf_start
         self.run_wallclock_start = run_wallclock_start
         self.run_log_start_idx = run_log_start_idx
@@ -341,7 +341,6 @@ class SimulationWorker(QThread):
         initial_dt = ctx.initial_dt
         run_duration_s = ctx.run_duration_s
         output_interval_s = ctx.output_interval_s
-        line_output_interval_s = ctx.line_output_interval_s
         reconstruction_mode = ctx.reconstruction_mode
         temporal_scheme = ctx.temporal_scheme
 
@@ -506,7 +505,11 @@ class SimulationWorker(QThread):
                 sample_map = list(ctx.sample_map_data or [])
 
             # ── GPU line sampling setup ──
+            import logging as _lg
+            _lg.warning("[LINE_DIAG] worker: sample_map=%d items, backend.has_line_sampling=%s",
+                        len(sample_map) if sample_map else 0, backend.has_line_sampling if backend else False)
             line_names_by_id: Dict[int, str] = {}
+            line_ids_ordered: List[int] = []
             if sample_map and backend.has_line_sampling:
                 station_offsets_list = [0]
                 cell_idx_parts: List[np.ndarray] = []
@@ -523,6 +526,7 @@ class SimulationWorker(QThread):
                     lid = int(sm.get("line_id", len(station_offsets_list) - 1))
                     lname = str(sm.get("line_name", f"line_{lid}"))
                     line_names_by_id[lid] = lname
+                    line_ids_ordered.append(lid)
                     n = ci.size
                     station_offsets_list.append(station_offsets_list[-1] + n)
                     cell_idx_parts.append(ci)
@@ -546,11 +550,11 @@ class SimulationWorker(QThread):
                         station_m=station_m_arr,
                         gravity=float(ctx.gravity),
                         h_min=float(ctx.h_min),
-                        max_snapshots=64,
                     )
                     log(f"GPU line sampling configured: {len(sample_map)} lines, {int(station_offsets[-1])} stations.")
                 except Exception as exc:
-                    log(f"[WARNING] GPU line sampling setup failed, falling back to CPU: {exc}")
+                    log(f"[ERROR] GPU line sampling setup failed: {exc}")
+                    raise
 
             coupling_controller = None
             if ctx.pipe_network_cfg is not None or ctx.hydraulic_structures_cfg is not None:
@@ -708,11 +712,9 @@ class SimulationWorker(QThread):
             results_data = SWE2DResultsData()
             results_data.clear_live_snapshots()
             if coupling_controller is not None:
-                import math as _math
-                n_snaps = max(1, _math.ceil(run_duration_s / max(float(line_output_interval_s), 1.0)))
                 coupling_keys, coupling_object_names = build_coupling_keys(coupling_controller)
                 if coupling_keys:
-                    results_data.preallocate_output_schedule(n_snaps, coupling_keys, coupling_object_names)
+                    results_data.init_coupling_storage(coupling_keys, coupling_object_names)
 
             runtime_step_executor = SWE2DRuntimeStepExecutor()
             runtime_reporter = SWE2DRuntimeReporter()
@@ -721,19 +723,26 @@ class SimulationWorker(QThread):
             wb = _WorkbenchShim(self, ctx, results_data, mesh_data)
 
             def _on_snapshot_readback() -> None:
+                import logging as _lg
                 timesteps = results_data.get_live_snapshot_timesteps()
                 if not timesteps:
+                    _lg.warning("[LINE_DIAG] _on_snapshot_readback: no timesteps, skipping emit")
                     return
-                t_s, h, hu, hv = timesteps[-1]
+                line_ts = dict(results_data._live_line_ts)
+                line_profiles = dict(results_data._live_line_profile)
+                _lg.warning("[LINE_DIAG] _on_snapshot_readback: emitting %d timesteps, %d line_ts keys, %d line_profiles keys",
+                            len(timesteps), len(line_ts), len(line_profiles))
                 self.snapshot_ready.emit(
                     SnapshotData(
-                        t_s=float(t_s),
-                        h=np.asarray(h, dtype=np.float64),
-                        hu=np.asarray(hu, dtype=np.float64),
-                        hv=np.asarray(hv, dtype=np.float64),
-                        line_ts=dict(results_data._live_line_ts),
-                        line_profiles=dict(results_data._live_line_profile),
-                        coupling_rows=results_data.get_live_coupling_snapshot_rows(),
+                        timesteps=timesteps,
+                        line_ts=line_ts,
+                        line_profiles=line_profiles,
+                        coupling_data={
+                            key: {"object_name": d["object_name"],
+                                  "t_s": list(d["t_s"]),
+                                  "values": list(d["values"])}
+                            for key, d in results_data._live_coupling.items()
+                        },
                     )
                 )
 
@@ -760,8 +769,6 @@ class SimulationWorker(QThread):
             timing_samples = 0
             run_span_s = max(float(run_duration_s), 1.0e-9)
             _next_snap_t = min(output_interval_s, run_span_s)
-            _next_line_snap_t = min(line_output_interval_s, run_span_s)
-            _next_coupling_snap_t = min(line_output_interval_s, run_span_s)
 
             loop_result = _execute_run_timestep_loop_runtime_logic(
                 wb=wb,
@@ -794,10 +801,7 @@ class SimulationWorker(QThread):
                 timing_totals_ms=timing_totals_ms,
                 timing_samples=timing_samples,
                 next_snap_t=_next_snap_t,
-                next_line_snap_t=_next_line_snap_t,
-                next_coupling_snap_t=_next_coupling_snap_t,
                 output_interval_s=output_interval_s,
-                line_output_interval_s=line_output_interval_s,
                 process_events_interval_s=_PROCESS_EVENTS_INTERVAL_S,
                 last_process_events_wall=_last_process_events_wall,
                 process_events_callback=lambda: None,
@@ -806,6 +810,7 @@ class SimulationWorker(QThread):
                 progress_callback=self.progress_percent.emit,
                 perf_mode=perf_mode,
                 line_names_by_id=line_names_by_id,
+                line_ids_ordered=line_ids_ordered,
             )
 
             snap_data = backend.read_snapshots()
@@ -832,22 +837,24 @@ class SimulationWorker(QThread):
             # the viewer and GPKG persistence both have line data.
             if snapshot_timesteps:
                 try:
-                    existing = results_data.get_live_snapshot_timesteps()
-                    merged = existing + snapshot_timesteps
+                    # Device ring buffer is non-destructive — replace live data
+                    # with the full current device state (no merge needed).
                     results_data.set_live_snapshot_timesteps(
-                        merged, t_sec=float(t_accum))
-                    # Update snapshot_timesteps to the merged set so
-                    # ComputeResult carries the full list, not just the
-                    # final device read (which may be a subset).
-                    snapshot_timesteps = merged
+                        snapshot_timesteps, t_sec=float(t_accum))
+                    snapshot_timesteps = list(results_data.get_live_snapshot_timesteps())
                     if sample_map and backend.has_line_sampling:
                         lm = backend.read_line_metrics()
                         if lm:
                             results_data.populate_live_line_metrics_from_gpu(
                                 lm, line_names_by_id=line_names_by_id,
+                                line_ids_ordered=line_ids_ordered,
                             )
                 except Exception as exc:
                     log(f"[SnapReadback] Final line metrics readback failed: {exc}")
+
+            # Push the final full state to the viewer so it has every
+            # accumulated timestep even if no snapshot button was pressed.
+            _on_snapshot_readback()
 
             h, hu, hv = backend.get_state()
             if hasattr(backend, "_cell_perm") and backend._cell_perm is not None and backend._cell_perm.size > 0:
@@ -866,13 +873,12 @@ class SimulationWorker(QThread):
 
             coupling_snapshots: Dict[Tuple[str, str, str], Dict[str, Any]] = {}
             if ctx.save_coupling_results:
-                snap_idx = results_data._coupling_snap_idx
                 for key, d in results_data._live_coupling.items():
                     t_s = d.get("t_s")
                     values = d.get("values")
-                    if t_s is None or values is None:
+                    if not t_s or not values:
                         continue
-                    n = min(int(t_s.size), int(values.size), snap_idx)
+                    n = min(len(t_s), len(values))
                     if n <= 0:
                         continue
                     coupling_snapshots[key] = {
@@ -901,7 +907,6 @@ class SimulationWorker(QThread):
                 run_id=run_id,
                 mesh_name=mesh_data.get("mesh_name", "") or "",
                 output_interval_s=output_interval_s,
-                line_output_interval_s=line_output_interval_s,
                 run_perf_start=run_perf_start,
                 run_wallclock_start=run_wallclock_start,
                 run_log_start_idx=run_log_start_idx,

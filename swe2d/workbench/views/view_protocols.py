@@ -135,11 +135,11 @@ class MapTabViewProtocol(Protocol):
 class RunDockProtocol(Protocol):
     """Typed access to Run dock widgets (execution surface only).
 
-    Output-config widgets (output_interval, line_output_interval,
-    results_table_name, results_gpkg_path, results_gpkg_browse, preview
-    overrides/coupling, load/save config) live on the Simulation tab's
-    Output page — see ModelTabViewProtocol. Read them from the dialog
-    or from the model tab view directly.
+    Output-config widgets (output_interval, results_table_name,
+    results_gpkg_path, results_gpkg_browse, preview overrides/coupling,
+    load/save config) live on the Simulation tab's Output page — see
+    ModelTabViewProtocol. Read them from the dialog or from the model tab
+    view directly.
     """
 
     def set_run_button_enabled(self, enabled: bool) -> None:

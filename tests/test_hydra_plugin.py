@@ -176,8 +176,10 @@ class TestHydraPluginOpenPanelAction(unittest.TestCase):
 
         with patch("swe2d.workbench.views.studio_host_methods.launch_swe2d_workbench_studio") as mock_launch, \
              patch("swe2d.workbench.views.studio_host_methods._remove_workbench_studio_dock") as mock_remove, \
+             patch("swe2d.workbench.views.studio_host_methods._capture_and_persist_window_state") as mock_capture, \
              patch("swe2d.workbench.views.studio_host_methods._studio_active_dialog", new=MagicMock()) as _:
             plugin._restart_workbench_for_project()
+            mock_capture.assert_called_once()
             mock_remove.assert_called_once()
             mock_launch.assert_called_once()
 

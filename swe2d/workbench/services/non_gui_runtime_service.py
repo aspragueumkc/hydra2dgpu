@@ -387,10 +387,7 @@ def execute_run_timestep_loop(
     timing_totals_ms: Dict[str, float],
     timing_samples: int,
     next_snap_t: float,
-    next_line_snap_t: float,
-    next_coupling_snap_t: float,
     output_interval_s: float,
-    line_output_interval_s: float,
     process_events_interval_s: float,
     last_process_events_wall: float,
     process_events_callback: Optional[Callable[[], None]] = None,
@@ -399,6 +396,7 @@ def execute_run_timestep_loop(
     progress_callback: Optional[Callable] = None,
     perf_mode: bool = False,
     line_names_by_id: Optional[Dict[int, str]] = None,
+    line_ids_ordered: Optional[List[int]] = None,
 ) -> Dict[str, object]:
 
     # Pre-compute boundary edge lengths for uniform-velocity normalization.
@@ -555,10 +553,7 @@ def execute_run_timestep_loop(
             i=i,
             run_duration_s=run_duration_s,
             next_snap_t=next_snap_t,
-            next_line_snap_t=next_line_snap_t,
-            next_coupling_snap_t=next_coupling_snap_t,
             output_interval_s=output_interval_s,
-            line_output_interval_s=line_output_interval_s,
             process_events_interval_s=process_events_interval_s,
             last_process_events_wall=last_process_events_wall,
             h_min=h_min,
@@ -570,14 +565,14 @@ def execute_run_timestep_loop(
             log_callback=wb._log,
             perf_mode=perf_mode,
             line_names_by_id=line_names_by_id,
+            line_ids_ordered=line_ids_ordered,
         )
         t_accum = float(report_result["t_accum"])
         last_valid_cmax = float(report_result["last_valid_cmax"])
         last_valid_wse_res = float(report_result["last_valid_wse_res"])
         next_snap_t = float(report_result["next_snap_t"])
-        next_line_snap_t = float(report_result["next_line_snap_t"])
-        next_coupling_snap_t = float(report_result["next_coupling_snap_t"])
         last_process_events_wall = float(report_result["last_process_events_wall"])
+        timing_totals_ms = report_result["timing_totals_ms"]
         timing_samples = int(report_result["timing_samples"])
         i = int(report_result["i"])
 
@@ -588,8 +583,7 @@ def execute_run_timestep_loop(
         "last_valid_cmax": float(last_valid_cmax),
         "last_valid_wse_res": float(last_valid_wse_res),
         "next_snap_t": float(next_snap_t),
-        "next_line_snap_t": float(next_line_snap_t),
-        "next_coupling_snap_t": float(next_coupling_snap_t),
         "last_process_events_wall": float(last_process_events_wall),
-        "timing_samples": int(timing_samples),
+        "timing_totals_ms": timing_totals_ms,
+        "timing_samples": timing_samples,
     }

@@ -184,12 +184,9 @@ class RunController:
             return parse_time_hours_fn(str(default_widget_text or ""))
 
         request_output_interval_text = getattr(request, "output_interval_text", None) if request is not None else None
-        request_line_output_interval_text = getattr(request, "line_output_interval_text", None) if request is not None else None
 
         _oi_hr = _parse_interval_text(request_output_interval_text, wp["output_interval_edit"])
         output_interval_s = max(1.0, _oi_hr * 3600.0)
-        _line_oi_hr = _parse_interval_text(request_line_output_interval_text, wp["line_output_interval_edit"])
-        line_output_interval_s = max(1.0, _line_oi_hr * 3600.0)
 
         from swe2d.runtime.coupling import pack_coupling_soa
         mesh_cell_areas_fn = view._mesh_cell_areas
@@ -237,7 +234,6 @@ class RunController:
             mesh_crs_wkt=str(mesh_data.get("crs_wkt", "") or ""),
             run_duration_s=run_duration_s,
             output_interval_s=output_interval_s,
-            line_output_interval_s=line_output_interval_s,
             dt_cfg=run_options.dt_cfg,
             dt_request=run_options.dt_request,
             dt_fixed=run_options.dt_fixed,
@@ -360,16 +356,11 @@ class RunController:
         if rd is None:
             return
         try:
-            existing = rd.get_live_snapshot_timesteps()
-            rd.set_live_snapshot_timesteps(
-                existing + [(
-                    float(data.t_s),
-                    np.asarray(data.h, dtype=np.float64),
-                    np.asarray(data.hu, dtype=np.float64),
-                    np.asarray(data.hv, dtype=np.float64),
-                )],
-                t_sec=float(data.t_s),
-            )
+            if getattr(data, "timesteps", None):
+                rd.set_live_snapshot_timesteps(
+                    list(data.timesteps),
+                    t_sec=float(data.timesteps[-1][0]),
+                )
         except Exception as exc:
             logger.warning("Snapshot readback: merge failed", exc_info=True)
             view._log(f"[SnapReadback] merge failed: {exc}")
@@ -398,16 +389,23 @@ class RunController:
             logger.warning("Snapshot readback: overlay time update failed", exc_info=True)
             view._log(f"[SnapReadback] overlay time update failed: {exc}")
         try:
-            if data.coupling_rows:
-                rd._live_coupling_rows = data.coupling_rows
+            if getattr(data, "coupling_data", None):
+                rd._live_coupling = data.coupling_data
         except Exception as exc:
             logger.warning("Snapshot readback: coupling sync failed", exc_info=True)
             view._log(f"[SnapReadback] coupling sync failed: {exc}")
         try:
-            if data.line_ts:
-                rd._live_line_ts = data.line_ts
-            if data.line_profiles:
-                rd._live_line_profile = data.line_profiles
+            line_ts = getattr(data, "line_ts", None)
+            line_profiles = getattr(data, "line_profiles", None)
+            logger.warning("[LINE_DIAG] controller: line_ts=%d keys, line_profiles=%d keys",
+                           len(line_ts) if line_ts else 0, len(line_profiles) if line_profiles else 0)
+            if line_ts:
+                rd._live_line_ts = line_ts
+            if line_profiles:
+                rd._live_line_profile = line_profiles
+            logger.warning("[LINE_DIAG] controller: rd._live_line_ts=%d keys, rd._live_line_profile=%d keys",
+                           len(rd._live_line_ts) if hasattr(rd._live_line_ts, '__len__') else '?',
+                           len(rd._live_line_profile) if hasattr(rd._live_line_profile, '__len__') else '?')
         except Exception as exc:
             logger.warning("Snapshot readback: line data sync failed", exc_info=True)
             view._log(f"[SnapReadback] line data sync failed: {exc}")
@@ -472,7 +470,6 @@ class RunController:
                 boundary_flux_step_rows_model=result.boundary_flux_step_rows_model,
                 run_id=result.run_id,
                 output_interval_s=result.output_interval_s,
-                line_output_interval_s=result.line_output_interval_s,
                 run_perf_start=result.run_perf_start,
                 run_wallclock_start=result.run_wallclock_start,
                 run_log_start_idx=result.run_log_start_idx,

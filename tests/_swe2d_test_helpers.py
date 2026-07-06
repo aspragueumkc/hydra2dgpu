@@ -480,7 +480,6 @@ def _run_cli_coupling(
     p["params"] = dict(p.get("params", {}))
     p["params"]["duration_s"] = float(duration_s)
     p["params"]["output_interval_s"] = float(p["params"].get("output_interval_s", 1.0))
-    p["params"]["line_output_interval_s"] = float(p["params"].get("line_output_interval_s", 1.0))
     p["drainage"] = drainage_cfg
     if structures_cfg is not None:
         p["structures"] = structures_cfg

@@ -11,7 +11,6 @@ def test_run_context_holds_arrays_and_cancel_event():
         run_log_start_idx=0,
         run_duration_s=10.0,
         output_interval_s=1.0,
-        line_output_interval_s=1.0,
         node_x=np.array([0.0, 1.0]),
         node_y=np.array([0.0, 0.0]),
         node_z=np.array([0.0, 0.0]),

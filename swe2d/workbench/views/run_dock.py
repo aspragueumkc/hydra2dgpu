@@ -2,7 +2,7 @@
 
 Owns the *execution* surface: Run / Cancel / Snapshot / Batch buttons
 and the progress bar. The output-configuration widgets
-(output_interval, line_output_interval, results_table_name,
+(output_interval, results_table_name,
 results_gpkg_path + Browse, and the Preview / Load / Save config
 buttons) live on the Simulation tab's Output page now
 (``ModelTabView._build_run_output_section``). Read them from there.

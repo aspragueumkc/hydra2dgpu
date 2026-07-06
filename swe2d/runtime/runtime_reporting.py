@@ -23,9 +23,6 @@ class SWE2DRuntimeReporter:
         self._snapshot_requested = False
         self._snapshot_ready = False
         self._post_readback_callback: Optional[Callable[[], None]] = None
-        # Tracks the current coupling snap index (NOT the row index).  Must
-        # advance exactly once per coupling snapshot, not once per row.
-        self._coupling_snap_idx: int = 0
 
     def request_snapshot_readback(self) -> None:
         """Set flag — next process_step will read accumulated device snapshots to host."""
@@ -59,10 +56,7 @@ class SWE2DRuntimeReporter:
         i: int,
         run_duration_s: float,
         next_snap_t: float,
-        next_line_snap_t: float,
-        next_coupling_snap_t: float,
         output_interval_s: float,
-        line_output_interval_s: float,
         process_events_interval_s: float,
         last_process_events_wall: float,
         h_min: float,
@@ -70,6 +64,7 @@ class SWE2DRuntimeReporter:
         results_data: Any,
         sample_coupling_object_metrics_callback: Callable[..., Any],
         line_names_by_id: Optional[Dict[int, str]] = None,
+        line_ids_ordered: Optional[list] = None,
         process_events_callback: Callable[[], None],
         set_progress_callback: Callable[[int], None],
         log_callback: Callable[[str], None],
@@ -90,8 +85,6 @@ class SWE2DRuntimeReporter:
         t_accum += float(dt_used)
 
         need_mesh_snap = t_accum >= float(next_snap_t)
-        need_line_snap = bool(sample_map) and t_accum >= float(next_line_snap_t)
-        need_coupling_snap = (coupling_controller is not None) and (t_accum >= float(next_coupling_snap_t))
 
         h_s = hu_s = hv_s = None
         # Mesh snapshots: store on-device at every output interval.
@@ -103,26 +96,13 @@ class SWE2DRuntimeReporter:
             state_ms += (time.perf_counter() - _t_state3) * 1000.0
             next_snap_t += float(output_interval_s)
 
-        # Line and coupling snapshots: metric computation is deferred to
-        # readback time (finalize or snapshot request).  During the run,
-        # only the mesh state is accumulated on-device in the ring buffer.
-        # When snapshots are read back, line/coupling metrics can be
-        # computed from the read-back h/hu/hv arrays.
-        if need_line_snap:
-            next_line_snap_t += float(line_output_interval_s)
+        # Coupling metrics sample on the same schedule.
+        need_coupling_snap = need_mesh_snap and (coupling_controller is not None)
         if need_coupling_snap:
-            next_coupling_snap_t += float(line_output_interval_s)
             if results_data is not None and coupling_controller is not None:
                 rows = sample_coupling_object_metrics_callback(coupling_controller, t_accum, None)
-                snap_idx = self._coupling_snap_idx
                 for row in rows:
-                    results_data.append_coupling_snapshot(row, snap_idx=snap_idx)
-                # Keep the data-layer counter in sync so readers that clamp
-                # to _coupling_snap_idx see the right window of valid entries.
-                results_data._coupling_snap_idx = max(
-                    results_data._coupling_snap_idx, snap_idx + 1
-                )
-                self._coupling_snap_idx += 1
+                    results_data.append_coupling_snapshot(row)
 
         # ── On-demand snapshot readback ──────────────────────────────────
         # When request_snapshot_readback() was called (from UI button press),
@@ -154,21 +134,25 @@ class SWE2DRuntimeReporter:
             t_read = time.perf_counter()
             if timesteps and results_data is not None:
                 try:
-                    # Merge with existing live snapshots from earlier
-                    # readbacks so data accumulates across multiple fetches.
-                    existing = results_data.get_live_snapshot_timesteps()
-                    results_data.set_live_snapshot_timesteps(existing + timesteps)
+                    # Replace live snapshots — device ring buffer is
+                    # non-destructive and always holds the full history.
+                    results_data.set_live_snapshot_timesteps(timesteps)
                 except Exception:
                     logger.warning("set_live_snapshot_timesteps failed", exc_info=True)
                 t_set = time.perf_counter()
                 # GPU line metrics are pre-computed on-device during
                 # store_snapshot.  Read them back and push to the viewer.
-                if sample_map and getattr(backend, "has_line_sampling", False):
+                has_lm = getattr(backend, "has_line_sampling", False)
+                logger.warning("[LINE_DIAG] runtime_reporting: sample_map=%s has_line_sampling=%s",
+                               bool(sample_map), has_lm)
+                if sample_map and has_lm:
                     try:
                         lm = backend.read_line_metrics()
+                        logger.warning("[LINE_DIAG] runtime_reporting: lm=%s", type(lm))
                         if lm:
                             results_data.populate_live_line_metrics_from_gpu(
                                 lm, line_names_by_id=line_names_by_id,
+                                line_ids_ordered=line_ids_ordered,
                             )
                     except Exception:
                         logger.warning(
@@ -259,9 +243,8 @@ class SWE2DRuntimeReporter:
                     "last_valid_cmax": last_valid_cmax,
                     "last_valid_wse_res": last_valid_wse_res,
                     "next_snap_t": next_snap_t,
-                    "next_line_snap_t": next_line_snap_t,
-                    "next_coupling_snap_t": next_coupling_snap_t,
                     "last_process_events_wall": last_process_events_wall,
+                    "timing_totals_ms": timing_totals_ms,
                     "timing_samples": timing_samples,
                     "i": i,
                     "state_ms": state_ms,
@@ -314,9 +297,8 @@ class SWE2DRuntimeReporter:
             "last_valid_cmax": last_valid_cmax,
             "last_valid_wse_res": last_valid_wse_res,
             "next_snap_t": next_snap_t,
-            "next_line_snap_t": next_line_snap_t,
-            "next_coupling_snap_t": next_coupling_snap_t,
             "last_process_events_wall": last_process_events_wall,
+            "timing_totals_ms": timing_totals_ms,
             "timing_samples": timing_samples,
             "i": i,
             "state_ms": state_ms,

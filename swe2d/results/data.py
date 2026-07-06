@@ -66,8 +66,6 @@ class SWE2DResultsData:
         self._coupling_records: list = []
         self._coupling_run_id: str = ""
         self._coupling_gpkg_path: str = ""
-        # Live coupling rows emitted from worker via SnapshotData signal
-        self._live_coupling_rows: list = []
 
         # Overlay geometry arrays (populated by overlay controller)
         self.overlay_cell_x: Optional[np.ndarray] = None
@@ -86,8 +84,6 @@ class SWE2DResultsData:
         self._live_line_profile: Dict[int, Dict[str, object]] = {}
         # Coupling: {(component, object_id, metric): {object_name: str, t_s: np.ndarray, values: np.ndarray}}
         self._live_coupling: Dict[Tuple[str, str, str], Dict[str, object]] = {}
-        # Indices tracking next write position for live accumulation
-        self._coupling_snap_idx: int = 0
         # Display state for TS/Profile/Structure/Network renderers (plain data)
         self.ts_var_key: str = "flow_cms"
         self.prof_var_key: str = "wse_bed"
@@ -127,40 +123,28 @@ class SWE2DResultsData:
         self._live_line_ts.clear()
         self._live_line_profile.clear()
         self._live_coupling.clear()
-        self._coupling_snap_idx = 0
         # Drop any GPKG-expanded coupling rows cached from a previous run
         # so viewers don't see stale data until load_coupling_records runs
         # again for the new run.
         self._coupling_records = []
         self._coupling_run_id = ""
-        self._live_coupling_rows = []
 
-    def preallocate_output_schedule(
+    def init_coupling_storage(
         self,
-        n_line_snaps: int,
         coupling_keys: List[Tuple[str, str, str]],
         coupling_object_names: Dict[Tuple[str, str, str], str],
     ) -> None:
-        """Pre-allocate numpy arrays for line TS and coupling accumulation.
+        """Initialize coupling storage with dynamic lists.
 
         Called once before the run starts, after the coupling controller is
-        built, so the object counts are known.
-
-        Parameters
-        ----------
-        n_line_snaps : int
-            Total number of line/coupling output snapshots:
-            ``ceil(run_duration_s / line_output_interval_s)``.
-        coupling_keys : list of (component, object_id, metric) tuples.
-        coupling_object_names : dict mapping key → object_name string.
+        built, so the object names are known.
         """
-        self._coupling_snap_idx = 0
         self._live_coupling.clear()
         for key in coupling_keys:
             self._live_coupling[key] = {
                 "object_name": coupling_object_names.get(key, key[1]),
-                "t_s": np.zeros(n_line_snaps, dtype=np.float64),
-                "values": np.zeros(n_line_snaps, dtype=np.float64),
+                "t_s": [],
+                "values": [],
             }
 
     def append_live_snapshot(self, t_s: float, h: np.ndarray, hu: np.ndarray, hv: np.ndarray) -> None:
@@ -276,15 +260,8 @@ class SWE2DResultsData:
             else:
                 wet_arr[snap_idx, :] = int(wet_val)
 
-    def append_coupling_snapshot(self, row: dict, snap_idx: int) -> None:
-        """Write a coupling row into pre-allocated _live_coupling at *snap_idx*.
-
-        Multiple rows are typically produced per snap (drainage depth+invert,
-        link flow+length, structure flow, culvert 7-metric block).  The caller
-        must pass the same *snap_idx* for every row in a given snap so the
-        per-key arrays are written at the correct time index and no entries
-        are silently dropped.
-        """
+    def append_coupling_snapshot(self, row: dict) -> None:
+        """Write a coupling row into live coupling storage."""
         key = (str(row.get("component", "")),
                str(row.get("object_id", "")),
                str(row.get("metric", "")))
@@ -293,12 +270,8 @@ class SWE2DResultsData:
         d = self._live_coupling.get(key)
         if d is None:
             return
-        idx = int(snap_idx)
-        t_s_arr = d["t_s"]
-        values_arr = d["values"]
-        if 0 <= idx < t_s_arr.size:
-            t_s_arr[idx] = float(row.get("t_s", 0.0))
-            values_arr[idx] = float(row.get("value", 0.0))
+        d["t_s"].append(float(row.get("t_s", 0.0)))
+        d["values"].append(float(row.get("value", 0.0)))
 
     def get_live_snapshot_timesteps(self) -> list:
         """Return the list of live mesh snapshots as (t_s, h, hu, hv) tuples."""
@@ -384,14 +357,14 @@ class SWE2DResultsData:
         self,
         lm_data: dict,
         line_names_by_id: Optional[Dict[int, str]] = None,
+        line_ids_ordered: Optional[List[int]] = None,
     ) -> None:
         """Populate _live_line_ts/_live_line_profile from GPU-computed flat arrays.
 
         Called each time the GPU line metrics ring buffer is read back.
-        Unlike the CPU path, the GPU already computed all station
-        interpolation and per-line TS aggregation — this just slices the
-        flat ``[N, total_stations, 6]`` / ``[N, n_lines, 7]`` arrays into
-        per-line dicts the viewer and GPKG finalizer expect.
+        ``line_ids_ordered`` maps the 0-based GPU index to the actual
+        ``line_id`` from the geopackage sample-lines layer so the viewer
+        can look up lines by their user-visible ID.
         """
         t_s = lm_data.get("t_s")
         profiles = lm_data.get("profiles")
@@ -399,28 +372,42 @@ class SWE2DResultsData:
         wet = lm_data.get("wet")
         station_offsets = lm_data.get("station_offsets")
         station_m = lm_data.get("station_m")
+        import logging as _lg
+        _lg.warning("[LINE_DIAG] populate_from_gpu: t_s=%s profiles=%s ts=%s station_offsets=%s station_m=%s",
+                     t_s.shape if hasattr(t_s, 'shape') else t_s,
+                     profiles.shape if hasattr(profiles, 'shape') else profiles,
+                     ts.shape if hasattr(ts, 'shape') else ts,
+                     station_offsets.shape if hasattr(station_offsets, 'shape') else station_offsets,
+                     station_m.shape if hasattr(station_m, 'shape') else station_m)
         if t_s is None or profiles is None or ts is None or station_offsets is None:
+            _lg.warning("[LINE_DIAG] populate_from_gpu: EARLY RETURN — missing required keys")
             return
         total_stations = lm_data.get("total_stations", 0)
         if total_stations <= 0:
+            _lg.warning("[LINE_DIAG] populate_from_gpu: EARLY RETURN — total_stations=%d", total_stations)
             return
         n_lines = int(station_offsets.size) - 1
         if n_lines <= 0:
+            _lg.warning("[LINE_DIAG] populate_from_gpu: EARLY RETURN — n_lines=%d", n_lines)
             return
 
-        # Replace — GPU data is cheap to slice; no incremental cost.
+        # Resolve the ordered list of actual line IDs (matching the GPU 0-index).
+        if not line_ids_ordered:
+            line_ids_ordered = list(range(n_lines))
+
         new_ts: Dict[int, Dict[str, object]] = {}
         new_prof: Dict[int, Dict[str, object]] = {}
         _ts_keys = ("depth_m", "velocity_ms", "wse_m", "bed_m",
                      "flow_cms", "wet_frac", "fr")
         _prof_keys = ("depth_m", "velocity_ms", "wse_m", "bed_m",
                        "flow_qn", "fr")
-        for lid in range(n_lines):
+        for gpu_idx in range(n_lines):
+            lid = line_ids_ordered[gpu_idx] if gpu_idx < len(line_ids_ordered) else gpu_idx
             nm = (line_names_by_id or {}).get(lid, f"line_{lid}")
-            s = int(station_offsets[lid])
-            e = int(station_offsets[lid + 1])
+            s = int(station_offsets[gpu_idx])
+            e = int(station_offsets[gpu_idx + 1])
             n_sta = e - s
-            ts_line = ts[:, lid, :]
+            ts_line = ts[:, gpu_idx, :]
             t_dict = {"line_name": nm}
             for idx, key in enumerate(_ts_keys):
                 t_dict[key] = np.ascontiguousarray(ts_line[:, idx])
@@ -448,14 +435,14 @@ class SWE2DResultsData:
         self._live_line_profile = new_prof
 
     def get_live_coupling_snapshot_rows(self) -> list:
-        """Reconstruct list-of-dicts from _live_coupling numpy storage."""
+        """Reconstruct list-of-dicts from _live_coupling list storage."""
         out = []
         for (component, object_id, metric), d in self._live_coupling.items():
             t_s = d.get("t_s")
             values = d.get("values")
-            if t_s is None or values is None:
+            if not t_s or not values:
                 continue
-            n = min(t_s.size, values.size, self._coupling_snap_idx)
+            n = min(len(t_s), len(values))
             for i in range(n):
                 out.append({
                     "component": component,
@@ -468,25 +455,19 @@ class SWE2DResultsData:
         return out
 
     def get_structure_flows_at_time(self, run_id: str, t_sec: float) -> list:
-        """Return structure coupling rows at the nearest stored timestep.
-
-        Used by :func:`swe2d.results.queries.load_structure_flows_at_time`
-        when called with a live data source (during live runs).  Mirrors the
-        GPKG path's return shape exactly so the profile viewer can treat both
-        paths uniformly.
-        """
+        """Return structure coupling rows at the nearest stored timestep."""
         out = []
         for (component, object_id, metric), d in self._live_coupling.items():
             if component != "structure" or metric != "flow":
                 continue
             t_s = d.get("t_s")
             values = d.get("values")
-            if t_s is None or values is None or t_s.size == 0:
+            if not t_s or not values:
                 continue
-            n = min(t_s.size, values.size, self._coupling_snap_idx)
+            n = min(len(t_s), len(values))
             if n == 0:
                 continue
-            i = int(np.argmin(np.abs(t_s[:n] - t_sec)))
+            i = int(np.argmin(np.abs(np.asarray(t_s[:n], dtype=np.float64) - t_sec)))
             out.append({
                 "component": component,
                 "object_id": object_id,
@@ -799,19 +780,11 @@ class SWE2DResultsData:
         return load_baked_line_timeseries(run_record.gpkg_path, run_record.run_id, line_id)
 
     def get_coupling_records(self) -> list:
-        """Return coupling records for the active run.
-
-        Falls back to in-memory coupling snapshots during live runs
-        when no GPKG coupling data has been loaded.
-        """
+        """Return coupling records for the active run."""
         if self._coupling_records:
             return list(self._coupling_records)
         if self._data_source == "live":
-            live_rows = self.get_live_coupling_snapshot_rows()
-            if live_rows:
-                return live_rows
-        if self._live_coupling_rows:
-            return list(self._live_coupling_rows)
+            return self.get_live_coupling_snapshot_rows()
         return []
 
     def get_coupling_run_id(self) -> str:

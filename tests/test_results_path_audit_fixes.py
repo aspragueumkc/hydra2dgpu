@@ -424,7 +424,6 @@ class TestPersistenceErrorsPropagate(unittest.TestCase):
             boundary_flux_step_rows_model=[],
             run_id="rid",
             output_interval_s=1.0,
-            line_output_interval_s=1.0,
             run_perf_start=time.perf_counter(),
             run_wallclock_start="now",
             run_log_start_idx=0,

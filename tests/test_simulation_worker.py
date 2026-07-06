@@ -65,7 +65,6 @@ def _make_context(**overrides):
         run_log_start_idx=0,
         run_duration_s=0.05,
         output_interval_s=0.1,
-        line_output_interval_s=0.1,
         dt_cfg=0.05,
         dt_request=0.05,
         node_x=np.array([0.0, 1.0, 0.0]),
@@ -76,9 +75,7 @@ def _make_context(**overrides):
         hu0=np.array([0.0]),
         hv0=np.array([0.0]),
         cell_areas=np.array([0.5]),
-        cell_solver_bed=np.array([0.0]),
         mesh_cell_areas=lambda: np.array([0.5]),
-        mesh_cell_solver_bed=lambda: np.array([0.0]),
     )
     defaults.update(overrides)
     from swe2d.workbench.workers.run_context import RunContext

@@ -441,11 +441,10 @@ def execute_run(
 
     # ── Sample line setup ────────────────────────────────────────────
     sample_map_list: List[Dict[str, Any]] = []
-    # Resolve intervals early so sample-line setup can use line_output_interval
+    # Resolve intervals early so sample-line setup can use output_interval
     t_end = float(rp.get("duration_s", 3600.0))
     output_interval = float(rp.get("output_interval_s", t_end))
-    line_output_interval = float(rp.get("line_output_interval_s", t_end))
-    if line_output_interval > 0:
+    if output_interval > 0:
         sl_cfg = p.get("sample_lines")
         if isinstance(sl_cfg, dict) and sl_cfg.get("table"):
             sl_gpkg = sl_cfg.get("gpkg") or mesh_gpkg
@@ -514,7 +513,6 @@ def execute_run(
     step = 0
     coupling_snapshots = {}
     next_snap_t = output_interval
-    next_line_snap_t = line_output_interval
     next_coupling_snap_t = coupling_interval
 
     def _collect_coupling_snapshot(cc, t_s: float) -> None:
@@ -748,7 +746,6 @@ def execute_run(
             boundary_flux_step_rows_model=[],
             run_id=run_id,
             output_interval_s=float(rp.get("output_interval_s", t)),
-            line_output_interval_s=float(rp.get("line_output_interval_s", t)),
             run_perf_start=0.0,
             run_wallclock_start="",
             run_log_start_idx=0,
