@@ -1341,8 +1341,7 @@ void swe2d_gpu_configure_line_sampling(
     const double*     normal_y,
     const double*     station_m,
     double            gravity,
-    double            h_min,
-    int32_t           max_snapshots = 64);
+    double            h_min);
 
 /// Kernel (called from swe2d_gpu_store_snapshot): compute line metrics for current
 /// solver state and write to the ring buffer at slot snap_count.

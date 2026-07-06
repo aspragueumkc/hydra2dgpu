@@ -9878,7 +9878,7 @@ __global__ void compute_line_metrics_ts_kernel(
     const int32_t* __restrict__ station_offsets,
     const double* __restrict__ weights,
     int32_t   snap_slot,
-    int32_t   lm_capacity,
+    int32_t   lm_n_lines,
     int32_t   lm_total_stations,
     const double* __restrict__ profile_buf,
     const int32_t* __restrict__ wet_buf,
@@ -9895,7 +9895,7 @@ __global__ void compute_line_metrics_ts_kernel(
     int start = station_offsets[line];
     int end   = station_offsets[line + 1];
     int nsta  = end - start;
-    if (nsta <= 0) { if (threadIdx.x == 0) { double* out = ts_buf + snap_slot * lm_capacity * 7 + line * 7; for (int k = 0; k < 7; ++k) out[k] = 0.0; } return; }
+    if (nsta <= 0) { if (threadIdx.x == 0) { double* out = ts_buf + snap_slot * lm_n_lines * 7 + line * 7; for (int k = 0; k < 7; ++k) out[k] = 0.0; } return; }
 
     // First thread: sum weights for this line.
     // ponytail: serial on first thread, nsta ≤ 200 so trivial.
@@ -9940,7 +9940,7 @@ __global__ void compute_line_metrics_ts_kernel(
 
     if (tid == 0) {
         double inv_wsum = 1.0 / s_wsum;
-        double* out = ts_buf + snap_slot * lm_capacity * 7 + line * 7;
+        double* out = ts_buf + snap_slot * lm_n_lines * 7 + line * 7;
         out[0] = depth_num * inv_wsum;   // depth_m
         out[1] = vel_num   * inv_wsum;   // velocity_ms
         out[2] = wse_num   * inv_wsum;   // wse_m
@@ -10006,8 +10006,7 @@ void swe2d_gpu_configure_line_sampling(
     const double*     normal_y,
     const double*     station_m,
     double            gravity,
-    double            h_min,
-    int32_t           max_snapshots)
+    double            h_min)
 {
     if (!dev) return;
     // Free any previous config
@@ -10031,7 +10030,7 @@ void swe2d_gpu_configure_line_sampling(
     alloc(&dev->d_lm_normal_y,       normal_y,          static_cast<size_t>(n_lines) * sizeof(double));
     alloc(&dev->d_lm_station_m,      station_m,         static_cast<size_t>(total_stations) * sizeof(double));
 
-    swe2d_gpu_ensure_line_metrics_buf(dev, max_snapshots);
+    swe2d_gpu_ensure_line_metrics_buf(dev, 64);
 }
 
 void swe2d_gpu_store_line_metrics(SWE2DDeviceState* dev, double t_s) {
@@ -10058,11 +10057,12 @@ void swe2d_gpu_store_line_metrics(SWE2DDeviceState* dev, double t_s) {
             dev->d_lm_profile, dev->d_lm_wet);
     }
 
-    // Launch TS reduction kernel: one block per line.
+    // Launch TS reduction kernel: one warp (32 threads) per line — sufficient
+    // for any nsta because all threads loop and reduce within the warp.
     if (nl > 0 && grid > 0) {
-        compute_line_metrics_ts_kernel<<<nl, 256, 0, dev->d_stream>>>(
+        compute_line_metrics_ts_kernel<<<nl, 32, 0, dev->d_stream>>>(
             nl, dev->d_lm_station_offsets, dev->d_lm_weights,
-            slot, dev->lm_capacity, dev->lm_total_stations,
+            slot, nl, dev->lm_total_stations,
             dev->d_lm_profile, dev->d_lm_wet,
             dev->d_lm_ts);
     }

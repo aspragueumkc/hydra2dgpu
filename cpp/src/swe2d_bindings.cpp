@@ -960,8 +960,7 @@ PYBIND11_MODULE(HYDRA_SWE2D_PY_MODULE_NAME, m) {
            py::array_t<double,  py::array::c_style | py::array::forcecast> normal_y,
            py::array_t<double,  py::array::c_style | py::array::forcecast> station_m,
            double gravity,
-           double h_min,
-           int32_t max_snapshots = 64) {
+           double h_min) {
             if (!ps || !ps->solver || !ps->solver->dev)
                 throw std::runtime_error("solver not initialized");
             SWE2DDeviceState* dev = ps->solver->dev;
@@ -970,12 +969,11 @@ PYBIND11_MODULE(HYDRA_SWE2D_PY_MODULE_NAME, m) {
                 dev, n_lines,
                 station_offsets.data(), cell_idx.data(), weights.data(),
                 normal_x.data(), normal_y.data(), station_m.data(),
-                gravity, h_min, max_snapshots);
+                gravity, h_min);
         },
         py::arg("solver"), py::arg("station_offsets"), py::arg("cell_idx"),
         py::arg("weights"), py::arg("normal_x"), py::arg("normal_y"),
         py::arg("station_m"), py::arg("gravity"), py::arg("h_min"),
-        py::arg("max_snapshots") = 64,
         "Upload line sampling map and allocate ring buffer on device.");
 
     m.def("swe2d_gpu_read_line_metrics",
@@ -1000,26 +998,10 @@ PYBIND11_MODULE(HYDRA_SWE2D_PY_MODULE_NAME, m) {
 
             py::dict d;
             d["t_s"] = py::array_t<double>({count}, {sizeof(double)}, h_times, cap_times);
-            // Profile: [count, total_stations, 6] — stride: (ts*6, 6, 1) in doubles
-            d["profiles"] = py::array_t<double>(
-                {count, static_cast<long>(total_stations), 6},
-                {static_cast<long>(total_stations) * 6 * static_cast<long>(sizeof(double)),
-                 static_cast<long>(6) * static_cast<long>(sizeof(double)),
-                 static_cast<long>(sizeof(double))},
-                h_profile, cap_profile);
-            // TS: [count, n_lines, 7]
-            d["ts"] = py::array_t<double>(
-                {count, static_cast<long>(n_lines), 7},
-                {static_cast<long>(n_lines) * 7 * static_cast<long>(sizeof(double)),
-                 static_cast<long>(7) * static_cast<long>(sizeof(double)),
-                 static_cast<long>(sizeof(double))},
-                h_ts, cap_ts);
-            // Wet: [count, total_stations] int32
-            d["wet"] = py::array_t<int32_t>(
-                {count, static_cast<long>(total_stations)},
-                {static_cast<long>(total_stations) * sizeof(int32_t),
-                 sizeof(int32_t)},
-                h_wet, cap_wet);
+            // 3D/2D arrays use the 3-arg ctor (shape, ptr, base) — auto-computes C-style strides
+            d["profiles"] = py::array_t<double>({count, total_stations, 6}, h_profile, cap_profile);
+            d["ts"]       = py::array_t<double>({count, n_lines, 7},         h_ts,      cap_ts);
+            d["wet"]      = py::array_t<int32_t>({count, total_stations},     h_wet,     cap_wet);
             // Station map arrays (host copies — safe for Python access)
             d["station_m"] = py::array_t<double>(
                 {total_stations}, {sizeof(double)},
