@@ -27,6 +27,12 @@ HYDRA is a QGIS plugin for 2D shallow water equation (SWE) modeling with a CUDA-
 | C++ Compiler | GCC 10+ or Clang 12+ (C++17) |
 | CMake | 3.16+ |
 
+> **Platform support:** Linux (x86_64) and Windows (x86_64) only. NVIDIA CUDA GPU
+> is **required** — there is no CPU fallback path. macOS is not currently supported.
+> Future releases may add Intel/AMD GPU compatibility via SYCL or HIP; Apple Silicon
+> support could follow from those backends given its unified memory architecture, but
+> there are no concrete plans at this time.
+
 ## Quick Start
 
 ```bash

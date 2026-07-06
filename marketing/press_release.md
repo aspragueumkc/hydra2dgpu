@@ -63,10 +63,15 @@ documentation, and installation instructions are available at:
 
 ### System Requirements
 
+- **OS:** Linux (x86_64) or Windows (x86_64) — macOS is not currently supported
 - QGIS 3.28+
 - Python 3.12+
 - CUDA Toolkit 11.x or 12.x
 - NVIDIA GPU with Compute Capability ≥ 7.5
+- **No CPU fallback path** — a CUDA-capable GPU is required
+
+> Future releases plan to explore Intel/AMD GPU compatibility (SYCL/HIP),
+> which may bring Apple Silicon support via the unified memory architecture.
 
 ### About HYDRA
 

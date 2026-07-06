@@ -157,8 +157,11 @@ jobs:
           New-Item -ItemType Directory -Force -Path dist/lib
           Get-ChildItem -Path build -Recurse -Filter "*.pyd" |
             Copy-Item -Destination dist/lib/
-          # Bundle CUDA runtime DLL so the .pyd can load without a system-wide CUDA install
+          # Bundle CUDA runtime DLLs so the .pyd can load without a system-wide CUDA install.
+          # cudart is required; cublas/cublasLt may be transitively linked by the toolkit.
           Copy-Item "$env:CUDA_PATH\bin\cudart64_*.dll" dist\lib\
+          Copy-Item "$env:CUDA_PATH\bin\cublas64_*.dll" dist\lib\
+          Copy-Item "$env:CUDA_PATH\bin\cublasLt64_*.dll" dist\lib\
 
       - name: Package
         shell: pwsh
@@ -182,9 +185,11 @@ jobs:
           Get-ChildItem dist\hydra2dgpu -Recurse -Include @('*.pyc','*.pyo','cuda_keyring*',
             'cuda_installer*','cmake_install.cmake') -Force | Remove-Item -Force -ErrorAction SilentlyContinue
 
-          # Place prebuilt libs and CUDA runtime DLL into the plugin root
+          # Place prebuilt libs and CUDA runtime DLLs into the plugin root
           Copy-Item dist\lib\*.pyd dist\hydra2dgpu\ -Force
           Copy-Item dist\lib\cudart64_*.dll dist\hydra2dgpu\ -Force
+          Copy-Item dist\lib\cublas64_*.dll dist\hydra2dgpu\ -Force
+          Copy-Item dist\lib\cublasLt64_*.dll dist\hydra2dgpu\ -Force
 
           # Create the release ZIP
           Compress-Archive -Path dist\hydra2dgpu -DestinationPath hydra2dgpu-windows-x86_64.zip

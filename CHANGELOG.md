@@ -7,7 +7,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
-## [Unreleased] — v1.2.0 (planned)
+## [1.2.0] — 2026-07-06
 
 ### Added
 
@@ -180,5 +180,5 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Results export (GeoPackage, UGRID NetCDF, GeoTIFF, CSV)
 - QGIS plugin integration
 
-[Unreleased]: https://github.com/aspragueumkc/hydra2dgpu/compare/v1.1.0...HEAD
+[1.2.0]: https://github.com/aspragueumkc/hydra2dgpu/compare/v1.1.0...v1.2.0
 [1.1.0]: https://github.com/aspragueumkc/hydra2dgpu/releases/tag/v1.1.0
