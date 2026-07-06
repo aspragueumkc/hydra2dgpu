@@ -713,6 +713,8 @@ class SimulationWorker(QThread):
                         h=np.asarray(h, dtype=np.float64),
                         hu=np.asarray(hu, dtype=np.float64),
                         hv=np.asarray(hv, dtype=np.float64),
+                        line_ts=dict(results_data._live_line_ts),
+                        line_profiles=dict(results_data._live_line_profile),
                         coupling_rows=results_data.get_live_coupling_snapshot_rows(),
                     )
                 )

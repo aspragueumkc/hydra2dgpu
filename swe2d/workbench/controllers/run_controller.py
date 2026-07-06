@@ -409,6 +409,14 @@ class RunController:
             logger.warning("Snapshot readback: coupling sync failed", exc_info=True)
             view._log(f"[SnapReadback] coupling sync failed: {exc}")
         try:
+            if data.line_ts:
+                rd._live_line_ts = data.line_ts
+            if data.line_profiles:
+                rd._live_line_profile = data.line_profiles
+        except Exception as exc:
+            logger.warning("Snapshot readback: line data sync failed", exc_info=True)
+            view._log(f"[SnapReadback] line data sync failed: {exc}")
+        try:
             view._refresh_plot()
         except Exception as exc:
             logger.warning("Snapshot readback: plot refresh failed", exc_info=True)
