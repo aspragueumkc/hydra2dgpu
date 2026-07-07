@@ -59,9 +59,10 @@ def collect_boundary_arrays(
     mesh_data: Optional[Dict[str, np.ndarray]],
     mesh_boundary_edges_fn: Callable[[], Tuple[np.ndarray, np.ndarray]],
     default_bc_type: int = 0,
-    apply_bc_layer_overrides_fn: Callable[[np.ndarray, np.ndarray, np.ndarray, np.ndarray], Tuple[np.ndarray, np.ndarray]],
+    default_relax: float = 0.0,
+    apply_bc_layer_overrides_fn: Callable[[np.ndarray, np.ndarray, np.ndarray, np.ndarray, float], Tuple[np.ndarray, np.ndarray, np.ndarray]],
     log_fn: Callable[[str], None],
-) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
     """Collect boundary condition arrays from mesh geometry and apply defaults.
 
     Parameters
@@ -72,6 +73,8 @@ def collect_boundary_arrays(
         Function returning boundary edge node indices (edge_n0, edge_n1).
     default_bc_type : int
         Default boundary condition type to apply (0=wall, 1=flow, etc.).
+    default_relax : float
+        Default relaxation coefficient for open BC boundaries.
     apply_bc_layer_overrides_fn : Callable
         Function to apply BC layer overrides from QGIS.
     log_fn : Callable[[str], None]
@@ -79,14 +82,16 @@ def collect_boundary_arrays(
 
     Returns
     -------
-    Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]
-        edge_n0, edge_n1, bc_type, bc_val arrays.
+    Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]
+        edge_n0, edge_n1, bc_type, bc_val, bc_relax arrays.
+        bc_relax is the per-edge relaxation coefficient.
     """
     if mesh_data is None:
         return (
             np.empty(0, dtype=np.int32),
             np.empty(0, dtype=np.int32),
             np.empty(0, dtype=np.int32),
+            np.empty(0, dtype=np.float64),
             np.empty(0, dtype=np.float64),
         )
 
@@ -100,11 +105,12 @@ def collect_boundary_arrays(
             np.empty(0, dtype=np.int32),
             np.empty(0, dtype=np.int32),
             np.empty(0, dtype=np.float64),
+            np.empty(0, dtype=np.float64),
         )
 
     bc_type, bc_val = _compute_default_bc(mesh_data, edge_n0, edge_n1, default_bc_type=default_bc_type)
-    bc_type, bc_val = apply_bc_layer_overrides_fn(edge_n0, edge_n1, bc_type, bc_val)
-    return edge_n0, edge_n1, bc_type, bc_val
+    bc_type, bc_val, bc_relax = apply_bc_layer_overrides_fn(edge_n0, edge_n1, bc_type, bc_val, default_relax)
+    return edge_n0, edge_n1, bc_type, bc_val, bc_relax
 
 
 def classify_boundary_edges(
