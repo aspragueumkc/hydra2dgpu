@@ -1835,6 +1835,7 @@ __global__ __launch_bounds__(256, 2) void swe2d_flux_kernel(
     const double*  __restrict__ edge_my,
     const int32_t* __restrict__ edge_bc,
     const double*  __restrict__ edge_bc_val,
+    const double*  __restrict__ edge_bc_relax,
     const State*   __restrict__ cell_h,
     const State*   __restrict__ cell_hu,
     const State*   __restrict__ cell_hv,
@@ -2104,9 +2105,10 @@ __global__ __launch_bounds__(256, 2) void swe2d_flux_kernel(
         hvR = fmin(hv_cap_R, fmax(-hv_cap_R, hvR));
     } else {
         const double n_local = cell_n_mann ? cell_n_mann[c0] : 0.03;
+        const double edge_relax = edge_bc_relax[e];
         GhostStateLocal gs = make_ghost_cuda_local(
             hL, huL, hvL, zbL, nx, ny,
-            edge_bc[e], edge_bc_val[e], h_min, n_local);
+            edge_bc[e], edge_bc_val[e], h_min, n_local, edge_relax);
         hR  = gs.h; huR = gs.hu; hvR = gs.hv;
         zbR = gs.zb;
     }
@@ -5314,7 +5316,7 @@ void swe2d_gpu_step(
                     dev->d_edge_c0, dev->d_edge_c1,
                     dev->d_edge_nx, dev->d_edge_ny, dev->d_edge_len,
                     dev->d_edge_mx, dev->d_edge_my,
-                    dev->d_edge_bc, dev->d_edge_bc_val,
+                    dev->d_edge_bc, dev->d_edge_bc_val, dev->d_edge_bc_relax,
                     dev->d_h, dev->d_hu, dev->d_hv,
                     dev->d_n_mann_cell,
                     dev->d_cell_zb,
@@ -5517,7 +5519,7 @@ void swe2d_gpu_step(
             dev->d_edge_c0, dev->d_edge_c1,
             dev->d_edge_nx, dev->d_edge_ny, dev->d_edge_len,
             dev->d_edge_mx, dev->d_edge_my,
-            dev->d_edge_bc, dev->d_edge_bc_val,
+            dev->d_edge_bc, dev->d_edge_bc_val, dev->d_edge_bc_relax,
             dev->d_h, dev->d_hu, dev->d_hv,
             dev->d_n_mann_cell,
             dev->d_cell_zb,
@@ -5704,6 +5706,7 @@ __global__ __launch_bounds__(256, 4) void swe2d_persistent_chunk_kernel_first_or
     const double*  __restrict__ edge_len,
     const int32_t* __restrict__ edge_bc,
     const double*  __restrict__ edge_bc_val,
+    const double*  __restrict__ edge_bc_relax,
     const int32_t* __restrict__ cell_owned_offsets,
     const int32_t* __restrict__ cell_owned_ids,
     const int32_t* __restrict__ cell_peer_offsets,
@@ -5801,9 +5804,10 @@ __global__ __launch_bounds__(256, 4) void swe2d_persistent_chunk_kernel_first_or
                     zbR = cell_zb[c1];
                 } else {
                     const double n_local = cell_n_mann ? cell_n_mann[c0] : 0.03;
+                    const double edge_relax = edge_bc_relax[e];
                     GhostStateLocal gs = make_ghost_cuda_local(
                         hL, huL, hvL, zbL, nx, ny,
-                        edge_bc[e], edge_bc_val[e], h_min, n_local);
+                        edge_bc[e], edge_bc_val[e], h_min, n_local, edge_relax);
                     hR = gs.h;
                     huR = gs.hu;
                     hvR = gs.hv;
@@ -6240,6 +6244,7 @@ void swe2d_gpu_step_persistent_chunk(
         &dev->d_edge_len,
         &dev->d_edge_bc,
         &dev->d_edge_bc_val,
+        &dev->d_edge_bc_relax,
         &dev->d_cell_owned_offsets,
         &dev->d_cell_owned_ids,
         &dev->d_cell_peer_offsets,
