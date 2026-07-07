@@ -76,6 +76,7 @@ struct SWE2DSolverConfig {
 
     // Wet/dry front stability controls
     double  front_flux_damping = 0.5;     // momentum-flux scale factor on wet/dry front edges (0=full damp, 1=none)
+    double  open_bc_relaxation = 0.0;     // reflection damping at outflow-style BCs (0=disabled, 1=fully transmissive)
     bool    active_set_hysteresis = true; // keep cells active 1 extra step after drying to suppress oscillatory front switching
     bool    enable_shallow_front_recon_fallback = true; // if true, force 1st-order reconstruction on shallow edge pairs
 
