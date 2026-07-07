@@ -7824,11 +7824,16 @@ void swe2d_gpu_set_edge_bc_relax(
     int32_t n_updates)
 {
     if (!dev) return;
-    constexpr int BLOCK = 256;
-    const int grid = (n_updates + BLOCK - 1) / BLOCK;
-    swe2d_apply_edge_relax_kernel<<<grid, BLOCK, 0, dev->d_stream>>>(
-        n_updates, edge_index, relax, dev->d_edge_bc_relax);
-    CUDA_CHECK(cudaGetLastError());
+    const size_t n = static_cast<size_t>(dev->n_edges);
+    std::vector<double> h_relax(n);
+    CUDA_CHECK(cudaMemcpy(h_relax.data(), dev->d_edge_bc_relax, n * sizeof(double), cudaMemcpyDeviceToHost));
+    for (int32_t i = 0; i < n_updates; ++i) {
+        const int e = edge_index[i];
+        if (e >= 0 && static_cast<size_t>(e) < n) {
+            h_relax[e] = relax[i];
+        }
+    }
+    CUDA_CHECK(cudaMemcpy(dev->d_edge_bc_relax, h_relax.data(), n * sizeof(double), cudaMemcpyHostToDevice));
 }
 
 void swe2d_gpu_set_boundary_hydrographs(
