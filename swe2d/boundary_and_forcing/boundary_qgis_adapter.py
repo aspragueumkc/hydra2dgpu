@@ -101,10 +101,11 @@ def apply_bc_layer_overrides_qgis(
     edge_n1: np.ndarray,
     bc_type: np.ndarray,
     bc_val: np.ndarray,
+    default_relax: float = 0.0,
     qgs_geometry_cls,
     qgs_pointxy_cls,
     log_fn: Callable[[str], None],
-) -> Tuple[np.ndarray, np.ndarray]:
+) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
     """
     apply bc layer overrides qgis.
 
@@ -126,6 +127,9 @@ def apply_bc_layer_overrides_qgis(
         Description of bc_type.
     bc_val : np.ndarray
         Description of bc_val.
+    default_relax : float
+        Default relaxation factor applied to all BC edges when no per-edge
+        override is found in the BC layer. Clamped to [0, 1].
     qgs_geometry_cls
         Description of qgs_geometry_cls.
     qgs_pointxy_cls
@@ -135,16 +139,19 @@ def apply_bc_layer_overrides_qgis(
 
     Returns
     -------
-    Tuple[np.ndarray, np.ndarray]
+    Tuple[np.ndarray, np.ndarray, np.ndarray]
+        (bc_type, bc_val, bc_relax)
     """
+    bc_relax = np.full(edge_n0.size, float(default_relax), dtype=np.float64)
+
     if mesh_data is None or not have_qgis_core:
-        return bc_type, bc_val
+        return bc_type, bc_val, bc_relax
     if bc_lines_layer_combo is None:
-        return bc_type, bc_val
+        return bc_type, bc_val, bc_relax
 
     bc_layer = combo_layer_fn(bc_lines_layer_combo, "vector")
     if bc_layer is None:
-        return bc_type, bc_val
+        return bc_type, bc_val, bc_relax
 
     fields = set(bc_layer.fields().names())
     type_field = None
@@ -157,11 +164,16 @@ def apply_bc_layer_overrides_qgis(
         if cand in fields:
             val_field = cand
             break
+    relax_field = None
+    for cand in ("bc_relax", "open_bc_relax", "relax"):
+        if cand in fields:
+            relax_field = cand
+            break
     prio_field = "priority" if "priority" in fields else None
 
     if type_field is None:
         log_fn("BC polyline layer selected but no bc_type/type field found; skipping overrides.")
-        return bc_type, bc_val
+        return bc_type, bc_val, bc_relax
 
     node_x = mesh_data["node_x"]
     node_y = mesh_data["node_y"]
@@ -190,6 +202,18 @@ def apply_bc_layer_overrides_qgis(
             except Exception as e:
                 log_fn(f"[ERROR] BC value field parse failed: {e}")
                 v = 0.0
+        r = default_relax
+        if relax_field is not None:
+            try:
+                raw_r = ft[relax_field]
+                if raw_r is None or (isinstance(raw_r, str) and raw_r.strip().upper() == 'NULL'):
+                    r = default_relax
+                else:
+                    r = float(str(raw_r))
+                    r = max(0.0, min(1.0, r))
+            except Exception as e:
+                log_fn(f"[ERROR] BC relax field parse failed: {e}")
+                r = default_relax
         pr = 0
         if prio_field is not None:
             try:
@@ -201,10 +225,10 @@ def apply_bc_layer_overrides_qgis(
             except Exception as e:
                 log_fn(f"[ERROR] BC priority field parse failed: {e}")
                 pr = 0
-        features.append((pr, geom, t, v))
+        features.append((pr, geom, t, v, r))
 
     if not features:
-        return bc_type, bc_val
+        return bc_type, bc_val, bc_relax
 
     applied = 0
     for i in range(edge_n0.size):
@@ -214,7 +238,7 @@ def apply_bc_layer_overrides_qgis(
         y1 = float(node_y[edge_n1[i]])
         best = None
         best_key = None
-        for pr, g, t, v in features:
+        for pr, g, t, v, r in features:
             if not _edge_matches_feature(
                 x0=x0,
                 y0=y0,
@@ -236,13 +260,14 @@ def apply_bc_layer_overrides_qgis(
             )
             key = (int(pr), -float(dist))
             if best is None or best_key is None or key > best_key:
-                best = (t, v)
+                best = (t, v, r)
                 best_key = key
         if best is not None:
-            t, v = best
+            t, v, r = best
             changed = (int(bc_type[i]) != int(t)) or (not np.isclose(float(bc_val[i]), float(v)))
             bc_type[i] = int(t)
             bc_val[i] = float(v)
+            bc_relax[i] = float(r)
             if changed:
                 applied += 1
 
@@ -259,7 +284,7 @@ def apply_bc_layer_overrides_qgis(
             y1 = float(node_y[edge_n1[i]])
             best = None
             best_key = None
-            for pr, g, t, v in features:
+            for pr, g, t, v, r in features:
                 if not _edge_intersects_feature(
                     x0=x0,
                     y0=y0,
@@ -281,13 +306,14 @@ def apply_bc_layer_overrides_qgis(
                 )
                 key = (int(pr), -float(dist))
                 if best is None or best_key is None or key > best_key:
-                    best = (t, v)
+                    best = (t, v, r)
                     best_key = key
             if best is not None:
-                t, v = best
+                t, v, r = best
                 changed = (int(bc_type[i]) != int(t)) or (not np.isclose(float(bc_val[i]), float(v)))
                 bc_type[i] = int(t)
                 bc_val[i] = float(v)
+                bc_relax[i] = float(r)
                 if changed:
                     fallback_applied += 1
         if fallback_applied:
@@ -296,7 +322,7 @@ def apply_bc_layer_overrides_qgis(
                 f"to {fallback_applied}/{edge_n0.size} boundary edges from '{bc_layer.name()}'."
             )
 
-    return bc_type, bc_val
+    return bc_type, bc_val, bc_relax
 
 
 def collect_bc_layer_hydrographs_qgis(
