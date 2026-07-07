@@ -27,6 +27,7 @@ class SWE2DRunInputData:
     bc_n1: np.ndarray
     bc_tp: np.ndarray
     bc_vl: np.ndarray
+    bc_relax: np.ndarray
     side_hydrographs: Dict[str, object]
     edge_hydrographs: Dict[Tuple[int, int], object]
     edge_group_overrides: Dict[Tuple[int, int], object]
@@ -42,7 +43,7 @@ class SWE2DRunDataBuilder:
     def __init__(
         self,
         get_mesh_data_callback: Callable[[], Optional[Dict[str, Any]]],
-        collect_boundary_arrays_callback: Callable[[], Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]],
+        collect_boundary_arrays_callback: Callable[[], Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]],
         build_side_hydrographs_callback: Callable[[], Dict[str, object]],
         collect_bc_layer_hydrographs_callback: Callable[[np.ndarray, np.ndarray], Dict[Tuple[int, int], object]],
         collect_bc_layer_edge_groups_callback: Callable[[np.ndarray, np.ndarray], Dict[Tuple[int, int], object]],
@@ -76,7 +77,7 @@ class SWE2DRunDataBuilder:
         face_offsets = mesh_data.get("cell_face_offsets")
         face_nodes = mesh_data.get("cell_face_nodes")
 
-        bc_n0, bc_n1, bc_tp, bc_vl = self._collect_boundary_arrays_callback()
+        bc_n0, bc_n1, bc_tp, bc_vl, bc_relax = self._collect_boundary_arrays_callback()
         side_hydrographs = self._build_side_hydrographs_callback()
         edge_hydrographs = self._collect_bc_layer_hydrographs_callback(bc_n0, bc_n1)
         edge_group_overrides = self._collect_bc_layer_edge_groups_callback(bc_n0, bc_n1)
@@ -95,6 +96,7 @@ class SWE2DRunDataBuilder:
             bc_n1=bc_n1,
             bc_tp=bc_tp,
             bc_vl=bc_vl,
+            bc_relax=bc_relax,
             side_hydrographs=side_hydrographs,
             edge_hydrographs=edge_hydrographs,
             edge_group_overrides=edge_group_overrides,

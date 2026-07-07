@@ -286,6 +286,7 @@ class RunController:
             tiny_wet_cell_threshold=wp["tiny_wet_cell_threshold_spin"],
             degen_mode=wp["degen_mode"],
             front_flux_damping=wp["front_flux_damping_spin"],
+            open_bc_relaxation=wp.get("open_bc_relax_spin", 0.0),
             active_set_hysteresis=wp["active_set_hysteresis_chk"],
             use_redistribution=wp["use_redistribution_chk"],
             inflow_progressive=wp["inflow_progressive_chk"],
@@ -301,6 +302,7 @@ class RunController:
             bc_n1=run_input.bc_n1,
             bc_tp=run_input.bc_tp,
             bc_vl=run_input.bc_vl,
+            bc_relax=run_input.bc_relax,
             side_hydrographs=run_input.side_hydrographs,
             edge_hydrographs=run_input.edge_hydrographs,
             edge_group_overrides=run_input.edge_group_overrides,
@@ -693,7 +695,7 @@ class RunController:
             )
             return
 
-        _, _, bc_type_preview, bc_val_preview = view._collect_boundary_arrays()
+        _, _, bc_type_preview, bc_val_preview, bc_relax_preview = view._collect_boundary_arrays()
         bc_type_preview = bc_type_preview.copy()
         bc_val_preview = bc_val_preview.copy()
         edge_hydrographs = view._collect_bc_layer_hydrographs(edge_n0, edge_n1)
