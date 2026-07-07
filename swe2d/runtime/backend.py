@@ -244,6 +244,9 @@ class SWE2DBackend:
         self._supports_solver_external_sources = log_feature_unavailable(
             self._mod, "swe2d_solver_set_external_sources", logger,
         )
+        self._supports_solver_edge_bc_relax = log_feature_unavailable(
+            self._mod, "swe2d_solver_set_edge_bc_relax", logger,
+        )
         self._h_min = 1.0e-6
         self._cell_area = np.empty(0, dtype=np.float64)
         self._cell_zb = np.empty(0, dtype=np.float64)
@@ -505,6 +508,45 @@ class SWE2DBackend:
             self._mod.swe2d_solver_set_boundary_values(self._solver_h, edge_index, tp, vl)
         else:
             self._mod.swe2d_set_boundary_values(self._mesh_h, edge_index, tp, vl)
+
+    def set_boundary_relaxation(
+        self,
+        bc_edge_node0: np.ndarray,
+        bc_edge_node1: np.ndarray,
+        bc_edge_relax: np.ndarray,
+    ) -> None:
+        """Upload per-edge open-bc relaxation overrides.
+
+        Parameters
+        ----------
+        bc_edge_node0, bc_edge_node1 : array_like int32, shape (E,)
+            Endpoint node indices for boundary edges to update.
+        bc_edge_relax : array_like float64, shape (E,)
+            Relaxation coefficient per edge in [0.0, 1.0].
+        """
+        if not self._boundary_edge_index_by_nodes:
+            return
+        if not self._supports_solver_edge_bc_relax:
+            logger.warning("swe2d_solver_set_edge_bc_relax not available; ignoring per-edge relaxation overrides")
+            return
+        if self._solver_h is None:
+            raise RuntimeError("initialize() must be called before set_boundary_relaxation().")
+        n0 = np.ascontiguousarray(bc_edge_node0, dtype=np.int32).ravel()
+        n1 = np.ascontiguousarray(bc_edge_node1, dtype=np.int32).ravel()
+        r = np.ascontiguousarray(bc_edge_relax, dtype=np.float64).ravel()
+        if not (n0.size == n1.size == r.size):
+            raise ValueError("bc edge relax arrays must have the same length")
+        if n0.size == 0:
+            return
+        edge_index = np.empty(n0.size, dtype=np.int32)
+        for i in range(n0.size):
+            a = int(n0[i])
+            b = int(n1[i])
+            key = (a, b) if a < b else (b, a)
+            if key not in self._boundary_edge_index_by_nodes:
+                raise ValueError(f"Boundary edge ({a}, {b}) not found in mesh")
+            edge_index[i] = self._boundary_edge_index_by_nodes[key]
+        self._mod.swe2d_solver_set_edge_bc_relax(self._solver_h, edge_index, r)
 
     def set_boundary_hydrographs_native(
         self,
@@ -894,6 +936,7 @@ class SWE2DBackend:
         model_options: Optional[SolverModelOptions] = None,
         degen_mode: int = 0,
         front_flux_damping: float = 0.5,
+        open_bc_relaxation: float = 0.0,
         active_set_hysteresis: bool = True,
         friction_substep_enabled: bool = True,
         friction_target_courant: float = 1.0,
@@ -1038,6 +1081,7 @@ class SWE2DBackend:
             shallow_friction_exponent=float(native_opts["shallow_friction_exponent"]),
             degen_mode=int(degen_mode),
             front_flux_damping=float(front_flux_damping),
+            open_bc_relaxation=float(open_bc_relaxation),
             active_set_hysteresis=bool(active_set_hysteresis),
         )
         self._tiny_mode = int(tiny_mode)
