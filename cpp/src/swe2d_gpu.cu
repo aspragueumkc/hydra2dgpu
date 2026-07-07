@@ -4609,7 +4609,8 @@ SWE2DDeviceState* swe2d_gpu_init(
     const double*    hv0,
     const double*    n_mann_cell,
     int              degen_mode,
-    double           max_inv_area)
+    double           max_inv_area,
+    double           open_bc_relaxation)
 {
     auto* dev = new SWE2DDeviceState();
     dev->n_cells = mesh.n_cells;
@@ -4641,6 +4642,11 @@ SWE2DDeviceState* swe2d_gpu_init(
     alloc_d(reinterpret_cast<void**>(&dev->d_edge_my),     sz_edges * sizeof(double));
     alloc_d(reinterpret_cast<void**>(&dev->d_edge_bc),     sz_edges * sizeof(int32_t));
     alloc_d(reinterpret_cast<void**>(&dev->d_edge_bc_val), sz_edges * sizeof(double));
+    alloc_d(reinterpret_cast<void**>(&dev->d_edge_bc_relax), sz_edges * sizeof(double));
+    {
+        std::vector<double> edge_bc_relax(sz_edges, open_bc_relaxation);
+        copy_h2d_d(dev->d_edge_bc_relax, edge_bc_relax.data(), sz_edges);
+    }
 
     copy_h2d_i(dev->d_edge_c0, mesh.edge_c0.data(), sz_edges);
     copy_h2d_i(dev->d_edge_c1, mesh.edge_c1.data(), sz_edges);
@@ -10935,6 +10941,7 @@ void swe2d_gpu_destroy(SWE2DDeviceState* dev) {
     safe_free(dev->d_edge_len);   safe_free(dev->d_edge_bc);
     safe_free(dev->d_edge_mx);    safe_free(dev->d_edge_my);
     safe_free(dev->d_edge_bc_val);
+    safe_free(dev->d_edge_bc_relax);
     safe_free(dev->d_cell_edge_offsets);
     safe_free(dev->d_cell_edge_ids);
     safe_free(dev->d_cell_owned_offsets);

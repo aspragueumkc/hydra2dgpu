@@ -66,6 +66,7 @@ struct SWE2DDeviceState {
     double*  d_edge_my     = nullptr;
     int32_t* d_edge_bc     = nullptr;   // BCType stored as int32_t for CUDA compatibility
     double*  d_edge_bc_val = nullptr;
+    double*  d_edge_bc_relax = nullptr;  // per-edge reflection-damping coefficient
     // Per-stage boundary forcing snapshots used by graph-safe higher-order schemes.
     // Layout is contiguous by stage: slot*swe_n_edges + edge.
     int32_t* d_stage_edge_bc = nullptr;
@@ -612,6 +613,7 @@ struct SWE2DDeviceState {
     @param n_mann_cell Manning's roughness per cell [n_cells]
     @param degen_mode Degenerate-cell handling mode (default 0)
     @param max_inv_area Maximum inverse-area threshold (default 1.0e6)
+    @param open_bc_relaxation Reflection-damping coefficient for open BC edges (default 0.0)
     @returns Pointer to initialized SWE2DDeviceState
     @host */
 SWE2DDeviceState* swe2d_gpu_init(
@@ -621,7 +623,8 @@ SWE2DDeviceState* swe2d_gpu_init(
     const double*    hv0,
     const double*    n_mann_cell,
     int              degen_mode   = 0,
-    double           max_inv_area = 1.0e6);
+    double           max_inv_area = 1.0e6,
+    double           open_bc_relaxation = 0.0);
 
 /** Set the Manning unit-conversion factor in GPU constant memory.
     Call once after swe2d_gpu_init and before any step call.

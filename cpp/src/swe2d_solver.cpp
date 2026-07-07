@@ -88,7 +88,8 @@ SWE2DSolver* swe2d_create(
                                 s->h.data(), s->hu.data(), s->hv.data(),
                                 s->n_mann_cell.data(),
                                 cfg.degen_mode,
-                                cfg.max_inv_area);
+                                cfg.max_inv_area,
+                                cfg.open_bc_relaxation);
         if (s->dev) {
             const bool enable_cuda_graphs = swe2d_env_enabled("BACKWATER_ENABLE_CUDA_GRAPHS");
             swe2d_gpu_enable_kernel_graphs(s->dev, enable_cuda_graphs);
