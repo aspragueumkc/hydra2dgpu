@@ -238,16 +238,17 @@ def execute_run(
             d.get("bc_edge_node1", np.empty(0, dtype=np.int32)),
             d.get("bc_edge_type", np.empty(0, dtype=np.int32)),
             d.get("bc_edge_val", np.empty(0, dtype=np.float64)),
+            d.get("bc_relax", np.empty(0, dtype=np.float64)),
         )
 
-    def _valid_bc_arrays(n0, n1, tp, vl):
-        return n0.size > 0 and n0.size == n1.size == tp.size == vl.size
+    def _valid_bc_arrays(n0, n1, tp, vl, rl):
+        return n0.size > 0 and n0.size == n1.size == tp.size == vl.size == rl.size
 
     def _norm_key(a, b):
         return (a, b) if a < b else (b, a)
 
-    bc_n0, bc_n1, bc_tp, bc_vl = _bc_arrays_from_dict(bc)
-    if _valid_bc_arrays(bc_n0, bc_n1, bc_tp, bc_vl):
+    bc_n0, bc_n1, bc_tp, bc_vl, bc_relax = _bc_arrays_from_dict(bc)
+    if _valid_bc_arrays(bc_n0, bc_n1, bc_tp, bc_vl, bc_relax):
         # Validate override edges against mesh boundary before using them.
         try:
             boundary_keys = {
@@ -264,12 +265,12 @@ def execute_run(
                     "[BC] %d/%d bc_lines edges do not exist on mesh boundary; falling back to baked-mesh BCs. Bad examples: %s",
                     len(bad), bc_n0.size, bad[:5],
                 )
-                bc_n0, bc_n1, bc_tp, bc_vl = _bc_arrays_from_dict(mesh_data)
+                bc_n0, bc_n1, bc_tp, bc_vl, bc_relax = _bc_arrays_from_dict(mesh_data)
         except Exception as _e:
             logger.warning("[BC] override validation failed: %s; using baked-mesh BCs", _e)
-            bc_n0, bc_n1, bc_tp, bc_vl = _bc_arrays_from_dict(mesh_data)
+            bc_n0, bc_n1, bc_tp, bc_vl, bc_relax = _bc_arrays_from_dict(mesh_data)
     else:
-        bc_n0, bc_n1, bc_tp, bc_vl = _bc_arrays_from_dict(mesh_data)
+        bc_n0, bc_n1, bc_tp, bc_vl, bc_relax = _bc_arrays_from_dict(mesh_data)
 
     # Build Thiessen forcing from GPKG (if configured)
     thiessen_forcing = None
@@ -344,6 +345,7 @@ def execute_run(
         tiny_mode=int(rp.get("tiny_mode", 0)),
         tiny_wet_cell_threshold=int(rp.get("tiny_wet_cell_threshold", 2000)),
         front_flux_damping=float(rp.get("front_flux_damping", 0.5)),
+        open_bc_relaxation=float(rp.get("open_bc_relaxation", 0.0)),
         active_set_hysteresis=bool(rp.get("active_set_hysteresis", True)),
         degen_mode=int(rp.get("degen_mode", 0)),
         spatial_discretization=int(rp.get("spatial_scheme", 0)),
@@ -357,6 +359,12 @@ def execute_run(
             backend.set_boundary_conditions(bc_n0, bc_n1, bc_tp, bc_vl)
         except Exception as _e:
             logger.warning("Failed to set boundary conditions: %s", _e)
+
+    if bc_relax.size > 0:
+        try:
+            backend.set_boundary_relaxation(bc_n0, bc_n1, bc_relax)
+        except Exception as _e:
+            logger.warning("Failed to set boundary relaxation: %s", _e)
 
     # Configure native rain if Thiessen forcing is present
     if thiessen_forcing is not None:
