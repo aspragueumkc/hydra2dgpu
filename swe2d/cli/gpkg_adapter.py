@@ -156,17 +156,31 @@ def query_bc_arrays(
 
     # ── Path 1: Pre-split edge table ──────────────────────────────────
     if {"node0", "node1", "bc_type", "bc_val"}.issubset(col_names_lower):
+        relax_col = None
+        for cand in ("bc_relax", "open_bc_relax", "relax"):
+            if cand in col_names_lower:
+                relax_col = cand
+                break
+        cols = ["node0", "node1", "bc_type", "bc_val"]
+        if relax_col:
+            cols.append(relax_col)
         cur.execute(
-            f"SELECT node0, node1, bc_type, bc_val FROM \"{bc_table}\" ORDER BY rowid"
+            f'SELECT {", ".join(cols)} FROM "{bc_table}" ORDER BY rowid'
         )
         rows = cur.fetchall()
         if rows:
-            return {
+            out = {
                 "bc_edge_node0": np.array([r[0] for r in rows], dtype=np.int32),
                 "bc_edge_node1": np.array([r[1] for r in rows], dtype=np.int32),
                 "bc_edge_type": np.array([r[2] for r in rows], dtype=np.int32),
                 "bc_edge_val": np.array([r[3] for r in rows], dtype=np.float64),
             }
+            if relax_col:
+                out["bc_relax"] = np.array(
+                    [0.0 if r[4] is None else float(r[4]) for r in rows],
+                    dtype=np.float64,
+                )
+            return out
 
     # ── Path 2: Geometry-based table (LineString features) ────────────
     # Requires node_x/node_y for vertex-to-node snapping
@@ -188,20 +202,29 @@ def query_bc_arrays(
     # Find bc_type / bc_val columns - check column NAME (first element), not type (second)
     bc_col = next(c for c, _ in col_info if c.lower() in ("bc_type", "bc", "bctype", "boundary_type"))
     val_col = next(c for c, _ in col_info if c.lower() in ("bc_val", "bcvalue", "bc_value", "value", "val"))
+    relax_col = next((c for c, _ in col_info if c.lower() in ("bc_relax", "open_bc_relax", "relax")), None)
 
     q_cols = f"\"{geom_col}\""
     if bc_col:
         q_cols += f", \"{bc_col}\""
     if val_col:
         q_cols += f", \"{val_col}\""
+    if relax_col:
+        q_cols += f", \"{relax_col}\""
 
     cur.execute(f"SELECT {q_cols} FROM \"{bc_table}\" ORDER BY rowid")
 
-    all_n0, all_n1, all_type, all_val = [], [], [], []
+    all_n0, all_n1, all_type, all_val, all_relax = [], [], [], [], []
     for row in cur.fetchall():
         geom_raw = row[0]
         bt = int(row[1]) if bc_col and len(row) > 1 and row[1] is not None else 1
         bv = float(row[2]) if val_col and len(row) > 2 and row[2] is not None else 0.0
+        br = 0.0
+        if relax_col and len(row) > 3 and row[3] is not None:
+            try:
+                br = float(row[3])
+            except Exception:
+                br = 0.0
 
         coords = _parse_wkb_linestring(geom_raw)
         if not coords:
@@ -216,6 +239,7 @@ def query_bc_arrays(
             all_n1.append(node_ids[i + 1])
             all_type.append(bt)
             all_val.append(bv)
+            all_relax.append(br)
 
         # Close ring if start==end (LINESTRING that forms a loop)
         if len(node_ids) > 2 and node_ids[0] == node_ids[-1]:
@@ -223,6 +247,7 @@ def query_bc_arrays(
             all_n1.append(node_ids[-1])
             all_type.append(bt)
             all_val.append(bv)
+            all_relax.append(br)
 
     if not all_n0:
         return {}
@@ -232,6 +257,7 @@ def query_bc_arrays(
         "bc_edge_node1": np.array(all_n1, dtype=np.int32),
         "bc_edge_type": np.array(all_type, dtype=np.int32),
         "bc_edge_val": np.array(all_val, dtype=np.float64),
+        "bc_relax": np.array(all_relax, dtype=np.float64),
     }
 
 
