@@ -1523,6 +1523,18 @@ __global__ void swe2d_apply_boundary_updates_kernel(
     edge_bc_val[e] = upd_val[i];
 }
 
+__global__ void swe2d_apply_edge_relax_kernel(
+    int32_t n_updates,
+    const int32_t* __restrict__ edge_index,
+    const double*  __restrict__ relax,
+    double*        __restrict__ d_edge_bc_relax)
+{
+    int i = blockIdx.x * blockDim.x + threadIdx.x;
+    if (i < n_updates) {
+        d_edge_bc_relax[edge_index[i]] = relax[i];
+    }
+}
+
 /** GPU kernel: build rain + CN (Curve Number) runoff source.
  * 1 thread per cell.  Interpolates cumulative rain from gage time series,
  * computes SCS runoff excess, tracks cumulative rain/excess, and writes

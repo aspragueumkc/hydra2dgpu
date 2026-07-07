@@ -2097,6 +2097,27 @@ PYBIND11_MODULE(HYDRA_SWE2D_PY_MODULE_NAME, m) {
         py::arg("solver"), py::arg("edge_index"), py::arg("bc_type"), py::arg("bc_val"),
         "Update boundary condition values on an active solver and sync GPU arrays.");
 
+    // ── Per-edge BC relaxation overrides ─────────────────────────────────────
+    m.def("swe2d_solver_set_edge_bc_relax",
+        [](std::shared_ptr<PySolver>& ps,
+           py::array_t<int32_t, py::array::c_style | py::array::forcecast> edge_index,
+           py::array_t<double, py::array::c_style | py::array::forcecast> relax) {
+            if (!ps || !ps->solver || !ps->solver->dev)
+                throw std::runtime_error("solver not initialized");
+            if (edge_index.size() != relax.size())
+                throw std::runtime_error("edge_index and relax must have the same length");
+            if (!ps->solver->dev->d_edge_bc_relax)
+                throw std::runtime_error("device relaxation array not allocated");
+            const int32_t n = static_cast<int32_t>(edge_index.size());
+            constexpr int BLOCK = 256;
+            const int grid = (n + BLOCK - 1) / BLOCK;
+            swe2d_apply_edge_relax_kernel<<<grid, BLOCK>>>(
+                n, edge_index.data(), relax.data(), ps->solver->dev->d_edge_bc_relax);
+            CUDA_CHECK(cudaGetLastError());
+        },
+        py::arg("solver"), py::arg("edge_index"), py::arg("relax"),
+        "Upload per-edge relaxation overrides for boundary edges.");
+
     m.def("swe2d_solver_set_boundary_hydrographs",
         [](const std::shared_ptr<PySolver>& ps,
            py::array_t<int32_t, py::array::c_style | py::array::forcecast> edge_index,
@@ -2242,8 +2263,9 @@ PYBIND11_MODULE(HYDRA_SWE2D_PY_MODULE_NAME, m) {
               bool enable_pipe_network_module,
               bool enable_hydraulic_structures,
               int degen_mode,
-              double front_flux_damping,
-              bool   active_set_hysteresis,
+               double front_flux_damping,
+               double open_bc_relaxation,
+               bool   active_set_hysteresis,
               bool   friction_substep_enabled,
               double friction_target_courant,
               int    friction_max_substeps,
@@ -2329,6 +2351,7 @@ PYBIND11_MODULE(HYDRA_SWE2D_PY_MODULE_NAME, m) {
             cfg.n_threads = n_threads;
             cfg.degen_mode = degen_mode;
             cfg.front_flux_damping = front_flux_damping;
+            cfg.open_bc_relaxation = open_bc_relaxation;
             cfg.active_set_hysteresis = active_set_hysteresis;
             cfg.friction_substep_enabled = friction_substep_enabled;
             cfg.friction_target_courant = friction_target_courant;
@@ -2391,6 +2414,7 @@ PYBIND11_MODULE(HYDRA_SWE2D_PY_MODULE_NAME, m) {
         py::arg("enable_hydraulic_structures") = false,
         py::arg("degen_mode") = 0,
         py::arg("front_flux_damping") = 0.5,
+        py::arg("open_bc_relaxation") = 0.0,
         py::arg("active_set_hysteresis") = true,
         py::arg("friction_substep_enabled") = true,
         py::arg("friction_target_courant") = 1.0,
