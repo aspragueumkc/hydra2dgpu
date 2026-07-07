@@ -80,6 +80,8 @@ class SWE2DBackendInitializer:
         tiny_wet_cell_threshold: int,
         degen_mode: int,
         front_flux_damping: float,
+        open_bc_relaxation: float,
+        bc_relax: np.ndarray,
         active_set_hysteresis: bool,
         # Baked mesh persistence
         gpkg_path: str = "",
@@ -171,6 +173,9 @@ class SWE2DBackendInitializer:
             temporal_scheme=temporal_scheme,
             degen_mode=int(degen_mode),
             front_flux_damping=float(front_flux_damping),
+            open_bc_relaxation=float(open_bc_relaxation),
             active_set_hysteresis=bool(active_set_hysteresis),
         )
+        if bc_relax is not None and bc_relax.size > 0:
+            b.set_boundary_relaxation(bc_n0, bc_n1, bc_relax)
         return b
