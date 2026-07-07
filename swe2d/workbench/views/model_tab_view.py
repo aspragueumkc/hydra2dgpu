@@ -1015,6 +1015,24 @@ class ModelTabView(QtWidgets.QWidget):
         self.front_flux_damping_spin.setSingleStep(0.05)
         self.front_flux_damping_spin.setValue(0.5)
 
+        self.open_bc_relax_spin = QtWidgets.QDoubleSpinBox()
+        self.open_bc_relax_spin.setObjectName("open_bc_relax_spin")
+        self.open_bc_relax_spin.setToolTip(
+            "Reflection damping at open / normal-depth / reflect boundaries.\n"
+            "Blends the constructed ghost state toward the interior state.\n"
+            "0.0 = disabled (current behavior).\n"
+            "0.1–0.5 if instability (runaway inflow, NaN h, oscillating\n"
+            "hydraulic jumps) appears near the boundary with higher-order\n"
+            "schemes (MUSCL, WENO5). 1.0 = fully transmissive boundary.\n"
+            "WALL / INFLOW_Q / STAGE BCs are NOT affected.\n"
+            "Per-edge override can be set with a 'bc_relax' field on the BC line layer."
+        )
+        self._add_param_row(form, "Open BC relax:", self.open_bc_relax_spin)
+        self.open_bc_relax_spin.setRange(0.0, 1.0)
+        self.open_bc_relax_spin.setDecimals(3)
+        self.open_bc_relax_spin.setSingleStep(0.05)
+        self.open_bc_relax_spin.setValue(0.0)
+
         self.active_set_hysteresis_chk = QtWidgets.QCheckBox("Enable")
         self.active_set_hysteresis_chk.setObjectName("active_set_hysteresis_chk")
         self.active_set_hysteresis_chk.setToolTip(
@@ -1516,6 +1534,7 @@ class ModelTabView(QtWidgets.QWidget):
             "enable_cuda_graphs_chk": bool(self.enable_cuda_graphs_chk.isChecked()),
             "degen_mode": int(self.degen_mode_combo.currentData()),
             "front_flux_damping_spin": float(self.front_flux_damping_spin.value()),
+            "open_bc_relax_spin": float(self.open_bc_relax_spin.value()),
             "active_set_hysteresis_chk": bool(self.active_set_hysteresis_chk.isChecked()),
             "drainage_gpu_method": str(self.drainage_gpu_method_combo.currentData()),
             "culvert_solver_mode": int(self.culvert_solver_mode_combo.currentData()),
