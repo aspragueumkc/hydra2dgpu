@@ -1763,3 +1763,17 @@ void swe2d_gpu_upload_culvert_tables(
 
 /// Release culvert lookup table device memory. @host
 void swe2d_gpu_release_culvert_tables(CulvertLookupTableDesc& desc);
+
+/// Per-edge BC relaxation override set by swe2d_solver_set_edge_bc_relax. @global
+__global__ void swe2d_apply_edge_relax_kernel(
+    int32_t n_updates,
+    const int32_t* __restrict__ edge_index,
+    const double*  __restrict__ relax,
+    double*        __restrict__ d_edge_bc_relax);
+
+/// Host-callable wrapper that launches swe2d_apply_edge_relax_kernel on the solver stream. @host
+void swe2d_gpu_set_edge_bc_relax(
+    SWE2DDeviceState* dev,
+    const int32_t* edge_index,
+    const double* relax,
+    int32_t n_updates);

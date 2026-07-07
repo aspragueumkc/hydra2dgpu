@@ -2109,11 +2109,7 @@ PYBIND11_MODULE(HYDRA_SWE2D_PY_MODULE_NAME, m) {
             if (!ps->solver->dev->d_edge_bc_relax)
                 throw std::runtime_error("device relaxation array not allocated");
             const int32_t n = static_cast<int32_t>(edge_index.size());
-            constexpr int BLOCK = 256;
-            const int grid = (n + BLOCK - 1) / BLOCK;
-            swe2d_apply_edge_relax_kernel<<<grid, BLOCK>>>(
-                n, edge_index.data(), relax.data(), ps->solver->dev->d_edge_bc_relax);
-            CUDA_CHECK(cudaGetLastError());
+            swe2d_gpu_set_edge_bc_relax(ps->solver->dev, edge_index.data(), relax.data(), n);
         },
         py::arg("solver"), py::arg("edge_index"), py::arg("relax"),
         "Upload per-edge relaxation overrides for boundary edges.");

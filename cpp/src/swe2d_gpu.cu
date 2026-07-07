@@ -7817,6 +7817,20 @@ void swe2d_gpu_update_boundary_values(
     CUDA_CHECK(cudaGetLastError());
 }
 
+void swe2d_gpu_set_edge_bc_relax(
+    SWE2DDeviceState* dev,
+    const int32_t* edge_index,
+    const double* relax,
+    int32_t n_updates)
+{
+    if (!dev) return;
+    constexpr int BLOCK = 256;
+    const int grid = (n_updates + BLOCK - 1) / BLOCK;
+    swe2d_apply_edge_relax_kernel<<<grid, BLOCK, 0, dev->d_stream>>>(
+        n_updates, edge_index, relax, dev->d_edge_bc_relax);
+    CUDA_CHECK(cudaGetLastError());
+}
+
 void swe2d_gpu_set_boundary_hydrographs(
     SWE2DDeviceState* dev,
     const int32_t* edge_index,
