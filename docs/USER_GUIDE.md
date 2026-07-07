@@ -796,6 +796,21 @@ Open the **Model GeoPackage Explorer** from the Layers tab → Utilities page to
 - Set **output interval** to be ≥10× larger than dt to avoid snapshot overhead
 - Use **streamline backend = CUDA** for fast velocity visualization
 
+### ANUGA Validation Suite
+
+The full hydraulic validation suite is in `tests/test_anuga_suite.py` and
+imports ANUGA's analytical solutions directly from
+`reference/anuga_validation_tests/`. Run it to verify SWE2D matches ANUGA
+across ~20 classical dam-break, lake-at-rest, subcritical, supercritical,
+transcritical, and 2D radial test cases:
+
+```bash
+mamba run -n qgis_stable python -m unittest tests.test_anuga_suite -v
+```
+
+Each test compares the GPU solution against ANUGA's closed-form or numerical
+ground truth with documented L1/L∞ tolerances.
+
 ---
 
 ## 10. Layer Styles (QML)
