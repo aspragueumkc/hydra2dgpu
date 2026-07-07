@@ -23,6 +23,9 @@ class _FakeModuleBase:
         empty_f = np.empty(0, dtype=np.float64)
         return empty_i, empty_i, empty_i, empty_i, empty_f
 
+    def swe2d_get_cell_perm(self, mesh_h):
+        return np.array([0], dtype=np.int32)
+
     def swe2d_destroy(self, solver_h):
         return None
 
@@ -89,9 +92,9 @@ class TestSWE2DBackendTinyModeConfig(unittest.TestCase):
         self.assertEqual(fake.create_kwargs["tiny_cell_threshold"], 8000)
         self.assertEqual(fake.create_kwargs["tiny_edge_threshold"], 24000)
         self.assertEqual(fake.create_kwargs["tiny_wet_cell_threshold"], 2000)
-        self.assertEqual(fake.create_kwargs["tiny_persistent_chunk_substeps"], 8)
-        self.assertEqual(fake.create_kwargs["tiny_active_compaction_stride_steps"], 8)
-        self.assertTrue(fake.create_kwargs["tiny_enable_active_compaction"])
+        self.assertNotIn("tiny_persistent_chunk_substeps", fake.create_kwargs)
+        self.assertNotIn("tiny_active_compaction_stride_steps", fake.create_kwargs)
+        self.assertNotIn("tiny_enable_active_compaction", fake.create_kwargs)
 
     def test_initialize_compat_filters_new_kwargs_for_old_extension(self):
         fake = _FakeModuleOld()
@@ -104,37 +107,21 @@ class TestSWE2DBackendTinyModeConfig(unittest.TestCase):
 
         self.assertEqual(fake.create_kwargs, {})
 
-    def test_run_uses_chunked_batching_in_persistent_tiny_mode(self):
-        fake = _FakeModuleNew()
-        backend_mod._swe2d_mod = fake
-        backend_mod._swe2d_load_error = None
+    def test_run_uses_zero_batching_for_all_tiny_modes(self):
+        for mode in (0, 1, 2, 3):
+            fake = _FakeModuleNew()
+            backend_mod._swe2d_mod = fake
+            backend_mod._swe2d_load_error = None
 
-        b = backend_mod.SWE2DBackend()
-        self._build_minimal_mesh(b)
-        b.initialize(
-            np.array([0.1], dtype=np.float64),
-            tiny_mode=3,
-            tiny_persistent_chunk_substeps=5,
-        )
-        b.run(t_end=1.0, dt_request=0.1)
+            b = backend_mod.SWE2DBackend()
+            self._build_minimal_mesh(b)
+            b.initialize(
+                np.array([0.1], dtype=np.float64),
+                tiny_mode=mode,
+            )
+            b.run(t_end=1.0, dt_request=0.1)
 
-        self.assertEqual(fake.last_run_diag_batch_size, 5)
-
-    def test_run_keeps_zero_batching_when_not_persistent_mode(self):
-        fake = _FakeModuleNew()
-        backend_mod._swe2d_mod = fake
-        backend_mod._swe2d_load_error = None
-
-        b = backend_mod.SWE2DBackend()
-        self._build_minimal_mesh(b)
-        b.initialize(
-            np.array([0.1], dtype=np.float64),
-            tiny_mode=1,
-            tiny_persistent_chunk_substeps=5,
-        )
-        b.run(t_end=1.0, dt_request=0.1)
-
-        self.assertEqual(fake.last_run_diag_batch_size, 0)
+            self.assertEqual(fake.last_run_diag_batch_size, 0, f"mode={mode}")
 
 
 if __name__ == "__main__":

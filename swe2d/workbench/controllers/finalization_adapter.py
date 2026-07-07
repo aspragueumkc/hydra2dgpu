@@ -60,9 +60,11 @@ class FinalizationAdapter:
             from swe2d.workbench.bridges.project_settings_bridge import collect_workbench_widget_state
             try:
                 wp = self._dialog.collect_run_widget_params()
+                all_attrs = list(wp.keys())
+                widget_attrs = [k for k in all_attrs if k not in ("gravity", "k_mann")]
                 widget_state = collect_workbench_widget_state(
-                    ui=self._dialog,
-                    widget_attrs=list(wp.keys()),
+                    ui=self._dialog._model_tab_view,
+                    widget_attrs=widget_attrs,
                     qtwidgets_module=QtWidgets,
                 )
                 return {"workbench_widget_state": widget_state}

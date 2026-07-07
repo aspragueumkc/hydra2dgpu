@@ -52,12 +52,12 @@ _WIDGET_TO_CLI_MAP = {
     "gpu_diag_sync_interval_spin": "gpu_diag_sync_interval_steps",
     "tiny_wet_cell_threshold_spin": "tiny_wet_cell_threshold",
     "front_flux_damping_spin": "front_flux_damping",
+    "open_bc_relax_spin": "open_bc_relaxation",
     "k_mann_spin": "k_mann",
 }
 
 _BOOL_WIDGET_TO_CLI_MAP = {
     "adaptive_cfl_dt_chk": "adaptive_cfl_dt",
-    "extreme_rain_mode_chk": "extreme_rain_mode",
     "source_true_subcycling_chk": "source_true_subcycling",
     "source_imex_split_chk": "source_imex_split",
     "active_set_hysteresis_chk": "active_set_hysteresis",

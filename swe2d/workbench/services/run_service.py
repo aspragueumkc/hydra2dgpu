@@ -27,7 +27,6 @@ def collect_run_parameters(
     momentum_cap_celerity_mult: Optional[float] = None,
     max_inv_area: Optional[float] = None,
     cfl_lambda_cap: Optional[float] = None,
-    extreme_rain_mode: Optional[bool] = None,
     source_cfl_beta: Optional[float] = None,
     source_max_substeps: Optional[int] = None,
     source_true_subcycling: Optional[bool] = None,
@@ -70,8 +69,6 @@ def collect_run_parameters(
         params["max_inv_area"] = float(max_inv_area)
     if cfl_lambda_cap is not None:
         params["cfl_lambda_cap"] = float(cfl_lambda_cap)
-    if extreme_rain_mode is not None:
-        params["extreme_rain_mode"] = bool(extreme_rain_mode)
     if source_cfl_beta is not None:
         params["source_cfl_beta"] = float(source_cfl_beta)
     if source_max_substeps is not None:

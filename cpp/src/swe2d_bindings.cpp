@@ -1794,6 +1794,14 @@ PYBIND11_MODULE(HYDRA_SWE2D_PY_MODULE_NAME, m) {
         py::arg("dev"),
         "Destroy cached CUDA graph resources for this solver instance.");
 
+    m.def("swe2d_gpu_invalidate_graph_cache",
+        []() {
+            swe2d_gpu_invalidate_graph_cache(nullptr);
+        },
+        "Invalidate cached CUDA graph so the solver re-captures on the next step. "
+        "Uses s_coupling_dev internally — call after coupling changes "
+        "use_culvert_face_flux to force a cache miss on the next solver step.");
+
 
     // ── Mesh builder (legacy triangular triplets) ───────────────────────────
     // swe2d_build_mesh(node_x, node_y, node_z, cell_nodes,
@@ -2089,6 +2097,23 @@ PYBIND11_MODULE(HYDRA_SWE2D_PY_MODULE_NAME, m) {
         py::arg("solver"), py::arg("edge_index"), py::arg("bc_type"), py::arg("bc_val"),
         "Update boundary condition values on an active solver and sync GPU arrays.");
 
+    // ── Per-edge BC relaxation overrides ─────────────────────────────────────
+    m.def("swe2d_solver_set_edge_bc_relax",
+        [](std::shared_ptr<PySolver>& ps,
+           py::array_t<int32_t, py::array::c_style | py::array::forcecast> edge_index,
+           py::array_t<double, py::array::c_style | py::array::forcecast> relax) {
+            if (!ps || !ps->solver || !ps->solver->dev)
+                throw std::runtime_error("solver not initialized");
+            if (edge_index.size() != relax.size())
+                throw std::runtime_error("edge_index and relax must have the same length");
+            if (!ps->solver->dev->d_edge_bc_relax)
+                throw std::runtime_error("device relaxation array not allocated");
+            const int32_t n = static_cast<int32_t>(edge_index.size());
+            swe2d_gpu_set_edge_bc_relax(ps->solver->dev, edge_index.data(), relax.data(), n);
+        },
+        py::arg("solver"), py::arg("edge_index"), py::arg("relax"),
+        "Upload per-edge relaxation overrides for boundary edges.");
+
     m.def("swe2d_solver_set_boundary_hydrographs",
         [](const std::shared_ptr<PySolver>& ps,
            py::array_t<int32_t, py::array::c_style | py::array::forcecast> edge_index,
@@ -2206,9 +2231,9 @@ PYBIND11_MODULE(HYDRA_SWE2D_PY_MODULE_NAME, m) {
                   double momentum_cap_celerity_mult,
                   double depth_cap,
                   double max_rel_depth_increase,
-                  double shallow_damping_depth,
-                  bool extreme_rain_mode,
-                  double source_cfl_beta,
+                   double shallow_damping_depth,
+                   double source_cfl_beta,
+
                   int source_max_substeps,
                   double source_rate_cap,
                   double source_depth_step_cap,
@@ -2219,11 +2244,9 @@ PYBIND11_MODULE(HYDRA_SWE2D_PY_MODULE_NAME, m) {
                   int tiny_mode,
                   int tiny_cell_threshold,
                   int tiny_edge_threshold,
-                  int tiny_wet_cell_threshold,
-                  int tiny_persistent_chunk_substeps,
-                  int tiny_active_compaction_stride_steps,
-                  bool tiny_enable_active_compaction,
-              bool use_gpu, int n_threads,
+                   int tiny_wet_cell_threshold,
+                   bool use_gpu, int n_threads,
+
                int temporal_order,
                int spatial_scheme,
                 int turbulence_model,
@@ -2234,8 +2257,9 @@ PYBIND11_MODULE(HYDRA_SWE2D_PY_MODULE_NAME, m) {
               bool enable_pipe_network_module,
               bool enable_hydraulic_structures,
               int degen_mode,
-              double front_flux_damping,
-              bool   active_set_hysteresis,
+               double front_flux_damping,
+               double open_bc_relaxation,
+               bool   active_set_hysteresis,
               bool   friction_substep_enabled,
               double friction_target_courant,
               int    friction_max_substeps,
@@ -2292,7 +2316,6 @@ PYBIND11_MODULE(HYDRA_SWE2D_PY_MODULE_NAME, m) {
             cfg.depth_cap = depth_cap;
             cfg.max_rel_depth_increase = max_rel_depth_increase;
             cfg.shallow_damping_depth = shallow_damping_depth;
-            cfg.extreme_rain_mode = extreme_rain_mode;
             cfg.source_cfl_beta = source_cfl_beta;
             cfg.source_max_substeps = source_max_substeps;
             cfg.source_rate_cap = source_rate_cap;
@@ -2305,9 +2328,6 @@ PYBIND11_MODULE(HYDRA_SWE2D_PY_MODULE_NAME, m) {
             cfg.tiny_cell_threshold = tiny_cell_threshold;
             cfg.tiny_edge_threshold = tiny_edge_threshold;
             cfg.tiny_wet_cell_threshold = tiny_wet_cell_threshold;
-            cfg.tiny_persistent_chunk_substeps = tiny_persistent_chunk_substeps;
-            cfg.tiny_active_compaction_stride_steps = tiny_active_compaction_stride_steps;
-            cfg.tiny_enable_active_compaction = tiny_enable_active_compaction;
             cfg.temporal_order = temporal_order;
             cfg.spatial_scheme = spatial_scheme;
             cfg.turbulence_model = turbulence_model;
@@ -2321,6 +2341,7 @@ PYBIND11_MODULE(HYDRA_SWE2D_PY_MODULE_NAME, m) {
             cfg.n_threads = n_threads;
             cfg.degen_mode = degen_mode;
             cfg.front_flux_damping = front_flux_damping;
+            cfg.open_bc_relaxation = open_bc_relaxation;
             cfg.active_set_hysteresis = active_set_hysteresis;
             cfg.friction_substep_enabled = friction_substep_enabled;
             cfg.friction_target_courant = friction_target_courant;
@@ -2354,7 +2375,6 @@ PYBIND11_MODULE(HYDRA_SWE2D_PY_MODULE_NAME, m) {
         py::arg("depth_cap") = 1.0e6,
         py::arg("max_rel_depth_increase") = 2.0,
         py::arg("shallow_damping_depth") = 1.0e-4,
-        py::arg("extreme_rain_mode") = false,
         py::arg("source_cfl_beta") = 0.25,
         py::arg("source_max_substeps") = 16,
         py::arg("source_rate_cap") = 0.0,
@@ -2367,9 +2387,6 @@ PYBIND11_MODULE(HYDRA_SWE2D_PY_MODULE_NAME, m) {
         py::arg("tiny_cell_threshold") = 8000,
         py::arg("tiny_edge_threshold") = 24000,
         py::arg("tiny_wet_cell_threshold") = 2000,
-        py::arg("tiny_persistent_chunk_substeps") = 8,
-        py::arg("tiny_active_compaction_stride_steps") = 8,
-        py::arg("tiny_enable_active_compaction") = true,
         py::arg("use_gpu")  = true,
         py::arg("n_threads") = 0,
         py::arg("temporal_order") = 2,
@@ -2383,6 +2400,7 @@ PYBIND11_MODULE(HYDRA_SWE2D_PY_MODULE_NAME, m) {
         py::arg("enable_hydraulic_structures") = false,
         py::arg("degen_mode") = 0,
         py::arg("front_flux_damping") = 0.5,
+        py::arg("open_bc_relaxation") = 0.0,
         py::arg("active_set_hysteresis") = true,
         py::arg("friction_substep_enabled") = true,
         py::arg("friction_target_courant") = 1.0,

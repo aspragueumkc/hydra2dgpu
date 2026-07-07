@@ -106,6 +106,16 @@ class RunController:
         view.set_cancel_button_enabled(True)
         view.set_run_progress(0)
 
+        # Clear stale overlay/snapshot state from any previous run so the
+        # new run starts with a clean slate (run records, overlay key, mesh
+        # arrays).  Without this, _ensure_live_run_record returns early
+        # because old run records are still present, causing numbering
+        # scrambles across consecutive runs in the same session.
+        try:
+            view._reset_runtime_snapshot_overlay_cache("new run starting")
+        except Exception:
+            pass
+
         # Ensure _results_data exists so snapshot_ready signals have a place to land.
         try:
             view._show_results_panel()
@@ -264,7 +274,6 @@ class RunController:
             depth_cap=wp["depth_cap_spin"],
             max_rel_depth_increase=wp["max_rel_depth_increase_spin"],
             shallow_damping_depth=wp["shallow_damping_depth_spin"],
-            extreme_rain_mode=wp["extreme_rain_mode_chk"],
             source_cfl_beta=wp["source_cfl_beta_spin"],
             source_max_substeps=wp["source_max_substeps_spin"],
             source_rate_cap=wp["max_source_rate_spin"],
@@ -276,6 +285,7 @@ class RunController:
             tiny_wet_cell_threshold=wp["tiny_wet_cell_threshold_spin"],
             degen_mode=wp["degen_mode"],
             front_flux_damping=wp["front_flux_damping_spin"],
+            open_bc_relaxation=wp.get("open_bc_relax_spin", 0.0),
             active_set_hysteresis=wp["active_set_hysteresis_chk"],
             use_redistribution=wp["use_redistribution_chk"],
             inflow_progressive=wp["inflow_progressive_chk"],
@@ -291,6 +301,7 @@ class RunController:
             bc_n1=run_input.bc_n1,
             bc_tp=run_input.bc_tp,
             bc_vl=run_input.bc_vl,
+            bc_relax=run_input.bc_relax,
             side_hydrographs=run_input.side_hydrographs,
             edge_hydrographs=run_input.edge_hydrographs,
             edge_group_overrides=run_input.edge_group_overrides,
@@ -423,11 +434,13 @@ class RunController:
         stays empty until persistence completes.
         """
         from swe2d.results.run_service import RunRecord, next_color
-        if rd.get_run_records():
-            return
         run_id = str(self._current_run_id or "")
         if not run_id:
             return
+        # Check if we already have a record for THIS run (not just any run).
+        for rec in rd.get_run_records():
+            if rec.run_id == run_id:
+                return
         rec = RunRecord(
             run_id=run_id,
             gpkg_path="",
@@ -442,15 +455,18 @@ class RunController:
 
     def _on_worker_compute_finished(self, result: ComputeResult):
         view = self._view
-        if result.cancelled or not result.ok:
-            view._log("Run cancelled." if result.cancelled else "Run failed during compute.")
+        if not result.ok and not result.cancelled:
+            view._log("Run failed during compute.")
             view.set_run_button_enabled(True)
             view.set_cancel_button_enabled(False)
             self._current_run_id = ""
             self._simulation_worker = None
             return
 
-        view._log("Compute finished; persisting results...")
+        if result.cancelled:
+            view._log("Run cancelled; persisting partial results...")
+        else:
+            view._log("Compute finished; persisting results...")
         view_adapter = self._finalization_adapter(view)
         try:
             from swe2d.runtime.run_finalizer import SWE2DRunFinalizer
@@ -678,7 +694,7 @@ class RunController:
             )
             return
 
-        _, _, bc_type_preview, bc_val_preview = view._collect_boundary_arrays()
+        _, _, bc_type_preview, bc_val_preview, bc_relax_preview = view._collect_boundary_arrays()
         bc_type_preview = bc_type_preview.copy()
         bc_val_preview = bc_val_preview.copy()
         edge_hydrographs = view._collect_bc_layer_hydrographs(edge_n0, edge_n1)
@@ -872,9 +888,10 @@ class RunController:
         from swe2d.services.gpkg_persistence_service import persist_simulation_config
 
         mesh_name = str(getattr(view, "_mesh_data", {}).get("mesh_name", "") or "")
-        widget_attrs = list(view.collect_run_widget_params().keys())
+        all_attrs = list(view.collect_run_widget_params().keys())
+        widget_attrs = [k for k in all_attrs if k not in ("gravity", "k_mann")]
         widget_state = collect_workbench_widget_state(
-            ui=view,
+            ui=view._model_tab_view,
             widget_attrs=widget_attrs,
             qtwidgets_module=_QtWidgets,
         )

@@ -59,7 +59,6 @@ class RunContext:
     depth_cap: float = 0.0
     max_rel_depth_increase: float = 0.0
     shallow_damping_depth: float = 0.0
-    extreme_rain_mode: bool = False
     source_cfl_beta: float = 0.0
     source_max_substeps: int = 1
     source_rate_cap: float = 0.0
@@ -71,6 +70,7 @@ class RunContext:
     tiny_wet_cell_threshold: int = 0
     degen_mode: int = 0
     front_flux_damping: float = 0.0
+    open_bc_relaxation: float = 0.0
     active_set_hysteresis: bool = False
     use_redistribution: bool = False
     inflow_progressive: bool = False
@@ -88,6 +88,7 @@ class RunContext:
     bc_n1: np.ndarray = field(default_factory=lambda: np.empty(0, dtype=np.int32))
     bc_tp: np.ndarray = field(default_factory=lambda: np.empty(0, dtype=np.int32))
     bc_vl: np.ndarray = field(default_factory=lambda: np.empty(0, dtype=np.float64))
+    bc_relax: np.ndarray = field(default_factory=lambda: np.empty(0, dtype=np.float64))
     side_hydrographs: Dict[str, Any] = field(default_factory=dict)
     edge_hydrographs: Dict[Tuple[int, int], Any] = field(default_factory=dict)
     edge_group_overrides: Dict[int, str] = field(default_factory=dict)

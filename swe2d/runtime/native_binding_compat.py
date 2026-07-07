@@ -97,7 +97,6 @@ def call_solver_create_compat(
     # on a pybind11 function is unavailable.
     filtered = dict(kwargs)
     for key in (
-        "extreme_rain_mode",
         "source_cfl_beta",
         "source_max_substeps",
         "source_rate_cap",
@@ -109,9 +108,6 @@ def call_solver_create_compat(
         "tiny_cell_threshold",
         "tiny_edge_threshold",
         "tiny_wet_cell_threshold",
-        "tiny_persistent_chunk_substeps",
-        "tiny_active_compaction_stride_steps",
-        "tiny_enable_active_compaction",
         "godunov_mode",
         "equation_set",
         "coupling_mode",

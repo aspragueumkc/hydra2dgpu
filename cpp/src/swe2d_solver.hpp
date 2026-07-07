@@ -76,17 +76,17 @@ struct SWE2DSolverConfig {
 
     // Wet/dry front stability controls
     double  front_flux_damping = 0.5;     // momentum-flux scale factor on wet/dry front edges (0=full damp, 1=none)
+    double  open_bc_relaxation = 0.0;     // reflection damping at outflow-style BCs (0=disabled, 1=fully transmissive)
     bool    active_set_hysteresis = true; // keep cells active 1 extra step after drying to suppress oscillatory front switching
     bool    enable_shallow_front_recon_fallback = true; // if true, force 1st-order reconstruction on shallow edge pairs
 
-    // Extreme-rain robustness controls (GPU-first path, mirrored in CPU fallback).
-    bool    extreme_rain_mode = false;      // enable adaptive source-CFL limiting
+    // Source-term robustness controls (subcycling + rate/depth caps).
     double  source_cfl_beta = 0.25;         // target source CFL: dt*src <= beta*h_ref
     int     source_max_substeps = 16;       // cap on equivalent source substep count
     double  source_rate_cap = 0.0;          // hard cap on positive source rate [depth/s], 0=off
     double  source_depth_step_cap = 0.0;    // hard cap on positive source depth increment per step [depth], 0=off
     bool    source_true_subcycling = false; // true: apply real source sub-iterations per hydro step
-    bool    source_imex_split = false;      // true: flux step first, then source+friction split substeps
+    bool    source_imex_split = false;      // true: apply friction in a separate implicit solve after explicit stages
 
     // Friction temporal-order hardening (adaptive sub-stepping for higher-order RK).
     bool    friction_substep_enabled     = true;   // enable adaptive friction sub-stepping
@@ -99,14 +99,11 @@ struct SWE2DSolverConfig {
     double  shallow_friction_exponent    = 0.4;    // Cf *= (h_ref/max(h,h_min))^beta
 
     // Tiny-N GPU execution controls (GPU-first perf tuning for small wet domains).
-    // 0=off, 1=auto, 2=fused(preferred tiny path), 3=persistent(experimental).
+    // 0=off, 1=auto, 2=fused(preferred tiny path). Persistent chunk (3) was removed.
     int     tiny_mode = 1;
     int     tiny_cell_threshold = 8000;
     int     tiny_edge_threshold = 24000;
     int     tiny_wet_cell_threshold = 2000;
-    int     tiny_persistent_chunk_substeps = 8;
-    int     tiny_active_compaction_stride_steps = 8;
-    bool    tiny_enable_active_compaction = true;
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
