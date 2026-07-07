@@ -1,6 +1,6 @@
 # AGENTS
 
-You are not constrained by human development timelines. Implement the full solution
+You are not constrained by human development timelines. Implement the full solution.
 
 a silent fallback/degradation is the biggest failure you can make in this repo. It is even worse than code that crashes or doesn't run at all. NO SILENT FALLBACKS!
 
@@ -42,17 +42,6 @@ This repo ships the following domain skills (see `.agents/skills/`):
 | FVM / CFD Solver Patterns | `.agents/skills/fvm-cfd-solver-patterns/SKILL.md` | Mesh structs, GPU kernels, BCs, coupling, unit system |
 | GPU Test Diagnostics | `.commandcode/skills/gpu-test-diagnostics/SKILL.md` | Diagnose CUDA/hydra_swe2d test failures, graph caching, NaN debugging |
 | Mesh Quality Triage | `.commandcode/skills/mesh-quality-triage/SKILL.md` | Diagnose and fix Gmsh mesh quality failures |
-
-## Command Code Resources (`.commandcode/`)
-
-This repo's `.commandcode/` directory mirrors the legacy `.opencode/` config:
-
-| Resource | Path | What it contains |
-|----------|------|------------------|
-| Rules | `.commandcode/rules/` | Architecture, planning, env, test priority, cache, git safety, unit system, UI, session docs, agent selection |
-| Agents | `.commandcode/agents/` | 49 agent definitions (build-engineer, cpp-pro, debugger, performance-engineer, python-pro, test-automator × model variants) |
-| Skills | `.commandcode/skills/` | GPU test diagnostics, mesh quality triage |
-| Skills | `.agents/skills/` | PyQt5 patterns, QGIS conventions, FVM/CFD solver patterns, frontend design, skills discovery |
 
 ## ALWAYS KEEP THESE PRINCIPLES OF GOOD SOFTWARE ENGINEERING IN MIND 
 Below are twelve fundamental software engineer principles that every developer, architect, and team lead should embrace in their software engineering approach.
