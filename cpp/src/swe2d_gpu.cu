@@ -264,51 +264,58 @@ __device__ __forceinline__ void bed_slope_correction_cuda_local(
  * @param bc_val Boundary condition value (stage, unit flux, etc.)
  * @param h_min Minimum depth threshold
  * @param n_mann Manning's n (for normal-depth BC)
+ * @param edge_bc_relax Relaxation coefficient for outflow-style BCs
  * @returns GhostStateLocal with constructed ghost state
  */
 __device__ __forceinline__ GhostStateLocal make_ghost_cuda_local(
-    double hI,  double huI, double hvI, double zbI,
-    double nx,  double ny,
+    double hI, double huI, double hvI, double zbI,
+    double nx, double ny,
     int bc_type,
     double bc_val,
-    double h_min,
-    double n_mann)
+    double h_min, double n_mann,
+    double edge_bc_relax)
 {
     GhostStateLocal g{};
     g.zb = zbI;
 
     switch (bc_type) {
-        case 1:
-        case 5: {
+        case 1: { // WALL: reflect normal velocity (NOT relaxed)
             g.h = hI;
             const double un = huI * nx + hvI * ny;
             g.hu = huI - 2.0 * un * nx;
             g.hv = hvI - 2.0 * un * ny;
             break;
         }
-        case 2:
+        case 2: // INFLOW_Q
             g.h = hI;
             g.hu = -bc_val * nx;
             g.hv = -bc_val * ny;
             break;
-        case 3: {
+        case 3: { // STAGE
             const double h_ghost = bc_val - zbI;
             g.h = (h_ghost > h_min) ? h_ghost : h_min;
             g.hu = huI;
             g.hv = hvI;
             break;
         }
-        case 4:
+        case 4: // OPEN
             g.h = hI;
             g.hu = huI;
             g.hv = hvI;
             break;
-        case 6:
+        case 5: { // REFLECT: same construction as WALL, then relaxed
+            g.h = hI;
+            const double un = huI * nx + hvI * ny;
+            g.hu = huI - 2.0 * un * nx;
+            g.hv = hvI - 2.0 * un * ny;
+            break;
+        }
+        case 6: // NORMAL_DEPTH
             g.h = (bc_val > h_min) ? bc_val : h_min;
             g.hu = huI;
             g.hv = hvI;
             break;
-        case 7: {
+        case 7: { // NORMAL_DEPTH_SLOPE
             const double sf = fmax(fabs(bc_val), 1.0e-8);
             const double qn = huI * nx + hvI * ny;
             const double qmag = fabs(qn);
@@ -328,6 +335,17 @@ __device__ __forceinline__ GhostStateLocal make_ghost_cuda_local(
             g.hu = huI;
             g.hv = hvI;
             break;
+    }
+
+    // Apply reflection damping only to outflow-style BCs.
+    if (bc_type == 4 || bc_type == 5 || bc_type == 6 || bc_type == 7) {
+        if (edge_bc_relax > 0.0) {
+            const double r = fmin(edge_bc_relax, 1.0);
+            g.h  = (1.0 - r) * g.h  + r * hI;
+            g.hu = (1.0 - r) * g.hu + r * huI;
+            g.hv = (1.0 - r) * g.hv + r * hvI;
+            g.h  = fmax(g.h, h_min);
+        }
     }
     return g;
 }
