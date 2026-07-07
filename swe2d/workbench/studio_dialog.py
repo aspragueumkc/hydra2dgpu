@@ -1715,10 +1715,15 @@ class SWE2DWorkbenchStudioDialog(QtWidgets.QDialog):
         default_bc_combo = getattr(self._model_tab_view, "default_bc_type_combo", None)
         if default_bc_combo is not None:
             default_bc_type = int(default_bc_combo.currentData())
+        default_relax = 0.0
+        relax_spin = getattr(self._model_tab_view, "open_bc_relax_spin", None)
+        if relax_spin is not None:
+            default_relax = float(relax_spin.value())
         return _logic(
             mesh_data=self._mesh_data,
             mesh_boundary_edges_fn=self._mesh_boundary_edges,
             default_bc_type=default_bc_type,
+            default_relax=default_relax,
             apply_bc_layer_overrides_fn=self._apply_bc_layer_overrides,
             log_fn=self._log,
         )
@@ -2107,7 +2112,7 @@ class SWE2DWorkbenchStudioDialog(QtWidgets.QDialog):
         return _mesh_svc.mesh_boundary_edges(self._mesh_data)
 
 
-    def _apply_bc_layer_overrides(self, edge_n0, edge_n1, bc_type, bc_val):
+    def _apply_bc_layer_overrides(self, edge_n0, edge_n1, bc_type, bc_val, default_relax=0.0):
         """Apply boundary condition overrides from BC vector layer."""
         from swe2d.boundary_and_forcing.boundary_qgis_adapter import apply_bc_layer_overrides_qgis as _logic
         return _logic(
@@ -2115,6 +2120,7 @@ class SWE2DWorkbenchStudioDialog(QtWidgets.QDialog):
             bc_lines_layer_combo=getattr(self._model_tab_view, "bc_lines_layer_combo", None),
             combo_layer_fn=self._combo_layer,
             edge_n0=edge_n0, edge_n1=edge_n1, bc_type=bc_type, bc_val=bc_val,
+            default_relax=float(default_relax),
             qgs_geometry_cls=QgsGeometry, qgs_pointxy_cls=QgsPointXY, log_fn=self._log,
         )
 
