@@ -58,7 +58,6 @@ _WIDGET_TO_CLI_MAP = {
 
 _BOOL_WIDGET_TO_CLI_MAP = {
     "adaptive_cfl_dt_chk": "adaptive_cfl_dt",
-    "extreme_rain_mode_chk": "extreme_rain_mode",
     "source_true_subcycling_chk": "source_true_subcycling",
     "source_imex_split_chk": "source_imex_split",
     "active_set_hysteresis_chk": "active_set_hysteresis",

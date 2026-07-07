@@ -62,7 +62,7 @@ class TestSWE2DTinyModeDispatch(unittest.TestCase):
         self.assertEqual(int(diag["tiny_mode_effective"]), 0)
         self.assertTrue(bool(diag["tiny_mode_fallback"]))
 
-    def test_tiny_persistent_effective_for_single_stage_gpu_step(self):
+    def test_tiny_persistent_maps_to_off(self):
         b = self._build_backend()
         b.initialize(
             np.array([0.1], dtype=np.float64),
@@ -71,7 +71,6 @@ class TestSWE2DTinyModeDispatch(unittest.TestCase):
             tiny_cell_threshold=16,
             tiny_edge_threshold=32,
             tiny_wet_cell_threshold=16,
-            tiny_persistent_chunk_substeps=4,
         )
         diag = b.step(-1.0)
 
@@ -81,101 +80,9 @@ class TestSWE2DTinyModeDispatch(unittest.TestCase):
             self.skipTest("Native extension diagnostics do not include tiny-mode fields (rebuild required)")
 
         self.assertEqual(int(diag["tiny_mode_requested"]), 3)
-        self.assertEqual(int(diag["tiny_mode_selected"]), 3)
-        self.assertEqual(int(diag["tiny_mode_effective"]), 3)
-        self.assertFalse(bool(diag["tiny_mode_fallback"]))
-
-    def test_tiny_persistent_effective_for_rk2_path(self):
-        b = self._build_backend()
-        b.initialize(
-            np.array([0.1], dtype=np.float64),
-            temporal_scheme=TemporalScheme.SSP_RK2,
-            tiny_mode=3,
-            tiny_cell_threshold=16,
-            tiny_edge_threshold=32,
-            tiny_wet_cell_threshold=16,
-            tiny_persistent_chunk_substeps=4,
-        )
-        diag = b.step(-1.0)
-
-        if not bool(diag.get("gpu_active", False)):
-            self.skipTest("GPU path not active in current environment")
-        if "tiny_mode_requested" not in diag:
-            self.skipTest("Native extension diagnostics do not include tiny-mode fields (rebuild required)")
-
-        self.assertEqual(int(diag["tiny_mode_requested"]), 3)
-        self.assertEqual(int(diag["tiny_mode_selected"]), 3)
-        self.assertEqual(int(diag["tiny_mode_effective"]), 3)
-        self.assertFalse(bool(diag["tiny_mode_fallback"]))
-
-    def test_tiny_persistent_effective_for_rk4_path(self):
-        b = self._build_backend()
-        b.initialize(
-            np.array([0.1], dtype=np.float64),
-            temporal_scheme=TemporalScheme.SSP_RK3,
-            tiny_mode=3,
-            tiny_cell_threshold=16,
-            tiny_edge_threshold=32,
-            tiny_wet_cell_threshold=16,
-            tiny_persistent_chunk_substeps=4,
-        )
-        diag = b.step(-1.0)
-
-        if not bool(diag.get("gpu_active", False)):
-            self.skipTest("GPU path not active in current environment")
-        if "tiny_mode_requested" not in diag:
-            self.skipTest("Native extension diagnostics do not include tiny-mode fields (rebuild required)")
-
-        self.assertEqual(int(diag["tiny_mode_requested"]), 3)
-        self.assertEqual(int(diag["tiny_mode_selected"]), 3)
-        self.assertEqual(int(diag["tiny_mode_effective"]), 3)
-        self.assertFalse(bool(diag["tiny_mode_fallback"]))
-
-    def test_tiny_persistent_effective_for_rk4_graph_path(self):
-        b = self._build_backend()
-        b.initialize(
-            np.array([0.1], dtype=np.float64),
-            temporal_scheme=TemporalScheme.GRAPH_SAFE_RK4,
-            tiny_mode=3,
-            tiny_cell_threshold=16,
-            tiny_edge_threshold=32,
-            tiny_wet_cell_threshold=16,
-            tiny_persistent_chunk_substeps=4,
-        )
-        diag = b.step(-1.0)
-
-        if not bool(diag.get("gpu_active", False)):
-            self.skipTest("GPU path not active in current environment")
-        if "tiny_mode_requested" not in diag:
-            self.skipTest("Native extension diagnostics do not include tiny-mode fields (rebuild required)")
-
-        self.assertEqual(int(diag["tiny_mode_requested"]), 3)
-        self.assertEqual(int(diag["tiny_mode_selected"]), 3)
-        self.assertEqual(int(diag["tiny_mode_effective"]), 3)
-        self.assertFalse(bool(diag["tiny_mode_fallback"]))
-
-    def test_tiny_persistent_effective_for_rk5_graph_path(self):
-        b = self._build_backend()
-        b.initialize(
-            np.array([0.1], dtype=np.float64),
-            temporal_scheme=TemporalScheme.GRAPH_SAFE_RK5,
-            tiny_mode=3,
-            tiny_cell_threshold=16,
-            tiny_edge_threshold=32,
-            tiny_wet_cell_threshold=16,
-            tiny_persistent_chunk_substeps=4,
-        )
-        diag = b.step(-1.0)
-
-        if not bool(diag.get("gpu_active", False)):
-            self.skipTest("GPU path not active in current environment")
-        if "tiny_mode_requested" not in diag:
-            self.skipTest("Native extension diagnostics do not include tiny-mode fields (rebuild required)")
-
-        self.assertEqual(int(diag["tiny_mode_requested"]), 3)
-        self.assertEqual(int(diag["tiny_mode_selected"]), 3)
-        self.assertEqual(int(diag["tiny_mode_effective"]), 3)
-        self.assertFalse(bool(diag["tiny_mode_fallback"]))
+        self.assertEqual(int(diag["tiny_mode_selected"]), 0)
+        self.assertEqual(int(diag["tiny_mode_effective"]), 0)
+        self.assertTrue(bool(diag["tiny_mode_fallback"]))
 
 
 if __name__ == "__main__":

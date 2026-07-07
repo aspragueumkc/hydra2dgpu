@@ -2231,9 +2231,9 @@ PYBIND11_MODULE(HYDRA_SWE2D_PY_MODULE_NAME, m) {
                   double momentum_cap_celerity_mult,
                   double depth_cap,
                   double max_rel_depth_increase,
-                  double shallow_damping_depth,
-                  bool extreme_rain_mode,
-                  double source_cfl_beta,
+                   double shallow_damping_depth,
+                   double source_cfl_beta,
+
                   int source_max_substeps,
                   double source_rate_cap,
                   double source_depth_step_cap,
@@ -2244,11 +2244,9 @@ PYBIND11_MODULE(HYDRA_SWE2D_PY_MODULE_NAME, m) {
                   int tiny_mode,
                   int tiny_cell_threshold,
                   int tiny_edge_threshold,
-                  int tiny_wet_cell_threshold,
-                  int tiny_persistent_chunk_substeps,
-                  int tiny_active_compaction_stride_steps,
-                  bool tiny_enable_active_compaction,
-              bool use_gpu, int n_threads,
+                   int tiny_wet_cell_threshold,
+                   bool use_gpu, int n_threads,
+
                int temporal_order,
                int spatial_scheme,
                 int turbulence_model,
@@ -2318,7 +2316,6 @@ PYBIND11_MODULE(HYDRA_SWE2D_PY_MODULE_NAME, m) {
             cfg.depth_cap = depth_cap;
             cfg.max_rel_depth_increase = max_rel_depth_increase;
             cfg.shallow_damping_depth = shallow_damping_depth;
-            cfg.extreme_rain_mode = extreme_rain_mode;
             cfg.source_cfl_beta = source_cfl_beta;
             cfg.source_max_substeps = source_max_substeps;
             cfg.source_rate_cap = source_rate_cap;
@@ -2331,9 +2328,6 @@ PYBIND11_MODULE(HYDRA_SWE2D_PY_MODULE_NAME, m) {
             cfg.tiny_cell_threshold = tiny_cell_threshold;
             cfg.tiny_edge_threshold = tiny_edge_threshold;
             cfg.tiny_wet_cell_threshold = tiny_wet_cell_threshold;
-            cfg.tiny_persistent_chunk_substeps = tiny_persistent_chunk_substeps;
-            cfg.tiny_active_compaction_stride_steps = tiny_active_compaction_stride_steps;
-            cfg.tiny_enable_active_compaction = tiny_enable_active_compaction;
             cfg.temporal_order = temporal_order;
             cfg.spatial_scheme = spatial_scheme;
             cfg.turbulence_model = turbulence_model;
@@ -2381,7 +2375,6 @@ PYBIND11_MODULE(HYDRA_SWE2D_PY_MODULE_NAME, m) {
         py::arg("depth_cap") = 1.0e6,
         py::arg("max_rel_depth_increase") = 2.0,
         py::arg("shallow_damping_depth") = 1.0e-4,
-        py::arg("extreme_rain_mode") = false,
         py::arg("source_cfl_beta") = 0.25,
         py::arg("source_max_substeps") = 16,
         py::arg("source_rate_cap") = 0.0,
@@ -2394,9 +2387,6 @@ PYBIND11_MODULE(HYDRA_SWE2D_PY_MODULE_NAME, m) {
         py::arg("tiny_cell_threshold") = 8000,
         py::arg("tiny_edge_threshold") = 24000,
         py::arg("tiny_wet_cell_threshold") = 2000,
-        py::arg("tiny_persistent_chunk_substeps") = 8,
-        py::arg("tiny_active_compaction_stride_steps") = 8,
-        py::arg("tiny_enable_active_compaction") = true,
         py::arg("use_gpu")  = true,
         py::arg("n_threads") = 0,
         py::arg("temporal_order") = 2,

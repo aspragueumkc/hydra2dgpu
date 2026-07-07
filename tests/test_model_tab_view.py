@@ -212,11 +212,6 @@ class TestModelTabView(unittest.TestCase):
         self.assertIsInstance(view.max_source_rate_spin, QDoubleSpinBox)
         self.assertEqual(view.max_source_rate_spin.objectName(), "max_source_rate_spin")
 
-    def test_view_has_extreme_rain_mode_chk(self):
-        view = self._make_view()
-        self.assertIsInstance(view.extreme_rain_mode_chk, QCheckBox)
-        self.assertEqual(view.extreme_rain_mode_chk.objectName(), "extreme_rain_mode_chk")
-
     def test_view_has_source_cfl_beta_spin(self):
         view = self._make_view()
         self.assertIsInstance(view.source_cfl_beta_spin, QDoubleSpinBox)

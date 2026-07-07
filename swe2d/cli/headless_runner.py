@@ -334,7 +334,6 @@ def execute_run(
         depth_cap=float(rp.get("depth_cap", 1e6)),
         max_rel_depth_increase=float(rp.get("max_rel_depth_increase", 2.0)),
         shallow_damping_depth=float(rp.get("shallow_damping_depth", 1e-4)),
-        extreme_rain_mode=bool(rp.get("extreme_rain_mode", False)),
         source_cfl_beta=float(rp.get("source_cfl_beta", 0.25)),
         source_max_substeps=int(rp.get("source_max_substeps", 16)),
         source_rate_cap=float(rp.get("source_rate_cap", 0.0)),

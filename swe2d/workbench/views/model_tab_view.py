@@ -50,10 +50,10 @@ class ModelTabView(QtWidgets.QWidget):
         rain_boundary_buffer_rings_spin,
         infiltration_method_combo, cn_layer_combo (Infiltration group),
         cn_default_spin, ia_ratio_spin,
-        max_rel_depth_increase_spin, max_source_depth_step_spin,
-        max_source_rate_spin, extreme_rain_mode_chk,
+        max_rel_depth_increase_spin, max_source_depth_step_spin, max_source_rate_spin,
         source_cfl_beta_spin, source_max_substeps_spin,
         source_true_subcycling_chk, source_imex_split_chk
+
 
     Stability Controls page (``model_stability_page``):
         shallow_damping_depth_spin, shallow_front_recon_fallback_chk,
@@ -921,16 +921,6 @@ class ModelTabView(QtWidgets.QWidget):
         self.max_source_rate_spin.setDecimals(6)
         self.max_source_rate_spin.setValue(0.0)
 
-        self.extreme_rain_mode_chk = QtWidgets.QCheckBox("Enable")
-        self.extreme_rain_mode_chk.setObjectName("extreme_rain_mode_chk")
-        self.extreme_rain_mode_chk.setToolTip(
-            "Enables extreme rainfall handling with enhanced source term "
-            "stabilization. Use for high-intensity storms where standard "
-            "source treatment may become unstable."
-        )
-        self._add_param_row(form, "Extreme rain mode:", self.extreme_rain_mode_chk, advanced=True)
-        self.extreme_rain_mode_chk.setChecked(False)
-
         self.source_cfl_beta_spin = QtWidgets.QDoubleSpinBox()
         self.source_cfl_beta_spin.setObjectName("source_cfl_beta_spin")
         self.source_cfl_beta_spin.setToolTip(
@@ -1513,7 +1503,6 @@ class ModelTabView(QtWidgets.QWidget):
             "max_rel_depth_increase_spin": float(self.max_rel_depth_increase_spin.value()),
             "max_source_depth_step_spin": float(self.max_source_depth_step_spin.value()),
             "max_source_rate_spin": float(self.max_source_rate_spin.value()),
-            "extreme_rain_mode_chk": bool(self.extreme_rain_mode_chk.isChecked()),
             "source_cfl_beta_spin": float(self.source_cfl_beta_spin.value()),
             "source_max_substeps_spin": int(self.source_max_substeps_spin.value()),
             "source_true_subcycling_chk": bool(self.source_true_subcycling_chk.isChecked()),

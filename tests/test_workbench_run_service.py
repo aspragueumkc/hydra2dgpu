@@ -88,7 +88,6 @@ class TestCollectRunParameters(unittest.TestCase):
             momentum_cap_celerity_mult=20.0,
             max_inv_area=1e8,
             cfl_lambda_cap=1e6,
-            extreme_rain_mode=False,
             source_cfl_beta=0.25,
             source_max_substeps=16,
             source_true_subcycling=False,

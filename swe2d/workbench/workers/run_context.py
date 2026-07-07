@@ -59,7 +59,6 @@ class RunContext:
     depth_cap: float = 0.0
     max_rel_depth_increase: float = 0.0
     shallow_damping_depth: float = 0.0
-    extreme_rain_mode: bool = False
     source_cfl_beta: float = 0.0
     source_max_substeps: int = 1
     source_rate_cap: float = 0.0

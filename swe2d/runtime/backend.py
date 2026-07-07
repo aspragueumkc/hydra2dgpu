@@ -260,7 +260,6 @@ class SWE2DBackend:
         self._bc_tp = np.empty(0, dtype=np.int32)
         self._bc_vl = np.empty(0, dtype=np.float64)
         self._tiny_mode = 1
-        self._tiny_persistent_chunk_substeps = 8
         self._cell_perm = np.empty(0, dtype=np.int32)
         self._inv_cell_perm = np.empty(0, dtype=np.int32)
 
@@ -912,7 +911,6 @@ class SWE2DBackend:
         depth_cap: float = 1.0e6,
         max_rel_depth_increase: float = 2.0,
         shallow_damping_depth: float = 1.0e-4,
-        extreme_rain_mode: bool = False,
         source_cfl_beta: float = 0.25,
         source_max_substeps: int = 16,
         source_rate_cap: float = 0.0,
@@ -925,9 +923,6 @@ class SWE2DBackend:
         tiny_cell_threshold: int = 8000,
         tiny_edge_threshold: int = 24000,
         tiny_wet_cell_threshold: int = 2000,
-        tiny_persistent_chunk_substeps: int = 8,
-        tiny_active_compaction_stride_steps: int = 8,
-        tiny_enable_active_compaction: bool = True,
         n_threads: int  = 0,
         temporal_scheme: TemporalScheme = TemporalScheme.SSP_RK2,
         spatial_discretization: SpatialDiscretization = SpatialDiscretization.FV_FIRST_ORDER,
@@ -1049,7 +1044,6 @@ class SWE2DBackend:
             depth_cap=depth_cap,
             max_rel_depth_increase=max_rel_depth_increase,
             shallow_damping_depth=shallow_damping_depth,
-            extreme_rain_mode=bool(extreme_rain_mode),
             source_cfl_beta=float(source_cfl_beta),
             source_max_substeps=int(source_max_substeps),
             source_rate_cap=float(source_rate_cap),
@@ -1062,9 +1056,6 @@ class SWE2DBackend:
             tiny_cell_threshold=int(tiny_cell_threshold),
             tiny_edge_threshold=int(tiny_edge_threshold),
             tiny_wet_cell_threshold=int(tiny_wet_cell_threshold),
-            tiny_persistent_chunk_substeps=int(tiny_persistent_chunk_substeps),
-            tiny_active_compaction_stride_steps=int(tiny_active_compaction_stride_steps),
-            tiny_enable_active_compaction=bool(tiny_enable_active_compaction),
             use_gpu=True, n_threads=n_threads,
             temporal_order=int(native_opts["temporal_order"]),
             spatial_scheme=int(native_opts["spatial_scheme"]),
@@ -1085,7 +1076,6 @@ class SWE2DBackend:
             active_set_hysteresis=bool(active_set_hysteresis),
         )
         self._tiny_mode = int(tiny_mode)
-        self._tiny_persistent_chunk_substeps = int(tiny_persistent_chunk_substeps)
         self._h_min = float(h_min)
 
     # ── Stepping ─────────────────────────────────────────────────────────────
@@ -1159,8 +1149,6 @@ class SWE2DBackend:
 
         if has_native_run:
             diag_batch_size = 0
-            if int(self._tiny_mode) == 3:
-                diag_batch_size = max(1, int(self._tiny_persistent_chunk_substeps))
 
             # Use native run-to-time API: eliminates per-step Python orchestration.
             # Returns dict with keys: 'diags', 'steps_completed', 'cancelled', 'final_time'

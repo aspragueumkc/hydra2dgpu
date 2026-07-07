@@ -235,6 +235,7 @@ struct SWE2DDeviceState {
     int32_t* d_active    = nullptr;   // n_cells
     int32_t* d_n_wet     = nullptr;   // device scalar: count of h>h_min cells
     int32_t* d_bc_forced = nullptr;   // n_cells: 1 if cell has forced-inflow BC
+    int32_t* d_boundary_cell = nullptr; // n_cells: 1 if cell touches any boundary edge
     // Hysteretic active set: stores d_active from the PREVIOUS step.
     // Passed to swe2d_classify_kernel so cells that were active last step and
     // still have h > 0 are kept active for one extra step, suppressing
@@ -664,7 +665,6 @@ void swe2d_gpu_set_friction_config(
     @param depth_cap Maximum allowable depth cap
     @param max_rel_depth_increase Maximum relative depth increase per step
     @param shallow_damping_depth Depth threshold for shallow damping
-    @param extreme_rain_mode Enable extreme-rain source treatment
     @param source_cfl_beta Beta parameter for source-term CFL
     @param source_max_substeps Maximum source subcycles
     @param source_rate_cap Maximum source rate cap
@@ -701,7 +701,6 @@ void swe2d_gpu_step(
     double depth_cap,
     double max_rel_depth_increase,
     double shallow_damping_depth,
-    bool extreme_rain_mode,
     double source_cfl_beta,
     int source_max_substeps,
     double source_rate_cap,
@@ -709,68 +708,6 @@ void swe2d_gpu_step(
     bool source_true_subcycling,
     bool source_imex_split,
     bool enable_shallow_front_recon_fallback,
-    bool sync_diagnostics,
-    SWE2DStepDiag* diag,
-    double front_flux_damping    = 0.5,
-    bool   active_set_hysteresis = true);
-
-/** Persistent cooperative-kernel chunk stepping for tiny-N runs.
-    Executes chunk_substeps internal substeps with dt/chunk_substeps each.
-    Constrained to first-order single-stage hydrostatic stepping; falls back to baseline when unsupported.
-    @param dev Device state pointer
-    @param t_now Current simulation time
-    @param dt Time step size
-    @param chunk_substeps Number of internal substeps
-    @param g Gravitational acceleration
-    @param h_min Minimum depth for wet/dry threshold
-    @param spatial_scheme Spatial reconstruction scheme index
-    @param cfl_factor CFL safety factor
-    @param max_inv_area Maximum inverse area for degenerate-cell checks
-    @param cfl_lambda_cap Capped characteristic speed for CFL
-    @param momentum_cap_min_speed Minimum speed for momentum cap
-    @param momentum_cap_celerity_mult Celerity multiplier for momentum cap
-    @param depth_cap Maximum allowable depth cap
-    @param max_rel_depth_increase Maximum relative depth increase per step
-    @param shallow_damping_depth Depth threshold for shallow damping
-    @param extreme_rain_mode Enable extreme-rain source treatment
-    @param source_cfl_beta Beta parameter for source-term CFL
-    @param source_max_substeps Maximum source subcycles
-    @param source_rate_cap Maximum source rate cap
-    @param source_depth_step_cap Per-step depth change cap from sources
-    @param source_true_subcycling Enable true subcycling for sources
-    @param source_imex_split Enable IMEX splitting for sources
-    @param enable_shallow_front_recon_fallback Enable shallow-front reconstruction fallback
-    @param enable_active_edge_compaction Enable active-edge compaction
-    @param sync_diagnostics Synchronize diagnostics to host after step
-    @param diag Output diagnostics struct
-    @param front_flux_damping Damping factor for front fluxes (default 0.5)
-    @param active_set_hysteresis Enable active-set hysteresis (default true)
-    @host */
-void swe2d_gpu_step_persistent_chunk(
-    SWE2DDeviceState* dev,
-    double t_now,
-    double dt,
-    int chunk_substeps,
-    double g,
-    double h_min,
-    int spatial_scheme,
-    double cfl_factor,
-    double max_inv_area,
-    double cfl_lambda_cap,
-    double momentum_cap_min_speed,
-    double momentum_cap_celerity_mult,
-    double depth_cap,
-    double max_rel_depth_increase,
-    double shallow_damping_depth,
-    bool extreme_rain_mode,
-    double source_cfl_beta,
-    int source_max_substeps,
-    double source_rate_cap,
-    double source_depth_step_cap,
-    bool source_true_subcycling,
-    bool source_imex_split,
-    bool enable_shallow_front_recon_fallback,
-    bool enable_active_edge_compaction,
     bool sync_diagnostics,
     SWE2DStepDiag* diag,
     double front_flux_damping    = 0.5,
@@ -791,7 +728,6 @@ void swe2d_gpu_step_persistent_chunk(
     @param depth_cap Maximum allowable depth cap
     @param max_rel_depth_increase Maximum relative depth increase per step
     @param shallow_damping_depth Depth threshold for shallow damping
-    @param extreme_rain_mode Enable extreme-rain source treatment
     @param source_cfl_beta Beta parameter for source-term CFL
     @param source_max_substeps Maximum source subcycles
     @param source_rate_cap Maximum source rate cap
@@ -819,7 +755,6 @@ void swe2d_gpu_step_rk2(
     double depth_cap,
     double max_rel_depth_increase,
     double shallow_damping_depth,
-    bool extreme_rain_mode,
     double source_cfl_beta,
     int source_max_substeps,
     double source_rate_cap,
@@ -827,66 +762,6 @@ void swe2d_gpu_step_rk2(
     bool source_true_subcycling,
     bool source_imex_split,
     bool enable_shallow_front_recon_fallback,
-    bool sync_diagnostics,
-    SWE2DStepDiag* diag,
-    double front_flux_damping    = 0.5,
-    bool   active_set_hysteresis = true);
-
-/** Advance one SSPRK2 (Heun) timestep using persistent chunk stepping for each RK stage.
-    @param dev Device state pointer
-    @param t_now Current simulation time
-    @param dt Time step size
-    @param chunk_substeps Number of internal substeps
-    @param g Gravitational acceleration
-    @param h_min Minimum depth for wet/dry threshold
-    @param spatial_scheme Spatial reconstruction scheme index
-    @param cfl_factor CFL safety factor
-    @param max_inv_area Maximum inverse area for degenerate-cell checks
-    @param cfl_lambda_cap Capped characteristic speed for CFL
-    @param momentum_cap_min_speed Minimum speed for momentum cap
-    @param momentum_cap_celerity_mult Celerity multiplier for momentum cap
-    @param depth_cap Maximum allowable depth cap
-    @param max_rel_depth_increase Maximum relative depth increase per step
-    @param shallow_damping_depth Depth threshold for shallow damping
-    @param extreme_rain_mode Enable extreme-rain source treatment
-    @param source_cfl_beta Beta parameter for source-term CFL
-    @param source_max_substeps Maximum source subcycles
-    @param source_rate_cap Maximum source rate cap
-    @param source_depth_step_cap Per-step depth change cap from sources
-    @param source_true_subcycling Enable true subcycling for sources
-    @param source_imex_split Enable IMEX splitting for sources
-    @param enable_shallow_front_recon_fallback Enable shallow-front reconstruction fallback
-    @param enable_active_edge_compaction Enable active-edge compaction
-    @param sync_diagnostics Synchronize diagnostics to host after step
-    @param diag Output diagnostics struct
-    @param front_flux_damping Damping factor for front fluxes (default 0.5)
-    @param active_set_hysteresis Enable active-set hysteresis (default true)
-    @host */
-void swe2d_gpu_step_rk2_persistent_chunk(
-    SWE2DDeviceState* dev,
-    double t_now,
-    double dt,
-    int chunk_substeps,
-    double g,
-    double h_min,
-    int spatial_scheme,
-    double cfl_factor,
-    double max_inv_area,
-    double cfl_lambda_cap,
-    double momentum_cap_min_speed,
-    double momentum_cap_celerity_mult,
-    double depth_cap,
-    double max_rel_depth_increase,
-    double shallow_damping_depth,
-    bool extreme_rain_mode,
-    double source_cfl_beta,
-    int source_max_substeps,
-    double source_rate_cap,
-    double source_depth_step_cap,
-    bool source_true_subcycling,
-    bool source_imex_split,
-    bool enable_shallow_front_recon_fallback,
-    bool enable_active_edge_compaction,
     bool sync_diagnostics,
     SWE2DStepDiag* diag,
     double front_flux_damping    = 0.5,
@@ -911,7 +786,6 @@ void swe2d_gpu_step_rk3(
     double depth_cap,
     double max_rel_depth_increase,
     double shallow_damping_depth,
-    bool extreme_rain_mode,
     double source_cfl_beta,
     int source_max_substeps,
     double source_rate_cap,
@@ -943,7 +817,6 @@ void swe2d_gpu_step_rk4(
     double depth_cap,
     double max_rel_depth_increase,
     double shallow_damping_depth,
-    bool extreme_rain_mode,
     double source_cfl_beta,
     int source_max_substeps,
     double source_rate_cap,
@@ -975,7 +848,6 @@ void swe2d_gpu_step_rk5(
     double depth_cap,
     double max_rel_depth_increase,
     double shallow_damping_depth,
-    bool extreme_rain_mode,
     double source_cfl_beta,
     int source_max_substeps,
     double source_rate_cap,

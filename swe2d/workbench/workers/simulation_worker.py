@@ -443,7 +443,6 @@ class SimulationWorker(QThread):
                     depth_cap=ctx.depth_cap,
                     max_rel_depth_increase=ctx.max_rel_depth_increase,
                     shallow_damping_depth=ctx.shallow_damping_depth,
-                    extreme_rain_mode=ctx.extreme_rain_mode,
                     source_cfl_beta=ctx.source_cfl_beta,
                     source_max_substeps=ctx.source_max_substeps,
                     source_rate_cap=ctx.source_rate_cap,

@@ -274,7 +274,6 @@ class RunController:
             depth_cap=wp["depth_cap_spin"],
             max_rel_depth_increase=wp["max_rel_depth_increase_spin"],
             shallow_damping_depth=wp["shallow_damping_depth_spin"],
-            extreme_rain_mode=wp["extreme_rain_mode_chk"],
             source_cfl_beta=wp["source_cfl_beta_spin"],
             source_max_substeps=wp["source_max_substeps_spin"],
             source_rate_cap=wp["max_source_rate_spin"],
@@ -889,9 +888,10 @@ class RunController:
         from swe2d.services.gpkg_persistence_service import persist_simulation_config
 
         mesh_name = str(getattr(view, "_mesh_data", {}).get("mesh_name", "") or "")
-        widget_attrs = list(view.collect_run_widget_params().keys())
+        all_attrs = list(view.collect_run_widget_params().keys())
+        widget_attrs = [k for k in all_attrs if k not in ("gravity", "k_mann")]
         widget_state = collect_workbench_widget_state(
-            ui=view,
+            ui=view._model_tab_view,
             widget_attrs=widget_attrs,
             qtwidgets_module=_QtWidgets,
         )

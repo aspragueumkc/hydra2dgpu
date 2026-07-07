@@ -11,6 +11,7 @@ from typing import Callable
 from qgis.PyQt import QtWidgets
 
 from swe2d.workbench.dialogs.sqlite_preview_dialog import SWE2DSQLiteTablePreviewDialog
+from swe2d.workbench.dialogs.simulation_config_viewer_dialog import SWE2DSimulationConfigViewerDialog
 from swe2d.workbench.services.gpkg_operations_service import (
     drop_table,
     get_table_row_count,
@@ -104,6 +105,8 @@ class SWE2DModelGeoPackageExplorerDialog(QtWidgets.QDialog):
         t = str(name or "").strip().lower()
         if t == "swe2d_run_logs" or t.endswith("_swe2d_run_logs"):
             return "run_log"
+        if t == "swe2d_simulation_configs":
+            return "config"
         if t.startswith("swe2d_baked_line"):
             return "line_results"
         if t == "swe2d_baked_coupling":
@@ -166,6 +169,10 @@ class SWE2DModelGeoPackageExplorerDialog(QtWidgets.QDialog):
             return
         if kind == "line_results":
             self._open_line_results_viewer()
+            return
+        if kind == "config":
+            dlg = SWE2DSimulationConfigViewerDialog(self._gpkg_path, parent=self)
+            dlg.exec()
             return
         if kind == "mesh_results":
             self._open_preview(name, title=f"Mesh Results Viewer - {name}")
