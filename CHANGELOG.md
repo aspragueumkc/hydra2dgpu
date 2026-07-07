@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [Unreleased]
+
+### Added
+
+- New `open_bc_relaxation` stability knob (Numerics / Stability) that damps reflections at OPEN, REFLECT, NORMAL_DEPTH, and NORMAL_DEPTH_SLOPE boundaries. Per-edge overrides can be supplied via a `bc_relax` field on the BC line layer.
+
+---
+
 ## [1.2.0] — 2026-07-06
 
 ### Added

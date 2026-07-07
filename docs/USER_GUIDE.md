@@ -260,6 +260,13 @@ The Mesh Setup page manages mesh I/O, terrain assignment, and boundary condition
 | **Inflow progressive** | Ramp inflow gradually at simulation start to avoid numerical shock. | Checkbox | Inflow boundaries with sudden discharge onset |
 | **Uniform inflow velocity** | Apply uniform velocity profile across inflow boundary cells. Unchecked for parabolic (shear) distribution. | Checkbox | When inflow velocity profile matters |
 
+> **Per-edge BC relaxation:** Each BC line segment can optionally supply a
+> `bc_relax` field (0.0–1.0) to override the global **Open BC relax** value
+> for that edge. When set, the per-edge value takes precedence over the
+> global spinbox. Leave the field empty or set to `NULL` to use the global
+> default. WALL, INFLOW_Q, and STAGE boundary types ignore the `bc_relax`
+> field entirely.
+
 ### 4.3 Utilities Page
 
 <div class="fig-frame"><div class="fig-header">Utilities</div><div class="fig-body">
@@ -521,6 +528,7 @@ The **Parameters** tab is the third step in the workflow. It contains five pages
 | **Momentum cap celerity mult** | Multiplier on wave celerity to determine the momentum cap. | 0.1–1000 | 20.0 | Momentum limiting |
 | **Max inv area** | Maximum cell area for cell inversion risk detection. | 1–1e12 | 1e6 | Large cells with steep gradients |
 | **CFL lambda cap** | Maximum eigenvalue (wave speed) in CFL calculation. Prevents tiny timesteps from high wave speeds. | 1–1e12 | 1e6 | Anomalously high wave speeds |
+| **Open BC relax** | Relaxation factor applied to OPEN, REFLECT, NORMAL_DEPTH, and NORMAL_DEPTH_SLOPE boundaries to damp reflections. 0 = no relaxation (fully reflective damping), 1 = maximum relaxation. WALL, INFLOW_Q, and STAGE boundaries are unaffected. | 0.0–1.0 | 0.0 | Higher-order spatial schemes (WENO5, MUSCL Van Leer) with boundary instabilities |
 
 ### 6.4 Structures & Drainage Page
 
