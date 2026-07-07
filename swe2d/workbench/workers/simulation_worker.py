@@ -456,6 +456,8 @@ class SimulationWorker(QThread):
                     tiny_wet_cell_threshold=ctx.tiny_wet_cell_threshold,
                     degen_mode=ctx.degen_mode,
                     front_flux_damping=ctx.front_flux_damping,
+                    open_bc_relaxation=ctx.open_bc_relaxation,
+                    bc_relax=ctx.bc_relax,
                     active_set_hysteresis=ctx.active_set_hysteresis,
                     gpkg_path=ctx.results_gpkg_path or ctx.model_gpkg_path or "",
                     mesh_name=mesh_data.get("mesh_name", "") or "",
