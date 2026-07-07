@@ -9,7 +9,7 @@ CMakeFiles/
 *.pyd
 *.o
 *.obj
-
+.sgry/
 # Distribution
 dist/
 *.egg-info/
@@ -34,7 +34,12 @@ Thumbs.db
 report_output/
 temp_error_log.txt
 tests/results/*.log
+docs/superpowers/
 reference/
 build_debug/
 symbology-style.db
-*.sww
+marketing/
+.*/
+reference/
+
+docs/AGENT_PLANS/
