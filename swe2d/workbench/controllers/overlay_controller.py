@@ -339,6 +339,10 @@ class OverlayController:
         if self._data is None:
             return
         self._data.clear_live_snapshots()
+        # Clear stale run records/selections so the next run starts clean.
+        self._data._run_records = []
+        self._data._selected_run_keys = set()
+        self._data._overlay_selected_key = ""
         view._snapshot_mesh_fingerprint = ""
         self._data.set_data_source("none")
         view._overlay_last_loaded_t_s = None

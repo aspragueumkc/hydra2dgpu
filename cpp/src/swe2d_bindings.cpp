@@ -1794,6 +1794,14 @@ PYBIND11_MODULE(HYDRA_SWE2D_PY_MODULE_NAME, m) {
         py::arg("dev"),
         "Destroy cached CUDA graph resources for this solver instance.");
 
+    m.def("swe2d_gpu_invalidate_graph_cache",
+        []() {
+            swe2d_gpu_invalidate_graph_cache(nullptr);
+        },
+        "Invalidate cached CUDA graph so the solver re-captures on the next step. "
+        "Uses s_coupling_dev internally — call after coupling changes "
+        "use_culvert_face_flux to force a cache miss on the next solver step.");
+
 
     // ── Mesh builder (legacy triangular triplets) ───────────────────────────
     // swe2d_build_mesh(node_x, node_y, node_z, cell_nodes,

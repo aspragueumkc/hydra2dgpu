@@ -399,47 +399,7 @@ def execute_run_timestep_loop(
     line_ids_ordered: Optional[List[int]] = None,
 ) -> Dict[str, object]:
 
-    # Pre-compute boundary edge lengths for uniform-velocity normalization.
     """execute run timestep loop."""
-    _bc_edge_len = None
-    if bc_n0.size > 0:
-        try:
-            _node_x = np.asarray(wb._mesh_data["node_x"], dtype=np.float64)
-            _node_y = np.asarray(wb._mesh_data["node_y"], dtype=np.float64)
-            _bc_edge_len = np.hypot(
-                _node_x[bc_n1] - _node_x[bc_n0],
-                _node_y[bc_n1] - _node_y[bc_n0],
-            ).astype(np.float64)
-        except Exception:
-            logger.warning("Silent fallback in Exception handler", exc_info=True)
-            _bc_edge_len = None
-
-    def _make_uniform_velocity_cb(uniform_enabled: bool):
-        """make uniform velocity cb."""
-        def _cb():
-            if not uniform_enabled:
-                return None
-            if _bc_edge_len is None or backend is None:
-                return None
-            edge_cells = backend.boundary_edge_cells()
-            if edge_cells is None:
-                return None
-
-            def _normalize(bc_vl_step, bc_tp_step, backend_obj):
-                """normalize."""
-                try:
-                    h_arr, _, _ = backend_obj.get_state()
-                    edge_h = np.asarray(h_arr, dtype=np.float64)[edge_cells]
-                    from swe2d.boundary_and_forcing.bc_logic import normalize_inflow_to_uniform_velocity as _norm
-                    return _norm(bc_vl_step, bc_tp_step, edge_h, _bc_edge_len)
-                except Exception:
-                    return bc_vl_step
-
-            return _normalize
-        return _cb
-
-    _uniform_velocity_cb = _make_uniform_velocity_cb(uniform_enabled)()
-
     while float(t_accum) < float(run_duration_s):
         if bool(getattr(wb, "_cancel_requested", False)):
             break
@@ -459,22 +419,11 @@ def execute_run_timestep_loop(
             dt_cfg=dt_cfg,
             dt_request=dt_request,
             coupling_controller=coupling_controller,
-            dynamic_bc=dynamic_bc,
-            native_bc_forcing=native_bc_forcing,
-            bc_n0=bc_n0,
-            bc_n1=bc_n1,
-            bc_tp=bc_tp,
-            bc_vl=bc_vl,
-            side_hydrographs=side_hydrographs,
-            edge_hydrographs=edge_hydrographs,
-            apply_timeseries_bc_values_callback=wb._apply_timeseries_bc_values,
-            distribute_total_flow_to_unit_q_callback=wb._distribute_total_flow_to_unit_q,
             rain_source_for_window_callback=rain_source_for_window_callback,
             cell_source_model_at_time_callback=cell_source_model_at_time_callback,
             accumulate_source_volume_model_callback=accumulate_source_volume_model_callback,
             apply_external_sources_callback=wb._apply_external_sources,
             native_source_injection_mode=native_source_injection_mode,
-            uniform_inflow_velocity_normalize_callback=_uniform_velocity_cb,
         )
         last_diag = step_result["last_diag"]
         dt_used = float(step_result["dt_used"])

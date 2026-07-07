@@ -12,8 +12,6 @@ from typing import Any, Callable, Dict, Optional
 
 import numpy as np
 
-from swe2d.boundary_and_forcing.bc_logic import normalize_inflow_to_uniform_velocity as _normalize_inflow_to_uniform_velocity
-
 import logging
 logger = logging.getLogger(__name__)
 
@@ -30,23 +28,12 @@ class SWE2DRuntimeStepExecutor:
         dt_cfg: float,
         dt_request: float,
         coupling_controller: Any,
-        dynamic_bc: bool,
-        native_bc_forcing: bool,
-        bc_n0: np.ndarray,
-        bc_n1: np.ndarray,
-        bc_tp: np.ndarray,
-        bc_vl: np.ndarray,
-        side_hydrographs: Dict[str, Any],
-        edge_hydrographs: Dict[Any, Any],
-        apply_timeseries_bc_values_callback: Callable[..., Any],
-        distribute_total_flow_to_unit_q_callback: Callable[..., np.ndarray],
         rain_source_for_window_callback: Callable[..., Any],
         cell_source_model_at_time_callback: Callable[[float], Optional[np.ndarray]],
         accumulate_source_volume_model_callback: Callable[..., None],
         apply_external_sources_callback: Callable[..., None],
         native_source_injection_mode: bool,
         apply_3d_patch_face_bc_callback: Optional[Callable[..., None]] = None,
-        uniform_inflow_velocity_normalize_callback: Optional[Callable[[np.ndarray, np.ndarray, np.ndarray], np.ndarray]] = None,
     ) -> Dict[str, Any]:
         """execute step."""
         step_ms = 0.0
@@ -55,27 +42,6 @@ class SWE2DRuntimeStepExecutor:
         state_ms = 0.0
         bc_ms = 0.0
         gpu_ms = 0.0
-
-        if dynamic_bc and not native_bc_forcing:
-            _t_bc0 = time.perf_counter()
-            bc_tp_step, bc_vl_step = apply_timeseries_bc_values_callback(
-                bc_n0, bc_n1, bc_tp, bc_vl, side_hydrographs, t_accum, edge_hydrographs
-            )
-            bc_vl_step = distribute_total_flow_to_unit_q_callback(
-                bc_n0,
-                bc_n1,
-                bc_tp_step,
-                bc_vl_step,
-                bc_tp,
-                side_hydrographs,
-                edge_hydrographs,
-            )
-            if uniform_inflow_velocity_normalize_callback is not None:
-                bc_vl_step = uniform_inflow_velocity_normalize_callback(
-                    bc_vl_step, bc_tp_step, backend,
-                )
-            backend.set_boundary_conditions(bc_n0, bc_n1, bc_tp_step, bc_vl_step)
-            bc_ms += (time.perf_counter() - _t_bc0) * 1000.0
 
         rain_src = 0.0
         coupled_source_rate = None
@@ -89,6 +55,7 @@ class SWE2DRuntimeStepExecutor:
         coupled_source_rate = None
         _native_device_applied = False
         if coupling_controller is not None:
+            _t_cpl0 = time.perf_counter()
             # GPU-only path — no CPU fallback. Fail loudly if unavailable.
             _native_device_applied = bool(
                 coupling_controller.apply_native_device_sources(
@@ -97,6 +64,7 @@ class SWE2DRuntimeStepExecutor:
             )
             if _native_device_applied:
                 coupled_source_rate = None  # sources already on GPU
+            coupling_ms += (time.perf_counter() - _t_cpl0) * 1000.0
         # GPU-native coupling path — all operations use the same CUDA
         # stream (dev->d_stream), so ordering is implicit.  No sync needed.
         rain_src = rain_source_for_window_callback(

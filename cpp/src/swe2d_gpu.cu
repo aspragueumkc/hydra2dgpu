@@ -2820,9 +2820,9 @@ void swe2d_gpu_accumulate_external_source(
         swe2d_gpu_ensure_drainage_q_buf(dev, n_cells);
     }
     if (!cpl_ws.d_drainage_q) return;
-    CUDA_CHECK(cudaMemcpy(cpl_ws.d_drainage_q, host_src,
-                          static_cast<size_t>(n_cells) * sizeof(double),
-                          cudaMemcpyHostToDevice));
+    CUDA_CHECK(cudaMemcpyAsync(cpl_ws.d_drainage_q, host_src,
+                                static_cast<size_t>(n_cells) * sizeof(double),
+                                cudaMemcpyHostToDevice, dev->d_stream));
     swe2d_accumulate_external_source_kernel<<<grid, BLOCK, 0, dev->d_stream>>>(
         n_cells, cpl_ws.d_drainage_q, dev->d_external_source_mps);
     CUDA_CHECK(cudaGetLastError());
@@ -5204,6 +5204,14 @@ void swe2d_gpu_step(
             cache.config_signature == graph_signature;
 
         if (cache_match) {
+            if (swe2d_debug_enabled("BACKWATER_SWE2D_DEBUG_GPU_GRAPH")) {
+                std::fprintf(stderr,
+                    "[SWE2D_GRAPH] REPLAY  step=%lu  sig=0x%016lx  "
+                    "cells=%d edges=%d scheme=%d integrator=%d variant=%d\n",
+                    static_cast<unsigned long>(dev->graph_replay_count + 1),
+                    static_cast<unsigned long>(graph_signature),
+                    n_cells, n_edges, spatial_scheme, graph_integrator, graph_variant_key);
+            }
             CUDA_CHECK(cudaGraphLaunch(cache.exec, dev->d_stream));
             dev->graph_replay_count += 1;
             used_graph_replay = true;
@@ -5383,6 +5391,14 @@ void swe2d_gpu_step(
                 } else if (captured_graph != nullptr) {
                     cudaGraphDestroy(captured_graph);
                 }
+            }
+            if (used_graph_replay && swe2d_debug_enabled("BACKWATER_SWE2D_DEBUG_GPU_GRAPH")) {
+                std::fprintf(stderr,
+                    "[SWE2D_GRAPH] CAPTURE step=%lu  sig=0x%016lx  "
+                    "cells=%d edges=%d scheme=%d integrator=%d variant=%d\n",
+                    static_cast<unsigned long>(dev->graph_replay_count),
+                    static_cast<unsigned long>(graph_signature),
+                    n_cells, n_edges, spatial_scheme, graph_integrator, graph_variant_key);
             }
         }
     }
@@ -6325,8 +6341,8 @@ double swe2d_gpu_compute_dt(
             grid, dev->d_cfl_block_max, dev->d_lambda_max);
         CUDA_CHECK(cudaGetLastError());
     }
-    CUDA_CHECK(cudaStreamSynchronize(dev->d_stream));
-
+    // D2H memcpy is inherently synchronous — it blocks until prior stream
+    // work completes, so the explicit cudaStreamSynchronize is redundant.
     double lambda_max = 0.0;
     CUDA_CHECK(cudaMemcpy(&lambda_max, dev->d_lambda_max, sizeof(double), cudaMemcpyDeviceToHost));
 
@@ -9706,6 +9722,12 @@ void swe2d_gpu_enable_kernel_graphs(SWE2DDeviceState* dev, bool enable) {
 }
 
 void swe2d_gpu_destroy_kernel_graphs(SWE2DDeviceState* dev) {
+    if (!dev) return;
+    dev->kernel_graph_cache.destroy();
+}
+
+void swe2d_gpu_invalidate_graph_cache(SWE2DDeviceState* dev) {
+    if (!dev) dev = s_coupling_dev;
     if (!dev) return;
     dev->kernel_graph_cache.destroy();
 }

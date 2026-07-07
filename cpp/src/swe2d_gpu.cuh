@@ -1695,6 +1695,14 @@ void swe2d_gpu_enable_kernel_graphs(SWE2DDeviceState* dev, bool enable);
     @host */
 void swe2d_gpu_destroy_kernel_graphs(SWE2DDeviceState* dev);
 
+/** Invalidate cached kernel graph so the solver re-captures on the next step.
+    Unlike destroy (which frees resources), invalidation sets a flag so the
+    next swe2d_gpu_step call detects a cache miss and re-captures.
+    Use when coupling changes dev->use_culvert_face_flux mid-run.
+    @param dev Device state pointer
+    @host */
+void swe2d_gpu_invalidate_graph_cache(SWE2DDeviceState* dev);
+
 /** Free all device memory.
     @param dev Device state pointer
     @host */

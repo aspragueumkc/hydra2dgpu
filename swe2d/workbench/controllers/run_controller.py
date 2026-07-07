@@ -106,6 +106,16 @@ class RunController:
         view.set_cancel_button_enabled(True)
         view.set_run_progress(0)
 
+        # Clear stale overlay/snapshot state from any previous run so the
+        # new run starts with a clean slate (run records, overlay key, mesh
+        # arrays).  Without this, _ensure_live_run_record returns early
+        # because old run records are still present, causing numbering
+        # scrambles across consecutive runs in the same session.
+        try:
+            view._reset_runtime_snapshot_overlay_cache("new run starting")
+        except Exception:
+            pass
+
         # Ensure _results_data exists so snapshot_ready signals have a place to land.
         try:
             view._show_results_panel()
@@ -423,11 +433,13 @@ class RunController:
         stays empty until persistence completes.
         """
         from swe2d.results.run_service import RunRecord, next_color
-        if rd.get_run_records():
-            return
         run_id = str(self._current_run_id or "")
         if not run_id:
             return
+        # Check if we already have a record for THIS run (not just any run).
+        for rec in rd.get_run_records():
+            if rec.run_id == run_id:
+                return
         rec = RunRecord(
             run_id=run_id,
             gpkg_path="",
@@ -442,15 +454,18 @@ class RunController:
 
     def _on_worker_compute_finished(self, result: ComputeResult):
         view = self._view
-        if result.cancelled or not result.ok:
-            view._log("Run cancelled." if result.cancelled else "Run failed during compute.")
+        if not result.ok and not result.cancelled:
+            view._log("Run failed during compute.")
             view.set_run_button_enabled(True)
             view.set_cancel_button_enabled(False)
             self._current_run_id = ""
             self._simulation_worker = None
             return
 
-        view._log("Compute finished; persisting results...")
+        if result.cancelled:
+            view._log("Run cancelled; persisting partial results...")
+        else:
+            view._log("Compute finished; persisting results...")
         view_adapter = self._finalization_adapter(view)
         try:
             from swe2d.runtime.run_finalizer import SWE2DRunFinalizer

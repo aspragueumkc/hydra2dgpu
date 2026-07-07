@@ -1296,13 +1296,15 @@ class SWE2DCouplingController:
 
         # ── Invalidate the cached CUDA graph because dev->use_culvert_face_flux
         # changed from the pre-coupling state (false) to the post-coupling state
-        # (true).  The graph signature includes use_culvert_face_flux, so the
-        # solver will detect a cache miss and re-capture on the next step.
-        # Without explicit invalidation, the solver tries to replay the OLD graph
-        # which has use_culvert_face_flux=false baked in, leading to incorrect
-        # kernel arguments for the face-flux path.
+        # (true).  Forces the solver to re-capture on the next step with the
+        # correct ext_struct_flux pointers instead of replaying the old graph
+        # which has nullptr baked in for those kernel arguments.
         if hasattr(native_mod, "swe2d_gpu_invalidate_graph_cache"):
             native_mod.swe2d_gpu_invalidate_graph_cache()
+        else:
+            raise RuntimeError(
+                "swe2d_gpu_invalidate_graph_cache not available — required for "
+                "graph cache invalidation when coupling changes use_culvert_face_flux.")
 
         # When face-flux mode is active, the culvert face flux is already
         # applied via d_ext_struct_flux_h which the update kernel reads

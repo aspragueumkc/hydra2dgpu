@@ -1,4 +1,7 @@
 # AGENTS
+
+You are not constrained by human development timelines. Implement the full solution
+
 a silent fallback/degradation is the biggest failure you can make in this repo. It is even worse than code that crashes or doesn't run at all. NO SILENT FALLBACKS!
 
 ## Dead Code

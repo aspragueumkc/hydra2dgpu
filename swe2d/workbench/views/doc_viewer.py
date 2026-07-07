@@ -90,15 +90,15 @@ AVAILABLE_DOCS: List[DocEntry] = [
 # ── File I/O ─────────────────────────────────────────────────────────────
 
 def _resolve_guide_path(filename: str) -> str:
-    """Find ``filename`` in ``docs/guides/`` relative to plugin root."""
+    """Find ``filename`` in ``docs/`` relative to plugin root."""
     from hydra2dgpu import PLUGIN_ROOT
-    c = os.path.join(PLUGIN_ROOT, "docs", "guides", filename)
+    c = os.path.join(PLUGIN_ROOT, "docs", filename)
     if os.path.exists(c):
         return c
     raise FileNotFoundError(f"Cannot find '{filename}' — tried: {c}")
 
 def _resolve_doc_path(filename: str) -> str:
-    """Resolve a guide filename to its absolute path under docs/guides/."""
+    """Resolve a guide filename to its absolute path under docs/."""
     return _resolve_guide_path(filename)
 
 
