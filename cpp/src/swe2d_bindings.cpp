@@ -1691,17 +1691,41 @@ PYBIND11_MODULE(HYDRA_SWE2D_PY_MODULE_NAME, m) {
            py::array_t<double, py::array::c_style|py::array::forcecast> link_invert_in,
            py::array_t<double, py::array::c_style|py::array::forcecast> link_invert_out,
            int32_t max_cell_length,
-           uintptr_t dev_ptr) -> void
+           uintptr_t dev_ptr,
+           // Optional shape arrays (default empty = all circular)
+           py::array_t<int32_t, py::array::c_style|py::array::forcecast> link_shape_type =
+               py::array_t<int32_t>(),
+           py::array_t<double, py::array::c_style|py::array::forcecast> link_width =
+               py::array_t<double>(),
+           py::array_t<double, py::array::c_style|py::array::forcecast> link_height =
+               py::array_t<double>()) -> void
         {
             auto* dev = reinterpret_cast<SWE2DDeviceState*>(dev_ptr);
+            const int32_t* shape_ptr = nullptr;
+            const double* w_ptr = nullptr;
+            const double* h_ptr = nullptr;
+            if (link_shape_type.size() > 0) shape_ptr = link_shape_type.data();
+            if (link_width.size() > 0)      w_ptr   = link_width.data();
+            if (link_height.size() > 0)     h_ptr   = link_height.data();
             swe2d_build_pipe1d_mesh(n_links,
                 link_from_node.data(), link_to_node.data(),
                 link_length.data(), link_diameter.data(), link_roughness_n.data(),
                 link_inlet_loss_k.data(), link_outlet_loss_k.data(),
                 node_invert_elev.data(), node_surface_area.data(), node_max_depth.data(),
                 link_invert_in.data(), link_invert_out.data(),
-                max_cell_length, &dev->pipe1d);
+                max_cell_length,
+                shape_ptr, w_ptr, h_ptr,
+                &dev->pipe1d);
         },
+        py::arg("n_links"), py::arg("link_from_node"), py::arg("link_to_node"),
+        py::arg("link_length"), py::arg("link_diameter"), py::arg("link_roughness_n"),
+        py::arg("link_inlet_loss_k"), py::arg("link_outlet_loss_k"),
+        py::arg("node_invert_elev"), py::arg("node_surface_area"), py::arg("node_max_depth"),
+        py::arg("link_invert_in"), py::arg("link_invert_out"),
+        py::arg("max_cell_length"), py::arg("dev_ptr"),
+        py::arg("link_shape_type") = py::array_t<int32_t>(),
+        py::arg("link_width") = py::array_t<double>(),
+        py::arg("link_height") = py::array_t<double>(),
         "Build 1D pipe network CSR topology and allocate device buffers in pipe1d state.");
 
     m.def("swe2d_pipe1d_step",

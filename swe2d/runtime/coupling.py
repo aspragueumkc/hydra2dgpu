@@ -1230,6 +1230,9 @@ class SWE2DCouplingController:
                         np.asarray(dsoa.link_invert_out, dtype=np.float64),
                         int(dsoa.max_cell_length),
                         dev_ptr,
+                        np.asarray(dsoa.link_shape_type, dtype=np.int32),
+                        np.asarray(dsoa.link_width, dtype=np.float64),
+                        np.asarray(dsoa.link_height, dtype=np.float64),
                     )
                     self._pipe1d_mesh_built = True
                     # Upload inlet/outfall exchange parameters for

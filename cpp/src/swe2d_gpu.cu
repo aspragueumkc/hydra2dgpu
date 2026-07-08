@@ -9678,6 +9678,9 @@ void swe2d_build_pipe1d_mesh(
     const double*         link_invert_in,
     const double*         link_invert_out,
     int32_t               max_cell_length,
+    const int32_t*        link_shape_type,
+    const double*         link_width,
+    const double*         link_height,
     SWE2DDeviceState::Pipe1DDeviceState* dev)
 {
     auto alloc_d = [](void** ptr, size_t bytes) {
@@ -9758,6 +9761,11 @@ void swe2d_build_pipe1d_mesh(
 
         // Shape resolution: default to circular (type 0); width=height=D
         int stype = 0; double sw = D, sh = D;
+        if (link_shape_type) {
+            stype = link_shape_type[i];
+            if (link_width)  sw = link_width[i];
+            if (link_height) sh = link_height[i];
+        }
 
         for (int32_t s = 0; s < n_sub; ++s) {
             const double frac = (static_cast<double>(s) + 0.5) / static_cast<double>(n_sub);

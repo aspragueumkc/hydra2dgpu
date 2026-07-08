@@ -1389,22 +1389,25 @@ void swe2d_gpu_set_coupling_dt(double dt);
     @param max_cell_length Max sub-cell length (0=no subdivision)
     @param dev Output pipe1d state
     @host */
-void swe2d_build_pipe1d_mesh(
-    int32_t               n_links,
-    const int32_t*        link_from_node,
-    const int32_t*        link_to_node,
-    const double*         link_length,
-    const double*         link_diameter,
-    const double*         link_roughness_n,
-    const double*         link_inlet_loss_k,
-    const double*         link_outlet_loss_k,
-    const double*         node_invert_elev,
-    const double*         node_surface_area,
-    const double*         node_max_depth,
-    const double*         link_invert_in,
-    const double*         link_invert_out,
-    int32_t               max_cell_length,
-    SWE2DDeviceState::Pipe1DDeviceState* dev);
+ void swe2d_build_pipe1d_mesh(
+     int32_t               n_links,
+     const int32_t*        link_from_node,
+     const int32_t*        link_to_node,
+     const double*         link_length,
+     const double*         link_diameter,
+     const double*         link_roughness_n,
+     const double*         link_inlet_loss_k,
+     const double*         link_outlet_loss_k,
+     const double*         node_invert_elev,
+     const double*         node_surface_area,
+     const double*         node_max_depth,
+     const double*         link_invert_in,
+     const double*         link_invert_out,
+     int32_t               max_cell_length,
+     const int32_t*        link_shape_type,
+     const double*         link_width,
+     const double*         link_height,
+     SWE2DDeviceState::Pipe1DDeviceState* dev);
 
 /** GPU kernel: compute HLLE flux for 1D pipe network.
     @param n_cells Number of pipe cells
