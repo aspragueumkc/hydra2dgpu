@@ -9508,6 +9508,158 @@ void swe2d_gpu_free_line_metrics(SWE2DDeviceState* dev) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// pipe1d_compute_table — host-side hydraulic geometry precomputation
+//
+// Builds two lookup tables of length PIPE1D_TABLE_N for a given cross-section:
+//   P_ratio[i] = P(A⁻¹(A_ratio[i]·A_full)) / P_full
+//   T_val[i]    = T(A⁻¹(A_ratio[i]·A_full))               [actual top width]
+// where A_ratio[i] = (i + 0.5) / PIPE1D_TABLE_N  (midpoint sampling).
+//
+// table_out layout: [P_ratio[0..N-1], T_val[0..N-1]]
+// ─────────────────────────────────────────────────────────────────────────────
+static void pipe1d_compute_table(
+    int shape_type, double width, double height,
+    double& A_full, double& P_full,
+    std::vector<double>& table_out)
+{
+    table_out.clear();
+    table_out.resize(2 * PIPE1D_TABLE_N, 0.0);
+
+    constexpr double EPS = 1e-12;
+
+    for (int i = 0; i < PIPE1D_TABLE_N; ++i) {
+        double A_ratio = (i + 0.5) / PIPE1D_TABLE_N;
+        double A_target = A_ratio * A_full;
+        double P_cur, T_cur;
+
+        // ── Circular (shape_type == 0) ──
+        if (shape_type == 0) {
+            double D = width;
+            double R = D * 0.5;
+
+            if (i == 0) {
+                A_full = M_PI * R * R;
+                P_full = 2.0 * M_PI * R;
+            }
+
+            // Newton on circular segment: F(y) = R²·acos((R-y)/R) − (R-y)·√(2Ry−y²) − A_target
+            double y = A_target / (2.0 * R); // initial guess (rectangular proxy)
+            for (int iter = 0; iter < 20; ++iter) {
+                double arg = (R - y) / R;
+                arg = fmax(-1.0, fmin(1.0, arg));
+                double phi = acos(arg);
+                double T  = 2.0 * sqrt(fmax(0.0, 2.0 * R * y - y * y));
+                double A_cur = R * R * phi - (R - y) * T * 0.5;
+                double F = A_cur - A_target;
+                if (fabs(F) < EPS * A_full) break;
+                y -= F / T;
+            }
+            // Clamp y to valid range
+            if (y < EPS * R) y = EPS * R;
+            if (y > 2.0 * R - EPS * R) y = 2.0 * R - EPS * R;
+
+            double arg = (R - y) / R;
+            arg = fmax(-1.0, fmin(1.0, arg));
+            double phi = acos(arg);                  // half central angle
+            P_cur = 2.0 * R * phi;                   // P = R·θ with θ = 2φ
+            T_cur = 2.0 * sqrt(fmax(0.0, 2.0 * R * y - y * y));
+        }
+        // ── Rectangular (shape_type == 1) ──
+        else if (shape_type == 1) {
+            double W = width;
+            double H = height;
+
+            if (i == 0) {
+                A_full = W * H;
+                P_full = 2.0 * (W + H);
+            }
+
+            double y = A_target / W;
+            if (y < 0.0) y = 0.0;
+            if (y > H)   y = H;
+
+            if (y <= 0.0) {
+                P_cur = 0.0;
+                T_cur = 0.0;
+            } else if (y >= H) {
+                P_cur = P_full;
+                T_cur = W;
+            } else {
+                P_cur = W + 2.0 * y;
+                T_cur = W;
+            }
+        }
+        // ── Elliptical (shape_type == 2) ──
+        else {
+            double a = width  * 0.5;  // semi-major axis
+            double b = height * 0.5;  // semi-minor axis
+
+            if (i == 0) {
+                A_full = M_PI * a * b;
+                // Ramanujan approximation for ellipse perimeter
+                double h = (a - b) * (a - b) / ((a + b) * (a + b));
+                P_full = M_PI * (a + b) * (1.0 + 3.0 * h / (10.0 + sqrt(4.0 - 3.0 * h)));
+            }
+
+            // Newton on elliptic segment
+            double y = A_target / (2.0 * a); // initial guess (rectangular proxy)
+            double phi = 0.0;                // half central angle of filled portion
+            for (int iter = 0; iter < 20; ++iter) {
+                double yr = y / b;
+                double A_cur, T_val;
+
+                if (yr <= 1.0) {
+                    // Lower half
+                    double arg = 1.0 - yr;
+                    arg = fmax(-1.0, fmin(1.0, arg));
+                    phi = acos(arg);
+                    A_cur = a * b * (phi - 0.5 * sin(2.0 * phi));
+                    T_val = 2.0 * a * sqrt(fmax(0.0, yr * (2.0 - yr)));
+                } else {
+                    // Upper half: compute via complement (empty portion at top)
+                    double yr2 = 2.0 - yr;
+                    double arg = 1.0 - yr2;
+                    arg = fmax(-1.0, fmin(1.0, arg));
+                    phi = acos(arg);                              // empty-segment half-angle
+                    double A_seg = a * b * (phi - 0.5 * sin(2.0 * phi));
+                    A_cur = A_full - A_seg;
+                    T_val = 2.0 * a * sqrt(fmax(0.0, yr2 * (2.0 - yr2)));
+                }
+
+                double F = A_cur - A_target;
+                if (fabs(F) < EPS * A_full) break;
+                y -= F / T_val;
+            }
+
+            // Clamp y to valid range
+            if (y < EPS * b) y = EPS * b;
+            if (y > 2.0 * b - EPS * b) y = 2.0 * b - EPS * b;
+
+            // Recompute final phi / T_cur from clamped y
+            double yr = y / b;
+            if (yr <= 1.0) {
+                double arg = 1.0 - yr;
+                arg = fmax(-1.0, fmin(1.0, arg));
+                phi = acos(arg);
+                T_cur = 2.0 * a * sqrt(fmax(0.0, yr * (2.0 - yr)));
+            } else {
+                double yr2 = 2.0 - yr;
+                double arg = 1.0 - yr2;
+                arg = fmax(-1.0, fmin(1.0, arg));
+                phi = acos(arg);  // empty-segment half-angle
+                phi = M_PI - phi; // filled-portion half-angle
+                T_cur = 2.0 * a * sqrt(fmax(0.0, yr2 * (2.0 - yr2)));
+            }
+            // Linear interpolation by central angle (approximate, adequate)
+            P_cur = P_full * phi / M_PI;
+        }
+
+        table_out[i]                     = P_cur / P_full;
+        table_out[PIPE1D_TABLE_N + i]    = T_cur;
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // swe2d_build_pipe1d_mesh
 // ─────────────────────────────────────────────────────────────────────────────
 void swe2d_build_pipe1d_mesh(
