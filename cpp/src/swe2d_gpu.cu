@@ -23,6 +23,9 @@
 #include <cstring>
 #include <stdexcept>
 
+// Pipe1D geometry table: number of sampling intervals for P(A)/A_full and T(A) lookup.
+#define PIPE1D_TABLE_N 256
+
 // Forward declarations for file-scope globals used by culvert/coupling paths.
 extern int32_t s_culvert_solver_mode;
 extern double* s_culvert_table_header;

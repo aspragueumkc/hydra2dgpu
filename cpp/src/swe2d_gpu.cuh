@@ -572,6 +572,11 @@ struct SWE2DDeviceState {
         double*   d_cell_link_k;   // [n_pipe_cells] k at boundary cells only (0 interior)
         double*   d_cell_link_area; // [n_pipe_cells] full pipe area at boundary cells (0 interior)
 
+        int32_t*  d_cell_shape_type; // [n_pipe_cells] 0=circular 1=rect 2=ellipse
+        double*   d_cell_width;      // [n_pipe_cells]
+        double*   d_cell_height;     // [n_pipe_cells]
+        double*   d_cell_tables;     // [n_pipe_cells × 2 × PIPE1D_TABLE_N] flattened P_ratio + T_ratio
+
         double*   d_node_invert;    // [n_nodes] invert elevation at each node
         double*   d_node_depth;     // [n_nodes]
         double*   d_node_net_q;     // [n_nodes]
@@ -594,6 +599,7 @@ struct SWE2DDeviceState {
             _P_FREE(d_cell_length); _P_FREE(d_cell_area);
             _P_FREE(d_cell_perim); _P_FREE(d_cell_invert);
             _P_FREE(d_cell_n); _P_FREE(d_cell_link_k); _P_FREE(d_cell_link_area);
+            _P_FREE(d_cell_shape_type); _P_FREE(d_cell_width); _P_FREE(d_cell_height); _P_FREE(d_cell_tables);
             _P_FREE(d_node_invert); _P_FREE(d_node_depth); _P_FREE(d_node_net_q); _P_FREE(d_node_surface_area);
             _P_FREE(d_A); _P_FREE(d_Q); _P_FREE(d_A_prev); _P_FREE(d_Q_iter);
             n_pipe_cells = 0; n_nodes = 0;
