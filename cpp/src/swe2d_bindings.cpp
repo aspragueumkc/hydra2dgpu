@@ -1763,6 +1763,14 @@ PYBIND11_MODULE(HYDRA_SWE2D_PY_MODULE_NAME, m) {
         py::arg("node_depth"),
         "Upload node depths from host to device before each pipe step.");
 
+    m.def("swe2d_pipe1d_init_area_from_depth",
+        [](uintptr_t dev_ptr) -> void {
+            auto* dev = reinterpret_cast<SWE2DDeviceState*>(dev_ptr);
+            swe2d_pipe1d_init_area_from_depth(&dev->pipe1d);
+        },
+        py::arg("dev_ptr"),
+        "Initialize pipe cell area from uploaded node depths.");
+
     m.def("swe2d_pipe1d_readback_node_state",
         [](uintptr_t dev_ptr, int32_t n_nodes, int32_t n_cells) -> py::dict
         {

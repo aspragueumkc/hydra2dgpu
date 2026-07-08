@@ -10405,6 +10405,47 @@ void swe2d_pipe1d_upload_node_depth(
         cudaMemcpyHostToDevice));
 }
 
+// ── Initialize pipe cell area from uploaded node depths ────────────────────
+
+void swe2d_pipe1d_init_area_from_depth(SWE2DDeviceState::Pipe1DDeviceState* dev)
+{
+    int32_t nc = dev->n_pipe_cells;
+    int32_t nn = dev->n_nodes;
+    if (nc <= 0 || nn <= 0) return;
+
+    std::vector<int32_t> cell_from(nc);
+    std::vector<int32_t> cell_to(nc);
+    std::vector<double> cell_area_full(nc);
+    std::vector<double> cell_width(nc);
+    std::vector<double> cell_height(nc);
+    std::vector<int32_t> cell_shape(nc);
+    std::vector<double> node_depth(nn);
+
+    CUDA_CHECK(cudaMemcpy(cell_from.data(), dev->d_cell_from_node, nc * sizeof(int32_t), cudaMemcpyDeviceToHost));
+    CUDA_CHECK(cudaMemcpy(cell_to.data(), dev->d_cell_to_node, nc * sizeof(int32_t), cudaMemcpyDeviceToHost));
+    CUDA_CHECK(cudaMemcpy(cell_area_full.data(), dev->d_cell_area, nc * sizeof(double), cudaMemcpyDeviceToHost));
+    CUDA_CHECK(cudaMemcpy(cell_width.data(), dev->d_cell_width, nc * sizeof(double), cudaMemcpyDeviceToHost));
+    CUDA_CHECK(cudaMemcpy(cell_height.data(), dev->d_cell_height, nc * sizeof(double), cudaMemcpyDeviceToHost));
+    CUDA_CHECK(cudaMemcpy(cell_shape.data(), dev->d_cell_shape_type, nc * sizeof(int32_t), cudaMemcpyDeviceToHost));
+    CUDA_CHECK(cudaMemcpy(node_depth.data(), dev->d_node_depth, nn * sizeof(double), cudaMemcpyDeviceToHost));
+
+    std::vector<double> init_A(nc, 0.0);
+    for (int c = 0; c < nc; ++c) {
+        int fn = cell_from[c];
+        int tn = cell_to[c];
+        double d_fn = (fn >= 0 && fn < nn) ? node_depth[fn] : 0.0;
+        double d_tn = (tn >= 0 && tn < nn) ? node_depth[tn] : 0.0;
+        double depth = 0.5 * (d_fn + d_tn);
+        if (depth <= 0.0) { init_A[c] = 0.0; continue; }
+        double A_full = cell_area_full[c];
+        double full_depth = (cell_shape[c] == 0) ? cell_width[c] : cell_height[c];
+        full_depth = fmax(1e-10, full_depth);
+        double frac = fmin(1.0, depth / full_depth);
+        init_A[c] = A_full * frac;
+    }
+    CUDA_CHECK(cudaMemcpy(dev->d_A, init_A.data(), nc * sizeof(double), cudaMemcpyHostToDevice));
+}
+
 // ── Readback node state for diagnostics/tests ───────────────────────────────
 
 void swe2d_pipe1d_readback_node_state(

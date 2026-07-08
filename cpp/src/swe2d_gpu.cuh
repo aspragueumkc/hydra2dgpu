@@ -1555,6 +1555,8 @@ void swe2d_pipe1d_upload_node_depth(
     const double*     host_node_depth,
     int32_t           n_nodes);
 
+void swe2d_pipe1d_init_area_from_depth(SWE2DDeviceState::Pipe1DDeviceState* dev);
+
 /** Readback pipe1d node/cell state for diagnostics and tests.
     @param dev Device state pointer
     @param host_node_depth Output host buffer for node depths [n_nodes] (may be nullptr)
