@@ -211,20 +211,6 @@ class MeshController:
         for i, lyr in enumerate(model_layers):
             view._write_memory_layer_to_gpkg(lyr, out_path, lyr.name(), create_file=(i == 0))
 
-        # Store QML editor-widget styles in GPKG layer_styles table
-        import os as _os
-        from swe2d.workbench.services.gpkg_layer_styles_service import (
-            write_qml_styles_to_gpkg as _write_styles,
-        )
-        _qml_dir = _os.path.join(
-            _os.path.dirname(
-                _os.path.dirname(_os.path.dirname(_os.path.dirname(__file__)))
-            ),
-            "QML",
-        )
-        if _os.path.isdir(_qml_dir):
-            _write_styles(out_path, _qml_dir)
-
         view._log(f"Created 2D model GeoPackage: {out_path}")
         view.set_layer_status_text("2D model GeoPackage created.")
         view._load_2d_model_geopackage(path_override=out_path)
@@ -648,12 +634,31 @@ class MeshController:
                 return
 
             import os as _os
+            from qgis.core import QgsEditFormConfig as _Cfg
             from swe2d.workbench.services.gpkg_layer_styles_service import (
                 apply_qml_style_from_gpkg as _apply_style,
             )
+
+            # Absolute path to the bundled form init file
+            _form_init_path = _os.path.join(
+                _os.path.dirname(_os.path.dirname(_os.path.dirname(_os.path.dirname(__file__)))),
+                "QML", "form_init.py",
+            )
+
             for name, lyr in layers.items():
                 QgsProject.instance().addMapLayer(lyr)
                 _apply_style(lyr, gpkg_path)
+                # Wire form init for layers with ID-based dropdowns
+                _fn = {
+                    "swe2d_rain_gages": "rain_gages_form_init",
+                    "swe2d_bc_lines": "bc_lines_form_init",
+                    "swe2d_internal_flow_sources": "internal_flow_form_init",
+                }.get(name)
+                if _fn is not None and _os.path.exists(_form_init_path):
+                    cfg = lyr.editFormConfig()
+                    cfg.setInitFunction(_fn)
+                    cfg.setInitFilePath(_form_init_path)
+                    cfg.setInitCodeSource(_Cfg.CodeSourceFile)
 
             self._view._layer_controller.refresh_layer_combos()
             view._model_gpkg_path = str(gpkg_path)

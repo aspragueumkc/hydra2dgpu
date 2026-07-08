@@ -114,7 +114,17 @@ LAYER_SCHEMAS: dict[str, dict] = {
             ("priority", _INT),
             ("hydrograph", _STR(1024)),
             ("hydrograph_id", _STR(64)),
-            ("hydrograph_layer", _STR(128)),
+        ],
+    },
+    "swe2d_internal_flow_sources": {
+        "geom": "Polygon",
+        "geom_col": "geom",
+        "fields": [
+            ("source_id", _INT),
+            ("q_cms", _DBL),
+            ("hydrograph", _STR(1024)),
+            ("hydrograph_id", _STR(64)),
+            ("priority", _INT),
         ],
     },
     "swe2d_sample_lines": {
@@ -328,6 +338,7 @@ _LAYER_DISPLAY_NAMES: dict[str, str] = {
     "swe2d_drainage_inlets": "SWE2D_Drainage_Inlets",
     "swe2d_drainage_node_inlets": "SWE2D_Drainage_Node_Inlets",
     "swe2d_structures": "SWE2D_Structures",
+    "swe2d_internal_flow_sources": "SWE2D_Internal_Flow_Sources",
 }
 
 

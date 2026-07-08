@@ -941,6 +941,35 @@ class SWE2DWorkbenchStudioDialog(QtWidgets.QDialog):
         """Load a model GeoPackage and update recent files."""
         self._mesh_controller.load_2d_model_geopackage(path_override=path_override)
 
+    def _open_graph_editor(self) -> None:
+        """Open the hyetograph/hydrograph editor dialog."""
+        gpkg_path = getattr(self, "_model_gpkg_path", None)
+        if not gpkg_path or not os.path.exists(gpkg_path):
+            # Recover GPKG path from loaded layers (survives QGIS restart)
+            gpkg_path = self._recover_gpkg_path()
+        if not gpkg_path or not os.path.exists(gpkg_path):
+            self._log("[ERROR] No model GeoPackage loaded. Load or create one first.")
+            return
+        from swe2d.workbench.views.graph_editor_dialog import GraphEditorDialog as _Dlg
+        dlg = _Dlg(gpkg_path, self)
+        dlg.exec()
+
+    def _recover_gpkg_path(self) -> str | None:
+        """Recover model GPKG path from loaded project layers."""
+        from qgis.core import QgsProject as _QgsProject
+        from swe2d.workbench.services.schema_definitions import get_layer_names as _layer_names
+        known = set(_layer_names())
+        for lyr in _QgsProject.instance().mapLayers().values():
+            name = str(lyr.name())
+            if name.lower() in known:
+                source = str(lyr.source())
+                if "|" in source:
+                    path = source.split("|")[0]
+                    if os.path.exists(path):
+                        self._model_gpkg_path = path
+                        return path
+        return None
+
     def _iter_all_persistable_widgets(self):
         """Yield (attr_name, widget) pairs across all tab views and toolbox."""
         return _wp_svc.iter_all_persistable_widgets(
@@ -1737,6 +1766,7 @@ class SWE2DWorkbenchStudioDialog(QtWidgets.QDialog):
             mesh_data=self._mesh_data,
             have_qgis_core=_HAVE_QGIS_CORE,
             bc_lines_layer_combo=getattr(self._model_tab_view, "bc_lines_layer_combo", None),
+            hydrograph_source_layer_combo=getattr(self._model_tab_view, "hydrograph_source_layer_combo", None),
             combo_layer_fn=self._combo_layer,
             iter_project_layers_fn=self._iter_project_layers,
             hydrograph_from_layer_fn=self._hydrograph_from_layer,

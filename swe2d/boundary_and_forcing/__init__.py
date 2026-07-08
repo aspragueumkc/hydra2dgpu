@@ -25,7 +25,6 @@ from swe2d.boundary_and_forcing.internal_flow_logic import (
     build_internal_flow_forcing_from_features,
     first_matching_field,
     resolve_internal_flow_field_name,
-    resolve_layer_hydrograph_for_feature,
 )
 from swe2d.boundary_and_forcing.internal_flow_qgis_adapter import (
     build_internal_flow_forcing_qgis,
@@ -74,5 +73,4 @@ __all__ = [
     "parse_hydrograph_text",
     "parse_time_hours",
     "resolve_internal_flow_field_name",
-    "resolve_layer_hydrograph_for_feature",
 ]

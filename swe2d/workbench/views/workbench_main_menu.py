@@ -156,6 +156,11 @@ def install_workbench_main_menu(dlg, iface) -> Optional[QtWidgets.QMenu]:
         "Create Topology Template Layers…",
         lambda: dlg._topology_controller.create_topology_template_layers(),
     )
+    add_action(
+        "HYDRA2DMenuGraphEditorAction",
+        "Graph Editor…",
+        lambda: dlg._open_graph_editor(),
+    )
     menu.addSeparator()
 
     # ── Simulation & I/O actions ────────────────────────────────────

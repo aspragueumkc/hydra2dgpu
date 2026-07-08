@@ -2,7 +2,7 @@ from __future__ import annotations
 
 """Internal-flow forcing logic: field resolution, hydrograph lookup, and cell-weight assembly."""
 
-from typing import Callable, Dict, Iterable, List, Optional, Tuple
+from typing import Callable, Dict, List, Optional, Tuple
 
 import numpy as np
 
@@ -63,106 +63,20 @@ def build_hydrograph_lookup_from_features(
     return lookup
 
 
-def resolve_layer_hydrograph_for_feature(
-    ft,
-    ref_layer: str,
-    hid: str,
-    hydro_field: Optional[str],
-    iter_layers_fn: Callable[[], Iterable[object]],
-    is_vector_layer_fn: Callable[[object], bool],
-    layer_name_fn: Callable[[object], str],
-    layer_id_fn: Callable[[object], str],
-    hydrograph_from_layer_fn: Callable[[object, str], Optional[Hydrograph]],
-) -> Optional[Hydrograph]:
-    """
-    resolve layer hydrograph for feature.
-
-    Parameters
-    ----------
-    ft
-        Description of ft.
-    ref_layer : str
-        Description of ref_layer.
-    hid : str
-        Description of hid.
-    hydro_field : Optional[str]
-        Description of hydro_field.
-    iter_layers_fn : Callable[[], Iterable[object]]
-        Description of iter_layers_fn.
-    is_vector_layer_fn : Callable[[object], bool]
-        Description of is_vector_layer_fn.
-    layer_name_fn : Callable[[object], str]
-        Description of layer_name_fn.
-    layer_id_fn : Callable[[object], str]
-        Description of layer_id_fn.
-    hydrograph_from_layer_fn : Callable[[object, str], Optional[Hydrograph]]
-        Description of hydrograph_from_layer_fn.
-
-    Returns
-    -------
-    Optional[Hydrograph]
-    """
-    layer_ref = ref_layer or (str(ft[hydro_field] or "").strip() if hydro_field is not None else "")
-    if not layer_ref:
-        return None
-
-    target_layer = None
-    for hlyr in iter_layers_fn():
-        if not is_vector_layer_fn(hlyr):
-            continue
-        if layer_name_fn(hlyr) == layer_ref or layer_id_fn(hlyr) == layer_ref:
-            target_layer = hlyr
-            break
-
-    if target_layer is None:
-        return None
-    return hydrograph_from_layer_fn(target_layer, hid)
-
-
 def build_internal_flow_forcing_from_features(
     features,
     field_name: str,
     hydro_field: Optional[str],
     hgid_field: Optional[str],
-    hlyr_field: Optional[str],
     hydro_lookup: Dict[str, str],
     cx: np.ndarray,
     cy: np.ndarray,
     parse_hydrograph_text_fn: Callable[[str], Optional[Hydrograph]],
-    resolve_layer_hydrograph_fn: Callable[[object, str, str], Optional[Hydrograph]],
+    resolve_hydrograph_via_canonical_fn: Callable[[str], Optional[Hydrograph]],
     geometry_to_indices_weights_fn: Callable[[object, np.ndarray, np.ndarray], Optional[Tuple[np.ndarray, np.ndarray]]],
 ) -> Optional[Tuple[np.ndarray, List[DynamicTerm], int, int]]:
     """
     build internal flow forcing from features.
-
-    Parameters
-    ----------
-    features
-        Description of features.
-    field_name : str
-        Description of field_name.
-    hydro_field : Optional[str]
-        Description of hydro_field.
-    hgid_field : Optional[str]
-        Description of hgid_field.
-    hlyr_field : Optional[str]
-        Description of hlyr_field.
-    hydro_lookup : Dict[str, str]
-        Description of hydro_lookup.
-    cx : np.ndarray
-        Description of cx.
-    cy : np.ndarray
-        Description of cy.
-    parse_hydrograph_text_fn : Callable[[str], Optional[Hydrograph]]
-        Description of parse_hydrograph_text_fn.
-    resolve_layer_hydrograph_fn : Callable[[object, str, str], Optional[Hydrograph]]
-        Description of resolve_layer_hydrograph_fn.
-    geometry_to_indices_weights_fn : Callable[[object, np.ndarray, np.ndarray], Optional[Tuple[np.ndarray, np.ndarray]]]
-        Description of geometry_to_indices_weights_fn.
-
-    Returns
-    -------
-    Optional[Tuple[np.ndarray, List[DynamicTerm], int, int]]
     """
     base_q = np.zeros(cx.shape[0], dtype=np.float64)
     dynamic_terms: List[DynamicTerm] = []
@@ -187,7 +101,6 @@ def build_internal_flow_forcing_from_features(
 
         hg = None
         raw_h = str(ft[hydro_field] or "").strip() if hydro_field is not None else ""
-        ref_layer = str(ft[hlyr_field] or "").strip() if hlyr_field is not None else ""
         hid = str(ft[hgid_field] or "").strip() if hgid_field is not None else ""
         if not raw_h and hid and hid in hydro_lookup:
             raw_h = hydro_lookup[hid]
@@ -198,9 +111,9 @@ def build_internal_flow_forcing_from_features(
             except Exception:
                 hg = None
 
-        if hg is None and (ref_layer or (hgid_field is not None and hid)):
+        if hg is None and hid:
             try:
-                hg = resolve_layer_hydrograph_fn(ft, ref_layer, hid)
+                hg = resolve_hydrograph_via_canonical_fn(hid)
             except Exception:
                 hg = None
 

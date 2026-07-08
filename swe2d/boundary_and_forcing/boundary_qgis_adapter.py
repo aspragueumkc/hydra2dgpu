@@ -330,6 +330,7 @@ def collect_bc_layer_hydrographs_qgis(
     mesh_data,
     have_qgis_core: bool,
     bc_lines_layer_combo,
+    hydrograph_source_layer_combo=None,
     combo_layer_fn: Callable[[object, str], Optional[object]],
     iter_project_layers_fn: Callable[[], Iterable[object]],
     hydrograph_from_layer_fn: Callable[..., Optional[Tuple[np.ndarray, np.ndarray]]],
@@ -345,43 +346,6 @@ def collect_bc_layer_hydrographs_qgis(
 ) -> Dict[int, Tuple[int, Tuple[np.ndarray, np.ndarray]]]:
     """
     collect bc layer hydrographs qgis.
-
-    Parameters
-    ----------
-    mesh_data
-        Description of mesh_data.
-    have_qgis_core : bool
-        Description of have_qgis_core.
-    bc_lines_layer_combo
-        Description of bc_lines_layer_combo.
-    combo_layer_fn : Callable[[object, str], Optional[object]]
-        Description of combo_layer_fn.
-    iter_project_layers_fn : Callable[[], Iterable[object]]
-        Description of iter_project_layers_fn.
-    hydrograph_from_layer_fn : Callable[..., Optional[Tuple[np.ndarray, np.ndarray]]]
-        Description of hydrograph_from_layer_fn.
-    parse_hydrograph_text_fn : Callable[[str], Optional[Tuple[np.ndarray, np.ndarray]]]
-        Description of parse_hydrograph_text_fn.
-    edge_n0 : np.ndarray
-        Description of edge_n0.
-    edge_n1 : np.ndarray
-        Description of edge_n1.
-    ts_flow_code : int
-        Description of ts_flow_code.
-    ts_stage_code : int
-        Description of ts_stage_code.
-    qgs_vector_layer_cls
-        Description of qgs_vector_layer_cls.
-    qgs_geometry_cls
-        Description of qgs_geometry_cls.
-    qgs_pointxy_cls
-        Description of qgs_pointxy_cls.
-    log_fn : Callable[[str], None]
-        Description of log_fn.
-
-    Returns
-    -------
-    Dict[int, Tuple[int, Tuple[np.ndarray, np.ndarray]]]
     """
     edge_hydro: Dict[int, Tuple[int, Tuple[np.ndarray, np.ndarray]]] = {}
     if mesh_data is None or not have_qgis_core:
@@ -406,22 +370,28 @@ def collect_bc_layer_hydrographs_qgis(
             break
 
     hgid_field = "hydrograph_id" if "hydrograph_id" in fields else None
-    hlyr_field = "hydrograph_layer" if "hydrograph_layer" in fields else None
 
     hydro_lookup: Dict[str, str] = {}
     canonical_hydro_layer = None
     if hgid_field is not None:
-        hydro_layers = [
-            lyr
-            for lyr in iter_project_layers_fn()
-            if isinstance(lyr, qgs_vector_layer_cls) and str(lyr.name()).lower() in ("swe2d_hydrographs",)
-        ]
-        if hydro_layers:
-            hlyr = hydro_layers[0]
-            canonical_hydro_layer = hlyr
-            hfields = set(hlyr.fields().names())
+        # Use explicit hydrograph source layer if selected
+        hsrc_layer = None
+        if hydrograph_source_layer_combo is not None:
+            hsrc_layer = combo_layer_fn(hydrograph_source_layer_combo, "vector")
+        if hsrc_layer is not None:
+            canonical_hydro_layer = hsrc_layer
+        else:
+            hydro_layers = [
+                lyr
+                for lyr in iter_project_layers_fn()
+                if isinstance(lyr, qgs_vector_layer_cls) and str(lyr.name()).lower() in ("swe2d_hydrographs",)
+            ]
+            if hydro_layers:
+                canonical_hydro_layer = hydro_layers[0]
+        if canonical_hydro_layer is not None:
+            hfields = set(canonical_hydro_layer.fields().names())
             if "hydrograph_id" in hfields and "hydrograph" in hfields:
-                for hft in hlyr.getFeatures():
+                for hft in canonical_hydro_layer.getFeatures():
                     hid = str(hft["hydrograph_id"] or "").strip()
                     htxt = str(hft["hydrograph"] or "").strip()
                     if hid and htxt:
@@ -432,25 +402,6 @@ def collect_bc_layer_hydrographs_qgis(
 
     node_x = mesh_data["node_x"]
     node_y = mesh_data["node_y"]
-
-    def _resolve_layer_hydrograph(layer_ref: str, hid: str, bc_t: int):
-        """resolve layer hydrograph"""
-        if not layer_ref:
-            return None
-        target_layer = None
-        for lyr in iter_project_layers_fn():
-            if not isinstance(lyr, qgs_vector_layer_cls):
-                continue
-            try:
-                if lyr.id() == layer_ref or str(lyr.name()) == layer_ref:
-                    target_layer = lyr
-                    break
-            except Exception as e:
-                logger.warning("_resolve_layer_hydrograph layer matching failed: %s", e)
-                continue
-        if target_layer is None:
-            return None
-        return hydrograph_from_layer_fn(target_layer, hydrograph_id=hid, bc_type=bc_t)
 
     features = []
     for ft in bc_layer.getFeatures():
@@ -467,25 +418,10 @@ def collect_bc_layer_hydrographs_qgis(
 
         raw_h = str(ft[hydro_field] or "").strip() if hydro_field is not None else ""
         hid = str(ft[hgid_field] or "").strip() if hgid_field is not None else ""
-        ref_layer = str(ft[hlyr_field] or "").strip() if hlyr_field is not None else ""
 
         if not raw_h and hgid_field is not None:
             if hid in hydro_lookup:
                 raw_h = hydro_lookup[hid]
-
-        # Prefer explicit referenced table/layer when provided.
-        if ref_layer:
-            hg_layer = _resolve_layer_hydrograph(ref_layer, hid, t)
-            if hg_layer is not None:
-                pr = 0
-                if prio_field is not None:
-                    try:
-                        pr = int(ft[prio_field])
-                    except Exception as e:
-                        log_fn(f"[ERROR] Hydrograph priority field parse failed: {e}")
-                        pr = 0
-                features.append((pr, geom, t, hg_layer))
-                continue
 
         if not raw_h:
             if hid and canonical_hydro_layer is not None:
@@ -507,9 +443,7 @@ def collect_bc_layer_hydrographs_qgis(
             log_fn(f"[ERROR] Hydrograph text parse failed: {e}")
             hg = None
         if hg is None:
-            # If parsing failed, treat hydrograph field as a layer reference token.
-            hg_layer = _resolve_layer_hydrograph(raw_h, hid, t)
-            if hg_layer is None and hid and canonical_hydro_layer is not None:
+            if hid and canonical_hydro_layer is not None:
                 hg_layer = hydrograph_from_layer_fn(canonical_hydro_layer, hydrograph_id=hid, bc_type=t)
             if hg_layer is not None:
                 pr = 0

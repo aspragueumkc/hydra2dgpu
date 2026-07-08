@@ -11,7 +11,6 @@ from swe2d.boundary_and_forcing.internal_flow_logic import (
     build_internal_flow_forcing_from_features,
     first_matching_field,
     resolve_internal_flow_field_name,
-    resolve_layer_hydrograph_for_feature,
 )
 from swe2d.boundary_and_forcing.internal_flow_qgis_geometry import internal_flow_geom_to_indices_weights_qgis
 
@@ -84,12 +83,10 @@ def build_internal_flow_forcing_qgis(
         """layer name"""
         return str(layer_obj.name())
 
-    def _layer_id(layer_obj: object) -> str:
-        """layer id"""
-        return str(layer_obj.id())
-
     def _hydrograph_from_layer_with_id(layer_obj, hid: str) -> Optional[Tuple[np.ndarray, np.ndarray]]:
         """hydrograph from layer with id"""
+        if not hid:
+            return None
         return hydrograph_from_layer_fn(layer_obj, hydrograph_id=hid, bc_type=None)
 
     def _geometry_to_indices_weights(geom, cx_local: np.ndarray, cy_local: np.ndarray) -> Optional[Tuple[np.ndarray, np.ndarray]]:
@@ -116,7 +113,6 @@ def build_internal_flow_forcing_qgis(
 
     hydro_field = first_matching_field(fields, ("hydrograph", "hydrograph_text", "hydro", "hg"))
     hgid_field = "hydrograph_id" if "hydrograph_id" in fields else None
-    hlyr_field = "hydrograph_layer" if "hydrograph_layer" in fields else None
 
     hydro_lookup: Dict[str, str] = {}
     if hgid_field is not None:
@@ -137,31 +133,24 @@ def build_internal_flow_forcing_qgis(
 
     cx, cy = mesh_cell_centroids_fn()
 
-    def _resolve_layer_hydrograph(ft, ref_layer: str, hid: str) -> Optional[Tuple[np.ndarray, np.ndarray]]:
-        """resolve layer hydrograph"""
-        return resolve_layer_hydrograph_for_feature(
-            ft=ft,
-            ref_layer=ref_layer,
-            hid=hid,
-            hydro_field=hydro_field,
-            iter_layers_fn=iter_project_layers_fn,
-            is_vector_layer_fn=_is_vector_layer,
-            layer_name_fn=_layer_name,
-            layer_id_fn=_layer_id,
-            hydrograph_from_layer_fn=_hydrograph_from_layer_with_id,
-        )
+    def _resolve_hydrograph_via_canonical(hid: str) -> Optional[Tuple[np.ndarray, np.ndarray]]:
+        if not hid:
+            return None
+        for hlyr in iter_project_layers_fn():
+            if _is_vector_layer(hlyr) and _layer_name(hlyr).lower() in ("swe2d_hydrographs",):
+                return _hydrograph_from_layer_with_id(hlyr, hid)
+        return None
 
     forcing_data = build_internal_flow_forcing_from_features(
         features=lyr.getFeatures(),
         field_name=field_name,
         hydro_field=hydro_field,
         hgid_field=hgid_field,
-        hlyr_field=hlyr_field,
         hydro_lookup=hydro_lookup,
         cx=cx,
         cy=cy,
         parse_hydrograph_text_fn=parse_hydrograph_text_fn,
-        resolve_layer_hydrograph_fn=_resolve_layer_hydrograph,
+        resolve_hydrograph_via_canonical_fn=_resolve_hydrograph_via_canonical,
         geometry_to_indices_weights_fn=_geometry_to_indices_weights,
     )
 

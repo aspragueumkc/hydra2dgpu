@@ -508,6 +508,15 @@ class ModelTabView(QtWidgets.QWidget):
         self.bc_lines_layer_combo.addItem("(none)", None)
         self._add_param_row(form, "BC lines layer:", self.bc_lines_layer_combo)
 
+        self.hydrograph_source_layer_combo = QtWidgets.QComboBox()
+        self.hydrograph_source_layer_combo.setObjectName("hydrograph_source_layer_combo")
+        self.hydrograph_source_layer_combo.setToolTip(
+            "Table layer containing hydrograph definitions referenced by BC line "
+            "hydrograph_id attributes. Typically the auto-created swe2d_hydrographs layer."
+        )
+        self.hydrograph_source_layer_combo.addItem("(auto-detect)", None)
+        self._add_param_row(form, "Hydrograph source:", self.hydrograph_source_layer_combo)
+
         self.inflow_progressive_chk = QtWidgets.QCheckBox("Inflow progressive")
         self.inflow_progressive_chk.setObjectName("inflow_progressive_chk")
         self.inflow_progressive_chk.setToolTip(

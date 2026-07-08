@@ -842,15 +842,14 @@ class TestBCHydrographCollection(unittest.TestCase):
         fields.append(QgsField("priority", QVariant.Int))
         fields.append(QgsField("hydrograph", QVariant.String))
         fields.append(QgsField("hydrograph_id", QVariant.String))
-        fields.append(QgsField("hydrograph_layer", QVariant.String))
         pr.addAttributes(fields)
         layer.updateFields()
 
         f = QgsFeature()
         f.setGeometry(QgsGeometry.fromWkt(f"LINESTRING(0 0, 0 {ly})"))
-        # Match culvert_test pattern: hydrograph field stores token "1",
-        # actual timeseries is in swe2d_hydrographs rows filtered by hydrograph_id.
-        f.setAttributes([102, 0.0, 1, "1", "1", "swe2d_hydrographs"])
+        # hydrograph field stores token "1"; actual timeseries is in
+        # swe2d_hydrographs rows filtered by hydrograph_id.
+        f.setAttributes([102, 0.0, 1, "1", "1"])
         pr.addFeatures([f])
         layer.updateExtents()
         return layer
@@ -876,7 +875,7 @@ class TestBCHydrographCollection(unittest.TestCase):
         pr.addFeatures(feats)
         return layer
 
-    def test_hydrograph_layer_lookup_when_hydrograph_field_is_token(self):
+    def test_hydrograph_token_resolves_via_canonical_layer(self):
         nx, ny = 4, 2
         lx, ly = 40.0, 5.0
         node_x, node_y, _, cell_nodes = _make_structured_mesh(nx, ny, lx, ly)
