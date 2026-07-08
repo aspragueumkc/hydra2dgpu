@@ -22,6 +22,7 @@
 #include <cmath>
 #include <cstring>
 #include <stdexcept>
+#include <unordered_map>
 
 // Pipe1D geometry table: number of sampling intervals for P(A)/A_full and T(A) lookup.
 #define PIPE1D_TABLE_N 256
@@ -9720,7 +9721,28 @@ void swe2d_build_pipe1d_mesh(
     std::vector<int32_t> cell_from_node(total_pipe_cells);
     std::vector<int32_t> cell_to_node(total_pipe_cells);
 
+    // Cross-section shape + table data (Task 6)
+    std::vector<int32_t> cell_shape_type(total_pipe_cells);
+    std::vector<double> cell_width(total_pipe_cells);
+    std::vector<double> cell_height(total_pipe_cells);
+    std::vector<double> cell_tables(total_pipe_cells * 2 * PIPE1D_TABLE_N, 0.0);
     int32_t cell_idx = 0;
+
+    // Deduplication: avoid recomputing tables for identical cross-sections
+    struct XsectKey {
+        int shape_type;
+        double w, h;
+        bool operator==(const XsectKey& o) const {
+            return shape_type == o.shape_type && fabs(w - o.w) < 1e-9 && fabs(h - o.h) < 1e-9;
+        }
+    };
+    struct XsectKeyHash {
+        size_t operator()(const XsectKey& k) const {
+            return std::hash<int>()(k.shape_type) ^ std::hash<double>()(k.w) ^ std::hash<double>()(k.h);
+        }
+    };
+    std::unordered_map<XsectKey, std::vector<double>, XsectKeyHash> table_cache;
+
     for (int32_t i = 0; i < n_links; ++i) {
         const double L = static_cast<double>(link_length[i]);
         const double D = static_cast<double>(link_diameter[i]);
@@ -9734,12 +9756,18 @@ void swe2d_build_pipe1d_mesh(
         const double A = M_PI * D * D / 4.0;
         const double P = M_PI * D;
 
+        // Shape resolution: default to circular (type 0); width=height=D
+        int stype = 0; double sw = D, sh = D;
+
         for (int32_t s = 0; s < n_sub; ++s) {
             const double frac = (static_cast<double>(s) + 0.5) / static_cast<double>(n_sub);
             cell_length[cell_idx] = sub_len;
             cell_area[cell_idx] = A;
             cell_perim[cell_idx] = P;
             cell_invert[cell_idx] = inv_in + frac * (inv_out - inv_in);
+            cell_shape_type[cell_idx] = stype;
+            cell_width[cell_idx] = sw;
+            cell_height[cell_idx] = sh;
             cell_n[cell_idx] = n_val;
             cell_link_k[cell_idx] = (s == 0) ? k_in : (s == n_sub - 1) ? k_out : 0.0;
             cell_link_area[cell_idx] = (s == 0 || s == n_sub - 1) ? A : 0.0;
@@ -9747,6 +9775,20 @@ void swe2d_build_pipe1d_mesh(
             cell_to_node[cell_idx] = link_to_node[i];
             ++cell_idx;
         }
+    }
+
+    // Compute precomputed tables for each unique cross-section
+    for (int c = 0; c < total_pipe_cells; ++c) {
+        XsectKey key{cell_shape_type[c], cell_width[c], cell_height[c]};
+        auto it = table_cache.find(key);
+        if (it == table_cache.end()) {
+            std::vector<double> tbl;
+            double A_full_dummy, P_full_dummy;
+            pipe1d_compute_table(key.shape_type, key.w, key.h, A_full_dummy, P_full_dummy, tbl);
+            it = table_cache.emplace(key, std::move(tbl)).first;
+        }
+        std::memcpy(&cell_tables[c * 2 * PIPE1D_TABLE_N],
+                    it->second.data(), 2 * PIPE1D_TABLE_N * sizeof(double));
     }
 
     // CSR peer topology: each pipe cell has 2 peers (from_node, to_node)
@@ -9825,6 +9867,10 @@ void swe2d_build_pipe1d_mesh(
     alloc_d(reinterpret_cast<void**>(&dev->d_cell_n), static_cast<size_t>(total_pipe_cells) * sizeof(double));
     alloc_d(reinterpret_cast<void**>(&dev->d_cell_link_k), static_cast<size_t>(total_pipe_cells) * sizeof(double));
     alloc_d(reinterpret_cast<void**>(&dev->d_cell_link_area), static_cast<size_t>(total_pipe_cells) * sizeof(double));
+    alloc_d(reinterpret_cast<void**>(&dev->d_cell_shape_type), static_cast<size_t>(total_pipe_cells) * sizeof(int32_t));
+    alloc_d(reinterpret_cast<void**>(&dev->d_cell_width), static_cast<size_t>(total_pipe_cells) * sizeof(double));
+    alloc_d(reinterpret_cast<void**>(&dev->d_cell_height), static_cast<size_t>(total_pipe_cells) * sizeof(double));
+    alloc_d(reinterpret_cast<void**>(&dev->d_cell_tables), static_cast<size_t>(total_pipe_cells) * 2 * PIPE1D_TABLE_N * sizeof(double));
     alloc_d(reinterpret_cast<void**>(&dev->d_node_invert), static_cast<size_t>(n_nodes) * sizeof(double));
     alloc_d(reinterpret_cast<void**>(&dev->d_node_depth), static_cast<size_t>(n_nodes) * sizeof(double));
     alloc_d(reinterpret_cast<void**>(&dev->d_node_net_q), static_cast<size_t>(n_nodes) * sizeof(double));
@@ -9850,6 +9896,12 @@ void swe2d_build_pipe1d_mesh(
     copy_h2d_d(dev->d_cell_n, cell_n.data(), static_cast<size_t>(total_pipe_cells));
     copy_h2d_d(dev->d_cell_link_k, cell_link_k.data(), static_cast<size_t>(total_pipe_cells));
     copy_h2d_d(dev->d_cell_link_area, cell_link_area.data(), static_cast<size_t>(total_pipe_cells));
+    copy_h2d_i(dev->d_cell_shape_type, cell_shape_type.data(), static_cast<size_t>(total_pipe_cells));
+    copy_h2d_d(dev->d_cell_width, cell_width.data(), static_cast<size_t>(total_pipe_cells));
+    copy_h2d_d(dev->d_cell_height, cell_height.data(), static_cast<size_t>(total_pipe_cells));
+    CUDA_CHECK(cudaMemcpy(dev->d_cell_tables, cell_tables.data(),
+        static_cast<size_t>(total_pipe_cells) * 2 * PIPE1D_TABLE_N * sizeof(double),
+        cudaMemcpyHostToDevice));
 
     // Upload node invert elevations
     copy_h2d_d(dev->d_node_invert, node_invert_elev, static_cast<size_t>(n_nodes));
