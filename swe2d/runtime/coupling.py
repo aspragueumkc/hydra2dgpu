@@ -236,6 +236,7 @@ def pack_pipe_network_soa(cfg: Optional[PipeNetworkConfig], n_cells: int) -> Opt
     link_shape_type = np.zeros(nl, dtype=np.int32)
     link_width = np.zeros(nl, dtype=np.float64)
     link_height = np.zeros(nl, dtype=np.float64)
+    shape_map = {"circular": 0, "rectangular": 1, "elliptical": 2}
     for i, lk in enumerate(cfg.links):
         link_from[i] = int(node_idx.get(lk.from_node_id, -1))
         link_to[i] = int(node_idx.get(lk.to_node_id, -1))
@@ -247,10 +248,11 @@ def pack_pipe_network_soa(cfg: Optional[PipeNetworkConfig], n_cells: int) -> Opt
             d_link = equivalent_circular_diameter_from_area(area_link)
         link_diameter[i] = d_link
         shape_str = str(getattr(lk, "link_shape", "circular") or "circular").strip().lower()
-        shape_map = {"circular": 0, "rectangular": 1, "elliptical": 2}
         link_shape_type[i] = shape_map.get(shape_str, 0)
-        link_width[i] = float(getattr(lk, "width", None) or getattr(lk, "diameter", d_link) or d_link)
-        link_height[i] = float(getattr(lk, "height", None) or getattr(lk, "diameter", d_link) or d_link)
+        w = getattr(lk, "width", None)
+        link_width[i] = float(w if w is not None else getattr(lk, "diameter", d_link) or d_link)
+        h = getattr(lk, "height", None)
+        link_height[i] = float(h if h is not None else getattr(lk, "diameter", d_link) or d_link)
         link_max_flow[i] = np.nan if lk.max_flow is None else float(lk.max_flow)
         link_cd[i] = _meta_float(lk.metadata, "cd", 0.75)
         link_entrance_loss_k[i] = float(getattr(lk, "entrance_loss_k", 0.5))
