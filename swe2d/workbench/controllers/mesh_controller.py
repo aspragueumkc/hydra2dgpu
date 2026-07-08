@@ -645,8 +645,56 @@ class MeshController:
                 "QML", "form_init.py",
             )
 
+            # Build layer tree groups matching the reference project
+            _root = QgsProject.instance().layerTreeRoot()
+
+            def _unique_group_name(parent, base: str) -> str:
+                candidate = base
+                suffix = 2
+                while parent.findGroup(candidate) is not None:
+                    candidate = f"{base} ({suffix})"
+                    suffix += 1
+                return candidate
+
+            _main_name = _unique_group_name(_root, "HYDRA2D Model Layers")
+            _main = _root.insertGroup(0, _main_name)
+
+            _subgroups = {
+                "swe2d_cn_zones": "friction/infiltration",
+                "swe2d_manning_zones": "friction/infiltration",
+                "swe2d_drainage_node_inlets": "data tables",
+                "swe2d_drainage_inlets": "data tables",
+                "swe2d_hydrographs": "data tables",
+                "swe2d_hyetographs": "data tables",
+                "swe2d_storm_areas": "rain",
+                "swe2d_rain_gages": "rain",
+                "swe2d_structures": "structures/drainage",
+                "swe2d_drainage_nodes": "structures/drainage",
+                "swe2d_drainage_links": "structures/drainage",
+                "swe2d_sample_lines": "topo_meshing/results/bcs",
+                "swe2d_bc_lines": "topo_meshing/results/bcs",
+                "swe2d_internal_flow_sources": "topo_meshing/results/bcs",
+                "swe2d_topo_nodes": "topo_meshing/results/bcs",
+                "swe2d_topo_arcs": "topo_meshing/results/bcs",
+                "swe2d_topo_quad_edges": "topo_meshing/results/bcs",
+                "swe2d_topo_constraints": "topo_meshing/results/bcs",
+                "swe2d_topo_regions": "topo_meshing/results/bcs",
+            }
+
+            # Create subgroup lookup, reusing existing groups
+            _group_cache: dict = {}
+            for _sg_name in sorted(set(_subgroups.values())):
+                g = _main.findGroup(_sg_name)
+                if g is None:
+                    g = _main.addGroup(_sg_name)
+                _group_cache[_sg_name] = g
+
             for name, lyr in layers.items():
-                QgsProject.instance().addMapLayer(lyr)
+                _sg = _subgroups.get(name)
+                if _sg is not None:
+                    _group_cache[_sg].addLayer(lyr)
+                else:
+                    QgsProject.instance().addMapLayer(lyr)
                 _apply_style(lyr, gpkg_path)
                 # Wire form init for layers with ID-based dropdowns
                 _fn = {

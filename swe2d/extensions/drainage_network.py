@@ -150,6 +150,16 @@ def build_drainage_config_from_json(
             coeff_weir=float(i.get("coeff_weir", 1.70)),
             coeff_orifice=float(i.get("coeff_orifice", 0.62)),
             max_capture=float(i["max_capture"]) if "max_capture" in i and i["max_capture"] is not None else None,
+            inlet_type=str(i.get("inlet_type", "custom")),
+            grate_length=float(i.get("grate_length", 0.0)),
+            grate_width=float(i.get("grate_width", 0.0)),
+            grate_type=int(i.get("grate_type", -1)),
+            grate_open_frac=float(i.get("grate_open_frac", 1.0)),
+            curb_length=float(i.get("curb_length", 0.0)),
+            curb_height=float(i.get("curb_height", 0.0)),
+            curb_throat=int(i.get("curb_throat", 0)),
+            slot_length=float(i.get("slot_length", 0.0)),
+            slot_width=float(i.get("slot_width", 0.0)),
         )
         for idx, i in enumerate(inlets_raw)
     ]

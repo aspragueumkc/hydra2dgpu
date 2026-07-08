@@ -192,6 +192,16 @@ class InletType:
     """Reusable inlet geometry template (grate, curb-opening, etc.)."""
     inlet_type_id: str
     name: str = ""
+    inlet_type: str = "grate"           # "grate" | "curb" | "slotted" | "combo" | "custom"
+    grate_length: float = 0.0
+    grate_width: float = 0.0
+    grate_type: int = -1                # -1=generic, 0..7=HEC-22 standard types
+    grate_open_frac: float = 1.0
+    curb_length: float = 0.0
+    curb_height: float = 0.0
+    curb_throat: int = 0                # 0=vertical 1=horizontal 2=inclined
+    slot_length: float = 0.0
+    slot_width: float = 0.0
     length: float = 1.0
     area: float = 0.0
     coeff_weir: float = 1.70

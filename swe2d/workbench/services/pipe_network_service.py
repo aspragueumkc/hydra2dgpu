@@ -556,6 +556,56 @@ def build_pipe_network_config(
                         if "name" in inlet_fields and ft["name"] not in (None, "")
                         else inlet_type_id
                     ),
+                    inlet_type=str(
+                        ft["inlet_type"]
+                        if "inlet_type" in inlet_fields and ft["inlet_type"] not in (None, "")
+                        else "custom"
+                    ),
+                    grate_length=float(
+                        ft["grate_length"]
+                        if "grate_length" in inlet_fields and ft["grate_length"] not in (None, "")
+                        else 0.0
+                    ),
+                    grate_width=float(
+                        ft["grate_width"]
+                        if "grate_width" in inlet_fields and ft["grate_width"] not in (None, "")
+                        else 0.0
+                    ),
+                    grate_type=int(
+                        ft["grate_type"]
+                        if "grate_type" in inlet_fields and ft["grate_type"] not in (None, "")
+                        else -1
+                    ),
+                    grate_open_frac=float(
+                        ft["grate_open_frac"]
+                        if "grate_open_frac" in inlet_fields and ft["grate_open_frac"] not in (None, "")
+                        else 1.0
+                    ),
+                    curb_length=float(
+                        ft["curb_length"]
+                        if "curb_length" in inlet_fields and ft["curb_length"] not in (None, "")
+                        else 0.0
+                    ),
+                    curb_height=float(
+                        ft["curb_height"]
+                        if "curb_height" in inlet_fields and ft["curb_height"] not in (None, "")
+                        else 0.0
+                    ),
+                    curb_throat=int(
+                        ft["curb_throat"]
+                        if "curb_throat" in inlet_fields and ft["curb_throat"] not in (None, "")
+                        else 0
+                    ),
+                    slot_length=float(
+                        ft["slot_length"]
+                        if "slot_length" in inlet_fields and ft["slot_length"] not in (None, "")
+                        else 0.0
+                    ),
+                    slot_width=float(
+                        ft["slot_width"]
+                        if "slot_width" in inlet_fields and ft["slot_width"] not in (None, "")
+                        else 0.0
+                    ),
                     length=float(
                         ft["weir_length"]
                         if "weir_length" in inlet_fields
@@ -646,6 +696,16 @@ def build_pipe_network_config(
                         coeff_weir=max(0.0, float(it.coeff_weir)),
                         coeff_orifice=max(0.0, float(it.coeff_orifice)),
                         max_capture=it.max_capture,
+                        inlet_type=str(it.inlet_type or "custom"),
+                        grate_length=max(0.0, float(it.grate_length)),
+                        grate_width=max(0.0, float(it.grate_width)),
+                        grate_type=int(it.grate_type),
+                        grate_open_frac=max(0.0, float(it.grate_open_frac)),
+                        curb_length=max(0.0, float(it.curb_length)),
+                        curb_height=max(0.0, float(it.curb_height)),
+                        curb_throat=int(it.curb_throat),
+                        slot_length=max(0.0, float(it.slot_length)),
+                        slot_width=max(0.0, float(it.slot_width)),
                     )
                 )
         else:
@@ -714,6 +774,56 @@ def build_pipe_network_config(
                             if "max_capture" in inlet_fields
                             and ft["max_capture"] not in (None, "")
                             else None
+                        ),
+                        inlet_type=str(
+                            ft["inlet_type"]
+                            if "inlet_type" in inlet_fields and ft["inlet_type"] not in (None, "")
+                            else "custom"
+                        ),
+                        grate_length=float(
+                            ft["grate_length"]
+                            if "grate_length" in inlet_fields and ft["grate_length"] not in (None, "")
+                            else 0.0
+                        ),
+                        grate_width=float(
+                            ft["grate_width"]
+                            if "grate_width" in inlet_fields and ft["grate_width"] not in (None, "")
+                            else 0.0
+                        ),
+                        grate_type=int(
+                            ft["grate_type"]
+                            if "grate_type" in inlet_fields and ft["grate_type"] not in (None, "")
+                            else -1
+                        ),
+                        grate_open_frac=float(
+                            ft["grate_open_frac"]
+                            if "grate_open_frac" in inlet_fields and ft["grate_open_frac"] not in (None, "")
+                            else 1.0
+                        ),
+                        curb_length=float(
+                            ft["curb_length"]
+                            if "curb_length" in inlet_fields and ft["curb_length"] not in (None, "")
+                            else 0.0
+                        ),
+                        curb_height=float(
+                            ft["curb_height"]
+                            if "curb_height" in inlet_fields and ft["curb_height"] not in (None, "")
+                            else 0.0
+                        ),
+                        curb_throat=int(
+                            ft["curb_throat"]
+                            if "curb_throat" in inlet_fields and ft["curb_throat"] not in (None, "")
+                            else 0
+                        ),
+                        slot_length=float(
+                            ft["slot_length"]
+                            if "slot_length" in inlet_fields and ft["slot_length"] not in (None, "")
+                            else 0.0
+                        ),
+                        slot_width=float(
+                            ft["slot_width"]
+                            if "slot_width" in inlet_fields and ft["slot_width"] not in (None, "")
+                            else 0.0
                         ),
                     )
                 )
