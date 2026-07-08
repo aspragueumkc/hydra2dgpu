@@ -4437,98 +4437,105 @@ __global__ __launch_bounds__(256, 4) void swe2d_drainage_inlet_exchange_kernel(
     double q_capture = 0.0;
     double Ao_total = 0.0;  // total opening area for relief orifice
 
-    if (H > 0.0) {
-        const int itype = inlet_type ? inlet_type[i] : 0;
-        switch (itype) {
-        case 0: { // GRATE — HEC-22 §4-4.1, eq 4-1 / 4-2
-            const double Lg = fmax(1e-6, inlet_grate_len ? inlet_grate_len[i] : 1.0);
-            const double Wg = fmax(1e-6, inlet_grate_wid ? inlet_grate_wid[i] : 1.0);
-            const double P = 2.0 * (Lg + Wg);
-            const int gkind = (inlet_grate_kind && inlet_grate_kind[i] >= 0 && inlet_grate_kind[i] < 8)
-                ? inlet_grate_kind[i] : -1;
-            const double openFrac = (gkind >= 0)
-                ? SWE2D_GRATE_OPENING_RATIOS[gkind]
-                : fmax(0.01, inlet_grate_open ? inlet_grate_open[i] : 1.0);
-            Ao_total = Lg * Wg * openFrac;
-            const double H_trans = (P > 0.0) ? 1.79 * Ao_total / P : 1e6;
+    // Always compute Ao_total (opening area) for relief orifice — needed
+    // even when H=0 so the relief path uses the correct orifice area.
+    const int itype = inlet_type ? inlet_type[i] : 0;
+    switch (itype) {
+    case 0: { // GRATE
+        const double Lg = fmax(1e-6, inlet_grate_len ? inlet_grate_len[i] : 1.0);
+        const double Wg = fmax(1e-6, inlet_grate_wid ? inlet_grate_wid[i] : 1.0);
+        const double P_grate = 2.0 * (Lg + Wg);
+        const int gkind = (inlet_grate_kind && inlet_grate_kind[i] >= 0 && inlet_grate_kind[i] < 8)
+            ? inlet_grate_kind[i] : -1;
+        const double openFrac = (gkind >= 0)
+            ? SWE2D_GRATE_OPENING_RATIOS[gkind]
+            : fmax(0.01, inlet_grate_open ? inlet_grate_open[i] : 1.0);
+        Ao_total = Lg * Wg * openFrac;
+        if (H > 0.0) {
+            const double H_trans = (P_grate > 0.0) ? 1.79 * Ao_total / P_grate : 1e6;
             if (H <= H_trans)
-                q_capture = 3.0 * P * pow(H, 1.5);                  // weir flow (eq 4-1)
+                q_capture = 3.0 * P_grate * pow(H, 1.5);
             else
-                q_capture = 0.67 * Ao_total * sqrt(2.0 * gravity * H); // orifice flow (eq 4-2)
-            break;
+                q_capture = 0.67 * Ao_total * sqrt(2.0 * gravity * H);
         }
-        case 1: { // CURB — HEC-22 §4-4.2, eq 4-5 / 4-7
-            const double L = fmax(1e-6, inlet_curb_len ? inlet_curb_len[i] : 1.0);
-            const double h = fmax(1e-6, inlet_curb_ht ? inlet_curb_ht[i] : 0.15);
-            Ao_total = L * h;
+        break;
+    }
+    case 1: { // CURB
+        const double L = fmax(1e-6, inlet_curb_len ? inlet_curb_len[i] : 1.0);
+        const double h = fmax(1e-6, inlet_curb_ht ? inlet_curb_ht[i] : 0.15);
+        Ao_total = L * h;
+        if (H > 0.0) {
             const double H_weir = h;
             const double H_orif = 1.4 * h;
             if (H <= H_weir) {
-                q_capture = 3.0 * L * pow(H, 1.5);                   // weir (eq 4-5)
+                q_capture = 3.0 * L * pow(H, 1.5);
             } else if (H >= H_orif) {
                 double H_eff = H - h * 0.5;
                 if (inlet_curb_throat && inlet_curb_throat[i] == 2)
-                    H_eff = H - h * 0.5 * 0.7071;                   // angled throat correction
-                q_capture = 0.67 * h * L * sqrt(2.0 * gravity * fmax(1e-10, H_eff)); // orifice (eq 4-7)
+                    H_eff = H - h * 0.5 * 0.7071;
+                q_capture = 0.67 * h * L * sqrt(2.0 * gravity * fmax(1e-10, H_eff));
             } else {
-                // Transition: linear interpolation between weir and orifice at transition points
                 const double r = (H - H_weir) / (H_orif - H_weir);
                 const double Qw = 3.0 * L * pow(H_weir, 1.5);
                 const double Qo = 0.67 * h * L * sqrt(2.0 * gravity * (H_orif - h * 0.5));
                 q_capture = (1.0 - r) * Qw + r * Qo;
             }
-            break;
         }
-        case 2: { // SLOTTED — HEC-22 §4-4.3, eq 4-11 / 4-13
-            const double L = fmax(1e-6, inlet_slot_len ? inlet_slot_len[i] : 1.0);
-            const double w = fmax(1e-6, inlet_slot_wid ? inlet_slot_wid[i] : 0.05);
-            Ao_total = L * w;
+        break;
+    }
+    case 2: { // SLOTTED
+        const double L = fmax(1e-6, inlet_slot_len ? inlet_slot_len[i] : 1.0);
+        const double w = fmax(1e-6, inlet_slot_wid ? inlet_slot_wid[i] : 0.05);
+        Ao_total = L * w;
+        if (H > 0.0) {
             const double H_trans = 2.587 * w;
             if (H <= H_trans)
-                q_capture = 2.48 * L * pow(H, 1.5);                // weir (eq 4-11)
+                q_capture = 2.48 * L * pow(H, 1.5);
             else
-                q_capture = 0.8 * L * w * sqrt(2.0 * gravity * H); // orifice (eq 4-13)
-            break;
+                q_capture = 0.8 * L * w * sqrt(2.0 * gravity * H);
         }
-        case 3: { // COMBO — HEC-22 §4-4.5: grate + curb sweep
-            // Grate contribution
-            const double Lg = fmax(1e-6, inlet_grate_len ? inlet_grate_len[i] : 1.0);
-            const double Wg = fmax(1e-6, inlet_grate_wid ? inlet_grate_wid[i] : 1.0);
-            const double P = 2.0 * (Lg + Wg);
-            const int gkind = (inlet_grate_kind && inlet_grate_kind[i] >= 0 && inlet_grate_kind[i] < 8)
-                ? inlet_grate_kind[i] : -1;
-            const double openFrac = (gkind >= 0)
-                ? SWE2D_GRATE_OPENING_RATIOS[gkind]
-                : fmax(0.01, inlet_grate_open ? inlet_grate_open[i] : 1.0);
-            const double Ao_g = Lg * Wg * openFrac;
-            const double H_trans_g = (P > 0.0) ? 1.79 * Ao_g / P : 1e6;
+        break;
+    }
+    case 3: { // COMBO — grate + curb sweep
+        const double Lg = fmax(1e-6, inlet_grate_len ? inlet_grate_len[i] : 1.0);
+        const double Wg = fmax(1e-6, inlet_grate_wid ? inlet_grate_wid[i] : 1.0);
+        const double P_grate = 2.0 * (Lg + Wg);
+        const int gkind = (inlet_grate_kind && inlet_grate_kind[i] >= 0 && inlet_grate_kind[i] < 8)
+            ? inlet_grate_kind[i] : -1;
+        const double openFrac = (gkind >= 0)
+            ? SWE2D_GRATE_OPENING_RATIOS[gkind]
+            : fmax(0.01, inlet_grate_open ? inlet_grate_open[i] : 1.0);
+        const double Ao_g = Lg * Wg * openFrac;
+        const double L_sweep = fmax(0.0, (inlet_curb_len ? inlet_curb_len[i] : 0.0) - Lg);
+        const double h_curb = fmax(1e-6, inlet_curb_ht ? inlet_curb_ht[i] : 0.15);
+        Ao_total = Ao_g + L_sweep * h_curb;
+        if (H > 0.0) {
+            const double H_trans_g = (P_grate > 0.0) ? 1.79 * Ao_g / P_grate : 1e6;
             const double qg = (H <= H_trans_g)
-                ? (3.0 * P * pow(H, 1.5))
+                ? (3.0 * P_grate * pow(H, 1.5))
                 : (0.67 * Ao_g * sqrt(2.0 * gravity * H));
-            // Curb sweep contribution
-            const double L_sweep = fmax(0.0, (inlet_curb_len ? inlet_curb_len[i] : 0.0) - Lg);
             double qc = 0.0;
             if (L_sweep > 0.0) {
-                const double h = fmax(1e-6, inlet_curb_ht ? inlet_curb_ht[i] : 0.15);
-                if (H <= h)
-                    qc = 3.0 * L_sweep * pow(H, 1.5);                       // weir
+                if (H <= h_curb)
+                    qc = 3.0 * L_sweep * pow(H, 1.5);
                 else
-                    qc = 0.67 * h * L_sweep * sqrt(2.0 * gravity * fmax(1e-10, H - h * 0.5)); // orifice
+                    qc = 0.67 * h_curb * L_sweep * sqrt(2.0 * gravity * fmax(1e-10, H - h_curb * 0.5));
             }
-            Ao_total = Ao_g + L_sweep * (inlet_curb_ht ? inlet_curb_ht[i] : 0.15);
             q_capture = qg + qc;
-            break;
         }
-        case 4: // CUSTOM — falls back to legacy width*H hybrid for now
-        default: {
-            // Legacy behavior: orifice-style using width + coefficient
-            const double width = fmax(0.0, inlet_width[i]);
-            const double cd = fmax(0.0, inlet_coefficient[i]);
+        break;
+    }
+    case 4: // CUSTOM — legacy width*H hybrid
+    default: {
+        const double width = fmax(0.0, inlet_width[i]);
+        const double cd = fmax(0.0, inlet_coefficient[i]);
+        Ao_total = width * fmax(0.01, H > 0.0 ? H : 1.0);
+        if (H > 0.0) {
             const double area = width * fmax(0.01, H);
             q_capture = cd * area * sqrt(fmax(0.0, 2.0 * gravity * H));
-            break;
         }
-        }
+        break;
+    }
     }
 
     // Relief direction (node → surface): orifice through total opening area
@@ -8938,27 +8945,42 @@ static bool ensure_drainage_step_workspace(
             capacity = (needed); \
         }
 
-    _DS_ENSURE(ws.d_cell_area, ws.cell_capacity, n_cells, double);
-    _DS_ENSURE(ws.d_cell_wse,   ws.cell_capacity, n_cells, double);
-    _DS_ENSURE(ws.d_cell_depth, ws.cell_capacity, n_cells, double);
-    _DS_ENSURE(ws.d_q_cell,    ws.cell_capacity, n_cells, double);
+    // ponytail: _DS_ALLOC replaces _DS_ENSURE for cell/node/link arrays —
+    // _DS_ENSURE shares one capacity counter per group, so after the first
+    // allocation sets capacity = needed, subsequent arrays in the same group
+    // skip allocation (capacity >= needed is already true).  _DS_ALLOC
+    // unconditionally frees+reallocates, which is safe for small per-step
+    // buffers and avoids the silent-skip bug.
+    #define _DS_ALLOC(ptr, needed, type) \
+        do { \
+            if (ptr) { cudaFree(ptr); ptr = nullptr; } \
+            if ((needed) > 0) { \
+                CUDA_CHECK(cudaMalloc(reinterpret_cast<void**>(&ptr), \
+                                      static_cast<size_t>(needed) * sizeof(type))); \
+            } \
+        } while(0)
 
-    _DS_ENSURE(ws.d_node_inv,     ws.node_capacity, n_nodes, double);
-    _DS_ENSURE(ws.d_node_maxd,    ws.node_capacity, n_nodes, double);
-    _DS_ENSURE(ws.d_node_area,    ws.node_capacity, n_nodes, double);
-    _DS_ENSURE(ws.d_node_depth,   ws.node_capacity, n_nodes, double);
-    _DS_ENSURE(ws.d_node_net_q,   ws.node_capacity, n_nodes, double);
-    _DS_ENSURE(ws.d_node_delta,   ws.node_capacity, n_nodes, double);
-    _DS_ENSURE(ws.d_node_qleave,  ws.node_capacity, n_nodes, double);
+    _DS_ALLOC(ws.d_cell_area,   n_cells, double);
+    _DS_ALLOC(ws.d_cell_wse,    n_cells, double);
+    _DS_ALLOC(ws.d_cell_depth,  n_cells, double);
+    _DS_ALLOC(ws.d_q_cell,      n_cells, double);
 
-    _DS_ENSURE(ws.d_l_from,   ws.link_capacity, n_links, int32_t);
-    _DS_ENSURE(ws.d_l_to,     ws.link_capacity, n_links, int32_t);
-    _DS_ENSURE(ws.d_l_len,    ws.link_capacity, n_links, double);
-    _DS_ENSURE(ws.d_l_n,      ws.link_capacity, n_links, double);
-    _DS_ENSURE(ws.d_l_d,      ws.link_capacity, n_links, double);
-    _DS_ENSURE(ws.d_l_qmax,   ws.link_capacity, n_links, double);
-    _DS_ENSURE(ws.d_l_q_prev, ws.link_capacity, n_links, double);
-    _DS_ENSURE(ws.d_l_q,      ws.link_capacity, n_links, double);
+    _DS_ALLOC(ws.d_node_inv,     n_nodes, double);
+    _DS_ALLOC(ws.d_node_maxd,    n_nodes, double);
+    _DS_ALLOC(ws.d_node_area,    n_nodes, double);
+    _DS_ALLOC(ws.d_node_depth,   n_nodes, double);
+    _DS_ALLOC(ws.d_node_net_q,   n_nodes, double);
+    _DS_ALLOC(ws.d_node_delta,   n_nodes, double);
+    _DS_ALLOC(ws.d_node_qleave,  n_nodes, double);
+
+    _DS_ALLOC(ws.d_l_from,   n_links, int32_t);
+    _DS_ALLOC(ws.d_l_to,     n_links, int32_t);
+    _DS_ALLOC(ws.d_l_len,    n_links, double);
+    _DS_ALLOC(ws.d_l_n,      n_links, double);
+    _DS_ALLOC(ws.d_l_d,      n_links, double);
+    _DS_ALLOC(ws.d_l_qmax,   n_links, double);
+    _DS_ALLOC(ws.d_l_q_prev, n_links, double);
+    _DS_ALLOC(ws.d_l_q,      n_links, double);
 
     // Unconditional allocation for ALL inlet arrays (the _DS_ENSURE macro
     // shares one capacity counter — using it would skip subsequent arrays
@@ -8990,13 +9012,23 @@ static bool ensure_drainage_step_workspace(
     ws.inlet_capacity = n_inlets;
     #undef _DS_ALLOC
 
-    _DS_ENSURE(ws.d_o_cell,        ws.outfall_capacity, n_outfalls, int32_t);
-    _DS_ENSURE(ws.d_o_node,        ws.outfall_capacity, n_outfalls, int32_t);
-    _DS_ENSURE(ws.d_o_invert,      ws.outfall_capacity, n_outfalls, double);
-    _DS_ENSURE(ws.d_o_diameter,    ws.outfall_capacity, n_outfalls, double);
-    _DS_ENSURE(ws.d_o_cd,          ws.outfall_capacity, n_outfalls, double);
-    _DS_ENSURE(ws.d_o_qmax,        ws.outfall_capacity, n_outfalls, double);
-    _DS_ENSURE(ws.d_o_zero_storage, ws.outfall_capacity, n_outfalls, int32_t);
+    // Outfall arrays: use _DS_ALLOC (same shared-capacity bug as cell arrays)
+    #define _DS_ALLOC(ptr, needed, type) \
+        do { \
+            if (ptr) { cudaFree(ptr); ptr = nullptr; } \
+            if ((needed) > 0) { \
+                CUDA_CHECK(cudaMalloc(reinterpret_cast<void**>(&ptr), \
+                                      static_cast<size_t>(needed) * sizeof(type))); \
+            } \
+        } while(0)
+    _DS_ALLOC(ws.d_o_cell,        n_outfalls, int32_t);
+    _DS_ALLOC(ws.d_o_node,        n_outfalls, int32_t);
+    _DS_ALLOC(ws.d_o_invert,      n_outfalls, double);
+    _DS_ALLOC(ws.d_o_diameter,    n_outfalls, double);
+    _DS_ALLOC(ws.d_o_cd,          n_outfalls, double);
+    _DS_ALLOC(ws.d_o_qmax,        n_outfalls, double);
+    _DS_ALLOC(ws.d_o_zero_storage, n_outfalls, int32_t);
+    #undef _DS_ALLOC
 
     _DS_ENSURE(ws.d_p_cell,         ws.pipe_end_capacity, n_pipe_ends, int32_t);
     _DS_ENSURE(ws.d_p_node,         ws.pipe_end_capacity, n_pipe_ends, int32_t);

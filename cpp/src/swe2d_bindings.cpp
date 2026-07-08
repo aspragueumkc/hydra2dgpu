@@ -2859,4 +2859,34 @@ PYBIND11_MODULE(HYDRA_SWE2D_PY_MODULE_NAME, m) {
     m.attr("BC_REFLECT")  = py::int_(static_cast<int>(BCType::REFLECT));
     m.attr("BC_NORMAL_DEPTH") = py::int_(static_cast<int>(BCType::NORMAL_DEPTH));
     m.attr("BC_NORMAL_DEPTH_SLOPE") = py::int_(static_cast<int>(BCType::NORMAL_DEPTH_SLOPE));
+
+    // ── Diagnostic: drain_ws state ──────────────────────────────────────
+    m.def("swe2d_gpu_diag_drain_ws", []() {
+        extern SWE2DDeviceState* s_coupling_dev;
+        auto dev = s_coupling_dev;
+        py::dict d;
+        if (!dev) { d["error"] = "no device"; return d; }
+        auto& dw = dev->drain_ws;
+        auto& sf = dev->sf_ws;
+        auto& cp = dev->coupling_ws;
+        d["exchange_loaded"] = dw.exchange_loaded;
+        d["n_inlets"] = dw.n_inlets;
+        d["n_outfalls"] = dw.n_outfalls;
+        d["n_nodes"] = dw.n_nodes;
+        d["d_i_cell"] = (uintptr_t)dw.d_i_cell;
+        d["d_i_node"] = (uintptr_t)dw.d_i_node;
+        d["d_i_type"] = (uintptr_t)dw.d_i_type;
+        d["d_i_crest"] = (uintptr_t)dw.d_i_crest;
+        d["d_q_cell"] = (uintptr_t)dw.d_q_cell;
+        d["sf_cell_capacity"] = sf.cell_capacity;
+        d["sf_d_cell_wse"] = (uintptr_t)sf.d_cell_wse;
+        d["sf_params_preloaded"] = sf.params_preloaded;
+        d["cp_d_drainage_q"] = (uintptr_t)cp.d_drainage_q;
+        d["d_external_source_mps"] = (uintptr_t)dev->d_external_source_mps;
+        d["d_h"] = (uintptr_t)dev->d_h;
+        d["d_cell_zb"] = (uintptr_t)dev->d_cell_zb;
+        d["pipe1d_d_A"] = (uintptr_t)dev->pipe1d.d_A;
+        d["pipe1d_d_node_depth"] = (uintptr_t)dev->pipe1d.d_node_depth;
+        return d;
+    }, "Diagnostic: dump drain_ws state");
 }

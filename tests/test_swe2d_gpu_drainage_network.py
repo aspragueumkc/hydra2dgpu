@@ -265,6 +265,11 @@ class TestGPUInletCapture(unittest.TestCase):
         hv = np.zeros(self.N_CELLS, dtype=np.float64)
         mod.swe2d_set_state(self.solver, h, hu, hv)
 
+        # Reset pipe1d node depth to zero so previous test's capture doesn't
+        # bias the driving head for this test.
+        mod.swe2d_pipe1d_upload_node_depth(int(self._dev_ptr),
+                                           np.zeros(1, dtype=np.float64))
+
         # Upload drainage exchange params
         o_cell, o_node, o_inv, o_dia, o_cd, o_qmax, o_zs = self._make_empty_outfall_arrays()
 
