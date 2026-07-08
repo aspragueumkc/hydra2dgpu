@@ -9928,6 +9928,23 @@ void swe2d_build_pipe1d_mesh(
     CUDA_CHECK(cudaMemset(dev->d_Q_iter, 0, static_cast<size_t>(total_pipe_cells) * sizeof(double)));
 }
 
+/// Device-side lookup: given current area A, full area A_full, full perimeter P_full,
+/// and a pointer to the per-cell table [2 * TABLE_N doubles], return wetted perimeter P
+/// and top width T.
+__device__ __forceinline__ void pipe1d_lookup_geometry(
+    double A, double A_full, double P_full,
+    const double* table, int table_N,
+    double& P, double& T)
+{
+    double frac = A * (1.0 / fmax(1e-20, A_full));
+    frac = fmin(1.0, fmax(0.0, frac));
+    double f = frac * table_N;
+    int idx = min(table_N - 2, max(0, int(f)));
+    double t = f - idx;
+    P = P_full * (table[idx] + t * (table[idx + 1] - table[idx]));
+    T = table[table_N + idx] + t * (table[table_N + idx + 1] - table[table_N + idx]);
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // swe2d_pipe1d_flux_kernel
 // One thread per pipe cell. Accumulates discharge at each owned face interface.
