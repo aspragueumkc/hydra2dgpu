@@ -9959,13 +9959,16 @@ __global__ __launch_bounds__(256, 1) void swe2d_pipe1d_flux_kernel(
     const int32_t* __restrict__ cell_to_node,
     const double*  __restrict__ cell_invert,
     const double*  __restrict__ cell_perim,
+    const double*  __restrict__ cell_area_full,
     const double*  __restrict__ cell_A,
     const double*  __restrict__ cell_Q,
     const double*  __restrict__ node_invert,
     const double*  __restrict__ node_depth,
     const double*  __restrict__ cell_length,
     double*                     flux_Q_out,
-    double                      g)
+    double                      g,
+    const double*  __restrict__ cell_tables,
+    int32_t                     table_N)
 {
     int32_t c = blockIdx.x * blockDim.x + threadIdx.x;
     if (c >= n_cells) return;
@@ -9979,8 +9982,11 @@ __global__ __launch_bounds__(256, 1) void swe2d_pipe1d_flux_kernel(
         const double  dir = interface_dir[k];
         const int32_t nbr = neighbor_cell[k];
 
-        // Head at this cell center
-        const double H_c = cell_invert[c] + cell_A[c] / fmax(1e-10, cell_perim[c]);
+        // Head at this cell center using table-lookup top width
+        double P_c, T_c;
+        pipe1d_lookup_geometry(cell_A[c], cell_area_full[c], cell_perim[c],
+            cell_tables + static_cast<int64_t>(c) * 2 * table_N, table_N, P_c, T_c);
+        const double H_c = cell_invert[c] + cell_A[c] / fmax(1e-10, T_c);
 
         double H_n, A_n, Q_n;
         if (nbr >= 0) {
@@ -10048,7 +10054,9 @@ __global__ __launch_bounds__(256, 1) void swe2d_pipe1d_diffusion_wave_kernel(
     double                      dt,
     double                      g,
     double*                     cell_A_new,
-    double*                     cell_Q_new)
+    double*                     cell_Q_new,
+    const double*  __restrict__ cell_tables,
+    int32_t                     table_N)
 {
     int32_t i = blockIdx.x * blockDim.x + threadIdx.x;
     if (i >= n_cells) return;
@@ -10057,13 +10065,18 @@ __global__ __launch_bounds__(256, 1) void swe2d_pipe1d_diffusion_wave_kernel(
     const double A = cell_A[i];
     const double Q = cell_Q[i];
     const double L = cell_length[i];
-    const double P = cell_perim[i];
+    const double P_full = cell_perim[i];
     const double n = cell_n[i];
     const double k_loss = cell_k_loss[i];
     const double absQ = fabs(Q);
 
-    // Hydraulic radius (current area / constant perimeter)
-    const double R = A / fmax(1e-6, P);
+    // Wetted perimeter and top width from geometry table
+    double P_c, T_c;
+    pipe1d_lookup_geometry(A, A_full, P_full,
+        cell_tables + static_cast<int64_t>(i) * 2 * table_N, table_N, P_c, T_c);
+
+    // Hydraulic radius (current area / wetted perimeter from table)
+    const double R = A / fmax(1e-10, P_c);
     const double R43 = pow(R, 4.0 / 3.0);
 
     // Friction source: -g * n² * |Q| * Q / (A * R^(4/3))
@@ -10114,7 +10127,9 @@ __global__ __launch_bounds__(256, 1) void swe2d_pipe1d_fully_dynamic_kernel(
     double*                     cell_A_iter,
     double*                     cell_Q_iter,
     double                      dt,
-    double                      g)
+    double                      g,
+    const double*  __restrict__ cell_tables,
+    int32_t                     table_N)
 {
     int32_t c = blockIdx.x * blockDim.x + threadIdx.x;
     if (c >= n_cells) return;
@@ -10122,7 +10137,7 @@ __global__ __launch_bounds__(256, 1) void swe2d_pipe1d_fully_dynamic_kernel(
     double A = cell_A_iter[c];
     double Q = cell_Q_iter[c];
     const double L = cell_length[c];
-    const double P = cell_perim[c];
+    const double P_full = cell_perim[c];
     const double n = cell_n[c];
     const double k_loss = cell_k_loss[c];
     const double A_full = cell_area_full[c];
@@ -10134,8 +10149,13 @@ __global__ __launch_bounds__(256, 1) void swe2d_pipe1d_fully_dynamic_kernel(
     const double H_to   = node_invert[tn] + node_depth[tn];
     const double dHdx = (H_to - H_from) / fmax(1e-6, L);
 
+    // Wetted perimeter from geometry table
+    double P_c, T_c;
+    pipe1d_lookup_geometry(A, A_full, P_full,
+        cell_tables + static_cast<int64_t>(c) * 2 * table_N, table_N, P_c, T_c);
+
     // Hydraulic radius for current area
-    const double R = A / fmax(1e-6, P);
+    const double R = A / fmax(1e-10, P_c);
     const double R43 = pow(R, 4.0 / 3.0);
     const double absQ = fabs(Q);
 
@@ -10189,19 +10209,23 @@ void swe2d_pipe1d_flux_kernel_host(
     const int32_t*        cell_to_node,
     const double*         cell_invert,
     const double*         cell_perim,
+    const double*         cell_area_full,
     const double*         cell_A,
     const double*         cell_Q,
     const double*         node_invert,
     const double*         node_depth,
     const double*         cell_length,
     double*               flux_Q_out,
-    double                g)
+    double                g,
+    const double*         cell_tables,
+    int32_t               table_N)
 {
     const int32_t n_blocks = (n_cells + BLOCK - 1) / BLOCK;
     swe2d_pipe1d_flux_kernel<<<n_blocks, BLOCK>>>(
         n_cells, owned_offsets, owned_ids, neighbor_cell, interface_dir,
         cell_from_node, cell_to_node, cell_invert, cell_perim,
-        cell_A, cell_Q, node_invert, node_depth, cell_length, flux_Q_out, g);
+        cell_area_full, cell_A, cell_Q, node_invert, node_depth, cell_length,
+        flux_Q_out, g, cell_tables, table_N);
     CUDA_CHECK(cudaGetLastError());
 }
 
@@ -10218,12 +10242,15 @@ void swe2d_pipe1d_diffusion_wave_kernel_host(
     double                dt,
     double                g,
     double*               cell_A_new,
-    double*               cell_Q_new)
+    double*               cell_Q_new,
+    const double*         cell_tables,
+    int32_t               table_N)
 {
     const int32_t n_blocks = (n_cells + BLOCK - 1) / BLOCK;
     swe2d_pipe1d_diffusion_wave_kernel<<<n_blocks, BLOCK>>>(
         n_cells, cell_length, cell_area_full, cell_perim, cell_n, cell_k_loss,
-        cell_A, cell_Q, flux_Q, dt, g, cell_A_new, cell_Q_new);
+        cell_A, cell_Q, flux_Q, dt, g, cell_A_new, cell_Q_new,
+        cell_tables, table_N);
     CUDA_CHECK(cudaGetLastError());
 }
 
@@ -10249,7 +10276,9 @@ void swe2d_pipe1d_fully_dynamic_kernel_host(
     double*               cell_A_iter,
     double*               cell_Q_iter,
     double                dt,
-    double                g)
+    double                g,
+    const double*         cell_tables,
+    int32_t               table_N)
 {
     const int32_t n_blocks = (n_cells + BLOCK - 1) / BLOCK;
     for (int32_t iter = 0; iter < n_iters; ++iter) {
@@ -10258,7 +10287,7 @@ void swe2d_pipe1d_fully_dynamic_kernel_host(
             neighbor_cell, interface_dir, cell_from_node, cell_to_node,
             cell_length, cell_area_full, cell_perim, cell_n, cell_k_loss,
             node_invert, node_depth, cell_A_prev, cell_Q_prev,
-            cell_A_iter, cell_Q_iter, dt, g);
+            cell_A_iter, cell_Q_iter, dt, g, cell_tables, table_N);
         CUDA_CHECK(cudaGetLastError());
     }
 }
@@ -10422,6 +10451,9 @@ void swe2d_pipe1d_step(
     auto& p = dev->pipe1d;
     const int32_t n_cells = p.n_pipe_cells;
 
+    const double* d_cell_tables = p.d_cell_tables;
+    const int32_t table_N = PIPE1D_TABLE_N;
+
     double* d_flux_Q = nullptr;
     CUDA_CHECK(cudaMalloc(&d_flux_Q, static_cast<size_t>(n_cells) * sizeof(double)));
 
@@ -10443,10 +10475,12 @@ void swe2d_pipe1d_step(
             p.d_cell_neighbor_cell, p.d_cell_interface_dir,
             p.d_cell_from_node, p.d_cell_to_node,
             p.d_cell_invert, p.d_cell_perim,
+            p.d_cell_area,
             p.d_A, p.d_Q,
             p.d_node_invert, p.d_node_depth,
             p.d_cell_length,
-            d_flux_Q, g);
+            d_flux_Q, g,
+            d_cell_tables, table_N);
 
         if (std::strcmp(solver_mode, "fully_dynamic") == 0) {
             swe2d_pipe1d_fully_dynamic_kernel_host(
@@ -10462,7 +10496,8 @@ void swe2d_pipe1d_step(
                 p.d_node_invert, p.d_node_depth,
                 p.d_A, p.d_Q,
                 d_A_new, d_Q_new,
-                local_dt, g);
+                local_dt, g,
+                d_cell_tables, table_N);
         } else {
             swe2d_pipe1d_diffusion_wave_kernel_host(
                 n_cells,
@@ -10471,7 +10506,8 @@ void swe2d_pipe1d_step(
                 p.d_cell_link_k,
                 p.d_A, p.d_Q, d_flux_Q,
                 local_dt, g,
-                d_A_new, d_Q_new);
+                d_A_new, d_Q_new,
+                d_cell_tables, table_N);
         }
 
         CUDA_CHECK(cudaMemcpy(p.d_A, d_A_new, static_cast<size_t>(n_cells) * sizeof(double), cudaMemcpyDeviceToDevice));
