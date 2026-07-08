@@ -217,7 +217,9 @@ class MeshController:
             write_qml_styles_to_gpkg as _write_styles,
         )
         _qml_dir = _os.path.join(
-            _os.path.dirname(_os.path.dirname(_os.path.dirname(__file__))),
+            _os.path.dirname(
+                _os.path.dirname(_os.path.dirname(_os.path.dirname(__file__)))
+            ),
             "QML",
         )
         if _os.path.isdir(_qml_dir):

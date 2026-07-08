@@ -105,6 +105,13 @@ def apply_qml_style_from_gpkg(layer, gpkg_path: str) -> bool:
     lname = layer.name()
     conn = sqlite3.connect(gpkg_path)
     try:
+        # Bail if the layer_styles table doesn't exist (old GPKG or write failed)
+        has_table = conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='layer_styles'"
+        ).fetchone()
+        if has_table is None:
+            return False
+
         row = conn.execute(
             "SELECT styleQML FROM layer_styles WHERE f_table_name = ?",
             (lname,),
