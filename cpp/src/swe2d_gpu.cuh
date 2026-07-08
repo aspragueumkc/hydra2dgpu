@@ -457,6 +457,16 @@ struct SWE2DDeviceState {
         double  *d_l_q_prev = nullptr, *d_l_q = nullptr;
         int32_t *d_i_cell = nullptr, *d_i_node = nullptr;
         double  *d_i_crest = nullptr, *d_i_width = nullptr, *d_i_cd = nullptr, *d_i_qmax = nullptr;
+        int32_t* d_i_type = nullptr;         // [n_inlets]
+        double*  d_i_grate_len = nullptr;    // [n_inlets]
+        double*  d_i_grate_wid = nullptr;    // [n_inlets]
+        int32_t* d_i_grate_kind = nullptr;   // [n_inlets]
+        double*  d_i_grate_open = nullptr;   // [n_inlets]
+        double*  d_i_curb_len = nullptr;     // [n_inlets]
+        double*  d_i_curb_ht = nullptr;      // [n_inlets]
+        int32_t* d_i_curb_throat = nullptr;  // [n_inlets]
+        double*  d_i_slot_len = nullptr;     // [n_inlets]
+        double*  d_i_slot_wid = nullptr;     // [n_inlets]
         int32_t *d_o_cell = nullptr, *d_o_node = nullptr;
         double  *d_o_invert = nullptr, *d_o_diameter = nullptr, *d_o_cd = nullptr, *d_o_qmax = nullptr;
         int32_t *d_o_zero_storage = nullptr;
@@ -477,6 +487,10 @@ struct SWE2DDeviceState {
             _DS_FREE(d_l_q_prev); _DS_FREE(d_l_q);
             _DS_FREE(d_i_cell); _DS_FREE(d_i_node); _DS_FREE(d_i_crest);
             _DS_FREE(d_i_width); _DS_FREE(d_i_cd); _DS_FREE(d_i_qmax);
+            _DS_FREE(d_i_type); _DS_FREE(d_i_grate_len); _DS_FREE(d_i_grate_wid);
+            _DS_FREE(d_i_grate_kind); _DS_FREE(d_i_grate_open);
+            _DS_FREE(d_i_curb_len); _DS_FREE(d_i_curb_ht); _DS_FREE(d_i_curb_throat);
+            _DS_FREE(d_i_slot_len); _DS_FREE(d_i_slot_wid);
             _DS_FREE(d_o_cell); _DS_FREE(d_o_node); _DS_FREE(d_o_invert);
             _DS_FREE(d_o_diameter); _DS_FREE(d_o_cd); _DS_FREE(d_o_qmax); _DS_FREE(d_o_zero_storage);
             _DS_FREE(d_p_cell); _DS_FREE(d_p_node); _DS_FREE(d_p_invert);
@@ -1231,6 +1245,12 @@ void swe2d_gpu_upload_drainage_exchange_params(
     const int32_t* inlet_cell, const int32_t* inlet_node,
     const double* inlet_crest, const double* inlet_width,
     const double* inlet_cd, const double* inlet_qmax,
+    const int32_t* inlet_type,
+    const double* inlet_grate_len, const double* inlet_grate_wid,
+    const int32_t* inlet_grate_kind, const double* inlet_grate_open,
+    const double* inlet_curb_len, const double* inlet_curb_ht,
+    const int32_t* inlet_curb_throat,
+    const double* inlet_slot_len, const double* inlet_slot_wid,
     const int32_t* outfall_cell, const int32_t* outfall_node,
     const double* outfall_invert, const double* outfall_diameter,
     const double* outfall_cd, const double* outfall_qmax,

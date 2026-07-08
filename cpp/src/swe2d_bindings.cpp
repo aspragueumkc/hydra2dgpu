@@ -1151,6 +1151,12 @@ PYBIND11_MODULE(HYDRA_SWE2D_PY_MODULE_NAME, m) {
         [](py::object inlet_cell_obj, py::object inlet_node_obj,
            py::object inlet_crest_obj, py::object inlet_width_obj,
            py::object inlet_cd_obj, py::object inlet_qmax_obj,
+           py::object inlet_type_obj,
+           py::object inlet_grate_len_obj, py::object inlet_grate_wid_obj,
+           py::object inlet_grate_kind_obj, py::object inlet_grate_open_obj,
+           py::object inlet_curb_len_obj, py::object inlet_curb_ht_obj,
+           py::object inlet_curb_throat_obj,
+           py::object inlet_slot_len_obj, py::object inlet_slot_wid_obj,
            py::object outfall_cell_obj, py::object outfall_node_obj,
            py::object outfall_invert_obj, py::object outfall_diameter_obj,
            py::object outfall_cd_obj, py::object outfall_qmax_obj,
@@ -1164,8 +1170,8 @@ PYBIND11_MODULE(HYDRA_SWE2D_PY_MODULE_NAME, m) {
                 if (!o.is_none()) out = o.cast<py::array_t<double, py::array::c_style|py::array::forcecast>>();
             };
             py::array_t<double> nmd;
-            py::array_t<int32_t> ic, in_, oc, on_, ozs;
-            py::array_t<double> icr, iw, icd, iq, oi_, od_, ocd, oq;
+            py::array_t<int32_t> ic, in_, it, igk, ict, oc, on_, ozs;
+            py::array_t<double> icr, iw, icd, iq, igl, igw, igo, icl, ich, isl, isw, oi_, od_, ocd, oq;
             get_arr_f64(node_max_depth_obj, nmd);
             int32_t n_nodes = static_cast<int32_t>(nmd.size());
             get_arr_i32(inlet_cell_obj, ic);
@@ -1175,6 +1181,16 @@ PYBIND11_MODULE(HYDRA_SWE2D_PY_MODULE_NAME, m) {
             get_arr_f64(inlet_width_obj, iw);
             get_arr_f64(inlet_cd_obj, icd);
             get_arr_f64(inlet_qmax_obj, iq);
+            get_arr_i32(inlet_type_obj, it);
+            get_arr_f64(inlet_grate_len_obj, igl);
+            get_arr_f64(inlet_grate_wid_obj, igw);
+            get_arr_i32(inlet_grate_kind_obj, igk);
+            get_arr_f64(inlet_grate_open_obj, igo);
+            get_arr_f64(inlet_curb_len_obj, icl);
+            get_arr_f64(inlet_curb_ht_obj, ich);
+            get_arr_i32(inlet_curb_throat_obj, ict);
+            get_arr_f64(inlet_slot_len_obj, isl);
+            get_arr_f64(inlet_slot_wid_obj, isw);
             get_arr_i32(outfall_cell_obj, oc);
             int32_t n_outfalls = static_cast<int32_t>(oc.size());
             get_arr_i32(outfall_node_obj, on_);
@@ -1187,6 +1203,9 @@ PYBIND11_MODULE(HYDRA_SWE2D_PY_MODULE_NAME, m) {
                 s_coupling_dev, n_nodes, n_inlets, n_outfalls,
                 ic.data(), in_.data(), icr.data(), iw.data(),
                 icd.data(), iq.data(),
+                it.data(), igl.data(), igw.data(),
+                igk.data(), igo.data(), icl.data(), ich.data(),
+                ict.data(), isl.data(), isw.data(),
                 oc.data(), on_.data(), oi_.data(), od_.data(),
                 ocd.data(), oq.data(), ozs.data(),
                 nmd.data());
@@ -1194,6 +1213,12 @@ PYBIND11_MODULE(HYDRA_SWE2D_PY_MODULE_NAME, m) {
         py::arg("inlet_cell")=py::none(), py::arg("inlet_node")=py::none(),
         py::arg("inlet_crest")=py::none(), py::arg("inlet_width")=py::none(),
         py::arg("inlet_cd")=py::none(), py::arg("inlet_qmax")=py::none(),
+        py::arg("inlet_type")=py::none(),
+        py::arg("inlet_grate_len")=py::none(), py::arg("inlet_grate_wid")=py::none(),
+        py::arg("inlet_grate_kind")=py::none(), py::arg("inlet_grate_open")=py::none(),
+        py::arg("inlet_curb_len")=py::none(), py::arg("inlet_curb_ht")=py::none(),
+        py::arg("inlet_curb_throat")=py::none(),
+        py::arg("inlet_slot_len")=py::none(), py::arg("inlet_slot_wid")=py::none(),
         py::arg("outfall_cell")=py::none(), py::arg("outfall_node")=py::none(),
         py::arg("outfall_invert")=py::none(), py::arg("outfall_diameter")=py::none(),
         py::arg("outfall_cd")=py::none(), py::arg("outfall_qmax")=py::none(),

@@ -3384,6 +3384,13 @@ __device__ __constant__ double SWE2D_CULVERT_PARAMS_CUDA[58][5] = {
     {2.0, 0.500, 0.667, 0.0446, 0.65}, {2.0, 0.500, 0.667, 0.0378, 0.71}
 };
 
+// HEC-22 Table 4-1: grate opening ratios (R = open area / total area).
+// Indexed by grate_kind: 0=P-1-1/8, 1=P-1-1/4, 2=P-1-1/2, 3=P-1-3/4,
+// 4=P-1-7/8, 5=Reticuline, 6=Hinged, 7=Fish (deprecated).
+__device__ __constant__ double SWE2D_GRATE_OPENING_RATIOS[8] = {
+    0.90, 0.80, 0.60, 0.35, 0.17, 0.34, 0.80, 1.00
+};
+
 /// Device helper: culvert cross-sectional area (rect or circular).
 /**
  * @device
@@ -4383,6 +4390,18 @@ __global__ __launch_bounds__(256, 4) void swe2d_drainage_inlet_exchange_kernel(
     const double* __restrict__ inlet_width,
     const double* __restrict__ inlet_coefficient,
     const double* __restrict__ inlet_max_capture,
+    // HEC-22 geometry arrays
+    const int32_t* __restrict__ inlet_type,
+    const double* __restrict__ inlet_grate_len,
+    const double* __restrict__ inlet_grate_wid,
+    const int32_t* __restrict__ inlet_grate_kind,
+    const double* __restrict__ inlet_grate_open,
+    const double* __restrict__ inlet_curb_len,
+    const double* __restrict__ inlet_curb_ht,
+    const int32_t* __restrict__ inlet_curb_throat,
+    const double* __restrict__ inlet_slot_len,
+    const double* __restrict__ inlet_slot_wid,
+    // State arrays
     const double* __restrict__ cell_wse,
     const double* __restrict__ cell_area,
     const double* __restrict__ cell_depth,
@@ -4407,21 +4426,130 @@ __global__ __launch_bounds__(256, 4) void swe2d_drainage_inlet_exchange_kernel(
     const double wse_surface = cell_wse[c];
     const double wse_node = node_invert_elev[n] + fmax(0.0, node_depth[n]);
     const double crest = inlet_crest_elev[i];
-    const double width = fmax(0.0, inlet_width[i]);
-    const double cd = fmax(0.0, inlet_coefficient[i]);
     const double q_cap = inlet_max_capture[i];
     const double deadband = fmax(0.0, head_deadband_m);
 
-    const double capture_head = fmax(0.0, wse_surface - fmax(wse_node, crest) - deadband);
-    const double area_capture = width * fmax(0.01, capture_head);
-    double q_capture = cd * area_capture * sqrt(fmax(0.0, 2.0 * gravity * capture_head));
-    if (isfinite(q_cap) && q_cap > 0.0) q_capture = fmin(q_capture, q_cap);
+    // Driving head (capture: surface → node)
+    const double H = fmax(0.0, wse_surface - fmax(wse_node, crest) - deadband);
+    // Driving head (relief: node → surface)
+    const double H_relief = fmax(0.0, wse_node - fmax(wse_surface, crest) - deadband);
 
-    const double relief_head = fmax(0.0, wse_node - fmax(wse_surface, crest) - deadband);
-    const double area_relief = width * fmax(0.01, relief_head);
-    double q_relief = cd * area_relief * sqrt(fmax(0.0, 2.0 * gravity * relief_head));
-    if (isfinite(q_cap) && q_cap > 0.0) q_relief = fmin(q_relief, q_cap);
+    double q_capture = 0.0;
+    double Ao_total = 0.0;  // total opening area for relief orifice
 
+    if (H > 0.0) {
+        const int itype = inlet_type ? inlet_type[i] : 0;
+        switch (itype) {
+        case 0: { // GRATE — HEC-22 §4-4.1, eq 4-1 / 4-2
+            const double Lg = fmax(1e-6, inlet_grate_len ? inlet_grate_len[i] : 1.0);
+            const double Wg = fmax(1e-6, inlet_grate_wid ? inlet_grate_wid[i] : 1.0);
+            const double P = 2.0 * (Lg + Wg);
+            const int gkind = (inlet_grate_kind && inlet_grate_kind[i] >= 0 && inlet_grate_kind[i] < 8)
+                ? inlet_grate_kind[i] : -1;
+            const double openFrac = (gkind >= 0)
+                ? SWE2D_GRATE_OPENING_RATIOS[gkind]
+                : fmax(0.01, inlet_grate_open ? inlet_grate_open[i] : 1.0);
+            Ao_total = Lg * Wg * openFrac;
+            const double H_trans = (P > 0.0) ? 1.79 * Ao_total / P : 1e6;
+            if (H <= H_trans)
+                q_capture = 3.0 * P * pow(H, 1.5);                  // weir flow (eq 4-1)
+            else
+                q_capture = 0.67 * Ao_total * sqrt(2.0 * gravity * H); // orifice flow (eq 4-2)
+            break;
+        }
+        case 1: { // CURB — HEC-22 §4-4.2, eq 4-5 / 4-7
+            const double L = fmax(1e-6, inlet_curb_len ? inlet_curb_len[i] : 1.0);
+            const double h = fmax(1e-6, inlet_curb_ht ? inlet_curb_ht[i] : 0.15);
+            Ao_total = L * h;
+            const double H_weir = h;
+            const double H_orif = 1.4 * h;
+            if (H <= H_weir) {
+                q_capture = 3.0 * L * pow(H, 1.5);                   // weir (eq 4-5)
+            } else if (H >= H_orif) {
+                double H_eff = H - h * 0.5;
+                if (inlet_curb_throat && inlet_curb_throat[i] == 2)
+                    H_eff = H - h * 0.5 * 0.7071;                   // angled throat correction
+                q_capture = 0.67 * h * L * sqrt(2.0 * gravity * fmax(1e-10, H_eff)); // orifice (eq 4-7)
+            } else {
+                // Transition: linear interpolation between weir and orifice at transition points
+                const double r = (H - H_weir) / (H_orif - H_weir);
+                const double Qw = 3.0 * L * pow(H_weir, 1.5);
+                const double Qo = 0.67 * h * L * sqrt(2.0 * gravity * (H_orif - h * 0.5));
+                q_capture = (1.0 - r) * Qw + r * Qo;
+            }
+            break;
+        }
+        case 2: { // SLOTTED — HEC-22 §4-4.3, eq 4-11 / 4-13
+            const double L = fmax(1e-6, inlet_slot_len ? inlet_slot_len[i] : 1.0);
+            const double w = fmax(1e-6, inlet_slot_wid ? inlet_slot_wid[i] : 0.05);
+            Ao_total = L * w;
+            const double H_trans = 2.587 * w;
+            if (H <= H_trans)
+                q_capture = 2.48 * L * pow(H, 1.5);                // weir (eq 4-11)
+            else
+                q_capture = 0.8 * L * w * sqrt(2.0 * gravity * H); // orifice (eq 4-13)
+            break;
+        }
+        case 3: { // COMBO — HEC-22 §4-4.5: grate + curb sweep
+            // Grate contribution
+            const double Lg = fmax(1e-6, inlet_grate_len ? inlet_grate_len[i] : 1.0);
+            const double Wg = fmax(1e-6, inlet_grate_wid ? inlet_grate_wid[i] : 1.0);
+            const double P = 2.0 * (Lg + Wg);
+            const int gkind = (inlet_grate_kind && inlet_grate_kind[i] >= 0 && inlet_grate_kind[i] < 8)
+                ? inlet_grate_kind[i] : -1;
+            const double openFrac = (gkind >= 0)
+                ? SWE2D_GRATE_OPENING_RATIOS[gkind]
+                : fmax(0.01, inlet_grate_open ? inlet_grate_open[i] : 1.0);
+            const double Ao_g = Lg * Wg * openFrac;
+            const double H_trans_g = (P > 0.0) ? 1.79 * Ao_g / P : 1e6;
+            const double qg = (H <= H_trans_g)
+                ? (3.0 * P * pow(H, 1.5))
+                : (0.67 * Ao_g * sqrt(2.0 * gravity * H));
+            // Curb sweep contribution
+            const double L_sweep = fmax(0.0, (inlet_curb_len ? inlet_curb_len[i] : 0.0) - Lg);
+            double qc = 0.0;
+            if (L_sweep > 0.0) {
+                const double h = fmax(1e-6, inlet_curb_ht ? inlet_curb_ht[i] : 0.15);
+                if (H <= h)
+                    qc = 3.0 * L_sweep * pow(H, 1.5);                       // weir
+                else
+                    qc = 0.67 * h * L_sweep * sqrt(2.0 * gravity * fmax(1e-10, H - h * 0.5)); // orifice
+            }
+            Ao_total = Ao_g + L_sweep * (inlet_curb_ht ? inlet_curb_ht[i] : 0.15);
+            q_capture = qg + qc;
+            break;
+        }
+        case 4: // CUSTOM — falls back to legacy width*H hybrid for now
+        default: {
+            // Legacy behavior: orifice-style using width + coefficient
+            const double width = fmax(0.0, inlet_width[i]);
+            const double cd = fmax(0.0, inlet_coefficient[i]);
+            const double area = width * fmax(0.01, H);
+            q_capture = cd * area * sqrt(fmax(0.0, 2.0 * gravity * H));
+            break;
+        }
+        }
+    }
+
+    // Relief direction (node → surface): orifice through total opening area
+    double q_relief = 0.0;
+    if (H_relief > 0.0 && Ao_total > 0.0) {
+        q_relief = 0.67 * Ao_total * sqrt(2.0 * gravity * H_relief);
+    } else if (H_relief > 0.0) {
+        // Fallback: legacy relief using width
+        const double width = fmax(0.0, inlet_width[i]);
+        const double cd = fmax(0.0, inlet_coefficient[i]);
+        const double area = width * fmax(0.01, H_relief);
+        q_relief = cd * area * sqrt(fmax(0.0, 2.0 * gravity * H_relief));
+    }
+
+    // Apply max_capture cap
+    if (isfinite(q_cap) && q_cap > 0.0) {
+        q_capture = fmin(q_capture, q_cap);
+        q_relief = fmin(q_relief, q_cap);
+    }
+
+    // ── Availability limiters (unchanged) ──
     const double node_area = fmax(1.0, node_surface_area[n]);
     const double d_node = fmax(0.0, node_depth[n]);
     const double rem_node_storage = fmax(0.0, node_max_depth[n] - d_node) * node_area;
@@ -7629,6 +7757,10 @@ void swe2d_gpu_compute_coupling_full_on_device(
                     dw.n_inlets, n_cells,
                     dw.d_i_cell, dw.d_i_node, dw.d_i_crest, dw.d_i_width,
                     dw.d_i_cd, dw.d_i_qmax,
+                    dw.d_i_type, dw.d_i_grate_len, dw.d_i_grate_wid,
+                    dw.d_i_grate_kind, dw.d_i_grate_open,
+                    dw.d_i_curb_len, dw.d_i_curb_ht, dw.d_i_curb_throat,
+                    dw.d_i_slot_len, dw.d_i_slot_wid,
                     sf_ws.d_cell_wse, cpl_ws.d_cell_area, nullptr,
                     p.d_node_invert, dw.d_node_maxd, p.d_node_depth,
                     p.d_node_surface_area,
@@ -8834,6 +8966,16 @@ static bool ensure_drainage_step_workspace(
     _DS_ENSURE(ws.d_i_width,  ws.inlet_capacity, n_inlets, double);
     _DS_ENSURE(ws.d_i_cd,     ws.inlet_capacity, n_inlets, double);
     _DS_ENSURE(ws.d_i_qmax,   ws.inlet_capacity, n_inlets, double);
+    _DS_ENSURE(ws.d_i_type,         ws.inlet_capacity, n_inlets, int32_t);
+    _DS_ENSURE(ws.d_i_grate_len,    ws.inlet_capacity, n_inlets, double);
+    _DS_ENSURE(ws.d_i_grate_wid,    ws.inlet_capacity, n_inlets, double);
+    _DS_ENSURE(ws.d_i_grate_kind,   ws.inlet_capacity, n_inlets, int32_t);
+    _DS_ENSURE(ws.d_i_grate_open,   ws.inlet_capacity, n_inlets, double);
+    _DS_ENSURE(ws.d_i_curb_len,     ws.inlet_capacity, n_inlets, double);
+    _DS_ENSURE(ws.d_i_curb_ht,      ws.inlet_capacity, n_inlets, double);
+    _DS_ENSURE(ws.d_i_curb_throat,  ws.inlet_capacity, n_inlets, int32_t);
+    _DS_ENSURE(ws.d_i_slot_len,     ws.inlet_capacity, n_inlets, double);
+    _DS_ENSURE(ws.d_i_slot_wid,     ws.inlet_capacity, n_inlets, double);
 
     _DS_ENSURE(ws.d_o_cell,        ws.outfall_capacity, n_outfalls, int32_t);
     _DS_ENSURE(ws.d_o_node,        ws.outfall_capacity, n_outfalls, int32_t);
@@ -8876,6 +9018,12 @@ void swe2d_gpu_upload_drainage_exchange_params(
     const int32_t* inlet_cell, const int32_t* inlet_node,
     const double* inlet_crest, const double* inlet_width,
     const double* inlet_cd, const double* inlet_qmax,
+    const int32_t* inlet_type,
+    const double* inlet_grate_len, const double* inlet_grate_wid,
+    const int32_t* inlet_grate_kind, const double* inlet_grate_open,
+    const double* inlet_curb_len, const double* inlet_curb_ht,
+    const int32_t* inlet_curb_throat,
+    const double* inlet_slot_len, const double* inlet_slot_wid,
     const int32_t* outfall_cell, const int32_t* outfall_node,
     const double* outfall_invert, const double* outfall_diameter,
     const double* outfall_cd, const double* outfall_qmax,
@@ -8896,6 +9044,16 @@ void swe2d_gpu_upload_drainage_exchange_params(
         h2d(ws.d_i_width, inlet_width, n_inlets * sizeof(double));
         h2d(ws.d_i_cd, inlet_cd, n_inlets * sizeof(double));
         h2d(ws.d_i_qmax, inlet_qmax, n_inlets * sizeof(double));
+        h2d(ws.d_i_type, inlet_type, n_inlets * sizeof(int32_t));
+        h2d(ws.d_i_grate_len, inlet_grate_len, n_inlets * sizeof(double));
+        h2d(ws.d_i_grate_wid, inlet_grate_wid, n_inlets * sizeof(double));
+        h2d(ws.d_i_grate_kind, inlet_grate_kind, n_inlets * sizeof(int32_t));
+        h2d(ws.d_i_grate_open, inlet_grate_open, n_inlets * sizeof(double));
+        h2d(ws.d_i_curb_len, inlet_curb_len, n_inlets * sizeof(double));
+        h2d(ws.d_i_curb_ht, inlet_curb_ht, n_inlets * sizeof(double));
+        h2d(ws.d_i_curb_throat, inlet_curb_throat, n_inlets * sizeof(int32_t));
+        h2d(ws.d_i_slot_len, inlet_slot_len, n_inlets * sizeof(double));
+        h2d(ws.d_i_slot_wid, inlet_slot_wid, n_inlets * sizeof(double));
     }
     if (n_outfalls > 0 && ws.d_o_cell) {
         h2d(ws.d_o_cell, outfall_cell, n_outfalls * sizeof(int32_t));
