@@ -104,6 +104,16 @@ class SWE2DDrainageSoA:
     inlet_width: np.ndarray
     inlet_coefficient: np.ndarray
     inlet_max_capture: np.ndarray
+    inlet_type: np.ndarray           # [n_inlets] int32
+    inlet_grate_len: np.ndarray      # [n_inlets] float64
+    inlet_grate_wid: np.ndarray      # [n_inlets] float64
+    inlet_grate_kind: np.ndarray     # [n_inlets] int32
+    inlet_grate_open: np.ndarray     # [n_inlets] float64
+    inlet_curb_len: np.ndarray       # [n_inlets] float64
+    inlet_curb_ht: np.ndarray        # [n_inlets] float64
+    inlet_curb_throat: np.ndarray    # [n_inlets] int32
+    inlet_slot_len: np.ndarray       # [n_inlets] float64
+    inlet_slot_wid: np.ndarray       # [n_inlets] float64
     outfall_cell: np.ndarray
     outfall_node: np.ndarray
     outfall_invert_elev: np.ndarray
@@ -272,6 +282,16 @@ def pack_pipe_network_soa(cfg: Optional[PipeNetworkConfig], n_cells: int) -> Opt
     inlet_width = np.zeros(ni, dtype=np.float64)
     inlet_coefficient = np.zeros(ni, dtype=np.float64)
     inlet_max_capture = np.full(ni, np.nan, dtype=np.float64)
+    inlet_type = np.zeros(ni, dtype=np.int32)
+    inlet_grate_len = np.zeros(ni, dtype=np.float64)
+    inlet_grate_wid = np.zeros(ni, dtype=np.float64)
+    inlet_grate_kind = np.full(ni, -1, dtype=np.int32)
+    inlet_grate_open = np.zeros(ni, dtype=np.float64)
+    inlet_curb_len = np.zeros(ni, dtype=np.float64)
+    inlet_curb_ht = np.zeros(ni, dtype=np.float64)
+    inlet_curb_throat = np.zeros(ni, dtype=np.int32)
+    inlet_slot_len = np.zeros(ni, dtype=np.float64)
+    inlet_slot_wid = np.zeros(ni, dtype=np.float64)
     for i, it in enumerate(cfg.inlets):
         ci = int(it.cell_id)
         inlet_cell[i] = ci if 0 <= ci < int(n_cells) else -1
@@ -288,6 +308,18 @@ def pack_pipe_network_soa(cfg: Optional[PipeNetworkConfig], n_cells: int) -> Opt
         inlet_width[i] = float(width_val)
         inlet_coefficient[i] = float(coeff_val)
         inlet_max_capture[i] = np.nan if it.max_capture is None else float(it.max_capture)
+        inlet_type_str = str(getattr(it, "inlet_type", "grate") or "grate").strip().lower()
+        type_map = {"grate": 0, "curb": 1, "slotted": 2, "combo": 3, "custom": 4}
+        inlet_type[i] = type_map.get(inlet_type_str, 0)
+        inlet_grate_len[i] = float(getattr(it, "grate_length", 0.0) or 0.0)
+        inlet_grate_wid[i] = float(getattr(it, "grate_width", 0.0) or 0.0)
+        inlet_grate_kind[i] = int(getattr(it, "grate_type", -1) if getattr(it, "grate_type", -1) is not None else -1)
+        inlet_grate_open[i] = float(getattr(it, "grate_open_frac", 1.0) or 1.0)
+        inlet_curb_len[i] = float(getattr(it, "curb_length", 0.0) or 0.0)
+        inlet_curb_ht[i] = float(getattr(it, "curb_height", 0.0) or 0.0)
+        inlet_curb_throat[i] = int(getattr(it, "curb_throat", 0) or 0)
+        inlet_slot_len[i] = float(getattr(it, "slot_length", 0.0) or 0.0)
+        inlet_slot_wid[i] = float(getattr(it, "slot_width", 0.0) or 0.0)
 
     outfall_cell = np.full(no, -1, dtype=np.int32)
     outfall_node = np.full(no, -1, dtype=np.int32)
@@ -337,7 +369,7 @@ def pack_pipe_network_soa(cfg: Optional[PipeNetworkConfig], n_cells: int) -> Opt
             if int(pipe_end_node[j]) == tn:
                 link_exit_loss_k[i] = float(pipe_end_outlet_loss_k[j])
 
-    max_cell_length = max(0.0, max(lk.max_cell_length for lk in cfg.links))
+    max_cell_length = max(0.0, max((lk.max_cell_length for lk in cfg.links), default=0.0))
 
     return SWE2DDrainageSoA(
         node_x=node_x,
@@ -358,6 +390,16 @@ def pack_pipe_network_soa(cfg: Optional[PipeNetworkConfig], n_cells: int) -> Opt
         inlet_width=inlet_width,
         inlet_coefficient=inlet_coefficient,
         inlet_max_capture=inlet_max_capture,
+        inlet_type=inlet_type,
+        inlet_grate_len=inlet_grate_len,
+        inlet_grate_wid=inlet_grate_wid,
+        inlet_grate_kind=inlet_grate_kind,
+        inlet_grate_open=inlet_grate_open,
+        inlet_curb_len=inlet_curb_len,
+        inlet_curb_ht=inlet_curb_ht,
+        inlet_curb_throat=inlet_curb_throat,
+        inlet_slot_len=inlet_slot_len,
+        inlet_slot_wid=inlet_slot_wid,
         outfall_cell=outfall_cell,
         outfall_node=outfall_node,
         outfall_invert_elev=outfall_invert_elev,

@@ -167,6 +167,17 @@ class InletExchange:
     max_capture: Optional[float] = None
     width: Optional[float] = None
     coefficient: Optional[float] = None
+    # HEC-22 inlet geometry fields
+    inlet_type: str = "grate"           # "grate" | "curb" | "slotted" | "combo" | "custom"
+    grate_length: float = 0.0
+    grate_width: float = 0.0
+    grate_type: int = -1                # -1=generic, 0..7=HEC-22 standard types
+    grate_open_frac: float = 1.0
+    curb_length: float = 0.0
+    curb_height: float = 0.0
+    curb_throat: int = 0                # 0=vertical 1=horizontal 2=inclined
+    slot_length: float = 0.0
+    slot_width: float = 0.0
 
     def __post_init__(self):
         """post init"""
