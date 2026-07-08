@@ -122,6 +122,9 @@ class SWE2DDrainageSoA:
     link_exit_loss_k: np.ndarray
     link_invert_in: np.ndarray
     link_invert_out: np.ndarray
+    link_shape_type: np.ndarray      # [n_links] int32, 0=circular 1=rect 2=ellipse
+    link_width: np.ndarray           # [n_links] float64
+    link_height: np.ndarray          # [n_links] float64
     max_cell_length: float = 0.0
     solver_mode: int = int(DrainageSolverMode.EGL)
     pipe_solver_mode: str = "diffusion_wave"
@@ -230,6 +233,9 @@ def pack_pipe_network_soa(cfg: Optional[PipeNetworkConfig], n_cells: int) -> Opt
     link_exit_loss_k = np.zeros(nl, dtype=np.float64)
     link_invert_in = np.zeros(nl, dtype=np.float64)
     link_invert_out = np.zeros(nl, dtype=np.float64)
+    link_shape_type = np.zeros(nl, dtype=np.int32)
+    link_width = np.zeros(nl, dtype=np.float64)
+    link_height = np.zeros(nl, dtype=np.float64)
     for i, lk in enumerate(cfg.links):
         link_from[i] = int(node_idx.get(lk.from_node_id, -1))
         link_to[i] = int(node_idx.get(lk.to_node_id, -1))
@@ -240,6 +246,11 @@ def pack_pipe_network_soa(cfg: Optional[PipeNetworkConfig], n_cells: int) -> Opt
             area_link = _meta_float(lk.metadata, "area_m2", 0.0)
             d_link = equivalent_circular_diameter_from_area(area_link)
         link_diameter[i] = d_link
+        shape_str = str(getattr(lk, "link_shape", "circular") or "circular").strip().lower()
+        shape_map = {"circular": 0, "rectangular": 1, "elliptical": 2}
+        link_shape_type[i] = shape_map.get(shape_str, 0)
+        link_width[i] = float(getattr(lk, "width", None) or getattr(lk, "diameter", d_link) or d_link)
+        link_height[i] = float(getattr(lk, "height", None) or getattr(lk, "diameter", d_link) or d_link)
         link_max_flow[i] = np.nan if lk.max_flow is None else float(lk.max_flow)
         link_cd[i] = _meta_float(lk.metadata, "cd", 0.75)
         link_entrance_loss_k[i] = float(getattr(lk, "entrance_loss_k", 0.5))
@@ -363,6 +374,9 @@ def pack_pipe_network_soa(cfg: Optional[PipeNetworkConfig], n_cells: int) -> Opt
         link_exit_loss_k=link_exit_loss_k,
         link_invert_in=link_invert_in,
         link_invert_out=link_invert_out,
+        link_shape_type=link_shape_type,
+        link_width=link_width,
+        link_height=link_height,
         max_cell_length=max_cell_length,
         solver_mode=int(getattr(cfg, "solver_mode", DrainageSolverMode.EGL)),
         pipe_solver_mode=str(getattr(cfg, "pipe_solver_mode", "diffusion_wave")),
