@@ -134,6 +134,9 @@ class DrainageLink:
     length: float = 0.0
     roughness_n: float = 0.013
     diameter: Optional[float] = None
+    link_shape: str = "circular"            # "circular" | "rectangular" | "elliptical"
+    width: Optional[float] = None            # width(rect) / span(ellipse)
+    height: Optional[float] = None           # height(rect) / rise(ellipse)
     max_flow: Optional[float] = None
     # Culvert-specific fields (used when link_type == "culvert")
     culvert_shape: Optional[str] = None       # circular, box, rectangular, pipe_arch
