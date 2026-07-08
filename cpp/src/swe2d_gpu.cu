@@ -8960,22 +8960,35 @@ static bool ensure_drainage_step_workspace(
     _DS_ENSURE(ws.d_l_q_prev, ws.link_capacity, n_links, double);
     _DS_ENSURE(ws.d_l_q,      ws.link_capacity, n_links, double);
 
-    _DS_ENSURE(ws.d_i_cell,   ws.inlet_capacity, n_inlets, int32_t);
-    _DS_ENSURE(ws.d_i_node,   ws.inlet_capacity, n_inlets, int32_t);
-    _DS_ENSURE(ws.d_i_crest,  ws.inlet_capacity, n_inlets, double);
-    _DS_ENSURE(ws.d_i_width,  ws.inlet_capacity, n_inlets, double);
-    _DS_ENSURE(ws.d_i_cd,     ws.inlet_capacity, n_inlets, double);
-    _DS_ENSURE(ws.d_i_qmax,   ws.inlet_capacity, n_inlets, double);
-    _DS_ENSURE(ws.d_i_type,         ws.inlet_capacity, n_inlets, int32_t);
-    _DS_ENSURE(ws.d_i_grate_len,    ws.inlet_capacity, n_inlets, double);
-    _DS_ENSURE(ws.d_i_grate_wid,    ws.inlet_capacity, n_inlets, double);
-    _DS_ENSURE(ws.d_i_grate_kind,   ws.inlet_capacity, n_inlets, int32_t);
-    _DS_ENSURE(ws.d_i_grate_open,   ws.inlet_capacity, n_inlets, double);
-    _DS_ENSURE(ws.d_i_curb_len,     ws.inlet_capacity, n_inlets, double);
-    _DS_ENSURE(ws.d_i_curb_ht,      ws.inlet_capacity, n_inlets, double);
-    _DS_ENSURE(ws.d_i_curb_throat,  ws.inlet_capacity, n_inlets, int32_t);
-    _DS_ENSURE(ws.d_i_slot_len,     ws.inlet_capacity, n_inlets, double);
-    _DS_ENSURE(ws.d_i_slot_wid,     ws.inlet_capacity, n_inlets, double);
+    // Unconditional allocation for ALL inlet arrays (the _DS_ENSURE macro
+    // shares one capacity counter — using it would skip subsequent arrays
+    // after the first allocation).
+    #define _DS_ALLOC(ptr, needed, type) \
+        do { \
+            if (ptr) { cudaFree(ptr); ptr = nullptr; } \
+            if ((needed) > 0) { \
+                CUDA_CHECK(cudaMalloc(reinterpret_cast<void**>(&ptr), \
+                                      static_cast<size_t>(needed) * sizeof(type))); \
+            } \
+        } while(0)
+    _DS_ALLOC(ws.d_i_cell,         n_inlets, int32_t);
+    _DS_ALLOC(ws.d_i_node,         n_inlets, int32_t);
+    _DS_ALLOC(ws.d_i_crest,        n_inlets, double);
+    _DS_ALLOC(ws.d_i_width,        n_inlets, double);
+    _DS_ALLOC(ws.d_i_cd,           n_inlets, double);
+    _DS_ALLOC(ws.d_i_qmax,         n_inlets, double);
+    _DS_ALLOC(ws.d_i_type,         n_inlets, int32_t);
+    _DS_ALLOC(ws.d_i_grate_len,    n_inlets, double);
+    _DS_ALLOC(ws.d_i_grate_wid,    n_inlets, double);
+    _DS_ALLOC(ws.d_i_grate_kind,   n_inlets, int32_t);
+    _DS_ALLOC(ws.d_i_grate_open,   n_inlets, double);
+    _DS_ALLOC(ws.d_i_curb_len,     n_inlets, double);
+    _DS_ALLOC(ws.d_i_curb_ht,      n_inlets, double);
+    _DS_ALLOC(ws.d_i_curb_throat,  n_inlets, int32_t);
+    _DS_ALLOC(ws.d_i_slot_len,     n_inlets, double);
+    _DS_ALLOC(ws.d_i_slot_wid,     n_inlets, double);
+    ws.inlet_capacity = n_inlets;
+    #undef _DS_ALLOC
 
     _DS_ENSURE(ws.d_o_cell,        ws.outfall_capacity, n_outfalls, int32_t);
     _DS_ENSURE(ws.d_o_node,        ws.outfall_capacity, n_outfalls, int32_t);
