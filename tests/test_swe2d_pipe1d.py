@@ -290,5 +290,70 @@ class TestPipe1DStep(unittest.TestCase):
                                   msg="Higher head should produce a different area")
 
 
+    def test_rectangular_link_diffusion(self):
+        """Rectangular link (W=1.0, H=0.5) builds and steps with diffusion wave without crash."""
+        a = self._simple_pipe_arrays()
+        a["link_diameter"] = np.array([0.0], dtype=np.float64)
+        link_shape_type = np.array([1], dtype=np.int32)
+        link_width = np.array([1.0], dtype=np.float64)
+        link_height = np.array([0.5], dtype=np.float64)
+        _MOD.swe2d_build_pipe1d_mesh(
+            a["n_links"],
+            a["link_from"], a["link_to"],
+            a["link_length"], a["link_diameter"], a["link_roughness"],
+            a["link_inlet_loss"], a["link_outlet_loss"],
+            a["node_invert"], a["node_surface_area"], a["node_max_depth"],
+            a["link_invert_in"], a["link_invert_out"],
+            0, self._dev_ptr,
+            link_shape_type, link_width, link_height,
+        )
+        _MOD.swe2d_pipe1d_upload_node_depth(self._dev_ptr, a["node_depth"])
+        _MOD.swe2d_pipe1d_step(self._dev_ptr, 0.5, "diffusion_wave", 1, 2, 0.5, 9.81)
+        rb = _MOD.swe2d_pipe1d_readback_node_state(self._dev_ptr, a["n_nodes"], 1)
+        self.assertTrue(np.isfinite(rb["cell_A"][0]))
+        self.assertTrue(np.isfinite(rb["cell_Q"][0]))
+
+    def test_elliptical_link_diffusion(self):
+        """Elliptical link (span=1.0, rise=0.6) builds and steps without crash."""
+        a = self._simple_pipe_arrays()
+        a["link_diameter"] = np.array([0.0], dtype=np.float64)
+        link_shape_type = np.array([2], dtype=np.int32)
+        link_width = np.array([1.0], dtype=np.float64)
+        link_height = np.array([0.6], dtype=np.float64)
+        _MOD.swe2d_build_pipe1d_mesh(
+            a["n_links"],
+            a["link_from"], a["link_to"],
+            a["link_length"], a["link_diameter"], a["link_roughness"],
+            a["link_inlet_loss"], a["link_outlet_loss"],
+            a["node_invert"], a["node_surface_area"], a["node_max_depth"],
+            a["link_invert_in"], a["link_invert_out"],
+            0, self._dev_ptr,
+            link_shape_type, link_width, link_height,
+        )
+        _MOD.swe2d_pipe1d_upload_node_depth(self._dev_ptr, a["node_depth"])
+        _MOD.swe2d_pipe1d_step(self._dev_ptr, 0.5, "diffusion_wave", 1, 2, 0.5, 9.81)
+        rb = _MOD.swe2d_pipe1d_readback_node_state(self._dev_ptr, a["n_nodes"], 1)
+        self.assertTrue(np.isfinite(rb["cell_A"][0]))
+        self.assertTrue(np.isfinite(rb["cell_Q"][0]))
+
+    def test_init_area_from_depth(self):
+        """swe2d_pipe1d_init_area_from_depth should set A proportional to depth."""
+        a = self._simple_pipe_arrays()
+        a["node_depth"] = np.array([0.0, 0.0], dtype=np.float64)
+        dev_ptr = self._build_and_upload(a)
+        _MOD.swe2d_pipe1d_init_area_from_depth(dev_ptr)
+        rb = _MOD.swe2d_pipe1d_readback_node_state(dev_ptr, a["n_nodes"], 1)
+        self.assertAlmostEqual(float(rb["cell_A"][0]), 0.0, places=6,
+                               msg="Zero depth → zero area")
+
+        a["node_depth"] = np.array([1.0, 1.0], dtype=np.float64)
+        dev_ptr = self._build_and_upload(a)
+        _MOD.swe2d_pipe1d_init_area_from_depth(dev_ptr)
+        rb = _MOD.swe2d_pipe1d_readback_node_state(dev_ptr, a["n_nodes"], 1)
+        A_full = np.pi * (a["link_diameter"][0] / 2.0) ** 2
+        self.assertAlmostEqual(float(rb["cell_A"][0]), A_full, places=3,
+                               msg="Depth = diameter → full area (approx)")
+
+
 if __name__ == "__main__":
     unittest.main()
