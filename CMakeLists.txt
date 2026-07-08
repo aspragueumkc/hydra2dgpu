@@ -100,6 +100,7 @@ if(BACKWATER_USE_CUDA)
     endif()
     list(APPEND SWE2D_GPU_SOURCES cpp/src/swe2d_gpu.cu)
     list(APPEND SWE2D_GPU_SOURCES cpp/src/swe2d_gpu_redistribute.cu)
+    list(APPEND SWE2D_GPU_SOURCES cpp/src/pipe1d.cu)
     set(SWE2D_CUDA_FOUND TRUE)
     message(STATUS "CUDA ${CUDAToolkit_VERSION} found — 2D solver GPU path enabled")
   else()
@@ -123,6 +124,7 @@ function(_configure_swe2d_module target_name py_module_name)
     # Allow CUDA files to find shared headers
     set_source_files_properties(cpp/src/swe2d_gpu.cu PROPERTIES LANGUAGE CUDA)
     set_source_files_properties(cpp/src/swe2d_gpu_redistribute.cu PROPERTIES LANGUAGE CUDA)
+    set_source_files_properties(cpp/src/pipe1d.cu PROPERTIES LANGUAGE CUDA)
     # Relaxed constexpr and extended lambda support for device-side std:: functions
     target_compile_options(${target_name} PRIVATE
       $<$<COMPILE_LANGUAGE:CUDA>:--expt-relaxed-constexpr --expt-extended-lambda>
