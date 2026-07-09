@@ -7,6 +7,49 @@ from typing import Callable, Dict, Optional, Tuple
 import numpy as np
 
 
+def permute_internal_flow_forcing(forcing: Optional[Dict[str, object]], cell_perm: np.ndarray) -> Optional[Dict[str, object]]:
+    """Permute internal-flow forcing from original cell order to solver (RCMK) order.
+
+    The C++ mesh builder reorders cells.  The internal-flow forcing is built
+    from the original-order mesh centroids, so its per-cell arrays must be
+    permuted before they are consumed by the solver backend.
+
+    Parameters
+    ----------
+    forcing : dict or None
+        Forcing object returned by ``build_internal_flow_forcing_*`` adapters.
+    cell_perm : np.ndarray
+        Solver permutation where ``cell_perm[c_new] = c_old``.
+
+    Returns
+    -------
+    dict or None
+        New forcing object whose ``base_q`` and dynamic-term indices are in
+        solver order.  Returns *forcing* unchanged if it is None or the
+        permutation is empty.
+    """
+    if forcing is None or cell_perm is None or cell_perm.size == 0:
+        return forcing
+    n_cells = int(cell_perm.size)
+    inv_perm = np.zeros(n_cells, dtype=np.int32)
+    inv_perm[cell_perm] = np.arange(n_cells, dtype=np.int32)
+
+    out = dict(forcing)
+    base_q = out.get("base_q")
+    if base_q is not None:
+        base_q = np.asarray(base_q, dtype=np.float64)
+        if base_q.size == n_cells:
+            out["base_q"] = base_q[cell_perm]
+
+    dynamic_terms = out.get("dynamic_terms")
+    if dynamic_terms is not None:
+        out["dynamic_terms"] = [
+            (inv_perm[np.asarray(idx_arr, dtype=np.int32)], wt_arr, hg)
+            for idx_arr, wt_arr, hg in dynamic_terms
+        ]
+    return out
+
+
 def internal_flow_source_cms_at_time(
     forcing: Optional[Dict[str, object]],
     t_sec: float,

@@ -12,6 +12,7 @@ import numpy as np
 from qgis.PyQt.QtCore import QThread, pyqtSignal
 
 from swe2d import units as _u
+from swe2d.boundary_and_forcing.runtime_source_logic import permute_internal_flow_forcing
 from swe2d.runtime.backend import SWE2DBackend
 from swe2d.runtime.backend_initializer import SWE2DBackendInitializer
 from swe2d.runtime.coupling import build_coupling_controller
@@ -502,6 +503,10 @@ class SimulationWorker(QThread):
                 else:
                     sample_map = list(ctx.sample_map_data or [])
                 apply_cell_permutation(mesh_data, cp)
+                if ctx.internal_flow_forcing is not None:
+                    ctx.internal_flow_forcing = permute_internal_flow_forcing(
+                        ctx.internal_flow_forcing, np.asarray(cp, dtype=np.int32)
+                    )
             else:
                 sample_map = list(ctx.sample_map_data or [])
 
