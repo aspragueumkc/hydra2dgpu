@@ -1322,8 +1322,11 @@ class SWE2DCouplingController:
                         ni = int(len(dsoa.inlet_cell))
                         no = int(len(dsoa.outfall_cell))
                         np_end = int(len(dsoa.pipe_end_cell))
+                        inlet_cell_gpu = self._remap_cells_for_gpu(np.asarray(dsoa.inlet_cell, dtype=np.int32))
+                        outfall_cell_gpu = self._remap_cells_for_gpu(np.asarray(dsoa.outfall_cell, dtype=np.int32))
+                        pipe_end_cell_gpu = self._remap_cells_for_gpu(np.asarray(dsoa.pipe_end_cell, dtype=np.int32))
                         native_mod.swe2d_gpu_upload_drainage_exchange_params(
-                            np.asarray(dsoa.inlet_cell, dtype=np.int32),
+                            np.asarray(inlet_cell_gpu, dtype=np.int32),
                             np.asarray(dsoa.inlet_node, dtype=np.int32),
                             np.asarray(dsoa.inlet_crest_elev, dtype=np.float64),
                             np.asarray(dsoa.inlet_width, dtype=np.float64),
@@ -1339,14 +1342,14 @@ class SWE2DCouplingController:
                             np.asarray(dsoa.inlet_curb_throat, dtype=np.int32),
                             np.asarray(dsoa.inlet_slot_len, dtype=np.float64),
                             np.asarray(dsoa.inlet_slot_wid, dtype=np.float64),
-                            np.asarray(dsoa.outfall_cell, dtype=np.int32),
+                            np.asarray(outfall_cell_gpu, dtype=np.int32),
                             np.asarray(dsoa.outfall_node, dtype=np.int32),
                             np.asarray(dsoa.outfall_invert_elev, dtype=np.float64),
                             np.asarray(dsoa.outfall_diameter, dtype=np.float64),
                             np.asarray(dsoa.outfall_coefficient, dtype=np.float64),
                             np.asarray(dsoa.outfall_max_flow, dtype=np.float64),
                             np.asarray(dsoa.outfall_zero_storage, dtype=np.int32),
-                            np.asarray(dsoa.pipe_end_cell, dtype=np.int32),
+                            np.asarray(pipe_end_cell_gpu, dtype=np.int32),
                             np.asarray(dsoa.pipe_end_node, dtype=np.int32),
                             np.asarray(dsoa.pipe_end_invert_elev, dtype=np.float64),
                             np.asarray(dsoa.pipe_end_diameter, dtype=np.float64),
@@ -1737,11 +1740,16 @@ def build_coupling_controller(
     drainage_gpu_method_mode: str,
     use_redistribution: bool,
     cell_centroids=None,
+    inv_cell_perm=None,
     log_fn=None,
 ):
     """Build a SWE2DCouplingController from drainage + structure configs.
 
     Returns None when neither config is supplied.
+
+    If inv_cell_perm is provided (array where inv_cell_perm[old] = new),
+    it is synced onto the controller so _remap_cells_for_gpu works
+    correctly for the RCMK mesh renumbering.
     """
     coupling_controller = None
     if pipe_network_cfg is not None or hydraulic_structures_cfg is not None:
@@ -1770,6 +1778,8 @@ def build_coupling_controller(
             use_redistribution=use_redistribution,
             log_callback=log_fn,
         )
+        if inv_cell_perm is not None:
+            coupling_controller._inv_cell_perm = np.asarray(inv_cell_perm, dtype=np.int32)
         if cell_centroids is not None:
             if hasattr(coupling_controller, "set_cell_centroids"):
                 coupling_controller.set_cell_centroids(cell_centroids[0], cell_centroids[1])

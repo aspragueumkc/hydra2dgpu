@@ -206,6 +206,7 @@ class TestGUICouplingPath(unittest.TestCase):
             culvert_solver_mode=0,
             drainage_gpu_method_mode="step",
             use_redistribution=False,
+            inv_cell_perm=getattr(self._backend, '_inv_cell_perm', None),
             log_fn=None,
         )
         self.assertIsNotNone(controller,
