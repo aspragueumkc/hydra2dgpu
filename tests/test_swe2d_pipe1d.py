@@ -244,6 +244,7 @@ class TestPipe1DStep(unittest.TestCase):
         a = self._simple_pipe_arrays()
         a["node_depth"] = np.zeros(2, dtype=np.float64)
         dev_ptr = self._build_and_upload(a)
+        _MOD.swe2d_pipe1d_init_area_from_depth(dev_ptr)
 
         _MOD.swe2d_pipe1d_step(
             dev_ptr, 1.0, "diffusion_wave",

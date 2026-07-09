@@ -115,6 +115,11 @@ def build_drainage_config_from_json(
     for i, n in enumerate(nodes_raw):
         nid = str(n["id"])
         ntype = str(n.get("type", "junction")).lower()
+        meta: Dict[str, float] = {}
+        if n.get("surface_area") is not None:
+            meta["surface_area"] = float(n["surface_area"])
+        if n.get("outfall_area") is not None:
+            meta["outfall_area"] = float(n["outfall_area"])
         nodes.append(DrainageNode(
             node_id=nid,
             x=float(n.get("x", 0.0)),
@@ -124,18 +129,32 @@ def build_drainage_config_from_json(
             max_depth=float(n.get("y_max", 10.0)),
             crest_elev=n.get("crest_elev"),
             rim_elev=n.get("rim_elev"),
+            metadata=meta,
         ))
 
     links: List[DrainageLink] = []
     for l in links_raw:
+        meta: Dict[str, float] = {}
+        if l.get("area_m2") is not None and float(l["area_m2"]) > 0:
+            meta["area_m2"] = float(l["area_m2"])
+        if l.get("equiv_diameter_m") is not None and float(l["equiv_diameter_m"]) > 0:
+            meta["equiv_diameter_m"] = float(l["equiv_diameter_m"])
         links.append(DrainageLink(
             link_id=str(l.get("id", f"link_{len(links)}")),
             from_node_id=str(l["from"]),
             to_node_id=str(l["to"]),
+            link_type=str(l.get("link_type", "conduit")),
             length=float(l.get("length", 100.0)),
-            diameter=float(l.get("diameter", 1.0)),
             roughness_n=float(l.get("roughness", 0.013)),
+            diameter=float(l.get("diameter", 0.0)) or None,
+            link_shape=str(l.get("link_shape", "circular")),
+            width=float(l["span"]) if l.get("span") is not None else None,
+            height=float(l["rise"]) if l.get("rise") is not None else None,
             max_flow=float(l.get("max_flow", -1.0)),
+            entrance_loss_k=float(l.get("entrance_loss_k", 0.5)),
+            exit_loss_k=float(l.get("exit_loss_k", 1.0)),
+            max_cell_length=float(l.get("max_cell_length", 0.0)),
+            metadata=meta,
         ))
 
     inlets_raw = data.get("inlets", [])

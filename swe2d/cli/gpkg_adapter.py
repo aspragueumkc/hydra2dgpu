@@ -547,11 +547,11 @@ def read_drainage_config_from_gpkg(
     nodes_raw: List[Dict[str, Any]] = []
     _geom_col = _find_geom_column(nodes_table, conn)
     if _geom_col:
-        for row in conn.execute(f'SELECT node_id, invert_elev, max_depth, rim_elev, crest_elev, node_type, "{_geom_col}" FROM "{nodes_table}" ORDER BY rowid'):
+        for row in conn.execute(f'SELECT node_id, invert_elev, max_depth, rim_elev, crest_elev, node_type, surface_area, outfall_area, zero_storage, "{_geom_col}" FROM "{nodes_table}" ORDER BY rowid'):
             nid = str(row[0] or "")
             if not nid:
                 continue
-            coords = _parse_wkb_point(row[6])
+            coords = _parse_wkb_point(row[9])
             nx, ny = (coords[0], coords[1]) if len(coords) >= 2 else (0.0, 0.0)
             node_x_map[nid] = nx
             node_y_map[nid] = ny
@@ -564,11 +564,14 @@ def read_drainage_config_from_gpkg(
                 "rim_elev": float(row[3]) if row[3] is not None else None,
                 "crest_elev": float(row[4]) if row[4] is not None else None,
                 "type": str(row[5] or "junction").lower(),
+                "surface_area": float(row[6]) if row[6] is not None else None,
+                "outfall_area": float(row[7]) if row[7] is not None else None,
+                "zero_storage": int(row[8]) if row[8] is not None else 0,
             })
     else:
         cols = {str(r[1]).lower() for r in nodes_cur}
         if "x" in cols and "y" in cols:
-            for row in conn.execute(f'SELECT node_id, x, y, invert_elev, max_depth, rim_elev, crest_elev, node_type FROM "{nodes_table}"'):
+            for row in conn.execute(f'SELECT node_id, x, y, invert_elev, max_depth, rim_elev, crest_elev, node_type, surface_area, outfall_area, zero_storage FROM "{nodes_table}"'):
                 nid = str(row[0] or "")
                 if not nid:
                     continue
@@ -583,20 +586,38 @@ def read_drainage_config_from_gpkg(
                     "rim_elev": float(row[5]) if row[5] is not None else None,
                     "crest_elev": float(row[6]) if row[6] is not None else None,
                     "type": str(row[7] or "junction").lower(),
+                    "surface_area": float(row[8]) if row[8] is not None else None,
+                    "outfall_area": float(row[9]) if row[9] is not None else None,
+                    "zero_storage": int(row[10]) if row[10] is not None else 0,
                 })
 
     links_raw: List[Dict[str, Any]] = []
-    for row in conn.execute(f'SELECT link_id, from_node, to_node, length, diameter, roughness_n, max_flow, link_type FROM "{links_table}"'):
+    for row in conn.execute(
+        f'SELECT link_id, from_node, to_node, length, diameter, roughness_n, max_flow, link_type, '
+        f'link_shape, span, rise, area_m2, equiv_diameter_m, '
+        f'entrance_loss_k, exit_loss_k, max_cell_length '
+        f'FROM "{links_table}"'
+    ):
         fid = str(row[0] or f"link_{len(links_raw)}")
-        links_raw.append({
+        link_entry: Dict[str, Any] = {
             "id": fid,
             "from": str(row[1] or ""),
             "to": str(row[2] or ""),
             "length": float(row[3] or 100.0),
-            "diameter": float(row[4] or 1.0),
+            "diameter": float(row[4]) if row[4] is not None else 0.0,
             "roughness": float(row[5] or 0.013),
             "max_flow": float(row[6]) if row[6] is not None else -1.0,
-        })
+            "link_type": str(row[7] or "conduit"),
+            "link_shape": str(row[8] or "circular"),
+            "span": float(row[9]) if row[9] is not None else None,
+            "rise": float(row[10]) if row[10] is not None else None,
+            "area_m2": float(row[11]) if row[11] is not None else None,
+            "equiv_diameter_m": float(row[12]) if row[12] is not None else None,
+            "entrance_loss_k": float(row[13]) if row[13] is not None else 0.5,
+            "exit_loss_k": float(row[14]) if row[14] is not None else 1.0,
+            "max_cell_length": float(row[15]) if row[15] is not None else 0.0,
+        }
+        links_raw.append(link_entry)
 
     if not nodes_raw or not links_raw:
         return None
@@ -609,26 +630,54 @@ def read_drainage_config_from_gpkg(
         _md2["cell_nodes"] = cell_nodes
     _cx2_raw, _cy2_raw = mesh_cell_centroids(_md2)
     cell_centroids = np.column_stack((_cx2_raw, _cy2_raw))
-    n_cells_actual = min(cell_centroids.shape[0], len(nodes_raw) * 10 + 1)
-    ccx = cell_centroids[:n_cells_actual, 0]
-    ccy = cell_centroids[:n_cells_actual, 1]
 
-    node_cell: Dict[str, int] = {}
-    for nid, nx in node_x_map.items():
-        ny = node_y_map[nid]
-        dist = np.hypot(ccx - nx, ccy - ny)
-        node_cell[nid] = int(np.argmin(dist))
+    from scipy.spatial import KDTree
+    cell_tree = KDTree(cell_centroids)
+
+    node_coords = np.column_stack([
+        np.array([node_x_map[nid] for nid in node_x_map], dtype=np.float64),
+        np.array([node_y_map[nid] for nid in node_y_map], dtype=np.float64),
+    ])
+    _, node_cell_arr = cell_tree.query(node_coords)
+    node_cell: Dict[str, int] = {
+        nid: int(node_cell_arr[i]) for i, nid in enumerate(node_x_map)
+    }
+
+    # Build lookup: node_id -> connecting link geometry (for outfall diameter derivation)
+    _link_by_to_node: Dict[str, Dict[str, Any]] = {}
+    for lk in links_raw:
+        _link_by_to_node[lk["to"]] = lk
 
     outfalls: List[Dict[str, Any]] = []
     for n in nodes_raw:
         if n["type"] in ("outfall", "free_outfall"):
             cid = node_cell.get(n["id"], 0)
-            outfalls.append({
+            outfall_entry: Dict[str, Any] = {
                 "outfall_id": n["id"],
                 "cell_id": cid,
                 "node_id": n["id"],
                 "invert_elev": n["invert"],
-            })
+            }
+            if n.get("outfall_area") is not None:
+                outfall_entry["area_m2"] = float(n["outfall_area"])
+            elif n.get("zero_storage"):
+                # Daylight outfall: derive orifice area from connecting pipe
+                conn_link = _link_by_to_node.get(n["id"])
+                if conn_link is not None:
+                    d = float(conn_link.get("diameter") or 0.0)
+                    if d <= 0.0:
+                        # Try span/rise for box pipes
+                        span = conn_link.get("span")
+                        rise = conn_link.get("rise")
+                        if span is not None and rise is not None and span > 0 and rise > 0:
+                            outfall_entry["area_m2"] = float(span) * float(rise)
+                        else:
+                            a = conn_link.get("area_m2")
+                            if a is not None and a > 0:
+                                outfall_entry["area_m2"] = float(a)
+                    else:
+                        outfall_entry["diameter"] = float(d)
+            outfalls.append(outfall_entry)
 
     inlets_raw: List[Dict[str, Any]] = []
     inlet_types_raw: List[Dict[str, Any]] = []
@@ -636,19 +685,41 @@ def read_drainage_config_from_gpkg(
 
     if inlets_table and node_inlets_table:
         conn.execute(f'PRAGMA table_info("{inlets_table}")')
-        for row in conn.execute(f'SELECT inlet_type_id, name, weir_length, orifice_area, coeff_weir, coeff_orifice, max_capture FROM "{inlets_table}"'):
+        for row in conn.execute(
+            f'SELECT inlet_type_id, name, inlet_type, '
+            f'grate_length, grate_width, grate_type, grate_open_frac, '
+            f'curb_length, curb_height, curb_throat, '
+            f'slot_length, slot_width, '
+            f'weir_length, orifice_area, coeff_weir, coeff_orifice, max_capture '
+            f'FROM "{inlets_table}"'
+        ):
             itid = str(row[0] or "")
             if not itid:
                 continue
             inlet_types_raw.append({
                 "inlet_type_id": itid,
                 "name": str(row[1] or itid),
-                "length": float(row[2] or 1.0),
-                "area": float(row[3] or 0.0),
-                "coeff_weir": float(row[4] or 1.70),
-                "coeff_orifice": float(row[5] or 0.62),
-                "max_capture": float(row[6]) if row[6] is not None else None,
+                "inlet_type": str(row[2] or "custom"),
+                "grate_length": float(row[3]) if row[3] is not None else 0.0,
+                "grate_width": float(row[4]) if row[4] is not None else 0.0,
+                "grate_type": int(row[5]) if row[5] is not None else -1,
+                "grate_open_frac": float(row[6]) if row[6] is not None else 1.0,
+                "curb_length": float(row[7]) if row[7] is not None else 0.0,
+                "curb_height": float(row[8]) if row[8] is not None else 0.0,
+                "curb_throat": int(row[9]) if row[9] is not None else 0,
+                "slot_length": float(row[10]) if row[10] is not None else 0.0,
+                "slot_width": float(row[11]) if row[11] is not None else 0.0,
+                "length": float(row[12] or 1.0),
+                "area": float(row[13] or 0.0),
+                "coeff_weir": float(row[14] or 1.70),
+                "coeff_orifice": float(row[15] or 0.62),
+                "max_capture": float(row[16]) if row[16] is not None else None,
             })
+
+        # Build lookup from inlet_type_id to inlet type definition
+        inlet_type_lookup: Dict[str, Dict[str, Any]] = {
+            it["inlet_type_id"]: it for it in inlet_types_raw
+        }
 
         conn.execute(f'PRAGMA table_info("{node_inlets_table}")')
         for row in conn.execute(f'SELECT node_id, inlet_type_id, inlet_count, crest_offset FROM "{node_inlets_table}"'):
@@ -656,13 +727,36 @@ def read_drainage_config_from_gpkg(
             itid = str(row[1] or "")
             if not nid or not itid:
                 continue
-            inlets_raw.append({
+            it_def = inlet_type_lookup.get(itid, {})
+            # Use rim_elev as crest_elev if available, otherwise 0
+            rim = None
+            for n in nodes_raw:
+                if n["id"] == nid:
+                    rim = n.get("rim_elev")
+                    break
+            inlet_entry: Dict[str, Any] = {
                 "inlet_id": f"{nid}:{itid}",
                 "cell_id": node_cell.get(nid, 0),
                 "node_id": nid,
                 "inlet_type_id": itid,
-                "crest_elev": 0.0,
-            })
+                "inlet_type": it_def.get("inlet_type", "custom"),
+                "crest_elev": float(rim) if rim is not None else 0.0,
+                "grate_length": it_def.get("grate_length", 0.0),
+                "grate_width": it_def.get("grate_width", 0.0),
+                "grate_type": it_def.get("grate_type", -1),
+                "grate_open_frac": it_def.get("grate_open_frac", 1.0),
+                "curb_length": it_def.get("curb_length", 0.0),
+                "curb_height": it_def.get("curb_height", 0.0),
+                "curb_throat": it_def.get("curb_throat", 0),
+                "slot_length": it_def.get("slot_length", 0.0),
+                "slot_width": it_def.get("slot_width", 0.0),
+                "length": it_def.get("length", 1.0),
+                "area": it_def.get("area", 0.0),
+                "coeff_weir": it_def.get("coeff_weir", 1.70),
+                "coeff_orifice": it_def.get("coeff_orifice", 0.62),
+                "max_capture": it_def.get("max_capture"),
+            }
+            inlets_raw.append(inlet_entry)
             node_inlets_raw.append({
                 "node_id": nid,
                 "inlet_type_id": itid,

@@ -856,6 +856,219 @@ class TestDrainageNoStructures(unittest.TestCase):
         self.assertAlmostEqual(float(src[1]), 0.0, places=12,
                                msg="Cell 1 should have zero source")
 
+    def test_pipe_end_upload_allocates_all_arrays(self):
+        """Regression: non-empty pipe_end arrays must not trigger CUDA invalid argument.
+
+        Prior to the fix, the pipe-end workspace used _DS_ENSURE with a shared
+        pipe_end_capacity counter. After the first array was allocated, the
+        capacity matched the request and subsequent arrays were silently skipped,
+        leaving their device pointers null. The upload then called cudaMemcpy to
+        a null pointer and failed with cudaErrorInvalidValue.
+        """
+        mod = self.mod
+
+        mod.swe2d_gpu_upload_drainage_exchange_params(
+            inlet_cell=np.empty(0, dtype=np.int32),
+            inlet_node=np.empty(0, dtype=np.int32),
+            inlet_crest=np.empty(0, dtype=np.float64),
+            inlet_width=np.empty(0, dtype=np.float64),
+            inlet_cd=np.empty(0, dtype=np.float64),
+            inlet_qmax=np.empty(0, dtype=np.float64),
+            inlet_type=np.empty(0, dtype=np.int32),
+            inlet_grate_len=np.empty(0, dtype=np.float64),
+            inlet_grate_wid=np.empty(0, dtype=np.float64),
+            inlet_grate_kind=np.empty(0, dtype=np.int32),
+            inlet_grate_open=np.empty(0, dtype=np.float64),
+            inlet_curb_len=np.empty(0, dtype=np.float64),
+            inlet_curb_ht=np.empty(0, dtype=np.float64),
+            inlet_curb_throat=np.empty(0, dtype=np.int32),
+            inlet_slot_len=np.empty(0, dtype=np.float64),
+            inlet_slot_wid=np.empty(0, dtype=np.float64),
+            outfall_cell=np.empty(0, dtype=np.int32),
+            outfall_node=np.empty(0, dtype=np.int32),
+            outfall_invert=np.empty(0, dtype=np.float64),
+            outfall_diameter=np.empty(0, dtype=np.float64),
+            outfall_cd=np.empty(0, dtype=np.float64),
+            outfall_qmax=np.empty(0, dtype=np.float64),
+            outfall_zero_storage=np.empty(0, dtype=np.int32),
+            pipe_end_cell=np.array([0], dtype=np.int32),
+            pipe_end_node=np.array([0], dtype=np.int32),
+            pipe_end_invert=np.array([0.0], dtype=np.float64),
+            pipe_end_diameter=np.array([1.0], dtype=np.float64),
+            pipe_end_area=np.array([0.78539816], dtype=np.float64),
+            pipe_end_kin=np.array([0.5], dtype=np.float64),
+            pipe_end_kout=np.array([1.0], dtype=np.float64),
+            node_max_depth=np.array([3.0], dtype=np.float64),
+        )
+
+        # If the upload succeeded, the device-side exchange is loaded.
+        # We can sanity-check by running a coupling step with no surface structures.
+        mod.swe2d_gpu_set_coupling_dt(1.0)
+        mod.swe2d_gpu_compute_coupling_full_on_device(
+            cell_wse=None,
+            n_structures=0,
+            host_structure_flows=None,
+        )
+
+        src = mod.swe2d_gpu_readback_coupling_sources(self.N_CELLS)
+        self.assertIsNotNone(src)
+        self.assertEqual(src.shape, (self.N_CELLS,))
+
+
+@unittest.skipIf(_MOD is None, "hydra_swe2d not built")
+@unittest.skipUnless(hasattr(_MOD, "swe2d_gpu_upload_drainage_exchange_params"),
+                     "drainage exchange CUDA functions not compiled")
+@unittest.skipUnless(hasattr(_MOD, "swe2d_gpu_apply_pipe_end_bc"),
+                     "pipe-end BC function not compiled")
+@unittest.skipUnless(hasattr(_MOD, "swe2d_gpu_available")
+                     and _MOD.swe2d_gpu_available(),
+                     "CUDA GPU not available")
+class TestPipeEndExchange(unittest.TestCase):
+    """Regression: pipe-end exchange must move water between surface cells."""
+
+    N_CELLS = 2
+    CELL_AREA = 25.0
+
+    @classmethod
+    def setUpClass(cls):
+        cls.mod = _MOD
+        cls.mesh = _make_2cell_mesh(_MOD)
+        h0 = np.array([0.0, 0.0], dtype=np.float64)
+        cls.solver = None
+        try:
+            cls.solver = _make_solver(_MOD, cls.mesh, h0)
+        except Exception:
+            raise unittest.SkipTest("Failed to create GPU solver")
+
+    @classmethod
+    def tearDownClass(cls):
+        if cls.solver is not None:
+            try:
+                cls.mod.swe2d_destroy(cls.solver)
+            except Exception:
+                pass
+            cls.solver = None
+
+    def setUp(self):
+        mod = self.mod
+        if not mod.swe2d_step(self.solver, 0.1).get("gpu_active", False):
+            self.skipTest("solver step did not activate GPU")
+
+        self._dev_ptr = mod.swe2d_get_coupling_dev_ptr()
+
+        mod.swe2d_gpu_preload_coupling_cell_area(
+            np.full(self.N_CELLS, self.CELL_AREA, dtype=np.float64))
+
+        # Two-node, one-link pipe.  Node 0 connects to surface cell 0,
+        # node 1 connects to surface cell 1.
+        mod.swe2d_build_pipe1d_mesh(
+            n_links=1,
+            link_from_node=np.array([0], dtype=np.int32),
+            link_to_node=np.array([1], dtype=np.int32),
+            link_length=np.array([100.0], dtype=np.float64),
+            link_diameter=np.array([1.0], dtype=np.float64),
+            link_roughness_n=np.array([0.013], dtype=np.float64),
+            link_inlet_loss_k=np.array([0.0], dtype=np.float64),
+            link_outlet_loss_k=np.array([0.0], dtype=np.float64),
+            node_invert_elev=np.array([0.0, 0.0], dtype=np.float64),
+            node_surface_area=np.array([10.0, 10.0], dtype=np.float64),
+            node_max_depth=np.array([3.0, 3.0], dtype=np.float64),
+            link_invert_in=np.array([0.0], dtype=np.float64),
+            link_invert_out=np.array([0.0], dtype=np.float64),
+            max_cell_length=10,
+            dev_ptr=int(self._dev_ptr),
+        )
+        mod.swe2d_pipe1d_upload_node_depth(int(self._dev_ptr),
+                                           np.zeros(2, dtype=np.float64))
+        mod.swe2d_pipe1d_init_area_from_depth(int(self._dev_ptr))
+        mod.swe2d_gpu_ensure_drainage_q_buf(self.N_CELLS)
+
+        mod.swe2d_gpu_upload_drainage_exchange_params(
+            inlet_cell=np.empty(0, dtype=np.int32),
+            inlet_node=np.empty(0, dtype=np.int32),
+            inlet_crest=np.empty(0, dtype=np.float64),
+            inlet_width=np.empty(0, dtype=np.float64),
+            inlet_cd=np.empty(0, dtype=np.float64),
+            inlet_qmax=np.empty(0, dtype=np.float64),
+            inlet_type=np.empty(0, dtype=np.int32),
+            inlet_grate_len=np.empty(0, dtype=np.float64),
+            inlet_grate_wid=np.empty(0, dtype=np.float64),
+            inlet_grate_kind=np.empty(0, dtype=np.int32),
+            inlet_grate_open=np.empty(0, dtype=np.float64),
+            inlet_curb_len=np.empty(0, dtype=np.float64),
+            inlet_curb_ht=np.empty(0, dtype=np.float64),
+            inlet_curb_throat=np.empty(0, dtype=np.int32),
+            inlet_slot_len=np.empty(0, dtype=np.float64),
+            inlet_slot_wid=np.empty(0, dtype=np.float64),
+            outfall_cell=np.empty(0, dtype=np.int32),
+            outfall_node=np.empty(0, dtype=np.int32),
+            outfall_invert=np.empty(0, dtype=np.float64),
+            outfall_diameter=np.empty(0, dtype=np.float64),
+            outfall_cd=np.empty(0, dtype=np.float64),
+            outfall_qmax=np.empty(0, dtype=np.float64),
+            outfall_zero_storage=np.empty(0, dtype=np.int32),
+            pipe_end_cell=np.array([0, 1], dtype=np.int32),
+            pipe_end_node=np.array([0, 1], dtype=np.int32),
+            pipe_end_invert=np.array([0.0, 0.0], dtype=np.float64),
+            pipe_end_diameter=np.array([1.0, 1.0], dtype=np.float64),
+            pipe_end_area=np.array([0.78539816, 0.78539816], dtype=np.float64),
+            pipe_end_kin=np.array([0.5, 0.5], dtype=np.float64),
+            pipe_end_kout=np.array([1.0, 1.0], dtype=np.float64),
+            node_max_depth=np.array([3.0, 3.0], dtype=np.float64),
+        )
+
+    def tearDown(self):
+        mod = self.mod
+        h = np.full(self.N_CELLS, 0.0, dtype=np.float64)
+        hu = np.zeros(self.N_CELLS, dtype=np.float64)
+        hv = np.zeros(self.N_CELLS, dtype=np.float64)
+        mod.swe2d_set_state(self.solver, h, hu, hv)
+
+    def test_pipe_end_moves_water_downhill(self):
+        """High WSE in cell 0 drives flow through pipe to cell 1."""
+        mod = self.mod
+
+        # Cell 0 has 2.0 m of water, cell 1 has 0.5 m.
+        mod.swe2d_set_state(
+            self.solver,
+            np.array([2.0, 0.5], dtype=np.float64),
+            np.zeros(self.N_CELLS, dtype=np.float64),
+            np.zeros(self.N_CELLS, dtype=np.float64),
+        )
+
+        mod.swe2d_gpu_apply_pipe_end_bc(self.N_CELLS)
+        mod.swe2d_gpu_set_coupling_dt(1.0)
+        mod.swe2d_pipe1d_step(
+            int(self._dev_ptr),
+            1.0,
+            "diffusion_wave",
+            1,
+            2,
+            0.5,
+            9.81,
+        )
+        mod.swe2d_gpu_compute_coupling_full_on_device(
+            cell_wse=None,
+            n_structures=0,
+            host_structure_flows=None,
+        )
+
+        src = mod.swe2d_gpu_readback_coupling_sources(self.N_CELLS)
+        self.assertIsNotNone(src)
+        self.assertEqual(src.shape, (self.N_CELLS,))
+
+        # q_cell is added to the 2D cell as a source term.  Water leaving
+        # cell 0 is negative; water entering cell 1 is positive.
+        self.assertLess(float(src[0]), 0.0,
+                        f"Expected cell 0 to lose water, got {src[0]:.6f}")
+        self.assertGreater(float(src[1]), 0.0,
+                           f"Expected cell 1 to gain water, got {src[1]:.6f}")
+
+        # Mass check: the two exchange terms should approximately cancel.
+        total = float(src[0]) + float(src[1])
+        self.assertAlmostEqual(total, 0.0, delta=1e-3,
+                               msg=f"Pipe-end exchange should conserve mass, got {total:.6f}")
+
 
 if __name__ == "__main__":
     unittest.main()
