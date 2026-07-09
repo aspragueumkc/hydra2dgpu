@@ -690,11 +690,12 @@ class MeshController:
                 _group_cache[_sg_name] = g
 
             for name, lyr in layers.items():
+                QgsProject.instance().addMapLayer(lyr, False)
                 _sg = _subgroups.get(name)
                 if _sg is not None:
                     _group_cache[_sg].addLayer(lyr)
                 else:
-                    QgsProject.instance().addMapLayer(lyr)
+                    _root.addLayer(lyr)
                 _apply_style(lyr, gpkg_path)
                 # Wire form init for layers with ID-based dropdowns
                 _fn = {
