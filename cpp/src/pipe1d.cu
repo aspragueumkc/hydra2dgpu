@@ -422,6 +422,7 @@ void swe2d_build_pipe1d_mesh(
     alloc_d(reinterpret_cast<void**>(&dev->d_node_depth), static_cast<size_t>(n_nodes) * sizeof(double));
     alloc_d(reinterpret_cast<void**>(&dev->d_node_net_q), static_cast<size_t>(n_nodes) * sizeof(double));
     alloc_d(reinterpret_cast<void**>(&dev->d_node_surface_area), static_cast<size_t>(n_nodes) * sizeof(double));
+    alloc_d(reinterpret_cast<void**>(&dev->d_node_max_depth), static_cast<size_t>(n_nodes) * sizeof(double));
     alloc_d(reinterpret_cast<void**>(&dev->d_A), static_cast<size_t>(total_pipe_cells) * sizeof(double));
     alloc_d(reinterpret_cast<void**>(&dev->d_Q), static_cast<size_t>(total_pipe_cells) * sizeof(double));
     alloc_d(reinterpret_cast<void**>(&dev->d_A_prev), static_cast<size_t>(total_pipe_cells) * sizeof(double));
@@ -455,6 +456,7 @@ void swe2d_build_pipe1d_mesh(
 
     // Upload node surface areas (used by mass-balance kernel)
     copy_h2d_d(dev->d_node_surface_area, node_surface_area, static_cast<size_t>(n_nodes));
+    copy_h2d_d(dev->d_node_max_depth, node_max_depth, static_cast<size_t>(n_nodes));
 
     // Initialize node depth to zero (caller uploads actual depths before each step)
     CUDA_CHECK(cudaMemset(dev->d_node_depth, 0, static_cast<size_t>(n_nodes) * sizeof(double)));
@@ -503,11 +505,14 @@ __global__ __launch_bounds__(256, 1) void swe2d_pipe1d_flux_kernel(
     const double*  __restrict__ cell_Q,
     const double*  __restrict__ node_invert,
     const double*  __restrict__ node_depth,
+    const double*  __restrict__ node_max_depth,
     const double*  __restrict__ cell_length,
+    const double*  __restrict__ cell_height,
     double*                     flux_Q_out,
     double                      g,
     const double*  __restrict__ cell_tables,
-    int32_t                     table_N)
+    int32_t                     table_N,
+    int32_t                     volume_decomposition)
 {
     int32_t c = blockIdx.x * blockDim.x + threadIdx.x;
     if (c >= n_cells) return;
@@ -516,16 +521,29 @@ __global__ __launch_bounds__(256, 1) void swe2d_pipe1d_flux_kernel(
     const int32_t start = owned_offsets[c];
     const int32_t end   = owned_offsets[c + 1];
 
+    double P_c, T_c;
+    pipe1d_lookup_geometry(cell_A[c], cell_area_full[c], cell_perim[c],
+        cell_tables + static_cast<int64_t>(c) * 2 * table_N, table_N, P_c, T_c);
+    const double A_c = cell_A[c];
+    double H_c = cell_invert[c] + A_c / fmax(1e-10, T_c);
+
+    if (volume_decomposition && cell_height) {
+        const int32_t fn = cell_from_node[c];
+        const int32_t tn = cell_to_node[c];
+        if (fn >= 0 && tn >= 0) {
+            const double cell_crown = cell_invert[c] + cell_height[c];
+            const double H_fn = node_invert[fn] + node_depth[fn];
+            const double H_tn = node_invert[tn] + node_depth[tn];
+            if (H_fn >= cell_crown - 1e-8 && H_tn >= cell_crown - 1e-8) {
+                H_c = 0.5 * (H_fn + H_tn);
+            }
+        }
+    }
+
     for (int32_t idx = start; idx < end; ++idx) {
         const int32_t k = owned_ids[idx];
         const double  dir = interface_dir[k];
         const int32_t nbr = neighbor_cell[k];
-
-        // Head at this cell center using table-lookup top width
-        double P_c, T_c;
-        pipe1d_lookup_geometry(cell_A[c], cell_area_full[c], cell_perim[c],
-            cell_tables + static_cast<int64_t>(c) * 2 * table_N, table_N, P_c, T_c);
-        const double H_c = cell_invert[c] + cell_A[c] / fmax(1e-10, T_c);
 
         double H_n, A_n, Q_n;
         if (nbr >= 0) {
@@ -587,6 +605,10 @@ __global__ __launch_bounds__(256, 1) void swe2d_pipe1d_diffusion_wave_kernel(
     const double*  __restrict__ cell_perim,
     const double*  __restrict__ cell_n,
     const double*  __restrict__ cell_k_loss,
+    const int32_t* __restrict__ cell_from_node,
+    const int32_t* __restrict__ cell_to_node,
+    const double*  __restrict__ node_invert,
+    const double*  __restrict__ node_depth,
     const double*  __restrict__ cell_A,
     const double*  __restrict__ cell_Q,
     const double*  __restrict__ flux_Q,
@@ -609,6 +631,17 @@ __global__ __launch_bounds__(256, 1) void swe2d_pipe1d_diffusion_wave_kernel(
     const double k_loss = cell_k_loss[i];
     const double absQ = fabs(Q);
 
+    // Head gradient across the cell: diffusion wave is driven by the balance
+    // between the pressure gradient and friction/minor losses.  Without this
+    // term the solver cannot self-start from Q = 0 because friction is zero
+    // when Q is zero.
+    const int32_t fn = cell_from_node[i];
+    const int32_t tn = cell_to_node[i];
+    const double H_from = (fn >= 0) ? node_invert[fn] + node_depth[fn] : 0.0;
+    const double H_to   = (tn >= 0) ? node_invert[tn] + node_depth[tn] : 0.0;
+    const double dHdx = (H_to - H_from) / fmax(1e-6, L);
+    const double pressure_grad = -g * A * dHdx;
+
     // Wetted perimeter and top width from geometry table
     double P_c, T_c;
     pipe1d_lookup_geometry(A, A_full, P_full,
@@ -623,7 +656,7 @@ __global__ __launch_bounds__(256, 1) void swe2d_pipe1d_diffusion_wave_kernel(
     // Minor loss source (HEC-22 entrance/exit at boundary cells only; k=0 for interior cells)
     const double source_minor = -g * k_loss * absQ * Q / (2.0 * A * A * L + 1e-12);
 
-    const double S_Q = source_fric + source_minor;
+    const double S_Q = pressure_grad + source_fric + source_minor;
     double Q_new = Q + dt * S_Q;
 
     // Clamp Q to reasonable bounds
@@ -753,18 +786,22 @@ void swe2d_pipe1d_flux_kernel_host(
     const double*         cell_Q,
     const double*         node_invert,
     const double*         node_depth,
+    const double*         node_max_depth,
     const double*         cell_length,
+    const double*         cell_height,
     double*               flux_Q_out,
     double                g,
     const double*         cell_tables,
-    int32_t               table_N)
+    int32_t               table_N,
+    int32_t               volume_decomposition)
 {
     const int32_t n_blocks = (n_cells + BLOCK - 1) / BLOCK;
     swe2d_pipe1d_flux_kernel<<<n_blocks, BLOCK>>>(
         n_cells, owned_offsets, owned_ids, neighbor_cell, interface_dir,
         cell_from_node, cell_to_node, cell_invert, cell_perim,
-        cell_area_full, cell_A, cell_Q, node_invert, node_depth, cell_length,
-        flux_Q_out, g, cell_tables, table_N);
+        cell_area_full, cell_A, cell_Q, node_invert, node_depth,
+        node_max_depth, cell_length, cell_height,
+        flux_Q_out, g, cell_tables, table_N, volume_decomposition);
     CUDA_CHECK(cudaGetLastError());
 }
 
@@ -775,6 +812,10 @@ void swe2d_pipe1d_diffusion_wave_kernel_host(
     const double*         cell_perim,
     const double*         cell_n,
     const double*         cell_k_loss,
+    const int32_t*        cell_from_node,
+    const int32_t*        cell_to_node,
+    const double*         node_invert,
+    const double*         node_depth,
     const double*         cell_A,
     const double*         cell_Q,
     const double*         flux_Q,
@@ -788,6 +829,7 @@ void swe2d_pipe1d_diffusion_wave_kernel_host(
     const int32_t n_blocks = (n_cells + BLOCK - 1) / BLOCK;
     swe2d_pipe1d_diffusion_wave_kernel<<<n_blocks, BLOCK>>>(
         n_cells, cell_length, cell_area_full, cell_perim, cell_n, cell_k_loss,
+        cell_from_node, cell_to_node, node_invert, node_depth,
         cell_A, cell_Q, flux_Q, dt, g, cell_A_new, cell_Q_new,
         cell_tables, table_N);
     CUDA_CHECK(cudaGetLastError());
@@ -1058,9 +1100,11 @@ void swe2d_pipe1d_step(
             p.d_cell_area,
             p.d_A, p.d_Q,
             p.d_node_invert, p.d_node_depth,
-            p.d_cell_length,
+            p.d_node_max_depth,
+            p.d_cell_length, p.d_cell_height,
             d_flux_Q, g,
-            d_cell_tables, table_N);
+            d_cell_tables, table_N,
+            1);
 
         if (std::strcmp(solver_mode, "fully_dynamic") == 0) {
             swe2d_pipe1d_fully_dynamic_kernel_host(
@@ -1084,6 +1128,8 @@ void swe2d_pipe1d_step(
                 p.d_cell_length, p.d_cell_area,
                 p.d_cell_perim, p.d_cell_n,
                 p.d_cell_link_k,
+                p.d_cell_from_node, p.d_cell_to_node,
+                p.d_node_invert, p.d_node_depth,
                 p.d_A, p.d_Q, d_flux_Q,
                 local_dt, g,
                 d_A_new, d_Q_new,
@@ -1180,9 +1226,11 @@ __global__ __launch_bounds__(256, 4) void swe2d_drainage_pipe_end_bc_kernel(
 
 /// GPU kernel: exchange flow between pipe end and 2D surface cell.
 /**
- * 1 thread per pipe end.  Computes net Q from node depth change,
- * applies surface availability limiter, and writes reconciled
- * node depth.
+ * 1 thread per pipe end.  Uses the net node discharge computed by the pipe
+ * solver's mass balance (node_net_q) as the exchange flux.  Positive
+ * node_net_q means flow is entering the node (pipe -> surface), so the
+ * surface cell gains water; negative node_net_q means flow is leaving the
+ * node (surface -> pipe), so the cell loses water.
  *
  * @global
  */
@@ -1191,17 +1239,16 @@ __global__ __launch_bounds__(256, 4) void swe2d_drainage_pipe_end_exchange_kerne
     int32_t n_cells,
     const int32_t* __restrict__ pipe_end_cell,
     const int32_t* __restrict__ pipe_end_node,
-    const double* __restrict__ pipe_end_depth_bc,
     const double* __restrict__ pipe_end_node_area,
     const double* __restrict__ cell_area,
     const double* __restrict__ cell_depth,
-    const double* __restrict__ node_max_depth,
+    const double* __restrict__ node_net_q,
     double dt_s,
-    const double* __restrict__ node_depth,
     double* __restrict__ q_cell,
-    double* __restrict__ node_depth_write,
     double* __restrict__ limiter_event_count,
-    double* __restrict__ limiter_volume_m3)
+    double* __restrict__ limiter_volume_m3,
+    const int32_t* __restrict__ pipe_end_enable_overflow,
+    const double*  __restrict__ pipe_end_max_overflow_rate)
 {
     const int32_t i = blockIdx.x * blockDim.x + threadIdx.x;
     if (i >= n_pipe_ends) return;
@@ -1209,31 +1256,98 @@ __global__ __launch_bounds__(256, 4) void swe2d_drainage_pipe_end_exchange_kerne
     const int32_t n = pipe_end_node[i];
     if (c < 0 || c >= n_cells || n < 0) return;
 
-    const double d_bc = fmax(0.0, pipe_end_depth_bc[i]);
-    const double area_node = fmax(1.0, pipe_end_node_area[i]);
-    const double d_after = fmax(0.0, node_depth[n]);
-    const double delta_vol = (d_after - d_bc) * area_node;
-    double q_net = (dt_s > 0.0) ? (delta_vol / dt_s) : 0.0;
+    double q_net = node_net_q ? node_net_q[n] : 0.0;
 
     if (q_net > 0.0) {
-        atomicAdd(&q_cell[c], q_net);
-        return;
-    }
-    if (q_net >= 0.0) return;
-
-    // Surface -> network sink, apply availability limiter.
-    double q_in = -q_net;
-    if (cell_depth && cell_area) {
-        const double avail_surface_vol = fmax(0.0, cell_depth[c]) * fmax(0.0, cell_area[c]);
-        const double q_cap_surface = (dt_s > 0.0) ? (avail_surface_vol / dt_s) : 0.0;
-        if (q_in > q_cap_surface) {
+        const int32_t overflow_enabled = pipe_end_enable_overflow ? pipe_end_enable_overflow[i] : 1;
+        if (!overflow_enabled) {
             if (limiter_event_count) atomicAdd(limiter_event_count, 1.0);
-            if (limiter_volume_m3) atomicAdd(limiter_volume_m3, fmax(0.0, q_in - q_cap_surface) * dt_s);
-            q_in = q_cap_surface;
+            if (limiter_volume_m3) atomicAdd(limiter_volume_m3, q_net * dt_s);
+            return;
         }
+        if (pipe_end_max_overflow_rate && pipe_end_max_overflow_rate[i] > 0.0
+            && q_net > pipe_end_max_overflow_rate[i]) {
+            if (limiter_event_count) atomicAdd(limiter_event_count, 1.0);
+            if (limiter_volume_m3)
+                atomicAdd(limiter_volume_m3, (q_net - pipe_end_max_overflow_rate[i]) * dt_s);
+            q_net = pipe_end_max_overflow_rate[i];
+        }
+        if (cell_depth && cell_area) {
+            const double avail_surface_vol = fmax(0.0, cell_depth[c]) * fmax(0.0, cell_area[c]);
+            const double q_cap_surface = (dt_s > 0.0) ? (avail_surface_vol / dt_s) : 0.0;
+            if (q_net > q_cap_surface) {
+                if (limiter_event_count) atomicAdd(limiter_event_count, 1.0);
+                if (limiter_volume_m3) atomicAdd(limiter_volume_m3, fmax(0.0, q_net - q_cap_surface) * dt_s);
+                q_net = q_cap_surface;
+            }
+        }
+        atomicAdd(&q_cell[c], q_net);
+    } else if (q_net < 0.0) {
+        // Surface -> pipe.  Limit by available surface water.
+        double q_in = -q_net;
+        if (cell_depth && cell_area) {
+            const double avail_surface_vol = fmax(0.0, cell_depth[c]) * fmax(0.0, cell_area[c]);
+            const double q_cap_surface = (dt_s > 0.0) ? (avail_surface_vol / dt_s) : 0.0;
+            if (q_in > q_cap_surface) {
+                if (limiter_event_count) atomicAdd(limiter_event_count, 1.0);
+                if (limiter_volume_m3) atomicAdd(limiter_volume_m3, fmax(0.0, q_in - q_cap_surface) * dt_s);
+                q_in = q_cap_surface;
+            }
+        }
+        atomicAdd(&q_cell[c], -q_in);
     }
-    atomicAdd(&q_cell[c], -q_in);
+}
 
-    const double d_reconciled = d_bc + q_in * dt_s / area_node;
-    node_depth_write[n] = fmax(0.0, fmin(node_max_depth[n], d_reconciled));
+// ── Host wrappers for pipe-end exchange kernels ──────────────────────────
+
+void swe2d_drainage_pipe_end_bc_kernel_host(
+    int32_t n_pipe_ends, int32_t n_cells,
+    const int32_t* pipe_end_cell, const int32_t* pipe_end_node,
+    const double* pipe_end_invert, const double* pipe_end_diameter,
+    const double* pipe_end_area,
+    const double* pipe_end_kin, const double* pipe_end_kout,
+    const double* cell_wse, const double* node_invert,
+    const double* node_surface_area, const double* node_qleave,
+    double gravity,
+    double* node_depth, double* pipe_end_depth_bc, double* pipe_end_node_area)
+{
+    if (n_pipe_ends <= 0) return;
+    const int PE_BLOCK = 256;
+    int grid = (n_pipe_ends + PE_BLOCK - 1) / PE_BLOCK;
+    swe2d_drainage_pipe_end_bc_kernel<<<grid, PE_BLOCK>>>(
+        n_pipe_ends, n_cells,
+        pipe_end_cell, pipe_end_node, pipe_end_invert,
+        pipe_end_diameter, pipe_end_area,
+        pipe_end_kin, pipe_end_kout,
+        cell_wse, node_invert, node_surface_area, node_qleave,
+        gravity, node_depth, pipe_end_depth_bc, pipe_end_node_area);
+    CUDA_CHECK(cudaGetLastError());
+}
+
+void swe2d_drainage_pipe_end_exchange_kernel_host(
+    int32_t n_pipe_ends, int32_t n_cells,
+    const int32_t* pipe_end_cell, const int32_t* pipe_end_node,
+    const double* pipe_end_node_area,
+    const double* cell_area, const double* cell_depth,
+    const double* node_net_q,
+    double dt_s,
+    double* q_cell,
+    double* limiter_event_count, double* limiter_volume_m3,
+    const int32_t* pipe_end_enable_overflow,
+    const double*  pipe_end_max_overflow_rate)
+{
+    if (n_pipe_ends <= 0) return;
+    const int PE_BLOCK = 256;
+    int grid = (n_pipe_ends + PE_BLOCK - 1) / PE_BLOCK;
+    swe2d_drainage_pipe_end_exchange_kernel<<<grid, PE_BLOCK>>>(
+        n_pipe_ends, n_cells,
+        pipe_end_cell, pipe_end_node,
+        pipe_end_node_area,
+        cell_area, cell_depth,
+        node_net_q, dt_s,
+        q_cell,
+        limiter_event_count, limiter_volume_m3,
+        pipe_end_enable_overflow,
+        pipe_end_max_overflow_rate);
+    CUDA_CHECK(cudaGetLastError());
 }

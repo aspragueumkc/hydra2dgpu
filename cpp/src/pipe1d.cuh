@@ -35,6 +35,7 @@ struct Pipe1DDeviceState {
     double*   d_node_depth;     // [n_nodes]
     double*   d_node_net_q;     // [n_nodes]
     double*   d_node_surface_area; // [n_nodes]
+    double*   d_node_max_depth;    // [n_nodes] crown elevation
 
     double*   d_A;              // [n_pipe_cells]
     double*   d_Q;              // [n_pipe_cells]
@@ -55,6 +56,7 @@ struct Pipe1DDeviceState {
         _P_FREE(d_cell_n); _P_FREE(d_cell_link_k); _P_FREE(d_cell_link_area);
         _P_FREE(d_cell_shape_type); _P_FREE(d_cell_width); _P_FREE(d_cell_height); _P_FREE(d_cell_tables);
         _P_FREE(d_node_invert); _P_FREE(d_node_depth); _P_FREE(d_node_net_q); _P_FREE(d_node_surface_area);
+        _P_FREE(d_node_max_depth);
         _P_FREE(d_A); _P_FREE(d_Q); _P_FREE(d_A_prev); _P_FREE(d_Q_iter);
         n_pipe_cells = 0; n_nodes = 0;
         #undef _P_FREE
@@ -139,9 +141,14 @@ void swe2d_pipe1d_flux_kernel_host(
     const double*         cell_Q,
     const double*         node_invert,
     const double*         node_depth,
+    const double*         node_max_depth,
     const double*         cell_length,
+    const double*         cell_height,
     double*               flux_Q_out,
-    double                g);
+    double                g,
+    const double*         cell_tables,
+    int32_t               table_N,
+    int32_t               volume_decomposition);
 
 /** GPU kernel: explicit diffusion-wave update for 1D pipe network.
     @param n_cells Number of pipe cells
@@ -149,6 +156,11 @@ void swe2d_pipe1d_flux_kernel_host(
     @param cell_area_full Full pipe cross-section area [n_cells]
     @param cell_perim Pipe perimeter [n_cells]
     @param cell_n Manning's n [n_cells]
+    @param cell_k_loss Minor loss K at boundary cells [n_cells] (0 interior)
+    @param cell_from_node From-node index per cell [n_cells]
+    @param cell_to_node To-node index per cell [n_cells]
+    @param node_invert Node invert elevation [n_nodes]
+    @param node_depth Node water depth [n_nodes]
     @param cell_A Current area [n_cells]
     @param cell_Q Current discharge [n_cells]
     @param flux_Q Net flux OUT of cell [n_cells]
@@ -156,6 +168,8 @@ void swe2d_pipe1d_flux_kernel_host(
     @param g Gravitational acceleration
     @param cell_A_new Updated area [n_cells]
     @param cell_Q_new Updated discharge [n_cells]
+    @param cell_tables Geometry lookup tables [n_cells * 2 * table_N]
+    @param table_N Number of entries per table
     @host */
 void swe2d_pipe1d_diffusion_wave_kernel_host(
     int32_t               n_cells,
@@ -164,13 +178,19 @@ void swe2d_pipe1d_diffusion_wave_kernel_host(
     const double*         cell_perim,
     const double*         cell_n,
     const double*         cell_k_loss,
+    const int32_t*        cell_from_node,
+    const int32_t*        cell_to_node,
+    const double*         node_invert,
+    const double*         node_depth,
     const double*         cell_A,
     const double*         cell_Q,
     const double*         flux_Q,
     double                dt,
     double                g,
     double*               cell_A_new,
-    double*               cell_Q_new);
+    double*               cell_Q_new,
+    const double*         cell_tables,
+    int32_t               table_N);
 
 /** GPU kernel: semi-implicit fully-dynamic update for 1D pipe network.
     @param n_cells Number of pipe cells
@@ -267,3 +287,32 @@ void swe2d_pipe1d_readback_node_state(
     double*           host_cell_Q,
     int32_t           n_nodes,
     int32_t           n_cells);
+
+/** Host wrapper: pipe-end boundary condition kernel.
+    Sets node depth from surface WSE using pipe exit loss coefficient.
+    @host */
+void swe2d_drainage_pipe_end_bc_kernel_host(
+    int32_t n_pipe_ends, int32_t n_cells,
+    const int32_t* pipe_end_cell, const int32_t* pipe_end_node,
+    const double* pipe_end_invert, const double* pipe_end_diameter,
+    const double* pipe_end_area,
+    const double* pipe_end_kin, const double* pipe_end_kout,
+    const double* cell_wse, const double* node_invert,
+    const double* node_surface_area, const double* node_qleave,
+    double gravity,
+    double* node_depth, double* pipe_end_depth_bc, double* pipe_end_node_area);
+
+/** Host wrapper: pipe-end exchange kernel.
+    Applies net node discharge from pipe solver as surface cell source/sink.
+    @host */
+void swe2d_drainage_pipe_end_exchange_kernel_host(
+    int32_t n_pipe_ends, int32_t n_cells,
+    const int32_t* pipe_end_cell, const int32_t* pipe_end_node,
+    const double* pipe_end_node_area,
+    const double* cell_area, const double* cell_depth,
+    const double* node_net_q,
+    double dt_s,
+    double* q_cell,
+    double* limiter_event_count, double* limiter_volume_m3,
+    const int32_t* pipe_end_enable_overflow,
+    const double*  pipe_end_max_overflow_rate);

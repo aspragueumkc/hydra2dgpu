@@ -204,6 +204,9 @@ LAYER_SCHEMAS: dict[str, dict] = {
             ("surface_area", _DBL),
             ("outfall_area", _DBL),
             ("zero_storage", _INT),
+            ("enable_overflow", _INT),
+            ("overflow_elevation", _DBL),
+            ("max_overflow_rate", _DBL),
         ],
     },
     "swe2d_drainage_links": {

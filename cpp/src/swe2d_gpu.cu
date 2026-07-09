@@ -10,6 +10,7 @@
 
 
 #include "swe2d_gpu.cuh"
+#include "pipe1d.cuh"
 #include "swe2d_units.cuh"
 
 #include <cuda_runtime.h>
@@ -4346,7 +4347,7 @@ __global__ void swe2d_drainage_node_update_kernel(
     const double area = fmax(1.0, node_surface_area[i]);
     const double d0 = fmax(0.0, node_depth_in[i]);
     double d1 = d0 + dt_s * node_net_q[i] / area;
-    d1 = fmax(0.0, fmin(node_max_depth[i], d1));
+    d1 = fmax(0.0, d1);
     node_depth_out[i] = d1;
 }
 
@@ -4719,7 +4720,7 @@ __global__ void swe2d_drainage_apply_delta_kernel(
     const int32_t i = blockIdx.x * blockDim.x + threadIdx.x;
     if (i >= n_nodes) return;
     double d = node_depth[i] + node_depth_delta[i];
-    d = fmax(0.0, fmin(node_max_depth[i], d));
+    d = fmax(0.0, d);
     node_depth[i] = d;
 }
 
@@ -7536,6 +7537,68 @@ __global__ void swe2d_coupling_wse_from_state_kernel(
     d_cell_wse[c] = h + zb;
 }
 
+// ── Pipe-end boundary-condition application (must run before pipe1d_step) ─
+void swe2d_gpu_apply_pipe_end_bc(SWE2DDeviceState* dev, int32_t n_cells)
+{
+    if (!dev) dev = s_coupling_dev;
+    if (!dev) return;
+    if (n_cells <= 0) n_cells = dev->n_cells;
+    if (n_cells <= 0) return;
+
+    auto& sf_ws = dev->sf_ws;
+    auto& dw = dev->drain_ws;
+    auto& p = dev->pipe1d;
+    cudaStream_t stream = dev->d_stream;
+    constexpr int BLOCK = 256;
+
+    if (dw.n_pipe_ends <= 0 || !dw.d_p_cell || !dw.d_p_node
+        || !dw.d_p_invert || !dw.d_p_depth_bc || !dw.d_p_node_area) {
+        return;
+    }
+
+    // Ensure node_qleave is zeroed; the BC kernel uses it to choose the loss
+    // coefficient direction and falls back to WSE vs node head when it is ~0.
+    if (dw.d_node_qleave && p.n_nodes > 0) {
+        CUDA_CHECK(cudaMemsetAsync(dw.d_node_qleave, 0,
+            static_cast<size_t>(p.n_nodes) * sizeof(double), stream));
+    }
+
+    // Ensure d_cell_wse is allocated before the BC kernel runs.
+    // The preload function (swe2d_gpu_preload_coupling_cell_area) normally
+    // allocates this, but may not have been called yet on the first timestep
+    // in a drainage-only simulation (no structures).  Lazily allocate here
+    // to avoid a NULL-pointer crash in the BC kernel.
+    sf_ensure_buf(sf_ws.d_cell_wse, sf_ws.cell_capacity, n_cells);
+
+    // Compute surface WSE from current 2D state.
+    if (dev->d_h && dev->d_cell_zb) {
+        int grid_wse = (n_cells + BLOCK - 1) / BLOCK;
+        swe2d_coupling_wse_from_state_kernel<<<grid_wse, BLOCK, 0, stream>>>(
+            n_cells, dev->d_h, dev->d_cell_zb, sf_ws.d_cell_wse);
+        CUDA_CHECK(cudaGetLastError());
+    } else {
+        // No 2D state yet — zero WSE so pipe sees no surface water.
+        CUDA_CHECK(cudaMemsetAsync(sf_ws.d_cell_wse, 0,
+            static_cast<size_t>(n_cells) * sizeof(double), stream));
+    }
+
+    swe2d_drainage_pipe_end_bc_kernel_host(
+        dw.n_pipe_ends, n_cells,
+        dw.d_p_cell, dw.d_p_node, dw.d_p_invert,
+        dw.d_p_diameter, dw.d_p_area,
+        dw.d_p_kin, dw.d_p_kout,
+        sf_ws.d_cell_wse, p.d_node_invert, p.d_node_surface_area,
+        dw.d_node_qleave,
+        sf_ws.gravity,
+        p.d_node_depth, dw.d_p_depth_bc, dw.d_p_node_area);
+
+    // Re-initialize pipe cell areas from the boundary node depths so the
+    // pipe solver sees a consistent initial state (area and head match).
+    if (p.d_A && p.d_node_depth) {
+        swe2d_pipe1d_init_area_from_depth(&p);
+    }
+}
+
 void swe2d_gpu_compute_coupling_full_on_device(
     SWE2DDeviceState* dev, int32_t n_cells, int32_t n_structures, const double* cell_wse_host,
     const double* host_structure_flows,
@@ -7798,6 +7861,26 @@ void swe2d_gpu_compute_coupling_full_on_device(
                 swe2d_drainage_apply_delta_kernel<<<grid_nodes, BLOCK, 0, stream>>>(
                     p.n_nodes, dw.d_node_maxd, dw.d_node_delta, p.d_node_depth);
                 CUDA_CHECK(cudaGetLastError());
+            }
+            // ── Pipe-end exchange: surface ↔ pipe network via daylight nodes ──
+            // The pipe-end BC (surface WSE → node depth) was already applied
+            // before the pipe solver in swe2d_gpu_apply_pipe_end_bc.  The pipe
+            // solver's mass balance computed p.d_node_net_q, which is the net
+            // discharge entering each node.  Apply it directly to the surface
+            // cell with the surface availability limiter.
+            if (dw.n_pipe_ends > 0 && dw.d_p_cell && dw.d_p_node
+                && dw.d_p_node_area && p.d_node_net_q) {
+                swe2d_drainage_pipe_end_exchange_kernel_host(
+                    dw.n_pipe_ends, n_cells,
+                    dw.d_p_cell, dw.d_p_node,
+                    dw.d_p_node_area,
+                    cpl_ws.d_cell_area, nullptr,
+                    p.d_node_net_q,
+                    s_coupling_dt,
+                    cpl_ws.d_drainage_q,
+                    dw.d_limiter_events, dw.d_limiter_volume,
+                    dw.d_p_enable_overflow,
+                    dw.d_p_max_overflow_rate);
             }
         }
     }
@@ -9036,18 +9119,48 @@ static bool ensure_drainage_step_workspace(
     _DS_ALLOC(ws.d_o_zero_storage, n_outfalls, int32_t);
     #undef _DS_ALLOC
 
-    _DS_ENSURE(ws.d_p_cell,         ws.pipe_end_capacity, n_pipe_ends, int32_t);
-    _DS_ENSURE(ws.d_p_node,         ws.pipe_end_capacity, n_pipe_ends, int32_t);
-    _DS_ENSURE(ws.d_p_invert,       ws.pipe_end_capacity, n_pipe_ends, double);
-    _DS_ENSURE(ws.d_p_diameter,     ws.pipe_end_capacity, n_pipe_ends, double);
-    _DS_ENSURE(ws.d_p_area,         ws.pipe_end_capacity, n_pipe_ends, double);
-    _DS_ENSURE(ws.d_p_kin,          ws.pipe_end_capacity, n_pipe_ends, double);
-    _DS_ENSURE(ws.d_p_kout,         ws.pipe_end_capacity, n_pipe_ends, double);
-    _DS_ENSURE(ws.d_p_depth_bc,     ws.pipe_end_capacity, n_pipe_ends, double);
-    _DS_ENSURE(ws.d_p_node_area,    ws.pipe_end_capacity, n_pipe_ends, double);
+    // Pipe-end arrays: use _DS_ALLOC (unconditional per-array alloc) to avoid the
+    // shared-capacity silent-skip bug that would leave later pointers null.
+    #define _DS_ALLOC(ptr, needed, type) \
+        do { \
+            if (ptr) { cudaFree(ptr); ptr = nullptr; } \
+            if ((needed) > 0) { \
+                CUDA_CHECK(cudaMalloc(reinterpret_cast<void**>(&ptr), \
+                                      static_cast<size_t>(needed) * sizeof(type))); \
+            } \
+        } while(0)
+    _DS_ALLOC(ws.d_p_cell,         n_pipe_ends, int32_t);
+    _DS_ALLOC(ws.d_p_node,         n_pipe_ends, int32_t);
+    _DS_ALLOC(ws.d_p_invert,       n_pipe_ends, double);
+    _DS_ALLOC(ws.d_p_diameter,     n_pipe_ends, double);
+    _DS_ALLOC(ws.d_p_area,         n_pipe_ends, double);
+    _DS_ALLOC(ws.d_p_kin,          n_pipe_ends, double);
+    _DS_ALLOC(ws.d_p_kout,         n_pipe_ends, double);
+    _DS_ALLOC(ws.d_p_enable_overflow,   n_pipe_ends, int32_t);
+    _DS_ALLOC(ws.d_p_overflow_elevation, n_pipe_ends, double);
+    _DS_ALLOC(ws.d_p_max_overflow_rate,  n_pipe_ends, double);
+    if (ws.d_p_enable_overflow)
+        CUDA_CHECK(cudaMemset(ws.d_p_enable_overflow, 1, static_cast<size_t>(n_pipe_ends) * sizeof(int32_t)));
+    if (ws.d_p_overflow_elevation)
+        CUDA_CHECK(cudaMemset(ws.d_p_overflow_elevation, 0, static_cast<size_t>(n_pipe_ends) * sizeof(double)));
+    if (ws.d_p_max_overflow_rate)
+        CUDA_CHECK(cudaMemset(ws.d_p_max_overflow_rate, 0, static_cast<size_t>(n_pipe_ends) * sizeof(double)));
+    _DS_ALLOC(ws.d_p_depth_bc,     n_pipe_ends, double);
+    _DS_ALLOC(ws.d_p_node_area,    n_pipe_ends, double);
+    #undef _DS_ALLOC
 
-    _DS_ENSURE(ws.d_limiter_events, ws.cell_capacity, 1, double);
-    _DS_ENSURE(ws.d_limiter_volume, ws.cell_capacity, 1, double);
+    // Limiter arrays (1 element each): use _DS_ALLOC to avoid shared-capacity skip.
+    #define _DS_ALLOC(ptr, needed, type) \
+        do { \
+            if (ptr) { cudaFree(ptr); ptr = nullptr; } \
+            if ((needed) > 0) { \
+                CUDA_CHECK(cudaMalloc(reinterpret_cast<void**>(&ptr), \
+                                      static_cast<size_t>(needed) * sizeof(type))); \
+            } \
+        } while(0)
+    _DS_ALLOC(ws.d_limiter_events, 1, double);
+    _DS_ALLOC(ws.d_limiter_volume,  1, double);
+    #undef _DS_ALLOC
 
     ws.cell_capacity = n_cells;
     ws.node_capacity = n_nodes;
@@ -9065,7 +9178,7 @@ static bool ensure_drainage_step_workspace(
 // kernels (inlet, outfall, apply_delta) can run during compute_coupling.
 void swe2d_gpu_upload_drainage_exchange_params(
     SWE2DDeviceState* dev,
-    int32_t n_nodes, int32_t n_inlets, int32_t n_outfalls,
+    int32_t n_nodes, int32_t n_inlets, int32_t n_outfalls, int32_t n_pipe_ends,
     const int32_t* inlet_cell, const int32_t* inlet_node,
     const double* inlet_crest, const double* inlet_width,
     const double* inlet_cd, const double* inlet_qmax,
@@ -9079,12 +9192,16 @@ void swe2d_gpu_upload_drainage_exchange_params(
     const double* outfall_invert, const double* outfall_diameter,
     const double* outfall_cd, const double* outfall_qmax,
     const int32_t* outfall_zero_storage,
+    const int32_t* pipe_end_cell, const int32_t* pipe_end_node,
+    const double* pipe_end_invert, const double* pipe_end_diameter,
+    const double* pipe_end_area,
+    const double* pipe_end_kin, const double* pipe_end_kout,
     const double* node_max_depth)
 {
     if (!dev) return;
     auto& ws = dev->drain_ws;
     // Allocate workspace (0 for unused capacities)
-    ensure_drainage_step_workspace(dev->n_cells, n_nodes, 0, n_inlets, n_outfalls, 0);
+    ensure_drainage_step_workspace(dev->n_cells, n_nodes, 0, n_inlets, n_outfalls, n_pipe_ends);
     auto h2d = [](void* dst, const void* src, size_t bytes) {
         CUDA_CHECK(cudaMemcpy(dst, src, bytes, cudaMemcpyHostToDevice));
     };
@@ -9115,12 +9232,22 @@ void swe2d_gpu_upload_drainage_exchange_params(
         h2d(ws.d_o_qmax, outfall_qmax, n_outfalls * sizeof(double));
         h2d(ws.d_o_zero_storage, outfall_zero_storage, n_outfalls * sizeof(int32_t));
     }
+    if (n_pipe_ends > 0 && ws.d_p_cell) {
+        h2d(ws.d_p_cell, pipe_end_cell, n_pipe_ends * sizeof(int32_t));
+        h2d(ws.d_p_node, pipe_end_node, n_pipe_ends * sizeof(int32_t));
+        h2d(ws.d_p_invert, pipe_end_invert, n_pipe_ends * sizeof(double));
+        h2d(ws.d_p_diameter, pipe_end_diameter, n_pipe_ends * sizeof(double));
+        h2d(ws.d_p_area, pipe_end_area, n_pipe_ends * sizeof(double));
+        h2d(ws.d_p_kin, pipe_end_kin, n_pipe_ends * sizeof(double));
+        h2d(ws.d_p_kout, pipe_end_kout, n_pipe_ends * sizeof(double));
+    }
     if (n_nodes > 0 && ws.d_node_maxd) {
         h2d(ws.d_node_maxd, node_max_depth, n_nodes * sizeof(double));
     }
     ws.n_inlets = n_inlets;
     ws.n_outfalls = n_outfalls;
     ws.n_nodes = n_nodes;
+    ws.n_pipe_ends = n_pipe_ends;
     ws.exchange_loaded = true;
 }
 

@@ -128,6 +128,12 @@ class SWE2DDrainageSoA:
     pipe_end_area: np.ndarray
     pipe_end_inlet_loss_k: np.ndarray
     pipe_end_outlet_loss_k: np.ndarray
+    node_enable_overflow: np.ndarray
+    node_overflow_elevation: np.ndarray
+    node_max_overflow_rate: np.ndarray
+    pipe_end_enable_overflow: np.ndarray
+    pipe_end_overflow_elevation: np.ndarray
+    pipe_end_max_overflow_rate: np.ndarray
     link_entrance_loss_k: np.ndarray
     link_exit_loss_k: np.ndarray
     link_invert_in: np.ndarray
@@ -231,6 +237,14 @@ def pack_pipe_network_soa(cfg: Optional[PipeNetworkConfig], n_cells: int) -> Opt
         node_invert_elev[i] = float(nd.invert_elev)
         node_max_depth[i] = float(nd.max_depth)
         node_surface_area[i] = _meta_float(nd.metadata, "surface_area", _meta_float(nd.metadata, "surface_area_m2", 50.0))
+
+    node_enable_overflow = np.zeros(nn, dtype=np.int32)
+    node_overflow_elevation = np.zeros(nn, dtype=np.float64)
+    node_max_overflow_rate = np.zeros(nn, dtype=np.float64)
+    for i, nd in enumerate(cfg.nodes):
+        node_enable_overflow[i] = 1 if bool(getattr(nd, "enable_overflow", False)) else 0
+        node_overflow_elevation[i] = float(getattr(nd, "overflow_elevation", 0.0) or 0.0)
+        node_max_overflow_rate[i] = float(getattr(nd, "max_overflow_rate", 0.0) or 0.0)
 
     link_from = np.full(nl, -1, dtype=np.int32)
     link_to = np.full(nl, -1, dtype=np.int32)
@@ -348,6 +362,9 @@ def pack_pipe_network_soa(cfg: Optional[PipeNetworkConfig], n_cells: int) -> Opt
     pipe_end_area = np.zeros(np_end, dtype=np.float64)
     pipe_end_inlet_loss_k = np.full(np_end, 0.5, dtype=np.float64)
     pipe_end_outlet_loss_k = np.full(np_end, 1.0, dtype=np.float64)
+    pipe_end_enable_overflow = np.zeros(np_end, dtype=np.int32)
+    pipe_end_overflow_elevation = np.zeros(np_end, dtype=np.float64)
+    pipe_end_max_overflow_rate = np.zeros(np_end, dtype=np.float64)
     for i, pe in enumerate(getattr(cfg, "pipe_ends", [])):
         ci = int(pe.cell_id)
         pipe_end_cell[i] = ci if 0 <= ci < int(n_cells) else -1
@@ -359,6 +376,9 @@ def pack_pipe_network_soa(cfg: Optional[PipeNetworkConfig], n_cells: int) -> Opt
         kout = getattr(pe, "outlet_loss_k", 1.0)
         pipe_end_inlet_loss_k[i] = 0.5 if kin is None else float(kin)
         pipe_end_outlet_loss_k[i] = 1.0 if kout is None else float(kout)
+        pipe_end_enable_overflow[i] = 1 if bool(getattr(pe, "enable_overflow", False)) else 0
+        pipe_end_overflow_elevation[i] = float(getattr(pe, "overflow_elevation", 0.0) or 0.0)
+        pipe_end_max_overflow_rate[i] = float(getattr(pe, "max_overflow_rate", 0.0) or 0.0)
 
     for i, lk in enumerate(cfg.links):
         fn = int(link_from[i])
@@ -414,6 +434,12 @@ def pack_pipe_network_soa(cfg: Optional[PipeNetworkConfig], n_cells: int) -> Opt
         pipe_end_area=pipe_end_area,
         pipe_end_inlet_loss_k=pipe_end_inlet_loss_k,
         pipe_end_outlet_loss_k=pipe_end_outlet_loss_k,
+        node_enable_overflow=node_enable_overflow,
+        node_overflow_elevation=node_overflow_elevation,
+        node_max_overflow_rate=node_max_overflow_rate,
+        pipe_end_enable_overflow=pipe_end_enable_overflow,
+        pipe_end_overflow_elevation=pipe_end_overflow_elevation,
+        pipe_end_max_overflow_rate=pipe_end_max_overflow_rate,
         link_entrance_loss_k=link_entrance_loss_k,
         link_exit_loss_k=link_exit_loss_k,
         link_invert_in=link_invert_in,
@@ -1139,6 +1165,18 @@ class SWE2DCouplingController:
             except Exception:
                 pass
 
+        # Read back external source array for diagnostics (source_min/max).
+        if hasattr(native_mod, "swe2d_gpu_readback_coupling_sources"):
+            try:
+                src_buf = np.zeros(self.n_cells, dtype=np.float64)
+                native_mod.swe2d_gpu_readback_coupling_sources(src_buf, int(self.n_cells))
+                if src_buf.size > 0:
+                    self.last_diag.source_min = float(np.min(src_buf))
+                    self.last_diag.source_max = float(np.max(src_buf))
+                    self.last_diag.source_sum = float(np.sum(src_buf))
+            except Exception:
+                pass
+
         # Update diagnostic snapshot so runtime log shows current readback values.
         if out["node_depth"].size > 0:
             self.last_diag.drainage_max_node_depth = float(np.max(out["node_depth"]))
@@ -1283,6 +1321,7 @@ class SWE2DCouplingController:
                         nn = int(len(static_args["node_invert_elev"]))
                         ni = int(len(dsoa.inlet_cell))
                         no = int(len(dsoa.outfall_cell))
+                        np_end = int(len(dsoa.pipe_end_cell))
                         native_mod.swe2d_gpu_upload_drainage_exchange_params(
                             np.asarray(dsoa.inlet_cell, dtype=np.int32),
                             np.asarray(dsoa.inlet_node, dtype=np.int32),
@@ -1307,9 +1346,22 @@ class SWE2DCouplingController:
                             np.asarray(dsoa.outfall_coefficient, dtype=np.float64),
                             np.asarray(dsoa.outfall_max_flow, dtype=np.float64),
                             np.asarray(dsoa.outfall_zero_storage, dtype=np.int32),
+                            np.asarray(dsoa.pipe_end_cell, dtype=np.int32),
+                            np.asarray(dsoa.pipe_end_node, dtype=np.int32),
+                            np.asarray(dsoa.pipe_end_invert_elev, dtype=np.float64),
+                            np.asarray(dsoa.pipe_end_diameter, dtype=np.float64),
+                            np.asarray(dsoa.pipe_end_area, dtype=np.float64),
+                            np.asarray(dsoa.pipe_end_inlet_loss_k, dtype=np.float64),
+                            np.asarray(dsoa.pipe_end_outlet_loss_k, dtype=np.float64),
                             np.asarray(dsoa.node_max_depth, dtype=np.float64),
                         )
                 cfg = self.drainage.cfg
+                # Ensure persistent coupling buffers (d_cell_wse) are
+                # allocated before the pipe-end BC kernel runs — it reads
+                # cell WSE and will fault on a NULL device pointer.
+                self._ensure_persistent_coupling_preloaded(native_mod)
+                if hasattr(native_mod, "swe2d_gpu_apply_pipe_end_bc"):
+                    native_mod.swe2d_gpu_apply_pipe_end_bc(int(self.n_cells))
                 native_mod.swe2d_pipe1d_step(
                     dev_ptr,
                     float(dt_s),
@@ -1590,6 +1642,9 @@ class SWE2DCouplingController:
             "pipe_end_area": np.ascontiguousarray(dsoa.pipe_end_area, dtype=np.float64),
             "pipe_end_inlet_loss_k": np.ascontiguousarray(dsoa.pipe_end_inlet_loss_k, dtype=np.float64),
             "pipe_end_outlet_loss_k": np.ascontiguousarray(dsoa.pipe_end_outlet_loss_k, dtype=np.float64),
+            "pipe_end_enable_overflow": np.ascontiguousarray(dsoa.pipe_end_enable_overflow, dtype=np.int32),
+            "pipe_end_overflow_elevation": np.ascontiguousarray(dsoa.pipe_end_overflow_elevation, dtype=np.float64),
+            "pipe_end_max_overflow_rate": np.ascontiguousarray(dsoa.pipe_end_max_overflow_rate, dtype=np.float64),
         }
         return self._gpu_drainage_static_args
 

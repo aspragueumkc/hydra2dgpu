@@ -122,6 +122,9 @@ class DrainageNode:
     outfall_fixed_wse: float = 0.0
     outfall_rating_table: list = field(default_factory=list)
     metadata: Dict[str, float] = field(default_factory=dict)
+    enable_overflow: bool = False
+    overflow_elevation: Optional[float] = None
+    max_overflow_rate: Optional[float] = None
 
 
 @dataclass
@@ -270,6 +273,9 @@ class PipeEndExchange:
     # coupling. Defaults follow common design heuristics.
     inlet_loss_k: Optional[float] = 0.5
     outlet_loss_k: Optional[float] = 1.0
+    enable_overflow: bool = False
+    overflow_elevation: Optional[float] = None
+    max_overflow_rate: Optional[float] = None
 
 
 @dataclass

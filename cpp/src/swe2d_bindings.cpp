@@ -1115,6 +1115,15 @@ PYBIND11_MODULE(HYDRA_SWE2D_PY_MODULE_NAME, m) {
             swe2d_gpu_preload_coupling_cell_area(nullptr, static_cast<int32_t>(cell_area.size()), cell_area.data());
         }, py::arg("cell_area"), "Preload cell areas to GPU once.");
 
+    m.def("swe2d_gpu_apply_pipe_end_bc",
+        [](int32_t n_cells) {
+            extern SWE2DDeviceState* s_coupling_dev;
+            swe2d_gpu_apply_pipe_end_bc(s_coupling_dev, n_cells);
+        }, py::arg("n_cells"),
+        "Apply pipe-end boundary conditions from surface WSE before swe2d_pipe1d_step. "
+        "Sets pipe-end node depths to the effective surface WSE so the pipe solver "
+        "sees the correct daylight boundary condition.");
+
     m.def("swe2d_gpu_compute_coupling_full_on_device",
         [](py::object cell_wse_obj,
            int32_t n_structures,
@@ -1161,6 +1170,10 @@ PYBIND11_MODULE(HYDRA_SWE2D_PY_MODULE_NAME, m) {
            py::object outfall_invert_obj, py::object outfall_diameter_obj,
            py::object outfall_cd_obj, py::object outfall_qmax_obj,
            py::object outfall_zero_storage_obj,
+           py::object pipe_end_cell_obj, py::object pipe_end_node_obj,
+           py::object pipe_end_invert_obj, py::object pipe_end_diameter_obj,
+           py::object pipe_end_area_obj,
+           py::object pipe_end_kin_obj, py::object pipe_end_kout_obj,
            py::object node_max_depth_obj) {
             extern SWE2DDeviceState* s_coupling_dev;
             auto get_arr_i32 = [](py::object o, py::array_t<int32_t>& out) {
@@ -1170,8 +1183,8 @@ PYBIND11_MODULE(HYDRA_SWE2D_PY_MODULE_NAME, m) {
                 if (!o.is_none()) out = o.cast<py::array_t<double, py::array::c_style|py::array::forcecast>>();
             };
             py::array_t<double> nmd;
-            py::array_t<int32_t> ic, in_, it, igk, ict, oc, on_, ozs;
-            py::array_t<double> icr, iw, icd, iq, igl, igw, igo, icl, ich, isl, isw, oi_, od_, ocd, oq;
+            py::array_t<int32_t> ic, in_, it, igk, ict, oc, on_, ozs, pec, pen_;
+            py::array_t<double> icr, iw, icd, iq, igl, igw, igo, icl, ich, isl, isw, oi_, od_, ocd, oq, pei_, ped_, pea_, pekin_, pekout_;
             get_arr_f64(node_max_depth_obj, nmd);
             int32_t n_nodes = static_cast<int32_t>(nmd.size());
             get_arr_i32(inlet_cell_obj, ic);
@@ -1199,8 +1212,16 @@ PYBIND11_MODULE(HYDRA_SWE2D_PY_MODULE_NAME, m) {
             get_arr_f64(outfall_cd_obj, ocd);
             get_arr_f64(outfall_qmax_obj, oq);
             get_arr_i32(outfall_zero_storage_obj, ozs);
+            get_arr_i32(pipe_end_cell_obj, pec);
+            int32_t n_pipe_ends = static_cast<int32_t>(pec.size());
+            get_arr_i32(pipe_end_node_obj, pen_);
+            get_arr_f64(pipe_end_invert_obj, pei_);
+            get_arr_f64(pipe_end_diameter_obj, ped_);
+            get_arr_f64(pipe_end_area_obj, pea_);
+            get_arr_f64(pipe_end_kin_obj, pekin_);
+            get_arr_f64(pipe_end_kout_obj, pekout_);
             swe2d_gpu_upload_drainage_exchange_params(
-                s_coupling_dev, n_nodes, n_inlets, n_outfalls,
+                s_coupling_dev, n_nodes, n_inlets, n_outfalls, n_pipe_ends,
                 ic.data(), in_.data(), icr.data(), iw.data(),
                 icd.data(), iq.data(),
                 it.data(), igl.data(), igw.data(),
@@ -1208,6 +1229,8 @@ PYBIND11_MODULE(HYDRA_SWE2D_PY_MODULE_NAME, m) {
                 ict.data(), isl.data(), isw.data(),
                 oc.data(), on_.data(), oi_.data(), od_.data(),
                 ocd.data(), oq.data(), ozs.data(),
+                pec.data(), pen_.data(), pei_.data(), ped_.data(),
+                pea_.data(), pekin_.data(), pekout_.data(),
                 nmd.data());
         },
         py::arg("inlet_cell")=py::none(), py::arg("inlet_node")=py::none(),
@@ -1223,8 +1246,12 @@ PYBIND11_MODULE(HYDRA_SWE2D_PY_MODULE_NAME, m) {
         py::arg("outfall_invert")=py::none(), py::arg("outfall_diameter")=py::none(),
         py::arg("outfall_cd")=py::none(), py::arg("outfall_qmax")=py::none(),
         py::arg("outfall_zero_storage")=py::none(),
+        py::arg("pipe_end_cell")=py::none(), py::arg("pipe_end_node")=py::none(),
+        py::arg("pipe_end_invert")=py::none(), py::arg("pipe_end_diameter")=py::none(),
+        py::arg("pipe_end_area")=py::none(),
+        py::arg("pipe_end_kin")=py::none(), py::arg("pipe_end_kout")=py::none(),
         py::arg("node_max_depth")=py::none(),
-        "Upload drainage exchange parameters (inlets, outfalls, node max depth) to GPU.");
+        "Upload drainage exchange parameters (inlets, outfalls, pipe-ends, node max depth) to GPU.");
 
     m.def("swe2d_gpu_accumulate_external_source",
         [](std::shared_ptr<PySolver>& ps,

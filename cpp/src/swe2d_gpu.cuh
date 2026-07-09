@@ -447,7 +447,7 @@ struct SWE2DDeviceState {
     struct DrainageStepWs {
         int32_t cell_capacity = 0, node_capacity = 0, link_capacity = 0;
         int32_t inlet_capacity = 0, outfall_capacity = 0, pipe_end_capacity = 0;
-        int32_t n_inlets = 0, n_outfalls = 0, n_nodes = 0;
+        int32_t n_inlets = 0, n_outfalls = 0, n_nodes = 0, n_pipe_ends = 0;
         bool    exchange_loaded = false;
         double  *d_cell_area = nullptr, *d_cell_wse = nullptr, *d_cell_depth = nullptr;
         double  *d_node_inv = nullptr, *d_node_maxd = nullptr, *d_node_area = nullptr;
@@ -473,6 +473,9 @@ struct SWE2DDeviceState {
         int32_t *d_p_cell = nullptr, *d_p_node = nullptr;
         double  *d_p_invert = nullptr, *d_p_diameter = nullptr, *d_p_area = nullptr;
         double  *d_p_kin = nullptr, *d_p_kout = nullptr;
+        int32_t *d_p_enable_overflow = nullptr;
+        double  *d_p_overflow_elevation = nullptr;
+        double  *d_p_max_overflow_rate = nullptr;
         double  *d_p_depth_bc = nullptr, *d_p_node_area = nullptr;
         double  *d_node_qleave = nullptr;
         double  *d_q_cell = nullptr, *d_limiter_events = nullptr, *d_limiter_volume = nullptr;
@@ -495,12 +498,15 @@ struct SWE2DDeviceState {
             _DS_FREE(d_o_diameter); _DS_FREE(d_o_cd); _DS_FREE(d_o_qmax); _DS_FREE(d_o_zero_storage);
             _DS_FREE(d_p_cell); _DS_FREE(d_p_node); _DS_FREE(d_p_invert);
             _DS_FREE(d_p_diameter); _DS_FREE(d_p_area); _DS_FREE(d_p_kin); _DS_FREE(d_p_kout);
+            _DS_FREE(d_p_enable_overflow);
+            _DS_FREE(d_p_overflow_elevation);
+            _DS_FREE(d_p_max_overflow_rate);
             _DS_FREE(d_p_depth_bc); _DS_FREE(d_p_node_area); _DS_FREE(d_node_qleave);
             _DS_FREE(d_q_cell); _DS_FREE(d_limiter_events); _DS_FREE(d_limiter_volume);
             #undef _DS_FREE
             cell_capacity = node_capacity = link_capacity = 0;
             inlet_capacity = outfall_capacity = pipe_end_capacity = 0;
-            n_inlets = n_outfalls = n_nodes = 0;
+            n_inlets = n_outfalls = n_nodes = n_pipe_ends = 0;
             exchange_loaded = false;
         }
     } drain_ws{};
@@ -1238,10 +1244,12 @@ void swe2d_gpu_compute_coupling_full_on_device(
 void swe2d_recompute_coupling_for_stage(SWE2DDeviceState* dev, int32_t n_cells,
                                          int32_t n_structures, const double* cell_wse_host,
                                          const double* host_structure_flows, double dt_stage);
+/// Apply pipe-end boundary conditions from surface WSE before pipe1d_step. @host
+void swe2d_gpu_apply_pipe_end_bc(SWE2DDeviceState* dev, int32_t n_cells);
 /// Upload drainage exchange parameters (inlets, outfalls, node geometry). @host
 void swe2d_gpu_upload_drainage_exchange_params(
     SWE2DDeviceState* dev,
-    int32_t n_nodes, int32_t n_inlets, int32_t n_outfalls,
+    int32_t n_nodes, int32_t n_inlets, int32_t n_outfalls, int32_t n_pipe_ends,
     const int32_t* inlet_cell, const int32_t* inlet_node,
     const double* inlet_crest, const double* inlet_width,
     const double* inlet_cd, const double* inlet_qmax,
@@ -1255,6 +1263,10 @@ void swe2d_gpu_upload_drainage_exchange_params(
     const double* outfall_invert, const double* outfall_diameter,
     const double* outfall_cd, const double* outfall_qmax,
     const int32_t* outfall_zero_storage,
+    const int32_t* pipe_end_cell, const int32_t* pipe_end_node,
+    const double* pipe_end_invert, const double* pipe_end_diameter,
+    const double* pipe_end_area,
+    const double* pipe_end_kin, const double* pipe_end_kout,
     const double* node_max_depth);
 /// Ensure drainage Q buffer is allocated in device workspace. @host
 void swe2d_gpu_ensure_drainage_q_buf(SWE2DDeviceState* dev, int32_t n_cells);
