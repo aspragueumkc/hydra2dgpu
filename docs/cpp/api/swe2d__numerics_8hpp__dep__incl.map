@@ -1,7 +1,0 @@
-<map id="swe2d_numerics.hpp" name="swe2d_numerics.hpp">
-<area shape="rect" id="Node000001" title=" " alt="" coords="85,5,231,31"/>
-<area shape="rect" id="Node000002" href="$swe2d__numerics_8cpp.html" title=" " alt="" coords="5,79,151,104"/>
-<area shape="poly" id="edge1_Node000001_Node000002" title=" " alt="" coords="137,42,93,80,89,76,133,38"/>
-<area shape="rect" id="Node000003" href="$swe2d__solver_8cpp.html" title=" " alt="" coords="175,79,301,104"/>
-<area shape="poly" id="edge2_Node000001_Node000003" title=" " alt="" coords="183,38,227,76,223,80,179,42"/>
-</map>

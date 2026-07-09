@@ -1,9 +1,0 @@
-<map id="swe2d::edge_cfl_lambda" name="swe2d::edge_cfl_lambda">
-<area shape="rect" id="Node000001" title=" " alt="" coords="5,55,172,80"/>
-<area shape="rect" id="Node000002" href="$namespaceswe2d.html#afd6e6388a68b477999d03e1f00e4f428" title="Wave speed (celerity) = sqrt(g*h). Zero for dry cells." alt="" coords="220,5,331,31"/>
-<area shape="poly" id="edge1_Node000001_Node000002" title=" " alt="" coords="137,52,213,32,214,37,138,57"/>
-<area shape="rect" id="Node000003" href="$namespaceswe2d.html#a41e00eb84faf7429882be734b3e15372" title="Compute x&#45;velocity from momentum and depth. Zero below h_min." alt="" coords="226,55,325,80"/>
-<area shape="poly" id="edge2_Node000001_Node000003" title=" " alt="" coords="172,65,212,65,212,70,172,70"/>
-<area shape="rect" id="Node000004" href="$namespaceswe2d.html#a86f84c42afcc080d4fb91e7d29ddce9a" title="Compute y&#45;velocity from momentum and depth." alt="" coords="226,104,325,129"/>
-<area shape="poly" id="edge3_Node000001_Node000004" title=" " alt="" coords="138,77,214,98,213,103,137,83"/>
-</map>

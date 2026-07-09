@@ -1,9 +1,0 @@
-<map id="swe2d::celerity" name="swe2d::celerity">
-<area shape="rect" id="Node000001" title="Wave speed (celerity) = sqrt(g*h). Zero for dry cells." alt="" coords="392,31,503,56"/>
-<area shape="rect" id="Node000002" href="$namespaceswe2d.html#aa03d99c0fb3bae43045a4afe2477511b" title=" " alt="" coords="177,5,344,31"/>
-<area shape="poly" id="edge1_Node000001_Node000002" title=" " alt="" coords="378,37,344,32,345,27,379,31"/>
-<area shape="rect" id="Node000003" href="$namespaceswe2d.html#acad122c9dc1bc49cb6cda2b4fcbca6a0" title=" " alt="" coords="203,55,319,80"/>
-<area shape="poly" id="edge2_Node000001_Node000003" title=" " alt="" coords="379,55,319,63,319,57,378,49"/>
-<area shape="rect" id="Node000004" href="$namespaceswe2d.html#af8df66db7a0229b4eacc46192290f00b" title=" " alt="" coords="5,55,129,80"/>
-<area shape="poly" id="edge3_Node000003_Node000004" title=" " alt="" coords="189,70,129,70,129,65,189,65"/>
-</map>

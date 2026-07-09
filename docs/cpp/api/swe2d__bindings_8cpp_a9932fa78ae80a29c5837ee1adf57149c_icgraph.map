@@ -1,7 +1,0 @@
-<map id="bw2d_clamp" name="bw2d_clamp">
-<area shape="rect" id="Node000001" title=" " alt="" coords="420,13,515,38"/>
-<area shape="rect" id="Node000002" href="$swe2d__bindings_8cpp.html#a978d87cee91670e4bfb0a4d54a5ba83f" title=" " alt="" coords="204,5,372,45"/>
-<area shape="poly" id="edge1_Node000001_Node000002" title=" " alt="" coords="406,28,372,28,372,23,406,23"/>
-<area shape="rect" id="Node000003" href="$swe2d__bindings_8cpp.html#ac1d3292f7f222393959bc9ccf986bfa1" title=" " alt="" coords="5,13,156,38"/>
-<area shape="poly" id="edge2_Node000002_Node000003" title=" " alt="" coords="190,28,157,28,157,23,190,23"/>
-</map>
