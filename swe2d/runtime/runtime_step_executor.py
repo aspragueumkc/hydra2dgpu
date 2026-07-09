@@ -88,11 +88,22 @@ class SWE2DRuntimeStepExecutor:
                 cell_source_model_step,
                 coupled_source_rate,
             )
-        elif rain_src is not None and np.any(np.asarray(rain_src, dtype=np.float64) > 0.0):
+        else:
             # Native device coupling path: d_external_source_mps already has
-            # structure/drainage sources on-device.  Accumulate rain directly
-            # on the GPU via a device kernel — no D2H readback.
-            backend.accumulate_external_sources_native(rain_src)
+            # structure/drainage sources on-device.  Accumulate rain and any
+            # internal-flow source directly on the GPU without overwriting the
+            # coupled contributions.
+            if cell_source_model_step is not None:
+                cell_arr = np.asarray(cell_source_model_step, dtype=np.float64)
+                if cell_arr.size > 0 and np.any(cell_arr != 0.0):
+                    try:
+                        cell_area = np.asarray(backend.cell_areas(), dtype=np.float64)
+                        safe_area = np.maximum(cell_area, 1.0e-8)
+                        backend.accumulate_external_sources_native(cell_arr / safe_area)
+                    except Exception:
+                        logger.warning("Internal-flow accumulation on native coupling path failed", exc_info=True)
+            if rain_src is not None and np.any(np.asarray(rain_src, dtype=np.float64) > 0.0):
+                backend.accumulate_external_sources_native(rain_src)
             accumulate_source_volume_model_callback(
                 dt_source_guess,
                 rain_src,
