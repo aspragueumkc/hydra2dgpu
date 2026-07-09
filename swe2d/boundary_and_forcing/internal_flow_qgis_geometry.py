@@ -18,11 +18,11 @@ def internal_flow_geom_to_indices_weights_qgis(
 ) -> Optional[Tuple[np.ndarray, np.ndarray]]:
     """Map a QGIS geometry to cell-centroid indices and area weights for internal flow."""
     try:
-        wkb_type = int(geom.wkbType())
+        wkb_type = qgs_wkb_types.Type(int(geom.wkbType()))
     except Exception:
-        wkb_type = -1
+        wkb_type = None
 
-    if qgs_wkb_types.geometryType(wkb_type) == qgs_wkb_types.GeometryType.PolygonGeometry:
+    if wkb_type is not None and qgs_wkb_types.geometryType(wkb_type) == qgs_wkb_types.GeometryType.PolygonGeometry:
         hit_ids = []
         for i in range(cx.shape[0]):
             p = qgs_geometry_cls.fromPointXY(qgs_pointxy_cls(float(cx[i]), float(cy[i])))

@@ -345,7 +345,12 @@ def build_line_sampling_map(
             wy = 0.0
             seg_keys: set = set()
             parts = []
-            gtype = inter.wkbType()
+            try:
+                gtype = QgsWkbTypes.Type(int(inter.wkbType()))
+            except Exception:
+                gtype = None
+            if gtype is None:
+                continue
             if QgsWkbTypes.isMultiType(gtype):
                 parts = inter.asMultiPolyline()
             elif QgsWkbTypes.flatType(gtype) in (

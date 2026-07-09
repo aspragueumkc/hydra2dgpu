@@ -442,11 +442,11 @@ def build_thiessen_rain_cn_forcing_qgis(
             if geom is None or geom.isEmpty():
                 continue
             try:
-                wkb_type = int(geom.wkbType())
+                wkb_type = qgs_wkb_types.Type(int(geom.wkbType()))
             except Exception as e:
                 log_fn(f"[ERROR] WKB type parse failed: {e}")
-                wkb_type = -1
-            if qgs_wkb_types.geometryType(wkb_type) == qgs_wkb_types.GeometryType.PolygonGeometry:
+                wkb_type = None
+            if wkb_type is not None and qgs_wkb_types.geometryType(wkb_type) == qgs_wkb_types.GeometryType.PolygonGeometry:
                 for i in range(cell_x.shape[0]):
                     if in_storm[i]:
                         continue
