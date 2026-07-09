@@ -295,6 +295,7 @@ def load_simulation_configs(
     """
     _log = log_fn or (lambda _: None)
     results: List[Dict[str, object]] = []
+    conn = None
     try:
         conn = sqlite3.connect(gpkg_path)
         cur = conn.cursor()
@@ -323,9 +324,79 @@ def load_simulation_configs(
                 "description": str(row[4]),
                 "widget_state": ws,
             })
-        conn.close()
+
+        # Fallback: runs that did not have an explicit config saved may still
+        # have their widget state stored in the run-log metadata_json column.
+        if not results:
+            try:
+                cur.execute(
+                    "SELECT run_id, created_utc, duration_s, log_text, metadata_json "
+                    "FROM swe2d_run_logs WHERE metadata_json IS NOT NULL AND metadata_json != '' "
+                    "ORDER BY created_utc DESC"
+                )
+                rows = cur.fetchall()
+                mesh_rows: List[Tuple[str, str]] = []
+                if rows:
+                    try:
+                        cur_m = conn.cursor()
+                        cur_m.execute(
+                            "SELECT mesh_name, created_utc FROM swe2d_baked_mesh ORDER BY created_utc"
+                        )
+                        mesh_rows = [(str(mn), str(ct)) for (mn, ct) in cur_m.fetchall()]
+                        cur_m.close()
+                    except Exception:
+                        pass
+                for row in rows:
+                    metadata = {}
+                    try:
+                        metadata = json.loads(str(row[4] or "{}"))
+                    except Exception:
+                        pass
+                    ws = metadata.get("workbench_widget_state")
+                    if not isinstance(ws, dict):
+                        continue
+                    run_created = str(row[1])
+                    mesh_name_for_row = str(metadata.get("mesh_name", "") or "")
+                    if not mesh_name_for_row and mesh_rows:
+                        best_mesh: Optional[str] = None
+                        try:
+                            run_dt = datetime.datetime.fromisoformat(run_created)
+                        except Exception:
+                            run_dt = None
+                        for mn, ct in mesh_rows:
+                            use_it = False
+                            if run_dt is not None:
+                                try:
+                                    use_it = datetime.datetime.fromisoformat(ct) <= run_dt
+                                except Exception:
+                                    use_it = ct <= run_created
+                            else:
+                                use_it = ct <= run_created
+                            if use_it:
+                                best_mesh = mn
+                            else:
+                                break
+                        mesh_name_for_row = best_mesh or ""
+                    if mesh_name and mesh_name_for_row != mesh_name:
+                        continue
+                    results.append({
+                        "config_id": str(row[0]),
+                        "mesh_name": mesh_name_for_row,
+                        "created_utc": run_created,
+                        "run_duration_s": float(row[2]) if row[2] else 0.0,
+                        "description": str(row[3]),
+                        "widget_state": ws,
+                    })
+            except Exception as exc:
+                _log(f"[WARNING] Failed to load simulation configs from run logs: {exc}")
     except Exception as exc:
         _log(f"[WARNING] Failed to load simulation configs: {exc}")
+    finally:
+        if conn is not None:
+            try:
+                conn.close()
+            except Exception:
+                pass
     return results
 
 
