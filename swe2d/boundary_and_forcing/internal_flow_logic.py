@@ -91,13 +91,13 @@ def build_internal_flow_forcing_from_features(
         if geom is None or geom.isEmpty():
             continue
 
-        q_cms = 0.0
+        q_value = 0.0
         try:
-            q_cms = float(ft[field_name])
+            q_value = float(ft[field_name])
         except Exception:
-            q_cms = 0.0
-        if not np.isfinite(q_cms):
-            q_cms = 0.0
+            q_value = 0.0
+        if not np.isfinite(q_value):
+            q_value = 0.0
 
         hg = None
         raw_h = str(ft[hydro_field] or "").strip() if hydro_field is not None else ""
@@ -117,7 +117,7 @@ def build_internal_flow_forcing_from_features(
             except Exception:
                 hg = None
 
-        if abs(q_cms) <= 0.0 and hg is None:
+        if abs(q_value) <= 0.0 and hg is None:
             continue
 
         mapped = geometry_to_indices_weights_fn(geom, cx, cy)
@@ -125,8 +125,8 @@ def build_internal_flow_forcing_from_features(
             continue
         idx_arr, wt_arr = mapped
 
-        if abs(q_cms) > 0.0:
-            base_q[idx_arr] += q_cms * wt_arr
+        if abs(q_value) > 0.0:
+            base_q[idx_arr] += q_value * wt_arr
         if hg is not None:
             dynamic_terms.append((idx_arr, wt_arr, hg))
             dynamic_assigned += 1

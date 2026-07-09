@@ -168,6 +168,13 @@ class TopologyController:
 
         update_summary_fn()
 
+    def _auto_assign_node_z_from_elevation_source(self, mesh_data) -> None:
+        """Apply the selected elevation source layer to mesh node_z."""
+        from swe2d.workbench.services.elevation_source_service import (
+            auto_assign_node_z_from_view_elevation_source,
+        )
+        auto_assign_node_z_from_view_elevation_source(self._view, mesh_data)
+
     def create_topology_template_layers(self) -> None:
         """Create all 14 topology template layers and add them to the QGIS project."""
         from qgis.core import QgsProject, QgsVectorLayer
@@ -1207,6 +1214,10 @@ class TopologyController:
             "target_size": np.asarray(mesh.target_size, dtype=np.float64),
         }
         view._mesh_data = mesh_data
+        try:
+            self._auto_assign_node_z_from_elevation_source(mesh_data)
+        except Exception as exc:
+            view._log(f"[WARNING] Auto-assign node_z failed: {exc}")
         log_fn(f"mesh> done backend={backend_name} elapsed={view._format_elapsed(started)}")
         n_nodes = int(mesh.node_x.size)
         n_faces = max(0, int(mesh.cell_face_offsets.size) - 1)

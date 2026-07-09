@@ -161,10 +161,10 @@ def build_internal_flow_forcing_qgis(
 
     log_fn(
         f"Internal flow sources mapped from layer '{_layer_name(lyr)}': features={assigned}, "
-        f"timeseries_features={dynamic_assigned}, static_total_Q={float(np.sum(base_q)):.6f} cms"
+        f"timeseries_features={dynamic_assigned}, static_total_Q={float(np.sum(base_q)):.6f}"
     )
     return {
-        "base_q_cms": base_q,
+        "base_q": base_q,
         "dynamic_terms": dynamic_terms,
         "layer_name": _layer_name(lyr),
     }

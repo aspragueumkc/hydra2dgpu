@@ -161,6 +161,13 @@ class MeshController:
         except RuntimeError:
             pass
 
+    def _auto_assign_node_z_from_elevation_source(self, mesh_data) -> None:
+        """Apply the selected elevation source layer to mesh node_z."""
+        from swe2d.workbench.services.elevation_source_service import (
+            auto_assign_node_z_from_view_elevation_source,
+        )
+        auto_assign_node_z_from_view_elevation_source(self._view, mesh_data)
+
     def create_2d_model_geopackage(self) -> None:
         """Create a new 2D model GeoPackage.
 

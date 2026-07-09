@@ -15,7 +15,7 @@ def internal_flow_source_cms_at_time(
     """Return per-cell internal flow source rates [m³/s] at simulation time *t_sec*."""
     if forcing is None:
         return None
-    base_q = forcing.get("base_q_cms")
+    base_q = forcing.get("base_q")
     if base_q is None:
         return None
 

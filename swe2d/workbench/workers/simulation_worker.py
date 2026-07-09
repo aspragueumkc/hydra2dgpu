@@ -703,7 +703,7 @@ class SimulationWorker(QThread):
                 inflow_q_bc_type=int(_BC_INFLOW_Q),
                 rain_rate_si_to_model_callback=lambda rr: float(np.asarray(rr)) * _u.rain_si_to_model(1.0),
                 internal_flow_source_cms_at_time_callback=ctx.internal_flow_source_cms_at_time,
-                flow_si_to_model_callback=lambda q: float(np.asarray(q)) * (_u.model_per_si_m() ** 3),
+                flow_si_to_model_callback=lambda q: np.asarray(q, dtype=np.float64),
                 enable_source_volume_accounting=(not perf_mode),
                 enable_boundary_flux_accounting=(not perf_mode),
                 record_source_step_rows=(not perf_mode),

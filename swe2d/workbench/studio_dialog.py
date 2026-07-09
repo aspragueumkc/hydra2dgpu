@@ -2234,7 +2234,7 @@ class SWE2DWorkbenchStudioDialog(QtWidgets.QDialog):
 
     def _interp_hydrograph(self, hg, t_sec):
         """Interpolate a hydrograph at a given time."""
-        from swe2d.boundary_and_forcing.hydrograph_logic import interp_hydrograph as _logic
+        from swe2d.boundary_and_forcing.bc_logic import interp_hydrograph as _logic
         return _logic(hg, t_sec)
 
     def _parse_hydrograph_text(self, text):
