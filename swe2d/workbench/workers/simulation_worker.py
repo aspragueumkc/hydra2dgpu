@@ -6,6 +6,7 @@ import os
 import threading
 import time
 import traceback
+from dataclasses import replace
 from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
@@ -504,8 +505,11 @@ class SimulationWorker(QThread):
                     sample_map = list(ctx.sample_map_data or [])
                 apply_cell_permutation(mesh_data, cp)
                 if ctx.internal_flow_forcing is not None:
-                    ctx.internal_flow_forcing = permute_internal_flow_forcing(
-                        ctx.internal_flow_forcing, np.asarray(cp, dtype=np.int32)
+                    ctx = replace(
+                        ctx,
+                        internal_flow_forcing=permute_internal_flow_forcing(
+                            ctx.internal_flow_forcing, np.asarray(cp, dtype=np.int32)
+                        ),
                     )
             else:
                 sample_map = list(ctx.sample_map_data or [])
