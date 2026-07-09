@@ -274,8 +274,6 @@ void swe2d_build_pipe1d_mesh(
         const double inv_out = static_cast<double>(link_invert_out[i]);
         const int32_t n_sub = sub_cells_per_link[i];
         const double sub_len = L / static_cast<double>(n_sub);
-        const double A = M_PI * D * D / 4.0;
-        const double P = M_PI * D;
 
         // Shape resolution: default to circular (type 0); width=height=D
         int stype = 0; double sw = D, sh = D;
@@ -283,6 +281,29 @@ void swe2d_build_pipe1d_mesh(
             stype = link_shape_type[i];
             if (link_width)  sw = link_width[i];
             if (link_height) sh = link_height[i];
+        }
+
+        // Compute area and perimeter from the actual shape dimensions.
+        // When diameter is 0 (box/rectangular shapes with no circular equivalent),
+        // derive A/P from width/height instead.
+        double A, P;
+        if (D > 0.0) {
+            A = M_PI * D * D / 4.0;
+            P = M_PI * D;
+        } else if (stype == 1 && sw > 0.0 && sh > 0.0) {
+            // Rectangular / box
+            A = sw * sh;
+            P = 2.0 * (sw + sh);
+        } else if (stype == 2 && sw > 0.0 && sh > 0.0) {
+            // Elliptical: area = π * (w/2) * (h/2), perimeter ≈ Ramanujan
+            A = M_PI * (sw / 2.0) * (sh / 2.0);
+            const double a = sw / 2.0, b = sh / 2.0;
+            const double h = ((a - b) * (a - b)) / ((a + b) * (a + b));
+            P = M_PI * (a + b) * (1.0 + (3.0 * h) / (10.0 + std::sqrt(4.0 - 3.0 * h)));
+        } else {
+            // Fallback: treat as circular with diameter=sw
+            A = M_PI * sw * sw / 4.0;
+            P = M_PI * sw;
         }
 
         for (int32_t s = 0; s < n_sub; ++s) {

@@ -36,6 +36,7 @@ class LayerController:
         v.populate_layer_combo("drain_node_inlets_layer_combo", layers)
         v.populate_layer_combo("structures_layer_combo", layers, "line")
         v.populate_layer_combo("bc_lines_layer_combo", layers, "line")
+        v.populate_layer_combo("internal_flow_layer_combo", layers, "polygon")
         self._refresh_topo_layer_combos(layers)
 
     def _refresh_topo_layer_combos(self, layers: List) -> None:

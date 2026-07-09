@@ -7507,6 +7507,12 @@ void swe2d_gpu_preload_coupling_cell_area(SWE2DDeviceState* dev, int32_t n_cells
         CUDA_CHECK(cudaMalloc(reinterpret_cast<void**>(&ws.d_source), static_cast<size_t>(n_cells) * sizeof(double)));
         ws.cell_capacity = n_cells;
     }
+
+    // Drainage-only coupling (no hydraulic structures) still needs a cell WSE
+    // buffer for the surface↔drainage exchange kernels.  Preload it here
+    // because this function is always called on the persistent coupling path.
+    sf_ensure_buf(dev->sf_ws.d_cell_wse, dev->sf_ws.cell_capacity, n_cells);
+
     CUDA_CHECK(cudaMemcpyAsync(ws.d_cell_area, cell_area, static_cast<size_t>(n_cells) * sizeof(double),
                                cudaMemcpyHostToDevice, dev->d_stream));
     CUDA_CHECK(cudaStreamSynchronize(dev->d_stream));

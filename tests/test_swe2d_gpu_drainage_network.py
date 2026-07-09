@@ -731,5 +731,131 @@ class TestGPUInletCapture(unittest.TestCase):
                                    f"expected {q_expected_limited:.6f}")
 
 
+@unittest.skipIf(_MOD is None, "hydra_swe2d not built")
+@unittest.skipUnless(hasattr(_MOD, "swe2d_gpu_upload_drainage_exchange_params"),
+                     "drainage exchange CUDA functions not compiled")
+@unittest.skipUnless(hasattr(_MOD, "swe2d_gpu_available")
+                     and _MOD.swe2d_gpu_available(),
+                     "CUDA GPU not available")
+class TestDrainageNoStructures(unittest.TestCase):
+    """Regression: drainage-only coupling must not crash with no structures."""
+
+    N_CELLS = 2
+    CELL_AREA = 25.0
+
+    @classmethod
+    def setUpClass(cls):
+        cls.mod = _MOD
+        cls.mesh = _make_2cell_mesh(_MOD)
+        h0 = np.array([0.0, 0.0], dtype=np.float64)
+        cls.solver = None
+        try:
+            cls.solver = _make_solver(_MOD, cls.mesh, h0)
+        except Exception:
+            raise unittest.SkipTest("Failed to create GPU solver")
+
+    @classmethod
+    def tearDownClass(cls):
+        if cls.solver is not None:
+            try:
+                cls.mod.swe2d_destroy(cls.solver)
+            except Exception:
+                pass
+            cls.solver = None
+
+    def setUp(self):
+        mod = self.mod
+        if not mod.swe2d_step(self.solver, 0.1).get("gpu_active", False):
+            self.skipTest("solver step did not activate GPU")
+
+        self._dev_ptr = mod.swe2d_get_coupling_dev_ptr()
+
+        # Intentionally do NOT preload a dummy weir.  The cell-area preload
+        # must be enough to allocate the WSE buffer used by the drainage
+        # exchange kernels (regression for CUDA illegal-access crash).
+        mod.swe2d_gpu_preload_coupling_cell_area(
+            np.full(self.N_CELLS, self.CELL_AREA, dtype=np.float64))
+
+        mod.swe2d_build_pipe1d_mesh(
+            n_links=1,
+            link_from_node=np.array([0], dtype=np.int32),
+            link_to_node=np.array([0], dtype=np.int32),
+            link_length=np.array([1.0], dtype=np.float64),
+            link_diameter=np.array([1.0], dtype=np.float64),
+            link_roughness_n=np.array([0.013], dtype=np.float64),
+            link_inlet_loss_k=np.array([0.0], dtype=np.float64),
+            link_outlet_loss_k=np.array([0.0], dtype=np.float64),
+            node_invert_elev=np.array([0.0], dtype=np.float64),
+            node_surface_area=np.array([10.0], dtype=np.float64),
+            node_max_depth=np.array([3.0], dtype=np.float64),
+            link_invert_in=np.array([0.0], dtype=np.float64),
+            link_invert_out=np.array([0.0], dtype=np.float64),
+            max_cell_length=10,
+            dev_ptr=int(self._dev_ptr),
+        )
+        mod.swe2d_pipe1d_upload_node_depth(int(self._dev_ptr),
+                                           np.array([0.0], dtype=np.float64))
+        mod.swe2d_pipe1d_init_area_from_depth(int(self._dev_ptr))
+        mod.swe2d_gpu_ensure_drainage_q_buf(self.N_CELLS)
+
+    def tearDown(self):
+        mod = self.mod
+        h = np.full(self.N_CELLS, 0.0, dtype=np.float64)
+        hu = np.zeros(self.N_CELLS, dtype=np.float64)
+        hv = np.zeros(self.N_CELLS, dtype=np.float64)
+        mod.swe2d_set_state(self.solver, h, hu, hv)
+
+    def test_drainage_only_no_structures(self):
+        """A single grate inlet with no hydraulic structures computes capture."""
+        mod = self.mod
+
+        mod.swe2d_set_state(
+            self.solver,
+            np.array([1.0, 0.0], dtype=np.float64),
+            np.zeros(self.N_CELLS, dtype=np.float64),
+            np.zeros(self.N_CELLS, dtype=np.float64),
+        )
+
+        mod.swe2d_gpu_upload_drainage_exchange_params(
+            inlet_cell=np.array([0], dtype=np.int32),
+            inlet_node=np.array([0], dtype=np.int32),
+            inlet_crest=np.array([0.0], dtype=np.float64),
+            inlet_width=np.array([1.0], dtype=np.float64),
+            inlet_cd=np.array([0.67], dtype=np.float64),
+            inlet_qmax=np.array([1e6], dtype=np.float64),
+            inlet_type=np.array([0], dtype=np.int32),
+            inlet_grate_len=np.array([1.0], dtype=np.float64),
+            inlet_grate_wid=np.array([0.5], dtype=np.float64),
+            inlet_grate_kind=np.array([0], dtype=np.int32),
+            inlet_grate_open=np.array([0.9], dtype=np.float64),
+            inlet_curb_len=np.array([0.0], dtype=np.float64),
+            inlet_curb_ht=np.array([0.15], dtype=np.float64),
+            inlet_curb_throat=np.array([0], dtype=np.int32),
+            inlet_slot_len=np.array([0.0], dtype=np.float64),
+            inlet_slot_wid=np.array([0.0], dtype=np.float64),
+            outfall_cell=np.empty(0, dtype=np.int32),
+            outfall_node=np.empty(0, dtype=np.int32),
+            outfall_invert=np.empty(0, dtype=np.float64),
+            outfall_diameter=np.empty(0, dtype=np.float64),
+            outfall_cd=np.empty(0, dtype=np.float64),
+            outfall_qmax=np.empty(0, dtype=np.float64),
+            outfall_zero_storage=np.empty(0, dtype=np.int32),
+            node_max_depth=np.array([3.0], dtype=np.float64),
+        )
+
+        mod.swe2d_gpu_set_coupling_dt(1.0)
+        mod.swe2d_gpu_compute_coupling_full_on_device(
+            cell_wse=None,
+            n_structures=0,
+            host_structure_flows=None,
+        )
+
+        src = mod.swe2d_gpu_readback_coupling_sources(self.N_CELLS)
+        q_actual = -float(src[0])
+        self.assertGreater(q_actual, 0.0, "Expected positive capture in cell 0")
+        self.assertAlmostEqual(float(src[1]), 0.0, places=12,
+                               msg="Cell 1 should have zero source")
+
+
 if __name__ == "__main__":
     unittest.main()

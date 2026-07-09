@@ -291,9 +291,10 @@ class TestPipe1DStep(unittest.TestCase):
 
 
     def test_rectangular_link_diffusion(self):
-        """Rectangular link (W=1.0, H=0.5) builds and steps with diffusion wave without crash."""
+        """Rectangular link (W=1.0, H=0.5) computes A = w*h from shape dimensions."""
         a = self._simple_pipe_arrays()
         a["link_diameter"] = np.array([0.0], dtype=np.float64)
+        a["node_depth"] = np.array([0.5, 0.5], dtype=np.float64)
         link_shape_type = np.array([1], dtype=np.int32)
         link_width = np.array([1.0], dtype=np.float64)
         link_height = np.array([0.5], dtype=np.float64)
@@ -308,15 +309,64 @@ class TestPipe1DStep(unittest.TestCase):
             link_shape_type, link_width, link_height,
         )
         _MOD.swe2d_pipe1d_upload_node_depth(self._dev_ptr, a["node_depth"])
-        _MOD.swe2d_pipe1d_step(self._dev_ptr, 0.5, "diffusion_wave", 1, 2, 0.5, 9.81)
+        _MOD.swe2d_pipe1d_init_area_from_depth(self._dev_ptr)
         rb = _MOD.swe2d_pipe1d_readback_node_state(self._dev_ptr, a["n_nodes"], 1)
-        self.assertTrue(np.isfinite(rb["cell_A"][0]))
-        self.assertTrue(np.isfinite(rb["cell_Q"][0]))
+        A_exp = 1.0 * 0.5  # w * h
+        self.assertAlmostEqual(float(rb["cell_A"][0]), A_exp, delta=0.01,
+                               msg="Rectangular full-cell area should match w*h")
+        _MOD.swe2d_pipe1d_step(self._dev_ptr, 0.5, "diffusion_wave", 1, 2, 0.5, 9.81)
+        rb2 = _MOD.swe2d_pipe1d_readback_node_state(self._dev_ptr, a["n_nodes"], 1)
+        self.assertTrue(np.isfinite(rb2["cell_A"][0]))
+        self.assertTrue(np.isfinite(rb2["cell_Q"][0]))
 
     def test_elliptical_link_diffusion(self):
-        """Elliptical link (span=1.0, rise=0.6) builds and steps without crash."""
+        """Elliptical link computes A = π * (w/2) * (h/2) from shape dimensions."""
         a = self._simple_pipe_arrays()
         a["link_diameter"] = np.array([0.0], dtype=np.float64)
+        a["node_depth"] = np.array([0.6, 0.6], dtype=np.float64)
+        link_shape_type = np.array([2], dtype=np.int32)
+        link_width = np.array([1.0], dtype=np.float64)    # span
+        link_height = np.array([0.6], dtype=np.float64)   # rise
+        _MOD.swe2d_build_pipe1d_mesh(
+            a["n_links"],
+            a["link_from"], a["link_to"],
+            a["link_length"], a["link_diameter"], a["link_roughness"],
+            a["link_inlet_loss"], a["link_outlet_loss"],
+            a["node_invert"], a["node_surface_area"], a["node_max_depth"],
+            a["link_invert_in"], a["link_invert_out"],
+            0, self._dev_ptr,
+            link_shape_type, link_width, link_height,
+        )
+        _MOD.swe2d_pipe1d_upload_node_depth(self._dev_ptr, a["node_depth"])
+        _MOD.swe2d_pipe1d_init_area_from_depth(self._dev_ptr)
+        rb = _MOD.swe2d_pipe1d_readback_node_state(self._dev_ptr, a["n_nodes"], 1)
+        A_exp = np.pi * 0.5 * 0.3  # π * (w/2) * (h/2)
+        self.assertAlmostEqual(float(rb["cell_A"][0]), A_exp, delta=0.01,
+                               msg="Elliptical cell area should match π*(w/2)*(h/2)")
+        _MOD.swe2d_pipe1d_step(self._dev_ptr, 0.5, "diffusion_wave", 1, 2, 0.5, 9.81)
+        rb2 = _MOD.swe2d_pipe1d_readback_node_state(self._dev_ptr, a["n_nodes"], 1)
+        self.assertTrue(np.isfinite(rb2["cell_A"][0]))
+        self.assertTrue(np.isfinite(rb2["cell_Q"][0]))
+
+    def test_box_shape_without_explicit_shape_arrays(self):
+        """Box shape with diameter=0 and no shape arrays falls back to D as width, produces finite values."""
+        a = self._simple_pipe_arrays()
+        a["link_diameter"] = np.array([0.0], dtype=np.float64)
+        _MOD.swe2d_build_pipe1d_mesh(
+            a["n_links"],
+            a["link_from"], a["link_to"],
+            a["link_length"], a["link_diameter"], a["link_roughness"],
+            a["link_inlet_loss"], a["link_outlet_loss"],
+            a["node_invert"], a["node_surface_area"], a["node_max_depth"],
+            a["link_invert_in"], a["link_invert_out"],
+            0, self._dev_ptr,
+        )
+        _MOD.swe2d_pipe1d_upload_node_depth(self._dev_ptr, a["node_depth"])
+        _MOD.swe2d_pipe1d_step(self._dev_ptr, 0.5, "diffusion_wave", 1, 2, 0.5, 9.81)
+        rb = _MOD.swe2d_pipe1d_readback_node_state(self._dev_ptr, a["n_nodes"], 1)
+        self.assertTrue(np.all(np.isfinite(rb["cell_A"])),
+                        "Zero-diameter without shape arrays should not crash")
+        self.assertTrue(np.all(np.isfinite(rb["node_depth"])))
         link_shape_type = np.array([2], dtype=np.int32)
         link_width = np.array([1.0], dtype=np.float64)
         link_height = np.array([0.6], dtype=np.float64)

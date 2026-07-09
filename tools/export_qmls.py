@@ -1,22 +1,31 @@
 """Export QML styles from a loaded model GeoPackage to QML/ folder.
 
-Usage: In QGIS Python console:
+Usage in QGIS Python console:
 
-    exec(open("tools/export_qmls.py").read())
+    exec(open(r"/home/aaron/QGIS_Plugins_dev/public-repo-hydra2dgpu/tools/export_qmls.py").read())
 
-Or from command line with a running QGIS instance.
+If __file__ errors, run this instead:
+
+    REPO = r"/home/aaron/QGIS_Plugins_dev/public-repo-hydra2dgpu"
+    exec(open(os.path.join(REPO, "tools", "export_qmls.py")).read())
+    export_qmls(REPO)
 """
 import os
-
-# Resolve QML directory relative to this script
-_QML_DIR = os.path.join(os.path.dirname(os.path.dirname(__file__)), "QML")
+import sys
 
 
-def export_qmls():
+def export_qmls(repo_root=None):
+    if repo_root is None:
+        try:
+            repo_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        except NameError:
+            repo_root = os.path.expanduser("~")
+
     from qgis.core import QgsProject
     from swe2d.workbench.services.schema_definitions import get_layer_names
 
-    os.makedirs(_QML_DIR, exist_ok=True)
+    qml_dir = os.path.join(repo_root, "QML")
+    os.makedirs(qml_dir, exist_ok=True)
 
     known = set(get_layer_names())
     exported = 0
@@ -24,19 +33,15 @@ def export_qmls():
         name = str(lyr.name())
         if name.lower() not in known:
             continue
-
-        out_path = os.path.join(_QML_DIR, f"{name.lower()}.qml")
-        ok, err = lyr.exportNamedStyle(out_path)
+        out_path = os.path.join(qml_dir, f"{name.lower()}.qml")
+        err, ok = lyr.saveNamedStyle(out_path)
         if ok:
-            print(f"  ✓ {name}  ->  {out_path}")
+            print(f"  ok {name}  ->  {out_path}")
             exported += 1
         else:
-            print(f"  ✗ {name}: {err}")
+            print(f"  FAIL {name}: {err}")
 
-    if exported == 0:
-        print("No model GPKG layers found in the project.")
-    else:
-        print(f"\nExported {exported} QML files to {_QML_DIR}")
+    print(f"\nExported {exported} QML files to {qml_dir}")
 
 
 if __name__ == "__main__":

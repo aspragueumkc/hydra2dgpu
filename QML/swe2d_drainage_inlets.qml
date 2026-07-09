@@ -146,6 +146,9 @@
   </elevation>
   <customproperties>
     <Option type="Map">
+      <Option type="List" name="dualview/previewExpressions">
+        <Option type="QString" value="COALESCE( &quot;name&quot;, '&lt;NULL>' )"/>
+      </Option>
       <Option type="int" name="embeddedWidgets/count" value="0"/>
       <Option name="variableNames"/>
       <Option name="variableValues"/>
@@ -773,7 +776,7 @@ def my_form_open(dialog, layer, feature):
   </reuseLastValue>
   <dataDefinedFieldProperties/>
   <widgets/>
-  <previewExpression>"name"</previewExpression>
+  <previewExpression>COALESCE( "name", '&lt;NULL>' )</previewExpression>
   <mapTip enabled="1"></mapTip>
   <layerGeometryType>4</layerGeometryType>
 </qgis>
