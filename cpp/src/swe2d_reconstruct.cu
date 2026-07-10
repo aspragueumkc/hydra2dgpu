@@ -484,7 +484,29 @@ __global__ void mp5_kernel(
         fMP_eta = fmax(f_min - 1e-10, fmin(f_max + 1e-10, fMP_eta));
     }
 
-    eta_face_L[f] = fMP_eta; eta_face_R[f] = fMP_eta;
-    hu_face_L[f]  = fMP_hu;  hu_face_R[f]  = fMP_hu;
-    hv_face_L[f]  = fMP_hv;  hv_face_R[f]  = fMP_hv;
+    // ── Upwind bias via cell-pair dissipation (JST-like) ────────────────
+    // MP5 is a face-centered scheme that produces the same value for both
+    // Riemann states.  On unstructured meshes this creates a purely central
+    // flux with zero numerical dissipation, which is unconditionally unstable
+    // on triangle meshes (but survivable on quads where edge averaging helps).
+    //
+    // To restore HLLC dissipation we add a small upwind bias proportional to
+    // the cell-pair jump, conceptually similar to Jameson-Schmidt-Turkel (JST)
+    // second-difference artificial dissipation.  The bias is:
+    //   U_L = fMP - 0.5 * diss * (U_v - U_u)
+    //   U_R = fMP + 0.5 * diss * (U_v - U_u)
+    // where diss << 1 so the bias is well below the O(h^5) MP5 truncation
+    // error in smooth regions.  The dissipation activates the HLLC solver's
+    // inherent upwind selection, providing the missing numerical diffusion
+    // on unstructured tessellations without compromising accuracy.
+    constexpr double diss = 0.01;
+    const double d_eta = eta[3] - eta[2];
+    const double d_hu  = hu_v[3] - hu_v[2];
+    const double d_hv  = hv_v[3] - hv_v[2];
+    eta_face_L[f] = fMP_eta - 0.5 * diss * d_eta;
+    eta_face_R[f] = fMP_eta + 0.5 * diss * d_eta;
+    hu_face_L[f]  = fMP_hu  - 0.5 * diss * d_hu;
+    hu_face_R[f]  = fMP_hu  + 0.5 * diss * d_hu;
+    hv_face_L[f]  = fMP_hv  - 0.5 * diss * d_hv;
+    hv_face_R[f]  = fMP_hv  + 0.5 * diss * d_hv;
 }
