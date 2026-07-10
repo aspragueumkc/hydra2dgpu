@@ -596,7 +596,9 @@ class ModelTabView(QtWidgets.QWidget):
             "Spatial reconstruction scheme for cell-face extrapolation. "
             "First-order (0): fastest, most diffusive. MUSCL variants (1–4) "
             "add second-order accuracy with different slope limiters. "
-            "WENO (5–6) use weighted stencils for smooth regions with shock capture."
+            "Barth-Jespersen (5): robust 2nd-order, good on poor meshes. "
+            "WENO3 (6): 3rd-order, 1-ring stencil. WENO5 (7): highest accuracy, 2-ring stencil. "
+            "MP5 (8): 4th-order mapped monotonicity-preserving (CFL ≤ 0.4 required)."
         )
         for text, data in [
             ("1st-order", 0),
@@ -604,8 +606,10 @@ class ModelTabView(QtWidgets.QWidget):
             ("MUSCL + MinMod", 2),
             ("MUSCL + MC", 3),
             ("MUSCL + Van Leer", 4),
-            ("WENO3-like", 5),
-            ("WENO5", 6),
+            ("Barth-Jespersen", 5),
+            ("WENO3 (3-sub-stencil)", 6),
+            ("WENO5 (2-ring LSQ)", 7),
+            ("MP5 (Mapped MP)", 8),
         ]:
             self.reconstruction_combo.addItem(text, data)
         self._add_param_row(form, "Reconstruction:", self.reconstruction_combo)

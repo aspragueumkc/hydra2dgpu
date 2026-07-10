@@ -404,6 +404,8 @@ class TestModelTabView(unittest.TestCase):
         self.assertIn("Persistent", tiny_labels)
         recon_labels = [view.reconstruction_combo.itemText(i) for i in range(view.reconstruction_combo.count())]
         self.assertIn("MUSCL + Superbee", recon_labels)
+        self.assertIn("Barth-Jespersen", recon_labels)
+        self.assertEqual(len(recon_labels), 9)
         bridge_labels = [view.bridge_stacked_coupling_mode_combo.itemText(i)
                          for i in range(view.bridge_stacked_coupling_mode_combo.count())]
         self.assertIn("Phase 3 — Spatial", bridge_labels)
