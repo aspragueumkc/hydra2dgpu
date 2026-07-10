@@ -112,43 +112,65 @@ def apply_cell_permutation(
 ) -> dict:
     """Apply an RCMK cell permutation to mesh_data in place and return it.
 
-    Reorders ``cell_nodes`` (1D flat or 2D) and ``cell_face_offsets`` /
-    ``cell_face_nodes`` to match *cell_perm* order.  Mutates *mesh_data*
-    in place and returns it for convenience.
+    Reorders ``cell_nodes`` (1D flat fan triangulation), ``cell_face_offsets``,
+    and ``cell_face_nodes`` to match *cell_perm* order.  Works for mixed
+    polygon types (tri, quad, etc.) by using ``cell_face_offsets`` to
+    determine per-cell vertex counts.  Mutates *mesh_data* in place and
+    returns it for convenience.
     """
-    cn = mesh_data.get("cell_nodes")
-    if cn is not None and cn.size > 0:
-        n_cells = cn.size // 3 if cn.ndim == 1 else cn.shape[0]
-    else:
-        n_cells = cell_perm.size
-
-    if cn is not None and cn.size > 0 and n_cells == cell_perm.size:
-        if cn.ndim == 1:
-            reshaped = cn.reshape(-1, 3)
-            mesh_data["cell_nodes"] = reshaped[cell_perm].ravel()
-        else:
-            mesh_data["cell_nodes"] = cn[cell_perm]
+    n_cells = int(cell_perm.size)
+    if n_cells <= 0:
+        return mesh_data
 
     cfo = mesh_data.get("cell_face_offsets")
     cfn = mesh_data.get("cell_face_nodes")
-    if cfo is not None and cfn is not None and n_cells == cell_perm.size:
-        old_offsets = cfo.copy()
-        new_offsets = np.zeros_like(cfo)
+
+    if cfo is not None and cfn is not None:
+        # ── Face data permutation ──────────────────────────────────────
+        old_offsets = np.asarray(cfo, dtype=np.int32).ravel()
+        old_nodes = np.asarray(cfn, dtype=np.int32).ravel()
+        new_offsets = np.empty(n_cells + 1, dtype=np.int32)
         new_offsets[0] = old_offsets[0]
         for ci in range(n_cells):
-            orig_ci = int(cell_perm[ci])
-            s = int(old_offsets[orig_ci])
-            e = int(old_offsets[orig_ci + 1])
+            orig = int(cell_perm[ci])
+            s = int(old_offsets[orig])
+            e = int(old_offsets[orig + 1])
             new_offsets[ci + 1] = new_offsets[ci] + (e - s)
-        cfn_new = np.empty(int(new_offsets[-1]), dtype=np.int32)
+        nfn = int(new_offsets[-1])
+        new_nodes = np.empty(nfn, dtype=np.int32)
         for ci in range(n_cells):
-            orig_ci = int(cell_perm[ci])
-            s = int(old_offsets[orig_ci])
-            e = int(old_offsets[orig_ci + 1])
+            orig = int(cell_perm[ci])
+            s = int(old_offsets[orig])
+            e = int(old_offsets[orig + 1])
             ds = int(new_offsets[ci])
-            cfn_new[ds:ds + (e - s)] = cfn[s:e]
+            new_nodes[ds:ds + (e - s)] = old_nodes[s:e]
         mesh_data["cell_face_offsets"] = new_offsets
-        mesh_data["cell_face_nodes"] = cfn_new
+        mesh_data["cell_face_nodes"] = new_nodes
+
+        # ── Regenerate fan triangulation from permuted face data ───────
+        tri_list: list = []
+        for ci in range(n_cells):
+            s = int(new_offsets[ci])
+            e = int(new_offsets[ci + 1])
+            ring = new_nodes[s:e]
+            # Fan from first vertex: (v0, v1, v2), (v0, v2, v3), ...
+            for k in range(1, int(ring.size) - 1):
+                tri_list.append(int(ring[0]))
+                tri_list.append(int(ring[k]))
+                tri_list.append(int(ring[k + 1]))
+        mesh_data["cell_nodes"] = np.asarray(tri_list, dtype=np.int32)
+
+    else:
+        # ── No face data — pure triangle mesh ──────────────────────────
+        cn = mesh_data.get("cell_nodes")
+        if cn is not None and cn.size > 0:
+            if cn.ndim == 1:
+                reshaped = cn.reshape(-1, 3)
+                if reshaped.shape[0] == n_cells:
+                    mesh_data["cell_nodes"] = reshaped[cell_perm].ravel()
+            else:
+                if cn.shape[0] == n_cells:
+                    mesh_data["cell_nodes"] = cn[cell_perm]
 
     return mesh_data
 

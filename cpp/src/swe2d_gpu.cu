@@ -1044,6 +1044,24 @@ __global__ __launch_bounds__(256, 4) void swe2d_gradient_kernel(
     }
 }
 
+/** GPU kernel: zero the eta-gradient (hx, hy) for cells with negligible depth.
+ *  Prevents MUSCL reconstruction from projecting bed-slope gradients onto
+ *  faces of dry or near-dry cells, which can create artificial face depths
+ *  that grow unstable when combined with source terms.
+ *  @global */
+__global__ __launch_bounds__(256, 4) void swe2d_zero_dry_eta_grad_kernel(
+    int32_t n_cells,
+    const State* __restrict__ cell_h,
+    Grad* d_grad,
+    double h_min)
+{
+    int32_t c = blockIdx.x * blockDim.x + threadIdx.x;
+    if (c >= n_cells) return;
+    if (static_cast<double>(cell_h[c]) > h_min) return;
+    d_grad[c].hx = 0.0;
+    d_grad[c].hy = 0.0;
+}
+
 /** Cell-parallel gather kernel: sum per-edge gradient contributions into per-cell arrays.
  *  Reads from edge-scratch arrays, writes to cell gradient arrays.  No atomics.
  *  Each edge stores the raw face flux (c0 perspective, +nx outward from c0).
@@ -5433,6 +5451,14 @@ void swe2d_gpu_step(
                     swe2d_maybe_launch_gradient_gather(dev, n_cells, BLOCK);
                     swe2d_maybe_launch_lsq_gradient(dev, spatial_scheme, n_cells, BLOCK,
                                                     dev->d_h, dev->d_hu, dev->d_hv);
+                    // Zero eta-gradient (hx, hy) at dry cells to prevent MUSCL
+                    // reconstruction from projecting bed-slope gradients onto
+                    // faces of source-active dry cells.
+                    if (h_min > 0.0) {
+                        int g2_grid = (n_cells + BLOCK - 1) / BLOCK;
+                        swe2d_zero_dry_eta_grad_kernel<<<g2_grid, BLOCK, 0, dev->d_stream>>>(
+                            n_cells, dev->d_h, dev->d_grad, h_min);
+                    }
                 }
                 // flux
                 int grid_flux = (n_edges + BLOCK - 1) / BLOCK;
@@ -5624,6 +5650,11 @@ void swe2d_gpu_step(
         swe2d_maybe_launch_gradient_gather(dev, n_cells, BLOCK);
         swe2d_maybe_launch_lsq_gradient(dev, spatial_scheme, n_cells, BLOCK,
                                         dev->d_h, dev->d_hu, dev->d_hv);
+        if (h_min > 0.0) {
+            int g2_grid = (n_cells + BLOCK - 1) / BLOCK;
+            swe2d_zero_dry_eta_grad_kernel<<<g2_grid, BLOCK, 0, dev->d_stream>>>(
+                n_cells, dev->d_h, dev->d_grad, h_min);
+        }
     }
 
     // ── Flux ────────────────────────────────────────────────────────────
