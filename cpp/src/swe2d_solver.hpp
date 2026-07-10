@@ -10,12 +10,15 @@
 #include <vector>
 
 enum class SWE2DSpatialScheme : int {
-    FV_FIRST_ORDER    = 0,
-    FV_MUSCL_FAST     = 1,
-    FV_MUSCL_MINMOD   = 2,
-    FV_MUSCL_MC       = 3,   // Monotonized-Central limiter (gradient-based TVD)
-    FV_MUSCL_VAN_LEER = 4,   // Van Leer smooth limiter (gradient-based TVD)
-    FV_WENO5          = 6,   // WENO5 + least-squares 2-ring gradient (~3rd order, GPU-first)
+    FV_FIRST_ORDER     = 0,
+    FV_MUSCL_FAST      = 1,
+    FV_MUSCL_MINMOD    = 2,
+    FV_MUSCL_MC        = 3,   // Monotonized-Central limiter (gradient-based TVD)
+    FV_MUSCL_VAN_LEER  = 4,   // Van Leer smooth limiter (gradient-based TVD)
+    FV_BARTH_JESPERSEN = 5,   // LSQ gradient + Barth-Jespersen face-value limiter
+    FV_WENO3           = 6,   // True 3-sub-stencil WENO (1-ring, 3rd-order)
+    FV_WENO5           = 7,   // WENO5 + least-squares 2-ring gradient (~3rd order, GPU-first)
+    FV_MP5             = 8,   // Suresh-Huynh Mapped Monotonicity-Preserving (5-cell walk)
 };
 
 enum class SWE2DTurbulenceModel : int {
