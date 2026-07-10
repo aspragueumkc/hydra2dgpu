@@ -1024,7 +1024,13 @@ __global__ __launch_bounds__(256, 4) void swe2d_gradient_kernel(
     // The gather kernel applies per-cell sign and divides by cell area.
     // For constant eta, the raw flux is non-zero but the gather cancels
     // it correctly (standard Green-Gauss closure).
-    if (c0_active) {
+    //
+    // Write when EITHER endpoint is active — the gather kernel reads this
+    // slot with sign +1 (c0) or -1 (c1) via edge_c0 lookup.  When only c1
+    // is active (e.g. c0 was deactivated as a degenerate cell after the
+    // classify propagation), we must still store the raw flux so that c1's
+    // gather produces a correct gradient contribution.
+    if (c0_active || c1_active) {
         edge_hx[e]  = qh  * nx * len;
         edge_hy[e]  = qh  * ny * len;
         edge_hux[e] = qhu * nx * len;

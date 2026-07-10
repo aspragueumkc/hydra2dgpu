@@ -415,6 +415,17 @@ SWE2DStepDiag swe2d_step(SWE2DSolver* s, double dt_request) {
         finalize_diag(diag);
         s->t += dt;
         s->gpu_steps += 1;
+        // Synchronize the solver stream so that all GPU work is complete
+        // before returning.  This ensures that step timers measure the full
+        // solver cost and that the next coupling call does not implicitly
+        // wait for queued solver kernels on the same stream.
+        {
+            cudaError_t sync_err = cudaStreamSynchronize(s->dev->d_stream);
+            if (sync_err != cudaSuccess) {
+                throw std::runtime_error(std::string("cudaStreamSynchronize failed: ")
+                    + cudaGetErrorString(sync_err));
+            }
+        }
         return diag;
     }
 #endif
