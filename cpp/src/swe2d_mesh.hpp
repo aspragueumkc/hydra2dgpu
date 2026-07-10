@@ -80,6 +80,22 @@ struct SWE2DMesh {
     std::vector<double>  cell_ring2_dcx;        // [sum(ring2_counts)] Δx = cx[j]-cx[c]
     std::vector<double>  cell_ring2_dcy;        // [sum(ring2_counts)] Δy = cy[j]-cy[c]
     std::vector<double>  cell_ring2_inv_dist2;  // [sum(ring2_counts)] 1/|Δr|² weight
+
+    // ── WENO3 face sub-stencil (scheme 6) ──────────────────────────────────
+    // Per-face variable-length CSR tables for the three WENO sub-stencils.
+    // S1 = {owner, neighbor} is stored as a flat [2*n_faces] pair array.
+    std::vector<int32_t> face_stencil_S0_offsets;  // [n_faces + 1] prefix-sum
+    std::vector<int32_t> face_stencil_S0_cells;    // variable-length upwind lobe cells
+    std::vector<int32_t> face_stencil_S1;          // [2 * n_faces] = {owner, neighbor}
+    std::vector<int32_t> face_stencil_S2_offsets;  // [n_faces + 1] prefix-sum
+    std::vector<int32_t> face_stencil_S2_cells;    // variable-length downwind lobe cells
+
+    // ── MP5 5-cell walk (scheme 8) ─────────────────────────────────────────
+    std::vector<int32_t> face_stencil_5;           // [5 * n_faces] = {u2, u1, u, v, v1}
+    std::vector<int32_t> face_mp5_case;            // [n_faces] case ∈ {1,2,3,4}
+
+    // Convenience
+    bool has_stencil_data() const { return !face_stencil_S0_offsets.empty(); }
 };
 
 // ─────────────────────────────────────────────────────────────────────────────

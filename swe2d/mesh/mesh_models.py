@@ -86,6 +86,15 @@ class MeshResult:
     region_id: np.ndarray
     target_size: np.ndarray
     quality_summary: Optional[Dict[str, object]] = None
+    # ── WENO3 face sub-stencils (scheme 6) ────────────────────
+    face_stencil_S0_offsets: Optional[np.ndarray] = None
+    face_stencil_S0_cells: Optional[np.ndarray] = None
+    face_stencil_S1: Optional[np.ndarray] = None
+    face_stencil_S2_offsets: Optional[np.ndarray] = None
+    face_stencil_S2_cells: Optional[np.ndarray] = None
+    # ── MP5 5-cell walk (scheme 8) ────────────────────────────
+    face_stencil_5: Optional[np.ndarray] = None
+    face_mp5_case: Optional[np.ndarray] = None
 
 
 _CELL_TYPES = {"triangular", "quadrilateral", "cartesian", "channel_generator", "empty"}
