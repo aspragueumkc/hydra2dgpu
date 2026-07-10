@@ -307,7 +307,7 @@ def _manning_normal_depth(q: float, n_mann: float, s0: float) -> float:
 # ─────────────────────────────────────────────────────────────────────────────
 # Valid scheme combinations for GPU hydraulics tests
 # ─────────────────────────────────────────────────────────────────────────────
-VALID_SPATIAL_SCHEMES = [0, 1, 2, 3, 4, 6]  # FO, Fast, MinMod, MC, VanLeer, WENO5
+VALID_SPATIAL_SCHEMES = [0, 1, 2, 3, 4, 5, 6, 7, 8]  # FO, Fast, MinMod, MC, VanLeer, BJ, WENO3, WENO5, MP5
 VALID_TEMPORAL_SCHEMES = [1, 2, 3, 5, 6]    # Euler, RK2, RK3, Graph-RK4, Graph-RK5
 GODUNOV_MODES = [0, 1]                       # standard, rollout
 

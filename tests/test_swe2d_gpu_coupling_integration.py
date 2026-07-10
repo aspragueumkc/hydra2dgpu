@@ -57,7 +57,7 @@ def _gpu_available():
         return False
 
 
-def _create_backend():
+def _create_backend(scheme_id: int = 0):
     """Build a 4-cell SWE2DBackend with solver (mirrors GUI init)."""
     node_x = np.array([0.0, 5.0, 10.0, 0.0, 5.0, 10.0], dtype=np.float64)
     node_y = np.array([0.0, 0.0, 0.0, 5.0, 5.0, 10.0], dtype=np.float64)
@@ -76,12 +76,12 @@ def _create_backend():
     )
     n_cells = 4
 
-    # The GUI uses SolverModelOptions with enable_pipe_network_module to
-    # enable GPU structures mode.  Pass model_options with structures
-    # enabled so the solver is compatible with structures coupling.
-    from swe2d.extensions.extension_models import SolverModelOptions
+    from swe2d.extensions.extension_models import SolverModelOptions, SpatialDiscretization
     opts = SolverModelOptions()
     opts.hydraulic_structures.enabled = True
+
+    # MP5 requires CFL ≤ 0.4; clamp for that scheme
+    cfl = 0.4 if scheme_id == 8 else 0.45
 
     backend.initialize(
         h0=np.array([0.2, 0.2, 0.1, 0.1], dtype=np.float64),
@@ -90,7 +90,8 @@ def _create_backend():
         g=9.81,
         dt_fixed=0.25,
         dt_max=0.25,
-        cfl=0.45,
+        cfl=cfl,
+        spatial_discretization=SpatialDiscretization(scheme_id),
         model_options=opts,
     )
     return backend
@@ -311,7 +312,49 @@ class TestGUICouplingPath(unittest.TestCase):
             self.assertTrue(np.all(np.isfinite(h)),
                 f"h not finite at step {step_i}")
 
-    # ── Test 4: Re-build coupling mid-simulation ──────────────────
+    # ── Test 5: New spatial schemes through full coupling path ─────
+
+    def test_new_schemes_through_coupling_path(self):
+        """Sweep schemes 5, 6, 8 through the drainage+structures coupling path.
+
+        Each scheme gets a fresh backend and controller, exercises the full
+        apply_native_device_sources → step → get_state loop, and verifies
+        no NaN / no negative depth / GPU active.
+        """
+        for scheme_id, name in [(5, "Barth-Jespersen"), (6, "WENO3"), (8, "MP5")]:
+            backend = _create_backend(scheme_id=scheme_id)
+            try:
+                diag = backend.step(0.1)
+                if not diag.get("gpu_active"):
+                    self.skipTest(f"GPU not active for scheme {scheme_id}")
+
+                controller = self._build_controller(
+                    _pipe_network_config(),
+                    _structures_config(),
+                )
+
+                for step_i in range(5):
+                    t = float(step_i) * 0.25
+                    dt = 0.25
+
+                    applied = controller.apply_native_device_sources(t, dt)
+                    self.assertTrue(applied,
+                        f"apply failed for {name} (scheme {scheme_id}) step {step_i}")
+
+                    diag = backend.step(dt)
+                    self.assertTrue(diag.get("gpu_active", False),
+                        f"GPU inactive for {name} (scheme {scheme_id})")
+
+                    h, hu, hv = backend.get_state()
+                    self.assertTrue(np.all(np.isfinite(h)),
+                        f"h not finite for {name} at step {step_i}")
+                    self.assertTrue(np.all(h >= -1e-10),
+                        f"negative depth for {name} at step {step_i}: min={h.min():.4e}")
+            finally:
+                try:
+                    backend.destroy()
+                except Exception:
+                    pass
 
     def test_rebuild_coupling_mid_simulation(self):
         """Destroy and rebuild the coupling controller mid-simulation.

@@ -15,7 +15,6 @@ from swe2d.workbench.devtools.ast_patterns import scan_view_file
 from swe2d.workbench.devtools.patch_builder import (
     Edit,
     build_rename_patch,
-    rename_in_file,
 )
 from swe2d.workbench.devtools.validation import (
     enumerate_all_object_names,

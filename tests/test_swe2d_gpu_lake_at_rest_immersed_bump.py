@@ -64,7 +64,7 @@ class TestGPULakeAtRestImmersedBump(unittest.TestCase):
     STAGE = 0.5
     T_END = 5.0
 
-    def _build(self):
+    def _build(self, spatial_scheme: int = 0):
         mod = _load_module()
         node_x, node_y, node_z, cell_nodes = _make_rect_mesh(
             self.NX, self.NY, self.LX, self.LY, zb_func=_bed_elevation
@@ -102,16 +102,18 @@ class TestGPULakeAtRestImmersedBump(unittest.TestCase):
         # Initial condition: stage = self.STAGE, capped so h ≥ 0
         h0 = np.maximum(self.STAGE - cell_zb, 0.0).astype(np.float64)
 
+        cfl = 0.4 if spatial_scheme == 8 else 0.45
         solver = mod.swe2d_create_solver(
-            mesh, h0, n_mann=0.0, cfl=0.45, dt_max=0.5, use_gpu=True, g=9.8
+            mesh, h0, n_mann=0.0, cfl=cfl, dt_max=0.5, use_gpu=True, g=9.8,
+            spatial_scheme=spatial_scheme,
         )
 
         perm = mod.swe2d_get_cell_perm(mesh)
         zb_p = cell_zb[perm]
         return mod, mesh, solver, zb_p
 
-    def _run_to_end(self):
-        mod, mesh, solver, zb_p = self._build()
+    def _run_to_end(self, spatial_scheme: int = 0):
+        mod, mesh, solver, zb_p = self._build(spatial_scheme)
         t = 0.0
         last_diag = None
         while t < self.T_END:
@@ -137,3 +139,11 @@ class TestGPULakeAtRestImmersedBump(unittest.TestCase):
             limit,
             msg=f"Immersed bump L∞ stage error {linf:.3e} m exceeds limit ({limit:.1e} m)",
         )
+
+    def test_new_schemes_stability(self):
+        """Sweep schemes 5, 6, 8 — must remain stable (no NaN, no negative depth)."""
+        for scheme, name in [(5, "Barth-Jespersen"), (6, "WENO3"), (8, "MP5")]:
+            h, _, last_diag = self._run_to_end(spatial_scheme=scheme)
+            self.assertTrue(last_diag["gpu_active"], f"GPU inactive for {name}")
+            self.assertTrue(np.all(np.isfinite(h)), f"NaN/Inf depth for {name}")
+            self.assertTrue(np.all(h >= -1e-10), f"Negative depth for {name}: min={h.min():.4e}")

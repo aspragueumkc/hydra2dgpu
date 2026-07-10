@@ -15,6 +15,24 @@ import concurrent.futures
 from typing import Any, Dict, List, Optional, Callable
 
 
+_VALID_SCHEMES: frozenset = frozenset(range(9))
+
+
+def validate_scheme(scheme: int) -> int:
+    """Validate and warn about scheme number. Returns valid scheme or raises."""
+    if scheme not in _VALID_SCHEMES:
+        raise ValueError(
+            f"Invalid spatial_scheme={scheme}. Must be 0-8."
+        )
+    if scheme == 6:
+        import logging
+        logging.getLogger(__name__).warning(
+            "spatial_scheme=6 was FV_WENO5; now it is FV_WENO3 (true 3-sub-stencil). "
+            "To keep WENO5, use spatial_scheme=7."
+        )
+    return scheme
+
+
 def _ensure_mps() -> bool:
     """Start the NVIDIA MPS daemon if it's not already running.
 

@@ -6,8 +6,13 @@
 This document explains how the SWE2D solver achieves its advertised accuracy
 on unstructured meshes — and where the practical accuracy ceiling sits given
 the 1-ring cell-edge stencil and TVD-limiter constraints. It is the
-reference for choosing between `FV_FIRST_ORDER`, `FV_MUSCL_*`, and `FV_WENO5`
-schemes.
+reference for choosing between `FV_FIRST_ORDER`, `FV_MUSCL_*`, `FV_BARTH_JESPERSEN`,
+`FV_WENO3`, `FV_WENO5`, and `FV_MP5` schemes.
+
+> **See also**: [Advanced Spatial Schemes — Technical Guide](ADVANCED_SPATIAL_SCHEMES.md)
+> for the math, references, and properties of `FV_BARTH_JESPERSEN` (5),
+> `FV_WENO3` true-3-sub-stencil (6), and `FV_MP5` (8). Those three schemes are
+> introduced in [Implementation Plan: Advanced Spatial Reconstruction Schemes](IMPLEMENTATION_PLANS/2026-07-10-advanced-spatial-schemes.md).
 
 ## Spatial Discretization
 
@@ -22,7 +27,7 @@ The FVM stencil is built from the **cell-edge CSR** (`cell_edge_offsets[]` / `ce
 
 The stencil width is always the **1-ring** — only immediate face neighbors. No scheme expands the stencil beyond this; higher order changes the *reconstruction accuracy*, not which cells participate.
 
-### Spatial Schemes (0–5)
+### Spatial Schemes (0–8)
 
 | Scheme | Value | Reconstruction | Limiter | Max. Order | Notes |
 |--------|:-----:|---------------|---------|:----------:|-------|
@@ -31,17 +36,21 @@ The stencil width is always the **1-ring** — only immediate face neighbors. No
 | `FV_MUSCL_MINMOD` | 2 | Green-Gauss + TVD | **MinMod** | **2nd** | Most conservative TVD, most stable, safest for mixed/hybrid meshes |
 | `FV_MUSCL_MC` | 3 | Green-Gauss + TVD | **MC (monotonized-central)** | **2nd** | Balanced between accuracy and stability |
 | `FV_MUSCL_VAN_LEER` | 4 | Green-Gauss + TVD | **Van Leer** (smooth) | **2nd** | Smooth limiter, graceful degradation on skewed cells — best all-rounder |
-| `FV_WENO5` | 6 | WENO5 + LSQ 2-ring gradient | Nonlinear weights + 2-ring stencil | **~3rd** | True 5th-order WENO on unstructured via 2-ring least-squares gradient; GPU-first |
+| `FV_BARTH_JESPERSEN` | **5** | Green-Gauss + Barth-Jespersen | **Barth-Jespersen** (isotropic) | **2nd** | Graceful 1st-order degradation on poor meshes; same CFL as MUSCL; best for urban drainage, mixed-element meshes |
+| `FV_WENO3` | **6** | 3-sub-stencil WENO (Hu-Shu) | **Nonlinear weights** (no TVD) | **3rd** | True 3-sub-stencil WENO on 1-ring; smoother than TVD on smooth flows; replaces old WENO3-like stub |
+| `FV_WENO5` | **7** | WENO5 + LSQ 2-ring gradient | Nonlinear weights + 2-ring stencil | **~3rd** | True 5th-order WENO on unstructured via 2-ring least-squares gradient; GPU-first *(moved from scheme 6)* |
+| `FV_MP5` | **8** | 5-cell directional walk + MP5 mapped limiter | **MP5** (Suresh-Huynh, 4-case) | **4th** | Highest-order option; CFL ≤ 0.4; best for smooth flows where accuracy matters more than speed |
 
-All schemes 1–5 use the **surface-gradient method** (Zhou et al. 2001): reconstruct η = h + zb via ∇η, then convert back to depth. This preserves lake-at-rest to machine precision independent of mesh irregularity.
+All schemes 1–5 (MUSCL variants and Barth-Jespersen) use the **surface-gradient method** (Zhou et al. 2001): reconstruct η = h + zb via ∇η, then convert back to depth. This preserves lake-at-rest to machine precision independent of mesh irregularity. WENO3 and MP5 reconstruct primitive variables directly.
 
 ### Accuracy Limit
 
-**2nd-order is the ceiling** for the current architecture, bounded by:
+**Order depends on scheme selection.** TVD schemes are bounded by:
 
 1. **Sweby's theorem** — any TVD scheme with a 3-point stencil is at most 2nd-order accurate in smooth regions.
-2. **1-ring stencil** — 3rd-order unstructured reconstruction requires at least 2 layers of neighbors (neighbors-of-neighbors).
-3. **WENO3-like is not true WENO3** — genuine unstructured WENO3 needs 3 sub-stencils (cell triplets) per edge, not 2 candidates.
+2. **1-ring stencil** — standard Green-Gauss reconstruction is at most 2nd-order on a 1-ring. True WENO3 (scheme 6) achieves 3rd-order on the 1-ring via 3 sub-stencils per edge.
+3. **WENO3-like stub replaced** — the planned-but-never-implemented 2-candidate blend (old scheme 5) is superseded by true WENO3 (scheme 6), which uses 3 sub-stencils. See [ADVANCED_SPATIAL_SCHEMES.md](ADVANCED_SPATIAL_SCHEMES.md) for details.
+4. **MP5 (scheme 8)** circumvents the 1-ring ceiling via a directional 5-cell walk along the face normal, achieving 4th-order at CFL ≤ 0.4.
 
 ### Non-Orthogonal Mesh Accuracy
 
@@ -105,12 +114,14 @@ HLLC Riemann solver                                ← flux computed from clampe
 | **Shallow-front fallback** | `enable_shallow_front_recon_fallback` | Depth-based check, independent of mesh quality. Still active. |
 | **Surface-gradient method** (reconstruct $\eta = h + z_b$, convert back) | Applied to depth only | **Lake-at-rest is exact regardless of mesh skew** — $\nabla\eta = 0$ for constant $\eta$, so $r=0$, $\phi=0$, and the reconstruction returns $q_0/q_1$ unchanged. This is a provable property of the Zhou et al. method. |
 | **Momentum cap** | Applied after reconstruction | Geometry-independent, always active. Caps prevent unbounded velocity from erroneous gradients on skewed cells. |
-| **WENO3 nonlinear blend** (scheme 5 only) | GPU: `weno3_like_reconstruct` lambda | Partially mitigates — on skewed cells the gradient candidate has larger smoothness indicator $\beta$, so the WENO weight shifts toward the midpoint candidate, effectively reducing to 1st-order on the most skewed cells. |
+| **Barth-Jespersen limiter** (scheme 5) | GPU: `barth_jespersen_limiter` kernel | Applies per-face isotropic limiting — on skewed cells the gradient is uniformly reduced by the minimum neighbor ratio $\psi = \min_j \phi_{ij}$, degrading to 1st-order isotropically. Unlike TVD limiters, does **not** depend on the Green-Gauss gradient direction for monotonicity detection. |
+| **WENO3 nonlinear blend** (scheme 6) | GPU: `weno3_reconstruct` kernel | 3-sub-stencil smoothness indicators $\beta_k$ weighted by Jiang-Shu formula. On skewed cells the stencil with largest $\beta$ is down-weighted, shifting weight to smoother stencils — effectively reducing to 2nd or 1st order where mesh quality is poor. |
+| **MP5 mapped limiter** (scheme 8) | GPU: `mp5_reconstruct` kernel | 4-case Suresh-Huynh mapped function. On skewed cells the high-order candidate $f^{HO}$ falls outside the TVD interval, triggering case 2 (midpoint) or case 4 (full TVD collapse). Mesh-independent monotonicity enforcement. |
 | **Active-set dry skipping** | GPU: `d_active` check in flux kernel | Unaffected by mesh quality. |
 
 #### Empirical Validation
 
-The sweep at `tests/swe2d_nonorth_gpu_sweep_common.py` tests all 6 spatial schemes × 2 temporal orders × 2 Godunov modes at `skew_fraction_dx=0.25$ (25% of cell width interior node perturbation) on GPU.
+The sweep at `tests/swe2d_nonorth_gpu_sweep_common.py` tests all 9 spatial schemes × 2 temporal orders × 2 Godunov modes at `skew_fraction_dx=0.25$ (25% of cell width interior node perturbation) on GPU.
 
 The orthogonal vs non-orthogonal solution comparison uses these tolerances:
 - `rel_l2_h < 10%` — depth field differs by up to 10%
@@ -123,9 +134,9 @@ These tolerances are relatively loose, confirming that non-orthogonality introdu
 
 | Skew Level ($\theta_e$) | Expected Accuracy | Recommended Scheme |
 |:-----------------------:|:-----------------:|:------------------:|
-| $< 10^\circ$ (good quad, well-shaped tri) | Full 2nd-order | Van Leer (4) or MC (3) |
-| $10^\circ$–$30^\circ$ (reasonable unstructured) | ~1.5th–2nd order | MinMod (2) or Van Leer (4) |
-| $30^\circ$–$60^\circ$ (poor quality) | 1st-order dominant | MinMod (2) — safest |
+| $< 10^\circ$ (good quad, well-shaped tri) | Full 2nd–4th order | MP5 (8), WENO3 (6), Van Leer (4), MC (3) |
+| $10^\circ$–$30^\circ$ (reasonable unstructured) | ~1.5th–2nd order | Van Leer (4), Barth-Jespersen (5), or MinMod (2) |
+| $30^\circ$–$60^\circ$ (poor quality) | 1st-order dominant | Barth-Jespersen (5) — isotropic degradation, or MinMod (2) |
 | $> 60^\circ$ (nearly degenerate) | 1st-order + risk of instability | First-order (0) or fix mesh |
 
 For production floodplain work, typical meshes generated by GMSH or TQMesh with reasonable element quality fall in the $10^\circ$–$25^\circ$ range, where the higher-order schemes still provide meaningful benefit over first-order.

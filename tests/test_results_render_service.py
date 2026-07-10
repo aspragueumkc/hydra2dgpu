@@ -252,7 +252,7 @@ class TestRenderProfileOnFigure(unittest.TestCase):
         }
 
         # Mock load_structure_flows_fn to return structure data
-        def mock_load_structure_flows(gpkg, rid, t, t_tol=1.0):
+        def mock_load_structure_flows(gpkg, rid, t, _t_tol=1.0):
             return [
                 {
                     "object_id": "s1",

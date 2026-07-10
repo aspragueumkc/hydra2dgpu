@@ -89,6 +89,29 @@ class BCType:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# Scheme CFL limits and migration helpers
+# ─────────────────────────────────────────────────────────────────────────────
+
+_SCHEME_MAX_CFL: dict[int, float] = {
+    0: 0.8, 1: 0.8, 2: 0.8, 3: 0.8, 4: 0.8,
+    5: 0.8,   # Barth-Jespersen
+    6: 0.8,   # WENO3
+    7: 0.5,   # WENO5
+    8: 0.4,   # MP5
+}
+
+
+def _warn_scheme_migration(scheme: int) -> int:
+    """Warn if using old scheme-6 (was WENO5, now WENO3). Returns unchanged scheme."""
+    if scheme == 6:
+        logger.warning(
+            "spatial_scheme=6 was FV_WENO5; now it is FV_WENO3 (true 3-sub-stencil). "
+            "To keep WENO5, use spatial_scheme=7."
+        )
+    return scheme
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # Module loader (GPU only — always loads hydra_swe2d)
 # ─────────────────────────────────────────────────────────────────────────────
 _swe2d_mod = None
@@ -888,6 +911,19 @@ class SWE2DBackend:
             "station_offsets": np.asarray(raw["station_offsets"], dtype=np.int32),
         }
 
+    # ── Scheme / CFL helpers ────────────────────────────────────────────────
+
+    def _clamp_cfl_for_scheme(self) -> None:
+        """Clamp CFL to the maximum allowed by the selected spatial scheme."""
+        scheme = getattr(self, '_spatial_scheme', 0)
+        max_cfl = _SCHEME_MAX_CFL.get(scheme, 0.8)
+        if hasattr(self, '_cfl') and self._cfl > max_cfl:
+            logger.warning(
+                f"CFL={self._cfl} exceeds scheme {scheme} max CFL={max_cfl}, "
+                f"clamping to {max_cfl}"
+            )
+            self._cfl = max_cfl
+
     # ── Solver init ──────────────────────────────────────────────────────────
 
     def initialize(
@@ -1014,6 +1050,11 @@ class SWE2DBackend:
         if self._solver_h is not None:
             self._mod.swe2d_destroy(self._solver_h)
 
+        self._spatial_scheme = int(spatial_discretization)
+        _warn_scheme_migration(self._spatial_scheme)
+        self._cfl = cfl
+        self._clamp_cfl_for_scheme()
+
         native_opts: Dict[str, object] = {
             "temporal_order": int(temporal_scheme),
             "spatial_scheme": int(spatial_discretization),
@@ -1036,7 +1077,7 @@ class SWE2DBackend:
             self._mesh_h,
             h0_arr, hu0_arr, hv0_arr, n_mann_cell_arr,
             g=g, k_mann=k_mann, n_mann=n_mann, h_min=h_min,
-            cfl=cfl, dt_max=dt_max, dt_fixed=dt_fixed, dt_initial=dt_initial,
+            cfl=self._cfl, dt_max=dt_max, dt_fixed=dt_fixed, dt_initial=dt_initial,
             max_inv_area=max_inv_area,
             cfl_lambda_cap=cfl_lambda_cap,
             momentum_cap_min_speed=momentum_cap_min_speed,

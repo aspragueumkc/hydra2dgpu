@@ -12,6 +12,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - New `open_bc_relaxation` stability knob (Numerics / Stability) that damps reflections at OPEN, REFLECT, NORMAL_DEPTH, and NORMAL_DEPTH_SLOPE boundaries. Per-edge overrides can be supplied via a `bc_relax` field on the BC line layer.
+- New spatial reconstruction schemes:
+  - `FV_BARTH_JESPERSEN` (scheme 5): Barth-Jespersen gradient limiter for robust 2nd-order on poor meshes
+  - `FV_WENO3` (scheme 6): True 3-sub-stencil WENO, 3rd-order with 1-ring stencil
+  - `FV_MP5` (scheme 8): Suresh-Huynh Mapped Monotonicity-Preserving, 4th-order (CFL ≤ 0.4)
+- Per-scheme CFL limits enforced in solver backend
+
+### Changed
+
+- `FV_WENO5` renumbered from scheme 6 to scheme 7. Old scheme-6 persisted configs emit a migration warning.
+- Reconstruction scheme combo in GUI updated to show all 9 schemes
 
 ---
 

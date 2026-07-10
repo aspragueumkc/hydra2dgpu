@@ -158,6 +158,17 @@ void swe2d_reorder_edges_for_gpu(SWE2DMesh& mesh);
     to each neighbour centroid. */
 void swe2d_build_cell_ring2(SWE2DMesh& mesh);
 
+/** Build the WENO3 face sub-stencil tables S0, S1, S2 (scheme 6).
+    For each face: S1={owner,neighbor}, S0=neighbors of owner\neighbor (upwind),
+    S2=neighbors of neighbor\owner (downwind).  CSR offsets for S0, S2.
+    Boundary faces produce empty S2. */
+void swe2d_build_face_substencil_tables(SWE2DMesh& mesh);
+
+/** Build the MP5 5-cell face-normal walk table (scheme 8).
+    For each interior face f: {u2,u1,u,v,v1} walking the cell graph 2 hops
+    upwind and 1 hop downwind from the face. Boundary faces fall back to c0. */
+void swe2d_build_face_stencil_5_table(SWE2DMesh& mesh);
+
 /// Validate mesh consistency. Returns empty string on success, error message on failure.
 std::string swe2d_validate_mesh(const SWE2DMesh& mesh);
 

@@ -7,7 +7,6 @@ import matplotlib
 matplotlib.use('Agg', force=True)
 import matplotlib.pyplot as plt
 from matplotlib.figure import Figure
-from matplotlib.collections import PolyCollection
 
 
 class TestRenderNetworkWithSelection(unittest.TestCase):

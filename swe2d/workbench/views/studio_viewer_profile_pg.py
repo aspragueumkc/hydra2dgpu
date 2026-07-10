@@ -514,7 +514,7 @@ class PGProfileWidget(QtWidgets.QWidget):
             use_fill_cmap = fill_key != "none"
 
             from swe2d.results.queries import (
-                find_nearest_timestep, load_profile, load_profile_from_live,
+                find_nearest_timestep, load_profile,
                 load_structure_flows_at_time,
             )
             from swe2d import units as _u

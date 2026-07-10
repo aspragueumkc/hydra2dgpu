@@ -915,7 +915,7 @@ def render_unstructured_snapshot_image(
     return out
 
 
-if True:  # ponytail: always define block; Qt imported inside functions that need it
+if True:  # noqa - ponytail: always define block; Qt imported inside functions that need it
     try:
         from qgis.PyQt import QtCore, QtGui
     except Exception:

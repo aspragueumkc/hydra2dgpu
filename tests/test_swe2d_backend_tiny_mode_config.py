@@ -15,18 +15,18 @@ class _FakeModuleBase:
     def swe2d_build_mesh(self, *args, **kwargs):
         return {"mesh": True}
 
-    def swe2d_mesh_info(self, mesh_h):
+    def swe2d_mesh_info(self, _mesh_h):
         return {"n_cells": 1}
 
-    def swe2d_boundary_edges(self, mesh_h):
+    def swe2d_boundary_edges(self, _mesh_h):
         empty_i = np.empty(0, dtype=np.int32)
         empty_f = np.empty(0, dtype=np.float64)
         return empty_i, empty_i, empty_i, empty_i, empty_f
 
-    def swe2d_get_cell_perm(self, mesh_h):
+    def swe2d_get_cell_perm(self, _mesh_h):
         return np.array([0], dtype=np.int32)
 
-    def swe2d_destroy(self, solver_h):
+    def swe2d_destroy(self, _solver_h):
         return None
 
 
@@ -39,7 +39,7 @@ class _FakeModuleNew(_FakeModuleBase):
         self.create_kwargs = dict(kwargs)
         return {"solver": True}
 
-    def swe2d_run_to_time(self, solver_h, t_end, dt_request, diag_batch_size):
+    def swe2d_run_to_time(self, _solver_h, t_end, dt_request, diag_batch_size):
         self.last_run_diag_batch_size = int(diag_batch_size)
         return {
             "diags": [],

@@ -10,8 +10,6 @@ from typing import Dict, List
 
 import numpy as np
 
-from swe2d.results.db_utils import open_ro as _open_ro
-
 
 # ---------------------------------------------------------------------------
 # Union

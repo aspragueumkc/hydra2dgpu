@@ -454,8 +454,24 @@ The **Parameters** tab is the third step in the workflow. It contains five pages
 | **Internal flow layer** | Polygon layer defining internal source/sink flow regions. | Layer combo | (none) | Internal source/sink flows |
 | **Internal flow field** | Field name in the internal flow layer containing discharge values. Positive = source, negative = sink. | Text | q_cms | Internal flow configuration |
 | **Run duration** | Total simulation duration. | Text (decimal hours or HH:MM) | 1:00 | Always |
-| **Reconstruction** | Spatial scheme for cell-face value extrapolation. | `First-order (0)`, `MUSCL Fast (1)`, `MUSCL MinMod (2)`, `MUSCL MC (3)`, `MUSCL Van Leer (4)`, `WENO3-like (5)`, `WENO5 (6)` | First-order (0) | Accuracy vs. speed trade-off |
+| **Reconstruction** | Spatial scheme for cell-face value extrapolation. | `First-order (0)`, `MUSCL Fast (1)`, `MUSCL MinMod (2)`, `MUSCL MC (3)`, `MUSCL Van Leer (4)`, `Barth-Jespersen (5)`, `WENO3 (6)`, `WENO5 (7)`, `MP5 (8)` | First-order (0) | Accuracy vs. speed trade-off — see scheme guidance below |
 | **Temporal discretization** | Time integration method (ODE solver). | `Euler RK1 (1)`, `RK2 Heun (2)`, `RK4 (4)`, `Graph-safe RK4 (5)`, `Graph-safe RK5 (6)` | RK2 (2) | Accuracy vs. stability trade-off |
+
+> **Choosing a reconstruction scheme:** See [SOLVER_ORDER_AND_STENCIL.md](SOLVER_ORDER_AND_STENCIL.md)
+> for the complete spatial accuracy analysis and [ADVANCED_SPATIAL_SCHEMES.md](ADVANCED_SPATIAL_SCHEMES.md)
+> for detailed guidance on the three schemes new in v2.0:
+>
+> - **Barth-Jespersen (5)**: Best when mesh quality is poor (sliver triangles, stretched quads, mixed
+>   element types). Degrades gracefully to 1st-order isotropically. Good for urban drainage where
+>   meshes are complex. Same CFL as MUSCL (0.8).
+> - **WENO3 (6)**: 3rd-order accuracy with only 1-ring stencil memory. Good general-purpose upgrade
+>   from 2nd-order MUSCL. Smoother results than TVD limiters on smooth flows.
+> - **MP5 (8)**: Highest-order option (4th). Requires CFL ≤ 0.4 — doubles wall-clock time vs CFL 0.8.
+>   Best for smooth flows where accuracy matters more than speed.
+>
+> **Note:** WENO5 moved from scheme 6 to scheme 7. If you have saved configurations with
+> `spatial-scheme=6`, they will now select WENO3 instead of WENO5. The CLI emits a migration warning
+> when the old value is detected.
 
 ### 6.2 Rain / Hydrology Page
 

@@ -481,7 +481,7 @@ class MeshController:
         pre-populated combo on the Layers page.
         """
         from qgis.PyQt import QtWidgets
-        from qgis.core import QgsProject, QGisRasterLayer
+        from qgis.core import QgsProject, QgsRasterLayer
         from swe2d.services.terrain_assignment_service import sample_raster_at_nodes
 
         view = self._view

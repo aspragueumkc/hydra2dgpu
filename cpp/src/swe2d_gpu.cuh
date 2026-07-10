@@ -138,8 +138,13 @@ struct SWE2DDeviceState {
     double* d_grad_y_lim = nullptr;   // [n_cells]
 
     // Precomputed face reconstruction arrays (schemes 6, 8)
-    double* d_weno3_face_recon = nullptr;  // [n_faces] WENO3 per-face q-hat
-    double* d_mp5_face_recon   = nullptr;  // [n_faces] MP5 per-face q-hat
+    // Each scheme reconstructs all 3 conserved variables (eta, hu, hv) per face.
+    double* d_weno3_face_eta = nullptr;  // [n_edges]
+    double* d_weno3_face_hu  = nullptr;  // [n_edges]
+    double* d_weno3_face_hv  = nullptr;  // [n_edges]
+    double* d_mp5_face_eta   = nullptr;  // [n_edges]
+    double* d_mp5_face_hu    = nullptr;  // [n_edges]
+    double* d_mp5_face_hv    = nullptr;  // [n_edges]
 
     // WENO3 face sub-stencil data (scheme 6) — uploaded from mesh
     int32_t* d_face_stencil_S0_offsets = nullptr;
@@ -1467,10 +1472,12 @@ __global__ void swe2d_apply_edge_relax_kernel(
 /// Barth-Jespersen limiter (scheme 5): one thread per cell, applies slope limiter
 /// using the 1-ring neighbor envelope to bound extrapolated face values.
 /// Uses cell_edge_offsets/ids (CSR over edges) plus edge_c0/edge_c1 to resolve
-/// neighbor cells from incident edge indices.
-/// Outputs limited gradients grad_x_lim[i], grad_y_lim[i].
+/// Barth-Jespersen slope limiter (scheme 5).  One thread per cell.
+/// Operates on ETA (water surface = h + zb) for C-property compliance.
+/// Outputs limited eta gradients grad_x_lim[i], grad_y_lim[i].
 __global__ void barth_jespersen_kernel(
-    const double* __restrict__ q,
+    const double* __restrict__ h,
+    const double* __restrict__ zb,
     const double* __restrict__ grad_x,
     const double* __restrict__ grad_y,
     const double* __restrict__ cell_cx,
@@ -1492,9 +1499,14 @@ __global__ void extract_hx_hy_kernel(
     int n_cells);
 
 /// WENO3 reconstruction (scheme 6): one thread per face, three sub-stencil
-/// candidate reconstructions combined via Hu-Shu nonlinear weights.
+/// candidate reconstructions via LSQ plane fits, combined via Hu-Shu
+/// nonlinear weights.  Reconstructs ALL 3 conserved variables (eta, hu, hv).
+/// Output arrays are per-face reconstructed values.
 __global__ void weno3_kernel(
-    const double* __restrict__ q,
+    const double* __restrict__ h,
+    const double* __restrict__ zb,
+    const double* __restrict__ hu,
+    const double* __restrict__ hv,
     const double* __restrict__ cell_cx,
     const double* __restrict__ cell_cy,
     const double* __restrict__ face_mid_x,
@@ -1505,20 +1517,30 @@ __global__ void weno3_kernel(
     const int* __restrict__ face_stencil_S2_offsets,
     const int* __restrict__ face_stencil_S2_cells,
     int n_faces,
-    double* __restrict__ q_face_recon);
+    double* __restrict__ eta_face,
+    double* __restrict__ hu_face,
+    double* __restrict__ hv_face);
 
 /// MP5 reconstruction (scheme 8): one thread per face, 5-cell walk with
-/// mapped monotonicity-preserving limiter (Suresh-Huynh 1997).
+/// Lagrange interpolation on face-normal-projected coordinates and
+/// runtime Suresh-Huynh monotonicity-preserving limiter.
+/// Reconstructs ALL 3 conserved variables (eta, hu, hv).
 __global__ void mp5_kernel(
-    const double* __restrict__ q,
+    const double* __restrict__ h,
+    const double* __restrict__ zb,
+    const double* __restrict__ hu,
+    const double* __restrict__ hv,
     const double* __restrict__ cell_cx,
     const double* __restrict__ cell_cy,
     const double* __restrict__ face_mid_x,
     const double* __restrict__ face_mid_y,
+    const double* __restrict__ face_nx,
+    const double* __restrict__ face_ny,
     const int* __restrict__ face_stencil_5,
-    const int* __restrict__ face_mp5_case,
     int n_faces,
-    double* __restrict__ q_face_recon);
+    double* __restrict__ eta_face,
+    double* __restrict__ hu_face,
+    double* __restrict__ hv_face);
 
 /// Host-callable wrapper that launches swe2d_apply_edge_relax_kernel on the solver stream. @host
 void swe2d_gpu_set_edge_bc_relax(

@@ -113,7 +113,7 @@ def _si_m_per_model_from_wkt(wkt: str) -> float:
         return float(unit_part[comma_idx + 1:].split("]")[0].strip())
     except Exception:
         return 1.0
-from swe2d.runtime.backend import SWE2DBackend, build_mesh as shared_build_mesh
+from swe2d.runtime.backend import SWE2DBackend, build_mesh as shared_build_mesh, _warn_scheme_migration
 
 
 def _parse_params(param_source: str) -> Dict[str, Any]:
@@ -304,7 +304,6 @@ def execute_run(
     thiessen_kwargs = {"thiessen_forcing": thiessen_forcing} if thiessen_forcing else {}
 
     # Initialize solver — read ALL params the UI provides, not just a subset
-    from swe2d.runtime.backend import BCType
 
     # Allow the user to supply an initial depth array via params["params"]["h0"]
     # (list of length ncells).  Defaults to dry (all zeros) so tests that
@@ -319,6 +318,9 @@ def execute_run(
             )
     else:
         h0 = np.zeros(ncells, dtype=np.float64)
+    # Validate and warn on spatial scheme migration
+    spatial_scheme_value = int(rp.get("spatial_scheme", 0))
+    _warn_scheme_migration(spatial_scheme_value)
     backend.initialize(
         h0=h0,
         k_mann=float(rp.get("k_mann", 1.0)),
@@ -347,7 +349,7 @@ def execute_run(
         open_bc_relaxation=float(rp.get("open_bc_relaxation", 0.0)),
         active_set_hysteresis=bool(rp.get("active_set_hysteresis", True)),
         degen_mode=int(rp.get("degen_mode", 0)),
-        spatial_discretization=int(rp.get("spatial_scheme", 0)),
+        spatial_discretization=spatial_scheme_value,
         temporal_scheme=int(rp.get("temporal_scheme", 2)),
         enable_shallow_front_recon_fallback=bool(rp.get("enable_shallow_front_recon_fallback", False)),
     )

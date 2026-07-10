@@ -236,7 +236,7 @@ class MockQgsVectorDataProvider(MockQgsObject):
     def addAttributes(self, fields) -> bool:
         return True
 
-    def changeAttributeValues(self, changes) -> bool:
+    def changeAttributeValues(self, _changes) -> bool:
         return True
 
     def dataSourceUri(self) -> str:

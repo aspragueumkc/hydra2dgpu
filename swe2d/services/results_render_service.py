@@ -201,7 +201,7 @@ def render_timeseries_on_figure(
         var_key=var_key,
         var_label=var_label,
         current_time_sec=result_data.current_time_sec,
-        load_timeseries_fn=lambda rec, lid, vk: (
+        load_timeseries_fn=lambda rec, lid, _vk: (
             load_baked_line_timeseries(rec.gpkg_path, str(rec.run_id), int(lid))
         ),
         length_unit=length_unit,

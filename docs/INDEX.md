@@ -31,6 +31,17 @@ Start here if you're contributing code or extending the plugin.
 | [MODEL_GEOPACKAGE_SCHEMA.md](MODEL_GEOPACKAGE_SCHEMA.md) | Input GPKG tables and field definitions |
 | [RESULTS_GEOPACKAGE_SCHEMA.md](RESULTS_GEOPACKAGE_SCHEMA.md) | Output GPKG tables, BLOB formats |
 | [SOLVER_ORDER_AND_STENCIL.md](SOLVER_ORDER_AND_STENCIL.md) | Spatial/temporal order, stencil, non-orthogonality |
+| [ADVANCED_SPATIAL_SCHEMES.md](ADVANCED_SPATIAL_SCHEMES.md) | Barth-Jespersen, true WENO3, MP5 — math, references, properties |
+
+### Implementation Plans
+
+Authoritative plans for ongoing and upcoming work. Each plan links to the technical guides it references.
+
+| Document | Scope |
+|----------|-------|
+| [IMPLEMENTATION_PLANS/2026-07-10-advanced-spatial-schemes.md](IMPLEMENTATION_PLANS/2026-07-10-advanced-spatial-schemes.md) | Schemes 5/6/8: Barth-Jespersen, true WENO3, MP5 — kernel design, mesh-assembly extensions, rollout |
+| [superpowers/specs/2026-07-10-advanced-spatial-schemes-design.md](superpowers/specs/2026-07-10-advanced-spatial-schemes-design.md) | Design spec: math, stencil tables, kernel interface, CFL enforcement |
+| [superpowers/plans/2026-07-10-advanced-spatial-schemes.md](superpowers/plans/2026-07-10-advanced-spatial-schemes.md) | Implementation plan: rollout order, config migration, testing strategy |
 
 ## For C++ / CUDA Engineers
 

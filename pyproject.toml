@@ -12,8 +12,32 @@ dependencies = [
     "gmsh>=4.12",
 ]
 
+[project.optional-dependencies]
+dev = [
+    "vulture>=2.14",
+]
+
 [project.scripts]
 swe2d-cli = "swe2d.cli.__main__:main"
 
 [tool.setuptools.packages.find]
 include = ["swe2d*"]
+
+[tool.vulture]
+paths = ["swe2d", "tests", "tools", "tests/vulture_whitelist.py"]
+exclude = ["build", "docs", "reference", "QML", "cpp", "graphify-out", "typings"]
+min_confidence = 80
+ignore_names = [
+    "setUp",
+    "setUpClass",
+    "tearDown",
+    "tearDownClass",
+    "fixture_*",
+    "mutate_state",
+    "use_native_source_injection",
+    "uniform_enabled",
+    "timestep_s",
+    "snapshot_data",
+    "standard_tests",
+]
+ignore_decorators = ["pytest.fixture"]

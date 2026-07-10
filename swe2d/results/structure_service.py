@@ -20,10 +20,9 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 
 try:
-    from qgis.core import QgsVectorLayer, QgsFeatureRequest
+    from qgis.core import QgsVectorLayer
 except ImportError:
     QgsVectorLayer = None
-    QgsFeatureRequest = None
 
 _HAVE_QGIS = QgsVectorLayer is not None
 

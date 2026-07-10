@@ -99,7 +99,7 @@ class TestGPUSubcriticalDepthExpansion(unittest.TestCase):
     H_REF = 1.0
     T_END = 200.0
 
-    def _build(self):
+    def _build(self, spatial_scheme: int = 0):
         mod = _load_module()
         node_x, node_y, node_z, cell_nodes = _make_rect_mesh(
             self.NX, self.NY, self.LX, self.LY,
@@ -142,13 +142,15 @@ class TestGPUSubcriticalDepthExpansion(unittest.TestCase):
         cx_p = cell_cx[perm]
         cy_p = cell_cy[perm]
 
+        cfl = 0.4 if spatial_scheme == 8 else 0.45
         solver = mod.swe2d_create_solver(
-            mesh, h0, n_mann=0.0, cfl=0.45, dt_max=0.5, use_gpu=True, g=9.8
+            mesh, h0, n_mann=0.0, cfl=cfl, dt_max=0.5, use_gpu=True, g=9.8,
+            spatial_scheme=spatial_scheme,
         )
         return mod, mesh, solver, cx_p, cy_p
 
-    def _run_to_end(self):
-        mod, mesh, solver, cx_p, cy_p = self._build()
+    def _run_to_end(self, spatial_scheme: int = 0):
+        mod, mesh, solver, cx_p, cy_p = self._build(spatial_scheme)
         t = 0.0
         last_diag = None
         while t < self.T_END:
@@ -179,3 +181,11 @@ class TestGPUSubcriticalDepthExpansion(unittest.TestCase):
             limit,
             msg=f"Subcritical depth-expansion L1 error {l1:.6f} m exceeds limit ({limit:.4f} m)",
         )
+
+    def test_new_schemes_stability(self):
+        """Sweep schemes 5, 6, 8 — must remain stable (no NaN, no negative depth)."""
+        for scheme, name in [(5, "Barth-Jespersen"), (6, "WENO3"), (8, "MP5")]:
+            h, _, _, last_diag = self._run_to_end(spatial_scheme=scheme)
+            self.assertTrue(last_diag["gpu_active"], f"GPU inactive for {name}")
+            self.assertTrue(np.all(np.isfinite(h)), f"NaN/Inf depth for {name}")
+            self.assertTrue(np.all(h >= -1e-10), f"Negative depth for {name}: min={h.min():.4e}")

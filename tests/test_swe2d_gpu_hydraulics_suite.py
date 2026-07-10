@@ -26,7 +26,6 @@ from tests._swe2d_test_helpers import (
     stoker_dam_break,
     VALID_SPATIAL_SCHEMES,
     VALID_TEMPORAL_SCHEMES,
-    QUICK_SPATIAL_COMBOS,
 )
 
 
@@ -212,8 +211,17 @@ class TestGPUAllSchemeCombinations(unittest.TestCase):
     def test_spatial4_van_leer(self):
         self._test_combination(4, 2, 0, "spatial=4(VanLeer) temporal=2(RK2) godunov=0")
 
-    def test_spatial6_weno5(self):
-        self._test_combination(6, 2, 0, "spatial=6(WENO5) temporal=2(RK2) godunov=0")
+    def test_spatial5_barth_jespersen(self):
+        self._test_combination(5, 2, 0, "spatial=5(BJ) temporal=2(RK2) godunov=0")
+
+    def test_spatial6_weno3(self):
+        self._test_combination(6, 2, 0, "spatial=6(WENO3) temporal=2(RK2) godunov=0")
+
+    def test_spatial7_weno5(self):
+        self._test_combination(7, 2, 0, "spatial=7(WENO5) temporal=2(RK2) godunov=0")
+
+    def test_spatial8_mp5(self):
+        self._test_combination(8, 2, 0, "spatial=8(MP5) temporal=2(RK2) godunov=0")
 
     # ── Temporal scheme sweep (spatial=0, godunov=0) ────────────────────
 

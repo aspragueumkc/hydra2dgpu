@@ -22,7 +22,7 @@ from qgis.PyQt.QtCore import Qt
 from qgis.PyQt.QtWidgets import QDockWidget
 
 if TYPE_CHECKING:
-    from swe2d.workbench.studio_dialog import SWE2DWorkbenchStudioDialog as SWE2DWorkbenchDialog
+    from swe2d.workbench.studio_dialog import SWE2DWorkbenchStudioDialog as SWE2DWorkbenchDialog  # noqa: V104
 
 
 @dataclass

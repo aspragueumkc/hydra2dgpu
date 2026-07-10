@@ -131,7 +131,7 @@ def test_non_native_path_uses_external_source_callback():
     def volume_cb(dt, r, c, coupled):
         pass
 
-    def external_cb(bk, dt, r, c, coupled):
+    def external_cb(_bk, dt, r, c, coupled):
         external_calls.append((dt, r, c, coupled))
 
     executor.execute_step(

@@ -38,7 +38,6 @@ from qgis.PyQt.QtWidgets import (
 from swe2d.workbench.devtools.ast_patterns import scan_view_file
 from swe2d.workbench.devtools.patch_builder import (
     Edit,
-    PatchResult,
     build_rename_patch,
 )
 from swe2d.workbench.devtools.validation import (

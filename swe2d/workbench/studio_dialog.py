@@ -22,17 +22,10 @@ from qgis.PyQt import QtCore, QtGui, QtWidgets
 
 from swe2d.workbench.views.studio_component_view import StudioComponent
 # ponytail: tab views imported lazily via studio_tab_builder.py
-from swe2d.workbench.views.studio_viewer import SWE2DStudioViewer
-from swe2d.workbench.views.results_controls import ResultsToolbox
-from swe2d.workbench.views.temporal_dock import TemporalDockWidget
 
-from swe2d.workbench.controllers.run_controller import RunController as WorkbenchController
 from swe2d.workbench.workbench_dialog_builder import WorkbenchDialogBuilder
 from swe2d.workbench.services import unit_conversion_service as _unit_svc
-from swe2d.workbench.services.text_parser_service import (
-    parse_hydrograph_text as _parse_hydrograph_text_logic,
-    parse_time_hours,
-)
+from swe2d.workbench.services.text_parser_service import parse_time_hours
 from swe2d.services import mesh_computation_service as _mesh_svc
 from swe2d.workbench.services import widget_persistence_service as _wp_svc
 from swe2d.workbench.services.runtime_source_application_service import (
@@ -48,12 +41,12 @@ from swe2d.workbench.bridges.project_settings_bridge import (
 from swe2d.workbench.signal_helpers import connect_lambda, safe_disconnect, safe_teardown
 from swe2d.mesh.gmsh_backend import _gmsh_available
 from swe2d.workbench.views.studio_host_methods import (
-    launch_swe2d_workbench_studio,
-    _resolve_workbench_iface,
+    _install_studio_host_controls,
     _remove_workbench_dock_instance,
     _remove_workbench_studio_dock,
+    _resolve_workbench_iface,
     _studio_host_main_window,
-    _install_studio_host_controls,
+    launch_swe2d_workbench_studio,
 )
 
 logger_wb = logging.getLogger(__name__)
@@ -61,27 +54,21 @@ logger_wb = logging.getLogger(__name__)
 try:
     from qgis.core import (
         QgsFeature,
-        QgsField,
         QgsGeometry,
-        QgsMeshLayer,
         QgsProject,
         QgsPointXY,
         QgsRasterLayer,
-        QgsSettings,
         QgsUnitTypes,
         QgsVectorFileWriter,
         QgsVectorLayer,
         QgsWkbTypes,
     )
-    from qgis.PyQt.QtCore import QVariant
     _HAVE_QGIS_CORE = True
 except Exception:
-    QgsEditorWidgetSetup = QgsFieldConstraints = QgsSettings = None
-    QgsFeature = QgsField = QgsGeometry = QgsPointXY = QgsProject = None
-    QgsMeshLayer = None
+    QgsEditorWidgetSetup = QgsFieldConstraints = None
+    QgsFeature = QgsGeometry = QgsPointXY = QgsProject = None
     QgsRasterLayer = QgsVectorLayer = QgsWkbTypes = None
     QgsUnitTypes = QgsVectorFileWriter = None
-    QVariant = None
     _HAVE_QGIS_CORE = False
     logger_wb.warning(
         "qgis.core import failed — running outside QGIS or QGIS not fully initialized",
@@ -1973,7 +1960,6 @@ class SWE2DWorkbenchStudioDialog(QtWidgets.QDialog):
             implicit_relax=self._model_tab_view.get_drainage_implicit_relax(),
             log_fn=self._log,
         )
-        self._log(f"[Drainage] _build_pipe_network_config: built config successfully (solver={solver_mode_combo.currentText()})")
 
     def _build_hydraulic_structure_config(self):
         """Build hydraulic structure configuration from structure layer."""
@@ -2330,7 +2316,6 @@ class SWE2DWorkbenchStudioDialog(QtWidgets.QDialog):
         dimension (e.g. MultiPointZ, LineStringZ, PolygonZ).
         """
         from qgis.core import (
-            QgsPoint,
             QgsWkbTypes,
             QgsRasterLayer,
             QgsVectorLayer,
