@@ -21,7 +21,10 @@ class SpatialDiscretization(IntEnum):
     FV_MUSCL_MINMOD   = 2
     FV_MUSCL_MC       = 3   # Monotonized-Central limiter (gradient-based TVD)
     FV_MUSCL_VAN_LEER = 4   # Van Leer smooth limiter (gradient-based TVD)
-    FV_WENO5          = 6   # WENO5 + LSQ 2-ring gradient (~3rd-order, GPU-first)
+    FV_BARTH_JESPERSEN = 5  # LSQ gradient + Barth-Jespersen limiter
+    FV_WENO3          = 6   # True 3-sub-stencil WENO (1-ring, 3rd-order)
+    FV_WENO5          = 7   # 5-sub-stencil WENO via 2-ring LSQ (was 6)
+    FV_MP5            = 8   # Suresh-Huynh Mapped Monotonicity-Preserving
     # Backward-compatibility aliases
     FV_MUSCL = FV_MUSCL_FAST
     FV_WENO  = FV_MUSCL_MINMOD
