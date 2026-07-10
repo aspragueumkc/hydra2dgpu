@@ -2863,6 +2863,56 @@ PYBIND11_MODULE(HYDRA_SWE2D_PY_MODULE_NAME, m) {
                 static_cast<py::ssize_t>(pm.mesh.edge_n1.size()),
                 pm.mesh.edge_n1.data(),
                 py::cast(pm));
+        })
+        // ── Face stencil arrays — may be empty if stencil tables not built ─
+        .def_property_readonly("face_stencil_S0_offsets", [](const PyMesh& pm) -> py::object {
+            if (pm.mesh.face_stencil_S0_offsets.empty()) return py::none();
+            return py::array_t<int32_t>(
+                static_cast<py::ssize_t>(pm.mesh.face_stencil_S0_offsets.size()),
+                pm.mesh.face_stencil_S0_offsets.data(),
+                py::cast(pm));
+        })
+        .def_property_readonly("face_stencil_S0_cells", [](const PyMesh& pm) -> py::object {
+            if (pm.mesh.face_stencil_S0_cells.empty()) return py::none();
+            return py::array_t<int32_t>(
+                static_cast<py::ssize_t>(pm.mesh.face_stencil_S0_cells.size()),
+                pm.mesh.face_stencil_S0_cells.data(),
+                py::cast(pm));
+        })
+        .def_property_readonly("face_stencil_S1", [](const PyMesh& pm) -> py::object {
+            if (pm.mesh.face_stencil_S1.empty()) return py::none();
+            return py::array_t<int32_t>(
+                static_cast<py::ssize_t>(pm.mesh.face_stencil_S1.size()),
+                pm.mesh.face_stencil_S1.data(),
+                py::cast(pm));
+        })
+        .def_property_readonly("face_stencil_S2_offsets", [](const PyMesh& pm) -> py::object {
+            if (pm.mesh.face_stencil_S2_offsets.empty()) return py::none();
+            return py::array_t<int32_t>(
+                static_cast<py::ssize_t>(pm.mesh.face_stencil_S2_offsets.size()),
+                pm.mesh.face_stencil_S2_offsets.data(),
+                py::cast(pm));
+        })
+        .def_property_readonly("face_stencil_S2_cells", [](const PyMesh& pm) -> py::object {
+            if (pm.mesh.face_stencil_S2_cells.empty()) return py::none();
+            return py::array_t<int32_t>(
+                static_cast<py::ssize_t>(pm.mesh.face_stencil_S2_cells.size()),
+                pm.mesh.face_stencil_S2_cells.data(),
+                py::cast(pm));
+        })
+        .def_property_readonly("face_stencil_5", [](const PyMesh& pm) -> py::object {
+            if (pm.mesh.face_stencil_5.empty()) return py::none();
+            return py::array_t<int32_t>(
+                static_cast<py::ssize_t>(pm.mesh.face_stencil_5.size()),
+                pm.mesh.face_stencil_5.data(),
+                py::cast(pm));
+        })
+        .def_property_readonly("face_mp5_case", [](const PyMesh& pm) -> py::object {
+            if (pm.mesh.face_mp5_case.empty()) return py::none();
+            return py::array_t<int32_t>(
+                static_cast<py::ssize_t>(pm.mesh.face_mp5_case.size()),
+                pm.mesh.face_mp5_case.data(),
+                py::cast(pm));
         });
 
     py::class_<PySolver, std::shared_ptr<PySolver>>(m, "SWE2DSolverHandle")
