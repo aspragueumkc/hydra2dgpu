@@ -1899,6 +1899,12 @@ __global__ __launch_bounds__(256, 2) void swe2d_flux_kernel(
     const double*  __restrict__ cell_cx,
     const double*  __restrict__ cell_cy,
     const Grad*    __restrict__ d_grad,
+    // Optional limited eta gradients for scheme 5 (Barth-Jespersen)
+    const double*  __restrict__ d_grad_x_lim,
+    const double*  __restrict__ d_grad_y_lim,
+    // Optional precomputed face reconstructions for scheme 6 (WENO3) and 8 (MP5)
+    const double*  __restrict__ d_weno3_face_recon,
+    const double*  __restrict__ d_mp5_face_recon,
     double*                     flux_h,    // [n_cells] accumulator
     double*                     flux_hu,
     double*                     flux_hv,
@@ -1990,7 +1996,10 @@ __global__ __launch_bounds__(256, 2) void swe2d_flux_kernel(
         const int scheme_robust = static_cast<int>(SWE2DSpatialScheme::FV_MUSCL_MINMOD);
         const int scheme_mc     = static_cast<int>(SWE2DSpatialScheme::FV_MUSCL_MC);
         const int scheme_vl     = static_cast<int>(SWE2DSpatialScheme::FV_MUSCL_VAN_LEER);
+        const int scheme_bj     = static_cast<int>(SWE2DSpatialScheme::FV_BARTH_JESPERSEN);
+        const int scheme_w3     = static_cast<int>(SWE2DSpatialScheme::FV_WENO3);
         const int scheme_weno5  = static_cast<int>(SWE2DSpatialScheme::FV_WENO5);
+        const int scheme_m5     = static_cast<int>(SWE2DSpatialScheme::FV_MP5);
         const double recon_fallback_depth = fmax(h_min, 0.5 * shallow_damping_depth);
         const bool shallow_pair = (hL < recon_fallback_depth) || (hR < recon_fallback_depth);
         // Disable higher-order reconstruction at any edge adjacent to a boundary
@@ -2131,10 +2140,29 @@ __global__ __launch_bounds__(256, 2) void swe2d_flux_kernel(
             double etaL_rec, etaR_rec, huL_rec, huR_rec, hvL_rec, hvR_rec;
             const double etaL = hL + zbL;
             const double etaR = hR + zbR;
-            if (spatial_scheme == scheme_weno5 && !near_boundary) {
+            if (spatial_scheme == scheme_w3 && !near_boundary && d_weno3_face_recon != nullptr) {
+                // WENO3 (scheme 6): read precomputed per-face value for eta; momentum first-order
+                const double w3_val = d_weno3_face_recon[e];
+                etaL_rec = w3_val - zbL;
+                etaR_rec = w3_val - zbR;
+                huL_rec = huL; huR_rec = huR;
+                hvL_rec = hvL; hvR_rec = hvR;
+            } else if (spatial_scheme == scheme_m5 && !near_boundary && d_mp5_face_recon != nullptr) {
+                // MP5 (scheme 8): read precomputed per-face value for eta; momentum first-order
+                const double m5_val = d_mp5_face_recon[e];
+                etaL_rec = m5_val - zbL;
+                etaR_rec = m5_val - zbR;
+                huL_rec = huL; huR_rec = huR;
+                hvL_rec = hvL; hvR_rec = hvR;
+            } else if (spatial_scheme == scheme_weno5 && !near_boundary) {
                 weno5_reconstruct(etaL, etaR, d_grad[c0].hx, d_grad[c0].hy, d_grad[c1].hx, d_grad[c1].hy, etaL_rec, etaR_rec);
                 weno5_reconstruct(huL, huR, d_grad[c0].hux, d_grad[c0].huy, d_grad[c1].hux, d_grad[c1].huy, huL_rec, huR_rec);
                 weno5_reconstruct(hvL, hvR, d_grad[c0].hvx, d_grad[c0].hvy, d_grad[c1].hvx, d_grad[c1].hvy, hvL_rec, hvR_rec);
+            } else if (spatial_scheme == scheme_bj && !near_boundary && d_grad_x_lim != nullptr) {
+                // Barth-Jespersen (scheme 5): use limited eta gradients, unlimited momentum
+                tvd_reconstruct(etaL, etaR, d_grad_x_lim[c0], d_grad_y_lim[c0], d_grad_x_lim[c1], d_grad_y_lim[c1], etaL_rec, etaR_rec);
+                tvd_reconstruct(huL, huR, d_grad[c0].hux, d_grad[c0].huy, d_grad[c1].hux, d_grad[c1].huy, huL_rec, huR_rec);
+                tvd_reconstruct(hvL, hvR, d_grad[c0].hvx, d_grad[c0].hvy, d_grad[c1].hvx, d_grad[c1].hvy, hvL_rec, hvR_rec);
             } else {
                 tvd_reconstruct(etaL, etaR, d_grad[c0].hx, d_grad[c0].hy, d_grad[c1].hx, d_grad[c1].hy, etaL_rec, etaR_rec);
                 tvd_reconstruct(huL, huR, d_grad[c0].hux, d_grad[c0].huy, d_grad[c1].hux, d_grad[c1].huy, huL_rec, huR_rec);
@@ -4907,9 +4935,59 @@ SWE2DDeviceState* swe2d_gpu_init(
     copy_h2d_d(dev->d_cell_cx, mesh.cell_cx.data(), sz_cells);
     copy_h2d_d(dev->d_cell_cy, mesh.cell_cy.data(), sz_cells);
 
+    // ── Advanced spatial reconstruction stencil data (schemes 6, 8) ────────
+    // WENO3 face sub-stencil CSR (scheme 6)
+    if (!mesh.face_stencil_S0_offsets.empty()) {
+        alloc_d(reinterpret_cast<void**>(&dev->d_face_stencil_S0_offsets),
+                mesh.face_stencil_S0_offsets.size() * sizeof(int32_t));
+        copy_h2d_i(dev->d_face_stencil_S0_offsets, mesh.face_stencil_S0_offsets.data(),
+                   mesh.face_stencil_S0_offsets.size());
+        alloc_d(reinterpret_cast<void**>(&dev->d_face_stencil_S0_cells),
+                mesh.face_stencil_S0_cells.size() * sizeof(int32_t));
+        copy_h2d_i(dev->d_face_stencil_S0_cells, mesh.face_stencil_S0_cells.data(),
+                   mesh.face_stencil_S0_cells.size());
+        alloc_d(reinterpret_cast<void**>(&dev->d_face_stencil_S1),
+                mesh.face_stencil_S1.size() * sizeof(int32_t));
+        copy_h2d_i(dev->d_face_stencil_S1, mesh.face_stencil_S1.data(),
+                   mesh.face_stencil_S1.size());
+        alloc_d(reinterpret_cast<void**>(&dev->d_face_stencil_S2_offsets),
+                mesh.face_stencil_S2_offsets.size() * sizeof(int32_t));
+        copy_h2d_i(dev->d_face_stencil_S2_offsets, mesh.face_stencil_S2_offsets.data(),
+                   mesh.face_stencil_S2_offsets.size());
+        alloc_d(reinterpret_cast<void**>(&dev->d_face_stencil_S2_cells),
+                mesh.face_stencil_S2_cells.size() * sizeof(int32_t));
+        copy_h2d_i(dev->d_face_stencil_S2_cells, mesh.face_stencil_S2_cells.data(),
+                   mesh.face_stencil_S2_cells.size());
+        dev->n_face_stencil_S0_cells = static_cast<int32_t>(mesh.face_stencil_S0_cells.size());
+        dev->n_face_stencil_S2_cells = static_cast<int32_t>(mesh.face_stencil_S2_cells.size());
+    }
+    // MP5 5-cell walk data (scheme 8)
+    if (!mesh.face_stencil_5.empty()) {
+        alloc_d(reinterpret_cast<void**>(&dev->d_face_stencil_5),
+                mesh.face_stencil_5.size() * sizeof(int32_t));
+        copy_h2d_i(dev->d_face_stencil_5, mesh.face_stencil_5.data(),
+                   mesh.face_stencil_5.size());
+        alloc_d(reinterpret_cast<void**>(&dev->d_face_mp5_case),
+                mesh.face_mp5_case.size() * sizeof(int32_t));
+        copy_h2d_i(dev->d_face_mp5_case, mesh.face_mp5_case.data(),
+                   mesh.face_mp5_case.size());
+    }
+
     // Gradient arrays (zeroed; filled by swe2d_gradient_kernel each step for MC/VL)
     alloc_d(reinterpret_cast<void**>(&dev->d_grad), sz_cells * sizeof(Grad));
     CUDA_CHECK(cudaMemset(dev->d_grad, 0, sz_cells * sizeof(Grad)));
+
+    // Barth-Jespersen limited gradient arrays (scheme 5)
+    alloc_d(reinterpret_cast<void**>(&dev->d_grad_x_lim), sz_cells * sizeof(double));
+    alloc_d(reinterpret_cast<void**>(&dev->d_grad_y_lim), sz_cells * sizeof(double));
+    CUDA_CHECK(cudaMemset(dev->d_grad_x_lim, 0, sz_cells * sizeof(double)));
+    CUDA_CHECK(cudaMemset(dev->d_grad_y_lim, 0, sz_cells * sizeof(double)));
+
+    // Face reconstruction precompute arrays (schemes 6, 8)
+    alloc_d(reinterpret_cast<void**>(&dev->d_weno3_face_recon), sz_edges * sizeof(double));
+    alloc_d(reinterpret_cast<void**>(&dev->d_mp5_face_recon),   sz_edges * sizeof(double));
+    CUDA_CHECK(cudaMemset(dev->d_weno3_face_recon, 0, sz_edges * sizeof(double)));
+    CUDA_CHECK(cudaMemset(dev->d_mp5_face_recon, 0, sz_edges * sizeof(double)));
 
     // State (stored as State = float or double)
     alloc_d(reinterpret_cast<void**>(&dev->d_h),  sz_cells * sizeof(State));
@@ -5434,6 +5512,51 @@ void swe2d_gpu_step(
                     swe2d_maybe_launch_lsq_gradient(dev, spatial_scheme, n_cells, BLOCK,
                                                     dev->d_h, dev->d_hu, dev->d_hv);
                 }
+                // ── Advanced spatial reconstruction pre-passes (schemes 5, 6, 8) ──
+                {
+                    const int scheme_bj = static_cast<int>(SWE2DSpatialScheme::FV_BARTH_JESPERSEN);
+                    const int scheme_w3 = static_cast<int>(SWE2DSpatialScheme::FV_WENO3);
+                    const int scheme_m5 = static_cast<int>(SWE2DSpatialScheme::FV_MP5);
+                    const int e_grid = (n_edges + BLOCK - 1) / BLOCK;
+                    const int c_grid = (n_cells + BLOCK - 1) / BLOCK;
+
+                    // Scheme 5: extract eta gradients from Grad struct, apply Barth-Jespersen limiter
+                    if (spatial_scheme == scheme_bj) {
+                        extract_hx_hy_kernel<<<c_grid, BLOCK, 0, dev->d_stream>>>(
+                            dev->d_grad, dev->d_grad_x_lim, dev->d_grad_y_lim, n_cells);
+                        barth_jespersen_kernel<<<c_grid, BLOCK, 0, dev->d_stream>>>(
+                            dev->d_h,
+                            dev->d_grad_x_lim, dev->d_grad_y_lim,
+                            dev->d_cell_cx, dev->d_cell_cy,
+                            dev->d_cell_edge_offsets, dev->d_cell_edge_ids,
+                            dev->d_edge_c0, dev->d_edge_c1,
+                            n_cells, dev->d_grad_x_lim, dev->d_grad_y_lim);
+                    }
+
+                    // Scheme 6: precompute per-face WENO3 reconstruction
+                    if (spatial_scheme == scheme_w3 && dev->d_face_stencil_S0_offsets != nullptr) {
+                        CUDA_CHECK(cudaMemsetAsync(dev->d_weno3_face_recon, 0,
+                            static_cast<size_t>(n_edges) * sizeof(double), dev->d_stream));
+                        weno3_kernel<<<e_grid, BLOCK, 0, dev->d_stream>>>(
+                            dev->d_h, dev->d_cell_cx, dev->d_cell_cy,
+                            dev->d_edge_mx, dev->d_edge_my,
+                            dev->d_face_stencil_S0_offsets, dev->d_face_stencil_S0_cells,
+                            dev->d_face_stencil_S1,
+                            dev->d_face_stencil_S2_offsets, dev->d_face_stencil_S2_cells,
+                            n_edges, dev->d_weno3_face_recon);
+                    }
+
+                    // Scheme 8: precompute per-face MP5 reconstruction
+                    if (spatial_scheme == scheme_m5 && dev->d_face_stencil_5 != nullptr) {
+                        CUDA_CHECK(cudaMemsetAsync(dev->d_mp5_face_recon, 0,
+                            static_cast<size_t>(n_edges) * sizeof(double), dev->d_stream));
+                        mp5_kernel<<<e_grid, BLOCK, 0, dev->d_stream>>>(
+                            dev->d_h, dev->d_cell_cx, dev->d_cell_cy,
+                            dev->d_edge_mx, dev->d_edge_my,
+                            dev->d_face_stencil_5, dev->d_face_mp5_case,
+                            n_edges, dev->d_mp5_face_recon);
+                    }
+                }
                 // flux
                 int grid_flux = (n_edges + BLOCK - 1) / BLOCK;
                 swe2d_flux_kernel<<<grid_flux, BLOCK, 0, dev->d_stream>>>(
@@ -5448,6 +5571,8 @@ void swe2d_gpu_step(
                     dev->d_cell_inv_area,
                     dev->d_cell_cx, dev->d_cell_cy,
                     dev->d_grad,
+                    dev->d_grad_x_lim, dev->d_grad_y_lim,
+                    dev->d_weno3_face_recon, dev->d_mp5_face_recon,
                     dev->d_flux_h, dev->d_flux_hu, dev->d_flux_hv,
                     dev->d_flux_hu_r, dev->d_flux_hv_r,
                     nullptr, nullptr, nullptr,
@@ -5626,6 +5751,52 @@ void swe2d_gpu_step(
                                         dev->d_h, dev->d_hu, dev->d_hv);
     }
 
+    // ── Advanced spatial reconstruction pre-passes (schemes 5, 6, 8) ──
+    {
+        const int scheme_bj = static_cast<int>(SWE2DSpatialScheme::FV_BARTH_JESPERSEN);
+        const int scheme_w3 = static_cast<int>(SWE2DSpatialScheme::FV_WENO3);
+        const int scheme_m5 = static_cast<int>(SWE2DSpatialScheme::FV_MP5);
+        const int e_grid = (n_edges + BLOCK - 1) / BLOCK;
+        const int c_grid = (n_cells + BLOCK - 1) / BLOCK;
+
+        // Scheme 5: extract eta gradients from Grad struct, apply Barth-Jespersen limiter
+        if (spatial_scheme == scheme_bj) {
+            extract_hx_hy_kernel<<<c_grid, BLOCK, 0, dev->d_stream>>>(
+                dev->d_grad, dev->d_grad_x_lim, dev->d_grad_y_lim, n_cells);
+            barth_jespersen_kernel<<<c_grid, BLOCK, 0, dev->d_stream>>>(
+                dev->d_h,
+                dev->d_grad_x_lim, dev->d_grad_y_lim,
+                dev->d_cell_cx, dev->d_cell_cy,
+                dev->d_cell_edge_offsets, dev->d_cell_edge_ids,
+                dev->d_edge_c0, dev->d_edge_c1,
+                n_cells, dev->d_grad_x_lim, dev->d_grad_y_lim);
+        }
+
+        // Scheme 6: precompute per-face WENO3 reconstruction
+        if (spatial_scheme == scheme_w3 && dev->d_face_stencil_S0_offsets != nullptr) {
+            CUDA_CHECK(cudaMemsetAsync(dev->d_weno3_face_recon, 0,
+                static_cast<size_t>(n_edges) * sizeof(double), dev->d_stream));
+            weno3_kernel<<<e_grid, BLOCK, 0, dev->d_stream>>>(
+                dev->d_h, dev->d_cell_cx, dev->d_cell_cy,
+                dev->d_edge_mx, dev->d_edge_my,
+                dev->d_face_stencil_S0_offsets, dev->d_face_stencil_S0_cells,
+                dev->d_face_stencil_S1,
+                dev->d_face_stencil_S2_offsets, dev->d_face_stencil_S2_cells,
+                n_edges, dev->d_weno3_face_recon);
+        }
+
+        // Scheme 8: precompute per-face MP5 reconstruction
+        if (spatial_scheme == scheme_m5 && dev->d_face_stencil_5 != nullptr) {
+            CUDA_CHECK(cudaMemsetAsync(dev->d_mp5_face_recon, 0,
+                static_cast<size_t>(n_edges) * sizeof(double), dev->d_stream));
+            mp5_kernel<<<e_grid, BLOCK, 0, dev->d_stream>>>(
+                dev->d_h, dev->d_cell_cx, dev->d_cell_cy,
+                dev->d_edge_mx, dev->d_edge_my,
+                dev->d_face_stencil_5, dev->d_face_mp5_case,
+                n_edges, dev->d_mp5_face_recon);
+        }
+    }
+
     // ── Flux ────────────────────────────────────────────────────────────
     {
         const bool dbg_edge_flux = swe2d_debug_enabled("BACKWATER_SWE2D_DEBUG_GPU_EDGE_FLUX");
@@ -5656,6 +5827,8 @@ void swe2d_gpu_step(
             dev->d_cell_inv_area,
             dev->d_cell_cx, dev->d_cell_cy,
             dev->d_grad,
+            dev->d_grad_x_lim, dev->d_grad_y_lim,
+            dev->d_weno3_face_recon, dev->d_mp5_face_recon,
             dev->d_flux_h, dev->d_flux_hu, dev->d_flux_hv,
             dev->d_flux_hu_r, dev->d_flux_hv_r,
             d_dbg_fh, d_dbg_fhu, d_dbg_fhv,
@@ -9759,6 +9932,12 @@ void swe2d_gpu_destroy(SWE2DDeviceState* dev) {
     safe_free(dev->d_n_mann_cell);
     safe_free(dev->d_cell_cx);    safe_free(dev->d_cell_cy);
     safe_free(dev->d_grad);
+    safe_free(dev->d_grad_x_lim); safe_free(dev->d_grad_y_lim);
+    safe_free(dev->d_weno3_face_recon); safe_free(dev->d_mp5_face_recon);
+    safe_free(dev->d_face_stencil_S0_offsets); safe_free(dev->d_face_stencil_S0_cells);
+    safe_free(dev->d_face_stencil_S1); safe_free(dev->d_face_stencil_S2_offsets);
+    safe_free(dev->d_face_stencil_S2_cells);
+    safe_free(dev->d_face_stencil_5); safe_free(dev->d_face_mp5_case);
     safe_free(dev->d_grad_edge_hx);  safe_free(dev->d_grad_edge_hy);
     safe_free(dev->d_grad_edge_hux); safe_free(dev->d_grad_edge_huy);
     safe_free(dev->d_grad_edge_hvx); safe_free(dev->d_grad_edge_hvy);

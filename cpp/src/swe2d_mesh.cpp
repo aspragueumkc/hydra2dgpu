@@ -293,6 +293,11 @@ SWE2DMesh swe2d_build_mesh_poly(
     // (spatial scheme 6 / FV_WENO5).
     swe2d_build_cell_ring2(mesh);
 
+    // Build WENO3 sub-stencil tables (S0, S1, S2) and MP5 5-cell walk table
+    // for spatial scheme 6 (FV_WENO3) and scheme 8 (MP5) reconstructions.
+    swe2d_build_face_substencil_tables(mesh);
+    swe2d_build_face_stencil_5_table(mesh);
+
     return mesh;
 }
 
@@ -645,6 +650,199 @@ void swe2d_build_cell_ring2(SWE2DMesh& mesh) {
     }
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// WENO3 face sub-stencil tables (S0, S1, S2) and MP5 5-cell walk table
+// ─────────────────────────────────────────────────────────────────────────────
+
+/** Build the WENO3 face sub-stencil tables S0, S1, S2 for scheme 6.
+    For each face f:
+      S1[2*f .. 2*f+1] = {owner, neighbor}
+      S0 = all face-neighbors of owner, excluding the neighbor (upwind lobe)
+      S2 = all face-neighbors of neighbor, excluding the owner (downwind lobe)
+    Boundary faces (c1 == -1) produce an empty S2.  Uses CSR for S0 and S2.
+    Requires cell_edge_offsets/cell_edge_ids and edge_c0/edge_c1 to be built. */
+void swe2d_build_face_substencil_tables(SWE2DMesh& mesh) {
+    const int32_t n_edges = mesh.n_edges;
+    if (n_edges <= 0) return;
+
+    // Helper: the face-neighbour of cell c across edge eidx (or -1 if boundary).
+    auto edge_peer = [&](int32_t eidx, int32_t c) -> int32_t {
+        const int32_t a = mesh.edge_c0[static_cast<size_t>(eidx)];
+        const int32_t b = mesh.edge_c1[static_cast<size_t>(eidx)];
+        if (a == c) return b;
+        if (b == c) return a;
+        return -1;
+    };
+
+    // S1: flat {owner, neighbor} per face.
+    mesh.face_stencil_S1.resize(static_cast<size_t>(2) * n_edges);
+
+    // First pass: count S0 and S2 entries per face.
+    std::vector<int32_t> s0_cnt(static_cast<size_t>(n_edges), 0);
+    std::vector<int32_t> s2_cnt(static_cast<size_t>(n_edges), 0);
+
+    for (int32_t f = 0; f < n_edges; ++f) {
+        const int32_t c0 = mesh.edge_c0[static_cast<size_t>(f)];
+        const int32_t c1 = mesh.edge_c1[static_cast<size_t>(f)];
+
+        mesh.face_stencil_S1[static_cast<size_t>(2) * f + 0] = c0;
+        mesh.face_stencil_S1[static_cast<size_t>(2) * f + 1] = c1;
+
+        // S0: neighbours of c0 excluding c1.
+        {
+            const int32_t es = mesh.cell_edge_offsets[static_cast<size_t>(c0)];
+            const int32_t ee = mesh.cell_edge_offsets[static_cast<size_t>(c0) + 1];
+            for (int32_t k = es; k < ee; ++k) {
+                const int32_t eidx = mesh.cell_edge_ids[static_cast<size_t>(k)];
+                const int32_t peer = edge_peer(eidx, c0);
+                if (peer >= 0 && peer != c1) {
+                    ++s0_cnt[static_cast<size_t>(f)];
+                }
+            }
+        }
+
+        // S2: neighbours of c1 excluding c0.
+        if (c1 >= 0) {
+            const int32_t cs = mesh.cell_edge_offsets[static_cast<size_t>(c1)];
+            const int32_t ce = mesh.cell_edge_offsets[static_cast<size_t>(c1) + 1];
+            for (int32_t k = cs; k < ce; ++k) {
+                const int32_t eidx = mesh.cell_edge_ids[static_cast<size_t>(k)];
+                const int32_t peer = edge_peer(eidx, c1);
+                if (peer >= 0 && peer != c0) {
+                    ++s2_cnt[static_cast<size_t>(f)];
+                }
+            }
+        }
+    }
+
+    // Build CSR offsets from counts.
+    mesh.face_stencil_S0_offsets.assign(static_cast<size_t>(n_edges) + 1, 0);
+    mesh.face_stencil_S2_offsets.assign(static_cast<size_t>(n_edges) + 1, 0);
+    for (int32_t f = 0; f < n_edges; ++f) {
+        const size_t fu = static_cast<size_t>(f);
+        mesh.face_stencil_S0_offsets[fu + 1] =
+            mesh.face_stencil_S0_offsets[fu] + s0_cnt[fu];
+        mesh.face_stencil_S2_offsets[fu + 1] =
+            mesh.face_stencil_S2_offsets[fu] + s2_cnt[fu];
+    }
+
+    const int32_t total_s0 = mesh.face_stencil_S0_offsets[static_cast<size_t>(n_edges)];
+    const int32_t total_s2 = mesh.face_stencil_S2_offsets[static_cast<size_t>(n_edges)];
+    mesh.face_stencil_S0_cells.resize(static_cast<size_t>(total_s0));
+    mesh.face_stencil_S2_cells.resize(static_cast<size_t>(total_s2));
+
+    // Second pass: fill S0 and S2 cell arrays.
+    // Write cursors initialised from offsets.
+    std::vector<int32_t> s0_pos(s0_cnt);  // reuse counts as cursors
+    std::vector<int32_t> s2_pos(s2_cnt);
+    for (int32_t f = 0; f < n_edges; ++f) {
+        s0_pos[static_cast<size_t>(f)] =
+            mesh.face_stencil_S0_offsets[static_cast<size_t>(f)];
+        s2_pos[static_cast<size_t>(f)] =
+            mesh.face_stencil_S2_offsets[static_cast<size_t>(f)];
+    }
+
+    for (int32_t f = 0; f < n_edges; ++f) {
+        const int32_t c0 = mesh.edge_c0[static_cast<size_t>(f)];
+        const int32_t c1 = mesh.edge_c1[static_cast<size_t>(f)];
+
+        // Fill S0.
+        {
+            size_t pos = static_cast<size_t>(s0_pos[static_cast<size_t>(f)]);
+            const int32_t es = mesh.cell_edge_offsets[static_cast<size_t>(c0)];
+            const int32_t ee = mesh.cell_edge_offsets[static_cast<size_t>(c0) + 1];
+            for (int32_t k = es; k < ee; ++k) {
+                const int32_t eidx = mesh.cell_edge_ids[static_cast<size_t>(k)];
+                const int32_t peer = edge_peer(eidx, c0);
+                if (peer >= 0 && peer != c1) {
+                    mesh.face_stencil_S0_cells[pos++] = peer;
+                }
+            }
+        }
+
+        // Fill S2.
+        if (c1 >= 0) {
+            size_t pos = static_cast<size_t>(s2_pos[static_cast<size_t>(f)]);
+            const int32_t cs = mesh.cell_edge_offsets[static_cast<size_t>(c1)];
+            const int32_t ce = mesh.cell_edge_offsets[static_cast<size_t>(c1) + 1];
+            for (int32_t k = cs; k < ce; ++k) {
+                const int32_t eidx = mesh.cell_edge_ids[static_cast<size_t>(k)];
+                const int32_t peer = edge_peer(eidx, c1);
+                if (peer >= 0 && peer != c0) {
+                    mesh.face_stencil_S2_cells[pos++] = peer;
+                }
+            }
+        }
+    }
+}
+
+/** Build the MP5 5-cell face-normal walk table for scheme 8.
+    For each interior face f with owner c0 and neighbour c1:
+      {u2, u1, u, v, v1} where
+        u  = c0 (upwind cell)
+        v  = c1 (downwind cell)
+        u1 = first neighbour of c0 != c1
+        u2 = first neighbour of u1 != c0
+        v1 = first neighbour of c1 != c0
+    For boundary faces (c1 == -1) all five positions are set to c0.
+    face_mp5_case[f] = 1 for all faces (case re-evaluated at runtime in the kernel). */
+void swe2d_build_face_stencil_5_table(SWE2DMesh& mesh) {
+    const int32_t n_edges = mesh.n_edges;
+    if (n_edges <= 0) return;
+
+    mesh.face_stencil_5.resize(static_cast<size_t>(5) * n_edges);
+    mesh.face_mp5_case.assign(static_cast<size_t>(n_edges), 1);
+
+    // Helper: the face-neighbour of cell c across edge eidx (or -1 if boundary).
+    auto edge_peer = [&](int32_t eidx, int32_t c) -> int32_t {
+        const int32_t a = mesh.edge_c0[static_cast<size_t>(eidx)];
+        const int32_t b = mesh.edge_c1[static_cast<size_t>(eidx)];
+        if (a == c) return b;
+        if (b == c) return a;
+        return -1;
+    };
+
+    // Helper: return the first neighbour of cell c that is not exclude_cell,
+    //         or c itself if no such neighbour exists.
+    auto first_neighbor_not = [&](int32_t c, int32_t exclude_cell) -> int32_t {
+        const int32_t es = mesh.cell_edge_offsets[static_cast<size_t>(c)];
+        const int32_t ee = mesh.cell_edge_offsets[static_cast<size_t>(c) + 1];
+        for (int32_t k = es; k < ee; ++k) {
+            const int32_t eidx = mesh.cell_edge_ids[static_cast<size_t>(k)];
+            const int32_t peer = edge_peer(eidx, c);
+            if (peer >= 0 && peer != exclude_cell) {
+                return peer;
+            }
+        }
+        return c;  // fallback: self
+    };
+
+    for (int32_t f = 0; f < n_edges; ++f) {
+        const int32_t c0 = mesh.edge_c0[static_cast<size_t>(f)];
+        const int32_t c1 = mesh.edge_c1[static_cast<size_t>(f)];
+
+        int32_t u2, u1, u, v, v1;
+
+        if (c1 < 0) {
+            // Boundary face: all five positions = c0.
+            u2 = u1 = u = v = v1 = c0;
+        } else {
+            u  = c0;
+            v  = c1;
+            u1 = first_neighbor_not(c0, c1);  // first upwind neighbour
+            u2 = first_neighbor_not(u1, c0);   // second upwind neighbour
+            v1 = first_neighbor_not(c1, c0);   // first downwind neighbour
+        }
+
+        const size_t base = static_cast<size_t>(5) * f;
+        mesh.face_stencil_5[base + 0] = u2;
+        mesh.face_stencil_5[base + 1] = u1;
+        mesh.face_stencil_5[base + 2] = u;
+        mesh.face_stencil_5[base + 3] = v;
+        mesh.face_stencil_5[base + 4] = v1;
+    }
+}
+
 /** Validate mesh consistency: array sizes, cell areas, edge lengths, node ranges.
     @param mesh Mesh to validate @returns Empty string on success, error message on failure */
 std::string swe2d_validate_mesh(const SWE2DMesh& mesh) {
@@ -832,6 +1030,17 @@ std::vector<uint8_t> swe2d_serialize_mesh(const SWE2DMesh& mesh) {
     serialize_vector(buf, mesh.cell_ring2_dcy);
     serialize_vector(buf, mesh.cell_ring2_inv_dist2);
 
+    // WENO3 face sub-stencil tables (scheme 6)
+    serialize_vector(buf, mesh.face_stencil_S0_offsets);
+    serialize_vector(buf, mesh.face_stencil_S0_cells);
+    serialize_vector(buf, mesh.face_stencil_S1);
+    serialize_vector(buf, mesh.face_stencil_S2_offsets);
+    serialize_vector(buf, mesh.face_stencil_S2_cells);
+
+    // MP5 5-cell walk table (scheme 8)
+    serialize_vector(buf, mesh.face_stencil_5);
+    serialize_vector(buf, mesh.face_mp5_case);
+
     return buf;
 }
 
@@ -910,6 +1119,17 @@ SWE2DMesh swe2d_deserialize_mesh(const uint8_t* data, size_t size) {
     mesh.cell_ring2_dcx    = deserialize_vector<double>(data, size, pos);
     mesh.cell_ring2_dcy    = deserialize_vector<double>(data, size, pos);
     mesh.cell_ring2_inv_dist2 = deserialize_vector<double>(data, size, pos);
+
+    // WENO3 face sub-stencil tables (scheme 6)
+    mesh.face_stencil_S0_offsets = deserialize_vector<int32_t>(data, size, pos);
+    mesh.face_stencil_S0_cells   = deserialize_vector<int32_t>(data, size, pos);
+    mesh.face_stencil_S1         = deserialize_vector<int32_t>(data, size, pos);
+    mesh.face_stencil_S2_offsets = deserialize_vector<int32_t>(data, size, pos);
+    mesh.face_stencil_S2_cells   = deserialize_vector<int32_t>(data, size, pos);
+
+    // MP5 5-cell walk table (scheme 8)
+    mesh.face_stencil_5          = deserialize_vector<int32_t>(data, size, pos);
+    mesh.face_mp5_case           = deserialize_vector<int32_t>(data, size, pos);
 
     return mesh;
 }

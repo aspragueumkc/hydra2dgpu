@@ -133,6 +133,27 @@ struct SWE2DDeviceState {
 
     Grad*  d_grad = nullptr;
 
+    // Barth-Jespersen limited gradients (scheme 5): per-cell, set by extract+barth_jespersen_kernel
+    double* d_grad_x_lim = nullptr;   // [n_cells]
+    double* d_grad_y_lim = nullptr;   // [n_cells]
+
+    // Precomputed face reconstruction arrays (schemes 6, 8)
+    double* d_weno3_face_recon = nullptr;  // [n_faces] WENO3 per-face q-hat
+    double* d_mp5_face_recon   = nullptr;  // [n_faces] MP5 per-face q-hat
+
+    // WENO3 face sub-stencil data (scheme 6) — uploaded from mesh
+    int32_t* d_face_stencil_S0_offsets = nullptr;
+    int32_t* d_face_stencil_S0_cells = nullptr;
+    int32_t* d_face_stencil_S1 = nullptr;
+    int32_t* d_face_stencil_S2_offsets = nullptr;
+    int32_t* d_face_stencil_S2_cells = nullptr;
+    int32_t n_face_stencil_S0_cells = 0;
+    int32_t n_face_stencil_S2_cells = 0;
+
+    // MP5 5-cell walk data (scheme 8) — uploaded from mesh
+    int32_t* d_face_stencil_5 = nullptr;
+    int32_t* d_face_mp5_case = nullptr;
+
     // Per-edge gradient scratch (atomics-free path).  Written by gradient
     // kernel, consumed by gradient-gather kernel.  Same layout as flux arrays.
     double*  d_grad_edge_hx  = nullptr;   double*  d_grad_edge_hy  = nullptr;
@@ -1440,6 +1461,64 @@ __global__ void swe2d_apply_edge_relax_kernel(
     const int32_t* __restrict__ edge_index,
     const double*  __restrict__ relax,
     double*        __restrict__ d_edge_bc_relax);
+
+// ── Advanced spatial reconstruction kernels ──────────────────────────────────
+
+/// Barth-Jespersen limiter (scheme 5): one thread per cell, applies slope limiter
+/// using the 1-ring neighbor envelope to bound extrapolated face values.
+/// Uses cell_edge_offsets/ids (CSR over edges) plus edge_c0/edge_c1 to resolve
+/// neighbor cells from incident edge indices.
+/// Outputs limited gradients grad_x_lim[i], grad_y_lim[i].
+__global__ void barth_jespersen_kernel(
+    const double* __restrict__ q,
+    const double* __restrict__ grad_x,
+    const double* __restrict__ grad_y,
+    const double* __restrict__ cell_cx,
+    const double* __restrict__ cell_cy,
+    const int* __restrict__ cell_edge_offsets,
+    const int* __restrict__ cell_edge_ids,
+    const int* __restrict__ edge_c0,
+    const int* __restrict__ edge_c1,
+    int n_cells,
+    double* __restrict__ grad_x_lim,
+    double* __restrict__ grad_y_lim);
+
+/// Extract hx/hy fields from a Grad struct array into two flat double arrays.
+/// Used to feed Green-Gauss eta gradients into the Barth-Jespersen limiter.
+__global__ void extract_hx_hy_kernel(
+    const Grad* __restrict__ d_grad,
+    double* __restrict__ hx_out,
+    double* __restrict__ hy_out,
+    int n_cells);
+
+/// WENO3 reconstruction (scheme 6): one thread per face, three sub-stencil
+/// candidate reconstructions combined via Hu-Shu nonlinear weights.
+__global__ void weno3_kernel(
+    const double* __restrict__ q,
+    const double* __restrict__ cell_cx,
+    const double* __restrict__ cell_cy,
+    const double* __restrict__ face_mid_x,
+    const double* __restrict__ face_mid_y,
+    const int* __restrict__ face_stencil_S0_offsets,
+    const int* __restrict__ face_stencil_S0_cells,
+    const int* __restrict__ face_stencil_S1,
+    const int* __restrict__ face_stencil_S2_offsets,
+    const int* __restrict__ face_stencil_S2_cells,
+    int n_faces,
+    double* __restrict__ q_face_recon);
+
+/// MP5 reconstruction (scheme 8): one thread per face, 5-cell walk with
+/// mapped monotonicity-preserving limiter (Suresh-Huynh 1997).
+__global__ void mp5_kernel(
+    const double* __restrict__ q,
+    const double* __restrict__ cell_cx,
+    const double* __restrict__ cell_cy,
+    const double* __restrict__ face_mid_x,
+    const double* __restrict__ face_mid_y,
+    const int* __restrict__ face_stencil_5,
+    const int* __restrict__ face_mp5_case,
+    int n_faces,
+    double* __restrict__ q_face_recon);
 
 /// Host-callable wrapper that launches swe2d_apply_edge_relax_kernel on the solver stream. @host
 void swe2d_gpu_set_edge_bc_relax(
