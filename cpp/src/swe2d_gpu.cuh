@@ -138,13 +138,20 @@ struct SWE2DDeviceState {
     double* d_grad_y_lim = nullptr;   // [n_cells]
 
     // Precomputed face reconstruction arrays (schemes 6, 8)
-    // Each scheme reconstructs all 3 conserved variables (eta, hu, hv) per face.
-    double* d_weno3_face_eta = nullptr;  // [n_edges]
-    double* d_weno3_face_hu  = nullptr;  // [n_edges]
-    double* d_weno3_face_hv  = nullptr;  // [n_edges]
-    double* d_mp5_face_eta   = nullptr;  // [n_edges]
-    double* d_mp5_face_hu    = nullptr;  // [n_edges]
-    double* d_mp5_face_hv    = nullptr;  // [n_edges]
+    // Each scheme reconstructs all 3 conserved variables (eta, hu, hv) as
+    // separate left/right Riemann states at each face.
+    double* d_weno3_face_eta_L = nullptr;  // [n_edges]
+    double* d_weno3_face_eta_R = nullptr;  // [n_edges]
+    double* d_weno3_face_hu_L  = nullptr;  // [n_edges]
+    double* d_weno3_face_hu_R  = nullptr;  // [n_edges]
+    double* d_weno3_face_hv_L  = nullptr;  // [n_edges]
+    double* d_weno3_face_hv_R  = nullptr;  // [n_edges]
+    double* d_mp5_face_eta_L   = nullptr;  // [n_edges]
+    double* d_mp5_face_eta_R   = nullptr;  // [n_edges]
+    double* d_mp5_face_hu_L    = nullptr;  // [n_edges]
+    double* d_mp5_face_hu_R    = nullptr;  // [n_edges]
+    double* d_mp5_face_hv_L    = nullptr;  // [n_edges]
+    double* d_mp5_face_hv_R    = nullptr;  // [n_edges]
 
     // WENO3 face sub-stencil data (scheme 6) — uploaded from mesh
     int32_t* d_face_stencil_S0_offsets = nullptr;
@@ -1498,10 +1505,12 @@ __global__ void extract_hx_hy_kernel(
     double* __restrict__ hy_out,
     int n_cells);
 
-/// WENO3 reconstruction (scheme 6): one thread per face, three sub-stencil
-/// candidate reconstructions via LSQ plane fits, combined via Hu-Shu
-/// nonlinear weights.  Reconstructs ALL 3 conserved variables (eta, hu, hv).
-/// Output arrays are per-face reconstructed values.
+/// WENO3 reconstruction (scheme 6): one thread per face, textbook upwind-biased
+/// left/right reconstruction at each face.  Two linear sub-stencils per side
+/// with standard Jiang-Shu smoothness indicators and nonlinear weights.
+/// Performs component-wise WENO3 left/right reconstruction of the conserved
+/// variables (eta, hu, hv) for each face, then rotates back to physical
+/// (eta, hu, hv) for the HLLC flux kernel.
 __global__ void weno3_kernel(
     const double* __restrict__ h,
     const double* __restrict__ zb,
@@ -1511,20 +1520,28 @@ __global__ void weno3_kernel(
     const double* __restrict__ cell_cy,
     const double* __restrict__ face_mid_x,
     const double* __restrict__ face_mid_y,
+    const double* __restrict__ face_nx,
+    const double* __restrict__ face_ny,
     const int* __restrict__ face_stencil_S0_offsets,
     const int* __restrict__ face_stencil_S0_cells,
     const int* __restrict__ face_stencil_S1,
     const int* __restrict__ face_stencil_S2_offsets,
     const int* __restrict__ face_stencil_S2_cells,
     int n_faces,
-    double* __restrict__ eta_face,
-    double* __restrict__ hu_face,
-    double* __restrict__ hv_face);
+    double h_min,
+    double g,
+    double* __restrict__ eta_face_L,
+    double* __restrict__ eta_face_R,
+    double* __restrict__ hu_face_L,
+    double* __restrict__ hu_face_R,
+    double* __restrict__ hv_face_L,
+    double* __restrict__ hv_face_R);
 
 /// MP5 reconstruction (scheme 8): one thread per face, 5-cell walk with
 /// Lagrange interpolation on face-normal-projected coordinates and
 /// runtime Suresh-Huynh monotonicity-preserving limiter.
-/// Reconstructs ALL 3 conserved variables (eta, hu, hv).
+/// Reconstructs ALL 3 conserved variables (eta, hu, hv) as left/right states.
+/// (Currently both sides are reconstructed from the same centered stencil.)
 __global__ void mp5_kernel(
     const double* __restrict__ h,
     const double* __restrict__ zb,
@@ -1538,9 +1555,12 @@ __global__ void mp5_kernel(
     const double* __restrict__ face_ny,
     const int* __restrict__ face_stencil_5,
     int n_faces,
-    double* __restrict__ eta_face,
-    double* __restrict__ hu_face,
-    double* __restrict__ hv_face);
+    double* __restrict__ eta_face_L,
+    double* __restrict__ eta_face_R,
+    double* __restrict__ hu_face_L,
+    double* __restrict__ hu_face_R,
+    double* __restrict__ hv_face_L,
+    double* __restrict__ hv_face_R);
 
 /// Host-callable wrapper that launches swe2d_apply_edge_relax_kernel on the solver stream. @host
 void swe2d_gpu_set_edge_bc_relax(

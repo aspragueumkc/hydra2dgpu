@@ -1044,6 +1044,24 @@ __global__ __launch_bounds__(256, 4) void swe2d_gradient_kernel(
     }
 }
 
+/** GPU kernel: zero the eta-gradient (hx, hy) for cells with negligible depth.
+ *  Prevents MUSCL reconstruction from projecting bed-slope gradients onto
+ *  faces of dry or near-dry cells, which can create artificial face depths
+ *  that grow unstable when combined with source terms.
+ *  @global */
+__global__ __launch_bounds__(256, 4) void swe2d_zero_dry_eta_grad_kernel(
+    int32_t n_cells,
+    const State* __restrict__ cell_h,
+    Grad* d_grad,
+    double h_min)
+{
+    int32_t c = blockIdx.x * blockDim.x + threadIdx.x;
+    if (c >= n_cells) return;
+    if (static_cast<double>(cell_h[c]) > h_min) return;
+    d_grad[c].hx = 0.0;
+    d_grad[c].hy = 0.0;
+}
+
 /** Cell-parallel gather kernel: sum per-edge gradient contributions into per-cell arrays.
  *  Reads from edge-scratch arrays, writes to cell gradient arrays.  No atomics.
  *  Each edge stores the raw face flux (c0 perspective, +nx outward from c0).
@@ -1902,13 +1920,19 @@ __global__ __launch_bounds__(256, 2) void swe2d_flux_kernel(
     // Optional limited eta gradients for scheme 5 (Barth-Jespersen)
     const double*  __restrict__ d_grad_x_lim,
     const double*  __restrict__ d_grad_y_lim,
-    // Optional precomputed face reconstructions for scheme 6 (WENO3) and 8 (MP5)
-    const double*  __restrict__ d_weno3_face_eta,
-    const double*  __restrict__ d_weno3_face_hu,
-    const double*  __restrict__ d_weno3_face_hv,
-    const double*  __restrict__ d_mp5_face_eta,
-    const double*  __restrict__ d_mp5_face_hu,
-    const double*  __restrict__ d_mp5_face_hv,
+    // Optional precomputed left/right face reconstructions for scheme 6 (WENO3) and 8 (MP5)
+    const double*  __restrict__ d_weno3_face_eta_L,
+    const double*  __restrict__ d_weno3_face_eta_R,
+    const double*  __restrict__ d_weno3_face_hu_L,
+    const double*  __restrict__ d_weno3_face_hu_R,
+    const double*  __restrict__ d_weno3_face_hv_L,
+    const double*  __restrict__ d_weno3_face_hv_R,
+    const double*  __restrict__ d_mp5_face_eta_L,
+    const double*  __restrict__ d_mp5_face_eta_R,
+    const double*  __restrict__ d_mp5_face_hu_L,
+    const double*  __restrict__ d_mp5_face_hu_R,
+    const double*  __restrict__ d_mp5_face_hv_L,
+    const double*  __restrict__ d_mp5_face_hv_R,
     double*                     flux_h,    // [n_cells] accumulator
     double*                     flux_hu,
     double*                     flux_hv,
@@ -2144,22 +2168,22 @@ __global__ __launch_bounds__(256, 2) void swe2d_flux_kernel(
             double etaL_rec, etaR_rec, huL_rec, huR_rec, hvL_rec, hvR_rec;
             const double etaL = hL + zbL;
             const double etaR = hR + zbR;
-            if (spatial_scheme == scheme_w3 && !near_boundary && d_weno3_face_eta != nullptr) {
-                // WENO3 (scheme 6): all 3 variables reconstructed by kernel
-                etaL_rec = d_weno3_face_eta[e];
-                etaR_rec = d_weno3_face_eta[e];
-                huL_rec = d_weno3_face_hu[e];
-                huR_rec = d_weno3_face_hu[e];
-                hvL_rec = d_weno3_face_hv[e];
-                hvR_rec = d_weno3_face_hv[e];
-            } else if (spatial_scheme == scheme_m5 && !near_boundary && d_mp5_face_eta != nullptr) {
-                // MP5 (scheme 8): all 3 variables reconstructed by kernel
-                etaL_rec = d_mp5_face_eta[e];
-                etaR_rec = d_mp5_face_eta[e];
-                huL_rec = d_mp5_face_hu[e];
-                huR_rec = d_mp5_face_hu[e];
-                hvL_rec = d_mp5_face_hv[e];
-                hvR_rec = d_mp5_face_hv[e];
+            if (spatial_scheme == scheme_w3 && !near_boundary && d_weno3_face_eta_L != nullptr) {
+                // WENO3 (scheme 6): all 3 variables reconstructed as left/right Riemann states
+                etaL_rec = d_weno3_face_eta_L[e];
+                etaR_rec = d_weno3_face_eta_R[e];
+                huL_rec = d_weno3_face_hu_L[e];
+                huR_rec = d_weno3_face_hu_R[e];
+                hvL_rec = d_weno3_face_hv_L[e];
+                hvR_rec = d_weno3_face_hv_R[e];
+            } else if (spatial_scheme == scheme_m5 && !near_boundary && d_mp5_face_eta_L != nullptr) {
+                // MP5 (scheme 8): all 3 variables reconstructed as left/right Riemann states
+                etaL_rec = d_mp5_face_eta_L[e];
+                etaR_rec = d_mp5_face_eta_R[e];
+                huL_rec = d_mp5_face_hu_L[e];
+                huR_rec = d_mp5_face_hu_R[e];
+                hvL_rec = d_mp5_face_hv_L[e];
+                hvR_rec = d_mp5_face_hv_R[e];
             } else if (spatial_scheme == scheme_weno5 && !near_boundary) {
                 weno5_reconstruct(etaL, etaR, d_grad[c0].hx, d_grad[c0].hy, d_grad[c1].hx, d_grad[c1].hy, etaL_rec, etaR_rec);
                 weno5_reconstruct(huL, huR, d_grad[c0].hux, d_grad[c0].huy, d_grad[c1].hux, d_grad[c1].huy, huL_rec, huR_rec);
@@ -4989,19 +5013,32 @@ SWE2DDeviceState* swe2d_gpu_init(
     CUDA_CHECK(cudaMemset(dev->d_grad_x_lim, 0, sz_cells * sizeof(double)));
     CUDA_CHECK(cudaMemset(dev->d_grad_y_lim, 0, sz_cells * sizeof(double)));
 
-    // Face reconstruction precompute arrays (schemes 6, 8) — 3 vars each
-    alloc_d(reinterpret_cast<void**>(&dev->d_weno3_face_eta), sz_edges * sizeof(double));
-    alloc_d(reinterpret_cast<void**>(&dev->d_weno3_face_hu),  sz_edges * sizeof(double));
-    alloc_d(reinterpret_cast<void**>(&dev->d_weno3_face_hv),  sz_edges * sizeof(double));
-    alloc_d(reinterpret_cast<void**>(&dev->d_mp5_face_eta),   sz_edges * sizeof(double));
-    alloc_d(reinterpret_cast<void**>(&dev->d_mp5_face_hu),    sz_edges * sizeof(double));
-    alloc_d(reinterpret_cast<void**>(&dev->d_mp5_face_hv),    sz_edges * sizeof(double));
-    CUDA_CHECK(cudaMemset(dev->d_weno3_face_eta, 0, sz_edges * sizeof(double)));
-    CUDA_CHECK(cudaMemset(dev->d_weno3_face_hu,  0, sz_edges * sizeof(double)));
-    CUDA_CHECK(cudaMemset(dev->d_weno3_face_hv,  0, sz_edges * sizeof(double)));
-    CUDA_CHECK(cudaMemset(dev->d_mp5_face_eta, 0, sz_edges * sizeof(double)));
-    CUDA_CHECK(cudaMemset(dev->d_mp5_face_hu,  0, sz_edges * sizeof(double)));
-    CUDA_CHECK(cudaMemset(dev->d_mp5_face_hv,  0, sz_edges * sizeof(double)));
+    // Face reconstruction precompute arrays (schemes 6, 8) — left/right Riemann
+    // states for each of the 3 conserved variables.
+    alloc_d(reinterpret_cast<void**>(&dev->d_weno3_face_eta_L), sz_edges * sizeof(double));
+    alloc_d(reinterpret_cast<void**>(&dev->d_weno3_face_eta_R), sz_edges * sizeof(double));
+    alloc_d(reinterpret_cast<void**>(&dev->d_weno3_face_hu_L),  sz_edges * sizeof(double));
+    alloc_d(reinterpret_cast<void**>(&dev->d_weno3_face_hu_R),  sz_edges * sizeof(double));
+    alloc_d(reinterpret_cast<void**>(&dev->d_weno3_face_hv_L),  sz_edges * sizeof(double));
+    alloc_d(reinterpret_cast<void**>(&dev->d_weno3_face_hv_R),  sz_edges * sizeof(double));
+    alloc_d(reinterpret_cast<void**>(&dev->d_mp5_face_eta_L),   sz_edges * sizeof(double));
+    alloc_d(reinterpret_cast<void**>(&dev->d_mp5_face_eta_R),   sz_edges * sizeof(double));
+    alloc_d(reinterpret_cast<void**>(&dev->d_mp5_face_hu_L),   sz_edges * sizeof(double));
+    alloc_d(reinterpret_cast<void**>(&dev->d_mp5_face_hu_R),   sz_edges * sizeof(double));
+    alloc_d(reinterpret_cast<void**>(&dev->d_mp5_face_hv_L),   sz_edges * sizeof(double));
+    alloc_d(reinterpret_cast<void**>(&dev->d_mp5_face_hv_R),   sz_edges * sizeof(double));
+    CUDA_CHECK(cudaMemset(dev->d_weno3_face_eta_L, 0, sz_edges * sizeof(double)));
+    CUDA_CHECK(cudaMemset(dev->d_weno3_face_eta_R, 0, sz_edges * sizeof(double)));
+    CUDA_CHECK(cudaMemset(dev->d_weno3_face_hu_L,  0, sz_edges * sizeof(double)));
+    CUDA_CHECK(cudaMemset(dev->d_weno3_face_hu_R,  0, sz_edges * sizeof(double)));
+    CUDA_CHECK(cudaMemset(dev->d_weno3_face_hv_L,  0, sz_edges * sizeof(double)));
+    CUDA_CHECK(cudaMemset(dev->d_weno3_face_hv_R,  0, sz_edges * sizeof(double)));
+    CUDA_CHECK(cudaMemset(dev->d_mp5_face_eta_L, 0, sz_edges * sizeof(double)));
+    CUDA_CHECK(cudaMemset(dev->d_mp5_face_eta_R, 0, sz_edges * sizeof(double)));
+    CUDA_CHECK(cudaMemset(dev->d_mp5_face_hu_L,  0, sz_edges * sizeof(double)));
+    CUDA_CHECK(cudaMemset(dev->d_mp5_face_hu_R,  0, sz_edges * sizeof(double)));
+    CUDA_CHECK(cudaMemset(dev->d_mp5_face_hv_L,  0, sz_edges * sizeof(double)));
+    CUDA_CHECK(cudaMemset(dev->d_mp5_face_hv_R,  0, sz_edges * sizeof(double)));
 
     // State (stored as State = float or double)
     alloc_d(reinterpret_cast<void**>(&dev->d_h),  sz_cells * sizeof(State));
@@ -5525,6 +5562,11 @@ void swe2d_gpu_step(
                     swe2d_maybe_launch_gradient_gather(dev, n_cells, BLOCK);
                     swe2d_maybe_launch_lsq_gradient(dev, spatial_scheme, n_cells, BLOCK,
                                                     dev->d_h, dev->d_hu, dev->d_hv);
+                    if (h_min > 0.0) {
+                        int g2_grid = (n_cells + BLOCK - 1) / BLOCK;
+                        swe2d_zero_dry_eta_grad_kernel<<<g2_grid, BLOCK, 0, dev->d_stream>>>(
+                            n_cells, dev->d_h, dev->d_grad, h_min);
+                    }
                 }
                 // ── Advanced spatial reconstruction pre-passes (schemes 5, 6, 8) ──
                 {
@@ -5547,16 +5589,20 @@ void swe2d_gpu_step(
                             n_cells, dev->d_grad_x_lim, dev->d_grad_y_lim);
                     }
 
-                    // Scheme 6: precompute per-face WENO3 reconstruction (eta, hu, hv)
+                    // Scheme 6: precompute per-face WENO3 left/right Riemann states
                     if (spatial_scheme == scheme_w3 && dev->d_face_stencil_S0_offsets != nullptr) {
                         weno3_kernel<<<e_grid, BLOCK, 0, dev->d_stream>>>(
                             dev->d_h, dev->d_cell_zb, dev->d_hu, dev->d_hv,
                             dev->d_cell_cx, dev->d_cell_cy,
                             dev->d_edge_mx, dev->d_edge_my,
+                            dev->d_edge_nx, dev->d_edge_ny,
                             dev->d_face_stencil_S0_offsets, dev->d_face_stencil_S0_cells,
                             dev->d_face_stencil_S1,
                             dev->d_face_stencil_S2_offsets, dev->d_face_stencil_S2_cells,
-                            n_edges, dev->d_weno3_face_eta, dev->d_weno3_face_hu, dev->d_weno3_face_hv);
+                            n_edges, h_min, g,
+                            dev->d_weno3_face_eta_L, dev->d_weno3_face_eta_R,
+                            dev->d_weno3_face_hu_L,  dev->d_weno3_face_hu_R,
+                            dev->d_weno3_face_hv_L,  dev->d_weno3_face_hv_R);
                     }
 
                     // Scheme 8: precompute per-face MP5 reconstruction (eta, hu, hv)
@@ -5567,7 +5613,10 @@ void swe2d_gpu_step(
                             dev->d_edge_mx, dev->d_edge_my,
                             dev->d_edge_nx, dev->d_edge_ny,
                             dev->d_face_stencil_5,
-                            n_edges, dev->d_mp5_face_eta, dev->d_mp5_face_hu, dev->d_mp5_face_hv);
+                            n_edges,
+                            dev->d_mp5_face_eta_L, dev->d_mp5_face_eta_R,
+                            dev->d_mp5_face_hu_L,  dev->d_mp5_face_hu_R,
+                            dev->d_mp5_face_hv_L,  dev->d_mp5_face_hv_R);
                     }
                 }
                 // flux
@@ -5585,8 +5634,12 @@ void swe2d_gpu_step(
                     dev->d_cell_cx, dev->d_cell_cy,
                     dev->d_grad,
                     dev->d_grad_x_lim, dev->d_grad_y_lim,
-                    dev->d_weno3_face_eta, dev->d_weno3_face_hu, dev->d_weno3_face_hv,
-                    dev->d_mp5_face_eta, dev->d_mp5_face_hu, dev->d_mp5_face_hv,
+                    dev->d_weno3_face_eta_L, dev->d_weno3_face_eta_R,
+                    dev->d_weno3_face_hu_L,  dev->d_weno3_face_hu_R,
+                    dev->d_weno3_face_hv_L,  dev->d_weno3_face_hv_R,
+                    dev->d_mp5_face_eta_L,   dev->d_mp5_face_eta_R,
+                    dev->d_mp5_face_hu_L,    dev->d_mp5_face_hu_R,
+                    dev->d_mp5_face_hv_L,    dev->d_mp5_face_hv_R,
                     dev->d_flux_h, dev->d_flux_hu, dev->d_flux_hv,
                     dev->d_flux_hu_r, dev->d_flux_hv_r,
                     nullptr, nullptr, nullptr,
@@ -5763,6 +5816,11 @@ void swe2d_gpu_step(
         swe2d_maybe_launch_gradient_gather(dev, n_cells, BLOCK);
         swe2d_maybe_launch_lsq_gradient(dev, spatial_scheme, n_cells, BLOCK,
                                         dev->d_h, dev->d_hu, dev->d_hv);
+        if (h_min > 0.0) {
+            int g2_grid = (n_cells + BLOCK - 1) / BLOCK;
+            swe2d_zero_dry_eta_grad_kernel<<<g2_grid, BLOCK, 0, dev->d_stream>>>(
+                n_cells, dev->d_h, dev->d_grad, h_min);
+        }
     }
 
     // ── Advanced spatial reconstruction pre-passes (schemes 5, 6, 8) ──
@@ -5786,16 +5844,20 @@ void swe2d_gpu_step(
                 n_cells, dev->d_grad_x_lim, dev->d_grad_y_lim);
         }
 
-        // Scheme 6: precompute per-face WENO3 reconstruction (eta, hu, hv)
+        // Scheme 6: precompute per-face WENO3 left/right Riemann states
         if (spatial_scheme == scheme_w3 && dev->d_face_stencil_S0_offsets != nullptr) {
             weno3_kernel<<<e_grid, BLOCK, 0, dev->d_stream>>>(
                 dev->d_h, dev->d_cell_zb, dev->d_hu, dev->d_hv,
                 dev->d_cell_cx, dev->d_cell_cy,
                 dev->d_edge_mx, dev->d_edge_my,
+                dev->d_edge_nx, dev->d_edge_ny,
                 dev->d_face_stencil_S0_offsets, dev->d_face_stencil_S0_cells,
                 dev->d_face_stencil_S1,
                 dev->d_face_stencil_S2_offsets, dev->d_face_stencil_S2_cells,
-                n_edges, dev->d_weno3_face_eta, dev->d_weno3_face_hu, dev->d_weno3_face_hv);
+                n_edges, h_min, g,
+                dev->d_weno3_face_eta_L, dev->d_weno3_face_eta_R,
+                dev->d_weno3_face_hu_L,  dev->d_weno3_face_hu_R,
+                dev->d_weno3_face_hv_L,  dev->d_weno3_face_hv_R);
         }
 
         // Scheme 8: precompute per-face MP5 reconstruction (eta, hu, hv)
@@ -5806,7 +5868,10 @@ void swe2d_gpu_step(
                 dev->d_edge_mx, dev->d_edge_my,
                 dev->d_edge_nx, dev->d_edge_ny,
                 dev->d_face_stencil_5,
-                n_edges, dev->d_mp5_face_eta, dev->d_mp5_face_hu, dev->d_mp5_face_hv);
+                n_edges,
+                dev->d_mp5_face_eta_L, dev->d_mp5_face_eta_R,
+                dev->d_mp5_face_hu_L,  dev->d_mp5_face_hu_R,
+                dev->d_mp5_face_hv_L,  dev->d_mp5_face_hv_R);
         }
     }
 
@@ -5841,8 +5906,12 @@ void swe2d_gpu_step(
             dev->d_cell_cx, dev->d_cell_cy,
             dev->d_grad,
             dev->d_grad_x_lim, dev->d_grad_y_lim,
-            dev->d_weno3_face_eta, dev->d_weno3_face_hu, dev->d_weno3_face_hv,
-            dev->d_mp5_face_eta, dev->d_mp5_face_hu, dev->d_mp5_face_hv,
+            dev->d_weno3_face_eta_L, dev->d_weno3_face_eta_R,
+            dev->d_weno3_face_hu_L,  dev->d_weno3_face_hu_R,
+            dev->d_weno3_face_hv_L,  dev->d_weno3_face_hv_R,
+            dev->d_mp5_face_eta_L,   dev->d_mp5_face_eta_R,
+            dev->d_mp5_face_hu_L,    dev->d_mp5_face_hu_R,
+            dev->d_mp5_face_hv_L,    dev->d_mp5_face_hv_R,
             dev->d_flux_h, dev->d_flux_hu, dev->d_flux_hv,
             dev->d_flux_hu_r, dev->d_flux_hv_r,
             d_dbg_fh, d_dbg_fhu, d_dbg_fhv,
@@ -9947,8 +10016,12 @@ void swe2d_gpu_destroy(SWE2DDeviceState* dev) {
     safe_free(dev->d_cell_cx);    safe_free(dev->d_cell_cy);
     safe_free(dev->d_grad);
     safe_free(dev->d_grad_x_lim); safe_free(dev->d_grad_y_lim);
-    safe_free(dev->d_weno3_face_eta); safe_free(dev->d_weno3_face_hu); safe_free(dev->d_weno3_face_hv);
-    safe_free(dev->d_mp5_face_eta); safe_free(dev->d_mp5_face_hu); safe_free(dev->d_mp5_face_hv);
+    safe_free(dev->d_weno3_face_eta_L); safe_free(dev->d_weno3_face_eta_R);
+    safe_free(dev->d_weno3_face_hu_L);  safe_free(dev->d_weno3_face_hu_R);
+    safe_free(dev->d_weno3_face_hv_L);  safe_free(dev->d_weno3_face_hv_R);
+    safe_free(dev->d_mp5_face_eta_L);   safe_free(dev->d_mp5_face_eta_R);
+    safe_free(dev->d_mp5_face_hu_L);    safe_free(dev->d_mp5_face_hu_R);
+    safe_free(dev->d_mp5_face_hv_L);    safe_free(dev->d_mp5_face_hv_R);
     safe_free(dev->d_face_stencil_S0_offsets); safe_free(dev->d_face_stencil_S0_cells);
     safe_free(dev->d_face_stencil_S1); safe_free(dev->d_face_stencil_S2_offsets);
     safe_free(dev->d_face_stencil_S2_cells);

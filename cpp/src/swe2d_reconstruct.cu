@@ -34,75 +34,71 @@ static __device__ __forceinline__ double minmod(double a, double b)
     return (fabs(a) < fabs(b)) ? a : b;
 }
 
-/// Weighted LSQ plane fit for a sub-stencil, evaluated at a target point.
-/// Computes the 3×3 normal-equations system once from geometry, then solves
-/// for the constant term (face value) of THREE variables simultaneously.
+/// 1D linear reconstruction of q at s = 0 from two points (s_a, q_a), (s_b, q_b).
 ///
-/// q1 = eta = h + zb (computed internally for C-property compliance)
-/// q2 = hu (passed directly)
-/// q3 = hv (passed directly)
-static __device__ __forceinline__ void lsq3_at_face(
-    const double* __restrict__ h,
-    const double* __restrict__ zb,
-    const double* __restrict__ hu_arr,
-    const double* __restrict__ hv_arr,
-    const double* __restrict__ cx,
-    const double* __restrict__ cy,
-    double fx, double fy,
-    const int* __restrict__ ids, int n,
-    double& out_eta, double& out_hu, double& out_hv, double& out_var)
+/// q(s) = q_a * (s - s_b)/(s_a - s_b) + q_b * (s - s_a)/(s_b - s_a)
+/// At s = 0: q(0) = (q_a * s_b - q_b * s_a) / (s_b - s_a)
+static __device__ __forceinline__ double weno3_linear2(
+    double s_a, double q_a, double s_b, double q_b)
 {
-    if (n <= 0) { out_eta = out_hu = out_hv = 0.0; out_var = 1e6; return; }
-    if (n == 1) {
-        int id = ids[0];
-        out_eta = h[id] + zb[id]; out_hu = hu_arr[id]; out_hv = hv_arr[id];
-        out_var = 0.0; return;
-    }
+    double ds = s_b - s_a;
+    if (fabs(ds) < 1.0e-14) return 0.5 * (q_a + q_b);
+    return (q_a * s_b - q_b * s_a) / ds;
+}
 
-    double S1 = 0.0, Sx = 0.0, Sy = 0.0;
-    double Sxx = 0.0, Sxy = 0.0, Syy = 0.0;
-    double Se = 0.0, Su = 0.0, Sv = 0.0;
-    double Sex = 0.0, Sey = 0.0, Sux = 0.0, Suy = 0.0, Svx = 0.0, Svy = 0.0;
+/// Jiang-Shu smoothness indicator for a 2-point linear stencil projected
+/// onto the face-normal coordinate.
+static __device__ __forceinline__ double weno3_beta2(
+    double s_a, double q_a, double s_b, double q_b)
+{
+    double ds = s_b - s_a;
+    if (fabs(ds) < 1.0e-14) return 0.0;
+    double dq = q_b - q_a;
+    double slope = dq / ds;
+    return slope * slope;
+}
 
-    for (int k = 0; k < n; ++k) {
-        int id = ids[k];
-        double dx = cx[id] - fx;
-        double dy = cy[id] - fy;
-        double eta = h[id] + zb[id];
-        double u = hu_arr[id];
-        double v = hv_arr[id];
-
-        S1  += 1.0;  Sx += dx;  Sy += dy;
-        Sxx += dx*dx;  Sxy += dx*dy;  Syy += dy*dy;
-        Se += eta;  Su += u;  Sv += v;
-        Sex += eta*dx;  Sey += eta*dy;
-        Sux += u*dx;  Suy += u*dy;
-        Svx += v*dx;  Svy += v*dy;
-    }
-
-    double M00 = Sxx*Syy - Sxy*Sxy;
-    double M01 = Sx*Syy - Sxy*Sy;
-    double M02 = Sx*Sxy - Sxx*Sy;
-    double det = S1*M00 - Sx*M01 + Sy*M02;
-
-    if (fabs(det) < 1e-20) {
-        double inv = 1.0 / S1;
-        out_eta = Se * inv; out_hu = Su * inv; out_hv = Sv * inv;
+/// Textbook 1D WENO3 reconstruction at a face (s = 0) using projected
+/// 1-D coordinates.  Two 2-cell linear sub-stencils per side with the
+/// standard Jiang-Shu optimal weights.
+///
+/// Left state (looking from c0 towards c1):
+///   sub-stencils: {u, c0} and {c0, c1}
+///   linear weights: d0 = 1/3, d1 = 2/3
+///
+/// Right state (looking from c1 towards c0):
+///   sub-stencils: {c0, c1} and {c1, v}
+///   linear weights: d0 = 2/3, d1 = 1/3
+static __device__ __forceinline__ double weno3_reconstruct(
+    double q_u, double q_c0, double q_c1, double q_v,
+    double s_u, double s_c0, double s_c1, double s_v,
+    bool is_left)
+{
+    double q0, q1, beta0, beta1, d0, d1;
+    if (is_left) {
+        q0    = weno3_linear2(s_u, q_u, s_c0, q_c0);
+        q1    = weno3_linear2(s_c0, q_c0, s_c1, q_c1);
+        beta0 = weno3_beta2(s_u, q_u, s_c0, q_c0);
+        beta1 = weno3_beta2(s_c0, q_c0, s_c1, q_c1);
+        d0 = 1.0 / 3.0;
+        d1 = 2.0 / 3.0;
     } else {
-        double inv_det = 1.0 / det;
-        out_eta = (Se*M00 - Sx*(Sex*Syy - Sxy*Sey) + Sy*(Sex*Sxy - Sxx*Sey)) * inv_det;
-        out_hu  = (Su*M00 - Sx*(Sux*Syy - Sxy*Suy) + Sy*(Sux*Sxy - Sxx*Suy)) * inv_det;
-        out_hv  = (Sv*M00 - Sx*(Svx*Syy - Sxy*Svy) + Sy*(Svx*Sxy - Sxx*Svy)) * inv_det;
+        q0    = weno3_linear2(s_c0, q_c0, s_c1, q_c1);
+        q1    = weno3_linear2(s_c1, q_c1, s_v, q_v);
+        beta0 = weno3_beta2(s_c0, q_c0, s_c1, q_c1);
+        beta1 = weno3_beta2(s_c1, q_c1, s_v, q_v);
+        d0 = 2.0 / 3.0;
+        d1 = 1.0 / 3.0;
     }
 
-    // Smoothness from eta variance
-    double mean = Se / S1;
-    double res = 0.0;
-    for (int k = 0; k < n; ++k) {
-        double diff = (h[ids[k]] + zb[ids[k]]) - mean;
-        res += diff * diff;
-    }
-    out_var = res;
+    const double eps = 1.0e-6;
+    double alpha0 = d0 / ((eps + beta0) * (eps + beta0));
+    double alpha1 = d1 / ((eps + beta1) * (eps + beta1));
+    double asum = alpha0 + alpha1;
+    if (asum <= 0.0) return q0;
+    double w0 = alpha0 / asum;
+    double w1 = alpha1 / asum;
+    return w0 * q0 + w1 * q1;
 }
 
 /// Lagrange interpolation of 5 points at s = 0 for a single variable.
@@ -210,17 +206,20 @@ __global__ void barth_jespersen_kernel(
 }
 
 // ═════════════════════════════════════════════════════════════════════════════
-//  WENO3  (scheme 6)
+//  WENO3  (scheme 6) — component-wise left/right reconstruction of conserved vars
 //
-//  One thread per face.  Reconstructs all 3 conserved variables (eta, hu, hv)
-//  at the face midpoint via 3-sub-stencil WENO blend.
+//  One thread per face.  Projects the relevant cells onto the face normal and
+//  performs a 1D WENO3 reconstruction separately for the left and right
+//  Riemann states of each conserved variable (eta, hu, hv).  Two linear
+//  sub-stencils per side with the standard Jiang-Shu smoothness indicators and
+//  optimal weights (1/3, 2/3) for the left state and (2/3, 1/3) for the right.
 //
-//  Each sub-stencil candidate is a weighted LSQ plane fit (S0, S2) or linear
-//  interpolation (S1), computed once and applied to all 3 variables.
-//  The WENO nonlinear weights are based on eta smoothness and applied to all 3.
+//  Left state  uses {u, c0} and {c0, c1}, where u is the most upwind neighbour
+//  of owner c0.  Right state uses {c0, c1} and {c1, v}, where v is the most
+//  upwind neighbour of c1.  Boundary faces simply duplicate the owner cell.
 //
-//  Output: eta_face, hu_face, hv_face — the reconstructed values at the face.
-//  The flux kernel uses these directly as etaL_rec=etaR_rec, etc.
+//  Output: eta/hu/hv as distinct left/right values at each face, consumed by
+//  the HLLC flux kernel.
 // ═════════════════════════════════════════════════════════════════════════════
 
 __global__ void weno3_kernel(
@@ -232,99 +231,131 @@ __global__ void weno3_kernel(
     const double* __restrict__ cell_cy,
     const double* __restrict__ face_mid_x,
     const double* __restrict__ face_mid_y,
+    const double* __restrict__ face_nx,
+    const double* __restrict__ face_ny,
     const int* __restrict__ face_stencil_S0_offsets,
     const int* __restrict__ face_stencil_S0_cells,
     const int* __restrict__ face_stencil_S1,
     const int* __restrict__ face_stencil_S2_offsets,
     const int* __restrict__ face_stencil_S2_cells,
     int n_faces,
-    double* __restrict__ eta_face,
-    double* __restrict__ hu_face,
-    double* __restrict__ hv_face)
+    double h_min,
+    double g,
+    double* __restrict__ eta_face_L,
+    double* __restrict__ eta_face_R,
+    double* __restrict__ hu_face_L,
+    double* __restrict__ hu_face_R,
+    double* __restrict__ hv_face_L,
+    double* __restrict__ hv_face_R)
 {
     int f = blockIdx.x * blockDim.x + threadIdx.x;
     if (f >= n_faces) return;
 
-    int i = face_stencil_S1[2 * f + 0];
-    int j = face_stencil_S1[2 * f + 1];
-    if (j < 0) {
-        eta_face[f] = h[i] + zb[i];
-        hu_face[f]  = hu_arr[i];
-        hv_face[f]  = hv_arr[i];
+    int c0 = face_stencil_S1[2 * f + 0];
+    int c1 = face_stencil_S1[2 * f + 1];
+
+    // Boundary face: left/right both see the owner cell (flux kernel applies
+    // the physical boundary condition on the right side later).
+    if (c1 < 0) {
+        double eta = h[c0] + zb[c0];
+        double u = (h[c0] > h_min) ? hu_arr[c0] / h[c0] : 0.0;
+        double v = (h[c0] > h_min) ? hv_arr[c0] / h[c0] : 0.0;
+        eta_face_L[f] = eta; eta_face_R[f] = eta;
+        hu_face_L[f] = hu_arr[c0]; hu_face_R[f] = hu_arr[c0];
+        hv_face_L[f] = hv_arr[c0]; hv_face_R[f] = hv_arr[c0];
         return;
     }
 
-    double xf = face_mid_x[f];
-    double yf = face_mid_y[f];
+    double mx = face_mid_x[f];
+    double my = face_mid_y[f];
+    double nx = face_nx[f];
+    double ny = face_ny[f];
 
-    double xi = cell_cx[i], yi = cell_cy[i];
-    double xj = cell_cx[j], yj = cell_cy[j];
-    double eta_i = h[i] + zb[i], eta_j = h[j] + zb[j];
+    auto project = [&](int id) -> double {
+        return (cell_cx[id] - mx) * nx + (cell_cy[id] - my) * ny;
+    };
 
-    // ── S0: upwind lobe — LSQ plane fit for all 3 variables ─────────────
-    int s0 = face_stencil_S0_offsets[f];
-    int e0 = face_stencil_S0_offsets[f + 1];
-    int n0 = e0 - s0;
-    double q0_eta, q0_hu, q0_hv, beta_0;
-    if (n0 >= 2) {
-        lsq3_at_face(h, zb, hu_arr, hv_arr,
-                     cell_cx, cell_cy, xf, yf,
-                     face_stencil_S0_cells + s0, n0,
-                     q0_eta, q0_hu, q0_hv, beta_0);
-    } else {
-        q0_eta = eta_i; q0_hu = hu_arr[i]; q0_hv = hv_arr[i]; beta_0 = 1e6;
+    double s_c0 = project(c0);
+    double s_c1 = project(c1);
+
+    // Select most upwind neighbour of c0 for the left state (minimum s).
+    int s0_beg = face_stencil_S0_offsets[f];
+    int s0_end = face_stencil_S0_offsets[f + 1];
+    int id_u = -1;
+    double s_u = s_c0;  // fallback: c0 itself
+    for (int k = s0_beg; k < s0_end; ++k) {
+        int id = face_stencil_S0_cells[k];
+        double s = project(id);
+        if (id_u < 0 || s < s_u) {
+            id_u = id;
+            s_u = s;
+        }
     }
+    if (id_u < 0) { id_u = c0; s_u = s_c0; }
 
-    // ── S1: central pair — linear interpolation ──────────────────────────
-    double dx_ij = xj - xi, dy_ij = yj - yi;
-    double dist_ij_sq = dx_ij * dx_ij + dy_ij * dy_ij;
-    double t = (dist_ij_sq > 1e-24)
-        ? ((xf - xi) * dx_ij + (yf - yi) * dy_ij) / dist_ij_sq : 0.5;
-    t = fmax(0.0, fmin(1.0, t));
-    double q1_eta = eta_i + t * (eta_j - eta_i);
-    double q1_hu  = hu_arr[i] + t * (hu_arr[j] - hu_arr[i]);
-    double q1_hv  = hv_arr[i] + t * (hv_arr[j] - hv_arr[i]);
-    double beta_1 = (eta_i - eta_j) * (eta_i - eta_j);
-
-    // ── S2: downwind lobe — LSQ plane fit for all 3 variables ───────────
-    int s2 = face_stencil_S2_offsets[f];
-    int e2 = face_stencil_S2_offsets[f + 1];
-    int n2 = e2 - s2;
-    double q2_eta, q2_hu, q2_hv, beta_2;
-    if (n2 >= 2) {
-        lsq3_at_face(h, zb, hu_arr, hv_arr,
-                     cell_cx, cell_cy, xf, yf,
-                     face_stencil_S2_cells + s2, n2,
-                     q2_eta, q2_hu, q2_hv, beta_2);
-    } else {
-        q2_eta = eta_j; q2_hu = hu_arr[j]; q2_hv = hv_arr[j]; beta_2 = 1e6;
+    // Select most upwind neighbour of c1 for the right state (maximum s).
+    int s2_beg = face_stencil_S2_offsets[f];
+    int s2_end = face_stencil_S2_offsets[f + 1];
+    int id_v = -1;
+    double s_v = s_c1;  // fallback: c1 itself
+    for (int k = s2_beg; k < s2_end; ++k) {
+        int id = face_stencil_S2_cells[k];
+        double s = project(id);
+        if (id_v < 0 || s > s_v) {
+            id_v = id;
+            s_v = s;
+        }
     }
+    if (id_v < 0) { id_v = c1; s_v = s_c1; }
 
-    // ── Nonlinear WENO weights (computed from eta smoothness) ────────────
-    double d_weights[3] = {0.1, 0.6, 0.3};
-    double eps = 1e-6;
-    double betas[3] = {beta_0, beta_1, beta_2};
-    double alpha[3], alpha_sum = 0.0;
-    for (int k = 0; k < 3; ++k) {
-        alpha[k] = d_weights[k] / ((eps + betas[k]) * (eps + betas[k]));
-        alpha_sum += alpha[k];
-    }
-    double w[3];
-    for (int k = 0; k < 3; ++k) w[k] = alpha[k] / alpha_sum;
+    // Conserved variables for the stencil cells: eta, hu, hv.
+    double eta_u  = h[id_u]  + zb[id_u],  eta_c0 = h[c0] + zb[c0], eta_c1 = h[c1] + zb[c1], eta_v  = h[id_v]  + zb[id_v];
+    double hu_u   = hu_arr[id_u], hu_c0  = hu_arr[c0], hu_c1  = hu_arr[c1], hu_v   = hu_arr[id_v];
+    double hv_u   = hv_arr[id_u], hv_c0  = hv_arr[c0], hv_c1  = hv_arr[c1], hv_v   = hv_arr[id_v];
 
-    // ── Weighted combination for all 3 variables ────────────────────────
-    double rec_eta = w[0]*q0_eta + w[1]*q1_eta + w[2]*q2_eta;
-    double rec_hu  = w[0]*q0_hu  + w[1]*q1_hu  + w[2]*q2_hu;
-    double rec_hv  = w[0]*q0_hv  + w[1]*q1_hv  + w[2]*q2_hv;
+    // WENO3 left/right reconstruction of each conserved variable.
+    double eta_L = weno3_reconstruct(eta_u, eta_c0, eta_c1, eta_v, s_u, s_c0, s_c1, s_v, true);
+    double eta_R = weno3_reconstruct(eta_u, eta_c0, eta_c1, eta_v, s_u, s_c0, s_c1, s_v, false);
+    double hu_L  = weno3_reconstruct(hu_u,  hu_c0,  hu_c1,  hu_v,  s_u, s_c0, s_c1, s_v, true);
+    double hu_R  = weno3_reconstruct(hu_u,  hu_c0,  hu_c1,  hu_v,  s_u, s_c0, s_c1, s_v, false);
+    double hv_L  = weno3_reconstruct(hv_u,  hv_c0,  hv_c1,  hv_v,  s_u, s_c0, s_c1, s_v, true);
+    double hv_R  = weno3_reconstruct(hv_u,  hv_c0,  hv_c1,  hv_v,  s_u, s_c0, s_c1, s_v, false);
 
-    // Safety: clamp eta to local envelope
-    double eta_min = fmin(eta_i, eta_j);
-    double eta_max = fmax(eta_i, eta_j);
-    rec_eta = fmax(eta_min, fmin(eta_max, rec_eta));
+    // Local pair monotonicity clip (same safeguard WENO5 uses).
+    double eta_min = fmin(eta_c0, eta_c1);
+    double eta_max = fmax(eta_c0, eta_c1);
+    double hu_min  = fmin(hu_c0, hu_c1);
+    double hu_max  = fmax(hu_c0, hu_c1);
+    double hv_min  = fmin(hv_c0, hv_c1);
+    double hv_max  = fmax(hv_c0, hv_c1);
 
-    eta_face[f] = rec_eta;
-    hu_face[f]  = rec_hu;
-    hv_face[f]  = rec_hv;
+    eta_L = fmax(eta_min, fmin(eta_max, eta_L));
+    eta_R = fmax(eta_min, fmin(eta_max, eta_R));
+    hu_L  = fmax(hu_min,  fmin(hu_max,  hu_L));
+    hu_R  = fmax(hu_min,  fmin(hu_max,  hu_R));
+    hv_L  = fmax(hv_min,  fmin(hv_max,  hv_L));
+    hv_R  = fmax(hv_min,  fmin(hv_max,  hv_R));
+
+    // Ensure reconstructed water surface is at least the local bed so that the
+    // flux kernel's hydrostatic reconstruction sees non-negative depth.
+    eta_L = fmax(eta_L, zb[c0]);
+    eta_R = fmax(eta_R, zb[c1]);
+
+    // Zero momentum on effectively dry reconstructed faces.
+    double hL = fmax(0.0, eta_L - zb[c0]);
+    double hR = fmax(0.0, eta_R - zb[c1]);
+    if (hL <= h_min) { hu_L = 0.0; hv_L = 0.0; }
+    if (hR <= h_min) { hu_R = 0.0; hv_R = 0.0; }
+
+    // g is unused in component-wise reconstruction; silence unused parameter warning.
+    (void)g;
+
+    eta_face_L[f] = eta_L;
+    eta_face_R[f] = eta_R;
+    hu_face_L[f]  = hu_L;
+    hu_face_R[f]  = hu_R;
+    hv_face_L[f]  = hv_L;
+    hv_face_R[f]  = hv_R;
 }
 
 // ═════════════════════════════════════════════════════════════════════════════
@@ -348,9 +379,12 @@ __global__ void mp5_kernel(
     const double* __restrict__ face_ny,
     const int* __restrict__ face_stencil_5,
     int n_faces,
-    double* __restrict__ eta_face,
-    double* __restrict__ hu_face,
-    double* __restrict__ hv_face)
+    double* __restrict__ eta_face_L,
+    double* __restrict__ eta_face_R,
+    double* __restrict__ hu_face_L,
+    double* __restrict__ hu_face_R,
+    double* __restrict__ hv_face_L,
+    double* __restrict__ hv_face_R)
 {
     int f = blockIdx.x * blockDim.x + threadIdx.x;
     if (f >= n_faces) return;
@@ -450,7 +484,7 @@ __global__ void mp5_kernel(
         fMP_eta = fmax(f_min - 1e-10, fmin(f_max + 1e-10, fMP_eta));
     }
 
-    eta_face[f] = fMP_eta;
-    hu_face[f]  = fMP_hu;
-    hv_face[f]  = fMP_hv;
+    eta_face_L[f] = fMP_eta; eta_face_R[f] = fMP_eta;
+    hu_face_L[f]  = fMP_hu;  hu_face_R[f]  = fMP_hu;
+    hv_face_L[f]  = fMP_hv;  hv_face_R[f]  = fMP_hv;
 }

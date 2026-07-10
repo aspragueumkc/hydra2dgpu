@@ -42,6 +42,9 @@ Authoritative plans for ongoing and upcoming work. Each plan links to the techni
 | [IMPLEMENTATION_PLANS/2026-07-10-advanced-spatial-schemes.md](IMPLEMENTATION_PLANS/2026-07-10-advanced-spatial-schemes.md) | Schemes 5/6/8: Barth-Jespersen, true WENO3, MP5 — kernel design, mesh-assembly extensions, rollout |
 | [superpowers/specs/2026-07-10-advanced-spatial-schemes-design.md](superpowers/specs/2026-07-10-advanced-spatial-schemes-design.md) | Design spec: math, stencil tables, kernel interface, CFL enforcement |
 | [superpowers/plans/2026-07-10-advanced-spatial-schemes.md](superpowers/plans/2026-07-10-advanced-spatial-schemes.md) | Implementation plan: rollout order, config migration, testing strategy |
+| [IMPLEMENTATION_PLANS/2026-07-10-unified-run-controller.md](IMPLEMENTATION_PLANS/2026-07-10-unified-run-controller.md) | Single-kernel-entry refactor: collapse GUI/CLI into one `SWE2DRunController` + `ProgressSink` protocol; closes MP5 CFL clamping |
+| [IMPLEMENTATION_PLANS/2026-07-10-unified-run-controller-revision-1.md](IMPLEMENTATION_PLANS/2026-07-10-unified-run-controller-revision-1.md) | Revision 1: GUI is source of truth, CLI replays it via JSON; replay JSON persisted to `swe2d_run_replays` table; round-trip test is the contract |
+| [IMPLEMENTATION_PLANS/2026-07-10-unified-run-controller-revision-2.md](IMPLEMENTATION_PLANS/2026-07-10-unified-run-controller-revision-2.md) | Revision 2: consolidate three JSON producers (snapshot, save-config, CLI replay) + two legacy GPKG tables (`swe2d_simulation_configs`, `swe2d_run_logs`) into one canonical pair (to_replay_json / from_replay_json → `swe2d_run_replays` table) |
 
 ## For C++ / CUDA Engineers
 

@@ -573,6 +573,7 @@ def execute_run(
 
     _status_step[0] = 0
     dt_request = float(rp.get("dt_request", rp.get("dt_max", 0.2)))
+    _last_dt = float(rp.get("initial_dt", 0.05))
 
     while t < t_end:
         if cancel_check and cancel_check():
@@ -580,11 +581,13 @@ def execute_run(
             break
         if coupling_controller is not None:
             try:
-                coupling_controller.apply_native_device_sources(t, dt_request)
+                dt_for_coupling = dt_request if dt_request > 0.0 else _last_dt
+                coupling_controller.apply_native_device_sources(t, dt_for_coupling)
             except Exception as _e:
                 logger.warning("[COUPLING] apply step failed: %s", _e)
         diag = backend.step(dt_request)
         dt = float(diag.get("dt", 0.0))
+        _last_dt = dt if dt > 0.0 else _last_dt
         t += dt
         step += 1
         _status_step[0] = step
