@@ -1540,8 +1540,8 @@ __global__ void weno3_kernel(
 /// MP5 reconstruction (scheme 8): one thread per face, 5-cell walk with
 /// Lagrange interpolation on face-normal-projected coordinates and
 /// runtime Suresh-Huynh monotonicity-preserving limiter.
-/// Reconstructs ALL 3 conserved variables (eta, hu, hv) as left/right states.
-/// (Currently both sides are reconstructed from the same centered stencil.)
+/// Reconstructs ALL 3 conserved variables (eta, hu, hv) as left/right states
+/// using the centered MP5 value split by the LSQ gradient projection.
 __global__ void mp5_kernel(
     const double* __restrict__ h,
     const double* __restrict__ zb,
@@ -1554,6 +1554,7 @@ __global__ void mp5_kernel(
     const double* __restrict__ face_nx,
     const double* __restrict__ face_ny,
     const int* __restrict__ face_stencil_5,
+    const Grad* __restrict__ d_grad,
     int n_faces,
     double* __restrict__ eta_face_L,
     double* __restrict__ eta_face_R,

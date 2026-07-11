@@ -378,6 +378,7 @@ __global__ void mp5_kernel(
     const double* __restrict__ face_nx,
     const double* __restrict__ face_ny,
     const int* __restrict__ face_stencil_5,
+    const Grad* __restrict__ d_grad,
     int n_faces,
     double* __restrict__ eta_face_L,
     double* __restrict__ eta_face_R,
@@ -484,29 +485,56 @@ __global__ void mp5_kernel(
         fMP_eta = fmax(f_min - 1e-10, fmin(f_max + 1e-10, fMP_eta));
     }
 
-    // ── Upwind bias via cell-pair dissipation (JST-like) ────────────────
-    // MP5 is a face-centered scheme that produces the same value for both
-    // Riemann states.  On unstructured meshes this creates a purely central
-    // flux with zero numerical dissipation, which is unconditionally unstable
-    // on triangle meshes (but survivable on quads where edge averaging helps).
-    //
-    // To restore HLLC dissipation we add a small upwind bias proportional to
-    // the cell-pair jump, conceptually similar to Jameson-Schmidt-Turkel (JST)
-    // second-difference artificial dissipation.  The bias is:
-    //   U_L = fMP - 0.5 * diss * (U_v - U_u)
-    //   U_R = fMP + 0.5 * diss * (U_v - U_u)
-    // where diss << 1 so the bias is well below the O(h^5) MP5 truncation
-    // error in smooth regions.  The dissipation activates the HLLC solver's
-    // inherent upwind selection, providing the missing numerical diffusion
-    // on unstructured tessellations without compromising accuracy.
-    constexpr double diss = 0.01;
-    const double d_eta = eta[3] - eta[2];
-    const double d_hu  = hu_v[3] - hu_v[2];
-    const double d_hv  = hv_v[3] - hv_v[2];
-    eta_face_L[f] = fMP_eta - 0.5 * diss * d_eta;
-    eta_face_R[f] = fMP_eta + 0.5 * diss * d_eta;
-    hu_face_L[f]  = fMP_hu  - 0.5 * diss * d_hu;
-    hu_face_R[f]  = fMP_hu  + 0.5 * diss * d_hu;
-    hv_face_L[f]  = fMP_hv  - 0.5 * diss * d_hv;
-    hv_face_R[f]  = fMP_hv  + 0.5 * diss * d_hv;
+    // ── Split centered MP5 value into L/R states via LSQ gradient ──────
+    // MP5 produces a single centered value at the face.  On unstructured
+    // meshes this creates identical L/R Riemann states, giving a purely
+    // central flux with zero numerical dissipation through the HLLC solver.
+    // We split into distinct L/R states using the LSQ gradient projection,
+    // which restores upwind dissipation through the HLLC wave-speed
+    // selection — identical to how weno5_reconstruct produces separate
+    // left/right values.  The LSQ gradient (computed for all schemes) is
+    // well-conditioned even on triangle meshes.
+    int cL = st[2];
+    int cR = st[3];
+    double dxL = mx - cell_cx[cL], dyL = my - cell_cy[cL];
+    double dxR = mx - cell_cx[cR], dyR = my - cell_cy[cR];
+    double gL_eta = d_grad[cL].hx * dxL + d_grad[cL].hy * dyL;
+    double gR_eta = d_grad[cR].hx * dxR + d_grad[cR].hy * dyR;
+    double gL_hu  = d_grad[cL].hux * dxL + d_grad[cL].huy * dyL;
+    double gR_hu  = d_grad[cR].hux * dxR + d_grad[cR].huy * dyR;
+    double gL_hv  = d_grad[cL].hvx * dxL + d_grad[cL].hvy * dyL;
+    double gR_hv  = d_grad[cR].hvx * dxR + d_grad[cR].hvy * dyR;
+
+    double rec_eta_L = fMP_eta + gL_eta;
+    double rec_eta_R = fMP_eta + gR_eta;
+    double rec_hu_L  = fMP_hu  + gL_hu;
+    double rec_hu_R  = fMP_hu  + gR_hu;
+    double rec_hv_L  = fMP_hv  + gL_hv;
+    double rec_hv_R  = fMP_hv  + gR_hv;
+
+    // Pair-envelope clamp (same safeguard WENO5 and WENO3 use).
+    double eta_min = fmin(eta[2], eta[3]);
+    double eta_max = fmax(eta[2], eta[3]);
+    double hu_min  = fmin(hu_v[2], hu_v[3]);
+    double hu_max  = fmax(hu_v[2], hu_v[3]);
+    double hv_min  = fmin(hv_v[2], hv_v[3]);
+    double hv_max  = fmax(hv_v[2], hv_v[3]);
+
+    rec_eta_L = fmax(eta_min, fmin(eta_max, rec_eta_L));
+    rec_eta_R = fmax(eta_min, fmin(eta_max, rec_eta_R));
+    rec_hu_L  = fmax(hu_min,  fmin(hu_max,  rec_hu_L));
+    rec_hu_R  = fmax(hu_min,  fmin(hu_max,  rec_hu_R));
+    rec_hv_L  = fmax(hv_min,  fmin(hv_max,  rec_hv_L));
+    rec_hv_R  = fmax(hv_min,  fmin(hv_max,  rec_hv_R));
+
+    // Ensure reconstructed water surface is at least the local bed.
+    rec_eta_L = fmax(rec_eta_L, zb[cL]);
+    rec_eta_R = fmax(rec_eta_R, zb[cR]);
+
+    eta_face_L[f] = rec_eta_L;
+    eta_face_R[f] = rec_eta_R;
+    hu_face_L[f]  = rec_hu_L;
+    hu_face_R[f]  = rec_hu_R;
+    hv_face_L[f]  = rec_hv_L;
+    hv_face_R[f]  = rec_hv_R;
 }
