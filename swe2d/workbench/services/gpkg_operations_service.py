@@ -15,6 +15,7 @@ logger = logging.getLogger(__name__)
 
 __all__ = [
     "delete_run",
+    "delete_run_partial",
     "drop_table",
     "get_table_contents",
     "get_table_info",
@@ -342,3 +343,157 @@ def delete_run(gpkg_path: str, run_id: str) -> None:
         raise RuntimeError(f"Failed to delete run '{run_id}': {exc}") from exc
     finally:
         conn.close()
+
+
+def delete_run_partial(
+    gpkg_path: str,
+    run_ids: List[str],
+    *,
+    delete_run_logs: bool = True,
+    delete_baked_results: bool = True,
+    delete_baked_line_ts: bool = True,
+    delete_baked_line_profiles: bool = True,
+    delete_baked_coupling: bool = True,
+    delete_baked_mesh: bool = False,
+    delete_simulation_configs: bool = False,
+    delete_legacy_tables: bool = True,
+) -> List[str]:
+    """Delete selected data for one or more run IDs.
+
+    Returns a list of table names that were modified (rows deleted or
+    tables dropped).
+    """
+    if not gpkg_path or not os.path.exists(gpkg_path) or not run_ids:
+        return []
+
+    conn = sqlite3.connect(gpkg_path)
+    deleted_tables: List[str] = []
+    try:
+        cur = conn.cursor()
+        placeholders = ",".join("?" for _ in run_ids)
+
+        # --- Baked tables keyed by run_id ---
+        baked_run_id_tables: List[str] = []
+        if delete_baked_results:
+            baked_run_id_tables.append("swe2d_baked_results")
+        if delete_baked_line_ts:
+            baked_run_id_tables.append("swe2d_baked_line_ts")
+        if delete_baked_line_profiles:
+            baked_run_id_tables.append("swe2d_baked_line_profiles")
+        if delete_baked_coupling:
+            baked_run_id_tables.append("swe2d_baked_coupling")
+
+        for tbl in baked_run_id_tables:
+            cur.execute(
+                "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?",
+                (tbl,),
+            )
+            if cur.fetchone() is not None:
+                try:
+                    cur.execute(
+                        f"DELETE FROM {_quote_sqlite_ident(tbl)} WHERE run_id IN ({placeholders})",
+                        run_ids,
+                    )
+                    deleted_tables.append(tbl)
+                except sqlite3.Error as exc:
+                    logger.error("Failed to delete from %s: %s", tbl, exc)
+
+        # --- swe2d_run_logs ---
+        if delete_run_logs:
+            cur.execute(
+                "SELECT 1 FROM sqlite_master WHERE type='table' AND name='swe2d_run_logs'"
+            )
+            if cur.fetchone() is not None:
+                try:
+                    cur.execute(
+                        f"DELETE FROM swe2d_run_logs WHERE run_id IN ({placeholders})",
+                        run_ids,
+                    )
+                    deleted_tables.append("swe2d_run_logs")
+                except sqlite3.Error as exc:
+                    logger.error("Failed to delete from swe2d_run_logs: %s", exc)
+
+        # --- swe2d_baked_mesh (orphan-only) ---
+        if delete_baked_mesh:
+            cur.execute(
+                "SELECT 1 FROM sqlite_master WHERE type='table' AND name='swe2d_baked_mesh'"
+            )
+            if cur.fetchone() is not None:
+                try:
+                    cur.execute(
+                        f"DELETE FROM swe2d_baked_mesh WHERE mesh_name NOT IN "
+                        f"(SELECT DISTINCT mesh_name FROM swe2d_baked_results "
+                        f"WHERE run_id IN ({placeholders}))",
+                        run_ids,
+                    )
+                    deleted_tables.append("swe2d_baked_mesh")
+                except sqlite3.Error as exc:
+                    logger.error("Failed to delete orphan meshes: %s", exc)
+
+        # --- swe2d_simulation_configs (unfiltered) ---
+        if delete_simulation_configs:
+            cur.execute(
+                "SELECT 1 FROM sqlite_master WHERE type='table' AND name='swe2d_simulation_configs'"
+            )
+            if cur.fetchone() is not None:
+                try:
+                    cur.execute("DELETE FROM swe2d_simulation_configs")
+                    deleted_tables.append("swe2d_simulation_configs")
+                except sqlite3.Error as exc:
+                    logger.error("Failed to delete from swe2d_simulation_configs: %s", exc)
+
+        # --- Legacy per-run tables (DROP TABLE) ---
+        if delete_legacy_tables:
+            cur.execute("SELECT name FROM sqlite_master WHERE type='table' ORDER BY name")
+            all_tables = [str(r[0]) for r in cur.fetchall() if r and r[0] is not None]
+
+            for tbl in all_tables:
+                if tbl.startswith("gpkg_") or tbl.startswith("sqlite_") or tbl.startswith("rtree_"):
+                    continue
+                suffix = tbl.rsplit("_", 1)
+                if len(suffix) == 2 and suffix[1] in run_ids:
+                    try:
+                        cur.execute(f"DROP TABLE IF EXISTS {_quote_sqlite_ident(tbl)}")
+                        for meta_tbl in ("gpkg_contents", "gpkg_geometry_columns", "gpkg_extensions"):
+                            cur.execute(
+                                "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?",
+                                (meta_tbl,),
+                            )
+                            if cur.fetchone() is not None:
+                                try:
+                                    cur.execute(
+                                        f"DELETE FROM {_quote_sqlite_ident(meta_tbl)} WHERE table_name=?",
+                                        (tbl,),
+                                    )
+                                except sqlite3.Error:
+                                    pass
+                        cur.execute(
+                            "SELECT name FROM sqlite_master WHERE type='table' AND name LIKE ?",
+                            (f"rtree_{tbl}_%",),
+                        )
+                        for row in cur.fetchall():
+                            rt = str(row[0]) if row and row[0] is not None else ""
+                            if rt:
+                                try:
+                                    cur.execute(f"DROP TABLE IF EXISTS {_quote_sqlite_ident(rt)}")
+                                except sqlite3.Error:
+                                    pass
+                        deleted_tables.append(tbl)
+                    except sqlite3.Error as exc:
+                        logger.error("Failed to drop legacy table %s: %s", tbl, exc)
+
+        conn.commit()
+
+        if deleted_tables:
+            try:
+                conn.execute("VACUUM")
+            except sqlite3.Error:
+                logger.warning("VACUUM failed after delete_run_partial")
+
+    except sqlite3.Error as exc:
+        conn.rollback()
+        raise RuntimeError(f"Failed to delete runs {run_ids}: {exc}") from exc
+    finally:
+        conn.close()
+
+    return deleted_tables

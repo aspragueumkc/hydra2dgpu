@@ -271,5 +271,168 @@ class TestDeleteRun(unittest.TestCase):
             delete_run(str(gpkg), "nonexistent_run")
 
 
+class TestDeleteRunPartial(unittest.TestCase):
+    def test_deletes_baked_rows_for_multiple_runs(self):
+        """delete_run_partial removes baked rows for selected run_ids."""
+        import numpy as np
+        from swe2d.services.gpkg_persistence_service import (
+            persist_baked_results,
+            persist_baked_line_ts,
+        )
+        from swe2d.workbench.services.gpkg_operations_service import delete_run_partial
+
+        with tempfile.TemporaryDirectory() as td:
+            gpkg = str(Path(td) / "test.gpkg")
+
+            h = np.zeros(4, dtype=np.float64)
+            for rid in ("run_A", "run_B"):
+                persist_baked_results(
+                    gpkg, rid, "mesh1",
+                    snapshot_timesteps=[(0.0, h, h, h), (1.0, h, h, h)],
+                )
+                persist_baked_line_ts(
+                    gpkg, rid, 1, "Line1",
+                    times=np.array([0.0, 1.0], dtype=np.float64),
+                    depth_m=h, velocity_ms=h, wse_m=h, bed_m=h,
+                    flow_cms=h, wet_frac=h, fr=h,
+                )
+
+            conn = sqlite3.connect(gpkg)
+            conn.execute(
+                "CREATE TABLE IF NOT EXISTS swe2d_run_logs (run_id TEXT PRIMARY KEY, created_utc TEXT)"
+            )
+            conn.execute("INSERT INTO swe2d_run_logs VALUES ('run_A', '2026-01-01')")
+            conn.execute("INSERT INTO swe2d_run_logs VALUES ('run_B', '2026-01-02')")
+            conn.commit()
+            conn.close()
+
+            deleted = delete_run_partial(
+                gpkg, ["run_A"],
+                delete_run_logs=True,
+                delete_baked_results=True,
+                delete_baked_line_ts=True,
+                delete_baked_line_profiles=False,
+                delete_baked_coupling=False,
+                delete_baked_mesh=False,
+                delete_simulation_configs=False,
+                delete_legacy_tables=False,
+            )
+
+            conn = sqlite3.connect(gpkg)
+            cur = conn.cursor()
+
+            cur.execute("SELECT COUNT(*) FROM swe2d_baked_results WHERE run_id='run_A'")
+            self.assertEqual(cur.fetchone()[0], 0)
+            cur.execute("SELECT COUNT(*) FROM swe2d_baked_results WHERE run_id='run_B'")
+            self.assertEqual(cur.fetchone()[0], 1)
+
+            cur.execute("SELECT COUNT(*) FROM swe2d_run_logs WHERE run_id='run_A'")
+            self.assertEqual(cur.fetchone()[0], 0)
+            cur.execute("SELECT COUNT(*) FROM swe2d_run_logs WHERE run_id='run_B'")
+            self.assertEqual(cur.fetchone()[0], 1)
+
+            cur.execute("SELECT COUNT(*) FROM swe2d_baked_line_ts WHERE run_id='run_A'")
+            self.assertEqual(cur.fetchone()[0], 0)
+            cur.execute("SELECT COUNT(*) FROM swe2d_baked_line_ts WHERE run_id='run_B'")
+            self.assertEqual(cur.fetchone()[0], 1)
+
+            conn.close()
+
+            self.assertTrue(any("swe2d_baked_results" in t for t in deleted))
+            self.assertTrue(any("swe2d_run_logs" in t for t in deleted))
+
+    def test_skips_tables_when_flags_false(self):
+        """When flags are False, corresponding tables are not touched."""
+        import numpy as np
+        from swe2d.services.gpkg_persistence_service import persist_baked_results
+        from swe2d.workbench.services.gpkg_operations_service import delete_run_partial
+
+        with tempfile.TemporaryDirectory() as td:
+            gpkg = str(Path(td) / "test.gpkg")
+            h = np.zeros(4, dtype=np.float64)
+            persist_baked_results(
+                gpkg, "rid1", "m",
+                snapshot_timesteps=[(0.0, h, h, h)],
+            )
+            conn = sqlite3.connect(gpkg)
+            conn.execute(
+                "CREATE TABLE IF NOT EXISTS swe2d_run_logs (run_id TEXT PRIMARY KEY, created_utc TEXT)"
+            )
+            conn.execute("INSERT INTO swe2d_run_logs VALUES ('rid1', '2026-01-01')")
+            conn.commit()
+            conn.close()
+
+            deleted = delete_run_partial(
+                gpkg, ["rid1"],
+                delete_run_logs=False,
+                delete_baked_results=False,
+                delete_baked_line_ts=False,
+                delete_baked_line_profiles=False,
+                delete_baked_coupling=False,
+                delete_baked_mesh=False,
+                delete_simulation_configs=False,
+                delete_legacy_tables=False,
+            )
+
+            conn = sqlite3.connect(gpkg)
+            cur = conn.cursor()
+            cur.execute("SELECT COUNT(*) FROM swe2d_run_logs WHERE run_id='rid1'")
+            self.assertEqual(cur.fetchone()[0], 1)
+            cur.execute("SELECT COUNT(*) FROM swe2d_baked_results WHERE run_id='rid1'")
+            self.assertEqual(cur.fetchone()[0], 1)
+            conn.close()
+            self.assertEqual(deleted, [])
+
+    def test_deletes_legacy_tables_for_multiple_runs(self):
+        """Legacy per-run tables are dropped for all selected run IDs."""
+        from swe2d.workbench.services.gpkg_operations_service import delete_run_partial
+
+        with tempfile.TemporaryDirectory() as td:
+            gpkg = str(Path(td) / "test.gpkg")
+            conn = sqlite3.connect(gpkg)
+            # Create gpkg_contents (needed for metadata cleanup)
+            conn.execute(
+                "CREATE TABLE IF NOT EXISTS gpkg_contents (table_name TEXT PRIMARY KEY, data_type TEXT)"
+            )
+            # Legacy per-run tables: name ends with _<run_id>
+            conn.execute("CREATE TABLE swe2d_mesh_results_001 (cell_id INT, h REAL)")
+            conn.execute("CREATE TABLE swe2d_line_results_001 (line_id INT)")
+            conn.execute("CREATE TABLE swe2d_mesh_results_002 (cell_id INT)")
+            conn.execute("CREATE TABLE swe2d_run_logs (run_id TEXT)")
+            conn.execute("INSERT INTO swe2d_run_logs VALUES ('001')")
+            conn.execute("INSERT INTO swe2d_run_logs VALUES ('002')")
+            conn.commit()
+            conn.close()
+
+            deleted = delete_run_partial(
+                gpkg, ["001", "002"],
+                delete_run_logs=True,
+                delete_baked_results=False,
+                delete_baked_line_ts=False,
+                delete_baked_line_profiles=False,
+                delete_baked_coupling=False,
+                delete_baked_mesh=False,
+                delete_simulation_configs=False,
+                delete_legacy_tables=True,
+            )
+
+            conn = sqlite3.connect(gpkg)
+            cur = conn.cursor()
+
+            # Legacy per-run tables should be gone
+            cur.execute(
+                "SELECT name FROM sqlite_master WHERE type='table' "
+                "AND (name LIKE '%\\_001' ESCAPE '\\' OR name LIKE '%\\_002' ESCAPE '\\')"
+            )
+            self.assertEqual(len(cur.fetchall()), 0)
+
+            # run_logs rows for both runs should be gone
+            cur.execute("SELECT COUNT(*) FROM swe2d_run_logs")
+            self.assertEqual(cur.fetchone()[0], 0)
+
+            conn.close()
+            self.assertTrue(len(deleted) > 0)
+
+
 if __name__ == "__main__":
     unittest.main()
