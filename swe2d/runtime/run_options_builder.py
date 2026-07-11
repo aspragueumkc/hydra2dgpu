@@ -119,6 +119,12 @@ class SWE2DRunOptionsBuilder:
         dt_fixed = -1.0 if adaptive_cfl_dt else dt if dt_fixed is None else dt_fixed
         dt_request = -1.0 if adaptive_cfl_dt else dt if dt_request is None else dt_request
         temporal_scheme = self._TemporalScheme(temporal_order_value)
+        if int(reconstruction_mode) == 8:
+            raise RuntimeError(
+                "FV_MP5 (spatial scheme 8) is currently disabled. "
+                "It is unstable on unstructured triangular meshes. "
+                "Use WENO5 (scheme 7), Barth-Jespersen (scheme 5), or a MUSCL TVD scheme (1–4)."
+            )
         def _gpu_available_for_selected_module() -> bool:
             """gpu available for selected module."""
             if self._swe2d_gpu_available is None:

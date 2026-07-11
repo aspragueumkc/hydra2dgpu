@@ -134,7 +134,8 @@ _REQUIRED_KEYS = {
     "output_interval_s",
 }
 
-_VALID_SPATIAL_SCHEMES = {0, 1, 2, 3, 4, 5, 6}
+_VALID_SPATIAL_SCHEMES = {0, 1, 2, 3, 4, 5, 6, 7}
+_DISABLED_SPATIAL_SCHEMES = {8: "FV_MP5 (spatial scheme 8) is currently disabled. It is unstable on unstructured triangular meshes. Use WENO5 (scheme 7), Barth-Jespersen (scheme 5), or a MUSCL TVD scheme (1–4)."}
 _VALID_TEMPORAL_SCHEMES = {1, 2, 3, 4, 5, 6}
 
 
@@ -193,7 +194,10 @@ def validate_run_configuration(params: Dict[str, Any]) -> List[str]:
     spatial_scheme = params.get("spatial_scheme")
     if spatial_scheme is not None:
         try:
-            if int(spatial_scheme) not in _VALID_SPATIAL_SCHEMES:
+            scheme_int = int(spatial_scheme)
+            if scheme_int in _DISABLED_SPATIAL_SCHEMES:
+                errors.append(_DISABLED_SPATIAL_SCHEMES[scheme_int])
+            elif scheme_int not in _VALID_SPATIAL_SCHEMES:
                 errors.append(
                     f"Spatial scheme {spatial_scheme} is out of range "
                     f"(valid: {sorted(_VALID_SPATIAL_SCHEMES)})"

@@ -15,14 +15,20 @@ import concurrent.futures
 from typing import Any, Dict, List, Optional, Callable
 
 
-_VALID_SCHEMES: frozenset = frozenset(range(9))
+_VALID_SCHEMES: frozenset = frozenset({0, 1, 2, 3, 4, 5, 6, 7})
 
 
 def validate_scheme(scheme: int) -> int:
     """Validate and warn about scheme number. Returns valid scheme or raises."""
+    if scheme == 8:
+        raise ValueError(
+            "FV_MP5 (spatial scheme 8) is currently disabled. "
+            "It is unstable on unstructured triangular meshes. "
+            "Use WENO5 (scheme 7), Barth-Jespersen (scheme 5), or a MUSCL TVD scheme (1–4)."
+        )
     if scheme not in _VALID_SCHEMES:
         raise ValueError(
-            f"Invalid spatial_scheme={scheme}. Must be 0-8."
+            f"Invalid spatial_scheme={scheme}. Must be one of {sorted(_VALID_SCHEMES)}."
         )
     if scheme == 6:
         import logging

@@ -802,19 +802,30 @@ void swe2d_build_face_stencil_5_table(SWE2DMesh& mesh) {
         return -1;
     };
 
-    // Helper: return the first neighbour of cell c that is not exclude_cell,
-    //         or c itself if no such neighbour exists.
-    auto first_neighbor_not = [&](int32_t c, int32_t exclude_cell) -> int32_t {
+    // Helper: return the neighbour of cell c that is not exclude_cell and whose
+    // centroid has the largest signed projection onto the direction dir.
+    // If no neighbour exists, return c itself.
+    auto best_neighbor_in_direction = [&](int32_t c, int32_t exclude_cell,
+                                        double dir_x, double dir_y) -> int32_t {
         const int32_t es = mesh.cell_edge_offsets[static_cast<size_t>(c)];
         const int32_t ee = mesh.cell_edge_offsets[static_cast<size_t>(c) + 1];
+        int32_t best_peer = c;
+        double best_proj = -1.0e300;
+        const double cx = mesh.cell_cx[static_cast<size_t>(c)];
+        const double cy = mesh.cell_cy[static_cast<size_t>(c)];
         for (int32_t k = es; k < ee; ++k) {
             const int32_t eidx = mesh.cell_edge_ids[static_cast<size_t>(k)];
             const int32_t peer = edge_peer(eidx, c);
-            if (peer >= 0 && peer != exclude_cell) {
-                return peer;
+            if (peer < 0 || peer == exclude_cell) continue;
+            const double px = mesh.cell_cx[static_cast<size_t>(peer)] - cx;
+            const double py = mesh.cell_cy[static_cast<size_t>(peer)] - cy;
+            const double proj = px * dir_x + py * dir_y;
+            if (proj > best_proj) {
+                best_proj = proj;
+                best_peer = peer;
             }
         }
-        return c;  // fallback: self
+        return best_peer;
     };
 
     for (int32_t f = 0; f < n_edges; ++f) {
@@ -829,9 +840,13 @@ void swe2d_build_face_stencil_5_table(SWE2DMesh& mesh) {
         } else {
             u  = c0;
             v  = c1;
-            u1 = first_neighbor_not(c0, c1);  // first upwind neighbour
-            u2 = first_neighbor_not(u1, c0);   // second upwind neighbour
-            v1 = first_neighbor_not(c1, c0);   // first downwind neighbour
+            // Face normal points from c0 to c1.  Upwind from c0 is the direction
+            // opposite to the normal, i.e. -normal.  Downwind from c1 is +normal.
+            const double nx = mesh.edge_nx[static_cast<size_t>(f)];
+            const double ny = mesh.edge_ny[static_cast<size_t>(f)];
+            u1 = best_neighbor_in_direction(c0, c1, -nx, -ny);
+            u2 = best_neighbor_in_direction(u1, c0, -nx, -ny);
+            v1 = best_neighbor_in_direction(c1, c0,  nx,  ny);
         }
 
         const size_t base = static_cast<size_t>(5) * f;

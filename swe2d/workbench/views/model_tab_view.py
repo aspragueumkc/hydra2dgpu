@@ -598,7 +598,7 @@ class ModelTabView(QtWidgets.QWidget):
             "add second-order accuracy with different slope limiters. "
             "Barth-Jespersen (5): robust 2nd-order, good on poor meshes. "
             "WENO3 (6): 3rd-order, 1-ring stencil. WENO5 (7): highest accuracy, 2-ring stencil. "
-            "MP5 (8): 4th-order mapped monotonicity-preserving (CFL ≤ 0.4 required)."
+            "MP5 (8) is currently disabled due to instability on unstructured triangular meshes."
         )
         for text, data in [
             ("1st-order", 0),
@@ -609,7 +609,6 @@ class ModelTabView(QtWidgets.QWidget):
             ("Barth-Jespersen", 5),
             ("WENO3 (3-sub-stencil)", 6),
             ("WENO5 (2-ring LSQ)", 7),
-            ("MP5 (Mapped MP)", 8),
         ]:
             self.reconstruction_combo.addItem(text, data)
         self._add_param_row(form, "Reconstruction:", self.reconstruction_combo)

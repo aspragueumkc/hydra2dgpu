@@ -36,7 +36,7 @@ References
 import unittest
 import numpy as np
 
-from tests._swe2d_test_helpers import _make_gmsh_triangle_mesh
+from tests._swe2d_test_helpers import _make_cartesian_quad_mesh
 
 
 # ── Availability guards (same pattern as WENO5 convergence test) ──────────────
@@ -70,34 +70,40 @@ def _gmsh_available():
 
 # ── Manufactured smooth solution ─────────────────────────────────────────────
 
-class SmoothBumpIC:
-    """Smooth sinusoidal bump for convergence testing.
+class StandingWaveIC:
+    """Linearized-SWE standing wave with wall BCs at x=0 and x=Lx.
 
-    h(x, y) = H_BASE + AMP * sin(2π x / Lx) * cos(2π y / Ly)
-    hu = 0, hv = 0  (quiescent — avoids temporal evolution from advection)
+    h(x,y,t) = H_BASE + AMP * cos(π x / Lx) * cos(ω t)
+    u(x,y,t) = -(AMP * ω / (π H_BASE / Lx)) * sin(π x / Lx) * sin(ω t)
+    v(x,y,t) = 0
 
-    The perturbation is tiny so the solution barely evolves over the short
-    integration window T_END, keeping the measured L₂ error dominated by
-    spatial truncation rather than temporal integration error.
-
-    Class attributes are tunable at the subclass level.
+    with ω = sqrt(g * H_BASE) * π / Lx.  This is an exact solution of the
+    linearized shallow-water equations and satisfies u = 0 at the lateral
+    walls (x = 0 and x = Lx), so the default wall BCs are consistent.
     """
 
-    H_BASE = 2.0      # base depth [m]
-    AMP    = 0.005     # tiny perturbation [m] (0.25 % of base depth)
+    H_BASE = 2.0
+    AMP = 0.005
+    G = 9.80665
 
     @classmethod
-    def h_exact(cls, x, y, Lx, Ly):
-        """Exact depth field at cell centroids."""
-        return cls.H_BASE + cls.AMP * np.sin(2.0 * np.pi * x / Lx) * np.cos(2.0 * np.pi * y / Ly)
+    def omega(cls, Lx):
+        return np.sqrt(cls.G * cls.H_BASE) * np.pi / Lx
 
     @classmethod
-    def make_ic(cls, cell_cx, cell_cy, Lx, Ly):
-        """Return (h0, hu0, hv0) arrays for solver initialization."""
-        h  = cls.h_exact(cell_cx, cell_cy, Lx, Ly)
-        hu = np.zeros_like(h)
-        hv = np.zeros_like(h)
-        return h, hu, hv
+    def h_exact(cls, x, y, t, Lx):
+        return cls.H_BASE + cls.AMP * np.cos(np.pi * x / Lx) * np.cos(cls.omega(Lx) * t)
+
+    @classmethod
+    def u_exact(cls, x, y, t, Lx):
+        return -(cls.AMP * cls.omega(Lx) / (np.pi * cls.H_BASE / Lx)) * \
+               np.sin(np.pi * x / Lx) * np.sin(cls.omega(Lx) * t)
+
+    @classmethod
+    def make_ic(cls, cell_cx, cell_cy, Lx):
+        h = cls.h_exact(cell_cx, cell_cy, 0.0, Lx)
+        u = cls.u_exact(cell_cx, cell_cy, 0.0, Lx)
+        return h, cls.H_BASE * u, np.zeros_like(h)
 
 
 # ── Convergence test ──────────────────────────────────────────────────────────
@@ -108,19 +114,17 @@ class SmoothBumpIC:
 class TestMP5Convergence(unittest.TestCase):
     """Mesh-refinement convergence test for FV_MP5 (spatial_scheme = 8).
 
-    Runs the solver on 3 mesh refinement levels with a smooth quiescent
-    initial condition.  Measures L2 error of h against the *analytical* IC
-    at each mesh's cell centroids (no cross-mesh interpolation).
-    Checks that the observed convergence order is ≥ 3.5.
+    Runs the solver on 3 mesh refinement levels with a smooth standing-wave
+    initial condition.  Measures L2 error of h against the *analytical*
+    solution at T_END.  Checks that the observed convergence order is ≥ 3.5.
     """
 
     LX, LY      = 200.0, 200.0   # square domain [m]
     NX_VALS     = [16, 32, 64]   # cells along x (controls refinement)
-    T_END       = 0.01           # simulation time [s] — very short to keep
-                                 #   error dominated by spatial truncation
+    T_END       = 1.0            # simulation time [s] — keep temporal error below spatial error
     SCHEME      = 8              # FV_MP5 from SpatialDiscretization
     ORDER_TARGET = 3.5           # 4th-order scheme → expect ≥ 3.5
-    CFL         = 0.3            # MP5 requires CFL ≤ 0.4
+    CFL         = 0.4            # MP5 max CFL
 
     @classmethod
     def _h_characteristic(cls, mesh_size):
@@ -137,44 +141,52 @@ class TestMP5Convergence(unittest.TestCase):
         Parameters
         ----------
         nx : int
-            Approximate number of cells along each axis; h ~ Lx / nx.
+            Number of cells along x; h = Lx / nx.
 
         Returns
         -------
-        l2_error  : float  — area-weighted L2 norm of (h - h_exact)
-        n_cells   : int    — number of cells in the mesh
-        h         : float  — characteristic mesh spacing
+        l2_error  : float  -- area-weighted L2 norm of (h - h_exact)
+        n_cells   : int    -- number of cells in the mesh
+        h         : float  -- characteristic mesh spacing
         """
         from swe2d.runtime.backend import SWE2DBackend
-        from swe2d.extensions.extension_models import SpatialDiscretization
+        from swe2d.extensions.extension_models import SpatialDiscretization, TemporalScheme
 
-        mesh_size = self.LX / nx
+        # Cartesian quad mesh with square cells: nx along x, ny = nx along y
+        ny = nx
 
         node_x, node_y, node_z, cell_nodes, cell_cx, cell_cy = \
-            _make_gmsh_triangle_mesh(self.LX, self.LY, mesh_size)
+            _make_cartesian_quad_mesh(nx, ny, self.LX, self.LY)
+
+        n_cells = cell_nodes.shape[0]
+        cell_face_offsets = np.arange(0, 4 * n_cells + 1, 4, dtype=np.int32)
 
         backend = SWE2DBackend()
-        backend.build_mesh(node_x, node_y, node_z, cell_nodes)
+        backend.build_mesh(
+            node_x, node_y, node_z, cell_nodes,
+            cell_face_offsets=cell_face_offsets,
+        )
 
-        h0, hu0, hv0 = SmoothBumpIC.make_ic(cell_cx, cell_cy, self.LX, self.LY)
+        h0, hu0, hv0 = StandingWaveIC.make_ic(cell_cx, cell_cy, self.LX)
         backend.initialize(
             h0=h0, hu0=hu0, hv0=hv0,
             n_mann=0.0,
             cfl=self.CFL,
+            temporal_scheme=TemporalScheme.GRAPH_SAFE_RK5,
             spatial_discretization=SpatialDiscretization.FV_MP5,
         )
 
         backend.run(t_end=self.T_END)
         h, hu, hv = backend.get_state()
 
-        # Area-weighted L2 error (proper discrete L2 norm on unstructured mesh)
+        # Area-weighted L2 error against the analytical solution at T_END
         areas    = backend.cell_areas()
-        h_exact  = SmoothBumpIC.h_exact(cell_cx, cell_cy, self.LX, self.LY)
+        h_exact  = StandingWaveIC.h_exact(cell_cx, cell_cy, self.T_END, self.LX)
         l2_error = np.sqrt(np.sum(areas * (h - h_exact)**2) / np.sum(areas))
 
-        n_cells = backend.n_cells
+        n_cells_out = backend.n_cells
         backend.destroy()
-        return l2_error, n_cells, mesh_size
+        return l2_error, n_cells_out, self.LX / nx
 
     def test_mp5_convergence_h(self):
         """FV_MP5 L2 error decreases with mesh refinement at order ≥ 3.5."""
@@ -242,29 +254,38 @@ class TestMP5BetterThanFirstOrder(unittest.TestCase):
 
     LX, LY = 200.0, 200.0
     NX     = 32
-    T_END  = 0.01
+    T_END  = 1.0
 
     def _run_scheme(self, scheme_id: int):
         """Run solver with given scheme, return area-weighted L2 error."""
         from swe2d.runtime.backend import SWE2DBackend
-        from swe2d.extensions.extension_models import SpatialDiscretization
+        from swe2d.extensions.extension_models import SpatialDiscretization, TemporalScheme
 
-        mesh_size = self.LX / self.NX
+        # Cartesian quad mesh with square cells
+        nx = self.NX
+        ny = nx
 
         node_x, node_y, node_z, cell_nodes, cell_cx, cell_cy = \
-            _make_gmsh_triangle_mesh(self.LX, self.LY, mesh_size)
+            _make_cartesian_quad_mesh(nx, ny, self.LX, self.LY)
+
+        n_cells = cell_nodes.shape[0]
+        cell_face_offsets = np.arange(0, 4 * n_cells + 1, 4, dtype=np.int32)
 
         backend = SWE2DBackend()
-        backend.build_mesh(node_x, node_y, node_z, cell_nodes)
+        backend.build_mesh(
+            node_x, node_y, node_z, cell_nodes,
+            cell_face_offsets=cell_face_offsets,
+        )
 
-        h0, hu0, hv0 = SmoothBumpIC.make_ic(cell_cx, cell_cy, self.LX, self.LY)
+        h0, hu0, hv0 = StandingWaveIC.make_ic(cell_cx, cell_cy, self.LX)
         scheme = SpatialDiscretization(scheme_id)
-        cfl = 0.3 if scheme_id == 8 else 0.45
+        cfl = 0.4
 
         backend.initialize(
             h0=h0, hu0=hu0, hv0=hv0,
             n_mann=0.0,
             cfl=cfl,
+            temporal_scheme=TemporalScheme.GRAPH_SAFE_RK5,
             spatial_discretization=scheme,
         )
 
@@ -272,7 +293,7 @@ class TestMP5BetterThanFirstOrder(unittest.TestCase):
         h, hu, hv = backend.get_state()
 
         areas    = backend.cell_areas()
-        h_exact  = SmoothBumpIC.h_exact(cell_cx, cell_cy, self.LX, self.LY)
+        h_exact  = StandingWaveIC.h_exact(cell_cx, cell_cy, self.T_END, self.LX)
         l2_error = np.sqrt(np.sum(areas * (h - h_exact)**2) / np.sum(areas))
 
         backend.destroy()

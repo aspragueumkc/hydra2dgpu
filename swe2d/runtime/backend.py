@@ -1052,6 +1052,12 @@ class SWE2DBackend:
 
         self._spatial_scheme = int(spatial_discretization)
         _warn_scheme_migration(self._spatial_scheme)
+        if self._spatial_scheme == 8:
+            raise RuntimeError(
+                "FV_MP5 (spatial scheme 8) is currently disabled. "
+                "It is unstable on unstructured triangular meshes. "
+                "Use WENO5 (scheme 7), Barth-Jespersen (scheme 5), or a MUSCL TVD scheme (1–4)."
+            )
         self._cfl = cfl
         self._clamp_cfl_for_scheme()
 

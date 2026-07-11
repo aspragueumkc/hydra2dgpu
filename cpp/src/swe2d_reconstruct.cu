@@ -451,11 +451,17 @@ __global__ void mp5_kernel(
     }
 
     // ── Degenerate stencil detection ─────────────────────────────────
-    // Check ALL 10 pairwise distances (not just 4 consecutive pairs).  On
-    // triangle meshes the 5-cell walk can produce non-consecutive duplicates
-    // (e.g., u2 walks back to c1 → st[0]==st[3]), which consecutive checks miss.
-    // Threshold: 5% of c0-c1 spacing (stiffer than 1%, needed for a
-    // degree-4 Lagrange polynomial to be well-conditioned).
+    // Two checks:
+    //   1) Pairwise distance: any two nodes within 5% of stencil span
+    //   2) Lagrange conditioning: sum of |L_k(0)| > threshold
+    //
+    // The Lagrange conditioning check is the key defense on triangle meshes.
+    // The 5-cell neighbor walk (first_neighbor_not) on triangles produces
+    // stencils with 3–4 unique cells but poor s-spacing.  Even when all
+    // pairwise distances exceed 5%, the degree-4 Lagrange polynomial can have
+    // basis weights |L_k(0)| >> 1, amplifying cell-center noise into large
+    // oscillatory face values.  On uniform 1-D spacing, sum|L_k(0)| = 1.0;
+    // on typical triangle stencils it can reach 5–20.
     const double ds_pair = fabs(s[4] - s[0]);
     bool degenerate_stencil = (ds_pair < 1.0e-14);
     if (!degenerate_stencil) {
@@ -470,6 +476,25 @@ __global__ void mp5_kernel(
         }
     }
 
+    // Lagrange conditioning: compute sum of |L_k(0)| for the degree-4 polynomial.
+    // L_k(0) = prod_{j≠k} (-s_j) / (s_k - s_j).
+    if (!degenerate_stencil) {
+        double lagrange_condition = 0.0;
+        for (int k = 0; k < 5; ++k) {
+            double Lk = 1.0;
+            for (int j = 0; j < 5; ++j) {
+                if (j == k) continue;
+                double denom = s[k] - s[j];
+                if (fabs(denom) < 1e-14) { Lk = 0.0; break; }
+                Lk *= (-s[j]) / denom;
+            }
+            lagrange_condition += fabs(Lk);
+        }
+        if (lagrange_condition > 5.0) {
+            degenerate_stencil = true;
+        }
+    }
+
     // Also fall back if the face midpoint (s=0) is not inside the stencil
     // span — the Lagrange evaluation is an extrapolation, not interpolation.
     if (!degenerate_stencil && (s[0] > 0.0 || s[4] < 0.0)) {
@@ -477,11 +502,45 @@ __global__ void mp5_kernel(
     }
 
     if (degenerate_stencil) {
-        int cL = st[2];
-        int cR = st[3];
-        eta_face_L[f] = eta[2]; eta_face_R[f] = eta[3];
-        hu_face_L[f]  = hu_v[2]; hu_face_R[f]  = hu_v[3];
-        hv_face_L[f]  = hv_v[2]; hv_face_R[f]  = hv_v[3];
+        int cL = ids[2];
+        int cR = ids[3];
+        double dxLf = mx - cell_cx[cL], dyLf = my - cell_cy[cL];
+        double dxRf = mx - cell_cx[cR], dyRf = my - cell_cy[cR];
+
+        auto tvd_fb = [&](double qL, double qR,
+                          double gxL, double gyL,
+                          double gxR, double gyR,
+                          double& oL, double& oR) {
+            const double EPS_TVD = 1.0e-30;
+            double dq = qR - qL;
+            double sdq = (dq >= 0.0) ? 1.0 : -1.0;
+            double inv_d = 1.0 / (dq + sdq * EPS_TVD);
+            double pL = gxL * dxLf + gyL * dyLf;
+            double pR = -(gxR * dxRf + gyR * dyRf);
+            double r0 = pL * inv_d;
+            double r1 = -pR * inv_d;
+            double phi0 = (r0 + fabs(r0)) / (1.0 + fabs(r0));
+            double phi1 = (r1 + fabs(r1)) / (1.0 + fabs(r1));
+            double rawL = qL + phi0 * pL;
+            double rawR = qR + phi1 * pR;
+            double qmin = fmin(qL, qR);
+            double qmax = fmax(qL, qR);
+            oL = fmin(qmax, fmax(qmin, rawL));
+            oR = fmin(qmax, fmax(qmin, rawR));
+        };
+
+        tvd_fb(eta[2], eta[3],
+               d_grad[cL].hx, d_grad[cL].hy,
+               d_grad[cR].hx, d_grad[cR].hy,
+               eta_face_L[f], eta_face_R[f]);
+        tvd_fb(hu_v[2], hu_v[3],
+               d_grad[cL].hux, d_grad[cL].huy,
+               d_grad[cR].hux, d_grad[cR].huy,
+               hu_face_L[f], hu_face_R[f]);
+        tvd_fb(hv_v[2], hv_v[3],
+               d_grad[cL].hvx, d_grad[cL].hvy,
+               d_grad[cR].hvx, d_grad[cR].hvy,
+               hv_face_L[f], hv_face_R[f]);
         return;
     }
 

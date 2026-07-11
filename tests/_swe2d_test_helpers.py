@@ -39,6 +39,46 @@ def _gpu_available():
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+def _make_cartesian_quad_mesh(
+    nx: int,
+    ny: int,
+    Lx: float,
+    Ly: float,
+    zb_func: Optional[Callable] = None,
+) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    """Build a Cartesian quadrilateral mesh with nx × ny cells.
+
+    Returns (node_x, node_y, node_z, cell_nodes, cell_cx, cell_cy).
+    cell_nodes has shape (nx*ny, 4) with CCW node indices for each quad.
+    """
+    xs = np.linspace(0.0, Lx, nx + 1)
+    ys = np.linspace(0.0, Ly, ny + 1)
+    Xg, Yg = np.meshgrid(xs, ys)
+    node_x = Xg.ravel().copy()
+    node_y = Yg.ravel().copy()
+    node_z = zb_func(node_x, node_y) if zb_func is not None else np.zeros_like(node_x)
+
+    cells = []
+    centroids_x = []
+    centroids_y = []
+    stride = nx + 1
+    for j in range(ny):
+        for i in range(nx):
+            n00 = j * stride + i
+            n10 = j * stride + i + 1
+            n11 = (j + 1) * stride + i + 1
+            n01 = (j + 1) * stride + i
+            cells.append([n00, n10, n11, n01])
+            centroids_x.append(0.25 * (node_x[n00] + node_x[n10] + node_x[n11] + node_x[n01]))
+            centroids_y.append(0.25 * (node_y[n00] + node_y[n10] + node_y[n11] + node_y[n01]))
+
+    cell_nodes = np.array(cells, dtype=np.int32)
+    cell_cx = np.array(centroids_x, dtype=np.float64)
+    cell_cy = np.array(centroids_y, dtype=np.float64)
+    return node_x, node_y, node_z, cell_nodes, cell_cx, cell_cy
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # Structured rectangular mesh builder (triangulated quads)
 # ─────────────────────────────────────────────────────────────────────────────
 def _make_rect_mesh(
