@@ -367,6 +367,24 @@ def execute_run(
         except Exception as _e:
             logger.warning("Failed to set boundary relaxation: %s", _e)
 
+    # Configure native hydrograph BCs from GPKG (BC lines with hydrograph_id)
+    try:
+        from swe2d.cli.gpkg_adapter import load_and_configure_hydrographs
+        _bc_cfg = p.get("bc_lines")
+        _bc_tbl = _bc_cfg.get("table", "") if isinstance(_bc_cfg, dict) else ""
+        if _bc_tbl:
+            _hconn = sqlite3.connect(mesh_gpkg)
+            try:
+                load_and_configure_hydrographs(
+                    _hconn, _bc_tbl, _hconn, "SWE2D_Hydrographs",
+                    mesh_data["node_x"], mesh_data["node_y"],
+                    backend, logger,
+                )
+            finally:
+                _hconn.close()
+    except Exception as _e:
+        logger.warning("Failed to configure hydrographs: %s", _e)
+
     # Configure native rain if Thiessen forcing is present
     if thiessen_forcing is not None:
         print(f"[DEBUG] Thiessen forcing present, configuring...", flush=True)

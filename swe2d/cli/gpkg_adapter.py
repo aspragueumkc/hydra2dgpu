@@ -772,3 +772,141 @@ def read_drainage_config_from_gpkg(
         "node_inlets": node_inlets_raw,
         "outfalls": outfalls,
     }
+
+
+def load_and_configure_hydrographs(
+    bc_conn: sqlite3.Connection,
+    bc_table: str,
+    hyd_conn: sqlite3.Connection,
+    hyd_table: str,
+    node_x: np.ndarray,
+    node_y: np.ndarray,
+    backend: Any,
+    logger: Any,
+) -> bool:
+    """Read BC hydrographs from GPKG and configure them on the backend.
+
+    Looks for BC lines in *bc_table* that have a non-null *hydrograph_id*,
+    snaps them to mesh boundary edges, reads the time series from
+    *hyd_table*, and calls ``backend.set_boundary_hydrographs_native()``.
+
+    Returns True if any hydrographs were configured.
+    """
+    cur = bc_conn.cursor()
+    cur.execute(f'PRAGMA table_info("{bc_table}")')
+    col_info = [(str(r[1]), str(r[2]).lower()) for r in cur.fetchall()]
+    col_names_lower = {c.lower() for c, _ in col_info}
+
+    if "hydrograph_id" not in col_names_lower:
+        return False
+
+    # Identify geometry column
+    geom_col = next((c for c, _ in col_info if c.lower() in ("geom", "wkb_geometry", "geometry", "shape")), None)
+    if geom_col is None:
+        return False
+
+    # Read BC rows with a hydrograph_id
+    cur.execute(f'SELECT "{geom_col}", "bc_type", "hydrograph_id" FROM "{bc_table}" '
+                f'WHERE "hydrograph_id" IS NOT NULL AND "hydrograph_id" != \'\'')
+    bc_rows = cur.fetchall()
+    if not bc_rows:
+        return False
+
+    # Build KD-tree for node snapping
+    from scipy.spatial import KDTree
+    tree = KDTree(np.column_stack([np.asarray(node_x, dtype=np.float64),
+                                    np.asarray(node_y, dtype=np.float64)]))
+
+    # Read all hydrographs from the hydrograph table
+    hcur = hyd_conn.cursor()
+    hcur.execute(f'PRAGMA table_info("{hyd_table}")')
+    hcols = [str(r[1]) for r in hcur.fetchall()]
+    hcol_names_lower = {c.lower() for c in hcols}
+
+    hg_col = next((c for c in hcols if c.lower() == "hydrograph_id"), None)
+    time_col = next((c for c in hcols if c.lower() in ("time", "t", "time_s")), None)
+    val_col = next((c for c in hcols if c.lower() in ("value", "val", "v", "flow", "q")), None)
+    if not all([hg_col, time_col, val_col]):
+        return False
+
+    hcur.execute(f'SELECT "{hg_col}", "{time_col}", "{val_col}" FROM "{hyd_table}" '
+                 f'ORDER BY "{hg_col}", "{time_col}"')
+    hyd_rows = hcur.fetchall()
+    if not hyd_rows:
+        return False
+
+    # Group hydrograph data by hydrograph_id
+    hyd_series: Dict[str, list] = {}
+    for row in hyd_rows:
+        hid = str(row[0])
+        t = float(row[1])
+        v = float(row[2])
+        hyd_series.setdefault(hid, []).append((t, v))
+
+    # Map BC lines to boundary edges
+    from swe2d.runtime.backend import SWE2DBackend
+    edge_to_idx = getattr(backend, '_boundary_edge_index_by_nodes', {})
+    if not edge_to_idx:
+        logger.warning("[Hydrograph] No boundary edge index available on backend")
+        return False
+
+    hyd_edge_indices: list = []
+    hyd_bc_types: list = []
+    hyd_offsets: list = [0]
+    hyd_times: list = []
+    hyd_values: list = []
+
+    for row in bc_rows:
+        geom_raw = row[0]
+        bc_type = int(row[1]) if row[1] is not None else 102
+        hydro_id = str(row[2])
+
+        series = hyd_series.get(hydro_id)
+        if not series:
+            logger.warning("[Hydrograph] No series found for hydrograph_id='%s'", hydro_id)
+            continue
+
+        coords = _parse_wkb_linestring(geom_raw)
+        if not coords:
+            coords = _parse_wkt_linestring_coords(str(geom_raw or ""))
+        if len(coords) < 2:
+            continue
+
+        # Snap vertices to nearest mesh nodes
+        node_ids = [int(tree.query([x, y])[1]) for x, y in coords]
+
+        # For each segment (vertex pair), look up the boundary edge
+        for i in range(len(node_ids) - 1):
+            a, b = node_ids[i], node_ids[i + 1]
+            key = (a, b) if a < b else (b, a)
+            eidx = edge_to_idx.get(key)
+            if eidx is None:
+                continue
+
+            hyd_edge_indices.append(eidx)
+            hyd_bc_types.append(bc_type)
+            n_pts = len(series)
+            hyd_offsets.append(hyd_offsets[-1] + n_pts)
+            for t, v in series:
+                hyd_times.append(t)
+                hyd_values.append(v)
+
+    if not hyd_edge_indices:
+        return False
+
+    # Convert to arrays and call backend
+    edge_arr = np.array(hyd_edge_indices, dtype=np.int32)
+    type_arr = np.array(hyd_bc_types, dtype=np.int32)
+    off_arr = np.array(hyd_offsets, dtype=np.int32)
+    time_arr = np.array(hyd_times, dtype=np.float64)
+    val_arr = np.array(hyd_values, dtype=np.float64)
+
+    logger.info("[Hydrograph] Configuring %d hydrograph edges", len(edge_arr))
+    backend.set_boundary_hydrographs_native(
+        edge_index=edge_arr,
+        bc_type=type_arr,
+        offsets=off_arr,
+        time_s=time_arr,
+        value=val_arr,
+    )
+    return True
