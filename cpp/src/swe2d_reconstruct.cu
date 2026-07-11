@@ -308,18 +308,40 @@ __global__ void weno3_kernel(
     }
     if (id_v < 0) { id_v = c1; s_v = s_c1; }
 
+    // Degenerate stencil detection: on triangle meshes, S0/S2 may have only
+    // 1 cell, or the selected upwind cell may be nearly coincident with c0/c1
+    // (projected distance < 1% of c0-c1 spacing).  In these cases the WENO3
+    // smoothness indicators become erratic and the nonlinear weights collapse
+    // to a single sub-stencil, producing oscillatory reconstruction.  Fall
+    // back to first-order upwind (copy cell values) when the stencil is
+    // insufficient for a meaningful WENO3 reconstruction.
+    const double ds_pair = fabs(s_c1 - s_c0);
+    const bool degenerate_stencil = (ds_pair < 1.0e-14)
+        || (fabs(s_u - s_c0) < 0.01 * ds_pair)
+        || (fabs(s_v - s_c1) < 0.01 * ds_pair)
+        || ((s0_end - s0_beg) < 1)
+        || ((s2_end - s2_beg) < 1);
+
     // Conserved variables for the stencil cells: eta, hu, hv.
     double eta_u  = h[id_u]  + zb[id_u],  eta_c0 = h[c0] + zb[c0], eta_c1 = h[c1] + zb[c1], eta_v  = h[id_v]  + zb[id_v];
     double hu_u   = hu_arr[id_u], hu_c0  = hu_arr[c0], hu_c1  = hu_arr[c1], hu_v   = hu_arr[id_v];
     double hv_u   = hv_arr[id_u], hv_c0  = hv_arr[c0], hv_c1  = hv_arr[c1], hv_v   = hv_arr[id_v];
 
+    double eta_L, eta_R, hu_L, hu_R, hv_L, hv_R;
+
+    if (degenerate_stencil) {
+        eta_L = eta_c0; eta_R = eta_c1;
+        hu_L  = hu_c0;  hu_R  = hu_c1;
+        hv_L  = hv_c0;  hv_R  = hv_c1;
+    } else {
     // WENO3 left/right reconstruction of each conserved variable.
-    double eta_L = weno3_reconstruct(eta_u, eta_c0, eta_c1, eta_v, s_u, s_c0, s_c1, s_v, true);
-    double eta_R = weno3_reconstruct(eta_u, eta_c0, eta_c1, eta_v, s_u, s_c0, s_c1, s_v, false);
-    double hu_L  = weno3_reconstruct(hu_u,  hu_c0,  hu_c1,  hu_v,  s_u, s_c0, s_c1, s_v, true);
-    double hu_R  = weno3_reconstruct(hu_u,  hu_c0,  hu_c1,  hu_v,  s_u, s_c0, s_c1, s_v, false);
-    double hv_L  = weno3_reconstruct(hv_u,  hv_c0,  hv_c1,  hv_v,  s_u, s_c0, s_c1, s_v, true);
-    double hv_R  = weno3_reconstruct(hv_u,  hv_c0,  hv_c1,  hv_v,  s_u, s_c0, s_c1, s_v, false);
+    eta_L = weno3_reconstruct(eta_u, eta_c0, eta_c1, eta_v, s_u, s_c0, s_c1, s_v, true);
+    eta_R = weno3_reconstruct(eta_u, eta_c0, eta_c1, eta_v, s_u, s_c0, s_c1, s_v, false);
+    hu_L  = weno3_reconstruct(hu_u,  hu_c0,  hu_c1,  hu_v,  s_u, s_c0, s_c1, s_v, true);
+    hu_R  = weno3_reconstruct(hu_u,  hu_c0,  hu_c1,  hu_v,  s_u, s_c0, s_c1, s_v, false);
+    hv_L  = weno3_reconstruct(hv_u,  hv_c0,  hv_c1,  hv_v,  s_u, s_c0, s_c1, s_v, true);
+    hv_R  = weno3_reconstruct(hv_u,  hv_c0,  hv_c1,  hv_v,  s_u, s_c0, s_c1, s_v, false);
+    }
 
     // Local pair monotonicity clip (same safeguard WENO5 uses).
     double eta_min = fmin(eta_c0, eta_c1);
@@ -404,6 +426,30 @@ __global__ void mp5_kernel(
         eta[k] = h[id] + zb[id];
         hu_v[k] = hu_arr[id];
         hv_v[k] = hv_arr[id];
+    }
+
+    // Degenerate stencil check: if any two consecutive projected coordinates
+    // are nearly coincident (< 1% of the c0-c1 spacing), the Lagrange
+    // interpolation is ill-conditioned and the MP5 limiter can produce
+    // oscillatory results.  Fall back to first-order upwind.
+    const double ds_pair = fabs(s[3] - s[2]);
+    bool degenerate_stencil = (ds_pair < 1.0e-14);
+    if (!degenerate_stencil) {
+        for (int k = 0; k < 4; ++k) {
+            if (fabs(s[k + 1] - s[k]) < 0.01 * ds_pair) {
+                degenerate_stencil = true;
+                break;
+            }
+        }
+    }
+
+    if (degenerate_stencil) {
+        int cL = st[2];
+        int cR = st[3];
+        eta_face_L[f] = eta[2]; eta_face_R[f] = eta[3];
+        hu_face_L[f]  = hu_v[2]; hu_face_R[f]  = hu_v[3];
+        hv_face_L[f]  = hv_v[2]; hv_face_R[f]  = hv_v[3];
+        return;
     }
 
     // High-order Lagrange interpolation at s=0 for all 3 variables

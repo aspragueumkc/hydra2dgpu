@@ -1044,6 +1044,29 @@ __global__ __launch_bounds__(256, 4) void swe2d_gradient_kernel(
     }
 }
 
+/** GPU kernel: zero the eta-gradient (hx, hy) for cells with negligible depth.
+ *  Prevents MUSCL reconstruction from projecting bed-slope gradients onto
+ *  faces of dry or near-dry cells, which can create artificial face depths
+ *  that grow unstable when combined with source terms.
+ *
+ *  Only zeros the eta (h+zb) gradient components; momentum gradients (hux,
+ *  huy, hvx, hvy) are left intact because they are typically zero or negligible
+ *  for dry cells anyway, and zeroing them can suppress the momentum recovery
+ *  mechanism at advancing wet fronts.
+ *  @global */
+__global__ __launch_bounds__(256, 4) void swe2d_zero_dry_eta_grad_kernel(
+    int32_t n_cells,
+    const State* __restrict__ cell_h,
+    Grad* d_grad,
+    double h_dry_threshold)
+{
+    int32_t c = blockIdx.x * blockDim.x + threadIdx.x;
+    if (c >= n_cells) return;
+    if (static_cast<double>(cell_h[c]) > h_dry_threshold) return;
+    d_grad[c].hx = 0.0;
+    d_grad[c].hy = 0.0;
+}
+
 /** Cell-parallel gather kernel: sum per-edge gradient contributions into per-cell arrays.
  *  Reads from edge-scratch arrays, writes to cell gradient arrays.  No atomics.
  *  Each edge stores the raw face flux (c0 perspective, +nx outward from c0).
@@ -1085,12 +1108,18 @@ __global__ __launch_bounds__(256, 4) void swe2d_gradient_gather_kernel(
     d_grad[c].hvx = gvx * ia; d_grad[c].hvy = gvy * ia;
 }
 
-/// GPU kernel: least-squares (2-ring) gradient — spatial scheme 6 (FV_WENO5).
+/// GPU kernel: least-squares (2-ring) gradient — all schemes >= 1.
 /**
  * Cell-parallel kernel.  Each active cell solves a weighted 2×2 normal-
  * equations system over its 2-ring neighbor stencil to compute η, hu, hv
  * gradients.  Overwrites the Green-Gauss gradient for well-posed stencils
  * (≥3 neighbors); under-determined cells retain the GG fallback.
+ *
+ * For nearly-dry cells (h ≤ h_dry_threshold), the η gradient is zeroed
+ * while momentum gradients are left intact.  This prevents bed-slope
+ * leakage into face reconstructions at wet/dry fronts, which causes a
+ * feedback loop on triangle meshes where the GG gradient fallback is
+ * degenerate.
  *
  * @global
  * @param n_cells Number of cells
@@ -1103,7 +1132,10 @@ __global__ __launch_bounds__(256, 4) void swe2d_gradient_gather_kernel(
  * @param cell_zb Cell bed elevations
  * @param cell_hu Cell x-discharges
  * @param cell_hv Cell y-discharges
+ * @param d_boundary_cell Boundary cell flags (nullable)
  * @param d_active Active cell flags (nullable)
+ * @param d_grad Output gradient struct
+ * @param h_dry_threshold Depth threshold below which η gradient is zeroed
  * @param grad_hx Output: dη/dx
  * @param grad_hy Output: dη/dy
  * @param grad_hux Output: d(hu)/dx
@@ -1124,7 +1156,8 @@ __global__ __launch_bounds__(256, 4) void swe2d_lsq_gradient_kernel(
     const State*   __restrict__ cell_hv,
     const int32_t* __restrict__ d_boundary_cell,   // nullable: 1 if cell touches boundary
     const int32_t* __restrict__ d_active,
-    Grad*                       d_grad)
+    Grad*                       d_grad,
+    double                      h_dry_threshold)
 {
     int32_t c = blockIdx.x * blockDim.x + threadIdx.x;
     if (c >= n_cells) return;
@@ -1140,6 +1173,13 @@ __global__ __launch_bounds__(256, 4) void swe2d_lsq_gradient_kernel(
     // 2-ring LSQ stencil is one-sided and can produce unstable gradients near
     // open/normal-depth boundaries with source terms.
     if (d_boundary_cell && d_boundary_cell[c]) return;
+
+    const double h_c = static_cast<double>(cell_h[c]);
+
+    // Nearly-dry cells: compute momentum gradients normally (they are typically
+    // small or zero anyway), but zero the eta gradient to prevent bed-slope
+    // leakage into face reconstructions.
+    const bool dry = (h_c <= h_dry_threshold);
 
     const double eta0 = static_cast<double>(cell_h[c]) + cell_zb[c];
 
@@ -1177,8 +1217,8 @@ __global__ __launch_bounds__(256, 4) void swe2d_lsq_gradient_kernel(
     if (fabs(det) <= 1.0e-30) return;
     const double inv_det = 1.0 / det;
 
-    d_grad[c].hx  = inv_det * (a22 * b1_eta - a12 * b2_eta);
-    d_grad[c].hy  = inv_det * (a11 * b2_eta - a12 * b1_eta);
+    d_grad[c].hx  = dry ? 0.0 : inv_det * (a22 * b1_eta - a12 * b2_eta);
+    d_grad[c].hy  = dry ? 0.0 : inv_det * (a11 * b2_eta - a12 * b1_eta);
     d_grad[c].hux = inv_det * (a22 * b1_hu  - a12 * b2_hu);
     d_grad[c].huy = inv_det * (a11 * b2_hu  - a12 * b1_hu);
     d_grad[c].hvx = inv_det * (a22 * b1_hv  - a12 * b2_hv);
@@ -1219,7 +1259,8 @@ static inline void swe2d_maybe_launch_gradient_gather(
  */
 static inline void swe2d_maybe_launch_lsq_gradient(
     SWE2DDeviceState* dev, int spatial_scheme, int32_t n_cells, int block,
-    const State* cell_h, const State* cell_hu, const State* cell_hv)
+    const State* cell_h, const State* cell_hu, const State* cell_hv,
+    double h_min)
 {
     if (spatial_scheme < 1) return;
     if (dev->d_cell_ring2_offsets == nullptr) return;
@@ -1231,7 +1272,8 @@ static inline void swe2d_maybe_launch_lsq_gradient(
         cell_h, dev->d_cell_zb, cell_hu, cell_hv,
         dev->d_boundary_cell,
         dev->d_active,
-        dev->d_grad);
+        dev->d_grad,
+        2.0 * h_min);
 }
 
 /// Device helper: clamped linear interpolation in a monotonic series.
@@ -2021,8 +2063,6 @@ __global__ __launch_bounds__(256, 2) void swe2d_flux_kernel(
         if (!disable_higher_order && spatial_scheme >= scheme_fast && cell_cx != nullptr && d_grad != nullptr) {
             const double fx = edge_mx[e];
             const double fy = edge_my[e];
-            const double dcx = cell_cx[c1] - cell_cx[c0];
-            const double dcy = cell_cy[c1] - cell_cy[c0];
             const double dxL = fx - cell_cx[c0];
             const double dyL = fy - cell_cy[c0];
             const double dxR = fx - cell_cx[c1];
@@ -2031,21 +2071,31 @@ __global__ __launch_bounds__(256, 2) void swe2d_flux_kernel(
 
             // Helper lambda: compute TVD limiter phi(r), extrapolate each cell state
             // to the actual face midpoint, then clamp to the local cell-pair bounds.
+            //
+            // The slope ratio r is computed using the centroid-to-face direction
+            // (the same direction used for extrapolation), not the c0-to-c1
+            // direction.  On irregular meshes (especially triangles), these
+            // directions can differ significantly, and computing r on one direction
+            // while applying phi on another can fool the limiter into allowing
+            // overshoots that amplify across the mesh into a feedback loop.
             auto tvd_reconstruct = [&](double q0, double q1,
                                        double gx0, double gy0,
                                        double gx1, double gy1,
                                        double& qL_out, double& qR_out) {
                 const double dq = q1 - q0;   // downwind difference (c0→c1)
 
-                // Slope ratio at c0: GG gradient projected onto c0→c1 / pair jump
-                const double s0 = gx0 * dcx + gy0 * dcy;
                 const double sign_dq = (dq >= 0.0) ? 1.0 : -1.0;
                 const double inv_denom = 1.0 / (dq + sign_dq * EPS);
-                const double r0 = s0 * inv_denom;
+
+                // Slope ratio at c0: gradient projected onto centroid-to-face /
+                // estimated face jump.  Uses the same direction as the extrapolation
+                // so the limiter correctly bounds the actual gradient projection.
+                const double projL = gx0 * dxL + gy0 * dyL;
+                const double r0 = projL * inv_denom;
 
                 // Slope ratio at c1 (looking back toward c0)
-                const double s1 = -(gx1 * dcx + gy1 * dcy);
-                const double r1 = -s1 * inv_denom;
+                const double projR = -(gx1 * dxR + gy1 * dyR);
+                const double r1 = -projR * inv_denom;
 
                 double phi0, phi1;
                 if (spatial_scheme == scheme_fast) {
@@ -2093,12 +2143,12 @@ __global__ __launch_bounds__(256, 2) void swe2d_flux_kernel(
 
                 // Van Leer TVD-limited LSQ slope using the pair jump as the
                 // monotonicity reference (robust candidate).
+                // Compute r using the centroid-to-face direction (same as
+                // extrapolation) to prevent direction-mismatch limiter bypass.
                 const double sign_dq = (dq >= 0.0) ? 1.0 : -1.0;
-                const double s0_pair = gx0 * dcx + gy0 * dcy;
                 const double inv_denom = 1.0 / (dq + sign_dq * EPS);
-                const double r0 = s0_pair * inv_denom;
-                const double s1_pair = -(gx1 * dcx + gy1 * dcy);
-                const double r1 = -s1_pair * inv_denom;
+                const double r0 = sL * inv_denom;
+                const double r1 = -sR * inv_denom;
                 const double phi0 = (r0 + fabs(r0)) / (1.0 + fabs(r0));
                 const double phi1 = (r1 + fabs(r1)) / (1.0 + fabs(r1));
 
@@ -5543,7 +5593,13 @@ void swe2d_gpu_step(
                     // Gather per-edge contributions into per-cell gradients
                     swe2d_maybe_launch_gradient_gather(dev, n_cells, BLOCK);
                     swe2d_maybe_launch_lsq_gradient(dev, spatial_scheme, n_cells, BLOCK,
-                                                    dev->d_h, dev->d_hu, dev->d_hv);
+                                                    dev->d_h, dev->d_hu, dev->d_hv,
+                                                    h_min);
+                    if (need_gradients) {
+                        int g2_grid = (n_cells + BLOCK - 1) / BLOCK;
+                        swe2d_zero_dry_eta_grad_kernel<<<g2_grid, BLOCK, 0, dev->d_stream>>>(
+                            n_cells, dev->d_h, dev->d_grad, 2.0 * h_min);
+                    }
                 }
                 // ── Advanced spatial reconstruction pre-passes (schemes 5, 6, 8) ──
                 {
@@ -5793,7 +5849,13 @@ void swe2d_gpu_step(
         CUDA_CHECK(cudaGetLastError());
         swe2d_maybe_launch_gradient_gather(dev, n_cells, BLOCK);
         swe2d_maybe_launch_lsq_gradient(dev, spatial_scheme, n_cells, BLOCK,
-                                        dev->d_h, dev->d_hu, dev->d_hv);
+                                        dev->d_h, dev->d_hu, dev->d_hv,
+                                        h_min);
+        if (need_gradients) {
+            int g2_grid = (n_cells + BLOCK - 1) / BLOCK;
+            swe2d_zero_dry_eta_grad_kernel<<<g2_grid, BLOCK, 0, dev->d_stream>>>(
+                n_cells, dev->d_h, dev->d_grad, 2.0 * h_min);
+        }
     }
 
     // ── Advanced spatial reconstruction pre-passes (schemes 5, 6, 8) ──
