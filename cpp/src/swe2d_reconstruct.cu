@@ -420,27 +420,60 @@ __global__ void mp5_kernel(
     // Project centroids onto face normal → 1-D coordinates (face midpoint at s=0)
     double s[5];
     double eta[5], hu_v[5], hv_v[5];
+    int ids[5];
     for (int k = 0; k < 5; ++k) {
         int id = st[k];
+        ids[k] = id;
         s[k]   = (cell_cx[id] - mx) * nx + (cell_cy[id] - my) * ny;
         eta[k] = h[id] + zb[id];
         hu_v[k] = hu_arr[id];
         hv_v[k] = hv_arr[id];
     }
 
-    // Degenerate stencil check: if any two consecutive projected coordinates
-    // are nearly coincident (< 1% of the c0-c1 spacing), the Lagrange
-    // interpolation is ill-conditioned and the MP5 limiter can produce
-    // oscillatory results.  Fall back to first-order upwind.
-    const double ds_pair = fabs(s[3] - s[2]);
-    bool degenerate_stencil = (ds_pair < 1.0e-14);
-    if (!degenerate_stencil) {
-        for (int k = 0; k < 4; ++k) {
-            if (fabs(s[k + 1] - s[k]) < 0.01 * ds_pair) {
-                degenerate_stencil = true;
-                break;
+    // ── Sort stencil by projected coordinate (ascending s) ───────────
+    // The Suresh-Huynh MP5 limiter assumes monotonically-ordered stencil
+    // points, which is guaranteed on structured 1D grids but NOT on
+    // unstructured triangle meshes where the 5-cell walk can produce
+    // points in any order.  Without sorting, the Lagrange polynomial at
+    // s=0 can oscillate wildly (Runge phenomenon on poorly-spaced,
+    // out-of-order nodes), and the limiter's slope/curvature comparisons
+    // use wrong sign conventions.  Sorting 5 elements is negligible cost.
+    for (int i = 0; i < 4; ++i) {
+        for (int j = i + 1; j < 5; ++j) {
+            if (s[j] < s[i]) {
+                double ts = s[i]; s[i] = s[j]; s[j] = ts;
+                double te = eta[i]; eta[i] = eta[j]; eta[j] = te;
+                double th = hu_v[i]; hu_v[i] = hu_v[j]; hu_v[j] = th;
+                double tv = hv_v[i]; hv_v[i] = hv_v[j]; hv_v[j] = tv;
+                int ti = ids[i]; ids[i] = ids[j]; ids[j] = ti;
             }
         }
+    }
+
+    // ── Degenerate stencil detection ─────────────────────────────────
+    // Check ALL 10 pairwise distances (not just 4 consecutive pairs).  On
+    // triangle meshes the 5-cell walk can produce non-consecutive duplicates
+    // (e.g., u2 walks back to c1 → st[0]==st[3]), which consecutive checks miss.
+    // Threshold: 5% of c0-c1 spacing (stiffer than 1%, needed for a
+    // degree-4 Lagrange polynomial to be well-conditioned).
+    const double ds_pair = fabs(s[4] - s[0]);
+    bool degenerate_stencil = (ds_pair < 1.0e-14);
+    if (!degenerate_stencil) {
+        const double tol = 0.05 * ds_pair;
+        for (int i = 0; i < 5 && !degenerate_stencil; ++i) {
+            for (int j = i + 1; j < 5; ++j) {
+                if (fabs(s[j] - s[i]) < tol) {
+                    degenerate_stencil = true;
+                    break;
+                }
+            }
+        }
+    }
+
+    // Also fall back if the face midpoint (s=0) is not inside the stencil
+    // span — the Lagrange evaluation is an extrapolation, not interpolation.
+    if (!degenerate_stencil && (s[0] > 0.0 || s[4] < 0.0)) {
+        degenerate_stencil = true;
     }
 
     if (degenerate_stencil) {
@@ -451,6 +484,9 @@ __global__ void mp5_kernel(
         hv_face_L[f]  = hv_v[2]; hv_face_R[f]  = hv_v[3];
         return;
     }
+
+    // After sorting: s[0] < s[1] < s[2] < s[3] < s[4], and s[2] < 0 < s[3].
+    // The central pair is at indices 2 (left cell c0) and 3 (right cell c1).
 
     // High-order Lagrange interpolation at s=0 for all 3 variables
     double fHO_eta = lagrange5_at_zero(s, eta[0], eta[1], eta[2], eta[3], eta[4]);
@@ -471,7 +507,7 @@ __global__ void mp5_kernel(
     } else {
         // Limiting needed on eta → compute blend factor and apply to all 3
 
-        // TVD value with proper non-uniform spacing
+        // TVD value with proper non-uniform spacing (normalized by s-distance)
         double s_u = s[2], s_v = s[3];
         double ds = s_v - s_u;
         double fTVD_eta;
@@ -484,13 +520,19 @@ __global__ void mp5_kernel(
             fTVD_eta = eta[2] + limited * (0.0 - s_u);
         }
 
-        // Check smooth extremum
+        // Check smooth extremum — use slope-normalized differences to be
+        // consistent with the TVD computation and valid on non-uniform
+        // triangle meshes where raw eta jumps don't represent comparable
+        // slopes when s-spacings differ.
         double d_ho = fHO_eta - eta[2];
-        double d_r  = eta[3] - eta[2];
-        double d_l  = eta[2] - eta[1];
+        double s_r = s[3] - s[2];
+        double s_l = s[2] - s[1];
+        double slope_d_ho = (fabs(s_r) > 1e-14) ? d_ho / s_r : 0.0;
+        double slope_d_r  = (fabs(s_r) > 1e-14) ? (eta[3] - eta[2]) / s_r : 0.0;
+        double slope_d_l  = (fabs(s_l) > 1e-14) ? (eta[2] - eta[1]) / s_l : 0.0;
 
         double blend;  // 1.0 = high order, 0.0 = TVD
-        if (d_ho * d_r > 0.0 && d_ho * d_l > 0.0) {
+        if (slope_d_ho * slope_d_r > 0.0 && slope_d_ho * slope_d_l > 0.0) {
             // Smooth extremum: allow controlled overshoot (up to 2× TVD)
             double d_tvd = fTVD_eta - eta[2];
             if (fabs(d_tvd) < 1e-20) {
@@ -549,8 +591,8 @@ __global__ void mp5_kernel(
     // only the curvature signal — the part of the gradient that the centered
     // Lagrange value does not already capture.  This restores upwind
     // dissipation through the HLLC wave-speed selection without overshooting.
-    int cL = st[2];
-    int cR = st[3];
+    int cL = ids[2];
+    int cR = ids[3];
     double dxL = mx - cell_cx[cL], dyL = my - cell_cy[cL];
     double dxR = mx - cell_cx[cR], dyR = my - cell_cy[cR];
     double dg_eta_x = d_grad[cL].hx - d_grad[cR].hx;
