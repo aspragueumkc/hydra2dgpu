@@ -531,32 +531,47 @@ __global__ void mp5_kernel(
         fMP_eta = fmax(f_min - 1e-10, fmin(f_max + 1e-10, fMP_eta));
     }
 
-    // ── Split centered MP5 value into L/R states via LSQ gradient ──────
+    // ── Split centered MP5 value into L/R states ────────────────────────
     // MP5 produces a single centered value at the face.  On unstructured
     // meshes this creates identical L/R Riemann states, giving a purely
     // central flux with zero numerical dissipation through the HLLC solver.
-    // We split into distinct L/R states using the LSQ gradient projection,
-    // which restores upwind dissipation through the HLLC wave-speed
-    // selection — identical to how weno5_reconstruct produces separate
-    // left/right values.  The LSQ gradient (computed for all schemes) is
-    // well-conditioned even on triangle meshes.
+    //
+    // The split uses the GRADIENT DIFFERENCE between cL and cR to create
+    // left/right asymmetry.  This avoids double-counting the extrapolation:
+    // the centered fMP already encodes the mean gradient from the Lagrange
+    // polynomial.  Using the absolute gradient projection (fMP + grad.dx)
+    // adds a second extrapolation on top, which on triangle meshes with
+    // poorly-conditioned LSQ gradients produces values at the pair-envelope
+    // clamp boundary, creating a systematic one-sided flux bias that
+    // amplifies into a feedback loop.
+    //
+    // The gradient-difference approach (fMP + 0.5*(gradL - gradR).dx) uses
+    // only the curvature signal — the part of the gradient that the centered
+    // Lagrange value does not already capture.  This restores upwind
+    // dissipation through the HLLC wave-speed selection without overshooting.
     int cL = st[2];
     int cR = st[3];
     double dxL = mx - cell_cx[cL], dyL = my - cell_cy[cL];
     double dxR = mx - cell_cx[cR], dyR = my - cell_cy[cR];
-    double gL_eta = d_grad[cL].hx * dxL + d_grad[cL].hy * dyL;
-    double gR_eta = d_grad[cR].hx * dxR + d_grad[cR].hy * dyR;
-    double gL_hu  = d_grad[cL].hux * dxL + d_grad[cL].huy * dyL;
-    double gR_hu  = d_grad[cR].hux * dxR + d_grad[cR].huy * dyR;
-    double gL_hv  = d_grad[cL].hvx * dxL + d_grad[cL].hvy * dyL;
-    double gR_hv  = d_grad[cR].hvx * dxR + d_grad[cR].hvy * dyR;
+    double dg_eta_x = d_grad[cL].hx - d_grad[cR].hx;
+    double dg_eta_y = d_grad[cL].hy - d_grad[cR].hy;
+    double dg_hu_x  = d_grad[cL].hux - d_grad[cR].hux;
+    double dg_hu_y  = d_grad[cL].huy - d_grad[cR].huy;
+    double dg_hv_x  = d_grad[cL].hvx - d_grad[cR].hvx;
+    double dg_hv_y  = d_grad[cL].hvy - d_grad[cR].hvy;
+    double half_gL_eta = 0.5 * (dg_eta_x * dxL + dg_eta_y * dyL);
+    double half_gR_eta = 0.5 * (dg_eta_x * dxR + dg_eta_y * dyR);
+    double half_gL_hu  = 0.5 * (dg_hu_x  * dxL + dg_hu_y  * dyL);
+    double half_gR_hu  = 0.5 * (dg_hu_x  * dxR + dg_hu_y  * dyR);
+    double half_gL_hv  = 0.5 * (dg_hv_x  * dxL + dg_hv_y  * dyL);
+    double half_gR_hv  = 0.5 * (dg_hv_x  * dxR + dg_hv_y  * dyR);
 
-    double rec_eta_L = fMP_eta + gL_eta;
-    double rec_eta_R = fMP_eta + gR_eta;
-    double rec_hu_L  = fMP_hu  + gL_hu;
-    double rec_hu_R  = fMP_hu  + gR_hu;
-    double rec_hv_L  = fMP_hv  + gL_hv;
-    double rec_hv_R  = fMP_hv  + gR_hv;
+    double rec_eta_L = fMP_eta + half_gL_eta;
+    double rec_eta_R = fMP_eta + half_gR_eta;
+    double rec_hu_L  = fMP_hu  + half_gL_hu;
+    double rec_hu_R  = fMP_hu  + half_gR_hu;
+    double rec_hv_L  = fMP_hv  + half_gL_hv;
+    double rec_hv_R  = fMP_hv  + half_gR_hv;
 
     // Pair-envelope clamp (same safeguard WENO5 and WENO3 use).
     double eta_min = fmin(eta[2], eta[3]);
