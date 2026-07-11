@@ -1244,8 +1244,11 @@ class SWE2DWorkbenchStudioDialog(QtWidgets.QDialog):
 
     def stop_timer(self, timer):
         if timer is not None:
-            timer.stop()
-            timer.deleteLater()
+            try:
+                timer.stop()
+                timer.deleteLater()
+            except RuntimeError:
+                pass
 
     def _sync_snapshot_to_ui(self, snapshot_data=None):
         """Sync live snapshot data to temporal dock, overlay, and plots."""

@@ -494,6 +494,7 @@ class TopologyController:
         fut = state.get("topology_mesh_future")
         if fut is None:
             view.stop_timer(topology_mesh_timer)
+            view._topology_mesh_timer = None
             set_topology_mesh_busy_fn(False)
             return state
 
@@ -517,6 +518,7 @@ class TopologyController:
             backend_name = topology_mesh_backend or "unknown"
             run_mode = topology_mesh_run_mode
             view.stop_timer(topology_mesh_timer)
+            view._topology_mesh_timer = None
             fut = None
             topology_mesh_started_at = None
             topology_mesh_poll_count = 0
@@ -632,6 +634,7 @@ class TopologyController:
             return state
 
         view.stop_timer(topology_mesh_timer)
+        view._topology_mesh_timer = None
         backend_name = topology_mesh_backend or "unknown"
         default_cell_type = topology_mesh_default_cell_type or "triangular"
         run_mode = topology_mesh_run_mode
@@ -951,6 +954,7 @@ class TopologyController:
                 except Exception:
 
                     pass
+            view._topology_mesh_timer = None
         proc = getattr(view, "_topology_mesh_subprocess", None)
         if proc is not None and proc.poll() is None:
             proc.kill()
@@ -1078,6 +1082,7 @@ class TopologyController:
         timer = getattr(view, "_topology_mesh_timer", None)
         if timer is not None:
             view.stop_timer(timer)
+        view._topology_mesh_timer = None
         view._topology_mesh_timer = view.create_timer(lambda: self._poll_topology_mesh())
 
 
@@ -1099,6 +1104,7 @@ class TopologyController:
                     except Exception:
 
                         pass
+                view._topology_mesh_timer = None
             return
         ret = proc.poll()
         if ret is None:
@@ -1139,6 +1145,7 @@ class TopologyController:
                 except Exception:
 
                     pass
+            view._topology_mesh_timer = None
         out_path = getattr(view, "_topology_mesh_out_path", None)
         if ret != 0 or out_path is None or not os.path.exists(out_path):
             view._log(f"mesh> fail returncode={ret}")
