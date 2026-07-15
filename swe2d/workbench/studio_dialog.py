@@ -1067,22 +1067,46 @@ class SWE2DWorkbenchStudioDialog(QtWidgets.QDialog):
         )
 
     def _apply_run_log_metadata_to_ui(self, metadata: dict) -> int:
-        """Restore UI widget state from run log metadata."""
+        """Restore UI widget state and RunContext params from run log metadata.
+
+        Restores both:
+        - Widget values from ``workbench_widget_state`` (via restore_workbench_widget_state)
+        - RunContext instance vars (``_gravity``, ``_k_mann``) from ``params``
+        - Unit system from ``units``
+        """
         if not isinstance(metadata, dict):
             return 0
+        restored = 0
+
+        # ── Restore widget values ─────────────────────────────────────
         state_payload = metadata.get("workbench_widget_state")
-        if not isinstance(state_payload, dict):
-            return 0
-        widgets_data = state_payload.get("widgets")
-        if not isinstance(widgets_data, dict):
-            return 0
-        from swe2d.workbench.bridges.project_settings_bridge import restore_workbench_widget_state
-        restored = restore_workbench_widget_state(
-            ui=self,
-            widgets_data=widgets_data,
-            qtwidgets_module=QtWidgets,
-            log_callback=self._log,
-        )
+        if isinstance(state_payload, dict):
+            widgets_data = state_payload.get("widgets")
+            if isinstance(widgets_data, dict):
+                from swe2d.workbench.bridges.project_settings_bridge import restore_workbench_widget_state
+                restored = restore_workbench_widget_state(
+                    ui=self,
+                    widgets_data=widgets_data,
+                    qtwidgets_module=QtWidgets,
+                    log_callback=self._log,
+                )
+
+        # ── Apply params to RunContext instance vars ───────────────────
+        params = metadata.get("params", {})
+        if isinstance(params, dict):
+            try:
+                self._gravity = float(params.get("gravity", 9.81))
+                self._k_mann = float(params.get("k_mann", 1.0))
+                # Also update unit service if units block is present
+                units_cfg = metadata.get("units", {})
+                if isinstance(units_cfg, dict):
+                    lsu = units_cfg.get("length_scale_si_to_model")
+                    if lsu is not None:
+                        _unit_svc.configure(float(lsu))
+                self._log(f"Applied run params: gravity={self._gravity}, k_mann={self._k_mann}")
+            except Exception as exc:
+                self._log(f"[WARNING] Failed to apply params from config: {exc}")
+
         self._log(f"Applied run metadata settings: restored_widgets={int(restored)}")
         return int(restored)
 
@@ -1927,9 +1951,19 @@ class SWE2DWorkbenchStudioDialog(QtWidgets.QDialog):
         inlet_layer = self._combo_layer(mv.drain_inlets_layer_combo, "vector") if hasattr(mv, "drain_inlets_layer_combo") else None
         node_inlet_layer = self._combo_layer(mv.drain_node_inlets_layer_combo, "vector") if hasattr(mv, "drain_node_inlets_layer_combo") else None
         if node_layer is None:
+            txt = mv.drain_nodes_layer_combo.currentText()
+            if txt:
+                raise ValueError(
+                    f"Drainage nodes layer '{txt}' is not a valid vector layer "
+                    f"in the current project.  Check the Drainage — Layers section.")
             self._log("[Drainage] _build_pipe_network_config: no drain_nodes layer selected")
             return None
         if link_layer is None:
+            txt = mv.drain_links_layer_combo.currentText()
+            if txt:
+                raise ValueError(
+                    f"Drainage links layer '{txt}' is not a valid vector layer "
+                    f"in the current project.  Check the Drainage — Layers section.")
             self._log("[Drainage] _build_pipe_network_config: no drain_links layer selected")
             return None
         cell_min_bed = self._mesh_cell_min_bed()
@@ -1953,12 +1987,9 @@ class SWE2DWorkbenchStudioDialog(QtWidgets.QDialog):
             solver_mode_name=solver_mode_combo.currentText(),
             solver_mode=solver_mode_combo.currentData(),
             coupling_substeps=self._model_tab_view.get_drainage_coupling_substeps(),
-            max_coupling_substeps=self._model_tab_view.get_drainage_max_coupling_substeps(),
             gpu_method=self._model_tab_view.get_drainage_gpu_method(),
             head_deadband=self._model_tab_view.get_drainage_head_deadband(),
             dynamic_relaxation=self._model_tab_view.get_drainage_dynamic_relaxation(),
-            adaptive_depth_fraction=self._model_tab_view.get_drainage_adaptive_depth_fraction(),
-            adaptive_wave_courant=self._model_tab_view.get_drainage_adaptive_wave_courant(),
             implicit_iters=self._model_tab_view.get_drainage_implicit_iters(),
             implicit_relax=self._model_tab_view.get_drainage_implicit_relax(),
             log_fn=self._log,
@@ -1983,6 +2014,12 @@ class SWE2DWorkbenchStudioDialog(QtWidgets.QDialog):
             return None
         layer = self._combo_layer(structures_layer_combo, "vector")
         if layer is None:
+            txt = structures_layer_combo.currentText()
+            if txt:
+                raise ValueError(
+                    f"Hydraulic structures layer '{txt}' is not a valid vector "
+                    f"layer in the current project.  Check the Structures — Layers "
+                    f"section.")
             self._log("[Structures] no structures layer selected in combo")
             return None
         from swe2d.workbench.services.structure_config_service import (
@@ -2499,6 +2536,144 @@ class SWE2DWorkbenchStudioDialog(QtWidgets.QDialog):
             **self.model_tab.collect_storage_params(),
             "inflow_progressive_chk": bool(self._model_tab_view.inflow_progressive_chk.isChecked()),
         }
+
+    def collect_data_source_config(self) -> dict:
+        """Read QGIS layer combos and return the CLI-style data source config dict.
+
+        Returns a dict with keys like ``bc_lines``, ``drainage``, ``hyetograph``,
+        ``sample_lines``, ``structures``, ``infiltration_method`` — matching the
+        format expected by the CLI ``build_run_context_from_dict()`` builder.
+        """
+        mt = self._model_tab_view
+        if mt is None:
+            return {}
+
+        from qgis.core import QgsProject as _QgsProject
+
+
+        def _resolve_gpkg_table(gpkg_path: str, layer_name: str) -> str:
+            """Look up the actual GPKG feature table name from gpkg_contents.
+
+            QGIS layer names (from ``layername=`` URI param) are often lowercased
+            or otherwise normalised, while the actual GPKG ``table_name`` in
+            ``gpkg_contents`` uses the real casing (e.g. ``SWE2D_BC_Lines``).
+            This function queries the GPKG to find the canonical table name.
+            """
+            import sqlite3
+            try:
+                conn = sqlite3.connect(gpkg_path)
+                cur = conn.cursor()
+                # Try identifier column first (actual table_name)
+                cur.execute(
+                    'SELECT table_name FROM gpkg_contents WHERE identifier=?',
+                    (layer_name,),
+                )
+                row = cur.fetchone()
+                if row:
+                    conn.close()
+                    return row[0]
+                # Fallback: case-insensitive match on identifier
+                cur.execute(
+                    'SELECT table_name FROM gpkg_contents WHERE LOWER(identifier)=?',
+                    (layer_name.lower(),),
+                )
+                row = cur.fetchone()
+                if row:
+                    conn.close()
+                    return row[0]
+                conn.close()
+            except Exception:
+                pass
+            return layer_name  # Fall back to what we had
+
+        def _get_layer_info(combo):
+            """Return (table_name, gpkg_path) from a QGIS layer combo.
+
+            The ``table_name`` returned is the *actual* GPKG table name
+            (resolved via ``gpkg_contents``), not the possibly-normalised
+            QGIS layer name.
+            """
+            if combo is None:
+                return ("", "")
+            lid = combo.currentData()
+            if not lid:
+                return ("", "")
+            layer = _QgsProject.instance().mapLayer(lid)
+            if layer is None:
+                return ("", "")
+            src = str(layer.source())
+            if "|layername=" in src:
+                gpkg_path, _, raw_name = src.partition("|layername=")
+                gpkg_path = gpkg_path.strip()
+                table = _resolve_gpkg_table(gpkg_path, raw_name.strip())
+                return (table, gpkg_path)
+            return (str(layer.name()).strip(), "")
+
+        def _dict_with_gpkg(table: str, gpkg_path: str, **extra) -> dict:
+            d = {"table": table, **extra}
+            mgp = getattr(self, "_model_gpkg_path", None)
+            if gpkg_path and gpkg_path != mgp:
+                d["gpkg"] = gpkg_path
+            return d
+
+        out = {}
+        # bc_lines
+        bc_tbl, bc_gpkg = _get_layer_info(getattr(mt, "bc_lines_layer_combo", None))
+        if bc_tbl:
+            out["bc_lines"] = _dict_with_gpkg(bc_tbl, bc_gpkg)
+
+        # hyetograph + rain gage
+        hg_tbl, hg_gpkg = _get_layer_info(getattr(mt, "hyetograph_layer_combo", None))
+        rg_tbl, rg_gpkg = _get_layer_info(getattr(mt, "rain_gage_layer_combo", None))
+        if hg_tbl and rg_tbl:
+            src_gpkg = hg_gpkg or rg_gpkg
+            out["hyetograph"] = _dict_with_gpkg(hg_tbl, src_gpkg, gauge_layer=rg_tbl)
+
+        # rain_cn (curve number layer)
+        cn_tbl, cn_gpkg = _get_layer_info(getattr(mt, "cn_layer_combo", None))
+        if cn_tbl:
+            out["rain_cn"] = _dict_with_gpkg(cn_tbl, cn_gpkg, cn_field="cn")
+
+        # drainage
+        dn_tbl, dn_gpkg = _get_layer_info(getattr(mt, "drain_nodes_layer_combo", None))
+        dl_tbl, dl_gpkg = _get_layer_info(getattr(mt, "drain_links_layer_combo", None))
+        if dn_tbl and dl_tbl:
+            drainage = {"nodes_layer": dn_tbl, "links_layer": dl_tbl}
+            di_tbl, _ = _get_layer_info(getattr(mt, "drain_inlets_layer_combo", None))
+            ni_tbl, _ = _get_layer_info(getattr(mt, "drain_node_inlets_layer_combo", None))
+            if di_tbl:
+                drainage["inlets_layer"] = di_tbl
+            if ni_tbl:
+                drainage["node_inlets_layer"] = ni_tbl
+            drain_gpkg = dn_gpkg or ""
+            if drain_gpkg and drain_gpkg != getattr(self, "_model_gpkg_path", ""):
+                drainage["gpkg"] = drain_gpkg
+            out["drainage"] = drainage
+
+        # sample lines
+        sl_tbl, sl_gpkg = _get_layer_info(getattr(mt, "sample_lines_layer_combo", None))
+        if sl_tbl:
+            out["sample_lines"] = _dict_with_gpkg(sl_tbl, sl_gpkg)
+
+        # infiltration method
+        combo = getattr(mt, "infiltration_method_combo", None)
+        im = str(combo.currentData() or "none") if combo else "none"
+        if im and im != "none":
+            out["infiltration_method"] = im
+
+        return out
+
+    def collect_widget_state_for_save(self) -> dict:
+        """Delegate to the workbench RunController so child dialogs (e.g. batch)
+        can use the same widget-collection API as GUI save paths.
+
+        Note: ``_run_controller`` is the runtime SWE2DRunController (no widget
+        state methods); ``_controller`` is the workbench RunController.
+        """
+        ctrl = getattr(self, "_controller", None)
+        if ctrl is not None:
+            return ctrl.collect_widget_state_for_save()
+        return {}
 
     def _log_exception(self, context: str, exc: Exception) -> None:
         """Log an exception with traceback to the runtime log."""

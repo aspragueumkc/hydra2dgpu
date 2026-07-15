@@ -22,6 +22,7 @@ and all Qt widgets.  Data loading is delegated to the data layer
 from __future__ import annotations
 
 import logging
+import sqlite3
 from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
@@ -349,8 +350,9 @@ class PGProfileWidget(QtWidgets.QWidget):
         self._plot_widget.setMinimumHeight(200)
         self._plot_widget.setBackground("white")
         self._plot_widget.showGrid(x=True, y=True, alpha=0.3)
-        self._plot_widget.setLabel("bottom", "Station (m)")
-        self._plot_widget.setLabel("left", "Elevation (m)")
+        u = _unit_labels()
+        self._plot_widget.setLabel("bottom", f"Station ({u['len']})")
+        self._plot_widget.setLabel("left", f"Elevation ({u['len']})")
         self._plot_widget.setMouseEnabled(x=True, y=True)
         self._plot_widget.setMenuEnabled(False)
 
@@ -703,6 +705,104 @@ class PGProfileWidget(QtWidgets.QWidget):
                 self._plot_widget.addItem(text)
             self._plot_widget.plotItem.autoRange()
 
+        elif etype == "drainage_link":
+            # ── Longitudinal pipe profile ──
+            link_id = str(self._element_id_combo.currentData() or "")
+            if not link_id:
+                text = pg.TextItem("No data", anchor=(0.5, 0.5), color=(128, 128, 128))
+                self._plot_widget.addItem(text)
+                self._plot_widget.plotItem.autoRange()
+                return
+
+            u = _unit_labels()
+            self._plot_widget.setLabel("bottom", f"Station ({u['len']})")
+            self._plot_widget.setLabel("left", f"Elevation ({u['len']})")
+
+            # ── Geometry from _live_coupling (length) and _live_pipe_cell (invert, width) ──
+            # Link length — stored as a drainage_link/length row in _live_coupling
+            coupling = data._live_coupling
+            length_key = ("drainage_link", link_id, "length")
+            length_d = coupling.get(length_key, {})
+            length_arr = length_d.get("values", [])
+            length_m = float(length_arr[0]) if length_arr else 0.0
+
+            # Per-cell geometry from _live_pipe_cell (set on first write from C++ readback)
+            pipe_cell = data._live_pipe_cell
+            sub_keys = sorted(
+                [
+                    k
+                    for k in pipe_cell.keys()
+                    if len(k) >= 2 and str(k[0]) == str(link_id) and k[2] == "depth"
+                ],
+                key=lambda k: int(k[1]) if len(k) >= 2 else 0,
+            )
+            n_sub = len(sub_keys)
+            if n_sub == 0 or length_m <= 0.0:
+                text = pg.TextItem("No pipe-cell data available", anchor=(0.5, 0.5), color=(128, 128, 128))
+                self._plot_widget.addItem(text)
+                self._plot_widget.plotItem.autoRange()
+                return
+
+            # Per-cell invert, width, height, and shape from C++ readback
+            invert_y = np.zeros(n_sub, dtype=np.float64)
+            crown_y = np.zeros(n_sub, dtype=np.float64)
+            for ki, k in enumerate(sub_keys):
+                d = pipe_cell.get(k, {})
+                invert_y[ki] = float(d.get("cell_invert", 0.0))
+                cell_w = float(d.get("cell_width", 1.0))
+                cell_h = float(d.get("cell_height", cell_w))
+                shape_type = int(d.get("cell_shape_type", 0))
+                if shape_type == 0:
+                    crown_y[ki] = invert_y[ki] + cell_w  # circular: diameter = width
+                else:
+                    crown_y[ki] = invert_y[ki] + cell_h  # rectangular/elliptical: height
+
+            # Station axis
+            x_stations = np.linspace(0.0, float(length_m), n_sub)
+
+            # Water surface at current time: depth from _live_pipe_cell
+            water_y = invert_y.copy()
+            for k in sub_keys:
+                depth_d = pipe_cell.get(k, {})
+                t_arr = depth_d.get("times", [])
+                v_arr = depth_d.get("values", [])
+                if not t_arr or not v_arr:
+                    continue
+                t_np = np.asarray(t_arr, dtype=np.float64)
+                v_np = np.asarray(v_arr, dtype=np.float64)
+                i_nearest = int(np.argmin(np.abs(t_np - t_sec)))
+                sub_idx = int(k[1]) if len(k) >= 2 else 0
+                if 0 <= sub_idx < n_sub:
+                    water_y[sub_idx] = invert_y[sub_idx] + float(v_np[i_nearest])
+
+            # Plot invert line (solid brown)
+            invert_pen = pg.mkPen(color=QtGui.QColor(92, 64, 51), width=1.2)
+            invert_plot = pg.PlotDataItem(x_stations, invert_y, pen=invert_pen, name="Invert")
+            self._plot_widget.addItem(invert_plot)
+            self._plot_items.append(invert_plot)
+
+            # Plot crown line (dashed grey)
+            crown_pen = pg.mkPen(
+                color=QtGui.QColor(64, 64, 64),
+                width=0.9,
+                style=QtCore.Qt.PenStyle.DashLine,
+            )
+            crown_plot = pg.PlotDataItem(x_stations, crown_y, pen=crown_pen, name="Crown")
+            self._plot_widget.addItem(crown_plot)
+            self._plot_items.append(crown_plot)
+
+            # Water fill between invert and water surface
+            water_plot = pg.PlotDataItem(x_stations, water_y)
+            fill_item = pg.FillBetweenItem(
+                curve1=invert_plot,
+                curve2=water_plot,
+                brush=pg.mkBrush(QtGui.QColor(100, 149, 237, 96)),
+            )
+            self._plot_widget.addItem(fill_item)
+            self._fill_items.append(fill_item)
+
+            self._plot_widget.plotItem.autoRange()
+
         else:
             # ── Time-series rendering for coupling types ──
             eid = self._selected_element_id
@@ -714,7 +814,32 @@ class PGProfileWidget(QtWidgets.QWidget):
 
             lu = getattr(data, "_length_unit", "")
             self._plot_widget.setLabel("bottom", f"Time ({_TIME_UNIT})")
-            self._plot_widget.setLabel("left", str(var_key))
+
+            # For drainage_node show head / depth / volume on y-axis
+            if etype == "drainage_node":
+                self._plot_widget.setLabel("left", "Head / Depth / Volume (m / m³)")
+            else:
+                self._plot_widget.setLabel("left", str(var_key))
+
+            # Lazy-load node geometry for drainage_node head+volume series
+            node_surface_area: Optional[float] = None
+            node_invert_elev: Optional[float] = None
+            if etype == "drainage_node":
+                gpkg_path = getattr(data, "_coupling_gpkg_path", "") or ""
+                if gpkg_path:
+                    try:
+                        conn = sqlite3.connect(gpkg_path)
+                        cur = conn.cursor()
+                        cur.execute(
+                            "SELECT surface_area, invert_elev FROM swe2d_drainage_nodes WHERE node_id = ?",
+                            (eid,),
+                        )
+                        row = cur.fetchone()
+                        conn.close()
+                        if row:
+                            node_surface_area, node_invert_elev = row
+                    except Exception as exc:
+                        logger.warning("Failed to load node geometry from GPKG: %s", exc)
 
             for rec in run_records:
                 # Load coupling data for this run
@@ -740,6 +865,23 @@ class PGProfileWidget(QtWidgets.QWidget):
                 item = self._plot_widget.plot(t_hr, v_vals, pen=pen, name=rec.display_label())
                 self._plot_items.append(item)
                 plotted += 1
+
+                # drainage_node: also plot head = invert_elev + depth and volume = surface_area * depth
+                if etype == "drainage_node" and node_surface_area is not None and node_invert_elev is not None:
+                    head_vals = np.asarray(v_vals, dtype=np.float64) + float(node_invert_elev)
+                    volume_vals = np.asarray(v_vals, dtype=np.float64) * float(node_surface_area)
+                    # Head series (slightly different shade)
+                    head_pen = pg.mkPen(color=color, width=1.2, style=QtCore.Qt.PenStyle.DashLine)
+                    self._plot_widget.plot(
+                        t_hr, head_vals, pen=head_pen, name=f"{rec.display_label()} Head"
+                    )
+                    # Volume series (darker shade)
+                    vol_color = QtGui.QColor(color[0] // 2, color[1] // 2, color[2] // 2)
+                    vol_pen = pg.mkPen(color=vol_color, width=1.0)
+                    self._plot_widget.plot(
+                        t_hr, volume_vals, pen=vol_pen, name=f"{rec.display_label()} Vol"
+                    )
+                    plotted += 2
 
             t_hr_now = t_sec / 3600.0
             self._vline = pg.InfiniteLine(pos=t_hr_now, angle=90,
@@ -978,9 +1120,10 @@ class PGProfileWidget(QtWidgets.QWidget):
             self._show_struct_chk.setVisible(is_profile)
         # Update axis labels for time-series mode
         if self._plot_widget is not None:
+            u = _unit_labels()
             if is_profile:
-                self._plot_widget.setLabel("bottom", "Station (m)")
-                self._plot_widget.setLabel("left", "Elevation (m)")
+                self._plot_widget.setLabel("bottom", f"Station ({u['len']})")
+                self._plot_widget.setLabel("left", f"Elevation ({u['len']})")
             else:
                 self._plot_widget.setLabel("bottom", f"Time ({_TIME_UNIT})")
                 self._plot_widget.setLabel("left", "Value")
@@ -1120,7 +1263,8 @@ class PGProfileWidget(QtWidgets.QWidget):
                 writer = csv.writer(f)
                 names = [item.name() or f"Series_{i}" for i, item in enumerate(self._plot_items)]
                 etype = str(self._etype_combo.currentData() or "line")
-                xlbl = "Station (m)" if etype == "line" else f"Time ({_TIME_UNIT})"
+                u = _unit_labels()
+                xlbl = f"Station ({u['len']})" if etype == "line" else f"Time ({_TIME_UNIT})"
                 writer.writerow([xlbl] + names)
                 x_data = None
                 y_series = []

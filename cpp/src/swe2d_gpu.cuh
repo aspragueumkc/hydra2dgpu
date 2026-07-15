@@ -1301,6 +1301,15 @@ void swe2d_gpu_upload_drainage_exchange_params(
     const double* pipe_end_area,
     const double* pipe_end_kin, const double* pipe_end_kout,
     const double* node_max_depth);
+
+/** Upload free outfall node indices and mark them as boundary nodes.
+ *  These outfalls are not required to have a coupled 2D surface cell.
+ *  @host */
+void swe2d_gpu_upload_outfall_free_bc_nodes(
+    SWE2DDeviceState* dev,
+    int32_t n_outfall_nodes,
+    const int32_t* outfall_node_indices);
+
 /// Ensure drainage Q buffer is allocated in device workspace. @host
 void swe2d_gpu_ensure_drainage_q_buf(SWE2DDeviceState* dev, int32_t n_cells);
 
@@ -1569,3 +1578,10 @@ void swe2d_gpu_set_edge_bc_relax(
     const int32_t* edge_index,
     const double* relax,
     int32_t n_updates);
+
+/// Readback rainfall CN cumulative state (rain and excess in mm) per cell. @host
+void swe2d_gpu_readback_rain_state(
+    SWE2DDeviceState* dev,
+    double* host_rain_cum_mm,
+    double* host_rain_excess_cum_mm,
+    int32_t n_cells);

@@ -76,29 +76,50 @@ class TestTopologyTabView(unittest.TestCase):
         view.update_control_summary()
         self.assertTrue(view._toolbox.isItemEnabled(view._algo_idx))
 
-    def test_view_has_arcs_page(self):
+    def test_view_has_mesh_def_page(self):
+        """Arcs + Sizing + Transfinite are combined into a single
+        Mesh Definition page."""
         from swe2d.workbench.views.topology_tab_view import TopologyTabView
         view = TopologyTabView()
-        page = view.findChild(QWidget, "topo_arcs_page")
+        page = view.findChild(QWidget, "topo_mesh_def_page")
         self.assertIsInstance(page, QWidget)
 
-    def test_view_has_sizing_page(self):
+    def test_mesh_def_page_has_three_sub_sections(self):
+        """The Mesh Definition page has three QGroupBox sub-sections."""
+        from qgis.PyQt.QtWidgets import QGroupBox
         from swe2d.workbench.views.topology_tab_view import TopologyTabView
         view = TopologyTabView()
-        page = view.findChild(QWidget, "topo_sizing_page")
-        self.assertIsInstance(page, QWidget)
+        for section_name in ("topo_arcs_section", "topo_sizing_section",
+                             "topo_transfinite_section"):
+            section = view.findChild(QGroupBox, section_name)
+            self.assertIsInstance(
+                section, QGroupBox,
+                f"missing sub-section: {section_name}",
+            )
 
-    def test_view_has_threading_page(self):
+    def test_legacy_arcs_sizing_transfinite_pages_removed(self):
+        """The old standalone page widgets should no longer exist."""
+        from swe2d.workbench.views.topology_tab_view import TopologyTabView
+        view = TopologyTabView()
+        for page_name in ("topo_arcs_page", "topo_sizing_page",
+                          "topo_transfinite_page"):
+            page = view.findChild(QWidget, page_name)
+            self.assertIsNone(page, f"legacy page still present: {page_name}")
+
+    def test_threading_page_is_removed(self):
+        """The standalone Threading page was removed; threading widgets
+        now live on the Algorithm page."""
         from swe2d.workbench.views.topology_tab_view import TopologyTabView
         view = TopologyTabView()
         page = view.findChild(QWidget, "topo_threading_page")
-        self.assertIsInstance(page, QWidget)
+        self.assertIsNone(page)
 
-    def test_view_has_transfinite_page(self):
+    def test_threading_form_is_algo_form(self):
+        """topo_threading_form is an alias of topo_algo_form so the
+        legacy control-builder can keep targeting it."""
         from swe2d.workbench.views.topology_tab_view import TopologyTabView
         view = TopologyTabView()
-        page = view.findChild(QWidget, "topo_transfinite_page")
-        self.assertIsInstance(page, QWidget)
+        self.assertIs(view.topo_threading_form, view.topo_algo_form)
 
     def test_view_has_quality_page(self):
         from swe2d.workbench.views.topology_tab_view import TopologyTabView
@@ -136,10 +157,7 @@ class TestTopologyTabView(unittest.TestCase):
             (view.topo_default_size_spin, "topo_default_size_spin"),
             (view.topo_default_cell_type_combo, "topo_default_cell_type_combo"),
             (view.findChild(QWidget, "topo_algo_page"), "topo_algo_page"),
-            (view.findChild(QWidget, "topo_arcs_page"), "topo_arcs_page"),
-            (view.findChild(QWidget, "topo_sizing_page"), "topo_sizing_page"),
-            (view.findChild(QWidget, "topo_threading_page"), "topo_threading_page"),
-            (view.findChild(QWidget, "topo_transfinite_page"), "topo_transfinite_page"),
+            (view.findChild(QWidget, "topo_mesh_def_page"), "topo_mesh_def_page"),
             (view.findChild(QWidget, "topo_quality_page"), "topo_quality_page"),
             (view.topo_generate_btn, "topo_generate_btn"),
             (view.topo_terminate_btn, "topo_terminate_btn"),
@@ -158,9 +176,17 @@ class TestTopologyTabView(unittest.TestCase):
         view.deleteLater()
 
     def test_arcs_page_title_is_plain_text(self):
+        """The legacy ``_arcs_idx`` attribute now points at the combined
+        Mesh Definition page; the title is 'Mesh Definition'."""
         from swe2d.workbench.views.topology_tab_view import TopologyTabView
         view = TopologyTabView()
-        self.assertEqual(view._toolbox.itemText(view._arcs_idx), "Arcs and Interfaces")
+        self.assertEqual(view._toolbox.itemText(view._arcs_idx), "Mesh Definition")
+
+    def test_quality_page_renamed_to_quality_loop(self):
+        """Quality page is now titled 'Quality Loop'."""
+        from swe2d.workbench.views.topology_tab_view import TopologyTabView
+        view = TopologyTabView()
+        self.assertEqual(view._toolbox.itemText(view._quality_idx), "Quality Loop")
 
     def test_gmsh_only_pages_always_enabled_suffixes_when_structured(self):
         """Gmsh-only pages are always enabled; they get '(Gmsh only)' suffix when structured backend is selected."""
@@ -168,8 +194,7 @@ class TestTopologyTabView(unittest.TestCase):
         view = TopologyTabView()
         view.topo_backend_combo.setCurrentIndex(view.topo_backend_combo.findData("structured"))
         view.update_control_summary()
-        for idx in (view._algo_idx, view._arcs_idx, view._sizing_idx,
-                    view._threading_idx, view._transfinite_idx, view._quality_idx):
+        for idx in (view._algo_idx, view._mesh_def_idx, view._quality_idx):
             self.assertTrue(view._toolbox.isItemEnabled(idx))
             self.assertIn("(Gmsh only)", view._toolbox.itemText(idx))
 

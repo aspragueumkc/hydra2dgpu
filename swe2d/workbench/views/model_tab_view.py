@@ -63,19 +63,21 @@ class ModelTabView(QtWidgets.QWidget):
         cfl_lambda_cap_spin
 
     Structures & Drainage page (``model_drain_page``):
-        drain_nodes_layer_combo, drain_links_layer_combo,
-        drain_inlets_layer_combo, drain_node_inlets_layer_combo,
-        structures_layer_combo (Layer Setup group),
-        coupling_loop_combo, culvert_solver_mode_combo,
-        culvert_face_flux_chk, use_redistribution_chk,
-        bridge_stacked_coupling_mode_combo,
-        drainage_solver_mode_combo, drainage_gpu_method_combo,
-        drainage_coupling_substeps_spin,
-        drainage_max_coupling_substeps_spin,
-        drainage_head_deadband_spin, drainage_dynamic_relaxation_spin,
-        drainage_adaptive_depth_fraction_spin,
-        drainage_adaptive_wave_courant_spin,
-        drainage_implicit_iters_spin, drainage_implicit_relax_spin,
+        Section: Structure Coupling
+          structures_layer_combo ("Structures — Layers" group),
+          culvert_solver_mode_combo, culvert_face_flux_chk,
+          use_redistribution_chk, bridge_stacked_coupling_mode_combo
+          ("Structures — Coupling Settings" group, advanced)
+        Section: Drainage Network
+          drain_nodes_layer_combo, drain_links_layer_combo,
+          drain_inlets_layer_combo, drain_node_inlets_layer_combo
+          ("Drainage — Layers" group),
+          drainage_solver_mode_combo, drainage_gpu_method_combo
+          ("Drainage — Equation Set" group, advanced),
+          drainage_coupling_substeps_spin ("Drainage — Substepping" group, advanced),
+          drainage_head_deadband_spin, drainage_dynamic_relaxation_spin,
+          drainage_implicit_iters_spin, drainage_implicit_relax_spin
+          ("Drainage — Stability" group, advanced),
         gpu_default_lbl, unit_system_lbl
 
     The following run/output widgets are now created as orphan attributes so
@@ -1130,55 +1132,40 @@ class ModelTabView(QtWidgets.QWidget):
         self.cfl_lambda_cap_spin.setValue(1.0e6)
 
     def _build_drain_form_widgets(self, param_form: QtWidgets.QFormLayout) -> None:
-        """Populate the Structures & Drainage page with grouped coupling controls."""
-        # Layer Setup (drainage + structures layers — relocated from removed Layers page)
-        for attr in [
-            "drain_nodes_layer_combo",
-            "drain_links_layer_combo",
-            "drain_inlets_layer_combo",
-            "drain_node_inlets_layer_combo",
-            "structures_layer_combo",
-        ]:
-            widget = QtWidgets.QComboBox()
-            widget.setObjectName(attr)
-            setattr(self, attr, widget)
-        form = self._start_param_group(param_form, "Layer Setup")
-        self.drain_nodes_layer_combo.setToolTip(
-            "Point layer for drainage network nodes (manholes, junctions). "
-            "Used for 1D-2D coupled drainage simulations."
+        """Populate the Structures & Drainage page with grouped coupling controls.
+
+        The page is split into two visual sections — Structure Coupling and
+        Drainage Network — each with their own layer setup and tuning groups.
+        All widget objectNames are preserved so that existing consumers
+        (studio_dialog, tests, etc.) continue to find them via getattr.
+        """
+        # ── Structure Coupling ────────────────────────────────────────────
+        # Outer section header (plain QGroupBox — not checkable; the
+        # enable/disable toggle wraps this when that plan is implemented).
+        struct_section = QtWidgets.QGroupBox("Structure Coupling")
+        struct_section.setObjectName("structure_coupling_section")
+        struct_layout = QtWidgets.QFormLayout(struct_section)
+        struct_layout.setContentsMargins(0, 4, 0, 0)
+        param_form.addRow(struct_section)
+
+        # Structures — Layers
+        struct_layer_form = self._start_param_group(
+            struct_layout, "Structures — Layers"
         )
-        self._add_param_row(form, "Drainage nodes layer:", self.drain_nodes_layer_combo)
-        self.drain_links_layer_combo.setToolTip(
-            "Line layer for drainage network links (pipes, channels). "
-            "Connects drain nodes for 1D-2D coupled drainage."
-        )
-        self._add_param_row(form, "Drainage links layer:", self.drain_links_layer_combo)
-        self.drain_inlets_layer_combo.setToolTip(
-            "Table layer defining inlet types (grate, curb, combination) "
-            "and their hydraulic capture curves."
-        )
-        self._add_param_row(form, "Drainage inlet types (table):", self.drain_inlets_layer_combo)
-        self.drain_node_inlets_layer_combo.setToolTip(
-            "Table layer mapping drain nodes to inlet types from the inlet types table. "
-            "Defines which inlets are connected to which nodes."
-        )
-        self._add_param_row(form, "Drainage node-inlets (table):", self.drain_node_inlets_layer_combo)
+        self.structures_layer_combo = QtWidgets.QComboBox()
+        self.structures_layer_combo.setObjectName("structures_layer_combo")
         self.structures_layer_combo.setToolTip(
             "Line layer for hydraulic structures (weirs, orifices, bridges, culverts, pumps). "
             "Each structure must have a type field and geometry."
         )
-        self._add_param_row(form, "Hydraulic structures layer:", self.structures_layer_combo)
-
-        form = self._start_param_group(param_form, "Culvert / Bridge", advanced=True)
-        self.coupling_loop_combo = QtWidgets.QComboBox()
-        self.coupling_loop_combo.setObjectName("coupling_loop_combo")
-        self.coupling_loop_combo.setToolTip(
-            "Select the coupling backend for drainage/structure-2D interaction. "
-            "'CUDA coupling loop (GPU)' runs the coupling solver on GPU."
+        self._add_param_row(
+            struct_layer_form, "Hydraulic structures layer:", self.structures_layer_combo
         )
-        self._add_param_row(form, "Coupling loop:", self.coupling_loop_combo)
-        self.coupling_loop_combo.addItem("CUDA coupling loop (GPU)", "cuda")
-        self.coupling_loop_combo.setCurrentIndex(0)
+
+        # Structures — Coupling Settings
+        struct_cpl_form = self._start_param_group(
+            struct_layout, "Structures — Coupling Settings", advanced=True
+        )
 
         self.culvert_solver_mode_combo = QtWidgets.QComboBox()
         self.culvert_solver_mode_combo.setObjectName("culvert_solver_mode_combo")
@@ -1187,7 +1174,9 @@ class ModelTabView(QtWidgets.QWidget):
             "'Direct solver' uses Newton/secant iteration at each culvert face. "
             "'Precomputed lookup table' uses interpolated discharge from stored tables."
         )
-        self._add_param_row(form, "Culvert solver mode:", self.culvert_solver_mode_combo, advanced=True)
+        self._add_param_row(
+            struct_cpl_form, "Culvert solver mode:", self.culvert_solver_mode_combo, advanced=True
+        )
         self.culvert_solver_mode_combo.addItem(
             "Direct culvert outlet solver (Newton/secant)", 0
         )
@@ -1203,13 +1192,21 @@ class ModelTabView(QtWidgets.QWidget):
             "Distributes culvert discharge across the 2D cell face instead "
             "of the whole cell for better spatial resolution."
         )
-        self._add_param_row(form, "Culvert coupling mode:", self.culvert_face_flux_chk, advanced=True)
+        self._add_param_row(
+            struct_cpl_form, "Culvert coupling mode:", self.culvert_face_flux_chk, advanced=True
+        )
 
         self.use_redistribution_chk = QtWidgets.QCheckBox("Enable redistribution override")
         self.use_redistribution_chk.setObjectName("use_redistribution_chk")
         self.use_redistribution_chk.setChecked(True)
-        self.use_redistribution_chk.setToolTip("When checked, reads per-structure redistribution parameters from the GeoPackage. Uncheck to skip redistribution entirely.")
-        self._add_param_row(form, self.use_redistribution_chk.text(), self.use_redistribution_chk, advanced=True)
+        self.use_redistribution_chk.setToolTip(
+            "When checked, reads per-structure redistribution parameters from the GeoPackage. "
+            "Uncheck to skip redistribution entirely."
+        )
+        self._add_param_row(
+            struct_cpl_form, self.use_redistribution_chk.text(),
+            self.use_redistribution_chk, advanced=True
+        )
 
         self.bridge_stacked_coupling_mode_combo = QtWidgets.QComboBox()
         self.bridge_stacked_coupling_mode_combo.setObjectName(
@@ -1221,7 +1218,8 @@ class ModelTabView(QtWidgets.QWidget):
             "cells. 'Legacy scalar weighting' uses a single scalar factor."
         )
         self._add_param_row(
-            form, "Bridge stacked coupling mode:", self.bridge_stacked_coupling_mode_combo, advanced=True
+            struct_cpl_form, "Bridge stacked coupling mode:",
+            self.bridge_stacked_coupling_mode_combo, advanced=True
         )
         self.bridge_stacked_coupling_mode_combo.addItem(
             "Phase 3 — Spatial", "phase3_spatial"
@@ -1231,19 +1229,76 @@ class ModelTabView(QtWidgets.QWidget):
         )
         self.bridge_stacked_coupling_mode_combo.setCurrentIndex(0)
 
-        form = self._start_param_group(param_form, "Drainage Network — Equation Set", advanced=True)
+        # ── Drainage Network ─────────────────────────────────────────────
+        drain_section = QtWidgets.QGroupBox("Drainage Network")
+        drain_section.setObjectName("drainage_network_section")
+        drain_layout = QtWidgets.QFormLayout(drain_section)
+        drain_layout.setContentsMargins(0, 4, 0, 0)
+        param_form.addRow(drain_section)
+
+        # Drainage — Layers
+        drain_layer_form = self._start_param_group(
+            drain_layout, "Drainage — Layers"
+        )
+
+        for attr in [
+            "drain_nodes_layer_combo",
+            "drain_links_layer_combo",
+            "drain_inlets_layer_combo",
+            "drain_node_inlets_layer_combo",
+        ]:
+            widget = QtWidgets.QComboBox()
+            widget.setObjectName(attr)
+            setattr(self, attr, widget)
+
+        self.drain_nodes_layer_combo.setToolTip(
+            "Point layer for drainage network nodes (manholes, junctions). "
+            "Used for 1D-2D coupled drainage simulations."
+        )
+        self._add_param_row(
+            drain_layer_form, "Drainage nodes layer:", self.drain_nodes_layer_combo
+        )
+        self.drain_links_layer_combo.setToolTip(
+            "Line layer for drainage network links (pipes, channels). "
+            "Connects drain nodes for 1D-2D coupled drainage."
+        )
+        self._add_param_row(
+            drain_layer_form, "Drainage links layer:", self.drain_links_layer_combo
+        )
+        self.drain_inlets_layer_combo.setToolTip(
+            "Table layer defining inlet types (grate, curb, combination) "
+            "and their hydraulic capture curves."
+        )
+        self._add_param_row(
+            drain_layer_form, "Drainage inlet types (table):", self.drain_inlets_layer_combo
+        )
+        self.drain_node_inlets_layer_combo.setToolTip(
+            "Table layer mapping drain nodes to inlet types from the inlet types table. "
+            "Defines which inlets are connected to which nodes."
+        )
+        self._add_param_row(
+            drain_layer_form, "Drainage node-inlets (table):", self.drain_node_inlets_layer_combo
+        )
+
+        # Drainage — Equation Set
+        drain_eq_form = self._start_param_group(
+            drain_layout, "Drainage — Equation Set", advanced=True
+        )
+
         self.drainage_solver_mode_combo = QtWidgets.QComboBox()
         self.drainage_solver_mode_combo.setObjectName("drainage_solver_mode_combo")
         self.drainage_solver_mode_combo.setToolTip(
             "Governing equations for 1D drainage network flow. "
-            "'EGL' includes Bernoulli + minor losses (recommended). "
-            "'Diffusion wave' simplifies to gravity + friction. "
-            "'Dynamic Saint-Venant' solves the full 1D momentum equation."
+            "'Diffusion wave' solves the momentum equation with gravity "
+            "and friction (pressurized flow supported). "
+            "'Full Saint-Venant' adds the full inertial term for transient "
+            "wave propagation and backwater effects."
         )
-        self._add_param_row(form, "Drainage equation set:", self.drainage_solver_mode_combo, advanced=True)
-        self.drainage_solver_mode_combo.addItem("EGL (Bernoulli + minor losses)", 0)
-        self.drainage_solver_mode_combo.addItem("Diffusion wave", 1)
-        self.drainage_solver_mode_combo.addItem("Dynamic Saint-Venant", 2)
+        self._add_param_row(
+            drain_eq_form, "Drainage equation set:", self.drainage_solver_mode_combo, advanced=True
+        )
+        self.drainage_solver_mode_combo.addItem("Diffusion wave", 0)
+        self.drainage_solver_mode_combo.addItem("Full Saint-Venant", 1)
         self.drainage_solver_mode_combo.setCurrentIndex(0)
 
         self.drainage_gpu_method_combo = QtWidgets.QComboBox()
@@ -1253,7 +1308,9 @@ class ModelTabView(QtWidgets.QWidget):
             "'Per-step GPU drainage' solves one SWE2D step per drainage substep. "
             "'Native iterative GPU drainage' batches multiple substeps on GPU."
         )
-        self._add_param_row(form, "Drainage GPU method:", self.drainage_gpu_method_combo, advanced=True)
+        self._add_param_row(
+            drain_eq_form, "Drainage GPU method:", self.drainage_gpu_method_combo, advanced=True
+        )
         self.drainage_gpu_method_combo.addItem(
             "Per-step GPU drainage (fast for sparse exchange)", "step"
         )
@@ -1262,34 +1319,28 @@ class ModelTabView(QtWidgets.QWidget):
         )
         self.drainage_gpu_method_combo.setCurrentIndex(0)
 
-        form = self._start_param_group(param_form, "Drainage — Substepping", advanced=True)
-        self.drainage_coupling_substeps_spin = QtWidgets.QSpinBox()
-        self.drainage_coupling_substeps_spin.setObjectName(
-            "drainage_coupling_substeps_spin"
+        # Drainage — Substepping
+        drain_sub_form = self._start_param_group(
+            drain_layout, "Drainage — Substepping", advanced=True
         )
+
+        self.drainage_coupling_substeps_spin = QtWidgets.QSpinBox()
+        self.drainage_coupling_substeps_spin.setObjectName("drainage_coupling_substeps_spin")
         self.drainage_coupling_substeps_spin.setToolTip(
             "Number of drainage substeps per SWE2D timestep. "
             "Range: 1–256. Default: 1. Increase for stiffer drainage systems."
         )
-        self._add_param_row(form, "Drainage substeps:", self.drainage_coupling_substeps_spin, advanced=True)
+        self._add_param_row(
+            drain_sub_form, "Drainage substeps:", self.drainage_coupling_substeps_spin, advanced=True
+        )
         self.drainage_coupling_substeps_spin.setRange(1, 256)
         self.drainage_coupling_substeps_spin.setValue(1)
 
-        self.drainage_max_coupling_substeps_spin = QtWidgets.QSpinBox()
-        self.drainage_max_coupling_substeps_spin.setObjectName(
-            "drainage_max_coupling_substeps_spin"
+        # Drainage — Stability
+        drain_stab_form = self._start_param_group(
+            drain_layout, "Drainage — Stability", advanced=True
         )
-        self.drainage_max_coupling_substeps_spin.setToolTip(
-            "Maximum number of adaptive substeps for drainage coupling. "
-            "Range: 1–1024. Default: 64."
-        )
-        self._add_param_row(
-            form, "Drainage max adaptive substeps:", self.drainage_max_coupling_substeps_spin, advanced=True
-        )
-        self.drainage_max_coupling_substeps_spin.setRange(1, 1024)
-        self.drainage_max_coupling_substeps_spin.setValue(64)
 
-        form = self._start_param_group(param_form, "Drainage — Stability", advanced=True)
         self.drainage_head_deadband_spin = QtWidgets.QDoubleSpinBox()
         self.drainage_head_deadband_spin.setObjectName("drainage_head_deadband_spin")
         self.drainage_head_deadband_spin.setToolTip(
@@ -1298,7 +1349,7 @@ class ModelTabView(QtWidgets.QWidget):
             "Range: 0–10. Default: 0.001."
         )
         self._add_param_row(
-            form, "Drainage head deadband:", self.drainage_head_deadband_spin, advanced=True
+            drain_stab_form, "Drainage head deadband:", self.drainage_head_deadband_spin, advanced=True
         )
         self.drainage_head_deadband_spin.setRange(0.0, 10.0)
         self.drainage_head_deadband_spin.setDecimals(6)
@@ -1314,76 +1365,44 @@ class ModelTabView(QtWidgets.QWidget):
             "Lower values improve stability for stiff coupling."
         )
         self._add_param_row(
-            form, "Drainage dynamic relaxation:", self.drainage_dynamic_relaxation_spin, advanced=True
+            drain_stab_form, "Drainage dynamic relaxation:",
+            self.drainage_dynamic_relaxation_spin, advanced=True
         )
         self.drainage_dynamic_relaxation_spin.setRange(0.0, 1.0)
         self.drainage_dynamic_relaxation_spin.setDecimals(3)
         self.drainage_dynamic_relaxation_spin.setSingleStep(0.05)
         self.drainage_dynamic_relaxation_spin.setValue(1.0)
 
-        self.drainage_adaptive_depth_fraction_spin = QtWidgets.QDoubleSpinBox()
-        self.drainage_adaptive_depth_fraction_spin.setObjectName(
-            "drainage_adaptive_depth_fraction_spin"
-        )
-        self.drainage_adaptive_depth_fraction_spin.setToolTip(
-            "Fraction of cell water depth allowed to be drained per step "
-            "when adaptive drainage is active. Range: 0.001–1.0. Default: 0.2."
-        )
-        self._add_param_row(
-            form, "Drainage adaptive depth fraction:", self.drainage_adaptive_depth_fraction_spin, advanced=True
-        )
-        self.drainage_adaptive_depth_fraction_spin.setRange(0.001, 1.0)
-        self.drainage_adaptive_depth_fraction_spin.setDecimals(3)
-        self.drainage_adaptive_depth_fraction_spin.setSingleStep(0.01)
-        self.drainage_adaptive_depth_fraction_spin.setValue(0.2)
-
-        self.drainage_adaptive_wave_courant_spin = QtWidgets.QDoubleSpinBox()
-        self.drainage_adaptive_wave_courant_spin.setObjectName(
-            "drainage_adaptive_wave_courant_spin"
-        )
-        self.drainage_adaptive_wave_courant_spin.setToolTip(
-            "Courant number target for adaptive drainage timestep control. "
-            "Range: 0.001–10.0. Default: 0.5."
-        )
-        self._add_param_row(
-            form, "Drainage adaptive wave Courant:", self.drainage_adaptive_wave_courant_spin, advanced=True
-        )
-        self.drainage_adaptive_wave_courant_spin.setRange(0.001, 10.0)
-        self.drainage_adaptive_wave_courant_spin.setDecimals(3)
-        self.drainage_adaptive_wave_courant_spin.setSingleStep(0.05)
-        self.drainage_adaptive_wave_courant_spin.setValue(0.5)
-
         self.drainage_implicit_iters_spin = QtWidgets.QSpinBox()
-        self.drainage_implicit_iters_spin.setObjectName(
-            "drainage_implicit_iters_spin"
-        )
+        self.drainage_implicit_iters_spin.setObjectName("drainage_implicit_iters_spin")
         self.drainage_implicit_iters_spin.setToolTip(
             "Number of implicit solver iterations for GPU drainage. "
             "Range: 1–8. Default: 2. More iterations improve convergence "
             "at the cost of performance."
         )
         self._add_param_row(
-            form, "Drainage implicit iterations (GPU):", self.drainage_implicit_iters_spin, advanced=True
+            drain_stab_form, "Drainage implicit iterations (GPU):",
+            self.drainage_implicit_iters_spin, advanced=True
         )
         self.drainage_implicit_iters_spin.setRange(1, 8)
         self.drainage_implicit_iters_spin.setValue(2)
 
         self.drainage_implicit_relax_spin = QtWidgets.QDoubleSpinBox()
-        self.drainage_implicit_relax_spin.setObjectName(
-            "drainage_implicit_relax_spin"
-        )
+        self.drainage_implicit_relax_spin.setObjectName("drainage_implicit_relax_spin")
         self.drainage_implicit_relax_spin.setToolTip(
             "Relaxation factor for implicit drainage solver on GPU (0.1–1.0). "
             "Default: 0.5. Lower values improve stability."
         )
         self._add_param_row(
-            form, "Drainage implicit relaxation (GPU):", self.drainage_implicit_relax_spin, advanced=True
+            drain_stab_form, "Drainage implicit relaxation (GPU):",
+            self.drainage_implicit_relax_spin, advanced=True
         )
         self.drainage_implicit_relax_spin.setRange(0.1, 1.0)
         self.drainage_implicit_relax_spin.setDecimals(2)
         self.drainage_implicit_relax_spin.setSingleStep(0.05)
         self.drainage_implicit_relax_spin.setValue(0.5)
 
+        # ── Footer labels ───────────────────────────────────────────────
         self.gpu_default_lbl = QtWidgets.QLabel(
             "GPU is attempted by default when supported by the native backend."
         )
@@ -1391,7 +1410,9 @@ class ModelTabView(QtWidgets.QWidget):
         self.gpu_default_lbl.setWordWrap(True)
         param_form.addRow(self.gpu_default_lbl)
 
-        self.unit_system_lbl = QtWidgets.QLabel("Unit system: (detecting \u2014 open a project or load layers)")
+        self.unit_system_lbl = QtWidgets.QLabel(
+            "Unit system: (detecting \u2014 open a project or load layers)"
+        )
         self.unit_system_lbl.setObjectName("unit_system_lbl")
         self.unit_system_lbl.setWordWrap(True)
         param_form.addRow(self.unit_system_lbl)
@@ -1445,10 +1466,6 @@ class ModelTabView(QtWidgets.QWidget):
         """Number of drainage substeps per SWE2D step."""
         return int(self.drainage_coupling_substeps_spin.value())
 
-    def get_drainage_max_coupling_substeps(self) -> int:
-        """Max adaptive substeps for drainage."""
-        return int(self.drainage_max_coupling_substeps_spin.value())
-
     def get_drainage_head_deadband(self) -> float:
         """Head deadband below which no drainage flow."""
         return float(self.drainage_head_deadband_spin.value())
@@ -1456,14 +1473,6 @@ class ModelTabView(QtWidgets.QWidget):
     def get_drainage_dynamic_relaxation(self) -> float:
         """Relaxation factor for drainage coupling."""
         return float(self.drainage_dynamic_relaxation_spin.value())
-
-    def get_drainage_adaptive_depth_fraction(self) -> float:
-        """Fraction of cell water depth drainable per step."""
-        return float(self.drainage_adaptive_depth_fraction_spin.value())
-
-    def get_drainage_adaptive_wave_courant(self) -> float:
-        """Courant target for adaptive drainage."""
-        return float(self.drainage_adaptive_wave_courant_spin.value())
 
     def get_drainage_implicit_iters(self) -> int:
         """Implicit solver iterations for GPU drainage."""
@@ -1534,12 +1543,16 @@ class ModelTabView(QtWidgets.QWidget):
             "culvert_face_flux_chk": bool(self.culvert_face_flux_chk.isChecked()),
             "enable_cuda_graphs_chk": bool(self.enable_cuda_graphs_chk.isChecked()),
             "degen_mode": int(self.degen_mode_combo.currentData()),
+            "degen_mode_combo": int(self.degen_mode_combo.currentData()),
             "front_flux_damping_spin": float(self.front_flux_damping_spin.value()),
             "open_bc_relax_spin": float(self.open_bc_relax_spin.value()),
             "active_set_hysteresis_chk": bool(self.active_set_hysteresis_chk.isChecked()),
             "drainage_gpu_method": str(self.drainage_gpu_method_combo.currentData()),
+            "drainage_gpu_method_combo": str(self.drainage_gpu_method_combo.currentData()),
             "culvert_solver_mode": int(self.culvert_solver_mode_combo.currentData()),
+            "culvert_solver_mode_combo": int(self.culvert_solver_mode_combo.currentData()),
             "bridge_coupling_mode": str(self.bridge_stacked_coupling_mode_combo.currentData()),
+            "bridge_stacked_coupling_mode_combo": str(self.bridge_stacked_coupling_mode_combo.currentData()),
         }
 
     def _on_select_results_gpkg(self) -> None:

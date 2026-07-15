@@ -467,163 +467,121 @@ class BatchSimulationDialog(QtWidgets.QDialog):
     # ── Snapshot Current Setup ────────────────────────────────────────
 
     def _snapshot_current_setup(self):
-        """Read the parent dialog's current widget values and add a new row."""
+        """Read the parent dialog's current widget values and add a new row (replay JSON format).
+
+        Uses ``collect_widget_state_for_save()`` from the parent to read actual
+        current widget values — the same collection used by GUI save, ensuring
+        the snapshot matches what would be saved to GPKG or JSON.
+        """
+        import datetime
         parent = self.parent()
         if parent is None:
             QtWidgets.QMessageBox.warning(self, "Snapshot", "No parent dialog to snapshot from.")
             return
 
-        # Get the current widget parameters
-        collect_fn = getattr(parent, "collect_run_widget_params", None)
+        # Use the same widget collection as GUI save — reads live widget values,
+        # not stale instance variables.
+        collect_fn = getattr(parent, "collect_widget_state_for_save", None)
         if collect_fn is None:
-            QtWidgets.QMessageBox.warning(self, "Snapshot", "Parent dialog has no collect_run_widget_params.")
-            return
-        try:
-            widget_params = collect_fn()
-        except Exception as exc:
             QtWidgets.QMessageBox.warning(
-                self, "Snapshot Error",
-                f"Failed to collect widget params:\n{exc}",
+                self, "Snapshot",
+                "Parent dialog does not implement collect_widget_state_for_save.",
             )
             return
-
-        if not isinstance(widget_params, dict):
+        try:
+            widget_state = collect_fn()
+        except Exception as exc:
+            QtWidgets.QMessageBox.warning(self, "Snapshot Error", f"Failed to collect widget state:\n{exc}")
+            return
+        if not isinstance(widget_state, dict):
             return
 
-        run_params = _widget_params_to_run_params(widget_params)
-
-        # Mesh name from the mesh combo (populated from the GPKG)
         mesh_name = str(self._mesh_combo.currentData() or "")
         if not mesh_name:
-            # Fall back to reading the GPKG directly
             gpkg = self._gpkg_path()
             if gpkg and os.path.isfile(gpkg):
                 try:
                     conn = sqlite3.connect(gpkg)
-                    cur = conn.cursor()
-                    cur.execute(
+                    row = conn.execute(
                         "SELECT mesh_name FROM swe2d_baked_mesh ORDER BY created_utc DESC LIMIT 1"
-                    )
-                    row = cur.fetchone()
+                    ).fetchone()
                     if row:
                         mesh_name = str(row[0])
                     conn.close()
-                except Exception as _e:
-
-                    logger.warning(f"[ERROR] Exception in batch_simulation_dialog.py: {_e}")
-
-        # ── Helper: resolve GPKG table name + GPKG path from QGIS layer ──
-        def _get_layer_info(combo):
-            """Return (table_name, gpkg_path) from combo's stored layer ID.
-
-            gpkg_path is '' if the layer doesn't come from a GeoPackage.
-            """
-            if combo is None:
-                return ("", "")
-            lid = combo.currentData()
-            if not lid:
-                return ("", "")
-            from qgis.core import QgsProject
-            layer = QgsProject.instance().mapLayer(lid)
-            if layer is None:
-                return ("", "")
-            src = str(layer.source())
-            # GPKG source: "/path/to/file.gpkg|layername=table_name"
-            if "|layername=" in src:
-                gpkg_path, _, table = src.partition("|layername=")
-                return (table.strip(), gpkg_path.strip())
-            return (str(layer.name()).strip(), "")
-
+                except Exception:
+                    pass
         mesh_gpkg = self._gpkg_path()
 
-        def _dict_with_gpkg(table: str, gpkg_path: str, **extra) -> dict:
-            """Build a data-source dict with optional gpkg key."""
-            d = {"table": table, **extra}
-            if gpkg_path and gpkg_path != mesh_gpkg:
-                d["gpkg"] = gpkg_path
-            return d
+        # Convert versioned widget_state to flat params using the shared mapper.
+        # Pass mesh_gpkg + mesh_name so units can be computed from CRS.
+        from swe2d.runtime.run_context_builder import widget_state_to_flat_params
+        flat_params = widget_state_to_flat_params(
+            widget_state,
+            mesh_gpkg=mesh_gpkg,
+            mesh_name=mesh_name,
+        )
+        # Pull out the units block (computed from mesh CRS) before storing in params.
+        # Only include it in the entry if it was actually resolved; otherwise omit
+        # so the runner computes units from mesh CRS at runtime.
+        units_block = flat_params.pop("_units_block", None)
 
-        # ── Capture top-level keys the headless runner needs ──────────
-        mtab = getattr(parent, "_model_tab_view", None)
+        # Override results GPKG path: the widget state captures the parent form's
+        # path, which may be stale. Use the batch dialog's own GPKG path.
+        batch_gpkg = self._gpkg_path()
 
-        bc_lines = None
-        hyetograph_cfg = None
-        rain_cn_cfg = None
-        infiltration_method = ""
-        drainage_cfg = None
-        structures_cfg = None
-        sample_lines_cfg = None
+        # run_duration_s is already parsed to seconds by widget_state_to_flat_params
+        run_dur = float(flat_params.get("run_duration_s", 0.0) or 0.0)
 
-        if mtab is not None:
-            bc_tbl, bc_gpkg = _get_layer_info(
-                getattr(mtab, "bc_lines_layer_combo", None))
-            if bc_tbl:
-                bc_lines = _dict_with_gpkg(bc_tbl, bc_gpkg)
-
-            hg_tbl, hg_gpkg = _get_layer_info(
-                getattr(mtab, "hyetograph_layer_combo", None))
-            rg_tbl, rg_gpkg = _get_layer_info(
-                getattr(mtab, "rain_gage_layer_combo", None))
-            if hg_tbl and rg_tbl:
-                src_gpkg = hg_gpkg or rg_gpkg
-                hyetograph_cfg = _dict_with_gpkg(
-                    hg_tbl, src_gpkg,
-                    gauge_layer=rg_tbl,
-                )
-
-            cn_tbl, cn_gpkg = _get_layer_info(
-                getattr(mtab, "cn_layer_combo", None))
-            if cn_tbl:
-                rain_cn_cfg = _dict_with_gpkg(cn_tbl, cn_gpkg, cn_field="cn")
-
-            dn_tbl, dn_gpkg = _get_layer_info(
-                getattr(mtab, "drain_nodes_layer_combo", None))
-            dl_tbl, dl_gpkg = _get_layer_info(
-                getattr(mtab, "drain_links_layer_combo", None))
-            if dn_tbl and dl_tbl:
-                drainage_cfg = {"nodes_layer": dn_tbl, "links_layer": dl_tbl}
-                _drain_gpkg = dn_gpkg or mesh_gpkg
-                if _drain_gpkg and _drain_gpkg != mesh_gpkg:
-                    drainage_cfg["gpkg"] = _drain_gpkg
-
-            struct_cfg = getattr(parent, "_build_hydraulic_structure_config", lambda: None)()
-            if struct_cfg is not None:
-                structures_cfg = struct_cfg.to_dict()
-
-            sl_tbl, sl_gpkg = _get_layer_info(
-                getattr(mtab, "sample_lines_layer_combo", None))
-            if sl_tbl:
-                sample_lines_cfg = _dict_with_gpkg(sl_tbl, sl_gpkg)
-
-        if mtab is not None:
-            combo = getattr(mtab, "infiltration_method_combo", None)
-            im = str(combo.currentData() or "none") if combo else "none"
-            if im and im != "none":
-                infiltration_method = str(im)
+        run_id = datetime.datetime.now().astimezone().strftime("swe2d_%Y%m%dT%H%M%S%z")
+        crs_wkt = ""
+        parent_view = self.parent()
+        if parent_view is not None:
+            mesh_data = getattr(parent_view, "_mesh_data", None) or {}
+            crs_wkt = str(mesh_data.get("crs_wkt", "") or "")
 
         entry = {
-            "id": "current_setup",
-            "mesh": mesh_name,
-            "mesh_gpkg": mesh_gpkg,
-            "params": run_params,
+            "schema_version": "swe2d-replay/1",
+            "run_id": run_id,
+            "mesh": {
+                "gpkg_path": mesh_gpkg or "",
+                "mesh_name": mesh_name,
+                "crs_wkt": crs_wkt,
+            },
+            "params": flat_params,
+            # Top-level results_gpkg_path is what build_run_context_from_dict reads
+            "results_gpkg_path": batch_gpkg,
+            "data_sources": widget_state.get("_data_sources", {}),
+            "results": {},
+            "widget_state": widget_state,
+            "run_duration_s": run_dur,
         }
-        if bc_lines:
-            entry["bc_lines"] = bc_lines
-        if hyetograph_cfg is not None:
-            entry["hyetograph"] = hyetograph_cfg
-        if rain_cn_cfg is not None:
-            entry["rain_cn"] = rain_cn_cfg
-        if infiltration_method:
-            entry["infiltration_method"] = infiltration_method
-        if drainage_cfg is not None:
-            entry["drainage"] = drainage_cfg
-        if structures_cfg is not None:
-            entry["structures"] = structures_cfg
-        if sample_lines_cfg is not None:
-            entry["sample_lines"] = sample_lines_cfg
+        # Include units only when CRS was successfully resolved from the mesh GPKG
+        if units_block:
+            entry["units"] = units_block
+
+        # Use the shared collect_data_source_config() to avoid duplicating
+        # layer-combo reading logic across save paths.  Wrap in a try-except
+        # so failures are logged instead of crashing the snapshot.
+        data_sources = {}
+        ds_collector = getattr(parent, "collect_data_source_config", None)
+        if ds_collector is not None:
+            try:
+                data_sources = ds_collector() or {}
+            except Exception as exc:
+                _log = getattr(parent, "_log", None)
+                if _log:
+                    _log(f"[batch] collect_data_source_config failed: {exc}")
+                else:
+                    logger.warning("batch snapshot: collect_data_source_config failed: %s", exc)
+        # Fallback: structures need special handling (not in collect_data_source_config)
+        struct_cfg = getattr(parent, "_build_hydraulic_structure_config", lambda: None)()
+        if struct_cfg is not None:
+            data_sources["structures"] = struct_cfg.to_dict()
+
+        if data_sources:
+            entry["data_sources"] = data_sources
 
         self._add_row_from_entry(entry)
-
         log = getattr(parent, "_log", None)
         if log:
             log("batch> snapshot added row from current setup")
@@ -681,13 +639,15 @@ class BatchSimulationDialog(QtWidgets.QDialog):
     def _query_runs_from_gpkg(self, gpkg_path: str) -> List:
         """Query run metadata from a results GPKG.
 
+        Prefers ``swe2d_run_replays`` table when available (replay JSON format),
+        falls back to legacy ``swe2d_run_logs`` / ``swe2d_baked_results``.
         Returns a list of ``(run_id, metadata_dict)`` tuples.
         """
         runs = []
         try:
             conn = sqlite3.connect(gpkg_path)
             cur = conn.cursor()
-            for table in ("swe2d_run_logs", "swe2d_baked_results"):
+            for table in ("swe2d_run_replays", "swe2d_run_logs", "swe2d_baked_results"):
                 cur.execute(
                     "SELECT name FROM sqlite_master WHERE type='table' AND name=?",
                     (table,),
@@ -696,7 +656,24 @@ class BatchSimulationDialog(QtWidgets.QDialog):
                     break
             else:
                 return runs
-            if table == "swe2d_baked_results":
+
+            if table == "swe2d_run_replays":
+                cur.execute(
+                    "SELECT run_id, mesh_name, created_utc, replay_json FROM swe2d_run_replays "
+                    "ORDER BY created_utc DESC"
+                )
+                for row in cur.fetchall():
+                    run_id = str(row[0])
+                    mesh_name = str(row[1] or "")
+                    created = str(row[2] or "")
+                    replay_json = str(row[3] or "{}")
+                    try:
+                        payload = json.loads(replay_json)
+                    except (json.JSONDecodeError, TypeError):
+                        payload = {}
+                    payload["id"] = run_id
+                    runs.append((run_id, {"created_utc": created, "params": json.dumps(payload), "mesh_name": mesh_name}))
+            elif table == "swe2d_baked_results":
                 cur.execute(
                     "SELECT run_id, created_utc, mesh_name FROM swe2d_baked_results "
                     "ORDER BY created_utc DESC"

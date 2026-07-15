@@ -3001,18 +3001,21 @@ __global__ void pack_diag_kernel(
 }
 
 /** GPU kernel: fold per-cell drainage rates into external source accumulator.
- * 1 thread per cell.  Adds d_drainage_q[c] to d_external_source_mps[c].
+ * 1 thread per cell.  Adds d_drainage_q[c] / cell_area[c] to d_external_source_mps[c].
+ * d_drainage_q carries volumetric flux (m³/s); d_external_source_mps holds depth rate (m/s).
  * @global */
 __global__ __launch_bounds__(256, 4) void swe2d_fold_drainage_q_kernel(
     int32_t n_cells,
     const double* __restrict__ d_drainage_q,
+    const double* __restrict__ d_cell_area,
     double* __restrict__ d_external_source_mps)
 {
     int32_t c = blockIdx.x * blockDim.x + threadIdx.x;
     if (c >= n_cells) return;
     double q = d_drainage_q[c];
     if (!isfinite(q) || q == 0.0) return;
-    atomicAdd(&d_external_source_mps[c], q);
+    // Divide by cell area to convert m³/s → m/s before accumulating into source term
+    atomicAdd(&d_external_source_mps[c], q / fmax(d_cell_area[c], 1e-12));
 }
 
 /** GPU kernel: accumulate host-provided source rates into d_external_source_mps.
@@ -4709,7 +4712,7 @@ __global__ __launch_bounds__(256, 4) void swe2d_drainage_outfall_exchange_kernel
     const double* __restrict__ cell_area,
     const double* __restrict__ cell_depth,
     const double* __restrict__ node_max_depth,
-    const double* __restrict__ node_depth,
+    double* __restrict__ node_depth,
     const double* __restrict__ node_surface_area,
     double dt_s,
     double gravity,
@@ -4745,8 +4748,9 @@ __global__ __launch_bounds__(256, 4) void swe2d_drainage_outfall_exchange_kernel
         node_area = fmax(1.0, node_surface_area[n]);
         wse_node = invert + d_node;
     } else {
-        // Daylight outfall: no local storage bucket during exchange.
-        node_depth_work[n] = 0.0;
+        // Free outfall: no storage, no backpressure. Force node depth to zero
+        // so the pipe solver sees free discharge at the pipe terminus.
+        node_depth[n] = 0.0;
     }
 
     if (wse_node > wse_surface + deadband && wse_node > invert) {
@@ -4817,6 +4821,7 @@ __global__ void swe2d_drainage_apply_delta_kernel(
     if (i >= n_nodes) return;
     double d = node_depth[i] + node_depth_delta[i];
     d = fmax(0.0, d);
+    if (node_max_depth) d = fmin(d, node_max_depth[i]);
     node_depth[i] = d;
 }
 
@@ -7415,6 +7420,28 @@ void swe2d_gpu_set_edge_bc_relax(
     CUDA_CHECK(cudaMemcpy(dev->d_edge_bc_relax, h_relax.data(), n * sizeof(double), cudaMemcpyHostToDevice));
 }
 
+/** Readback rainfall CN state from device to host.
+ *  Returns cumulative rain (mm) and cumulative excess (mm) per cell.
+ *  Safe to call even when rain forcing is not active (arrays may be nullptr). @host */
+void swe2d_gpu_readback_rain_state(
+    SWE2DDeviceState* dev,
+    double* host_rain_cum_mm,
+    double* host_rain_excess_cum_mm,
+    int32_t n_cells)
+{
+    if (!dev) return;
+    if (host_rain_cum_mm && dev->d_rain_cum_mm && n_cells == dev->n_cells) {
+        CUDA_CHECK(cudaMemcpy(host_rain_cum_mm, dev->d_rain_cum_mm,
+            static_cast<size_t>(n_cells) * sizeof(double),
+            cudaMemcpyDeviceToHost));
+    }
+    if (host_rain_excess_cum_mm && dev->d_rain_excess_cum_mm && n_cells == dev->n_cells) {
+        CUDA_CHECK(cudaMemcpy(host_rain_excess_cum_mm, dev->d_rain_excess_cum_mm,
+            static_cast<size_t>(n_cells) * sizeof(double),
+            cudaMemcpyDeviceToHost));
+    }
+}
+
 void swe2d_gpu_set_boundary_hydrographs(
     SWE2DDeviceState* dev,
     const int32_t* edge_index,
@@ -7885,7 +7912,8 @@ void swe2d_gpu_apply_pipe_end_bc(SWE2DDeviceState* dev, int32_t n_cells)
         dw.d_p_cell, dw.d_p_node, dw.d_p_invert,
         dw.d_p_diameter, dw.d_p_area,
         dw.d_p_kin, dw.d_p_kout,
-        sf_ws.d_cell_wse, p.d_node_invert, p.d_node_surface_area,
+        sf_ws.d_cell_wse, dev->d_h, 1.0e-6,
+        p.d_node_invert, p.d_node_surface_area,
         dw.d_node_qleave,
         sf_ws.gravity,
         p.d_node_depth, dw.d_p_depth_bc, dw.d_p_node_area);
@@ -8135,7 +8163,7 @@ void swe2d_gpu_compute_coupling_full_on_device(
                     dw.d_i_grate_kind, dw.d_i_grate_open,
                     dw.d_i_curb_len, dw.d_i_curb_ht, dw.d_i_curb_throat,
                     dw.d_i_slot_len, dw.d_i_slot_wid,
-                    sf_ws.d_cell_wse, cpl_ws.d_cell_area, nullptr,
+                    sf_ws.d_cell_wse, cpl_ws.d_cell_area, dev->d_h,
                     p.d_node_invert, dw.d_node_maxd, p.d_node_depth,
                     p.d_node_surface_area,
                     s_coupling_dt, sf_ws.gravity, 0.0,
@@ -8148,7 +8176,7 @@ void swe2d_gpu_compute_coupling_full_on_device(
                     dw.n_outfalls, n_cells,
                     dw.d_o_cell, dw.d_o_node, dw.d_o_invert, dw.d_o_diameter,
                     dw.d_o_cd, dw.d_o_qmax, dw.d_o_zero_storage,
-                    sf_ws.d_cell_wse, cpl_ws.d_cell_area, nullptr,
+                    sf_ws.d_cell_wse, cpl_ws.d_cell_area, dev->d_h,
                     dw.d_node_maxd, p.d_node_depth, p.d_node_surface_area,
                     s_coupling_dt, sf_ws.gravity, 0.0,
                     cpl_ws.d_drainage_q, dw.d_node_delta, dw.d_node_qleave,
@@ -8172,7 +8200,7 @@ void swe2d_gpu_compute_coupling_full_on_device(
                     dw.n_pipe_ends, n_cells,
                     dw.d_p_cell, dw.d_p_node,
                     dw.d_p_node_area,
-                    cpl_ws.d_cell_area, nullptr,
+                    cpl_ws.d_cell_area, dev->d_h,
                     p.d_node_net_q,
                     s_coupling_dt,
                     cpl_ws.d_drainage_q,
@@ -8187,7 +8215,7 @@ void swe2d_gpu_compute_coupling_full_on_device(
     if (cpl_ws.d_drainage_q) {
         int grid = (n_cells + BLOCK - 1) / BLOCK;
         swe2d_fold_drainage_q_kernel<<<grid, BLOCK, 0, stream>>>(
-            n_cells, cpl_ws.d_drainage_q, dev->d_external_source_mps);
+            n_cells, cpl_ws.d_drainage_q, dev->d_cell_area, dev->d_external_source_mps);
         CUDA_CHECK(cudaGetLastError());
         // Zero the drainage q buffer for the next step
         CUDA_CHECK(cudaMemsetAsync(cpl_ws.d_drainage_q, 0,
@@ -9542,11 +9570,74 @@ void swe2d_gpu_upload_drainage_exchange_params(
     if (n_nodes > 0 && ws.d_node_maxd) {
         h2d(ws.d_node_maxd, node_max_depth, n_nodes * sizeof(double));
     }
+    // Mark pipe-end and outfall nodes as boundary (no storage in mass balance)
+    if (n_nodes > 0 && dev->pipe1d.d_node_is_boundary) {
+        std::vector<int32_t> is_boundary(n_nodes, 0);
+        for (int32_t j = 0; j < n_outfalls; ++j) {
+            int32_t n = outfall_node[j];
+            if (n >= 0 && n < n_nodes) is_boundary[n] = 1;
+        }
+        for (int32_t j = 0; j < n_pipe_ends; ++j) {
+            int32_t n = pipe_end_node[j];
+            if (n >= 0 && n < n_nodes) is_boundary[n] = 1;
+        }
+        h2d(dev->pipe1d.d_node_is_boundary, is_boundary.data(), n_nodes * sizeof(int32_t));
+    }
+    // Mark inlet nodes (flow-prescribed BC): zero then mark from inlet_node array.
+    // This must run every upload because inlet_node may have changed.
+    if (n_nodes > 0 && dev->pipe1d.d_node_is_inlet) {
+        CUDA_CHECK(cudaMemsetAsync(dev->pipe1d.d_node_is_inlet, 0,
+            static_cast<size_t>(n_nodes) * sizeof(int32_t), dev->d_stream));
+        if (n_inlets > 0) {
+            dim3 grid_inlets((n_inlets + 256 - 1) / 256);
+            swe2d_mark_inlet_nodes_kernel<<<grid_inlets, 256, 0, dev->d_stream>>>(
+                n_inlets, ws.d_i_node, n_nodes, dev->pipe1d.d_node_is_inlet);
+            CUDA_CHECK(cudaGetLastError());
+        }
+    }
     ws.n_inlets = n_inlets;
     ws.n_outfalls = n_outfalls;
     ws.n_nodes = n_nodes;
     ws.n_pipe_ends = n_pipe_ends;
     ws.exchange_loaded = true;
+}
+
+/** Upload free outfall node indices and mark them as boundary nodes.
+ *  These outfalls are not required to have a coupled 2D surface cell.
+ *  The free outfall BC kernel will force node_depth = 0 at these nodes
+ *  before each pipe1d step. @host */
+void swe2d_gpu_upload_outfall_free_bc_nodes(
+    SWE2DDeviceState* dev,
+    int32_t n_outfall_nodes,
+    const int32_t* outfall_node_indices)
+{
+    if (!dev || n_outfall_nodes <= 0) return;
+    const int32_t n_nodes = dev->pipe1d.n_nodes;
+    if (n_nodes <= 0) return;
+
+    // Set outfall flags on device
+    if (dev->pipe1d.d_node_is_outfall) {
+        std::vector<int32_t> is_outfall(n_nodes, 0);
+        for (int32_t j = 0; j < n_outfall_nodes; ++j) {
+            int32_t n = outfall_node_indices[j];
+            if (n >= 0 && n < n_nodes) is_outfall[n] = 1;
+        }
+        CUDA_CHECK(cudaMemcpy(dev->pipe1d.d_node_is_outfall, is_outfall.data(),
+            static_cast<size_t>(n_nodes) * sizeof(int32_t), cudaMemcpyHostToDevice));
+    }
+
+    // Also mark them as boundary nodes (no storage mass balance)
+    if (dev->pipe1d.d_node_is_boundary) {
+        std::vector<int32_t> is_boundary(n_nodes, 0);
+        CUDA_CHECK(cudaMemcpy(is_boundary.data(), dev->pipe1d.d_node_is_boundary,
+            static_cast<size_t>(n_nodes) * sizeof(int32_t), cudaMemcpyDeviceToHost));
+        for (int32_t j = 0; j < n_outfall_nodes; ++j) {
+            int32_t n = outfall_node_indices[j];
+            if (n >= 0 && n < n_nodes) is_boundary[n] = 1;
+        }
+        CUDA_CHECK(cudaMemcpy(dev->pipe1d.d_node_is_boundary, is_boundary.data(),
+            static_cast<size_t>(n_nodes) * sizeof(int32_t), cudaMemcpyHostToDevice));
+    }
 }
 
 // Graph management (Suggestion 9)

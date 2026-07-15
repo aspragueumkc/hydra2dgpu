@@ -429,8 +429,7 @@
   <storedexpressions/>
   <editform tolerant="1"></editform>
   <editforminit>bc_lines_form_init</editforminit>
-  <editforminitcodesource>1</editforminitcodesource>
-  <editforminitfilepath>/home/aaron/QGIS_Plugins_dev/public-repo-hydra2dgpu/QML/form_init.py</editforminitfilepath>
+  <editforminitcodesource>0</editforminitcodesource>
   <editforminitcode><![CDATA[from qgis.PyQt.QtWidgets import QComboBox, QLineEdit
 from qgis.core import QgsProject, QgsMapLayerType, QgsWkbTypes
 

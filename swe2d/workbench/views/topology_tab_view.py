@@ -7,8 +7,9 @@ so the dialog can delegate tab construction to this view.
 UI structure (matches ``ModelTabView``):
 
 * A ``QToolBox`` whose pages correspond to functional groups
-  (Layer Setup, General, Algorithm, Arcs & Interfaces, Sizing,
-  Threading, Transfinite, Quality).
+  (Layer Setup, General, Algorithm, Mesh Definition, Quality Loop).
+  Threading controls live on the Algorithm page; Arcs/Sizing/Transfinite
+  share a single "Mesh Definition" page.
 * Each page hosts one or more ``QGroupBox`` sections; each section
   uses a ``QFormLayout`` for its labeled rows.
 * A free-text filter (``topo_search``) and an
@@ -36,14 +37,14 @@ class TopologyTabView(QtWidgets.QWidget):
       topo_default_cell_type_combo, topo_generate_btn, topo_terminate_btn
     - Algorithm page (gmsh): tri/quad/recombine algos, smoothing,
       optimize, verbosity, netgen, global_recombine, flow_align,
-      algo_switch_on_failure, recombine_node_repositioning
-    - Arcs & Interfaces page (gmsh): arc mode, soft size/dist,
-      interface transition, conformance, snap tol, reject controls
-    - Sizing page (gmsh): mesh_size_min, tolerance_edge_length,
-      mesh_size_from_points
-    - Threading page (gmsh): num_threads, max_num_threads_2d
-    - Transfinite page (gmsh): harmonize, subset containment, debug
-    - Quality page (gmsh): thresholds, retry ladder, loop controls
+      algo_switch_on_failure, recombine_node_repositioning,
+      num_threads, max_num_threads_2d (threading controls live here)
+    - Mesh Definition page (gmsh): combines former Arcs & Interfaces,
+      Sizing, and Transfinite — arc mode, soft size/dist, interface
+      transition, conformance, snap tol, reject controls, mesh_size_min,
+      tolerance_edge_length, mesh_size_from_points, transfinite
+      harmonize, subset containment, debug
+    - Quality Loop page (gmsh): thresholds, retry ladder, loop controls
     """
 
     def __init__(self, parent=None):
@@ -223,52 +224,104 @@ class TopologyTabView(QtWidgets.QWidget):
         self._algo_idx = self._toolbox.addItem(algo_page, "Algorithm")
         self._toolbox.setItemEnabled(self._algo_idx, False)
 
-        # ── Arcs & Interfaces page ─────────────────────────────────
-        arcs_page, self.topo_arcs_form = self._create_topo_page(
-            "topo_arcs_page", "topo_arcs_form", "Arcs and Interfaces"
-        )
-        self._arcs_idx = self._toolbox.addItem(arcs_page, "Arcs and Interfaces")
-        self._toolbox.setItemEnabled(self._arcs_idx, False)
+        # ── Mesh Definition page ────────────────────────────────────
+        # Combines the former Arcs & Interfaces, Sizing, and Transfinite
+        # pages into a single toolbox page. Sub-forms are kept as
+        # attributes (``topo_arcs_form``, ``topo_sizing_form``,
+        # ``topo_transfinite_form``) so the legacy control-builder can
+        # keep appending rows into the right place. The actual form
+        # layout lives on the combined page; rows are grouped via
+        # ``QHBoxLayout``/``addStretch`` to keep sections visually
+        # separated when the page is rendered.
+        # NOTE: this block must run BEFORE the threading-form alias and
+        # the legacy control-builder, both of which expect these form
+        # attributes to exist.
 
-        # ── Sizing page ───────────────────────────────────────────
-        sizing_page, self.topo_sizing_form = self._create_topo_page(
-            "topo_sizing_page", "topo_sizing_form", "Sizing"
-        )
-        self._sizing_idx = self._toolbox.addItem(sizing_page, "Sizing")
-        self._toolbox.setItemEnabled(self._sizing_idx, False)
+        # ── Threading controls ──
+        # Threading moved onto the Algorithm page; the standalone Threading
+        # page is removed. ``self.topo_threading_form`` is kept as an alias
+        # of the Algorithm form so the legacy control-builder (which adds
+        # the threading widgets) can keep using ``threading_form`` as a
+        # target — every widget ends up on the Algorithm page.
+        self.topo_threading_form = self.topo_algo_form
 
-        # ── Threading page ───────────────────────────────────────
-        threading_page, self.topo_threading_form = self._create_topo_page(
-            "topo_threading_page", "topo_threading_form", "Threading"
-        )
-        self._threading_idx = self._toolbox.addItem(threading_page, "Threading")
-        self._toolbox.setItemEnabled(self._threading_idx, False)
+        # ── Mesh Definition page ────────────────────────────────────
+        # Combines the former Arcs & Interfaces, Sizing, and Transfinite
+        # pages into a single toolbox page. Unlike the single-section
+        # pages built by ``_create_topo_page``, this page hosts multiple
+        # titled QGroupBox sub-sections directly under a plain QVBoxLayout
+        # — no redundant outer "Mesh Definition" groupbox wrapping the
+        # three inner ones. Sub-forms are kept as attributes
+        # (``topo_arcs_form``, ``topo_sizing_form``,
+        # ``topo_transfinite_form``) so the legacy control-builder can
+        # keep appending rows into the right place; each sub-form is the
+        # QFormLayout inside its own QGroupBox.
+        mesh_def_page = QtWidgets.QWidget()
+        mesh_def_page.setObjectName("topo_mesh_def_page")
+        mesh_def_layout = QtWidgets.QVBoxLayout(mesh_def_page)
+        mesh_def_layout.setContentsMargins(4, 4, 4, 4)
+        mesh_def_layout.setSpacing(6)
 
-        # ── Transfinite page ───────────────────────────────────
-        transfinite_page, self.topo_transfinite_form = self._create_topo_page(
-            "topo_transfinite_page", "topo_transfinite_form", "Transfinite"
-        )
-        self._transfinite_idx = self._toolbox.addItem(transfinite_page, "Transfinite")
-        self._toolbox.setItemEnabled(self._transfinite_idx, False)
+        # Sub-form section: Arcs & Interfaces
+        arcs_section = QtWidgets.QGroupBox("Arcs and Interfaces")
+        arcs_section.setObjectName("topo_arcs_section")
+        self.topo_arcs_form = QtWidgets.QFormLayout(arcs_section)
+        self.topo_arcs_form.setContentsMargins(4, 4, 4, 4)
+        mesh_def_layout.addWidget(arcs_section)
 
-        # ── Quality page ───────────────────────────────────────
+        # Sub-form section: Sizing
+        sizing_section = QtWidgets.QGroupBox("Sizing")
+        sizing_section.setObjectName("topo_sizing_section")
+        self.topo_sizing_form = QtWidgets.QFormLayout(sizing_section)
+        self.topo_sizing_form.setContentsMargins(4, 4, 4, 4)
+        mesh_def_layout.addWidget(sizing_section)
+
+        # Sub-form section: Transfinite
+        transfinite_section = QtWidgets.QGroupBox("Transfinite")
+        transfinite_section.setObjectName("topo_transfinite_section")
+        self.topo_transfinite_form = QtWidgets.QFormLayout(transfinite_section)
+        self.topo_transfinite_form.setContentsMargins(4, 4, 4, 4)
+        mesh_def_layout.addWidget(transfinite_section)
+
+        mesh_def_layout.addStretch(1)
+        # Keep ``topo_mesh_def_form`` as an alias of the page-level
+        # QVBoxLayout for any code that introspects it (and so the legacy
+        # control-builder's ``_find_form("topo_mesh_def_page")`` lookup
+        # remains resolvable when sub-sections aren't yet present).
+        self.topo_mesh_def_form = mesh_def_layout
+
+        self._mesh_def_idx = self._toolbox.addItem(mesh_def_page, "Mesh Definition")
+        self._toolbox.setItemEnabled(self._mesh_def_idx, False)
+
+        # Standalone ``topo_arcs_page`` / ``topo_sizing_page`` objects
+        # are no longer created (they were used as ``objectName``
+        # placeholders by the legacy control-builder, which now finds
+        # the sub-forms by their ``QGroupBox`` ``objectName`` instead).
+        # The legacy ``topo_arcs_form`` / ``topo_sizing_form`` form
+        # layouts are kept as attributes (above) so any code that
+        # introspects them still gets a sensible layout.
+
+        # Legacy single-page indices are no longer used by the toolbox,
+        # but keep the attributes set to the combined page's index so
+        # any external code that introspects them sees a sensible value.
+        self._arcs_idx = self._mesh_def_idx
+        self._sizing_idx = self._mesh_def_idx
+        self._transfinite_idx = self._mesh_def_idx
+
+        # ── Quality Loop page (renamed from "Quality") ──────────
         quality_page, self.topo_quality_form = self._create_topo_page(
-            "topo_quality_page", "topo_quality_form", "Quality"
+            "topo_quality_page", "topo_quality_form", "Quality Loop"
         )
-        self._quality_idx = self._toolbox.addItem(quality_page, "Quality")
+        self._quality_idx = self._toolbox.addItem(quality_page, "Quality Loop")
         self._toolbox.setItemEnabled(self._quality_idx, False)
 
         self._gmsh_only_indices = (
-            self._algo_idx, self._arcs_idx, self._sizing_idx,
-            self._threading_idx, self._transfinite_idx, self._quality_idx,
+            self._algo_idx, self._mesh_def_idx, self._quality_idx,
         )
         self._gmsh_only_base_titles = {
             self._algo_idx: "Algorithm",
-            self._arcs_idx: "Arcs and Interfaces",
-            self._sizing_idx: "Sizing",
-            self._threading_idx: "Threading",
-            self._transfinite_idx: "Transfinite",
-            self._quality_idx: "Quality",
+            self._mesh_def_idx: "Mesh Definition",
+            self._quality_idx: "Quality Loop",
         }
 
         self._populate_gmsh_quality_controls()
@@ -829,10 +882,35 @@ def _build_topology_tab_controls(
         return form
 
     algo_form = _find_form("topo_algo_page")
-    arcs_form = _find_form("topo_arcs_page")
-    sizing_form = _find_form("topo_sizing_page")
-    threading_form = _find_form("topo_threading_page")
-    transfinite_form = _find_form("topo_transfinite_page")
+    # Threading widgets now live on the Algorithm page; ``threading_form``
+    # is aliased to ``algo_form`` so the threading-row additions below
+    # land on the Algorithm page (the standalone Threading page was
+    # removed).
+    threading_form = algo_form
+    # Arcs/Sizing/Transfinite share a single "Mesh Definition" page.
+    # Each gets its own QGroupBox sub-form (``topo_arcs_section``,
+    # ``topo_sizing_section``, ``topo_transfinite_section``) created by
+    # ``TopologyTabView._build_ui``. When this builder runs standalone
+    # (i.e. without a TopologyTabView parent, as in legacy tests), the
+    # sections don't exist yet — fall back to creating a transient
+    # QFormLayout on the parent so legacy widget insertion still works.
+    def _find_section_form(section_object_name: str):
+        section = parent.findChild(QtWidgets.QGroupBox, section_object_name)
+        if section is not None:
+            layout = section.layout()
+            if isinstance(layout, QtWidgets.QFormLayout):
+                return layout
+        # Standalone fallback (no TopologyTabView): create a transient
+        # QFormLayout and attach it as an attribute on parent so it
+        # survives the duration of the build. We deliberately do NOT
+        # add the layout to any visible widget — these tests only
+        # exercise the widget-creation dict, not rendering.
+        transient = QtWidgets.QFormLayout()
+        setattr(parent, f"_transient_{section_object_name}", transient)
+        return transient
+    arcs_form = _find_section_form("topo_arcs_section")
+    sizing_form = _find_section_form("topo_sizing_section")
+    transfinite_form = _find_section_form("topo_transfinite_section")
     quality_form = _find_form("topo_quality_page")
 
     def _add_row(form_layout, label_text, widget, *, advanced=False):

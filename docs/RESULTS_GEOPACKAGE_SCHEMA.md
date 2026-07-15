@@ -107,6 +107,53 @@ One row per run per component/object/metric combination.
 | `values_blob` | BLOB | `float64[]` — metric values (model units) |
 | | | **PRIMARY KEY** `(run_id, component, object_id, metric)` |
 
+## Coupling Results
+
+### `swe2d_baked_pipe_cell_ts`
+
+Pipe-cell resolved time-series for drainage links. Each link is subdivided into
+`n_sub` cells (computed from `link_length / sub_cell_size`); one row exists per
+`(run_id, link_id, cell_sub_idx, metric)` combination.
+
+| Column | Type | Description |
+|--------|------|-------------|
+| `run_id` | TEXT | FK — run identifier |
+| `link_id` | TEXT | Drainage link identifier |
+| `cell_sub_idx` | INTEGER | 0-based sub-cell index within the link |
+| `metric` | TEXT | Measured metric: `"velocity"`, `"depth"`, `"flow"`, `"head"` |
+| `n_timesteps` | INTEGER | Number of coupling timesteps |
+| `times_blob` | BLOB | `float64[]` — coupling times |
+| `values_blob` | BLOB | `float64[]` — metric values (model units) |
+| | | **PRIMARY KEY** `(run_id, link_id, cell_sub_idx, metric)` |
+
+**Notes**:
+- `metric` values: `velocity` (m/s), `depth` (m), `flow` (m³/s), `head` (m).
+- `cell_sub_idx` is 0-based within the link; reconstruct the full longitudinal
+  array by sorting rows by `cell_sub_idx` for a given `link_id`.
+- Total rows per run = `n_links × n_sub_per_link × n_metrics` (4 metrics).
+- A separate `cell_owner_link` array (shape `(n_pipe_cells,)`) maps each global
+  pipe cell index to its parent link index.
+
+### `swe2d_baked_overlay_fields`
+
+Overlay field time-series for spatial lookup (e.g. rainfall, losses, land-cover).
+One row per run per metric. Each row stores a flattened `n_timesteps × n_cells` array.
+
+| Column | Type | Description |
+|--------|------|-------------|
+| `run_id` | TEXT | FK — run identifier |
+| `metric` | TEXT | Field type: `rain_rate`, `cum_rain`, `cum_excess`, `manning_n`, `cn` |
+| `n_timesteps` | INTEGER | Number of snapshot timesteps |
+| `times_blob` | BLOB | `float64[]` — snapshot times in model seconds |
+| `values_blob` | BLOB | `float64[]` — field values, flattened row-major `(n_timesteps × n_cells)` |
+| | | **PRIMARY KEY** `(run_id, metric)` |
+
+**Notes**:
+- `metric` values: `rain_rate` (mm/hr, converted from m/s), `cum_rain` (mm),
+  `cum_excess` (mm), `manning_n` (dimensionless), `cn` (dimensionless).
+- `values_blob` is row-major flattened with shape `(n_timesteps × n_cells)`; reshape
+  with `values.reshape(n_timesteps, n_cells)`.
+
 ## Run Logs
 
 ### `swe2d_run_logs`
@@ -207,6 +254,8 @@ erDiagram
     swe2d_baked_results ||--o{ swe2d_baked_line_ts : "run_id"
     swe2d_baked_results ||--o{ swe2d_baked_line_profiles : "run_id"
     swe2d_baked_results ||--o{ swe2d_baked_coupling : "run_id"
+    swe2d_baked_results ||--o{ swe2d_baked_pipe_cell_ts : "run_id"
+    swe2d_baked_results ||--o{ swe2d_baked_overlay_fields : "run_id"
     swe2d_baked_results ||--o{ swe2d_conservation_runs : "run_id"
     swe2d_baked_results ||--o{ swe2d_run_logs : "run_id"
     swe2d_conservation_runs ||--o{ swe2d_conservation_storage_ts : run_id
@@ -249,6 +298,22 @@ erDiagram
         text object_id PK
         text metric PK
         text object_name
+        integer n_timesteps
+        blob times_blob
+        blob values_blob
+    }
+    swe2d_baked_pipe_cell_ts {
+        text run_id PK
+        text link_id PK
+        integer cell_sub_idx PK
+        text metric PK
+        integer n_timesteps
+        blob times_blob
+        blob values_blob
+    }
+    swe2d_baked_overlay_fields {
+        text run_id PK
+        text metric PK
         integer n_timesteps
         blob times_blob
         blob values_blob

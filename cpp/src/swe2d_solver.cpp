@@ -121,6 +121,15 @@ void swe2d_destroy(SWE2DSolver* s) {
     if (!s) return;
 #ifdef HYDRA_HAS_CUDA
     if (s->dev) {
+        // The global ``s_coupling_dev`` is a singleton that aliases the
+        // most-recently-created SWE2DDeviceState.  If we're destroying
+        // the dev it points at, clear the global so subsequent callers
+        // (e.g. SWE2DCouplingController eager pipe1d mesh build) do not
+        // dereference a dangling pointer and corrupt the heap.
+        extern SWE2DDeviceState* s_coupling_dev;
+        if (s_coupling_dev == s->dev) {
+            s_coupling_dev = nullptr;
+        }
         swe2d_gpu_destroy(s->dev);
         s->dev = nullptr;
     }

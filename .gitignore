@@ -1,15 +1,17 @@
 # Build artifacts
 build/
 build_asan/
+build_debug/
 _deps/
-cmake_install.cmake
-CMakeCache.txt
 CMakeFiles/
+CMakeCache.txt
+cmake_install.cmake
+Makefile
 *.so
 *.pyd
 *.o
 *.obj
-.sgry/
+
 # Distribution
 dist/
 *.egg-info/
@@ -18,14 +20,11 @@ dist/
 __pycache__/
 *.pyc
 *.pyo
+.pytest_cache/
 
-# IDE / tools
-.opencode/
-.qodo/
-.agents/
-.commandcode/
-AGENTS.md
-graphify-out
+# Knowledge graph cache
+graphify-out/
+
 # OS
 .DS_Store
 Thumbs.db
@@ -34,12 +33,10 @@ Thumbs.db
 report_output/
 temp_error_log.txt
 tests/results/*.log
-docs/superpowers/
-reference/
-build_debug/
 symbology-style.db
 marketing/
-.*/
-reference/
-docs/IMPLEMENTATION_PLANS
-docs/AGENT_PLANS/
+
+# Heavy / third-party reference material (file size)
+reference/example_test_project/
+reference/Stormwater-Management-Model-develop 
+

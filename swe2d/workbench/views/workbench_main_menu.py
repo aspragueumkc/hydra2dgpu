@@ -185,9 +185,19 @@ def install_workbench_main_menu(dlg, iface) -> Optional[QtWidgets.QMenu]:
         lambda: dlg._controller.on_save_simulation_config(),
     )
     add_action(
+        "HYDRA2DMenuSaveConfigJSONAction",
+        "Export Simulation Config as JSON…",
+        lambda: dlg._controller.on_save_simulation_config_as_json(),
+    )
+    add_action(
         "HYDRA2DMenuLoadConfigAction",
         "Load Simulation Config from GeoPackage…",
         lambda: dlg._controller.on_load_simulation_config(),
+    )
+    add_action(
+        "HYDRA2DMenuLoadConfigJSONAction",
+        "Import Simulation Config from JSON…",
+        lambda: dlg._controller.on_load_simulation_config_from_json(),
     )
     add_action(
         "HYDRA2DMenuOpenRunLogAction",

@@ -167,26 +167,73 @@ def boundary_edge_owner_cells(
     return owners
 
 
-def _sample_coupling_object_metrics(cc, t_s: float, _h_s) -> list:
+def _copy_overlay_cell_data_from_coupling(cc, results_data, t_s, dt):
+    """Copy rain overlay cell arrays into results_data at output intervals.
+
+    Called from _sample_coupling_object_metrics on every output-interval step.
+    Rain arrays come from C++ via readback_coupling_state(); rain rate is
+    recomputed from the Python forcing. Manning's n and curve number are
+    populated separately from the mesh by Path 5.
+    """
+    if results_data is None:
+        return
+
+    # Rain CN state — from C++ kernel via readback ─────────────────────────
+    try:
+        state = cc.readback_coupling_state()
+    except Exception:
+        state = {}
+
+    rain_cum = state.get("rain_cum_mm")
+    rain_excess = state.get("rain_excess_cum_mm")
+    if rain_cum is not None and rain_cum.size > 0:
+        results_data.overlay_cell_cumulative_rain = np.ascontiguousarray(rain_cum, dtype=np.float64)
+    if rain_excess is not None and rain_excess.size > 0:
+        results_data.overlay_cell_cumulative_excess = np.ascontiguousarray(rain_excess, dtype=np.float64)
+
+    # Rain rate (m/s) still comes from Python forcing — it is computed here
+    # and uploaded to the C++ kernel each step; read back via Python for overlay.
+    forcing = getattr(cc, "_rain_forcing", None)
+    if forcing is None and hasattr(cc, "drainage"):
+        forcing = getattr(cc.drainage, "_rain_forcing", None)
+    if forcing is not None:
+        rate_mps, _stats = forcing.step_net_rainfall_mps(t_s, t_s + dt, mutate_state=False)
+        if rate_mps is not None:
+            arr = np.asarray(rate_mps, dtype=np.float64)
+            if arr.size > 0:
+                results_data.overlay_cell_rainfall_rate = np.ascontiguousarray(arr)
+
+    results_data.append_overlay_field_snapshot(t_s)
+
+
+def _sample_coupling_object_metrics(cc, t_s: float, dt: float, _h_s, _results_data=None) -> list:
     """Return per-element coupling rows from the coupling controller.
 
     Uses ``cc.readback_coupling_state()`` for drainage node depths, link flows,
     and structure flows — a small D2H readback at output intervals (not per-step).
+
+    The optional ``_results_data`` parameter is used internally to copy live
+    rain overlay arrays on output-interval steps. Manning/CN arrays are
+    populated separately from the mesh.
     """
     rows = []
     if cc is None:
         return rows
+    # Copy live rain overlay cell arrays on output-interval steps.
+    if _results_data is not None:
+        _copy_overlay_cell_data_from_coupling(cc, _results_data, t_s, dt)
     state = cc.readback_coupling_state()
     cfg = getattr(getattr(cc, "drainage", None), "cfg", None)
     if cfg is not None:
         for i, node in enumerate(getattr(cfg, "nodes", [])):
+            node_id = str(getattr(node, "node_id", str(i)))
             if i < len(state["node_depth"]):
                 depth = float(state["node_depth"][i])
                 rows.append({
                     "t_s": t_s,
                     "component": "drainage_node",
                     "metric": "depth",
-                    "object_id": str(getattr(node, "node_id", str(i))),
+                    "object_id": node_id,
                     "object_name": str(getattr(node, "node_id", str(i))),
                     "value": depth,
                 })
@@ -195,20 +242,21 @@ def _sample_coupling_object_metrics(cc, t_s: float, _h_s) -> list:
                     "t_s": t_s,
                     "component": "drainage_node",
                     "metric": "invert",
-                    "object_id": str(getattr(node, "node_id", str(i))),
+                    "object_id": node_id,
                     "object_name": str(getattr(node, "node_id", str(i))),
                     "value": invert,
                 })
-        for i, link in enumerate(getattr(cfg, "links", [])):
-            if i < len(state["link_flow"]):
-                flow = float(state["link_flow"][i])
+        for li, link in enumerate(getattr(cfg, "links", [])):
+            link_id = str(getattr(link, "link_id", str(li)))
+            if li < len(state["link_flow"]):
+                flow = float(state["link_flow"][li])
                 from_id = getattr(link, "from_node_id", "")
                 to_id = getattr(link, "to_node_id", "")
                 rows.append({
                     "t_s": t_s,
                     "component": "drainage_link",
                     "metric": "flow",
-                    "object_id": str(getattr(link, "link_id", str(i))),
+                    "object_id": link_id,
                     "object_name": f"{from_id} -> {to_id}",
                     "value": flow,
                 })
@@ -217,10 +265,131 @@ def _sample_coupling_object_metrics(cc, t_s: float, _h_s) -> list:
                     "t_s": t_s,
                     "component": "drainage_link",
                     "metric": "length",
-                    "object_id": str(getattr(link, "link_id", str(i))),
+                    "object_id": link_id,
                     "object_name": f"{from_id} -> {to_id}",
                     "value": link_len,
                 })
+        # Drainage cell: per-pipe-cell velocity, depth, flow, head.
+        # cell_sub_idx and cell_owner_link now come directly from C++ readback.
+        cell_velocity = state.get("cell_velocity")
+        cell_depth = state.get("cell_depth")
+        cell_flow = state.get("cell_flow")
+        cell_head = state.get("cell_head")
+        cell_owner_link = state.get("cell_owner_link")
+        cell_sub_idx = state.get("cell_sub_idx")  # directly from C++
+        # Per-cell geometry for profile rendering (crown = invert + cell_width for circular)
+        cell_invert = state.get("cell_invert")
+        cell_width = state.get("cell_width")
+
+        if cell_velocity is not None and cell_owner_link is not None and cfg is not None:
+            links = getattr(cfg, "links", [])
+            n_cells = len(cell_velocity)
+            if cell_sub_idx is not None and len(cell_sub_idx) == n_cells:
+                # Fast path: use C++-sourced cell_sub_idx and cell_owner_link directly.
+                for c in range(n_cells):
+                    li = int(cell_owner_link[c])
+                    if li < 0 or li >= len(links):
+                        continue
+                    link = links[li]
+                    link_id = str(getattr(link, "link_id", str(li)))
+                    sub_idx = int(cell_sub_idx[c])
+                    for metric, arr in [("velocity", cell_velocity), ("depth", cell_depth),
+                                       ("flow", cell_flow), ("head", cell_head)]:
+                        rows.append({
+                            "t_s": t_s,
+                            "component": "drainage_cell",
+                            "metric": metric,
+                            "object_id": f"{link_id}#{sub_idx}",
+                            "object_name": f"{link_id} cell {sub_idx}",
+                            "value": float(arr[c]),
+                            # Per-cell geometry — constant per sub-cell, same for all 4 metrics
+                            "cell_invert": float(cell_invert[c]) if cell_invert is not None and c < len(cell_invert) else 0.0,
+                            "cell_width": float(cell_width[c]) if cell_width is not None and c < len(cell_width) else 1.0,
+                        })
+            else:
+                # Fallback: derive sub_idx from enumeration — indicates a bug if
+                # pipe-link coupling is active and sub_idx is missing from C++.
+                log_fn = getattr(cc, "_log", None) or (lambda _m: None)
+                log_fn(f"[drainage_cell] WARNING: cell_sub_idx not returned by C++ readback "
+                       f"(cell_sub_idx={cell_sub_idx is not None}) — using enumeration fallback. "
+                       f"This may indicate a bug if pipe-link coupling is active.")
+                for c in range(n_cells):
+                    li = int(cell_owner_link[c])
+                    if li < 0 or li >= len(links):
+                        continue
+                    link = links[li]
+                    link_id = str(getattr(link, "link_id", str(li)))
+                    for metric, arr in [("velocity", cell_velocity), ("depth", cell_depth), ("flow", cell_flow), ("head", cell_head)]:
+                        rows.append({
+                            "t_s": t_s,
+                            "component": "drainage_cell",
+                            "metric": metric,
+                            "object_id": f"{link_id}#{c}",
+                            "object_name": f"{link_id} cell {c}",
+                            "value": float(arr[c]),
+                            "cell_invert": float(cell_invert[c]) if cell_invert is not None and c < len(cell_invert) else 0.0,
+                            "cell_width": float(cell_width[c]) if cell_width is not None and c < len(cell_width) else 1.0,
+                        })
+
+        # Cell index metrics — one row per element (value does not vary with time).
+        # Drainage nodes: cell index from associated inlet/pipe_end/outfall exchanges
+        node_cell: Dict[str, int] = {}
+        for ex in getattr(cfg, "inlets", []) or []:
+            nid = str(getattr(ex, "node_id", ""))
+            cid = int(getattr(ex, "cell_id", -1))
+            if nid and cid >= 0:
+                node_cell[nid] = cid
+        for ex in getattr(cfg, "pipe_ends", []) or []:
+            nid = str(getattr(ex, "node_id", ""))
+            cid = int(getattr(ex, "cell_id", -1))
+            if nid and cid >= 0:
+                node_cell[nid] = cid
+        for ex in getattr(cfg, "outfalls", []) or []:
+            nid = str(getattr(ex, "node_id", ""))
+            cid = int(getattr(ex, "cell_id", -1))
+            if nid and cid >= 0:
+                node_cell[nid] = cid
+        for node in getattr(cfg, "nodes", []) or []:
+            nid = str(getattr(node, "node_id", ""))
+            if nid in node_cell:
+                rows.append({
+                    "t_s": t_s,
+                    "component": "drainage_node",
+                    "metric": "cell",
+                    "object_id": nid,
+                    "object_name": nid,
+                    "value": float(node_cell[nid]),
+                })
+        # Inlets: cell index
+        for i, inlet in enumerate(getattr(cfg, "inlets", []) or []):
+            rows.append({
+                "t_s": t_s,
+                "component": "drainage_inlet",
+                "metric": "cell",
+                "object_id": str(getattr(inlet, "inlet_id", str(i))),
+                "object_name": str(getattr(inlet, "inlet_id", str(i))),
+                "value": float(getattr(inlet, "cell_id", -1)),
+            })
+        # Outfalls: cell index
+        for i, outfall in enumerate(getattr(cfg, "outfalls", []) or []):
+            rows.append({
+                "t_s": t_s,
+                "component": "drainage_outfall",
+                "metric": "cell",
+                "object_id": str(getattr(outfall, "outfall_id", str(i))),
+                "object_name": str(getattr(outfall, "outfall_id", str(i))),
+                "value": float(getattr(outfall, "cell_id", -1)),
+            })
+        # Pipe ends: cell index
+        for i, pe in enumerate(getattr(cfg, "pipe_ends", []) or []):
+            rows.append({
+                "t_s": t_s,
+                "component": "drainage_pipe_end",
+                "metric": "cell",
+                "object_id": str(getattr(pe, "pipe_end_id", str(i))),
+                "object_name": str(getattr(pe, "pipe_end_id", str(i))),
+                "value": float(getattr(pe, "cell_id", -1)),
+            })
     # Structures (with culvert-specific diagnostics)
     if hasattr(cc, "_structures_cfg") and cc._structures_cfg:
         nb_flows = state["struct_flow"] if state["struct_flow"].size > 0 else getattr(cc, "_last_structure_flows", None)
@@ -355,6 +524,37 @@ def build_coupling_keys(cc) -> Tuple[List[Tuple[str, str, str]], Dict[Tuple[str,
     return keys, object_names
 
 
+def build_pipe_cell_keys(cc) -> List[Tuple[str, int, str]]:
+    """Return the (link_id, cell_sub_idx, metric) keys for per-pipe-cell storage.
+
+    Sub-cell counts are derived from link_length / max_cell_length, matching the
+    C++ subdivision formula used in pipe1d_init.
+    """
+    import math as _math
+    keys: List[Tuple[str, int, str]] = []
+    if cc is None:
+        return keys
+    dsoa = getattr(cc, "_drainage_soa", None)
+    cfg = getattr(getattr(cc, "drainage", None), "cfg", None)
+    if dsoa is None or cfg is None:
+        return keys
+    link_lengths = getattr(dsoa, "link_length", [])
+    mcl = float(getattr(dsoa, "max_cell_length", 0.0))
+    links = getattr(cfg, "links", [])
+    if len(link_lengths) == 0 or not links:
+        return keys
+    for li, link in enumerate(links):
+        link_id = str(getattr(link, "link_id", str(li)))
+        L = float(link_lengths[li]) if li < len(link_lengths) else 0.0
+        n_sub = 1
+        if mcl > 0.0 and L > 0.0:
+            n_sub = max(1, int(_math.ceil(L / mcl)))
+        for sub_idx in range(n_sub):
+            for metric in ("velocity", "depth", "flow", "head"):
+                keys.append((link_id, sub_idx, metric))
+    return keys
+
+
 def execute_run_timestep_loop(
     *,
     wb: object,
@@ -480,6 +680,13 @@ def execute_run_timestep_loop(
             bc_ms += (time.perf_counter() - _t_bc_acc) * 1000.0
             # [BC_DIAG] removed for performance
 
+        # Wrap _sample_coupling_object_metrics to pass results_data for
+        # live rain/Manning/CN overlay array population on output-interval steps.
+        _results_data = wb._results_data
+
+        def _metrics_cb(cc, t_s, _h_s):
+            return _sample_coupling_object_metrics(cc, t_s, dt_used, _h_s, _results_data)
+
         report_result = runtime_reporter.process_step(
             backend=backend,
             t_accum=t_accum,
@@ -507,8 +714,8 @@ def execute_run_timestep_loop(
             last_process_events_wall=last_process_events_wall,
             h_min=h_min,
             length_unit_name=wb._length_unit_name,
-            results_data=wb._results_data,
-            sample_coupling_object_metrics_callback=_sample_coupling_object_metrics,
+            results_data=_results_data,
+            sample_coupling_object_metrics_callback=_metrics_cb,
             process_events_callback=process_events_callback,
             set_progress_callback=progress_callback,
             log_callback=wb._log,

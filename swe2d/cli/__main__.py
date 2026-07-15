@@ -43,6 +43,10 @@ def main():
     batch_parser.add_argument("--results", "-r", default="", help="Results GeoPackage path")
     batch_parser.add_argument("--max-workers", "-w", type=int, default=0, help="Max concurrent workers (0=auto)")
 
+    replay_parser = sub.add_parser("replay", help="Replay a run from its replay JSON")
+    replay_parser.add_argument("--replay-file", type=str, default="", help="Standalone replay JSON file path")
+    replay_parser.add_argument("--progress", action="store_true", help="Print progress per step")
+
     args = parser.parse_args()
 
     if args.command == "run":
@@ -76,6 +80,35 @@ def main():
         from swe2d.cli.batch_runner import run_batch
         run_batch(args.batch_json, args.mesh_gpkg, args.results, args.max_workers)
 
+    elif args.command == "replay":
+        from swe2d.cli.headless_runner import execute_replay
+        try:
+            results = execute_replay(
+                args.replay_file,
+                log_cb=print,
+                progress_cb=_make_progress(args.progress),
+            )
+
+            class _TupleKeyEncoder(json.JSONEncoder):
+                def default(self, o):
+                    return str(o)
+
+                def encode(self, o):
+                    return super().encode(_normalize_keys(o))
+
+            def _normalize_keys(obj):
+                if isinstance(obj, dict):
+                    return {str(k) if isinstance(k, tuple) else k: _normalize_keys(v) for k, v in obj.items()}
+                if isinstance(obj, (list, tuple)):
+                    return [_normalize_keys(v) for v in obj]
+                return obj
+
+            print(_TupleKeyEncoder(indent=2).encode(results))
+        except Exception as exc:
+            import traceback
+            traceback.print_exc()
+            sys.exit(1)
+
     else:
         parser.print_help()
 
@@ -92,8 +125,8 @@ def _load_params(param_source: str) -> dict:
 def _make_progress(enabled: bool):
     if not enabled:
         return None
-    def cb(t, diag):
-        print(f"  t={t:.3f}s  dt={diag.get('dt', 0):.5f}  wet={diag.get('wet_cells', -1)}", file=sys.stderr)
+    def cb(pct, diag=None):
+        print(f"  progress={pct}%", file=sys.stderr)
     return cb
 
 

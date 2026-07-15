@@ -99,9 +99,8 @@ def build_pipe_network_config(
         Gravity value.
     config : dict or None
         Drainage coupling config from widgets. Keys:
-        solver_mode, coupling_substeps, max_coupling_substeps,
+        solver_mode, coupling_substeps,
         gpu_method, head_deadband, dynamic_relaxation,
-        adaptive_depth_fraction, adaptive_wave_courant,
         implicit_iters, implicit_relax.
     log_fn : callable or None
         Logging function.
@@ -677,10 +676,13 @@ def build_pipe_network_config(
                 if it is None:
                     continue
                 node = node_by_id[a.node_id]
-                crest = float(
-                    (node.crest_elev if node.crest_elev is not None else node.invert_elev)
-                    + a.crest_offset
-                )
+                if node.crest_elev is None:
+                    raise ValueError(
+                        f"Drainage node {a.node_id} is assigned inlet {a.inlet_type_id} "
+                        f"but has no crest_elev. Inlet crest must be explicitly set; "
+                        f"it cannot fall back to invert_elev (the pipe invert)."
+                    )
+                crest = float(node.crest_elev + a.crest_offset)
                 inlets.append(
                     InletExchange(
                         inlet_id=f"{a.node_id}:{a.inlet_type_id}",
@@ -853,7 +855,9 @@ def build_pipe_network_config(
     for node in nodes:
         if str(node.node_type).strip().lower() != "outfall":
             continue
-        cell_id = nearest_cell_fn(float(node.x), float(node.y))
+        # Outfalls are free-discharge boundaries; do not auto-couple them to a
+        # surface cell even if the node is inside the 2D domain.
+        cell_id = -1
         area_outfall = max(
             0.0, float(node.metadata.get("outfall_area_m2", 0.0) or 0.0)
         )
@@ -961,22 +965,19 @@ def build_pipe_network_config(
     solver_mode = int(config.get("solver_mode", 0))
     solver_mode_name = str(config.get("solver_mode_name", ""))
     coupling_substeps = int(config.get("coupling_substeps", 1))
-    max_coupling_substeps = int(config.get("max_coupling_substeps", 1))
     gpu_method = str(config.get("gpu_method", "auto"))
     head_deadband = float(config.get("head_deadband", 0.001))
     dynamic_relaxation = float(config.get("dynamic_relaxation", 0.7))
-    adaptive_depth_fraction = float(config.get("adaptive_depth_fraction", 0.5))
-    adaptive_wave_courant = float(config.get("adaptive_wave_courant", 0.45))
     implicit_iters = int(config.get("implicit_iters", 3))
     implicit_relax = float(config.get("implicit_relax", 0.8))
 
-    pipe_solver_mode = "diffusion_wave" if solver_mode != 2 else "fully_dynamic"
+    pipe_solver_mode = "diffusion_wave" if solver_mode == 0 else "fully_dynamic"
 
     _log(
         f"Drainage coupling configured: nodes={len(nodes)}, links={len(links)}, "
         f"inlets={len(inlets)}, inlet_types={len(inlet_types)}, node_inlets={len(node_inlets)}, "
         f"outfalls={len(outfalls)}, pipe_ends={len(pipe_ends)}, gravity={gravity:.3f}, mode={solver_mode_name}, "
-        f"substeps={coupling_substeps}, max_substeps={max_coupling_substeps}, "
+        f"substeps={coupling_substeps}, "
         f"gpu_method={gpu_method}, deadband={head_deadband:.4g}, relax={dynamic_relaxation:.3f}"
     )
     return PipeNetworkConfig(
@@ -991,11 +992,8 @@ def build_pipe_network_config(
         gravity=gravity,
         pipe_solver_mode=pipe_solver_mode,
         coupling_substeps=coupling_substeps,
-        max_coupling_substeps=max_coupling_substeps,
         head_deadband_m=head_deadband,
         dynamic_flow_relaxation=dynamic_relaxation,
-        adaptive_depth_fraction=adaptive_depth_fraction,
-        adaptive_wave_courant=adaptive_wave_courant,
         implicit_coupling_iterations=implicit_iters,
         implicit_coupling_relaxation=implicit_relax,
     )

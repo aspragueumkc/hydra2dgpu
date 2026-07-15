@@ -12,7 +12,7 @@ import json
 import logging
 import os
 import sqlite3
-from typing import Any, Callable, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 import numpy as np
 
@@ -28,6 +28,7 @@ __all__ = [
     "compute_max_tracking",
     "persist_baked_coupling",
     "persist_baked_coupling_batch",
+    "persist_baked_pipe_cell_ts",
     "load_baked_coupling_timeseries",
     "persist_baked_line_ts",
     "persist_baked_line_ts_batch",
@@ -37,6 +38,8 @@ __all__ = [
     "load_baked_line_profile",
     "load_baked_timesteps",
     "collect_baked_runs_from_gpkg",
+    "load_baked_pipe_cell_ts",
+    "load_baked_overlay_fields",
 ]
 
 
@@ -214,8 +217,14 @@ def _ensure_ogc_gpkg_tables(conn: sqlite3.Connection, crs_wkt: str = "") -> None
             created_utc     TEXT NOT NULL,
             run_duration_s  REAL DEFAULT 0.0,
             description     TEXT DEFAULT '',
+            params          TEXT NOT NULL DEFAULT '{}',
             widget_state    TEXT NOT NULL)
     """)
+    # Backwards-compat: add params column if table already exists without it
+    try:
+        cur.execute("ALTER TABLE swe2d_simulation_configs ADD COLUMN params TEXT NOT NULL DEFAULT '{}'")
+    except sqlite3.OperationalError:
+        pass  # column already exists
 
 
 def persist_simulation_config(
@@ -225,6 +234,7 @@ def persist_simulation_config(
     run_duration_s: float,
     widget_state: Dict[str, object],
     description: str = "",
+    params: Optional[Dict[str, Any]] = None,
     log_fn: Optional[Callable[[str], None]] = None,
 ) -> None:
     """Save a simulation configuration to the GeoPackage.
@@ -240,27 +250,33 @@ def persist_simulation_config(
     run_duration_s : float
         Simulation run duration in seconds.
     widget_state : dict
-        Dict of widget parameter values (from collect_run_widget_params()).
+        Versioned widget state dict (from collect_workbench_widget_state()).
+        Used for UI restoration.
     description : str, optional
         Human-readable description.
+    params : dict, optional
+        Flat RunContext params dict (from widget_state_to_flat_params()).
+        Stored separately so CLI replay via build_run_context_from_dict works.
     log_fn : callable, optional
         Logging callback.
     """
     _log = log_fn or (lambda _: None)
+    _params = params if params is not None else {}
     try:
         conn = sqlite3.connect(gpkg_path)
         _ensure_ogc_gpkg_tables(conn)
         cur = conn.cursor()
         cur.execute(
             "INSERT OR REPLACE INTO swe2d_simulation_configs "
-            "(config_id, mesh_name, created_utc, run_duration_s, description, widget_state) "
-            "VALUES (?, ?, ?, ?, ?, ?)",
+            "(config_id, mesh_name, created_utc, run_duration_s, description, params, widget_state) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?)",
             (
                 str(config_id),
                 str(mesh_name or ""),
                 datetime.datetime.now(datetime.timezone.utc).isoformat(),
                 float(run_duration_s),
                 str(description),
+                json.dumps(_params, default=str),
                 json.dumps(widget_state, default=str),
             ),
         )
@@ -291,7 +307,7 @@ def load_simulation_configs(
     -------
     list of dict
         Each dict has keys: config_id, mesh_name, created_utc, run_duration_s,
-        description, widget_state (parsed from JSON).
+        description, params (flat RunContext params), widget_state (versioned).
     """
     _log = log_fn or (lambda _: None)
     results: List[Dict[str, object]] = []
@@ -299,31 +315,75 @@ def load_simulation_configs(
     try:
         conn = sqlite3.connect(gpkg_path)
         cur = conn.cursor()
+        # Select params column if it exists (new schema), otherwise None
+        _has_params = None
+        try:
+            cur.execute("SELECT params FROM swe2d_simulation_configs LIMIT 0")
+            _has_params = True
+        except sqlite3.OperationalError:
+            _has_params = False
+
         if mesh_name:
-            cur.execute(
-                "SELECT config_id, mesh_name, created_utc, run_duration_s, description, widget_state "
-                "FROM swe2d_simulation_configs WHERE mesh_name=? ORDER BY created_utc DESC",
-                (mesh_name,),
-            )
+            if _has_params:
+                cur.execute(
+                    "SELECT config_id, mesh_name, created_utc, run_duration_s, description, params, widget_state "
+                    "FROM swe2d_simulation_configs WHERE mesh_name=? ORDER BY created_utc DESC",
+                    (mesh_name,),
+                )
+            else:
+                cur.execute(
+                    "SELECT config_id, mesh_name, created_utc, run_duration_s, description, widget_state "
+                    "FROM swe2d_simulation_configs WHERE mesh_name=? ORDER BY created_utc DESC",
+                    (mesh_name,),
+                )
         else:
-            cur.execute(
-                "SELECT config_id, mesh_name, created_utc, run_duration_s, description, widget_state "
-                "FROM swe2d_simulation_configs ORDER BY created_utc DESC"
-            )
+            if _has_params:
+                cur.execute(
+                    "SELECT config_id, mesh_name, created_utc, run_duration_s, description, params, widget_state "
+                    "FROM swe2d_simulation_configs ORDER BY created_utc DESC"
+                )
+            else:
+                cur.execute(
+                    "SELECT config_id, mesh_name, created_utc, run_duration_s, description, widget_state "
+                    "FROM swe2d_simulation_configs ORDER BY created_utc DESC"
+                )
         for row in cur.fetchall():
             ws = {}
-            try:
-                ws = json.loads(str(row[5] or "{}"))
-            except Exception:
-                pass
-            results.append({
-                "config_id": str(row[0]),
-                "mesh_name": str(row[1]),
-                "created_utc": str(row[2]),
-                "run_duration_s": float(row[3]) if row[3] else 0.0,
-                "description": str(row[4]),
-                "widget_state": ws,
-            })
+            ps = {}
+            if _has_params:
+                # params at index 5, widget_state at index 6
+                try:
+                    ps = json.loads(str(row[5] or "{}"))
+                except Exception:
+                    pass
+                try:
+                    ws = json.loads(str(row[6] or "{}"))
+                except Exception:
+                    pass
+                results.append({
+                    "config_id": str(row[0]),
+                    "mesh_name": str(row[1]),
+                    "created_utc": str(row[2]),
+                    "run_duration_s": float(row[3]) if row[3] else 0.0,
+                    "description": str(row[4]),
+                    "params": ps,
+                    "widget_state": ws,
+                })
+            else:
+                # No params column (old schema)
+                try:
+                    ws = json.loads(str(row[5] or "{}"))
+                except Exception:
+                    pass
+                results.append({
+                    "config_id": str(row[0]),
+                    "mesh_name": str(row[1]),
+                    "created_utc": str(row[2]),
+                    "run_duration_s": float(row[3]) if row[3] else 0.0,
+                    "description": str(row[4]),
+                    "params": ps,
+                    "widget_state": ws,
+                })
 
         # Fallback: runs that did not have an explicit config saved may still
         # have their widget state stored in the run-log metadata_json column.
@@ -408,6 +468,8 @@ def persist_all_baked_results(
     line_ts_items: Optional[List[Dict[str, Any]]] = None,
     profile_items: Optional[List[Dict[str, Any]]] = None,
     coupling_items: Optional[List[Dict[str, Any]]] = None,
+    pipe_cell_items: Optional[List[Dict[str, Any]]] = None,
+    overlay_field_items: Optional[List[Dict[str, Any]]] = None,
     max_tracking: Optional[Dict[str, np.ndarray]] = None,
     crs_wkt: str = "",
     log_fn: Optional[Callable[[str], None]] = None,
@@ -428,6 +490,12 @@ def persist_all_baked_results(
         Each dict: line_id, line_name, station_m, times, depth_m (2-D), ...
     coupling_items : list of dict, optional
         Each dict: component, object_id, object_name, metric, times, values.
+    pipe_cell_items : list of dict, optional
+        Each dict: link_id, cell_sub_idx, metric, times, values.
+    overlay_field_items : list of dict, optional
+        Each dict: metric ('rainfall_rate' | 'cumulative_rain' | 'cumulative_excess' |
+        'cumulative_loss' | 'mannings_n' | 'curve_number'), times (ndarray),
+        values (ndarray, row-major flatten n_timesteps × n_cells).
     max_tracking : dict, optional
     crs_wkt : str
     log_fn : callable, optional
@@ -609,6 +677,58 @@ def persist_all_baked_results(
             )
             if log_fn:
                 log_fn(f"Baked coupling saved: {len(coupling_items)} series")
+
+        # ── Pipe-cell timeseries ──────────────────────────────────────────
+        if pipe_cell_items:
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS swe2d_baked_pipe_cell_ts (
+                    run_id TEXT,
+                    link_id TEXT,
+                    cell_sub_idx INTEGER,
+                    metric TEXT,
+                    n_timesteps INTEGER,
+                    times_blob BLOB,
+                    values_blob BLOB,
+                    PRIMARY KEY (run_id, link_id, cell_sub_idx, metric))
+            """)
+            for item in pipe_cell_items:
+                times = np.asarray(item["times"], dtype=np.float64)
+                values = np.asarray(item["values"], dtype=np.float64)
+                conn.execute(
+                    "INSERT OR REPLACE INTO swe2d_baked_pipe_cell_ts "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?)",
+                    (run_id, str(item["link_id"]), int(item["cell_sub_idx"]),
+                     str(item["metric"]), len(times),
+                     times.tobytes(), values.tobytes()),
+                )
+                if log_fn:
+                    log_fn(f"Baked pipe-cell ts: link={item['link_id']} "
+                           f"cell={item['cell_sub_idx']} metric={item['metric']} "
+                           f"({len(times)} steps)")
+
+        # ── Overlay fields ───────────────────────────────────────────────
+        if overlay_field_items:
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS swe2d_baked_overlay_fields (
+                    run_id TEXT,
+                    metric TEXT,
+                    n_timesteps INTEGER,
+                    times_blob BLOB,
+                    values_blob BLOB,
+                    PRIMARY KEY (run_id, metric))
+            """)
+            for item in overlay_field_items:
+                times = np.asarray(item["times"], dtype=np.float64)
+                values = np.asarray(item["values"], dtype=np.float64).ravel()
+                conn.execute(
+                    "INSERT OR REPLACE INTO swe2d_baked_overlay_fields "
+                    "VALUES (?, ?, ?, ?, ?)",
+                    (run_id, str(item["metric"]), len(times),
+                     times.tobytes(), values.tobytes()),
+                )
+                if log_fn:
+                    log_fn(f"Baked overlay field: metric={item['metric']} "
+                           f"({len(times)} steps, {values.size} cells)")
 
         conn.commit()
     finally:
@@ -913,6 +1033,61 @@ def persist_baked_coupling_batch(
         conn.close()
 
 
+def persist_baked_pipe_cell_ts(
+    gpkg_path: str,
+    run_id: str,
+    pipe_cell_items: List[Dict[str, Any]],
+    log_fn: Optional[Callable[[str], None]] = None,
+) -> None:
+    """Save per-pipe-cell timeseries (velocity, depth, flow, head) as BLOBs.
+
+    Parameters
+    ----------
+    gpkg_path : str
+        Path to the GeoPackage file.
+    run_id : str
+        Run identifier.
+    pipe_cell_items : list of dict
+        Each dict has keys: link_id, cell_sub_idx, metric,
+        times (1-D ndarray), values (1-D ndarray).
+    log_fn : callable, optional
+        Logging callback.
+    """
+    if not gpkg_path or not pipe_cell_items:
+        return
+    conn = sqlite3.connect(gpkg_path)
+    try:
+        _configure_connection(conn)
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS swe2d_baked_pipe_cell_ts (
+                run_id TEXT,
+                link_id TEXT,
+                cell_sub_idx INTEGER,
+                metric TEXT,
+                n_timesteps INTEGER,
+                times_blob BLOB,
+                values_blob BLOB,
+                PRIMARY KEY (run_id, link_id, cell_sub_idx, metric))
+        """)
+        for item in pipe_cell_items:
+            times = np.asarray(item["times"], dtype=np.float64)
+            values = np.asarray(item["values"], dtype=np.float64)
+            conn.execute(
+                "INSERT OR REPLACE INTO swe2d_baked_pipe_cell_ts "
+                "VALUES (?, ?, ?, ?, ?, ?, ?)",
+                (run_id, str(item["link_id"]), int(item["cell_sub_idx"]),
+                 str(item["metric"]), len(times),
+                 times.tobytes(), values.tobytes()),
+            )
+            if log_fn:
+                log_fn(f"Baked pipe-cell ts: link={item['link_id']} "
+                       f"cell={item['cell_sub_idx']} metric={item['metric']} "
+                       f"({len(times)} steps)")
+        conn.commit()
+    finally:
+        conn.close()
+
+
 def load_baked_coupling_timeseries(
     gpkg_path: str,
     run_id: str,
@@ -960,6 +1135,102 @@ def load_baked_coupling_timeseries(
                 np.frombuffer(row[1], dtype=np.float64))
     finally:
         conn.close()
+
+
+def load_baked_pipe_cell_ts(
+    conn: sqlite3.Connection,
+    run_id: str,
+) -> List[Dict[str, Any]]:
+    """Load per-pipe-cell timeseries from GPKG BLOBs.
+
+    Parameters
+    ----------
+    conn : sqlite3.Connection
+        Open connection to the GeoPackage.
+    run_id : str
+        Run identifier.
+
+    Returns
+    -------
+    list of dict
+        Each dict has keys: ``link_id``, ``cell_sub_idx``, ``metric``,
+        ``n_timesteps``, ``times`` (ndarray), ``values`` (ndarray).
+    """
+    cur = conn.execute(
+        "SELECT name FROM sqlite_master WHERE type='table' AND name='swe2d_baked_pipe_cell_ts'"
+    )
+    if cur.fetchone() is None:
+        return []
+    rows = conn.execute(
+        "SELECT link_id, cell_sub_idx, metric, n_timesteps, times_blob, values_blob "
+        "FROM swe2d_baked_pipe_cell_ts WHERE run_id=?",
+        (run_id,),
+    ).fetchall()
+    out: List[Dict[str, Any]] = []
+    for link_id, cell_sub_idx, metric, n_timesteps, times_blob, values_blob in rows:
+        out.append({
+            "link_id": str(link_id),
+            "cell_sub_idx": int(cell_sub_idx),
+            "metric": str(metric),
+            "n_timesteps": int(n_timesteps),
+            "times": (
+                np.frombuffer(times_blob, dtype=np.float64).copy()
+                if times_blob is not None else np.empty(0, dtype=np.float64)
+            ),
+            "values": (
+                np.frombuffer(values_blob, dtype=np.float64).copy()
+                if values_blob is not None else np.empty(0, dtype=np.float64)
+            ),
+        })
+    return out
+
+
+def load_baked_overlay_fields(
+    conn: sqlite3.Connection,
+    run_id: str,
+    n_cells: int,
+) -> Dict[str, np.ndarray]:
+    """Load baked overlay field arrays from GPKG BLOBs.
+
+    Parameters
+    ----------
+    conn : sqlite3.Connection
+        Open connection to the GeoPackage.
+    run_id : str
+        Run identifier.
+    n_cells : int
+        Number of cells (used to reshape row-major BLOBs).
+
+    Returns
+    -------
+    dict
+        Mapping metric -> ndarray. If the BLOB size matches
+        ``n_timesteps * n_cells``, the array is reshaped to
+        ``(n_timesteps, n_cells)``; otherwise it is returned as a 1-D
+        ``(n_cells,)`` legacy single-snapshot array.
+    """
+    cur = conn.execute(
+        "SELECT name FROM sqlite_master WHERE type='table' AND name='swe2d_baked_overlay_fields'"
+    )
+    if cur.fetchone() is None:
+        return {}
+    out: Dict[str, np.ndarray] = {}
+    rows = conn.execute(
+        "SELECT metric, n_timesteps, values_blob FROM swe2d_baked_overlay_fields WHERE run_id=?",
+        (run_id,),
+    ).fetchall()
+    for metric, n_timesteps, values_blob in rows:
+        n_timesteps = int(n_timesteps)
+        values = (
+            np.frombuffer(values_blob, dtype=np.float64).copy()
+            if values_blob is not None else np.empty(0, dtype=np.float64)
+        )
+        if values.size == n_timesteps * n_cells and n_cells > 0:
+            arr = values.reshape(n_timesteps, n_cells)
+        else:
+            arr = values
+        out[str(metric)] = arr
+    return out
 
 
 def persist_baked_line_ts(

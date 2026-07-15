@@ -1209,7 +1209,19 @@ class TopologyController:
         started = getattr(view, "_topology_mesh_started_at", None)
         if started is not None:
             elapsed = max(0.0, time.perf_counter() - started)
+
+        # Capture the CRS from the QGIS project for baked-mesh persistence
+        crs_wkt = ""
+        try:
+            from qgis.core import QgsProject
+            crs = QgsProject.instance().crs()
+            if crs is not None and crs.isValid():
+                crs_wkt = crs.toWkt()
+        except Exception:
+            pass
+
         mesh_data = {
+            "crs_wkt": crs_wkt,
             "node_x": np.asarray(mesh.node_x, dtype=np.float64),
             "node_y": np.asarray(mesh.node_y, dtype=np.float64),
             "node_z": np.asarray(mesh.node_z, dtype=np.float64),

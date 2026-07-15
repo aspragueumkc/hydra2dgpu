@@ -442,7 +442,7 @@ def render_unstructured_snapshot_image(
     gravity: float = 9.81,
     courant_cell_size: float = 0.0,
     courant_dt: float = 0.0,
-    manning_n: float = 0.035,
+    mannings_n: float = 0.035,
     cmap_key: str = "turbo",
     resolution: Tuple[int, int] = (960, 540),
     auto_contrast: bool = True,
@@ -469,8 +469,23 @@ def render_unstructured_snapshot_image(
     tri_to_cell: Optional[np.ndarray] = None,
     show_legend: bool = True,
     legend_label: str = "",
+    length_unit_name: str = "m",
+    overlay_cell_rainfall_rate: Optional[np.ndarray] = None,
+    overlay_cell_cumulative_rain: Optional[np.ndarray] = None,
+    overlay_cell_cumulative_excess: Optional[np.ndarray] = None,
+    overlay_cell_mannings_n: Optional[np.ndarray] = None,
+    overlay_cell_curve_number: Optional[np.ndarray] = None,
 ) -> dict:
     """Rasterize unstructured cell data into a QImage for high-FPS display.
+
+    Shared naming contract you MUST use (attributes on `data` / `results_data`):
+    - ``overlay_cell_rainfall_rate`` (was ``overlay_cell_rain_rate_mps``)
+    - ``overlay_cell_cumulative_rain`` (was ``overlay_cell_cum_rain_mm``)
+    - ``overlay_cell_cumulative_excess`` (was ``overlay_cell_cum_excess_mm``)
+    - ``overlay_cell_mannings_n`` (was ``overlay_cell_manning_n``)
+    - ``overlay_cell_curve_number`` (was ``overlay_cell_cn``)
+
+    The display/legend unit is determined by ``length_unit_name``.
 
     Returns a dictionary with keys:
     - ok: bool
@@ -479,6 +494,13 @@ def render_unstructured_snapshot_image(
     - frame_idx, frame_count, time_s, n_cells
     - vmin, vmax, render_ms
     - message
+
+    Additional overlay cell arrays (all optional):
+    - overlay_cell_rainfall_rate: rain rate in m/s
+    - overlay_cell_cumulative_rain: cumulative rain in mm
+    - overlay_cell_cumulative_excess: cumulative excess in mm
+    - overlay_cell_mannings_n: per-cell Manning's n
+    - overlay_cell_curve_number: per-cell Curve Number
     """
     try:
         from qgis.PyQt import QtCore, QtGui
@@ -596,12 +618,65 @@ def render_unstructured_snapshot_image(
         vals = np.where(wet_all, v * dt / cell_size, 0.0)
     elif mode == "shear_stress":
         g = float(gravity)
-        n_val = max(float(manning_n), 1.0e-6)
+        n_val = max(float(mannings_n), 1.0e-6)
         safe_h = np.maximum(h, 1.0e-6)
         v = np.zeros_like(h)
         v[wet_all] = np.sqrt((hu[wet_all] / safe_h[wet_all]) ** 2 + (hv[wet_all] / safe_h[wet_all]) ** 2)
         rho = 1000.0
         vals = np.where(wet_all, rho * g * n_val * n_val * v * v / np.maximum(safe_h ** (1.0 / 3.0), 1.0e-12), 0.0)
+    elif mode == "rain_intensity":
+        if overlay_cell_rainfall_rate is not None and overlay_cell_rainfall_rate.size == n:
+            # rain rate stored in m/s; display is mm/hr (or in/hr for USC)
+            vals = overlay_cell_rainfall_rate * 3_600_000.0
+            if length_unit_name == "ft":
+                vals = vals / 25.4
+        else:
+            vals = np.zeros(n, dtype=np.float64)
+        vals[~wet_all] = np.nan
+    elif mode == "cumulative_rain":
+        if overlay_cell_cumulative_rain is not None and overlay_cell_cumulative_rain.size == n:
+            # cumulative rain stored in mm; display is in for USC
+            vals = overlay_cell_cumulative_rain.copy()
+            if length_unit_name == "ft":
+                vals = vals / 25.4
+        else:
+            vals = np.zeros(n, dtype=np.float64)
+        vals[~wet_all] = np.nan
+    elif mode == "cumulative_excess":
+        if overlay_cell_cumulative_excess is not None and overlay_cell_cumulative_excess.size == n:
+            # cumulative excess stored in mm; display is in for USC
+            vals = overlay_cell_cumulative_excess.copy()
+            if length_unit_name == "ft":
+                vals = vals / 25.4
+        else:
+            vals = np.zeros(n, dtype=np.float64)
+        vals[~wet_all] = np.nan
+    elif mode == "cumulative_loss":
+        if (
+            overlay_cell_cumulative_rain is not None
+            and overlay_cell_cumulative_excess is not None
+            and overlay_cell_cumulative_rain.size == n
+            and overlay_cell_cumulative_excess.size == n
+        ):
+            # cumulative loss = rain - excess, stored in mm; display is in for USC
+            vals = overlay_cell_cumulative_rain - overlay_cell_cumulative_excess
+            if length_unit_name == "ft":
+                vals = vals / 25.4
+        else:
+            vals = np.zeros(n, dtype=np.float64)
+        vals[~wet_all] = np.nan
+    elif mode == "mannings_n":
+        if overlay_cell_mannings_n is not None and overlay_cell_mannings_n.size == n:
+            vals = overlay_cell_mannings_n.copy()
+        else:
+            vals = np.zeros(n, dtype=np.float64)
+        vals[~wet_all] = np.nan
+    elif mode == "curve_number":
+        if overlay_cell_curve_number is not None and overlay_cell_curve_number.size == n:
+            vals = overlay_cell_curve_number.copy()
+        else:
+            vals = np.zeros(n, dtype=np.float64)
+        vals[~wet_all] = np.nan
     else:
         vals = h.copy()
 
@@ -903,6 +978,22 @@ def render_unstructured_snapshot_image(
                 label = "Velocity"
             elif mode == "wse":
                 label = "Water Surface"
+            elif mode == "rain_intensity":
+                label = "Rain Intensity (mm/hr)" if length_unit_name != "ft" else "Rain Intensity (in/hr)"
+            elif mode == "cumulative_rain":
+                label = "Cumulative Rain (mm)" if length_unit_name != "ft" else "Cumulative Rain (in)"
+            elif mode == "cumulative_excess":
+                label = "Cumulative Excess (mm)" if length_unit_name != "ft" else "Cumulative Excess (in)"
+            elif mode == "cumulative_loss":
+                label = "Cumulative Loss (mm)" if length_unit_name != "ft" else "Cumulative Loss (in)"
+            elif mode == "mannings_n":
+                label = "Manning's n (\u2013)"
+            elif mode == "curve_number":
+                label = "Curve Number (\u2013)"
+            elif mode == "depth":
+                label = f"Depth ({length_unit_name})"
+            elif mode == "speed":
+                label = f"Velocity ({length_unit_name}/s)"
             else:
                 label = "Depth"
         _draw_scalar_legend(img_out, cmap, vmin, vmax, label)

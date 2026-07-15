@@ -162,6 +162,11 @@ class RunController:
 
         run_input = run_data_builder.build()
 
+        # Keep per-cell scalar arrays in mesh data so the overlay can render
+        # mannings_n / curve_number fields without rebuilding them.
+        mesh_data["n_mann_cell"] = run_input.n_mann_cell
+        mesh_data["cn_cell"] = view._build_spatial_cn_array()
+
         run_options = run_options_builder.build(
             dt=wp["dt_spin"],
             adaptive_cfl_dt=wp["adaptive_cfl_dt_chk"],
@@ -352,7 +357,13 @@ class RunController:
         view = self._view
         try:
             if cell_perm is not None and len(cell_perm) > 0:
-                apply_cell_permutation(view._mesh_data, np.asarray(cell_perm, dtype=np.int32))
+                cell_perm_arr = np.asarray(cell_perm, dtype=np.int32)
+                apply_cell_permutation(view._mesh_data, cell_perm_arr)
+                # Keep per-cell scalar arrays in sync with the reordered mesh.
+                for key in ("n_mann_cell", "cn_cell"):
+                    arr = view._mesh_data.get(key)
+                    if arr is not None and arr.size > 0:
+                        view._mesh_data[key] = np.asarray(arr, dtype=np.float64).ravel()[cell_perm_arr]
             sample_map = list(view._build_line_sampling_map() or [])
             result_holder.sample_map = sample_map
         except Exception as exc:
@@ -405,6 +416,13 @@ class RunController:
         except Exception as exc:
             logger.warning("Snapshot readback: coupling sync failed", exc_info=True)
             view._log(f"[SnapReadback] coupling sync failed: {exc}")
+        try:
+            if getattr(data, "pipe_cell_data", None):
+                rd._live_pipe_cell = data.pipe_cell_data
+                view._log(f"[SnapReadback] pipe-cell sync: {len(data.pipe_cell_data)} keys")
+        except Exception as exc:
+            logger.warning("Snapshot readback: pipe-cell sync failed", exc_info=True)
+            view._log(f"[SnapReadback] pipe-cell sync failed: {exc}")
         try:
             line_ts = getattr(data, "line_ts", None)
             line_profiles = getattr(data, "line_profiles", None)
@@ -517,6 +535,26 @@ class RunController:
                             if rec.run_id == result.run_id:
                                 rec.gpkg_path = gpkg
                                 break
+                        # Auto-save simulation config with run
+                        try:
+                            from swe2d.services.gpkg_persistence_service import persist_simulation_config
+                            from swe2d.runtime.run_context_builder import widget_state_to_flat_params
+                            widget_state = self.collect_widget_state_for_save()
+                            flat_params = widget_state_to_flat_params(widget_state)
+                            if result.run_duration_s:
+                                flat_params["run_duration_s"] = result.run_duration_s
+                            persist_simulation_config(
+                                gpkg_path=gpkg,
+                                config_id=result.run_id,
+                                mesh_name=result.mesh_name,
+                                run_duration_s=result.run_duration_s,
+                                widget_state=widget_state,
+                                params=flat_params,
+                                description=f"Auto-saved run: {result.run_id}",
+                                log_fn=view._log,
+                            )
+                        except Exception:
+                            pass
                 view._on_results_refresh()
             except Exception:
                 pass
@@ -750,6 +788,88 @@ class RunController:
         view._log("Override preview:\n" + summary.replace("\n", " | "))
         view.show_information_message("Preview Overrides", summary)
 
+    # ── Config save/load helpers ──────────────────────────────────────
+
+    def collect_widget_state_for_save(self) -> dict:
+        """Collect widget state + data sources for any config save path.
+
+        Returns a versioned widget_state dict ({"version": 1, "widgets": {...}})
+        with _data_sources appended — the format expected by
+        ``restore_workbench_widget_state`` and ``build_run_context_from_dict``
+        (via the params extractor added to the builder).
+
+        Uses the same widget attr list (excluding gravity/k_mann) as manual save.
+        """
+        view = self._view
+        from qgis.PyQt import QtWidgets as _QtWidgets
+        from swe2d.workbench.bridges.project_settings_bridge import collect_workbench_widget_state
+
+        all_attrs = list(view.collect_run_widget_params().keys())
+        widget_attrs = [k for k in all_attrs if k not in ("gravity", "k_mann")]
+        # Include raw storage checkbox widget names — their derived key names
+        # (save_mesh_results_to_gpkg_chk, etc.) are not widget attribute names
+        # on _model_tab_view so collect_workbench_widget_state skips them.
+        widget_attrs.extend(["save_mesh_chk", "save_line_chk", "save_coupling_chk",
+                            "save_log_chk"])
+        widget_state = collect_workbench_widget_state(
+            ui=view._model_tab_view,
+            widget_attrs=widget_attrs,
+            qtwidgets_module=_QtWidgets,
+        )
+        if hasattr(view, "collect_data_source_config"):
+            ds = view.collect_data_source_config()
+            if ds:
+                widget_state["_data_sources"] = ds
+        return widget_state
+
+    def _build_replay_payload(
+        self,
+        widget_state: dict,
+        mesh_name: str,
+        run_duration_s: float,
+        mesh_gpkg_path: str = "",
+        run_id: str = "",
+    ) -> dict:
+        """Build a CLI-replay JSON payload from widget state.
+
+        The payload format matches the ``swe2d-replay/1`` schema understood by
+        ``build_run_context_from_dict``.  The ``params`` block is populated
+        from the versioned ``widget_state`` so the builder can read actual
+        values (not just defaults).  Units are computed from the mesh CRS.
+        """
+        from swe2d.runtime.run_context_builder import widget_state_to_flat_params
+        flat_params = widget_state_to_flat_params(
+            widget_state,
+            mesh_gpkg=mesh_gpkg_path,
+            mesh_name=mesh_name,
+        )
+        units_block = flat_params.pop("_units_block", None)
+        # Always include run_duration_s (not all widgets capture it)
+        if run_duration_s:
+            flat_params["run_duration_s"] = run_duration_s
+
+        # Capture the CRS from the current mesh data
+        crs_wkt = ""
+        view = self._view
+        mesh_data = getattr(view, "_mesh_data", None) or {}
+        crs_wkt = str(mesh_data.get("crs_wkt", "") or "")
+
+        return {
+            "schema_version": "swe2d-replay/1",
+            "run_id": run_id or datetime.datetime.now().astimezone().strftime("swe2d_%Y%m%dT%H%M%S%z"),
+            "mesh": {
+                "gpkg_path": mesh_gpkg_path,
+                "mesh_name": mesh_name,
+                "crs_wkt": crs_wkt,
+            },
+            "params": flat_params,
+            "data_sources": widget_state.get("_data_sources", {}),
+            "results": {},
+            "units": units_block or {},
+            "widget_state": widget_state,
+            "run_duration_s": run_duration_s,
+        }
+
     # ── Load run settings from results GeoPackage ─────────────────────
     def on_load_simulation_config(self) -> None:
         """Open a GeoPackage file picker, then a config picker, then apply.
@@ -854,7 +974,6 @@ class RunController:
         GPKG.
         """
         from qgis.PyQt import QtWidgets as _QtWidgets
-
         view = self._view
 
         # Pre-fill the picker with the current results GPKG if one is set,
@@ -872,45 +991,153 @@ class RunController:
         db_path = str(db_path or "").strip()
         if not db_path:
             return  # user cancelled
-        # If the user typed a path without an extension, add .gpkg.
         if not os.path.splitext(db_path)[1]:
             db_path = db_path + ".gpkg"
 
-        # Prompt for a config name
-        name, ok = view.get_input_text("Save Config", "Configuration name:", "")
-        if not ok:
-            return
-        config_name = str(name).strip()
-        if not config_name:
-            config_name = datetime.datetime.now().astimezone().strftime("swe2d_%Y%m%dT%H%M%S%z")
+        from swe2d.services.gpkg_persistence_service import persist_simulation_config, load_simulation_configs
 
-        from swe2d.workbench.bridges.project_settings_bridge import collect_workbench_widget_state
-        from swe2d.services.gpkg_persistence_service import persist_simulation_config
+        mesh_name = str((getattr(view, "_mesh_data", None) or {}).get("mesh_name", "") or "")
+        widget_state = self.collect_widget_state_for_save()
 
-        mesh_name = str(getattr(view, "_mesh_data", {}).get("mesh_name", "") or "")
-        all_attrs = list(view.collect_run_widget_params().keys())
-        widget_attrs = [k for k in all_attrs if k not in ("gravity", "k_mann")]
-        widget_state = collect_workbench_widget_state(
-            ui=view._model_tab_view,
-            widget_attrs=widget_attrs,
-            qtwidgets_module=_QtWidgets,
-        )
-
-        # Get run duration from the UI
         try:
             run_dur = view.model_tab.get_run_time_hours_parsed() * 3600.0
         except Exception:
             run_dur = 0.0
 
-        persist_simulation_config(
+        # Query existing config IDs so the dialog can warn about overwrites
+        try:
+            existing_configs = load_simulation_configs(db_path, log_fn=None)
+            existing_ids = [c["config_id"] for c in existing_configs]
+        except Exception:
+            existing_ids = []
+
+        def do_persist(gpkg, cfg_id, ws, desc, dur):
+            from swe2d.runtime.run_context_builder import widget_state_to_flat_params
+            flat_params = widget_state_to_flat_params(ws)
+            if dur:
+                flat_params["run_duration_s"] = dur
+            persist_simulation_config(
+                gpkg_path=gpkg,
+                config_id=cfg_id,
+                mesh_name=mesh_name,
+                run_duration_s=dur,
+                widget_state=ws,
+                params=flat_params,
+                description=desc,
+                log_fn=view._log,
+            )
+            view._log(f"Configuration saved as '{cfg_id}' to {gpkg}")
+
+        def do_json_export(json_path, ws):
+            import json
+            payload = self._build_replay_payload(
+                widget_state=ws,
+                mesh_name=mesh_name,
+                run_duration_s=run_dur,
+                mesh_gpkg_path=db_path,
+                run_id=json_path.rsplit("/", 1)[-1].rsplit(".", 1)[0],
+            )
+            try:
+                with open(json_path, "w") as f:
+                    json.dump(payload, f, indent=2, default=str)
+                view._log(f"Configuration exported to JSON: {json_path}")
+            except Exception as exc:
+                view._log(f"[ERROR] JSON export failed: {exc}")
+
+        from swe2d.workbench.dialogs.save_config_dialog import SaveConfigDialog
+        dlg = SaveConfigDialog(
             gpkg_path=db_path,
-            config_id=config_name,
+            existing_config_ids=existing_ids,
+            widget_state=widget_state,
             mesh_name=mesh_name,
             run_duration_s=run_dur,
-            widget_state=widget_state,
-            log_fn=view._log,
+            save_callback=do_persist,
+            json_save_callback=do_json_export,
+            parent=view,
         )
-        view._log(f"Configuration saved as '{config_name}' to {db_path}.")
+        dlg.exec()
+
+    def on_save_simulation_config_as_json(self) -> None:
+        """Export the current widget configuration directly to a JSON file.
+
+        No GPKG interaction — pure JSON export for sharing, version control,
+        or archival.
+        """
+        import json
+        from qgis.PyQt import QtWidgets as _QtWidgets
+
+        view = self._view
+        path, _ = _QtWidgets.QFileDialog.getSaveFileName(
+            view,
+            "Export Configuration as JSON",
+            "",
+            "JSON Files (*.json);;All Files (*)",
+        )
+        if not path:
+            return
+        if not path.endswith(".json"):
+            path += ".json"
+
+        mesh_name = str((getattr(view, "_mesh_data", None) or {}).get("mesh_name", "") or "")
+        widget_state = self.collect_widget_state_for_save()
+
+        try:
+            run_dur = view.model_tab.get_run_time_hours_parsed() * 3600.0
+        except Exception:
+            run_dur = 0.0
+
+        payload = self._build_replay_payload(
+            widget_state=widget_state,
+            mesh_name=mesh_name,
+            run_duration_s=run_dur,
+            mesh_gpkg_path=str(getattr(view, "_model_gpkg_path", "") or ""),
+        )
+        try:
+            with open(path, "w") as f:
+                json.dump(payload, f, indent=2, default=str)
+            view._log(f"Configuration exported to JSON: {path}")
+        except Exception as exc:
+            view.show_critical_message("Export failed", str(exc))
+
+    def on_load_simulation_config_from_json(self) -> None:
+        """Load a simulation configuration directly from a JSON file.
+
+        No GPKG interaction — imports a previously-exported JSON file.
+        """
+        from qgis.PyQt import QtWidgets as _QtWidgets
+
+        view = self._view
+        path, _ = _QtWidgets.QFileDialog.getOpenFileName(
+            view,
+            "Load Configuration from JSON",
+            "",
+            "JSON Files (*.json);;All Files (*)",
+        )
+        if not path:
+            return
+        try:
+            import json
+            with open(path) as f:
+                data = json.load(f)
+        except Exception as exc:
+            view.show_critical_message("Load failed", f"Could not read JSON:\n{exc}")
+            return
+
+        # widget_state is either at top level or nested
+        ws = data.get("widget_state", data)
+        if not isinstance(ws, dict):
+            view.show_critical_message("Load failed", "JSON does not contain valid widget state.")
+            return
+
+        metadata = {"workbench_widget_state": ws}
+        if hasattr(view, "_apply_run_log_metadata_to_ui"):
+            try:
+                restored = view._apply_run_log_metadata_to_ui(metadata)
+                view._log(f"Loaded config from JSON '{path}': {int(restored)} widgets restored.")
+            except Exception as exc:
+                view.show_critical_message("Apply failed", str(exc))
+        else:
+            view._log(f"[WARNING] JSON loaded but apply callback not available.")
 
     def on_preview_coupling(self) -> None:
         """Compute and display a coupling configuration preview.

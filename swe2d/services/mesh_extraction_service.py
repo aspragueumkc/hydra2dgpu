@@ -70,6 +70,15 @@ def extract_mesh_from_layer_data(
     if nodes_layer is None or cells_layer is None:
         return {}
 
+    # Capture the CRS from the nodes layer
+    crs_wkt = ""
+    try:
+        crs = nodes_layer.crs()
+        if crs is not None and crs.isValid():
+            crs_wkt = crs.toWkt()
+    except Exception:
+        pass
+
     nodes_by_id: Dict[int, Tuple[float, float, float]] = {}
     auto_id = 0
     for ft in nodes_layer.getFeatures():
@@ -232,6 +241,7 @@ def extract_mesh_from_layer_data(
         "ny": np.array(max(2, int(round(np.sqrt(node_x.size))))),
         "lx": np.array(max(lx, 1.0)),
         "ly": np.array(max(ly, 1.0)),
+        "crs_wkt": crs_wkt,
         "node_x": node_x,
         "node_y": node_y,
         "node_z": node_z,

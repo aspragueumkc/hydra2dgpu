@@ -50,20 +50,11 @@ class ModelTabViewProtocol(Protocol):
     def get_drainage_coupling_substeps(self) -> int:
         """Number of drainage substeps per SWE2D step."""
 
-    def get_drainage_max_coupling_substeps(self) -> int:
-        """Max adaptive substeps for drainage."""
-
     def get_drainage_head_deadband(self) -> float:
         """Head deadband below which no drainage flow."""
 
     def get_drainage_dynamic_relaxation(self) -> float:
         """Relaxation factor for drainage coupling."""
-
-    def get_drainage_adaptive_depth_fraction(self) -> float:
-        """Fraction of cell water depth drainable per step."""
-
-    def get_drainage_adaptive_wave_courant(self) -> float:
-        """Courant target for adaptive drainage."""
 
     def get_drainage_implicit_iters(self) -> int:
         """Implicit solver iterations for GPU drainage."""

@@ -125,6 +125,20 @@ def on_results_add(dialog) -> None:
     # do NOT scan previously-added manual GPKGs.  Each "Add Results"
     # action is self-contained.
     data.discover_runs(scan_paths=list(gpkg_paths_in_this_batch))
+
+    # Clear stale overlay geometry so the next overlay refresh loads
+    # mesh from the newly added GPKG (not the previous one).
+    dialog._overlay_controller._clear_overlay_geometry()
+    data._snapshot_mesh_fingerprint = ""
+    # Reset overlay selected key so it resolves to a run from the new
+    # _run_records — otherwise it points to the old GPKG's run and the
+    # overlay loads the wrong mesh geometry for the new snapshot data.
+    data._overlay_selected_key = ""
+    # Clear stale live snapshot tuples so sync_high_perf_overlay_data()
+    # enters the GPKG path (Path 2) instead of the live path (Path 1)
+    # which would crash on missing in-memory mesh data.
+    data.clear_live_snapshots()
+
     data._rebuild_timestep_union()
     dialog.results_toolbox.refresh_run_list()
     temporal = getattr(dialog, "_temporal_dock", None)

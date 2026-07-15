@@ -44,21 +44,16 @@ def query_mesh_from_gpkg(gpkg_path: str, mesh_name: str) -> Optional[Dict[str, n
             "node_z": np.asarray(pm.node_z, dtype=np.float64),
             "cell_nodes": np.asarray(pm.cell_face_nodes, dtype=np.int32) if pm.cell_face_nodes is not None else np.empty(0, dtype=np.int32),
         }
-        # Include baked boundary-condition arrays if the mesh was baked with them.
-        # Filter out INTERIOR edges (bc_type==0): the C++ BLOB serializes ALL
-        # edges (interior + boundary), but backend.set_boundary_conditions only
-        # accepts boundary edges. Re-applying interior edges fails the lookup
-        # in _boundary_edge_index_by_nodes and aborts the run.
+        # Extract the boundary edge topology (node pairs) from the BLOB.
+        # BC type/values are NOT baked — they come from config
+        # (default_bc_type + bc_lines override).
         if pm.edge_n0 is not None and pm.edge_n1 is not None:
             n0_all = np.asarray(pm.edge_n0, dtype=np.int32)
             n1_all = np.asarray(pm.edge_n1, dtype=np.int32)
             bc_all = np.asarray(pm.edge_bc, dtype=np.int32) if pm.edge_bc is not None else np.zeros_like(n0_all, dtype=np.int32)
-            vl_all = np.asarray(pm.edge_bc_val, dtype=np.float64) if pm.edge_bc_val is not None else np.zeros_like(n0_all, dtype=np.float64)
             boundary_mask = bc_all != 0
             out["bc_edge_node0"] = n0_all[boundary_mask]
             out["bc_edge_node1"] = n1_all[boundary_mask]
-            out["bc_edge_type"] = bc_all[boundary_mask]
-            out["bc_edge_val"] = vl_all[boundary_mask]
         # Also read CRS from the baked mesh table
         try:
             _c = sqlite3.connect(gpkg_path)
@@ -651,7 +646,9 @@ def read_drainage_config_from_gpkg(
     outfalls: List[Dict[str, Any]] = []
     for n in nodes_raw:
         if n["type"] in ("outfall", "free_outfall"):
-            cid = node_cell.get(n["id"], 0)
+            # Outfalls are free-discharge boundaries; do not auto-couple them to a
+            # surface cell even if the node is inside the 2D domain.
+            cid = -1
             outfall_entry: Dict[str, Any] = {
                 "outfall_id": n["id"],
                 "cell_id": cid,
@@ -910,3 +907,127 @@ def load_and_configure_hydrographs(
         value=val_arr,
     )
     return True
+
+
+def load_hydrograph_edge_data(
+    bc_conn: sqlite3.Connection,
+    bc_table: str,
+    hyd_conn: sqlite3.Connection,
+    hyd_table: str,
+    node_x: np.ndarray,
+    node_y: np.ndarray,
+    bc_n0: np.ndarray,
+    bc_n1: np.ndarray,
+    logger: Any = None,
+) -> dict:
+    """Read BC hydrographs from GPKG into edge_hydrographs dict format.
+
+    Does NOT call any backend methods — returns data only.  The returned dict
+    can be passed to ``RunContext.edge_hydrographs`` and will be handled by
+    ``SWE2DNativeBoundaryHydrographConfigurator`` inside ``_execute()``.
+
+    Returns ``edge_hydrographs``: ``{bc_edge_index: (bc_type, (times, values))}``
+    where *bc_edge_index* is the position in the bc_n0/bc_n1 arrays.
+    """
+    _log = logger.info if logger else (lambda *a: None)
+    cur = bc_conn.cursor()
+    cur.execute(f'PRAGMA table_info("{bc_table}")')
+    col_info = [(str(r[1]), str(r[2]).lower()) for r in cur.fetchall()]
+    col_names_lower = {c.lower() for c, _ in col_info}
+
+    if "hydrograph_id" not in col_names_lower:
+        _log("[Hydrograph] No hydrograph_id column in bc_table")
+        return {}
+
+    geom_col = next((c for c, _ in col_info if c.lower() in ("geom", "wkb_geometry", "geometry", "shape")), None)
+    if geom_col is None:
+        _log("[Hydrograph] No geometry column found in bc_table")
+        return {}
+
+    cur.execute(f'SELECT "{geom_col}", "bc_type", "hydrograph_id" FROM "{bc_table}" '
+                f'WHERE "hydrograph_id" IS NOT NULL AND "hydrograph_id" != \'\'')
+    bc_rows = cur.fetchall()
+    if not bc_rows:
+        _log("[Hydrograph] No bc_lines with hydrograph_id")
+        return {}
+
+    # Build KD-tree for snapping bc_line vertices to mesh nodes
+    from scipy.spatial import KDTree
+    tree = KDTree(np.column_stack([np.asarray(node_x, dtype=np.float64),
+                                    np.asarray(node_y, dtype=np.float64)]))
+
+    # Build bc edge lookup: (min_node, max_node) → bc edge index
+    _bc_n0 = np.asarray(bc_n0, dtype=np.int32).ravel()
+    _bc_n1 = np.asarray(bc_n1, dtype=np.int32).ravel()
+    bc_edge_map: Dict[tuple, int] = {}
+    for ei in range(_bc_n0.size):
+        a, b = int(_bc_n0[ei]), int(_bc_n1[ei])
+        key = (a, b) if a < b else (b, a)
+        bc_edge_map[key] = ei
+
+    # Read all hydrographs from hydrograph table
+    hcur = hyd_conn.cursor()
+    hcur.execute(f'PRAGMA table_info("{hyd_table}")')
+    hcols = [str(r[1]) for r in hcur.fetchall()]
+    hcol_names_lower = {c.lower() for c in hcols}
+
+    hg_col = next((c for c in hcols if c.lower() == "hydrograph_id"), None)
+    time_col = next((c for c in hcols if c.lower() in ("time", "t", "time_s")), None)
+    val_col = next((c for c in hcols if c.lower() in ("value", "val", "v", "flow", "q")), None)
+    if not all([hg_col, time_col, val_col]):
+        _log("[Hydrograph] Missing required columns in hydrograph table")
+        return {}
+
+    hcur.execute(f'SELECT "{hg_col}", "{time_col}", "{val_col}" FROM "{hyd_table}" '
+                 f'ORDER BY "{hg_col}", "{time_col}"')
+    hyd_rows = hcur.fetchall()
+    if not hyd_rows:
+        return {}
+
+    # Group hydrograph data by hydrograph_id → (times, values)
+    hyd_series: Dict[str, Tuple[np.ndarray, np.ndarray]] = {}
+    for row in hyd_rows:
+        hid = str(row[0])
+        t = float(row[1])
+        v = float(row[2])
+        if hid not in hyd_series:
+            hyd_series[hid] = ([], [])
+        hyd_series[hid][0].append(t)
+        hyd_series[hid][1].append(v)
+    for hid in hyd_series:
+        hyd_series[hid] = (
+            np.array(hyd_series[hid][0], dtype=np.float64),
+            np.array(hyd_series[hid][1], dtype=np.float64),
+        )
+
+    # Match bc_lines to bc edges and build edge_hydrographs
+    edge_hydrographs: Dict[int, Tuple[int, Tuple[np.ndarray, np.ndarray]]] = {}
+    for row in bc_rows:
+        geom_raw = row[0]
+        bc_type = int(row[1]) if row[1] is not None else 102
+        hydro_id = str(row[2])
+
+        series = hyd_series.get(hydro_id)
+        if series is None:
+            _log("[Hydrograph] No series found for hydrograph_id='%s'", hydro_id)
+            continue
+
+        coords = _parse_wkb_linestring(geom_raw)
+        if not coords:
+            coords = _parse_wkt_linestring_coords(str(geom_raw or ""))
+        if len(coords) < 2:
+            continue
+
+        node_ids = [int(tree.query([x, y])[1]) for x, y in coords]
+
+        for i in range(len(node_ids) - 1):
+            a, b = node_ids[i], node_ids[i + 1]
+            key = (a, b) if a < b else (b, a)
+            eidx = bc_edge_map.get(key)
+            if eidx is None:
+                continue
+            edge_hydrographs[int(eidx)] = (int(bc_type), series)
+            break  # found a match for this bc_line, move to next
+
+    _log("[Hydrograph] Built edge_hydrographs dict with %d entries", len(edge_hydrographs))
+    return edge_hydrographs

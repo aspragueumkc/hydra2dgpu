@@ -25,6 +25,8 @@ struct Pipe1DDeviceState {
     double*   d_cell_n;        // [n_pipe_cells]
     double*   d_cell_link_k;   // [n_pipe_cells] k at boundary cells only (0 interior)
     double*   d_cell_link_area; // [n_pipe_cells] full pipe area at boundary cells (0 interior)
+    int32_t*  d_cell_owner_link; // [n_pipe_cells] which link each sub-cell belongs to
+    int32_t*  d_cell_sub_idx;    // [n_pipe_cells] sub-cell index within its link
 
     int32_t*  d_cell_shape_type; // [n_pipe_cells] 0=circular 1=rect 2=ellipse
     double*   d_cell_width;      // [n_pipe_cells]
@@ -36,6 +38,9 @@ struct Pipe1DDeviceState {
     double*   d_node_net_q;     // [n_nodes]
     double*   d_node_surface_area; // [n_nodes]
     double*   d_node_max_depth;    // [n_nodes] crown elevation
+    int32_t*  d_node_is_boundary; // [n_nodes] 1=pipe-end or outfall (no storage)
+    int32_t*  d_node_is_outfall;    // [n_nodes] 1=free outfall node (node_depth forced to 0)
+    int32_t*  d_node_is_inlet;     // [n_nodes] 1=node has inlet assignment (flow-prescribed BC)
 
     double*   d_A;              // [n_pipe_cells]
     double*   d_Q;              // [n_pipe_cells]
@@ -54,14 +59,25 @@ struct Pipe1DDeviceState {
         _P_FREE(d_cell_length); _P_FREE(d_cell_area);
         _P_FREE(d_cell_perim); _P_FREE(d_cell_invert);
         _P_FREE(d_cell_n); _P_FREE(d_cell_link_k); _P_FREE(d_cell_link_area);
+        _P_FREE(d_cell_owner_link); _P_FREE(d_cell_sub_idx);
         _P_FREE(d_cell_shape_type); _P_FREE(d_cell_width); _P_FREE(d_cell_height); _P_FREE(d_cell_tables);
         _P_FREE(d_node_invert); _P_FREE(d_node_depth); _P_FREE(d_node_net_q); _P_FREE(d_node_surface_area);
-        _P_FREE(d_node_max_depth);
+        _P_FREE(d_node_max_depth); _P_FREE(d_node_is_boundary); _P_FREE(d_node_is_outfall);
+        _P_FREE(d_node_is_inlet);
         _P_FREE(d_A); _P_FREE(d_Q); _P_FREE(d_A_prev); _P_FREE(d_Q_iter);
         n_pipe_cells = 0; n_nodes = 0;
         #undef _P_FREE
     }
 };
+
+// ── Kernel declarations ────────────────────────────────────────────────────
+
+/** Mark nodes that have inlet assignments. Defined in pipe1d.cu. @global */
+__global__ void swe2d_mark_inlet_nodes_kernel(
+    int32_t n_inlets,
+    const int32_t* __restrict__ inlet_node,
+    int32_t n_nodes,
+    int32_t* __restrict__ node_is_inlet);
 
 // ── Host API declarations ────────────────────────────────────────────────
 
@@ -118,14 +134,19 @@ void swe2d_build_pipe1d_mesh(
     @param cell_to_node To-node per cell [n_cells]
     @param cell_invert Cell midpoint invert [n_cells]
     @param cell_perim Pipe perimeter [n_cells]
-    @param cell_k_loss Minor loss K at boundary cells [n_cells] (0 interior)
     @param cell_A Current area [n_cells]
     @param cell_Q Current discharge [n_cells]
     @param node_invert Node invert elevation [n_nodes]
     @param node_depth Node depth [n_nodes]
+    @param node_max_depth Node max depth [n_nodes]
+    @param node_is_inlet Node has inlet assignment (1=flow-prescribed BC) [n_nodes]
     @param cell_length Cell length [n_cells]
+    @param cell_height Cell height / crown [n_cells]
     @param flux_Q_out Net flux OUT of each cell [n_cells]
     @param g Gravitational acceleration
+    @param cell_tables Geometry lookup tables [n_cells * 2 * table_N]
+    @param table_N Number of entries per table
+    @param volume_decomposition Enable volume decomposition head averaging
     @host */
 void swe2d_pipe1d_flux_kernel_host(
     int32_t               n_cells,
@@ -142,6 +163,7 @@ void swe2d_pipe1d_flux_kernel_host(
     const double*         node_invert,
     const double*         node_depth,
     const double*         node_max_depth,
+    const int32_t*        node_is_inlet,
     const double*         cell_length,
     const double*         cell_height,
     double*               flux_Q_out,
@@ -272,6 +294,9 @@ void swe2d_pipe1d_upload_node_depth(
 /** Initialize pipe cell area from uploaded node depths. @host */
 void swe2d_pipe1d_init_area_from_depth(Pipe1DDeviceState* dev);
 
+/** Initialize pipe cell area to full pipe cross-section (primed initial condition). @host */
+void swe2d_pipe1d_init_full(Pipe1DDeviceState* dev);
+
 /** Readback pipe1d node/cell state for diagnostics and tests.
     @param dev Device state pointer
     @param host_node_depth Output host buffer for node depths [n_nodes] (may be nullptr)
@@ -285,6 +310,12 @@ void swe2d_pipe1d_readback_node_state(
     double*           host_node_depth,
     double*           host_cell_A,
     double*           host_cell_Q,
+    double*           host_cell_width,
+    double*           host_cell_height,
+    int32_t*          host_cell_shape_type,
+    double*           host_cell_invert,
+    int32_t*          host_cell_owner_link,
+    int32_t*          host_cell_sub_idx,
     int32_t           n_nodes,
     int32_t           n_cells);
 
@@ -297,10 +328,19 @@ void swe2d_drainage_pipe_end_bc_kernel_host(
     const double* pipe_end_invert, const double* pipe_end_diameter,
     const double* pipe_end_area,
     const double* pipe_end_kin, const double* pipe_end_kout,
-    const double* cell_wse, const double* node_invert,
+    const double* cell_wse, const double* cell_h, double h_min,
+    const double* node_invert,
     const double* node_surface_area, const double* node_qleave,
     double gravity,
     double* node_depth, double* pipe_end_depth_bc, double* pipe_end_node_area);
+
+/** Host wrapper: force free outfall node depth to zero.
+    Outfall nodes act as free-discharge pipe boundaries.
+    @host */
+void swe2d_outfall_free_bc_kernel_host(
+    int32_t n_nodes,
+    const int32_t* node_is_outfall,
+    double* node_depth);
 
 /** Host wrapper: pipe-end exchange kernel.
     Applies net node discharge from pipe solver as surface cell source/sink.

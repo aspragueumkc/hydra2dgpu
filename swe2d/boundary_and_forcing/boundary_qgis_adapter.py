@@ -325,6 +325,56 @@ def apply_bc_layer_overrides_qgis(
     return bc_type, bc_val, bc_relax
 
 
+def apply_bc_layer_overrides_from_gpkg(
+    *,
+    gpkg_path: str,
+    table_name: str,
+    mesh_data,
+    edge_n0: np.ndarray,
+    edge_n1: np.ndarray,
+    bc_type: np.ndarray,
+    bc_val: np.ndarray,
+    default_relax: float = 0.0,
+    log_fn=None,
+) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Apply BC layer overrides loaded from a GeoPackage table.
+
+    Thin headless shim: loads the QgsVectorLayer from GPKG, then calls the
+    same ``apply_bc_layer_overrides_qgis`` used by the GUI path.
+    """
+    from qgis.core import QgsVectorLayer, QgsGeometry, QgsPointXY
+    if log_fn is None:
+        log_fn = logger.info
+
+    uri = f"{gpkg_path}|layername={table_name}"
+    bc_layer = QgsVectorLayer(uri, "bc_lines", "ogr")
+    if not bc_layer.isValid():
+        log_fn(f"BC layer '{table_name}' not loaded from {gpkg_path}")
+        bc_relax = np.full(edge_n0.size, float(default_relax), dtype=np.float64)
+        return bc_type, bc_val, bc_relax
+
+    def _combo_layer_fn(combo, layer_type):
+        return bc_layer
+
+    # apply_bc_layer_overrides_qgis returns early if bc_lines_layer_combo is
+    # None, so pass a sentinel value (the combo object is only used as an
+    # argument to combo_layer_fn, which we've replaced).
+    return apply_bc_layer_overrides_qgis(
+        mesh_data=mesh_data,
+        have_qgis_core=True,
+        bc_lines_layer_combo="__headless__",
+        combo_layer_fn=_combo_layer_fn,
+        edge_n0=edge_n0,
+        edge_n1=edge_n1,
+        bc_type=bc_type,
+        bc_val=bc_val,
+        default_relax=default_relax,
+        qgs_geometry_cls=QgsGeometry,
+        qgs_pointxy_cls=QgsPointXY,
+        log_fn=log_fn,
+    )
+
+
 def collect_bc_layer_hydrographs_qgis(
     *,
     mesh_data,

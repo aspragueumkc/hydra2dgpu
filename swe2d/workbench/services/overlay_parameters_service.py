@@ -19,6 +19,7 @@ import logging
 logger = logging.getLogger(__name__)
 
 from typing import Any, Dict, Optional
+import numpy as np
 
 
 def _safe_current_data(combo: Any, default: Any) -> Any:
@@ -65,6 +66,36 @@ def _safe_extent(canvas: Any) -> Optional[tuple]:
         )
     except Exception:
         return None
+
+
+def _label_for_overlay_mode(mode: str, length_unit_name: str) -> str:
+    """Return a unit-aware legend label for the overlay field mode."""
+    mode = str(mode or "").lower()
+    if mode == "rain_intensity":
+        return "Rain Intensity (in/hr)" if length_unit_name == "ft" else "Rain Intensity (mm/hr)"
+    if mode == "cumulative_rain":
+        return "Cumulative Rain (in)" if length_unit_name == "ft" else "Cumulative Rain (mm)"
+    if mode == "cumulative_excess":
+        return "Cumulative Excess (in)" if length_unit_name == "ft" else "Cumulative Excess (mm)"
+    if mode == "cumulative_loss":
+        return "Cumulative Loss (in)" if length_unit_name == "ft" else "Cumulative Loss (mm)"
+    if mode == "mannings_n":
+        return "Manning's n (\u2013)"
+    if mode == "curve_number":
+        return "Curve Number (\u2013)"
+    if mode == "depth":
+        return f"Depth ({length_unit_name})"
+    if mode == "speed":
+        return f"Velocity ({length_unit_name}/s)"
+    if mode == "wse":
+        return f"Water Surface ({length_unit_name})"
+    if mode == "froude":
+        return "Froude Number"
+    if mode == "courant":
+        return "Courant Number"
+    if mode == "shear_stress":
+        return "Shear Stress (Pa)"
+    return ""
 
 
 def collect_overlay_parameters(view: Any, t_use: float) -> Dict[str, Any]:
@@ -175,14 +206,7 @@ def collect_overlay_parameters(view: Any, t_use: float) -> Dict[str, Any]:
         courant_dt = 1.0
 
     length_unit_name = getattr(view, "_length_unit_name", "m")
-    legend_label = (
-        f"Depth ({length_unit_name})" if field_key == "depth"
-        else f"Velocity ({length_unit_name}/s)" if field_key == "speed"
-        else f"Water Surface ({length_unit_name})" if field_key == "wse"
-        else "Froude Number" if field_key == "froude"
-        else "Courant Number" if field_key == "courant"
-        else "Shear Stress (Pa)"
-    )
+    legend_label = _label_for_overlay_mode(field_key, length_unit_name)
 
     return {
         "cell_x": data.overlay_cell_x if data is not None else None,
@@ -216,7 +240,15 @@ def collect_overlay_parameters(view: Any, t_use: float) -> Dict[str, Any]:
         "gravity": getattr(view, "_gravity", 9.81),
         "courant_cell_size": courant_cell_size,
         "courant_dt": courant_dt,
-        "manning_n": getattr(view, "_mannings_n", 0.035),
+        "mannings_n": getattr(view, "_mannings_n", 0.035),
         "show_legend": True,
         "legend_label": legend_label,
+        # Overlay per-cell scalar arrays for Manning/CN fields
+        "overlay_cell_mannings_n": getattr(data, "overlay_cell_mannings_n", np.empty(0, dtype=np.float64)) if data is not None else np.empty(0, dtype=np.float64),
+        "overlay_cell_curve_number": getattr(data, "overlay_cell_curve_number", np.empty(0, dtype=np.float64)) if data is not None else np.empty(0, dtype=np.float64),
+        # Rain overlay arrays (rain rate in m/s, cumulative values in mm)
+        "overlay_cell_rainfall_rate": getattr(data, "overlay_cell_rainfall_rate", np.empty(0, dtype=np.float64)) if data is not None else np.empty(0, dtype=np.float64),
+        "overlay_cell_cumulative_rain": getattr(data, "overlay_cell_cumulative_rain", np.empty(0, dtype=np.float64)) if data is not None else np.empty(0, dtype=np.float64),
+        "overlay_cell_cumulative_excess": getattr(data, "overlay_cell_cumulative_excess", np.empty(0, dtype=np.float64)) if data is not None else np.empty(0, dtype=np.float64),
+        "length_unit_name": length_unit_name,
     }

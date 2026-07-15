@@ -312,10 +312,15 @@ class TestModelTabView(unittest.TestCase):
         self.assertIsInstance(view.rain_boundary_buffer_rings_spin, QSpinBox)
         self.assertEqual(view.rain_boundary_buffer_rings_spin.objectName(), "rain_boundary_buffer_rings_spin")
 
-    def test_view_has_coupling_loop_combo(self):
+    def test_view_coupling_loop_combo_removed(self):
+        """CUDA coupling loop is the only valid backend; the UI widget was removed.
+
+        See SWE2DCouplingController.__init__ which hardcodes
+        ``self.coupling_loop = "cuda"``. Tests asserting the widget exists
+        are intentionally absent.
+        """
         view = self._make_view()
-        self.assertIsInstance(view.coupling_loop_combo, QComboBox)
-        self.assertEqual(view.coupling_loop_combo.objectName(), "coupling_loop_combo")
+        self.assertFalse(hasattr(view, "coupling_loop_combo"))
 
     def test_view_has_culvert_solver_mode_combo(self):
         view = self._make_view()
@@ -347,11 +352,6 @@ class TestModelTabView(unittest.TestCase):
         self.assertIsInstance(view.drainage_coupling_substeps_spin, QSpinBox)
         self.assertEqual(view.drainage_coupling_substeps_spin.objectName(), "drainage_coupling_substeps_spin")
 
-    def test_view_has_drainage_max_coupling_substeps_spin(self):
-        view = self._make_view()
-        self.assertIsInstance(view.drainage_max_coupling_substeps_spin, QSpinBox)
-        self.assertEqual(view.drainage_max_coupling_substeps_spin.objectName(), "drainage_max_coupling_substeps_spin")
-
     def test_view_has_drainage_head_deadband_spin(self):
         view = self._make_view()
         self.assertIsInstance(view.drainage_head_deadband_spin, QDoubleSpinBox)
@@ -361,16 +361,6 @@ class TestModelTabView(unittest.TestCase):
         view = self._make_view()
         self.assertIsInstance(view.drainage_dynamic_relaxation_spin, QDoubleSpinBox)
         self.assertEqual(view.drainage_dynamic_relaxation_spin.objectName(), "drainage_dynamic_relaxation_spin")
-
-    def test_view_has_drainage_adaptive_depth_fraction_spin(self):
-        view = self._make_view()
-        self.assertIsInstance(view.drainage_adaptive_depth_fraction_spin, QDoubleSpinBox)
-        self.assertEqual(view.drainage_adaptive_depth_fraction_spin.objectName(), "drainage_adaptive_depth_fraction_spin")
-
-    def test_view_has_drainage_adaptive_wave_courant_spin(self):
-        view = self._make_view()
-        self.assertIsInstance(view.drainage_adaptive_wave_courant_spin, QDoubleSpinBox)
-        self.assertEqual(view.drainage_adaptive_wave_courant_spin.objectName(), "drainage_adaptive_wave_courant_spin")
 
     def test_view_has_drainage_implicit_iters_spin(self):
         view = self._make_view()
@@ -452,11 +442,25 @@ class TestModelTabView(unittest.TestCase):
             self.assertIn(expected, titles)
 
     def test_drain_page_has_group_boxes(self):
+        """Drain page has the expected group boxes after the Structure Coupling /
+        Drainage Network split.  The old 'Culvert / Bridge' group was replaced
+        by 'Structure Coupling' (outer) + 'Structures — Layers' +
+        'Structures — Coupling Settings' (inner, advanced).
+        """
         view = self._make_view()
         page = view.findChild(QWidget, "model_drain_page")
         groups = page.findChildren(QGroupBox)
         titles = {g.title() for g in groups}
-        for expected in ("Culvert / Bridge", "Drainage Network — Equation Set", "Drainage — Substepping", "Drainage — Stability"):
+        for expected in (
+            "Structure Coupling",           # outer section replacing Culvert/Bridge
+            "Structures — Layers",         # layer setup inside Structure Coupling
+            "Structures — Coupling Settings",  # advanced settings inside Structure Coupling
+            "Drainage Network",            # outer section for drainage
+            "Drainage — Layers",           # layer setup inside Drainage Network
+            "Drainage — Equation Set",     # renamed from Drainage Network — Equation Set
+            "Drainage — Substepping",
+            "Drainage — Stability",
+        ):
             self.assertIn(expected, titles)
 
     def test_model_tab_has_search_filter(self):

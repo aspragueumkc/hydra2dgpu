@@ -118,7 +118,7 @@ class ResultsToolbox(QtWidgets.QWidget):
         field_layout = QtWidgets.QFormLayout(field_group)
 
         self.field_combo = self._add_combo(field_layout, "Field:")
-        self.field_combo.setToolTip("Result field to render on the map canvas: Depth, Velocity, WSE, etc.")
+        self.field_combo.setToolTip("Result field to render on the map canvas: Depth, Velocity, WSE, Froude, Courant, Shear Stress, Rain Intensity, Cumulative Rain/Excess/Loss, Manning's n, Curve Number.")
         self.wse_render_combo = self._add_combo(field_layout, "WSE render:")
         self.wse_render_combo.setToolTip("Water surface elevation rendering mode: raw cell-centered or smoothed nodal.")
         self.cmap_combo = self._add_combo(field_layout, "Colormap:")
@@ -312,6 +312,12 @@ class ResultsToolbox(QtWidgets.QWidget):
                 ("Depth", "depth"), ("Velocity", "speed"),
                 ("Water Surface", "wse"), ("Froude Number", "froude"),
                 ("Courant Number", "courant"), ("Shear Stress", "shear_stress"),
+                ("Rain Intensity", "rain_intensity"),
+                ("Cumulative Rain", "cumulative_rain"),
+                ("Cumulative Excess", "cumulative_excess"),
+                ("Cumulative Loss", "cumulative_loss"),
+                ("Manning's n (–)", "mannings_n"),
+                ("Curve Number (–)", "curve_number"),
             ]),
             (self.cmap_combo, [
                 ("Turbo", "turbo"), ("Viridis", "viridis"),

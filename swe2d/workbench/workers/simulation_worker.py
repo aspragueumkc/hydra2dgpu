@@ -13,7 +13,10 @@ import numpy as np
 from qgis.PyQt.QtCore import QThread, pyqtSignal
 
 from swe2d import units as _u
-from swe2d.boundary_and_forcing.runtime_source_logic import permute_internal_flow_forcing
+from swe2d.boundary_and_forcing.runtime_source_logic import (
+    permute_internal_flow_forcing,
+    permute_thiessen_forcing,
+)
 from swe2d.runtime.backend import SWE2DBackend
 from swe2d.runtime.backend_initializer import SWE2DBackendInitializer
 from swe2d.runtime.coupling import build_coupling_controller
@@ -28,7 +31,9 @@ from swe2d.workbench.services.constants_service import BC_TS_STAGE as _BC_TS_STA
 from swe2d.workbench.services.mesh_service import apply_cell_permutation, classify_boundary_edges
 from swe2d.workbench.services.non_gui_runtime_service import (
     build_coupling_keys,
+    build_pipe_cell_keys,
     execute_run_timestep_loop as _execute_run_timestep_loop_runtime_logic,
+    _sample_coupling_object_metrics,
 )
 from swe2d.results.data import SWE2DResultsData
 from swe2d.workbench.workers.run_context import RunContext
@@ -50,6 +55,7 @@ class SnapshotData:
         line_ts: Any = None,
         line_profiles: Any = None,
         coupling_data: Any = None,
+        pipe_cell_data: Any = None,
     ):
         self.timesteps = timesteps
         self.t_s = t_s
@@ -59,6 +65,7 @@ class SnapshotData:
         self.line_ts = line_ts
         self.line_profiles = line_profiles
         self.coupling_data = coupling_data
+        self.pipe_cell_data = pipe_cell_data
 
 
 class ComputeResult:
@@ -511,6 +518,13 @@ class SimulationWorker(QThread):
                             ctx.internal_flow_forcing, np.asarray(cp, dtype=np.int32)
                         ),
                     )
+                if ctx.thiessen_forcing is not None:
+                    ctx = replace(
+                        ctx,
+                        thiessen_forcing=permute_thiessen_forcing(
+                            ctx.thiessen_forcing, np.asarray(cp, dtype=np.int32)
+                        ),
+                    )
             else:
                 sample_map = list(ctx.sample_map_data or [])
 
@@ -720,11 +734,24 @@ class SimulationWorker(QThread):
             )
 
             results_data = SWE2DResultsData()
+            # Store on self so headless executor can access via adapter after _execute() returns
+            self._results_data = results_data
             results_data.clear_live_snapshots()
             if coupling_controller is not None:
                 coupling_keys, coupling_object_names = build_coupling_keys(coupling_controller)
                 if coupling_keys:
                     results_data.init_coupling_storage(coupling_keys, coupling_object_names)
+                # Initialize per-pipe-cell storage (drainage_cell rows)
+                pipe_cell_keys = build_pipe_cell_keys(coupling_controller)
+                log(f"[PipeCell] initialized {len(pipe_cell_keys)} pipe-cell keys")
+                if pipe_cell_keys:
+                    results_data.init_pipe_cell_storage(pipe_cell_keys)
+                # t=0 coupling snapshot (node depths, link flows, cell indices)
+                t0_rows = list(_sample_coupling_object_metrics(coupling_controller, 0.0, None, None))
+                log(f"[PipeCell] t=0 snapshot produced {len(t0_rows)} coupling rows")
+                for row in t0_rows:
+                    results_data.append_coupling_snapshot(row)
+                log(f"[PipeCell] _live_pipe_cell now has {len(results_data._live_pipe_cell)} keys")
 
             runtime_step_executor = SWE2DRuntimeStepExecutor()
             runtime_reporter = SWE2DRuntimeReporter()
@@ -742,17 +769,33 @@ class SimulationWorker(QThread):
                 line_profiles = dict(results_data._live_line_profile)
                 _lg.warning("[LINE_DIAG] _on_snapshot_readback: emitting %d timesteps, %d line_ts keys, %d line_profiles keys",
                             len(timesteps), len(line_ts), len(line_profiles))
+                coupling_data = {
+                    key: {"object_name": d["object_name"],
+                          "t_s": list(d["t_s"]),
+                          "values": list(d["values"])}
+                    for key, d in results_data._live_coupling.items()
+                }
+                pipe_cell_data = None
+                if results_data._live_pipe_cell:
+                    pipe_cell_data = {
+                        key: {
+                            "cell_invert": float(d.get("cell_invert", 0.0)),
+                            "cell_width": float(d.get("cell_width", 1.0)),
+                            "cell_height": float(d.get("cell_height", d.get("cell_width", 1.0))),
+                            "cell_shape_type": int(d.get("cell_shape_type", 0)),
+                            "times": list(d.get("times", [])),
+                            "values": list(d.get("values", [])),
+                        }
+                        for key, d in results_data._live_pipe_cell.items()
+                    }
+                    _lg.warning("[PipeCell] emitting %d pipe-cell keys in snapshot", len(pipe_cell_data))
                 self.snapshot_ready.emit(
                     SnapshotData(
                         timesteps=timesteps,
                         line_ts=line_ts,
                         line_profiles=line_profiles,
-                        coupling_data={
-                            key: {"object_name": d["object_name"],
-                                  "t_s": list(d["t_s"]),
-                                  "values": list(d["values"])}
-                            for key, d in results_data._live_coupling.items()
-                        },
+                        coupling_data=coupling_data,
+                        pipe_cell_data=pipe_cell_data,
                     )
                 )
 

@@ -29,6 +29,8 @@ def _build_mock_view() -> MagicMock:
     view._snapshot_timesteps = [
         (0.0, np.array([1.0, 1.0]), np.array([0.0, 0.0]), np.array([0.0, 0.0]))
     ]
+    data.get_live_snapshot_timesteps.return_value = view._snapshot_timesteps
+
     view._gravity = 9.81
     view._mannings_n = 0.035
     view._length_unit_name = "m"
@@ -76,12 +78,16 @@ class TestOverlayParametersService(unittest.TestCase):
             "cell_x", "cell_y", "cell_bed", "node_x", "node_y", "cell_nodes",
             "tri_to_cell", "timesteps", "current_time_s", "field_key",
             "wse_render_mode", "cmap_key", "resolution", "auto_contrast",
+            "h_min_display", "vmin_manual", "vmax_manual",
             "show_velocity_arrows", "arrow_stride_px", "arrow_length_scale",
             "arrow_head_length_scale", "arrow_head_width_scale",
             "show_streamlines", "streamline_backend", "streamline_seed_count",
             "streamline_steps", "visible_extent_world", "render_extent_world",
-            "gravity", "courant_cell_size", "courant_dt", "manning_n",
-            "show_legend", "legend_label",
+            "gravity", "courant_cell_size", "courant_dt", "mannings_n",
+            "show_legend", "legend_label", "length_unit_name",
+            "overlay_cell_mannings_n", "overlay_cell_curve_number",
+            "overlay_cell_rainfall_rate", "overlay_cell_cumulative_rain",
+            "overlay_cell_cumulative_excess",
         }
         self.assertEqual(set(result.keys()), expected_keys)
 
@@ -96,22 +102,15 @@ class TestOverlayParametersService(unittest.TestCase):
         from swe2d.workbench.services.overlay_parameters_service import collect_overlay_parameters
         result = collect_overlay_parameters(_build_mock_view(), t_use=2.5)
         self.assertEqual(result["gravity"], 9.81)
-        self.assertEqual(result["manning_n"], 0.035)
+        self.assertEqual(result["mannings_n"], 0.035)
         self.assertEqual(len(result["timesteps"]), 1)
 
     def test_collect_handles_missing_widgets(self):
         """A view with no widgets returns defaults (no exception)."""
         from swe2d.workbench.services.overlay_parameters_service import collect_overlay_parameters
-        view = MagicMock()
-        view._results_data = None
-        view._resolve_map_canvas.return_value = None
-        view._snapshot_timesteps = []
-        view._length_unit_name = "m"
-        view._gravity = 9.81
-        view._mannings_n = 0.035
-        # toolbox with missing widgets — _safe helpers return defaults
-        tb = MagicMock(spec=[])
-        view._results_toolbox = tb
+        view = _build_mock_view()
+        view._results_toolbox = MagicMock(spec=[])
+        view._results_data.get_live_snapshot_timesteps.return_value = []
         result = collect_overlay_parameters(view, t_use=0.0)
         self.assertEqual(result["field_key"], "depth")
         self.assertEqual(result["current_time_s"], 0.0)

@@ -132,3 +132,45 @@ def rain_si_to_model(rain_rate_mps: float) -> float:
     return rain_rate_mps * _model_per_si_m
 
 
+def si_m_per_model_from_wkt(wkt: str) -> float:
+    """Extract SI meters per model unit from a projected CRS WKT.
+
+    Handles both WKT2 (``LENGTHUNIT``) and WKT1 (``UNIT``) formats.
+    Returns 1.0 if no linear unit is found (e.g. geographic CRS).
+    """
+    import re
+    try:
+        # WKT2 format: CS[...LENGTHUNIT["name", factor]...]
+        lu_match = re.search(r"LENGTHUNIT\[\"[^\"]*\",\s*([0-9.eE+-]+)", wkt)
+        if lu_match:
+            return float(lu_match.group(1))
+
+        # WKT1 format: PROJCS["...", ... UNIT["name", factor, ...] ...]
+        pj = wkt.find("PROJCS[")
+        if pj < 0:
+            pj = wkt.find("PROJCRS[")
+        if pj >= 0:
+            # The last UNIT entry in a projected CRS is the linear unit.
+            # Parse backward through the WKT to find it.
+            tail = wkt[pj:]
+            units = list(re.finditer(r"UNIT\[\"[^\"]*\",\s*([0-9.eE+-]+)", tail))
+            if units:
+                # Skip angular units ("degree", "radian", "grad")
+                for m in reversed(units):
+                    unit_name_start = m.start() + len("UNIT[\"")
+                    unit_name_end = tail.find("\"", unit_name_start)
+                    unit_name = tail[unit_name_start:unit_name_end].lower()
+                    if unit_name not in ("degree", "radian", "grad"):
+                        return float(m.group(1))
+
+        # If we reach here, no projected CRS with linear unit was found
+        import logging
+        logging.getLogger(__name__).warning(
+            "No linear unit found in CRS WKT — assuming model units are SI meters. "
+            "Geographic CRS or unsupported WKT format?"
+        )
+    except Exception:
+        pass
+    return 1.0
+
+

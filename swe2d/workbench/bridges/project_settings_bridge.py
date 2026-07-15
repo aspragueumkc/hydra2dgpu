@@ -154,6 +154,13 @@ def collect_workbench_widget_state(*, ui: object, widget_attrs: Sequence[str], q
             value = widget.currentData()
             if value is None:
                 value = widget.currentIndex()
+            # Also capture display text for combos so reconstruction_name,
+            # temporal_scheme_name, etc. can be derived by callers.
+            combo_text = str(widget.currentText()).strip()
+            payload["widgets"][attr_name + "_text"] = {
+                "type": type(widget).__name__ + "_text",
+                "value": combo_text,
+            }
         elif isinstance(widget, check_box_cls):
             value = widget.isChecked()
         elif isinstance(widget, line_edit_cls):

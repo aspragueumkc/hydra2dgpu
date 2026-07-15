@@ -301,20 +301,12 @@ class PipeNetworkConfig:
     # allow the 1D solver to run at a finer dt than the 2D timestep, improving
     # stability for stiff networks without requiring GPU sub-stepping.
     coupling_substeps: int = 1
-    # Maximum substeps allowed when the adaptive drainage timestep controller
-    # tightens the 1D solve for stiff dynamic states.
-    max_coupling_substeps: int = 64
     # Small head-difference deadband applied before link/inlet exchange updates
     # to suppress chatter around near-balanced states.
     head_deadband_m: float = 1.0e-3
     # Relaxation factor applied to dynamic-wave link flow updates.
     # 1.0 keeps the full update, lower values damp oscillatory responses.
     dynamic_flow_relaxation: float = 1.0
-    # Adaptive substepping limit: allowable fractional node-depth change per
-    # drainage substep for the 1D network solve.
-    adaptive_depth_fraction: float = 0.2
-    # Adaptive substepping limit: wave Courant target used for dynamic links.
-    adaptive_wave_courant: float = 0.5
     # Optional extra inner iterations for a predictor/corrector style coupling
     # solve between 2D surface exchange and the 1D drainage network.
     implicit_coupling_iterations: int = 2

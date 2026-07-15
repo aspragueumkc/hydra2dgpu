@@ -94,7 +94,7 @@ class TestHighPerfOverlay(unittest.TestCase):
 
         sig = inspect.signature(render_unstructured_snapshot_image)
         params = list(sig.parameters.keys())
-        for required in ("gravity", "courant_cell_size", "courant_dt", "manning_n"):
+        for required in ("gravity", "courant_cell_size", "courant_dt", "mannings_n"):
             self.assertIn(required, params, f"Missing param: {required}")
 
     def test_no_set_canvas_rotation(self):

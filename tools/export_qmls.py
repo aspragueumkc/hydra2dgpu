@@ -1,14 +1,6 @@
 """Export QML styles from a loaded model GeoPackage to QML/ folder.
 
-Usage in QGIS Python console:
-
-    exec(open(r"/home/aaron/QGIS_Plugins_dev/public-repo-hydra2dgpu/tools/export_qmls.py").read())
-
-If __file__ errors, run this instead:
-
-    REPO = r"/home/aaron/QGIS_Plugins_dev/public-repo-hydra2dgpu"
-    exec(open(os.path.join(REPO, "tools", "export_qmls.py")).read())
-    export_qmls(REPO)
+use in qgis python console
 """
 import os
 import sys

@@ -169,15 +169,36 @@ def run_batch(
 
     def _run_one(param_set: Dict[str, Any]) -> str:
         sim_id = str(param_set.get("id", "unknown"))
-        params_json = json.dumps(param_set)
-        cmd = [
-            sys.executable, "-m", "swe2d.cli", "run",
-            mesh_gpkg, params_json,
-            "--results", results_gpkg,
-        ]
-        result = subprocess.run(
-            cmd, capture_output=True, text=True, timeout=7200
-        )
+        if param_set.get("schema_version") == "swe2d-replay/1":
+            import tempfile
+            with tempfile.NamedTemporaryFile(
+                mode="w", suffix=".json", delete=False,
+            ) as tf:
+                json.dump(param_set, tf)
+                replay_file = tf.name
+            try:
+                cmd = [
+                    sys.executable, "-m", "swe2d.cli", "replay",
+                    "--replay-file", replay_file,
+                ]
+                result = subprocess.run(
+                    cmd, capture_output=True, text=True, timeout=7200
+                )
+            finally:
+                try:
+                    os.unlink(replay_file)
+                except OSError:
+                    pass
+        else:
+            params_json = json.dumps(param_set)
+            cmd = [
+                sys.executable, "-m", "swe2d.cli", "run",
+                mesh_gpkg, params_json,
+                "--results", results_gpkg,
+            ]
+            result = subprocess.run(
+                cmd, capture_output=True, text=True, timeout=7200
+            )
         if result.returncode != 0:
             return f"{sim_id}: FAILED ({result.stderr.strip()[:200]})"
         return f"{sim_id}: OK"

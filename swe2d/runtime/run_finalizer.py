@@ -325,6 +325,8 @@ class SWE2DRunFinalizer:
                         "values": np.array(cd.get("values", []), dtype=np.float64),
                     })
 
+            pipe_cell_items = _results_data.build_pipe_cell_items() if _results_data and hasattr(_results_data, "build_pipe_cell_items") else None
+            overlay_field_items = _results_data.build_overlay_field_items() if _results_data and hasattr(_results_data, "build_overlay_field_items") else None
             try:
                 persist_all_baked_results(
                     gpkg_path=gpkg_results_path,
@@ -334,6 +336,8 @@ class SWE2DRunFinalizer:
                     line_ts_items=line_ts_items or None,
                     profile_items=profile_items or None,
                     coupling_items=coupling_items or None,
+                    pipe_cell_items=pipe_cell_items,
+                    overlay_field_items=overlay_field_items,
                     max_tracking=max_tracking,
                     crs_wkt="",
                     log_fn=self._log,

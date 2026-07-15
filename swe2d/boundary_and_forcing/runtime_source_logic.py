@@ -2,7 +2,7 @@ from __future__ import annotations
 
 """Runtime internal-flow source-term computation at a given simulation time."""
 
-from typing import Callable, Dict, Optional, Tuple
+from typing import Any, Callable, Dict, Optional, Tuple
 
 import numpy as np
 
@@ -48,6 +48,51 @@ def permute_internal_flow_forcing(forcing: Optional[Dict[str, object]], cell_per
             for idx_arr, wt_arr, hg in dynamic_terms
         ]
     return out
+
+
+def permute_thiessen_forcing(forcing, cell_perm: np.ndarray) -> Any:
+    """Permute Thiessen rain/CN forcing from original cell order to solver (RCMK) order.
+
+    The C++ mesh builder reorders cells.  The Thiessen rain/CN forcing is built
+    from the original-order mesh centroids, so its per-cell arrays (cell-to-gauge
+    mapping and optional curve number) must be permuted before they are consumed
+    by the solver backend.
+
+    Parameters
+    ----------
+    forcing : object or None
+        Forcing object returned by ``build_thiessen_rain_cn_forcing_*`` adapters,
+        expected to expose ``cell_to_gauge``, ``curve_number``, ``gauge_hyetographs``,
+        ``ia_ratio``, and ``infiltration_method``.
+    cell_perm : np.ndarray
+        Solver permutation where ``cell_perm[c_new] = c_old``.
+
+    Returns
+    -------
+    object or None
+        New ``ThiessenRainCNForcing`` instance in solver order.  Returns *forcing*
+        unchanged if it is None or the permutation is empty.
+    """
+    if forcing is None or cell_perm is None or cell_perm.size == 0:
+        return forcing
+    from swe2d.boundary_and_forcing.rainfall_hydrology import ThiessenRainCNForcing
+
+    n_cells = int(cell_perm.size)
+    cell_to_gauge = np.asarray(getattr(forcing, "cell_to_gauge", None), dtype=np.int32)
+    if cell_to_gauge.size != n_cells:
+        return forcing
+
+    curve_number = np.asarray(getattr(forcing, "curve_number", None), dtype=np.float64)
+    if curve_number.size == n_cells:
+        curve_number = curve_number[cell_perm]
+
+    return ThiessenRainCNForcing(
+        cell_to_gauge=cell_to_gauge[cell_perm],
+        gauge_hyetographs=forcing.gauge_hyetographs,
+        curve_number=curve_number,
+        ia_ratio=forcing.ia_ratio,
+        infiltration_method=forcing.infiltration_method,
+    )
 
 
 def internal_flow_source_cms_at_time(

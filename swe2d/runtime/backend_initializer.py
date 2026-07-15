@@ -175,5 +175,11 @@ class SWE2DBackendInitializer:
             active_set_hysteresis=bool(active_set_hysteresis),
         )
         if bc_relax is not None and bc_relax.size > 0:
-            b.set_boundary_relaxation(bc_n0, bc_n1, bc_relax)
+            try:
+                b.set_boundary_relaxation(bc_n0, bc_n1, bc_relax)
+            except ValueError as exc:
+                import logging
+                logging.getLogger(__name__).warning(
+                    "Boundary relaxation skipped: %s", exc
+                )
         return b

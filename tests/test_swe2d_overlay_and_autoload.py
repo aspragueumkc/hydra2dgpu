@@ -445,6 +445,10 @@ class TestOverlayRendering(unittest.TestCase):
             cell_x=self.cell_x,
             cell_y=self.cell_y,
             cell_bed=self.cell_bed,
+            node_x=self.node_x,
+            node_y=self.node_y,
+            cell_nodes=self.cell_nodes,
+            tri_to_cell=self.tri_to_cell,
             timesteps=self._make_timesteps(),
             current_time_s=60.0,
             field_key="depth",
@@ -453,7 +457,7 @@ class TestOverlayRendering(unittest.TestCase):
         expected_keys = {
             "ok", "image", "extent", "frame_idx", "frame_count",
             "time_s", "n_cells", "vmin", "vmax", "render_ms", "backend",
-            "message", "grid", "grid_mask",
+            "message", "grid", "grid_mask", "computed_vmin", "computed_vmax",
         }
         self.assertEqual(
             set(result.keys()),
@@ -470,6 +474,10 @@ class TestOverlayRendering(unittest.TestCase):
             cell_x=self.cell_x,
             cell_y=self.cell_y,
             cell_bed=self.cell_bed,
+            node_x=self.node_x,
+            node_y=self.node_y,
+            cell_nodes=self.cell_nodes,
+            tri_to_cell=self.tri_to_cell,
             timesteps=self._make_timesteps(),
             current_time_s=60.0,
             field_key="depth",
@@ -489,6 +497,10 @@ class TestOverlayRendering(unittest.TestCase):
             cell_x=self.cell_x,
             cell_y=self.cell_y,
             cell_bed=self.cell_bed,
+            node_x=self.node_x,
+            node_y=self.node_y,
+            cell_nodes=self.cell_nodes,
+            tri_to_cell=self.tri_to_cell,
             timesteps=self._make_timesteps(),
             current_time_s=60.0,
             field_key="wse",
@@ -504,6 +516,10 @@ class TestOverlayRendering(unittest.TestCase):
             cell_x=self.cell_x,
             cell_y=self.cell_y,
             cell_bed=self.cell_bed,
+            node_x=self.node_x,
+            node_y=self.node_y,
+            cell_nodes=self.cell_nodes,
+            tri_to_cell=self.tri_to_cell,
             timesteps=self._make_timesteps(),
             current_time_s=60.0,
             field_key="speed",
@@ -519,6 +535,10 @@ class TestOverlayRendering(unittest.TestCase):
             cell_x=self.cell_x,
             cell_y=self.cell_y,
             cell_bed=self.cell_bed,
+            node_x=self.node_x,
+            node_y=self.node_y,
+            cell_nodes=self.cell_nodes,
+            tri_to_cell=self.tri_to_cell,
             timesteps=self._make_timesteps(),
             current_time_s=60.0,
             field_key="froude",
@@ -535,6 +555,10 @@ class TestOverlayRendering(unittest.TestCase):
             cell_x=self.cell_x,
             cell_y=self.cell_y,
             cell_bed=self.cell_bed,
+            node_x=self.node_x,
+            node_y=self.node_y,
+            cell_nodes=self.cell_nodes,
+            tri_to_cell=self.tri_to_cell,
             timesteps=self._make_timesteps(),
             current_time_s=60.0,
             field_key="courant",
@@ -552,10 +576,14 @@ class TestOverlayRendering(unittest.TestCase):
             cell_x=self.cell_x,
             cell_y=self.cell_y,
             cell_bed=self.cell_bed,
+            node_x=self.node_x,
+            node_y=self.node_y,
+            cell_nodes=self.cell_nodes,
+            tri_to_cell=self.tri_to_cell,
             timesteps=self._make_timesteps(),
             current_time_s=60.0,
             field_key="shear_stress",
-            manning_n=0.035,
+            mannings_n=0.035,
             gravity=9.81,
             resolution=(320, 240),
         )
@@ -572,6 +600,10 @@ class TestOverlayRendering(unittest.TestCase):
             cell_x=self.cell_x,
             cell_y=self.cell_y,
             cell_bed=self.cell_bed,
+            node_x=self.node_x,
+            node_y=self.node_y,
+            cell_nodes=self.cell_nodes,
+            tri_to_cell=self.tri_to_cell,
             timesteps=timesteps,
             current_time_s=119.0,
             field_key="depth",
@@ -609,10 +641,28 @@ class TestOverlayRendering(unittest.TestCase):
             n_cells=n, n_ts=3, depth_range=(0.5, 2.0),
         )
 
+        # Build a simple per-cell triangle fan so the tri-fill rasterizer has
+        # valid mesh data. Each cell becomes one triangle with distinct nodes.
+        eps = 1.0
+        node_x = np.empty(3 * n, dtype=np.float64)
+        node_y = np.empty(3 * n, dtype=np.float64)
+        node_x[0::3] = cell_x
+        node_y[0::3] = cell_y
+        node_x[1::3] = cell_x + eps
+        node_y[1::3] = cell_y
+        node_x[2::3] = cell_x
+        node_y[2::3] = cell_y + eps
+        cell_nodes = np.arange(3 * n, dtype=np.int32)
+        tri_to_cell = np.arange(n, dtype=np.int32)
+
         result = render_unstructured_snapshot_image(
             cell_x=cell_x,
             cell_y=cell_y,
             cell_bed=cell_bed,
+            node_x=node_x,
+            node_y=node_y,
+            cell_nodes=cell_nodes,
+            tri_to_cell=tri_to_cell,
             timesteps=timesteps,
             current_time_s=60.0,
             field_key="depth",
@@ -630,6 +680,10 @@ class TestOverlayRendering(unittest.TestCase):
             cell_x=self.cell_x,
             cell_y=self.cell_y,
             cell_bed=self.cell_bed,
+            node_x=self.node_x,
+            node_y=self.node_y,
+            cell_nodes=self.cell_nodes,
+            tri_to_cell=self.tri_to_cell,
             timesteps=self._make_timesteps(),
             current_time_s=60.0,
             field_key="depth",
@@ -646,6 +700,10 @@ class TestOverlayRendering(unittest.TestCase):
             cell_x=self.cell_x,
             cell_y=self.cell_y,
             cell_bed=self.cell_bed,
+            node_x=self.node_x,
+            node_y=self.node_y,
+            cell_nodes=self.cell_nodes,
+            tri_to_cell=self.tri_to_cell,
             timesteps=self._make_timesteps(n_ts=1),
             current_time_s=0.0,
             field_key="depth",
@@ -671,6 +729,10 @@ class TestOverlayRendering(unittest.TestCase):
             cell_x=self.cell_x,
             cell_y=self.cell_y,
             cell_bed=self.cell_bed,
+            node_x=self.node_x,
+            node_y=self.node_y,
+            cell_nodes=self.cell_nodes,
+            tri_to_cell=self.tri_to_cell,
             timesteps=timesteps,
             current_time_s=0.0,
             field_key="depth",

@@ -319,12 +319,12 @@ class TestGPUInletCapture(unittest.TestCase):
                         atol: float, msg: str = ""):
         """Assert that the coupling source for cell 0 matches expected Q.
 
-        The kernel writes Q (m³/s) into d_drainage_q, which is then folded
-        into d_external_source_mps.  The fold does NOT divide by cell area,
-        so the readback source is in m³/s (volume rate), not m/s.
+        The kernel writes Q (m³/s) into d_drainage_q, then folds it into
+        d_external_source_mps by dividing by cell area.  The readback is
+        therefore a rate in m/s; convert back to m³/s before comparing.
         """
         # Cell 0 should have negative source (water leaving surface → node)
-        q_actual = -float(src[0])  # flip sign for positive capture
+        q_actual = -float(src[0]) * self.CELL_AREA  # m/s → m³/s * self.CELL_AREA  # m/s → m³/s
         self.assertAlmostEqual(q_actual, Q_expected, delta=atol,
                                msg=f"Cell 0 capture mismatch: got {q_actual}, expected {Q_expected}. {msg}")
         # Cell 1 should be unaffected
@@ -395,7 +395,7 @@ class TestGPUInletCapture(unittest.TestCase):
         params = self._grate_params(Lg=Lg, Wg=Wg, openFrac=openFrac)
         src = self._upload_inlet_and_run(params, H_trans)
 
-        q_actual = -float(src[0])
+        q_actual = -float(src[0]) * self.CELL_AREA  # m/s → m³/s
         # Weir and orifice should agree within 1%
         self.assertAlmostEqual(q_actual / Q_weir, 1.0, delta=0.01,
                                msg=f"At transition, Q={q_actual:.6f}, Q_weir={Q_weir:.6f}, Q_orif={Q_orif:.6f}")
@@ -408,12 +408,12 @@ class TestGPUInletCapture(unittest.TestCase):
         # Grate kind 0: P_BAR-50 (openFrac=0.90)
         params0 = self._grate_params(Lg=Lg, Wg=Wg, grate_kind=0)
         src0 = self._upload_inlet_and_run(params0, H)
-        q0 = -float(src0[0])
+        q0 = -float(src0[0]) * self.CELL_AREA  # m/s → m³/s
 
         # Grate kind 3: Curved_Vane (openFrac=0.35)
         params3 = self._grate_params(Lg=Lg, Wg=Wg, grate_kind=3)
         src3 = self._upload_inlet_and_run(params3, H)
-        q3 = -float(src3[0])
+        q3 = -float(src3[0]) * self.CELL_AREA  # m/s → m³/s
 
         # Check analytically: Q ∝ Ao
         Ao0 = Lg * Wg * 0.90
@@ -635,7 +635,7 @@ class TestGPUInletCapture(unittest.TestCase):
         # Relief: node→surface, so cell 0 gets positive source
         H_relief = 1.0
         Q_exp = 0.67 * Ao * math.sqrt(2.0 * G * H_relief)
-        q_actual = float(src[0])
+        q_actual = float(src[0]) * self.CELL_AREA  # m/s → m³/s
         self.assertAlmostEqual(q_actual, Q_exp, delta=1e-3,
                                msg=f"Relief: got {q_actual:.6f}, expected {Q_exp:.6f}")
 
@@ -725,7 +725,7 @@ class TestGPUInletCapture(unittest.TestCase):
         # over dt=1.0 s → max 0.01 m³/s
         q_expected_limited = 0.01  # m³/s
 
-        q_actual = -float(src[0])
+        q_actual = -float(src[0]) * self.CELL_AREA  # m/s → m³/s
         self.assertAlmostEqual(q_actual, q_expected_limited, delta=1e-4,
                                msg=f"Availability limiter: got {q_actual:.6f}, "
                                    f"expected {q_expected_limited:.6f}")
@@ -851,7 +851,7 @@ class TestDrainageNoStructures(unittest.TestCase):
         )
 
         src = mod.swe2d_gpu_readback_coupling_sources(self.N_CELLS)
-        q_actual = -float(src[0])
+        q_actual = -float(src[0]) * self.CELL_AREA  # m/s → m³/s
         self.assertGreater(q_actual, 0.0, "Expected positive capture in cell 0")
         self.assertAlmostEqual(float(src[1]), 0.0, places=12,
                                msg="Cell 1 should have zero source")
@@ -1068,6 +1068,57 @@ class TestPipeEndExchange(unittest.TestCase):
         total = float(src[0]) + float(src[1])
         self.assertAlmostEqual(total, 0.0, delta=1e-3,
                                msg=f"Pipe-end exchange should conserve mass, got {total:.6f}")
+
+
+class TestPipeCellReadback(unittest.TestCase):
+    """Tests for pipe-cell readback via SWE2DCouplingController."""
+
+    def test_readback_coupling_state_returns_cell_arrays(self):
+        """readback_coupling_state returns cell_velocity/depth/flow/head arrays."""
+        from unittest.mock import patch, MagicMock
+        import numpy as np
+        from swe2d.runtime.coupling import SWE2DCouplingController
+
+        with patch("swe2d.runtime.coupling.load_swe2d_native_module") as mock_mod:
+            mock_dev = MagicMock()
+            mock_mod.return_value = mock_mod
+            mock_mod.swe2d_pipe1d_readback_node_state.return_value = {
+                "node_depth": np.zeros(2),
+                "cell_A": np.array([0.5, 0.5, 0.5]),
+                "cell_Q": np.array([0.1, 0.1, 0.1]),
+                "cell_width": np.array([1.0, 1.0, 1.0]),
+                "cell_height": np.array([1.0, 1.0, 1.0]),
+                "cell_shape_type": np.array([0, 0, 0], dtype=np.int32),
+                "cell_invert": np.array([0.0, 0.0, 0.0]),
+                "cell_owner_link": np.array([0, 0, 0], dtype=np.int32),
+                "cell_sub_idx": np.array([0, 1, 2], dtype=np.int32),
+            }
+            cc = SWE2DCouplingController(cell_area=[1.0], cell_bed=[0.0])
+            cc._drainage_soa = MagicMock()
+            cc._drainage_soa.node_invert_elev = np.zeros(2)
+            cc._drainage_soa.link_from = np.array([0])
+            cc._drainage_soa.link_to = np.array([1])
+            cc._drainage_soa.link_length = np.array([10.0])
+            cc._drainage_soa.link_diameter = np.array([1.0])
+            cc._drainage_soa.link_width = np.array([1.0])
+            cc._drainage_soa.max_cell_length = 5.0
+            cc._native_cuda_module = MagicMock(return_value=mock_mod)
+            cc._log = MagicMock()
+            cc.drainage = MagicMock()
+            cc.drainage.cfg = MagicMock()
+            cc.drainage.cfg.links = [MagicMock(link_id="L1")]
+            cc._n_non_bridge_structures = 0
+
+            state = cc.readback_coupling_state()
+
+            for key in ["cell_velocity", "cell_depth", "cell_flow", "cell_head", "cell_owner_link"]:
+                assert key in state, f"Missing key: {key}"
+                assert isinstance(state[key], np.ndarray), f"{key} is not ndarray"
+            assert state["cell_flow"].dtype == np.float64, "cell_flow must be float64"
+            assert state["cell_velocity"].dtype == np.float64, "cell_velocity must be float64"
+            assert state["cell_depth"].dtype == np.float64, "cell_depth must be float64"
+            assert state["cell_head"].dtype == np.float64, "cell_head must be float64"
+            assert state["cell_owner_link"].dtype in (np.int64, np.int32), "cell_owner_link must be integer dtype"
 
 
 if __name__ == "__main__":

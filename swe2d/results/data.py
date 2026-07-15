@@ -76,6 +76,17 @@ class SWE2DResultsData:
         self.overlay_cell_nodes: Optional[np.ndarray] = None
         self.overlay_tri_to_cell: Optional[np.ndarray] = None
 
+        # Overlay scalar arrays (rain/Manning/CN per cell)
+        self.overlay_cell_rainfall_rate: np.ndarray = np.empty(0, dtype=np.float64)
+        self.overlay_cell_cumulative_rain: np.ndarray = np.empty(0, dtype=np.float64)
+        self.overlay_cell_cumulative_excess: np.ndarray = np.empty(0, dtype=np.float64)
+        self.overlay_cell_mannings_n: np.ndarray = np.empty(0, dtype=np.float64)
+        self.overlay_cell_curve_number: np.ndarray = np.empty(0, dtype=np.float64)
+
+        # In-memory overlay-field history (full time-series per metric)
+        self._overlay_field_history: Dict[str, List[np.ndarray]] = {}
+        self._overlay_field_times: List[float] = []
+
         # In-memory snapshots during a live run (kept for backward compat)
         self._live_snapshot_timesteps: list = []
         # Line timeseries: {line_id: {t_s: np.ndarray (n_snaps,), depth_m: np.ndarray (n_snaps,), ...}}
@@ -84,6 +95,8 @@ class SWE2DResultsData:
         self._live_line_profile: Dict[int, Dict[str, object]] = {}
         # Coupling: {(component, object_id, metric): {object_name: str, t_s: np.ndarray, values: np.ndarray}}
         self._live_coupling: Dict[Tuple[str, str, str], Dict[str, object]] = {}
+        # Pipe cell: {(link_id, cell_sub_idx, metric): {link_id, cell_sub_idx, metric, times: list, values: list}}
+        self._live_pipe_cell: Dict[Tuple[str, int, str], Dict[str, object]] = {}
         # Display state for TS/Profile/Structure/Network renderers (plain data)
         self.ts_var_key: str = "flow_cms"
         self.prof_var_key: str = "wse_bed"
@@ -123,6 +136,14 @@ class SWE2DResultsData:
         self._live_line_ts.clear()
         self._live_line_profile.clear()
         self._live_coupling.clear()
+        self._live_pipe_cell.clear()
+        self.overlay_cell_rainfall_rate = np.empty(0, dtype=np.float64)
+        self.overlay_cell_cumulative_rain = np.empty(0, dtype=np.float64)
+        self.overlay_cell_cumulative_excess = np.empty(0, dtype=np.float64)
+        self.overlay_cell_mannings_n = np.empty(0, dtype=np.float64)
+        self.overlay_cell_curve_number = np.empty(0, dtype=np.float64)
+        self._overlay_field_history.clear()
+        self._overlay_field_times = []
         # Drop any GPKG-expanded coupling rows cached from a previous run
         # so viewers don't see stale data until load_coupling_records runs
         # again for the new run.
@@ -140,10 +161,27 @@ class SWE2DResultsData:
         built, so the object names are known.
         """
         self._live_coupling.clear()
+        self._live_pipe_cell.clear()
         for key in coupling_keys:
             self._live_coupling[key] = {
                 "object_name": coupling_object_names.get(key, key[1]),
                 "t_s": [],
+                "values": [],
+            }
+
+    def init_pipe_cell_storage(self, keys: List[Tuple[str, int, str]]) -> None:
+        """Initialize pipe cell storage with dynamic lists.
+
+        Called once before the run starts, after the pipe cell keys are known.
+        """
+        self._live_pipe_cell.clear()
+        for key in keys:
+            link_id, cell_sub_idx, metric = key
+            self._live_pipe_cell[key] = {
+                "link_id": link_id,
+                "cell_sub_idx": cell_sub_idx,
+                "metric": metric,
+                "times": [],
                 "values": [],
             }
 
@@ -261,17 +299,88 @@ class SWE2DResultsData:
                 wet_arr[snap_idx, :] = int(wet_val)
 
     def append_coupling_snapshot(self, row: dict) -> None:
-        """Write a coupling row into live coupling storage."""
-        key = (str(row.get("component", "")),
-               str(row.get("object_id", "")),
-               str(row.get("metric", "")))
-        if not key[0] or not key[1] or not key[2]:
+        """Write a coupling row into live coupling storage.
+
+        drainage_cell rows are routed to append_pipe_cell_snapshot.
+        """
+        component = str(row.get("component", ""))
+        object_id = str(row.get("object_id", ""))
+        metric = str(row.get("metric", ""))
+        if not component or not object_id or not metric:
             return
+
+        # Route drainage_cell rows to pipe-cell storage
+        if component == "drainage_cell":
+            # object_id format: "link_id#sub_idx"
+            parts = object_id.rsplit("#", 1)
+            if len(parts) == 2:
+                link_id, sub_idx_str = parts
+                try:
+                    sub_idx = int(sub_idx_str)
+                except ValueError:
+                    sub_idx = -1
+                pipe_row = {
+                    "link_id": link_id,
+                    "cell_sub_idx": sub_idx,
+                    "metric": metric,
+                    "t_s": row.get("t_s", 0.0),
+                    "value": row.get("value", 0.0),
+                }
+                self.append_pipe_cell_snapshot(pipe_row)
+            return
+
+        key = (component, object_id, metric)
         d = self._live_coupling.get(key)
         if d is None:
             return
         d["t_s"].append(float(row.get("t_s", 0.0)))
         d["values"].append(float(row.get("value", 0.0)))
+
+    def append_pipe_cell_snapshot(self, snapshot: Dict) -> None:
+        """Write a pipe cell row into live pipe cell storage.
+
+        On the first write for each cell, also stores per-cell geometry
+        (cell_invert, cell_width) extracted from the C++ readback — these
+        are constant for the cell's lifetime and are used by the profile
+        viewer to draw the pipe cross-section without needing GPKK access.
+        """
+        key = (
+            str(snapshot.get("link_id", "")),
+            int(snapshot.get("cell_sub_idx", -1)),
+            str(snapshot.get("metric", "")),
+        )
+        if not key[0] or key[1] < 0 or not key[2]:
+            return
+        d = self._live_pipe_cell.get(key)
+        if d is None:
+            return
+
+        # Store per-cell geometry on first write (same for all 4 metrics)
+        if "cell_invert" not in d:
+            d["cell_invert"] = float(snapshot.get("cell_invert", 0.0))
+            d["cell_width"] = float(snapshot.get("cell_width", 1.0))
+
+        d["times"].append(float(snapshot.get("t_s", 0.0)))
+        d["values"].append(float(snapshot.get("value", 0.0)))
+
+    def append_overlay_field_snapshot(self, t_s: float) -> None:
+        """Append the current overlay scalar arrays to the field history."""
+        if self.overlay_cell_rainfall_rate.size == 0:
+            return
+        self._overlay_field_times.append(float(t_s))
+        self._overlay_field_history.setdefault("rainfall_rate", []).append(
+            np.asarray(self.overlay_cell_rainfall_rate, dtype=np.float64)
+        )
+        self._overlay_field_history.setdefault("cumulative_rain", []).append(
+            np.asarray(self.overlay_cell_cumulative_rain, dtype=np.float64)
+        )
+        self._overlay_field_history.setdefault("cumulative_excess", []).append(
+            np.asarray(self.overlay_cell_cumulative_excess, dtype=np.float64)
+        )
+        loss = self.overlay_cell_cumulative_rain - self.overlay_cell_cumulative_excess
+        self._overlay_field_history.setdefault("cumulative_loss", []).append(
+            np.asarray(loss, dtype=np.float64)
+        )
 
     def get_live_snapshot_timesteps(self) -> list:
         """Return the list of live mesh snapshots as (t_s, h, hu, hv) tuples."""
@@ -452,6 +561,40 @@ class SWE2DResultsData:
                     "t_s": float(t_s[i]),
                     "value": float(values[i]),
                 })
+        return out
+
+    def build_pipe_cell_items(self) -> List[Dict]:
+        """Reconstruct list-of-dicts from _live_pipe_cell for persistence."""
+        out = []
+        for (link_id, cell_sub_idx, metric), d in self._live_pipe_cell.items():
+            times = d.get("times")
+            values = d.get("values")
+            if not times or not values:
+                continue
+            out.append({
+                "link_id": link_id,
+                "cell_sub_idx": cell_sub_idx,
+                "metric": metric,
+                "times": np.array(list(times), dtype=np.float64),
+                "values": np.array(list(values), dtype=np.float64),
+            })
+        return out
+
+    def build_overlay_field_items(self) -> List[Dict]:
+        """Reconstruct overlay-field items from the in-memory field history.
+
+        Returns a list of dicts with keys:
+            metric (str), times (ndarray), values (ndarray).
+        """
+        out = []
+        if not self._overlay_field_times:
+            return out
+        times = np.asarray(self._overlay_field_times, dtype=np.float64)
+        for metric, hist in self._overlay_field_history.items():
+            if not hist:
+                continue
+            arr = np.stack(hist, axis=0)
+            out.append({"metric": metric, "times": times, "values": arr})
         return out
 
     def get_structure_flows_at_time(self, run_id: str, t_sec: float) -> list:
@@ -792,7 +935,13 @@ class SWE2DResultsData:
         return self._coupling_run_id
 
     def load_coupling_for_first_enabled_run(self) -> list:
-        """Load coupling for first enabled run."""
+        """Load coupling for first enabled run.
+
+        Reloads from GPKG baked tables (via the private helper) instead of
+        returning the stale in-memory cache, so coupling data appears
+        immediately after a run completes (Bug 2 fix).
+        """
+        self._load_coupling_for_first_enabled_run()
         return list(self._coupling_records)
 
     # ------------------------------------------------------------------
@@ -955,6 +1104,10 @@ class SWE2DResultsData:
         from swe2d.services.gpkg_persistence_service import load_baked_timesteps
 
         ts_sets: List[np.ndarray] = []
+        # Include live timesteps (Bug 4 fix) so the slider range is correct
+        # during a live run before persistence completes.
+        if self._live_times is not None and self._live_times.size > 0:
+            ts_sets.append(self._live_times.copy())
         for rec in self._run_records:
             if not rec.enabled:
                 continue
@@ -1046,6 +1199,12 @@ class SWE2DResultsData:
 
     def _load_coupling_for_first_enabled_run(self) -> None:
         """load coupling for first enabled run (baked — expand BLOBs into per-row format)."""
+        from swe2d.services.gpkg_persistence_service import (
+            load_baked_coupling_timeseries,
+            load_baked_pipe_cell_ts,
+            load_baked_overlay_fields,
+        )
+
         first = None
         for rec in self._run_records:
             if rec.enabled:
@@ -1061,6 +1220,43 @@ class SWE2DResultsData:
         )
         self._coupling_run_id = first.run_id
         self._coupling_gpkg_path = first.gpkg_path
+
+        # Load pipe-cell time series
+        conn = __import__('sqlite3').connect(first.gpkg_path)
+        try:
+            run_id = first.run_id
+            for item in load_baked_pipe_cell_ts(conn, run_id):
+                key = (item["link_id"], item["cell_sub_idx"], item["metric"])
+                self._live_pipe_cell[key] = {
+                    "link_id": item["link_id"],
+                    "cell_sub_idx": item["cell_sub_idx"],
+                    "metric": item["metric"],
+                    "times": list(item["times"]),
+                    "values": list(item["values"]),
+                }
+
+            # Load overlay scalar fields
+            n_cells = self.overlay_cell_x.size if self.overlay_cell_x is not None else 0
+            loaded_fields = load_baked_overlay_fields(conn, run_id, n_cells)
+            if loaded_fields:
+                latest = lambda a: a[-1] if a.ndim == 2 else a
+                self.overlay_cell_rainfall_rate = np.asarray(
+                    latest(loaded_fields.get("rainfall_rate", np.empty(0, dtype=np.float64))), dtype=np.float64
+                )
+                self.overlay_cell_cumulative_rain = np.asarray(
+                    latest(loaded_fields.get("cumulative_rain", np.empty(0, dtype=np.float64))), dtype=np.float64
+                )
+                self.overlay_cell_cumulative_excess = np.asarray(
+                    latest(loaded_fields.get("cumulative_excess", np.empty(0, dtype=np.float64))), dtype=np.float64
+                )
+                self.overlay_cell_mannings_n = np.asarray(
+                    latest(loaded_fields.get("mannings_n", np.empty(0, dtype=np.float64))), dtype=np.float64
+                )
+                self.overlay_cell_curve_number = np.asarray(
+                    latest(loaded_fields.get("curve_number", np.empty(0, dtype=np.float64))), dtype=np.float64
+                )
+        finally:
+            conn.close()
 
     def load_coupling_records(self, run_id_or_key: str) -> None:
         """Load coupling records from GPKG baked table, falling back to live."""

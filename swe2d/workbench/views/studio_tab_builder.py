@@ -165,6 +165,7 @@ def wire_model_tab_layers_signals(dialog) -> None:
         "drain_node_inlets_layer_combo",
         "structures_layer_combo",
         "bc_lines_layer_combo",
+        "storm_area_layer_combo",
     ):
         combo = getattr(v, attr, None)
         if combo is not None:

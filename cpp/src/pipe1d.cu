@@ -241,6 +241,8 @@ void swe2d_build_pipe1d_mesh(
     std::vector<double> cell_link_area(total_pipe_cells);  // full pipe area at boundary cells, 0 interior
     std::vector<int32_t> cell_from_node(total_pipe_cells);
     std::vector<int32_t> cell_to_node(total_pipe_cells);
+    std::vector<int32_t> cell_owner_link(total_pipe_cells);  // which link each sub-cell belongs to
+    std::vector<int32_t> cell_sub_idx(total_pipe_cells);    // sub-cell index within its link
 
     // Cross-section shape + table data
     std::vector<int32_t> cell_shape_type(total_pipe_cells);
@@ -320,6 +322,8 @@ void swe2d_build_pipe1d_mesh(
             cell_link_area[cell_idx] = (s == 0 || s == n_sub - 1) ? A : 0.0;
             cell_from_node[cell_idx] = link_from_node[i];
             cell_to_node[cell_idx] = link_to_node[i];
+            cell_owner_link[cell_idx] = i;
+            cell_sub_idx[cell_idx] = s;
             ++cell_idx;
         }
     }
@@ -416,6 +420,8 @@ void swe2d_build_pipe1d_mesh(
     alloc_d(reinterpret_cast<void**>(&dev->d_cell_link_area), static_cast<size_t>(total_pipe_cells) * sizeof(double));
     alloc_d(reinterpret_cast<void**>(&dev->d_cell_shape_type), static_cast<size_t>(total_pipe_cells) * sizeof(int32_t));
     alloc_d(reinterpret_cast<void**>(&dev->d_cell_width), static_cast<size_t>(total_pipe_cells) * sizeof(double));
+    alloc_d(reinterpret_cast<void**>(&dev->d_cell_owner_link), static_cast<size_t>(total_pipe_cells) * sizeof(int32_t));
+    alloc_d(reinterpret_cast<void**>(&dev->d_cell_sub_idx), static_cast<size_t>(total_pipe_cells) * sizeof(int32_t));
     alloc_d(reinterpret_cast<void**>(&dev->d_cell_height), static_cast<size_t>(total_pipe_cells) * sizeof(double));
     alloc_d(reinterpret_cast<void**>(&dev->d_cell_tables), static_cast<size_t>(total_pipe_cells) * 2 * PIPE1D_TABLE_N * sizeof(double));
     alloc_d(reinterpret_cast<void**>(&dev->d_node_invert), static_cast<size_t>(n_nodes) * sizeof(double));
@@ -423,6 +429,9 @@ void swe2d_build_pipe1d_mesh(
     alloc_d(reinterpret_cast<void**>(&dev->d_node_net_q), static_cast<size_t>(n_nodes) * sizeof(double));
     alloc_d(reinterpret_cast<void**>(&dev->d_node_surface_area), static_cast<size_t>(n_nodes) * sizeof(double));
     alloc_d(reinterpret_cast<void**>(&dev->d_node_max_depth), static_cast<size_t>(n_nodes) * sizeof(double));
+    alloc_d(reinterpret_cast<void**>(&dev->d_node_is_boundary), static_cast<size_t>(n_nodes) * sizeof(int32_t));
+    alloc_d(reinterpret_cast<void**>(&dev->d_node_is_outfall), static_cast<size_t>(n_nodes) * sizeof(int32_t));
+    alloc_d(reinterpret_cast<void**>(&dev->d_node_is_inlet),  static_cast<size_t>(n_nodes) * sizeof(int32_t));
     alloc_d(reinterpret_cast<void**>(&dev->d_A), static_cast<size_t>(total_pipe_cells) * sizeof(double));
     alloc_d(reinterpret_cast<void**>(&dev->d_Q), static_cast<size_t>(total_pipe_cells) * sizeof(double));
     alloc_d(reinterpret_cast<void**>(&dev->d_A_prev), static_cast<size_t>(total_pipe_cells) * sizeof(double));
@@ -446,6 +455,8 @@ void swe2d_build_pipe1d_mesh(
     copy_h2d_d(dev->d_cell_link_area, cell_link_area.data(), static_cast<size_t>(total_pipe_cells));
     copy_h2d_i(dev->d_cell_shape_type, cell_shape_type.data(), static_cast<size_t>(total_pipe_cells));
     copy_h2d_d(dev->d_cell_width, cell_width.data(), static_cast<size_t>(total_pipe_cells));
+    copy_h2d_i(dev->d_cell_owner_link, cell_owner_link.data(), static_cast<size_t>(total_pipe_cells));
+    copy_h2d_i(dev->d_cell_sub_idx, cell_sub_idx.data(), static_cast<size_t>(total_pipe_cells));
     copy_h2d_d(dev->d_cell_height, cell_height.data(), static_cast<size_t>(total_pipe_cells));
     CUDA_CHECK(cudaMemcpy(dev->d_cell_tables, cell_tables.data(),
         static_cast<size_t>(total_pipe_cells) * 2 * PIPE1D_TABLE_N * sizeof(double),
@@ -460,12 +471,19 @@ void swe2d_build_pipe1d_mesh(
 
     // Initialize node depth to zero (caller uploads actual depths before each step)
     CUDA_CHECK(cudaMemset(dev->d_node_depth, 0, static_cast<size_t>(n_nodes) * sizeof(double)));
+    // Initialize boundary flags to zero; exchange upload marks pipe-end/outfall nodes
+    CUDA_CHECK(cudaMemset(dev->d_node_is_boundary, 0, static_cast<size_t>(n_nodes) * sizeof(int32_t)));
+    // Initialize outfall flags to zero; caller uploads actual outfall flags
+    CUDA_CHECK(cudaMemset(dev->d_node_is_outfall, 0, static_cast<size_t>(n_nodes) * sizeof(int32_t)));
+    CUDA_CHECK(cudaMemset(dev->d_node_is_inlet, 0,  static_cast<size_t>(n_nodes) * sizeof(int32_t)));
     CUDA_CHECK(cudaMemset(dev->d_node_net_q, 0, static_cast<size_t>(n_nodes) * sizeof(double)));
 
-    // Initialize pipe cell state: d_A = full area, d_Q = 0
-    CUDA_CHECK(cudaMemcpy(dev->d_A, cell_area.data(), static_cast<size_t>(total_pipe_cells) * sizeof(double), cudaMemcpyHostToDevice));
+    // Initialize pipe cell state: d_A = 0 (dry), d_Q = 0
+    // Call swe2d_pipe1d_init_full() from Python if primed/full initial condition
+    // is desired (e.g. for perpetual streams or pipes with baseflow).
+    CUDA_CHECK(cudaMemset(dev->d_A, 0, static_cast<size_t>(total_pipe_cells) * sizeof(double)));
     CUDA_CHECK(cudaMemset(dev->d_Q, 0, static_cast<size_t>(total_pipe_cells) * sizeof(double)));
-    CUDA_CHECK(cudaMemcpy(dev->d_A_prev, cell_area.data(), static_cast<size_t>(total_pipe_cells) * sizeof(double), cudaMemcpyHostToDevice));
+    CUDA_CHECK(cudaMemset(dev->d_A_prev, 0, static_cast<size_t>(total_pipe_cells) * sizeof(double)));
     CUDA_CHECK(cudaMemset(dev->d_Q_iter, 0, static_cast<size_t>(total_pipe_cells) * sizeof(double)));
 }
 
@@ -477,6 +495,11 @@ __device__ __forceinline__ void pipe1d_lookup_geometry(
     const double* table, int table_N,
     double& P, double& T)
 {
+    if (A <= 0.0) {
+        P = 0.0;
+        T = 0.0;
+        return;
+    }
     double frac = A * (1.0 / fmax(1e-20, A_full));
     frac = fmin(1.0, fmax(0.0, frac));
     double f = frac * table_N;
@@ -506,6 +529,7 @@ __global__ __launch_bounds__(256, 1) void swe2d_pipe1d_flux_kernel(
     const double*  __restrict__ node_invert,
     const double*  __restrict__ node_depth,
     const double*  __restrict__ node_max_depth,
+    const int32_t* __restrict__ node_is_inlet,
     const double*  __restrict__ cell_length,
     const double*  __restrict__ cell_height,
     double*                     flux_Q_out,
@@ -534,7 +558,12 @@ __global__ __launch_bounds__(256, 1) void swe2d_pipe1d_flux_kernel(
             const double cell_crown = cell_invert[c] + cell_height[c];
             const double H_fn = node_invert[fn] + node_depth[fn];
             const double H_tn = node_invert[tn] + node_depth[tn];
-            if (H_fn >= cell_crown - 1e-8 && H_tn >= cell_crown - 1e-8) {
+            // Skip head averaging at inlet nodes — they have prescribed flow,
+            // not real storage head.
+            const bool fn_inlet = node_is_inlet && node_is_inlet[fn];
+            const bool tn_inlet = node_is_inlet && node_is_inlet[tn];
+            if (!fn_inlet && !tn_inlet
+                && H_fn >= cell_crown - 1e-8 && H_tn >= cell_crown - 1e-8) {
                 H_c = 0.5 * (H_fn + H_tn);
             }
         }
@@ -546,7 +575,20 @@ __global__ __launch_bounds__(256, 1) void swe2d_pipe1d_flux_kernel(
         const int32_t nbr = neighbor_cell[k];
 
         double H_n, A_n, Q_n;
-        if (nbr >= 0) {
+        // For inlet nodes, use cell head as "neutral" neighbor head —
+        // zeros HLLE driving term and avoids head-driven flux into the
+        // prescribed-flow BC. The inlet exchange kernel supplies the flow.
+        const bool shared_is_inlet = node_is_inlet && (
+            (nbr >= 0)
+                ? ((dir > 0.0) ? (node_is_inlet[cell_to_node[c]])
+                               : (node_is_inlet[cell_from_node[c]]))
+                : ((dir > 0.0) ? (node_is_inlet[cell_to_node[c]])
+                               : (node_is_inlet[cell_from_node[c]])));
+        if (shared_is_inlet) {
+            H_n = H_c;
+            A_n = cell_A[c];
+            Q_n = 0.0;
+        } else if (nbr >= 0) {
             // Interior neighbor: head at shared node
             const int32_t from_n = cell_from_node[nbr];
             const int32_t to_n   = cell_to_node[nbr];
@@ -576,12 +618,20 @@ __global__ __launch_bounds__(256, 1) void swe2d_pipe1d_flux_kernel(
 
         double F;
         if (nbr < 0) {
-            // Boundary: use head-difference flux instead of Q_cell * dir.
-            // This drives flow from the pipe cell when the node head differs,
-            // enabling flow development from zero initial Q.
+            // Boundary: skip flux when dry — no water in the pipe cell,
+            // so there's nothing to drive across this interface.
+            if (cell_A[c] <= 0.0) {
+                F = 0.0;
+            } else {
+                // Boundary: use head-difference flux instead of Q_cell * dir.
+                // This drives flow from the pipe cell when the node head differs,
+                // enabling flow development from zero initial Q.
+                // c_face is in m/s (wave speed), so F = dH*c_face is in m/s.
+                // Multiply by full pipe area to get volumetric flux in m³/s.
             const double dH = H_c - H_n;
             const double c_face = sqrt(fmax(0.0, g * fabs(dH))) / fmax(1e-12, cell_length[c]);
-            F = dH * c_face;
+            F = dH * c_face * cell_area_full[c];
+            }
         } else {
             // HLLE flux
             const double c_wave = sqrt(g * fabs(H_c - H_n) / fmax(1e-12, cell_length[c]));
@@ -651,13 +701,11 @@ __global__ __launch_bounds__(256, 1) void swe2d_pipe1d_diffusion_wave_kernel(
     const double R = A / fmax(1e-10, P_c);
     const double R43 = pow(R, 4.0 / 3.0);
 
-    // Friction source: -g * n² * |Q| * Q / (A * R^(4/3))
-    const double source_fric = -g * n * n * absQ * Q / (A * R43 + 1e-12);
-    // Minor loss source (HEC-22 entrance/exit at boundary cells only; k=0 for interior cells)
-    const double source_minor = -g * k_loss * absQ * Q / (2.0 * A * A * L + 1e-12);
-
-    const double S_Q = pressure_grad + source_fric + source_minor;
-    double Q_new = Q + dt * S_Q;
+    // Implicit Manning friction (minor/expansion losses handled explicitly in
+    // swe2d_pipe1d_accumulate_node_flux_kernel; do NOT double-apply here).
+    const double cf = g * n * n / (A * R43 + 1e-12);
+    const double denom = 1.0 + dt * cf * absQ;
+    double Q_new = (Q + dt * pressure_grad) / denom;
 
     // Clamp Q to reasonable bounds
     const double Q_cap = 1e6;
@@ -734,11 +782,11 @@ __global__ __launch_bounds__(256, 1) void swe2d_pipe1d_fully_dynamic_kernel(
     // Pressure gradient term: -g * A * dH/dx
     const double pressure_grad = -g * A * dHdx;
 
-    // Friction source
-    const double source_fric = -g * n * n * absQ * Q / (A * R43 + 1e-12);
-    // Minor loss source (HEC-22 entrance/exit at boundary cells only; k=0 for interior)
-    const double source_minor = -g * k_loss * absQ * Q / (2.0 * A * A * L + 1e-12);
-    double Q_new = Q + dt * (pressure_grad + source_fric + source_minor);
+    // Implicit Manning friction + HEC-22 minor loss.
+    const double cf = g * n * n / (A * R43 + 1e-12);
+    const double cm = g * k_loss / (2.0 * A * A * L + 1e-12);
+    const double denom = 1.0 + dt * cf * absQ + dt * cm * absQ;
+    double Q_new = (Q + dt * pressure_grad) / denom;
 
     // Clamp Q
     const double Q_cap = 1e6;
@@ -787,6 +835,7 @@ void swe2d_pipe1d_flux_kernel_host(
     const double*         node_invert,
     const double*         node_depth,
     const double*         node_max_depth,
+    const int32_t*        node_is_inlet,
     const double*         cell_length,
     const double*         cell_height,
     double*               flux_Q_out,
@@ -800,7 +849,7 @@ void swe2d_pipe1d_flux_kernel_host(
         n_cells, owned_offsets, owned_ids, neighbor_cell, interface_dir,
         cell_from_node, cell_to_node, cell_invert, cell_perim,
         cell_area_full, cell_A, cell_Q, node_invert, node_depth,
-        node_max_depth, cell_length, cell_height,
+        node_max_depth, node_is_inlet, cell_length, cell_height,
         flux_Q_out, g, cell_tables, table_N, volume_decomposition);
     CUDA_CHECK(cudaGetLastError());
 }
@@ -880,9 +929,9 @@ void swe2d_pipe1d_fully_dynamic_kernel_host(
 /** Accumulate net pipe flux into each node. 1 thread per cell.
  *  Q > 0 means flow from from_node to to_node.
  *  HEC-22 entrance/exit losses are applied at boundary cells:
- *    h_loss = k * V^2 / (2g) = k * |Q| * Q / (2 * g * A_actual^2)
- *  where A_actual is the current flow area at the boundary cell.
- *  Loss opposes motion (same sign as Q), reducing effective flow at nodes. */
+ *    h_loss = k * V^2 / (2g) = k * Q^2 / (2 * g * A_actual^2)
+ *  Loss always opposes motion — it reduces |Q| towards zero but can never
+ *  reverse flow direction (loss is a sink, not a source). */
 __global__ __launch_bounds__(256, 4) void swe2d_pipe1d_accumulate_node_flux_kernel(
     int32_t                     n_cells,
     const int32_t* __restrict__ cell_from_node,
@@ -900,16 +949,15 @@ __global__ __launch_bounds__(256, 4) void swe2d_pipe1d_accumulate_node_flux_kern
     const int32_t fn = cell_from_node[c];
     const int32_t tn = cell_to_node[c];
 
-    // HEC-22 boundary loss at entrance (s==0, k_in) or exit (s==n_sub-1, k_out)
-    // V = Q / A_actual (actual current flow area), h_loss = k * V^2 / (2g)
-    // loss_Q = k * |Q| * Q / (2 * g * A_actual^2), same sign as Q, opposes motion
     const double k = cell_link_k[c];
     const double A_actual = cell_A[c];
     double Q_eff = Q;
     if (k > 0.0 && A_actual > 0.0) {
-        const double absQ = fabs(Q);
-        const double loss_Q = k * absQ * Q / (2.0 * g * A_actual * A_actual + 1e-12);
-        Q_eff = Q - loss_Q;
+        const double loss_mag = k * Q * Q / (2.0 * g * A_actual * A_actual + 1e-12);
+        if (Q > 0.0)
+            Q_eff = fmax(0.0, Q - loss_mag);
+        else
+            Q_eff = fmin(0.0, Q + loss_mag);
     }
 
     // Q > 0: flow leaves from_node, arrives at to_node
@@ -917,22 +965,46 @@ __global__ __launch_bounds__(256, 4) void swe2d_pipe1d_accumulate_node_flux_kern
     if (tn >= 0) atomicAdd(&node_net_q[tn],  Q_eff);
 }
 
-/** Update node depth from accumulated net flux. 1 thread per node. */
+/** Update node depth from accumulated net flux. 1 thread per node.
+ *  Boundary nodes (pipe-ends, outfalls) are skipped — they have no storage;
+ *  their depth is set by the BC kernel or outfall kernel, not by mass balance. */
 __global__ __launch_bounds__(256, 4) void swe2d_pipe1d_update_node_depth_kernel(
     int32_t           n_nodes,
     const double* __restrict__ node_net_q,
     const double* __restrict__ node_surface_area,
+    const int32_t* __restrict__ node_is_boundary,
+    const double* __restrict__ node_max_depth,
     double*                     node_depth,
     double                     dt)
 {
     int32_t n = blockIdx.x * blockDim.x + threadIdx.x;
     if (n >= n_nodes) return;
 
-    const double area = fmax(1.0, node_surface_area[n]);
+    if (node_is_boundary && node_is_boundary[n]) return;
+
+    const double area = fmax(1e-6, node_surface_area[n]);
     const double dh = dt * node_net_q[n] / area;
     double d = node_depth[n] + dh;
-    d = fmax(0.0, d);
+    d = fmax(0.0, fmin(d, node_max_depth[n]));
     node_depth[n] = d;
+}
+
+/** GPU kernel: mark nodes that have inlet assignments.
+ *  1 thread per inlet.  Uses atomicExch so the final value is always 1
+ *  (multiple inlets at the same node will all write the same value).
+ *  @global */
+__global__ void swe2d_mark_inlet_nodes_kernel(
+    int32_t n_inlets,
+    const int32_t* __restrict__ inlet_node,
+    int32_t n_nodes,
+    int32_t* __restrict__ node_is_inlet)
+{
+    int32_t i = blockIdx.x * blockDim.x + threadIdx.x;
+    if (i >= n_inlets) return;
+    const int32_t n = inlet_node[i];
+    if (n >= 0 && n < n_nodes) {
+        atomicExch(&node_is_inlet[n], 1);
+    }
 }
 
 // ── Host wrappers ───────────────────────────────────────────────────────────
@@ -961,12 +1033,12 @@ static void swe2d_pipe1d_node_mass_balance_host(
         CUDA_CHECK(cudaGetLastError());
     }
 
-    // Update node depth
+    // Update node depth (skip boundary nodes — no storage)
     {
         const int32_t grid = (n_nodes + BLOCK - 1) / BLOCK;
         swe2d_pipe1d_update_node_depth_kernel<<<grid, BLOCK, 0, stream>>>(
             n_nodes, p.d_node_net_q, p.d_node_surface_area,
-            p.d_node_depth, dt);
+            p.d_node_is_boundary, p.d_node_max_depth, p.d_node_depth, dt);
         CUDA_CHECK(cudaGetLastError());
     }
 }
@@ -1011,13 +1083,14 @@ void swe2d_pipe1d_init_area_from_depth(Pipe1DDeviceState* dev)
     CUDA_CHECK(cudaMemcpy(node_depth.data(), dev->d_node_depth, nn * sizeof(double), cudaMemcpyDeviceToHost));
 
     std::vector<double> init_A(nc, 0.0);
+    constexpr double PIPE_DEPTH_MIN = 1.0e-4;
     for (int c = 0; c < nc; ++c) {
         int fn = cell_from[c];
         int tn = cell_to[c];
         double d_fn = (fn >= 0 && fn < nn) ? node_depth[fn] : 0.0;
         double d_tn = (tn >= 0 && tn < nn) ? node_depth[tn] : 0.0;
         double depth = 0.5 * (d_fn + d_tn);
-        if (depth <= 0.0) { init_A[c] = 0.0; continue; }
+        if (depth <= PIPE_DEPTH_MIN) { init_A[c] = 0.0; continue; }
         double A_full = cell_area_full[c];
         double full_depth = (cell_shape[c] == 0) ? cell_width[c] : cell_height[c];
         full_depth = fmax(1e-10, full_depth);
@@ -1027,6 +1100,17 @@ void swe2d_pipe1d_init_area_from_depth(Pipe1DDeviceState* dev)
     CUDA_CHECK(cudaMemcpy(dev->d_A, init_A.data(), nc * sizeof(double), cudaMemcpyHostToDevice));
 }
 
+void swe2d_pipe1d_init_full(Pipe1DDeviceState* dev)
+{
+    int32_t nc = dev->n_pipe_cells;
+    if (nc <= 0) return;
+    std::vector<double> full_A(nc);
+    CUDA_CHECK(cudaMemcpy(full_A.data(), dev->d_cell_area, nc * sizeof(double), cudaMemcpyDeviceToHost));
+    CUDA_CHECK(cudaMemcpy(dev->d_A, full_A.data(), nc * sizeof(double), cudaMemcpyHostToDevice));
+    CUDA_CHECK(cudaMemcpy(dev->d_A_prev, full_A.data(), nc * sizeof(double), cudaMemcpyHostToDevice));
+}
+
+
 // ── Readback node state for diagnostics/tests ───────────────────────────────
 
 void swe2d_pipe1d_readback_node_state(
@@ -1034,6 +1118,12 @@ void swe2d_pipe1d_readback_node_state(
     double*           host_node_depth,
     double*           host_cell_A,
     double*           host_cell_Q,
+    double*           host_cell_width,
+    double*           host_cell_height,
+    int32_t*          host_cell_shape_type,
+    double*           host_cell_invert,
+    int32_t*          host_cell_owner_link,
+    int32_t*          host_cell_sub_idx,
     int32_t           n_nodes,
     int32_t           n_cells)
 {
@@ -1052,6 +1142,36 @@ void swe2d_pipe1d_readback_node_state(
     if (host_cell_Q && n_cells > 0 && n_cells == p.n_pipe_cells) {
         CUDA_CHECK(cudaMemcpy(host_cell_Q, p.d_Q,
             static_cast<size_t>(n_cells) * sizeof(double),
+            cudaMemcpyDeviceToHost));
+    }
+    if (host_cell_width && n_cells > 0 && n_cells == p.n_pipe_cells) {
+        CUDA_CHECK(cudaMemcpy(host_cell_width, p.d_cell_width,
+            static_cast<size_t>(n_cells) * sizeof(double),
+            cudaMemcpyDeviceToHost));
+    }
+    if (host_cell_height && n_cells > 0 && n_cells == p.n_pipe_cells) {
+        CUDA_CHECK(cudaMemcpy(host_cell_height, p.d_cell_height,
+            static_cast<size_t>(n_cells) * sizeof(double),
+            cudaMemcpyDeviceToHost));
+    }
+    if (host_cell_shape_type && n_cells > 0 && n_cells == p.n_pipe_cells) {
+        CUDA_CHECK(cudaMemcpy(host_cell_shape_type, p.d_cell_shape_type,
+            static_cast<size_t>(n_cells) * sizeof(int32_t),
+            cudaMemcpyDeviceToHost));
+    }
+    if (host_cell_invert && n_cells > 0 && n_cells == p.n_pipe_cells) {
+        CUDA_CHECK(cudaMemcpy(host_cell_invert, p.d_cell_invert,
+            static_cast<size_t>(n_cells) * sizeof(double),
+            cudaMemcpyDeviceToHost));
+    }
+    if (host_cell_owner_link && n_cells > 0 && n_cells == p.n_pipe_cells) {
+        CUDA_CHECK(cudaMemcpy(host_cell_owner_link, p.d_cell_owner_link,
+            static_cast<size_t>(n_cells) * sizeof(int32_t),
+            cudaMemcpyDeviceToHost));
+    }
+    if (host_cell_sub_idx && n_cells > 0 && n_cells == p.n_pipe_cells) {
+        CUDA_CHECK(cudaMemcpy(host_cell_sub_idx, p.d_cell_sub_idx,
+            static_cast<size_t>(n_cells) * sizeof(int32_t),
             cudaMemcpyDeviceToHost));
     }
 }
@@ -1101,6 +1221,7 @@ void swe2d_pipe1d_step(
             p.d_A, p.d_Q,
             p.d_node_invert, p.d_node_depth,
             p.d_node_max_depth,
+            p.d_node_is_inlet,
             p.d_cell_length, p.d_cell_height,
             d_flux_Q, g,
             d_cell_tables, table_N,
@@ -1171,6 +1292,8 @@ __global__ __launch_bounds__(256, 4) void swe2d_drainage_pipe_end_bc_kernel(
     const double* __restrict__ pipe_end_inlet_loss_k,
     const double* __restrict__ pipe_end_outlet_loss_k,
     const double* __restrict__ cell_wse,
+    const double* __restrict__ cell_h,
+    double h_min,
     const double* __restrict__ node_invert_elev,
     const double* __restrict__ node_surface_area,
     const double* __restrict__ node_qleave,
@@ -1189,6 +1312,13 @@ __global__ __launch_bounds__(256, 4) void swe2d_drainage_pipe_end_bc_kernel(
         return;
     }
 
+    const double h_surface = cell_h ? cell_h[c] : 0.0;
+    if (h_surface <= h_min) {
+        pipe_end_depth_bc[i] = 0.0;
+        pipe_end_node_area[i] = fmax(1.0, node_surface_area[n]);
+        return;
+    }
+
     const double invert = pipe_end_invert_elev[i];
     const double area_node = fmax(1.0, node_surface_area[n]);
     const double wse_surface = cell_wse[c];
@@ -1201,11 +1331,14 @@ __global__ __launch_bounds__(256, 4) void swe2d_drainage_pipe_end_bc_kernel(
     }
 
     const double q_leave = node_qleave ? node_qleave[n] : 0.0;
+    // q_leave convention: positive = water leaving node (node→surface).
+    // When q_leave > 0, flow is FROM network TO surface → use outlet loss (k_out).
+    // When q_leave < 0, flow is FROM surface TO network → use inlet loss (k_in).
     bool flow_surface_to_network = false;
     if (fabs(q_leave) <= 1.0e-12) {
         flow_surface_to_network = (wse_surface >= node_head);
     } else {
-        flow_surface_to_network = (q_leave >= 0.0);
+        flow_surface_to_network = (q_leave <= 0.0);
     }
 
     const double k_in = fmax(0.0, pipe_end_inlet_loss_k[i]);
@@ -1218,10 +1351,29 @@ __global__ __launch_bounds__(256, 4) void swe2d_drainage_pipe_end_bc_kernel(
         h_loss = k_use * vel * vel / (2.0 * fmax(gravity, 1.0e-9));
     }
     const double wse_eff = fmax(invert, wse_surface - h_loss);
-    const double d_bc = fmax(0.0, wse_eff - invert);
+    // Cap BC depth to the available water depth in the surface cell.
+    // Without this cap, a cell whose bed is above the pipe invert would
+    // create a phantom depth from WSE = bed + h even when h is near zero,
+    // causing the pipe network to start "full" from non-existent water.
+    const double d_bc = fmin(h_surface, fmax(0.0, wse_eff - invert));
     node_depth[n] = d_bc;
     pipe_end_depth_bc[i] = d_bc;
     pipe_end_node_area[i] = area_node;
+}
+
+/// GPU kernel: force free outfall node depth to zero.
+/** 1 thread per node.  Outfall nodes are treated as free discharge boundaries:
+ *  tailwater head equals the invert, so node_depth is forced to zero. */
+__global__ __launch_bounds__(256, 4) void swe2d_outfall_free_bc_kernel(
+    int32_t n_nodes,
+    const int32_t* __restrict__ node_is_outfall,
+    double* __restrict__ node_depth)
+{
+    int32_t n = blockIdx.x * blockDim.x + threadIdx.x;
+    if (n >= n_nodes) return;
+    if (node_is_outfall && node_is_outfall[n]) {
+        node_depth[n] = 0.0;
+    }
 }
 
 /// GPU kernel: exchange flow between pipe end and 2D surface cell.
@@ -1272,15 +1424,6 @@ __global__ __launch_bounds__(256, 4) void swe2d_drainage_pipe_end_exchange_kerne
                 atomicAdd(limiter_volume_m3, (q_net - pipe_end_max_overflow_rate[i]) * dt_s);
             q_net = pipe_end_max_overflow_rate[i];
         }
-        if (cell_depth && cell_area) {
-            const double avail_surface_vol = fmax(0.0, cell_depth[c]) * fmax(0.0, cell_area[c]);
-            const double q_cap_surface = (dt_s > 0.0) ? (avail_surface_vol / dt_s) : 0.0;
-            if (q_net > q_cap_surface) {
-                if (limiter_event_count) atomicAdd(limiter_event_count, 1.0);
-                if (limiter_volume_m3) atomicAdd(limiter_volume_m3, fmax(0.0, q_net - q_cap_surface) * dt_s);
-                q_net = q_cap_surface;
-            }
-        }
         atomicAdd(&q_cell[c], q_net);
     } else if (q_net < 0.0) {
         // Surface -> pipe.  Limit by available surface water.
@@ -1306,7 +1449,8 @@ void swe2d_drainage_pipe_end_bc_kernel_host(
     const double* pipe_end_invert, const double* pipe_end_diameter,
     const double* pipe_end_area,
     const double* pipe_end_kin, const double* pipe_end_kout,
-    const double* cell_wse, const double* node_invert,
+    const double* cell_wse, const double* cell_h, double h_min,
+    const double* node_invert,
     const double* node_surface_area, const double* node_qleave,
     double gravity,
     double* node_depth, double* pipe_end_depth_bc, double* pipe_end_node_area)
@@ -1319,8 +1463,21 @@ void swe2d_drainage_pipe_end_bc_kernel_host(
         pipe_end_cell, pipe_end_node, pipe_end_invert,
         pipe_end_diameter, pipe_end_area,
         pipe_end_kin, pipe_end_kout,
-        cell_wse, node_invert, node_surface_area, node_qleave,
+        cell_wse, cell_h, h_min,
+        node_invert, node_surface_area, node_qleave,
         gravity, node_depth, pipe_end_depth_bc, pipe_end_node_area);
+    CUDA_CHECK(cudaGetLastError());
+}
+
+void swe2d_outfall_free_bc_kernel_host(
+    int32_t n_nodes,
+    const int32_t* node_is_outfall,
+    double* node_depth)
+{
+    if (n_nodes <= 0) return;
+    const int BC_BLOCK = 256;
+    int grid = (n_nodes + BC_BLOCK - 1) / BC_BLOCK;
+    swe2d_outfall_free_bc_kernel<<<grid, BC_BLOCK>>>(n_nodes, node_is_outfall, node_depth);
     CUDA_CHECK(cudaGetLastError());
 }
 

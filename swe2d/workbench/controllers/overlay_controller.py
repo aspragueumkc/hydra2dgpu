@@ -56,6 +56,7 @@ class OverlayController:
     def __init__(self, view: OverlayView):
         self._view = view
         self._cached_mesh_data: Optional[Dict[str, np.ndarray]] = None
+        self._last_mesh_gpkg_run_id: str = ""
         from swe2d.results.data import SWE2DResultsData as _SWE2DRes
         if not hasattr(view, "_results_data") or view._results_data is None:
             view._results_data = _SWE2DRes()
@@ -86,25 +87,126 @@ class OverlayController:
 
     # ── Inlined bridge methods (converted from `dialog` → `self._view`) ──
 
+    def _set_overlay_scalar_arrays(self, n_cells: int) -> None:
+        """Set per-cell Manning's n and CN arrays from mesh metadata.
+
+        Reads ``n_mann_cell`` and ``cn_cell`` from the view's mesh data
+        dict and stores them on the results data using the shared naming
+        contract.  Falls back to empty arrays when the mesh metadata does
+        not contain the arrays or when the cell count is zero.
+
+        Parameters
+        ----------
+        n_cells : int
+            Expected number of cells; arrays are reshaped to ``(n_cells,)``.
+        """
+        if self._data is None:
+            return
+        if n_cells <= 0:
+            self._data.overlay_cell_mannings_n = np.empty(0, dtype=np.float64)
+            self._data.overlay_cell_curve_number = np.empty(0, dtype=np.float64)
+            return
+
+        mesh = getattr(self._view, "_mesh_data", {}) or {}
+
+        mann_arr = mesh.get("n_mann_cell")
+        if mann_arr is not None:
+            mann_arr = np.asarray(mann_arr, dtype=np.float64).ravel()
+            if mann_arr.size == n_cells:
+                self._data.overlay_cell_mannings_n = mann_arr
+            else:
+                self._data.overlay_cell_mannings_n = np.empty(0, dtype=np.float64)
+        else:
+            self._data.overlay_cell_mannings_n = np.empty(0, dtype=np.float64)
+
+        cn_arr = mesh.get("cn_cell")
+        if cn_arr is not None:
+            cn_arr = np.asarray(cn_arr, dtype=np.float64).ravel()
+            if cn_arr.size == n_cells:
+                self._data.overlay_cell_curve_number = cn_arr
+            else:
+                self._data.overlay_cell_curve_number = np.empty(0, dtype=np.float64)
+        else:
+            self._data.overlay_cell_curve_number = np.empty(0, dtype=np.float64)
+
     def sync_high_perf_overlay_data(self) -> None:
         """Refresh cached cell-center and bed arrays used by the canvas overlay.
 
-        Two mutually exclusive paths:
-        1. Live run (snapshots exist) — reads mesh geometry from in-memory
+        Two mutually exclusive paths selected by ``data_source``:
+        1. Live run (data_source == "live") — reads mesh geometry from in-memory
            ``_mesh_data`` / ``_mesh_cell_centroids()``.  This is the ONLY
            correct source during a live simulation.  Fails loudly if missing.
-        2. GPKG results (no snapshots) — loads baked mesh BLOB from
+        2. GPKG results (data_source != "live") — loads baked mesh BLOB from
            ``swe2d_baked_mesh`` in the results GPKG.  Fails loudly if
            the baked mesh entry is missing.  No fallback to in-memory mesh.
         """
         view = self._view
-        _snapshots = self._data.get_live_snapshot_timesteps()
-        if not _snapshots:
+        data_source = self._data.data_source if self._data else "none"
+
+        if data_source == "live":
+            # ── Path 1: Live run — in-memory mesh only, fail loudly ──
+            cx, cy = view._mesh_cell_centroids()
+            if cx is None or cy is None or cx.size <= 0:
+                raise RuntimeError(
+                    "Live overlay requires mesh centroids — no mesh loaded?"
+                )
+            bed = view._mesh_cell_solver_bed()
+            self._data.overlay_cell_x = np.asarray(cx, dtype=np.float64)
+            self._data.overlay_cell_y = np.asarray(cy, dtype=np.float64)
+            self._data.overlay_cell_bed = np.asarray(bed, dtype=np.float64)
+            mesh = getattr(view, "_mesh_data", {}) or {}
+            self._data.overlay_node_x = np.asarray(
+                mesh.get("node_x", np.empty(0)), dtype=np.float64
+            ).ravel()
+            self._data.overlay_node_y = np.asarray(
+                mesh.get("node_y", np.empty(0)), dtype=np.float64
+            ).ravel()
+            raw_cell_nodes = np.asarray(
+                mesh.get("cell_nodes", np.empty(0)), dtype=np.int32
+            ).ravel()
+            if raw_cell_nodes.size <= 0:
+                raise RuntimeError(
+                    "Live overlay requires mesh cell_nodes — no mesh loaded?"
+                )
+            if "cell_face_offsets" in mesh and "cell_face_nodes" in mesh:
+                offs = np.asarray(mesh["cell_face_offsets"], dtype=np.int32).ravel()
+                faces = np.asarray(mesh["cell_face_nodes"], dtype=np.int32).ravel()
+                tri_list = []
+                tc_list = []
+                for ci in range(int(offs.size) - 1):
+                    s = int(offs[ci])
+                    e = int(offs[ci + 1])
+                    ns = faces[s:e]
+                    for k in range(1, int(ns.size) - 1):
+                        tri_list.append([int(ns[0]), int(ns[k]), int(ns[k + 1])])
+                        tc_list.append(ci)
+                if tri_list:
+                    self._data.overlay_cell_nodes = np.asarray(
+                        tri_list, dtype=np.int32
+                    ).ravel()
+                    self._data.overlay_tri_to_cell = np.asarray(tc_list, dtype=np.int32)
+                else:
+                    self._data.overlay_cell_nodes = raw_cell_nodes
+                    self._data.overlay_tri_to_cell = np.empty(0, dtype=np.int32)
+            else:
+                self._data.overlay_cell_nodes = raw_cell_nodes
+                self._data.overlay_tri_to_cell = np.empty(0, dtype=np.int32)
+            self._set_overlay_scalar_arrays(int(cx.size))
+            self.refresh_high_perf_canvas_overlay(None)
+
+        else:
             # ── Path 2: GPKG results — baked mesh from GPKG only ──
-            _data = getattr(view, "_results_data", None)
-            if hasattr(self._data, 'overlay_cell_x') and (self._data.overlay_cell_x is None or self._data.overlay_cell_x.size <= 0):
+            rec = self._data.overlay_selected_run()
+            current_key = ""
+            if rec:
+                current_key = f"{rec.gpkg_path}::{rec.run_id}"
+            needs_reload = (
+                self._data.overlay_cell_x is None
+                or self._data.overlay_cell_x.size <= 0
+                or self._last_mesh_gpkg_run_id != current_key
+            )
+            if needs_reload:
                 try:
-                    rec = self._data.overlay_selected_run()
                     if not rec:
                         raise ValueError("No enabled run records")
                     gpkg = rec.gpkg_path
@@ -146,6 +248,8 @@ class OverlayController:
                             self._data.overlay_tri_to_cell = np.asarray(tc_list, dtype=np.int32)
                     self._cached_mesh_data = {"node_x": pm.node_x, "node_y": pm.node_y,
                                               "cell_nodes": pm.cell_nodes}
+                    self._last_mesh_gpkg_run_id = current_key
+                    self._set_overlay_scalar_arrays(int(self._data.overlay_cell_x.size))
                     return
                 except Exception as exc:
                     view._log(
@@ -159,58 +263,8 @@ class OverlayController:
             self._data.overlay_node_y = np.empty(0, dtype=np.float64)
             self._data.overlay_cell_nodes = np.empty(0, dtype=np.int32)
             self._data.overlay_tri_to_cell = np.empty(0, dtype=np.int32)
+            self._set_overlay_scalar_arrays(0)
             self.refresh_high_perf_canvas_overlay(None)
-            return
-
-        # ── Path 1: Live run — in-memory mesh only, fail loudly ──
-        cx, cy = view._mesh_cell_centroids()
-        if cx is None or cy is None or cx.size <= 0:
-            raise RuntimeError(
-                "Live overlay requires mesh centroids — no mesh loaded?"
-            )
-        bed = view._mesh_cell_solver_bed()
-        self._data.overlay_cell_x = np.asarray(cx, dtype=np.float64)
-        self._data.overlay_cell_y = np.asarray(cy, dtype=np.float64)
-        self._data.overlay_cell_bed = np.asarray(bed, dtype=np.float64)
-        mesh = getattr(view, "_mesh_data", {}) or {}
-        self._data.overlay_node_x = np.asarray(
-            mesh.get("node_x", np.empty(0)), dtype=np.float64
-        ).ravel()
-        self._data.overlay_node_y = np.asarray(
-            mesh.get("node_y", np.empty(0)), dtype=np.float64
-        ).ravel()
-        raw_cell_nodes = np.asarray(
-            mesh.get("cell_nodes", np.empty(0)), dtype=np.int32
-        ).ravel()
-        if raw_cell_nodes.size <= 0:
-            raise RuntimeError(
-                "Live overlay requires mesh cell_nodes — no mesh loaded?"
-            )
-        if "cell_face_offsets" in mesh and "cell_face_nodes" in mesh:
-            offs = np.asarray(mesh["cell_face_offsets"], dtype=np.int32).ravel()
-            faces = np.asarray(mesh["cell_face_nodes"], dtype=np.int32).ravel()
-            tri_list = []
-            tc_list = []
-            for ci in range(int(offs.size) - 1):
-                s = int(offs[ci])
-                e = int(offs[ci + 1])
-                ns = faces[s:e]
-                for k in range(1, int(ns.size) - 1):
-                    tri_list.append([int(ns[0]), int(ns[k]), int(ns[k + 1])])
-                    tc_list.append(ci)
-            if tri_list:
-                self._data.overlay_cell_nodes = np.asarray(
-                    tri_list, dtype=np.int32
-                ).ravel()
-                self._data.overlay_tri_to_cell = np.asarray(tc_list, dtype=np.int32)
-            else:
-                self._data.overlay_cell_nodes = raw_cell_nodes
-                self._data.overlay_tri_to_cell = np.empty(0, dtype=np.int32)
-        else:
-            self._data.overlay_cell_nodes = raw_cell_nodes
-            self._data.overlay_tri_to_cell = np.empty(0, dtype=np.int32)
-
-        self.refresh_high_perf_canvas_overlay(None)
 
     def update_high_perf_overlay_time(self, t_s: float) -> None:
         """Update overlay rendering at a specific simulation time."""
@@ -299,6 +353,16 @@ class OverlayController:
             return
         if self._data is None or self._data.overlay_cell_x is None or self._data.overlay_cell_x.size <= 0 or not self._get_snapshot_timesteps():
             return
+        # Re-attempt scalar array population from mesh data when the overlay
+        # is first rendered if the per-cell Manning/CN arrays are still empty.
+        n_cells = int(self._data.overlay_cell_x.size)
+        if n_cells > 0 and (
+            getattr(self._data, "overlay_cell_mannings_n", None) is None
+            or self._data.overlay_cell_mannings_n.size <= 0
+            or getattr(self._data, "overlay_cell_curve_number", None) is None
+            or self._data.overlay_cell_curve_number.size <= 0
+        ):
+            self._set_overlay_scalar_arrays(n_cells)
         t_use = self.resolve_overlay_time(t_s)
         if t_use is None:
             return
@@ -328,6 +392,29 @@ class OverlayController:
             self.apply_overlay_frame(frame)
         except Exception as exc:
             view._log(f"[HighPerf Overlay] refresh failed: {exc}")
+
+    def _clear_overlay_geometry(self) -> None:
+        """Clear all overlay geometry arrays so the next refresh reloads mesh.
+
+        Called when run records change (new GPKG loaded, runs toggled)
+        so stale mesh geometry from a previous GPKG is not reused for
+        a different run's snapshot data.
+        """
+        from swe2d.workbench.services.mesh_data_prep_service import (
+            create_empty_overlay_arrays,
+        )
+        if self._data is None:
+            return
+        empty = create_empty_overlay_arrays()
+        self._data.overlay_cell_x = empty["cell_x"]
+        self._data.overlay_cell_y = empty["cell_y"]
+        self._data.overlay_cell_bed = empty["cell_bed"]
+        self._data.overlay_node_x = empty["node_x"]
+        self._data.overlay_node_y = empty["node_y"]
+        self._data.overlay_cell_nodes = empty["cell_nodes"]
+        self._data.overlay_tri_to_cell = empty["tri_to_cell"]
+        self._cached_mesh_data = None
+        self._last_mesh_gpkg_run_id = ""
 
     def reset_runtime_snapshot_overlay_cache(self, reason: str = "") -> None:
         """Reset all snapshot/overlay cache state on the dialog."""
@@ -397,10 +484,14 @@ class OverlayController:
             except Exception:
                 t_s = 0.0
 
-        # Single code path: load_baked_snapshot handles both live and GPKG
-        # data transparently.  No data_source branching.
+        # GPKG path: load_mesh_snapshot_for_overlay handles the full overlay
+        # setup (mesh geometry + snapshot seeding + canvas refresh). When it
+        # succeeds, skip the LIVE-path sync below so baked-mesh geometry is
+        # not overwritten by view._mesh_cell_centroids() (Bug 1 fix).
+        # Live path: snapshots already exist, go straight to sync+refresh.
         if not self._get_snapshot_timesteps():
-            self.load_mesh_snapshot_for_overlay(t_s)
+            if self.load_mesh_snapshot_for_overlay(t_s):
+                return
         self.sync_high_perf_overlay_data()
         self.refresh_high_perf_canvas_overlay(t_s)
 
@@ -621,7 +712,9 @@ class OverlayController:
         # Load overlay mesh geometry from the baked mesh BLOB in GPKG only.
         # No fallback to in-memory _mesh_data — if the GPKG is missing
         # a swe2d_baked_mesh entry this fails loudly.
-        if self._data.overlay_cell_x is None or self._data.overlay_cell_x.size <= 0:
+        current_gpkg_run_id = f"{gpkg}::{run_id}"
+        if (self._data.overlay_cell_x is None or self._data.overlay_cell_x.size <= 0
+                or self._last_mesh_gpkg_run_id != current_gpkg_run_id):
             self.sync_high_perf_overlay_data()
         if self._data.overlay_cell_x is None or self._data.overlay_cell_x.size <= 0:
             view._log(
@@ -646,7 +739,15 @@ class OverlayController:
         # Seed in-memory snapshot from GPKG so the overlay renderer has data.
         # data_source stays "gpkg" so that scrubbing to a different time
         # triggers a new GPKG load rather than reading stale in-memory data.
+        # Save and restore coupling records around clear_live_snapshots so
+        # slider scrubbing doesn't destroy the coupling cache (Bug 3 fix).
+        _saved_coupling = self._data._coupling_records[:] if hasattr(self._data, '_coupling_records') else []
+        _saved_coupling_run_id = str(getattr(self._data, '_coupling_run_id', ''))
+        _saved_coupling_gpkg = str(getattr(self._data, '_coupling_gpkg_path', ''))
         self._data.clear_live_snapshots()
+        self._data._coupling_records = _saved_coupling
+        self._data._coupling_run_id = _saved_coupling_run_id
+        self._data._coupling_gpkg_path = _saved_coupling_gpkg
         self._data.append_live_snapshot(
             float(nearest_ts),
             np.asarray(h, dtype=np.float64).copy(),

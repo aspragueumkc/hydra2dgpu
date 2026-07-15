@@ -1253,6 +1253,22 @@ PYBIND11_MODULE(HYDRA_SWE2D_PY_MODULE_NAME, m) {
         py::arg("node_max_depth")=py::none(),
         "Upload drainage exchange parameters (inlets, outfalls, pipe-ends, node max depth) to GPU.");
 
+    m.def("swe2d_gpu_upload_outfall_free_bc_nodes",
+        [](py::object outfall_node_indices_obj) {
+            extern SWE2DDeviceState* s_coupling_dev;
+            int32_t n_outfall_nodes = 0;
+            const int32_t* outfall_node_indices = nullptr;
+            py::array_t<int32_t> oni;
+            if (!outfall_node_indices_obj.is_none()) {
+                oni = outfall_node_indices_obj.cast<py::array_t<int32_t, py::array::c_style|py::array::forcecast>>();
+                n_outfall_nodes = static_cast<int32_t>(oni.size());
+                outfall_node_indices = oni.data();
+            }
+            swe2d_gpu_upload_outfall_free_bc_nodes(s_coupling_dev, n_outfall_nodes, outfall_node_indices);
+        },
+        py::arg("outfall_node_indices")=py::none(),
+        "Upload outfall node indices and mark them as free-discharge boundary nodes.");
+
     m.def("swe2d_gpu_accumulate_external_source",
         [](std::shared_ptr<PySolver>& ps,
            py::array_t<double, py::array::c_style | py::array::forcecast> src)
@@ -1823,6 +1839,23 @@ PYBIND11_MODULE(HYDRA_SWE2D_PY_MODULE_NAME, m) {
         py::arg("dev_ptr"),
         "Initialize pipe cell area from uploaded node depths.");
 
+    m.def("swe2d_pipe1d_init_full",
+        [](uintptr_t dev_ptr) -> void {
+            auto* dev = reinterpret_cast<SWE2DDeviceState*>(dev_ptr);
+            swe2d_pipe1d_init_full(&dev->pipe1d);
+        },
+        py::arg("dev_ptr"),
+        "Initialize pipe cell area to full cross-section (primed).");
+
+    m.def("swe2d_outfall_free_bc_kernel_host",
+        [](uintptr_t dev_ptr) -> void {
+            auto* dev = reinterpret_cast<SWE2DDeviceState*>(dev_ptr);
+            swe2d_outfall_free_bc_kernel_host(dev->pipe1d.n_nodes,
+                dev->pipe1d.d_node_is_outfall, dev->pipe1d.d_node_depth);
+        },
+        py::arg("dev_ptr"),
+        "Force free outfall node depth to zero before pipe1d step.");
+
     m.def("swe2d_pipe1d_readback_node_state",
         [](uintptr_t dev_ptr, int32_t n_nodes, int32_t n_cells) -> py::dict
         {
@@ -1830,22 +1863,58 @@ PYBIND11_MODULE(HYDRA_SWE2D_PY_MODULE_NAME, m) {
             py::array_t<double> node_depth_arr(n_nodes);
             py::array_t<double> cell_A_arr(n_cells);
             py::array_t<double> cell_Q_arr(n_cells);
+            py::array_t<double> cell_width_arr(n_cells);
+            py::array_t<double> cell_height_arr(n_cells);
+            py::array_t<int32_t> cell_shape_type_arr(n_cells);
+            py::array_t<double> cell_invert_arr(n_cells);
+            py::array_t<int32_t> cell_owner_link_arr(n_cells);
+            py::array_t<int32_t> cell_sub_idx_arr(n_cells);
+            // Zero-init the host buffers.  py::array_t<double>(N) is
+            // equivalent to np.empty(N) — it does NOT zero-initialize.  The
+            // downstream readback function guards each cudaMemcpy with
+            // ``n_* == p.n_*``; if any guard fails, the host buffer stays
+            // uninitialized and Python sees random heap bits.  Pre-zeroing
+            // here turns "guard fail" from silent corruption into a clean
+            // zero result.
+            if (n_nodes > 0) std::memset(node_depth_arr.mutable_data(), 0, static_cast<size_t>(n_nodes) * sizeof(double));
+            if (n_cells > 0) {
+                std::memset(cell_A_arr.mutable_data(), 0, static_cast<size_t>(n_cells) * sizeof(double));
+                std::memset(cell_Q_arr.mutable_data(), 0, static_cast<size_t>(n_cells) * sizeof(double));
+                std::memset(cell_width_arr.mutable_data(), 0, static_cast<size_t>(n_cells) * sizeof(double));
+                std::memset(cell_height_arr.mutable_data(), 0, static_cast<size_t>(n_cells) * sizeof(double));
+                std::memset(cell_shape_type_arr.mutable_data(), 0, static_cast<size_t>(n_cells) * sizeof(int32_t));
+                std::memset(cell_invert_arr.mutable_data(), 0, static_cast<size_t>(n_cells) * sizeof(double));
+                std::memset(cell_owner_link_arr.mutable_data(), 0, static_cast<size_t>(n_cells) * sizeof(int32_t));
+                std::memset(cell_sub_idx_arr.mutable_data(), 0, static_cast<size_t>(n_cells) * sizeof(int32_t));
+            }
             swe2d_pipe1d_readback_node_state(
                 dev,
                 node_depth_arr.mutable_data(),
                 cell_A_arr.mutable_data(),
                 cell_Q_arr.mutable_data(),
+                cell_width_arr.mutable_data(),
+                cell_height_arr.mutable_data(),
+                cell_shape_type_arr.mutable_data(),
+                cell_invert_arr.mutable_data(),
+                cell_owner_link_arr.mutable_data(),
+                cell_sub_idx_arr.mutable_data(),
                 n_nodes, n_cells);
             py::dict d;
             d["node_depth"] = node_depth_arr;
             d["cell_A"] = cell_A_arr;
             d["cell_Q"] = cell_Q_arr;
+            d["cell_width"] = cell_width_arr;
+            d["cell_height"] = cell_height_arr;
+            d["cell_shape_type"] = cell_shape_type_arr;
+            d["cell_invert"] = cell_invert_arr;
+            d["cell_owner_link"] = cell_owner_link_arr;
+            d["cell_sub_idx"] = cell_sub_idx_arr;
             return d;
         },
         py::arg("dev_ptr"),
         py::arg("n_nodes"),
         py::arg("n_cells"),
-        "Readback pipe1d node depths, cell areas, and cell flows for diagnostics/tests.");
+        "Readback pipe1d node depths, cell areas, flows, per-cell geometry, and cell-to-link mapping.");
 
     m.def("swe2d_solver_get_device_capsule",
         [](const std::shared_ptr<PySolver>& ps) -> py::object {
@@ -2569,6 +2638,26 @@ PYBIND11_MODULE(HYDRA_SWE2D_PY_MODULE_NAME, m) {
         },
         py::arg("solver"), py::arg("h_in"), py::arg("hu_in"), py::arg("hv_in"),
         "Overwrite current (h, hu, hv) solver state arrays.");
+
+    // ── Readback rain CN cumulative state ─────────────────────────────────────
+    m.def("swe2d_readback_rain_state",
+        [](uintptr_t dev_ptr, int32_t n_cells) -> py::dict
+        {
+            auto* dev = reinterpret_cast<SWE2DDeviceState*>(dev_ptr);
+            py::array_t<double> rain_cum_mm(n_cells);
+            py::array_t<double> rain_excess_cum_mm(n_cells);
+            swe2d_gpu_readback_rain_state(dev,
+                rain_cum_mm.mutable_data(),
+                rain_excess_cum_mm.mutable_data(),
+                n_cells);
+            py::dict d;
+            d["rain_cum_mm"] = rain_cum_mm;
+            d["rain_excess_cum_mm"] = rain_excess_cum_mm;
+            return d;
+        },
+        py::arg("dev_ptr"),
+        py::arg("n_cells"),
+        "Readback cumulative rain and excess (mm) per cell from the GPU rain CN state.");
 
     // ── Get max tracking ───────────────────────────────────────────
     m.def("swe2d_get_max_tracking",
